@@ -443,6 +443,13 @@ void spawn_initial_userspace_init(void) {
          * at most this much kernel memory" expressible for the first time. Note the
          * object must be restated, per the NB above. */
         cap_install_from_root(pid, CAPSLOT_UNTYPED, 17, UNTYPED_ROOT);
+        /* CAP_STORAGE_FORMAT (root[22], roadmap 2.9 / S72): the authority to
+         * DESTROY the volume on the attached disk and lay a new one down. init
+         * holds it so it can decide whether this machine needs installing and
+         * grant it to the installer it launches; nothing a login reaches is ever
+         * given a copy. It is READ|WRITE at the primordial and rights only
+         * narrow, so no delegate can widen it into a grantable one. */
+        cap_install_from_root(pid, CAPSLOT_STORAGE_FORMAT, 22, 0);
 
         /* do_spawn leaves the child SUSPENDED so a supervisor can endow it
          * before it runs (SYS_TASK_RESUME). init's endowment is complete above,

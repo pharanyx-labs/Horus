@@ -123,6 +123,63 @@ static void report_shell_exit(void) {
  * there is no shell to wait on). */
 static void settle(void) { for (volatile int d = 0; d < 40000; d++) { } }
 
+/* ---- What volume this machine has (roadmap 2.9, S72) ----------------------
+ *
+ * init asks the kernel, at boot, before anything else runs. Two reasons, and the
+ * second is the one this exists for.
+ *
+ * FIRST, IT IS THE POSITIVE HALF OF THE CAPABILITY. captest probes
+ * SYS_STORAGE_INFO and SYS_STORAGE_FORMAT from a task holding no
+ * CAP_STORAGE_FORMAT and asserts both are refused -- and a syscall that refused
+ * EVERYONE would satisfy those checks exactly as well as one that refuses the
+ * right callers. This is the call from a holder, on the wire, saying something
+ * that differs between a machine with a disk and a machine without: the arm
+ * captest cannot supply from inside its own boot, because the gate names a fixed
+ * slot and a task cannot grant itself into one.
+ *
+ * SECOND, IT IS THE QUESTION AN INSTALLER EXISTS TO ANSWER. "There is a disk
+ * here and it carries no Horus volume" is precisely the state in which a machine
+ * needs installing, and init is the task that will decide what to launch.
+ *
+ * ONE write, whole line assembled first: a marker split across two writes can be
+ * cut in half by another task's output (docs/LIMITATIONS.md 2.6a), and this one
+ * is asserted by a gate.
+ */
+static void report_storage(void) {
+    struct storage_info si;
+    char line[192];
+    int p = 0;
+
+    for (unsigned z = 0; z < sizeof(si); z++) ((char *)&si)[z] = 0;
+
+    if (sys_storage_info(&si) != 0) {
+        /* init holds CAP_STORAGE_FORMAT from the primordial endowment, so a
+         * refusal here is a real finding rather than a configuration: it means
+         * the endowment did not land. Said out loud rather than swallowed. */
+        report("INIT_STORAGE: refused -- init holds no CAP_STORAGE_FORMAT\n");
+        return;
+    }
+
+    exr_append_str(line, &p, "INIT_STORAGE: ");
+    if (!si.present) {
+        /* The ephemeral RAM vdisk. It is a block device by every internal
+         * measure and is deliberately not reported as one here: an installer
+         * offering to format memory would be offering nonsense. */
+        exr_append_str(line, &p, "no persistent volume; this boot runs on the ephemeral store\n");
+        report(line);
+        return;
+    }
+
+    exr_append_str(line, &p, "disk present, ");
+    exr_append_num(line, &p, si.total_blocks, 10);
+    exr_append_str(line, &p, " blocks of ");
+    exr_append_num(line, &p, si.block_size, 10);
+    exr_append_str(line, &p, " bytes; ");
+    if (si.recognised) exr_append_str(line, &p, "a Horus volume is present\n");
+    else               exr_append_str(line, &p, "no Horus volume -- an install is needed\n");
+    report(line);
+}
+
 /* Slots init holds its delegable caps in, matching the kernel endowment in
  * spawn_initial_userspace_init(). */
 #define CAP_SLOT_USER       6    /* CAP_USER admin cap (SYS_REGISTER_FS_SERVER gate) */
@@ -382,6 +439,11 @@ static int launch_shell(void) {
 }
 
 void _start(void) {
+    /* Say what volume this machine has, before anything else runs. See
+     * report_storage: it is both the positive arm for CAP_STORAGE_FORMAT and the
+     * question that decides whether a machine needs installing. */
+    report_storage();
+
     /* Bring up the filesystem server first, so it is registered and serving by
      * the time the shell (or the test client) issues its first request. */
     int srv = launch_fs_server();

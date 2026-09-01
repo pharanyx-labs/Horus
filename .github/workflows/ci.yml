@@ -453,6 +453,14 @@ jobs:
       # arm shows the rule moved into one place rather than that a hole existed.
       - name: Control arm — a lookup that returns whatever the slot holds
         run: make smoke-captest-lookup-type-control
+      # S72. The one call that DESTROYS a volume answers to a capability of its
+      # own. The arm removes the whole dispatch row -- slot, rights and type --
+      # so captest reaches the handler and SUCCEEDS, which is the condition a
+      # refusal test needs: an ungated path that also failed would witness
+      # nothing. Non-destructive, because captest boots on the ephemeral vdisk
+      # and storage_unlock is idempotent there.
+      - name: Control arm — a format with no capability in front of it
+        run: make smoke-captest-storage-format-control
       # cap_lookup is the function every capability gate in this kernel resolves
       # through, and it used to end in an unconditional fallback to the
       # PRIMORDIAL root cnode -- reached both by a task with no cspace and by one
@@ -2621,6 +2629,14 @@ jobs:
         run: make smoke-storage-noformat
       - name: Control arm — the pre-2026-08-31 format-on-login
         run: make smoke-storage-noformat-control
+      # S72. The other half of S63: the deliberate act now HAS a caller, and it
+      # answers to CAP_STORAGE_FORMAT rather than to the object-store capability
+      # fs_server and the shell both hold. This is the POSITIVE arm -- two boots
+      # of one kernel, one with a blank disk and one without, requiring init (a
+      # holder) to report a different answer each time. Without it captest's
+      # refusals are satisfied by a syscall that refuses everyone.
+      - name: A capability holder learns what volume this machine has
+        run: make smoke-storage-survey
 
   smoke-fs-wal:
     name: QEMU filesystem journal crash-recovery self-test (two-boot, headless)

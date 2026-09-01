@@ -60,6 +60,13 @@ liveness:
 # Targets that establish liveness another way. A reason here must say WHICH
 # mechanism, specifically enough that a reader can check it against the recipe.
 exempt:
+  smoke-storage-survey: >
+    Both boots assert a POSITIVE marker with REQUIRE_MARKER, so a boot that died
+    before reaching init produces no marker and tools/smoke_test.sh exits
+    non-zero, which fails the recipe -- there is no absence assertion here for a
+    dead boot to satisfy. The ABSENT_MARKER on each boot is the other arm's
+    marker, not this one's, so it cannot be satisfied by silence either: a run
+    that printed nothing still fails on the missing REQUIRE_MARKER first.
   # The five entries below were added on 2026-08-31, when this file's checker
   # learned to read the scripts a recipe delegates its boots to. Two of them --
   # the stress pair -- had been booting thirty times each, invisibly, since long

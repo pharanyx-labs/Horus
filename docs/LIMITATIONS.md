@@ -453,9 +453,12 @@ a page at the bogus address and reported success.
 ### 1.8 Part of the syscall table has no test that runs its handler, and one of those gaps hid a defect
 
 **Measured since 2026-08-20**, and re-derived on every merge rather than restated: as of
-2026-09-01, and gated since: **81 of 92** implemented syscalls have their handler
+2026-09-01, and gated since: **82 of 94** implemented syscalls have their handler
 body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
-boot-modules session). The other 11 are listed in `.github/syscall-coverage.yml`, each with a written reason.
+boot-modules session). The other 12 are listed in `.github/syscall-coverage.yml`, each with a written reason.
+2026-08-30, and gated since: **82 of 94** implemented syscalls have their handler
+body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
+boot-modules session). The other 12 are listed in `.github/syscall-coverage.yml`, each with a written reason.
 
 This was stated as a limitation rather than a finding, on the grounds that nothing here was
 known to be broken. **That is no longer the honest framing, and it has now been wrong twice.**
@@ -490,8 +493,10 @@ once rather than the one syscall that motivated it. And third, **neither would h
 by a wider `captest`**: both syscalls are gated on a real capability, so the only way in is a
 task that holds one, which is why the answer was a new task rather than a bigger suite.
 
-So the standing risk is not hypothetical: a defect in any of those 11 handlers is invisible in
+So the standing risk is not hypothetical: a defect in any of those 12 handlers is invisible in
 the same way issue #176 was, and in the way S52 and S71 just were. `captest` is a **refusal** suite by
+So the standing risk is not hypothetical: a defect in any of those 12 handlers is invisible in
+the same way issue #176 was, and in the way S52 just was. `captest` is a **refusal** suite by
 construction: its checks for `SYS_DMESG` and `SYS_AUDIT_DIGEST` both assert `SYS_ERR_PERM`, and
 the capability gate returns before the handler runs. Both syscalls were named by the suite;
 neither handler had ever executed. What S52 adds to that lesson is that a refusal test does not
@@ -547,16 +552,24 @@ because running the one arm would leave the other two transcripts missing and re
 without the defect contributing anything. Without the arm, a promotion the probes earned would
 be indistinguishable from one that was free all along.
 
-**What is left is thirteen, in three groups, and the grouping is the useful part** because it
-says what each would cost. Six have a real capability in their dispatch row, so the table
-refuses before the handler runs and `captest` holds neither `CAP_AUDIT` nor
-`CAP_ENCRYPTED_STORAGE` — covering one needs a probe task that holds exactly one of them, not a
-wider `captest`. Among those is `SYS_AUDIT_DIGEST`, **one of the two wrappers issue #176 was
-about**, whose sibling `SYS_DMESG` has been covered since this manifest existed: the defect that
-motivated the whole file still sits behind a handler nothing enters. Five carry the slot-3
-`[C-1]` decoy (§1.6b), which is not a gate, so `captest` passes the table check and is stopped
-by the opposite problem — the call would *succeed*, replacing or duplicating the caller. Two are
-the SC_NONE pair above.
+**What is left is twelve, in three groups, and the grouping is the useful part** because it
+says what each would cost. **Five** have a real capability in their dispatch row, so the table
+refuses before the handler runs and `captest` holds none of `CAP_ENCRYPTED_STORAGE` or
+`CAP_STORAGE_FORMAT` — covering one needs a probe task that holds exactly one of them, not a
+wider `captest`. That prescription was followed for `CAP_AUDIT` on 2026-09-01 and it worked, so
+the cost is now known rather than estimated: one small task, and the first entry into either
+handler found a defect.
+
+**`SYS_STORAGE_FORMAT` is the one member of that group a probe task cannot rescue**, and it is
+worth naming because it is the boundary of the technique rather than a gap in it: entering its
+body **formats the attached disk**, so no tracked workload can enter it without destroying the
+volume the run is using. Its sibling `SYS_STORAGE_INFO` is `covered` instead — by `init` calling
+it at boot from the same capability (roadmap 2.9), which is the same capability and the opposite
+consequence.
+
+Five carry the slot-3 `[C-1]` decoy (§1.6b), which is not a gate, so `captest` passes the table
+check and is stopped by the opposite problem — the call would *succeed*, replacing or
+duplicating the caller. Two are the SC_NONE pair above.
 
 ### 1.9 ~~S16 had no witness at all~~: CLOSED 2026-08-28
 

@@ -958,8 +958,8 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             exists as far as the caller is concerned.
           </p>
           <p>
-            The ABI defines <strong>110 syscall numbers</strong>. The dispatch table is sized to
-            the highest of them plus one, and a default build installs <strong>92
+            The ABI defines <strong>112 syscall numbers</strong>. The dispatch table is sized to
+            the highest of them plus one, and a default build installs <strong>94
             handlers</strong>, the remainder are reserved, or are test-only calls compiled out
             entirely. Every one of those gaps answers <code>SYS_ERR_NOSYS</code>. That difference
             is the fail-closed property, not an oversight: a shipping kernel denies the debug
@@ -1225,6 +1225,32 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <span class="witness">smoke-fs · smoke-meta-crash · smoke-merkle-replay</span>
           </article>
           <article>
+            <h3>Erasing a disk is its own authority</h3>
+            <p>
+              The kernel refuses to format a volume it does not recognise just because someone
+              typed a password at the login prompt &mdash; a mistyped password on a machine
+              whose disk it did not know used to destroy that disk, silently. Formatting became
+              a deliberate act instead, and for a while that act had <em>no caller at all</em>:
+              a refusal that is absolute because nothing can reach it is a weaker claim than one
+              that is deliberate.
+            </p>
+            <p>
+              It has a caller now, and the caller answers to a capability of its own.
+              <code>CAP_STORAGE_FORMAT</code> is held by <code>init</code> and passed to the
+              installer alone. It is deliberately <em>not</em> a permission bit on the storage
+              capability the filesystem server and the shell already hold: those are handed out
+              with every right there is, so defining the bit would have granted it to both, with
+              nothing in the diff to show for it. A separate capability fails closed where a new
+              bit inside &ldquo;all rights&rdquo; fails open.
+            </p>
+            <p>
+              The same capability answers the survey &mdash; what disk is here, how big, does it
+              already carry a volume &mdash; because that readout is the first screen of the same
+              act. A task that cannot destroy the volume is not told what is on it.
+            </p>
+            <span class="witness">smoke-captest &middot; smoke-storage-survey &middot; smoke-storage-noformat</span>
+          </article>
+          <article>
             <h3>A usable userland</h3>
             <p>
               newlib as the C library, a shell with pipelines over bounded in-kernel pipes,
@@ -1388,7 +1414,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <div>
 <pre class="code"><span class="c"># check the claims on this page</span>
 <span class="p">$</span> make smoke                 <span class="c"># boot to ring-3 login</span>
-<span class="p">$</span> make smoke-captest         <span class="c"># 174 capability checks</span>
+<span class="p">$</span> make smoke-captest         <span class="c"># 180 capability checks</span>
 <span class="p">$</span> make smoke-modules-tamper  <span class="c"># <span class="x">expect a refusal</span></span>
 <span class="p">$</span> make smoke-tpm-seal        <span class="c"># <span class="x">expect a locked volume</span></span>
 <span class="p">$</span> make reproducible-build    <span class="c"># <span class="x">run twice, diff the record</span></span></pre>
@@ -1396,7 +1422,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 214 test targets, and the troubleshooting
+          Every configuration flag, every one of the 216 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1516,7 +1542,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             The security argument rests entirely on the tests, so they are treated as engineering
             artifacts rather than an afterthought. There are three layers: Rust unit tests and
-            Kani proofs on the host; 113 QEMU integration targets that boot a purpose-built kernel
+            Kani proofs on the host; 114 QEMU integration targets that boot a purpose-built kernel
             and assert a marker on the serial console; and scripted sessions that type into the
             real ring-3 shell over serial and read what comes back.
           </p>
@@ -2013,9 +2039,12 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <h3><span class="id">coverage</span>Eleven system calls still have no test that runs them &mdash; and covering two of them found a fault</h3>
             <p>
               <strong>Measured 2026-08-20</strong>, and checked on every merge since.
-              <strong>81 of 92</strong> system calls have their handler actually executed by the
+              <strong>82 of 94</strong> system calls have their handler actually executed by the
               three workloads this project tracks, a scripted end-to-end session, the
-              permission conformance suite, and the boot-modules session. The other 11 are each
+              permission conformance suite, and the boot-modules session. The other 12 are each
+              <strong>82 of 94</strong> system calls have their handler actually executed by the
+              three workloads this project tracks, a scripted end-to-end session, the
+              permission conformance suite, and the boot-modules session. The other 12 are each
               listed with a written reason.
             </p>
             <p>
@@ -2061,7 +2090,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
             <p>
               The build can record the first time each call's body is entered and say so on the
-              wire, and a checked-in file classifies all 92 implemented syscalls, covered or not
+              wire, and a checked-in file classifies all 94 implemented syscalls, covered or not
               covered with a reason. The check fails if a call is in neither list, if a covered
               one stops being exercised, if an uncovered one starts being exercised and its
               reason has gone stale, or if the recording produced nothing at all. That last case

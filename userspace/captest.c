@@ -1204,6 +1204,73 @@ void _start(void) {
               "zero-length-split-accepted");
     }
 
+    /* ---- 15. destroying a volume answers to a capability of its own ----
+     *
+     * S72, roadmap 2.9. SYS_STORAGE_FORMAT is the one call in this system that
+     * DESTROYS a volume, and SYS_STORAGE_INFO is the readout an installer shows
+     * an operator before it does. Both are gated on CAP_STORAGE_FORMAT at
+     * CAPSLOT_STORAGE_FORMAT; this task holds none, and captest_selftest endows
+     * four slots of which that is not one.
+     *
+     * WHY THE CHECK EXISTS WHEN THE CAPABILITY IS UNREACHABLE EITHER WAY. The
+     * gate is a dispatch-table row, and the row three lines above it in that
+     * table names CAPSLOT_AUDIT / CAP_ENCRYPTED_STORAGE -- the object-store
+     * capability fs_server and the shell both hold. Copying that row, which is
+     * what writing a storage syscall invites, would hand the format to the
+     * filesystem server and to a login shell while looking like consistency.
+     * These checks are what would notice.
+     *
+     * THE ARM IS WHAT MAKES THE REFUSAL A MEASUREMENT. Under
+     * STORAGE_FORMAT_UNGATED=1 the row loses its slot, rights and type; this
+     * task then reaches the handler and the call SUCCEEDS, because captest boots
+     * on the ephemeral RAM vdisk, which is already mounted and unlocked, so
+     * storage_unlock is idempotent and returns 0 without destroying anything. A
+     * refusal test whose ungated path also failed would pass under the defect
+     * and witness nothing; this one cannot.
+     *
+     * Exact SYS_ERR_PERM, never `< 0`. SYS_ERR_INVAL is what a rejected password
+     * length returns, so "you may not ask" stays distinguishable from "you asked
+     * wrongly" -- and the probe deliberately passes a WELL-FORMED password so
+     * that a refusal here cannot be the argument check answering instead. */
+    out("CAPTEST: storage-format-authority\n");
+    {
+        static const char pw[] = "captest-must-not-format";
+
+        struct storage_info si;
+        for (unsigned z = 0; z < sizeof(si); z++) ((char *)&si)[z] = 0x5A;
+        check(sys_storage_info(&si) == SYS_ERR_PERM,
+              "storage-info-without-cap-storage-format");
+        /* Nothing was written through on the refusal. The central gate returns
+         * before the handler, so the caller's buffer must be exactly as it left
+         * it; a gate that refuses after filling the buffer has already
+         * disclosed what it refused to disclose. */
+        check(((unsigned char *)&si)[0] == 0x5A,
+              "storage-info-wrote-through-on-refusal");
+
+        check(sys_storage_format(pw, sizeof(pw) - 1) == SYS_ERR_PERM,
+              "storage-format-without-cap-storage-format");
+
+        /* The type half, from the other side: a slot that DOES hold a
+         * capability, of the wrong type. An empty slot is refused by emptiness
+         * alone, so it cannot tell a type check from its absence.
+         *
+         * Minted into CAPSLOT_STORAGE_FORMAT rather than probed at another slot
+         * number, because the gate names a FIXED slot -- passing a different one
+         * would never reach the check. The source is slot 40, the endpoint this
+         * task retyped for itself in section 8b, because it is the only
+         * capability here carrying CAP_RIGHT_MINT: the CAP_FRAME in slot 3 has
+         * READ|WRITE|EXEC and no MINT, so a mint from it fails and the two
+         * checks below would silently not run. Asserted rather than guarded with
+         * an `if`, for that reason. */
+        check(sys_cap_mint(CAPSLOT_STORAGE_FORMAT, SLOT_RETYPED_EP,
+                           CAP_RIGHT_READ | CAP_RIGHT_WRITE) == 0,
+              "could-not-mint-a-wrong-type-capability-to-probe-with");
+        check(sys_storage_format(pw, sizeof(pw) - 1) == SYS_ERR_PERM,
+              "storage-format-with-wrong-cap-type");
+        check(sys_storage_info(&si) == SYS_ERR_PERM,
+              "storage-info-with-wrong-cap-type");
+    }
+
     /* ---- done -------------------------------------------------------- */
 
     out("CAPTEST: PASS ");

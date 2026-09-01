@@ -1296,6 +1296,71 @@ counter value bound into that root, and a volume behind the counter is refused �
 still leaves (unanchored volumes on TPM-less machines, one-boot granularity, no migration path)
 is in `docs/LIMITATIONS.md` 1.12.
 
+### 2.9 🚧 An installer *the format authority landed 2026-09-01*
+
+**Why this is here and not in a "polish" track.** An installer is the program that formats
+disks and sets the first root password, so it is a *privilege* item wearing a user-interface
+costume. Every other item in Track 2 asks what a task may do; this one asks what an OPERATOR
+may do and by what authority the machine believes them. Placing it after 2.8 is not a
+preference: 2.8 is what made a volume worth installing onto, and 2.5's `libhorus` TUI (#269)
+was landed as its groundwork.
+
+**It is also the item that finishes two others.** `storage_authorize_format()` shipped with
+**S63** carrying the comment "which an installer calls and a login never does", and had **no
+caller at all** for as long as there was no installer -- so the refusal was absolute rather
+than deliberate, and "no path exists" is a weaker claim than "one gated path exists". And the
+TUI has never been driven by a program that has to get an answer right.
+
+**Delivered: the authority** (`SECURITY.md` **S72**).
+
+`CAP_STORAGE_FORMAT` is a capability **type** of its own, primordial at `root_cnode[22]` with
+`READ|WRITE` and nothing else, endowed to `init` and granted onward to the installer alone.
+`SYS_STORAGE_FORMAT` is the one caller of `storage_authorize_format()`; `SYS_STORAGE_INFO` is
+the "what will be destroyed" readout an installer must show before it asks.
+
+**A rights bit on `CAP_ENCRYPTED_STORAGE` was the first design and it is wrong**, which is
+worth recording because it is the cheaper-looking option and the tree shows why rather than
+arguing. `root_cnode[9]` carries `CAP_RIGHT_ALL`; `cap_install_from_root` copies rights
+verbatim; existing call sites already hand a full copy of that capability to `fs_server` and to
+the shell. A new bit inside `CAP_RIGHT_ALL` is therefore conferred on both **the moment it is
+defined**, with no diff at the grant -- formatting would have become something the filesystem
+server and the login shell could do because of how a constant is spelled. A new type fails
+closed in the same situation. That is 3.6's split of `CAP_DEBUG` out of `CAP_AUDIT` -- "the gate
+was real, it just named far more authority than the caller needed" -- applied *before* the
+bundling exists rather than after.
+
+The password bound is a round-trip property, not a buffer size: a login copies 31 bytes and
+offers exactly those to `storage_unlock`, so a volume sealed to more could never be opened by
+the operator who chose the password. `SYS_STORAGE_FORMAT` refuses rather than truncating,
+because an installer that silently shortened a password would seal a volume to a string nobody
+picked.
+
+**Still open, and what each needs:**
+
+- **The TUI does not yet have the input an installer needs.** `tui_field` renders a fixed-width
+  cell and `tui_getkey` decodes one key; there is no line editor, no way to place a visible
+  cursor, and above all **no masked field** -- so a password typed into an installer would be
+  drawn on the screen. That is a security property of the widget, not a nicety, and it wants a
+  control arm of its own.
+- **The installer program.** A ring-3 `installer` on `libhorus`, holding exactly
+  `CAP_STORAGE_FORMAT`, a console client endpoint, and nothing else it does not use: survey the
+  device, show what will be destroyed, take an explicit confirmation, ask for the password
+  twice, format, and verify. `init` is the task that decides to launch it, because `init` is
+  the only task that holds the capability to ask whether the machine needs installing.
+- **The confirmation must be witnessed, not asserted.** A gate in which the operator declines
+  and the disk is untouched, and a control arm in which the confirmation is skipped and the
+  format happens anyway. An installer that formats without being told to is the same class of
+  defect as the login that formatted on a mistyped password (**S63**), one layer up.
+- **Boot from the installed volume.** The claim "this machine now boots what was installed on
+  it" is a two-boot property and is not made until a gate makes it: install on boot 1, power
+  cycle, and log in on boot 2 with the password the installer was given, with `/bin` present.
+  Until that gate exists this item says the volume was formatted and sealed, which is less.
+- **Selecting among several targets.** There is one ATA device today and `storage_query`
+  reports it or nothing. A machine with two disks needs the survey to enumerate, which is a
+  block-layer change rather than an installer one.
+
+---
+
 ---
 
 ## Track 3: Assurance and observability
@@ -1592,7 +1657,7 @@ table already has the four columns a registry needs (id, statement, enforcing co
 the table *is* the registry. A hand-maintained parallel manifest would be a second copy of
 claims that already exist, which is **[H-3]**'s shape: two descriptions of one thing, drifting.
 The manifest that remains (`.github/invariants.yml`) holds exemptions only, and today it is
-**empty**, all 73 properties name a witness that resolves.
+**empty**, all 74 properties name a witness that resolves.
 
 **What the survey found on the way.** **S16** had no witness at all, an em-dash against
 `fpu_save`/`fpu_restore`, real code called on every ring transition and exercised by nothing.
@@ -1631,7 +1696,7 @@ past it.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue`, §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 214 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 101 of them control arms that must reproduce a defect |
+| ✅ | 216 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 102 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

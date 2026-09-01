@@ -313,6 +313,31 @@ void cap_init(void) {
     root_cnode[21].serial = 0xC0DE0015U;
     root_cnode[21].generation = 0;
 
+    /* CAP_STORAGE_FORMAT (root[22]), roadmap 2.9 / S72.
+     *
+     * The authority to DESTROY the volume on the attached disk and lay a new one
+     * down. init is endowed with it and grants it to exactly one task: the
+     * installer it launches when a machine has a disk carrying no Horus volume
+     * (userspace/init.c). It is never granted to the shell, to fs_server, or to
+     * anything a login reaches.
+     *
+     * READ | WRITE and nothing more, deliberately not CAP_RIGHT_ALL. GRANT and
+     * MINT are what would let a holder pass it on or widen a copy; an installer
+     * needs neither, and the primordial is where that is cheapest to say --
+     * rights only narrow on delegation, so a capability that never held GRANT
+     * cannot produce a descendant that does. READ is SYS_STORAGE_INFO (what will
+     * be destroyed), WRITE is SYS_STORAGE_FORMAT (destroy it).
+     *
+     * Note the two are split rather than folded into one bit: an installer's
+     * first screen reads, and only its last screen writes, so a build that
+     * wanted a read-only survey tool could be handed a READ-only mint. */
+    root_cnode[22].type   = CAP_STORAGE_FORMAT;
+    root_cnode[22].rights = CAP_RIGHT_READ | CAP_RIGHT_WRITE;
+    root_cnode[22].object = 0;
+    root_cnode[22].badge  = 0;
+    root_cnode[22].serial = 0xC0DE0016U;
+    root_cnode[22].generation = 0;
+
     cap_next_serial = 0x00010000U;
 
     for (int i = 0; i < MAX_REV_SETS; i++) rev_sets[i].valid = 0;

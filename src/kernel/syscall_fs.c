@@ -38,6 +38,75 @@ void h_fs_list(struct interrupt_frame64 *r) {
  * state == 0 on return from the syscall and redirects to the kernel reaper
  * (exactly as the ring-3 fault-kill path does). */
 
+/* ---- The installer's two syscalls (roadmap 2.9, S72) ----------------------
+ *
+ * Both answer to CAP_STORAGE_FORMAT at CAPSLOT_STORAGE_FORMAT, enforced by the
+ * dispatch table so neither handler repeats the check and neither can forget it.
+ * Nothing else in this tree is granted that capability: init is endowed with it
+ * from the root cnode and passes a copy to the installer alone.
+ *
+ * They are NOT gated on CAP_ENCRYPTED_STORAGE, which fs_server and the shell
+ * both hold. Formatting from that capability would mean the filesystem server
+ * could erase the filesystem, and a login shell could erase the volume it just
+ * logged into -- which is the sentence S63 exists to make false.
+ */
+
+/* SYS_STORAGE_INFO (110): what volume this machine has. READ. */
+void h_storage_info(struct interrupt_frame64 *r) {
+    struct storage_info info;
+    storage_query(&info);
+    if (copy_to_user((void *)(addr_t)r->rbx, &info, sizeof(info)) != 0) {
+        r->rax = (uint32_t)SYS_ERR_FAULT;
+        return;
+    }
+    r->rax = 0;
+}
+
+/* SYS_STORAGE_FORMAT (111): destroy the volume on the attached device and lay a
+ * new encrypted one down, sealed to `password`. WRITE.
+ *
+ * THE LENGTH BOUND IS NOT ARBITRARY, and getting it wrong would brick the
+ * machine the installer just installed. h_auth copies 31 bytes of the typed
+ * password and hands exactly that to storage_unlock, so a volume sealed to a
+ * 40-character password could never be opened by a login: the operator would
+ * type the password they chose and be refused forever, with nothing on the wire
+ * saying why. The two paths must agree on the effective length, so this one
+ * REFUSES what it cannot round-trip rather than silently truncating -- an
+ * installer that quietly shortened the password would seal the volume to a
+ * string the operator never chose.
+ *
+ * The password is copied into a kernel stack buffer and zeroed before return, on
+ * every path including the refusals, the same discipline h_auth follows.
+ */
+void h_storage_format(struct interrupt_frame64 *r) {
+    uint32_t plen = (uint32_t)r->rcx;
+
+    /* Refuse before copying anything: an empty password seals a volume to
+     * nothing, and an over-long one cannot be typed back at a login prompt. */
+    if (plen == 0 || plen > STORAGE_FORMAT_PASSWORD_MAX) {
+        r->rax = (uint32_t)SYS_ERR_INVAL;
+        return;
+    }
+
+    char pw[STORAGE_FORMAT_PASSWORD_MAX + 1];
+    if (copy_from_user(pw, (void *)(addr_t)r->rbx, plen) != 0) {
+        secure_zero(pw, sizeof(pw));
+        r->rax = (uint32_t)SYS_ERR_FAULT;
+        return;
+    }
+    pw[plen] = 0;
+
+    /* The deliberate act S63 named and left without a caller. It is set here and
+     * not reset: a machine whose operator has said "format this disk" once is a
+     * machine being installed, and storage_unlock consumes the permission by
+     * clearing g_needs_format the moment a volume exists. */
+    storage_authorize_format();
+
+    int rc = storage_unlock(pw, plen);
+    secure_zero(pw, sizeof(pw));
+    r->rax = (uint64_t)(uint32_t)(rc == 0 ? 0 : rc);
+}
+
 void h_block_read(struct interrupt_frame64 *r) {
     uint64_t block = ((uint64_t)r->rbx << 32) | r->rcx;
     void *buf = (void*)(addr_t)r->rdx;

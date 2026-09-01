@@ -119,6 +119,7 @@ DEFECT_FLAGS = \
 	ROLLBACK_ANCHOR_IGNORE \
 	VDISK_TOTAL_UNBOUNDED \
 	TUI_NO_DAMAGE_DIFF TUI_CLAMP_OFF \
+	TUI_INPUT_ECHO_SECRET TUI_INPUT_UNBOUNDED TUI_MENU_UNCLAMPED \
 	CSPACE_KEEP_ON_TEARDOWN \
 	CSPACE_RELEASE_BEFORE_PIPES SPAWN_SLOT3_DECOY_GATE UNTYPED_SPLIT_FREE_BYTES \
 	INIT_PROVISION_NO_UNTYPED AUDIT_ABI_LEGACY
@@ -433,6 +434,32 @@ endif
 # through, so an out-of-range write lands outside the cell buffer.
 TUI_CLAMP_OFF ?= 0
 ifeq ($(TUI_CLAMP_OFF),1)
+endif
+
+# TUI_INPUT_ECHO_SECRET=1 drops the mask in tui_input, so a password field paints
+# what was typed. The RETURNED value is identical either way, which is the whole
+# difficulty: neither the caller nor a test that inspects the buffer can tell.
+# Only the cells can, which is why the witness reads them.
+TUI_INPUT_ECHO_SECRET ?= 0
+ifeq ($(TUI_INPUT_ECHO_SECRET),1)
+endif
+
+# TUI_INPUT_UNBOUNDED=1 drops the `cap` bound in tui_input and KEEPS the visible
+# width bound, so a caller that passed a small buffer and a wide field is written
+# past the end of it. Keeping the second bound is deliberate: removing both would
+# reproduce an unbounded write, which no realistic mistake makes, where the
+# mistake this guards against is the ordinary one of trusting a single bound.
+TUI_INPUT_UNBOUNDED ?= 0
+ifeq ($(TUI_INPUT_UNBOUNDED),1)
+endif
+
+# TUI_MENU_UNCLAMPED=1 lets a menu's selection run past either end of its item
+# list. It corrupts nothing in the TUI -- every cell it paints is clamped by
+# tui_putc regardless -- it corrupts the PROGRAM using it, which indexes
+# items[*sel] on return. For an installer that array is the list of disks it is
+# about to destroy one of, so the witness asserts on the returned index.
+TUI_MENU_UNCLAMPED ?= 0
+ifeq ($(TUI_MENU_UNCLAMPED),1)
 endif
 
 # META_CRASH_SELFTEST=1 builds Arm A of docs/design/meta-cache-merkle.md: a
@@ -2692,6 +2719,15 @@ USERSPACE_CFLAGS += -DTUI_NO_DAMAGE_DIFF
 endif
 ifeq ($(TUI_CLAMP_OFF),1)
 USERSPACE_CFLAGS += -DTUI_CLAMP_OFF
+endif
+ifeq ($(TUI_INPUT_ECHO_SECRET),1)
+USERSPACE_CFLAGS += -DTUI_INPUT_ECHO_SECRET
+endif
+ifeq ($(TUI_INPUT_UNBOUNDED),1)
+USERSPACE_CFLAGS += -DTUI_INPUT_UNBOUNDED
+endif
+ifeq ($(TUI_MENU_UNCLAMPED),1)
+USERSPACE_CFLAGS += -DTUI_MENU_UNCLAMPED
 endif
 
 ifeq ($(SYSCALL_PTR_TRUNC32),1)
@@ -7521,6 +7557,45 @@ smoke-tui-clamp-control:
 	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_CLAMP_OFF=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='TUITEST: FAIL an out-of-range write reached the buffer' \
+		tools/smoke_test.sh boot.iso
+
+# A password on the screen is a password disclosed, and the caller cannot tell:
+# tui_input returns the same bytes whether it masked or echoed. Only the CELLS
+# distinguish them, which is why this is the one TUI property whose witness reads
+# the back buffer rather than a return value.
+.PHONY: smoke-tui-mask-control
+smoke-tui-mask-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_INPUT_ECHO_SECRET=1
+	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_INPUT_ECHO_SECRET=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='TUITEST: FAIL a masked field showed its characters' \
+		tools/smoke_test.sh boot.iso
+
+# The memory-safety half of the editor. The `cap` bound goes and the visible
+# width bound stays, so the write lands past the caller's declared capacity and
+# into the guard region the witness keeps INSIDE THE SAME ARRAY -- adjacency
+# between two separate arrays is the linker's business, not the language's.
+.PHONY: smoke-tui-bound-control
+smoke-tui-bound-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_INPUT_UNBOUNDED=1
+	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_INPUT_UNBOUNDED=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='TUITEST: FAIL an input overran the buffer it was given' \
+		tools/smoke_test.sh boot.iso
+
+# The menu's clamp is a bounds check on the CALLER's array. An unclamped menu
+# draws an identical screen -- every cell it paints is clamped by tui_putc
+# anyway -- so the marker is the returned INDEX, which is what the caller then
+# indexes with.
+.PHONY: smoke-tui-menu-control
+smoke-tui-menu-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_MENU_UNCLAMPED=1
+	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_MENU_UNCLAMPED=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='TUITEST: FAIL a menu selected past its last item' \
 		tools/smoke_test.sh boot.iso
 
 # S64. A block device may not accept a block it has no memory for. Both

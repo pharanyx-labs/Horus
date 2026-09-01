@@ -58,6 +58,9 @@ control_arms:
   smoke-storage-noformat-control: smoke-storage-noformat
   smoke-tui-diff-control: smoke-tui
   smoke-tui-clamp-control: smoke-tui
+  smoke-tui-mask-control: smoke-tui
+  smoke-tui-bound-control: smoke-tui
+  smoke-tui-menu-control: smoke-tui
   smoke-cap-lookup-control: smoke-cap-lookup
   smoke-cap-lookup-range-control: smoke-cap-lookup
   smoke-cspace-release-control: smoke-cspace-release

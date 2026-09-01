@@ -122,7 +122,8 @@ DEFECT_FLAGS = \
 	TUI_INPUT_ECHO_SECRET TUI_INPUT_UNBOUNDED TUI_MENU_UNCLAMPED \
 	CSPACE_KEEP_ON_TEARDOWN \
 	CSPACE_RELEASE_BEFORE_PIPES SPAWN_SLOT3_DECOY_GATE UNTYPED_SPLIT_FREE_BYTES \
-	INIT_PROVISION_NO_UNTYPED AUDIT_ABI_LEGACY STORE_LOCKED_UNCHECKED
+	INIT_PROVISION_NO_UNTYPED AUDIT_ABI_LEGACY STORE_LOCKED_UNCHECKED \
+	PASSWD_TARGET_IGNORED
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -308,6 +309,23 @@ STORE_LOCKED_UNCHECKED ?= 0
 ifeq ($(STORE_LOCKED_UNCHECKED),1)
 CFLAGS  += -DSTORE_LOCKED_UNCHECKED
 endif
+
+# PASSWD_TARGET_IGNORED=1 restores the pre-2026-09-01 shell `passwd`, which
+# MATCHED an argument and then dropped it: every call went to sys_getuid(). A
+# root operator who created an account and typed `passwd 1001` to give it a
+# password got `password changed` -- true of a different account than the one
+# named -- and silently changed their OWN. Not cosmetic: do_passwd re-wraps the
+# volume key when target_uid == my_uid, so the string typed for somebody else's
+# account became the volume's key-slot password (**S75**).
+#
+# USERSPACE ONLY, so it is applied at top level after USERSPACE_CFLAGS is
+# assigned with `=` and outside any other flag's ifeq -- the trap
+# SYSCALL_PTR_TRUNC32 records.
+#
+# `make smoke-passwd-target-control` is the arm. Never ship it.
+# The `?= 0` default lives here with the explanation; the -D is applied down
+# beside SYSCALL_PTR_TRUNC32's, after USERSPACE_CFLAGS is assigned.
+PASSWD_TARGET_IGNORED ?= 0
 
 # FS_SELFTEST=1 embeds the userspace fs_server and a client, spawns both at
 # boot, and drives the filesystem end-to-end over IPC against the encrypted
@@ -2825,6 +2843,13 @@ endif
 
 ifeq ($(SYSCALL_PTR_TRUNC32),1)
 USERSPACE_CFLAGS += -DSYSCALL_PTR_TRUNC32
+endif
+
+# PASSWD_TARGET_IGNORED, here for exactly the reason above: USERSPACE_CFLAGS is
+# assigned with `=` a few lines up, so a `+=` before that point is discarded and
+# the arm silently builds a clean shell. See its comment beside STORAGE_ATA.
+ifeq ($(PASSWD_TARGET_IGNORED),1)
+USERSPACE_CFLAGS += -DPASSWD_TARGET_IGNORED
 endif
 # captest's section-13 arm, and it needs exactly the placement above for exactly
 # the reason recorded there.
@@ -7669,6 +7694,44 @@ smoke-installer-provision-control:
 	@SESSION_DISK=installer-pc.img INSTALLER_MODE=provision INSTALLER_EXPECT_EMPTY_BIN=1 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) 		python3 tools/installer_session.py boot.iso
 	@rm -f installer-pc.img
 	@echo "[installer] CONTROL PASS - a sealed store that answers leaves /bin empty for good"
+
+# S75: `passwd <uid>` CHANGES THAT ACCOUNT, AND ONLY THAT ACCOUNT.
+#
+# TWO BOOTS ON ONE IMAGE, and the second is what makes this a credential defect
+# rather than a mis-printed message. `do_passwd` re-wraps the volume key whenever
+# target_uid == my_uid, so a `passwd <uid>` that silently targeted the CALLER
+# re-sealed the volume to a string the operator typed for somebody else's
+# account. Boot 1 does the administration; boot 2 asks the disk who it now
+# belongs to. The machine's own installer says a forgotten password is a lost
+# volume, so a way to change it without being asked is worth a gate.
+#
+# STORAGE_AUTOFORMAT=1 rather than driving the installer: the volume is sealed at
+# the first login, which is all this needs, and it keeps the pair to two boots
+# instead of four. It is stamped into DEFECT FLAGS either way.
+PASSWD_TARGET_TIMEOUT ?= 300
+
+.PHONY: smoke-passwd-target
+smoke-passwd-target:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_AUTOFORMAT=1 boot.iso
+	@rm -f passwd-t.img && truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) passwd-t.img
+	@SESSION_DISK=passwd-t.img SESSION_TIMEOUT=$(PASSWD_TARGET_TIMEOUT) 		BOOT_TIMEOUT=$(PASSWD_TARGET_TIMEOUT) 		python3 tools/passwd_session.py boot.iso
+	@rm -f passwd-t.img
+	@echo "[passwd] PASS - passwd <uid> wrote that account, left root's password and the volume's seal alone"
+
+# Control arm: the argument is parsed and discarded, exactly as it was, and
+# NOTHING ELSE changes -- both arms type the same commands and differ only in
+# which account the shell writes.
+.PHONY: smoke-passwd-target-control
+smoke-passwd-target-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_AUTOFORMAT=1 PASSWD_TARGET_IGNORED=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_AUTOFORMAT=1 PASSWD_TARGET_IGNORED=1 boot.iso
+	@rm -f passwd-tc.img && truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) passwd-tc.img
+	@SESSION_DISK=passwd-tc.img PASSWD_EXPECT_SELF=1 SESSION_TIMEOUT=$(PASSWD_TARGET_TIMEOUT) 		BOOT_TIMEOUT=$(PASSWD_TARGET_TIMEOUT) 		python3 tools/passwd_session.py boot.iso
+	@rm -f passwd-tc.img
+	@echo "[passwd] CONTROL PASS - the dropped argument re-sealed the volume to another account's password"
 
 # THE POSITIVE HALF OF CAP_STORAGE_FORMAT (roadmap 2.9, S72).
 #

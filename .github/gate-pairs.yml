@@ -41,6 +41,7 @@ control_arms:
   smoke-captest-storage-format-control: smoke-captest
   smoke-installer-refuse-control: smoke-installer-refuse
   smoke-installer-provision-control: smoke-installer-provision
+  smoke-passwd-target-control: smoke-passwd-target
   smoke-captest-lookup-type-control: smoke-captest
   smoke-auditprobe-control: smoke-auditprobe
   smoke-auditprobe-abi-control: smoke-auditprobe
@@ -171,6 +172,7 @@ gates:
   - smoke-installer
   - smoke-installer-refuse
   - smoke-installer-provision
+  - smoke-passwd-target
   - smoke-nvcounter
   - smoke-rollback
   - smoke-vdisk-bound

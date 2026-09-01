@@ -1807,6 +1807,30 @@ jobs:
       - name: Control arm — a sealed store that answers leaves /bin empty for good
         run: make smoke-installer-provision-control
 
+  passwd-target:
+    name: "passwd <uid> changes that account, and only that account (S75)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # Two boots on one image, and the second is what makes this a credential
+      # defect rather than a mis-printed message: do_passwd re-wraps the volume
+      # key when target_uid == my_uid, so a `passwd <uid>` that silently targeted
+      # the caller re-sealed the volume to a password the operator typed for
+      # somebody else. Boot 1 administers; boot 2 asks the disk who it belongs to.
+      - name: An account gets the password it was given, and root keeps its own
+        run: make smoke-passwd-target
+      # The arm. Both arms type the same commands and differ only in which
+      # account the shell writes; every assertion is a login that SUCCEEDS.
+      - name: Control arm — the dropped argument re-seals the volume
+        run: make smoke-passwd-target-control
+
   vfs:
     name: "Two filesystem servers, two mounts, one namespace (2.4)"
     runs-on: ubuntu-latest

@@ -39,6 +39,27 @@ static inline void outw(uint16_t port, uint16_t val) {
  * ata_lock (never the reverse), so no deadlock. */
 static spinlock_t ata_lock = { 0 };
 
+/* How long to wait for BSY to clear on a sector transfer.
+ *
+ * IT WAS 2e6, SIZED FOR A PIO SECTOR, and its comment said "QEMU and real drives
+ * clear BSY almost immediately, so the cap is never reached in practice". That
+ * was measured on a developer's machine and is false on a loaded CI runner:
+ * 2026-09-01, `smoke-meta-crash` refused a write at lba 2303 with status 0xD0 --
+ * BSY set, DRQ clear -- eleven seconds into a boot. The drive was not wedged, it
+ * was slow, because the host had descheduled the emulator.
+ *
+ * The bound was never about how long a DRIVE may take; it was about not hanging
+ * the boot on a bus with nothing on it. That job now belongs to the 0xFF/0x00
+ * short-circuit in ata_wait_busy(), which exits on the first read, so the count
+ * can be what ATA-8 actually allows. It matches the flush bound for the same
+ * reason that one is large: a timed-out wait the caller reads as success is a
+ * silent hole, and a wait that gives up early on a busy drive manufactures one.
+ *
+ * Under TCG each iteration is a port read the emulator handles, so the
+ * wall-clock ceiling depends on how often the host runs the vCPU -- which is the
+ * variable that produced the failure and cannot be bounded from inside. */
+#define ATA_BSY_SPINS  30000000u
+
 /* Wait for BSY to clear (SECURITY.md S69). 0 = clear, -1 = the bound was reached.
  *
  * THE RETURN VALUE IS NEW, AND SO IS EVERY CALLER CHECKING IT. This returned
@@ -53,9 +74,30 @@ static spinlock_t ata_lock = { 0 };
  * Bounded rather than infinite for the original reason: an absent or floating
  * bus reads 0xFF, which has BSY set forever, and the shipped kernel probes for a
  * disk on every boot. An unbounded wait turns "no disk" into "hang at mount". */
+/* Is nobody driving the bus?
+ *
+ * A floating or absent bus reads all-ones, which has BSY set and stays that way
+ * forever; all-zero is a cleared controller with no device. Neither is a status a
+ * working drive produces -- 0xFF asserts ERR, DRQ and BSY at once -- and ata_init
+ * already tests for exactly these two before deciding a disk is absent.
+ *
+ * SHORT-CIRCUITING ON THEM IS WHAT PAYS FOR THE SPIN BOUND. The bound was small
+ * because an unbounded wait turns "no disk" into "hang at mount"; with this, that
+ * case exits on the first read and the count can be what ATA-8 actually allows.
+ * A pure function of the byte, and tested as one, for the same reason
+ * ata_transfer_ready is: getting it wrong in the other direction -- treating a
+ * valid busy status as an absent bus -- would abandon a working drive early, and
+ * no emulator will produce the cases that would show it. */
+static int ata_bus_absent(uint8_t status)
+{
+    return (status == 0xFF || status == 0x00);
+}
+
 static int ata_wait_busy(void) {
-    for (uint32_t i = 0; i < 2000000u; i++) {
-        if (!(inb(ATA_STATUS) & 0x80)) return 0;
+    for (uint32_t i = 0; i < ATA_BSY_SPINS; i++) {
+        uint8_t st = inb(ATA_STATUS);
+        if (!(st & 0x80)) return 0;
+        if (ata_bus_absent(st)) return -1;
     }
     return -1;
 }
@@ -94,6 +136,7 @@ static int ata_transfer_ready(uint8_t status)
 }
 
 #ifdef ATA_READY_SELFTEST
+int ata_test_bus_absent(uint8_t status) { return ata_bus_absent(status); }
 /* The predicate, reachable from the witness. Selftest builds only: nothing in a
  * shipping kernel has any business asking the driver to classify a status byte
  * it did not read from the drive. */
@@ -128,13 +171,15 @@ static void ata_400ns_delay(void) {
     for (int i = 0; i < 4; i++) inb(ATA_CTRL);
 }
 
+
 /* FLUSH CACHE is the one command whose completion time is not bounded by a
  * sector transfer: ATA-8 permits up to 30 seconds, because the drive may be
- * writing out its entire volatile cache. ata_wait_busy()'s 2e6-iteration cap is
- * sized for a PIO sector (microseconds) and would time out mid-flush, and a
- * timed-out flush that the caller reads as success is precisely the silent
- * durability hole this exists to close. So the flush path gets its own, much
- * larger bound.
+ * writing out its entire volatile cache. This bound and ata_wait_busy()'s are
+ * now the same number, and the reason is the same in both places: a timed-out
+ * wait that the caller reads as success is a silent hole. They are kept as two
+ * named constants rather than one because they answer different questions -- how
+ * long a cache flush may take, and how long a sector transfer may -- and a future
+ * change to either should not silently move the other.
  *
  * It stays bounded rather than infinite for the same reason ata_wait_busy() is:
  * a floating bus reads 0xFF, which has BSY set forever, and the shipped kernel
@@ -144,12 +189,11 @@ static void ata_400ns_delay(void) {
  * refused transaction, a spurious "flush succeeded" costs the guarantee.
  *
  * Sizing: a port read of 0x1F7 costs on the order of a microsecond on real
- * hardware, so ata_wait_busy()'s 2e6 is roughly a 2-second budget — right for a
- * PIO sector, wrong for a flush. 30e6 puts this at roughly the 30 seconds ATA-8
- * allows, and no higher: the cap is a backstop against a wedged bus, and making
- * it arbitrarily large just converts a clean failure into a boot that looks
- * hung. Under TCG each iteration is cheaper, so the wall-clock ceiling in CI is
- * well under that. In practice QEMU and real drives clear BSY long before. */
+ * hardware, so 30e6 is roughly the 30 seconds ATA-8 allows, and no higher: the
+ * cap is a backstop against a wedged bus, and making it arbitrarily large just
+ * converts a clean failure into a boot that looks hung. In practice QEMU and
+ * real drives clear BSY long before -- but "in practice" was doing too much work
+ * in the sizing of the sector-transfer bound, and that is recorded above. */
 static int ata_wait_busy_flush(void) {
     for (uint32_t i = 0; i < 30000000u; i++) {
         if (!(inb(ATA_STATUS) & 0x80)) return 0;

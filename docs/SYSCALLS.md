@@ -713,6 +713,19 @@ sees key material.
 | 77 | `SYS_BOOT_MODULE_INFO` | `index`, `struct boot_module_info *` → count *(needs `CAP_BOOT_MODULE`)* |
 | 78 | `SYS_BOOT_MODULE_READ` | `index`, `offset`, `buf`, `len` *(needs `CAP_BOOT_MODULE`)* |
 
+**Every one of the eight object-store calls above requires the volume to be UNLOCKED, not
+merely mounted** (**S74**). A sealed ATA volume is mounted and locked from power-on until a
+login opens a key slot, and in that window all eight return `SYS_ERR_INVAL` -- the same code as
+an unmounted store, because both mean "there is no open store to act on", a statement about the
+volume rather than about the caller whose authority the dispatch table has already settled.
+Until 2026-09-01 they tested `mounted` alone: the AEAD enforced the rule for `SYS_FBLOCK_READ` /
+`_WRITE` as a side effect of needing the key, and the inode table is plaintext on disk, so the
+six metadata calls enforced nothing and a sealed volume served real inode records and accepted
+edits to its own inode table. The check is now in one place, `store_open()` in
+`src/kernel/syscall_fs.c`. **`SYS_BLOCK_READ` / `SYS_BLOCK_WRITE` are deliberately outside this
+rule**: they sit below the volume abstraction and move ciphertext, which is what the journal and
+crash gates need of them.
+
 `SYS_BOOT_MODULE_READ` **refuses any module that failed its manifest hash check**. Since
 provisioning into `/bin` goes through this path, an unverified module can never become a
 root-owned executable. `SYS_BOOT_MODULE_INFO` reports such a module as an empty slot, keeping

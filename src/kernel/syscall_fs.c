@@ -209,10 +209,90 @@ void h_connect_fs_server(struct interrupt_frame64 *r) {
  * authority, which is the point of retiring ambient uid 0 ([I-1], [H-1]): the
  * gate is revocable and the uid was not. */
 
+/* ---- the object store's OTHER precondition ------------------------------
+ *
+ * A volume has two states that both look like "there is a filesystem here", and
+ * for a long time the eight handlers below tested only the first of them:
+ *
+ *   mounted  -- the superblock has been read and verified, so the geometry, the
+ *               inode count and the metadata root are known.
+ *   unlocked -- a key slot has been opened with somebody's password, so disk_key
+ *               exists and the AEAD can run.
+ *
+ * A sealed ATA volume is MOUNTED AND LOCKED for the whole of every boot until a
+ * login unlocks it. That is not an edge case, it is the normal state of an
+ * installed machine between power-on and the password prompt, and it is the
+ * state the store must answer nothing in.
+ *
+ * WHY THE MISSING CHECK WAS INVISIBLE. The AEAD layer catches it for FILE DATA:
+ * storage_decrypt_block and storage_encrypt_block both test `unlocked` and fail
+ * closed, so h_fblock_read/h_fblock_write were saved downstream by the layer
+ * that needs the key. Nothing catches it for the INODE TABLE, which is written
+ * through do_block_write with no crypto at all -- inode records are plaintext on
+ * disk, so storage_read_inode and storage_write_inode work perfectly on a volume
+ * nobody has opened. The half of the API with a key requirement enforced the
+ * rule as a side effect of needing the key; the half without one enforced
+ * nothing, and had no reason to look wrong.
+ *
+ * SO THE STORE FAILED OPEN IN BOTH DIRECTIONS on a locked volume. Reading:
+ * SYS_FS_STAT answered with a real inode -- size, mode, uid, gid, type, links --
+ * for any inode number on a sealed disk. Writing: SYS_FS_INODE_ALLOC,
+ * SYS_FS_SET_META, SYS_FS_SET_SIZE, SYS_FS_INODE_LINK and SYS_FS_INODE_FREE all
+ * edited the inode table of a volume that had never been opened. The gate on all
+ * of them is CAP_ENCRYPTED_STORAGE, so this was never reachable from an ordinary
+ * ring-3 task -- but "only the filesystem server can do it" is a statement about
+ * who, and the rule here is about WHEN. A capability is not a password.
+ *
+ * HOW IT SURFACED, which is the part worth keeping. fs_server decides at startup
+ * whether the store is usable by asking for the root inode:
+ *
+ *     if (sys_fs_stat(0, &root_st) == 0) { provision_boot_modules(); provisioned = 1; }
+ *
+ * On a sealed volume that stat SUCCEEDED, so the server ran its provisioning pass
+ * against a locked store, every module's data write failed in the AEAD, and it
+ * recorded itself as provisioned anyway -- which permanently disabled the
+ * post-login retry its own comment describes as the sealed-ATA fallback. Install
+ * a machine, power it off at the login prompt before the copy finishes, and /bin
+ * is empty on that disk forever. Measured 2026-09-01: `cd bin; ls` empty on every
+ * subsequent boot, and `[fs_server] some boot modules did not fit the store
+ * volume` printed on machines where all 25 modules were in fact present, because
+ * the same doomed pass ran on every boot. The server's test was reasonable; the
+ * syscall's answer was wrong.
+ *
+ * THE RULE LIVES IN ONE PLACE, deliberately, and that is the whole repair.
+ * Eight handlers each repeating `!mfs || !mfs->mounted` is eight chances to write
+ * the predicate that was already written wrong eight times -- the same argument
+ * S60 makes for folding the capability type check into cap_lookup. A handler that
+ * wants the store now asks for an OPEN one and gets NULL otherwise.
+ *
+ * SYS_ERR_INVAL rather than SYS_ERR_PERM, matching the unmounted case it now
+ * shares a return with. Both mean "there is no open store to act on", which is a
+ * statement about the volume and not about the caller; the caller's authority was
+ * already settled by the dispatch table before this ran. Callers test for zero,
+ * so no existing client can tell the two apart, and inventing a distinction the
+ * clients cannot use would be a wider ABI change than the defect warrants.
+ *
+ * THE RAW BLOCK API IS DELIBERATELY NOT CHANGED. h_block_read/h_block_write sit
+ * BELOW the volume abstraction on purpose -- they move ciphertext, which is what
+ * the journal and crash gates need them for -- and a raw read of an encrypted
+ * block discloses nothing the disk does not already show anyone holding it.
+ *
+ * STORE_LOCKED_UNCHECKED=1 restores the mounted-only test. See
+ * docs/BUILDING.md; never ship it. */
+static struct mounted_fs *store_open(void)
+{
+    struct mounted_fs *mfs = storage_get_mounted_fs();
+    if (!mfs || !mfs->mounted) return NULL;
+#ifndef STORE_LOCKED_UNCHECKED
+    if (!mfs->unlocked) return NULL;
+#endif
+    return mfs;
+}
+
 void h_fs_inode_alloc(struct interrupt_frame64 *r) {
     uint32_t type = r->rbx;
-    struct mounted_fs *mfs = storage_get_mounted_fs();
-    if (!mfs || !mfs->mounted) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+    struct mounted_fs *mfs = store_open();
+    if (!mfs) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
 
     int64_t ino = storage_alloc_inode(mfs->bd, &mfs->sb);
     if (ino < 0) { r->rax = (uint32_t)SYS_ERR_IO; return; }   /* out of inodes */
@@ -242,8 +322,8 @@ void h_fs_inode_alloc(struct interrupt_frame64 *r) {
 void h_fs_inode_free(struct interrupt_frame64 *r) {
     uint64_t ino = r->rbx;
     if (ino == 0) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }   /* never free root */
-    struct mounted_fs *mfs = storage_get_mounted_fs();
-    if (!mfs || !mfs->mounted) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+    struct mounted_fs *mfs = store_open();
+    if (!mfs) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
 
     struct on_disk_inode inode;
     if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) { r->rax = (uint32_t)SYS_ERR_NOENT; return; }
@@ -264,8 +344,8 @@ void h_fs_inode_free(struct interrupt_frame64 *r) {
 void h_fs_inode_link(struct interrupt_frame64 *r) {
     uint64_t ino = r->rbx;
     if (ino == 0) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }   /* root is not hard-linked */
-    struct mounted_fs *mfs = storage_get_mounted_fs();
-    if (!mfs || !mfs->mounted) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+    struct mounted_fs *mfs = store_open();
+    if (!mfs) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
 
     struct on_disk_inode inode;
     if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) { r->rax = (uint32_t)SYS_ERR_NOENT; return; }
@@ -281,8 +361,8 @@ void h_fblock_read(struct interrupt_frame64 *r) {
     uint64_t ino   = r->rbx;
     uint64_t block = r->rcx;
     void    *ubuf  = (void *)(addr_t)r->rdx;
-    struct mounted_fs *mfs = storage_get_mounted_fs();
-    if (!mfs || !mfs->mounted) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+    struct mounted_fs *mfs = store_open();
+    if (!mfs) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
 
     uint8_t kbuf[BLOCK_SIZE];
     /* Fails on an unallocated hole or an authentication failure; the server
@@ -298,8 +378,8 @@ void h_fblock_write(struct interrupt_frame64 *r) {
     const void *ubuf = (const void *)(addr_t)r->rdx;
     uint32_t len   = r->rsi;
     if (len > BLOCK_SIZE) len = BLOCK_SIZE;
-    struct mounted_fs *mfs = storage_get_mounted_fs();
-    if (!mfs || !mfs->mounted) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+    struct mounted_fs *mfs = store_open();
+    if (!mfs) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
 
     uint8_t kbuf[BLOCK_SIZE];
     for (int i = 0; i < BLOCK_SIZE; i++) kbuf[i] = 0;   /* zero-pad short writes */
@@ -313,8 +393,8 @@ void h_fblock_write(struct interrupt_frame64 *r) {
 void h_fs_set_size(struct interrupt_frame64 *r) {
     uint64_t ino  = r->rbx;
     uint64_t size = r->rcx;
-    struct mounted_fs *mfs = storage_get_mounted_fs();
-    if (!mfs || !mfs->mounted) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+    struct mounted_fs *mfs = store_open();
+    if (!mfs) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
     struct on_disk_inode inode;
     if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) { r->rax = (uint32_t)SYS_ERR_NOENT; return; }
     inode.size = size;
@@ -337,8 +417,8 @@ void h_fs_set_meta(struct interrupt_frame64 *r) {
     uint32_t mode = r->rcx;
     uint32_t uid  = r->rdx;
     uint32_t gid  = r->rsi;
-    struct mounted_fs *mfs = storage_get_mounted_fs();
-    if (!mfs || !mfs->mounted) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+    struct mounted_fs *mfs = store_open();
+    if (!mfs) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
     struct on_disk_inode inode;
     if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) { r->rax = (uint32_t)SYS_ERR_NOENT; return; }
     inode.mode = (inode.mode & ~0007777u) | (mode & 0007777u);
@@ -351,8 +431,8 @@ void h_fs_set_meta(struct interrupt_frame64 *r) {
 void h_fs_stat(struct interrupt_frame64 *r) {
     uint64_t ino  = r->rbx;
     void    *uout = (void *)(addr_t)r->rcx;
-    struct mounted_fs *mfs = storage_get_mounted_fs();
-    if (!mfs || !mfs->mounted) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+    struct mounted_fs *mfs = store_open();
+    if (!mfs) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
 
     struct on_disk_inode inode;
     if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) { r->rax = (uint32_t)SYS_ERR_NOENT; return; }

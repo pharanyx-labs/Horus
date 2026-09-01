@@ -193,6 +193,13 @@ required:
   # for that mount, not the path -- and the routing half, where the failure mode
   # is the WRONG SERVER ANSWERING rather than an error.
   - installer
+  # Gating. It carries S74: the object store answers only an UNLOCKED volume,
+  # not merely a mounted one. The AEAD enforced that for file data as a side
+  # effect of needing the key, and the plaintext inode table had nothing
+  # enforcing it at all -- so a sealed disk served real inode metadata and
+  # accepted edits to its inode table. The gate is the consequence an operator
+  # meets: an install powered off at the login prompt whose /bin never fills.
+  - store-locked
   - vfs
   # Gating. It carries S30. The property it guards was true only by boot
   # ordering for four months -- entropy_init happens to run before the first

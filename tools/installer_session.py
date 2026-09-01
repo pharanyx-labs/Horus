@@ -23,6 +23,8 @@ one console write instead, and those are the sync points.
 
 Usage:  installer_session.py [boot.iso]
 Env:    SESSION_DISK      the disk image; REQUIRED, and the same one for both boots
+        INSTALLER_MODE    "refuse" or "provision"; default is the install-then-login pair
+        INSTALLER_EXPECT_EMPTY_BIN  provision mode's control arm: require the empty /bin
         INSTALL_PASSWORD  the password to install with (default "installpw1")
         SESSION_TIMEOUT   per-step expect timeout (default 90; formatting is slow)
         BOOT_TIMEOUT      time to the first marker (default 120)
@@ -204,12 +206,109 @@ def refuse(disk):
         s.close()
 
 
+def provision(disk):
+    """Install, power off BEFORE logging in, boot again, and require a /bin.
+
+    THE POWER-OFF IS THE EXPERIMENT, not a shortcut. fs_server copies the base
+    system into the store the moment the volume becomes readable, which on boot 1
+    is when the installer formats it -- so an operator who installs and walks away
+    at the login prompt leaves that copy unfinished. What the machine must do on
+    the NEXT boot is finish it. That is the only boot on which S74 is observable,
+    and it is a boot every real install passes through.
+
+    WHAT WENT WRONG, so the arm is read as the measurement it is. The store used
+    to answer SYS_FS_STAT on a SEALED volume -- mounted and locked, the normal
+    state of an installed machine before its password is typed -- because the
+    handlers tested `mounted` and not `unlocked`. fs_server asks exactly that
+    question at startup to decide whether the store is usable, got yes, ran the
+    copy against a locked volume where every data write failed inside the AEAD,
+    and recorded itself provisioned anyway; the post-login retry never ran again.
+    Measured 2026-09-01 on this sequence: `/bin` empty on that disk on every
+    subsequent boot, permanently.
+
+    BOTH ARMS ASSERT A MARKER POSITIVELY, and the marker is the branch fs_server
+    took rather than the absence of one. The base arm requires the store to say it
+    was SEALED at startup; the control requires it to say it was OPEN -- on the
+    same disk, in the same state, with only STORE_LOCKED_UNCHECKED between them.
+    An arm that asserted only "/bin is empty" would be satisfied by a run that
+    never reached a shell, which is how the S63 pair first passed vacuously.
+
+    The `ls` is the consequence and is checked in both directions too: present in
+    the base arm, absent in the control. `basename` is the probe rather than the
+    whole listing because the listing is a shell-formatted column layout and one
+    name is a contiguous string on the wire.
+    """
+    control = os.environ.get("INSTALLER_EXPECT_EMPTY_BIN") == "1"
+
+    # ---- boot 1: install, then power off at the login prompt ----
+    s = Serial(ISO)
+    try:
+        s.expect("init: this machine has a disk and no volume; running the installer", BOOT)
+        s.expect("INSTALLER: waiting on the destroy-this-disk choice", STEP)
+        os.write(s.fd, DOWN)
+        os.write(s.fd, ENTER)
+        s.expect("INSTALLER: waiting on the typed confirmation", STEP)
+        os.write(s.fd, b"FORMAT" + ENTER)
+        s.expect("INSTALLER: waiting on the password", STEP)
+        os.write(s.fd, PASSWORD.encode() + ENTER)
+        s.expect("INSTALLER: waiting on the password again", STEP)
+        os.write(s.fd, PASSWORD.encode() + ENTER)
+        s.expect("INSTALLER: PASS installed", STEP)
+        s.expect("horus login:", STEP)
+        step("boot 1: installed, and powered off at the login prompt without logging in")
+    finally:
+        s.close()
+
+    # ---- boot 2: the same disk, now carrying a sealed volume ----
+    s = Serial(ISO)
+    try:
+        if control:
+            s.expect("FS_STORE: open at startup; provisioning now", BOOT)
+            step("CONTROL: the sealed store answered, so fs_server provisioned against a locked volume")
+        else:
+            s.expect("FS_STORE: sealed at startup; provisioning deferred until unlock", BOOT)
+            step("the sealed store refused, so fs_server deferred to the post-login pass")
+
+        s.expect("horus login:", BOOT)
+        s.send("root")
+        s.expect("Password:", STEP)
+        s.send(PASSWORD)
+        s.expect("root@horus#", STEP)
+        step("logged in with the password the installer was given")
+
+        # Everything from here is the answer to one `ls`, so the window is cut at
+        # the prompt before it: a `basename` printed earlier in the boot (the
+        # provisioning log, say) must not be read as a directory entry.
+        s.send("cd bin")
+        s.expect("root@horus#", STEP)
+        mark = len(s.buf)
+        s.send("ls")
+        s.expect("root@horus#", STEP)
+        listing = s.buf[mark:]
+
+        if control:
+            if "basename" in listing:
+                raise SessionFail("CONTROL: /bin was provisioned; the defect did not reproduce")
+            step("CONTROL: /bin is empty on the installed disk, and no later boot repairs it")
+        else:
+            if "basename" not in listing:
+                raise SessionFail("/bin is empty on the installed disk")
+            step("the base system is on the volume, provisioned by the post-login pass")
+    finally:
+        s.close()
+
+
 def run():
     disk = os.environ.get("SESSION_DISK", "")
     if not disk:
         raise SessionFail("SESSION_DISK must name the image both boots share")
-    if os.environ.get("INSTALLER_MODE") == "refuse":
+    mode = os.environ.get("INSTALLER_MODE")
+    if mode == "refuse":
         refuse(disk)
+        print("INSTALLER_SESSION: PASS")
+        return 0
+    if mode == "provision":
+        provision(disk)
         print("INSTALLER_SESSION: PASS")
         return 0
     boot1(disk)

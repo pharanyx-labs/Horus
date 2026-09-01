@@ -1263,7 +1263,21 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               disk nobody can log into &mdash; which the first boot cannot detect, because
               everything it can see succeeded.
             </p>
-            <span class="witness">smoke-installer &middot; smoke-installer-refuse &middot; smoke-captest &middot; smoke-storage-survey</span>
+            <p>
+              A second test powers the machine off <em>at the login prompt</em>, before anyone
+              types anything, and requires the boot after that to finish the install. That gap is
+              where an installed machine actually lives: the base system is copied into the store
+              when the volume unlocks, so an install nobody logs into leaves the copy unfinished,
+              and finishing it is the next boot's job. It was not being done. A sealed volume is
+              mounted and locked, and the object store answered anyway &mdash; the encryption
+              layer refused, because it needs the key, but the inode table is plaintext on disk
+              and nothing there refused at all. The filesystem server asks the store whether it
+              is usable, was told yes by a volume nobody had opened, copied into a locked disk
+              where every write failed, and recorded the job done. <code>/bin</code> was then
+              empty on that machine for good. The store now answers only an unlocked volume, in
+              one place rather than in eight handlers.
+            </p>
+            <span class="witness">smoke-installer &middot; smoke-installer-refuse &middot; smoke-installer-provision &middot; smoke-captest &middot; smoke-storage-survey</span>
           </article>
           <article>
             <h3>A usable userland</h3>
@@ -1437,7 +1451,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 222 test targets, and the troubleshooting
+          Every configuration flag, every one of the 224 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1557,7 +1571,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             The security argument rests entirely on the tests, so they are treated as engineering
             artifacts rather than an afterthought. There are three layers: Rust unit tests and
-            Kani proofs on the host; 116 QEMU integration targets that boot a purpose-built kernel
+            Kani proofs on the host; 117 QEMU integration targets that boot a purpose-built kernel
             and assert a marker on the serial console; and scripted sessions that type into the
             real ring-3 shell over serial and read what comes back.
           </p>
@@ -1751,7 +1765,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               be listed as merge-gating, or exempted <em>with a written reason</em>, and CI fails
               the build if any is in neither; there is no default, because defaulting was the
               defect. It caught an unclassified static-analysis job on its first run. The
-              intended set is 104 gating and 3 exempted, and the promotions are backed by
+              intended set is 105 gating and 3 exempted, and the promotions are backed by
               measurement rather than optimism: across 18 sampled runs, 64 of 66 jobs had zero
               failures in 1152 job-executions.
             </p>

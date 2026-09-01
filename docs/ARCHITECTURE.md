@@ -1080,6 +1080,16 @@ the ring-3 FS server never sees a key.
   unlock — and read back correctly until the allocator collided with them, which is why nothing
   caught it.
 
+- **The store answers only an UNLOCKED volume** (**S74**). `mounted` and `unlocked` are
+  different states and a sealed ATA volume sits in the gap between them from power-on until a
+  login opens a key slot -- the normal state of an installed machine, not an edge case. All
+  eight object-store handlers test both, in one place (`store_open`). They tested `mounted`
+  alone until 2026-09-01: the AEAD enforced the rule for file data as a side effect of needing
+  the key, and the **inode table is plaintext on disk**, so the six metadata calls enforced
+  nothing and a sealed volume served real inode records and accepted edits to its own inode
+  table. `h_block_read`/`h_block_write` are outside the rule on purpose -- they move ciphertext
+  below the volume abstraction, which is what the journal and crash gates need.
+
 Authority is one capability, checked in one place: the dispatch table requires a
 `CAP_ENCRYPTED_STORAGE` carrying `READ|WRITE` at `CAPSLOT_AUDIT` (slot 7) before the handler
 runs. The ambient `uid == 0` check that used to sit alongside it in each handler is gone

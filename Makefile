@@ -122,7 +122,7 @@ DEFECT_FLAGS = \
 	TUI_INPUT_ECHO_SECRET TUI_INPUT_UNBOUNDED TUI_MENU_UNCLAMPED \
 	CSPACE_KEEP_ON_TEARDOWN \
 	CSPACE_RELEASE_BEFORE_PIPES SPAWN_SLOT3_DECOY_GATE UNTYPED_SPLIT_FREE_BYTES \
-	INIT_PROVISION_NO_UNTYPED AUDIT_ABI_LEGACY
+	INIT_PROVISION_NO_UNTYPED AUDIT_ABI_LEGACY STORE_LOCKED_UNCHECKED
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -292,6 +292,21 @@ endif
 STORAGE_ATA ?= 0
 ifeq ($(STORAGE_ATA),1)
 CFLAGS  += -DSTORAGE_ATA
+endif
+
+# STORE_LOCKED_UNCHECKED=1 restores the pre-2026-09-01 object-store handlers,
+# which tested `mfs->mounted` and not `mfs->unlocked` -- so a sealed volume, the
+# normal state of an installed machine between power-on and the password prompt,
+# answered SYS_FS_STAT with a real inode and accepted SYS_FS_INODE_ALLOC /
+# SET_META / SET_SIZE / INODE_LINK / INODE_FREE against its plaintext inode
+# table (**S74**). The AEAD caught it for file DATA and nothing caught it for
+# metadata, which is why it read as correct for as long as it did.
+# `make smoke-installer-provision-control` is the arm: it requires fs_server to
+# report the sealed store as OPEN at startup, and requires the empty /bin that
+# answer leaves behind for good. Never ship it.
+STORE_LOCKED_UNCHECKED ?= 0
+ifeq ($(STORE_LOCKED_UNCHECKED),1)
+CFLAGS  += -DSTORE_LOCKED_UNCHECKED
 endif
 
 # FS_SELFTEST=1 embeds the userspace fs_server and a client, spawns both at
@@ -7614,6 +7629,46 @@ smoke-installer-refuse-control:
 		python3 tools/installer_session.py boot.iso
 	@rm -f installer-c.img
 	@echo "[installer] CONTROL PASS - without the comparison the disk is formatted anyway"
+
+# S74: AN INSTALLED MACHINE FINISHES PROVISIONING ITSELF ON THE NEXT BOOT.
+#
+# THE POWER-OFF IS THE EXPERIMENT. fs_server copies the base system into the
+# store the moment the volume becomes readable, which on the install boot is when
+# the installer formats it -- so an operator who installs and walks away at the
+# login prompt leaves that copy unfinished. Finishing it is the next boot's job,
+# and that boot is the only one on which S74 is observable. It is also a boot
+# every real install passes through, which is why this is a gate and not a note.
+#
+# The store used to answer SYS_FS_STAT on a sealed volume, so fs_server's startup
+# test said "usable", the copy ran against a locked store with every data write
+# failing inside the AEAD, and the server recorded itself provisioned -- killing
+# the post-login retry for the rest of the boot. /bin was then empty on that disk
+# forever.
+#
+# BOTH ARMS ASSERT A MARKER POSITIVELY -- which branch fs_server took, not the
+# absence of one -- and check the /bin that follows from it in both directions.
+.PHONY: smoke-installer-provision
+smoke-installer-provision:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 COREUTILS_MODULES=1 boot.iso
+	@rm -f installer-p.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-p.img
+	@SESSION_DISK=installer-p.img INSTALLER_MODE=provision 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) 		python3 tools/installer_session.py boot.iso
+	@rm -f installer-p.img
+	@echo "[installer] PASS - a sealed store defers provisioning, and the next boot completes it"
+
+# Control arm: STORE_LOCKED_UNCHECKED=1 and nothing else, so both arms drive the
+# same install and differ only in what the store says about a volume nobody has
+# opened.
+.PHONY: smoke-installer-provision-control
+smoke-installer-provision-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORE_LOCKED_UNCHECKED=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORE_LOCKED_UNCHECKED=1 COREUTILS_MODULES=1 boot.iso
+	@rm -f installer-pc.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-pc.img
+	@SESSION_DISK=installer-pc.img INSTALLER_MODE=provision INSTALLER_EXPECT_EMPTY_BIN=1 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) 		python3 tools/installer_session.py boot.iso
+	@rm -f installer-pc.img
+	@echo "[installer] CONTROL PASS - a sealed store that answers leaves /bin empty for good"
 
 # THE POSITIVE HALF OF CAP_STORAGE_FORMAT (roadmap 2.9, S72).
 #

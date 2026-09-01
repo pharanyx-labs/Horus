@@ -17,6 +17,45 @@ in this file.
 
 ### Fixed
 
+- **A sealed volume answered the object store, and an install nobody logged into lost its
+  `/bin` permanently** (**S74**). A volume has two states that both look like "there is a
+  filesystem here": `mounted` -- the superblock is read and verified -- and `unlocked`, a key
+  slot opened so `disk_key` exists and the AEAD can run. A **sealed ATA volume is mounted and
+  locked** for the whole of every boot until a login opens it, which is the normal state of an
+  installed machine between power-on and its password prompt. All eight object-store handlers
+  tested only the first.
+  **The AEAD hid half of it, which is why it read as correct.** `storage_decrypt_block` and
+  `storage_encrypt_block` both test `unlocked` and fail closed, so `SYS_FBLOCK_READ`/`_WRITE`
+  were saved downstream by the layer that needs the key. The **inode table is plaintext on
+  disk** -- `storage_read_inode`/`storage_write_inode` go through `do_block_write` with no
+  crypto at all -- so nothing caught the other six: a sealed volume served real inode records
+  (size, mode, uid, gid, type, links) through `SYS_FS_STAT` and accepted `SYS_FS_INODE_ALLOC`,
+  `SET_META`, `SET_SIZE`, `INODE_LINK` and `INODE_FREE` against its own inode table. The half of
+  the API with a key requirement enforced the rule as a side effect of needing the key; the half
+  without one enforced nothing. All eight are gated on `CAP_ENCRYPTED_STORAGE`, so none of it
+  was reachable from an ordinary ring-3 task -- but **that is a statement about who, and the
+  rule is about when**. A capability is not a password.
+  **How it surfaced, which is the part worth keeping.** `fs_server` decides at startup whether
+  the store is usable by asking for the root inode (`sys_fs_stat(0, &root_st) == 0`). On a
+  sealed volume that succeeded, so it ran its `/bin` copy against a locked store where every
+  data write failed inside the AEAD, and set `provisioned = 1` anyway -- which permanently
+  disabled the post-login retry its own comment describes as the sealed-ATA fallback. Install a
+  machine, power it off at the login prompt before the copy finishes, and `/bin` is empty on
+  that disk on every subsequent boot. Measured 2026-09-01, deterministic. The same doomed pass
+  is why `[fs_server] some boot modules did not fit the store volume` printed on machines where
+  all 25 modules were in fact present.
+  The rule now lives in **one place**, `store_open()` -- the argument **S60** makes for folding
+  the capability type check into `cap_lookup`: eight handlers repeating a predicate is eight
+  chances to write the one that was already written wrong eight times. It returns `SYS_ERR_INVAL`,
+  the code the unmounted case already returned, because both mean "there is no open store to act
+  on" -- about the volume, not about the caller, whose authority the dispatch table settled
+  first. **`SYS_BLOCK_READ`/`_WRITE` are deliberately unchanged**: they sit below the volume
+  abstraction and move ciphertext, which is what the journal and crash gates need of them, and a
+  raw read of an encrypted block discloses nothing a stolen disk does not.
+  Witnessed by `make smoke-installer-provision`, falsified by `STORE_LOCKED_UNCHECKED=1`
+  (`make smoke-installer-provision-control`) and in the other direction by
+  `tools/check_base_gate_reddens.sh STORE_LOCKED_UNCHECKED`.
+
 - **A gated marker split across two writes fails a gate the way a broken runner does**
   (`docs/LIMITATIONS.md` 2.6a, reopened and now gated). `userspace/captest.c`'s `fail()` emitted
   `CAPTEST: FAIL `, the detail and the newline as **three writes** to a console shared with every

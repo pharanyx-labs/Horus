@@ -480,6 +480,32 @@ jobs:
         run: make smoke-cspace-release
       - name: Control arm — keep them on teardown and require the dead task to still hold one
         run: make smoke-cspace-release-control
+      # The audit handlers, entered at last. SYS_READ_AUDIT and SYS_AUDIT_DIGEST
+      # carry a real CAP_AUDIT in their dispatch rows, so captest -- which holds
+      # none -- is refused by the TABLE and its checks say nothing about the
+      # bodies. That is the shape that hid issue #176, whose other wrapper
+      # (SYS_DMESG) has been covered since the coverage manifest existed. So the
+      # capability goes to a task of its own, holding it and nothing else, rather
+      # than to captest, whose negative probes are only worth anything because its
+      # absence of authority is real.
+      #
+      # THESE ARE STEPS IN THIS JOB, not a job of their own, for the reason given
+      # forty lines up: a new job is a new required context and the ruleset is
+      # synced by hand after the merge ([C-6]).
+      - name: A task holding one CAP_AUDIT runs both audit handlers, and nothing else
+        run: make smoke-auditprobe
+      # Issue #176 itself, on the wrapper it was about and nothing had called.
+      # The signature is the asymmetry: the probe's STACK calls still succeed
+      # under the flag and only its STATIC ones fail, because every static in a
+      # PIE image is above 4 GiB by construction and a stack buffer is not.
+      - name: Control arm — the audit digest into a truncated pointer
+        run: make smoke-auditprobe-control
+      # S71. Two declarations of one record, and a kernel-sized copy between them:
+      # every field read from the wrong offset, and 184 bytes past the array per
+      # record. The marker is the OVERRUN rather than the misread field, because
+      # that is the half no return code can report.
+      - name: Control arm — the audit record the kernel sends is not the one ring 3 declares
+        run: make smoke-auditprobe-abi-control
 
   smoke-modules:
     name: QEMU boot-module transport (printf / tail provisioned into /bin, run from FS)

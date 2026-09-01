@@ -3003,6 +3003,44 @@ void captest_selftest(void) {
     cap_install_from_root(pid, 21, 11, CON_EP_REQ);       /* listen: READ|WRITE     */
     cap_install_from_root(pid, CAPSLOT_UNTYPED, 17, UNTYPED_ROOT);  /* CAP_UNTYPED  */
 
+    /* ---- auditprobe: the one capability captest must not be given -----------
+     *
+     * SYS_AUDIT_DIGEST and SYS_READ_AUDIT carry { slot 7, READ, CAP_AUDIT } in
+     * the dispatch table, so the CENTRAL gate refuses captest and neither handler
+     * body runs. captest names both syscalls and asserts SYS_ERR_PERM on both;
+     * the refusal is the table's, not the handler's, and that is exactly the
+     * shape that hid issue #176 -- a pointer truncation in sys_audit_digest()
+     * and sys_dmesg(), 100% reproducible for every static buffer in the system,
+     * invisible to a 100-check conformance suite.
+     *
+     * The fix is not to endow captest. captest's negative probes are only worth
+     * anything because its absence of authority is real, and handing it a
+     * CAP_AUDIT to raise a coverage number would trade the property for the
+     * measurement. So the capability goes to a SECOND task that holds it and
+     * nothing else, and captest's own cspace is untouched.
+     *
+     * uid 1000 deliberately. If the probe ran as root, a reader could not tell
+     * whether the audit log answered the capability or the uid -- and ambient uid
+     * 0 is the authority this project retired ([I-1], [H-1]). It is an ordinary
+     * user holding one capability, which is the whole claim.
+     *
+     * A failure to spawn or endow is FATAL rather than skipped: a probe that
+     * quietly did not run would leave `make smoke-syscall-coverage` red with the
+     * two syscalls listed covered and never entered, which is a confusing way to
+     * report "the image is missing a task". */
+    extern uint8_t embedded_auditprobe_bin_start[], embedded_auditprobe_bin_end[];
+    int apid = fs_spawn_embedded(embedded_auditprobe_bin_start,
+                                 embedded_auditprobe_bin_end, "auditprobe");
+    if (apid <= 0) {
+        print("AUDITPROBE: FAIL spawn\n");
+        for (;;) asm volatile("hlt");
+    }
+    tasks[apid].uid = 1000;
+    if (cap_install_from_root(apid, CAPSLOT_AUDIT, CAPSLOT_AUDIT, 0) != 0) {
+        print("AUDITPROBE: FAIL endow\n");
+        for (;;) asm volatile("hlt");
+    }
+
     print("CAPTEST_SELFTEST: launching\n");
     selftest_resume_all();
     sched_enable_preemption();

@@ -367,7 +367,7 @@ void _start(void) {
      * available to whoever is being detected. */
     unsigned char digest[64];
     check(sys_audit_digest(digest) < 0, "audit-digest-allowed-without-cap");
-    static struct audit_event ev[2];
+    static struct audit_record ev[2];
     check(sys_read_audit(ev, 2) < 0, "audit-read-allowed-without-cap");
 
     struct untyped_info uinfo;

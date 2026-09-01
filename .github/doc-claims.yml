@@ -115,6 +115,14 @@ counts:
     occurrences:
       - file: site/index.html
         pattern: 'defines <strong>(\d+) syscall numbers'
+  - id: auditprobe_checks
+    describe: check() calls in userspace/auditprobe.c (the base build's count)
+    derive: auditprobe_checks
+    occurrences:
+      - file: TESTS.md
+        pattern: '\| `smoke-auditprobe` \| \*\*(\d+) checks\*\*'
+      - file: CHANGES.md
+        pattern: 'holding one `CAP_AUDIT` and nothing else, (\d+) checks'
   - id: framepeer_checks
     describe: check() calls in userspace/framepeer.c (the delegate's side)
     derive: framepeer_checks
@@ -204,6 +212,12 @@ counts:
         pattern: 'gated since: \*\*\d+ of (\d+)\*\* implemented syscalls'
       - file: site/index.html
         pattern: '<strong>\d+ of (\d+)</strong> system calls'
+      # site/index.html stated this denominator as a bare `76` from before
+      # 2026-08-22, when the live value was 92 and nothing compared them. It sat
+      # three paragraphs under a ratio that WAS gated, which is the same
+      # half-gated shape `syscalls_uncovered` was declared for. Gated 2026-09-01.
+      - file: site/index.html
+        pattern: 'classifies all (\d+) implemented syscalls'
 
   # frametest's parent-side checks, declared 2026-08-27 for the reason the entry
   # above it exists: TESTS.md carried 17 while the wire said 31, and the number
@@ -237,6 +251,27 @@ counts:
         pattern: 'make smoke-captest\s+<span class="c"># (\d+) capability checks'
 
 forbidden:
+  - pattern: 'every pointer[- ]taking wrapper in[\s\n]+`?include/syscall\.h`?[\s\n]+passes its pointer through'
+    reason: >-
+      SECURITY.md S24's mechanism clause, and it was never true: only FIVE of the
+      52 pointer arguments tools/check_syscall_abi.py checks go through
+      SYSCALL_UPTR(). The rest use an explicit (uint64_t)(uintptr_t) cast, which
+      the checker accepts because it expands identically -- so the PROPERTY held
+      throughout and the stated mechanism did not. It mattered rather than being
+      pedantry: SYSCALL_PTR_TRUNC32=1 reintroduces issue #176 by redefining
+      SYSCALL_UPTR alone, so a wrapper spelled the other way is outside the
+      runtime arm, and a reader of this row would have concluded the arm covered
+      everything. Corrected 2026-09-01, when sys_read_audit was moved into the
+      arm because auditprobe began calling it with a static buffer.
+  - pattern: 'a probe task holding one CAP_AUDIT is worth writing'
+    reason: >-
+      .github/syscall-coverage.yml's uncovered reason for SYS_AUDIT_DIGEST, and
+      it was right -- which is the problem. The prescription sat there for nine
+      days with nobody working on it, and when it was finally followed the first
+      boot found S71. Written work is not done work. Retired 2026-09-01 because
+      the probe now exists; the phrase must not come back as a recommendation for
+      something already shipped, which is exactly what the pipe-family entry
+      below records happening once already.
   - pattern: 'The pipe family and `SYS_STDIO_INFO` are[\s\n]+uncovered only because'
     reason: >-
       docs/LIMITATIONS.md 1.8 nominated these as the two cheap coverage gaps

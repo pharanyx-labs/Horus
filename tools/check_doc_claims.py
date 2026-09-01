@@ -70,6 +70,7 @@ HISTORICAL = "docs/history/"
 MAKEFILE = "Makefile"
 GATE_PAIRS_YML = ".github/gate-pairs.yml"
 CAPTEST = "userspace/captest.c"
+AUDITPROBE = "userspace/auditprobe.c"
 DEVLOG = "docs/history/DEVLOG-2026.md"
 FRAMETEST = "userspace/frametest.c"
 
@@ -176,6 +177,22 @@ def derive():
         # is anchoring on the entry, not on a nesting depth that might change.
         "devlog_entries": _grep_count(DEVLOG, r"^### "),
         "captest_checks": _grep_count(CAPTEST, r"\s*check\("),
+        # auditprobe's checks. Declared 2026-09-01 in the commit that added
+        # the probe, rather than after the number went stale -- it went from
+        # 14 to 13 within that same commit when two capability probes were
+        # replaced by one, and TESTS.md said 14 for as long as nothing
+        # derived it.
+        #
+        # This counts every check() in the file, INCLUDING the eight inside
+        # `#ifndef SYSCOV_PROBES_ABSENT`. That is correct for the number the
+        # docs state, which is the base build's -- source and wire were
+        # verified equal (13) on 2026-09-01. It would be wrong for the arm's
+        # build, and this deriver reads text rather than evaluating the
+        # preprocessor, which is exactly the blind spot that made
+        # check_syscall_coverage.py overstate the ship build by three until
+        # 2026-08-23. Nothing states the arm's count, so nothing is gated on
+        # it; state one and this must learn to preprocess first.
+        "auditprobe_checks": _grep_count(AUDITPROBE, r"^\s+check\("),
         # frametest's parent-side checks. Declared 2026-08-27 because this exact
         # number had already gone stale: TESTS.md said 17 while the wire said 31.
         # Anchored to a line that STARTS with the call so the `static void

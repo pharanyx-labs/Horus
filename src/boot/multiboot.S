@@ -885,6 +885,20 @@ embedded_passwdprobe_bin_start:
 embedded_passwdprobe_bin_end:
 #endif
 
+#ifdef CAPTEST_SELFTEST
+/* PIE auditprobe binary: endowed with ONE CAP_AUDIT and nothing else, it enters
+ * the two audit handler bodies the dispatch table refuses captest before. Unlike
+ * captest, which is embedded unconditionally so `spawn captest` works from the
+ * shell, this one is embedded only in a CAPTEST_SELFTEST build -- a task whose
+ * whole purpose is to hold a capability has no business in the ship image. */
+.align 16
+.global embedded_auditprobe_bin_start
+embedded_auditprobe_bin_start:
+.incbin "userspace/auditprobe.bin"
+.global embedded_auditprobe_bin_end
+embedded_auditprobe_bin_end:
+#endif
+
 #ifdef FRAME_SELFTEST
 /* Frame-capability pair (roadmap 2.1): one task retypes a KOBJ_FRAME out of its
  * CAP_UNTYPED and delegates a READ-only copy; the other proves it sees the

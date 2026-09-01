@@ -38,15 +38,14 @@ struct program_header {
     char     name[32];
 };
 
-struct audit_event {
-    uint32_t timestamp;
-    uint32_t type;
-    uint32_t subject_uid;
-    uint32_t subject_task;
-    uint32_t object;
-    uint32_t result;
-    char     message[48];
-};
+/* The audit record SYS_READ_AUDIT delivers is declared in a header BOTH RINGS
+ * READ, and it used to be declared here instead. That is the whole of the defect
+ * fixed on 2026-09-01: this file's `struct audit_event` was 72 bytes and seven
+ * fields, the kernel's was 256 bytes and twelve, they shared a name, and
+ * h_read_audit copied the kernel's size at the kernel's stride into an array
+ * sized with this one. See include/audit_abi.h -- it carries the whole story and
+ * the _Static_assert that stops it recurring. */
+#include "audit_abi.h"
 
 #define SYS_YIELD           0
 #define SYS_PRINT           1
@@ -1293,8 +1292,21 @@ static inline int sys_rotate_keys(void) {
     return syscall(SYS_ROTATE_KEYS, 0, 0, 0);
 }
 
-static inline int sys_read_audit(struct audit_event *events, uint32_t max_events) {
-    return syscall(SYS_READ_AUDIT, (uint64_t)(uintptr_t)events, max_events, 0);
+/* Copy up to `max_events` retained audit records into `events`; returns how many
+ * were copied. Requires a CAP_AUDIT (READ) at CAPSLOT_AUDIT, the same authority
+ * as sys_audit_digest().
+ *
+ * SYSCALL_UPTR rather than the plain 64-bit cast its neighbours use, and the
+ * difference is not style. `(uint64_t)(uintptr_t)` and SYSCALL_UPTR expand
+ * identically in a ship build, and tools/check_syscall_abi.py accepts both --
+ * so the BUILD-TIME half of S24 covers every wrapper either way. But
+ * SYSCALL_PTR_TRUNC32=1 reintroduces issue #176 by redefining SYSCALL_UPTR
+ * alone, so a wrapper spelled the other way sits OUTSIDE the runtime arm and
+ * cannot be falsified by it. This one is called by auditprobe with a static
+ * buffer, which is the class of buffer #176 always corrupted, so it belongs
+ * inside the arm. */
+static inline int sys_read_audit(struct audit_record *events, uint32_t max_events) {
+    return syscall(SYS_READ_AUDIT, SYSCALL_UPTR(events), max_events, 0);
 }
 
 /* The legacy in-memory capfs userspace wrappers (sys_fs_mint_file / lookup /

@@ -1396,7 +1396,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 211 test targets, and the troubleshooting
+          Every configuration flag, every one of the 214 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1516,7 +1516,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             The security argument rests entirely on the tests, so they are treated as engineering
             artifacts rather than an afterthought. There are three layers: Rust unit tests and
-            Kani proofs on the host; 112 QEMU integration targets that boot a purpose-built kernel
+            Kani proofs on the host; 113 QEMU integration targets that boot a purpose-built kernel
             and assert a marker on the serial console; and scripted sessions that type into the
             real ring-3 shell over serial and read what comes back.
           </p>
@@ -2010,12 +2010,12 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
           </li>
           <li>
-            <h3><span class="id">coverage</span>Thirteen system calls still have no test that runs them</h3>
+            <h3><span class="id">coverage</span>Eleven system calls still have no test that runs them &mdash; and covering two of them found a fault</h3>
             <p>
               <strong>Measured 2026-08-20</strong>, and checked on every merge since.
-              <strong>79 of 92</strong> system calls have their handler actually executed by the
+              <strong>81 of 92</strong> system calls have their handler actually executed by the
               three workloads this project tracks, a scripted end-to-end session, the
-              permission conformance suite, and the boot-modules session. The other 13 are each
+              permission conformance suite, and the boot-modules session. The other 11 are each
               listed with a written reason.
             </p>
             <p>
@@ -2032,21 +2032,40 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               anything.
             </p>
             <p>
-              Nothing on that list is known to be broken. What is known is that a fault in any of
-              them would hide exactly as the one above it did. The conformance suite is a
-              <em>refusal</em> suite by design: it checks that a program without permission is
-              turned away, and a refusal is decided before the call's body ever runs. So two
-              calls could be named by the suite, counted as tested, and have their implementation
-              never once execute, which is precisely what happened, and why a fault reproducible
-              for every fixed variable in the system survived a hundred passing checks.
+              The conformance suite is a <em>refusal</em> suite by design: it checks that a
+              program without permission is turned away, and a refusal is decided before the
+              call's body ever runs. So a call can be named by the suite, counted as tested, and
+              have its implementation never once execute &mdash; which is precisely what happened,
+              and why a fault reproducible for every fixed variable in the system survived a
+              hundred passing checks.
             </p>
             <p>
-              The build can now record the first time each call's body is entered and say so on
-              the wire, and a checked-in file classifies all 76, covered, or not covered with a
-              reason. The check fails if a call is in neither list, if a covered one stops being
-              exercised, if an uncovered one starts being exercised and its reason has gone
-              stale, or if the recording produced nothing at all. That last case is the one that
-              would otherwise let the whole check pass while measuring nothing.
+              This page used to say that nothing on the uncovered list was known to be broken.
+              That has now been wrong twice. In August, three of the calls on it turned out to
+              share a helper that spun forever holding a lock with interrupts off, reachable by
+              any unprivileged program in a single call. On 1 September, writing the program that
+              would finally run the audit calls &mdash; a task holding exactly one permission and
+              nothing else &mdash; found a fault on its first boot: the record the kernel sends
+              back was described in two places, 256 bytes in the kernel and 72 in the header
+              programs compile against, under the same name. Every field was read from the wrong
+              place, and the kernel wrote 184 bytes past the end of the array it was handed, for
+              every record. It is confined to the program that asked, and it is the same class of
+              fault as the one that started all of this. There is now one description of that
+              record, which both sides compile and both sides check the size of.
+            </p>
+            <p>
+              The pattern is worth stating plainly, because it is the argument for the whole
+              exercise: <em>both</em> faults were found by the act of running the code, not by
+              reading it, and neither could have been found by widening the conformance suite
+              &mdash; both calls are gated on a permission that suite deliberately does not hold.
+            </p>
+            <p>
+              The build can record the first time each call's body is entered and say so on the
+              wire, and a checked-in file classifies all 92 implemented syscalls, covered or not
+              covered with a reason. The check fails if a call is in neither list, if a covered
+              one stops being exercised, if an uncovered one starts being exercised and its
+              reason has gone stale, or if the recording produced nothing at all. That last case
+              is the one that would otherwise let the whole check pass while measuring nothing.
             </p>
             <p>
               It deliberately does not demand all 76. That would be a large amount of

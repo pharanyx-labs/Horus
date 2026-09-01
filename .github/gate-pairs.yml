@@ -39,6 +39,7 @@ control_arms:
   smoke-captest-mint-hang-control: smoke-captest
   smoke-captest-split-control: smoke-captest
   smoke-captest-storage-format-control: smoke-captest
+  smoke-installer-refuse-control: smoke-installer-refuse
   smoke-captest-lookup-type-control: smoke-captest
   smoke-auditprobe-control: smoke-auditprobe
   smoke-auditprobe-abi-control: smoke-auditprobe
@@ -166,6 +167,8 @@ gates:
   - smoke-alloc-hint
   - smoke-ata-ready
   - smoke-storage-survey
+  - smoke-installer
+  - smoke-installer-refuse
   - smoke-nvcounter
   - smoke-rollback
   - smoke-vdisk-bound

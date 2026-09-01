@@ -94,6 +94,8 @@ extern uint8_t embedded_fsserver_bin_start[];
 extern uint8_t embedded_fsserver_bin_end[];
 extern uint8_t embedded_console_server_bin_start[];
 extern uint8_t embedded_console_server_bin_end[];
+extern uint8_t embedded_installer_bin_start[];
+extern uint8_t embedded_installer_bin_end[];
 #ifdef INIT_FS_SELFTEST
 extern uint8_t embedded_fsclient_bin_start[];
 extern uint8_t embedded_fsclient_bin_end[];
@@ -132,6 +134,10 @@ static const struct embedded_binary embedded_binaries[] = {
     { "captest",   embedded_captest_bin_start, embedded_captest_bin_end },
     { "fs_server", embedded_fsserver_bin_start,embedded_fsserver_bin_end},
     { "console_server", embedded_console_server_bin_start, embedded_console_server_bin_end },
+    /* installer: spawned BY NAME from init, and only when the machine has a disk
+     * carrying no volume (roadmap 2.9). Unconditional, unlike the test fixtures
+     * below: being able to install onto bare hardware is not a test build. */
+    { "installer", embedded_installer_bin_start, embedded_installer_bin_end },
 #ifdef INIT_FS_SELFTEST
     /* fsclient: spawned by name from init to drive the delegated fs_server over
      * IPC. INIT_FS_SELFTEST only. */

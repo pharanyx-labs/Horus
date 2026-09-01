@@ -93,6 +93,49 @@ in this file.
 
 ### Added
 
+- **An installer: the program that lays a system down on a bare disk** (**S73**, roadmap 2.9).
+  `init` surveys the machine at boot and launches `userspace/installer.c` when there is a disk
+  carrying no volume. It shows what will be destroyed, takes consent, asks for the password
+  twice, formats, sets the first root password, and verifies by asking the kernel again rather
+  than trusting a return code.
+
+  **It is not a user interface with a formatting step in it.** It is the one task in the system
+  holding `CAP_STORAGE_FORMAT`, and every screen exists to decide whether to exercise that
+  capability once. Its whole endowment is three capabilities: `CAP_STORAGE_FORMAT` (survey and
+  destroy), `CAP_USER` (set the first root password), and a console client endpoint every task
+  with a console already has. It holds **no** `CAP_ENCRYPTED_STORAGE`, so it cannot read one byte
+  of the volume it replaces; **no** `CAP_UNTYPED`, so it cannot create a task and nothing it does
+  outlives it; **no** `CAP_BOOT_MODULE`.
+
+  **`CAP_USER` is granted rather than inferred**, and that is the point of granting it at all:
+  `do_passwd` would *also* accept the installer on the strength of its uid being 0 and equal to
+  the target's, and leaning on that would be trusting a caller for who it claims to be. The
+  capability is the authority; the uid is a coincidence of how `init` spawns.
+
+  **Consent is a typed word, not a menu choice** (**S73**). The menu in front of it defaults to
+  Cancel and that is worth having, but a menu whose default is Cancel still becomes a format with
+  two keystrokes, and a person holding return through a wizard has not decided anything. A word
+  cannot be reached by any sequence of keys that is not the word. This is **S63** one layer up
+  and in the same direction: there, a password typed at a login prompt was taken as consent to
+  format a disk the kernel did not recognise.
+
+  **The base system is not copied by the installer**, which is a capability decision rather than
+  an omission: `fs_server` already provisions `/bin` from the boot modules the moment the store
+  becomes readable, because it polls for exactly that on a sealed volume. Doing it here would
+  mean granting the installer the authority to read every boot module and write anywhere in the
+  object store, to duplicate a loop that already exists in the task whose job it is.
+
+  `struct storage_info` gains `format_on_login`, replacing `reserved`. It is 1 only under
+  `STORAGE_AUTOFORMAT` — the **S63** control arm, which a dozen test targets set because they
+  boot a deliberately blank image and expect it formatted without an operator. Without the field
+  every one of those would have launched an installer that then waits forever for a keystroke
+  nobody is there to type.
+
+  *Witness:* `make smoke-installer` (two boots on one image: install, power cycle, log in with
+  the installer's password, `bin/` present) and `make smoke-installer-refuse`. *Falsified by*
+  `INSTALLER_NO_CONFIRM=1` (`make smoke-installer-refuse-control`); base gate red under the same
+  flag, measured 2026-09-01.
+
 - **A probe task holding one `CAP_AUDIT` and nothing else, 13 checks, and the two handler
   bodies it finally entered** (`userspace/auditprobe.c`). `SYS_READ_AUDIT` and `SYS_AUDIT_DIGEST` carry a real
   capability in their dispatch rows, so `captest` — which holds none — was refused by the

@@ -98,13 +98,26 @@ class Serial:
         # Merge stderr into stdout and keep it a PIPE: QEMU prints the pty path
         # ("char device redirected to /dev/pts/N") on one of them at startup, and
         # we must not block waiting on the wrong stream.
+        # An optional IDE disk. Off unless SESSION_DISK names an image, so every
+        # existing scenario boots exactly the machine it booted before.
+        #
+        # writethrough, matching tools/smoke_test.sh: a scenario that powers the
+        # machine off and boots the SAME image again is asserting that what the
+        # guest wrote is on the platter, and a writeback cache would let the host
+        # answer that question instead of the guest.
+        disk = os.environ.get("SESSION_DISK", "")
+        drive = []
+        if disk:
+            drive = ["-drive",
+                     "file=%s,format=raw,if=ide,index=0,media=disk,cache=writethrough" % disk]
+
         self.proc = subprocess.Popen(
             [qemu,
              "-m", "512M", "-cpu", "qemu64,+aes,+rdrand,+smep,+smap", "-accel", "tcg",
              "-smp", SMP,
              "-display", "none", "-no-reboot", "-no-shutdown",
              "-device", "isa-debug-exit,iobase=0x604,iosize=0x04",
-             "-serial", "pty", "-net", "none", "-cdrom", iso],
+             "-serial", "pty", "-net", "none"] + drive + ["-cdrom", iso],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
         self.fd = self._await_pty()

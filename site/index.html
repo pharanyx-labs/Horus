@@ -1248,7 +1248,22 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               already carry a volume &mdash; because that readout is the first screen of the same
               act. A task that cannot destroy the volume is not told what is on it.
             </p>
-            <span class="witness">smoke-captest &middot; smoke-storage-survey &middot; smoke-storage-noformat</span>
+            <p>
+              The caller is an installer, and it is the only task that gets a copy. It cannot read
+              the volume it replaces, and it cannot create a task, so nothing it does outlives it.
+              Before it erases anything you type the word <code>FORMAT</code> &mdash; not a
+              menu choice, because a menu whose default is Cancel still becomes a format with two
+              keystrokes, and somebody holding return through a wizard has not decided anything.
+            </p>
+            <p>
+              The test installs onto a blank disk, powers the machine off, boots it again and logs
+              in with the password that was typed. That last step is the whole claim: a format
+              that returns success is not an install, and an installer that sealed the volume but
+              left the root account on its built-in password would produce a perfectly installed
+              disk nobody can log into &mdash; which the first boot cannot detect, because
+              everything it can see succeeded.
+            </p>
+            <span class="witness">smoke-installer &middot; smoke-installer-refuse &middot; smoke-captest &middot; smoke-storage-survey</span>
           </article>
           <article>
             <h3>A usable userland</h3>
@@ -1422,7 +1437,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 219 test targets, and the troubleshooting
+          Every configuration flag, every one of the 222 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1542,7 +1557,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             The security argument rests entirely on the tests, so they are treated as engineering
             artifacts rather than an afterthought. There are three layers: Rust unit tests and
-            Kani proofs on the host; 114 QEMU integration targets that boot a purpose-built kernel
+            Kani proofs on the host; 116 QEMU integration targets that boot a purpose-built kernel
             and assert a marker on the serial console; and scripted sessions that type into the
             real ring-3 shell over serial and read what comes back.
           </p>
@@ -1736,7 +1751,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               be listed as merge-gating, or exempted <em>with a written reason</em>, and CI fails
               the build if any is in neither; there is no default, because defaulting was the
               defect. It caught an unclassified static-analysis job on its first run. The
-              intended set is 103 gating and 3 exempted, and the promotions are backed by
+              intended set is 104 gating and 3 exempted, and the promotions are backed by
               measurement rather than optimism: across 18 sampled runs, 64 of 66 jobs had zero
               failures in 1152 job-executions.
             </p>

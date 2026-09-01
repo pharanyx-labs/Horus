@@ -738,7 +738,13 @@ and the primordial carries `READ|WRITE` and **not** `CAP_RIGHT_ALL` -- rights on
 delegation, so no descendant of it can grant or mint.
 
 `struct storage_info` reports whether a **persistent** block device is attached, its size in
-blocks, whether a Horus volume was recognised on it, and whether that volume is unlocked. It
+blocks, whether a Horus volume was recognised on it, whether that volume is unlocked, and
+whether **this kernel would format an unrecognised volume at the login prompt**
+(`format_on_login`, 1 only under the `STORAGE_AUTOFORMAT` control arm). That last field exists
+because `init` uses this survey to decide whether to launch an installer, and a kernel that
+formats at login by itself is a machine with nothing for an installer to do — without it, the
+dozen test targets that boot a deliberately blank image would each launch an installer that
+waits forever for a keystroke nobody is there to type. It
 deliberately reports nothing about the volume's contents: it exists so an installer can tell an
 operator what is about to be destroyed, and every field is a disclosure made under this
 capability. The ephemeral RAM vdisk answers `present = 0` -- it is a block device by every

@@ -112,7 +112,7 @@ DEFECT_FLAGS = \
 	SYSCOV_PROBES_ABSENT KSTACK_INFLIGHT_LEGACY_WORD KSTACK_SLOT_INDEX_TRUNC \
 	CAP_LOOKUP_ROOT_FALLBACK CAP_LOOKUP_RANGE_FALLBACK CAP_LOOKUP_TYPE_UNCHECKED \
 	KEYSLOT_REMOVE_NOOP USERS_PEPPER_PER_BOOT STORAGE_AUTOFORMAT \
-	STORAGE_FORMAT_UNGATED \
+	STORAGE_FORMAT_UNGATED INSTALLER_NO_CONFIRM \
 	META_CACHE_NO_WRITEBACK META_CACHE_WB_OUTSIDE_TXN META_CACHE_EVICT_NOWB \
 	META_CACHE_TINY MERKLE_NODE_TRUST_CACHED MERKLE_SKIP_PARENT_BIND \
 	FSCK_SHALLOW_REFS STORAGE_MOUNT_ANY_SIZE ALLOC_NO_HINT ATA_READY_ERR_ONLY \
@@ -399,6 +399,17 @@ STORAGE_FORMAT_UNGATED ?= 0
 ifeq ($(STORAGE_FORMAT_UNGATED),1)
 CFLAGS  += -DSTORAGE_FORMAT_UNGATED
 ASFLAGS += -DSTORAGE_FORMAT_UNGATED
+endif
+
+# INSTALLER_NO_CONFIRM=1 reads the typed confirmation and then does not COMPARE
+# it, so the install proceeds whatever was typed -- including nothing (S73).
+# Only the comparison goes: removing the screen would also remove the keystrokes
+# the harness sends, and the two arms would then be driving different
+# conversations instead of differing in one decision.
+INSTALLER_NO_CONFIRM ?= 0
+ifeq ($(INSTALLER_NO_CONFIRM),1)
+CFLAGS  += -DINSTALLER_NO_CONFIRM
+ASFLAGS += -DINSTALLER_NO_CONFIRM
 endif
 
 USERS_TAMPER_INJECT ?= 0
@@ -2541,7 +2552,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin userspace/installer.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -2719,6 +2730,9 @@ USERSPACE_CFLAGS += -DTUI_NO_DAMAGE_DIFF
 endif
 ifeq ($(TUI_CLAMP_OFF),1)
 USERSPACE_CFLAGS += -DTUI_CLAMP_OFF
+endif
+ifeq ($(INSTALLER_NO_CONFIRM),1)
+USERSPACE_CFLAGS += -DINSTALLER_NO_CONFIRM
 endif
 ifeq ($(TUI_INPUT_ECHO_SECRET),1)
 USERSPACE_CFLAGS += -DTUI_INPUT_ECHO_SECRET
@@ -3267,7 +3281,7 @@ tools/mkheadered: tools/mkheadered.c
 # kernel's do_spawn routes it through try_elf_load with ASLR + relocations).
 SHIPPED_PIE_BINS = userspace/shell.bin userspace/init.bin userspace/hello.bin \
                    userspace/fs_server.bin userspace/captest.bin \
-                   userspace/console_server.bin
+                   userspace/console_server.bin userspace/installer.bin
 $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.stripped.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -7476,6 +7490,66 @@ smoke-storage-noformat:
 		tools/smoke_test.sh boot.iso
 	@rm -f noformat.img
 	@echo "[noformat] PASS - a login did not format an unrecognised disk"
+
+# ---- the installer (roadmap 2.9, S73) --------------------------------------
+#
+# TWO BOOTS ON ONE IMAGE, and the second is the point. A format that returns 0 is
+# not an install: the claim is "this machine now boots what was put on it", which
+# is a property of the next power cycle rather than of a return code. Boot 1
+# drives the installer's screens over a pty; boot 2 powers the machine on again
+# and logs in with the password the installer was given.
+#
+# The password is the reason boot 2 cannot be skipped. The volume is sealed to
+# one and the root account is verified against one, by different mechanisms with
+# different salts, and a login needs the same typed string to satisfy both -- so
+# an installer that sealed the volume and left the account on its compiled-in
+# default produces a perfectly installed disk nobody can log into, and boot 1
+# cannot tell, because everything it can observe succeeded.
+INSTALLER_TIMEOUT ?= 300
+INSTALLER_BLOCKS_IMG ?= $(KEYSLOT_BLOCKS_IMG)
+
+.PHONY: smoke-installer
+smoke-installer:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 boot.iso
+	@rm -f installer.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer.img
+	@SESSION_DISK=installer.img SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		python3 tools/installer_session.py boot.iso
+	@rm -f installer.img
+	@echo "[installer] PASS - installed onto a bare disk, then booted and logged into it"
+
+# THE HALF THAT MATTERS MOST. The operator answers the confirmation with the
+# wrong word; nothing may be written. Both directions are asserted positively --
+# "nothing was written" present AND "formatting" absent -- because an absence
+# alone is satisfied by a run that never reached the installer, which is exactly
+# how the first version of the S63 pair passed vacuously.
+.PHONY: smoke-installer-refuse
+smoke-installer-refuse:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 boot.iso
+	@rm -f installer-r.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-r.img
+	@SESSION_DISK=installer-r.img INSTALLER_MODE=refuse \
+		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		python3 tools/installer_session.py boot.iso
+	@rm -f installer-r.img
+	@echo "[installer] PASS - the wrong confirmation word wrote nothing"
+
+# Control arm: the comparison is compiled out and NOTHING ELSE is, so both arms
+# type the same wrong word and differ only in what the program does about it.
+.PHONY: smoke-installer-refuse-control
+smoke-installer-refuse-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 INSTALLER_NO_CONFIRM=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 INSTALLER_NO_CONFIRM=1 boot.iso
+	@rm -f installer-c.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-c.img
+	@SESSION_DISK=installer-c.img INSTALLER_MODE=refuse INSTALLER_EXPECT_FORMAT=1 \
+		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		python3 tools/installer_session.py boot.iso
+	@rm -f installer-c.img
+	@echo "[installer] CONTROL PASS - without the comparison the disk is formatted anyway"
 
 # THE POSITIVE HALF OF CAP_STORAGE_FORMAT (roadmap 2.9, S72).
 #

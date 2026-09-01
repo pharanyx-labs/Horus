@@ -60,6 +60,21 @@ liveness:
 # Targets that establish liveness another way. A reason here must say WHICH
 # mechanism, specifically enough that a reader can check it against the recipe.
 exempt:
+  smoke-installer: >
+    Two boots inside tools/installer_session.py, and every step of both is an
+    expect() with a timeout that raises SessionFail -- there is no absence
+    assertion anywhere in it for a dead boot to satisfy. A boot that died before
+    reaching the installer fails at the first expect rather than being read as
+    the property holding, and boot 2's assertions (the volume recognised, the
+    login accepted, /bin present) cannot be produced by a machine that did not
+    boot.
+  smoke-installer-refuse: >
+    One boot in the refuse path, but it is listed here because the harness is
+    shared with the two-boot mode above. Its ABSENCE assertion ("formatting" must
+    not appear) is fenced by a REQUIRED marker either side of it: the run must
+    reach "waiting on the typed confirmation" before typing, and must reach
+    "nothing was written" after, so the absence is only ever evaluated on a run
+    that provably got to the question and past it.
   smoke-storage-survey: >
     Both boots assert a POSITIVE marker with REQUIRE_MARKER, so a boot that died
     before reaching init produces no marker and tools/smoke_test.sh exits

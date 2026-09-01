@@ -765,6 +765,9 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `smoke-tui-mask-control` | Control arm, and the disclosure half. `TUI_INPUT_ECHO_SECRET=1` drops `tui_input`'s mask so a password field paints what was typed: `TUITEST: FAIL a masked field showed its characters`. **The returned value is identical either way** — neither the caller nor a test that inspects the buffer can tell — so the witness reads the back buffer. It asserts "it drew stars" and "it did not draw the secret" as two checks, because those are the same sentence only while the alphabet excludes `*`, and separately that the cells past the content are **blank rather than masked**: padding to the field width would disclose nothing about the text and everything about its length. |
 | `smoke-tui-bound-control` | Control arm, and the memory-safety half of the editor. `TUI_INPUT_UNBOUNDED=1` drops the `cap` bound and **keeps** the visible-width bound, so a caller that passed a small buffer and a wide field is written past the end of it: `TUITEST: FAIL an input overran the buffer it was given`. Keeping the second bound is deliberate — removing both reproduces an unbounded write, which no realistic mistake makes, where the mistake this guards against is trusting a single bound. The guard region is **inside the same array** as the buffer under test: adjacency between two separate arrays is the linker's business, not the language's. |
 | `smoke-tui-menu-control` | Control arm. `TUI_MENU_UNCLAMPED=1` lets a menu's selection run past either end of its item list: `TUITEST: FAIL a menu selected past its last item`. **The screen is identical** — every cell a menu paints is clamped by `tui_putc` regardless — so what breaks is the *caller*, which indexes `items[*sel]` on return; for an installer that array is the list of disks it is about to destroy one of. The marker is therefore the returned index, and **both ends are checked**, since a single-direction arm would miss a clamp lost only at the top. |
+| `smoke-installer` | **Roadmap 2.9.** Install onto a bare disk, then boot and log into what was installed. **Two boots on one image, and the second is the point**: a format that returns 0 is not an install, and the claim being made is "this machine now boots what was put on it", which is a property of the next power cycle rather than of a return code. Boot 1 drives the installer's screens over a pty -- the destroy-this-disk choice, the typed confirmation, the password twice -- and requires `INSTALLER: PASS installed` and a login prompt on the same boot. Boot 2 powers the machine on again and requires the volume **recognised**, no installer, a successful `root` login **with the password the installer was given**, and `bin/` in `ls`. That login is why boot 2 cannot be skipped: the volume is sealed to a password and the root account is verified against one, by different mechanisms with different salts, so an installer that sealed the volume and left the account on its compiled-in default produces a perfectly installed disk nobody can log into -- and boot 1 cannot tell, because everything it can observe succeeded. It also asserts the password **never appears on the serial line**, which is the end-to-end version of what `smoke-tui-mask-control` checks against the cell buffers. |
+| `smoke-installer-refuse` | **S73**, and the half that matters most. The operator answers the confirmation with `yes` rather than the required word; the gate requires `INSTALLER: nothing was written` **present** and `INSTALLER: formatting` **absent**. Both directions positively, because an absence alone is satisfied by a run that never reached the installer -- exactly how the first version of the **S63** pair passed vacuously. The absence is additionally fenced by required markers either side of it, so it is only ever evaluated on a run that provably got to the question and past it. |
+| `smoke-installer-refuse-control` | Control arm for **S73**. `INSTALLER_NO_CONFIRM=1` reads the typed word and does not compare it. Both arms type the **same wrong word** and differ only in what the program does about it. The arm then **drives the install through to the format** rather than stopping at the bypass: its first version asserted `INSTALLER: formatting` immediately after the wrong word and timed out, because the installer was sitting at the password prompt waiting for input the refuse-mode harness never sends — the defect had reproduced perfectly and the arm reported a timeout. Answering the remaining questions is also the stronger statement: not merely that consent was skipped, but that the whole install proceeds to destroy the disk without it. |
 | `smoke-tui-diff-control` | Control arm. `TUI_NO_DAMAGE_DIFF=1` makes `tui_flush` repaint every cell. The screen looks identical, which is the point — only the byte count for a one-cell change tells them apart, and the marker is `TUITEST: FAIL a one-cell change repainted the screen`. |
 | `smoke-tui-clamp-control` | Control arm, and the memory-safety half. `TUI_CLAMP_OFF=1` removes the single bounds check every drawing call funnels through, so a write one row past the end lands in the buffers and the next flush notices: `TUITEST: FAIL an out-of-range write reached the buffer`. |
 | `smoke-keyslots` | **S61.** Several passwords open one volume, and revoking one revokes exactly that one. **Two boots on one disk image**, because the property is about surviving a power cycle: boot 1 meets a blank disk, formats it under password A (slot 0, uid 0), adds a slot for B (uid 1000), and requires B to open the volume **in the boot that added it** — without that, a boot-2 failure could not be told from "never worked". Boot 2 requires both A and B to still open it, revokes B, then requires B refused and A untouched, and finally requires the last remaining slot to be **un-removable**. Phase is read off the disk (a blank disk is boot 1, two slots is boot 2), so no boot counter is needed. |
@@ -1293,10 +1296,10 @@ measures false *negatives*. A checker with three rules needs three arms, not one
 
 ## CI
 
-`.github/workflows/ci.yml` defines **101** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **102** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below: **103** jobs, **106** contexts. Counts from `tools/check_ci_gating.py`, which prints
+below: **104** jobs, **107** contexts. Counts from `tools/check_ci_gating.py`, which prints
 them; do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20, a backstop, not a budget. The default is
@@ -1348,7 +1351,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **103 required contexts and 3 reasoned exemptions** (read off
+The intended set is **104 required contexts and 3 reasoned exemptions** (read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence) `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
@@ -1802,7 +1805,7 @@ three ways: a planted phrasing in a `.c` file is caught with file and line; the 
 phrasing inside a quotation stays exempt, so a comment can record the wrong thing while
 correcting it.
 
-`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 74 properties
+`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 75 properties
 name a witness that resolves to a make target or a CI job.
 
 | Rule | Rejects |

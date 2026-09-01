@@ -192,6 +192,7 @@ required:
   # Gating. It carries S29 -- reaching a mounted subtree takes the capability
   # for that mount, not the path -- and the routing half, where the failure mode
   # is the WRONG SERVER ANSWERING rather than an error.
+  - installer
   - vfs
   # Gating. It carries S30. The property it guards was true only by boot
   # ordering for four months -- entropy_init happens to run before the first

@@ -1335,29 +1335,45 @@ the operator who chose the password. `SYS_STORAGE_FORMAT` refuses rather than tr
 because an installer that silently shortened a password would seal a volume to a string nobody
 picked.
 
+**Delivered: the TUI's two interactions**, `tui_input` (bounded by the smaller of the buffer
+and the field, masked on request) and `tui_menu` (selection clamped to the caller's array), plus
+`tui_cursor`. Three properties, each invisible from the side the caller looks at, each with its
+own arm: a masked field and an echoing one return the same bytes, an unclamped menu draws the
+same screen, and an over-long input is visible only in memory the caller declared.
+
+**Delivered: the installer** (`userspace/installer.c`, `SECURITY.md` **S73**). `init` surveys the
+machine at boot and launches it when there is a disk carrying no volume; it holds
+`CAP_STORAGE_FORMAT`, `CAP_USER` and a console client endpoint, and nothing else. It shows what
+will be destroyed, takes a **typed word** rather than a menu choice as consent, asks for the
+password twice, formats, sets the first root password, and verifies by asking the kernel again
+rather than by trusting a return code.
+
+**The password is asked for once and used twice, and that is forced rather than chosen.** The
+volume is sealed to a password and the root account is verified against one, by different
+mechanisms with different salts, and `h_auth` needs the same typed string to satisfy both. Seal
+the volume to one and leave the account on its compiled-in default and the result is a perfectly
+installed disk nobody can log into -- which boot 1 cannot detect, because everything it can
+observe succeeded. `make smoke-installer` therefore powers the machine off and logs in.
+
+**The base system is not copied by the installer**, and that is a capability decision rather than
+an omission: `fs_server` already provisions `/bin` and the directory skeleton the moment the
+store becomes readable, because it polls for exactly that on a sealed volume. Doing it in the
+installer would mean granting it `CAP_ENCRYPTED_STORAGE` and `CAP_BOOT_MODULE` -- the authority
+to read every boot module and write anywhere in the object store -- to duplicate a loop that
+already exists in the task whose job it is.
+
 **Still open, and what each needs:**
 
-- **The TUI does not yet have the input an installer needs.** `tui_field` renders a fixed-width
-  cell and `tui_getkey` decodes one key; there is no line editor, no way to place a visible
-  cursor, and above all **no masked field** -- so a password typed into an installer would be
-  drawn on the screen. That is a security property of the widget, not a nicety, and it wants a
-  control arm of its own.
-- **The installer program.** A ring-3 `installer` on `libhorus`, holding exactly
-  `CAP_STORAGE_FORMAT`, a console client endpoint, and nothing else it does not use: survey the
-  device, show what will be destroyed, take an explicit confirmation, ask for the password
-  twice, format, and verify. `init` is the task that decides to launch it, because `init` is
-  the only task that holds the capability to ask whether the machine needs installing.
-- **The confirmation must be witnessed, not asserted.** A gate in which the operator declines
-  and the disk is untouched, and a control arm in which the confirmation is skipped and the
-  format happens anyway. An installer that formats without being told to is the same class of
-  defect as the login that formatted on a mistyped password (**S63**), one layer up.
-- **Boot from the installed volume.** The claim "this machine now boots what was installed on
-  it" is a two-boot property and is not made until a gate makes it: install on boot 1, power
-  cycle, and log in on boot 2 with the password the installer was given, with `/bin` present.
-  Until that gate exists this item says the volume was formatted and sealed, which is less.
 - **Selecting among several targets.** There is one ATA device today and `storage_query`
   reports it or nothing. A machine with two disks needs the survey to enumerate, which is a
-  block-layer change rather than an installer one.
+  block-layer change rather than an installer one. `tui_menu` is already the shape that question
+  needs, which is why the yes/no uses it.
+- **Installing over an existing volume.** Refused outright today, with a message. It is a
+  different act needing a different confirmation, and offering it in the same menu as "install
+  onto blank media" is how the two get confused.
+- **No partitioning and no bootloader step.** The volume is the disk.
+- **Nothing re-runs the installer on demand.** It is launched by `init` when the machine needs
+  it; there is no way to ask for it from a shell, which a recovery workflow would want.
 
 ---
 
@@ -1551,7 +1567,7 @@ neither, in both, or names a job that no longer exists. No default, defaulting i
 caught CodeQL unclassified on its first run, which is the same omission class the finding
 describes.
 
-The intended set is **103 required, 3 exempted** (103 jobs, 106 contexts (re-derive it with
+The intended set is **104 required, 3 exempted** (104 jobs, 107 contexts (re-derive it with
 `tools/check_ci_gating.py`, never from this line)) `fuzz` (a 30-second time-boxed search is
 evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on), and
 `ruleset-audit` (schedule-only, so it never runs on a pull request). `smoke-fs-wal` was an
@@ -1657,7 +1673,7 @@ table already has the four columns a registry needs (id, statement, enforcing co
 the table *is* the registry. A hand-maintained parallel manifest would be a second copy of
 claims that already exist, which is **[H-3]**'s shape: two descriptions of one thing, drifting.
 The manifest that remains (`.github/invariants.yml`) holds exemptions only, and today it is
-**empty**, all 74 properties name a witness that resolves.
+**empty**, all 75 properties name a witness that resolves.
 
 **What the survey found on the way.** **S16** had no witness at all, an em-dash against
 `fpu_save`/`fpu_restore`, real code called on every ring transition and exercised by nothing.
@@ -1696,7 +1712,7 @@ past it.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue`, §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 219 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 105 of them control arms that must reproduce a defect |
+| ✅ | 222 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 106 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

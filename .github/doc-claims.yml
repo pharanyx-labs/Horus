@@ -251,6 +251,23 @@ counts:
         pattern: 'make smoke-captest\s+<span class="c"># (\d+) capability checks'
 
 forbidden:
+  - pattern: '\*\*All ten are now single writes\.\*\*'
+    reason: >-
+      docs/LIMITATIONS.md 2.6a's closure claim, and it was false when written.
+      The 2026-08-31 sweep found ten split markers and fixed those ten; it missed
+      userspace/captest.c (a private out(), no libhorus.h, so it did not match
+      the shape the sweep searched for) and src/kernel/main.c's DEFECT FLAGS
+      line. The captest one reddened CI on 2026-09-01, one day after auditprobe
+      became a second writer in that image. Retired 2026-09-01 and replaced by a
+      gate, tools/check_split_markers.py: a hand sweep cannot assert completeness
+      about itself, which is the whole reason that sentence was wrong.
+  - pattern: 'No gate reproduces this\.\* A witness would have to interleave'
+    reason: >-
+      The other half of the same paragraph. It concluded that because a runtime
+      witness would be a coin toss, nothing could enforce the property -- and
+      then wrote "enforced structurally instead" while nothing enforced it. The
+      conclusion about a RUNTIME arm was right and is kept; what was missing is
+      that a structural property is checkable statically. Retired 2026-09-01.
   - pattern: 'every pointer[- ]taking wrapper in[\s\n]+`?include/syscall\.h`?[\s\n]+passes its pointer through'
     reason: >-
       SECURITY.md S24's mechanism clause, and it was never true: only FIVE of the

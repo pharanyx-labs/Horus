@@ -17,6 +17,32 @@ in this file.
 
 ### Fixed
 
+- **A gated marker split across two writes fails a gate the way a broken runner does**
+  (`docs/LIMITATIONS.md` 2.6a, reopened and now gated). `userspace/captest.c`'s `fail()` emitted
+  `CAPTEST: FAIL `, the detail and the newline as **three writes** to a console shared with every
+  other ring-3 task. Ten `smoke-captest-*-control` arms assert a contiguous
+  `CAPTEST: FAIL <detail>`, so each was one unlucky interleave from a spurious red. CI produced
+  exactly that on 2026-09-01:
+  `AUDITPROBE: rotate_keys -> -1CAPTEST: FAIL` / `clock-resolution-finer-than-a-pit-tick` and then
+  `SMOKE FAIL: timed out ... without required marker`. **The marker was printed and the defect did
+  reproduce**; the gate reported a timeout, which is indistinguishable from infrastructure and
+  invites a re-run.
+  2.6a was recorded **closed** on 2026-08-31 after a hand sweep fixed ten instances. It missed
+  this one for a repeatable reason — the sweep searched for the `report(prefix); report(detail);`
+  shape, and `captest` has a private `out()` and no `libhorus.h` — and missed the kernel's
+  `DEFECT FLAGS: ` line, which six gates assert. **A latent split marker and a second writer are
+  the same defect; only one is observable**, and `auditprobe` (**S71**) became that second writer
+  one day earlier.
+  Both are single writes now, and the property is **enforced rather than swept**:
+  `tools/check_split_markers.py` fails the build when a gate-asserted marker is emitted in pieces,
+  beside `check_capslots.py` and `check_abi_structs.py` in the same "written down twice, nothing
+  compares them" class. It does not flag ungated informational output — 91 such runs exist, and
+  the rule is "never emit a *gated* marker in pieces", not "never write twice". Falsified four
+  ways by `tools/test_check_split_markers.sh`, including an **ungated** split that must not be
+  flagged and the unmutated tree. No runtime arm, deliberately: the interleave did not reproduce
+  in 0 of 12 local boots of the configuration CI fails on, so a runtime witness would be a coin
+  toss asserting something a static check decides.
+
 - **The audit record the kernel copies out was not the one ring 3 declared** (`SECURITY.md`
   **S71**). `struct audit_event` was defined twice under one name — 256 bytes and twelve fields
   in `src/include/kernel.h`, 72 bytes and seven in `include/syscall.h` — and `h_read_audit`

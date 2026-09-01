@@ -1079,7 +1079,7 @@ by slot index, because finding a slot by uid would require that user's password;
 active slot cannot be removed, because a volume with no slots is unreachable rather than deleted.
 Witness `make smoke-keyslots` (two boots on one image), falsified by `KEYSLOT_REMOVE_NOOP=1`.
 
-### 2.6a ~~Self-test markers are emitted in two writes, on a shared console~~ (**FIXED 2026-08-31**)
+### 2.6a Self-test markers emitted in two writes, on a shared console (swept 2026-08-31, **gated 2026-09-01** after the sweep was found incomplete)
 
 *Added 2026-08-31.*
 
@@ -1091,19 +1091,54 @@ hypothetical: `smoke-init-provision-control` failed on 2026-08-31 with
 and the gate timed out looking for a contiguous `stopped at step 1` that had been emitted in two
 pieces. The arm had passed since it was written, on timing luck.
 
-**All ten are now single writes.** Six of the seven userspace cases share one `kput_marker()` in
-`libhorus`, because the hazard is a property of the console rather than of any individual
-self-test; the kernel's aspace test and `proctest` join locally, having no access to that helper.
-Verified by re-running the sweep that found them (none remain) and by re-running every gate whose
-marker changed: `smoke-libhorus`, `smoke-passwd-probe`, `smoke-vfs`, `smoke-frame`,
-`smoke-recvblock`, `smoke-proc`, `smoke-aspace`.
+Ten instances were fixed on 2026-08-31. Six of the seven userspace cases share one
+`kput_marker()` in `libhorus`, because the hazard is a property of the console rather than of any
+individual self-test; the kernel's aspace test and `proctest` join locally, having no access to
+that helper.
 
-**No gate reproduces this.** A witness would have to interleave another task's output between two
-writes on demand, which means either injecting a scheduler yield into the print path or
-constructing a second task that prints at exactly the wrong moment. The nine unfixed ones were
-green for months, so a control arm built this way would have to force what only luck produced.
-The property is enforced structurally instead: markers are now built as one string, and there is
-one obvious place to write that is not.
+**That was recorded as closed, and it was not. Two more instances were missed, and one of them
+reddened CI on 2026-09-01.**
+
+`userspace/captest.c`'s `fail()` emitted `CAPTEST: FAIL `, the detail, and the newline as **three
+writes**. Ten `smoke-captest-*-control` arms assert a contiguous `CAPTEST: FAIL <detail>`, so
+every one of them was one unlucky interleave away from a spurious red. The sweep missed it for a
+specific and repeatable reason: it searched for the shape it had just fixed —
+`report(prefix); report(detail);` over `libhorus`'s helpers — and `captest` has a private `out()`
+and does not include `libhorus.h` at all. `src/kernel/main.c`'s `DEFECT FLAGS: ` line was the
+second, asserted by six gates and emitted in three writes.
+
+**A latent defect and a second writer are the same defect; only one of them is observable.** The
+captest instance was harmless while that image had exactly one ring-3 writer. `auditprobe` joined
+it on 2026-09-01 (**S71**) and CI reddened on the very next PR:
+
+```
+AUDITPROBE: rotate_keys -> -1CAPTEST: FAIL
+clock-resolution-finer-than-a-pit-tick
+SMOKE FAIL: timed out after 40s without required marker
+              'CAPTEST: FAIL clock-resolution-finer-than-a-pit-tick'
+```
+
+The marker **was** printed. The defect the arm exists to reproduce **did** reproduce. The gate
+reported a timeout — which is what a broken runner looks like, so the natural response is to
+re-run it and move on. That is the worst way for a check to be wrong, and it is why this is now
+enforced rather than swept.
+
+**The enforcement is `tools/check_split_markers.py`** (required job step, beside
+`check_capslots.py` and `check_abi_structs.py` — the same "written down twice, nothing compares
+them" class). For every consecutive run of single-write console calls, if the first call's
+literal is a strict prefix of a marker some gate asserts contiguously, the build fails. It
+deliberately does **not** flag ungated informational output: 91 multi-write runs exist and
+rewriting them would be churn with no property behind it. The rule is not "never write twice", it
+is "never emit a gated marker in pieces". Falsified four ways by
+`tools/test_check_split_markers.sh` — a split userspace marker, a split kernel marker, an
+*ungated* split that must **not** be flagged, and the unmutated tree, since three
+"is it caught" arms are all satisfied by a checker that rejects everything.
+
+**No runtime gate reproduces this, and that is now a decision rather than a gap.** Reproducing it
+needs another task's output to land between two writes on demand; the interleave is timing, and it
+did not reproduce in **0 of 12** local boots of the exact failing configuration even though CI
+hits it. A control arm built on that rate would be a coin toss asserting a property. The property
+is structural — a marker is one write — so it is checked statically, where it is decidable.
 
 ### 2.7 The VFS namespace is a name, not an enforcement boundary
 

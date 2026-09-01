@@ -1725,6 +1725,31 @@ installs binutils and QEMU from the Ubuntu archive and nothing else. 87 of 101 j
 and an arm for the unmutated tree, because four "is it caught" arms are satisfied by a checker
 that rejects everything.
 
+**Every gate-asserted marker is emitted in one write, gated since 2026-09-01.**
+`tools/check_split_markers.py` (required, beside `check_capslots.py` and `check_abi_structs.py`)
+fails the build when a marker some gate asserts as a contiguous string is emitted in more than one
+write to the shared console. Another task's output can land between the writes, and the gate then
+times out looking for a string that **was** printed, in pieces — reporting an infrastructure
+failure for a run in which the defect reproduced perfectly.
+
+**It exists because the hand sweep that was supposed to have closed this missed two instances.**
+`docs/LIMITATIONS.md` 2.6a recorded all ten as fixed on 2026-08-31; `userspace/captest.c` was not
+among them, because the sweep searched for the `report(prefix); report(detail);` shape and captest
+has a private `out()` and does not include `libhorus.h`. Ten `smoke-captest-*-control` arms assert
+a contiguous `CAPTEST: FAIL <detail>`. It reddened CI on 2026-09-01, the day after `auditprobe`
+became a second ring-3 writer in that image — a latent split marker and a second writer are the
+same defect, and only one of them is observable. The kernel's `DEFECT FLAGS: ` line, asserted by
+six gates, was the second instance and was found by the checker rather than by anyone looking.
+
+It deliberately does not flag **ungated** multi-write output — 91 such runs exist and rewriting
+them would be churn with no property behind it. Falsified four ways by
+`tools/test_check_split_markers.sh`: a split userspace marker, a split kernel marker, an *ungated*
+split that must **not** be flagged, and the unmutated tree — because three "is it caught" arms are
+all satisfied by a checker that rejects everything. **No runtime arm**, and that is a decision:
+the interleave is timing and did not reproduce in 0 of 12 local boots of the exact configuration
+CI fails on, so a runtime witness would be a coin toss asserting a property that is decidable
+statically.
+
 **Every ABI struct is identical in both headers, gated since 2026-08-30 — and since 2026-09-01
 the tool decides which structs those are.** `tools/check_abi_structs.py` runs beside
 `check_capslots.py` and compares the structs that cross the ring-3 boundary and are written down

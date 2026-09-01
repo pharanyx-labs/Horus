@@ -41,11 +41,44 @@ static void out_dec(uint64_t v) {
 static int checks = 0;
 
 /* Report the first failure and stop: later checks would be reading state the
- * failed one already invalidated. */
+ * failed one already invalidated.
+ *
+ * ONE WRITE, NOT THREE, and that is a correctness property of the gate rather
+ * than tidiness. The serial console is shared with every other ring-3 task, so
+ * another task's output can land between two writes and split the exact string a
+ * gate asserts on -- `docs/LIMITATIONS.md` 2.6a. Ten instances were swept on
+ * 2026-08-31 and this one was missed, because the sweep looked for the
+ * `report(prefix); report(detail);` shape and captest has a private `out()` and
+ * does not include `libhorus.h` at all.
+ *
+ * It was latent until it was not. `auditprobe` joined this image on 2026-09-01
+ * (S71) as a second ring-3 task writing to the same console, and CI caught it on
+ * the first PR afterwards:
+ *
+ *     AUDITPROBE: rotate_keys -> -1CAPTEST: FAIL
+ *     clock-resolution-finer-than-a-pit-tick
+ *     SMOKE FAIL: timed out ... without required marker
+ *
+ * The marker WAS printed. It was printed in two pieces, so the ten
+ * `smoke-captest-*-control` arms that require a contiguous
+ * `CAPTEST: FAIL <detail>` can time out on a boot where the defect reproduced
+ * perfectly -- a gate reporting infrastructure failure for a successful
+ * reproduction, which is the worst way for a check to be wrong.
+ *
+ * The buffer is a static rather than a stack array because `sys_write` takes a
+ * user pointer and this is the failure path: a stack that is already suspect is
+ * not where to put the only description of what went wrong. Truncation is
+ * deliberate and silent-safe -- every caller's `what` is a compile-time literal
+ * well under the bound, and a marker cut short fails the gate loudly rather than
+ * matching something it should not. */
 static void fail(const char *what) {
-    out("CAPTEST: FAIL ");
-    out(what);
-    out("\n");
+    static char line[160];
+    const char *pfx = "CAPTEST: FAIL ";
+    unsigned n = 0;
+    while (*pfx && n < sizeof(line) - 2) line[n++] = *pfx++;
+    while (what && *what && n < sizeof(line) - 2) line[n++] = *what++;
+    line[n++] = '\n';
+    sys_write(1, line, n);
     sys_exit();
     for (;;) { }
 }
@@ -1273,9 +1306,28 @@ void _start(void) {
 
     /* ---- done -------------------------------------------------------- */
 
-    out("CAPTEST: PASS ");
-    out_dec((uint64_t)checks);
-    out(" checks\n");
+    /* One write, for `fail`'s reason above. The gate requires only the
+     * `CAPTEST: PASS` prefix, so a split here would not redden it -- but the
+     * COUNT is read off this line by a human and by CLAUDE.md's instruction to
+     * trust the wire over the documentation, and a count with another task's
+     * output through the middle of it is exactly the number nobody should be
+     * reading. Same hazard, same file, same fix. */
+    {
+        static char line[64];
+        const char *pfx = "CAPTEST: PASS ";
+        unsigned n = 0;
+        while (*pfx) line[n++] = *pfx++;
+        char d[24];
+        int i = (int)sizeof(d);
+        uint64_t v = (uint64_t)checks;
+        d[--i] = '\0';
+        if (v == 0) d[--i] = '0';
+        while (v && i > 0) { d[--i] = (char)('0' + (v % 10)); v /= 10; }
+        for (const char *q = &d[i]; *q; q++) line[n++] = *q;
+        const char *sfx = " checks\n";
+        while (*sfx) line[n++] = *sfx++;
+        sys_write(1, line, n);
+    }
     sys_exit();
     for (;;) { }
 }

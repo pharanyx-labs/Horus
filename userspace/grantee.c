@@ -20,7 +20,7 @@ static void settle(void) { for (volatile int d = 0; d < 20000; d++) { } }
  *       an authority leak.
  */
 void _start(void) {
-    struct audit_event evbuf[2];
+    struct audit_record evbuf[2];
 
     int used = 0;
     for (int i = 0; i < 8000; i++) {

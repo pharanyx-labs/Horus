@@ -120,7 +120,7 @@ DEFECT_FLAGS = \
 	TUI_NO_DAMAGE_DIFF TUI_CLAMP_OFF \
 	CSPACE_KEEP_ON_TEARDOWN \
 	CSPACE_RELEASE_BEFORE_PIPES SPAWN_SLOT3_DECOY_GATE UNTYPED_SPLIT_FREE_BYTES \
-	INIT_PROVISION_NO_UNTYPED
+	INIT_PROVISION_NO_UNTYPED AUDIT_ABI_LEGACY
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -758,10 +758,22 @@ endif
 # (unheld caps, post-revoke use, grants outside the descendants rule, bad input)
 # -- prints "CAPTEST: PASS <n> checks" to serial. captest is embedded in every
 # build already, so this only gates the boot-time run.
+#
+# It also spawns auditprobe, a SECOND task, and the separation is the point
+# rather than a convenience. SYS_AUDIT_DIGEST and SYS_READ_AUDIT carry a real
+# capability in their dispatch rows, so the central gate refuses captest before
+# either handler runs and its refusal checks say nothing about the bodies --
+# which is exactly how issue #176 stayed invisible to a 100-check suite. Covering
+# them needs a task that HOLDS a CAP_AUDIT, and endowing captest with one would
+# widen the authority of the one task in this tree whose job is to hold as little
+# as possible. So the capability goes to a task of its own, which holds that and
+# nothing else (prints "AUDITPROBE: PASS <n> checks"). Unlike captest, its image
+# is embedded only in this build -- see multiboot.S.
 CAPTEST_SELFTEST ?= 0
 ifeq ($(CAPTEST_SELFTEST),1)
 CFLAGS  += -DCAPTEST_SELFTEST
 ASFLAGS += -DCAPTEST_SELFTEST
+AUDITPROBE_DEP = userspace/auditprobe.bin
 endif
 
 # The set of utilities ported so far. Each is an unmodified upstream .c in
@@ -1021,7 +1033,8 @@ endif
 
 SYSCALL_PTR_TRUNC32 ?= 0
 
-# SYSCOV_PROBES_ABSENT=1 compiles captest's section 13 out: the probes that enter
+# SYSCOV_PROBES_ABSENT=1 compiles out the coverage probes -- captest's section 13
+# and auditprobe's four calls into the audit handlers: the probes that enter
 # the twelve SC_NONE handler bodies promoted to `covered` on 2026-08-30. Under it
 # `make smoke-syscall-coverage` must go RED, naming each of them as declared
 # covered with a handler that never ran.
@@ -1042,6 +1055,25 @@ SYSCOV_PROBES_ABSENT ?= 0
 KLOG_WRITE_UNGATED ?= 0
 ifeq ($(KLOG_WRITE_UNGATED),1)
 CFLAGS += -DKLOG_WRITE_UNGATED
+endif
+
+# AUDIT_ABI_LEGACY=1 restores the pre-2026-09-01 SYS_READ_AUDIT ABI: ring 3
+# declares a 72-byte `struct audit_record` and h_read_audit copies the KERNEL's
+# 256-byte internal event at the kernel's stride into it. Every field is then read
+# from the wrong offset, and the copy runs 184 bytes past the array per record.
+#
+# BOTH RINGS, under one flag, because the defect is the DISAGREEMENT rather than
+# either declaration -- an arm that changed only one side would be reintroducing
+# something that never existed. So this appends to CFLAGS here and to
+# USERSPACE_CFLAGS at top level; see the note beside SYSCALL_PTR_TRUNC32 there for
+# why the userspace half cannot live in this block.
+#
+# `make smoke-auditprobe-abi-control` requires
+# AUDITPROBE: FAIL read-audit-wrote-past-the-array, and `make smoke-auditprobe`
+# must go red under it.
+AUDIT_ABI_LEGACY ?= 0
+ifeq ($(AUDIT_ABI_LEGACY),1)
+CFLAGS += -DAUDIT_ABI_LEGACY
 endif
 
 # MAPPHYS_SELFTEST=1 embeds mapphystest and, at boot, spawns it endowed with a
@@ -2468,7 +2500,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -2655,6 +2687,13 @@ endif
 # the reason recorded there.
 ifeq ($(SYSCOV_PROBES_ABSENT),1)
 USERSPACE_CFLAGS += -DSYSCOV_PROBES_ABSENT
+endif
+# The ring-3 half of AUDIT_ABI_LEGACY, HERE and not beside its `?= 0` several
+# hundred lines up, for the reason recorded beside SYSCALL_PTR_TRUNC32: this
+# variable is assigned with `=`, so anything appended before that assignment is
+# discarded and the arm silently does nothing.
+ifeq ($(AUDIT_ABI_LEGACY),1)
+USERSPACE_CFLAGS += -DAUDIT_ABI_LEGACY
 endif
 # netd's two control arms, HERE for the same reason and not one line earlier.
 # Both live in userspace/netd.c, so they are userspace flags; putting them beside
@@ -3187,7 +3226,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.stripped.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/tuitest.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/tuitest.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -4041,6 +4080,65 @@ smoke-captest-capenum-control:
 		REQUIRE_MARKER='CAPTEST: FAIL cap-enumerate-without-cap-debug' \
 		tools/smoke_test.sh boot.iso
 
+# ---- the audit probe: two handler bodies, and #176's runtime witness --------
+#
+# auditprobe rides in the CAPTEST_SELFTEST image as a SECOND task holding exactly
+# one CAP_AUDIT. It exists because SYS_AUDIT_DIGEST and SYS_READ_AUDIT carry a
+# real capability in their dispatch rows: the central gate refuses captest before
+# either handler runs, so captest's SYS_ERR_PERM checks say nothing about the
+# bodies -- and that is precisely how issue #176 stayed invisible.
+#
+# It is its own gate rather than a line in smoke-captest because the two assert
+# different things and must be able to fail separately: smoke-captest is about
+# refusals, this is about two handlers that RUN and deliver bytes to the buffer
+# the caller named.
+.PHONY: smoke-auditprobe
+smoke-auditprobe:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='AUDITPROBE: PASS' \
+		FAIL_MARKER='AUDITPROBE: FAIL' tools/smoke_test.sh boot.iso
+
+# The falsifying arm. SYSCALL_PTR_TRUNC32=1 rebuilds the pre-2026-08-20 wrappers,
+# which narrowed the caller's buffer pointer to 32 bits (issue #176).
+#
+# THE MARKER IS THE STATIC HALF, NOT "IT FAILED". Every static in a PIE image is
+# above 4 GiB by construction (USER_IMAGE_ASLR_BASE is 16 GiB) and a stack buffer
+# is around 8 MiB, so under the flag the probe's stack calls still succeed and
+# only its static calls do not. Requiring that exact asymmetry is what makes this
+# #176's signature rather than a build that broke somehow.
+#
+# This is a USERSPACE flag: it must be applied to USERSPACE_CFLAGS at top level,
+# after that variable's `=` assignment and outside any other flag's ifeq -- see
+# the comment beside it there.
+.PHONY: smoke-auditprobe-control
+smoke-auditprobe-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 SYSCALL_PTR_TRUNC32=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 SYSCALL_PTR_TRUNC32=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='AUDITPROBE: FAIL digest-into-a-static-buffer' \
+		tools/smoke_test.sh boot.iso
+
+# The ABI arm. AUDIT_ABI_LEGACY=1 puts back the two disagreeing declarations of
+# the audit record and the raw kernel-sized copy between them.
+#
+# THE MARKER IS THE OVERRUN, not the misread field. Both are real and the probe
+# checks both, but `read-audit-did-not-return-our-own-event` is what a reader
+# sees and `read-audit-wrote-past-the-array` is what the kernel DID -- and the
+# second is the one a return code can never report, which is why the gate asserts
+# on it. The probe stops at neither: it runs every check and reports them all, so
+# the transcript shows the misalignment beside the overrun.
+.PHONY: smoke-auditprobe-abi-control
+smoke-auditprobe-abi-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 AUDIT_ABI_LEGACY=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 AUDIT_ABI_LEGACY=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='AUDITPROBE: FAIL read-audit-wrote-past-the-array' \
+		tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-captest
 smoke-captest:
 	@$(MAKE) --no-print-directory clean
@@ -4268,9 +4366,12 @@ smoke-syscall-coverage:
 
 # ---- the falsifying arm for the 2026-08-30 SC_NONE promotions ---------------
 #
-# SYSCOV_PROBES_ABSENT=1 compiles captest's section 13 out. The gate above must
-# then go RED, and it must go red for the RIGHT REASON -- which is why this
-# asserts the exact SET of syscalls the checker names, not merely that it failed.
+# SYSCOV_PROBES_ABSENT=1 compiles out the coverage probes: captest's section 13
+# and, since 2026-09-01, auditprobe's calls into the two audit handlers. The gate
+# above must then go RED, and it must go red for the RIGHT REASON -- which is why
+# this asserts the exact SET of syscalls the checker names, not merely that it
+# failed. The set is SYSCOV_CONTROL_EXPECTED below; read the count from there and
+# not from prose here, which said "twelve" until the set became 14.
 #
 # ALL THREE WORKLOADS ARE REBUILT AND REBOOTED, even though the flag only changes
 # captest. Running the captest arm alone would leave the other two transcripts
@@ -4289,9 +4390,10 @@ smoke-syscall-coverage:
 # duplicate of smoke-session. The assertion is the checker run below, which is
 # `if`-guarded and carries no `|| true` at all.
 SYSCOV_CONTROL_EXPECTED = \
-	SYS_BRK SYS_FRAME_PAGES SYS_IPC_REPLY SYS_MAP_FRAME SYS_MAP_REGION \
-	SYS_READ SYS_REGISTER_STORAGE_BACKEND SYS_SIGACTION SYS_SIGRETURN \
-	SYS_SPAWN_ARG SYS_TASK_EXIT_INFO SYS_UNMAP_FRAME
+	SYS_AUDIT_DIGEST SYS_BRK SYS_FRAME_PAGES SYS_IPC_REPLY SYS_MAP_FRAME \
+	SYS_MAP_REGION SYS_READ SYS_READ_AUDIT SYS_REGISTER_STORAGE_BACKEND \
+	SYS_SIGACTION SYS_SIGRETURN SYS_SPAWN_ARG SYS_TASK_EXIT_INFO \
+	SYS_UNMAP_FRAME
 
 smoke-syscall-coverage-control:
 	@set -eu; \
@@ -4328,7 +4430,7 @@ smoke-syscall-coverage-control:
 	    cat "$$cov/checker.out"; \
 	    exit 1; \
 	fi; \
-	echo "CONTROL PASS: section 13 removed, and the coverage gate names exactly its twelve"
+	echo "CONTROL PASS: the coverage probes are gone, and the gate names exactly the set they earn"
 
 # The three transcripts are KEPT rather than made in a mktemp that the shell
 # deletes on the way out. A failure here is "which syscall stopped being

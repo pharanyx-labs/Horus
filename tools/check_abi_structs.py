@@ -29,7 +29,28 @@ sizeof or offsets: those are properties of a compilation, not of a header, and
 the two are compiled with different flags. A `_Static_assert` on `sizeof` in each
 header would be the stronger check and is worth having; it is not what this is.
 
-Exit 0 if every shared struct agrees, 1 otherwise.
+THE LIST WAS HAND-MAINTAINED, AND THAT IS HOW IT MISSED THE ONE THAT HAD DRIFTED.
+On 2026-09-01 `struct audit_event` turned out to be the eighth struct crossing this
+boundary -- 256 bytes in kernel.h, 72 in syscall.h, one name -- and `h_read_audit`
+copied the kernel's size at the kernel's stride into an array ring 3 had sized
+with the other. Exactly the failure this file describes, in a struct this file did
+not know about, while it passed on the seven it did. It was never enrolled because
+enrolling is a thing somebody has to remember; the seven came from an audit sweep
+and the eighth was not in that sweep's output.
+
+So the declared list is no longer the whole check. `main()` now also DISCOVERS
+every struct defined in both headers and fails on one that is in neither `SHARED`
+nor `UNRESOLVED` -- the question "is this struct enrolled?" is asked by the tool
+rather than by whoever last added one. The declared list stays, because discovery
+alone cannot notice a struct DISAPPEARING from one header, which is its own kind
+of drift. The two rules catch opposite mistakes and both are needed.
+
+Discovery found four more that were simply never enrolled and do agree (`fs_stat`,
+`task_info`, `irq_policy_info`, `irq_policy_site_info`), and one that does not:
+see `UNRESOLVED`.
+
+Exit 0 if every shared struct agrees and every discovered one is enrolled, 1
+otherwise.
 """
 import pathlib
 import re
@@ -49,7 +70,34 @@ SHARED = [
     "horus_timespec",
     "boot_module_info",
     "task_exit_info",
+    # Found by the discovery rule below on 2026-09-01, not by anyone noticing.
+    # All four agree and always have; they were simply never enrolled, which is
+    # the failure mode `audit_event` turned into a defect.
+    "fs_stat",
+    "task_info",
+    "irq_policy_info",
+    "irq_policy_site_info",
 ]
+
+# Structs defined in BOTH headers that do NOT agree, each with the finding that
+# records it. This is an exemption list and it is deliberately uncomfortable to
+# add to: an entry here is an open defect, not a naming convention, and the
+# checker fails if one of these starts AGREEING -- at which point it belongs in
+# SHARED and the finding is closed.
+UNRESOLVED = {
+    "program_header": (
+        "docs/LIMITATIONS.md 2.18. The kernel's is an ELF program header with "
+        "four Horus staging fields appended (104 bytes); ring 3's is the staging "
+        "header alone (44). h_receive_program copies the kernel's size, so the "
+        "shell's `receive` would overrun its own 44-byte stack object by 60 "
+        "bytes -- except that the SUCCESS PATH IS UNREACHABLE: "
+        "loader_receive_to_staging reads sizeof(hdr) = 104 bytes off serial "
+        "where the uploader sends 44 plus payload, so `magic` is tested against "
+        "payload bytes and the transfer answers 'Bad magic' every time. Broken "
+        "rather than dangerous, and a transport decision rather than a struct "
+        "rename, so it is filed rather than fixed here."
+    ),
+}
 
 FIELD = re.compile(r"^\s+((?:const\s+)?[A-Za-z_][A-Za-z_0-9]*)\s+([A-Za-z_][A-Za-z_0-9]*)\s*(\[[^\]]*\])?\s*;")
 
@@ -57,8 +105,12 @@ FIELD = re.compile(r"^\s+((?:const\s+)?[A-Za-z_][A-Za-z_0-9]*)\s+([A-Za-z_][A-Za
 def fields(path, name):
     """The (type, name, array) triples of `struct name`, or None if absent."""
     text = path.read_text(encoding="utf-8")
-    m = re.search(r"^struct\s+" + re.escape(name) + r"\s*\{(.*?)^\};", text,
-                  re.S | re.M)
+    # `typedef struct X {` as well as `struct X {`. Anchoring on the latter
+    # alone silently returned None for a typedef'd struct, which for a DISCOVERED
+    # struct would have looked like "not defined in this header" -- the checker
+    # excusing itself from the comparison. program_header is declared that way.
+    m = re.search(r"^(?:typedef\s+)?struct\s+" + re.escape(name) + r"\s*\{(.*?)^\}",
+                  text, re.S | re.M)
     if not m:
         return None
     out = []
@@ -73,9 +125,49 @@ def fields(path, name):
     return out
 
 
+STRUCT_DEF = re.compile(r"^(?:typedef\s+)?struct\s+([A-Za-z_]\w*)\s*\{", re.M)
+
+
+def defined_in_both():
+    """Struct names defined in BOTH headers -- the ones that cross the boundary."""
+    k = set(STRUCT_DEF.findall(KERNEL_H.read_text(encoding="utf-8")))
+    s = set(STRUCT_DEF.findall(SYSCALL_H.read_text(encoding="utf-8")))
+    return k & s
+
+
 def main():
     problems = []
     checked = 0
+
+    # RULE 2, and the one that would have caught audit_event: no struct crosses
+    # this boundary without being enrolled. Asked of the headers rather than of
+    # whoever last edited them.
+    discovered = defined_in_both()
+    for name in sorted(discovered - set(SHARED) - set(UNRESOLVED)):
+        problems.append(
+            f"struct {name}: defined in BOTH headers and enrolled in neither "
+            f"SHARED nor UNRESOLVED. Every struct that crosses this boundary is "
+            f"copied by the kernel at the KERNEL's size; add it to SHARED, or to "
+            f"UNRESOLVED with the finding that records why it disagrees")
+    for name in sorted(set(SHARED) | set(UNRESOLVED)):
+        if name not in discovered:
+            problems.append(
+                f"struct {name}: enrolled, but no longer defined in both headers. "
+                f"If it stopped crossing the boundary, remove it from the list on "
+                f"purpose -- an enrolled name that compares nothing is a check "
+                f"that cannot fail")
+
+    # RULE 3: an UNRESOLVED entry is an open defect. If it starts agreeing, the
+    # defect is fixed and it belongs in SHARED -- say so rather than letting an
+    # exemption outlive its reason.
+    for name, why in sorted(UNRESOLVED.items()):
+        k = fields(KERNEL_H, name)
+        s = fields(SYSCALL_H, name)
+        if k is not None and s is not None and k == s:
+            problems.append(
+                f"struct {name}: listed UNRESOLVED but the two headers now AGREE. "
+                f"Move it to SHARED and close the finding. Its reason was: {why}")
+
     for name in SHARED:
         k = fields(KERNEL_H, name)
         s = fields(SYSCALL_H, name)
@@ -96,8 +188,12 @@ def main():
                     problems.append(f"    field {i}: kernel.h has {fmt(a)}, "
                                     f"syscall.h has {fmt(b)}")
 
-    print(f"shared ABI structs : {len(SHARED)}")
-    print(f"  compared         : {checked}")
+    print(f"structs in both headers : {len(discovered)}")
+    print(f"  enrolled SHARED       : {len(SHARED)}")
+    print(f"  compared              : {checked}")
+    print(f"  UNRESOLVED (open)     : {len(UNRESOLVED)}")
+    for name in sorted(UNRESOLVED):
+        print(f"      {name}: known to disagree, see the reason in this file")
 
     if problems:
         print("\nFAIL: an ABI struct is not the same in both headers\n")
@@ -107,7 +203,8 @@ def main():
               "the OTHER definition. Neither compiler sees both files.")
         return 1
 
-    print("\nPASS: every shared ABI struct is identical in both headers")
+    print("\nPASS: every struct crossing the boundary is enrolled, and every "
+          "enrolled-as-shared one is identical in both headers")
     return 0
 
 

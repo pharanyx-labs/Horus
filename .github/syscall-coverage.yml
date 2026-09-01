@@ -166,6 +166,32 @@ covered:
   # kernel". SYS_FS_INODE_LINK is the same shape and is NOT done, because no shell
   # command makes a hard link; it needs a new command, not a new line in a test.
   - SYS_FS_INODE_FREE
+  # Promoted 2026-09-01, and they are the two this whole file was written about.
+  # SYS_DMESG and SYS_AUDIT_DIGEST are the pair issue #176 truncated; SYS_DMESG
+  # has been `covered` since the manifest existed and its sibling had never run.
+  #
+  # Neither moved on an argument. Both carry { slot 7, READ, CAP_AUDIT } in the
+  # dispatch table, so the central gate refuses captest first and no reading of
+  # the table could promote them -- what they needed was a task that HOLDS the
+  # capability, which the entry below said in as many words and nobody had
+  # written. userspace/auditprobe.c is that task: a SECOND task in the
+  # CAPTEST_SELFTEST image, uid 1000, holding one CAP_AUDIT at slot 7 and nothing
+  # else. captest's own cspace is untouched, because endowing the one task whose
+  # job is to hold nothing would have traded the property for the number.
+  #
+  # ENTERING THEM FOUND A DEFECT ON THE FIRST BOOT, which is what LIMITATIONS.md
+  # 1.8 stopped calling a hypothetical on 2026-08-29 and is now the second time
+  # it has been right. `struct audit_event` was declared twice -- 256 bytes in
+  # the kernel, 72 in ring 3, one name -- and h_read_audit copied the kernel's
+  # size at the kernel's stride into an array sized with the other, misreading
+  # every field and writing 184 bytes past the array per record. Fixed by
+  # include/audit_abi.h, one declaration both rings compile.
+  #
+  # Witness: make smoke-auditprobe. Falsified by AUDIT_ABI_LEGACY=1 (the defect,
+  # both halves) and SYSCALL_PTR_TRUNC32=1 (#176 itself, whose runtime arm had
+  # only ever reached SYS_DMESG).
+  - SYS_AUDIT_DIGEST
+  - SYS_READ_AUDIT
   # Promoted 2026-08-29 with S52, and the promotion is the point rather than a
   # side effect. All three were listed below as "not entered by any tracked
   # workload, and by no build known in this tree" -- and all three reached a
@@ -279,7 +305,7 @@ covered:
   - SYS_IPC_RECV_BLOCK
 
 uncovered:
-  # Thirteen left, and after the 2026-08-30 sweep they fall into exactly three
+  # Eleven left, and after the 2026-08-30 sweep they fall into exactly three
   # groups. The grouping is the useful part: it says what each one would COST to
   # cover, which is the question this file is asked when somebody wants the
   # number to go up.
@@ -294,10 +320,13 @@ uncovered:
   # raise this number would widen the authority of the one task in this tree whose
   # job is to hold as little as possible, so none of these moves without a
   # separate probe task that holds exactly one of them.
-  SYS_READ_AUDIT: >-
-    dispatch row (slot 7, READ, CAP_AUDIT). captest holds no CAP_AUDIT, so its check asserts a refusal the TABLE issues and the handler never runs -- exactly the shape that hid issue #176. init holds the capability and the shell does not: it was narrowed to CAP_DEBUG on 2026-08-23 precisely so `ps` could not also read the audit log, so no tracked workload can reach this without undoing that narrowing
-  SYS_AUDIT_DIGEST: >-
-    dispatch row (slot 7, READ, CAP_AUDIT), as SYS_READ_AUDIT. It is also ONE OF THE TWO WRAPPERS ISSUE #176 WAS ABOUT, and the other (SYS_DMESG) has been covered since the manifest existed -- so the defect that motivated this whole file still sits behind a handler nothing enters. That is not an argument for entering it cheaply; it is the reason a probe task holding one CAP_AUDIT is worth writing
+  #
+  # THE PRESCRIPTION WAS FOLLOWED ON 2026-09-01 and this group is four rather than
+  # six. auditprobe holds one CAP_AUDIT and nothing else, so SYS_READ_AUDIT and
+  # SYS_AUDIT_DIGEST are `covered` above -- and the first entry into either found
+  # a defect. The remaining four are the CAP_ENCRYPTED_STORAGE half; the same
+  # prescription applies, and the cost is now known to be one small task rather
+  # than a widened captest.
   SYS_ROTATE_KEYS: >-
     dispatch row (slot 8, READ, CAP_CONSOLE), and that row is only the first of two checks -- do_rotate_keys additionally requires CAP_ENCRYPTED_STORAGE before it does anything. captest holds neither
   SYS_BLOCK_READ: >-

@@ -15,7 +15,87 @@ in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The audit record the kernel copies out was not the one ring 3 declared** (`SECURITY.md`
+  **S71**). `struct audit_event` was defined twice under one name — 256 bytes and twelve fields
+  in `src/include/kernel.h`, 72 bytes and seven in `include/syscall.h` — and `h_read_audit`
+  copied `sizeof(struct audit_event)`, the kernel's 256, at the kernel's stride into an array
+  ring 3 had sized at 72 an element. Both halves are real and only one is visible to the caller:
+  **every field was read from the wrong offset** — a caller's `subject_uid` landed on a kernel
+  field nothing writes, so an audit log answered *who did this* with 0 — **and the copy ran off
+  the end**, `max * 256` bytes into `max * 72` bytes of caller memory, 184 past the array per
+  record. `userspace/grantee.c` asks for 2 into a 144-byte **stack** array, so the kernel wrote
+  up to 512 bytes there on every `PROC_SELFTEST` boot since that caller was written.
+  `user_copy` walks the caller's own CR3 and refuses an address the task has not mapped, so this
+  is corruption confined to the caller rather than a privilege boundary — the same shape and the
+  same seriousness as issue #176, and the same sentence applies: *the kernel wrote to an address
+  the caller did not name*.
+  The exported record is now `struct audit_record` in **`include/audit_abi.h`**, included by both
+  rings, with a `_Static_assert` on its size that both rings compile; the kernel's internal event
+  stays private and `audit_export()` projects onto it, zeroing the whole record first because it
+  is a kernel stack object. It is deliberately not the internal struct — `kind`, `uid`, `arg0`,
+  `arg1` and `path` are written by nothing, and exporting a field is a promise to keep filling
+  it. The arrangement is `include/block_size.h`'s, one subsystem over, for its reason: **a layout
+  two rings must agree on cannot be written down twice.** The rename is part of the fix, not
+  cosmetic — sharing a name is what let both sides compile, both sides be self-consistent, and
+  nothing but a running probe tell them apart.
+  Witness `make smoke-auditprobe`; falsified by `AUDIT_ABI_LEGACY=1`
+  (`make smoke-auditprobe-abi-control`, `AUDITPROBE: FAIL read-audit-wrote-past-the-array`,
+  3 boots in 3), which restores **both** declarations under one flag because the defect is the
+  disagreement rather than either side.
+
+- **`tools/check_abi_structs.py` now discovers the structs it checks instead of being told
+  them.** The gate for exactly S71's defect class existed, had run on every PR since
+  2026-08-30, and passed throughout — because its list of structs crossing the ring boundary was
+  hand-written from an audit sweep and `audit_event` was not in that sweep's output. A checker
+  that only compares what somebody remembered to enrol is a checker whose coverage is the thing
+  it cannot check. It now enumerates every struct defined in **both** headers and fails on one
+  enrolled in neither list; the declared list stays, because discovery cannot notice a struct
+  *disappearing* from one header, and the two rules catch opposite mistakes.
+  It found four more never enrolled and agreeing (`fs_stat`, `task_info`, `irq_policy_info`,
+  `irq_policy_site_info`) and one disagreeing: **`struct program_header`**, 104 bytes in the
+  kernel (an ELF header with four staging fields appended) against 44 in ring 3
+  (`docs/LIMITATIONS.md` 2.18). `SYS_RECEIVE_PROGRAM` copies the kernel's size into the shell's
+  44-byte **stack** object — and cannot reach it, because `loader_receive_to_staging` also reads
+  104 bytes off serial where the uploader sends 44, so `magic` is tested against payload bytes
+  and every transfer answers "Bad magic". Broken rather than dangerous; filed rather than fixed,
+  because it needs a decision about the loader's transport format and not a struct rename.
+  It is `docs/LIMITATIONS.md` §1.8's pattern a third time: nothing enters that handler, and a
+  shell command that cannot work has sat in the table unnoticed.
+  Falsified seven ways, four of them new.
+
 ### Added
+
+- **A probe task holding one `CAP_AUDIT` and nothing else, 13 checks, and the two handler
+  bodies it finally entered** (`userspace/auditprobe.c`). `SYS_READ_AUDIT` and `SYS_AUDIT_DIGEST` carry a real
+  capability in their dispatch rows, so `captest` — which holds none — was refused by the
+  **table** and its two checks naming them asserted a refusal the handler never issued. That is
+  the shape that hid issue #176, whose other wrapper `SYS_DMESG` has been `covered` since the
+  coverage manifest existed: **the defect that motivated the whole file still sat behind a
+  handler nothing entered.** Coverage is **81 of 92**, up from 79.
+  The capability goes to a task of its own rather than to `captest`, whose negative probes are
+  only worth anything because its absence of authority is real; it runs as **uid 1000**, so a
+  success is the capability's doing and not root's. It causes an audited event of its own — a
+  denied capability grant, refused by `h_cap_grant`'s authority check, so the log gains an entry
+  and the cspace gains nothing — then requires the digest's count to advance and its chain head to
+  move across it, the records to
+  come back with the fields where the caller declared them, and the two syscalls it holds no
+  capability for to be refused. Every call is made twice, into a stack buffer and into a static,
+  because statics are above 4 GiB by construction and stack buffers are not: that is the class
+  distinction #176 turned on, and under `SYSCALL_PTR_TRUNC32=1` the stack half still passes while
+  the static half does not, which is the defect's signature rather than merely a failure.
+  **The first boot found S71**, which is what `docs/LIMITATIONS.md` 1.8 predicted and the second
+  time it has been right. Three things from the repeat rather than the defect: the prescription
+  was already written down in the manifest and sat there nine days, so a costed fix beside a gap
+  is not work in progress; both defects were in the *neighbours* of what was being covered, which
+  argues for covering a capability's whole family at once; and neither was reachable by a wider
+  `captest`, because both are gated on a capability it deliberately does not hold.
+  `sys_read_audit` also moves to `SYSCALL_UPTR()` — identical expansion, but
+  `SYSCALL_PTR_TRUNC32=1` redefines that macro alone, so a wrapper spelled the other way sits
+  outside the runtime arm. **`SECURITY.md` S24 was corrected in the same commit**: it claimed
+  every pointer-taking wrapper went through `SYSCALL_UPTR()`, and five of fifty-two do. The
+  property held throughout and the stated mechanism did not.
 
 - **A TPM NV monotonic counter anchors the volume against whole-volume rollback** (**S70**).
   The Merkle tree (**S66**) catches a subtree rewound while the rest of the volume moves on. It

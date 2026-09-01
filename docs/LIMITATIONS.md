@@ -453,21 +453,45 @@ a page at the bogus address and reported success.
 ### 1.8 Part of the syscall table has no test that runs its handler, and one of those gaps hid a defect
 
 **Measured since 2026-08-20**, and re-derived on every merge rather than restated: as of
-2026-08-30, and gated since: **79 of 92** implemented syscalls have their handler
+2026-09-01, and gated since: **81 of 92** implemented syscalls have their handler
 body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
-boot-modules session). The other 13 are listed in `.github/syscall-coverage.yml`, each with a written reason.
+boot-modules session). The other 11 are listed in `.github/syscall-coverage.yml`, each with a written reason.
 
 This was stated as a limitation rather than a finding, on the grounds that nothing here was
-known to be broken. **That is no longer the honest framing.** On 2026-08-29 three of the
-syscalls on the uncovered list, `SYS_CAP_MINT`, `SYS_CAP_TRANSFER` and `SYS_CAP_MOVE`, turned
-out to reach a helper that spun forever on a NULL capability lookup while holding `cap_lock`
-with interrupts masked, which any unprivileged ring-3 task could trigger in one syscall
-(**S52**). The three had carried the reason "not entered by any tracked workload, and by no
-build known in this tree" since 2026-08-22. Nothing ran them, so nothing found it. They are on
-the `covered` list now because the fix is not finished until something enters the handler.
+known to be broken. **That is no longer the honest framing, and it has now been wrong twice.**
 
-So the standing risk is not hypothetical: a defect in any of those 13 handlers is invisible in
-the same way issue #176 was, and in the way S52 just was. `captest` is a **refusal** suite by
+On 2026-08-29 three of the syscalls on the uncovered list, `SYS_CAP_MINT`, `SYS_CAP_TRANSFER`
+and `SYS_CAP_MOVE`, turned out to reach a helper that spun forever on a NULL capability lookup
+while holding `cap_lock` with interrupts masked, which any unprivileged ring-3 task could
+trigger in one syscall (**S52**). The three had carried the reason "not entered by any tracked
+workload, and by no build known in this tree" since 2026-08-22. Nothing ran them, so nothing
+found it. They are on the `covered` list now because the fix is not finished until something
+enters the handler.
+
+On 2026-09-01 it happened again, to the syscall this whole file was written about. **The two
+wrappers issue #176 truncated were `SYS_DMESG` and `SYS_AUDIT_DIGEST`; only the first had ever
+been covered.** Writing the probe that entered the second — `userspace/auditprobe.c`, a task
+holding one `CAP_AUDIT` and nothing else — found a defect on its first boot, in the neighbour
+it also entered. `struct audit_event` was declared twice under one name: 256 bytes and twelve
+fields in the kernel, 72 bytes and seven in `include/syscall.h`. `h_read_audit` copied the
+kernel's size at the kernel's stride into an array ring 3 had sized with the other, so every
+field was read from the wrong offset **and** the copy ran 184 bytes past the array per record —
+into `userspace/grantee.c`'s 144-byte stack array, on every `PROC_SELFTEST` boot since that
+caller was written. Fixed by `include/audit_abi.h`, one declaration both rings compile, with a
+`_Static_assert` on the size in each (**S71**).
+
+Three things are worth taking from the repeat rather than from either defect. The prescription
+was **already written down**: the `uncovered` entry for `SYS_AUDIT_DIGEST` said in as many
+words that "a probe task holding one `CAP_AUDIT` is worth writing", and it sat there for nine
+days. A gap with a costed fix beside it is not a gap anyone is working on. Second, both defects
+were in the *neighbours* of what was being covered — S52's trio and this one's `SYS_READ_AUDIT`
+were entered incidentally, which is an argument for covering a capability's whole family at
+once rather than the one syscall that motivated it. And third, **neither would have been caught
+by a wider `captest`**: both syscalls are gated on a real capability, so the only way in is a
+task that holds one, which is why the answer was a new task rather than a bigger suite.
+
+So the standing risk is not hypothetical: a defect in any of those 11 handlers is invisible in
+the same way issue #176 was, and in the way S52 and S71 just were. `captest` is a **refusal** suite by
 construction: its checks for `SYS_DMESG` and `SYS_AUDIT_DIGEST` both assert `SYS_ERR_PERM`, and
 the capability gate returns before the handler runs. Both syscalls were named by the suite;
 neither handler had ever executed. What S52 adds to that lesson is that a refusal test does not
@@ -1546,6 +1570,47 @@ with the library's capabilities.
   whose calls go somewhere nobody chose. That is also why the demo object is built
   `-fvisibility=hidden`: an exported symbol can be interposed, so the linker emits
   `R_X86_64_64` against the dynamic symbol for it.
+
+### 2.18 `SYS_RECEIVE_PROGRAM` cannot succeed, and the reason is a struct with two definitions
+
+`struct program_header` is declared in both headers and they describe different things. The
+kernel's (`src/include/kernel.h`) is an **ELF** program header — `type`, `offset`, `vaddr`,
+`paddr`, `filesz`, `memsz`, `flags`, `align` — with four Horus staging fields appended
+(`name[32]`, `size`, `magic`, `entry`): **104 bytes**. Ring 3's (`include/syscall.h`) is the
+staging header alone, `{magic, entry, size, name[32]}`: **44 bytes**. One name, no compiler that
+sees both.
+
+It breaks the transfer in two independent places, and the second is why the first has never
+been reached.
+
+- **`h_receive_program` copies the kernel's size.** `copy_to_user(user_hdr, &k_hdr,
+  sizeof(k_hdr))` writes 104 bytes into an object ring 3 sized at 44. The shell's `receive` and
+  `load` commands declare `struct program_header h;` **on the stack**, so a successful transfer
+  would write 60 bytes past it — and then read `h.name` at offset 12, where the kernel wrote the
+  low half of `vaddr`.
+- **The wire format disagrees too, and fails closed.** `loader_receive_to_staging` reads
+  `sizeof(hdr)` = 104 bytes off serial port 2, but the uploader sends the 44-byte header
+  `tools/mkheadered` writes, followed by the payload. So `magic` is tested at offset 96 against
+  payload bytes, essentially never matches `0x55524F48`, and the command answers **"Bad magic"**
+  every time. The overrun above is therefore unreachable, and the feature is simply broken.
+
+**This is `SECURITY.md` S71's defect in a second struct**, found by the same question on the
+same day, and it is filed rather than fixed because the two are not the same size of job:
+S71's was a struct rename and a projection, this one needs a decision about what the loader's
+**transport** format is before anything can be made to agree with anything. Fixing the export
+without fixing the wire read would produce a transfer that still cannot succeed.
+
+It is also **`§1.8`'s pattern for the third time**: `SYS_RECEIVE_PROGRAM` is on the `uncovered`
+list, nothing enters the handler, and a feature that cannot work has sat in the shell's command
+table unnoticed. Nothing found it by reading; it fell out of enumerating what crosses the ring
+boundary.
+
+**Gated, so it cannot be forgotten and cannot quietly change shape.**
+`tools/check_abi_structs.py` now *discovers* every struct defined in both headers rather than
+comparing a hand-written list — the rule that would have caught S71 — and `program_header` is
+its one `UNRESOLVED` entry, carrying this section's number. The checker fails if it is removed,
+if another unenrolled struct appears, **and if `program_header` starts agreeing**, at which
+point the exemption has outlived its reason and this section should close.
 
 ## 3. Scale and performance limitations
 

@@ -858,6 +858,19 @@ driver that could write it could move any device's BARs and defeat the frame che
 | 37 | `SYS_READ_AUDIT` | `buf`, `max` | slot 7: `CAP_AUDIT` READ |
 | 52 | `SYS_AUDIT_DIGEST` | `buf` | slot 7: `CAP_AUDIT` READ |
 
+`SYS_READ_AUDIT` writes up to `max` records into `buf`, **oldest first**, and returns how many
+it wrote. A record is `struct audit_record` — **160 bytes**, declared in `include/audit_abi.h`,
+which the kernel and ring 3 both include and both `_Static_assert` the size of. Nothing else
+declares it: the layout is the ABI, so `buf` must be an array of that type and the stride the
+kernel writes at is that type's. Until 2026-09-01 it was declared twice under one name, 256
+bytes in the kernel and 72 in `include/syscall.h`, and the copy used the kernel's — see
+`SECURITY.md` **S71** for what that cost and `include/audit_abi.h` for why the record is a
+projection of the kernel's internal event rather than the event itself.
+
+`SYS_AUDIT_DIGEST` writes a fixed **40 bytes** — an 8-byte little-endian total event count then
+the 32-byte chain-head MAC — and returns the verify status of the retained window: `0` intact,
+a positive value for the first tampered index plus one, `-1` for a chain never initialised.
+
 The audit log is **forward-secure**: the chaining key is ratcheted after each record, so an
 attacker who compromises the system cannot forge or alter history written before the
 compromise.

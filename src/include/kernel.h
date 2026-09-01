@@ -17,6 +17,13 @@ typedef uint64_t vaddr_t;
  * SYS_FBLOCK_READ returns a whole block, so this size is part of the ABI. */
 #define BLOCK_SIZE              HORUS_BLOCK_SIZE
 
+/* Same arrangement, same reason, one subsystem over: SYS_READ_AUDIT delivers
+ * records, so their layout is part of the ABI and is declared once in a header
+ * both rings read. It was declared twice until 2026-09-01 and the two
+ * declarations disagreed about every field and about the stride; the header
+ * carries what that cost. */
+#include "audit_abi.h"
+
 /* Key slots: how many passwords may open one volume, and the region they live
  * in. Eight is a prototype's answer, not a protocol limit -- the cost of a slot
  * is one Argon2id derivation on a FAILED unlock (a successful one stops at the
@@ -1324,6 +1331,17 @@ typedef struct user_account {
 #define KEYSLOT_NONE            0xFFFFFFFFu
 
 
+/* The KERNEL'S INTERNAL audit record, which is not what SYS_READ_AUDIT delivers
+ * and must not be confused with it -- `struct audit_record` in
+ * include/audit_abi.h is the exported one. Sharing the name `audit_event` with a
+ * differently-shaped ring-3 declaration is how a 184-bytes-per-record overrun
+ * survived unnoticed, so the export now goes through audit_export() and this
+ * struct stays private.
+ *
+ * `kind`, `uid`, `arg0`, `arg1` and `path` are written by nothing in this tree.
+ * They are harmless where they are -- audit_log_buffer is .bss, so they read as
+ * zero rather than as stale kernel memory -- and they are deliberately NOT in
+ * the exported record: exporting a field is a promise to keep filling it. */
 typedef struct audit_event {
     uint32_t type;
     uint32_t kind;

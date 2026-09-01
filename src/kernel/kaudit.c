@@ -136,8 +136,45 @@ void audit_log(uint32_t type, uint32_t object, int32_t result, const char *msg) 
 }
 
 
+/* Project one internal event onto the exported record.
+ *
+ * The whole record is zeroed first and every byte of it is then a named field or
+ * a zero the message did not fill. `rec` is a KERNEL STACK object, so anything
+ * left unwritten is kernel stack handed to ring 3 -- the disclosure
+ * copy_to_user's own comment describes for a short copy reported as a complete
+ * one, arriving here by a different road. There is no padding in the record by
+ * construction (see include/audit_abi.h), so the memset is belt-and-braces
+ * against a future field rather than a fix for a hole today; it stays because
+ * "there is no padding" is a property of a layout somebody may edit. */
+static void audit_export(struct audit_record *rec, const struct audit_event *e) {
+    uint8_t *p = (uint8_t *)rec;
+    for (size_t i = 0; i < sizeof(*rec); i++) p[i] = 0;
+
+    rec->timestamp    = e->timestamp;
+    rec->object       = e->object;
+    rec->type         = e->type;
+    rec->result       = (int32_t)e->result;
+    rec->subject_uid  = e->subject_uid;
+    rec->subject_task = (int32_t)e->subject_task;
+
+    for (size_t i = 0; i < sizeof(rec->message) - 1 && e->message[i]; i++)
+        rec->message[i] = e->message[i];
+}
+
+/* SYS_READ_AUDIT: copy retained audit records into the caller's array, oldest
+ * first, and return how many were written. Needs CAP_AUDIT (READ) at slot 7,
+ * enforced centrally by the dispatch table.
+ *
+ * THE STRIDE IS THE EXPORTED RECORD'S, NOT THE INTERNAL EVENT'S, and that
+ * sentence is the fix. This loop used to write `sizeof(struct audit_event)` --
+ * the kernel's 256 bytes -- at the kernel's stride into `user_events[out]`,
+ * where `user_events` was a pointer to a struct of the same NAME and a different
+ * shape. For `max` records it wrote `max * 256` bytes into `max * 72` bytes of
+ * caller memory. See include/audit_abi.h.
+ *
+ * Under AUDIT_ABI_LEGACY=1 that is exactly what it does again. SECURITY.md S71. */
 void h_read_audit(struct interrupt_frame64 *r) {
-    struct audit_event *user_events = (struct audit_event *)(addr_t)r->rbx;
+    uint64_t user_base = r->rbx;
     uint32_t max = r->rcx;
     if (max > AUDIT_LOG_SIZE) max = AUDIT_LOG_SIZE;
 
@@ -146,9 +183,18 @@ void h_read_audit(struct interrupt_frame64 *r) {
 
     for (uint32_t i = 0; i < audit_count && out < max; i++) {
         uint32_t idx = (start + i) % AUDIT_LOG_SIZE;
-        if (copy_to_user(&user_events[out], &audit_log_buffer[idx], sizeof(struct audit_event)) == 0) {
+#ifdef AUDIT_ABI_LEGACY
+        struct audit_event *user_events = (struct audit_event *)(addr_t)user_base;
+        if (copy_to_user(&user_events[out], &audit_log_buffer[idx],
+                         sizeof(struct audit_event)) == 0)
             out++;
-        }
+#else
+        struct audit_record rec;
+        audit_export(&rec, &audit_log_buffer[idx]);
+        void *dst = (void *)(addr_t)(user_base + (uint64_t)out * sizeof(rec));
+        if (copy_to_user(dst, &rec, sizeof(rec)) == 0)
+            out++;
+#endif
     }
     r->rax = out;
 }

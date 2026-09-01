@@ -3508,6 +3508,180 @@ void storage_noformat_selftest(void)
 }
 #endif
 
+#ifdef ROLLBACK_SELFTEST
+/* A whole-volume rollback is refused (S70).
+ *
+ * THE ATTACK THIS MODELS is the one the Merkle tree cannot see. A physical
+ * attacker takes an image of the disk, lets the machine run on, and later
+ * restores the whole image: superblock, metadata region, tree and data, all of
+ * it, from one consistent moment. Every internal relationship holds. Every byte
+ * was genuinely produced by this volume with this key. Nothing inside the disk
+ * distinguishes it from the current state -- the root lives in the superblock it
+ * protects, so rewinding both together is self-consistent by construction.
+ *
+ * What does distinguish it is the TPM's NV counter, which stayed on the machine
+ * while the disk was away and only goes up.
+ *
+ * THREE BOOTS, and the host does the tampering with `cp` -- restoring an entire
+ * image is exactly what the attacker does, and there is nothing for the kernel
+ * to simulate. The TPM state directory is kept across the three so the counter
+ * is the same counter; without that the test would be meaningless, and boot 3
+ * asserts the counter actually advanced rather than assuming it.
+ */
+#define ROLLBACK_INO   1
+#define ROLLBACK_BLOCK 0
+
+static uint8_t rollback_byte(uint8_t era, uint32_t i)
+{
+    return (uint8_t)((era * 89u + i * 13u + 0x2Bu) & 0xFFu);
+}
+
+void rollback_selftest(void)
+{
+    static uint8_t buf[BLOCK_SIZE];
+    print("ROLLBACK: begin\n");
+
+    int rc = storage_unlock("rollbackpw", 10);
+    if (rc == -11) {
+        /* The refusal, by its own code rather than by "unlock failed" -- a wrong
+         * password, an unreadable superblock and a failed tree check all fail
+         * here too, and none of them is what this gate is about. */
+        print("ROLLBACK: PASS a rolled-back volume was refused\n");
+        for (;;) asm volatile ("hlt");
+    }
+    if (rc != 0) {
+        print("ROLLBACK: FAIL unlock failed for a reason that is not a rollback\n");
+        for (;;) asm volatile ("hlt");
+    }
+
+    mounted_fs_t *mfs = storage_get_mounted_fs();
+    if (!mfs->sb.rollback_anchored) {
+        /* Positive, and a failure: an unanchored volume cannot demonstrate
+         * anything about rollback, and a run without a TPM would otherwise sail
+         * through every boot below and look green. */
+        print("ROLLBACK: FAIL the volume is not anchored - this run tested nothing\n");
+        for (;;) asm volatile ("hlt");
+    }
+
+    /* WHAT ERA IS ALREADY HERE? Read before writing -- the first version of this
+     * wrote first and then read its own bytes back, so the stale-data check
+     * could never fire.
+     *
+     * A ROLLED-BACK BOOT CANNOT IDENTIFY ITSELF FROM THE INSIDE, and that is not
+     * a shortcoming of this test, it is the attack. The restored volume is
+     * byte-identical to a volume that legitimately reached that state, so era 1
+     * looks the same to boot 2 (which should see it) and to a rolled-back boot 3
+     * (which should not). The harness knows which boot this is and asserts
+     * accordingly; the guest's job is to report what it found. */
+    on_disk_inode_t nd;
+    uint8_t found = 0;
+    int fresh = (storage_read_inode(mfs->bd, &mfs->sb, ROLLBACK_INO, &nd) != 0 ||
+                 nd.type == 0);
+    if (!fresh) {
+        static uint8_t rb[BLOCK_SIZE];
+        if (storage_read_file_block(mfs, ROLLBACK_INO, ROLLBACK_BLOCK, rb) == 0) {
+            for (uint8_t e = 1; e <= 8; e++) {
+                int match = 1;
+                for (uint32_t i = 0; i < BLOCK_SIZE; i++)
+                    if (rb[i] != rollback_byte(e, i)) { match = 0; break; }
+                if (match) { found = e; break; }
+            }
+        }
+    } else {
+        int64_t ino = storage_alloc_inode(mfs->bd, &mfs->sb);
+        if (ino != ROLLBACK_INO) {
+            print("ROLLBACK: FAIL unexpected inode\n"); for (;;) asm volatile ("hlt");
+        }
+        for (size_t i = 0; i < sizeof(nd); i++) ((uint8_t *)&nd)[i] = 0;
+        nd.type = 1; nd.mode = 0100600; nd.links = 1;
+        storage_write_inode(mfs->bd, &mfs->sb, (uint64_t)ino, &nd);
+    }
+
+    print("ROLLBACK: gen=");
+    print_decimal(mfs->sb.rollback_gen);
+    print("\n");
+    /* The marker the harness matches on, one string. "found era 1" on the third
+     * boot is the whole finding: a volume that had moved on to era 2 served era
+     * 1's contents, so the machine was handed a state it had already left. */
+    print("ROLLBACK: found era ");
+    print_decimal((uint64_t)found);
+    print("\n");
+
+    uint8_t era = (uint8_t)(found + 1);
+    for (uint32_t i = 0; i < BLOCK_SIZE; i++) buf[i] = rollback_byte(era, i);
+    if (storage_write_file_block(mfs, ROLLBACK_INO, ROLLBACK_BLOCK, buf) != 0) {
+        print("ROLLBACK: FAIL could not write\n"); for (;;) asm volatile ("hlt");
+    }
+
+    print("ROLLBACK: mounted an anchored volume\n");
+    for (;;) asm volatile ("hlt");
+}
+#endif /* ROLLBACK_SELFTEST */
+
+#ifdef NVCOUNTER_SELFTEST
+/* The TPM NV counter behaves as a freshness anchor must (S70).
+ *
+ * Three properties, and the third is the one that matters:
+ *   1. it can be provisioned, and provisioning is idempotent -- every boot after
+ *      the first meets an index that already exists,
+ *   2. it reads back a value,
+ *   3. it only ever goes UP. A counter that could be made to repeat a value
+ *      would let a rolled-back volume match, which is the whole attack.
+ */
+void nvcounter_selftest(void)
+{
+    print("NVCOUNTER: begin\n");
+    if (!tpm_present()) {
+        /* Positive, and a failure: this gate exists to test the anchor, and a
+         * run without a TPM has not tested it. Reported as FAIL rather than
+         * SKIP so a CI job that lost its swtpm does not look green. */
+        print("NVCOUNTER: FAIL no TPM present - this run tested nothing\n");
+        for (;;) asm volatile ("hlt");
+    }
+
+    uint64_t a = 0, b = 0, c = 0;
+    if (tpm_nv_counter_provision(&a) != 0) {
+        print("NVCOUNTER: FAIL could not provision the counter\n");
+        for (;;) asm volatile ("hlt");
+    }
+    /* Idempotent: provisioning again must succeed and must not go backwards. */
+    if (tpm_nv_counter_provision(&b) != 0) {
+        print("NVCOUNTER: FAIL provisioning was not idempotent\n");
+        for (;;) asm volatile ("hlt");
+    }
+    if (b < a) {
+        print("NVCOUNTER: FAIL the counter went backwards across provisioning\n");
+        for (;;) asm volatile ("hlt");
+    }
+
+    if (tpm_nv_counter_increment() != 0) {
+        print("NVCOUNTER: FAIL could not increment\n");
+        for (;;) asm volatile ("hlt");
+    }
+    if (tpm_nv_counter_read(&c) != 0) {
+        print("NVCOUNTER: FAIL could not read back after incrementing\n");
+        for (;;) asm volatile ("hlt");
+    }
+
+    print("NVCOUNTER: values ");
+    print_decimal(a); print(" -> "); print_decimal(b); print(" -> "); print_decimal(c);
+    print("\n");
+
+    if (c <= b) {
+        print("NVCOUNTER: FAIL an increment did not advance the counter\n");
+        for (;;) asm volatile ("hlt");
+    }
+    /* Never zero: a provisioned counter has been incremented at least once, and
+     * 0 is exactly what an UNANCHORED superblock field holds. If the two could
+     * collide, a volume that was never anchored would look anchored. */
+    if (a == 0) {
+        print("NVCOUNTER: FAIL a provisioned counter read as zero\n");
+        for (;;) asm volatile ("hlt");
+    }
+    print("NVCOUNTER: PASS the counter provisions, reads, and only goes up\n");
+}
+#endif /* NVCOUNTER_SELFTEST */
+
 #ifdef ATA_READY_SELFTEST
 /* A sector transfer happens only when the drive says it is ready (S69).
  *

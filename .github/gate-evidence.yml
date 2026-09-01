@@ -93,6 +93,17 @@ exempt:
     file reached the triple-indirect tree -- a gate for a 16 GiB volume that a
     128 MiB image satisfies is a gate for nothing, and the image size lives in
     the Makefile where nothing else would notice it shrinking.
+  smoke-rollback: >
+    Three written-out boots on one image with a KEPT TPM state directory, each
+    asserting its own REQUIRE_MARKER with a FAIL_MARKER set, so a boot that died
+    fails the target rather than being read as the property holding. Before boot
+    3 it asserts POSITIVELY that boot 2 both changed the image and ADVANCED THE
+    ROLLBACK GENERATION -- a restore that replays nothing, or an anchor that is
+    not moving, would let boot 3 pass having tested nothing.
+  smoke-rollback-control: >
+    Same three boots and the same whole-image restore; boot 3 requires the stale
+    era it served, so a dead boot reddens the arm rather than being credited with
+    reproducing the defect.
   smoke-fs-shrink: >
     Two written-out boots on one image, the host truncating it between them, each
     asserting its own REQUIRE_MARKER with a FAIL_MARKER set so a boot that died

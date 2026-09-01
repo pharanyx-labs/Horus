@@ -5,7 +5,7 @@ All notable changes to Horus are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it has a public ABI to break.
 
 **The reasoning behind these lines is in
-[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 133 entries recording what was
+[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 134 entries recording what was
 tried, what failed, and how each measurement was taken. In a security project that record is
 evidence, not commentary, so it is kept in full rather than compressed away. Entries here cite
 finding IDs; their **current** status is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), never
@@ -14,6 +14,43 @@ in this file.
 ---
 
 ## [Unreleased]
+
+### Added
+
+- **A TPM NV monotonic counter anchors the volume against whole-volume rollback** (**S70**).
+  The Merkle tree (**S66**) catches a subtree rewound while the rest of the volume moves on. It
+  cannot catch superblock, metadata and tree being replaced *together* with a consistent earlier
+  snapshot: every internal relationship holds, every byte was genuinely produced by this volume
+  with this key, and the root lives in the superblock it is meant to protect — so rewinding both
+  is self-consistent by construction. Nothing inside the disk can tell "this volume" from "this
+  volume, last week".
+  `sb.rollback_gen` is the counter value the volume was last written at, **bound into the Merkle
+  root's preimage** so it cannot be edited without a key the attacker does not have; unlock
+  refuses a volume whose generation is behind the counter. The counter is not a secret and does
+  not need to be — monotonicity is the whole requirement, and `TPM_NT_COUNTER` gives it
+  structurally: it cannot be decreased by anyone including the owner, and a re-created index
+  starts above every value any counter on that TPM has held.
+  **The generation is written before the counter is raised to meet it**, never the other way
+  round: a crash between them leaves `gen == counter + 1`, the one state above the counter that
+  can exist, which the next boot accepts and completes. The opposite order would leave the volume
+  behind its own anchor after a power cut — indistinguishable from a rollback, and a bricked disk.
+  `make smoke-rollback` restores an **entire earlier disk image** between boots and requires the
+  refusal; `make smoke-nvcounter` checks the anchor itself first, because a counter that could
+  repeat a value would let a rolled-back volume match. `TPM2_NV_DefineSpace`, `NV_Increment` and
+  `NV_Read` are new in `src/kernel/tpm.c`. Format version **v13**.
+  **What this still leaves** is in `docs/LIMITATIONS.md` 1.12 and is not small: only volumes
+  formatted on a machine with a TPM are anchored (and `sb.rollback_anchored` says which kind a
+  volume is, rather than leaving a reader to guess); the granularity is one boot; an attacker who
+  can talk to the TPM can deny service though not roll back; and an anchored volume cannot be
+  moved to another machine.
+
+### Changed
+
+- **`tools/run_with_swtpm.sh` honours `SMOKE_DISK`**, with the same name and the same
+  `cache=writethrough` default as `tools/smoke_test.sh`. A gate needing both a TPM and a disk that
+  survives a reboot — the rollback anchor is exactly that — would otherwise hand-roll QEMU drive
+  arguments in a Makefile recipe, and the two harnesses would be free to disagree about caching.
+
 
 ### Fixed
 

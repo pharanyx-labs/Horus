@@ -66,6 +66,25 @@ void tpm_test_extend_boot_pcr(void);
  * 0 otherwise. Cheap; safe to call before tpm_measured_boot. */
 int tpm_present(void);
 
+/* ---- the NV rollback counter (SECURITY.md S70) ----------------------------
+ *
+ * The freshness anchor the Merkle tree cannot be. The tree catches a subtree
+ * rewound while the rest of the volume moves on; it cannot catch the whole
+ * volume being replaced with a consistent earlier snapshot, because its root
+ * lives in the superblock it is meant to protect. This lives outside the volume.
+ *
+ * Monotonic by construction: a TPM_NT_COUNTER index cannot be decreased by
+ * anyone, including the owner, and a re-created index starts above every value
+ * any counter on that TPM has held -- so undefining it does not rewind it. It is
+ * not a secret and does not need to be; monotonicity is the whole requirement.
+ *
+ * All three return 0 on success and -1 otherwise, including when no TPM is
+ * present, which every caller must treat as "no anchor" rather than "no
+ * rollback". */
+int tpm_nv_counter_read(uint64_t *out);
+int tpm_nv_counter_increment(void);
+int tpm_nv_counter_provision(uint64_t *out);
+
 /* Discover the TPM, ensure it is started, and extend the reproducible boot hash
  * chain into PCR[8]/PCR[9]. Reads the two PCRs back and prints them on the
  * serial console as a `[tpm] PCR8=<hex> PCR9=<hex>` marker the smoke test keys

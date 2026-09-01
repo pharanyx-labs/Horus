@@ -61,9 +61,26 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# Optional persistent ATA disk, with the same name and the same default cache
+# mode as tools/smoke_test.sh -- a gate that needs BOTH a TPM and a disk that
+# survives a reboot (the rollback anchor is exactly that) would otherwise have to
+# hand-roll the drive arguments in a Makefile recipe, and the two harnesses would
+# be free to disagree about caching. cache=writethrough means every guest write
+# is on the host image before the guest is told it landed, which is what a
+# multi-boot test needs.
+DRIVE_ARG=""
+if [ -n "${SMOKE_DISK:-}" ]; then
+    if [ ! -f "$SMOKE_DISK" ]; then
+        echo "SWTPM FAIL: SMOKE_DISK '$SMOKE_DISK' not found" >&2
+        exit 1
+    fi
+    DRIVE_ARG="-drive file=$SMOKE_DISK,format=raw,if=ide,index=0,cache=${SMOKE_DISK_CACHE:-writethrough}"
+fi
+
 qemu-system-x86_64 \
     -m 512M -cpu qemu64,+aes,+rdrand,+smep,+smap,+umip -accel tcg \
     -display none -no-reboot -no-shutdown \
+    $DRIVE_ARG \
     -chardev socket,id=chrtpm,path="$SWTPM_SOCK" \
     -tpmdev emulator,id=tpm0,chardev=chrtpm \
     -device tpm-tis,tpmdev=tpm0 \

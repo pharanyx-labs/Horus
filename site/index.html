@@ -1202,10 +1202,20 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               one that was lost; a bounded cache cannot, so the write-ahead log is now the only
               thing keeping a block's nonce and its ciphertext in the same atomic unit. And the
               tree catches <em>partial</em> rollback &mdash; a subtree rewound while the rest of
-              the volume moves on &mdash; but it does not make the volume monotonic. The root
-              lives in the superblock it protects, so an attacker who replaces superblock,
-              metadata and tree together with a consistent earlier snapshot defeats it. That
-              needs a freshness anchor outside the volume, and there isn't one yet.
+              the volume moves on. On its own it could not catch the whole volume being replaced
+              with a consistent earlier snapshot, because its root lives in the superblock it
+              protects: rewind both together and every check inside the disk still passes. Nothing
+              on the disk can tell &ldquo;this volume&rdquo; from &ldquo;this volume, last
+              week&rdquo;.
+            </p>
+            <p>
+              So the anchor is somewhere the attacker holding the disk isn't: a TPM counter that
+              only goes up. The volume records the value it was last written at, bound into the
+              tree's root so it can't be edited, and a volume behind the counter is refused. The
+              test restores an entire earlier disk image between boots &mdash; the actual attack,
+              not a model of it &mdash; and requires the refusal. It applies to volumes formatted
+              on a machine that has a TPM, at a granularity of one boot; the volume records which
+              kind it is rather than leaving you to guess.
             </p>
             <p>
               Both of those are what a 16 GiB volume needed: the mirror would have been 128 MiB
@@ -1386,7 +1396,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 208 test targets, and the troubleshooting
+          Every configuration flag, every one of the 211 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1506,7 +1516,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             The security argument rests entirely on the tests, so they are treated as engineering
             artifacts rather than an afterthought. There are three layers: Rust unit tests and
-            Kani proofs on the host; 110 QEMU integration targets that boot a purpose-built kernel
+            Kani proofs on the host; 112 QEMU integration targets that boot a purpose-built kernel
             and assert a marker on the serial console; and scripted sessions that type into the
             real ring-3 shell over serial and read what comes back.
           </p>

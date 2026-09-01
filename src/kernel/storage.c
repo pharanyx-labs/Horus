@@ -48,7 +48,14 @@ static void my_strncpy(char *dst, const char *src, size_t n) {
 static uint32_t g_unlocked_slot = 0;
 static uint32_t g_unlocked_uid  = 0;
 
-#define STORAGE_VERSION 12  /* v12: the volume is sized from the DISK rather than
+#define STORAGE_VERSION 13  /* v13: the superblock carries rollback_gen and
+                             * rollback_anchored, and the Merkle ROOT binds the
+                             * generation -- so the root of a v12 volume does not
+                             * verify under v13's rule even where the bytes are
+                             * identical. Refusing the version is how that
+                             * presents as "unsupported" rather than as a volume
+                             * that has been tampered with.
+                             * v12: the volume is sized from the DISK rather than
                              * from BLOCKS_PER_DISK, and four things changed with
                              * it, every one of them moving bytes: an inode gained
                              * triple_indirect (248 bytes, 16 to a block instead
@@ -344,6 +351,9 @@ static void meta_cache_reset(void);
 static int  merkle_verify_leaf(uint64_t meta_blk, const uint8_t *img);
 static int  merkle_update_leaf(uint64_t meta_blk, const uint8_t *img);
 static int  merkle_flush_all(void);
+static int  merkle_root_hash(uint64_t gen, const uint8_t *top_img,
+                             const uint8_t *mac_key, uint32_t levels,
+                             uint8_t out32[32]);
 static void merkle_drop_dirty(void);
 static void merkle_cache_reset(void);
 /* Is a journal transaction open? The transaction state is declared further down
@@ -1323,9 +1333,18 @@ static struct merkle_line *merkle_node(uint32_t level, uint64_t index)
         if (!line->verified) {
             uint8_t want[32];
             if (merkle_hash(l + 1, path[l], mfs->meta_mac_key, line->img, want) != 0) return NULL;
-            const uint8_t *have = (l == top)
-                ? mfs->sb.meta_root
-                : parent->img + (path[l] % MERKLE_FANOUT) * 32;
+            const uint8_t *have;
+            uint8_t root_want[32];
+            if (l == top) {
+                /* The top node is judged against the generation-bound root, so a
+                 * superblock whose generation was edited does not verify. */
+                if (merkle_root_hash(mfs->sb.rollback_gen, line->img,
+                                     mfs->meta_mac_key, levels, root_want) != 0) return NULL;
+                for (int i = 0; i < 32; i++) want[i] = root_want[i];
+                have = mfs->sb.meta_root;
+            } else {
+                have = parent->img + (path[l] % MERKLE_FANOUT) * 32;
+            }
             int bad = 0;
             for (int i = 0; i < 32; i++) bad |= (want[i] ^ have[i]);
             if (bad) return NULL;                   /* stale or forged: refuse */
@@ -1398,7 +1417,14 @@ static int merkle_update_leaf(uint64_t meta_blk, const uint8_t *img)
         /* The line's content just changed, so its own recorded hash must too --
          * and it stays `verified` because we are the ones who changed it and we
          * are about to record the new hash in its parent. */
-        if (merkle_hash(l + 1, node_idx, mfs->meta_mac_key, line->img, h) != 0) return -1;
+        if (l + 1 == levels) {
+            /* The top node: its hash is wrapped with the generation before it
+             * becomes the root, so the two cannot be separated. */
+            if (merkle_root_hash(mfs->sb.rollback_gen, line->img,
+                                 mfs->meta_mac_key, levels, h) != 0) return -1;
+        } else if (merkle_hash(l + 1, node_idx, mfs->meta_mac_key, line->img, h) != 0) {
+            return -1;
+        }
         idx = node_idx;
     }
 
@@ -1444,7 +1470,55 @@ static int merkle_build(struct block_device *bd, struct fs_superblock *sb,
     /* The root is the hash of the single top node block, which merkle_build has
      * just written -- read it back for the same reason the leaves are read back. */
     if (bd->read_block(bd, base - 1, node) != 0) return -1;
-    if (merkle_hash(levels, 0, mac_key, node, sb->meta_root) != 0) return -1;
+    if (merkle_root_hash(sb->rollback_gen, node, mac_key, levels, sb->meta_root) != 0) return -1;
+    return 0;
+}
+
+/* THE ROOT BINDS THE GENERATION (S70).
+ *
+ * `sb.meta_root` was the top node block's own hash. It is now that hash wrapped
+ * with the volume's rollback generation, so the generation cannot be edited
+ * without the key: an attacker holding an old superblock can change the number
+ * in it, and then the root no longer verifies.
+ *
+ * Without this the anchor is decorative. The check at unlock compares
+ * sb.rollback_gen against the TPM counter, and if the field were unauthenticated
+ * the attacker would simply write the current counter value into the old
+ * superblock and keep everything else. */
+static int merkle_root_hash(uint64_t gen, const uint8_t *top_img,
+                            const uint8_t *mac_key, uint32_t levels,
+                            uint8_t out32[32])
+{
+    uint8_t node_hash[32];
+    if (merkle_hash(levels, 0, mac_key, top_img, node_hash) != 0) return -1;
+
+    uint8_t pre[8 + 8 + 32];
+    const char tag[8] = { 'M','K','R','O','O','T','v','1' };
+    for (int i = 0; i < 8; i++) pre[i] = (uint8_t)tag[i];
+    for (int i = 0; i < 8; i++) pre[8 + i] = (uint8_t)(gen >> (i * 8));
+    my_memcpy(pre + 16, node_hash, 32);
+    return rust_hmac_sha256(mac_key, 32, pre, sizeof(pre), out32);
+}
+
+/* Recompute the root at the CURRENT sb.rollback_gen and stage the superblock.
+ *
+ * Used when the generation advances at unlock and nothing else has changed: the
+ * tree is untouched, only the number bound into its root moves. Staged into a
+ * journal transaction like every other superblock write, so a crash leaves the
+ * volume at one generation or the other and never between. */
+static int merkle_reseal_root(void)
+{
+    struct mounted_fs *mfs = storage_get_mounted_fs();
+    if (!mfs || !mfs->mounted) return -1;
+    uint64_t counts[MERKLE_MAX_LEVELS];
+    uint32_t levels = merkle_layout(mfs->sb.meta_blocks, counts);
+    if (levels == 0) return -1;
+
+    struct merkle_line *top = merkle_node(levels - 1, 0);
+    if (!top) return -1;
+    if (merkle_root_hash(mfs->sb.rollback_gen, top->img,
+                         mfs->meta_mac_key, levels, mfs->sb.meta_root) != 0) return -1;
+    do_block_write(0, &mfs->sb);
     return 0;
 }
 
@@ -2553,6 +2627,32 @@ static int storage_format_sealed(struct block_device *bd,
     meta_cache_reset();
     merkle_cache_reset();
 
+    /* THE FRESHNESS ANCHOR (S70). Bind this volume to the machine's TPM NV
+     * counter, so that a whole-volume snapshot restored later is behind it and
+     * is refused. The generation goes into the root MAC below, which is what
+     * stops the number being edited.
+     *
+     * A machine with no TPM gets an UNANCHORED volume, and the superblock says
+     * so rather than leaving the field at zero and hoping: a reader can tell the
+     * difference between "no rollback protection" and "rollback protection that
+     * happens to read zero". The ephemeral vdisk is unanchored for the same
+     * reason it is unsealed -- it does not survive the boot, so there is no
+     * later state for anyone to roll back to. */
+    sb.rollback_gen       = 0;
+    sb.rollback_anchored  = 0;
+    if (!g_vdisk_high_entropy_kek && tpm_present()) {
+        uint64_t gen = 0;
+        if (tpm_nv_counter_provision(&gen) != 0) {
+            secure_zero(disk_key, sizeof(disk_key));
+            println("STORAGE: a TPM is present but its rollback counter could not be "
+                    "provisioned; refusing to format a volume that would claim an "
+                    "anchor it does not have");
+            return -1;
+        }
+        sb.rollback_gen      = gen;
+        sb.rollback_anchored = 1;
+    }
+
     {
         uint8_t fmt_mac_key[32];
         if (derive_meta_mac_key(disk_key, sizeof(disk_key),
@@ -2869,6 +2969,84 @@ int storage_unlock(const char *password, size_t plen)
         meta_cache_reset();
         merkle_cache_reset();
         return -9;   /* the tree does not stand under its own root */
+    }
+
+    /* ---- the freshness check (S70) ----------------------------------------
+     *
+     * The tree above verified that this volume is internally consistent and
+     * authentic. It cannot say WHEN. An attacker who replaced superblock,
+     * metadata and tree together with a consistent earlier snapshot passes every
+     * check made so far, because every byte was genuinely produced by this
+     * volume with this key -- the root lives in the superblock it protects, so
+     * rewinding both is self-consistent by construction.
+     *
+     * The TPM NV counter is the one thing in the system the disk does not carry.
+     * The generation is bound into the root, so it could not have been edited;
+     * comparing it to the counter is therefore comparing this volume's age to
+     * the machine's. */
+    if (mfs->sb.rollback_anchored) {
+        uint64_t counter = 0;
+        if (tpm_nv_counter_read(&counter) != 0) {
+            /* An anchored volume on a machine that cannot answer for the anchor.
+             * Refuse: the alternative is to serve a volume whose freshness
+             * nothing can vouch for, which is the property this field exists to
+             * assert. A TPM that has been cleared lands here, and so does one
+             * that is simply absent -- both mean the same thing to a reader of
+             * this volume. */
+            println("STORAGE: this volume is anchored to a TPM rollback counter "
+                    "that cannot be read; refusing to unlock");
+            secure_zero(mfs->disk_key,     sizeof(mfs->disk_key));
+            secure_zero(mfs->volume_key,   sizeof(mfs->volume_key));
+            secure_zero(mfs->meta_mac_key, sizeof(mfs->meta_mac_key));
+            meta_cache_reset();
+            merkle_cache_reset();
+            return -10;
+        }
+
+#ifndef ROLLBACK_ANCHOR_IGNORE
+        /* gen == counter     : the volume is current.
+         * gen == counter + 1 : the previous boot wrote the new generation and
+         *                      did not live to increment the counter. That is
+         *                      the ONLY state above the counter that can exist,
+         *                      because the generation is written first and the
+         *                      counter only ever advances to meet it -- so it is
+         *                      the current volume, not an old one, and accepting
+         *                      it is what stops a crash in that window bricking
+         *                      the disk.
+         * anything else      : behind the counter, which is a volume older than
+         *                      the machine has been. */
+        if (mfs->sb.rollback_gen != counter && mfs->sb.rollback_gen != counter + 1) {
+            println("STORAGE: ROLLBACK DETECTED - this volume is older than the "
+                    "machine's rollback counter; refusing to unlock");
+            secure_zero(mfs->disk_key,     sizeof(mfs->disk_key));
+            secure_zero(mfs->volume_key,   sizeof(mfs->volume_key));
+            secure_zero(mfs->meta_mac_key, sizeof(mfs->meta_mac_key));
+            meta_cache_reset();
+            merkle_cache_reset();
+            return -11;
+        }
+#endif
+
+        /* Advance. The superblock's new generation is written FIRST and the
+         * counter is raised to meet it, never the other way round: a crash
+         * between them then leaves gen == counter + 1, which the rule above
+         * accepts and this boot completes. The opposite order leaves the volume
+         * behind its own anchor, which is indistinguishable from a rollback and
+         * would brick the disk on a power cut. */
+        if (mfs->sb.rollback_gen == counter) {
+            mfs->unlocked = 1;          /* merkle_reseal_root writes through the fs */
+            journal_begin();
+            mfs->sb.rollback_gen = counter + 1;
+            if (merkle_reseal_root() != 0 || journal_commit() != 0) {
+                mfs->unlocked = 0;
+                println("STORAGE: could not advance the rollback generation");
+                secure_zero(mfs->disk_key,     sizeof(mfs->disk_key));
+                secure_zero(mfs->volume_key,   sizeof(mfs->volume_key));
+                secure_zero(mfs->meta_mac_key, sizeof(mfs->meta_mac_key));
+                return -12;
+            }
+        }
+        (void)tpm_nv_counter_increment();   /* to counter + 1; retried next boot */
     }
 
     mfs->unlocked = 1;

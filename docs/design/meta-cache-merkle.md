@@ -213,6 +213,12 @@ Stated plainly, because a gate's scope is part of its claim:
   freshness anchor outside the volume — a TPM NV counter is the usual answer —
   and is **not** in scope for stages 2 or 3. The tree improves per-write cost and
   catches *partial* rollback; it does not make the volume monotonic.
+
+  *(2026-09-01: this was built afterwards — `SECURITY.md` **S70**, witness
+  `make smoke-rollback`. The paragraph above stands as written because it is
+  what the design said at the time, and because its last sentence is still the
+  correct description of what the TREE does. The anchor is a separate mechanism
+  bolted to the same root, not a property of the tree.)*
 - **A crash during write-back itself.** Arm A crashes at the journal's armed
   point. Tearing *inside* a single meta block write is the disk's atomicity
   domain, not the cache's, and is already covered by the journal.

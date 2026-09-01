@@ -80,6 +80,35 @@
 #define TPM_SE_TRIAL        0x03
 #define TPM_CC_PCR_READ     0x0000017Eu
 
+/* NV counter, the freshness anchor against whole-volume rollback (S70). */
+#define TPM_CC_NV_DEFINE_SPACE   0x0000012Au
+#define TPM_CC_NV_INCREMENT      0x00000134u
+#define TPM_CC_NV_READ           0x0000014Eu
+#define TPM_CC_NV_READ_PUBLIC    0x00000169u
+
+/* Owner-hierarchy NV index for the volume's rollback counter. The owner range is
+ * 0x01000000-0x01FFFFFF; this one is arbitrary within it and only has to be
+ * stable across boots of the same machine. */
+#define HORUS_NV_INDEX           0x01800048u
+
+/* TPMA_NV. The type field is four bits at 4..7, and TPM_NT_COUNTER is 1 -- so a
+ * counter index is 0x10. AUTHWRITE/AUTHREAD with an EMPTY nvAuth is deliberate
+ * and is worth being explicit about: the counter is not a secret and does not
+ * need to be. What this scheme needs from it is MONOTONICITY, which the TPM
+ * enforces structurally -- a TPM_NT_COUNTER index cannot be decreased by anyone,
+ * including the owner, and a re-created index starts above every value any
+ * counter on that TPM has held. An attacker who can talk to the TPM can advance
+ * it or undefine it, which denies service; neither lets them make an old volume
+ * look current, because that needs a root MAC they cannot forge.
+ * NO_DA keeps a wrong auth from feeding the dictionary-attack lockout. */
+#define TPMA_NV_AUTHWRITE        0x00000004u
+#define TPMA_NV_COUNTER          0x00000010u
+#define TPMA_NV_AUTHREAD         0x00040000u
+#define TPMA_NV_NO_DA            0x02000000u
+
+#define TPM_RC_NV_UNINITIALIZED  0x0000014Au
+#define TPM_RC_NV_DEFINED        0x0000014Cu
+
 #define TPM_SU_CLEAR        0x0000
 #define TPM_RS_PW           0x40000009u
 #define TPM_ALG_SHA256      0x000B
@@ -327,6 +356,183 @@ int tpm_present(void) {
     if (idvid == 0xFFFFFFFFu || idvid == 0) return 0;
     /* A live TIS reports a valid status in ACCESS. */
     return (tpm_r8(TPM_REG_ACCESS) & ACCESS_VALID) ? 1 : 0;
+}
+
+/* ---- the NV rollback counter (S70) ----------------------------------------
+ *
+ * WHAT IT IS FOR. The Merkle tree over the metadata region catches a subtree
+ * rewound while the rest of the volume moves on. It cannot catch a WHOLE-volume
+ * rollback -- superblock, metadata and tree replaced together with a consistent
+ * earlier snapshot -- because every internal relationship holds and the root
+ * lives in the superblock it is meant to protect. Nothing inside the volume can
+ * distinguish "this volume" from "this volume, last week".
+ *
+ * So the anchor is outside it: a TPM NV counter, which the attacker holding the
+ * disk does not hold. The volume records the counter value it was last written
+ * at, BOUND INTO THE ROOT MAC so it cannot be edited without the key, and the
+ * kernel refuses a volume whose recorded value is behind the counter.
+ *
+ * MONOTONIC IS THE ONLY PROPERTY REQUIRED, and TPM_NT_COUNTER gives it
+ * structurally: the value cannot be decreased by anyone, including the owner,
+ * and a re-created index starts above every value any counter on that TPM has
+ * held -- so undefining and redefining it does not rewind it either.
+ */
+
+/* Read the counter. 0 on success. */
+
+static int nv_read_locked(uint64_t *out)
+{
+    if (!out) return -1;
+    uint8_t cmd[64];
+    uint32_t p = 0;
+    be16(cmd + p, TPM_ST_SESSIONS);            p += 2;
+    be32(cmd + p, 0);                          p += 4;   /* size, patched */
+    be32(cmd + p, TPM_CC_NV_READ);             p += 4;
+    be32(cmd + p, HORUS_NV_INDEX);             p += 4;   /* authHandle: the index */
+    be32(cmd + p, HORUS_NV_INDEX);             p += 4;   /* nvIndex */
+    be32(cmd + p, 9);                          p += 4;   /* authorization size */
+    be32(cmd + p, TPM_RS_PW);                  p += 4;
+    be16(cmd + p, 0);                          p += 2;   /* nonce */
+    cmd[p++] = 0;                                        /* attributes */
+    be16(cmd + p, 0);                          p += 2;   /* hmac */
+    be16(cmd + p, 8);                          p += 2;   /* size: a counter is 8 bytes */
+    be16(cmd + p, 0);                          p += 2;   /* offset */
+    be32(cmd + 2, p);
+
+    uint8_t rsp[TPM_IO_MAX];
+    int n = tpm_transact(cmd, p, rsp, sizeof(rsp));
+    if (n < 0 || tpm_rc(rsp, n) != TPM_RC_SUCCESS) return -1;
+
+    /* header(10) | parameterSize(4) | TPM2B_MAX_NV_BUFFER{ size(2), data } */
+    if (n < 10 + 4 + 2 + 8) return -1;
+    uint32_t sz = ((uint32_t)rsp[14] << 8) | rsp[15];
+    if (sz != 8 || n < 16 + 8) return -1;
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++) v = (v << 8) | rsp[16 + i];
+    *out = v;
+    return 0;
+}
+
+/* Advance the counter by one. 0 on success. */
+static int nv_increment_locked(void)
+{
+    uint8_t cmd[64];
+    uint32_t p = 0;
+    be16(cmd + p, TPM_ST_SESSIONS);            p += 2;
+    be32(cmd + p, 0);                          p += 4;
+    be32(cmd + p, TPM_CC_NV_INCREMENT);        p += 4;
+    be32(cmd + p, HORUS_NV_INDEX);             p += 4;   /* authHandle */
+    be32(cmd + p, HORUS_NV_INDEX);             p += 4;   /* nvIndex */
+    be32(cmd + p, 9);                          p += 4;
+    be32(cmd + p, TPM_RS_PW);                  p += 4;
+    be16(cmd + p, 0);                          p += 2;
+    cmd[p++] = 0;
+    be16(cmd + p, 0);                          p += 2;
+    be32(cmd + 2, p);
+
+    uint8_t rsp[TPM_IO_MAX];
+    int n = tpm_transact(cmd, p, rsp, sizeof(rsp));
+    if (n < 0) return -1;
+    return tpm_rc(rsp, n) == TPM_RC_SUCCESS ? 0 : -1;
+}
+
+/* Define the index if it is not there. Idempotent: an index that already exists
+ * reports TPM_RC_NV_DEFINED and that is success, not an error -- the whole point
+ * is that it SURVIVES, so meeting one that already exists is the normal case on
+ * every boot after the first. */
+static int tpm_nv_define(void)
+{
+    uint8_t cmd[96];
+    uint32_t p = 0;
+    be16(cmd + p, TPM_ST_SESSIONS);            p += 2;
+    be32(cmd + p, 0);                          p += 4;
+    be32(cmd + p, TPM_CC_NV_DEFINE_SPACE);     p += 4;
+    be32(cmd + p, TPM_RH_OWNER);               p += 4;   /* authHandle */
+    be32(cmd + p, 9);                          p += 4;   /* authorization */
+    be32(cmd + p, TPM_RS_PW);                  p += 4;
+    be16(cmd + p, 0);                          p += 2;
+    cmd[p++] = 0;
+    be16(cmd + p, 0);                          p += 2;
+    be16(cmd + p, 0);                          p += 2;   /* TPM2B_AUTH: empty nvAuth */
+    /* TPM2B_NV_PUBLIC */
+    uint32_t pub_len_at = p;                   p += 2;   /* size, patched below */
+    uint32_t pub_start = p;
+    be32(cmd + p, HORUS_NV_INDEX);             p += 4;
+    be16(cmd + p, TPM_ALG_SHA256);             p += 2;   /* nameAlg */
+    be32(cmd + p, TPMA_NV_AUTHWRITE | TPMA_NV_COUNTER |
+                  TPMA_NV_AUTHREAD  | TPMA_NV_NO_DA);    p += 4;
+    be16(cmd + p, 0);                          p += 2;   /* authPolicy: empty */
+    be16(cmd + p, 8);                          p += 2;   /* dataSize: a counter */
+    be16(cmd + pub_len_at, (uint16_t)(p - pub_start));
+    be32(cmd + 2, p);
+
+    uint8_t rsp[TPM_IO_MAX];
+    int n = tpm_transact(cmd, p, rsp, sizeof(rsp));
+    if (n < 0) return -1;
+    uint32_t rc = tpm_rc(rsp, n);
+    if (rc == TPM_RC_SUCCESS) return 0;
+    /* Already there. The RC carries parameter/handle/session bits in the high
+     * nibbles, so compare the format-1 base rather than the whole word. */
+    if ((rc & 0xFFFu) == (TPM_RC_NV_DEFINED & 0xFFFu)) return 0;
+    return -1;
+}
+
+/* Make the counter exist and be readable, and hand back its value.
+ *
+ * A freshly defined counter has never been written, and TPM2_NV_Read on it
+ * returns TPM_RC_NV_UNINITIALIZED rather than zero -- so provisioning is define
+ * THEN increment, and the first value a volume ever anchors to is 1 or more,
+ * never 0. That matters: 0 is what an unanchored superblock field holds. */
+static int nv_provision_locked(uint64_t *out)
+{
+    if (tpm_nv_define() != 0) return -1;
+
+    uint64_t v;
+    if (nv_read_locked(&v) != 0) {
+        /* Never incremented: TPM2_NV_Read on a counter that has never been
+         * written returns TPM_RC_NV_UNINITIALIZED rather than zero. */
+        if (nv_increment_locked() != 0) return -1;
+        if (nv_read_locked(&v) != 0) return -1;
+    }
+    if (out) *out = v;
+    return 0;
+}
+
+/* ---- the public entry points ----------------------------------------------
+ *
+ * EACH ONE TAKES LOCALITY, and that is the whole of what these wrappers do.
+ * tpm_transact does not request it: every other caller in this file brackets its
+ * own run of commands with tpm_request_locality()/tpm_release_locality(), and
+ * the first version of the three functions below did not.
+ *
+ * The failure that produced was a TIS state-machine error indistinguishable from
+ * malformed command marshalling, and it cost a round of decoding a 45-byte
+ * command that turned out to be byte-for-byte correct. What settled it in one
+ * try was a probe asking whether the TPM answered a PCR_Read AT ALL at that
+ * point -- it did not. When a device stops answering, ask whether it is
+ * answering anything before asking whether it liked what you said. */
+int tpm_nv_counter_read(uint64_t *out)
+{
+    if (!tpm_present() || !tpm_request_locality()) return -1;
+    int rc = nv_read_locked(out);
+    tpm_release_locality();
+    return rc;
+}
+
+int tpm_nv_counter_increment(void)
+{
+    if (!tpm_present() || !tpm_request_locality()) return -1;
+    int rc = nv_increment_locked();
+    tpm_release_locality();
+    return rc;
+}
+
+int tpm_nv_counter_provision(uint64_t *out)
+{
+    if (!tpm_present() || !tpm_request_locality()) return -1;
+    int rc = nv_provision_locked(out);
+    tpm_release_locality();
+    return rc;
 }
 
 /* ---- measurement ---------------------------------------------------------- */

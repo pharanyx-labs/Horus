@@ -2779,8 +2779,41 @@ struct mounted_fs *storage_get_mounted_fs(void) {
 /* Called at first successful login.  If no valid v4 disk exists (g_needs_format)
  * formats and seals one with the user's password first; then unwraps disk_key,
  * derives volume_key + meta_mac_key, and verifies the metadata HMAC. */
-/* An installer's explicit "yes, format this disk". Nothing else calls it. */
+/* An installer's explicit "yes, format this disk".
+ *
+ * SYS_STORAGE_FORMAT is its only caller, and that syscall answers to
+ * CAP_STORAGE_FORMAT, a capability nothing but the installer is ever granted
+ * (roadmap 2.9, S72). Between 2026-08-31 and 2026-09-01 this function had no
+ * caller at all: the refusal below was therefore absolute rather than
+ * deliberate, which was the right way round to ship it but is not a policy --
+ * "no path exists" and "one gated path exists" are different claims, and only
+ * the second is what S63 says. */
 void storage_authorize_format(void) { g_format_authorized = 1; }
+
+/* What SYS_STORAGE_INFO reports. See struct storage_info in kernel.h for why
+ * each field is there and why there are not more of them.
+ *
+ * `present` is about PERSISTENCE, not about a device existing: the ephemeral
+ * RAM vdisk is a block device by every internal measure, and reporting it as
+ * something an operator could install onto would be a lie an installer would
+ * then render on a screen. A diskless boot therefore answers present = 0 and an
+ * installer says so, rather than offering to format memory. */
+void storage_query(struct storage_info *out)
+{
+    if (!out) return;
+    my_memset(out, 0, sizeof(*out));
+
+    out->block_size = BLOCK_SIZE;
+    out->present    = (current_bd == &g_ata_bd) ? 1u : 0u;
+    if (out->present) out->total_blocks = g_ata_bd.total_blocks;
+
+    /* g_needs_format is set at boot when a persistent device is attached and
+     * storage_mount refused what is on it. It is the whole of "this machine has
+     * a disk and no volume", and it is cleared the moment one is laid down. */
+    out->needs_format = g_needs_format ? 1u : 0u;
+    out->recognised   = (out->present && g_mounted_fs.mounted) ? 1u : 0u;
+    out->unlocked     = (out->recognised && g_mounted_fs.unlocked) ? 1u : 0u;
+}
 
 int storage_unlock(const char *password, size_t plen)
 {

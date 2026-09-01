@@ -718,6 +718,44 @@ provisioning into `/bin` goes through this path, an unverified module can never 
 root-owned executable. `SYS_BOOT_MODULE_INFO` reports such a module as an empty slot, keeping
 module numbering stable.
 
+## Installing: destroying a volume and laying a new one down (roadmap 2.9)
+
+Gated on `CAP_STORAGE_FORMAT` at `CAPSLOT_STORAGE_FORMAT` (23), required **by type**
+(`SECURITY.md` **S72**). That is a capability of its own and **not** the
+`CAP_ENCRYPTED_STORAGE` the section above describes: `fs_server` and the shell both hold that
+one, and gating a format on it would mean the filesystem server may erase the filesystem and a
+login shell may erase the volume it just opened. `init` is endowed with `CAP_STORAGE_FORMAT`
+from the primordial root cnode and grants it to the installer alone.
+
+| # | Name | Arguments | Authorisation |
+|---|---|---|---|
+| 110 | `SYS_STORAGE_INFO` | `struct storage_info *` | `CAP_STORAGE_FORMAT` at `CAPSLOT_STORAGE_FORMAT`: READ |
+| 111 | `SYS_STORAGE_FORMAT` | `password`, `plen` | `CAP_STORAGE_FORMAT` at `CAPSLOT_STORAGE_FORMAT`: WRITE |
+
+The rights differ on purpose. READ is the survey an installer shows before it asks; WRITE is
+the destruction. A build that wanted a read-only survey tool can be handed a `READ`-only mint,
+and the primordial carries `READ|WRITE` and **not** `CAP_RIGHT_ALL` -- rights only narrow on
+delegation, so no descendant of it can grant or mint.
+
+`struct storage_info` reports whether a **persistent** block device is attached, its size in
+blocks, whether a Horus volume was recognised on it, and whether that volume is unlocked. It
+deliberately reports nothing about the volume's contents: it exists so an installer can tell an
+operator what is about to be destroyed, and every field is a disclosure made under this
+capability. The ephemeral RAM vdisk answers `present = 0` -- it is a block device by every
+internal measure, and reporting it would have an installer offering to format memory.
+
+`SYS_STORAGE_FORMAT` is the **one** caller of `storage_authorize_format()`, the function
+**S63** introduced with the comment "which an installer calls and a login never does" and which
+had no caller at all until 2026-09-01. A login (`SYS_AUTH` -> `storage_unlock`) still meets an
+unformatted volume and still refuses it.
+
+`plen` is bounded at `STORAGE_FORMAT_PASSWORD_MAX` (31) and an over-long password is
+**refused, not truncated**. That bound is a round-trip property rather than a buffer size: a
+login copies 31 bytes of what was typed and offers exactly those to `storage_unlock`, so a
+volume sealed to more could never be opened by the operator who chose the password, and an
+installer that silently shortened one would seal the volume to a string nobody picked. An empty
+password is refused for the same reason it would be at a login prompt.
+
 ## Filesystem server registration
 
 | # | Name | Arguments | Authorisation |

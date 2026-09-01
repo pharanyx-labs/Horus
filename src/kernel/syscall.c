@@ -1271,7 +1271,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 110
+#define SYSCALL_TABLE_SIZE 112
 
 /* ------------------------------------------------------------------------- *
  *  Capability-checked dispatch table.
@@ -1457,6 +1457,40 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_REGISTER_STORAGE_BACKEND] = { h_register_storage_backend, SC_NONE, 0, SC_ANYTYPE },
     [SYS_BLOCK_READ]               = { h_block_read,              CAPSLOT_AUDIT, CAP_RIGHT_READ | CAP_RIGHT_WRITE, CAP_ENCRYPTED_STORAGE }, /* the capability is the whole gate */
     [SYS_BLOCK_WRITE]              = { h_block_write,             CAPSLOT_AUDIT, CAP_RIGHT_READ | CAP_RIGHT_WRITE, CAP_ENCRYPTED_STORAGE }, /* likewise */
+    /* The installer's two syscalls (roadmap 2.9, S72). CAP_STORAGE_FORMAT at
+     * CAPSLOT_STORAGE_FORMAT -- a capability of its own, held by init and by the
+     * one task init grants it to, and by nothing else in this tree.
+     *
+     * DELIBERATELY NOT CAPSLOT_AUDIT / CAP_ENCRYPTED_STORAGE, which is the row
+     * directly above and the obvious place to have put them. fs_server and the
+     * shell both hold that capability; gating a format on it would mean the
+     * filesystem server may erase the filesystem and a login shell may erase the
+     * volume it just opened, which is S63's sentence with the words rearranged.
+     *
+     * The rights differ between the two rows, and that is the point of splitting
+     * them: READ says what is on the disk, WRITE destroys it. */
+    [SYS_STORAGE_INFO]             = { h_storage_info,            CAPSLOT_STORAGE_FORMAT, CAP_RIGHT_READ,  CAP_STORAGE_FORMAT },
+#ifdef STORAGE_FORMAT_UNGATED
+    /* CONTROL ARM -- never ship. The gate removed entirely: no slot, no rights,
+     * no type, so any ring-3 task may authorise a format of the attached disk.
+     *
+     * The WHOLE row goes rather than just the type or just the slot, and that is
+     * deliberate. With the type check in place a caller holding nothing is
+     * refused by the type; with the slot in place it is refused by the empty
+     * slot; either half alone still refuses, so an arm against either half would
+     * pass for a reason that is not the one being measured. What is being
+     * falsified is that a gate exists at all.
+     *
+     * captest holds no CAP_STORAGE_FORMAT and calls this, so under the flag the
+     * call SUCCEEDS -- the store in a captest boot is the ephemeral vdisk, which
+     * is already unlocked, so storage_unlock is idempotent and returns 0 rather
+     * than destroying anything. That is what makes the refusal test a
+     * measurement: a refusal test whose ungated path also fails witnesses
+     * nothing. See make smoke-captest-storage-format-control. */
+    [SYS_STORAGE_FORMAT]           = { h_storage_format,          SC_NONE, 0, SC_ANYTYPE },
+#else
+    [SYS_STORAGE_FORMAT]           = { h_storage_format,          CAPSLOT_STORAGE_FORMAT, CAP_RIGHT_WRITE, CAP_STORAGE_FORMAT },
+#endif
     [SYS_REGISTER_FS_SERVER]       = { h_register_fs_server,      6, CAP_RIGHT_ALL, CAP_USER }, /* + ep lookup in handler */
     [SYS_CONNECT_FS_SERVER]        = { h_connect_fs_server,       SC_NONE, 0, SC_ANYTYPE },
     [SYS_CAP_REVOKE]               = { h_cap_revoke,              SC_NONE, 0, SC_ANYTYPE }, /* authority in cap_revoke */
@@ -1592,7 +1626,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
 /* Carries S6: an unknown or reserved syscall number cannot reach a handler.
  * The bound check in syscall_handler fails closed at runtime; this assertion is
  * what stops a new number being added without its table entry. */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_UNTYPED_SPLIT + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_STORAGE_FORMAT + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

@@ -160,6 +160,8 @@ void h_ramfs_create(struct interrupt_frame64 *r);
 #endif
 void h_block_read(struct interrupt_frame64 *r);
 void h_block_write(struct interrupt_frame64 *r);
+void h_storage_info(struct interrupt_frame64 *r);
+void h_storage_format(struct interrupt_frame64 *r);
 void h_register_fs_server(struct interrupt_frame64 *r);
 void h_connect_fs_server(struct interrupt_frame64 *r);
 void h_fs_inode_alloc(struct interrupt_frame64 *r);

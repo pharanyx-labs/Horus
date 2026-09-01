@@ -96,6 +96,48 @@ in this file.
   outside the runtime arm. **`SECURITY.md` S24 was corrected in the same commit**: it claimed
   every pointer-taking wrapper went through `SYSCALL_UPTR()`, and five of fifty-two do. The
   property held throughout and the stated mechanism did not.
+- **Destroying a volume answers to a capability nothing else in the system holds** (**S72**,
+  roadmap 2.9). `SYS_STORAGE_FORMAT` (111) and `SYS_STORAGE_INFO` (110) are gated on
+  `CAP_STORAGE_FORMAT` at `CAPSLOT_STORAGE_FORMAT` — a capability type of its own, primordial at
+  `root_cnode[22]` with `READ|WRITE` and nothing else, endowed to `init` and destined for the
+  installer alone.
+
+  **S63** made formatting a deliberate act and left `storage_authorize_format()` with **no
+  caller at all**, because there was no installer to call it. "No path exists" and "one gated
+  path exists" are different claims and only the second is a policy; `SYS_STORAGE_FORMAT` is now
+  that one path, and a login still meets an unformatted volume and still refuses it.
+
+  **A rights bit on `CAP_ENCRYPTED_STORAGE` was the first design and it is wrong.** That
+  capability names the same volume and would have taken an eighth bit without a new table or a
+  new destroy path — but `root_cnode[9]` carries `CAP_RIGHT_ALL`, `cap_install_from_root` copies
+  rights verbatim, and existing call sites hand a full copy of it to `fs_server` and to the
+  shell. A new bit inside `CAP_RIGHT_ALL` is conferred on both **the moment it is defined**,
+  with no diff at the grant: formatting would have become something the filesystem server and
+  the login shell could do because of how a constant is spelled. A new type fails closed in the
+  same situation. That is the `CAP_DEBUG`/`CAP_AUDIT` split applied before the bundling exists
+  rather than after.
+
+  The password is bounded at 31 bytes and an over-long one is **refused, not truncated**: a
+  login copies 31 bytes and offers exactly those to `storage_unlock`, so a volume sealed to more
+  could never be opened by the operator who chose the password, and silently shortening it would
+  seal the volume to a string nobody picked.
+
+  `init` now reports what volume the machine has at boot (`INIT_STORAGE:`), which is both the
+  question that decides whether a machine needs installing and the **positive** arm for the
+  capability — captest's refusals are all satisfied by a syscall that refuses everyone.
+
+  *Witness:* `make smoke-captest` section 15 (a task holding no `CAP_STORAGE_FORMAT` is refused
+  both calls with exactly `SYS_ERR_PERM`, the info buffer is unwritten on the refusal, and a
+  wrong-type capability minted into the gate's own slot is refused too) and
+  `make smoke-storage-survey` (two boots of one kernel, with and without a disk, each requiring
+  the other's marker absent). *Falsified by* `STORAGE_FORMAT_UNGATED=1`
+  (`make smoke-captest-storage-format-control`), which removes the whole dispatch row — slot,
+  rights and type, because either half alone still refuses — so the call SUCCEEDS and
+  `CAPTEST: FAIL storage-format-without-cap-storage-format` appears; `make smoke-captest` exits
+  2 under the same flag. The ungated call is non-destructive by construction: captest boots on
+  the ephemeral vdisk, already unlocked, where `storage_unlock` is idempotent — and that is
+  exactly the condition a refusal test needs, since an ungated path that also failed would pass
+  under the defect and witness nothing.
 
 - **A TPM NV monotonic counter anchors the volume against whole-volume rollback** (**S70**).
   The Merkle tree (**S66**) catches a subtree rewound while the rest of the volume moves on. It
@@ -140,6 +182,14 @@ in this file.
 
 
 ### Fixed
+
+- **`SECURITY.md` advertised whole-volume rollback as unimplemented after S70 implemented it.**
+  The trailing "NOT a property" row still said the defence "is not implemented" while the row
+  above it described the TPM NV anchor that provides it, and `docs/LIMITATIONS.md` 1.12 had
+  already been updated. A fixed defect advertised as open is the direction §3 of the operating
+  instructions names first. The row is kept rather than deleted — the boundary between S66 and
+  S70 is exactly where "we added a Merkle tree" invites the wrong reading — and now states what
+  is covered and points at 1.12 for what is not.
 
 - **The ATA busy-wait gave up on a slow drive, not just a wedged one.** `ata_wait_busy()`'s bound
   was 2,000,000 spins, "sized for a PIO sector", with a comment saying drives clear BSY almost

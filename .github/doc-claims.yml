@@ -272,6 +272,22 @@ forbidden:
       the probe now exists; the phrase must not come back as a recommendation for
       something already shipped, which is exactly what the pipe-family entry
       below records happening once already.
+  - pattern: 'NOT a property: whole-volume rollback'
+    reason: >-
+      SECURITY.md's trailing row said whole-volume rollback "is not implemented"
+      for a day after S70 implemented it, while the row directly above described
+      the TPM NV anchor that provides it and docs/LIMITATIONS.md 1.12 had already
+      been rewritten. A fixed defect still advertised as open is the first
+      direction the operating instructions name, and this one survived because
+      the row was written as a standing caveat rather than as a claim anybody
+      would re-derive. The row still exists -- the boundary between S66 and S70
+      is where "we added a Merkle tree" invites the wrong reading -- but it now
+      states what IS covered and points at 1.12 for what is not.
+  - pattern: 'a freshness anchor \*\*outside\*\* the volume[\s\n]+-- a TPM NV monotonic counter is the usual answer -- and that is not implemented'
+    reason: >-
+      The same row's operative sentence. Recorded separately from the heading
+      above because a future edit could keep one and drop the other, and it is
+      this sentence that made the false claim.
   - pattern: 'The pipe family and `SYS_STDIO_INFO` are[\s\n]+uncovered only because'
     reason: >-
       docs/LIMITATIONS.md 1.8 nominated these as the two cheap coverage gaps

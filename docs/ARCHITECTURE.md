@@ -176,10 +176,19 @@ typedef struct capability {
 } capability_t;
 ```
 
-Sixteen object types, besides the empty `CAP_NULL`: `CAP_TCB`, `CAP_NOTIFICATION`,
+Eighteen object types, besides the empty `CAP_NULL`: `CAP_TCB`, `CAP_NOTIFICATION`,
 `CAP_ENDPOINT`, `CAP_FRAME`, `CAP_USER`, `CAP_AUDIT`, `CAP_CONSOLE`,
 `CAP_ENCRYPTED_STORAGE`, `CAP_REVOCATION`, `CAP_BLOCK_DEV`, `CAP_IO_DEVICE`, `CAP_PIPE`,
-`CAP_KERNEL_LOG`, `CAP_BOOT_MODULE`, `CAP_UNTYPED`, `CAP_REPLY`.
+`CAP_KERNEL_LOG`, `CAP_BOOT_MODULE`, `CAP_UNTYPED`, `CAP_REPLY`, `CAP_DEBUG`,
+`CAP_STORAGE_FORMAT`.
+
+Two of those are splits rather than additions, and the reason is the same both times.
+`CAP_DEBUG` (roadmap 3.6) exists because `ps` used to run on a `CAP_AUDIT` that also rotated
+the audit chain's keys; `CAP_STORAGE_FORMAT` (roadmap 2.9, **S72**) exists because destroying a
+volume would otherwise have been a rights bit on the `CAP_ENCRYPTED_STORAGE` `fs_server` and the
+shell already hold -- and `root_cnode[9]` carries `CAP_RIGHT_ALL`, so defining the bit would
+have conferred it on both with no diff at the grant. A new type fails closed where a new bit
+inside `CAP_RIGHT_ALL` fails open.
 
 Each task has a 256-slot cspace. Userspace names a capability by slot index and never sees
 the struct, so capabilities cannot be forged or guessed.
@@ -894,10 +903,16 @@ The complete ABI is in [`SYSCALLS.md`](SYSCALLS.md).
 PID 1, uid 0, and the **delegation root**. `kshell` endows it from the primordial root cnode
 with exactly what it must wield or delegate: `CAP_AUDIT`, `CAP_CONSOLE`,
 `CAP_ENCRYPTED_STORAGE`, `CAP_USER` (admin), the service `CAP_ENDPOINT`s, `CAP_IO_DEVICE`,
-`CAP_KERNEL_LOG`, `CAP_BOOT_MODULE`, and `CAP_UNTYPED` over `UNTYPED_ROOT`. It launches
+`CAP_KERNEL_LOG`, `CAP_BOOT_MODULE`, `CAP_STORAGE_FORMAT`, and `CAP_UNTYPED` over
+`UNTYPED_ROOT`. It launches
 `fs_server` and `console_server` and hands each only its own subset via `SYS_CAP_GRANT`,
 including, in principle, a bounded share of kernel-object memory, which is what makes "this
 server may consume at most this much of the kernel" expressible.
+
+`CAP_STORAGE_FORMAT` is the one it holds in order to ASK rather than to wield: `init` calls
+`SYS_STORAGE_INFO` at boot and says on the wire what volume the machine has, which is the
+question that decides whether a machine needs installing (roadmap 2.9). Nothing a login reaches
+is given a copy -- not the shell, not `fs_server`.
 
 ### `fs_server`
 

@@ -112,6 +112,7 @@ DEFECT_FLAGS = \
 	SYSCOV_PROBES_ABSENT KSTACK_INFLIGHT_LEGACY_WORD KSTACK_SLOT_INDEX_TRUNC \
 	CAP_LOOKUP_ROOT_FALLBACK CAP_LOOKUP_RANGE_FALLBACK CAP_LOOKUP_TYPE_UNCHECKED \
 	KEYSLOT_REMOVE_NOOP USERS_PEPPER_PER_BOOT STORAGE_AUTOFORMAT \
+	STORAGE_FORMAT_UNGATED \
 	META_CACHE_NO_WRITEBACK META_CACHE_WB_OUTSIDE_TXN META_CACHE_EVICT_NOWB \
 	META_CACHE_TINY MERKLE_NODE_TRUST_CACHED MERKLE_SKIP_PARENT_BIND \
 	FSCK_SHALLOW_REFS STORAGE_MOUNT_ANY_SIZE ALLOC_NO_HINT ATA_READY_ERR_ONLY \
@@ -384,6 +385,19 @@ STORAGE_AUTOFORMAT ?= 0
 ifeq ($(STORAGE_AUTOFORMAT),1)
 CFLAGS  += -DSTORAGE_AUTOFORMAT
 ASFLAGS += -DSTORAGE_AUTOFORMAT
+endif
+
+# STORAGE_FORMAT_UNGATED=1 removes the dispatch-table gate in front of
+# SYS_STORAGE_FORMAT entirely -- no slot, no rights, no type -- so any ring-3
+# task may authorise a format of the attached disk (roadmap 2.9, S72). The WHOLE
+# row goes rather than one half of it: with the type in place an empty slot is
+# refused by emptiness and with the slot in place a wrong type is refused by
+# type, so an arm against either half alone would pass for a reason that is not
+# the one being measured. Control arm for make smoke-captest-storage-format.
+STORAGE_FORMAT_UNGATED ?= 0
+ifeq ($(STORAGE_FORMAT_UNGATED),1)
+CFLAGS  += -DSTORAGE_FORMAT_UNGATED
+ASFLAGS += -DSTORAGE_FORMAT_UNGATED
 endif
 
 USERS_TAMPER_INJECT ?= 0
@@ -4137,6 +4151,20 @@ smoke-auditprobe-abi-control:
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 AUDIT_ABI_LEGACY=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='AUDITPROBE: FAIL read-audit-wrote-past-the-array' \
+# The one call in this system that DESTROYS a volume answers to a capability
+# nothing else holds (roadmap 2.9, S72). The arm removes the whole dispatch-table
+# row -- slot, rights and type -- so captest, holding no CAP_STORAGE_FORMAT,
+# reaches the handler. It then SUCCEEDS rather than failing differently: captest
+# boots on the ephemeral RAM vdisk, which is already mounted and unlocked, so
+# storage_unlock is idempotent and nothing is destroyed. That is what makes the
+# refusal in the base arm a measurement instead of a coincidence.
+.PHONY: smoke-captest-storage-format-control
+smoke-captest-storage-format-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 STORAGE_FORMAT_UNGATED=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 STORAGE_FORMAT_UNGATED=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CAPTEST: FAIL storage-format-without-cap-storage-format' \
 		tools/smoke_test.sh boot.iso
 
 .PHONY: smoke-captest
@@ -7412,6 +7440,38 @@ smoke-storage-noformat:
 		tools/smoke_test.sh boot.iso
 	@rm -f noformat.img
 	@echo "[noformat] PASS - a login did not format an unrecognised disk"
+
+# THE POSITIVE HALF OF CAP_STORAGE_FORMAT (roadmap 2.9, S72).
+#
+# captest asks whether SYS_STORAGE_INFO refuses a task holding no
+# CAP_STORAGE_FORMAT. A syscall that refused EVERYONE would satisfy that exactly
+# as well as one that refuses the right callers, so this is the call from a
+# HOLDER -- init, endowed from the primordial root cnode -- and it asserts that
+# the answer DIFFERS with the machine rather than merely arriving.
+#
+# TWO BOOTS, and the pair is the measurement. The same kernel, the same init, one
+# with a blank ATA disk attached and one without: a survey that reported the same
+# thing either way would tell an installer nothing, and would pass a one-boot
+# version of this gate. Each arm additionally requires the OTHER arm's marker to
+# be absent, so a build that printed both lines cannot satisfy either.
+.PHONY: smoke-storage-survey
+smoke-storage-survey:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 boot.iso
+	@rm -f survey.img && truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) survey.img
+	@echo "[survey] boot 1: a blank disk attached -- an install is needed"
+	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=survey.img \
+		REQUIRE_MARKER='INIT_STORAGE: disk present' \
+		ABSENT_MARKER='INIT_STORAGE: no persistent volume' \
+		tools/smoke_test.sh boot.iso
+	@echo "[survey] boot 2: no disk at all -- the ephemeral store"
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='INIT_STORAGE: no persistent volume' \
+		ABSENT_MARKER='INIT_STORAGE: disk present' \
+		tools/smoke_test.sh boot.iso
+	@rm -f survey.img
+	@echo "[survey] PASS - a capability holder learns what volume this machine has, and the answer differs with the machine"
 
 .PHONY: smoke-storage-noformat-control
 smoke-storage-noformat-control:

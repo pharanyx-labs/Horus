@@ -167,6 +167,14 @@ struct program_header {
 #define SYS_TASK_RESUME        89   /* (tid) -> 0; make a spawned-but-suspended child schedulable. Needs a CAP_TCB to the target (or admin), exactly like SYS_KILL. Spawn leaves a child suspended so its supervisor can endow it before it runs. */
 #define SYS_RETYPE             90   /* (untyped_slot, kobj_type, count, dest_slot) -> objects created; carve kernel objects out of untyped memory. Authority is the CAP_UNTYPED at untyped_slot (WRITE). */
 #define SYS_UNTYPED_INFO       91   /* (untyped_slot, struct untyped_info*) -> 0; size/watermark/free of the region named at untyped_slot (READ). */
+/* ---- The installer's authority (roadmap 2.9, S72) -------------------------
+ * Both answer to CAP_STORAGE_FORMAT at CAPSLOT_STORAGE_FORMAT, a capability of
+ * its own that only the installer is granted -- not CAP_ENCRYPTED_STORAGE, which
+ * fs_server and the shell hold, because "may read and write the object store"
+ * must not mean "may erase the volume". */
+#define STORAGE_FORMAT_PASSWORD_MAX 31  /* what a login can offer back; see below */
+#define SYS_STORAGE_INFO      110  /* (struct storage_info*) -> 0; what volume this machine has (CAP_STORAGE_FORMAT + READ). */
+#define SYS_STORAGE_FORMAT    111  /* (const char *password, plen) -> 0; DESTROY the attached volume and lay a new sealed one down (CAP_STORAGE_FORMAT + WRITE). The one caller of storage_authorize_format(), which S63 introduced and left with none. */
 #define SYS_IRQ_POLICY_INFO    92   /* (struct irq_policy_info*) -> 0; roadmap 1.1 audit counters. IRQ_POLICY_AUDIT builds only; NOSYS otherwise. CAP_KERNEL_LOG (READ). */
 #define SYS_DMESG              88   /* (buf, offset, max) -> bytes; copy a chunk of the kernel message ring at `offset` to buf. CAP_KERNEL_LOG (READ) in CAPSLOT_KERNEL_LOG, else SYS_ERR_PERM */
 #define SYS_TASK_EXIT_INFO     93   /* (struct task_exit_info*) -> 0; why the last task this caller waited on died. Self-scoped (no capability): waiting already entitled the caller to observe it. */
@@ -510,6 +518,10 @@ static inline int sys_console_owned(void) {
                                  * request just received (minted by RECV,
                                  * consumed by REPLY_TO). Server-side only. */
 #define CAPSLOT_FS_EP      20    /* CAP_ENDPOINT: fs service (sys_connect_fs_server) */
+#define CAPSLOT_STORAGE_FORMAT 23 /* CAP_STORAGE_FORMAT: destroy and re-lay a
+                                   * volume (installer only). Deliberately NOT
+                                   * CAPSLOT_STORAGE -- reading and writing the
+                                   * object store must not confer erasing it. */
 
 /* ---- Untyped memory (roadmap 0.3, audit finding I-7) ----------------------
  *
@@ -716,6 +728,48 @@ static inline int sys_untyped_split(int src_slot, int dest_slot, uint64_t bytes)
 static inline int sys_untyped_info(int untyped_slot, struct untyped_info *out) {
     return (int)syscall(SYS_UNTYPED_INFO, (uint32_t)untyped_slot,
                         (uint64_t)(uintptr_t)out, 0);
+}
+
+/* ---- The installer's authority (roadmap 2.9, S72) -------------------------
+ *
+ * MUST stay byte-identical to struct storage_info in src/include/kernel.h -- the
+ * kernel fills this layout and copies it out. tools/check_abi_structs.py gates
+ * that. It deliberately reports nothing about the volume's CONTENTS: it exists
+ * so an installer can tell an operator what is about to be destroyed, and every
+ * field is a disclosure made under CAP_STORAGE_FORMAT. */
+struct storage_info {
+    uint64_t total_blocks;   /* blocks the attached device reports, 0 if none   */
+    uint32_t block_size;     /* bytes per block                                 */
+    uint32_t present;        /* 1 if a persistent block device is attached      */
+    uint32_t recognised;     /* 1 if a Horus volume was found and mounted       */
+    uint32_t unlocked;       /* 1 if that volume's keys are derived             */
+    uint32_t needs_format;   /* 1 if a device is attached carrying no volume    */
+    uint32_t reserved;       /* pad to an 8-byte multiple                       */
+};
+
+/* What volume this machine has. CAP_STORAGE_FORMAT + READ at
+ * CAPSLOT_STORAGE_FORMAT; a caller holding none gets SYS_ERR_PERM and learns
+ * nothing, which is the point -- the survey and the destruction answer to the
+ * same capability because the survey is the destruction's first screen. */
+static inline int sys_storage_info(struct storage_info *out) {
+    return (int)syscall(SYS_STORAGE_INFO, SYSCALL_UPTR(out), 0, 0);
+}
+
+/* DESTROY the volume on the attached device and lay a new encrypted one down,
+ * sealed to `password`. CAP_STORAGE_FORMAT + WRITE. Returns 0, or a negative
+ * SYS_ERR_*; SYS_ERR_INVAL for an empty password or one longer than
+ * STORAGE_FORMAT_PASSWORD_MAX.
+ *
+ * THE LENGTH BOUND IS A ROUND-TRIP PROPERTY, not a buffer size. A login copies
+ * 31 bytes of what was typed and offers exactly that to the storage layer, so a
+ * volume sealed to more than 31 characters could never be opened by anyone: the
+ * operator would type the password they chose and be refused, forever, with
+ * nothing saying why. The syscall refuses rather than truncating, because an
+ * installer that silently shortened a password would seal the volume to a string
+ * its operator never picked. */
+static inline int sys_storage_format(const char *password, unsigned int plen) {
+    return (int)syscall(SYS_STORAGE_FORMAT, SYSCALL_UPTR(password),
+                        (uint32_t)plen, 0);
 }
 
 /* ---- Frame capabilities and shared memory (roadmap 2.1) -------------------

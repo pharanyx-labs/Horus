@@ -244,6 +244,14 @@ covered:
   # only in NET_SELFTEST, because this is the call that decides which interrupt a
   # device raises (S47).
   - SYS_MSI_REGISTER
+  # Covered from the day it landed, and by a HOLDER rather than by a refusal.
+  # init calls it at boot to say what volume this machine has (report_storage,
+  # userspace/init.c), so every tracked workload that boots the shipped kernel
+  # enters the body on the success path. That matters more here than usual: the
+  # dispatch row for this syscall has a real slot, rights and type, so a captest
+  # refusal would be the TABLE's and the handler would never run -- which is
+  # group (1) below and issue #176's exact shape.
+  - SYS_STORAGE_INFO
   - SYS_CLOCK_GETTIME      # roadmap 2.2; entered by captest's clock checks
   - SYS_CAP_ENUMERATE      # roadmap 3.6; entered by `capview` in the scripted session
   - SYS_YIELD              # measured 2026-08-23 in all three workloads; was a bare `[0]`
@@ -305,7 +313,7 @@ covered:
   - SYS_IPC_RECV_BLOCK
 
 uncovered:
-  # Eleven left, and after the 2026-08-30 sweep they fall into exactly three
+  # Twelve left, and after the 2026-08-30 sweep they fall into exactly three
   # groups. The grouping is the useful part: it says what each one would COST to
   # cover, which is the question this file is asked when somebody wants the
   # number to go up.
@@ -316,17 +324,26 @@ uncovered:
   # #176's shape exactly, and it is the group where "captest asserts the refusal"
   # is worth nothing: the refusal is the table's, not the handler's. Covering one
   # means a task that HOLDS the capability calling it, and captest deliberately
-  # holds neither CAP_AUDIT nor CAP_ENCRYPTED_STORAGE. Endowing it with them to
-  # raise this number would widen the authority of the one task in this tree whose
-  # job is to hold as little as possible, so none of these moves without a
-  # separate probe task that holds exactly one of them.
+  # holds none of CAP_AUDIT, CAP_ENCRYPTED_STORAGE or CAP_STORAGE_FORMAT. Endowing
+  # it with them to raise this number would widen the authority of the one task in
+  # this tree whose job is to hold as little as possible, so none of these moves
+  # without a separate probe task that holds exactly one of them.
   #
-  # THE PRESCRIPTION WAS FOLLOWED ON 2026-09-01 and this group is four rather than
-  # six. auditprobe holds one CAP_AUDIT and nothing else, so SYS_READ_AUDIT and
-  # SYS_AUDIT_DIGEST are `covered` above -- and the first entry into either found
-  # a defect. The remaining four are the CAP_ENCRYPTED_STORAGE half; the same
-  # prescription applies, and the cost is now known to be one small task rather
-  # than a widened captest.
+  # THE PRESCRIPTION WAS FOLLOWED ON 2026-09-01 and it worked. auditprobe holds one
+  # CAP_AUDIT and nothing else, so SYS_READ_AUDIT and SYS_AUDIT_DIGEST are
+  # `covered` above -- and the first entry into either found a defect. Four of the
+  # five left are the CAP_ENCRYPTED_STORAGE half; the same prescription applies,
+  # and the cost is now known to be one small task rather than a widened captest.
+  #
+  # THE FIFTH IS WHERE THE PRESCRIPTION STOPS WORKING, and that is worth stating
+  # rather than leaving as an unexplained hold-out. SYS_STORAGE_FORMAT's handler
+  # body FORMATS THE ATTACHED DISK, so there is no probe task that can enter it
+  # without destroying the volume the run is using -- the cost is not a task, it is
+  # the workload. Its sibling SYS_STORAGE_INFO took the same capability to the
+  # `covered` list on the same day, which is the cleanest illustration this file
+  # has that the gate and the consequence are different questions.
+  SYS_STORAGE_FORMAT: >-
+    dispatch row (CAPSLOT_STORAGE_FORMAT, WRITE, CAP_STORAGE_FORMAT). captest holds no CAP_STORAGE_FORMAT and its checks assert a refusal the TABLE issues, so the handler never runs. Its sibling SYS_STORAGE_INFO IS covered, by init calling it at boot from the same capability -- the difference is that entering this body FORMATS THE ATTACHED DISK, so no tracked workload can enter it without destroying the volume the run is using. The installer build is what enters it (roadmap 2.9), and that is a separate boot with a blank image rather than a promotion this file can make
   SYS_ROTATE_KEYS: >-
     dispatch row (slot 8, READ, CAP_CONSOLE), and that row is only the first of two checks -- do_rotate_keys additionally requires CAP_ENCRYPTED_STORAGE before it does anything. captest holds neither
   SYS_BLOCK_READ: >-

@@ -38,6 +38,7 @@ control_arms:
   smoke-captest-irq-ack-control: smoke-captest
   smoke-captest-mint-hang-control: smoke-captest
   smoke-captest-split-control: smoke-captest
+  smoke-captest-storage-format-control: smoke-captest
   smoke-captest-lookup-type-control: smoke-captest
   smoke-auditprobe-control: smoke-auditprobe
   smoke-auditprobe-abi-control: smoke-auditprobe
@@ -161,6 +162,7 @@ gates:
   - smoke-fs-shrink
   - smoke-alloc-hint
   - smoke-ata-ready
+  - smoke-storage-survey
   - smoke-nvcounter
   - smoke-rollback
   - smoke-vdisk-bound

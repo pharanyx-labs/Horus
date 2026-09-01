@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
 """Fail the build if an ABI struct differs between the two headers.
 
-Seven structs cross the ring-3 boundary and are written down TWICE -- once in
+Structs cross the ring-3 boundary written down TWICE -- once in
 `src/include/kernel.h` for the kernel and once in `include/syscall.h` for
 userspace -- because the two headers are compiled into different worlds and
-neither includes the other. `struct dev_info`, `shlib_info`, `untyped_info`,
-`cap_info`, `horus_timespec`, `boot_module_info`, `task_exit_info`.
+neither includes the other.
 
-Nothing compared them. The 2026-08-30 audit found all seven in agreement, so this
-is a latent risk rather than a live defect -- and that is the moment to gate it,
+THE LIST IS DISCOVERED, NOT TYPED. It used to be a fixed enumeration, and a
+fixed enumeration is a list that goes stale silently: a struct added to both
+headers after it was written is a struct nothing compares. Every name defined in
+both headers is now found and must be enrolled in `SHARED` or in `UNRESOLVED`
+with a written finding, so a new one fails the build rather than slipping past.
+That is the gate that would have caught S71.
+
+Nothing compared them at all before 2026-08-30, and that audit found the seven
+that existed then in agreement, so this began as a latent risk rather than a live
+defect -- and that is the moment to gate it,
 because the failure mode is silent and the tree already knows the shape:
 `check_capslots.py` exists because the cspace slot map is written twice and
 drifted, and `CAPSLOT_DEBUG` was added as a number `CAPSLOT_UNTYPED` already
@@ -64,6 +71,7 @@ SYSCALL_H = ROOT / "include" / "syscall.h"
 # is a failure too. Discovery would silently start checking nothing.
 SHARED = [
     "dev_info",
+    "storage_info",
     "shlib_info",
     "untyped_info",
     "cap_info",

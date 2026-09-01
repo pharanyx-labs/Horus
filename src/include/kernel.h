@@ -471,6 +471,11 @@ static inline int reply_ep_for_task(int tid) {
 #define CAPSLOT_REPLY      21    /* CAP_REPLY: one-shot right to answer the
                                  * request just received (minted by RECV,
                                  * consumed by REPLY_TO). Server-side only. */
+#define CAPSLOT_STORAGE_FORMAT 23 /* CAP_STORAGE_FORMAT: destroy and re-lay a
+                                   * volume (installer only). Deliberately NOT
+                                   * CAPSLOT_STORAGE: a task that reads and
+                                   * writes the object store must not thereby
+                                   * be able to erase it. See CAP_STORAGE_FORMAT. */
 
 /* Task states. */
 #define TASK_DEAD          0
@@ -787,6 +792,25 @@ struct untyped_info {
     uint32_t reserved;    /* pad to an 8-byte multiple      */
 };
 
+/* What SYS_STORAGE_INFO reports (roadmap 2.9). MUST stay byte-identical to
+ * `struct storage_info` in include/syscall.h; tools/check_abi_structs.py gates
+ * that.
+ *
+ * Deliberately says nothing about the volume's CONTENTS -- no inode counts, no
+ * free space, no names. It answers exactly the question an installer must put to
+ * an operator before destroying something: is there a disk, how big is it, does
+ * it already carry a Horus volume, and is that volume open. A field here is a
+ * disclosure gated on CAP_STORAGE_FORMAT, so each one has to earn its place. */
+struct storage_info {
+    uint64_t total_blocks;   /* blocks the attached device reports, 0 if none   */
+    uint32_t block_size;     /* bytes per block                                 */
+    uint32_t present;        /* 1 if a persistent block device is attached      */
+    uint32_t recognised;     /* 1 if a Horus volume was found and mounted       */
+    uint32_t unlocked;       /* 1 if that volume's keys are derived             */
+    uint32_t needs_format;   /* 1 if a device is attached carrying no volume    */
+    uint32_t reserved;       /* pad to an 8-byte multiple                       */
+};
+
 /* Carve up the arena and publish the two boot regions. Called from kernel_main
  * after paging_init (which sets g_untyped_arena) and before scheduler_init
  * (which needs UNTYPED_KERNEL to allocate task 0's cspace). */
@@ -1008,6 +1032,20 @@ void users_init(void);
 #define SYS_MSI_REGISTER      107   /* (dev_slot, notif_slot, badge) -> 0; route the named device's message-signalled interrupt to a notification the caller holds. NOTE: no vector argument -- the kernel allocates it and programs the device, because an MSI's data word IS the vector and a driver that could choose one could raise any interrupt on the machine (S47). */
 #define SYS_SHLIB_INFO        108   /* (frame_slot, struct shlib_info*) -> 0; where the shared library is loaded THIS BOOT. The base is drawn from the ASLR source rather than compiled in, so a program cannot assume it -- and the answer is gated on a CAP_FRAME + READ naming one of the library's own TEXT frames, because the base is the address of code every task executes and telling an uncapable caller would defeat the randomisation. */
 #define SYS_UNTYPED_SPLIT     109   /* (src_slot, dest_slot, bytes) -> 0; carve `bytes` off the CAP_UNTYPED at `src_slot` and mint a CAP_UNTYPED naming the sub-region into `dest_slot` (roadmap 0.3). The bytes come OUT OF THE PARENT -- its watermark advances past them -- so a split spends budget rather than creating it, and the child capability is DERIVED (own serial, parent's serial as badge) so revoking the parent sweeps it. Needs CAP_UNTYPED + WRITE at `src_slot`; rights are the parent's and are never widened. This is what makes S57's "a task given a small region can spawn a bounded number of times" expressible: before it, granting a CAP_UNTYPED named the SAME region, so a delegate shared its grantor's whole budget. */
+/* ---- The installer's authority (roadmap 2.9) ------------------------------
+ *
+ * Two syscalls, one capability, and nothing else in the system holds it.
+ * S72: only a task holding CAP_STORAGE_FORMAT can destroy a volume. */
+/* The longest password SYS_STORAGE_FORMAT will seal a volume to. It is 31 and
+ * not a rounder number because h_auth's `char upass[32]` with `upass[31] = 0` is
+ * what a later login can actually offer back to storage_unlock; sealing a volume
+ * to more than a login can type is sealing it to nobody. Mirrored in
+ * include/syscall.h so the installer can refuse in the UI rather than at the
+ * syscall. */
+#define STORAGE_FORMAT_PASSWORD_MAX 31
+
+#define SYS_STORAGE_INFO      110   /* (struct storage_info*) -> 0; what volume this machine has: whether a block device is attached, its size, whether a Horus volume was recognised on it, and whether it is unlocked. CAP_STORAGE_FORMAT + READ at CAPSLOT_STORAGE_FORMAT. It is the "what will be destroyed" readout, so it answers to the capability that can destroy it rather than to the object-store capability every filesystem client holds. */
+#define SYS_STORAGE_FORMAT    111   /* (const char *password, plen) -> 0; DESTROY the volume on the attached device and lay a new encrypted one down, sealed to `password`. CAP_STORAGE_FORMAT + WRITE at CAPSLOT_STORAGE_FORMAT. This is the ONE caller of storage_authorize_format(), the function S63 introduced and left with none: "a deliberate act -- which an installer calls and a login never does". A login (SYS_AUTH -> storage_unlock) still reaches an unformatted volume and still refuses it. */
 #define SYS_POLL_NOTIFY       106   /* (notif_slot, uint32_t*) -> 0 with a badge, or IPC_AGAIN; sys_wait_notify's non-blocking twin. Same gate (CAP_NOTIFICATION + READ): being non-blocking changes when the answer comes, never who may ask. Lets a caller witness the ABSENCE of a notification, which a blocking wait cannot. */
 #define SYS_IRQ_ACK           105   /* (dev_slot, irq) -> 0; the driver has serviced its device, so unmask the line. A registered line is masked by the kernel when it fires and stays masked until this call, which is what stops an unserviced level-triggered device livelocking the machine (CAP_IO_DEVICE + WRITE naming a device that declares the line, AND the registration must be the caller's) */
 #define SYS_DMA_ADDR          104   /* (dev_slot, frame_slot, uint64_t*) -> 0; the bus address at which that device reaches that frame. Needs BOTH capabilities: the answer is a physical address, and a bus-mastering device already reaches all of memory, so the disclosure adds nothing to a caller who holds one */
@@ -1278,6 +1316,34 @@ struct boot_module_info {
  * anything that writes. Observation is not control: CAP_DEBUG cannot kill,
  * spawn, mint, revoke, or map. */
 #define CAP_DEBUG               18   /* observation only: task info, cspace readout */
+
+/* CAP_STORAGE_FORMAT (roadmap 2.9): authority to DESTROY a volume and lay a new
+ * one down in its place. It is the authority an installer holds and nothing else
+ * does.
+ *
+ * WHY IT IS A TYPE OF ITS OWN AND NOT A RIGHT ON CAP_ENCRYPTED_STORAGE. The
+ * object store capability already exists, names the same volume, and would take
+ * an eighth rights bit without a new table or a new destroy path. It was tried
+ * that way first and it is the wrong answer, for a reason the tree can be read
+ * off: root_cnode[9] carries CAP_RIGHT_ALL, `cap_install_from_root` copies
+ * rights verbatim, and five call sites already hand a full copy of slot 9 to
+ * fs_server and to the shell. A new bit inside CAP_RIGHT_ALL is therefore
+ * conferred on every one of them the moment it is defined -- silently, with no
+ * diff at the grant. Formatting would have become something the filesystem
+ * server and the login shell could do, by default, because of how a constant is
+ * spelled.
+ *
+ * A new TYPE fails closed in the same situation: a slot that holds no
+ * CAP_STORAGE_FORMAT authorises nothing, whatever rights it carries, and a task
+ * acquires it only where someone wrote the grant down. That is the same argument
+ * that split CAP_DEBUG out of CAP_AUDIT (see above) -- "the gate was real, it
+ * just named far more authority than the caller needed" -- applied one step
+ * earlier, before the bundling exists rather than after.
+ *
+ * It is NOT a superset of CAP_ENCRYPTED_STORAGE and confers no read or write of
+ * the store's contents: an installer formats a volume and never reads the one it
+ * replaced. The two capabilities are disjoint on purpose. */
+#define CAP_STORAGE_FORMAT      19
 
 #define CAP_RIGHT_READ          (1u << 0)
 #define CAP_RIGHT_WRITE         (1u << 1)
@@ -2635,6 +2701,11 @@ uint32_t storage_unlocked_slot(void);
  * what lets the password hashes inside it stop depending on a per-boot pepper.
  * Both require the volume unlocked. */
 void storage_authorize_format(void);
+/* Fill `*out` with what SYS_STORAGE_INFO reports. Reads state only; a machine
+ * with no persistent device answers `present = 0` rather than failing, because
+ * "there is nothing here to install onto" is an answer an installer must be able
+ * to render. */
+void storage_query(struct storage_info *out);
 #ifdef STORAGE_NOFORMAT_SELFTEST
 void storage_noformat_selftest(void);
 #endif

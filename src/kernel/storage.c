@@ -1736,7 +1736,17 @@ static int64_t bitmap_find_free(const uint8_t *bitmap, uint64_t max_bits) {
  * documentation. */
 #define FSCK_MAX_DEPTH   3
 
+/* Data-bitmap block reads made by the allocator, since boot. THE INSTRUMENT, and
+ * it exists because the cost it measures is invisible from the outside: a scan
+ * that reads a hundred bitmap blocks and one that reads a single block both
+ * return a block number and both look instantaneous next to the disk I/O the
+ * caller is about to do. Counted rather than timed, because a count is the same
+ * number on a fast host and a slow one. */
+static uint64_t g_alloc_bitmap_reads;
+uint64_t storage_alloc_bitmap_reads(void) { return g_alloc_bitmap_reads; }
+
 static int read_block_bitmap_n(const struct fs_superblock *sb, uint64_t bm_idx, uint8_t *buf) {
+    g_alloc_bitmap_reads++;
     return do_block_read(sb->block_bitmap_start + bm_idx, buf);
 }
 
@@ -1744,24 +1754,69 @@ static int write_block_bitmap_n(const struct fs_superblock *sb, uint64_t bm_idx,
     return do_block_write(sb->block_bitmap_start + bm_idx, buf);
 }
 
+/* The bitmap block the last allocation succeeded in. A STARTING POINT, never a
+ * bound: the scan below still wraps over every block, so the set of allocations
+ * that succeed is exactly the set that succeeded before. That is what makes the
+ * hint safe to be wrong -- a stale value costs one wasted read, not a block the
+ * allocator failed to find.
+ *
+ * Reset at mount, because it describes a volume. */
+static uint64_t g_alloc_hint;
+
 int64_t storage_alloc_block(struct block_device *bd, struct fs_superblock *sb) {
     (void)bd;
     uint8_t bitmap[BLOCK_SIZE];
-    uint64_t remaining = sb->block_count;
-    for (uint64_t bm = 0; remaining > 0; bm++) {
-        uint64_t bits_here = remaining < BITS_PER_BITMAP_BLOCK ? remaining : BITS_PER_BITMAP_BLOCK;
+
+    const uint64_t nbm = (sb->block_count + BITS_PER_BITMAP_BLOCK - 1) / BITS_PER_BITMAP_BLOCK;
+    if (nbm == 0) return -1;
+
+    /* WHERE THE SCAN STARTS IS THE WHOLE OF THIS. It began at bitmap block 0
+     * every time, so a volume whose first N bitmap blocks are full cost N+1 reads
+     * PER ALLOCATION and writing a file of M blocks cost M*(N+1) reads of pure
+     * search. Measured on a 2 GiB volume with 15 of 16 bitmap blocks full: 32
+     * allocations, 512 reads. With the hint, 47.
+     *
+     * It was invisible below a gigabyte, and not because it was small: one bitmap
+     * block covers BLOCK_SIZE*8 = 32768 blocks, so a 128 MiB volume HAS no second
+     * block to scan and the loop reads one block whatever it does. The cost
+     * appeared when the volume grew, not when this code changed. */
+#ifdef ALLOC_NO_HINT
+    const uint64_t start = 0;
+#else
+    const uint64_t start = (g_alloc_hint < nbm) ? g_alloc_hint : 0;
+#endif
+
+    for (uint64_t i = 0; i < nbm; i++) {
+        uint64_t bm = start + i;
+        if (bm >= nbm) bm -= nbm;                    /* wrap: every block is tried */
+
+        /* Derived from the block index rather than carried in a counter, because
+         * the scan no longer runs in order -- the old `remaining -= bits_here`
+         * only described the last block correctly while bm counted up from 0. */
+        uint64_t base = bm * BITS_PER_BITMAP_BLOCK;
+        uint64_t bits_here = sb->block_count - base;
+        if (bits_here > BITS_PER_BITMAP_BLOCK) bits_here = BITS_PER_BITMAP_BLOCK;
+
         if (read_block_bitmap_n(sb, bm, bitmap) != 0) return -1;
         int64_t bit = bitmap_find_free(bitmap, bits_here);
         if (bit >= 0) {
             bitmap_set(bitmap, bit);
-            write_block_bitmap_n(sb, bm, bitmap);
-            return (int64_t)(sb->data_start + bm * BITS_PER_BITMAP_BLOCK + (uint64_t)bit);
+            /* Checked, where it was not before: a block whose allocated bit did
+             * not reach the bitmap is a block the next caller is handed as well. */
+            if (write_block_bitmap_n(sb, bm, bitmap) != 0) return -1;
+            g_alloc_hint = bm;
+            return (int64_t)(sb->data_start + base + (uint64_t)bit);
         }
-        remaining -= bits_here;
     }
     return -1;   /* volume full */
 }
 
+/* The hint is deliberately NOT pulled back to a freed block. Doing so turns a
+ * delete-then-allocate pattern into a rescan of everything between the freed
+ * block and where the allocator had got to, which is the cost this is here to
+ * remove -- and the wrap in storage_alloc_block finds the freed space anyway,
+ * one pass later. Space is reused a little less eagerly in exchange for the scan
+ * staying bounded; that is the same trade ext2's allocator makes. */
 void storage_free_block(struct block_device *bd, struct fs_superblock *sb, uint64_t block) {
     (void)bd;
     uint64_t rel = block - sb->data_start;
@@ -1865,7 +1920,8 @@ int storage_write_inode(struct block_device *bd, struct fs_superblock *sb,
 /* Test hooks shared by the storage witnesses. Guarded by the union of the
  * selftests that need them rather than by one of their names, so a second
  * witness does not have to depend on the first one's flag being set. */
-#if defined(MERKLE_SELFTEST) || defined(FSCKREF_SELFTEST) || defined(BIGVOL_SELFTEST)
+#if defined(MERKLE_SELFTEST) || defined(FSCKREF_SELFTEST) || \
+    defined(BIGVOL_SELFTEST)  || defined(ALLOCHINT_SELFTEST)
 #define STORAGE_TEST_HOOKS 1
 #endif
 
@@ -1975,6 +2031,38 @@ void storage_test_scratch_set(uint32_t phase)
     my_memset(buf, 0, BLOCK_SIZE);
     buf[0] = 'P'; buf[1] = 'H'; buf[2] = (uint8_t)phase;
     raw_block_write(blk, buf);
+    raw_block_flush();
+}
+
+/* How many blocks the data bitmap spans. The allocator's scan is bounded by this,
+ * so it is the number that decides whether a scan is a scan at all: on a volume
+ * whose bitmap is one block there is nothing to measure. */
+uint64_t storage_test_bitmap_blocks(const struct mounted_fs *mfs)
+{
+    return (mfs->sb.block_count + BITS_PER_BITMAP_BLOCK - 1) / BITS_PER_BITMAP_BLOCK;
+}
+
+/* Mark the first `n` data-bitmap blocks fully allocated.
+ *
+ * THIS IS THE WORKLOAD, and writing the bitmap directly rather than allocating
+ * two million blocks is the only way to have one. Reaching bitmap block 16 by
+ * allocation means 524288 calls, each reading and writing a bitmap block through
+ * emulated PIO -- hours, to arrive at a state that is four bytes of description.
+ * The bytes written here are EXACTLY the bytes those allocations would leave: a
+ * bitmap block of all ones is a bitmap block of all ones. What is skipped is the
+ * time, not the state.
+ *
+ * It leaves the volume genuinely that full afterwards, which is the point: the
+ * allocator is then asked for blocks under the conditions being measured, and
+ * every answer it gives is a real allocation out of the region that is left. */
+void storage_test_fill_bitmap_blocks(struct mounted_fs *mfs, uint64_t n)
+{
+    static uint8_t ones[BLOCK_SIZE];
+    my_memset(ones, 0xFF, BLOCK_SIZE);
+    uint64_t total = storage_test_bitmap_blocks(mfs);
+    if (n > total) n = total;
+    for (uint64_t i = 0; i < n; i++)
+        raw_block_write(mfs->sb.block_bitmap_start + i, ones);
     raw_block_flush();
 }
 
@@ -2573,6 +2661,7 @@ int storage_mount(struct block_device *bd) {
     }
 #endif
 
+    g_alloc_hint = 0;     /* it describes a volume, and this is a different one */
     g_mounted_fs.bd       = bd;
     g_mounted_fs.sb       = *sb;
     g_mounted_fs.mounted  = 1;

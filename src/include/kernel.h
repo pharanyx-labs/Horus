@@ -2650,9 +2650,15 @@ uint64_t storage_fsck_runs(void);
  * device has (S68). Counted so the witness can assert the refusal positively
  * rather than inferring it from a volume that failed to come up, which a dozen
  * other things also produce. */
+/* Data-bitmap block reads made by the block allocator since boot. The allocator
+ * scans the bitmap for a free bit, and how far it scans is invisible from the
+ * outside -- so it is counted. A count rather than a time, because it is the
+ * same number on a fast host and a slow one. */
+uint64_t storage_alloc_bitmap_reads(void);
 uint64_t storage_mount_oversize_refusals(void);
 int      storage_is_mounted(void);
-#if defined(MERKLE_SELFTEST) || defined(FSCKREF_SELFTEST) || defined(BIGVOL_SELFTEST)
+#if defined(MERKLE_SELFTEST) || defined(FSCKREF_SELFTEST) || \
+    defined(BIGVOL_SELFTEST)  || defined(ALLOCHINT_SELFTEST)
 /* Storage witness hooks. Selftest builds only -- they expose the allocator's
  * choices and reach the block one past the volume, neither of which a shipping
  * kernel has any business doing. */
@@ -2663,6 +2669,8 @@ uint32_t storage_test_scratch_get(void);
 void     storage_test_scratch_set(uint32_t phase);
 int      storage_test_block_allocated(mounted_fs_t *mfs, uint64_t phys);
 void     storage_test_arm_fsck(mounted_fs_t *mfs);
+uint64_t storage_test_bitmap_blocks(const mounted_fs_t *mfs);
+void     storage_test_fill_bitmap_blocks(mounted_fs_t *mfs, uint64_t n);
 #endif
 int  storage_block_read(uint64_t block, void *buf);
 int  storage_block_write(uint64_t block, const void *buf);

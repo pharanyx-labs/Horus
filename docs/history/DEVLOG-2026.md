@@ -1,6 +1,6 @@
 # Horus development log, 2026
 
-The narrative record of how Horus was built: 130 entries, newest first, each explaining what
+The narrative record of how Horus was built: 131 entries, newest first, each explaining what
 changed and (the part that matters here) **why, including what was tried and failed**.
 
 This is not the changelog. [`../../CHANGES.md`](../../CHANGES.md) is, and it summarises the
@@ -18,6 +18,59 @@ project. Their **current** status lives in [`../LIMITATIONS.md`](../LIMITATIONS.
 which is exactly what a historical record should do and exactly why it is not authoritative.
 
 ---
+
+### Changed: the allocator's rescan, measured before it was fixed
+
+When the 16 GiB work landed this was written up as an open limitation rather than fixed, on the
+grounds that it was UNMEASURED: nothing in the tree filled a large volume, so there was no number
+to improve on and no gate that would notice a regression. That was the right call and it left the
+obvious next step, which is not the fix -- it is the workload.
+
+**The instrument first.** `storage_alloc_block` scans the data bitmap for a clear bit, and how far
+it scans is invisible from outside: a scan that reads a hundred bitmap blocks and one that reads a
+single block both return a block number and both look instantaneous beside the disk I/O the caller
+is about to do. So the instrument is a COUNTER on the bitmap read, not a timer -- a count is the
+same number on a fast host and a slow one, which matters for something that will be re-measured
+on a CI runner.
+
+**Then the workload, and the honest shortcut in it.** Reaching bitmap block 16 by allocating is
+524288 calls, each reading and writing a bitmap block through emulated PIO: hours, to arrive at a
+state that is four bytes of description. The selftest writes the bitmap blocks directly instead.
+The bytes are EXACTLY the bytes those allocations would leave -- a bitmap block of all ones is a
+bitmap block of all ones -- and what is skipped is the time, not the state. Every allocation
+measured afterwards is a real one out of the region that is left.
+
+**Measured, before touching the allocator:** 2 GiB volume, bitmap spans 16 blocks, 15 marked full,
+32 allocations -> **512 bitmap reads**. Exactly 32 x 16, which is the arithmetic saying the scan
+starts at block 0 every single time.
+
+**After: 47.** Sixteen for the first allocation, one each for the thirty-one after it. The change
+is four lines: start at `g_alloc_hint`, wrap, record where you succeeded.
+
+**What made the hint safe to get wrong.** It is a starting POINT and never a bound -- the loop
+still covers every bitmap block, so the set of allocations that succeed is identical to before. A
+stale hint costs one wasted read. That property is what let this be a small change rather than a
+careful one, and it is worth stating because the tempting version -- remember which blocks are
+free -- is neither.
+
+One real subtlety: the old loop carried `remaining -= bits_here` down the blocks in order, which
+only describes the last block correctly while the index counts up from zero. A wrapping scan has
+to derive the bit count from the block index instead. That is the kind of thing that would have
+worked in every test and been wrong on exactly one block of a full volume.
+
+**The gate asserts two things, and the second is the one that matters.** After the measurement it
+fills the volume completely, frees a single block in bitmap block 0 -- BEHIND the hint, which is
+by then near the end -- and requires the next allocation to return exactly that block. It can only
+do so by wrapping. A gate that measured the read count alone would pass a "fix" that made the
+allocator fast by giving up early, and that fix is easier to write than the real one.
+
+**And it refuses to conclude where there is nothing to measure.** One bitmap block covers
+BLOCK_SIZE*8 = 32768 blocks, so any volume below about a gigabyte has a one-block bitmap and the
+old allocator and the new one read the same single block. On a 128 MiB image the gate prints
+`the bitmap is too small for a scan to exist - this run tested nothing` and fails. That is also
+the answer to why this survived so long: not that it was hard to see, but that no volume in this
+tree was large enough for it to exist.
+
 
 ### Changed: 16 GiB, and the constant that had to stop being the volume's size
 

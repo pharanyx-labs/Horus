@@ -3508,6 +3508,131 @@ void storage_noformat_selftest(void)
 }
 #endif
 
+#ifdef ALLOCHINT_SELFTEST
+/* What a block allocation costs on a volume that is mostly full.
+ *
+ * `storage_alloc_block` scans the data bitmap for a clear bit. Where it starts
+ * decides everything: from block 0 every time, a volume whose first N bitmap
+ * blocks are full costs N+1 reads PER ALLOCATION, so writing a file of M blocks
+ * is M*(N+1) reads of pure search. Starting where the last allocation succeeded
+ * costs N+1 once and 1 thereafter.
+ *
+ * THE COST IS INVISIBLE WITHOUT COUNTING IT. Both versions return a block number
+ * and both look instantaneous beside the disk I/O the caller is about to do; the
+ * difference only shows as a volume that gets slower the fuller it gets, which
+ * is the kind of thing that gets attributed to the disk. So the instrument is a
+ * counter, and it counts rather than times, because a count is the same number on
+ * a fast host and a slow one.
+ *
+ * THE VOLUME HAS TO BE BIG ENOUGH FOR A SCAN TO EXIST. One bitmap block covers
+ * BLOCK_SIZE*8 = 32768 blocks, so a 128 MiB volume has a ONE-BLOCK bitmap and
+ * there is nothing to measure -- which is exactly why this went unnoticed until
+ * the volume grew. The gate runs on a 2 GiB image, whose bitmap is 16 blocks.
+ */
+#define ALLOCHINT_FULL_BLOCKS  15   /* bitmap blocks marked full before measuring */
+#define ALLOCHINT_ALLOCS       32   /* allocations to measure */
+#define ALLOCHINT_MIN_BITMAP   8    /* below this the volume proves nothing */
+
+void allochint_selftest(void)
+{
+    print("ALLOCHINT: begin\n");
+    if (storage_unlock("allochintpw", 11) != 0) {
+        print("ALLOCHINT: FAIL unlock\n"); for (;;) asm volatile ("hlt");
+    }
+    mounted_fs_t *mfs = storage_get_mounted_fs();
+
+    uint64_t nbm = storage_test_bitmap_blocks(mfs);
+    print("ALLOCHINT: bitmap spans ");
+    print_decimal(nbm);
+    print(" blocks\n");
+    if (nbm < ALLOCHINT_MIN_BITMAP) {
+        /* A one- or two-block bitmap has no scan in it. Refusing to conclude is
+         * the only honest thing: the numbers below would be identical with and
+         * without the hint, and the gate would pass either way. */
+        print("ALLOCHINT: FAIL the bitmap is too small for a scan to exist - this run tested nothing\n");
+        for (;;) asm volatile ("hlt");
+    }
+
+    /* Fill all but the last bitmap block, so every allocation below has to get
+     * past the full ones to reach free space. */
+    uint64_t full = (nbm > ALLOCHINT_FULL_BLOCKS) ? ALLOCHINT_FULL_BLOCKS : nbm - 1;
+    storage_test_fill_bitmap_blocks(mfs, full);
+
+    uint64_t before = storage_alloc_bitmap_reads();
+    int64_t first = -1;
+    for (unsigned i = 0; i < ALLOCHINT_ALLOCS; i++) {
+        int64_t b = storage_alloc_block(mfs->bd, &mfs->sb);
+        if (b < 0) {
+            print("ALLOCHINT: FAIL the volume had no free block to allocate\n");
+            return;
+        }
+        if (i == 0) first = b;
+    }
+    uint64_t reads = storage_alloc_bitmap_reads() - before;
+
+    print("ALLOCHINT: ");
+    print_decimal((uint64_t)ALLOCHINT_ALLOCS);
+    print(" allocations past ");
+    print_decimal(full);
+    print(" full bitmap blocks cost ");
+    print_decimal(reads);
+    print(" bitmap reads\n");
+
+    /* The allocations must have been real -- a scan that found nothing would
+     * report a small count for the wrong reason. */
+    if (first < 0 || (uint64_t)first < mfs->sb.data_start) {
+        print("ALLOCHINT: FAIL the allocator returned nothing usable\n");
+        return;
+    }
+
+    /* The bound. Ideal with a hint is `full + 1` for the first allocation and one
+     * read each thereafter; the slack is for a scan that crosses into a further
+     * block as the tail fills. Without a hint the cost is ALLOCS * (full + 1),
+     * which for these numbers is 512 against a budget of 79 -- the two are not
+     * close, so the threshold is not a tuned number. */
+    uint64_t budget = (full + 1) + 2 * ALLOCHINT_ALLOCS;
+    if (reads > budget) {
+        print("ALLOCHINT: FAIL every allocation rescans the bitmap from the start\n");
+        return;
+    }
+
+    /* THE CORRECTNESS HALF, and the gate is worth little without it: a hint makes
+     * the scan start somewhere other than the beginning, so the thing that could
+     * go wrong is an allocator that no longer FINDS free space it used to. Fill
+     * the volume completely, free one block in bitmap block 0 -- behind the hint,
+     * which is now near the end -- and require the next allocation to return
+     * exactly that block. It can only do so by wrapping.
+     *
+     * A gate that measured the cost and not this would pass a "fix" that made the
+     * allocator fast by making it give up early. */
+    storage_test_fill_bitmap_blocks(mfs, nbm);          /* the volume is now full */
+    {
+        uint64_t behind = mfs->sb.data_start + 5;       /* bitmap block 0, bit 5 */
+        storage_free_block(mfs->bd, &mfs->sb, behind);
+
+        int64_t got = storage_alloc_block(mfs->bd, &mfs->sb);
+        if (got < 0) {
+            print("ALLOCHINT: FAIL the scan did not wrap - free space behind the hint was not found\n");
+            return;
+        }
+        if ((uint64_t)got != behind) {
+            print("ALLOCHINT: FAIL the wrap returned a block other than the only free one\n");
+            return;
+        }
+    }
+
+    /* And with the volume genuinely full again, an allocation must FAIL rather
+     * than return something -- the other way a wrapping scan can be wrong is by
+     * not terminating, or by handing back a block outside the region. */
+    if (storage_alloc_block(mfs->bd, &mfs->sb) >= 0) {
+        print("ALLOCHINT: FAIL a full volume still handed out a block\n");
+        return;
+    }
+
+    print("ALLOCHINT: PASS an allocation does not rescan the whole bitmap, and the scan still wraps\n");
+}
+#endif /* ALLOCHINT_SELFTEST */
+
 #ifdef SHRINK_SELFTEST
 /* A volume is never served on a disk too small to hold it (SECURITY.md S68).
  *

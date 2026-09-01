@@ -464,6 +464,12 @@ void smp_bringup(void) {
     { extern void storage_vdisk_bound_selftest(void);
       storage_vdisk_bound_selftest();
       for (;;) __asm__ volatile ("hlt"); }
+#elif defined(ATA_READY_SELFTEST)
+    /* Gated: a sector transfer happens only when the drive says it is ready
+     * (S69), checked over all 256 status bytes because the ones that matter are
+     * the ones a working emulator never produces. */
+    { extern void ata_ready_selftest(void); ata_ready_selftest();
+      for (;;) __asm__ volatile ("hlt"); }
 #elif defined(ALLOCHINT_SELFTEST)
     /* Gated: a block allocation does not rescan the whole data bitmap. Counts
      * bitmap reads over a fixed number of allocations on a volume whose bitmap

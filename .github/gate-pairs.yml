@@ -49,6 +49,7 @@ control_arms:
   smoke-fsck-refs-control: smoke-fsck-refs
   smoke-fs-shrink-control: smoke-fs-shrink
   smoke-alloc-hint-control: smoke-alloc-hint
+  smoke-ata-ready-control: smoke-ata-ready
   smoke-vdisk-bound-control: smoke-vdisk-bound
   smoke-storage-noformat-control: smoke-storage-noformat
   smoke-tui-diff-control: smoke-tui
@@ -155,6 +156,7 @@ gates:
   - smoke-fs-16g
   - smoke-fs-shrink
   - smoke-alloc-hint
+  - smoke-ata-ready
   - smoke-vdisk-bound
   - smoke-users-persist
   - smoke-users-tamper

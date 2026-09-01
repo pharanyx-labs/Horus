@@ -2533,6 +2533,14 @@ jobs:
         run: make smoke-alloc-hint
       - name: Control arm — every allocation rescans from bitmap block 0
         run: make smoke-alloc-hint-control
+      # S69. The transport read 256 words out of a drive that had not said it had
+      # any and returned them as success. Checked as a pure function over all 256
+      # status bytes, because the ones that matter are the ones a working QEMU
+      # never produces. No disk, one boot, seconds.
+      - name: A sector transfer happens only when the drive says it is ready
+        run: make smoke-ata-ready
+      - name: Control arm — ERR alone lets a not-ready transfer proceed
+        run: make smoke-ata-ready-control
       # S64. The RAM vdisk advertised BLOCKS_PER_DISK over a VDISK_BLOCKS-sized
       # reservation, so a block past the backing store landed in the free page
       # pool. Diskless, so it runs here only for topical company.

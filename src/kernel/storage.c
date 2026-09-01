@@ -1921,7 +1921,8 @@ int storage_write_inode(struct block_device *bd, struct fs_superblock *sb,
  * selftests that need them rather than by one of their names, so a second
  * witness does not have to depend on the first one's flag being set. */
 #if defined(MERKLE_SELFTEST) || defined(FSCKREF_SELFTEST) || \
-    defined(BIGVOL_SELFTEST)  || defined(ALLOCHINT_SELFTEST)
+    defined(BIGVOL_SELFTEST)  || defined(ALLOCHINT_SELFTEST) || \
+    defined(META_CRASH_SELFTEST)
 #define STORAGE_TEST_HOOKS 1
 #endif
 

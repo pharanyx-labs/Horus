@@ -1750,6 +1750,33 @@ jobs:
       - name: Control arm — ustrncpy must always terminate
         run: make smoke-libhorus-strncpy-control
 
+  installer:
+    name: "Install onto a bare disk, then boot and log into what was installed (2.9)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # Two boots on one image. The second is the claim: a format that returns 0
+      # is not an install, and an installer that sealed the volume but left the
+      # root account on its compiled-in default produces a perfectly installed
+      # disk nobody can log into -- which the first boot cannot detect, because
+      # everything it can observe succeeded.
+      - name: An installer lays a system down, and the next boot logs into it
+        run: make smoke-installer
+      # The half that matters most: the wrong confirmation word writes nothing.
+      - name: A disk is erased only after the word that means erase this disk
+        run: make smoke-installer-refuse
+      # And the arm. Only the comparison is compiled out, so both arms type the
+      # same wrong word and differ solely in what the program does about it.
+      - name: Control arm — the confirmation read and not compared
+        run: make smoke-installer-refuse-control
+
   vfs:
     name: "Two filesystem servers, two mounts, one namespace (2.4)"
     runs-on: ubuntu-latest

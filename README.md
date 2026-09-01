@@ -9,10 +9,8 @@ operating system built from the ground up.**
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 [![Target: x86-64](https://img.shields.io/badge/target-x86__64-informational)](docs/ARCHITECTURE.md)
-[![Security core: no_std Rust](https://img.shields.io/badge/security%20core-no__std%20Rust-orange)](docs/BUILDING.md#rust-core)
 [![Kernel image: byte-for-byte reproducible](https://img.shields.io/badge/kernel.elf-byte--for--byte%20reproducible-brightgreen)](docs/BUILDING.md#reproducible-builds)
 [![Boot: TPM 2.0 measured](https://img.shields.io/badge/boot-TPM%202.0%20measured-brightgreen)](docs/ARCHITECTURE.md#12-trusted-boot-and-the-tpm)
-[![Status: research-grade](https://img.shields.io/badge/status-research--grade-yellow)](docs/LIMITATIONS.md)
 
 Horus boots on x86-64 hardware and under QEMU, drops to a ring-3 shell, and runs ordinary C
 programs (including GNU coreutils and the Tiny C Compiler) on a microkernel whose device drivers
@@ -87,10 +85,10 @@ syscall number without adding its table entry.
 by building twice and diffing; `boot.iso` is not, and `docs/LIMITATIONS.md` §5.3a says why.
 Boot-module integrity is tested by *corrupting a module* and asserting rejection. Measured boot
 is tested by tampering and asserting the PCRs diverge. Capability revocation carries Kani
-proofs. `.github/workflows/ci.yml` runs 101 jobs, most of them QEMU integration self-tests.
+proofs. `.github/workflows/ci.yml` runs 102 jobs, most of them QEMU integration self-tests.
 Which of them may block a merge is a decision recorded in `.github/ci-gating.yml` and enforced
 by the `ci-gating` job: every job must be listed as gating, or exempted with a written reason
-(**[C-6]**). The intended set is 103 of its 106 contexts, including every security test; the
+(**[C-6]**). The intended set is 104 of its 107 contexts, including every security test; the
 ruleset is reconciled to it by hand and lags whenever a gate is added. Read the live count from
 `gh api repos/pharanyx-labs/Horus/rulesets/21815299`, not from this sentence; the ruleset is
 reconciled by hand, so only the API knows.
@@ -145,7 +143,7 @@ per item.
 | **Devices** | A `CAP_IO_DEVICE` names **one device** in a boot-time table (PCI bus-0 scan plus the non-enumerable legacy platform hardware) and confers only that device's frames, port ranges and interrupt lines. Two ring-3 drivers: `console_server` and `netd`, an Intel e1000 driver proved by a full DMA round trip. It drives e1000 rather than virtio deliberately: a paravirtual device accesses guest memory directly and is not on the far side of the IOMMU at all, so it could not witness DMA confinement. **VT-d DMA remapping**: each device gets an address space that starts **empty**, so it reaches only the frames its driver mapped. An interrupt reaches its ring-3 driver either as an **MSI on a vector the kernel chose** (the driver cannot name one) or through the I/O APIC and masked until acknowledged, so an unserviced device cannot livelock the machine. A device's **MSI-X vector table is unmappable by its driver**, it lives in a BAR, so the vector-choice question had to be answered again there. MSI-X is protected but not yet enabled; no interrupt remapping, no bridge walk |
 | **Network** | `netd` drives an e1000 from ring 3 holding one device capability and one untyped region, and its DMA reaches only what it mapped. It is woken by its device's own interrupt and acknowledges it. It transmits; it does **not** receive yet, and there is no ARP table, IP, TCP or socket capability |
 | **Storage crypto** | Per-`(inode, block)` AEAD subkeys, Merkle rollback tree, and a TPM NV monotonic counter anchoring the volume against whole-volume rollback; key material never leaves the kernel |
-| **Installing** | Destroying a volume and laying a new one down answers to `CAP_STORAGE_FORMAT`, a capability type of its own that `init` holds and passes to an installer alone — deliberately **not** a rights bit on the storage capability `fs_server` and the shell already hold, since those are granted with every right there is and defining the bit would confer it on both with nothing in the diff to show for it. A login still refuses to format a volume it does not recognise. **No installer program yet**: the authority and the survey exist, the ring-3 program that walks an operator through using them does not |
+| **Installing** | A ring-3 `installer`, launched by `init` when the machine has a disk carrying no volume. Its whole authority is `CAP_STORAGE_FORMAT` (a capability type of its own — deliberately **not** a rights bit on the storage capability `fs_server` and the shell already hold, since those are granted with every right there is and defining the bit would confer it on both with nothing in the diff to show for it), `CAP_USER` to set the first root password, and a console endpoint. It cannot read the volume it replaces and cannot create a task. **Consent is a typed word, not a menu choice**: a menu whose default is Cancel still becomes a format with two keystrokes. A login still refuses to format a volume it does not recognise. **No partitioning, no bootloader step, one disk**, and installing over an existing volume is refused rather than offered |
 | **Boot integrity** | SHA-256 module manifest embedded in the kernel image; TPM 2.0 measurement into PCR 8 and 9; vdisk KEK sealed under `PolicyPCR` |
 | **Userspace** | newlib libc, a shell with pipelines, GNU coreutils, TCC |
 | **Shared libraries** | A shared object is loaded once into frames and mapped read+exec by many tasks through capabilities that never carry write, so no task can modify code another executes. **Not** yet a dynamic linker: no symbol resolution, and newlib is still statically linked into each program |
@@ -304,7 +302,7 @@ Horus's assurance rests on its tests, so they are treated as first-class. Three 
 
 1. **Rust unit tests and Kani proofs**, `cargo test`, plus formal proofs that revocation
    hits exactly the target's derivation subtree.
-2. **QEMU integration self-tests**, the bulk of CI's 101 jobs; each boots a purpose-built
+2. **QEMU integration self-tests**, the bulk of CI's 102 jobs; each boots a purpose-built
    kernel configuration and asserts a marker on the serial console. These cover W^X,
    capability refusals, COW, TLB shootdown, preemption, signals, SMEP/SMAP, measured boot,
    untyped retyping, blocking receive, and more.

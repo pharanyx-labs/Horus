@@ -858,6 +858,16 @@ embedded_libhorustest_bin_end:
  * has ring-3 init bring it up on an endpoint init RETYPED from its own untyped,
  * which is the provisioning half (S59). The client that mounts both belongs to
  * the first only, so it stays inside the narrower guard below. */
+/* The installer (roadmap 2.9). Unconditional, unlike the probes below it: it is a
+ * system program rather than a test fixture, and a machine that cannot install
+ * itself without a special build is a machine that cannot install itself. */
+.align 16
+.global embedded_installer_bin_start
+embedded_installer_bin_start:
+.incbin "userspace/installer.bin"
+.global embedded_installer_bin_end
+embedded_installer_bin_end:
+
 #if defined(VFS_SELFTEST) || defined(INIT_PROVISION_SELFTEST)
 .align 16
 .global embedded_dev_server_bin_start

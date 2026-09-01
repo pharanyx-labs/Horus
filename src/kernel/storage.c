@@ -2811,6 +2811,15 @@ void storage_query(struct storage_info *out)
      * storage_mount refused what is on it. It is the whole of "this machine has
      * a disk and no volume", and it is cleared the moment one is laid down. */
     out->needs_format = g_needs_format ? 1u : 0u;
+#ifdef STORAGE_AUTOFORMAT
+    /* The S63 control arm is on: a login WILL format an unrecognised volume, so
+     * this machine has nothing for an installer to do. Said out loud rather than
+     * inferred, because the alternative is an installer waiting for a keystroke
+     * in twelve unattended test images. */
+    out->format_on_login = 1u;
+#else
+    out->format_on_login = 0u;
+#endif
     out->recognised   = (out->present && g_mounted_fs.mounted) ? 1u : 0u;
     out->unlocked     = (out->recognised && g_mounted_fs.unlocked) ? 1u : 0u;
 }

@@ -808,7 +808,17 @@ struct storage_info {
     uint32_t recognised;     /* 1 if a Horus volume was found and mounted       */
     uint32_t unlocked;       /* 1 if that volume's keys are derived             */
     uint32_t needs_format;   /* 1 if a device is attached carrying no volume    */
-    uint32_t reserved;       /* pad to an 8-byte multiple                       */
+    /* 1 if THIS KERNEL will format an unrecognised volume at the login prompt.
+     * Zero in every shipping build -- it is STORAGE_AUTOFORMAT, the S63 control
+     * arm, which a dozen test targets set because they boot a deliberately blank
+     * image and expect it formatted without an operator.
+     *
+     * It is reported rather than left implicit because init uses it to decide
+     * whether to launch an installer, and "a login will format this disk anyway"
+     * means there is nothing here for an installer to do. Leaving it out would
+     * have made every one of those twelve targets launch an installer that then
+     * waits forever for a keystroke nobody is there to type. */
+    uint32_t format_on_login;
 };
 
 /* Carve up the arena and publish the two boot regions. Called from kernel_main

@@ -145,6 +145,13 @@ static void settle(void) { for (volatile int d = 0; d < 40000; d++) { } }
  * cut in half by another task's output (docs/LIMITATIONS.md 2.6a), and this one
  * is asserted by a gate.
  */
+/* The survey, kept rather than asked for twice: report_storage prints it and
+ * machine_needs_install decides on it, and two calls could in principle disagree
+ * -- which is a needless way for "what init said" and "what init did" to come
+ * apart in a transcript somebody is reading to find out why. */
+static struct storage_info g_si;
+static int g_si_valid;
+
 static void report_storage(void) {
     struct storage_info si;
     char line[192];
@@ -159,6 +166,8 @@ static void report_storage(void) {
         report("INIT_STORAGE: refused -- init holds no CAP_STORAGE_FORMAT\n");
         return;
     }
+    g_si = si;
+    g_si_valid = 1;
 
     exr_append_str(line, &p, "INIT_STORAGE: ");
     if (!si.present) {
@@ -438,6 +447,58 @@ static int launch_shell(void) {
     return sh;
 }
 
+/* Does this machine need installing?
+ *
+ * FAIL CLOSED IN THE DIRECTION OF NOT INSTALLING. Every uncertainty here -- the
+ * survey unreadable, no capability, no disk, a volume already present -- answers
+ * NO. The cost of a wrong YES is an installer offering to erase a disk on a
+ * machine that did not ask; the cost of a wrong NO is a login prompt on a machine
+ * with nothing installed, which is recoverable by looking at it. Those are not
+ * symmetric and the code is not symmetric either.
+ *
+ * `format_on_login` is the STORAGE_AUTOFORMAT case (the S63 control arm): that
+ * kernel formats an unrecognised volume at the login prompt by itself, so there
+ * is nothing for an installer to do, and launching one would leave a dozen
+ * unattended test images waiting forever for a keystroke. */
+static int machine_needs_install(void) {
+    if (!g_si_valid)         return 0;
+    if (!g_si.present)       return 0;   /* the ephemeral store; nothing to install onto */
+    if (g_si.recognised)     return 0;   /* a volume is already here */
+    if (g_si.format_on_login) return 0;  /* this kernel formats at login by itself */
+    return g_si.needs_format ? 1 : 0;
+}
+
+/* Launch the installer and wait for it. Returns the task id, or negative.
+ *
+ * THE ENDOWMENT IS THE WHOLE SECURITY STATEMENT OF THIS FUNCTION, so it is three
+ * grants and no more:
+ *
+ *   CAP_STORAGE_FORMAT -- survey the disk and destroy what is on it. The one
+ *   capability that makes this program what it is, and the one no other task in
+ *   the system is given a copy of.
+ *
+ *   CAP_USER -- set the first root password. Granted rather than inferred:
+ *   do_passwd would ALSO accept the installer on the strength of its uid being 0
+ *   and equal to the target's, and leaning on that would be trusting a caller for
+ *   who it claims to be, which is the pattern this project exists to refuse. The
+ *   capability is the authority; the uid is a coincidence of how init spawns.
+ *
+ *   The console client endpoint -- draw, and read keys. Every task with a console
+ *   holds one; it confers nothing an ordinary program lacks.
+ *
+ * It is NOT given CAP_ENCRYPTED_STORAGE (it must not be able to read the volume
+ * it replaces), CAP_UNTYPED (it cannot create a task, so nothing it does outlives
+ * it), or CAP_BOOT_MODULE (fs_server copies the base system; see do_install). */
+static int launch_installer(void) {
+    int in = sys_spawn_named("installer");
+    if (in <= 0) return -1;
+    if (sys_cap_grant(in, CAPSLOT_STORAGE_FORMAT, CAPSLOT_STORAGE_FORMAT) != 0) return -2;
+    if (sys_cap_grant(in, CAP_SLOT_USER, CAPSLOT_USER) != 0) return -3;
+    if (sys_cap_grant(in, INIT_CON_CLIENT, CAPSLOT_CONSOLE_EP) != 0) return -4;
+    if (sys_task_resume(in) != 0) return -5;
+    return in;
+}
+
 void _start(void) {
     /* Say what volume this machine has, before anything else runs. See
      * report_storage: it is both the positive arm for CAP_STORAGE_FORMAT and the
@@ -500,6 +561,31 @@ void _start(void) {
         report("init: WARNING console_server launch failed (shell output falls back to kernel console)\n");
     else
         report("init: console_server launched\n");
+
+    /* THE INSTALLER RUNS BEFORE THE SHELL AND AFTER THE CONSOLE SERVER, and both
+     * halves of that are required. It needs the console server, because the whole
+     * program is CON_OP_WRITE_RAW / CON_OP_READ_RAW on that endpoint; and it must
+     * finish before a login prompt appears, because a login on a machine with no
+     * volume is a prompt nothing can satisfy.
+     *
+     * init BLOCKS on it rather than supervising it: an installer that died
+     * half-way has not left a system to log into, so there is nothing useful to
+     * do in parallel. When it returns -- installed, cancelled, or dead -- the
+     * shell loop below runs exactly as it always did. */
+    if (machine_needs_install()) {
+        int in = launch_installer();
+        if (in < 0) {
+            report(in == -1 ? "init: FAIL could not spawn the installer\n"
+                 : in == -2 ? "init: FAIL could not delegate CAP_STORAGE_FORMAT\n"
+                 : in == -3 ? "init: FAIL could not delegate CAP_USER\n"
+                 : in == -4 ? "init: FAIL could not delegate the console endpoint\n"
+                            : "init: FAIL could not resume the installer\n");
+        } else {
+            report("init: this machine has a disk and no volume; running the installer\n");
+            sys_wait(in);
+            report("init: the installer finished\n");
+        }
+    }
 
     report("init: starting, launching shell\n");
 

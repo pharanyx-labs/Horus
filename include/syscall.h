@@ -744,7 +744,7 @@ struct storage_info {
     uint32_t recognised;     /* 1 if a Horus volume was found and mounted       */
     uint32_t unlocked;       /* 1 if that volume's keys are derived             */
     uint32_t needs_format;   /* 1 if a device is attached carrying no volume    */
-    uint32_t reserved;       /* pad to an 8-byte multiple                       */
+    uint32_t format_on_login;/* 1 if a login on THIS kernel would format it      */
 };
 
 /* What volume this machine has. CAP_STORAGE_FORMAT + READ at

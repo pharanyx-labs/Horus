@@ -29,13 +29,25 @@ static void out(const char *s) {
     sys_write(1, s, n);
 }
 
-static void out_dec(uint64_t v) {
+/* Format `v` into `dst` and return how many characters it took.
+ *
+ * It returns into a caller's buffer rather than writing to the console, which is
+ * the shape the single-write markers need: a marker is assembled whole and
+ * emitted once, so nothing here may reach the port on its own. It was
+ * `out_dec()`, which printed directly, until the markers below became one write
+ * each on 2026-09-01 -- at which point its last caller went away and it sat
+ * unused, warning under -Wall. Deleting it and open-coding the digits in the one
+ * remaining caller was the other option and is worse: the next marker that needs
+ * a number would open-code them again. */
+static unsigned dec_into(char *dst, uint64_t v) {
     char buf[24];
     int i = (int)sizeof(buf);
     buf[--i] = '\0';
     if (v == 0) buf[--i] = '0';
     while (v && i > 0) { buf[--i] = (char)('0' + (v % 10)); v /= 10; }
-    out(&buf[i]);
+    unsigned n = 0;
+    for (const char *q = &buf[i]; *q; q++) dst[n++] = *q;
+    return n;
 }
 
 static int checks = 0;
@@ -1317,13 +1329,7 @@ void _start(void) {
         const char *pfx = "CAPTEST: PASS ";
         unsigned n = 0;
         while (*pfx) line[n++] = *pfx++;
-        char d[24];
-        int i = (int)sizeof(d);
-        uint64_t v = (uint64_t)checks;
-        d[--i] = '\0';
-        if (v == 0) d[--i] = '0';
-        while (v && i > 0) { d[--i] = (char)('0' + (v % 10)); v /= 10; }
-        for (const char *q = &d[i]; *q; q++) line[n++] = *q;
+        n += dec_into(&line[n], (uint64_t)checks);
         const char *sfx = " checks\n";
         while (*sfx) line[n++] = *sfx++;
         sys_write(1, line, n);

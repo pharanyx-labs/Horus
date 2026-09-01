@@ -156,6 +156,43 @@ help
 
 `Ctrl-A X` exits QEMU.
 
+### Running with a persistent disk
+
+`make run` boots the **in-RAM vdisk**: it formats itself on the way up under a per-boot
+throwaway key, so nothing typed at that shell -- no file, no account, no password -- exists
+after `Ctrl-A X`. That is the right default for development and the wrong one for looking at
+the system as an installed machine.
+
+```bash
+make run-ata        # boot with a persistent volume on horus.img
+make run-ata-wipe   # throw that volume away; the next run-ata installs from scratch
+./rebuild-and-run.sh   # full clean rebuild, then the same thing
+```
+
+`run-ata` builds the kernel with `STORAGE_ATA=1` and attaches `$(HORUS_DISK)` (default
+`horus.img`, 1 GiB, sparse) as the primary IDE drive. **It creates the image only if it is not
+already there.** On the first run the image is blank, so `storage_init` reports `needs_format`,
+ring-3 `init` runs the **installer** instead of a login prompt, and the installer asks you to
+type `FORMAT` and then to choose a root password twice. That one password seals the volume's
+encryption key *and* becomes the password on the root account -- they are different mechanisms
+with different salts and a login needs the same string to satisfy both, which is why the
+installer asks once and applies it twice.
+
+Every run after that finds a recognised volume, skips the installer, and goes straight to a
+login prompt. **Log in with the password you chose during the install**, not the compiled-in
+`horus`: the account table lives on the volume you sealed. `make run-ata-wipe` is the
+deliberate way to start again -- neither target will truncate an image that already exists,
+because that would destroy the volume and its password and look like an installer bug on the
+next boot.
+
+`run-ata` boots **without a TPM**, and that is deliberate rather than an omission.
+`storage_format_sealed` opts a persistent volume into TPM sealing whenever a TPM is present,
+under `PolicyPCR(PCR8, PCR9)` -- and PCR8 is the kernel's identity. A rebuild-and-boot loop
+changes the kernel on every iteration, so a volume installed by one build cannot be unsealed by
+the next: right password, intact disk, and the machine will not open it. That is measured boot
+working exactly as `smoke-tpm-tamper` asserts it should. `make run-tpm` is where it is
+exercised, against a kernel that is not moving.
+
 ### On real hardware
 
 `boot.iso` is a standard El Torito BIOS-boot ISO. Write it to a USB stick with `dd` and boot a

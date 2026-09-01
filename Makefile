@@ -2655,6 +2655,70 @@ run-tpm: kernel.elf
 	    -net none -no-reboot -no-shutdown -cdrom boot.iso; \
 	 kill $$(cat $$D/pid) 2>/dev/null; rm -rf $$D
 
+# `make run-ata` — the interactive boot with a PERSISTENT disk attached, and the
+# only way to exercise the installer by hand.
+#
+# `run` above boots the RAM vdisk: it formats itself on the way up under a
+# per-boot throwaway key, so nothing typed at that shell exists after Ctrl-A X.
+# This target attaches a raw image as the primary IDE drive and builds the kernel
+# with STORAGE_ATA=1, which is what makes storage_init probe that drive and
+# report `needs_format` rather than mounting a vdisk. From there init's
+# machine_needs_install() runs the installer on a blank image and does not on an
+# image that already holds a volume, so the first boot installs and every boot
+# after it logs into what the first one wrote.
+#
+# THE IMAGE IS CREATED ONLY IF IT IS NOT THERE, and that is the whole persistence
+# contract. A truncate over an existing $(HORUS_DISK) would silently destroy the
+# volume and the root password with it, and the installer would then come back on
+# the next boot looking like a bug in the installer rather than in the Makefile.
+# `make run-ata-wipe` is the deliberate way to start again, for the same reason
+# the installer refuses a recognised volume instead of offering to erase it.
+#
+# NO TPM, DELIBERATELY, and this is not the `run` target's preference restated.
+# storage_format_sealed opts a persistent volume into TPM sealing whenever a TPM
+# is present, under PolicyPCR(PCR8, PCR9) -- and PCR8 is the kernel's identity.
+# A rebuild-and-boot loop changes the kernel on every iteration, so the volume
+# installed by one build cannot be unsealed by the next: the disk is intact, the
+# password is right, and the machine will not open it. That is measured boot
+# working exactly as smoke-tpm-tamper asserts it should, and it makes a
+# rebuild-and-run disk a one-shot. A TPM-sealed volume wants a kernel that is not
+# moving; use `make run-tpm` for that and keep this target's disk openable.
+HORUS_DISK        ?= horus.img
+# 1 GiB at $(FS_BLOCK_SIZE). Sparse (truncate), so it costs nothing until it is
+# written, and a format under TCG is quick at this size. The gates use
+# BLOCKS_PER_DISK (16 GiB) because they are measuring the ceiling; an interactive
+# session is not.
+HORUS_DISK_BLOCKS ?= 262144
+
+.PHONY: run-ata
+run-ata:
+	@if [ -f $(HORUS_DISK) ]; then \
+	    echo "[run-ata] reusing $(HORUS_DISK) -- the volume on it, and the password it was sealed to, are the ones you installed"; \
+	 else \
+	    echo "[run-ata] creating $(HORUS_DISK) ($(HORUS_DISK_BLOCKS) blocks x $(FS_BLOCK_SIZE) bytes) -- blank, so this boot runs the installer"; \
+	    truncate -s $$(( $(HORUS_DISK_BLOCKS) * $(FS_BLOCK_SIZE) )) $(HORUS_DISK); \
+	 fi
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 kernel.elf
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 \
+		COREUTILS_MODULES=$(RUN_MODULES) TCC_MODULE=$(RUN_MODULES) boot.iso
+	@echo "Console on this terminal. Quit QEMU with Ctrl-A X; QEMU monitor with Ctrl-A C."
+	qemu-system-x86_64 -m 512M -cpu qemu64,+aes,+rdrand,+smep,+smap \
+		-smp $(SMP_CPUS) \
+		-machine accel=kvm:tcg -display none \
+		-serial mon:stdio \
+		-device isa-debug-exit,iobase=0x604,iosize=0x04 \
+		-drive file=$(HORUS_DISK),format=raw,if=ide,index=0,cache=writethrough \
+		-net none -no-reboot -no-shutdown -cdrom boot.iso
+
+# Throw the volume away and install again. Separate from `run-ata` because
+# destroying a filesystem is a different act from booting one, and the two should
+# not be reachable by the same command.
+.PHONY: run-ata-wipe
+run-ata-wipe:
+	@rm -f $(HORUS_DISK)
+	@echo "[run-ata] $(HORUS_DISK) removed; the next run-ata installs from scratch"
+
+
 
 # The @HORUS_MODULES@ marker in grub.cfg is replaced with a `module2` line per
 # BOOT_MODULES entry (empty when none), so GRUB loads each utility image into RAM

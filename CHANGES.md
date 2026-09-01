@@ -93,6 +93,31 @@ in this file.
 
 ### Added
 
+- **`make run-ata`: the interactive boot with a persistent disk, and the only way to drive the
+  installer by hand.** `make run` boots the in-RAM vdisk, which formats itself on the way up
+  under a per-boot throwaway key -- nothing typed at that shell survives `Ctrl-A X`, so the
+  installer (**S73**) had no interactive path at all and existed only behind
+  `smoke-installer`. `run-ata` builds `STORAGE_ATA=1` and attaches `$(HORUS_DISK)` (default
+  `horus.img`, 1 GiB, sparse) as the primary IDE drive, so `storage_init` probes a real disk:
+  a blank image reports `needs_format` and `init` runs the installer, and an image that
+  already holds a volume goes straight to a login prompt with the credentials that install
+  chose. **The image is created only when it is absent** -- a truncate over an existing one
+  would destroy the volume and its root password and look like an installer bug on the next
+  boot -- and `make run-ata-wipe` is the separate, deliberate way to start over, for the same
+  reason the installer refuses a recognised volume rather than offering to erase it.
+  It boots **without a TPM on purpose**: `storage_format_sealed` opts a persistent volume into
+  `PolicyPCR(PCR8, PCR9)` sealing whenever a TPM is present, PCR8 is the kernel's identity, and
+  a rebuild-and-boot loop therefore installs a volume the next build cannot unseal -- right
+  password, intact disk, and the machine will not open it. That is `smoke-tpm-tamper`'s
+  property working; `make run-tpm` is where it is exercised, against a kernel that is not
+  moving. `rebuild-and-run.sh` now drives this path, and the Makefile comment on `STORAGE_ATA`
+  that has said "see `make run-ata`" since the flag was added finally names a target that
+  exists.
+  Verified by hand rather than by a new gate, which is the honest description: a fresh
+  `horus.img`, `INSTALLER: PASS installed`, a login as `root` with the installed password, and
+  `/bin` holding the twelve provisioned binaries; then a second boot on the same image with no
+  installer, the same login, and the same `/bin`.
+
 - **An installer: the program that lays a system down on a bare disk** (**S73**, roadmap 2.9).
   `init` surveys the machine at boot and launches `userspace/installer.c` when there is a disk
   carrying no volume. It shows what will be destroyed, takes consent, asks for the password

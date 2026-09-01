@@ -20,6 +20,16 @@ static struct con_response rp;   /* ring-3 stack is not the place for them */
 static uint8_t kbuf[CON_IO_MAX];
 static unsigned klen, kpos;
 
+/* Where the visible cursor should be, and where the terminal was last told it
+ * is. Two variables rather than one for the same reason `front` exists beside
+ * `back`: tui_flush emits only differences, and without a record of what the
+ * terminal was last told, "has the cursor moved" is unanswerable and the only
+ * safe answer is to re-send it on every flush -- which puts bytes on the wire
+ * for an unchanged screen, the one thing tui_flush is built not to do. A
+ * negative row means hidden, and hidden is the state tui_begin establishes. */
+static int cur_r = -1, cur_c = -1;      /* requested */
+static int shown_r = -1, shown_c = -1;  /* last sent */
+
 /* ---- transport ---------------------------------------------------------- */
 
 /* One console request, with the bounded retry the shell uses: a full mailbox is
@@ -86,6 +96,12 @@ void tui_test_feed(const uint8_t *b, unsigned n)
     for (unsigned i = 0; i < n; i++) kbuf[i] = b[i];
     klen = n; kpos = 0;
 }
+/* Unread keys left in the injected burst. The interaction tests assert this is
+ * zero after a fed sequence: an input loop that returned early leaves keys
+ * behind, and its RESULT can still be the expected one -- a menu that ignored
+ * every arrow and returned the initial selection looks identical to a menu that
+ * clamped correctly, unless somebody asks whether the arrows were consumed. */
+unsigned tui_test_keys_left(void) { return klen - kpos; }
 #endif
 
 static void oflush(void)
@@ -153,6 +169,11 @@ int tui_begin(void)
         }
     olen = 0;
     g_active = 1;
+    /* Both halves of the cursor diff start HIDDEN, and both are set here rather
+     * than only the requested one: the escape below is what makes `shown_*`
+     * true, so a session begun twice cannot inherit a stale belief about where
+     * the terminal's cursor is. */
+    cur_r = cur_c = shown_r = shown_c = -1;
     oputs("\033[?25l");                    /* hide the cursor */
     oputs("\033[2J");                      /* clear, so the terminal agrees */
     oflush();
@@ -163,6 +184,7 @@ void tui_end(void)
 {
     if (!g_active) return;
     olen = 0;
+    cur_r = cur_c = shown_r = shown_c = -1;
     osgr(TUI_A_NORMAL);
     ocup(g_rows - 1, 0);
     oputs("\033[?25h");                    /* show the cursor again */
@@ -251,6 +273,21 @@ void tui_box(int row, int col, int height, int width, uint8_t attr)
     tui_putc(row + height - 1, col + width - 1, '+', attr);
 }
 
+void tui_cursor(int row, int col)
+{
+    /* Clamped to the screen like every other coordinate, and a negative or
+     * out-of-range request means HIDDEN rather than clamped-to-an-edge. Putting
+     * the cursor somewhere the caller did not ask for would be a lie about where
+     * the next character lands, which in a password field is worse than no
+     * cursor at all. */
+    if (row < 0 || row >= g_rows || col < 0 || col >= g_cols) {
+        cur_r = cur_c = -1;
+        return;
+    }
+    cur_r = row;
+    cur_c = col;
+}
+
 /* ---- flush -------------------------------------------------------------- */
 
 /* Emit only what changed. The cursor is re-addressed when the run of changed
@@ -284,7 +321,188 @@ void tui_flush(void)
             front[r][c] = back[r][c];
         }
     }
+
+    /* The cursor, diffed like the cells and emitted LAST -- the cell loop moves
+     * the terminal's cursor as a side effect of writing, so positioning it
+     * before the loop would be undone by the first character written. */
+    if (cur_r != shown_r || cur_c != shown_c) {
+        if (cur_r < 0) {
+            oputs("\033[?25l");
+        } else {
+            ocup(cur_r, cur_c);
+            oputs("\033[?25h");
+        }
+        shown_r = cur_r;
+        shown_c = cur_c;
+    }
     oflush();
+}
+
+/* ---- interactions -------------------------------------------------------
+ *
+ * Two loops over tui_getkey, and the file will not grow a third without a
+ * program that needs it. Both share the same three obligations, which is why
+ * they are stated once here rather than twice below.
+ *
+ * THEY MUST TERMINATE WITHOUT A KEY. tui_getkey returns TUI_KEY_NONE for two
+ * different things: a control byte the decoder deliberately ignores, and a
+ * console that did not answer at all (kfill's con_call failed after its bounded
+ * retry). The second is permanent -- the endpoint is gone, or the server is --
+ * and a loop that kept asking would be the G-8 wedge wearing a user interface:
+ * a task spinning inside an input call prints nothing, so "the installer is
+ * waiting for you" and "the installer is dead" look identical on a serial line.
+ * So consecutive NONEs are counted and the loop gives up at IDLE_LIMIT. A human
+ * cannot produce 256 ignorable control bytes in a row without also producing a
+ * printable one, which resets the count; a dead console produces nothing else,
+ * ever.
+ *
+ * THEY REDRAW BEFORE THEY BLOCK, never after. The screen must show the state the
+ * next keystroke will act on, so every path that changes state falls through to
+ * one draw-and-flush at the top of the loop rather than each branch painting for
+ * itself -- which is how a backspace comes to clear the character before it and
+ * leave the one after.
+ *
+ * THEY OWN NO BUFFER. tui_input writes into the caller's array and nowhere else,
+ * so there is no second copy of a password for the library to forget to erase.
+ * That is the reason `cap` is a parameter rather than a fixed maximum here.
+ */
+#define TUI_IDLE_LIMIT 256
+
+int tui_input(int row, int col, int width, char *buf, int cap, unsigned flags)
+{
+    if (!buf || cap < 1) return -1;
+    buf[0] = 0;
+    if (width <= 0) return -1;
+
+    /* THE FIELD IS THE BOUND, and it is the smaller of the two on purpose.
+     * `cap - 1` is what the caller's memory can hold; `width` is what the person
+     * can see. Taking the minimum is what makes "a field is exactly as long as
+     * it looks" true in both directions -- a caller cannot be handed more than
+     * it asked for, and a person cannot type a character that is not on the
+     * screen in front of them. */
+    int limit = cap - 1;
+    if (width < limit) limit = width;
+    if (limit < 0) limit = 0;
+
+    int len = 0;
+    int idle = 0;
+
+    for (;;) {
+        /* Draw the field, then say where the next character lands. Masked
+         * fields draw '*' and the clear text never reaches a cell -- not the
+         * back buffer, not the front buffer, and therefore not the wire. */
+        for (int i = 0; i < width; i++) {
+            char ch = ' ';
+            if (i < len) {
+#ifdef TUI_INPUT_ECHO_SECRET
+                /* CONTROL ARM -- never ship. The mask dropped, so a password
+                 * field paints what was typed. Nothing about the RETURNED value
+                 * changes, which is the whole difficulty: the caller cannot tell,
+                 * and neither can a test that only inspects `buf`. The witness
+                 * has to look at the cells. See make smoke-tui-mask-control. */
+                ch = buf[i];
+#else
+                ch = (flags & TUI_IN_MASK) ? '*' : buf[i];
+#endif
+            }
+            tui_putc(row, col + i, ch, TUI_A_REVERSE);
+        }
+        tui_cursor(row, col + (len < width ? len : width - 1));
+        tui_flush();
+
+        int k = tui_getkey();
+        if (k == TUI_KEY_NONE) {
+            if (++idle >= TUI_IDLE_LIMIT) { buf[0] = 0; return -1; }
+            continue;
+        }
+        idle = 0;
+
+        if (k == TUI_KEY_ENTER) { buf[len] = 0; return 0; }
+        if (k == TUI_KEY_ESC) {
+            /* Emptied rather than left holding a partial answer: a caller that
+             * ignores the return value gets nothing, not half of something. */
+            buf[0] = 0;
+            return -1;
+        }
+        if (k == TUI_KEY_BACKSP) {
+            if (len > 0) { len--; buf[len] = 0; }
+            continue;
+        }
+        if (k >= 0x20 && k < 0x7F) {
+#ifdef TUI_INPUT_UNBOUNDED
+            /* CONTROL ARM -- never ship. The `cap` bound dropped; only the
+             * visible width still stops the loop, so a caller that passed a
+             * small buffer and a wide field is written past the end of it.
+             *
+             * Deliberately leaves the WIDTH bound in place. Removing both would
+             * make the arm reproduce something no realistic mistake does -- an
+             * unbounded write -- where the mistake this guards against is the
+             * ordinary one of trusting a single bound. See
+             * make smoke-tui-bound-control. */
+            if (len < width) buf[len++] = (char)k;
+#else
+            if (len < limit) buf[len++] = (char)k;
+            /* else: DISCARDED, and discarded at the head of the buffer rather
+             * than silently dropped at the end. A field that accepted a
+             * character it could not store would show one thing and return
+             * another. */
+#endif
+            continue;
+        }
+        /* Anything else -- arrows, tab, home -- is not an edit in a one-line
+         * field and is ignored rather than guessed at. */
+    }
+}
+
+int tui_menu(int row, int col, int width, const char *const *items, int n, int *sel)
+{
+    if (!items || !sel || n <= 0) return -1;
+
+    int cur = *sel;
+    if (cur < 0) cur = 0;
+    if (cur >= n) cur = n - 1;
+
+    int idle = 0;
+
+    for (;;) {
+        for (int i = 0; i < n; i++)
+            tui_field(row + i, col, width, items[i],
+                      i == cur ? TUI_A_REVERSE : TUI_A_NORMAL);
+        /* No cursor in a menu: the highlight IS the selection, and a second
+         * indicator that could disagree with it is a second thing to get
+         * wrong. */
+        tui_cursor(-1, -1);
+        tui_flush();
+
+        int k = tui_getkey();
+        if (k == TUI_KEY_NONE) {
+            if (++idle >= TUI_IDLE_LIMIT) return -1;
+            continue;
+        }
+        idle = 0;
+
+        if (k == TUI_KEY_ENTER) { *sel = cur; return 0; }
+        if (k == TUI_KEY_ESC)   return -1;   /* *sel untouched */
+
+        if (k == TUI_KEY_UP)   cur--;
+        if (k == TUI_KEY_DOWN) cur++;
+        if (k == TUI_KEY_HOME) cur = 0;
+        if (k == TUI_KEY_END)  cur = n - 1;
+
+#ifndef TUI_MENU_UNCLAMPED
+        /* THE CLAMP IS A BOUNDS CHECK ON THE CALLER'S ARRAY, not on this one.
+         * Everything drawn above is clamped by tui_putc regardless, so an
+         * out-of-range `cur` paints nothing and looks like a menu with nothing
+         * selected -- harmless here. What is not harmless is that the caller
+         * indexes items[*sel] after this returns, and for the installer that
+         * array is the list of disks it is about to destroy one of. Removing
+         * this does not corrupt the TUI; it corrupts the program using it, which
+         * is exactly why the arm for it asserts on the returned INDEX rather
+         * than on the screen. */
+        if (cur < 0)  cur = 0;
+        if (cur >= n) cur = n - 1;
+#endif
+    }
 }
 
 /* ---- input -------------------------------------------------------------- */

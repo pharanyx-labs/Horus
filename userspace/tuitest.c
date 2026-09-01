@@ -154,6 +154,158 @@ void _start(void)
         tui_test_feed(lone, sizeof(lone));   check(tui_getkey() == TUI_KEY_ESC,   "a bare ESC did not yield ESC");
     }
 
+    /* --- 7. the cursor is diffed like a cell ------------------------------
+     * It is state the TERMINAL holds and the buffers do not, so the question is
+     * the same one section 1 asks about cells: does an unchanged request cost
+     * bytes? Checked here and not only in section 1 because a cursor emitted
+     * unconditionally would ALSO break section 1, and then two checks would be
+     * failing for one cause with no way to tell which rule was lost. */
+    tui_flush();
+    tui_test_reset();
+    tui_flush();
+    check(tui_test_emitted() == 0, "an unchanged cursor still emitted bytes");
+
+    tui_cursor(4, 9);
+    tui_test_reset();
+    tui_flush();
+    check(tui_test_emitted() > 0, "a moved cursor emitted nothing");
+    tui_test_reset();
+    tui_flush();
+    check(tui_test_emitted() == 0, "an unmoved cursor re-emitted its position");
+
+    /* Out of range means HIDDEN, not clamped to an edge. A cursor parked
+     * somewhere the caller did not ask for is a lie about where the next
+     * character lands, which in a password field is worse than none. */
+    tui_cursor(tui_rows(), 0);
+    tui_test_reset();
+    tui_flush();
+    check(tui_test_emitted() > 0, "hiding the cursor emitted nothing");
+
+    /* --- 8. a line editor bounded by the smaller of two bounds -------------
+     * `cap` is what the caller's memory holds; `width` is what the person can
+     * see. The editor takes the minimum, so a field is exactly as long as it
+     * looks -- and neither bound may be the only one enforced. */
+    {
+        /* THE BUFFER IS DELIBERATELY LARGER THAN `cap`, WITH A GUARD AFTER IT.
+         * The overrun this checks for is a write past the capacity the caller
+         * declared, and detecting it needs somewhere for the write to land that
+         * is still inside an object we own -- adjacency between two separate
+         * arrays is the linker's business, not the language's, so the guard
+         * lives in the SAME array. `cap` is 4; bytes 4..31 must never move. */
+        static char box[32];
+        for (int i = 0; i < 32; i++) box[i] = '#';
+
+        /* Twelve printable characters into a four-byte capacity, in a field
+         * twenty wide, so `width` cannot be what stops it. */
+        static const uint8_t typed[] = { 'a','b','c','d','e','f','g','h','i','j','k','l', '\r' };
+        tui_test_feed(typed, sizeof(typed));
+        int rc = tui_input(9, 0, 20, box, 4, 0);
+
+        check(rc == 0, "enter did not end the input");
+        check(tui_test_keys_left() == 0, "the editor returned with keys unread");
+        check(box[0] == 'a' && box[1] == 'b' && box[2] == 'c',
+              "the editor did not keep the characters that fit");
+        check(box[3] == 0, "the editor did not terminate within its capacity");
+        /* The guard. This is the check TUI_INPUT_UNBOUNDED=1 breaks. */
+        {
+            int intact = 1;
+            for (int i = 4; i < 32; i++) if (box[i] != '#') intact = 0;
+            check(intact, "an input overran the buffer it was given");
+        }
+    }
+
+    /* Backspace removes exactly one character and clears exactly one cell.
+     * Asserted on the CELL as well as the buffer: an editor that shortened its
+     * string without repainting leaves the removed character on the screen,
+     * which for a masked field means the screen and the buffer disagree about
+     * how long the password is. */
+    {
+        static char line[16];
+        static const uint8_t typed[] = { 'x','y','z', 0x7F, '\r' };
+        tui_test_feed(typed, sizeof(typed));
+        check(tui_input(10, 0, 8, line, sizeof(line), 0) == 0, "enter did not end the input");
+        check(line[0] == 'x' && line[1] == 'y' && line[2] == 0,
+              "backspace did not remove exactly one character");
+        check(tui_test_cell(10, 2) == ' ', "backspace left its character on the screen");
+    }
+
+    /* ESC empties the buffer rather than handing back a partial answer, so a
+     * caller that ignores the return value gets nothing instead of half. */
+    {
+        static char line[16];
+        static const uint8_t typed[] = { 'n','o', 0x1B };
+        tui_test_feed(typed, sizeof(typed));
+        check(tui_input(11, 0, 8, line, sizeof(line), 0) == -1, "esc did not cancel the input");
+        check(line[0] == 0, "a cancelled input left a partial answer in the buffer");
+    }
+
+    /* --- 9. a masked field never puts the secret in a cell -----------------
+     * The whole property, and it is invisible from the caller's side: `buf` is
+     * identical either way, so only the CELLS can tell a masked field from an
+     * echoing one. This is what TUI_INPUT_ECHO_SECRET=1 breaks. */
+    {
+        static char secret[16];
+        static const uint8_t typed[] = { 'h','u','n','t','2', '\r' };
+        tui_test_feed(typed, sizeof(typed));
+        check(tui_input(12, 3, 10, secret, sizeof(secret), TUI_IN_MASK) == 0,
+              "enter did not end the masked input");
+        check(secret[0] == 'h' && secret[4] == '2' && secret[5] == 0,
+              "a masked field did not return what was typed");
+        check(tui_test_cell(12, 3) == '*' && tui_test_cell(12, 7) == '*',
+              "a masked field did not draw its mask");
+        /* Named as its own check rather than folded into the one above: "it
+         * drew stars" and "it did not draw the secret" are the same sentence
+         * only while the alphabet excludes '*'. */
+        check(tui_test_cell(12, 3) != 'h' && tui_test_cell(12, 7) != '2',
+              "a masked field showed its characters");
+        /* And the cells past the content are blank, not stars: a mask that
+         * padded to the field width would disclose nothing about the text but
+         * would lie about its LENGTH, and the length of a password is worth
+         * something to somebody watching the screen. */
+        check(tui_test_cell(12, 8) == ' ', "a masked field padded with its mask");
+    }
+
+    /* --- 10. a menu's selection stays inside the caller's array ------------
+     * The clamp is a bounds check on the CALLER: it indexes items[*sel] after
+     * this returns, and for the installer that array is the list of disks it is
+     * about to destroy one of. So the assertion is on the returned index, not
+     * on the screen -- an unclamped menu draws exactly the same picture, since
+     * every cell it paints is clamped by tui_putc anyway. */
+    {
+        static const char *const items[] = { "sda", "sdb", "sdc" };
+        int sel = 0;
+
+        /* Four DOWNs against three items: the fourth must do nothing. */
+        static const uint8_t down4[] = {
+            0x1B,'[','B', 0x1B,'[','B', 0x1B,'[','B', 0x1B,'[','B', '\r'
+        };
+        tui_test_feed(down4, sizeof(down4));
+        check(tui_menu(14, 0, 12, items, 3, &sel) == 0, "enter did not end the menu");
+        check(tui_test_keys_left() == 0, "the menu returned with keys unread");
+        check(sel == 2, "a menu selected past its last item");
+
+        /* And the other end, which a single-direction arm would miss. */
+        static const uint8_t up4[] = {
+            0x1B,'[','A', 0x1B,'[','A', 0x1B,'[','A', 0x1B,'[','A', '\r'
+        };
+        tui_test_feed(up4, sizeof(up4));
+        check(tui_menu(14, 0, 12, items, 3, &sel) == 0, "enter did not end the menu");
+        check(sel == 0, "a menu selected before its first item");
+
+        /* ESC leaves the caller's selection alone. A menu that wrote its
+         * in-progress cursor back on cancel would turn "I changed my mind" into
+         * a choice. */
+        sel = 1;
+        static const uint8_t esc_after_move[] = { 0x1B,'[','B', 0x1B };
+        tui_test_feed(esc_after_move, sizeof(esc_after_move));
+        check(tui_menu(14, 0, 12, items, 3, &sel) == -1, "esc did not cancel the menu");
+        check(sel == 1, "a cancelled menu wrote back its selection");
+
+        /* Degenerate input is refused rather than guessed at. */
+        check(tui_menu(14, 0, 12, items, 0, &sel) == -1, "an empty menu was not refused");
+        check(tui_menu(14, 0, 12, 0, 3, &sel) == -1, "a menu with no items was not refused");
+    }
+
     tui_end();
 
     /* The asserted markers go out as ONE write each, and the counts follow on

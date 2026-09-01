@@ -1734,6 +1734,17 @@ jobs:
         run: make smoke-tui-diff-control
       - name: Control arm — drawing with the bounds check removed
         run: make smoke-tui-clamp-control
+      # The three interaction arms. tui_input and tui_menu are what an installer
+      # is built out of, and each of the three properties below is invisible
+      # from the side the caller looks at: a masked field and an echoing one
+      # return the same bytes, an unclamped menu draws the same screen, and an
+      # over-long input is only visible in memory the caller declared.
+      - name: Control arm — a password field that paints what was typed
+        run: make smoke-tui-mask-control
+      - name: Control arm — an editor bounded only by what is visible
+        run: make smoke-tui-bound-control
+      - name: Control arm — a menu selecting past the end of its list
+        run: make smoke-tui-menu-control
       # The termination half: strncpy's semantics leave the buffer unterminated
       # exactly when the source did not fit.
       - name: Control arm — ustrncpy must always terminate

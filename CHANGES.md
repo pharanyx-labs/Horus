@@ -164,6 +164,42 @@ in this file.
   the ephemeral vdisk, already unlocked, where `storage_unlock` is idempotent — and that is
   exactly the condition a refusal test needs, since an ungated path that also failed would pass
   under the defect and witness nothing.
+- **The TUI has the two interactions an installer is built out of, and a mask that is a
+  security property rather than a nicety.** `tui_cursor` places or hides the visible cursor;
+  `tui_input` edits one line inside a field; `tui_menu` chooses one of *n* items. That is the
+  whole addition and the boundary of what this library will grow — a program that has to be
+  *read* before it is trusted does not get a widget set.
+
+  **Three properties, each invisible from the side the caller looks at, which is why each has an
+  arm.** A masked field and an echoing one return the *same bytes*, so neither the caller nor a
+  test that inspects the buffer can tell them apart; the disclosure is to whoever is looking at
+  the screen or the serial capture, so the witness reads the back buffer. An unclamped menu
+  draws an *identical screen*, because every cell it paints is clamped by `tui_putc` regardless
+  — what an unclamped selection breaks is the caller, which indexes `items[*sel]` on return. And
+  an over-long input is only visible in memory the caller declared, so the guard region lives
+  inside the same array as the buffer under test: adjacency between two separate arrays is the
+  linker's business, not the language's.
+
+  `tui_input` is bounded by the smaller of `cap - 1` and `width` — **a field is exactly as long
+  as it looks.** There is no horizontal scrolling, deliberately: a field whose contents you
+  cannot see is a field you cannot check before pressing enter. ESC empties the buffer rather
+  than handing back a partial answer, so a caller that ignores the return value gets nothing
+  instead of half of something. Both loops give up after `TUI_IDLE_LIMIT` consecutive
+  no-key returns, because `tui_getkey` reports "a control byte I ignore" and "the console never
+  answered" identically, and an input loop with no way out is the **[G-8]** wedge wearing a user
+  interface: a task spinning inside an input call prints nothing, so "waiting for you" and
+  "dead" look the same on a serial line.
+
+  The cursor is diffed the way cells are — a position is emitted only when the request changed —
+  because emitting it unconditionally would put bytes on the wire for an unchanged screen, which
+  is the one thing `tui_flush` exists not to do, and would have broken the existing
+  damage-diff check for a second reason with no way to tell which rule was lost.
+
+  *Witness:* `make smoke-tui`, extended. *Falsified by* `TUI_INPUT_ECHO_SECRET=1`
+  (`make smoke-tui-mask-control`), `TUI_INPUT_UNBOUNDED=1` (`make smoke-tui-bound-control`) and
+  `TUI_MENU_UNCLAMPED=1` (`make smoke-tui-menu-control`). All three measured 2026-09-01: each
+  arm's marker present, and `tools/check_base_gate_reddens.sh` reports `smoke-tui` **RED** under
+  each of the three.
 
 - **A TPM NV monotonic counter anchors the volume against whole-volume rollback** (**S70**).
   The Merkle tree (**S66**) catches a subtree rewound while the rest of the volume moves on. It

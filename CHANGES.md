@@ -46,6 +46,13 @@ in this file.
 
 ### Changed
 
+- **`tools/swtpm_lib.sh` reports a failed `swtpm_setup`** instead of discarding its output, its
+  status and its result. A setup that leaves no state file lets the emulator start on an empty
+  directory; QEMU then reports `tpm-emulator: TPM result for CMD_INIT: 0x9 operation failed` and
+  the guest never boots — which reaches the harness as a **zero-length serial log**, indis-
+  tinguishable from a kernel hanging before its first print. It also resolves a relative state
+  directory to an absolute one, because `swtpm_setup` and `swtpm` do not agree about a relative
+  `--tpmstate` and the disagreement is silent.
 - **`tools/run_with_swtpm.sh` honours `SMOKE_DISK`**, with the same name and the same
   `cache=writethrough` default as `tools/smoke_test.sh`. A gate needing both a TPM and a disk that
   survives a reboot — the rollback anchor is exactly that — would otherwise hand-roll QEMU drive

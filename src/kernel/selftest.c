@@ -3600,12 +3600,6 @@ void rollback_selftest(void)
     print("ROLLBACK: gen=");
     print_decimal(mfs->sb.rollback_gen);
     print("\n");
-    /* The marker the harness matches on, one string. "found era 1" on the third
-     * boot is the whole finding: a volume that had moved on to era 2 served era
-     * 1's contents, so the machine was handed a state it had already left. */
-    print("ROLLBACK: found era ");
-    print_decimal((uint64_t)found);
-    print("\n");
 
     uint8_t era = (uint8_t)(found + 1);
     for (uint32_t i = 0; i < BLOCK_SIZE; i++) buf[i] = rollback_byte(era, i);
@@ -3613,7 +3607,25 @@ void rollback_selftest(void)
         print("ROLLBACK: FAIL could not write\n"); for (;;) asm volatile ("hlt");
     }
 
-    print("ROLLBACK: mounted an anchored volume\n");
+    /* THE MARKER COMES AFTER THE WRITE, and that ordering is the gate.
+     *
+     * It was printed before, and the harness ends a boot the moment it sees the
+     * marker it is waiting for -- so boot 1 was killed between announcing what it
+     * had read and writing what the NEXT boot needs to find. It passed locally
+     * for four runs and failed in CI, where boot 1 was stopped four seconds in
+     * and boot 2 then correctly reported finding nothing. A marker a later boot
+     * depends on must be emitted only once the state it depends on is durable,
+     * and storage_write_file_block returns after its journal barriers, so here it
+     * is.
+     *
+     * One string, so a shared console cannot split it. "found era 1" on the third
+     * boot is the whole finding: a volume that had moved on to era 2 served era
+     * 1's contents, so the machine was handed a state it had already left. */
+    print("ROLLBACK: found era ");
+    print_decimal((uint64_t)found);
+    print(" and wrote era ");
+    print_decimal((uint64_t)era);
+    print("\n");
     for (;;) asm volatile ("hlt");
 }
 #endif /* ROLLBACK_SELFTEST */

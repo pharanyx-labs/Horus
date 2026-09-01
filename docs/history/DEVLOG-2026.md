@@ -91,6 +91,20 @@ bytes back. The guest reports what it found; the harness, which knows which boot
 the context. Under `ROLLBACK_ANCHOR_IGNORE=1` boot 3 reports `found era 1`, and a current volume
 holds era 2.
 
+**A fourth wrong turn, found by CI rather than by me, and it is the most reusable.** The gate
+passed four times locally and failed on the first CI run: boot 2 timed out waiting to find era 1.
+Boot 1 had printed its marker and been killed FOUR SECONDS IN -- because the marker was printed
+BEFORE the write the next boot depends on. The harness ends a boot the moment it sees the marker
+it is waiting for, which is exactly what makes these two-boot gates fast and deterministic, and it
+means A MARKER A LATER BOOT DEPENDS ON MUST BE EMITTED ONLY ONCE THE STATE IT DEPENDS ON IS
+DURABLE. `journal_commit` already guarantees that on return, so the fix was to move one print
+below the write. This tree has a rule about markers being written as ONE STRING; this is the same
+rule in the other axis, about WHEN.
+
+Worth noting what the failure looked like: not a wrong answer, but boot 2 honestly reporting that
+the volume was empty -- which is what boot 1 actually left. Nothing was broken except the order of
+two lines.
+
 **What it does not cover** is in `docs/LIMITATIONS.md` 1.12 rather than here, and it is not
 formality: unanchored volumes on TPM-less machines have exactly the protection they had before,
 the granularity is one boot rather than one transaction (an NV write per filesystem transaction

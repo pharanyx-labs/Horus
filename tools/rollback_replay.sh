@@ -51,13 +51,13 @@ boot() {   # boot <n> <require> <fail-marker> <logfile>
 }
 
 echo "[rollback] boot 1/3 - format an anchored volume and write era 1"
-boot 1 'ROLLBACK: found era 0' 'ROLLBACK: FAIL' "$LOG-p1.log"
+boot 1 'ROLLBACK: found era 0 and wrote era 1' 'ROLLBACK: FAIL' "$LOG-p1.log"
 
 echo "[rollback] the attacker images the disk"
 cp "$IMG" "$SNAP"
 
 echo "[rollback] boot 2/3 - the machine runs on; era 2 overwrites era 1"
-boot 2 'ROLLBACK: found era 1' 'ROLLBACK: FAIL' "$LOG-p2.log"
+boot 2 'ROLLBACK: found era 1 and wrote era 2' 'ROLLBACK: FAIL' "$LOG-p2.log"
 
 # ANTI-VACUITY. If boot 2 left the image byte-identical there is nothing to roll
 # back to and boot 3 would pass having replayed nothing -- the same shape as a

@@ -7424,7 +7424,7 @@ smoke-rollback:
 	@$(MAKE) --no-print-directory $(ROLLBACK_ARGS) boot.iso
 	@$(ROLLBACK_ENV) ROLLBACK_IMG=rollback.img \
 		ROLLBACK_EXPECT='ROLLBACK: PASS a rolled-back volume was refused' \
-		ROLLBACK_OPPOSITE='ROLLBACK: mounted an anchored volume' \
+		ROLLBACK_OPPOSITE='ROLLBACK: found era' \
 		tools/rollback_replay.sh boot.iso
 	@echo "[rollback] PASS - a volume older than the machine is refused"
 
@@ -7437,7 +7437,7 @@ smoke-rollback-control:
 	@$(MAKE) --no-print-directory $(ROLLBACK_ARGS) ROLLBACK_ANCHOR_IGNORE=1
 	@$(MAKE) --no-print-directory $(ROLLBACK_ARGS) ROLLBACK_ANCHOR_IGNORE=1 boot.iso
 	@$(ROLLBACK_ENV) ROLLBACK_IMG=rollback-c.img \
-		ROLLBACK_EXPECT='ROLLBACK: found era 1' \
+		ROLLBACK_EXPECT='ROLLBACK: found era 1 and wrote era 2' \
 		ROLLBACK_OPPOSITE='ROLLBACK: PASS' \
 		tools/rollback_replay.sh boot.iso
 	@echo "[rollback] CONTROL PASS - without the anchor an old volume mounts and serves stale data"

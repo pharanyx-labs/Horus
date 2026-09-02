@@ -435,6 +435,41 @@ def accounts(disk):
             s.send("whoami")
             s.expect("uid=%s" % USER_UID, STEP)
             step("and it is the uid the installer created, not root")
+
+            # ---- THE FILESYSTEM, ON A REAL VOLUME ---------------------------
+            #
+            # Until 2026-09-02 no gate touched the filesystem after unlocking an
+            # installed volume: this scenario and smoke-installer both logged in,
+            # ran `whoami`, and logged out. That is the one path on which
+            # fs_server's provisioning runs LATE -- a sealed volume defers it
+            # until a login unlocks it (S74) -- so the whole of it was exercised
+            # only on the ephemeral RAM vdisk, where it runs at boot instead.
+            #
+            # An operator reported `ls` hanging on an installed machine on
+            # 2026-09-02. It did not reproduce, in three shapes including this
+            # one, and the cause was most likely host contention rather than the
+            # guest. The gap it exposed is real either way: a regression of
+            # exactly that shape would have shipped green.
+            #
+            # `ls` first, because "the server answers at all" is the weaker claim
+            # and has to hold before the stronger one means anything.
+            s.expect("%s@horus$" % USER_NAME, STEP)
+            s.send("ls")
+            s.expect("bin/", STEP)
+            step("the filesystem answers an unprivileged login on the installed volume")
+
+            # And S78 on a REAL volume rather than the RAM vdisk: the account has
+            # a home directory it owns and can write in. On this path the
+            # directory is created when the login unlocks the store, not at boot.
+            s.expect("%s@horus$" % USER_NAME, STEP)
+            s.send("cd /home/%s" % USER_NAME)
+            s.expect("%s@horus$" % USER_NAME, STEP)
+            s.send("mkdir installed_home_probe")
+            s.expect("mkdir: created installed_home_probe", STEP)
+            step("S78 on the installed volume: the home exists, is the account's, "
+                 "and it can write there")
+            s.send("cd /")
+
             s.send("logout")
             if not login(s, "root", PASSWORD):
                 raise SessionFail("root could not log in on its own key slot")

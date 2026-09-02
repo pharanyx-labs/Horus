@@ -2703,6 +2703,7 @@ int  storage_keyslot_add(const char *new_password, size_t nlen, uint32_t uid,
                          uint32_t *slot_out);
 int  storage_keyslot_remove(uint32_t idx);
 int  storage_keyslot_count(void);
+int  storage_volume_is_persistent(void);
 uint32_t storage_unlocked_uid(void);
 uint32_t storage_unlocked_slot(void);
 /* Persist / restore the user table. The buffer is sealed under

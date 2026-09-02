@@ -672,6 +672,15 @@ Pipes *are* properly capability-addressed: the slot argument is a cspace slot re
 | 34 | `SYS_USERDEL` | `user` | `CAP_USER` at `CAPSLOT_USER` |
 | 35 | `SYS_PASSWD` | `user`, `pass` | `CAP_USER`, or the target is the caller's own uid |
 
+`SYS_PASSWD` **also grants the target a volume key slot** when an administrator sets *another*
+account's password, and records its index in that account's record (**S76**). Without one the
+password opens the account and not the volume, and the account cannot be the first login after a
+power cycle -- see `SECURITY.md` **S61** for what a key slot is and `docs/LIMITATIONS.md` 2.6b for
+what its absence cost. It **fails closed**: the slot is taken before the hash changes, so a volume
+with no free slot leaves the old password working and returns an error rather than setting a
+password that cannot open the machine. Changing your **own** password re-seals the slot you
+already hold instead, and a machine with no persistent volume grants nothing.
+
 These three are `SC_NONE` in the dispatch table, so `current_user_is_admin()` in
 `src/kernel/kusers.c` *is* the gate. Until 2026-08-15 it accepted `uid == 0` as an alternative
 to holding the capability: the last surviving ambient gate from **[I-1]**, which roadmap 0.2's

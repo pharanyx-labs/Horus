@@ -231,6 +231,13 @@ static int verify_user_password(const char *name, const char *password) {
 void users_init(void) {
     for (int i = 0; i < MAX_USERS; i++) {
         users[i].valid = 0;
+        /* NOT left to the static zero-initialiser, which reads as slot 0 -- a
+         * VALID index, and the one the formatting password owns. Every account
+         * would then claim root's slot: an admin password change would revoke it
+         * as the "old" slot and lock the machine's owner out of their own
+         * volume. KEYSLOT_NONE is the only honest starting value, because an
+         * account that has never had a password set has no slot. */
+        users[i].keyslot = KEYSLOT_NONE;
     }
     user_count = 0;
     next_uid = 1000;
@@ -356,6 +363,11 @@ int do_useradd(uint32_t uid, uint32_t gid, const char *name, const char *initial
             kstrcpy(users[i].shell, "/bin/shell");
             users[i].auth_fail_count = 0;
             users[i].auth_lockout_until = 0;
+            /* No slot yet, and stated rather than inherited: this record may be
+             * a reused array entry whose previous owner had one, and a stale
+             * index here would have the next password change revoke a slot that
+             * now belongs to somebody else. do_passwd grants the real one. */
+            users[i].keyslot = KEYSLOT_NONE;
             if (initial_password && *initial_password) {
                 set_user_password(uid, initial_password);
             } else {
@@ -398,23 +410,123 @@ int do_userdel(uint32_t uid) {
     return -3;
 }
 
+/* The account record for a uid, or NULL. Wanted by do_passwd, which has to write
+ * the key-slot index back into the account that owns it. */
+static struct user_account *find_user_by_uid(uint32_t uid) {
+    for (int i = 0; i < MAX_USERS; i++)
+        if (users[i].valid && users[i].uid == uid) return &users[i];
+    return NULL;
+}
+
+/* Set an account's password, and make that password OPEN THE VOLUME.
+ *
+ * ---- WHY A PASSWORD CHANGE TOUCHES THE DISK AT ALL ------------------------
+ *
+ * A Horus volume is sealed to key slots (**S61**): up to HORUS_KEYSLOTS wraps of
+ * the same disk_key, each under a KEK derived from one password. h_auth calls
+ * users_unlock_and_restore(typed_password) BEFORE it consults the account table,
+ * because on a sealed volume the table it would otherwise read is the
+ * compiled-in one users_init seeded. So an account with no slot cannot be the
+ * FIRST login after a power cycle: its password opens nothing, the persisted
+ * table is never loaded, the account is not found, and the login is refused. It
+ * works perfectly on a machine somebody else has already opened, which is what
+ * made this survivable and hard to see.
+ *
+ * That was docs/LIMITATIONS.md 2.6b. `storage_keyslot_add` has existed since S61
+ * and its only caller was a selftest; `user_account.keyslot` has existed with a
+ * comment saying what it is for and was assigned in exactly one place, also a
+ * selftest. The mechanism and the field were both already here. This is the
+ * caller.
+ *
+ * ---- THE ORDER IS THE FAIL-SAFE, AND IT IS DELIBERATE ---------------------
+ *
+ * The slot is added BEFORE the hash is changed, and the account's OLD slot is
+ * removed only after the new one is written. Three consequences, each of which
+ * is the reason for it:
+ *
+ *   - A failure to grant a slot changes NOTHING. The old password still works
+ *     and still opens the volume, and the caller is told the change did not
+ *     happen. The alternative -- set the hash, then fail to grant -- produces an
+ *     account whose password was accepted and which cannot log in after a
+ *     reboot, which is 2.6b again with a success code in front of it.
+ *   - We never dip to one active slot, so storage_keyslot_remove's refusal to
+ *     drop the last one cannot strand us mid-change.
+ *   - A crash between the add and the remove LEAKS a slot rather than losing
+ *     one. Two passwords opening the volume is recoverable; none is not.
+ *
+ * ---- WHAT IS NOT A FAILURE ------------------------------------------------
+ *
+ * Changing your OWN password takes storage_rekey, not a new slot: the slot this
+ * boot opened is already yours, and re-sealing it in place is what keeps every
+ * other user working (a second slot would leave the old password valid). The
+ * index is recorded here so a later admin change can revoke it.
+ *
+ * And on a machine with NO PERSISTENT VOLUME -- the ephemeral RAM vdisk, which
+ * is every diskless boot -- there is no slot to grant and none is wanted: the
+ * volume does not outlive the boot, and the account works from the RAM table for
+ * as long as it exists. Refusing there would break every diskless useradd.
+ */
 int do_passwd(uint32_t target_uid, const char *new_password) {
     uint32_t my_uid = tasks[get_current_task()].uid;
     int is_admin = current_user_is_admin();
 
     if (!is_admin && my_uid != target_uid) return -1;
 
-    int rc = set_user_password(target_uid, new_password);
-    if (rc != 0) return rc;
+    struct user_account *u = find_user_by_uid(target_uid);
+    if (!u) return -1;
+
+    size_t plen = kstrlen(new_password);
+
+    if (target_uid == my_uid) {
+        /* Re-wrap disk_key under the new KEK so storage_unlock(new_password)
+         * succeeds on the next boot. Without it the on-disk wrap still requires
+         * the old password and the volume is unopenable by its owner. */
+        int rc = set_user_password(target_uid, new_password);
+        if (rc != 0) return rc;
+        storage_rekey(new_password, plen);
+        /* Record which slot is ours, so an admin changing this password later
+         * can revoke exactly it. storage_unlocked_slot() is the slot the login
+         * that started this session opened. */
+        if (storage_volume_is_persistent()) u->keyslot = storage_unlocked_slot();
+    } else {
+        uint32_t fresh = KEYSLOT_NONE;
+#ifdef PASSWD_NO_KEYSLOT
+        /* CONTROL ARM -- never ship. The pre-2026-09-02 behaviour: an admin sets
+         * another account's password and no key slot is granted, so the password
+         * opens the account and not the VOLUME. The account then works only on a
+         * machine somebody else has already unlocked, which is
+         * docs/LIMITATIONS.md 2.6b exactly. Everything else here is unchanged --
+         * the hash is still set and the call still reports success -- because the
+         * defect was never a failure, it was a success that left out the half
+         * nobody could see. See make smoke-installer-accounts-control. */
+#else
+        if (storage_volume_is_persistent()) {
+            uint32_t idx = 0;
+            if (storage_keyslot_add(new_password, plen, target_uid, &idx) != 0) {
+                /* Nothing has changed yet. Say so rather than setting a password
+                 * that cannot open the machine after a reboot. */
+                audit_log(AUDIT_USER_MGMT, target_uid, -1, "passwd: no key slot available");
+                return -6;
+            }
+            fresh = idx;
+        }
+#endif
+
+        int rc = set_user_password(target_uid, new_password);
+        if (rc != 0) {
+            if (fresh != KEYSLOT_NONE) storage_keyslot_remove(fresh);   /* unwind */
+            return rc;
+        }
+
+        if (fresh != KEYSLOT_NONE) {
+            uint32_t old = u->keyslot;
+            u->keyslot = fresh;
+            /* Now, and only now, is the old password's slot spent. */
+            if (old != KEYSLOT_NONE && old != fresh) storage_keyslot_remove(old);
+        }
+    }
+
     users_persist();
-
-    /* If the user is changing their own password, re-wrap disk_key with the
-     * new KEK so storage_unlock(new_password) succeeds on the next boot.
-     * Without this, the on-disk wrapped key would still require the old
-     * password and storage would be permanently locked after a reboot. */
-    if (target_uid == my_uid)
-        storage_rekey(new_password, kstrlen(new_password));
-
     return 0;
 }
 

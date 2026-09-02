@@ -200,6 +200,12 @@ required:
   # accepted edits to its inode table. The gate is the consequence an operator
   # meets: an install powered off at the login prompt whose /bin never fills.
   - store-locked
+  # Gating. It carries S76 and closes docs/LIMITATIONS.md 2.6b: an account an
+  # administrator creates can be the FIRST login after a power cycle, because
+  # setting its password grants it a key slot. Without one the password opens the
+  # account and not the volume, and the account works only on a machine somebody
+  # else has already unlocked -- which is why root-first tests never saw it.
+  - installer-accounts
   # Gating. It carries S75: a password command names the account it writes.
   # The shell matched `passwd <uid>` and dropped the argument, so an admin
   # giving a new account a password silently changed their own -- and, since

@@ -3609,6 +3609,22 @@ int storage_keyslot_remove(uint32_t idx)
     return rc == 0 ? 0 : -5;
 }
 
+/* Is the volume this machine has mounted a PERSISTENT one, or the per-boot RAM
+ * vdisk? The predicate is which backend `current_bd` points at, the same one
+ * storage_get_info reports as `present`.
+ *
+ * It exists because a key slot is only meaningful on a volume that outlives the
+ * boot. The ephemeral vdisk is formatted in storage_init under a throwaway key
+ * and discarded at power-off, so a slot added to it authorises a password to
+ * open something that will not exist -- harmless, but it spends one of
+ * HORUS_KEYSLOTS and it makes a failure to add one look like a defect on a
+ * machine where it never mattered. Callers that grant slots use this to tell the
+ * two cases apart and to say which one they are in. */
+int storage_volume_is_persistent(void)
+{
+    return (current_bd == &g_ata_bd) ? 1 : 0;
+}
+
 /* How many slots can currently open this volume. Observability for the witness;
  * it reveals a count, never a uid. */
 int storage_keyslot_count(void)

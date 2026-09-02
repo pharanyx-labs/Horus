@@ -15,6 +15,46 @@ in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **The installer creates two accounts, and either password opens the disk** (**S76**, closing
+  `docs/LIMITATIONS.md` 2.6b). It asks for a root password, then for the name and password of an
+  everyday account, and lays down both. Day-to-day work on a machine whose only login is root is
+  every session administered; the install is the one moment an operator can be asked for both
+  without it being a chore.
+  **It also deletes the compiled-in `user` account.** `users_init` seeds `user` at uid 1000 with
+  the password `password`, and a fresh volume's account table is seeded from exactly that RAM
+  image -- so until now **every installed Horus machine shipped a working login whose password is
+  printed in this repository and in `docs/BUILDING.md`**. The install removes it and recreates the
+  same uid under the name and password the operator chose.
+  The two passwords must differ, the name is validated on screen before anything is written
+  (lowercase, starts with a letter, not `root`), and neither password reaches the terminal.
+
+### Fixed
+
+- **An account an administrator created could not be the first login after a power cycle**
+  (**S76**). The volume is sealed to key slots (**S61**) and `h_auth` calls
+  `users_unlock_and_restore(typed_password)` *before* it consults the account table, because on a
+  sealed volume the table it would otherwise read is the compiled-in one. An account with no slot
+  therefore opened nothing, the persisted table was never loaded, the account was not found, and
+  the login was refused -- **while working perfectly on a machine somebody else had already
+  opened**. That asymmetry is why it lasted: every test and every operator logs in as root first.
+  `do_passwd` now grants a key slot when an admin sets another account's password and records its
+  index in `user_account.keyslot`. **Both halves already existed with no live caller** --
+  `storage_keyslot_add` had only a selftest, and the field's single assignment was also in a
+  selftest -- the same shape **S63**'s `storage_authorize_format` had before **S72**.
+  **The order is the fail-safe**: the slot is taken before the hash changes and the old one is
+  released only after the new one is written, so a failure changes nothing, the active count never
+  dips to one where `storage_keyslot_remove` refuses, and a crash leaks a slot rather than losing
+  one. Two passwords opening a volume is recoverable; none is not.
+  Also fixed alongside it: `users_init` and `do_useradd` now write `KEYSLOT_NONE` explicitly. The
+  static zero-initialiser reads as slot **0** -- a valid index, and the one the formatting password
+  owns -- so every account silently claimed root's slot, and an admin password change would have
+  revoked it.
+  Witnessed by `make smoke-installer-accounts`, falsified by `PASSWD_NO_KEYSLOT=1`
+  (`make smoke-installer-accounts-control`) and in the other direction by
+  `tools/check_base_gate_reddens.sh PASSWD_NO_KEYSLOT`.
+
 ### Removed
 
 - **A scratch gate sweep and its output, neither of which was ever part of the system.**

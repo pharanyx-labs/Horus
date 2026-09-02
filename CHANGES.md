@@ -15,6 +15,27 @@ in this file.
 
 ## [Unreleased]
 
+### Removed
+
+- **A scratch gate sweep and its output, neither of which was ever part of the system.**
+  `c0a9f2e` carried `SWEEP.txt` and `inst_sweep.sh` into the tree; nothing references either --
+  no Makefile target, no workflow, no document, no other script. `SWEEP.txt` is a committed
+  record of seventeen gates in which **every line says FAIL**, and all seventeen pass: each is
+  invoked by a job in `.github/workflows/ci.yml`, checked target by target, and CI on `main` is
+  green. So it is not a stale result but a broken run's output -- the shape a sweep produces when
+  the tree is rebuilt underneath it -- and it told anyone opening the repository root that the
+  system was comprehensively broken, with no date, no command and no context to argue with.
+  `inst_sweep.sh` goes with it. Its comment is a real observation, that the installer is in every
+  build so a sweep must cover the gates whose images it could perturb rather than its own three
+  -- but a root-level script with a hand-maintained list of seventeen target names and no gate to
+  keep that list honest is the pattern `tools/check_split_markers.py`'s header argues against at
+  length. A hand sweep cannot assert completeness about itself.
+  **`SWEEP.txt` and `sweep_*.log` are now gitignored**, beside `soak-evidence/` and
+  `.syscov-evidence*/` and for the same reason: evidence from a run on one machine is not a
+  tracked artifact. That is the part that lasts -- deleting the files fixes today, and the next
+  sweep in a checkout writes them into the root again for the next `git add -A` to collect, which
+  is exactly how these arrived. History is not rewritten; `c0a9f2e` stands as it is.
+
 ### Documented
 
 - **How long [C-6]'s manual reconciliation actually lags, measured** (`docs/LIMITATIONS.md` 5.2).

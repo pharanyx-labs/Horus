@@ -1140,6 +1140,10 @@ did not reproduce in **0 of 12** local boots of the exact failing configuration 
 hits it. A control arm built on that rate would be a coin toss asserting a property. The property
 is structural — a marker is one write — so it is checked statically, where it is decidable.
 
+**And "a marker is one write" is not sufficient for a KERNEL marker.** `panic_str` writes one
+byte at a time to a UART a ring-3 server owns, so a single call is splittable and the static check
+cannot tell. See 2.6c, which is that hazard observed reddening CI on 2026-09-02.
+
 ### 2.6b An account created after the install cannot be the first login after a power cycle
 
 **Open.** `useradd 1001 bob` followed by `passwd 1001` now produces an account that works
@@ -1165,6 +1169,88 @@ implied by S61's existence.
 
 Until then the honest statement of the account model on a persistent volume is: **root
 administers, and every other account is usable on a machine root has opened.**
+
+### 2.6c A KERNEL marker is splittable even when it is one write, and 2.6a's rule does not reach it
+
+**Open.** *Added 2026-09-02.*
+
+2.6a's model is "a gated marker emitted as two writes can be split by another task's output",
+and its repair is "emit it as one write", enforced statically by `tools/check_split_markers.py`.
+**For a marker printed by the KERNEL while ring 3 is running, one write is not enough**, and the
+checker cannot see the difference.
+
+`panic_str` is `while (*s) panic_ch(*s++)` — one byte to the UART at a time. `console_server`
+owns that UART from a ring-3 task on another CPU (a deliberate second-writer arrangement, finding
+**#126**, recorded in the comment above `kfault_begin`). A ring-3 write can therefore land between
+any two **characters** of a single `panic_str` call. The claim `kfault_begin` takes serialises
+kernel reporters against each other and against nothing else; `kfault_begin(1)`/`panic_begin`
+halts other CPUs that try to *report*, which is also not ring 3. There is no lock the kernel can
+take here, because the party it needs to exclude is a task it does not schedule out.
+
+**Observed 2026-09-02**, CI run `33553525177`, job `smoke-kstack-park-control` on PR #289 — a PR
+touching `userspace/shell.c`, documentation and a userspace-only build flag this gate never sets.
+`src/kernel/scheduler.c:1660` emits
+
+```c
+kfault_str("\nPANIC: two CPUs parking on one kernel stack rsp=");
+```
+
+as a single call. It reached the wire as:
+
+```
+Us parking on one kernel stack rsp=0xffffffffc0010ff0 this-cpu=3 already-cpu=0 task=1 'hello'
+KERNEL FATAL SHARED PARK STACK - halting
+```
+
+`\nPANIC: two CP` is gone — the line begins mid-word, ring-3 `PROC_SELFTEST` output having landed
+inside the call. The gate's `KSTACK_PARK_RE = PANIC: two CPUs parking on one kernel stack` did not
+match, and it reported:
+
+```
+boot 1/8: 5 park(s), none shared   ...   boot 8/8: 5 park(s), none shared
+KSTACK PARK CONTROL: FAIL - the shared park did NOT reproduce in
+  8 boots that ran to completion (0 more died and were not counted).
+```
+
+**Its own evidence dump, four lines below that sentence, contains the panic.** The defect
+reproduced; the arm scored it a clean sweep of misses.
+
+**Both of that gate's detectors failed at once, each for a reason already written down.** The
+duplicate-`PARKTRACE` test needs two trace lines, and `sched_note_park` halts on seeing the second
+CPU, so on the boot that reproduces hardest the second line is never printed — the #193 lesson,
+which is *why* the panic fallback was added. The panic fallback then needs contiguity the console
+cannot provide. Each detector covers the other's blind spot in principle and neither covers this
+boot. Every `PARKTRACE` in that run was `cpu=0` while the panic reported `this-cpu=3
+already-cpu=0`, which is exactly that shape.
+
+Measured both ways on the same day: CI **FAIL** with the panic present in its own dump, and the
+same arm on `origin/main` locally **PASS on boot 1 of 8**, caught by the duplicate-trace path
+(`distinct CPUs parking: 2`) because there both CPUs printed before the halt. The arm is not
+flaky about whether the defect occurs — it occurred in both — it is flaky about **which detector
+sees it**, and one of the two is unreliable by construction.
+
+**Why `check_split_markers.py` passes this.** The checker's rule is "a gated marker is one write",
+and this marker *is* one write. The invariant is correct for userspace, where `sys_write` delivers
+a buffer, and insufficient for the kernel, where the write is a character loop. A static check
+cannot distinguish the two without knowing that `panic_str` is not atomic — so the hazard is
+outside what the 2026-09-01 gating closed, rather than a regression of it.
+
+**What the repair is not.** "Make the emission atomic" was the first proposal and is not
+available, for the reason above. A shorter grep is a smaller probability, not a property, and
+`0.4^N` reasoning about a detector is the framing CLAUDE.md's own park worked-example rejects.
+
+**What it probably is.** A channel the kernel controls end to end. `isa-debug-exit` at port
+`0x604` is already wired into every harness invocation and already written by
+`src/kernel/kshell.c:99`; `tools/smoke_test.sh:146` says outright that it is "present for parity
+with `make run`; not relied on here". A distinct exit code for the shared-park collision cannot be
+split by any amount of console noise, and would make this arm's assertion exact rather than
+probabilistic. That is a kernel change plus a harness change plus its own witness, and it should
+be designed against the other kernel-marker gates rather than bolted onto this one.
+
+**Scope is reasoned, not enumerated.** The mechanism applies to any gate matching a kernel-emitted
+string while ring 3 is running — CLAUDE.md already records `DEFECT FLAGS: ` as asserted by six
+gates and emitted from the kernel. Which gates are actually exposed has **not** been measured, and
+this entry does not claim a count.
 
 ### 2.7 The VFS namespace is a name, not an enforcement boundary
 

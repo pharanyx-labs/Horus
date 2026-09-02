@@ -15,6 +15,29 @@ in this file.
 
 ## [Unreleased]
 
+### Documented
+
+- **A kernel marker is splittable even when it is one write** (`docs/LIMITATIONS.md` 2.6c).
+  2.6a's repair for split markers is "emit it as one write", enforced statically by
+  `tools/check_split_markers.py`. That invariant is correct for userspace, where `sys_write`
+  delivers a buffer, and **insufficient for the kernel**: `panic_str` writes one byte at a time to
+  a UART a ring-3 `console_server` owns from another CPU, so a ring-3 write can land between any
+  two characters of a single call. No lock helps -- the party to exclude is a task the kernel does
+  not schedule out.
+  Observed reddening CI on 2026-09-02: `smoke-kstack-park-control` reported the shared park did
+  not reproduce in 8 of 8 boots, and its own evidence dump four lines later carried
+  `KERNEL FATAL SHARED PARK STACK - halting`. `scheduler.c:1660`'s
+  `PANIC: two CPUs parking on one kernel stack` reached the wire beginning mid-word, with
+  `\nPANIC: two CP` replaced by ring-3 output. **Both** of that gate's detectors failed at once,
+  each for a reason already recorded: the duplicate-`PARKTRACE` test is defeated by
+  `sched_note_park` halting before the second trace prints (the #193 lesson, which is why the
+  panic fallback exists), and the panic fallback needs contiguity the console cannot give.
+  Not fixed. "Make the emission atomic" is not available, and a shorter grep is a smaller
+  probability rather than a property. The likely repair is a channel the kernel controls end to
+  end -- `isa-debug-exit` is already wired into every harness invocation and explicitly not relied
+  on -- designed against the other kernel-marker gates rather than bolted onto this one. Which
+  gates are exposed has not been measured and no count is claimed.
+
 ### Fixed
 
 - **`passwd <uid>` changed the caller's own password, and re-sealed the volume to it**

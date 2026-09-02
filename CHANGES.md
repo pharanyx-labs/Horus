@@ -131,6 +131,20 @@ in this file.
   The two passwords must differ, the name is validated on screen before anything is written
   (lowercase, starts with a letter, not `root`), and neither password reaches the terminal.
 
+### Changed
+
+- **[G-12]'s rate at HEAD is measurably lower, and the survivor is named.** 0 failures in **3500**
+  clean idle boots against the pre-fix 7 in 2250 -- Fisher **p = 0.0014**, 95% upper bound 0.086%.
+  Both fixes it follows are *checker* fixes (the S20 detector's identity, the auditor's
+  persistence test), so what this establishes is that **most of what the finding counted were the
+  checkers' own false positives**, not that a hardware defect was repaired.
+  The one surviving failure is not an artifact: `percpu_current=[1,1,0,0]` with `imp=[0,0,0,0]`
+  (two CPUs current on one task, no impersonation), an audit panic that **survived the re-read**,
+  and a stack canary dying in **`do_spawn_charged`** with `inflight=0` -- outside the window the
+  S20 detector watches. Two CPUs on one kernel stack, corrupting the spawn path's frame.
+  **A load "lever" recorded on 2026-09-02 did not survive retesting** (1/600 under CPU burners
+  against 0/2500 idle, p = 0.194) and is corrected in the record rather than left as a tool.
+
 ### Fixed
 
 - **[G-13] filed: the installer's format stalls on CI, cause unestablished.** `smoke-installer`

@@ -2958,14 +2958,25 @@ real corruption is the stack canary**, which is independent of both detectors --
 it with no audit panic at all, and a CI capture printed it *before* the audit panic. That remains
 unattributed.
 
-**Since 2026-09-02**: the auditor's persistence test is fixed (it re-reads before accusing;
-witness `make smoke-claim-reread`, arm `CLAIM_AUDIT_NO_REREAD=1`), and the surviving corruption
-is characterised -- the faulting address in two captures is an **instruction fetch into
-`KSTACK_REGION_VMA`**, the per-task kernel stack region, which unifies all three symptoms as
-kernel stack contents being overwritten. The defect is **load-sensitive**: 9 failures in 700
-boots under concurrent builds against 2 in 1000 idle (Fisher p = 0.010), which is both a lever
-for reproduction and the reason one campaign here was discarded. Whether the rate has changed at
-all is **not established** (2/2000 idle against 7/2250, Fisher p = 0.186).
+**Since 2026-09-02** the auditor's persistence test is fixed (it re-reads before accusing;
+witness `make smoke-claim-reread`, arm `CLAIM_AUDIT_NO_REREAD=1`), and **the rate at HEAD is
+measurably lower**: 0 failures in 3500 clean idle boots against the pre-fix 7 in 2250, Fisher
+**p = 0.0014**, 95% upper bound 0.086%. Read that carefully -- both fixes it follows are
+*checker* fixes, so what it establishes is that **most of what this finding counted were the
+checkers' own false positives**, not that any hardware defect was repaired.
+
+**The survivor is named.** One failure in 600 loaded boots, with `percpu_current=[1,1,0,0]` and
+`imp=[0,0,0,0]` -- two CPUs current on one task with no impersonation to explain it -- an audit
+panic that **survived the re-read**, and a stack canary dying in **`do_spawn_charged`**
+(`src/kernel/kspawn.c`). `inflight=0`, so the S20 collision detector could not have fired. The
+faulting addresses in earlier captures are instruction fetches into `KSTACK_REGION_VMA`, the
+per-task kernel stack region. So: two CPUs become current on one task, the shared kernel stack
+corrupts the spawn path's frame, and how the second CPU gets there is the open question.
+
+**A load "lever" recorded here on 2026-09-02 did not survive retesting** and should not be used
+to size a campaign: 1 failure in 600 boots under CPU burners against 0 in 2500 idle, Fisher
+p = 0.194. The original figure came from concurrent `make -j12`, which is memory and I/O pressure
+as well as CPU, so a build-shaped load may still be a lever while a spin-loop is not.
 
 ### 5.2h The installer's format stalls on CI, cause unestablished: **[G-13]**, open
 

@@ -387,7 +387,7 @@ library and cannot create kernel scheduler state, but it did resize four server 
 moves timing, so "pre-existing and under-sampled" and "the same defect, made marginally easier
 to hit" both fit the data. Recorded rather than concluded.
 
-**Re-measured 2026-09-02, and it is now [G-12].** The rate is **7 marker failures in 2250
+**Re-measured 2026-09-02, and it is now [G-12].** The rate is **10 marker failures in 3250
 boots, 0.31% per boot**, with CI (2/750, mined from the job's own `STRESS RESULT` lines, so
 green runs contribute their boots and their zeroes) and a local campaign (5/1500) agreeing. That
 puts this gate's red rate on `main` at 1 - 0.9969^30 ≈ **8.9%** of runs, against 2 of 25
@@ -401,7 +401,12 @@ all four reproductions**. A `KSTACK_RACE_WIDEN=1` arm, which stretches that same
 essentially every switch, was silent across 100 more but reproduced no failures of its own and
 costs 3x boot time, so it corroborates rather than carries the result. The instrument's own cost
 was checked before the exclusion was believed: 4/1000 with it against 1/500 without is Fisher
-p ≈ 0.67. Full record in
+p ≈ 0.67. `CLAIM_IMP_TRACE=1` then killed the remaining candidate: across 1000 further boots, **`torn=0`
+in every capture** -- no impersonation tear -- and **every audit accusation captured is false at
+the instant it is made**, with a fresh `sched_running_on()` microseconds later agreeing with the
+claim. Two failure modes are now distinguished: one boot smashed the stack with the auditor
+silent, and a CI capture printed the canary *before* the audit panic, which rules out the
+corruption being fallout from the auditor's halt. Full record in
 [`docs/investigations/G-12-claim-invariant-residue.md`](docs/investigations/G-12-claim-invariant-residue.md).
 
 **An early cluster that was not real, recorded because it nearly set the sample size.** The

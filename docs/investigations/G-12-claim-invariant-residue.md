@@ -5,7 +5,9 @@ that observes it is `make smoke-sched-invariants-stress`.*
 
 ---
 
-**Status: OPEN, filed 2026-09-02. Rate 7 marker failures in 2250 boots (0.31% per boot).**
+**Status: OPEN, filed 2026-09-02. Rate 10 marker failures in 3250 boots (0.31% per boot).**
+**Two failure modes, one of them independent of the claim auditor. The impersonation
+hypothesis this document was filed with has since been falsified by its own instrument.**
 
 This is **not** [G-9] reopened. Every mechanism [G-9] names is fixed and falsified, and this
 document does not disturb that. What is filed here is the residue that [G-9]'s own record
@@ -115,25 +117,74 @@ Two limits on that, stated because they bound the claim rather than decorate it:
   p ≈ 0.67. That check exists because §5.2d records an instrument whose cost was misread as the
   system's failure rate, and the same mistake here would have made the exclusion worthless.
 
-## Candidate, NOT established
+## The candidate is DEAD, and the auditor is accusing states that do not hold
 
-`sched_running_on()` reads `percpu_impersonating[c]`, and on the `d == 0` branch reads
-`percpu_current_task[c]` afterwards. `sched_impersonate_enter()` takes no scheduler lock, so a
-CPU can begin impersonating between those two reads -- and the auditor then reads the
-**impersonated** task believing it is the real one, which would report a mismatch that is not
-one. That is the same class as [G-9]'s final component, which was a checker false positive.
+`CLAIM_IMP_TRACE=1` (added 2026-09-02) re-reads the accused CPU at the instant of the
+accusation and prints the impersonation depth either side of the reads, what each branch of
+`sched_running_on()` would have returned, and a fresh evaluation. 1000 boots, unwidened:
 
-**The evidence does not support it as the whole story**, and it is written down as a lead rather
-than a finding for one specific reason: the first capture above has `imp=[0,0,0,0]` -- no
-impersonation anywhere -- and still produced a bogus resume `%rsp`. Either there is more than one
-mechanism here, or impersonation is not necessary to it. Fitting the story to two captures out of
-three is how the earlier residues in this family were mis-attributed twice.
+| | Boots | Marker failures | Rate |
+|---|---|---|---|
+| `CLAIM_IMP_TRACE=1` | 1000 | 3 | 0.30% |
+
+0.30% against the 0.31% baseline, so the instrument costs nothing measurable -- checked before
+anything it reported was believed.
+
+**The impersonation-tear hypothesis is falsified by its own instrument.** `torn=0` in every
+capture. It was the leading candidate when this document was filed, and it is wrong:
+
+```
+imp-probe: d1=1 d2=1 torn=0 cur=1 real=1  seen2=1  -- MISMATCH GONE ON RE-READ
+imp-probe: d1=0 d2=0 torn=0 cur=1 real=-1 seen2=1  -- MISMATCH GONE ON RE-READ
+```
+
+**Every audit accusation captured is false at the instant it is made.** The auditor reports
+`task 1 claimed by cpu N but that cpu was running 0`; a fresh `sched_running_on(N)` microseconds
+later returns 1. The claim and the runner agree. Three captures, three times.
+
+**The two-strike guard does not establish persistence.** It reads *"persisted across two
+audits"*, and it is a single file-scope `(sched_susp_task, sched_susp_cpu)` pair with **no time
+component**: audit A arms it, audit B -- which may be microseconds later on another CPU, and both
+audits run under `sched_raw_lock` so they serialise rather than exclude the window -- sees the
+same in-flight switch and panics. "Seen twice" is not "persisted", and for a window every switch
+enters, the difference is the whole claim.
+
+`percpu_commit_gap[]` exists to describe exactly that window -- the gap between
+`task_running_cpu[next] = cpu` and `set_current_task(next)` -- and it is **printed in the panic
+and never exempted by the audit loops**. `sched_enter_user()`, the first-entry path that runs a
+few hundred milliseconds after `kernel ready` (which is when these failures land), does not set
+it at all.
+
+## There are TWO failure modes, not one
+
+This is the part that stops the checker story explaining everything.
+
+| Capture | Auditor fired? | Corruption |
+|---|---|---|
+| `fail-34` | **no** | stack canary, alone |
+| `fail-696` | yes, first | `PANIC: two CPUs on one kernel stack task=1 entering-cpu=3 unwinding-cpu=0` |
+| `fail-842` | yes, first | page fault at `0x0`, task killed by the validator |
+| CI, PR #299 | yes, **second** | stack canary, **printed first** |
+
+`fail-34` corrupts memory with **no audit panic at all**, so the auditor is not the only thing
+wrong. And the ordering settles a confound: in `fail-696` the audit fired first and halts a CPU
+while holding `sched_raw_lock`, so the two-CPU report could have been fallout from that halt --
+but in the PR #299 capture **the canary tripped BEFORE the audit panic**, which no halt can
+explain. The corruption is independent of the claim auditor.
+
+Note also that `PANIC: two CPUs on one kernel stack` is the **[G-8]/S20 detector**, a mechanism
+entirely separate from the claim auditor, reporting the same underlying condition.
 
 ## What would settle it
 
-An instrument on `sched_running_on` recording whether a reported mismatch coincides with an
-impersonation transition. That distinguishes "the auditor is lying" from "the scheduler is
-leaking", and those need different fixes -- the first is a checker bug and the second is not.
+Two things, and they are separate work:
+
+1. **The auditor's persistence test.** Make "persisted" mean it, rather than "seen twice by
+   whichever CPUs happened to audit". The obvious repair -- exempt the commit gap, as the
+   deferred release is already exempted -- must not reduce what the gate detects: `fail-34`
+   shows corruption arriving with the auditor silent, so a quieter auditor is a gate that
+   catches less. **Re-sizing or relaxing the gate is not on the table** (see below).
+2. **The corruption itself**, which is not the auditor's doing and is not yet attributed.
 
 ## What this does NOT justify
 

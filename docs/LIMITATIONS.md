@@ -2912,7 +2912,7 @@ foreign-image-spawned pid 1` on every boot.
 
 ### 5.2g The claim invariant still fires in the boot phase: **[G-12]**, open
 
-**Filed 2026-09-02, rate 7 marker failures in 2250 boots (0.31% per boot).** Full record in
+**Filed 2026-09-02, rate 10 marker failures in 3250 boots (0.31% per boot).** Full record in
 [`investigations/G-12-claim-invariant-residue.md`](investigations/G-12-claim-invariant-residue.md).
 
 This is **not [G-9] reopened**: every mechanism [G-9] names is fixed and falsified and stays
@@ -2937,12 +2937,21 @@ switch was silent across 100 more. The instrument costs nothing measurable (4/10
 against 1/500 without, Fisher p ≈ 0.67), which is checked rather than assumed because §5.2d
 records an instrument whose cost was misread as the system's rate.
 
-**No mechanism is attributed.** One candidate is written down in the investigation and
-deliberately not asserted: `sched_running_on()` reads `percpu_impersonating[c]` and then, on the
-not-impersonating branch, reads `percpu_current_task[c]` -- and `sched_impersonate_enter()` takes
-no scheduler lock, so a CPU beginning to impersonate between those two reads would have the
-auditor read the impersonated task as the real one. It fits two captures out of three; the third
-has no impersonation in flight at all and fails anyway.
+**That candidate is now dead, killed by its own instrument.** `CLAIM_IMP_TRACE=1` re-reads the
+accused CPU at the instant of the accusation; across 1000 further boots and every capture,
+`torn=0` -- no impersonation tear anywhere. What it found instead is that **every audit
+accusation captured is false when it is made**: the auditor reports "task 1 claimed by cpu N but
+that cpu was running 0", and a fresh `sched_running_on(N)` microseconds later returns 1. The
+report's *"persisted across two audits"* does not mean what it says: the two-strike guard is a
+single `(task, cpu)` pair with **no time component**, so two audits observing one in-flight
+switch are enough to panic.
+
+**There are two failure modes, and only one of them is the auditor.** One captured boot smashed
+the stack with **no audit panic at all**, and a CI capture on 2026-09-02 printed the canary
+*before* the audit panic -- which rules out the corruption being fallout from the auditor halting
+a CPU mid-switch, a confound the earlier captures could not settle. `PANIC: two CPUs on one
+kernel stack` (the **[G-8]/S20** detector, independent of the claim auditor) has also been
+observed. The corruption is real, it is not the checker, and it is not yet attributed.
 
 ### 5.3 No release provenance: **[I-9]**
 

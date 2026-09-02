@@ -17,6 +17,24 @@ in this file.
 
 ### Added
 
+- **`CLAIM_IMP_TRACE=1`**, an instrument for **[G-12]**: it re-reads the accused CPU at the
+  instant the claim auditor accuses it, and prints the impersonation depth either side of the
+  reads, what each branch of `sched_running_on()` would have returned, and a fresh evaluation.
+  Reads only, on the mismatch path only; measured at 3/1000 against the 0.31% baseline, so it
+  costs nothing.
+  **It killed the hypothesis [G-12] was filed with.** `torn=0` in every capture -- no
+  impersonation tear -- and instead **every audit accusation captured is false when it is made**:
+  a fresh `sched_running_on()` microseconds later agrees with the claim. The report's *"persisted
+  across two audits"* does not mean what it says, because the two-strike guard is a single
+  `(task, cpu)` pair with no time component.
+  **And there are two failure modes.** One boot smashed the stack with **no audit panic at all**,
+  and a CI capture printed the canary *before* the audit panic -- which rules out the corruption
+  being fallout from the auditor halting a CPU mid-switch, a confound the earlier captures could
+  not settle. `PANIC: two CPUs on one kernel stack`, the independent **[G-8]/S20** detector, has
+  also been observed. No fix here, deliberately: the auditor's persistence test and the
+  corruption are separate work, and quieting the auditor would reduce what a gate that is
+  currently catching real corruption detects.
+
 - **The installed-login gate touches the filesystem.** `smoke-installer` and
   `smoke-installer-accounts` logged into an installed volume, ran `whoami`, and logged out -- so
   **no gate exercised the filesystem after a login unlocked a real volume**, which is the one

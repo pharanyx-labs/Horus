@@ -2459,6 +2459,14 @@ jobs:
       # was chosen to kill tasks.
       - name: Restore the shared park and require it to REPRODUCE
         run: make smoke-kstack-park-control
+      # S20, identity half. The G-8 collision detector asked percpu_current_task[],
+      # which is deliberately lying for the whole of an impersonation window, so it
+      # accused a CPU that was merely impersonating. Deterministic pair: the
+      # natural event is ~0.3% of boots ([G-12]) and that is no basis for a gate.
+      - name: A CPU that is merely impersonating is not accused of sharing a kernel stack (S20)
+        run: make smoke-kstack-imp
+      - name: Restore the lying identity and require the false accusation to REPRODUCE
+        run: make smoke-kstack-imp-control
 
   smoke-session:
     name: Scripted integration session (headless, drives the real shell)

@@ -48,6 +48,7 @@ control_arms:
   smoke-session-chmod-control: smoke-session
   smoke-session-chown-control: smoke-session
   smoke-session-home-control: smoke-session
+  smoke-kstack-imp-control: smoke-kstack-imp
   smoke-captest-lookup-type-control: smoke-captest
   smoke-auditprobe-control: smoke-auditprobe
   smoke-auditprobe-abi-control: smoke-auditprobe
@@ -245,6 +246,7 @@ gates:
   - smoke-rng-seed
   - smoke-sched-invariants
   - smoke-sched-invariants-stress
+  - smoke-kstack-imp
   - smoke-session
   - smoke-session-smp
   - smoke-session-smp-soak

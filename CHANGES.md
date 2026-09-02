@@ -133,6 +133,25 @@ in this file.
 
 ### Fixed
 
+- **The kernel-stack collision detector accused CPUs that were merely impersonating** (**S20**).
+  It took its identity from `get_current_task()` -- `percpu_current_task[]`, which `scheduler.c`'s
+  own header calls *"deliberately lying"* for the duration of every impersonation window. A CPU
+  impersonating a peer that blocked on another core, and had not been unwound off its stack yet,
+  asked "is anyone else on that task's stack", got yes, and reported **two CPUs on one kernel
+  stack** while neither CPU was on the other's -- a false positive in a security witness, in a
+  detector that halts the machine fail-closed.
+  It is the same blind spot `percpu_real_task[]` was introduced to close for the claim auditor in
+  August, reached through a different caller. There is now **one implementation** of "who is this
+  CPU really running", shared by the auditor and the detector, moved under plain `SMP` because
+  the detector runs in ship builds where the auditor's helper does not exist.
+  **This makes the detector more correct, not quieter**: it stops accusing on an identity it does
+  not hold, and every genuine collision still reports -- which the witness asserts in the same run.
+  It also corrects **[G-12]**, which had recorded that report as independent evidence of real
+  corruption; the surviving evidence there is the stack canary.
+  Witness: `make smoke-kstack-imp`, deterministic. Falsified by `KSTACK_COLLIDE_IMPERSONATED=1`
+  (`smoke-kstack-imp-control`); base gate red under the same flag.
+
+
 - **The shell reports the reason the `fs_server` gave, instead of guessing at it.** Every file
   command collapsed `fss_call() < 0 || rp.rc < 0` into a single sentence that named two possible
   causes -- `mkdir: failed (name exists or server not running)` -- and the answer the server

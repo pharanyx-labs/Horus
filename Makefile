@@ -125,7 +125,8 @@ DEFECT_FLAGS = \
 	INIT_PROVISION_NO_UNTYPED AUDIT_ABI_LEGACY STORE_LOCKED_UNCHECKED \
 	PASSWD_TARGET_IGNORED PASSWD_NO_KEYSLOT \
 	SHELL_FS_ERR_FLAT FS_CHMOD_ANY_OWNER FS_CHOWN_ANY_UID \
-	USERLIST_UNGATED HOME_DIR_ROOT_OWNED CLAIM_IMP_TRACE
+	USERLIST_UNGATED HOME_DIR_ROOT_OWNED CLAIM_IMP_TRACE \
+	KSTACK_COLLIDE_IMPERSONATED
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -1630,6 +1631,26 @@ CLAIM_IMP_TRACE ?= 0
 ifeq ($(CLAIM_IMP_TRACE),1)
 CFLAGS  += -DCLAIM_IMP_TRACE
 ASFLAGS += -DCLAIM_IMP_TRACE
+endif
+
+# KSTACK_COLLIDE_IMPERSONATED=1 restores the pre-2026-09-02 identity in the G-8
+# collision detector: percpu_current_task[], which is deliberately lying for the
+# whole of every impersonation window. A CPU impersonating a peer that blocked on
+# another core then reports "two CPUs on one kernel stack" while neither CPU is on
+# the other's -- a FALSE POSITIVE in an S20 witness.
+KSTACK_COLLIDE_IMPERSONATED ?= 0
+ifeq ($(KSTACK_COLLIDE_IMPERSONATED),1)
+CFLAGS  += -DKSTACK_COLLIDE_IMPERSONATED
+ASFLAGS += -DKSTACK_COLLIDE_IMPERSONATED
+endif
+
+# KSTACK_IMP_SELFTEST=1 adds the S20 identity witness. A TEST rather than a defect
+# arm -- it adds a check and removes none -- so it is deliberately NOT in
+# DEFECT_FLAGS, for the reason the comment on that list gives.
+KSTACK_IMP_SELFTEST ?= 0
+ifeq ($(KSTACK_IMP_SELFTEST),1)
+CFLAGS  += -DKSTACK_IMP_SELFTEST
+ASFLAGS += -DKSTACK_IMP_SELFTEST
 endif
 
 # CLAIM_RELEASE_SKIP=1 removes `call sched_release_deferred` from the ISR
@@ -4422,6 +4443,34 @@ smoke-captest-storage-format-control:
 # and nothing else, and the ungated call SUCCEEDS -- a booted system always has
 # accounts, so captest reads `root` back. A refusal test whose ungated form also
 # failed would pass under the defect and witness nothing.
+# S20, identity half: the G-8 collision detector must not accuse a CPU that is
+# merely impersonating -- percpu_current_task[] is deliberately lying for the
+# whole of an impersonation window, and the detector asked it until 2026-09-02.
+# Deterministic: the condition is three variables and the selftest stages them,
+# because the natural event is ~0.3% of boots ([G-12]) and that is no basis for a
+# gate. Asserts BOTH directions in one run -- an impersonating CPU is not accused,
+# and a genuine collision still is.
+.PHONY: smoke-kstack-imp
+smoke-kstack-imp:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory KSTACK_IMP_SELFTEST=1
+	@$(MAKE) --no-print-directory KSTACK_IMP_SELFTEST=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) MARKER_ONLY=1 \
+		REQUIRE_MARKER='KSTACKIMP_SELFTEST: PASS' \
+		FAIL_MARKER='KSTACKIMP_SELFTEST: FAIL' \
+		tools/smoke_test.sh boot.iso
+
+# Control arm: the pre-2026-09-02 identity restored, so the detector reads
+# percpu_current_task[] and accuses the impersonating CPU.
+.PHONY: smoke-kstack-imp-control
+smoke-kstack-imp-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory KSTACK_IMP_SELFTEST=1 KSTACK_COLLIDE_IMPERSONATED=1
+	@$(MAKE) --no-print-directory KSTACK_IMP_SELFTEST=1 KSTACK_COLLIDE_IMPERSONATED=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) MARKER_ONLY=1 \
+		REQUIRE_MARKER='KSTACKIMP_SELFTEST: FAIL an impersonating cpu was accused of sharing a kernel stack' \
+		tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-captest-userlist-control
 smoke-captest-userlist-control:
 	@$(MAKE) --no-print-directory clean

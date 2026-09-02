@@ -585,6 +585,11 @@ void kernel_main(uint32_t mb_info) {
      * marker. */
     caplookup_selftest();
 #endif
+#ifdef KSTACK_IMP_SELFTEST
+    /* After scheduler_init: it zeroes the per-CPU tables this stages against.
+     * Boot continues; make smoke-kstack-imp asserts on the marker. */
+    kstack_imp_selftest();
+#endif
 #ifdef TASKCEIL_SELFTEST
     /* After scheduler_init, which is what allocates task 0 and therefore what
      * makes kstack_slots_mapped meaningful. Boot continues; make

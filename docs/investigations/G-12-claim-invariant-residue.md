@@ -172,8 +172,24 @@ while holding `sched_raw_lock`, so the two-CPU report could have been fallout fr
 but in the PR #299 capture **the canary tripped BEFORE the audit panic**, which no halt can
 explain. The corruption is independent of the claim auditor.
 
-Note also that `PANIC: two CPUs on one kernel stack` is the **[G-8]/S20 detector**, a mechanism
-entirely separate from the claim auditor, reporting the same underlying condition.
+### The `two CPUs on one kernel stack` report in `fail-696` was a FALSE POSITIVE
+
+*Corrects this document, 2026-09-02.* It was filed here as an independent detector reporting the
+same underlying condition. It was not. The entering CPU in that capture has `imp=[0,0,0,1]` -- it
+was **impersonating** -- and the G-8 detector took its identity from `get_current_task()`, i.e.
+`percpu_current_task[]`, which is deliberately lying for the whole of an impersonation window. A
+CPU impersonating a peer that blocked on another core, and had not been unwound off its stack
+yet, asked "is anyone else on that task's stack", got yes, and reported a collision while neither
+CPU was on the other's.
+
+Fixed and witnessed by `make smoke-kstack-imp` / `smoke-kstack-imp-control`
+(`KSTACK_COLLIDE_IMPERSONATED=1`). That is the **third** false positive in this family --
+the claim auditor's impersonation blind spot in August, its two-strike guard above, and now the
+collision detector -- all of them one question asked of the wrong variable.
+
+**What survives as evidence of real corruption is the stack canary**, which is independent of
+both detectors: `fail-34` tripped it with no audit panic at all, and the CI capture on PR #299
+printed it *before* the audit panic. That remains unattributed.
 
 ## What would settle it
 

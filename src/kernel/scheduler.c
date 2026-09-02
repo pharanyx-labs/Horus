@@ -1677,6 +1677,163 @@ int sched_kstack_holder(int t)
         if (percpu_deferred_release[c] == t) return c;
     return -1;
 }
+
+/* WHICH TASK'S KERNEL STACK IS THIS CPU EXECUTING ON, and is another CPU still
+ * unwinding off it? Returns that CPU, or -1 for "no collision".
+ *
+ * THE IDENTITY IS THE WHOLE POINT, and asking the wrong variable for it is the
+ * defect this function exists to remove. The G-8 detector in idt.c asked
+ * `get_current_task()`, i.e. percpu_current_task[] -- and this file's own header
+ * says that variable is "deliberately lying" for the duration of an
+ * impersonation. A CPU impersonating task T to copy into T's address space is
+ * still executing on ITS OWN stack; it is not on T's. So when a reply lands for a
+ * peer that blocked on another core and has not yet been unwound off its stack,
+ * the impersonating CPU asked "is anyone else on T's stack", got yes, and
+ * reported two CPUs on one kernel stack. Neither CPU was where the report said.
+ *
+ * That is the same blind spot percpu_real_task[] was introduced to close for the
+ * claim auditor (see the impersonation note at the top of this file), reached
+ * here through a different caller. sched_running_on() already answers the
+ * question correctly, so the fix is to ask it rather than to special-case
+ * impersonation at the call site.
+ *
+ * A -1 identity means the CPU is mid-flight through an impersonation bracket and
+ * cannot say which stack it is on. It reports no collision, deliberately: a
+ * detector that accuses on an identity it does not know is the thing being fixed,
+ * and a real collision persists -- the other CPU is still unwinding -- so the next
+ * interrupt with a known identity catches it. Missing one interrupt's worth of
+ * detection is the correct trade against accusing correct kernels. */
+#ifdef SMP
+/* WHICH TASK IS CPU `c` REALLY RUNNING -- the one whose kernel stack it is on.
+ *
+ * Defined here, under plain SMP, because the G-8 collision detector needs it in
+ * a SHIP build: percpu_impersonating[]/percpu_real_task[] are SMP state, while
+ * the claim auditor that first needed this answer is SCHED_INVARIANTS-only. The
+ * auditor's sched_running_on() is now a wrapper over this, so there is ONE
+ * implementation of "who is this CPU really running" rather than two that can
+ * drift -- which is the shape of defect this whole area keeps producing.
+ *
+ * -1 means "cannot tell": the two variables are written on the other CPU without
+ * a lock, so a reader can land between the depth increment and the snapshot. That
+ * is a mid-flight read of a correct kernel, and every caller declines to judge on
+ * it. */
+static int sched_real_task_on(int c) {
+    int d = percpu_impersonating[c];
+    __sync_synchronize();
+    if (d == 0) return percpu_current_task[c];
+    int r = percpu_real_task[c];
+    return (r < 0) ? -1 : r;
+}
+#endif
+
+int sched_kstack_collision(void)
+{
+#ifdef SMP
+    int me = this_cpu();
+    if (me < 0 || me >= MAX_CPUS) return -1;
+#ifdef KSTACK_COLLIDE_IMPERSONATED
+    /* CONTROL ARM -- never ship. The pre-2026-09-02 identity: percpu_current_task[],
+     * which lies for the whole of every impersonation window. */
+    int t = percpu_current_task[me];
+#else
+    int t = sched_real_task_on(me);
+#endif
+    if (t <= 0 || t >= g_max_tasks) return -1;
+    if (!kstack_inflight_task(t)) return -1;
+    int holder = sched_kstack_holder(t);
+    if (holder < 0 || holder == me) return -1;   /* our own bit is not a collision */
+    return holder;
+#else
+    return -1;
+#endif
+}
+
+/* The task whose kernel stack this CPU is executing on, or -1 if it cannot tell.
+ * Exported for the same reason the predicate above is: the answer depends on
+ * percpu_real_task[], which lives here. */
+int sched_stack_task(void)
+{
+#ifdef SMP
+    int me = this_cpu();
+    if (me < 0 || me >= MAX_CPUS) return -1;
+    return sched_real_task_on(me);
+#else
+    return get_current_task();
+#endif
+}
+
+#ifdef KSTACK_IMP_SELFTEST
+/* S20 witness, identity half: THE COLLISION DETECTOR MUST NOT ACCUSE A CPU THAT
+ * IS MERELY IMPERSONATING.
+ *
+ * Deterministic on purpose. The natural event is a reply landing for a peer that
+ * blocked on another core and has not been unwound off its stack yet -- about
+ * 0.3% of boots ([G-12]), which is no basis for a gate. The condition is three
+ * variables, so it is staged directly and the predicate is asked.
+ *
+ * Staged HERE rather than in selftest.c because percpu_deferred_release[] and the
+ * impersonation state are file-static; exporting a setter so a test could reach
+ * them would put a hole in a ship build for a test's convenience.
+ *
+ * The check is deliberately in BOTH directions. A predicate that answered "no
+ * collision" unconditionally would pass the first half and is exactly the
+ * mutation an inject-and-look test cannot see, so the second half stages a
+ * genuine collision -- same foreign holder, no impersonation -- and requires it
+ * to be REPORTED. */
+void kstack_imp_selftest(void)
+{
+    print("KSTACKIMP_SELFTEST: begin\n");
+
+    int me = this_cpu();
+    int victim = -1;
+    for (int t = 1; t < g_max_tasks && t < MAX_TASKS; t++)
+        if (task_running_cpu[t] < 0) { victim = t; break; }
+    if (victim < 0) {
+        print("KSTACKIMP_SELFTEST: FAIL no unclaimed task to stage with\n");
+        return;
+    }
+    int foreign = (me == 0) ? 1 : 0;
+    if (foreign >= MAX_CPUS) {
+        print("KSTACKIMP_SELFTEST: FAIL need a second cpu slot to be the holder\n");
+        return;
+    }
+
+    int saved_cur      = percpu_current_task[me];
+    int saved_deferred = percpu_deferred_release[foreign];
+
+    /* Another CPU is still unwinding off `victim`'s kernel stack. */
+    percpu_deferred_release[foreign] = victim;
+    __sync_fetch_and_or(&KSTACK_INFLIGHT_WORD(victim), KSTACK_INFLIGHT_BIT(victim));
+
+    /* (1) This CPU IMPERSONATES it -- percpu_current_task[] now names a task this
+     *     CPU is not running and whose stack it is not on. */
+    sched_impersonate_enter();
+    percpu_current_task[me] = victim;
+    int imp_holder = sched_kstack_collision();
+    percpu_current_task[me] = saved_cur;
+    sched_impersonate_exit();
+
+    /* (2) The same state WITHOUT impersonation is a real collision and must be
+     *     reported, or half of this test is satisfied by a predicate that never
+     *     accuses anyone. */
+    percpu_current_task[me] = victim;
+    int real_holder = sched_kstack_collision();
+    percpu_current_task[me] = saved_cur;
+
+    __sync_fetch_and_and(&KSTACK_INFLIGHT_WORD(victim), ~KSTACK_INFLIGHT_BIT(victim));
+    percpu_deferred_release[foreign] = saved_deferred;
+
+    if (imp_holder >= 0) {
+        print("KSTACKIMP_SELFTEST: FAIL an impersonating cpu was accused of sharing a kernel stack\n");
+        return;
+    }
+    if (real_holder != foreign) {
+        print("KSTACKIMP_SELFTEST: FAIL a genuine collision went unreported\n");
+        return;
+    }
+    print("KSTACKIMP_SELFTEST: PASS\n");
+}
+#endif
 #endif
 
 /* Async signal delivery. When a ring-3 task is about to resume, redirect it into
@@ -1861,11 +2018,11 @@ static void sched_bracket_panic(const char *where, int cpu, int depth, int real)
  * a violation, and callers skip it. The two-strike rule covers the rest: the
  * window is a handful of instructions and cannot repeat 10 ms later. */
 static int sched_running_on(int c) {
-    int d = percpu_impersonating[c];
-    __sync_synchronize();
-    if (d == 0) return percpu_current_task[c];
-    int r = percpu_real_task[c];
-    return (r < 0) ? -1 : r;
+    /* One implementation, above, shared with the G-8 collision detector. This was
+     * the only copy until 2026-09-02, and the detector asked percpu_current_task[]
+     * directly instead -- so the auditor knew about impersonation and the detector
+     * did not, which is exactly how a second copy of a rule goes wrong. */
+    return sched_real_task_on(c);
 }
 
 static void sched_assert_claims(const char *where) {

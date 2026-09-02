@@ -786,11 +786,19 @@ uint64_t interrupt_handler64(struct interrupt_frame64 *frame)
          * shift silently aliased task 64 onto task 0 the moment MAX_TASKS grew.
          * Asking about the current task directly is the same one load and bit
          * test, and it cannot be wrong about which task it answered for. */
-        int t = get_current_task();
-        if (kstack_inflight_task(t)) {
-            int me = this_cpu();
-            int holder = sched_kstack_holder(t);
-            if (holder >= 0 && holder != me) {
+        /* The identity comes from sched_kstack_collision() (scheduler.c) rather
+         * than from get_current_task(). This asked percpu_current_task[] until
+         * 2026-09-02, and that variable is DELIBERATELY LYING for the duration of
+         * every impersonation window -- so a CPU impersonating a peer that blocked
+         * on another core, and had not yet been unwound off its stack, reported
+         * two CPUs on one kernel stack while neither CPU was on the other's. The
+         * predicate lives beside percpu_real_task[] because that is what answers
+         * the question; see the note there. */
+        int holder = sched_kstack_collision();
+        int t  = sched_stack_task();
+        int me = this_cpu();
+        {
+            if (holder >= 0) {
                 /* Both parties to a collision see it, and both would report the
                  * same task and the same pair of CPUs, so the second report only
                  * garbles the first: the bounded claim prints past its budget by

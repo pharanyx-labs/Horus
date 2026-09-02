@@ -2695,6 +2695,8 @@ int  rust_elf_x86_64_reloc_resolve(const uint8_t *buf, size_t buf_len, uint64_t 
 
 int  do_useradd(uint32_t uid, uint32_t gid, const char *name, const char *pass);
 int  do_userlist(uint32_t index, struct user_entry *out);
+int  sched_kstack_collision(void);   /* the CPU still unwinding off this CPU's stack, or -1 */
+int  sched_stack_task(void);         /* the task whose kernel stack this CPU is on, or -1 */
 void h_userlist(struct interrupt_frame64 *r);
 int  do_userdel(uint32_t uid);
 int  do_passwd(uint32_t target, const char *newpass);
@@ -2862,6 +2864,11 @@ void caplookup_selftest(void);
  * Declared out here rather than beside aspace_selftest, which is inside
  * `#ifdef ASPACE_SELFTEST` -- a flag this build does not set. */
 void taskceiling_selftest(void);
+#endif
+#ifdef KSTACK_IMP_SELFTEST
+/* S20, identity half: the G-8 collision detector must not accuse a CPU that is
+ * merely impersonating, and must still report a genuine collision. */
+void kstack_imp_selftest(void);
 #endif
 #ifdef ELF_SELFTEST
 void elf_loader_selftest(void);

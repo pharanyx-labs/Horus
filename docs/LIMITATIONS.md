@@ -2949,9 +2949,14 @@ switch are enough to panic.
 **There are two failure modes, and only one of them is the auditor.** One captured boot smashed
 the stack with **no audit panic at all**, and a CI capture on 2026-09-02 printed the canary
 *before* the audit panic -- which rules out the corruption being fallout from the auditor halting
-a CPU mid-switch, a confound the earlier captures could not settle. `PANIC: two CPUs on one
-kernel stack` (the **[G-8]/S20** detector, independent of the claim auditor) has also been
-observed. The corruption is real, it is not the checker, and it is not yet attributed.
+a CPU mid-switch, a confound the earlier captures could not settle. The `PANIC: two CPUs on one
+kernel stack` seen alongside one of them was **itself a false positive**, corrected 2026-09-02:
+the entering CPU was impersonating, and the G-8 detector took its identity from
+`percpu_current_task[]`, which lies for the duration of an impersonation window (fixed; witness
+`make smoke-kstack-imp`, arm `KSTACK_COLLIDE_IMPERSONATED=1`). **What survives as evidence of
+real corruption is the stack canary**, which is independent of both detectors -- one boot tripped
+it with no audit panic at all, and a CI capture printed it *before* the audit panic. That remains
+unattributed.
 
 ### 5.3 No release provenance: **[I-9]**
 

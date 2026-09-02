@@ -558,15 +558,20 @@ def run():
         #         a server that refuses metadata changes to everybody.
         s.expect("user@horus$", STEP_TIMEOUT)
         s.send("chown 1000 note")
+        # The refusal goes through fs_err(), not a literal. SHELL_FS_ERR_FLAT is
+        # a neighbouring arm in the same CI job and a defect flag is global to
+        # the IMAGE: under it every fs_fail() prints the one flattened sentence,
+        # so a literal here reddens that arm rather than this one. It did, on
+        # 2026-09-02, and the arm it broke was the one nobody re-ran.
         s.expect("chown: note is now uid=1000" if CHOWN_UNGATED
-                 else "chown: permission denied", STEP_TIMEOUT)
+                 else fs_err("chown", "permission denied"), STEP_TIMEOUT)
         step("chown by a standard user: "
              + ("ALLOWED under FS_CHOWN_ANY_UID" if CHOWN_UNGATED else "refused (root only)"))
 
         s.expect("user@horus$", STEP_TIMEOUT)
         s.send("chmod 777 keepme")
         s.expect("chmod: keepme is now 0777" if CHMOD_UNGATED
-                 else "chmod: permission denied", STEP_TIMEOUT)
+                 else fs_err("chmod", "permission denied"), STEP_TIMEOUT)
         step("chmod on a file owned by root: "
              + ("ALLOWED under FS_CHMOD_ANY_OWNER" if CHMOD_UNGATED else "refused (not the owner)"))
 

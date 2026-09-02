@@ -15,6 +15,33 @@ in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Fifteen gates formatted a 16 GiB volume none of them needs, and it made `main` red twice.**
+  `KEYSLOT_BLOCKS_IMG` tracked `BLOCKS_PER_DISK`, so every gate in the keyslot/installer/users
+  family sized its test image from the kernel's **ceiling** rather than from its own workload. A
+  format's duration scales with the volume -- the metadata region alone is one block per 128, so
+  16 GiB is ~128 MiB of metadata plus its Merkle tree, written through emulated IDE PIO under TCG.
+  Measured 2026-09-02, one host, same ISO, `make smoke-installer`: **247 s at 16 GiB against 17 s
+  at 128 MiB**, a 14x difference on a 300 s budget. `smoke-installer` boot 1 therefore reached
+  `INSTALLER: formatting` and timed out on `main` at `3802057` and `69ab526` while **the same
+  commits passed the same job on their pull-request runs** -- a red that follows the runner rather
+  than the diff.
+  **The rule was already written down and did not propagate.** `PERSIST_BLOCKS` carries a comment
+  saying that sizing a test image from `BLOCKS_PER_DISK` "became wrong the moment the volume
+  started being sized from the disk" (**S68**), that 32768 blocks is enough for what these gates
+  run, and that `smoke-fs-16g` is where a large volume is exercised. `KEYSLOT_BLOCKS_IMG` is the
+  instance that fix missed: four thousand lines away, with **no comment at all**, so nothing
+  recorded which of the two rules it followed.
+  Swept rather than spot-fixed: `KEYSLOT_BLOCKS_IMG` now takes `PERSIST_BLOCKS`; `BIGVOL_BLOCKS`
+  is left on the ceiling because `smoke-fs-16g` is the S68 witness and is *supposed* to format
+  one; and a dead `BLOCKS_PER_DISK ?=` declaration with no readers, whose comment still asserted
+  the superseded rule, is removed -- that comment is how the live instance went on tracking the
+  ceiling.
+  **The timeout is deliberately not raised.** 247 s of that run was a format none of these gates
+  asks for, and a bound widened to cover a cost nobody wanted would have hidden the defect and
+  left all fifteen slow. All fifteen pass, now in seconds each: `smoke-installer` 247 s → 16 s.
+
 ### Documented
 
 - **A kernel marker is splittable even when it is one write** (`docs/LIMITATIONS.md` 2.6c).

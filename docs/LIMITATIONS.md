@@ -2199,6 +2199,23 @@ the checked-in set to 74 while the live ruleset stayed at 73, and `--check-rules
 lag visible the next morning instead of indefinitely. Read the count from the API or from that
 job's log, never from this paragraph.
 
+**Measured 2026-09-02, and the number to keep is not the lag but what fits inside it.** The
+`installer` job -- the S73 witness, "a disk is erased only after the word that means erase this
+disk" -- entered `required:` in `c0a9f2e` on 2026-09-01 and the ruleset was not synced. When it
+finally was, the sync reported `103 -> 106` and named three additions: `installer`, plus
+`store-locked` and `passwd-target` from the two merges that had each added a gating job in the
+meantime. **Five merges landed in that window** (#287 through #291) with a job classified
+merge-gating and not enforced -- and `smoke-installer` went red on `main` twice inside it,
+where it could not have blocked anything.
+
+**The audit is not what failed, and saying so is the point.** Its last scheduled run before the
+change was 2026-09-01 12:35Z, five hours earlier; it passed correctly on the state it saw and had
+not yet had a chance to fire. The lag is therefore bounded by the schedule rather than by
+attention -- one day, at worst -- which is the guarantee this design actually offers. What the
+`doc-claims` example above does not convey, and this one does, is that a day is not small when it
+is measured in merges: the same person adds the job and holds the token, at different times, and
+nothing in between refuses.
+
 Two counts moved in the right direction since. `strict_required_status_checks_policy` is now
 **true**, so a stale-base merge is no longer permitted. And the `security` job is a required
 check whose scanner-presence step no longer carries `continue-on-error` (#154), so the job goes

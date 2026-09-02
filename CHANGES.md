@@ -15,6 +15,22 @@ in this file.
 
 ## [Unreleased]
 
+### Documented
+
+- **How long [C-6]'s manual reconciliation actually lags, measured** (`docs/LIMITATIONS.md` 5.2).
+  The record described the mechanism -- `--sync-ruleset` needs an admin token, so a PR adding a
+  gating job leaves the ruleset a context behind -- and its only example was a lag resolved in
+  the same commit. Measured 2026-09-02: the `installer` job, the **S73** witness, entered
+  `required:` in `c0a9f2e` on 2026-09-01 and was not synced, so **five merges landed** (#287
+  through #291) with it classified merge-gating and not enforced -- and `smoke-installer` went
+  red on `main` twice inside that window, where it could not have blocked anything. The sync
+  reported `103 -> 106`, naming `installer` alongside the two jobs the intervening merges had
+  added.
+  **The daily audit is not what failed**, and the entry says so: its last run before the change
+  was five hours earlier, so it passed correctly on the state it saw. The lag is bounded by the
+  audit's schedule rather than by attention -- one day at worst -- which is the guarantee the
+  design offers. What the entry now adds is that a day is not small when it is counted in merges.
+
 ### Fixed
 
 - **Fifteen gates formatted a 16 GiB volume none of them needs, and it made `main` red twice.**

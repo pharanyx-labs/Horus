@@ -44,6 +44,8 @@ control_arms:
   smoke-installer-accounts-control: smoke-installer-accounts
   smoke-passwd-target-control: smoke-passwd-target
   smoke-session-fs-err-control: smoke-session
+  smoke-session-chmod-control: smoke-session
+  smoke-session-chown-control: smoke-session
   smoke-captest-lookup-type-control: smoke-captest
   smoke-auditprobe-control: smoke-auditprobe
   smoke-auditprobe-abi-control: smoke-auditprobe

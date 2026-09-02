@@ -318,16 +318,31 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
         rp->size = end;          /* so the client can track its offset */
         break;
     }
+    /* THE TWO METADATA RULES ARE DIFFERENT ON PURPOSE, and each has a control
+     * arm of its own (FS_CHMOD_ANY_OWNER=1, FS_CHOWN_ANY_UID=1) because an arm
+     * against one says nothing about the other. Changing a mode is something an
+     * owner does to their own file; giving a file AWAY is not, so chown is
+     * root-only -- an owner who could hand a file to another uid could leave an
+     * object under a name that account is answerable for, and an owner who could
+     * TAKE one could help themselves to anything readable. Both checks are made
+     * against `cuid`, which is SYS_IPC_SENDER's kernel-attested uid and never a
+     * field of the request. Until 2026-09-02 neither had a ring-3 caller at all:
+     * the operations existed, the shell had no command for them, and nothing in
+     * the tree had ever exercised either rule from a real login. */
     case FS_OP_CHMOD: {
         if (sys_fs_stat(rq->ino, &st) != 0)          { rp->rc = SYS_ERR_NOENT; break; }
+#ifndef FS_CHMOD_ANY_OWNER
         if (!(cuid == 0 || cuid == st.uid))          { rp->rc = SYS_ERR_PERM;  break; }  /* owner or root */
+#endif
         if (sys_fs_set_meta(rq->ino, rq->mode & 07777u, st.uid, st.gid) != 0) { rp->rc = SYS_ERR_IO; break; }
         rp->rc = 0;
         break;
     }
     case FS_OP_CHOWN: {
         if (sys_fs_stat(rq->ino, &st) != 0)          { rp->rc = SYS_ERR_NOENT; break; }
+#ifndef FS_CHOWN_ANY_UID
         if (cuid != 0)                               { rp->rc = SYS_ERR_PERM;  break; }  /* only root may chown */
+#endif
         if (sys_fs_set_meta(rq->ino, st.mode & 07777u, rq->arg_uid, rq->arg_gid) != 0) { rp->rc = SYS_ERR_IO; break; }
         rp->rc = 0;
         break;

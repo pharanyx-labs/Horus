@@ -17,6 +17,24 @@ in this file.
 
 ### Added
 
+- **`chmod` and `chown` in the shell** (**S77**). The `fs_server` has implemented both since the
+  beginning and **neither had a ring-3 caller**: the operations were there, no command reached
+  them, and no test in the tree had ever exercised either rule from a real login. A gate nothing
+  reaches is a gate nobody has watched fail, which is how the first ownership bug would have been
+  found by an operator rather than by CI. `chmod` takes an octal mode and refuses a malformed one
+  rather than applying the digits it could read; `chown` takes `<uid>[:<gid>]` and **reads the
+  group back** when none is given, because the underlying operation writes both fields and an
+  unspecified group would otherwise silently become gid 0.
+  The shell adds **no permission check of its own**, deliberately. `useradd` and `userdel` carry
+  one because `CAP_USER` is per-*task* and the shell is one long-lived task serving successive
+  logins, so the kernel's gate cannot tell who is at the terminal. The filesystem is the other
+  case: `SYS_AUTH` rewrites the task's attested uid at every login, so the `cuid` the `fs_server`
+  decides against already *is* whoever is logged in, and a second copy of the rule in the shell
+  would be policy kept somewhere nothing verifies it.
+  Witness: five checks in `make smoke-session` across both identities. Falsified one arm per rule
+  (`FS_CHOWN_ANY_UID=1`, `FS_CHMOD_ANY_OWNER=1`), each of which must leave the other refusal
+  standing.
+
 - **The installer creates two accounts, and either password opens the disk** (**S76**, closing
   `docs/LIMITATIONS.md` 2.6b). It asks for a root password, then for the name and password of an
   everyday account, and lays down both. Day-to-day work on a machine whose only login is root is

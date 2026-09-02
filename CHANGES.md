@@ -133,6 +133,20 @@ in this file.
 
 ### Fixed
 
+- **[G-13] filed: the installer's format stalls on CI, cause unestablished.** `smoke-installer`
+  went red on `main` twice with a 300s timeout waiting for `INSTALLER: PASS installed`, the guest
+  having printed `INSTALLER: formatting` and then nothing -- no fault, no panic. Written off as a
+  slow runner until the harness was made to time its own steps and the same step measured **5.7s**
+  on a developer machine: a runner is slower, not fifty times slower. A contended runner and a
+  hang in the format path both fit the evidence and nothing distinguishes them yet.
+  **The budget was deliberately not raised.** `INSTALLER_FORMAT_TIMEOUT` makes the format's bound
+  separable from every other wait -- raising `INSTALLER_TIMEOUT` would have loosened the refusal
+  assertions, where a generous budget turns a real wedge into a slow pass -- but the default stays
+  at 300s, because a bigger number would hide an unexplained hang rather than fix one.
+  **The harness times its own steps now**, and that is why any of this is knowable: it buffered
+  stdout and the runner timestamps the flush, so consecutive step lines landed microseconds apart
+  however long the guest took. The 300s could never have been argued with from a CI log.
+
 - **The kernel-stack collision detector accused CPUs that were merely impersonating** (**S20**).
   It took its identity from `get_current_task()` -- `percpu_current_task[]`, which `scheduler.c`'s
   own header calls *"deliberately lying"* for the duration of every impersonation window. A CPU

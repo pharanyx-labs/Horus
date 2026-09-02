@@ -7849,6 +7849,17 @@ smoke-storage-noformat:
 # default produces a perfectly installed disk nobody can log into, and boot 1
 # cannot tell, because everything it can observe succeeded.
 INSTALLER_TIMEOUT ?= 300
+# The FORMAT gets a budget of its own, and it is deliberately not INSTALLER_TIMEOUT:
+# raising that would loosen every other wait in the scenario, including the refusal
+# assertions, where a generous budget is what turns a real wedge into a slow pass.
+#
+# THE VALUE IS UNCHANGED AT 300s ON PURPOSE. This gate went red on `main` twice
+# (2026-09-01 19:18, 2026-09-02 00:20), both times a 300s timeout here -- and the
+# same step measures 5.7s on a developer machine. A CI runner is slower, not 50x
+# slower, so "the budget is too small" does not survive the measurement, and a
+# bigger number would hide an unexplained hang rather than fix one. The knob
+# exists so the bound is separable and arguable; see docs/LIMITATIONS.md.
+INSTALLER_FORMAT_TIMEOUT ?= 300
 INSTALLER_BLOCKS_IMG ?= $(KEYSLOT_BLOCKS_IMG)
 
 .PHONY: smoke-installer
@@ -7857,7 +7868,7 @@ smoke-installer:
 	@$(MAKE) --no-print-directory STORAGE_ATA=1
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 boot.iso
 	@rm -f installer.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer.img
-	@SESSION_DISK=installer.img SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) \
+	@SESSION_DISK=installer.img SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) \
 		BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
 		python3 tools/installer_session.py boot.iso
 	@rm -f installer.img
@@ -7875,7 +7886,7 @@ smoke-installer-refuse:
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 boot.iso
 	@rm -f installer-r.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-r.img
 	@SESSION_DISK=installer-r.img INSTALLER_MODE=refuse \
-		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
 		python3 tools/installer_session.py boot.iso
 	@rm -f installer-r.img
 	@echo "[installer] PASS - the wrong confirmation word wrote nothing"
@@ -7889,7 +7900,7 @@ smoke-installer-refuse-control:
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 INSTALLER_NO_CONFIRM=1 boot.iso
 	@rm -f installer-c.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-c.img
 	@SESSION_DISK=installer-c.img INSTALLER_MODE=refuse INSTALLER_EXPECT_FORMAT=1 \
-		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
 		python3 tools/installer_session.py boot.iso
 	@rm -f installer-c.img
 	@echo "[installer] CONTROL PASS - without the comparison the disk is formatted anyway"
@@ -7917,7 +7928,7 @@ smoke-installer-provision:
 	@$(MAKE) --no-print-directory STORAGE_ATA=1
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 COREUTILS_MODULES=1 boot.iso
 	@rm -f installer-p.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-p.img
-	@SESSION_DISK=installer-p.img INSTALLER_MODE=provision 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) 		python3 tools/installer_session.py boot.iso
+	@SESSION_DISK=installer-p.img INSTALLER_MODE=provision 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) 		python3 tools/installer_session.py boot.iso
 	@rm -f installer-p.img
 	@echo "[installer] PASS - a sealed store defers provisioning, and the next boot completes it"
 
@@ -7930,7 +7941,7 @@ smoke-installer-provision-control:
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORE_LOCKED_UNCHECKED=1
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORE_LOCKED_UNCHECKED=1 COREUTILS_MODULES=1 boot.iso
 	@rm -f installer-pc.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-pc.img
-	@SESSION_DISK=installer-pc.img INSTALLER_MODE=provision INSTALLER_EXPECT_EMPTY_BIN=1 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) 		python3 tools/installer_session.py boot.iso
+	@SESSION_DISK=installer-pc.img INSTALLER_MODE=provision INSTALLER_EXPECT_EMPTY_BIN=1 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) 		python3 tools/installer_session.py boot.iso
 	@rm -f installer-pc.img
 	@echo "[installer] CONTROL PASS - a sealed store that answers leaves /bin empty for good"
 
@@ -7957,7 +7968,7 @@ smoke-installer-accounts:
 	@$(MAKE) --no-print-directory STORAGE_ATA=1
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 boot.iso
 	@rm -f installer-a.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-a.img
-	@SESSION_DISK=installer-a.img INSTALLER_MODE=accounts 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) 		python3 tools/installer_session.py boot.iso
+	@SESSION_DISK=installer-a.img INSTALLER_MODE=accounts 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) 		python3 tools/installer_session.py boot.iso
 	@rm -f installer-a.img
 	@echo "[installer] PASS - the everyday account boots the machine, and the built-in one is gone"
 
@@ -7972,7 +7983,7 @@ smoke-installer-accounts-control:
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 PASSWD_NO_KEYSLOT=1
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 PASSWD_NO_KEYSLOT=1 boot.iso
 	@rm -f installer-ac.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-ac.img
-	@SESSION_DISK=installer-ac.img INSTALLER_MODE=accounts INSTALLER_EXPECT_NO_SLOT=1 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) 		python3 tools/installer_session.py boot.iso
+	@SESSION_DISK=installer-ac.img INSTALLER_MODE=accounts INSTALLER_EXPECT_NO_SLOT=1 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) 		python3 tools/installer_session.py boot.iso
 	@rm -f installer-ac.img
 	@echo "[installer] CONTROL PASS - without a key slot the account cannot open the machine it belongs to"
 

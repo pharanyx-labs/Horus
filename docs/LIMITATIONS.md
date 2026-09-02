@@ -2958,6 +2958,35 @@ real corruption is the stack canary**, which is independent of both detectors --
 it with no audit panic at all, and a CI capture printed it *before* the audit panic. That remains
 unattributed.
 
+### 5.2h The installer's format stalls on CI, cause unestablished: **[G-13]**, open
+
+**Filed 2026-09-02.** `smoke-installer` has gone red on `main` twice -- 2026-09-01 19:18 and
+2026-09-02 00:20 -- both times a **300s timeout** waiting for `INSTALLER: PASS installed`, with
+the guest having printed `INSTALLER: formatting` and then said nothing. **No fault, no panic, no
+output at all** in either capture.
+
+**It was first written off as a slow runner, and that does not survive measurement.** Once
+`tools/installer_session.py` was made to time its own steps (2026-09-02), the same step measured
+**5.7 s** on a developer machine. A shared CI runner under TCG is slower than a workstation; it
+is not fifty times slower. So the two live explanations are a pathologically contended runner and
+a hang in the format path, and **the evidence does not choose between them**.
+
+**The budget was deliberately NOT raised.** `INSTALLER_FORMAT_TIMEOUT` exists so the format's
+bound is separable from every other wait in the scenario -- raising `INSTALLER_TIMEOUT` would
+have loosened the refusal assertions too, where a generous budget is what turns a real wedge into
+a slow pass -- but its default stays at 300 s, because no measurement justifies more and a bigger
+number would hide an unexplained hang rather than fix one. The timeout message now says the cause
+is unestablished and asks for the serial rather than a larger budget.
+
+**Why sizing it from the logs was impossible until now**, which is a finding of its own: the
+harness buffered stdout and the runner timestamps the *flush*, so consecutive step lines landed
+microseconds apart however long the guest actually took. Nobody could have argued with the 300 s
+from a CI log, ever. Steps are timed and flushed per line now.
+
+**Next step** is a capture: the failure prints no serial beyond the install frame, so the gate
+needs to dump the guest's log on this path the way `tools/stress_boot.sh` does on its first
+failure. Until then this is two hypotheses and one measurement that embarrasses one of them.
+
 ### 5.3 No release provenance: **[I-9]**
 
 `kernel.elf` is verified reproducible and an SBOM is produced, but there are no tags, no

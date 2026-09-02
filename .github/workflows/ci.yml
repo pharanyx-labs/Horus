@@ -1807,6 +1807,31 @@ jobs:
       - name: Control arm — a sealed store that answers leaves /bin empty for good
         run: make smoke-installer-provision-control
 
+  installer-accounts:
+    name: "An installed machine has two accounts and either one boots it (S76)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # The first login of boot 2 is the whole property. h_auth unlocks the
+      # volume with the typed password BEFORE it consults the account table, so
+      # an account with no key slot opens nothing and is not found -- while
+      # working perfectly on a machine somebody else has already opened. A test
+      # that logs in as root first can never see it, so this logs in as the USER.
+      - name: The everyday account is the first login after a power cycle
+        run: make smoke-installer-accounts
+      # The arm, and its third step is what makes the pair mean something: after
+      # the refusal it logs root in and then the SAME user, separating "the
+      # account is broken" from "the account has no key slot".
+      - name: Control arm — no key slot, so the account cannot open its own machine
+        run: make smoke-installer-accounts-control
+
   passwd-target:
     name: "passwd <uid> changes that account, and only that account (S75)"
     runs-on: ubuntu-latest

@@ -1144,31 +1144,36 @@ is structural — a marker is one write — so it is checked statically, where i
 byte at a time to a UART a ring-3 server owns, so a single call is splittable and the static check
 cannot tell. See 2.6c, which is that hazard observed reddening CI on 2026-09-02.
 
-### 2.6b An account created after the install cannot be the first login after a power cycle
+### 2.6b ~~An account created after the install cannot be the first login after a power cycle~~ (**CLOSED 2026-09-02**, `SECURITY.md` **S76**)
 
-**Open.** `useradd 1001 bob` followed by `passwd 1001` now produces an account that works
-(`SECURITY.md` **S75**) -- but only on a machine somebody has already opened.
-
-The volume is sealed to **key slots** (**S61**): up to `HORUS_KEYSLOTS` independent AEAD wraps
-of the volume key, each under a KEK derived from one password. `h_auth` calls
+The volume is sealed to **key slots** (**S61**) and `h_auth` calls
 `users_unlock_and_restore(typed_password)` *before* it consults the account table, because on a
-sealed volume the table it would otherwise read is the compiled-in default `users_init` seeded.
-A user with no key slot cannot open the volume, so the table stays at the defaults, so the
-account is not found and the login is refused. Once root has logged in and unlocked, the unlock
-is a no-op for the rest of the boot and the persisted table is in memory -- and the new account
-logs in normally. Measured 2026-09-01, both directions.
+sealed volume the table it would otherwise read is the compiled-in one `users_init` seeded. An
+account with no slot therefore opened nothing, the persisted table was never loaded, the account
+was not found, and the login was refused -- **while working perfectly on a machine somebody else
+had already opened**. That asymmetry is why it lasted: every test and every operator logs in as
+root first.
 
-**The mechanism to close this exists and has no caller.** `storage_keyslot_add`
-(`src/kernel/storage.c`) does exactly this job and is what `smoke-keyslots` exercises; its only
-caller in the tree is that selftest. There is no syscall in front of it. That is the same shape
-as **S63**'s `storage_authorize_format` -- a deliberate act whose refusal was absolute rather
-than deliberate because nothing could perform it -- and closing it is the same work: a syscall
-number, a dispatch-table row with a capability and a type, a `captest` refusal check for a task
-that does not hold it, and a gate pair. It is not done, so it is written down here rather than
-implied by S61's existence.
+`do_passwd` now grants a key slot when an administrator sets another account's password, and
+records its index in `user_account.keyslot`. **Both halves already existed with no live caller** --
+`storage_keyslot_add` had only a selftest, and the field's one assignment was also in a selftest --
+which is the shape **S63**'s `storage_authorize_format` had before **S72** gave it one.
 
-Until then the honest statement of the account model on a persistent volume is: **root
-administers, and every other account is usable on a machine root has opened.**
+The installer asks for two passwords and lays down two accounts, so a machine comes up with an
+administrator and an everyday login, either of which can open the disk. It also **deletes the
+compiled-in `user` account**: a fresh volume's table is seeded from `users_init`'s RAM image, so
+until 2026-09-02 every installed machine shipped a working login whose password is printed in this
+repository.
+
+Witnessed by `make smoke-installer-accounts`, which logs in as the **unprivileged** account first
+on a machine nobody has opened; falsified by `PASSWD_NO_KEYSLOT=1`.
+
+**What is still true** is narrower and worth keeping: a slot is granted only when an *administrator
+sets a password*. `useradd` alone leaves the account locked and slotless by design, a user changing
+their own password re-seals the slot they already hold rather than taking another, and a volume has
+`HORUS_KEYSLOTS` (8) of them -- so a machine with more than eight password-holding accounts cannot
+give them all one. Nothing warns at the eighth; `storage_keyslot_add` returns "full" and
+`do_passwd` fails closed, which is the right direction but a poor message.
 
 ### 2.6c A KERNEL marker is splittable even when it is one write, and 2.6a's rule does not reach it
 
@@ -2081,9 +2086,9 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand: **[C-6]**
 
-`.github/workflows/ci.yml` defines **104** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more: **106** across the three, producing **109** status-check contexts. Ruleset `21815299`
-requires all **106** today. Its predecessor `19007209` required **22** of them before
+`.github/workflows/ci.yml` defines **105** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more: **107** across the three, producing **110** status-check contexts. Ruleset `21815299`
+requires all **107** today. Its predecessor `19007209` required **22** of them before
 2026-08-16, and until 2026-08-15 exactly **zero** of those 22 were security gates: capability
 conformance, kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence,
 flush-on-switch and stack-guard reseed could all fail while a PR merged green. The required set
@@ -2127,7 +2132,7 @@ the right name with the wrong verdict. Step-level `continue-on-error` is untouch
 allowed; it lets one step be advisory while the job's own status still reports the truth, which
 is how the `security` job keeps its scanners advisory without becoming unfailable itself.
 
-That intended set is **106 required contexts and 3 reasoned exemptions**: `fuzz` (a 30-second
+That intended set is **107 required contexts and 3 reasoned exemptions**: `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` was a fifth until **[G-9]** closed on 2026-08-21; it was promoted on

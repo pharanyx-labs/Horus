@@ -770,6 +770,8 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `smoke-installer-refuse-control` | Control arm for **S73**. `INSTALLER_NO_CONFIRM=1` reads the typed word and does not compare it. Both arms type the **same wrong word** and differ only in what the program does about it. The arm then **drives the install through to the format** rather than stopping at the bypass: its first version asserted `INSTALLER: formatting` immediately after the wrong word and timed out, because the installer was sitting at the password prompt waiting for input the refuse-mode harness never sends — the defect had reproduced perfectly and the arm reported a timeout. Answering the remaining questions is also the stronger statement: not merely that consent was skipped, but that the whole install proceeds to destroy the disk without it. |
 | `smoke-installer-provision` | **S74.** Install onto a bare disk, **power the machine off at the login prompt without logging in**, and require the next boot to finish the job. The power-off is the experiment rather than a shortcut: `fs_server` copies the base system into the store when the volume unlocks, so an install nobody logs into leaves that copy unfinished, and the next boot is the only one on which S74 is observable -- and one every real install passes through. Boot 2 requires `FS_STORE: sealed at startup; provisioning deferred until unlock`, then a `root` login with the installed password, then a `/bin` that lists the provisioned binaries. The marker is asserted **positively** -- which branch `fs_server` took -- because a `/bin` check alone is satisfied by a run that never reached a shell. |
 | `smoke-installer-provision-control` | Control arm for **S74**. `STORE_LOCKED_UNCHECKED=1` restores the handlers that tested `mfs->mounted` and not `mfs->unlocked`, and **nothing else changes**, so both arms drive the same install and differ only in what the store says about a volume nobody has opened. Boot 2 reports `FS_STORE: open at startup; provisioning now` on a sealed volume and `/bin` is **empty on that disk for good**: `fs_server` decides at startup whether the store is usable by asking for the root inode, got yes, ran the copy against a locked store where every data write failed inside the AEAD, and recorded itself provisioned anyway -- which permanently disabled the post-login retry its own comment describes as the sealed-ATA fallback. Falsified in the other direction too: `smoke-installer-provision` goes **red** under the same flag (`tools/check_base_gate_reddens.sh STORE_LOCKED_UNCHECKED`, measured 2026-09-01 -- exit 2, `/bin is empty on the installed disk`). |
+| `smoke-installer-accounts` | **S76**, closing `docs/LIMITATIONS.md` 2.6b. Installs two accounts -- root and an everyday one, both named and given passwords at the install screens -- powers the machine off, and requires the **unprivileged** account to be the **first login** on a machine nobody has opened. That ordering is the whole property: `h_auth` unlocks the volume with the typed password before it consults the account table, so an account with no key slot opens nothing and is not found, while working perfectly once somebody else has unlocked. A test that logs in as root first can never see it. It then requires root on a slot of its own, and the compiled-in `user`/`password` account to be **absent** from the volume -- a fresh table is seeded from `users_init`'s RAM image, so before the installer deleted it every install shipped a login whose password is in the source. Also requires neither typed password to reach the serial line. |
+| `smoke-installer-accounts-control` | Control arm for **S76**. `PASSWD_NO_KEYSLOT=1` restores the `do_passwd` that set the hash and granted no slot, and **nothing else changes**. The user is refused as the first login; then root logs in; then the **same user** logs in in the same boot. That third step is what makes the pair mean anything — it separates "the account is broken" from "the account has no key slot", and without it the arm would be satisfied by any defect that breaks the account at all. Falsified in the other direction too: `smoke-installer-accounts` goes **red** under the same flag (`tools/check_base_gate_reddens.sh PASSWD_NO_KEYSLOT`, measured 2026-09-02). |
 | `smoke-passwd-target` | **S75.** Two boots on one image. Boot 1 logs in as `root` (which seals the volume), creates an account, runs `passwd <uid>`, and requires the reply to **name that uid** -- then requires `root`'s own password to still work and the new account to log in with what it was given. Boot 2 requires the volume itself to still open with the password it was sealed to, which is the half that makes this a credential defect rather than a session-scoped one. Every assertion is a login that **succeeds**; a refusal would be satisfied by a boot that never reached a prompt. |
 | `smoke-passwd-target-control` | Control arm for **S75**. `PASSWD_TARGET_IGNORED=1` restores the shell `passwd` that matched an argument and dropped it, and **nothing else changes** -- both arms type the same commands and differ only in which account the shell writes. It requires `password changed for uid 0` from a `passwd 1001`, then a successful `root` login with the OTHER account's password, then a boot 2 that opens the volume with it. The arm keeps the fix's reply (which now names the uid it wrote) and restores only the mis-targeting; its real assertions are the two logins, which do not depend on that message. Falsified in the other direction too: `smoke-passwd-target` goes **red** under the same flag (`tools/check_base_gate_reddens.sh PASSWD_TARGET_IGNORED`, measured 2026-09-01 -- exit 2, `root's own password was changed by passwd <uid>`). |
 | `smoke-tui-diff-control` | Control arm. `TUI_NO_DAMAGE_DIFF=1` makes `tui_flush` repaint every cell. The screen looks identical, which is the point — only the byte count for a one-cell change tells them apart, and the marker is `TUITEST: FAIL a one-cell change repainted the screen`. |
@@ -1300,10 +1302,10 @@ measures false *negatives*. A checker with three rules needs three arms, not one
 
 ## CI
 
-`.github/workflows/ci.yml` defines **104** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **105** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below: **106** jobs, **109** contexts. Counts from `tools/check_ci_gating.py`, which prints
+below: **107** jobs, **110** contexts. Counts from `tools/check_ci_gating.py`, which prints
 them; do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20, a backstop, not a budget. The default is
@@ -1355,7 +1357,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **106 required contexts and 3 reasoned exemptions** (read off
+The intended set is **107 required contexts and 3 reasoned exemptions** (read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence) `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
@@ -1809,7 +1811,7 @@ three ways: a planted phrasing in a `.c` file is caught with file and line; the 
 phrasing inside a quotation stays exempt, so a comment can record the wrong thing while
 correcting it.
 
-`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 77 properties
+`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 78 properties
 name a witness that resolves to a make target or a CI job.
 
 | Rule | Rejects |

@@ -123,7 +123,7 @@ DEFECT_FLAGS = \
 	CSPACE_KEEP_ON_TEARDOWN \
 	CSPACE_RELEASE_BEFORE_PIPES SPAWN_SLOT3_DECOY_GATE UNTYPED_SPLIT_FREE_BYTES \
 	INIT_PROVISION_NO_UNTYPED AUDIT_ABI_LEGACY STORE_LOCKED_UNCHECKED \
-	PASSWD_TARGET_IGNORED
+	PASSWD_TARGET_IGNORED PASSWD_NO_KEYSLOT
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -326,6 +326,20 @@ endif
 # The `?= 0` default lives here with the explanation; the -D is applied down
 # beside SYSCALL_PTR_TRUNC32's, after USERSPACE_CFLAGS is assigned.
 PASSWD_TARGET_IGNORED ?= 0
+
+# PASSWD_NO_KEYSLOT=1 restores the pre-2026-09-02 do_passwd: an administrator
+# sets another account's password and NO KEY SLOT IS GRANTED, so that password
+# opens the account and not the volume. h_auth unlocks before it consults the
+# account table, so such an account cannot be the FIRST login after a power
+# cycle -- it works perfectly on a machine somebody else has already opened,
+# which is docs/LIMITATIONS.md 2.6b and why it went unnoticed (**S76**).
+# The hash is still set and the call still reports success: the defect was never
+# a failure, it was a success with the invisible half left out.
+# `make smoke-installer-accounts-control` is the arm. Never ship it.
+PASSWD_NO_KEYSLOT ?= 0
+ifeq ($(PASSWD_NO_KEYSLOT),1)
+CFLAGS  += -DPASSWD_NO_KEYSLOT
+endif
 
 # FS_SELFTEST=1 embeds the userspace fs_server and a client, spawns both at
 # boot, and drives the filesystem end-to-end over IPC against the encrypted
@@ -7724,6 +7738,48 @@ smoke-installer-provision-control:
 	@SESSION_DISK=installer-pc.img INSTALLER_MODE=provision INSTALLER_EXPECT_EMPTY_BIN=1 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) 		python3 tools/installer_session.py boot.iso
 	@rm -f installer-pc.img
 	@echo "[installer] CONTROL PASS - a sealed store that answers leaves /bin empty for good"
+
+# S76: AN ACCOUNT AN ADMINISTRATOR CREATES CAN BE THE FIRST LOGIN AFTER A POWER
+# CYCLE -- docs/LIMITATIONS.md 2.6b, closed.
+#
+# THE FIRST LOGIN OF BOOT 2 IS THE WHOLE PROPERTY. h_auth calls
+# users_unlock_and_restore(typed_password) BEFORE it consults the account table,
+# because on a sealed volume the table it would otherwise read is the compiled-in
+# one users_init seeded. An account with no key slot opens nothing, so the
+# persisted table is never loaded, the account is not found, and the login is
+# refused -- while working perfectly on a machine somebody else has already
+# unlocked. A test that logs in as root first can never see it, which is why this
+# one logs in as the USER first, on a machine nobody has opened.
+#
+# The base arm also requires the compiled-in `user`/`password` account to be
+# ABSENT from the installed volume. users_init seeds it and a fresh volume's
+# table is seeded from that RAM image, so before the installer deleted it every
+# installed machine shipped a working login whose password is printed in the
+# source.
+.PHONY: smoke-installer-accounts
+smoke-installer-accounts:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 boot.iso
+	@rm -f installer-a.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-a.img
+	@SESSION_DISK=installer-a.img INSTALLER_MODE=accounts 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) 		python3 tools/installer_session.py boot.iso
+	@rm -f installer-a.img
+	@echo "[installer] PASS - the everyday account boots the machine, and the built-in one is gone"
+
+# Control arm: PASSWD_NO_KEYSLOT=1 and nothing else, so both arms drive the same
+# install and differ only in whether the password is authorised to open the disk.
+# Its THIRD step is what makes the pair mean something: after the refusal it logs
+# root in and then the SAME user, in the same boot, which separates "the account
+# is broken" from "the account has no key slot".
+.PHONY: smoke-installer-accounts-control
+smoke-installer-accounts-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 PASSWD_NO_KEYSLOT=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 PASSWD_NO_KEYSLOT=1 boot.iso
+	@rm -f installer-ac.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-ac.img
+	@SESSION_DISK=installer-ac.img INSTALLER_MODE=accounts INSTALLER_EXPECT_NO_SLOT=1 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) 		python3 tools/installer_session.py boot.iso
+	@rm -f installer-ac.img
+	@echo "[installer] CONTROL PASS - without a key slot the account cannot open the machine it belongs to"
 
 # S75: `passwd <uid>` CHANGES THAT ACCOUNT, AND ONLY THAT ACCOUNT.
 #

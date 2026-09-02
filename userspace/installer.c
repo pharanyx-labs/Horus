@@ -158,6 +158,21 @@ static struct storage_info g_si;
 static char g_pw[STORAGE_FORMAT_PASSWORD_MAX + 1];
 static char g_pw2[STORAGE_FORMAT_PASSWORD_MAX + 1];
 
+/* The unprivileged account: its name, and its password twice. Same reasoning as
+ * the pair above -- static so there is one named place to erase, not a ring-3
+ * stack frame holding two more copies of a secret. */
+#define USER_NAME_MAX 15
+static char g_user[USER_NAME_MAX + 1];
+static char g_upw[STORAGE_FORMAT_PASSWORD_MAX + 1];
+static char g_upw2[STORAGE_FORMAT_PASSWORD_MAX + 1];
+
+/* The uid the everyday account gets. 1000 is the convention, and it is the uid
+ * users_init already seeds a compiled-in `user` account at -- which is exactly
+ * why the install DELETES that account before creating this one at the same
+ * number. See do_install. */
+#define USER_UID  1000
+#define USER_GID  100
+
 static void wipe_passwords(void)
 {
     /* Erased on every exit path, including the failures. A refused install has
@@ -165,8 +180,15 @@ static void wipe_passwords(void)
      * one. `volatile` so the write is not optimised away as dead. */
     volatile char *a = (volatile char *)g_pw;
     volatile char *b = (volatile char *)g_pw2;
-    for (unsigned i = 0; i < sizeof(g_pw); i++)  a[i] = 0;
-    for (unsigned i = 0; i < sizeof(g_pw2); i++) b[i] = 0;
+    volatile char *c = (volatile char *)g_upw;
+    volatile char *d = (volatile char *)g_upw2;
+    for (unsigned i = 0; i < sizeof(g_pw); i++)   a[i] = 0;
+    for (unsigned i = 0; i < sizeof(g_pw2); i++)  b[i] = 0;
+    for (unsigned i = 0; i < sizeof(g_upw); i++)  c[i] = 0;
+    for (unsigned i = 0; i < sizeof(g_upw2); i++) d[i] = 0;
+    /* The NAME is not a secret and is deliberately not wiped here: do_install
+     * reports it back on the finished screen, and an operator who has just been
+     * asked to remember a login should be shown which one. */
 }
 
 /* ---- steps -------------------------------------------------------------- */
@@ -283,6 +305,100 @@ static int screen_password(void)
     }
 }
 
+
+/* Ask for the everyday account: a name, and a password twice.
+ *
+ * WHY THERE ARE TWO ACCOUNTS AT ALL. A machine whose only login is root is a
+ * machine every session is administered from, and this project's whole argument
+ * is that authority should be held only when it is being exercised. The
+ * installer is the one moment an operator can be asked for both without it
+ * feeling like an extra chore, so it asks.
+ *
+ * THE NAME IS BOUNDED AND CHECKED HERE, not left to the kernel to refuse. It is
+ * lowercase letters and digits, must start with a letter, and cannot be `root`.
+ * do_useradd would refuse a duplicate name anyway, but a refusal arriving as a
+ * return code AFTER the disk has been formatted is a bad place to discover a
+ * typo -- this screen runs before anything is written.
+ */
+static int name_ok(const char *n)
+{
+    if (n[0] < 'a' || n[0] > 'z') return 0;          /* must start with a letter */
+    for (unsigned i = 0; n[i]; i++) {
+        char c = n[i];
+        int lower = (c >= 'a' && c <= 'z');
+        int digit = (c >= '0' && c <= '9');
+        if (!lower && !digit) return 0;
+    }
+    return !ustreq(n, "root");
+}
+
+static int screen_user(void)
+{
+    for (;;) {
+        frame("Create your everyday account");
+        tui_text(ROW_BODY, 3, "Day-to-day work should not be done as root, so this machine",
+                 TUI_A_NORMAL);
+        tui_text(ROW_BODY + 1, 3, "gets a second account with no administrative authority.",
+                 TUI_A_NORMAL);
+        tui_text(ROW_BODY + 3, 3,
+                 "Its password also unlocks the disk at boot, so either account", TUI_A_NORMAL);
+        tui_text(ROW_BODY + 4, 3,
+                 "can be the first login after the machine is powered on.", TUI_A_NORMAL);
+        status("lowercase letters and digits  -  esc to cancel the install");
+
+        tui_text(ROW_FIELD - 1, 3, "username:", TUI_A_NORMAL);
+        tui_flush();
+        say("INSTALLER: waiting on the user name", "");
+        if (tui_input(ROW_FIELD, 14, USER_NAME_MAX, g_user, sizeof(g_user), 0) != 0) return 0;
+
+        if (!name_ok(g_user)) {
+            status("a name is lowercase letters and digits, starts with a letter, and is not root");
+            tui_flush();
+            continue;
+        }
+
+        tui_text(ROW_FIELD + 1, 3, "password:", TUI_A_NORMAL);
+        tui_flush();
+        say("INSTALLER: waiting on the user password", "");
+        if (tui_input(ROW_FIELD + 2, 14, STORAGE_FORMAT_PASSWORD_MAX,
+                      g_upw, sizeof(g_upw), TUI_IN_MASK) != 0) return 0;
+
+        tui_text(ROW_FIELD + 3, 3, "again:", TUI_A_NORMAL);
+        tui_flush();
+        say("INSTALLER: waiting on the user password again", "");
+        if (tui_input(ROW_FIELD + 4, 14, STORAGE_FORMAT_PASSWORD_MAX,
+                      g_upw2, sizeof(g_upw2), TUI_IN_MASK) != 0) return 0;
+
+        if (g_upw[0] == 0) {
+            status("an empty password would leave this account unusable - try again");
+            tui_flush();
+            continue;
+        }
+        if (!ustreq(g_upw, g_upw2)) {
+            /* Both cleared before asking again, for the reason the root pair
+             * gives: confirming a string the operator can no longer see is not
+             * confirmation. */
+            for (unsigned i = 0; i < sizeof(g_upw); i++)  g_upw[i] = 0;
+            for (unsigned i = 0; i < sizeof(g_upw2); i++) g_upw2[i] = 0;
+            status("the two did not match - try again");
+            tui_flush();
+            continue;
+        }
+        /* THE TWO PASSWORDS MUST DIFFER. Identical ones would put the same
+         * secret in two key slots and give the everyday account root's password
+         * -- which is the separation this screen exists to create, undone by an
+         * operator taking the shortest path. */
+        if (ustreq(g_upw, g_pw)) {
+            for (unsigned i = 0; i < sizeof(g_upw); i++)  g_upw[i] = 0;
+            for (unsigned i = 0; i < sizeof(g_upw2); i++) g_upw2[i] = 0;
+            status("this must not be the root password - the two accounts are separate");
+            tui_flush();
+            continue;
+        }
+        return 1;
+    }
+}
+
 /* Do it. Returns 0 on success.
  *
  * THE BASE SYSTEM IS NOT COPIED HERE, and that is a decision rather than an
@@ -327,6 +443,38 @@ static int do_install(void)
      * chosen, and h_auth needs the same typed string to satisfy both. */
     if (sys_passwd(0, g_pw) != 0) {
         say("INSTALLER: FAIL could not set the root password", "");
+        return -1;
+    }
+
+    /* ---- the everyday account ---------------------------------------------
+     *
+     * THE COMPILED-IN ACCOUNT IS DELETED FIRST, and that is the security half of
+     * this block rather than tidiness. users_init seeds `user` at uid 1000 with
+     * the password `password`, and a fresh volume's table is seeded from exactly
+     * that RAM image -- so without this, every installed Horus machine ships a
+     * working login whose password is printed in the source and in
+     * docs/BUILDING.md. Deleting it and recreating the same uid under a name and
+     * password the operator chose is the whole point of asking them.
+     *
+     * A missing account is not an error here: `userdel` on a machine whose table
+     * has already been replaced has nothing to remove, and refusing would make
+     * a second install of the same image fail for being tidy.
+     */
+    (void)sys_userdel(USER_UID);
+
+    if (sys_useradd(USER_UID, USER_GID, g_user) != 0) {
+        say("INSTALLER: FAIL could not create the account ", g_user);
+        return -1;
+    }
+
+    /* AND THIS IS WHERE THE ACCOUNT BECOMES ABLE TO BOOT THE MACHINE.
+     * do_passwd grants a key slot when an admin sets another account's password
+     * (docs/LIMITATIONS.md 2.6b, closed), so this one call both sets the hash and
+     * authorises the password to open the volume. It fails closed: no slot, no
+     * password change, and the install stops here rather than finishing with an
+     * account that cannot be the first login after a power cycle. */
+    if (sys_passwd(USER_UID, g_upw) != 0) {
+        say("INSTALLER: FAIL could not set the password for ", g_user);
         return -1;
     }
 
@@ -416,6 +564,20 @@ void _start(void)
         sys_exit();
     }
 
+    /* Asked BEFORE anything is written, like every other question here. An
+     * installer that formats and then discovers the operator wanted to cancel
+     * has already spent the only thing it cannot give back. */
+    if (!screen_user()) {
+        frame("Cancelled");
+        tui_text(ROW_BODY, 3, "Nothing was written. The disk is exactly as it was.",
+                 TUI_A_NORMAL);
+        tui_flush();
+        tui_end();
+        wipe_passwords();
+        say("INSTALLER: nothing was written", "");
+        sys_exit();
+    }
+
     int rc = do_install();
     wipe_passwords();
 
@@ -426,7 +588,13 @@ void _start(void)
 
     frame("Installed");
     tui_text(ROW_BODY, 3, "The volume is created, sealed and open.", TUI_A_NORMAL);
-    tui_text(ROW_BODY + 2, 3, "Log in as root with the password you chose.", TUI_A_NORMAL);
+    tui_text(ROW_BODY + 2, 3, "Two accounts exist, and either password opens the disk:",
+             TUI_A_NORMAL);
+    tui_text(ROW_BODY + 4, 5, "root", TUI_A_BOLD);
+    tui_text(ROW_BODY + 4, 16, "administers this machine", TUI_A_NORMAL);
+    tui_text(ROW_BODY + 5, 5, g_user, TUI_A_BOLD);
+    tui_text(ROW_BODY + 5, 16, "everything else", TUI_A_NORMAL);
+    tui_text(ROW_BODY + 7, 3, "Log in with the passwords you chose.", TUI_A_NORMAL);
     status("");
     tui_flush();
     tui_end();

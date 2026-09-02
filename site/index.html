@@ -1278,6 +1278,23 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               one place rather than in eight handlers.
             </p>
             <p>
+              It asks for two passwords, not one. A machine whose only login is root is a machine
+              every session is administered from, so the install creates an everyday account
+              alongside it &mdash; and <em>either</em> password opens the disk at boot. That last
+              part was the missing piece rather than a convenience: the volume is sealed to key
+              slots, and the kernel unlocks it with the typed password <em>before</em> it can read
+              the account table, so an account without a slot of its own opens nothing and is not
+              found. It worked perfectly on a machine somebody else had already unlocked, which is
+              why nobody noticed &mdash; every test and every operator logs in as root first. The
+              test now logs in as the unprivileged account, on a machine nobody has opened.
+            </p>
+            <p>
+              The install also deletes the account the kernel compiles in. A fresh volume's account
+              table is seeded from that built-in image, so until this landed every installed
+              machine shipped a working login whose password is printed in the source. It is
+              replaced by the one you named.
+            </p>
+            <p>
               A third checks who a password command actually writes. Creating an account and
               giving it a password is the ordinary next thing an operator does, and the shell was
               matching the account argument and then discarding it &mdash; so
@@ -1288,7 +1305,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               longer opened the machine. A malformed argument is now refused rather than quietly
               treated as a request to change your own, and the reply names the account it wrote.
             </p>
-            <span class="witness">smoke-installer &middot; smoke-installer-refuse &middot; smoke-installer-provision &middot; smoke-passwd-target &middot; smoke-captest &middot; smoke-storage-survey</span>
+            <span class="witness">smoke-installer &middot; smoke-installer-refuse &middot; smoke-installer-provision &middot; smoke-installer-accounts &middot; smoke-passwd-target &middot; smoke-captest &middot; smoke-storage-survey</span>
           </article>
           <article>
             <h3>A usable userland</h3>
@@ -1462,7 +1479,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 226 test targets, and the troubleshooting
+          Every configuration flag, every one of the 228 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1582,7 +1599,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             The security argument rests entirely on the tests, so they are treated as engineering
             artifacts rather than an afterthought. There are three layers: Rust unit tests and
-            Kani proofs on the host; 118 QEMU integration targets that boot a purpose-built kernel
+            Kani proofs on the host; 119 QEMU integration targets that boot a purpose-built kernel
             and assert a marker on the serial console; and scripted sessions that type into the
             real ring-3 shell over serial and read what comes back.
           </p>
@@ -1776,7 +1793,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               be listed as merge-gating, or exempted <em>with a written reason</em>, and CI fails
               the build if any is in neither; there is no default, because defaulting was the
               defect. It caught an unclassified static-analysis job on its first run. The
-              intended set is 106 gating and 3 exempted, and the promotions are backed by
+              intended set is 107 gating and 3 exempted, and the promotions are backed by
               measurement rather than optimism: across 18 sampled runs, 64 of 66 jobs had zero
               failures in 1152 job-executions.
             </p>

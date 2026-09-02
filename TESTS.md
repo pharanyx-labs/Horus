@@ -387,7 +387,29 @@ library and cannot create kernel scheduler state, but it did resize four server 
 moves timing, so "pre-existing and under-sampled" and "the same defect, made marginally easier
 to hit" both fit the data. Recorded rather than concluded.
 
-**A red here is a [G-9] reproduction, not a flake.** `smoke-sched-invariants` stays **required**
+**Re-measured 2026-09-02, and it is now [G-12].** The rate is **7 marker failures in 2250
+boots, 0.31% per boot**, with CI (2/750, mined from the job's own `STRESS RESULT` lines, so
+green runs contribute their boots and their zeroes) and a local campaign (5/1500) agreeing. That
+puts this gate's red rate on `main` at 1 - 0.9969^30 ≈ **8.9%** of runs, against 2 of 25
+observed. A green run therefore establishes very little about absence, which is the same point
+§5.2d's own note makes in older numbers.
+
+**The deferred-release machinery is EXCLUDED by measurement.** `CLAIM_TRACE=1` instruments the
+only two ways that path can orphan a claim -- a slot overwritten while occupied, and a release
+declined because the claim names another CPU -- and it was **silent across 1000 boots including
+all four reproductions**. A `KSTACK_RACE_WIDEN=1` arm, which stretches that same window onto
+essentially every switch, was silent across 100 more but reproduced no failures of its own and
+costs 3x boot time, so it corroborates rather than carries the result. The instrument's own cost
+was checked before the exclusion was believed: 4/1000 with it against 1/500 without is Fisher
+p ≈ 0.67. Full record in
+[`docs/investigations/G-12-claim-invariant-residue.md`](docs/investigations/G-12-claim-invariant-residue.md).
+
+**An early cluster that was not real, recorded because it nearly set the sample size.** The
+first local run gave **2 failures in 30 boots** and would have supported 6.7% -- 25x the truth --
+with both hits on boots 28 and 30, which invited a host-state story. The next 500 boots failed
+on boot 104 and killed it. At the pooled rate that cluster has probability ≈ 0.2%.
+
+**A red here is a [G-12] reproduction, not a flake.** `smoke-sched-invariants` stays **required**
 deliberately. It is not `smoke-kstack-park` as that gate stood until 2026-08-22, when it was
 advisory because it reddened for a defect it does *not* test; this gate tests the claim
 invariant and what it caught *was* a claim leak. The gate is working. Before re-running it,

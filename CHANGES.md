@@ -17,6 +17,26 @@ in this file.
 
 ### Added
 
+- **[G-12] filed**: the SMP claim invariant still fires in the boot phase, at a measured
+  **0.31% per boot (7 marker failures in 2250 boots)**, with CI and a local campaign agreeing.
+  Three of its four signatures are memory corruption rather than audit reports -- a resume `%rsp`
+  of `0x1`, the kernel's own stack canary, and an instruction fetch into a kernel stack address
+  hitting NX. **This is not [G-9] reopened**: every mechanism [G-9] names is fixed and falsified
+  and stays closed. It is the residue [G-9]'s own record predicted -- *"a stale claim in the
+  boot/spawn phase, before any exec runs, 2 in 30"* -- measured after the closure and given its
+  own number, because calling it [G-9] would assert that [G-9]'s mechanism explains it.
+  **The deferred-release machinery is excluded by measurement**: `CLAIM_TRACE=1` instruments the
+  only two ways that path can orphan a claim and was silent across 1000 boots *including all four
+  reproductions*; the instrument's own cost was checked first (Fisher p ≈ 0.67) because §5.2d
+  records an instrument whose cost was misread as the system's rate. No mechanism is attributed;
+  one candidate is written down in the investigation and deliberately not asserted, because it
+  fits two captures out of three.
+  `smoke-sched-invariants-stress` is **unchanged and stays required**: its ~8.9% red rate on
+  `main` is the arithmetic consequence of the defect over 30 boots with zero permitted failures,
+  and is a fact about the defect rather than about the gate.
+  Record: `docs/investigations/G-12-claim-invariant-residue.md`; status in
+  `docs/LIMITATIONS.md` §5.2g.
+
 - **Every account gets a home directory that it owns** (**S78**). The provisioned skeleton
   (`/bin /etc /home /lib /usr /usr/share`) is created root-owned 0755 and **nothing created a
   home**, so a standard user on an installed machine had nowhere writable anywhere on the volume

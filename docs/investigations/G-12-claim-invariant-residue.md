@@ -217,26 +217,71 @@ address that points into the stack it came off. It is the condition S20 exists t
 **the S20 detector did not fire on these boots** -- it reports only when the inflight bit is set
 *and* a foreign holder exists, so this is happening outside that window.
 
-## It is LOAD-SENSITIVE, and that is a lever
+## The load "lever" did NOT survive retesting
 
-Measured 2026-09-02, by accident and then confirmed: a campaign at HEAD produced **2 failures in
-its first 1000 boots (0.20%)** and **9 in the next 700 (1.29%)** -- Fisher p = 0.010. The
-difference is that concurrent `make -j12` builds were running during the second half, on the same
-host, while the campaign's QEMUs were pinned to two cores.
+*Corrects this document, 2026-09-03.* It was recorded here as an established effect with
+Fisher p = 0.010, from a campaign where 2 failures fell in the first 1000 boots (0.20%) and 9 in
+the next 700 (1.29%) while concurrent `make -j12` builds ran on the same host. That contamination
+is real and that campaign stays discarded -- `tools/stress_boot.sh` refuses to run beside another
+QEMU and has no defence against a compiler.
 
-Two consequences. That campaign is **contaminated and its overall rate discarded**;
-`tools/stress_boot.sh` refuses to run beside another QEMU but has no defence against a compiler.
-And a deliberately loaded host reproduces this ~6x more often, which turns a 2500-boot campaign
-into a 400-boot one -- the cheapest known way to collect captures.
+**But the lever does not reproduce.** Retested deliberately with 12 CPU burners against an
+otherwise identical build: **1 failure in 600 loaded boots against 0 in 2500 idle, Fisher
+p = 0.194.** So "CPU contention raises the rate" is not established, and the earlier figure
+should not be used to size a campaign.
 
-## Has the rate changed? NOT ESTABLISHED
+What differs is what `make -j12` actually does -- memory pressure, I/O, page-cache churn and page
+faults, not merely burning cores -- so a build-shaped load may still be the lever while a
+spin-loop is not. Recorded as an open question rather than a tool, because a lever nobody has
+made work twice is a story.
 
-Idle boots at HEAD, after the detector fix: **2 in 2000 (0.10%)** against the pre-fix baseline of
-**7 in 2250 (0.311%)**. Fisher exact **p = 0.186**. Suggestive, not significant, and recorded as
-such: an earlier 0-in-1000 looked decisive and was p = 0.11, which by the rule of three still
-admitted the old rate. Nothing here says the corruption has been reduced, and the detector fixes
-were never expected to touch it -- they addressed what the checkers *reported*, not what the
-hardware did.
+## The rate at HEAD is lower, and this is now established
+
+| | Boots | Marker failures | Rate |
+|---|---|---|---|
+| Pre-fix baseline | 2250 | 7 | 0.311% |
+| HEAD, clean idle boots (2500 + 1000) | **3500** | **0** | **0%** |
+
+**Fisher exact p = 0.0014.** The 95% upper bound on the current rate is 0.086% (rule of three).
+
+**What that means, stated carefully.** The two fixes it follows are both *checker* fixes -- the
+collision detector's identity (S20, 2026-09-02) and the auditor's persistence test (above). So
+the honest reading is that **the majority of what this finding was counting were the checkers'
+own false positives**, and removing them removed the failures. It is not evidence that any
+hardware-level defect was repaired, and nothing here claims it was.
+
+An earlier 0-in-1000 was reported here as suggestive-not-significant at p = 0.11; it was right to
+hold. 3500 boots is what it took.
+
+## THE SURVIVOR, and it now has a function name
+
+One failure in the 600 loaded boots, and it is not a checker artifact:
+
+```
+PANIC: unclaimed running task at preempt_on_tick: task 1 claimed by cpu 1
+       but that cpu was running 0 (persisted across two audits; observed by cpu 3)
+  holder cpu 1: commit_gap=-1 deferred=-1 idle=0 current=1 impersonating=0
+  task 1: state=1 runnable_ctx=1 inflight=0
+PANIC: stack smashing detected in function at 0xffffffff80116e34 cpu=0 task=1 'prog1'
+  claim: task 1 running_cpu=0  percpu_current=[1,1,0,0]  imp=[0,0,0,0]
+```
+
+Four things make this the real one:
+
+- **`percpu_current=[1,1,0,0]` with `imp=[0,0,0,0]`.** Two CPUs are current on task 1 and no
+  impersonation exists to explain it away. That is the claim invariant's `<-` direction broken,
+  whose documented consequence is two cores executing one kernel stack.
+- **The audit panic survived the re-read** added by the persistence fix above, so the mismatch
+  persisted. Post-fix, an audit panic is evidence rather than noise.
+- **`0xffffffff80116e34` symbolises to `do_spawn_charged`** (`src/kernel/kspawn.c:518`) -- the
+  spawn path, and the corruption is its stack frame's canary.
+- **`inflight=0`**, so the S20 collision detector could not have fired: it reports only when the
+  inflight bit is set *and* a foreign holder exists. This collision is outside that window.
+
+So the surviving defect is: **two CPUs become current on one task with no impersonation
+involved, and the shared kernel stack corrupts the spawn path's frame.** How the second CPU comes
+to be current on a task it has not claimed is the open question, and [G-10] is worth re-reading
+against it -- that finding was the spawn path's process-wide singleton state.
 
 ## What would settle it
 

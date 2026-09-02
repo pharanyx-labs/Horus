@@ -671,6 +671,7 @@ Pipes *are* properly capability-addressed: the slot argument is a cspace slot re
 | 33 | `SYS_USERADD` | `user`, `pass` | `CAP_USER` at `CAPSLOT_USER` |
 | 34 | `SYS_USERDEL` | `user` | `CAP_USER` at `CAPSLOT_USER` |
 | 35 | `SYS_PASSWD` | `user`, `pass` | `CAP_USER`, or the target is the caller's own uid |
+| 112 | `SYS_USERLIST` | `index`, `struct user_entry *` | `CAP_USER` at `CAPSLOT_USER` |
 
 `SYS_PASSWD` **also grants the target a volume key slot** when an administrator sets *another*
 account's password, and records its index in that account's record (**S76**). Without one the
@@ -681,7 +682,18 @@ with no free slot leaves the old password working and returns an error rather th
 password that cannot open the machine. Changing your **own** password re-seals the slot you
 already hold instead, and a machine with no persistent volume grants nothing.
 
-These three are `SC_NONE` in the dispatch table, so `current_user_is_admin()` in
+`SYS_USERLIST` reads one account's **public metadata** -- name, uid, gid, home -- and nothing
+else: no hash, no salt, no key slot, no lockout state. It returns 1 when the buffer was filled,
+**0 when `index` is past the last account**, and `SYS_ERR_PERM` without the capability; the
+buffer is written only on 1, so a refusal and an empty index are not distinguishable by
+inspecting it. The index is **dense over valid accounts** rather than an array position, because
+the table is sparse -- `SYS_USERDEL` clears a slot and leaves it -- so array positions would
+export `MAX_USERS` across the boundary and make a hole in the middle read as the end. A caller
+loops from 0 until it gets 0. The one caller today is `fs_server`, which uses it to give every
+account a home directory it owns (**S78**); it already holds `CAP_USER` as the
+`SYS_REGISTER_FS_SERVER` gate, so nothing was granted to make this work.
+
+These four are `SC_NONE` in the dispatch table, so `current_user_is_admin()` in
 `src/kernel/kusers.c` *is* the gate. Until 2026-08-15 it accepted `uid == 0` as an alternative
 to holding the capability: the last surviving ambient gate from **[I-1]**, which roadmap 0.2's
 sweep of `syscall.c` never reached (finding **[H-1]**). "Admin" here now means possession of

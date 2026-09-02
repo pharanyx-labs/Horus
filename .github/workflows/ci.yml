@@ -461,6 +461,11 @@ jobs:
       # and storage_unlock is idempotent there.
       - name: Control arm — a format with no capability in front of it
         run: make smoke-captest-storage-format-control
+      # S78. The gate removed and nothing else: the ungated read SUCCEEDS, because
+      # a booted system always has accounts, so this refusal cannot pass under
+      # the defect for want of something to read.
+      - name: Control arm — reading the account table with no capability in front of it
+        run: make smoke-captest-userlist-control
       # cap_lookup is the function every capability gate in this kernel resolves
       # through, and it used to end in an unconditional fallback to the
       # PRIMORDIAL root cnode -- reached both by a task with no cspace and by one
@@ -2488,6 +2493,10 @@ jobs:
         run: make smoke-session-chown-control
       - name: Remove the chmod gate and require a standard user to set a mode they do not own
         run: make smoke-session-chmod-control
+      # S78: the home is created and then not given away, so the account can see
+      # it and cannot write in it.
+      - name: Withhold ownership of the home directory and require the account to be locked out
+        run: make smoke-session-home-control
 
   smoke-session-smp:
     name: Scripted integration session under SMP (-smp 4, drives the real shell)

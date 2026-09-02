@@ -60,6 +60,11 @@ FS_ERR_FLAT = os.environ.get("SESSION_FS_ERR_FLAT", "0") == "1"
 # of two independent rules rather than of "something gates metadata".
 CHMOD_UNGATED = os.environ.get("SESSION_CHMOD_UNGATED", "0") == "1"
 CHOWN_UNGATED = os.environ.get("SESSION_CHOWN_UNGATED", "0") == "1"
+# S78's arm. HOME_DIR_ROOT_OWNED=1 has fs_server create /home/<name> and then
+# NOT give it away, so the directory exists and the account cannot write in it --
+# which is the state the tree was in before it created them at all, reached by a
+# route the account can observe.
+HOME_ROOT_OWNED = os.environ.get("SESSION_HOME_ROOT_OWNED", "0") == "1"
 
 
 def fs_err(cmd, reason):
@@ -614,6 +619,38 @@ def run():
         s.expect("user@horus$", STEP_TIMEOUT)
         s.send("stat userdir"); s.expect("stat: not found", STEP_TIMEOUT)
         step("the refused mkdir created nothing")
+
+        # --- 6f. the account has a home directory it owns (S78) -----------
+        #         The gap this closes was found on an installed machine: every
+        #         directory in the provisioned skeleton is root-owned 0755, and
+        #         nothing created a home, so a standard user had NOWHERE
+        #         writable and no way to be given one -- root could make a
+        #         directory but not hand it over. fs_server creates it at
+        #         provisioning, which is the only moment the account list, the
+        #         authority to stamp ownership, and an unlocked volume are all
+        #         available at once.
+        #
+        #         Two checks and they are different claims: the directory is
+        #         OWNED by the account (asked of the server), and the account can
+        #         actually WRITE in it. Ownership without a usable mode, or a
+        #         mode without ownership, satisfies one and not the other.
+        s.expect("user@horus$", STEP_TIMEOUT)
+        s.send("cd /home"); s.expect("user@horus$", STEP_TIMEOUT)
+        s.send("stat user")
+        s.expect(fs_err("stat", "permission denied") if HOME_ROOT_OWNED
+                 else "uid=1000", STEP_TIMEOUT)
+        step("the home directory is owned by the account"
+             + (" -- NOT, under HOME_DIR_ROOT_OWNED" if HOME_ROOT_OWNED else ""))
+
+        s.expect("user@horus$", STEP_TIMEOUT)
+        s.send("cd user"); s.expect("user@horus$", STEP_TIMEOUT)
+        s.send("mkdir mine")
+        s.expect(fs_err("mkdir", "permission denied") if HOME_ROOT_OWNED
+                 else "mkdir: created mine", STEP_TIMEOUT)
+        step("a standard user can write in their own home"
+             + (" -- CANNOT, under HOME_DIR_ROOT_OWNED" if HOME_ROOT_OWNED else ""))
+        s.expect("user@horus$", STEP_TIMEOUT)
+        s.send("cd /"); s.expect("user@horus$", STEP_TIMEOUT)
 
         # --- 7. sudo refuses to take the password on the command line ----
         #        It would be echoed to the console and mirrored to the serial

@@ -453,10 +453,10 @@ a page at the bogus address and reported success.
 ### 1.8 Part of the syscall table has no test that runs its handler, and one of those gaps hid a defect
 
 **Measured since 2026-08-20**, and re-derived on every merge rather than restated: as of
-2026-09-01, and gated since: **82 of 94** implemented syscalls have their handler
+2026-09-01, and gated since: **83 of 95** implemented syscalls have their handler
 body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
 boot-modules session). The other 12 are listed in `.github/syscall-coverage.yml`, each with a written reason.
-2026-08-30, and gated since: **82 of 94** implemented syscalls have their handler
+2026-08-30, and gated since: **83 of 95** implemented syscalls have their handler
 body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
 boot-modules session). The other 12 are listed in `.github/syscall-coverage.yml`, each with a written reason.
 

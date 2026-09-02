@@ -395,6 +395,51 @@ int do_useradd(uint32_t uid, uint32_t gid, const char *name, const char *initial
     return -6;
 }
 
+/* Read one account's public metadata into a KERNEL buffer; the handler copies it
+ * out. Returns 1 when `out` was filled, 0 when `index` is past the last account,
+ * and -1 when the caller holds no CAP_USER.
+ *
+ * THE GATE IS THE SAME ONE useradd/userdel/passwd USE, and it is a capability
+ * rather than a uid: current_user_is_admin() asks cap_lookup for CAP_USER at
+ * CAPSLOT_USER and nothing else. That matters here more than it looks, because
+ * the temptation with a read-only call is to leave it ungated on the grounds
+ * that names are not secrets. They are not, but "no ambient authority" is a
+ * property of the SYSTEM, not of each syscall argued individually, and an
+ * ungated enumeration is exactly the ambient path CLAUDE.md exists to refuse:
+ * every task would learn the account table by asking.
+ *
+ * THE INDEX IS DENSE OVER VALID ACCOUNTS, not an array position. The array is
+ * sparse -- do_userdel clears `valid` and leaves the slot -- so exporting array
+ * positions would export MAX_USERS to every caller and make a hole in the middle
+ * of the table look like the end of it. A caller loops from 0 until this returns
+ * 0 and never needs to know how the kernel stores accounts.
+ *
+ * FIELDS ARE COPIED ONE AT A TIME, deliberately, rather than the record being
+ * memcpy'd into a smaller struct. user_account also holds pass_hash, salt,
+ * keyslot and the lockout counters; a struct-shaped copy would export whatever
+ * happened to be laid out inside the exported extent the day somebody added a
+ * field. This way an addition to user_account cannot leak by adjacency. */
+int do_userlist(uint32_t index, struct user_entry *out) {
+#ifndef USERLIST_UNGATED
+    if (!current_user_is_admin()) return -1;
+#endif
+    if (!out) return -1;
+
+    uint32_t seen = 0;
+    for (int i = 0; i < MAX_USERS; i++) {
+        if (!users[i].valid) continue;
+        if (seen == index) {
+            out->uid = users[i].uid;
+            out->gid = users[i].gid;
+            kstrcpy(out->name, users[i].name);
+            kstrcpy(out->home, users[i].home);
+            return 1;
+        }
+        seen++;
+    }
+    return 0;
+}
+
 int do_userdel(uint32_t uid) {
     if (!current_user_is_admin()) return -1;
     if (uid == 0) return -2;
@@ -877,6 +922,32 @@ void h_useradd(struct interrupt_frame64 *r) {
 }
 void h_userdel(struct interrupt_frame64 *r) {
     r->rax = do_userdel(r->rbx);
+}
+/* SYS_USERLIST: one account's public metadata. SC_NONE in the table with the
+ * capability tested in do_userlist, matching useradd/userdel/passwd -- the four
+ * account calls answer to one gate written once.
+ *
+ * THE BUFFER IS FILLED IN THE KERNEL AND COPIED ONCE. do_userlist writes a
+ * kernel-local struct and this copies it out, so a user pointer is never handed
+ * to code that walks the account table; and the copy is skipped entirely unless
+ * do_userlist returned 1, so a refused or past-the-end call writes nothing to
+ * ring 3 at all. A caller cannot tell an empty index from a refusal by looking
+ * at its buffer, which is the direction that has to fail closed. */
+void h_userlist(struct interrupt_frame64 *r) {
+    struct user_entry e;
+    /* ZEROED BEFORE IT IS FILLED, and this is not defensive habit. kstrcpy
+     * terminates the string and leaves the rest of name[32]/home[64] as it
+     * found it, and copy_to_user copies sizeof(e) -- so without this, every
+     * byte of this stack frame past each string is handed to ring 3. A short
+     * account name would export whatever the previous kernel call left there. */
+    secure_zero(&e, sizeof(e));
+    int rc = do_userlist((uint32_t)r->rbx, &e);
+    if (rc != 1) { r->rax = (uint32_t)(rc < 0 ? SYS_ERR_PERM : 0); return; }
+    if (copy_to_user((void *)(addr_t)r->rcx, &e, sizeof(e)) != 0) {
+        r->rax = (uint32_t)SYS_ERR_FAULT;
+        return;
+    }
+    r->rax = 1;
 }
 void h_passwd(struct interrupt_frame64 *r) {
     uint32_t target = r->rbx;

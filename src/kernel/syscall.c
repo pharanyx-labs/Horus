@@ -1271,7 +1271,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 112
+#define SYSCALL_TABLE_SIZE 113
 
 /* ------------------------------------------------------------------------- *
  *  Capability-checked dispatch table.
@@ -1446,6 +1446,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_GET_PASS]                 = { h_get_pass,                SC_NONE, 0, SC_ANYTYPE },
     [SYS_USERADD]                  = { h_useradd,                 SC_NONE, 0, SC_ANYTYPE }, /* admin check in do_useradd */
     [SYS_USERDEL]                  = { h_userdel,                 SC_NONE, 0, SC_ANYTYPE }, /* admin check in do_userdel */
+    [SYS_USERLIST]                 = { h_userlist,                SC_NONE, 0, SC_ANYTYPE }, /* admin check in do_userlist */
     [SYS_PASSWD]                   = { h_passwd,                  SC_NONE, 0, SC_ANYTYPE }, /* admin/self in do_passwd */
     [SYS_ROTATE_KEYS]              = { h_rotate_keys,             8, CAP_RIGHT_READ, CAP_CONSOLE },
     [SYS_READ_AUDIT]               = { h_read_audit,              7, CAP_RIGHT_READ, CAP_AUDIT },
@@ -1626,7 +1627,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
 /* Carries S6: an unknown or reserved syscall number cannot reach a handler.
  * The bound check in syscall_handler fails closed at runtime; this assertion is
  * what stops a new number being added without its table entry. */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_STORAGE_FORMAT + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_USERLIST + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

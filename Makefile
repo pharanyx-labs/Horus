@@ -124,7 +124,8 @@ DEFECT_FLAGS = \
 	CSPACE_RELEASE_BEFORE_PIPES SPAWN_SLOT3_DECOY_GATE UNTYPED_SPLIT_FREE_BYTES \
 	INIT_PROVISION_NO_UNTYPED AUDIT_ABI_LEGACY STORE_LOCKED_UNCHECKED \
 	PASSWD_TARGET_IGNORED PASSWD_NO_KEYSLOT \
-	SHELL_FS_ERR_FLAT FS_CHMOD_ANY_OWNER FS_CHOWN_ANY_UID
+	SHELL_FS_ERR_FLAT FS_CHMOD_ANY_OWNER FS_CHOWN_ANY_UID \
+	USERLIST_UNGATED HOME_DIR_ROOT_OWNED
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -489,6 +490,26 @@ FS_CHOWN_ANY_UID ?= 0
 ifeq ($(FS_CHOWN_ANY_UID),1)
 CFLAGS  += -DFS_CHOWN_ANY_UID
 ASFLAGS += -DFS_CHOWN_ANY_UID
+endif
+
+# USERLIST_UNGATED=1 removes SYS_USERLIST's CAP_USER test, so any ring-3 task
+# reads the account table (S78). KERNEL flag: the gate is in do_userlist, beside
+# the one useradd/userdel/passwd share.
+USERLIST_UNGATED ?= 0
+ifeq ($(USERLIST_UNGATED),1)
+CFLAGS  += -DUSERLIST_UNGATED
+ASFLAGS += -DUSERLIST_UNGATED
+endif
+
+# HOME_DIR_ROOT_OWNED=1 has fs_server create /home/<name> and then NOT give it
+# away. The directory exists and the account cannot write in it -- which is the
+# state the tree was in before homes were created at all, reached by a route the
+# account can observe. Userspace-only; the -D that matters is applied to
+# USERSPACE_CFLAGS at top level.
+HOME_DIR_ROOT_OWNED ?= 0
+ifeq ($(HOME_DIR_ROOT_OWNED),1)
+CFLAGS  += -DHOME_DIR_ROOT_OWNED
+ASFLAGS += -DHOME_DIR_ROOT_OWNED
 endif
 
 USERS_TAMPER_INJECT ?= 0
@@ -2902,6 +2923,10 @@ ifeq ($(FS_CHOWN_ANY_UID),1)
 USERSPACE_CFLAGS += -DFS_CHOWN_ANY_UID
 endif
 
+ifeq ($(HOME_DIR_ROOT_OWNED),1)
+USERSPACE_CFLAGS += -DHOME_DIR_ROOT_OWNED
+endif
+
 # PASSWD_TARGET_IGNORED, here for exactly the reason above: USERSPACE_CFLAGS is
 # assigned with `=` a few lines up, so a `+=` before that point is discarded and
 # the arm silently builds a clean shell. See its comment beside STORAGE_ATA.
@@ -4380,6 +4405,19 @@ smoke-captest-storage-format-control:
 		REQUIRE_MARKER='CAPTEST: FAIL storage-format-without-cap-storage-format' \
 		tools/smoke_test.sh boot.iso
 
+# S78: reading the account table answers to CAP_USER. The arm removes that test
+# and nothing else, and the ungated call SUCCEEDS -- a booted system always has
+# accounts, so captest reads `root` back. A refusal test whose ungated form also
+# failed would pass under the defect and witness nothing.
+.PHONY: smoke-captest-userlist-control
+smoke-captest-userlist-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 USERLIST_UNGATED=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 USERLIST_UNGATED=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CAPTEST: FAIL userlist-without-cap-user' \
+		tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-captest
 smoke-captest:
 	@$(MAKE) --no-print-directory clean
@@ -5516,6 +5554,17 @@ smoke-session-chown-control:
 	@$(MAKE) --no-print-directory FS_CHOWN_ANY_UID=1 boot.iso
 	@SESSION_CHOWN_UNGATED=1 python3 tools/session_test.py boot.iso
 	@echo "[session] CONTROL PASS - a standard user took ownership of root's file"
+
+# S78's arm: the home directory is created and then not given away. The account
+# can see it and cannot write in it, which is the pre-2026-09-02 state reached by
+# a route the account can observe -- before this, /home simply had nothing in it.
+.PHONY: smoke-session-home-control
+smoke-session-home-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory HOME_DIR_ROOT_OWNED=1
+	@$(MAKE) --no-print-directory HOME_DIR_ROOT_OWNED=1 boot.iso
+	@SESSION_HOME_ROOT_OWNED=1 python3 tools/session_test.py boot.iso
+	@echo "[session] CONTROL PASS - the home exists and its account cannot write in it"
 
 # Regression guard for the SMP console-INPUT corruption: drive the real ring-3
 # shell over serial under -smp 4. Where smoke-console-smp covers console *output*

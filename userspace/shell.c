@@ -2302,8 +2302,47 @@ static void handle_command(char *cmd) {
         newname[ni] = 0;
 
         int r = sys_useradd(newuid, 100, newname);
-        if (r == 0) println("user added");
-        else println("useradd failed");
+        if (r != 0) { println("useradd failed"); }
+        else {
+            println("user added");
+            /* AND A HOME DIRECTORY, because an account without one has nowhere
+             * to write: every directory in the provisioned skeleton is root's.
+             * fs_server does this for the accounts that exist when a volume is
+             * provisioned; an account created afterwards is this path's job, and
+             * the shell can do it because it is running as root here -- /home is
+             * root-owned, and chown is root-only (S77).
+             *
+             * REPORTED BUT NOT FATAL. The account exists either way and saying
+             * so twice would be a lie in one direction or the other: `useradd`
+             * succeeded, the home did not, and an operator needs both facts. */
+            uint32_t htype, hino = sh_lookup("/home", &htype);
+            if (hino == (uint32_t)-1 || htype != FS_TYPE_DIR) {
+                println("useradd: no /home; the account has no home directory");
+            } else {
+                struct fs_request  mq = {0};
+                struct fs_response mp;
+                mq.op = FS_OP_MKDIR; mq.dir_ino = hino;
+                fss_strcpy(mq.name, newname);
+                int mt = fss_call(&mq, &mp);
+                if (mt < 0 || mp.rc < 0) {
+                    fs_fail("useradd: home", mt, &mp);
+                } else {
+                    struct fs_request  cq = {0};
+                    struct fs_response cp;
+                    cq.op = FS_OP_CHOWN; cq.ino = mp.ino;
+                    cq.arg_uid = newuid; cq.arg_gid = 100;
+                    int ct = fss_call(&cq, &cp);
+                    if (ct < 0 || cp.rc < 0) fs_fail("useradd: home", ct, &cp);
+                    else {
+                        struct fs_request  pq = {0};
+                        struct fs_response pp;
+                        pq.op = FS_OP_CHMOD; pq.ino = mp.ino; pq.mode = 0700u;
+                        (void)fss_call(&pq, &pp);
+                        print("useradd: created /home/"); println(newname);
+                    }
+                }
+            }
+        }
         }
     } else if (strncmp(cmd, "userdel ", 8) == 0) {
         /* ROOT ONLY — see the note on useradd above. */

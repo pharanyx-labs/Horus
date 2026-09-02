@@ -158,3 +158,11 @@ soak-evidence/
 
 # Stamp of the CFLAGS/ASFLAGS a build was made with; forces a rebuild when they change
 .build-flags
+
+# Output of an ad-hoc local gate sweep: a table of PASS/FAIL and one serial log
+# per target. Evidence from a run on one machine, never a tracked artifact -- the
+# same call soak-evidence/ and .syscov-evidence*/ get. Ignored rather than merely
+# deleted because SWEEP.txt reached main once already, on a `git add -A`, and a
+# committed table of seventeen FAILs that were not real is worse than no table.
+SWEEP.txt
+sweep_*.log

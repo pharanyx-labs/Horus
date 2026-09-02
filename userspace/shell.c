@@ -850,7 +850,14 @@ static const char *const d_sudo[] = {
     "through the shell's input buffer.",
     0 };
 static const char *const d_passwd[] = {
-    "Change your password at a secure prompt.",
+    "Change a password at a secure prompt. With no argument, your own.",
+    "",
+    "`passwd <uid>` changes THAT account's password and requires uid 0. It is",
+    "the only way to give an account created by useradd a usable password:",
+    "useradd leaves the new account locked, with no password that can match.",
+    "",
+    "The argument is a uid, not a name, and a malformed one is refused rather",
+    "than treated as a request to change your own -- see help passwd.",
     "",
     "Passwords are stored as Argon2id hashes -- memory-hard, so an attacker",
     "who obtains the database cannot cheaply brute-force it -- and the change",
@@ -928,7 +935,7 @@ static const struct man_page man_pages[] = {
  { "whoami","1","show your attested uid and gid","whoami",d_whoami,0,0,"id(1), sudo(1), ps(1)" },
  { "id","1","show your attested uid and gid","id",d_whoami,0,0,"whoami(1)" },
  { "sudo","1","re-authenticate and elevate","sudo",d_sudo,0,0,"passwd(1), whoami(1)" },
- { "passwd","1","change your password","passwd",d_passwd,0,0,"sudo(1)" },
+ { "passwd","1","change a password","passwd [UID]",d_passwd,0,0,"useradd(8), sudo(1)" },
  { "useradd","8","create a user account","useradd UID NAME",d_useradd,0,0,"userdel(8), passwd(1)" },
  { "userdel","8","delete a user account","userdel UID",d_userdel,0,0,"useradd(8)" },
  { "rotate_keys","8","re-encrypt storage under a fresh key","rotate_keys",d_rotate,0,0,"passwd(1)" },
@@ -1064,7 +1071,7 @@ static void show_general_help_us(void) {
     println("");
     println("  IDENTITY & SECURITY");
     print_cmd("whoami, id",        "show your login uid / gid");
-    print_cmd("passwd",            "change your password (secure prompt)");
+    print_cmd("passwd [<uid>]",    "change a password, yours or an account's (root)");
     print_cmd("sudo",              "re-authenticate (secure prompt), spawn elevated");
     print_cmd("rotate_keys",       "re-encrypt storage under a fresh key    (root)");
     print_cmd("dmesg",             "print the kernel message log            (root)");
@@ -1141,7 +1148,7 @@ static void show_topic_help_us(const char *topic) {
         println("  hold - never from what a command claims. uid 0 (root) is the sole admin.");
         println("");
         print_cmd("whoami, id",     "show your uid / gid");
-        print_cmd("passwd",         "change your password");
+        print_cmd("passwd",         "change a password (passwd <uid> for another, root)");
         print_cmd("sudo <pw>",      "re-authenticate, spawn an elevated image");
         print_cmd("rotate_keys",    "re-encrypt storage under a fresh key    (root)");
         print_cmd("useradd/userdel","manage user accounts                    (root)");
@@ -1263,10 +1270,17 @@ static void show_topic_help_us(const char *topic) {
         help_line("",         "and every privileged op are checked against it.");
         help_line("See also:","passwd, sudo, ps");
     } else if (strcmp(t,"passwd")==0) {
-        help_line("Purpose:", "Change your own account password.");
-        help_line("Usage:",   "passwd");
+        help_line("Purpose:", "Change a password: your own, or another account's as root.");
+        help_line("Usage:",   "passwd            |    passwd <uid>");
+        help_line("Example:", "passwd 1001");
         help_line("Notes:",   "The new password is read without echo, hashed with Argon2id,");
         help_line("",         "and persists across reboots.");
+        help_line("",         "passwd <uid> is how an account made by useradd gets a usable");
+        help_line("",         "password: useradd leaves it locked. The argument is a uid, not");
+        help_line("",         "a name, and a malformed one is REFUSED -- it is never taken as");
+        help_line("",         "a request to change your own.");
+        help_line("",         "Changing your OWN password also re-seals the volume to it.");
+        help_line("See also:","useradd, sudo");
     } else if (strcmp(t,"sudo")==0) {
         help_line("Purpose:", "Re-authenticate and spawn a privileged (armed) image.");
         help_line("Usage:",   "sudo            (prompts for your password, masked)");
@@ -1285,7 +1299,9 @@ static void show_topic_help_us(const char *topic) {
         help_line("Purpose:", "Create or delete a user account (admin).");
         help_line("Usage:",   "useradd <uid> <name>    |    userdel <uid>");
         help_line("Example:", "useradd 1001 bob");
-        help_line("Notes:",   "Requires uid 0. New accounts persist across reboots.");
+        help_line("Notes:",   "Requires uid 0. New accounts persist across reboots, and are");
+        help_line("",         "created LOCKED: give one a password with passwd <uid> before it");
+        help_line("",         "can be logged into.");
         help_line("See also:","passwd, whoami");
     } else if (strcmp(t,"ipc_send")==0 || strcmp(t,"ipc_recv")==0 || strcmp(t,"ipc")==0) {
         help_line("Purpose:", "Exchange a message over a capability endpoint.");
@@ -2125,21 +2141,92 @@ static void handle_command(char *cmd) {
         println(r == 0 ? "user deleted" : "userdel failed");
         }
     } else if (strcmp(cmd, "passwd") == 0 || strncmp(cmd, "passwd ", 7) == 0) {
-        println("New password: ");
-        char newp[32];
-        int plen = sh_get_pass(newp, 31);
-        if (plen > 0) {
-            newp[plen] = 0;
-            /* Change the CURRENT user's password, not uid 0.  The old code
-             * always passed target=0, so non-root users got "passwd failed"
-             * (kernel rejects uid!=self unless admin) and root accidentally
-             * had an "admin only" passwd command. */
-            uint32_t target = sys_getuid();
-            int r = sys_passwd(target, newp);
-            for (int i=0; i<32; i++) newp[i]=0;
-            println(r == 0 ? "password changed" : "passwd failed");
-        } else {
-            println("passwd aborted");
+        /* WHO THIS CHANGES THE PASSWORD OF, and why the argument is not optional
+         * once it is typed.
+         *
+         * `passwd` with no argument changes the CURRENT user's password. That is
+         * unchanged and is what an ordinary user gets.
+         *
+         * `passwd <uid>` changes THAT account's, and only root may ask. Until
+         * 2026-09-01 the argument was matched (`strncmp(cmd, "passwd ", 7)`) and
+         * then dropped on the floor: every call went to sys_getuid(). So a root
+         * operator who created an account and typed `passwd 1001` to give it a
+         * password got `password changed` -- a true sentence about a different
+         * account than the one they named -- and silently changed their OWN.
+         *
+         * That is not a cosmetic mis-targeting, because do_passwd re-wraps the
+         * volume key whenever target_uid == my_uid. The string typed for somebody
+         * else's account became the volume's key-slot password too. Measured on a
+         * real install: `passwd 1001` typing `bobpass1`, then a power cycle, and
+         * root/<install password> was REFUSED while root/bobpass1 opened the
+         * machine. The installer's own screen says a forgotten password is a lost
+         * volume, and this was a way to change it without being asked.
+         *
+         * A MALFORMED ARGUMENT IS REFUSED RATHER THAN IGNORED, and that is the
+         * actual repair. Silently falling back to self on an argument that did
+         * not parse would reproduce the defect for `passwd bob` -- a name, which
+         * is what an operator who knows POSIX will type first -- while the uid
+         * form worked, which is a worse failure than the uniform one because it
+         * teaches the wrong model. There is no name lookup to offer instead:
+         * useradd and userdel are uid-only for the same reason, the shell has no
+         * syscall that resolves a name.
+         *
+         * THE ROOT TEST IS THE SHELL'S OWN, for the reason the useradd branch
+         * above gives at length: the kernel asks "does this TASK hold CAP_USER?",
+         * and the shell is one long-lived task serving successive logins, so
+         * without this check delegating that capability would hand every logged-in
+         * user the ability to set anybody's password. do_passwd would also refuse
+         * uid != self for a non-admin, so this is the second of two gates rather
+         * than the only one -- but it is the one that knows who is at the
+         * terminal. */
+        uint32_t target = sys_getuid();
+        int may_ask = 1;
+        const char *arg = cmd + 6;
+        while (*arg == ' ') arg++;
+        if (*arg) {
+#ifdef PASSWD_TARGET_IGNORED
+            /* CONTROL ARM -- never ship. The argument is parsed and discarded, so
+             * every call targets the caller: `passwd 1001` changes root's own
+             * password and re-seals the volume to it. See
+             * make smoke-passwd-target-control. */
+            (void)arg;
+#else
+            uint32_t want = 0;
+            int digits = 0;
+            while (*arg >= '0' && *arg <= '9') { want = want*10 + (uint32_t)(*arg - '0'); arg++; digits++; }
+            while (*arg == ' ') arg++;
+            if (!digits || *arg) {
+                println("passwd: usage: passwd [uid]   (a uid, not a name)");
+                may_ask = 0;
+            } else if (want != target && sys_getuid() != 0) {
+                println("passwd: permission denied (root only sets another account's password)");
+                may_ask = 0;
+            } else {
+                target = want;
+            }
+#endif
+        }
+        /* THE PROMPT IS NOT REACHED UNLESS THE TARGET IS SETTLED. Asking first and
+         * refusing afterwards would take a password the operator typed for an
+         * account this command was never going to write, which is a secret
+         * collected for nothing. */
+        if (may_ask) {
+            println("New password: ");
+            char newp[32];
+            int plen = sh_get_pass(newp, 31);
+            if (plen > 0) {
+                newp[plen] = 0;
+                int r = sys_passwd(target, newp);
+                for (int i=0; i<32; i++) newp[i]=0;
+                /* WHOSE password changed is named in the reply. The defect above
+                 * survived as long as it did because `password changed` is true of
+                 * whichever account was actually written, so the output could not
+                 * distinguish the two. */
+                if (r == 0) { print("password changed for uid "); print_decimal(target); println(""); }
+                else        println("passwd failed");
+            } else {
+                println("passwd aborted");
+            }
         }
     } else if (strcmp(cmd, "rotate_keys") == 0) {
         int r = sys_rotate_keys();

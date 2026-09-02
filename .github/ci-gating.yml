@@ -200,6 +200,12 @@ required:
   # accepted edits to its inode table. The gate is the consequence an operator
   # meets: an install powered off at the login prompt whose /bin never fills.
   - store-locked
+  # Gating. It carries S75: a password command names the account it writes.
+  # The shell matched `passwd <uid>` and dropped the argument, so an admin
+  # giving a new account a password silently changed their own -- and, since
+  # do_passwd re-wraps the volume key for a self-change, re-sealed the disk to
+  # a string meant for somebody else. Only the next power-on showed it.
+  - passwd-target
   - vfs
   # Gating. It carries S30. The property it guards was true only by boot
   # ordering for four months -- entropy_init happens to run before the first

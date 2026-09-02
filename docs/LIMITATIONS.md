@@ -1140,6 +1140,32 @@ did not reproduce in **0 of 12** local boots of the exact failing configuration 
 hits it. A control arm built on that rate would be a coin toss asserting a property. The property
 is structural — a marker is one write — so it is checked statically, where it is decidable.
 
+### 2.6b An account created after the install cannot be the first login after a power cycle
+
+**Open.** `useradd 1001 bob` followed by `passwd 1001` now produces an account that works
+(`SECURITY.md` **S75**) -- but only on a machine somebody has already opened.
+
+The volume is sealed to **key slots** (**S61**): up to `HORUS_KEYSLOTS` independent AEAD wraps
+of the volume key, each under a KEK derived from one password. `h_auth` calls
+`users_unlock_and_restore(typed_password)` *before* it consults the account table, because on a
+sealed volume the table it would otherwise read is the compiled-in default `users_init` seeded.
+A user with no key slot cannot open the volume, so the table stays at the defaults, so the
+account is not found and the login is refused. Once root has logged in and unlocked, the unlock
+is a no-op for the rest of the boot and the persisted table is in memory -- and the new account
+logs in normally. Measured 2026-09-01, both directions.
+
+**The mechanism to close this exists and has no caller.** `storage_keyslot_add`
+(`src/kernel/storage.c`) does exactly this job and is what `smoke-keyslots` exercises; its only
+caller in the tree is that selftest. There is no syscall in front of it. That is the same shape
+as **S63**'s `storage_authorize_format` -- a deliberate act whose refusal was absolute rather
+than deliberate because nothing could perform it -- and closing it is the same work: a syscall
+number, a dispatch-table row with a capability and a type, a `captest` refusal check for a task
+that does not hold it, and a gate pair. It is not done, so it is written down here rather than
+implied by S61's existence.
+
+Until then the honest statement of the account model on a persistent volume is: **root
+administers, and every other account is usable on a machine root has opened.**
+
 ### 2.7 The VFS namespace is a name, not an enforcement boundary
 
 *Added 2026-08-22 with roadmap 2.4.*
@@ -1969,9 +1995,9 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand: **[C-6]**
 
-`.github/workflows/ci.yml` defines **103** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more: **105** across the three, producing **108** status-check contexts. Ruleset `21815299`
-requires all **105** today. Its predecessor `19007209` required **22** of them before
+`.github/workflows/ci.yml` defines **104** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more: **106** across the three, producing **109** status-check contexts. Ruleset `21815299`
+requires all **106** today. Its predecessor `19007209` required **22** of them before
 2026-08-16, and until 2026-08-15 exactly **zero** of those 22 were security gates: capability
 conformance, kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence,
 flush-on-switch and stack-guard reseed could all fail while a PR merged green. The required set
@@ -2015,7 +2041,7 @@ the right name with the wrong verdict. Step-level `continue-on-error` is untouch
 allowed; it lets one step be advisory while the job's own status still reports the truth, which
 is how the `security` job keeps its scanners advisory without becoming unfailable itself.
 
-That intended set is **105 required contexts and 3 reasoned exemptions**: `fuzz` (a 30-second
+That intended set is **106 required contexts and 3 reasoned exemptions**: `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` was a fifth until **[G-9]** closed on 2026-08-21; it was promoted on

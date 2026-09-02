@@ -17,6 +17,38 @@ in this file.
 
 ### Fixed
 
+- **`passwd <uid>` changed the caller's own password, and re-sealed the volume to it**
+  (**S75**). The shell matched an argument (`strncmp(cmd, "passwd ", 7)`) and then dropped it:
+  every call passed `sys_getuid()` to `SYS_PASSWD`. `useradd` creates an account **locked** --
+  `do_useradd` stores random bytes in `pass_hash` when no initial password is given, so nothing
+  can ever match -- and `passwd <uid>` is the only way to give it one. So a root operator
+  following the obvious sequence typed `passwd 1001`, was told `password changed`, and had
+  changed **their own**. The reply could not distinguish the two cases: it is true of whichever
+  account was actually written.
+  **That is a credential change, not a mis-print.** `do_passwd` re-wraps the volume key whenever
+  `target_uid == my_uid`, so the string typed for somebody else's account became the volume's
+  key-slot password as well. Measured before the fix: `passwd 1001` typing `bobpass1`, then a
+  power cycle, and `root` / the install password was **refused** while `root` / `bobpass1`
+  opened the machine. The installer's own screen says a forgotten password is a lost volume.
+  **A malformed argument is refused rather than ignored**, which is the actual repair. A silent
+  fallback to self would reproduce the defect for `passwd bob` -- a name, which is what an
+  operator who knows POSIX types first -- while the uid form worked, and a defect that survives
+  in one spelling is worse than the uniform one because it teaches the wrong model. There is no
+  name lookup to offer instead; `useradd` and `userdel` are uid-only for the same reason. The
+  reply now names the uid it wrote.
+  Witnessed by `make smoke-passwd-target`, falsified by `PASSWD_TARGET_IGNORED=1`
+  (`make smoke-passwd-target-control`) and in the other direction by
+  `tools/check_base_gate_reddens.sh PASSWD_TARGET_IGNORED`.
+  **What this does not give a new account is a volume key slot**, so it still cannot be the
+  first login after a power cycle: `storage_keyslot_add` exists, is what `smoke-keyslots`
+  exercises, and has no syscall in front of it. Recorded as `docs/LIMITATIONS.md` 2.6b rather
+  than left implied by S61.
+
+- **`docs/BUILDING.md` gave a root password the kernel has never accepted.** It said to log in
+  as `root` / `horus`; `users_init` seeds `rootpass` (and `user` / `password`). Corrected, with
+  the note that an installed disk has neither -- its account table lives on the volume and the
+  password is the one chosen during the install.
+
 - **A sealed volume answered the object store, and an install nobody logged into lost its
   `/bin` permanently** (**S74**). A volume has two states that both look like "there is a
   filesystem here": `mounted` -- the superblock is read and verified -- and `unlocked`, a key

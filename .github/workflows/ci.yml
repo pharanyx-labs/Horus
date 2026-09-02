@@ -2473,6 +2473,14 @@ jobs:
         run: rustup target add x86_64-unknown-none
       - name: Drive the ring-3 shell over serial and assert auth + least-privilege enforcement
         run: make smoke-session
+      # The control arm for the error-reporting half, in this job rather than a
+      # job of its own: it needs the same toolchain and adds no CI context to
+      # promote, and running it after the base arm keeps the pair's `make clean`
+      # out of the base arm's way. Without it, "mkdir names the permission it
+      # was refused for" is consistent with a shell that says that whatever
+      # happened -- the assertion cannot tell a report from a coincidence.
+      - name: Restore the flattened fs error and require the guess to REPRODUCE
+        run: make smoke-session-fs-err-control
 
   smoke-session-smp:
     name: Scripted integration session under SMP (-smp 4, drives the real shell)

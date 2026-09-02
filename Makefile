@@ -123,7 +123,8 @@ DEFECT_FLAGS = \
 	CSPACE_KEEP_ON_TEARDOWN \
 	CSPACE_RELEASE_BEFORE_PIPES SPAWN_SLOT3_DECOY_GATE UNTYPED_SPLIT_FREE_BYTES \
 	INIT_PROVISION_NO_UNTYPED AUDIT_ABI_LEGACY STORE_LOCKED_UNCHECKED \
-	PASSWD_TARGET_IGNORED PASSWD_NO_KEYSLOT
+	PASSWD_TARGET_IGNORED PASSWD_NO_KEYSLOT \
+	SHELL_FS_ERR_FLAT
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -457,6 +458,20 @@ INSTALLER_NO_CONFIRM ?= 0
 ifeq ($(INSTALLER_NO_CONFIRM),1)
 CFLAGS  += -DINSTALLER_NO_CONFIRM
 ASFLAGS += -DINSTALLER_NO_CONFIRM
+endif
+
+# SHELL_FS_ERR_FLAT=1 restores the pre-2026-09-02 shell, which had the
+# fs_server's rc in its hand and printed a guess instead: one sentence for every
+# outcome of every file command, naming two causes and not the common one. A
+# standard user's mkdir in the root-owned 0755 / is SYS_ERR_PERM -- the reference
+# monitor working -- reported as "name exists or server not running".
+# Userspace-only, so the -D that matters is on USERSPACE_CFLAGS at top level
+# (see the note beside SYSCALL_PTR_TRUNC32 there); this pair is what puts the
+# flag in DEFECT FLAGS and churns .build-flags.
+SHELL_FS_ERR_FLAT ?= 0
+ifeq ($(SHELL_FS_ERR_FLAT),1)
+CFLAGS  += -DSHELL_FS_ERR_FLAT
+ASFLAGS += -DSHELL_FS_ERR_FLAT
 endif
 
 USERS_TAMPER_INJECT ?= 0
@@ -2857,6 +2872,10 @@ endif
 
 ifeq ($(SYSCALL_PTR_TRUNC32),1)
 USERSPACE_CFLAGS += -DSYSCALL_PTR_TRUNC32
+endif
+
+ifeq ($(SHELL_FS_ERR_FLAT),1)
+USERSPACE_CFLAGS += -DSHELL_FS_ERR_FLAT
 endif
 
 # PASSWD_TARGET_IGNORED, here for exactly the reason above: USERSPACE_CFLAGS is
@@ -5432,6 +5451,24 @@ smoke-session:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory boot.iso
 	@python3 tools/session_test.py boot.iso
+
+# Control arm for the error-reporting half of that session: the shell is built
+# with SHELL_FS_ERR_FLAT=1, so it prints the pre-2026-09-02 sentence -- one guess
+# for every outcome of every file command -- and session_test.py REQUIRES that
+# sentence rather than the reason. Both arms type exactly the same commands; the
+# only difference is what the shell says about them.
+#
+# `clean` first, and it is load-bearing rather than tidy: `userspace/%.o` has no
+# .build-flags prerequisite, so a userspace-only -D does not force a rebuild by
+# itself. Without the clean this arm links yesterday's shell.bin, the defect is
+# absent, and the arm passes -- which is a control arm proving nothing at all.
+.PHONY: smoke-session-fs-err-control
+smoke-session-fs-err-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SHELL_FS_ERR_FLAT=1
+	@$(MAKE) --no-print-directory SHELL_FS_ERR_FLAT=1 boot.iso
+	@SESSION_FS_ERR_FLAT=1 python3 tools/session_test.py boot.iso
+	@echo "[session] CONTROL PASS - the flattened sentence is back, and it still names two causes and not the one that fired"
 
 # Regression guard for the SMP console-INPUT corruption: drive the real ring-3
 # shell over serial under -smp 4. Where smoke-console-smp covers console *output*

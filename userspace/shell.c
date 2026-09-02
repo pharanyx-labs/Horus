@@ -166,6 +166,56 @@ static int fss_call(struct fs_request *req, struct fs_response *rep) {
     return (r < 0) ? r : 0;
 }
 
+/* ----- reporting what the fs_server actually said ----------------------
+ *
+ * WHY THIS EXISTS. Every fs command used to collapse `fss_call() < 0 ||
+ * rp.rc < 0` into one sentence that GUESSED at the cause -- "mkdir: failed
+ * (name exists or server not running)" -- and the guess did not contain the
+ * answer the server gives most often. A standard user's `mkdir` in a
+ * root-owned 0755 directory is SYS_ERR_PERM, returned by the `perm_ok(&st,
+ * cuid, cgid, P_W)` gate in fs_server.c: the reference monitor doing its job,
+ * against the uid the KERNEL attests rather than one the client claimed. The
+ * shell reported that as a name clash or a dead server and sent the reader
+ * looking for a fault that was not there. `rp.rc` carried the reason the whole
+ * time and was thrown away one line after it arrived.
+ *
+ * This is the same lesson section 9 of tools/session_test.py already encodes
+ * for sudo -- "the CORRECT password does not report invalid argument" -- and
+ * it is a correctness defect rather than a security one: nothing was permitted
+ * that should not have been. What it costs is the operator's time and their
+ * trust in the next refusal they read.
+ *
+ * TRANSPORT IS SEPARATE FROM THE VERDICT, and that is the point of taking two
+ * arguments. Below zero, `fss_call` never got a reply: `rep` holds nothing, so
+ * saying anything about names or permissions would be inventing it. Only at or
+ * above zero is rp->rc a statement the server made. */
+static const char *fs_reason(int rc) {
+    switch (rc) {
+    case SYS_ERR_PERM:   return "permission denied";
+    case SYS_ERR_EXIST:  return "name exists";
+    case SYS_ERR_NOENT:  return "not found";
+    case SYS_ERR_INVAL:  return "invalid name";
+    case SYS_ERR_BUSY:   return "directory not empty";
+    case SYS_ERR_NOMEM:  return "no space left on the volume";
+    case SYS_ERR_IO:     return "I/O error";
+    case SYS_ERR_NOSYS:  return "unsupported operation";
+    default:             return "failed";
+    }
+}
+
+static void fs_fail(const char *what, int transport, const struct fs_response *rep) {
+#ifdef SHELL_FS_ERR_FLAT
+    /* The control arm (SHELL_FS_ERR_FLAT=1): the pre-2026-09-02 shell, which
+     * had the rc in its hand and printed a guess. One sentence for every
+     * outcome, naming two causes and not the common one. */
+    (void)transport; (void)rep;
+    print(what); println(": failed (name exists or server not running)");
+#else
+    print(what); print(": ");
+    println(transport < 0 ? "fs_server did not answer" : fs_reason(rep->rc));
+#endif
+}
+
 static void *memcpy(void *dest, const void *src, size_t n) {
     unsigned char *d = dest;
     const unsigned char *s = src;
@@ -1758,8 +1808,8 @@ static void handle_command(char *cmd) {
         struct fs_response rp;
         rq.op = FS_OP_MKDIR; rq.dir_ino = sh_cwd_ino;
         fss_strcpy(rq.name, name);
-        if (fss_call(&rq, &rp) < 0 || rp.rc < 0)
-            println("mkdir: failed (name exists or server not running)");
+        int t = fss_call(&rq, &rp);
+        if (t < 0 || rp.rc < 0) fs_fail("mkdir", t, &rp);
         else { print("mkdir: created "); println(name); }
     } else if (strncmp(cmd, "rm ", 3) == 0) {
         const char *name = cmd + 3;
@@ -1767,8 +1817,8 @@ static void handle_command(char *cmd) {
         struct fs_response rp;
         rq.op = FS_OP_DELETE; rq.dir_ino = sh_cwd_ino;
         fss_strcpy(rq.name, name);
-        if (fss_call(&rq, &rp) < 0 || rp.rc < 0)
-            println("rm: failed (not found or server not running)");
+        int t = fss_call(&rq, &rp);
+        if (t < 0 || rp.rc < 0) fs_fail("rm", t, &rp);
         else { print("rm: removed "); println(name); }
     } else if (strncmp(cmd, "touch ", 6) == 0) {
         const char *name = cmd + 6;
@@ -1776,8 +1826,8 @@ static void handle_command(char *cmd) {
         struct fs_response rp;
         rq.op = FS_OP_CREATE; rq.dir_ino = sh_cwd_ino;
         fss_strcpy(rq.name, name);
-        if (fss_call(&rq, &rp) < 0 || rp.rc < 0)
-            println("touch: failed (already exists or server not running)");
+        int t = fss_call(&rq, &rp);
+        if (t < 0 || rp.rc < 0) fs_fail("touch", t, &rp);
         else { print("touch: created "); println(name); }
     } else if (strncmp(cmd, "stat ", 5) == 0) {
         const char *name = cmd + 5; while (*name == ' ') name++;
@@ -1787,7 +1837,8 @@ static void handle_command(char *cmd) {
             struct fs_request  sq = {0};
             struct fs_response sp;
             sq.op = FS_OP_STAT; sq.ino = ino;
-            if (fss_call(&sq, &sp) < 0 || sp.rc < 0) println("stat: failed");
+            int t = fss_call(&sq, &sp);
+            if (t < 0 || sp.rc < 0) fs_fail("stat", t, &sp);
             else {
                 /* Labels padded to a common width so the values form a
                  * column, and the mode shown both symbolically and in octal --
@@ -1861,30 +1912,37 @@ static void handle_command(char *cmd) {
                 struct fs_request  cq = {0};
                 struct fs_response cprp;
                 cq.op = FS_OP_CREATE; cq.dir_ino = sh_cwd_ino; fss_strcpy(cq.name, dst);
-                if (fss_call(&cq, &cprp) < 0 || cprp.rc < 0) { println("cp: cannot create dest (exists?)"); }
+                int ct = fss_call(&cq, &cprp);
+                if (ct < 0 || cprp.rc < 0) { fs_fail("cp", ct, &cprp); }
                 else {
                     uint32_t dino = cprp.ino, off = 0;
-                    int ok = 1;
+                    int ok = 1, ft = 0;
+                    /* Hoisted out of the loop so the reply that FAILED is still
+                     * in scope at the report below. A copy that dies half way
+                     * has a reason -- a full volume, a revoked capability -- and
+                     * it used to be discarded with the iteration it arrived in. */
+                    struct fs_response rp, wp;
+                    const struct fs_response *fail = 0;
                     for (;;) {
                         struct fs_request  rq = {0};
-                        struct fs_response rp;
                         rq.op = FS_OP_READ; rq.ino = sino; rq.offset = off; rq.len = FS_IO_MAX;
-                        if (fss_call(&rq, &rp) < 0 || rp.rc < 0) { ok = 0; break; }
+                        ft = fss_call(&rq, &rp);
+                        if (ft < 0 || rp.rc < 0) { fail = &rp; ok = 0; break; }
                         uint32_t got = (uint32_t)rp.rc;
                         if (got > FS_IO_MAX) got = FS_IO_MAX;
                         if (got == 0) break;
                         struct fs_request  wq = {0};
-                        struct fs_response wp;
                         wq.op = FS_OP_WRITE; wq.ino = dino; wq.offset = off; wq.len = got;
                         memcpy(wq.data, rp.data, got);
-                        if (fss_call(&wq, &wp) < 0 || wp.rc < 0) { ok = 0; break; }
+                        ft = fss_call(&wq, &wp);
+                        if (ft < 0 || wp.rc < 0) { fail = &wp; ok = 0; break; }
                         /* WRITE writes at most one block per call, so it may store
                          * fewer bytes than offered; advance by what it took and
                          * re-read the tail on the next pass. */
                         off += (uint32_t)wp.rc;
                     }
                     if (ok) { print("cp: copied to "); println(dst); }
-                    else    { println("cp: copy failed"); }
+                    else    { fs_fail("cp", ft, fail); }
                 }
             }
         }
@@ -1900,7 +1958,8 @@ static void handle_command(char *cmd) {
             rq.ino     = sh_cwd_ino;   /* new parent (same directory) */
             fss_strcpy(rq.name, src);
             fss_strcpy((char *)rq.data, dst);
-            if (fss_call(&rq, &rp) < 0 || rp.rc < 0) println("mv: failed");
+            int t = fss_call(&rq, &rp);
+            if (t < 0 || rp.rc < 0) fs_fail("mv", t, &rp);
             else { print("mv: "); print(src); print(" -> "); println(dst); }
         }
     } else if (cmd[0] == 'e' && cmd[1] == 'c' && cmd[2] == 'h' && cmd[3] == 'o' && cmd[4] == ' ') {
@@ -1927,9 +1986,8 @@ static void handle_command(char *cmd) {
                 /* file doesn't exist yet — create it */
                 rq.op = FS_OP_CREATE; rq.dir_ino = sh_cwd_ino;
                 fss_strcpy(rq.name, fname);
-                if (fss_call(&rq, &rp) < 0 || rp.rc < 0) {
-                    println("echo: cannot create file"); goto echo_done;
-                }
+                int ct = fss_call(&rq, &rp);
+                if (ct < 0 || rp.rc < 0) { fs_fail("echo", ct, &rp); goto echo_done; }
             }
             { /* write the text */
                 uint32_t wlen = (uint32_t)tlen;
@@ -1937,8 +1995,8 @@ static void handle_command(char *cmd) {
                 rq.op = FS_OP_WRITE; rq.ino = rp.ino;
                 rq.offset = 0; rq.len = wlen;
                 memcpy(rq.data, text, wlen);
-                if (fss_call(&rq, &rp) < 0 || rp.rc < 0)
-                    println("echo: write failed");
+                int wt = fss_call(&rq, &rp);
+                if (wt < 0 || rp.rc < 0) fs_fail("echo", wt, &rp);
             }
             echo_done:;
         } else {

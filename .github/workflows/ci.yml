@@ -2481,6 +2481,13 @@ jobs:
       # happened -- the assertion cannot tell a report from a coincidence.
       - name: Restore the flattened fs error and require the guess to REPRODUCE
         run: make smoke-session-fs-err-control
+      # S77, one arm per rule. Each removes ONE of the fs_server's metadata
+      # checks; each must leave the OTHER refusal standing, which is what shows
+      # the two rules are independent rather than one rule read twice.
+      - name: Remove the chown gate and require a standard user to TAKE root's file
+        run: make smoke-session-chown-control
+      - name: Remove the chmod gate and require a standard user to set a mode they do not own
+        run: make smoke-session-chmod-control
 
   smoke-session-smp:
     name: Scripted integration session under SMP (-smp 4, drives the real shell)

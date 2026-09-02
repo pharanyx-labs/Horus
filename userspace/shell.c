@@ -822,6 +822,28 @@ static const char *const d_stat[] = {
     "hard links exist, and the data survives until the count reaches zero.",
     0 };
 
+static const char *const d_chmod[] = {
+    "Change a file's permission bits. The mode is OCTAL and required:",
+    "there is no symbolic form, and a malformed mode is refused rather than",
+    "partly applied.",
+    "",
+    "The owner of a file may change its mode, and so may root. The check is",
+    "made by the fs_server against the uid the KERNEL attests for your",
+    "session, never against anything the shell claims.",
+    0 };
+
+static const char *const d_chown[] = {
+    "Give a file to another account. Root only.",
+    "",
+    "The uid is numeric; there is no name lookup, as for useradd and userdel.",
+    "With no group given the file keeps the group it has -- the group is read",
+    "back and rewritten, because the underlying operation sets both fields and",
+    "an unspecified group would otherwise become gid 0.",
+    "",
+    "Changing a mode and giving a file away are different acts with different",
+    "rules: an owner may do the first and only root may do the second.",
+    0 };
+
 static const char *const d_cp[] = {
     "Copy a file. Reads the source and writes a new file at the destination,",
     "so the copy is owned by you regardless of who owned the original.",
@@ -972,6 +994,10 @@ static const struct man_page man_pages[] = {
    "0 on success; non-zero if the name is missing, or a directory is not empty.","mkdir(1), stat(1)" },
  { "touch","1","create an empty file","touch FILE",d_touch,0,0,"echo(1), stat(1)" },
  { "stat","1","show a file's metadata","stat FILE",d_stat,0,0,"ls(1)" },
+ { "chmod","1","change a file's permission bits","chmod MODE FILE",d_chmod,0,
+   "0 on success; non-zero if the mode is malformed, the name is missing, or you are neither the owner nor root.","chown(8), stat(1), ls(1)" },
+ { "chown","8","change a file's owner","chown UID[:GID] FILE",d_chown,0,
+   "0 on success; non-zero if the name is missing or you are not root.","chmod(1), stat(1)" },
  { "cp","1","copy a file","cp SRC DST",d_cp,0,0,"mv(1)" },
  { "mv","1","rename a file","mv SRC DST",d_mv,0,0,"cp(1), rm(1)" },
  { "wc","1","count lines, words and bytes","wc FILE",d_wc,0,0,"cat(1)" },
@@ -1113,6 +1139,8 @@ static void show_general_help_us(void) {
     print_cmd("cp <src> <dst>",    "copy a file within the current directory");
     print_cmd("mv <src> <dst>",    "rename a file within the current directory");
     print_cmd("stat <file>",       "show type, mode, owner and size");
+    print_cmd("chmod <mode> <f>",  "change permission bits, octal   (owner or root)");
+    print_cmd("chown <uid> <f>",   "give a file to another account          (root)");
     print_cmd("wc <file>",         "count lines, words and bytes");
     print_cmd("echo <text>",       "print text to the console");
     print_cmd("echo <text> > <f>", "write text to a file (creates it if needed)");
@@ -1829,6 +1857,97 @@ static void handle_command(char *cmd) {
         int t = fss_call(&rq, &rp);
         if (t < 0 || rp.rc < 0) fs_fail("touch", t, &rp);
         else { print("touch: created "); println(name); }
+    } else if (strncmp(cmd, "chmod ", 6) == 0) {
+        /* WHO MAY DO THIS IS NOT DECIDED HERE, and that is deliberate.
+         *
+         * `useradd` and `userdel` above carry a shell-side `sys_getuid() != 0`
+         * gate because the authority they use is CAP_USER, which is per-TASK:
+         * the shell is one long-lived task serving successive logins, so the
+         * kernel's gate cannot tell which human is at the terminal.
+         *
+         * The filesystem is the other case. fs_server decides with
+         * SYS_IPC_SENDER, the uid the KERNEL attests for the calling task, and
+         * SYS_AUTH rewrites that uid at every login -- so the attested identity
+         * IS who is at the terminal, and a second check here would be a copy of
+         * the reference monitor's rule kept in a place nothing verifies. The
+         * rule is "owner or root" (fs_server.c, FS_OP_CHMOD) and a standard user
+         * changing the mode of their own file is correct, not an escalation. */
+        const char *p = cmd + 6; while (*p == ' ') p++;
+        uint32_t mode = 0; int digits = 0;
+        while (*p >= '0' && *p <= '7') { mode = (mode << 3) | (uint32_t)(*p - '0'); p++; digits++; }
+        int bad = (digits == 0 || digits > 4 || *p != ' ');
+        while (*p == ' ') p++;
+        if (bad || *p == 0) {
+            /* Refused rather than guessed at. `chmod 8 f` and `chmod u+x f`
+             * both land here: there is no symbolic parser, and silently taking
+             * the digits it could read would apply a mode nobody typed. */
+            println("chmod: usage: chmod <octal mode> <name>");
+        } else {
+            uint32_t type, ino = sh_lookup(p, &type);
+            if (ino == (uint32_t)-1) { println("chmod: not found"); }
+            else {
+                struct fs_request  rq = {0};
+                struct fs_response rp;
+                rq.op = FS_OP_CHMOD; rq.ino = ino; rq.mode = mode & 07777u;
+                int t = fss_call(&rq, &rp);
+                if (t < 0 || rp.rc < 0) fs_fail("chmod", t, &rp);
+                else {
+                    print("chmod: "); print(p); print(" is now 0");
+                    print_octal(mode & 07777u); println("");
+                }
+            }
+        }
+    } else if (strncmp(cmd, "chown ", 6) == 0) {
+        /* Root only, enforced by fs_server against the attested uid -- see the
+         * note on chmod above for why the shell does not repeat the test.
+         *
+         * Giving a file away is not the same act as changing its mode, which is
+         * why the two rules differ: an owner who could hand a file to another
+         * uid could plant a setuid-shaped object under someone else's name, and
+         * an owner who could take one could not, so only root does either. */
+        const char *p = cmd + 6; while (*p == ' ') p++;
+        uint32_t nuid = 0, ngid = 0;
+        int ud = 0, gd = 0, have_gid = 0;
+        while (*p >= '0' && *p <= '9') { nuid = nuid*10 + (uint32_t)(*p - '0'); p++; ud++; }
+        if (*p == ':') { p++; have_gid = 1;
+            while (*p >= '0' && *p <= '9') { ngid = ngid*10 + (uint32_t)(*p - '0'); p++; gd++; } }
+        int bad = (ud == 0 || (have_gid && gd == 0) || *p != ' ');
+        while (*p == ' ') p++;
+        if (bad || *p == 0) {
+            /* Numeric only, and a name is refused rather than resolved: there is
+             * no name lookup to offer, for the reason `useradd` and `userdel`
+             * are uid-only (SECURITY.md S75). */
+            println("chown: usage: chown <uid>[:<gid>] <name>");
+        } else {
+            uint32_t type, ino = sh_lookup(p, &type);
+            if (ino == (uint32_t)-1) { println("chown: not found"); }
+            else {
+                /* The gid is READ BACK rather than defaulted when it was not
+                 * typed. FS_OP_CHOWN writes both fields, so passing 0 for an
+                 * unspecified group would silently move the file to gid 0 --
+                 * `chown 1000 f` would grant root's group along the way, which
+                 * is the opposite of what the operator asked for. */
+                struct fs_request  sq = {0};
+                struct fs_response sp;
+                sq.op = FS_OP_STAT; sq.ino = ino;
+                int st_rc = fss_call(&sq, &sp);
+                if (st_rc < 0 || sp.rc < 0) { fs_fail("chown", st_rc, &sp); }
+                else {
+                    struct fs_request  rq = {0};
+                    struct fs_response rp;
+                    rq.op = FS_OP_CHOWN; rq.ino = ino;
+                    rq.arg_uid = nuid;
+                    rq.arg_gid = have_gid ? ngid : sp.gid;
+                    int t = fss_call(&rq, &rp);
+                    if (t < 0 || rp.rc < 0) fs_fail("chown", t, &rp);
+                    else {
+                        print("chown: "); print(p); print(" is now uid=");
+                        print_decimal(rq.arg_uid); print(" gid=");
+                        print_decimal(rq.arg_gid); println("");
+                    }
+                }
+            }
+        }
     } else if (strncmp(cmd, "stat ", 5) == 0) {
         const char *name = cmd + 5; while (*name == ' ') name++;
         uint32_t type, ino = sh_lookup(name, &type);

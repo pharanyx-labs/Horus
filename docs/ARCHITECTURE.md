@@ -928,6 +928,13 @@ Features: POSIX rwx, a write-ahead journal with mount-time fsck for crash atomic
 double-indirect blocks for large files, and concurrent multi-client service via
 `SYS_IPC_REPLY_TO`.
 
+Metadata carries **two different rules**, and the difference is deliberate (**S77**): a file's
+mode may be set by its owner or by root, while its owner may be set by root alone. Changing a
+mode is something an owner does to their own file; giving one away is not. Both are decided
+against the attested `cuid`, like every other request. They were reachable only in principle
+until 2026-09-02 -- the shell had no `chmod` or `chown`, so neither rule had ever been exercised
+from a login.
+
 The journal's crash atomicity is an ordering property over what is on *stable media*, not over
 the order writes were issued, so `journal_commit()` places three `FLUSH CACHE` barriers: after
 the staged data and **before** the commit record (the write-ahead rule, without it recovery can

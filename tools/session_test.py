@@ -53,6 +53,13 @@ SMP = os.environ.get("QEMU_SMP", "1")
 # outcome -- and this harness then REQUIRES that sentence, so the two arms type
 # exactly the same commands and differ only in what the shell says about them.
 FS_ERR_FLAT = os.environ.get("SESSION_FS_ERR_FLAT", "0") == "1"
+# S77's two arms, one per rule. FS_CHMOD_ANY_OWNER=1 removes the owner-or-root
+# test on chmod; FS_CHOWN_ANY_UID=1 removes the root-only test on chown. Each
+# knob flips exactly ONE of the two refusals below into a required SUCCESS and
+# leaves the other refusal standing -- which is what makes the pair a measurement
+# of two independent rules rather than of "something gates metadata".
+CHMOD_UNGATED = os.environ.get("SESSION_CHMOD_UNGATED", "0") == "1"
+CHOWN_UNGATED = os.environ.get("SESSION_CHOWN_UNGATED", "0") == "1"
 
 
 def fs_err(cmd, reason):
@@ -424,6 +431,36 @@ def run():
         # note3 satisfies any expect() for the file that legitimately remains.)
         s.send("stat note3"); s.expect("stat: not found", STEP_TIMEOUT)
         step("rm unlinks a file and the name no longer resolves")
+
+        # --- 4b-ii. metadata: chmod and chown from a real login (S77) ------
+        #        Both fs_server operations existed from the beginning and
+        #        neither had a ring-3 caller until 2026-09-02: the shell had no
+        #        command for them, so no test in the tree had ever exercised
+        #        either rule from a login. `owned` is created here and given
+        #        away, so the standard user below has a file of their OWN to
+        #        chmod -- without it the only thing observable is a refusal, and
+        #        a rule that refuses everyone is not the rule being claimed.
+        #        `keepme` stays root's, as the target of the chmod refusal:
+        #        under FS_CHOWN_ANY_UID the user takes `note`, so the two
+        #        refusals must not share a file or one arm would hand the user
+        #        ownership of the other arm's target and both would pass.
+        s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("touch owned"); s.expect("touch: created owned", STEP_TIMEOUT)
+        s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("cp note keepme"); s.expect("cp: copied to keepme", STEP_TIMEOUT)
+        s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("chown 1000 owned")
+        s.expect("chown: owned is now uid=1000", STEP_TIMEOUT)
+        s.expect("root@horus#", STEP_TIMEOUT)
+        # Asked of the server rather than inferred from the command's own reply,
+        # which is the shell reporting what it believes it asked for.
+        s.send("stat owned"); s.expect("uid=1000", STEP_TIMEOUT)
+        s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("chmod 640 owned"); s.expect("chmod: owned is now 0640", STEP_TIMEOUT)
+        s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("stat owned"); s.expect("-rw-r-----", STEP_TIMEOUT)
+        step("root gives a file away and sets its mode; the server confirms both")
+
         s.expect("root@horus#", STEP_TIMEOUT)
         s.send("cd /")                            # back to root for the logout below
         step("filesystem coreutils (cd/pwd/ls -l/cp/mv/wc/stat/rm) work as root")
@@ -513,6 +550,33 @@ def run():
         # and the expect below would fail instead of passing.
         s.send("cat note"); s.expect("hello", STEP_TIMEOUT)
         step("the root-owned file is unchanged after the denied write")
+
+        # --- 6c-ii. metadata is gated by two different rules (S77) --------
+        #         chown is root-only and chmod is owner-or-root, so a standard
+        #         user is refused one on any file and allowed the other on their
+        #         own. Three checks, because the first two alone are satisfied by
+        #         a server that refuses metadata changes to everybody.
+        s.expect("user@horus$", STEP_TIMEOUT)
+        s.send("chown 1000 note")
+        s.expect("chown: note is now uid=1000" if CHOWN_UNGATED
+                 else "chown: permission denied", STEP_TIMEOUT)
+        step("chown by a standard user: "
+             + ("ALLOWED under FS_CHOWN_ANY_UID" if CHOWN_UNGATED else "refused (root only)"))
+
+        s.expect("user@horus$", STEP_TIMEOUT)
+        s.send("chmod 777 keepme")
+        s.expect("chmod: keepme is now 0777" if CHMOD_UNGATED
+                 else "chmod: permission denied", STEP_TIMEOUT)
+        step("chmod on a file owned by root: "
+             + ("ALLOWED under FS_CHMOD_ANY_OWNER" if CHMOD_UNGATED else "refused (not the owner)"))
+
+        # The positive half, and it holds in every arm: a standard user may set
+        # the mode of a file that is theirs. Read back from the server.
+        s.expect("user@horus$", STEP_TIMEOUT)
+        s.send("chmod 600 owned"); s.expect("chmod: owned is now 0600", STEP_TIMEOUT)
+        s.expect("user@horus$", STEP_TIMEOUT)
+        s.send("stat owned"); s.expect("-rw-------", STEP_TIMEOUT)
+        step("a standard user sets the mode of a file they own")
 
         # --- 6d. dmesg is root-only: the kernel gates it on the attested
         #         uid (like Linux's dmesg_restrict), so a standard user is

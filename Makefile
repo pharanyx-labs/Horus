@@ -124,7 +124,7 @@ DEFECT_FLAGS = \
 	CSPACE_RELEASE_BEFORE_PIPES SPAWN_SLOT3_DECOY_GATE UNTYPED_SPLIT_FREE_BYTES \
 	INIT_PROVISION_NO_UNTYPED AUDIT_ABI_LEGACY STORE_LOCKED_UNCHECKED \
 	PASSWD_TARGET_IGNORED PASSWD_NO_KEYSLOT \
-	SHELL_FS_ERR_FLAT
+	SHELL_FS_ERR_FLAT FS_CHMOD_ANY_OWNER FS_CHOWN_ANY_UID
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -472,6 +472,23 @@ SHELL_FS_ERR_FLAT ?= 0
 ifeq ($(SHELL_FS_ERR_FLAT),1)
 CFLAGS  += -DSHELL_FS_ERR_FLAT
 ASFLAGS += -DSHELL_FS_ERR_FLAT
+endif
+
+# The two fs_server metadata arms. SEPARATE FLAGS, not one: chmod is owner-or-root
+# and chown is root-only, and an arm that removed both would show only that
+# "something" gates metadata. Each removes exactly its own check, so each arm must
+# leave the OTHER refusal standing -- which is what shows the two rules are
+# independent rather than one rule read twice. Userspace-only; see the note beside
+# SHELL_FS_ERR_FLAT above for why the -D that matters is applied further down.
+FS_CHMOD_ANY_OWNER ?= 0
+ifeq ($(FS_CHMOD_ANY_OWNER),1)
+CFLAGS  += -DFS_CHMOD_ANY_OWNER
+ASFLAGS += -DFS_CHMOD_ANY_OWNER
+endif
+FS_CHOWN_ANY_UID ?= 0
+ifeq ($(FS_CHOWN_ANY_UID),1)
+CFLAGS  += -DFS_CHOWN_ANY_UID
+ASFLAGS += -DFS_CHOWN_ANY_UID
 endif
 
 USERS_TAMPER_INJECT ?= 0
@@ -2876,6 +2893,13 @@ endif
 
 ifeq ($(SHELL_FS_ERR_FLAT),1)
 USERSPACE_CFLAGS += -DSHELL_FS_ERR_FLAT
+endif
+
+ifeq ($(FS_CHMOD_ANY_OWNER),1)
+USERSPACE_CFLAGS += -DFS_CHMOD_ANY_OWNER
+endif
+ifeq ($(FS_CHOWN_ANY_UID),1)
+USERSPACE_CFLAGS += -DFS_CHOWN_ANY_UID
 endif
 
 # PASSWD_TARGET_IGNORED, here for exactly the reason above: USERSPACE_CFLAGS is
@@ -5469,6 +5493,29 @@ smoke-session-fs-err-control:
 	@$(MAKE) --no-print-directory SHELL_FS_ERR_FLAT=1 boot.iso
 	@SESSION_FS_ERR_FLAT=1 python3 tools/session_test.py boot.iso
 	@echo "[session] CONTROL PASS - the flattened sentence is back, and it still names two causes and not the one that fired"
+
+# S77's two arms. Each removes ONE of the fs_server's metadata checks and the
+# harness then requires THAT refusal to become a success -- while still requiring
+# the other one to hold, which is what makes the pair a measurement of two rules
+# rather than of "something is gating metadata".
+#
+# `clean` first for the reason the arm above needs it: userspace/%.o has no
+# .build-flags prerequisite, so a userspace-only -D does not force a rebuild.
+.PHONY: smoke-session-chmod-control
+smoke-session-chmod-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FS_CHMOD_ANY_OWNER=1
+	@$(MAKE) --no-print-directory FS_CHMOD_ANY_OWNER=1 boot.iso
+	@SESSION_CHMOD_UNGATED=1 python3 tools/session_test.py boot.iso
+	@echo "[session] CONTROL PASS - a standard user set the mode of a file they do not own"
+
+.PHONY: smoke-session-chown-control
+smoke-session-chown-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FS_CHOWN_ANY_UID=1
+	@$(MAKE) --no-print-directory FS_CHOWN_ANY_UID=1 boot.iso
+	@SESSION_CHOWN_UNGATED=1 python3 tools/session_test.py boot.iso
+	@echo "[session] CONTROL PASS - a standard user took ownership of root's file"
 
 # Regression guard for the SMP console-INPUT corruption: drive the real ring-3
 # shell over serial under -smp 4. Where smoke-console-smp covers console *output*

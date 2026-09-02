@@ -928,6 +928,13 @@ Features: POSIX rwx, a write-ahead journal with mount-time fsck for crash atomic
 double-indirect blocks for large files, and concurrent multi-client service via
 `SYS_IPC_REPLY_TO`.
 
+At provisioning it also gives every account a home directory the **account** owns (**S78**),
+reading the account list with `SYS_USERLIST` -- the `CAP_USER` it already holds as the
+registration gate. This is the only component that can: it has the list, it has the sole ring-3
+`CAP_ENCRYPTED_STORAGE` that `sys_fs_set_meta` answers to, and its provisioning already waits for
+the volume to unlock, which an installed machine does not do until a login. A directory that
+already exists is left alone rather than re-stamped.
+
 Metadata carries **two different rules**, and the difference is deliberate (**S77**): a file's
 mode may be set by its owner or by root, while its owner may be set by root alone. Changing a
 mode is something an owner does to their own file; giving one away is not. Both are decided

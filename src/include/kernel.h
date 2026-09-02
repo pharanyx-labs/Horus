@@ -1056,6 +1056,7 @@ void users_init(void);
 
 #define SYS_STORAGE_INFO      110   /* (struct storage_info*) -> 0; what volume this machine has: whether a block device is attached, its size, whether a Horus volume was recognised on it, and whether it is unlocked. CAP_STORAGE_FORMAT + READ at CAPSLOT_STORAGE_FORMAT. It is the "what will be destroyed" readout, so it answers to the capability that can destroy it rather than to the object-store capability every filesystem client holds. */
 #define SYS_STORAGE_FORMAT    111   /* (const char *password, plen) -> 0; DESTROY the volume on the attached device and lay a new encrypted one down, sealed to `password`. CAP_STORAGE_FORMAT + WRITE at CAPSLOT_STORAGE_FORMAT. This is the ONE caller of storage_authorize_format(), the function S63 introduced and left with none: "a deliberate act -- which an installer calls and a login never does". A login (SYS_AUTH -> storage_unlock) still reaches an unformatted volume and still refuses it. */
+#define SYS_USERLIST          112   /* (index, struct user_entry*) -> 1 filled, 0 past the last account, SYS_ERR_PERM without CAP_USER at CAPSLOT_USER. Account METADATA only: name, uid, gid, home. No hash, no salt, no key slot, no lockout state. The index is dense over VALID accounts, so a deleted slot in the middle of the table does not read as the end of it and MAX_USERS never crosses the boundary. */
 #define SYS_POLL_NOTIFY       106   /* (notif_slot, uint32_t*) -> 0 with a badge, or IPC_AGAIN; sys_wait_notify's non-blocking twin. Same gate (CAP_NOTIFICATION + READ): being non-blocking changes when the answer comes, never who may ask. Lets a caller witness the ABSENCE of a notification, which a blocking wait cannot. */
 #define SYS_IRQ_ACK           105   /* (dev_slot, irq) -> 0; the driver has serviced its device, so unmask the line. A registered line is masked by the kernel when it fires and stays masked until this call, which is what stops an unserviced level-triggered device livelocking the machine (CAP_IO_DEVICE + WRITE naming a device that declares the line, AND the registration must be the caller's) */
 #define SYS_DMA_ADDR          104   /* (dev_slot, frame_slot, uint64_t*) -> 0; the bus address at which that device reaches that frame. Needs BOTH capabilities: the answer is a physical address, and a bus-mastering device already reaches all of memory, so the disclosure adds nothing to a caller who holds one */
@@ -1386,6 +1387,19 @@ struct boot_module_info {
 
 
 
+
+/* The ring-3 view of an account: name, uid, gid, home and nothing else.
+ * Mirrored in include/syscall.h and compared by tools/check_abi_structs.py --
+ * S71 is what one name with two layouts does. The omissions are the point: the
+ * record below also holds pass_hash, salt, keyslot and the lockout counters, and
+ * do_userlist copies FIELDS rather than the record so a field added there cannot
+ * be exported by sitting next to one that is. */
+struct user_entry {
+    uint32_t uid;
+    uint32_t gid;
+    char     name[32];
+    char     home[64];
+};
 
 typedef struct user_account {
     char     name[32];
@@ -2680,6 +2694,8 @@ int  rust_elf_x86_64_reloc_resolve(const uint8_t *buf, size_t buf_len, uint64_t 
 
 
 int  do_useradd(uint32_t uid, uint32_t gid, const char *name, const char *pass);
+int  do_userlist(uint32_t index, struct user_entry *out);
+void h_userlist(struct interrupt_frame64 *r);
 int  do_userdel(uint32_t uid);
 int  do_passwd(uint32_t target, const char *newpass);
 int derive_and_store_user_file_key(uint32_t uid, const char *material, size_t material_len);

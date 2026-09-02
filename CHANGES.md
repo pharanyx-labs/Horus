@@ -17,6 +17,37 @@ in this file.
 
 ### Added
 
+- **Every account gets a home directory that it owns** (**S78**). The provisioned skeleton
+  (`/bin /etc /home /lib /usr /usr/share`) is created root-owned 0755 and **nothing created a
+  home**, so a standard user on an installed machine had nowhere writable anywhere on the volume
+  -- and no way to be given one, since root could create a directory but the operation that hands
+  it over had no shell command until **S77**. `useradd` had been recording `/home/<name>` in the
+  account record since long before any such directory existed.
+  `fs_server` creates them, and it is the only place in the system where the three things this
+  needs are true at once: it already holds `CAP_USER` (granted by `init` as the
+  `SYS_REGISTER_FS_SERVER` gate, so **no authority is added here**), `sys_fs_set_meta` answers to
+  the `CAP_ENCRYPTED_STORAGE` only it holds in ring 3, and its provisioning already waits for the
+  volume to unlock -- which matters, because a sealed volume writes nothing until a login opens
+  it (**S74**), so anything attempted at boot would have failed silently. An account created
+  after boot gets its home from the shell's `useradd`, which is running as root there.
+  An existing directory is left **entirely alone** rather than re-stamped: re-asserting the owner
+  and 0700 every boot would overrule a mode the account chose for itself, once per power cycle.
+  Witness: two checks in `make smoke-session` -- the home is owned by the account, and the account
+  can write in it. Control arm `HOME_DIR_ROOT_OWNED=1` creates it and withholds ownership; both
+  checks must then fail.
+
+- **`SYS_USERLIST` (112)** -- read one account's public metadata: name, uid, gid, home, and
+  nothing else. No hash, no salt, no key slot, no lockout state; the handler copies **fields**
+  rather than the record, so a field added to `user_account` cannot be exported by sitting beside
+  one that is, and the buffer is zeroed before it is filled because `kstrcpy` leaves the tail of
+  a fixed-size array as it found it. The index is dense over valid accounts, so the sparse table
+  and its `MAX_USERS` never cross the boundary.
+  Gated on `CAP_USER` at `CAPSLOT_USER`, in `do_userlist`, beside the gate `useradd`/`userdel`/
+  `passwd` already share. **A read-only call that returns no secrets is gated anyway**: "no
+  ambient authority" is a property of the system, not of each syscall argued on its own merits,
+  and an ungated enumeration is exactly the ambient path -- every task would learn the account
+  table by asking. Witness: `make smoke-captest` §16; control arm `USERLIST_UNGATED=1`.
+
 - **`chmod` and `chown` in the shell** (**S77**). The `fs_server` has implemented both since the
   beginning and **neither had a ring-3 caller**: the operations were there, no command reached
   them, and no test in the tree had ever exercised either rule from a real login. A gate nothing

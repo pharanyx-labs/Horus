@@ -39,6 +39,7 @@ control_arms:
   smoke-captest-mint-hang-control: smoke-captest
   smoke-captest-split-control: smoke-captest
   smoke-captest-storage-format-control: smoke-captest
+  smoke-captest-userlist-control: smoke-captest
   smoke-installer-refuse-control: smoke-installer-refuse
   smoke-installer-provision-control: smoke-installer-provision
   smoke-installer-accounts-control: smoke-installer-accounts
@@ -46,6 +47,7 @@ control_arms:
   smoke-session-fs-err-control: smoke-session
   smoke-session-chmod-control: smoke-session
   smoke-session-chown-control: smoke-session
+  smoke-session-home-control: smoke-session
   smoke-captest-lookup-type-control: smoke-captest
   smoke-auditprobe-control: smoke-auditprobe
   smoke-auditprobe-abi-control: smoke-auditprobe

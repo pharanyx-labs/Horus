@@ -81,6 +81,11 @@ SHARED = [
     # Found by the discovery rule below on 2026-09-01, not by anyone noticing.
     # All four agree and always have; they were simply never enrolled, which is
     # the failure mode `audit_event` turned into a defect.
+    # SYS_USERLIST's export (2026-09-02, S78). Metadata only -- name, uid, gid,
+    # home -- and deliberately not the account record: the fields the kernel does
+    # NOT export are the point, so a drift here would be a disclosure rather than
+    # only an overrun.
+    "user_entry",
     "fs_stat",
     "task_info",
     "irq_policy_info",

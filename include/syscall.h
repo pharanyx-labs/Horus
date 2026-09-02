@@ -175,6 +175,7 @@ struct program_header {
 #define STORAGE_FORMAT_PASSWORD_MAX 31  /* what a login can offer back; see below */
 #define SYS_STORAGE_INFO      110  /* (struct storage_info*) -> 0; what volume this machine has (CAP_STORAGE_FORMAT + READ). */
 #define SYS_STORAGE_FORMAT    111  /* (const char *password, plen) -> 0; DESTROY the attached volume and lay a new sealed one down (CAP_STORAGE_FORMAT + WRITE). The one caller of storage_authorize_format(), which S63 introduced and left with none. */
+#define SYS_USERLIST          112  /* (index, struct user_entry*) -> 1 filled, 0 past the last account, SYS_ERR_PERM without CAP_USER. Account METADATA only -- name, uid, gid, home -- and deliberately nothing else: no hash, no salt, no key slot, no lockout state. A dense index over the valid accounts, so a caller loops until 0 and never needs the kernel's MAX_USERS. */
 #define SYS_IRQ_POLICY_INFO    92   /* (struct irq_policy_info*) -> 0; roadmap 1.1 audit counters. IRQ_POLICY_AUDIT builds only; NOSYS otherwise. CAP_KERNEL_LOG (READ). */
 #define SYS_DMESG              88   /* (buf, offset, max) -> bytes; copy a chunk of the kernel message ring at `offset` to buf. CAP_KERNEL_LOG (READ) in CAPSLOT_KERNEL_LOG, else SYS_ERR_PERM */
 #define SYS_TASK_EXIT_INFO     93   /* (struct task_exit_info*) -> 0; why the last task this caller waited on died. Self-scoped (no capability): waiting already entitled the caller to observe it. */
@@ -737,6 +738,23 @@ static inline int sys_untyped_info(int untyped_slot, struct untyped_info *out) {
  * that. It deliberately reports nothing about the volume's CONTENTS: it exists
  * so an installer can tell an operator what is about to be destroyed, and every
  * field is a disclosure made under CAP_STORAGE_FORMAT. */
+/* ---- SYS_USERLIST ------------------------------------------------------
+ * ABI struct: written down TWICE, here and in src/include/kernel.h, because the
+ * two headers are compiled into different worlds and neither includes the other.
+ * tools/check_abi_structs.py compares them; S71 is what happens when nothing
+ * does. Keep the two copies field-for-field identical.
+ *
+ * WHAT IS NOT IN IT is the security statement. An account record also holds
+ * pass_hash, salt, keyslot, and the lockout counters; none of them are here, and
+ * the handler copies fields rather than the record, so a field added to the
+ * kernel's account struct cannot leak by being adjacent to one that is exported. */
+struct user_entry {
+    uint32_t uid;
+    uint32_t gid;
+    char     name[32];
+    char     home[64];
+};
+
 struct storage_info {
     uint64_t total_blocks;   /* blocks the attached device reports, 0 if none   */
     uint32_t block_size;     /* bytes per block                                 */
@@ -1331,6 +1349,18 @@ static inline int sys_get_pass(char *buf, size_t max) {
 
 static inline int sys_useradd(uint32_t uid, uint32_t gid, const char *name) {
     return syscall(SYS_USERADD, uid, gid, (uint64_t)(uintptr_t)name);
+}
+
+/* Read one account's public metadata. `index` is dense over the valid accounts:
+ * 1 means `out` was filled, 0 means there is no account at that index (stop),
+ * and SYS_ERR_PERM means the caller holds no CAP_USER.
+ *
+ * SYSCALL_UPTR, not a cast: issue #176 truncated two buffer pointers to 32 bits
+ * and every static or global in a PIE image is above 4 GiB by construction, so a
+ * caller passing anything but a stack buffer would have been handed a pointer it
+ * never named. tools/check_syscall_abi.py fails the build on the narrow form. */
+static inline int sys_userlist(uint32_t index, struct user_entry *out) {
+    return (int)syscall(SYS_USERLIST, index, SYSCALL_UPTR(out), 0);
 }
 
 static inline int sys_userdel(uint32_t uid) {

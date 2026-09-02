@@ -552,11 +552,85 @@ static int install_module_at(const char *path, uint32_t mod_index, uint32_t size
  *      first boot that sees a new/changed module.
  * This is how program binaries and their man pages reach the filesystem WITHOUT
  * being baked into the kernel image. The 16 MiB store holds all of it at once. */
+/* Give every account a home directory that the account OWNS.
+ *
+ * WHY THIS IS HERE AND NOT ANYWHERE ELSE. Three things have to be true at the
+ * same moment, and this is the only place in the system where they are.
+ *
+ *   The account list. This is the one server holding CAP_USER for a reason of
+ *   its own (init grants it as the SYS_REGISTER_FS_SERVER gate), so SYS_USERLIST
+ *   costs no new authority -- nothing is granted here that was not already held.
+ *
+ *   The ability to stamp ownership. sys_fs_set_meta is gated on
+ *   CAP_ENCRYPTED_STORAGE, which is this server and nothing else in ring 3. The
+ *   installer deliberately holds no storage capability and could not do it; a
+ *   task running as the account cannot either, because /home is root's.
+ *
+ *   The right MOMENT. On an installed machine the volume is sealed from
+ *   power-on until a login unlocks it (S74), so anything attempted at boot runs
+ *   against a locked store and silently writes nothing. Provisioning is already
+ *   the code that waits for the unlock, and this rides with it.
+ *
+ * AN EXISTING DIRECTORY IS LEFT ENTIRELY ALONE -- not re-stamped. Re-asserting
+ * 0700 and the owner on every boot would undo a mode the account chose for
+ * itself, which is a filesystem server overruling its own permission model once
+ * per power cycle. Absent means "this account has never had one"; present means
+ * somebody -- the account, or an operator -- has had their say.
+ *
+ * A home is only ever /home/<leaf>. The path is validated rather than walked:
+ * anything else in the record is left for whoever put it there, and a name with
+ * a '/' in it is refused instead of being turned into a nested directory. */
+static void provision_home_dirs(void) {
+    int home_ino = ensure_dir_path("home");
+    if (home_ino < 0) return;
+
+    for (uint32_t i = 0; ; i++) {
+        struct user_entry e;
+        if (sys_userlist(i, &e) != 1) break;      /* 0 = past the last account */
+
+        /* The home must be exactly "/home/<leaf>", with a non-empty leaf that is
+         * a single path component. root's "/" falls out here, which is right:
+         * root's home is the volume root and it already exists. */
+        static const char pfx[] = "/home/";
+        unsigned k = 0;
+        while (pfx[k] && e.home[k] == pfx[k]) k++;
+        if (pfx[k] != 0) continue;
+        const char *leaf = e.home + k;
+        if (leaf[0] == 0) continue;
+        int bad = 0;
+        for (unsigned j = 0; leaf[j]; j++) if (leaf[j] == '/') bad = 1;
+        if (bad || uslen(leaf) >= FS_DIRENT_NAME) continue;
+
+        uint32_t ino, type;
+        if (dir_find((uint32_t)home_ino, leaf, &ino, &type)) continue;   /* had their say */
+
+        int nino = sys_fs_inode_alloc(FS_TYPE_DIR);
+        if (nino < 0) continue;
+        /* Owner and mode BEFORE the link, for the reason FS_OP_CREATE gives: the
+         * inode is not reachable by name yet, so the window in which it exists
+         * owned by nobody is invisible to every other client. */
+#ifdef HOME_DIR_ROOT_OWNED
+        /* Control arm: created, but never given away. The directory is there and
+         * the account cannot write a thing in it. */
+        sys_fs_set_meta((uint32_t)nino, 0700u, 0, 0);
+#else
+        sys_fs_set_meta((uint32_t)nino, 0700u, e.uid, e.gid);
+#endif
+        if (dir_add((uint32_t)home_ino, leaf, (uint32_t)nino, FS_TYPE_DIR) != 0) {
+            sys_fs_inode_free((uint32_t)nino);
+        }
+    }
+}
+
 static void provision_boot_modules(void) {
     static const char *const skel[] = {
         "bin", "etc", "home", "lib", "usr", "usr/share", "usr/share/man", 0
     };
     for (int i = 0; skel[i]; i++) ensure_dir_path(skel[i]);
+
+    /* After the skeleton, because it needs /home to exist; before the modules,
+     * because a full volume should cost an account its home last, not first. */
+    provision_home_dirs();
 
     int n = sys_boot_module_info(0, 0);
     int installed = 0, skipped = 0;

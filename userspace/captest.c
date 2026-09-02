@@ -1316,6 +1316,36 @@ void _start(void) {
               "storage-info-with-wrong-cap-type");
     }
 
+    /* ---- 16. reading the account table answers to CAP_USER -------------
+     *
+     * S78. SYS_USERLIST is read-only and returns nothing secret -- name, uid,
+     * gid, home, the contents of /etc/passwd on any Unix -- and that is exactly
+     * why it needs a check here rather than an argument. "No ambient authority"
+     * is a property of the system, not of each syscall argued on its own merits,
+     * and an ungated enumeration is the ambient path: every task would learn the
+     * account table by asking. The gate is the same CAP_USER at CAPSLOT_USER
+     * that useradd, userdel and passwd answer to, tested inside do_userlist so
+     * the four account calls share one written rule.
+     *
+     * THE UNGATED PATH SUCCEEDS, which is what makes this a measurement.
+     * USERLIST_UNGATED=1 removes the capability test and nothing else; this task
+     * then reads index 0 and gets `root` back, because a booted system always
+     * has accounts. A refusal test whose ungated form also failed would pass
+     * under the defect and witness nothing. */
+    out("CAPTEST: userlist-authority\n");
+    {
+        struct user_entry ue;
+        for (unsigned z = 0; z < sizeof(ue); z++) ((char *)&ue)[z] = 0x5A;
+
+        check(sys_userlist(0, &ue) == SYS_ERR_PERM,
+              "userlist-without-cap-user");
+        /* Refused before anything was written. The handler fills a KERNEL buffer
+         * and copies out only on success, so a gate that leaked the first record
+         * while refusing would show up right here. */
+        check(((unsigned char *)&ue)[0] == 0x5A,
+              "userlist-wrote-through-on-refusal");
+    }
+
     /* ---- done -------------------------------------------------------- */
 
     /* One write, for `fail`'s reason above. The gate requires only the

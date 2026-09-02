@@ -126,7 +126,7 @@ DEFECT_FLAGS = \
 	PASSWD_TARGET_IGNORED PASSWD_NO_KEYSLOT \
 	SHELL_FS_ERR_FLAT FS_CHMOD_ANY_OWNER FS_CHOWN_ANY_UID \
 	USERLIST_UNGATED HOME_DIR_ROOT_OWNED CLAIM_IMP_TRACE \
-	KSTACK_COLLIDE_IMPERSONATED
+	KSTACK_COLLIDE_IMPERSONATED CLAIM_AUDIT_NO_REREAD
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -1651,6 +1651,24 @@ KSTACK_IMP_SELFTEST ?= 0
 ifeq ($(KSTACK_IMP_SELFTEST),1)
 CFLAGS  += -DKSTACK_IMP_SELFTEST
 ASFLAGS += -DKSTACK_IMP_SELFTEST
+endif
+
+# CLAIM_AUDIT_NO_REREAD=1 restores the pre-2026-09-02 claim auditor: accuse on the
+# strength of two sightings alone, without asking whether the mismatch is still
+# there. Every audit panic ever captured was a state that had already resolved by
+# the time the report was written.
+CLAIM_AUDIT_NO_REREAD ?= 0
+ifeq ($(CLAIM_AUDIT_NO_REREAD),1)
+CFLAGS  += -DCLAIM_AUDIT_NO_REREAD
+ASFLAGS += -DCLAIM_AUDIT_NO_REREAD
+endif
+
+# A TEST rather than a defect arm -- it adds a check and removes none -- so it is
+# deliberately not in DEFECT_FLAGS.
+CLAIM_REREAD_SELFTEST ?= 0
+ifeq ($(CLAIM_REREAD_SELFTEST),1)
+CFLAGS  += -DCLAIM_REREAD_SELFTEST
+ASFLAGS += -DCLAIM_REREAD_SELFTEST
 endif
 
 # CLAIM_RELEASE_SKIP=1 removes `call sched_release_deferred` from the ISR
@@ -4450,6 +4468,32 @@ smoke-captest-storage-format-control:
 # because the natural event is ~0.3% of boots ([G-12]) and that is no basis for a
 # gate. Asserts BOTH directions in one run -- an impersonating CPU is not accused,
 # and a genuine collision still is.
+# The claim auditor accuses a mismatch that is STILL THERE and not one that has
+# already resolved. Both halves in one run: "never accuses" satisfies the second
+# and the pre-fix "always accuses" satisfies the first, so either alone admits a
+# wrong predicate. Deterministic -- the predicate is a pure function of three
+# variables, staged directly rather than waiting for the ~0.3%-per-boot natural
+# event ([G-12]).
+.PHONY: smoke-claim-reread
+smoke-claim-reread:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 CLAIM_REREAD_SELFTEST=1
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 CLAIM_REREAD_SELFTEST=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CLAIMREREAD_SELFTEST: PASS' \
+		FAIL_MARKER='CLAIMREREAD_SELFTEST: FAIL' \
+		tools/smoke_test.sh boot.iso
+
+# Control arm: the pre-fix auditor, which accuses without re-reading.
+.PHONY: smoke-claim-reread-control
+smoke-claim-reread-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 CLAIM_REREAD_SELFTEST=1 CLAIM_AUDIT_NO_REREAD=1
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 CLAIM_REREAD_SELFTEST=1 CLAIM_AUDIT_NO_REREAD=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CLAIMREREAD_SELFTEST: FAIL a resolved mismatch was still accused' \
+		tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-kstack-imp
 smoke-kstack-imp:
 	@$(MAKE) --no-print-directory clean

@@ -191,6 +191,53 @@ collision detector -- all of them one question asked of the wrong variable.
 both detectors: `fail-34` tripped it with no audit panic at all, and the CI capture on PR #299
 printed it *before* the audit panic. That remains unattributed.
 
+## The auditor's persistence test is fixed; the corruption is not
+
+*2026-09-02.* `claim_still_mismatched()` now asks, immediately before accusing, whether the
+mismatch is **still there**. It was not, on every capture ever taken.
+
+**This costs no detection, and that is asserted rather than argued.** A leaked claim is
+permanent -- that is what makes it a leak, and why the livelock it causes is silent and forever
+-- so it cannot resolve between the sighting and the re-read. What can resolve is a switch in
+flight, which is not a violation. `make smoke-claim-reread` requires **both**: a live leak is
+still reported, and a resolved mismatch is not. Either half alone admits a wrong predicate --
+"never accuses" passes the second, and the pre-fix "always accuses" passes the first. Arm:
+`CLAIM_AUDIT_NO_REREAD=1`; base gate RED under it.
+
+## The corruption is in the kernel stacks, and the address says so
+
+`0xffffffffc0030f40` has appeared in two independent captures as the target of an **instruction
+fetch** (`err=0x11`: present, exec) from ring 0, with `%rsp` 0x1e0 below it. That address is
+inside `KSTACK_REGION_VMA` (`0xFFFFFFFFC0000000`, `paging.c`) -- **the per-task kernel stack
+region**. A CPU `ret`d to an address that lives in a kernel stack.
+
+That unifies all three surviving symptoms as one thing, *kernel stack contents being
+overwritten*: a resume `%rsp` that is a small integer, a stack canary that fails, and a return
+address that points into the stack it came off. It is the condition S20 exists to prevent, and
+**the S20 detector did not fire on these boots** -- it reports only when the inflight bit is set
+*and* a foreign holder exists, so this is happening outside that window.
+
+## It is LOAD-SENSITIVE, and that is a lever
+
+Measured 2026-09-02, by accident and then confirmed: a campaign at HEAD produced **2 failures in
+its first 1000 boots (0.20%)** and **9 in the next 700 (1.29%)** -- Fisher p = 0.010. The
+difference is that concurrent `make -j12` builds were running during the second half, on the same
+host, while the campaign's QEMUs were pinned to two cores.
+
+Two consequences. That campaign is **contaminated and its overall rate discarded**;
+`tools/stress_boot.sh` refuses to run beside another QEMU but has no defence against a compiler.
+And a deliberately loaded host reproduces this ~6x more often, which turns a 2500-boot campaign
+into a 400-boot one -- the cheapest known way to collect captures.
+
+## Has the rate changed? NOT ESTABLISHED
+
+Idle boots at HEAD, after the detector fix: **2 in 2000 (0.10%)** against the pre-fix baseline of
+**7 in 2250 (0.311%)**. Fisher exact **p = 0.186**. Suggestive, not significant, and recorded as
+such: an earlier 0-in-1000 looked decisive and was p = 0.11, which by the rule of three still
+admitted the old rate. Nothing here says the corruption has been reduced, and the detector fixes
+were never expected to touch it -- they addressed what the checkers *reported*, not what the
+hardware did.
+
 ## What would settle it
 
 Two things, and they are separate work:

@@ -585,6 +585,10 @@ void kernel_main(uint32_t mb_info) {
      * marker. */
     caplookup_selftest();
 #endif
+#ifdef CLAIM_REREAD_SELFTEST
+    /* After scheduler_init, which owns the tables this stages against. */
+    claim_reread_selftest();
+#endif
 #ifdef KSTACK_IMP_SELFTEST
     /* After scheduler_init: it zeroes the per-CPU tables this stages against.
      * Boot continues; make smoke-kstack-imp asserts on the marker. */

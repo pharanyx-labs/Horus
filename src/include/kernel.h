@@ -2865,6 +2865,11 @@ void caplookup_selftest(void);
  * `#ifdef ASPACE_SELFTEST` -- a flag this build does not set. */
 void taskceiling_selftest(void);
 #endif
+#ifdef CLAIM_REREAD_SELFTEST
+/* The claim auditor accuses a mismatch that persists and not one that has
+ * resolved -- both halves, because either alone admits a wrong predicate. */
+void claim_reread_selftest(void);
+#endif
 #ifdef KSTACK_IMP_SELFTEST
 /* S20, identity half: the G-8 collision detector must not accuse a CPU that is
  * merely impersonating, and must still report a genuine collision. */

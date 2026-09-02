@@ -147,6 +147,21 @@ in this file.
   stdout and the runner timestamps the flush, so consecutive step lines landed microseconds apart
   however long the guest took. The 300s could never have been argued with from a CI log.
 
+- **The claim auditor accused mismatches that had already resolved** (**[G-12]**). Its panic reads
+  *"persisted across two audits"*, and the state behind it is a single file-scope `(task, cpu)`
+  pair with **no time component**: audit A arms it and audit B -- microseconds later, on another
+  CPU -- sees the same in-flight switch and panics. Both audits run under `sched_raw_lock`, which
+  serialises them rather than excluding the window they are observing. `CLAIM_IMP_TRACE` measured
+  it: on every audit panic ever captured, a fresh read taken microseconds later agreed with the
+  claim. It now re-reads before accusing.
+  **This costs no detection**, and the witness asserts that rather than arguing it: a leaked claim
+  is permanent -- that is what makes it a leak and why its livelock is silent and forever -- so it
+  cannot resolve between the sighting and the re-read, and `make smoke-claim-reread` requires a
+  live leak to still be reported in the same run. Arm: `CLAIM_AUDIT_NO_REREAD=1`.
+  **It does not touch the corruption**, which is now better characterised and still unattributed:
+  the faulting address in two captures is an instruction fetch into `KSTACK_REGION_VMA`, the
+  per-task kernel stack region.
+
 - **The kernel-stack collision detector accused CPUs that were merely impersonating** (**S20**).
   It took its identity from `get_current_task()` -- `percpu_current_task[]`, which `scheduler.c`'s
   own header calls *"deliberately lying"* for the duration of every impersonation window. A CPU

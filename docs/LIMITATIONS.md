@@ -2520,8 +2520,10 @@ is the [G-8] trace lesson in a new place.
 
 #### Narrowed 2026-08-17: one component found, fixed, and falsified: the rest still open
 
-**[G-9] as filed was a cluster, not one defect.** One component is now closed; the remainder is
-not, and the finding stays **OPEN**.
+**[G-9] as filed was a cluster, not one defect.** *Written 2026-08-17, when one component was
+closed and the finding was open.* **[G-9] closed on 2026-08-21** -- see the close below, which is
+the current status; the residue that outlived it is **[G-12]** (§5.2g). The paragraph is kept
+because the hypotheses it kills are reusable, not because its status line still holds.
 
 The `sched_enter_user()` lead recorded above was **wrong**, and is retained rather than deleted
 because the reason it was wrong is reusable: it does bypass `isr_common_stub64`, but every one
@@ -2721,7 +2723,11 @@ account in
 4, the shell, on an idled CPU) at 1 boot in 120, not only in `PROC_SELFTEST` at `-smp 4`, which
 is how this finding had been scoped. A control on the preceding commit was 0 in 270, but the
 difference is not significant (Fisher exact, p ≈ 0.31). See
-[`investigations/G-09-scheduler-claim-leak.md`](investigations/G-09-scheduler-claim-leak.md).
+[`investigations/G-09-scheduler-claim-leak.md`](investigations/G-09-scheduler-claim-leak.md). **That 1-in-120 is a 2026-08-21
+measurement and has been superseded**: the same signature was re-measured on 2026-09-02 at
+**0.31% per boot over 2250 boots** and is filed as **[G-12]** (§5.2g), which also excludes the
+deferred-release machinery described here. The figure above is kept because the conclusion drawn
+from it -- that the blast radius is wider than `PROC_SELFTEST` -- rests on it.
 
 An earlier measurement of this fix reported 0 claim panics in 20 boots. It was taken with
 diagnostic scaffolding that scanned every task slot on every ISR exit, and the perturbation hid
@@ -2903,6 +2909,40 @@ requires the spawn to be refused, then re-arms honestly and requires it to succe
 check that refuses everything is not a check. `make smoke-spawn-owner-control`
 (`SPAWN_OWNER_UNCHECKED=1`) removes the refusal and reports `SPAWN_OWNER_SELFTEST: FAIL
 foreign-image-spawned pid 1` on every boot.
+
+### 5.2g The claim invariant still fires in the boot phase: **[G-12]**, open
+
+**Filed 2026-09-02, rate 7 marker failures in 2250 boots (0.31% per boot).** Full record in
+[`investigations/G-12-claim-invariant-residue.md`](investigations/G-12-claim-invariant-residue.md).
+
+This is **not [G-9] reopened**: every mechanism [G-9] names is fixed and falsified and stays
+closed. This is the residue [G-9]'s own record predicted -- *"a stale claim in the boot/spawn
+phase, before any exec runs, 2 in 30"* -- measured after the closure and given a number of its
+own, because calling it [G-9] would assert that [G-9]'s mechanism explains it and the
+measurement below shows that is not established.
+
+`smoke-sched-invariants-stress` reddens on `main` at **8.9%** of runs, which is the arithmetic
+consequence of 0.31% per boot over 30 boots with zero permitted failures, and matches the 2 in
+25 observed. **The gate is not the problem and must not be re-sized**: three of the four
+observed signatures are memory corruption rather than audit reports -- a resume `%rsp` of `0x1`,
+the kernel's own stack canary, and an instruction fetch into a kernel stack address hitting NX.
+
+**The rate here supersedes the 1-in-120 figure in §5.2d**, which was measured on 2026-08-21
+against a different workload and was not re-derived before this campaign.
+
+**The deferred-release machinery is excluded.** `CLAIM_TRACE=1` instruments the only two ways
+that path can orphan a claim, and it was **silent across 1000 boots including all four
+failures**; a `KSTACK_RACE_WIDEN=1` arm that stretches the same window onto essentially every
+switch was silent across 100 more. The instrument costs nothing measurable (4/1000 with it
+against 1/500 without, Fisher p ≈ 0.67), which is checked rather than assumed because §5.2d
+records an instrument whose cost was misread as the system's rate.
+
+**No mechanism is attributed.** One candidate is written down in the investigation and
+deliberately not asserted: `sched_running_on()` reads `percpu_impersonating[c]` and then, on the
+not-impersonating branch, reads `percpu_current_task[c]` -- and `sched_impersonate_enter()` takes
+no scheduler lock, so a CPU beginning to impersonate between those two reads would have the
+auditor read the impersonated task as the real one. It fits two captures out of three; the third
+has no impersonation in flight at all and fails anyway.
 
 ### 5.3 No release provenance: **[I-9]**
 

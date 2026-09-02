@@ -1462,16 +1462,20 @@ The claim now ends later than the switch does (§7 above, and the long note at
 stack rather than on a shared one. `make smoke-kstack-race`, `smoke-kstack-park` and their
 control arms.
 
-**G-9: claims leak and kernel stacks collide on the spawn/reap path under SMP.** *Open, narrowed
-2026-08-17.* It was a cluster rather than one defect. The component that is closed was
+**G-9: claims leak and kernel stacks collide on the spawn/reap path under SMP.** *Closed
+2026-08-21; narrowed 2026-08-17 and again 2026-08-20 on the way there.* This entry read "Open,
+narrowed 2026-08-17" until 2026-09-02, eleven days after the closure it contradicted -- a fixed
+defect still advertised as open, in the section that is supposed to be the list of what is not
+fixed. It was a cluster rather than one defect. The component that is closed was
 architectural in the same way G-10 is: `g_exec_reenter_task`, the hand-off telling
 `interrupt_handler64` to re-enter a task through the context `SYS_EXEC_NAMED` had just built for
 it, was **one global consumed on the exit of every syscall on every CPU**, so an exec armed on
 one core could be taken by another, which then resumed that task's fresh trap frame while the
 core that ran the exec was still on it. The storage is per-CPU now, with a standing assertion in
 `exec_reenter_switch`; falsified with `EXEC_REENTER_GLOBAL=1` at 0 thefts in 30 boots against 5
-in 20. Two residues remain and are not the exec race: a claim leaked in the boot/spawn phase,
-and a CPL-0 write-fault at `lapic_eoi`. *Narrowed again 2026-08-20*: the surviving fault is a
+in 20. Two residues remained and were not the exec race: a claim leaked in the boot/spawn
+phase, and a CPL-0 write-fault at `lapic_eoi`. The first of those is still live and is now filed
+as **G-12** below, measured at 0.31% per boot. *Narrowed again 2026-08-20*: the surviving fault is a
 supervisor write to `ap_idle_stacks + 0x90a0` from `interrupt_handler64 + 0x4a8`, `0xa0`
 **above** slot 0's stack top, inside slot 1's guard page, and the four `saved_ksp` producers are
 ruled out by a page-table-based guard that did not fire in 57 boots containing a reproduction.
@@ -1523,3 +1527,15 @@ closed on an unowned one, and audit the refusal. The same check is what lets the
 identity be handed to `wire_child_stdio` as a *proved* parentage rather than a remembered one.
 Witness `make smoke-spawn-owner`, falsified by `SPAWN_OWNER_UNCHECKED=1`
 (`smoke-spawn-owner-control`, which spawns the foreign image on every boot).
+
+**G-12: the claim invariant still fires in the boot phase, mechanism unattributed.** *Open,
+filed 2026-09-02.* `smoke-sched-invariants-stress` reddens at **0.31% per boot** (7 failures in
+2250, CI and local agreeing), a few hundred milliseconds after `kernel ready`. Three of the four
+signatures are memory corruption rather than audit reports -- a resume `%rsp` of `0x1`, the
+kernel's own stack canary, and an instruction fetch into a kernel stack address hitting NX --
+which is the consequence this file's own claim-invariant note gives for the `<-` direction
+breaking. **It is not [G-9] reopened**: [G-9]'s mechanisms are fixed and falsified, and this is
+the residue its record predicted, measured and given its own number rather than folded back into
+a closed finding. The deferred-release hand-over machinery is **excluded** -- `CLAIM_TRACE=1` was
+silent across 1000 boots including all four reproductions. See
+`docs/investigations/G-12-claim-invariant-residue.md`.

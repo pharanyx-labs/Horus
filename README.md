@@ -31,7 +31,9 @@ measured into a TPM, and the volume encryption key is sealed against those measu
 > wrong for days before getting right.
 >
 > Notable open findings: **[C-5]** (no independent review), **[C-6]** (the branch ruleset is
-> reconciled to the checked-in gating decision by hand, so it lags a merge). **[G-9]** closed
+> reconciled to the checked-in gating decision by hand, so it lags a merge), **[G-12]** (the SMP
+> claim invariant still fires in the boot phase at 0.31% per boot, mechanism unattributed; the
+> deferred-release path is excluded by measurement). **[G-9]** closed
 > on 2026-08-21: its last component was the claim auditor clearing its own exemption before the
 > release it exempts, so the checker accused a release that was in flight rather than a leak.
 

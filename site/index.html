@@ -1972,13 +1972,55 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <p>
               <strong>This is a narrowing, not a close, and the difference is the point.</strong>
               The workload still fails 2 boots in 30, a claim leaked before any exec runs, and a
-              bogus stack pointer handed back by the dispatcher, so the finding stays
-              open and the gate whose red flag started all this stays advisory rather than being
-              promoted back on a partial fix. Three earlier explanations for this defect were
+              bogus stack pointer handed back by the dispatcher, so this was a narrowing and the
+              gate whose red flag started all this stayed advisory rather than being promoted back
+              on a partial fix. Both of those have since moved: that gate was promoted on 22
+              August 2026 once G-9 closed, and the 2-in-30 residue described here is now filed
+              separately as <strong>G-12</strong> above, measured and still open. Three earlier explanations for this defect were
               published-in-progress and were all wrong; each looked right when read and was killed
               by an instrument. One measurement of the fix even came back clean, because the
               diagnostic scaffolding still in the build had perturbed the timing enough to hide
               the remainder. The arm you measure has to be the arm you ship.
+            </p>
+          </li>
+          <li>
+            <h3><span class="id">G-12</span>The claim invariant still fires, and the obvious cause is ruled out</h3>
+            <p class="note"><a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/investigations/G-12-claim-invariant-residue.md">Read the full investigation &rarr;</a></p>
+            <p>
+              <strong>Filed 2 September 2026, open.</strong> The residue G-9's own record
+              predicted is still there, and it now has a number of its own. Measured across
+              <strong>2250 boots</strong> &mdash; continuous integration and a local campaign
+              agreeing &mdash; it appears on <strong>0.31% of boots</strong>, a few hundred
+              milliseconds after the kernel hands control to its first task. Three of its four
+              signatures are not audit reports but memory corruption: a resume stack pointer that
+              is the number one rather than an address, the kernel's own stack canary tripping,
+              and an instruction fetch into a stack address, which is what executing a clobbered
+              return address looks like.
+            </p>
+            <p>
+              <strong>This is not G-9 reopened.</strong> Every mechanism G-9 names is fixed and
+              falsified and stays closed. Filing this separately is the honest option: calling it
+              G-9 would assert that G-9's mechanism explains it, and the campaign shows it does
+              not.
+            </p>
+            <p>
+              <strong>What was ruled out, and how.</strong> The suspect was the hand-over
+              machinery that holds a task's claim until the core has left its kernel stack. The
+              tree already ships an instrument that halts the machine naming both tasks the
+              instant that path can orphan a claim. It ran for a thousand boots and stayed
+              silent &mdash; through all four reproductions. Ruling something out is a weaker
+              result than a fix and a much better one than a plausible story: two earlier
+              explanations in this family were wrong, and one of them was the checker rather than
+              the kernel.
+            </p>
+            <p>
+              The instrument was itself measured before its silence was believed, because this
+              project has been burned by that exact mistake: an earlier campaign attributed its
+              tracing tool's cost to the system it was watching. This one changes the failure rate
+              not at all. <strong>The gate stays as it is.</strong> It permits zero failures over
+              thirty boots, which makes it red on about 9% of runs &mdash; and that is a fact
+              about the defect, not about the gate. Relaxing it would turn a detector of real
+              memory corruption into a silence.
             </p>
           </li>
           <li>

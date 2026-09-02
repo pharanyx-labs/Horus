@@ -32,6 +32,27 @@ in this file.
 
 ### Fixed
 
+- **The shell reports the reason the `fs_server` gave, instead of guessing at it.** Every file
+  command collapsed `fss_call() < 0 || rp.rc < 0` into a single sentence that named two possible
+  causes -- `mkdir: failed (name exists or server not running)` -- and the answer the server
+  actually returns most often was neither of them. A standard user's `mkdir` in the root-owned
+  0755 `/` is `SYS_ERR_PERM`, out of `perm_ok(&st, cuid, cgid, P_W)`: the reference monitor
+  enforcing POSIX permissions against the uid the **kernel** attests, working exactly as designed
+  and described to the operator as a name clash or a dead server. `rp.rc` carried the reason and
+  was discarded one line after it arrived. Found on an installed machine, where the guess sent the
+  reader looking for a fault that was not there. `mkdir`, `rm`, `touch`, `stat`, `cp`, `mv` and
+  `echo >` now print what they were told, and the transport failure -- no reply at all, where the
+  response struct holds nothing to report -- is a separate sentence rather than one of the guesses.
+  Witness: three new steps in `make smoke-session`; control arm `SHELL_FS_ERR_FLAT=1`
+  (`make smoke-session-fs-err-control`) restores the flattened sentence and requires it back.
+- **`fs_server` distinguishes a taken name from a malformed one, and a non-empty directory from a
+  bad argument.** Creating over an existing name returned `SYS_ERR_INVAL`, the same code as a name
+  that is empty or too long, so no client could report which had happened -- the hedge above was
+  the only honest thing the shell could print from it. It returns `SYS_ERR_EXIST` now, and
+  unlinking or renaming onto a directory that still has children returns `SYS_ERR_BUSY` rather
+  than `SYS_ERR_INVAL`. No authority changed: the same operations are permitted and refused as
+  before, only the code they report differs.
+
 - **An account an administrator created could not be the first login after a power cycle**
   (**S76**). The volume is sealed to key slots (**S61**) and `h_auth` calls
   `users_unlock_and_restore(typed_password)` *before* it consults the account table, because on a

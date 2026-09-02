@@ -43,6 +43,7 @@ control_arms:
   smoke-installer-provision-control: smoke-installer-provision
   smoke-installer-accounts-control: smoke-installer-accounts
   smoke-passwd-target-control: smoke-passwd-target
+  smoke-session-fs-err-control: smoke-session
   smoke-captest-lookup-type-control: smoke-captest
   smoke-auditprobe-control: smoke-auditprobe
   smoke-auditprobe-abi-control: smoke-auditprobe

@@ -198,7 +198,11 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
         if (sys_fs_stat(rq->dir_ino, &st) != 0)      { rp->rc = SYS_ERR_NOENT; break; }
         if (!perm_ok(&st, cuid, cgid, P_W))          { rp->rc = SYS_ERR_PERM;  break; }  /* modify the dir */
         if (rq->name[0] == 0 || uslen(rq->name) >= FS_DIRENT_NAME) { rp->rc = SYS_ERR_INVAL; break; }
-        if (dir_find(rq->dir_ino, rq->name, 0, 0))   { rp->rc = SYS_ERR_INVAL; break; }  /* exists */
+        /* EXIST, not INVAL. The code is the only thing a client can report a
+         * reason from, and a name that is taken is not a name that is malformed:
+         * collapsing the two left the shell unable to say which, so it said
+         * both and hedged. See fs_reason() in userspace/shell.c. */
+        if (dir_find(rq->dir_ino, rq->name, 0, 0))   { rp->rc = SYS_ERR_EXIST; break; }  /* exists */
         uint32_t type = (rq->op == FS_OP_MKDIR) ? FS_TYPE_DIR : FS_TYPE_FILE;
         int ino = sys_fs_inode_alloc(type);
         if (ino < 0) { rp->rc = ino; break; }
@@ -219,7 +223,11 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
         /* Refuse to delete a non-empty directory. */
         if (type == FS_TYPE_DIR) {
             uint32_t cino, ctype; char cname[FS_NAME_MAX];
-            if (dir_get(ino, 0, &cino, &ctype, cname)) { rp->rc = SYS_ERR_INVAL; break; }
+            /* BUSY: a directory with children is not an invalid argument, it is
+             * a directory in use. POSIX spells this ENOTEMPTY; the shared table
+             * has no such code, and BUSY is the one that lets a client say
+             * something true rather than something generic. */
+            if (dir_get(ino, 0, &cino, &ctype, cname)) { rp->rc = SYS_ERR_BUSY; break; }
         }
         if (dir_remove(rq->dir_ino, rq->name) == 0) { rp->rc = SYS_ERR_NOENT; break; }
         sys_fs_inode_free(ino);     /* drops one link; frees only when the last name is gone */
@@ -237,7 +245,7 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
         if (st.type != FS_TYPE_DIR)                      { rp->rc = SYS_ERR_INVAL; break; }
         if (!perm_ok(&st, cuid, cgid, P_W))              { rp->rc = SYS_ERR_PERM;  break; }  /* modify the dir */
         if (rq->name[0] == 0 || uslen(rq->name) >= FS_DIRENT_NAME) { rp->rc = SYS_ERR_INVAL; break; }
-        if (dir_find(rq->dir_ino, rq->name, 0, 0))       { rp->rc = SYS_ERR_INVAL; break; }  /* name exists */
+        if (dir_find(rq->dir_ino, rq->name, 0, 0))       { rp->rc = SYS_ERR_EXIST; break; }  /* name exists */
         struct fs_stat sst;
         if (sys_fs_stat(rq->ino, &sst) != 0)             { rp->rc = SYS_ERR_NOENT; break; }  /* source inode */
         if (sst.type != FS_TYPE_FILE)                    { rp->rc = SYS_ERR_INVAL; break; }  /* no dir/other links */
@@ -364,7 +372,7 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
             if (dst_ino != src_ino) {
                 if (dst_type == FS_TYPE_DIR) {   /* refuse to clobber a non-empty dir */
                     uint32_t cino, ctype; char cname[FS_NAME_MAX];
-                    if (dir_get(dst_ino, 0, &cino, &ctype, cname)) { rp->rc = SYS_ERR_INVAL; break; }
+                    if (dir_get(dst_ino, 0, &cino, &ctype, cname)) { rp->rc = SYS_ERR_BUSY; break; }
                 }
                 if (dir_remove(new_parent, newname) == 0) { rp->rc = SYS_ERR_IO; break; }
                 sys_fs_inode_free(dst_ino);

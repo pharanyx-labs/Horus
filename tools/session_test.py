@@ -48,6 +48,18 @@ ISO = sys.argv[1] if len(sys.argv) > 1 else "boot.iso"
 STEP_TIMEOUT = float(os.environ.get("SESSION_TIMEOUT", "45"))
 BOOT_TIMEOUT = float(os.environ.get("BOOT_TIMEOUT", "90"))
 SMP = os.environ.get("QEMU_SMP", "1")
+# The control arm for the fs-error reporting fix (SHELL_FS_ERR_FLAT=1). The shell
+# built with that flag prints the pre-2026-09-02 sentence -- one guess for every
+# outcome -- and this harness then REQUIRES that sentence, so the two arms type
+# exactly the same commands and differ only in what the shell says about them.
+FS_ERR_FLAT = os.environ.get("SESSION_FS_ERR_FLAT", "0") == "1"
+
+
+def fs_err(cmd, reason):
+    """What `cmd` must print when the fs_server refuses it, in either arm."""
+    if FS_ERR_FLAT:
+        return f"{cmd}: failed (name exists or server not running)"
+    return f"{cmd}: {reason}"
 # Optional full-serial capture. Off by default (a session that passes normally
 # needs no transcript). Set to a path to write everything the guest said,
 # whether the run passes or fails -- which is what lets a RARE event be counted
@@ -352,6 +364,15 @@ def run():
         s.expect("root@horus#", STEP_TIMEOUT)
         s.send("ls"); s.expect("sess_d/", STEP_TIMEOUT)
         step("ls lists a new entry alongside the skeleton and stops at end-of-directory")
+        # The name is taken now, so the SAME command must report the collision
+        # rather than the generic failure it used to. This is the EXIST half of
+        # the reporting fix: fs_server returns SYS_ERR_EXIST here (it returned
+        # SYS_ERR_INVAL, indistinguishable from a malformed name, until
+        # 2026-09-02) and the shell prints what it was told.
+        s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("mkdir sess_d")
+        s.expect(fs_err("mkdir", "name exists"), STEP_TIMEOUT)
+        step("a second mkdir of the same name reports the collision by name")
         s.expect("root@horus#", STEP_TIMEOUT)
         # ls -l is a table now: a header row, then aligned columns. Assert the
         # header and the directory's mode string, so a regression in the column
@@ -484,7 +505,8 @@ def run():
         s.send("cd /sess_d"); s.expect("user@horus$", STEP_TIMEOUT)
         s.send("cat note"); s.expect("hello", STEP_TIMEOUT)
         step("standard user can read a world-readable root-owned file")
-        s.send("echo pwned > note"); s.expect("echo: write failed", STEP_TIMEOUT)
+        s.send("echo pwned > note")
+        s.expect(fs_err("echo", "permission denied"), STEP_TIMEOUT)
         step("standard user cannot write a root-owned file (fs_server denies by attested uid)")
         # The write was genuinely refused, not silently applied: the content is
         # still root's. If enforcement were bypassed, this cat would show "pwned"
@@ -499,6 +521,30 @@ def run():
         s.send("dmesg"); s.expect("permission denied", STEP_TIMEOUT)
         step("dmesg denied for a standard user (root only)")
         s.send("cd /"); s.expect("user@horus$", STEP_TIMEOUT)
+
+        # --- 6e. a refusal in / names its own reason ---------------------
+        #         Reported from a real installed machine: a standard user typed
+        #         `mkdir tmp` in / and got "mkdir: failed (name exists or server
+        #         not running)". Neither cause was true. The skeleton / is
+        #         root-owned 0755, so this is SYS_ERR_PERM out of fs_server's
+        #         perm_ok(&st, cuid, cgid, P_W) gate -- the reference monitor
+        #         working exactly as designed, described to the operator as a
+        #         name clash or a dead server.
+        #
+        #         Two commands, not one: mkdir and touch take different fs ops
+        #         (FS_OP_MKDIR, FS_OP_CREATE) through the same reporting path,
+        #         and the flattened sentence was pasted separately into each.
+        s.send("mkdir userdir")
+        s.expect(fs_err("mkdir", "permission denied"), STEP_TIMEOUT)
+        s.expect("user@horus$", STEP_TIMEOUT)
+        s.send("touch userfile")
+        s.expect(fs_err("touch", "permission denied"), STEP_TIMEOUT)
+        step("mkdir/touch refused in / name the permission, not a guess")
+
+        # The refusal was real, not cosmetic: neither name is in the directory.
+        s.expect("user@horus$", STEP_TIMEOUT)
+        s.send("stat userdir"); s.expect("stat: not found", STEP_TIMEOUT)
+        step("the refused mkdir created nothing")
 
         # --- 7. sudo refuses to take the password on the command line ----
         #        It would be echoed to the console and mirrored to the serial

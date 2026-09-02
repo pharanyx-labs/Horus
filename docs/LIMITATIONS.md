@@ -2958,6 +2958,15 @@ real corruption is the stack canary**, which is independent of both detectors --
 it with no audit panic at all, and a CI capture printed it *before* the audit panic. That remains
 unattributed.
 
+**Since 2026-09-02**: the auditor's persistence test is fixed (it re-reads before accusing;
+witness `make smoke-claim-reread`, arm `CLAIM_AUDIT_NO_REREAD=1`), and the surviving corruption
+is characterised -- the faulting address in two captures is an **instruction fetch into
+`KSTACK_REGION_VMA`**, the per-task kernel stack region, which unifies all three symptoms as
+kernel stack contents being overwritten. The defect is **load-sensitive**: 9 failures in 700
+boots under concurrent builds against 2 in 1000 idle (Fisher p = 0.010), which is both a lever
+for reproduction and the reason one campaign here was discarded. Whether the rate has changed at
+all is **not established** (2/2000 idle against 7/2250, Fisher p = 0.186).
+
 ### 5.2h The installer's format stalls on CI, cause unestablished: **[G-13]**, open
 
 **Filed 2026-09-02.** `smoke-installer` has gone red on `main` twice -- 2026-09-01 19:18 and

@@ -1762,6 +1762,62 @@ int sched_stack_task(void)
 #endif
 }
 
+#ifdef CLAIM_REREAD_SELFTEST
+static int claim_still_mismatched(int t, int c, int direction);  /* with the auditor below */
+/* The claim auditor must accuse a mismatch that is STILL THERE, and must not
+ * accuse one that has already resolved.
+ *
+ * Both halves in one run, because either alone is satisfied by the wrong
+ * predicate: "never accuses" passes the second, and the pre-fix "always accuses"
+ * passes the first. The property being defended is that the re-read costs NO
+ * DETECTION -- a leaked claim is permanent, so it cannot resolve between the
+ * sighting and the re-read, while a switch in flight can and is not a violation.
+ *
+ * Deterministic: the predicate is a pure function of three variables, so they are
+ * staged directly rather than waiting for the ~0.3%-per-boot natural event
+ * ([G-12]). Staged here because they are file-static. */
+void claim_reread_selftest(void)
+{
+    print("CLAIMREREAD_SELFTEST: begin\n");
+
+    int me = this_cpu();
+    int victim = -1;
+    for (int t = 1; t < g_max_tasks && t < MAX_TASKS; t++)
+        if (task_running_cpu[t] < 0 && percpu_current_task[me] != t) { victim = t; break; }
+    if (victim < 0) {
+        print("CLAIMREREAD_SELFTEST: FAIL no spare task to stage with\n");
+        return;
+    }
+
+    int saved_claim = task_running_cpu[victim];
+    int saved_cur   = percpu_current_task[me];
+
+    /* (1) A GENUINE, PERSISTING mismatch: this CPU claims `victim` and is running
+     *     something else. That is a leak, and it must still be reported. */
+    task_running_cpu[victim] = me;
+    percpu_current_task[me]  = 0;
+    int persists = claim_still_mismatched(victim, me, 0);
+
+    /* (2) The SAME pair, resolved: the CPU is now running the task it claims.
+     *     Nothing was leaked and nothing may be accused. */
+    percpu_current_task[me] = victim;
+    int resolved = claim_still_mismatched(victim, me, 0);
+
+    task_running_cpu[victim] = saved_claim;
+    percpu_current_task[me]  = saved_cur;
+
+    if (!persists) {
+        print("CLAIMREREAD_SELFTEST: FAIL a live claim leak went unreported\n");
+        return;
+    }
+    if (resolved) {
+        print("CLAIMREREAD_SELFTEST: FAIL a resolved mismatch was still accused\n");
+        return;
+    }
+    print("CLAIMREREAD_SELFTEST: PASS\n");
+}
+#endif
+
 #ifdef KSTACK_IMP_SELFTEST
 /* S20 witness, identity half: THE COLLISION DETECTOR MUST NOT ACCUSE A CPU THAT
  * IS MERELY IMPERSONATING.
@@ -1886,6 +1942,54 @@ static int sched_susp_cpu  = -1;
 
 
 /* Report and halt. Split out so both directions read identically. */
+/* IS THE MISMATCH STILL THERE? Asked immediately before accusing, and the answer
+ * was "no" on every capture ever taken.
+ *
+ * THE TWO-STRIKE GUARD DOES NOT ESTABLISH WHAT IT SAYS. The report reads
+ * "persisted across two audits", and the state behind it is a single file-scope
+ * (sched_susp_task, sched_susp_cpu) pair with NO TIME COMPONENT: audit A arms it,
+ * audit B -- which may be microseconds later, on another CPU -- sees the same
+ * in-flight switch and panics. Both audits run under sched_raw_lock, which
+ * serialises them rather than excluding the window they are observing. "Seen
+ * twice" is not "persisted", and for a window every switch enters, the difference
+ * is the whole claim.
+ *
+ * Measured 2026-09-02 with CLAIM_IMP_TRACE: on every audit panic captured, a
+ * fresh sched_running_on() taken microseconds later AGREED with the claim. The
+ * auditor was accusing states that had already resolved.
+ *
+ * WHY THIS COSTS NO DETECTION, which is the only thing that matters about it. A
+ * leaked claim is PERMANENT -- that is what makes it a leak, and why the livelock
+ * it causes is silent and forever. It cannot resolve between the sighting and
+ * this re-read. What can resolve is a switch in flight, which is not a violation.
+ * So this is strictly more evidence before an accusation and strictly no less
+ * detection, and it does not replace the two-strike rule: both must hold.
+ *
+ * `direction` selects which way round the invariant is being read, so the
+ * re-read asks the same question the sighting asked rather than a similar one:
+ *   0  a claim whose holder is not running the task   (-> direction)
+ *   1  a task being run by a CPU that has not claimed it (<- direction) */
+static int claim_still_mismatched(int t, int c, int direction)
+{
+#ifdef CLAIM_AUDIT_NO_REREAD
+    /* CONTROL ARM -- never ship. The pre-2026-09-02 auditor: accuse on the
+     * strength of two sightings alone, without asking whether the mismatch is
+     * still there. Every audit panic ever captured was a state that had already
+     * resolved by the time the report was written. */
+    (void)t; (void)c; (void)direction;
+    return 1;
+#else
+    if (t <= 0 || t >= g_max_tasks || c < 0 || c >= MAX_CPUS) return 0;
+    /* sched_real_task_on(), the one shared implementation, rather than the
+     * auditor's wrapper -- which is declared further down this file. Same answer,
+     * and it keeps this predicate independent of declaration order. */
+    int seen = sched_real_task_on(c);
+    if (seen < 0) return 0;              /* mid-flight; cannot judge, do not accuse */
+    if (direction == 0) return task_running_cpu[t] == c && seen != t;
+    return seen == t && task_running_cpu[t] != c;
+#endif
+}
+
 #ifdef CLAIM_IMP_TRACE
 /* Instrument, not a defect arm: reads only, on the mismatch path only, and it
  * changes no behaviour. It exists to answer the one question [G-12] is stuck on
@@ -2089,7 +2193,8 @@ static void sched_assert_claims(const char *where) {
         int seen = sched_running_on(c);
         if (seen < 0) continue;                 /* mid-flight; see sched_running_on */
         if (seen != t) {
-            if (sched_susp_task == t && sched_susp_cpu == c) {
+            if (sched_susp_task == t && sched_susp_cpu == c &&
+                claim_still_mismatched(t, c, 0)) {
 #ifdef CLAIM_IMP_TRACE
                 claim_imp_observe(c);   /* re-read at the instant of the accusation */
 #endif
@@ -2108,7 +2213,8 @@ static void sched_assert_claims(const char *where) {
         if (tasks[t].state == 0) continue;      /* teardown window; see above */
         int seen = task_running_cpu[t];         /* snapshot; see above */
         if (seen != c) {
-            if (sched_susp_task == t && sched_susp_cpu == c) {
+            if (sched_susp_task == t && sched_susp_cpu == c &&
+                claim_still_mismatched(t, c, 1)) {
 #ifdef CLAIM_IMP_TRACE
                 claim_imp_observe(c);
 #endif

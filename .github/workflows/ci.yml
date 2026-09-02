@@ -2467,6 +2467,12 @@ jobs:
         run: make smoke-kstack-imp
       - name: Restore the lying identity and require the false accusation to REPRODUCE
         run: make smoke-kstack-imp-control
+      # The claim auditor accuses a mismatch that is still there, and not one that
+      # has already resolved -- which is what every captured audit panic was.
+      - name: A resolved mismatch is not accused, and a live leak still is
+        run: make smoke-claim-reread
+      - name: Restore the accuse-without-re-reading auditor and require the false accusation
+        run: make smoke-claim-reread-control
 
   smoke-session:
     name: Scripted integration session (headless, drives the real shell)

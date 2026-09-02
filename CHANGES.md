@@ -17,6 +17,20 @@ in this file.
 
 ### Added
 
+- **The installed-login gate touches the filesystem.** `smoke-installer` and
+  `smoke-installer-accounts` logged into an installed volume, ran `whoami`, and logged out -- so
+  **no gate exercised the filesystem after a login unlocked a real volume**, which is the one
+  path where `fs_server` provisions *late* (a sealed volume defers it until unlock, **S74**).
+  Everything about that path was covered only on the ephemeral RAM vdisk, where provisioning
+  runs at boot instead. The scenario now requires `ls` to answer an unprivileged login and then
+  requires **S78 on a real volume**: `cd /home/<name>` and a `mkdir` in it, where the directory
+  was created by *this login* rather than at boot.
+  Prompted by an operator reporting `ls` hanging on an installed machine; it did not reproduce
+  in three shapes (RAM vdisk, fresh install, and an old install booted with the new kernel) and
+  was most likely host contention, but the coverage gap it exposed is real either way.
+  Falsified by `HOME_DIR_ROOT_OWNED=1`, under which the base gate goes red. The `ls` step has no
+  arm of its own and is stated as a liveness assertion rather than a witness.
+
 - **[G-12] filed**: the SMP claim invariant still fires in the boot phase, at a measured
   **0.31% per boot (7 marker failures in 2250 boots)**, with CI and a local campaign agreeing.
   Three of its four signatures are memory corruption rather than audit reports -- a resume `%rsp`

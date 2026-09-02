@@ -125,7 +125,7 @@ DEFECT_FLAGS = \
 	INIT_PROVISION_NO_UNTYPED AUDIT_ABI_LEGACY STORE_LOCKED_UNCHECKED \
 	PASSWD_TARGET_IGNORED PASSWD_NO_KEYSLOT \
 	SHELL_FS_ERR_FLAT FS_CHMOD_ANY_OWNER FS_CHOWN_ANY_UID \
-	USERLIST_UNGATED HOME_DIR_ROOT_OWNED
+	USERLIST_UNGATED HOME_DIR_ROOT_OWNED CLAIM_IMP_TRACE
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -1617,6 +1617,19 @@ CLAIM_TRACE ?= 0
 ifeq ($(CLAIM_TRACE),1)
 CFLAGS  += -DCLAIM_TRACE
 ASFLAGS += -DCLAIM_TRACE
+endif
+
+# CLAIM_IMP_TRACE=1 is an INSTRUMENT too, and a narrower one: it changes no
+# behaviour, runs only on the claim auditor's mismatch path, and re-reads the
+# accused CPU's impersonation state at the instant of the accusation. [G-12] is
+# stuck on whether the auditor is telling the truth -- sched_running_on() reads
+# the impersonation depth and then the current task, and nothing locks the two
+# together -- and this is what tells a torn read from a real leak. Requires
+# SCHED_INVARIANTS=1 for the auditor it instruments.
+CLAIM_IMP_TRACE ?= 0
+ifeq ($(CLAIM_IMP_TRACE),1)
+CFLAGS  += -DCLAIM_IMP_TRACE
+ASFLAGS += -DCLAIM_IMP_TRACE
 endif
 
 # CLAIM_RELEASE_SKIP=1 removes `call sched_release_deferred` from the ISR

@@ -1729,6 +1729,52 @@ static int sched_susp_cpu  = -1;
 
 
 /* Report and halt. Split out so both directions read identically. */
+#ifdef CLAIM_IMP_TRACE
+/* Instrument, not a defect arm: reads only, on the mismatch path only, and it
+ * changes no behaviour. It exists to answer the one question [G-12] is stuck on
+ * -- is the auditor telling the truth?
+ *
+ * THE SUSPICION. sched_running_on() reads percpu_impersonating[c], and on the
+ * not-impersonating branch reads percpu_current_task[c] AFTERWARDS.
+ * sched_impersonate_enter() takes no scheduler lock, so a CPU that begins
+ * impersonating between those two reads leaves the auditor holding the
+ * IMPERSONATED task while believing it is the real one -- a mismatch that is not
+ * one. That is the same class as [G-9]'s final component, which turned out to be
+ * a checker false positive rather than a scheduler defect, and the two want
+ * completely different fixes.
+ *
+ * WHAT IT RECORDS. A second, stability-bracketed observation of the accused CPU
+ * taken at the instant of the panic:
+ *
+ *   d1/d2   the impersonation depth either side of the reads. d1 != d2 means the
+ *           CPU changed impersonation state DURING the probe, so any single read
+ *           of percpu_current_task[] across that window is untrustworthy.
+ *   cur     percpu_current_task[c] -- what the d==0 branch would have returned.
+ *   real    percpu_real_task[c]    -- what the d!=0 branch would have returned.
+ *   seen2   a fresh sched_running_on(c).
+ *
+ * HOW TO READ IT. seen2 == t means the mismatch is GONE on re-read: the auditor
+ * accused a state that no longer holds, and with torn=1 it very likely never did.
+ * seen2 != t with torn=0 means the state is stable and the claim really is
+ * leaked -- the auditor is right and the scheduler is wrong. The whole point is
+ * that those two are indistinguishable in the report as it stands today. */
+static int sched_running_on(int c);   /* defined with the claim auditor below */
+static int g_imp_d1, g_imp_d2, g_imp_cur, g_imp_real, g_imp_seen2, g_imp_torn;
+
+static void claim_imp_observe(int c)
+{
+    if (c < 0 || c >= MAX_CPUS) return;
+    g_imp_d1 = percpu_impersonating[c];
+    __sync_synchronize();
+    g_imp_cur  = percpu_current_task[c];
+    g_imp_real = percpu_real_task[c];
+    __sync_synchronize();
+    g_imp_d2 = percpu_impersonating[c];
+    g_imp_seen2 = sched_running_on(c);
+    g_imp_torn = (g_imp_d1 != g_imp_d2);
+}
+#endif
+
 static void sched_claim_panic(const char *what, const char *where,
                               int t, int c, int seen) {
     panic_begin();
@@ -1772,6 +1818,17 @@ static void sched_claim_panic(const char *what, const char *where,
     panic_str(" deferred_on_holder="); panic_dec(percpu_deferred_release[c]);
     panic_str(" impersonating="); panic_dec(percpu_impersonating[c]);
     panic_str("\n");
+#endif
+#ifdef CLAIM_IMP_TRACE
+    /* The re-read, taken above at the instant of the panic. See claim_imp_observe. */
+    panic_str("  imp-probe: d1=");   panic_dec(g_imp_d1);
+    panic_str(" d2=");               panic_dec(g_imp_d2);
+    panic_str(" torn=");             panic_dec(g_imp_torn);
+    panic_str(" cur=");              panic_dec(g_imp_cur);
+    panic_str(" real=");             panic_dec(g_imp_real);
+    panic_str(" seen2=");            panic_dec(g_imp_seen2);
+    panic_str(g_imp_seen2 == t ? "  -- MISMATCH GONE ON RE-READ\n"
+                               : "  -- mismatch stable on re-read\n");
 #endif
     for (;;) __asm__ volatile ("cli; hlt");
 }
@@ -1875,8 +1932,12 @@ static void sched_assert_claims(const char *where) {
         int seen = sched_running_on(c);
         if (seen < 0) continue;                 /* mid-flight; see sched_running_on */
         if (seen != t) {
-            if (sched_susp_task == t && sched_susp_cpu == c)
+            if (sched_susp_task == t && sched_susp_cpu == c) {
+#ifdef CLAIM_IMP_TRACE
+                claim_imp_observe(c);   /* re-read at the instant of the accusation */
+#endif
                 sched_claim_panic("stale scheduler claim", where, t, c, seen);
+            }
             sched_susp_task = t;      /* first sighting: arm, do not accuse */
             sched_susp_cpu  = c;
             return;
@@ -1890,8 +1951,12 @@ static void sched_assert_claims(const char *where) {
         if (tasks[t].state == 0) continue;      /* teardown window; see above */
         int seen = task_running_cpu[t];         /* snapshot; see above */
         if (seen != c) {
-            if (sched_susp_task == t && sched_susp_cpu == c)
+            if (sched_susp_task == t && sched_susp_cpu == c) {
+#ifdef CLAIM_IMP_TRACE
+                claim_imp_observe(c);
+#endif
                 sched_claim_panic("unclaimed running task", where, t, c, seen);
+            }
             sched_susp_task = t;
             sched_susp_cpu  = c;
             return;

@@ -41,6 +41,19 @@ ISO = sys.argv[1] if len(sys.argv) > 1 else "boot.iso"
 STEP = float(os.environ.get("SESSION_TIMEOUT", "90"))
 BOOT = float(os.environ.get("BOOT_TIMEOUT", "120"))
 PASSWORD = os.environ.get("INSTALL_PASSWORD", "installpw1")
+# The format is the longest operation in the run, so it gets a budget of its own
+# rather than borrowing STEP: raising STEP to cover it would loosen every other
+# wait in the file, including the refusal assertions, where a generous budget is
+# exactly what turns a real wedge into a slow pass.
+#
+# THE DEFAULT IS NOT RAISED, and that is deliberate. This gate went red on `main`
+# twice (2026-09-01 19:18, 2026-09-02 00:20), both times a 300s timeout here --
+# and the same step takes **5.7s** on a developer machine (measured 2026-09-02,
+# once this harness started timing its own steps). A shared CI runner under TCG is
+# slower than a workstation, but not fifty times slower, so "the budget is too
+# small" does not survive its own measurement. The knob exists so the bound can be
+# argued with independently; the number stays where the evidence leaves it.
+FORMAT_STEP = float(os.environ.get("INSTALLER_FORMAT_TIMEOUT", "300"))
 USER_NAME = os.environ.get("INSTALL_USER", "alice")
 USER_PASSWORD = os.environ.get("INSTALL_USER_PASSWORD", "userpw2")
 USER_UID = os.environ.get("INSTALL_USER_UID", "1000")
@@ -49,8 +62,27 @@ ENTER = b"\r"
 DOWN = b"\x1b[B"
 
 
+_step_t0 = [time.time()]
+
+
 def step(msg):
-    print(f"INSTALLER_SESSION: ok - {msg}")
+    """Report the step AND how long it took.
+
+    The elapsed time is not decoration. On 2026-09-01 and 2026-09-02 this gate
+    went red on `main` twice, both times a 300s timeout waiting for
+    `INSTALLER: PASS installed` with the screen still showing "this takes a
+    moment" -- a format that had not finished inside the budget. Sizing that
+    budget from the CI logs turned out to be impossible: this harness buffers
+    stdout and the runner timestamps the FLUSH, so consecutive step lines land
+    microseconds apart however long the guest actually took. So the harness
+    measures its own steps, and the next person to argue about the number has
+    data instead of the two of us guessing.
+
+    flush=True for the same reason -- a buffered line is a line whose timestamp
+    belongs to somebody else. """
+    now = time.time()
+    print(f"INSTALLER_SESSION: ok - {msg} ({now - _step_t0[0]:.1f}s)", flush=True)
+    _step_t0[0] = now
 
 
 def expect_any(s, needles, timeout):
@@ -176,7 +208,23 @@ def boot1(disk):
             raise SessionFail("a password appeared on the serial line")
         step("neither password reached the terminal")
 
-        s.expect("INSTALLER: PASS installed", STEP)
+        # FORMAT_STEP, not STEP: everything between `formatting` and this marker
+        # is one uninterruptible write of the whole volume. A timeout here means
+        # the format did not finish in the budget -- which on a slow runner is a
+        # budget problem and not a defect -- so it is reported as its own thing
+        # rather than as a generic step timeout that reads like a wedge.
+        try:
+            s.expect("INSTALLER: PASS installed", FORMAT_STEP)
+        except SessionFail as e:
+            raise SessionFail(
+                f"the format did not complete within INSTALLER_FORMAT_TIMEOUT="
+                f"{FORMAT_STEP:.0f}s. The guest reported `INSTALLER: formatting` and "
+                f"then said nothing. THE CAUSE IS NOT ESTABLISHED: the same step "
+                f"takes ~6s on a developer machine, so a runner slow enough to "
+                f"explain this would have to be ~50x slower, and a hang in the "
+                f"format path fits the evidence equally well. Do not raise the "
+                f"budget to make this green -- capture the serial and find out "
+                f"which. See docs/LIMITATIONS.md. Underlying: {e}")
         step("the installer reported a completed install")
 
         # It hands the machine back: a login prompt on the same boot.

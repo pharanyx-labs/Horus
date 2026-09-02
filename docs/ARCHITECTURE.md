@@ -1539,3 +1539,11 @@ the residue its record predicted, measured and given its own number rather than 
 a closed finding. The deferred-release hand-over machinery is **excluded** -- `CLAIM_TRACE=1` was
 silent across 1000 boots including all four reproductions. See
 `docs/investigations/G-12-claim-invariant-residue.md`.
+
+**G-13: the installer's format stalls on CI, cause unestablished.** *Open, filed 2026-09-02.*
+`smoke-installer` times out after 300 s waiting for `INSTALLER: PASS installed`, having seen
+`INSTALLER: formatting` and nothing after it -- no fault, no panic. Twice on `main`. Written off
+as a slow runner until the harness was made to time its own steps and the same step measured
+**5.7 s** on a workstation: a runner is slower, not fifty times slower. A contended runner and a
+hang in the format path both fit, and nothing yet distinguishes them. The budget was not raised;
+see `LIMITATIONS.md` §5.2h.

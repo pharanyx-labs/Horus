@@ -45,6 +45,16 @@ in this file.
   path, and the auditor is what catches this class. It also retires the "exempt the commit gap"
   item the investigation listed as future work: there is no commit gap on this path to exempt.
 
+  **The refusal report is one `print()`, not a `kfault_str` sequence, and that is a fix rather
+  than a formatting choice.** The first version passed 3 boots in 3 locally and went red on the
+  CI runner, shredded byte-by-byte by the ring-3 task whose theft it was reporting --
+  `ENTERUSER: refused entIry to task NIT_STORAGE: no persistent volume; this boot r1uns on the
+  on cpu  ephemeral store` -- so the defect reproduced perfectly and the gate reported a timeout
+  without its marker. The `kfault`/`panic` writers bypass the console lock by design, which is
+  right for a halt and wrong for a survivable report that by construction races a ring-3 task on
+  another CPU. `print_core()` holds that lock for the whole string. A marker must not be
+  splittable by the condition it asserts, and shortening it only lowers the odds.
+
   **Falsified in both directions, with the instrument in both arms.** `ENTER_USER_STEAL_WIDEN=1`
   holds the entry open until another CPU claims the task; `make smoke-enter-user-claim` requires
   `holder=-1` after the full budget, no refusal, and a boot that still reaches its login prompt.

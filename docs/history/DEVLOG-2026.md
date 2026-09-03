@@ -131,11 +131,45 @@ Falsified the other way too: `make smoke-enter-user-claim` goes RED under
 
 The collision arm asserts a **fault attributed to task 1** rather than a named panic. Three
 shapes were observed -- the claim auditor, the resume-`%rsp` floor guard, the stack canary -- and
-which one fires depends on which of two CPUs sharing a stack corrupts what first. The marker is
-also deliberately short: with two CPUs live on one task the serial output interleaves
-byte-by-byte, and one capture came out as `PANIC: ,unclaimesud runpening rvisortask at
-preempt_,on_tick` -- two kernel messages written into each other. **A long marker can be split by
-the very condition it is asserting.**
+which one fires depends on which of two CPUs sharing a stack corrupts what first.
+
+#### The marker was splittable, and the defect proved it on the first CI run
+
+The refusal report was written as a `kfault_str` sequence. It passed 3 boots in 3 locally, and on
+the CI runner it was shredded byte-by-byte by the ring-3 task whose theft it was reporting:
+
+```
+ENTERUSER: refused entIry to task NIT_STORAGE: no persistent volume; this boot r1uns
+on the on cpu  ephemeral store
+```
+
+The defect had reproduced perfectly -- `holder=3`, the AP had taken init at spin 41428 -- and the
+gate reported *a timeout without its marker*. That is the shape `CLAUDE.md` already records as
+"a split marker fails like a broken runner", arriving through a writer nobody had connected to
+it.
+
+`kfault` and `panic` bypass the console lock **deliberately**: at a halt there is no owner left
+to be polite to, and `terminal.c` says so at length. That reasoning does not transfer to a
+*survivable* report which by construction races a ring-3 task on another CPU -- reporting exactly
+that race is its whole job. `print_core()` already holds the console lock for the length of the
+string, "so a line is emitted whole to one sink, never split across a handoff", so the report is
+now formatted into a buffer and emitted with one `print()`.
+
+**Shortening the marker was the obvious repair and is the wrong one.** It lowers the probability
+of the same failure without removing it, and the property wanted is that a marker cannot be split
+by the condition it asserts. The collision arm cannot be repaired this way -- a panic cannot
+politely take a lock held by a CPU it is about to halt -- so it gets the remedy `CLAUDE.md`
+prescribes for a probabilistic arm instead: a bounded retry, `ENTER_USER_COLLIDE_CONTROL_BOOTS`
+= 5, stopping at the first reproduction, keeping the serial on the failure path, and **falsified
+in the other direction** -- run against the fixed build the loop still goes red, so it is not
+just a way to pass.
+
+One further note on that falsification, because the first attempt did not test what it looked
+like. `make smoke-enter-user-collide-control ENTER_USER_PUBLISH_EARLY=0` reported PASS, and the
+build it ran had `DEFECT FLAGS: ENTER_USER_STEAL_WIDEN ENTER_USER_PUBLISH_EARLY
+ENTER_USER_CLAIM_UNCHECKED`: the recipe passes the flag explicitly on its sub-make command line,
+which beats an outer command-line override. The real falsification builds the fixed kernel and
+runs the identical loop body against it.
 
 #### What this does not claim
 

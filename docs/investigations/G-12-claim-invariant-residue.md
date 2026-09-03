@@ -403,6 +403,31 @@ persistence test, and it is now unnecessary -- there is no commit gap on this pa
 Falsified in the other direction too: `make smoke-enter-user-claim` goes **red** under
 `ENTER_USER_PUBLISH_EARLY=1`, and so does `make smoke-sched-invariants` under the full arm.
 
+### The marker was splittable, and the defect proved it
+
+*Added 2026-09-03, after the first CI run.* The refusal report was written as a `kfault_str`
+sequence, passed 3 boots in 3 locally, and went red on the CI runner -- shredded byte-by-byte by
+the ring-3 task whose theft it was reporting:
+
+```
+ENTERUSER: refused entIry to task NIT_STORAGE: no persistent volume; this boot r1uns
+on the on cpu  ephemeral store
+```
+
+The defect had reproduced perfectly and the gate reported *a timeout without its marker*. The
+`kfault` and `panic` writers bypass the console lock deliberately -- right for a halt, where
+there is no owner left to be polite to -- and wrong for a **survivable** report that by
+construction races a ring-3 task on another CPU. `print_core()` already holds that lock for the
+whole string, "so a line is emitted whole to one sink"; the report is now formatted into a buffer
+and emitted with one `print()`.
+
+Fixed at the source rather than by shortening the marker. Shortening lowers the odds of the same
+failure and does not remove it, and **a marker must not be splittable by the condition it
+asserts**. The collision arm cannot be repaired the same way -- a panic cannot politely take a
+lock held by a CPU it is about to halt -- so it gets a bounded retry instead
+(`ENTER_USER_COLLIDE_CONTROL_BOOTS` = 5), falsified against the fixed build, where the loop still
+goes red.
+
 ### What this does NOT claim
 
 That the 0.31% figure was all this defect. It was not: the campaign that produced it was

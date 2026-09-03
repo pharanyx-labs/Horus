@@ -4569,10 +4569,23 @@ smoke-enter-user-claim:
 		tools/smoke_test.sh boot.iso
 
 # Arm 1: the pre-fix ORDERING, with the guard left in place. The AP takes init
-# inside the window (measured 912 to 23801 spins, 3 boots in 3), so the guard is
+# inside the window (measured 912 to 45245 spins, 3 boots in 3), so the guard is
 # the thing that observes it -- and the boot still completes, because parking the
 # CPU whose task was taken is the correct outcome and not a degradation: init is
 # running, on the CPU that legitimately holds it. Both are asserted here.
+#
+# THE MARKER USED TO BE SPLITTABLE, and this arm is why the refusal report is now
+# one print() rather than a kfault_str sequence. It passed 3 boots in 3 locally
+# and went red on the CI runner in PR #305, shredded by the very task whose theft
+# it was reporting:
+#
+#   ENTERUSER: refused entIry to task NIT_STORAGE: no persistent volume; this
+#   boot r1uns on the on cpu  ephemeral store
+#
+# The defect had reproduced perfectly and the gate reported a timeout without its
+# marker. Fixed at the source (scheduler.c, eu_put) rather than by shortening the
+# marker: a survivable report can take the console lock, and shortening only
+# lowers the odds of the same failure.
 .PHONY: smoke-enter-user-claim-control
 smoke-enter-user-claim-control:
 	@$(MAKE) --no-print-directory clean
@@ -4593,16 +4606,53 @@ smoke-enter-user-claim-control:
 # names the TASK rather than the flavour: the three shapes observed are the claim
 # auditor, the resume-%rsp floor guard and the stack-protector canary, and which
 # one fires depends on which of two CPUs sharing a kernel stack corrupts what
-# first. Same reasoning as smoke-net-msi-vector-control. Short, deliberately --
-# with two CPUs live on one task their output interleaves byte-by-byte, so a long
-# marker can be split by the very condition it is asserting.
+# first. Same reasoning as smoke-net-msi-vector-control.
+#
+# ---- WHY THIS ONE RETRIES AND THE OTHER TWO DO NOT ------------------------
+#
+# Not because the defect is probabilistic. It reproduced 6 boots in 6 when this
+# was written, and the widen makes the steal deterministic. It retries because
+# the MARKER is carried on the panic path, and the panic writers bypass the
+# console lock by design -- right for a halt, and it means the report can be
+# shredded byte-by-byte by the ring-3 task running on the CPU that stole the
+# task. That is the very condition being asserted, so it is not a rare accident.
+#
+# The refusal report in the arm above was fixed instead of retried: it is
+# SURVIVABLE, so it can politely take the console lock and be emitted whole
+# (one print(), see eu_put in scheduler.c). A panic cannot -- it is reporting
+# that the machine is dying, possibly holding a lock owned by a CPU it is about
+# to halt. Shortening the marker only lowers the odds; a bounded retry with the
+# assertion unchanged is the remedy CLAUDE.md prescribes, and the evidence is
+# kept on the failure path because that is the case anyone needs it in.
+#
+# Falsified in the other direction: run this loop against the FIXED build (drop
+# ENTER_USER_PUBLISH_EARLY) and it still goes red, so the retry is not just a
+# way to pass.
+ENTER_USER_COLLIDE_CONTROL_BOOTS ?= 5
 .PHONY: smoke-enter-user-collide-control
 smoke-enter-user-collide-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 ENTER_USER_STEAL_WIDEN=1 ENTER_USER_PUBLISH_EARLY=1 ENTER_USER_CLAIM_UNCHECKED=1
 	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 ENTER_USER_STEAL_WIDEN=1 ENTER_USER_PUBLISH_EARLY=1 ENTER_USER_CLAIM_UNCHECKED=1 boot.iso
-	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) \
-		EXPECT_FAULT='task 1' tools/smoke_test.sh boot.iso
+	@echo "[enter-user] pre-fix ordering + no guard: the two-CPU collision must reproduce"
+	@log=$$(mktemp); hit=0; n=0; \
+	while [ $$n -lt $(ENTER_USER_COLLIDE_CONTROL_BOOTS) ]; do \
+	    n=$$((n+1)); \
+	    if SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) EXPECT_FAULT='task 1' \
+	           tools/smoke_test.sh boot.iso >"$$log" 2>&1; then hit=$$n; break; fi; \
+	    echo "  boot $$n/$(ENTER_USER_COLLIDE_CONTROL_BOOTS): no legible fault yet"; \
+	done; \
+	if [ $$hit -eq 0 ]; then \
+	    echo "ENTER-USER COLLIDE CONTROL: FAIL -- the pre-fix kernel did NOT reproduce"; \
+	    echo "  the two-CPU collision legibly in $(ENTER_USER_COLLIDE_CONTROL_BOOTS) boots."; \
+	    echo "  It reproduced 6 boots in 6 when this arm was written. If it has stopped,"; \
+	    echo "  the widen or the launch-site ordering has decayed -- read the log, do not"; \
+	    echo "  raise the bound. The last boot's serial follows."; \
+	    cat "$$log" | sed 's/^/  /'; rm -f "$$log"; exit 1; \
+	fi; \
+	grep -aE 'ENTERUSER|percpu_current|PANIC' "$$log" | head -6 | sed 's/^/  /'; \
+	rm -f "$$log"; \
+	echo "ENTER-USER COLLIDE CONTROL: PASS -- two CPUs on one task, as they must (boot $$hit of $(ENTER_USER_COLLIDE_CONTROL_BOOTS))"
 
 .PHONY: smoke-kstack-imp
 smoke-kstack-imp:

@@ -2879,6 +2879,51 @@ void __attribute__((noreturn)) kernel_idle(void) {
     for (;;) __asm__ volatile ("sti; hlt");
 }
 
+#ifdef SMP
+/* ---- Whole-line diagnostics for the entry path ----------------------------
+ *
+ * These reports are SURVIVABLE and they are emitted while another CPU is
+ * running a ring-3 task, which is not incidental -- it is the condition being
+ * reported. The kfault_ and panic_ writers deliberately bypass the console lock,
+ * which is right for a halt (there is no owner left to be polite to) and wrong
+ * here: print_core() holds that lock for the whole string precisely so a line is
+ * emitted whole, and a survivable report has to share the wire.
+ *
+ * Measured, not anticipated. The first version of the refusal below used
+ * kfault_str() in pieces, passed 3 boots in 3 locally, and was shredded on the
+ * CI runner by the very task whose theft it was reporting:
+ *
+ *   ENTERUSER: refused entIry to task NIT_STORAGE: no persistent volume; this
+ *   boot r1uns on the on cpu  ephemeral store
+ *
+ * The gate then reported a timeout without its marker -- the defect had
+ * reproduced and the arm said nothing had happened. A marker must not be
+ * splittable by the condition it asserts, and shortening it only lowers the
+ * odds. So: format into a buffer and emit with ONE print(), which is atomic
+ * against every other print() in the machine.
+ *
+ * It reaches the wire only while the kernel owns the console; past a ring-3
+ * console_server handover it is recorded to the klog instead. Every
+ * sched_enter_user call site in this tree runs before that handover (init's
+ * launcher, and the selftest launchers), so a refusal is audible where it can
+ * happen -- and where that ever stops being true, the klog still has it, which
+ * kfault's bypass would not have improved. */
+static __attribute__((unused)) char *eu_put(char *p, char *end, const char *s) {
+    while (*s && p < end - 1) *p++ = *s++;
+    return p;
+}
+static __attribute__((unused)) char *eu_dec(char *p, char *end, int v) {
+    char tmp[12];
+    int i = 0;
+    unsigned u;
+    if (v < 0) { if (p < end - 1) *p++ = '-'; u = (unsigned)(-v); } else u = (unsigned)v;
+    if (!u) tmp[i++] = '0';
+    while (u) { tmp[i++] = (char)('0' + (u % 10)); u /= 10; }
+    while (i-- > 0 && p < end - 1) *p++ = tmp[i];
+    return p;
+}
+#endif
+
 #if defined(SMP) && defined(ENTER_USER_STEAL_WIDEN)
 /* ---- Test-only instrument for [G-12]. Set in BOTH arms -------------------
  *
@@ -2912,14 +2957,16 @@ static void enter_user_steal_widen(int tid) {
     /* Reported unconditionally, because the base arm's whole assertion is that
      * the window was held open and nobody took it. Without this line a base arm
      * that never reached sched_enter_user at all would look identical. */
-    kfault_begin(0);
-    kfault_str("\nENTERUSER: steal-widen tid="); kfault_dec(tid);
-    kfault_str(" cpu=");         kfault_dec(me);
-    kfault_str(" holder=");      kfault_dec(holder);
-    kfault_str(" runnable_ctx="); kfault_dec((int)tasks[tid].runnable_ctx);
-    kfault_str(" spins=");       kfault_dec((int)spins);
-    kfault_str("\n");
-    kfault_end(0);
+    char buf[128];
+    char *e = buf + sizeof(buf), *p = buf;
+    p = eu_put(p, e, "\nENTERUSER: steal-widen tid="); p = eu_dec(p, e, tid);
+    p = eu_put(p, e, " cpu=");                          p = eu_dec(p, e, me);
+    p = eu_put(p, e, " holder=");                       p = eu_dec(p, e, holder);
+    p = eu_put(p, e, " runnable_ctx=");                 p = eu_dec(p, e, (int)tasks[tid].runnable_ctx);
+    p = eu_put(p, e, " spins=");                        p = eu_dec(p, e, (int)spins);
+    p = eu_put(p, e, "\n");
+    *p = 0;
+    print(buf);
 }
 #define ENTER_USER_WIDEN(t) enter_user_steal_widen(t)
 #else
@@ -3047,23 +3094,28 @@ static void __attribute__((noreturn)) enter_user_impl(int tid, int publish) {
                           (publish || tasks[tid].runnable_ctx) &&
                           tasks[tid].saved_ksp && tasks[tid].cr3;
         if (foreign || !schedulable) {
-            int st = (int)tasks[tid].state;
-            int rc = (int)tasks[tid].runnable_ctx;
+            int st  = (int)tasks[tid].state;
+            int rc  = (int)tasks[tid].runnable_ctx;
+            int hcur = foreign ? percpu_current_task[holder] : -1;
             sched_raw_unlock();
-            kfault_begin(0);
-            kfault_str("\nENTERUSER: refused entry to task "); kfault_dec(tid);
-            kfault_str(" on cpu "); kfault_dec(cpu);
+            /* Formatted whole and emitted with ONE print(): see eu_put above for
+             * why this is not a kfault_str sequence. */
+            char buf[160];
+            char *e = buf + sizeof(buf), *p = buf;
+            p = eu_put(p, e, "\nENTERUSER: refused entry to task "); p = eu_dec(p, e, tid);
+            p = eu_put(p, e, " on cpu ");                             p = eu_dec(p, e, cpu);
             if (foreign) {
-                kfault_str(" -- already claimed by cpu "); kfault_dec(holder);
-                kfault_str(" (that cpu current="); kfault_dec(percpu_current_task[holder]);
-                kfault_str(")");
+                p = eu_put(p, e, " -- already claimed by cpu "); p = eu_dec(p, e, holder);
+                p = eu_put(p, e, " (that cpu current=");         p = eu_dec(p, e, hcur);
+                p = eu_put(p, e, ")");
             } else {
-                kfault_str(" -- no longer schedulable (state="); kfault_dec(st);
-                kfault_str(" runnable_ctx=");                    kfault_dec(rc);
-                kfault_str(")");
+                p = eu_put(p, e, " -- no longer schedulable (state="); p = eu_dec(p, e, st);
+                p = eu_put(p, e, " runnable_ctx=");                    p = eu_dec(p, e, rc);
+                p = eu_put(p, e, ")");
             }
-            kfault_str("; parking this cpu instead\n");
-            kfault_end(0);
+            p = eu_put(p, e, "; parking this cpu instead\n");
+            *p = 0;
+            print(buf);
             kernel_idle();
         }
     }

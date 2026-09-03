@@ -1479,7 +1479,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 246 test targets, and the troubleshooting
+          Every configuration flag, every one of the 251 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1599,7 +1599,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             The security argument rests entirely on the tests, so they are treated as engineering
             artifacts rather than an afterthought. There are three layers: Rust unit tests and
-            Kani proofs on the host; 124 QEMU integration targets that boot a purpose-built kernel
+            Kani proofs on the host; 126 QEMU integration targets that boot a purpose-built kernel
             and assert a marker on the serial console; and scripted sessions that type into the
             real ring-3 shell over serial and read what comes back.
           </p>
@@ -1800,6 +1800,41 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
           </li>
           <li>
+            <h3><span class="id">2.6c</span>A merge gate reported a defect as absent because its evidence was shredded</h3>
+            <p>
+              When the kernel traps in its own code it writes the serial line directly, one byte
+              at a time, because the ordinary logging path is silenced the moment a userspace
+              process takes ownership of the console &mdash; and that process writes the same
+              serial line. So an unrelated program&rsquo;s output can land <em>between two
+              characters</em> of a single kernel report. On 2026-09-02 that is exactly what
+              happened on a pull request that touched none of the code involved: a kernel panic
+              reached the log beginning mid-word, the gate&rsquo;s pattern did not match, and it
+              announced that the defect it was hunting <em>had not reproduced in eight boots</em>
+              &mdash; with the panic printed four lines below that sentence, in the gate&rsquo;s
+              own evidence dump.
+            </p>
+            <p>
+              A gate whose evidence can be destroyed by an unrelated program fails <em>open</em>,
+              and there is no lock available: the writer the kernel would have to exclude is a
+              process it does not schedule. The repair is a channel with only one writer, and what
+              makes it one is not a convention but the capability model itself. The kernel now
+              reports on a serial port that <strong>no capability names</strong> &mdash; it is
+              absent from every entry in the device table, so the syscall that hands out port
+              access has nothing to hand out. It is not that userspace does not write there; it is
+              that it cannot, and the test proves that by having a userspace process attempt the
+              write in both configurations. Declaring the port makes the write land. Leaving it
+              undeclared makes the identical instruction fault.
+            </p>
+            <p>
+              <strong>It stays on this list</strong>, because only the mechanism is fixed. Around
+              twenty existing gates still read the shared console for kernel output and are
+              exposed exactly as before, and migrating them is the remaining work. The first thing
+              the new channel caught, incidentally, was the test written to measure it: it had
+              been proving the console handover by searching the shared console for a marker,
+              which the same hazard ate on one boot in five.
+            </p>
+          </li>
+          <li>
             <h3><span class="id">C-5</span>No independent review</h3>
             <p>
               Horus is maintained by one person, and recent pull requests merged with zero
@@ -1833,7 +1868,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               be listed as merge-gating, or exempted <em>with a written reason</em>, and CI fails
               the build if any is in neither; there is no default, because defaulting was the
               defect. It caught an unclassified static-analysis job on its first run. The
-              intended set is 108 gating and 3 exempted, and the promotions are backed by
+              intended set is 109 gating and 3 exempted, and the promotions are backed by
               measurement rather than optimism: across 18 sampled runs, 64 of 66 jobs had zero
               failures in 1152 job-executions.
             </p>

@@ -214,6 +214,18 @@ second ring-3 driver could not be given the hardware it needs without the hardwa
 `SECURITY.md` **S43**; witness `make smoke-devcap`. It is the mechanism roadmap 2.6 (a network
 stack as a ring-3 server) and 2.7 (real device drivers) both stand on.
 
+**What that table does NOT declare is load-bearing too.** COM3 (`0x3E8`) appears in no entry, and
+that omission is the kernel's diagnostic channel (`SECURITY.md` **S81**). The kernel reports a
+trap by writing the UART directly, because `print()` reaches only the klog once `console_server`
+owns the console -- and `console_server` writes that same UART from ring 3, one byte at a time,
+so a report could be cut in half between two characters by an unrelated task's output. A channel
+no capability names has one writer by construction: `SYS_IOPORT_GRANT` walks the device's
+declared ranges, so a port that is in none of them cannot be granted to anyone. `panic_ch` writes
+COM3 first and the shared console second; the second copy is best-effort and nothing asserts on
+it. The falsifying arm declares `0x3E8` in the platform entry and watches ring 3 write into the
+kernel's channel -- `make smoke-kdiag-grant-control`, against `make smoke-kdiag-ioport`, where
+the identical instruction takes a #GP.
+
 Index 0 is reserved and names nothing, so the two fields that default to zero (a task's
 `io_device` and a capability's `object`) fail closed instead of resolving to the console. The
 bus scan does not follow PCI-to-PCI bridges: a device behind one is *absent* from the table, so

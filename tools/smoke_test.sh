@@ -121,6 +121,13 @@ fi
 # on the wire, and partly about what must (that the path under test was entered
 # at all), and neither can be checked from an exit status.
 LOG="${SMOKE_LOG:-$(mktemp)}"
+# The kernel's own diagnostic channel, COM3. Separate from $LOG because that is
+# the whole point: $LOG is the console, which ring 3 writes too, so a kernel
+# marker in it can be cut in half between two characters by an unrelated task's
+# output (docs/LIMITATIONS.md 2.6c). Nothing but the kernel can write COM3 -- no
+# capability names 0x3E8 -- so a marker here is contiguous or it was never
+# emitted. A gate asserting on a KERNEL string reads this file.
+KDIAG="${SMOKE_KDIAG_LOG:-$(mktemp)}"
 QEMU_PID=""
 TRACE_FILE=""   # declared before the EXIT trap so cleanup() is safe under set -u
 QMP_SOCK=""
@@ -132,6 +139,7 @@ cleanup() {
     # AFTER this script exits, which is the whole reason the override exists.
     # Only the mktemp we created ourselves is ours to delete.
     [ -n "${SMOKE_LOG:-}" ] || rm -f "$LOG"
+    [ -n "${SMOKE_KDIAG_LOG:-}" ] || rm -f "$KDIAG"
     # Only remove a trace file we created ourselves; when the caller named one
     # via SMOKE_TRACE_FILE it belongs to them and is usually the whole point.
     [ -n "$TRACE_FILE" ] && [ -z "${SMOKE_TRACE_FILE:-}" ] && rm -f "$TRACE_FILE"
@@ -306,7 +314,7 @@ qemu-system-x86_64 \
     -m 512M -cpu "${QEMU_CPU:-qemu64,+aes,+rdrand,+smep,+smap,+umip}" -accel tcg \
     -display none -no-reboot -no-shutdown \
     -device isa-debug-exit,iobase=0x604,iosize=0x04 \
-    -serial file:"$LOG" $NET_ARG \
+    -serial file:"$LOG" -serial none -serial file:"$KDIAG" $NET_ARG \
     $MACHINE_ARG $DRIVE_ARG $SMP_ARG $TRACE_ARG $QMP_ARG $TPM_ARG \
     -cdrom "$ISO" &
 QEMU_PID=$!

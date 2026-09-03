@@ -538,9 +538,6 @@ a page at the bogus address and reported success.
 2026-09-01, and gated since: **83 of 93** implemented syscalls have their handler
 body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
 boot-modules session). The other 10 are listed in `.github/syscall-coverage.yml`, each with a written reason.
-2026-08-30, and gated since: **83 of 93** implemented syscalls have their handler
-body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
-boot-modules session). The other 10 are listed in `.github/syscall-coverage.yml`, each with a written reason.
 
 This was stated as a limitation rather than a finding, on the grounds that nothing here was
 known to be broken. **That is no longer the honest framing, and it has now been wrong twice.**
@@ -1259,7 +1256,27 @@ give them all one. Nothing warns at the eighth; `storage_keyslot_add` returns "f
 
 ### 2.6c A KERNEL marker is splittable even when it is one write, and 2.6a's rule does not reach it
 
-**Open.** *Added 2026-09-02.*
+**Open, and narrowed.** *Added 2026-09-02; the channel landed 2026-09-03 (`SECURITY.md`
+**S81**), the migration has not.*
+
+**What is fixed.** The kernel now has a channel with one writer end to end: COM3 (0x3E8), which
+`src/kernel/pci.c` declares to no device, so no capability names it and `SYS_IOPORT_GRANT` can
+never open it. `panic_ch` writes it first and the shared console second, so every kernel report
+now exists in a form that cannot be cut. `make smoke-kdiag` gates it and four arms falsify it;
+see `TESTS.md`.
+
+**What is not, and it is the larger half.** *Every gate that asserts a kernel-emitted string
+still reads the shared console*, so each remains exposed exactly as described below -- about
+twenty of them, measured 2026-09-03 (see **Scope** at the end of this entry). Until that sweep
+lands, the channel protects reports a human reads and not one merge gate.
+
+**And the first thing it caught was the harness written for it.** `tools/kdiag_test.sh` proved
+the console handover by grepping the shared console for `[console_server] ready`. On 1 boot in 5
+a kernel marker landed inside that string, and the harness reported "console_server never took
+the console" for a boot whose own markers proved that it had. A harness that reads its own
+precondition off the channel it is measuring inherits the failure it exists to detect. It now
+takes that precondition from the diagnostic channel, where one marker is proof -- the probe
+emits only when `console_hw_owned()` -- and cannot be shredded.
 
 2.6a's model is "a gated marker emitted as two writes can be split by another task's output",
 and its repair is "emit it as one write", enforced statically by `tools/check_split_markers.py`.
@@ -1326,18 +1343,27 @@ outside what the 2026-09-01 gating closed, rather than a regression of it.
 available, for the reason above. A shorter grep is a smaller probability, not a property, and
 `0.4^N` reasoning about a detector is the framing CLAUDE.md's own park worked-example rejects.
 
-**What it probably is.** A channel the kernel controls end to end. `isa-debug-exit` at port
-`0x604` is already wired into every harness invocation and already written by
-`src/kernel/kshell.c:99`; `tools/smoke_test.sh:146` says outright that it is "present for parity
-with `make run`; not relied on here". A distinct exit code for the shared-park collision cannot be
-split by any amount of console noise, and would make this arm's assertion exact rather than
-probabilistic. That is a kernel change plus a harness change plus its own witness, and it should
-be designed against the other kernel-marker gates rather than bolted onto this one.
+**What it turned out to be, and why not the obvious one.** This entry proposed `isa-debug-exit`
+at port `0x604` -- already wired into every harness invocation, already written by
+`src/kernel/kshell.c:99` -- on the grounds that an exit code cannot be split. It cannot, and it
+was rejected anyway: it **terminates the machine**, so it can carry only a fatal report, and the
+reports that hide are the survivable ones. It also carries a number where the text is the
+diagnosis. A second UART carries both classes and keeps the words, which is what shipped
+(`SECURITY.md` **S81**).
 
-**Scope is reasoned, not enumerated.** The mechanism applies to any gate matching a kernel-emitted
-string while ring 3 is running — CLAUDE.md already records `DEFECT FLAGS: ` as asserted by six
-gates and emitted from the kernel. Which gates are actually exposed has **not** been measured, and
-this entry does not claim a count.
+COM3 rather than COM2, which is equally unused by any live path: attaching a backend to COM2
+changes what `serial2_read_char` sees. An unassigned port floats and reads `0xFF`, which is why
+the retired `SYS_RECEIVE_PROGRAM` answers -1 under `LEGACY_SYSCALLS_PRESENT` rather than
+blocking, and it is what `smoke-passwd-probe-recv27-control` asserts on. A diagnostic channel
+that silently converted a neighbouring arm's refusal into a hang would be paying for this
+property with someone else's.
+
+**Scope, measured 2026-09-03.** The mechanism applies to any gate matching a kernel-emitted
+string while ring 3 is running. Extracting the literals passed to `kfault_str` and `panic_str`
+across `src/kernel/*.c` and intersecting them with the assertions in `Makefile`, `tools/` and
+`.github/workflows/ci.yml` gives **about twenty** such markers, `DEFECT FLAGS: ` and
+`smoke-kstack-park-control`'s panic among them. None has been migrated to the channel yet, which
+is the remainder recorded at the top of this entry.
 
 ### 2.7 The VFS namespace is a name, not an enforcement boundary
 
@@ -2214,9 +2240,11 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand: **[C-6]**
 
-`.github/workflows/ci.yml` defines **106** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more: **108** across the three, producing **111** status-check contexts. Ruleset `21815299`
-requires all **108** today. Its predecessor `19007209` required **22** of them before
+`.github/workflows/ci.yml` defines **107** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more: **109** across the three, producing **112** status-check contexts. Ruleset `21815299`
+requires all **109** today -- with the standing one-merge lag below: `smoke-kdiag`
+(**S81**) is classified `required` in `.github/ci-gating.yml` as of 2026-09-03 and reaches the
+ruleset only when `--sync-ruleset` is next run. Its predecessor `19007209` required **22** of them before
 2026-08-16, and until 2026-08-15 exactly **zero** of those 22 were security gates: capability
 conformance, kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence,
 flush-on-switch and stack-guard reseed could all fail while a PR merged green. The required set
@@ -2260,7 +2288,7 @@ the right name with the wrong verdict. Step-level `continue-on-error` is untouch
 allowed; it lets one step be advisory while the job's own status still reports the truth, which
 is how the `security` job keeps its scanners advisory without becoming unfailable itself.
 
-That intended set is **108 required contexts and 3 reasoned exemptions**: `fuzz` (a 30-second
+That intended set is **109 required contexts and 3 reasoned exemptions**: `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` was a fifth until **[G-9]** closed on 2026-08-21; it was promoted on

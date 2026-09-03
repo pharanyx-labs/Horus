@@ -1322,6 +1322,43 @@ jobs:
       - name: Restore println() reporting and require the report to be INAUDIBLE
         run: make smoke-kfault-legacy SMOKE_TIMEOUT=180
 
+  smoke-kdiag:
+    name: A kernel marker cannot be cut in half by ring-3 output (S81)
+    runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 105
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Every kernel marker is contiguous on the channel ring 3 cannot write
+        run: make smoke-kdiag
+      # The control arm, in the same job. Without it a green smoke-kdiag is
+      # consistent with a system where nothing ever splits a marker, in which
+      # case the channel guards nothing. This asserts the SAME markers, from the
+      # SAME build, arriving cut on the shared console.
+      - name: The same markers, on the shared console, arrive cut
+        run: make smoke-kdiag-split-control
+      # And the base gate must be able to fail. Under the pre-2026-09-03
+      # reporter the channel is silent and smoke-kdiag goes red; this target is
+      # green exactly when that happens.
+      - name: The pre-fix reporter reddens the base gate
+        run: make smoke-kdiag-legacy-control
+      # The authority half. console_server attempts the write in both, and only
+      # the kernel's port declaration moves: refused with a #GP here, granted
+      # and landing 200 sentinels in the kernel's channel below.
+      - name: Ring 3 is refused the diagnostic port
+        run: make smoke-kdiag-ioport
+      - name: Declaring the port lets ring 3 into the kernel's channel
+        run: make smoke-kdiag-grant-control
+
   smoke-resume-guard:
     name: The resume-%rsp floor guard fires and is heard (and both control arms are not)
     runs-on: ubuntu-latest

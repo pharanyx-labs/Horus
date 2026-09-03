@@ -425,8 +425,19 @@ Fixed at the source rather than by shortening the marker. Shortening lowers the 
 failure and does not remove it, and **a marker must not be splittable by the condition it
 asserts**. The collision arm cannot be repaired the same way -- a panic cannot politely take a
 lock held by a CPU it is about to halt -- so it gets a bounded retry instead
-(`ENTER_USER_COLLIDE_CONTROL_BOOTS` = 5), falsified against the fixed build, where the loop still
-goes red.
+(`ENTER_USER_COLLIDE_CONTROL_BOOTS` = 5).
+
+**And that retry needed the liveness accounting, which `tools/check_gate_evidence.py` refused to
+let it ship without.** A boot that died before reaching the entry path is *inconclusive*, not a
+miss; without that distinction a run whose boots all died would report "the collision stopped
+reproducing -- read the log, do not raise the bound", which is the [G-9] pair's 2026-08-30 defect
+pointed at a red instead of a green. The `ENTERUSER: steal-widen` line is printed by every boot
+that reaches `sched_enter_user`, so it is exactly the "this boot ran the experiment" marker, and
+`ENTER_USER_COLLIDE_MIN_CONCLUSIVE` = 3 is the floor below which the arm declines to conclude.
+
+Worth recording plainly: the checker caught this on the first CI run, in an arm written by
+someone who had just read `CLAUDE.md`'s worked example about exactly it. That is the argument for
+mechanising a lesson rather than writing it down.
 
 ### What this does NOT claim
 

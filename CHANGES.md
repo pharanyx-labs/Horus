@@ -64,6 +64,19 @@ in this file.
   and requires the collision, 6 boots in 6. Base gate RED under the first arm;
   `make smoke-sched-invariants` RED under the second.
 
+  **The collision arm is the one with a bounded retry** (`ENTER_USER_COLLIDE_CONTROL_BOOTS` = 5),
+  and not because the defect is probabilistic: its marker rides the panic path, which cannot take
+  the console lock. It carries the liveness accounting its neighbours carry
+  (`.github/gate-evidence.yml`): a boot that died before reaching the entry path is
+  **inconclusive**, not a miss, and below `ENTER_USER_COLLIDE_MIN_CONCLUSIVE` = 3 the arm reports
+  that the experiment never ran rather than that the collision stopped reproducing -- the [G-9]
+  pair's 2026-08-30 defect pointed at a red instead of a green. `tools/check_gate_evidence.py`
+  caught the omission on the first CI run of this arm, which is the argument for mechanising a
+  lesson rather than writing it down. Falsified in three directions: PASS on the pre-fix kernel
+  (boot 1 of 5); `SMOKE_TIMEOUT=2` starves every boot and it reports *never ran the experiment*,
+  0 of 5 reaching the path; and the loop body against the FIXED build goes red with 3 of 3
+  conclusive.
+
   **What this does not claim.** That the 0.31%-per-boot rate was all this defect: the campaign
   that measured it was also counting three checker false positives, which is why the rate at HEAD
   was already 0 in 3500 boots before the fix. The historical share is not recoverable. Record:

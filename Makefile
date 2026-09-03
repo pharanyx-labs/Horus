@@ -4629,30 +4629,58 @@ smoke-enter-user-claim-control:
 # ENTER_USER_PUBLISH_EARLY) and it still goes red, so the retry is not just a
 # way to pass.
 ENTER_USER_COLLIDE_CONTROL_BOOTS ?= 5
+# A boot that died before reaching the entry path is INCONCLUSIVE, not a miss.
+# Without this the arm reports "the collision stopped reproducing -- read the log,
+# do not raise the bound" for a run in which the experiment never happened, which
+# is the [G-9] pair's 2026-08-30 defect pointed the other way: there it was a
+# false GREEN, here it would be a false diagnosis on a red. The steal-widen line
+# is printed by every boot that reaches sched_enter_user, so it is exactly the
+# "this boot ran the experiment" marker, and the floor refuses to conclude below
+# it. See .github/gate-evidence.yml.
+ENTER_USER_COLLIDE_LIVE_RE = ENTERUSER: steal-widen
+ENTER_USER_COLLIDE_MIN_CONCLUSIVE ?= 3
 .PHONY: smoke-enter-user-collide-control
 smoke-enter-user-collide-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 ENTER_USER_STEAL_WIDEN=1 ENTER_USER_PUBLISH_EARLY=1 ENTER_USER_CLAIM_UNCHECKED=1
 	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 ENTER_USER_STEAL_WIDEN=1 ENTER_USER_PUBLISH_EARLY=1 ENTER_USER_CLAIM_UNCHECKED=1 boot.iso
 	@echo "[enter-user] pre-fix ordering + no guard: the two-CPU collision must reproduce"
-	@log=$$(mktemp); hit=0; n=0; \
+	@log=$$(mktemp); hit=0; ok=0; incon=0; n=0; \
 	while [ $$n -lt $(ENTER_USER_COLLIDE_CONTROL_BOOTS) ]; do \
-	    n=$$((n+1)); \
-	    if SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) EXPECT_FAULT='task 1' \
-	           tools/smoke_test.sh boot.iso >"$$log" 2>&1; then hit=$$n; break; fi; \
-	    echo "  boot $$n/$(ENTER_USER_COLLIDE_CONTROL_BOOTS): no legible fault yet"; \
+	    n=$$((n+1)); one=$$(mktemp); \
+	    if SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) SMOKE_LOG="$$one" \
+	           EXPECT_FAULT='task 1' tools/smoke_test.sh boot.iso >/dev/null 2>&1; then \
+	        hit=$$n; echo "  boot $$n/$(ENTER_USER_COLLIDE_CONTROL_BOOTS): HIT, two CPUs on one task"; \
+	        cat "$$one" >> "$$log"; rm -f "$$one"; break; \
+	    fi; \
+	    if grep -qa '$(ENTER_USER_COLLIDE_LIVE_RE)' "$$one"; then \
+	        ok=$$((ok+1)); \
+	        echo "  boot $$n/$(ENTER_USER_COLLIDE_CONTROL_BOOTS): the entry path ran, no legible fault"; \
+	    else \
+	        incon=$$((incon+1)); \
+	        echo "  boot $$n/$(ENTER_USER_COLLIDE_CONTROL_BOOTS): INCONCLUSIVE, died before the entry path -- not counted"; \
+	    fi; \
+	    cat "$$one" >> "$$log"; rm -f "$$one"; \
 	done; \
-	if [ $$hit -eq 0 ]; then \
-	    echo "ENTER-USER COLLIDE CONTROL: FAIL -- the pre-fix kernel did NOT reproduce"; \
-	    echo "  the two-CPU collision legibly in $(ENTER_USER_COLLIDE_CONTROL_BOOTS) boots."; \
-	    echo "  It reproduced 6 boots in 6 when this arm was written. If it has stopped,"; \
-	    echo "  the widen or the launch-site ordering has decayed -- read the log, do not"; \
-	    echo "  raise the bound. The last boot's serial follows."; \
-	    cat "$$log" | sed 's/^/  /'; rm -f "$$log"; exit 1; \
+	conc=$$((hit+ok)); \
+	if [ $$hit -eq 0 ] && [ "$$conc" -lt $(ENTER_USER_COLLIDE_MIN_CONCLUSIVE) ]; then \
+	    echo "ENTER-USER COLLIDE CONTROL: FAIL -- the arm never ran the experiment."; \
+	    echo "  Only $$conc of $(ENTER_USER_COLLIDE_CONTROL_BOOTS) boots reached the entry path;"; \
+	    echo "  $$incon died first. That is a broken workload, NOT evidence that the"; \
+	    echo "  guard is unnecessary. Read the serial below."; \
+	    tail -40 "$$log" | sed 's/^/  /'; rm -f "$$log"; exit 1; \
 	fi; \
-	grep -aE 'ENTERUSER|percpu_current|PANIC' "$$log" | head -6 | sed 's/^/  /'; \
+	if [ $$hit -eq 0 ]; then \
+	    echo "ENTER-USER COLLIDE CONTROL: FAIL -- the pre-fix kernel did NOT reproduce the"; \
+	    echo "  two-CPU collision legibly in $$conc conclusive boots ($$incon inconclusive)."; \
+	    echo "  It reproduced 6 boots in 6 when this arm was written. If it has stopped, the"; \
+	    echo "  widen or the launch-site ordering has decayed -- read the log, do not raise"; \
+	    echo "  the bound. Serial follows."; \
+	    tail -40 "$$log" | sed 's/^/  /'; rm -f "$$log"; exit 1; \
+	fi; \
+	grep -aE 'ENTERUSER|percpu_current' "$$log" | head -4 | sed 's/^/  /'; \
 	rm -f "$$log"; \
-	echo "ENTER-USER COLLIDE CONTROL: PASS -- two CPUs on one task, as they must (boot $$hit of $(ENTER_USER_COLLIDE_CONTROL_BOOTS))"
+	echo "ENTER-USER COLLIDE CONTROL: PASS -- two CPUs on one task, as they must (boot $$hit of $(ENTER_USER_COLLIDE_CONTROL_BOOTS), $$ok clean, $$incon inconclusive)"
 
 .PHONY: smoke-kstack-imp
 smoke-kstack-imp:

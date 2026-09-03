@@ -164,6 +164,27 @@ prescribes for a probabilistic arm instead: a bounded retry, `ENTER_USER_COLLIDE
 in the other direction** -- run against the fixed build the loop still goes red, so it is not
 just a way to pass.
 
+The first version of that loop shipped without liveness accounting and `tools/check_gate_evidence.py`
+refused it on the next CI run: *"boots more than once and is not classified in
+.github/gate-evidence.yml. Declare how it tells a boot that ran from one that died."* It was
+right. A boot that dies before reaching the entry path cannot produce the fault, so the loop
+scored it as a miss -- and a run whose boots all died would have reported "the collision stopped
+reproducing, read the log, do not raise the bound", which is a confident wrong diagnosis. That is
+the [G-9] pair's 2026-08-30 defect pointed at a red instead of a green: the same vacuum, the
+other sign. The `ENTERUSER: steal-widen` line is printed by every boot that reaches
+`sched_enter_user`, so it is exactly the "this boot ran the experiment" marker, and
+`ENTER_USER_COLLIDE_MIN_CONCLUSIVE` = 3 is the floor below which the arm declines to conclude.
+
+Falsified three ways: PASS on the pre-fix kernel (boot 1 of 5); `SMOKE_TIMEOUT=2` starves every
+boot and it reports *never ran the experiment*, 0 of 5 reaching the path, rather than a
+regression; and the loop body against the fixed build goes red with 3 of 3 conclusive.
+
+**Worth stating plainly: the checker caught this in an arm written by someone who had just read
+the worked example it exists to enforce.** That is the argument for mechanising a lesson rather
+than writing it down, and it is the same argument `tools/check_split_markers.py` won a fortnight
+earlier -- twice in one change, in fact, since the shredded marker above is that checker's family
+appearing on the kernel side of the console.
+
 One further note on that falsification, because the first attempt did not test what it looked
 like. `make smoke-enter-user-collide-control ENTER_USER_PUBLISH_EARLY=0` reported PASS, and the
 build it ran had `DEFECT FLAGS: ENTER_USER_STEAL_WIDEN ENTER_USER_PUBLISH_EARLY

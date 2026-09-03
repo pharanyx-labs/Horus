@@ -17,6 +17,22 @@ in this file.
 
 ### Fixed
 
+- **A required CI job installed its scanner without a lockfile, so an unrelated crate's release
+  could redden every open pull request.** `cargo install cargo-audit` re-resolved the tool's
+  entire dependency graph on each run. On 2026-09-03 `tinyvec` 1.13.0 was published and failed to
+  compile (`cannot find macro `vec` in this scope`), which broke the **required** security-scan
+  job on a documentation-only PR twenty-six minutes after an all-green run on `main` -- no commit
+  in this repository was involved, and nothing in the failure named the real cause. Reproduced
+  locally in both directions before the fix: unpinned exits 101 on `tinyvec-1.13.0`, and
+  `--locked` resolves the 1.11.0 that cargo-audit's own lockfile pins and exits 0. The install is
+  now pinned and `--locked`, the rule `kani-verifier` two jobs down had used all along. `cargo-fuzz`
+  gets the same treatment -- its job is advisory and swallows the status, so a resolution break
+  there would be silent rather than loud. `make security`'s local installs were pinned to match, and
+  its `gitleaks` line installed `github.com/gitleaks/gitleaks@latest`, which is a **different tool**:
+  per the Go proxy that path tops out at **v1.25.1, published 2019-03-30**, while the gate runs
+  v8.21.0. A local scan that is not the same binary as the gate can agree or disagree with it for
+  reasons neither reports.
+
 - **A kernel diagnostic could be cut in half by a ring-3 task's output, and one gate reported a
   reproduction as a clean sweep of misses because of it.** The kernel reports through COM1, which
   a ring-3 `console_server` also owns (finding **#126**): it writes anyway, because a report that

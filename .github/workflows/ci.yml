@@ -3238,7 +3238,17 @@ jobs:
           sudo install -m 0755 "$(go env GOPATH)/bin/gitleaks" /usr/local/bin/gitleaks
           # Rust bare-metal target for cargo-audit and Makefile
           retry rustup target add x86_64-unknown-none
-          retry cargo install cargo-audit
+          # --locked AND a pinned version, for the reason gitleaks is pinned two
+          # lines up. Without --locked, cargo re-resolves cargo-audit's whole
+          # dependency graph on every run, so ANY crate in it publishing a
+          # broken release breaks this REQUIRED job on every open pull request,
+          # with no commit involved. That is not hypothetical: on 2026-09-03
+          # tinyvec 1.13.0 was published and failed to compile ("cannot find
+          # macro `vec` in this scope"), reddening a documentation-only PR
+          # twenty-six minutes after an all-green run on main. cargo-audit's own
+          # lockfile pins tinyvec 1.11.0, which builds. kani-verifier below has
+          # used --locked all along; this is the same rule, applied late.
+          retry cargo install cargo-audit --version 0.22.2 --locked
 
       # The VACUOUS guard, and the point of this job's existence as a REQUIRED
       # check. smoke-session-smp-soak already established the pattern: "a run
@@ -3350,7 +3360,10 @@ jobs:
         run: |
           rustup toolchain install nightly --profile minimal
           rustup component add --toolchain nightly rust-src
-          cargo install cargo-fuzz || true
+          # --locked for the same reason as cargo-audit above. This job is
+          # advisory and swallows the status, so a resolution break here would
+          # be SILENT rather than loud -- which is the worse of the two.
+          cargo install cargo-fuzz --locked || true
 
       - name: Build fuzz targets
         continue-on-error: true

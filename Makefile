@@ -8129,9 +8129,19 @@ security-install:
 	# Trivy (official install script)
 	curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
 	# gitleaks (via Go)
-	go install github.com/gitleaks/gitleaks@latest || echo "⚠️  Install Go to get gitleaks binary"
-	# cargo-audit for Rust
-	cargo install cargo-audit || true
+	: "Same module path and same version as ci.yml installs. This line used"
+	: "github.com/gitleaks/gitleaks@latest, which is a DIFFERENT TOOL: per the"
+	: "Go proxy that path tops out at v1.25.1, published 2019-03-30, while the"
+	: "gate runs v8.21.0. A local scan that is not the same binary as the gate"
+	: "can agree or disagree with it for reasons neither of them reports, which"
+	: "is worse than not running locally at all. ci.yml adds that go install on"
+	: "that path also FAILS on a post-v8 module path -- not re-verified here,"
+	: "since the fix does not depend on which of the two it does."
+	go install github.com/zricethezav/gitleaks/v8@v8.21.0 || echo "⚠️  Install Go to get gitleaks binary"
+	# cargo-audit for Rust. Pinned and --locked to match ci.yml; without it cargo
+	# re-resolves the whole dependency graph and any broken release in it breaks
+	# the install (tinyvec 1.13.0 did exactly that on 2026-09-03).
+	cargo install cargo-audit --version 0.22.2 --locked || true
 	@echo "Installation finished. You may need to add ~/.local/bin or /usr/local/bin to your PATH."
 
 semgrep:

@@ -1248,6 +1248,21 @@ whole on 4 boots in 4 with the probes just before that window, one split in one 
 just after it. Tuning an offset until a race lands is not a measurement. Under the flag `init`
 does not launch a shell and talks forever instead, so the window is the whole run.
 
+**The widener waits on GUEST time, and the first version did not.** It spun a fixed number of
+times per character, which reproduced **6 boots in 6** here and **0 in 1** on a CI runner
+(PR #309, run `33799979586`). The obvious reading -- the runner has fewer host cores, so the
+reporting CPU and the ring-3 writer never truly overlap -- is **wrong**, and measuring it says
+so: with every guest CPU pinned to ONE host core the split reproduces *hardest* of all, the
+console keeping 0-4 markers of 7 across 3 boots in 3. The variable is **density**. The same
+workload emitted **134** ring-3 lines on the runner against **~6000** here, so a line lands
+roughly every 30 ms there, and a marker whose length is measured in host spins fits between two
+of them on a fast host. A spin count measures the host; the hazard is a race in guest time. Each
+character now waits for the AP timer tick to advance -- 10 ms of guest time per character, ~0.5 s
+per marker, on any host -- so what ring 3 prints during one marker is a property of the workload
+rather than of the machine the gate runs on. `KDIAG_WIDEN_SPINS` survives as the **wedge guard**
+on that wait: with no AP ticking it expires and the widener degrades to the old bounded spin,
+because a reporter that can wedge a CPU is a worse defect than the one it measures.
+
 **The split is ground-truthed against COM3, not against the console's own count.** Counting
 markers on the console misses the hardest reproductions: a write landing inside the word
 `KDIAGPROBE` leaves no prefix to count, and a boot that shredded 7 markers of 8 scored
@@ -1266,8 +1281,8 @@ shredded.
 
 | Arm | Asserts | Result |
 |---|---|---|
-| `smoke-kdiag` | every marker on COM3 contiguous, at least 6 of them | passes, **3 boots in 3** |
-| `smoke-kdiag-split-control` (same build) | intact console copies **<** markers emitted on COM3 | passes, **6 boots in 6**, losing 1-4 of 6 per boot |
+| `smoke-kdiag` | every marker on COM3 contiguous, at least 6 of them | passes, **5 boots in 5** (3 before the widener changed, 2 after) |
+| `smoke-kdiag-split-control` (same build) | intact console copies **<** markers emitted on COM3 | passes, **5 boots in 5** on the guest-time widener -- 2 on 12 host cores, 3 with every guest CPU pinned to **one**. The spin-count version it replaced: 6 in 6 here, 0 in 1 on CI |
 | `smoke-kdiag-legacy-control` (`KDIAG_LEGACY_COM1=1`) | `smoke-kdiag` goes **red**, naming the condition | passes, **3 boots in 3** |
 | `smoke-kdiag-ioport` (`KDIAG_RING3_PROBE=1`) | `'console_server' killed: ring-3 trap vector 13`, no sentinel on COM3 | passes, **1 boot in 1** |
 | `smoke-kdiag-grant-control` (`+ KDIAG_PORTS_GRANTABLE=1`) | 200 ring-3 sentinels on COM3, **no** #GP | passes, **3 boots in 3** |

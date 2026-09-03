@@ -877,12 +877,39 @@ static void panic_ch(char ch) {
 #ifdef KDIAG_SPLIT_WIDEN
     /* Not a defect -- the window widener, and it must be set in BOTH arms of
      * the pair or they are not the same measurement. The split is a race
-     * against whatever ring 3 happens to be printing, so an arm that asserted
-     * it from an unwidened boot would be asserting a rate; with a spin between
-     * every character of the marker, a concurrently-printing task lands inside
-     * it every time. Bounded, and it runs only in a build that asked for it. */
-    for (volatile unsigned long w = 0; w < (unsigned long)KDIAG_WIDEN_SPINS; w++)
-        __asm__ volatile ("pause");
+     * against whatever ring 3 happens to be printing, so an unwidened arm would
+     * be asserting a rate rather than a property.
+     *
+     * IT WAITS ON GUEST TIME, NOT ON A SPIN COUNT, and that is the whole
+     * lesson of this widener. The first version spun `KDIAG_WIDEN_SPINS`
+     * times per character, which reproduced 6 boots in 6 here and 0 in 1 on a
+     * CI runner. The cause was not parallelism -- the runner splits nothing
+     * even with every guest CPU pinned to ONE host core, which reproduces
+     * hardest of all locally (console kept 0-4 markers of 7). It was DENSITY:
+     * the same workload emitted 134 ring-3 lines there against ~6000 here, so
+     * one line lands every ~30 ms of wall clock, and a marker whose length is
+     * measured in host spins fits between two of them on a fast host. A spin
+     * count measures the HOST; the hazard is a race in GUEST time.
+     *
+     * So each character waits for the AP timer tick to advance: 10 ms of guest
+     * time per character, ~0.5 s per marker, on any host. Ring 3 advances in
+     * the same guest time, so what it prints during one marker is a property of
+     * the workload rather than of the machine the gate happens to run on.
+     *
+     * The BSP is inside IRQ0 with interrupts off here, so its own tick cannot
+     * advance -- the APs' LAPIC timers are what moves this counter, which is
+     * why the arms boot with -smp 4. KDIAG_WIDEN_SPINS is now a WEDGE GUARD,
+     * not the window: if no AP is ticking (SMP=0, or every AP dead) the wait
+     * expires and this degrades to the old bounded spin. A reporter that can
+     * wedge a CPU is a worse defect than the one it measures, which is the
+     * argument kfault_begin's bounded claim already makes. */
+    {
+        extern volatile unsigned long ap_timer_ticks;   /* smp.c */
+        unsigned long t0 = ap_timer_ticks;
+        unsigned long guard = 0;
+        while (ap_timer_ticks == t0 && guard++ < (unsigned long)KDIAG_WIDEN_SPINS)
+            __asm__ volatile ("pause");
+    }
 #endif
     while ((inb(0x3FD) & 0x20) == 0) { }
     outb(0x3F8, (uint8_t)ch);   /* best-effort copy on the shared console */

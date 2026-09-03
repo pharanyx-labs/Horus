@@ -2076,11 +2076,16 @@ endif
 #
 #   KDIAG_LEGACY_COM1=1     the pre-2026-09-03 reporter: the marker goes to the
 #                           SHARED console UART and nowhere else. The arm.
-#   KDIAG_SPLIT_WIDEN=1     not a defect -- a bounded spin between the characters
-#                           of a kernel marker, so a concurrently-printing task
-#                           lands inside it every boot instead of at a rate. Set
-#                           in BOTH arms; that is what makes the pair a
+#   KDIAG_SPLIT_WIDEN=1     not a defect -- the window widener: each character of
+#                           a kernel marker waits for the AP timer tick to
+#                           advance, so a marker spans ~0.5s of GUEST time on any
+#                           host. Set in BOTH arms; that is what makes the pair a
 #                           measurement rather than two different experiments.
+#                           KDIAG_WIDEN_SPINS is the wedge guard on that wait,
+#                           not the window. A spin-count widener was tried first
+#                           and measured the HOST: 6 boots in 6 locally, 0 in 1
+#                           on CI, where the same workload emits 134 ring-3 lines
+#                           against ~6000 here.
 #   KDIAG_PROBE=1           not a defect -- the marker these gates are ABOUT: a
 #                           survivable kernel report, emitted KDIAG_PROBE_COUNT
 #                           times on a timer tick after the console handover,
@@ -2099,7 +2104,7 @@ KDIAG_PORTS_GRANTABLE ?= 0
 KDIAG_NOISE ?= 0
 KDIAG_PROBE ?= 0
 KDIAG_RING3_PROBE ?= 0
-KDIAG_WIDEN_SPINS ?= 60000
+KDIAG_WIDEN_SPINS ?= 200000000
 KDIAG_PROBE_COUNT ?= 8
 KDIAG_PROBE_EVERY ?= 20
 KDIAG_MIN ?= 6

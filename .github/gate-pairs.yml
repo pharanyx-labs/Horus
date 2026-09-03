@@ -131,6 +131,7 @@ control_arms:
   smoke-passwd-probe-legacy-control: smoke-passwd-probe
   smoke-passwd-probe-recv27-control: smoke-passwd-probe
   smoke-passwd-probe-exec19-control: smoke-passwd-probe
+  smoke-image-abi-control: smoke-image-abi
   smoke-proc-taskinfo-control: smoke-proc
   smoke-repro-sha-control: smoke-repro-sha
   smoke-resume-guard-ist-control: smoke-resume-guard-ist
@@ -238,6 +239,7 @@ gates:
   - smoke-newlib-tamper
   - smoke-notify
   - smoke-nzcow
+  - smoke-image-abi
   - smoke-passwd-probe
   - smoke-percpu
   - smoke-pipe

@@ -1479,7 +1479,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 244 test targets, and the troubleshooting
+          Every configuration flag, every one of the 246 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1599,7 +1599,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             The security argument rests entirely on the tests, so they are treated as engineering
             artifacts rather than an afterthought. There are three layers: Rust unit tests and
-            Kani proofs on the host; 123 QEMU integration targets that boot a purpose-built kernel
+            Kani proofs on the host; 124 QEMU integration targets that boot a purpose-built kernel
             and assert a marker on the serial console; and scripted sessions that type into the
             real ring-3 shell over serial and read what comes back.
           </p>
@@ -1779,6 +1779,25 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               &mdash; because every other rule in it is vacuous if the parser has quietly stopped
               matching, and a check that cannot fail is the thing this whole finding is about.
             </p>
+            <p>
+              <strong>The same week, the same mistake, in a different file &mdash; and this time
+              the checker found it.</strong> The container format the build writes and the kernel
+              reads was recorded as being written down four times. A checker added to refuse a
+              second copy of it reported <em>eleven</em> on its first run, including two on the
+              boot path that starts the first userspace process. The recorded number had been
+              produced by a person reading the code, and it was short, exactly as the count of
+              ungated syscalls above had been short four days earlier.
+            </p>
+            <p>
+              Both were closed the same way, and it is the transferable part of all of this:
+              <em>stop counting, and let something enumerate.</em> A number in a document is a
+              claim about the code that nothing re-checks; every time this project has written one
+              down by hand, it has drifted. The format now has a single declaration that the
+              kernel, the userspace side and the host build tool all compile, and a test that boots
+              the system and confirms the bytes on disk really came from it &mdash; because the
+              build tool is a separate program built by a separate compiler, and no amount of
+              static checking can bridge that gap.
+            </p>
           </li>
           <li>
             <h3><span class="id">C-5</span>No independent review</h3>
@@ -1814,7 +1833,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               be listed as merge-gating, or exempted <em>with a written reason</em>, and CI fails
               the build if any is in neither; there is no default, because defaulting was the
               defect. It caught an unclassified static-analysis job on its first run. The
-              intended set is 107 gating and 3 exempted, and the promotions are backed by
+              intended set is 108 gating and 3 exempted, and the promotions are backed by
               measurement rather than optimism: across 18 sampled runs, 64 of 66 jobs had zero
               failures in 1152 job-executions.
             </p>

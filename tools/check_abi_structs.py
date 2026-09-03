@@ -98,18 +98,27 @@ SHARED = [
 # checker fails if one of these starts AGREEING -- at which point it belongs in
 # SHARED and the finding is closed.
 UNRESOLVED = {
-    "program_header": (
-        "docs/LIMITATIONS.md 2.18. The kernel's is an ELF program header with "
-        "four Horus staging fields appended (104 bytes); ring 3's is the staging "
-        "header alone (44). h_receive_program copies the kernel's size, so the "
-        "shell's `receive` would overrun its own 44-byte stack object by 60 "
-        "bytes -- except that the SUCCESS PATH IS UNREACHABLE: "
-        "loader_receive_to_staging reads sizeof(hdr) = 104 bytes off serial "
-        "where the uploader sends 44 plus payload, so `magic` is tested against "
-        "payload bytes and the transfer answers 'Bad magic' every time. Broken "
-        "rather than dangerous, and a transport decision rather than a struct "
-        "rename, so it is filed rather than fixed here."
-    ),
+    # EMPTY, and that is a status rather than an oversight.
+    #
+    # `program_header` lived here from 2026-09-01 to 2026-09-03 as the one open
+    # entry: 104 bytes in kernel.h, 44 in syscall.h, one name, no compiler seeing
+    # both (docs/LIMITATIONS.md 2.18). It is not "now agreeing" -- it is GONE from
+    # both headers, because the container it described is declared once in
+    # include/program_abi.h as `struct horus_image_header` and both sides include
+    # that. This checker's third rule fired on the removal and made it a decision
+    # rather than a side effect, which is what that rule is for.
+    #
+    # It is deliberately not moved to SHARED. SHARED is for structs written down
+    # in both headers that must stay identical; a struct written down ONCE cannot
+    # drift, so enrolling it would be a check that cannot fail. `audit_record` is
+    # absent for exactly the same reason, and the two absences mean the same
+    # thing: the defect class was removed rather than monitored.
+    #
+    # tools/check_image_abi.py is what guards the container now, and it guards a
+    # different property -- that no SECOND declaration appears anywhere in the
+    # tree, under any name.
+    #
+    # Adding an entry here is adding an open defect. Say which finding records it.
 }
 
 FIELD = re.compile(r"^\s+((?:const\s+)?[A-Za-z_][A-Za-z_0-9]*)\s+([A-Za-z_][A-Za-z_0-9]*)\s*(\[[^\]]*\])?\s*;")

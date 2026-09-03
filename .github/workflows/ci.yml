@@ -1942,6 +1942,31 @@ jobs:
       - name: Control arm — syscall 19 enters its handler for a task holding nothing
         run: make smoke-passwd-probe-exec19-control
 
+  image-abi:
+    name: "The kernel reads the .bin container the build tool wrote (S80)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # The _Static_asserts in include/program_abi.h prove both sides compile the
+      # same layout. They cannot prove the bytes on disk came from it, because
+      # mkheadered is a separate program built by a separate compiler -- so this
+      # arms a real boot module and checks every field survived the round trip.
+      - name: Every field of a real boot module survives the round trip
+        run: make smoke-image-abi
+      # mkheadered writes `name` four bytes further into the same 44-byte header.
+      # Magic, entry, size and the payload offset stay correct, so the image still
+      # ARMS and only the name comes back wrong: an arm that asked "did it load?"
+      # would pass. That silence is the point -- it is the shape 2.18's defect had.
+      - name: Control arm — a one-sided layout change is caught, not tolerated
+        run: make smoke-image-abi-control
+
   frame:
     name: "A frame capability names an object, and a delegate maps only what it holds"
     runs-on: ubuntu-latest
@@ -3389,6 +3414,13 @@ jobs:
       # This reads the table the compiler reads so a fourth sweep is not needed.
       - name: No ship-build syscall is gated on the slot-3 decoy
         run: python3 tools/check_dispatch_gates.py
+      # Fifth in this job, and the one whose subject spanned the most files. The
+      # `.bin` container the build writes and the kernel reads was declared four
+      # times and PARSED in eleven places, each spelling the magic and the offsets
+      # by hand. docs/LIMITATIONS.md 2.18 said four; this checker found the other
+      # seven the first time it ran, which is the argument for it in one line.
+      - name: The .bin container format has exactly one declaration
+        run: python3 tools/check_image_abi.py
       # Third instance of the same class in the same job: a property two places
       # must agree on, with nothing comparing them. Here the two places are the
       # marker a gate asserts and the writes that emit it. docs/LIMITATIONS.md

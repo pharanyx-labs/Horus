@@ -9,7 +9,7 @@
  * init_user_page_allocator points this at (PHYS_KVA(USER_PHYS_BASE)) before any
  * image is armed. 0 until then; nothing arms an image that early. */
 uint8_t *loader_staging = 0;
-struct program_header armed_hdr;
+struct horus_image_header armed_hdr;
 int program_armed = 0;
 
 /* ---- WHO ARMED IT -- roadmap 1.7, finding [G-11] --------------------------
@@ -182,6 +182,90 @@ static const struct embedded_binary embedded_binaries[] = {
     { NULL, NULL, NULL }
 };
 
+
+/* Decode a `.bin` container header out of `raw`.
+ *
+ * WHY BYTE-WISE AND NOT A CAST. `raw` is a linker symbol into an embedded blob on
+ * one path and a ring-3 buffer copied in on the other: unaligned in principle,
+ * attacker-controlled in fact. Casting it to `struct horus_image_header *` would
+ * be an unaligned access the compiler is entitled to assume never happens, and on
+ * the user path it would also read fields the caller chose through a typed
+ * pointer. The explicit little-endian decode is the same reason the format is
+ * little-endian in the first place: the wire layout is a promise, not whatever
+ * this compiler does with a struct today.
+ *
+ * WHAT CHANGED IN 2026-09-03. The offsets are `offsetof` against the ONE
+ * declaration (include/program_abi.h) instead of the literals 0, 4, 8, 12 and 44
+ * spelled out at each of two call sites, next to a third private copy of the
+ * layout inside tools/mkheadered.c that actually defined it. See
+ * docs/LIMITATIONS.md 2.18: this function is where "four copies, none connected"
+ * became one.
+ *
+ * Fails closed on a short buffer or a bad magic; `out` is fully written before
+ * either test only for the fields it could read, and callers must not use it on a
+ * non-zero return. */
+static uint32_t le32_at(const uint8_t *p, size_t off) {
+    return (uint32_t)p[off]            | ((uint32_t)p[off + 1] << 8) |
+          ((uint32_t)p[off + 2] << 16) | ((uint32_t)p[off + 3] << 24);
+}
+
+static int image_header_decode(const uint8_t *raw, uint32_t len,
+                               struct horus_image_header *out) {
+    if (len < HORUS_IMAGE_HDR_BYTES) return -1;
+
+    out->magic = le32_at(raw, offsetof(struct horus_image_header, magic));
+    out->entry = le32_at(raw, offsetof(struct horus_image_header, entry));
+    out->size  = le32_at(raw, offsetof(struct horus_image_header, size));
+
+    /* NUL-terminated within the field whatever the producer wrote: mkheadered
+     * uses strncpy(.., 31) so byte 31 is already zero, and a hand-made image
+     * that filled all 32 must not leave the kernel with an unterminated name. */
+    const size_t noff = offsetof(struct horus_image_header, name);
+    for (size_t k = 0; k + 1 < HORUS_IMAGE_NAME_MAX; k++) out->name[k] = (char)raw[noff + k];
+    out->name[HORUS_IMAGE_NAME_MAX - 1] = 0;
+
+    if (out->magic != HORUS_IMAGE_MAGIC) return -2;
+    return 0;
+}
+
+/* Parse and validate a `.bin` container header.
+ *
+ * THE ONE PARSE. `raw` must be readable for at least HORUS_IMAGE_HDR_BYTES;
+ * `total_len` is the length of the WHOLE container (header + payload) and is used
+ * only to clamp `out->size`, so a caller holding just the header in a bounce
+ * buffer passes the length of the thing it came from. On success `out` carries
+ * the header with `size` already clamped to what the container actually holds,
+ * and the payload begins at offset HORUS_IMAGE_HDR_BYTES.
+ *
+ * Returns 0, or -1 shorter than a header, -2 bad magic, -3 implausible size.
+ *
+ * WHY IT IS PUBLIC. This parse was open-coded ELEVEN times: twice here, twice in
+ * kshell.c and seven times in selftest.c, each spelling 0x55524F48 and the
+ * offsets 4, 8 and 44 by hand, next to a private copy of the layout in
+ * tools/mkheadered.c that actually defined the format. docs/LIMITATIONS.md 2.18
+ * called it four copies; tools/check_image_abi.py found the other seven on its
+ * first run, which is the argument for the checker in one line. Eleven copies of
+ * a nine-line parse is [H-3]'s shape -- parallel copies of one idea, drifting --
+ * and the fix is the same one S71 and include/block_size.h got: one definition,
+ * one reader, and a gate that refuses a second.
+ *
+ * Most of those sites also did `*(const uint32_t *)(bin + 4)`, an unaligned load
+ * on a linker symbol the compiler is entitled to assume is aligned. Going through
+ * image_header_decode's byte-wise read fixes that everywhere at once. */
+int image_container_parse(const uint8_t *raw, uint32_t total_len,
+                          struct horus_image_header *out) {
+    int rc = image_header_decode(raw, total_len, out);
+    if (rc != 0) return rc;                       /* -1 short, -2 bad magic */
+    if (out->size == 0 || out->size > MAX_PROGRAM_SIZE) return -3;
+
+    /* A header claiming more payload than the container holds is a truncated
+     * build artifact; the declared size never outranks the measured one, because
+     * reading past the blob would be the actual bug. */
+    if (total_len - HORUS_IMAGE_HDR_BYTES < out->size)
+        out->size = total_len - HORUS_IMAGE_HDR_BYTES;
+    return 0;
+}
+
 /* Arm the staging buffer from a named embedded binary.
  * Returns 0 on success, negative on error (not found, bad magic, too large). */
 int arm_named_binary(const char *name) {
@@ -189,26 +273,109 @@ int arm_named_binary(const char *name) {
         if (kstrcmp(embedded_binaries[i].name, name) != 0) continue;
         const uint8_t *bin = embedded_binaries[i].start;
         uint32_t full_sz = (uint32_t)(embedded_binaries[i].end - bin);
-        if (full_sz < 44) return -1;
-        uint32_t magic   = (uint32_t)bin[0] | ((uint32_t)bin[1]<<8) |
-                           ((uint32_t)bin[2]<<16) | ((uint32_t)bin[3]<<24);
-        uint32_t h_entry = (uint32_t)bin[4] | ((uint32_t)bin[5]<<8) |
-                           ((uint32_t)bin[6]<<16) | ((uint32_t)bin[7]<<24);
-        uint32_t h_size  = (uint32_t)bin[8] | ((uint32_t)bin[9]<<8) |
-                           ((uint32_t)bin[10]<<16) | ((uint32_t)bin[11]<<24);
-        if (magic != 0x55524F48u) return -2;
-        if (h_size == 0 || h_size > MAX_PROGRAM_SIZE) return -3;
-        if (full_sz < 44 + h_size) h_size = full_sz - 44;
-        for (uint32_t j = 0; j < h_size; j++) loader_staging[j] = bin[44 + j];
-        armed_hdr.entry = h_entry;
-        armed_hdr.size  = h_size;
-        for (int k = 0; k < 31; k++) armed_hdr.name[k] = (char)bin[12 + k];
-        armed_hdr.name[31] = 0;
+
+        struct horus_image_header h;
+        int rc = image_container_parse(bin, full_sz, &h);
+        if (rc != 0) return rc;                   /* -1 short, -2 magic, -3 size */
+
+        for (uint32_t j = 0; j < h.size; j++) loader_staging[j] = bin[HORUS_IMAGE_HDR_BYTES + j];
+        armed_hdr = h;
         loader_arm_commit();
         return 0;
     }
     return -4;  /* not found */
 }
+
+#ifdef IMAGE_ABI_SELFTEST
+/* IMAGE_ABI_SELFTEST -- the kernel reads exactly what the build tool wrote.
+ *
+ * SECURITY.md S80. The _Static_asserts in include/program_abi.h prove the two
+ * sides compile the same LAYOUT; they cannot prove that the bytes on disk were
+ * produced from it, because tools/mkheadered.c is a separate program built by a
+ * separate compiler. This closes that gap at runtime, against a real boot module.
+ *
+ * It arms "hello" -- unconditional in embedded_binaries[], so this needs no test
+ * fixture -- and requires every field of the container to survive the round trip
+ * from mkheadered's `fwrite` to armed_hdr. The NAME check is the sharp one: a
+ * header whose magic, entry and size all parse can still put `name` somewhere
+ * else, and that is a SILENT misparse rather than a refusal, which is exactly the
+ * shape docs/LIMITATIONS.md 2.18 describes (ring 3 read `h.name` at offset 12,
+ * where the kernel had written the low half of `vaddr`). The payload check is the
+ * other half: it proves the payload really begins at HORUS_IMAGE_HDR_BYTES rather
+ * than at some literal that happens to match today.
+ *
+ * Falsified by IMAGE_HDR_WRITER_SKEW=1, which makes mkheadered emit `name` four
+ * bytes further into the SAME 44-byte header -- one side of the format changed,
+ * which is precisely what four unconnected copies could not catch. Magic, entry,
+ * size and the payload offset are all still correct under it, so an arm that only
+ * checked "did it arm?" would pass. */
+void image_abi_selftest(void) {
+    int checks = 0;
+    const char *fail = 0;
+
+    print("IMAGE_ABI: begin\n");
+
+    const uint8_t *bin = 0;
+    uint32_t full_sz = 0;
+    for (int i = 0; embedded_binaries[i].name != NULL; i++) {
+        if (kstrcmp(embedded_binaries[i].name, "hello") != 0) continue;
+        bin     = embedded_binaries[i].start;
+        full_sz = (uint32_t)(embedded_binaries[i].end - bin);
+        break;
+    }
+    if (!bin)                              { fail = "no-hello-module"; goto done; }
+    if (full_sz <= HORUS_IMAGE_HDR_BYTES)  { fail = "hello-module-too-small"; goto done; }
+
+    /* The header size is the ABI, and it is read off the declaration rather than
+     * written here: a literal in the test would pass against a changed struct. */
+    if (HORUS_IMAGE_HDR_BYTES != 44)       { fail = "header-not-44-bytes"; goto done; }
+    checks++;
+
+    spawn_stage_acquire();
+    int rc = arm_named_binary("hello");
+    if (rc != 0)                           { spawn_stage_release(); fail = "arm-failed"; goto done; }
+    checks++;
+
+    /* NAME: mkheadered wrote it, the decoder read it back from offset 12. */
+    if (kstrcmp(armed_hdr.name, "hello") != 0) {
+        spawn_stage_release(); fail = "name-mismatch"; goto done;
+    }
+    checks++;
+
+    /* SIZE: the payload is everything after the header. */
+    if (armed_hdr.size != full_sz - HORUS_IMAGE_HDR_BYTES) {
+        spawn_stage_release(); fail = "size-mismatch"; goto done;
+    }
+    checks++;
+
+    /* ENTRY: whatever the tool recorded, read back from offset 4. */
+    if (armed_hdr.entry != le32_at(bin, offsetof(struct horus_image_header, entry))) {
+        spawn_stage_release(); fail = "entry-mismatch"; goto done;
+    }
+    checks++;
+
+    /* PAYLOAD: staged bytes are the module's, starting at the header's end. A
+     * prefix is enough -- an offset error shows in the first word -- and cheap
+     * enough to run on every boot of this build. */
+    for (uint32_t j = 0; j < 64 && j < armed_hdr.size; j++) {
+        if (loader_staging[j] != bin[HORUS_IMAGE_HDR_BYTES + j]) {
+            spawn_stage_release(); fail = "payload-offset-mismatch"; goto done;
+        }
+    }
+    checks++;
+
+    loader_disarm();          /* leave nothing armed behind a self-test */
+    spawn_stage_release();
+
+done:
+    if (fail) {
+        print("IMAGE_ABI: FAIL "); print(fail); print("\n");
+        return;
+    }
+    print("IMAGE_ABI: PASS "); print_decimal((uint32_t)checks);
+    print(" checks - the kernel reads what mkheadered wrote\n");
+}
+#endif /* IMAGE_ABI_SELFTEST */
 
 /* Arm the staging buffer from a program image the caller supplies in its own
  * address space (execve-from-fd): the caller reads the image from a file — via
@@ -218,7 +385,7 @@ int arm_named_binary(const char *name) {
  * are untrusted and are validated by the same loader (try_elf_load: W^X, bounds,
  * fail-closed relocations) before anything runs. Two container formats are
  * accepted, mirroring arm_named_binary:
- *   - a 44-byte Horus header {magic,entry,size,name[32]} + payload (a `.bin`), or
+ *   - a Horus `.bin`: the container header of include/program_abi.h + payload, or
  *   - a bare ELF (0x7f 'E' 'L' 'F'), whose entry the ELF loader computes.
  * Every read is bounds-checked and goes through copy_from_user (present/user
  * checks, SMAP-safe) against the *current* task, so it must run while the
@@ -240,19 +407,24 @@ int arm_image_from_user(addr_t ubuf, uint32_t len, const char *name_hint) {
     char hname[32];
     hname[0] = 0;
 
-    if (len >= 44 && m == 0x55524F48u) {            /* Horus .bin: header + payload */
-        uint8_t hdr[44];
-        if (copy_from_user(hdr, (const void *)(addr_t)ubuf, 44) != 0) return -3;
-        h_entry = (uint32_t)hdr[4] | ((uint32_t)hdr[5] << 8) |
-                  ((uint32_t)hdr[6] << 16) | ((uint32_t)hdr[7] << 24);
-        uint32_t h_size = (uint32_t)hdr[8] | ((uint32_t)hdr[9] << 8) |
-                          ((uint32_t)hdr[10] << 16) | ((uint32_t)hdr[11] << 24);
-        if (h_size == 0 || h_size > MAX_PROGRAM_SIZE) return -4;
-        if (44u + h_size > len) h_size = len - 44u;  /* clamp to what was supplied */
-        payload_off = 44;
+    if (len >= HORUS_IMAGE_HDR_BYTES && m == HORUS_IMAGE_MAGIC) {  /* Horus .bin */
+        uint8_t raw[HORUS_IMAGE_HDR_BYTES];
+        if (copy_from_user(raw, (const void *)(addr_t)ubuf, HORUS_IMAGE_HDR_BYTES) != 0) return -3;
+
+        /* Same decoder as the boot-module path, so the two cannot drift: that
+         * drift is the whole of docs/LIMITATIONS.md 2.18. A second copy of a
+         * nine-line parse is how [H-3] happened one subsystem over. */
+        struct horus_image_header h;
+        if (image_header_decode(raw, HORUS_IMAGE_HDR_BYTES, &h) != 0) return -5;
+        if (h.size == 0 || h.size > MAX_PROGRAM_SIZE) return -4;
+
+        uint32_t h_size = h.size;
+        if (HORUS_IMAGE_HDR_BYTES + h_size > len) h_size = len - HORUS_IMAGE_HDR_BYTES;
+        h_entry     = h.entry;
+        payload_off = HORUS_IMAGE_HDR_BYTES;
         payload_len = h_size;
-        for (int k = 0; k < 31; k++) hname[k] = (char)hdr[12 + k];
-        hname[31] = 0;
+        for (size_t k = 0; k + 1 < HORUS_IMAGE_NAME_MAX; k++) hname[k] = h.name[k];
+        hname[HORUS_IMAGE_NAME_MAX - 1] = 0;
     } else if (probe[0] == 0x7f && probe[1] == 'E' &&
                probe[2] == 'L' && probe[3] == 'F') {  /* bare ELF */
         h_entry = 0;                                 /* try_elf_load computes it */
@@ -311,8 +483,8 @@ int arm_image_from_user(addr_t ubuf, uint32_t len, const char *name_hint) {
  * reorder it to "fix" the ring-0 path -- the ring-3 path is gone, and disarming
  * late would leave a half-armed image if the transfer failed. */
 #if defined(DEBUG_SHELL) || defined(LEGACY_SYSCALLS_PRESENT)
-static int loader_receive_to_staging(struct program_header *out_hdr) {
-    struct program_header hdr;
+static int loader_receive_to_staging(struct horus_image_header *out_hdr) {
+    struct horus_image_header hdr;
     uint8_t *p = (uint8_t *)&hdr;
 
     p[0] = serial2_read_char();
@@ -320,7 +492,7 @@ static int loader_receive_to_staging(struct program_header *out_hdr) {
         p[i] = serial2_read_char();
     }
 
-    if (hdr.magic != 0x55524F48) {
+    if (hdr.magic != HORUS_IMAGE_MAGIC) {
         return -1;
     }
     if (hdr.size == 0 || hdr.size > MAX_PROGRAM_SIZE) {
@@ -341,7 +513,7 @@ static int loader_receive_to_staging(struct program_header *out_hdr) {
 }
 
 
-int do_receive_program(struct program_header *hdr_out) {
+int do_receive_program(struct horus_image_header *hdr_out) {
     if (!hdr_out) return -3;
 
     loader_disarm();

@@ -31,12 +31,12 @@ struct task_info {
     char     name[32];
 };
 
-struct program_header {
-    uint32_t magic;
-    uint32_t entry;
-    uint32_t size;
-    char     name[32];
-};
+/* The `.bin` program-image container is declared in a header BOTH RINGS AND THE
+ * BUILD TOOL read. It used to be declared here as `struct program_header` and
+ * again, differently, in src/include/kernel.h -- 44 bytes against 104, one name,
+ * no compiler seeing both. See include/program_abi.h: it carries the whole story
+ * and the _Static_asserts that stop it recurring. */
+#include "program_abi.h"
 
 /* The audit record SYS_READ_AUDIT delivers is declared in a header BOTH RINGS
  * READ, and it used to be declared here instead. That is the whole of the defect

@@ -101,6 +101,7 @@ DEFECT_FLAGS = \
 	POSIX_LEGACY_WALK HVFS_DOTDOT_SERVER \
 	MEASURED_BOOT_REQUIRED MEASURED_VOLUME_EXEMPT_NONE \
 	LEGACY_SYSCALLS_PRESENT CAP_ENUMERATE_UNGATED CLOCK_TSC_RESOLUTION \
+	IMAGE_HDR_WRITER_SKEW \
 	TASKINFO_WIDE_AUTHORITY GETLINE_SLOT3_FALLBACK CAP_LOOKUP_ASSERT_HANG \
 	IOMMU_NO_FRAME_TEARDOWN IOMMU_NO_TASK_TEARDOWN \
 	IO_DEVICE_OBJECT_UNCHECKED IO_DEVICE_PORTS_GLOBAL IO_DEVICE_IRQ_UNCHECKED \
@@ -220,6 +221,30 @@ endif
 # self-test of try_elf_load + W^X at boot (prints ELF_SELFTEST: PASS/FAIL to
 # serial). Gated so the default/ship kernel is unaffected. ASFLAGS also gets
 # the define so the gated .incbin in multiboot.S is included.
+# IMAGE_ABI_SELFTEST=1 arms a real boot module at boot and requires every field
+# of the .bin container to survive the round trip from mkheadered to armed_hdr
+# (prints IMAGE_ABI: PASS/FAIL to serial). The _Static_asserts in
+# include/program_abi.h prove both sides compile the same layout; only this proves
+# the bytes on disk were produced from it, mkheadered being a separate program
+# built by a separate compiler. Gated off the ship kernel. S80.
+IMAGE_ABI_SELFTEST ?= 0
+ifeq ($(IMAGE_ABI_SELFTEST),1)
+CFLAGS  += -DIMAGE_ABI_SELFTEST
+ASFLAGS += -DIMAGE_ABI_SELFTEST
+endif
+
+# IMAGE_HDR_WRITER_SKEW=1 makes mkheadered emit `name` four bytes further into the
+# same 44-byte header -- a one-sided layout change, which is exactly what four
+# unconnected copies of the format could not catch. Deliberately quiet: magic,
+# entry, size and the payload offset stay correct, the image ARMS, and only the
+# name comes back wrong, so an arm that merely asked "did it load?" would pass.
+# It reaches the tool through MKHEADERED_SKEW rather than CFLAGS because
+# mkheadered is a HOST build with its own rule.
+IMAGE_HDR_WRITER_SKEW ?= 0
+ifeq ($(IMAGE_HDR_WRITER_SKEW),1)
+MKHEADERED_SKEW = -DIMAGE_HDR_WRITER_SKEW
+endif
+
 ELF_SELFTEST ?= 0
 ifeq ($(ELF_SELFTEST),1)
 CFLAGS  += -DELF_SELFTEST
@@ -3571,8 +3596,13 @@ userspace/elftest64.elf: userspace/elftest64.o userspace/elftest.ld
 userspace/%.raw: userspace/%.elf
 	objcopy -O binary $< $@
 
-tools/mkheadered: tools/mkheadered.c
-	$(CC) -o $@ $<
+# -I include so the tool compiles the ONE declaration of the container format
+# (include/program_abi.h) rather than a private copy -- that copy is what
+# docs/LIMITATIONS.md 2.18 was about. The header is a prerequisite so a layout
+# change rebuilds the writer; without it, every .bin in the tree would keep the
+# old layout until someone touched this .c file.
+tools/mkheadered: tools/mkheadered.c include/program_abi.h
+	$(CC) -I include $(MKHEADERED_SKEW) -o $@ $<
 
 # Shipped binaries: HORU-wrap the static-PIE ELF (real ELF payload, so the
 # kernel's do_spawn routes it through try_elf_load with ASLR + relocations).
@@ -7307,6 +7337,33 @@ smoke-vfs-mount-control:
 	@echo "VFS MOUNT CONTROL: PASS - a prefix alone installs a mount"
 
 # ---- The in-kernel ramfs is not reachable from ring 3 ----------------------
+# ---- the .bin container has one definition (S80) --------------------------
+# The kernel arms a real boot module and requires every field to survive the
+# round trip from mkheadered's fwrite to armed_hdr. See docs/LIMITATIONS.md 2.18.
+.PHONY: smoke-image-abi
+smoke-image-abi:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory IMAGE_ABI_SELFTEST=1
+	@$(MAKE) --no-print-directory IMAGE_ABI_SELFTEST=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='IMAGE_ABI: PASS' \
+		FAIL_MARKER='IMAGE_ABI: FAIL' \
+		tools/smoke_test.sh boot.iso
+
+# Control arm: mkheadered writes `name` four bytes further into the same 44-byte
+# header. Magic, entry, size and the payload offset stay correct, so the image
+# still ARMS -- the marker is the name, which is the half a "did it load?" test
+# cannot see. The rebuild is what makes this an arm at all: MKHEADERED_SKEW is a
+# host-tool flag, so every .bin must be regenerated, which `clean` forces.
+.PHONY: smoke-image-abi-control
+smoke-image-abi-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory IMAGE_ABI_SELFTEST=1 IMAGE_HDR_WRITER_SKEW=1
+	@$(MAKE) --no-print-directory IMAGE_ABI_SELFTEST=1 IMAGE_HDR_WRITER_SKEW=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='IMAGE_ABI: FAIL name-mismatch' \
+		tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-passwd-probe
 smoke-passwd-probe:
 	@$(MAKE) --no-print-directory clean

@@ -901,7 +901,7 @@ static void h_run(struct interrupt_frame64 *r) {
  * transfer non-blocking. */
 static void h_receive_program(struct interrupt_frame64 *r) {
     void *user_hdr = (void *)(addr_t)r->rbx;
-    struct program_header k_hdr;
+    struct horus_image_header k_hdr;
 
     int rc = do_receive_program(&k_hdr);
     if (rc != 0) {

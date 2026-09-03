@@ -24,6 +24,11 @@ typedef uint64_t vaddr_t;
  * carries what that cost. */
 #include "audit_abi.h"
 
+/* Same arrangement again, for the program-image container the build tool writes
+ * and this kernel reads. tools/mkheadered.c includes it too, so writer and
+ * readers are one declaration rather than three that happen to agree. */
+#include "program_abi.h"
+
 /* Key slots: how many passwords may open one volume, and the region they live
  * in. Eight is a prototype's answer, not a protocol limit -- the cost of a slot
  * is one Argon2id derivation on a FAILED unlock (a successful one stops at the
@@ -1448,20 +1453,14 @@ typedef struct audit_event {
 } audit_event_t;
 
 
-typedef struct program_header {
-    uint32_t type;
-    uint64_t offset;
-    uint64_t vaddr;
-    uint64_t paddr;
-    uint64_t filesz;
-    uint64_t memsz;
-    uint32_t flags;
-    uint32_t align;
-    char     name[32];      
-    uint64_t size;          
-    uint32_t magic;         
-    uint32_t entry;
-} program_header_t;
+/* `struct program_header` was declared here as an ELF program header with four
+ * Horus staging fields appended -- 104 bytes, `magic` at offset 96 -- while
+ * include/syscall.h declared a 44-byte struct of the same name. Nothing read the
+ * eight ELF fields and the `program_header_t` typedef had no uses at all, so the
+ * two declarations that shared a name were the two nothing used. Removed
+ * 2026-09-03; the one definition of the container is include/program_abi.h,
+ * included at the top of this file, and the type is `horus_image_header`.
+ * docs/LIMITATIONS.md 2.18 and SECURITY.md S80. */
 
 
 typedef struct capability {
@@ -2882,6 +2881,18 @@ void kstack_imp_selftest(void);
 #endif
 #ifdef ELF_SELFTEST
 void elf_loader_selftest(void);
+#endif
+/* The one parse of the `.bin` container (loader.c). Every site that used to
+ * open-code 0x55524F48 and the offsets 4/8/44 calls this. S80. */
+int image_container_parse(const uint8_t *raw, uint32_t total_len,
+                          struct horus_image_header *out);
+
+#ifdef IMAGE_ABI_SELFTEST
+/* S80: the .bin container the build writes is the one this kernel reads.
+ * Its own guard, NOT nested in ELF_SELFTEST's -- the first version of this
+ * declaration was, and so was the call in smp.c, so IMAGE_ABI_SELFTEST=1 alone
+ * compiled neither and the gate timed out with an empty wire. */
+void image_abi_selftest(void);
 #endif
 #ifdef CPU_SELFTEST
 void cpu_protections_selftest(void);

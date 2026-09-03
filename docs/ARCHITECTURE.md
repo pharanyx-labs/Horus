@@ -1474,8 +1474,8 @@ one core could be taken by another, which then resumed that task's fresh trap fr
 core that ran the exec was still on it. The storage is per-CPU now, with a standing assertion in
 `exec_reenter_switch`; falsified with `EXEC_REENTER_GLOBAL=1` at 0 thefts in 30 boots against 5
 in 20. Two residues remained and were not the exec race: a claim leaked in the boot/spawn
-phase, and a CPL-0 write-fault at `lapic_eoi`. The first of those is still live and is now filed
-as **G-12** below, measured at 0.31% per boot. *Narrowed again 2026-08-20*: the surviving fault is a
+phase, and a CPL-0 write-fault at `lapic_eoi`. The first of those was filed as **G-12** below,
+measured at 0.31% per boot, and is closed as of 2026-09-03. *Narrowed again 2026-08-20*: the surviving fault is a
 supervisor write to `ap_idle_stacks + 0x90a0` from `interrupt_handler64 + 0x4a8`, `0xa0`
 **above** slot 0's stack top, inside slot 1's guard page, and the four `saved_ksp` producers are
 ruled out by a page-table-based guard that did not fire in 57 boots containing a reproduction.
@@ -1528,16 +1528,27 @@ identity be handed to `wire_child_stdio` as a *proved* parentage rather than a r
 Witness `make smoke-spawn-owner`, falsified by `SPAWN_OWNER_UNCHECKED=1`
 (`smoke-spawn-owner-control`, which spawns the foreign image on every boot).
 
-**G-12: the claim invariant still fires in the boot phase, mechanism unattributed.** *Open,
-filed 2026-09-02.* `smoke-sched-invariants-stress` reddens at **0.31% per boot** (7 failures in
-2250, CI and local agreeing), a few hundred milliseconds after `kernel ready`. Three of the four
-signatures are memory corruption rather than audit reports -- a resume `%rsp` of `0x1`, the
-kernel's own stack canary, and an instruction fetch into a kernel stack address hitting NX --
-which is the consequence this file's own claim-invariant note gives for the `<-` direction
-breaking. **It is not [G-9] reopened**: [G-9]'s mechanisms are fixed and falsified, and this is
-the residue its record predicted, measured and given its own number rather than folded back into
-a closed finding. The deferred-release hand-over machinery is **excluded** -- `CLAIM_TRACE=1` was
-silent across 1000 boots including all four reproductions. See
+**G-12: two CPUs current on one task, through the user-entry path.** *Filed 2026-09-02;
+attributed and closed 2026-09-03.* `sched_enter_user()` claimed its task **unconditionally**, and
+`spawn_initial_userspace_init()` published that task as schedulable one call earlier. Between the
+publish and the claim the task satisfies every condition of `preempt_on_tick()`'s selection loop
+and is claimed by nobody, so an AP's timer tick landing there takes it -- and the entering CPU
+then takes it as well. Two CPUs current on one task, neither impersonating, both `iretq`ing onto
+its single kernel stack: `percpu_current=[1,1,0,0]` with `imp=[0,0,0,0]`, which is the `<-` claim
+direction breaking and the consequence this file's own claim-invariant note gives for it. All
+three surviving symptoms follow -- a resume `%rsp` of `0x1`, the stack canary, and an instruction
+fetch into `KSTACK_REGION_VMA`.
+
+Fixed in two rules. `enter_user_impl()` re-validates under the scheduler lock and fails closed: a
+CPU does not enter a task another CPU holds, nor one that has stopped being schedulable -- it
+parks and reports, because a refusal means some launch site still has the window.
+`sched_publish_and_enter_user()` removes the window at the launch site, doing the publish, the
+claim and `set_current_task()` in one acquisition of the lock. Witness `make smoke-enter-user-claim`,
+falsified by `ENTER_USER_PUBLISH_EARLY=1` (the steal, 3 boots in 3) and by
+`+ ENTER_USER_CLAIM_UNCHECKED=1` (the collision, 6 boots in 6), with `ENTER_USER_STEAL_WIDEN=1`
+set in all three arms. **It was not [G-9] reopened**: [G-9]'s mechanisms are fixed and falsified,
+and the deferred-release hand-over machinery was positively **excluded** here -- `CLAIM_TRACE=1`
+was silent across 1000 boots including all four reproductions. See
 `docs/investigations/G-12-claim-invariant-residue.md`.
 
 **G-13: the installer's format stalls on CI, cause unestablished.** *Open, filed 2026-09-02.*

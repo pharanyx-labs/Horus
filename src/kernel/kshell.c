@@ -453,13 +453,34 @@ void spawn_initial_userspace_init(void) {
 
         /* do_spawn leaves the child SUSPENDED so a supervisor can endow it
          * before it runs (SYS_TASK_RESUME). init's endowment is complete above,
-         * so make it schedulable before entering it. */
-        tasks[pid].runnable_ctx = 1;
-
-        /* do_spawn already fabricated a full trap frame; enter via the same
+         * so make it schedulable -- and enter it in the same breath.
+         *
+         * The publish and the entry are ONE step ([G-12]). Written apart, as
+         *
+         *     tasks[pid].runnable_ctx = 1;
+         *     sched_enable_preemption();
+         *     sched_enter_user(pid);
+         *
+         * they left init schedulable, unclaimed and visible to every AP for the
+         * length of a call -- and an AP's tick landing there took the task, made
+         * itself current on it, and then this CPU claimed it too and ran it as
+         * well. Two cores on one kernel stack, at 0.31% of boots. Preemption is
+         * armed first on purpose: it is the publish that opens the window, and
+         * sched_publish_and_enter_user does not have one.
+         *
+         * do_spawn already fabricated a full trap frame; entry uses the same
          * pop+iretq path every later resume uses. */
+#ifdef ENTER_USER_PUBLISH_EARLY
+        /* CONTROL ARM -- never ship. The pre-2026-09-03 ordering, verbatim:
+         * publish, then arm preemption, then go and claim it. Reopens [G-12]'s
+         * window at the one live launch site in the tree. */
+        tasks[pid].runnable_ctx = 1;
         sched_enable_preemption();
         sched_enter_user(pid);
+#else
+        sched_enable_preemption();
+        sched_publish_and_enter_user(pid);
+#endif
     }
 }
 

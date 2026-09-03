@@ -5,7 +5,7 @@ All notable changes to Horus are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it has a public ABI to break.
 
 **The reasoning behind these lines is in
-[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 134 entries recording what was
+[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 135 entries recording what was
 tried, what failed, and how each measurement was taken. In a security project that record is
 evidence, not commentary, so it is kept in full rather than compressed away. Entries here cite
 finding IDs; their **current** status is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), never
@@ -15,7 +15,65 @@ in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **[G-12] is attributed and closed: two CPUs became current on one task through the
+  first-entry path.** `sched_enter_user()` claimed its task with `task_running_cpu[tid] = cpu`
+  and no test of who held it, and the one live launch site --
+  `spawn_initial_userspace_init()` -- published that task as schedulable a call earlier. In
+  between, the task satisfies **every** condition of `preempt_on_tick()`'s selection loop and is
+  claimed by nobody, on a machine where cross-CPU scheduling has been open since bringup and
+  preemption has just been armed. An AP's timer tick landing there selects it, claims it and
+  becomes current on it; the entering CPU then claims it too. Both `iretq` onto one kernel stack
+  with one TSS `RSP0` -- `percpu_current=[1,1,0,0]` with `imp=[0,0,0,0]`, which is [G-12]'s
+  survivor signature verbatim, and the source of all three of its surviving symptoms (a resume
+  `%rsp` that is a small integer, the stack-protector canary, and an instruction fetch into
+  `KSTACK_REGION_VMA`).
+
+  **Two rules, because they are two failures.** `enter_user_impl()` now re-validates under the
+  scheduler lock and fails closed: it will not enter a task another CPU holds, nor one that has
+  stopped being schedulable, and parks with a report rather than proceeding. That second half is
+  not hypothetical -- with the window held open for 60 ms the AP took init, ran it to `SYS_WAIT`
+  and released it, and the old path entered a task in `TASK_BLOCKED_WAIT` because it had tested
+  `runnable_ctx` *before* queueing for the lock and never looked again. And
+  `sched_publish_and_enter_user()` removes the window at the launch site by doing the publish,
+  the claim and `set_current_task()` in **one** acquisition of the lock.
+
+  **Claim-then-publish in two critical sections was written and rejected.** It leaves the CPU
+  holding a claim it is not yet current on -- the commit gap -- which the claim auditor does not
+  exempt; the repair would then have been to widen an auditor exemption in order to fix a launch
+  path, and the auditor is what catches this class. It also retires the "exempt the commit gap"
+  item the investigation listed as future work: there is no commit gap on this path to exempt.
+
+  **Falsified in both directions, with the instrument in both arms.** `ENTER_USER_STEAL_WIDEN=1`
+  holds the entry open until another CPU claims the task; `make smoke-enter-user-claim` requires
+  `holder=-1` after the full budget, no refusal, and a boot that still reaches its login prompt.
+  `ENTER_USER_PUBLISH_EARLY=1` (`smoke-enter-user-claim-control`) restores the ordering with the
+  guard standing and requires the steal, 3 boots in 3, observed at 912--45245 spins;
+  `+ ENTER_USER_CLAIM_UNCHECKED=1` (`smoke-enter-user-collide-control`) removes the guard as well
+  and requires the collision, 6 boots in 6. Base gate RED under the first arm;
+  `make smoke-sched-invariants` RED under the second.
+
+  **What this does not claim.** That the 0.31%-per-boot rate was all this defect: the campaign
+  that measured it was also counting three checker false positives, which is why the rate at HEAD
+  was already 0 in 3500 boots before the fix. The historical share is not recoverable. Record:
+  `docs/investigations/G-12-claim-invariant-residue.md`; status in `docs/LIMITATIONS.md` §5.2g.
+
+- **A lead cleared for one property is not cleared.** `docs/LIMITATIONS.md` §5.2d dismissed
+  `sched_enter_user()` during the [G-9] narrowing, correctly: that path orphans no *deferred
+  release*, and no probe ever found one there. It was the site all along, of a different defect
+  -- a claim taken twice rather than a claim leaked. The dismissal was recoverable a fortnight
+  later only because it named the property it had cleared narrowly enough to still be true.
+
 ### Added
+
+- **Three build flags for [G-12]** (`docs/BUILDING.md`, "Defect-reproducing builds"):
+  `ENTER_USER_STEAL_WIDEN=1`, the instrument, set in **both** arms -- it polls for another CPU's
+  claim rather than sleeping a fixed time, because the fixed-length first attempt reproduced the
+  *other* defect on that path; `ENTER_USER_PUBLISH_EARLY=1`, the pre-fix ordering; and
+  `ENTER_USER_CLAIM_UNCHECKED=1`, which removes the guard **entirely** -- both halves, since with
+  either standing the entry is refused anyway and an arm against the other would pass for the
+  wrong reason.
 
 - **`CLAIM_IMP_TRACE=1`**, an instrument for **[G-12]**: it re-reads the accused CPU at the
   instant the claim auditor accuses it, and prints the impersonation depth either side of the

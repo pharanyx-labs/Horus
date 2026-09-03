@@ -2532,6 +2532,14 @@ cannot leak. Two further hypotheses died the same way: the unguarded "defensive 
 `preempt_on_tick`, and `create_task()` inheriting a stale claim through slot reuse. Both are
 real shapes; neither is what fires. Probes beat reading, three times over.
 
+**And `sched_enter_user()` WAS the site after all -- of a different defect** ([G-12], §5.2g,
+2026-09-03). The dismissal above is still correct on its own terms: that path orphans no
+*deferred release*, and no probe ever found one there. What it does is claim its task
+unconditionally while the launch site has already published it, which is not a leak at all --
+it is the opposite, a claim taken twice. **A lead cleared for one property is not cleared**, and
+the note that cleared it named the property narrowly enough to be re-read a fortnight later and
+still be true. That is the only reason this was recoverable rather than misleading.
+
 **The component that was found.** `g_exec_reenter_task` was a single global naming the task
 whose exec re-entry was pending, and `idt.c` consumed it on the exit of **every syscall on every
 CPU** with no test that the exec belonged to the CPU reading it. An exec armed on one core was
@@ -2910,10 +2918,40 @@ check that refuses everything is not a check. `make smoke-spawn-owner-control`
 (`SPAWN_OWNER_UNCHECKED=1`) removes the refusal and reports `SPAWN_OWNER_SELFTEST: FAIL
 foreign-image-spawned pid 1` on every boot.
 
-### 5.2g The claim invariant still fires in the boot phase: **[G-12]**, open
+### 5.2g Two CPUs current on one task, through the user-entry path: **[G-12]**, FIXED
 
-**Filed 2026-09-02, rate 10 marker failures in 3250 boots (0.31% per boot).** Full record in
+**Filed 2026-09-02 at 10 marker failures in 3250 boots (0.31% per boot); attributed and fixed
+2026-09-03.** Full record in
 [`investigations/G-12-claim-invariant-residue.md`](investigations/G-12-claim-invariant-residue.md).
+
+**The mechanism.** `sched_enter_user()` claimed its task **unconditionally**, and
+`spawn_initial_userspace_init()` published that task as schedulable a call *before* it. Between
+the publish and the claim, init satisfies every condition of `preempt_on_tick()`'s selection loop
+and is claimed by nobody, so an AP's timer tick landing there takes it -- and the entering CPU
+then takes it too. Two CPUs current on one task, neither impersonating, both on its single kernel
+stack: `percpu_current=[1,1,0,0]` with `imp=[0,0,0,0]`, which is the survivor signature recorded
+below, verbatim.
+
+**The fix, two rules.** `enter_user_impl()` re-validates under the scheduler lock and **fails
+closed** -- a CPU does not enter a task another CPU holds, nor one that has stopped being
+schedulable; it parks and says so. And `sched_publish_and_enter_user()` removes the window at the
+launch site by doing the publish, the claim and `set_current_task()` in one acquisition of the
+lock, so there is no instant at which the task is schedulable and unclaimed.
+
+**Witnessed and falsified in both directions.** `make smoke-enter-user-claim` holds the window
+open for a full spin budget and requires that nobody takes the task;
+`smoke-enter-user-claim-control` (`ENTER_USER_PUBLISH_EARLY=1`) restores the ordering and requires
+the steal (3 boots in 3); and `smoke-enter-user-collide-control` (`+ ENTER_USER_CLAIM_UNCHECKED=1`)
+removes the guard as well and requires the two-CPU collision (6 boots in 6). The base gate goes RED
+under the first arm, and `make smoke-sched-invariants` goes red under the full one.
+
+**What that does not claim.** That the 0.31% was all this defect. The campaign that measured it
+was also counting the three checker false positives recorded below, which is why the rate at HEAD
+was already 0 in 3500 boots *before* this fix. The arms establish that the mechanism is real and
+now impossible; the historical share is not recoverable.
+
+The record of how it was narrowed is kept below, because the exclusions are what made the
+attribution findable.
 
 This is **not [G-9] reopened**: every mechanism [G-9] names is fixed and falsified and stays
 closed. This is the residue [G-9]'s own record predicted -- *"a stale claim in the boot/spawn
@@ -2970,8 +3008,10 @@ checkers' own false positives**, not that any hardware defect was repaired.
 panic that **survived the re-read**, and a stack canary dying in **`do_spawn_charged`**
 (`src/kernel/kspawn.c`). `inflight=0`, so the S20 collision detector could not have fired. The
 faulting addresses in earlier captures are instruction fetches into `KSTACK_REGION_VMA`, the
-per-task kernel stack region. So: two CPUs become current on one task, the shared kernel stack
-corrupts the spawn path's frame, and how the second CPU gets there is the open question.
+per-task kernel stack region. So: two CPUs become current on one task and the shared kernel stack
+corrupts the spawn path's frame. How the second CPU got there was the open question; the answer is
+the entry path above, and not the spawn path -- `do_spawn_charged`'s canary was a frame that
+happened to be on the shared stack, not the thing that shared it.
 
 **A load "lever" recorded here on 2026-09-02 did not survive retesting** and should not be used
 to size a campaign: 1 failure in 600 boots under CPU burners against 0 in 2500 idle, Fisher

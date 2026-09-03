@@ -31,9 +31,12 @@ measured into a TPM, and the volume encryption key is sealed against those measu
 > wrong for days before getting right.
 >
 > Notable open findings: **[C-5]** (no independent review), **[C-6]** (the branch ruleset is
-> reconciled to the checked-in gating decision by hand, so it lags a merge), **[G-12]** (the SMP
-> claim invariant still fires in the boot phase at 0.31% per boot, mechanism unattributed; the
-> deferred-release path is excluded by measurement). **[G-9]** closed
+> reconciled to the checked-in gating decision by hand, so it lags a merge), **[G-13]** (the
+> installer's format stalls on CI after `INSTALLER: formatting`, cause unestablished; the budget
+> was deliberately not raised). **[G-12]** closed on 2026-09-03: `sched_enter_user()` claimed its
+> task unconditionally while the launch site had published it as schedulable a call earlier, so
+> an AP's timer tick landing in that window took the task and the entering CPU took it too --
+> two CPUs on one kernel stack. **[G-9]** closed
 > on 2026-08-21: its last component was the claim auditor clearing its own exemption before the
 > release it exempts, so the checker accused a release that was in flight rather than a leak.
 

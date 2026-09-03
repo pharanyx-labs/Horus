@@ -2879,17 +2879,156 @@ void __attribute__((noreturn)) kernel_idle(void) {
     for (;;) __asm__ volatile ("sti; hlt");
 }
 
+#ifdef SMP
+/* ---- Whole-line diagnostics for the entry path ----------------------------
+ *
+ * These reports are SURVIVABLE and they are emitted while another CPU is
+ * running a ring-3 task, which is not incidental -- it is the condition being
+ * reported. The kfault_ and panic_ writers deliberately bypass the console lock,
+ * which is right for a halt (there is no owner left to be polite to) and wrong
+ * here: print_core() holds that lock for the whole string precisely so a line is
+ * emitted whole, and a survivable report has to share the wire.
+ *
+ * Measured, not anticipated. The first version of the refusal below used
+ * kfault_str() in pieces, passed 3 boots in 3 locally, and was shredded on the
+ * CI runner by the very task whose theft it was reporting:
+ *
+ *   ENTERUSER: refused entIry to task NIT_STORAGE: no persistent volume; this
+ *   boot r1uns on the on cpu  ephemeral store
+ *
+ * The gate then reported a timeout without its marker -- the defect had
+ * reproduced and the arm said nothing had happened. A marker must not be
+ * splittable by the condition it asserts, and shortening it only lowers the
+ * odds. So: format into a buffer and emit with ONE print(), which is atomic
+ * against every other print() in the machine.
+ *
+ * It reaches the wire only while the kernel owns the console; past a ring-3
+ * console_server handover it is recorded to the klog instead. Every
+ * sched_enter_user call site in this tree runs before that handover (init's
+ * launcher, and the selftest launchers), so a refusal is audible where it can
+ * happen -- and where that ever stops being true, the klog still has it, which
+ * kfault's bypass would not have improved. */
+static __attribute__((unused)) char *eu_put(char *p, char *end, const char *s) {
+    while (*s && p < end - 1) *p++ = *s++;
+    return p;
+}
+static __attribute__((unused)) char *eu_dec(char *p, char *end, int v) {
+    char tmp[12];
+    int i = 0;
+    unsigned u;
+    if (v < 0) { if (p < end - 1) *p++ = '-'; u = (unsigned)(-v); } else u = (unsigned)v;
+    if (!u) tmp[i++] = '0';
+    while (u) { tmp[i++] = (char)('0' + (u % 10)); u /= 10; }
+    while (i-- > 0 && p < end - 1) *p++ = tmp[i];
+    return p;
+}
+#endif
+
+#if defined(SMP) && defined(ENTER_USER_STEAL_WIDEN)
+/* ---- Test-only instrument for [G-12]. Set in BOTH arms -------------------
+ *
+ * The window this widens is the one between a launch site publishing `tid` as
+ * schedulable and this CPU claiming it in enter_user_impl below. It is a few
+ * instructions wide in the pre-fix tree, which is why the collision it permits
+ * ran at 0.31% per boot and took 2250 boots to measure. Held open for the spin
+ * budget instead, an AP takes the task on the first tick that lands inside it,
+ * and the pair of arms answers in one boot each.
+ *
+ * It stops the moment another CPU claims `tid`, so the control arm proceeds
+ * straight into the collision rather than letting the stolen task run on and
+ * block -- which is what a fixed-length widen produced on the first attempt:
+ * the AP took init, ran it all the way to SYS_WAIT and released it again, and
+ * the BSP then entered a task in TASK_BLOCKED_WAIT. That is a real second
+ * failure on this path (see the schedulability half of the guard below), but it
+ * is not the two-CPU collision, and an arm that reproduces the wrong one of two
+ * defects is an arm reporting the wrong thing.
+ *
+ * Same role KSTACK_RACE_WIDEN plays for [G-8]: set in both arms, so the two
+ * runs differ only in the defect. */
+static void enter_user_steal_widen(int tid) {
+    int me = this_cpu();
+    int holder = -1;
+    unsigned spins = 0;
+    for (; spins < (unsigned)ENTER_USER_STEAL_WIDEN_SPINS; spins++) {
+        holder = task_running_cpu[tid];
+        if (holder >= 0 && holder != me) break;
+        __asm__ volatile ("pause" ::: "memory");
+    }
+    /* Reported unconditionally, because the base arm's whole assertion is that
+     * the window was held open and nobody took it. Without this line a base arm
+     * that never reached sched_enter_user at all would look identical. */
+    char buf[128];
+    char *e = buf + sizeof(buf), *p = buf;
+    p = eu_put(p, e, "\nENTERUSER: steal-widen tid="); p = eu_dec(p, e, tid);
+    p = eu_put(p, e, " cpu=");                          p = eu_dec(p, e, me);
+    p = eu_put(p, e, " holder=");                       p = eu_dec(p, e, holder);
+    p = eu_put(p, e, " runnable_ctx=");                 p = eu_dec(p, e, (int)tasks[tid].runnable_ctx);
+    p = eu_put(p, e, " spins=");                        p = eu_dec(p, e, (int)spins);
+    p = eu_put(p, e, "\n");
+    *p = 0;
+    print(buf);
+}
+#define ENTER_USER_WIDEN(t) enter_user_steal_widen(t)
+#else
+#define ENTER_USER_WIDEN(t) ((void)0)
+#endif
+
+static void __attribute__((noreturn)) enter_user_impl(int tid, int publish);
+
 /* Enter a task that already has a fabricated/saved full trap frame
  * (sched_prepare_user_context / do_spawn). Installs CR3, TSS RSP0, and current
  * task, then runs the same pop+iretq epilogue as isr_common_stub64 so first
- * entry matches every later resume. Does not return. */
-void __attribute__((noreturn)) sched_enter_user(int tid) {
+ * entry matches every later resume. Does not return.
+ *
+ * The task must ALREADY be schedulable. If the caller is the one making it so,
+ * it must use sched_publish_and_enter_user() instead -- see [G-12] below. */
+void __attribute__((noreturn)) sched_enter_user(int tid) { enter_user_impl(tid, 0); }
+
+/* Publish `tid` as schedulable AND enter it, with no window in between.
+ *
+ * ---- WHY THIS EXISTS: finding [G-12] -------------------------------------
+ *
+ * A launch site that writes `tasks[tid].runnable_ctx = 1` and then calls
+ * sched_enter_user(tid) has, between those two statements, published a task
+ * that satisfies every condition of preempt_on_tick's selection loop -- state
+ * TASK_RUNNABLE, a cr3, a runnable_ctx, a saved_ksp, and task_running_cpu[] of
+ * -1 -- to every other CPU in the machine. An AP's timer tick lands in that
+ * window, selects the task, claims it and becomes current on it; the entering
+ * CPU then arrives here and claims it too, because the claim below used to be
+ * unconditional.
+ *
+ * Two CPUs then hold one task's single kernel stack, which is exactly the
+ * consequence this file's header states for a broken `<-` claim direction. It
+ * is [G-12]'s signature, and it reproduces on the first boot with the window
+ * held open:
+ *
+ *   ENTERUSER: cpu 0 entering task 1 holder=1 ... -- STEAL: that cpu current=1
+ *   PANIC: dispatcher returned a bogus resume rsp=0xfee000b0 task=1 'prog1'
+ *     claim: task 1 running_cpu=0  percpu_current=[1,1,0,0]  imp=[0,0,0,0]
+ *
+ * Publishing and claiming under one acquisition of the scheduler lock removes
+ * the window rather than narrowing it. Doing it the other way round -- claim
+ * first in one critical section, publish and enter in a second -- was written
+ * and rejected: it leaves the CPU holding a claim it is not yet current on,
+ * which is the commit gap, and the claim auditor does not exempt that. The
+ * repair would then have been to widen an exemption in the auditor to fix a
+ * defect in a launch path, and the auditor is the thing catching this class.
+ *
+ * The refusal in enter_user_impl is the general half and covers every caller,
+ * including the ones that still publish early (the selftest launchers, which
+ * publish the whole task table with selftest_resume_all before entering one of
+ * them). This is the half that keeps the BSP's own task. */
+void __attribute__((noreturn)) sched_publish_and_enter_user(int tid) { enter_user_impl(tid, 1); }
+
+static void __attribute__((noreturn)) enter_user_impl(int tid, int publish) {
     if (tid <= 0 || tid >= g_max_tasks ||
-        !tasks[tid].runnable_ctx || !tasks[tid].saved_ksp || !tasks[tid].cr3) {
+        (!publish && !tasks[tid].runnable_ctx) ||
+        !tasks[tid].saved_ksp || !tasks[tid].cr3) {
         kernel_idle();
     }
 
 #ifdef SMP
+    ENTER_USER_WIDEN(tid);
     sched_raw_lock();
     int cpu = this_cpu();
 #ifdef CLAIM_TRACE
@@ -2921,8 +3060,74 @@ void __attribute__((noreturn)) sched_enter_user(int tid) {
         }
     }
 #endif
+#ifndef ENTER_USER_CLAIM_UNCHECKED
+    /* ---- The [G-12] guard: re-validate under the lock ---------------------
+     *
+     * Everything the entry precondition tested above was read WITHOUT the
+     * scheduler lock, so it describes the machine as it was before this CPU
+     * queued for the lock -- and another CPU may have taken the task in the
+     * meantime. Two things can be wrong by the time we get here, and they are
+     * separate failures with one cure:
+     *
+     *  - `tid` is CLAIMED BY ANOTHER CPU. Claiming it anyway is what put two
+     *    CPUs on one kernel stack; see sched_publish_and_enter_user above.
+     *  - `tid` is NO LONGER SCHEDULABLE. Another CPU took it, ran it, and it
+     *    blocked or exited -- so the claim is free again but the task is not
+     *    ours to resume, and its saved_ksp is no longer the frame the check
+     *    above accepted. Measured, not hypothesised: with the window held open
+     *    for 60 ms the AP ran init to SYS_WAIT and released it, and this path
+     *    entered a task in TASK_BLOCKED_WAIT with runnable_ctx already 0.
+     *
+     * Fail closed: this CPU does not enter the task. It parks, which is the
+     * correct outcome rather than a graceful degradation -- the task IS running
+     * (or has finished), on the CPU that legitimately holds it, and this CPU has
+     * nothing to do. The report is survivable-fault shaped (kfault_begin(0)) so
+     * it does not take the UART away from a later real panic.
+     *
+     * Reported rather than silent because a refusal here means a launch site
+     * still has the publish-before-claim window, and a window nobody can see is
+     * how this one lasted from the [G-9] closure to 2026-09-03. */
+    {
+        int holder     = task_running_cpu[tid];
+        int foreign    = (holder >= 0 && holder != cpu);
+        int schedulable = (tasks[tid].state == TASK_RUNNABLE) &&
+                          (publish || tasks[tid].runnable_ctx) &&
+                          tasks[tid].saved_ksp && tasks[tid].cr3;
+        if (foreign || !schedulable) {
+            int st  = (int)tasks[tid].state;
+            int rc  = (int)tasks[tid].runnable_ctx;
+            int hcur = foreign ? percpu_current_task[holder] : -1;
+            sched_raw_unlock();
+            /* Formatted whole and emitted with ONE print(): see eu_put above for
+             * why this is not a kfault_str sequence. */
+            char buf[160];
+            char *e = buf + sizeof(buf), *p = buf;
+            p = eu_put(p, e, "\nENTERUSER: refused entry to task "); p = eu_dec(p, e, tid);
+            p = eu_put(p, e, " on cpu ");                             p = eu_dec(p, e, cpu);
+            if (foreign) {
+                p = eu_put(p, e, " -- already claimed by cpu "); p = eu_dec(p, e, holder);
+                p = eu_put(p, e, " (that cpu current=");         p = eu_dec(p, e, hcur);
+                p = eu_put(p, e, ")");
+            } else {
+                p = eu_put(p, e, " -- no longer schedulable (state="); p = eu_dec(p, e, st);
+                p = eu_put(p, e, " runnable_ctx=");                    p = eu_dec(p, e, rc);
+                p = eu_put(p, e, ")");
+            }
+            p = eu_put(p, e, "; parking this cpu instead\n");
+            *p = 0;
+            print(buf);
+            kernel_idle();
+        }
+    }
+#endif
+    /* Publish INSIDE the lock, immediately before the claim and in the same
+     * critical section that makes this CPU current on it below: there is no
+     * instant at which the task is schedulable and unclaimed. */
+    if (publish) tasks[tid].runnable_ctx = 1;
     task_running_cpu[tid] = cpu;
     CLAIM_NOTE(tid, cpu, "sched_enter_user");
+#else
+    if (publish) tasks[tid].runnable_ctx = 1;
 #endif
     switch_cr3(tasks[tid].cr3);
     uint64_t kstop = task_kstack_top(tid);

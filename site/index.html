@@ -1479,7 +1479,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 237 test targets, and the troubleshooting
+          Every configuration flag, every one of the 240 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1599,7 +1599,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             The security argument rests entirely on the tests, so they are treated as engineering
             artifacts rather than an afterthought. There are three layers: Rust unit tests and
-            Kani proofs on the host; 121 QEMU integration targets that boot a purpose-built kernel
+            Kani proofs on the host; 122 QEMU integration targets that boot a purpose-built kernel
             and assert a marker on the serial console; and scripted sessions that type into the
             real ring-3 shell over serial and read what comes back.
           </p>
@@ -1976,7 +1976,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               gate whose red flag started all this stayed advisory rather than being promoted back
               on a partial fix. Both of those have since moved: that gate was promoted on 22
               August 2026 once G-9 closed, and the 2-in-30 residue described here is now filed
-              separately as <strong>G-12</strong> above, measured and still open. Three earlier explanations for this defect were
+              separately as <strong>G-12</strong> above, since attributed and fixed. Three earlier explanations for this defect were
               published-in-progress and were all wrong; each looked right when read and was killed
               by an instrument. One measurement of the fix even came back clean, because the
               diagnostic scaffolding still in the build had perturbed the timing enough to hide
@@ -1984,43 +1984,74 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
           </li>
           <li>
-            <h3><span class="id">G-12</span>The claim invariant still fires, and the obvious cause is ruled out</h3>
+            <h3><span class="id">G-12</span>Two cores on one task, through the door marked &ldquo;first entry&rdquo;</h3>
             <p class="note"><a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/investigations/G-12-claim-invariant-residue.md">Read the full investigation &rarr;</a></p>
             <p>
-              <strong>Filed 2 September 2026, open.</strong> The residue G-9's own record
-              predicted is still there, and it now has a number of its own. Measured across
-              <strong>2250 boots</strong> &mdash; continuous integration and a local campaign
-              agreeing &mdash; it appears on <strong>0.31% of boots</strong>, a few hundred
-              milliseconds after the kernel hands control to its first task. Three of its four
-              signatures are not audit reports but memory corruption: a resume stack pointer that
-              is the number one rather than an address, the kernel's own stack canary tripping,
-              and an instruction fetch into a stack address, which is what executing a clobbered
-              return address looks like.
+              <strong>Filed 2 September 2026, attributed and fixed 3 September 2026.</strong> The
+              residue G-9's own record predicted was real, and it took two weeks of exclusions to
+              find because it was hiding behind three false positives in the checkers that were
+              looking for it. Measured across <strong>2250 boots</strong> it appeared on
+              <strong>0.31% of boots</strong>, a few hundred milliseconds after the kernel hands
+              control to its first task. Three of its four signatures were not audit reports but
+              memory corruption: a resume stack pointer that is the number one rather than an
+              address, the kernel's own stack canary tripping, and an instruction fetch into a
+              stack address, which is what executing a clobbered return address looks like.
             </p>
             <p>
-              <strong>This is not G-9 reopened.</strong> Every mechanism G-9 names is fixed and
-              falsified and stays closed. Filing this separately is the honest option: calling it
-              G-9 would assert that G-9's mechanism explains it, and the campaign shows it does
-              not.
+              <strong>The mechanism is one line of ordering.</strong> The function that enters a
+              brand-new task claimed it unconditionally &mdash; it wrote &ldquo;this core owns
+              this task&rdquo; without asking whether another core already did. And the one place
+              in the running system that calls it published the task as runnable a call earlier.
+              Between those two statements the task is visible to every other core, satisfies
+              every condition the scheduler's selection loop tests, and is owned by nobody. A
+              second core's timer tick landing in that window picks it up, claims it, and starts
+              running it; the first core then arrives and claims it as well. Two cores, one task,
+              one kernel stack, and every symptom above follows from that.
             </p>
             <p>
-              <strong>What was ruled out, and how.</strong> The suspect was the hand-over
-              machinery that holds a task's claim until the core has left its kernel stack. The
-              tree already ships an instrument that halts the machine naming both tasks the
-              instant that path can orphan a claim. It ran for a thousand boots and stayed
-              silent &mdash; through all four reproductions. Ruling something out is a weaker
-              result than a fix and a much better one than a plausible story: two earlier
-              explanations in this family were wrong, and one of them was the checker rather than
-              the kernel.
+              <strong>Fixed in two rules, because it was two failures.</strong> The entry path now
+              re-checks under the scheduler lock and refuses: a core will not enter a task another
+              core holds, nor one that has stopped being runnable, and parks itself with a report
+              instead. That second clause is not theoretical &mdash; with the window held open for
+              sixty milliseconds, the other core ran the task all the way to a blocking wait and
+              gave it back, and the old code entered a blocked task because it had checked before
+              queueing for the lock and never looked again. Separately, the launch site now
+              publishes the task, claims it and makes it current inside a <em>single</em> lock
+              acquisition, so the window does not exist at all.
             </p>
             <p>
-              The instrument was itself measured before its silence was believed, because this
-              project has been burned by that exact mistake: an earlier campaign attributed its
-              tracing tool's cost to the system it was watching. This one changes the failure rate
-              not at all. <strong>The gate stays as it is.</strong> It permits zero failures over
-              thirty boots, which makes it red on about 9% of runs &mdash; and that is a fact
-              about the defect, not about the gate. Relaxing it would turn a detector of real
-              memory corruption into a silence.
+              <strong>The obvious alternative was written and thrown away.</strong> Claiming first
+              and publishing second leaves a core holding a claim it is not yet running &mdash; a
+              gap the claim auditor deliberately does not excuse. Fixing a launch path by widening
+              an exemption in the checker that catches this entire class is the wrong direction,
+              however tidy the diff.
+            </p>
+            <p>
+              <strong>It reproduces on demand now, which it never did before.</strong> An
+              instrument holds the entry open until another core takes the task; it is set in
+              every arm, so the runs differ only in the defect. Restore the old ordering and the
+              theft happens on <strong>3 boots out of 3</strong>. Take the guard out as well and
+              the two-core collision reproduces on <strong>6 out of 6</strong>, printing the exact
+              signature this investigation had been chasing since it was filed. The instrument
+              polls rather than sleeping a fixed time, and that detail was earned: the first
+              version slept, and reproduced the <em>other</em> defect on the same path. An arm
+              that reproduces the wrong one of two defects is an arm reporting the wrong thing.
+            </p>
+            <p>
+              <strong>What is deliberately not claimed.</strong> That this accounts for the 0.31%.
+              The campaign that measured that figure was also counting three checker false
+              positives &mdash; which is why the rate had already fallen to zero in 3500 boots
+              before this fix landed, on checker repairs alone. The arms establish that the
+              mechanism was real, reachable from an ordinary boot, and is now impossible. The
+              share of the historical rate it owned is not recoverable, and no number here
+              pretends otherwise.
+            </p>
+            <p>
+              <strong>The gate stays exactly as it is.</strong> It permits zero failures over
+              thirty boots, which made it red on about 9% of runs while the defect was open
+              &mdash; a fact about the defect, not about the gate. Relaxing it at any point in
+              those two weeks would have converted a detector of real memory corruption into a
+              silence, and there would have been nothing left to attribute.
             </p>
           </li>
           <li>

@@ -1,13 +1,20 @@
-# G-12: the claim invariant still fires in the boot phase, mechanism unattributed
+# G-12: two CPUs current on one task, through the user-entry path
 
-*Current status is authoritative in [`../LIMITATIONS.md`](../LIMITATIONS.md) §5.2g; the gate
-that observes it is `make smoke-sched-invariants-stress`.*
+*Current status is authoritative in [`../LIMITATIONS.md`](../LIMITATIONS.md) §5.2g; the gates
+that witness it are `make smoke-enter-user-claim` and its two control arms.*
 
 ---
 
-**Status: OPEN, filed 2026-09-02. Rate 10 marker failures in 3250 boots (0.31% per boot).**
-**Two failure modes, one of them independent of the claim auditor. The impersonation
-hypothesis this document was filed with has since been falsified by its own instrument.**
+**Status: ATTRIBUTED and FIXED, 2026-09-03.** `sched_enter_user()` claimed its task
+unconditionally, and the one live launch site published that task as schedulable *before*
+calling it -- so an AP's timer tick landing in the window between took the task, and the
+entering CPU took it as well. Two CPUs then held one task's single kernel stack.
+
+**Filed 2026-09-02 at 10 marker failures in 3250 boots (0.31% per boot), with two failure
+modes and no mechanism.** Everything below is kept in the order it happened: the rate, the two
+candidate mechanisms this document positively excluded, the three checker false positives that
+were counted as the defect, and finally the mechanism. The exclusions are what made the
+attribution findable, and the arithmetic behind each is the part worth reusing.
 
 This is **not** [G-9] reopened. Every mechanism [G-9] names is fixed and falsified, and this
 document does not disturb that. What is filed here is the residue that [G-9]'s own record
@@ -191,7 +198,7 @@ collision detector -- all of them one question asked of the wrong variable.
 both detectors: `fail-34` tripped it with no audit panic at all, and the CI capture on PR #299
 printed it *before* the audit panic. That remains unattributed.
 
-## The auditor's persistence test is fixed; the corruption is not
+## The auditor's persistence test is fixed (2026-09-02), the corruption not yet
 
 *2026-09-02.* `claim_still_mismatched()` now asks, immediately before accusing, whether the
 mismatch is **still there**. It was not, on every capture ever taken.
@@ -280,26 +287,175 @@ Four things make this the real one:
 
 So the surviving defect is: **two CPUs become current on one task with no impersonation
 involved, and the shared kernel stack corrupts the spawn path's frame.** How the second CPU comes
-to be current on a task it has not claimed is the open question, and [G-10] is worth re-reading
-against it -- that finding was the spawn path's process-wide singleton state.
+to be current on a task it has not claimed was the open question; the section below answers it,
+and the answer is not [G-10] -- the spawn path's singleton state was the strongest lead at the
+time of writing and had nothing to do with it. The second CPU arrives through the *entry* path,
+not the spawn path, and the canary in `do_spawn_charged` is a frame that happened to be on the
+shared stack rather than the thing that shared it.
 
-## What would settle it
+## THE MECHANISM, and it is one line of ordering
 
-Two things, and they are separate work:
+*Attributed and fixed 2026-09-03. This is the answer to the section above.*
 
-1. **The auditor's persistence test.** Make "persisted" mean it, rather than "seen twice by
-   whichever CPUs happened to audit". The obvious repair -- exempt the commit gap, as the
-   deferred release is already exempted -- must not reduce what the gate detects: `fail-34`
-   shows corruption arriving with the auditor silent, so a quieter auditor is a gate that
-   catches less. **Re-sizing or relaxing the gate is not on the table** (see below).
-2. **The corruption itself**, which is not the auditor's doing and is not yet attributed.
+`sched_enter_user()` is the first-entry path: it takes a task with a fabricated trap frame,
+claims it, installs its address space and kernel stack, and `iretq`s into ring 3. Under SMP its
+claim was **unconditional**:
+
+```c
+    sched_raw_lock();
+    int cpu = this_cpu();
+    task_running_cpu[tid] = cpu;        /* whoever else may hold it */
+```
+
+The one live launch site, `spawn_initial_userspace_init()` (`src/kernel/kshell.c`), published
+the task and then called it:
+
+```c
+    tasks[pid].runnable_ctx = 1;        /* PUBLISH */
+    sched_enable_preemption();
+    sched_enter_user(pid);              /* CLAIM, a call later */
+```
+
+Between those two statements init satisfies **every** condition of `preempt_on_tick()`'s
+selection loop -- `state == TASK_RUNNABLE`, a `cr3`, a `runnable_ctx`, a `saved_ksp`, and
+`task_running_cpu[] == -1` -- on a machine where `smp_sched_enabled` has been 1 since bringup
+and preemption has just been armed. An AP's timer tick landing there selects it, claims it and
+becomes current on it. The BSP then arrives and claims it too.
+
+Two CPUs, both current on one task, neither impersonating, both `iretq`ing onto the same kernel
+stack with the same TSS `RSP0`. That is the `<-` claim direction broken, and it is the
+consequence `scheduler.c`'s own header names for it. Every surviving symptom in this document
+follows from it: a resume `%rsp` that is a small integer, the stack-protector canary, and a
+return address that points into `KSTACK_REGION_VMA`.
+
+### It reproduces on the first boot
+
+`ENTER_USER_STEAL_WIDEN=1` holds the entry open until another CPU claims the task, or a spin
+budget expires. It is set in **both** arms; that is what makes the pair a measurement. With the
+pre-fix ordering and the guard removed:
+
+```
+ENTERUSER: steal-widen tid=1 cpu=0 holder=1 runnable_ctx=1 spins=22431
+PANIC: dispatcher returned a bogus resume rsp=0xfee000b0 task=1 'prog1' state=1
+  vec=32 errc=0x0 rip=0x18fbb9bccb2 cs=0x23 rsp=0x7fed10 cpu=1
+  claim: task 1 running_cpu=0  percpu_current=[1,1,0,0]  imp=[0,0,0,0]
+```
+
+`percpu_current=[1,1,0,0]` with `imp=[0,0,0,0]` -- **the survivor's signature above, verbatim**,
+on the first boot rather than one boot in three hundred. **6 boots in 6.**
+
+The AP takes the task within **912 to 45245 spins** across nine measured boots, i.e. almost
+immediately once the window is open: an AP is normally already inside `preempt_on_tick` or
+queued for the scheduler lock. The window in the unwidened tree is a few instructions, which is
+why the natural event ran at 0.31% per boot rather than at 100%.
+
+### The second failure on the same path
+
+The first widen was a fixed 60 ms rather than a poll, and it found something else:
+
+```
+ENTERUSER-WIDEN: tid=1 cpu=0 holder=-1 state=4 runnable_ctx=0 ap_ticks_delta=63
+```
+
+`state=4` is `TASK_BLOCKED_WAIT`, `runnable_ctx=0`. The AP had taken init, run it all the way to
+`SYS_WAIT`, and *released* it -- so by the time the BSP looked, the claim was free again and the
+task was not runnable. The BSP entered it anyway, because `sched_enter_user` tested
+`runnable_ctx`, `saved_ksp` and `cr3` **before** queueing for the scheduler lock and never looked
+again. Same root cause -- a decision made outside the lock that another CPU can invalidate --
+and a separate failure: resuming a blocked task from a frame that is no longer its own.
+
+This is also why the instrument polls rather than sleeping a fixed time. A fixed widen
+reproduces the *wrong one* of the two defects, and an arm that reproduces the wrong defect is an
+arm reporting the wrong thing.
+
+### The fix, and why not the other one
+
+Two halves, and they are separate rules:
+
+1. **`enter_user_impl()` re-validates under the lock** and fails closed. If the task is claimed
+   by another CPU, or is no longer schedulable, this CPU does not enter it -- it parks. That is
+   the correct outcome and not a degradation: the task *is* running, on the CPU that
+   legitimately holds it, and this CPU has nothing to do. It is general, so it covers every
+   caller, including the selftest launchers that still publish the whole task table with
+   `selftest_resume_all()` before entering one of them. It reports, because a refusal means some
+   launch site still has the window, and a window nobody can see is how this one survived the
+   [G-9] closure.
+2. **`sched_publish_and_enter_user()` removes the window** at the launch site by doing the
+   publish, the claim and `set_current_task()` in **one** acquisition of the scheduler lock.
+   There is no instant at which the task is schedulable and unclaimed.
+
+The obvious alternative -- claim in one critical section, then publish and enter in a second --
+was written and rejected. It leaves the CPU holding a claim it is not yet current on, which is
+the **commit gap**, and the claim auditor does not exempt that. The repair would then have been
+to widen an exemption in the auditor in order to fix a defect in a launch path, and the auditor
+is the thing that catches this whole class. Note that this also answers the open question three
+sections up: exempting the commit gap was listed as "the obvious repair" for the auditor's
+persistence test, and it is now unnecessary -- there is no commit gap on this path to exempt.
+
+### Witnesses
+
+| Gate | Asserts |
+|---|---|
+| `make smoke-enter-user-claim` | The window is held open for the full spin budget and **no other CPU takes the task** (`holder=-1`), no refusal fires, and the boot still reaches its login prompt. All three, because `holder=-1` alone is also what a boot that never reached `sched_enter_user` would print |
+| `make smoke-enter-user-claim-control` (`ENTER_USER_PUBLISH_EARLY=1`) | The pre-fix ordering with the guard left standing: the AP takes init and the guard refuses, `ENTERUSER: refused entry to task 1 ... already claimed by cpu N`, **3 boots in 3** -- and the boot still completes, which is the fail-closed outcome being correct rather than merely safe |
+| `make smoke-enter-user-collide-control` (`+ ENTER_USER_CLAIM_UNCHECKED=1`) | The guard removed as well -- the pre-fix kernel -- and the two-CPU collision reproduces, **6 boots in 6**. Asserts a *fault* attributed to task 1 rather than a flavour: the three shapes seen are the claim auditor, the resume-`%rsp` floor guard and the stack canary, and which fires depends on which of two CPUs sharing a stack corrupts what first |
+
+Falsified in the other direction too: `make smoke-enter-user-claim` goes **red** under
+`ENTER_USER_PUBLISH_EARLY=1`, and so does `make smoke-sched-invariants` under the full arm.
+
+### The marker was splittable, and the defect proved it
+
+*Added 2026-09-03, after the first CI run.* The refusal report was written as a `kfault_str`
+sequence, passed 3 boots in 3 locally, and went red on the CI runner -- shredded byte-by-byte by
+the ring-3 task whose theft it was reporting:
+
+```
+ENTERUSER: refused entIry to task NIT_STORAGE: no persistent volume; this boot r1uns
+on the on cpu  ephemeral store
+```
+
+The defect had reproduced perfectly and the gate reported *a timeout without its marker*. The
+`kfault` and `panic` writers bypass the console lock deliberately -- right for a halt, where
+there is no owner left to be polite to -- and wrong for a **survivable** report that by
+construction races a ring-3 task on another CPU. `print_core()` already holds that lock for the
+whole string, "so a line is emitted whole to one sink"; the report is now formatted into a buffer
+and emitted with one `print()`.
+
+Fixed at the source rather than by shortening the marker. Shortening lowers the odds of the same
+failure and does not remove it, and **a marker must not be splittable by the condition it
+asserts**. The collision arm cannot be repaired the same way -- a panic cannot politely take a
+lock held by a CPU it is about to halt -- so it gets a bounded retry instead
+(`ENTER_USER_COLLIDE_CONTROL_BOOTS` = 5).
+
+**And that retry needed the liveness accounting, which `tools/check_gate_evidence.py` refused to
+let it ship without.** A boot that died before reaching the entry path is *inconclusive*, not a
+miss; without that distinction a run whose boots all died would report "the collision stopped
+reproducing -- read the log, do not raise the bound", which is the [G-9] pair's 2026-08-30 defect
+pointed at a red instead of a green. The `ENTERUSER: steal-widen` line is printed by every boot
+that reaches `sched_enter_user`, so it is exactly the "this boot ran the experiment" marker, and
+`ENTER_USER_COLLIDE_MIN_CONCLUSIVE` = 3 is the floor below which the arm declines to conclude.
+
+Worth recording plainly: the checker caught this on the first CI run, in an arm written by
+someone who had just read `CLAUDE.md`'s worked example about exactly it. That is the argument for
+mechanising a lesson rather than writing it down.
+
+### What this does NOT claim
+
+That the 0.31% figure was all this defect. It was not: the campaign that produced it was
+counting the three checker false positives recorded above as well, which is why the rate at HEAD
+was already 0 in 3500 boots *before* this fix. What the arms establish is that the mechanism is
+real, reachable from a normal boot, and now impossible -- not that it accounted for any
+particular share of the historical rate. That share is not recoverable, because the captures
+that would settle it were overwritten by `tools/stress_boot.sh`'s keep-the-first-failure policy.
 
 ## What this does NOT justify
 
-Re-sizing or relaxing `smoke-sched-invariants-stress`. It permits zero marker failures and it is
-catching real memory corruption at a real rate; the gate is not the problem. Raising its
-tolerance would convert a detector into a silence, which is precisely the trade `CLAUDE.md`
-refuses. Its 8.9% red rate on `main` is a fact about the defect, not about the gate.
+Re-sizing or relaxing `smoke-sched-invariants-stress`. It permits zero marker failures, and
+throughout this investigation it was catching real memory corruption at a real rate; the gate
+was never the problem. Raising its tolerance would have converted a detector into a silence,
+which is precisely the trade `CLAUDE.md` refuses. The 8.9% red rate it ran at on `main` was a
+fact about the defect, not about the gate -- which is the argument that held while the defect
+was open, and the reason it was still there to catch the next one.
 
 ## Evidence
 

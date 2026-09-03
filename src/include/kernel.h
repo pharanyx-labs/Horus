@@ -2028,6 +2028,11 @@ void __attribute__((noreturn)) kernel_idle(void);
 /* Enter a task that already has a fabricated/saved trap frame (do_spawn /
  * sched_prepare_user_context). Noreturn: pop+iretq into ring 3. */
 void __attribute__((noreturn)) sched_enter_user(int tid);
+/* Publish `tid` as schedulable and enter it under one acquisition of the
+ * scheduler lock, so it is never schedulable-and-unclaimed. Any launch site
+ * that is itself making the task runnable must use this rather than a write to
+ * runnable_ctx followed by sched_enter_user -- see [G-12] in scheduler.c. */
+void __attribute__((noreturn)) sched_publish_and_enter_user(int tid);
 /* Voluntary yield with a live trap frame; returns the kernel %rsp for the ISR epilogue. */
 uint64_t sched_yield_switch(int cur, uint64_t frame_rsp);
 /* Terminate task `id`: record why it died, wake any SYS_WAIT waiter (handing it

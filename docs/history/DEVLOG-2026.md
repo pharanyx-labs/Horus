@@ -1,6 +1,6 @@
 # Horus development log, 2026
 
-The narrative record of how Horus was built: 134 entries, newest first, each explaining what
+The narrative record of how Horus was built: 135 entries, newest first, each explaining what
 changed and (the part that matters here) **why, including what was tried and failed**.
 
 This is not the changelog. [`../../CHANGES.md`](../../CHANGES.md) is, and it summarises the
@@ -16,6 +16,190 @@ Finding IDs (**[C-n]**, **[I-n]**, **[G-n]**, **[H-n]**, **[M-n]**) are global a
 project. Their **current** status lives in [`../LIMITATIONS.md`](../LIMITATIONS.md) and
 [`../AUDIT.md`](../AUDIT.md), an entry below records a status as of the day it was written,
 which is exactly what a historical record should do and exactly why it is not authoritative.
+
+---
+
+### Fixed: [G-12] was in the door, not in the room
+
+`sched_enter_user()` is the first-entry path -- a task with a fabricated trap frame, entered by
+`iretq` from an inlined copy of the ISR epilogue. Under SMP it claimed its task like this:
+
+```c
+    sched_raw_lock();
+    int cpu = this_cpu();
+    task_running_cpu[tid] = cpu;
+```
+
+No test of who held it. That is fine as long as nobody else can have it -- and the one live
+launch site made sure they could:
+
+```c
+    tasks[pid].runnable_ctx = 1;        /* PUBLISH */
+    sched_enable_preemption();
+    sched_enter_user(pid);              /* CLAIM, a call later */
+```
+
+Between those two statements, init has `state == TASK_RUNNABLE`, a `cr3`, a `runnable_ctx`, a
+`saved_ksp`, and `task_running_cpu[] == -1`. That is the complete selection predicate of
+`preempt_on_tick()`, on a machine where `smp_sched_enabled` has been 1 since bringup and
+preemption has just been armed. An AP's tick lands there, takes the task, and becomes current on
+it. The BSP arrives a moment later and claims it too. Two CPUs, one task, one kernel stack, one
+TSS `RSP0`.
+
+**Every surviving [G-12] symptom is that.** A resume `%rsp` of `0x1`; the stack-protector canary
+in `do_spawn_charged`; an instruction fetch into `KSTACK_REGION_VMA` with `%rsp` 0x1e0 below it.
+Two ring-3 threads on one kernel stack, each pushing its trap frames where the other's are.
+
+#### How it was found, and what that says about the two weeks before it
+
+The investigation had already excluded the deferred-release machinery (`CLAIM_TRACE=1` silent
+through 1000 boots including all four reproductions) and the impersonation-tear hypothesis
+(`CLAIM_IMP_TRACE=1`, `torn=0` every time), and had corrected three checker false positives. What
+was left was a signature -- `percpu_current=[1,1,0,0]` with `imp=[0,0,0,0]` -- and no path.
+
+The step that worked was not a probe on the suspected path. It was reading the *writers* of
+`percpu_current_task[]` and asking, of each, "what stops a second CPU being here". Ten of the
+eleven answers were "the scheduler lock". The eleventh was `sched_enter_user`, whose answer was
+"nothing, because the task is new". That is true at the instant `do_spawn` returns and false by
+the time the launcher has finished endowing the child.
+
+**And the path had been cleared before.** `LIMITATIONS.md` §5.2d records, from the [G-9]
+narrowing on 2026-08-17: *"the `sched_enter_user()` lead was wrong ... every one of its callers
+is a boot-time path on the BSP where no deferred release is ever pending, so it cannot leak."*
+That is still correct. It clears the path of *leaking a deferred release*, which is the property
+[G-9] was about, and says nothing about claiming a task twice -- the opposite failure. **A lead
+cleared for one property is not cleared**, and the only reason that note was recoverable rather
+than actively misleading is that it named the property it had cleared.
+
+#### The instrument, and why the first one answered the wrong question
+
+`ENTER_USER_STEAL_WIDEN=1` holds the entry open before the lock is taken. The first version slept
+a fixed ~60 ms and printed what it found:
+
+```
+ENTERUSER-WIDEN: tid=1 cpu=0 holder=-1 state=4 runnable_ctx=0 ap_ticks_delta=63
+```
+
+`state=4` is `TASK_BLOCKED_WAIT`. In 60 ms the AP had not merely taken init -- it had run it to
+`SYS_WAIT` and *released* it, so the claim was free again and the task was not runnable. That is
+a real second defect on the same path (the precondition check reads `runnable_ctx`, `saved_ksp`
+and `cr3` before queueing for the lock and never looks again), and it is **not** the two-CPU
+collision. A widen long enough to catch the steal was long enough to let the steal finish.
+
+So the instrument polls instead: it spins until another CPU claims the task, and stops there. The
+collision then reproduced on the **first boot**:
+
+```
+ENTERUSER: cpu 0 entering task 1 holder=1 ... -- STEAL: that cpu current=1
+PANIC: dispatcher returned a bogus resume rsp=0xfee000b0 task=1 'prog1'
+  claim: task 1 running_cpu=0  percpu_current=[1,1,0,0]  imp=[0,0,0,0]
+```
+
+The AP takes the task within **912 to 45245 spins** across nine measured boots -- essentially
+immediately once the window is open, because an AP is normally already inside `preempt_on_tick`
+or queued for the scheduler lock. The window in the shipped tree was a few instructions wide,
+which is the whole distance between 0.31% per boot and 100%.
+
+#### The fix, and the one that was rejected
+
+Two rules, because it is two failures. `enter_user_impl()` re-validates **under the lock** and
+fails closed: it will not enter a task another CPU holds, nor one that has stopped being
+schedulable; it parks and reports. That half is general and covers every caller, including the
+selftest launchers that still publish the whole task table with `selftest_resume_all()` before
+entering one of them. And `sched_publish_and_enter_user()` does the publish, the claim and
+`set_current_task()` in **one** acquisition of the lock, so the window does not exist.
+
+The obvious alternative -- claim in one critical section, publish and enter in a second -- was
+written and thrown away. It leaves the CPU holding a claim it is not yet current on, which is the
+commit gap, and the claim auditor does not exempt that. The repair would then have been to widen
+an exemption in the auditor to fix a defect in a launch path, and the auditor is the thing that
+catches this class. It also retires an item the investigation had listed as future work
+("exempt the commit gap, as the deferred release is already exempted"): on this path there is now
+no commit gap to exempt.
+
+#### Measurements
+
+| Arm | Flags (all with `SCHED_INVARIANTS=1`) | Result |
+|---|---|---|
+| Base | `ENTER_USER_STEAL_WIDEN=1` | `holder=-1` after the full 20,000,000-spin budget; no refusal; boot reaches its login prompt |
+| Steal | `+ ENTER_USER_PUBLISH_EARLY=1` | `ENTERUSER: refused entry to task 1 ... already claimed by cpu N`, **3 boots in 3**; boot still completes |
+| Collision | `+ ENTER_USER_CLAIM_UNCHECKED=1` | fault attributed to task 1, **6 boots in 6**, `percpu_current` showing two CPUs and `imp=[0,0,0,0]` |
+
+Falsified the other way too: `make smoke-enter-user-claim` goes RED under
+`ENTER_USER_PUBLISH_EARLY=1`, and `make smoke-sched-invariants` goes RED under the full arm.
+`make smoke-sched-invariants-stress STRESS_RUNS=60` is 60/60 on the fix.
+
+The collision arm asserts a **fault attributed to task 1** rather than a named panic. Three
+shapes were observed -- the claim auditor, the resume-`%rsp` floor guard, the stack canary -- and
+which one fires depends on which of two CPUs sharing a stack corrupts what first.
+
+#### The marker was splittable, and the defect proved it on the first CI run
+
+The refusal report was written as a `kfault_str` sequence. It passed 3 boots in 3 locally, and on
+the CI runner it was shredded byte-by-byte by the ring-3 task whose theft it was reporting:
+
+```
+ENTERUSER: refused entIry to task NIT_STORAGE: no persistent volume; this boot r1uns
+on the on cpu  ephemeral store
+```
+
+The defect had reproduced perfectly -- `holder=3`, the AP had taken init at spin 41428 -- and the
+gate reported *a timeout without its marker*. That is the shape `CLAUDE.md` already records as
+"a split marker fails like a broken runner", arriving through a writer nobody had connected to
+it.
+
+`kfault` and `panic` bypass the console lock **deliberately**: at a halt there is no owner left
+to be polite to, and `terminal.c` says so at length. That reasoning does not transfer to a
+*survivable* report which by construction races a ring-3 task on another CPU -- reporting exactly
+that race is its whole job. `print_core()` already holds the console lock for the length of the
+string, "so a line is emitted whole to one sink, never split across a handoff", so the report is
+now formatted into a buffer and emitted with one `print()`.
+
+**Shortening the marker was the obvious repair and is the wrong one.** It lowers the probability
+of the same failure without removing it, and the property wanted is that a marker cannot be split
+by the condition it asserts. The collision arm cannot be repaired this way -- a panic cannot
+politely take a lock held by a CPU it is about to halt -- so it gets the remedy `CLAUDE.md`
+prescribes for a probabilistic arm instead: a bounded retry, `ENTER_USER_COLLIDE_CONTROL_BOOTS`
+= 5, stopping at the first reproduction, keeping the serial on the failure path, and **falsified
+in the other direction** -- run against the fixed build the loop still goes red, so it is not
+just a way to pass.
+
+The first version of that loop shipped without liveness accounting and `tools/check_gate_evidence.py`
+refused it on the next CI run: *"boots more than once and is not classified in
+.github/gate-evidence.yml. Declare how it tells a boot that ran from one that died."* It was
+right. A boot that dies before reaching the entry path cannot produce the fault, so the loop
+scored it as a miss -- and a run whose boots all died would have reported "the collision stopped
+reproducing, read the log, do not raise the bound", which is a confident wrong diagnosis. That is
+the [G-9] pair's 2026-08-30 defect pointed at a red instead of a green: the same vacuum, the
+other sign. The `ENTERUSER: steal-widen` line is printed by every boot that reaches
+`sched_enter_user`, so it is exactly the "this boot ran the experiment" marker, and
+`ENTER_USER_COLLIDE_MIN_CONCLUSIVE` = 3 is the floor below which the arm declines to conclude.
+
+Falsified three ways: PASS on the pre-fix kernel (boot 1 of 5); `SMOKE_TIMEOUT=2` starves every
+boot and it reports *never ran the experiment*, 0 of 5 reaching the path, rather than a
+regression; and the loop body against the fixed build goes red with 3 of 3 conclusive.
+
+**Worth stating plainly: the checker caught this in an arm written by someone who had just read
+the worked example it exists to enforce.** That is the argument for mechanising a lesson rather
+than writing it down, and it is the same argument `tools/check_split_markers.py` won a fortnight
+earlier -- twice in one change, in fact, since the shredded marker above is that checker's family
+appearing on the kernel side of the console.
+
+One further note on that falsification, because the first attempt did not test what it looked
+like. `make smoke-enter-user-collide-control ENTER_USER_PUBLISH_EARLY=0` reported PASS, and the
+build it ran had `DEFECT FLAGS: ENTER_USER_STEAL_WIDEN ENTER_USER_PUBLISH_EARLY
+ENTER_USER_CLAIM_UNCHECKED`: the recipe passes the flag explicitly on its sub-make command line,
+which beats an outer command-line override. The real falsification builds the fixed kernel and
+runs the identical loop body against it.
+
+#### What this does not claim
+
+That 0.31% per boot was this defect. It was not only this defect: that campaign was also counting
+three checker false positives, which is why the rate at HEAD was already 0 in 3500 boots
+*before* this fix, on checker repairs alone. The arms establish that the mechanism is real,
+reachable from an ordinary boot, and now impossible. The share of the historical rate it owned is
+not recoverable, because `tools/stress_boot.sh` keeps only the first failure's log per campaign
+and the rest were overwritten.
 
 ---
 

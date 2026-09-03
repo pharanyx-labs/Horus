@@ -737,3 +737,24 @@ forbidden:
       ([H-3]'s sixth door, S28). The handler was fixed that day and this row was
       not, so for three days the ABI reference published the retired authority as
       current. Corrected 2026-08-27.
+
+  - pattern: 'claim invariant still fires in the boot phase, mechanism unattributed'
+    reason: >-
+      [G-12]'s filing title, true from 2026-09-02 until 2026-09-03. The mechanism
+      is attributed: sched_enter_user() claimed its task unconditionally while
+      spawn_initial_userspace_init() had published it as schedulable a call
+      earlier, so an AP's timer tick landing in that window took the task and the
+      entering CPU took it too -- two CPUs current on one task, both on its single
+      kernel stack. Witnessed by smoke-enter-user-claim and falsified by
+      ENTER_USER_PUBLISH_EARLY=1 and ENTER_USER_CLAIM_UNCHECKED=1. The old
+      phrasing is forbidden because "unattributed" is the exact claim that stops
+      anyone looking, and it survived in four documents while the answer was one
+      grep away. Corrected 2026-09-03.
+
+  - pattern: 'how the second CPU gets there is the open question'
+    reason: >-
+      The same finding's last open sentence, in docs/LIMITATIONS.md 5.2g and the
+      investigation record. It also carried a wrong lead -- it pointed at [G-10]
+      and the spawn path, and the second CPU arrives through the ENTRY path;
+      do_spawn_charged's canary was a frame that happened to be on the shared
+      stack, not the thing that shared it. Corrected 2026-09-03.

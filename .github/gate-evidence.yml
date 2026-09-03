@@ -56,6 +56,18 @@ liveness:
   smoke-defer-exemption-control:
     marker: DEFER_EXEMPTION_LIVE_RE
     floor: DEFER_EXEMPTION_MIN_LIVE
+  # [G-12], 2026-09-03. This arm retries not because the defect is probabilistic
+  # -- it reproduced 6 boots in 6 -- but because its marker rides the PANIC path,
+  # which bypasses the console lock by design, so the ring-3 task running on the
+  # CPU that stole the task can shred it. The retry needs the same liveness
+  # accounting as its neighbours above: without it, a run whose boots all died
+  # would report "the collision stopped reproducing, do not raise the bound",
+  # which is this file's defect pointed at a red instead of a green. The
+  # steal-widen line is printed by every boot that reaches sched_enter_user, so
+  # it is exactly "this boot ran the experiment".
+  smoke-enter-user-collide-control:
+    marker: ENTER_USER_COLLIDE_LIVE_RE
+    floor: ENTER_USER_COLLIDE_MIN_CONCLUSIVE
 
 # Targets that establish liveness another way. A reason here must say WHICH
 # mechanism, specifically enough that a reader can check it against the recipe.

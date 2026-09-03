@@ -126,7 +126,8 @@ DEFECT_FLAGS = \
 	PASSWD_TARGET_IGNORED PASSWD_NO_KEYSLOT \
 	SHELL_FS_ERR_FLAT FS_CHMOD_ANY_OWNER FS_CHOWN_ANY_UID \
 	USERLIST_UNGATED HOME_DIR_ROOT_OWNED CLAIM_IMP_TRACE \
-	KSTACK_COLLIDE_IMPERSONATED CLAIM_AUDIT_NO_REREAD
+	KSTACK_COLLIDE_IMPERSONATED CLAIM_AUDIT_NO_REREAD \
+	ENTER_USER_STEAL_WIDEN ENTER_USER_PUBLISH_EARLY ENTER_USER_CLAIM_UNCHECKED
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -2242,6 +2243,47 @@ endif
 ifeq ($(KSTACK_RACE_WIDEN),1)
 CFLAGS += -DKSTACK_RACE_WIDEN -DKSTACK_RACE_WIDEN_SPINS=$(KSTACK_RACE_WIDEN_SPINS) \
           -DKSTACK_RACE_WIDEN_CPUMASK=$(KSTACK_RACE_WIDEN_CPUMASK)
+endif
+
+# ---- [G-12]: the publish-before-claim window in the user-entry path ---------
+#
+# ENTER_USER_STEAL_WIDEN=1 is NOT a defect. It holds sched_enter_user's entry
+# open until another CPU claims the task it is about to enter (or the spin
+# budget expires), which turns a window a few instructions wide into one an AP's
+# timer tick lands in every time. Set it in BOTH arms; that is what makes the
+# pair a measurement rather than two unrelated runs, exactly as KSTACK_RACE_WIDEN
+# is used for [G-8].
+#
+# The budget is a spin count rather than a tick count because the widen runs
+# before this CPU has taken the scheduler lock and must not depend on the
+# scheduler to end. 20,000,000 `pause` iterations is ~0.4 s on the CI runner --
+# comfortably more than the 10 ms LAPIC tick period the steal needs, and the
+# base arm pays it once per boot.
+ENTER_USER_STEAL_WIDEN ?= 0
+ENTER_USER_STEAL_WIDEN_SPINS ?= 20000000
+ifeq ($(ENTER_USER_STEAL_WIDEN),1)
+CFLAGS += -DENTER_USER_STEAL_WIDEN \
+          -DENTER_USER_STEAL_WIDEN_SPINS=$(ENTER_USER_STEAL_WIDEN_SPINS)
+endif
+
+# ENTER_USER_PUBLISH_EARLY=1 restores the pre-2026-09-03 ordering at the one live
+# launch site (spawn_initial_userspace_init, kshell.c): publish the task as
+# schedulable, THEN go and claim it. That is [G-12]'s window, and with the widen
+# above an AP takes the task inside it on every boot.
+ENTER_USER_PUBLISH_EARLY ?= 0
+ifeq ($(ENTER_USER_PUBLISH_EARLY),1)
+CFLAGS += -DENTER_USER_PUBLISH_EARLY
+endif
+
+# ENTER_USER_CLAIM_UNCHECKED=1 removes the guard in enter_user_impl entirely --
+# both the foreign-claim test and the still-schedulable test, because with either
+# one left standing the entry is refused anyway and an arm against the other
+# would pass for the wrong reason. Combined with ENTER_USER_PUBLISH_EARLY it is
+# the pre-fix kernel, and it reproduces [G-12]'s own signature:
+# percpu_current=[1,1,0,0] with imp=[0,0,0,0], two CPUs on one kernel stack.
+ENTER_USER_CLAIM_UNCHECKED ?= 0
+ifeq ($(ENTER_USER_CLAIM_UNCHECKED),1)
+CFLAGS += -DENTER_USER_CLAIM_UNCHECKED
 endif
 
 # USER_HEAP_HIGH_BASE=1 places every user heap at 8 GiB instead of 16 MiB, which
@@ -4493,6 +4535,152 @@ smoke-claim-reread-control:
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) MARKER_ONLY=1 \
 		REQUIRE_MARKER='CLAIMREREAD_SELFTEST: FAIL a resolved mismatch was still accused' \
 		tools/smoke_test.sh boot.iso
+
+# ---- [G-12]: two CPUs current on one task, via the user-entry path ---------
+#
+# THE PROPERTY. A CPU entering a task through sched_enter_user claims it, and a
+# task is claimed by at most one CPU (this file's `<-` claim direction, whose
+# documented consequence when broken is two cores executing one kernel stack).
+# Until 2026-09-03 the claim there was unconditional and the launch site
+# published the task as schedulable BEFORE calling, so an AP's timer tick landing
+# in that window took the task and the entering CPU took it as well.
+#
+# WHY IT NEEDS THE WIDEN. The window is a few instructions wide; the natural
+# event ran at 0.31% per boot and took 2250 boots to measure a rate for. Held
+# open by ENTER_USER_STEAL_WIDEN -- which spins until another CPU claims the task
+# or the budget expires -- an AP takes it within a few thousand spins, so both
+# arms answer in one boot each. Set in BOTH arms: that is what makes the pair a
+# measurement rather than two unrelated runs.
+#
+# The base arm asserts three things, and needs all three. `holder=-1` after the
+# full spin budget says the window was HELD OPEN and nobody took the task, which
+# is the property; without it an arm that never reached sched_enter_user would
+# look identical. No refusal says the guard did not have to fire. And the boot
+# reaching its login prompt says the fix did not simply park the BSP.
+.PHONY: smoke-enter-user-claim
+smoke-enter-user-claim:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 ENTER_USER_STEAL_WIDEN=1
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 ENTER_USER_STEAL_WIDEN=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) \
+		REQUIRE_MARKER='ENTERUSER: steal-widen tid=1 cpu=0 holder=-1' \
+		ABSENT_MARKER='ENTERUSER: refused entry to task' \
+		FAIL_MARKER='PANIC:' \
+		tools/smoke_test.sh boot.iso
+
+# Arm 1: the pre-fix ORDERING, with the guard left in place. The AP takes init
+# inside the window (measured 912 to 45245 spins, 3 boots in 3), so the guard is
+# the thing that observes it -- and the boot still completes, because parking the
+# CPU whose task was taken is the correct outcome and not a degradation: init is
+# running, on the CPU that legitimately holds it. Both are asserted here.
+#
+# THE MARKER USED TO BE SPLITTABLE, and this arm is why the refusal report is now
+# one print() rather than a kfault_str sequence. It passed 3 boots in 3 locally
+# and went red on the CI runner in PR #305, shredded by the very task whose theft
+# it was reporting:
+#
+#   ENTERUSER: refused entIry to task NIT_STORAGE: no persistent volume; this
+#   boot r1uns on the on cpu  ephemeral store
+#
+# The defect had reproduced perfectly and the gate reported a timeout without its
+# marker. Fixed at the source (scheduler.c, eu_put) rather than by shortening the
+# marker: a survivable report can take the console lock, and shortening only
+# lowers the odds of the same failure.
+.PHONY: smoke-enter-user-claim-control
+smoke-enter-user-claim-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 ENTER_USER_STEAL_WIDEN=1 ENTER_USER_PUBLISH_EARLY=1
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 ENTER_USER_STEAL_WIDEN=1 ENTER_USER_PUBLISH_EARLY=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) \
+		REQUIRE_MARKER='ENTERUSER: refused entry to task 1' \
+		FAIL_MARKER='PANIC:' \
+		tools/smoke_test.sh boot.iso
+
+# Arm 2: the pre-fix ordering AND the guard removed -- the kernel as it was, and
+# it reproduces [G-12]'s own signature, percpu_current=[1,1,0,0] with
+# imp=[0,0,0,0]. A second arm because arm 1 cannot speak to it: arm 1 shows the
+# window is real and the guard sees it, and says nothing about what happens if
+# the guard is not there.
+#
+# Asserts a FAULT rather than a marker, because that is what this defect IS, and
+# names the TASK rather than the flavour: the three shapes observed are the claim
+# auditor, the resume-%rsp floor guard and the stack-protector canary, and which
+# one fires depends on which of two CPUs sharing a kernel stack corrupts what
+# first. Same reasoning as smoke-net-msi-vector-control.
+#
+# ---- WHY THIS ONE RETRIES AND THE OTHER TWO DO NOT ------------------------
+#
+# Not because the defect is probabilistic. It reproduced 6 boots in 6 when this
+# was written, and the widen makes the steal deterministic. It retries because
+# the MARKER is carried on the panic path, and the panic writers bypass the
+# console lock by design -- right for a halt, and it means the report can be
+# shredded byte-by-byte by the ring-3 task running on the CPU that stole the
+# task. That is the very condition being asserted, so it is not a rare accident.
+#
+# The refusal report in the arm above was fixed instead of retried: it is
+# SURVIVABLE, so it can politely take the console lock and be emitted whole
+# (one print(), see eu_put in scheduler.c). A panic cannot -- it is reporting
+# that the machine is dying, possibly holding a lock owned by a CPU it is about
+# to halt. Shortening the marker only lowers the odds; a bounded retry with the
+# assertion unchanged is the remedy CLAUDE.md prescribes, and the evidence is
+# kept on the failure path because that is the case anyone needs it in.
+#
+# Falsified in the other direction: run this loop against the FIXED build (drop
+# ENTER_USER_PUBLISH_EARLY) and it still goes red, so the retry is not just a
+# way to pass.
+ENTER_USER_COLLIDE_CONTROL_BOOTS ?= 5
+# A boot that died before reaching the entry path is INCONCLUSIVE, not a miss.
+# Without this the arm reports "the collision stopped reproducing -- read the log,
+# do not raise the bound" for a run in which the experiment never happened, which
+# is the [G-9] pair's 2026-08-30 defect pointed the other way: there it was a
+# false GREEN, here it would be a false diagnosis on a red. The steal-widen line
+# is printed by every boot that reaches sched_enter_user, so it is exactly the
+# "this boot ran the experiment" marker, and the floor refuses to conclude below
+# it. See .github/gate-evidence.yml.
+ENTER_USER_COLLIDE_LIVE_RE = ENTERUSER: steal-widen
+ENTER_USER_COLLIDE_MIN_CONCLUSIVE ?= 3
+.PHONY: smoke-enter-user-collide-control
+smoke-enter-user-collide-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 ENTER_USER_STEAL_WIDEN=1 ENTER_USER_PUBLISH_EARLY=1 ENTER_USER_CLAIM_UNCHECKED=1
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 ENTER_USER_STEAL_WIDEN=1 ENTER_USER_PUBLISH_EARLY=1 ENTER_USER_CLAIM_UNCHECKED=1 boot.iso
+	@echo "[enter-user] pre-fix ordering + no guard: the two-CPU collision must reproduce"
+	@log=$$(mktemp); hit=0; ok=0; incon=0; n=0; \
+	while [ $$n -lt $(ENTER_USER_COLLIDE_CONTROL_BOOTS) ]; do \
+	    n=$$((n+1)); one=$$(mktemp); \
+	    if SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) SMOKE_LOG="$$one" \
+	           EXPECT_FAULT='task 1' tools/smoke_test.sh boot.iso >/dev/null 2>&1; then \
+	        hit=$$n; echo "  boot $$n/$(ENTER_USER_COLLIDE_CONTROL_BOOTS): HIT, two CPUs on one task"; \
+	        cat "$$one" >> "$$log"; rm -f "$$one"; break; \
+	    fi; \
+	    if grep -qa '$(ENTER_USER_COLLIDE_LIVE_RE)' "$$one"; then \
+	        ok=$$((ok+1)); \
+	        echo "  boot $$n/$(ENTER_USER_COLLIDE_CONTROL_BOOTS): the entry path ran, no legible fault"; \
+	    else \
+	        incon=$$((incon+1)); \
+	        echo "  boot $$n/$(ENTER_USER_COLLIDE_CONTROL_BOOTS): INCONCLUSIVE, died before the entry path -- not counted"; \
+	    fi; \
+	    cat "$$one" >> "$$log"; rm -f "$$one"; \
+	done; \
+	conc=$$((hit+ok)); \
+	if [ $$hit -eq 0 ] && [ "$$conc" -lt $(ENTER_USER_COLLIDE_MIN_CONCLUSIVE) ]; then \
+	    echo "ENTER-USER COLLIDE CONTROL: FAIL -- the arm never ran the experiment."; \
+	    echo "  Only $$conc of $(ENTER_USER_COLLIDE_CONTROL_BOOTS) boots reached the entry path;"; \
+	    echo "  $$incon died first. That is a broken workload, NOT evidence that the"; \
+	    echo "  guard is unnecessary. Read the serial below."; \
+	    tail -40 "$$log" | sed 's/^/  /'; rm -f "$$log"; exit 1; \
+	fi; \
+	if [ $$hit -eq 0 ]; then \
+	    echo "ENTER-USER COLLIDE CONTROL: FAIL -- the pre-fix kernel did NOT reproduce the"; \
+	    echo "  two-CPU collision legibly in $$conc conclusive boots ($$incon inconclusive)."; \
+	    echo "  It reproduced 6 boots in 6 when this arm was written. If it has stopped, the"; \
+	    echo "  widen or the launch-site ordering has decayed -- read the log, do not raise"; \
+	    echo "  the bound. Serial follows."; \
+	    tail -40 "$$log" | sed 's/^/  /'; rm -f "$$log"; exit 1; \
+	fi; \
+	grep -aE 'ENTERUSER|percpu_current' "$$log" | head -4 | sed 's/^/  /'; \
+	rm -f "$$log"; \
+	echo "ENTER-USER COLLIDE CONTROL: PASS -- two CPUs on one task, as they must (boot $$hit of $(ENTER_USER_COLLIDE_CONTROL_BOOTS), $$ok clean, $$incon inconclusive)"
 
 .PHONY: smoke-kstack-imp
 smoke-kstack-imp:

@@ -127,7 +127,8 @@ DEFECT_FLAGS = \
 	SHELL_FS_ERR_FLAT FS_CHMOD_ANY_OWNER FS_CHOWN_ANY_UID \
 	USERLIST_UNGATED HOME_DIR_ROOT_OWNED CLAIM_IMP_TRACE \
 	KSTACK_COLLIDE_IMPERSONATED CLAIM_AUDIT_NO_REREAD \
-	ENTER_USER_STEAL_WIDEN ENTER_USER_PUBLISH_EARLY ENTER_USER_CLAIM_UNCHECKED
+	ENTER_USER_STEAL_WIDEN ENTER_USER_PUBLISH_EARLY ENTER_USER_CLAIM_UNCHECKED \
+	STORAGE_FORMAT_WEDGE
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -2284,6 +2285,18 @@ endif
 ENTER_USER_CLAIM_UNCHECKED ?= 0
 ifeq ($(ENTER_USER_CLAIM_UNCHECKED),1)
 CFLAGS += -DENTER_USER_CLAIM_UNCHECKED
+endif
+
+# ---- [G-13]: telling a slow disk from a wedged format ----------------------
+#
+# STORAGE_FORMAT_WEDGE=1 spins forever halfway through the format's metadata
+# region, so the disk image is provably being written and then stops. That is the
+# ONE case the installer's stall detector exists to separate from a slow runner,
+# and until 2026-09-03 nothing in this tree could produce it -- which is why
+# [G-13] sat on "two hypotheses and nothing distinguishes them" for a day.
+STORAGE_FORMAT_WEDGE ?= 0
+ifeq ($(STORAGE_FORMAT_WEDGE),1)
+CFLAGS += -DSTORAGE_FORMAT_WEDGE
 endif
 
 # USER_HEAP_HIGH_BASE=1 places every user heap at 8 GiB instead of 16 MiB, which
@@ -8085,14 +8098,36 @@ INSTALLER_TIMEOUT ?= 300
 # raising that would loosen every other wait in the scenario, including the refusal
 # assertions, where a generous budget is what turns a real wedge into a slow pass.
 #
-# THE VALUE IS UNCHANGED AT 300s ON PURPOSE. This gate went red on `main` twice
-# (2026-09-01 19:18, 2026-09-02 00:20), both times a 300s timeout here -- and the
-# same step measures 5.7s on a developer machine. A CI runner is slower, not 50x
-# slower, so "the budget is too small" does not survive the measurement, and a
-# bigger number would hide an unexplained hang rather than fix one. The knob
-# exists so the bound is separable and arguable; see docs/LIMITATIONS.md.
+# RETIRED AS THE FORMAT'S DEADLINE, 2026-09-03 ([G-13]). It is still passed to
+# the harness, where the other scenarios use it, and it is still the number the
+# finding was measured against -- but the format itself is now bounded by a STALL
+# rather than by a total, because no value of a total budget can tell the two
+# candidates apart.
+#
+# WHAT THE OLD COMMENT HERE ARGUED, AND WHY IT WAS WRONG. It said: this gate went
+# red twice, the same step measures ~6s locally, "a CI runner is slower, not 50x
+# slower, so the budget is too small does not survive the measurement". The
+# measurement it appealed to is the boot step, and the boot step cannot answer
+# that question. Measured 2026-09-03: twelve CPU burners slow BOTH by ~2.1x and
+# leave the format:boot ratio at 2.6, while disk contention leaves the boot at
+# 1.9s and takes the format to 15s. Dialling qemu's own throttle gives
+# format ~= 5.2s + 4700/iops with THE BOOT STEP FLAT AT 1.7s at every point. So
+# the format is ~4,700 synchronous PIO operations and the boot is insensitive to
+# the disk; at <=16 IOPS the format crosses 300s, and SESSION_DISK_IOPS=12
+# reproduces the CI signature exactly, normal boot step and all.
 INSTALLER_FORMAT_TIMEOUT ?= 300
+# The format's real deadline: seconds with NO write reaching the disk image.
+# Sized from what it separates, not from how long a format takes -- the guest
+# issues ~4,700 writes, so 30s of silence is ~140 writes' worth of nothing at the
+# slowest rate ever measured, and a wedge produces it at once.
+INSTALLER_FORMAT_STALL ?= 30
+# Backstop only; neither candidate reaches it.
+INSTALLER_FORMAT_CAP ?= 900
 INSTALLER_BLOCKS_IMG ?= $(KEYSLOT_BLOCKS_IMG)
+# The IOPS a throttled arm gives the guest. 12 puts the format at ~4700/12 = 392s,
+# comfortably past the 300s that used to fail it, so the arm is a real test of the
+# stall bound rather than a slightly slower pass.
+INSTALLER_SLOWDISK_IOPS ?= 12
 
 .PHONY: smoke-installer
 smoke-installer:
@@ -8100,11 +8135,85 @@ smoke-installer:
 	@$(MAKE) --no-print-directory STORAGE_ATA=1
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 boot.iso
 	@rm -f installer.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer.img
+	@rm -f installer-serial.log
 	@SESSION_DISK=installer.img SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) \
+		INSTALLER_FORMAT_STALL=$(INSTALLER_FORMAT_STALL) INSTALLER_FORMAT_CAP=$(INSTALLER_FORMAT_CAP) \
+		SESSION_SERIAL_LOG=installer-serial.log \
 		BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
-		python3 tools/installer_session.py boot.iso
+		python3 tools/installer_session.py boot.iso \
+	  || { echo "[installer] ----- guest serial (installer-serial.log) -----"; \
+	       tail -60 installer-serial.log 2>/dev/null | sed 's/^/  /'; exit 1; }
 	@rm -f installer.img
 	@echo "[installer] PASS - installed onto a bare disk, then booted and logged into it"
+
+# ---- [G-13]: a slow disk is not a wedge, and the gate now says which ---------
+#
+# BASE GATE for the stall bound. The guest's disk is throttled to
+# INSTALLER_SLOWDISK_IOPS, which puts the format at ~392s -- past the 300s TOTAL
+# budget that used to fail this, and past it by enough that a run passing here
+# cannot be doing so by being slightly quicker than the old bound. The install
+# must SUCCEED, because a slow disk is not a defect and a gate that fails on one
+# is a gate for the runner's I/O scheduler.
+#
+# The throttle is qemu's own (SESSION_DISK_IOPS -> throttling.iops-total), so the
+# guest is unmodified and the arm measures the harness rather than a special
+# build. This is the direction an inject-and-look arm cannot cover: it shows the
+# detector stays SILENT on a legal input, and without it "never fires" would pass
+# the control arm below.
+.PHONY: smoke-installer-slowdisk
+smoke-installer-slowdisk:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 boot.iso
+	@rm -f installer-s.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-s.img
+	@rm -f installer-s-serial.log
+	@echo "[installer] disk throttled to $(INSTALLER_SLOWDISK_IOPS) IOPS: the format must still finish"
+	@SESSION_DISK=installer-s.img SESSION_DISK_IOPS=$(INSTALLER_SLOWDISK_IOPS) \
+		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) \
+		INSTALLER_FORMAT_STALL=$(INSTALLER_FORMAT_STALL) INSTALLER_FORMAT_CAP=$(INSTALLER_FORMAT_CAP) \
+		SESSION_SERIAL_LOG=installer-s-serial.log \
+		BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		python3 tools/installer_session.py boot.iso \
+	  || { echo "[installer] ----- guest serial -----"; \
+	       tail -60 installer-s-serial.log 2>/dev/null | sed 's/^/  /'; exit 1; }
+	@rm -f installer-s.img
+	@echo "[installer] PASS - a $(INSTALLER_SLOWDISK_IOPS)-IOPS disk is slow, not wedged, and the install completed"
+
+# CONTROL ARM: the format wedges halfway through the metadata region, so the
+# image is provably being written and then stops. The stall bound must catch it
+# and must NAME it a wedge -- the whole point is that this failure and the one
+# above are no longer the same message.
+#
+# It asserts the WEDGE wording rather than merely a non-zero exit: before this
+# change both cases produced "the format did not complete within
+# INSTALLER_FORMAT_TIMEOUT=300s", which is what left [G-13] unattributable.
+.PHONY: smoke-installer-wedge-control
+smoke-installer-wedge-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_FORMAT_WEDGE=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_FORMAT_WEDGE=1 boot.iso
+	@rm -f installer-w.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-w.img
+	@rm -f installer-w-serial.log
+	@echo "[installer] format wedged on purpose: the stall bound must catch it and say so"
+	@out=$$(SESSION_DISK=installer-w.img \
+		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) \
+		INSTALLER_FORMAT_STALL=$(INSTALLER_FORMAT_STALL) INSTALLER_FORMAT_CAP=$(INSTALLER_FORMAT_CAP) \
+		SESSION_SERIAL_LOG=installer-w-serial.log \
+		BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		python3 tools/installer_session.py boot.iso 2>&1); rc=$$?; \
+	rm -f installer-w.img; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "INSTALLER WEDGE CONTROL: FAIL - the wedged format was reported as a PASS"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "the format WEDGED"; then \
+	    echo "INSTALLER WEDGE CONTROL: FAIL - it failed, but not as a wedge."; \
+	    echo "  The stall bound is what separates this from a slow disk; a generic"; \
+	    echo "  timeout here is the state [G-13] was stuck in for a day."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "$$out" | grep -o "the format WEDGED[^\"]*" | head -1 | sed 's/^/  /'; \
+	echo "INSTALLER WEDGE CONTROL: PASS - a wedged format is caught and named"
 
 # THE HALF THAT MATTERS MOST. The operator answers the confirmation with the
 # wrong word; nothing may be written. Both directions are asserted positively --

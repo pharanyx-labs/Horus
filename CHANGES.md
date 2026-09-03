@@ -5,7 +5,7 @@ All notable changes to Horus are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it has a public ABI to break.
 
 **The reasoning behind these lines is in
-[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 135 entries recording what was
+[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 136 entries recording what was
 tried, what failed, and how each measurement was taken. In a security project that record is
 evidence, not commentary, so it is kept in full rather than compressed away. Entries here cite
 finding IDs; their **current** status is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), never
@@ -16,6 +16,47 @@ in this file.
 ## [Unreleased]
 
 ### Fixed
+
+- **[G-13]: the installer's format bound is a STALL, not a total, and the argument that kept it
+  a total was wrong.** `smoke-installer` went red on `main` twice -- 2026-09-01 19:18 and
+  2026-09-02 00:20 -- both times a 300s timeout waiting for `INSTALLER: PASS installed`, with
+  the guest having printed `INSTALLER: formatting` and then nothing at all. Two explanations
+  were live and nothing distinguished them; the one that ruled out a slow runner ran *"the same
+  step takes ~6s locally, so a runner slow enough would have to be ~50x slower, and the boot
+  step says it is not"*.
+
+  **The boot step cannot answer that question**, and this is the measurement. Twelve CPU burners
+  slow the boot step AND the format by ~2.1x and leave the format:boot ratio at 2.6 -- CPU load
+  does not decouple them. Disk contention leaves the boot at 1.9s and takes the format to 15s.
+  Dialling QEMU's own throttle gives `format ≈ 5.2s + 4700/IOPS` -- the format is ~4,700
+  synchronous PIO operations -- with **the boot step flat at 1.7s at every point**. Bandwidth is
+  not the variable: the format writes only ~2.3 MB, so 2 MB/s changes nothing and reaching 300s
+  that way would need ~8 KB/s. At ≤16 IOPS the format crosses 300s, and `SESSION_DISK_IOPS=12`
+  reproduces the CI signature on the first try, normal boot step and all.
+
+  **No total budget separates the two candidates at any value** -- raise it and a wedge takes
+  longer to report, lower it and a slow disk fails -- so the format is bounded by
+  `INSTALLER_FORMAT_STALL` (30s with no guest disk operation at all) and the failure now says
+  which case it saw. The budget was never raised, and a slow disk is no longer a failure at all.
+
+  **The progress signal is QEMU's block statistics over QMP, and three cheaper ones were
+  measured wrong.** The image's `st_mtime` and the QEMU process's `write_bytes` both advance
+  through the format's write phase and then freeze for ~200s while `merkle_build` reads the
+  metadata region back off the device -- a stall detector on either declares a wedge at the read
+  phase, and did, on its first run. `/proc/PID/io` `syscr` advances through both phases *and
+  keeps advancing when the guest is wedged*, because QEMU's event loop polls the serial pty, so
+  it cannot go quiet and therefore cannot fire. `query-blockstats` counts operations the guest
+  issued against its disk and nothing else. If QMP is unreachable the gate **fails closed**
+  rather than silently degrading to a total budget.
+
+  Witnessed by `make smoke-installer-slowdisk` -- 12 IOPS, format ~420s, the install must
+  **succeed** -- and falsified by `STORAGE_FORMAT_WEDGE=1` (`smoke-installer-wedge-control`),
+  which spins the format halfway through the metadata region and requires the failure to **name
+  a wedge**, not merely to be non-zero: before this, a wedge and a slow disk printed the
+  identical message, and that identity is what left the finding unattributable. Which case the
+  two CI runs actually were is **not recoverable** -- the gate kept no serial log then. It does
+  now (`SESSION_SERIAL_LOG`, appended per boot, dumped on failure). Record:
+  `docs/LIMITATIONS.md` §5.2h.
 
 - **[G-12] is attributed and closed: two CPUs became current on one task through the
   first-entry path.** `sched_enter_user()` claimed its task with `task_running_cpu[tid] = cpu`

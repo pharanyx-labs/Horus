@@ -3018,34 +3018,83 @@ to size a campaign: 1 failure in 600 boots under CPU burners against 0 in 2500 i
 p = 0.194. The original figure came from concurrent `make -j12`, which is memory and I/O pressure
 as well as CPU, so a build-shaped load may still be a lever while a spin-loop is not.
 
-### 5.2h The installer's format stalls on CI, cause unestablished: **[G-13]**, open
+### 5.2h The installer's format on a slow disk: **[G-13]**, gate repaired
 
-**Filed 2026-09-02.** `smoke-installer` has gone red on `main` twice -- 2026-09-01 19:18 and
-2026-09-02 00:20 -- both times a **300s timeout** waiting for `INSTALLER: PASS installed`, with
-the guest having printed `INSTALLER: formatting` and then said nothing. **No fault, no panic, no
-output at all** in either capture.
+**Filed 2026-09-02 as "cause unestablished". Measured and repaired 2026-09-03.**
+`smoke-installer` went red on `main` twice -- 2026-09-01 19:18 and 2026-09-02 00:20 -- both
+times a **300s timeout** waiting for `INSTALLER: PASS installed`, with the guest having printed
+`INSTALLER: formatting` and then said nothing. No fault, no panic, no output at all in either
+capture. Two explanations were live -- a pathologically contended runner, or a hang in the
+format path -- and nothing distinguished them.
 
-**It was first written off as a slow runner, and that does not survive measurement.** Once
-`tools/installer_session.py` was made to time its own steps (2026-09-02), the same step measured
-**5.7 s** on a developer machine. A shared CI runner under TCG is slower than a workstation; it
-is not fifty times slower. So the two live explanations are a pathologically contended runner and
-a hang in the format path, and **the evidence does not choose between them**.
+**The argument that ruled out slowness does not hold, and this is the measurement.** It ran:
+*the same step takes ~6s on a developer machine, so a runner slow enough would have to be ~50x
+slower, and it is not.* The evidence for "it is not" is the boot step, which in both captures
+was normal. That step cannot answer the question:
 
-**The budget was deliberately NOT raised.** `INSTALLER_FORMAT_TIMEOUT` exists so the format's
-bound is separable from every other wait in the scenario -- raising `INSTALLER_TIMEOUT` would
-have loosened the refusal assertions too, where a generous budget is what turns a real wedge into
-a slow pass -- but its default stays at 300 s, because no measurement justifies more and a bigger
-number would hide an unexplained hang rather than fix one. The timeout message now says the cause
-is unestablished and asks for the serial rather than a larger budget.
+| Condition | boot step | format step | ratio |
+|---|---|---|---|
+| idle | 2.33s | 6.13s | 2.63 |
+| 12 CPU burners (12 cores) | 5.07s | 13.07s | 2.58 |
+| disk contention (3 concurrent `fdatasync` writers) | **1.9s** | **15.0s** | **7.9** |
 
-**Why sizing it from the logs was impossible until now**, which is a finding of its own: the
-harness buffered stdout and the runner timestamps the *flush*, so consecutive step lines landed
-microseconds apart however long the guest actually took. Nobody could have argued with the 300 s
-from a CI log, ever. Steps are timed and flushed per line now.
+CPU load slows both by ~2.1x and leaves the ratio alone. Disk contention leaves the boot at full
+speed and hits the format only. Dialling the one variable with QEMU's own throttle settles it:
 
-**Next step** is a capture: the failure prints no serial beyond the install frame, so the gate
-needs to dump the guest's log on this path the way `tools/stress_boot.sh` does on its first
-failure. Until then this is two hypotheses and one measurement that embarrasses one of them.
+| Guest disk | boot step | format step |
+|---|---|---|
+| unthrottled | 1.7s | 5.2s |
+| 500 IOPS | 1.7s | 12.7s |
+| 200 IOPS | 1.7s | 27.6s |
+| 100 IOPS | 1.7s | 52.1s |
+
+That is `format ≈ 5.2s + 4700/IOPS` -- the format is ~4,700 synchronous PIO operations -- with
+**the boot step flat at 1.7s at every point**. Bandwidth is not the variable: throttling to
+2 MB/s changes nothing, because the format writes only ~2.3 MB. Solving for the old 300s budget
+gives **≈16 IOPS**, and `SESSION_DISK_IOPS=12` reproduces the CI signature on the first try --
+normal boot step, `INSTALLER: formatting` last on the wire, 300s timeout, no fault.
+
+So a slow disk produces every observed symptom, and the boot step is insensitive to exactly the
+thing that would cause it. **This does not prove the runner was at 16 IOPS**; it removes the
+reason for believing a hang, and it supplies a lever that makes the signature on demand.
+
+**The repair is a stall bound, not a bigger budget.** No value of a *total* budget can separate
+the two candidates -- raise it and a wedge takes longer to report, lower it and a slow disk
+fails. The format is now bounded by `INSTALLER_FORMAT_STALL` (30s), measured as seconds with
+**no guest disk operation at all**, and it says which case it saw. Applied to **every scenario in
+`tools/installer_session.py` that formats a volume**, not only the one that went red: they all
+wait on the same marker after the same syscall, and three of the four were waiting on a total
+budget of their own. A slow disk keeps doing I/O
+and is never failed; a wedge stops and is caught in 30s instead of 300.
+
+**The progress signal is QEMU's own block statistics over QMP, and three cheaper ones are
+wrong.** The image's `st_mtime` and the QEMU process's `write_bytes` both advance through the
+format's write phase and then freeze for ~200s while `merkle_build` reads the metadata region
+back -- a detector on either declares a wedge at the read phase, and did, on the first run.
+`/proc/PID/io` `syscr` advances through both phases *and keeps advancing when the guest is
+wedged*, because QEMU's event loop polls the serial pty -- a detector that cannot go quiet
+cannot fire. `query-blockstats` counts operations the guest issued against its disk and nothing
+else. If QMP is unreachable the gate **fails closed** rather than degrading to a total budget.
+
+**Witnessed both ways.** `make smoke-installer-slowdisk` throttles the guest to 12 IOPS, which
+puts the format at ~420s -- past the budget that used to fail it -- and requires the install to
+**succeed**; that is the direction an inject-and-look arm cannot cover, and without it "never
+fires" would pass the arm below. `make smoke-installer-wedge-control` (`STORAGE_FORMAT_WEDGE=1`)
+spins the format halfway through the metadata region, so the image is provably being written and
+then stops, and requires the failure to **name a wedge** -- not merely to fail, because before
+this change both cases produced the same timeout message, which is what left this finding
+unattributable for a day.
+
+**What is still open.** Which of the two actually happened on those two CI runs is not
+recoverable: the gate kept no serial log, and the captures survive only as the 600-character
+tail the timeout message quoted. It does now (`SESSION_SERIAL_LOG`, appended per boot, dumped on
+failure), so a recurrence is answerable. The budget was never raised.
+
+**Why sizing it from the logs was impossible until 2026-09-02**, which is a finding of its own:
+the harness buffered stdout and the runner timestamps the *flush*, so consecutive step lines
+landed microseconds apart however long the guest actually took. Nobody could have argued with
+the 300s from a CI log, ever. Steps are timed and flushed per line now, and those timings are
+what made the table above checkable against a real failure.
 
 ### 5.3 No release provenance: **[I-9]**
 

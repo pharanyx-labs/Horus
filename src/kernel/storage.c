@@ -2620,6 +2620,19 @@ static int storage_format_sealed(struct block_device *bd,
      * first mount by a check that could not say why. */
     for (uint64_t m = 0; m < sb.meta_blocks; m++) {
         bd->write_block(bd, sb.meta_start + m, zero);
+#ifdef STORAGE_FORMAT_WEDGE
+        /* CONTROL ARM -- never ship. Wedges the format HALFWAY through the
+         * metadata region, which is the shape [G-13] needs a witness for: the
+         * image is provably being written, and then it stops.
+         *
+         * Halfway rather than at entry, deliberately. A format that wedges
+         * before its first write is indistinguishable from an installer that
+         * never reached the syscall, and the harness's stall detector would be
+         * asserting on a run in which the interesting thing never started. This
+         * way the arm reproduces the case the detector exists to separate from a
+         * slow disk: writes, then silence. */
+        if (m == sb.meta_blocks / 2) { for (;;) __asm__ volatile ("pause"); }
+#endif
     }
 
     /* Nothing resident describes this volume yet, and anything resident describes

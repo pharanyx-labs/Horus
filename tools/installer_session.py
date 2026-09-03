@@ -53,7 +53,18 @@ PASSWORD = os.environ.get("INSTALL_PASSWORD", "installpw1")
 # slower than a workstation, but not fifty times slower, so "the budget is too
 # small" does not survive its own measurement. The knob exists so the bound can be
 # argued with independently; the number stays where the evidence leaves it.
+# RETIRED as the format's deadline; see expect_while_writing. Kept because
+# smoke-installer-accounts and the other scenarios still pass it around, and
+# because the number is the historical bound [G-13] was measured against.
 FORMAT_STEP = float(os.environ.get("INSTALLER_FORMAT_TIMEOUT", "300"))
+# The format's deadline is now a STALL, not a total. Sized from what it separates
+# rather than from how long a format takes: the guest issues ~4,700 writes over
+# the step, so 30s of complete silence is ~140 writes' worth of nothing at the
+# slowest rate ever measured, and a real wedge produces it immediately.
+FORMAT_STALL = float(os.environ.get("INSTALLER_FORMAT_STALL", "30"))
+# Backstop only. Neither candidate reaches it: a wedge trips the stall in 30s and
+# a slow disk finishes. It exists so a guest that writes forever cannot hang CI.
+FORMAT_CAP = float(os.environ.get("INSTALLER_FORMAT_CAP", "900"))
 USER_NAME = os.environ.get("INSTALL_USER", "alice")
 USER_PASSWORD = os.environ.get("INSTALL_USER_PASSWORD", "userpw2")
 USER_UID = os.environ.get("INSTALL_USER_UID", "1000")
@@ -63,6 +74,148 @@ DOWN = b"\x1b[B"
 
 
 _step_t0 = [time.time()]
+_timeline = []
+
+_SERIAL_LOG = os.environ.get("SESSION_SERIAL_LOG", "")
+_serial_parts = [0]
+
+
+def keep_serial(buf):
+    """Append this boot's serial to SESSION_SERIAL_LOG, labelled.
+
+    A GATE MUST KEEP ITS EVIDENCE IN THE CASE IT GOES RED, and this one did not.
+    [G-13]'s two CI captures survive only as the 600-character tail the timeout
+    message happened to quote -- which was enough to see `INSTALLER: formatting`
+    and nothing after it, and not enough for anything else anybody wanted to ask.
+
+    APPENDED AND LABELLED, not written. session_test's _dump_serial opens "w",
+    which is right for a one-boot scenario and wrong here: every scenario in this
+    file drives two or three boots, so the last one would overwrite the one that
+    failed. Called from every scenario's finally, pass or fail.
+    """
+    if not _SERIAL_LOG:
+        return
+    _serial_parts[0] += 1
+    try:
+        with open(_SERIAL_LOG, "a") as fh:
+            fh.write("\n===== boot %d =====\n" % _serial_parts[0])
+            fh.write(buf)
+    except OSError:
+        pass    # a diagnostic must never be the reason a run fails
+
+
+def _timeline_note():
+    """This run's own step timings, for the failure message.
+
+    The point is not decoration: the boot step is in here, and it is the step the
+    [G-13] argument leaned on. A reader of a future failure can compare it
+    against the ~2s this scenario takes on an idle developer machine and see for
+    themselves whether the machine was uniformly slow -- rather than being told,
+    as the old message told them, that it could not have been.
+    """
+    if not _timeline:
+        return ""
+    parts = ", ".join("%s %.1fs" % (m, e) for m, e in _timeline)
+    return " This run's steps so far: " + parts + "."
+
+
+def _io_ops(s):
+    """Guest disk operations so far, from QEMU's own block statistics.
+
+    See Serial.blockstats_ops for why this and not the image's mtime, the
+    process's write_bytes, or its read-syscall count. All three were measured
+    against a throttled format and all three are wrong here, in two different
+    directions.
+    """
+    return s.blockstats_ops()
+
+
+def expect_while_doing_io(s, needle, stall, cap):
+    """Wait for `needle`, failing on a STALL rather than on a total budget.
+
+    ---- WHY THIS IS NOT A TIMEOUT: finding [G-13] ---------------------------
+
+    The installer's format step went red twice on CI, both times a 300s timeout
+    with `INSTALLER: formatting` last on the wire and nothing after it. It takes
+    ~6s locally, and the argument that stalled the investigation for a day was
+    that a runner slow enough to explain 300s would have to be ~50x slower, which
+    the boot step says it is not.
+
+    That argument does not hold, and it was settled by measurement rather than by
+    more of it (2026-09-03, numbers in docs/LIMITATIONS.md 5.2h):
+
+      * twelve CPU burners slow the boot step AND the format by ~2.1x and leave
+        the format:boot ratio at 2.6 -- CPU load does not decouple them;
+      * disk contention leaves the boot at 1.9s and takes the format to 15s;
+      * throttling BANDWIDTH does nothing until ~100 KB/s, because the format
+        writes only ~2.3 MB;
+      * throttling IOPS gives format ~= 5.2s + 4700/iops, with the BOOT STEP FLAT
+        AT 1.7s at every point.
+
+    So the format is ~4,700 synchronous PIO operations and the boot step is
+    perfectly insensitive to the disk -- it cannot witness a slow disk, which is
+    the whole of what the "50x" argument asked it to do. At <=16 IOPS the format
+    crosses 300s, and SESSION_DISK_IOPS=12 reproduces the CI signature exactly,
+    normal boot step and all.
+
+    A TOTAL budget therefore cannot distinguish the two candidates at any value:
+    raise it and a wedge takes longer to report, lower it and a slow disk fails.
+    A STALL budget distinguishes them by construction -- a slow disk keeps
+    writing, a wedged format does not -- so it never punishes a slow runner and
+    catches a real wedge in `stall` seconds instead of five minutes.
+
+    `cap` remains as a backstop against a guest that writes forever without
+    finishing, which is neither candidate and should not hang CI.
+    """
+    t0 = time.time()
+    # The counters are polled on their own, slower cadence than the serial pump.
+    # An instrument is not free: each sample is a QMP round trip, and at the pump
+    # rate a 420s format would take ~1,700 of them. Two seconds is far below the
+    # 30s it has to resolve and far above anything worth worrying about.
+    poll_every = 2.0
+    next_poll = 0.0
+    last = _io_ops(s)
+    if last is None:
+        raise SessionFail(
+            "the format's stall bound needs QEMU's block statistics over QMP and "
+            "they are unreachable. FAILING CLOSED rather than falling back to a "
+            "total budget: a total budget cannot tell a slow disk from a wedge at "
+            "any value, which is the whole of [G-13], and silently degrading to "
+            "one would put this gate back where it started while still reporting "
+            "the new wording.")
+    last_change = time.time()
+    while True:
+        idx = s.buf.find(needle, s.pos)
+        if idx >= 0:
+            s.pos = idx + len(needle)
+            return time.time() - t0
+        now = time.time()
+        if now >= next_poll:
+            next_poll = now + poll_every
+            cur = _io_ops(s)
+            if cur is not None and cur != last:
+                last, last_change = cur, now
+        if now - last_change >= stall:
+            raise SessionFail(
+                "the format WEDGED: the guest issued no disk operation at all "
+                "for %.0fs (INSTALLER_FORMAT_STALL), %.0fs after `INSTALLER: "
+                "formatting`. This is not a slow runner -- a slow disk keeps "
+                "doing I/O, and this one stopped.%s "
+                "See docs/LIMITATIONS.md 5.2h."
+                % (stall, now - t0, _timeline_note()))
+        if now - t0 >= cap:
+            raise SessionFail(
+                "the format is STILL DOING I/O after %.0fs "
+                "(INSTALLER_FORMAT_CAP) and has not finished. The guest is "
+                "making progress, so this is NOT a wedge; it is a disk slower "
+                "than anything measured -- the format is ~4700 synchronous ops, "
+                "so finishing no sooner than this implies under %.1f IOPS. Do "
+                "not raise the cap without saying what made the disk that "
+                "slow.%s See docs/LIMITATIONS.md 5.2h."
+                % (cap, 4700.0 / max(cap, 1.0), _timeline_note()))
+        if s.proc.poll() is not None and not s._pump(0):
+            raise SessionFail("QEMU exited while formatting")
+        s._pump(0.25)
 
 
 def step(msg):
@@ -81,7 +234,9 @@ def step(msg):
     flush=True for the same reason -- a buffered line is a line whose timestamp
     belongs to somebody else. """
     now = time.time()
-    print(f"INSTALLER_SESSION: ok - {msg} ({now - _step_t0[0]:.1f}s)", flush=True)
+    elapsed = now - _step_t0[0]
+    _timeline.append((msg, elapsed))
+    print(f"INSTALLER_SESSION: ok - {msg} ({elapsed:.1f}s)", flush=True)
     _step_t0[0] = now
 
 
@@ -213,24 +368,15 @@ def boot1(disk):
         # the format did not finish in the budget -- which on a slow runner is a
         # budget problem and not a defect -- so it is reported as its own thing
         # rather than as a generic step timeout that reads like a wedge.
-        try:
-            s.expect("INSTALLER: PASS installed", FORMAT_STEP)
-        except SessionFail as e:
-            raise SessionFail(
-                f"the format did not complete within INSTALLER_FORMAT_TIMEOUT="
-                f"{FORMAT_STEP:.0f}s. The guest reported `INSTALLER: formatting` and "
-                f"then said nothing. THE CAUSE IS NOT ESTABLISHED: the same step "
-                f"takes ~6s on a developer machine, so a runner slow enough to "
-                f"explain this would have to be ~50x slower, and a hang in the "
-                f"format path fits the evidence equally well. Do not raise the "
-                f"budget to make this green -- capture the serial and find out "
-                f"which. See docs/LIMITATIONS.md. Underlying: {e}")
-        step("the installer reported a completed install")
+        took = expect_while_doing_io(s, "INSTALLER: PASS installed",
+                                    FORMAT_STALL, FORMAT_CAP)
+        step(f"the installer reported a completed install [{took:.0f}s of writing]")
 
         # It hands the machine back: a login prompt on the same boot.
         s.expect("horus login:", STEP)
         step("init went on to a login prompt on the same boot")
     finally:
+        keep_serial(s.buf)
         s.close()
 
 
@@ -265,6 +411,7 @@ def boot2(disk):
         s.expect("bin/", STEP)
         step("the base system is on the installed volume")
     finally:
+        keep_serial(s.buf)
         s.close()
 
 
@@ -326,6 +473,7 @@ def refuse(disk):
         s.expect("horus login:", STEP)
         step("the machine went on to a login prompt with the disk untouched")
     finally:
+        keep_serial(s.buf)
         s.close()
 
 
@@ -369,10 +517,13 @@ def provision(disk):
         s.expect("init: this machine has a disk and no volume; running the installer", BOOT)
         answer_confirm(s)
         answer_accounts(s)
-        s.expect("INSTALLER: PASS installed", STEP)
+        # Same stall bound as boot1's, and for the same reason: every scenario in
+        # this file formats a volume, so every one of them was exposed to [G-13].
+        expect_while_doing_io(s, "INSTALLER: PASS installed", FORMAT_STALL, FORMAT_CAP)
         s.expect("horus login:", STEP)
         step("boot 1: installed, and powered off at the login prompt without logging in")
     finally:
+        keep_serial(s.buf)
         s.close()
 
     # ---- boot 2: the same disk, now carrying a sealed volume ----
@@ -411,6 +562,7 @@ def provision(disk):
                 raise SessionFail("/bin is empty on the installed disk")
             step("the base system is on the volume, provisioned by the post-login pass")
     finally:
+        keep_serial(s.buf)
         s.close()
 
 
@@ -445,7 +597,7 @@ def accounts(disk):
         answer_accounts(s)
         step("answered the root password, then named the everyday account")
 
-        s.expect("INSTALLER: PASS installed", STEP)
+        expect_while_doing_io(s, "INSTALLER: PASS installed", FORMAT_STALL, FORMAT_CAP)
         # NEITHER password may reach the terminal. The user's field is masked by
         # the same tui_input flag as root's, so this is the second half of the
         # check smoke-tui-mask-control makes against the cell buffers.
@@ -454,6 +606,7 @@ def accounts(disk):
         step("both accounts installed, neither password on the wire")
         s.expect("horus login:", STEP)
     finally:
+        keep_serial(s.buf)
         s.close()
 
     # ---- boot 2: the same disk, sealed, nobody has opened it ----
@@ -533,6 +686,7 @@ def accounts(disk):
                 raise SessionFail("the compiled-in user/password account survived the install")
             step("the compiled-in user/password account is not on the installed volume")
     finally:
+        keep_serial(s.buf)
         s.close()
 
 

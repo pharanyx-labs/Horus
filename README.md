@@ -31,9 +31,11 @@ measured into a TPM, and the volume encryption key is sealed against those measu
 > wrong for days before getting right.
 >
 > Notable open findings: **[C-5]** (no independent review), **[C-6]** (the branch ruleset is
-> reconciled to the checked-in gating decision by hand, so it lags a merge), **[G-13]** (the
-> installer's format stalls on CI after `INSTALLER: formatting`, cause unestablished; the budget
-> was deliberately not raised). **[G-12]** closed on 2026-09-03: `sched_enter_user()` claimed its
+> reconciled to the checked-in gating decision by hand, so it lags a merge). **[G-13]** closed on
+> 2026-09-03: the installer's format was bounded by a total timeout, which cannot separate a slow
+> disk from a wedge at any value; it is bounded by a stall now, and a 12-IOPS disk reproduces the
+> whole CI signature including the normal boot step that was used to rule slowness out.
+> **[G-12]** closed on 2026-09-03: `sched_enter_user()` claimed its
 > task unconditionally while the launch site had published it as schedulable a call earlier, so
 > an AP's timer tick landing in that window took the task and the entering CPU took it too --
 > two CPUs on one kernel stack. **[G-9]** closed

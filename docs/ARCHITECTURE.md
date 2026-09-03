@@ -1551,10 +1551,26 @@ and the deferred-release hand-over machinery was positively **excluded** here --
 was silent across 1000 boots including all four reproductions. See
 `docs/investigations/G-12-claim-invariant-residue.md`.
 
-**G-13: the installer's format stalls on CI, cause unestablished.** *Open, filed 2026-09-02.*
-`smoke-installer` times out after 300 s waiting for `INSTALLER: PASS installed`, having seen
-`INSTALLER: formatting` and nothing after it -- no fault, no panic. Twice on `main`. Written off
-as a slow runner until the harness was made to time its own steps and the same step measured
-**5.7 s** on a workstation: a runner is slower, not fifty times slower. A contended runner and a
-hang in the format path both fit, and nothing yet distinguishes them. The budget was not raised;
-see `LIMITATIONS.md` §5.2h.
+**G-13: the installer's format on a slow disk.** *Filed 2026-09-02 as "cause unestablished";
+measured and the gate repaired 2026-09-03.* `smoke-installer` timed out twice on `main` after
+300 s waiting for `INSTALLER: PASS installed`, having seen `INSTALLER: formatting` and nothing
+after it -- no fault, no panic. The argument that ruled out a slow runner appealed to the boot
+step, which was normal in both captures, and **the boot step cannot answer that question**:
+throttling the guest's disk gives `format ≈ 5.2 s + 4700/IOPS` -- the format is ~4,700
+synchronous PIO operations -- with the boot step **flat at 1.7 s at every point**. Twelve CPU
+burners, by contrast, slow both by ~2.1x and leave the format:boot ratio at 2.6. At ≤16 IOPS the
+format crosses 300 s, and `SESSION_DISK_IOPS=12` reproduces the CI signature exactly.
+
+The repair is a **stall** bound rather than a bigger budget, because no total budget separates a
+slow disk from a wedge at any value: raise it and a wedge takes longer to report, lower it and a
+slow disk fails. `INSTALLER_FORMAT_STALL` (30 s) measures seconds with no guest disk operation,
+read from QEMU's block statistics over QMP -- the image's mtime and the QEMU process's
+`write_bytes` both freeze for ~200 s during the format's `merkle_build` read phase, and
+`/proc/PID/io` `syscr` keeps advancing even when the guest is wedged, so all three cheaper
+signals are wrong in one direction or the other. Witnessed by `make smoke-installer-slowdisk`
+(12 IOPS, format ~420 s, the install must still succeed) and falsified by
+`STORAGE_FORMAT_WEDGE=1` (`smoke-installer-wedge-control`, which requires the failure to NAME a
+wedge rather than merely to fail -- before this both cases printed the same timeout, which is
+what left the finding unattributable). Which case the two CI runs were is not recoverable: the
+gate kept no serial log then, and does now. The budget was never raised; see `LIMITATIONS.md`
+§5.2h.

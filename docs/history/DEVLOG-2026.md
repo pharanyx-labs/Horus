@@ -1,6 +1,6 @@
 # Horus development log, 2026
 
-The narrative record of how Horus was built: 135 entries, newest first, each explaining what
+The narrative record of how Horus was built: 136 entries, newest first, each explaining what
 changed and (the part that matters here) **why, including what was tried and failed**.
 
 This is not the changelog. [`../../CHANGES.md`](../../CHANGES.md) is, and it summarises the
@@ -16,6 +16,119 @@ Finding IDs (**[C-n]**, **[I-n]**, **[G-n]**, **[H-n]**, **[M-n]**) are global a
 project. Their **current** status lives in [`../LIMITATIONS.md`](../LIMITATIONS.md) and
 [`../AUDIT.md`](../AUDIT.md), an entry below records a status as of the day it was written,
 which is exactly what a historical record should do and exactly why it is not authoritative.
+
+---
+
+### Fixed: the boot step was never a speed probe ([G-13])
+
+`smoke-installer` went red on `main` twice, both times a 300s timeout waiting for
+`INSTALLER: PASS installed`, with `INSTALLER: formatting` last on the wire and nothing after it.
+No fault, no panic. The step takes ~6s locally. Two explanations, and the record said nothing
+distinguished them.
+
+The argument that ruled out the slow-runner explanation was:
+
+> the same step takes ~6s on a developer machine, so a runner slow enough to explain this would
+> have to be ~50x slower, and a hang in the format path fits the evidence equally well
+
+and the evidence for *"it is not 50x slower"* is the boot step, which is normal in both captures.
+**That is the part that does not hold.** The boot step and the format step do not measure the
+same machine.
+
+#### What the levers actually do
+
+| Condition | boot | format | ratio |
+|---|---|---|---|
+| idle | 2.33s | 6.13s | 2.63 |
+| 12 CPU burners on 12 cores | 5.07s | 13.07s | 2.58 |
+| 3 concurrent `fdatasync` writers | **1.9s** | **15.0s** | **7.9** |
+
+CPU contention slows both by ~2.1x and leaves the ratio alone -- which is worth recording as a
+*negative*, because it is the lever a reader would reach for first and it does not decouple
+them. Disk contention leaves the boot at full speed and hits the format only.
+
+Then dial the one variable with QEMU's own limiter instead of arguing about it:
+
+| Guest disk | boot | format |
+|---|---|---|
+| unthrottled | 1.7s | 5.2s |
+| 500 IOPS | 1.7s | 12.7s |
+| 200 IOPS | 1.7s | 27.6s |
+| 100 IOPS | 1.7s | 52.1s |
+
+`format ≈ 5.2s + 4700/IOPS`, so the format is ~4,700 synchronous PIO operations -- and **the boot
+step is flat at 1.7s at every point**. It is not merely a poor probe for disk speed; it is
+perfectly insensitive to it. Bandwidth is the wrong knob too: throttling to 2 MB/s changes
+nothing, because the format writes only ~2.3 MB, and reaching 300s that way would need ~8 KB/s.
+
+Solving for the old budget gives **≈16 IOPS**, and `SESSION_DISK_IOPS=12` reproduced the CI
+signature on the first try -- normal boot step at 2.2s, `INSTALLER: formatting` last on the
+wire, 300s timeout, no fault. A finding that had no reproduction now has one on demand.
+
+**What that does and does not establish.** It does not prove the CI runner was at 16 IOPS; that
+is not recoverable, because the gate kept no serial log and the two captures survive only as the
+600-character tail the timeout message happened to quote. What it establishes is that a slow
+disk produces every observed symptom including the normal boot step, so the reason for believing
+a hang was a non-sequitur about a step that cannot see the disk.
+
+#### The repair is a stall, and the reason is arithmetic
+
+No value of a TOTAL budget separates the two candidates. Raise it and a wedge takes longer to
+report; lower it and a slow disk fails. The two are only distinguishable by *whether progress is
+being made*, so that is what the bound now measures: `INSTALLER_FORMAT_STALL`, 30s with no guest
+disk operation at all. A slow disk keeps doing I/O and is never failed; a wedge stops and is
+caught in 30s instead of 300.
+
+#### Three progress signals, measured, and two of them wrong in opposite directions
+
+This is the part worth reusing.
+
+The first implementation watched the disk image's `st_mtime` and the QEMU process's
+`write_bytes`. It declared a wedge on its first real run, 203s into a throttled format that was
+working perfectly. A trace of the counters says why:
+
+```
+t=170  write_bytes 8302592   mtime ...253.818   syscr 4426004
+t=180  write_bytes 8450048   mtime ...256.818   syscr 4471220
+t=190  write_bytes 8450048   mtime ...256.818   syscr 4534580
+t=240  write_bytes 8450048   mtime ...256.818   syscr 4851380
+```
+
+At ~180s the format stops writing and starts READING -- `merkle_build` hashes the metadata
+region off the device rather than an in-RAM assumption about it, deliberately, and that read
+phase is ~200s at 12 IOPS. Both write-shaped signals freeze for the whole of it. **A detector
+built on writes calls a read phase a wedge.**
+
+`syscr` moves through both phases, and is also wrong: it counts QEMU's own `read()` calls, so it
+keeps climbing while the guest is wedged, because the event loop is polling the serial pty. **A
+detector that cannot go quiet cannot fire** -- the same shape as a checker that cannot fail,
+arriving through a counter instead of a predicate.
+
+The signal that is right is QEMU's `query-blockstats` over QMP: `rd_operations + wr_operations`
+counts what the GUEST issued against its disk and nothing else. It moves in both phases, stops
+dead when the guest does, and is immune to host page caching. If QMP is unreachable the gate
+fails closed rather than degrading to a total budget -- degrading silently would put it back
+where it started while still printing the new wording.
+
+#### Falsified both ways
+
+`make smoke-installer-slowdisk` throttles the guest to 12 IOPS, which puts the format at
+**420s** against a predicted 392s, and requires the install to SUCCEED. That is the direction an
+inject-and-look arm cannot cover: without it, a detector that never fires passes the arm below.
+`make smoke-installer-wedge-control` (`STORAGE_FORMAT_WEDGE=1`) spins the format halfway through
+the metadata region -- halfway, because a format that wedges before its first write is
+indistinguishable from an installer that never reached the syscall -- and requires the failure
+to NAME a wedge rather than merely to be non-zero. Before this change both cases printed `the
+format did not complete within INSTALLER_FORMAT_TIMEOUT=300s`, and that identity is the whole
+reason the finding sat open.
+
+#### And the gate now keeps its evidence
+
+It did not. `tools/installer_session.py` never called `_dump_serial` at all, so both CI captures
+exist only as a quoted tail. It writes `SESSION_SERIAL_LOG` on every exit path now, appended and
+labelled per boot -- appended because every scenario in that file drives two or three boots and
+`_dump_serial`'s `"w"` would have kept the wrong one. Same lesson as `smoke-exec-reenter`, in a
+harness that never got the repair.
 
 ---
 

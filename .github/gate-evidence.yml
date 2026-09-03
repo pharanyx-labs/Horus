@@ -80,6 +80,22 @@ exempt:
     the property holding, and boot 2's assertions (the volume recognised, the
     login accepted, /bin present) cannot be produced by a machine that did not
     boot.
+  smoke-installer-slowdisk: >
+    Two boots inside tools/installer_session.py with the guest's disk throttled to
+    12 IOPS, and every step of both is an expect() that raises SessionFail on a
+    timeout -- there is no absence assertion anywhere in it for a dead boot to
+    satisfy. The format step is additionally bounded by a STALL on QEMU's own
+    block statistics, so a boot that never reached the format produces no guest
+    I/O and trips it rather than being read as the property holding. Boot 2's
+    assertions (the volume recognised, the login accepted, /bin present) cannot
+    be produced by a machine that did not boot.
+  smoke-installer-wedge-control: >
+    One boot, and it is listed here because it shares the harness with the
+    two-boot scenarios above. It asserts a POSITIVE failure string -- the run must
+    fail AND the message must say `the format WEDGED` -- so a boot that died
+    before reaching the format fails the arm rather than being credited with
+    reproducing the defect: a dead boot produces a boot timeout or a QEMU exit,
+    neither of which carries that wording.
   smoke-installer-refuse: >
     One boot in the refuse path, but it is listed here because the harness is
     shared with the two-boot mode above. Its ABSENCE assertion ("formatting" must

@@ -348,7 +348,7 @@ because it returns an *address* and newlib's `_sbrk` compares against `(void *)(
 | 2 | `SYS_EXIT` |, | none (self) |
 | 17 | `SYS_WAIT` | `tid` | none (self) |
 | 18 | `SYS_GET_TASK_INFO` | `tid`, `struct task_info *` | self; or `CAP_USER` / `CAP_AUDIT` |
-| 19 | `SYS_EXEC` | `load_base`, `entry` | slot 3: WRITE\|EXEC |
+| 19 | `SYS_EXEC` | `load_base`, `entry` | **retired 2026-09-03** (**S79**); compiles only under `LEGACY_SYSCALLS_PRESENT=1` |
 | 20 | `SYS_GETPID` |, | none (self-authorising) |
 | 28 | `SYS_SPAWN` |, | `CAP_UNTYPED` at `CAPSLOT_UNTYPED`: WRITE (**S57**) |
 | 63 | `SYS_KILL` | `tid` | `CAP_TCB` for target, or `CAP_USER` |
@@ -357,7 +357,18 @@ because it returns an *address* and newlib's `_sbrk` compares against `(void *)(
 | 69 | `SYS_GET_ARGV` | `char ***out` | none (self) |
 | 70 | `SYS_SPAWN_IMAGE` | `image`, `len`, `arg`, `argv`, `argc` | `CAP_UNTYPED` at `CAPSLOT_UNTYPED`: WRITE (**S57**) |
 | 71 | `SYS_EXEC_IMAGE` | `image`, `len`, `0`, `argv`, `argc` | none (self), as `SYS_EXEC_NAMED` |
-| 27 | `SYS_RECEIVE_PROGRAM` | `struct program_header *` | slot 3: WRITE\|EXEC |
+| 27 | `SYS_RECEIVE_PROGRAM` | `struct program_header *` | **retired 2026-09-03** (**S79**); compiles only under `LEGACY_SYSCALLS_PRESENT=1` |
+
+**19 and 27 are retired, and the numbers are reserved** (**S79**,
+`docs/LIMITATIONS.md` §1.6c). Both read `{ handler, 3, WRITE|EXEC, SC_ANYTYPE }` in the ship
+table -- cspace slot 3 being the `CAP_FRAME` `create_task` installs in every task, so the row
+authorised every ring-3 caller. Neither had a caller: `SYS_EXEC` dropped the caller to ring 3 at
+`load_base + entry` with nothing validated and is superseded by `SYS_EXEC_NAMED` /
+`SYS_EXEC_IMAGE`, and `SYS_RECEIVE_PROGRAM`'s transport was a second serial port no target in
+this tree attaches. Their wrappers (`sys_exec`, `sys_receive_program`) are removed too, because
+a wrapper is the ring-3-facing half of a syscall. Absent rows fail closed at `SYS_ERR_NOSYS`,
+which `make smoke-passwd-probe` requires from an ordinary uid-1000 task, and
+`tools/check_dispatch_gates.py` fails the build if a slot-3 row returns.
 
 `SYS_GET_TASK_INFO` reports `cr3` as 0 deliberately (disclosing the page-table physical base
 would reveal the physical memory layout) and since **[I-4]** reports `eip` only for the calling

@@ -1063,11 +1063,15 @@ endif
 # expected to boot on TPM-less machines (docs/LIMITATIONS.md 2.9); it is in this
 # list because a transcript taken under it describes a different machine, which
 # is exactly what DEFECT FLAGS exists to record.
-# LEGACY_SYSCALLS_PRESENT=1 restores the four dispatch entries retired on
+# LEGACY_SYSCALLS_PRESENT=1 restores six retired dispatch entries. Four went on
 # 2026-08-23: SYS_CLEAR (5), SYS_SYSINFO (6), SYS_DEBUG_EXEC (7) and
-# SYS_EXEC_LEGACY (14). The last one is the reason the flag exists -- it creates
-# a TASK, authorised on cspace slot 3, which is the legacy CAP_FRAME every task
-# is born holding. `make smoke-passwd-probe` must go red under it.
+# SYS_EXEC_LEGACY (14). Two more went on 2026-09-03: SYS_EXEC (19) and
+# SYS_RECEIVE_PROGRAM (27). All but SYS_DEBUG_EXEC shared one gate and it is the
+# reason the flag exists -- cspace slot 3 with SC_ANYTYPE, the legacy CAP_FRAME
+# create_task installs in every task, on syscalls that create a task, arm a
+# program image, or drop the caller to ring 3 at an address it picks.
+# `make smoke-passwd-probe` must go red under it, and does: three of its ten
+# checks name a door this flag reopens.
 # CAP_ENUMERATE_UNGATED=1 removes SYS_CAP_ENUMERATE's declared capability, so
 # the central gate admits every caller and the capability graph becomes readable
 # by any ring-3 task. `make smoke-captest` must go red under it (roadmap 3.6).
@@ -7330,6 +7334,40 @@ smoke-passwd-probe-legacy-control:
 	@$(MAKE) --no-print-directory PASSWD_PROBE=1 LEGACY_SYSCALLS_PRESENT=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='PASSWDPROBE: FAIL legacy-exec-spawned-a-task' \
+		tools/smoke_test.sh boot.iso
+
+# Control arms 3 and 4: the two ship-build rows the earlier sweeps did not count.
+# SYS_RECEIVE_PROGRAM (27) and SYS_EXEC (19) carried the same
+# `{ handler, 3, WRITE|EXEC, SC_ANYTYPE }` gate as SYS_EXEC_LEGACY until
+# 2026-09-03 -- slot 3 being the CAP_FRAME create_task installs in every task.
+# Same flag as arm 2 restores them; two arms rather than one because the probe's
+# checks are TERMINAL in this build and each needs its own marker.
+#
+# WHY 27 GETS A PROBE MARKER AND 19 GETS A KERNEL ONE. Under the flag
+# h_receive_program returns: nothing in this tree attaches COM2, so the port
+# floats, serial2_read_char reads 0xFF, the magic test rejects it and the call
+# answers -1 -- so the probe's own check fails and names the door. h_run does not
+# return at all (drop_to_ring3), so no ring-3 marker for 19 is possible; a
+# landing pad was tried and printed three bytes before the machine went quiet.
+# SYSCALL_COVERAGE=1 reports `SYSCOV <n>` from the kernel at handler ENTRY, which
+# is upstream of the divergence, so it is the only reporter the defect cannot
+# destroy. Not a defect flag itself -- it is the coverage instrument.
+.PHONY: smoke-passwd-probe-recv27-control
+smoke-passwd-probe-recv27-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PASSWD_PROBE=1 LEGACY_SYSCALLS_PRESENT=1
+	@$(MAKE) --no-print-directory PASSWD_PROBE=1 LEGACY_SYSCALLS_PRESENT=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='PASSWDPROBE: FAIL receive-program-reachable-on-the-slot-3-decoy' \
+		tools/smoke_test.sh boot.iso
+
+.PHONY: smoke-passwd-probe-exec19-control
+smoke-passwd-probe-exec19-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PASSWD_PROBE=1 LEGACY_SYSCALLS_PRESENT=1 SYSCALL_COVERAGE=1
+	@$(MAKE) --no-print-directory PASSWD_PROBE=1 LEGACY_SYSCALLS_PRESENT=1 SYSCALL_COVERAGE=1 boot.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='SYSCOV 19' \
 		tools/smoke_test.sh boot.iso
 
 .PHONY: smoke-passwd-probe-control

@@ -1218,6 +1218,24 @@ as "a live capability that is not an endpoint", and `smoke-frame` now uses it as
 test vector for the map path. A trap that is asserted against on every boot is worth more than
 one that was quietly removed.
 
+**And keeping it means something has to watch the gates, not just the capability** (2026-09-03,
+**S79**). A dispatch row reading `{ handler, 3, WRITE|EXEC, SC_ANYTYPE }` is authorised by the
+decoy, so it authorises everyone. That shape has been swept three times and each sweep left rows
+behind: [H-3] removed three and its comment called them "the last three"; #201 found a fourth,
+invisible because the entry was the bare index `[14]`; audit 4.1 moved the five task-creating
+syscalls to `CAP_UNTYPED` (**S57**) and called the old gate "vacuous". None of the three
+enumerated `SYS_EXEC` (19) or `SYS_RECEIVE_PROGRAM` (27), which carried the identical row in the
+**ship** table until they were retired.
+
+The fact was not even unknown. `.github/syscall-coverage.yml` had recorded it against both since
+2026-08-20, in a group header that asserted the same shape for three syscalls which had been
+fixed on 2026-08-30 without it being touched -- one accurate sentence beside three stale ones,
+gating nothing. So the lesson is not "sweep again": it is that **a property this cheap to state
+should be enforced by something that reads the table**, which `tools/check_dispatch_gates.py`
+does on every build. `docs/LIMITATIONS.md` §1.6c has the finding, 2.18 has the repair this
+reordered, and the checker is falsified in four directions because the three interesting rules
+are all vacuous against a regex that has silently stopped matching.
+
 **Multi-page runs, and the policy a run needs.** `SYS_MAP_REGION` (2026-08-27) maps `count`
 frames from consecutive cspace slots at consecutive pages: the dual of `SYS_RETYPE(untyped,
 KOBJ_FRAME, count, dest)`, which fills the run it maps. The question that had to be answered

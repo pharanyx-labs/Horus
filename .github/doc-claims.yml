@@ -758,3 +758,29 @@ forbidden:
       and the spawn path, and the second CPU arrives through the ENTRY path;
       do_spawn_charged's canary was a frame that happened to be on the shared
       stack, not the thing that shared it. Corrected 2026-09-03.
+  - pattern: "these were the last three gates still wearing it"
+    reason: >-
+      The [H-3] sweep's own certificate of completeness, in src/kernel/syscall.c's dispatch
+      table from 2026-08-22 to 2026-09-03. It was wrong the next day (#201 found SYS_EXEC_LEGACY,
+      a fourth), wrong again on 2026-08-30 (audit 4.1 moved five task-creating syscalls off the
+      same gate), and wrong the whole time about SYS_EXEC (19) and SYS_RECEIVE_PROGRAM (27),
+      which carried the identical slot-3 row in the SHIP build. Forbidden because a sweep cannot
+      certify itself complete and a sentence saying it did is what stopped three later readers
+      looking; tools/check_dispatch_gates.py reads the table instead (S79). Corrected 2026-09-03.
+  - pattern: "it has no userspace wrapper -- a live handler with no caller"
+    reason: >-
+      .github/syscall-coverage.yml's stated reason for leaving SYS_EXEC (19) in the ship build
+      from 2026-08-20 to 2026-09-03. The second half was true and the first was false: sys_exec()
+      was declared in include/syscall.h the whole time. It mattered because the absence of a
+      wrapper was the argument for treating 19 as less exposed than SYS_EXEC_LEGACY, SYS_CLEAR and
+      SYS_SYSINFO, which were retired for exactly this state -- so a wrong fact bought the row
+      eleven days. 19 is retired and the wrapper is removed with it. Corrected 2026-09-03.
+  - pattern: "the slot-3 check does not stop a caller, and a successful call arms an image"
+    reason: >-
+      True of SYS_RECEIVE_PROGRAM from 2026-08-20 to 2026-09-03, and forbidden now because the
+      row it described is retired (S79, docs/LIMITATIONS.md 1.6c). Kept as a ratchet for the
+      shape rather than the sentence: this is what an accurate description of an open ambient-
+      authority path looks like sitting in a reason field where nothing asserts it, under a group
+      header that made the same claim about three syscalls already fixed. If a syscall needs this
+      sentence again, it needs a capability or a retirement, not a note. Corrected 2026-09-03.
+

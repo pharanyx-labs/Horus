@@ -91,6 +91,14 @@ conditional:
     flag: LEGACY_SYSCALLS_PRESENT
     reason: >-
       RETIRED 2026-08-23. Syscall 6 returned a version string, with no userspace wrapper anywhere in the tree -- reachable only by issuing the raw number
+  SYS_EXEC:
+    flag: LEGACY_SYSCALLS_PRESENT
+    reason: >-
+      RETIRED 2026-09-03. Syscall 19 dropped the caller to ring 3 at load_base + entry with no validation of what was there, gated on cspace slot 3 with SC_ANYTYPE -- the CAP_FRAME every task is born holding, so no gate at all. Not one caller in the tree, and superseded by SYS_EXEC_NAMED and SYS_EXEC_IMAGE, which validate an image before entering it. It DID have a userspace wrapper (sys_exec), contrary to the reason this file gave for leaving it alone from 2026-08-20 to 2026-09-03
+  SYS_RECEIVE_PROGRAM:
+    flag: LEGACY_SYSCALLS_PRESENT
+    reason: >-
+      RETIRED 2026-09-03. Syscall 27 staged a program image read byte by byte off COM2, gated on the same slot-3 decoy, and no target in this tree attaches a second serial so the transport had no endpoint. do_receive_program disarmed whatever another task had staged BEFORE reading, so its reachable effect was to destroy a peer's armed image. Its success path could not be reached at all -- struct program_header was 104 bytes in the kernel and 44 in ring 3, docs/LIMITATIONS.md 2.18
   SYS_DEBUG_EXEC:
     flag: DEBUG_SHELL || LEGACY_SYSCALLS_PRESENT
     reason: >-
@@ -354,25 +362,34 @@ uncovered:
   SYS_FS_INODE_LINK: >-
     dispatch row (CAPSLOT_AUDIT, READ|WRITE, CAP_ENCRYPTED_STORAGE). fs_server HOLDS that capability, so unlike its neighbours in this group the gate would pass -- the gap is that nothing asks it to make a hard link. Its sibling SYS_FS_INODE_FREE was in this position until 2026-08-30 and moved for the price of one `rm` in the session; this one needs a shell command that does not exist, which is a feature rather than a test
 
-  # (2) THE GATE IS THE [C-1] DECOY, AND THE CALL WOULD SUCCEED. These carry
-  # (slot 3, WRITE|EXEC, SC_ANYTYPE) -- the legacy CAP_FRAME every task is born
-  # holding, which is not a gate at all (docs/LIMITATIONS.md 1.6b, and the
-  # 2026-08-30 audit's finding 4.1). So captest PASSES the table check on all
-  # five. What stops a probe is the opposite of the group above: not that the
-  # call would be refused, but that it would WORK -- replacing the caller's image
-  # or duplicating the caller -- and a conformance suite that execs itself away
-  # has no section 14. They are covered by their own selftest builds instead,
-  # which are full kernel builds plus a boot and are therefore not tracked arms.
+  # (2) THE CALL WOULD SUCCEED, WHICH IS WHY NO PROBE ENTERS IT. What stops a
+  # probe here is the opposite of the group above: not that the call would be
+  # refused, but that it would WORK -- replacing the caller's image or
+  # duplicating the caller -- and a conformance suite that execs itself away has
+  # no section 14. They are covered by their own selftest builds instead, which
+  # are full kernel builds plus a boot and are therefore not tracked arms.
+  #
+  # THIS HEADER SAID SOMETHING ELSE UNTIL 2026-09-03, and the correction is the
+  # reason it is written out. It read: "THE GATE IS THE [C-1] DECOY ... These
+  # carry (slot 3, WRITE|EXEC, SC_ANYTYPE) ... So captest PASSES the table check
+  # on all five." That was true of five entries when it was written and of none
+  # of the three left here now. SYS_FORK, SYS_EXEC_NAMED and SYS_EXEC_IMAGE are
+  # SC_NONE and gated in their handlers -- fork on CAP_UNTYPED (S57), the other
+  # two self-only, replacing the caller's own image and creating no task -- and
+  # they moved there on 2026-08-30 without this comment being touched.
+  #
+  # The two the header was STILL right about were SYS_EXEC (19) and
+  # SYS_RECEIVE_PROGRAM (27), which is the whole lesson: a reason field went on
+  # asserting a gate shape for three syscalls that had been fixed, while the two
+  # it correctly described as ungated sat under the same sentence and were read
+  # as covered by the same claim. A fact recorded here gates nothing --
+  # tools/check_dispatch_gates.py is what fails the build now.
   SYS_FORK: >-
     MEASURED 2026-08-28: not entered by the tracked workloads -- nothing in a tracked image forks, because fork's only client so far is its own witness. Entered by FORK_SELFTEST, which is its gate (make smoke-fork, plus four control arms). A captest probe would pass the slot-3 check and then actually fork captest
   SYS_EXEC_NAMED: >-
     MEASURED 2026-08-20: entered by a PROC_SELFTEST=1 boot, which is not a tracked arm. Also gated by make smoke-forkexec since 2026-08-28 (S42). A probe would replace captest's image
-  SYS_EXEC: >-
-    MEASURED 2026-08-20: NOT entered by any of PROC_SELFTEST, SIGNAL_SELFTEST, PREEMPT_SELFTEST, IRQ_SELFTEST or IRQ_POLICY_AUDIT. No build in this tree is known to reach it, and it has no userspace wrapper -- a live handler with no caller, which is the state SYS_EXEC_LEGACY, SYS_CLEAR and SYS_SYSINFO were retired from on 2026-08-23
   SYS_EXEC_IMAGE: >-
     MEASURED 2026-08-20: NOT entered by any of the five selftest builds tried. No build in this tree is known to reach it, as SYS_EXEC
-  SYS_RECEIVE_PROGRAM: >-
-    receives a program image over IPC; no tracked workload provisions a program this way. Same dispatch row as its neighbours here, so the same two facts hold: the slot-3 check does not stop a caller, and a successful call arms an image
 
   # (3) SC_NONE, AND STILL NOT PROBEABLE. The sweep of 2026-08-30 promoted twelve
   # SC_NONE handlers on the argument that the dispatch table admits everyone, so

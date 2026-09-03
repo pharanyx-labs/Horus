@@ -53,6 +53,7 @@ static void check(int ok, const char *what) {
     failures++;
 }
 
+
 void _start(void) {
     kputln("PASSWDPROBE: begin (uid 1000, no capabilities beyond a fresh task's)");
 
@@ -132,10 +133,48 @@ void _start(void) {
               "debug-exec-present-in-ship-kernel");
     }
 
+    /* ---- the sixth and seventh doors: the two rows the sweeps did not count --
+     *
+     * SYS_RECEIVE_PROGRAM (27) and SYS_EXEC (19) carried
+     * `{ handler, 3, CAP_RIGHT_WRITE|CAP_RIGHT_EXEC, SC_ANYTYPE }` in the SHIP
+     * build until 2026-09-03 -- the same slot-3 shape as the five above, on a
+     * syscall that arms a program image and one that drops the caller to ring 3
+     * at an address it chooses. This probe is the task that shows what that
+     * gate was worth: uid 1000, holding nothing anyone delegated.
+     *
+     * .github/syscall-coverage.yml had recorded the fact in prose since
+     * 2026-08-20 -- "the slot-3 check does not stop a caller" -- against both.
+     * Nothing asserted it, so nothing failed when it stayed true.
+     *
+     * SYS_RECEIVE_PROGRAM is checked BEFORE SYS_EXEC and that ordering is
+     * load-bearing: under LEGACY_SYSCALLS_PRESENT=1 h_run does not return
+     * (drop_to_ring3), so any check placed after it is unreachable in the arm
+     * that matters. See smoke-passwd-probe-legacy-control. */
+    {
+        static struct { uint32_t magic, entry, size; char name[32]; } hdr;
+        check((int)syscall(SYS_RECEIVE_PROGRAM, (uint64_t)(uintptr_t)&hdr, 0, 0) == SYS_ERR_NOSYS,
+              "receive-program-reachable-on-the-slot-3-decoy");
+    }
+    /* SYS_EXEC is LAST, and its FAIL marker is one this probe cannot print.
+     * h_run ends in drop_to_ring3() and does not return, so under
+     * LEGACY_SYSCALLS_PRESENT=1 the syscall that fails this check is the
+     * syscall that prevents the check running -- control leaves for
+     * `load_base + entry` and the probe never reaches kput_marker. A landing
+     * pad was tried (passing the address of a local function as `entry`, so the
+     * marker would be "SYS_EXEC took me where I asked"): it printed three bytes
+     * and stopped. THE DEFECT DESTROYS ITS OWN RING-3 REPORTER, which is why
+     * this door's arm is kernel-side -- `SYSCOV 19` under SYSCALL_COVERAGE=1,
+     * emitted at handler entry before h_run can diverge. See
+     * make smoke-passwd-probe-exec19-control. In the SHIP build the row is
+     * absent, dispatch answers SYS_ERR_NOSYS, and this check is an ordinary
+     * one that passes. */
+    check((int)syscall(SYS_EXEC, 0x400000u, 0u, 0) == SYS_ERR_NOSYS,
+          "exec19-reachable-on-the-slot-3-decoy");
+
     if (failures) {
         kput("PASSWDPROBE: FAIL ");
         kput_int(failures);
-        kputln(" of 8 doors open");
+        kputln(" of 10 doors open");
     } else {
         kput("PASSWDPROBE: PASS ");
         kput_int(checks);

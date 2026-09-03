@@ -996,8 +996,10 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `smoke-captest-clock-control` | **A control arm whose defect is an improvement.** `CLOCK_TSC_RESOLUTION=1` reports real microseconds off the calibrated TSC: more accurate, more useful, and it undoes `CR4.TSD`. `CAPTEST: FAIL clock-resolution-finer-than-a-pit-tick` must appear. Worth having precisely because the tempting mistake here does not look like a mistake. |
 | `miri` | **The only check here that looks for undefined behaviour.** `cargo miri test` interprets the security core and checks out-of-bounds access, invalid pointer use, and the Stacked Borrows aliasing rules, which is what raw-pointer FFI breaks. 77 tests, ~2 minutes, no `continue-on-error`. Four crypto modules are excused in `.github/miri-scope.yml` (argon2 is memory-hard by construction and does not finish under an interpreter; the other three have no `unsafe` at all), and `tools/check_miri_scope.py` fails the build on a module that is neither run nor excused. **The job derives its `--skip` flags from that manifest**, so the scope and the command are one list rather than two that can drift. |
 | `kani-bounded` | **The first Kani job that can fail anything.** Eleven harnesses over the capability algebra, run with no `continue-on-error`, plus `check_kani_harnesses.py` refusing a proof classified as neither gating nor excused. The advisory `kani` job it sits beside is `workflow_dispatch`-only *and* `continue-on-error` on every step, thirteen proofs that could not redden a build, which is `smoke-kstack-park`'s shape applied to formal verification. 319 s measured end to end; the four excused harnesses are named with reasons in `.github/kani-harnesses.yml`. |
-| `smoke-passwd-probe` (2026-08-23) | **Eight checks now, not four.** The probe (uid 1000, no delegated capability) also asserts that the four syscalls retired that day fail closed at `SYS_ERR_NOSYS`. The one that matters is `SYS_EXEC_LEGACY` (14): it **created a task**, authorised on cspace slot 3, and this probe was handed task id 2 by it before it was removed. |
-| `smoke-passwd-probe-legacy-control` | `LEGACY_SYSCALLS_PRESENT=1` restores all four entries. The required marker is `FAIL legacy-exec-spawned-a-task` specifically, so an arm that reddened the probe for any other reason would not satisfy it; the same discipline as the two `smoke-newlib` arms failing at different markers. |
+| `smoke-passwd-probe` (2026-08-23; 10 checks since 2026-09-03) | **Ten checks now, not four.** The probe (uid 1000, no delegated capability) also asserts that the six retired syscalls fail closed at `SYS_ERR_NOSYS`. `SYS_EXEC_LEGACY` (14) **created a task** on cspace slot 3 and handed this probe task id 2 before it was removed; `SYS_EXEC` (19) and `SYS_RECEIVE_PROGRAM` (27) carried the identical row in the ship build until 2026-09-03 (**S79**). |
+| `smoke-passwd-probe-legacy-control` | `LEGACY_SYSCALLS_PRESENT=1` restores all six entries. The required marker is `FAIL legacy-exec-spawned-a-task` specifically, so an arm that reddened the probe for any other reason would not satisfy it; the same discipline as the two `smoke-newlib` arms failing at different markers. |
+| `smoke-passwd-probe-recv27-control` (2026-09-03) | Same flag, and the marker is `FAIL receive-program-reachable-on-the-slot-3-decoy`. One arm per door, because both of the checks added that day are **terminal** under the flag. |
+| `smoke-passwd-probe-exec19-control` (2026-09-03) | Same flag plus `SYSCALL_COVERAGE=1`, and the marker is **`SYSCOV 19`** -- emitted by the **kernel** at handler entry, because `h_run` ends in `drop_to_ring3` and never returns, so the defect destroys any ring-3 reporter. |
 | `smoke-measured-boot-required` | **The kernel half of `docs/LIMITATIONS.md` §2.9.** `MEASURED_BOOT_REQUIRED=1` makes an unavailable measured boot fatal. The base arm boots that build **under swtpm** and requires `tpm: measured boot OK`, because a gate that only checked the refusal is passed by a kernel that halts on every boot, which is the same shape as the `KSP_GUARD_ALWAYS` mutation. |
 | `smoke-measured-boot-required-control` / `-volume-control` | Two refusals, two arms. Without a TPM the machine must halt (`no TPM present`); the exact case §2.9 described. With a TPM but an **unsealed volume** it must refuse to unlock: a never-sealed volume opens on its password alone, so a re-formatted disk would make the requirement evaporate. The default boot runs on the exempt ephemeral vdisk, so `MEASURED_VOLUME_EXEMPT_NONE=1` removes the exemption to reach the branch; the arm proves the refusal fires, **not** that a persistent on-disk volume reaches it, and that gap is stated in §2.9 rather than implied. Both assert through `EXPECT_FAULT`, since the success condition is a halt and `PANIC` is in the harness's fault regex on purpose. |
 | `smoke-newlib` (2026-08-23) | **Roadmap 2.4's witness.** The libc walks paths through `hvfs` now, so this gate asserts `.` and `..` in paths passed to `open()`; the paths a libc program actually uses, and the ones a private walker got wrong. Four checks: `.` resolves, `..` steps back out of a directory the walker descended, `..` is pinned at the mount root rather than erroring, and a missing name under a `..` prefix is still `ENOENT`. |
@@ -1007,8 +1009,8 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 | `gate-pairs` | **The coverage question applied to the gates themselves.** `tools/check_gate_pairs.py` enforces four structural rules, each violated at least once in this tree: a control arm must extend a base gate that exists; a control arm must actually be invoked by CI; a gate must be invoked or listed in `.github/gate-exceptions.yml` with a reason; and an exception must name a real target and give one. Source analysis, no build. Falsified all four ways, orphan arm, unrun arm, stale exception, empty reason. It was written because `smoke-ksp-guard-control` had **no positive counterpart**: an arm proving the guard *could* fire, with nothing asking whether it stayed silent on a legal value. The same job also runs `tools/check_gate_evidence.py`, which refuses a multi-boot gate that cannot tell a dead boot from a passing one — every `smoke-*` target that loops over boots must be declared in `.github/gate-evidence.yml`, either with the marker and floor it uses to count live boots (both of which must be real Makefile variables, *read by a grep* and *compared against in a numeric test* respectively) or with a written reason naming the mechanism it uses instead. Declarative rather than inferred, because the sweep that found the defect flagged six targets and four were false positives establishing liveness correctly in four different ways. Falsified six ways; rule 3 failed first and had to be strengthened, because it accepted a floor that was merely *present* in the recipe — which a floor quoted in the failure message satisfies while the comparison beside it reads `-lt 0`. |
 | `smoke-ksp-guard` | The **false-positive** arm for the producer-side resume-`%rsp` guard, and the direction whose absence is a known way to ship a regression. Every other arm on this guard injects a bogus value and asks whether it fires: they measure false *negatives*, and a predicate that rejected every stack pointer would satisfy all of them. This boots the **default** workload, where every resume value is legal, and requires `SCHED BOGUS KSP` to be **absent**. Falsified by `KSP_GUARD_ALWAYS=1`, which makes `ksp_is_bogus()` reject everything: the guard then fires on a legitimate address (`ipc_block_switch task=2 ksp=0xffffffff8020cf40`) and the gate goes red. The default workload rather than `PROC_SELFTEST` on purpose; the latter still trips [G-9] on ~1–2% of boots and would make this intermittently red for an unrelated reason. |
 | `smoke-ksp-guard-control` | **[G-9]**, producer side. All four switch functions (`preempt_on_tick`, `ipc_block_switch`, `sched_yield_switch`, `task_exit_switch`) end in the same three lines (take `tasks[next].saved_ksp`, drop the lock, return it) and every selection loop above them required that value to be merely **non-zero**. Each now validates it **against the page tables** (`kern_addr_present`), not an address range: `per_task_kstacks`, `ap_idle_stacks` and `ap_ist` all live inside `[__bss_start, __bss_end)` and their guards are armed by being made *absent*, so a pointer sitting in a guard page passes every range test in the tree. Both the value and the byte 8 below it are checked, since that is where the epilogue pushes. On failure it names the producing function and returns 0, so the caller parks instead of `iretq`-ing onto it. `KSP_GUARD_INJECT=1` forges `-7` and requires `SCHED BOGUS KSP from task_exit_switch` on the wire. **A detector, not a fix**, across 57 pinned boots containing a live reproduction it did not fire once, which is what rules those four producers out. |
-| `syscall-coverage` | **The coverage claim over the syscall table.** Boots three workloads under `SYSCALL_COVERAGE=1` (the scripted ring-3 session, the conformance suite, and the boot-modules session) and records which syscall **handler bodies** are entered, then diffs the union against `.github/syscall-coverage.yml`. Currently **83 of 95** implemented syscalls. It does not demand all of them; it demands the number be decided rather than drifting, and every gap be written down. Fails four ways, all falsified: a syscall in neither list, a `covered` one whose handler stopped running, an `uncovered` one whose handler *did* run (a stale reason), and a serial log with no `SYSCOV` lines at all; that last is what stops a mis-built arm from reporting a page of spurious regressions, or an empty log from passing silently. |
-| `syscall-coverage` | **The coverage claim over the syscall table.** Boots three workloads under `SYSCALL_COVERAGE=1` (the scripted ring-3 session, the conformance suite, and the boot-modules session) and records which syscall **handler bodies** are entered, then diffs the union against `.github/syscall-coverage.yml`. Currently **83 of 95** implemented syscalls. It does not demand all of them; it demands the number be decided rather than drifting, and every gap be written down. Fails four ways, all falsified: a syscall in neither list, a `covered` one whose handler stopped running, an `uncovered` one whose handler *did* run (a stale reason), and a serial log with no `SYSCOV` lines at all; that last is what stops a mis-built arm from reporting a page of spurious regressions, or an empty log from passing silently. |
+| `syscall-coverage` | **The coverage claim over the syscall table.** Boots three workloads under `SYSCALL_COVERAGE=1` (the scripted ring-3 session, the conformance suite, and the boot-modules session) and records which syscall **handler bodies** are entered, then diffs the union against `.github/syscall-coverage.yml`. Currently **83 of 93** implemented syscalls. It does not demand all of them; it demands the number be decided rather than drifting, and every gap be written down. Fails four ways, all falsified: a syscall in neither list, a `covered` one whose handler stopped running, an `uncovered` one whose handler *did* run (a stale reason), and a serial log with no `SYSCOV` lines at all; that last is what stops a mis-built arm from reporting a page of spurious regressions, or an empty log from passing silently. |
+| `syscall-coverage` | **The coverage claim over the syscall table.** Boots three workloads under `SYSCALL_COVERAGE=1` (the scripted ring-3 session, the conformance suite, and the boot-modules session) and records which syscall **handler bodies** are entered, then diffs the union against `.github/syscall-coverage.yml`. Currently **83 of 93** implemented syscalls. It does not demand all of them; it demands the number be decided rather than drifting, and every gap be written down. Fails four ways, all falsified: a syscall in neither list, a `covered` one whose handler stopped running, an `uncovered` one whose handler *did* run (a stale reason), and a serial log with no `SYSCOV` lines at all; that last is what stops a mis-built arm from reporting a page of spurious regressions, or an empty log from passing silently. |
 | `smoke-proc` (2026-08-30) | **Creating a task now costs authority**, property **S57**, and this gate is where it is witnessed. `grantee` is spawned by `proctest` and deliberately **not** endowed with `CAP_UNTYPED` — it is literally "a task spawned without the right to spawn further tasks", which is the property audit finding 4.1 asked for — and asserts that `SYS_SPAWN`, `SYS_FORK` and `SYS_SPAWN_IMAGE` all return **`SYS_ERR_PERM`**. That error specifically: a spawn can fail for want of a free slot, a bad name, or an unarmed image, and none of those says anything about authority. The distinction between "refused" and "failed" is the whole test. |
 | `smoke-proc-spawn-decoy-control` | Control arm. `SPAWN_SLOT3_DECOY_GATE=1` restores the pre-fix gate — cspace slot 3 with `SC_ANYTYPE`, which `create_task` fills in **every** task — and `grantee` can then spawn: `PROC_SELFTEST: FAIL spawn-without-untyped`, base gate red under the same flag. **The arm is what shows the old gate was vacuous rather than merely different**: the un-endowed child passes it, which is what "the check could not fail" means in practice. |
 | `smoke-proc` (what the endowments say) | Worth recording because the change is visible in *policy*, not only in code. Three tasks gained a `CAP_UNTYPED` because they create tasks: the **shell** (`spawn` is a shell command), **proctest**, and — already held — `init`. Each grant is now a written, revocable statement that this task may create tasks, where previously every task could and no grant expressed anything. `grantee` is the control: it is spawned by a task that holds one and is not given it. |
@@ -1629,8 +1631,42 @@ find) which is what an arm looks like when it half-measures and still reports su
 
 | Arm | Asserts | Result |
 |---|---|---|
-| `smoke-passwd-probe` | `PASSWDPROBE: PASS` present, no `FAIL` | passes; all four return `SYS_ERR_NOSYS` |
+| `smoke-passwd-probe` | `PASSWDPROBE: PASS` present, no `FAIL` | passes; `PASS 10 checks`, all ten refusals returned `SYS_ERR_NOSYS` |
 | `smoke-passwd-probe-control` (`RAMFS_SLOT3_GATE=1`) | `FAIL opened-a-ramfs-file` present | passes; all **4 of 4 doors open**, and `smoke-passwd-probe` goes red under the same flag |
+| `smoke-passwd-probe-legacy-control` (`LEGACY_SYSCALLS_PRESENT=1`) | `FAIL legacy-exec-spawned-a-task` present | passes |
+| `smoke-passwd-probe-recv27-control` (same flag) | `FAIL receive-program-reachable-on-the-slot-3-decoy` present | passes |
+| `smoke-passwd-probe-exec19-control` (same flag + `SYSCALL_COVERAGE=1`) | `SYSCOV 19` present | passes |
+
+**Two more doors, and two more arms, 2026-09-03 (S79).** `SYS_EXEC` (19) and
+`SYS_RECEIVE_PROGRAM` (27) carried `{ handler, 3, WRITE|EXEC, SC_ANYTYPE }` in the **ship**
+table -- the same shape as the four above, on syscalls that drop the caller to ring 3 at an
+address it picks and arm a program image. Both are retired; the probe now calls all six retired
+numbers and requires `SYS_ERR_NOSYS`.
+
+**Why they need separate arms, and why one of them reports from the kernel.** Under the flag
+both new checks are *terminal*, so neither can be witnessed in the same boot as the other:
+
+- **27 returns, and that had to be measured rather than reasoned about.** The obvious reading is
+  that it blocks -- `serial2_read_char` spins on the UART and nothing attaches COM2. It does not
+  block here: an absent port floats, so the LSR reads `0xFF` (bit 0 set, "data ready"), the
+  header fills with `0xFF`, the magic test rejects it and the call answers `-1`. The probe's own
+  `check()` therefore fires and names the door. **On a machine that has a COM2 with nothing
+  sending, LSR bit 0 stays clear and it really does spin** -- so the hang is hardware-dependent,
+  which is the weaker claim and the true one.
+- **19 does not return at all**, so the syscall that fails the check is the syscall that
+  prevents the check running. A ring-3 landing pad was tried first: pass the address of a local
+  function as `entry`, so the marker would be "SYS_EXEC took me where I asked". It printed
+  **three bytes** and the machine went quiet. That is the lesson rather than a detour -- **the
+  defect destroys its own reporter**, the same shape as `ENTER_USER_PUBLISH_EARLY`'s marker being
+  shredded by the task whose theft it reported. `SYSCALL_COVERAGE=1` emits `SYSCOV <n>` from the
+  kernel on first entry into a handler body, which is *upstream* of `drop_to_ring3`, so it is
+  the one reporter the defect cannot reach.
+
+**Both arms falsified in the other direction**, which is the half an N-of-N marker requirement
+does not cover: built with `SYSCALL_COVERAGE=1` and the defect flag **absent**, neither
+`SYSCOV 19` nor `SYSCOV 27` appears anywhere in the log (3 SYSCOV lines total, neither of them
+these) and the probe reports `PASS 10 checks`. So the markers are produced by the restored rows
+and not by the instrument.
 
 **The control arm reads out more than the base arm asks about**, which is why it prints what it
 finds rather than only whether it succeeded: it recovered 24, 64 and 32 bytes from three
@@ -1840,6 +1876,34 @@ name that no longer crosses the boundary, an `UNRESOLVED` entry that now agrees,
 struct the field extractor used to skip silently (which for a discovered struct would have been
 the checker excusing itself from the comparison).
 
+**No ship-build syscall is gated on the [C-1] decoy, gated since 2026-09-03.**
+`tools/check_dispatch_gates.py` (required, in the same source-only checker set) parses
+`syscall_table` in `src/kernel/syscall.c` and fails on any row whose capability slot is **3** and
+which is not behind a preprocessor macro the ship build provably lacks. Slot 3 holds the
+`CAP_FRAME` `create_task` installs in every task, so such a row authorises every ring-3 caller
+(**S28**, **S79**).
+
+**It exists because the same shape survived three hand sweeps.** [H-3] (2026-08-22) removed three
+rows and left a comment calling them "the last three"; #201 (2026-08-23) found a fourth,
+invisible because its entry was the bare index `[14]`; audit 4.1 (2026-08-30) moved five
+task-creating syscalls to `CAP_UNTYPED`. None enumerated `SYS_EXEC` (19) or
+`SYS_RECEIVE_PROGRAM` (27), which carried the identical row in the ship table the whole time --
+and `.github/syscall-coverage.yml` had *described* that fact against both since 2026-08-20,
+under a group header asserting the same shape for three syscalls already fixed. A fact in a
+reason field gates nothing; this reads the table the compiler reads.
+
+Falsified **four** ways, and the fourth is the one that matters: an un-guarded slot-3 row; a
+slot-3 row guarded by a macro not on the known-absent list (so it cannot be smuggled back behind
+an unrelated `#ifdef`); a slot-3 row in the `#else` arm of a guard (which *is* a ship-build arm);
+and a **renamed table**, because all three rules above are vacuous against a regex that has
+silently stopped matching, so the tool refuses a parse that yields implausibly few rows and says
+why. It parses 106 rows today and reports the 7 slot-3 rows it found with the flag each is
+restored under, so the exemptions are read out rather than assumed.
+
+What it deliberately does not check: fixed slots in general (`CAPSLOT_AUDIT` and friends name
+capabilities `init` delegates, which is the opposite of a decoy) and `SC_ANYTYPE` on its own (the
+type field is enforced inside `cap_lookup` since **S60**).
+
 **Every production `unsafe` states its caller's obligations, gated since 2026-08-29.**
 `tools/check_unsafe_safety.py` (required job `unsafe-safety`) walks `rust/src/*.rs`, skipping
 test modules, and requires a `# Safety` clause on the enclosing item of every `unsafe`. It was
@@ -1863,7 +1927,7 @@ three ways: a planted phrasing in a `.c` file is caught with file and line; the 
 phrasing inside a quotation stays exempt, so a comment can record the wrong thing while
 correcting it.
 
-`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 80 properties
+`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 81 properties
 name a witness that resolves to a make target or a CI job.
 
 | Rule | Rejects |

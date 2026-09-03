@@ -286,6 +286,31 @@ int arm_image_from_user(addr_t ubuf, uint32_t len, const char *name_hint) {
 }
 
 
+/* ---- the COM2 staging transport --------------------------------------------
+ *
+ * Compiled only for the in-kernel debug shell (DEBUG_SHELL) and for the retired
+ * ring-3 door under LEGACY_SYSCALLS_PRESENT. SYS_RECEIVE_PROGRAM was retired on
+ * 2026-09-03 -- see the block above h_run in syscall.c for why -- and this is
+ * the machinery behind it.
+ *
+ * WHAT STAYS AND WHY. The kshell `receive` command is ring 0 in a build that
+ * already carries documented extra surface, and its transport is one an operator
+ * wires BY HAND (`-serial tcp::4444`, which is what the command's own help
+ * prints). No capability gate is involved and none is claimed. What was removed
+ * is the ring-3 syscall, whose gate was the [C-1] decoy and whose transport no
+ * target in this tree attaches. On QEMU with no COM2 the port floats: the LSR
+ * reads 0xFF so serial2_read_char below finds "data ready" immediately, returns
+ * 0xFF, and the magic test rejects the header -- measured, not assumed, because
+ * the obvious guess is that it blocks. It blocks on a machine that HAS a COM2
+ * and nothing sending. Either way do_receive_program has already disarmed
+ * whatever another task had staged before the first byte is read.
+ *
+ * NOTE THE ORDER IN do_receive_program: loader_disarm() runs BEFORE the blocking
+ * read. That is correct for a caller that is about to replace the staged image
+ * and is the reachable half of the defect for one that never will. Do not
+ * reorder it to "fix" the ring-0 path -- the ring-3 path is gone, and disarming
+ * late would leave a half-armed image if the transfer failed. */
+#if defined(DEBUG_SHELL) || defined(LEGACY_SYSCALLS_PRESENT)
 static int loader_receive_to_staging(struct program_header *out_hdr) {
     struct program_header hdr;
     uint8_t *p = (uint8_t *)&hdr;
@@ -324,6 +349,7 @@ int do_receive_program(struct program_header *hdr_out) {
     int rc = loader_receive_to_staging(hdr_out);
     return rc;
 }
+#endif /* DEBUG_SHELL || LEGACY_SYSCALLS_PRESENT */
 
 /* FFI layout contract for the located i386 REL table (mirror of Rust
  * ElfI386RelocTable). */

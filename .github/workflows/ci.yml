@@ -1815,7 +1815,12 @@ jobs:
   installer-accounts:
     name: "An installed machine has two accounts and either one boots it (S76)"
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Raised from 45 on 2026-09-03 because the job genuinely does more work, not
+    # because anything got slower: the [G-13] steps below add a deliberately
+    # THROTTLED install, and its format is ~4,700 disk operations at 12 IOPS, so
+    # it costs ~392s by construction on any host. Backstop, not a performance
+    # budget -- the four steps measure ~20 minutes locally.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU
@@ -1836,6 +1841,16 @@ jobs:
       # account is broken" from "the account has no key slot".
       - name: Control arm — no key slot, so the account cannot open its own machine
         run: make smoke-installer-accounts-control
+      # [G-13]. The format's bound is a STALL, not a total, because no total can
+      # separate a slow disk from a wedge at any value. The base gate throttles
+      # the guest to 12 IOPS -- format ~420s, past the 300s that used to fail
+      # this -- and requires the install to SUCCEED; the arm wedges the format
+      # halfway through the metadata region and requires the failure to NAME a
+      # wedge, which is the distinction the old message could not draw.
+      - name: A 12-IOPS disk is slow, not wedged, and the install still completes (G-13)
+        run: make smoke-installer-slowdisk
+      - name: Wedge the format halfway and require the stall bound to catch and NAME it
+        run: make smoke-installer-wedge-control
 
   passwd-target:
     name: "passwd <uid> changes that account, and only that account (S75)"

@@ -36,10 +36,12 @@ Env:    SESSION_TIMEOUT   per-step expect timeout, seconds (default 45). Raise t
 Exit:   0 and "SESSION_TEST: PASS" on success; 1 and "SESSION_TEST: FAIL ..." otherwise.
 """
 
+import json
 import os
 import re
 import select
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -132,8 +134,49 @@ class Serial:
         disk = os.environ.get("SESSION_DISK", "")
         drive = []
         if disk:
-            drive = ["-drive",
-                     "file=%s,format=raw,if=ide,index=0,media=disk,cache=writethrough" % disk]
+            spec = ("file=%s,format=raw,if=ide,index=0,media=disk,cache=writethrough"
+                    % disk)
+            # SESSION_DISK_BPS throttles the guest's disk bandwidth, in bytes per
+            # second, using QEMU's own limiter. MEASUREMENT ONLY -- unset in every
+            # gate, so no target's behaviour depends on it.
+            #
+            # It exists for [G-13]. That finding is a 300s timeout in the
+            # installer's format step on CI, against ~6s locally, and the argument
+            # that stalled it was "a runner slow enough to explain this would have
+            # to be ~50x slower, and the boot step says it is not". That argument
+            # assumes the two steps measure the same thing. They do not: the boot
+            # reads a cached ISO and is CPU-bound under TCG, while the format is
+            # ~68 million emulated PIO port operations against a writethrough
+            # image. Measured on this tree, twelve CPU burners slow both by ~2.1x
+            # and leave the format:boot ratio at 2.6; disk contention leaves the
+            # boot at 1.9s and takes the format to 15s, a ratio of ~7.9. So the
+            # boot step is NOT the speed probe the argument treated it as, and the
+            # honest way to settle it is to dial the one variable that decouples
+            # them rather than to keep arguing about the other one.
+            bps = os.environ.get("SESSION_DISK_BPS", "")
+            if bps:
+                spec += ",throttling.bps-total=%s" % bps
+            # SESSION_DISK_IOPS is the same instrument for the other variable, and
+            # it is the one that turned out to matter. Measured on this tree, the
+            # installer's format writes ~2.3 MB, so BANDWIDTH cannot explain a
+            # 300s format at any rate a real runner has (it would need ~8 KB/s).
+            # What it does do is ~4,500 synchronous single-sector PIO writes, and
+            # that cost is per-OPERATION latency, not throughput -- a number a
+            # contended or network-backed runner disk can move by orders of
+            # magnitude while leaving a cached-ISO boot untouched.
+            iops = os.environ.get("SESSION_DISK_IOPS", "")
+            if iops:
+                spec += ",throttling.iops-total=%s" % iops
+            drive = ["-drive", spec]
+
+        # A QMP monitor, so a scenario can ask QEMU what the GUEST's disk is
+        # doing. Inert unless something connects. See blockstats_ops().
+        self.qmp_path = "/tmp/horus-session-qmp-%d.sock" % os.getpid()
+        try:
+            os.unlink(self.qmp_path)
+        except OSError:
+            pass
+        self._qmp = None
 
         self.proc = subprocess.Popen(
             [qemu,
@@ -141,6 +184,7 @@ class Serial:
              "-smp", SMP,
              "-display", "none", "-no-reboot", "-no-shutdown",
              "-device", "isa-debug-exit,iobase=0x604,iosize=0x04",
+             "-qmp", "unix:%s,server,nowait" % self.qmp_path,
              "-serial", "pty", "-net", "none"] + drive + ["-cdrom", iso],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
@@ -241,10 +285,80 @@ class Serial:
                     f"recent serial: {tail!r}")
             self._pump(min(0.5, max(0.0, deadline - time.time())))
 
+    def blockstats_ops(self):
+        """Total guest disk operations (reads + writes), or None.
+
+        THE ONLY HONEST PROGRESS SIGNAL FOR "IS THE GUEST STILL DOING I/O", and
+        three cheaper ones were tried and rejected against a measured trace of a
+        throttled format ([G-13], 2026-09-03):
+
+          * the image's st_mtime, and /proc/PID/io write_bytes -- both advance
+            steadily for the format's WRITE phase and then freeze for ~200s while
+            merkle_build READS the metadata region back off the device. A stall
+            detector built on either declares a wedge at the read phase, which is
+            exactly the false positive it exists to avoid, and it did.
+          * /proc/PID/io syscr -- advances through both phases, and keeps
+            advancing when the guest is wedged, because QEMU's own event loop
+            polls the serial pty. A detector that cannot go quiet cannot fire.
+
+        QEMU's block statistics count operations the GUEST issued against its
+        disk and nothing else: they move in both phases and stop dead when the
+        guest stops, which is the distinction being drawn. Immune to host page
+        caching for the same reason.
+
+        Returns None if QMP is unreachable; the caller must decide what to do
+        rather than being handed a zero that looks like a stall.
+        """
+        try:
+            if self._qmp is None:
+                sock = socket.socket(socket.AF_UNIX)
+                sock.settimeout(5)
+                sock.connect(self.qmp_path)
+                f = sock.makefile("rw")
+                if '"QMP"' not in f.readline():
+                    sock.close()
+                    return None
+                f.write(json.dumps({"execute": "qmp_capabilities"}) + "\n")
+                f.flush()
+                if '"return"' not in f.readline():
+                    sock.close()
+                    return None
+                self._qmp = (sock, f)
+            _, f = self._qmp
+            f.write(json.dumps({"execute": "query-blockstats"}) + "\n")
+            f.flush()
+            while True:
+                line = f.readline()
+                if not line:
+                    return None
+                msg = json.loads(line)
+                if "event" in msg:      # asynchronous; not our reply
+                    continue
+                if "return" not in msg:
+                    return None
+                total = 0
+                for dev in msg["return"]:
+                    st = dev.get("stats") or {}
+                    total += st.get("rd_operations", 0) + st.get("wr_operations", 0)
+                return total
+        except (OSError, ValueError, KeyError, json.JSONDecodeError):
+            self._qmp = None
+            return None
+
     def send(self, line):
         os.write(self.fd, (line + "\n").encode("latin-1"))
 
     def close(self):
+        if self._qmp is not None:
+            try:
+                self._qmp[0].close()
+            except OSError:
+                pass
+            self._qmp = None
+        try:
+            os.unlink(self.qmp_path)
+        except OSError:
+            pass
         try:
             if self.proc.poll() is None:
                 self.proc.terminate()

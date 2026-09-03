@@ -297,6 +297,7 @@ failing arm. A gate that has only ever been run against the fixed kernel is not 
 | `ENTER_USER_STEAL_WIDEN=1` | **Not a defect, an instrument**, and it is set in **BOTH** arms of the [G-12] pair -- that is what makes them a measurement rather than two unrelated runs. It holds `sched_enter_user`'s entry open until another CPU claims the task it is about to enter, or a spin budget (`ENTER_USER_STEAL_WIDEN_SPINS`, default 20,000,000) expires, and reports `ENTERUSER: steal-widen ... holder=<n>` either way. It POLLS rather than sleeping a fixed time on purpose: a fixed 60 ms widen was tried first and reproduced the *other* defect on this path -- the AP took init, ran it all the way to `SYS_WAIT` and released it, so the entering CPU resumed a task in `TASK_BLOCKED_WAIT` -- and an arm that reproduces the wrong one of two defects is an arm reporting the wrong thing. | Set in all three arms of `make smoke-enter-user-claim` and its two controls |
 | `ENTER_USER_PUBLISH_EARLY=1` | The pre-2026-09-03 ordering at the one live launch site (`spawn_initial_userspace_init`, `kshell.c`): publish the task as schedulable, arm preemption, and only then go and claim it. That is **[G-12]**'s window -- between the publish and the claim the task satisfies every condition of `preempt_on_tick()`'s selection loop and is claimed by nobody, so an AP's timer tick takes it. | `make smoke-enter-user-claim-control` (`ENTERUSER: refused entry to task 1 ... already claimed by cpu N` present, 3 boots in 3, steal observed at 912--45245 spins); `make smoke-enter-user-claim` must go red under it. The boot still completes: parking the CPU whose task was taken is the correct outcome, not a degradation |
 | `ENTER_USER_CLAIM_UNCHECKED=1` | Removes the guard in `enter_user_impl` **entirely** -- both the foreign-claim test and the still-schedulable test. The whole guard, not half: with either one standing the entry is refused anyway and an arm against the other would pass for the wrong reason. Combined with `ENTER_USER_PUBLISH_EARLY=1` it is the pre-fix kernel and it reproduces **[G-12]**'s own signature, `percpu_current=[1,1,0,0]` with `imp=[0,0,0,0]`. | `make smoke-enter-user-collide-control`, which asserts a **fault** attributed to `task 1`, 6 boots in 6 -- naming the task rather than the flavour, because which of the claim auditor, the resume-`%rsp` guard or the stack canary fires depends on which of two CPUs sharing a kernel stack corrupts what first. `make smoke-sched-invariants` red under the same flags. It is the one arm of the three with a **bounded retry** (`ENTER_USER_COLLIDE_CONTROL_BOOTS`, 5), and not because the defect is probabilistic: its marker rides the panic path, which bypasses the console lock by design, so the ring-3 task running on the CPU that stole the task can shred it. The loop was falsified against the fixed build and still goes red |
+| `STORAGE_FORMAT_WEDGE=1` | Spins forever **halfway through** the format's metadata region, so the disk image is provably being written and then stops. That is the one case the installer's stall bound exists to separate from a slow runner, and until 2026-09-03 nothing in this tree could produce it -- which is why **[G-13]** sat on "two hypotheses and nothing distinguishes them". Halfway rather than at entry, deliberately: a format that wedges before its first write is indistinguishable from an installer that never reached the syscall. | `make smoke-installer-wedge-control`, which requires the failure to **name a wedge** (`the format WEDGED`) and not merely to be non-zero -- before the stall bound, a wedge and a slow disk printed the same timeout. Base gate `make smoke-installer-slowdisk` |
 | `RESUME_RSP_INJECT=1` | Forces `interrupt_handler64`'s resume `%rsp` to a bogus value once, after the console handover, so the floor guard in `idt.c` can be **gated** rather than waited on: the natural event is about 1 boot in 150, and "no `PANIC` line appeared" is worth nothing until the guard is known to be able to speak on that path. `RESUME_RSP_INJECT_VALUE` (default `4`) picks which half of the guard is exercised, `4` is the 2026-08-13 capture and tests the **floor**; `-7` is the 2026-08-17 capture and tests the **ceiling** added after a real boot showed `-7` sailing over a floor-only predicate (`0xFFFFFFFFFFFFFFF9` is above `0xFFFF800000000000`). Both halves need an arm. `RESUME_RSP_INJECT_TICKS` (default `400`) sets how long after the handover. | `make smoke-resume-guard`, which requires the guard's report to be **present** |
 | `RESUME_RSP_INJECT_PRECLAIM=1` | The same injection, but taken with another CPU's **fatal** exception claim already held; the state a real `FATAL` leaves behind, and the exact state of the 2026-08-13 capture, where cpu 3 halted holding it. The guard used to report under `kfault_begin(1)`, which loses that claim and halts **without printing**; this arm is what makes the difference audible. | `make smoke-resume-guard-preclaim` (report **present**), against `make smoke-resume-guard-preclaim-control`, which restores the pre-fix bracket and requires it **absent** |
 | `WAL_CRASHTEST=1` | Not a defect, builds the in-kernel journal crash-recovery test. Boot 1 commits a write and halts **before** applying it; boot 2 replays the committed transaction at mount. Pure kernel, no userspace binaries, which is why it is a build flag rather than a workload. | `make smoke-fs-wal`, a two-boot gate requiring `WAL_CRASHTEST: crashed-after-commit` then `WAL_CRASHTEST: PASS` |
@@ -446,6 +447,28 @@ fixed kernel as well as the broken one. That is what makes the pair a measuremen
 widened window must be harmless with the fix and fatal without it. Applied to one arm only it
 would prove nothing: which is the mistake `TESTS.md` records this project making twice on
 **[G-8]** before it was diagnosed.
+
+### Measurement knobs for the session harness
+
+Not flags and not defects: environment variables `tools/session_test.py` reads. They change no
+build, and no gate sets them except where noted.
+
+Deliberately NOT a table: `tools/check_defect_flags.py` reads every backticked, upper-case table
+row in this file as a claim about `DEFECT_FLAGS`, and it is right to — a retired flag lingering
+as a row sends a reader to reproduce a defect with a build that cannot.
+
+- **`SESSION_DISK_IOPS=<n>`** — throttles the guest's disk to *n* operations per second, using
+  QEMU's own limiter. The **[G-13]** lever: the installer's format is ~4,700 synchronous PIO
+  operations, so the step costs `≈5.2s + 4700/n` while the boot step stays flat at 1.7s, and
+  `SESSION_DISK_IOPS=12` reproduces that finding's CI signature on demand.
+  `make smoke-installer-slowdisk` sets it.
+- **`SESSION_DISK_BPS=<n>`** — the same for bandwidth. Recorded because it is the variable that
+  turned out **not** to matter: the format writes only ~2.3 MB, so throttling to 2 MB/s changes
+  nothing and reaching a 300s format this way would need ~8 KB/s. Kept so the next person does
+  not re-derive it.
+- **`SESSION_SERIAL_LOG=<path>`** — where the guest's serial is written.
+  `tools/installer_session.py` **appends** per boot with a label, because its scenarios drive two
+  or three boots and a plain overwrite loses the one that failed.
 
 ---
 

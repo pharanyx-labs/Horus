@@ -1479,7 +1479,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 240 test targets, and the troubleshooting
+          Every configuration flag, every one of the 242 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1599,7 +1599,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             The security argument rests entirely on the tests, so they are treated as engineering
             artifacts rather than an afterthought. There are three layers: Rust unit tests and
-            Kani proofs on the host; 122 QEMU integration targets that boot a purpose-built kernel
+            Kani proofs on the host; 123 QEMU integration targets that boot a purpose-built kernel
             and assert a marker on the serial console; and scripted sessions that type into the
             real ring-3 shell over serial and read what comes back.
           </p>
@@ -2052,6 +2052,71 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               &mdash; a fact about the defect, not about the gate. Relaxing it at any point in
               those two weeks would have converted a detector of real memory corruption into a
               silence, and there would have been nothing left to attribute.
+            </p>
+          </li>
+          <li>
+            <h3><span class="id">G-13</span>The measurement that was never a measurement</h3>
+            <p>
+              <strong>Filed 2 September 2026, closed 3 September 2026.</strong> The installer's
+              integration test went red twice on the main branch, both times a five-minute
+              timeout waiting for the install to report success, with the guest having said
+              &ldquo;formatting&rdquo; and then nothing at all. No crash, no error, no output.
+              The same step takes six seconds on a workstation.
+            </p>
+            <p>
+              It was written off as a slow test runner, and then that was rejected on what looked
+              like solid ground: a runner slow enough to turn six seconds into five minutes would
+              have to be fifty times slower, and the <em>boot</em> step in both captures was
+              perfectly normal. Two explanations &mdash; a contended runner, or a genuine hang in
+              the format &mdash; and nothing to choose between them. The budget was deliberately
+              not raised, which was the right call and left the finding stuck.
+            </p>
+            <p>
+              <strong>The boot step cannot answer that question, and that is the whole finding.</strong>
+              Slowing the machine's processors slows the boot and the format together, in lockstep,
+              leaving their ratio unchanged &mdash; so that lever would indeed have shown up in the
+              boot step. Contending the <em>disk</em> does something else entirely: the boot stays
+              at full speed while the format triples. Dial the guest's disk down with the
+              emulator's own limiter and the format's cost is a clean straight line in one over
+              the operation rate, while the boot step sits flat at 1.7 seconds at every single
+              point. It is not a poor probe for a slow disk. It is completely blind to one.
+            </p>
+            <p>
+              The format turns out to be about 4,700 synchronous device operations and only about
+              2.3 megabytes of data, which is why throughput is the wrong knob and operation rate
+              is the right one. Solve the line for the five-minute budget and it gives roughly
+              sixteen operations per second &mdash; and a guest throttled to twelve reproduces the
+              continuous-integration failure exactly, first try, including the normal boot step
+              that had been the reason for disbelieving it.
+            </p>
+            <p>
+              <strong>The repair is not a bigger budget.</strong> No total budget can separate the
+              two candidates at any value: raise it and a real hang takes longer to report, lower
+              it and a slow disk fails. They differ in one thing only &mdash; whether the machine
+              is still making progress &mdash; so that is what the bound measures now. Thirty
+              seconds with no disk operation at all is a wedge; anything still moving is a slow
+              disk and is not a failure. A genuine hang is now caught in thirty seconds instead of
+              five minutes, and the failure says which of the two it saw.
+            </p>
+            <p>
+              <strong>Three ways to measure progress, two of them wrong, in opposite directions.</strong>
+              Watching the disk image change declares a hang the moment the format stops writing
+              and starts reading its own metadata back &mdash; a two-hundred-second read phase on a
+              throttled disk, and the first implementation failed exactly there. Counting the
+              emulator's read calls instead keeps climbing even when the guest is wedged, because
+              the emulator is polling its serial port; a detector that cannot go quiet cannot fire.
+              What works is asking the emulator for the guest's own device statistics, which move
+              in both phases and stop dead when the guest does. When that channel is unavailable
+              the gate fails closed rather than quietly falling back to the budget it just
+              replaced.
+            </p>
+            <p>
+              <strong>What is deliberately not claimed.</strong> That the runner really was that
+              slow on those two days. It is not recoverable: the gate kept no serial log, and both
+              captures survive only as the six hundred characters the timeout message happened to
+              quote. It keeps one now. What the measurement establishes is narrower and enough:
+              a slow disk produces every symptom that was observed, including the one that had
+              been treated as ruling it out.
             </p>
           </li>
           <li>

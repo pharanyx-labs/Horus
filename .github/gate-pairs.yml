@@ -52,6 +52,7 @@ control_arms:
   smoke-claim-reread-control: smoke-claim-reread
   smoke-enter-user-claim-control: smoke-enter-user-claim
   smoke-enter-user-collide-control: smoke-enter-user-claim
+  smoke-installer-wedge-control: smoke-installer-slowdisk
   smoke-captest-lookup-type-control: smoke-captest
   smoke-auditprobe-control: smoke-auditprobe
   smoke-auditprobe-abi-control: smoke-auditprobe
@@ -252,6 +253,7 @@ gates:
   - smoke-kstack-imp
   - smoke-claim-reread
   - smoke-enter-user-claim
+  - smoke-installer-slowdisk
   - smoke-session
   - smoke-session-smp
   - smoke-session-smp-soak

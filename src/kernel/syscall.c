@@ -806,6 +806,60 @@ static void h_cap_enumerate(struct interrupt_frame64 *r) {
            ? 0u : (uint32_t)SYS_ERR_FAULT;
 }
 
+/* ---- SYS_EXEC (19) and SYS_RECEIVE_PROGRAM (27), retired 2026-09-03 ---------
+ *
+ * THE LAST TWO SHIP-BUILD ROWS GATED ON THE [C-1] DECOY. Both read
+ * `{ handler, 3, CAP_RIGHT_WRITE|CAP_RIGHT_EXEC, SC_ANYTYPE }` -- cspace slot 3,
+ * where create_task installs a CAP_FRAME in EVERY task with exactly those
+ * rights. By S28 that is not a gate: it is satisfied by a capability nobody
+ * asked for and everybody has. The [H-3] sweep removed four doors of this shape
+ * and the comment above SYS_OPEN calls those "the last three"; the 2026-08-30
+ * sweep moved the five task-creating syscalls to CAP_UNTYPED (S57). Neither
+ * enumerated these two, and .github/syscall-coverage.yml has recorded the fact
+ * in prose since 2026-08-20 -- "the slot-3 check does not stop a caller, and a
+ * successful call arms an image" -- with no finding ID and no S-number against
+ * it. A fact in a reason field is not a gate.
+ *
+ * THEY ARE REMOVED RATHER THAN RE-GATED, following syscalls 5, 6 and 14 on
+ * 2026-08-23, because neither has a caller and one has no transport:
+ *
+ *  - SYS_EXEC (h_run) drops the caller to ring 3 at `load_base + entry`, with
+ *    no validation of what is there. It HAS a wrapper (sys_exec, in
+ *    include/syscall.h) and not one caller anywhere in the tree. The coverage
+ *    manifest's stated reason for leaving it alone was "it has no userspace
+ *    wrapper", which was simply wrong -- and the wrapper is what made it worse
+ *    than the three retired beside it, not better. Superseded by SYS_EXEC_NAMED
+ *    and SYS_EXEC_IMAGE, which both validate an image before entering it.
+ *
+ *  - SYS_RECEIVE_PROGRAM (h_receive_program) staged an image read byte by byte
+ *    off COM2, and NOTHING IN THIS TREE WIRES COM2 -- no target attaches a
+ *    second serial. What that means was MEASURED rather than reasoned about,
+ *    because the two guesses differ: an absent port floats, so `inb(0x2FD) & 1`
+ *    reads 1 (data ready) and `inb(0x2F8)` yields 0xFF, and the header fills
+ *    with 0xFF until the magic test rejects it and the call answers -1. It does
+ *    NOT hang here. On a machine that HAS a COM2 with nothing sending, LSR bit 0
+ *    stays clear and serial2_read_char spins forever -- so the hang is real and
+ *    hardware-dependent, which is the weaker claim and the true one.
+ *    do_receive_program calls loader_disarm() BEFORE the read either way, so the
+ *    reachable effect of the call was: destroy whatever image another task had
+ *    armed, and report a magic failure -- on authority every task is born
+ *    holding. docs/LIMITATIONS.md 2.18 records that the SUCCESS path could not
+ *    be reached at all: the header is 104 bytes in the kernel and 44 in ring 3.
+ *
+ * WHY THAT ORDER MATTERED. Repairing 2.18's struct first would have made a
+ * decoy-gated, disarm-first, never-returning handler reachable for the first
+ * time. The gate is harmless today only because the transport fails at `magic`
+ * before the body can do anything, and "safe because something else breaks
+ * first" is the shape S28, S30 and S38 all turned out to have. It is not a
+ * property; it is a coincidence with a comment.
+ *
+ * The numbers are reserved, as 38-45 are. Both rows come back under
+ * LEGACY_SYSCALLS_PRESENT=1, which is what makes
+ * `make smoke-passwd-probe-legacy-control` a measurement rather than an
+ * assertion, and tools/check_dispatch_gates.py is the ratchet that stops a
+ * sixth door of this shape opening: it fails the build on any live dispatch row
+ * gated on slot 3 with SC_ANYTYPE. */
+#ifdef LEGACY_SYSCALLS_PRESENT
 /* SYS_RUN (19): drop the current task to ring 3 at an already-loaded image.
  * Capability (slot 3, WRITE|EXEC) is enforced centrally by the dispatch table. */
 static void h_run(struct interrupt_frame64 *r) {
@@ -864,6 +918,7 @@ static void h_receive_program(struct interrupt_frame64 *r) {
 
     r->rax = 0;
 }
+#endif /* LEGACY_SYSCALLS_PRESENT */
 
 /* SYS_AUTH: authenticate the calling task as a user (sets uid/gid on success). */
 
@@ -1329,7 +1384,15 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
      * legacy CAP_FRAME that create_task installs in EVERY task, with
      * READ|WRITE|EXEC, and SC_ANYTYPE accepts any type -- so all three were
      * satisfied by a capability nobody asked for and everybody has. That is
-     * [C-1]'s shape, and these were the last three gates still wearing it.
+     * [C-1]'s shape.
+     *
+     * THIS COMMENT USED TO END "and these were the last three gates still
+     * wearing it", and that was wrong for a year of commits. #201 found a
+     * fourth the next day (SYS_EXEC_LEGACY, below), audit 4.1 found five more
+     * on 2026-08-30, and SYS_EXEC and SYS_RECEIVE_PROGRAM carried the identical
+     * row in the SHIP build until 2026-09-03. A sweep cannot certify itself
+     * complete; tools/check_dispatch_gates.py is what says so now, by reading
+     * this table rather than trusting a sentence in it (S79).
      *
      * They are removed rather than re-gated, following syscalls 38-45: the
      * ramfs is an in-kernel toy superseded by fs_server, no ring-3 program in
@@ -1375,7 +1438,12 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
 #endif
     [SYS_WAIT]                     = { h_wait,                    SC_NONE, 0, SC_ANYTYPE },
     [SYS_GET_TASK_INFO]            = { h_task_info,               SC_NONE, 0, SC_ANYTYPE }, /* self, or admin/audit in handler */
+    /* SYS_EXEC (19): retired 2026-09-03, slot-3 decoy gate and no caller.
+     * See the block above h_run. Absent entries fail closed at SYS_ERR_NOSYS
+     * by table dispatch, which is what passwdprobe asserts. */
+#ifdef LEGACY_SYSCALLS_PRESENT
     [SYS_EXEC]                     = { h_run,                     3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
+#endif
     /* IPC is capability-ADDRESSED (audit finding C-1): the first argument is a
      * cspace slot, and the handler resolves it through cap_lookup to the endpoint
      * or notification it names — checking type, right, and lineage in one place
@@ -1392,7 +1460,11 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_IPC_REPLY]                = { h_ipc_reply,               SC_NONE, 0, SC_ANYTYPE },
     [SYS_NOTIFY]                   = { h_notify,                  SC_NONE, 0, SC_ANYTYPE },
     [SYS_WAIT_NOTIFY]              = { h_wait_notify,             SC_NONE, 0, SC_ANYTYPE },
+    /* SYS_RECEIVE_PROGRAM (27): retired 2026-09-03, slot-3 decoy gate over a
+     * transport nothing wires. See the block above h_run. */
+#ifdef LEGACY_SYSCALLS_PRESENT
     [SYS_RECEIVE_PROGRAM]          = { h_receive_program,         3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE },
+#endif
     [SYS_SPAWN]                    = { h_spawn,                   SC_NONE, 0, SC_ANYTYPE }, /* CAP_UNTYPED, resolved in the handler: creating a task costs a cspace */
     [SYS_EXEC_NAMED]               = { h_exec_named,              SC_NONE, 0, SC_ANYTYPE }, /* self only: replaces the CALLER's image, creates no task */
     [SYS_CAP_GRANT]                = { h_cap_grant,               SC_NONE, 0, SC_ANYTYPE }, /* CAP_TCB-to-target/admin in handler */

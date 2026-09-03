@@ -873,7 +873,7 @@ static const char *const d_run[] = {
     0 };
 
 static const char *const d_spawn[] = {
-    "Spawn an embedded binary by name, or the last image armed by receive(1).",
+    "Spawn an embedded binary by name, or the last image armed by `run`.",
     "",
     "The child inherits your uid, and only the capabilities the spawner passes",
     "down. There is no ambient authority: a spawned task can do nothing its",
@@ -1160,7 +1160,7 @@ static void show_general_help_us(void) {
     println("  PROCESSES");
     print_cmd("ps",                "list visible tasks (non-root sees only its own)");
     print_cmd("spawn <name>",      "spawn an embedded binary (hello/captest/fs_server)");
-    print_cmd("spawn",             "spawn the last image armed via 'receive'");
+    print_cmd("spawn",             "spawn the last armed image");
     print_cmd("mem",               "allocate a page from the heap (sbrk demo)");
     print_cmd("yield",             "voluntarily hand the CPU to another task");
     println("");
@@ -1171,8 +1171,6 @@ static void show_general_help_us(void) {
     print_cmd("wait_notify",       "block until a notification badge arrives");
     println("");
     println("  LOADER (over serial)   and   SESSION");
-    print_cmd("receive",           "receive a program image over serial, arm it");
-    print_cmd("load",              "receive + spawn in one step");
     print_cmd("help [topic]",      "this list, or details for a command or group");
     print_cmd("man <command>",     "full reference page for one command");
     print_cmd("apropos <keyword>", "search the manual pages by keyword");
@@ -1263,11 +1261,9 @@ static void show_topic_help_us(const char *topic) {
         println("  Programs can be streamed in over the serial loader port, staged, and then");
         println("  spawned - the kernel validates every image (W^X, bounds) before it runs.");
         println("");
-        print_cmd("receive",       "receive an image over serial, arm it");
         print_cmd("spawn",         "spawn the armed image");
-        print_cmd("load",          "receive + spawn in one step");
         println("");
-        println("  Detail:  help receive | help load | help spawn");
+        println("  Detail:  help run | help spawn");
         return;
     }
 
@@ -1327,7 +1323,7 @@ static void show_topic_help_us(const char *topic) {
     } else if (strcmp(t,"spawn")==0) {
         help_line("Purpose:", "Launch an embedded binary, or the last image you armed.");
         help_line("Usage:",   "spawn <name>    hello | captest | fs_server");
-        help_line("",         "spawn           the image armed via 'receive'");
+        help_line("",         "spawn           the last armed image");
         help_line("Example:", "spawn fs_server");
         help_line("Notes:",   "The child gets a fresh address space and only the capabilities");
         help_line("",         "the shell delegates - never the shell's full authority.");
@@ -1396,16 +1392,6 @@ static void show_topic_help_us(const char *topic) {
         help_line("Notes:",   "Badges OR together until consumed; a waiter wakes with the");
         help_line("",         "accumulated value. Needs a slot-3 capability.");
         help_line("See also:","ipc_send, ipc_recv");
-    } else if (strcmp(t,"receive")==0) {
-        help_line("Purpose:", "Receive a program image over the serial loader and arm it.");
-        help_line("Usage:",   "receive");
-        help_line("Notes:",   "Follow with 'spawn' to run it, or use 'load' to do both.");
-        help_line("See also:","load, spawn");
-    } else if (strcmp(t,"load")==0) {
-        help_line("Purpose:", "Receive an image over serial and immediately spawn it.");
-        help_line("Usage:",   "load");
-        help_line("Notes:",   "Equivalent to 'receive' followed by 'spawn'.");
-        help_line("See also:","receive, spawn");
     } else if (strcmp(t,"fss")==0 || strncmp(t,"fss_",4)==0) {
         help_line("Purpose:", "Low-level demo client that talks to the fs_server directly.");
         help_line("Usage:",   "fss | fss_connect | fss_ls | fss_cat <name>");
@@ -2270,7 +2256,7 @@ static void handle_command(char *cmd) {
                     println("sudo: incorrect password or locked out");
                 } else if (r == SYS_ERR_NOENT) {
                     println("sudo: authenticated, but no image is armed to elevate");
-                    println("      arm one first (see 'help receive' / 'help spawn')");
+                    println("      arm one first (see 'help run' / 'help spawn')");
                 } else {
                     print("sudo: failed (");
                     print(sys_strerror(r));
@@ -2454,22 +2440,12 @@ static void handle_command(char *cmd) {
          * cap_mint / cap_revoke / cap_create / cap_delete) was removed; the
          * encrypted fs_server is the filesystem now. */
         println("removed: use the fs_server commands (ls, cat, rm, mkdir, touch)");
-    } else if (strcmp(cmd, "receive") == 0) {
-        struct program_header h;
-        int r = sys_receive_program(&h);
-        if (r == 0) {
-            print("Received '");
-            print(h.name);
-            print("' (");
-            print_decimal(h.size);
-            println(" bytes) - armed for spawn");
-        } else if (r == -1) {
-            println("Bad magic");
-        } else if (r == -2) {
-            println("Invalid size");
-        } else {
-            println("Receive error");
-        }
+    /* `receive` and `load` drove SYS_RECEIVE_PROGRAM, retired 2026-09-03:
+     * its gate was the [C-1] slot-3 decoy, its transport (COM2) is attached
+     * by no target in this tree, and its success path could not be reached
+     * anyway -- docs/LIMITATIONS.md 2.18. `run <file>` is how an image gets
+     * into a task now: it reads the file over fs_server and hands the bytes
+     * to SYS_SPAWN_IMAGE, which validates them with the same loader. */
     } else if (strcmp(cmd, "spawn") == 0 || strncmp(cmd, "spawn ", 6) == 0) {
         int pid;
         if (cmd[5] == ' ') {
@@ -2493,24 +2469,6 @@ static void handle_command(char *cmd) {
             println("");
         } else if (pid < 0) {
             println("Spawn failed (no armed image or no free task slot)");
-        }
-    } else if (strcmp(cmd, "load") == 0) {
-        struct program_header h;
-        int r = sys_receive_program(&h);
-        if (r != 0) {
-            println("Receive failed");
-            return;
-        }
-        int pid = sys_spawn();
-        if (pid > 0) sys_task_resume(pid);   /* spawn leaves the child suspended */
-        if (pid > 0) {
-            print("Loaded '");
-            print(h.name);
-            print("' as pid ");
-            print_decimal(pid);
-            println("");
-        } else {
-            println("Spawn failed after receive");
         }
     } else if (strncmp(cmd, "run ", 4) == 0) {
         /* execve-from-fd: read a program image from a file in the encrypted FS

@@ -115,7 +115,9 @@ int  arm_image_from_user(addr_t ubuf, uint32_t len, const char *name_hint); /* l
 int  try_elf_load(uint64_t load_base, uint64_t *out_entry, uint64_t *out_img_end); /* loader.c */
 void choose_image_placement(int tid, uint64_t *out_load_base, uint64_t *out_stack_top); /* loader.c */
 void load_staged_image_into(int tid, uint64_t load_base);                  /* loader.c */
+#if defined(DEBUG_SHELL) || defined(LEGACY_SYSCALLS_PRESENT)
 int  do_receive_program(struct program_header *hdr_out);                   /* loader.c */
+#endif
 void loader_arm_commit(void);                                              /* loader.c */
 void loader_disarm(void);                                                  /* loader.c */
 int  staged_image_owned_by_current(void);                                  /* loader.c */

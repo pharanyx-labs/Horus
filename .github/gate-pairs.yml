@@ -129,6 +129,8 @@ control_arms:
   smoke-nzcow-arena-control: smoke-nzcow
   smoke-passwd-probe-control: smoke-passwd-probe
   smoke-passwd-probe-legacy-control: smoke-passwd-probe
+  smoke-passwd-probe-recv27-control: smoke-passwd-probe
+  smoke-passwd-probe-exec19-control: smoke-passwd-probe
   smoke-proc-taskinfo-control: smoke-proc
   smoke-repro-sha-control: smoke-repro-sha
   smoke-resume-guard-ist-control: smoke-resume-guard-ist

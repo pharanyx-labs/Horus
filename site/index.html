@@ -959,7 +959,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           </p>
           <p>
             The ABI defines <strong>113 syscall numbers</strong>. The dispatch table is sized to
-            the highest of them plus one, and a default build installs <strong>95
+            the highest of them plus one, and a default build installs <strong>93
             handlers</strong>, the remainder are reserved, or are test-only calls compiled out
             entirely. Every one of those gaps answers <code>SYS_ERR_NOSYS</code>. That difference
             is the fail-closed property, not an oversight: a shipping kernel denies the debug
@@ -1479,7 +1479,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 242 test targets, and the troubleshooting
+          Every configuration flag, every one of the 244 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1757,6 +1757,27 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               out of the memory budget the parent holds a capability to. A task given no such
               budget cannot create tasks &mdash; which is what that check had always claimed to
               mean.
+            </p>
+            <p>
+              <strong>And a third home, closed 2026-09-03 &mdash; the part that changed how this
+              is checked.</strong> Two more calls still carried the identical row in the shipping
+              kernel: one dropped the caller into user mode at an address it chose, the other
+              armed a program image for execution. Neither had a caller anywhere in the tree, and
+              the second read its image from a serial port nothing in the project connects. What
+              makes this worth publishing is not the two calls but how they survived: <em>the
+              project had already written the fact down.</em> A machine-readable manifest of
+              syscall test coverage had said of one of them, for two weeks, that &ldquo;the slot-3
+              check does not stop a caller, and a successful call arms an image&rdquo; &mdash;
+              sitting under a heading that made the same claim about three calls which had since
+              been fixed. One true sentence beside three stale ones, in a field nothing asserts.
+            </p>
+            <p>
+              A fact in a comment is not a gate, and three sweeps in a row certified themselves
+              complete. So the fix is not a fourth sweep: a required check now parses the kernel's
+              dispatch table the way the compiler does and fails the build on any shipping entry
+              gated on that slot. It is falsified four ways, including against a renamed table
+              &mdash; because every other rule in it is vacuous if the parser has quietly stopped
+              matching, and a check that cannot fail is the thing this whole finding is about.
             </p>
           </li>
           <li>
@@ -2234,12 +2255,12 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <h3><span class="id">coverage</span>Eleven system calls still have no test that runs them &mdash; and covering two of them found a fault</h3>
             <p>
               <strong>Measured 2026-08-20</strong>, and checked on every merge since.
-              <strong>83 of 95</strong> system calls have their handler actually executed by the
+              <strong>83 of 93</strong> system calls have their handler actually executed by the
               three workloads this project tracks, a scripted end-to-end session, the
-              permission conformance suite, and the boot-modules session. The other 12 are each
-              <strong>83 of 95</strong> system calls have their handler actually executed by the
+              permission conformance suite, and the boot-modules session. The other 10 are each
+              <strong>83 of 93</strong> system calls have their handler actually executed by the
               three workloads this project tracks, a scripted end-to-end session, the
-              permission conformance suite, and the boot-modules session. The other 12 are each
+              permission conformance suite, and the boot-modules session. The other 10 are each
               listed with a written reason.
             </p>
             <p>
@@ -2285,7 +2306,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
             <p>
               The build can record the first time each call's body is entered and say so on the
-              wire, and a checked-in file classifies all 95 implemented syscalls, covered or not
+              wire, and a checked-in file classifies all 93 implemented syscalls, covered or not
               covered with a reason. The check fails if a call is in neither list, if a covered
               one stops being exercised, if an uncovered one starts being exercised and its
               reason has gone stale, or if the recording produced nothing at all. That last case

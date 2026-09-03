@@ -198,6 +198,7 @@ list is derived from, because that is what it got wrong: it enumerates gates tha
 | `SYS_READ` fd 0 / `SYS_GET_LINE` | none, but both refuse once `console_hw_owned()` | Correctly mitigated; the guard is present and deliberate |
 | `SYS_SYSINFO` | none | A version string. Acceptable, and marked ambient in `SYSCALLS.md` |
 | `SYS_OPEN`, `15` (ramfs create), `16` (ramfs list), `SYS_READ` fd ≥ 3 | cspace slot 3, `SC_ANYTYPE` | **Missing from this table until 2026-08-22, and the omission is the point**: see **[H-3]** below. Slot 3 holds the legacy `CAP_FRAME` every task is born with, so all four were gated on nothing. **Fixed 2026-08-22**: retired |
+| `SYS_EXEC` (19), `SYS_RECEIVE_PROGRAM` (27) | cspace slot 3, `SC_ANYTYPE` | **Missing from this table until 2026-09-03, which is the third time this table was short.** Same decoy, in the **ship** build, on a call that drops the caller to ring 3 at an address it picks and one that arms a program image. **Retired 2026-09-03** (**S79**): see §1.6c |
 
 > *This table was headed "the complete residual list" from 2026-08-20 and was not complete: it
 > named the four paths gated on **nothing** and missed the four gated on a capability that is
@@ -205,6 +206,14 @@ list is derived from, because that is what it got wrong: it enumerates gates tha
 > produced this section looked for the first shape only. The lesson generalises past the four
 > rows: **"ungated" and "gated on something every task holds" are the same security property
 > and were being counted differently.***
+>
+> ***It was incomplete twice more after that, which is why this table is no longer the check.***
+> §1.6b (2026-08-30) closed five entries of a set its own first sentence counted as **seven**.
+> The remaining two sat in the ship build until 2026-09-03 (§1.6c). Three sweeps, each certifying
+> itself complete, each leaving rows behind: the conclusion is not that the next hand-written list
+> should be more careful but that **a hand-written list cannot hold this property at all**.
+> `tools/check_dispatch_gates.py` reads the dispatch table on every build. This table stays as a
+> record of the reasoning, not as the enumeration.
 
 **[H-2]** was the one with teeth, and it was an asymmetry rather than an oversight in isolation:
 the *read* side of the kernel log was converted to require `CAP_KERNEL_LOG` under **[I-1]**
@@ -330,15 +339,25 @@ gates verbatim and reproduces all four openings on every boot.
 
 *Found 2026-08-30 by audit, and it is **[H-3]**'s shape rather than **[H-3]** itself.*
 
-Seven dispatch entries authorise on cspace **slot 3** with `SC_ANYTYPE`:
+Seven dispatch entries authorise on cspace **slot 3** with `SC_ANYTYPE`. **This block listed
+five of them until 2026-09-03**, and the two it left out are §1.6c:
 
 ```c
-[SYS_SPAWN]       = { h_spawn,       3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE }
-[SYS_SPAWN_IMAGE] = { h_spawn_image, 3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE }
-[SYS_EXEC_NAMED]  = { h_exec_named,  3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE }
-[SYS_EXEC_IMAGE]  = { h_exec_image,  3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE }
-[SYS_FORK]        = { h_fork,        3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE }
+[SYS_SPAWN]           = { h_spawn,            3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE }
+[SYS_SPAWN_IMAGE]     = { h_spawn_image,      3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE }
+[SYS_EXEC_NAMED]      = { h_exec_named,       3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE }
+[SYS_EXEC_IMAGE]      = { h_exec_image,       3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE }
+[SYS_FORK]            = { h_fork,             3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE }
+[SYS_EXEC]            = { h_run,              3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE }  /* §1.6c */
+[SYS_RECEIVE_PROGRAM] = { h_receive_program,  3, CAP_RIGHT_WRITE | CAP_RIGHT_EXEC, SC_ANYTYPE }  /* §1.6c */
 ```
+
+> ***The count was right and the list was two short, and the section was closed on the list.***
+> This is kept rather than tidied because it is the only evidence of how the two survived: the
+> number seven was derived from the table and is correct; the five rows beneath it were typed out;
+> the prose that follows says "the five task-creating syscalls" and marks the section CLOSED. Two
+> entries were named by the arithmetic and by nothing else. §1.6c retires them and replaces the
+> arithmetic with `tools/check_dispatch_gates.py`, which enumerates rather than counts.
 
 `create_task` installs a `CAP_FRAME` in slot 3 of **every** task with exactly
 `READ|WRITE|EXEC` (`src/kernel/scheduler.c`), so `WRITE|EXEC` on slot 3 is satisfied by a
@@ -408,7 +427,70 @@ rather than receiving a sub-budget; per-delegate accounting is what a `SYS_UNTYP
 buy. And a task is still not retyped from untyped as a `KOBJ_TASK` in the seL4 sense — the TCB
 storage is still `tasks[]`. What is now true is that creating one costs authority somebody holds.
 
- ### 1.7 ~~Two syscall wrappers truncated their buffer pointer to 32 bits~~ (**FIXED
+### 1.6c ~~Two ship-build syscalls were gated on the same decoy, and the count had said so~~: CLOSED 2026-09-03
+
+*Found 2026-09-03 while deciding the order of repairs for §2.18. `SECURITY.md` **S79**.*
+
+`SYS_EXEC` (19) and `SYS_RECEIVE_PROGRAM` (27) were the two entries §1.6b counted and did not
+list. Both read `{ handler, 3, CAP_RIGHT_WRITE|CAP_RIGHT_EXEC, SC_ANYTYPE }` in the **ship**
+dispatch table, so both were authorised by the `CAP_FRAME` `create_task` installs in every task.
+
+**What each did, and why neither is re-gated.** `SYS_EXEC` (`h_run`) sets
+`heap_current = heap_start` and then `drop_to_ring3(load_base + entry, esp)` — it transfers
+control to a ring-3 address of the caller's choosing with nothing validated about what is there.
+It had a wrapper (`sys_exec`, `include/syscall.h`) and **no caller anywhere in the tree**, and is
+superseded by `SYS_EXEC_NAMED` and `SYS_EXEC_IMAGE`, which validate an image through the loader
+first (**S42**). `SYS_RECEIVE_PROGRAM` (`h_receive_program`) staged a program image read byte by
+byte off COM2; **no target in this tree attaches a second serial**, and `do_receive_program`
+calls `loader_disarm()` *before* the read, so the reachable effect of the call was to destroy
+whatever image another task had staged and then report a magic failure. Retirement is the same
+answer syscalls 5, 6, 7 and 14 got on 2026-08-23 and for the same reasons; the numbers stay
+reserved and the wrappers go with the rows, because a wrapper is the ring-3-facing half of a
+syscall and leaving one behind is how a retired number keeps looking available.
+
+**How much this conferred, stated honestly.** Less than §1.6a and more than §1.6b.
+`SYS_RECEIVE_PROGRAM` could not succeed at all (§2.18), so what a caller got was the *disarm*: a
+denial-of-service on another task's staged image, plus a blocking read whose cost is
+hardware-dependent (an absent COM2 floats and answers `0xFF` immediately; a real COM2 with
+nothing sending spins). `SYS_EXEC` is the one that could have mattered — an arbitrary ring-3
+entry point on a reset heap — and nothing called it, so nothing exercised it. Neither is an
+escalation of the §1.6a kind. **What both were is authority the capability graph did not
+describe**, which is the property this project claims, not a severity estimate.
+
+**The ordering was forced, and it is the reason this section exists before §2.18 is fixed.**
+Repairing §2.18's struct first would have made `h_receive_program` succeed for the first time —
+turning a decoy-gated, disarm-first handler from a dead path into a live one. The transport was
+harmless *because the header was broken*, and "safe because something else breaks first" is the
+shape **S28**, **S30** and **S38** all turned out to have. It is a coincidence, not a property.
+So the gate shipped first and §2.18 stays open, correctly described.
+
+**And the fact was already written down, in a field nothing asserts.**
+`.github/syscall-coverage.yml` had recorded against `SYS_RECEIVE_PROGRAM` since 2026-08-20 that
+*"the slot-3 check does not stop a caller, and a successful call arms an image"* — accurate, and
+sitting beneath a group header that made the same claim about `SYS_FORK`, `SYS_EXEC_NAMED` and
+`SYS_EXEC_IMAGE`, all three of which §1.6b had fixed on 2026-08-30 without the header being
+touched. One true sentence beside three stale ones. Together with §1.6b's short list and
+[H-3]'s *"these were the last three gates still wearing it"*, that is three separate records of
+this property being maintained by hand and being wrong.
+
+**So the witness is a checker, not a fourth sweep.** `tools/check_dispatch_gates.py` (required)
+parses `syscall_table` and fails on any slot-3 row not behind a macro the ship build provably
+lacks — including one hidden in an `#else` arm, which is a ship-build arm. Falsified four ways,
+the fourth being a renamed table, because the other three are vacuous against a parser that has
+silently stopped matching. Runtime witness `make smoke-passwd-probe` (**10 checks**): an
+ordinary uid-1000 task holding nothing calls all six retired numbers and requires
+`SYS_ERR_NOSYS`. Falsified one arm per door —
+`make smoke-passwd-probe-recv27-control` and `make smoke-passwd-probe-exec19-control`, the second
+reporting `SYSCOV 19` from the **kernel** because `h_run` never returns and so destroys any
+ring-3 reporter. `TESTS.md` has why, including the landing pad that printed three bytes.
+
+**The in-kernel `kshell` `receive` command keeps the COM2 machinery**, under `DEBUG_SHELL`: ring
+0, in a build already documented as carrying extra syscall surface (`CLAUDE.md` §6), on a
+transport an operator wires by hand. No capability gate is involved there and none is claimed.
+
+---
+
+### 1.7 ~~Two syscall wrappers truncated their buffer pointer to 32 bits~~ (**FIXED
 2026-08-20**) issue #176
 
 `sys_dmesg()` and `sys_audit_digest()` passed their buffer as
@@ -453,12 +535,12 @@ a page at the bogus address and reported success.
 ### 1.8 Part of the syscall table has no test that runs its handler, and one of those gaps hid a defect
 
 **Measured since 2026-08-20**, and re-derived on every merge rather than restated: as of
-2026-09-01, and gated since: **83 of 95** implemented syscalls have their handler
+2026-09-01, and gated since: **83 of 93** implemented syscalls have their handler
 body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
-boot-modules session). The other 12 are listed in `.github/syscall-coverage.yml`, each with a written reason.
-2026-08-30, and gated since: **83 of 95** implemented syscalls have their handler
+boot-modules session). The other 10 are listed in `.github/syscall-coverage.yml`, each with a written reason.
+2026-08-30, and gated since: **83 of 93** implemented syscalls have their handler
 body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
-boot-modules session). The other 12 are listed in `.github/syscall-coverage.yml`, each with a written reason.
+boot-modules session). The other 10 are listed in `.github/syscall-coverage.yml`, each with a written reason.
 
 This was stated as a limitation rather than a finding, on the grounds that nothing here was
 known to be broken. **That is no longer the honest framing, and it has now been wrong twice.**
@@ -493,9 +575,9 @@ once rather than the one syscall that motivated it. And third, **neither would h
 by a wider `captest`**: both syscalls are gated on a real capability, so the only way in is a
 task that holds one, which is why the answer was a new task rather than a bigger suite.
 
-So the standing risk is not hypothetical: a defect in any of those 12 handlers is invisible in
+So the standing risk is not hypothetical: a defect in any of those 10 handlers is invisible in
 the same way issue #176 was, and in the way S52 and S71 just were. `captest` is a **refusal** suite by
-So the standing risk is not hypothetical: a defect in any of those 12 handlers is invisible in
+So the standing risk is not hypothetical: a defect in any of those 10 handlers is invisible in
 the same way issue #176 was, and in the way S52 just was. `captest` is a **refusal** suite by
 construction: its checks for `SYS_DMESG` and `SYS_AUDIT_DIGEST` both assert `SYS_ERR_PERM`, and
 the capability gate returns before the handler runs. Both syscalls were named by the suite;
@@ -1405,8 +1487,18 @@ carried whatever the slot held, 0 on a fresh slot, the previous occupant's uid o
 Since **S18** uid 0 confers no kernel authority, but `fs_server` enforces file permissions
 against the kernel-attested uid (**S13**/**S14**).
 
-Witness `make smoke-passwd-probe` (8 checks), falsified by
-`make smoke-passwd-probe-legacy-control`.
+Witness `make smoke-passwd-probe` (10 checks), falsified by
+`make smoke-passwd-probe-legacy-control` and the two arms §1.6c adds.
+
+---
+
+### 2.10a Two more syscalls had no caller either, and were retired with them
+
+`SYS_EXEC` (19) and `SYS_RECEIVE_PROGRAM` (27) were retired on 2026-09-03 in the same state 2.10
+describes — a live handler in the ship build with no caller in the tree — and for an additional
+reason that makes them a §1 finding rather than a §2 one: both were gated on the **[C-1]** decoy.
+The account is **§1.6c**, and the property is `SECURITY.md` **S79**. `make smoke-passwd-probe` is
+the witness both sections share, and it is 10 checks rather than 8 because of them.
 
 ---
 
@@ -1736,46 +1828,66 @@ with the library's capabilities.
   `-fvisibility=hidden`: an exported symbol can be interposed, so the linker emits
   `R_X86_64_64` against the dynamic symbol for it.
 
-### 2.18 `SYS_RECEIVE_PROGRAM` cannot succeed, and the reason is a struct with two definitions
+### 2.18 The `.bin` container format is written down four times and no two copies are connected
+
+*Filed 2026-09-01 as "`SYS_RECEIVE_PROGRAM` cannot succeed". Restated 2026-09-03: that syscall
+is retired (§1.6c), so what remains is the duplication behind it rather than the dead call.*
 
 `struct program_header` is declared in both headers and they describe different things. The
 kernel's (`src/include/kernel.h`) is an **ELF** program header — `type`, `offset`, `vaddr`,
 `paddr`, `filesz`, `memsz`, `flags`, `align` — with four Horus staging fields appended
-(`name[32]`, `size`, `magic`, `entry`): **104 bytes**. Ring 3's (`include/syscall.h`) is the
-staging header alone, `{magic, entry, size, name[32]}`: **44 bytes**. One name, no compiler that
-sees both.
+(`name[32]`, `size`, `magic`, `entry`): **104 bytes**, `magic` at offset **96**. Ring 3's
+(`include/syscall.h`) is the staging header alone, `{magic, entry, size, name[32]}`: **44
+bytes**, `magic` at offset **0**. One name, no compiler that sees both.
 
-It breaks the transfer in two independent places, and the second is why the first has never
-been reached.
+**Neither declaration is the format, which is the actual finding.** The `program_header_t`
+typedef has **no uses**, and not one of the eight ELF fields is read anywhere — the kernel only
+ever touches `magic`, `entry`, `size` and `name`. What defines the wire format is a **third**
+copy, private to `tools/mkheadered.c`, the tool that writes every `.bin` in the tree; and what
+reads it is a **fourth** and fifth, two hand-rolled parsers in `src/kernel/loader.c`
+(`arm_named_binary` and `arm_image_from_user`) that take `magic` from byte 0, `entry` from 4,
+`size` from 8, `name` from 12 and the payload from a literal `44`, with `0x55524F48` spelled out
+at each site. So the two declarations that share a name are the two nothing uses, and the three
+that matter agree only because someone kept them in step by hand.
 
-- **`h_receive_program` copies the kernel's size.** `copy_to_user(user_hdr, &k_hdr,
-  sizeof(k_hdr))` writes 104 bytes into an object ring 3 sized at 44. The shell's `receive` and
-  `load` commands declare `struct program_header h;` **on the stack**, so a successful transfer
-  would write 60 bytes past it — and then read `h.name` at offset 12, where the kernel wrote the
-  low half of `vaddr`.
-- **The wire format disagrees too, and fails closed.** `loader_receive_to_staging` reads
-  `sizeof(hdr)` = 104 bytes off serial port 2, but the uploader sends the 44-byte header
-  `tools/mkheadered` writes, followed by the payload. So `magic` is tested at offset 96 against
-  payload bytes, essentially never matches `0x55524F48`, and the command answers **"Bad magic"**
-  every time. The overrun above is therefore unreachable, and the feature is simply broken.
+That is `include/block_size.h`'s lesson one subsystem over — 512 was not a constant but an
+assumption repeated in six places — and the repair is the same shape as **S71**'s: one header
+both sides include, offsets from `offsetof` rather than from literals, and a `_Static_assert` per
+field. It is filed rather than done because it is a second commit's worth of work and the
+ordering mattered more than the tidiness (below).
 
-**This is `SECURITY.md` S71's defect in a second struct**, found by the same question on the
-same day, and it is filed rather than fixed because the two are not the same size of job:
-S71's was a struct rename and a projection, this one needs a decision about what the loader's
-**transport** format is before anything can be made to agree with anything. Fixing the export
-without fixing the wire read would produce a transfer that still cannot succeed.
+**What the divergence did, and why it never fired.** `h_receive_program` copied
+`sizeof(k_hdr)` — the **kernel's** 104 — into an object ring 3 sized at 44. The shell's
+`receive` and `load` declared `struct program_header h;` **on the stack**, so a successful
+transfer would have written 60 bytes past it, then read `h.name` at offset 12 where the kernel
+had put the low half of `vaddr`. It was unreachable because the **wire read** disagreed too:
+`loader_receive_to_staging` read `sizeof(hdr)` = 104 bytes where the uploader sends 44 plus
+payload, so `magic` was tested at offset 96 against payload bytes and the command answered
+**"Bad magic"** every time.
 
-It is also **`§1.8`'s pattern for the third time**: `SYS_RECEIVE_PROGRAM` is on the `uncovered`
-list, nothing enters the handler, and a feature that cannot work has sat in the shell's command
-table unnoticed. Nothing found it by reading; it fell out of enumerating what crosses the ring
-boundary.
+**THE ORDER OF REPAIRS IS THE POINT, and it is why this section is still here.** Fixing the
+struct first would have made `h_receive_program` reachable for the first time — and its gate was
+cspace slot 3, the `CAP_FRAME` every task holds, over a transport nothing attaches, entered
+after `loader_disarm()` had destroyed a peer's staged image. The transport was only harmless
+because the header broke first. **"Safe because something else breaks first" is the shape S28,
+S30 and S38 all turned out to have**; it is a coincidence, not a property, and repairing the
+coincidence without the gate would have converted a dead path into a live one. So the syscall
+was retired first (§1.6c, **S79**) and the duplication is what is left.
+
+**Still reachable, and bounded.** The COM2 reader survives under `DEBUG_SHELL` for the
+in-kernel `kshell` `receive` command — ring 0, in a build documented as carrying extra surface,
+on a transport an operator wires by hand. Nothing in ring 3 reaches either declaration now, so
+the remaining risk is drift between the three copies that do the work, not a copy past the end
+of a user buffer.
 
 **Gated, so it cannot be forgotten and cannot quietly change shape.**
-`tools/check_abi_structs.py` now *discovers* every struct defined in both headers rather than
+`tools/check_abi_structs.py` *discovers* every struct defined in both headers rather than
 comparing a hand-written list — the rule that would have caught S71 — and `program_header` is
 its one `UNRESOLVED` entry, carrying this section's number. The checker fails if it is removed,
-if another unenrolled struct appears, **and if `program_header` starts agreeing**, at which
-point the exemption has outlived its reason and this section should close.
+if another unenrolled struct appears, **and if `program_header` starts agreeing**. Unifying it
+into a shared header will trip that last rule on purpose: the name leaves both headers, so the
+entry must be **removed deliberately** at the same time, exactly as `audit_record` is not
+enrolled because there is only one of it.
 
 ## 3. Scale and performance limitations
 

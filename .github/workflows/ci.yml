@@ -1930,6 +1930,17 @@ jobs:
       # as it then stood.
       - name: Control arm — the retired legacy syscalls, including the one that spawns a task
         run: make smoke-passwd-probe-legacy-control
+      # The sixth and seventh doors, found 2026-09-03: SYS_RECEIVE_PROGRAM (27)
+      # and SYS_EXEC (19) carried the identical slot-3 row in the SHIP build
+      # while three sweeps and a coverage manifest described that shape as
+      # closed. Two arms rather than one because both of the probe's new checks
+      # are terminal under the flag, so each needs its own marker -- and 19's
+      # marker has to come from the kernel (SYSCOV, at handler entry) because
+      # h_run does not return and so destroys the ring-3 reporter.
+      - name: Control arm — arming a program image on the slot-3 decoy
+        run: make smoke-passwd-probe-recv27-control
+      - name: Control arm — syscall 19 enters its handler for a task holding nothing
+        run: make smoke-passwd-probe-exec19-control
 
   frame:
     name: "A frame capability names an object, and a delegate maps only what it holds"
@@ -3369,6 +3380,15 @@ jobs:
       # user buffer or a driver reading the wrong MMIO range.
       - name: Every ABI struct is identical in both headers
         run: python3 tools/check_abi_structs.py
+      # Fourth instance, and the one with the longest history of being missed by
+      # hand. A dispatch row gated on cspace slot 3 is gated on the CAP_FRAME
+      # create_task installs in EVERY task -- [C-1]'s decoy, and by S28 not a
+      # gate. Three sweeps enumerated that shape and each left rows behind
+      # ([H-3] 2026-08-22, #201 2026-08-23, audit 4.1 2026-08-30); the last two
+      # survivors, SYS_EXEC and SYS_RECEIVE_PROGRAM, were retired 2026-09-03.
+      # This reads the table the compiler reads so a fourth sweep is not needed.
+      - name: No ship-build syscall is gated on the slot-3 decoy
+        run: python3 tools/check_dispatch_gates.py
       # Third instance of the same class in the same job: a property two places
       # must agree on, with nothing comparing them. Here the two places are the
       # marker a gate asserts and the writes that emit it. docs/LIMITATIONS.md

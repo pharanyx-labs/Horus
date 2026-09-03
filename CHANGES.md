@@ -17,6 +17,53 @@ in this file.
 
 ### Fixed
 
+- **[C-1]'s decoy still gated two ship-build syscalls, and the fact had been written down for
+  two weeks.** `SYS_EXEC` (19) and `SYS_RECEIVE_PROGRAM` (27) read
+  `{ handler, 3, CAP_RIGHT_WRITE|CAP_RIGHT_EXEC, SC_ANYTYPE }`. Cspace slot 3 is the `CAP_FRAME`
+  `create_task` installs in **every** task with exactly those rights, so the row authorised every
+  ring-3 caller -- by **S28**, not a gate. One drops the caller to ring 3 at `load_base + entry`
+  with nothing validated; the other arms a program image after `loader_disarm()` has destroyed
+  whatever a peer had staged.
+
+  **Three sweeps had enumerated this exact shape and each left rows behind.** [H-3] (2026-08-22)
+  removed three and its comment in the table called them *"the last three"*; #201 (2026-08-23)
+  found a fourth, invisible because the entry was the bare index `[14]`; audit 4.1 (2026-08-30)
+  moved the five task-creating syscalls to `CAP_UNTYPED` (**S57**) and called the old gate
+  "vacuous". None named 19 or 27. And this was not a discovery: `.github/syscall-coverage.yml`
+  had recorded, against `SYS_RECEIVE_PROGRAM`, since 2026-08-20, that *"the slot-3 check does not
+  stop a caller, and a successful call arms an image"* -- under a group header asserting the same
+  shape for `SYS_FORK`, `SYS_EXEC_NAMED` and `SYS_EXEC_IMAGE`, **all three of which had been
+  fixed on 2026-08-30 without that header being touched**. One accurate sentence beside three
+  stale ones, in a reason field, gating nothing.
+
+  **Both retired rather than re-gated**, following 5, 6, 7 and 14: neither had a caller,
+  `SYS_EXEC` is superseded by `SYS_EXEC_NAMED`/`SYS_EXEC_IMAGE` (which validate an image first),
+  and `SYS_RECEIVE_PROGRAM`'s transport is a second serial port **no target in this tree
+  attaches**. Numbers reserved as 38-45 are; wrappers removed too, because a wrapper is the
+  ring-3-facing half of a syscall. The in-kernel `kshell` `receive` keeps the COM2 machinery under
+  `DEBUG_SHELL` -- ring 0, in a build already documented as extra surface, on a transport an
+  operator wires by hand.
+
+  **The order was forced.** `docs/LIMITATIONS.md` 2.18 records that 27's success path was
+  unreachable anyway (`struct program_header` is 104 bytes in the kernel, 44 in ring 3, `magic`
+  tested at offset 96), so repairing that struct first would have made a decoy-gated,
+  disarm-first handler reachable **for the first time**. "Safe because something else breaks
+  first" is the shape **S28**, **S30** and **S38** all turned out to have; the gate ships before
+  the mechanism.
+
+  Invariant: **S79**, and the account is `docs/LIMITATIONS.md` §1.6c. Witness
+  `tools/check_dispatch_gates.py` (required), which reads the
+  dispatch table instead of trusting a sentence in it and is falsified four ways -- an un-guarded
+  row, a row behind an unknown macro, a row in an `#else` arm, and a renamed table (the
+  self-check, since the other three are vacuous against a regex that stopped matching). Runtime
+  witness `make smoke-passwd-probe`, now **10 checks**, falsified one arm per door:
+  `smoke-passwd-probe-recv27-control` (`PASSWDPROBE: FAIL
+  receive-program-reachable-on-the-slot-3-decoy`) and `smoke-passwd-probe-exec19-control`
+  (**`SYSCOV 19`**, a kernel-side marker -- `h_run` never returns, so the defect destroys any
+  ring-3 reporter; a landing pad was tried and printed three bytes before the machine went
+  quiet). Both arms falsified in the other direction: with the flag absent and
+  `SYSCALL_COVERAGE=1` still set, neither `SYSCOV 19` nor `SYSCOV 27` appears.
+
 - **[G-13]: the installer's format bound is a STALL, not a total, and the argument that kept it
   a total was wrong.** `smoke-installer` went red on `main` twice -- 2026-09-01 19:18 and
   2026-09-02 00:20 -- both times a 300s timeout waiting for `INSTALLER: PASS installed`, with

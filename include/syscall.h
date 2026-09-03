@@ -60,10 +60,30 @@ struct program_header {
  * numbers are unchanged — this is a naming change, not an ABI change — and
  * `tools/check_syscall_coverage.py` now refuses a bare numeric entry outright so
  * the hole cannot reopen. */
-#define SYS_CLEAR           5   /* clear the screen; slot-3 WRITE */
-#define SYS_SYSINFO         6   /* kernel version/build readout   */
+
+/* RETIRED, NUMBERS RESERVED. Six of the names above and below are no longer in
+ * the ship build's dispatch table: 5, 6, 7 and 14 went on 2026-08-23, and 19
+ * (SYS_EXEC) and 27 (SYS_RECEIVE_PROGRAM) on 2026-09-03. All but 7 shared one
+ * gate -- cspace slot 3 with SC_ANYTYPE, the CAP_FRAME create_task installs in
+ * every task -- which is [C-1]'s decoy and by S28 not a gate at all.
+ *
+ * The names and numbers stay defined so no future syscall silently inherits one,
+ * exactly as 38-45 do, and `tools/check_dispatch_gates.py` fails the build if a
+ * slot-3 row reappears in the ship table. The rows come back under
+ * LEGACY_SYSCALLS_PRESENT=1, which is what makes their control arms
+ * measurements: passwdprobe calls all six as an ordinary uid-1000 task holding
+ * nothing, and asserts SYS_ERR_NOSYS from each.
+ *
+ * WRAPPERS ARE NOT KEPT. `sys_exec()` and `sys_receive_program()` were removed
+ * with the rows, because a wrapper is the ring-3-facing half of a syscall and
+ * leaving one behind is how a retired number keeps looking available. There is
+ * no wrapper for 5, 6, 7 or 14 either -- 19 and 27 were the two retirements that
+ * HAD one, and the coverage manifest's stated reason for leaving 19 alone
+ * ("it has no userspace wrapper") was wrong on exactly that point. */
+#define SYS_CLEAR           5   /* LEGACY_SYSCALLS_PRESENT only   */
+#define SYS_SYSINFO         6   /* LEGACY_SYSCALLS_PRESENT only   */
 #define SYS_DEBUG_EXEC      7   /* DEBUG_SHELL only; -1 otherwise */
-#define SYS_EXEC_LEGACY     14  /* pre-ELF (load_base, entry) exec */
+#define SYS_EXEC_LEGACY     14  /* LEGACY_SYSCALLS_PRESENT only   */
 #define SYS_RAMFS_CREATE    15  /* RAMFS_SLOT3_GATE only ([H-3])  */
 #define SYS_RAMFS_LIST      16  /* RAMFS_SLOT3_GATE only ([H-3])  */
 #define SYS_SBRK            10
@@ -72,7 +92,7 @@ struct program_header {
 #define SYS_OPEN            13
 #define SYS_WAIT            17
 #define SYS_GET_TASK_INFO   18
-#define SYS_EXEC            19
+#define SYS_EXEC            19  /* LEGACY_SYSCALLS_PRESENT only   */
 #define SYS_GETPID          20
 
 #define SYS_IPC_SEND   21
@@ -82,7 +102,7 @@ struct program_header {
 
 #define SYS_NOTIFY          25
 #define SYS_WAIT_NOTIFY     26
-#define SYS_RECEIVE_PROGRAM 27
+#define SYS_RECEIVE_PROGRAM 27  /* LEGACY_SYSCALLS_PRESENT only   */
 #define SYS_SPAWN           28
 
 #define SYS_GETUID   29
@@ -455,10 +475,6 @@ static inline int sys_kill(int tid) {
 
 static inline int sys_get_task_info(int id, struct task_info *out) {
     return syscall(SYS_GET_TASK_INFO, (uint32_t)id, (uint64_t)(uintptr_t)out, 0);
-}
-
-static inline int sys_exec(uint32_t load_base, uint32_t entry) {
-    return syscall(SYS_EXEC, load_base, entry, 0);
 }
 
 static inline int sys_getpid(void) {
@@ -1143,9 +1159,6 @@ static inline int sys_wait_notify(int notif_slot, uint32_t *out_badge) {
     return (int)ret;
 }
 
-static inline int sys_receive_program(struct program_header *hdr_out) {
-    return syscall(SYS_RECEIVE_PROGRAM, (uint64_t)(uintptr_t)hdr_out, 0, 0);
-}
 
 static inline int sys_spawn(void) {
     return syscall(SYS_SPAWN, 0, 0, 0);

@@ -81,6 +81,7 @@ RUST_TARGET ?= x86_64-unknown-none
 DEFECT_FLAGS = \
 	IRQ_LEGACY_GLOBAL_LOCK USER_HEAP_HIGH_BASE \
 	KFAULT_INJECT KFAULT_LEGACY_PRINTLN \
+	KDIAG_LEGACY_COM1 KDIAG_SPLIT_WIDEN KDIAG_PORTS_GRANTABLE KDIAG_NOISE KDIAG_PROBE KDIAG_RING3_PROBE \
 	KSTACK_RELEASE_EARLY KSTACK_RACE_WIDEN KSTACK0_SHARED_PARK KSTACK0_PARK_TRACE \
 	RESUME_GUARD_FLOOR_ONLY RESUME_GUARD_BSS_ONLY RESUME_GUARD_DISABLE \
 	RESUME_GUARD_LEGACY_FATAL RESUME_RSP_INJECT RESUME_RSP_INJECT_PRECLAIM \
@@ -2065,6 +2066,56 @@ CFLAGS  += -DKFAULT_INJECT -DKFAULT_INJECT_TICKS=$(KFAULT_INJECT_TICKS)
 ASFLAGS += -DKFAULT_INJECT
 endif
 
+# ---- The kernel's diagnostic channel (COM3) -------------------------------
+#
+# The kernel reports through a UART a ring-3 console_server also writes, so a
+# marker can be split BETWEEN TWO CHARACTERS by an unrelated task's output --
+# observed 2026-09-02 shredding smoke-kstack-park-control's panic into a miss
+# (docs/LIMITATIONS.md 2.6c). COM3 has no second writer: no capability names
+# 0x3E8, so ring 3 cannot reach it. Three flags, and only the first is a defect.
+#
+#   KDIAG_LEGACY_COM1=1     the pre-2026-09-03 reporter: the marker goes to the
+#                           SHARED console UART and nowhere else. The arm.
+#   KDIAG_SPLIT_WIDEN=1     not a defect -- a bounded spin between the characters
+#                           of a kernel marker, so a concurrently-printing task
+#                           lands inside it every boot instead of at a rate. Set
+#                           in BOTH arms; that is what makes the pair a
+#                           measurement rather than two different experiments.
+#   KDIAG_PROBE=1           not a defect -- the marker these gates are ABOUT: a
+#                           survivable kernel report, emitted KDIAG_PROBE_COUNT
+#                           times on a timer tick after the console handover,
+#                           while ring 3 is still alive to interleave with it.
+#                           See the note above kdiag_probe_tick() in idt.c for
+#                           why no existing injection could serve.
+#   KDIAG_PORTS_GRANTABLE=1 not a split at all: declares 0x3E8 among the platform
+#                           device's grantable ports, so a ring-3 holder of the
+#                           console capability can be granted the diagnostic
+#                           channel and write into it. The arm for the AUTHORITY
+#                           half -- without it, "no capability names this port"
+#                           is a sentence no test has ever tried to falsify.
+KDIAG_LEGACY_COM1 ?= 0
+KDIAG_SPLIT_WIDEN ?= 0
+KDIAG_PORTS_GRANTABLE ?= 0
+KDIAG_NOISE ?= 0
+KDIAG_PROBE ?= 0
+KDIAG_RING3_PROBE ?= 0
+KDIAG_WIDEN_SPINS ?= 60000
+KDIAG_PROBE_COUNT ?= 8
+KDIAG_PROBE_EVERY ?= 20
+KDIAG_MIN ?= 6
+ifeq ($(KDIAG_LEGACY_COM1),1)
+CFLAGS  += -DKDIAG_LEGACY_COM1
+endif
+ifeq ($(KDIAG_SPLIT_WIDEN),1)
+CFLAGS  += -DKDIAG_SPLIT_WIDEN -DKDIAG_WIDEN_SPINS=$(KDIAG_WIDEN_SPINS)
+endif
+ifeq ($(KDIAG_PORTS_GRANTABLE),1)
+CFLAGS  += -DKDIAG_PORTS_GRANTABLE
+endif
+ifeq ($(KDIAG_PROBE),1)
+CFLAGS  += -DKDIAG_PROBE -DKDIAG_PROBE_COUNT=$(KDIAG_PROBE_COUNT) -DKDIAG_PROBE_EVERY=$(KDIAG_PROBE_EVERY)
+endif
+
 # RESUME_RSP_INJECT=1 forces interrupt_handler64's resume %rsp to a bogus 4 once,
 # after the console handover -- the literal value G-8's 2026-08-13 capture
 # recorded. It exists so the floor guard in idt.c can be GATED rather than waited
@@ -3046,6 +3097,27 @@ endif
 
 ifeq ($(SYSCALL_PTR_TRUNC32),1)
 USERSPACE_CFLAGS += -DSYSCALL_PTR_TRUNC32
+endif
+
+# KDIAG_NOISE=1 keeps init talking to the console instead of blocking in
+# sys_wait, so the COM3 diagnostic-channel arms have a ring-3 second writer to
+# measure against. Not a defect: it is the instrument, set in ALL of those arms.
+# In the ordinary session every ring-3 task is blocked by the time
+# KFAULT_INJECT fires, so without it the marker cannot be split however wide the
+# window is opened -- an experiment with no independent variable. Applied here,
+# at top level after USERSPACE_CFLAGS is assigned with `=`, for the reason
+# recorded beside SYSCALL_PTR_TRUNC32 above.
+ifeq ($(KDIAG_NOISE),1)
+USERSPACE_CFLAGS += -DKDIAG_NOISE
+endif
+
+# KDIAG_RING3_PROBE=1 makes console_server attempt a write to the diagnostic
+# port. It is set in BOTH directions of the authority pair and it is the kernel
+# flag that moves: with KDIAG_PORTS_GRANTABLE the write lands, without it the
+# same instruction faults. Attempting it in both is what separates "ring 3 did
+# not write the channel" from "ring 3 cannot".
+ifeq ($(KDIAG_RING3_PROBE),1)
+USERSPACE_CFLAGS += -DKDIAG_RING3_PROBE
 endif
 
 ifeq ($(SHELL_FS_ERR_FLAT),1)
@@ -6116,6 +6188,92 @@ smoke-irq-policy:
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='IRQ_POLICY: PASS' FAIL_MARKER='IRQ_POLICY: FAIL' \
 		tools/smoke_test.sh boot.iso
+
+# ---- The kernel's diagnostic channel (SECURITY.md S81) --------------------
+#
+# Can a kernel marker be cut in half by a ring-3 task's output?
+#
+# It could, and on 2026-09-02 it was: CI run 33553525177 shredded
+# smoke-kstack-park-control's panic on the shared console, the gate's regex did
+# not match, and it reported "the shared park did NOT reproduce in 8 boots" with
+# the panic sitting four lines below that sentence in its own evidence dump
+# (docs/LIMITATIONS.md 2.6c). Kernel reporting goes to a UART a ring-3
+# console_server also writes (finding #126) through a character loop, so another
+# task's write lands BETWEEN TWO CHARACTERS. A gate whose marker can be
+# destroyed by unrelated output fails OPEN.
+#
+# COM3 (0x3E8) is the repair, and what makes it work is an authority fact rather
+# than a timing one: src/kernel/pci.c declares the platform device's ports and
+# 0x3E8 is not among them, so no capability names it and SYS_IOPORT_GRANT can
+# never open it. One writer, end to end.
+#
+# FOUR ARMS, and they measure two different claims:
+#
+#   smoke-kdiag                 every marker the kernel emits is contiguous on
+#                               its own channel.
+#   smoke-kdiag-split-control   THE SAME BUILD, the same boot, the other channel:
+#                               fewer of those markers arrived intact on the
+#                               shared console. Without it the base gate would
+#                               pass on a system where splitting never happens
+#                               and the channel would guard nothing. Measured
+#                               2026-09-03: 6 boots in 6, losing 1-4 markers of
+#                               6 per boot while COM3 kept all 6.
+#   smoke-kdiag-legacy-control  KDIAG_LEGACY_COM1=1, the pre-2026-09-03
+#                               reporter: smoke-kdiag must go RED. 3 boots in 3.
+#   smoke-kdiag-ioport /         the authority pair. console_server attempts the
+#   smoke-kdiag-grant-control    write in BOTH; only the kernel flag moves. Base:
+#                               a #GP and a clean channel. Control: with 0x3E8
+#                               declared, 200 sentinels in the kernel's channel
+#                               and no fault. 3 boots in 3 each.
+#
+# KDIAG_NOISE and KDIAG_SPLIT_WIDEN are instruments, set in BOTH arms of the
+# first pair; see their notes above and in userspace/init.c. KDIAG_MIN=6 is a
+# sample size, not a timeout: the split arm compares intact console copies
+# against markers the kernel provably emitted, so it needs enough of them to
+# compare.
+.PHONY: smoke-kdiag
+smoke-kdiag:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory KDIAG_PROBE=1 KDIAG_NOISE=1 KDIAG_SPLIT_WIDEN=1
+	@$(MAKE) --no-print-directory KDIAG_PROBE=1 KDIAG_NOISE=1 KDIAG_SPLIT_WIDEN=1 boot.iso
+	@KDIAG_MIN=$(KDIAG_MIN) MODE=channel tools/kdiag_test.sh boot.iso
+
+.PHONY: smoke-kdiag-split-control
+smoke-kdiag-split-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory KDIAG_PROBE=1 KDIAG_NOISE=1 KDIAG_SPLIT_WIDEN=1
+	@$(MAKE) --no-print-directory KDIAG_PROBE=1 KDIAG_NOISE=1 KDIAG_SPLIT_WIDEN=1 boot.iso
+	@KDIAG_MIN=$(KDIAG_MIN) MODE=split tools/kdiag_test.sh boot.iso
+
+.PHONY: smoke-kdiag-legacy-control
+smoke-kdiag-legacy-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory KDIAG_PROBE=1 KDIAG_NOISE=1 KDIAG_SPLIT_WIDEN=1 KDIAG_LEGACY_COM1=1
+	@$(MAKE) --no-print-directory KDIAG_PROBE=1 KDIAG_NOISE=1 KDIAG_SPLIT_WIDEN=1 KDIAG_LEGACY_COM1=1 boot.iso
+	@: "The base gate must go RED here. Inverted, so this target is green when"
+	@: "smoke-kdiag's assertion fails -- and the verdict it fails with names the"
+	@: "condition (markers on the console, nothing on the channel) rather than"
+	@: "the generic not-a-result a broken boot gets."
+	@if KDIAG_MIN=$(KDIAG_MIN) MODE=channel tools/kdiag_test.sh boot.iso; then \
+		echo "KDIAG LEGACY CONTROL: FAIL - the base gate passed with the kernel"; \
+		echo "  reporting only to the shared console. It is not testing the channel."; \
+		exit 1; \
+	fi
+	@echo "KDIAG LEGACY CONTROL: PASS - the base gate goes red on the pre-fix reporter"
+
+.PHONY: smoke-kdiag-ioport
+smoke-kdiag-ioport:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory KDIAG_PROBE=1 KDIAG_NOISE=1 KDIAG_SPLIT_WIDEN=1 KDIAG_RING3_PROBE=1
+	@$(MAKE) --no-print-directory KDIAG_PROBE=1 KDIAG_NOISE=1 KDIAG_SPLIT_WIDEN=1 KDIAG_RING3_PROBE=1 boot.iso
+	@MODE=ioport tools/kdiag_test.sh boot.iso
+
+.PHONY: smoke-kdiag-grant-control
+smoke-kdiag-grant-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory KDIAG_PROBE=1 KDIAG_NOISE=1 KDIAG_SPLIT_WIDEN=1 KDIAG_RING3_PROBE=1 KDIAG_PORTS_GRANTABLE=1
+	@$(MAKE) --no-print-directory KDIAG_PROBE=1 KDIAG_NOISE=1 KDIAG_SPLIT_WIDEN=1 KDIAG_RING3_PROBE=1 KDIAG_PORTS_GRANTABLE=1 boot.iso
+	@MODE=grant tools/kdiag_test.sh boot.iso
 
 # Can the kernel be heard when it faults in its own code?
 #

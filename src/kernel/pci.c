@@ -163,6 +163,23 @@ static void iodev_add_platform(void) {
     d->port[4].base = 0x3B0; d->port[4].len = 0x30;   /* VGA register file   */
     d->n_port = 5;
 
+    /* 0x3E8 (COM3) is deliberately NOT here, and its absence is a security
+     * property rather than an omission: COM3 is the kernel's diagnostic
+     * channel, and what makes a marker on it unsplittable is that no capability
+     * names the port, so SYS_IOPORT_GRANT can never open the TSS bitmap for it.
+     * See the note above kdiag_ch() in src/kernel/scheduler.c.
+     *
+     * A range this file does not declare is unreachable from ring 3 by
+     * construction, so the property holds today with no code -- which is exactly
+     * the kind of claim that goes untested until it stops being true. The flag
+     * below is the arm that falsifies it: declare the port, and a ring-3 holder
+     * of the console capability is granted the diagnostic channel and writes
+     * into the middle of the kernel's report. */
+#ifdef KDIAG_PORTS_GRANTABLE
+    d->port[5].base = 0x3E8; d->port[5].len = 8;      /* COM3 -- the arm     */
+    d->n_port = 6;
+#endif
+
     d->irq_mask = (1u << 0) | (1u << 1);
     d->msi_cap  = 0;                  /* the platform device has no config space */
     d->msix_cap = 0;

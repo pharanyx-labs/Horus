@@ -276,6 +276,7 @@ required:
   - smoke-ioport
   - smoke-irq
   - smoke-irq-policy
+  - smoke-kdiag
   - smoke-kfault
   - smoke-kstack-race
   - smoke-mapphys

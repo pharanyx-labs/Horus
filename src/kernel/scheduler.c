@@ -807,9 +807,85 @@ void create_user_task(int id, addr_t entry, addr_t stack_top) {
  * Everything below writes bytes to COM1 itself, with interrupts already off and
  * every other CPU about to be halted. It bypasses the console ownership rules
  * deliberately: there is no owner left to be polite to. */
+/* ---- The kernel's own channel (COM3), and why a second UART -------------
+ *
+ * COM1 has two writers and always will. console_server owns it from ring 3
+ * (finding #126), the kernel writes it anyway from the paths below because a
+ * report that loses a race with a shell prompt is not a report -- and those two
+ * facts together mean a kernel marker can be cut in half BETWEEN ANY TWO
+ * CHARACTERS. panic_str is `while (*s) panic_ch(*s++)`; there is no lock the
+ * kernel can take, because the party it needs to exclude is a ring-3 task it
+ * does not schedule out.
+ *
+ * That is not theoretical. On 2026-09-02, CI run 33553525177, job
+ * smoke-kstack-park-control on PR #289:
+ *
+ *     kfault_str("\nPANIC: two CPUs parking on one kernel stack rsp=");
+ *
+ * reached the wire beginning "Us parking on one kernel stack rsp=..." -- ring-3
+ * PROC_SELFTEST output had landed inside the call, `\nPANIC: two CP` was gone,
+ * the gate's regex did not match, and it reported the defect had NOT reproduced
+ * across 8 boots while its own evidence dump held the panic. A gate whose marker
+ * can be shredded by an unrelated task's output is a gate that fails open.
+ *
+ * "Emit it as one write" is tools/check_split_markers.py's rule and it is the
+ * right rule for USERSPACE, where sys_write delivers a buffer. It cannot help
+ * here: this IS one call, and the write underneath it is a character loop.
+ *
+ * So the repair is a channel with only one writer, end to end. COM3 (0x3E8) is
+ * kernel-only: the platform device declares the PS/2 ports, COM1, COM2 and
+ * [0x3B0,0x3E0) of the VGA register file (src/kernel/pci.c), and 0x3E8 is in
+ * none of them -- so no capability names it, SYS_IOPORT_GRANT cannot reach it,
+ * and contiguity stops being a race the kernel has to win and becomes a
+ * property of who holds the port. KDIAG_PORTS_GRANTABLE=1 is the arm that
+ * falsifies that sentence by declaring it.
+ *
+ * COM3 rather than COM2, which is also unused by any live path: attaching a
+ * backend to COM2 would change what serial2_read_char sees. An unassigned port
+ * floats and reads 0xFF, which is why the retired SYS_RECEIVE_PROGRAM answers
+ * -1 under LEGACY_SYSCALLS_PRESENT instead of blocking, and it is what
+ * smoke-passwd-probe-recv27-control asserts on. A diagnostic channel that
+ * silently converted a neighbouring arm's refusal into a hang would be paying
+ * for this property with someone else's.
+ *
+ * Why not isa-debug-exit at 0x604, which docs/LIMITATIONS.md 2.6c proposed: an
+ * exit code cannot be split either, but it terminates the machine, so it can
+ * only ever carry a FATAL report -- and the reports that hide are the survivable
+ * ones (see the kfault_begin note below). It also carries a number where the
+ * text is the diagnosis. A second UART covers both classes and keeps the words.
+ *
+ * COM1 still gets a copy. A human running `make run` watches one serial line,
+ * and a report they can read most of beats a report they cannot see; the copy is
+ * best-effort by construction and nothing asserts on it.
+ *
+ * Safe when COM3 is absent. An unassigned port reads 0xFF, so the line-status
+ * poll below sees THR-empty immediately and returns rather than spinning -- a
+ * reporter that can wedge a CPU is a worse defect than the one it fixes, which
+ * is the same argument kfault_begin's bounded wait already makes. */
+#define KDIAG_PORT      0x3E8      /* COM3 data      */
+#define KDIAG_PORT_LSR  0x3ED      /* COM3 line status */
+
+static void kdiag_ch(char ch) {
+    while ((inb(KDIAG_PORT_LSR) & 0x20) == 0) { }
+    outb(KDIAG_PORT, (uint8_t)ch);
+}
+
 static void panic_ch(char ch) {
+#ifndef KDIAG_LEGACY_COM1
+    kdiag_ch(ch);               /* authoritative: one writer, cannot be split */
+#endif
+#ifdef KDIAG_SPLIT_WIDEN
+    /* Not a defect -- the window widener, and it must be set in BOTH arms of
+     * the pair or they are not the same measurement. The split is a race
+     * against whatever ring 3 happens to be printing, so an arm that asserted
+     * it from an unwidened boot would be asserting a rate; with a spin between
+     * every character of the marker, a concurrently-printing task lands inside
+     * it every time. Bounded, and it runs only in a build that asked for it. */
+    for (volatile unsigned long w = 0; w < (unsigned long)KDIAG_WIDEN_SPINS; w++)
+        __asm__ volatile ("pause");
+#endif
     while ((inb(0x3FD) & 0x20) == 0) { }
-    outb(0x3F8, (uint8_t)ch);
+    outb(0x3F8, (uint8_t)ch);   /* best-effort copy on the shared console */
 }
 
 /* First CPU to detect a violation gets the UART; the rest halt silently.

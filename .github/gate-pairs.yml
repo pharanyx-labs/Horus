@@ -96,6 +96,9 @@ control_arms:
   smoke-fork-share-control: smoke-fork
   smoke-forkexec-reset-control: smoke-forkexec
   smoke-forkexec-root-control: smoke-forkexec
+  smoke-kdiag-split-control: smoke-kdiag
+  smoke-kdiag-legacy-control: smoke-kdiag
+  smoke-kdiag-grant-control: smoke-kdiag-ioport
   smoke-fpu-leak-control: smoke-fpu
   smoke-fpu-save-control: smoke-fpu
   smoke-frame-dma-control: smoke-frame
@@ -206,6 +209,8 @@ gates:
   - smoke-flush
   - smoke-fork
   - smoke-forkexec
+  - smoke-kdiag
+  - smoke-kdiag-ioport
   - smoke-fpu
   - smoke-frame
   - smoke-fs

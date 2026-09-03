@@ -17,6 +17,37 @@ in this file.
 
 ### Fixed
 
+- **A kernel diagnostic could be cut in half by a ring-3 task's output, and one gate reported a
+  reproduction as a clean sweep of misses because of it.** The kernel reports through COM1, which
+  a ring-3 `console_server` also owns (finding **#126**): it writes anyway, because a report that
+  loses a race with a shell prompt is not a report. `panic_str` is `while (*s) panic_ch(*s++)`, so
+  another task's write lands **between two characters of one call**. On 2026-09-02, CI run
+  `33553525177`, `kfault_str("\nPANIC: two CPUs parking on one kernel stack rsp=")` reached the
+  wire beginning `Us parking on one kernel stack rsp=`, and `smoke-kstack-park-control` reported
+  *the shared park did NOT reproduce in 8 boots* with the panic four lines below that sentence in
+  its own evidence dump. **A gate whose marker can be destroyed by unrelated output fails open**,
+  and no lock closes it: the party the kernel must exclude is a task it does not schedule out.
+  `tools/check_split_markers.py`'s rule -- a gated marker is one write -- is right for ring 3,
+  where `sys_write` delivers a buffer, and cannot reach this: it **is** one write, and the write
+  underneath is a character loop. The kernel now has a channel with one writer end to end, COM3
+  (`0x3E8`), and what makes it kernel-only is an authority fact rather than a convention:
+  `src/kernel/pci.c` declares the platform device's ports and `0x3E8` is in none of them, so no
+  capability names it and `SYS_IOPORT_GRANT` can never open the TSS I/O bitmap for it. COM1 still
+  gets a best-effort copy for whoever is watching one serial line; nothing asserts on it.
+  `isa-debug-exit` at `0x604` was `docs/LIMITATIONS.md` 2.6c's own proposal and was rejected: an
+  exit code cannot be split either, but it **terminates the machine**, so it carries only a fatal
+  report -- and the reports that hide are the survivable ones -- and it carries a number where the
+  text is the diagnosis. COM3 rather than COM2, which is equally unused, because attaching a
+  backend to COM2 changes what `serial2_read_char` sees: an unassigned port floats and reads
+  `0xFF`, which is what `smoke-passwd-probe-recv27-control` asserts on, and a diagnostic channel
+  that turned a neighbouring arm's refusal into a hang would be paying for this property with
+  someone else's. Gated by `make smoke-kdiag` and falsified four ways -- the split reproduced on
+  the shared console from the **same build and boot** (6 in 6), the pre-fix reporter reddening the
+  base gate (3 in 3), and an authority pair in which `console_server` attempts the write in both
+  directions and only the port declaration moves (a #GP, versus 200 sentinels landing in the
+  kernel's channel; 3 in 3 each). `SECURITY.md` **S81**; the remaining ~20 gates that assert
+  kernel-emitted strings still read the shared console and are the named remainder in 2.6c.
+
 - **The `.bin` container format was written down four times and parsed in eleven places; the
   count in the finding's own title was the first thing that turned out to be wrong.** The format
   is a 44-byte header -- `magic` at 0, `entry` at 4, `size` at 8, `name[32]` at 12 -- then the

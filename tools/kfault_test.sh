@@ -55,11 +55,17 @@ if [ ! -f "$ISO" ]; then
 fi
 
 LOG="${KFAULT_LOG:-$(mktemp)}"
+# COM3, the kernel's diagnostic channel. $LOG is the console, which ring 3 writes
+# too, so a kernel marker in it can be split between two characters; nothing but
+# the kernel can write COM3. REPORT_CHANNEL selects which one the assertion
+# reads. See the note above kdiag_ch() in src/kernel/scheduler.c.
+KDIAG="${KFAULT_KDIAG_LOG:-$(mktemp)}"
 QEMU_PID=""
 cleanup() {
     [ -n "$QEMU_PID" ] && kill "$QEMU_PID" 2>/dev/null
     [ -n "$QEMU_PID" ] && wait "$QEMU_PID" 2>/dev/null
     [ -z "${KFAULT_LOG:-}" ] && rm -f "$LOG"
+    [ -z "${KFAULT_KDIAG_LOG:-}" ] && rm -f "$KDIAG"
     return 0
 }
 trap cleanup EXIT
@@ -67,7 +73,7 @@ trap cleanup EXIT
 qemu-system-x86_64 \
     -m 512M -cpu "${QEMU_CPU:-qemu64,+aes,+rdrand,+smep,+smap,+umip}" -accel tcg \
     -display none -no-reboot -no-shutdown \
-    -serial file:"$LOG" -net none \
+    -serial file:"$LOG" -serial none -serial file:"$KDIAG" -net none \
     -smp "${QEMU_SMP:-1}" \
     -cdrom "$ISO" &
 QEMU_PID=$!

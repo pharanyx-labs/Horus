@@ -279,6 +279,49 @@ static void kfault_inject_tick(void) {
 }
 #endif
 
+#ifdef KDIAG_PROBE
+/* Test-only, and an instrument rather than a defect: the marker the COM3
+ * diagnostic channel's gates are ABOUT.
+ *
+ * They need a kernel marker emitted repeatedly while a ring-3 console writer is
+ * still alive, and no existing injection provides one. KFAULT_INJECT was tried
+ * first and is disqualified by what it does: its fault KILLS console_server, so
+ * from the first character of the report onward there is no ring-3 writer left
+ * to interleave with and the split cannot happen however wide the window is
+ * opened -- measured 2026-09-03, the marker contiguous on BOTH channels with
+ * the widener at 400k spins per character. An arm whose provocation destroys
+ * the second writer measures nothing. The fatal injections (RESUME_RSP_INJECT)
+ * halt the machine, which is worse.
+ *
+ * So this emits a plain marker, survivably, on a timer tick after the console
+ * handover, KDIAG_PROBE_COUNT times. It is deliberately about nothing: the
+ * property under test is the CHANNEL's, and borrowing another finding's marker
+ * would make this gate go red when that finding's injection changed.
+ *
+ * kfault_str, not print(): print() is klog-only once console_server owns the
+ * console, which is the whole reason the kernel writes the UART directly here
+ * (finding #126) and the reason a marker can be split at all. A probe that took
+ * a path the real reporters cannot take would be measuring a different system.
+ *
+ * Bracketed with kfault_begin(0)/kfault_end(0) -- the survivable claim, bounded
+ * and released -- because that is what every live survivable reporter uses, and
+ * an instrument that serialised differently from the thing it measures would be
+ * measuring itself. */
+static void kdiag_probe_tick(void) {
+    static unsigned owned_ticks = 0;
+    static unsigned emitted = 0;
+    if (!console_hw_owned()) return;
+    if (emitted >= (unsigned)KDIAG_PROBE_COUNT) return;
+    if (++owned_ticks % (unsigned)KDIAG_PROBE_EVERY) return;
+    emitted++;
+    kfault_begin(0);
+    kfault_str("\nKDIAGPROBE: a kernel marker that must not be split #");
+    kfault_dec((int)emitted);
+    kfault_str("\n");
+    kfault_end(0);
+}
+#endif
+
 #ifdef RESUME_RSP_INJECT
 /* Test-only. Forces the dispatcher's resume %rsp to a bogus value ONCE, after
  * the console handover, so the floor guard in interrupt_handler64 can be gated
@@ -499,6 +542,9 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
          * on: the current frame (no switch) or the next task's saved frame. */
         irq_eoi(32);
         timer_handler();
+#ifdef KDIAG_PROBE
+        kdiag_probe_tick();
+#endif
 #ifdef KFAULT_INJECT
         kfault_inject_tick();
 #endif
@@ -991,6 +1037,22 @@ static void serial_init(void) {
     outb(0x2FB, 0x03);
     outb(0x2FA, 0xC7);
     outb(0x2FC, 0x0B);
+
+    /* COM3 is the kernel's own diagnostic channel -- the one line ring 3 has no
+     * capability to write, so a kernel marker on it cannot be cut in half by a
+     * task's output. See the long note above kdiag_ch() in scheduler.c for what
+     * that fixes and why COM1 could never provide it. Initialised here with its
+     * two neighbours because a reporter that needs the UART configured at the
+     * moment it is needed is a reporter that configures it before then; on a
+     * machine with no COM3 these writes go to an unassigned port and are
+     * dropped, which is the same thing that makes the write side safe. */
+    outb(0x3E9, 0x00);
+    outb(0x3EB, 0x80);
+    outb(0x3E8, 0x03);
+    outb(0x3E9, 0x00);
+    outb(0x3EB, 0x03);
+    outb(0x3EA, 0xC7);
+    outb(0x3EC, 0x0B);
 }
 
 /* Program PIT channel 0 for a fixed periodic tick so the preemptive scheduler

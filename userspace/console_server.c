@@ -204,6 +204,34 @@ void _start(void) {
     /* From here on the console output is ours, produced entirely in ring 3. */
     ser_puts("[console_server] ready (ring-3; owns serial + VGA framebuffer)\n");
 
+#ifdef KDIAG_RING3_PROBE
+    /* Test-only, and it is the whole of the authority pair.
+     *
+     * COM3 (0x3E8) is the kernel's diagnostic channel, and what keeps ring 3 out
+     * of it is one thing only: src/kernel/pci.c does not declare the port among
+     * the platform device's, so the SYS_IOPORT_GRANT above never opens the TSS
+     * I/O bitmap for it. That is a sentence about a file, and a sentence about a
+     * file is exactly the kind of security claim that goes untested until it
+     * stops being true.
+     *
+     * So the write is ATTEMPTED in both directions, and the flag that moves is
+     * the kernel's. With KDIAG_PORTS_GRANTABLE the port is declared, our
+     * existing grant covers it with no new syscall and no new capability, and
+     * the sentinel lands in the kernel's channel. Without it the same
+     * instruction faults. Attempting it in both is the difference between "ring
+     * 3 did not write the channel" and "ring 3 CANNOT" -- only the second is a
+     * property, and only the second is what SECURITY.md is allowed to say.
+     *
+     * A sentinel rather than a count of shredded markers, deliberately: the
+     * question is "did ring 3 REACH the channel", and a string ring 3 wrote
+     * answers it with no arithmetic and no assumption about how a split
+     * scores. */
+    for (int i = 0; i < 200; i++) {
+        const char *p = "KDIAGRING3";
+        while (*p) { outb(0x3E8, (uint8_t)*p); p++; }
+    }
+#endif
+
 #ifdef CONSOLE_ISOLATION_TEST
     con_isolation_fault();   /* prove a console-driver fault stays contained in ring 3 */
 #endif

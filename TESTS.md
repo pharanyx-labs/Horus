@@ -955,6 +955,11 @@ The ELF loader migration to Rust found two real out-of-bounds bugs in the C orig
 |---|---|
 | `smoke-kfault` | A page fault taken at **CPL 0** is reported on the **serial line**, after the console handover. `KFAULT_INJECT=1` makes the kernel fault on purpose (a read of `0x94`, G-8's exact address) on a timer tick once `console_server` owns the console, and the harness requires the report to appear *after* the login prompt. |
 | `smoke-kfault-legacy` | The same injection with reporting restored to `println()` (`KFAULT_LEGACY_PRINTLN=1`): the report must **not** reach serial. The control arm. |
+| `smoke-kdiag` | Every marker the kernel emits is **contiguous** on its own channel, COM3 (0x3E8), which no capability names. The property **S81** states, and the answer to a marker being cut in half by ring-3 output. |
+| `smoke-kdiag-split-control` | The **same build and the same boot**, read on the shared console: fewer of those markers arrived intact there. The hazard, on demand. |
+| `smoke-kdiag-legacy-control` | `KDIAG_LEGACY_COM1=1`, the pre-2026-09-03 reporter -- the kernel writes only the shared console. `smoke-kdiag` must go **red**. |
+| `smoke-kdiag-ioport` | A ring-3 write to `0x3E8` takes a **#GP** and the channel stays clean. The authority half: `SYS_IOPORT_GRANT` cannot open a port no device declares. |
+| `smoke-kdiag-grant-control` | `KDIAG_PORTS_GRANTABLE=1` declares `0x3E8` among the platform device's ports; the **same** ring-3 write then lands, 200 sentinels deep, in the kernel's own channel. |
 | `smoke-resume-guard` | `idt.c`'s resume-`%rsp` floor guard fires and is **heard**. `RESUME_RSP_INJECT=1` forces the dispatcher to return a bogus resume `%rsp` of `4` (G-8's own recorded value) once, after the console handover; the `PANIC: dispatcher returned a bogus resume rsp=0x4` line must appear after the login prompt. Replaces a ~1-in-150 wait with a gate. |
 | `smoke-resume-guard-preclaim` | The same, with the **permanent panic claim already held**, the state another CPU's fatal exception leaves behind. The report must still get out. This is the arm that witnesses the fix. |
 | `smoke-resume-guard-legacy` | Control arm for the fix: same injection and claim, with the guard's pre-fix `kfault_begin(1)`/`kfault_end(1)` bracket restored (`RESUME_GUARD_LEGACY_FATAL=1`). The report must **not** reach serial; the boot goes silent at the login prompt, which is the defect on demand. |
@@ -1216,6 +1221,68 @@ that cannot fail on the bug it targets is not evidence.
 The ordering assertion is deliberate. "The report appeared" is satisfied by early-boot output,
 when `print()` still drives the UART; "the report appeared **after** the login prompt" is not.
 
+
+## The kernel's diagnostic channel cannot be cut (S81)
+
+A kernel report goes to a UART a ring-3 `console_server` also owns (finding **#126**), through
+`panic_str`'s character loop, so another task's write lands **between two characters**. On
+2026-09-02, CI run `33553525177`, that shredded `smoke-kstack-park-control`'s panic into
+`Us parking on one kernel stack rsp=` and the gate reported *the shared park did NOT reproduce
+in 8 boots* with the panic in its own evidence dump. A gate whose marker can be destroyed by
+unrelated output fails **open**. COM3 is the repair: `src/kernel/pci.c` declares it to no
+device, so no capability names it.
+
+**The provocation is purpose-built, and two others were tried first.** `KDIAG_PROBE=1` emits a
+survivable marker on a timer tick after the console handover. `KFAULT_INJECT` was the obvious
+candidate and is disqualified by what it does -- its fault **kills `console_server`**, so from
+the first character of the report there is no ring-3 writer left to interleave with, and the
+marker arrived whole on both channels with the widener at 400k spins per character. The fatal
+injections halt the machine, which is worse. An arm whose provocation destroys the second writer
+measures nothing.
+
+**And the ordinary session cannot measure this at all**, which is why `KDIAG_NOISE=1` exists.
+After the login prompt the shell blocks reading a character, `console_server` blocks serving
+that read, and `init`'s own console writes never complete -- so ring 3 is silent for all but a
+fraction of a second around the banner. Two tunings were spent discovering that: every marker
+whole on 4 boots in 4 with the probes just before that window, one split in one boot with them
+just after it. Tuning an offset until a race lands is not a measurement. Under the flag `init`
+does not launch a shell and talks forever instead, so the window is the whole run.
+
+**The split is ground-truthed against COM3, not against the console's own count.** Counting
+markers on the console misses the hardest reproductions: a write landing inside the word
+`KDIAGPROBE` leaves no prefix to count, and a boot that shredded 7 markers of 8 scored
+`prefix=1 whole=1` -- clean. That is CLAUDE.md's park worked-example, met again in a new
+detector. The assertion is therefore *fewer intact copies on the console than the kernel
+provably emitted on its own channel, same boot*.
+
+**Two counting defects were found and fixed in the harness itself, both by measurement.** It
+scored its own truncation as a split -- QEMU is killed when the assertion is ready, which lands
+mid-marker, giving `whole=2 prefix=3` on the **kernel-only** channel where a split is impossible
+by construction; it now counts complete lines only. And it proved the console handover by
+grepping the shared console for `[console_server] ready`, which the hazard ate on 1 boot in 5,
+reporting "console_server never took the console" for a boot whose markers proved otherwise; the
+precondition now comes from the diagnostic channel, where one marker is proof and cannot be
+shredded.
+
+| Arm | Asserts | Result |
+|---|---|---|
+| `smoke-kdiag` | every marker on COM3 contiguous, at least 6 of them | passes, **3 boots in 3** |
+| `smoke-kdiag-split-control` (same build) | intact console copies **<** markers emitted on COM3 | passes, **6 boots in 6**, losing 1-4 of 6 per boot |
+| `smoke-kdiag-legacy-control` (`KDIAG_LEGACY_COM1=1`) | `smoke-kdiag` goes **red**, naming the condition | passes, **3 boots in 3** |
+| `smoke-kdiag-ioport` (`KDIAG_RING3_PROBE=1`) | `'console_server' killed: ring-3 trap vector 13`, no sentinel on COM3 | passes, **1 boot in 1** |
+| `smoke-kdiag-grant-control` (`+ KDIAG_PORTS_GRANTABLE=1`) | 200 ring-3 sentinels on COM3, **no** #GP | passes, **3 boots in 3** |
+
+**The authority pair attempts the write in both directions, and only the kernel flag moves.**
+That is the difference between *ring 3 did not write the channel* and *ring 3 cannot*: without
+the attempt, the base arm would be an absence test satisfied by a `console_server` that never
+tried. Note that the refused build emits no probe markers at all -- the #GP kills
+`console_server`, console ownership is released, and the probe stops firing -- so that arm does
+not require them. That is the refusal working.
+
+**Scope, stated rather than implied.** The channel exists and is gated; the ~20 existing
+assertions on kernel-emitted strings still read the shared console and are unchanged. See
+`docs/LIMITATIONS.md` 2.6c.
+
 ## Build integrity
 
 | Target | Proves |
@@ -1356,10 +1423,10 @@ measures false *negatives*. A checker with three rules needs three arms, not one
 
 ## CI
 
-`.github/workflows/ci.yml` defines **106** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **107** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below: **108** jobs, **111** contexts. Counts from `tools/check_ci_gating.py`, which prints
+below: **109** jobs, **112** contexts. Counts from `tools/check_ci_gating.py`, which prints
 them; do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20, a backstop, not a budget. The default is
@@ -1411,7 +1478,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **108 required contexts and 3 reasoned exemptions** (read off
+The intended set is **109 required contexts and 3 reasoned exemptions** (read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence) `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
@@ -1968,7 +2035,7 @@ three ways: a planted phrasing in a `.c` file is caught with file and line; the 
 phrasing inside a quotation stays exempt, so a comment can record the wrong thing while
 correcting it.
 
-`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 82 properties
+`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 83 properties
 name a witness that resolves to a make target or a CI job.
 
 | Rule | Rejects |

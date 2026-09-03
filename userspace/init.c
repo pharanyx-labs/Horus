@@ -589,6 +589,41 @@ void _start(void) {
 
     report("init: starting, launching shell\n");
 
+#ifdef KDIAG_NOISE
+    /* The second writer, on purpose. Not a defect flag: it is the instrument
+     * the COM3 diagnostic-channel arms measure with, and it is set in ALL of
+     * them.
+     *
+     * The hazard being measured is a ring-3 task's output landing inside a
+     * kernel marker on the shared console UART. The ordinary session cannot
+     * measure it, and the reason is worth writing down because two tunings were
+     * spent on it: console output stops almost as soon as it starts. After the
+     * login prompt the shell blocks reading a character, console_server blocks
+     * serving that read, and init's own report() -- which goes through
+     * console_server like any other program -- never completes. So ring 3 is
+     * silent for all but a fraction of a second around the banner, and a probe
+     * firing on a tick count either lands in that window or does not. Measured
+     * 2026-09-03: every marker whole on 4 boots in 4 with the probes just
+     * before the window, and one split in one boot with them just after it.
+     * Tuning an offset until a race lands is not a measurement.
+     *
+     * So under this flag init does not launch the shell at all: it talks
+     * forever instead, and the window is the whole run. What proves the console
+     * handover happened is then console_server's own ready line rather than a
+     * login prompt -- which is the more direct evidence anyway, being the event
+     * itself rather than something that follows it.
+     *
+     * It goes through console_server, which is what makes it a faithful second
+     * writer rather than a privileged one: console_server's ser_puts is a byte
+     * loop on COM1 and the kernel writes the same UART from its trap path, so
+     * the two interleave at BYTE granularity exactly as they did in CI on
+     * 2026-09-02. settle() between lines keeps it from monopolising a CPU. */
+    for (;;) {
+        report("init: kdiag noise ---------------------------------------\n");
+        settle();
+    }
+#endif
+
     /* Launch the shell, then block in SYS_WAIT until it exits or faults, and
      * relaunch. SYS_WAIT suspends init on the preemptive block/switch path, so
      * while the shell runs init is off the run queue entirely (no polling). The

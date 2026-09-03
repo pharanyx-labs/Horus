@@ -1828,66 +1828,82 @@ with the library's capabilities.
   `-fvisibility=hidden`: an exported symbol can be interposed, so the linker emits
   `R_X86_64_64` against the dynamic symbol for it.
 
-### 2.18 The `.bin` container format is written down four times and no two copies are connected
+### 2.18 ~~The `.bin` container format is declared four times and parsed in eleven, none of them connected~~: CLOSED 2026-09-03
 
-*Filed 2026-09-01 as "`SYS_RECEIVE_PROGRAM` cannot succeed". Restated 2026-09-03: that syscall
-is retired (§1.6c), so what remains is the duplication behind it rather than the dead call.*
+*Filed 2026-09-01 as "`SYS_RECEIVE_PROGRAM` cannot succeed". Restated 2026-09-03 when that
+syscall was retired (§1.6c). Closed the same day -- and the restatement got the number wrong too,
+saying four when the declarations were four and the PARSES were eleven. The checker found the
+difference; see below.* `SECURITY.md` **S80**.
 
-`struct program_header` is declared in both headers and they describe different things. The
-kernel's (`src/include/kernel.h`) is an **ELF** program header — `type`, `offset`, `vaddr`,
-`paddr`, `filesz`, `memsz`, `flags`, `align` — with four Horus staging fields appended
-(`name[32]`, `size`, `magic`, `entry`): **104 bytes**, `magic` at offset **96**. Ring 3's
-(`include/syscall.h`) is the staging header alone, `{magic, entry, size, name[32]}`: **44
-bytes**, `magic` at offset **0**. One name, no compiler that sees both.
+**The format.** A 44-byte header -- `magic` at 0, `entry` at 4, `size` at 8, `name[32]` at 12 --
+then the payload. Four declarations, eleven parses, nothing connecting them:
 
-**Neither declaration is the format, which is the actual finding.** The `program_header_t`
-typedef has **no uses**, and not one of the eight ELF fields is read anywhere — the kernel only
-ever touches `magic`, `entry`, `size` and `name`. What defines the wire format is a **third**
-copy, private to `tools/mkheadered.c`, the tool that writes every `.bin` in the tree; and what
-reads it is a **fourth** and fifth, two hand-rolled parsers in `src/kernel/loader.c`
-(`arm_named_binary` and `arm_image_from_user`) that take `magic` from byte 0, `entry` from 4,
-`size` from 8, `name` from 12 and the payload from a literal `44`, with `0x55524F48` spelled out
-at each site. So the two declarations that share a name are the two nothing uses, and the three
-that matter agree only because someone kept them in step by hand.
+- `struct program_header` in `src/include/kernel.h`: an ELF program header
+  (`type`/`offset`/`vaddr`/`paddr`/`filesz`/`memsz`/`flags`/`align`) with four Horus fields
+  appended. **104 bytes, `magic` at offset 96.**
+- `struct program_header` in `include/syscall.h`: the staging header alone, **44 bytes,
+  `magic` at offset 0.** Same name, different layout, no compiler seeing both.
+- **Neither was used by anything.** The `program_header_t` typedef had no uses and not one of the
+  eight ELF fields was ever read. The two declarations that shared a name were the two that did
+  no work.
+- A private copy inside `tools/mkheadered.c` -- which, since that tool writes every `.bin` in the
+  tree, is the copy that actually *defined* the format.
+- And the readers used none of them: `arm_named_binary` and `arm_image_from_user` assembled the
+  fields from the literals 0, 4, 8, 12 and 44, with `0x55524F48` spelled out at each site.
 
-That is `include/block_size.h`'s lesson one subsystem over — 512 was not a constant but an
-assumption repeated in six places — and the repair is the same shape as **S71**'s: one header
-both sides include, offsets from `offsetof` rather than from literals, and a `_Static_assert` per
-field. It is filed rather than done because it is a second commit's worth of work and the
-ordering mattered more than the tidiness (below).
+**The count in this section's own title was short, and a checker found the rest.**
+`tools/check_image_abi.py` was written to refuse a second declaration; on its first run it named
+**seven more parses** nobody had counted -- two in `src/kernel/kshell.c`, on the boot path that
+spawns `init` and the shell, and five in `src/kernel/selftest.c`. Eleven sites, each with its own
+`0x55524F48` and its own `44`. Most also did `*(const uint32_t *)(bin + 4)`: an unaligned load
+through a typed pointer on a linker symbol the compiler may assume is aligned.
 
-**What the divergence did, and why it never fired.** `h_receive_program` copied
-`sizeof(k_hdr)` — the **kernel's** 104 — into an object ring 3 sized at 44. The shell's
-`receive` and `load` declared `struct program_header h;` **on the stack**, so a successful
-transfer would have written 60 bytes past it, then read `h.name` at offset 12 where the kernel
-had put the low half of `vaddr`. It was unreachable because the **wire read** disagreed too:
-`loader_receive_to_staging` read `sizeof(hdr)` = 104 bytes where the uploader sends 44 plus
-payload, so `magic` was tested at offset 96 against payload bytes and the command answered
-**"Bad magic"** every time.
+That is **§1.6b's mistake in a different file, four days later** -- a number written by hand,
+short, and reasoned from as if complete. Both were closed the same way: stop counting, and let
+something enumerate.
 
-**THE ORDER OF REPAIRS IS THE POINT, and it is why this section is still here.** Fixing the
-struct first would have made `h_receive_program` reachable for the first time — and its gate was
-cspace slot 3, the `CAP_FRAME` every task holds, over a transport nothing attaches, entered
-after `loader_disarm()` had destroyed a peer's staged image. The transport was only harmless
-because the header broke first. **"Safe because something else breaks first" is the shape S28,
-S30 and S38 all turned out to have**; it is a coincidence, not a property, and repairing the
-coincidence without the gate would have converted a dead path into a live one. So the syscall
-was retired first (§1.6c, **S79**) and the duplication is what is left.
+**What the divergence cost, recorded rather than guessed.** It broke `SYS_RECEIVE_PROGRAM` in two
+independent places. `h_receive_program` copied `sizeof(k_hdr)` -- the *kernel's* 104 -- into an
+object ring 3 had sized at 44, so a successful transfer wrote **60 bytes past** the shell's stack
+object and then read `h.name` at offset 12, where the kernel had put the low half of `vaddr`. And
+the wire read tested `magic` at offset 96 against payload bytes, so the transfer answered **"Bad
+magic" every time**. The overrun was unreachable *because* the other half was broken.
 
-**Still reachable, and bounded.** The COM2 reader survives under `DEBUG_SHELL` for the
-in-kernel `kshell` `receive` command — ring 0, in a build documented as carrying extra surface,
-on a transport an operator wires by hand. Nothing in ring 3 reaches either declaration now, so
-the remaining risk is drift between the three copies that do the work, not a copy past the end
-of a user buffer.
+**Which is why the order of repairs was forced**, and why this section stayed open through the
+commit before this one. Repairing the struct first would have made a decoy-gated, disarm-first
+handler succeed for the first time (§1.6c). "Safe because something else breaks first" is the
+shape **S28**, **S30** and **S38** all turned out to have. The gate shipped first; then this.
 
-**Gated, so it cannot be forgotten and cannot quietly change shape.**
-`tools/check_abi_structs.py` *discovers* every struct defined in both headers rather than
-comparing a hand-written list — the rule that would have caught S71 — and `program_header` is
-its one `UNRESOLVED` entry, carrying this section's number. The checker fails if it is removed,
-if another unenrolled struct appears, **and if `program_header` starts agreeing**. Unifying it
-into a shared header will trip that last rule on purpose: the name leaves both headers, so the
-entry must be **removed deliberately** at the same time, exactly as `audit_record` is not
-enrolled because there is only one of it.
+**The repair.** One declaration -- `struct horus_image_header` in `include/program_abi.h` --
+included by the kernel, by ring 3, and by `tools/mkheadered.c`. That header is deliberately
+freestanding (`<stdint.h>` and nothing else) so the **host** build tool can compile it: a
+dependency on `kernel.h` would have forced the writer back to a private copy and reopened the
+whole finding. One parse, `image_container_parse`, called by all eleven sites, with offsets from
+`offsetof` and a byte-wise little-endian decode that fixes the unaligned loads everywhere at
+once. `HORUS_IMAGE_HDR_BYTES` is `sizeof` the struct, never the literal 44.
+
+**The rename is S71's lesson verbatim.** `horus_image_header`, not `program_header`: sharing a
+name was half of how the divergence survived, since both sides compiled and both were
+self-consistent and only a running probe could tell them apart. A rename makes a stale caller
+fail to **build** rather than fail to **agree**. The eight ELF fields are not carried over --
+exporting a field means promising to keep it, the same judgement `audit_abi.h` made.
+
+**Witness.** `tools/check_image_abi.py` (required) refuses a second declaration anywhere in the
+tree **under any name** (it matches the field set, not the spelling) and a second spelling of the
+magic; falsified four ways, two of them self-checks, because both rules are vacuous against a
+checker whose subject has moved. `make smoke-image-abi` (6 checks) arms a real boot module and
+requires every field to survive the round trip -- which the `_Static_assert`s cannot cover, since
+`mkheadered` is a separate program built by a separate compiler. Falsified by
+`IMAGE_HDR_WRITER_SKEW=1` (`make smoke-image-abi-control`), which emits `name` four bytes further
+into the same 44-byte header: the image still **arms**, and only the name is wrong. `make smoke`,
+`smoke-preempt`, `smoke-smp`, `smoke-proc`, `smoke-signal`, `smoke-tsd`, `smoke-fs` and
+`smoke-captest` all re-run green over the converted parse.
+
+**`check_abi_structs.py` has no `UNRESOLVED` entry now**, and its third rule is what made that a
+decision: the name left both headers, the checker refused the silence, and the entry was removed
+on purpose. It is deliberately *not* moved to `SHARED` -- a struct written down once cannot
+drift, so enrolling it would be a check that cannot fail. `audit_record` is absent for the same
+reason.
 
 ## 3. Scale and performance limitations
 
@@ -2198,9 +2214,9 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand: **[C-6]**
 
-`.github/workflows/ci.yml` defines **105** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more: **107** across the three, producing **110** status-check contexts. Ruleset `21815299`
-requires all **107** today. Its predecessor `19007209` required **22** of them before
+`.github/workflows/ci.yml` defines **106** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more: **108** across the three, producing **111** status-check contexts. Ruleset `21815299`
+requires all **108** today. Its predecessor `19007209` required **22** of them before
 2026-08-16, and until 2026-08-15 exactly **zero** of those 22 were security gates: capability
 conformance, kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence,
 flush-on-switch and stack-guard reseed could all fail while a PR merged green. The required set
@@ -2244,7 +2260,7 @@ the right name with the wrong verdict. Step-level `continue-on-error` is untouch
 allowed; it lets one step be advisory while the job's own status still reports the truth, which
 is how the `security` job keeps its scanners advisory without becoming unfailable itself.
 
-That intended set is **107 required contexts and 3 reasoned exemptions**: `fuzz` (a 30-second
+That intended set is **108 required contexts and 3 reasoned exemptions**: `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` was a fifth until **[G-9]** closed on 2026-08-21; it was promoted on

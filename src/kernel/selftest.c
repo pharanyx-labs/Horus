@@ -1248,16 +1248,18 @@ void preempt_selftest(void) {
     uint32_t full_sz = (uint32_t)(embedded_preempttest_bin_end - embedded_preempttest_bin_start);
 
     print("PREEMPT_SELFTEST: begin\n");
-    if (full_sz < 44) { print("PREEMPT_SELFTEST: FAIL embed-size\n"); for (;;) asm volatile("hlt"); }
+    if (full_sz < HORUS_IMAGE_HDR_BYTES) { print("PREEMPT_SELFTEST: FAIL embed-size\n"); for (;;) asm volatile("hlt"); }
 
     const uint8_t *bin = embedded_preempttest_bin_start;
-    uint32_t magic   = *(const uint32_t *)bin;
-    uint32_t h_entry = *(const uint32_t *)(bin + 4);
-    uint32_t h_size  = *(const uint32_t *)(bin + 8);
-    if (magic != 0x55524F48)                     { print("PREEMPT_SELFTEST: FAIL magic\n"); for (;;) asm volatile("hlt"); }
-    if (h_size == 0 || h_size > MAX_PROGRAM_SIZE) { print("PREEMPT_SELFTEST: FAIL size\n");  for (;;) asm volatile("hlt"); }
-    if (full_sz < 44 + h_size) h_size = full_sz - 44;
-    const uint8_t *payload = bin + 44;
+    /* One parse, shared with the loader and every other staging site (S80):
+     * three unaligned casts and a hand-spelled magic, eight times over. */
+    struct horus_image_header hdr_;
+    int hrc_ = image_container_parse(bin, full_sz, &hdr_);
+    uint32_t h_entry = hdr_.entry;
+    uint32_t h_size  = hdr_.size;
+    if (hrc_ == -2)                              { print("PREEMPT_SELFTEST: FAIL magic\n"); for (;;) asm volatile("hlt"); }
+    if (hrc_ != 0)                               { print("PREEMPT_SELFTEST: FAIL size\n");  for (;;) asm volatile("hlt"); }
+    const uint8_t *payload = bin + HORUS_IMAGE_HDR_BYTES;
 
     int a = preempt_spawn_one(h_entry, h_size, payload);
     int b = preempt_spawn_one(h_entry, h_size, payload);
@@ -1306,15 +1308,17 @@ void smp_selftest(void) {
     if (online < 2) { print("SMP_SELFTEST: FAIL no-aps\n"); for (;;) asm volatile("hlt"); }
 
     uint32_t full_sz = (uint32_t)(embedded_preempttest_bin_end - embedded_preempttest_bin_start);
-    if (full_sz < 44) { print("SMP_SELFTEST: FAIL embed-size\n"); for (;;) asm volatile("hlt"); }
+    if (full_sz < HORUS_IMAGE_HDR_BYTES) { print("SMP_SELFTEST: FAIL embed-size\n"); for (;;) asm volatile("hlt"); }
     const uint8_t *bin = embedded_preempttest_bin_start;
-    uint32_t magic   = *(const uint32_t *)bin;
-    uint32_t h_entry = *(const uint32_t *)(bin + 4);
-    uint32_t h_size  = *(const uint32_t *)(bin + 8);
-    if (magic != 0x55524F48)                     { print("SMP_SELFTEST: FAIL magic\n"); for (;;) asm volatile("hlt"); }
-    if (h_size == 0 || h_size > MAX_PROGRAM_SIZE) { print("SMP_SELFTEST: FAIL size\n");  for (;;) asm volatile("hlt"); }
-    if (full_sz < 44 + h_size) h_size = full_sz - 44;
-    const uint8_t *payload = bin + 44;
+    /* One parse, shared with the loader and every other staging site (S80):
+     * three unaligned casts and a hand-spelled magic, eight times over. */
+    struct horus_image_header hdr_;
+    int hrc_ = image_container_parse(bin, full_sz, &hdr_);
+    uint32_t h_entry = hdr_.entry;
+    uint32_t h_size  = hdr_.size;
+    if (hrc_ == -2)                              { print("SMP_SELFTEST: FAIL magic\n"); for (;;) asm volatile("hlt"); }
+    if (hrc_ != 0)                               { print("SMP_SELFTEST: FAIL size\n");  for (;;) asm volatile("hlt"); }
+    const uint8_t *payload = bin + HORUS_IMAGE_HDR_BYTES;
 
     /* Spawn one worker per online CPU so an AP always has work to pull. Preserve
      * the kernel address space across do_spawn (which installs the new task's
@@ -1386,18 +1390,20 @@ static int proc_spawn_named(const char *name) {
 /* Spawn a HORU-headered embedded image with an explicit task name. */
 static int proc_spawn_embed(const uint8_t *start, const uint8_t *end, const char *nm) {
     uint32_t full = (uint32_t)(end - start);
-    if (full < 44) return -1;
-    uint32_t magic   = *(const uint32_t *)start;
-    uint32_t h_entry = *(const uint32_t *)(start + 4);
-    uint32_t h_size  = *(const uint32_t *)(start + 8);
-    if (magic != 0x55524F48 || h_size == 0 || h_size > MAX_PROGRAM_SIZE) return -1;
-    if (full < 44 + h_size) h_size = full - 44;
+    if (full < HORUS_IMAGE_HDR_BYTES) return -1;
+    /* One parse, shared with the loader and every other staging site (S80):
+     * three unaligned casts and a hand-spelled magic, eight times over. */
+    struct horus_image_header hdr_;
+    int hrc_ = image_container_parse(start, full, &hdr_);
+    uint32_t h_entry = hdr_.entry;
+    uint32_t h_size  = hdr_.size;
+    if (hrc_ != 0) return -1;
 
     uint64_t kcr3;
     __asm__ volatile ("mov %%cr3, %0" : "=r"(kcr3));
     set_current_task(0);
     spawn_stage_acquire();
-    for (uint32_t i = 0; i < h_size; i++) loader_staging[i] = start[44 + i];
+    for (uint32_t i = 0; i < h_size; i++) loader_staging[i] = start[HORUS_IMAGE_HDR_BYTES + i];
     armed_hdr.entry = h_entry;
     armed_hdr.size  = h_size;
     int k = 0;
@@ -1481,17 +1487,19 @@ void signal_selftest(void) {
     uint32_t full_sz = (uint32_t)(embedded_sigtest_bin_end - embedded_sigtest_bin_start);
 
     print("SIGNAL_SELFTEST: launch\n");
-    if (full_sz < 44) { print("SIGNAL_SELFTEST: FAIL embed-size\n"); for (;;) asm volatile("hlt"); }
+    if (full_sz < HORUS_IMAGE_HDR_BYTES) { print("SIGNAL_SELFTEST: FAIL embed-size\n"); for (;;) asm volatile("hlt"); }
 
     const uint8_t *bin = embedded_sigtest_bin_start;
-    uint32_t magic   = *(const uint32_t *)bin;
-    uint32_t h_entry = *(const uint32_t *)(bin + 4);
-    uint32_t h_size  = *(const uint32_t *)(bin + 8);
-    if (magic != 0x55524F48)                     { print("SIGNAL_SELFTEST: FAIL magic\n"); for (;;) asm volatile("hlt"); }
-    if (h_size == 0 || h_size > MAX_PROGRAM_SIZE) { print("SIGNAL_SELFTEST: FAIL size\n");  for (;;) asm volatile("hlt"); }
-    if (full_sz < 44 + h_size) h_size = full_sz - 44;
+    /* One parse, shared with the loader and every other staging site (S80):
+     * three unaligned casts and a hand-spelled magic, eight times over. */
+    struct horus_image_header hdr_;
+    int hrc_ = image_container_parse(bin, full_sz, &hdr_);
+    uint32_t h_entry = hdr_.entry;
+    uint32_t h_size  = hdr_.size;
+    if (hrc_ == -2)                              { print("SIGNAL_SELFTEST: FAIL magic\n"); for (;;) asm volatile("hlt"); }
+    if (hrc_ != 0)                               { print("SIGNAL_SELFTEST: FAIL size\n");  for (;;) asm volatile("hlt"); }
 
-    const uint8_t *payload = bin + 44;
+    const uint8_t *payload = bin + HORUS_IMAGE_HDR_BYTES;
     spawn_stage_acquire();
     for (uint32_t i = 0; i < h_size; i++) loader_staging[i] = payload[i];
     armed_hdr.entry = h_entry;
@@ -1523,17 +1531,19 @@ void tsd_selftest(void) {
     uint32_t full_sz = (uint32_t)(embedded_tsdtest_bin_end - embedded_tsdtest_bin_start);
 
     print("TSD_SELFTEST: launch\n");
-    if (full_sz < 44) { print("TSD_SELFTEST: FAIL embed-size\n"); for (;;) asm volatile("hlt"); }
+    if (full_sz < HORUS_IMAGE_HDR_BYTES) { print("TSD_SELFTEST: FAIL embed-size\n"); for (;;) asm volatile("hlt"); }
 
     const uint8_t *bin = embedded_tsdtest_bin_start;
-    uint32_t magic   = *(const uint32_t *)bin;
-    uint32_t h_entry = *(const uint32_t *)(bin + 4);
-    uint32_t h_size  = *(const uint32_t *)(bin + 8);
-    if (magic != 0x55524F48)                     { print("TSD_SELFTEST: FAIL magic\n"); for (;;) asm volatile("hlt"); }
-    if (h_size == 0 || h_size > MAX_PROGRAM_SIZE) { print("TSD_SELFTEST: FAIL size\n");  for (;;) asm volatile("hlt"); }
-    if (full_sz < 44 + h_size) h_size = full_sz - 44;
+    /* One parse, shared with the loader and every other staging site (S80):
+     * three unaligned casts and a hand-spelled magic, eight times over. */
+    struct horus_image_header hdr_;
+    int hrc_ = image_container_parse(bin, full_sz, &hdr_);
+    uint32_t h_entry = hdr_.entry;
+    uint32_t h_size  = hdr_.size;
+    if (hrc_ == -2)                              { print("TSD_SELFTEST: FAIL magic\n"); for (;;) asm volatile("hlt"); }
+    if (hrc_ != 0)                               { print("TSD_SELFTEST: FAIL size\n");  for (;;) asm volatile("hlt"); }
 
-    const uint8_t *payload = bin + 44;
+    const uint8_t *payload = bin + HORUS_IMAGE_HDR_BYTES;
     spawn_stage_acquire();
     for (uint32_t i = 0; i < h_size; i++) loader_staging[i] = payload[i];
     armed_hdr.entry = h_entry;
@@ -2421,15 +2431,17 @@ void e820_selftest(void) {
 
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm) {
     uint32_t full = (uint32_t)(end - start);
-    if (full < 44) return -1;
-    uint32_t magic   = *(const uint32_t *)start;
-    uint32_t h_entry = *(const uint32_t *)(start + 4);
-    uint32_t h_size  = *(const uint32_t *)(start + 8);
-    if (magic != 0x55524F48) return -1;
-    if (h_size == 0 || h_size > MAX_PROGRAM_SIZE) return -1;
+    if (full < HORUS_IMAGE_HDR_BYTES) return -1;
+    /* One parse, shared with the loader and every other staging site (S80):
+     * three unaligned casts and a hand-spelled magic, eight times over. */
+    struct horus_image_header hdr_;
+    int hrc_ = image_container_parse(start, full, &hdr_);
+    uint32_t h_entry = hdr_.entry;
+    uint32_t h_size  = hdr_.size;
+    if (hrc_ != 0) return -1;
     if (full < 44 + h_size) h_size = full - 44;
 
-    const uint8_t *payload = start + 44;
+    const uint8_t *payload = start + HORUS_IMAGE_HDR_BYTES;
     spawn_stage_acquire();
     for (uint32_t i = 0; i < h_size; i++) loader_staging[i] = payload[i];
     armed_hdr.entry = h_entry;           /* recomputed by try_elf_load for the PIE ELF */

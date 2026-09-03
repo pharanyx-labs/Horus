@@ -3,16 +3,25 @@
 
 
 
+/* mkheadered -- write a Horus `.bin`: the container header, then the payload.
+ *
+ * THIS TOOL DEFINED THE FORMAT AND DID NOT SHARE ITS DEFINITION. Until
+ * 2026-09-03 the struct below was a private copy here, a second (44-byte) copy in
+ * include/syscall.h, a third (104-byte, same name, ELF-flavoured) in
+ * src/include/kernel.h, and neither of the two readers in src/kernel/loader.c
+ * used any of them -- they assembled the fields from literal byte offsets. Four
+ * copies, none connected, agreeing only by hand. docs/LIMITATIONS.md 2.18.
+ *
+ * It now includes the one declaration. That is the whole repair: this is a HOST
+ * program built with the host compiler, so program_abi.h is deliberately
+ * freestanding (<stdint.h> and nothing else) to keep it includable from here.
+ * A change to the layout now fails to build, or moves both sides at once. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-struct program_header {
-    uint32_t magic;
-    uint32_t entry;
-    uint32_t size;
-    char     name[32];
-};
+
+#include "program_abi.h"
 
 int main(int argc, char **argv) {
     if (argc < 3) {
@@ -63,11 +72,11 @@ int main(int argc, char **argv) {
     }
     fclose(fin);
 
-    struct program_header hdr = {0};
-    hdr.magic = 0x55524F48;
+    struct horus_image_header hdr = {0};
+    hdr.magic = HORUS_IMAGE_MAGIC;
     hdr.entry = 0;
     hdr.size  = fsize;
-    strncpy(hdr.name, name, 31);
+    strncpy(hdr.name, name, HORUS_IMAGE_NAME_MAX - 1);
     {
 
         char elfpath[512];
@@ -101,7 +110,27 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+#ifdef IMAGE_HDR_WRITER_SKEW
+    /* CONTROL ARM (S80). Emit `name` four bytes further into the SAME 44-byte
+     * header, as if a `uint32_t flags` had been inserted before it on the WRITER
+     * side only. That is the change four unconnected copies of a layout could not
+     * catch, and it is deliberately not a loud one: magic, entry, size and the
+     * payload offset are all still exactly right, the kernel arms the image
+     * successfully, and only the NAME comes back wrong. An arm that broke the
+     * magic would be caught by any reader; this one is caught only by a test that
+     * checks the whole header. */
+    {
+        unsigned char skew[44];
+        memset(skew, 0, sizeof(skew));
+        memcpy(skew + 0, &hdr.magic, 4);
+        memcpy(skew + 4, &hdr.entry, 4);
+        memcpy(skew + 8, &hdr.size,  4);
+        strncpy((char *)skew + 16, name, 27);
+        fwrite(skew, 1, sizeof(skew), fout);
+    }
+#else
     fwrite(&hdr, 1, sizeof(hdr), fout);
+#endif
     fwrite(data, 1, fsize, fout);
     fclose(fout);
 

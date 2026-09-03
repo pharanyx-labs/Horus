@@ -1356,10 +1356,10 @@ measures false *negatives*. A checker with three rules needs three arms, not one
 
 ## CI
 
-`.github/workflows/ci.yml` defines **105** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **106** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below: **107** jobs, **110** contexts. Counts from `tools/check_ci_gating.py`, which prints
+below: **108** jobs, **111** contexts. Counts from `tools/check_ci_gating.py`, which prints
 them; do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20, a backstop, not a budget. The default is
@@ -1411,7 +1411,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **107 required contexts and 3 reasoned exemptions** (read off
+The intended set is **108 required contexts and 3 reasoned exemptions** (read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence) `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
@@ -1876,6 +1876,47 @@ name that no longer crosses the boundary, an `UNRESOLVED` entry that now agrees,
 struct the field extractor used to skip silently (which for a discovered struct would have been
 the checker excusing itself from the comparison).
 
+**The `.bin` container has exactly one declaration, gated since 2026-09-03.**
+`tools/check_image_abi.py` (required, same source-only job) refuses a second declaration of the
+program-image container anywhere in the tree and a second spelling of its magic. It matches on
+the **field set**, not the name, so a rename is not an escape -- the defect was four copies
+rather than four names (**S80**, `docs/LIMITATIONS.md` 2.18).
+
+**It found seven sites on its first run that the finding had not counted.** 2.18's own title said
+the format was written down four times; the checker named eleven parses, including two in
+`kshell.c` on the boot path that spawns `init` and the shell. That is §1.6b's mistake four days
+later in a different file -- a hand-written count, short, reasoned from as complete -- and it is
+the second time in one week that replacing a count with an enumeration was the fix.
+
+Falsified **four** ways: a second spelling of the magic; a redeclaration under a different name;
+the declaration renamed away; and the header removed entirely. The last two are self-checks,
+because both real rules are vacuous against a checker whose subject has moved, and that failure
+would look exactly like success.
+
+**The runtime half is `make smoke-image-abi`, and it exists because the `_Static_assert`s cannot
+cover it.** `include/program_abi.h` asserts the layout in every translation unit that includes
+it, which proves the kernel and ring 3 compile the same struct -- but `tools/mkheadered` is a
+separate program built by a separate compiler, so nothing static can prove the bytes on disk came
+from that declaration. The gate arms a real boot module (`hello`, unconditional, so no fixture is
+needed) and requires name, size, entry and the payload offset to survive the round trip: 6 checks.
+
+| Arm | Asserts | Result |
+|---|---|---|
+| `smoke-image-abi` | `IMAGE_ABI: PASS` present, no `FAIL` | passes; `PASS 6 checks` |
+| `smoke-image-abi-control` (`IMAGE_HDR_WRITER_SKEW=1`) | `IMAGE_ABI: FAIL name-mismatch` present | passes; the image **arms**, and only the name is wrong |
+
+**The control arm is deliberately quiet, and that is the design.** It makes `mkheadered` emit
+`name` four bytes further into the same 44-byte header -- one side of the format changed, which
+is exactly what eleven unconnected copies could not catch. `magic`, `entry`, `size` and the
+payload offset all stay correct, so the image loads and runs. An arm that broke the magic would
+be caught by any reader; an arm that only asked *did it load?* would pass this one. The required
+marker is `FAIL name-mismatch` specifically, so an arm failing at `arm-failed` -- a loud break --
+does not satisfy it.
+
+The eight sites the selftests own are covered by re-running what they gate: `make smoke` (the
+boot path), `smoke-preempt`, `smoke-smp`, `smoke-proc`, `smoke-signal`, `smoke-tsd`, `smoke-fs`
+and `smoke-captest` (182 checks), all green over the converted parse.
+
 **No ship-build syscall is gated on the [C-1] decoy, gated since 2026-09-03.**
 `tools/check_dispatch_gates.py` (required, in the same source-only checker set) parses
 `syscall_table` in `src/kernel/syscall.c` and fails on any row whose capability slot is **3** and
@@ -1927,7 +1968,7 @@ three ways: a planted phrasing in a `.c` file is caught with file and line; the 
 phrasing inside a quotation stays exempt, so a comment can record the wrong thing while
 correcting it.
 
-`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 81 properties
+`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 82 properties
 name a witness that resolves to a make target or a CI job.
 
 | Rule | Rejects |

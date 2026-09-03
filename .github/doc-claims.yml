@@ -783,4 +783,13 @@ forbidden:
       authority path looks like sitting in a reason field where nothing asserts it, under a group
       header that made the same claim about three syscalls already fixed. If a syscall needs this
       sentence again, it needs a capability or a retirement, not a note. Corrected 2026-09-03.
+  - pattern: "written down four times and no two copies are connected"
+    reason: >-
+      docs/LIMITATIONS.md 2.18's own title from 2026-09-03, and wrong in the number. The `.bin`
+      container was DECLARED four times but PARSED in eleven places -- two more in kshell.c on the
+      boot path and five in selftest.c -- which tools/check_image_abi.py found on its first run,
+      after the section had been written and reviewed. Forbidden because the specific failure is a
+      hand-written count reasoned from as if complete, which is the same mistake LIMITATIONS 1.6b
+      made four days earlier with "seven dispatch entries" and a list of five. The format has one
+      declaration now (include/program_abi.h) and a checker that enumerates. Corrected 2026-09-03.
 

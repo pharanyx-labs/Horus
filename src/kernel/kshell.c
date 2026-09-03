@@ -328,7 +328,7 @@ int process_user_command(const char *cmd) {
         println("  From Horus root: cat userspace/shell.bin | nc localhost 4444");
         println("  Inside userspace/: cat shell.bin | nc localhost 4444");
         println("Waiting on 4444 for the binary...");
-        struct program_header h;
+        struct horus_image_header h;
         spawn_stage_acquire();
         int r = do_receive_program(&h);
         if (r != 0) {
@@ -370,14 +370,15 @@ void spawn_initial_userspace_init(void) {
     extern uint8_t embedded_init_bin_end[];
     extern int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);
     uint32_t full_sz = (uint32_t)(embedded_init_bin_end - embedded_init_bin_start);
-    if (full_sz < 44) return;
+    if (full_sz < HORUS_IMAGE_HDR_BYTES) return;
     const uint8_t *bin = embedded_init_bin_start;
-    uint32_t magic = *(const uint32_t *)bin;
-    uint32_t h_entry = *(const uint32_t *)(bin + 4);
-    uint32_t h_size = *(const uint32_t *)(bin + 8);
-    if (magic != 0x55524F48) return;
-    if (h_size == 0 || h_size > MAX_PROGRAM_SIZE) return;
-    if (full_sz < 44 + h_size) h_size = full_sz - 44;
+    /* One parse, shared with the loader and every other staging site (S80):
+     * three unaligned casts and a hand-spelled magic, eight times over. */
+    struct horus_image_header hdr_;
+    int hrc_ = image_container_parse(bin, full_sz, &hdr_);
+    uint32_t h_entry = hdr_.entry;
+    uint32_t h_size  = hdr_.size;
+    if (hrc_ != 0) return;
     /* Staged by hand rather than through arm_named_binary, so the bracket goes
      * on by hand too: everything from the first write into loader_staging to the
      * spawn that consumes it is one window (roadmap 1.7). This one runs at boot
@@ -385,7 +386,7 @@ void spawn_initial_userspace_init(void) {
     spawn_stage_acquire();
     armed_hdr.entry = h_entry;
     armed_hdr.size = h_size;
-    const uint8_t *payload = bin + 44;
+    const uint8_t *payload = bin + HORUS_IMAGE_HDR_BYTES;
     for (uint32_t i = 0; i < h_size; i++) loader_staging[i] = payload[i];
     loader_arm_commit();
     int pid = do_spawn();
@@ -488,18 +489,19 @@ void spawn_initial_userspace_shell(void) {
     extern uint8_t embedded_shell_bin_start[];
     extern uint8_t embedded_shell_bin_end[];
     uint32_t full_sz = (uint32_t)(embedded_shell_bin_end - embedded_shell_bin_start);
-    if (full_sz < 44) return;
+    if (full_sz < HORUS_IMAGE_HDR_BYTES) return;
     const uint8_t *bin = embedded_shell_bin_start;
-    uint32_t magic = *(const uint32_t *)bin;
-    uint32_t h_entry = *(const uint32_t *)(bin + 4);
-    uint32_t h_size = *(const uint32_t *)(bin + 8);
-    if (magic != 0x55524F48) return;
-    if (h_size == 0 || h_size > MAX_PROGRAM_SIZE) return;
-    if (full_sz < 44 + h_size) h_size = full_sz - 44;
+    /* One parse, shared with the loader and every other staging site (S80):
+     * three unaligned casts and a hand-spelled magic, eight times over. */
+    struct horus_image_header hdr_;
+    int hrc_ = image_container_parse(bin, full_sz, &hdr_);
+    uint32_t h_entry = hdr_.entry;
+    uint32_t h_size  = hdr_.size;
+    if (hrc_ != 0) return;
     spawn_stage_acquire();                      /* see the note in the init launcher */
     armed_hdr.entry = h_entry;
     armed_hdr.size = h_size;
-    const uint8_t *payload = bin + 44;
+    const uint8_t *payload = bin + HORUS_IMAGE_HDR_BYTES;
     for (uint32_t i = 0; i < h_size; i++) {
         loader_staging[i] = payload[i];
     }

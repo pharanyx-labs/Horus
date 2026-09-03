@@ -1218,6 +1218,19 @@ as "a live capability that is not an endpoint", and `smoke-frame` now uses it as
 test vector for the map path. A trap that is asserted against on every boot is worth more than
 one that was quietly removed.
 
+**One layout, written down once** (2026-09-03, **S80**). The `.bin` container the build writes
+and the loader reads was declared four times and parsed in eleven places, each parse spelling the
+magic and the offsets 4, 8 and 44 by hand. Two of the declarations shared the name
+`struct program_header` and described different things -- 104 bytes in the kernel, 44 in ring 3 --
+and neither was used by anything; the copy that defined the format was a private struct inside
+`tools/mkheadered.c`. It is one declaration now (`struct horus_image_header`,
+`include/program_abi.h`, included by the kernel, ring 3 **and** the host tool) and one parse
+(`image_container_parse`). The header is deliberately freestanding so the host tool can compile
+it -- a dependency on `kernel.h` would push the writer back to a private copy. This is
+`include/block_size.h`'s lesson and `audit_abi.h`'s repair applied a third time; the count of
+copies came from `tools/check_image_abi.py`, not from a person, because §2.18's own title said
+four and the number was eleven. `docs/LIMITATIONS.md` 2.18.
+
 **And keeping it means something has to watch the gates, not just the capability** (2026-09-03,
 **S79**). A dispatch row reading `{ handler, 3, WRITE|EXEC, SC_ANYTYPE }` is authorised by the
 decoy, so it authorises everyone. That shape has been swept three times and each sweep left rows

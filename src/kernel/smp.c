@@ -676,6 +676,16 @@ void smp_bringup(void) {
      * so it never returns to kernel_main. */
     elf_loader_selftest();
 #endif
+#ifdef IMAGE_ABI_SELFTEST
+    /* S80: the container the build writes is the one this kernel reads. Runs
+     * here because it arms a real boot module, so it needs the staging lock and
+     * the embedded blobs -- both available by this point. Its own #ifdef and not
+     * nested inside ELF_SELFTEST's: the first version of this call sat one line
+     * below elf_loader_selftest() and inside its guard, so IMAGE_ABI_SELFTEST=1
+     * alone produced no output at all and the gate timed out with nothing on the
+     * wire to say why. */
+    image_abi_selftest();
+#endif
 #ifdef ELF64_SELFTEST
     /* Gated: verify the loader's x86-64 RELA relocation path on a real 64-bit
      * static-PIE. Loads and inspects only — never executed, so this is

@@ -189,6 +189,13 @@ required:
   # database, and they survived two prior ambient-authority sweeps because both
   # looked for gates that were ABSENT rather than vacuous.
   - passwd-probe
+  # Gating. S80: the .bin container the build writes is the one the kernel reads.
+  # The compile-time half (_Static_asserts in include/program_abi.h) cannot cover
+  # this, because mkheadered is a separate program built by a separate compiler --
+  # only booting and arming a real module proves the bytes on disk came from the
+  # one declaration. Its control arm makes a one-sided layout change that still
+  # ARMS and only corrupts the name, so the silent case is the one gated.
+  - image-abi
   # Gating. It carries S29 -- reaching a mounted subtree takes the capability
   # for that mount, not the path -- and the routing half, where the failure mode
   # is the WRONG SERVER ANSWERING rather than an error.

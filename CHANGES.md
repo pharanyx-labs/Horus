@@ -17,6 +17,55 @@ in this file.
 
 ### Fixed
 
+- **The `.bin` container format was written down four times and parsed in eleven places; the
+  count in the finding's own title was the first thing that turned out to be wrong.** The format
+  is a 44-byte header -- `magic` at 0, `entry` at 4, `size` at 8, `name[32]` at 12 -- then the
+  payload. Two declarations shared the name `struct program_header` and described different
+  things: 104 bytes in `src/include/kernel.h` (an ELF program header with four Horus fields
+  appended, `magic` at offset **96**) and 44 in `include/syscall.h`. **Neither was used by
+  anything** -- the `program_header_t` typedef had no uses and not one of the eight ELF fields
+  was ever read -- so the two that shared a name were the two that did no work. The copy that
+  actually defined the format was private to `tools/mkheadered.c`, which writes every `.bin` in
+  the tree. And the readers used none of them, assembling fields from the literals 0, 4, 8, 12
+  and 44 with `0x55524F48` spelled out at each site.
+
+  **`tools/check_image_abi.py` was written to refuse a second declaration and named seven more
+  parses on its first run** -- two in `src/kernel/kshell.c`, on the boot path that spawns `init`
+  and the shell, and five in `src/kernel/selftest.c`. Eleven, not four. That is `LIMITATIONS.md`
+  §1.6b's mistake four days later in a different file: a hand-written count, short, reasoned from
+  as if complete. Both were closed the same way -- stop counting, let something enumerate.
+
+  **What the divergence cost, recorded rather than guessed.** It broke `SYS_RECEIVE_PROGRAM`
+  twice over: `h_receive_program` copied the kernel's 104 bytes into a 44-byte ring-3 stack
+  object -- 60 past its end, then read `h.name` at offset 12 where the kernel had put the low
+  half of `vaddr` -- and the wire read tested `magic` at offset 96 against payload bytes, so the
+  transfer answered "Bad magic" every time. The overrun was unreachable **because** the other
+  half was broken, which is why that syscall was retired first (**S79**): repairing the struct
+  ahead of the gate would have made a decoy-gated handler succeed for the first time.
+
+  One declaration now -- `struct horus_image_header` in `include/program_abi.h`, included by the
+  kernel, by ring 3 and by the **host** build tool, which is why it is freestanding (`<stdint.h>`
+  and nothing else: a dependency on `kernel.h` would have forced `mkheadered` back to a private
+  copy and reopened the finding). One parse, `image_container_parse`, called by all eleven sites,
+  with offsets from `offsetof` and a byte-wise decode that also removes eleven unaligned
+  `*(const uint32_t *)(bin + 4)` loads through typed pointers on linker symbols. The **rename** is
+  S71's lesson verbatim: sharing a name was half of how the divergence survived, so a stale caller
+  now fails to build rather than fails to agree.
+
+  Invariant: **S80**, and the account is `docs/LIMITATIONS.md` 2.18, now closed. Witness
+  `tools/check_image_abi.py` (required), falsified four ways -- a second magic, a redeclaration
+  under a different name, and two self-checks (the declaration renamed away, the header removed),
+  because both real rules are vacuous against a checker whose subject has moved. Runtime witness
+  `make smoke-image-abi` (6 checks), which arms a real boot module and checks every field
+  survives the round trip -- something no `_Static_assert` can cover, `mkheadered` being a
+  separate program built by a separate compiler. Falsified by `IMAGE_HDR_WRITER_SKEW=1`
+  (`make smoke-image-abi-control`), which emits `name` four bytes further into the same header so
+  the image still **arms** and only the name is wrong: an arm that broke the magic would be caught
+  by any reader, and one that only asked "did it load?" would pass. `make smoke`, `smoke-preempt`,
+  `smoke-smp`, `smoke-proc`, `smoke-signal`, `smoke-tsd`, `smoke-fs` and `smoke-captest` (182
+  checks) all re-run green over the converted parse. `check_abi_structs.py` has no `UNRESOLVED`
+  entry now; its third rule caught the removal and made it a decision rather than a side effect.
+
 - **[C-1]'s decoy still gated two ship-build syscalls, and the fact had been written down for
   two weeks.** `SYS_EXEC` (19) and `SYS_RECEIVE_PROGRAM` (27) read
   `{ handler, 3, CAP_RIGHT_WRITE|CAP_RIGHT_EXEC, SC_ANYTYPE }`. Cspace slot 3 is the `CAP_FRAME`

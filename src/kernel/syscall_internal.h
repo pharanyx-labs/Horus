@@ -22,7 +22,7 @@
  * LOADER_STAGING_BYTES are declared in kernel.h; MAX_PROGRAM_SIZE is the loader's
  * name for that cap and bounds every staged-image offset. */
 #define MAX_PROGRAM_SIZE LOADER_STAGING_BYTES
-extern struct program_header armed_hdr;
+extern struct horus_image_header armed_hdr;
 extern int program_armed;
 /* Which task armed the staged image ([G-11]). Written only by
  * loader_arm_commit(); read through staged_image_owned_by_current(), which is
@@ -116,7 +116,7 @@ int  try_elf_load(uint64_t load_base, uint64_t *out_entry, uint64_t *out_img_end
 void choose_image_placement(int tid, uint64_t *out_load_base, uint64_t *out_stack_top); /* loader.c */
 void load_staged_image_into(int tid, uint64_t load_base);                  /* loader.c */
 #if defined(DEBUG_SHELL) || defined(LEGACY_SYSCALLS_PRESENT)
-int  do_receive_program(struct program_header *hdr_out);                   /* loader.c */
+int  do_receive_program(struct horus_image_header *hdr_out);               /* loader.c */
 #endif
 void loader_arm_commit(void);                                              /* loader.c */
 void loader_disarm(void);                                                  /* loader.c */

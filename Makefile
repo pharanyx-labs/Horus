@@ -115,6 +115,7 @@ DEFECT_FLAGS = \
 	CAP_LOOKUP_ROOT_FALLBACK CAP_LOOKUP_RANGE_FALLBACK CAP_LOOKUP_TYPE_UNCHECKED \
 	KEYSLOT_REMOVE_NOOP USERS_PEPPER_PER_BOOT STORAGE_AUTOFORMAT \
 	STORAGE_FORMAT_UNGATED INSTALLER_NO_CONFIRM BLOCK_ERRNO_LEGACY \
+	READDIR_END_IS_NOENT \
 	META_CACHE_NO_WRITEBACK META_CACHE_WB_OUTSIDE_TXN META_CACHE_EVICT_NOWB \
 	META_CACHE_TINY MERKLE_NODE_TRUST_CACHED MERKLE_SKIP_PARENT_BIND \
 	FSCK_SHALLOW_REFS STORAGE_MOUNT_ANY_SIZE ALLOC_NO_HINT ATA_READY_ERR_ONLY \
@@ -1305,6 +1306,23 @@ CFLAGS += -DSYSCALL_COVERAGE
 endif
 
 SYSCALL_PTR_TRUNC32 ?= 0
+
+# READDIR_END_IS_NOENT=1 restores the overloaded readdir reply: SYS_ERR_NOENT for
+# BOTH "the offset is past the last entry" and "I could not stat that directory",
+# and fs_server flattening h_fs_stat's reason instead of passing it through.
+#
+# The consequence is the one a user reports: `ls` prints nothing and no error. A
+# SEALED volume -- every ATA machine from power-on until a login unlocks it --
+# makes h_fs_stat answer SYS_ERR_INVAL, fs_server turned that into NOENT, and the
+# shell read NOENT as end-of-directory. A locked store reported itself as an
+# empty filesystem, and none of the three steps looked wrong on its own.
+#
+# USERSPACE ONLY -- fs_server, dev_server, the shell and the libc are all ring 3 --
+# so the -D goes on USERSPACE_CFLAGS at top level, after that variable's `=`
+# assignment and outside any other flag's ifeq. See the note beside
+# SYSCALL_PTR_TRUNC32, which is the arm that established the rule.
+# Control arm for make smoke-readdir-end.
+READDIR_END_IS_NOENT ?= 0
 
 # SYSCOV_PROBES_ABSENT=1 compiles out the coverage probes -- captest's section 13
 # and auditprobe's four calls into the audit handlers: the probes that enter
@@ -3178,6 +3196,9 @@ endif
 ifeq ($(INSTALLER_NO_CONFIRM),1)
 USERSPACE_CFLAGS += -DINSTALLER_NO_CONFIRM
 endif
+ifeq ($(READDIR_END_IS_NOENT),1)
+USERSPACE_CFLAGS += -DREADDIR_END_IS_NOENT
+endif
 ifeq ($(TUI_INPUT_ECHO_SECRET),1)
 USERSPACE_CFLAGS += -DTUI_INPUT_ECHO_SECRET
 endif
@@ -4232,6 +4253,38 @@ smoke-fs:
 	@$(SMOKE_FS_PREP)
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 $(SMOKE_FS_ENV) REQUIRE_MARKER='FS_SELFTEST: PASS' \
 		FAIL_MARKER='FS_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# The readdir contract's own gate. smoke-fs already asserts FS_SELFTEST: PASS,
+# which these checks ride in; this target exists so the contract has a gate that
+# names it, and so the control arm below has a base to extend.
+.PHONY: smoke-readdir-end
+smoke-readdir-end:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FS_SELFTEST=1 $(SMOKE_FS_FLAGS)
+	@$(MAKE) --no-print-directory FS_SELFTEST=1 boot.iso
+	@$(SMOKE_FS_PREP)
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 $(SMOKE_FS_ENV) REQUIRE_MARKER='FS_SELFTEST: PASS' \
+		FAIL_MARKER='FS_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# The falsifying arm. READDIR_END_IS_NOENT=1 restores the overloaded reply --
+# SYS_ERR_NOENT for "past the last entry" AND for "I could not stat that
+# directory" -- together with fs_server flattening h_fs_stat's reason.
+#
+# THE MARKER IS THE EQUALITY, not "it failed". Under the flag the end of a
+# directory and a directory that is not there answer with the same value, which
+# is the entire defect: every caller in the tree then reads the second as the
+# first and reports an empty listing. A check comparing either observed code
+# against a CONSTANT would pass under this arm -- neither equals FS_RC_ENDDIR
+# there -- so the probe compares the two observed values against each other.
+.PHONY: smoke-readdir-end-control
+smoke-readdir-end-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FS_SELFTEST=1 READDIR_END_IS_NOENT=1 $(SMOKE_FS_FLAGS)
+	@$(MAKE) --no-print-directory FS_SELFTEST=1 READDIR_END_IS_NOENT=1 boot.iso
+	@$(SMOKE_FS_PREP)
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 $(SMOKE_FS_ENV) \
+		REQUIRE_MARKER='FS_SELFTEST: FAIL readdir-end-and-missing-dir-are-the-same' \
+		tools/smoke_test.sh boot.iso
 
 # Boot-time FS integration test: ring-3 init brings up the fs_server by delegation
 # (SYS_CAP_GRANT) and the delegated server serves the client end-to-end. Reuses

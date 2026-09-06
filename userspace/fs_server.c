@@ -257,13 +257,47 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
         break;
     }
     case FS_OP_READDIR: {
-        if (sys_fs_stat(rq->dir_ino, &st) != 0)      { rp->rc = SYS_ERR_NOENT; break; }
+        /* THE REASON IS PASSED THROUGH, NOT FLATTENED TO NOENT.
+         *
+         * This read `!= 0 -> SYS_ERR_NOENT`, and h_fs_stat has two distinct
+         * failures: SYS_ERR_INVAL when the store is not open -- a SEALED volume,
+         * which is every ATA machine from power-on until a login unlocks it --
+         * and SYS_ERR_NOENT when the inode itself cannot be read. Flattening
+         * them meant a caller walking the root of a sealed volume was told
+         * "no such directory", which the shell's `ls` in turn read as
+         * end-of-directory, and printed nothing at all with no error. A locked
+         * store reported itself as an empty filesystem.
+         *
+         * That is the whole path behind a `ls` that returns nothing on a real
+         * installed disk, and none of the three steps looked wrong on its own.
+         * See FS_RC_ENDDIR in include/fs_proto.h. */
+        int strc = sys_fs_stat(rq->dir_ino, &st);
+#ifdef READDIR_END_IS_NOENT
+        if (strc != 0) { rp->rc = SYS_ERR_NOENT; break; }
+#else
+        if (strc != 0) { rp->rc = strc; break; }
+#endif
         if (!perm_ok(&st, cuid, cgid, P_R))          { rp->rc = SYS_ERR_PERM;  break; }  /* read the dir */
         uint32_t ino, type; char name[FS_NAME_MAX];
         if (dir_get(rq->dir_ino, rq->offset, &ino, &type, name)) {
             rp->rc = 0; rp->ino = ino; rp->type = type;
             ustrncpy(rp->name, name, FS_NAME_MAX);
-        } else rp->rc = SYS_ERR_NOENT;   /* past end */
+        } else {
+            /* PAST THE END, which is not the same fact as the sys_fs_stat
+             * failure above and no longer shares a code with it. Both answered
+             * SYS_ERR_NOENT until 2026-09-06, so a caller could not tell a
+             * directory it had read to the end from one it could not read at
+             * all -- and all three callers in the tree guessed "end", which is
+             * fail-open for a listing. See FS_RC_ENDDIR in include/fs_proto.h.
+             *
+             * READDIR_END_IS_NOENT=1 restores the overload; it is the control
+             * arm for make smoke-readdir-end. */
+#ifdef READDIR_END_IS_NOENT
+            rp->rc = SYS_ERR_NOENT;
+#else
+            rp->rc = FS_RC_ENDDIR;
+#endif
+        }
         break;
     }
     case FS_OP_STAT: {

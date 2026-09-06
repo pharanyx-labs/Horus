@@ -2767,6 +2767,19 @@ jobs:
         run: rustup target add x86_64-unknown-none
       - name: Boot FS_SELFTEST kernel and assert the ring-3 fs_server serves a client end-to-end
         run: make smoke-fs
+      # The readdir contract. The end of a directory and the absence of one
+      # answered with the SAME code until 2026-09-06, and every caller read the
+      # second as the first -- so an unreadable directory listed as an empty one,
+      # with no error. On a SEALED volume (every ATA machine until a login
+      # unlocks it) that made a locked store report itself as an empty
+      # filesystem, which is what `ls returning nothing` on a real disk was.
+      - name: The end of a directory is not the absence of one
+        run: make smoke-readdir-end
+      # The marker is the EQUALITY of the two codes, not "it failed": a check
+      # comparing either observed code against a constant would pass under the
+      # defect, since neither equals FS_RC_ENDDIR there.
+      - name: Control arm — a missing directory answers like the end of one
+        run: make smoke-readdir-end-control
 
   smoke-fs-perms:
     name: QEMU filesystem permissions self-test (headless)

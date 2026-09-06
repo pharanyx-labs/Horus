@@ -1666,14 +1666,36 @@ static void handle_command(char *cmd) {
                 else { print("ls: fs_server call failed ("); print(sys_strerror(rc)); println(")"); }
                 break;
             }
-            /* NOENT here means the server walked past the last entry, which is
-             * how a readdir ends. The server also returns NOENT for a directory
-             * that does not exist -- the two are not distinguishable over the
-             * wire -- but sh_cwd_ino is a directory `cd` already verified exists,
-             * so for this caller it can only be end-of-directory. */
-            if (rp.rc == SYS_ERR_NOENT) break;
+            /* END OF DIRECTORY, and it now has a code of its own.
+             *
+             * This used to test SYS_ERR_NOENT and reason that "sh_cwd_ino is a
+             * directory `cd` already verified exists, so for this caller it can
+             * only be end-of-directory". That is untrue of sh_cwd_ino's INITIAL
+             * value, 0, which no `cd` ever verified -- and untrue again if the
+             * directory is removed underneath us. The server answered NOENT both
+             * for "past the last entry" and for "I could not stat that
+             * directory", so on either of those the listing ended here and
+             * printed nothing at all: an unreadable directory looked exactly
+             * like an empty one, with no error anywhere. See FS_RC_ENDDIR in
+             * include/fs_proto.h.
+             *
+             * Anything else negative now falls through to the report below,
+             * which is the whole point: a listing that cannot be produced must
+             * say so rather than look empty. */
+            if (rp.rc == FS_RC_ENDDIR) break;
             if (rp.rc < 0) {
-                print("ls: "); print(sys_strerror(rp.rc)); println("");
+                /* NOENT here is about the DIRECTORY, not about an entry: the
+                 * server could not stat sh_cwd_ino. Saying "no such object"
+                 * would be true and useless, since the object the user is
+                 * standing in is the one that is gone. */
+                if (rp.rc == SYS_ERR_INVAL)
+                    println("ls: the volume is not unlocked, so nothing can be listed");
+                else if (rp.rc == SYS_ERR_NOENT)
+                    println("ls: the current directory is no longer there");
+                else {
+                    print("ls: cannot read this directory (");
+                    print(sys_strerror(rp.rc)); println(")");
+                }
                 break;
             }
             if (n >= LS_MAX) { truncated = 1; break; }
@@ -2537,15 +2559,24 @@ static void handle_command(char *cmd) {
             req.op      = FS_OP_READDIR;
             req.dir_ino = 0;
             print("Userspace FS contents:\n");
-            int found = 0;
+            int found = 0, err = 0;
             for (int idx = 0; idx < 256; idx++) {
                 req.offset = (uint32_t)idx;
-                if (fss_call(&req, &rep) < 0 || rep.rc < 0) break;
+                /* Three outcomes, and this used to print one sentence naming two
+                 * of them as a guess: "(empty or server not connected)". The
+                 * transport failing, the server refusing and the directory
+                 * ending are separate facts and each is now reported as itself.
+                 * See FS_RC_ENDDIR in include/fs_proto.h. */
+                if (fss_call(&req, &rep) < 0) { err = -1; break; }
+                if (rep.rc == FS_RC_ENDDIR) break;
+                if (rep.rc < 0) { err = rep.rc; break; }
                 print("  "); print(rep.name);
                 print(rep.type == 2 ? "/\n" : "\n");
                 found = 1;
             }
-            if (!found) println("  (empty or server not connected)");
+            if (err == -1)     println("  (no reply from the FS server)");
+            else if (err < 0)  { print("  (refused: "); print(sys_strerror(err)); println(")"); }
+            else if (!found)   println("  (empty)");
         } else if (strncmp(cmd, "fss_cat ", 8) == 0) {
             const char *name = cmd + 8;
             struct fs_request  req = {0};

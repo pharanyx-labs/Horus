@@ -19,6 +19,7 @@
  */
 
 #include <stdint.h>
+#include "errno.h"   /* SYS_ERR_* -- FS_RC_ENDDIR is one of them */
 
 #define FS_PROTO_MAGIC   0x48465250u   /* "HFRP" */
 
@@ -49,7 +50,10 @@
 #define FS_OP_CREATE   2   /* dir_ino, name              -> ino          (needs w on dir) */
 #define FS_OP_MKDIR    3   /* dir_ino, name              -> ino          (needs w on dir) */
 #define FS_OP_DELETE   4   /* dir_ino, name              -> 0            (needs w on dir) */
-#define FS_OP_READDIR  5   /* dir_ino, offset=index      -> name, ino, type (needs r on dir) */
+#define FS_OP_READDIR  5   /* dir_ino, offset=index      -> name, ino, type (needs r on dir).
+                            * Ends with FS_RC_ENDDIR, NOT with SYS_ERR_NOENT: see
+                            * the note on FS_RC_ENDDIR below, which is a defect
+                            * this protocol used to have rather than a nicety. */
 #define FS_OP_READ     6   /* ino, offset, len           -> data[size], size (needs r on file) */
 #define FS_OP_WRITE    7   /* ino, offset, data[len]     -> size         (needs w on file) */
 #define FS_OP_STAT     8   /* ino                        -> size, type, mode, uid, gid */
@@ -84,6 +88,37 @@
                             * the source; directories are refused). unlink of
                             * either name then only frees the file once the last
                             * name is gone (FS_OP_DELETE drops one reference). */
+
+/* READDIR's end-of-directory signal, and it is a SEPARATE VALUE from
+ * SYS_ERR_NOENT on purpose.
+ *
+ * Until 2026-09-06 a server answered SYS_ERR_NOENT for BOTH "the offset is past
+ * the last entry" and "that directory does not exist, or I could not stat it".
+ * Two different facts, one code, and every caller in the tree resolved the
+ * ambiguity the same way -- as end-of-directory, which is the fail-OPEN
+ * direction for a listing. The consequence a user sees is `ls` printing nothing
+ * and no error for a directory it could not read: an unreadable directory and an
+ * empty one were indistinguishable, so a failure was reported as a fact about
+ * the filesystem.
+ *
+ * The shell's `ls` reasoned explicitly from "sh_cwd_ino is a directory `cd`
+ * already verified exists". That is untrue of its INITIAL value, 0, which no
+ * `cd` ever verified -- so before the store is readable, or if the directory is
+ * removed underneath, the listing is silently empty. `posix_readdir` was worse:
+ * it returned "no more entries" for a permission failure and for a transport
+ * failure too, so newlib's opendir/readdir reported an empty directory when it
+ * had not spoken to the server at all.
+ *
+ * SYS_ERR_RANGE because that is what has actually happened: the OFFSET is past
+ * the permitted range. It is not an error condition -- a caller walking a
+ * directory to its end sees it every time -- which is why it must not share a
+ * code with one.
+ *
+ * EVERY SERVER IMPLEMENTING THIS PROTOCOL MUST USE IT (fs_server and dev_server
+ * both do), and every caller must treat anything else negative as a reason to
+ * report rather than a reason to stop quietly. */
+#define FS_RC_ENDDIR  SYS_ERR_RANGE
+
 
 #define FS_NAME_MAX   32   /* directory entry name field (NUL-terminated) */
 #define FS_IO_MAX    176   /* max data payload per request/response */

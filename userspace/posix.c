@@ -736,10 +736,17 @@ int posix_diropen(const char *path, uint32_t *out_ino) {
 
 /* Read the directory entry at `index` (0-based) of directory inode `dir_ino`.
  * Returns 1 and fills the non-NULL out params on success, 0 at/after the end of
- * the directory (or on any error — readdir(3) reports end-of-dir as a NULL
- * return with errno unchanged, so the two are indistinguishable to the caller,
- * which matches POSIX). The name is copied NUL-terminated into name_out, which
- * must be at least FS_NAME_MAX bytes. */
+ * the directory, and the server's negative SYS_ERR_* on a failure.
+ *
+ * THE THIRD CASE USED TO BE THE SECOND ONE. This returned 0 for end-of-directory
+ * "or on any error", defended as matching POSIX because readdir(3) reports the
+ * end as a NULL return. That defence is half the rule: POSIX distinguishes the
+ * two through errno, which this could not do while it discarded the reason. So a
+ * refused directory, a missing one, and an RPC that never reached the server all
+ * became "the directory is empty" for every newlib program. readdir() in
+ * newlib_glue.c maps the negative case to errno and is where the POSIX shape is
+ * actually produced. The name is copied NUL-terminated into name_out, which must
+ * be at least FS_NAME_MAX bytes. */
 int posix_readdir(uint32_t dir_ino, uint32_t index,
                   char *name_out, uint32_t *ino_out, uint32_t *type_out) {
     ENSURE_INIT();
@@ -751,9 +758,22 @@ int posix_readdir(uint32_t dir_ino, uint32_t index,
     rq.dir_ino = dir_ino;
     rq.offset  = index;                 /* entry index, per fs_proto.h */
 
-    /* Server returns rc 0 with the entry, or a negative SYS_ERR_* past the end
-     * (NOENT) or on a permission/transport failure — all "no more entries". */
-    if (fss_rpc(&rq, &rp) != 0) return 0;
+    /* END OF DIRECTORY IS ONE OUTCOME; A FAILURE IS ANOTHER.
+     *
+     * This used to read "a negative SYS_ERR_* past the end (NOENT) or on a
+     * permission/transport failure — all 'no more entries'", and it did exactly
+     * that: opendir/readdir reported an empty directory when the caller had been
+     * refused, when the directory did not exist, and when the RPC had not
+     * reached the server at all. POSIX distinguishes these -- readdir() returns
+     * NULL for both, and the caller tells them apart with errno -- so collapsing
+     * them here made that impossible for every newlib program.
+     *
+     * FS_RC_ENDDIR is the ordinary end and clears errno; anything else negative
+     * is a failure, reported through errno with the walk stopped. See
+     * include/fs_proto.h. */
+    int rc = fss_rpc(&rq, &rp);
+    if (rc == FS_RC_ENDDIR) return 0;      /* the ordinary end of the walk */
+    if (rc != 0)            return rc;     /* a reason, for the caller to report */
 
     if (name_out) {
         uint32_t i = 0;

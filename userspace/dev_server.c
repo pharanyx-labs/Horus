@@ -102,7 +102,15 @@ static void handle(const struct fs_request *rq, struct fs_response *rp) {
         if (rq->dir_ino != DEV_INO_ROOT) { reply_err(rp, SYS_ERR_NOENT); return; }
         if (rq->offset == 0) { ustrncpy(rp->name, "null", FS_NAME_MAX); rp->ino = DEV_INO_NULL; rp->type = FS_TYPE_FILE; rp->rc = 0; return; }
         if (rq->offset == 1) { ustrncpy(rp->name, "zero", FS_NAME_MAX); rp->ino = DEV_INO_ZERO; rp->type = FS_TYPE_FILE; rp->rc = 0; return; }
+        /* Past the end -- distinct from the "not our root inode" refusal above,
+         * which is a genuine SYS_ERR_NOENT. This server implements the same
+         * protocol as fs_server and must answer the same way, or a client that
+         * learns to tell the two apart would still be lied to by /dev. */
+#ifdef READDIR_END_IS_NOENT
         reply_err(rp, SYS_ERR_NOENT);
+#else
+        reply_err(rp, FS_RC_ENDDIR);
+#endif
         return;
 
     default:

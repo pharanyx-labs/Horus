@@ -216,7 +216,7 @@ static int ata_wait_busy_flush(void) {
     return -1;
 }
 
-/* ---- which drive ---------------------------------------------------------
+/* ---- which drive (SECURITY.md S82) ---------------------------------------
  *
  * Two devices share one ATA bus: a master and a slave, selected by a bit in the
  * drive register. Everything below took the master for granted, which was

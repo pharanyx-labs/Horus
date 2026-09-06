@@ -1804,7 +1804,7 @@ int storage_init(void) {
         if (g_ata_usable_count == 0) goto no_disk;
 
         /* MOUNT THE FIRST DEVICE THAT CARRIES A VOLUME, not simply the first
-         * device. With one disk these are the same sentence, which is why it was
+         * device (SECURITY.md S82). With one disk these are the same sentence, which is why it was
          * written the second way; with two they are not, and the second way makes
          * an installed second disk invisible to the machine it was installed on.
          *
@@ -2937,7 +2937,8 @@ void storage_query(struct storage_info *out)
     out->unlocked     = (out->recognised && g_mounted_fs.unlocked) ? 1u : 0u;
 }
 
-/* The survey for ONE enumerated device, rather than for the machine.
+/* The survey for ONE enumerated device, rather than for the machine (SECURITY.md
+ * S82).
  *
  * Everything storage_query says about the mounted volume is a property of the
  * machine; everything it says about size and presence is a property of a device.

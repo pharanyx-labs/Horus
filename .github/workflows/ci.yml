@@ -1650,6 +1650,16 @@ jobs:
       # that once let the resume-%rsp guard reject the IST stacks.
       - name: Refuse an orphan control arm, or a gate nobody runs
         run: python3 tools/check_gate_pairs.py
+      # The syscall numbers and every struct crossing the ring boundary are
+      # written down TWICE, and until 2026-09-06 nothing compared them. A number
+      # that disagrees is loud; a STRUCT that disagrees is not -- both sides
+      # compile and copy_to_user writes the kernel's sizeof into a buffer the
+      # caller sized with the other one. That is S71, which cost 184 bytes past
+      # an array per record.
+      - name: The kernel and userspace agree on the ABI headers
+        run: python3 tools/check_abi_headers.py
+      - name: Falsify every rule of the ABI-header checker
+        run: ./tools/test_check_abi_headers.sh
       # Five rules, and until 2026-08-30 rule 1 inferred the classification from
       # the target NAME, which was wrong for four arms and made two published
       # counts wrong with it. Seven arms: one per rule, one for a manifest entry
@@ -2906,6 +2916,15 @@ jobs:
       # refusals are satisfied by a syscall that refuses everyone.
       - name: A capability holder learns what volume this machine has
         run: make smoke-storage-survey
+      # The enumeration, from the side that shows it is one. Both arms boot TWO
+      # blank disks and assert a COUNT: "the survey found a disk" is true either
+      # way and on a one-disk machine, so it distinguishes nothing.
+      - name: Control arm — a master-only probe on a two-disk machine
+        run: make smoke-storage-survey-single-control
+      # A clamped index is not a crash: it is a complete, well-formed survey of
+      # the wrong disk, handed to a program deciding which disk to erase.
+      - name: Control arm — an out-of-range device index answered anyway
+        run: make smoke-storage-device-clamp-control
 
   smoke-fs-wal:
     name: QEMU filesystem journal crash-recovery self-test (two-boot, headless)

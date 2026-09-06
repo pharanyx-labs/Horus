@@ -123,6 +123,7 @@ DEFECT_FLAGS = \
 	TUI_NO_DAMAGE_DIFF TUI_CLAMP_OFF \
 	TUI_INPUT_ECHO_SECRET TUI_INPUT_UNBOUNDED TUI_MENU_UNCLAMPED \
 	TUI_ACS_NO_RESTORE TUI_WRAP_NO_BREAK TUI_NO_INVALIDATE \
+	STORAGE_SINGLE_DEVICE STORAGE_DEVICE_INDEX_CLAMP \
 	CSPACE_KEEP_ON_TEARDOWN \
 	CSPACE_RELEASE_BEFORE_PIPES SPAWN_SLOT3_DECOY_GATE UNTYPED_SPLIT_FREE_BYTES \
 	INIT_PROVISION_NO_UNTYPED AUDIT_ABI_LEGACY STORE_LOCKED_UNCHECKED \
@@ -627,6 +628,25 @@ endif
 # trusting one bound, not writing off the end of memory.
 TUI_WRAP_NO_BREAK ?= 0
 ifeq ($(TUI_WRAP_NO_BREAK),1)
+endif
+
+# STORAGE_SINGLE_DEVICE=1 restores the pre-2026-09-06 ATA probe: only the
+# primary master is ever looked at. A machine with two disks then reports one,
+# and the second is invisible to the survey, to the mount policy that picks which
+# volume to boot, and to an installer asking which disk to erase.
+STORAGE_SINGLE_DEVICE ?= 0
+ifeq ($(STORAGE_SINGLE_DEVICE),1)
+CFLAGS += -DSTORAGE_SINGLE_DEVICE
+endif
+
+# STORAGE_DEVICE_INDEX_CLAMP=1 answers an out-of-range device index with the LAST
+# device instead of refusing it. Nothing faults and nothing overruns: the caller
+# gets a complete, well-formed survey OF THE WRONG DISK -- and the one caller is a
+# program deciding which disk to erase. This is the shape a bounds check takes
+# when somebody makes it "forgiving".
+STORAGE_DEVICE_INDEX_CLAMP ?= 0
+ifeq ($(STORAGE_DEVICE_INDEX_CLAMP),1)
+CFLAGS += -DSTORAGE_DEVICE_INDEX_CLAMP
 endif
 
 # TUI_NO_INVALIDATE=1 makes tui_invalidate a no-op, so the library keeps
@@ -8712,7 +8732,19 @@ smoke-storage-survey:
 		REQUIRE_MARKER='INIT_STORAGE: no persistent volume' \
 		ABSENT_MARKER='INIT_STORAGE: disk present' \
 		tools/smoke_test.sh boot.iso
-	@rm -f survey.img
+	@echo "[survey] boot 3: TWO blank disks -- the survey must enumerate both"
+	@rm -f survey2.img && truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) survey2.img
+	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 \
+		SMOKE_DISK=survey.img SMOKE_DISK2=survey2.img \
+		REQUIRE_MARKER='INIT_STORAGE: 2 persistent device(s)' \
+		ABSENT_MARKER='INIT_STORAGE: FAIL' \
+		tools/smoke_test.sh boot.iso
+	@echo "[survey] boot 4: an index past the last device must be REFUSED"
+	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 \
+		SMOKE_DISK=survey.img SMOKE_DISK2=survey2.img \
+		REQUIRE_MARKER='INIT_STORAGE: an index past the last device was refused' \
+		tools/smoke_test.sh boot.iso
+	@rm -f survey.img survey2.img
 	@echo "[survey] PASS - a capability holder learns what volume this machine has, and the answer differs with the machine"
 
 .PHONY: smoke-storage-noformat-control
@@ -8847,6 +8879,47 @@ smoke-tui-wrap-control:
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='TUITEST: FAIL a wrapped word ran out of its column' \
 		tools/smoke_test.sh boot.iso
+
+# The enumeration, from the side that shows it is one. The base gate boots two
+# blank disks and requires the survey to say two; this restores the pre-2026-09-06
+# probe, which only ever looked at the primary master, and requires it to say ONE
+# on the same machine.
+#
+# BOTH ARMS ASSERT A COUNT, not a presence. "The survey found a disk" is true in
+# both arms and on a one-disk machine, so it distinguishes nothing; the number is
+# the whole property, and an arm that asserted the second disk's ABSENCE would be
+# satisfied by a boot that never surveyed at all.
+.PHONY: smoke-storage-survey-single-control
+smoke-storage-survey-single-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_SINGLE_DEVICE=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_SINGLE_DEVICE=1 boot.iso
+	@rm -f survey.img survey2.img
+	@truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) survey.img
+	@truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) survey2.img
+	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 \
+		SMOKE_DISK=survey.img SMOKE_DISK2=survey2.img \
+		REQUIRE_MARKER='INIT_STORAGE: 1 persistent device(s)' \
+		tools/smoke_test.sh boot.iso
+	@rm -f survey.img survey2.img
+	@echo "[survey] CONTROL PASS - a master-only probe reports one disk on a two-disk machine"
+
+# The bounds check on the enumeration, from the side that shows it is one. A
+# clamped index answers about the LAST device: no fault, no overrun, a complete
+# and well-formed survey of the wrong disk. The marker is init's own FAIL line,
+# because "the call succeeded" is what the defect looks like from ring 3 and the
+# refusal is what the property is.
+.PHONY: smoke-storage-device-clamp-control
+smoke-storage-device-clamp-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_DEVICE_INDEX_CLAMP=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_DEVICE_INDEX_CLAMP=1 boot.iso
+	@rm -f survey.img && truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) survey.img
+	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=survey.img \
+		REQUIRE_MARKER='INIT_STORAGE: FAIL an index past the last device was answered' \
+		tools/smoke_test.sh boot.iso
+	@rm -f survey.img
+	@echo "[survey] CONTROL PASS - a clamped index answered about a disk nobody asked for"
 
 # S64. A block device may not accept a block it has no memory for. Both
 # directions in one boot: the last in-range block must still be writable, so the

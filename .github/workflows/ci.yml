@@ -1767,6 +1767,33 @@ jobs:
       - name: Control arm — strip the release and it must fire
         run: make smoke-claim-release-control
 
+  console-timestamps:
+    name: "Every line of the boot log carries a timestamp, and they run forwards"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # The whole window is asserted rather than one marker, because the failure
+      # being gated is a line nobody remembered to stamp -- and the console has
+      # two writers in a boot, the kernel and then console_server, so "remember
+      # to call the timestamped helper" was a rule half the boot log did not
+      # follow and one of the two writers could not follow at all.
+      - name: Every boot-log line is stamped and the stamps advance
+        run: make smoke-console-timestamps
+      # Two arms because the property has two halves and each still satisfies the
+      # other's check: an unstamped log has no ordering to be wrong about, and a
+      # log stamped from two epochs is fully stamped.
+      - name: Control arm — nothing stamps, on either side of the handover
+        run: make smoke-console-timestamps-control
+      - name: Control arm — ring 3 counts from the first tick, not from boot
+        run: make smoke-console-timestamps-epoch-control
+
   libhorus:
     name: "The shared userspace runtime keeps its bounds, and refuses rather than spins"
     runs-on: ubuntu-latest

@@ -1779,7 +1779,7 @@ int storage_init(void) {
             uint64_t blocks  = (uint64_t)sectors / ATA_SECTORS_PER_BLOCK;
             if (blocks > (uint64_t)BLOCKS_PER_DISK) blocks = (uint64_t)BLOCKS_PER_DISK;
             if (blocks < STORAGE_MIN_BLOCKS) {
-                kmsg("ata: a disk reports too few sectors for a volume; ignoring it");
+                println("ata: a disk reports too few sectors for a volume; ignoring it");
                 continue;
             }
             g_ata_bd[d].total_blocks = blocks;
@@ -1791,7 +1791,6 @@ int storage_init(void) {
                  * the end, so the number belongs on the wire at boot rather than in
                  * a debugger -- and with more than one disk it has to say WHICH. */
                 uint64_t mib = (blocks * (uint64_t)BLOCK_SIZE) / (1024u * 1024u);
-                kmsg_begin();
                 print("ata: ");
                 print(g_ata_bd[d].name);
                 print(" sized from the disk: ");
@@ -3321,7 +3320,6 @@ int storage_unlock(const char *password, size_t plen)
      * operation either committed whole or did not happen, which is exactly what
      * the journal guarantees, so there is nothing for the sweep to find. */
     if (replayed || mfs->sb.needs_fsck) {
-        kmsg_begin();
         print("storage: running the fsck sweep (");
         print(replayed ? "journal replayed" : "an interrupted multi-transaction operation");
         print(")\n");

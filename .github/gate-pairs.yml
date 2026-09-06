@@ -78,6 +78,8 @@ control_arms:
   smoke-tui-diff-control: smoke-tui
   smoke-tui-clamp-control: smoke-tui
   smoke-tui-mask-control: smoke-tui
+  smoke-console-timestamps-control: smoke-console-timestamps
+  smoke-console-timestamps-epoch-control: smoke-console-timestamps
   smoke-tui-bound-control: smoke-tui
   smoke-tui-menu-control: smoke-tui
   smoke-tui-acs-control: smoke-tui
@@ -182,6 +184,7 @@ gates:
   - smoke-console
   - smoke-console-isolation
   - smoke-console-smp
+  - smoke-console-timestamps
   - smoke-console-smp-stress
   - smoke-coreutils-shell
   - smoke-cow

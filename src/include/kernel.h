@@ -1110,6 +1110,14 @@ void users_init(void);
  * the PIT tick counter at PIT_TICK_HZ, not from the TSC, and `nsec` is always a
  * multiple of 10,000,000.
  *
+ * SINCE BOOT MEANS SINCE BOOT. That counter starts at the first timer interrupt,
+ * which on a measured SMP boot was 1.07 s in -- so the answer used to be short by
+ * however long the machine spent getting there, and the console log went
+ * BACKWARDS by a second where the kernel handed the wire to console_server (each
+ * stamping from its own epoch). `clock_epoch_ticks` in scheduler.c adds the
+ * difference, captured once on the first tick and already rounded down to a
+ * whole tick, so this adds no resolution: a constant cannot make a clock finer.
+ *
  * That is not a claim of side-channel safety. The TSD comment already says the
  * mitigation is partial -- a counting thread still builds a finer timer -- and
  * this changes nothing about that. It declines to make it easy.
@@ -2077,13 +2085,14 @@ void print(const char *s);
  * PROVED CAP_KERNEL_LOG(WRITE) authority to append to the kernel message ring;
  * 0 means console only. Finding [H-2] -- see the comment on the definition. */
 void print_from_user(const char *s, int may_klog);
-/* Linux-style timestamped boot/kernel-log helpers (terminal.c). */
+/* The TSC boot clock behind the "[    S.uuuuuu] " prefix print() puts in front
+ * of every line (terminal.c). There is no kmsg()/kmsg_begin() any more: the
+ * stamp is applied by the writer, so a caller cannot forget it. */
 void kmsg_clock_init(void);         /* calibrate the TSC boot clock; call once, early */
+uint64_t kmsg_uptime_ticks(void);   /* whole PIT ticks since boot -- quantised, see terminal.c */
 #ifdef CLOCK_TSC_RESOLUTION
 uint64_t kmsg_uptime_us(void);      /* control arm only -- see terminal.c */
 #endif
-void kmsg_begin(void);              /* emit just the "[    S.uuuuuu] " prefix */
-void kmsg(const char *s);           /* emit a whole "[    S.mmm] s" line */
 uint32_t klog_copy(char *dst, uint32_t offset, uint32_t max); /* snapshot the kernel log ring from `offset`; backs SYS_DMESG */
 void print_char(char c);
 #ifdef DEBUG_SHELL

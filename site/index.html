@@ -1465,6 +1465,9 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             An x86-64 Linux host, Debian or Ubuntu; no cross-compiler needed. This is what the
             boot looks like, abridged for width, and with the microsecond timestamps stripped.
+            On a real boot <em>every</em> line above the banner carries one &mdash; including the
+            lines ring 3 printed, which is the half that used to go unstamped. The console changes
+            hands part way down that list, so both writers stamp, in one format, from one epoch.
             The real log is readable afterwards with <code>dmesg</code>.
           </p>
         </div>
@@ -1516,7 +1519,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 262 test targets, and the troubleshooting
+          Every configuration flag, every one of the 265 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1559,6 +1562,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">SMT siblings parked; microarchitectural flush between distrusting tasks</th><td class="t-note">smoke-smt · smoke-flush</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Ring-3 <code>init</code> (PID 1) supervising the shell</th><td class="t-note">smoke-session</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Ring-3 <code>console_server</code>, single writer, owns UART and framebuffer</th><td class="t-note">smoke-console-smp</td></tr>
+              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Every boot-console line timestamped, by the writer, across the console handover</th><td class="t-note">smoke-console-timestamps</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Raw terminal mode, termios and winsize</th><td class="t-note">smoke-term</td></tr>
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Shared library text, private library data</strong>, a shared object is loaded once into frames and mapped read+exec by many tasks through capabilities that never carry write, so no task can modify code another executes. Its <em>writable</em> segment is not shared at all: each task gets a private copy, carved from the library&rsquo;s initial image and endowed read+write and never exec. The library&rsquo;s load address is drawn afresh on every boot rather than compiled in, and a task learns it only by presenting a capability over the library&rsquo;s own text, so the address of shared code is not something an attacker reads off the binary, nor something any task can simply ask for. The security argument matters more than the size one, sharing a libc&rsquo;s text is an optimisation, but sharing its data means one task reading and writing another&rsquo;s <code>errno</code>, stdio buffers and malloc arena, which is worse than the per-program static copies it replaces. The shared libc now builds, is gated, and a ring-3 task calls newlib out of it, 36 pages, 34 of shared text and 2 of per-task data, with the library&rsquo;s own reentrancy state resolving inside each task&rsquo;s private copy, and a program now links against it, ordinary C calling <code>printf</code> by name, carrying no libc of its own, 106,392 bytes static against 13,088 shared, and it is not a dynamic linker: there is no symbol resolution, and a program&rsquo;s direct reference to a libc <em>data</em> symbol cannot be redirected without a GOT</th><td class="t-note">smoke-shlib</td></tr>
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Device capabilities</strong>, a <code>CAP_IO_DEVICE</code> names one device in a boot-time table (a PCI bus-0 scan plus the non-enumerable legacy platform hardware) and confers only that device&rsquo;s frames, port ranges and interrupt lines; until 2026-08-28 the capability&rsquo;s object was never read, so holding the type was holding the console. DMA is confined by VT-d since 2026-08-28; each device gets an address space that starts empty. An interrupt reaches its ring-3 driver either as an <strong>MSI on a vector the kernel chose</strong>, an MSI&rsquo;s data word <em>is</em> the vector, so the driver is given nowhere to name one, or through the I/O APIC, masked until acknowledged so an unserviced device cannot livelock the machine. A device&rsquo;s <strong>MSI-X vector table is unmappable by its driver</strong>, it lives in a BAR rather than in configuration space, so the vector-choice question had to be answered a second time and in a different way. MSI-X is protected but not yet enabled; no interrupt remapping, no bridge walk</th><td class="t-note">smoke-devcap</td></tr>
@@ -1636,7 +1640,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             The security argument rests entirely on the tests, so they are treated as engineering
             artifacts rather than an afterthought. There are three layers: Rust unit tests and
-            Kani proofs on the host; 129 QEMU integration targets that boot a purpose-built kernel
+            Kani proofs on the host; 130 QEMU integration targets that boot a purpose-built kernel
             and assert a marker on the serial console; and scripted sessions that type into the
             real ring-3 shell over serial and read what comes back.
           </p>
@@ -1905,7 +1909,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               be listed as merge-gating, or exempted <em>with a written reason</em>, and CI fails
               the build if any is in neither; there is no default, because defaulting was the
               defect. It caught an unclassified static-analysis job on its first run. The
-              intended set is 109 gating and 3 exempted, and the promotions are backed by
+              intended set is 110 gating and 3 exempted, and the promotions are backed by
               measurement rather than optimism: across 18 sampled runs, 64 of 66 jobs had zero
               failures in 1152 job-executions.
             </p>

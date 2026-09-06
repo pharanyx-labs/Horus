@@ -100,6 +100,13 @@ required:
   # index of the control arms, and an arm nobody can find is one nobody
   # re-runs -- so a silent omission there quietly retires a falsification.
   - defect-flags-documented
+  # Gating. The boot log is the only record a reader has of what the system did
+  # before there was a shell to ask, and half of it used to arrive with no
+  # timestamp at all -- so nothing in it could be ordered against anything else,
+  # and the ring-3 half was stamped from a clock a second behind the kernel's.
+  # Advisory would leave the rule "remember to stamp your line" enforced by
+  # nobody, which is the state this gate exists to replace.
+  - console-timestamps
   # Gating. Every freestanding userspace program links libhorus, so this is
   # the one gate that covers all four servers' shared runtime at once -- and
   # it carries the only executable witness for the IPC refusal contract.

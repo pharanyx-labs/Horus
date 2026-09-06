@@ -936,6 +936,13 @@ static inline int sys_unmap_frame(int frame_slot, unsigned long vaddr) {
  * Monotonic by construction: the source is a counter the timer interrupt only
  * increments, 64-bit so it does not wrap (a u32 at 100 Hz wraps in ~497 days,
  * and a clock that goes backwards makes every timeout fire early or never).
+ *
+ * SINCE BOOT MEANS SINCE BOOT. The tick counter starts at the first timer
+ * interrupt, which on a measured SMP boot was 1.07 s in -- so the answer used to
+ * be short by however long the machine spent getting there. A fixed offset,
+ * captured once on the first tick from the kernel's TSC boot clock and already
+ * rounded down to a whole tick, puts the two on one epoch. It adds no
+ * resolution: a constant cannot make a clock finer.
  */
 #define HORUS_CLOCK_MONOTONIC 1
 

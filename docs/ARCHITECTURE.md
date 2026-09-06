@@ -984,6 +984,42 @@ applications.
 `task_teardown` calls `console_clear_owner`, so a crashed console server releases the
 hardware back to the kernel fallback.
 
+#### The boot log has two writers and one format
+
+Every line the console accepts between the kernel's first message and the start of the session
+carries `[    S.uuuuuu] `. **The writer stamps it, not the caller**: `print_core`
+(`src/kernel/terminal.c`) emits the prefix in front of the first printable byte of each line, and
+`con_putc` (`userspace/console_server.c`) does the same after the handover. Before 2026-09-06 a
+line was stamped only if its author called `kmsg()`, and roughly half the boot console did not --
+the `  [ OK ]` status lines, and every ring-3 line arriving through `SYS_WRITE`, which could not
+call it at all. `kmsg()`/`kmsg_begin()` no longer exist; there is nothing to remember.
+
+The prefix goes out **inside the same critical section as the text**. `kmsg_begin(); print(msg);`
+was two `console_lock` acquisitions, so a ring-3 `SYS_WRITE` on another CPU could land between a
+kernel line's timestamp and its text -- the 2.6a hazard, on every timestamped line the system
+printed. In the server the same guarantee comes from it being the only writer of the UART after
+the handover, serving one request at a time. (Neither serialises against `kfault_str`/`panic_ch`,
+which bypass every lock by design: `docs/LIMITATIONS.md` 2.6c, unchanged.)
+
+**Two clocks, one format.** The kernel stamps from the calibrated TSC in microseconds;
+`console_server` has only `SYS_CLOCK_GETTIME`, quantised to a 10 ms PIT tick because `CR4.TSD`
+denies ring 3 anything finer and a syscall must not hand it back, so its microsecond field is
+always a multiple of 10,000. They share an epoch: `clock_epoch_ticks` (`src/kernel/scheduler.c`)
+adds the time the tick counter could not see, which is everything before the first timer interrupt
+-- 1.07 s on a measured SMP boot, and the reason the log used to run *backwards* by a second at
+the handover.
+
+**The window closes at the session.** `init` sends `CON_OP_BOOT_DONE` immediately before it
+launches the shell, and the server passes bytes through verbatim from then on: after that the
+console is a terminal, and a timestamp in front of a prompt, an echoed keystroke or a column of
+`ls -l` is wrong rather than merely noisy. Serving any input request has the same effect, as a
+backstop -- which is also what makes the installer's raw-mode session unstamped, correctly, on a
+machine that has one. A server that is never told keeps stamping, which is right for the
+self-test images whose output is nothing but a boot log.
+
+`make smoke-console-timestamps` asserts the whole window rather than one marker, because the
+failure being gated is the line nobody remembered.
+
 ---
 
 ### `libhorus`: the shared freestanding runtime

@@ -194,7 +194,7 @@ struct task_info {
  * must not mean "may erase the volume". */
 #define STORAGE_FORMAT_PASSWORD_MAX 31  /* what a login can offer back; see below */
 #define SYS_STORAGE_INFO      110  /* (struct storage_info*) -> 0; what volume this machine has (CAP_STORAGE_FORMAT + READ). */
-#define SYS_STORAGE_FORMAT    111  /* (const char *password, plen) -> 0; DESTROY the attached volume and lay a new sealed one down (CAP_STORAGE_FORMAT + WRITE). The one caller of storage_authorize_format(), which S63 introduced and left with none. */
+#define SYS_STORAGE_FORMAT    111  /* (const char *password, plen, device) -> 0; DESTROY the attached volume and lay a new sealed one down (CAP_STORAGE_FORMAT + WRITE). The one caller of storage_authorize_format(), which S63 introduced and left with none. */
 #define SYS_USERLIST          112  /* (index, struct user_entry*) -> 1 filled, 0 past the last account, SYS_ERR_PERM without CAP_USER. Account METADATA only -- name, uid, gid, home -- and deliberately nothing else: no hash, no salt, no key slot, no lockout state. A dense index over the valid accounts, so a caller loops until 0 and never needs the kernel's MAX_USERS. */
 #define SYS_STORAGE_DEVICE   113  /* (index, struct storage_info*) -> 0; the survey for ONE enumerated persistent device (CAP_STORAGE_FORMAT + READ). Refuses an index past the end rather than clamping. */
 #define SYS_IRQ_POLICY_INFO    92   /* (struct irq_policy_info*) -> 0; roadmap 1.1 audit counters. IRQ_POLICY_AUDIT builds only; NOSYS otherwise. CAP_KERNEL_LOG (READ). */
@@ -833,9 +833,15 @@ static inline int sys_storage_device(unsigned index, struct storage_info *out) {
  * nothing saying why. The syscall refuses rather than truncating, because an
  * installer that silently shortened a password would seal the volume to a string
  * its operator never picked. */
-static inline int sys_storage_format(const char *password, unsigned int plen) {
+/* `device` is a position in the machine's enumeration (0 .. device_count-1), or
+ * 0 on a machine with no persistent devices. It is REFUSED if it names no such
+ * device: the call that destroys a disk names the disk it destroys, and an index
+ * quietly rounded to some other one would erase a disk nobody chose.
+ * SECURITY.md S83. */
+static inline int sys_storage_format(unsigned int device, const char *password,
+                                     unsigned int plen) {
     return (int)syscall(SYS_STORAGE_FORMAT, SYSCALL_UPTR(password),
-                        (uint32_t)plen, 0);
+                        (uint32_t)plen, (uint64_t)device);
 }
 
 /* ---- Frame capabilities and shared memory (roadmap 2.1) -------------------

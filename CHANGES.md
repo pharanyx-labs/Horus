@@ -17,6 +17,35 @@ in this file.
 
 ### Added
 
+- **The call that erases a disk names the disk it erases** (`SECURITY.md` **S83**, roadmap 2.9).
+  `SYS_STORAGE_FORMAT` takes the target device as an argument. The alternative -- a "select the
+  device" call followed by a "format it" call -- is a confused deputy by construction: the act
+  that destroys a disk would depend on a global somebody else set, and any amount of anything can
+  happen between the two. `storage_authorize_format(index)` validates against the machine's own
+  enumeration and **refuses rather than clamps**, and also refuses a device already carrying a
+  mounted volume, so a target the format path would never look at cannot be accepted as consent.
+  The password buffer is wiped on those refusals like every other exit -- an operator whose index
+  was wrong has still typed a password.
+  The installer shows a disk menu only when there is something to choose between: a one-disk
+  machine has the same conversation it had before, which is why no single-disk harness scenario
+  needed a new keystroke. The menu's labels are disk SIZES rather than device numbers, because
+  `ata0` and `ata1` are what the kernel calls them and not what an operator recognises.
+  **Two globals had to stop being assumed equal to the target, and neither failed loudly.** The
+  ATA driver selected a drive and then waited for whichever drive was *previously* selected --
+  correct while the selection never changed, and with two drives it writes command registers at a
+  controller still switching, so the transfer never starts. That is not an error: it is a guest
+  that stops doing disk I/O entirely, which reaches the harness as the installer's format
+  WEDGING with nothing after `INSTALLER: formatting`. And thirty-one call sites reach the medium
+  through `current_bd` while the format writes through the device it is handed, so a volume was
+  laid down on device 1 while the journal and metadata region were read and written on device 0.
+  Both were found by the first gate that ever wrote to the second disk.
+  Falsified by `STORAGE_FORMAT_TARGET_IGNORED=1` (`make smoke-installer-target-control`), which
+  validates the index and discards it: every check passes, every return code is 0, and a
+  different disk is erased. Boot 1 cannot witness that -- the format returns 0 whichever device
+  it lands on -- so the assertion is the next boot's survey, and both halves are positive: the
+  chosen disk carries a volume **and** the other is still blank.
+
+
 - **The block layer sees every disk, and the survey enumerates them** (`SECURITY.md` **S82**,
   roadmap 2.9). The ATA driver probed the primary master and nothing else, which was correct
   while the survey could only report one disk and became wrong the moment an installer had to ask

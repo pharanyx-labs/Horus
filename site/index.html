@@ -1260,6 +1260,24 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               program whose next act is erasing the disk it was just told about.
             </p>
             <p>
+              And the call that erases a disk now names the disk it erases. Not
+              &ldquo;choose the device&rdquo; followed by &ldquo;format it&rdquo;: that is a
+              confused deputy by construction, because the act that destroys would depend on a
+              global somebody else set, with any amount of anything in between. The target is an
+              argument, refused if it names no such device or one already carrying a mounted
+              volume.
+            </p>
+            <p>
+              Making that work meant finding two variables that had been standing in for the
+              target all along and were never noticed, because with one disk they were always
+              equal to it. The driver selected a drive and then waited for whichever drive was
+              selected <em>before</em>. Thirty-one places reached the disk through a global
+              &ldquo;current&rdquo; pointer while the format wrote through the device it had been
+              handed. Neither produced an error &mdash; the first simply stopped the machine
+              doing disk I/O at all. Both were found by the first test that ever wrote to the
+              second disk, which is the argument for having the test.
+            </p>
+            <p>
               The caller is an installer, and it is the only task that gets a copy. It cannot read
               the volume it replaces, and it cannot create a task, so nothing it does outlives it.
               Before it erases anything you type the word <code>FORMAT</code> &mdash; not a
@@ -1498,7 +1516,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 256 test targets, and the troubleshooting
+          Every configuration flag, every one of the 258 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1618,7 +1636,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             The security argument rests entirely on the tests, so they are treated as engineering
             artifacts rather than an afterthought. There are three layers: Rust unit tests and
-            Kani proofs on the host; 126 QEMU integration targets that boot a purpose-built kernel
+            Kani proofs on the host; 127 QEMU integration targets that boot a purpose-built kernel
             and assert a marker on the serial console; and scripted sessions that type into the
             real ring-3 shell over serial and read what comes back.
           </p>

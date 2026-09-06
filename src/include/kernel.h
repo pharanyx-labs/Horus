@@ -1065,7 +1065,7 @@ void users_init(void);
 #define STORAGE_FORMAT_PASSWORD_MAX 31
 
 #define SYS_STORAGE_INFO      110   /* (struct storage_info*) -> 0; what volume this machine has: whether a block device is attached, its size, whether a Horus volume was recognised on it, and whether it is unlocked. CAP_STORAGE_FORMAT + READ at CAPSLOT_STORAGE_FORMAT. It is the "what will be destroyed" readout, so it answers to the capability that can destroy it rather than to the object-store capability every filesystem client holds. */
-#define SYS_STORAGE_FORMAT    111   /* (const char *password, plen) -> 0; DESTROY the volume on the attached device and lay a new encrypted one down, sealed to `password`. CAP_STORAGE_FORMAT + WRITE at CAPSLOT_STORAGE_FORMAT. This is the ONE caller of storage_authorize_format(), the function S63 introduced and left with none: "a deliberate act -- which an installer calls and a login never does". A login (SYS_AUTH -> storage_unlock) still reaches an unformatted volume and still refuses it. */
+#define SYS_STORAGE_FORMAT    111   /* (const char *password, plen, device) -> 0; DESTROY the volume on the attached device and lay a new encrypted one down, sealed to `password`. CAP_STORAGE_FORMAT + WRITE at CAPSLOT_STORAGE_FORMAT. This is the ONE caller of storage_authorize_format(), the function S63 introduced and left with none: "a deliberate act -- which an installer calls and a login never does". A login (SYS_AUTH -> storage_unlock) still reaches an unformatted volume and still refuses it. */
 #define SYS_USERLIST          112   /* (index, struct user_entry*) -> 1 filled, 0 past the last account, SYS_ERR_PERM without CAP_USER at CAPSLOT_USER. Account METADATA only: name, uid, gid, home. No hash, no salt, no key slot, no lockout state. The index is dense over VALID accounts, so a deleted slot in the middle of the table does not read as the end of it and MAX_USERS never crosses the boundary. */
 #define SYS_STORAGE_DEVICE   113   /* (index, struct storage_info*) -> 0; the survey for ONE enumerated persistent device (CAP_STORAGE_FORMAT + READ at CAPSLOT_STORAGE_FORMAT). An index past the end is REFUSED rather than clamped: a survey that answered about a different disk would be read as a description of the disk about to be erased. */
 #define SYS_POLL_NOTIFY       106   /* (notif_slot, uint32_t*) -> 0 with a badge, or IPC_AGAIN; sys_wait_notify's non-blocking twin. Same gate (CAP_NOTIFICATION + READ): being non-blocking changes when the answer comes, never who may ask. Lets a caller witness the ABSENCE of a notification, which a blocking wait cannot. */
@@ -2744,7 +2744,7 @@ uint32_t storage_unlocked_slot(void);
  * rest under the volume key that is already sealed to the TPM policy -- which is
  * what lets the password hashes inside it stop depending on a per-boot pepper.
  * Both require the volume unlocked. */
-void storage_authorize_format(void);
+int  storage_authorize_format(int index);  /* 0 authorised, -1 refused: the target is an ARGUMENT (S83) */
 /* Fill `*out` with what SYS_STORAGE_INFO reports. Reads state only; a machine
  * with no persistent device answers `present = 0` rather than failing, because
  * "there is nothing here to install onto" is an answer an installer must be able

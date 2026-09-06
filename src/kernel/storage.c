@@ -2890,7 +2890,52 @@ struct mounted_fs *storage_get_mounted_fs(void) {
  * deliberate, which was the right way round to ship it but is not a policy --
  * "no path exists" and "one gated path exists" are different claims, and only
  * the second is what S63 says. */
-void storage_authorize_format(void) { g_format_authorized = 1; }
+int storage_authorize_format(int index)
+{
+    /* THE TARGET IS AN ARGUMENT, NOT AMBIENT STATE, and that is the whole shape
+     * of this function since 2026-09-06 (SECURITY.md S83). The alternative was a
+     * "select the device" call followed by a "format it" call, which is a
+     * confused deputy by construction: the act that destroys a disk would depend
+     * on a global somebody else set, and the two calls could be separated by any
+     * amount of anything. The call that destroys names what it destroys.
+     *
+     * IT REFUSES RATHER THAN CLAMPING, for the reason storage_device_query does:
+     * an index past the end quietly resolved to some other disk would format a
+     * disk nobody chose, which is the one outcome this whole subsystem exists to
+     * make impossible.
+     */
+    if (index < 0) return -1;
+
+    if (g_ata_usable_count > 0) {
+        struct block_device *bd = storage_device_at(index);
+        if (!bd) return -1;
+        /* A device already carrying a mounted volume is not a target here. That
+         * is not this function's policy -- storage_unlock's g_needs_format gate
+         * is what decides whether a format happens at all -- but naming the
+         * mounted device would set g_needs_format_bd to a device the format path
+         * will never look at, which is a silent no-op dressed as consent. */
+        if (bd == g_mounted_fs.bd && g_mounted_fs.mounted) return -1;
+#ifndef STORAGE_FORMAT_TARGET_IGNORED
+        g_needs_format_bd = bd;
+#else
+        /* CONTROL ARM -- never ship. The index is validated and then DISCARDED,
+         * so the format lands on whatever device the machine nominated at boot
+         * rather than the one the operator chose. Every check still passes,
+         * every return code is still 0, and the disk that gets erased is a
+         * different one from the disk that was named on the screen. See
+         * make smoke-installer-target-control. */
+        (void)bd;
+#endif
+    } else if (index != 0) {
+        /* No persistent devices: the machine has an ephemeral store and exactly
+         * one thing that could be meant. Index 0 means it; anything else names a
+         * device that does not exist and is refused rather than rounded down. */
+        return -1;
+    }
+
+    g_format_authorized = 1;
+    return 0;
+}
 
 /* What SYS_STORAGE_INFO reports. See struct storage_info in kernel.h for why
  * each field is there and why there are not more of them.
@@ -3008,6 +3053,24 @@ int storage_unlock(const char *password, size_t plen)
             return -6;
         }
 #endif
+        /* THE TARGET BECOMES THE MACHINE'S CURRENT DEVICE BEFORE ANYTHING IS
+         * WRITTEN, and this line is the whole reason a two-disk install works.
+         *
+         * storage_format_sealed writes through the block device it is handed,
+         * but THIRTY-ONE other call sites in this file reach the medium through
+         * raw_block_read/write/flush, which resolve `current_bd`. While there
+         * was one disk those were the same object and nobody had to think about
+         * it. Targeting the slave made them different: the format laid a volume
+         * down on device 1 while the journal and the metadata region were read
+         * and written on device 0, and the result was not an error -- it was a
+         * guest that stopped issuing disk operations entirely, which reaches the
+         * harness as the installer's format WEDGING with no marker after
+         * `INSTALLER: formatting`.
+         *
+         * This is the same shape as the drive-select ordering in ata.c that the
+         * same gate found an hour earlier: a variable that was always equal to
+         * the thing it stood for, until something made them differ. */
+        current_bd = g_needs_format_bd;
         if (storage_format_sealed(g_needs_format_bd, password, plen) != 0) return -1;
         if (storage_mount(g_needs_format_bd) != 0) return -1;
         g_needs_format    = 0;

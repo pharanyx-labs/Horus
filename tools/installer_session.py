@@ -722,6 +722,81 @@ def accounts(disk):
         s.close()
 
 
+def twodisk(disk):
+    """Install onto the SECOND of two disks, then boot and find the volume there.
+
+    THE POINT IS WHICH DISK GOT ERASED, and no return code can say. The format
+    reports 0 whichever device it landed on, both disks are blank before it and
+    one of them is a volume after, so the only thing that distinguishes "the disk
+    the operator chose" from "the disk the machine nominated" is the survey on
+    the NEXT boot naming which device carries the volume.
+
+    That is why this drives an install to completion and then powers the machine
+    on again, rather than asserting anything about boot 1. Boot 1 cannot tell:
+    everything it can observe succeeded.
+    """
+    s = Serial(ISO)
+    try:
+        s.expect("INIT_STORAGE: disk present", BOOT)
+        s.expect("INIT_STORAGE: 2 persistent device(s)", STEP)
+        step("boot 1: the machine surveyed two disks")
+
+        s.expect("init: this machine has a disk and no volume; running the installer", STEP)
+        answer_survey(s)
+
+        # The disk menu, which a one-disk machine never shows. DOWN moves to the
+        # second entry -- the menu's own clamp is what stops that running past
+        # the end, and smoke-tui-menu-control is the arm for it.
+        s.expect("INSTALLER: waiting on the disk choice", STEP)
+        os.write(s.fd, DOWN)
+        os.write(s.fd, ENTER)
+        step("chose the second disk")
+
+        answer_accounts(s)
+        answer_review_and_confirm(s)
+        s.expect("INSTALLER: formatting", STEP)
+        expect_while_doing_io(s, "INSTALLER: PASS installed", FORMAT_STALL, FORMAT_CAP)
+        step("the installer reported a completed install")
+        s.expect("horus login:", STEP)
+    finally:
+        keep_serial(s.buf)
+        s.close()
+
+    s = Serial(ISO)
+    try:
+        s.expect("INIT_STORAGE: 2 persistent device(s)", BOOT)
+        # WAIT FOR THE LINE init PRINTS LAST, not for the ones being parsed.
+        # report_storage emits the per-device lines and then the past-the-end
+        # refusal, so this is the only expect that guarantees every device line
+        # is COMPLETE in the buffer. Waiting on `device 1: ` itself returned
+        # mid-line -- `device 1: 327` -- and the parse below then read a truncated
+        # verdict as a missing one, which is a harness bug that looks exactly like
+        # the defect the gate is for.
+        s.expect("INIT_STORAGE: an index past the last device was refused", STEP)
+        # THE ASSERTION, and it is positive on both halves: the chosen disk
+        # carries a volume AND the other one is still blank. Either alone is
+        # satisfied by a run that formatted both, or by one that formatted
+        # neither and reported an unrelated line.
+        line1 = [l for l in s.buf.splitlines() if "INIT_STORAGE: device 1: " in l]
+        line0 = [l for l in s.buf.splitlines() if "INIT_STORAGE: device 0: " in l]
+        if not line1 or "a Horus volume" not in line1[-1]:
+            raise SessionFail(
+                "the volume is not on the disk that was chosen; device 1 says %r"
+                % (line1[-1] if line1 else "<nothing>"))
+        if not line0 or "blank" not in line0[-1]:
+            raise SessionFail(
+                "the disk that was NOT chosen was written to; device 0 says %r"
+                % (line0[-1] if line0 else "<nothing>"))
+        step("boot 2: the volume is on the chosen disk, and only on it")
+
+        if not login(s, "root", PASSWORD, BOOT):
+            raise SessionFail("could not log into the volume on the chosen disk")
+        step("logged in with the password the installer was given")
+    finally:
+        keep_serial(s.buf)
+        s.close()
+
+
 def run():
     disk = os.environ.get("SESSION_DISK", "")
     if not disk:
@@ -737,6 +812,10 @@ def run():
         return 0
     if mode == "accounts":
         accounts(disk)
+        print("INSTALLER_SESSION: PASS")
+        return 0
+    if mode == "twodisk":
+        twodisk(disk)
         print("INSTALLER_SESSION: PASS")
         return 0
     boot1(disk)

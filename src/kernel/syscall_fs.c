@@ -83,7 +83,7 @@ void h_storage_device(struct interrupt_frame64 *r) {
     r->rax = 0;
 }
 
-/* SYS_STORAGE_FORMAT (111): destroy the volume on the attached device and lay a
+/* SYS_STORAGE_FORMAT (111): destroy the volume on the NAMED device (S83) and lay a
  * new encrypted one down, sealed to `password`. WRITE.
  *
  * THE LENGTH BOUND IS NOT ARBITRARY, and getting it wrong would brick the
@@ -100,7 +100,8 @@ void h_storage_device(struct interrupt_frame64 *r) {
  * every path including the refusals, the same discipline h_auth follows.
  */
 void h_storage_format(struct interrupt_frame64 *r) {
-    uint32_t plen = (uint32_t)r->rcx;
+    uint32_t plen   = (uint32_t)r->rcx;
+    uint32_t device = (uint32_t)r->rdx;
 
     /* Refuse before copying anything: an empty password seals a volume to
      * nothing, and an over-long one cannot be typed back at a login prompt. */
@@ -117,11 +118,21 @@ void h_storage_format(struct interrupt_frame64 *r) {
     }
     pw[plen] = 0;
 
-    /* The deliberate act S63 named and left without a caller. It is set here and
-     * not reset: a machine whose operator has said "format this disk" once is a
-     * machine being installed, and storage_unlock consumes the permission by
-     * clearing g_needs_format the moment a volume exists. */
-    storage_authorize_format();
+    /* The deliberate act S63 named and left without a caller, and since
+     * 2026-09-06 it NAMES ITS TARGET (S83). Set here and not reset: a machine
+     * whose operator has said "format this disk" once is a machine being
+     * installed, and storage_unlock consumes the permission by clearing
+     * g_needs_format the moment a volume exists.
+     *
+     * The refusal comes BEFORE the password is used and the buffer is wiped on
+     * the way out, the same discipline every other exit here follows: an
+     * operator who named a disk that is not there has still typed a password,
+     * and it does not stay in kernel memory because their index was wrong. */
+    if (storage_authorize_format((int)device) != 0) {
+        secure_zero(pw, sizeof(pw));
+        r->rax = (uint32_t)SYS_ERR_INVAL;
+        return;
+    }
 
     int rc = storage_unlock(pw, plen);
     secure_zero(pw, sizeof(pw));

@@ -1292,7 +1292,7 @@ void _start(void) {
         check(((unsigned char *)&si)[0] == 0x5A,
               "storage-info-wrote-through-on-refusal");
 
-        check(sys_storage_format(pw, sizeof(pw) - 1) == SYS_ERR_PERM,
+        check(sys_storage_format(0, pw, sizeof(pw) - 1) == SYS_ERR_PERM,
               "storage-format-without-cap-storage-format");
 
         /* The type half, from the other side: a slot that DOES hold a
@@ -1310,7 +1310,7 @@ void _start(void) {
         check(sys_cap_mint(CAPSLOT_STORAGE_FORMAT, SLOT_RETYPED_EP,
                            CAP_RIGHT_READ | CAP_RIGHT_WRITE) == 0,
               "could-not-mint-a-wrong-type-capability-to-probe-with");
-        check(sys_storage_format(pw, sizeof(pw) - 1) == SYS_ERR_PERM,
+        check(sys_storage_format(0, pw, sizeof(pw) - 1) == SYS_ERR_PERM,
               "storage-format-with-wrong-cap-type");
         check(sys_storage_info(&si) == SYS_ERR_PERM,
               "storage-info-with-wrong-cap-type");

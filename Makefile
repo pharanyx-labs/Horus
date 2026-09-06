@@ -123,7 +123,7 @@ DEFECT_FLAGS = \
 	TUI_NO_DAMAGE_DIFF TUI_CLAMP_OFF \
 	TUI_INPUT_ECHO_SECRET TUI_INPUT_UNBOUNDED TUI_MENU_UNCLAMPED \
 	TUI_ACS_NO_RESTORE TUI_WRAP_NO_BREAK TUI_NO_INVALIDATE \
-	STORAGE_SINGLE_DEVICE STORAGE_DEVICE_INDEX_CLAMP \
+	STORAGE_SINGLE_DEVICE STORAGE_DEVICE_INDEX_CLAMP STORAGE_FORMAT_TARGET_IGNORED \
 	CSPACE_KEEP_ON_TEARDOWN \
 	CSPACE_RELEASE_BEFORE_PIPES SPAWN_SLOT3_DECOY_GATE UNTYPED_SPLIT_FREE_BYTES \
 	INIT_PROVISION_NO_UNTYPED AUDIT_ABI_LEGACY STORE_LOCKED_UNCHECKED \
@@ -637,6 +637,16 @@ endif
 STORAGE_SINGLE_DEVICE ?= 0
 ifeq ($(STORAGE_SINGLE_DEVICE),1)
 CFLAGS += -DSTORAGE_SINGLE_DEVICE
+endif
+
+# STORAGE_FORMAT_TARGET_IGNORED=1 validates the device index handed to
+# SYS_STORAGE_FORMAT and then DISCARDS it, so the format lands on whatever device
+# the machine nominated at boot rather than the one the operator chose. Every
+# check still passes and every return code is still 0; the only difference is
+# which disk got erased.
+STORAGE_FORMAT_TARGET_IGNORED ?= 0
+ifeq ($(STORAGE_FORMAT_TARGET_IGNORED),1)
+CFLAGS += -DSTORAGE_FORMAT_TARGET_IGNORED
 endif
 
 # STORAGE_DEVICE_INDEX_CLAMP=1 answers an out-of-range device index with the LAST
@@ -8497,6 +8507,62 @@ smoke-installer:
 # build. This is the direction an inject-and-look arm cannot cover: it shows the
 # detector stays SILENT on a legal input, and without it "never fires" would pass
 # the control arm below.
+# S83. The format destroys the disk the operator named, and only that one.
+#
+# TWO blank disks, install onto the SECOND, then power on again and require the
+# volume to be on device 1 AND device 0 to still be blank. No return code can say
+# which disk was erased -- the format reports 0 either way and both disks were
+# blank before it -- so the assertion is the NEXT boot's survey.
+.PHONY: smoke-installer-target
+smoke-installer-target:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 boot.iso
+	@rm -f installer-t0.img installer-t1.img installer-target-serial.log
+	@truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-t0.img
+	@truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-t1.img
+	@SESSION_DISK=installer-t0.img SESSION_DISK2=installer-t1.img \
+		INSTALLER_MODE=twodisk SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		INSTALLER_FORMAT_STALL=$(INSTALLER_FORMAT_STALL) INSTALLER_FORMAT_CAP=$(INSTALLER_FORMAT_CAP) \
+		SESSION_SERIAL_LOG=installer-target-serial.log BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		python3 tools/installer_session.py boot.iso \
+	  || { echo "[installer] ----- guest serial -----"; \
+	       tail -60 installer-target-serial.log 2>/dev/null | sed 's/^/  /'; exit 1; }
+	@rm -f installer-t0.img installer-t1.img
+	@echo "[installer] PASS - the install went onto the disk that was chosen, and only that one"
+
+# The falsifying arm: the index is validated and then DISCARDED, so the format
+# lands on the device the machine nominated at boot instead of the one the
+# operator chose. EVERY check still passes and every return code is still 0 --
+# the only difference is which disk got erased, which is why the base gate
+# asserts on the next boot's survey rather than on anything boot 1 can see.
+.PHONY: smoke-installer-target-control
+smoke-installer-target-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_FORMAT_TARGET_IGNORED=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_FORMAT_TARGET_IGNORED=1 boot.iso
+	@rm -f installer-t0.img installer-t1.img installer-target-serial.log
+	@truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-t0.img
+	@truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-t1.img
+	@SESSION_DISK=installer-t0.img SESSION_DISK2=installer-t1.img \
+		INSTALLER_MODE=twodisk SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		INSTALLER_FORMAT_STALL=$(INSTALLER_FORMAT_STALL) INSTALLER_FORMAT_CAP=$(INSTALLER_FORMAT_CAP) \
+		SESSION_SERIAL_LOG=installer-target-serial.log BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		python3 tools/installer_session.py boot.iso > installer-target-run.log 2>&1 \
+	  && { echo "[installer] CONTROL FAIL - the install went onto the chosen disk with the target ignored"; \
+	       rm -f installer-t0.img installer-t1.img; exit 1; } || true
+	@# THE HARNESS'S OWN OUTPUT, not the guest's serial. The verdict this arm has
+	@# to distinguish -- "the volume is not on the disk that was chosen" -- is a
+	@# SessionFail raised in ring 0 of the test, printed on stderr, and it never
+	@# appears on the wire. Grepping the serial log for it found nothing and scored
+	@# a real reproduction as "failed for some other reason".
+	@grep -q "the volume is not on the disk that was chosen" installer-target-run.log 2>/dev/null \
+	  || { echo "[installer] CONTROL FAIL - the run failed for some other reason than the wrong disk"; \
+	       tail -20 installer-target-run.log 2>/dev/null | sed 's/^/  /'; \
+	       rm -f installer-t0.img installer-t1.img; exit 1; }
+	@rm -f installer-t0.img installer-t1.img installer-target-run.log
+	@echo "[installer] CONTROL PASS - with the target ignored the install erased a disk nobody chose"
+
 .PHONY: smoke-installer-slowdisk
 smoke-installer-slowdisk:
 	@$(MAKE) --no-print-directory clean

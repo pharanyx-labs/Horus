@@ -43,6 +43,7 @@ control_arms:
   smoke-installer-refuse-control: smoke-installer-refuse
   smoke-installer-provision-control: smoke-installer-provision
   smoke-installer-accounts-control: smoke-installer-accounts
+  smoke-installer-target-control: smoke-installer-target
   smoke-passwd-target-control: smoke-passwd-target
   smoke-session-fs-err-control: smoke-session
   smoke-session-chmod-control: smoke-session
@@ -195,6 +196,7 @@ gates:
   - smoke-installer-refuse
   - smoke-installer-provision
   - smoke-installer-accounts
+  - smoke-installer-target
   - smoke-passwd-target
   - smoke-nvcounter
   - smoke-rollback

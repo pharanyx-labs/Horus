@@ -1902,6 +1902,14 @@ jobs:
       # account is broken" from "the account has no key slot".
       - name: Control arm — no key slot, so the account cannot open its own machine
         run: make smoke-installer-accounts-control
+      # S83. Two blank disks, install onto the SECOND, then power on again and
+      # require the volume to be on device 1 and device 0 still blank. No return
+      # code can say which disk was erased -- the format reports 0 either way --
+      # so the assertion is the next boot's survey.
+      - name: The install goes onto the disk that was chosen (S83)
+        run: make smoke-installer-target
+      - name: Control arm — the chosen disk ignored, another one erased
+        run: make smoke-installer-target-control
       # [G-13]. The format's bound is a STALL, not a total, because no total can
       # separate a slow disk from a wedge at any value. The base gate throttles
       # the guest to 12 IOPS -- format ~420s, past the 300s that used to fail

@@ -292,6 +292,15 @@ static void label(int row, const char *s)
 
 static struct storage_info g_si;
 
+/* WHICH DEVICE THE INSTALL GOES ONTO, a position in the machine's enumeration.
+ *
+ * It is state of this program rather than of the kernel, and it is passed to
+ * SYS_STORAGE_FORMAT as an argument rather than selected by an earlier call: the
+ * act that destroys a disk names the disk it destroys (SECURITY.md S83). 0 is
+ * the machine's own nomination and is what a one-disk install uses without ever
+ * showing a menu. */
+static unsigned g_target;
+
 /* The password, and the only copy of it in this program. Static rather than on
  * the stack because it is 32 bytes twice over and a ring-3 stack is not the
  * place for them (the same reason tui.c keeps its request buffers static), and
@@ -349,6 +358,95 @@ static void disk_size(char *blocks, unsigned bcap, char *mib, unsigned mcap)
 {
     utoa10(g_si.total_blocks, blocks, bcap);
     utoa10((g_si.total_blocks * (uint64_t)g_si.block_size) / (1024u * 1024u), mib, mcap);
+}
+
+/* ---- choosing a disk ----------------------------------------------------
+ *
+ * Only asked when there is something to ask. A machine with one disk shows no
+ * menu at all and installs onto device 0, which is byte for byte the
+ * conversation this program had before it could count past one -- the harness
+ * scenarios that drive a single-disk install were not taught a new keystroke,
+ * because they should not need one.
+ *
+ * BUILT FROM tui_menu, like every other choice here, and the labels are the
+ * SIZE of each disk rather than a device number. "ata0" and "ata1" are what the
+ * kernel calls them and they are not what an operator recognises; the size is
+ * the only thing on this screen that lets somebody say "that is the one I
+ * meant". It is the same argument the survey screen makes for showing MiB
+ * alongside blocks.
+ *
+ * The list is built from SYS_STORAGE_DEVICE rather than from the machine-wide
+ * survey, because that is the enumeration the index is a position in -- reading
+ * one and indexing the other is how the wrong disk gets erased by a program
+ * whose every individual step was right.
+ */
+#define TARGET_MAX 8
+
+static char g_target_labels[TARGET_MAX][40];
+static const char *g_target_items[TARGET_MAX];
+static unsigned g_target_count;
+
+static void build_target_list(void)
+{
+    g_target_count = 0;
+    for (unsigned d = 0; d < g_si.device_count && d < TARGET_MAX; d++) {
+        struct storage_info di;
+        for (unsigned z = 0; z < sizeof(di); z++) ((char *)&di)[z] = 0;
+        if (sys_storage_device(d, &di) != 0) continue;
+
+        char mib[24];
+        utoa10((di.total_blocks * (uint64_t)di.block_size) / (1024u * 1024u),
+               mib, sizeof(mib));
+
+        char *out = g_target_labels[g_target_count];
+        unsigned n = 0;
+        const char *pre = "disk ";
+        for (const char *c = pre; *c && n < sizeof(g_target_labels[0]) - 1; c++) out[n++] = *c;
+        char idx[8];
+        utoa10(d, idx, sizeof(idx));
+        for (const char *c = idx; *c && n < sizeof(g_target_labels[0]) - 1; c++) out[n++] = *c;
+        const char *mid = "  -  ";
+        for (const char *c = mid; *c && n < sizeof(g_target_labels[0]) - 1; c++) out[n++] = *c;
+        for (const char *c = mib; *c && n < sizeof(g_target_labels[0]) - 1; c++) out[n++] = *c;
+        const char *suf = " MiB";
+        for (const char *c = suf; *c && n < sizeof(g_target_labels[0]) - 1; c++) out[n++] = *c;
+        out[n] = 0;
+
+        g_target_items[g_target_count] = out;
+        g_target_count++;
+    }
+}
+
+/* Returns 1 with g_target set, 0 if the operator cancelled. */
+static int screen_target(void)
+{
+    build_target_list();
+
+    /* Nothing to choose between: the machine's own nomination stands, and no
+     * screen is shown. */
+    if (g_target_count <= 1) {
+        g_target = 0;
+        return 1;
+    }
+
+    frame("Choose the disk to install onto");
+    int r = para(ROW_BODY, "This machine has more than one disk. Everything on the one you "
+                           "choose is erased; the others are not touched.", C_TEXT);
+    r += 2;
+
+    int sel = 0;
+    status("Nothing has been written yet.", C_TEXT);
+    hint("arrows to choose  -  enter to accept  -  esc to cancel");
+    tui_flush();
+    mark("INSTALLER: waiting on the disk choice", "");
+    if (tui_menu(r, MARGIN + 2, 40, g_target_items, (int)g_target_count, &sel) != 0) return 0;
+
+    /* tui_menu clamps to 0..n-1, and this is the caller that clamp exists for:
+     * the returned index is about to be handed to the call that erases a disk.
+     * Re-checked here anyway -- the bound belongs to whoever indexes with it. */
+    if (sel < 0 || (unsigned)sel >= g_target_count) return 0;
+    g_target = (unsigned)sel;
+    return 1;
 }
 
 static int screen_survey(void)
@@ -700,7 +798,7 @@ static int do_install(void)
     tui_flush();
 
     unsigned plen = uslen(g_pw);
-    int rc = sys_storage_format(g_pw, plen);
+    int rc = sys_storage_format(g_target, g_pw, plen);
     if (rc != 0) {
         char n[24];
         utoa10((uint64_t)(unsigned)(-rc), n, sizeof(n));
@@ -838,6 +936,7 @@ void _start(void)
      * so an operator who changes their mind at any point up to the word has
      * cost themselves nothing but typing. */
     if (!screen_survey())            leave_untouched("You chose not to install.");
+    if (!screen_target())            leave_untouched("You chose not to install.");
     if (!ask_root_password())        leave_untouched("The install was cancelled.");
     if (!ask_user_name())            leave_untouched("The install was cancelled.");
     if (!ask_user_password())        leave_untouched("The install was cancelled.");

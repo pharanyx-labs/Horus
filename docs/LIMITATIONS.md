@@ -535,9 +535,9 @@ a page at the bogus address and reported success.
 ### 1.8 Part of the syscall table has no test that runs its handler, and one of those gaps hid a defect
 
 **Measured since 2026-08-20**, and re-derived on every merge rather than restated: as of
-2026-09-01, and gated since: **83 of 93** implemented syscalls have their handler
+2026-09-01, and gated since: **83 of 94** implemented syscalls have their handler
 body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
-boot-modules session). The other 10 are listed in `.github/syscall-coverage.yml`, each with a written reason.
+boot-modules session). The other 11 are listed in `.github/syscall-coverage.yml`, each with a written reason.
 
 This was stated as a limitation rather than a finding, on the grounds that nothing here was
 known to be broken. **That is no longer the honest framing, and it has now been wrong twice.**
@@ -572,9 +572,9 @@ once rather than the one syscall that motivated it. And third, **neither would h
 by a wider `captest`**: both syscalls are gated on a real capability, so the only way in is a
 task that holds one, which is why the answer was a new task rather than a bigger suite.
 
-So the standing risk is not hypothetical: a defect in any of those 10 handlers is invisible in
+So the standing risk is not hypothetical: a defect in any of those 11 handlers is invisible in
 the same way issue #176 was, and in the way S52 and S71 just were. `captest` is a **refusal** suite by
-So the standing risk is not hypothetical: a defect in any of those 10 handlers is invisible in
+So the standing risk is not hypothetical: a defect in any of those 11 handlers is invisible in
 the same way issue #176 was, and in the way S52 just was. `captest` is a **refusal** suite by
 construction: its checks for `SYS_DMESG` and `SYS_AUDIT_DIGEST` both assert `SYS_ERR_PERM`, and
 the capability gate returns before the handler runs. Both syscalls were named by the suite;

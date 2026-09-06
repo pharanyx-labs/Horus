@@ -196,6 +196,7 @@ struct task_info {
 #define SYS_STORAGE_INFO      110  /* (struct storage_info*) -> 0; what volume this machine has (CAP_STORAGE_FORMAT + READ). */
 #define SYS_STORAGE_FORMAT    111  /* (const char *password, plen) -> 0; DESTROY the attached volume and lay a new sealed one down (CAP_STORAGE_FORMAT + WRITE). The one caller of storage_authorize_format(), which S63 introduced and left with none. */
 #define SYS_USERLIST          112  /* (index, struct user_entry*) -> 1 filled, 0 past the last account, SYS_ERR_PERM without CAP_USER. Account METADATA only -- name, uid, gid, home -- and deliberately nothing else: no hash, no salt, no key slot, no lockout state. A dense index over the valid accounts, so a caller loops until 0 and never needs the kernel's MAX_USERS. */
+#define SYS_STORAGE_DEVICE   113  /* (index, struct storage_info*) -> 0; the survey for ONE enumerated persistent device (CAP_STORAGE_FORMAT + READ). Refuses an index past the end rather than clamping. */
 #define SYS_IRQ_POLICY_INFO    92   /* (struct irq_policy_info*) -> 0; roadmap 1.1 audit counters. IRQ_POLICY_AUDIT builds only; NOSYS otherwise. CAP_KERNEL_LOG (READ). */
 #define SYS_DMESG              88   /* (buf, offset, max) -> bytes; copy a chunk of the kernel message ring at `offset` to buf. CAP_KERNEL_LOG (READ) in CAPSLOT_KERNEL_LOG, else SYS_ERR_PERM */
 #define SYS_TASK_EXIT_INFO     93   /* (struct task_exit_info*) -> 0; why the last task this caller waited on died. Self-scoped (no capability): waiting already entitled the caller to observe it. */
@@ -571,6 +572,19 @@ static inline int sys_console_owned(void) {
  *
  * The array bounds must match IODEV_MAX_MMIO / IODEV_MAX_PORT in
  * src/include/kernel.h; the kernel _Static_asserts that they do. */
+/* How many ranges one device may declare. SPELLED BY NAME ON BOTH SIDES, and
+ * that is the point: these were `8` here and IODEV_MAX_MMIO in the kernel, which
+ * is the same layout right up until somebody raises the kernel's constant. Ring 3
+ * would then still be compiled against 8 while the kernel wrote the larger struct
+ * into it -- S71, exactly, and silent. tools/check_syscall_abi.py compares the
+ * VALUES so the two names cannot drift apart either. */
+#ifndef IODEV_MAX_MMIO
+#define IODEV_MAX_MMIO      8
+#endif
+#ifndef IODEV_MAX_PORT
+#define IODEV_MAX_PORT      8
+#endif
+
 struct dev_info {
     uint16_t vendor;      /* PCI vendor id, 0 for a platform device */
     uint16_t device;      /* PCI device id, 0 for a platform device */
@@ -588,8 +602,8 @@ struct dev_info {
     uint32_t msi_capable; /* nonzero if the device has an MSI capability. Whether,
                            * not where: the offset is the kernel's business, since
                            * the register it points at carries the vector (S47). */
-    struct { uint64_t base, len; } mmio[8];
-    struct { uint32_t base, len; } port[8];
+    struct { uint64_t base, len; } mmio[IODEV_MAX_MMIO];
+    struct { uint32_t base, len; } port[IODEV_MAX_PORT];
 };
 
 /* Report what the device named by the CAP_IO_DEVICE (READ right) at `dev_slot`
@@ -779,6 +793,12 @@ struct storage_info {
     uint32_t unlocked;       /* 1 if that volume's keys are derived             */
     uint32_t needs_format;   /* 1 if a device is attached carrying no volume    */
     uint32_t format_on_login;/* 1 if a login on THIS kernel would format it      */
+    /* How many persistent devices this machine has, and which one the fields
+     * above describe. A survey that could only say "the disk" is what made an
+     * installer unable to ask which one; `device_count` is 0 on a diskless boot
+     * and these two are the enumeration SYS_STORAGE_DEVICE indexes into. */
+    uint32_t device_count;
+    uint32_t device_index;
 };
 
 /* What volume this machine has. CAP_STORAGE_FORMAT + READ at
@@ -787,6 +807,18 @@ struct storage_info {
  * same capability because the survey is the destruction's first screen. */
 static inline int sys_storage_info(struct storage_info *out) {
     return (int)syscall(SYS_STORAGE_INFO, SYSCALL_UPTR(out), 0, 0);
+}
+
+/* The same survey for the persistent device at `index` in the machine's
+ * enumeration, 0 .. device_count-1. Returns 0, SYS_ERR_INVAL for an index past
+ * the end, or SYS_ERR_PERM without the capability.
+ *
+ * IT REFUSES RATHER THAN CLAMPING. An out-of-range index answered about a
+ * different disk would be read by an installer as a description of the disk it
+ * is about to erase, which is the one screen in this system that must not be
+ * about the wrong device. */
+static inline int sys_storage_device(unsigned index, struct storage_info *out) {
+    return (int)syscall(SYS_STORAGE_DEVICE, (uint64_t)index, SYSCALL_UPTR(out), 0);
 }
 
 /* DESTROY the volume on the attached device and lay a new encrypted one down,

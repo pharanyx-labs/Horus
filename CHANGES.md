@@ -15,6 +15,54 @@ in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **The block layer sees every disk, and the survey enumerates them** (`SECURITY.md` **S82**,
+  roadmap 2.9). The ATA driver probed the primary master and nothing else, which was correct
+  while the survey could only report one disk and became wrong the moment an installer had to ask
+  WHICH disk. It now probes the master and the slave, each present device is a block device of
+  its own carrying its drive index in `private` -- so a read, a write and a flush go to the
+  device the caller holds rather than to a global "current" one -- and `SYS_STORAGE_DEVICE`
+  surveys one enumerated device under the same `CAP_STORAGE_FORMAT` + READ as the machine-wide
+  survey, because the survey is the destruction's first screen.
+  **`storage_init` now mounts the first device CARRYING A VOLUME**, not simply the first device.
+  With one disk those are the same sentence, which is why it was written the second way; with two
+  they are not, and an installed second disk would have been invisible to the machine it was
+  installed on. Trying devices in order is safe because `storage_mount` touches no state on its
+  failure paths.
+  **An index past the last device is refused, not clamped**, and that is the property rather than
+  the absence of a crash: a clamped index faults nothing and overruns nothing, it returns a
+  complete well-formed survey of a different disk to the one program whose next act is erasing
+  the disk it was told about. Falsified in both directions -- `STORAGE_SINGLE_DEVICE=1` restores
+  the master-only probe and reports one device on a two-disk machine, `STORAGE_DEVICE_INDEX_CLAMP=1`
+  answers the out-of-range index with the last device -- and both redden `make smoke-storage-survey`.
+  **The authority half is deliberately not in this change.** `SYS_STORAGE_FORMAT` still formats
+  the device the machine nominated, so the installer can show two disks and cannot yet erase the
+  second. Giving the format an explicit target changes what `CAP_STORAGE_FORMAT` authorises, from
+  "the disk" to "a disk you name", and it interacts with a control arm whose premise is that the
+  ungated call succeeds on a diskless boot. That gets its own arm.
+
+- **A ratchet on the syscall ABI, because it is written down twice**
+  (`tools/check_abi_headers.py`, required job). The syscall numbers, the thirteen structs that
+  cross the ring boundary and 182 shared integer constants live in both `src/include/kernel.h`
+  and `include/syscall.h`, and nothing compared them. They agreed -- a fact about the tree, not a
+  property of it.
+  **This is S71's defect class.** `struct audit_event` was declared twice under one name, 256
+  bytes in the kernel and 72 in ring 3, and the handler copied the kernel's size at the kernel's
+  stride into an array sized with the other: 184 bytes past the array per record. A number that
+  disagrees is loud, because the dispatch table will not compile against a name it does not have;
+  a STRUCT that disagrees is silent, because both sides compile and `copy_to_user` writes the
+  kernel's `sizeof` into the caller's smaller buffer.
+  It found a real one on its first run: `struct dev_info` spelled its array bounds
+  `IODEV_MAX_MMIO` on the kernel side and a literal `8` on the userspace side -- the same layout
+  right up until somebody raised the constant, at which point ring 3 stays compiled against 8
+  while the kernel writes the larger struct into it. Both sides now spell it by name, and rule 3
+  compares the values, because rule 2 compares field TEXT and text can agree while layout does
+  not. Falsified per rule by `tools/test_check_abi_headers.sh`, which also asserts an unmutated
+  tree passes -- three "is it caught" arms are all satisfied by a checker that rejects everything.
+  That script's own first run scored every rule a miss: under `set -o pipefail`,
+  `checker | grep -q` reports the checker's deliberate exit 1 even when grep matched.
+
 ### Changed
 
 - **The installer's own progress markers were being drawn across its screens, and had been all

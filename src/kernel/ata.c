@@ -150,6 +150,21 @@ static int g_ata_refusal_reported;
 static uint64_t g_ata_refusals;
 uint64_t ata_transfer_refusals(void) { return g_ata_refusals; }
 
+/* Two-part message, because there is no varargs in this kernel's kmsg and a
+ * drive name is a runtime string. */
+static void kmsg_who(const char *who, const char *what)
+{
+    char line[64];
+    unsigned n = 0;
+    const char *pre = "ata: ";
+    for (const char *c = pre; *c && n < sizeof(line) - 1; c++) line[n++] = *c;
+    for (const char *c = who; *c && n < sizeof(line) - 1; c++) line[n++] = *c;
+    if (n < sizeof(line) - 1) line[n++] = ' ';
+    for (const char *c = what; *c && n < sizeof(line) - 1; c++) line[n++] = *c;
+    line[n] = 0;
+    kmsg(line);
+}
+
 static int ata_refuse(const char *what, uint32_t lba, uint8_t status)
 {
     g_ata_refusals++;
@@ -201,6 +216,50 @@ static int ata_wait_busy_flush(void) {
     return -1;
 }
 
+/* ---- which drive ---------------------------------------------------------
+ *
+ * Two devices share one ATA bus: a master and a slave, selected by a bit in the
+ * drive register. Everything below took the master for granted, which was
+ * correct while the survey could only report one disk and became wrong the
+ * moment an installer had to ask WHICH disk.
+ *
+ * ONE BUS, NOT TWO. The secondary bus (0x170) is deliberately not probed: it
+ * would double the register set, the IRQ line and the absent-bus handling for a
+ * case nothing in this tree can produce, and an untested probe of hardware that
+ * is not there is a hang waiting for a machine that has it. Two is the number
+ * that makes the survey plural, which is the property being added.
+ *
+ * A DRIVE INDEX IS VALIDATED AT EVERY ENTRY POINT and an out-of-range one is
+ * REFUSED rather than clamped. Clamping to 0 would turn "format the disk I
+ * chose" into "format the first disk" on exactly the call that destroys one --
+ * a caller that names a disk that is not there must be told no, not quietly
+ * given a different disk. */
+#define ATA_DRIVE_MASTER 0
+#define ATA_DRIVE_SLAVE  1
+
+/* Filled by ata_init from IDENTIFY words 60-61; 0 until then, per drive. */
+static uint32_t g_ata_sectors[ATA_MAX_DRIVES];
+static int      g_ata_present[ATA_MAX_DRIVES];
+
+static inline int ata_drive_ok(int drive)
+{
+    return drive >= 0 && drive < ATA_MAX_DRIVES;
+}
+
+/* The drive/head register for an LBA access: 0xE0 selects the master in LBA
+ * mode, 0xF0 the slave, and the low nibble carries LBA bits 24-27. */
+static inline uint8_t ata_sel_lba(int drive, uint32_t lba)
+{
+    uint8_t base = (drive == ATA_DRIVE_SLAVE) ? 0xF0u : 0xE0u;
+    return (uint8_t)(base | ((lba >> 24) & 0x0Fu));
+}
+
+/* The same register for a non-LBA command (IDENTIFY, FLUSH CACHE). */
+static inline uint8_t ata_sel_plain(int drive)
+{
+    return (drive == ATA_DRIVE_SLAVE) ? 0xB0u : 0xA0u;
+}
+
 /* Issue FLUSH CACHE and wait for the drive to report the cache is on stable
  * media. Returns 0 only when the drive completed the flush without error;
  * -1 on ERR/DF, on timeout, or on an absent/floating bus.
@@ -212,13 +271,14 @@ static int ata_wait_busy_flush(void) {
  * filesystem advertises does not hold. It went unnoticed for as long as it did
  * because QEMU with cache=writethrough persists every write on its own, so the
  * emulator supplied a guarantee the kernel never asked for. */
-int ata_flush(void) {
+int ata_flush(int drive) {
+    if (!ata_drive_ok(drive)) return -1;
     spin_lock(&ata_lock);
 
     if (ata_wait_busy_flush() != 0) { spin_unlock(&ata_lock); return -1; }
     ata_400ns_delay();
 
-    outb(ATA_DRIVE, 0xE0);          /* primary master, LBA mode */
+    outb(ATA_DRIVE, ata_sel_lba(drive, 0));   /* this drive, LBA mode */
     ata_400ns_delay();
     outb(ATA_COMMAND, ATA_CMD_FLUSH);
 
@@ -240,10 +300,9 @@ int ata_flush(void) {
     return 0;
 }
 
-/* Filled by ata_init from IDENTIFY words 60-61; 0 until then. */
-static uint32_t g_ata_sectors = 0;
 
-static int ata_read_sector(uint32_t lba, uint8_t *buf) {
+static int ata_read_sector(int drive, uint32_t lba, uint8_t *buf) {
+    if (!ata_drive_ok(drive)) return -1;
     spin_lock(&ata_lock);
 
     if (ata_wait_busy() != 0) {
@@ -252,7 +311,7 @@ static int ata_read_sector(uint32_t lba, uint8_t *buf) {
     }
     ata_400ns_delay();
 
-    outb(ATA_DRIVE, 0xE0 | ((lba >> 24) & 0x0F));
+    outb(ATA_DRIVE, ata_sel_lba(drive, lba));
     outb(ATA_SECCOUNT, 1);
     outb(ATA_LBA_LOW,  lba & 0xFF);
     outb(ATA_LBA_MID,  (lba >> 8) & 0xFF);
@@ -283,7 +342,8 @@ static int ata_read_sector(uint32_t lba, uint8_t *buf) {
     return 0;
 }
 
-static int ata_write_sector(uint32_t lba, const uint8_t *buf) {
+static int ata_write_sector(int drive, uint32_t lba, const uint8_t *buf) {
+    if (!ata_drive_ok(drive)) return -1;
     spin_lock(&ata_lock);
 
     if (ata_wait_busy() != 0) {
@@ -292,7 +352,7 @@ static int ata_write_sector(uint32_t lba, const uint8_t *buf) {
     }
     ata_400ns_delay();
 
-    outb(ATA_DRIVE, 0xE0 | ((lba >> 24) & 0x0F));
+    outb(ATA_DRIVE, ata_sel_lba(drive, lba));
     outb(ATA_SECCOUNT, 1);
     outb(ATA_LBA_LOW,  lba & 0xFF);
     outb(ATA_LBA_MID,  (lba >> 8) & 0xFF);
@@ -337,23 +397,30 @@ static int ata_write_sector(uint32_t lba, const uint8_t *buf) {
     return 0;
 }
 
-/* Probe the primary master with IDENTIFY and report whether a usable ATA disk is
- * attached. Returns 1 for a real ATA disk, 0 for an absent/floating bus or a
- * non-ATA (e.g. ATAPI) device. storage_init() uses this to choose the persistent
- * ATA store when a disk is present and fall back to the ephemeral RAM vdisk when
- * it is not — so a diskless/CI boot must land on 0 here without hanging. */
-int ata_init(void) {
+/* Probe ONE drive with IDENTIFY and report whether a usable ATA disk is there.
+ * Returns 1 for a real ATA disk, 0 for an absent/floating bus or a non-ATA (e.g.
+ * ATAPI) device. storage_init() uses this to choose the persistent ATA store
+ * when a disk is present and fall back to the ephemeral RAM vdisk when it is not
+ * — so a diskless/CI boot must land on 0 here without hanging.
+ *
+ * The messages name the drive, because "not present" about an unnamed device is
+ * the line a two-disk machine makes ambiguous exactly when somebody is trying to
+ * work out which of its disks the kernel found. */
+static int ata_probe_drive(int drive) {
+    if (!ata_drive_ok(drive)) return 0;
+    const char *who = (drive == ATA_DRIVE_SLAVE) ? "primary slave" : "primary master";
+
     outb(ATA_CTRL, 0x00);
     ata_400ns_delay();
 
-    outb(ATA_DRIVE, 0xA0);          /* select primary master */
+    outb(ATA_DRIVE, ata_sel_plain(drive));
     ata_400ns_delay();
 
     /* Floating bus (no device drives the data lines) reads back all-ones; a
      * cleared controller with no device reads all-zero. Either means absent. */
     uint8_t status = inb(ATA_STATUS);
     if (status == 0xFF || status == 0x00) {
-        kmsg("ata: primary master not present");
+        kmsg_who(who, "not present");
         return 0;
     }
 
@@ -365,7 +432,7 @@ int ata_init(void) {
 
     status = inb(ATA_STATUS);
     if (status == 0) {              /* command ignored: no device */
-        kmsg("ata: primary master not present");
+        kmsg_who(who, "not present");
         return 0;
     }
     ata_wait_busy();                /* bounded */
@@ -373,17 +440,17 @@ int ata_init(void) {
     /* A non-ATA device (ATAPI/SATA) writes a signature into the LBA-mid/high
      * registers and aborts IDENTIFY; a genuine parallel-ATA disk keeps them 0. */
     if (inb(ATA_LBA_MID) != 0 || inb(ATA_LBA_HIGH) != 0) {
-        kmsg("ata: primary master is not an ATA disk");
+        kmsg_who(who, "is not an ATA disk");
         return 0;
     }
 
     status = inb(ATA_STATUS);
     if (status & 0x01) {            /* ERR/ABRT */
-        kmsg("ata: primary master not present or error");
+        kmsg_who(who, "not present or error");
         return 0;
     }
     if (!(status & 0x08)) {         /* DRQ never asserted: no IDENTIFY data */
-        kmsg("ata: primary master not ready");
+        kmsg_who(who, "not ready");
         return 0;
     }
 
@@ -404,29 +471,69 @@ int ata_init(void) {
      * this driver can reach. */
     uint16_t id[256];
     for (int i = 0; i < 256; i++) id[i] = inw(ATA_DATA);
-    g_ata_sectors = (uint32_t)id[60] | ((uint32_t)id[61] << 16);
+    g_ata_sectors[drive] = (uint32_t)id[60] | ((uint32_t)id[61] << 16);
 
-    kmsg("ata: primary master ready (PIO)");
+    kmsg_who(who, "ready (PIO)");
     return 1;
 }
 
 /* User-addressable 512-byte sectors reported by IDENTIFY, or 0 if the probe
  * never ran or the drive reported nothing. 0 means "unknown", and every caller
  * must treat it as a refusal rather than as a size. */
-uint32_t ata_total_sectors(void) { return g_ata_sectors; }
+uint32_t ata_total_sectors(int drive) {
+    return ata_drive_ok(drive) ? g_ata_sectors[drive] : 0u;
+}
 
-int ata_read(uint32_t lba, void *buf, uint32_t sectors) {
+/* Is there a usable ATA disk at this index? Out of range is 0, not a fault: the
+ * question "is there a disk here" has a correct answer for an index that does
+ * not exist, and it is no. */
+int ata_present(int drive) {
+    return ata_drive_ok(drive) ? g_ata_present[drive] : 0;
+}
+
+/* Probe every drive on the bus. Returns how many usable ATA disks were found.
+ *
+ * The order matters and is master first: storage_init walks these in index order
+ * to pick what to mount, so the master stays the device a one-disk machine gets,
+ * byte for byte, as it did when this function probed nothing else. */
+int ata_init(void) {
+    int found = 0;
+#ifdef STORAGE_SINGLE_DEVICE
+    /* CONTROL ARM -- never ship. The pre-2026-09-06 probe: only the master is
+     * ever looked at, so a machine with two disks reports one and the second is
+     * invisible to the survey, to the mount policy and to an installer.
+     *
+     * It is the PROBE that is cut rather than the enumeration, because that is
+     * where the old code stopped: everything downstream was already written to
+     * walk a list, and cutting the list instead would leave the driver finding a
+     * device that nothing then reports -- a different defect, and a weaker one,
+     * since the survey would still be right about what the driver knew. */
+    const int probe_max = 1;
+#else
+    const int probe_max = ATA_MAX_DRIVES;
+#endif
+    for (int d = 0; d < probe_max; d++) {
+        g_ata_present[d] = ata_probe_drive(d) ? 1 : 0;
+        if (g_ata_present[d]) found++;
+    }
+    for (int d = probe_max; d < ATA_MAX_DRIVES; d++) g_ata_present[d] = 0;
+    return found;
+}
+
+int ata_read(int drive, uint32_t lba, void *buf, uint32_t sectors) {
+    if (!ata_drive_ok(drive)) return -1;
     uint8_t *b = (uint8_t*)buf;
     for (uint32_t s = 0; s < sectors; s++) {
-        if (ata_read_sector(lba + s, b + s * 512) != 0) return -1;
+        if (ata_read_sector(drive, lba + s, b + s * 512) != 0) return -1;
     }
     return 0;
 }
 
-int ata_write(uint32_t lba, const void *buf, uint32_t sectors) {
+int ata_write(int drive, uint32_t lba, const void *buf, uint32_t sectors) {
+    if (!ata_drive_ok(drive)) return -1;
     const uint8_t *b = (const uint8_t*)buf;
     for (uint32_t s = 0; s < sectors; s++) {
-        if (ata_write_sector(lba + s, b + s * 512) != 0) return -1;
+        if (ata_write_sector(drive, lba + s, b + s * 512) != 0) return -1;
     }
     return 0;
 }

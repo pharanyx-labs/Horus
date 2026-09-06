@@ -62,6 +62,27 @@ void h_storage_info(struct interrupt_frame64 *r) {
     r->rax = 0;
 }
 
+/* SYS_STORAGE_DEVICE (113): the survey for ONE enumerated persistent device.
+ * READ, the same right as the machine-wide survey and for the same reason: the
+ * survey and the destruction answer to the same capability because the survey is
+ * the destruction's first screen.
+ *
+ * The index is in rbx and the buffer in rcx. An index past the end is REFUSED --
+ * a caller that names a device that is not there is told no, not quietly handed
+ * a description of a different disk. */
+void h_storage_device(struct interrupt_frame64 *r) {
+    struct storage_info info;
+    if (storage_device_query((int)(uint32_t)r->rbx, &info) != 0) {
+        r->rax = (uint32_t)SYS_ERR_INVAL;
+        return;
+    }
+    if (copy_to_user((void *)(addr_t)r->rcx, &info, sizeof(info)) != 0) {
+        r->rax = (uint32_t)SYS_ERR_FAULT;
+        return;
+    }
+    r->rax = 0;
+}
+
 /* SYS_STORAGE_FORMAT (111): destroy the volume on the attached device and lay a
  * new encrypted one down, sealed to `password`. WRITE.
  *

@@ -188,6 +188,20 @@ if [ -n "${SMOKE_DISK:-}" ]; then
     fi
 fi
 
+# A SECOND persistent disk (SMOKE_DISK2=<image>), attached as the primary SLAVE.
+#
+# index=1 on the same IDE bus is the slave, which is the second device the ATA
+# driver probes. It is a separate variable rather than a list because every gate
+# but the two-disk survey wants exactly one disk, and a list would make "how many
+# disks does this gate boot" a thing you work out rather than read.
+if [ -n "${SMOKE_DISK2:-}" ]; then
+    if [ -z "${SMOKE_DISK:-}" ]; then
+        echo "SMOKE FAIL: SMOKE_DISK2 set without SMOKE_DISK; the slave cannot be the only disk" >&2
+        exit 1
+    fi
+    DRIVE_ARG="$DRIVE_ARG -drive file=$SMOKE_DISK2,format=raw,if=ide,index=1,cache=${SMOKE_DISK_CACHE:-writethrough}"
+fi
+
 # Optional QEMU tracing. Fails closed when the QEMU build has no trace backend:
 # a trace-based assertion that silently observes nothing would pass vacuously,
 # which is the exact defect class ([I-11]) these gates exist to retire.

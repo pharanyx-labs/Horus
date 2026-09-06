@@ -15,8 +15,8 @@ int storage_rekey(const char *p,size_t l){(void)p;(void)l;return 0;}
 int storage_block_read(uint64_t bl, void *buf){(void)bl;(void)buf;return -1;}
 int storage_block_write(uint64_t bl, const void *buf){(void)bl;(void)buf;return -1;}
 void ata_init(void){}
-void ata_read_sector(uint32_t lba, uint8_t *buf){(void)lba;(void)buf;}
-void ata_write_sector(uint32_t lba, const uint8_t *buf){(void)lba;(void)buf;}
+void ata_read_sector(int drive, uint32_t lba, uint8_t *buf){(void)drive;(void)lba;(void)buf;}
+void ata_write_sector(int drive, uint32_t lba, const uint8_t *buf){(void)drive;(void)lba;(void)buf;}
 int crypto_aes_init(void){return 0;}
 void crypto_aes128_ctr_encrypt(void *b, size_t l, const uint8_t *k, const uint8_t *n){(void)b;(void)l;(void)k;(void)n;}
 int do_rotate_keys(void){return 0;}

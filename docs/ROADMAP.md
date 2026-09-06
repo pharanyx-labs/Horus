@@ -1408,10 +1408,18 @@ and for a full-screen program those are different questions.
 
 **Still open, and what each needs:**
 
-- **Selecting among several targets.** There is one ATA device today and `storage_query`
-  reports it or nothing. A machine with two disks needs the survey to enumerate, which is a
-  block-layer change rather than an installer one. `tui_menu` is already the shape that question
-  needs, which is why the yes/no uses it.
+- **Selecting among several targets.** *The block layer half landed 2026-09-06* (`SECURITY.md`
+  **S82**). The ATA driver probes the master and the slave, every persistent device is a block
+  device carrying its own drive index, `storage_init` mounts **the first device carrying a
+  volume** rather than simply the first device, and `SYS_STORAGE_DEVICE` surveys one enumerated
+  device with an out-of-range index refused rather than clamped. `make smoke-storage-survey`
+  boots two disks and requires the count.
+  **What is left is the authority half, and it is deliberately separate**: `SYS_STORAGE_FORMAT`
+  still formats the device the machine nominated, so an installer can SHOW two disks and cannot
+  yet erase the second one. Giving the format an explicit target changes what
+  `CAP_STORAGE_FORMAT` authorises -- from "the disk" to "a disk you name" -- and it interacts
+  with `smoke-captest-storage-format-control`, whose premise is that the ungated call SUCCEEDS on
+  a diskless boot. That is a change with its own arm rather than a rider on this one.
 - **Installing over an existing volume.** Refused outright today, with a message. It is a
   different act needing a different confirmation, and offering it in the same menu as "install
   onto blank media" is how the two get confused.
@@ -1717,7 +1725,7 @@ table already has the four columns a registry needs (id, statement, enforcing co
 the table *is* the registry. A hand-maintained parallel manifest would be a second copy of
 claims that already exist, which is **[H-3]**'s shape: two descriptions of one thing, drifting.
 The manifest that remains (`.github/invariants.yml`) holds exemptions only, and today it is
-**empty**, all 83 properties name a witness that resolves.
+**empty**, all 84 properties name a witness that resolves.
 
 **What the survey found on the way.** **S16** had no witness at all, an em-dash against
 `fpu_save`/`fpu_restore`, real code called on every ring transition and exercised by nothing.
@@ -1756,7 +1764,7 @@ past it.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue`, §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 254 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 128 of them control arms that must reproduce a defect |
+| ✅ | 256 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 130 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

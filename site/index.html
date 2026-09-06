@@ -958,8 +958,8 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             exists as far as the caller is concerned.
           </p>
           <p>
-            The ABI defines <strong>113 syscall numbers</strong>. The dispatch table is sized to
-            the highest of them plus one, and a default build installs <strong>93
+            The ABI defines <strong>114 syscall numbers</strong>. The dispatch table is sized to
+            the highest of them plus one, and a default build installs <strong>94
             handlers</strong>, the remainder are reserved, or are test-only calls compiled out
             entirely. Every one of those gaps answers <code>SYS_ERR_NOSYS</code>. That difference
             is the fail-closed property, not an oversight: a shipping kernel denies the debug
@@ -1249,6 +1249,17 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               act. A task that cannot destroy the volume is not told what is on it.
             </p>
             <p>
+              Since September 2026 that survey can count past one. The driver probes both devices
+              on the bus, each is a block device carrying its own identity rather than writing
+              through a global &ldquo;current disk&rdquo;, and the kernel mounts the first device
+              that actually <em>carries</em> a volume rather than simply the first device &mdash;
+              with one disk those are the same sentence, and with two they are not. Asking about a
+              device that is not there is refused rather than answered about a different one. That
+              last part is not politeness: a clamped index faults nothing and overruns nothing, it
+              hands back a complete and well-formed description of the wrong disk, to the one
+              program whose next act is erasing the disk it was just told about.
+            </p>
+            <p>
               The caller is an installer, and it is the only task that gets a copy. It cannot read
               the volume it replaces, and it cannot create a task, so nothing it does outlives it.
               Before it erases anything you type the word <code>FORMAT</code> &mdash; not a
@@ -1487,7 +1498,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 254 test targets, and the troubleshooting
+          Every configuration flag, every one of the 256 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -2317,12 +2328,12 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <h3><span class="id">coverage</span>Eleven system calls still have no test that runs them &mdash; and covering two of them found a fault</h3>
             <p>
               <strong>Measured 2026-08-20</strong>, and checked on every merge since.
-              <strong>83 of 93</strong> system calls have their handler actually executed by the
+              <strong>83 of 94</strong> system calls have their handler actually executed by the
               three workloads this project tracks, a scripted end-to-end session, the
-              permission conformance suite, and the boot-modules session. The other 10 are each
-              <strong>83 of 93</strong> system calls have their handler actually executed by the
+              permission conformance suite, and the boot-modules session. The other 11 are each
+              <strong>83 of 94</strong> system calls have their handler actually executed by the
               three workloads this project tracks, a scripted end-to-end session, the
-              permission conformance suite, and the boot-modules session. The other 10 are each
+              permission conformance suite, and the boot-modules session. The other 11 are each
               listed with a written reason.
             </p>
             <p>
@@ -2368,7 +2379,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
             <p>
               The build can record the first time each call's body is entered and say so on the
-              wire, and a checked-in file classifies all 93 implemented syscalls, covered or not
+              wire, and a checked-in file classifies all 94 implemented syscalls, covered or not
               covered with a reason. The check fails if a call is in neither list, if a covered
               one stops being exercised, if an uncovered one starts being exercised and its
               reason has gone stale, or if the recording produced nothing at all. That last case

@@ -405,10 +405,23 @@ void tui_box(int row, int col, int height, int width, uint16_t attr)
 
 /* ---- text layout -------------------------------------------------------- */
 
+/* THE BOUND COMES FIRST, for the reason tui_field states forty lines below and
+ * which this function got wrong anyway.
+ *
+ * It read `s && s[n] && n < CON_COLS * CON_ROWS`, which dereferences before it
+ * checks: a string with no terminator inside the bound had s[1920] read before
+ * the range test short-circuited. CodeQL caught it as
+ * cpp/offset-use-before-range-check on the pull request that introduced it --
+ * the SAME query, on the SAME mistake, one function away from the comment
+ * explaining why the order matters. That is worth recording rather than
+ * quietly reordering: a rule written down in the file is not a rule the next
+ * function inherits, and the gate that caught this is the one that caught the
+ * first one. Nothing in the self-test would have found either, because both
+ * over-reads only fed a loop condition and the rendered output is identical. */
 static int ulen(const char *s)
 {
     int n = 0;
-    while (s && s[n] && n < CON_COLS * CON_ROWS) n++;
+    while (s && n < CON_COLS * CON_ROWS && s[n]) n++;
     return n;
 }
 
@@ -439,7 +452,7 @@ int tui_wrap(int row, int col, int width, int max_rows, const char *s, uint16_t 
         /* How much of what remains fits, and where the last space inside that
          * span was. `brk` stays 0 for a single word longer than the column. */
         int take = 0, brk = 0;
-        while (s[i + take] && take < width) {
+        while (take < width && s[i + take]) {
             if (s[i + take] == ' ') brk = take;
             take++;
         }

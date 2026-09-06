@@ -122,6 +122,7 @@ DEFECT_FLAGS = \
 	VDISK_TOTAL_UNBOUNDED \
 	TUI_NO_DAMAGE_DIFF TUI_CLAMP_OFF \
 	TUI_INPUT_ECHO_SECRET TUI_INPUT_UNBOUNDED TUI_MENU_UNCLAMPED \
+	TUI_ACS_NO_RESTORE TUI_WRAP_NO_BREAK \
 	CSPACE_KEEP_ON_TEARDOWN \
 	CSPACE_RELEASE_BEFORE_PIPES SPAWN_SLOT3_DECOY_GATE UNTYPED_SPLIT_FREE_BYTES \
 	INIT_PROVISION_NO_UNTYPED AUDIT_ABI_LEGACY STORE_LOCKED_UNCHECKED \
@@ -600,6 +601,32 @@ endif
 # about to destroy one of, so the witness asserts on the returned index.
 TUI_MENU_UNCLAMPED ?= 0
 ifeq ($(TUI_MENU_UNCLAMPED),1)
+endif
+
+# TUI_ACS_NO_RESTORE=1 stops tui_flush EMITTING the shift back from the DEC
+# line-drawing charset while leaving the bookkeeping that says it did. The
+# terminal then renders every subsequent byte as a line-drawing glyph -- this
+# task's own markers, and the login prompt after tui_end. It corrupts nothing
+# this library owns, which is why no cell, no return value and no byte count
+# shows it: the count goes DOWN. The witness reads the emitted stream.
+#
+# The bookkeeping deliberately still runs. Dropping it too would make `ographics`
+# never see a transition, so no box would be drawn at all -- the arm would then
+# fail by producing no line drawing rather than by failing to restore, which is a
+# different defect wearing this one's name.
+TUI_ACS_NO_RESTORE ?= 0
+ifeq ($(TUI_ACS_NO_RESTORE),1)
+endif
+
+# TUI_WRAP_NO_BREAK=1 lets tui_wrap emit a word longer than its column whole,
+# instead of breaking it at the column. The space-breaking path is the one that
+# gets tested and the no-space case is the one that gets forgotten, which is what
+# makes this the ordinary wrap bug rather than an invented one. It stays bounded
+# by the SCREEN -- tui_putc still discards past the last column -- for the reason
+# TUI_INPUT_UNBOUNDED keeps its width bound: the mistake being reproduced is
+# trusting one bound, not writing off the end of memory.
+TUI_WRAP_NO_BREAK ?= 0
+ifeq ($(TUI_WRAP_NO_BREAK),1)
 endif
 
 # META_CRASH_SELFTEST=1 builds Arm A of docs/design/meta-cache-merkle.md: a
@@ -3098,6 +3125,12 @@ USERSPACE_CFLAGS += -DTUI_INPUT_UNBOUNDED
 endif
 ifeq ($(TUI_MENU_UNCLAMPED),1)
 USERSPACE_CFLAGS += -DTUI_MENU_UNCLAMPED
+endif
+ifeq ($(TUI_ACS_NO_RESTORE),1)
+USERSPACE_CFLAGS += -DTUI_ACS_NO_RESTORE
+endif
+ifeq ($(TUI_WRAP_NO_BREAK),1)
+USERSPACE_CFLAGS += -DTUI_WRAP_NO_BREAK
 endif
 
 ifeq ($(SYSCALL_PTR_TRUNC32),1)
@@ -8753,6 +8786,36 @@ smoke-tui-menu-control:
 	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_MENU_UNCLAMPED=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='TUITEST: FAIL a menu selected past its last item' \
+		tools/smoke_test.sh boot.iso
+
+# The charset restore. Line drawing works by telling the terminal to reinterpret
+# ordinary letters, and the shift BACK is the half that matters: a flush that
+# ended in the graphics charset corrupts everything that is not this library --
+# this task's own markers, the login prompt after tui_end -- while every cell it
+# owns stays correct. No cell, no return value and no byte count shows it; the
+# count goes DOWN, so a count-based check would read the defect as an
+# improvement. The witness reads the bytes the terminal was actually sent.
+.PHONY: smoke-tui-acs-control
+smoke-tui-acs-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_ACS_NO_RESTORE=1
+	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_ACS_NO_RESTORE=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='TUITEST: FAIL a flush left the terminal in the line-drawing charset' \
+		tools/smoke_test.sh boot.iso
+
+# The wrap bound. A word longer than its column is broken at the column rather
+# than run past it; the space-breaking path is the one that gets tested and this
+# is the case that gets forgotten. The column has a box edge to its right on
+# every installer screen, so an overrun corrupts the frame a reader uses to tell
+# one field from another.
+.PHONY: smoke-tui-wrap-control
+smoke-tui-wrap-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_WRAP_NO_BREAK=1
+	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_WRAP_NO_BREAK=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='TUITEST: FAIL a wrapped word ran out of its column' \
 		tools/smoke_test.sh boot.iso
 
 # S64. A block device may not accept a block it has no memory for. Both

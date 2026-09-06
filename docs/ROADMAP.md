@@ -1341,6 +1341,22 @@ and the field, masked on request) and `tui_menu` (selection clamped to the calle
 own arm: a masked field and an echoing one return the same bytes, an unclamped menu draws the
 same screen, and an over-long input is visible only in memory the caller declared.
 
+**Delivered: rendering and layout (2026-09-06), and the interactions deliberately UNCHANGED.**
+The library draws in colour and boxes it with the terminal's own line glyphs, and gained
+`tui_center` and `tui_wrap`. It did **not** gain a form layer, and the refusal is the part worth
+recording: tabbing between fields and re-editing an answer is genuinely friendlier than three
+questions in a row, and it is also a third blocking loop over the keyboard holding the caller's
+fields and deciding which one the next keystroke edits -- in the library that stands between a
+keystroke and a decision to erase a disk. `include/tui.h` has said since it was written that a
+program which has to be READ before it is trusted does not get a widget set, and that rule
+decided this. The installer gets the same behaviour by composing the two interactions in its own
+file. The layout calls earn their place by **subtraction**: every line of prose in
+`installer.c` was placed at a hand-counted column, which is silently wrong the moment somebody
+edits the sentence above it. Two new arms, `TUI_ACS_NO_RESTORE=1` and `TUI_WRAP_NO_BREAK=1`,
+both witnessed against the **emitted stream** because neither property is visible in a cell, a
+return value, or a byte count -- the charset restore makes the count go DOWN when it is
+dropped.
+
 **Delivered: the installer** (`userspace/installer.c`, `SECURITY.md` **S73**). `init` surveys the
 machine at boot and launches it when there is a disk carrying no volume; it holds
 `CAP_STORAGE_FORMAT`, `CAP_USER` and a console client endpoint, and nothing else. It shows what
@@ -1712,7 +1728,7 @@ past it.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue`, §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 251 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 125 of them control arms that must reproduce a defect |
+| ✅ | 253 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 127 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

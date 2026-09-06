@@ -1787,6 +1787,15 @@ jobs:
         run: make smoke-tui-bound-control
       - name: Control arm — a menu selecting past the end of its list
         run: make smoke-tui-menu-control
+      # The two rendering arms. Both are properties of what the TERMINAL was
+      # told rather than of what the library holds, which is why the self-test
+      # grew a hook that reads the emitted stream: the charset restore is
+      # invisible in a cell, in a return value, and in the byte count -- the
+      # count goes DOWN when it is dropped.
+      - name: Control arm — a flush that leaves the terminal drawing lines
+        run: make smoke-tui-acs-control
+      - name: Control arm — a wrapped word running out of its column
+        run: make smoke-tui-wrap-control
       # The termination half: strncpy's semantics leave the buffer unterminated
       # exactly when the source did not fit.
       - name: Control arm — ustrncpy must always terminate

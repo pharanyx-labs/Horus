@@ -327,6 +327,33 @@ void _start(void) {
     if (rpc(&rq, &rp) != 0) fail("readdir");
     if (!ustreq(rp.name, "hello.txt")) fail("readdir-name");
 
+    /* ---- the end of a directory is not the absence of one -------------------
+     *
+     * Both answered SYS_ERR_NOENT until 2026-09-06, and every caller in the tree
+     * resolved that the same way -- as end-of-directory, the fail-OPEN direction
+     * for a listing. What a user saw was `ls` printing nothing and no error for a
+     * directory it could not read; on a SEALED volume (every ATA machine until a
+     * login unlocks it) h_fs_stat answers SYS_ERR_INVAL, fs_server flattened it
+     * to NOENT, and the shell stopped there. A locked store reported itself as an
+     * empty filesystem.
+     *
+     * THE CLAIM IS THAT THE TWO CODES DIFFER, so it is asserted by comparing the
+     * two OBSERVED values against each other rather than each against a constant.
+     * An arm that tested `badrc == FS_RC_ENDDIR` would pass under the defect --
+     * there both are NOENT, and neither equals FS_RC_ENDDIR -- which is a check
+     * that cannot fail for the reason it was written. The equality goes first
+     * because this probe stops at its first failure, and this is the marker that
+     * names the defect. */
+    umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_READDIR; rq.dir_ino = dino; rq.offset = 1;
+    int endrc = rpc(&rq, &rp);                 /* past the single entry */
+
+    umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_READDIR; rq.dir_ino = 0xFFFFu; rq.offset = 0;
+    int badrc = rpc(&rq, &rp);                 /* a directory that is not there */
+
+    if (endrc == badrc) fail2("readdir-end-and-missing-dir-are-the-same", endrc);
+    if (endrc != FS_RC_ENDDIR)  fail2("readdir-end-wrong-code", endrc);
+    if (badrc != SYS_ERR_NOENT) fail2("readdir-missing-dir-wrong-code", badrc);
+
     /* lookup returns the same inode */
     umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_LOOKUP; rq.dir_ino = dino; ustrncpy(rq.name, "hello.txt", FS_NAME_MAX);
     if (rpc(&rq, &rp) != 0) fail("lookup");

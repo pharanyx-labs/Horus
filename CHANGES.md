@@ -15,6 +15,35 @@ in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A locked store reported itself as an empty filesystem, and `ls` said nothing at all.**
+  `FS_OP_READDIR` answered `SYS_ERR_NOENT` for two different facts -- "the offset is past the
+  last entry" and "I could not stat that directory" -- and `fs_server` additionally flattened
+  `h_fs_stat`'s reason to `NOENT` before replying. Every caller in the tree then resolved the
+  ambiguity the same way, as end-of-directory, which is the fail-**open** direction for a
+  listing.
+  The path a user actually walks: on a **sealed volume** -- every ATA machine from power-on
+  until a login unlocks it -- `h_fs_stat` answers `SYS_ERR_INVAL`, `fs_server` turned that into
+  `NOENT`, and the shell's `ls` read `NOENT` as the end of the directory and printed nothing,
+  with no error anywhere. Three steps, none of which looks wrong on its own.
+  `ls` reasoned explicitly from "`sh_cwd_ino` is a directory `cd` already verified exists",
+  which is untrue of its initial value `0`, which no `cd` ever verified. `posix_readdir` was
+  worse: it returned "no more entries" for a refusal, a missing directory **and** a transport
+  failure, so newlib's `opendir`/`readdir` reported an empty directory when it had not reached
+  the server at all. `fss_ls` printed one sentence naming two possibilities as a guess.
+  Now `FS_RC_ENDDIR` (`SYS_ERR_RANGE` -- the *offset* is out of range, which is what has
+  actually happened) ends a walk; every other negative is a reason, reported as itself.
+  `fs_server` passes `h_fs_stat`'s code through, `dev_server` speaks the same contract, `ls`
+  names a locked volume and a vanished directory separately, `posix_readdir` returns the reason
+  and `readdir()` maps it to `errno`.
+  Witness `make smoke-readdir-end`, falsified by `READDIR_END_IS_NOENT=1`
+  (`make smoke-readdir-end-control`), which requires
+  `FS_SELFTEST: FAIL readdir-end-and-missing-dir-are-the-same` and turns `smoke-fs` red.
+  **The marker is the equality of the two codes**, compared against each other rather than
+  against a constant: under the defect neither equals `FS_RC_ENDDIR`, so an arm testing either
+  against a constant would pass and witness nothing.
+
 ### Added
 
 - **The two syscalls nothing had ever called now answer in the shared error vocabulary**

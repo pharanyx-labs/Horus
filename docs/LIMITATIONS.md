@@ -1950,6 +1950,42 @@ on purpose. It is deliberately *not* moved to `SHARED` -- a struct written down 
 drift, so enrolling it would be a check that cannot fail. `audit_record` is absent for the same
 reason.
 
+### 2.19 ~~The end of a directory and the absence of one were the same answer~~: CLOSED 2026-09-06
+
+`FS_OP_READDIR` replied `SYS_ERR_NOENT` for two different facts: "the offset is past the last
+entry" and "I could not stat that directory". `fs_server` flattened `h_fs_stat`'s return on top
+of that, so a third fact -- "the store is not open" -- arrived as `NOENT` too. Every caller in
+the tree resolved the ambiguity the same way, as end-of-directory, which is the fail-**open**
+direction for a listing: a failure was reported as a fact about the filesystem.
+
+**What a user sees is `ls` printing nothing and no error.** The full path: on a sealed volume --
+every ATA machine from power-on until a login unlocks it -- `h_fs_stat` answers `SYS_ERR_INVAL`
+(`store_open()` refuses, `SECURITY.md` **S74**), `fs_server` turned that into `NOENT`, and the
+shell's `ls` treated `NOENT` as the end of the directory and stopped. A locked store reported
+itself as an empty filesystem. None of the three steps looks wrong in isolation, which is why
+this survived: each one is a small, locally reasonable simplification.
+
+The shell reasoned about it **explicitly and wrongly**. Its comment read "`sh_cwd_ino` is a
+directory `cd` already verified exists, so for this caller it can only be end-of-directory" --
+untrue of `sh_cwd_ino`'s initial value, `0`, which no `cd` ever verified, and untrue again if
+the directory is removed underneath. An assumption written down is not an assumption checked.
+
+Three callers, and the worst was not the shell. `posix_readdir` returned "no more entries" for a
+permission refusal, a missing directory **and** a transport failure, defending it in a comment as
+matching POSIX because `readdir(3)` reports the end as a NULL return -- which is half the rule,
+since POSIX separates the two through `errno` and this discarded the reason before anyone could.
+So every newlib program was told an unreadable directory was empty. `fss_ls` printed one
+sentence, "(empty or server not connected)", naming two possibilities as a guess.
+
+Closed by giving the end its own code (`FS_RC_ENDDIR` = `SYS_ERR_RANGE`, since the *offset* is
+what is out of range) and passing every other reason through: `fs_server` no longer flattens,
+`dev_server` speaks the same contract, `ls` names a locked volume and a vanished directory
+separately, `posix_readdir` returns the reason and `readdir()` maps it to `errno`. Witness
+`make smoke-readdir-end`; falsified by `READDIR_END_IS_NOENT=1`. **The gate asserts that the two
+codes DIFFER, comparing the observed values against each other** rather than against a constant:
+under the defect both are `NOENT` and neither equals `FS_RC_ENDDIR`, so an arm written the
+obvious way would have passed and witnessed nothing.
+
 ## 3. Scale and performance limitations
 
 ### 3.1 Hard compile-time ceilings: **[I-7]**

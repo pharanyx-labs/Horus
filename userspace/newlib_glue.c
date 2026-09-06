@@ -204,8 +204,23 @@ struct dirent *readdir(DIR *dirp) {
 
     char     name[32];
     uint32_t eino, etype;
-    if (posix_readdir(d->ino, d->index, name, &eino, &etype) != 1)
-        return (struct dirent *)0;   /* end of directory (errno unchanged) */
+    int rc = posix_readdir(d->ino, d->index, name, &eino, &etype);
+    if (rc == 0)
+        return (struct dirent *)0;   /* end of directory: NULL, errno unchanged */
+    if (rc < 0) {
+        /* A FAILURE, WHICH IS NOT THE END OF THE DIRECTORY. Both looked like the
+         * end until 2026-09-06 -- posix_readdir returned 0 for a refusal, a
+         * missing directory and a dead transport alike -- so a program that
+         * could not read a directory was told it was empty. POSIX returns NULL
+         * either way and separates them with errno, so this is where that
+         * separation has to be made. */
+        switch (rc) {
+            case SYS_ERR_PERM:  errno = EACCES; break;   /* no read on the dir */
+            case SYS_ERR_NOENT: errno = ENOENT; break;   /* the dir is not there */
+            default:            errno = EIO;    break;   /* transport / other */
+        }
+        return (struct dirent *)0;
+    }
 
     d->index++;
     d->ent.d_ino  = eino;

@@ -1326,7 +1326,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 113
+#define SYSCALL_TABLE_SIZE 114
 
 /* ------------------------------------------------------------------------- *
  *  Capability-checked dispatch table.
@@ -1543,6 +1543,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
      * The rights differ between the two rows, and that is the point of splitting
      * them: READ says what is on the disk, WRITE destroys it. */
     [SYS_STORAGE_INFO]             = { h_storage_info,            CAPSLOT_STORAGE_FORMAT, CAP_RIGHT_READ,  CAP_STORAGE_FORMAT },
+    [SYS_STORAGE_DEVICE]           = { h_storage_device,          CAPSLOT_STORAGE_FORMAT, CAP_RIGHT_READ,  CAP_STORAGE_FORMAT },
 #ifdef STORAGE_FORMAT_UNGATED
     /* CONTROL ARM -- never ship. The gate removed entirely: no slot, no rights,
      * no type, so any ring-3 task may authorise a format of the attached disk.
@@ -1699,7 +1700,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
 /* Carries S6: an unknown or reserved syscall number cannot reach a handler.
  * The bound check in syscall_handler fails closed at runtime; this assertion is
  * what stops a new number being added without its table entry. */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_USERLIST + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_STORAGE_DEVICE + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

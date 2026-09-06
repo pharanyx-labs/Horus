@@ -70,6 +70,8 @@ control_arms:
   smoke-rollback-control: smoke-rollback
   smoke-vdisk-bound-control: smoke-vdisk-bound
   smoke-storage-noformat-control: smoke-storage-noformat
+  smoke-storage-survey-single-control: smoke-storage-survey
+  smoke-storage-device-clamp-control: smoke-storage-survey
   smoke-tui-diff-control: smoke-tui
   smoke-tui-clamp-control: smoke-tui
   smoke-tui-mask-control: smoke-tui

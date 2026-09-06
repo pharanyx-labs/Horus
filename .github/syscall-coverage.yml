@@ -351,6 +351,8 @@ uncovered:
   # the workload. Its sibling SYS_STORAGE_INFO took the same capability to the
   # `covered` list on the same day, which is the cleanest illustration this file
   # has that the gate and the consequence are different questions.
+  SYS_STORAGE_DEVICE: >-
+    dispatch row (CAPSLOT_STORAGE_FORMAT, READ, CAP_STORAGE_FORMAT), and init DOES hold that capability and DOES call this at boot -- but only when the machine has a persistent device. All three tracked workloads boot diskless on the ephemeral vdisk, where `present` is 0 and report_storage returns before it reaches the enumeration, so the handler is never entered. That is the syscall behaving correctly rather than a test that stopped: enumerating persistent devices on a machine with none is a call with no answer to give. Its sibling SYS_STORAGE_INFO IS covered because init calls that one unconditionally. The boot that enters this body is `make smoke-storage-survey`, which attaches one disk and then two, and the two-disk arm is the whole reason the syscall exists -- a separate boot with attached images rather than a promotion this file can make
   SYS_STORAGE_FORMAT: >-
     dispatch row (CAPSLOT_STORAGE_FORMAT, WRITE, CAP_STORAGE_FORMAT). captest holds no CAP_STORAGE_FORMAT and its checks assert a refusal the TABLE issues, so the handler never runs. Its sibling SYS_STORAGE_INFO IS covered, by init calling it at boot from the same capability -- the difference is that entering this body FORMATS THE ATTACHED DISK, so no tracked workload can enter it without destroying the volume the run is using. The installer build is what enters it (roadmap 2.9), and that is a separate boot with a blank image rather than a promotion this file can make
   SYS_ROTATE_KEYS: >-

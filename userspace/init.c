@@ -149,6 +149,11 @@ static void settle(void) { for (volatile int d = 0; d < 40000; d++) { } }
  * machine_needs_install decides on it, and two calls could in principle disagree
  * -- which is a needless way for "what init said" and "what init did" to come
  * apart in a transcript somebody is reading to find out why. */
+/* A bound of init's own on how many devices it will describe. It is not
+ * ATA_MAX_DRIVES: that is a kernel constant and this is ring 3, which must not
+ * trust a count the kernel handed it as a loop bound either. */
+#define ATA_SURVEY_MAX 8
+
 static struct storage_info g_si;
 static int g_si_valid;
 
@@ -187,6 +192,58 @@ static void report_storage(void) {
     if (si.recognised) exr_append_str(line, &p, "a Horus volume is present\n");
     else               exr_append_str(line, &p, "no Horus volume -- an install is needed\n");
     report(line);
+
+    /* THE ENUMERATION, on lines of its own.
+     *
+     * A survey that could only ever say "the disk" is what made an installer
+     * unable to ask which one. It is reported separately rather than folded into
+     * the line above, so the marker every existing gate greps for is unchanged --
+     * a gate reading "disk present" is asking a question this does not answer,
+     * and rewording its line to carry a second answer is how a passing gate comes
+     * to mean something else without anybody editing it.
+     *
+     * Each device is asked for individually rather than described from the
+     * machine-wide survey, because that is the call an installer will make and an
+     * enumeration nothing exercises is an enumeration nobody has checked. */
+    {
+        char dl[192];
+        int dp = 0;
+        exr_append_str(dl, &dp, "INIT_STORAGE: ");
+        exr_append_num(dl, &dp, si.device_count, 10);
+        exr_append_str(dl, &dp, " persistent device(s)\n");
+        report(dl);
+    }
+    for (unsigned d = 0; d < si.device_count && d < ATA_SURVEY_MAX; d++) {
+        struct storage_info di;
+        for (unsigned z = 0; z < sizeof(di); z++) ((char *)&di)[z] = 0;
+        if (sys_storage_device(d, &di) != 0) continue;
+
+        char dl[192];
+        int dp = 0;
+        exr_append_str(dl, &dp, "INIT_STORAGE: device ");
+        exr_append_num(dl, &dp, d, 10);
+        exr_append_str(dl, &dp, ": ");
+        exr_append_num(dl, &dp, di.total_blocks, 10);
+        exr_append_str(dl, &dp, " blocks, ");
+        exr_append_str(dl, &dp, di.recognised ? "a Horus volume\n" : "blank\n");
+        report(dl);
+    }
+
+    /* AND ONE PAST THE END, which must be REFUSED rather than answered.
+     *
+     * A survey that clamped would hand back a complete, well-formed description
+     * of a different disk -- no fault, no overrun, and the caller is a program
+     * deciding which disk to erase. So the refusal is the property, and a
+     * property with no witness is an assertion: this asks for it on every boot
+     * that has any devices at all, and the two-disk gate requires the answer. */
+    if (si.device_count > 0) {
+        struct storage_info past;
+        for (unsigned z = 0; z < sizeof(past); z++) ((char *)&past)[z] = 0;
+        if (sys_storage_device(si.device_count, &past) == 0)
+            report("INIT_STORAGE: FAIL an index past the last device was answered\n");
+        else
+            report("INIT_STORAGE: an index past the last device was refused\n");
+    }
 }
 
 /* Slots init holds its delegable caps in, matching the kernel endowment in

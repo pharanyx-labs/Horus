@@ -776,6 +776,7 @@ from the primordial root cnode and grants it to the installer alone.
 |---|---|---|---|
 | 110 | `SYS_STORAGE_INFO` | `struct storage_info *` | `CAP_STORAGE_FORMAT` at `CAPSLOT_STORAGE_FORMAT`: READ |
 | 111 | `SYS_STORAGE_FORMAT` | `password`, `plen` | `CAP_STORAGE_FORMAT` at `CAPSLOT_STORAGE_FORMAT`: WRITE |
+| 113 | `SYS_STORAGE_DEVICE` | `index`, `struct storage_info *` | `CAP_STORAGE_FORMAT` at `CAPSLOT_STORAGE_FORMAT`: READ |
 
 The rights differ on purpose. READ is the survey an installer shows before it asks; WRITE is
 the destruction. A build that wanted a read-only survey tool can be handed a `READ`-only mint,
@@ -794,6 +795,19 @@ deliberately reports nothing about the volume's contents: it exists so an instal
 operator what is about to be destroyed, and every field is a disclosure made under this
 capability. The ephemeral RAM vdisk answers `present = 0` -- it is a block device by every
 internal measure, and reporting it would have an installer offering to format memory.
+
+`SYS_STORAGE_DEVICE` (113) is the same survey for ONE enumerated persistent device rather
+than for the machine, and it answers to the same capability and the same READ right for the
+reason `SYS_STORAGE_INFO` does: the survey is the destruction's first screen, so a task that
+cannot destroy a volume is not told what is on it. `storage_info.device_count` says how many
+there are and `device_index` says which one the machine-wide survey described; the index runs
+`0 .. device_count-1` over **usable** devices, which is a position in the enumeration an
+operator was shown rather than a drive number.
+
+**An index past the last device is refused, not clamped** (`SYS_ERR_INVAL`). Clamping would
+fault nothing and overrun nothing -- it would return a complete, well-formed description of a
+different disk, to the one program whose next act is erasing the disk it was just told about.
+See `SECURITY.md` **S82**.
 
 `SYS_STORAGE_FORMAT` is the **one** caller of `storage_authorize_format()`, the function
 **S63** introduced with the comment "which an installer calls and a login never does" and which

@@ -824,6 +824,11 @@ struct storage_info {
      * have made every one of those twelve targets launch an installer that then
      * waits forever for a keystroke nobody is there to type. */
     uint32_t format_on_login;
+    /* How many persistent devices this machine has, and which one the fields
+     * above describe. 0 on a diskless boot. These two are the enumeration
+     * SYS_STORAGE_DEVICE indexes into. */
+    uint32_t device_count;
+    uint32_t device_index;
 };
 
 /* Carve up the arena and publish the two boot regions. Called from kernel_main
@@ -1062,6 +1067,7 @@ void users_init(void);
 #define SYS_STORAGE_INFO      110   /* (struct storage_info*) -> 0; what volume this machine has: whether a block device is attached, its size, whether a Horus volume was recognised on it, and whether it is unlocked. CAP_STORAGE_FORMAT + READ at CAPSLOT_STORAGE_FORMAT. It is the "what will be destroyed" readout, so it answers to the capability that can destroy it rather than to the object-store capability every filesystem client holds. */
 #define SYS_STORAGE_FORMAT    111   /* (const char *password, plen) -> 0; DESTROY the volume on the attached device and lay a new encrypted one down, sealed to `password`. CAP_STORAGE_FORMAT + WRITE at CAPSLOT_STORAGE_FORMAT. This is the ONE caller of storage_authorize_format(), the function S63 introduced and left with none: "a deliberate act -- which an installer calls and a login never does". A login (SYS_AUTH -> storage_unlock) still reaches an unformatted volume and still refuses it. */
 #define SYS_USERLIST          112   /* (index, struct user_entry*) -> 1 filled, 0 past the last account, SYS_ERR_PERM without CAP_USER at CAPSLOT_USER. Account METADATA only: name, uid, gid, home. No hash, no salt, no key slot, no lockout state. The index is dense over VALID accounts, so a deleted slot in the middle of the table does not read as the end of it and MAX_USERS never crosses the boundary. */
+#define SYS_STORAGE_DEVICE   113   /* (index, struct storage_info*) -> 0; the survey for ONE enumerated persistent device (CAP_STORAGE_FORMAT + READ at CAPSLOT_STORAGE_FORMAT). An index past the end is REFUSED rather than clamped: a survey that answered about a different disk would be read as a description of the disk about to be erased. */
 #define SYS_POLL_NOTIFY       106   /* (notif_slot, uint32_t*) -> 0 with a badge, or IPC_AGAIN; sys_wait_notify's non-blocking twin. Same gate (CAP_NOTIFICATION + READ): being non-blocking changes when the answer comes, never who may ask. Lets a caller witness the ABSENCE of a notification, which a blocking wait cannot. */
 #define SYS_IRQ_ACK           105   /* (dev_slot, irq) -> 0; the driver has serviced its device, so unmask the line. A registered line is masked by the kernel when it fires and stays masked until this call, which is what stops an unserviced level-triggered device livelocking the machine (CAP_IO_DEVICE + WRITE naming a device that declares the line, AND the registration must be the caller's) */
 #define SYS_DMA_ADDR          104   /* (dev_slot, frame_slot, uint64_t*) -> 0; the bus address at which that device reaches that frame. Needs BOTH capabilities: the answer is a physical address, and a bus-mastering device already reaches all of memory, so the disclosure adds nothing to a caller who holds one */
@@ -2447,14 +2453,19 @@ int  irq_notify_ack(int irq, int task);
 void cpu_detect_features(void);
 void init_syscall_instruction_path(void);
 void ramfs_init(void);
-int ata_init(void);   /* probe primary master; 1 = ATA disk present, 0 = absent */
-int  ata_read(uint32_t lba, void *buf, uint32_t sectors);
-int  ata_write(uint32_t lba, const void *buf, uint32_t sectors);
-int  ata_flush(void);  /* FLUSH CACHE; 0 = on stable media, -1 = NOT durable */
+/* How many devices the ATA driver can address: the master and slave of the
+ * primary bus. The secondary bus is deliberately not probed -- see ata.c. */
+#define ATA_MAX_DRIVES 2
+
+int ata_init(void);            /* probe every drive; returns how many are present */
+int ata_present(int drive);    /* 1 = usable ATA disk at this index, 0 = not */
+int  ata_read(int drive, uint32_t lba, void *buf, uint32_t sectors);
+int  ata_write(int drive, uint32_t lba, const void *buf, uint32_t sectors);
+int  ata_flush(int drive);  /* FLUSH CACHE; 0 = on stable media, -1 = NOT durable */
 /* User-addressable 512-byte sectors from IDENTIFY words 60-61 (LBA28, saturating
  * at 0x0FFFFFFF). 0 means the probe never ran or the drive reported nothing, and
  * is a refusal rather than a size. */
-uint32_t ata_total_sectors(void);
+uint32_t ata_total_sectors(int drive);
 /* Sector transfers the driver refused because the drive was not ready. A read
  * that did not happen must never be reported as one that did (S69). */
 uint64_t ata_transfer_refusals(void);
@@ -2739,6 +2750,7 @@ void storage_authorize_format(void);
  * "there is nothing here to install onto" is an answer an installer must be able
  * to render. */
 void storage_query(struct storage_info *out);
+int  storage_device_query(int index, struct storage_info *out);
 #ifdef STORAGE_NOFORMAT_SELFTEST
 void storage_noformat_selftest(void);
 #endif

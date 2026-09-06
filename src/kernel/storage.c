@@ -1577,19 +1577,26 @@ _Static_assert((uint64_t)BLOCKS_PER_DISK * ATA_SECTORS_PER_BLOCK <= 0xFFFFFFFFUL
  * verifies the region's HMAC against the disk, so files survive a reboot — proven by
  * `make smoke-fs-persist`. Compiled unconditionally; storage_init() selects it
  * at runtime when a disk is actually present. */
+/* WHICH DRIVE THIS DEVICE IS, carried in the block device rather than assumed.
+ *
+ * These three took the master for granted while there was only ever one ATA
+ * device to take for granted. The index lives in `private` -- the field the
+ * block_device struct has always had for exactly this -- so a caller holding a
+ * device formats, reads and flushes THAT device and there is no global saying
+ * which one is current for the purposes of a write. */
+static inline int atadisk_drive(struct block_device *bd) {
+    return (int)(uintptr_t)bd->private;
+}
 static int atadisk_read(struct block_device *bd, uint64_t block, void *buf) {
-    (void)bd;
-    return ata_read((uint32_t)(block * ATA_SECTORS_PER_BLOCK), buf,
+    return ata_read(atadisk_drive(bd), (uint32_t)(block * ATA_SECTORS_PER_BLOCK), buf,
                     ATA_SECTORS_PER_BLOCK);
 }
 static int atadisk_write(struct block_device *bd, uint64_t block, const void *buf) {
-    (void)bd;
-    return ata_write((uint32_t)(block * ATA_SECTORS_PER_BLOCK), buf,
+    return ata_write(atadisk_drive(bd), (uint32_t)(block * ATA_SECTORS_PER_BLOCK), buf,
                      ATA_SECTORS_PER_BLOCK);
 }
 static int atadisk_flush(struct block_device *bd) {
-    (void)bd;
-    return ata_flush();
+    return ata_flush(atadisk_drive(bd));
 }
 /* SIZED FROM THE DISK AT PROBE TIME, not from a compile-time constant
  * (SECURITY.md S68).
@@ -1604,14 +1611,61 @@ static int atadisk_flush(struct block_device *bd) {
  *
  * It also decouples the gates from the ceiling: raising BLOCKS_PER_DISK no
  * longer makes every persistence test allocate a volume that size. */
-static struct block_device g_ata_bd = {
-    .name = "ata0",
-    .total_blocks = 0,          /* set by storage_init from IDENTIFY */
-    .read_block = atadisk_read,
-    .write_block = atadisk_write,
-    .flush = atadisk_flush,
-    .private = 0,
+static struct block_device g_ata_bd[ATA_MAX_DRIVES] = {
+    { .name = "ata0", .total_blocks = 0, .read_block = atadisk_read,
+      .write_block = atadisk_write, .flush = atadisk_flush, .private = (void *)(uintptr_t)0 },
+    { .name = "ata1", .total_blocks = 0, .read_block = atadisk_read,
+      .write_block = atadisk_write, .flush = atadisk_flush, .private = (void *)(uintptr_t)1 },
 };
+
+/* Which of the above are usable: probed present, and large enough to hold a
+ * volume. A device that is present but too small is deliberately NOT usable --
+ * see storage_init, where laying a filesystem out against an unknown or absurd
+ * size is the mistake S68 exists about. */
+static int g_ata_usable[ATA_MAX_DRIVES];
+static int g_ata_usable_count;
+
+/* Is this block device one of the persistent ATA disks?
+ *
+ * It used to be a pointer comparison against the single device, which is the
+ * kind of test that silently means something narrower once there are two. The
+ * ephemeral vdisk must answer 0 here: `present` in the survey is about
+ * PERSISTENCE, and reporting a RAM disk as something an operator could install
+ * onto would be a lie an installer would then draw on a screen. */
+static int storage_bd_is_ata(const struct block_device *bd)
+{
+    for (int d = 0; d < ATA_MAX_DRIVES; d++)
+        if (bd == &g_ata_bd[d]) return 1;
+    return 0;
+}
+
+/* The n-th USABLE persistent device, or NULL. The index an installer holds is a
+ * position in the survey's enumeration, not a drive number: a machine whose
+ * slave is present and whose master is too small must not have its one usable
+ * disk answer to index 1, because the enumeration is what the operator was shown
+ * and what they chose from. */
+static struct block_device *storage_device_at(int index)
+{
+    if (index < 0) return NULL;
+    int seen = 0;
+    for (int d = 0; d < ATA_MAX_DRIVES; d++) {
+        if (!g_ata_usable[d]) continue;
+        if (seen == index) return &g_ata_bd[d];
+        seen++;
+    }
+#ifdef STORAGE_DEVICE_INDEX_CLAMP
+    /* CONTROL ARM -- never ship. An index past the end is answered with the LAST
+     * device instead of refused, which is the shape a bounds check takes when
+     * somebody makes it "forgiving". Nothing faults and nothing overruns: the
+     * caller gets a complete, well-formed survey OF THE WRONG DISK, and the one
+     * caller of this is a program deciding which disk to erase. That is why the
+     * refusal is the property and not the absence of a crash. See
+     * make smoke-storage-device-clamp-control. */
+    for (int d = ATA_MAX_DRIVES - 1; d >= 0; d--)
+        if (g_ata_usable[d]) return &g_ata_bd[d];
+#endif
+    return NULL;
+}
 
 
 #ifdef VDISK_BOUND_SELFTEST
@@ -1711,35 +1765,70 @@ int storage_init(void) {
      * system still comes up without a login. ata_init()'s probe is bounded, so a
      * floating/absent bus can never hang the boot. */
     if (ata_init()) {
-        /* Fail closed on a disk that reports nothing: laying a filesystem out
-         * against an unknown size is how the old compile-time constant went
-         * wrong, and guessing again here would repeat it with extra steps. */
-        uint32_t sectors = ata_total_sectors();
-        uint64_t blocks  = (uint64_t)sectors / ATA_SECTORS_PER_BLOCK;
-        if (blocks > (uint64_t)BLOCKS_PER_DISK) blocks = (uint64_t)BLOCKS_PER_DISK;
-        if (blocks < STORAGE_MIN_BLOCKS) {
-            kmsg("ata: disk reports too few sectors for a volume; ignoring it");
-            goto no_disk;
+        /* Size every drive the probe found. A drive that reports nothing, or too
+         * little to hold a volume, is dropped from the usable set rather than
+         * guessed at: laying a filesystem out against an unknown size is how the
+         * old compile-time constant went wrong (S68), and guessing again here
+         * would repeat it with extra steps. */
+        g_ata_usable_count = 0;
+        for (int d = 0; d < ATA_MAX_DRIVES; d++) {
+            g_ata_usable[d] = 0;
+            if (!ata_present(d)) continue;
+
+            uint32_t sectors = ata_total_sectors(d);
+            uint64_t blocks  = (uint64_t)sectors / ATA_SECTORS_PER_BLOCK;
+            if (blocks > (uint64_t)BLOCKS_PER_DISK) blocks = (uint64_t)BLOCKS_PER_DISK;
+            if (blocks < STORAGE_MIN_BLOCKS) {
+                kmsg("ata: a disk reports too few sectors for a volume; ignoring it");
+                continue;
+            }
+            g_ata_bd[d].total_blocks = blocks;
+            g_ata_usable[d] = 1;
+            g_ata_usable_count++;
+            {
+                /* Say what size was chosen and why, per device. A volume laid out
+                 * against the wrong number is invisible until something reads past
+                 * the end, so the number belongs on the wire at boot rather than in
+                 * a debugger -- and with more than one disk it has to say WHICH. */
+                uint64_t mib = (blocks * (uint64_t)BLOCK_SIZE) / (1024u * 1024u);
+                kmsg_begin();
+                print("ata: ");
+                print(g_ata_bd[d].name);
+                print(" sized from the disk: ");
+                print_decimal(blocks);
+                print(" blocks (");
+                print_decimal(mib);
+                print(" MiB)\n");
+            }
         }
-        g_ata_bd.total_blocks = blocks;
-        {
-            /* Say what size was chosen and why. A volume laid out against the
-             * wrong number is invisible until something reads past the end, so
-             * the number belongs on the wire at boot rather than in a debugger. */
-            uint64_t mib = (blocks * (uint64_t)BLOCK_SIZE) / (1024u * 1024u);
-            kmsg_begin();
-            print("ata: volume sized from the disk: ");
-            print_decimal(blocks);
-            print(" blocks (");
-            print_decimal(mib);
-            print(" MiB)\n");
+        if (g_ata_usable_count == 0) goto no_disk;
+
+        /* MOUNT THE FIRST DEVICE THAT CARRIES A VOLUME, not simply the first
+         * device (SECURITY.md S82). With one disk these are the same sentence, which is why it was
+         * written the second way; with two they are not, and the second way makes
+         * an installed second disk invisible to the machine it was installed on.
+         *
+         * Trying them in order is safe because storage_mount touches no state on
+         * its failure paths -- every refusal returns before it assigns
+         * g_mounted_fs -- so a device that does not carry a volume leaves nothing
+         * behind for the next one to trip over. */
+        for (int d = 0; d < ATA_MAX_DRIVES; d++) {
+            if (!g_ata_usable[d]) continue;
+            if (storage_mount(&g_ata_bd[d]) == 0) {
+                current_bd = &g_ata_bd[d];
+                return 0;            /* unlock deferred to login */
+            }
         }
-        current_bd = &g_ata_bd;
-        if (storage_mount(&g_ata_bd) != 0) {
+
+        /* None of them carries one. The first usable device is what an install
+         * would go onto, and is what the survey reports as needing a format. */
+        for (int d = 0; d < ATA_MAX_DRIVES; d++) {
+            if (!g_ata_usable[d]) continue;
+            current_bd        = &g_ata_bd[d];
             g_needs_format    = 1;   /* no valid v4 volume yet: seal it at first login */
-            g_needs_format_bd = &g_ata_bd;
+            g_needs_format_bd = &g_ata_bd[d];
+            return 0;
         }
-        return 0;                    /* unlock deferred to login */
     }
 
 no_disk:
@@ -2817,8 +2906,19 @@ void storage_query(struct storage_info *out)
     my_memset(out, 0, sizeof(*out));
 
     out->block_size = BLOCK_SIZE;
-    out->present    = (current_bd == &g_ata_bd) ? 1u : 0u;
-    if (out->present) out->total_blocks = g_ata_bd.total_blocks;
+    out->present    = storage_bd_is_ata(current_bd) ? 1u : 0u;
+    if (out->present) out->total_blocks = current_bd->total_blocks;
+
+    /* How many persistent devices this machine has, and which one the fields
+     * above describe. A survey that could only ever say "the disk" is what made
+     * an installer unable to ask which one. */
+    out->device_count = (uint32_t)g_ata_usable_count;
+    out->device_index = 0;
+    for (int d = 0, seen = 0; d < ATA_MAX_DRIVES; d++) {
+        if (!g_ata_usable[d]) continue;
+        if (&g_ata_bd[d] == current_bd) { out->device_index = (uint32_t)seen; break; }
+        seen++;
+    }
 
     /* g_needs_format is set at boot when a persistent device is attached and
      * storage_mount refused what is on it. It is the whole of "this machine has
@@ -2835,6 +2935,46 @@ void storage_query(struct storage_info *out)
 #endif
     out->recognised   = (out->present && g_mounted_fs.mounted) ? 1u : 0u;
     out->unlocked     = (out->recognised && g_mounted_fs.unlocked) ? 1u : 0u;
+}
+
+/* The survey for ONE enumerated device, rather than for the machine (SECURITY.md
+ * S82).
+ *
+ * Everything storage_query says about the mounted volume is a property of the
+ * machine; everything it says about size and presence is a property of a device.
+ * With one disk those were the same object and one struct answered both. This
+ * fills the same struct for the device at `index`, so an installer can show a
+ * list, and REFUSES an index past the end rather than clamping -- a survey that
+ * answered about a different disk than the one asked about would be read as the
+ * disk the operator is about to erase.
+ *
+ * `recognised` here is per-device and answers "does THIS disk carry a Horus
+ * volume": it is the mounted device's flag when the index names the mounted
+ * device, and 0 otherwise. That is what makes it usable as "is this one safe to
+ * install onto" without the caller having to know which device is mounted. */
+int storage_device_query(int index, struct storage_info *out)
+{
+    if (!out) return -1;
+    struct block_device *bd = storage_device_at(index);
+    if (!bd) return -1;
+
+    my_memset(out, 0, sizeof(*out));
+    out->block_size   = BLOCK_SIZE;
+    out->present      = 1u;
+    out->total_blocks = bd->total_blocks;
+    out->device_count = (uint32_t)g_ata_usable_count;
+    out->device_index = (uint32_t)index;
+
+    int is_mounted    = (bd == g_mounted_fs.bd) && g_mounted_fs.mounted;
+    out->recognised   = is_mounted ? 1u : 0u;
+    out->unlocked     = (is_mounted && g_mounted_fs.unlocked) ? 1u : 0u;
+    out->needs_format = (!is_mounted && g_needs_format && bd == g_needs_format_bd) ? 1u : 0u;
+#ifdef STORAGE_AUTOFORMAT
+    out->format_on_login = 1u;
+#else
+    out->format_on_login = 0u;
+#endif
+    return 0;
 }
 
 int storage_unlock(const char *password, size_t plen)
@@ -3635,7 +3775,7 @@ int storage_keyslot_remove(uint32_t idx)
  * two cases apart and to say which one they are in. */
 int storage_volume_is_persistent(void)
 {
-    return (current_bd == &g_ata_bd) ? 1 : 0;
+    return storage_bd_is_ata(current_bd) ? 1 : 0;
 }
 
 /* How many slots can currently open this volume. Observability for the witness;

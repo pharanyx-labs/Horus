@@ -7,6 +7,21 @@
 *.raw
 *.iso
 *.img
+# swtpm state for the TPM-backed gates, generated per disk image.
+#
+# The name is DERIVED from the image (`${IMG%.img}-tpmstate` in
+# tools/rollback_replay.sh), so the glob covers every image rather than the one
+# that happened to get committed: `rollback-tpmstate/` was tracked from 2026-08,
+# and `tools/rollback_replay.sh` opens by doing `rm -rf` on exactly that path and
+# recreating it, so every run of `make smoke-rollback` showed two files deleted
+# in `git status`. Tracked output that a gate deletes on every run is a diff
+# waiting to be committed by accident.
+#
+# Nothing needs the contents: swtpm_setup --overwrite regenerates the state, and
+# swtpm_lib.sh refuses a setup that reports success without leaving a
+# tpm2-00.permall, so an empty or absent directory fails loudly rather than
+# booting a guest with a TPM that cannot initialise.
+*-tpmstate/
 kernel.elf
 boot.iso
 horus.iso

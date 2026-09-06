@@ -775,7 +775,7 @@ from the primordial root cnode and grants it to the installer alone.
 | # | Name | Arguments | Authorisation |
 |---|---|---|---|
 | 110 | `SYS_STORAGE_INFO` | `struct storage_info *` | `CAP_STORAGE_FORMAT` at `CAPSLOT_STORAGE_FORMAT`: READ |
-| 111 | `SYS_STORAGE_FORMAT` | `password`, `plen` | `CAP_STORAGE_FORMAT` at `CAPSLOT_STORAGE_FORMAT`: WRITE |
+| 111 | `SYS_STORAGE_FORMAT` | `password`, `plen`, `device` | `CAP_STORAGE_FORMAT` at `CAPSLOT_STORAGE_FORMAT`: WRITE |
 | 113 | `SYS_STORAGE_DEVICE` | `index`, `struct storage_info *` | `CAP_STORAGE_FORMAT` at `CAPSLOT_STORAGE_FORMAT`: READ |
 
 The rights differ on purpose. READ is the survey an installer shows before it asks; WRITE is
@@ -795,6 +795,15 @@ deliberately reports nothing about the volume's contents: it exists so an instal
 operator what is about to be destroyed, and every field is a disclosure made under this
 capability. The ephemeral RAM vdisk answers `present = 0` -- it is a block device by every
 internal measure, and reporting it would have an installer offering to format memory.
+
+**`SYS_STORAGE_FORMAT` names its target** (`SECURITY.md` **S83**). `device` is a position in
+the same enumeration `SYS_STORAGE_DEVICE` indexes, and it is an **argument** rather than
+something a previous call selected: a "choose the device" call followed by a "format it" call is
+a confused deputy by construction, because the act that destroys a disk would then depend on a
+global somebody else set. An index naming no such device is refused (`SYS_ERR_INVAL`), as is one
+naming a device that already carries a mounted volume; the password buffer is wiped on those
+refusals like every other exit. On a machine with no persistent devices only `device = 0` is
+valid, and it means the ephemeral store the machine is already running on.
 
 `SYS_STORAGE_DEVICE` (113) is the same survey for ONE enumerated persistent device rather
 than for the machine, and it answers to the same capability and the same READ right for the

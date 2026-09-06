@@ -275,11 +275,13 @@ int ata_flush(int drive) {
     if (!ata_drive_ok(drive)) return -1;
     spin_lock(&ata_lock);
 
-    if (ata_wait_busy_flush() != 0) { spin_unlock(&ata_lock); return -1; }
-    ata_400ns_delay();
-
+    /* Select, settle, then wait for THIS drive -- see ata_read_sector for what
+     * the other order does once there is more than one drive on the bus. */
     outb(ATA_DRIVE, ata_sel_lba(drive, 0));   /* this drive, LBA mode */
     ata_400ns_delay();
+
+    if (ata_wait_busy_flush() != 0) { spin_unlock(&ata_lock); return -1; }
+
     outb(ATA_COMMAND, ATA_CMD_FLUSH);
 
     /* A device that does not implement FLUSH CACHE leaves status 0 here; treat
@@ -305,13 +307,24 @@ static int ata_read_sector(int drive, uint32_t lba, uint8_t *buf) {
     if (!ata_drive_ok(drive)) return -1;
     spin_lock(&ata_lock);
 
+    /* SELECT THE DRIVE, THEN WAIT FOR THAT DRIVE. The order was the other way
+     * round and it did not matter while there was only ever one drive to
+     * select: ata_wait_busy() polled the status of whichever drive was already
+     * selected, which was always this one. With two drives it polls the OTHER
+     * one and then writes command registers at a drive that has not been given
+     * the 400ns it is owed to put its own status on the bus -- the command is
+     * issued into a controller still switching drives, and the transfer never
+     * starts. The symptom is not an error: it is a guest that stops doing disk
+     * I/O entirely, which reaches the harness as the installer's format WEDGING.
+     * Found by the first gate that ever wrote to the slave. */
+    outb(ATA_DRIVE, ata_sel_lba(drive, lba));
+    ata_400ns_delay();
+
     if (ata_wait_busy() != 0) {
         spin_unlock(&ata_lock);
         return ata_refuse("read", lba, inb(ATA_STATUS));
     }
-    ata_400ns_delay();
 
-    outb(ATA_DRIVE, ata_sel_lba(drive, lba));
     outb(ATA_SECCOUNT, 1);
     outb(ATA_LBA_LOW,  lba & 0xFF);
     outb(ATA_LBA_MID,  (lba >> 8) & 0xFF);
@@ -346,13 +359,24 @@ static int ata_write_sector(int drive, uint32_t lba, const uint8_t *buf) {
     if (!ata_drive_ok(drive)) return -1;
     spin_lock(&ata_lock);
 
+    /* SELECT THE DRIVE, THEN WAIT FOR THAT DRIVE. The order was the other way
+     * round and it did not matter while there was only ever one drive to
+     * select: ata_wait_busy() polled the status of whichever drive was already
+     * selected, which was always this one. With two drives it polls the OTHER
+     * one and then writes command registers at a drive that has not been given
+     * the 400ns it is owed to put its own status on the bus -- the command is
+     * issued into a controller still switching drives, and the transfer never
+     * starts. The symptom is not an error: it is a guest that stops doing disk
+     * I/O entirely, which reaches the harness as the installer's format WEDGING.
+     * Found by the first gate that ever wrote to the slave. */
+    outb(ATA_DRIVE, ata_sel_lba(drive, lba));
+    ata_400ns_delay();
+
     if (ata_wait_busy() != 0) {
         spin_unlock(&ata_lock);
         return ata_refuse("write", lba, inb(ATA_STATUS));
     }
-    ata_400ns_delay();
 
-    outb(ATA_DRIVE, ata_sel_lba(drive, lba));
     outb(ATA_SECCOUNT, 1);
     outb(ATA_LBA_LOW,  lba & 0xFF);
     outb(ATA_LBA_MID,  (lba >> 8) & 0xFF);

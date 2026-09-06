@@ -1414,12 +1414,19 @@ and for a full-screen program those are different questions.
   volume** rather than simply the first device, and `SYS_STORAGE_DEVICE` surveys one enumerated
   device with an out-of-range index refused rather than clamped. `make smoke-storage-survey`
   boots two disks and requires the count.
-  **What is left is the authority half, and it is deliberately separate**: `SYS_STORAGE_FORMAT`
-  still formats the device the machine nominated, so an installer can SHOW two disks and cannot
-  yet erase the second one. Giving the format an explicit target changes what
-  `CAP_STORAGE_FORMAT` authorises -- from "the disk" to "a disk you name" -- and it interacts
-  with `smoke-captest-storage-format-control`, whose premise is that the ungated call SUCCEEDS on
-  a diskless boot. That is a change with its own arm rather than a rider on this one.
+  **The authority half landed 2026-09-06** (`SECURITY.md` **S83**). `SYS_STORAGE_FORMAT` takes
+  the target as an ARGUMENT rather than as something a previous call selected, refuses an index
+  naming no such device or one already carrying a mounted volume, and the installer shows a disk
+  menu when there is more than one candidate. `make smoke-installer-target` installs onto the
+  second of two disks and requires the next boot to find the volume there and the other disk
+  still blank.
+  **Two globals had to stop being assumed equal to the target, and both failed silently rather
+  than loudly.** The ATA driver selected a drive and then waited on whichever drive was
+  *previously* selected, which never mattered while the selection never changed; and thirty-one
+  call sites reached the medium through `current_bd` while the format wrote through the device it
+  was handed. Neither produced an error -- the first stopped the guest issuing disk I/O at all,
+  reaching the harness as the installer's format WEDGING. Both were found by the first gate that
+  ever wrote to the second disk, which is the argument for the gate.
 - **Installing over an existing volume.** Refused outright today, with a message. It is a
   different act needing a different confirmation, and offering it in the same menu as "install
   onto blank media" is how the two get confused.
@@ -1725,7 +1732,7 @@ table already has the four columns a registry needs (id, statement, enforcing co
 the table *is* the registry. A hand-maintained parallel manifest would be a second copy of
 claims that already exist, which is **[H-3]**'s shape: two descriptions of one thing, drifting.
 The manifest that remains (`.github/invariants.yml`) holds exemptions only, and today it is
-**empty**, all 84 properties name a witness that resolves.
+**empty**, all 85 properties name a witness that resolves.
 
 **What the survey found on the way.** **S16** had no witness at all, an em-dash against
 `fpu_save`/`fpu_restore`, real code called on every ring transition and exercised by nothing.
@@ -1764,7 +1771,7 @@ past it.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue`, §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 256 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 130 of them control arms that must reproduce a defect |
+| ✅ | 258 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 131 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

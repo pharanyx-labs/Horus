@@ -169,6 +169,19 @@ class Serial:
                 spec += ",throttling.iops-total=%s" % iops
             drive = ["-drive", spec]
 
+            # A SECOND persistent disk, attached as the primary SLAVE (index=1),
+            # which is the second device the ATA driver probes. Off unless
+            # SESSION_DISK2 names an image, so every existing scenario boots
+            # exactly the machine it booted before. It deliberately does NOT
+            # inherit the throttling knobs above: those exist to dial [G-13]'s
+            # one variable, and a second throttled disk would make "which disk
+            # was slow" a thing you work out rather than read.
+            disk2 = os.environ.get("SESSION_DISK2", "")
+            if disk2:
+                drive += ["-drive",
+                          "file=%s,format=raw,if=ide,index=1,media=disk,"
+                          "cache=writethrough" % disk2]
+
         # A QMP monitor, so a scenario can ask QEMU what the GUEST's disk is
         # doing. Inert unless something connects. See blockstats_ops().
         self.qmp_path = "/tmp/horus-session-qmp-%d.sock" % os.getpid()

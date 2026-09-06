@@ -210,18 +210,29 @@ static void osgr(uint16_t attr)
  * single function so the arm removes it from BOTH callers at once -- the end of
  * a flush and tui_end -- because a restore present at one of the two would let
  * the arm pass for the wrong reason. */
-static int g_graphics;                  /* is the terminal's G0 currently ACS? */
+/* What the terminal's G0 is believed to be: 0 ASCII, 1 graphics, -1 UNKNOWN.
+ *
+ * The third value is not decoration. Invalidation means "something else wrote to
+ * this terminal and the library's beliefs are void", and a two-valued flag
+ * cannot express that: whichever of the two it is set to, one of the shift
+ * emitters will conclude the terminal is already where it wants it and emit
+ * nothing. Setting it to 1 was tried first and drew the next box with no shift
+ * in front of it -- a frame rendered as `lqqqk` in raw letters, caught by
+ * rendering the stream rather than by any check, because a cell buffer records
+ * the GLYPH and not the charset it was sent under. Unknown forces both emitters
+ * to speak, which costs three bytes once per invalidation. */
+static int g_graphics;
 
 static void ographics(void)
 {
-    if (g_graphics) return;
+    if (g_graphics == 1) return;
     oputs("\033(0");
     g_graphics = 1;
 }
 
 static void oascii(void)
 {
-    if (!g_graphics) return;
+    if (g_graphics == 0) return;
 #ifndef TUI_ACS_NO_RESTORE
     oputs("\033(B");
 #else
@@ -277,7 +288,7 @@ int tui_begin(void)
      * session begun twice must not assume the terminal is still where the last
      * one left it. Asserted rather than assumed -- the explicit restore below
      * is what makes `g_graphics = 0` true. */
-    g_graphics = 1;
+    g_graphics = -1;                       /* unknown until we say otherwise */
     oascii();
     oputs("\033[?25l");                    /* hide the cursor */
     oputs("\033[2J");                      /* clear, so the terminal agrees */
@@ -487,6 +498,41 @@ int tui_wrap(int row, int col, int width, int max_rows, const char *s, uint16_t 
         used++;
     }
     return used;
+}
+
+void tui_invalidate(void)
+{
+    /* The same sentinel tui_begin seeds: a value no real cell can hold, so every
+     * cell compares unequal and the next flush writes all of them.
+     *
+     * The CURSOR belief is dropped too. A cooked write moved the terminal's
+     * cursor to somewhere the library has no record of, so `shown_*` is exactly
+     * as stale as the cells are, and a repaint that restored every character but
+     * left the cursor where a marker ended would put the caret in the wrong
+     * field -- which in a masked password field is a lie about where the next
+     * character lands, the thing tui_cursor's own comment refuses to tell. */
+#ifndef TUI_NO_INVALIDATE
+    for (int r = 0; r < CON_ROWS; r++)
+        for (int c = 0; c < CON_COLS; c++) {
+            front[r][c].ch = '\0'; front[r][c].attr = 0xFFFFu;
+        }
+    shown_r = shown_c = -1;
+    /* The charset belief goes as well: a cooked write does not change G0, but a
+     * repaint that assumes ASCII because the last flush ended there would emit a
+     * box edge with no shift in front of it. UNKNOWN rather than either value,
+     * so both shift emitters speak on the next run -- see the tri-state above,
+     * where setting this to 1 drew a frame in raw letters. */
+    g_graphics = -1;
+#else
+    /* CONTROL ARM -- never ship. Invalidation does nothing, so the library keeps
+     * believing a screen that something else has written over: the next flush
+     * skips every cell it thinks is already correct and the foreign text stays
+     * put, through this screen and every screen after it. This is the shipped
+     * behaviour of the installer until 2026-09-06 and it was invisible to every
+     * gate -- the markers are on the wire either way, and the cells the
+     * self-test inspects are the ones the library owns and got right. See
+     * make smoke-tui-invalidate-control. */
+#endif
 }
 
 void tui_cursor(int row, int col)

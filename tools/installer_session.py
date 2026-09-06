@@ -319,8 +319,8 @@ def answer_accounts(s, root_pw=None, user=None, user_pw=None):
     os.write(s.fd, user_pw.encode() + ENTER)
 
 
-def answer_confirm(s, word=b"FORMAT", first_timeout=None):
-    """Choose Continue, then type the confirmation word.
+def answer_survey(s, first_timeout=None):
+    """Choose Continue on the destroy-this-disk screen.
 
     Cancel is the default and the cursor starts on it, so reaching Continue takes
     a deliberate keystroke -- which is the property being relied on, so the
@@ -329,6 +329,25 @@ def answer_confirm(s, word=b"FORMAT", first_timeout=None):
     s.expect("INSTALLER: waiting on the destroy-this-disk choice",
              STEP if first_timeout is None else first_timeout)
     os.write(s.fd, DOWN)
+    os.write(s.fd, ENTER)
+
+
+def answer_review_and_confirm(s, word=b"FORMAT"):
+    """Accept the review, then type the confirmation word.
+
+    THE WORD IS LAST NOW, AND THE ORDER IS THE POINT. Until 2026-09-06 it was the
+    second question: the operator consented and then answered five more screens
+    before anything was written, so the consent was about a machine state they
+    could no longer see. It is now immediately before the format with nothing in
+    between.
+
+    The review menu DEFAULTS to "Install now", so this presses enter rather than
+    arrowing down. That is not the harness taking a shortcut past a safety
+    property: the property is that the format is reachable only through a word
+    that is typed and compared, and no sequence of enters spells FORMAT. The
+    keystroke that costs something is the next one.
+    """
+    s.expect("INSTALLER: waiting on the review choice", STEP)
     os.write(s.fd, ENTER)
     s.expect("INSTALLER: waiting on the typed confirmation", STEP)
     os.write(s.fd, word + ENTER)
@@ -345,12 +364,18 @@ def boot1(disk):
         s.expect("init: this machine has a disk and no volume; running the installer", STEP)
         step("init launched the installer rather than a login prompt")
 
-        # The destroy-this-disk choice, then the typed word -- a menu can be
-        # reached by holding return, a word cannot -- then every account screen.
-        answer_confirm(s)
-        step("chose to continue and typed the confirmation word")
+        # The destroy-this-disk choice, then every account screen, then the
+        # review and the typed word. The word is LAST since 2026-09-06: consent
+        # to destroy a disk belongs immediately before the destruction, not five
+        # screens earlier where it is about a machine state the operator can no
+        # longer see. A menu can be reached by holding return; a word cannot,
+        # and that is still the gate.
+        answer_survey(s)
+        step("chose to continue on the destroy-this-disk screen")
         answer_accounts(s)
         step("answered both accounts' screens")
+        answer_review_and_confirm(s)
+        step("accepted the review and typed the confirmation word")
 
         # THE PASSWORD MUST NOT BE ON THE WIRE. The mask is a property of what
         # tui_input DRAWS, and this is the end-to-end version of the check
@@ -434,30 +459,35 @@ def refuse(disk):
     s = Serial(ISO)
     try:
         s.expect("init: this machine has a disk and no volume; running the installer", BOOT)
+        # Every question first, then the review, then the wrong word.
+        answer_survey(s)
+        answer_accounts(s)
         # Not the word. Deliberately something a hurried operator might type.
-        answer_confirm(s, b"yes")
+        answer_review_and_confirm(s, b"yes")
         step("answered the confirmation with the wrong word")
 
         if os.environ.get("INSTALLER_EXPECT_FORMAT") == "1":
             # CONTROL ARM. With the comparison compiled out the wrong word is
-            # accepted, and the FIRST observable is that the installer moves on to
-            # the password screen at all -- a screen the base arm never reaches.
+            # accepted and the install proceeds to destroy the disk.
             #
-            # THE ARM DOES NOT STOP THERE, and the first version of it did, which
-            # is why this comment exists. It asserted "INSTALLER: formatting"
-            # immediately after the wrong word and timed out: the installer was
-            # sitting at the password prompt, waiting for input the refuse-mode
-            # harness never sends. The defect had reproduced perfectly and the arm
-            # reported a timeout -- an arm asserting the right property at the
-            # wrong point in the conversation.
+            # THE ARM REQUIRES THE FORMAT, NOT MERELY THE BYPASS, and the reason
+            # is a scar. Its first version asserted "INSTALLER: formatting"
+            # straight after the wrong word and TIMED OUT -- back then the word
+            # was the second question, so the installer was sitting at a password
+            # prompt waiting for input the refuse-mode harness never sent. The
+            # defect had reproduced perfectly and the arm reported a timeout: the
+            # right property asserted at the wrong point in the conversation.
             #
-            # So the arm answers the remaining questions and requires the FORMAT.
-            # That is the stronger statement anyway: not merely that consent was
-            # skipped, but that the whole install proceeds to destroy the disk
-            # without it. A refusal test needs the ungated path to actually
-            # succeed, and succeeding here means reaching the format.
+            # The word is now the LAST question, so every screen that used to
+            # follow it has already been answered and the format is genuinely the
+            # next thing to happen. The assertion is back where it reads
+            # naturally -- but it is kept as an assertion on the FORMAT rather
+            # than on the bypass, because that is the stronger statement and the
+            # one the scar is about: not that consent was skipped, but that the
+            # whole install proceeds to destroy the disk without it. A refusal
+            # test needs the ungated path to actually succeed, and succeeding
+            # here means reaching the format.
             step("CONTROL: the wrong word was accepted and the install continued")
-            answer_accounts(s)
             s.expect("INSTALLER: formatting", STEP)
             step("CONTROL: the disk was formatted without the confirmation word")
             print("INSTALLER_SESSION: PASS (control arm reproduced)")
@@ -515,8 +545,9 @@ def provision(disk):
     s = Serial(ISO)
     try:
         s.expect("init: this machine has a disk and no volume; running the installer", BOOT)
-        answer_confirm(s)
+        answer_survey(s)
         answer_accounts(s)
+        answer_review_and_confirm(s)
         # Same stall bound as boot1's, and for the same reason: every scenario in
         # this file formats a volume, so every one of them was exposed to [G-13].
         expect_while_doing_io(s, "INSTALLER: PASS installed", FORMAT_STALL, FORMAT_CAP)
@@ -593,8 +624,9 @@ def accounts(disk):
     # ---- boot 1: install, two accounts ----
     s = Serial(ISO)
     try:
-        answer_confirm(s, first_timeout=BOOT)
+        answer_survey(s, first_timeout=BOOT)
         answer_accounts(s)
+        answer_review_and_confirm(s)
         step("answered the root password, then named the everyday account")
 
         expect_while_doing_io(s, "INSTALLER: PASS installed", FORMAT_STALL, FORMAT_CAP)

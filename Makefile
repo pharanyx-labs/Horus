@@ -122,7 +122,7 @@ DEFECT_FLAGS = \
 	VDISK_TOTAL_UNBOUNDED \
 	TUI_NO_DAMAGE_DIFF TUI_CLAMP_OFF \
 	TUI_INPUT_ECHO_SECRET TUI_INPUT_UNBOUNDED TUI_MENU_UNCLAMPED \
-	TUI_ACS_NO_RESTORE TUI_WRAP_NO_BREAK \
+	TUI_ACS_NO_RESTORE TUI_WRAP_NO_BREAK TUI_NO_INVALIDATE \
 	CSPACE_KEEP_ON_TEARDOWN \
 	CSPACE_RELEASE_BEFORE_PIPES SPAWN_SLOT3_DECOY_GATE UNTYPED_SPLIT_FREE_BYTES \
 	INIT_PROVISION_NO_UNTYPED AUDIT_ABI_LEGACY STORE_LOCKED_UNCHECKED \
@@ -627,6 +627,19 @@ endif
 # trusting one bound, not writing off the end of memory.
 TUI_WRAP_NO_BREAK ?= 0
 ifeq ($(TUI_WRAP_NO_BREAK),1)
+endif
+
+# TUI_NO_INVALIDATE=1 makes tui_invalidate a no-op, so the library keeps
+# believing a screen something else has written over. Every program here that
+# emits marker lines writes to the same UART the TUI draws on -- cooked
+# CON_OP_WRITE, landing wherever the terminal's cursor is -- and the damage diff
+# cannot see a write it did not make, so it skips those cells forever after.
+#
+# This was the SHIPPED behaviour until 2026-09-06, and no gate saw it: the
+# markers are on the wire either way, and every cell the library owns was right.
+# It was found by rendering the installer's serial stream through a VT emulator.
+TUI_NO_INVALIDATE ?= 0
+ifeq ($(TUI_NO_INVALIDATE),1)
 endif
 
 # META_CRASH_SELFTEST=1 builds Arm A of docs/design/meta-cache-merkle.md: a
@@ -3131,6 +3144,9 @@ USERSPACE_CFLAGS += -DTUI_ACS_NO_RESTORE
 endif
 ifeq ($(TUI_WRAP_NO_BREAK),1)
 USERSPACE_CFLAGS += -DTUI_WRAP_NO_BREAK
+endif
+ifeq ($(TUI_NO_INVALIDATE),1)
+USERSPACE_CFLAGS += -DTUI_NO_INVALIDATE
 endif
 
 ifeq ($(SYSCALL_PTR_TRUNC32),1)
@@ -8809,6 +8825,20 @@ smoke-tui-acs-control:
 # is the case that gets forgotten. The column has a box edge to its right on
 # every installer screen, so an overrun corrupts the frame a reader uses to tell
 # one field from another.
+# The assumption the damage diff rests on -- that nothing else writes to this
+# terminal -- is false for every program that also emits markers, and this is the
+# arm for noticing. A no-op invalidate leaves the foreign text on screen through
+# every screen after it, while every cell the library owns stays correct, which
+# is why the self-test's own marker path is the foreign writer here.
+.PHONY: smoke-tui-invalidate-control
+smoke-tui-invalidate-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_NO_INVALIDATE=1
+	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_NO_INVALIDATE=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='TUITEST: FAIL an invalidated screen was not repainted' \
+		tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-tui-wrap-control
 smoke-tui-wrap-control:
 	@$(MAKE) --no-print-directory clean

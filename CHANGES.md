@@ -15,6 +15,69 @@ in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **The installer's own progress markers were being drawn across its screens, and had been all
+  along.** `say()` emits a marker as a cooked `CON_OP_WRITE` to the same UART the TUI draws on, so
+  it lands at wherever the terminal's cursor is -- which, on a screen that has just drawn a
+  password field, is inside the password field. The damage diff cannot see a write it did not
+  make, so `front` still believed those cells correct and every later flush skipped them: the text
+  stayed through that screen and every screen after it.
+  **Found by rendering the installer's serial stream through a VT emulator**, because no gate
+  could have. `*******INSTALLER: waiting on the user password again` drawn across a live install's
+  password row. Measured over one install rendered both ways: **16 rows of marker text inside the
+  frame, against 0 after the fix**, with `make smoke-installer` **passing in both arms** -- those
+  gates assert on the markers, which are on the wire either way, and the TUI self-test asserts on
+  cells the library owns and got right.
+  The repair is `tui_invalidate()`, which drops the library's belief about the terminal so the next
+  flush repaints. It is the caller's job to say it wrote behind the library's back rather than a
+  printing wrapper the library offers, because routing marker output through the TUI would put a
+  second output path inside it and the argument for that file is that it has one. Falsified by
+  `TUI_NO_INVALIDATE=1` (`make smoke-tui-invalidate-control`), which also measures RED against
+  `make smoke-tui`.
+  Two things the fix got wrong first, both worth recording. The charset belief is now a
+  **tri-state** -- 0 ASCII, 1 graphics, -1 unknown -- because setting it to either real value on
+  invalidation makes one of the two shift emitters conclude the terminal is already where it wants
+  it: setting it to 1 drew the next frame as `lqqqk` in raw letters, caught by rendering the stream
+  and by nothing else, since a cell buffer records the glyph and not the charset it was sent under.
+  And the cursor belief is dropped with the cells, because a cooked write moved the terminal's
+  caret somewhere the library has no record of.
+
+
+- **The installer asks for consent LAST, and shows you what you answered before it does.** The
+  typed word was the second question: choose Continue, type `FORMAT`, and then answer five more
+  screens about passwords and account names before anything was written. Consent to destroy a
+  disk should be adjacent to the destruction, and a word typed before a five-screen conversation
+  is a word typed about a machine state the operator can no longer see. The order is now: show
+  what is at stake, collect every answer, **show them back**, then ask for the word -- immediately
+  before the format with nothing in between.
+  **`SECURITY.md` S73 is unchanged in substance.** The gate has never been that a menu is hard to
+  reach; it is that the format is reachable only through a word that is typed and compared, and
+  `INSTALLER_NO_CONFIRM=1` still removes only the comparison. The new review menu therefore
+  defaults to **Install now** on purpose -- no sequence of return presses spells `FORMAT` -- and
+  the survey menu in front of the whole conversation still defaults to Cancel.
+  **The review screen is also the only way to correct a typo**, which is the friendlier behaviour
+  a form layer would have provided, built instead from the two interactions that already existed:
+  a `tui_menu` choosing which question to ask again and a `tui_input` asking it. `include/tui.h`
+  has always said that a program which has to be READ before it is trusted does not get a widget
+  set, so the logic deciding what an operator consented to lives in `installer.c`, in front of
+  whoever audits that consent. One consequence had to be handled explicitly: changing the root
+  password at the review can collide with the everyday password, and the check that catches that
+  lives in the screen which is not running -- so the review re-asks the everyday password when it
+  happens, rather than refusing at the end about an answer it is not offering to change.
+  **The refuse arm got stronger by getting simpler.** Its control arm used to answer extra screens
+  the base arm never reached, because those screens came after the word; both arms now drive a
+  byte-identical conversation and differ solely in whether the comparison happens. The arm still
+  asserts the FORMAT rather than the bypass, which is the scar it carries: its first version
+  asserted `INSTALLER: formatting` right after the wrong word and TIMED OUT against a password
+  prompt, reporting a reproduction as a broken runner.
+  Every screen is redrawn on the rendering core: line-drawn frame, one accent colour, prose
+  through `tui_wrap` instead of hand-counted columns. **There is deliberately no progress bar over
+  the format** -- `sys_storage_format` is one blocking call that learns nothing on the way, so a
+  bar would be an animation with no measurement behind it, and a stalled real bar and a smooth
+  fake one say opposite things about whether to keep waiting on the one screen an operator is
+  asked not to power off.
+
 ### Added
 
 - **The TUI renders in colour and draws with the terminal's own line glyphs, and grew two

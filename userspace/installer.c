@@ -60,6 +60,41 @@
  *     needs to be.
  *   - It does not partition, and there is no bootloader step. The volume is the
  *     disk.
+ *
+ * ---- WHY THE CONSENT IS THE LAST THING ASKED (2026-09-06) ------------------
+ *
+ * The typed word used to be the SECOND question: choose Continue, type FORMAT,
+ * and then answer five more screens about passwords and account names before
+ * anything was written. That ordering is wrong on the only ground this program
+ * is judged by. Consent to destroy a disk should be adjacent to the destruction:
+ * a word typed before a five-screen conversation is a word typed about a machine
+ * state the operator can no longer see, and by the time it is acted on they have
+ * been thinking about something else for a minute.
+ *
+ * So the order is now: show what will be destroyed and ask whether to go on,
+ * collect every answer, SHOW THEM BACK, and only then ask for the word --
+ * immediately before the format, with nothing in between. This is the shape
+ * every mainstream installer converged on, and the reason is the same one.
+ *
+ * THE REVIEW SCREEN IS ALSO THE ONLY WAY TO FIX A TYPO, and that is where it
+ * belongs rather than in the library. A form layer with tab-navigation between
+ * fields was designed and rejected: see include/tui.h, which has always said
+ * that a program which has to be READ before it is trusted does not get a widget
+ * set. A form is a third blocking loop over the keyboard, holding an array of
+ * field descriptors and deciding on the caller's behalf which field the next
+ * keystroke edits -- inside the library that stands between a keystroke and this
+ * program's one capability. What is here instead is a tui_menu choosing which
+ * question to ask again and a tui_input asking it, which is the same behaviour
+ * built from the two interactions that already existed, in the file a reviewer
+ * of this program's consent is already reading.
+ *
+ * THE REVIEW MENU DEFAULTS TO "Install now", AND THAT IS NOT A WEAKENING.
+ * The property being relied on has never been "the menu is hard to reach"; it is
+ * that THE FORMAT IS REACHABLE ONLY THROUGH A WORD THAT IS TYPED AND COMPARED.
+ * No sequence of return presses spells F-O-R-M-A-T, so where the highlight
+ * starts changes how many keys an operator who has already answered everything
+ * must press, and changes nothing about what consent costs. Do not "fix" this
+ * default back to Cancel on security grounds; the gate is the word.
  */
 #include "syscall.h"
 #include "libhorus.h"
@@ -79,7 +114,6 @@
  */
 static struct con_request  say_rq;
 static struct con_response say_rp;
-
 static void say(const char *a, const char *b)
 {
     unsigned n = 0;
@@ -95,6 +129,31 @@ static void say(const char *a, const char *b)
     }
 }
 
+/* say(), then tell the TUI its screen is no longer what it thinks it is.
+ *
+ * EVERY MARKER IN THIS PROGRAM GOES THROUGH HERE, and that is the point. A
+ * marker is a cooked console write to the same UART the TUI draws on, so it
+ * lands at wherever the terminal's cursor is -- which, on a screen that has just
+ * drawn a password field, is inside the password field. The library cannot see
+ * a write it did not make, so its damage diff believes those cells are still
+ * correct and never repaints them: the text sits there through this screen and
+ * every screen after it.
+ *
+ * Found on 2026-09-06 by rendering this program's own serial stream through a VT
+ * emulator, which showed `*******INSTALLER: waiting on the user password again`
+ * written across a live install's password row. Every installer gate was green
+ * at the time and none of them could have caught it -- they assert on the
+ * markers, which are on the wire either way.
+ *
+ * The repaint is not done here: whoever draws next flushes, and that flush is
+ * now a full one. The one place that does not draw next is do_install, which
+ * flushes explicitly. */
+static void mark(const char *a, const char *b)
+{
+    say(a, b);
+    tui_invalidate();
+}
+
 /* Decimal into a caller-owned buffer. No varargs anywhere in this program, for
  * the reason tui.h gives: there is no format string to get wrong. */
 static void utoa10(uint64_t v, char *out, unsigned cap)
@@ -108,26 +167,108 @@ static void utoa10(uint64_t v, char *out, unsigned cap)
     while (n && i + 1 < cap) out[i++] = tmp[--n];
     out[i] = 0;
 }
+/* ---- the look ----------------------------------------------------------
+ *
+ * One accent, and everything else is the terminal's own colours. A screen that
+ * asks whether to erase a disk is not the place to demonstrate a palette: the
+ * red is spent on the one sentence that says what is about to be destroyed, and
+ * spending it anywhere else is what makes an operator stop reading it.
+ *
+ * These are attributes, not a theme system. There is no runtime switch, no
+ * configuration and no table -- eight names, used directly. */
+#define C_FRAME   ((uint16_t)TUI_FG(TUI_C_BLUE))
+#define C_TITLE   ((uint16_t)(TUI_FG(TUI_C_CYAN) | TUI_A_BOLD))
+#define C_SUBTITLE ((uint16_t)TUI_A_BOLD)
+#define C_TEXT    ((uint16_t)TUI_A_NORMAL)
+#define C_LABEL   ((uint16_t)TUI_FG(TUI_C_CYAN))
+#define C_VALUE   ((uint16_t)TUI_A_BOLD)
+#define C_DANGER  ((uint16_t)(TUI_FG(TUI_C_RED) | TUI_A_BOLD))
+#define C_OK      ((uint16_t)(TUI_FG(TUI_C_GREEN) | TUI_A_BOLD))
+#define C_HINT    ((uint16_t)TUI_A_DIM)
 
-/* ---- screen furniture --------------------------------------------------- */
-
+/* ---- screen furniture ---------------------------------------------------
+ *
+ * The 80x24 console, divided once. Every screen in this program is this frame
+ * with a different body, so the operator's eye learns where the title, the
+ * question and the keys are on the first screen and does not have to look for
+ * them again on the one that erases the disk.
+ *
+ * NOTHING HERE COUNTS COLUMNS BY HAND ANY MORE. Every line of prose used to be
+ * placed at a literal column, which is silently wrong the moment somebody edits
+ * the sentence above it -- on screens whose whole job is to be read accurately.
+ * Body text goes through tui_wrap, which is the reason that call exists. */
+#define BOX_H       23
+#define MARGIN      3
 #define ROW_TITLE   1
-#define ROW_BODY    4
-#define ROW_PROMPT  14
-#define ROW_FIELD   16
-#define ROW_STATUS  21
+#define ROW_SUB     2
+#define ROW_RULE_T  3
+#define ROW_BODY    5
+#define ROW_RULE_B  19
+#define ROW_STATUS  20
+#define ROW_HINT    21
+#define BODY_ROWS   (ROW_RULE_B - ROW_BODY)
+
+static int body_w(void) { return tui_cols() - 2 * MARGIN; }
+
+/* A horizontal rule with tees, drawn with the terminal's line glyphs. The tees
+ * are what make it read as one frame divided rather than three boxes stacked. */
+static void rule(int row)
+{
+    int last = tui_cols() - 1;
+    for (int c = 1; c < last; c++)
+        tui_putc(row, c, TUI_ACS_HLINE, (uint16_t)(C_FRAME | TUI_A_ACS));
+    tui_putc(row, 0,    TUI_ACS_LTEE, (uint16_t)(C_FRAME | TUI_A_ACS));
+    tui_putc(row, last, TUI_ACS_RTEE, (uint16_t)(C_FRAME | TUI_A_ACS));
+}
 
 static void frame(const char *title)
 {
     tui_clear();
-    tui_box(0, 0, tui_rows() - 1, tui_cols(), TUI_A_NORMAL);
-    tui_text(ROW_TITLE, 3, "Horus installer", TUI_A_BOLD);
-    tui_text(ROW_TITLE + 1, 3, title, TUI_A_NORMAL);
+    tui_box(0, 0, BOX_H, tui_cols(), C_FRAME);
+    tui_text(ROW_TITLE, MARGIN, "Horus installer", C_TITLE);
+    tui_text(ROW_SUB,   MARGIN, title, C_SUBTITLE);
+    rule(ROW_RULE_T);
+    rule(ROW_RULE_B);
 }
 
-static void status(const char *s)
+/* The status line: one sentence about what just happened, or what is wrong. */
+static void status(const char *s, uint16_t attr)
 {
-    tui_field(ROW_STATUS, 3, tui_cols() - 6, s, TUI_A_DIM);
+    tui_field(ROW_STATUS, MARGIN, body_w(), s, attr);
+}
+
+/* The key hints. Always present, always in the same place, always dim -- an
+ * operator who does not know that esc cancels is an operator who will guess. */
+static void hint(const char *s)
+{
+    tui_field(ROW_HINT, MARGIN, body_w(), s, C_HINT);
+}
+
+/* Body prose. Returns the row after the last one used, so a caller stacks
+ * paragraphs without counting. */
+static int para(int row, const char *s, uint16_t attr)
+{
+    int used = tui_wrap(row, MARGIN, body_w(), ROW_RULE_B - row, s, attr);
+    return row + used;
+}
+
+/* A label and its field, on one row. The label is the accent colour and the
+ * value is bold: a form where every word looks the same is a form people fill
+ * in without reading. */
+#define LABEL_COL   (MARGIN + 2)
+#define FIELD_COL   (MARGIN + 20)
+#define FIELD_W     STORAGE_FORMAT_PASSWORD_MAX
+#define LABEL_W     (FIELD_COL - LABEL_COL - 1)
+
+/* tui_field, not tui_text, and the difference is a real collision rather than
+ * tidiness. One of these labels is the account NAME, which the operator chose
+ * and which USER_NAME_MAX allows fifteen characters of -- long enough to reach
+ * the value column and overwrite what it says. A field truncates at its width,
+ * so the columns cannot move however long the answer is, which is the property
+ * tui_field exists for and the reason menus use it too. */
+static void label(int row, const char *s)
+{
+    tui_field(row, LABEL_COL, LABEL_W, s, C_LABEL);
 }
 
 /* ---- the confirmation ---------------------------------------------------
@@ -142,8 +283,8 @@ static void status(const char *s)
  * prompt was taken as consent to format, and the repair was to make formatting
  * require an act that means only that.
  *
- * The menu below it is still a menu, because "which of these do I want" is what
- * a menu is for -- it just is not what consent is for.
+ * The menus in this program are still menus, because "which of these do I want"
+ * is what a menu is for -- it just is not what consent is for.
  */
 #define CONFIRM_WORD "FORMAT"
 
@@ -173,6 +314,14 @@ static char g_upw2[STORAGE_FORMAT_PASSWORD_MAX + 1];
 #define USER_UID  1000
 #define USER_GID  100
 
+static void wipe_user_password(void)
+{
+    volatile char *c = (volatile char *)g_upw;
+    volatile char *d = (volatile char *)g_upw2;
+    for (unsigned i = 0; i < sizeof(g_upw); i++)  c[i] = 0;
+    for (unsigned i = 0; i < sizeof(g_upw2); i++) d[i] = 0;
+}
+
 static void wipe_passwords(void)
 {
     /* Erased on every exit path, including the failures. A refused install has
@@ -180,70 +329,299 @@ static void wipe_passwords(void)
      * one. `volatile` so the write is not optimised away as dead. */
     volatile char *a = (volatile char *)g_pw;
     volatile char *b = (volatile char *)g_pw2;
-    volatile char *c = (volatile char *)g_upw;
-    volatile char *d = (volatile char *)g_upw2;
     for (unsigned i = 0; i < sizeof(g_pw); i++)   a[i] = 0;
     for (unsigned i = 0; i < sizeof(g_pw2); i++)  b[i] = 0;
-    for (unsigned i = 0; i < sizeof(g_upw); i++)  c[i] = 0;
-    for (unsigned i = 0; i < sizeof(g_upw2); i++) d[i] = 0;
+    wipe_user_password();
     /* The NAME is not a secret and is deliberately not wiped here: do_install
      * reports it back on the finished screen, and an operator who has just been
      * asked to remember a login should be shown which one. */
 }
 
-/* ---- steps -------------------------------------------------------------- */
-
-/* Draw what is about to be destroyed, and ask. Returns 1 to proceed, 0 to stop.
+/* ---- the survey --------------------------------------------------------
  *
- * The size is shown in blocks AND in MiB. Not decoration: an operator
- * recognising their disk is the only check in this program that the machine
- * being installed is the machine they think they are standing at, and a block
- * count alone is not a number anybody recognises. */
-static int screen_confirm(void)
+ * What is about to be destroyed, and a chance to stop before being asked for
+ * anything. The size is shown in blocks AND in MiB: an operator recognising
+ * their disk is the only check in this program that the machine being installed
+ * is the machine they are standing at, and a block count alone is not a number
+ * anybody recognises.
+ */
+static void disk_size(char *blocks, unsigned bcap, char *mib, unsigned mcap)
+{
+    utoa10(g_si.total_blocks, blocks, bcap);
+    utoa10((g_si.total_blocks * (uint64_t)g_si.block_size) / (1024u * 1024u), mib, mcap);
+}
+
+static int screen_survey(void)
 {
     char blocks[24], mib[24];
-    utoa10(g_si.total_blocks, blocks, sizeof(blocks));
-    utoa10((g_si.total_blocks * (uint64_t)g_si.block_size) / (1024u * 1024u),
-           mib, sizeof(mib));
+    disk_size(blocks, sizeof(blocks), mib, sizeof(mib));
 
     frame("Install onto the attached disk");
 
-    tui_text(ROW_BODY, 3, "This will DESTROY everything on:", TUI_A_BOLD);
-    tui_text(ROW_BODY + 2, 5, "the attached ATA disk", TUI_A_NORMAL);
-    tui_text(ROW_BODY + 3, 5, "size:", TUI_A_NORMAL);
-    tui_text(ROW_BODY + 3, 14, blocks, TUI_A_NORMAL);
-    tui_text(ROW_BODY + 3, 30, "blocks", TUI_A_NORMAL);
-    tui_text(ROW_BODY + 4, 14, mib, TUI_A_NORMAL);
-    tui_text(ROW_BODY + 4, 30, "MiB", TUI_A_NORMAL);
-    tui_text(ROW_BODY + 6, 3,
-             "A new encrypted volume will be created and sealed to a password", TUI_A_NORMAL);
-    tui_text(ROW_BODY + 7, 3,
-             "you choose next. Nothing on the disk survives this.", TUI_A_NORMAL);
+    int r = para(ROW_BODY, "This will DESTROY everything on the attached disk.", C_DANGER);
+    r++;
+    label(r, "device");
+    tui_text(r, FIELD_COL, "the attached ATA disk", C_VALUE);
+    r++;
+    label(r, "size");
+    tui_text(r, FIELD_COL, blocks, C_VALUE);
+    tui_text(r, FIELD_COL + 12, "blocks", C_TEXT);
+    r++;
+    tui_text(r, FIELD_COL, mib, C_VALUE);
+    tui_text(r, FIELD_COL + 12, "MiB", C_TEXT);
+    r += 2;
+    r = para(r, "A new encrypted volume will be created and sealed to a password you "
+                "choose next. Nothing on the disk survives this.", C_TEXT);
 
     static const char *const choices[] = { "Cancel, change nothing", "Continue" };
     int sel = 0;   /* Cancel is the default, and the cursor starts on it. */
-    tui_text(ROW_PROMPT - 2, 3, "Choose, then press enter:", TUI_A_NORMAL);
-    status("arrows to choose  -  enter to accept  -  esc to cancel");
+    status("Nothing has been written yet.", C_TEXT);
+    hint("arrows to choose  -  enter to accept  -  esc to cancel");
     tui_flush();
-    say("INSTALLER: waiting on the destroy-this-disk choice", "");
-    if (tui_menu(ROW_PROMPT, 5, 32, choices, 2, &sel) != 0) return 0;
-    if (sel != 1) return 0;
+    mark("INSTALLER: waiting on the destroy-this-disk choice", "");
+    if (tui_menu(r + 1, MARGIN + 2, 32, choices, 2, &sel) != 0) return 0;
+    return sel == 1;
+}
 
-    /* THE MENU IS NOT THE CONSENT. See CONFIRM_WORD above: a choice that can be
-     * reached by holding return is not a decision to destroy a disk. */
-    frame("Confirm");
-    tui_text(ROW_BODY, 3, "Type", TUI_A_NORMAL);
-    tui_text(ROW_BODY, 8, CONFIRM_WORD, TUI_A_BOLD);
-    tui_text(ROW_BODY, 8 + (int)sizeof(CONFIRM_WORD), "to erase the disk, or esc to stop.",
-             TUI_A_NORMAL);
-    tui_text(ROW_BODY + 2, 3, "Anything else cancels.", TUI_A_NORMAL);
-    status("this is the last question before the disk is erased");
+/* ---- the questions -----------------------------------------------------
+ *
+ * One function per question, each re-runnable on its own, because the review
+ * screen re-asks exactly one of them at a time. That is what stops this program
+ * growing a second copy of any question: "ask for the root password" has one
+ * implementation whether it is the first pass or a correction.
+ */
+static int ask_root_password(void)
+{
+    for (;;) {
+        frame("Choose the root password");
+        int r = para(ROW_BODY,
+                     "This password does two things, and it must be one password: it seals "
+                     "the volume's encryption key, and it is the password for the root "
+                     "account.", C_TEXT);
+        r++;
+        r = para(r, "There is no recovery. A forgotten password is a lost volume.", C_DANGER);
+
+        label(r + 2, "password");
+        label(r + 4, "again");
+        hint("typing is not shown  -  esc to cancel the install");
+        tui_flush();
+
+        mark("INSTALLER: waiting on the password", "");
+        if (tui_input(r + 2, FIELD_COL, FIELD_W, g_pw, sizeof(g_pw), TUI_IN_MASK) != 0) return 0;
+        mark("INSTALLER: waiting on the password again", "");
+        if (tui_input(r + 4, FIELD_COL, FIELD_W, g_pw2, sizeof(g_pw2), TUI_IN_MASK) != 0) return 0;
+
+        if (g_pw[0] == 0) {
+            status("An empty password would seal the volume to nothing. Try again.", C_DANGER);
+            tui_flush();
+            continue;
+        }
+        if (!ustreq(g_pw, g_pw2)) {
+            /* Both fields are cleared before asking again. Leaving the first one
+             * populated would mean the second attempt is confirming a string the
+             * operator can no longer see and may not have meant. */
+            wipe_passwords();
+            status("The two did not match. Try again.", C_DANGER);
+            tui_flush();
+            continue;
+        }
+        return 1;
+    }
+}
+
+/* THE NAME IS BOUNDED AND CHECKED HERE, not left to the kernel to refuse. It is
+ * lowercase letters and digits, must start with a letter, and cannot be `root`.
+ * do_useradd would refuse a duplicate name anyway, but a refusal arriving as a
+ * return code AFTER the disk has been formatted is a bad place to discover a
+ * typo -- every question in this program is asked before anything is written. */
+static int name_ok(const char *n)
+{
+    if (n[0] < 'a' || n[0] > 'z') return 0;          /* must start with a letter */
+    for (unsigned i = 0; n[i]; i++) {
+        char c = n[i];
+        int lower = (c >= 'a' && c <= 'z');
+        int digit = (c >= '0' && c <= '9');
+        if (!lower && !digit) return 0;
+    }
+    return !ustreq(n, "root");
+}
+
+/* WHY THERE ARE TWO ACCOUNTS AT ALL. A machine whose only login is root is a
+ * machine every session is administered from, and this project's whole argument
+ * is that authority should be held only when it is being exercised. The
+ * installer is the one moment an operator can be asked for both without it
+ * feeling like an extra chore, so it asks. */
+static int ask_user_name(void)
+{
+    for (;;) {
+        frame("Create your everyday account");
+        int r = para(ROW_BODY,
+                     "Day-to-day work should not be done as root, so this machine gets a "
+                     "second account with no administrative authority.", C_TEXT);
+        r++;
+        r = para(r, "Its password also unlocks the disk at boot, so either account can be "
+                    "the first login after the machine is powered on.", C_TEXT);
+
+        label(r + 2, "username");
+        hint("lowercase letters and digits  -  esc to cancel the install");
+        tui_flush();
+
+        mark("INSTALLER: waiting on the user name", "");
+        if (tui_input(r + 2, FIELD_COL, USER_NAME_MAX, g_user, sizeof(g_user), 0) != 0) return 0;
+
+        if (!name_ok(g_user)) {
+            status("A name is lowercase letters and digits, starts with a letter, "
+                   "and is not root.", C_DANGER);
+            tui_flush();
+            continue;
+        }
+        return 1;
+    }
+}
+
+static int ask_user_password(void)
+{
+    for (;;) {
+        frame("Set the password for your account");
+        int r = para(ROW_BODY,
+                     "This is the password for the everyday account. It must be different "
+                     "from the root password.", C_TEXT);
+        r++;
+        label(r + 1, "account");
+        tui_text(r + 1, FIELD_COL, g_user, C_VALUE);
+
+        label(r + 3, "password");
+        label(r + 5, "again");
+        hint("typing is not shown  -  esc to cancel the install");
+        tui_flush();
+
+        mark("INSTALLER: waiting on the user password", "");
+        if (tui_input(r + 3, FIELD_COL, FIELD_W, g_upw, sizeof(g_upw), TUI_IN_MASK) != 0) return 0;
+        mark("INSTALLER: waiting on the user password again", "");
+        if (tui_input(r + 5, FIELD_COL, FIELD_W, g_upw2, sizeof(g_upw2), TUI_IN_MASK) != 0) return 0;
+
+        if (g_upw[0] == 0) {
+            status("An empty password would leave this account unusable. Try again.", C_DANGER);
+            tui_flush();
+            continue;
+        }
+        if (!ustreq(g_upw, g_upw2)) {
+            /* Both cleared before asking again, for the reason the root pair
+             * gives: confirming a string the operator can no longer see is not
+             * confirmation. */
+            wipe_user_password();
+            status("The two did not match. Try again.", C_DANGER);
+            tui_flush();
+            continue;
+        }
+        /* THE TWO PASSWORDS MUST DIFFER. Identical ones would put the same
+         * secret in two key slots and give the everyday account root's password
+         * -- which is the separation this screen exists to create, undone by an
+         * operator taking the shortest path. */
+        if (ustreq(g_upw, g_pw)) {
+            wipe_user_password();
+            status("This must not be the root password. The two accounts are separate.",
+                   C_DANGER);
+            tui_flush();
+            continue;
+        }
+        return 1;
+    }
+}
+
+/* ---- the review --------------------------------------------------------
+ *
+ * Everything that was answered, shown back, with the chance to change any of it
+ * -- and the last screen before the word is asked for.
+ *
+ * PASSWORDS ARE SHOWN AS "set", NEVER AS THEMSELVES OR AS A LENGTH. The whole
+ * point of tui_input's mask is that the clear text never reaches a cell; a
+ * review screen that printed it back, or printed one asterisk per character,
+ * would hand back at the end what was protected all the way through. The length
+ * of a password is worth something to somebody watching the screen, which is the
+ * same reason tui_input pads with spaces rather than with its mask.
+ */
+static int review_returns_install(void)
+{
+    char blocks[24], mib[24];
+
+    for (;;) {
+        disk_size(blocks, sizeof(blocks), mib, sizeof(mib));
+        frame("Review before installing");
+
+        int r = para(ROW_BODY, "Check this, then choose. Nothing has been written yet.", C_TEXT);
+        r++;
+
+        label(r, "disk");
+        tui_text(r, FIELD_COL, mib, C_VALUE);
+        tui_text(r, FIELD_COL + 12, "MiB - everything on it is erased", C_DANGER);
+        r++;
+        label(r, "root");
+        tui_text(r, FIELD_COL, "password set", C_VALUE);
+        r++;
+        label(r, g_user);
+        tui_text(r, FIELD_COL, "password set", C_VALUE);
+        r += 2;
+
+        static const char *const choices[] = {
+            "Install now - this erases the disk",
+            "Change the account name",
+            "Change the root password",
+            "Change the everyday password",
+            "Cancel, change nothing",
+        };
+        /* Defaults to Install. See the header: the gate is the typed word, not
+         * where this highlight starts. */
+        int sel = 0;
+        hint("arrows to choose  -  enter to accept  -  esc to cancel");
+        tui_flush();
+        mark("INSTALLER: waiting on the review choice", "");
+        if (tui_menu(r, MARGIN + 2, 40, choices, 5, &sel) != 0) return 0;
+
+        if (sel == 0) return 1;
+        if (sel == 4) return 0;
+
+        if (sel == 1) {
+            if (!ask_user_name()) return 0;
+        } else if (sel == 2) {
+            if (!ask_root_password()) return 0;
+            /* CHANGING ROOT'S PASSWORD CAN INVALIDATE THE OTHER ONE, and the
+             * check that catches it lives in ask_user_password -- which is not
+             * running. Without this, an operator who changes root's password to
+             * whatever the everyday account already uses gets both accounts on
+             * one secret, and the separation the second account exists to create
+             * is gone with no screen having said anything. Re-ask rather than
+             * refuse at the end: the answer that has to change is the one being
+             * asked for again. */
+            if (ustreq(g_upw, g_pw)) {
+                wipe_user_password();
+                if (!ask_user_password()) return 0;
+            }
+        } else if (sel == 3) {
+            if (!ask_user_password()) return 0;
+        }
+    }
+}
+
+/* The word. Immediately before the format, with nothing between it and the
+ * call that destroys the disk. */
+static int screen_confirm_word(void)
+{
+    frame("Type the word to erase this disk");
+
+    int r = para(ROW_BODY, "This is the last question before the disk is erased.", C_DANGER);
+    r++;
+    r = para(r, "Type " CONFIRM_WORD " to go ahead. Anything else, or esc, stops and "
+                "changes nothing.", C_TEXT);
+
+    label(r + 2, "confirm");
+    status("", C_TEXT);
+    hint("type the word  -  enter to accept  -  esc to stop");
+    tui_flush();
 
     char typed[16];
-    tui_text(ROW_FIELD - 1, 3, "confirm:", TUI_A_NORMAL);
-    tui_flush();
-    say("INSTALLER: waiting on the typed confirmation", "");
-    if (tui_input(ROW_FIELD, 12, 12, typed, sizeof(typed), 0) != 0) return 0;
+    mark("INSTALLER: waiting on the typed confirmation", "");
+    if (tui_input(r + 2, FIELD_COL, 12, typed, sizeof(typed), 0) != 0) return 0;
 
 #ifdef INSTALLER_NO_CONFIRM
     /* CONTROL ARM -- never ship. The typed word is read and then not compared,
@@ -262,142 +640,32 @@ static int screen_confirm(void)
 #endif
 }
 
-/* Ask for the password twice. Returns 1 on a confirmed, usable password. */
-static int screen_password(void)
-{
-    for (;;) {
-        frame("Choose the root password");
-        tui_text(ROW_BODY, 3, "This password does two things, and it must be one password:",
-                 TUI_A_NORMAL);
-        tui_text(ROW_BODY + 2, 5, "it seals the volume's encryption key, and", TUI_A_NORMAL);
-        tui_text(ROW_BODY + 3, 5, "it is the password for the root account.", TUI_A_NORMAL);
-        tui_text(ROW_BODY + 5, 3,
-                 "There is no recovery. A forgotten password is a lost volume.", TUI_A_BOLD);
-        status("typing is not shown  -  esc to cancel the install");
-
-        tui_text(ROW_FIELD - 1, 3, "password:", TUI_A_NORMAL);
-        tui_flush();
-        say("INSTALLER: waiting on the password", "");
-        if (tui_input(ROW_FIELD, 14, STORAGE_FORMAT_PASSWORD_MAX,
-                      g_pw, sizeof(g_pw), TUI_IN_MASK) != 0) return 0;
-
-        tui_text(ROW_FIELD + 1, 3, "again:", TUI_A_NORMAL);
-        tui_flush();
-        say("INSTALLER: waiting on the password again", "");
-        if (tui_input(ROW_FIELD + 2, 14, STORAGE_FORMAT_PASSWORD_MAX,
-                      g_pw2, sizeof(g_pw2), TUI_IN_MASK) != 0) return 0;
-
-        if (g_pw[0] == 0) {
-            status("an empty password would seal the volume to nothing - try again");
-            tui_flush();
-            continue;
-        }
-        if (!ustreq(g_pw, g_pw2)) {
-            /* Both fields are cleared before asking again. Leaving the first one
-             * populated would mean the second attempt is confirming a string the
-             * operator can no longer see and may not have meant. */
-            wipe_passwords();
-            status("the two did not match - try again");
-            tui_flush();
-            continue;
-        }
-        return 1;
-    }
-}
-
-
-/* Ask for the everyday account: a name, and a password twice.
+/* The screen shown while the format runs.
  *
- * WHY THERE ARE TWO ACCOUNTS AT ALL. A machine whose only login is root is a
- * machine every session is administered from, and this project's whole argument
- * is that authority should be held only when it is being exercised. The
- * installer is the one moment an operator can be asked for both without it
- * feeling like an extra chore, so it asks.
- *
- * THE NAME IS BOUNDED AND CHECKED HERE, not left to the kernel to refuse. It is
- * lowercase letters and digits, must start with a letter, and cannot be `root`.
- * do_useradd would refuse a duplicate name anyway, but a refusal arriving as a
- * return code AFTER the disk has been formatted is a bad place to discover a
- * typo -- this screen runs before anything is written.
- */
-static int name_ok(const char *n)
+ * THERE IS NO PROGRESS BAR, AND THAT IS A DECISION. sys_storage_format is one
+ * blocking call: this task is inside it from the moment it starts until the
+ * volume exists, and it learns nothing on the way. A bar drawn over it would be
+ * an animation with no measurement behind it, which on the one screen an
+ * operator is asked not to power off is worse than no bar -- a stalled real bar
+ * and a smooth fake one say opposite things about whether to keep waiting. So
+ * this says what is happening, says it can take minutes on a slow disk, and then
+ * stops moving. [G-13] is the finding that made "how long is this allowed to
+ * take" a measured question; the answer lives in the gate, not in a spinner. */
+static void screen_working(void)
 {
-    if (n[0] < 'a' || n[0] > 'z') return 0;          /* must start with a letter */
-    for (unsigned i = 0; n[i]; i++) {
-        char c = n[i];
-        int lower = (c >= 'a' && c <= 'z');
-        int digit = (c >= '0' && c <= '9');
-        if (!lower && !digit) return 0;
-    }
-    return !ustreq(n, "root");
+    frame("Installing");
+    int r = para(ROW_BODY, "Creating the encrypted volume.", C_TEXT);
+    r++;
+    r = para(r, "This can take several minutes on a slow disk, and the screen will not "
+                "change while it runs.", C_TEXT);
+    r++;
+    (void)para(r, "Do not power off.", C_DANGER);
+    status("", C_TEXT);
+    hint("");
+    tui_flush();
 }
 
-static int screen_user(void)
-{
-    for (;;) {
-        frame("Create your everyday account");
-        tui_text(ROW_BODY, 3, "Day-to-day work should not be done as root, so this machine",
-                 TUI_A_NORMAL);
-        tui_text(ROW_BODY + 1, 3, "gets a second account with no administrative authority.",
-                 TUI_A_NORMAL);
-        tui_text(ROW_BODY + 3, 3,
-                 "Its password also unlocks the disk at boot, so either account", TUI_A_NORMAL);
-        tui_text(ROW_BODY + 4, 3,
-                 "can be the first login after the machine is powered on.", TUI_A_NORMAL);
-        status("lowercase letters and digits  -  esc to cancel the install");
-
-        tui_text(ROW_FIELD - 1, 3, "username:", TUI_A_NORMAL);
-        tui_flush();
-        say("INSTALLER: waiting on the user name", "");
-        if (tui_input(ROW_FIELD, 14, USER_NAME_MAX, g_user, sizeof(g_user), 0) != 0) return 0;
-
-        if (!name_ok(g_user)) {
-            status("a name is lowercase letters and digits, starts with a letter, and is not root");
-            tui_flush();
-            continue;
-        }
-
-        tui_text(ROW_FIELD + 1, 3, "password:", TUI_A_NORMAL);
-        tui_flush();
-        say("INSTALLER: waiting on the user password", "");
-        if (tui_input(ROW_FIELD + 2, 14, STORAGE_FORMAT_PASSWORD_MAX,
-                      g_upw, sizeof(g_upw), TUI_IN_MASK) != 0) return 0;
-
-        tui_text(ROW_FIELD + 3, 3, "again:", TUI_A_NORMAL);
-        tui_flush();
-        say("INSTALLER: waiting on the user password again", "");
-        if (tui_input(ROW_FIELD + 4, 14, STORAGE_FORMAT_PASSWORD_MAX,
-                      g_upw2, sizeof(g_upw2), TUI_IN_MASK) != 0) return 0;
-
-        if (g_upw[0] == 0) {
-            status("an empty password would leave this account unusable - try again");
-            tui_flush();
-            continue;
-        }
-        if (!ustreq(g_upw, g_upw2)) {
-            /* Both cleared before asking again, for the reason the root pair
-             * gives: confirming a string the operator can no longer see is not
-             * confirmation. */
-            for (unsigned i = 0; i < sizeof(g_upw); i++)  g_upw[i] = 0;
-            for (unsigned i = 0; i < sizeof(g_upw2); i++) g_upw2[i] = 0;
-            status("the two did not match - try again");
-            tui_flush();
-            continue;
-        }
-        /* THE TWO PASSWORDS MUST DIFFER. Identical ones would put the same
-         * secret in two key slots and give the everyday account root's password
-         * -- which is the separation this screen exists to create, undone by an
-         * operator taking the shortest path. */
-        if (ustreq(g_upw, g_pw)) {
-            for (unsigned i = 0; i < sizeof(g_upw); i++)  g_upw[i] = 0;
-            for (unsigned i = 0; i < sizeof(g_upw2); i++) g_upw2[i] = 0;
-            status("this must not be the root password - the two accounts are separate");
-            tui_flush();
-            continue;
-        }
-        return 1;
-    }
-}
+/* ---- the install -------------------------------------------------------- */
 
 /* Do it. Returns 0 on success.
  *
@@ -417,16 +685,19 @@ static int screen_user(void)
  */
 static int do_install(void)
 {
-    frame("Installing");
-    tui_text(ROW_BODY, 3, "Creating the encrypted volume. Do not power off.", TUI_A_NORMAL);
-    status("this takes a moment");
-    tui_flush();
+    screen_working();
 
     /* The marker goes out BEFORE the call, not after. If the format wedges or
      * the machine dies mid-write, a transcript that says "formatting" and stops
      * is evidence; one that says nothing is indistinguishable from an installer
      * that never got here. */
-    say("INSTALLER: formatting", "");
+    mark("INSTALLER: formatting", "");
+    /* Repaint over the marker BEFORE going into the format. Every other marker
+     * is followed by a screen that draws itself; this one is followed by a
+     * blocking call that can run for minutes, so without this the working screen
+     * carries `INSTALLER: formatting` across it for the whole install -- on the
+     * one screen an operator is asked to sit and look at. */
+    tui_flush();
 
     unsigned plen = uslen(g_pw);
     int rc = sys_storage_format(g_pw, plen);
@@ -492,8 +763,24 @@ static int do_install(void)
     }
     return 0;
 }
-
 /* ---- entry -------------------------------------------------------------- */
+
+/* Every exit that changed nothing goes through here, so "nothing was written"
+ * is one sentence in one place rather than five copies that can drift apart --
+ * and the marker a gate asserts on is emitted by the same code that draws the
+ * screen saying it. */
+static void leave_untouched(const char *why)
+{
+    frame("Cancelled");
+    (void)para(ROW_BODY, "Nothing was written. The disk is exactly as it was.", C_TEXT);
+    status(why, C_TEXT);
+    hint("");
+    tui_flush();
+    tui_end();
+    wipe_passwords();
+    say("INSTALLER: nothing was written", "");
+    sys_exit();
+}
 
 void _start(void)
 {
@@ -513,11 +800,12 @@ void _start(void)
 
     if (!g_si.present) {
         frame("Nothing to install onto");
-        tui_text(ROW_BODY, 3, "This machine has no persistent disk attached.", TUI_A_NORMAL);
-        tui_text(ROW_BODY + 2, 3, "It is running from the ephemeral store, which lasts",
-                 TUI_A_NORMAL);
-        tui_text(ROW_BODY + 3, 3, "until the power goes off.", TUI_A_NORMAL);
-        status("press any key");
+        int r = para(ROW_BODY, "This machine has no persistent disk attached.", C_TEXT);
+        r++;
+        (void)para(r, "It is running from the ephemeral store, which lasts until the power "
+                      "goes off.", C_TEXT);
+        status("", C_TEXT);
+        hint("press any key");
         tui_flush();
         (void)tui_getkey();
         tui_end();
@@ -531,10 +819,12 @@ void _start(void)
          * confirmation, and putting it in the same menu is how the two get
          * confused. */
         frame("This disk already has a Horus volume");
-        tui_text(ROW_BODY, 3, "Installing over an existing volume is not something this",
-                 TUI_A_NORMAL);
-        tui_text(ROW_BODY + 1, 3, "installer will do. Nothing has been changed.", TUI_A_NORMAL);
-        status("press any key");
+        int r = para(ROW_BODY, "Installing over an existing volume is not something this "
+                               "installer will do.", C_TEXT);
+        r++;
+        (void)para(r, "Nothing has been changed.", C_TEXT);
+        status("", C_TEXT);
+        hint("press any key");
         tui_flush();
         (void)tui_getkey();
         tui_end();
@@ -542,41 +832,17 @@ void _start(void)
         sys_exit();
     }
 
-    if (!screen_confirm()) {
-        frame("Cancelled");
-        tui_text(ROW_BODY, 3, "Nothing was written. The disk is exactly as it was.",
-                 TUI_A_NORMAL);
-        tui_flush();
-        tui_end();
-        wipe_passwords();
-        say("INSTALLER: nothing was written", "");
-        sys_exit();
-    }
-
-    if (!screen_password()) {
-        frame("Cancelled");
-        tui_text(ROW_BODY, 3, "Nothing was written. The disk is exactly as it was.",
-                 TUI_A_NORMAL);
-        tui_flush();
-        tui_end();
-        wipe_passwords();
-        say("INSTALLER: nothing was written", "");
-        sys_exit();
-    }
-
-    /* Asked BEFORE anything is written, like every other question here. An
-     * installer that formats and then discovers the operator wanted to cancel
-     * has already spent the only thing it cannot give back. */
-    if (!screen_user()) {
-        frame("Cancelled");
-        tui_text(ROW_BODY, 3, "Nothing was written. The disk is exactly as it was.",
-                 TUI_A_NORMAL);
-        tui_flush();
-        tui_end();
-        wipe_passwords();
-        say("INSTALLER: nothing was written", "");
-        sys_exit();
-    }
+    /* THE ORDER: show what is at stake, collect every answer, show them back,
+     * and only then ask for the word. See the header for why the word is last
+     * rather than second. Every question is asked before anything is written,
+     * so an operator who changes their mind at any point up to the word has
+     * cost themselves nothing but typing. */
+    if (!screen_survey())            leave_untouched("You chose not to install.");
+    if (!ask_root_password())        leave_untouched("The install was cancelled.");
+    if (!ask_user_name())            leave_untouched("The install was cancelled.");
+    if (!ask_user_password())        leave_untouched("The install was cancelled.");
+    if (!review_returns_install())   leave_untouched("You chose not to install.");
+    if (!screen_confirm_word())      leave_untouched("The disk was not erased.");
 
     int rc = do_install();
     wipe_passwords();
@@ -587,15 +853,19 @@ void _start(void)
     }
 
     frame("Installed");
-    tui_text(ROW_BODY, 3, "The volume is created, sealed and open.", TUI_A_NORMAL);
-    tui_text(ROW_BODY + 2, 3, "Two accounts exist, and either password opens the disk:",
-             TUI_A_NORMAL);
-    tui_text(ROW_BODY + 4, 5, "root", TUI_A_BOLD);
-    tui_text(ROW_BODY + 4, 16, "administers this machine", TUI_A_NORMAL);
-    tui_text(ROW_BODY + 5, 5, g_user, TUI_A_BOLD);
-    tui_text(ROW_BODY + 5, 16, "everything else", TUI_A_NORMAL);
-    tui_text(ROW_BODY + 7, 3, "Log in with the passwords you chose.", TUI_A_NORMAL);
-    status("");
+    int r = para(ROW_BODY, "The volume is created, sealed and open.", C_OK);
+    r++;
+    r = para(r, "Two accounts exist, and either password opens the disk:", C_TEXT);
+    r++;
+    label(r, "root");
+    tui_text(r, FIELD_COL, "administers this machine", C_TEXT);
+    r++;
+    label(r, g_user);
+    tui_text(r, FIELD_COL, "everything else", C_TEXT);
+    r += 2;
+    (void)para(r, "Log in with the passwords you chose.", C_TEXT);
+    status("", C_TEXT);
+    hint("");
     tui_flush();
     tui_end();
     say("INSTALLER: PASS installed", "");

@@ -114,7 +114,7 @@ DEFECT_FLAGS = \
 	SYSCOV_PROBES_ABSENT KSTACK_INFLIGHT_LEGACY_WORD KSTACK_SLOT_INDEX_TRUNC \
 	CAP_LOOKUP_ROOT_FALLBACK CAP_LOOKUP_RANGE_FALLBACK CAP_LOOKUP_TYPE_UNCHECKED \
 	KEYSLOT_REMOVE_NOOP USERS_PEPPER_PER_BOOT STORAGE_AUTOFORMAT \
-	STORAGE_FORMAT_UNGATED INSTALLER_NO_CONFIRM \
+	STORAGE_FORMAT_UNGATED INSTALLER_NO_CONFIRM BLOCK_ERRNO_LEGACY \
 	META_CACHE_NO_WRITEBACK META_CACHE_WB_OUTSIDE_TXN META_CACHE_EVICT_NOWB \
 	META_CACHE_TINY MERKLE_NODE_TRUST_CACHED MERKLE_SKIP_PARENT_BIND \
 	FSCK_SHALLOW_REFS STORAGE_MOUNT_ANY_SIZE ALLOC_NO_HINT ATA_READY_ERR_ONLY \
@@ -479,6 +479,23 @@ STORAGE_FORMAT_UNGATED ?= 0
 ifeq ($(STORAGE_FORMAT_UNGATED),1)
 CFLAGS  += -DSTORAGE_FORMAT_UNGATED
 ASFLAGS += -DSTORAGE_FORMAT_UNGATED
+endif
+
+# BLOCK_ERRNO_LEGACY=1 restores the bare return values h_block_read and
+# h_block_write shipped with: the storage layer's raw -1 for a block the device
+# refuses, and a raw -3 for a failed user copy. -1 IS SYS_ERR_PERM, so under this
+# flag "that block does not exist" and "you hold no capability for this" are the
+# same answer -- which is why a refusal test against these two syscalls could not
+# tell whether the handler had run at all. -3 is in no vocabulary; the code for a
+# bad user pointer is SYS_ERR_FAULT.
+#
+# It survived because nothing had ever called either syscall: both sat on
+# .github/syscall-coverage.yml's `uncovered` list from the day it was written.
+# Control arm for make smoke-blockprobe.
+BLOCK_ERRNO_LEGACY ?= 0
+ifeq ($(BLOCK_ERRNO_LEGACY),1)
+CFLAGS  += -DBLOCK_ERRNO_LEGACY
+ASFLAGS += -DBLOCK_ERRNO_LEGACY
 endif
 
 # INSTALLER_NO_CONFIRM=1 reads the typed confirmation and then does not COMPARE
@@ -1025,6 +1042,7 @@ ifeq ($(CAPTEST_SELFTEST),1)
 CFLAGS  += -DCAPTEST_SELFTEST
 ASFLAGS += -DCAPTEST_SELFTEST
 AUDITPROBE_DEP = userspace/auditprobe.bin
+BLOCKPROBE_DEP = userspace/blockprobe.bin
 endif
 
 # The set of utilities ported so far. Each is an unmodified upstream .c in
@@ -2914,7 +2932,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin userspace/installer.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin userspace/installer.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(BLOCKPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -3773,7 +3791,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.stripped.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/tuitest.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/tuitest.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -4679,6 +4697,43 @@ smoke-auditprobe-control:
 # second is the one a return code can never report, which is why the gate asserts
 # on it. The probe stops at neither: it runs every check and reports them all, so
 # the transcript shows the misalignment beside the overrun.
+# blockprobe rides in the same CAPTEST_SELFTEST image as a THIRD task, holding
+# exactly one CAP_ENCRYPTED_STORAGE. SYS_BLOCK_READ and SYS_BLOCK_WRITE carry
+# { CAPSLOT_AUDIT, READ|WRITE, CAP_ENCRYPTED_STORAGE }, so the central gate
+# refuses captest before either handler runs -- and unlike the audit pair, whose
+# entry cost one probe, these two had never been entered by ANY build in this
+# tree, tracked or otherwise.
+#
+# Its own gate rather than a line in smoke-auditprobe: the two probes hold
+# different capability TYPES in the same slot and each asserts it is refused the
+# other's syscalls, so they must be able to fail separately or the pair says
+# nothing.
+.PHONY: smoke-blockprobe
+smoke-blockprobe:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='BLOCKPROBE: PASS' \
+		FAIL_MARKER='BLOCKPROBE: FAIL' tools/smoke_test.sh boot.iso
+
+# The falsifying arm. BLOCK_ERRNO_LEGACY=1 puts back the bare -1 the storage
+# layer returns for a block the device refuses.
+#
+# THE MARKER IS THE INDISTINGUISHABILITY, not "it failed". -1 is the value of
+# SYS_ERR_PERM, so under the flag the probe's check 4 reads its refusal as the
+# capability gate's and says so by name. That is the defect's signature rather
+# than a build that broke somehow: the same call still refuses, still writes
+# nothing, and still returns a negative number -- it just cannot say which
+# refusal it was, which is the whole claim.
+.PHONY: smoke-blockprobe-control
+smoke-blockprobe-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 BLOCK_ERRNO_LEGACY=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 BLOCK_ERRNO_LEGACY=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='BLOCKPROBE: FAIL bad-block-is-indistinguishable-from-refusal' \
+		tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-auditprobe-abi-control
 smoke-auditprobe-abi-control:
 	@$(MAKE) --no-print-directory clean
@@ -5142,8 +5197,9 @@ smoke-syscall-coverage:
 
 # ---- the falsifying arm for the 2026-08-30 SC_NONE promotions ---------------
 #
-# SYSCOV_PROBES_ABSENT=1 compiles out the coverage probes: captest's section 13
-# and, since 2026-09-01, auditprobe's calls into the two audit handlers. The gate
+# SYSCOV_PROBES_ABSENT=1 compiles out the coverage probes: captest's section 13,
+# auditprobe's calls into the two audit handlers (2026-09-01), and blockprobe's
+# calls into the two raw-block handlers (2026-09-06). The gate
 # above must then go RED, and it must go red for the RIGHT REASON -- which is why
 # this asserts the exact SET of syscalls the checker names, not merely that it
 # failed. The set is SYSCOV_CONTROL_EXPECTED below; read the count from there and
@@ -5169,7 +5225,7 @@ SYSCOV_CONTROL_EXPECTED = \
 	SYS_AUDIT_DIGEST SYS_BRK SYS_FRAME_PAGES SYS_IPC_REPLY SYS_MAP_FRAME \
 	SYS_MAP_REGION SYS_READ SYS_READ_AUDIT SYS_REGISTER_STORAGE_BACKEND \
 	SYS_SIGACTION SYS_SIGRETURN SYS_SPAWN_ARG SYS_TASK_EXIT_INFO \
-	SYS_UNMAP_FRAME
+	SYS_UNMAP_FRAME SYS_BLOCK_READ SYS_BLOCK_WRITE
 
 smoke-syscall-coverage-control:
 	@set -eu; \

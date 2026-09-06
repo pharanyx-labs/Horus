@@ -907,6 +907,18 @@ embedded_auditprobe_bin_start:
 .incbin "userspace/auditprobe.bin"
 .global embedded_auditprobe_bin_end
 embedded_auditprobe_bin_end:
+
+/* PIE blockprobe binary: endowed with ONE CAP_ENCRYPTED_STORAGE and nothing
+ * else, it enters the two raw-block handler bodies -- which nothing in this tree
+ * had ever entered, on any build. Embedded on the same terms as auditprobe: a
+ * task whose whole purpose is to hold a capability has no business in the ship
+ * image. */
+.align 16
+.global embedded_blockprobe_bin_start
+embedded_blockprobe_bin_start:
+.incbin "userspace/blockprobe.bin"
+.global embedded_blockprobe_bin_end
+embedded_blockprobe_bin_end:
 #endif
 
 #ifdef FRAME_SELFTEST

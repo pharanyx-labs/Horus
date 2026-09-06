@@ -198,6 +198,47 @@ covered:
   # Witness: make smoke-auditprobe. Falsified by AUDIT_ABI_LEGACY=1 (the defect,
   # both halves) and SYSCALL_PTR_TRUNC32=1 (#176 itself, whose runtime arm had
   # only ever reached SYS_DMESG).
+
+  # Promoted 2026-09-06, and they had the longest gap of anything on this list:
+  # both sat in `uncovered` from the day this manifest was written, and unlike
+  # every other entry here NO build in this tree had ever entered them -- not a
+  # tracked workload, not a selftest image, not a flag arm. They are the raw
+  # medium beneath the filesystem.
+  #
+  # Neither moved on an argument. They carry { CAPSLOT_AUDIT, READ|WRITE,
+  # CAP_ENCRYPTED_STORAGE }, so the central gate refuses captest first and no
+  # reading of the dispatch table could promote them; what they needed was a task
+  # that HOLDS the capability, which the entry below said and nobody had written.
+  # userspace/blockprobe.c is that task: uid 1000, holding one
+  # CAP_ENCRYPTED_STORAGE at CAPSLOT_AUDIT and nothing else, in the
+  # CAPTEST_SELFTEST image beside auditprobe. captest's own cspace is untouched.
+  #
+  # It is auditprobe's MIRROR rather than its copy: the two hold different
+  # capability TYPES in the SAME slot, and each asserts it is refused the other's
+  # syscalls. That is S60 -- the type test living in cap_lookup rather than in its
+  # ~40 callers -- witnessed from both sides in one image.
+  #
+  # ENTERING THEM FOUND A DEFECT, which is the third time LIMITATIONS.md 1.8 has
+  # been right about this technique. Both handlers returned the storage layer's
+  # bare -1 for a block the device refuses, and -1 IS SYS_ERR_PERM: "that block
+  # does not exist" and "you hold no capability for this" were the same answer, so
+  # a refusal test against either syscall could not tell whether the handler had
+  # run at all. A failed user copy answered a bare -3, which is in no vocabulary.
+  # Fixed to SYS_ERR_IO and SYS_ERR_FAULT, the codes include/errno.h says to use.
+  #
+  # h_block_write's SUCCESS path is deliberately NOT entered and is not claimed:
+  # a successful raw write would have to land inside the live volume, and a probe
+  # that scribbles on the filesystem it shares a boot with is a flaky gate. The
+  # body is entered by writes the storage layer refuses -- which still run
+  # copy_from_user, so the #176 static-buffer check is made on the write path too.
+  # That is the same boundary SYS_SHLIB_INFO records below, stated for a syscall
+  # whose success path needs a scratch device rather than a compiled-in feature.
+  #
+  # Witness: make smoke-blockprobe. Falsified by BLOCK_ERRNO_LEGACY=1, which puts
+  # the bare returns back and must turn the probe red naming the
+  # indistinguishability by name.
+  - SYS_BLOCK_READ
+  - SYS_BLOCK_WRITE
   - SYS_AUDIT_DIGEST
   - SYS_READ_AUDIT
   # Promoted 2026-08-29 with S52, and the promotion is the point rather than a
@@ -357,10 +398,6 @@ uncovered:
     dispatch row (CAPSLOT_STORAGE_FORMAT, WRITE, CAP_STORAGE_FORMAT). captest holds no CAP_STORAGE_FORMAT and its checks assert a refusal the TABLE issues, so the handler never runs. Its sibling SYS_STORAGE_INFO IS covered, by init calling it at boot from the same capability -- the difference is that entering this body FORMATS THE ATTACHED DISK, so no tracked workload can enter it without destroying the volume the run is using. The installer build is what enters it (roadmap 2.9), and that is a separate boot with a blank image rather than a promotion this file can make
   SYS_ROTATE_KEYS: >-
     dispatch row (slot 8, READ, CAP_CONSOLE), and that row is only the first of two checks -- do_rotate_keys additionally requires CAP_ENCRYPTED_STORAGE before it does anything. captest holds neither
-  SYS_BLOCK_READ: >-
-    dispatch row (CAPSLOT_AUDIT, READ|WRITE, CAP_ENCRYPTED_STORAGE). A raw block read beneath the filesystem; the tracked workloads reach storage through fs_server's higher-level calls, and fs_server itself has no reason to bypass its own layer
-  SYS_BLOCK_WRITE: >-
-    dispatch row (CAPSLOT_AUDIT, READ|WRITE, CAP_ENCRYPTED_STORAGE), as SYS_BLOCK_READ
   SYS_FS_INODE_LINK: >-
     dispatch row (CAPSLOT_AUDIT, READ|WRITE, CAP_ENCRYPTED_STORAGE). fs_server HOLDS that capability, so unlike its neighbours in this group the gate would pass -- the gap is that nothing asks it to make a hard link. Its sibling SYS_FS_INODE_FREE was in this position until 2026-08-30 and moved for the price of one `rm` in the session; this one needs a shell command that does not exist, which is a feature rather than a test
 

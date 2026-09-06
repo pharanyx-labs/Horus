@@ -139,6 +139,37 @@ void h_storage_format(struct interrupt_frame64 *r) {
     r->rax = (uint64_t)(uint32_t)(rc == 0 ? 0 : rc);
 }
 
+/* SYS_BLOCK_READ: raw block read. Authorised solely by the object-store
+ * capability (CAP_ENCRYPTED_STORAGE at CAPSLOT_AUDIT, by type) enforced centrally
+ * in the dispatch table.
+ *
+ * THE RETURN CODES ARE THE SHARED VOCABULARY, AND THEY DID NOT USED TO BE.
+ *
+ * This handler passed the storage layer's bare -1 straight back to ring 3, and
+ * answered a failed copy_to_user with a bare -3. `include/errno.h` says in as
+ * many words to use the SYS_ERR_* names "instead of bare -1/-2/-3 so the same
+ * condition returns the same code across every syscall", and the reason is not
+ * tidiness: -1 IS SYS_ERR_PERM. A caller that asked for a block the device does
+ * not have was told "you hold no capability for this", which is both false and
+ * the one answer that makes a refusal test meaningless -- it cannot distinguish
+ * the dispatch table refusing before the handler from the handler refusing
+ * inside it. -3 was not in the vocabulary at all; the code for a bad user
+ * pointer is SYS_ERR_FAULT.
+ *
+ * It survived because nothing had ever called either syscall. Both sat on
+ * `.github/syscall-coverage.yml`'s `uncovered` list from the day it was written,
+ * and `docs/LIMITATIONS.md` 1.8 is the record of what that costs -- this is the
+ * third defect found by entering a handler body for the first time.
+ *
+ * SYS_ERR_IO rather than a bound-specific code, and that is deliberate: the
+ * block layer answers -1 for a block past the end of the device AND for a device
+ * that failed, and this handler cannot tell them apart. Inventing a distinction
+ * the layer below does not make would be a fail-open of a smaller kind -- a
+ * caller reading SYS_ERR_RANGE would conclude the device is healthy. It says
+ * what it knows: the storage layer refused.
+ *
+ * Falsified by BLOCK_ERRNO_LEGACY=1, which restores both bare returns
+ * (`make smoke-blockprobe-control`). */
 void h_block_read(struct interrupt_frame64 *r) {
     uint64_t block = ((uint64_t)r->rbx << 32) | r->rcx;
     void *buf = (void*)(addr_t)r->rdx;
@@ -150,17 +181,34 @@ void h_block_read(struct interrupt_frame64 *r) {
         if (copy_to_user(buf, kbuf, to) == 0) {
             r->rax = to;
         } else {
-            r->rax = -3;
+#ifdef BLOCK_ERRNO_LEGACY
+            r->rax = (uint64_t)(int64_t)-3;
+#else
+            r->rax = (uint64_t)(int64_t)SYS_ERR_FAULT;
+#endif
         }
     } else {
-        r->rax = rc;
+#ifdef BLOCK_ERRNO_LEGACY
+        r->rax = (uint64_t)(int64_t)rc;
+#else
+        r->rax = (uint64_t)(int64_t)SYS_ERR_IO;
+#endif
     }
 }
 
 /* SYS_BLOCK_WRITE: raw block write. Authorised solely by the object-store
  * capability (CAP_ENCRYPTED_STORAGE at CAPSLOT_AUDIT, by type) enforced centrally
  * in the dispatch table. The ambient uid==0 gate that used to sit here is gone
- * (finding I-1): authority is the capability, not the identity. */
+ * (finding I-1): authority is the capability, not the identity.
+ *
+ * The return codes are the shared vocabulary for the reason h_block_read above
+ * states at length, and this handler had the same two bare values. Note the
+ * ordering, which blockprobe's check 5 depends on: the copy from the user runs
+ * BEFORE the block is offered to the storage layer, so a write to a block the
+ * device refuses still exercises the caller's pointer. That is what lets a probe
+ * witness a 32-bit truncation of it (issue #176's shape) without a byte reaching
+ * the medium -- a truncated pointer answers SYS_ERR_FAULT where an intact one
+ * reaches the layer below and answers SYS_ERR_IO. */
 void h_block_write(struct interrupt_frame64 *r) {
     uint64_t block = ((uint64_t)r->rbx << 32) | r->rcx;
     const void *buf = (const void*)(addr_t)r->rdx;
@@ -168,11 +216,19 @@ void h_block_write(struct interrupt_frame64 *r) {
     uint8_t kbuf[BLOCK_SIZE];
     uint32_t to = len > BLOCK_SIZE ? BLOCK_SIZE : len;
     if (copy_from_user(kbuf, buf, to) != 0) {
-        r->rax = -3;
+#ifdef BLOCK_ERRNO_LEGACY
+        r->rax = (uint64_t)(int64_t)-3;
+#else
+        r->rax = (uint64_t)(int64_t)SYS_ERR_FAULT;
+#endif
         return;
     }
     int rc = storage_block_write(block, kbuf);
-    r->rax = (rc == 0) ? (int)to : rc;
+#ifdef BLOCK_ERRNO_LEGACY
+    r->rax = (rc == 0) ? (uint64_t)to : (uint64_t)(int64_t)rc;
+#else
+    r->rax = (rc == 0) ? (uint64_t)to : (uint64_t)(int64_t)SYS_ERR_IO;
+#endif
 }
 
 /* SYS_REGISTER_FS_SERVER: register the caller as the fs server. The admin

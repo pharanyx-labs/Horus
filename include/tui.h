@@ -231,6 +231,32 @@ void tui_cursor(int row, int col);
  * restore is unconditional at the end. */
 void tui_flush(void);
 
+/* Discard the library's belief about what the terminal is showing, so the next
+ * tui_flush repaints every cell.
+ *
+ * WHY THIS HAS TO EXIST. The damage diff rests on one assumption: that nothing
+ * writes to this terminal except tui_flush. That assumption is FALSE for every
+ * program here that also emits marker lines, because those go out as cooked
+ * CON_OP_WRITE requests to the same UART, landing at wherever the terminal's
+ * cursor happens to be -- in the middle of a password field, as it turned out.
+ * The library cannot see that, so `front` still says those cells are correct and
+ * the next flush skips them. The text stays on the screen, through every
+ * subsequent screen, until something else happens to write that exact cell.
+ *
+ * Measured on 2026-09-06 by rendering the installer's own serial stream through
+ * a VT emulator: `*******INSTALLER: waiting on the user password again` drawn
+ * across the password row of a live install. No gate saw it -- every installer
+ * gate asserts on the markers themselves, which are on the wire either way, and
+ * the TUI self-test asserts on cells the library owns. It is only visible to
+ * somebody looking at the screen.
+ *
+ * A caller that writes to the terminal behind the library's back says so with
+ * this. It is deliberately the CALLER's job rather than a wrapper the library
+ * offers for printing: routing marker output through the TUI would put a second
+ * output path inside it, and the whole argument for this file is that it has
+ * one. */
+void tui_invalidate(void);
+
 /* Block for one key and return it. Never returns a partial escape sequence. */
 int  tui_getkey(void);
 

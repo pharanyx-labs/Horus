@@ -1796,6 +1796,11 @@ jobs:
         run: make smoke-tui-acs-control
       - name: Control arm — a wrapped word running out of its column
         run: make smoke-tui-wrap-control
+      # The damage diff assumes nothing else writes to this terminal, and for
+      # every program that also emits markers that is false. This arm is the one
+      # that found a shipped defect rather than guarding a new one.
+      - name: Control arm — a screen written over by something else is not repainted
+        run: make smoke-tui-invalidate-control
       # The termination half: strncpy's semantics leave the buffer unterminated
       # exactly when the source did not fit.
       - name: Control arm — ustrncpy must always terminate

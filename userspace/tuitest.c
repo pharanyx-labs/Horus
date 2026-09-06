@@ -424,6 +424,51 @@ void _start(void)
               "a screen with no line drawing still shifted the charset");
     }
 
+    /* --- 12b. a screen something else wrote over is repainted --------------
+     *
+     * The damage diff assumes nothing writes to this terminal except tui_flush,
+     * and for every program here that also emits marker lines that assumption is
+     * FALSE: those are cooked CON_OP_WRITE requests to the same UART, landing at
+     * wherever the terminal's cursor is. The library cannot see it, so `front`
+     * still says the cell is correct and the next flush skips it -- the foreign
+     * text stays on screen through every subsequent screen.
+     *
+     * This is not hypothetical and it is not a test-only concern: it was found
+     * by rendering the installer's own serial stream through a VT emulator, as
+     * `*******INSTALLER: waiting on the user password again` across a live
+     * password row. No gate saw it, because the markers are on the wire either
+     * way and every cell the library owns was correct.
+     *
+     * say() below is exactly that foreign write -- this test's own marker path,
+     * which is the same mechanism as the installer's. This is what
+     * TUI_NO_INVALIDATE=1 breaks. */
+    {
+        tui_cursor(-1, -1);
+        tui_flush();
+        tui_test_reset();
+        tui_flush();
+        check(tui_test_emitted() == 0, "an unchanged screen still emitted bytes before invalidation");
+
+        say("TUITEST: a foreign write lands on the terminal here", "");
+        tui_invalidate();
+        tui_test_reset();
+        tui_flush();
+        /* A full repaint of 24x80 is a couple of thousand bytes; an unchanged
+         * screen is zero. The bound only has to separate those two, and is
+         * deliberately loose about the exact escapes. */
+        check(tui_test_emitted() > 1000,
+              "an invalidated screen was not repainted");
+
+        /* And it is not permanent: once repainted, the library is entitled to
+         * believe the terminal again. An invalidate that never cleared would
+         * turn every later flush into a full repaint, which is the damage diff
+         * gone -- the same loss TUI_NO_DAMAGE_DIFF reproduces, arrived at from
+         * the other side. */
+        tui_test_reset();
+        tui_flush();
+        check(tui_test_emitted() == 0, "invalidation did not clear after its repaint");
+    }
+
     /* --- 13. word wrap breaks at spaces, and breaks a long word at the column
      *
      * The column has a box edge to its right on every installer screen, so text

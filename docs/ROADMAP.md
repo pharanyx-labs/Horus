@@ -1378,6 +1378,34 @@ installer would mean granting it `CAP_ENCRYPTED_STORAGE` and `CAP_BOOT_MODULE` -
 to read every boot module and write anywhere in the object store -- to duplicate a loop that
 already exists in the task whose job it is.
 
+**Delivered: the conversation, reordered so the consent is last (2026-09-06).** The typed word
+used to be the second question -- choose Continue, type `FORMAT`, then answer five more screens
+before anything was written -- so the consent was acted on about a machine state the operator
+could no longer see. The order is now: show what is at stake, collect every answer, **show them
+back**, then ask for the word, immediately before the format with nothing in between. `SECURITY.md`
+**S73** is unchanged in substance and restated for the new position; the gate is still the word,
+and `INSTALLER_NO_CONFIRM=1` still removes only the comparison.
+
+**The review screen is also the only way to correct a typo, and it is built from the two
+interactions that already existed** -- a `tui_menu` choosing which question to ask again and a
+`tui_input` asking it. A form layer with tab-navigation was designed and rejected on the rule
+`include/tui.h` has always stated; see 2.5. The decision logic lives in `installer.c`, where a
+reviewer of this program's consent is already reading. One consequence worth recording: changing
+the root password at the review can silently collide with the everyday one, and the check that
+catches that lives in the screen which is not running, so the review re-asks the everyday
+password when it happens.
+
+**And the screens were being drawn over by the program's own markers, which is what looking at
+it found.** A marker is a cooked console write to the same UART the TUI draws on, so it lands
+wherever the terminal's cursor is; the damage diff cannot see a write it did not make, so the
+text stayed on screen through every screen after it. `*******INSTALLER: waiting on the user
+password again` across a live install's password row. **No gate could have caught it** -- every
+installer gate asserts on the markers, which are on the wire either way -- and it was found by
+rendering the installer's serial stream through a VT emulator, measured at 16 corrupted rows
+against 0 after `tui_invalidate()`, with `make smoke-installer` green in both arms. The lesson
+is narrow and worth keeping: a gate that reads the WIRE cannot see what the SCREEN looks like,
+and for a full-screen program those are different questions.
+
 **Still open, and what each needs:**
 
 - **Selecting among several targets.** There is one ATA device today and `storage_query`
@@ -1728,7 +1756,7 @@ past it.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue`, §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 253 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 127 of them control arms that must reproduce a defect |
+| ✅ | 254 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 128 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

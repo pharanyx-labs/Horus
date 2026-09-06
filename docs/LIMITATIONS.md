@@ -535,12 +535,12 @@ a page at the bogus address and reported success.
 ### 1.8 Part of the syscall table has no test that runs its handler, and one of those gaps hid a defect
 
 **Measured since 2026-08-20**, and re-derived on every merge rather than restated: as of
-2026-09-01, and gated since: **83 of 94** implemented syscalls have their handler
+2026-09-06, and gated since: **85 of 94** implemented syscalls have their handler
 body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
-boot-modules session). The other 11 are listed in `.github/syscall-coverage.yml`, each with a written reason.
+boot-modules session). The other 9 are listed in `.github/syscall-coverage.yml`, each with a written reason.
 
 This was stated as a limitation rather than a finding, on the grounds that nothing here was
-known to be broken. **That is no longer the honest framing, and it has now been wrong twice.**
+known to be broken. **That is no longer the honest framing, and it has now been wrong three times.**
 
 On 2026-08-29 three of the syscalls on the uncovered list, `SYS_CAP_MINT`, `SYS_CAP_TRANSFER`
 and `SYS_CAP_MOVE`, turned out to reach a helper that spun forever on a NULL capability lookup
@@ -562,6 +562,26 @@ into `userspace/grantee.c`'s 144-byte stack array, on every `PROC_SELFTEST` boot
 caller was written. Fixed by `include/audit_abi.h`, one declaration both rings compile, with a
 `_Static_assert` on the size in each (**S71**).
 
+On 2026-09-06 it happened a third time, to the pair with the longest gap on the list.
+`SYS_BLOCK_READ` and `SYS_BLOCK_WRITE` — the raw medium beneath the filesystem — had sat in
+`uncovered` since the manifest was written, and unlike every other entry there, **no build in
+this tree had ever entered them**: not a tracked workload, not a selftest image, not a defect
+arm. `userspace/blockprobe.c`, a task holding one `CAP_ENCRYPTED_STORAGE` and nothing else,
+entered both and found that each returned the storage layer's bare `-1` for a block the device
+refuses. `-1` **is** `SYS_ERR_PERM`: "that block does not exist" and "you hold no capability for
+this" were the same answer, so a refusal test against either syscall could not have told whether
+the handler ran at all — the defect and the thing that hid it were one value. A failed user copy
+answered a bare `-3`, which is in no vocabulary at all; `include/errno.h` names it
+`SYS_ERR_FAULT` and says in as many words to use the names "instead of bare -1/-2/-3". Fixed to
+`SYS_ERR_IO` and `SYS_ERR_FAULT`, witnessed by `make smoke-blockprobe`, falsified by
+`BLOCK_ERRNO_LEGACY=1`.
+
+The probe is also `auditprobe`'s **mirror**, and that is the part worth reusing: the two hold
+different capability *types* in the **same** slot (`CAPSLOT_AUDIT` carries `CAP_AUDIT` for the
+audit syscalls and `CAP_ENCRYPTED_STORAGE` for the block ones), and each asserts it is refused
+the other's syscalls. **S60** — the type test living in `cap_lookup` rather than in its ~40
+callers — is witnessed from both sides in one image, which neither probe could do alone.
+
 Three things are worth taking from the repeat rather than from either defect. The prescription
 was **already written down**: the `uncovered` entry for `SYS_AUDIT_DIGEST` said in as many
 words that "a probe task holding one `CAP_AUDIT` is worth writing", and it sat there for nine
@@ -572,10 +592,9 @@ once rather than the one syscall that motivated it. And third, **neither would h
 by a wider `captest`**: both syscalls are gated on a real capability, so the only way in is a
 task that holds one, which is why the answer was a new task rather than a bigger suite.
 
-So the standing risk is not hypothetical: a defect in any of those 11 handlers is invisible in
-the same way issue #176 was, and in the way S52 and S71 just were. `captest` is a **refusal** suite by
-So the standing risk is not hypothetical: a defect in any of those 11 handlers is invisible in
-the same way issue #176 was, and in the way S52 just was. `captest` is a **refusal** suite by
+So the standing risk is not hypothetical: a defect in any of those 9 handlers is invisible in
+the same way issue #176 was, and in the way S52, S71 and the block-syscall error vocabulary just
+were. `captest` is a **refusal** suite by
 construction: its checks for `SYS_DMESG` and `SYS_AUDIT_DIGEST` both assert `SYS_ERR_PERM`, and
 the capability gate returns before the handler runs. Both syscalls were named by the suite;
 neither handler had ever executed. What S52 adds to that lesson is that a refusal test does not

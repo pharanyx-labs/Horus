@@ -57,6 +57,7 @@ control_arms:
   smoke-captest-lookup-type-control: smoke-captest
   smoke-auditprobe-control: smoke-auditprobe
   smoke-auditprobe-abi-control: smoke-auditprobe
+  smoke-blockprobe-control: smoke-blockprobe
   smoke-keyslots-control: smoke-keyslots
   smoke-users-persist-control: smoke-users-persist
   smoke-meta-crash-control: smoke-meta-crash
@@ -174,6 +175,7 @@ gates:
   - smoke-cspace-release
   - smoke-captest
   - smoke-auditprobe
+  - smoke-blockprobe
   - smoke-claim-release
   - smoke-console
   - smoke-console-isolation

@@ -3053,6 +3053,37 @@ void captest_selftest(void) {
         for (;;) asm volatile("hlt");
     }
 
+    /* ---- blockprobe: the same argument, one capability along -----------------
+     *
+     * SYS_BLOCK_READ and SYS_BLOCK_WRITE carry
+     * { CAPSLOT_AUDIT, READ|WRITE, CAP_ENCRYPTED_STORAGE }, so the central gate
+     * refuses captest exactly as it refuses it the audit syscalls, and neither
+     * handler body had ever run -- on any build in this tree, tracked or not.
+     * `docs/LIMITATIONS.md` 1.8 records what that has cost twice already.
+     *
+     * IT HOLDS THE SAME SLOT AS auditprobe AND A DIFFERENT TYPE, which is the
+     * part worth reading. CAPSLOT_AUDIT carries CAP_AUDIT for the audit syscalls
+     * and CAP_ENCRYPTED_STORAGE for the block ones; the two probes sit in the
+     * same slot with the types exchanged, and each asserts that it is refused the
+     * other's syscalls. That is S60 -- the type test living in cap_lookup rather
+     * than in ~40 callers -- witnessed from both sides at once. A kernel that
+     * gated on the slot alone would pass every positive check both probes make
+     * and fail both of the negative ones.
+     *
+     * uid 1000, and fatal on failure, for the reasons given above. */
+    extern uint8_t embedded_blockprobe_bin_start[], embedded_blockprobe_bin_end[];
+    int bpid = fs_spawn_embedded(embedded_blockprobe_bin_start,
+                                 embedded_blockprobe_bin_end, "blockprobe");
+    if (bpid <= 0) {
+        print("BLOCKPROBE: FAIL spawn\n");
+        for (;;) asm volatile("hlt");
+    }
+    tasks[bpid].uid = 1000;
+    if (cap_install_from_root(bpid, CAPSLOT_AUDIT, CAPSLOT_STORAGE, 0) != 0) {
+        print("BLOCKPROBE: FAIL endow\n");
+        for (;;) asm volatile("hlt");
+    }
+
     print("CAPTEST_SELFTEST: launching\n");
     selftest_resume_all();
     sched_enable_preemption();

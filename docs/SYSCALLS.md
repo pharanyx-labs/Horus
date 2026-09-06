@@ -735,7 +735,7 @@ sees key material.
 | # | Name | Arguments |
 |---|---|---|
 | 46 | `SYS_REGISTER_STORAGE_BACKEND` |, |
-| 47 / 48 | `SYS_BLOCK_READ` / `SYS_BLOCK_WRITE` | raw block I/O |
+| 47 / 48 | `SYS_BLOCK_READ` / `SYS_BLOCK_WRITE` | `(block, buf, len)`; raw block I/O. `block` is 64-bit, split across two registers by the wrapper. Returns bytes transferred, `SYS_ERR_IO` for a block the storage layer refuses, `SYS_ERR_FAULT` for a bad user pointer |
 | 56 / 57 | `SYS_FS_INODE_ALLOC` / `_FREE` | `type` → `ino` / `ino` |
 | 76 | `SYS_FS_INODE_LINK` | `ino` (increment link count) |
 | 58 / 59 | `SYS_FBLOCK_READ` / `_WRITE` | `(ino, block, buf[, len])`, decrypt+verify / encrypt with fresh nonce |
@@ -757,6 +757,17 @@ edits to its own inode table. The check is now in one place, `store_open()` in
 `src/kernel/syscall_fs.c`. **`SYS_BLOCK_READ` / `SYS_BLOCK_WRITE` are deliberately outside this
 rule**: they sit below the volume abstraction and move ciphertext, which is what the journal and
 crash gates need of them.
+
+**Both returned bare `-1` and `-3` until 2026-09-06**, and the first of those is the value of
+`SYS_ERR_PERM`. So a caller that asked for a block the device does not have was told it held no
+capability, and a refusal test could not distinguish the dispatch table refusing *before* the
+handler from the handler refusing *inside* it. They now answer `SYS_ERR_IO` and `SYS_ERR_FAULT`,
+the names `include/errno.h` exists to supply. `SYS_ERR_IO` rather than a bound-specific code is
+deliberate: the block layer answers `-1` both for a block past the end of the device and for a
+device that failed, and these handlers cannot tell those apart -- a caller reading
+`SYS_ERR_RANGE` would wrongly conclude the device is healthy. The defect survived because
+nothing had ever called either syscall (`docs/LIMITATIONS.md` 1.8); `userspace/blockprobe.c` is
+the task that does, and `make smoke-blockprobe` is the gate.
 
 `SYS_BOOT_MODULE_READ` **refuses any module that failed its manifest hash check**. Since
 provisioning into `/bin` goes through this path, an unverified module can never become a

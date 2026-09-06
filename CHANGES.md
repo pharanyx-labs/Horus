@@ -17,6 +17,37 @@ in this file.
 
 ### Added
 
+- **The two syscalls nothing had ever called now answer in the shared error vocabulary**
+  (`docs/LIMITATIONS.md` 1.8, `docs/SYSCALLS.md`). `SYS_BLOCK_READ` and `SYS_BLOCK_WRITE` -- the
+  raw medium beneath the filesystem -- sat in `.github/syscall-coverage.yml`'s `uncovered` list
+  from the day that file was written, and unlike every other entry there, **no build in this tree
+  had ever entered them**: not a tracked workload, not a selftest image, not a defect arm. Their
+  dispatch rows carry a real capability, so `captest` is refused by the table and the only way in
+  is a task that holds one.
+  `userspace/blockprobe.c` is that task -- uid 1000, one `CAP_ENCRYPTED_STORAGE` at
+  `CAPSLOT_AUDIT`, nothing else -- and **entering the handlers found a defect on the first boot**,
+  the third time out of three for this technique. Both returned the storage layer's bare `-1` for
+  a block the device refuses, and `-1` **is** `SYS_ERR_PERM`: "that block does not exist" and "you
+  hold no capability for this" were the same answer. The defect and the thing that hid it were one
+  value -- a refusal test against either syscall could not have told whether the handler ran at
+  all. A failed user copy answered a bare `-3`, which is in no vocabulary; `include/errno.h` names
+  it `SYS_ERR_FAULT` and says outright to use the names "instead of bare -1/-2/-3". Now
+  `SYS_ERR_IO` and `SYS_ERR_FAULT`.
+  `SYS_ERR_IO` rather than a bound-specific code is deliberate: the block layer answers `-1` both
+  for a block past the end of the device and for a device that failed, and the handler cannot tell
+  those apart. Inventing a distinction the layer below does not make is a fail-open of a smaller
+  kind, since a caller reading `SYS_ERR_RANGE` would conclude the device is healthy.
+  The probe is `auditprobe`'s **mirror** rather than its copy: the two hold different capability
+  *types* in the **same** slot, and each asserts it is refused the other's syscalls, so **S60** --
+  the type test living in `cap_lookup` rather than in its ~40 callers -- is witnessed from both
+  sides in one image. `h_block_write`'s success path is deliberately not entered and not claimed:
+  a successful raw write would have to land inside the live volume, and a probe that scribbles on
+  the filesystem it shares a boot with is a flaky gate. It is entered by writes the storage layer
+  refuses, which still run `copy_from_user` -- so the static-buffer check that issue #176 turned
+  on is made on the write path too, with no byte reaching the medium.
+  Witness `make smoke-blockprobe` (10 checks), falsified by `BLOCK_ERRNO_LEGACY=1`
+  (`make smoke-blockprobe-control`), both arms measured 2026-09-06. Coverage 83 -> **85 of 94**.
+
 - **The call that erases a disk names the disk it erases** (`SECURITY.md` **S83**, roadmap 2.9).
   `SYS_STORAGE_FORMAT` takes the target device as an argument. The alternative -- a "select the
   device" call followed by a "format it" call -- is a confused deputy by construction: the act

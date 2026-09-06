@@ -519,6 +519,20 @@ jobs:
       # that is the half no return code can report.
       - name: Control arm — the audit record the kernel sends is not the one ring 3 declares
         run: make smoke-auditprobe-abi-control
+      # The same argument one capability along, and the pair with the longest gap
+      # on the coverage list: SYS_BLOCK_READ and SYS_BLOCK_WRITE had never been
+      # entered by ANY build in this tree. blockprobe holds one
+      # CAP_ENCRYPTED_STORAGE at the SAME slot auditprobe holds its CAP_AUDIT in,
+      # so between them the two probes witness S60 -- the type test living in
+      # cap_lookup -- from both sides in one image.
+      - name: A task holding one CAP_ENCRYPTED_STORAGE runs both raw-block handlers
+        run: make smoke-blockprobe
+      # What entering them found. Both handlers passed the storage layer's bare
+      # -1 back to ring 3, and -1 IS SYS_ERR_PERM: "no such block" and "you hold
+      # no capability" were one answer, so a refusal test could not tell whether
+      # the handler had run. The marker is that indistinguishability by name.
+      - name: Control arm — a bad block and a missing capability answer alike
+        run: make smoke-blockprobe-control
 
   smoke-modules:
     name: QEMU boot-module transport (printf / tail provisioned into /bin, run from FS)

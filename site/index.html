@@ -1516,7 +1516,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 258 test targets, and the troubleshooting
+          Every configuration flag, every one of the 260 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1636,7 +1636,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             The security argument rests entirely on the tests, so they are treated as engineering
             artifacts rather than an afterthought. There are three layers: Rust unit tests and
-            Kani proofs on the host; 127 QEMU integration targets that boot a purpose-built kernel
+            Kani proofs on the host; 128 QEMU integration targets that boot a purpose-built kernel
             and assert a marker on the serial console; and scripted sessions that type into the
             real ring-3 shell over serial and read what comes back.
           </p>
@@ -2343,16 +2343,23 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
           </li>
           <li>
-            <h3><span class="id">coverage</span>Eleven system calls still have no test that runs them &mdash; and covering two of them found a fault</h3>
+            <h3><span class="id">coverage</span>Nine system calls still have no test that runs them &mdash; and covering four of them found a fault</h3>
             <p>
               <strong>Measured 2026-08-20</strong>, and checked on every merge since.
-              <strong>83 of 94</strong> system calls have their handler actually executed by the
+              <strong>85 of 94</strong> system calls have their handler actually executed by the
               three workloads this project tracks, a scripted end-to-end session, the
-              permission conformance suite, and the boot-modules session. The other 11 are each
-              <strong>83 of 94</strong> system calls have their handler actually executed by the
-              three workloads this project tracks, a scripted end-to-end session, the
-              permission conformance suite, and the boot-modules session. The other 11 are each
+              permission conformance suite, and the boot-modules session. The other 9 are each
               listed with a written reason.
+            </p>
+            <p>
+              The technique has now found a defect three times out of three. The most recent, on
+              2026-09-06, was the raw block pair &mdash; <code>SYS_BLOCK_READ</code> and
+              <code>SYS_BLOCK_WRITE</code>, the medium beneath the filesystem &mdash; which no
+              build in this tree had ever entered. Both returned the storage layer's bare
+              <code>-1</code> for a block the device refuses, and <code>-1</code> is the value of
+              &ldquo;you hold no capability for this&rdquo;. A caller could not tell a bad block
+              from a refusal, and neither could a test: the defect and the thing that hid it were
+              the same value.
             </p>
             <p>
               That was 65 until 2026-08-30, and the thirteen that moved cost no new machinery,

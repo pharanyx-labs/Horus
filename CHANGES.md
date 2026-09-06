@@ -15,6 +15,40 @@ in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **The TUI renders in colour and draws with the terminal's own line glyphs, and grew two
+  layout calls -- while the number of blocking input loops stayed at two.** The count is the
+  point. `include/tui.h` has always argued that "a program that has to be READ before it is
+  trusted does not get a widget set", and a form layer with tab-navigation between fields was
+  designed against that rule and rejected: it is a third loop over the keyboard, holding the
+  caller's array of fields and deciding on the caller's behalf which one the next keystroke
+  edits, in the library that stands between a keystroke and a decision to erase a disk. The
+  installer gets the same behaviour by composing the two interactions that already exist, in its
+  own file, where the logic deciding what an operator consented to is in front of whoever is
+  auditing that consent.
+  What did grow adds no control flow. Colour is four more bits in the attribute word `osgr`
+  already emitted; **an out-of-range colour becomes the terminal default rather than SGR 38 or
+  48**, which are the extended-colour introducers and would make the terminal read the rest of
+  the sequence -- including its terminator and the text after it -- as their arguments. Boxes
+  are drawn with DEC Special Graphics, the single-byte encoding ncurses uses on this terminal,
+  because a cell here holds ONE byte and a three-byte UTF-8 box character would either widen
+  every cell or store a cell that lies about the column it occupies, which is the invariant the
+  damage diff addresses the terminal by. `tui_center` and `tui_wrap` exist **by subtraction**:
+  `installer.c` placed every line of prose at a hand-counted column, and a hand-counted column
+  is silently wrong after somebody edits the sentence above it.
+  Two new falsified arms, both reading the **emitted stream** through a self-test hook added for
+  them, because both properties are invisible in a cell, in a return value, and in the byte
+  count. `TUI_ACS_NO_RESTORE=1` (`make smoke-tui-acs-control`) drops the emission of the shift
+  back to ASCII while leaving the bookkeeping that claims it happened, so the terminal renders
+  every subsequent byte as a line glyph -- the task's own markers, and the login prompt after
+  `tui_end`. **A byte-count check would read that as an improvement**, since the skipped restore
+  emits fewer bytes. `TUI_WRAP_NO_BREAK=1` (`make smoke-tui-wrap-control`) lets a word longer
+  than its column run out of it and across the frame edge beside it. Both measured RED against
+  `make smoke-tui` through `tools/check_base_gate_reddens.sh`, and all five pre-existing TUI arms
+  were re-run under the widened attribute type rather than assumed unaffected -- a defect flag is
+  global to the image, so a new test can disarm a neighbouring arm.
+
 ### Fixed
 
 - **A required CI job installed its scanner without a lockfile, so an unrelated crate's release

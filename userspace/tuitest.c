@@ -16,6 +16,44 @@
 
 static int checks, failures;
 
+/* ---- reading the WIRE, not the buffers -------------------------------------
+ *
+ * Sections 11 and 12 assert on bytes the terminal was actually sent. Every other
+ * check here reads a cell or a return value, and neither can answer "was the
+ * terminal left in the line-drawing charset" or "did a colour become an
+ * extended-colour introducer" -- those exist only in the emitted stream.
+ */
+static char wire[4096];
+static unsigned wirelen;
+
+static void wire_capture(void)
+{
+    wirelen = tui_test_out(wire, sizeof(wire));
+}
+
+static int wire_has(const char *needle)
+{
+    unsigned n = 0;
+    while (needle[n]) n++;
+    if (n == 0 || wirelen < n) return 0;
+    for (unsigned i = 0; i + n <= wirelen; i++) {
+        unsigned k = 0;
+        while (k < n && wire[i + k] == needle[k]) k++;
+        if (k == n) return 1;
+    }
+    return 0;
+}
+
+static int wire_ends_with(const char *needle)
+{
+    unsigned n = 0;
+    while (needle[n]) n++;
+    if (n == 0 || wirelen < n) return 0;
+    for (unsigned k = 0; k < n; k++)
+        if (wire[wirelen - n + k] != needle[k]) return 0;
+    return 1;
+}
+
 /* Markers go through the CONSOLE SERVER, not through kput.
  *
  * console_server owns the serial hardware in this build, so a ring-3 kput goes
@@ -304,6 +342,142 @@ void _start(void)
         /* Degenerate input is refused rather than guessed at. */
         check(tui_menu(14, 0, 12, items, 0, &sel) == -1, "an empty menu was not refused");
         check(tui_menu(14, 0, 12, 0, 3, &sel) == -1, "a menu with no items was not refused");
+    }
+
+    /* --- 11. colour reaches the wire, and an illegal colour does not -------
+     *
+     * The attribute word carries a foreground and a background since
+     * 2026-09-06. Two separate questions: does a colour survive into the cell
+     * (buffer), and does it become the right number on the wire (stream). The
+     * second is where the safety-relevant case lives. */
+    {
+        tui_cursor(-1, -1);
+        tui_flush();
+        tui_test_reset();
+        tui_putc(5, 5, 'C', (uint16_t)(TUI_FG(TUI_C_CYAN) | TUI_A_BOLD));
+        tui_flush();
+        wire_capture();
+
+        check(tui_test_attr(5, 5) == (uint16_t)(TUI_FG(TUI_C_CYAN) | TUI_A_BOLD),
+              "a colour did not survive into the cell");
+        check(wire_has(";36"), "a cyan foreground did not reach the wire as SGR 36");
+        check(wire_has(";1"),  "bold did not reach the wire as SGR 1");
+    }
+
+    /* A foreground and a background past TUI_C_WHITE. SGR 38 and 48 are the
+     * extended-colour INTRODUCERS: emitting one would make the terminal read the
+     * rest of the sequence as its arguments, so an out-of-range colour must
+     * become the terminal default rather than a number in that range. The cell
+     * is at row 5, column 5 deliberately -- a CUP to column 38 would put ";38"
+     * on the wire honestly, and the check could not tell the two apart. */
+    {
+        tui_cursor(-1, -1);
+        tui_flush();
+        tui_test_reset();
+        tui_putc(5, 5, 'X', (uint16_t)(TUI_FG(9u) | TUI_BG(9u)));
+        tui_flush();
+        wire_capture();
+
+        check(!wire_has(";38"), "an out-of-range foreground emitted the extended-colour introducer");
+        check(!wire_has(";48"), "an out-of-range background emitted the extended-colour introducer");
+    }
+
+    /* --- 12. line drawing shifts the charset, and shifts it BACK ------------
+     *
+     * tui_box draws with DEC Special Graphics, which means telling the terminal
+     * to reinterpret ordinary letters. The restore is the property that matters:
+     * a flush that ended in the graphics charset corrupts everything that is not
+     * this library -- this task's own markers, and the login prompt after
+     * tui_end -- and it does so INVISIBLY to every other check here, because the
+     * cells are right and the byte count goes DOWN. This is what
+     * TUI_ACS_NO_RESTORE=1 breaks. */
+    {
+        tui_cursor(-1, -1);
+        tui_flush();
+        tui_test_reset();
+        tui_box(15, 60, 3, 8, TUI_A_NORMAL);
+        tui_flush();
+        wire_capture();
+
+        check((tui_test_attr(15, 60) & TUI_A_ACS) != 0,
+              "a box corner was not marked as a line-drawing cell");
+        check(tui_test_cell(15, 60) == TUI_ACS_ULCORNER,
+              "a box did not use the line-drawing corner glyph");
+        check(tui_test_cell(15, 61) == TUI_ACS_HLINE,
+              "a box did not use the line-drawing horizontal glyph");
+        check(wire_has("\033(0"), "line drawing never shifted the terminal charset");
+        check(wire_ends_with("\033(B"),
+              "a flush left the terminal in the line-drawing charset");
+    }
+
+    /* And an ordinary flush after a box does not re-shift: the charset is diffed
+     * like an attribute, so a screen with no box cells in its damage costs no
+     * charset bytes at all. Checked separately because a flush that emitted the
+     * pair unconditionally would satisfy the two checks above and still put
+     * bytes on the wire for every screen. */
+    {
+        tui_test_reset();
+        tui_putc(15, 2, 'z', TUI_A_NORMAL);
+        tui_flush();
+        wire_capture();
+        check(!wire_has("\033(0"),
+              "a screen with no line drawing still shifted the charset");
+    }
+
+    /* --- 13. word wrap breaks at spaces, and breaks a long word at the column
+     *
+     * The column has a box edge to its right on every installer screen, so text
+     * that leaves its column corrupts the frame a reader uses to tell one field
+     * from another. The region is pre-filled so an overrun has somewhere
+     * recognisable to land. */
+    {
+        tui_fill(16, 0, 4, 40, '.', TUI_A_NORMAL);
+
+        int used = tui_wrap(16, 0, 10, 3, "alpha beta gamma", TUI_A_NORMAL);
+        check(used == 2, "wrapping did not use the expected number of rows");
+        check(tui_test_cell(16, 0) == 'a' && tui_test_cell(16, 4) == 'a',
+              "wrapping lost the first word");
+        check(tui_test_cell(16, 5) == '.',
+              "wrapping ran the first line past its column");
+        check(tui_test_cell(17, 0) == 'b' && tui_test_cell(17, 9) == 'a',
+              "wrapping did not fill the second line");
+
+        /* max_rows is honoured: a third line would have been needed and must not
+         * be drawn, because the caller sized the space for what it asked for. */
+        tui_fill(16, 0, 4, 40, '.', TUI_A_NORMAL);
+        check(tui_wrap(16, 0, 6, 1, "alpha beta gamma", TUI_A_NORMAL) == 1,
+              "wrapping exceeded the rows it was given");
+        check(tui_test_cell(17, 0) == '.', "wrapping drew past its last row");
+    }
+
+    /* A single word longer than the column. This is the case the space-breaking
+     * path never reaches and the one that gets forgotten -- which is what
+     * TUI_WRAP_NO_BREAK=1 reproduces. */
+    {
+        tui_fill(19, 0, 2, 40, '.', TUI_A_NORMAL);
+        int used = tui_wrap(19, 0, 6, 2, "supercalifragilistic", TUI_A_NORMAL);
+        check(used == 2, "a long word did not fill the rows it was given");
+        check(tui_test_cell(19, 0) == 's', "a long word lost its first character");
+        check(tui_test_cell(19, 5) == 'c', "a long word was broken early");
+        check(tui_test_cell(19, 6) == '.',
+              "a wrapped word ran out of its column");
+    }
+
+    /* --- 14. centring, and what it does with a string wider than the screen -
+     * Too wide starts at the left rather than at a negative column: the tail is
+     * then what is discarded, and the head -- the words that say which screen
+     * this is -- survives. Discarding the head would be the silent version. */
+    {
+        tui_fill(21, 0, 1, tui_cols(), '.', TUI_A_NORMAL);
+        tui_center(21, "hi", TUI_A_NORMAL);
+        check(tui_test_cell(21, (tui_cols() - 2) / 2) == 'h',
+              "a centred string is not centred");
+
+        static char wide[CON_COLS + 10];
+        for (int i = 0; i < CON_COLS + 9; i++) wide[i] = 'W';
+        wide[CON_COLS + 9] = 0;
+        tui_center(22, wide, TUI_A_NORMAL);
+        check(tui_test_cell(22, 0) == 'W', "an over-wide centred string lost its head");
     }
 
     tui_end();

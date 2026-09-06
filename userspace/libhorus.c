@@ -54,6 +54,56 @@ void ustrncpy(char *d, const char *s, unsigned n) {
 #endif
 }
 
+/* Render the boot-console timestamp prefix, "[    S.uuuuuu] ", into `buf` and
+ * return its length. `buf` needs HSTAMP_MAX bytes.
+ *
+ * THE FORMAT IS THE KERNEL'S, BYTE FOR BYTE -- kmsg_stamp() in
+ * src/kernel/terminal.c. The console changes hands mid-boot (the kernel drives
+ * it until console_server maps the VGA framebuffer, ring 3 drives it after), and
+ * a boot log whose prefix shape tells you which side of that handover a line
+ * fell on is a log a reader has to know the kernel's internals to read.
+ * tools/check_console_timestamps.py holds both writers to one regex.
+ *
+ * THE CLOCK IS NOT THE KERNEL'S, AND CANNOT BE. The kernel stamps from the
+ * calibrated TSC; ring 3 has SYS_CLOCK_GETTIME, which is derived from the 100 Hz
+ * PIT tick and quantised to 10 ms *on purpose* -- CR4.TSD denies ring 3 RDTSC to
+ * take away the cycle-accurate timer cache and covert-channel attacks lean on,
+ * and handing a microsecond clock back through a syscall (or through a
+ * kernel-stamped console line the server can read) would return it through the
+ * front door. So the microsecond field a ring-3 stamp prints is always a
+ * multiple of 10,000, and the two clocks have different epochs; see
+ * docs/LIMITATIONS.md 2.6d. Resolution was the thing worth giving up here. */
+unsigned hstamp(char *buf) {
+    struct horus_timespec ts;
+    umemset(&ts, 0, sizeof(ts));
+    if (sys_clock_gettime(HORUS_CLOCK_MONOTONIC, &ts) != 0) {
+        ts.sec = 0; ts.nsec = 0;
+    }
+    unsigned sec  = (unsigned)ts.sec;
+    unsigned frac = ts.nsec / 1000u;             /* microseconds */
+    unsigned n = 0;
+    buf[n++] = '[';
+    char digits[10];
+    unsigned dl = 0;
+    if (sec == 0) {
+        digits[dl++] = '0';
+    } else {
+        unsigned v = sec;
+        char tmp[10];
+        unsigned tl = 0;
+        while (v && tl < sizeof(tmp)) { tmp[tl++] = (char)('0' + (v % 10u)); v /= 10u; }
+        while (tl) digits[dl++] = tmp[--tl];
+    }
+    for (unsigned i = dl; i < 5; i++) buf[n++] = ' ';   /* width-5 seconds field */
+    for (unsigned i = 0; i < dl; i++) buf[n++] = digits[i];
+    buf[n++] = '.';
+    for (unsigned d = 100000u; d >= 1u; d /= 10u) buf[n++] = (char)('0' + (frac / d) % 10u);
+    buf[n++] = ']';
+    buf[n++] = ' ';
+    buf[n]   = 0;
+    return n;
+}
+
 void kput(const char *s) {
     sys_write(1, s, uslen(s));
 }

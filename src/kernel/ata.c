@@ -162,7 +162,7 @@ static void kmsg_who(const char *who, const char *what)
     if (n < sizeof(line) - 1) line[n++] = ' ';
     for (const char *c = what; *c && n < sizeof(line) - 1; c++) line[n++] = *c;
     line[n] = 0;
-    kmsg(line);
+    println(line);
 }
 
 static int ata_refuse(const char *what, uint32_t lba, uint8_t status)
@@ -170,7 +170,6 @@ static int ata_refuse(const char *what, uint32_t lba, uint8_t status)
     g_ata_refusals++;
     if (!g_ata_refusal_reported) {
         g_ata_refusal_reported = 1;
-        kmsg_begin();
         print("ata: refusing a ");
         print(what);
         print(" the drive is not ready for (lba ");

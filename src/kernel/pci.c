@@ -463,7 +463,6 @@ void iodev_init(void) {
      * whether the device was found at all. Deliberately a count and not a
      * listing: this is the kernel log, and enumerating hardware into it would be
      * a bus walk anyone with CAP_KERNEL_LOG could read. */
-    kmsg_begin();
     print("iodev: ");
     print_decimal((uint64_t)(iodev_count - IODEV_PLATFORM));
     print(" delegatable devices (platform + PCI bus 0)\n");

@@ -84,6 +84,42 @@ static void report(const char *s) {
     sys_write(1, s, (unsigned)n);
 }
 
+/* Tell console_server the boot log is over, so it stops putting a
+ * "[    S.uuuuuu] " prefix on every line (include/console_proto.h).
+ *
+ * Sent from here rather than decided by the server, because init is the only
+ * task that knows the difference: the server sees CON_OP_WRITE either way, and
+ * "the boot has finished" is a fact about what init is about to do next, not
+ * about the bytes. Best effort -- a console that keeps timestamping is a cosmetic
+ * fault in the session, and blocking the login on it would trade that for a
+ * machine nobody can reach. The server also stops on its first read request, so
+ * a lost signal costs at most the shell's banner.
+ *
+ * Nothing is stamped before this call that should not be, and everything after
+ * it is session output; the last stamped line of an ordinary boot is
+ * "init: starting, launching shell".
+ *
+ * NO sys_console_owned() GUARD, unlike report(). The first version had one and
+ * it did nothing at all: measured 2026-09-06, init reaches this line before
+ * console_server's SYS_MAP_PHYS on a uniprocessor boot, so the guard was false
+ * every time, the signal was never sent, and the login banner came out
+ * timestamped. That is the same race report() has, and the answer here is the
+ * opposite one -- report() needs to know which path can reach the wire NOW,
+ * while this only needs the server to see it EVENTUALLY, and the endpoint is
+ * already delegated whether or not the server has run yet. */
+static void console_boot_done(void) {
+    init_con_rq.magic = CON_PROTO_MAGIC;
+    init_con_rq.op    = CON_OP_BOOT_DONE;
+    init_con_rq.len   = 0;
+    for (int tries = 0; tries < 20000; tries++) {
+        int rc = sys_ipc_call(INIT_CON_CLIENT_SLOT, 0,
+                              &init_con_rq, sizeof(init_con_rq), &init_con_rp);
+        if (rc >= 0) return;
+        if (!ipc_transient(rc)) return;
+        sys_yield();
+    }
+}
+
 /* Report why the supervised shell ended, using the record SYS_TASK_EXIT_INFO
  * hands back after a completed sys_wait().
  *
@@ -645,6 +681,9 @@ void _start(void) {
     }
 
     report("init: starting, launching shell\n");
+
+    /* The last line of the boot log. From here the console is a terminal. */
+    console_boot_done();
 
 #ifdef KDIAG_NOISE
     /* The second writer, on purpose. Not a defect flag: it is the instrument

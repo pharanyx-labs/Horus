@@ -387,6 +387,25 @@ struct endpoint endpoints[MAX_ENDPOINTS];
  * compare small deltas. */
 uint64_t system_ticks = 0;
 
+/* How much of "since boot" the tick counter above cannot see.
+ *
+ * `system_ticks` starts at the FIRST TIMER INTERRUPT, which is not boot: on the
+ * boot measured on 2026-09-06 the first tick landed 1.07 s in, nearly all of it
+ * SMP bring-up, so SYS_CLOCK_GETTIME -- documented as "monotonic time since
+ * boot" -- was reporting a machine that had been up for 1.16 s as 0.09 s. That
+ * was invisible while nothing compared the answer to anything, and became a
+ * defect the moment the console log changed hands mid-boot: the kernel stamps
+ * lines from its own boot epoch and console_server stamps them from this one,
+ * so the log ran backwards by a second at the handover.
+ *
+ * Captured once, on the first tick, from the TSC boot clock the console uses,
+ * ALREADY ROUNDED DOWN TO A WHOLE TICK -- so this adds an offset and not one bit
+ * of resolution. CR4.TSD's argument is about how finely ring 3 can measure, and
+ * a constant cannot make anything finer. Captured in the ISR rather than at the
+ * point the timer is enabled because there are two such points (LAPIC, and the
+ * 8259 under IRQ_FORCE_PIC) and one ISR. */
+uint64_t clock_epoch_ticks = 0;
+
 /* Carve the task table out of the kernel's untyped reserve. Called from
  * kernel_main immediately after untyped_init(), which is the first moment an
  * arena exists, and before anything can reference a task.
@@ -1260,6 +1279,11 @@ void irq_policy_totals_uart(const char *when);   /* likewise -- one line, no tab
 
 void timer_handler(void) {
     system_ticks++;
+#ifndef CLOCK_EPOCH_FROM_FIRST_TICK
+    /* CLOCK_EPOCH_FROM_FIRST_TICK=1 is the control arm: it leaves the epoch at
+     * zero, which is the pre-2026-09-06 clock. See clock_epoch_ticks above. */
+    if (system_ticks == 1) clock_epoch_ticks = kmsg_uptime_ticks();
+#endif
 #ifdef IRQ_POLICY_AUDIT
     /* Report at two points either side of the init -> fs_server -> console_server
      * -> shell handshake, which is the window roadmap 1.1 says depends on the
@@ -1308,8 +1332,11 @@ uint32_t get_system_ticks(void) {
     return (uint32_t)system_ticks;
 }
 
+/* The clock. Ticks since BOOT, which is the counter plus the offset the counter
+ * itself could not observe -- see clock_epoch_ticks. Backs SYS_CLOCK_GETTIME;
+ * callers comparing small deltas want get_system_ticks() and are unaffected. */
 uint64_t get_system_ticks64(void) {
-    return system_ticks;
+    return system_ticks + clock_epoch_ticks;
 }
 
 /* ----------------------------------------------------------------------------

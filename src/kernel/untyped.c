@@ -1076,7 +1076,6 @@ int untyped_info(uint32_t untyped_slot, struct untyped_info *out) {
  * The frame is destroyed through destroy_dyn_frame(), the real path, so the arm
  * below reproduces a defect in the shipping code rather than in a copy of it. */
 void iommu_frame_teardown_selftest(void) {
-    kmsg_begin();
 
     if (!iommu_active()) {
         print("IOMMUTEST: FAIL no-iommu (this gate boots with SMOKE_IOMMU=1)\n");

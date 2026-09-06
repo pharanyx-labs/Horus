@@ -183,7 +183,6 @@ int ioapic_init(void) {
     ioapic_ready = 0;
 
     if (acpi_find_ioapic(&ioapic_info) != 0) {
-        kmsg_begin();
         print("ioapic: none in the MADT; interrupts stay on the 8259\n");
         return -1;
     }
@@ -197,7 +196,6 @@ int ioapic_init(void) {
 
     ioapic_pins = ((ioapic_read(IOAPIC_VER) >> 16) & 0xFF) + 1;
     if (ioapic_pins == 0 || ioapic_pins > 240) {
-        kmsg_begin();
         print("ioapic: implausible pin count; staying on the 8259\n");
         return -1;
     }
@@ -225,7 +223,6 @@ int ioapic_init(void) {
     ioapic_set_irq(0, 0);
     ioapic_set_irq(1, 0);
 
-    kmsg_begin();
     print("ioapic: ");
     print_decimal((uint64_t)ioapic_pins);
     print(" pins; timer+keyboard live, every delegatable line masked until a capability is accepted\n");

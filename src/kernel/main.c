@@ -85,7 +85,7 @@ static void assert_higher_half(void) {
         print("HIGHHALF: FAIL virt_to_phys/phys_to_virt do not round-trip\n");
         for (;;) asm volatile("cli; hlt");
     }
-    kmsg("boot: high-half relocation verified");
+    println("boot: high-half relocation verified");
 
     /* Every boot states which defect-reproducing flags it was built with, so a
      * serial transcript can be audited after the fact instead of being trusted.
@@ -106,8 +106,9 @@ static void assert_higher_half(void) {
      * string (smoke-defect-flags and its rebuild arms), and three writes give
      * anything printing concurrently -- an AP coming up, a driver probing -- a
      * place to land in the middle of the one line that says which kernel this
-     * is. `kmsg_begin()` is a timestamp prefix, not a lock, so it does not close
-     * that window; it only opens the line.
+     * is. The timestamp in front of it is emitted by print() itself, inside the
+     * console lock it already holds, so the prefix does not reopen that window
+     * the way the old `kmsg_begin(); print(line);` pair did.
      *
      * Boot-time and mostly single-CPU, so this is the less reachable of the two
      * instances the 2026-09-01 checker found -- but "less reachable" is what
@@ -123,7 +124,6 @@ static void assert_higher_half(void) {
         while (*val && n < sizeof(line) - 2) line[n++] = *val++;
         line[n++] = '\n';
         line[n]   = 0;
-        kmsg_begin();
         print(line);
     }
 }
@@ -326,7 +326,7 @@ void kernel_main(uint32_t mb_info) {
 
     terminal_init();
     kmsg_clock_init();   /* TSC boot clock (microsecond timestamps) before the first kmsg */
-    kmsg("Horus secure microkernel (x86_64) booting");
+    println("Horus secure microkernel (x86_64) booting");
     assert_higher_half();
 
     idt_init64();
@@ -343,7 +343,6 @@ void kernel_main(uint32_t mb_info) {
     if (e820_pages) phys_set_pool_pages(e820_pages);
     {
         uint32_t used = e820_pages ? e820_pages : USER_PHYS_DEFAULT_PAGES;
-        kmsg_begin();
         print("mem: physical pool ");
         print_decimal(used / 256);        /* frames * 4 KiB / 1 MiB */
         print(" MiB (");
@@ -351,7 +350,6 @@ void kernel_main(uint32_t mb_info) {
         print(e820_pages ? " frames, from E820)\n" : " frames, default: no E820)\n");
     }
     if (g_boot_module_count) {
-        kmsg_begin();
         print("boot: ");
         print_decimal(g_boot_module_count);
         print(" boot modules loaded\n");
@@ -379,7 +377,6 @@ void kernel_main(uint32_t mb_info) {
      * NULL base faults on an unmapped low address at once, so the ordering fails
      * loudly if it is ever broken. */
     tasks_init();
-    kmsg_begin();
     print("tasks: ");
     print_decimal((uint64_t)g_max_tasks);
     print(" provisioned from the kernel untyped reserve\n");
@@ -469,7 +466,6 @@ void kernel_main(uint32_t mb_info) {
     /* Report side-channel flush-on-switch coverage (like the CR4-protections
      * gate): which barriers are active, and whether SMT co-residency is a
      * residual the time-slice flush cannot cover. */
-    kmsg_begin();
     print("sched: flush-on-switch");
     if (platform.has_ibpb)      print(" IBPB");
     if (platform.has_l1d_flush) print(" L1D");

@@ -453,6 +453,16 @@ Monotonic **by construction**: the source is a counter the timer interrupt only 
 64-bit since 2026-08-24 because a `uint32_t` at 100 Hz wraps after ~497 days, and a clock that
 goes backwards makes every timeout built on it fire early or never.
 
+**Since boot means since boot.** That counter starts at the *first timer interrupt*, not at boot,
+and the gap is whatever the machine spent getting there -- 1.07 s on an SMP boot measured on
+2026-09-06, nearly all of it AP bring-up. A caller asking how long the machine had been up was
+told 0.09 s about a machine 1.16 s old, and the boot console -- stamped by the kernel from its own
+clock until `console_server` takes the wire, and by `console_server` from this one afterwards --
+ran backwards by a second at the handover. `clock_epoch_ticks` (`src/kernel/scheduler.c`) adds the
+difference, captured once on the first tick from the kernel's TSC boot clock and **already rounded
+down to a whole tick**, so the resolution above is unchanged: a constant cannot make a clock finer.
+Witnessed by `make smoke-console-timestamps`, falsified by `CLOCK_EPOCH_FROM_FIRST_TICK=1`.
+
 ## Observation (roadmap 3.6)
 
 | # | Name | Arguments | Authorisation *(as checked)* |

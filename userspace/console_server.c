@@ -63,11 +63,65 @@ static void vga_putc(char c) {
     if (vga_pos >= VGA_CELLS) vga_pos = 0;    /* wrap (no scroll in this first slice) */
 }
 
-/* Emit one console byte to both outputs, expanding \n to \r\n on serial. */
-static void con_putc(char c) {
+/* ---- the timestamped boot log, continued in ring 3 --------------------------
+ *
+ * The kernel puts "[    S.uuuuuu] " in front of every line it accepts
+ * (print_core in src/kernel/terminal.c). The console changes hands part way
+ * through the boot -- the moment we map the VGA framebuffer, the kernel stops
+ * driving the hardware -- and everything after that point arrives here instead.
+ * If only the kernel stamped, the boot log would lose its timestamps at an
+ * instant nothing in the log marks, and WHICH LINES lost them would depend on
+ * scheduling: `init: console_server launched` is written by init on another CPU
+ * and lands on either side of our SYS_MAP_PHYS from one boot to the next. A
+ * format that is decided by a race is not a format.
+ *
+ * So the server stamps too, in the same shape, from the only clock ring 3 has
+ * (see hstamp() in libhorus.c for why that clock is coarse and why that is the
+ * right trade). It stops when init says the boot log is over -- CON_OP_BOOT_DONE
+ * -- or when anyone reads from the console, whichever comes first.
+ *
+ * WHY THIS CANNOT BE SPLIT. The 2.6a hazard is a marker emitted as two writes
+ * with another writer's output landing between them. Here the prefix and the
+ * line it belongs to are emitted by ONE task in ONE pass of con_putc, and after
+ * the handover this task is the only writer of the UART -- that is the whole
+ * point of the handover (finding #126). Nothing schedulable can get between
+ * them: a client's next CON_OP_WRITE cannot be served until this one returns.
+ * (kfault_str/panic_ch still bypass every lock in the system by design; that is
+ * 2.6c and is neither improved nor worsened here.) */
+#ifdef CONSOLE_TIMESTAMPS_LEGACY
+/* CONTROL ARM -- never ship. The pre-2026-09-06 console: no line is stamped on
+ * either side of the handover. Its kernel half is in src/kernel/terminal.c; one
+ * flag sets both because the claim being falsified spans both rings (a boot log
+ * whose every line is timestamped), and an arm that removed only one half would
+ * leave the other half's lines stamped and pass for half the right reason. */
+static int con_stamping = 0;
+#else
+static int con_stamping = 1;      /* until CON_OP_BOOT_DONE, or the first read */
+#endif
+static int con_line_start = 1;
+
+/* One byte to both outputs, expanding \n to \r\n on serial. No stamping: this is
+ * what the prefix itself is written with. */
+static void con_emit(char c) {
     if (c == '\n') ser_putc('\r');
     ser_putc(c);
     vga_putc(c);
+}
+
+/* Emit one console byte, opening each line with a timestamp while the console is
+ * still a boot log. A '\n' at the start of a line stays a blank line -- a bare
+ * prefix on an empty row is noise, and the gate skips blank lines for the same
+ * reason. Control bytes (the '\b' of a backspace echo) never open a line. */
+static void con_putc(char c) {
+    if (con_stamping && con_line_start && ((unsigned char)c >= ' ' || c == '\t')) {
+        char st[HSTAMP_MAX];
+        unsigned n = hstamp(st);
+        for (unsigned i = 0; i < n; i++) con_emit(st[i]);
+        con_line_start = 0;
+    }
+    if (c == '\n') con_line_start = 1;
+    else if ((unsigned char)c >= ' ' || c == '\t') con_line_start = 0;
+    con_emit(c);
 }
 static void con_write(const uint8_t *data, unsigned len) {
     for (unsigned i = 0; i < len; i++) con_putc((char)data[i]);
@@ -97,6 +151,7 @@ static char con_getc(void) {
  * h_get_line / h_get_pass so behaviour (and the session tests) are unchanged.
  * Returns the line length; `out` is NUL-terminated. */
 static int con_getline(uint8_t *out, unsigned max, int mask) {
+    con_stamping = 0;          /* someone is typing at it: it is a terminal now */
     if (max > CON_LINE_MAX - 1) max = CON_LINE_MAX - 1;
     unsigned len = 0;
     for (;;) {
@@ -121,6 +176,7 @@ static int con_getline(uint8_t *out, unsigned max, int mask) {
  * comes back in one reply and a curses program can decode it without a timer. No
  * echo and no line editing — the program owns the screen. */
 static int con_read_raw(uint8_t *out, unsigned max) {
+    con_stamping = 0;          /* same backstop as con_getline */
     if (max == 0) return 0;
     if (max > CON_LINE_MAX) max = CON_LINE_MAX;
     unsigned n = 0;
@@ -281,6 +337,13 @@ void _start(void) {
             rp.rc = (int)n;
         } else if (rq.op == CON_OP_WINSZ) {
             rp.rc = (CON_ROWS << 16) | CON_COLS;
+        } else if (rq.op == CON_OP_BOOT_DONE) {
+            /* The boot log ends and the session begins: stop stamping. Idempotent
+             * on purpose -- init sends it once, but a second sender costs nothing
+             * and a server that refused the repeat would be a wedge waiting for
+             * an init that retries a transient IPC failure. */
+            con_stamping = 0;
+            rp.rc = 0;
         } else {
             rp.rc = -1;
         }

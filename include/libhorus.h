@@ -83,6 +83,12 @@ void ustrncpy(char *d, const char *s, unsigned n);
  * read side requires CAP_KERNEL_LOG. */
 void kput(const char *s);
 
+/* The boot-console timestamp prefix, "[    S.uuuuuu] ", rendered into `buf`
+ * (HSTAMP_MAX bytes) -- the ring-3 half of the format print() applies in the
+ * kernel. See the definition for why the shape is shared and the clock is not. */
+#define HSTAMP_MAX 24
+unsigned hstamp(char *buf);
+
 /* kput followed by a newline, as a single logical line. */
 /* Emit `prefix` and `detail` as one write, newline-terminated. Use this for any
  * marker a gate asserts on as a single string -- see the definition. */

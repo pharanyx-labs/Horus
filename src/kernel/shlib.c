@@ -257,7 +257,6 @@ int shlib_init(const uint8_t *elf, uint64_t len) {
     uint32_t wpages = 0;
     for (uint32_t p = 0; p < shlib_text_count; p++) if (shlib_page_w[p]) wpages++;
 
-    kmsg_begin();
     print("shlib: ");
     print_decimal((uint64_t)shlib_text_count);
     print(" pages loaded (");

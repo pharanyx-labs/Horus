@@ -449,96 +449,6 @@ static void serial_update_colour(void) {
 }
 
 /* The console writer. `to_klog` decides whether the bytes are also recorded in
- * the kernel message ring, and that is an AUTHORITY decision, not a formatting
- * one -- see print_from_user() below and finding [H-2]. Kernel-origin output
- * always records; ring-3 output records only if the writing task holds
- * CAP_KERNEL_LOG with WRITE. */
-static void print_core(const char* str, int to_klog) {
-    uint64_t flags = console_lock_acquire();
-    /* Snapshot ownership once for the whole call so a line is emitted whole to one
-     * sink, never split across a handoff. `drive_hw` false => a ring-3 server owns
-     * the console; we only record to klog and leave the wire to it. */
-    int drive_hw = (console_owner_task == 0);
-
-    while (*str) {
-        char c = *str;
-        /* The kernel log survives the handoff to ring 3: this append is placed
-         * BEFORE the drive_hw test on purpose, so a kernel diagnostic is still
-         * recorded once console_server owns the wire. That placement is also
-         * what made [H-2] reachable when the caller was ring 3. */
-        if (to_klog) klog_append(c);
-
-        if (!drive_hw) { str++; continue; }
-
-        if (cursor_y >= VGA_ROWS || cursor_x >= VGA_COLS) {
-            scroll_screen();
-        }
-
-        if (c == '\n') {
-            cursor_x = 0;
-            cursor_y++;
-        } else if (c == '\r') {
-            cursor_x = 0;
-        } else if (c == '\b') {
-
-            if (cursor_x > 0) {
-                cursor_x--;
-            } else if (cursor_y > 0) {
-                cursor_y--;
-                cursor_x = VGA_COLS - 1;
-            }
-        } else {
-            if (cursor_y < VGA_ROWS && cursor_x < VGA_COLS) {
-                VIDEO_MEMORY[cursor_y * VGA_COLS + cursor_x] = (current_attr << 8) | (uint8_t)c;
-            }
-            cursor_x++;
-        }
-
-        if (cursor_x >= VGA_COLS) {
-            cursor_x = 0;
-            cursor_y++;
-        }
-        if (cursor_y >= VGA_ROWS) {
-            scroll_screen();
-        }
-
-        if (c == '\n') {
-            serial_write_char('\r');
-            serial_write_char('\n');
-        } else {
-            serial_update_colour();
-            serial_write_char(c);
-        }
-
-        str++;
-    }
-    if (drive_hw) update_cursor();
-    console_lock_release(flags);
-}
-
-/* Kernel-origin output. Always recorded to klog: every caller is ring 0, and the
- * log is the kernel's own record of what it did. */
-void print(const char* str) { print_core(str, 1); }
-
-/* Ring-3-origin output (the SYS_WRITE fd 1 path, and nothing else).
- *
- * `may_klog` is the caller's proved authority to append to the kernel message
- * ring, not a preference: h_write() resolves it through cap_lookup() and passes
- * 0 when the writing task holds no CAP_KERNEL_LOG with WRITE. Finding [H-2] was
- * that this distinction did not exist -- h_write called print(), print() called
- * klog_append() unconditionally, and so any unprivileged ring-3 task could write
- * lines into `dmesg` that a reader cannot tell from kernel diagnostics, and could
- * flood the 16 KiB ring to evict genuine ones. That is an anti-forensics
- * primitive against the log a maintainer reads after an incident, and the read
- * side of the same ring had required CAP_KERNEL_LOG since [I-1].
- *
- * The console still takes the bytes either way. Writing to the terminal is not
- * the authority in question and is deliberately ungated (docs/SYSCALLS.md);
- * writing to the KERNEL'S LOG is, and it fails closed. */
-void print_from_user(const char* str, int may_klog) { print_core(str, may_klog != 0); }
-
-void println(const char* str) { print(str); print("\n"); }
-
 /* ---- Linux-style boot/kernel-log timestamps -------------------------------
  *
  * The prefix is "[    S.uuuuuu] " with MICROSECOND resolution, sourced from the
@@ -547,8 +457,31 @@ void println(const char* str) { print(str); print("\n"); }
  * early line; the TSC increments from the first instruction. `kmsg_clock_init()`
  * calibrates the TSC frequency once against PIT channel 2 -- the same ~10 ms
  * gate `lapic_timer_calibrate` uses -- and records the boot epoch. Call it once,
- * early, before the first kmsg. Under TCG the TSC is virtual but self-consistent
- * with the emulated PIT, so timestamps still advance monotonically. */
+ * early, before the first line is printed. Under TCG the TSC is virtual but
+ * self-consistent with the emulated PIT, so timestamps still advance
+ * monotonically.
+ *
+ * THE STAMP IS APPLIED BY THE WRITER, NOT BY THE CALLER (2026-09-06). Until then
+ * a line was timestamped only if its author remembered to call kmsg(), and most
+ * did not: the boot console mixed `[    0.002417] boot: 25 boot modules loaded`
+ * with `  [ OK ] boot modules verified ...` from crypto.c and main.c, and with
+ * every ring-3 line arriving through SYS_WRITE, which has no way to call kmsg()
+ * at all. A rule the caller must remember is a rule that decays; print_core()
+ * now stamps the first character of every line it accepts, so there is one place
+ * to get it right and no way to opt out by accident. kmsg()/kmsg_begin() are
+ * gone with the same commit -- they would have double-stamped, and their whole
+ * job is now done by the writer.
+ *
+ * WHY THE STAMP IS EMITTED INSIDE print_core's CRITICAL SECTION and not by a
+ * second call in front of it. `kmsg_begin(); print(msg);` was two separate
+ * `console_lock` acquisitions, so a ring-3 SYS_WRITE on another CPU could land
+ * between the prefix and the text of a kernel line -- the 2.6a hazard, in the
+ * kernel, on every timestamped line the system printed. Stamping from inside the
+ * loop that is already holding the lock makes prefix+text atomic against every
+ * other writer of this console: kernel print() on any CPU, and every ring-3
+ * SYS_WRITE, both of which reach the hardware only through this function. (It
+ * does NOT serialise against `kfault_str`/`panic_ch`, which bypass the lock by
+ * design; that is docs/LIMITATIONS.md 2.6c and is unchanged either way.) */
 static uint64_t boot_tsc0  = 0;
 static uint64_t tsc_per_us = 0;   /* 0 until calibrated => timestamps read 0 */
 
@@ -577,6 +510,24 @@ void kmsg_clock_init(void) {
     boot_tsc0 = rd_tsc();
 }
 
+/* Whole PIT ticks (10 ms each) elapsed since the kernel's boot epoch.
+ *
+ * QUANTISED DELIBERATELY, and that is the entire point of the function: it
+ * exists so SYS_CLOCK_GETTIME can share the console timestamps' epoch without
+ * anyone gaining a finer number than the PIT already hands out. The
+ * microsecond value it divides never leaves this file except under
+ * CLOCK_TSC_RESOLUTION, which is a control arm.
+ *
+ * Read once, on the first timer tick (scheduler.c), to fix the offset between
+ * "since boot" and "since the timer started". Those differed by 1.07 s on the
+ * boot measured on 2026-09-06 -- almost all of it SMP bring-up -- which is why
+ * a ring-3 stamp read 0.09 on a line the kernel would have stamped 1.16, and
+ * why a boot log that changed hands went BACKWARDS in the middle. */
+uint64_t kmsg_uptime_ticks(void) {
+    uint64_t us = tsc_per_us ? (rd_tsc() - boot_tsc0) / tsc_per_us : 0;
+    return us / (1000000u / PIT_TICK_HZ);
+}
+
 #ifdef CLOCK_TSC_RESOLUTION
 /* Microseconds since boot from the calibrated TSC. Exists ONLY for the
  * CLOCK_TSC_RESOLUTION control arm (roadmap 2.2): it is the cycle-accurate
@@ -587,13 +538,15 @@ uint64_t kmsg_uptime_us(void) {
 }
 #endif
 
-/* `kmsg_begin()` emits just the "[    S.uuuuuu] " prefix (for lines that then
- * print interpolated values); `kmsg()` emits a whole "[ts] msg" line. */
-void kmsg_begin(void) {
+/* Render "[    S.uuuuuu] " into `buf` (needs 24 bytes) and return its length.
+ * The exact same field widths are produced in ring 3 by hstamp() in
+ * userspace/libhorus.c, because the console changes hands mid-boot and a reader
+ * must not be able to tell which writer stamped a line by looking at it.
+ * tools/check_console_timestamps.py holds both to one regex. */
+static int kmsg_stamp(char *buf) {
     uint64_t us   = tsc_per_us ? (rd_tsc() - boot_tsc0) / tsc_per_us : 0;
     uint32_t sec  = (uint32_t)(us / 1000000u);
     uint32_t frac = (uint32_t)(us % 1000000u);     /* microseconds */
-    char buf[24];
     int n = 0;
     buf[n++] = '[';
     /* right-align the seconds in a width-5 field (the classic printk look) */
@@ -616,10 +569,139 @@ void kmsg_begin(void) {
     buf[n++] = ']';
     buf[n++] = ' ';
     buf[n]   = 0;
-    print(buf);
+    return n;
 }
 
-void kmsg(const char* str) { kmsg_begin(); print(str); print("\n"); }
+/* Emit ONE byte to the klog and (when the kernel still drives the hardware) to
+ * the VGA text buffer and COM1. Split out of print_core so the timestamp prefix
+ * can go through exactly the same path as the text it precedes, inside the same
+ * lock. Callers hold `console_lock`. */
+static void emit_char(char c, int to_klog, int drive_hw) {
+    /* The kernel log survives the handoff to ring 3: this append is placed
+     * BEFORE the drive_hw test on purpose, so a kernel diagnostic is still
+     * recorded once console_server owns the wire. That placement is also
+     * what made [H-2] reachable when the caller was ring 3. */
+    if (to_klog) klog_append(c);
+
+    if (!drive_hw) return;
+
+    if (cursor_y >= VGA_ROWS || cursor_x >= VGA_COLS) {
+        scroll_screen();
+    }
+
+    if (c == '\n') {
+        cursor_x = 0;
+        cursor_y++;
+    } else if (c == '\r') {
+        cursor_x = 0;
+    } else if (c == '\b') {
+
+        if (cursor_x > 0) {
+            cursor_x--;
+        } else if (cursor_y > 0) {
+            cursor_y--;
+            cursor_x = VGA_COLS - 1;
+        }
+    } else {
+        if (cursor_y < VGA_ROWS && cursor_x < VGA_COLS) {
+            VIDEO_MEMORY[cursor_y * VGA_COLS + cursor_x] = (current_attr << 8) | (uint8_t)c;
+        }
+        cursor_x++;
+    }
+
+    if (cursor_x >= VGA_COLS) {
+        cursor_x = 0;
+        cursor_y++;
+    }
+    if (cursor_y >= VGA_ROWS) {
+        scroll_screen();
+    }
+
+    if (c == '\n') {
+        serial_write_char('\r');
+        serial_write_char('\n');
+    } else {
+        serial_update_colour();
+        serial_write_char(c);
+    }
+}
+
+/* Where the next byte falls in the line, so the writer knows when to stamp. Not
+ * per-caller state: the console is one line of text whoever is printing to it,
+ * and print() is re-entered from every CPU and from ring 3. Guarded by
+ * `console_lock` like the cursor beside it. */
+static int at_line_start = 1;
+
+/* Set while dump_kernel_log() replays the ring back to the console. Those bytes
+ * were stamped when they were first accepted; stamping the replay would put a
+ * second, later prefix in front of every recovered line and misdate the log a
+ * maintainer is reading it to reconstruct. */
+static int replaying_klog = 0;
+
+/* The console writer. `to_klog` decides whether the bytes are also recorded in
+ * the kernel message ring, and that is an AUTHORITY decision, not a formatting
+ * one -- see print_from_user() below and finding [H-2]. Kernel-origin output
+ * always records; ring-3 output records only if the writing task holds
+ * CAP_KERNEL_LOG with WRITE.
+ *
+ * Every line it accepts is timestamped -- see the block above kmsg_stamp() for
+ * why the stamp is applied here rather than by the caller, and why it must be
+ * emitted without releasing the lock. */
+static void print_core(const char* str, int to_klog) {
+    uint64_t flags = console_lock_acquire();
+    /* Snapshot ownership once for the whole call so a line is emitted whole to one
+     * sink, never split across a handoff. `drive_hw` false => a ring-3 server owns
+     * the console; we only record to klog and leave the wire to it. */
+    int drive_hw = (console_owner_task == 0);
+
+    while (*str) {
+        char c = *str;
+
+#ifndef CONSOLE_TIMESTAMPS_LEGACY
+        /* Stamp the first PRINTABLE byte of each line. A '\n' arriving at the
+         * start of a line is a deliberate blank line and stays blank -- a
+         * timestamp alone on a row is noise, and the gate that requires the
+         * format skips blank lines for the same reason. Control bytes ('\b'
+         * from the console read echo, '\r') never open a line either. */
+        if (at_line_start && !replaying_klog && ((unsigned char)c >= ' ' || c == '\t')) {
+            char st[24];
+            int n = kmsg_stamp(st);
+            for (int i = 0; i < n; i++) emit_char(st[i], to_klog, drive_hw);
+            at_line_start = 0;
+        }
+#endif
+        if (c == '\n') at_line_start = 1;
+        else if ((unsigned char)c >= ' ' || c == '\t') at_line_start = 0;
+
+        emit_char(c, to_klog, drive_hw);
+        str++;
+    }
+    if (drive_hw) update_cursor();
+    console_lock_release(flags);
+}
+
+/* Kernel-origin output. Always recorded to klog: every caller is ring 0, and the
+ * log is the kernel's own record of what it did. */
+void print(const char* str) { print_core(str, 1); }
+
+/* Ring-3-origin output (the SYS_WRITE fd 1 path, and nothing else).
+ *
+ * `may_klog` is the caller's proved authority to append to the kernel message
+ * ring, not a preference: h_write() resolves it through cap_lookup() and passes
+ * 0 when the writing task holds no CAP_KERNEL_LOG with WRITE. Finding [H-2] was
+ * that this distinction did not exist -- h_write called print(), print() called
+ * klog_append() unconditionally, and so any unprivileged ring-3 task could write
+ * lines into `dmesg` that a reader cannot tell from kernel diagnostics, and could
+ * flood the 16 KiB ring to evict genuine ones. That is an anti-forensics
+ * primitive against the log a maintainer reads after an incident, and the read
+ * side of the same ring had required CAP_KERNEL_LOG since [I-1].
+ *
+ * The console still takes the bytes either way. Writing to the terminal is not
+ * the authority in question and is deliberately ungated (docs/SYSCALLS.md);
+ * writing to the KERNEL'S LOG is, and it fails closed. */
+void print_from_user(const char* str, int may_klog) { print_core(str, may_klog != 0); }
+
+void println(const char* str) { print(str); print("\n"); }
 
 void clear_screen(void) {
     uint64_t flags = console_lock_acquire();
@@ -722,6 +804,10 @@ void dump_kernel_log(void) {
     if (klog_len == 0) {
         println("(log empty)");
     } else {
+        /* Replay verbatim: these bytes already carry the timestamp they were
+         * accepted with, and a second, now-later prefix in front of each one
+         * would misdate exactly the record this dump exists to recover. */
+        replaying_klog = 1;
         uint32_t start = (klog_head + sizeof(klog_buf) - klog_len) % sizeof(klog_buf);
         uint32_t pos = start;
         for (uint32_t i = 0; i < klog_len; i++) {
@@ -735,6 +821,7 @@ void dump_kernel_log(void) {
                 println("");
             }
         }
+        replaying_klog = 0;
     }
 
     print_hrule(0x08);

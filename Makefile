@@ -133,7 +133,7 @@ DEFECT_FLAGS = \
 	USERLIST_UNGATED HOME_DIR_ROOT_OWNED CLAIM_IMP_TRACE \
 	KSTACK_COLLIDE_IMPERSONATED CLAIM_AUDIT_NO_REREAD \
 	ENTER_USER_STEAL_WIDEN ENTER_USER_PUBLISH_EARLY ENTER_USER_CLAIM_UNCHECKED \
-	STORAGE_FORMAT_WEDGE
+	STORAGE_FORMAT_WEDGE CONSOLE_TIMESTAMPS_LEGACY CLOCK_EPOCH_FROM_FIRST_TICK
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -497,6 +497,35 @@ BLOCK_ERRNO_LEGACY ?= 0
 ifeq ($(BLOCK_ERRNO_LEGACY),1)
 CFLAGS  += -DBLOCK_ERRNO_LEGACY
 ASFLAGS += -DBLOCK_ERRNO_LEGACY
+endif
+
+# CONSOLE_TIMESTAMPS_LEGACY=1 restores the pre-2026-09-06 console: no line
+# carries a "[    S.uuuuuu] " prefix unless its author remembered to ask for one,
+# which most did not. BOTH RINGS UNDER ONE FLAG, because the property being
+# falsified spans both -- the console changes hands mid-boot, so a kernel-only
+# arm would leave console_server stamping and a userspace-only arm would leave
+# the kernel stamping, and either way the gate would still see stamped lines and
+# pass for half the right reason. Control arm for make smoke-console-timestamps.
+CONSOLE_TIMESTAMPS_LEGACY ?= 0
+ifeq ($(CONSOLE_TIMESTAMPS_LEGACY),1)
+CFLAGS  += -DCONSOLE_TIMESTAMPS_LEGACY
+ASFLAGS += -DCONSOLE_TIMESTAMPS_LEGACY
+endif
+
+# CLOCK_EPOCH_FROM_FIRST_TICK=1 restores the pre-2026-09-06 SYS_CLOCK_GETTIME
+# epoch: time counted from the first timer interrupt rather than from boot. The
+# gap is whatever the machine spent getting to that interrupt -- 1.07 s on the
+# boot measured on 2026-09-06, nearly all of it SMP bring-up -- so the ring-3
+# half of the boot log is stamped a second EARLIER than the kernel half that
+# precedes it, and the log runs backwards at the handover. Separate from
+# CONSOLE_TIMESTAMPS_LEGACY on purpose: that arm asks whether lines are stamped
+# at all, this one asks whether the two writers agree about when now is, and
+# each still passes the other's check. Control arm for the monotonicity half of
+# make smoke-console-timestamps.
+CLOCK_EPOCH_FROM_FIRST_TICK ?= 0
+ifeq ($(CLOCK_EPOCH_FROM_FIRST_TICK),1)
+CFLAGS  += -DCLOCK_EPOCH_FROM_FIRST_TICK
+ASFLAGS += -DCLOCK_EPOCH_FROM_FIRST_TICK
 endif
 
 # INSTALLER_NO_CONFIRM=1 reads the typed confirmation and then does not COMPARE
@@ -3198,6 +3227,9 @@ USERSPACE_CFLAGS += -DINSTALLER_NO_CONFIRM
 endif
 ifeq ($(READDIR_END_IS_NOENT),1)
 USERSPACE_CFLAGS += -DREADDIR_END_IS_NOENT
+endif
+ifeq ($(CONSOLE_TIMESTAMPS_LEGACY),1)
+USERSPACE_CFLAGS += -DCONSOLE_TIMESTAMPS_LEGACY
 endif
 ifeq ($(TUI_INPUT_ECHO_SECRET),1)
 USERSPACE_CFLAGS += -DTUI_INPUT_ECHO_SECRET
@@ -8226,6 +8258,98 @@ smoke:
 	@$(MAKE) --no-print-directory
 	@$(MAKE) --no-print-directory boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) tools/smoke_test.sh boot.iso
+
+# ---- every line of the boot log carries a timestamp ------------------------
+#
+# The property: from the kernel's first message to the moment the session starts,
+# every non-blank line on the console is prefixed "[    S.uuuuuu] ", and the
+# prefixes do not go backwards. tools/check_console_timestamps.py holds the whole
+# window to that rather than asserting one marker, because the failure mode being
+# gated is a line NOBODY REMEMBERED to stamp -- and a marker says nothing about
+# the next line someone adds.
+#
+# The window ends at the shell's banner on purpose. After it the console is a
+# terminal, not a log, and a timestamp in front of a prompt or a column of
+# `ls -l` would be wrong rather than merely noisy; init draws that line with
+# CON_OP_BOOT_DONE (include/console_proto.h).
+#
+# The smoke boot is asserted, not `|| true`: a run that never reaches the session
+# has no window, and the checker says so rather than passing on an empty one.
+CONSOLE_TS_LOG ?= .console-timestamps.log
+
+.PHONY: smoke-console-timestamps smoke-console-timestamps-control \
+        smoke-console-timestamps-epoch-control
+smoke-console-timestamps:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory
+	@$(MAKE) --no-print-directory boot.iso
+	@set -eu; \
+	rm -f $(CONSOLE_TS_LOG); \
+	SMOKE_LOG=$(CONSOLE_TS_LOG) SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
+	    tools/smoke_test.sh boot.iso; \
+	python3 tools/check_console_timestamps.py $(CONSOLE_TS_LOG)
+
+# CONTROL ARM 1 -- nothing is stamped, on either side of the handover.
+#
+# One flag for both rings, because the claim spans both: the kernel stamps the
+# boot until console_server maps the framebuffer and console_server stamps it
+# after, so an arm that disarmed only one of them would leave the other's lines
+# stamped and the checker would still have something to find. The arm must fail
+# NAMING UNSTAMPED LINES -- a run that died early also fails the checker, and
+# "the gate went red" is not the same claim as "the defect reproduced".
+smoke-console-timestamps-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CONSOLE_TIMESTAMPS_LEGACY=1
+	@$(MAKE) --no-print-directory CONSOLE_TIMESTAMPS_LEGACY=1 boot.iso
+	@set -eu; \
+	rm -f $(CONSOLE_TS_LOG); \
+	SMOKE_LOG=$(CONSOLE_TS_LOG) SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
+	    tools/smoke_test.sh boot.iso; \
+	out="$$(python3 tools/check_console_timestamps.py $(CONSOLE_TS_LOG) || true)"; \
+	echo "$$out"; \
+	case "$$out" in \
+	  *"unstamped line(s)"*) ;; \
+	  *) echo "CONSOLE TIMESTAMPS CONTROL: FAIL - the checker did not report"; \
+	     echo "  unstamped lines under CONSOLE_TIMESTAMPS_LEGACY=1. Serial log"; \
+	     echo "  kept at $(CONSOLE_TS_LOG):"; \
+	     sed -e 's/\r$$//' $(CONSOLE_TS_LOG) | tail -40 | sed 's/^/    /'; \
+	     exit 1 ;; \
+	esac; \
+	if python3 tools/check_console_timestamps.py $(CONSOLE_TS_LOG) >/dev/null 2>&1; then \
+	    echo "CONSOLE TIMESTAMPS CONTROL: FAIL - the checker PASSED the unstamped build"; \
+	    exit 1; \
+	fi; \
+	echo "CONSOLE TIMESTAMPS CONTROL: PASS - the unstamped boot log was rejected"
+
+# CONTROL ARM 2 -- the lines are stamped and the two writers disagree about when
+# now is. Separate from arm 1 because it falsifies the other half of the property
+# and each arm still passes the other's check: under this one every line has a
+# prefix, and under arm 1 there is no ordering to be wrong about. The marker is
+# the backwards STEP, not merely a red gate.
+smoke-console-timestamps-epoch-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CLOCK_EPOCH_FROM_FIRST_TICK=1
+	@$(MAKE) --no-print-directory CLOCK_EPOCH_FROM_FIRST_TICK=1 boot.iso
+	@set -eu; \
+	rm -f $(CONSOLE_TS_LOG); \
+	SMOKE_LOG=$(CONSOLE_TS_LOG) SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
+	    tools/smoke_test.sh boot.iso; \
+	out="$$(python3 tools/check_console_timestamps.py $(CONSOLE_TS_LOG) || true)"; \
+	echo "$$out"; \
+	case "$$out" in \
+	  *"backwards step(s)"*"went back"*|*"went back"*) ;; \
+	  *) echo "CONSOLE TIMESTAMPS EPOCH CONTROL: FAIL - the checker did not report"; \
+	     echo "  a backwards step under CLOCK_EPOCH_FROM_FIRST_TICK=1. Serial log"; \
+	     echo "  kept at $(CONSOLE_TS_LOG):"; \
+	     sed -e 's/\r$$//' $(CONSOLE_TS_LOG) | tail -40 | sed 's/^/    /'; \
+	     exit 1 ;; \
+	esac; \
+	if python3 tools/check_console_timestamps.py $(CONSOLE_TS_LOG) >/dev/null 2>&1; then \
+	    echo "CONSOLE TIMESTAMPS EPOCH CONTROL: FAIL - the checker PASSED a log that"; \
+	    echo "  runs backwards at the console handover"; \
+	    exit 1; \
+	fi; \
+	echo "CONSOLE TIMESTAMPS EPOCH CONTROL: PASS - the backwards boot log was rejected"
 
 # ---- reproducible builds -------------------------------------------------
 #

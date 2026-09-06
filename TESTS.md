@@ -1448,10 +1448,10 @@ measures false *negatives*. A checker with three rules needs three arms, not one
 
 ## CI
 
-`.github/workflows/ci.yml` defines **107** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **108** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below: **109** jobs, **112** contexts. Counts from `tools/check_ci_gating.py`, which prints
+below: **110** jobs, **113** contexts. Counts from `tools/check_ci_gating.py`, which prints
 them; do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20, a backstop, not a budget. The default is
@@ -1503,7 +1503,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **109 required contexts and 3 reasoned exemptions** (read off
+The intended set is **110 required contexts and 3 reasoned exemptions** (read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence) `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
@@ -2853,6 +2853,68 @@ every right requested, so `have & want == want` at every reachable call and the 
 produce the same PTE. The arm now removes the **floor** instead, which is the thing that
 actually decides. Recorded here because a control arm that cannot fail is indistinguishable from
 one that works until somebody tries to make it fire.
+
+### `smoke-console-timestamps`: every line of the boot log is stamped, and the stamps run forwards
+
+The boot console mixed timestamped and untimestamped lines. A kernel line that called `kmsg()`
+carried `[    1.249500] `; the `  [ OK ] ...` status lines from `crypto.c` and `main.c` did not,
+and neither did anything ring 3 printed -- `INIT_STORAGE:`, `init:`, `[fs_server]`, `FS_STORE:`,
+`[console_server]` -- because a ring-3 task reaches the console through `SYS_WRITE` and had no way
+to ask for a prefix at all. So a reader could not order the boot against itself, and the largest
+gap in it (1.10 s of SMP bring-up, on the boot measured here) sat exactly where nothing was
+stamped.
+
+**The gate asserts the whole window, not a marker.** From the kernel's first line to the shell's
+banner, every non-blank line must match `^\[\s*\d+\.\d{6}\] ` and the stamps must not go
+backwards. A marker gate would say nothing about the next line somebody adds, and "somebody did
+not stamp their line" is precisely the failure. `tools/check_console_timestamps.py` does the
+checking and prints the offending lines when it rejects, so a red arm keeps the evidence.
+
+**What was changed to make it pass** is the *writer*, in two places, because the console changes
+hands mid-boot: `print_core` (`src/kernel/terminal.c`) and `con_putc`
+(`userspace/console_server.c`) each emit the prefix in front of the first printable byte of a
+line. `kmsg()` and `kmsg_begin()` are gone -- they would have double-stamped, and a rule the
+caller has to remember is the rule that failed. The session is deliberately *outside* the window:
+`init` sends `CON_OP_BOOT_DONE` before launching the shell and the server stops stamping, because
+a prefix in front of a prompt or a column of `ls -l` is wrong rather than noisy
+(`docs/LIMITATIONS.md` 2.6d).
+
+**The split hazard, and why the prefix is not a second write.** Adding a prefix is by default one
+more console write in front of every line, which is 2.6a's shape. In the kernel the stamp is
+emitted from *inside* `print_core`'s existing `console_lock` critical section, so prefix and text
+are atomic against every other writer of that console -- kernel `print()` on any CPU, and every
+ring-3 `SYS_WRITE`, both of which reach the hardware only through that function. This is stricter
+than what it replaced: `kmsg_begin(); print(msg);` was two separate acquisitions, so a ring-3
+write could already land between a kernel line's timestamp and its text. In the server the
+guarantee is different and simpler -- after the handover it is the only writer of the UART, and it
+serves one request at a time. `tools/check_split_markers.py` passes over both.
+
+| Arm | Asserts | Result |
+|---|---|---|
+| `smoke-console-timestamps` | every non-blank line in the window stamped, no backwards step | passes: **24 of 24** boot-log lines, measured 2026-09-06 |
+| `smoke-console-timestamps-control` (`CONSOLE_TIMESTAMPS_LEGACY=1`) | the checker reports **unstamped lines** specifically | passes: **24 of 24** lines unstamped, and **0** backwards steps |
+| `smoke-console-timestamps-epoch-control` (`CLOCK_EPOCH_FROM_FIRST_TICK=1`) | the checker reports a **backwards step** specifically | passes: **0** unstamped lines, one step back of **1.047960 s** at `[console_server] ready` |
+
+**Falsified in both directions, and the two arms are separable.** Each control arm passes the
+*other* arm's half of the check, which is what shows the two halves are independent rather than
+one property stated twice: an unstamped log has no ordering to be wrong about, and a log stamped
+from two epochs is fully stamped. Each arm requires the checker to name its own failure and not
+merely to exit non-zero -- a boot that died early also fails the checker, and "the gate went red"
+is not the claim being made. The base gate was then re-run against the fixed build and passes, so
+neither arm is a loop that only ever goes one way.
+
+**The second defect was found by the first fix.** With both writers stamping, the log ran
+*backwards* by 1.07 s at the handover: `[    1.156828] init: starting, launching shell` followed
+by `[    0.090000] [console_server] ready`. `SYS_CLOCK_GETTIME` is documented as monotonic time
+since **boot** and counted from the **first timer interrupt**, which is a different thing by
+however long the machine spends getting there -- nearly all of it AP bring-up. `clock_epoch_ticks`
+(`src/kernel/scheduler.c`) adds the difference, captured once on the first tick and already
+rounded down to a whole tick so it adds no resolution (S34's argument is about how finely ring 3
+can measure, and a constant cannot make anything finer).
+
+**A boot with a kernel fault in it fails this gate**, because `kfault_str`/`panic_ch` bypass the
+console writer and so are unstamped (2.6c). That is deliberate: an exception for them would also
+be an exception for a line nobody stamped.
 
 ### `smoke-libhorus`: libhorus keeps its bounds, and refuses rather than spins
 

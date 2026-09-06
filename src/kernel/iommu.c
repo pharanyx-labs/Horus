@@ -460,7 +460,6 @@ void iommu_init(void) {
 
     uint64_t regs_phys = dmar_find_unit();
     if (!regs_phys) {
-        kmsg_begin();
         print("iommu: no DMAR; device DMA is unrestricted\n");
         return;
     }
@@ -480,7 +479,6 @@ void iommu_init(void) {
     if (sagaw & SAGAW_39BIT)      iommu_levels = 3;
     else if (sagaw & SAGAW_48BIT) iommu_levels = 4;
     else {
-        kmsg_begin();
         print("iommu: no supported address width; DMA left unrestricted\n");
         return;
     }
@@ -502,7 +500,6 @@ void iommu_init(void) {
 
     iommu_ready = 1;
 
-    kmsg_begin();
     print("iommu: VT-d active, ");
     print_decimal((uint64_t)iommu_levels);
     print("-level, every device starts unable to reach memory\n");

@@ -52,6 +52,23 @@
                              * '\n'->'\r\n' translation), for escape sequences + screen output */
 #define CON_OP_WINSZ     6  /* (no payload) -> rc = (rows<<16)|cols; the console's size */
 
+/* The boot log ends here. Until this arrives, the server puts a
+ * "[    S.uuuuuu] " prefix on every line of CON_OP_WRITE output and on its own
+ * status lines, continuing the timestamped log the kernel was printing before
+ * the console changed hands. After it, bytes go through verbatim, because the
+ * console is no longer a log -- it is a terminal, and a timestamp in front of a
+ * shell prompt, an echoed keystroke or a column of `ls -l` is wrong rather than
+ * merely noisy.
+ *
+ * init sends it once, immediately before it launches the shell (or, on an
+ * uninstalled machine, before the installer's first raw write). A server that
+ * never receives it keeps stamping, which is the right failure: an image whose
+ * init is replaced by a self-test client -- INIT_FS_SELFTEST, and every
+ * smoke-* workload that never reaches a login prompt -- prints nothing BUT a
+ * boot log. Serving any input request has the same effect, as a backstop: a
+ * console someone is typing at is a terminal whether or not anyone said so. */
+#define CON_OP_BOOT_DONE 7  /* (no payload) -> rc = 0; stop stamping: the session begins */
+
 #define CON_IO_MAX   200  /* max payload bytes per write request */
 #define CON_LINE_MAX 128  /* max input line (incl. NUL); matches the kernel's h_get_line */
 

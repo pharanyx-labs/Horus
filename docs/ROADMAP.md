@@ -1626,7 +1626,7 @@ neither, in both, or names a job that no longer exists. No default, defaulting i
 caught CodeQL unclassified on its first run, which is the same omission class the finding
 describes.
 
-The intended set is **109 required, 3 exempted** (109 jobs, 112 contexts (re-derive it with
+The intended set is **110 required, 3 exempted** (110 jobs, 113 contexts (re-derive it with
 `tools/check_ci_gating.py`, never from this line)) `fuzz` (a 30-second time-boxed search is
 evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on), and
 `ruleset-audit` (schedule-only, so it never runs on a pull request). `smoke-fs-wal` was an
@@ -1771,7 +1771,7 @@ past it.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue`, §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 262 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 133 of them control arms that must reproduce a defect |
+| ✅ | 265 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 135 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

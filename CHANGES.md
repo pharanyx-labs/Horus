@@ -76,6 +76,43 @@ in this file.
   on is made on the write path too, with no byte reaching the medium.
   Witness `make smoke-blockprobe` (10 checks), falsified by `BLOCK_ERRNO_LEGACY=1`
   (`make smoke-blockprobe-control`), both arms measured 2026-09-06. Coverage 83 -> **85 of 94**.
+- **Every line of the boot console carries a timestamp, and the writer applies it.** The boot log
+  mixed stamped and unstamped lines: a kernel line that called `kmsg()` got
+  `[    1.249500] `, the `  [ OK ] ...` status lines did not, and nothing ring 3 printed did --
+  `INIT_STORAGE:`, `init:`, `[fs_server]`, `FS_STORE:`, `[console_server]` all reach the console
+  through `SYS_WRITE` or the console server, neither of which could ask for a prefix. `print_core`
+  (`src/kernel/terminal.c`) and `con_putc` (`userspace/console_server.c`) now stamp the first
+  printable byte of each line themselves; `kmsg()` and `kmsg_begin()` are deleted, because a rule
+  the caller must remember is the rule that had already failed for half the log.
+  The prefix is emitted **inside** `print_core`'s existing `console_lock` critical section rather
+  than as a second call in front of it, so prefix and text are atomic against every other writer
+  of that console. That is stricter than what it replaces: `kmsg_begin(); print(msg);` was two
+  separate acquisitions, so a ring-3 write could already land between a kernel line's timestamp
+  and its text -- `docs/LIMITATIONS.md` 2.6a's hazard, on every timestamped line the system
+  printed. In the server the same guarantee comes from it being the only writer of the UART after
+  the handover.
+  The window ends at the session: `init` sends `CON_OP_BOOT_DONE` immediately before launching the
+  shell and the server stops stamping, because a timestamp in front of a shell prompt, an echoed
+  keystroke or a column of `ls -l` is wrong rather than merely noisy. Serving any input request
+  does the same, which is what leaves the installer's raw-mode session correctly unstamped.
+  Witnessed by `make smoke-console-timestamps`, which asserts **every** non-blank line in the
+  window rather than one marker -- a marker gate says nothing about the next line somebody adds.
+  Falsified by `CONSOLE_TIMESTAMPS_LEGACY=1` (`make smoke-console-timestamps-control`): 24 of 24
+  boot-log lines unstamped, and **0** backwards steps, which is the other arm's half still
+  passing.
+
+- **`SYS_CLOCK_GETTIME` counts from boot, which is not where its counter starts** (`SECURITY.md`
+  **S34**). The clock is derived from the PIT tick counter, and that counter starts at the first
+  timer interrupt -- 1.07 s into a measured SMP boot, nearly all of it AP bring-up. A caller
+  asking how long the machine had been up was told 0.09 s about a machine 1.16 s old. It was
+  invisible until the console log changed hands mid-boot and the two writers stamped from
+  different epochs, at which point the log ran **backwards** by a second at the handover.
+  `clock_epoch_ticks` (`src/kernel/scheduler.c`) adds the difference, captured once on the first
+  tick from the kernel's TSC boot clock and **already rounded down to a whole tick** -- so the
+  10 ms resolution `CR4.TSD` argues for is unchanged, because a constant cannot make a clock
+  finer. Falsified by `CLOCK_EPOCH_FROM_FIRST_TICK=1`
+  (`make smoke-console-timestamps-epoch-control`): 0 unstamped lines and one step back of
+  1.047960 s at `[console_server] ready`.
 
 - **The call that erases a disk names the disk it erases** (`SECURITY.md` **S83**, roadmap 2.9).
   `SYS_STORAGE_FORMAT` takes the target device as an argument. The alternative -- a "select the

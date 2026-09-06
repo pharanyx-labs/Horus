@@ -1384,6 +1384,38 @@ across `src/kernel/*.c` and intersecting them with the assertions in `Makefile`,
 `smoke-kstack-park-control`'s panic among them. None has been migrated to the channel yet, which
 is the remainder recorded at the top of this entry.
 
+### 2.6d The boot log's two timestamps come from two clocks, and only the boot is stamped
+
+*Added 2026-09-06 with the change that made every boot-console line carry a
+`[    S.uuuuuu] ` prefix.* **Open, and bounded on purpose.** Three residuals, none of which is a
+missing stamp:
+
+**The session is not stamped, and must not be.** The window ends when `init` sends
+`CON_OP_BOOT_DONE`, immediately before it launches the shell -- or earlier, at the first read
+request, which is what the installer's raw-mode session trips. After that the console is a
+terminal: a prefix in front of a shell prompt, an echoed keystroke or a column of `ls -l` is
+wrong, not merely noisy, and `CON_OP_WRITE_RAW` carries escape sequences a prefix would corrupt.
+So `init: shell exited ... relaunching` and everything else a supervisor prints during a session
+arrives unstamped. If those ever need times, the answer is a second channel, not a prefix on the
+terminal.
+
+**The two halves are stamped from two clocks.** The kernel's is the calibrated TSC in
+microseconds; `console_server` has only `SYS_CLOCK_GETTIME`, which is quantised to a 10 ms PIT
+tick because `CR4.TSD` denies ring 3 anything finer and a syscall must not hand it back (S34). So
+every microsecond field after the handover is a multiple of 10,000, and the two agree only to
+within a tick: the ring-3 stamp rounds down, and the offset that puts them on one epoch
+(`clock_epoch_ticks`) was itself captured rounded down. `tools/check_console_timestamps.py`
+therefore tolerates a backwards step of up to three ticks. It does **not** tolerate the failure it
+exists to catch -- ring 3 counting from the first timer interrupt instead of from boot, which was
+1.07 s on the boot measured on 2026-09-06 and is what `CLOCK_EPOCH_FROM_FIRST_TICK=1` restores.
+
+**`kfault_str` and `panic_ch` are still unstamped**, because they bypass the console writer
+entirely -- which is 2.6c, and is why they are also still splittable. A kernel report arriving
+mid-boot is therefore an unstamped line inside the checked window, and the gate goes red on it.
+That is the right direction: a boot with a kernel fault in it has a bigger problem than its
+formatting, and the gate says so rather than making an exception that would also excuse a missing
+stamp.
+
 ### 2.7 The VFS namespace is a name, not an enforcement boundary
 
 *Added 2026-08-22 with roadmap 2.4.*
@@ -2295,9 +2327,9 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand: **[C-6]**
 
-`.github/workflows/ci.yml` defines **107** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more: **109** across the three, producing **112** status-check contexts. Ruleset `21815299`
-requires all **109** today, `smoke-kdiag` (**S81**) among them since 2026-09-03 -- one
+`.github/workflows/ci.yml` defines **108** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more: **110** across the three, producing **113** status-check contexts. Ruleset `21815299`
+requires all **110** today, `smoke-kdiag` (**S81**) among them since 2026-09-03 -- one
 `--sync-ruleset` run after the pull request that added the job, which is the lag this finding is
 about rather than an exception to it. Its predecessor `19007209` required **22** of them before
 2026-08-16, and until 2026-08-15 exactly **zero** of those 22 were security gates: capability
@@ -2343,7 +2375,7 @@ the right name with the wrong verdict. Step-level `continue-on-error` is untouch
 allowed; it lets one step be advisory while the job's own status still reports the truth, which
 is how the `security` job keeps its scanners advisory without becoming unfailable itself.
 
-That intended set is **109 required contexts and 3 reasoned exemptions**: `fuzz` (a 30-second
+That intended set is **110 required contexts and 3 reasoned exemptions**: `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` was a fifth until **[G-9]** closed on 2026-08-21; it was promoted on

@@ -361,7 +361,6 @@ static void smp_start_aps(int expected_cpus) {
          spins++)
         smp_busy_delay(20000);
 
-    kmsg_begin();
     print("smp: ");
     print_decimal((uint64_t)smp_cpus_online);
     print(" cores online");
@@ -399,20 +398,20 @@ void smp_bringup(void) {
     uint8_t apic_ids[MAX_CPUS];
     int ncpu = acpi_detect_cpus(apic_ids, MAX_CPUS);
     if (ncpu < 1) {
-        kmsg("smp: ACPI MADT unreadable, assuming up to MAX_CPUS");
+        println("smp: ACPI MADT unreadable, assuming up to MAX_CPUS");
         ncpu = MAX_CPUS;
     } else if (ncpu > MAX_CPUS) {
         /* More CPUs than we have idle-stack slots for: cap here; any AP whose
          * LAPIC id lands outside the array parks in the trampoline (see
          * ap_trampoline.S), so this only forgoes their compute, never faults. */
-        kmsg("smp: MADT reports more CPUs than MAX_CPUS, capping");
+        println("smp: MADT reports more CPUs than MAX_CPUS, capping");
         ncpu = MAX_CPUS;
     }
 
     if (ncpu > 1) {
         smp_start_aps(ncpu);
     } else {
-        kmsg("smp: uniprocessor, 1 CPU, no APs to start");
+        println("smp: uniprocessor, 1 CPU, no APs to start");
     }
 
     /* Turn on the SMP scheduler now that every AP is parked in its idle loop and
@@ -435,7 +434,7 @@ void smp_bringup(void) {
     irq_milestone("kernel-ready");
     irq_policy_report("kernel-ready");
 #endif
-    kmsg("kernel ready, starting init (PID 1)");
+    println("kernel ready, starting init (PID 1)");
 #ifdef PREEMPT_SELFTEST
     /* Gated: spawn two non-yielding ring-3 tracers and prove the timer
      * time-slices them (prints PREEMPT_SELFTEST: PASS). Does not return -- it

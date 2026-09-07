@@ -118,6 +118,7 @@ DEFECT_FLAGS = \
 	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY \
 	AHCI_PROBE_ABSENT AHCI_CAPACITY_CONSTANT \
 	CONSOLE_VGA_CHECK_FAIL \
+	AHCI_PROBE_ABSENT AHCI_CAPACITY_CONSTANT SERIAL_TX_NEVER_DRAINS \
 	META_CACHE_NO_WRITEBACK META_CACHE_WB_OUTSIDE_TXN META_CACHE_EVICT_NOWB \
 	META_CACHE_TINY MERKLE_NODE_TRUST_CACHED MERKLE_SKIP_PARENT_BIND \
 	FSCK_SHALLOW_REFS STORAGE_MOUNT_ANY_SIZE ALLOC_NO_HINT ATA_READY_ERR_ONLY \
@@ -1408,6 +1409,21 @@ endif
 # reproduces the failure so the gate can require the marker to be heard.
 # Userspace-only, so the -D goes on USERSPACE_CFLAGS at top level.
 CONSOLE_VGA_CHECK_FAIL ?= 0
+# SERIAL_TX_NEVER_DRAINS=1 polls the UART's line-status register and never
+# accepts the answer, which is the wedged-port case: a COM1 that DECODES and
+# never asserts THRE. An absent port is not this -- it reads back 0xFF, whose
+# THRE bit is set, so it leaves the loop on the first read, and that is why an
+# unbounded spin survived every boot on hardware with no serial port at all.
+#
+# The byte is still written under the flag, so the arm's own assertion stays
+# observable: an arm that silenced the console could not distinguish a working
+# bound from the hang it exists to reproduce. Control arm for
+# make smoke-serial-bound.
+SERIAL_TX_NEVER_DRAINS ?= 0
+ifeq ($(SERIAL_TX_NEVER_DRAINS),1)
+CFLAGS  += -DSERIAL_TX_NEVER_DRAINS
+ASFLAGS += -DSERIAL_TX_NEVER_DRAINS
+endif
 
 # SYSCOV_PROBES_ABSENT=1 compiles out the coverage probes -- captest's section 13
 # and auditprobe's four calls into the audit handlers: the probes that enter
@@ -6299,6 +6315,54 @@ smoke-console-handover-control:
 	@$(MAKE) --no-print-directory CONSOLE_VGA_CHECK_FAIL=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='CONSOLE_SELFTEST: FAIL vga' tools/smoke_test.sh boot.iso
+# The console must not be able to stop the machine.
+#
+# serial_wait() spins on COM1's THRE bit from inside emit_char, which runs under
+# console_lock with interrupts DISABLED. Unbounded, that is not a slow console --
+# it is the whole machine stopped with nothing on screen, and on a laptop with no
+# serial port there is no second channel on which to notice it.
+#
+# The BASE arm is an ordinary boot: the bound must be invisible when the UART
+# works, which it is, because a working UART leaves the loop on its first read.
+.PHONY: smoke-serial-bound
+smoke-serial-bound:
+# `clean` first, and it is load-bearing rather than tidy. userspace/%.o has no
+# .build-flags prerequisite, so a userspace-only -D survives a flagless rebuild --
+# and this target runs in the same CI job as smoke-console-handover-control,
+# which builds console_server.o with CONSOLE_VGA_CHECK_FAIL=1. Without the clean
+# this arm inherits that object, console_server fails its VGA check, no login
+# prompt appears, and the failure reads as "the serial bound broke the boot".
+# Observed on CI 2026-09-07, which is the same trap smoke-console-handover had
+# one commit earlier: the lesson is not learned until every arm built from the
+# same template has it.
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='horus login:' \
+		tools/smoke_test.sh boot.iso
+
+# The falsifying arm. SERIAL_TX_NEVER_DRAINS=1 makes the drain test never
+# succeed, so every byte the kernel prints runs the bound to its end.
+#
+# THE ASSERTION IS THAT THE MACHINE STILL GETS THERE. Without the bound this
+# wedges on the first character with interrupts off and the gate times out; with
+# it the boot is slower and completes. The arm keeps WRITING the byte on purpose
+# so the login prompt stays observable -- an arm that silenced the console could
+# not tell a working bound from the hang it reproduces.
+#
+# Its budget is sized for a boot where every byte pays the full bound, not for a
+# healthy one.
+SMOKE_SERIAL_BOUND_TIMEOUT ?= 180
+.PHONY: smoke-serial-bound-control
+smoke-serial-bound-control:
+# Cleans for the reason the base arm does: SERIAL_TX_NEVER_DRAINS is a KERNEL
+# flag and .build-flags forces that rebuild, but a stale userspace object from a
+# neighbouring arm in the same job is not covered by it.
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SERIAL_TX_NEVER_DRAINS=1
+	@$(MAKE) --no-print-directory SERIAL_TX_NEVER_DRAINS=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_SERIAL_BOUND_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='horus login:' tools/smoke_test.sh boot.iso
+	@echo "[serial] CONTROL PASS - a UART that never drains no longer stops the boot"
 
 .PHONY: smoke-ahci-detect
 smoke-ahci-detect:

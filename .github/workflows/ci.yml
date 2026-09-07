@@ -317,12 +317,33 @@ jobs:
       # Ownership passes on the first successful VGA map, and from then the
       # kernel's print() records to the klog and stops driving the wire -- so a
       # driver that then fails reports into a buffer nobody reads and parks.
+      # ORDER MATTERS FROM HERE DOWN. The four steps below build USERSPACE with
+      # a -D, and userspace/%.o has no .build-flags prerequisite, so such a flag
+      # survives a flagless rebuild. Each of them therefore cleans first, and any
+      # step ADDED AFTER THEM must clean too -- otherwise it silently inherits a
+      # control-arm console_server and fails as though its own property broke.
+      # That is not hypothetical: smoke-serial-bound was added without a clean
+      # and went red on CI with `CONSOLE_SELFTEST: FAIL vga`, which reads as "the
+      # serial bound broke the boot" and is nothing of the kind.
+      # The steps above are safe only because they run BEFORE the first such
+      # build, which is a property of this ordering rather than of those targets.
       - name: A failed console handover is still audible
         run: make smoke-console-handover
       # The arm forces the check to fail; the assertion is that the marker is
       # HEARD. Before the fix it existed only in the kernel log ring.
       - name: Control arm — the console driver fails after taking the console
         run: make smoke-console-handover-control
+      # The console must not be able to stop the machine. serial_wait spins on
+      # COM1's THRE from inside emit_char, which runs under console_lock with
+      # interrupts disabled -- unbounded, that is the whole machine stopped with
+      # nothing on screen, and a laptop has no second channel to notice on.
+      - name: A UART that never drains does not stop the boot
+        run: make smoke-serial-bound
+      # The arm keeps writing the byte so the login prompt stays observable: an
+      # arm that silenced the console could not tell a working bound from the
+      # hang it reproduces.
+      - name: Control arm — every byte pays the full bound
+        run: make smoke-serial-bound-control
 
   smoke-aspace:
     name: QEMU address-space reclaim self-test (a rebuilt slot leaks nothing)

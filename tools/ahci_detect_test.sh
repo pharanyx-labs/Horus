@@ -29,11 +29,12 @@ EVID="${AHCI_EVIDENCE:-.ahci-evidence}"
 rm -rf "$EVID"; mkdir -p "$EVID"
 [ -f "$ISO" ] || { echo "ahci-detect: no such ISO: $ISO"; exit 2; }
 
+DISK_MB="${AHCI_DISK_MB:-128}"
 DISK="$EVID/sata.img"
-qemu-img create -f raw "$DISK" 64M >/dev/null 2>&1 || {
+qemu-img create -f raw "$DISK" "${DISK_MB}M" >/dev/null 2>&1 || {
     # dd rather than failing: qemu-img is not in every toolchain list, and a
     # 64 MiB sparse file is all this needs.
-    dd if=/dev/zero of="$DISK" bs=1M count=0 seek=64 status=none; }
+    dd if=/dev/zero of="$DISK" bs=1M count=0 seek="$DISK_MB" status=none; }
 
 LOG="$EVID/serial.log"
 timeout "$TIMEOUT" qemu-system-x86_64 -m 512M -cpu qemu64 -machine q35 \
@@ -77,13 +78,23 @@ check() {  # $1 = description, $2 = pattern
     fi
 }
 
-check "the HBA is recognised"            "ahci: HBA v"
-check "port 0 is reported as a SATA disk" "ahci: port 0: SATA disk"
-check "the disk count is reported"        "ahci: 1 SATA disk"
+check "the HBA is recognised"             "ahci: HBA v"
+check "port 0 is reported as a SATA disk"  "ahci: port 0: SATA disk"
+check "the disk count is reported"         "ahci: 1 SATA disk"
+# IDENTIFY: the drive answered a real command over DMA, not merely a link-status
+# read. The MODEL comes from the drive; the CAPACITY is checked against the size
+# this script created, so a driver that returned a plausible constant -- or read
+# the right words from the wrong offset -- fails here rather than passing on a
+# number nobody compared to anything.
+check "the drive answered IDENTIFY"        "QEMU HARDDISK"
+check "the capacity is the disk's own"     "QEMU HARDDISK, ${DISK_MB} MiB"
 
 if [ "$fail" != 0 ]; then
     echo "AHCI-DETECT FAIL: what the guest actually said:"
-    grep -a "ahci:" "$LOG" | sed 's/\r//' | sed 's/^/    /' || echo "    (nothing)"
+    # The model/capacity line is INDENTED under its port and carries no "ahci:"
+    # prefix, so a dump that grepped for that prefix alone hid the one line the
+    # capacity check fails on -- which is the line anyone reading a red run needs.
+    grep -aE "ahci:|^\[[^]]*\] +[A-Z]" "$LOG" | sed 's/\r//' | sed 's/^/    /' || echo "    (nothing)"
     echo "  evidence: $LOG"
     exit 1
 fi

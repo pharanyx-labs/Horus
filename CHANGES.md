@@ -17,6 +17,30 @@ in this file.
 
 ### Added
 
+- **The kernel talks to a SATA disk** (`src/kernel/ahci.c`). Building on the detection landed
+  earlier, each attached port is now brought up -- command list, FIS receive area, command table,
+  PRDT -- and asked to `IDENTIFY` itself, so the report names the drive and its capacity:
+  `QEMU HARDDISK, 128 MiB`. That is a complete DMA command round trip, which is the mechanism a
+  block read needs; what is still missing is the read itself and a `block_device` registration,
+  so **nothing can be mounted yet** and the report says so.
+  **IDENTIFY rather than READ, deliberately.** It exercises the whole mechanism -- DMA addresses,
+  alignment rules, the completion handshake -- against a command whose worst failure is a
+  timeout. Getting those wrong first with a WRITE is how a driver destroys the disk it was meant
+  to install onto.
+  Everything the controller needs fits in **one 4 KiB page** whose layout satisfies the
+  alignment requirements by construction (command list at 0, FIS at 0x400, command table at
+  0x500, data at 0x800), and the IOMMU mapping is installed **before** the port is pointed at
+  that memory rather than after -- on a machine with VT-d the controller reaches nothing it has
+  not been given, so the other order would work only where the IOMMU is absent.
+  The model string is byte-swapped per word, because words 27..46 are the one big-endian field
+  in the structure; the capacity prefers the 48-bit words and falls back to the 28-bit pair, so
+  a large disk is not reported as its low 32 bits.
+  Witness `make smoke-ahci-detect`, which now also requires the drive to answer and requires the
+  **capacity to equal the size of the disk the harness attached** -- verified against 64, 128 and
+  512 MiB disks. Falsified by `AHCI_CAPACITY_CONSTANT=1`
+  (`make smoke-ahci-capacity-control`), which reports a plausible fixed 128 MiB and is run
+  against a 64 MiB disk, since a constant that happened to be right could not fail.
+
 - **The kernel can see a SATA controller** (`src/kernel/ahci.c`). The only storage driver in this
   tree is legacy ATA PIO, which is what QEMU's default machine gives and is not what a machine
   built this decade has -- so `boot.iso` boots on real hardware, and from a USB stick under UEFI

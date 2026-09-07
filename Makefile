@@ -116,7 +116,7 @@ DEFECT_FLAGS = \
 	KEYSLOT_REMOVE_NOOP USERS_PEPPER_PER_BOOT STORAGE_AUTOFORMAT \
 	STORAGE_FORMAT_UNGATED INSTALLER_NO_CONFIRM BLOCK_ERRNO_LEGACY \
 	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY \
-	AHCI_PROBE_ABSENT \
+	AHCI_PROBE_ABSENT AHCI_CAPACITY_CONSTANT \
 	META_CACHE_NO_WRITEBACK META_CACHE_WB_OUTSIDE_TXN META_CACHE_EVICT_NOWB \
 	META_CACHE_TINY MERKLE_NODE_TRUST_CACHED MERKLE_SKIP_PARENT_BIND \
 	FSCK_SHALLOW_REFS STORAGE_MOUNT_ANY_SIZE ALLOC_NO_HINT ATA_READY_ERR_ONLY \
@@ -1383,6 +1383,18 @@ AHCI_PROBE_ABSENT ?= 0
 ifeq ($(AHCI_PROBE_ABSENT),1)
 CFLAGS  += -DAHCI_PROBE_ABSENT
 ASFLAGS += -DAHCI_PROBE_ABSENT
+endif
+
+# AHCI_CAPACITY_CONSTANT=1 reports a fixed 128 MiB instead of the capacity the
+# drive returned. It is what a driver that read the right IDENTIFY words from the
+# WRONG OFFSET looks like, or one that filled in a default it never checked --
+# and the number it prints is entirely plausible, which is the point: the gate
+# has to compare it against the size of the disk it attached, not against a
+# range. Control arm for the capacity half of make smoke-ahci-detect.
+AHCI_CAPACITY_CONSTANT ?= 0
+ifeq ($(AHCI_CAPACITY_CONSTANT),1)
+CFLAGS  += -DAHCI_CAPACITY_CONSTANT
+ASFLAGS += -DAHCI_CAPACITY_CONSTANT
 endif
 
 # SYSCOV_PROBES_ABSENT=1 compiles out the coverage probes -- captest's section 13
@@ -6247,6 +6259,26 @@ smoke-ahci-detect:
 # `kernel ready`. Without that second half, a kernel that died before the probe
 # ran would satisfy "said nothing about AHCI" and the arm would pass for a reason
 # unrelated to its defect.
+# The capacity arm. AHCI_CAPACITY_CONSTANT=1 reports a fixed 128 MiB, so it runs
+# against a disk that is NOT 128 MiB -- otherwise the constant would be right by
+# coincidence and the arm could not fail, which is the trap a control arm exists
+# to avoid.
+.PHONY: smoke-ahci-capacity-control
+smoke-ahci-capacity-control:
+	@$(MAKE) --no-print-directory AHCI_CAPACITY_CONSTANT=1 boot.iso
+	@set -e; \
+	 if SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) AHCI_DISK_MB=64 \
+	    AHCI_EVIDENCE=.ahci-evidence-capacity tools/ahci_detect_test.sh boot.iso \
+	    > .ahci-capacity.out 2>&1; then \
+	    echo "CONTROL FAIL: a constant capacity passed the gate on a 64 MiB disk"; \
+	    cat .ahci-capacity.out; rm -f .ahci-capacity.out; exit 1; \
+	 fi; \
+	 grep -q "the capacity is the disk's own" .ahci-capacity.out || { \
+	    echo "CONTROL FAIL: it went red, but not on the capacity check"; \
+	    cat .ahci-capacity.out; rm -f .ahci-capacity.out; exit 1; }; \
+	 cat .ahci-capacity.out; rm -f .ahci-capacity.out; \
+	 echo "[ahci] CAPACITY CONTROL PASS - a plausible constant is caught"
+
 .PHONY: smoke-ahci-detect-control
 smoke-ahci-detect-control:
 	@$(MAKE) --no-print-directory AHCI_PROBE_ABSENT=1 boot.iso

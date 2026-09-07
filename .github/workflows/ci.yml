@@ -307,6 +307,12 @@ jobs:
       # `kernel ready` -- otherwise a boot that died early would satisfy it.
       - name: Control arm — the probe is compiled out and the disk goes unseen
         run: make smoke-ahci-detect-control
+      # The capacity half. A driver that read the right IDENTIFY words from the
+      # wrong offset prints a plausible number, so the gate compares it to the
+      # size of the disk it attached -- and this arm runs against a disk that is
+      # NOT the constant, or it could not fail.
+      - name: Control arm — a plausible constant capacity is caught
+        run: make smoke-ahci-capacity-control
 
   smoke-aspace:
     name: QEMU address-space reclaim self-test (a rebuilt slot leaks nothing)

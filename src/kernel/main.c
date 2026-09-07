@@ -418,6 +418,13 @@ void kernel_main(uint32_t mb_info) {
      * before they are minted. Pure port I/O, no allocation, no interrupts. */
     iodev_init();
 
+    /* What storage this machine actually has. iodev_init has just enumerated the
+     * bus, so the controller is findable; ata.c has already probed the legacy
+     * ports above. Reads and reports only -- there is no AHCI driver, and the
+     * gap between "the image boots on a laptop" and "the installer can install
+     * onto one" is exactly this. */
+    ahci_probe();
+
     /* VT-d, before cap_init and long before any ring-3 task: bringing the unit up
      * with an empty root table is what makes "a device reaches nothing until its
      * driver maps a frame" true from the first instruction, rather than from

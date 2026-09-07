@@ -2153,6 +2153,18 @@ void iommu_frame_teardown_selftest(void);
 #endif
 void iommu_reset_device(uint64_t devindex);
 void ensure_iommu_regs_mapped(uint64_t *root_pml4, uint64_t regs_phys);
+
+/* Map an AHCI HBA's register file: generic host control plus up to 32 per-port
+ * blocks is 0x1100 bytes, so two pages. */
+void ensure_ahci_abar_mapped(uint64_t *root_pml4, uint64_t abar_phys);
+
+/* Find the SATA controller and report what is attached to it. READS ONLY: there
+ * is no AHCI driver yet, so nothing it finds is usable, and saying which disks
+ * exist is the point -- a laptop's SSD is invisible to ata.c and that is what
+ * gates installing onto one (docs/LIMITATIONS.md §4). */
+void ahci_probe(void);
+uint64_t ahci_abar(void);
+uint32_t ahci_device_count(void);
 void ensure_iommu_mapped_current(uint64_t *root_pml4);
 uint32_t alloc_user_physical_page(void);
 

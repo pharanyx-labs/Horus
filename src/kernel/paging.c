@@ -2565,6 +2565,17 @@ void ensure_iommu_regs_mapped(uint64_t *root_pml4, uint64_t regs_phys) {
  * be present in every address space or that syscall faults. The base comes from
  * the MADT rather than a constant, so this takes a parameter. */
 static uint64_t g_ioapic_regs_phys;
+/* The AHCI HBA register file: generic host control at 0x00..0xFF, then up to 32
+ * per-port blocks of 0x80 from 0x100 -- 0x1100 bytes, so TWO pages. Mapped by
+ * the same rule as every other device register file here (identity, writable,
+ * cache-disabled, NX), and mapped in full rather than on demand because the
+ * probe walks every implemented port in one pass. */
+void ensure_ahci_abar_mapped(uint64_t *root_pml4, uint64_t abar_phys) {
+    if (abar_phys == 0) return;
+    ensure_identity_mmio_page(root_pml4, abar_phys & ~0xFFFULL);
+    ensure_identity_mmio_page(root_pml4, (abar_phys & ~0xFFFULL) + 0x1000ULL);
+}
+
 void ensure_ioapic_mapped(uint64_t *root_pml4, uint64_t regs_phys) {
     if (!regs_phys) return;
     g_ioapic_regs_phys = regs_phys;

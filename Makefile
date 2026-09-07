@@ -118,6 +118,7 @@ DEFECT_FLAGS = \
 	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY \
 	AHCI_PROBE_ABSENT AHCI_CAPACITY_CONSTANT SDHCI_PROBE_ABSENT \
 	SDHCI_CSD_SPEC_BITS SDHCI_ADDR_MODE_INVERTED \
+	SDHCI_WRITE_SELFTEST SDHCI_WRITE_NO_FLUSH \
 	CONSOLE_VGA_CHECK_FAIL \
 	AHCI_PROBE_ABSENT AHCI_CAPACITY_CONSTANT SERIAL_TX_NEVER_DRAINS \
 	META_CACHE_NO_WRITEBACK META_CACHE_WB_OUTSIDE_TXN META_CACHE_EVICT_NOWB \
@@ -1438,6 +1439,34 @@ SDHCI_ADDR_MODE_INVERTED ?= 0
 ifeq ($(SDHCI_ADDR_MODE_INVERTED),1)
 CFLAGS  += -DSDHCI_ADDR_MODE_INVERTED
 ASFLAGS += -DSDHCI_ADDR_MODE_INVERTED
+endif
+
+# SDHCI_WRITE_SELFTEST=1 has the boot probe write a block, flush, read it back
+# and compare. NOT A DEFECT ARM -- it is the only way the write path is exercised
+# at all, and it is build-gated because a shipped boot must never write to the
+# card it just found: on a laptop that is the operator's own storage.
+SDHCI_WRITE_SELFTEST ?= 0
+ifeq ($(SDHCI_WRITE_SELFTEST),1)
+CFLAGS  += -DSDHCI_WRITE_SELFTEST
+ASFLAGS += -DSDHCI_WRITE_SELFTEST
+endif
+
+# SDHCI_WRITE_NO_FLUSH=1 drops the wait for the card to finish programming, so
+# `write` returns while the card is still busy.
+#
+# NO GATE, DELIBERATELY -- measured 2026-09-07 and it CANNOT FAIL here. QEMU's
+# sd-card completes a write synchronously, so the round trip and the host-side
+# check of the backing file both pass with the flush removed; there is no window
+# for the race the flag creates. A control arm that cannot fail cannot gate, so
+# this is not wired to one -- the same call NET_NO_BUSMASTER got, for the same
+# reason: the emulator does not enforce what the hardware requires.
+#
+# Kept because a real card DOES hold DAT0 low while programming, and the day this
+# driver is asked to survive a power cut the flag is the arm for it.
+SDHCI_WRITE_NO_FLUSH ?= 0
+ifeq ($(SDHCI_WRITE_NO_FLUSH),1)
+CFLAGS  += -DSDHCI_WRITE_NO_FLUSH
+ASFLAGS += -DSDHCI_WRITE_NO_FLUSH
 endif
 
 # CONSOLE_VGA_CHECK_FAIL=1 forces console_server's VGA round-trip check to fail
@@ -6431,6 +6460,22 @@ smoke-sdhci-detect:
 		SDHCI_EVIDENCE=.sdhci-evidence-large tools/sdhci_detect_test.sh boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SDHCI_EXPECT=empty \
 		SDHCI_EVIDENCE=.sdhci-evidence-empty tools/sdhci_detect_test.sh boot.iso
+
+# The WRITE round trip, in a build of its own.
+#
+# A shipped boot never writes to the card it found -- on a laptop that is the
+# operator's storage -- so the write path is compiled in only here. The gate
+# asserts the guest's own read-back AND, separately, that the bytes reached the
+# BACKING FILE: a read-back alone could be served from the controller's buffer,
+# and the host-side check is the only evidence available that a write was durable
+# rather than merely accepted.
+.PHONY: smoke-sdhci-write
+smoke-sdhci-write:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SDHCI_WRITE_SELFTEST=1
+	@$(MAKE) --no-print-directory SDHCI_WRITE_SELFTEST=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SDHCI_EXPECT_WRITE=1 \
+		SDHCI_EVIDENCE=.sdhci-evidence-write tools/sdhci_detect_test.sh boot.iso
 
 # The falsifying arm. SDHCI_PROBE_ABSENT=1 compiles the probe out, which is the
 # state this tree was in before 2026-09-07.

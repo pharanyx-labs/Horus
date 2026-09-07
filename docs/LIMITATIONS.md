@@ -2332,8 +2332,10 @@ old allocator and the new one read the same single block and no workload could t
   capacity from the CSD. That is the storage a budget laptop actually has -- soldered eMMC,
   reached by neither `ata.c` nor `ahci.c`, and since 2026-09-07 it **reads blocks** (`CMD17` by
   PIO), verified against known bytes at two blocks on both a byte-addressed and a block-addressed
-  card. It is still not mountable: there is no `block_device` registration, so `storage.c` cannot
-  use it, and nothing writes.
+  card, and since 2026-09-07 **writes** them too (`CMD24` plus a flush that waits out the card's
+  programming state), verified from the host rather than only from the guest. It is still not
+  mountable: there is no `block_device` registration, so `storage.c` cannot use it. The write path
+  is compiled in only for its gate -- a shipped boot must never write to the card it found.
   **The eMMC branch of that has never executed anywhere.** eMMC powers up with `CMD1`; SD uses
   `CMD8`/`ACMD41`, and an SD card must not answer `CMD1`. QEMU 10.0 has no eMMC device -- only
   `sd-card` -- so every gate here exercises the SD branch, and the code an actual laptop needs is

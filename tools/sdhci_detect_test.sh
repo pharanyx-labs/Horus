@@ -111,6 +111,21 @@ else
     check "a non-zero block reads correctly"          "sdhci-read block100: HORUS100"
 fi
 
+# The write round trip, when the image was built with it. TWO assertions, and the
+# second is the one that cannot be fooled: the guest's own read-back could be
+# served from the controller's buffer, so the host also checks that the bytes
+# reached the BACKING FILE. That is the only evidence available here that a write
+# was durable rather than merely accepted.
+if [ "${SDHCI_EXPECT_WRITE:-0}" = 1 ]; then
+    check "the write round trip succeeded in the guest" "sdhci-write block200: SDHCI-WRITE-OK"
+    if dd if="$CARD" bs=512 skip=200 count=1 2>/dev/null | head -c 8 | grep -q 'WXYZ'; then
+        echo "  [ OK ] the written bytes reached the backing file"
+    else
+        echo "  [FAIL] the written bytes reached the backing file"
+        fail=1
+    fi
+fi
+
 if [ "$fail" != 0 ]; then
     echo "SDHCI-DETECT FAIL: what the guest actually said:"
     dump

@@ -193,6 +193,7 @@ gates:
   - smoke-boot-media
   - smoke-ahci-detect
   - smoke-sdhci-detect
+  - smoke-sdhci-write
   - smoke-console-handover
   - smoke-serial-bound
   - smoke-claim-release

@@ -115,7 +115,7 @@ DEFECT_FLAGS = \
 	CAP_LOOKUP_ROOT_FALLBACK CAP_LOOKUP_RANGE_FALLBACK CAP_LOOKUP_TYPE_UNCHECKED \
 	KEYSLOT_REMOVE_NOOP USERS_PEPPER_PER_BOOT STORAGE_AUTOFORMAT \
 	STORAGE_FORMAT_UNGATED INSTALLER_NO_CONFIRM BLOCK_ERRNO_LEGACY \
-	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG \
+	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY \
 	META_CACHE_NO_WRITEBACK META_CACHE_WB_OUTSIDE_TXN META_CACHE_EVICT_NOWB \
 	META_CACHE_TINY MERKLE_NODE_TRUST_CACHED MERKLE_SKIP_PARENT_BIND \
 	FSCK_SHALLOW_REFS STORAGE_MOUNT_ANY_SIZE ALLOC_NO_HINT ATA_READY_ERR_ONLY \
@@ -1361,6 +1361,17 @@ READDIR_END_IS_NOENT ?= 0
 # Userspace-only, so the -D goes on USERSPACE_CFLAGS at top level.
 # Control arm for make smoke-ls-path.
 SHELL_LS_NO_PATH_ARG ?= 0
+
+# BOOT_ROOT_CD_ONLY=1 restores the pre-2026-09-07 grub.cfg line `set root=(cd)`,
+# which named the BIOS El Torito CD-ROM. That device does not exist when the same
+# image is booted through UEFI, or written to a USB stick with dd (where it is
+# (hd0)) -- GRUB then resolved /boot/kernel.elf on the NETWORK and stopped with
+# "error: no server is specified" followed by "you need to load the kernel
+# first". Measured 2026-09-06: BIOS+CD booted, BIOS+disk failed, UEFI+CD failed.
+#
+# It rewrites the STAGED grub.cfg rather than the source file, so the arm cannot
+# be left behind in the tree. Control arm for make smoke-boot-media.
+BOOT_ROOT_CD_ONLY ?= 0
 
 # SYSCOV_PROBES_ABSENT=1 compiles out the coverage probes -- captest's section 13
 # and auditprobe's four calls into the audit handlers: the probes that enter
@@ -3174,6 +3185,10 @@ boot.iso: kernel.elf grub.cfg $(BOOT_MODULE_DEP)
 	@awk '/@HORUS_MODULES@/{while((getline l < "isofiles/mods.txt")>0) print l; next} {print}' \
 	    grub.cfg > isofiles/boot/grub/grub.cfg
 	@rm -f isofiles/mods.txt
+	@if [ "$(BOOT_ROOT_CD_ONLY)" = 1 ]; then \
+	    sed -i 's|^    search --no-floppy --set=root --file /boot/kernel.elf$$|    set root=(cd)|' \
+	        isofiles/boot/grub/grub.cfg; \
+	 fi
 	@grub-mkrescue -o $@ isofiles 2>&1 || (echo "grub-mkrescue failed (install grub-pc-bin xorriso)" && exit 1)
 	@rm -rf isofiles
 
@@ -6183,6 +6198,51 @@ smoke-session:
 # rebuild the shell, and because the three facts it asserts (an argument is
 # accepted, a missing path is named, a file is refused differently from a missing
 # path) must be able to fail separately from the rest of the session.
+# The image booted the way people actually boot it. Every other gate in this tree
+# runs `-cdrom boot.iso` under SeaBIOS, which is ONE CELL of a four-cell table --
+# {BIOS, UEFI} x {optical, raw disk} -- and three of the other cells were broken
+# with nothing able to see it. A USB stick written with dd is the same bytes
+# presented as a raw disk rather than as optical media, which is what a laptop
+# install starts from.
+#
+# bios-cd is deliberately NOT among the modes: every other smoke target already
+# covers it, so repeating it here would buy nothing and cost a boot.
+#
+# Needs OVMF for the UEFI halves; the script REFUSES rather than skipping when the
+# firmware is absent, so "we could not test UEFI" can never read as "UEFI works".
+.PHONY: smoke-boot-media
+smoke-boot-media:
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) tools/boot_media_test.sh boot.iso
+
+# The falsifying arm. BOOT_ROOT_CD_ONLY=1 puts `set root=(cd)` back into the
+# STAGED grub.cfg, so the source file is untouched and the arm cannot be left
+# behind in the tree.
+#
+# It requires ALL THREE modes to fail, not merely one: the defect is that the
+# root device is named rather than searched for, and a named device that happens
+# to exist in one configuration would still leave the other two broken. Requiring
+# the whole column is what distinguishes this from a build that broke somehow.
+.PHONY: smoke-boot-media-control
+smoke-boot-media-control:
+	@$(MAKE) --no-print-directory BOOT_ROOT_CD_ONLY=1 boot.iso
+	@set -e; \
+	 if SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) BOOT_MEDIA_EVIDENCE=.boot-media-evidence-control \
+	    tools/boot_media_test.sh boot.iso > .boot-media-control.out 2>&1; then \
+	    echo "CONTROL FAIL: every medium still booted with the root device hard-coded"; \
+	    cat .boot-media-control.out; rm -f .boot-media-control.out; exit 1; \
+	 fi; \
+	 n=$$(grep -c '^  \[FAIL\]' .boot-media-control.out || true); \
+	 if [ "$$n" != 3 ]; then \
+	    echo "CONTROL FAIL: expected all 3 modes to fail, got $$n"; \
+	    cat .boot-media-control.out; rm -f .boot-media-control.out; exit 1; \
+	 fi; \
+	 grep -q 'root device did not resolve' .boot-media-control.out || { \
+	    echo "CONTROL FAIL: the modes failed, but not by failing to resolve the root device"; \
+	    cat .boot-media-control.out; rm -f .boot-media-control.out; exit 1; }; \
+	 cat .boot-media-control.out; rm -f .boot-media-control.out; \
+	 echo "[boot-media] CONTROL PASS - all three media failed to resolve the root device"
+
 .PHONY: smoke-ls-path
 smoke-ls-path:
 	@$(MAKE) --no-print-directory clean

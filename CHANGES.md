@@ -15,6 +15,30 @@ in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The image now boots from a USB stick written with `dd`, and under UEFI.** `grub.cfg` said
+  `set root=(cd)`, naming the BIOS El Torito CD-ROM. That device exists only when the image is
+  booted that way: under UEFI it is not there, and on a USB stick written with `dd` the device is
+  `(hd0)`. GRUB then resolved `/boot/kernel.elf` on the **network** and stopped with
+  `error: no server is specified` followed by `you need to load the kernel first`.
+  It is now found by a file that is on the volume -- `search --no-floppy --set=root --file
+  /boot/kernel.elf` -- which resolves on every one of those media.
+  **Three of four cases were broken and nothing could see it**, because every gate in this tree
+  boots `-cdrom boot.iso` under SeaBIOS, which is the one cell that worked. Measured 2026-09-06:
+
+  | | optical | raw disk (a dd'd USB stick) |
+  |---|---|---|
+  | **BIOS** | booted | **failed** |
+  | **UEFI** | **failed** | **failed** |
+
+  All four boot now. Witness `make smoke-boot-media`, falsified by `BOOT_ROOT_CD_ONLY=1`
+  (`make smoke-boot-media-control`), which requires **all three** of the previously-untested
+  modes to fail *and* to fail by not resolving the root device -- a named device that happened
+  to exist in one configuration would still leave the others dead, so the whole column is the
+  assertion. The arm rewrites the **staged** config, never the source file, so it cannot be left
+  behind in the tree.
+
 ### Added
 
 - **`ls` takes a path.** It matched the literal strings `ls` and `ls -l` and nothing else, so

@@ -177,6 +177,7 @@ soak-evidence/
 # arm's own directory (-control) is covered by the same line.
 .boot-media-evidence*/
 .ahci-evidence*/
+.sdhci-evidence*/
 .boot-media-control.out
 
 # Stamp of the CFLAGS/ASFLAGS a build was made with; forces a rebuild when they change

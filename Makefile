@@ -116,7 +116,7 @@ DEFECT_FLAGS = \
 	KEYSLOT_REMOVE_NOOP USERS_PEPPER_PER_BOOT STORAGE_AUTOFORMAT \
 	STORAGE_FORMAT_UNGATED INSTALLER_NO_CONFIRM BLOCK_ERRNO_LEGACY \
 	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY \
-	AHCI_PROBE_ABSENT AHCI_CAPACITY_CONSTANT \
+	AHCI_PROBE_ABSENT AHCI_CAPACITY_CONSTANT SDHCI_PROBE_ABSENT \
 	CONSOLE_VGA_CHECK_FAIL \
 	AHCI_PROBE_ABSENT AHCI_CAPACITY_CONSTANT SERIAL_TX_NEVER_DRAINS \
 	META_CACHE_NO_WRITEBACK META_CACHE_WB_OUTSIDE_TXN META_CACHE_EVICT_NOWB \
@@ -213,7 +213,8 @@ OBJS = src/boot/multiboot.o \
        src/kernel/msi.o \
        src/kernel/shlib.o \
        src/kernel/ata.o \
-       src/kernel/ahci.o
+       src/kernel/ahci.o \
+       src/kernel/sdhci.o
 
 MINIMAL_SECURE ?= 0
 ifeq ($(MINIMAL_SECURE),1)
@@ -1397,6 +1398,16 @@ AHCI_CAPACITY_CONSTANT ?= 0
 ifeq ($(AHCI_CAPACITY_CONSTANT),1)
 CFLAGS  += -DAHCI_CAPACITY_CONSTANT
 ASFLAGS += -DAHCI_CAPACITY_CONSTANT
+endif
+
+# SDHCI_PROBE_ABSENT=1 compiles out the SD/eMMC probe, so a machine that HAS a
+# host controller reports nothing about it -- the state this tree was in before
+# 2026-09-07, and the reason the installer surveys a laptop whose storage is
+# soldered eMMC and finds no disk at all.
+SDHCI_PROBE_ABSENT ?= 0
+ifeq ($(SDHCI_PROBE_ABSENT),1)
+CFLAGS  += -DSDHCI_PROBE_ABSENT
+ASFLAGS += -DSDHCI_PROBE_ABSENT
 endif
 
 # CONSOLE_VGA_CHECK_FAIL=1 forces console_server's VGA round-trip check to fail
@@ -3085,6 +3096,9 @@ src/kernel/ata.o: src/kernel/ata.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 src/kernel/ahci.o: src/kernel/ahci.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+src/kernel/sdhci.o: src/kernel/sdhci.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 ifeq ($(RUST_ENABLED),1)
@@ -6363,6 +6377,36 @@ smoke-serial-bound-control:
 	@SMOKE_TIMEOUT=$(SMOKE_SERIAL_BOUND_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='horus login:' tools/smoke_test.sh boot.iso
 	@echo "[serial] CONTROL PASS - a UART that never drains no longer stops the boot"
+
+# What storage a LAPTOP has. ata.c reaches legacy IDE and ahci.c reaches SATA;
+# neither reaches an SD/eMMC host controller, which is what a budget machine's
+# soldered internal storage sits behind. No other gate attaches one, so
+# "no SD/eMMC host controller" is the only answer any of them could observe --
+# a probe that always said that would pass every gate in this tree.
+#
+# Cleans first: it shares its job with userspace-flag arms, and userspace/%.o has
+# no .build-flags prerequisite (see the ordering note in ci.yml).
+.PHONY: smoke-sdhci-detect
+smoke-sdhci-detect:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) tools/sdhci_detect_test.sh boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SDHCI_EXPECT=empty \
+		SDHCI_EVIDENCE=.sdhci-evidence-empty tools/sdhci_detect_test.sh boot.iso
+
+# The falsifying arm. SDHCI_PROBE_ABSENT=1 compiles the probe out, which is the
+# state this tree was in before 2026-09-07.
+#
+# An ABSENCE assertion, so the arm ALSO requires the kernel to have reached
+# `kernel ready`: without that, a boot that died before the probe ran would
+# satisfy "said nothing about SD" and pass for a reason unrelated to its defect.
+.PHONY: smoke-sdhci-detect-control
+smoke-sdhci-detect-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SDHCI_PROBE_ABSENT=1
+	@$(MAKE) --no-print-directory SDHCI_PROBE_ABSENT=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SDHCI_EXPECT=absent \
+		SDHCI_EVIDENCE=.sdhci-evidence-control tools/sdhci_detect_test.sh boot.iso
 
 .PHONY: smoke-ahci-detect
 smoke-ahci-detect:

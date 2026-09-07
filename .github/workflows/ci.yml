@@ -313,6 +313,16 @@ jobs:
       # NOT the constant, or it could not fail.
       - name: Control arm — a plausible constant capacity is caught
         run: make smoke-ahci-capacity-control
+      # What storage a LAPTOP has. ata.c reaches legacy IDE and ahci.c reaches
+      # SATA; neither reaches an SD/eMMC host controller, which is what a budget
+      # machine's soldered internal storage sits behind. No other gate attaches
+      # one, so "no SD/eMMC host controller" is the only answer any of them
+      # could observe.
+      - name: The SD/eMMC host controller and its card are identified
+        run: make smoke-sdhci-detect
+      # An absence assertion, so the arm also requires `kernel ready`.
+      - name: Control arm — the SD probe is compiled out and the card goes unseen
+        run: make smoke-sdhci-detect-control
       # A console driver that fails AFTER taking the console must still be heard.
       # Ownership passes on the first successful VGA map, and from then the
       # kernel's print() records to the klog and stops driving the wire -- so a

@@ -15,6 +15,31 @@ in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **The kernel can see an SD/eMMC host controller** (`src/kernel/sdhci.c`). This tree had two
+  storage drivers -- `ata.c` for legacy IDE and, since 2026-09-07, enough of `ahci.c` to make a
+  SATA disk identify itself -- and **neither reaches a laptop whose internal storage is soldered
+  eMMC**, which is common on budget machines. So `boot.iso` boots on that hardware, the installer
+  surveys the machine, and finds no disk at all.
+  This is the first half of answering that and deliberately only the first half: it finds the
+  controller (PCI class `0x0805`), maps its register file, and reports the specification revision,
+  the base clock, the maximum block length, and whether a card is present. It resets nothing,
+  issues no command, sets no clock and takes no interrupt -- **a card it names is not usable**,
+  and the report says so.
+  **Card present *and stable*** is reported as a card; a slot whose detect line has not settled is
+  reported as "being detected", because calling that storage would be reporting a race as a fact.
+  The empty slot is a third, distinct answer, and the gate asserts all three.
+  **The prog-if is deliberately not tested**, which is the difference from `ahci.c`: there,
+  prog-if `0x01` separates an AHCI controller from the same silicon in IDE-compatibility mode. For
+  SDHCI, `0x00` and `0x01` both mean SDHCI -- they distinguish "no DMA" from "supports DMA", a
+  capability rather than a different programming interface.
+  Witness `make smoke-sdhci-detect`, which boots a q35 machine with an `sdhci-pci` controller --
+  **no other gate attaches one**, so "no SD/eMMC host controller" is the only answer any of them
+  could observe, and a probe that always said that would pass every gate in this tree. Falsified
+  by `SDHCI_PROBE_ABSENT=1` (`make smoke-sdhci-detect-control`), an absence assertion that also
+  requires the kernel to have reached `kernel ready`.
+
 ### Fixed
 
 - **A console driver that failed after taking the console could not be heard** (`SYS_CONSOLE_RELEASE`,

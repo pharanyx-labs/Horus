@@ -2165,6 +2165,13 @@ void ensure_ahci_abar_mapped(uint64_t *root_pml4, uint64_t abar_phys);
  * exist is the point -- a laptop's SSD is invisible to ata.c and that is what
  * gates installing onto one (docs/LIMITATIONS.md §4). */
 void ahci_probe(void);
+/* Find the SD/eMMC host controller and report what is in it. READS ONLY: no
+ * reset, no command, no clock -- so a card it names is not yet usable. A budget
+ * laptop's internal storage is frequently soldered eMMC, which neither ata.c nor
+ * ahci.c reaches at all (docs/LIMITATIONS.md §4). See src/kernel/sdhci.c. */
+void sdhci_probe(void);
+uint64_t sdhci_bar(void);
+uint32_t sdhci_card_count(void);
 uint64_t ahci_abar(void);
 uint32_t ahci_device_count(void);
 void ensure_iommu_mapped_current(uint64_t *root_pml4);

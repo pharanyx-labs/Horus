@@ -2325,8 +2325,15 @@ old allocator and the new one read the same single block and no workload could t
   mechanism a block read needs is working.
   **What is still missing is the block read itself**, and a `block_device` registration --
   `storage.c` cannot mount any of this, so a laptop's SATA SSD is now *named* on the console and
-  still not installable onto. NVMe remains entirely unaddressed, so a machine whose SSD is NVMe
-  (most of them, now) is not reached by any of this.
+  still not installable onto.
+  Since 2026-09-07 the same is true one controller type along: `src/kernel/sdhci.c` finds an
+  **SD/eMMC host controller** (PCI class `0x0805`) and reports its revision, base clock and
+  whether a card is present and stable. That is the storage a budget laptop actually has --
+  soldered eMMC, reached by neither `ata.c` nor `ahci.c` -- and it too is *named* and not yet
+  usable: no reset, no command, no clock, no `block_device`.
+  **NVMe remains entirely unaddressed**, so a machine whose SSD is NVMe is not reached by any of
+  this. Three controller types are now visible and none is mountable; the block read is the next
+  change for whichever of them a given machine has.
 - **Process groups, job control, and `/proc`.** `SYS_SPAWN`, `SYS_EXEC_*` and `SYS_FORK` all
   exist, and `fork` + `exec` is gated as a pairing (**S42**, `make smoke-forkexec`); what a
   shell still cannot do is group its children, put one in the background, or read `/proc`.

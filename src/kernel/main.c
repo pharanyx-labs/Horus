@@ -425,6 +425,10 @@ void kernel_main(uint32_t mb_info) {
      * onto one" is exactly this. */
     ahci_probe();
 
+    /* And the third controller type, which is the one a budget laptop actually
+     * has: SD/eMMC. Neither ata.c nor ahci.c reaches it. */
+    sdhci_probe();
+
     /* VT-d, before cap_init and long before any ring-3 task: bringing the unit up
      * with an empty root table is what makes "a device reaches nothing until its
      * driver maps a frame" true from the first instruction, rather than from

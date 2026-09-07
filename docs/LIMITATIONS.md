@@ -2314,9 +2314,17 @@ old allocator and the new one read the same single block and no workload could t
   of that server's contract, and changing it underneath is what this experiment did. Doing it
   properly means the kernel and `console_server` learning about a linear framebuffer together,
   in one change, with the VGA path kept for BIOS machines that still have one.
-- **USB, sound, or any modern bus.** ATA PIO and PS/2 only. Two consequences on real hardware:
-  a laptop's **NVMe or AHCI SSD is invisible**, so the installer has nothing to install onto; and
-  a machine that provides no 8042 emulation has **no keyboard**, since there is no USB stack.
+- **USB, sound, or any modern bus.** ATA PIO and PS/2 only for *driving* hardware. Two
+  consequences on real hardware: a laptop's **NVMe or AHCI SSD cannot be read or written**, so
+  the installer has nothing to install onto; and a machine that provides no 8042 emulation has
+  **no keyboard**, since there is no USB stack.
+  Since 2026-09-07 the SATA half is at least *visible*: `src/kernel/ahci.c` finds an AHCI
+  controller, maps its register file, and reports each implemented port and what is attached
+  (`make smoke-ahci-detect`, which boots a q35 machine because QEMU's default i440fx has no AHCI
+  at all). It reads only -- no commands, no interrupts -- so a disk it names is still not one
+  anything can use. That is deliberate: finding the controller and driving it are separate
+  changes, and the first can be wrong on its own without half a driver in the tree to explain
+  it. NVMe remains entirely unaddressed.
 - **Process groups, job control, and `/proc`.** `SYS_SPAWN`, `SYS_EXEC_*` and `SYS_FORK` all
   exist, and `fork` + `exec` is gated as a pairing (**S42**, `make smoke-forkexec`); what a
   shell still cannot do is group its children, put one in the background, or read `/proc`.

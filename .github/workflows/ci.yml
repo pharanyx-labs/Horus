@@ -295,6 +295,18 @@ jobs:
       # that happens to exist in one configuration still leaves the others dead.
       - name: Control arm — the root device is named instead of searched for
         run: make smoke-boot-media-control
+      # What storage the machine has. Only legacy ATA PIO exists, which is what
+      # QEMU's default i440fx gives and is not what a laptop has -- so the image
+      # boots on real hardware and the installer then finds no disk. This boots
+      # q35, which has an AHCI controller, with a disk on it. Its own machine
+      # type is the point: on i440fx "no SATA controller" is the only answer any
+      # other gate could observe.
+      - name: The SATA controller and its disk are both identified
+        run: make smoke-ahci-detect
+      # An absence assertion, so the arm also requires the kernel to have reached
+      # `kernel ready` -- otherwise a boot that died early would satisfy it.
+      - name: Control arm — the probe is compiled out and the disk goes unseen
+        run: make smoke-ahci-detect-control
 
   smoke-aspace:
     name: QEMU address-space reclaim self-test (a rebuilt slot leaks nothing)

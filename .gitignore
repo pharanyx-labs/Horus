@@ -176,6 +176,7 @@ soak-evidence/
 # rejected -- which is the only run anyone needs it for. A glob, so the control
 # arm's own directory (-control) is covered by the same line.
 .boot-media-evidence*/
+.ahci-evidence*/
 .boot-media-control.out
 
 # Stamp of the CFLAGS/ASFLAGS a build was made with; forces a rebuild when they change

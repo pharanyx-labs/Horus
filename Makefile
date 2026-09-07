@@ -116,6 +116,7 @@ DEFECT_FLAGS = \
 	KEYSLOT_REMOVE_NOOP USERS_PEPPER_PER_BOOT STORAGE_AUTOFORMAT \
 	STORAGE_FORMAT_UNGATED INSTALLER_NO_CONFIRM BLOCK_ERRNO_LEGACY \
 	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY \
+	AHCI_PROBE_ABSENT \
 	META_CACHE_NO_WRITEBACK META_CACHE_WB_OUTSIDE_TXN META_CACHE_EVICT_NOWB \
 	META_CACHE_TINY MERKLE_NODE_TRUST_CACHED MERKLE_SKIP_PARENT_BIND \
 	FSCK_SHALLOW_REFS STORAGE_MOUNT_ANY_SIZE ALLOC_NO_HINT ATA_READY_ERR_ONLY \
@@ -209,7 +210,8 @@ OBJS = src/boot/multiboot.o \
        src/kernel/ioapic.o \
        src/kernel/msi.o \
        src/kernel/shlib.o \
-       src/kernel/ata.o
+       src/kernel/ata.o \
+       src/kernel/ahci.o
 
 MINIMAL_SECURE ?= 0
 ifeq ($(MINIMAL_SECURE),1)
@@ -1372,6 +1374,16 @@ SHELL_LS_NO_PATH_ARG ?= 0
 # It rewrites the STAGED grub.cfg rather than the source file, so the arm cannot
 # be left behind in the tree. Control arm for make smoke-boot-media.
 BOOT_ROOT_CD_ONLY ?= 0
+
+# AHCI_PROBE_ABSENT=1 compiles out the SATA probe, so a machine WITH an AHCI
+# controller attached says nothing about it -- which is the state this tree was
+# in before 2026-09-07, and the reason the installer surveys a laptop and finds
+# no disk. Control arm for make smoke-ahci-detect.
+AHCI_PROBE_ABSENT ?= 0
+ifeq ($(AHCI_PROBE_ABSENT),1)
+CFLAGS  += -DAHCI_PROBE_ABSENT
+ASFLAGS += -DAHCI_PROBE_ABSENT
+endif
 
 # SYSCOV_PROBES_ABSENT=1 compiles out the coverage probes -- captest's section 13
 # and auditprobe's four calls into the audit handlers: the probes that enter
@@ -3030,6 +3042,9 @@ src/kernel/crypto.o: src/kernel/crypto.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 src/kernel/ata.o: src/kernel/ata.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+src/kernel/ahci.o: src/kernel/ahci.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 ifeq ($(RUST_ENABLED),1)
@@ -6210,6 +6225,34 @@ smoke-session:
 #
 # Needs OVMF for the UEFI halves; the script REFUSES rather than skipping when the
 # firmware is absent, so "we could not test UEFI" can never read as "UEFI works".
+# What storage the machine actually has. The only storage driver here is legacy
+# ATA PIO, which is what QEMU's default i440fx gives and is NOT what a machine
+# built this decade has -- so the image boots on a laptop and the installer then
+# surveys it and finds no disk. This gate boots q35, which has an AHCI
+# controller, with a disk on it.
+#
+# ITS OWN MACHINE TYPE IS THE POINT: on i440fx "no SATA controller" is the only
+# answer any existing arm could observe, so a probe that always said that would
+# pass every gate in this tree.
+.PHONY: smoke-ahci-detect
+smoke-ahci-detect:
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) tools/ahci_detect_test.sh boot.iso
+
+# The falsifying arm. AHCI_PROBE_ABSENT=1 compiles the probe out, which is the
+# state this tree was in before 2026-09-07.
+#
+# It requires the probe to say NOTHING -- an absence, which is the weaker kind of
+# assertion and is why the arm ALSO requires the kernel to have reached
+# `kernel ready`. Without that second half, a kernel that died before the probe
+# ran would satisfy "said nothing about AHCI" and the arm would pass for a reason
+# unrelated to its defect.
+.PHONY: smoke-ahci-detect-control
+smoke-ahci-detect-control:
+	@$(MAKE) --no-print-directory AHCI_PROBE_ABSENT=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) AHCI_EXPECT=absent \
+		AHCI_EVIDENCE=.ahci-evidence-control tools/ahci_detect_test.sh boot.iso
+
 .PHONY: smoke-boot-media
 smoke-boot-media:
 	@$(MAKE) --no-print-directory boot.iso

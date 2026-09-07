@@ -15,6 +15,31 @@ in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **The kernel can see a SATA controller** (`src/kernel/ahci.c`). The only storage driver in this
+  tree is legacy ATA PIO, which is what QEMU's default machine gives and is not what a machine
+  built this decade has -- so `boot.iso` boots on real hardware, and from a USB stick under UEFI
+  since 2026-09-07, and the installer then surveys the machine and finds **no disk**. That is the
+  item gating an install onto a laptop.
+  This is the first half of answering it and deliberately only the first half: it finds the AHCI
+  controller on the PCI bus, maps its register file, and reports the HBA version, the port count
+  and what is attached to each implemented port -- distinguishing a SATA disk from an ATAPI
+  device by its signature, which matters because the boot CD-ROM itself appears as one. It issues
+  no commands, allocates nothing and takes no interrupt, so **a disk it names is still not usable**.
+  Finding the controller and driving it are separate changes, and keeping them apart means the
+  risky half can be wrong on its own without a half-written driver in the tree to explain it.
+  The candidate register BAR is a **heuristic that is then validated**: `struct io_device` records
+  each sized BAR's base but not its index, so the highest-based MMIO region is taken as ABAR and
+  then checked against the hardware (a version this specification defines, and at least one
+  implemented port). A controller that fails those checks is reported as unrecognised rather than
+  guessed at.
+  Witness `make smoke-ahci-detect`, which boots a **q35** machine -- its own machine type is the
+  point, since on i440fx "no SATA controller" is the only answer any existing gate could observe,
+  so a probe that always said that would pass all of them. Falsified by `AHCI_PROBE_ABSENT=1`
+  (`make smoke-ahci-detect-control`), an absence assertion that additionally requires the kernel
+  to have reached `kernel ready`, so a boot that died early cannot satisfy it.
+
 ### Documentation
 
 - **Recorded why the framebuffer console is not a one-line start** (`docs/LIMITATIONS.md` §4).

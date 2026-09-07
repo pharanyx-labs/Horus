@@ -323,6 +323,12 @@ jobs:
       # An absence assertion, so the arm also requires `kernel ready`.
       - name: Control arm — the SD probe is compiled out and the card goes unseen
         run: make smoke-sdhci-detect-control
+      # The capacity half. A CSD decoded at the specification's own bit positions
+      # -- rather than eight bits lower, where a stored response actually puts
+      # them -- prints a plausible number and a wrong one. The gate compares
+      # against the size of the image it created, which is the only way to see it.
+      - name: Control arm — a plausibly wrong card capacity is caught
+        run: make smoke-sdhci-csd-control
       # A console driver that fails AFTER taking the console must still be heard.
       # Ownership passes on the first successful VGA map, and from then the
       # kernel's print() records to the klog and stops driving the wire -- so a

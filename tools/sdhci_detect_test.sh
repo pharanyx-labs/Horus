@@ -35,9 +35,10 @@ EVID="${SDHCI_EVIDENCE:-.sdhci-evidence}"
 rm -rf "$EVID"; mkdir -p "$EVID"
 [ -f "$ISO" ] || { echo "sdhci-detect: no such ISO: $ISO"; exit 2; }
 
+CARD_MB="${SDHCI_CARD_MB:-128}"
 CARD="$EVID/emmc.img"
-qemu-img create -f raw "$CARD" 128M >/dev/null 2>&1 || \
-    dd if=/dev/zero of="$CARD" bs=1M count=0 seek=128 status=none
+qemu-img create -f raw "$CARD" "${CARD_MB}M" >/dev/null 2>&1 || \
+    dd if=/dev/zero of="$CARD" bs=1M count=0 seek="$CARD_MB" status=none
 
 LOG="$EVID/serial.log"
 args=(-m 512M -cpu qemu64 -machine q35 -display none -no-reboot -cdrom "$ISO"
@@ -86,6 +87,16 @@ else
     check "the controller is recognised"              "sdhci: host controller v"
     check "a card is present and the line is stable"  "a card is present and the detect line is stable"
     check "the card count is reported"                "sdhci: 1 card(s) present"
+    # The card was brought up -- reset, power, clock divisor, CMD0, the op-cond
+    # negotiation, CMD2/CMD3/CMD9/CMD7 -- and the CAPACITY is compared against
+    # the image this script created. A driver that decoded the CSD from the
+    # specification's own bit numbers reads a plausible number and a wrong one:
+    # the first version of this reported a 128 MiB card as 30752 MiB, because a
+    # 136-bit response is stored with the CRC byte dropped and every field sits
+    # eight bits below its documented position. Only a size comparison catches
+    # that.
+    check "the card came up"                          "SD card, "
+    check "the capacity is the card's own"            "SD card, ${CARD_MB} MiB"
 fi
 
 if [ "$fail" != 0 ]; then

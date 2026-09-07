@@ -2326,11 +2326,18 @@ old allocator and the new one read the same single block and no workload could t
   **What is still missing is the block read itself**, and a `block_device` registration --
   `storage.c` cannot mount any of this, so a laptop's SATA SSD is now *named* on the console and
   still not installable onto.
-  Since 2026-09-07 the same is true one controller type along: `src/kernel/sdhci.c` finds an
-  **SD/eMMC host controller** (PCI class `0x0805`) and reports its revision, base clock and
-  whether a card is present and stable. That is the storage a budget laptop actually has --
-  soldered eMMC, reached by neither `ata.c` nor `ahci.c` -- and it too is *named* and not yet
-  usable: no reset, no command, no clock, no `block_device`.
+  Since 2026-09-07 the same is true one controller type along, and further along than for SATA:
+  `src/kernel/sdhci.c` finds an **SD/eMMC host controller** (PCI class `0x0805`), resets and
+  clocks it, brings the card up (`CMD0`, op-cond, `CMD2`, `CMD3`, `CMD9`, `CMD7`) and decodes its
+  capacity from the CSD. That is the storage a budget laptop actually has -- soldered eMMC,
+  reached by neither `ata.c` nor `ahci.c`. It is still not usable: no block read, no
+  `block_device`, so `storage.c` cannot mount it.
+  **The eMMC branch of that has never executed anywhere.** eMMC powers up with `CMD1`; SD uses
+  `CMD8`/`ACMD41`, and an SD card must not answer `CMD1`. QEMU 10.0 has no eMMC device -- only
+  `sd-card` -- so every gate here exercises the SD branch, and the code an actual laptop needs is
+  written, reviewed and unrun. The branches share the reset, the clock, the command mechanism, the
+  response decoding and both CSD decoders, so the unexercised delta is one command; that is a
+  mitigation and not a substitute for having run it.
   **NVMe remains entirely unaddressed**, so a machine whose SSD is NVMe is not reached by any of
   this. Three controller types are now visible and none is mountable; the block read is the next
   change for whichever of them a given machine has.

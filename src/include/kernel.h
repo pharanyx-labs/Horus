@@ -2172,6 +2172,7 @@ void ahci_probe(void);
 void sdhci_probe(void);
 uint64_t sdhci_bar(void);
 uint32_t sdhci_card_count(void);
+uint64_t sdhci_sectors(void);
 uint64_t ahci_abar(void);
 uint32_t ahci_device_count(void);
 void ensure_iommu_mapped_current(uint64_t *root_pml4);

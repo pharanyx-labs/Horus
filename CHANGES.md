@@ -17,6 +17,31 @@ in this file.
 
 ### Added
 
+- **The card comes up and says how big it is** (`src/kernel/sdhci.c`). Building on the detection
+  landed earlier: the controller is reset, powered and clocked down to the 400 kHz the
+  identification phase requires, then the card is taken through `CMD0`, the op-cond negotiation,
+  `CMD2`, `CMD3`, `CMD9` and `CMD7`, and its capacity is decoded from the CSD.
+  **The capacity decode was wrong the first time, and the way it was wrong is the point.** A
+  136-bit response is stored with its **CRC byte dropped**, so response bit *R* carries CSD bit
+  *R+8* -- every field sits eight bits below the position the specification documents. Writing the
+  specification's own numbers reads correctly and reported a 128 MiB card as **30752 MiB**: a
+  plausible number, and a wrong one. Verified against images of 128 MiB, 512 MiB, 2 GiB, 4 GiB and
+  16 GiB, which also covers **both CSD encodings** -- v1 computes capacity from three fields and
+  v2 from a single 22-bit count, so one card size exercises only one decoder.
+  **The eMMC path is written and has never run anywhere.** An eMMC device powers up with `CMD1`;
+  SD uses `CMD8`/`ACMD41`, and an SD card must not answer `CMD1`. QEMU 10.0 has no eMMC device,
+  only `sd-card`, so CI exercises the SD branch. The two share everything they can -- the reset,
+  the clock, the command mechanism, the response decoding, `CMD2`/`CMD3`/`CMD9`/`CMD7` and both
+  CSD decoders -- so the untested delta is one command and its argument rather than a second
+  driver. The first machine to run it will be real hardware, and the probe reports **which step
+  failed, by number**, so a photograph of the screen is enough to place a failure.
+  Witness `make smoke-sdhci-detect`, which now asserts the card came up and that the capacity
+  equals the size of the image the harness created, at two sizes on either side of the CSD version
+  boundary. Falsified by `SDHCI_CSD_SPEC_BITS=1` (`make smoke-sdhci-csd-control`), which decodes
+  at the documented positions and must go red **on the capacity check** -- the card still comes up
+  and the controller is still recognised, which is exactly why a size comparison is the only thing
+  that sees it.
+
 - **The kernel can see an SD/eMMC host controller** (`src/kernel/sdhci.c`). This tree had two
   storage drivers -- `ata.c` for legacy IDE and, since 2026-09-07, enough of `ahci.c` to make a
   SATA disk identify itself -- and **neither reaches a laptop whose internal storage is soldered

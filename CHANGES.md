@@ -15,6 +15,19 @@ in this file.
 
 ## [Unreleased]
 
+### Documentation
+
+- **Recorded why the framebuffer console is not a one-line start** (`docs/LIMITATIONS.md` §4).
+  Adding the multiboot2 framebuffer request tag with `width`/`height`/`depth` all zero -- "no
+  preference", chosen so a BIOS machine could stay in EGA text -- boots on every medium and then
+  hangs `console_server`: the log stops after `init: starting, launching shell` and
+  `[console_server] ready` never arrives, with neither of that server's own failure markers
+  emitted, so it blocks before its VGA round-trip rather than failing it. Reverting the tag alone
+  restores the login prompt, which is what makes the tag the cause rather than a coincidence.
+  The conclusion is the useful part: ring 3 owns the display after the handover, so the firmware
+  mode is part of `console_server`'s contract and the kernel cannot change it underneath. A
+  framebuffer console has to be one change across both.
+
 ### Fixed
 
 - **The image now boots from a USB stick written with `dd`, and under UEFI.** `grub.cfg` said

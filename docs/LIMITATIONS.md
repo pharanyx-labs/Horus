@@ -2296,6 +2296,24 @@ old allocator and the new one read the same single block and no workload could t
   UEFI machine with no CSM that text buffer does not exist**, so the kernel boots and runs blind
   unless a serial port is attached: there is no GOP/linear-framebuffer console yet. This is the
   first thing between "the image boots on a laptop" and "the laptop is usable".
+
+  **Asking GRUB for a framebuffer is not the small first step it looks like, and the measurement
+  is recorded here so the next attempt does not repeat it.** Adding the multiboot2 framebuffer
+  request tag (type 5) to the header with `width`/`height`/`depth` all zero -- which multiboot2
+  defines as "no preference", and which was chosen precisely so a BIOS machine could stay in EGA
+  text -- boots on every medium and then **hangs `console_server`**: measured 2026-09-07, the
+  serial log stops after `init: starting, launching shell` and
+  `[console_server] ready` never appears. It emits neither of its own failure markers
+  (`CONSOLE_SELFTEST: FAIL grant`, `... FAIL vga`), so it blocks *before* its VGA round-trip
+  check rather than failing it. Reverting the tag alone restores the login prompt, which is what
+  makes the tag the cause rather than a coincidence.
+
+  So the framebuffer console is **not** a kernel-only change layered onto `emit_char`. Ring 3
+  owns the display after the handover (`console_server` maps the VGA text plane through
+  `SYS_MAP_PHYS` and drives the VGA registers directly), so the mode the firmware leaves is part
+  of that server's contract, and changing it underneath is what this experiment did. Doing it
+  properly means the kernel and `console_server` learning about a linear framebuffer together,
+  in one change, with the VGA path kept for BIOS machines that still have one.
 - **USB, sound, or any modern bus.** ATA PIO and PS/2 only. Two consequences on real hardware:
   a laptop's **NVMe or AHCI SSD is invisible**, so the installer has nothing to install onto; and
   a machine that provides no 8042 emulation has **no keyboard**, since there is no USB stack.

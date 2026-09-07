@@ -60,6 +60,7 @@ control_arms:
   smoke-blockprobe-control: smoke-blockprobe
   smoke-readdir-end-control: smoke-readdir-end
   smoke-ls-path-control: smoke-ls-path
+  smoke-boot-media-control: smoke-boot-media
   smoke-keyslots-control: smoke-keyslots
   smoke-users-persist-control: smoke-users-persist
   smoke-meta-crash-control: smoke-meta-crash
@@ -182,6 +183,7 @@ gates:
   - smoke-blockprobe
   - smoke-readdir-end
   - smoke-ls-path
+  - smoke-boot-media
   - smoke-claim-release
   - smoke-console
   - smoke-console-isolation

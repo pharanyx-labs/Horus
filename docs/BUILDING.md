@@ -208,10 +208,32 @@ exercised, against a kernel that is not moving.
 
 ### On real hardware
 
-`boot.iso` is a standard El Torito BIOS-boot ISO. Write it to a USB stick with `dd` and boot a
-machine in legacy/CSM mode. Horus expects a serial port for its console; without one you get VGA
-text output only. This is genuinely exercised, but expect rough edges, driver coverage is
-minimal (ATA PIO and PS/2 only).
+`boot.iso` is a hybrid image: El Torito for BIOS, and an EFI system partition for UEFI. Write it
+to a USB stick with `dd` and boot from it either way.
+
+```sh
+sudo dd if=boot.iso of=/dev/sdX bs=4M status=progress conv=fsync   # sdX, not sdX1
+```
+
+**Until 2026-09-07 that did not work**, and the instruction above was here anyway. `grub.cfg`
+named the boot device as `set root=(cd)` -- the BIOS El Torito CD-ROM -- which does not exist
+when the image is written to a USB stick (the device is `(hd0)`) or booted through UEFI. GRUB
+looked the kernel up on the network instead and stopped with `error: no server is specified`.
+The volume is now found by a file that is on it, and all four combinations of
+{BIOS, UEFI} x {optical, raw disk} are gated by `make smoke-boot-media`.
+
+**Booting is not the same as being usable, and on a modern laptop the gap is wide.** What still
+does not exist:
+
+| | State |
+|---|---|
+| Console | VGA text (`0xB8000`) only. Under UEFI there is no such text buffer, so on a machine with no CSM the kernel runs **blind** unless a serial port is attached. There is no GOP/linear-framebuffer console yet |
+| Storage | ATA PIO only. A laptop's NVMe or AHCI SSD is **not visible**, so the installer has nothing to install onto |
+| Keyboard | PS/2 (8042) only. Many recent laptops provide no 8042 emulation, and there is no USB stack |
+
+So the image boots on real UEFI hardware and will reach the kernel; a serial console is
+currently the only reliable way to see it, and installing to an internal disk needs drivers this
+tree does not have.
 
 ---
 
@@ -412,6 +434,7 @@ failing arm. A gate that has only ever been run against the fixed kernel is not 
 | `BLOCK_ERRNO_LEGACY=1` | Restores the bare return values `h_block_read` and `h_block_write` shipped with: the storage layer's raw `-1` for a block the device refuses, and a raw `-3` for a failed user copy. **`-1` is the value of `SYS_ERR_PERM`**, so under the flag "that block does not exist" and "you hold no capability for this" are one answer -- and a refusal test against either syscall cannot tell whether the handler ran at all. `-3` is in no vocabulary; `include/errno.h` names a bad user pointer `SYS_ERR_FAULT` and says outright to use the names rather than bare integers. It survived because **nothing had ever called either syscall**: both sat on `.github/syscall-coverage.yml`'s `uncovered` list from the day that file was written (`docs/LIMITATIONS.md` 1.8). | `make smoke-blockprobe-control`, which requires `BLOCKPROBE: FAIL bad-block-is-indistinguishable-from-refusal` to be **present**; `make smoke-blockprobe` must go red under the same flag (measured 2026-09-06: the probe reports three failed checks, and the base gate's `BLOCKPROBE: PASS` marker never appears). The marker is the **indistinguishability by name** rather than "it failed": under the flag the same call still refuses, still writes nothing and still returns a negative number -- it just cannot say which refusal it was, which is the whole claim |
 | `READDIR_END_IS_NOENT=1` | Restores the overloaded readdir reply: `SYS_ERR_NOENT` for **both** "the offset is past the last entry" and "I could not stat that directory", together with `fs_server` flattening `h_fs_stat`'s reason instead of passing it through. The consequence is the one a user reports -- `ls` prints nothing and no error. On a **sealed volume** (every ATA machine from power-on until a login unlocks it) `h_fs_stat` answers `SYS_ERR_INVAL`, `fs_server` turned it into `NOENT`, and the shell read `NOENT` as end-of-directory: a locked store reported itself as an empty filesystem, and none of the three steps looks wrong on its own. Userspace-only, so the `-D` goes on `USERSPACE_CFLAGS` at top level. | `make smoke-readdir-end-control`, which requires `FS_SELFTEST: FAIL readdir-end-and-missing-dir-are-the-same` to be **present**; `make smoke-fs` must go red under the same flag (measured 2026-09-06: `SMOKE FAIL: saw fail marker`, both codes reported as `-2`). **The marker is the EQUALITY of the two codes** rather than either one's value: under the defect neither equals `FS_RC_ENDDIR`, so an arm comparing either against a constant would pass and witness nothing |
 | `SHELL_LS_NO_PATH_ARG=1` | Restores the pre-2026-09-06 `ls` dispatch: the builtin matched the literal strings `ls` and `ls -l` and nothing else, so `ls /bin` fell through the entire builtin chain and answered **`Unknown command`**. That reads as "there is no such command" rather than "that command takes no argument", which is why it looked like the shell had no `ls`. Userspace-only, so the `-D` goes on `USERSPACE_CFLAGS` at top level. | `make smoke-ls-path-control`, which types the **identical** commands as the base arm and requires `Unknown command` back (measured 2026-09-06). Both arms drive the same scripted session and differ only in what the shell is required to say, which is what makes the pair a measurement of the dispatch rather than of the harness |
+| `BOOT_ROOT_CD_ONLY=1` | Restores the pre-2026-09-07 `grub.cfg` line `set root=(cd)`, which named the BIOS El Torito CD-ROM. That device does not exist under UEFI, nor on a USB stick written with `dd` (where it is `(hd0)`), so GRUB resolved `/boot/kernel.elf` on the **network** and stopped: `error: no server is specified`, then `you need to load the kernel first`. It rewrites the **staged** config rather than the source file, so the arm cannot be left behind in the tree. | `make smoke-boot-media-control`, which requires **all three** modes (`bios-disk`, `uefi-cd`, `uefi-disk`) to fail and to fail by not resolving the root device — a named device that happens to exist in one configuration would still leave the others dead, so the whole column is the assertion (measured 2026-09-06). Base gate `make smoke-boot-media` |
 | `KSTACK_INFLIGHT_LEGACY_WORD=1` | The pre-2026-08-30 `g_kstack_inflight`: ONE `uint64_t`, bit selected by `1ULL << t` with no bound on `t`. At `MAX_TASKS` 256 the shift is masked to 6 bits, so task 255 aliases task 191 — the S20 detector answers about a different task than the one asked about, with no fault and no warning. The defect raising the ceiling would have introduced. | `make smoke-task-ceiling-control`, which requires `TASKCEIL_SELFTEST: FAIL setting task 255 also set task 191` to be **present**; `make smoke-task-ceiling` must go red under the same flag |
 | `KSTACK_SLOT_INDEX_TRUNC=1` | The kernel-stack slot index truncated to 6 bits, so task *t* and task *t*−64 are permanently bound to one kernel stack: **S20 by construction** rather than by race. | `make smoke-task-ceiling-stack-control`, which requires `TASKCEIL_SELFTEST: FAIL alias pair shares a kernel stack slot` to be **present**; `make smoke-task-ceiling` must go red under the same flag. A separate arm from the one above deliberately: that blinds the *detector* for S20, this creates the *condition* S20 describes, and one arm covering both would not show the two checks fail independently |
 | `SYSCOV_PROBES_ABSENT=1` | Compiles out the coverage probes: `captest` section 13, which enters the twelve `SC_NONE` handler bodies promoted on 2026-08-30, and `auditprobe`'s four calls into the two audit handlers promoted on 2026-09-01. Not a kernel defect: it removes a TEST, which is what makes it the right arm here, because the claim being falsified is that those promotions were earned by the probes rather than free all along. | `make smoke-syscall-coverage-control`, which requires the coverage checker to name **exactly** the set in `SYSCOV_CONTROL_EXPECTED` (14 since 2026-09-01) as declared-covered-with-a-handler-that-never-ran, and fails if it names more or fewer — measured on the day the two audit syscalls were added, and it named all 14; `make smoke-syscall-coverage` must go red under the same flag, measured 2026-08-30 through `tools/check_base_gate_reddens.sh SYSCOV_PROBES_ABSENT`: RED, the 31st `-D` pair in that table and the first added since the script existed. Both arms rebuild and reboot all three workloads, because running one would redden the gate on the other two's missing transcripts and the defect would contribute nothing |

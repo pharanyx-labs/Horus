@@ -278,11 +278,23 @@ jobs:
       - name: Install build toolchain + QEMU
         uses: ./.github/actions/apt
         with:
-          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86 grub-efi-amd64-bin ovmf
       - name: Add bare-metal Rust target
         run: rustup target add x86_64-unknown-none
       - name: Boot the kernel under QEMU and assert it reaches the shell
         run: make smoke
+      # The image booted the way people actually boot it: {BIOS, UEFI} x
+      # {optical, raw disk}. Every other gate runs `-cdrom` under SeaBIOS, one
+      # cell of that table, and the other three were broken -- grub.cfg named
+      # the El Torito CD-ROM as the root device, which does not exist under UEFI
+      # or on a USB stick written with dd. grub-efi-amd64-bin is what gives the
+      # ISO an EFI partition on the runner at all; ovmf is the firmware.
+      - name: The image boots from a dd'd USB stick and under UEFI
+        run: make smoke-boot-media
+      # All THREE modes must fail under the arm, not merely one: a named device
+      # that happens to exist in one configuration still leaves the others dead.
+      - name: Control arm — the root device is named instead of searched for
+        run: make smoke-boot-media-control
 
   smoke-aspace:
     name: QEMU address-space reclaim self-test (a rebuilt slot leaks nothing)

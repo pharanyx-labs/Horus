@@ -2292,8 +2292,13 @@ old allocator and the new one read the same single block and no workload could t
 ## 4. Functionality that does not exist
 
 - **Networking.** No drivers, no stack, no sockets.
-- **Graphics.** VGA text mode only; no framebuffer graphics, no windowing.
-- **USB, sound, or any modern bus.** ATA PIO and PS/2 only.
+- **Graphics.** VGA text mode (`0xB8000`) only; no framebuffer graphics, no windowing. **On a
+  UEFI machine with no CSM that text buffer does not exist**, so the kernel boots and runs blind
+  unless a serial port is attached: there is no GOP/linear-framebuffer console yet. This is the
+  first thing between "the image boots on a laptop" and "the laptop is usable".
+- **USB, sound, or any modern bus.** ATA PIO and PS/2 only. Two consequences on real hardware:
+  a laptop's **NVMe or AHCI SSD is invisible**, so the installer has nothing to install onto; and
+  a machine that provides no 8042 emulation has **no keyboard**, since there is no USB stack.
 - **Process groups, job control, and `/proc`.** `SYS_SPAWN`, `SYS_EXEC_*` and `SYS_FORK` all
   exist, and `fork` + `exec` is gated as a pairing (**S42**, `make smoke-forkexec`); what a
   shell still cannot do is group its children, put one in the background, or read `/proc`.
@@ -2306,7 +2311,10 @@ old allocator and the new one read the same single block and no workload could t
 - **KASLR.** Userspace has 30-bit ASLR; the kernel is loaded at a fixed address.
 - **IOMMU.** A DMA-capable device can read all of physical memory.
 - **Signals beyond the basics.** No `SIGCHLD`, no job control, no process groups.
-- **ARM or RISC-V.** x86-64 only, and the boot path is Multiboot2/BIOS (no UEFI).
+- **ARM or RISC-V.** x86-64 only. The boot path is Multiboot2, reached through GRUB under
+  **either** BIOS or UEFI since 2026-09-07 (`make smoke-boot-media`); the kernel itself never
+  talks to firmware, so "no UEFI", which this bullet said until then, was about the image rather
+  than the kernel and is no longer true of either.
 
 ---
 

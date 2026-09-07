@@ -171,6 +171,13 @@ soak-evidence/
 # lands rather than the day someone notices it in `git status`.
 .syscov-evidence*/
 
+# Boot-media transcripts: one serial log per {BIOS,UEFI} x {optical,raw disk}
+# boot, kept by tools/boot_media_test.sh so a RED run still has the evidence it
+# rejected -- which is the only run anyone needs it for. A glob, so the control
+# arm's own directory (-control) is covered by the same line.
+.boot-media-evidence*/
+.boot-media-control.out
+
 # Stamp of the CFLAGS/ASFLAGS a build was made with; forces a rebuild when they change
 .build-flags
 

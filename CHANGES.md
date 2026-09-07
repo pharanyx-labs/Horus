@@ -15,6 +15,23 @@ in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`ls` takes a path.** It matched the literal strings `ls` and `ls -l` and nothing else, so
+  `ls /bin` fell through the entire builtin chain and came back **`Unknown command`** -- which
+  reads as "there is no such command" rather than "that command does not take an argument", and
+  is why it looked like the shell had no `ls` rather than a limited one. `ls [-l] [path]` now
+  resolves its argument through `hvfs_walk`, the same walker `cd` uses.
+  **It carries the mount slot, not just the inode**, and that is the part worth recording: an
+  inode number means nothing without knowing which server was asked, so a path that crosses a
+  mount point is listed by the server that owns it rather than by whichever server the shell
+  last spoke to. The listing itself moved into `sh_list_dir()` unchanged.
+  The refusals are separate sentences because they are separate facts: a path that does not
+  resolve is `ls: no such directory: <path>`, and one that resolves to a file is
+  `ls: not a directory: <path>`. Witness `make smoke-ls-path`, falsified by
+  `SHELL_LS_NO_PATH_ARG=1` (`make smoke-ls-path-control`), which restores the exact-match
+  dispatch and requires `Unknown command` from the identical keystrokes.
+
 ### Fixed
 
 - **A locked store reported itself as an empty filesystem, and `ls` said nothing at all.**

@@ -1415,6 +1415,214 @@ static void show_topic_help_us(const char *topic) {
     }
 }
 
+/* Send one filesystem request to a NAMED mount.
+ *
+ * fss_call() always talks to CAPSLOT_FS_EP and lazily connects; hvfs_rpc() takes
+ * the slot but assumes the connection exists. Directory listing needs both
+ * behaviours now that a path can name a mount other than the root one, so this
+ * keeps the existing path byte-for-byte identical and routes anything else
+ * through the walker's slot. Any hvfs failure is folded to -1, which is
+ * fss_call's own "the transport failed" convention. */
+static int sh_dir_call(int slot, struct fs_request *rq, struct fs_response *rp) {
+    if (slot == CAPSLOT_FS_EP) return fss_call(rq, rp);
+    return (hvfs_rpc(slot, rq, rp) == 0) ? 0 : -1;
+}
+
+/* One mount's directory, listed. Split out of the `ls` builtin on 2026-09-06 so
+ * that a PATH ARGUMENT could name a directory other than the cwd -- `ls /bin`
+ * answered "Unknown command" until then, because the builtin matched the literal
+ * strings "ls" and "ls -l" and nothing else.
+ *
+ * It takes the MOUNT SLOT as well as the inode, and that is the part worth
+ * stating: an inode number means nothing without knowing which server was asked.
+ * hvfs_walk resolves a path to exactly that pair, so a path that crosses a mount
+ * point is listed by the server that owns it rather than by whichever server the
+ * shell last spoke to. The cwd case passes CAPSLOT_FS_EP, which is what it has
+ * always used. */
+static void sh_list_dir(int dir_slot, uint32_t dir_ino, int long_fmt) {
+
+    /* Entries are collected before anything is printed. Column widths are a
+     * property of the whole listing -- the widest name decides the layout --
+     * so a streaming printer cannot align them, which is why the old one
+     * emitted a ragged entry per line. */
+    #define LS_MAX 128
+    static struct {
+        char     name[FS_NAME_MAX];
+        uint32_t type, mode, uid, size;
+        int      stat_ok;
+    } ent[LS_MAX];
+    int n = 0, truncated = 0;
+
+    struct fs_request  rq = {0};
+    struct fs_response rp;
+    for (uint32_t idx = 0; idx < 4096; idx++) {
+        rq.op = FS_OP_READDIR; rq.dir_ino = dir_ino; rq.offset = idx;
+        /* Distinguish the ways this loop can stop: a broken IPC path, a
+         * directory you cannot read, and a genuine end-of-directory once read
+         * to the same silence, so a failure was indistinguishable from an
+         * empty directory. Each failure now reports itself (below); only
+         * running off the end is a normal stop, after which an empty directory
+         * prints nothing at all. */
+        int rc = sh_dir_call(dir_slot, &rq, &rp);
+        if (rc < 0) {
+            if (!fss_connected) println("ls: spawn fs_server first");
+            else { print("ls: fs_server call failed ("); print(sys_strerror(rc)); println(")"); }
+            break;
+        }
+        /* END OF DIRECTORY, and it now has a code of its own.
+         *
+         * This used to test SYS_ERR_NOENT and reason that "sh_cwd_ino is a
+         * directory `cd` already verified exists, so for this caller it can
+         * only be end-of-directory". That is untrue of sh_cwd_ino's INITIAL
+         * value, 0, which no `cd` ever verified -- and untrue again if the
+         * directory is removed underneath us. The server answered NOENT both
+         * for "past the last entry" and for "I could not stat that
+         * directory", so on either of those the listing ended here and
+         * printed nothing at all: an unreadable directory looked exactly
+         * like an empty one, with no error anywhere. See FS_RC_ENDDIR in
+         * include/fs_proto.h.
+         *
+         * Anything else negative now falls through to the report below,
+         * which is the whole point: a listing that cannot be produced must
+         * say so rather than look empty. */
+        if (rp.rc == FS_RC_ENDDIR) break;
+        if (rp.rc < 0) {
+            /* NOENT here is about the DIRECTORY, not about an entry: the
+             * server could not stat sh_cwd_ino. Saying "no such object"
+             * would be true and useless, since the object the user is
+             * standing in is the one that is gone. */
+            if (rp.rc == SYS_ERR_INVAL)
+                println("ls: the volume is not unlocked, so nothing can be listed");
+            else if (rp.rc == SYS_ERR_NOENT)
+                println("ls: the current directory is no longer there");
+            else {
+                print("ls: cannot read this directory (");
+                print(sys_strerror(rp.rc)); println(")");
+            }
+            break;
+        }
+        if (n >= LS_MAX) { truncated = 1; break; }
+
+        fss_strcpy(ent[n].name, rp.name);
+        ent[n].type    = rp.type;
+        ent[n].mode    = 0;
+        ent[n].uid     = 0;
+        ent[n].size    = 0;
+        ent[n].stat_ok = 0;
+
+        /* Stat every entry, not just in -l: the plain listing marks
+         * directories and executables, which needs the mode. A denied stat
+         * is recorded, not fatal -- you may list a directory whose entries
+         * you cannot stat. */
+        struct fs_request  sq = {0};
+        struct fs_response sp;
+        sq.op = FS_OP_STAT; sq.ino = rp.ino;
+        if (sh_dir_call(dir_slot, &sq, &sp) == 0 && sp.rc == 0) {
+            ent[n].mode    = sp.mode;
+            ent[n].uid     = sp.uid;
+            ent[n].size    = sp.size;
+            ent[n].stat_ok = 1;
+        }
+        n++;
+    }
+
+    /* Alphabetical, so a listing is reproducible and scannable rather than
+     * ordered by whatever the directory happens to hold. Insertion sort:
+     * bounded at LS_MAX and this is not a hot path. */
+    for (int i = 1; i < n; i++) {
+        for (int j = i; j > 0; j--) {
+            const char *a = ent[j - 1].name, *b = ent[j].name;
+            int k = 0;
+            while (a[k] && a[k] == b[k]) k++;
+            if ((unsigned char)a[k] <= (unsigned char)b[k]) break;
+            for (unsigned t = 0; t < sizeof(ent[0]); t++) {
+                char *pa = (char *)&ent[j - 1], *pb = (char *)&ent[j];
+                char tmp = pa[t]; pa[t] = pb[t]; pb[t] = tmp;
+            }
+        }
+    }
+
+    if (n == 0) {
+        /* An empty directory prints nothing, like ls(1) — the root now holds
+         * the provisioned skeleton (/bin /etc /home /lib /usr), so a bare `ls`
+         * shows a real filesystem. A read *failure* still surfaces below (it is
+         * distinct from an empty directory), so a broken fs_server is not
+         * silently mistaken for emptiness. */
+    } else if (long_fmt) {
+        /* Size column is sized to its widest value so the numbers line up. */
+        int wsize = 4;   /* at least as wide as the "Size" heading */
+        for (int i = 0; i < n; i++) {
+            char hb[8]; human_size(ent[i].size, hb);
+            int l = 0; while (hb[l]) l++;
+            if (l > wsize) wsize = l;
+        }
+
+        print("  "); print_pad("Mode", 12); print_pad("Owner", 8);
+        print_rpad("Size", wsize); print("  "); println("Name");
+
+        for (int i = 0; i < n; i++) {
+            int is_dir = (ent[i].type == FS_TYPE_DIR);
+            char perms[11], owner[12], hb[8];
+
+            if (ent[i].stat_ok) {
+                fmt_perms(is_dir, ent[i].mode, perms);
+                owner_name(ent[i].uid, owner);
+                human_size(ent[i].size, hb);
+            } else {
+                /* Unreadable metadata is shown as unknown rather than as
+                 * zeroes, which would read as a real (empty, root-owned)
+                 * file. */
+                for (int k = 0; k < 10; k++) perms[k] = '?';
+                perms[10] = '\0';
+                owner[0] = '?'; owner[1] = '\0';
+                hb[0] = '-'; hb[1] = '\0';
+            }
+
+            print("  ");
+            print_pad(perms, 12);
+            print_pad(owner, 8);
+            if (is_dir) { hb[0] = '-'; hb[1] = '\0'; }   /* a directory has no useful size here */
+            print_rpad(hb, wsize);
+            print("  ");
+            print(ent[i].name);
+            /* Trailing marker instead of colour: '/' directory, '*' executable. */
+            if (is_dir) println("/");
+            else if (ent[i].stat_ok && (ent[i].mode & 0111u)) println("*");
+            else println("");
+        }
+    } else {
+        /* Plain listing: pack names into as many columns as fit the console,
+         * row-major, each padded to the widest name plus its type marker. */
+        int w = 1;
+        for (int i = 0; i < n; i++) {
+            int l = 0; while (ent[i].name[l]) l++;
+            l++;                                  /* room for the / or * marker */
+            if (l > w) w = l;
+        }
+        int colw = w + 2;
+        int cols = (TERM_COLS - 2) / colw;
+        if (cols < 1) cols = 1;
+
+        for (int i = 0; i < n; i++) {
+            if (i % cols == 0) print("  ");
+            char cell[FS_NAME_MAX + 2];
+            int l = 0;
+            while (l < FS_NAME_MAX && ent[i].name[l]) { cell[l] = ent[i].name[l]; l++; }
+            if (ent[i].type == FS_TYPE_DIR) cell[l++] = '/';
+            else if (ent[i].stat_ok && (ent[i].mode & 0111u)) cell[l++] = '*';
+            cell[l] = '\0';
+
+            int last_in_row = ((i % cols) == cols - 1) || (i == n - 1);
+            if (last_in_row) println(cell);
+            else print_pad(cell, colw);
+        }
+    }
+
+    if (truncated) {
+        print("  ... listing truncated at "); print_decimal(LS_MAX); println(" entries");
+    }
+}
+
 static void handle_command(char *cmd) {
 
     /* A pipeline (`a | b | ...`) of /bin programs — checked before the single
@@ -1635,189 +1843,72 @@ static void handle_command(char *cmd) {
                 fss_strcpy(sh_cwd_path, norm);
             }
         }
+#ifdef SHELL_LS_NO_PATH_ARG
+    /* The pre-2026-09-06 dispatch: the two literal strings and nothing else, so
+     * any argument falls through the whole builtin chain to "Unknown command".
+     * Control arm for make smoke-ls-path. */
     } else if (strcmp(cmd, "ls") == 0 || strcmp(cmd, "ls -l") == 0) {
-        int long_fmt = (cmd[2] != '\0');   /* "ls -l" carries a 3rd char */
+#else
+    } else if (strcmp(cmd, "ls") == 0 || strncmp(cmd, "ls ", 3) == 0) {
+#endif
+        /* ls [-l] [path]. The argument is new (2026-09-06): this matched the
+         * literal strings "ls" and "ls -l" and nothing else, so `ls /bin` fell
+         * through the whole builtin chain and came back "Unknown command" --
+         * which reads as "no such command" rather than "that command does not
+         * take an argument", and is why it looked like ls was missing. */
+        const char *arg = cmd + 2;
+        while (*arg == ' ') arg++;
 
-        /* Entries are collected before anything is printed. Column widths are a
-         * property of the whole listing -- the widest name decides the layout --
-         * so a streaming printer cannot align them, which is why the old one
-         * emitted a ragged entry per line. */
-        #define LS_MAX 128
-        static struct {
-            char     name[FS_NAME_MAX];
-            uint32_t type, mode, uid, size;
-            int      stat_ok;
-        } ent[LS_MAX];
-        int n = 0, truncated = 0;
-
-        struct fs_request  rq = {0};
-        struct fs_response rp;
-        for (uint32_t idx = 0; idx < 4096; idx++) {
-            rq.op = FS_OP_READDIR; rq.dir_ino = sh_cwd_ino; rq.offset = idx;
-            /* Distinguish the ways this loop can stop: a broken IPC path, a
-             * directory you cannot read, and a genuine end-of-directory once read
-             * to the same silence, so a failure was indistinguishable from an
-             * empty directory. Each failure now reports itself (below); only
-             * running off the end is a normal stop, after which an empty directory
-             * prints nothing at all. */
-            int rc = fss_call(&rq, &rp);
-            if (rc < 0) {
-                if (!fss_connected) println("ls: spawn fs_server first");
-                else { print("ls: fs_server call failed ("); print(sys_strerror(rc)); println(")"); }
-                break;
-            }
-            /* END OF DIRECTORY, and it now has a code of its own.
-             *
-             * This used to test SYS_ERR_NOENT and reason that "sh_cwd_ino is a
-             * directory `cd` already verified exists, so for this caller it can
-             * only be end-of-directory". That is untrue of sh_cwd_ino's INITIAL
-             * value, 0, which no `cd` ever verified -- and untrue again if the
-             * directory is removed underneath us. The server answered NOENT both
-             * for "past the last entry" and for "I could not stat that
-             * directory", so on either of those the listing ended here and
-             * printed nothing at all: an unreadable directory looked exactly
-             * like an empty one, with no error anywhere. See FS_RC_ENDDIR in
-             * include/fs_proto.h.
-             *
-             * Anything else negative now falls through to the report below,
-             * which is the whole point: a listing that cannot be produced must
-             * say so rather than look empty. */
-            if (rp.rc == FS_RC_ENDDIR) break;
-            if (rp.rc < 0) {
-                /* NOENT here is about the DIRECTORY, not about an entry: the
-                 * server could not stat sh_cwd_ino. Saying "no such object"
-                 * would be true and useless, since the object the user is
-                 * standing in is the one that is gone. */
-                if (rp.rc == SYS_ERR_INVAL)
-                    println("ls: the volume is not unlocked, so nothing can be listed");
-                else if (rp.rc == SYS_ERR_NOENT)
-                    println("ls: the current directory is no longer there");
-                else {
-                    print("ls: cannot read this directory (");
-                    print(sys_strerror(rp.rc)); println(")");
-                }
-                break;
-            }
-            if (n >= LS_MAX) { truncated = 1; break; }
-
-            fss_strcpy(ent[n].name, rp.name);
-            ent[n].type    = rp.type;
-            ent[n].mode    = 0;
-            ent[n].uid     = 0;
-            ent[n].size    = 0;
-            ent[n].stat_ok = 0;
-
-            /* Stat every entry, not just in -l: the plain listing marks
-             * directories and executables, which needs the mode. A denied stat
-             * is recorded, not fatal -- you may list a directory whose entries
-             * you cannot stat. */
-            struct fs_request  sq = {0};
-            struct fs_response sp;
-            sq.op = FS_OP_STAT; sq.ino = rp.ino;
-            if (fss_call(&sq, &sp) == 0 && sp.rc == 0) {
-                ent[n].mode    = sp.mode;
-                ent[n].uid     = sp.uid;
-                ent[n].size    = sp.size;
-                ent[n].stat_ok = 1;
-            }
-            n++;
+        int long_fmt = 0;
+        if (arg[0] == '-' && arg[1] == 'l' && (arg[2] == '\0' || arg[2] == ' ')) {
+            long_fmt = 1;
+            arg += 2;
+            while (*arg == ' ') arg++;
         }
 
-        /* Alphabetical, so a listing is reproducible and scannable rather than
-         * ordered by whatever the directory happens to hold. Insertion sort:
-         * bounded at LS_MAX and this is not a hot path. */
-        for (int i = 1; i < n; i++) {
-            for (int j = i; j > 0; j--) {
-                const char *a = ent[j - 1].name, *b = ent[j].name;
-                int k = 0;
-                while (a[k] && a[k] == b[k]) k++;
-                if ((unsigned char)a[k] <= (unsigned char)b[k]) break;
-                for (unsigned t = 0; t < sizeof(ent[0]); t++) {
-                    char *pa = (char *)&ent[j - 1], *pb = (char *)&ent[j];
-                    char tmp = pa[t]; pa[t] = pb[t]; pb[t] = tmp;
-                }
-            }
-        }
+        int      dir_slot = CAPSLOT_FS_EP;
+        uint32_t dir_ino  = sh_cwd_ino;
+        int      ok       = 1;
 
-        if (n == 0) {
-            /* An empty directory prints nothing, like ls(1) — the root now holds
-             * the provisioned skeleton (/bin /etc /home /lib /usr), so a bare `ls`
-             * shows a real filesystem. A read *failure* still surfaces below (it is
-             * distinct from an empty directory), so a broken fs_server is not
-             * silently mistaken for emptiness. */
-        } else if (long_fmt) {
-            /* Size column is sized to its widest value so the numbers line up. */
-            int wsize = 4;   /* at least as wide as the "Size" heading */
-            for (int i = 0; i < n; i++) {
-                char hb[8]; human_size(ent[i].size, hb);
-                int l = 0; while (hb[l]) l++;
-                if (l > wsize) wsize = l;
-            }
-
-            print("  "); print_pad("Mode", 12); print_pad("Owner", 8);
-            print_rpad("Size", wsize); print("  "); println("Name");
-
-            for (int i = 0; i < n; i++) {
-                int is_dir = (ent[i].type == FS_TYPE_DIR);
-                char perms[11], owner[12], hb[8];
-
-                if (ent[i].stat_ok) {
-                    fmt_perms(is_dir, ent[i].mode, perms);
-                    owner_name(ent[i].uid, owner);
-                    human_size(ent[i].size, hb);
+        if (*arg != '\0') {
+            char norm[SH_PATH_MAX];
+            if (sh_normalize(arg, norm) != 0) {
+                println("ls: path too long");
+                ok = 0;
+            } else if (fss_connect() != 0) {
+                println("ls: no connection to the filesystem server");
+                ok = 0;
+            } else {
+                int      slot;
+                uint32_t ino;
+                char     leaf[FS_NAME_MAX];
+                if (hvfs_walk(norm, 0u, CAPSLOT_FS_EP, &slot, &ino, leaf) != 0) {
+                    print("ls: no such directory: "); println(arg);
+                    ok = 0;
                 } else {
-                    /* Unreadable metadata is shown as unknown rather than as
-                     * zeroes, which would read as a real (empty, root-owned)
-                     * file. */
-                    for (int k = 0; k < 10; k++) perms[k] = '?';
-                    perms[10] = '\0';
-                    owner[0] = '?'; owner[1] = '\0';
-                    hb[0] = '-'; hb[1] = '\0';
+                    /* The walker reports what the path NAMES, so a regular file
+                     * would otherwise be handed back and listed as a directory.
+                     * The two refusals are separate sentences because they are
+                     * separate facts -- the same reason FS_RC_ENDDIR exists. */
+                    struct fs_request  rq = {0};
+                    struct fs_response rp;
+                    rq.op = FS_OP_STAT; rq.ino = ino;
+                    if (sh_dir_call(slot, &rq, &rp) < 0 || rp.rc < 0) {
+                        print("ls: cannot stat "); println(arg);
+                        ok = 0;
+                    } else if (rp.type != FS_TYPE_DIR) {
+                        print("ls: not a directory: "); println(arg);
+                        ok = 0;
+                    } else {
+                        dir_slot = slot;
+                        dir_ino  = ino;
+                    }
                 }
-
-                print("  ");
-                print_pad(perms, 12);
-                print_pad(owner, 8);
-                if (is_dir) { hb[0] = '-'; hb[1] = '\0'; }   /* a directory has no useful size here */
-                print_rpad(hb, wsize);
-                print("  ");
-                print(ent[i].name);
-                /* Trailing marker instead of colour: '/' directory, '*' executable. */
-                if (is_dir) println("/");
-                else if (ent[i].stat_ok && (ent[i].mode & 0111u)) println("*");
-                else println("");
-            }
-        } else {
-            /* Plain listing: pack names into as many columns as fit the console,
-             * row-major, each padded to the widest name plus its type marker. */
-            int w = 1;
-            for (int i = 0; i < n; i++) {
-                int l = 0; while (ent[i].name[l]) l++;
-                l++;                                  /* room for the / or * marker */
-                if (l > w) w = l;
-            }
-            int colw = w + 2;
-            int cols = (TERM_COLS - 2) / colw;
-            if (cols < 1) cols = 1;
-
-            for (int i = 0; i < n; i++) {
-                if (i % cols == 0) print("  ");
-                char cell[FS_NAME_MAX + 2];
-                int l = 0;
-                while (l < FS_NAME_MAX && ent[i].name[l]) { cell[l] = ent[i].name[l]; l++; }
-                if (ent[i].type == FS_TYPE_DIR) cell[l++] = '/';
-                else if (ent[i].stat_ok && (ent[i].mode & 0111u)) cell[l++] = '*';
-                cell[l] = '\0';
-
-                int last_in_row = ((i % cols) == cols - 1) || (i == n - 1);
-                if (last_in_row) println(cell);
-                else print_pad(cell, colw);
             }
         }
 
-        if (truncated) {
-            print("  ... listing truncated at "); print_decimal(LS_MAX); println(" entries");
-        }
+        if (ok) sh_list_dir(dir_slot, dir_ino, long_fmt);
+
     } else if (strncmp(cmd, "cat ", 4) == 0) {
         const char *name = cmd + 4;
         struct fs_request  rq = {0};

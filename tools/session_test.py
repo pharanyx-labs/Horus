@@ -55,6 +55,13 @@ SMP = os.environ.get("QEMU_SMP", "1")
 # outcome -- and this harness then REQUIRES that sentence, so the two arms type
 # exactly the same commands and differ only in what the shell says about them.
 FS_ERR_FLAT = os.environ.get("SESSION_FS_ERR_FLAT", "0") == "1"
+# The `ls` path-argument arm. SESSION_LS_NO_PATH=1 builds the shell with
+# SHELL_LS_NO_PATH_ARG=1, where the builtin matches the two literal strings and
+# nothing else -- so an argument falls through the whole chain to "Unknown
+# command". The steps below type EXACTLY the same commands in both arms and
+# differ only in what the shell is required to say back, which is what makes the
+# pair a measurement of the dispatch rather than of the harness.
+LS_NO_PATH = os.environ.get("SESSION_LS_NO_PATH", "0") == "1"
 # S77's two arms, one per rule. FS_CHMOD_ANY_OWNER=1 removes the owner-or-root
 # test on chmod; FS_CHOWN_ANY_UID=1 removes the root-only test on chown. Each
 # knob flips exactly ONE of the two refusals below into a required SUCCESS and
@@ -480,6 +487,45 @@ def run():
         s.expect("root@horus#", STEP_TIMEOUT)
         s.send("ls"); s.expect("bin/", STEP_TIMEOUT)
         step("ls shows the boot-provisioned directory skeleton")
+
+        # --- 4a2. ls takes a PATH, and it names a directory other than the cwd -
+        #        `ls /bin` answered "Unknown command" until 2026-09-06: the builtin
+        #        matched the literal strings "ls" and "ls -l", so any argument fell
+        #        through the whole chain. Three separate facts are asserted because
+        #        the failures are separate: an argument is accepted at all, a
+        #        missing path is refused by NAME rather than silently, and a path
+        #        that exists but is a file is refused DIFFERENTLY from one that
+        #        does not exist.
+        #
+        #        The positive check walks into /bin and lists `..`, which is the
+        #        strongest assertion this image can make: it proves the listing
+        #        came from a directory that is NOT the cwd, without depending on
+        #        /bin having been populated (this ISO carries no coreutils).
+        #        NOTE ON PROMPTS: this block deliberately leaves its LAST prompt
+        #        unconsumed, because the section that follows opens by expecting
+        #        one. Consuming it here made the whole scenario fail one step
+        #        later with the prompt plainly visible in the transcript.
+        s.send("cd bin"); s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("ls ..")
+        if LS_NO_PATH:
+            s.expect("Unknown command", STEP_TIMEOUT)
+            step("CONTROL: ls with a path argument is not dispatched at all")
+        else:
+            s.expect("etc/", STEP_TIMEOUT)
+            step("ls <path> lists a directory other than the cwd")
+        s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("cd /")
+
+        if not LS_NO_PATH:
+            s.expect("root@horus#", STEP_TIMEOUT)
+            s.send("ls /nope")
+            s.expect("ls: no such directory: /nope", STEP_TIMEOUT)
+            step("ls names the path it could not resolve")
+            s.expect("root@horus#", STEP_TIMEOUT)
+
+            s.send("ls -l /")
+            s.expect("Mode", STEP_TIMEOUT)
+            step("ls -l <path> keeps the long format")
 
         # Under SMP this run's job is the two multi-core console races: the
         # single-writer banner (asserted above) and the SMP login/IPC round-trip —

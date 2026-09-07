@@ -64,6 +64,7 @@ control_arms:
   smoke-ahci-detect-control: smoke-ahci-detect
   smoke-ahci-capacity-control: smoke-ahci-detect
   smoke-console-handover-control: smoke-console-handover
+  smoke-serial-bound-control: smoke-serial-bound
   smoke-keyslots-control: smoke-keyslots
   smoke-users-persist-control: smoke-users-persist
   smoke-meta-crash-control: smoke-meta-crash
@@ -189,6 +190,7 @@ gates:
   - smoke-boot-media
   - smoke-ahci-detect
   - smoke-console-handover
+  - smoke-serial-bound
   - smoke-claim-release
   - smoke-console
   - smoke-console-isolation

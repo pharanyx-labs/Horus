@@ -39,6 +39,25 @@ in this file.
   (`make smoke-console-handover-control`), which forces the round-trip check to fail and requires
   the marker **on the wire**. Ablated to confirm the arm reproduces the defect rather than merely
   exercising the fix: with the release removed the same arm times out with the marker absent.
+- **The console could stop the machine.** `serial_wait()` spun on COM1's THRE bit with no bound,
+  from inside `emit_char`, which runs under `console_lock` with **interrupts disabled**. That is
+  not a slow console: it is the whole machine stopped with nothing on screen, and on a laptop
+  with no serial port there is no second channel on which to notice it.
+  **Why it had never fired, which is not the same as being safe:** a port that decodes nothing
+  reads back `0xFF`, and `0xFF & 0x20` is non-zero, so an *absent* UART leaves the loop on its
+  first read. That is why an unbounded spin survived every boot on hardware with no COM1 at all.
+  The hazard is the port that *does* decode and never drains -- a wedged device, or firmware
+  that left the UART in a state it does not leave.
+  Both COM1 and COM2 transmit paths are now bounded, and the byte is written anyway on timeout:
+  the console is a diagnostic, and a kernel that stops making progress to finish a log line has
+  traded the thing being diagnosed for the diagnosis. When the UART works the loop still exits on
+  its first read, so nothing changes.
+  Witness `make smoke-serial-bound`; falsified by `SERIAL_TX_NEVER_DRAINS=1`
+  (`make smoke-serial-bound-control`), which makes every byte pay the full bound and requires the
+  boot to **still reach the login prompt**. **Ablated:** with the bound removed the same arm hangs
+  for the full 180 s and the gate goes red, so the arm reproduces the defect rather than
+  exercising the fix. The arm keeps writing the byte on purpose -- one that silenced the console
+  could not tell a working bound from the hang it reproduces.
 
 ### Added
 

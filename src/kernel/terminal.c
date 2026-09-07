@@ -397,8 +397,41 @@ static void vga_initialize_text_mode_80x50(void) {
     outb(0x3D4, 0x0B); outb(0x3D5, 0x07);
 }
 
+/* How many polls to give the UART before giving up on it.
+ *
+ * WHY IT MUST BE BOUNDED. serial_wait runs from emit_char, inside
+ * console_lock_acquire(), which holds `cli`. An unbounded spin there is not a
+ * slow console -- it is the whole machine stopped with interrupts disabled and
+ * nothing on screen, which is the least diagnosable failure this kernel can
+ * have. On a laptop with no serial port there is no second channel on which to
+ * notice it.
+ *
+ * WHY IT HAS NEVER FIRED, WHICH IS NOT THE SAME AS BEING SAFE. A port that
+ * decodes nothing reads back 0xFF, and 0xFF & 0x20 is non-zero, so an ABSENT
+ * UART leaves the loop on its first read -- that is why this has survived every
+ * boot on hardware that has no COM1 at all. The hazard is the port that DOES
+ * decode and never drains: a wedged device, or firmware that left the UART in a
+ * state it does not leave. That case had no bound.
+ *
+ * THE BYTE IS WRITTEN ANYWAY ON TIMEOUT. The console is a diagnostic, and a
+ * kernel that stops making progress in order to finish a log line has traded the
+ * thing being diagnosed for the diagnosis. Writing into a UART that never
+ * asserted THRE may lose the byte, which is the acceptable half of that trade.
+ * When the UART works this loop exits on the first read and nothing changes. */
+#define SERIAL_TX_SPINS 200000u
+
 static void serial_wait(void) {
-    while ((inb(0x3FD) & 0x20) == 0) {}
+    for (uint32_t i = 0; i < SERIAL_TX_SPINS; i++) {
+#ifdef SERIAL_TX_NEVER_DRAINS
+        /* Control arm: poll the register but never accept the answer, which is
+         * the wedged-UART case. The outb below still happens, so the arm's own
+         * assertion stays observable -- an arm that silenced the console could
+         * not tell a working bound from a hung machine. */
+        (void)inb(0x3FD);
+#else
+        if (inb(0x3FD) & 0x20) return;
+#endif
+    }
 }
 
 void serial_write_char(char c) {
@@ -407,7 +440,13 @@ void serial_write_char(char c) {
 }
 
 static void serial2_wait(void) {
-    while ((inb(0x2FD) & 0x20) == 0) {}
+    for (uint32_t i = 0; i < SERIAL_TX_SPINS; i++) {
+#ifdef SERIAL_TX_NEVER_DRAINS
+        (void)inb(0x2FD);
+#else
+        if (inb(0x2FD) & 0x20) return;
+#endif
+    }
 }
 
 void serial2_write_char(char c) {

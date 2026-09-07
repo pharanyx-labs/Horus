@@ -59,6 +59,7 @@ control_arms:
   smoke-auditprobe-abi-control: smoke-auditprobe
   smoke-blockprobe-control: smoke-blockprobe
   smoke-readdir-end-control: smoke-readdir-end
+  smoke-ls-path-control: smoke-ls-path
   smoke-keyslots-control: smoke-keyslots
   smoke-users-persist-control: smoke-users-persist
   smoke-meta-crash-control: smoke-meta-crash
@@ -180,6 +181,7 @@ gates:
   - smoke-auditprobe
   - smoke-blockprobe
   - smoke-readdir-end
+  - smoke-ls-path
   - smoke-claim-release
   - smoke-console
   - smoke-console-isolation

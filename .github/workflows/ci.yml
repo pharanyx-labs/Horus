@@ -2665,6 +2665,16 @@ jobs:
         run: rustup target add x86_64-unknown-none
       - name: Drive the ring-3 shell over serial and assert auth + least-privilege enforcement
         run: make smoke-session
+      # `ls` takes a path. It matched the literal strings "ls" and "ls -l" and
+      # nothing else, so `ls /bin` fell through the whole builtin chain and came
+      # back "Unknown command" -- which reads as "no such command" rather than
+      # "that command takes no argument".
+      - name: ls takes a path argument, and names what it cannot resolve
+        run: make smoke-ls-path
+      # Both arms type the identical commands and differ only in what the shell
+      # is required to say back.
+      - name: Control arm — a path argument is not dispatched at all
+        run: make smoke-ls-path-control
       # The control arm for the error-reporting half, in this job rather than a
       # job of its own: it needs the same toolchain and adds no CI context to
       # promote, and running it after the base arm keeps the pair's `make clean`

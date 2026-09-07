@@ -115,7 +115,7 @@ DEFECT_FLAGS = \
 	CAP_LOOKUP_ROOT_FALLBACK CAP_LOOKUP_RANGE_FALLBACK CAP_LOOKUP_TYPE_UNCHECKED \
 	KEYSLOT_REMOVE_NOOP USERS_PEPPER_PER_BOOT STORAGE_AUTOFORMAT \
 	STORAGE_FORMAT_UNGATED INSTALLER_NO_CONFIRM BLOCK_ERRNO_LEGACY \
-	READDIR_END_IS_NOENT \
+	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG \
 	META_CACHE_NO_WRITEBACK META_CACHE_WB_OUTSIDE_TXN META_CACHE_EVICT_NOWB \
 	META_CACHE_TINY MERKLE_NODE_TRUST_CACHED MERKLE_SKIP_PARENT_BIND \
 	FSCK_SHALLOW_REFS STORAGE_MOUNT_ANY_SIZE ALLOC_NO_HINT ATA_READY_ERR_ONLY \
@@ -1352,6 +1352,15 @@ SYSCALL_PTR_TRUNC32 ?= 0
 # SYSCALL_PTR_TRUNC32, which is the arm that established the rule.
 # Control arm for make smoke-readdir-end.
 READDIR_END_IS_NOENT ?= 0
+
+# SHELL_LS_NO_PATH_ARG=1 restores the pre-2026-09-06 `ls` dispatch: the builtin
+# matched the literal strings "ls" and "ls -l" and nothing else, so `ls /bin`
+# fell through the entire builtin chain and came back "Unknown command". That
+# reads as "no such command" rather than "that command takes no argument", which
+# is why it looked like the shell had no ls rather than a limited one.
+# Userspace-only, so the -D goes on USERSPACE_CFLAGS at top level.
+# Control arm for make smoke-ls-path.
+SHELL_LS_NO_PATH_ARG ?= 0
 
 # SYSCOV_PROBES_ABSENT=1 compiles out the coverage probes -- captest's section 13
 # and auditprobe's four calls into the audit handlers: the probes that enter
@@ -3227,6 +3236,9 @@ USERSPACE_CFLAGS += -DINSTALLER_NO_CONFIRM
 endif
 ifeq ($(READDIR_END_IS_NOENT),1)
 USERSPACE_CFLAGS += -DREADDIR_END_IS_NOENT
+endif
+ifeq ($(SHELL_LS_NO_PATH_ARG),1)
+USERSPACE_CFLAGS += -DSHELL_LS_NO_PATH_ARG
 endif
 ifeq ($(CONSOLE_TIMESTAMPS_LEGACY),1)
 USERSPACE_CFLAGS += -DCONSOLE_TIMESTAMPS_LEGACY
@@ -6162,6 +6174,36 @@ smoke-session:
 # .build-flags prerequisite, so a userspace-only -D does not force a rebuild by
 # itself. Without the clean this arm links yesterday's shell.bin, the defect is
 # absent, and the arm passes -- which is a control arm proving nothing at all.
+# `ls` takes a path. It matched the two literal strings "ls" and "ls -l" and
+# nothing else until 2026-09-06, so `ls /bin` fell through the whole builtin
+# chain and answered "Unknown command" -- which reads as "no such command", and
+# is why it looked like the shell had no ls rather than a limited one.
+#
+# Its own gate rather than a line in smoke-session because the control arm has to
+# rebuild the shell, and because the three facts it asserts (an argument is
+# accepted, a missing path is named, a file is refused differently from a missing
+# path) must be able to fail separately from the rest of the session.
+.PHONY: smoke-ls-path
+smoke-ls-path:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory boot.iso
+	@python3 tools/session_test.py boot.iso
+
+# The falsifying arm. SHELL_LS_NO_PATH_ARG=1 restores the exact-match dispatch,
+# and the harness then REQUIRES "Unknown command" from the same keystrokes -- so
+# both arms type the identical commands and differ only in what the shell says.
+#
+# `clean` first, and it is load-bearing rather than tidy: userspace/%.o has no
+# .build-flags prerequisite, so a userspace-only -D does not force a rebuild by
+# itself and the arm would silently measure the base build.
+.PHONY: smoke-ls-path-control
+smoke-ls-path-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SHELL_LS_NO_PATH_ARG=1
+	@$(MAKE) --no-print-directory SHELL_LS_NO_PATH_ARG=1 boot.iso
+	@SESSION_LS_NO_PATH=1 python3 tools/session_test.py boot.iso
+	@echo "[ls-path] CONTROL PASS - a path argument was not dispatched at all"
+
 .PHONY: smoke-session-fs-err-control
 smoke-session-fs-err-control:
 	@$(MAKE) --no-print-directory clean

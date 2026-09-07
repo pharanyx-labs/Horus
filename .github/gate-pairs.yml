@@ -62,6 +62,7 @@ control_arms:
   smoke-ls-path-control: smoke-ls-path
   smoke-boot-media-control: smoke-boot-media
   smoke-ahci-detect-control: smoke-ahci-detect
+  smoke-ahci-capacity-control: smoke-ahci-detect
   smoke-keyslots-control: smoke-keyslots
   smoke-users-persist-control: smoke-users-persist
   smoke-meta-crash-control: smoke-meta-crash

@@ -117,6 +117,7 @@ DEFECT_FLAGS = \
 	STORAGE_FORMAT_UNGATED INSTALLER_NO_CONFIRM BLOCK_ERRNO_LEGACY \
 	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY \
 	AHCI_PROBE_ABSENT AHCI_CAPACITY_CONSTANT SDHCI_PROBE_ABSENT \
+	SDHCI_CSD_SPEC_BITS \
 	CONSOLE_VGA_CHECK_FAIL \
 	AHCI_PROBE_ABSENT AHCI_CAPACITY_CONSTANT SERIAL_TX_NEVER_DRAINS \
 	META_CACHE_NO_WRITEBACK META_CACHE_WB_OUTSIDE_TXN META_CACHE_EVICT_NOWB \
@@ -1408,6 +1409,21 @@ SDHCI_PROBE_ABSENT ?= 0
 ifeq ($(SDHCI_PROBE_ABSENT),1)
 CFLAGS  += -DSDHCI_PROBE_ABSENT
 ASFLAGS += -DSDHCI_PROBE_ABSENT
+endif
+
+# SDHCI_CSD_SPEC_BITS=1 decodes the card's CSD register at the field positions
+# the SD specification documents, WITHOUT the eight-bit shift that a stored
+# 136-bit response has because its CRC byte is dropped.
+#
+# It is not an invented mistake: it is the one this driver made, and it reported
+# a 128 MiB card as 30752 MiB -- a plausible number, and a wrong one. The gate
+# catches it only because it compares the reported capacity against the size of
+# the image it created; a driver checked against a single card of unknown size
+# would look correct.
+SDHCI_CSD_SPEC_BITS ?= 0
+ifeq ($(SDHCI_CSD_SPEC_BITS),1)
+CFLAGS  += -DSDHCI_CSD_SPEC_BITS
+ASFLAGS += -DSDHCI_CSD_SPEC_BITS
 endif
 
 # CONSOLE_VGA_CHECK_FAIL=1 forces console_server's VGA round-trip check to fail
@@ -6391,6 +6407,14 @@ smoke-sdhci-detect:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) tools/sdhci_detect_test.sh boot.iso
+# A SECOND size, on the other side of the CSD version boundary. Cards up to 2 GiB
+# describe themselves with CSD v1 (a capacity computed from three fields); larger
+# ones with CSD v2 (a single 22-bit count). They are different decoders, and one
+# size exercises only one of them -- which is how a decoder that reads the
+# specification's own bit numbers, and is therefore wrong by eight bits in every
+# field, can pass a gate.
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SDHCI_CARD_MB=4096 \
+		SDHCI_EVIDENCE=.sdhci-evidence-large tools/sdhci_detect_test.sh boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SDHCI_EXPECT=empty \
 		SDHCI_EVIDENCE=.sdhci-evidence-empty tools/sdhci_detect_test.sh boot.iso
 
@@ -6400,6 +6424,31 @@ smoke-sdhci-detect:
 # An ABSENCE assertion, so the arm ALSO requires the kernel to have reached
 # `kernel ready`: without that, a boot that died before the probe ran would
 # satisfy "said nothing about SD" and pass for a reason unrelated to its defect.
+# The CSD arm. SDHCI_CSD_SPEC_BITS=1 reads the capacity fields at their
+# documented bit positions instead of eight bits lower, which is what a reader
+# who trusts the specification's numbering writes -- and what this driver did.
+#
+# It must go red ON THE CAPACITY CHECK, not merely go red: the card still comes
+# up, the controller is still recognised, and the number printed is entirely
+# plausible. That is the whole difficulty, and why the gate compares against a
+# size it chose rather than against a range.
+.PHONY: smoke-sdhci-csd-control
+smoke-sdhci-csd-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SDHCI_CSD_SPEC_BITS=1
+	@$(MAKE) --no-print-directory SDHCI_CSD_SPEC_BITS=1 boot.iso
+	@set -e; \
+	 if SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SDHCI_EVIDENCE=.sdhci-evidence-csd \
+	    tools/sdhci_detect_test.sh boot.iso > .sdhci-csd.out 2>&1; then \
+	    echo "CONTROL FAIL: the shifted CSD decode still reported the right size"; \
+	    cat .sdhci-csd.out; rm -f .sdhci-csd.out; exit 1; \
+	 fi; \
+	 grep -q "the capacity is the card's own" .sdhci-csd.out || { \
+	    echo "CONTROL FAIL: it went red, but not on the capacity check"; \
+	    cat .sdhci-csd.out; rm -f .sdhci-csd.out; exit 1; }; \
+	 cat .sdhci-csd.out; rm -f .sdhci-csd.out; \
+	 echo "[sdhci] CSD CONTROL PASS - a plausible wrong capacity is caught"
+
 .PHONY: smoke-sdhci-detect-control
 smoke-sdhci-detect-control:
 	@$(MAKE) --no-print-directory clean

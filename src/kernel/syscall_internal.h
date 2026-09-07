@@ -193,6 +193,7 @@ void h_poll_notify(struct interrupt_frame64 *r);
  * caller names in the first argument; see src/kernel/pci.c) */
 void h_map_phys(struct interrupt_frame64 *r);
 void h_ioport_grant(struct interrupt_frame64 *r);
+void h_console_release(struct interrupt_frame64 *r);
 void h_irq_register(struct interrupt_frame64 *r);
 void h_device_info(struct interrupt_frame64 *r);
 void h_device_enable(struct interrupt_frame64 *r);

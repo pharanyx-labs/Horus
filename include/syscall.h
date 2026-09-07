@@ -196,6 +196,7 @@ struct task_info {
 #define SYS_STORAGE_INFO      110  /* (struct storage_info*) -> 0; what volume this machine has (CAP_STORAGE_FORMAT + READ). */
 #define SYS_STORAGE_FORMAT    111  /* (const char *password, plen, device) -> 0; DESTROY the attached volume and lay a new sealed one down (CAP_STORAGE_FORMAT + WRITE). The one caller of storage_authorize_format(), which S63 introduced and left with none. */
 #define SYS_USERLIST          112  /* (index, struct user_entry*) -> 1 filled, 0 past the last account, SYS_ERR_PERM without CAP_USER. Account METADATA only -- name, uid, gid, home -- and deliberately nothing else: no hash, no salt, no key slot, no lockout state. A dense index over the valid accounts, so a caller loops until 0 and never needs the kernel's MAX_USERS. */
+#define SYS_CONSOLE_RELEASE  114  /* (dev_slot) -> 0; give the console hardware back to the kernel. CAP_IO_DEVICE + WRITE in dev_slot, and the caller must BE the current owner. Exists so a console driver that fails AFTER taking the console can still be heard: its own diagnostic goes to the klog and nowhere else while it owns the wire. */
 #define SYS_STORAGE_DEVICE   113  /* (index, struct storage_info*) -> 0; the survey for ONE enumerated persistent device (CAP_STORAGE_FORMAT + READ). Refuses an index past the end rather than clamping. */
 #define SYS_IRQ_POLICY_INFO    92   /* (struct irq_policy_info*) -> 0; roadmap 1.1 audit counters. IRQ_POLICY_AUDIT builds only; NOSYS otherwise. CAP_KERNEL_LOG (READ). */
 #define SYS_DMESG              88   /* (buf, offset, max) -> bytes; copy a chunk of the kernel message ring at `offset` to buf. CAP_KERNEL_LOG (READ) in CAPSLOT_KERNEL_LOG, else SYS_ERR_PERM */
@@ -1583,6 +1584,17 @@ static inline int sys_map_phys(uint32_t dev_slot, uint64_t paddr, uint64_t vaddr
  * a negative SYS_ERR_*. */
 static inline int sys_ioport_grant(uint32_t dev_slot) {
     return syscall(SYS_IOPORT_GRANT, dev_slot, 0, 0);
+}
+
+/* Give the console hardware back to the kernel.
+ *
+ * A console driver that takes the console and THEN fails has muted itself: the
+ * kernel stops driving serial and VGA the moment the handover happens, so the
+ * driver's own failure marker reaches the klog ring and nothing else. On a
+ * machine with no serial port that is the difference between a diagnosable boot
+ * and a black screen. Call this before reporting a startup failure. */
+static inline int sys_console_release(uint32_t dev_slot) {
+    return syscall(SYS_CONSOLE_RELEASE, dev_slot, 0, 0);
 }
 
 /* Route hardware IRQ `irq` to notification slot `notif_slot`, delivering `badge`

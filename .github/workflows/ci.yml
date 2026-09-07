@@ -313,6 +313,16 @@ jobs:
       # NOT the constant, or it could not fail.
       - name: Control arm — a plausible constant capacity is caught
         run: make smoke-ahci-capacity-control
+      # A console driver that fails AFTER taking the console must still be heard.
+      # Ownership passes on the first successful VGA map, and from then the
+      # kernel's print() records to the klog and stops driving the wire -- so a
+      # driver that then fails reports into a buffer nobody reads and parks.
+      - name: A failed console handover is still audible
+        run: make smoke-console-handover
+      # The arm forces the check to fail; the assertion is that the marker is
+      # HEARD. Before the fix it existed only in the kernel log ring.
+      - name: Control arm — the console driver fails after taking the console
+        run: make smoke-console-handover-control
 
   smoke-aspace:
     name: QEMU address-space reclaim self-test (a rebuilt slot leaks nothing)

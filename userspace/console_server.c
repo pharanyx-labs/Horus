@@ -248,12 +248,29 @@ void _start(void) {
      * bytes) into our own address space. */
     if (sys_map_phys(CAPSLOT_IO_DEVICE, VGA_PADDR,          VGA_VADDR,          4096, MAP_PHYS_WRITE) != 0 ||
         sys_map_phys(CAPSLOT_IO_DEVICE, VGA_PADDR + 0x1000, VGA_VADDR + 0x1000, 4096, MAP_PHYS_WRITE) != 0) {
+        /* A partial map may already have taken the console -- ownership is
+         * granted on the FIRST successful VGA map, so the second call failing
+         * leaves us owning a console we cannot drive. Hand it back before
+         * reporting, or this marker reaches the klog and nothing else. */
+        sys_console_release(CAPSLOT_IO_DEVICE);
         kput("CONSOLE_SELFTEST: FAIL map\n"); for (;;) sys_yield();
     }
     /* Prove the mapping is the real framebuffer: write + read back the last cell
      * (it is in the second mapped frame). */
     vga[VGA_CELLS - 1] = (uint16_t)((VGA_ATTR << 8) | '.');
+#ifdef CONSOLE_VGA_CHECK_FAIL
+    /* Control arm: force the round-trip to fail without touching the hardware,
+     * which is what a firmware-set graphics mode does to the legacy text window.
+     * See make smoke-console-handover. */
+    if (1) {
+#else
     if (vga[VGA_CELLS - 1] != (uint16_t)((VGA_ATTR << 8) | '.')) {
+#endif
+        /* THE MAP ABOVE ALREADY TOOK THE CONSOLE. Without handing it back this
+         * marker goes to the kernel log ring and nowhere else, and the machine
+         * shows nothing at all -- which is exactly what a framebuffer-mode boot
+         * looked like on 2026-09-07, undiagnosable from the wire. */
+        sys_console_release(CAPSLOT_IO_DEVICE);
         kput("CONSOLE_SELFTEST: FAIL vga\n"); for (;;) sys_yield();
     }
 

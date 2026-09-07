@@ -1326,7 +1326,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 114
+#define SYSCALL_TABLE_SIZE 115
 
 /* ------------------------------------------------------------------------- *
  *  Capability-checked dispatch table.
@@ -1602,6 +1602,11 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
      * is why removing it is part of the fix rather than a tidy-up. */
     [SYS_MAP_PHYS]                = { h_map_phys,                SC_NONE, 0, SC_ANYTYPE },
     [SYS_IOPORT_GRANT]            = { h_ioport_grant,            SC_NONE, 0, SC_ANYTYPE },
+    /* SC_NONE and the authority tested INSIDE the handler, exactly as its
+     * neighbour above: the capability names a device by SLOT, which the central
+     * gate cannot express, so iodev_from_slot does the lookup. The handler
+     * additionally requires the caller to be the console's current owner. */
+    [SYS_CONSOLE_RELEASE]         = { h_console_release,         SC_NONE, 0, SC_ANYTYPE },
     [SYS_IRQ_REGISTER]            = { h_irq_register,            SC_NONE, 0, SC_ANYTYPE },
     [SYS_DEVICE_INFO]             = { h_device_info,             SC_NONE, 0, SC_ANYTYPE },
     [SYS_DEVICE_ENABLE]           = { h_device_enable,           SC_NONE, 0, SC_ANYTYPE },
@@ -1700,7 +1705,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
 /* Carries S6: an unknown or reserved syscall number cannot reach a handler.
  * The bound check in syscall_handler fails closed at runtime; this assertion is
  * what stops a new number being added without its table entry. */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_STORAGE_DEVICE + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_CONSOLE_RELEASE + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

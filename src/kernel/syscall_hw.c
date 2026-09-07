@@ -141,6 +141,51 @@ void h_map_phys(struct interrupt_frame64 *r) {
     }
 }
 
+/* SYS_CONSOLE_RELEASE(dev_slot): give the console hardware back to the kernel.
+ *
+ * WHY THIS EXISTS. Console ownership is taken in h_map_phys above, on a
+ * successful map of the VGA text window -- so a console driver owns the wire
+ * from that instant, and print() stops driving serial and VGA (terminal.c's
+ * emit_char returns early when drive_hw is 0, recording to the klog and nothing
+ * else). A driver that then FAILS its own start-up checks reports that failure
+ * into a ring buffer nobody is reading, and parks. What an operator sees is
+ * total silence with no marker of any kind: not a hang the kernel can attribute,
+ * and on a machine with NO SERIAL PORT there is nothing else to look at.
+ *
+ * That is not hypothetical. Asking GRUB for a framebuffer puts the card in a
+ * mode where the legacy text window does not round-trip, console_server's own
+ * `CONSOLE_SELFTEST: FAIL vga` check fires, and the marker is swallowed exactly
+ * this way -- measured 2026-09-07, and it is why that experiment could not be
+ * diagnosed from the boot log (docs/LIMITATIONS.md §4).
+ *
+ * THE AUTHORITY IS THE ONE THE HANDOVER ALREADY REQUIRED: a CAP_IO_DEVICE with
+ * WRITE naming the platform device, the same capability h_ioport_grant demands
+ * and the same one whose VGA map took the console in the first place. It is not
+ * self-authorising: a task that never owned the console cannot use this to mute
+ * one that does, because the caller must BE the current owner. Both halves are
+ * checked, and refusing loudly matters more here than usual -- a driver that
+ * silently failed to release would be right back in the silence this fixes. */
+void h_console_release(struct interrupt_frame64 *r) {
+    int cur = get_current_task();
+    if (cur <= 0 || cur >= g_max_tasks) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+
+    uint32_t dev_slot = (uint32_t)r->rbx;
+    uint64_t index = IODEV_NONE;
+    const struct io_device *d = iodev_from_slot(dev_slot, CAP_RIGHT_WRITE, &index);
+    if (!d) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+
+    /* Holding the capability is not holding the console. Releasing what you do
+     * not own is refused rather than ignored: a caller that thinks it handed the
+     * console back and did not would report into the same silence. */
+    if (!console_hw_owned() || !console_owner_is(cur)) {
+        r->rax = (uint32_t)SYS_ERR_PERM;
+        return;
+    }
+
+    console_clear_owner(cur);
+    r->rax = 0;
+}
+
 /* SYS_IOPORT_GRANT(dev_slot): grant the calling task native ring-3 in/out on the
  * ports declared by the device named by `dev_slot`, via the TSS I/O bitmap.
  *

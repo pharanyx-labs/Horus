@@ -15,6 +15,31 @@ in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A console driver that failed after taking the console could not be heard** (`SYS_CONSOLE_RELEASE`,
+  syscall 114). Ownership passes to `console_server` on its first successful map of the VGA text
+  window (`src/kernel/syscall_hw.c`), and from that instant the kernel's `print()` records to the
+  kernel log ring and stops driving serial and VGA. So a driver that then failed one of its own
+  start-up checks reported the failure into a buffer nobody was reading, and parked. What an
+  operator saw was **total silence with no marker of any kind** -- not a hang the kernel could
+  attribute, and on a machine with no serial port, a black screen with no explanation.
+  Not hypothetical: asking GRUB for a framebuffer puts the card in a mode where the legacy text
+  window does not round-trip, `console_server`'s own `CONSOLE_SELFTEST: FAIL vga` check fires,
+  and the marker was swallowed exactly this way. That is why that experiment could not be
+  diagnosed from the boot log.
+  The three start-up failure paths now hand the console back first. The authority is the one the
+  handover already required -- a `CAP_IO_DEVICE` with `WRITE` naming the platform device -- and
+  it is **not self-authorising**: the caller must also BE the current owner, so a task holding
+  the capability cannot mute a console it never took. Releasing what you do not own is refused
+  rather than ignored, because a driver that believed it had handed the console back and had not
+  would report into the same silence.
+  Witness `make smoke-console-handover` (the ordinary boot still reaches the login prompt, which
+  is what says the release did not break the handover). Falsified by `CONSOLE_VGA_CHECK_FAIL=1`
+  (`make smoke-console-handover-control`), which forces the round-trip check to fail and requires
+  the marker **on the wire**. Ablated to confirm the arm reproduces the defect rather than merely
+  exercising the fix: with the release removed the same arm times out with the marker absent.
+
 ### Added
 
 - **The kernel talks to a SATA disk** (`src/kernel/ahci.c`). Building on the detection landed

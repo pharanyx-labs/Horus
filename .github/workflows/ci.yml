@@ -335,6 +335,12 @@ jobs:
       # fail on the NON-ZERO block and still pass on block 0.
       - name: Control arm — an inverted card addressing mode is caught
         run: make smoke-sdhci-addr-control
+      # The write path, compiled in only for this gate: a shipped boot must never
+      # write to the card it found. Asserts the guest's read-back AND that the
+      # bytes reached the backing file, since a read-back alone could be served
+      # from the controller's buffer.
+      - name: A block written to the card reaches the medium
+        run: make smoke-sdhci-write
       # A console driver that fails AFTER taking the console must still be heard.
       # Ownership passes on the first successful VGA map, and from then the
       # kernel's print() records to the klog and stops driving the wire -- so a

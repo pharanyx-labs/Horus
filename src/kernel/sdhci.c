@@ -93,8 +93,12 @@
 #define CMD_INDEX_CHECK       (1u << 4)
 #define CMD_DATA_PRESENT      (1u << 5)
 
-/* Transfer Mode: direction is bit 4, and 1 means card-to-host. */
+/* Transfer Mode: direction is bit 4, and 1 means card-to-host. Zero is
+ * host-to-card, i.e. a WRITE -- so a transfer whose direction was never set
+ * writes. See sd_command_data() on why that is a separate function. */
 #define XFER_READ             (1u << 4)
+#define XFER_WRITE            0u
+#define INT_BUF_WRITE_READY   (1u << 4)
 #define SDHCI_BUFFER_DATA     0x20
 
 /* The commands this file issues. CMD1 is the eMMC one and CMD8/ACMD41 the SD
@@ -107,6 +111,7 @@
 #define CMD_SEND_IF_COND      8u    /* CMD8, SD only             */
 #define CMD_SEND_CSD          9u    /* CMD9                      */
 #define CMD_READ_SINGLE      17u    /* CMD17                     */
+#define CMD_WRITE_SINGLE     24u    /* CMD24                     */
 #define CMD_APP_CMD          55u    /* CMD55, prefixes an ACMD   */
 #define ACMD_SEND_OP_COND    41u    /* ACMD41, SD only           */
 
@@ -455,6 +460,68 @@ static int sd_read_block(uint64_t bar, uint64_t lba, void *buf, int is_hc) {
     }
 }
 
+/* Write one 512-byte block from `buf`, by PIO. The mirror of sd_read_block, and
+ * the same addressing rule applies: high-capacity cards take a block number,
+ * standard-capacity a byte offset.
+ *
+ * NOTHING IN A SHIPPED BOOT CALLS THIS. The probe below exercises it only under
+ * SDHCI_WRITE_SELFTEST, and that is a safety property rather than a testing
+ * convenience: a boot-time write round-trip would corrupt whatever is on the
+ * card of the machine it booted, which on a laptop is the operator's own
+ * storage. A read is safe to do unasked; a write is not. */
+static int sd_write_block(uint64_t bar, uint64_t lba, const void *buf, int is_hc) {
+    const uint32_t *in = (const uint32_t *)buf;
+
+    sdhci_write16(bar, SDHCI_BLOCK_SIZE, 512);
+    sdhci_write16(bar, SDHCI_BLOCK_COUNT, 1);
+    sdhci_write16(bar, SDHCI_TRANSFER_MODE, XFER_WRITE);
+
+    const uint32_t arg = is_hc ? (uint32_t)lba : (uint32_t)(lba * 512u);
+    if (sd_command_data(bar, CMD_WRITE_SINGLE, arg,
+                        RESP_48, CMD_CRC_CHECK | CMD_INDEX_CHECK | CMD_DATA_PRESENT) != 0)
+        return -1;
+
+    for (uint32_t i = 0; ; i++) {
+        uint16_t st  = sdhci_read16(bar, SDHCI_INT_STATUS);
+        uint16_t err = sdhci_read16(bar, SDHCI_ERR_STATUS);
+        if (err) return -2;
+        if (st & INT_BUF_WRITE_READY) break;
+        if (i >= SDHCI_SPINS) return -3;
+    }
+
+    for (uint32_t i = 0; i < 512u / 4u; i++)
+        sdhci_write32(bar, SDHCI_BUFFER_DATA, in[i]);
+
+    /* Transfer Complete is the card acknowledging the DATA. It is not a
+     * durability barrier: the card may still be programming internally, which is
+     * what the busy state after this covers, and what sd_flush waits out. */
+    for (uint32_t i = 0; ; i++) {
+        uint16_t st  = sdhci_read16(bar, SDHCI_INT_STATUS);
+        uint16_t err = sdhci_read16(bar, SDHCI_ERR_STATUS);
+        if (err) return -4;
+        if (st & INT_XFER_COMPLETE) return 0;
+        if (i >= SDHCI_SPINS) return -5;
+    }
+}
+
+/* Wait until the card has finished programming everything already accepted.
+ *
+ * A card signals internal programming by holding DAT0 low, which the controller
+ * reports as the data line being inhibited. Waiting for that to clear is what
+ * "the write is on stable media" means for this device -- there is no separate
+ * cache-flush command in the SD protocol the way ATA has one.
+ *
+ * It returns a STATUS rather than void: raw_block_flush treats a backend that
+ * cannot flush as a failure rather than a no-op, deliberately, so that a new
+ * block device cannot silently inherit "durability not implemented" while the
+ * journal keeps advertising crash atomicity. */
+static int sd_flush(uint64_t bar) {
+    for (uint32_t i = 0; ; i++) {
+        if ((sdhci_read32(bar, SDHCI_PRESENT_STATE) & PSTATE_DAT_INHIBIT) == 0) return 0;
+        if (i >= SDHCI_SPINS) return -1;
+    }
+}
+
 /* The controller, if the machine has one.
  *
  * Class 0x08 subclass 0x05 is "SD Host controller". THE PROG-IF IS NOT TESTED,
@@ -584,6 +651,37 @@ void sdhci_probe(void) {
                     { 0,   "block0" },
                     { 100, "block100" },
                 };
+#ifdef SDHCI_WRITE_SELFTEST
+                /* WRITE ROUND TRIP -- BUILD-GATED, AND THAT IS A SAFETY
+                 * PROPERTY, NOT A TESTING CONVENIENCE. A shipped boot must
+                 * never write to the card it found: on a laptop that is the
+                 * operator's own storage, and a probe that scribbled on it to
+                 * prove it could would be indefensible. Only the gate builds
+                 * this in.
+                 *
+                 * Block 200, not block 0: the addressing mode makes block 0
+                 * address 0 in either unit, so a round trip there would pass
+                 * with the mode inverted -- the same reason the read probes use
+                 * a non-zero block. */
+                {
+                    static uint8_t wbuf[512], rbuf[512];
+                    for (int i = 0; i < 512; i++) wbuf[i] = (uint8_t)('W' + (i & 7));
+                    int wrc = sd_write_block(bar, 200, wbuf, is_hc);
+                    int frc = (wrc == 0) ? sd_flush(bar) : -1;
+                    int rrc = (frc == 0) ? sd_read_block(bar, 200, rbuf, is_hc) : -1;
+                    int same = 1;
+                    if (rrc == 0) {
+                        for (int i = 0; i < 512; i++)
+                            if (rbuf[i] != wbuf[i]) { same = 0; break; }
+                    }
+                    print("         sdhci-write block200: ");
+                    if (wrc != 0)      print("write failed\n");
+                    else if (frc != 0) print("flush failed\n");
+                    else if (rrc != 0) print("readback failed\n");
+                    else if (!same)    print("readback differs\n");
+                    else               print("SDHCI-WRITE-OK\n");
+                }
+#endif
                 for (int p = 0; p < 2; p++) {
                     int brc = sd_read_block(bar, probes[p].lba, blk, is_hc);
                     print("         sdhci-read ");

@@ -17,6 +17,26 @@ in this file.
 
 ### Added
 
+- **Blocks can be written to the card, and the write is checked from outside the guest**
+  (`src/kernel/sdhci.c`). `CMD24` by PIO, plus a flush that waits for the card to stop holding
+  DAT0 low -- which is what "on stable media" means for this device, since the SD protocol has no
+  separate cache-flush command the way ATA does.
+  **A shipped boot never writes to the card it found.** The round trip is compiled in only under
+  `SDHCI_WRITE_SELFTEST`, and that is a safety property rather than a testing convenience: on a
+  laptop the card is the operator's own storage, and a probe that scribbled on it to prove it
+  could would be indefensible. A read is safe to do unasked; a write is not.
+  **The gate checks the backing file, not just the read-back.** A guest-side read could be served
+  from the controller's buffer, so the harness also verifies from the host that the bytes reached
+  the image -- the only evidence available here that a write was durable rather than merely
+  accepted. Block 200, not block 0, for the addressing reason that applies to every read here.
+  `SDHCI_WRITE_NO_FLUSH=1` exists and is **deliberately not gated**: measured 2026-09-07, QEMU's
+  `sd-card` completes a write synchronously, so both the round trip and the host-side check pass
+  with the flush removed and there is no window for the race the flag creates. A control arm that
+  cannot fail cannot gate -- the same call `NET_NO_BUSMASTER` got, for the same reason. It is kept
+  because a real card does hold DAT0 low while programming.
+  Still no `block_device` registration: that touches the installer's device enumeration, which is
+  the path S83 is about, and belongs in a change of its own.
+
 - **The kernel reads blocks off the card** (`src/kernel/sdhci.c`). `CMD17` by PIO through the
   buffer data port, verified against known bytes planted at two blocks: 128 MiB byte-addressed and
   4 GiB block-addressed, both exact.

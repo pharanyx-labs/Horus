@@ -958,8 +958,8 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             exists as far as the caller is concerned.
           </p>
           <p>
-            The ABI defines <strong>114 syscall numbers</strong>. The dispatch table is sized to
-            the highest of them plus one, and a default build installs <strong>94
+            The ABI defines <strong>115 syscall numbers</strong>. The dispatch table is sized to
+            the highest of them plus one, and a default build installs <strong>95
             handlers</strong>, the remainder are reserved, or are test-only calls compiled out
             entirely. Every one of those gaps answers <code>SYS_ERR_NOSYS</code>. That difference
             is the fail-closed property, not an oversight: a shipping kernel denies the debug
@@ -1519,7 +1519,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 272 test targets, and the troubleshooting
+          Every configuration flag, every one of the 274 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1640,7 +1640,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             The security argument rests entirely on the tests, so they are treated as engineering
             artifacts rather than an afterthought. There are three layers: Rust unit tests and
-            Kani proofs on the host; 133 QEMU integration targets that boot a purpose-built kernel
+            Kani proofs on the host; 134 QEMU integration targets that boot a purpose-built kernel
             and assert a marker on the serial console; and scripted sessions that type into the
             real ring-3 shell over serial and read what comes back.
           </p>
@@ -2347,12 +2347,12 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
           </li>
           <li>
-            <h3><span class="id">coverage</span>Nine system calls still have no test that runs them &mdash; and covering four of them found a fault</h3>
+            <h3><span class="id">coverage</span>Ten system calls still have no test that runs them &mdash; and covering four of them found a fault</h3>
             <p>
               <strong>Measured 2026-08-20</strong>, and checked on every merge since.
-              <strong>85 of 94</strong> system calls have their handler actually executed by the
+              <strong>85 of 95</strong> system calls have their handler actually executed by the
               three workloads this project tracks, a scripted end-to-end session, the
-              permission conformance suite, and the boot-modules session. The other 9 are each
+              permission conformance suite, and the boot-modules session. The other 10 are each
               listed with a written reason.
             </p>
             <p>
@@ -2408,7 +2408,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
             <p>
               The build can record the first time each call's body is entered and say so on the
-              wire, and a checked-in file classifies all 94 implemented syscalls, covered or not
+              wire, and a checked-in file classifies all 95 implemented syscalls, covered or not
               covered with a reason. The check fails if a call is in neither list, if a covered
               one stops being exercised, if an uncovered one starts being exercised and its
               reason has gone stale, or if the recording produced nothing at all. That last case

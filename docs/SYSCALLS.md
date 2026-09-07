@@ -877,6 +877,7 @@ checked against what **that** device declares. `SECURITY.md` **S43**.
 |---|---|---|
 | 79 | `SYS_MAP_PHYS` | `dev_slot`, `paddr`, `vaddr`, `len`, `flags`, map one 4 KiB frame **the named device declares** (needs WRITE) |
 | 80 | `SYS_IOPORT_GRANT` | `dev_slot`, grant native ring-3 `in`/`out` on **the named device's** port ranges via the TSS I/O bitmap (needs WRITE) |
+| 114 | `SYS_CONSOLE_RELEASE` | `dev_slot` -> 0; give the console hardware back to the kernel. `CAP_IO_DEVICE` + `WRITE` in `dev_slot`, **and the caller must be the current owner** -- holding the capability is not holding the console. Exists so a console driver that fails *after* the handover can still be heard: while it owns the wire its own diagnostic reaches the kernel log ring and nothing else |
 | 81 | `SYS_IRQ_REGISTER` | `dev_slot`, `irq`, `notif_slot`, `badge`, route an IRQ **the named device declares** to the notification named by the `CAP_NOTIFICATION` at `notif_slot` (both need WRITE) |
 | 102 | `SYS_DEVICE_INFO` | `dev_slot`, `struct dev_info *`, report the named device's ids, MMIO ranges, port ranges and IRQ lines (needs READ) |
 | 103 | `SYS_DEVICE_ENABLE` | `dev_slot`, `flags`, set the named device's three PCI decode bits (I/O, memory, **bus master**) to exactly `flags`, and nothing else in configuration space (needs WRITE) |

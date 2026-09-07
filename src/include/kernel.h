@@ -1067,6 +1067,7 @@ void users_init(void);
 #define SYS_STORAGE_INFO      110   /* (struct storage_info*) -> 0; what volume this machine has: whether a block device is attached, its size, whether a Horus volume was recognised on it, and whether it is unlocked. CAP_STORAGE_FORMAT + READ at CAPSLOT_STORAGE_FORMAT. It is the "what will be destroyed" readout, so it answers to the capability that can destroy it rather than to the object-store capability every filesystem client holds. */
 #define SYS_STORAGE_FORMAT    111   /* (const char *password, plen, device) -> 0; DESTROY the volume on the attached device and lay a new encrypted one down, sealed to `password`. CAP_STORAGE_FORMAT + WRITE at CAPSLOT_STORAGE_FORMAT. This is the ONE caller of storage_authorize_format(), the function S63 introduced and left with none: "a deliberate act -- which an installer calls and a login never does". A login (SYS_AUTH -> storage_unlock) still reaches an unformatted volume and still refuses it. */
 #define SYS_USERLIST          112   /* (index, struct user_entry*) -> 1 filled, 0 past the last account, SYS_ERR_PERM without CAP_USER at CAPSLOT_USER. Account METADATA only: name, uid, gid, home. No hash, no salt, no key slot, no lockout state. The index is dense over VALID accounts, so a deleted slot in the middle of the table does not read as the end of it and MAX_USERS never crosses the boundary. */
+#define SYS_CONSOLE_RELEASE  114   /* (dev_slot) -> 0; give the console hardware back to the kernel. CAP_IO_DEVICE + WRITE in dev_slot, and the caller must BE the current owner. Exists so a console driver that fails AFTER taking the console can still be heard: while it owns the wire its own diagnostic reaches the klog ring and nothing else. */
 #define SYS_STORAGE_DEVICE   113   /* (index, struct storage_info*) -> 0; the survey for ONE enumerated persistent device (CAP_STORAGE_FORMAT + READ at CAPSLOT_STORAGE_FORMAT). An index past the end is REFUSED rather than clamped: a survey that answered about a different disk would be read as a description of the disk about to be erased. */
 #define SYS_POLL_NOTIFY       106   /* (notif_slot, uint32_t*) -> 0 with a badge, or IPC_AGAIN; sys_wait_notify's non-blocking twin. Same gate (CAP_NOTIFICATION + READ): being non-blocking changes when the answer comes, never who may ask. Lets a caller witness the ABSENCE of a notification, which a blocking wait cannot. */
 #define SYS_IRQ_ACK           105   /* (dev_slot, irq) -> 0; the driver has serviced its device, so unmask the line. A registered line is masked by the kernel when it fires and stays masked until this call, which is what stops an unserviced level-triggered device livelocking the machine (CAP_IO_DEVICE + WRITE naming a device that declares the line, AND the registration must be the caller's) */
@@ -2121,6 +2122,7 @@ void dump_kernel_log(void);
 void console_set_owner(int tid);
 void console_clear_owner(int tid);
 int  console_hw_owned(void);
+int  console_owner_is(int tid);
 void syscall_handler(struct interrupt_frame64 *r);
 void resume_shell_after_fault(void);
 void print_hex64(uint64_t v);

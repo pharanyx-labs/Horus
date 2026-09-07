@@ -117,6 +117,7 @@ DEFECT_FLAGS = \
 	STORAGE_FORMAT_UNGATED INSTALLER_NO_CONFIRM BLOCK_ERRNO_LEGACY \
 	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY \
 	AHCI_PROBE_ABSENT AHCI_CAPACITY_CONSTANT \
+	CONSOLE_VGA_CHECK_FAIL \
 	META_CACHE_NO_WRITEBACK META_CACHE_WB_OUTSIDE_TXN META_CACHE_EVICT_NOWB \
 	META_CACHE_TINY MERKLE_NODE_TRUST_CACHED MERKLE_SKIP_PARENT_BIND \
 	FSCK_SHALLOW_REFS STORAGE_MOUNT_ANY_SIZE ALLOC_NO_HINT ATA_READY_ERR_ONLY \
@@ -1396,6 +1397,17 @@ ifeq ($(AHCI_CAPACITY_CONSTANT),1)
 CFLAGS  += -DAHCI_CAPACITY_CONSTANT
 ASFLAGS += -DAHCI_CAPACITY_CONSTANT
 endif
+
+# CONSOLE_VGA_CHECK_FAIL=1 forces console_server's VGA round-trip check to fail
+# without touching the hardware -- which is what a firmware-set graphics mode
+# does to the legacy text window at 0xB8000.
+#
+# It is not the defect: the defect is that the resulting marker was INAUDIBLE,
+# because the map that precedes the check has already handed the console to the
+# server, so its own kput reaches the kernel log ring and nothing else. This arm
+# reproduces the failure so the gate can require the marker to be heard.
+# Userspace-only, so the -D goes on USERSPACE_CFLAGS at top level.
+CONSOLE_VGA_CHECK_FAIL ?= 0
 
 # SYSCOV_PROBES_ABSENT=1 compiles out the coverage probes -- captest's section 13
 # and auditprobe's four calls into the audit handlers: the probes that enter
@@ -3281,6 +3293,9 @@ USERSPACE_CFLAGS += -DREADDIR_END_IS_NOENT
 endif
 ifeq ($(SHELL_LS_NO_PATH_ARG),1)
 USERSPACE_CFLAGS += -DSHELL_LS_NO_PATH_ARG
+endif
+ifeq ($(CONSOLE_VGA_CHECK_FAIL),1)
+USERSPACE_CFLAGS += -DCONSOLE_VGA_CHECK_FAIL
 endif
 ifeq ($(CONSOLE_TIMESTAMPS_LEGACY),1)
 USERSPACE_CFLAGS += -DCONSOLE_TIMESTAMPS_LEGACY
@@ -6246,6 +6261,45 @@ smoke-session:
 # ITS OWN MACHINE TYPE IS THE POINT: on i440fx "no SATA controller" is the only
 # answer any existing arm could observe, so a probe that always said that would
 # pass every gate in this tree.
+# A console driver that fails AFTER taking the console must still be heard.
+#
+# Ownership is handed over on the first successful VGA map, and from that instant
+# the kernel's print() records to the klog ring and stops driving serial and VGA.
+# So a driver that then fails its own start-up check reports into a buffer nobody
+# is reading and parks -- total silence, no marker, nothing to attribute. On a
+# machine with no serial port that is a black screen with no explanation.
+#
+# The BASE arm is the ordinary boot: the console is taken and the login prompt
+# appears, which is what says releasing it did not break the handover.
+.PHONY: smoke-console-handover
+smoke-console-handover:
+# `clean` first, and it is load-bearing rather than tidy: userspace/%.o has no
+# .build-flags prerequisite, so CONSOLE_VGA_CHECK_FAIL survives a flagless
+# rebuild and this arm would measure the CONTROL build. Observed 2026-09-07 --
+# run straight after the control arm it went red with `DEFECT FLAGS: none` on
+# the wire, because that stamp describes the KERNEL and the stale object was
+# console_server's.
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='horus login:' \
+		FAIL_MARKER='CONSOLE_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+
+# The falsifying arm. CONSOLE_VGA_CHECK_FAIL=1 makes the round-trip check fail --
+# what a firmware-set graphics mode does to the legacy text window -- and the gate
+# requires the marker to appear ON THE WIRE.
+#
+# THAT IS THE WHOLE ASSERTION: the check failing is the arm's doing, not the
+# defect. The defect is whether anyone can hear about it. Before this change the
+# marker existed only in the kernel log ring and the boot went silent, so this
+# arm reproduces the silence rather than the failure.
+.PHONY: smoke-console-handover-control
+smoke-console-handover-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CONSOLE_VGA_CHECK_FAIL=1
+	@$(MAKE) --no-print-directory CONSOLE_VGA_CHECK_FAIL=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CONSOLE_SELFTEST: FAIL vga' tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-ahci-detect
 smoke-ahci-detect:
 	@$(MAKE) --no-print-directory boot.iso

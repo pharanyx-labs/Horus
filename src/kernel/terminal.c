@@ -96,6 +96,11 @@ void console_clear_owner(int tid) { if (console_owner_task == tid) console_owner
  * so a kernel-side read would race it byte-for-byte and split a typed line. */
 int console_hw_owned(void) { return console_owner_task != 0; }
 
+/* Is THIS task the owner? Asked by SYS_CONSOLE_RELEASE, which must refuse a
+ * caller that holds the device capability but not the console -- otherwise one
+ * task could mute another's display by handing back a console it never took. */
+int console_owner_is(int tid) { return console_owner_task != 0 && console_owner_task == tid; }
+
 static const uint8_t font_8x8[256][8] = {
      ['!'] = {0x00,0x10,0x10,0x10,0x10,0x00,0x10,0x00},
      ['"'] = {0x00,0x28,0x28,0x00,0x00,0x00,0x00,0x00},

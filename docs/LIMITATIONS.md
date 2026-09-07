@@ -2330,8 +2330,10 @@ old allocator and the new one read the same single block and no workload could t
   `src/kernel/sdhci.c` finds an **SD/eMMC host controller** (PCI class `0x0805`), resets and
   clocks it, brings the card up (`CMD0`, op-cond, `CMD2`, `CMD3`, `CMD9`, `CMD7`) and decodes its
   capacity from the CSD. That is the storage a budget laptop actually has -- soldered eMMC,
-  reached by neither `ata.c` nor `ahci.c`. It is still not usable: no block read, no
-  `block_device`, so `storage.c` cannot mount it.
+  reached by neither `ata.c` nor `ahci.c`, and since 2026-09-07 it **reads blocks** (`CMD17` by
+  PIO), verified against known bytes at two blocks on both a byte-addressed and a block-addressed
+  card. It is still not mountable: there is no `block_device` registration, so `storage.c` cannot
+  use it, and nothing writes.
   **The eMMC branch of that has never executed anywhere.** eMMC powers up with `CMD1`; SD uses
   `CMD8`/`ACMD41`, and an SD card must not answer `CMD1`. QEMU 10.0 has no eMMC device -- only
   `sd-card` -- so every gate here exercises the SD branch, and the code an actual laptop needs is

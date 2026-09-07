@@ -329,6 +329,12 @@ jobs:
       # against the size of the image it created, which is the only way to see it.
       - name: Control arm — a plausibly wrong card capacity is caught
         run: make smoke-sdhci-csd-control
+      # The addressing half. A high-capacity card takes a block number and a
+      # standard-capacity card a byte offset; inverting them moves every read
+      # 512x -- except block 0, which is address 0 in both units. The arm must
+      # fail on the NON-ZERO block and still pass on block 0.
+      - name: Control arm — an inverted card addressing mode is caught
+        run: make smoke-sdhci-addr-control
       # A console driver that fails AFTER taking the console must still be heard.
       # Ownership passes on the first successful VGA map, and from then the
       # kernel's print() records to the klog and stops driving the wire -- so a

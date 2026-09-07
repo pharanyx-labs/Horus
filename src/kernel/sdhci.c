@@ -38,6 +38,8 @@
 
 /* Register offsets from the SD Host Controller Simplified Specification 3.00,
  * section 2.1. */
+#define SDHCI_BLOCK_SIZE      0x04   /* 16-bit                                  */
+#define SDHCI_BLOCK_COUNT     0x06   /* 16-bit                                  */
 #define SDHCI_ARGUMENT        0x08
 #define SDHCI_TRANSFER_MODE   0x0C   /* 16-bit; the command register is at 0x0E */
 #define SDHCI_COMMAND         0x0E
@@ -79,6 +81,7 @@
 /* Normal / error interrupt status */
 #define INT_CMD_COMPLETE      (1u << 0)
 #define INT_XFER_COMPLETE     (1u << 1)
+#define INT_BUF_READ_READY    (1u << 5)
 #define ERR_CMD_TIMEOUT       (1u << 0)
 
 /* Command register: index<<8 | type<<6 | data<<5 | idxchk<<4 | crcchk<<3 | resp */
@@ -88,6 +91,11 @@
 #define RESP_48_BUSY          0x3u
 #define CMD_CRC_CHECK         (1u << 3)
 #define CMD_INDEX_CHECK       (1u << 4)
+#define CMD_DATA_PRESENT      (1u << 5)
+
+/* Transfer Mode: direction is bit 4, and 1 means card-to-host. */
+#define XFER_READ             (1u << 4)
+#define SDHCI_BUFFER_DATA     0x20
 
 /* The commands this file issues. CMD1 is the eMMC one and CMD8/ACMD41 the SD
  * ones -- see card_identify() for why both exist and only one is testable. */
@@ -98,6 +106,7 @@
 #define CMD_SELECT_CARD       7u    /* CMD7                      */
 #define CMD_SEND_IF_COND      8u    /* CMD8, SD only             */
 #define CMD_SEND_CSD          9u    /* CMD9                      */
+#define CMD_READ_SINGLE      17u    /* CMD17                     */
 #define CMD_APP_CMD          55u    /* CMD55, prefixes an ACMD   */
 #define ACMD_SEND_OP_COND    41u    /* ACMD41, SD only           */
 
@@ -130,6 +139,7 @@
 static uint64_t g_sdhci_bar;      /* 0 when no controller was recognised */
 static uint32_t g_sdhci_cards;    /* slots reporting a card present      */
 static uint64_t g_sdhci_sectors;  /* capacity of the card that came up   */
+static int      g_sdhci_is_hc;    /* block-addressed (HC) vs byte-addressed */
 
 uint64_t sdhci_bar(void)        { return g_sdhci_bar; }
 uint32_t sdhci_card_count(void) { return g_sdhci_cards; }
@@ -212,8 +222,8 @@ clk_ok:
 /* Issue one command and wait for it to complete. `resp` is one of RESP_*.
  * Returns 0, or -1 on timeout/error, with the response left in the controller's
  * response registers for the caller to read. */
-static int sd_command(uint64_t bar, uint32_t index, uint32_t arg, uint32_t resp,
-                      uint32_t extra_flags) {
+static int sd_command_common(uint64_t bar, uint32_t index, uint32_t arg, uint32_t resp,
+                             uint32_t extra_flags, int touch_xfer_mode) {
     /* Both inhibit bits: the command line for every command, and the data line
      * too, because a command that changes card state must not be issued while a
      * previous data transfer is still using it. */
@@ -226,7 +236,11 @@ static int sd_command(uint64_t bar, uint32_t index, uint32_t arg, uint32_t resp,
     sdhci_write16(bar, SDHCI_INT_STATUS, 0xFFFFu);   /* write-1-to-clear */
     sdhci_write16(bar, SDHCI_ERR_STATUS, 0xFFFFu);
     sdhci_write32(bar, SDHCI_ARGUMENT, arg);
-    sdhci_write16(bar, SDHCI_TRANSFER_MODE, 0);      /* no data phase here */
+    /* Only a command WITHOUT a data phase clears the transfer mode. A data
+     * command has already had its direction written, and zeroing it here would
+     * turn every read into a write of whatever the FIFO held -- which is the
+     * kind of mistake that destroys a disk rather than failing a test. */
+    if (touch_xfer_mode) sdhci_write16(bar, SDHCI_TRANSFER_MODE, 0);
 
     uint16_t cmd = (uint16_t)((index << 8) | resp | extra_flags);
     sdhci_write16(bar, SDHCI_COMMAND, cmd);
@@ -238,6 +252,18 @@ static int sd_command(uint64_t bar, uint32_t index, uint32_t arg, uint32_t resp,
         if (st & INT_CMD_COMPLETE) return 0;
         if (i >= SDHCI_SPINS) return -1;
     }
+}
+
+/* A command with no data phase: the transfer mode is cleared. */
+static int sd_command(uint64_t bar, uint32_t index, uint32_t arg, uint32_t resp,
+                      uint32_t extra_flags) {
+    return sd_command_common(bar, index, arg, resp, extra_flags, 1);
+}
+
+/* A command whose caller has already programmed the transfer mode. */
+static int sd_command_data(uint64_t bar, uint32_t index, uint32_t arg, uint32_t resp,
+                           uint32_t extra_flags) {
+    return sd_command_common(bar, index, arg, resp, extra_flags, 0);
 }
 
 /* Identify the card and learn its capacity.
@@ -254,7 +280,8 @@ static int sd_command(uint64_t bar, uint32_t index, uint32_t arg, uint32_t resp,
  * untested delta is one command and its argument rather than a second driver.
  * The first machine to run the CMD1 path will be real hardware.
  */
-static int card_identify(uint64_t bar, uint64_t *sectors_out, int *is_mmc_out) {
+static int card_identify(uint64_t bar, uint64_t *sectors_out, int *is_mmc_out,
+                         int *is_hc_out) {
     if (sd_command(bar, CMD_GO_IDLE, 0, RESP_NONE, 0) != 0) return -1;
 
     int is_mmc = 0;
@@ -363,7 +390,69 @@ static int card_identify(uint64_t bar, uint64_t *sectors_out, int *is_mmc_out) {
 
     *sectors_out = sectors;
     *is_mmc_out  = is_mmc;
+    /* OCR bit 30 (CCS) is the ADDRESSING MODE, and it is not cosmetic: a
+     * high-capacity card takes a BLOCK number where a standard-capacity card
+     * takes a BYTE offset. Get it wrong and every read lands 512x away from
+     * where it was meant to -- except block 0, which is address 0 either way and
+     * therefore cannot reveal the mistake. */
+    *is_hc_out   = (ocr & (1u << 30)) ? 1 : 0;
     return 0;
+}
+
+/* Read one 512-byte block into `buf`, by PIO through the buffer data port.
+ *
+ * PIO AND NOT DMA, DELIBERATELY. A DMA read needs a descriptor table, a physical
+ * buffer the controller may reach, and an IOMMU mapping when VT-d is on -- three
+ * more things to get wrong, for a speed nobody installing an operating system
+ * will notice. The buffer data port is a FIFO the host drains itself, and it is
+ * the simplest thing that can be correct.
+ *
+ * THE ARGUMENT IS AN ADDRESS IN TWO DIFFERENT UNITS. A high-capacity card takes
+ * a block number; a standard-capacity card takes a byte offset. Passing the
+ * wrong one reads a location 512 times away from the intended -- and block 0
+ * cannot show it, because 0 is 0 in both units. */
+static int sd_read_block(uint64_t bar, uint64_t lba, void *buf, int is_hc) {
+    uint32_t *out = (uint32_t *)buf;
+
+    sdhci_write16(bar, SDHCI_BLOCK_SIZE, 512);
+    sdhci_write16(bar, SDHCI_BLOCK_COUNT, 1);
+
+    /* Set the direction BEFORE issuing the command: the controller latches the
+     * transfer mode when the command register is written. */
+    sdhci_write16(bar, SDHCI_TRANSFER_MODE, XFER_READ);
+
+#ifdef SDHCI_ADDR_MODE_INVERTED
+    /* Control arm: the addressing mode inverted. A high-capacity card is given a
+     * byte offset and a standard-capacity card a block number, so every read
+     * lands 512x from where it should -- EXCEPT block 0, which is address 0 in
+     * both units and reads correctly either way. That is precisely why the gate
+     * reads a non-zero block. */
+    const uint32_t arg = is_hc ? (uint32_t)(lba * 512u) : (uint32_t)lba;
+#else
+    const uint32_t arg = is_hc ? (uint32_t)lba : (uint32_t)(lba * 512u);
+#endif
+    if (sd_command_data(bar, CMD_READ_SINGLE, arg,
+                        RESP_48, CMD_CRC_CHECK | CMD_INDEX_CHECK | CMD_DATA_PRESENT) != 0)
+        return -1;
+
+    for (uint32_t i = 0; ; i++) {
+        uint16_t st  = sdhci_read16(bar, SDHCI_INT_STATUS);
+        uint16_t err = sdhci_read16(bar, SDHCI_ERR_STATUS);
+        if (err) return -2;
+        if (st & INT_BUF_READ_READY) break;
+        if (i >= SDHCI_SPINS) return -3;
+    }
+
+    for (uint32_t i = 0; i < 512u / 4u; i++)
+        out[i] = sdhci_read32(bar, SDHCI_BUFFER_DATA);
+
+    for (uint32_t i = 0; ; i++) {
+        uint16_t st  = sdhci_read16(bar, SDHCI_INT_STATUS);
+        uint16_t err = sdhci_read16(bar, SDHCI_ERR_STATUS);
+        if (err) return -4;
+        if (st & INT_XFER_COMPLETE) return 0;
+        if (i >= SDHCI_SPINS) return -5;
+    }
 }
 
 /* The controller, if the machine has one.
@@ -471,15 +560,47 @@ void sdhci_probe(void) {
             print("  sdhci: the controller would not reset\n");
         } else {
             uint64_t sectors = 0;
-            int is_mmc = 0;
-            int rc = card_identify(bar, &sectors, &is_mmc);
+            int is_mmc = 0, is_hc = 0;
+            int rc = card_identify(bar, &sectors, &is_mmc, &is_hc);
             if (rc == 0) {
                 g_sdhci_sectors = sectors;
+                g_sdhci_is_hc   = is_hc;
                 print("         ");
                 print(is_mmc ? "eMMC" : "SD card");
                 print(", ");
                 print_decimal(sectors / 2048u);      /* 512-byte sectors -> MiB */
-                print(" MiB\n");
+                print(" MiB, ");
+                print(is_hc ? "block-addressed\n" : "byte-addressed\n");
+
+                /* Read two blocks and report the first eight bytes of each.
+                 *
+                 * TWO, AND NEITHER OF THEM ONLY BLOCK 0. Block 0 is address 0
+                 * whether the card is block- or byte-addressed, so a read of it
+                 * alone cannot distinguish the two and would pass with the
+                 * addressing mode inverted. The second block is far enough out
+                 * that the wrong unit lands somewhere else entirely. */
+                static uint8_t blk[512];
+                struct { uint64_t lba; const char *label; } probes[2] = {
+                    { 0,   "block0" },
+                    { 100, "block100" },
+                };
+                for (int p = 0; p < 2; p++) {
+                    int brc = sd_read_block(bar, probes[p].lba, blk, is_hc);
+                    print("         sdhci-read ");
+                    print(probes[p].label);
+                    if (brc != 0) {
+                        print(": failed (");
+                        print_decimal((uint64_t)(-brc));
+                        print(")\n");
+                        continue;
+                    }
+                    print(": ");
+                    for (int i = 0; i < 8; i++) {
+                        char c = (char)blk[i];
+                        print_char((c >= 32 && c < 127) ? c : '.');
+                    }
+                    print("\n");
+                }
             } else {
                 print("  sdhci: the card did not come up (");
                 print_decimal((uint64_t)(-rc));

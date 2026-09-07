@@ -65,6 +65,7 @@ control_arms:
   smoke-ahci-capacity-control: smoke-ahci-detect
   smoke-sdhci-detect-control: smoke-sdhci-detect
   smoke-sdhci-csd-control: smoke-sdhci-detect
+  smoke-sdhci-addr-control: smoke-sdhci-detect
   smoke-console-handover-control: smoke-console-handover
   smoke-serial-bound-control: smoke-serial-bound
   smoke-keyslots-control: smoke-keyslots

@@ -17,6 +17,26 @@ in this file.
 
 ### Added
 
+- **The kernel reads blocks off the card** (`src/kernel/sdhci.c`). `CMD17` by PIO through the
+  buffer data port, verified against known bytes planted at two blocks: 128 MiB byte-addressed and
+  4 GiB block-addressed, both exact.
+  **PIO and not DMA, deliberately.** A DMA read needs a descriptor table, a physical buffer the
+  controller may reach, and an IOMMU mapping when VT-d is on -- three more things to get wrong,
+  for a speed nobody installing an operating system will notice.
+  **The addressing mode is the trap, and block 0 cannot catch it.** A high-capacity card takes a
+  block number where a standard-capacity card takes a byte offset; invert them and every read
+  lands 512x from where it should -- *except block 0*, which is address 0 in both units and reads
+  correctly either way. So the harness plants bytes at block 100 as well, and the control arm
+  `SDHCI_ADDR_MODE_INVERTED=1` (`make smoke-sdhci-addr-control`) requires block 0 to **still pass**
+  while the non-zero block fails. A gate that read only block 0 would have accepted the defect,
+  and your laptop's eMMC is block-addressed.
+  One structural change came out of it: `sd_command` is split into a no-data form that clears the
+  transfer mode and a data form that does not. Clearing it after the direction has been programmed
+  would turn every read into a write of whatever the FIFO held -- the kind of mistake that
+  destroys a disk rather than failing a test.
+  Still no `block_device` registration, so `storage.c` cannot mount it yet; write and flush come
+  with that.
+
 - **The card comes up and says how big it is** (`src/kernel/sdhci.c`). Building on the detection
   landed earlier: the controller is reset, powered and clocked down to the 400 kHz the
   identification phase requires, then the card is taken through `CMD0`, the op-cond negotiation,

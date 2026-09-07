@@ -117,7 +117,7 @@ DEFECT_FLAGS = \
 	STORAGE_FORMAT_UNGATED INSTALLER_NO_CONFIRM BLOCK_ERRNO_LEGACY \
 	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY \
 	AHCI_PROBE_ABSENT AHCI_CAPACITY_CONSTANT SDHCI_PROBE_ABSENT \
-	SDHCI_CSD_SPEC_BITS \
+	SDHCI_CSD_SPEC_BITS SDHCI_ADDR_MODE_INVERTED \
 	CONSOLE_VGA_CHECK_FAIL \
 	AHCI_PROBE_ABSENT AHCI_CAPACITY_CONSTANT SERIAL_TX_NEVER_DRAINS \
 	META_CACHE_NO_WRITEBACK META_CACHE_WB_OUTSIDE_TXN META_CACHE_EVICT_NOWB \
@@ -1424,6 +1424,20 @@ SDHCI_CSD_SPEC_BITS ?= 0
 ifeq ($(SDHCI_CSD_SPEC_BITS),1)
 CFLAGS  += -DSDHCI_CSD_SPEC_BITS
 ASFLAGS += -DSDHCI_CSD_SPEC_BITS
+endif
+
+# SDHCI_ADDR_MODE_INVERTED=1 swaps the two addressing units: a high-capacity card
+# is handed a byte offset and a standard-capacity card a block number, so every
+# read lands 512x from where it was meant to.
+#
+# EXCEPT BLOCK 0, which is address 0 in both units and reads correctly either
+# way. A gate that read only block 0 would pass with this defect in place, which
+# is why the harness plants bytes at block 100 as well. Control arm for the
+# block-read half of make smoke-sdhci-detect.
+SDHCI_ADDR_MODE_INVERTED ?= 0
+ifeq ($(SDHCI_ADDR_MODE_INVERTED),1)
+CFLAGS  += -DSDHCI_ADDR_MODE_INVERTED
+ASFLAGS += -DSDHCI_ADDR_MODE_INVERTED
 endif
 
 # CONSOLE_VGA_CHECK_FAIL=1 forces console_server's VGA round-trip check to fail
@@ -6432,6 +6446,31 @@ smoke-sdhci-detect:
 # up, the controller is still recognised, and the number printed is entirely
 # plausible. That is the whole difficulty, and why the gate compares against a
 # size it chose rather than against a range.
+# The addressing arm. It must go red on the NON-ZERO block specifically: block 0
+# still reads correctly with the mode inverted, because 0 is 0 in both units.
+# Requiring that exact check is what shows the gate tests addressing at all
+# rather than merely that a read happened.
+.PHONY: smoke-sdhci-addr-control
+smoke-sdhci-addr-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SDHCI_ADDR_MODE_INVERTED=1
+	@$(MAKE) --no-print-directory SDHCI_ADDR_MODE_INVERTED=1 boot.iso
+	@set -e; \
+	 if SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SDHCI_EVIDENCE=.sdhci-evidence-addr \
+	    tools/sdhci_detect_test.sh boot.iso > .sdhci-addr.out 2>&1; then \
+	    echo "CONTROL FAIL: an inverted addressing mode still read every block"; \
+	    cat .sdhci-addr.out; rm -f .sdhci-addr.out; exit 1; \
+	 fi; \
+	 grep -q "a non-zero block reads correctly" .sdhci-addr.out || { \
+	    echo "CONTROL FAIL: it went red, but not on the non-zero block"; \
+	    cat .sdhci-addr.out; rm -f .sdhci-addr.out; exit 1; }; \
+	 grep -q "\[ OK \] block 0 reads the bytes that are there" .sdhci-addr.out || { \
+	    echo "CONTROL FAIL: block 0 was expected to still read correctly -- if it"; \
+	    echo "  did not, this arm is breaking something other than addressing."; \
+	    cat .sdhci-addr.out; rm -f .sdhci-addr.out; exit 1; }; \
+	 cat .sdhci-addr.out; rm -f .sdhci-addr.out; \
+	 echo "[sdhci] ADDR CONTROL PASS - block 0 still reads, the non-zero block does not"
+
 .PHONY: smoke-sdhci-csd-control
 smoke-sdhci-csd-control:
 	@$(MAKE) --no-print-directory clean

@@ -40,6 +40,15 @@ CARD="$EVID/emmc.img"
 qemu-img create -f raw "$CARD" "${CARD_MB}M" >/dev/null 2>&1 || \
     dd if=/dev/zero of="$CARD" bs=1M count=0 seek="$CARD_MB" status=none
 
+# Known bytes at TWO blocks, and the second one is the point.
+#
+# Block 0 is address 0 whether the card is block-addressed or byte-addressed, so
+# a driver with the addressing mode inverted reads it correctly and every other
+# block from 512x the wrong place. Only a non-zero block can tell the two apart,
+# and a high-capacity card is block-addressed -- which is what a laptop's eMMC is.
+printf 'HORUS-B0' | dd of="$CARD" bs=1 seek=0 conv=notrunc status=none
+printf 'HORUS100' | dd of="$CARD" bs=1 seek=$((100 * 512)) conv=notrunc status=none
+
 LOG="$EVID/serial.log"
 args=(-m 512M -cpu qemu64 -machine q35 -display none -no-reboot -cdrom "$ISO"
       -device sdhci-pci,id=sd -serial "file:$LOG")
@@ -97,6 +106,9 @@ else
     # that.
     check "the card came up"                          "SD card, "
     check "the capacity is the card's own"            "SD card, ${CARD_MB} MiB"
+    check "block 0 reads the bytes that are there"    "sdhci-read block0: HORUS-B0"
+    # The one that catches an inverted addressing mode, which block 0 cannot.
+    check "a non-zero block reads correctly"          "sdhci-read block100: HORUS100"
 fi
 
 if [ "$fail" != 0 ]; then

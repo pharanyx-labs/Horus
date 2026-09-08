@@ -364,6 +364,26 @@ jobs:
       # superblock.
       - name: Control arm — an unscaled card block address is caught
         run: make smoke-installer-sd-stride-control
+      # WHAT THE DISPLAY IS. The multiboot2 framebuffer tag is always present, so
+      # this arm runs on an ordinary boot and asserts the GEOMETRY as well as the
+      # mode -- a parser reading a field from the wrong offset still prints
+      # "EGA text".
+      - name: The display GRUB reported is parsed and named
+        run: make smoke-fb-tag
+      - name: Control arm — the tag goes unread and the reporter falls back
+        run: make smoke-fb-tag-control
+      # The only configuration in which the non-text branch is reachable: the
+      # kernel header's type-5 request tag plus the video driver grub.cfg loads.
+      # `set gfxpayload` does not apply to a multiboot2 payload, and the request
+      # tag without a driver silently falls back to text -- both measured, so
+      # without this arm the pixel branch would be written and never executed.
+      - name: A linear framebuffer is parsed, and its limits are stated
+        run: make smoke-fb-tag-gfx
+      # The type field is parsed, validated, stored -- and not consulted when
+      # choosing a console path. Every field in the report is right except the
+      # one that decides what happens.
+      - name: Control arm — an unconsulted framebuffer type is caught
+        run: make smoke-fb-tag-gfx-control
       # A console driver that fails AFTER taking the console must still be heard.
       # Ownership passes on the first successful VGA map, and from then the
       # kernel's print() records to the klog and stops driving the wire -- so a

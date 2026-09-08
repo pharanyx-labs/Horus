@@ -273,6 +273,39 @@ uint32_t boot_module_verify_all(void);
 /* Highest physical address any module occupies, page-rounded (0 if none). */
 uint64_t boot_module_top(void);
 
+/* What GRUB says the display is, from the multiboot2 framebuffer tag (type 8).
+ *
+ * `valid` is 0 until the tag has been parsed AND every field has passed the
+ * checks in mb_record_framebuffer -- so a caller tests `valid` and never a
+ * field, and an unparsed, absent, truncated or nonsensical tag is one case
+ * rather than four. The address is PHYSICAL and, on a machine that granted a
+ * real graphics mode, is typically far above the PHYS_KVA window (measured
+ * 0xFD000000 under QEMU), so it cannot simply be dereferenced through PHYS_KVA.
+ *
+ * `type` is MB2_FB_EGA_TEXT for the character-cell buffer at 0xB8000 that this
+ * kernel's console writes today, or MB2_FB_RGB for a linear pixel framebuffer.
+ * `bpp` is bits per CHARACTER CELL in the first case and bits per PIXEL in the
+ * second -- the same field naming two different quantities, which is why the
+ * validation is written per type. */
+struct fb_info {
+    uint64_t addr;      /* physical base */
+    uint32_t pitch;     /* bytes per row; >= the row the geometry implies */
+    uint32_t width;     /* cells (EGA text) or pixels (RGB) */
+    uint32_t height;    /* rows */
+    uint8_t  bpp;
+    uint8_t  type;      /* MB2_FB_EGA_TEXT / MB2_FB_RGB */
+    uint8_t  valid;     /* 0 = nothing here may be read */
+};
+
+/* An upper bound on height*pitch, so an absurd geometry is refused at the point
+ * it is recorded rather than at the point something maps it. 64 MiB is roughly
+ * 4x a 4K 32-bit framebuffer, which is far past anything this kernel will drive
+ * and far short of a number that could be mistaken for a plausible region. */
+#define FB_MAX_BYTES  (64u * 1024u * 1024u)
+
+/* The recorded display, always non-NULL; test ->valid before reading a field. */
+const struct fb_info *fb_info(void);
+
 /* Identity-map the TPM TIS locality-0 MMIO page (0xFED40000) into a page directory
  * (NULL = kernel pml4) for the measured-boot driver and the storage KEK-sealing
  * path (src/kernel/tpm.c). Defined in paging.c. */

@@ -149,7 +149,8 @@ DEFECT_FLAGS = \
 	KSTACK_COLLIDE_IMPERSONATED CLAIM_AUDIT_NO_REREAD \
 	ENTER_USER_STEAL_WIDEN ENTER_USER_PUBLISH_EARLY ENTER_USER_CLAIM_UNCHECKED \
 	STORAGE_FORMAT_WEDGE CONSOLE_TIMESTAMPS_LEGACY CLOCK_EPOCH_FROM_FIRST_TICK \
-	DEVREGS_KERNEL_ONLY SD_BLOCK_ADDR_UNSCALED
+	DEVREGS_KERNEL_ONLY SD_BLOCK_ADDR_UNSCALED FB_REQUEST \
+	FB_TAG_IGNORED FB_TAG_ASSUME_TEXT
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -2670,6 +2671,42 @@ endif
 STORAGE_FORMAT_WEDGE ?= 0
 ifeq ($(STORAGE_FORMAT_WEDGE),1)
 CFLAGS += -DSTORAGE_FORMAT_WEDGE
+endif
+
+# ---- FB_REQUEST: ask GRUB for a linear framebuffer -------------------------
+#
+# NOT A DEFECT ARM. It adds the multiboot2 framebuffer REQUEST tag (type 5) to
+# the header, which is the only thing that makes GRUB set a graphics mode for a
+# multiboot2 payload -- `set gfxpayload` does not apply to one, measured
+# 2026-09-08. Without it GRUB always reports EGA text and the kernel's non-text
+# branch is unreachable, so this is what makes that branch testable at all.
+#
+# Off by default because it changes the mode the machine boots in, and the VGA
+# text window every existing gate's console depends on does not survive it.
+# It goes on ASFLAGS, not CFLAGS: the header is in src/boot/multiboot.S.
+FB_REQUEST ?= 0
+ifeq ($(FB_REQUEST),1)
+ASFLAGS += -DFB_REQUEST
+endif
+
+# FB_TAG_IGNORED=1 walks past the framebuffer tag without reading it -- the state
+# this kernel was in before 2026-09-08, where nothing was reported and nothing
+# broke. The absence arm for `make smoke-fb-tag`.
+FB_TAG_IGNORED ?= 0
+ifeq ($(FB_TAG_IGNORED),1)
+CFLAGS += -DFB_TAG_IGNORED
+endif
+
+# FB_TAG_ASSUME_TEXT=1 parses, validates and stores framebuffer_type and then
+# does not CONSULT it when choosing a console path: every display is character
+# cells. Placed at the decision rather than at the parse deliberately -- a parser
+# that misreads the field is a bug anyone finds, and one that reads it correctly
+# while the chooser never asks is the one that ships. Under FB_REQUEST=1 it
+# prints `fb: EGA text 1024x768`, which is plausible and has no text window in
+# it at all. The arm for `make smoke-fb-tag-gfx`.
+FB_TAG_ASSUME_TEXT ?= 0
+ifeq ($(FB_TAG_ASSUME_TEXT),1)
+CFLAGS += -DFB_TAG_ASSUME_TEXT
 endif
 
 # ---- a device register file must be present in every address space -----------
@@ -9275,6 +9312,55 @@ smoke-installer:
 # the ATA gate's job and is controller-independent. This one asks the question
 # that is specific to the card -- does an install survive a power cycle when the
 # medium is reached through SDHCI rather than through PIO ports.
+# THE DISPLAY THE KERNEL WAS HANDED, and what it decided to do about it.
+#
+# The multiboot2 framebuffer tag is ALWAYS present, so the text arm below runs on
+# an ordinary boot of the shipped grub.cfg and asserts geometry as well as mode --
+# a parser reading width from the wrong offset still prints "EGA text".
+.PHONY: smoke-fb-tag
+smoke-fb-tag:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory boot.iso
+	@FB_EXPECT=text tools/fb_tag_test.sh boot.iso
+
+.PHONY: smoke-fb-tag-control
+smoke-fb-tag-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FB_TAG_IGNORED=1 boot.iso
+	@FB_EXPECT=unparsed tools/fb_tag_test.sh boot.iso
+
+# The arm that matters, and the only configuration in which the non-text branch
+# is reachable at all: the header's type-5 request tag plus the video driver
+# grub.cfg loads. Without both, GRUB reports EGA text and every check below
+# would be measuring the same boot the arm above already measured.
+.PHONY: smoke-fb-tag-gfx
+smoke-fb-tag-gfx:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FB_REQUEST=1 boot.iso
+	@FB_EXPECT=rgb tools/fb_tag_test.sh boot.iso
+
+.PHONY: smoke-fb-tag-gfx-control
+smoke-fb-tag-gfx-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FB_REQUEST=1 FB_TAG_ASSUME_TEXT=1 boot.iso
+	@echo "[fb] the type field is stored and not consulted: a pixel mode must be misreported"
+	@if FB_EXPECT=rgb tools/fb_tag_test.sh boot.iso >.fb-gfx-control.out 2>&1; then \
+	    echo "FB GFX CONTROL: FAIL - the gate passed with the type field ignored,"; \
+	    echo "  so nothing it asserts depends on that field."; \
+	    cat .fb-gfx-control.out | sed 's/^/  /'; rm -f .fb-gfx-control.out; exit 1; \
+	fi; \
+	rm -f .fb-gfx-control.out
+	@# It must fail by MISREPORTING the mode, not by failing to boot: the defect
+	@# is a wrong answer, and a build that died would satisfy "the gate went red"
+	@# while witnessing nothing. The kernel must have reached the report and said
+	@# "EGA text" about a 1024x768 linear framebuffer.
+	@if ! grep -qa "fb: EGA text 1024x768" .fb-evidence/serial.log; then \
+	    echo "FB GFX CONTROL: FAIL - the gate went red, but not by calling a pixel"; \
+	    echo "  framebuffer character cells. That is a different failure."; \
+	    grep -aE "fb:|kernel ready" .fb-evidence/serial.log | sed 's/^/  /'; exit 1; \
+	fi
+	@echo "[fb] CONTROL PASS - unconsulted, the type field lets 1024x768 be called EGA text"
+
 .PHONY: smoke-installer-sd
 smoke-installer-sd:
 	@$(MAKE) --no-print-directory clean

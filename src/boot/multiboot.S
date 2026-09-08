@@ -8,6 +8,17 @@ multiboot_header_start:
     .long 0
     .long multiboot_header_end - multiboot_header_start
     .long -(0xe85250d6 + 0 + (multiboot_header_end - multiboot_header_start))
+#ifdef FB_REQUEST
+    /* framebuffer request tag (type 5): width, height, depth. 0 = "you choose". */
+    .align 8
+    .word 5
+    .word 0
+    .long 20
+    .long 1024
+    .long 768
+    .long 32
+#endif
+    .align 8
     .word 0
     .word 0
     .long 8

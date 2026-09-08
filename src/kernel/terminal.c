@@ -492,7 +492,6 @@ static void serial_update_colour(void) {
     last_serial_attr = current_attr;
 }
 
-/* The console writer. `to_klog` decides whether the bytes are also recorded in
 /* ---- Linux-style boot/kernel-log timestamps -------------------------------
  *
  * The prefix is "[    S.uuuuuu] " with MICROSECOND resolution, sourced from the

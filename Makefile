@@ -43,10 +43,20 @@ export SOURCE_DATE_EPOCH ?= 1609459200
 # GCC's x86-64 default reads the canary from %gs:0x28, which in a kernel with no
 # per-CPU GS base is a garbage address, and __stack_chk_guard would go entirely
 # unreferenced. See the stack-protector block in src/kernel/crypto.c.
+# -Werror=comment is here for the same reason -Werror=vla is: it is the one
+# diagnostic in this build whose damage is INVISIBLE IN THE OUTPUT. A `/*` inside
+# a comment means the comment did not end where it looks like it ended, so the
+# text after it -- up to the next `*/`, which may be pages away -- is silently
+# not compiled AND silently not documentation either. On 2026-09-08 an orphaned
+# first line left behind by #319 had, since that merge, been swallowing the whole
+# explanation of why the kernel-log timestamp is applied inside the console lock.
+# Nothing failed, nothing was mis-executed, and the warning scrolled past every
+# build. In a tree whose §7 says comments are load-bearing for auditability, a
+# comment that has been eaten is a defect, so it stops the build.
 CFLAGS = -m64 -ffreestanding -fno-pic -fno-pie -MMD -MP \
          -fstack-protector-strong -mstack-protector-guard=global \
          -mno-sse -mno-mmx -mno-80387 \
-         -Wall -Wextra -Wformat -Wformat-security -Werror=vla -O2 -pipe \
+         -Wall -Wextra -Wformat -Wformat-security -Werror=vla -Werror=comment -O2 -pipe \
          -I src/include -I include -std=gnu99 -fno-builtin -mcmodel=kernel -frandom-seed=horus -fdebug-prefix-map=$(CURDIR)=/horus
 ASFLAGS = -m64 -ffreestanding -fno-pic -fno-pie -x assembler-with-cpp -c -I src/include
 LDFLAGS = -T linker64.ld -m elf_x86_64 -nostdlib -static --build-id=none
@@ -3382,7 +3392,7 @@ iso: kernel.elf
 # Userspace is 64-bit. -mno-red-zone matches the kernel's own setting: the red
 # zone is not safe across an interrupt frame, and a ring-3 task takes interrupts.
 USERSPACE_CFLAGS = -m64 -ffreestanding -fPIE -fno-plt -fno-stack-protector \
-                   -mno-red-zone -Wall -Wextra -O2 -I include -std=gnu99 -fno-builtin
+                   -mno-red-zone -Wall -Wextra -Werror=comment -O2 -I include -std=gnu99 -fno-builtin
 # IRQ_POLICY_AUDIT changes which syscalls EXIST, so userspace has to be told:
 # SYS_IRQ_POLICY_INFO answers SYS_ERR_PERM in an audit build and SYS_ERR_NOSYS in
 # a ship build, and captest asserts the exact code. Without this the kernel and

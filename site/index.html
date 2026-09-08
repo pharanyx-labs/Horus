@@ -1342,7 +1342,24 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               longer opened the machine. A malformed argument is now refused rather than quietly
               treated as a request to change your own, and the reply names the account it wrote.
             </p>
-            <span class="witness">smoke-installer &middot; smoke-installer-refuse &middot; smoke-installer-provision &middot; smoke-installer-accounts &middot; smoke-passwd-target &middot; smoke-captest &middot; smoke-storage-survey</span>
+            <p>
+              It installs onto a laptop's soldered eMMC, which is not the same disk as the one
+              every earlier test used. A budget machine's internal storage sits behind an SD host
+              controller that neither the IDE driver nor the SATA driver can reach, so an install
+              scenario that only ever attached IDE said nothing about the hardware the driver
+              exists for. Driving the whole install onto a card found two defects the driver's own
+              tests could not. The register file is memory-mapped, and the probe maps it into the
+              <em>kernel's</em> address space &mdash; but a syscall reaches the driver on the
+              calling program's, where it was not mapped at all, so the format wrote to a page
+              that was not there and the installer was killed. The second is quieter: the card
+              addresses 512-byte sectors and the filesystem addresses 4096-byte blocks, and the
+              first version handed one to the other unconverted. Block zero is sector zero either
+              way, so the volume header read back, the install reported success and the next boot
+              recognised the disk &mdash; and every other block came from an eighth of the right
+              place. What failed was the login, seconds later and a layer above the mistake. A
+              test that stopped at &ldquo;the volume is there&rdquo; would have passed on it.
+            </p>
+            <span class="witness">smoke-installer &middot; smoke-installer-refuse &middot; smoke-installer-provision &middot; smoke-installer-accounts &middot; smoke-passwd-target &middot; smoke-captest &middot; smoke-storage-survey &middot; smoke-installer-sd</span>
           </article>
           <article>
             <h3>A usable userland</h3>
@@ -1519,7 +1536,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 281 test targets, and the troubleshooting
+          Every configuration flag, every one of the 284 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1640,7 +1657,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             The security argument rests entirely on the tests, so they are treated as engineering
             artifacts rather than an afterthought. There are three layers: Rust unit tests and
-            Kani proofs on the host; 137 QEMU integration targets that boot a purpose-built kernel
+            Kani proofs on the host; 138 QEMU integration targets that boot a purpose-built kernel
             and assert a marker on the serial console; and scripted sessions that type into the
             real ring-3 shell over serial and read what comes back.
           </p>

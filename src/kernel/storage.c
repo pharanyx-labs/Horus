@@ -1618,6 +1618,78 @@ static struct block_device g_ata_bd[ATA_MAX_DRIVES] = {
       .write_block = atadisk_write, .flush = atadisk_flush, .private = (void *)(uintptr_t)1 },
 };
 
+/* A card sector is 512 bytes by definition of the SD/eMMC block protocol -- the
+ * driver sets SDHCI_BLOCK_SIZE to it and CMD17/CMD24 move exactly that -- so this
+ * is derived from BLOCK_SIZE the way ATA_SECTORS_PER_BLOCK is, not written as 8. */
+#define SD_SECTORS_PER_BLOCK  (BLOCK_SIZE / 512u)
+
+/* The SD/eMMC card, when one came up. src/kernel/sdhci.c owns the protocol; this
+ * is only the block_device face of it, so storage.c does not learn what a CSD is.
+ *
+ * A CARD SECTOR IS 512 BYTES AND A FILESYSTEM BLOCK IS 4096, so one block is
+ * SD_SECTORS_PER_BLOCK sectors and the address must be scaled -- exactly as
+ * atadisk_read scales by ATA_SECTORS_PER_BLOCK. The first version of these two
+ * did not scale and did not loop: it passed the block number through as an LBA
+ * and moved 512 of the 4096 bytes.
+ *
+ * IT NEARLY WORKED, which is why it is worth a comment. Block 0 is sector 0
+ * whichever way round it is, and a superblock's magic lives in the first 512
+ * bytes of it -- so the volume was recognised on the next boot, `INIT_STORAGE`
+ * announced "a Horus volume is present", and every other block came from an
+ * eighth of the right place. It failed at the login prompt, one layer above the
+ * mistake and several seconds later. The detect gate's own comment warns about
+ * this shape for the addressing mode; the same reasoning applies to the stride,
+ * and neither block 0 nor a superblock read can witness either.
+ *
+ * PARTIAL TRANSFERS ARE REPORTED AS FAILURES and not retried here. A block half
+ * of which is new is worse than one that was refused: the journal's crash
+ * atomicity is built on a write either landing or being reported not to have. */
+#ifdef SD_BLOCK_ADDR_UNSCALED
+/* CONTROL ARM -- never ship. The block number passed through as a card LBA, and
+ * one sector moved instead of eight: the mistake described above, reintroduced
+ * so the gate that caught it can be shown to catch it. Both directions of the
+ * defect at once, because they are one line each and a driver that scaled the
+ * address but moved 512 bytes is not a mistake anyone makes. */
+static int sdcard_read(struct block_device *bd, uint64_t block, void *buf) {
+    (void)bd; return sdhci_bd_read(block, buf);
+}
+static int sdcard_write(struct block_device *bd, uint64_t block, const void *buf) {
+    (void)bd; return sdhci_bd_write(block, buf);
+}
+#else
+static int sdcard_read(struct block_device *bd, uint64_t block, void *buf) {
+    (void)bd;
+    uint8_t *p = (uint8_t *)buf;
+    uint64_t lba = block * SD_SECTORS_PER_BLOCK;
+    for (unsigned i = 0; i < SD_SECTORS_PER_BLOCK; i++)
+        if (sdhci_bd_read(lba + i, p + i * 512u) != 0) return -1;
+    return 0;
+}
+static int sdcard_write(struct block_device *bd, uint64_t block, const void *buf) {
+    (void)bd;
+    const uint8_t *p = (const uint8_t *)buf;
+    uint64_t lba = block * SD_SECTORS_PER_BLOCK;
+    for (unsigned i = 0; i < SD_SECTORS_PER_BLOCK; i++)
+        if (sdhci_bd_write(lba + i, p + i * 512u) != 0) return -1;
+    return 0;
+}
+#endif
+/* A REAL IMPLEMENTATION AND NOT A STUB: raw_block_flush treats a NULL flush as a
+ * FAILURE rather than as a no-op, deliberately, so a new device cannot silently
+ * inherit "durability not implemented" while the journal keeps advertising crash
+ * atomicity. For a card that means waiting out its programming state, which is
+ * what sdhci_bd_flush does -- the SD protocol has no separate cache-flush
+ * command the way ATA does. */
+static int sdcard_flush(struct block_device *bd) {
+    (void)bd; return sdhci_bd_flush();
+}
+
+static struct block_device g_sd_bd = {
+    .name = "sd0", .total_blocks = 0, .read_block = sdcard_read,
+    .write_block = sdcard_write, .flush = sdcard_flush, .private = NULL,
+};
+static int g_sd_usable;
+
 /* Which of the above are usable: probed present, and large enough to hold a
  * volume. A device that is present but too small is deliberately NOT usable --
  * see storage_init, where laying a filesystem out against an unknown or absurd
@@ -1636,7 +1708,25 @@ static int storage_bd_is_ata(const struct block_device *bd)
 {
     for (int d = 0; d < ATA_MAX_DRIVES; d++)
         if (bd == &g_ata_bd[d]) return 1;
+    /* The SD/eMMC card counts as persistent, and that is the whole point of it:
+     * `present` in the survey is about PERSISTENCE, and a laptop whose only
+     * storage is soldered eMMC would otherwise be surveyed as having no disk --
+     * which is what it was reported as before this device existed. The ephemeral
+     * RAM vdisk still answers 0, because reporting a RAM disk as something an
+     * operator could install onto would be a lie an installer draws on a screen. */
+    if (bd == &g_sd_bd) return 1;
     return 0;
+}
+
+/* How many persistent devices the machine has, across every controller type.
+ *
+ * This replaced a bare read of g_ata_usable_count at each site. The count and
+ * the ENUMERATION must agree exactly -- an installer shows the operator a list
+ * built from one and then names an index into the other -- so they are computed
+ * from the same two facts here rather than in five places. */
+static int storage_usable_count(void)
+{
+    return g_ata_usable_count + (g_sd_usable ? 1 : 0);
 }
 
 /* The n-th USABLE persistent device, or NULL. The index an installer holds is a
@@ -1651,6 +1741,15 @@ static struct block_device *storage_device_at(int index)
     for (int d = 0; d < ATA_MAX_DRIVES; d++) {
         if (!g_ata_usable[d]) continue;
         if (seen == index) return &g_ata_bd[d];
+        seen++;
+    }
+    /* The card comes AFTER every usable ATA drive, and the order is part of the
+     * contract rather than an implementation detail: the index an operator
+     * chose came from a list this enumeration produced, so changing the order
+     * changes which disk that index names. Appending keeps every existing index
+     * meaning what it meant on a machine that also has ATA drives. */
+    if (g_sd_usable) {
+        if (seen == index) return &g_sd_bd;
         seen++;
     }
 #ifdef STORAGE_DEVICE_INDEX_CLAMP
@@ -1764,6 +1863,36 @@ int storage_init(void) {
      * formatted and unlocked immediately with a per-boot throwaway key so the
      * system still comes up without a login. ata_init()'s probe is bounded, so a
      * floating/absent bus can never hang the boot. */
+    /* The SD/eMMC card, sized by the same rule the ATA drives get below: a
+     * device too small to hold a volume is DROPPED from the usable set rather
+     * than guessed at, because laying a filesystem out against a size nobody
+     * checked is how S68 happened.
+     *
+     * Its capacity comes from the card's own CSD, which sdhci_probe read at
+     * boot. The card is in 512-byte sectors and this layer counts BLOCK_SIZE
+     * blocks, so the conversion is explicit rather than assumed equal -- and it
+     * goes through the same SD_SECTORS_PER_BLOCK the read and write paths use,
+     * because a size and an address that disagree about the stride is exactly
+     * the defect SD_BLOCK_ADDR_UNSCALED reproduces. */
+    {
+        uint64_t card_sectors = sdhci_sectors();
+        if (card_sectors) {
+            uint64_t blocks = card_sectors / SD_SECTORS_PER_BLOCK;
+            if (blocks > (uint64_t)BLOCKS_PER_DISK) blocks = (uint64_t)BLOCKS_PER_DISK;
+            if (blocks < STORAGE_MIN_BLOCKS) {
+                println("sdhci: the card reports too few blocks for a volume; ignoring it");
+            } else {
+                g_sd_bd.total_blocks = blocks;
+                g_sd_usable = 1;
+            }
+        }
+    }
+
+    /* ata_init()'s result no longer decides whether this machine has persistent
+     * storage -- it decides whether it has ATA. A laptop whose only storage is
+     * soldered eMMC has none, and everything below used to sit inside this `if`,
+     * so such a machine fell through to the ephemeral RAM disk and reported "no
+     * persistent volume" while holding a card it had already identified. */
     if (ata_init()) {
         /* Size every drive the probe found. A drive that reports nothing, or too
          * little to hold a volume, is dropped from the usable set rather than
@@ -1800,32 +1929,45 @@ int storage_init(void) {
                 print(" MiB)\n");
             }
         }
-        if (g_ata_usable_count == 0) goto no_disk;
+    }
 
-        /* MOUNT THE FIRST DEVICE THAT CARRIES A VOLUME, not simply the first
-         * device (SECURITY.md S82). With one disk these are the same sentence, which is why it was
-         * written the second way; with two they are not, and the second way makes
-         * an installed second disk invisible to the machine it was installed on.
-         *
-         * Trying them in order is safe because storage_mount touches no state on
-         * its failure paths -- every refusal returns before it assigns
-         * g_mounted_fs -- so a device that does not carry a volume leaves nothing
-         * behind for the next one to trip over. */
-        for (int d = 0; d < ATA_MAX_DRIVES; d++) {
-            if (!g_ata_usable[d]) continue;
-            if (storage_mount(&g_ata_bd[d]) == 0) {
-                current_bd = &g_ata_bd[d];
-                return 0;            /* unlock deferred to login */
-            }
+    /* From here the controller type stops mattering: what follows walks the
+     * SAME ENUMERATION the installer indexes into (storage_device_at), so the
+     * device this machine mounts and the device an operator picked from a survey
+     * are ordered by one rule rather than by two that could drift apart. That
+     * matters more than it reads: the index an operator chose is a position in
+     * that list, and a second ordering here would make it name a different disk
+     * (SECURITY.md S82, S83). */
+    const int usable = storage_usable_count();
+    if (usable == 0) goto no_disk;
+
+    /* MOUNT THE FIRST DEVICE THAT CARRIES A VOLUME, not simply the first device
+     * (SECURITY.md S82). With one disk these are the same sentence, which is why
+     * it was written the second way; with two they are not, and the second way
+     * makes an installed second disk invisible to the machine it was installed
+     * on.
+     *
+     * Trying them in order is safe because storage_mount touches no state on its
+     * failure paths -- every refusal returns before it assigns g_mounted_fs --
+     * so a device that does not carry a volume leaves nothing behind for the
+     * next one to trip over. */
+    for (int i = 0; i < usable; i++) {
+        struct block_device *bd = storage_device_at(i);
+        if (!bd) continue;
+        if (storage_mount(bd) == 0) {
+            current_bd = bd;
+            return 0;                /* unlock deferred to login */
         }
+    }
 
-        /* None of them carries one. The first usable device is what an install
-         * would go onto, and is what the survey reports as needing a format. */
-        for (int d = 0; d < ATA_MAX_DRIVES; d++) {
-            if (!g_ata_usable[d]) continue;
-            current_bd        = &g_ata_bd[d];
+    /* None of them carries one. The first usable device is what an install would
+     * go onto, and is what the survey reports as needing a format. */
+    {
+        struct block_device *bd = storage_device_at(0);
+        if (bd) {
+            current_bd        = bd;
             g_needs_format    = 1;   /* no valid v4 volume yet: seal it at first login */
-            g_needs_format_bd = &g_ata_bd[d];
+            g_needs_format_bd = bd;
             return 0;
         }
     }
@@ -2905,7 +3047,7 @@ int storage_authorize_format(int index)
      */
     if (index < 0) return -1;
 
-    if (g_ata_usable_count > 0) {
+    if (storage_usable_count() > 0) {
         struct block_device *bd = storage_device_at(index);
         if (!bd) return -1;
         /* A device already carrying a mounted volume is not a target here. That
@@ -2956,7 +3098,7 @@ void storage_query(struct storage_info *out)
     /* How many persistent devices this machine has, and which one the fields
      * above describe. A survey that could only ever say "the disk" is what made
      * an installer unable to ask which one. */
-    out->device_count = (uint32_t)g_ata_usable_count;
+    out->device_count = (uint32_t)storage_usable_count();
     out->device_index = 0;
     for (int d = 0, seen = 0; d < ATA_MAX_DRIVES; d++) {
         if (!g_ata_usable[d]) continue;
@@ -3006,7 +3148,7 @@ int storage_device_query(int index, struct storage_info *out)
     out->block_size   = BLOCK_SIZE;
     out->present      = 1u;
     out->total_blocks = bd->total_blocks;
-    out->device_count = (uint32_t)g_ata_usable_count;
+    out->device_count = (uint32_t)storage_usable_count();
     out->device_index = (uint32_t)index;
 
     int is_mounted    = (bd == g_mounted_fs.bd) && g_mounted_fs.mounted;

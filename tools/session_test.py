@@ -176,6 +176,27 @@ class Serial:
                 spec += ",throttling.iops-total=%s" % iops
             drive = ["-drive", spec]
 
+            # SESSION_DISK_SD=1 attaches the SAME image as an SD/eMMC card behind
+            # an SDHCI controller instead of as an IDE disk. Off by default, so
+            # every existing scenario boots exactly the machine it booted before.
+            #
+            # It exists because a budget laptop's internal storage is soldered
+            # eMMC, which the ATA driver cannot see at all -- so an install
+            # scenario that only ever attaches IDE proves nothing about the
+            # machine this is for. The image is the same file either way, which
+            # is what lets one scenario assert an install across a power cycle
+            # regardless of which controller carried it.
+            if os.environ.get("SESSION_DISK_SD", "") == "1":
+                drive = ["-device", "sdhci-pci,id=sd",
+                         "-drive", "id=sdmmc,file=%s,format=raw,if=none,"
+                                   "cache=writethrough" % disk,
+                         # The bus is named `sd-bus`, not `sd.0`: `bus=sd.0` is
+                         # refused with "Bus 'sd.0' not found" and `-drive if=sd`
+                         # with "machine type does not support if=sd". Only
+                         # `info qtree` reveals the real name, because both error
+                         # messages point at the drive rather than the bus.
+                         "-device", "sd-card,drive=sdmmc,bus=sd-bus"]
+
             # A SECOND persistent disk, attached as the primary SLAVE (index=1),
             # which is the second device the ATA driver probes. Off unless
             # SESSION_DISK2 names an image, so every existing scenario boots
@@ -201,7 +222,12 @@ class Serial:
         self.proc = subprocess.Popen(
             [qemu,
              "-m", "512M", "-cpu", "qemu64,+aes,+rdrand,+smep,+smap", "-accel", "tcg",
-             "-smp", SMP,
+             "-smp", SMP]
+            # q35 for the SD path: the default i440fx has no PCIe root the SDHCI
+            # controller can sit on, and attaching one there gives a machine the
+            # kernel never finds.
+            + (["-machine", "q35"] if os.environ.get("SESSION_DISK_SD", "") == "1" else [])
+            + [
              "-display", "none", "-no-reboot", "-no-shutdown",
              "-device", "isa-debug-exit,iobase=0x604,iosize=0x04",
              "-qmp", "unix:%s,server,nowait" % self.qmp_path,

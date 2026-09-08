@@ -1541,6 +1541,11 @@ void create_user_pagedir(uint32_t task_id) {
     ensure_iommu_mapped_current(pml4_tab);
     ensure_ioapic_mapped_current(pml4_tab);
     ensure_msix_mapped_current(pml4_tab);
+    /* And a storage host controller's register file, for the same reason one
+     * subsystem further: SYS_STORAGE_FORMAT reaches sdhci_bd_write, which writes
+     * these registers while running on the calling task's cr3. Absent this the
+     * installer faults at 0xfebf1004 the moment it formats. */
+    ensure_storage_regs_mapped_current(pml4_tab);
 
     tasks[task_id].cr3 = pml4_phys;
 
@@ -1772,6 +1777,19 @@ int clone_user_aspace(uint32_t child, uint64_t parent_cr3) {
     cp4[510] = child_phys | PAGE_PRESENT | PAGE_WRITE | PAGE_NX;
     ensure_lapic_mapped(cp4);
     ensure_tpm_tis_mapped(cp4);
+    /* The other four, which this builder did not replay until 2026-09-08 while
+     * create_user_pagedir replayed all of them. A forked child inherits its
+     * parent's capabilities by derivation, so it can reach SYS_DMA_ADDR,
+     * SYS_IRQ_ACK, SYS_MSI_REGISTER and the storage path -- each of which writes
+     * a supervisor MMIO window on the CALLER's cr3, which in the child's address
+     * space was not there. Latent rather than observed: no workload in this tree
+     * forks a task holding a device capability, so no gate witnesses it and none
+     * is claimed. The two builders now replay the same set, which is the property
+     * worth having -- a list maintained in two places diverges, and this one had. */
+    ensure_iommu_mapped_current(cp4);
+    ensure_ioapic_mapped_current(cp4);
+    ensure_msix_mapped_current(cp4);
+    ensure_storage_regs_mapped_current(cp4);
 
     tasks[child].cr3 = child_phys;
 
@@ -2565,15 +2583,77 @@ void ensure_iommu_regs_mapped(uint64_t *root_pml4, uint64_t regs_phys) {
  * be present in every address space or that syscall faults. The base comes from
  * the MADT rather than a constant, so this takes a parameter. */
 static uint64_t g_ioapic_regs_phys;
-/* The AHCI HBA register file: generic host control at 0x00..0xFF, then up to 32
- * per-port blocks of 0x80 from 0x100 -- 0x1100 bytes, so TWO pages. Mapped by
- * the same rule as every other device register file here (identity, writable,
- * cache-disabled, NX), and mapped in full rather than on demand because the
- * probe walks every implemented port in one pass. */
-void ensure_ahci_abar_mapped(uint64_t *root_pml4, uint64_t abar_phys) {
-    if (abar_phys == 0) return;
-    ensure_identity_mmio_page(root_pml4, abar_phys & ~0xFFFULL);
-    ensure_identity_mmio_page(root_pml4, (abar_phys & ~0xFFFULL) + 0x1000ULL);
+/* A storage host controller's register file -- the AHCI HBA's ABAR, or an SDHCI
+ * host controller's BAR. TWO pages, because AHCI is generic host control at
+ * 0x00..0xFF then up to 32 per-port blocks of 0x80 from 0x100, which is 0x1100
+ * bytes; SDHCI's own file is 0x100 and fits in the first of them. Mapped in full
+ * rather than on demand because a probe walks every implemented port in one pass.
+ *
+ * NOT AHCI-SPECIFIC any more, and the name says so. It was `ensure_ahci_abar_mapped`
+ * while AHCI was the only caller; sdhci.c then called it with a comment explaining
+ * that the name was wrong, which is the point at which a name stops being a
+ * shorthand and starts being a claim about what the code covers.
+ *
+ * WHY THE PAGES ARE REMEMBERED, which is the whole of the 2026-09-08 fix. A probe
+ * runs on the KERNEL's cr3 and maps into the kernel pml4, so the registers are
+ * present for the rest of boot and the probe passes. But these are supervisor
+ * mappings in pml4[0], the LOW half, and create_user_pagedir copies only
+ * pml4[256..511] from the kernel -- so the low half of a user address space is
+ * built from nothing and the register file is absent from it. The driver is then
+ * reached from a syscall (SYS_STORAGE_FORMAT -> sdhci_bd_write), which runs on
+ * the CALLING task's cr3, and the first register write is a supervisor write to a
+ * not-present page:
+ *
+ *     PAGE FAULT at 0xfebf1004 err=0x2(not-present,write,supervisor) task=4 'installer'
+ *
+ * That is the same hazard the LAPIC, the TPM, the VT-d unit, the I/O APIC and the
+ * MSI-X tables each solved separately above, and the reason every one of them has
+ * a `_current` sibling replayed from the address-space builders. This one had no
+ * sibling, so the driver worked at boot and faulted the moment ring 3 asked it for
+ * anything. Discovered by `make smoke-installer-sd` -- the first gate to drive a
+ * write all the way from ring 3 to a memory-mapped controller.
+ *
+ * Four pages, not two: a machine may have both an AHCI HBA and an SDHCI host
+ * controller, and a laptop with eMMC behind SDHCI plus a SATA bay is exactly the
+ * target this was written for. A fifth register file is REFUSED rather than
+ * dropped, for the reason MSIX_MAX_PAGES gives: a window that is missing from the
+ * current address space is a kernel write to an unmapped address, which is a
+ * panic, not a subtle bug -- so the refusal is at the point the driver could still
+ * be told, not at the point it faults. */
+#define DEVREGS_MAX_PAGES 4
+static uint64_t g_devregs_pages[DEVREGS_MAX_PAGES];
+static unsigned g_devregs_page_count;
+
+static void devregs_map_page(uint64_t *root_pml4, uint64_t page_phys) {
+    unsigned i;
+    for (i = 0; i < g_devregs_page_count; i++)
+        if (g_devregs_pages[i] == page_phys) break;
+    if (i == g_devregs_page_count) {
+        if (g_devregs_page_count >= DEVREGS_MAX_PAGES) return;  /* refuse, do not drop */
+        g_devregs_pages[g_devregs_page_count++] = page_phys;
+    }
+    ensure_identity_mmio_page(root_pml4, page_phys);
+}
+
+void ensure_storage_regs_mapped(uint64_t *root_pml4, uint64_t regs_phys) {
+    if (regs_phys == 0) return;
+    devregs_map_page(root_pml4, regs_phys & ~0xFFFULL);
+    devregs_map_page(root_pml4, (regs_phys & ~0xFFFULL) + 0x1000ULL);
+}
+
+/* Re-establish them in a freshly built address space. A no-op on a machine with
+ * neither controller, which is every machine the existing gates boot.
+ *
+ * DEVREGS_KERNEL_ONLY=1 makes this the empty function it effectively was before
+ * the fix -- the register file stays in the kernel pml4 and nowhere else -- so the
+ * control arm reproduces the page fault above rather than approximating it. */
+void ensure_storage_regs_mapped_current(uint64_t *root_pml4) {
+#ifndef DEVREGS_KERNEL_ONLY
+    for (unsigned i = 0; i < g_devregs_page_count; i++)
+        ensure_identity_mmio_page(root_pml4, g_devregs_pages[i]);
+#else
+    (void)root_pml4;
+#endif
 }
 
 void ensure_ioapic_mapped(uint64_t *root_pml4, uint64_t regs_phys) {

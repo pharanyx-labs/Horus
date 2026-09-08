@@ -459,7 +459,19 @@ static int screen_survey(void)
     int r = para(ROW_BODY, "This will DESTROY everything on the attached disk.", C_DANGER);
     r++;
     label(r, "device");
-    tui_text(r, FIELD_COL, "the attached ATA disk", C_VALUE);
+    /* NOT "the attached ATA disk", which this said until 2026-09-08 and which
+     * became false the moment a machine could boot with an SD/eMMC card as its
+     * only storage. This is the screen whose entire job is telling an operator
+     * WHICH device is about to be destroyed, so a hard-coded controller type is
+     * the one kind of inaccuracy it cannot afford.
+     *
+     * It names no controller at all rather than reporting one: `struct
+     * storage_info` carries no device name, and adding one is an ABI change
+     * across the syscall boundary (the struct is declared in both rings, which
+     * is the S71 shape, gated by tools/check_abi_structs.py). The size and the
+     * device index below already identify the target; the controller type does
+     * not, and a wrong one is worse than none. */
+    tui_text(r, FIELD_COL, "the attached disk", C_VALUE);
     r++;
     label(r, "size");
     tui_text(r, FIELD_COL, blocks, C_VALUE);

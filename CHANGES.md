@@ -338,6 +338,34 @@ in this file.
 
 ### Fixed
 
+- **A gate read a kernel marker from the one place it can be cut in half** (`Makefile`,
+  `smoke-kstack-park` and its control arm). Both read the SHARED console, where `proctest`'s
+  ring-3 output interleaves with the kernel's, so an exact-string grep misses a marker that was
+  printed. Observed in CI 2026-09-08: the control arm swept 8 boots reporting the shared park
+  "did NOT reproduce", and its own evidence dump held
+  `ROC_SELFTEPANIC: ST: two CPASS PUsexit+ parking on one kernel skitack` -- the panic and
+  `PROC_SELFTEST: PASS` interleaved character by character. It reddened PR #334, a dependabot
+  bump whose diff was three SHA pins in two workflow files.
+  **The kernel already writes both signals where this cannot happen.** `PARKTRACE` and the panic
+  go through `kfault_str` -> `panic_ch` -> `kdiag_ch`, i.e. COM3, and no capability names
+  `0x3E8` -- so a marker there is contiguous or was never emitted (**S81**, kept true by
+  `smoke-kdiag-ioport`). `tools/smoke_test.sh` has captured that channel all along as
+  `SMOKE_KDIAG_LOG`; the gate simply never passed it. Both arms read it now.
+  **The base arm's exposure was the worse of the two**, and is why this is not merely a flake
+  fix: it asserts the panic is **absent**, so a copy ring 3 can cut is one the gate would fail
+  to find and then pass on -- a false green in a required gate, not a false red.
+  The comment above these arms has warned about this shredding since 2026-08-22
+  (`PARKTRACE cpu=3 rsp=0xffffffff806ff0PROC_SELFTEST: PASS`), and the channel that removes it
+  landed with S81 on 2026-09-03. A mechanism built for a hazard, and the gate suffering that
+  hazard left reading the old surface.
+  Witness: the control arm now finds the shared park on **boot 1**, where it previously swept 8
+  and found nothing. Both failure paths dump BOTH captures, so a red run shows what the kernel
+  said and what ring 3 was writing over it.
+  **No rate is quoted for the split, deliberately.** Twelve local boots panicked eleven times
+  and the console copy was findable in all eleven, so this host does not reproduce it; the CI
+  run is the evidence that it happens. The argument is structural rather than statistical --
+  one writer on that channel, by construction -- which is why it holds whatever the rate is.
+
 - **A required gate reported a defect that had not happened** (`tools/kdiag_test.sh`). The
   verdict's counts came from two separate `python3` processes re-reading a capture QEMU was
   still writing, and the poll loop broke the instant `prefix >= KDIAG_MIN` -- exactly at the

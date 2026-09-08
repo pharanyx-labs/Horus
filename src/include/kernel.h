@@ -332,6 +332,17 @@ const struct fb_info *fb_info(void);
 uint64_t fb_vaddr(void);
 uint64_t fb_mapped_bytes(void);
 
+/* Start the framebuffer console, if GRUB granted a linear framebuffer and the
+ * window was built. A no-op otherwise, and a no-op for a pixel format the
+ * blitter does not implement -- it refuses and says so rather than drawing
+ * wrong, because on a machine with no serial port the console is the only way
+ * anything gets reported and a console that draws WRONG is harder to diagnose
+ * than one that never started. Call after paging_init. */
+void fb_console_init(void);
+
+/* True once the console is painting pixels rather than writing VGA text cells. */
+int console_is_framebuffer(void);
+
 /* Identity-map the TPM TIS locality-0 MMIO page (0xFED40000) into a page directory
  * (NULL = kernel pml4) for the measured-boot driver and the storage KEK-sealing
  * path (src/kernel/tpm.c). Defined in paging.c. */

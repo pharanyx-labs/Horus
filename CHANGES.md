@@ -17,6 +17,43 @@ in this file.
 
 ### Added
 
+- **The kernel console draws on the framebuffer** (`src/kernel/terminal.c`). An 80x50 cell grid
+  blitted from a font through the window at `high_pdpt[509]`, driven by the SAME grid the VGA
+  text console uses -- so every caller of `print()` is unchanged and the two modes differ only in
+  where a cell lands. A machine in a graphics mode, where the `0xB8000` text buffer does not
+  exist, now shows its boot log instead of a black screen.
+  The kernel keeps a **shadow** of the grid rather than reading it back out of the display: on
+  such a machine the legacy text window is not a display and may not even be decoded, so it is
+  neither a place to store state nor a place to read it from. The four sites that wrote
+  `VIDEO_MEMORY` directly now go through `cell_put`/`cell_get`, which is what keeps the mode
+  decision in one place instead of four.
+  **Font-agnostic on purpose**: the blitter takes width, height and a bitmap pointer, so
+  replacing the 8x8 font is a data change and not a code change. That matters here specifically,
+  because the font it ships with is ASCII-only, draws 7 pixels wide in an 8-pixel cell, and
+  carries **no provenance** -- replacing it is the next commit and this is what makes that commit
+  small.
+  Scale is 1:1 below 1600 pixels wide and 2x at or above, falling back to 1:1 rather than drawing
+  off the edge, and refusing to start at all if the grid does not fit. Non-32bpp modes are
+  **refused with a message** rather than approximated: on a machine with no serial port the
+  console is the only way anything gets reported, and a console that draws WRONG is harder to
+  diagnose than one that never started and said so. A framebuffer has no CRTC cursor, so one is
+  drawn -- an underline erased by re-blitting the cell it was over.
+  **`fb: NO PIXEL CONSOLE YET` is gone**, because it has stopped being true. What the console
+  actually did is now reported by `fb_console_init`, which runs after the window exists and is
+  the code that knows; `smoke-fb-tag-gfx`'s assertion moved with it.
+  Witness `make smoke-fb-console`, which **screendumps over QMP and inspects pixels** -- the
+  glyph cell is not uniform, uses exactly the two colours it was given, and is left-heavy.
+  Deliberately not an exact bitmap comparison: that would pin the gate to one font and break on
+  the commit that replaces it, whereas an `L` is left-heavy in any font that draws an `L`.
+  Falsified by `FB_CONSOLE_MIRRORED=1` (`make smoke-fb-console-control`), which reads the font's
+  bit 0 as the leftmost pixel and mirrors every glyph: 8 left / 2 right becomes 2 left / 8 right.
+  **The arm's value is what it does not disturb** -- measured 2026-09-08, the serial log under it
+  still reads `fb: console on the framebuffer, 80x50 cells, 8x8 font at 1x`, the klog is
+  complete, `kernel ready` arrives, and the screen is unreadable. That is the class of defect
+  every wire-reading gate in this tree is structurally blind to.
+  Ring 3 is not there yet: `console_server` takes the console by mapping the VGA text plane and
+  fails its round-trip check in a graphics mode, audibly. That is the next step after the font.
+
 - **The framebuffer has a window the kernel can reach, in the half every task
   inherits** (`src/kernel/paging.c`). `PHYS_KVA` covers `[0, 1 GiB)` and a linear
   framebuffer does not live there -- measured at `0xFD000000`, and firmware on real

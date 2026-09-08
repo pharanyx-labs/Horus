@@ -449,14 +449,13 @@ void kernel_main(uint32_t mb_info) {
     /* What the display is, and -- because they are not the same sentence -- what
      * the console is going to do about it.
      *
-     * TODAY THE ANSWER IS ALWAYS THE VGA TEXT WINDOW. terminal.c writes character
-     * cells at 0xB8000 and has no pixel path yet, so an RGB framebuffer is
-     * reported and then not used. That is stated out loud rather than left to be
-     * inferred: on a machine that granted a graphics mode the text window is not
-     * there, and a console writing into it produces a BLACK SCREEN AND NO ERROR
-     * -- which is exactly how the first framebuffer experiment presented, and
-     * cost a session to attribute. A line naming the mode and the consequence is
-     * what turns that into a diagnosis. */
+     * THE MODE IS REPORTED HERE AND THE CONSEQUENCE THERE. This runs before
+     * paging_init, so it can say what the display is but not yet what the
+     * console did about it; fb_console_init prints that, after the window it
+     * draws through exists. Both lines matter on a machine with no serial port:
+     * a console writing into a text window that is not there produces a BLACK
+     * SCREEN AND NO ERROR, which is exactly how the first framebuffer experiment
+     * presented and what cost a session to attribute. */
     {
         const struct fb_info *fb = fb_info();
 #ifdef FB_TAG_ASSUME_TEXT
@@ -489,8 +488,12 @@ void kernel_main(uint32_t mb_info) {
             print(" pitch "); print_decimal(fb->pitch);
             print(" at "); print_hex(fb->addr);
             print("\n");
-            print("fb: NO PIXEL CONSOLE YET -- the VGA text window does not exist in this\n");
-            print("fb: mode, so console output goes nowhere. Boot without FB_REQUEST.\n");
+            /* What happens NEXT is fb_console_init's to report, and it runs
+             * after paging_init has built the window it draws through -- so the
+             * line that says whether the console actually moved is printed
+             * there, by the code that knows. This used to warn that there was no
+             * pixel console at all; there is one now, and a warning that has
+             * stopped being true is worse than none. */
         }
     }
     /* Integrity-check the modules before anything can read one. Runs here, right
@@ -499,6 +502,12 @@ void kernel_main(uint32_t mb_info) {
     boot_module_verify_all();
 
     paging_init();
+    /* The framebuffer console, once paging_init has built the window it draws
+     * through. As early as possible after that: everything printed from here on
+     * is visible on a machine whose only display is a pixel framebuffer, and
+     * everything printed BEFORE it went to serial and the VGA text window only.
+     * A no-op unless GRUB granted a linear framebuffer. */
+    fb_console_init();
 #ifdef IRQ_POLICY_AUDIT
     irq_milestone("post-paging");
 #endif

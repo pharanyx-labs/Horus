@@ -396,6 +396,17 @@ jobs:
       # faulted the moment ring 3 asked for it.
       - name: Control arm — a low-half window no task can reach is caught
         run: make smoke-fb-map-control
+      # WHAT IS ON THE SCREEN, which no gate above can see. Every other
+      # framebuffer check reads the wire, and the wire is complete and correct
+      # under a blitter that mirrors every glyph. This screendumps over QMP and
+      # inspects the pixels.
+      - name: The framebuffer console draws legible, correctly-oriented glyphs
+        run: make smoke-fb-console
+      # Bit 0 read as the leftmost pixel instead of bit 7 -- the classic
+      # framebuffer font defect. Serial says the console started and every
+      # message is present; the display is unreadable.
+      - name: Control arm — a mirrored glyph blitter is caught
+        run: make smoke-fb-console-control
       # A console driver that fails AFTER taking the console must still be heard.
       # Ownership passes on the first successful VGA map, and from then the
       # kernel's print() records to the klog and stops driving the wire -- so a

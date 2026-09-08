@@ -90,11 +90,13 @@ rgb)
     # The base address, which PHYS_KVA cannot reach. Asserted explicitly so a
     # later change that quietly starts trusting PHYS_KVA has something to fail.
     check "the base address is the one GRUB gave"        "at 0x00000000FD000000"
-    # The kernel must SAY it cannot drive this yet. On this path the VGA text
-    # window does not exist, so a console writing to it produces a black screen
-    # and no error -- which is how the first framebuffer experiment presented,
-    # and it cost a session to attribute. The warning is the diagnosis.
-    check "it names the consequence rather than going quiet" "NO PIXEL CONSOLE YET"
+    # And the kernel must say what the CONSOLE did about it, not only what the
+    # display is. On this path the VGA text window does not exist, so a console
+    # that silently kept writing to it would produce a black screen and no error
+    # -- which is how the first framebuffer experiment presented, and it cost a
+    # session to attribute. Until 2026-09-08 this line was a warning that there
+    # was no pixel console; there is one now, and the assertion moved with it.
+    check "the console moved to the framebuffer" "fb: console on the framebuffer"
     check "the boot still completed"                     "kernel ready"
     ;;
 map)

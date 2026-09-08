@@ -41,6 +41,8 @@
  * already cover: the table is immutable after boot, so an index that resolves
  * once resolves to the same device forever. What can change is whether the CALLER
  * still holds the capability, and that is exactly what cap_lookup answers. */
+static int paddr_is_a_display(uint64_t paddr);
+
 static const struct io_device *iodev_from_slot(uint32_t slot, uint32_t need_rights,
                                               uint64_t *out_index) {
 #ifdef IO_DEVICE_CAP_UNCHECKED
@@ -135,10 +137,40 @@ void h_map_phys(struct interrupt_frame64 *r) {
      * console); off the VGA map alone would wrongly silence mapphystest (maps the
      * frame to verify it, holds no port grant). Both self-tests report via the
      * kernel console, so neither may lose ownership of it. */
-    if (rc == 0 && paddr >= 0xB8000ULL && paddr < 0xBA000ULL &&
+    if (rc == 0 && paddr_is_a_display(paddr) &&
         cur > 0 && cur < g_max_tasks && tasks[cur].io_device == IODEV_PLATFORM) {
         console_set_owner(cur);
     }
+}
+
+/* Is this physical page part of a display the console driver would drive?
+ *
+ * The VGA text window, or the linear framebuffer when firmware gave the machine
+ * one. Generalised from a bare 0xB8000 test on 2026-09-08: on a UEFI boot with
+ * no CSM there IS no text window, so a console driver maps the framebuffer
+ * instead, and a handover keyed only on the legacy address would leave the
+ * kernel driving a display ring 3 had just taken -- both writing, neither
+ * owning it.
+ *
+ * THE PAIR IS STILL WHAT IDENTIFIES THE DRIVER, and that reasoning is unchanged:
+ * ownership passes to the task that holds the platform device's ports AND maps
+ * its display. Keying off the port grant alone would wrongly silence ioporttest
+ * (grants ports to probe faults, never drives the console); off the map alone
+ * would wrongly silence mapphystest (maps the frame to verify it, holds no port
+ * grant). Widening the map half to a second surface does not weaken that, because
+ * the other half is doing the identifying.
+ *
+ * The framebuffer's extent comes from the recorded tag rather than from the
+ * device table, so this answers the same way whether or not the range was
+ * declared -- the declaration governs what may be MAPPED, and this governs what
+ * a successful map MEANS. */
+static int paddr_is_a_display(uint64_t paddr) {
+    if (paddr >= 0xB8000ULL && paddr < 0xBA000ULL) return 1;
+    const struct fb_info *fb = fb_info();
+    if (!fb->valid || fb->type != MB2_FB_RGB) return 0;
+    uint64_t base = fb->addr & ~(uint64_t)(PAGE_SIZE - 1);
+    uint64_t end  = fb->addr + (uint64_t)fb->height * (uint64_t)fb->pitch;
+    return paddr >= base && paddr < end;
 }
 
 /* SYS_CONSOLE_RELEASE(dev_slot): give the console hardware back to the kernel.

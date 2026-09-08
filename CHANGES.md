@@ -17,6 +17,38 @@ in this file.
 
 ### Added
 
+- **`console_server` drives the framebuffer, so ring 3 is no longer blind on a UEFI-only
+  machine** (`userspace/console_server.c`, `src/kernel/syscall_hw.c`, `include/console_font.h`).
+  It asks `SYS_FB_INFO` what the display is, takes the framebuffer's address from the platform
+  device's own MMIO ranges, maps it, and paints the same 80x50 cell grid the VGA text path
+  drives. **Before this that machine reached `CONSOLE_SELFTEST: FAIL vga` and had no shell** --
+  audibly, since 2026-09-07, but with a boot log and nothing to type at.
+  **The console handover generalised with it.** Ownership passed on a successful map of
+  `0xB8000`; on a UEFI boot with no CSM there is no such window, so a driver mapping the
+  framebuffer would never have been given the console and both rings would have drawn at once.
+  It now fires on either surface -- and the PAIR is still what identifies the driver: the task
+  that holds the platform device's ports *and* maps its display. Widening the map half does not
+  weaken that, because the other half does the identifying.
+  **One font, both rings.** `font_8x8` moved to `include/console_font.h`, included by the kernel
+  and by `console_server`. Two copies of a font are two things that can disagree about what a
+  character looks like, and nothing notices until somebody reads a screen -- the shape **S80**
+  records for the `.bin` container, which had eleven copies of one format.
+  The VGA round-trip check is **skipped on a pixel display**, where there is no text window to
+  round-trip and a correct console fails it. Non-32bpp is refused with a message rather than
+  approximated, for the reason the kernel's blitter refuses it.
+  **The report is emitted with `ser_puts`, not `kput`**, and that was a bug first: the map takes
+  the console, so the first version's `CONSOLE_FB:` line went to the kernel log ring and no gate
+  could ever have seen it. The same silence `sys_console_release` exists for, reintroduced by
+  reporting after the handover instead of before.
+  Witness `make smoke-fb-console-server`, which screendumps over QMP: text near the top **and**
+  `y 200-400` blank, the second being evidence that ring 3 cleared the display rather than that
+  nothing happened. Falsified by `CONSOLE_FB_ABSENT=1`
+  (`make smoke-fb-console-server-control`), which asserts the pre-fix signature positively --
+  `CONSOLE_SELFTEST: FAIL vga` and the kernel's log still on screen.
+  **The bands were measured on both builds, not guessed.** The first attempt sampled `y 300-700`
+  and separated nothing, because the kernel's grid is 640x400 and nothing below 400 is ever
+  painted by anyone. Measured: `y 200-400` is 0 when ring 3 clears and 3217 when it does not.
+
 - **Ring 3 can learn what the display is** (`SYS_FB_INFO`, syscall 115). A capability-gated
   report of the linear framebuffer's SHAPE -- width, height, pitch, bits per pixel -- and the
   platform device now declares the framebuffer among its MMIO ranges, which is what makes that

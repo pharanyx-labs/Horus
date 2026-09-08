@@ -152,7 +152,7 @@ DEFECT_FLAGS = \
 	DEVREGS_KERNEL_ONLY SD_BLOCK_ADDR_UNSCALED FB_REQUEST \
 	FB_TAG_IGNORED FB_TAG_ASSUME_TEXT \
 	FB_MAP_SELFTEST FB_MAP_LOW_HALF FB_CONSOLE_SELFTEST \
-	FB_CONSOLE_MIRRORED FB_INFO_ANY_DEVICE
+	FB_CONSOLE_MIRRORED FB_INFO_ANY_DEVICE CONSOLE_FB_ABSENT
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -2758,6 +2758,12 @@ endif
 # The capability LOOKUP is left in place on purpose: removing it too would refuse
 # the call for a different reason and the arm would pass for the wrong one.
 # The arm for `make smoke-devcap-fb`.
+# CONSOLE_FB_ABSENT=1 is console_server before 2026-09-08: it never asks what the
+# display is, so on a machine with no VGA text window it maps one anyway, fails
+# its own round-trip check and parks. The kernel's boot log stays on the screen
+# and there is no shell. Userspace-only, so it goes on USERSPACE_CFLAGS.
+CONSOLE_FB_ABSENT ?= 0
+
 FB_INFO_ANY_DEVICE ?= 0
 ifeq ($(FB_INFO_ANY_DEVICE),1)
 CFLAGS += -DFB_INFO_ANY_DEVICE
@@ -3521,6 +3527,9 @@ USERSPACE_CFLAGS += -DSHELL_LS_NO_PATH_ARG
 endif
 ifeq ($(CONSOLE_VGA_CHECK_FAIL),1)
 USERSPACE_CFLAGS += -DCONSOLE_VGA_CHECK_FAIL
+endif
+ifeq ($(CONSOLE_FB_ABSENT),1)
+USERSPACE_CFLAGS += -DCONSOLE_FB_ABSENT
 endif
 ifeq ($(CONSOLE_TIMESTAMPS_LEGACY),1)
 USERSPACE_CFLAGS += -DCONSOLE_TIMESTAMPS_LEGACY
@@ -9467,6 +9476,28 @@ smoke-fb-tag-gfx-control:
 # permitted call SUCCEEDS, which is what makes the two refusals mean something.
 # On the ordinary machine devcaptest says the checks did not run, and
 # smoke-devcap asserts only its own marker.
+# RING 3 OWNS THE DISPLAY, AND HAS PAINTED IT.
+#
+# The end of the chain: kernel parses the tag, maps a window, draws the boot log;
+# then console_server learns the geometry, maps the framebuffer, takes the console
+# and paints the login prompt. Before this, that configuration ended at
+# `CONSOLE_SELFTEST: FAIL vga` -- audibly, but with no shell on a machine whose
+# only display is a framebuffer.
+#
+# It reads PIXELS, because serial cannot show whether ring 3 painted anything.
+.PHONY: smoke-fb-console-server
+smoke-fb-console-server:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FB_REQUEST=1 boot.iso
+	@FB_CONSOLE_EXPECT=server tools/fb_console_test.sh boot.iso
+
+.PHONY: smoke-fb-console-server-control
+smoke-fb-console-server-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CONSOLE_FB_ABSENT=1 FB_REQUEST=1 boot.iso
+	@echo "[fb] console_server never asks what the display is: the screen must keep the kernel's log"
+	@FB_CONSOLE_EXPECT=server-absent tools/fb_console_test.sh boot.iso
+
 .PHONY: smoke-devcap-fb
 smoke-devcap-fb:
 	@$(MAKE) --no-print-directory clean

@@ -2295,11 +2295,16 @@ old allocator and the new one read the same single block and no workload could t
 - **Graphics.** No windowing, and no graphics beyond a text grid. **The KERNEL's console draws on
   a linear framebuffer since 2026-09-08** -- an 80x50 cell grid blitted from a font, with the VGA
   text path kept for machines that boot in text mode -- so a UEFI machine with no CSM, where the
-  `0xB8000` text buffer does not exist, is no longer blind. **Ring 3 is still blind on such a
-  machine**: `console_server` takes the console by mapping the VGA text plane and fails its
-  round-trip check in a graphics mode (`CONSOLE_SELFTEST: FAIL vga`, audibly), so the boot log is
-  drawn and the shell is not. Teaching `console_server` about the framebuffer is the next step and
-  is what closes "the laptop is usable".
+  `0xB8000` text buffer does not exist, is no longer blind. **Since 2026-09-08 ring 3 drives it too**: `console_server` asks `SYS_FB_INFO` what the
+  display is, maps the framebuffer from the platform device's own MMIO range, takes the console
+  and paints the login prompt (`make smoke-fb-console-server`, which checks pixels). So a UEFI
+  machine with no CSM boots to a usable console.
+  **What is still missing there is the grid.** The console is a fixed 80x50 of 8x8 cells, which
+  fits any panel this targets but wastes most of a 1920x1080 one, and it does not scroll -- it
+  wraps, exactly as the VGA text path it mirrors always has. Replacing the font with an 8x16 is
+  blocked on the same thing: at 8x16 an 80x50 grid needs 800 lines, and a 768-line panel -- which
+  is what the target hardware has -- gives 48 rows, so the grid has to become what the display can
+  show before the font can change.
 
   **Since 2026-09-08 the kernel knows what the display is, and draws on it.** It parses the multiboot2 framebuffer tag (type 8), validates every field
   before recording it, and reports the mode, geometry and base address: `fb: EGA text 80x25 at

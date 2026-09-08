@@ -17,6 +17,37 @@ in this file.
 
 ### Added
 
+- **The kernel knows what the display is** (`src/kernel/main.c`, `src/boot/multiboot.S`,
+  `grub.cfg`). The multiboot2 framebuffer tag (type 8) is parsed, every field validated before it
+  is recorded, and the mode reported: `fb: EGA text 80x25 at 0x00000000000B8000` on an ordinary
+  boot, `fb: RGB 1024x768x32 pitch 4096 at 0x00000000FD000000` on a machine that granted a
+  graphics mode. `fb_info()` is the accessor a renderer will use. **Nothing renders to it yet**,
+  and on the RGB path the kernel says so in as many words -- a console still writing to a text
+  window that is not there produces a black screen and no error, which is precisely how the first
+  framebuffer experiment presented.
+  **Validate before believing, and refuse rather than default.** Every field is firmware-supplied
+  and will later compute addresses into a region the kernel maps and writes. A zero address, a
+  pitch shorter than the row the geometry implies, a depth this kernel cannot address, an extent
+  over `FB_MAX_BYTES`, or a `framebuffer_type` that is none of the three the specification names
+  leaves the record invalid -- and invalid means the console does not move. A partly trusted
+  geometry is an out-of-bounds write with a plausible-looking base. `bpp` is checked per type
+  because it is not the same quantity in the two of them: bits per character CELL for EGA text,
+  bits per PIXEL for RGB, so one range test would accept 16 for RGB.
+  **Two plausible routes to a graphics mode are dead ends, measured 2026-09-08.** `set gfxpayload`
+  does not apply to a multiboot2 payload and changes nothing. The header's type-5 request tag is
+  what GRUB honours, but only with a video driver loaded -- with the tag and no driver it silently
+  falls back to EGA text, which reads exactly like the tag being ignored. `grub.cfg` now carries
+  `insmod all_video`, inert without the request tag (measured: EGA text 80x25, boot reaches the
+  login prompt), so `FB_REQUEST=1` is the whole switch. Without it the pixel branch is
+  unreachable, and an unreachable branch is the state `LIMITATIONS.md` §4 records the eMMC `CMD1`
+  path in -- which is why the switch exists rather than the branch being written and left unrun.
+  Witnesses `make smoke-fb-tag` (geometry and base address, not merely the mode -- a parser
+  reading a field from the wrong offset still prints `EGA text`) and `make smoke-fb-tag-gfx`
+  (which also asserts the **pitch**, read rather than computed, and the base `0xFD000000` that
+  sits above the `PHYS_KVA` window). Falsified by `FB_TAG_IGNORED=1`
+  (`make smoke-fb-tag-control`) and `FB_TAG_ASSUME_TEXT=1` (`make smoke-fb-tag-gfx-control`);
+  both base gates measured red under their arms.
+
 - **A comment that eats the next one stops the build** (`Makefile`, `src/kernel/terminal.c`).
   `-Werror=comment` on both `CFLAGS` and `USERSPACE_CFLAGS` -- two variables, so a flag set on
   the kernel alone covers half the tree.
@@ -201,6 +232,17 @@ in this file.
   check that asserted a mirror is reachable would be asserting the state of the internet, and
   the property that actually matters (bytes are trusted only when the hash matches) is already
   gated by `make smoke-newlib-tamper`.
+
+- **An inference drawn from silence on 2026-09-07 was wrong** (`docs/LIMITATIONS.md`). That
+  entry reported the framebuffer request tag hanging `console_server` with neither of its own
+  failure markers appearing, and concluded from their absence that it blocks *before* its VGA
+  round-trip check rather than failing it. It does not. Re-measured on the same configuration
+  2026-09-08, the boot prints `CONSOLE_SELFTEST: FAIL vga`: the server reached the check, failed
+  it and reported, and the report was **inaudible** because the successful `SYS_MAP_PHYS` that
+  precedes the check had already handed the console over, so the marker went to the kernel log
+  ring and nowhere else. `sys_console_release` is what made it audible. The correction is the
+  argument for that fix -- an absent marker was read as an absent event, and the diagnosis
+  followed from a silence the reporting path itself created.
 
 - **A console driver that failed after taking the console could not be heard** (`SYS_CONSOLE_RELEASE`,
   syscall 114). Ownership passes to `console_server` on its first successful map of the VGA text

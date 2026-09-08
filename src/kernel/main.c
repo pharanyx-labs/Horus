@@ -142,7 +142,23 @@ static void assert_higher_half(void) {
 #define MB2_TAG_END        0u
 #define MB2_TAG_MODULE     3u
 #define MB2_TAG_MMAP       6u
+#define MB2_TAG_FRAMEBUFFER 8u
 #define MB2_MEM_AVAILABLE  1u
+
+/* framebuffer_type, from the multiboot2 specification. The kernel cares about
+ * exactly one distinction -- whether the thing GRUB handed it is a grid of
+ * character cells or a grid of pixels -- but all three are named because a
+ * value that is none of them must be REFUSED rather than defaulted, and a
+ * default is what an unnamed constant invites. */
+#define MB2_FB_INDEXED     0u
+#define MB2_FB_RGB         1u
+#define MB2_FB_EGA_TEXT    2u
+
+/* The fixed part of the framebuffer tag: type+size (8), addr (8), pitch (4),
+ * width (4), height (4), bpp (1), fb_type (1), reserved (2) = 32. Colour info
+ * follows and is variable-length, which is why an RGB tag measures 38 and a
+ * text one 32 -- so the bound tested below is 32 and not sizeof(the whole tag). */
+#define MB2_FB_TAG_FIXED   32u
 
 struct mb2_tag        { uint32_t type; uint32_t size; };
 struct mb2_mmap_entry { uint64_t base; uint64_t len; uint32_t type; uint32_t reserved; };
@@ -273,6 +289,88 @@ static void mb_record_module(const uint8_t *info, uint32_t off, uint32_t tag_siz
     g_boot_module_count++;
 }
 
+/* What GRUB says the display is (multiboot2 tag type 8).
+ *
+ * THE TAG IS ALWAYS THERE. Measured 2026-09-08: a plain boot of this tree's own
+ * grub.cfg reports `addr=0xB8000 pitch=160 80x25 bpp=16 type=2` -- EGA text --
+ * so parsing it costs nothing and changes nothing on every existing gate. What
+ * is NOT always there is a linear framebuffer: GRUB sets a graphics mode for a
+ * multiboot2 payload only when the KERNEL HEADER asks for one (the type-5
+ * request tag, built under FB_REQUEST), and only when grub.cfg has loaded a
+ * video driver. `set gfxpayload` does not apply to multiboot2 at all -- it was
+ * tried first and changed nothing. With both, the same machine reports
+ * `addr=0xFD000000 pitch=4096 1024x768 bpp=32 type=1`.
+ *
+ * VALIDATE BEFORE BELIEVING, and refuse rather than default. Everything here is
+ * firmware-supplied, and the fields are used later to compute addresses into a
+ * region the kernel will map and write. A pitch smaller than a row, a zero
+ * address, a depth that is not one this kernel can address, or a type that is
+ * none of the three the specification names -- each leaves the record INVALID,
+ * and an invalid record means the console stays where it is. A partially
+ * trusted geometry is worse than none: it is an out-of-bounds write with a
+ * plausible-looking base.
+ *
+ * `bpp` for EGA text is 16, which is bits per CHARACTER CELL (two bytes: glyph
+ * and attribute), not bits per pixel. That is why the depth check is written per
+ * type rather than as one table -- the field means different things in the two
+ * modes, and a single range test would accept 16 for RGB, which is a mode this
+ * kernel cannot address. */
+static struct fb_info g_fb;
+
+const struct fb_info *fb_info(void) { return &g_fb; }
+
+static void mb_record_framebuffer(const uint8_t *info, uint32_t off, uint32_t size) {
+#ifdef FB_TAG_IGNORED
+    /* CONTROL ARM -- never ship. The tag is walked past without being read, which
+     * is the state this kernel was in before 2026-09-08. Nothing breaks and
+     * nothing is reported: the display is simply a thing the kernel has no
+     * opinion about, and the first person to need one has to go and find out
+     * what GRUB said by hand. */
+    (void)info; (void)off; (void)size;
+    return;
+#else
+    if (size < MB2_FB_TAG_FIXED) return;   /* truncated: read nothing from it */
+
+    uint64_t addr   = *(const uint64_t *)(info + off + 8);
+    uint32_t pitch  = *(const uint32_t *)(info + off + 16);
+    uint32_t width  = *(const uint32_t *)(info + off + 20);
+    uint32_t height = *(const uint32_t *)(info + off + 24);
+    uint8_t  bpp    = *(const uint8_t  *)(info + off + 28);
+    uint8_t  type   = *(const uint8_t  *)(info + off + 29);
+
+    if (addr == 0 || width == 0 || height == 0) return;
+
+    /* Bytes per row that the geometry ITSELF implies, computed per type because
+     * `bpp` is not the same quantity in the two of them. The pitch GRUB reports
+     * must be at least this, or a row's last pixel is off the end of the row. */
+    uint64_t row_bytes;
+    if (type == MB2_FB_EGA_TEXT) {
+        if (bpp != 16) return;             /* two bytes per cell, or it is not EGA text */
+        row_bytes = (uint64_t)width * 2u;
+    } else if (type == MB2_FB_RGB) {
+        if (bpp != 15 && bpp != 16 && bpp != 24 && bpp != 32) return;
+        row_bytes = ((uint64_t)width * bpp + 7u) / 8u;
+    } else {
+        /* MB2_FB_INDEXED, or a value the specification does not define. Refused
+         * rather than recorded: this kernel has no palette path, and recording a
+         * mode nothing can render would hand a later caller a base address and a
+         * size for memory it must not touch. */
+        return;
+    }
+    if ((uint64_t)pitch < row_bytes) return;
+
+    /* The whole region must be describable. height*pitch is the byte extent a
+     * mapper would have to cover, and it is computed in 64 bits from 32-bit
+     * fields precisely so an absurd geometry overflows into a number the bound
+     * below rejects rather than wrapping to a small one that passes. */
+    uint64_t bytes = (uint64_t)height * (uint64_t)pitch;
+    if (bytes == 0 || bytes > FB_MAX_BYTES) return;
+
+    g_fb.addr = addr; g_fb.pitch = pitch; g_fb.width = width;
+    g_fb.height = height; g_fb.bpp = bpp; g_fb.type = type; g_fb.valid = 1;
+#endif /* FB_TAG_IGNORED */
+}
+
 /* One walk over the boot-information tags: sizes the physical pool from the
  * memory map (return value, in frames) and fills the boot-module table as a side
  * effect. Returns 0 if the map cannot be trusted, so the caller keeps the
@@ -293,6 +391,8 @@ static uint32_t mb_scan_boot_info(void) {
 
         if (tag->type == MB2_TAG_MODULE) {
             mb_record_module(info, off, tag->size);
+        } else if (tag->type == MB2_TAG_FRAMEBUFFER) {
+            mb_record_framebuffer(info, off, tag->size);
         } else if (tag->type == MB2_TAG_MMAP) {
             uint32_t entry_size = *(const uint32_t *)(info + off + 8);
             if (entry_size >= sizeof(struct mb2_mmap_entry)) {
@@ -353,6 +453,54 @@ void kernel_main(uint32_t mb_info) {
         print("boot: ");
         print_decimal(g_boot_module_count);
         print(" boot modules loaded\n");
+    }
+
+    /* What the display is, and -- because they are not the same sentence -- what
+     * the console is going to do about it.
+     *
+     * TODAY THE ANSWER IS ALWAYS THE VGA TEXT WINDOW. terminal.c writes character
+     * cells at 0xB8000 and has no pixel path yet, so an RGB framebuffer is
+     * reported and then not used. That is stated out loud rather than left to be
+     * inferred: on a machine that granted a graphics mode the text window is not
+     * there, and a console writing into it produces a BLACK SCREEN AND NO ERROR
+     * -- which is exactly how the first framebuffer experiment presented, and
+     * cost a session to attribute. A line naming the mode and the consequence is
+     * what turns that into a diagnosis. */
+    {
+        const struct fb_info *fb = fb_info();
+#ifdef FB_TAG_ASSUME_TEXT
+        /* CONTROL ARM -- never ship. The type field is parsed, validated, stored
+         * and then NOT CONSULTED HERE: whatever the display is, the kernel says
+         * it is character cells and keeps the console on the text window.
+         *
+         * The arm is placed at the DECISION and not at the parse on purpose. A
+         * parser that misreads the field is a bug anyone would find; a parser
+         * that reads it correctly while the code choosing a console path never
+         * asks is the one that ships, because every field in the report is right
+         * except the one that decides what happens. Under FB_REQUEST=1 it prints
+         * `fb: EGA text 1024x768` -- an entirely plausible line for a mode with
+         * no text window in it at all. */
+        const int fb_is_text = 1;
+#else
+        const int fb_is_text = (fb->type == MB2_FB_EGA_TEXT);
+#endif
+        if (!fb->valid) {
+            print("fb: no usable framebuffer tag; console stays on VGA text\n");
+        } else if (fb_is_text) {
+            print("fb: EGA text ");
+            print_decimal(fb->width); print("x"); print_decimal(fb->height);
+            print(" at "); print_hex(fb->addr);
+            print("; console on VGA text\n");
+        } else {
+            print("fb: RGB ");
+            print_decimal(fb->width); print("x"); print_decimal(fb->height);
+            print("x"); print_decimal(fb->bpp);
+            print(" pitch "); print_decimal(fb->pitch);
+            print(" at "); print_hex(fb->addr);
+            print("\n");
+            print("fb: NO PIXEL CONSOLE YET -- the VGA text window does not exist in this\n");
+            print("fb: mode, so console output goes nowhere. Boot without FB_REQUEST.\n");
+        }
     }
     /* Integrity-check the modules before anything can read one. Runs here, right
      * after the tag walk that recorded them and well before init/fs_server exist,

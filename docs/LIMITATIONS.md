@@ -2297,27 +2297,46 @@ old allocator and the new one read the same single block and no workload could t
   unless a serial port is attached: there is no GOP/linear-framebuffer console yet. This is the
   first thing between "the image boots on a laptop" and "the laptop is usable".
 
-  **Asking GRUB for a framebuffer is not the small first step it looks like, and the measurement
-  is recorded here so the next attempt does not repeat it.** Adding the multiboot2 framebuffer
-  request tag (type 5) to the header with `width`/`height`/`depth` all zero -- which multiboot2
-  defines as "no preference", and which was chosen precisely so a BIOS machine could stay in EGA
-  text -- boots on every medium and then **hangs `console_server`**: measured 2026-09-07, the
-  serial log stops after `init: starting, launching shell` and
-  `[console_server] ready` never appears. It emits neither of its own failure markers
-  (`CONSOLE_SELFTEST: FAIL grant`, `... FAIL vga`), so it blocks *before* its VGA round-trip
-  check rather than failing it. Reverting the tag alone restores the login prompt, which is what
-  makes the tag the cause rather than a coincidence.
+  **Since 2026-09-08 the kernel knows what the display is**, which is the first of the four steps
+  and not yet a console. It parses the multiboot2 framebuffer tag (type 8), validates every field
+  before recording it, and reports the mode, geometry and base address: `fb: EGA text 80x25 at
+  0x00000000000B8000` on an ordinary boot, `fb: RGB 1024x768x32 pitch 4096 at 0x00000000FD000000`
+  on a machine that granted a graphics mode. Gated by `make smoke-fb-tag` and
+  `make smoke-fb-tag-gfx`. **Nothing renders to it yet** -- on the RGB path the kernel says so in
+  as many words, because a console still writing to a text window that is not there produces a
+  black screen and no error.
 
-  So the framebuffer console is **not** a kernel-only change layered onto `emit_char`. Ring 3
-  owns the display after the handover (`console_server` maps the VGA text plane through
-  `SYS_MAP_PHYS` and drives the VGA registers directly), so the mode the firmware leaves is part
-  of that server's contract, and changing it underneath is what this experiment did. Doing it
-  properly means the kernel and `console_server` learning about a linear framebuffer together,
-  in one change, with the VGA path kept for BIOS machines that still have one.
+  **How a graphics mode is actually obtained, measured 2026-09-08, because two plausible routes
+  are dead ends.** `set gfxpayload` in `grub.cfg` does not apply to a multiboot2 payload and
+  changes nothing. The multiboot2 framebuffer *request* tag (type 5) in the kernel header is what
+  GRUB honours -- but only if `grub.cfg` has also loaded a video driver; with the tag and no
+  driver it silently falls back to EGA text, which reads exactly like the tag being ignored.
+  `grub.cfg` now carries `insmod all_video`, which is inert without the request tag (measured:
+  EGA text 80x25, boot reaches the login prompt), so `FB_REQUEST=1` is the whole switch.
+
+  **An inference recorded here on 2026-09-07 was wrong, and what disproved it is worth keeping.**
+  That entry reported the request tag hanging `console_server`, with the serial log stopping after
+  `init: starting, launching shell` and *neither* of the server's own failure markers appearing --
+  and concluded from their absence that it blocks *before* its VGA round-trip check rather than
+  failing it. It does not. Re-measured 2026-09-08 on the same configuration, the boot now prints
+  `CONSOLE_SELFTEST: FAIL vga`: the server reached the check, failed it, and reported -- and the
+  report was **inaudible**, because the successful `SYS_MAP_PHYS` that precedes the check had
+  already handed the console over, so the marker went to the kernel log ring and nowhere else.
+  `sys_console_release` (2026-09-07, `make smoke-console-handover`) is what made it audible, and
+  the correction is the argument for that fix: **an absent marker was read as an absent event**,
+  and the whole diagnosis followed from a silence that the reporting path itself created.
+
+  The rest of that entry stands. The framebuffer console is **not** a kernel-only change layered
+  onto `emit_char`: ring 3 owns the display after the handover (`console_server` maps the VGA text
+  plane through `SYS_MAP_PHYS` and drives the VGA registers directly), so the mode the firmware
+  leaves is part of that server's contract. Doing it properly means the kernel and
+  `console_server` learning about a linear framebuffer together, with the VGA path kept for BIOS
+  machines that still have one.
 - **USB, sound, or any modern bus.** ATA PIO and PS/2 only for *driving* hardware. Two
-  consequences on real hardware: a laptop's **NVMe or AHCI SSD cannot be read or written**, so
-  the installer has nothing to install onto; and a machine that provides no 8042 emulation has
-  **no keyboard**, since there is no USB stack.
+  consequences on real hardware: a laptop's **NVMe or AHCI SSD cannot be read or written** (an
+  SD/eMMC card can, since 2026-09-08 -- see §4, so a machine whose internal storage is soldered
+  eMMC *is* installable onto and one with a SATA or NVMe SSD is not); and a machine that provides
+  no 8042 emulation has **no keyboard**, since there is no USB stack.
   Since 2026-09-07 the SATA half is *identified*: `src/kernel/ahci.c` finds an AHCI controller,
   brings each attached port up and asks the drive to IDENTIFY itself, so the boot log names the
   model and the capacity (`make smoke-ahci-detect`, which boots a q35 machine because QEMU's

@@ -56,6 +56,8 @@ control_arms:
   smoke-installer-wedge-control: smoke-installer-slowdisk
   smoke-installer-sd-devregs-control: smoke-installer-sd
   smoke-installer-sd-stride-control: smoke-installer-sd
+  smoke-fb-tag-control: smoke-fb-tag
+  smoke-fb-tag-gfx-control: smoke-fb-tag-gfx
   smoke-captest-lookup-type-control: smoke-captest
   smoke-auditprobe-control: smoke-auditprobe
   smoke-auditprobe-abi-control: smoke-auditprobe
@@ -223,6 +225,8 @@ gates:
   - smoke-installer-accounts
   - smoke-installer-target
   - smoke-installer-sd
+  - smoke-fb-tag
+  - smoke-fb-tag-gfx
   - smoke-passwd-target
   - smoke-nvcounter
   - smoke-rollback

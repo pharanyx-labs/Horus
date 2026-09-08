@@ -184,6 +184,21 @@ soak-evidence/
 # here, and never a tracked artifact.
 .kdiag-split-control.out
 
+# EVERY evidence directory, including ones that do not exist yet.
+#
+# The three lines above were added one per gate as each gate was written, and on
+# 2026-09-08 two new ones were not: .fb-evidence/ and .fbcon-evidence/ went
+# un-ignored, and a `git add -A` put a 2.3 MB screendump of a QEMU framebuffer
+# onto main. That is the second time this exact shape has landed -- see SWEEP.txt
+# below, whose comment records the first -- so the rule stops being a list.
+#
+# A directory whose name matches this and holds something a commit WANTS would be
+# misnamed: the convention across this tree is that `.<gate>-evidence/` is a
+# gate's own working output, kept so a red run still has what it rejected, and
+# never a tracked artifact. tools/check_gate_pairs.py refuses a tracked file
+# under one of these, because a .gitignore only governs what is not yet added.
+.*-evidence*/
+
 # Stamp of the CFLAGS/ASFLAGS a build was made with; forces a rebuild when they change
 .build-flags
 

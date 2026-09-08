@@ -31,6 +31,7 @@ Exit 0 if sound, 1 otherwise.
 """
 import pathlib
 import re
+import subprocess
 import sys
 
 import yaml
@@ -124,6 +125,32 @@ def main():
             )
         if not reason or len(str(reason).split()) < 5:
             problems.append(f"{name}: excused with no substantive reason")
+
+    # 6. no gate's own evidence is TRACKED.
+    #
+    # A .gitignore governs what has not been added yet; it does nothing about a
+    # file already in the index, and nothing at all about the moment somebody
+    # runs `git add -A` before the ignore line exists. Both have happened here:
+    # SWEEP.txt reached main that way once, and on 2026-09-08 a 2.3 MB screendump
+    # of a QEMU framebuffer followed it, from a gate whose evidence directory was
+    # written in the same commit as the ignore rule was not.
+    #
+    # So the rule is checked rather than promised. Evidence is a gate's working
+    # output, kept so a RED run still has what it rejected -- it is per-machine,
+    # frequently large, and never something a commit wants.
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, text=True
+    ).stdout.split("\0")
+    for path in tracked:
+        if not path:
+            continue
+        head = path.split("/")[0]
+        if head.startswith(".") and "-evidence" in head:
+            problems.append(
+                f"{path}: a gate's evidence is tracked. It is per-machine working "
+                f"output kept for red runs, not a committed artifact -- "
+                f"`git rm --cached` it and check .gitignore covers the directory"
+            )
 
     print(f"smoke targets     : {len(targets)}")
     print(f"  control arms    : {len(controls)}")

@@ -307,6 +307,23 @@ in this file.
   marker is **present** and the loop stops at the first hit, so a sweep of dead boots leaves no
   hit and the arm fails. That is the opposite of the vacuum the manifest exists to catch.
 
+- **A gate's evidence is no longer trackable, and the rule is checked rather than promised**
+  (`.gitignore`, `tools/check_gate_pairs.py`). `.fbcon-evidence/screen.ppm` -- a 2.3 MB
+  screendump of a QEMU framebuffer -- reached `main` on a `git add -A`, because the two evidence
+  directories added on 2026-09-08 were written without the `.gitignore` lines every sibling gate
+  has. **The second time this exact shape has landed**: `SWEEP.txt` got there the same way, and
+  its `.gitignore` comment already recorded it.
+  So the list became a rule. `.gitignore` now carries `.*-evidence*/`, covering directories that
+  do not exist yet, and `check_gate_pairs.py` refuses any TRACKED file under one -- because a
+  `.gitignore` governs only what has not been added, and does nothing about the moment somebody
+  runs `git add -A` before the ignore line exists, which is precisely how both of these landed.
+  Falsified in both directions, measured 2026-09-08: re-adding a file under `.fbcon-evidence/`
+  makes the checker name it and fail; with it removed the checker passes; and
+  `.github/gate-evidence.yml`, a legitimately tracked file, is untouched by the new glob.
+  **The blob stays in history.** `main` is not force-pushed and the repository's linear,
+  signed history is worth more than 2.3 MB; what is fixed is that it is no longer in the tree
+  and cannot recur.
+
 - **The build no longer depends on one host being reachable** (`tools/build_newlib.sh`). The
   newlib tarball is fetched from sourceware.org and, failing that, from `mirrors.kernel.org`;
   the pinned `NEWLIB_SHA256` is verified afterwards exactly as before, on every invocation and

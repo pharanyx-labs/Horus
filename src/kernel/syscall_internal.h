@@ -196,6 +196,7 @@ void h_ioport_grant(struct interrupt_frame64 *r);
 void h_console_release(struct interrupt_frame64 *r);
 void h_irq_register(struct interrupt_frame64 *r);
 void h_device_info(struct interrupt_frame64 *r);
+void h_fb_info(struct interrupt_frame64 *r);
 void h_device_enable(struct interrupt_frame64 *r);
 void h_dma_addr(struct interrupt_frame64 *r);
 void h_irq_ack(struct interrupt_frame64 *r);

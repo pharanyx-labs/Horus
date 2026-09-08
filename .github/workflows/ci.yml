@@ -407,6 +407,14 @@ jobs:
       # message is present; the display is unreadable.
       - name: Control arm — a mirrored glyph blitter is caught
         run: make smoke-fb-console-control
+      # WHOSE GEOMETRY IT IS. SYS_FB_INFO discloses the display's dimensions to
+      # the device that owns the framebuffer and to nothing else. Run on a
+      # machine that HAS one, because with no framebuffer the call refuses every
+      # caller and the refusals would hold with the object check deleted.
+      - name: The display's geometry is the platform device's to disclose
+        run: make smoke-devcap-fb
+      - name: Control arm — a NIC capability reading the display is caught
+        run: make smoke-devcap-fb-control
       # A console driver that fails AFTER taking the console must still be heard.
       # Ownership passes on the first successful VGA map, and from then the
       # kernel's print() records to the klog and stops driving the wire -- so a

@@ -319,6 +319,19 @@ struct fb_info {
 /* The recorded display, always non-NULL; test ->valid before reading a field. */
 const struct fb_info *fb_info(void);
 
+/* The SHAPE of the linear framebuffer, copied out by SYS_FB_INFO.
+ *
+ * MUST stay byte-identical to struct fb_geometry in include/syscall.h; enrolled
+ * in tools/check_abi_structs.py. Shape only -- the ADDRESS comes from the
+ * platform device's mmio[] ranges via SYS_DEVICE_INFO, so one fact has one
+ * source. */
+struct fb_geometry {
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;
+    uint32_t bpp;
+};
+
 /* The framebuffer's KERNEL virtual address, or 0 if there is no window.
  *
  * Non-zero only when GRUB granted a linear framebuffer (fb_info()->type ==
@@ -1138,6 +1151,7 @@ void users_init(void);
 #define SYS_STORAGE_FORMAT    111   /* (const char *password, plen, device) -> 0; DESTROY the volume on the attached device and lay a new encrypted one down, sealed to `password`. CAP_STORAGE_FORMAT + WRITE at CAPSLOT_STORAGE_FORMAT. This is the ONE caller of storage_authorize_format(), the function S63 introduced and left with none: "a deliberate act -- which an installer calls and a login never does". A login (SYS_AUTH -> storage_unlock) still reaches an unformatted volume and still refuses it. */
 #define SYS_USERLIST          112   /* (index, struct user_entry*) -> 1 filled, 0 past the last account, SYS_ERR_PERM without CAP_USER at CAPSLOT_USER. Account METADATA only: name, uid, gid, home. No hash, no salt, no key slot, no lockout state. The index is dense over VALID accounts, so a deleted slot in the middle of the table does not read as the end of it and MAX_USERS never crosses the boundary. */
 #define SYS_CONSOLE_RELEASE  114   /* (dev_slot) -> 0; give the console hardware back to the kernel. CAP_IO_DEVICE + WRITE in dev_slot, and the caller must BE the current owner. Exists so a console driver that fails AFTER taking the console can still be heard: while it owns the wire its own diagnostic reaches the klog ring and nothing else. */
+#define SYS_FB_INFO          115   /* (dev_slot, struct fb_geometry*) -> 0; the SHAPE of the linear framebuffer (width/height/pitch/bpp), or SYS_ERR_NOENT if this display is not one. CAP_IO_DEVICE + READ in dev_slot, and it must name the PLATFORM device. Where the framebuffer is comes from SYS_DEVICE_INFO's mmio[] ranges, not from here. */
 #define SYS_STORAGE_DEVICE   113   /* (index, struct storage_info*) -> 0; the survey for ONE enumerated persistent device (CAP_STORAGE_FORMAT + READ at CAPSLOT_STORAGE_FORMAT). An index past the end is REFUSED rather than clamped: a survey that answered about a different disk would be read as a description of the disk about to be erased. */
 #define SYS_POLL_NOTIFY       106   /* (notif_slot, uint32_t*) -> 0 with a badge, or IPC_AGAIN; sys_wait_notify's non-blocking twin. Same gate (CAP_NOTIFICATION + READ): being non-blocking changes when the answer comes, never who may ask. Lets a caller witness the ABSENCE of a notification, which a blocking wait cannot. */
 #define SYS_IRQ_ACK           105   /* (dev_slot, irq) -> 0; the driver has serviced its device, so unmask the line. A registered line is masked by the kernel when it fires and stays masked until this call, which is what stops an unserviced level-triggered device livelocking the machine (CAP_IO_DEVICE + WRITE naming a device that declares the line, AND the registration must be the caller's) */

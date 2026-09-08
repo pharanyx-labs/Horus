@@ -880,6 +880,7 @@ checked against what **that** device declares. `SECURITY.md` **S43**.
 | 114 | `SYS_CONSOLE_RELEASE` | `dev_slot` -> 0; give the console hardware back to the kernel. `CAP_IO_DEVICE` + `WRITE` in `dev_slot`, **and the caller must be the current owner** -- holding the capability is not holding the console. Exists so a console driver that fails *after* the handover can still be heard: while it owns the wire its own diagnostic reaches the kernel log ring and nothing else |
 | 81 | `SYS_IRQ_REGISTER` | `dev_slot`, `irq`, `notif_slot`, `badge`, route an IRQ **the named device declares** to the notification named by the `CAP_NOTIFICATION` at `notif_slot` (both need WRITE) |
 | 102 | `SYS_DEVICE_INFO` | `dev_slot`, `struct dev_info *`, report the named device's ids, MMIO ranges, port ranges and IRQ lines (needs READ) |
+| 115 | `SYS_FB_INFO` | `dev_slot`, `struct fb_geometry *`, report the SHAPE of the linear framebuffer -- width, height, pitch, bits per pixel (needs READ, and the slot must name the PLATFORM device) |
 | 103 | `SYS_DEVICE_ENABLE` | `dev_slot`, `flags`, set the named device's three PCI decode bits (I/O, memory, **bus master**) to exactly `flags`, and nothing else in configuration space (needs WRITE) |
 | 107 | `SYS_MSI_REGISTER` | `dev_slot`, `notif_slot`, `badge`, route the named device's message-signalled interrupt to a notification. **No vector argument**, deliberately (WRITE on both) |
 | 108 | `SYS_SHLIB_INFO` | `frame_slot`, `struct shlib_info *`: where the shared library is loaded **this boot**. The base is drawn from the ASLR source, not compiled in, so a program cannot assume it. Requires a `CAP_FRAME` + READ naming one of the library's own **text** frames: the base is the address of code every task executes, and a task's private copy of the library's data page does not qualify |
@@ -897,6 +898,22 @@ console: finding **[C-1]**'s shape one layer down, and it takes [C-1]'s fix.
 capability names. A driver needs it because firmware assigns BARs and a hardcoded address is
 how a driver ends up mapping whatever happens to sit there; there is deliberately no bus walk,
 because holding one device should not be a way to enumerate the machine.
+
+
+`SYS_FB_INFO` is READ for the same reason and narrower still: it answers only for the PLATFORM
+device, because the framebuffer is declared among *that* device's MMIO ranges and belongs to
+nothing else. A NIC capability is a perfectly good `CAP_IO_DEVICE` and is refused, which is the
+type standing in for the object -- the [C-1] shape **S43** exists about, one syscall along.
+
+**It reports the shape and not the address.** Where the framebuffer is comes from
+`SYS_DEVICE_INFO`'s `mmio[]` ranges, which already carry it once the platform device declares
+one. Two syscalls reporting the same address is the arrangement that lets a display be mapped
+at one and drawn at another, and that write lands in whatever else is there.
+
+`SYS_ERR_NOENT` is the ordinary answer, not a failure: every machine that booted in EGA text
+gives it, which is all of them unless the kernel was built to ask GRUB for a framebuffer. A
+caller must be able to tell "no framebuffer" from "a framebuffer zero pixels wide" without
+inspecting fields, because the second is a shape it might then try to draw into.
 
 `SYS_DEVICE_ENABLE` is the only write to configuration space reachable from ring 3, and it
 reaches exactly three bits of one register. The narrowness is load-bearing: the BARs live in the

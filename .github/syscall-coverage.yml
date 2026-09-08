@@ -158,6 +158,7 @@ covered:
   - SYS_MAP_FRAME            # empty slot, the legacy slot-3 decoy, and W^X
   - SYS_UNMAP_FRAME          # empty slot
   - SYS_MAP_REGION           # a zero-length run, and an empty slot
+  - SYS_FB_INFO              # no device capability, and a wrong-type slot
   - SYS_FRAME_PAGES          # empty slot, and the legacy slot-3 decoy
   - SYS_REGISTER_STORAGE_BACKEND  # retired syscall 46; must still fail closed
 

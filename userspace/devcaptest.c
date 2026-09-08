@@ -221,6 +221,48 @@ void _start(void) {
      *
      * Under IO_DEVICE_PORTS_GLOBAL the regrant loads the console's bitmap anyway,
      * the second read succeeds, and control falls through to the FAIL below. */
+    /* SYS_FB_INFO: the display's geometry is disclosed to the device that owns
+     * the framebuffer, and to nothing else.
+     *
+     * THE PERMITTED CALL MUST SUCCEED OR THE REFUSALS WITNESS NOTHING. On a
+     * machine with no linear framebuffer this syscall refuses EVERY caller --
+     * SYS_ERR_NOENT for the platform device, SYS_ERR_PERM for anyone else -- so
+     * "the NIC was refused" would hold with the device check deleted. The
+     * refusals are therefore only asserted where the platform device is
+     * answered, and the other case is announced rather than skipped quietly:
+     * a check that did not run is not a check that passed.
+     *
+     * That is why this pair is measured under FB_REQUEST (make smoke-devcap-fb)
+     * as well as on the ordinary machine, where it reports itself not run. */
+    {
+        struct fb_geometry g;
+        int prc = sys_fb_info(PLATFORM_SLOT, &g);
+        if (prc == SYS_ERR_NOENT) {
+            wr("DEVCAPTEST: fb-geometry checks NOT RUN (no linear framebuffer)\n");
+        } else if (prc != 0) {
+            wr("DEVCAPTEST: FAIL platform-cap-refused-fb-geometry\n"); sys_exit();
+        } else {
+            /* Plausible, not merely non-zero: a handler that copied out a zeroed
+             * struct would satisfy "it returned 0", and a pitch shorter than a
+             * row is a geometry a renderer would run off the end of. */
+            if (g.width == 0 || g.height == 0 || g.bpp == 0 ||
+                (uint64_t)g.pitch * 8u < (uint64_t)g.width * g.bpp) {
+                wr("DEVCAPTEST: FAIL fb-geometry-implausible\n"); sys_exit();
+            }
+            /* A perfectly good device capability that names the WRONG device.
+             * This is the [C-1] shape one layer along: the type standing in for
+             * the object, which is what S43 exists about. */
+            if (sys_fb_info(NIC_SLOT, &g) != SYS_ERR_PERM) {
+                wr("DEVCAPTEST: FAIL nic-cap-read-fb-geometry\n"); sys_exit();
+            }
+            /* And a slot holding no device capability at all. */
+            if (sys_fb_info(NOTIF_SLOT, &g) != SYS_ERR_PERM) {
+                wr("DEVCAPTEST: FAIL notification-cap-read-fb-geometry\n"); sys_exit();
+            }
+            wr("DEVCAPTEST: fb-geometry is gated to the platform device\n");
+        }
+    }
+
     if (sys_ioport_grant(PLATFORM_SLOT) != 0) {
         wr("DEVCAPTEST: FAIL platform-grant-refused\n"); sys_exit();
     }

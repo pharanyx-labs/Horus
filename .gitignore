@@ -179,6 +179,10 @@ soak-evidence/
 .ahci-evidence*/
 .sdhci-evidence*/
 .boot-media-control.out
+# The last verdict of smoke-kdiag-split-control's retry loop, kept so a RED run
+# still carries the run it rejected -- the same reason .boot-media-control.out is
+# here, and never a tracked artifact.
+.kdiag-split-control.out
 
 # Stamp of the CFLAGS/ASFLAGS a build was made with; forces a rebuild when they change
 .build-flags

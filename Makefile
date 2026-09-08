@@ -7061,11 +7061,42 @@ smoke-kdiag:
 	@KDIAG_MIN=$(KDIAG_MIN) MODE=channel tools/kdiag_test.sh boot.iso
 
 .PHONY: smoke-kdiag-split-control
+# THE SPLIT IS A RACE, SO ONE BOOT CANNOT ASSERT IT.
+#
+# Measured 2026-09-08, twenty boots of the widened build on one host: 7 of 10 on
+# 3af91ca and 6 of 10 on its parent -- 13/20, about 65%. So a single-boot arm is
+# RED ON ROUGHLY A THIRD OF RUNS, and it reddened PR #339, a change to .gitignore
+# and a checker that contains no kernel code at all. That is the same failure
+# CLAUDE.md's worked example records for smoke-kstack-park-control, in an arm
+# written from the same template and never given the same repair -- "a lesson is
+# not learned until every arm built from the same template has it".
+#
+# The two rates were measured either side of the framebuffer-console commit
+# precisely to rule it out as the cause: 6/10 before and 7/10 after are
+# indistinguishable at n=10, so the arm has always been this flaky and nothing in
+# that commit perturbed it.
+#
+# So it boots until the split reproduces, and stops at the first one. At 65% the
+# expected cost is under two boots and a clean sweep of eight is 0.35^8, about
+# one run in four thousand. NOTHING IS WEAKENED: the assertion is still "the
+# defect MUST reproduce", drawn from a sample large enough to mean it, and a
+# widener that has actually decayed reproduces on none of the eight and fails
+# exactly as before.
+#
+# AN INCONCLUSIVE BOOT IS NOT A MISS. kdiag_test.sh already separates "the run
+# ended before there was anything to split" from "the markers arrived intact",
+# and only the second is evidence about the race. The first is the workload
+# dying, which is what the kstack-park arm was scored wrongly on for months, so
+# it is named and retried against a separate attempt bound rather than counted.
+KDIAG_SPLIT_CONTROL_BOOTS ?= 8
+KDIAG_SPLIT_CONTROL_ATTEMPTS ?= 16
+
 smoke-kdiag-split-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory KDIAG_PROBE=1 KDIAG_NOISE=1 KDIAG_SPLIT_WIDEN=1
 	@$(MAKE) --no-print-directory KDIAG_PROBE=1 KDIAG_NOISE=1 KDIAG_SPLIT_WIDEN=1 boot.iso
-	@KDIAG_MIN=$(KDIAG_MIN) MODE=split tools/kdiag_test.sh boot.iso
+	@echo "[kdiag] widened window + ring-3 noise: the split must reproduce"
+	@out=.kdiag-split-control.out; hit=0; conc=0; att=0; incon=0; 	while [ $$conc -lt $(KDIAG_SPLIT_CONTROL_BOOTS) ] && [ $$att -lt $(KDIAG_SPLIT_CONTROL_ATTEMPTS) ]; do 	    att=$$((att+1)); 	    if KDIAG_MIN=$(KDIAG_MIN) MODE=split tools/kdiag_test.sh boot.iso >"$$out" 2>&1; then 	        hit=$$att; break; 	    fi; 	    if grep -q 'Inconclusive' "$$out"; then 	        incon=$$((incon+1)); 	        echo "  attempt $$att: INCONCLUSIVE -- the run ended before there was anything to split, not counted"; 	        continue; 	    fi; 	    conc=$$((conc+1)); 	    echo "  boot $$conc/$(KDIAG_SPLIT_CONTROL_BOOTS): the markers arrived intact, no split yet"; 	done; 	if [ $$hit -eq 0 ]; then 	    echo "KDIAG SPLIT CONTROL: FAIL - the widened build did NOT reproduce the split"; 	    echo "  in $$conc conclusive boot(s) ($$att attempt(s), $$incon inconclusive)."; 	    echo "  It reproduced 13 of 20 when this bound was set, so a clean sweep of"; 	    echo "  $(KDIAG_SPLIT_CONTROL_BOOTS) is about one run in four thousand by chance. This arm is what"; 	    echo "  makes smoke-kdiag a measurement; if it stops reproducing, the widener"; 	    echo "  or the detector has decayed rather than the property having improved."; 	    echo "  ----- the last run's own verdict -----"; 	    cat "$$out" | sed 's/^/  /'; 	    exit 1; 	fi; 	if [ $$incon -gt 0 ]; then 	    echo "  ($$incon inconclusive attempt(s) along the way, not scored either way)"; 	fi; 	rm -f "$$out"; 	echo "KDIAG SPLIT CONTROL: PASS -- the split reproduced on attempt $$hit of at most $(KDIAG_SPLIT_CONTROL_ATTEMPTS)"
 
 .PHONY: smoke-kdiag-legacy-control
 smoke-kdiag-legacy-control:

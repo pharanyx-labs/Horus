@@ -14,8 +14,19 @@ multiboot_header_start:
     .word 5
     .word 0
     .long 20
-    .long 1024
-    .long 768
+    /* The mode asked for. Parameterised because the console's grid is derived
+     * from what firmware grants, and a property derived from the display can
+     * only be tested by varying the display: FB_REQUEST_H=360 is a real 45-row
+     * screen rather than a flag pretending to be one. GRUB honours arbitrary
+     * heights here -- measured 2026-09-08, 400/360/300 all granted exactly. */
+#ifndef FB_REQ_W
+#define FB_REQ_W 1024
+#endif
+#ifndef FB_REQ_H
+#define FB_REQ_H 768
+#endif
+    .long FB_REQ_W
+    .long FB_REQ_H
     .long 32
 #endif
     .align 8

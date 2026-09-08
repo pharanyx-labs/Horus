@@ -183,6 +183,7 @@ soak-evidence/
 # still carries the run it rejected -- the same reason .boot-media-control.out is
 # here, and never a tracked artifact.
 .kdiag-split-control.out
+.fb-grid-control.out
 
 # EVERY evidence directory, including ones that do not exist yet.
 #

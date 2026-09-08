@@ -79,7 +79,14 @@ static void ser_putc(char c) {
 
 static volatile uint32_t *fbp;      /* 0 until mapped */
 static uint32_t fb_pitch_px, fb_w, fb_h, fb_scale = 1;
-static uint16_t fb_cells[80 * 50];
+static uint16_t fb_cells[80 * 50];      /* sized for the MAXIMUM grid */
+
+/* How many rows this console actually has -- 50 is the maximum, not the count.
+ * Mirrors the kernel's g_rows in src/kernel/terminal.c, and for the same reason:
+ * 50 rows of an 8x16 cell need 800 lines and the target hardware has 768, so a
+ * taller font is impossible while the row count is a constant. Columns stay 80,
+ * because a display too narrow for them is refused rather than accommodated. */
+static unsigned fb_rows = 50;
 static unsigned fb_pos;
 
 /* The VGA 16-colour text palette as 0x00RRGGBB -- the levels a VGA DAC actually
@@ -96,7 +103,7 @@ static const uint32_t fb_pal[16] = {
  * the grid is what this server believes and the geometry is what the hardware
  * has, and a mismatch must clip rather than scribble past the mapping. */
 static void fb_blit(unsigned idx) {
-    if (!fbp || idx >= 80u * 50u) return;
+    if (!fbp || idx >= 80u * fb_rows) return;
     uint16_t cell = fb_cells[idx];
     uint8_t ch = (uint8_t)(cell & 0xFF), attr = (uint8_t)(cell >> 8);
     uint32_t fg = fb_pal[attr & 0x0F], bg = fb_pal[(attr >> 4) & 0x07];
@@ -122,7 +129,7 @@ static void fb_putc(char c) {
         fb_blit(fb_pos);
         fb_pos++;
     }
-    if (fb_pos >= 80u * 50u) fb_pos = 0;    /* wrap, exactly as vga_putc does */
+    if (fb_pos >= 80u * fb_rows) fb_pos = 0;   /* wrap, exactly as vga_putc does */
 }
 
 /* ---- VGA text framebuffer -------------------------------------------------- */
@@ -412,11 +419,20 @@ void _start(void) {
                     fb_pitch_px = fbg.pitch / 4u;
                     fb_w = fbg.width; fb_h = fbg.height;
                     fb_scale = (fbg.width >= 1600u) ? 2u : 1u;
-                    if (fbg.width < 80u * 8u * fb_scale || fbg.height < 50u * 8u * fb_scale)
-                        fb_scale = 1u;
-                    for (unsigned i = 0; i < 80u * 50u; i++)
+                    if (fbg.width < 80u * 8u * fb_scale) fb_scale = 1u;
+                    /* Columns are demanded and rows are taken -- see the kernel's
+                     * fb_console_init for why that asymmetry is the right one. */
+                    {
+                        unsigned fits = fbg.height / (8u * fb_scale);
+#ifdef FB_GRID_FIXED_ROWS
+                        (void)fits; fb_rows = 50u;   /* CONTROL ARM -- never ship */
+#else
+                        fb_rows = fits > 50u ? 50u : fits;
+#endif
+                    }
+                    for (unsigned i = 0; i < 80u * fb_rows; i++)
                         fb_cells[i] = (uint16_t)((VGA_ATTR << 8) | ' ');
-                    for (unsigned i = 0; i < 80u * 50u; i++) fb_blit(i);
+                    for (unsigned i = 0; i < 80u * fb_rows; i++) fb_blit(i);
                     /* ser_puts, not kput: the map above has already taken the
                      * console, so a kput here is written into the kernel log
                      * ring and is heard by nobody -- which is what happened on
@@ -425,7 +441,8 @@ void _start(void) {
                     ser_u32(fbg.width); ser_puts("x"); ser_u32(fbg.height);
                     ser_puts("x"); ser_u32(fbg.bpp);
                     ser_puts(" pitch "); ser_u32(fbg.pitch);
-                    ser_puts(" scale "); ser_u32(fb_scale); ser_puts("\n");
+                    ser_puts(" scale "); ser_u32(fb_scale);
+                    ser_puts(" grid 80x"); ser_u32(fb_rows); ser_puts("\n");
                 }
             }
         }

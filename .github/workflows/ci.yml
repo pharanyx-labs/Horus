@@ -426,6 +426,16 @@ jobs:
       # kernel's boot log on screen because nothing in ring 3 cleared it.
       - name: Control arm — a console server blind to the framebuffer is caught
         run: make smoke-fb-console-server-control
+      # The console's grid is what the display can show, not a constant. Boots a
+      # SHORT framebuffer (360 lines, 45 rows of an 8px cell) -- a real display
+      # rather than a flag, because the row count is DERIVED from what firmware
+      # granted and a derived property can only be tested by varying its input.
+      # A taller font is impossible while the count is fixed: 50 rows of 8x16
+      # need 800 lines and the target hardware has 768.
+      - name: The console's grid is what the display can show
+        run: make smoke-fb-grid
+      - name: Control arm — a console claiming rows the display lacks is caught
+        run: make smoke-fb-grid-control
       # A console driver that fails AFTER taking the console must still be heard.
       # Ownership passes on the first successful VGA map, and from then the
       # kernel's print() records to the klog and stops driving the wire -- so a

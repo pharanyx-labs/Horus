@@ -2299,12 +2299,16 @@ old allocator and the new one read the same single block and no workload could t
   display is, maps the framebuffer from the platform device's own MMIO range, takes the console
   and paints the login prompt (`make smoke-fb-console-server`, which checks pixels). So a UEFI
   machine with no CSM boots to a usable console.
-  **What is still missing there is the grid.** The console is a fixed 80x50 of 8x8 cells, which
-  fits any panel this targets but wastes most of a 1920x1080 one, and it does not scroll -- it
-  wraps, exactly as the VGA text path it mirrors always has. Replacing the font with an 8x16 is
-  blocked on the same thing: at 8x16 an 80x50 grid needs 800 lines, and a 768-line panel -- which
-  is what the target hardware has -- gives 48 rows, so the grid has to become what the display can
-  show before the font can change.
+  **Since 2026-09-08 the grid is what the display can show** -- `min(50, height / cell)` rows, in
+  both rings (`make smoke-fb-grid`, which boots a real 360-line display and derives the expected
+  count from the geometry rather than hardcoding it). Columns stay at 80 and a narrower display is
+  refused, because a console that wraps every line is unreadable where one that scrolls sooner is
+  merely smaller. That unblocks a taller font: an 8x16 cell gives 48 rows on the 768-line panel
+  this targets, which the fixed count could not have accommodated.
+  **What is still missing is scrolling and the font.** The console wraps rather than scrolls,
+  exactly as the VGA text path it mirrors always has, so a full screen overwrites from the top;
+  and the font is still the 8x8 with no provenance (§THIRD_PARTY). Neither blocks a usable
+  console, and both are the next changes.
 
   **Since 2026-09-08 the kernel knows what the display is, and draws on it.** It parses the multiboot2 framebuffer tag (type 8), validates every field
   before recording it, and reports the mode, geometry and base address: `fb: EGA text 80x25 at

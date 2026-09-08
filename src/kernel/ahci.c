@@ -13,7 +13,10 @@
  * It FINDS the controller, brings each attached port up, and asks the drive to
  * IDENTIFY itself -- so the report names the model and the capacity rather than
  * merely "something is there". It does NOT read or write blocks yet: there is no
- * block_device registration and storage.c cannot mount any of this.
+ * block_device registration for a SATA disk, so storage.c cannot mount one. The
+ * SD/eMMC driver next door does have one as of 2026-09-08, so the shape to copy
+ * is `g_sd_bd` in storage.c -- the block layer, the survey's enumeration and the
+ * installer's target selection are controller-independent and already in place.
  *
  * WHY IDENTIFY AND NOT READ. IDENTIFY exercises the whole mechanism a read would
  * -- command list, FIS receive area, command table, PRDT, and the completion
@@ -325,7 +328,7 @@ void ahci_probe(void) {
         return;
     }
 
-    ensure_ahci_abar_mapped(NULL, abar);
+    ensure_storage_regs_mapped(NULL, abar);
 
     const uint32_t vs = abar_read(abar, AHCI_VS);
     const uint32_t pi = abar_read(abar, AHCI_PI);

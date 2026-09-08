@@ -54,6 +54,8 @@ control_arms:
   smoke-enter-user-claim-control: smoke-enter-user-claim
   smoke-enter-user-collide-control: smoke-enter-user-claim
   smoke-installer-wedge-control: smoke-installer-slowdisk
+  smoke-installer-sd-devregs-control: smoke-installer-sd
+  smoke-installer-sd-stride-control: smoke-installer-sd
   smoke-captest-lookup-type-control: smoke-captest
   smoke-auditprobe-control: smoke-auditprobe
   smoke-auditprobe-abi-control: smoke-auditprobe
@@ -220,6 +222,7 @@ gates:
   - smoke-installer-provision
   - smoke-installer-accounts
   - smoke-installer-target
+  - smoke-installer-sd
   - smoke-passwd-target
   - smoke-nvcounter
   - smoke-rollback

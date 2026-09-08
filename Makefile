@@ -138,7 +138,8 @@ DEFECT_FLAGS = \
 	USERLIST_UNGATED HOME_DIR_ROOT_OWNED CLAIM_IMP_TRACE \
 	KSTACK_COLLIDE_IMPERSONATED CLAIM_AUDIT_NO_REREAD \
 	ENTER_USER_STEAL_WIDEN ENTER_USER_PUBLISH_EARLY ENTER_USER_CLAIM_UNCHECKED \
-	STORAGE_FORMAT_WEDGE CONSOLE_TIMESTAMPS_LEGACY CLOCK_EPOCH_FROM_FIRST_TICK
+	STORAGE_FORMAT_WEDGE CONSOLE_TIMESTAMPS_LEGACY CLOCK_EPOCH_FROM_FIRST_TICK \
+	DEVREGS_KERNEL_ONLY SD_BLOCK_ADDR_UNSCALED
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -2659,6 +2660,40 @@ endif
 STORAGE_FORMAT_WEDGE ?= 0
 ifeq ($(STORAGE_FORMAT_WEDGE),1)
 CFLAGS += -DSTORAGE_FORMAT_WEDGE
+endif
+
+# ---- a device register file must be present in every address space -----------
+#
+# DEVREGS_KERNEL_ONLY=1 stops ensure_storage_regs_mapped_current replaying the
+# AHCI/SDHCI register pages into a freshly built user address space, which is
+# what the kernel did until 2026-09-08. The probe maps them into the KERNEL pml4
+# and every register access at boot works, so the driver looks correct; the
+# moment ring 3 asks for one -- SYS_STORAGE_FORMAT reaching sdhci_bd_write, which
+# runs on the CALLING task's cr3 -- the kernel takes a supervisor write to a
+# not-present page and the installer is killed by the validator.
+#
+# The base gate is `make smoke-installer-sd`; the arm is
+# `make smoke-installer-sd-devregs-control`.
+DEVREGS_KERNEL_ONLY ?= 0
+ifeq ($(DEVREGS_KERNEL_ONLY),1)
+CFLAGS += -DDEVREGS_KERNEL_ONLY
+endif
+
+# ---- an SD block number is not a card LBA ------------------------------------
+#
+# SD_BLOCK_ADDR_UNSCALED=1 restores the first version of storage.c's SD block
+# device: the filesystem block number handed to the card as an LBA, and one
+# 512-byte sector moved where the block layer asked for 4096 bytes.
+#
+# IT IS QUIET, and that is what the arm is for. Block 0 is sector 0 either way,
+# so the superblock reads back and the install and the next boot's volume check
+# BOTH SUCCEED -- `smoke-installer-sd` gets seven steps in before anything is
+# wrong, and what finally fails is the login, several seconds and one layer
+# above the mistake. A gate that stopped at "the volume was recognised" would
+# have passed on this. See `make smoke-installer-sd-stride-control`.
+SD_BLOCK_ADDR_UNSCALED ?= 0
+ifeq ($(SD_BLOCK_ADDR_UNSCALED),1)
+CFLAGS += -DSD_BLOCK_ADDR_UNSCALED
 endif
 
 # USER_HEAP_HIGH_BASE=1 places every user heap at 8 GiB instead of 16 MiB, which
@@ -9218,6 +9253,133 @@ smoke-installer:
 # volume to be on device 1 AND device 0 to still be blank. No return code can say
 # which disk was erased -- the format reports 0 either way and both disks were
 # blank before it -- so the assertion is the NEXT boot's survey.
+# The SAME install, onto an SD/eMMC card instead of an ATA disk.
+#
+# It is a separate gate rather than a flag on the one below because it is a
+# different MACHINE: q35 with an SDHCI controller, and storage the ATA driver
+# cannot see at all. A budget laptop's internal storage is soldered eMMC, so an
+# install scenario that only ever attaches IDE proves nothing about the hardware
+# this driver exists for.
+#
+# One disk, not two: the two-disk scenario is about CHOOSING a target, which is
+# the ATA gate's job and is controller-independent. This one asks the question
+# that is specific to the card -- does an install survive a power cycle when the
+# medium is reached through SDHCI rather than through PIO ports.
+.PHONY: smoke-installer-sd
+smoke-installer-sd:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory boot.iso
+	@rm -f installer-sd.img installer-sd-serial.log
+	@truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-sd.img
+	@SESSION_DISK=installer-sd.img SESSION_DISK_SD=1 \
+		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		INSTALLER_FORMAT_STALL=$(INSTALLER_FORMAT_STALL) INSTALLER_FORMAT_CAP=$(INSTALLER_FORMAT_CAP) \
+		SESSION_SERIAL_LOG=installer-sd-serial.log BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		python3 tools/installer_session.py boot.iso \
+	  || { echo "[installer-sd] ----- guest serial -----"; \
+	       tail -60 installer-sd-serial.log 2>/dev/null | sed 's/^/  /'; exit 1; }
+	@rm -f installer-sd.img
+
+# CONTROL ARM: the register file present only in the KERNEL's address space.
+#
+# WHY THE MARKER IS THE FAULT AND NOT A RETURN CODE. There is no return code. The
+# driver does not discover that its registers are absent -- it writes to them, and
+# the CPU takes a page fault at CPL 0 on the installer's cr3. So the arm asserts
+# on the fault report, and on the TASK it is attributed to rather than on the
+# address: the BAR is where the firmware put it and is not the kernel's to
+# promise. `err=0x2` is the whole signature in one field -- not-present, write,
+# supervisor -- and is what separates this from a ring-3 bug at the same address.
+#
+# It must also have got that far. A build that died at boot would produce no
+# installer and no fault, so the arm requires the installer to have REACHED the
+# format: `INSTALLER: formatting` on the wire, then the fault. Without that this
+# passes on any kernel that fails early, which is the shape `smoke-installer-refuse`
+# was corrected for.
+.PHONY: smoke-installer-sd-devregs-control
+smoke-installer-sd-devregs-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory DEVREGS_KERNEL_ONLY=1 boot.iso
+	@rm -f installer-sdd.img installer-sdd-serial.log
+	@truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-sdd.img
+	@echo "[installer-sd] the register file is in the kernel pml4 only: the format must fault"
+	@out=$$(SESSION_DISK=installer-sdd.img SESSION_DISK_SD=1 \
+		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		INSTALLER_FORMAT_STALL=$(INSTALLER_FORMAT_STALL) INSTALLER_FORMAT_CAP=$(INSTALLER_FORMAT_CAP) \
+		SESSION_SERIAL_LOG=installer-sdd-serial.log BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		python3 tools/installer_session.py boot.iso 2>&1); rc=$$?; \
+	rm -f installer-sdd.img; \
+	log=installer-sdd-serial.log; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "DEVREGS CONTROL: FAIL - the install SUCCEEDED without the replay."; \
+	    echo "  The driver's registers cannot have been reached from ring 3, so this"; \
+	    echo "  arm witnesses nothing. Check DEFECT FLAGS on the wire."; \
+	    tail -30 $$log 2>/dev/null | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! grep -qa "INSTALLER: formatting" $$log; then \
+	    echo "DEVREGS CONTROL: FAIL - it failed BEFORE the format, so the defect was"; \
+	    echo "  never reached. A build that dies at boot satisfies 'the install failed'."; \
+	    tail -30 $$log 2>/dev/null | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! grep -qa "PAGE FAULT" $$log || ! grep -qa "err=0x2(not-present,write,supervisor)" $$log; then \
+	    echo "DEVREGS CONTROL: FAIL - the format failed, but not as a supervisor write"; \
+	    echo "  to a not-present page. A generic failure here is not this defect."; \
+	    tail -30 $$log 2>/dev/null | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! grep -qa "PAGE FAULT.*'installer'" $$log; then \
+	    echo "DEVREGS CONTROL: FAIL - a fault, but not on the installer's address space."; \
+	    tail -30 $$log 2>/dev/null | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "[installer-sd] CONTROL PASS - unreplayed, the register file faults the installer"
+
+# CONTROL ARM: the block number handed to the card as an LBA.
+#
+# WHAT THIS ARM ASSERTS THAT A CRASH ARM WOULD NOT. Nothing faults. The install
+# runs to completion, the machine reboots, and the volume is RECOGNISED -- so the
+# arm requires that step to have PASSED, and requires the login after it to have
+# failed. Both halves matter: "the install failed" is satisfied by a kernel that
+# never booted, and "the volume was recognised" is what shows the defect is the
+# quiet kind rather than a driver that does not work at all.
+#
+# `Login incorrect` rather than a timeout, for the reason [G-13] cost a day: the
+# guest ANSWERS here, and reading a refusal off a timeout would spend the whole
+# budget and hide a hang behind the same four lines.
+.PHONY: smoke-installer-sd-stride-control
+smoke-installer-sd-stride-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SD_BLOCK_ADDR_UNSCALED=1 boot.iso
+	@rm -f installer-sds.img installer-sds-serial.log
+	@truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-sds.img
+	@echo "[installer-sd] the block number passed through as an LBA: the install must not survive the reboot"
+	@out=$$(SESSION_DISK=installer-sds.img SESSION_DISK_SD=1 \
+		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		INSTALLER_FORMAT_STALL=$(INSTALLER_FORMAT_STALL) INSTALLER_FORMAT_CAP=$(INSTALLER_FORMAT_CAP) \
+		SESSION_SERIAL_LOG=installer-sds-serial.log BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		python3 tools/installer_session.py boot.iso 2>&1); rc=$$?; \
+	rm -f installer-sds.img; \
+	log=installer-sds-serial.log; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "STRIDE CONTROL: FAIL - the install survived the reboot with the address"; \
+	    echo "  unscaled, so the round trip never left the first sector of a block."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "the second boot recognised the volume the installer wrote"; then \
+	    echo "STRIDE CONTROL: FAIL - it failed before the volume was recognised."; \
+	    echo "  This arm is about a defect that gets PAST that step; failing earlier"; \
+	    echo "  means something else went wrong and the defect witnessed nothing."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if echo "$$out" | grep -q "logged in with the password the installer was given"; then \
+	    echo "STRIDE CONTROL: FAIL - the login SUCCEEDED, so the volume's key material"; \
+	    echo "  read back correctly and the stride cannot have been wrong."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! grep -qa "Login incorrect" $$log; then \
+	    echo "STRIDE CONTROL: FAIL - the login did not complete, but the guest never"; \
+	    echo "  REFUSED it either. A refusal read off a timeout is not a refusal."; \
+	    tail -30 $$log 2>/dev/null | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "[installer-sd] CONTROL PASS - unscaled, the volume is recognised and the password is not"
+
 .PHONY: smoke-installer-target
 smoke-installer-target:
 	@$(MAKE) --no-print-directory clean

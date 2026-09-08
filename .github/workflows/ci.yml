@@ -341,6 +341,29 @@ jobs:
       # from the controller's buffer.
       - name: A block written to the card reaches the medium
         run: make smoke-sdhci-write
+      # THE ONE THAT MATTERS FOR A LAPTOP. Everything above tests the driver
+      # against the driver's own harness; this drives the whole install onto a
+      # card through the block layer, the filesystem and the installer, then
+      # power-cycles and logs in. A budget machine's storage is soldered eMMC,
+      # so an install scenario that only ever attaches IDE proves nothing about
+      # the hardware this driver exists for.
+      - name: An install onto an SD/eMMC card survives a power cycle
+        run: make smoke-installer-sd
+      # The driver's registers are memory-mapped, and a syscall reaches them on
+      # the CALLING task's cr3 -- not the kernel's, which is the only one the
+      # probe mapped them into. Without the replay the format takes a supervisor
+      # write to a not-present page. The arm requires the installer to have
+      # REACHED the format first, or a build that died at boot would satisfy it.
+      - name: Control arm — the register file is absent from the installer's address space
+        run: make smoke-installer-sd-devregs-control
+      # The quiet one. A block number handed to the card as an LBA moves one
+      # sector where the block layer asked for eight, and block 0 is sector 0
+      # either way -- so the install completes and the next boot RECOGNISES the
+      # volume. The arm requires that step to have passed and the login after it
+      # to have been refused, which is what shows the gate reaches past the
+      # superblock.
+      - name: Control arm — an unscaled card block address is caught
+        run: make smoke-installer-sd-stride-control
       # A console driver that fails AFTER taking the console must still be heard.
       # Ownership passes on the first successful VGA map, and from then the
       # kernel's print() records to the klog and stops driving the wire -- so a

@@ -17,6 +17,61 @@ in this file.
 
 ### Added
 
+- **A laptop's eMMC is a disk the installer can install onto** (`src/kernel/storage.c`,
+  `src/kernel/sdhci.c`, `src/kernel/paging.c`). The card is registered as a `block_device`
+  beside the ATA drives, `storage_usable_count()` and `storage_device_at()` enumerate it after
+  the usable ATA drives, and `storage_init` walks that one enumeration for the persistent path
+  instead of the ATA-only one it used to sit inside -- a machine whose only storage is soldered
+  eMMC fell through to the ephemeral RAM disk and reported "no persistent volume" while holding
+  a card it had already identified.
+  **The order of that enumeration is a contract, not an implementation detail.** The index the
+  installer holds is a POSITION IN THE SURVEY the operator was shown (**S82**, **S83**), so ATA
+  first and the card last is written down where the enumeration is, not left to be rediscovered
+  by whoever adds the third controller.
+  Witness `make smoke-installer-sd`, which drives the whole installer conversation onto an
+  `sdhci-pci` card, power-cycles the machine, and requires the second boot to recognise the
+  volume **and** the `root` login to be accepted with the password that was typed. Every earlier
+  install gate attaches IDE, and a budget machine's internal storage is behind a controller
+  neither `ata.c` nor `ahci.c` reaches -- so no existing gate said anything about this hardware.
+
+  **The gate found two defects, and neither was reachable from the driver's own tests.**
+
+  *The register file was in the kernel's address space and nowhere else.* `sdhci_probe` maps the
+  BAR with `ensure_storage_regs_mapped(NULL, ...)`, which installs into the kernel `pml4`; those
+  are supervisor mappings in `pml4[0]`, the LOW half, and `create_user_pagedir` copies only
+  `pml4[256..511]`. So every register access at boot worked and the driver looked correct, and
+  the first one made from a syscall -- `SYS_STORAGE_FORMAT` reaching `sdhci_bd_write`, running on
+  the CALLING task's `cr3` -- was `PAGE FAULT at 0xfebf1004
+  err=0x2(not-present,write,supervisor) task=4 'installer'`. That is the hazard the LAPIC, the
+  TPM, the VT-d unit, the I/O APIC and the MSI-X tables each solved separately, which is why each
+  has a `_current` sibling replayed from the address-space builders; this one had none. It now
+  does, and `clone_user_aspace` -- which replayed two of the six and not the other four -- replays
+  the same set as `create_user_pagedir`. That half is latent rather than observed: no workload
+  here forks a task holding a device capability, so no gate witnesses it and none is claimed.
+  Falsified by `DEVREGS_KERNEL_ONLY=1` (`make smoke-installer-sd-devregs-control`), which requires
+  `INSTALLER: formatting` on the wire **before** the fault -- a build that died at boot would
+  otherwise satisfy "the install failed" -- and then the fault attributed to `'installer'`.
+
+  *A card sector is 512 bytes and a filesystem block is 4096.* The first version of the block
+  device handed the block number to the card as an LBA and moved one sector where the layer above
+  asked for eight, where `atadisk_read` next door scales by `ATA_SECTORS_PER_BLOCK`. **It nearly
+  worked**, which is the point: block 0 is sector 0 in either unit and a superblock's magic lives
+  in its first 512 bytes, so the install completed, the machine rebooted, `INIT_STORAGE`
+  announced "a Horus volume is present" -- seven of the gate's twelve steps passed -- and every
+  other block came from an eighth of the right place. What failed was the login. Falsified by
+  `SD_BLOCK_ADDR_UNSCALED=1` (`make smoke-installer-sd-stride-control`), which requires the gate
+  to have got PAST the volume check and then to fail at the login, and requires `Login incorrect`
+  on the wire rather than a timeout -- the guest answers here, and a refusal read off a timeout
+  spends the whole budget and hides a hang.
+
+  `ensure_ahci_abar_mapped` is `ensure_storage_regs_mapped` now. It stopped being AHCI's when
+  `sdhci.c` began calling it with a comment explaining that the name was wrong, which is the
+  point at which a name stops being shorthand and starts being a claim about what the code covers.
+  The installer's screen said "the attached ATA disk" on a machine with no ATA controller; it says
+  "the attached disk", because `storage_info` has no name field and adding one is an ABI change to
+  a struct declared in both rings -- the **S71** shape, gated by `tools/check_abi_structs.py` --
+  which is a commit of its own and not a caption fix.
+
 - **Blocks can be written to the card, and the write is checked from outside the guest**
   (`src/kernel/sdhci.c`). `CMD24` by PIO, plus a flush that waits for the card to stop holding
   DAT0 low -- which is what "on stable media" means for this device, since the SD protocol has no

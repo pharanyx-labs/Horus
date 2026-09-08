@@ -2323,9 +2323,8 @@ old allocator and the new one read the same single block and no workload could t
   model and the capacity (`make smoke-ahci-detect`, which boots a q35 machine because QEMU's
   default i440fx has no AHCI at all). That is a complete DMA command round trip, so the
   mechanism a block read needs is working.
-  **What is still missing is the block read itself**, and a `block_device` registration --
-  `storage.c` cannot mount any of this, so a laptop's SATA SSD is now *named* on the console and
-  still not installable onto.
+  **What is still missing for SATA is the block read itself**, and a `block_device` registration,
+  so a laptop's SATA SSD is *named* on the console and still not installable onto.
   Since 2026-09-07 the same is true one controller type along, and further along than for SATA:
   `src/kernel/sdhci.c` finds an **SD/eMMC host controller** (PCI class `0x0805`), resets and
   clocks it, brings the card up (`CMD0`, op-cond, `CMD2`, `CMD3`, `CMD9`, `CMD7`) and decodes its
@@ -2333,9 +2332,14 @@ old allocator and the new one read the same single block and no workload could t
   reached by neither `ata.c` nor `ahci.c`, and since 2026-09-07 it **reads blocks** (`CMD17` by
   PIO), verified against known bytes at two blocks on both a byte-addressed and a block-addressed
   card, and since 2026-09-07 **writes** them too (`CMD24` plus a flush that waits out the card's
-  programming state), verified from the host rather than only from the guest. It is still not
-  mountable: there is no `block_device` registration, so `storage.c` cannot use it. The write path
-  is compiled in only for its gate -- a shipped boot must never write to the card it found.
+  programming state), verified from the host rather than only from the guest.
+  **Since 2026-09-08 it is mountable and installable onto.** The card is registered as a
+  `block_device` beside the ATA drives, the survey enumerates it, and the installer formats it:
+  `make smoke-installer-sd` drives a whole install onto a card, power-cycles the machine and logs
+  in with the password the installer was given. So the storage a budget laptop actually has is
+  now the storage Horus can install onto -- the driver's own write path stays compiled out of a
+  shipped boot, because that gate writes to a card the kernel merely *found*, and the block layer
+  is how a shipped boot writes to one it was told to.
   **The eMMC branch of that has never executed anywhere.** eMMC powers up with `CMD1`; SD uses
   `CMD8`/`ACMD41`, and an SD card must not answer `CMD1`. QEMU 10.0 has no eMMC device -- only
   `sd-card` -- so every gate here exercises the SD branch, and the code an actual laptop needs is
@@ -2343,8 +2347,11 @@ old allocator and the new one read the same single block and no workload could t
   response decoding and both CSD decoders, so the unexercised delta is one command; that is a
   mitigation and not a substitute for having run it.
   **NVMe remains entirely unaddressed**, so a machine whose SSD is NVMe is not reached by any of
-  this. Three controller types are now visible and none is mountable; the block read is the next
-  change for whichever of them a given machine has.
+  this. Of the three controller types now visible, **SD/eMMC and legacy IDE are mountable and
+  AHCI is not**: `ahci.c` identifies a SATA drive and stops there, so a laptop with a SATA SSD is
+  still named on the console and not installable onto. That is the next change, and it is now the
+  read/write pair rather than the whole stack -- the `block_device` shape, the survey's
+  enumeration and the installer's target selection are all in place and controller-independent.
 - **Process groups, job control, and `/proc`.** `SYS_SPAWN`, `SYS_EXEC_*` and `SYS_FORK` all
   exist, and `fork` + `exec` is gated as a pairing (**S42**, `make smoke-forkexec`); what a
   shell still cannot do is group its children, put one in the background, or read `/proc`.

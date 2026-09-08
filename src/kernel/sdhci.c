@@ -141,6 +141,12 @@
 #define VER_SPEC_MASK         0xFFu
 #define VER_SPEC_MAX          4u
 
+/* Forward declarations: the block operations below are defined near the
+ * accessors, above the PIO implementations they call. */
+static int sd_read_block(uint64_t bar, uint64_t lba, void *buf, int is_hc);
+static int sd_write_block(uint64_t bar, uint64_t lba, const void *buf, int is_hc);
+static int sd_flush(uint64_t bar);
+
 static uint64_t g_sdhci_bar;      /* 0 when no controller was recognised */
 static uint32_t g_sdhci_cards;    /* slots reporting a card present      */
 static uint64_t g_sdhci_sectors;  /* capacity of the card that came up   */
@@ -149,6 +155,29 @@ static int      g_sdhci_is_hc;    /* block-addressed (HC) vs byte-addressed */
 uint64_t sdhci_bar(void)        { return g_sdhci_bar; }
 uint32_t sdhci_card_count(void) { return g_sdhci_cards; }
 uint64_t sdhci_sectors(void)    { return g_sdhci_sectors; }
+
+/* The block operations, for storage.c's block_device.
+ *
+ * They refuse when no card came up rather than reaching into a zero BAR, and
+ * they BOUND THE BLOCK against the capacity the card itself reported -- a block
+ * device may not accept a block it has no medium for (S64), and the card's own
+ * CSD is the only statement of its extent this kernel has. */
+int sdhci_bd_read(uint64_t lba, void *buf) {
+    if (!g_sdhci_bar || !g_sdhci_sectors) return -1;
+    if (lba >= g_sdhci_sectors) return -1;
+    return sd_read_block(g_sdhci_bar, lba, buf, g_sdhci_is_hc);
+}
+
+int sdhci_bd_write(uint64_t lba, const void *buf) {
+    if (!g_sdhci_bar || !g_sdhci_sectors) return -1;
+    if (lba >= g_sdhci_sectors) return -1;
+    return sd_write_block(g_sdhci_bar, lba, buf, g_sdhci_is_hc);
+}
+
+int sdhci_bd_flush(void) {
+    if (!g_sdhci_bar) return -1;
+    return sd_flush(g_sdhci_bar);
+}
 
 static inline uint32_t sdhci_read32(uint64_t bar, uint32_t off) {
     return *(volatile uint32_t *)(uintptr_t)(bar + off);
@@ -571,7 +600,7 @@ void sdhci_probe(void) {
         return;
     }
 
-    ensure_ahci_abar_mapped(NULL, bar);   /* two pages: the file is 0x100 bytes */
+    ensure_storage_regs_mapped(NULL, bar);
 
     const uint16_t ver  = sdhci_read16(bar, SDHCI_HOST_VERSION);
     const uint32_t caps = sdhci_read32(bar, SDHCI_CAPABILITIES);
@@ -709,6 +738,6 @@ void sdhci_probe(void) {
 
     print("sdhci: ");
     print_decimal(g_sdhci_cards);
-    print(" card(s) present; no block driver yet, so none is mountable\n");
+    print(" card(s) present\n");
 #endif /* SDHCI_PROBE_ABSENT */
 }

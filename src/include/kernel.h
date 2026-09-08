@@ -2158,7 +2158,12 @@ void ensure_iommu_regs_mapped(uint64_t *root_pml4, uint64_t regs_phys);
 
 /* Map an AHCI HBA's register file: generic host control plus up to 32 per-port
  * blocks is 0x1100 bytes, so two pages. */
-void ensure_ahci_abar_mapped(uint64_t *root_pml4, uint64_t abar_phys);
+/* A storage host controller register file (AHCI ABAR or SDHCI BAR), two pages.
+ * The pages are remembered, and ensure_storage_regs_mapped_current re-establishes
+ * them in every address space the builders make -- the driver is reached from a
+ * syscall, which runs on the caller's cr3, not the kernel's. */
+void ensure_storage_regs_mapped(uint64_t *root_pml4, uint64_t regs_phys);
+void ensure_storage_regs_mapped_current(uint64_t *root_pml4);
 
 /* Find the SATA controller and report what is attached to it. READS ONLY: there
  * is no AHCI driver yet, so nothing it finds is usable, and saying which disks
@@ -2173,6 +2178,13 @@ void sdhci_probe(void);
 uint64_t sdhci_bar(void);
 uint32_t sdhci_card_count(void);
 uint64_t sdhci_sectors(void);
+/* Block operations for the SD/eMMC card, backing storage.c's block_device.
+ * Each refuses when no card came up, and bounds the block against the capacity
+ * the card's own CSD reported (S64: a device may not accept a block it has no
+ * medium for). */
+int sdhci_bd_read(uint64_t lba, void *buf);
+int sdhci_bd_write(uint64_t lba, const void *buf);
+int sdhci_bd_flush(void);
 uint64_t ahci_abar(void);
 uint32_t ahci_device_count(void);
 void ensure_iommu_mapped_current(uint64_t *root_pml4);

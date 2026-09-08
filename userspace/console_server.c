@@ -19,6 +19,7 @@
 #include "syscall.h"
 #include "console_proto.h"
 #include "libhorus.h"
+#include "console_font.h"   /* the same glyphs the kernel blits */
 
 /* How many times to retry the startup SYS_IOPORT_GRANT while init finishes
  * endowing us with CAP_IO_DEVICE (see _start). Each attempt yields, so this is a
@@ -44,11 +45,90 @@ static void ser_putc(char c) {
     outb(COM1, (uint8_t)c);
 }
 
+/* light-grey on black: the attribute BOTH displays render, hoisted above the
+ * two blocks that use it so neither has a private idea of the default. */
+#define VGA_ATTR   0x07
+
+/* ---- The linear framebuffer ------------------------------------------------
+ *
+ * The same 80x50 cell grid the VGA text path drives, rendered as pixels. On a
+ * machine with no legacy text window -- a UEFI boot with no CSM, which is what
+ * the target hardware does -- this is the only display there is, and without it
+ * ring 3 is blind: the kernel draws its boot log and the shell reaches nobody.
+ *
+ * THE ADDRESS AND THE SHAPE COME FROM DIFFERENT PLACES, deliberately. Where the
+ * framebuffer is comes from SYS_DEVICE_INFO's mmio[] ranges; what shape it is
+ * comes from SYS_FB_INFO. One fact, one source: two syscalls reporting the same
+ * address is the arrangement that lets a display be mapped at one and drawn at
+ * another, and that write lands in whatever else is there.
+ *
+ * ONE MAP CALL PER PAGE, and 3 MiB is 768 of them. That is ~1.5 ms once at
+ * start-up, which is not worth a batching syscall and the ABI surface it would
+ * add; if a 4K panel ever makes it 8000 calls, that is the moment to reconsider.
+ *
+ * THE FONT IS include/console_font.h, the same table the kernel blits and uploads
+ * into the VGA font plane. Two copies of a font are two things that can disagree
+ * about what a character looks like, and nothing notices until somebody reads a
+ * screen.
+ *
+ * WRAP, NOT SCROLL, matching the VGA text path beside it exactly. That path has
+ * never scrolled either (see vga_putc), so this is parity rather than a new
+ * limitation, and fixing both is one change to make once rather than two
+ * behaviours to keep in step. */
+#define FB_VADDR   0x0000000100000000ULL   /* 4 GiB: clear of image/heap/stack */
+
+static volatile uint32_t *fbp;      /* 0 until mapped */
+static uint32_t fb_pitch_px, fb_w, fb_h, fb_scale = 1;
+static uint16_t fb_cells[80 * 50];
+static unsigned fb_pos;
+
+/* The VGA 16-colour text palette as 0x00RRGGBB -- the levels a VGA DAC actually
+ * produces, which is why they are written out rather than computed from a rule
+ * that would merely look principled. */
+static const uint32_t fb_pal[16] = {
+    0x000000, 0x0000AA, 0x00AA00, 0x00AAAA,
+    0xAA0000, 0xAA00AA, 0xAA5500, 0xAAAAAA,
+    0x555555, 0x5555FF, 0x55FF55, 0x55FFFF,
+    0xFF5555, 0xFF55FF, 0xFFFF55, 0xFFFFFF,
+};
+
+/* Paint one cell. Bounds-checked against the real geometry rather than the grid:
+ * the grid is what this server believes and the geometry is what the hardware
+ * has, and a mismatch must clip rather than scribble past the mapping. */
+static void fb_blit(unsigned idx) {
+    if (!fbp || idx >= 80u * 50u) return;
+    uint16_t cell = fb_cells[idx];
+    uint8_t ch = (uint8_t)(cell & 0xFF), attr = (uint8_t)(cell >> 8);
+    uint32_t fg = fb_pal[attr & 0x0F], bg = fb_pal[(attr >> 4) & 0x07];
+
+    uint32_t cw = 8u * fb_scale, chh = 8u * fb_scale;
+    uint32_t px0 = (idx % 80u) * cw, py0 = (idx / 80u) * chh;
+    if (px0 + cw > fb_w || py0 + chh > fb_h) return;
+
+    const uint8_t *g = &font_8x8[ch][0];
+    for (uint32_t ry = 0; ry < chh; ry++) {
+        uint8_t bits = g[ry / fb_scale];
+        volatile uint32_t *row = fbp + (uint64_t)(py0 + ry) * fb_pitch_px + px0;
+        for (uint32_t rx = 0; rx < cw; rx++)
+            row[rx] = (bits & (0x80u >> (rx / fb_scale))) ? fg : bg;
+    }
+}
+
+static void fb_putc(char c) {
+    if (c == '\n')      fb_pos = (fb_pos / 80 + 1) * 80;
+    else if (c == '\r') fb_pos = (fb_pos / 80) * 80;
+    else {
+        fb_cells[fb_pos] = (uint16_t)((VGA_ATTR << 8) | (uint8_t)c);
+        fb_blit(fb_pos);
+        fb_pos++;
+    }
+    if (fb_pos >= 80u * 50u) fb_pos = 0;    /* wrap, exactly as vga_putc does */
+}
+
 /* ---- VGA text framebuffer -------------------------------------------------- */
 #define VGA_PADDR  0xB8000UL
 #define VGA_VADDR  0xB8000UL      /* identity-map the framebuffer into the user half */
 #define VGA_CELLS  (80 * 50)
-#define VGA_ATTR   0x07           /* light-grey on black */
 static volatile uint16_t *const vga = (volatile uint16_t *)VGA_VADDR;
 static unsigned vga_pos = 0;
 
@@ -105,7 +185,11 @@ static int con_line_start = 1;
 static void con_emit(char c) {
     if (c == '\n') ser_putc('\r');
     ser_putc(c);
-    vga_putc(c);
+    /* Whichever display this machine has. On a framebuffer the VGA text window
+     * does not exist, and writing to it would be a store into a mapping that is
+     * not a display -- silent, and the screen stays black. */
+    if (fbp) fb_putc(c);
+    else     vga_putc(c);
 }
 
 /* Emit one console byte, opening each line with a timestamp while the console is
@@ -127,6 +211,20 @@ static void con_write(const uint8_t *data, unsigned len) {
     for (unsigned i = 0; i < len; i++) con_putc((char)data[i]);
 }
 static void ser_puts(const char *s) { while (*s) con_putc(*s++); }
+
+/* A decimal, straight to the console this server drives.
+ *
+ * NOT kput. kput goes to fd 1, and from the instant this server's first map of
+ * a display succeeds the kernel has handed it the console -- so a kput from
+ * HERE reaches the kernel log ring and nothing else. That is the same silence
+ * `sys_console_release` exists for, and it swallowed the framebuffer report on
+ * its first run: the line was written, and no gate could ever have seen it. */
+static void ser_u32(uint32_t v) {
+    char b[11]; int n = 0;
+    if (!v) { con_putc('0'); return; }
+    while (v) { b[n++] = (char)('0' + (v % 10u)); v /= 10u; }
+    while (n) con_putc(b[--n]);
+}
 
 /* ---- input ----------------------------------------------------------------- */
 /* Read one console character. Serial RX is polled (the COM1 line-status data-ready
@@ -259,14 +357,77 @@ void _start(void) {
      * worked yesterday. */
     {
         struct fb_geometry fbg;
+#ifdef CONSOLE_FB_ABSENT
+        /* CONTROL ARM -- never ship. console_server as it was before
+         * 2026-09-08: it never asks what the display is, so on a machine with
+         * no VGA text window it maps one anyway, fails its own round-trip check
+         * and parks. The kernel's boot log stays on the screen because nothing
+         * in ring 3 ever cleared it, and there is no shell. */
+        int frc = -1;
+        (void)sys_fb_info;
+#else
         int frc = sys_fb_info(CAPSLOT_IO_DEVICE, &fbg);
-        if (frc == 0) {
-            kput("CONSOLE_FB: linear framebuffer ");
-            kput_int((int)fbg.width); kput("x"); kput_int((int)fbg.height);
-            kput("x"); kput_int((int)fbg.bpp);
-            kput(" pitch "); kput_int((int)fbg.pitch); kput("\n");
-        } else {
+#endif
+        if (frc != 0) {
             kput("CONSOLE_FB: no linear framebuffer; the VGA text window it is\n");
+        } else if (fbg.bpp != 32) {
+            /* REFUSED, NOT APPROXIMATED. 24bpp needs a byte-wise store and
+             * 15/16bpp needs channel packing; each is a different blitter, and
+             * on a machine with no serial port a console that draws WRONG is
+             * harder to diagnose than one that says it did not start. */
+            kput("CONSOLE_FB: unsupported pixel depth; the VGA text window it is\n");
+        } else {
+            /* WHERE it is comes from the device's own MMIO ranges -- the
+             * framebuffer is the range that is neither VGA window. Reading the
+             * address from the device rather than from SYS_FB_INFO is what keeps
+             * one fact to one source; see the note above the blitter. */
+            struct dev_info di;
+            uint64_t base = 0, len = 0;
+            if (sys_device_info(CAPSLOT_IO_DEVICE, &di) == 0) {
+                for (unsigned i = 0; i < di.n_mmio; i++) {
+                    if (di.mmio[i].base == 0xA0000ULL || di.mmio[i].base == 0xB8000ULL) continue;
+                    base = di.mmio[i].base; len = di.mmio[i].len; break;
+                }
+            }
+            if (base == 0) {
+                kput("CONSOLE_FB: FAIL the platform device declares no framebuffer range\n");
+            } else {
+                uint64_t need = (uint64_t)fbg.height * fbg.pitch;
+                if (need > len) need = len;         /* never map past what is declared */
+                unsigned pages = (unsigned)((need + 4095) / 4096), mapped = 0;
+                for (unsigned i = 0; i < pages; i++) {
+                    if (sys_map_phys(CAPSLOT_IO_DEVICE, base + (uint64_t)i * 4096,
+                                     FB_VADDR + (uint64_t)i * 4096, 4096,
+                                     MAP_PHYS_WRITE) != 0) break;
+                    mapped++;
+                }
+                if (mapped != pages) {
+                    /* A partial map may already have taken the console, exactly
+                     * as the VGA path's does. Hand it back before reporting, or
+                     * the marker reaches the klog and nothing else. */
+                    sys_console_release(CAPSLOT_IO_DEVICE);
+                    ser_puts("CONSOLE_FB: FAIL map\n");
+                } else {
+                    fbp = (volatile uint32_t *)(uintptr_t)FB_VADDR;
+                    fb_pitch_px = fbg.pitch / 4u;
+                    fb_w = fbg.width; fb_h = fbg.height;
+                    fb_scale = (fbg.width >= 1600u) ? 2u : 1u;
+                    if (fbg.width < 80u * 8u * fb_scale || fbg.height < 50u * 8u * fb_scale)
+                        fb_scale = 1u;
+                    for (unsigned i = 0; i < 80u * 50u; i++)
+                        fb_cells[i] = (uint16_t)((VGA_ATTR << 8) | ' ');
+                    for (unsigned i = 0; i < 80u * 50u; i++) fb_blit(i);
+                    /* ser_puts, not kput: the map above has already taken the
+                     * console, so a kput here is written into the kernel log
+                     * ring and is heard by nobody -- which is what happened on
+                     * this line's first run. */
+                    ser_puts("CONSOLE_FB: linear framebuffer ");
+                    ser_u32(fbg.width); ser_puts("x"); ser_u32(fbg.height);
+                    ser_puts("x"); ser_u32(fbg.bpp);
+                    ser_puts(" pitch "); ser_u32(fbg.pitch);
+                    ser_puts(" scale "); ser_u32(fb_scale); ser_puts("\n");
+                }
+            }
         }
     }
 
@@ -282,7 +443,15 @@ void _start(void) {
         kput("CONSOLE_SELFTEST: FAIL map\n"); for (;;) sys_yield();
     }
     /* Prove the mapping is the real framebuffer: write + read back the last cell
-     * (it is in the second mapped frame). */
+     * (it is in the second mapped frame).
+     *
+     * SKIPPED ON A PIXEL DISPLAY, where there is no text window to round-trip
+     * and the check would fail on a console that is working perfectly. That is
+     * not hypothetical: it is exactly what `CONSOLE_SELFTEST: FAIL vga` was on
+     * every framebuffer boot before this, a correct check asked the wrong
+     * question. The framebuffer's own proof is that its pixels are on the
+     * screen, which `make smoke-fb-console-server` checks by looking at them. */
+    if (fbp) goto display_ready;
     vga[VGA_CELLS - 1] = (uint16_t)((VGA_ATTR << 8) | '.');
 #ifdef CONSOLE_VGA_CHECK_FAIL
     /* Control arm: force the round-trip to fail without touching the hardware,
@@ -300,8 +469,10 @@ void _start(void) {
         kput("CONSOLE_SELFTEST: FAIL vga\n"); for (;;) sys_yield();
     }
 
+display_ready:
     /* From here on the console output is ours, produced entirely in ring 3. */
-    ser_puts("[console_server] ready (ring-3; owns serial + VGA framebuffer)\n");
+    ser_puts(fbp ? "[console_server] ready (ring-3; owns serial + a linear framebuffer)\n"
+                 : "[console_server] ready (ring-3; owns serial + VGA framebuffer)\n");
 
 #ifdef KDIAG_RING3_PROBE
     /* Test-only, and it is the whole of the authority pair.

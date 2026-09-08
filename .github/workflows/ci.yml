@@ -415,6 +415,17 @@ jobs:
         run: make smoke-devcap-fb
       - name: Control arm — a NIC capability reading the display is caught
         run: make smoke-devcap-fb-control
+      # THE END OF THE CHAIN: ring 3 owns the display and has painted it. Before
+      # this, a machine whose only display is a framebuffer reached
+      # `CONSOLE_SELFTEST: FAIL vga` and had no shell. Reads PIXELS, because
+      # serial cannot show whether anything was drawn.
+      - name: console_server drives the framebuffer, and the prompt is on screen
+        run: make smoke-fb-console-server
+      # console_server as it was: never asks what the display is, maps a text
+      # window that is not there, fails its own check and parks -- leaving the
+      # kernel's boot log on screen because nothing in ring 3 cleared it.
+      - name: Control arm — a console server blind to the framebuffer is caught
+        run: make smoke-fb-console-server-control
       # A console driver that fails AFTER taking the console must still be heard.
       # Ownership passes on the first successful VGA map, and from then the
       # kernel's print() records to the klog and stops driving the wire -- so a

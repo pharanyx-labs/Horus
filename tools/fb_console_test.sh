@@ -23,6 +23,7 @@
 # Usage: tools/fb_console_test.sh [iso]
 #   FB_CONSOLE_EXPECT=ok        (default) the glyph is drawn and not mirrored
 #   FB_CONSOLE_EXPECT=mirrored  require it to BE mirrored (the control arm)
+#   FB_CONSOLE_EXPECT=server    ring 3 owns the display and has painted it
 #   SMOKE_TIMEOUT               seconds (default 90)
 set -u
 
@@ -44,18 +45,23 @@ QPID=$!
 # shellcheck disable=SC2064
 trap "kill $QPID 2>/dev/null" EXIT
 
-# Wait for the guest to say it drew the glyph, rather than sleeping a guessed
-# interval: a fixed sleep measures the host, and this runs on CI too.
+# Wait for the guest to reach the point this arm inspects, rather than sleeping a
+# guessed interval: a fixed sleep measures the host, and this runs on CI too.
+case "$EXPECT" in
+  server)        WAIT_FOR="horus login:" ;;
+  server-absent) WAIT_FOR="CONSOLE_SELFTEST: FAIL vga" ;;
+  *)             WAIT_FOR="fb: selftest glyph drawn" ;;
+esac
 deadline=$(( $(date +%s) + TIMEOUT ))
 while [ "$(date +%s)" -lt "$deadline" ]; do
-    grep -qa "fb: selftest glyph drawn" "$LOG" 2>/dev/null && break
+    grep -qa "$WAIT_FOR" "$LOG" 2>/dev/null && break
     kill -0 $QPID 2>/dev/null || break
     sleep 1
 done
-if ! grep -qa "fb: selftest glyph drawn" "$LOG" 2>/dev/null; then
-    echo "fb-console: FAIL - the guest never reported drawing the selftest glyph"
-    echo "  (built without FB_CONSOLE_SELFTEST, or the console never started)"
-    grep -aE "fb:|kernel ready" "$LOG" 2>/dev/null | sed 's/^/    /' || echo "    (no serial output)"
+if ! grep -qa "$WAIT_FOR" "$LOG" 2>/dev/null; then
+    echo "fb-console: FAIL - the guest never reached '$WAIT_FOR'"
+    echo "  (built without the flag this arm needs, or the console never started)"
+    grep -aE "fb:|CONSOLE_|kernel ready" "$LOG" 2>/dev/null | sed 's/^/    /' || echo "    (no serial output)"
     echo "  evidence: $LOG"
     exit 1
 fi
@@ -101,6 +107,68 @@ def rgb(x, y):
 # Where the guest drew it: directly below the 80x50 grid, plus the 8px gap the
 # kernel leaves. Both the font height and the scale are read off the guest's own
 # report so this does not have to know either.
+if expect == "server-absent":
+    # THE PRE-FIX STATE, asserted positively. console_server never asks what the
+    # display is, maps a text window that is not there, fails its own round trip
+    # and parks -- so the kernel's boot log is still on the screen, because
+    # nothing in ring 3 ever cleared it. The lower band being FULL is the
+    # evidence; "no login prompt" alone would also describe a machine that never
+    # booted.
+    fail = 0
+    def check(desc, ok):
+        global fail
+        print(("  [ OK ] " if ok else "  [FAIL] ") + desc)
+        if not ok: fail = 1
+    def ink(y0, y1):
+        n = 0
+        for y in range(y0, min(y1, H)):
+            for x in range(0, min(700, W)):
+                if rgb(x, y) != (0, 0, 0): n += 1
+        return n
+    # THE BAND IS MEASURED, NOT GUESSED. The kernel's console grid is 80x50 at
+    # 8x8, so it occupies y 0..400 and nothing below that is ever painted by
+    # anyone -- a band chosen there separates nothing, which is what the first
+    # version of this check did. Measured 2026-09-08 on both builds:
+    #   y 200-400:  0 when ring 3 cleared and painted,  3217 when it did not.
+    # That is the discriminator, so that is the band.
+    mid = ink(200, 400)
+    print(f"  non-black pixels in y 200-400: {mid}")
+    check("the kernel's boot log is still on the screen", mid > 0)
+    check("ring 3 never took the display (it failed its VGA check)",
+          b"CONSOLE_SELFTEST: FAIL vga" in open(log, "rb").read())
+    sys.exit(fail)
+
+if expect == "server":
+    # WHAT RING 3 PUT ON THE SCREEN. The kernel drew its whole boot log here --
+    # roughly thirty rows of it -- and console_server CLEARS the display when it
+    # takes over, then writes a banner and a prompt. So two things are true only
+    # if ring 3 really painted: there is text near the top, and the lower half is
+    # blank. The kernel's log would have filled that lower half, so "it is empty"
+    # is evidence of the clear rather than of nothing having happened -- which is
+    # why the top-half check alone would not do.
+    fail = 0
+    def check(desc, ok):
+        global fail
+        print(("  [ OK ] " if ok else "  [FAIL] ") + desc)
+        if not ok: fail = 1
+
+    def ink(y0, y1):
+        n = 0
+        for y in range(y0, min(y1, H)):
+            for x in range(0, min(700, W)):
+                if rgb(x, y) != (0, 0, 0): n += 1
+        return n
+
+    # Bands measured on both builds rather than guessed (see the arm below):
+    #   y   0-200:  2073 painted by ring 3   vs 10161 of kernel log
+    #   y 200-400:     0 after the clear      vs  3217 of kernel log
+    top = ink(0, 200)        # the banner and prompt console_server writes
+    mid = ink(200, 400)      # inside the kernel's grid, and blank once cleared
+    print(f"  non-black pixels: {top} in y 0-200, {mid} in y 200-400")
+    check("ring 3 painted text near the top", top > 500)
+    check("the display was cleared: y 200-400 is blank", mid == 0)
+    sys.exit(fail)
+
 m = re.search(rb"(\d+)x(\d+) font at (\d+)x", open(log, "rb").read())
 if not m:
     print("  [FAIL] the guest never reported its font geometry"); sys.exit(1)

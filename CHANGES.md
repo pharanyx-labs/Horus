@@ -17,6 +17,21 @@ in this file.
 
 ### Added
 
+- **A comment that eats the next one stops the build** (`Makefile`, `src/kernel/terminal.c`).
+  `-Werror=comment` on both `CFLAGS` and `USERSPACE_CFLAGS` -- two variables, so a flag set on
+  the kernel alone covers half the tree.
+  It is promoted for the reason `-Werror=vla` is: **the damage does not show up in the output.**
+  A `/*` inside a comment means the comment did not end where it looks like it ended, so
+  everything after it up to the next `*/` is silently neither compiled nor documentation.
+  Nothing fails and nothing is mis-executed. An orphaned first line left behind by #319 had been
+  swallowing the whole explanation of why the kernel-log timestamp is applied inside the console
+  lock, in every build since that merge, while the warning scrolled past. In a tree whose
+  contributing rules make comments load-bearing for auditability, an eaten comment is a defect.
+  The line is deleted and the explanation is readable again.
+  Falsified in both directions, measured 2026-09-08: reintroducing the orphaned line fails the
+  kernel build with `terminal.c:496:1: error: "/*" within comment [-Werror=comment]`, an
+  equivalent injection fails the userspace build, and the tree builds clean with neither.
+
 - **A laptop's eMMC is a disk the installer can install onto** (`src/kernel/storage.c`,
   `src/kernel/sdhci.c`, `src/kernel/paging.c`). The card is registered as a `block_device`
   beside the ATA drives, `storage_usable_count()` and `storage_device_at()` enumerate it after

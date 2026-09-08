@@ -124,9 +124,18 @@ survive), then the C kernel objects, under `linker64.ld`.
 -ffreestanding -fno-pic -fno-pie -mcmodel=kernel
 -mno-sse -mno-mmx -mno-80387        # the kernel never touches FP/SIMD registers
 -fstack-protector-strong -mstack-protector-guard=global
--Wall -Wextra -Wformat-security -Werror=vla
+-Wall -Wextra -Wformat-security -Werror=vla -Werror=comment
 -frandom-seed=horus -fdebug-prefix-map=...   # reproducibility
 ```
+
+**Two warnings are errors, and both are errors for the same reason: their damage does not
+show up in the output.** A VLA moves an attacker-influenced length onto the kernel stack, and
+`-Wcomment` fires on a `/*` inside a comment -- which means the comment did not end where it
+looks like it ended, so the text after it, up to the next `*/`, is silently neither compiled
+nor documentation. Nothing fails and nothing is mis-executed; the explanation is simply gone.
+One of those went unnoticed from #319 until 2026-09-08, eating the reason the kernel-log
+timestamp is applied inside the console lock. `USERSPACE_CFLAGS` carries `-Werror=comment`
+too -- it is a separate variable, so a flag set only on the kernel covers half the tree.
 
 The kernel is built without SSE deliberately: ring-3 owns the FPU/SIMD register file, and the
 kernel's only job is to save and restore it. `fxsave`/`fxrstor` are therefore inline

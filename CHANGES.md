@@ -277,6 +277,36 @@ in this file.
 
 ### Fixed
 
+- **A control arm that asserted a race from one boot is bounded** (`Makefile`,
+  `smoke-kdiag-split-control`). The split is probabilistic: measured 2026-09-08 over twenty
+  boots, it reproduces **13 of 20**, so the single-boot form was **red on about a third of
+  runs** -- and it reddened a PR whose entire diff was `.gitignore`, `CHANGES.md` and a checker,
+  containing no kernel code at all. It now boots until the split reproduces and stops at the
+  first hit (`KDIAG_SPLIT_CONTROL_BOOTS`, 8 conclusive boots, within
+  `KDIAG_SPLIT_CONTROL_ATTEMPTS`, 16); at 65% a clean sweep of eight is about one run in four
+  thousand. **Nothing is weakened** -- the assertion is still "the defect MUST reproduce",
+  drawn from a sample large enough to mean it, and a widener that has decayed reproduces on none
+  of the eight and fails exactly as before.
+  **This is the repair `smoke-kstack-park-control` already had, in an arm built from the same
+  template and never given it** -- the recurrence `CLAUDE.md`'s worked example warns about in as
+  many words. An **inconclusive** boot, one that ended before there was anything to split, is
+  named and retried against the attempt bound rather than scored as a miss; that is the same
+  distinction, and scoring it wrongly is what made the park arm unreliable for months.
+  **Two directions were measured before blaming anything.** The rate either side of the
+  framebuffer-console commit is 7/10 and 6/10 -- indistinguishable, so that commit did not cause
+  it and the arm has always been this flaky. And with the ring-3 writer removed (`KDIAG_NOISE`
+  off) the same loop goes red **8 conclusive boots in 8**, which is what shows an N-try loop is
+  not simply a way to pass.
+  One thing the measurement did **not** support: on this host the widener makes no difference
+  (13/20 with it, 8/10 without). That is recorded rather than acted on -- this host emits ~6000
+  ring-3 lines where the CI runner emits 134, and the low-density runner is the environment
+  `KDIAG_SPLIT_WIDEN` exists for, which a local null result cannot speak to.
+  Making it a multi-boot arm brought it under `tools/check_gate_evidence.py`, which refused it
+  until it declared how it tells a boot that ran from one that died -- correctly, and the refusal
+  is the falsification of that rule. It is `exempt:`, with the reason: the assertion is that a
+  marker is **present** and the loop stops at the first hit, so a sweep of dead boots leaves no
+  hit and the arm fails. That is the opposite of the vacuum the manifest exists to catch.
+
 - **The build no longer depends on one host being reachable** (`tools/build_newlib.sh`). The
   newlib tarball is fetched from sourceware.org and, failing that, from `mirrors.kernel.org`;
   the pinned `NEWLIB_SHA256` is verified afterwards exactly as before, on every invocation and

@@ -72,6 +72,21 @@ liveness:
 # Targets that establish liveness another way. A reason here must say WHICH
 # mechanism, specifically enough that a reader can check it against the recipe.
 exempt:
+  smoke-kdiag-split-control: >
+    Up to KDIAG_SPLIT_CONTROL_BOOTS conclusive boots, and the assertion is that a
+    marker is PRESENT -- the split reproduced -- with the loop stopping at the
+    first one. That is the opposite of the hazard this file exists for. A boot
+    that never happened produces no hit, so a sweep of dead boots leaves `hit` at
+    0 and the arm FAILS with the message naming how many boots it got through;
+    there is no absence assertion anywhere in it for a dead boot to satisfy.
+    It also does not have to infer liveness from the marker, because
+    tools/kdiag_test.sh already separates the two outcomes and says which: a run
+    that emitted fewer than KDIAG_MIN markers is reported as "Inconclusive -- the
+    run ended before there was anything to split", and the loop names those,
+    retries them against a SEPARATE attempt bound (KDIAG_SPLIT_CONTROL_ATTEMPTS)
+    and does not score them either way. Only a boot that emitted its markers and
+    saw them arrive intact is counted as a miss, which is the distinction
+    smoke-kstack-park-control was scored wrongly on for months.
   smoke-installer: >
     Two boots inside tools/installer_session.py, and every step of both is an
     expect() with a timeout that raises SessionFail -- there is no absence

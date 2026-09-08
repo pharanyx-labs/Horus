@@ -7576,19 +7576,25 @@ smoke-kstack-park:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 boot.iso
-	@log=$$(mktemp); rc=0; \
-	SMOKE_TIMEOUT=$(KSTACK_PARK_TIMEOUT) SMOKE_LOG="$$log" MARKER_ONLY=1 SMP_CPUS=4 \
+	@log=$$(mktemp); diag=$$(mktemp); rc=0; \
+	SMOKE_TIMEOUT=$(KSTACK_PARK_TIMEOUT) SMOKE_LOG="$$log" SMOKE_KDIAG_LOG="$$diag" \
+	    MARKER_ONLY=1 SMP_CPUS=4 \
 	    REQUIRE_MARKER='PROC_SELFTEST: suspend OK' FAIL_MARKER='PROC_SELFTEST: FAIL' \
 	    tools/smoke_test.sh boot.iso >/dev/null 2>&1 || rc=$$?; \
 	if [ $$rc -ne 0 ]; then \
 	    echo "KSTACK PARK: FAIL - the task-killing self-test did not complete (exit $$rc)"; \
-	    tail -20 "$$log" 2>/dev/null | sed 's/^/  /'; rm -f "$$log"; exit 1; \
+	    tail -20 "$$log" 2>/dev/null | sed 's/^/  /'; rm -f "$$log" "$$diag"; exit 1; \
 	fi; \
-	if grep -qa '$(KSTACK_PARK_RE)' "$$log"; then \
+	: "THE PANIC IS READ FROM THE DIAGNOSTIC CHANNEL, and here that is a"; \
+	: "FALSE-GREEN fix rather than a false-red one: this arm asserts the panic is"; \
+	: "ABSENT, so a copy that ring-3 output can cut in half is one this gate would"; \
+	: "fail to find and pass. The kernel writes it to COM3 through panic_ch, where"; \
+	: "no capability names the port and nothing else can interleave (S81)."; \
+	if grep -qa '$(KSTACK_PARK_RE)' "$$diag"; then \
 	    echo "KSTACK PARK: FAIL - two CPUs parked on one kernel stack"; \
-	    grep -a -A 4 '$(KSTACK_PARK_RE)' "$$log" | sed 's/^/  /'; rm -f "$$log"; exit 1; \
+	    grep -a -A 4 '$(KSTACK_PARK_RE)' "$$diag" | sed 's/^/  /'; rm -f "$$log" "$$diag"; exit 1; \
 	fi; \
-	rm -f "$$log"; \
+	rm -f "$$log" "$$diag"; \
 	echo "KSTACK PARK: PASS - task-killing workload completed on 4 CPUs, no shared park stack"
 
 # The defect, on demand: the same task-killing workload with the shared park
@@ -7707,17 +7713,29 @@ smoke-kstack-park-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSTACK0_PARK_TRACE=1 KSTACK0_SHARED_PARK=1
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSTACK0_PARK_TRACE=1 KSTACK0_SHARED_PARK=1 boot.iso
-	@log=$$(mktemp); hit=0; n=0; good=0; bad=0; rc=0; dup=""; \
+	@log=$$(mktemp); diag=$$(mktemp); hit=0; n=0; good=0; bad=0; rc=0; dup=""; \
 	while [ $$n -lt $(KSTACK_PARK_CONTROL_ATTEMPTS) ] \
 	      && [ $$good -lt $(KSTACK_PARK_CONTROL_BOOTS) ]; do \
 	    n=$$((n+1)); rc=0; \
-	    SMOKE_TIMEOUT=$(KSTACK_PARK_TIMEOUT) SMOKE_LOG="$$log" MARKER_ONLY=1 SMP_CPUS=4 \
+	    SMOKE_TIMEOUT=$(KSTACK_PARK_TIMEOUT) SMOKE_LOG="$$log" SMOKE_KDIAG_LOG="$$diag" \
+	        MARKER_ONLY=1 SMP_CPUS=4 \
 	        REQUIRE_MARKER='PROC_SELFTEST: suspend OK' FAIL_MARKER='PROC_SELFTEST: FAIL' \
 	        tools/smoke_test.sh boot.iso >/dev/null 2>&1 || rc=$$?; \
 	    : "captured, and deliberately NOT the assertion: this arm halts a CPU on"; \
 	    : "purpose, so whether the self-test still finishes is a property of the"; \
 	    : "schedule. The assertion is the shared park stack below. rc=$$rc"; \
-	    dup=$$(grep -ha PARKTRACE "$$log" \
+	    : "BOTH SIGNALS ARE READ FROM THE DIAGNOSTIC CHANNEL. Each is emitted with"; \
+	    : "kfault_str, which goes to COM3 through panic_ch -- one writer, nothing"; \
+	    : "else can name the port, so a marker there is contiguous or absent (S81)."; \
+	    : "On the shared console both are cut in half by proctest's ring-3 output,"; \
+	    : "and an exact-string grep then misses an event that DID happen. Observed"; \
+	    : "2026-09-08 in CI run 34227134084's sibling on PR #334, whose dump held"; \
+	    : "  ROC_SELFTEPANIC: ST: two CPASS PUsexit+ parking on one kernel skitack"; \
+	    : "-- the panic and PROC_SELFTEST interleaved character by character. The"; \
+	    : "comment above this arm has warned about exactly that shredding since"; \
+	    : "2026-08-22; the channel that fixes it landed with S81 on 2026-09-03 and"; \
+	    : "this gate was never moved onto it."; \
+	    dup=$$(grep -ha PARKTRACE "$$diag" \
 	           | sed -n 's/.*cpu=\([0-9]*\) rsp=\([^ ]*\).*/\2 \1/p' \
 	           | sort -u | awk '{c[$$1]++} END {for (r in c) if (c[r] > 1) print r}'); \
 	    : "The kernel's OWN detector is the other, stronger witness, and it has to"; \
@@ -7727,8 +7745,8 @@ smoke-kstack-park-control:
 	    : "therefore MISSES exactly the boots where the defect fired hardest --"; \
 	    : "observed 2026-08-22, a boot whose log carried the PANIC and was still"; \
 	    : "scored as a miss. Either signal is the same event."; \
-	    if [ -z "$$dup" ] && grep -qa '$(KSTACK_PARK_RE)' "$$log"; then \
-	        dup=$$(grep -ha '$(KSTACK_PARK_RE)' "$$log" \
+	    if [ -z "$$dup" ] && grep -qa '$(KSTACK_PARK_RE)' "$$diag"; then \
+	        dup=$$(grep -ha '$(KSTACK_PARK_RE)' "$$diag" \
 	               | sed -n 's/.*rsp=\([^ ]*\).*/\1 (from the kernel panic)/p' | head -1); \
 	    fi; \
 	    if [ -n "$$dup" ]; then hit=$$n; break; fi; \
@@ -7738,10 +7756,10 @@ smoke-kstack-park-control:
 	    : "read it as evidence FOR the defect: the fixed build does it too."; \
 	    if grep -qa '$(KSTACK_PARK_TRUNC_RE)' "$$log"; then \
 	        bad=$$((bad+1)); \
-	        echo "  attempt $$n: INCONCLUSIVE, the workload died after $$(grep -hac PARKTRACE "$$log") park(s) -- not counted"; \
+	        echo "  attempt $$n: INCONCLUSIVE, the workload died after $$(grep -hac PARKTRACE "$$diag") park(s) -- not counted"; \
 	    else \
 	        good=$$((good+1)); \
-	        echo "  boot $$good/$(KSTACK_PARK_CONTROL_BOOTS): $$(grep -hac PARKTRACE "$$log") park(s), none shared"; \
+	        echo "  boot $$good/$(KSTACK_PARK_CONTROL_BOOTS): $$(grep -hac PARKTRACE "$$diag") park(s), none shared"; \
 	    fi; \
 	done; \
 	if [ $$hit -eq 0 ] && [ $$good -lt $(KSTACK_PARK_CONTROL_BOOTS) ]; then \
@@ -7752,7 +7770,10 @@ smoke-kstack-park-control:
 	    echo "  on the FIXED kernel too, so it is the instrument and not this defect --"; \
 	    echo "  but an arm that cannot measure fails closed rather than passing."; \
 	    echo "  Raise KSTACK_PARK_CONTROL_ATTEMPTS only with a rate to justify it."; \
-	    tail -20 "$$log" 2>/dev/null | sed 's/^/  /'; rm -f "$$log"; exit 1; \
+	    tail -20 "$$log" 2>/dev/null | sed 's/^/  /'; \
+	    echo "  ----- the kernel's own channel -----"; \
+	    tail -20 "$$diag" 2>/dev/null | sed 's/^/  /'; \
+	    rm -f "$$log" "$$diag"; exit 1; \
 	fi; \
 	if [ $$hit -eq 0 ]; then \
 	    echo "KSTACK PARK CONTROL: FAIL - the shared park did NOT reproduce in"; \
@@ -7760,14 +7781,18 @@ smoke-kstack-park-control:
 	    echo "  EVERY conclusive boot reproduced it when this arm was measured -- 10 of 10"; \
 	    echo "  on 2026-08-22 -- so a clean sweep of $$good is evidence that the shared park"; \
 	    echo "  has stopped being restored or the PARKTRACE detector has decayed, not noise."; \
-	    tail -20 "$$log" 2>/dev/null | sed 's/^/  /'; rm -f "$$log"; exit 1; \
+	    echo "  ----- the kernel's own channel, which is what the verdict read -----"; \
+	    tail -20 "$$diag" 2>/dev/null | sed 's/^/  /'; \
+	    echo "  ----- the shared console -----"; \
+	    tail -20 "$$log" 2>/dev/null | sed 's/^/  /'; \
+	    rm -f "$$log" "$$diag"; exit 1; \
 	fi; \
-	cpus=$$(grep -ha PARKTRACE "$$log" | grep -o 'cpu=[0-9]*' | sort -u | wc -l); \
+	cpus=$$(grep -ha PARKTRACE "$$diag" | grep -o 'cpu=[0-9]*' | sort -u | wc -l); \
 	echo "  shared park stack(s): $$dup   (distinct CPUs parking: $$cpus)"; \
-	if grep -qa '$(KSTACK_PARK_RE)' "$$log"; then \
-	    grep -a -A 3 '$(KSTACK_PARK_RE)' "$$log" | head -4 | sed 's/^/  /'; \
+	if grep -qa '$(KSTACK_PARK_RE)' "$$diag"; then \
+	    grep -a -A 3 '$(KSTACK_PARK_RE)' "$$diag" | head -4 | sed 's/^/  /'; \
 	fi; \
-	rm -f "$$log"; \
+	rm -f "$$log" "$$diag"; \
 	echo "KSTACK PARK CONTROL: PASS - the shared park puts two CPUs on one stack, as it must (boot $$hit of $(KSTACK_PARK_CONTROL_BOOTS))"
 
 # ---- [G-9], exec hand-off component: the re-entry belongs to the CPU that armed it

@@ -305,6 +305,11 @@ static void defer_aspace_reclaim(uint64_t cr3)
     /* Full: leak this one. Bounded and deliberate -- never free in use. */
 }
 static void kstack_region_init(void);   /* defined with the kernel-stack region */
+static void fb_region_init(void);       /* defined with the framebuffer window */
+static void ensure_identity_mmio_page(uint64_t *root_pml4, uint64_t paddr);
+#ifdef FB_MAP_SELFTEST
+void fb_map_selftest(const char *when, uint64_t *root_pml4);
+#endif
 /* The region's two predicates, forward-declared because kern_addr_present sits
  * above the region's definition and must delegate to them -- see the branch at
  * the top of that function for why it cannot answer for a stack itself. */
@@ -687,6 +692,14 @@ void paging_init(void) {
      * it carries no shootdown requirement of its own: the region's guards are
      * pages that are never mapped, not pages that stop being mapped. */
     kstack_region_init();
+    /* And the framebuffer window at high_pdpt[509], for the same reason and with
+     * the same timing requirement: ahead of smp_bringup so the APs inherit it
+     * from the BSP's live CR3 rather than needing it propagated. A no-op unless
+     * GRUB granted a linear framebuffer. */
+    fb_region_init();
+#ifdef FB_MAP_SELFTEST
+    fb_map_selftest("boot", (uint64_t *)0);
+#endif
     kern_fixed_stack_guards_init();
 #ifdef SMP
     {   /* Per-CPU ring-0 idle/park stacks (smp.c). Same one-pass arming, same
@@ -862,6 +875,163 @@ static uint64_t *kstack_pt_for(uint64_t vaddr, int allocate) {
     if (pde & PAGE_PS) return (uint64_t *)0;
     return (uint64_t *)PHYS_KVA(pde & PTE_ADDR_MASK);
 }
+
+/* ---- The framebuffer window ------------------------------------------------
+ *
+ * WHY IT NEEDS A WINDOW AT ALL. PHYS_KVA covers [0, 1 GiB) and a linear
+ * framebuffer does not live there: measured 2026-09-08, QEMU hands this kernel
+ * one at 0xFD000000, and firmware on a real machine routinely puts it higher
+ * still. So the one address every other physical access in this kernel goes
+ * through cannot reach it, and it needs a mapping of its own.
+ *
+ * WHERE. high_pdpt had three live entries -- [2] the PHYS_KVA window, [510] the
+ * kernel's own image, [511] the kernel-stack region. [509] was free: one GiB of
+ * kernel-half VA immediately below the image, which is far more than
+ * FB_MAX_BYTES (64 MiB) can ever ask for. If you are looking for a fourth
+ * region, [509] is taken now and the next free entry is [508].
+ *
+ * WHY THIS IS INHERITED AND THE SDHCI REGISTERS WERE NOT. This is the same
+ * bargain kstack_region_init strikes, and it is worth stating next to the code
+ * because the alternative cost a day. high_pdpt hangs off pml4[511], and
+ * pml4[256..511] is copied verbatim into EVERY address space -- so a mapping
+ * installed here is visible to every task, present and future, with nothing to
+ * install per address space and nothing to keep in step. Contrast
+ * ensure_storage_regs_mapped, which installs into pml4[0]: that is the LOW half,
+ * create_user_pagedir builds it from nothing, and the mapping was therefore
+ * absent the moment a syscall reached the driver on a task's cr3 -- a supervisor
+ * write to a not-present page, fixed 2026-09-08 by replaying it per address
+ * space. A kernel-half window needs no replay because it was never per-task.
+ *
+ * 2 MiB PAGES, so the window needs no page tables of its own: the PDEs map the
+ * frames directly. A framebuffer is large, physically contiguous and written
+ * linearly, which is the case those pages exist for.
+ *
+ * THE PHYSICAL BASE IS NOT ASSUMED ALIGNED. It is on every machine measured so
+ * far (0xFD000000 is a multiple of 2 MiB), and "so far" is not a guarantee to
+ * build an address on. The window starts at the 2 MiB floor of the base and the
+ * exported address carries the offset back, so a misaligned framebuffer is
+ * mapped correctly rather than shifted by however much it was misaligned.
+ *
+ * CACHE-DISABLED, which is correct and slow. Write-combining is what a
+ * framebuffer wants and it needs a PAT entry set up; that is a change with its
+ * own measurement and is deliberately not bundled here. Correct first. If
+ * scrolling turns out to be too slow to use, that is the thing to fix, and the
+ * shadow buffer the renderer keeps is what makes the cost per FRAME rather than
+ * per character.
+ *
+ * NOT FATAL ON FAILURE. A machine with no framebuffer, one in text mode, or one
+ * whose page directory cannot be allocated simply gets no window: g_fb_va stays
+ * 0 and the console stays where it is. There is no case here worth halting for
+ * -- unlike kstack_region_init, whose failure means no task can have a stack. */
+#define FB_REGION_VMA   0xFFFFFFFF40000000ULL   /* high_pdpt[509], 1 GiB */
+#define FB_PDPT_SLOT    509
+#define PAGE_2MIB       0x200000ULL
+
+static uint64_t g_fb_va;      /* 0 until mapped; the mapped base, offset applied */
+static uint64_t g_fb_bytes;   /* how much of it is backed */
+
+uint64_t fb_vaddr(void) { return g_fb_va; }
+uint64_t fb_mapped_bytes(void) { return g_fb_bytes; }
+
+static void fb_region_init(void) {
+    const struct fb_info *fb = fb_info();
+    /* Text mode needs no window: that buffer is at 0xB8000, which PHYS_KVA
+     * already reaches and the existing console already writes. */
+    if (!fb->valid || fb->type != MB2_FB_RGB) return;
+
+    uint64_t phys_base = fb->addr & ~(PAGE_2MIB - 1);
+    uint64_t off       = fb->addr - phys_base;
+    uint64_t bytes     = off + (uint64_t)fb->height * (uint64_t)fb->pitch;
+    uint64_t pages     = (bytes + PAGE_2MIB - 1) / PAGE_2MIB;
+
+    /* 512 PDEs is the whole GiB. mb_record_framebuffer already refused anything
+     * over FB_MAX_BYTES, so this cannot trigger on a tag that got this far --
+     * it is here because the bound belongs beside the array it bounds, not two
+     * files away in the code that happens to be the only caller today. */
+    if (pages == 0 || pages > 512) return;
+
+#ifdef FB_MAP_LOW_HALF
+    /* CONTROL ARM -- never ship. The window identity-mapped into pml4[0]
+     * instead, which is the LOW half: create_user_pagedir builds that from
+     * nothing, so the mapping exists on the kernel's cr3 and in no task's.
+     *
+     * This is the SDHCI register file's defect reproduced in new code, and it is
+     * here so the "why the kernel half" comment above is CHECKABLE rather than
+     * merely asserted. Under it the boot readback still passes -- that runs on
+     * the kernel's own cr3 and never noticed -- and every user address space
+     * reports ABSENT. Which is precisely how that bug presented: correct at
+     * boot, correct in every probe, and a page fault the moment ring 3 asked. */
+    for (uint64_t o = 0; o < bytes; o += PAGE_SIZE)
+        ensure_identity_mmio_page((uint64_t *)0, phys_base + o);
+    g_fb_va    = fb->addr;
+    g_fb_bytes = (uint64_t)fb->height * (uint64_t)fb->pitch;
+    return;
+#else
+    extern uint64_t high_pdpt[512];
+    uint64_t pd_phys = (uint64_t)alloc_user_physical_page();
+    if (pd_phys == 0) return;
+    uint64_t *pd = (uint64_t *)PHYS_KVA(pd_phys);
+    for (int i = 0; i < 512; i++) pd[i] = 0;
+    for (uint64_t i = 0; i < pages; i++)
+        pd[i] = (phys_base + i * PAGE_2MIB)
+              | PAGE_PRESENT | PAGE_WRITE | PAGE_PS | PAGE_CD | PAGE_NX;
+
+    /* Supervisor-only: no PAGE_USER anywhere in the walk. Ring 3 reaching the
+     * display is console_server's business and goes through SYS_MAP_PHYS with a
+     * device capability, not through a window the kernel opened for itself. */
+    high_pdpt[FB_PDPT_SLOT] = pd_phys | PAGE_PRESENT | PAGE_WRITE;
+    g_fb_va    = FB_REGION_VMA + off;
+    g_fb_bytes = (uint64_t)fb->height * (uint64_t)fb->pitch;
+#endif /* FB_MAP_LOW_HALF */
+}
+
+#ifdef FB_MAP_SELFTEST
+/* Does `vaddr` resolve to a present mapping in the address space rooted at
+ * `root_pml4`? Walks the four levels the CPU would, honouring a 2 MiB PDE.
+ *
+ * IT TAKES A ROOT, which is the entire point. Writing through fb_vaddr() on the
+ * kernel's own cr3 shows the window was built; it says nothing about whether a
+ * TASK can be running when the kernel touches it. That distinction is exactly
+ * what the SDHCI register file got wrong -- present at boot, absent under a
+ * syscall, discovered as a page fault in the installer -- so the check that
+ * matters here is made against a user address space's real, built tables. */
+static int fb_present_in(uint64_t *root_pml4, uint64_t vaddr) {
+    uint64_t e = root_pml4[(vaddr >> 39) & 511];
+    if (!(e & PAGE_PRESENT)) return 0;
+    uint64_t *pdpt = (uint64_t *)PHYS_KVA(e & PTE_ADDR_MASK);
+    e = pdpt[(vaddr >> 30) & 511];
+    if (!(e & PAGE_PRESENT)) return 0;
+    uint64_t *pd = (uint64_t *)PHYS_KVA(e & PTE_ADDR_MASK);
+    e = pd[(vaddr >> 21) & 511];
+    if (!(e & PAGE_PRESENT)) return 0;
+    if (e & PAGE_PS) return 1;                  /* 2 MiB leaf: this is our case */
+    uint64_t *pt = (uint64_t *)PHYS_KVA(e & PTE_ADDR_MASK);
+    return (pt[(vaddr >> 12) & 511] & PAGE_PRESENT) ? 1 : 0;
+}
+
+/* Write a pattern through the window and read it back, on whatever cr3 is
+ * current. Both ends of the mapped extent, because a window one page short
+ * still passes a test that only touches the start. */
+void fb_map_selftest(const char *when, uint64_t *root_pml4) {
+    if (g_fb_va == 0) { print("FBMAP: no window ("); print(when); print(")\n"); return; }
+
+    volatile uint32_t *fb = (volatile uint32_t *)g_fb_va;
+    uint64_t last = (g_fb_bytes / 4) - 1;
+    fb[0]    = 0xA5A5A5A5u;
+    fb[last] = 0x5A5A5A5Au;
+    int ok = (fb[0] == 0xA5A5A5A5u) && (fb[last] == 0x5A5A5A5Au);
+    fb[0] = 0; fb[last] = 0;
+
+    print("FBMAP: "); print(when);
+    print(ok ? " readback OK" : " READBACK FAILED");
+    if (root_pml4) {
+        print(fb_present_in(root_pml4, g_fb_va)
+              ? ", present in the task address space"
+              : ", ABSENT FROM THE TASK ADDRESS SPACE");
+    }
+    print("\n");
+}
+#endif
 
 /* Build the region's page directory and install it at high_pdpt[511].
  *
@@ -1546,6 +1716,13 @@ void create_user_pagedir(uint32_t task_id) {
      * these registers while running on the calling task's cr3. Absent this the
      * installer faults at 0xfebf1004 the moment it formats. */
     ensure_storage_regs_mapped_current(pml4_tab);
+#ifdef FB_MAP_SELFTEST
+    /* On the address space just built, before it has ever been entered. The
+     * write below still runs on the KERNEL's cr3 -- create_user_pagedir is not
+     * a syscall -- so the readback and the presence check answer two different
+     * questions on purpose, and only the second one is about this task. */
+    fb_map_selftest("user-aspace", pml4_tab);
+#endif
 
     tasks[task_id].cr3 = pml4_phys;
 

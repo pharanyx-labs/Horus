@@ -287,6 +287,19 @@ uint64_t boot_module_top(void);
  * `bpp` is bits per CHARACTER CELL in the first case and bits per PIXEL in the
  * second -- the same field naming two different quantities, which is why the
  * validation is written per type. */
+/* framebuffer_type, from the multiboot2 specification. The kernel cares about
+ * exactly one distinction -- whether the thing GRUB handed it is a grid of
+ * character cells or a grid of pixels -- but all three are named because a
+ * value that is none of them must be REFUSED rather than defaulted, and a
+ * default is what an unnamed constant invites.
+ *
+ * In the header rather than in main.c since 2026-09-08: paging.c decides whether
+ * to build a framebuffer window from `type`, so the constant that gives the
+ * field meaning has to be readable wherever the field is. */
+#define MB2_FB_INDEXED     0u
+#define MB2_FB_RGB         1u
+#define MB2_FB_EGA_TEXT    2u
+
 struct fb_info {
     uint64_t addr;      /* physical base */
     uint32_t pitch;     /* bytes per row; >= the row the geometry implies */
@@ -305,6 +318,19 @@ struct fb_info {
 
 /* The recorded display, always non-NULL; test ->valid before reading a field. */
 const struct fb_info *fb_info(void);
+
+/* The framebuffer's KERNEL virtual address, or 0 if there is no window.
+ *
+ * Non-zero only when GRUB granted a linear framebuffer (fb_info()->type ==
+ * MB2_FB_RGB) and paging_init could build the window. It is in the kernel half
+ * (high_pdpt[509]), so it is present in every address space with no per-task
+ * fixup -- see fb_region_init in paging.c for why that matters and what it is
+ * being contrasted with. Supervisor-only and NX; ring 3 does not reach it.
+ *
+ * fb_mapped_bytes() is height*pitch: what is backed, and the bound anything
+ * writing through fb_vaddr() must respect. */
+uint64_t fb_vaddr(void);
+uint64_t fb_mapped_bytes(void);
 
 /* Identity-map the TPM TIS locality-0 MMIO page (0xFED40000) into a page directory
  * (NULL = kernel pml4) for the measured-boot driver and the storage KEK-sealing

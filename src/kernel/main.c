@@ -145,15 +145,6 @@ static void assert_higher_half(void) {
 #define MB2_TAG_FRAMEBUFFER 8u
 #define MB2_MEM_AVAILABLE  1u
 
-/* framebuffer_type, from the multiboot2 specification. The kernel cares about
- * exactly one distinction -- whether the thing GRUB handed it is a grid of
- * character cells or a grid of pixels -- but all three are named because a
- * value that is none of them must be REFUSED rather than defaulted, and a
- * default is what an unnamed constant invites. */
-#define MB2_FB_INDEXED     0u
-#define MB2_FB_RGB         1u
-#define MB2_FB_EGA_TEXT    2u
-
 /* The fixed part of the framebuffer tag: type+size (8), addr (8), pitch (4),
  * width (4), height (4), bpp (1), fb_type (1), reserved (2) = 32. Colour info
  * follows and is variable-length, which is why an RGB tag measures 38 and a

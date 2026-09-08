@@ -21,6 +21,8 @@
 #   FB_EXPECT=text     (default) EGA text, and the boot reaches the login prompt
 #   FB_EXPECT=rgb      a linear framebuffer, its geometry, and the consequence
 #   FB_EXPECT=unparsed the tag is not recorded, so the reporter falls back (control arm)
+#   FB_EXPECT=map      the framebuffer window is built and reachable from a task
+#   FB_EXPECT=map-lowhalf  the window is in the low half, so no task has it (control arm)
 #   SMOKE_TIMEOUT      seconds (default 60)
 set -u
 
@@ -41,7 +43,7 @@ if [ ! -s "$LOG" ]; then
     exit 1
 fi
 
-dump() { grep -aE "fb:|DEFECT FLAGS|kernel ready" "$LOG" | sed 's/\r//' | sed 's/^/    /' || echo "    (nothing)"; }
+dump() { grep -aE "fb:|FBMAP|DEFECT FLAGS|kernel ready" "$LOG" | sed 's/\r//' | sed 's/^/    /' || echo "    (nothing)"; }
 
 fail=0
 check() {  # $1 = description, $2 = pattern
@@ -94,6 +96,25 @@ rgb)
     # and it cost a session to attribute. The warning is the diagnosis.
     check "it names the consequence rather than going quiet" "NO PIXEL CONSOLE YET"
     check "the boot still completed"                     "kernel ready"
+    ;;
+map)
+    # The window exists AND is reachable from a task's address space. Two
+    # questions, and the second is the one worth asking: the first is answered on
+    # the kernel's own cr3, where a low-half mapping looks perfect.
+    check  "the window was built and reads back"     "FBMAP: boot readback OK"
+    check  "it is present in a task address space"   "present in the task address space"
+    refute "no address space is missing it"          "ABSENT FROM THE TASK ADDRESS SPACE"
+    check  "the boot still completed"                "kernel ready"
+    ;;
+map-lowhalf)
+    # The control arm's signature, and BOTH halves are asserted. That the boot
+    # readback still passes is not incidental -- it is the lesson: a check made
+    # on the kernel's cr3 cannot see this defect at all, which is why the SDHCI
+    # register file shipped, probed clean, and faulted the moment ring 3 asked.
+    check  "the boot-time check is BLIND to it"      "FBMAP: boot readback OK"
+    check  "a task address space is missing it"      "ABSENT FROM THE TASK ADDRESS SPACE"
+    refute "no address space claims to have it"      "present in the task address space"
+    check  "the boot still completed"                "kernel ready"
     ;;
 *)
     echo "fb-tag: unknown FB_EXPECT: $EXPECT"; exit 2 ;;

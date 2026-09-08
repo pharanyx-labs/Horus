@@ -18,7 +18,22 @@ set -eu
 
 NEWLIB_VERSION=4.5.0.20241231
 NEWLIB_SHA256=33f12605e0054965996c25c1382b3e463b0af91799001f5bb8c0630f2ec8c852
-NEWLIB_URL=https://sourceware.org/pub/newlib/newlib-${NEWLIB_VERSION}.tar.gz
+# WHERE IT COMES FROM IS NOT WHAT MAKES IT TRUSTED -- the pinned SHA-256 above
+# is, and it is verified below on every invocation whatever served the bytes. So
+# a second source costs nothing in supply-chain terms and buys the build the
+# ability to survive one host being down. Upstream first; the mirror is a
+# fallback, not a preference.
+#
+# WHY, with the date, because "add a mirror" reads like premature generality
+# otherwise. On 2026-09-08 sourceware.org returned HTTP 502 for this file for
+# long enough to fail ELEVEN required checks on one PR -- every job that links
+# libc -- and it kept returning it through five of curl's own retries. The
+# existing --retry-all-errors already covers a transient 5xx; it cannot cover a
+# host that is simply down, and nothing in this repo could be merged while it
+# was. Verified the same day: mirrors.kernel.org serves this file byte-identical
+# to the pinned hash.
+NEWLIB_URLS="https://sourceware.org/pub/newlib/newlib-${NEWLIB_VERSION}.tar.gz
+https://mirrors.kernel.org/sourceware/newlib/newlib-${NEWLIB_VERSION}.tar.gz"
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 NEWLIB_DIR=$ROOT/newlib
@@ -77,13 +92,44 @@ mkdir -p "$NEWLIB_DIR"
 # only fail verification. Verification runs on every invocation, not just after a
 # fetch, so a tarball that arrived by any means -- resumed, cached, or dropped in
 # by hand -- is checked before it is trusted.
+#
+# ONE PARTIAL FILE PER SOURCE, and the partial is discarded when moving to the
+# next one. `-C -` resumes into $TARBALL.tmp, which is right for retrying the
+# SAME host and wrong across two: resuming a half-finished sourceware transfer
+# from a kernel.org offset would splice two responses into one file. The
+# checksum would catch it -- it catches everything -- but "the mirror is broken"
+# is a much worse thing to be told than "that transfer was abandoned", and a
+# spliced file would be quarantined as a CHECKSUM MISMATCH, which reads as
+# tampering. Failure messages are evidence; they should not lie about what
+# happened.
 if [ ! -f "$TARBALL" ]; then
-	echo "newlib: fetching $NEWLIB_URL"
-	curl -sfL --retry 5 --retry-delay 3 --retry-all-errors \
-	     --connect-timeout 30 --max-time 900 -C - -o "$TARBALL.tmp" "$NEWLIB_URL" || {
-		echo "newlib: fetch failed (curl exit $?) -- leaving the partial file for resume" >&2
+	fetched=0
+	for url in $NEWLIB_URLS; do
+		echo "newlib: fetching $url"
+		if curl -sfL --retry 5 --retry-delay 3 --retry-all-errors \
+		        --connect-timeout 30 --max-time 900 -C - -o "$TARBALL.tmp" "$url"; then
+			fetched=1
+			break
+		else
+			# FIRST statement in the else, deliberately: $? holds the
+			# condition's status only until the next command runs. Written
+			# after the `fi` it reports the status of the `if` ITSELF, which
+			# is 0 when the condition was false -- so the message said
+			# "curl exit 0" about a failure. Measured 2026-09-08 on the very
+			# outage this fallback was written for. The exit code is the
+			# evidence here (the comment above turns on 56 vs a transient
+			# 5xx), so a message that misreports it is worse than none.
+			rc=$?
+			echo "newlib: $url failed (curl exit $rc)" >&2
+			rm -f "$TARBALL.tmp"
+		fi
+	done
+	if [ "$fetched" != 1 ]; then
+		echo "newlib: every source failed; the build cannot proceed" >&2
+		echo "newlib: tried:" >&2
+		for url in $NEWLIB_URLS; do echo "newlib:   $url" >&2; done
 		exit 1
-	}
+	fi
 	mv "$TARBALL.tmp" "$TARBALL"
 fi
 

@@ -46,6 +46,22 @@ beside it instead, the stamp would be absent on every cache *hit*, the guard wou
 "flags changed", and every job that restored a perfectly good `libc.a` would rebuild newlib from
 scratch anyway, a stamp has to travel with the thing it certifies or it certifies nothing.
 
+**The tarball is fetched from two sources and trusted because of neither.** `NEWLIB_URLS` lists
+sourceware.org first and `mirrors.kernel.org` as a fallback; each is tried in turn and the
+pinned `NEWLIB_SHA256` is verified afterwards on **every** invocation, whatever served the bytes
+and however they arrived — fetched, resumed, restored from a cache, or dropped in by hand. So a
+second source costs nothing in supply-chain terms: the hash is the trust anchor, not the host.
+A mismatch quarantines the file as `.rejected` rather than leaving it in place, because the
+fetch is skipped whenever the tarball exists and a bad one would otherwise wedge the tree.
+
+It exists because on 2026-09-08 sourceware.org returned HTTP 502 for this file long enough to
+fail **eleven required checks** on one PR — every job that links libc — and kept returning it
+through all five of curl's retries. `--retry-all-errors` covers a transient 5xx; nothing covers
+a host that is down, and nothing in this repository could be merged while it was. Each source
+gets its own partial file and the partial is discarded when moving on: `-C -` resume is right
+for retrying one host and wrong across two, and a spliced response would be reported as a
+checksum mismatch, which reads as tampering rather than as an abandoned transfer.
+
 ---
 
 ## Stripped binaries, and where the debug info went

@@ -1716,8 +1716,19 @@ that nothing yet enforces.
   `Pharanyx Labs <horus@pharanyx.co.uk>`, so the history *says* one identity rather than merely
   displaying one, a `.mailmap` changes what `git` shows and not what the commits contain, and
   GitHub's contributor graph keys on the author's email regardless.
-- **4.10 ⬜ Pin vendored `newlib`** by upstream URL and SHA-256 in a `THIRD_PARTY.md`, or
-  fetch it at build time with verification instead of committing `.deb`s.
+- **4.10 ✅ Third-party material is declared** *landed 2026-09-08*. `THIRD_PARTY.md` states
+  what is vendored and what is merely fetched, because those are different questions and only
+  the first is a redistribution. newlib was already the second: `tools/build_newlib.sh` pins the
+  version and SHA-256 and verifies on every invocation, so nothing is committed and nothing is
+  trusted for having arrived.
+  **The item was written about newlib and the gap it found was a font.** `font_8x8` is uploaded
+  into the VGA font plane on every text-mode boot -- shipped and rendered -- and carries no
+  attribution, no upstream and no licence statement. It resembles the small 8x8 bitmap fonts
+  that circulated with early PC graphics code, several of which are public domain and several of
+  which are not; resemblance is not provenance, so the file records the question as **open**
+  rather than guessing an answer. Its replacement on the framebuffer, `font_8x16`, was authored
+  here for exactly that reason: reproducing another font's glyphs from memory and citing it
+  would be a claim nobody could check.
 - **4.11 ⬜ `verify-release.sh`** a third party can run: rebuild from a tag, diff against the
   published artifact, check the signature, recompute the PCRs.
 - **4.12 ✅ A security-invariant registry ([F-4.1]**) *landed 2026-08-28*.

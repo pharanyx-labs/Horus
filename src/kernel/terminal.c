@@ -396,9 +396,22 @@ void fb_console_init(void) {
         return;
     }
 
-    g_font.bits = &font_8x8[0][0];
+    /* The 8x16 on a framebuffer, and the 8x8 stays for the VGA text plane.
+     *
+     * TWO FONTS, ONE REASON: the VGA text mode this kernel programs is 80x50,
+     * which is an 8x8 cell by definition of the mode -- vga_initialize_text_mode_80x50
+     * uploads the 8x8 into the font plane and the hardware renders from it. The
+     * framebuffer has no such constraint and every reason to use the taller one:
+     * descenders, a comma that is not a full stop, a slashed zero.
+     *
+     * IT ONLY FITS BECAUSE THE GRID IS DERIVED. Fifty rows of a 16-pixel cell
+     * need 800 lines; the panel this targets has 768 and gives 48. Before the
+     * row count came from the display this would have refused the display as too
+     * small and fallen back to a text window that does not exist on a UEFI-only
+     * machine -- a black screen. */
+    g_font.bits = &font_8x16[0][0];
     g_font.w = 8;
-    g_font.h = 8;
+    g_font.h = 16;
 
     /* Scale first, then take however many rows are left.
      *
@@ -472,7 +485,12 @@ void fb_console_init(void) {
      * all -- a stem down the left, a foot to the right -- so the host can test
      * for a mirrored blitter without knowing which font is loaded. That keeps
      * the check alive across a font replacement, which is the next commit. */
-    fb_draw_glyph(0, (uint32_t)g_rows * (uint32_t)g_font.h * g_scale + 8u,
+    /* TO THE RIGHT OF THE GRID, not below it. Below was right while the cell was
+     * 8 pixels and 50 rows filled 400 of 768 lines; at 16 the same 48 rows fill
+     * the screen exactly and there is nothing under them. The margin to the RIGHT
+     * survives by construction: columns are capped at 80, so a display wider than
+     * 640 pixels has space the console never touches whatever the font is. */
+    fb_draw_glyph((uint32_t)VGA_COLS * (uint32_t)g_font.w * g_scale + 8u, 0u,
                   (uint8_t)'L', vga_palette[15], vga_palette[0]);
     print("fb: selftest glyph drawn below the grid\n");
 #endif

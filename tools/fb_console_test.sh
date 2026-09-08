@@ -174,13 +174,21 @@ if not m:
     print("  [FAIL] the guest never reported its font geometry"); sys.exit(1)
 fw, fh, scale = int(m.group(1)), int(m.group(2)), int(m.group(3))
 cw, chh = fw * scale, fh * scale
-py0 = 50 * chh + 8
-print(f"  glyph cell: {cw}x{chh} at (0,{py0})  [font {fw}x{fh} at {scale}x]")
+# WHERE THE GUEST PUT IT, derived from the guest's own report rather than from a
+# constant here. It is to the RIGHT of the grid: at a 16-pixel cell the 48 rows
+# fill a 768-line display exactly and there is nothing below them, whereas the
+# horizontal margin survives by construction because columns are capped at 80.
+# The first version of this computed `50 * cell + 8` and went off the bottom of
+# the screen the moment the font grew -- a constant standing in for something the
+# kernel derives, which is the same defect the grid gate caught one commit back.
+px0 = 80 * cw + 8
+py0 = 0
+print(f"  glyph cell: {cw}x{chh} at ({px0},{py0})  [font {fw}x{fh} at {scale}x]")
 
-if py0 + chh > H:
-    print("  [FAIL] the selftest glyph is off the bottom of the screen"); sys.exit(1)
+if px0 + cw > W or py0 + chh > H:
+    print(f"  [FAIL] the selftest glyph is off the screen ({W}x{H})"); sys.exit(1)
 
-cells = [[rgb(x, py0 + y) for x in range(cw)] for y in range(chh)]
+cells = [[rgb(px0 + x, py0 + y) for x in range(cw)] for y in range(chh)]
 flat = [c for row in cells for c in row]
 colours = set(flat)
 

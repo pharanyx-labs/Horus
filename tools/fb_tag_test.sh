@@ -118,8 +118,21 @@ grid)
     else
         h=$(echo "$geom" | sed 's/.*x\([0-9]*\)x[0-9]*$/\1/')
         rows=$(echo "$kern" | sed 's/.*80x//')
-        want=$(( h / 8 )); [ "$want" -gt 50 ] && want=50
-        echo "  display ${geom#fb: RGB }, cell 8px -> $want rows fit; the console reports $rows"
+        # THE CELL HEIGHT IS READ, NOT ASSUMED. The first version of this check
+        # divided by a hardcoded 8 and broke the moment the font became 8x16 --
+        # having just been written to derive the ROWS from the display so it
+        # would not encode a number. Deriving one input and hardcoding the other
+        # is the same mistake with a smaller blast radius, and the gate caught it
+        # by disagreeing with a kernel that was right.
+        fh=$(grep -ao "[0-9]*x[0-9]* font at [0-9]*x" "$LOG" | head -1 \
+             | sed 's/^[0-9]*x\([0-9]*\) font at \([0-9]*\)x$/\1 \2/')
+        cell=$(echo "$fh" | awk '{print $1 * $2}')
+        if [ -z "$cell" ] || [ "$cell" -le 0 ] 2>/dev/null; then
+            echo "  [FAIL] the kernel did not report its font geometry"; fail=1; cell=0
+        fi
+        if [ "$cell" -gt 0 ]; then
+        want=$(( h / cell )); [ "$want" -gt 50 ] && want=50
+        echo "  display ${geom#fb: RGB }, cell ${cell}px -> $want rows fit; the console reports $rows"
         if [ "$rows" = "$want" ]; then
             echo "  [ OK ] the kernel's grid is what the display can show"
         else
@@ -133,6 +146,7 @@ grid)
         else
             echo "  [FAIL] console_server reports '$ring3', wanted 'grid 80x$want'"
             fail=1
+        fi
         fi
     fi
     check "the machine reached the login prompt" "horus login:"

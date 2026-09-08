@@ -244,6 +244,32 @@ void _start(void) {
     }
     if (!granted) { kput("CONSOLE_SELFTEST: FAIL grant\n"); for (;;) sys_yield(); }
 
+    /* WHAT KIND OF DISPLAY THIS MACHINE HAS, asked before anything is mapped.
+     *
+     * Reported and not yet acted on: this server still drives the VGA text
+     * window below, and teaching it to blit pixels is the next change. The call
+     * is here now because it is what makes that change possible -- a driver
+     * cannot render into a framebuffer whose width, height, pitch and depth it
+     * has no way to learn, and until this syscall there was no way.
+     *
+     * SYS_ERR_NOENT is the ordinary answer, not a failure: every machine that
+     * booted in EGA text says it, which is all of them by default. So a
+     * non-zero return is reported and the server carries on to the VGA path
+     * exactly as before -- this line must not be able to break a boot that
+     * worked yesterday. */
+    {
+        struct fb_geometry fbg;
+        int frc = sys_fb_info(CAPSLOT_IO_DEVICE, &fbg);
+        if (frc == 0) {
+            kput("CONSOLE_FB: linear framebuffer ");
+            kput_int((int)fbg.width); kput("x"); kput_int((int)fbg.height);
+            kput("x"); kput_int((int)fbg.bpp);
+            kput(" pitch "); kput_int((int)fbg.pitch); kput("\n");
+        } else {
+            kput("CONSOLE_FB: no linear framebuffer; the VGA text window it is\n");
+        }
+    }
+
     /* Map the VGA text framebuffer (two 4 KiB frames: an 80x50 buffer is 8000
      * bytes) into our own address space. */
     if (sys_map_phys(CAPSLOT_IO_DEVICE, VGA_PADDR,          VGA_VADDR,          4096, MAP_PHYS_WRITE) != 0 ||

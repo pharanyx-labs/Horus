@@ -151,7 +151,8 @@ DEFECT_FLAGS = \
 	STORAGE_FORMAT_WEDGE CONSOLE_TIMESTAMPS_LEGACY CLOCK_EPOCH_FROM_FIRST_TICK \
 	DEVREGS_KERNEL_ONLY SD_BLOCK_ADDR_UNSCALED FB_REQUEST \
 	FB_TAG_IGNORED FB_TAG_ASSUME_TEXT \
-	FB_MAP_SELFTEST FB_MAP_LOW_HALF FB_CONSOLE_SELFTEST FB_CONSOLE_MIRRORED
+	FB_MAP_SELFTEST FB_MAP_LOW_HALF FB_CONSOLE_SELFTEST \
+	FB_CONSOLE_MIRRORED FB_INFO_ANY_DEVICE
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -2750,6 +2751,16 @@ endif
 FB_CONSOLE_MIRRORED ?= 0
 ifeq ($(FB_CONSOLE_MIRRORED),1)
 CFLAGS += -DFB_CONSOLE_MIRRORED
+endif
+
+# FB_INFO_ANY_DEVICE=1 drops SYS_FB_INFO's object check, so any device capability
+# reads the display's geometry -- a NIC driver learns the screen's dimensions.
+# The capability LOOKUP is left in place on purpose: removing it too would refuse
+# the call for a different reason and the arm would pass for the wrong one.
+# The arm for `make smoke-devcap-fb`.
+FB_INFO_ANY_DEVICE ?= 0
+ifeq ($(FB_INFO_ANY_DEVICE),1)
+CFLAGS += -DFB_INFO_ANY_DEVICE
 endif
 
 # ---- a device register file must be present in every address space -----------
@@ -9447,6 +9458,36 @@ smoke-fb-tag-gfx-control:
 # mirrored glyph: under FB_CONSOLE_MIRRORED the serial log is complete and
 # correct, the console reports itself started, and the display is unreadable.
 # This screendumps over QMP and inspects the pixels.
+# THE FRAMEBUFFER'S GEOMETRY IS THE PLATFORM DEVICE'S TO DISCLOSE.
+#
+# The same devcaptest, on a machine that HAS a linear framebuffer. That is not a
+# convenience: with no framebuffer SYS_FB_INFO refuses every caller -- NOENT for
+# the platform device, PERM for anyone else -- so "the NIC was refused" holds
+# with the device check deleted, and the refusals witness nothing. Here the
+# permitted call SUCCEEDS, which is what makes the two refusals mean something.
+# On the ordinary machine devcaptest says the checks did not run, and
+# smoke-devcap asserts only its own marker.
+.PHONY: smoke-devcap-fb
+smoke-devcap-fb:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 FB_REQUEST=1
+	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 FB_REQUEST=1 boot.iso
+	@SMOKE_NET=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='DEVCAPTEST: fb-geometry is gated to the platform device' \
+		FAIL_MARKER='DEVCAPTEST: FAIL' tools/smoke_test.sh boot.iso
+	@echo "[devcap-fb] the geometry answered the platform device and refused the NIC"
+
+.PHONY: smoke-devcap-fb-control
+smoke-devcap-fb-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 FB_REQUEST=1 FB_INFO_ANY_DEVICE=1
+	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 FB_REQUEST=1 FB_INFO_ANY_DEVICE=1 boot.iso
+	@echo "[devcap-fb] the object check is gone: the NIC must read the display's geometry"
+	@SMOKE_NET=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='DEVCAPTEST: FAIL nic-cap-read-fb-geometry' \
+		tools/smoke_test.sh boot.iso
+	@echo "[devcap-fb] CONTROL PASS - ungated by object, a NIC capability reads the display"
+
 .PHONY: smoke-fb-console
 smoke-fb-console:
 	@$(MAKE) --no-print-directory clean

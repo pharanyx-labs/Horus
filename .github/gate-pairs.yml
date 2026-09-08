@@ -60,6 +60,7 @@ control_arms:
   smoke-fb-tag-gfx-control: smoke-fb-tag-gfx
   smoke-fb-map-control: smoke-fb-map
   smoke-fb-console-control: smoke-fb-console
+  smoke-devcap-fb-control: smoke-devcap-fb
   smoke-captest-lookup-type-control: smoke-captest
   smoke-auditprobe-control: smoke-auditprobe
   smoke-auditprobe-abi-control: smoke-auditprobe
@@ -231,6 +232,7 @@ gates:
   - smoke-fb-tag-gfx
   - smoke-fb-map
   - smoke-fb-console
+  - smoke-devcap-fb
   - smoke-passwd-target
   - smoke-nvcounter
   - smoke-rollback

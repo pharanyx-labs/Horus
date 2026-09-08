@@ -197,6 +197,7 @@ struct task_info {
 #define SYS_STORAGE_FORMAT    111  /* (const char *password, plen, device) -> 0; DESTROY the attached volume and lay a new sealed one down (CAP_STORAGE_FORMAT + WRITE). The one caller of storage_authorize_format(), which S63 introduced and left with none. */
 #define SYS_USERLIST          112  /* (index, struct user_entry*) -> 1 filled, 0 past the last account, SYS_ERR_PERM without CAP_USER. Account METADATA only -- name, uid, gid, home -- and deliberately nothing else: no hash, no salt, no key slot, no lockout state. A dense index over the valid accounts, so a caller loops until 0 and never needs the kernel's MAX_USERS. */
 #define SYS_CONSOLE_RELEASE  114  /* (dev_slot) -> 0; give the console hardware back to the kernel. CAP_IO_DEVICE + WRITE in dev_slot, and the caller must BE the current owner. Exists so a console driver that fails AFTER taking the console can still be heard: its own diagnostic goes to the klog and nowhere else while it owns the wire. */
+#define SYS_FB_INFO           115  /* (dev_slot, struct fb_geometry*) -> 0; the SHAPE of the linear framebuffer (width/height/pitch/bpp), or SYS_ERR_NOENT if this display is not one. CAP_IO_DEVICE + READ in dev_slot, and it must name the PLATFORM device. Where the framebuffer is comes from SYS_DEVICE_INFO's mmio[] ranges, not from here. */
 #define SYS_STORAGE_DEVICE   113  /* (index, struct storage_info*) -> 0; the survey for ONE enumerated persistent device (CAP_STORAGE_FORMAT + READ). Refuses an index past the end rather than clamping. */
 #define SYS_IRQ_POLICY_INFO    92   /* (struct irq_policy_info*) -> 0; roadmap 1.1 audit counters. IRQ_POLICY_AUDIT builds only; NOSYS otherwise. CAP_KERNEL_LOG (READ). */
 #define SYS_DMESG              88   /* (buf, offset, max) -> bytes; copy a chunk of the kernel message ring at `offset` to buf. CAP_KERNEL_LOG (READ) in CAPSLOT_KERNEL_LOG, else SYS_ERR_PERM */
@@ -606,6 +607,36 @@ struct dev_info {
     struct { uint64_t base, len; } mmio[IODEV_MAX_MMIO];
     struct { uint32_t base, len; } port[IODEV_MAX_PORT];
 };
+
+/* The SHAPE of the linear framebuffer (SYS_FB_INFO).
+ *
+ * MUST stay byte-identical to struct fb_geometry in src/include/kernel.h -- the
+ * kernel fills this layout and copies it out. Enrolled in
+ * tools/check_abi_structs.py, which is what makes that a checked statement
+ * rather than a hopeful comment (S71).
+ *
+ * SHAPE ONLY, DELIBERATELY. Where the framebuffer IS comes from SYS_DEVICE_INFO's
+ * mmio[] ranges, which already report it once the platform device declares it.
+ * Repeating the address here would give one fact two sources that can drift, and
+ * a display mapped at one address and drawn at another is a write into whatever
+ * else is there.
+ *
+ * `pitch` is BYTES per row and is not derivable from width and bpp: firmware pads
+ * rows, and the measured machine reports 4096 for a 1024-pixel 32-bit line, which
+ * happens to agree -- one that did not would be silently corrupt if computed. */
+struct fb_geometry {
+    uint32_t width;    /* pixels */
+    uint32_t height;   /* pixels */
+    uint32_t pitch;    /* bytes per row */
+    uint32_t bpp;      /* bits per pixel */
+};
+
+/* Report the shape of the linear framebuffer the device at `dev_slot` owns.
+ * Returns 0, SYS_ERR_NOENT if this machine has no linear framebuffer, or a
+ * negative SYS_ERR_*. */
+static inline int sys_fb_info(uint32_t dev_slot, struct fb_geometry *out) {
+    return (int)syscall(SYS_FB_INFO, dev_slot, (uint64_t)(uintptr_t)out, 0);
+}
 
 /* Report what the device named by the CAP_IO_DEVICE (READ right) at `dev_slot`
  * declares. Returns 0 or a negative SYS_ERR_*. */

@@ -17,6 +17,35 @@ in this file.
 
 ### Added
 
+- **Ring 3 can learn what the display is** (`SYS_FB_INFO`, syscall 115). A capability-gated
+  report of the linear framebuffer's SHAPE -- width, height, pitch, bits per pixel -- and the
+  platform device now declares the framebuffer among its MMIO ranges, which is what makes that
+  memory mappable from ring 3 at all (`iodev_allows_mmio` gates `SYS_MAP_PHYS` against exactly
+  that list). Together they are what a console driver needs before it can render on a machine
+  whose only display is a pixel framebuffer; `console_server` reads the geometry and reports it,
+  and still drives the VGA text window, because teaching it to blit is the next change.
+  **READ, and it must be the PLATFORM device.** The framebuffer is declared among that device's
+  ranges and belongs to nothing else, so a NIC capability -- a perfectly good `CAP_IO_DEVICE` --
+  is refused. That is the type standing in for the object, the [C-1] shape **S43** exists about,
+  one syscall along. The check is on the device INDEX rather than on any field of the device,
+  because that index is what `iodev_allows_mmio` will gate the eventual map against, and gating
+  discovery and access on two different notions of "which device" is how the two drift apart.
+  **Shape, not address.** Where the framebuffer is comes from `SYS_DEVICE_INFO`'s `mmio[]`
+  ranges. One fact with two sources can drift, and a display mapped at one address and drawn at
+  another writes into whatever else is there. `struct fb_geometry` is declared in both rings and
+  enrolled in `tools/check_abi_structs.py`, which is what makes "byte-identical" a checked
+  statement rather than a hopeful comment (**S71**).
+  `SYS_ERR_NOENT` is the ordinary answer, not a failure: every machine that booted in EGA text
+  gives it. A caller must be able to tell "no framebuffer" from "a framebuffer zero pixels wide"
+  without inspecting fields, because the second is a shape it might then draw into.
+  Witnesses `make smoke-devcap-fb`, which runs on a machine that HAS a framebuffer **so that the
+  permitted call succeeds** -- with none the call refuses every caller and the refusals would
+  hold with the object check deleted -- and `make smoke-captest` (184 checks), whose two new
+  refusals require `SYS_ERR_PERM` specifically rather than merely non-zero, for the same reason.
+  Falsified by `FB_INFO_ANY_DEVICE=1` (`make smoke-devcap-fb-control`): the object check dropped
+  and the capability lookup deliberately kept, so the arm fails on the object rule alone.
+  Measured 2026-09-08, both directions.
+
 - **The kernel console draws on the framebuffer** (`src/kernel/terminal.c`). An 80x50 cell grid
   blitted from a font through the window at `high_pdpt[509]`, driven by the SAME grid the VGA
   text console uses -- so every caller of `print()` is unchanged and the two modes differ only in

@@ -866,6 +866,27 @@ void _start(void) {
         check(sys_device_info(SLOT_FRAME, &di) == SYS_ERR_PERM,
               "device-info-with-wrong-cap-type");
     }
+    {
+        /* SYS_FB_INFO discloses the display's dimensions. Same rights split as
+         * SYS_DEVICE_INFO above and the same answer with no capability: READ is
+         * not a softer gate, it is a narrower one.
+         *
+         * SYS_ERR_PERM SPECIFICALLY, not merely non-zero. This call has a second
+         * refusal -- SYS_ERR_NOENT, when the machine has no linear framebuffer,
+         * which is every machine captest boots on. Accepting either would make
+         * this check pass with the capability test deleted, because the NOENT
+         * answer arrives whatever the caller holds. Requiring PERM is what keeps
+         * it a test of the gate rather than of the hardware.
+         *
+         * The complementary half -- the permitted caller SUCCEEDING, so the
+         * refusals mean something -- is devcaptest's, on a machine that has a
+         * framebuffer (make smoke-devcap-fb). */
+        struct fb_geometry fg;
+        check(sys_fb_info(CAPSLOT_IO_DEVICE, &fg) == SYS_ERR_PERM,
+              "fb-info-without-cap-io-device");
+        check(sys_fb_info(SLOT_FRAME, &fg) == SYS_ERR_PERM,
+              "fb-info-with-wrong-cap-type");
+    }
 
     /* SYS_DEVICE_ENABLE writes the only configuration-space register ring 3 can
      * reach — the three PCI decode bits, bus mastering among them. On a machine

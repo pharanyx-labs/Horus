@@ -156,6 +156,35 @@ static void iodev_add_platform(void) {
     d->mmio[1].base = 0xB8000ULL; d->mmio[1].len = 0x2000ULL;   /* VGA text framebuffer    */
     d->n_mmio = 2;
 
+    /* And the linear framebuffer, when firmware gave this machine one.
+     *
+     * DECLARED HERE IS WHAT MAKES IT MAPPABLE. iodev_allows_mmio gates
+     * SYS_MAP_PHYS against exactly this list, so a range absent from it is
+     * unreachable from ring 3 by construction -- the same property the COM3 note
+     * below turns on. A console driver on a UEFI-only machine has no VGA text
+     * window to map, so without this line it can reach no display at all.
+     *
+     * PAGE-ALIGNED AND PAGE-ROUNDED, in that order and both deliberately. The
+     * base is floored so the whole framebuffer is inside the range even when
+     * firmware reports an unaligned start, and the length is rounded UP from the
+     * floored base so the last partial page is still covered. Getting either
+     * wrong yields a range that looks right and refuses the final row.
+     *
+     * It is added LAST so the two VGA ranges keep the indices they have always
+     * had: a driver reads mmio[] by position, and inserting ahead of them would
+     * silently renumber what every existing caller reads. */
+    {
+        const struct fb_info *fb = fb_info();
+        if (fb->valid && fb->type == MB2_FB_RGB && d->n_mmio < IODEV_MAX_MMIO) {
+            uint64_t base = fb->addr & ~(uint64_t)(PAGE_SIZE - 1);
+            uint64_t end  = fb->addr + (uint64_t)fb->height * (uint64_t)fb->pitch;
+            end = (end + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
+            d->mmio[d->n_mmio].base = base;
+            d->mmio[d->n_mmio].len  = end - base;
+            d->n_mmio++;
+        }
+    }
+
     d->port[0].base = 0x60;  d->port[0].len = 1;      /* PS/2 data           */
     d->port[1].base = 0x64;  d->port[1].len = 1;      /* PS/2 status/command */
     d->port[2].base = 0x2F8; d->port[2].len = 8;      /* COM2                */

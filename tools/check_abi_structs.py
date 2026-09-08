@@ -71,6 +71,7 @@ SYSCALL_H = ROOT / "include" / "syscall.h"
 # is a failure too. Discovery would silently start checking nothing.
 SHARED = [
     "dev_info",
+    "fb_geometry",
     "storage_info",
     "shlib_info",
     "untyped_info",

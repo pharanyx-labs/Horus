@@ -312,6 +312,65 @@ void h_device_info(struct interrupt_frame64 *r) {
     r->rax = 0;
 }
 
+/* SYS_FB_INFO(dev_slot, struct fb_geometry *out): the SHAPE of the linear
+ * framebuffer -- width, height, pitch, bits per pixel.
+ *
+ * READ, and the same capability lookup h_device_info makes: this discloses the
+ * display's dimensions, which is information about the machine rather than
+ * authority over it, and a driver that may not name the device may not ask.
+ *
+ * AND IT MUST BE THE PLATFORM DEVICE. The framebuffer is declared among that
+ * device's MMIO ranges, so the geometry belongs to it and to nothing else; a NIC
+ * capability answering this would be the [C-1] shape one layer along -- the type
+ * standing in for the object. The check is on the device INDEX rather than on any
+ * field of the device, because that index is what iodev_allows_mmio will gate the
+ * eventual map against, and gating discovery and access on two different notions
+ * of "which device" is how the two drift apart.
+ *
+ * SHAPE ONLY. Where the framebuffer is comes from SYS_DEVICE_INFO's mmio[]
+ * ranges. One fact, one source: a display mapped at one address and drawn at
+ * another writes into whatever else is there, and two syscalls reporting the
+ * same address is the arrangement that permits it.
+ *
+ * SYS_ERR_NOENT, not a zeroed struct, when this machine has no linear
+ * framebuffer -- which is every machine that booted in EGA text, i.e. all of
+ * them by default. A caller must be able to tell "no framebuffer" from "a
+ * framebuffer 0 pixels wide" without inspecting fields, because the second is a
+ * shape it might then try to draw into. */
+void h_fb_info(struct interrupt_frame64 *r) {
+    uint64_t index = 0;
+    const struct io_device *d = iodev_from_slot((uint32_t)r->rbx, CAP_RIGHT_READ, &index);
+    if (!d) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+#ifndef FB_INFO_ANY_DEVICE
+    if (index != IODEV_PLATFORM) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+#else
+    /* CONTROL ARM -- never ship. The OBJECT check dropped: any device capability
+     * answers, so a NIC driver reads the display's dimensions. The type standing
+     * in for the object, which is the [C-1] shape S43 exists about, in a syscall
+     * young enough that the habit could still have been formed the other way.
+     *
+     * The capability lookup ABOVE is deliberately left in place: with it gone the
+     * call would be refused for a different reason and the arm would pass for the
+     * wrong one. What this removes is exactly "and it must be THAT device". */
+    (void)index;
+#endif
+
+    const struct fb_info *fb = fb_info();
+    if (!fb->valid || fb->type != MB2_FB_RGB) { r->rax = (uint32_t)SYS_ERR_NOENT; return; }
+
+    struct fb_geometry g;
+    for (unsigned i = 0; i < sizeof(g); i++) ((uint8_t *)&g)[i] = 0;
+    g.width  = fb->width;
+    g.height = fb->height;
+    g.pitch  = fb->pitch;
+    g.bpp    = fb->bpp;
+
+    if (copy_to_user((void *)(addr_t)r->rcx, &g, sizeof(g)) != 0) {
+        r->rax = (uint32_t)SYS_ERR_FAULT; return;
+    }
+    r->rax = 0;
+}
+
 /* SYS_DEVICE_ENABLE(dev_slot, flags): set the three PCI decode bits of the device
  * named by `dev_slot` to exactly `flags` (DEV_ENABLE_IO / _MEM / _BUSMASTER).
  *

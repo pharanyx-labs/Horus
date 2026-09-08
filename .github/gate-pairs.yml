@@ -62,6 +62,7 @@ control_arms:
   smoke-fb-console-control: smoke-fb-console
   smoke-devcap-fb-control: smoke-devcap-fb
   smoke-fb-console-server-control: smoke-fb-console-server
+  smoke-fb-grid-control: smoke-fb-grid
   smoke-captest-lookup-type-control: smoke-captest
   smoke-auditprobe-control: smoke-auditprobe
   smoke-auditprobe-abi-control: smoke-auditprobe
@@ -235,6 +236,7 @@ gates:
   - smoke-fb-console
   - smoke-devcap-fb
   - smoke-fb-console-server
+  - smoke-fb-grid
   - smoke-passwd-target
   - smoke-nvcounter
   - smoke-rollback

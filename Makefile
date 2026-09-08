@@ -152,7 +152,8 @@ DEFECT_FLAGS = \
 	DEVREGS_KERNEL_ONLY SD_BLOCK_ADDR_UNSCALED FB_REQUEST \
 	FB_TAG_IGNORED FB_TAG_ASSUME_TEXT \
 	FB_MAP_SELFTEST FB_MAP_LOW_HALF FB_CONSOLE_SELFTEST \
-	FB_CONSOLE_MIRRORED FB_INFO_ANY_DEVICE CONSOLE_FB_ABSENT
+	FB_CONSOLE_MIRRORED FB_INFO_ANY_DEVICE CONSOLE_FB_ABSENT \
+	FB_GRID_FIXED_ROWS
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -2687,8 +2688,16 @@ endif
 # text window every existing gate's console depends on does not survive it.
 # It goes on ASFLAGS, not CFLAGS: the header is in src/boot/multiboot.S.
 FB_REQUEST ?= 0
+# The mode FB_REQUEST asks for. Overridable because the console's grid is DERIVED
+# from what firmware grants, and a derived property can only be tested by varying
+# what it derives from: FB_REQUEST_H=360 gives a real 45-row display, where a flag
+# would only assert that a number was written down. Measured 2026-09-08: GRUB
+# grants 400, 360 and 300 exactly, so these are real modes and not requests that
+# quietly round to something else.
+FB_REQUEST_W ?= 1024
+FB_REQUEST_H ?= 768
 ifeq ($(FB_REQUEST),1)
-ASFLAGS += -DFB_REQUEST
+ASFLAGS += -DFB_REQUEST -DFB_REQ_W=$(FB_REQUEST_W) -DFB_REQ_H=$(FB_REQUEST_H)
 endif
 
 # FB_TAG_IGNORED=1 walks past the framebuffer tag without reading it -- the state
@@ -2763,6 +2772,17 @@ endif
 # its own round-trip check and parks. The kernel's boot log stays on the screen
 # and there is no shell. Userspace-only, so it goes on USERSPACE_CFLAGS.
 CONSOLE_FB_ABSENT ?= 0
+
+# FB_GRID_FIXED_ROWS=1 nails the console's row count to 50 whatever the display
+# can show -- what it was before 2026-09-08. NOTHING FAULTS under it: every cell
+# is clipped against the real geometry, so the rows that do not exist are simply
+# not drawn and output is lost silently while the serial log stays complete. Both
+# rings, because both draw a grid. The arm for `make smoke-fb-grid`.
+FB_GRID_FIXED_ROWS ?= 0
+ifeq ($(FB_GRID_FIXED_ROWS),1)
+CFLAGS += -DFB_GRID_FIXED_ROWS
+USERSPACE_CFLAGS_FB_GRID = -DFB_GRID_FIXED_ROWS
+endif
 
 FB_INFO_ANY_DEVICE ?= 0
 ifeq ($(FB_INFO_ANY_DEVICE),1)
@@ -3530,6 +3550,9 @@ USERSPACE_CFLAGS += -DCONSOLE_VGA_CHECK_FAIL
 endif
 ifeq ($(CONSOLE_FB_ABSENT),1)
 USERSPACE_CFLAGS += -DCONSOLE_FB_ABSENT
+endif
+ifeq ($(FB_GRID_FIXED_ROWS),1)
+USERSPACE_CFLAGS += -DFB_GRID_FIXED_ROWS
 endif
 ifeq ($(CONSOLE_TIMESTAMPS_LEGACY),1)
 USERSPACE_CFLAGS += -DCONSOLE_TIMESTAMPS_LEGACY
@@ -9510,6 +9533,44 @@ smoke-fb-tag-gfx-control:
 # only display is a framebuffer.
 #
 # It reads PIXELS, because serial cannot show whether ring 3 painted anything.
+# THE CONSOLE'S GRID IS WHAT THE DISPLAY CAN SHOW.
+#
+# Boots a SHORT framebuffer -- 360 lines, which fits 45 rows of an 8-pixel cell
+# and not the 50 the console used to assume. A real display rather than a flag:
+# the row count is derived from what firmware granted, and a derived property can
+# only be tested by varying what it derives from. GRUB grants 400, 360 and 300
+# exactly (measured 2026-09-08), so these are real modes.
+#
+# WHY IT MATTERS BEYOND TIDINESS: a taller font is impossible while the row count
+# is a constant. 50 rows of an 8x16 cell need 800 lines and the hardware this
+# targets has 768, so fb_console_init would refuse the display and fall back to a
+# VGA text window that does not exist on a UEFI-only machine -- a black screen.
+.PHONY: smoke-fb-grid
+smoke-fb-grid:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FB_REQUEST=1 FB_REQUEST_H=360 boot.iso
+	@FB_EXPECT=grid tools/fb_tag_test.sh boot.iso
+
+.PHONY: smoke-fb-grid-control
+smoke-fb-grid-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FB_REQUEST=1 FB_REQUEST_H=360 FB_GRID_FIXED_ROWS=1 boot.iso
+	@echo "[fb] the row count is nailed to 50: the console must claim rows the display has not got"
+	@if FB_EXPECT=grid tools/fb_tag_test.sh boot.iso >.fb-grid-control.out 2>&1; then \
+	    echo "FB GRID CONTROL: FAIL - the gate passed with the row count hardcoded,"; \
+	    echo "  so nothing it asserts depends on the display's height."; \
+	    cat .fb-grid-control.out | sed 's/^/  /'; rm -f .fb-grid-control.out; exit 1; \
+	fi
+	@# It must fail by CLAIMING TOO MANY ROWS, not by failing to boot: the defect
+	@# is a console that believes in rows the display has not got, and a build that
+	@# died would satisfy "the gate went red" while witnessing nothing.
+	@if ! grep -q "grid is 50 rows on a display that fits 45" .fb-grid-control.out; then \
+	    echo "FB GRID CONTROL: FAIL - it went red, but not by claiming rows that do not fit."; \
+	    cat .fb-grid-control.out | sed 's/^/  /'; rm -f .fb-grid-control.out; exit 1; \
+	fi
+	@rm -f .fb-grid-control.out
+	@echo "[fb] CONTROL PASS - hardcoded, the console claims 50 rows on a 45-row display"
+
 .PHONY: smoke-fb-console-server
 smoke-fb-console-server:
 	@$(MAKE) --no-print-directory clean

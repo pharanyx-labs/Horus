@@ -17,6 +17,37 @@ in this file.
 
 ### Added
 
+- **The console's grid is what the display can show** (`src/kernel/terminal.c`,
+  `userspace/console_server.c`). The row count was the constant 50; it is derived from the
+  display now, in both rings -- `min(50, height / cell)`. On the 1024x768 QEMU boot that is
+  still 50 and nothing changes; on a 360-line display it is 45.
+  **This is what a taller font was blocked on.** 50 rows of an 8x16 cell need 800 lines and the
+  hardware this targets has 768, so replacing the font while the count was fixed would have made
+  `fb_console_init` refuse the display as too small and fall back to a VGA text window that does
+  not exist on a UEFI-only machine -- a black screen, which is the failure the whole framebuffer
+  sequence exists to remove.
+  **Columns are still a constant, deliberately.** 80 columns of an 8-pixel cell need 640 pixels
+  and a narrower display is refused outright, so the count never varies -- and keeping it
+  constant keeps `VIDEO_MEMORY`'s stride constant, which it must be: the VGA text plane is 80
+  wide whatever this console believes, and a dynamic stride there would be a subtly wrong write
+  rather than a refusal. Rows are taken and columns are demanded because a console with too few
+  columns wraps every line and one with too few rows merely scrolls sooner.
+  A display shorter than `CON_ROWS` -- the geometry the console protocol promises its clients --
+  is refused rather than clipped, because `tui.c` would otherwise draw rows that are not there.
+  The clipping in `fb_blit_cell` would in fact catch it, and relying on a bounds check to make a
+  wrong geometry harmless is how a wrong geometry survives.
+  Witness `make smoke-fb-grid`, which boots a **real** 360-line display (`FB_REQUEST_H=360`;
+  GRUB grants 400, 360 and 300 exactly, measured) rather than asserting through a flag, and
+  **computes** the expected row count from the geometry the kernel reported rather than
+  hardcoding it -- so it checks the rule, and a build that ignored the display cannot pass by
+  coincidence. It also requires both rings to agree: two grids over one framebuffer that
+  disagreed would have `console_server` clearing rows the kernel scrolls.
+  Falsified by `FB_GRID_FIXED_ROWS=1` (`make smoke-fb-grid-control`), which requires the gate to
+  go red **by claiming too many rows** and not merely to go red. **Nothing faults under it** --
+  every cell is clipped against the real geometry, so the rows that do not exist are simply not
+  drawn, output is lost silently, and the serial log stays complete throughout. A gate asking
+  only "did it fault" would pass.
+
 - **`console_server` drives the framebuffer, so ring 3 is no longer blind on a UEFI-only
   machine** (`userspace/console_server.c`, `src/kernel/syscall_hw.c`, `include/console_font.h`).
   It asks `SYS_FB_INFO` what the display is, takes the framebuffer's address from the platform

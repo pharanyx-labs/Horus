@@ -245,7 +245,37 @@ static uint32_t *g_fbp;             /* framebuffer as 32-bit pixels; 0 = inactiv
 static uint32_t  g_fb_pitch_px;     /* pitch in PIXELS, not bytes */
 static uint32_t  g_fb_w, g_fb_h;
 static uint32_t  g_scale = 1;
-static uint16_t  fb_cells[VGA_ROWS * VGA_COLS];
+static uint16_t  fb_cells[VGA_ROWS * VGA_COLS];   /* sized for the MAXIMUM grid */
+
+/* HOW MANY ROWS THE CONSOLE ACTUALLY HAS.
+ *
+ * VGA_ROWS (50) is the maximum, not the count. In VGA text mode it IS 50, because
+ * that is the mode terminal_init programs. On a framebuffer it is whatever fits:
+ * 50 rows of an 8x8 cell need 400 lines and every display has those, but 50 rows
+ * of an 8x16 cell need 800 and a 768-line panel -- which is what the hardware this
+ * targets has -- gives 48.
+ *
+ * SO THIS IS WHAT UNBLOCKS A TALLER FONT, and it is a variable rather than a
+ * constant for exactly that reason. Without it, replacing the font would make
+ * fb_console_init refuse the display as too small and fall back to a VGA text
+ * window that does not exist on a UEFI-only machine -- which is a black screen,
+ * the failure this whole sequence of work exists to remove.
+ *
+ * COLUMNS ARE STILL A CONSTANT, and deliberately. 80 columns of an 8-pixel cell
+ * need 640 pixels; a display narrower than that is refused outright below, so the
+ * count never varies. Keeping it constant also keeps VIDEO_MEMORY's stride
+ * constant, which it must be: the VGA text plane is 80 wide whatever this console
+ * believes, and a dynamic stride there would be a subtly wrong write rather than
+ * a refusal. */
+static int g_rows = VGA_ROWS;
+
+/* The fewest rows a framebuffer console may have. It is CON_ROWS from
+ * include/console_proto.h -- the geometry the console protocol promises its
+ * clients -- rather than a number chosen here, because a display shorter than
+ * what the protocol advertises makes tui.c draw rows that do not exist. Written
+ * as a literal with this note rather than by including the protocol header into
+ * the kernel's terminal, which has no other reason to know the protocol. */
+#define FB_MIN_ROWS 24
 static int       g_fb_console;      /* 1 once the framebuffer console is live */
 static int       g_cur_y = -1, g_cur_x = -1;   /* where the cursor is drawn */
 
@@ -302,7 +332,7 @@ static void fb_draw_glyph(uint32_t px0, uint32_t py0, uint8_t ch,
  * grid: the grid is what the console believes and the geometry is what the
  * hardware has, and a mismatch must clip rather than scribble. */
 static void fb_blit_cell(int y, int x) {
-    if (!g_fb_console || y < 0 || x < 0 || y >= VGA_ROWS || x >= VGA_COLS) return;
+    if (!g_fb_console || y < 0 || x < 0 || y >= g_rows || x >= VGA_COLS) return;
 
     uint16_t cell = fb_cells[y * VGA_COLS + x];
     uint8_t  ch   = (uint8_t)(cell & 0xFF);
@@ -322,7 +352,7 @@ static void fb_draw_cursor(void) {
     if (!g_fb_console) return;
     if (g_cur_y >= 0) fb_blit_cell(g_cur_y, g_cur_x);
     g_cur_y = cursor_y; g_cur_x = cursor_x;
-    if (cursor_y < 0 || cursor_x < 0 || cursor_y >= VGA_ROWS || cursor_x >= VGA_COLS) return;
+    if (cursor_y < 0 || cursor_x < 0 || cursor_y >= g_rows || cursor_x >= VGA_COLS) return;
 
     uint32_t cw = (uint32_t)g_font.w * g_scale;
     uint32_t chh = (uint32_t)g_font.h * g_scale;
@@ -341,7 +371,7 @@ static void fb_draw_cursor(void) {
 /* Repaint every cell. Used on start-up and after a scroll. */
 static void fb_repaint(void) {
     if (!g_fb_console) return;
-    for (int y = 0; y < VGA_ROWS; y++)
+    for (int y = 0; y < g_rows; y++)
         for (int x = 0; x < VGA_COLS; x++) fb_blit_cell(y, x);
     g_cur_y = -1;
     fb_draw_cursor();
@@ -370,13 +400,52 @@ void fb_console_init(void) {
     g_font.w = 8;
     g_font.h = 8;
 
+    /* Scale first, then take however many rows are left.
+     *
+     * The scale rule is about legibility -- a dense panel renders an 8-pixel cell
+     * unreadably small -- so it is chosen from the WIDTH and then dropped to 1:1
+     * if 80 columns would not fit at 2x. Columns are the hard requirement; rows
+     * are whatever remains.
+     *
+     * WHY ROWS ARE TAKEN AND COLUMNS DEMANDED. A console with fewer columns than
+     * 80 wraps every line of the boot log and is unreadable; a console with fewer
+     * rows just scrolls sooner. So a narrow display is refused and a short one is
+     * accommodated, which is what lets a taller font work at all: 50 rows of an
+     * 8x16 cell need 800 lines and the target hardware has 768. */
     g_scale = (fb->width >= 1600u) ? 2u : 1u;
-    if (fb->width  < (uint32_t)VGA_COLS * g_font.w * g_scale ||
-        fb->height < (uint32_t)VGA_ROWS * g_font.h * g_scale)
-        g_scale = 1;
-    if (fb->width  < (uint32_t)VGA_COLS * g_font.w ||
-        fb->height < (uint32_t)VGA_ROWS * g_font.h) {
-        print("fb: the display is too small for an 80x50 grid; console stays on VGA text\n");
+    if (fb->width < (uint32_t)VGA_COLS * g_font.w * g_scale) g_scale = 1;
+    if (fb->width < (uint32_t)VGA_COLS * g_font.w) {
+        print("fb: the display is narrower than 80 columns; console stays on VGA text\n");
+        return;
+    }
+
+    uint32_t fits = fb->height / ((uint32_t)g_font.h * g_scale);
+#ifdef FB_GRID_FIXED_ROWS
+    /* CONTROL ARM -- never ship. The row count nailed to VGA_ROWS whatever the
+     * display can show, which is what it was before 2026-09-08.
+     *
+     * NOTHING FAULTS UNDER IT, and that is the point. fb_blit_cell clips every
+     * cell against the real geometry, so the rows that do not exist are simply
+     * not drawn: the console believes it has fifty rows, writes to all of them,
+     * and the last few are discarded on the way to the screen. Output is LOST,
+     * silently, and the serial log is complete and correct throughout. A gate
+     * that only asked "did it fault" or "is there text on screen" would pass. */
+    (void)fits;
+    g_rows = VGA_ROWS;
+#else
+    g_rows = (fits > (uint32_t)VGA_ROWS) ? VGA_ROWS : (int)fits;
+#endif
+
+    /* FB_MIN_ROWS is CON_ROWS, the geometry the console PROTOCOL promises its
+     * clients (include/console_proto.h). A display shorter than that would have
+     * tui.c drawing rows that are not there -- off the end of the mapping, into
+     * whatever the next page holds -- so it is refused rather than clipped. The
+     * clipping in fb_blit_cell would in fact catch it, and relying on a bounds
+     * check to make a wrong geometry harmless is how a wrong geometry survives. */
+    if (g_rows < FB_MIN_ROWS) {
+        print("fb: the display is shorter than the console protocol promises; ");
+        print("console stays on VGA text\n");
+        g_rows = VGA_ROWS;
         return;
     }
 
@@ -388,7 +457,7 @@ void fb_console_init(void) {
     /* The shadow starts as the blank screen clear_screen would have drawn, and
      * the whole display is painted from it -- including the region outside the
      * grid, which firmware left holding whatever it left holding. */
-    for (int i = 0; i < VGA_ROWS * VGA_COLS; i++) fb_cells[i] = (uint16_t)((current_attr << 8) | ' ');
+    for (int i = 0; i < g_rows * VGA_COLS; i++) fb_cells[i] = (uint16_t)((current_attr << 8) | ' ');
     g_fb_console = 1;
     for (uint32_t py = 0; py < g_fb_h; py++) {
         uint32_t *row = g_fbp + (uint64_t)py * g_fb_pitch_px;
@@ -403,12 +472,12 @@ void fb_console_init(void) {
      * all -- a stem down the left, a foot to the right -- so the host can test
      * for a mirrored blitter without knowing which font is loaded. That keeps
      * the check alive across a font replacement, which is the next commit. */
-    fb_draw_glyph(0, (uint32_t)VGA_ROWS * (uint32_t)g_font.h * g_scale + 8u,
+    fb_draw_glyph(0, (uint32_t)g_rows * (uint32_t)g_font.h * g_scale + 8u,
                   (uint8_t)'L', vga_palette[15], vga_palette[0]);
     print("fb: selftest glyph drawn below the grid\n");
 #endif
     print("fb: console on the framebuffer, ");
-    print_decimal((uint32_t)VGA_COLS); print("x"); print_decimal((uint32_t)VGA_ROWS);
+    print_decimal((uint32_t)VGA_COLS); print("x"); print_decimal((uint32_t)g_rows);
     print(" cells, "); print_decimal(g_font.w); print("x"); print_decimal(g_font.h);
     print(" font at "); print_decimal(g_scale); print("x\n");
 }
@@ -741,7 +810,7 @@ static void emit_char(char c, int to_klog, int drive_hw) {
 
     if (!drive_hw) return;
 
-    if (cursor_y >= VGA_ROWS || cursor_x >= VGA_COLS) {
+    if (cursor_y >= g_rows || cursor_x >= VGA_COLS) {
         scroll_screen();
     }
 
@@ -759,7 +828,7 @@ static void emit_char(char c, int to_klog, int drive_hw) {
             cursor_x = VGA_COLS - 1;
         }
     } else {
-        if (cursor_y < VGA_ROWS && cursor_x < VGA_COLS) {
+        if (cursor_y < g_rows && cursor_x < VGA_COLS) {
             cell_put(cursor_y, cursor_x, (uint16_t)((current_attr << 8) | (uint8_t)c));
         }
         cursor_x++;
@@ -769,7 +838,7 @@ static void emit_char(char c, int to_klog, int drive_hw) {
         cursor_x = 0;
         cursor_y++;
     }
-    if (cursor_y >= VGA_ROWS) {
+    if (cursor_y >= g_rows) {
         scroll_screen();
     }
 
@@ -862,7 +931,7 @@ void println(const char* str) { print(str); print("\n"); }
 void clear_screen(void) {
     uint64_t flags = console_lock_acquire();
     if (console_owner_task == 0) {
-        for (int y = 0; y < VGA_ROWS; y++)
+        for (int y = 0; y < g_rows; y++)
             for (int x = 0; x < VGA_COLS; x++)
                 cell_put(y, x, (uint16_t)((current_attr << 8) | ' '));
         cursor_x = 0; cursor_y = 0; update_cursor();
@@ -911,15 +980,15 @@ void print_decimal(uint64_t n) {
 }
 
 static void scroll_screen(void) {
-    for (int y = 1; y < VGA_ROWS; y++) {
+    for (int y = 1; y < g_rows; y++) {
         for (int x = 0; x < VGA_COLS; x++) {
             cell_put(y - 1, x, cell_get(y, x));
         }
     }
     for (int x = 0; x < VGA_COLS; x++) {
-        cell_put(VGA_ROWS - 1, x, (uint16_t)((current_attr << 8) | ' '));
+        cell_put(g_rows - 1, x, (uint16_t)((current_attr << 8) | ' '));
     }
-    cursor_y = VGA_ROWS - 1;
+    cursor_y = g_rows - 1;
     cursor_x = 0;
     update_cursor();
 }

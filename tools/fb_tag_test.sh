@@ -23,6 +23,7 @@
 #   FB_EXPECT=unparsed the tag is not recorded, so the reporter falls back (control arm)
 #   FB_EXPECT=map      the framebuffer window is built and reachable from a task
 #   FB_EXPECT=map-lowhalf  the window is in the low half, so no task has it (control arm)
+#   FB_EXPECT=grid     the console's rows are what the display can show
 #   SMOKE_TIMEOUT      seconds (default 60)
 set -u
 
@@ -98,6 +99,43 @@ rgb)
     # was no pixel console; there is one now, and the assertion moved with it.
     check "the console moved to the framebuffer" "fb: console on the framebuffer"
     check "the boot still completed"                     "kernel ready"
+    ;;
+grid)
+    # THE EXPECTATION IS DERIVED FROM THE DISPLAY, not written down here.
+    #
+    # The rule is "as many rows as fit, capped at the 80x50 maximum", so the gate
+    # computes that from the geometry the kernel itself reported and compares. A
+    # hardcoded 45 would pass a build that ignored the display and happened to be
+    # asked for a 360-line one; it would also have to be edited every time the
+    # gate's mode changed, which is how an expectation stops tracking the rule it
+    # stands for.
+    geom=$(grep -ao "fb: RGB [0-9]*x[0-9]*x[0-9]*" "$LOG" | head -1)
+    kern=$(grep -ao "fb: console on the framebuffer, 80x[0-9]*" "$LOG" | head -1)
+    ring3=$(grep -ao "grid 80x[0-9]*" "$LOG" | head -1)
+    if [ -z "$geom" ] || [ -z "$kern" ]; then
+        echo "  [FAIL] the kernel did not report a framebuffer and a grid"
+        fail=1
+    else
+        h=$(echo "$geom" | sed 's/.*x\([0-9]*\)x[0-9]*$/\1/')
+        rows=$(echo "$kern" | sed 's/.*80x//')
+        want=$(( h / 8 )); [ "$want" -gt 50 ] && want=50
+        echo "  display ${geom#fb: RGB }, cell 8px -> $want rows fit; the console reports $rows"
+        if [ "$rows" = "$want" ]; then
+            echo "  [ OK ] the kernel's grid is what the display can show"
+        else
+            echo "  [FAIL] the kernel's grid is $rows rows on a display that fits $want"
+            fail=1
+        fi
+        # Ring 3 must agree: two grids over one framebuffer that disagree about
+        # the row count would have console_server clearing rows the kernel scrolls.
+        if [ "$ring3" = "grid 80x$want" ]; then
+            echo "  [ OK ] console_server's grid agrees with the kernel's"
+        else
+            echo "  [FAIL] console_server reports '$ring3', wanted 'grid 80x$want'"
+            fail=1
+        fi
+    fi
+    check "the machine reached the login prompt" "horus login:"
     ;;
 map)
     # The window exists AND is reachable from a task's address space. Two

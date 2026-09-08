@@ -1870,6 +1870,13 @@ jobs:
       # all satisfied by a checker that rejects everything.
       - name: Falsify every rule of the evidence checker
         run: ./tools/test_check_gate_evidence.sh
+      # A required gate reported a split marker that had not happened: its two
+      # counts came from two reads of a capture QEMU was still writing, and the
+      # skew is one-directional, so it can only ever manufacture a false RED.
+      # This reproduces that on demand against a live writer -- the rate in CI is
+      # about 1 job run in 35, which is not something to wait for.
+      - name: The kdiag counts come from one snapshot of a finished capture
+        run: ./tools/test_kdiag_counts.sh
       # The code graph is local-only (gitignored), so CI cannot check it. What CI
       # CAN check is the half that goes stale silently: if the extern "C" export
       # pattern stops matching, tools/ffi_edges.py injects nothing, and the graph

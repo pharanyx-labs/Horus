@@ -164,10 +164,50 @@ while [ "$SECONDS" -lt "$deadline" ]; do
     sleep 0.5
 done
 
-con_whole=$(count "$LOG" "$MARKER");  con_prefix=$(count "$LOG" "$PREFIX")
-dia_whole=$(count "$DIAG" "$MARKER"); dia_prefix=$(count "$DIAG" "$PREFIX")
-dia_ring3=$(count "$DIAG" "$RING3");  con_ring3=$(count "$LOG" "$RING3")
-gp=$(count "$LOG" "$GPFAULT")
+# STOP THE GUEST BEFORE MEASURING IT, and derive every count for a capture from
+# ONE read of that capture.
+#
+# THE DEFECT THIS FIXES, observed on 2026-09-08 in run 34227134084. Each `count`
+# above is a separate python process re-reading the file, and the loop breaks the
+# instant `prefix >= MIN` -- exactly at the boundary, with QEMU still running and
+# still writing. `whole` was read, marker #7 completed, `prefix` was read: 6 and 7,
+# from two different files that happened to share a name. The gate reported
+#
+#   KDIAG FAIL: 7 marker(s) reached the diagnostic channel and only 6 arrived whole
+#
+# and then printed its own evidence dump showing all SEVEN intact. It reddened a
+# dependabot PR whose entire diff was three SHA pin bumps in two workflow files.
+#
+# THE SKEW WAS ONE-DIRECTIONAL, which is why this had never shown up as a false
+# PASS: `whole` is read before `prefix`, so a marker completing in between can
+# only ever make prefix exceed whole -- the shape of a split. A race that can only
+# manufacture the failure it is looking for is the worst kind to leave in a gate.
+#
+# `count()` is kept for the poll loop above, where a threshold on a growing file
+# is exactly right and reading low merely waits longer.
+kill "$QEMU_PID" 2>/dev/null
+wait "$QEMU_PID" 2>/dev/null
+QEMU_PID=
+
+# One read, every count from the same bytes. The trailing-partial-line guard is
+# unchanged and still wanted: a capture can end mid-line whether or not anyone is
+# still writing to it.
+counts_for() {   # $1 = file -> "<marker> <prefix> <ring3> <gpfault>"
+    python3 - "$1" "$MARKER" "$PREFIX" "$RING3" "$GPFAULT" <<'PYCOUNTS'
+import sys
+data = open(sys.argv[1], 'rb').read()
+cut = data.rfind(b'\n')
+body = data[:cut + 1] if cut >= 0 else b''
+print(' '.join(str(body.count(a.encode())) for a in sys.argv[2:]))
+PYCOUNTS
+}
+
+read -r con_whole con_prefix con_ring3 gp        <<EOF
+$(counts_for "$LOG")
+EOF
+read -r dia_whole dia_prefix dia_ring3 _dia_gp   <<EOF
+$(counts_for "$DIAG")
+EOF
 
 # Evidence FIRST, and unconditionally. A gate that destroys its own capture on
 # the failure path is one nobody can debug on the run that mattered -- the
@@ -216,8 +256,13 @@ channel)
     fi
     if [ "$dia_whole" -ne "$dia_prefix" ]; then
         echo "KDIAG FAIL: $dia_prefix marker(s) reached the diagnostic channel and only"
-        echo "            $dia_whole arrived whole. Something other than the kernel is"
-        echo "            writing COM3, which is the one thing that channel is for."
+        echo "            $dia_whole arrived whole -- so a marker on the kernel's own"
+        echo "            diagnostic channel was cut, which is the hazard S81 is about."
+        echo "            Read the dump below before believing this: it is the whole"
+        echo "            capture, and if every marker in it is intact then the verdict"
+        echo "            is wrong rather than the kernel. That happened on 2026-09-08,"
+        echo "            when the two counts came from two reads of a file still being"
+        echo "            written; they come from one snapshot of a finished capture now."
         exit 1
     fi
     echo "KDIAG PASS: $dia_whole/$dia_prefix kernel markers contiguous on a channel"

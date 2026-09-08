@@ -151,7 +151,7 @@ DEFECT_FLAGS = \
 	STORAGE_FORMAT_WEDGE CONSOLE_TIMESTAMPS_LEGACY CLOCK_EPOCH_FROM_FIRST_TICK \
 	DEVREGS_KERNEL_ONLY SD_BLOCK_ADDR_UNSCALED FB_REQUEST \
 	FB_TAG_IGNORED FB_TAG_ASSUME_TEXT \
-	FB_MAP_SELFTEST FB_MAP_LOW_HALF
+	FB_MAP_SELFTEST FB_MAP_LOW_HALF FB_CONSOLE_SELFTEST FB_CONSOLE_MIRRORED
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -2731,6 +2731,25 @@ endif
 FB_MAP_LOW_HALF ?= 0
 ifeq ($(FB_MAP_LOW_HALF),1)
 CFLAGS += -DFB_MAP_LOW_HALF
+endif
+
+# FB_CONSOLE_SELFTEST=1 draws a known glyph BELOW the console grid, where nothing
+# scrolls over it, so a host-side screendump can check the PIXELS. Not a defect
+# arm: it is the only way to see what the screen looks like, and the screen is
+# the one thing a serial log cannot report.
+FB_CONSOLE_SELFTEST ?= 0
+ifeq ($(FB_CONSOLE_SELFTEST),1)
+CFLAGS += -DFB_CONSOLE_SELFTEST
+endif
+
+# FB_CONSOLE_MIRRORED=1 blits LSB-first, so bit 0 becomes the leftmost pixel and
+# every glyph is mirrored. The classic framebuffer font defect, and one NO SERIAL
+# LOG CAN SHOW: the console reports itself started, every message is present and
+# correct in the log, and the screen is unreadable. The arm for
+# `make smoke-fb-console`.
+FB_CONSOLE_MIRRORED ?= 0
+ifeq ($(FB_CONSOLE_MIRRORED),1)
+CFLAGS += -DFB_CONSOLE_MIRRORED
 endif
 
 # ---- a device register file must be present in every address space -----------
@@ -9391,6 +9410,25 @@ smoke-fb-tag-gfx-control:
 # pml4[511], which create_user_pagedir copies verbatim, so it is inherited by
 # every address space with no per-task fixup. A window in the low half is not,
 # and nothing running at boot can tell the difference.
+# WHAT IS ACTUALLY ON THE SCREEN.
+#
+# Every other framebuffer gate reads the WIRE, and the wire cannot show a
+# mirrored glyph: under FB_CONSOLE_MIRRORED the serial log is complete and
+# correct, the console reports itself started, and the display is unreadable.
+# This screendumps over QMP and inspects the pixels.
+.PHONY: smoke-fb-console
+smoke-fb-console:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FB_REQUEST=1 FB_CONSOLE_SELFTEST=1 boot.iso
+	@FB_CONSOLE_EXPECT=ok tools/fb_console_test.sh boot.iso
+
+.PHONY: smoke-fb-console-control
+smoke-fb-console-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FB_REQUEST=1 FB_CONSOLE_SELFTEST=1 FB_CONSOLE_MIRRORED=1 boot.iso
+	@echo "[fb] the blitter reads bit 0 as the leftmost pixel: the glyph must come out mirrored"
+	@FB_CONSOLE_EXPECT=mirrored tools/fb_console_test.sh boot.iso
+
 .PHONY: smoke-fb-map
 smoke-fb-map:
 	@$(MAKE) --no-print-directory clean

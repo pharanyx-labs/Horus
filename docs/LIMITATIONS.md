@@ -2292,19 +2292,22 @@ old allocator and the new one read the same single block and no workload could t
 ## 4. Functionality that does not exist
 
 - **Networking.** No drivers, no stack, no sockets.
-- **Graphics.** VGA text mode (`0xB8000`) only; no framebuffer graphics, no windowing. **On a
-  UEFI machine with no CSM that text buffer does not exist**, so the kernel boots and runs blind
-  unless a serial port is attached: there is no GOP/linear-framebuffer console yet. This is the
-  first thing between "the image boots on a laptop" and "the laptop is usable".
+- **Graphics.** No windowing, and no graphics beyond a text grid. **The KERNEL's console draws on
+  a linear framebuffer since 2026-09-08** -- an 80x50 cell grid blitted from a font, with the VGA
+  text path kept for machines that boot in text mode -- so a UEFI machine with no CSM, where the
+  `0xB8000` text buffer does not exist, is no longer blind. **Ring 3 is still blind on such a
+  machine**: `console_server` takes the console by mapping the VGA text plane and fails its
+  round-trip check in a graphics mode (`CONSOLE_SELFTEST: FAIL vga`, audibly), so the boot log is
+  drawn and the shell is not. Teaching `console_server` about the framebuffer is the next step and
+  is what closes "the laptop is usable".
 
-  **Since 2026-09-08 the kernel knows what the display is**, which is the first of the four steps
-  and not yet a console. It parses the multiboot2 framebuffer tag (type 8), validates every field
+  **Since 2026-09-08 the kernel knows what the display is, and draws on it.** It parses the multiboot2 framebuffer tag (type 8), validates every field
   before recording it, and reports the mode, geometry and base address: `fb: EGA text 80x25 at
   0x00000000000B8000` on an ordinary boot, `fb: RGB 1024x768x32 pitch 4096 at 0x00000000FD000000`
-  on a machine that granted a graphics mode. Gated by `make smoke-fb-tag` and
-  `make smoke-fb-tag-gfx`. **Nothing renders to it yet** -- on the RGB path the kernel says so in
-  as many words, because a console still writing to a text window that is not there produces a
-  black screen and no error.
+  on a machine that granted a graphics mode. The window it draws through is 2 MiB pages at
+  `high_pdpt[509]`, in the half of the address space every task inherits (`make smoke-fb-map`),
+  and the console blits an 80x50 grid through it (`make smoke-fb-console`, which checks PIXELS
+  over QMP -- a mirrored blitter leaves the serial log complete and correct).
 
   **How a graphics mode is actually obtained, measured 2026-09-08, because two plausible routes
   are dead ends.** `set gfxpayload` in `grub.cfg` does not apply to a multiboot2 payload and

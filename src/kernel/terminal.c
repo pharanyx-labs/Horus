@@ -316,7 +316,227 @@ char console_getc(void) {
     }
 }
 
+/* ---- The framebuffer console ------------------------------------------------
+ *
+ * A pixel display driven from the SAME 80x50 cell grid the VGA text console
+ * uses, so every caller of print() is unchanged and the two modes differ only
+ * in where a cell lands. The kernel keeps a shadow of that grid here rather
+ * than reading it back out of the display: on a machine in a graphics mode the
+ * legacy text window at 0xB8000 is not a display and may not even be decoded,
+ * so it is neither a place to store state nor a place to read it from.
+ *
+ * FONT-AGNOSTIC ON PURPOSE. The blitter takes width, height and a bitmap
+ * pointer, so replacing the 8x8 font with a taller one is a data change and not
+ * a code change. That matters here specifically: the font this ships with is
+ * `font_8x8` below, which is ASCII-only, draws 7 pixels wide in an 8-pixel cell
+ * and CARRIES NO PROVENANCE -- see THIRD_PARTY.md. Replacing it is a separate
+ * commit, and this is what makes that commit small.
+ *
+ * BIT ORDER IS MSB-FIRST, and it is not a guess: this same table is uploaded
+ * into the VGA font plane at 0xA0000 by vga_initialize_text_mode_80x50, where
+ * the hardware reads bit 7 as the leftmost pixel. A blitter that disagreed with
+ * that would mirror every glyph, and the two paths would disagree about what
+ * the same bytes mean.
+ *
+ * SCALE is 1:1 below 1600 pixels wide and 2x at or above it, so a dense modern
+ * panel does not render an unreadably small grid. If the chosen scale does not
+ * FIT the grid, it falls back to 1:1 rather than drawing off the edge, and if
+ * 1:1 does not fit either the framebuffer console is simply not started. Every
+ * cell blit is bounds-checked against the real width and height as well: the
+ * geometry came from firmware, and a write past the end of this mapping is a
+ * write into whatever the next 2 MiB page holds. */
+struct console_font { const uint8_t *bits; uint8_t w, h; };
+
+static struct console_font g_font;
+static uint32_t *g_fbp;             /* framebuffer as 32-bit pixels; 0 = inactive */
+static uint32_t  g_fb_pitch_px;     /* pitch in PIXELS, not bytes */
+static uint32_t  g_fb_w, g_fb_h;
+static uint32_t  g_scale = 1;
+static uint16_t  fb_cells[VGA_ROWS * VGA_COLS];
+static int       g_fb_console;      /* 1 once the framebuffer console is live */
+static int       g_cur_y = -1, g_cur_x = -1;   /* where the cursor is drawn */
+
+int console_is_framebuffer(void) { return g_fb_console; }
+
+/* The standard VGA 16-colour text palette as 0x00RRGGBB. Written out rather
+ * than computed: these are the colours a VGA DAC produces for attribute values
+ * 0..15, and every terminal in the world renders them approximately this way.
+ * The bright half is not "the dark half doubled" -- 0xAA and 0x55 are the
+ * hardware's own levels -- so a formula here would be a subtly different
+ * palette that merely looked principled. */
+static const uint32_t vga_palette[16] = {
+    0x000000, 0x0000AA, 0x00AA00, 0x00AAAA,
+    0xAA0000, 0xAA00AA, 0xAA5500, 0xAAAAAA,
+    0x555555, 0x5555FF, 0x55FF55, 0x55FFFF,
+    0xFF5555, 0xFF55FF, 0xFFFF55, 0xFFFFFF,
+};
+
+/* Paint one glyph at a pixel origin. The one place pixels are written, so the
+ * self-test below exercises the code the console actually draws with rather
+ * than a second copy of it that could be right while the first is wrong.
+ *
+ * BIT 7 IS THE LEFTMOST PIXEL. Not a guess: this same table is uploaded into
+ * the VGA font plane, where the hardware reads it that way, so a blitter that
+ * disagreed would mirror every glyph while the text console rendered correctly
+ * -- two paths disagreeing about what the same bytes mean. It is also invisible
+ * on serial, which is why the gate for it checks PIXELS. */
+static void fb_draw_glyph(uint32_t px0, uint32_t py0, uint8_t ch,
+                          uint32_t fg, uint32_t bg) {
+    uint32_t cw  = (uint32_t)g_font.w * g_scale;
+    uint32_t chh = (uint32_t)g_font.h * g_scale;
+    if (px0 + cw > g_fb_w || py0 + chh > g_fb_h) return;
+
+    const uint8_t *glyph = g_font.bits + (uint32_t)ch * g_font.h;
+    for (uint32_t ry = 0; ry < chh; ry++) {
+        uint8_t bits = glyph[ry / g_scale];
+        uint32_t *row = g_fbp + (uint64_t)(py0 + ry) * g_fb_pitch_px + px0;
+        for (uint32_t rx = 0; rx < cw; rx++) {
+#ifdef FB_CONSOLE_MIRRORED
+            /* CONTROL ARM -- never ship. LSB-first: bit 0 as the leftmost pixel,
+             * which mirrors every glyph. The classic framebuffer font defect,
+             * and one no serial log can show -- the console reports itself
+             * started and every message is present and correct in the log while
+             * the screen is unreadable. */
+            row[rx] = (bits & (1u << (rx / g_scale))) ? fg : bg;
+#else
+            row[rx] = (bits & (0x80u >> (rx / g_scale))) ? fg : bg;
+#endif
+        }
+    }
+}
+
+/* Paint one cell. Bounds-checked against the real geometry, not against the
+ * grid: the grid is what the console believes and the geometry is what the
+ * hardware has, and a mismatch must clip rather than scribble. */
+static void fb_blit_cell(int y, int x) {
+    if (!g_fb_console || y < 0 || x < 0 || y >= VGA_ROWS || x >= VGA_COLS) return;
+
+    uint16_t cell = fb_cells[y * VGA_COLS + x];
+    uint8_t  ch   = (uint8_t)(cell & 0xFF);
+    uint8_t  attr = (uint8_t)(cell >> 8);
+    uint32_t fg   = vga_palette[attr & 0x0F];
+    uint32_t bg   = vga_palette[(attr >> 4) & 0x07];
+
+    fb_draw_glyph((uint32_t)x * (uint32_t)g_font.w * g_scale,
+                  (uint32_t)y * (uint32_t)g_font.h * g_scale, ch, fg, bg);
+}
+
+/* A framebuffer has no CRTC cursor, so one is drawn: an underline in the
+ * foreground colour across the bottom of the cell. Erasing is a re-blit of the
+ * cell it was over, which is why the position it was last drawn at is
+ * remembered -- repainting the whole grid to move a cursor would be visible. */
+static void fb_draw_cursor(void) {
+    if (!g_fb_console) return;
+    if (g_cur_y >= 0) fb_blit_cell(g_cur_y, g_cur_x);
+    g_cur_y = cursor_y; g_cur_x = cursor_x;
+    if (cursor_y < 0 || cursor_x < 0 || cursor_y >= VGA_ROWS || cursor_x >= VGA_COLS) return;
+
+    uint32_t cw = (uint32_t)g_font.w * g_scale;
+    uint32_t chh = (uint32_t)g_font.h * g_scale;
+    uint32_t px0 = (uint32_t)cursor_x * cw;
+    uint32_t py0 = (uint32_t)cursor_y * chh;
+    if (px0 + cw > g_fb_w || py0 + chh > g_fb_h) return;
+
+    uint16_t cell = fb_cells[cursor_y * VGA_COLS + cursor_x];
+    uint32_t fg = vga_palette[(cell >> 8) & 0x0F];
+    for (uint32_t ry = chh - (g_scale * 2u); ry < chh; ry++) {
+        uint32_t *row = g_fbp + (uint64_t)(py0 + ry) * g_fb_pitch_px + px0;
+        for (uint32_t rx = 0; rx < cw; rx++) row[rx] = fg;
+    }
+}
+
+/* Repaint every cell. Used on start-up and after a scroll. */
+static void fb_repaint(void) {
+    if (!g_fb_console) return;
+    for (int y = 0; y < VGA_ROWS; y++)
+        for (int x = 0; x < VGA_COLS; x++) fb_blit_cell(y, x);
+    g_cur_y = -1;
+    fb_draw_cursor();
+}
+
+/* Start the framebuffer console, if there is one to start.
+ *
+ * REFUSES RATHER THAN APPROXIMATES. 32 bits per pixel only: 24bpp needs a
+ * byte-wise store and 15/16bpp needs channel packing, and each is a different
+ * blitter. Writing one of them untested would be worse than not claiming the
+ * mode -- the console is the only way to report anything on a machine with no
+ * serial port, so a console that draws WRONG is harder to diagnose than one
+ * that never started and said so. */
+void fb_console_init(void) {
+    const struct fb_info *fb = fb_info();
+    if (!fb->valid || fb->type != MB2_FB_RGB) return;
+    uint64_t va = fb_vaddr();
+    if (va == 0) return;
+    if (fb->bpp != 32) {
+        print("fb: "); print_decimal(fb->bpp);
+        print("-bit pixels are not supported; console stays on VGA text\n");
+        return;
+    }
+
+    g_font.bits = &font_8x8[0][0];
+    g_font.w = 8;
+    g_font.h = 8;
+
+    g_scale = (fb->width >= 1600u) ? 2u : 1u;
+    if (fb->width  < (uint32_t)VGA_COLS * g_font.w * g_scale ||
+        fb->height < (uint32_t)VGA_ROWS * g_font.h * g_scale)
+        g_scale = 1;
+    if (fb->width  < (uint32_t)VGA_COLS * g_font.w ||
+        fb->height < (uint32_t)VGA_ROWS * g_font.h) {
+        print("fb: the display is too small for an 80x50 grid; console stays on VGA text\n");
+        return;
+    }
+
+    g_fbp         = (uint32_t *)(uintptr_t)va;
+    g_fb_pitch_px = fb->pitch / 4u;
+    g_fb_w        = fb->width;
+    g_fb_h        = fb->height;
+
+    /* The shadow starts as the blank screen clear_screen would have drawn, and
+     * the whole display is painted from it -- including the region outside the
+     * grid, which firmware left holding whatever it left holding. */
+    for (int i = 0; i < VGA_ROWS * VGA_COLS; i++) fb_cells[i] = (uint16_t)((current_attr << 8) | ' ');
+    g_fb_console = 1;
+    for (uint32_t py = 0; py < g_fb_h; py++) {
+        uint32_t *row = g_fbp + (uint64_t)py * g_fb_pitch_px;
+        for (uint32_t px = 0; px < g_fb_w; px++) row[px] = vga_palette[(current_attr >> 4) & 0x07];
+    }
+    fb_repaint();
+
+#ifdef FB_CONSOLE_SELFTEST
+    /* Draw a known glyph BELOW the 80x50 grid, in the region the console never
+     * touches, so the boot log cannot scroll over it before the host looks.
+     * 'L' specifically: it is strongly left-heavy in any font that draws an L at
+     * all -- a stem down the left, a foot to the right -- so the host can test
+     * for a mirrored blitter without knowing which font is loaded. That keeps
+     * the check alive across a font replacement, which is the next commit. */
+    fb_draw_glyph(0, (uint32_t)VGA_ROWS * (uint32_t)g_font.h * g_scale + 8u,
+                  (uint8_t)'L', vga_palette[15], vga_palette[0]);
+    print("fb: selftest glyph drawn below the grid\n");
+#endif
+    print("fb: console on the framebuffer, ");
+    print_decimal((uint32_t)VGA_COLS); print("x"); print_decimal((uint32_t)VGA_ROWS);
+    print(" cells, "); print_decimal(g_font.w); print("x"); print_decimal(g_font.h);
+    print(" font at "); print_decimal(g_scale); print("x\n");
+}
+
+/* The console's cell grid, addressed the same way in both modes.
+ *
+ * In text mode these ARE the VGA text plane, exactly as before. In framebuffer
+ * mode they are the shadow above and every write also paints. Introduced so the
+ * four places that used to write VIDEO_MEMORY directly do not each need to know
+ * which mode they are in. */
+static inline uint16_t cell_get(int y, int x) {
+    return g_fb_console ? fb_cells[y * VGA_COLS + x]
+                        : VIDEO_MEMORY[y * VGA_COLS + x];
+}
+static inline void cell_put(int y, int x, uint16_t v) {
+    if (g_fb_console) { fb_cells[y * VGA_COLS + x] = v; fb_blit_cell(y, x); }
+    else VIDEO_MEMORY[y * VGA_COLS + x] = v;
+}
+
 static void update_cursor(void) {
+    if (g_fb_console) { fb_draw_cursor(); return; }
     uint16_t pos = cursor_y * VGA_COLS + cursor_x;
     outb(0x3D4, 14);
     outb(0x3D5, pos >> 8);
@@ -647,7 +867,7 @@ static void emit_char(char c, int to_klog, int drive_hw) {
         }
     } else {
         if (cursor_y < VGA_ROWS && cursor_x < VGA_COLS) {
-            VIDEO_MEMORY[cursor_y * VGA_COLS + cursor_x] = (current_attr << 8) | (uint8_t)c;
+            cell_put(cursor_y, cursor_x, (uint16_t)((current_attr << 8) | (uint8_t)c));
         }
         cursor_x++;
     }
@@ -749,7 +969,9 @@ void println(const char* str) { print(str); print("\n"); }
 void clear_screen(void) {
     uint64_t flags = console_lock_acquire();
     if (console_owner_task == 0) {
-        for (int i = 0; i < VGA_COLS * VGA_ROWS; i++) VIDEO_MEMORY[i] = (current_attr << 8) | ' ';
+        for (int y = 0; y < VGA_ROWS; y++)
+            for (int x = 0; x < VGA_COLS; x++)
+                cell_put(y, x, (uint16_t)((current_attr << 8) | ' '));
         cursor_x = 0; cursor_y = 0; update_cursor();
     }
     console_lock_release(flags);
@@ -798,11 +1020,11 @@ void print_decimal(uint64_t n) {
 static void scroll_screen(void) {
     for (int y = 1; y < VGA_ROWS; y++) {
         for (int x = 0; x < VGA_COLS; x++) {
-            VIDEO_MEMORY[(y-1) * VGA_COLS + x] = VIDEO_MEMORY[y * VGA_COLS + x];
+            cell_put(y - 1, x, cell_get(y, x));
         }
     }
     for (int x = 0; x < VGA_COLS; x++) {
-        VIDEO_MEMORY[(VGA_ROWS-1) * VGA_COLS + x] = (current_attr << 8) | ' ';
+        cell_put(VGA_ROWS - 1, x, (uint16_t)((current_attr << 8) | ' '));
     }
     cursor_y = VGA_ROWS - 1;
     cursor_x = 0;

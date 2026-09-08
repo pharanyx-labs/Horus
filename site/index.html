@@ -1536,7 +1536,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 290 test targets, and the troubleshooting
+          Every configuration flag, every one of the 292 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1617,7 +1617,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>A VFS and mount points</strong>, a per-task mount table routes each path to the capability for that mount, and a second filesystem server proves it; the existing clients still carry their own path walkers</th><td class="t-note">smoke-vfs</td></tr>
               <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Dynamic linking and a shared libc, every binary statically links newlib</th><td class="t-note">roadmap 2.5</td></tr>
               <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Networking: no drivers, no stack, no sockets</th><td class="t-note">roadmap 2.6</td></tr>
-              <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">KASLR, USB, sound, graphics beyond VGA text, interrupt remapping</th><td class="t-note">; </td></tr>
+              <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">KASLR, USB, sound, windowing or graphics beyond a text grid, interrupt remapping</th><td class="t-note">; </td></tr>
             </tbody>
           </table>
         </div>
@@ -1657,7 +1657,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             The security argument rests entirely on the tests, so they are treated as engineering
             artifacts rather than an afterthought. There are three layers: Rust unit tests and
-            Kani proofs on the host; 141 QEMU integration targets that boot a purpose-built kernel
+            Kani proofs on the host; 142 QEMU integration targets that boot a purpose-built kernel
             and assert a marker on the serial console; and scripted sessions that type into the
             real ring-3 shell over serial and read what comes back.
           </p>

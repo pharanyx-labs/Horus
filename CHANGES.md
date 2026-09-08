@@ -17,6 +17,39 @@ in this file.
 
 ### Added
 
+- **The framebuffer console draws an 8x16 font, authored for this project**
+  (`include/console_font.h`, `THIRD_PARTY.md`). Real descenders on `g j p q y`; a comma with a
+  tail, distinguishable from a full stop, where the 8x8's is effectively one pixel and
+  `uniprocessor, 1 CPU, no APs` renders with what read as full stops; a slashed zero, and
+  `1`/`l`/`I` mutually distinct; twice the vertical resolution.
+  **It was written rather than adopted, deliberately.** Taking a permissively licensed console
+  font would have been less work, but reproducing another font's glyphs from memory and
+  attributing them to it is a provenance claim nobody can check -- which is exactly the defect
+  `font_8x8` already is. A font whose origin is "we drew it" needs no research.
+  **It fits only because the grid is derived.** 48 rows of a 16-pixel cell on a 768-line panel;
+  the fixed 50 it replaced would have needed 800 and been refused.
+  **`M N W m w` use all eight columns** and give up their letter spacing. At six they are not
+  legible: rendered and read, `smp` came out as `snp` and `rn` was indistinguishable from `m`.
+  Every one of those glyphs passes any check that reads the bytes, which is why the font was
+  judged by looking at it.
+  `THIRD_PARTY.md` is new and records both fonts: the 8x16 as authored here, and **`font_8x8` as
+  provenance unknown** -- it is uploaded into the VGA font plane on every text-mode boot, so it
+  is shipped and rendered, and it carries no attribution, upstream or licence statement. It
+  resembles the small 8x8 bitmap fonts that circulated with early PC graphics code, several of
+  which are public domain and several of which are not; resemblance is not provenance, so the
+  question is recorded as open rather than answered with a guess. That closes roadmap **4.10**,
+  which was written about newlib and whose real gap turned out to be a font.
+  Witnesses: `make smoke-fb-console` (pixels over QMP) still passes with the taller glyphs --
+  the `L` goes from 8 left / 2 right to 20 left / 2 right, and the arm still inverts it -- which
+  is the font-independence that check was designed for, now demonstrated rather than argued.
+  `make smoke-fb-grid` reports 80x30 on a 480-line display.
+  **Two gates encoded constants the kernel derives, and both were caught by the gates
+  themselves.** `smoke-fb-grid` divided the display height by a hardcoded 8 and disagreed with a
+  kernel that was right; `smoke-fb-console` drew its selftest glyph below the grid, which had
+  room at 8x8 (50 rows = 400 of 768 lines) and none at 8x16 (48 rows = 768 exactly). The glyph
+  moved to the RIGHT margin, which survives by construction because columns are capped at 80,
+  and both harnesses now read the geometry the guest reports.
+
 - **The console's grid is what the display can show** (`src/kernel/terminal.c`,
   `userspace/console_server.c`). The row count was the constant 50; it is derived from the
   display now, in both rings -- `min(50, height / cell)`. On the 1024x768 QEMU boot that is

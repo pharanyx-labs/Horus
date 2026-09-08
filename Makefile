@@ -9545,16 +9545,23 @@ smoke-fb-tag-gfx-control:
 # is a constant. 50 rows of an 8x16 cell need 800 lines and the hardware this
 # targets has 768, so fb_console_init would refuse the display and fall back to a
 # VGA text window that does not exist on a UEFI-only machine -- a black screen.
+#
+# THE MODE MOVED FROM 360 TO 480 WHEN THE FONT GREW, and that is the rule working
+# rather than the gate being tuned to pass: 360 lines is 22 rows of a 16-pixel
+# cell, below the FB_MIN_ROWS floor the console protocol sets, so the console
+# would REFUSE the display and this gate would be measuring a fallback. 480 gives
+# 30 rows -- clear of the floor and still short of the 50 cap, which is what makes
+# the derivation visible.
 .PHONY: smoke-fb-grid
 smoke-fb-grid:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory FB_REQUEST=1 FB_REQUEST_H=360 boot.iso
+	@$(MAKE) --no-print-directory FB_REQUEST=1 FB_REQUEST_H=480 boot.iso
 	@FB_EXPECT=grid tools/fb_tag_test.sh boot.iso
 
 .PHONY: smoke-fb-grid-control
 smoke-fb-grid-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory FB_REQUEST=1 FB_REQUEST_H=360 FB_GRID_FIXED_ROWS=1 boot.iso
+	@$(MAKE) --no-print-directory FB_REQUEST=1 FB_REQUEST_H=480 FB_GRID_FIXED_ROWS=1 boot.iso
 	@echo "[fb] the row count is nailed to 50: the console must claim rows the display has not got"
 	@if FB_EXPECT=grid tools/fb_tag_test.sh boot.iso >.fb-grid-control.out 2>&1; then \
 	    echo "FB GRID CONTROL: FAIL - the gate passed with the row count hardcoded,"; \
@@ -9564,12 +9571,12 @@ smoke-fb-grid-control:
 	@# It must fail by CLAIMING TOO MANY ROWS, not by failing to boot: the defect
 	@# is a console that believes in rows the display has not got, and a build that
 	@# died would satisfy "the gate went red" while witnessing nothing.
-	@if ! grep -q "grid is 50 rows on a display that fits 45" .fb-grid-control.out; then \
+	@if ! grep -q "grid is 50 rows on a display that fits 30" .fb-grid-control.out; then \
 	    echo "FB GRID CONTROL: FAIL - it went red, but not by claiming rows that do not fit."; \
 	    cat .fb-grid-control.out | sed 's/^/  /'; rm -f .fb-grid-control.out; exit 1; \
 	fi
 	@rm -f .fb-grid-control.out
-	@echo "[fb] CONTROL PASS - hardcoded, the console claims 50 rows on a 45-row display"
+	@echo "[fb] CONTROL PASS - hardcoded, the console claims 50 rows on a 30-row display"
 
 .PHONY: smoke-fb-console-server
 smoke-fb-console-server:

@@ -2305,10 +2305,15 @@ old allocator and the new one read the same single block and no workload could t
   refused, because a console that wraps every line is unreadable where one that scrolls sooner is
   merely smaller. That unblocks a taller font: an 8x16 cell gives 48 rows on the 768-line panel
   this targets, which the fixed count could not have accommodated.
-  **What is still missing is scrolling and the font.** The console wraps rather than scrolls,
-  exactly as the VGA text path it mirrors always has, so a full screen overwrites from the top;
-  and the font is still the 8x8 with no provenance (§THIRD_PARTY). Neither blocks a usable
-  console, and both are the next changes.
+  **The framebuffer console draws an 8x16 font since 2026-09-08**, authored for this project
+  (`THIRD_PARTY.md`): real descenders, a comma distinguishable from a full stop, a slashed zero.
+  It fits only because the grid is derived -- 48 rows of a 16-pixel cell on a 768-line panel,
+  where the old fixed 50 would have been refused.
+  **What is still missing is scrolling**, and the 8x8's provenance. The console wraps rather
+  than scrolls, exactly as the VGA text path it mirrors always has, so a full screen overwrites
+  from the top. And `font_8x8` is still uploaded into the VGA font plane for 80x50 text mode --
+  that mode is an 8x8 cell by definition -- so the unattributed asset still ships on a BIOS
+  boot; `THIRD_PARTY.md` records the question as open rather than guessing an answer.
 
   **Since 2026-09-08 the kernel knows what the display is, and draws on it.** It parses the multiboot2 framebuffer tag (type 8), validates every field
   before recording it, and reports the mode, geometry and base address: `fb: EGA text 80x25 at

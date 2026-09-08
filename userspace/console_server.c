@@ -77,6 +77,13 @@ static void ser_putc(char c) {
  * behaviours to keep in step. */
 #define FB_VADDR   0x0000000100000000ULL   /* 4 GiB: clear of image/heap/stack */
 
+/* The cell, named rather than spelled 8 in four places. It is the font's, and
+ * the font changed from 8x8 to 8x16 on 2026-09-08: a literal in the row-fitting
+ * arithmetic and a different literal in the blitter would have disagreed
+ * silently, drawing 16-pixel glyphs into an 8-pixel grid. */
+#define FB_CELL_W  8u
+#define FB_CELL_H  16u
+
 static volatile uint32_t *fbp;      /* 0 until mapped */
 static uint32_t fb_pitch_px, fb_w, fb_h, fb_scale = 1;
 static uint16_t fb_cells[80 * 50];      /* sized for the MAXIMUM grid */
@@ -108,11 +115,11 @@ static void fb_blit(unsigned idx) {
     uint8_t ch = (uint8_t)(cell & 0xFF), attr = (uint8_t)(cell >> 8);
     uint32_t fg = fb_pal[attr & 0x0F], bg = fb_pal[(attr >> 4) & 0x07];
 
-    uint32_t cw = 8u * fb_scale, chh = 8u * fb_scale;
+    uint32_t cw = FB_CELL_W * fb_scale, chh = FB_CELL_H * fb_scale;
     uint32_t px0 = (idx % 80u) * cw, py0 = (idx / 80u) * chh;
     if (px0 + cw > fb_w || py0 + chh > fb_h) return;
 
-    const uint8_t *g = &font_8x8[ch][0];
+    const uint8_t *g = &font_8x16[ch][0];
     for (uint32_t ry = 0; ry < chh; ry++) {
         uint8_t bits = g[ry / fb_scale];
         volatile uint32_t *row = fbp + (uint64_t)(py0 + ry) * fb_pitch_px + px0;
@@ -419,11 +426,11 @@ void _start(void) {
                     fb_pitch_px = fbg.pitch / 4u;
                     fb_w = fbg.width; fb_h = fbg.height;
                     fb_scale = (fbg.width >= 1600u) ? 2u : 1u;
-                    if (fbg.width < 80u * 8u * fb_scale) fb_scale = 1u;
+                    if (fbg.width < 80u * FB_CELL_W * fb_scale) fb_scale = 1u;
                     /* Columns are demanded and rows are taken -- see the kernel's
                      * fb_console_init for why that asymmetry is the right one. */
                     {
-                        unsigned fits = fbg.height / (8u * fb_scale);
+                        unsigned fits = fbg.height / (FB_CELL_H * fb_scale);
 #ifdef FB_GRID_FIXED_ROWS
                         (void)fits; fb_rows = 50u;   /* CONTROL ARM -- never ship */
 #else

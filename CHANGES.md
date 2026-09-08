@@ -177,6 +177,31 @@ in this file.
 
 ### Fixed
 
+- **The build no longer depends on one host being reachable** (`tools/build_newlib.sh`). The
+  newlib tarball is fetched from sourceware.org and, failing that, from `mirrors.kernel.org`;
+  the pinned `NEWLIB_SHA256` is verified afterwards exactly as before, on every invocation and
+  whatever served the bytes. **A second source costs nothing in supply-chain terms** -- the hash
+  is the trust anchor, not the host -- which is why this is a fallback list and not a change to
+  what is trusted.
+  On 2026-09-08 sourceware.org returned HTTP 502 for that file long enough to fail **eleven
+  required checks** on one PR, every job that links libc, and kept returning it through all five
+  of curl's retries. `--retry-all-errors` covers a transient 5xx; nothing covers a host that is
+  down, and nothing in this repository could be merged while it was.
+  Each source gets its own partial file, discarded when moving to the next: `-C -` resume is
+  correct for retrying one host and wrong across two, and a spliced response would be reported
+  as a CHECKSUM MISMATCH -- which reads as tampering rather than as an abandoned transfer.
+  **A failure message that misreports its own evidence was fixed in the same change**: the first
+  version printed `curl exit 0` for a failed fetch, because `$?` after `if ... fi` is the status
+  of the `if`, which is 0 when the condition was false. The capture is now the first statement
+  in the `else`, and the message reports curl's real exit (22 on this outage).
+  Measured 2026-09-08, three ways: against the live outage the primary fails with exit 22 and
+  the mirror serves a tarball whose checksum matches; with every source unreachable the script
+  refuses, enumerates what it tried, and leaves no tarball to wedge the next run; and a
+  deliberately corrupt tarball is still refused and quarantined. **No gate, deliberately** -- a
+  check that asserted a mirror is reachable would be asserting the state of the internet, and
+  the property that actually matters (bytes are trusted only when the hash matches) is already
+  gated by `make smoke-newlib-tamper`.
+
 - **A console driver that failed after taking the console could not be heard** (`SYS_CONSOLE_RELEASE`,
   syscall 114). Ownership passes to `console_server` on its first successful map of the VGA text
   window (`src/kernel/syscall_hw.c`), and from that instant the kernel's `print()` records to the

@@ -384,6 +384,18 @@ jobs:
       # one that decides what happens.
       - name: Control arm — an unconsulted framebuffer type is caught
         run: make smoke-fb-tag-gfx-control
+      # The window the renderer will draw through: built, and REACHABLE FROM A
+      # TASK. The second half is the point -- a kernel-half window is inherited
+      # by every address space because pml4[511] is copied verbatim, and a
+      # low-half one is not, which nothing running at boot can tell apart.
+      - name: The framebuffer window is reachable from a task's address space
+        run: make smoke-fb-map
+      # The SDHCI register file's defect reproduced in new code. Its boot-time
+      # readback still passes under the arm, which is the lesson rather than an
+      # incidental: that is why the register file shipped, probed clean, and
+      # faulted the moment ring 3 asked for it.
+      - name: Control arm — a low-half window no task can reach is caught
+        run: make smoke-fb-map-control
       # A console driver that fails AFTER taking the console must still be heard.
       # Ownership passes on the first successful VGA map, and from then the
       # kernel's print() records to the klog and stops driving the wire -- so a

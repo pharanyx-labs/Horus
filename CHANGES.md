@@ -17,6 +17,38 @@ in this file.
 
 ### Added
 
+- **The framebuffer has a window the kernel can reach, in the half every task
+  inherits** (`src/kernel/paging.c`). `PHYS_KVA` covers `[0, 1 GiB)` and a linear
+  framebuffer does not live there -- measured at `0xFD000000`, and firmware on real
+  hardware routinely puts it higher -- so the one address every other physical access
+  in this kernel goes through cannot reach it. It gets 2 MiB pages at
+  `high_pdpt[509]`, one GiB of kernel-half VA immediately below the kernel image;
+  `fb_vaddr()` and `fb_mapped_bytes()` are what the renderer will draw through.
+  **Which half it is in is the whole design.** `high_pdpt` hangs off `pml4[511]`, and
+  `pml4[256..511]` is copied verbatim into every address space -- so the window is
+  visible to every task, present and future, with nothing to install per address
+  space and nothing to keep in step. That is the same bargain `kstack_region_init`
+  strikes, and the direct contrast is `ensure_storage_regs_mapped`, which installs
+  into `pml4[0]`: the low half, which `create_user_pagedir` builds from nothing, and
+  which was therefore absent the moment a syscall reached the SDHCI driver on a task's
+  `cr3`.
+  The physical base is **not assumed 2 MiB-aligned** -- it is on every machine measured
+  so far, and "so far" is not a guarantee to build an address on -- so the window starts
+  at the 2 MiB floor and the exported address carries the offset back. Cache-disabled,
+  which is correct and slow: write-combining is what a framebuffer wants, needs a PAT
+  entry, and is a change with its own measurement rather than one bundled here.
+  Not fatal on failure: no framebuffer, text mode, or a page directory that cannot be
+  allocated all leave `fb_vaddr()` at 0 and the console where it is.
+  Witness `make smoke-fb-map`, which asserts the readback **and** that the window is
+  present in a freshly built user address space's real page tables. Falsified by
+  `FB_MAP_LOW_HALF=1` (`make smoke-fb-map-control`), which builds it in the low half
+  and asserts **both** halves of the resulting signature: every task address space
+  reports `ABSENT FROM THE TASK ADDRESS SPACE`, and the boot-time readback still
+  reports `OK`. The second assertion is the lesson -- a check made on the kernel's own
+  `cr3` cannot see this defect at all, which is exactly why the SDHCI register file
+  probed clean at boot and faulted the instant ring 3 asked for it. Measured
+  2026-09-08, both directions.
+
 - **The kernel knows what the display is** (`src/kernel/main.c`, `src/boot/multiboot.S`,
   `grub.cfg`). The multiboot2 framebuffer tag (type 8) is parsed, every field validated before it
   is recorded, and the mode reported: `fb: EGA text 80x25 at 0x00000000000B8000` on an ordinary

@@ -150,7 +150,8 @@ DEFECT_FLAGS = \
 	ENTER_USER_STEAL_WIDEN ENTER_USER_PUBLISH_EARLY ENTER_USER_CLAIM_UNCHECKED \
 	STORAGE_FORMAT_WEDGE CONSOLE_TIMESTAMPS_LEGACY CLOCK_EPOCH_FROM_FIRST_TICK \
 	DEVREGS_KERNEL_ONLY SD_BLOCK_ADDR_UNSCALED FB_REQUEST \
-	FB_TAG_IGNORED FB_TAG_ASSUME_TEXT
+	FB_TAG_IGNORED FB_TAG_ASSUME_TEXT \
+	FB_MAP_SELFTEST FB_MAP_LOW_HALF
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -2707,6 +2708,29 @@ endif
 FB_TAG_ASSUME_TEXT ?= 0
 ifeq ($(FB_TAG_ASSUME_TEXT),1)
 CFLAGS += -DFB_TAG_ASSUME_TEXT
+endif
+
+# FB_MAP_SELFTEST=1 writes a pattern through the framebuffer window and reads it
+# back, at boot and again on each freshly built user address space -- and reports
+# whether the window is PRESENT in that address space's real page tables.
+#
+# NOT A DEFECT ARM. It is the only way to see a mapping that nothing renders to
+# yet. The presence half is the one that matters: the SDHCI register file was
+# present at boot and absent under a syscall, and that only surfaced as a page
+# fault in the installer. This asks the question directly, of the built tables.
+FB_MAP_SELFTEST ?= 0
+ifeq ($(FB_MAP_SELFTEST),1)
+CFLAGS += -DFB_MAP_SELFTEST
+endif
+
+# FB_MAP_LOW_HALF=1 builds the framebuffer window in pml4[0] -- the LOW half,
+# which create_user_pagedir builds from nothing -- instead of the kernel half.
+# The SDHCI register file's defect reproduced in new code: present on the
+# kernel's cr3, absent from every task's, and invisible to any check that runs
+# at boot. The arm for `make smoke-fb-map`.
+FB_MAP_LOW_HALF ?= 0
+ifeq ($(FB_MAP_LOW_HALF),1)
+CFLAGS += -DFB_MAP_LOW_HALF
 endif
 
 # ---- a device register file must be present in every address space -----------
@@ -9360,6 +9384,25 @@ smoke-fb-tag-gfx-control:
 	    grep -aE "fb:|kernel ready" .fb-evidence/serial.log | sed 's/^/  /'; exit 1; \
 	fi
 	@echo "[fb] CONTROL PASS - unconsulted, the type field lets 1024x768 be called EGA text"
+
+# THE FRAMEBUFFER WINDOW: built, and reachable from a task's address space.
+#
+# The second half is the whole point. A window in the KERNEL half hangs off
+# pml4[511], which create_user_pagedir copies verbatim, so it is inherited by
+# every address space with no per-task fixup. A window in the low half is not,
+# and nothing running at boot can tell the difference.
+.PHONY: smoke-fb-map
+smoke-fb-map:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FB_REQUEST=1 FB_MAP_SELFTEST=1 boot.iso
+	@FB_EXPECT=map tools/fb_tag_test.sh boot.iso
+
+.PHONY: smoke-fb-map-control
+smoke-fb-map-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FB_REQUEST=1 FB_MAP_SELFTEST=1 FB_MAP_LOW_HALF=1 boot.iso
+	@echo "[fb] the window is in the low half: no task address space may have it"
+	@FB_EXPECT=map-lowhalf tools/fb_tag_test.sh boot.iso
 
 .PHONY: smoke-installer-sd
 smoke-installer-sd:

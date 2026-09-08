@@ -58,6 +58,7 @@ control_arms:
   smoke-installer-sd-stride-control: smoke-installer-sd
   smoke-fb-tag-control: smoke-fb-tag
   smoke-fb-tag-gfx-control: smoke-fb-tag-gfx
+  smoke-fb-map-control: smoke-fb-map
   smoke-captest-lookup-type-control: smoke-captest
   smoke-auditprobe-control: smoke-auditprobe
   smoke-auditprobe-abi-control: smoke-auditprobe
@@ -227,6 +228,7 @@ gates:
   - smoke-installer-sd
   - smoke-fb-tag
   - smoke-fb-tag-gfx
+  - smoke-fb-map
   - smoke-passwd-target
   - smoke-nvcounter
   - smoke-rollback

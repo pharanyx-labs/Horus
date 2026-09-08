@@ -338,6 +338,32 @@ in this file.
 
 ### Fixed
 
+- **A required gate reported a defect that had not happened** (`tools/kdiag_test.sh`). The
+  verdict's counts came from two separate `python3` processes re-reading a capture QEMU was
+  still writing, and the poll loop broke the instant `prefix >= KDIAG_MIN` -- exactly at the
+  boundary. A marker completing between the two reads made `prefix` exceed `whole`, which is
+  precisely the shape of a split marker, so `smoke-kdiag` reported the hazard it exists to
+  detect **from an artefact of its own measurement**.
+  It reddened PR #334, a dependabot bump whose entire diff was three SHA pins in two workflow
+  files -- and then printed an evidence dump containing all **seven** markers intact, refuting
+  its own `whole=6 prefix=7` verdict. Reading the dump is what identified it.
+  **The skew was one-directional**, `whole` being read first, so it could only ever manufacture
+  a false RED and never a false green. That is why it survived: a measurement that only fails
+  wrongly reads as a flaky gate rather than a broken instrument.
+  The capture is now finished before it is measured -- QEMU is stopped -- and every count for a
+  capture is derived from **one** read of it. `count()` is kept for the poll loop, where a
+  threshold on a growing file is exactly right and reading low merely waits longer.
+  The failure message no longer asserts *"Something other than the kernel is writing COM3"*,
+  which was flatly false here: a verdict that a read skew can produce must not name a cause it
+  has not established. It now tells the reader to check the dump against the verdict.
+  Witness `tools/test_kdiag_counts.sh`, run in CI, which reproduces the defect **on demand**
+  against a live writer rather than waiting for a rate of about 1 job run in 35: measured
+  2026-09-08, **20 of 40 samples skew with two reads and 0 of 40 with one**. It extracts
+  `counts_for()` from the script under test rather than copying it, so the test and the code
+  cannot drift apart. Its first version wrote its whole log before sampling, reproduced nothing,
+  and **reported that as a broken experiment rather than as a pass** -- which is the check that
+  makes the rest of it mean anything.
+
 - **A control arm that asserted a race from one boot is bounded** (`Makefile`,
   `smoke-kdiag-split-control`). The split is probabilistic: measured 2026-09-08 over twenty
   boots, it reproduces **13 of 20**, so the single-boot form was **red on about a third of

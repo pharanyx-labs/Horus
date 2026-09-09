@@ -1,6 +1,6 @@
 # Horus development log, 2026
 
-The narrative record of how Horus was built: 141 entries, newest first, each explaining what
+The narrative record of how Horus was built: 142 entries, newest first, each explaining what
 changed and (the part that matters here) **why, including what was tried and failed**.
 
 This is not the changelog. [`../../CHANGES.md`](../../CHANGES.md) is, and it summarises the
@@ -16,6 +16,45 @@ Finding IDs (**[C-n]**, **[I-n]**, **[G-n]**, **[H-n]**, **[M-n]**) are global a
 project. Their **current** status lives in [`../LIMITATIONS.md`](../LIMITATIONS.md) and
 [`../AUDIT.md`](../AUDIT.md), an entry below records a status as of the day it was written,
 which is exactly what a historical record should do and exactly why it is not authoritative.
+
+---
+
+### Fixed: two arms defined a macro nothing read, and both had measurements written against them
+
+The night's third checker came from asking a different question of the same list. `DEFECT_FLAGS`
+has 181 members; every one has a row in `docs/BUILDING.md`, which `check_defect_flags.py` has
+enforced since 2026-08-21. Nothing asked whether the flag DID anything.
+
+Two did not. `NET_NO_BUSMASTER` (2026-08-28) and `SDHCI_WRITE_NO_FLUSH` (2026-09-07) each had a
+Makefile block adding `-DFLAG` to the compiler line and no source file testing it. Building with
+either produced a byte-identical system. Both arms had been run; both had passed; and both
+passes were written up as measurements of the emulator:
+
+> QEMU does not enforce the bus-master bit for virtio-net, so the arm cannot fail here.
+> QEMU's `sd-card` completes a write synchronously, so both checks pass with the flush removed.
+
+Neither sentence was about the emulator. They were about a macro nobody read.
+
+**Wired, the two answers differ, and that is the argument for the rule rather than for the fix.**
+`NET_NO_BUSMASTER` reproduces at once -- `NETTEST: FAIL dma-never-completed`, `smoke-net` red --
+because QEMU's e1000 checks the bus-master bit on the RECEIVE path (`e1000x_rx_ready`), which the
+driver's own comment in `netd.c` had recorded a morning of debugging ago. The old record was
+wrong twice: it named virtio, and this tree replaced virtio with an e1000 precisely because a
+paravirtual device cannot witness an IOMMU property. `SDHCI_WRITE_NO_FLUSH`, wired, still cannot
+fail: `PSTATE_DAT_INHIBIT` is clear by the time the driver looks. It stays ungated, and now the
+reason is true.
+
+**Rule 3 nearly could not fail either**, which is the part worth keeping. The first draft scanned
+one corpus -- sources plus `tools/` -- and the new self-test QUOTES `#elif
+defined(NET_NO_BUSMASTER)` in the text of an arm. Un-wire the flag in a mutated tree and the
+checker still "found" it, in the file whose job is to prove the finding. The arm reported NOT
+CAUGHT. Code and tools are now separate corpora, and `test_*.sh` is excluded from the tool one: a
+self-test quotes flags, it does not read them.
+
+Seven arms, on a checker that had none: both existing rules, three for rule 3 (un-wire in ring 3,
+un-wire in the kernel, a declared build-level effect not reported), the arm that removes a
+build-effect declaration and requires its flag to become a finding, and a Makefile the parser
+cannot read failing loudly rather than passing with nothing to compare against.
 
 ---
 

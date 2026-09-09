@@ -2468,11 +2468,19 @@ jobs:
       # reach. Clear all three decode bits and the device stops answering its own
       # I/O BAR -- which is what shows the write lands rather than returning 0.
       #
-      # This is NOT the bus-master arm it started as: measured, QEMU does not
-      # enforce PCI bus-master enable for virtio-net, so that arm cannot fail
-      # here and a control arm that cannot fail cannot gate.
+      # This is NOT the bus-master arm it started as, and the reason it gave for
+      # that was wrong twice over: it cited QEMU not enforcing bus-master enable
+      # for VIRTIO-NET, on a tree whose driver is an e1000, and the arm it was
+      # citing defined a macro no source file read. Both fixed 2026-09-10; the
+      # bus-master arm is the step below.
       - name: Control arm — a device asked to decode nothing answers nothing
         run: make smoke-net-decode-control
+      # S44's other half, gated for the first time on 2026-09-10. The flag had
+      # existed since 2026-08-28 defining a macro no source file read, so the arm
+      # built an identical driver and its "the defect does not reproduce here"
+      # was a measurement of the base build. Wired, it reproduces at once.
+      - name: Control arm — a driver whose device cannot master the bus
+        run: make smoke-net-busmaster-control
       # SYS_DMA_ADDR returns the address the DEVICE uses. Program the driver's own
       # virtual address instead and every register write still succeeds, the
       # device accepts both queues, and not one descriptor is ever found.
@@ -2768,6 +2776,8 @@ jobs:
       # undocumented arm indistinguishable from a deleted one.
       - name: Refuse an undocumented defect flag, or a row no build can produce
         run: python3 tools/check_defect_flags.py
+      - name: Falsify that checker in every direction
+        run: tools/test_check_defect_flags.sh
 
   syscall-abi:
     name: "Every user pointer reaches the kernel full-width (issue #176)"

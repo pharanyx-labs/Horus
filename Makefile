@@ -6732,6 +6732,28 @@ smoke-net-decode-control:
 	@SMOKE_NET=e1000 SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='NETTEST: FAIL mac-not-valid' tools/smoke_test.sh boot.iso
 
+# S44's other half, and the arm that spent thirteen days changing nothing.
+#
+# NET_NO_BUSMASTER=1 withholds the PCI bus-master bit while leaving decode on, so
+# the driver's registers answer and its DMA does not. From 2026-08-28 the Makefile
+# added -DNET_NO_BUSMASTER and NO SOURCE FILE TESTED IT: the arm built an
+# identical driver, passed, and was recorded as "the defect does not reproduce on
+# this emulator" -- a sentence about QEMU that was really a sentence about a macro
+# nobody read, and about virtio, which this tree replaced with an e1000.
+#
+# Wired on 2026-09-10 it reproduces at once: QEMU's e1000 checks the bit on the
+# RECEIVE path (e1000x_rx_ready), so the descriptor ring is never read back and
+# the round trip never completes. Same marker as smoke-net-iommu-control, and for
+# the same reason -- both withhold the device's reach rather than its addresses.
+.PHONY: smoke-net-busmaster-control
+smoke-net-busmaster-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 NET_NO_BUSMASTER=1
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 NET_NO_BUSMASTER=1 boot.iso
+	@SMOKE_NET=e1000 SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='NETTEST: FAIL dma-never-completed' tools/smoke_test.sh boot.iso
+	@echo "[net] CONTROL PASS - without bus mastering the device never reads its own ring"
+
 # ---- Device capabilities: a CAP_IO_DEVICE names a device --------------------
 #
 # Base gate. Boots with a virtio-net NIC on the bus (SMOKE_NET=1) and a probe

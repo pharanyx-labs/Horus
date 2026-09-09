@@ -110,7 +110,7 @@ DEFECT_FLAGS = \
 	VFS_FIRST_MATCH VFS_MOUNT_UNGATED \
 	RNG_UNSEEDED_PROBE RNG_UNSEEDED_LEGACY \
 	POSIX_LEGACY_WALK HVFS_DOTDOT_SERVER \
-	MEASURED_BOOT_REQUIRED MEASURED_VOLUME_EXEMPT_NONE \
+	MEASURED_BOOT_REQUIRED MEASURED_VOLUME_EXEMPT_NONE MEASURED_VOLUME_UNCHECKED \
 	LEGACY_SYSCALLS_PRESENT CAP_ENUMERATE_UNGATED CLOCK_TSC_RESOLUTION \
 	IMAGE_HDR_WRITER_SKEW \
 	TASKINFO_WIDE_AUTHORITY GETLINE_SLOT3_FALLBACK CAP_LOOKUP_ASSERT_HANG \
@@ -924,6 +924,17 @@ CFLAGS  += -DROLLBACK_ANCHOR_IGNORE
 ASFLAGS += -DROLLBACK_ANCHOR_IGNORE
 endif
 
+# MEASURED_PERSIST_SELFTEST=1 builds the witness for "a persistent volume that
+# was never sealed is refused when measured boot is required" (S85): two boots on
+# one disk, the first without a TPM so the format takes the password-only path,
+# the second under the policy WITH a TPM so measured boot succeeds and the volume
+# is the only thing wrong with the machine.
+MEASURED_PERSIST_SELFTEST ?= 0
+ifeq ($(MEASURED_PERSIST_SELFTEST),1)
+CFLAGS  += -DMEASURED_PERSIST_SELFTEST
+ASFLAGS += -DMEASURED_PERSIST_SELFTEST
+endif
+
 NVCOUNTER_SELFTEST ?= 0
 ifeq ($(NVCOUNTER_SELFTEST),1)
 CFLAGS  += -DNVCOUNTER_SELFTEST
@@ -1389,6 +1400,18 @@ endif
 MEASURED_VOLUME_EXEMPT_NONE ?= 0
 ifeq ($(MEASURED_VOLUME_EXEMPT_NONE),1)
 CFLAGS += -DMEASURED_VOLUME_EXEMPT_NONE
+endif
+
+# MEASURED_VOLUME_UNCHECKED=1 removes the sealed-volume refusal ITSELF, which is
+# the opposite of the flag above and is why the two sit together: EXEMPT_NONE
+# makes the refusal REACHABLE on the vdisk, this one deletes it. It restores the
+# pre-2026-08-23 kernel, where the policy made an unavailable TPM fatal and said
+# nothing about the volume -- so a disk formatted on a machine with no TPM
+# unlocks on its password alone under a kernel that requires measurement.
+# The arm for make smoke-measured-persist.
+MEASURED_VOLUME_UNCHECKED ?= 0
+ifeq ($(MEASURED_VOLUME_UNCHECKED),1)
+CFLAGS += -DMEASURED_VOLUME_UNCHECKED
 endif
 
 POSIX_LEGACY_WALK ?= 0
@@ -6004,6 +6027,92 @@ smoke-measured-boot-required-volume-control:
 	@SWTPM_TIMEOUT=$(SMOKE_TIMEOUT) \
 		EXPECT_FAULT='PANIC: measured boot required but the volume is not sealed' \
 		tools/run_with_swtpm.sh boot.iso
+
+# ---- the policy, met by a REAL DISK (docs/LIMITATIONS.md 2.9, S85) ----------
+#
+# The three arms above all run on the ephemeral vdisk. The volume half of the
+# policy is reached there only by REMOVING the vdisk's exemption
+# (MEASURED_VOLUME_EXEMPT_NONE=1), so what they show is that the branch fires
+# when it is entered -- on a RAM volume that is exempt by design, under a flag
+# whose only job is to make it non-exempt. The claim the policy makes is about a
+# disk: present a re-formatted drive to a machine that requires measured boot and
+# the requirement must not evaporate. 2.9 recorded that as still ungated from
+# 2026-08-23, and these arms are what close it.
+#
+# TWO KERNELS, because a password-only volume can only be MADE by a machine with
+# no TPM, and the policy kernel refuses to boot on one. Boot 1 is therefore an
+# ordinary kernel with the disk and no TPM; boot 2 is the policy kernel WITH a
+# TPM, so measured boot succeeds and the VOLUME is the only thing wrong.
+MEASURED_PERSIST_ARGS = MEASURED_PERSIST_SELFTEST=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
+MEASURED_PERSIST_ENV  = MP_BS=$(FS_BLOCK_SIZE) MP_BLOCKS=$(PERSIST_BLOCKS) \
+                        MP_TIMEOUT=$(PERSIST_TIMEOUT)
+MEASURED_PERSIST_B1   = measured-persist-b1.iso
+
+.PHONY: smoke-measured-persist
+smoke-measured-persist:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS)
+	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS) boot.iso
+	@cp boot.iso $(MEASURED_PERSIST_B1)
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS) MEASURED_BOOT_REQUIRED=1
+	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS) MEASURED_BOOT_REQUIRED=1 boot.iso
+	@$(MEASURED_PERSIST_ENV) MP_IMG=measured-persist.img \
+		MP_ISO1=$(MEASURED_PERSIST_B1) MP_TPM1=0 \
+		MP_ISO2=boot.iso MP_TPM2=1 \
+		MP_REQUIRE1='MEASURED_PERSIST: UNLOCKED a persistent password-only volume' \
+		MP_EXPECT_FAULT2='PANIC: measured boot required but the volume is not sealed' \
+		MP_ALSO2='MEASURED_PERSIST: met a persistent password-only volume|MEASURED_PERSIST: PASS an unsealed persistent volume was refused' \
+		tools/measured_persist_replay.sh
+	@rm -f $(MEASURED_PERSIST_B1)
+	@echo "[measured-persist] PASS - a disk formatted without a TPM is refused by a kernel that requires one"
+
+# The falsifying arm: the refusal itself is gone (MEASURED_VOLUME_UNCHECKED=1),
+# which is the pre-2026-08-23 kernel. Boot 2 is unchanged in every other way --
+# same disk, same TPM, `tpm: measured boot OK` still on the wire -- and it serves
+# a volume sealed to nothing. The marker is what HAPPENED rather than a rule that
+# failed to fire, and MP_FAIL is inverted because the required marker here is a
+# FAIL line.
+.PHONY: smoke-measured-persist-control
+smoke-measured-persist-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS)
+	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS) boot.iso
+	@cp boot.iso $(MEASURED_PERSIST_B1)
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS) MEASURED_BOOT_REQUIRED=1 MEASURED_VOLUME_UNCHECKED=1
+	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS) MEASURED_BOOT_REQUIRED=1 MEASURED_VOLUME_UNCHECKED=1 boot.iso
+	@$(MEASURED_PERSIST_ENV) MP_IMG=measured-persist-c.img \
+		MP_ISO1=$(MEASURED_PERSIST_B1) MP_TPM1=0 \
+		MP_ISO2=boot.iso MP_TPM2=1 \
+		MP_REQUIRE1='MEASURED_PERSIST: UNLOCKED a persistent password-only volume' \
+		MP_REQUIRE2='MEASURED_PERSIST: FAIL an unsealed persistent volume unlocked under the policy' \
+		MP_FAIL='MEASURED_PERSIST: PASS' \
+		tools/measured_persist_replay.sh
+	@rm -f $(MEASURED_PERSIST_B1)
+	@echo "[measured-persist] CONTROL PASS - without the check a never-sealed disk unlocks under a kernel that requires measurement"
+
+# THE OTHER DIRECTION, and it is not optional: a predicate that rejects every
+# persistent volume satisfies the refusal arm above perfectly. This one installs
+# a volume the policy is meant to ACCEPT -- formatted under the policy kernel
+# with the TPM present, so it seals (tpm_mode 1) -- powers the machine off, and
+# requires the same TPM to open it again on the next boot. One ISO for both
+# boots, because a secret sealed under PolicyPCR(8,9) is released only to the
+# same measurements: a boot 2 built differently would be refused by the TPM
+# rather than by us, and the arm would pass for the wrong reason.
+.PHONY: smoke-measured-persist-sealed
+smoke-measured-persist-sealed:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS) MEASURED_BOOT_REQUIRED=1
+	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS) MEASURED_BOOT_REQUIRED=1 boot.iso
+	@$(MEASURED_PERSIST_ENV) MP_IMG=measured-persist-s.img \
+		MP_ISO1=boot.iso MP_TPM1=1 \
+		MP_ISO2=boot.iso MP_TPM2=1 \
+		MP_REQUIRE1='MEASURED_PERSIST: UNLOCKED a persistent TPM-sealed volume' \
+		MP_REQUIRE2='MEASURED_PERSIST: UNLOCKED a persistent TPM-sealed volume' \
+		MP_ALSO2='MEASURED_PERSIST: met a persistent TPM-sealed volume' \
+		tools/measured_persist_replay.sh
+	@echo "[measured-persist] PASS - a volume sealed under the policy opens again on the next boot"
 
 .PHONY: smoke-modules
 smoke-modules:

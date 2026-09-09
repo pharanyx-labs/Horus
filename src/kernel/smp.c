@@ -468,6 +468,13 @@ void smp_bringup(void) {
      * tree cannot see, because its root lives in the superblock it protects. */
     { extern void rollback_selftest(void); rollback_selftest();
       for (;;) __asm__ volatile ("hlt"); }
+#elif defined(MEASURED_PERSIST_SELFTEST)
+    /* Gated: a persistent volume that was never sealed is refused when measured
+     * boot is required (S85). Two boots on one disk; the second one is the
+     * policy kernel with a TPM present, so measured boot itself succeeds and the
+     * VOLUME is what is refused. */
+    { extern void measured_persist_selftest(void); measured_persist_selftest();
+      for (;;) __asm__ volatile ("hlt"); }
 #elif defined(NVCOUNTER_SELFTEST)
     /* Gated: the TPM NV counter provisions, reads, and only goes up (S70). */
     { extern void nvcounter_selftest(void); nvcounter_selftest();

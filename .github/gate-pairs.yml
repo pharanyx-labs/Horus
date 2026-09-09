@@ -154,6 +154,7 @@ control_arms:
   smoke-libhorus-strncpy-control: smoke-libhorus
   smoke-measured-boot-required-control: smoke-measured-boot-required
   smoke-measured-boot-required-volume-control: smoke-measured-boot-required
+  smoke-measured-persist-control: smoke-measured-persist
   smoke-net-decode-control: smoke-net
   smoke-net-iommu-control: smoke-net
   smoke-net-irq-storm-control: smoke-net
@@ -289,6 +290,8 @@ gates:
   - smoke-libhorus
   - smoke-mapphys
   - smoke-measured-boot-required
+  - smoke-measured-persist
+  - smoke-measured-persist-sealed
   - smoke-modules
   - smoke-modules-tamper
   - smoke-net

@@ -3251,11 +3251,29 @@ int storage_unlock(const char *password, size_t plen)
 #else
         int exempt = g_vdisk_high_entropy_kek;
 #endif
+#ifndef MEASURED_VOLUME_UNCHECKED
         if (!exempt && sb->tpm_mode != 1) {
             println("PANIC: measured boot required but the volume is not sealed "
                     "(password-only); refusing to unlock");
             return -9;
         }
+#else
+        /* CONTROL ARM -- never ship. The pre-2026-08-23 kernel: the policy makes
+         * an unavailable TPM fatal and then says nothing about the volume, so a
+         * disk that was formatted on a machine without one unlocks on its
+         * password alone under a kernel that requires measurement. That is the
+         * downgrade the check above exists to refuse, and it is invisible from
+         * everything the boot reports -- the TPM is present, the PCRs are
+         * extended, `tpm: measured boot OK` is on the wire, and the volume the
+         * machine goes on to serve was never sealed to any of it.
+         *
+         * MEASURED_VOLUME_EXEMPT_NONE is NOT this arm: it removes the ephemeral
+         * vdisk's exemption so the refusal is REACHED on an ordinary boot. This
+         * one removes the refusal itself, which is the only way to show that a
+         * real on-disk volume meets it. See make smoke-measured-persist-control.
+         */
+        (void)exempt;
+#endif
     }
 #endif
 

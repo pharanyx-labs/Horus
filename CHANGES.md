@@ -5,7 +5,7 @@ All notable changes to Horus are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it has a public ABI to break.
 
 **The reasoning behind these lines is in
-[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 136 entries recording what was
+[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 137 entries recording what was
 tried, what failed, and how each measurement was taken. In a security project that record is
 evidence, not commentary, so it is kept in full rather than compressed away. Entries here cite
 finding IDs; their **current** status is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), never
@@ -16,6 +16,42 @@ in this file.
 ## [Unreleased]
 
 ### Added
+
+- **A persistent disk under `MEASURED_BOOT_REQUIRED=1`, which had never been in front of the
+  policy** (`src/kernel/selftest.c`, `tools/measured_persist_replay.sh`, `SECURITY.md` **S85**).
+  The policy has refused a never-sealed volume since 2026-08-23, and every arm for it ran on the
+  **ephemeral vdisk** -- which is exempt by design, so the branch was reached only by
+  `MEASURED_VOLUME_EXEMPT_NONE=1`, a flag whose whole job is to remove that exemption. What that
+  witnesses is that the branch fires when it is entered. The claim is about a disk: present a
+  re-formatted drive to a machine that requires measured boot and the requirement must not
+  evaporate. `docs/LIMITATIONS.md` 2.9 recorded the gap in as many words for seventeen days.
+  `make smoke-measured-persist` is two boots on one disk and **two kernels**, because a
+  password-only volume can only be MADE by a machine with no TPM and the policy kernel refuses to
+  boot on one. Boot 1 is an ordinary kernel with no TPM, so the format takes the `tpm_mode 0`
+  path; boot 2 is the policy kernel **with** a TPM, so `tpm: measured boot OK` reaches the wire
+  and the volume is the only thing wrong with the machine. Booting boot 2 without a TPM would halt
+  at `tpm_init` and never look at a volume -- that is `smoke-measured-boot-required-control`, not
+  this.
+  The guest reports the volume it MET before it touches it, which is the
+  `STORAGE_NOFORMAT_SELFTEST` lesson applied in advance: an arm whose evidence is the absence of a
+  message passes in the arm where nothing ran. It matters twice here, because the refusal says
+  `PANIC` and the harness stops the boot on it, so a fact printed after the refusal is a fact in a
+  race with the kill. The harness also refuses to run boot 2 if boot 1 left the image blank: a
+  boot 2 meeting a blank disk would FORMAT it under the policy, sealing it, and pass by never
+  having had an unsealed volume at all.
+  `make smoke-measured-persist-sealed` is the other direction and is not optional -- a check that
+  rejected every persistent volume passes the refusal arm perfectly. It formats under the policy
+  with the TPM present, powers the machine off, and requires the same TPM to open the volume
+  again; one ISO for both boots, since a secret sealed under `PolicyPCR(8,9)` is released only to
+  the same measurements and a differently built boot 2 would be refused by the TPM rather than by
+  us.
+  Falsified by `MEASURED_VOLUME_UNCHECKED=1` (`make smoke-measured-persist-control`), which
+  deletes the refusal itself -- the opposite of `MEASURED_VOLUME_EXEMPT_NONE`, which only makes it
+  reachable -- and requires `MEASURED_PERSIST: FAIL an unsealed persistent volume unlocked under
+  the policy` on boot 2. Measured in both directions on 2026-09-09: the base gate goes red under
+  the flag, on the FAIL marker rather than on a timeout, and the control arm goes red against the
+  fixed build on `MEASURED_PERSIST: PASS`. All three arms run in the existing required
+  `measured-boot-required` job, so no ruleset context changes.
 
 - **`ln` — a hard-link command, and the caller `SYS_FS_INODE_LINK` never had**
   (`userspace/shell.c`). `ln OLD NEW` gives an existing regular file a second name in the current

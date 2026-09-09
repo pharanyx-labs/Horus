@@ -1,6 +1,6 @@
 # Horus development log, 2026
 
-The narrative record of how Horus was built: 136 entries, newest first, each explaining what
+The narrative record of how Horus was built: 137 entries, newest first, each explaining what
 changed and (the part that matters here) **why, including what was tried and failed**.
 
 This is not the changelog. [`../../CHANGES.md`](../../CHANGES.md) is, and it summarises the
@@ -16,6 +16,60 @@ Finding IDs (**[C-n]**, **[I-n]**, **[G-n]**, **[H-n]**, **[M-n]**) are global a
 project. Their **current** status lives in [`../LIMITATIONS.md`](../LIMITATIONS.md) and
 [`../AUDIT.md`](../AUDIT.md), an entry below records a status as of the day it was written,
 which is exactly what a historical record should do and exactly why it is not authoritative.
+
+---
+
+### Added: the measured-boot policy, met by a disk rather than by a flag (S85)
+
+`MEASURED_BOOT_REQUIRED=1` has refused to unlock a never-sealed volume since 2026-08-23, and
+`docs/LIMITATIONS.md` 2.9 said, from the day the policy landed, that a persistent disk had never
+been put in front of it. Seventeen days. The gap is worth stating precisely, because the arm that
+existed looked like it covered this: `smoke-measured-boot-required-volume-control` reaches the
+refusal by building with `MEASURED_VOLUME_EXEMPT_NONE=1`, which removes the **ephemeral vdisk's**
+exemption. So the branch was only ever entered on a RAM volume that is exempt by design, under a
+flag whose sole purpose is to make it non-exempt. What that witnesses is that the code fires when
+it is entered. The claim is about a disk.
+
+**Two boots and two kernels, and the second kernel is the constraint.** A password-only volume can
+only be MADE by a machine with no TPM -- `storage_format_sealed` takes the sealing path whenever
+`tpm_present()` and the volume is not the vdisk -- and the policy kernel halts at `tpm_init` on a
+machine without one. So boot 1 has to be an ordinary kernel (no policy, no TPM), and boot 2 the
+policy kernel **with** a TPM: measured boot itself succeeds, `tpm: measured boot OK` is on the
+wire, and the volume is the only thing wrong with the machine. Booting boot 2 without a TPM would
+have been the first refusal wearing this one's name, and would have proved nothing new.
+
+**The guest reports the volume it met before it touches it**, which is `STORAGE_NOFORMAT_SELFTEST`'s
+lesson applied in advance: a gate whose evidence is the absence of a message passes in the arm where
+nothing ran. It matters twice here. The refusal says `PANIC` -- deliberately, so a refusal reddens
+CI rather than scrolling past -- and the harness ends the boot on it, so a fact printed after the
+refusal is in a race with the kill. Measured: the PANIC and the selftest's own marker are 0.2 ms
+apart on the wire, against a 1 s poll, so the race is not close; the ordering is still the reason
+`met a persistent password-only volume` comes first.
+
+**The harness refuses to run boot 2 if boot 1 left the image blank.** That is the vacuity this
+particular pair invites: a boot 2 meeting a blank disk would FORMAT it under the policy, with the
+TPM present -- sealing it -- and then pass the refusal arm by never having had an unsealed volume
+at all. The check is `tr -d '\0'` over the image, the cheapest form of "boot 1 actually wrote".
+
+**The other direction is a separate gate, not an extra assertion.** A check that rejected every
+persistent volume satisfies the refusal arm perfectly, which is `KSP_GUARD_ALWAYS`'s lesson.
+`smoke-measured-persist-sealed` formats under the policy with the TPM present, powers the machine
+off and requires the same TPM to release the secret again -- one ISO for both boots, because a
+secret sealed under `PolicyPCR(8,9)` is released only to the same measurements, so a differently
+built boot 2 would be refused by the TPM rather than by us and the arm would fail for a reason that
+is not the policy.
+
+**Falsified in both directions on 2026-09-09.** `MEASURED_VOLUME_UNCHECKED=1` deletes the refusal
+itself -- the opposite of `MEASURED_VOLUME_EXEMPT_NONE`, which only makes it reachable -- and boot 2
+then reports `MEASURED_PERSIST: FAIL an unsealed persistent volume unlocked under the policy`,
+`DEFECT FLAGS` naming the arm on the same wire. Under that flag the base gate goes red on the FAIL
+marker rather than on a timeout, which is worth recording: a control arm that reddens its base gate
+by *timing out* is indistinguishable from a broken runner. Run the other way -- the control arm's
+expectations against the fixed build -- it goes red on `MEASURED_PERSIST: PASS`, which is what stops
+an inverted arm being merely a way to pass.
+
+All three arms are steps in the existing required `measured-boot-required` job, so the required
+context set is unchanged and no ruleset sync is owed.
 
 ---
 

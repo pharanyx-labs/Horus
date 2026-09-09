@@ -3822,6 +3822,107 @@ void nvcounter_selftest(void)
 }
 #endif /* NVCOUNTER_SELFTEST */
 
+#ifdef MEASURED_PERSIST_SELFTEST
+/* A PERSISTENT volume that was never sealed is refused when measured boot is
+ * required (docs/LIMITATIONS.md 2.9, SECURITY.md S85).
+ *
+ * WHY THIS EXISTS AND smoke-measured-boot-required-volume-control DOES NOT COVER
+ * IT. That arm reaches the refusal by REMOVING the ephemeral vdisk's exemption
+ * (MEASURED_VOLUME_EXEMPT_NONE=1), because the default boot runs on the vdisk and
+ * the branch is otherwise unreachable. So what it shows is that the code fires
+ * when it is entered -- on a RAM volume that is exempt by design, under a flag
+ * that exists only to make it non-exempt. The claim the policy actually makes is
+ * about a disk: present a re-formatted drive to a machine that requires measured
+ * boot and the requirement must not evaporate. Nothing in this tree had ever put
+ * a real on-disk volume in front of that check, and 2.9 said so in as many words
+ * for seventeen days.
+ *
+ * TWO BOOTS, because a password-only volume can only be MADE by a machine with no
+ * TPM. Boot 1 runs a kernel without the policy and without a TPM, so the format
+ * takes the password-only path (tpm_mode 0) and the disk is left as an operator's
+ * would be. Boot 2 runs the policy kernel WITH a TPM: measured boot itself
+ * succeeds -- `tpm: measured boot OK` is on the wire -- and the volume is what is
+ * wrong. That ordering is the point of the gate. An arm that booted boot 2
+ * without a TPM would halt at tpm_init and never reach the volume at all, which
+ * is the first refusal (smoke-measured-boot-required-control) wearing this one's
+ * name.
+ *
+ * IT REPORTS THE VOLUME BEFORE IT TOUCHES IT, and both arms report the same
+ * facts. That is the STORAGE_NOFORMAT_SELFTEST lesson: a gate whose evidence is
+ * the absence of a message passes in the arm where nothing ran. Here the state
+ * the boot MET -- persistent or not, sealed or not -- is on the wire before the
+ * unlock is attempted, so an arm that formatted the wrong kind of volume fails
+ * as itself rather than as a missing refusal. The refusal says PANIC and the
+ * harness stops the boot on it, which is the other reason these lines come
+ * first: a fact printed after the refusal is a fact in a race with the kill.
+ *
+ * Each gated marker is ONE literal write (docs/LIMITATIONS.md 2.6a).
+ */
+/* The password the volume is formatted with on boot 1 and offered on boot 2.
+ * One place, because a disagreement between the two would fail as "the unlock
+ * failed for a reason that is not the policy" -- correctly, and confusingly. */
+#define MEASURED_PERSIST_PW "measuredpw"
+
+void measured_persist_selftest(void)
+{
+    print("MEASURED_PERSIST: begin\n");
+
+    mounted_fs_t *mfs = storage_get_mounted_fs();
+    int persistent = storage_volume_is_persistent();
+    int mounted    = mfs->mounted;
+    int sealed     = mounted && mfs->sb.tpm_mode == 1;
+
+    if (!persistent) {
+        /* Positive, and a failure. A run on the ephemeral vdisk tests the
+         * exemption, not the policy, and would sail through boot 2 green:
+         * exempt volumes are not refused. */
+        print("MEASURED_PERSIST: FAIL the volume is not persistent - this run tested nothing\n");
+        for (;;) asm volatile ("hlt");
+    }
+    if (!mounted) {
+        print("MEASURED_PERSIST: met a blank disk\n");
+    } else if (sealed) {
+        print("MEASURED_PERSIST: met a persistent TPM-sealed volume\n");
+    } else {
+        print("MEASURED_PERSIST: met a persistent password-only volume\n");
+    }
+
+    int rc = storage_unlock(MEASURED_PERSIST_PW, sizeof(MEASURED_PERSIST_PW) - 1);
+
+    if (rc == -9) {
+        /* By its own code rather than by "unlock failed": a wrong password, an
+         * unreadable superblock and a failed metadata HMAC all fail here too,
+         * and none of them is what this gate is about. */
+        print("MEASURED_PERSIST: PASS an unsealed persistent volume was refused\n");
+        for (;;) asm volatile ("hlt");
+    }
+    if (rc != 0) {
+        print("MEASURED_PERSIST: FAIL the unlock failed for a reason that is not the policy\n");
+        for (;;) asm volatile ("hlt");
+    }
+
+    /* Unlocked. WHICH volume was unlocked is the whole question, and it is read
+     * back from the superblock rather than assumed from the boot: boot 1 formats
+     * here, so the sealed/unsealed answer above was taken before the volume
+     * existed. */
+    if (mfs->sb.tpm_mode == 1) {
+        print("MEASURED_PERSIST: UNLOCKED a persistent TPM-sealed volume\n");
+    } else {
+#ifdef MEASURED_BOOT_REQUIRED
+        /* THE DEFECT, NAMED BY WHAT HAPPENED rather than by a rule that did not
+         * fire: this kernel requires measured boot, measured boot succeeded, and
+         * the volume it went on to serve was sealed to nothing. Only reachable
+         * under MEASURED_VOLUME_UNCHECKED=1 -- with the check in place the call
+         * above returned -9 and this line is dead. */
+        print("MEASURED_PERSIST: FAIL an unsealed persistent volume unlocked under the policy\n");
+#else
+        print("MEASURED_PERSIST: UNLOCKED a persistent password-only volume\n");
+#endif
+    }
+    for (;;) asm volatile ("hlt");
+}
+#endif /* MEASURED_PERSIST_SELFTEST */
+
 #ifdef ATA_READY_SELFTEST
 /* A sector transfer happens only when the drive says it is ready (S69).
  *

@@ -150,7 +150,7 @@ Three layers, see [`TESTS.md`](TESTS.md) for the full catalogue.
 
 **Adding a self-test.** Most follow the same shape: a `*_SELFTEST` compile flag guards a
 routine in `src/kernel/selftest.c` (or a ring-3 program in `userspace/`) that prints
-`NAME: PASS`, and a `make smoke-name` target boots it and greps for that marker. Copy an
+`NAME: PASS`, and a `make smoke-<name>` target boots it and greps for that marker. Copy an
 existing target.
 
 **Prefer adversarial tests.** `smoke-modules-tamper` corrupts a boot module and asserts it is

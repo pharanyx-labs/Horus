@@ -499,7 +499,7 @@ endif
 # row goes rather than one half of it: with the type in place an empty slot is
 # refused by emptiness and with the slot in place a wrong type is refused by
 # type, so an arm against either half alone would pass for a reason that is not
-# the one being measured. Control arm for make smoke-captest-storage-format.
+# the one being measured. Control arm for make smoke-captest-storage-format-control.
 STORAGE_FORMAT_UNGATED ?= 0
 ifeq ($(STORAGE_FORMAT_UNGATED),1)
 CFLAGS  += -DSTORAGE_FORMAT_UNGATED

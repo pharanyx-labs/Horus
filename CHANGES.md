@@ -5,7 +5,7 @@ All notable changes to Horus are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it has a public ABI to break.
 
 **The reasoning behind these lines is in
-[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 140 entries recording what was
+[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 141 entries recording what was
 tried, what failed, and how each measurement was taken. In a security project that record is
 evidence, not commentary, so it is kept in full rather than compressed away. Entries here cite
 finding IDs; their **current** status is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), never
@@ -16,6 +16,32 @@ in this file.
 ## [Unreleased]
 
 ### Added
+
+- **Every `make` target named in the tree has to exist** (`tools/check_named_targets.py`, required
+  in the source-only checker job). The defect it catches is the quietest kind of stale claim here:
+  a comment or a document telling a reader to run a gate that is not there. The reader who follows
+  it gets `No rule to make target`, which reads as their own mistake; the reader who does not takes
+  the sentence at face value. **A check nobody can run looks exactly like a check that passes.**
+  It was measured before it was written, and the tree held **five**:
+  `smoke-captest-cspaceless-control` in `capability.c` (it is `smoke-cap-lookup-control`),
+  `smoke-irq-ack-control` in `syscall_hw.c` (it is `smoke-captest-irq-ack-control`),
+  `smoke-sdhci-card` in `sdhci.c` (it is `smoke-sdhci-detect`), a pair in `docs/BUILDING.md`
+  described against `smoke-resume-guard-preclaim-control` when the other arm is
+  `smoke-resume-guard-legacy` -- and `smoke-pipe-cspace-order-control` in `scheduler.c`, which was
+  not a typo at all but a gate that should have existed, and now does. Four of the five were
+  near-misses of a real name, which is the failure mode a hand sweep is worst at.
+  Three documentation placeholders (`smoke-name`, `smoke-x`) became `smoke-<name>` /
+  `smoke-<target>` rather than being exempted: a stand-in that looks like a target is the same
+  ambiguity one layer down.
+  `docs/history/` and `CHANGES.md` are out of scope deliberately -- a retired target named in an
+  August entry is correct history, and rewriting it would be the opposite of what those files are
+  for. Falsified nine ways (`tools/test_check_named_targets.sh`): the absent reference, the same
+  reference wrapped across a comment line, the backticked form with no `make`, **both directions**
+  of the hyphen-wrap rule (a name wrapped at a hyphen is ONE target -- reporting it is the false
+  positive the first draft produced), a resolving reference left alone, history left alone in both
+  files, the arm that removes the checker's own exemption and requires its planted names to become
+  findings, and a Makefile the parser cannot read failing loudly rather than passing with nothing
+  to compare against.
 
 - **The metadata cache's eviction write-back is gated, on a workload that says it is synthetic**
   (`src/kernel/storage.c`). `META_CACHE_EVICT_NOWB=1` deletes the write-back that runs when a

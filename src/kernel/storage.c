@@ -1853,6 +1853,124 @@ void storage_vdisk_bound_selftest(void)
 }
 #endif /* VDISK_BOUND_SELFTEST */
 
+#ifdef META_EVICT_SELFTEST
+/* A dirty metadata line that is EVICTED mid-transaction is still on the disk
+ * when the transaction commits.
+ *
+ * WHY THIS EXISTS. The eviction write-back a few hundred lines above is a
+ * backstop, and its own comment says so: "unreachable on every workload in this
+ * tree -- a transaction dirties one line and journal_commit writes it back
+ * before anything can evict it". META_CACHE_EVICT_NOWB=1 removes it and, when
+ * that was measured on 2026-08-31, `make smoke-meta-crash` PASSED under the flag
+ * -- every crash-gate boot prints `dirty=0` beside its eviction count. A control
+ * arm that cannot fail cannot gate, so it was kept ungated "for the day a
+ * transaction dirties more lines than the cache holds". Nothing in this tree
+ * does that, and the reason is structural rather than incidental: the allocator
+ * hands out CONSECUTIVE physical blocks, 128 of them share one metadata line, and
+ * every path that writes many blocks commits between them.
+ *
+ * SO THE WORKLOAD IS SYNTHETIC, AND THAT IS STATED RATHER THAN DRESSED UP. This
+ * writes three blocks a metadata block apart inside ONE transaction, which is the
+ * structural condition the backstop exists for and which no caller currently
+ * meets. What it witnesses is the structure -- a cache that silently drops a
+ * dirty line loses the only copy of a nonce, and the ciphertext it was written
+ * for becomes unreadable. It does not claim a live path reaches this.
+ *
+ * IT WRITES RAW PHYSICAL BLOCKS rather than going through an inode, for the same
+ * reason: `storage_alloc_block` returns consecutive blocks, so a file cannot
+ * produce the spread. The blocks are in the data region of the RAM vdisk, which
+ * this boot formatted and which is discarded at power-off.
+ *
+ * META_CACHE_TINY=1 is set in BOTH arms (the KSTACK_RACE_WIDEN pattern): at the
+ * shipped 32 lines, three touched lines evict nothing and the run would test
+ * nothing -- which the eviction assertion below turns from a hope into a check.
+ */
+#define META_EVICT_BLOCKS 3
+#define META_EVICT_INO    7
+
+static uint8_t meta_evict_byte(uint32_t k, uint32_t i)
+{
+    return (uint8_t)((k * 61u + i * 11u + 0xA7u) & 0xFFu);
+}
+
+void meta_evict_selftest(void)
+{
+    struct mounted_fs *mfs = storage_get_mounted_fs();
+    print("METAEVICT: begin\n");
+    if (!mfs || !mfs->mounted || !mfs->unlocked) {
+        print("METAEVICT: FAIL no unlocked volume - this run tested nothing\n");
+        return;
+    }
+
+    uint64_t phys[META_EVICT_BLOCKS];
+    for (uint32_t k = 0; k < META_EVICT_BLOCKS; k++)
+        phys[k] = mfs->sb.data_start + (uint64_t)k * META_ENTRIES_PER_BLOCK;
+    if (phys[META_EVICT_BLOCKS - 1] >= mfs->bd->total_blocks) {
+        print("METAEVICT: FAIL the volume is too small to span the cache\n");
+        return;
+    }
+
+    static uint8_t buf[BLOCK_SIZE];
+    uint64_t dirty_before = meta_cache_dirty_evictions();
+
+    /* ONE transaction, three metadata lines. The commit writes back whatever is
+     * still resident; the line that was pushed out has to have been written by
+     * the eviction itself, and that is the whole experiment. */
+    journal_begin();
+    for (uint32_t k = 0; k < META_EVICT_BLOCKS; k++) {
+        for (uint32_t i = 0; i < BLOCK_SIZE; i++) buf[i] = meta_evict_byte(k, i);
+        if (storage_encrypt_block(phys[k], META_EVICT_INO, k, buf) != 0) {
+            journal_abort();
+            print("METAEVICT: FAIL a block could not be encrypted\n");
+            return;
+        }
+        if (do_block_write(phys[k], buf) != 0) {
+            journal_abort();
+            print("METAEVICT: FAIL a block could not be written\n");
+            return;
+        }
+    }
+    if (journal_commit() != 0) {
+        print("METAEVICT: FAIL the transaction did not commit\n");
+        return;
+    }
+
+    /* THE PREMISE, and it is the half a run on the shipped cache would fail: if
+     * no dirty line was ever pushed out, the read-back below says nothing about
+     * the eviction write-back and would pass with the backstop deleted. */
+    if (meta_cache_dirty_evictions() == dirty_before) {
+        print("METAEVICT: FAIL no dirty line was evicted - this run tested nothing\n");
+        return;
+    }
+
+    /* Every block must still decrypt. The one whose metadata line was evicted is
+     * the one that cannot, if the write-back is gone: its nonce and tag were the
+     * only copy, they were in RAM, and RAM is where they stayed. */
+    for (uint32_t k = 0; k < META_EVICT_BLOCKS; k++) {
+        if (do_block_read(phys[k], buf) != 0) {
+            print("METAEVICT: FAIL a block could not be read back\n");
+            return;
+        }
+        if (storage_decrypt_block(phys[k], META_EVICT_INO, k, buf) != 0) {
+            /* One literal write per case, because these are what the arms
+             * assert on and a gated marker must not be assembled (2.6a). */
+            if (k == 0) print("METAEVICT: FAIL an evicted line lost block 0\n");
+            else if (k == 1) print("METAEVICT: FAIL an evicted line lost block 1\n");
+            else print("METAEVICT: FAIL an evicted line lost block 2\n");
+            return;
+        }
+        for (uint32_t i = 0; i < BLOCK_SIZE; i++) {
+            if (buf[i] != meta_evict_byte(k, i)) {
+                print("METAEVICT: FAIL a block came back with the wrong contents\n");
+                return;
+            }
+        }
+    }
+
+    print("METAEVICT: PASS an evicted dirty line was still on the disk\n");
+}
+#endif /* META_EVICT_SELFTEST */
+
 int storage_init(void) {
     /* Persistent by default: probe for an ATA disk. If one is attached, use the
      * encrypted ATA store — it comes up mounted-but-locked and disk_key is only

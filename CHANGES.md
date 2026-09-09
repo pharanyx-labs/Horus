@@ -5,7 +5,7 @@ All notable changes to Horus are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it has a public ABI to break.
 
 **The reasoning behind these lines is in
-[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 139 entries recording what was
+[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 140 entries recording what was
 tried, what failed, and how each measurement was taken. In a security project that record is
 evidence, not commentary, so it is kept in full rather than compressed away. Entries here cite
 finding IDs; their **current** status is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), never
@@ -16,6 +16,29 @@ in this file.
 ## [Unreleased]
 
 ### Added
+
+- **The metadata cache's eviction write-back is gated, on a workload that says it is synthetic**
+  (`src/kernel/storage.c`). `META_CACHE_EVICT_NOWB=1` deletes the write-back that runs when a
+  DIRTY line is pushed out of the bounded metadata cache. It had no arm from 2026-08-31:
+  `smoke-meta-crash` passed under it and every crash-gate boot printed `dirty=0`, because no live
+  path in this tree dirties more lines than the cache holds -- the allocator hands out
+  **consecutive** physical blocks, 128 of them share one metadata line, and every multi-block path
+  commits between them. So the condition is structurally out of reach rather than merely unusual,
+  and the flag was kept ungated for the day something met it.
+  `make smoke-meta-evict` meets it deliberately: one transaction writing three blocks a metadata
+  block apart, on the RAM vdisk. That is stated as synthetic in the selftest's header and here --
+  what it witnesses is the structure the backstop exists for (a cache that drops a dirty line
+  loses the only copy of a nonce, and the ciphertext it was written for stops being readable), not
+  that a caller reaches it. It writes raw physical blocks for the same reason it exists: a file
+  cannot produce the spread, because the allocator is sequential.
+  `META_CACHE_TINY=1` is set in **both** arms, the `KSTACK_RACE_WIDEN` pattern: at the shipped 32
+  lines three touched lines evict nothing. The gate therefore asserts that a dirty eviction
+  actually happened before it concludes anything -- without that, a run on the shipped cache would
+  pass with the backstop deleted.
+  Falsified by `make smoke-meta-evict-control`, which requires `METAEVICT: FAIL an evicted line
+  lost block 0` -- the block whose nonces went out with the line, named rather than any
+  `METAEVICT` failure, so an arm that reddened the test by failing to commit would not satisfy it.
+  Added as steps in the existing required metadata-cache job, so no ruleset context changes.
 
 - **The pipe teardown backstop has a workload, and therefore a gate**
   (`src/kernel/pipe.c`, `src/kernel/scheduler.c`). `CSPACE_RELEASE_BEFORE_PIPES=1` moves the

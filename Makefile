@@ -929,6 +929,17 @@ endif
 # one disk, the first without a TPM so the format takes the password-only path,
 # the second under the policy WITH a TPM so measured boot succeeds and the volume
 # is the only thing wrong with the machine.
+# META_EVICT_SELFTEST=1 builds the witness for the metadata cache's eviction
+# write-back: one transaction that dirties more lines than the cache holds, which
+# no live path in this tree produces (the allocator hands out consecutive blocks,
+# 128 share a line, and every multi-block path commits between them). Boots on the
+# RAM vdisk; needs META_CACHE_TINY=1 in both arms to make eviction certain.
+META_EVICT_SELFTEST ?= 0
+ifeq ($(META_EVICT_SELFTEST),1)
+CFLAGS  += -DMETA_EVICT_SELFTEST
+ASFLAGS += -DMETA_EVICT_SELFTEST
+endif
+
 MEASURED_PERSIST_SELFTEST ?= 0
 ifeq ($(MEASURED_PERSIST_SELFTEST),1)
 CFLAGS  += -DMEASURED_PERSIST_SELFTEST
@@ -10635,6 +10646,41 @@ smoke-rollback:
 		ROLLBACK_OPPOSITE='ROLLBACK: found era' \
 		tools/rollback_replay.sh boot.iso
 	@echo "[rollback] PASS - a volume older than the machine is refused"
+
+# The metadata cache's eviction write-back, which no live path in this tree
+# reaches: the allocator hands out CONSECUTIVE physical blocks, 128 of them share
+# one metadata line, and every multi-block path commits between them -- so a line
+# is clean by the time anything can evict it. META_CACHE_EVICT_NOWB=1 was measured
+# on 2026-08-31 and `smoke-meta-crash` passed under it, `dirty=0` on every boot,
+# so it was kept ungated: a control arm that cannot fail cannot gate.
+#
+# The workload here is SYNTHETIC and says so: one transaction writing three blocks
+# a metadata block apart, which is the structural condition the backstop exists
+# for. META_CACHE_TINY=1 is set in BOTH arms, the KSTACK_RACE_WIDEN pattern -- at
+# the shipped 32 lines three touched lines evict nothing, which is why the gate
+# asserts the eviction happened rather than hoping.
+.PHONY: smoke-meta-evict
+smoke-meta-evict:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory META_EVICT_SELFTEST=1 META_CACHE_TINY=1
+	@$(MAKE) --no-print-directory META_EVICT_SELFTEST=1 META_CACHE_TINY=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='METAEVICT: PASS an evicted dirty line was still on the disk' \
+		FAIL_MARKER='METAEVICT: FAIL' tools/smoke_test.sh boot.iso
+
+# The falsifying arm: the eviction write-back removed, so the line pushed out of
+# the cache takes the only copy of its nonces with it. The marker names the block
+# that became unreadable rather than any METAEVICT failure -- an arm that reddened
+# the test by, say, failing to commit would not satisfy it.
+.PHONY: smoke-meta-evict-control
+smoke-meta-evict-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory META_EVICT_SELFTEST=1 META_CACHE_TINY=1 META_CACHE_EVICT_NOWB=1
+	@$(MAKE) --no-print-directory META_EVICT_SELFTEST=1 META_CACHE_TINY=1 META_CACHE_EVICT_NOWB=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='METAEVICT: FAIL an evicted line lost block 0' \
+		FAIL_MARKER='METAEVICT: PASS' tools/smoke_test.sh boot.iso
+	@echo "[meta-evict] CONTROL PASS - a dirty line pushed out of the cache took its nonces with it"
 
 # The falsifying arm: the comparison against the NV counter is gone, so the
 # rolled-back volume mounts. The marker is what HAPPENED -- it served era 1's

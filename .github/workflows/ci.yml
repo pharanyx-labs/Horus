@@ -3139,6 +3139,16 @@ jobs:
       # written.
       - name: Control arm — a write-back that escapes its journal transaction
         run: make smoke-meta-crash-txn-control
+      # The eviction write-back, gated for the first time on 2026-09-09. No live
+      # path in this tree dirties more lines than the cache holds -- the allocator
+      # hands out consecutive blocks, 128 share a line, and every multi-block path
+      # commits between them -- so the workload is a synthetic transaction that
+      # writes three blocks a metadata block apart. It is labelled as synthetic:
+      # what it witnesses is the structure, not a reachable path.
+      - name: A dirty metadata line evicted mid-transaction is still on the disk
+        run: make smoke-meta-evict
+      - name: Control arm — a dirty line pushed out of the cache takes its nonces with it
+        run: make smoke-meta-evict-control
       # The arm on the GATE rather than on the property: without the widener the
       # working set fits the cache, nothing evicts, and the gate must refuse to
       # conclude instead of passing.

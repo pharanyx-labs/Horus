@@ -535,9 +535,9 @@ a page at the bogus address and reported success.
 ### 1.8 Part of the syscall table has no test that runs its handler, and one of those gaps hid a defect
 
 **Measured since 2026-08-20**, and re-derived on every merge rather than restated: as of
-2026-09-09, and gated since: **87 of 96** implemented syscalls have their handler
+2026-09-09, and gated since: **88 of 96** implemented syscalls have their handler
 body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
-boot-modules session). The other 9 are listed in `.github/syscall-coverage.yml`, each with a written reason.
+boot-modules session). The other 8 are listed in `.github/syscall-coverage.yml`, each with a written reason.
 
 This was stated as a limitation rather than a finding, on the grounds that nothing here was
 known to be broken. **That is no longer the honest framing, and it has now been wrong four times.**
@@ -592,7 +592,7 @@ once rather than the one syscall that motivated it. And third, **neither would h
 by a wider `captest`**: both syscalls are gated on a real capability, so the only way in is a
 task that holds one, which is why the answer was a new task rather than a bigger suite.
 
-So the standing risk is not hypothetical: a defect in any of those 9 handlers is invisible in
+So the standing risk is not hypothetical: a defect in any of those 8 handlers is invisible in
 the same way issue #176 was, and in the way S52, S71 and the block-syscall error vocabulary just
 were. `captest` is a **refusal** suite by
 construction: its checks for `SYS_DMESG` and `SYS_AUDIT_DIGEST` both assert `SYS_ERR_PERM`, and
@@ -651,13 +651,17 @@ because running the one arm would leave the other two transcripts missing and re
 without the defect contributing anything. Without the arm, a promotion the probes earned would
 be indistinguishable from one that was free all along.
 
-**What is left is nine, in three groups, and the grouping is the useful part** because it
-says what each would cost. **Five** have a real capability in their dispatch row, so the table
+**What is left is eight, in three groups, and the grouping is the useful part** because it
+says what each would cost. **Four** have a real capability in their dispatch row, so the table
 refuses before the handler runs and `captest` holds none of `CAP_ENCRYPTED_STORAGE` or
 `CAP_STORAGE_FORMAT` — covering one needs a probe task that holds exactly one of them, not a
 wider `captest`. That prescription was followed for `CAP_AUDIT` on 2026-09-01 and it worked, so
 the cost is now known rather than estimated: one small task, and the first entry into either
-handler found a defect.
+handler found a defect. `SYS_FS_INODE_LINK` used to be a fifth here with an asterisk — its gate
+would have *passed*, since `fs_server` holds the capability, so the gap was a missing shell verb
+rather than a missing probe. It was covered on 2026-09-09 by adding `ln`, and the session now
+asserts with `stat` that a second name leaves the link count at two and that the file outlives
+the removal of its first name.
 
 **`SYS_STORAGE_FORMAT` is the one member of that group a probe task cannot rescue**, and it is
 worth naming because it is the boundary of the technique rather than a gap in it: entering its

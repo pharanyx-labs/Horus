@@ -17,6 +17,23 @@ in this file.
 
 ### Added
 
+- **`ln` — a hard-link command, and the caller `SYS_FS_INODE_LINK` never had**
+  (`userspace/shell.c`). `ln OLD NEW` gives an existing regular file a second name in the current
+  directory. The whole path already existed — `posix_link` → `FS_OP_LINK` → `sys_fs_inode_link` →
+  `h_fs_inode_link` — and the handler was one shell verb away from running on every session boot;
+  `.github/syscall-coverage.yml` had said so, in as many words, since the manifest was written.
+  It was the last member of the coverage list's "the gate would pass" group (`fs_server` holds the
+  `CAP_ENCRYPTED_STORAGE` the syscall is gated on), so the gap was a missing command, not a
+  missing probe. `SYS_FS_INODE_LINK` moves to `covered` (**88 of 96**), and `docs/LIMITATIONS.md`
+  1.8 shrinks by one.
+  The witness is in the tracked session (`tools/session_test.py`, so `make smoke-session`): `ln`
+  gives a fresh file a second name, `stat` is required to report **two** links — the increment,
+  not the directory entry, which fs_server would have added regardless — and the file is required
+  to **outlive the removal of its first name**, which is the whole reason a link count exists.
+  Falsified by `FS_LINK_UNCOUNTED=1` (`make smoke-session-hardlink-control`), which records the
+  link without counting it: `stat` then shows **one** link where two names were made, and the
+  session requires exactly that.
+
 - **The framebuffer console draws an 8x16 font, authored for this project**
   (`include/console_font.h`, `THIRD_PARTY.md`). Real descenders on `g j p q y`; a comma with a
   tail, distinguishable from a full stop, where the 8x8's is effectively one pixel and

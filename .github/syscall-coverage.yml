@@ -173,9 +173,13 @@ covered:
   # and asserts with `stat` that the name stops resolving.
   #
   # This is the shape LIMITATIONS.md 1.8 meant by "a gap in the workload, not the
-  # kernel". SYS_FS_INODE_LINK is the same shape and is NOT done, because no shell
-  # command makes a hard link; it needs a new command, not a new line in a test.
+  # kernel". SYS_FS_INODE_LINK was the same shape and was covered on 2026-09-09
+  # the way this entry predicted it would have to be -- by a new command, `ln`,
+  # not a new line in a test. session_test.py now runs `ln lf lf2` and asserts
+  # with `stat` that the link count is two and that the file outlives the removal
+  # of its first name.
   - SYS_FS_INODE_FREE
+  - SYS_FS_INODE_LINK
   # Promoted 2026-09-01, and they are the two this whole file was written about.
   # SYS_DMESG and SYS_AUDIT_DIGEST are the pair issue #176 truncated; SYS_DMESG
   # has been `covered` since the manifest existed and its sibling had never run.
@@ -419,8 +423,6 @@ uncovered:
     dispatch row (slot 8, READ, CAP_CONSOLE), and that row is only the first of two checks -- do_rotate_keys additionally requires CAP_ENCRYPTED_STORAGE before it does anything. captest holds neither
   SYS_CONSOLE_RELEASE: >-
     SC_NONE in the table, with the authority tested inside the handler (a CAP_IO_DEVICE with WRITE, plus the caller must BE the console's current owner). Its only caller is console_server, and only on a start-up FAILURE path -- the grant, the map, or the VGA round-trip going wrong -- none of which happens in a boot that works. So the tracked workloads cannot enter it without breaking themselves, which is the opposite of what they exist to do. It IS entered on every boot of a CONSOLE_VGA_CHECK_FAIL=1 build, which is `make smoke-console-handover-control`, and that arm is the gate: it requires the marker the handler makes audible to appear on the wire. Promoting this would mean making a tracked workload fail its own console handover on purpose
-  SYS_FS_INODE_LINK: >-
-    dispatch row (CAPSLOT_AUDIT, READ|WRITE, CAP_ENCRYPTED_STORAGE). fs_server HOLDS that capability, so unlike its neighbours in this group the gate would pass -- the gap is that nothing asks it to make a hard link. Its sibling SYS_FS_INODE_FREE was in this position until 2026-08-30 and moved for the price of one `rm` in the session; this one needs a shell command that does not exist, which is a feature rather than a test
 
   # (2) THE CALL WOULD SUCCEED, WHICH IS WHY NO PROBE ENTERS IT. What stops a
   # probe here is the opposite of the group above: not that the call would be

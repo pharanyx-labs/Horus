@@ -1123,6 +1123,128 @@ void iommu_frame_teardown_selftest(void) {
         return;
     }
 
+    print("IOMMUTEST: frame phase ok\n");
+}
+
+/* S53, the OTHER path: a driver dies and the device stops reaching the frame,
+ * even though the frame itself survives.
+ *
+ * WHY THE PHASE ABOVE CANNOT REACH THIS. There, the frame is destroyed, so
+ * `destroy_dyn_frame` is what removes the translation. A frame a SECOND task
+ * still holds is not destroyed when its driver dies -- so if `task_teardown` did
+ * not reset the domain, the device would go on reading and writing a page the
+ * dead driver holds no capability for at all. `IOMMU_NO_TASK_TEARDOWN=1` has
+ * existed since 2026-08-29 with NO GATE, on the recorded grounds that
+ * "reproducing it needs a driver holding a device capability to die under
+ * SMOKE_IOMMU while a peer still holds the frame, and no workload in this tree
+ * does that yet" (docs/LIMITATIONS.md 2.12). This is that workload, in the
+ * kernel, for the reason the frame phase is: proving it with a packet means
+ * pointing a live device at a page whose owner is gone.
+ *
+ * THE PEER IS THIS TASK, and it holds a real capability rather than a promise:
+ * the frame is named from task 0's cspace, which `mark_reachable` walks like any
+ * other, so the `kobj_gc` at the end of `task_teardown` finds the object named
+ * and leaves it alone. The last check proves that is what happened rather than
+ * that collection never happens at all -- drop the peer's name, sweep again, and
+ * the frame goes. Without it, "the frame survived" would be satisfied equally by
+ * a garbage collector that does nothing.
+ *
+ * IT RUNS AFTER scheduler_init, and that is not a preference: before it, task 0
+ * has no cspace, `cap_install_object` refuses, and the peer cannot hold anything.
+ * The frame phase runs earlier because it needs no capability at all -- which is
+ * also why they are two functions rather than one with a flag.
+ *
+ * `tasks[drv].io_device` is written here the way `h_ioport_grant` writes it:
+ * that syscall is the only thing that sets the field, and it is reachable only
+ * from ring 3. The path under test is `task_teardown`, which is the shipping
+ * one; the field is its input. */
+void iommu_task_teardown_selftest(void) {
+
+    if (!iommu_active()) {
+        print("IOMMUTEST: FAIL no-iommu (this gate boots with SMOKE_IOMMU=1)\n");
+        return;
+    }
+
+    uint64_t dev = 0;
+    uint16_t bdf = 0;
+    for (uint64_t d = 1; d < IODEV_MAX; d++) {
+        const struct io_device *io = iodev_get(d);
+        if (io && io->present && io->bdf) { dev = d; bdf = io->bdf; break; }
+    }
+    if (!dev) {
+        print("IOMMUTEST: FAIL no-device (this gate boots with SMOKE_NET)\n");
+        return;
+    }
+
+    uint32_t peer_idx = 0;
+    void *peer_mem = kobj_alloc(UNTYPED_ROOT, KOBJ_FRAME, 1, &peer_idx);
+    if (!peer_mem) { print("IOMMUTEST: FAIL peer-frame-alloc\n"); return; }
+    uint64_t peer_phys = (uint64_t)peer_mem - PHYS_KVA_BASE;
+
+    uint32_t peer_slot = KERNEL_RESERVED_CAPS;
+    if (!cap_install_object(peer_slot, CAP_FRAME, (uint64_t)peer_idx,
+                            CAP_RIGHT_READ | CAP_RIGHT_WRITE | CAP_RIGHT_GRANT |
+                            CAP_RIGHT_REVOKE, 0)) {
+        print("IOMMUTEST: FAIL peer-cap-install\n");
+        return;
+    }
+
+    /* The dying driver: a real task slot, taken from the top so nothing the boot
+     * goes on to spawn lands in it. It never runs -- create_task leaves
+     * runnable_ctx and saved_ksp at 0, which every selection loop tests -- so the
+     * scheduler cannot pick it up between here and its death. */
+    int drv = g_max_tasks - 1;
+    create_task(drv, 0, 0, 0, 0, UNTYPED_KERNEL);
+    if (tasks[drv].state != 1 || !tasks[drv].cspace) {
+        print("IOMMUTEST: FAIL driver-task-create\n");
+        return;
+    }
+    /* The driver holds the frame too, DERIVED from the peer's capability, so the
+     * frame has two names and only one of them dies with the task. */
+    if (!cap_grant_into(drv, KERNEL_RESERVED_CAPS, peer_slot,
+                        CAP_RIGHT_READ | CAP_RIGHT_WRITE)) {
+        print("IOMMUTEST: FAIL driver-cap-grant\n");
+        return;
+    }
+    tasks[drv].io_device = dev;
+
+    if (iommu_map(dev, bdf, peer_phys, 1, 1) != 0) {
+        print("IOMMUTEST: FAIL peer-map\n");
+        return;
+    }
+    /* The positive half, as in the frame phase: without it the assertion after
+     * the death is satisfied by a mapping that was never installed. */
+    if (iommu_translates(dev, peer_phys) != 1) {
+        print("IOMMUTEST: FAIL not-translated-after-peer-map\n");
+        return;
+    }
+
+    struct task_exit_cause cause = { .reason = TASK_EXIT_NORMAL, .detail = 0,
+                                     .err = 0, .rip = 0, .addr = 0 };
+    task_teardown(drv, &cause);
+
+    /* The premise first: if the frame went with the driver, this phase is the
+     * one above wearing a different name. */
+    if (!dyn_frames[peer_idx - DYN_FRAME_BASE].mem) {
+        print("IOMMUTEST: FAIL peer-frame-collected-with-the-driver\n");
+        return;
+    }
+    if (iommu_translates(dev, peer_phys) != 0) {
+        print("IOMMUTEST: FAIL device-still-translates-after-driver-death\n");
+        return;
+    }
+
+    /* And the sweep does work: drop the peer's name and the frame goes. */
+    if (!cap_revoke(peer_slot)) {
+        print("IOMMUTEST: FAIL peer-cap-revoke\n");
+        return;
+    }
+    kobj_gc();
+    if (dyn_frames[peer_idx - DYN_FRAME_BASE].mem) {
+        print("IOMMUTEST: FAIL unnamed-frame-was-not-collected\n");
+        return;
+    }
+
     print("IOMMUTEST: PASS\n");
 }
 #endif /* IOMMU_TEARDOWN_SELFTEST */

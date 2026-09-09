@@ -711,6 +711,13 @@ void kernel_main(uint32_t mb_info) {
     keyslot_selftest();
 #endif
     scheduler_init();
+#ifdef IOMMU_TEARDOWN_SELFTEST
+    /* Phase 2, and it must be AFTER scheduler_init: before it, task 0 has no
+     * cspace, so cap_install_object refuses and the peer this phase needs cannot
+     * hold the frame at all. The frame phase runs earlier because it needs no
+     * capability -- which is why they are two functions. */
+    iommu_task_teardown_selftest();
+#endif
 #ifdef WX_SELFTEST
     /* After paging_init (which installs the W^X tables) and after
      * cpu_enable_protections, so CR0.WP is set and the bits it inspects are the

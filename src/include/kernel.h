@@ -2236,6 +2236,7 @@ void iommu_unmap_all(uint64_t phys, uint32_t pages);
 int  iommu_translates(uint64_t devindex, uint64_t phys);
 #ifdef IOMMU_TEARDOWN_SELFTEST
 void iommu_frame_teardown_selftest(void);
+void iommu_task_teardown_selftest(void);
 #endif
 void iommu_reset_device(uint64_t devindex);
 void ensure_iommu_regs_mapped(uint64_t *root_pml4, uint64_t regs_phys);

@@ -1744,9 +1744,16 @@ stays legible.
   counts CPU mappings only, so a device mapping neither kept the frame alive nor was torn down
   when it died, and `destroy_dyn_frame` scrubbed the run and returned it to the arena with the
   device still able to read and write it. `destroy_dyn_frame` now unmaps from every device domain
-  before the scrub, and `task_teardown` resets a dying driver's domain. What is still **not**
-  witnessed is the task-death half: reproducing it needs a driver holding a device capability to
-  die under `SMOKE_IOMMU` while a peer still holds the frame, and no workload here does that yet.
+  before the scrub, and `task_teardown` resets a dying driver's domain. **The task-death half is
+  witnessed since 2026-09-09**, by phase 2 of the same in-kernel selftest: a driver task holds a
+  frame *derived from a peer's capability*, its `io_device` names a real device, and it dies. The
+  frame therefore survives -- which the gate asserts first, because if the frame went with the
+  driver the phase would be the frame half wearing a different name -- and the device's
+  translation of it must be gone. `IOMMU_NO_TASK_TEARDOWN=1` (`make
+  smoke-iommu-teardown-task-control`) had shipped since 2026-08-29 with no arm at all, for want of
+  exactly that workload, and the base gate is measured red under it. The last check keeps the
+  premise honest: drop the peer's name, sweep again, and the frame IS collected -- so "the frame
+  survived" cannot be satisfied by a garbage collector that does nothing.
 - **The table is not enumerable.** `SYS_DEVICE_INFO` reports the device the caller's capability
   names and nothing else; there is no "list the devices" call, so holding one device is not a
   way to learn the shape of the machine. That is a deliberate omission, and it means a driver

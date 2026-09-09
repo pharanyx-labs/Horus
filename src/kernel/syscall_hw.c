@@ -584,7 +584,7 @@ void h_irq_ack(struct interrupt_frame64 *r) {
     int irq = (int)r->rcx;
 #ifndef IRQ_ACK_UNGATED
     /* Control arm IRQ_ACK_UNGATED: drop the authority check, so any task unmasks
-     * any line. See make smoke-irq-ack-control. */
+     * any line. See make smoke-captest-irq-ack-control. */
     const struct io_device *d = iodev_from_slot((uint32_t)r->rbx, CAP_RIGHT_WRITE, 0);
     if (!d) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
     if (!iodev_allows_irq(d, irq)) { r->rax = (uint32_t)SYS_ERR_PERM; return; }

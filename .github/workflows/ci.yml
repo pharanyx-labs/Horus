@@ -3860,6 +3860,17 @@ jobs:
         run: python3 tools/check_split_markers.py
       - name: Falsify that checker in every direction
         run: tools/test_check_split_markers.sh
+      # Fourth instance of the same class, and the quietest: a comment or a
+      # document telling a reader to run a gate that does not exist. The reader
+      # who follows it gets `No rule to make target`, which reads as their own
+      # mistake; the reader who does not takes the sentence at face value. It
+      # found five on its first run -- four were near-misses of a real name, and
+      # the fifth (`smoke-pipe-cspace-order-control`, named in scheduler.c since
+      # 2026-08-30) was a gate that should have existed and now does.
+      - name: Every make target named in the tree exists
+        run: python3 tools/check_named_targets.py
+      - name: Falsify that checker in every direction
+        run: tools/test_check_named_targets.sh
       - name: Install Kani
         run: |
           cargo install --locked kani-verifier

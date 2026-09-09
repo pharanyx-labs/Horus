@@ -1,6 +1,6 @@
 # Horus development log, 2026
 
-The narrative record of how Horus was built: 140 entries, newest first, each explaining what
+The narrative record of how Horus was built: 141 entries, newest first, each explaining what
 changed and (the part that matters here) **why, including what was tried and failed**.
 
 This is not the changelog. [`../../CHANGES.md`](../../CHANGES.md) is, and it summarises the
@@ -16,6 +16,40 @@ Finding IDs (**[C-n]**, **[I-n]**, **[G-n]**, **[H-n]**, **[M-n]**) are global a
 project. Their **current** status lives in [`../LIMITATIONS.md`](../LIMITATIONS.md) and
 [`../AUDIT.md`](../AUDIT.md), an entry below records a status as of the day it was written,
 which is exactly what a historical record should do and exactly why it is not authoritative.
+
+---
+
+### Added: a gate nobody can run looks exactly like a gate that passes
+
+Writing the pipe arm earlier the same night turned up a sentence in
+`src/kernel/scheduler.c` that had been there since 2026-08-30: "See make
+smoke-pipe-cspace-order-control." No such target had ever existed. The comment was
+correct about everything except the one part a reader would act on.
+
+That is worth a checker rather than a fix, and the argument is the usual one here: a hand sweep
+certifies itself. So the measurement came first -- every tracked file outside `docs/history/` and
+`CHANGES.md`, every `make smoke-*` and every backticked `smoke-*`, compared against the Makefile's
+own target list. **Five.** Four were near-misses of a real name -- `smoke-captest-cspaceless-control`
+for `smoke-cap-lookup-control`, `smoke-irq-ack-control` for `smoke-captest-irq-ack-control`,
+`smoke-sdhci-card` for `smoke-sdhci-detect`, and a `docs/BUILDING.md` pair described against
+`smoke-resume-guard-preclaim-control` when the other arm is `smoke-resume-guard-legacy`. The fifth
+was the pipe one, and it was not a typo: it named a gate that should have existed.
+
+**The first draft reported a sixth, and it was wrong.** `userspace/execprobe.c` wraps
+`make smoke-syscall-\n * coverage` across a comment line, at the hyphen. Joining continuations with
+a space invents `smoke-syscall`, which does not exist, so the checker reported a stale reference
+that was not one. A line ending in a hyphen now joins with nothing and every other continuation
+joins with a space -- and both directions of that rule are arms in the self-test, because the
+false-positive direction is the one a checker's author never runs.
+
+Three of the findings were documentation PLACEHOLDERS: `make smoke-name`, `make smoke-x`, standing
+for "your target". They became `smoke-<name>` and `smoke-<target>` rather than exemptions. A
+stand-in that looks like a real target is the same ambiguity the checker exists to remove, one
+layer down, and the angle brackets say what the sentence meant.
+
+Nine arms (`tools/test_check_named_targets.sh`), including the one this repository has learned to
+insist on: remove the checker's own exemption and its self-test's planted names must become
+findings. An exemption nobody has watched fire is a line of configuration, not a decision.
 
 ---
 

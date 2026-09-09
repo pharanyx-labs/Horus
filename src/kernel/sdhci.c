@@ -305,7 +305,7 @@ static int sd_command_data(uint64_t bar, uint32_t index, uint32_t arg, uint32_t 
  * TWO OP-COND PATHS, AND ONLY ONE OF THEM IS TESTABLE HERE. An SD card is told
  * to power up with CMD8 followed by ACMD41 (CMD55 then CMD41); an eMMC device
  * uses CMD1, and an SD card must NOT answer CMD1 at all. QEMU 10.0 has no eMMC
- * device -- only `sd-card`, which speaks SD -- so `make smoke-sdhci-card`
+ * device -- only `sd-card`, which speaks SD -- so `make smoke-sdhci-detect`
  * exercises the SD branch and the eMMC branch has never run anywhere.
  *
  * That is recorded rather than hidden, and it is why the two branches share

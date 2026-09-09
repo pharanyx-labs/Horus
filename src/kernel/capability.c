@@ -661,7 +661,7 @@ struct capability *cap_lookup(uint32_t slot, uint32_t expected_type,
         /* CONTROL ARM -- never ship. The pre-2026-08-30 fallback: a task with no
          * cspace resolves against the primordial root cnode and holds every
          * capability the kernel minted at boot. See make
-         * smoke-captest-cspaceless-control. */
+         * smoke-cap-lookup-control. */
         cspace = root_cnode;
         cspace_sz = CNODE_SIZE;
 #else

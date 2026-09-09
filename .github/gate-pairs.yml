@@ -144,6 +144,7 @@ control_arms:
   smoke-fs-wal-flush-control: smoke-fs-wal-flush
   smoke-fs-wal-order-control: smoke-fs-wal-order
   smoke-iommu-teardown-control: smoke-iommu-teardown
+  smoke-iommu-teardown-task-control: smoke-iommu-teardown
   smoke-kfault-legacy: smoke-kfault
   smoke-klog-forge-abi-control: smoke-klog-forge
   smoke-klog-forge-control: smoke-klog-forge

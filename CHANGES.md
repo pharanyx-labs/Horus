@@ -5,7 +5,7 @@ All notable changes to Horus are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it has a public ABI to break.
 
 **The reasoning behind these lines is in
-[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 137 entries recording what was
+[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 138 entries recording what was
 tried, what failed, and how each measurement was taken. In a security project that record is
 evidence, not commentary, so it is kept in full rather than compressed away. Entries here cite
 finding IDs; their **current** status is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), never
@@ -16,6 +16,31 @@ in this file.
 ## [Unreleased]
 
 ### Added
+
+- **The other half of S53: a dead driver's device stops reaching a frame its peer still holds**
+  (`src/kernel/untyped.c`, `docs/LIMITATIONS.md` 2.12). `IOMMU_NO_TASK_TEARDOWN=1` has existed
+  since 2026-08-29 with **no gate at all**, and the reason was written down rather than assumed:
+  reproducing it needs a driver holding a device capability to die under `SMOKE_IOMMU` while a
+  peer still holds the frame, and no workload in this tree did that. This is that workload.
+  The existing arm cannot reach the case. There the frame is destroyed, so `destroy_dyn_frame`
+  is what removes the translation; a frame a **second** task still holds is not destroyed when
+  its driver dies, so nothing but `task_teardown` removes the device's translation of it, and a
+  device that kept it would go on reading and writing a page the dead driver holds no capability
+  for. Phase 2 of the same in-kernel selftest builds exactly that: the peer is task 0, holding a
+  real `CAP_FRAME`; the driver is a real task slot holding a capability **derived** from it, with
+  `io_device` naming a device on the bus; and it dies through the shipping `task_teardown`.
+  It asserts its own premise, in both directions. The frame must still be there after the death
+  -- if it went with the driver, the phase is the frame half wearing a different name -- and then
+  revoking the peer's name and sweeping again must collect it, because otherwise "the frame
+  survived" is satisfied by a garbage collector that does nothing.
+  The two phases are two functions because they run at different points: the frame phase needs no
+  capability and runs before `scheduler_init`, while task 0 has no cspace until after it, so
+  `cap_install_object` refuses and the peer can hold nothing. Only phase 2 prints
+  `IOMMUTEST: PASS`, so `make smoke-iommu-teardown` cannot pass on the frame half alone.
+  Falsified by `IOMMU_NO_TASK_TEARDOWN=1` (`make smoke-iommu-teardown-task-control`): measured
+  2026-09-09, `IOMMUTEST: FAIL device-still-translates-after-driver-death`, with the base gate
+  measured **red** under the same flag via `tools/check_base_gate_reddens.sh`. Added as a step in
+  the existing required IOMMU job, so no ruleset context changes.
 
 - **A persistent disk under `MEASURED_BOOT_REQUIRED=1`, which had never been in front of the
   policy** (`src/kernel/selftest.c`, `tools/measured_persist_replay.sh`, `SECURITY.md` **S85**).

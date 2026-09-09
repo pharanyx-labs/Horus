@@ -1,6 +1,6 @@
 # Horus development log, 2026
 
-The narrative record of how Horus was built: 137 entries, newest first, each explaining what
+The narrative record of how Horus was built: 138 entries, newest first, each explaining what
 changed and (the part that matters here) **why, including what was tried and failed**.
 
 This is not the changelog. [`../../CHANGES.md`](../../CHANGES.md) is, and it summarises the
@@ -16,6 +16,50 @@ Finding IDs (**[C-n]**, **[I-n]**, **[G-n]**, **[H-n]**, **[M-n]**) are global a
 project. Their **current** status lives in [`../LIMITATIONS.md`](../LIMITATIONS.md) and
 [`../AUDIT.md`](../AUDIT.md), an entry below records a status as of the day it was written,
 which is exactly what a historical record should do and exactly why it is not authoritative.
+
+---
+
+### Added: the arm that was waiting for a workload, and the workload was three lines of kernel (S53)
+
+`IOMMU_NO_TASK_TEARDOWN=1` shipped on 2026-08-29 with no gate, and the reason was written down at
+the time: reproducing it needs a driver holding a device capability to die under `SMOKE_IOMMU`
+while a peer still holds the frame, and nothing in this tree did that. It sat that way for eleven
+days beside a sibling flag that *did* have an arm, which is the shape worth noticing -- the pair
+looks complete from the outside, and the half without an arm is the half whose repair nothing
+would have caught.
+
+**Why the sibling arm cannot reach it.** `smoke-iommu-teardown-control` destroys the frame, so
+`destroy_dyn_frame` is what removes the translation. The task path only matters when the frame
+does *not* die with its driver, which happens exactly when someone else still names it. So the
+workload is not a driver and a device at all -- it is a frame with **two** names, one of which is
+in a dying task's cspace.
+
+**The workload is in the kernel, and that is the same judgement the frame phase made.** Proving it
+with a packet means pointing a live device at a page whose owner is gone. The peer is task 0
+holding a real `CAP_FRAME`; the driver is a real task slot holding a capability derived from it via
+`cap_grant_into`, with `tasks[drv].io_device` set the way `h_ioport_grant` sets it -- that syscall
+being the only writer of the field and reachable only from ring 3. What is under test is
+`task_teardown`, the shipping path; the field is its input.
+
+**It asserts its own premise in both directions, and the second direction is the one that would
+have been skipped.** After the death the frame must still exist, or the phase is the frame half
+under another name. And then revoking the peer's capability and sweeping again must collect it --
+without which "the frame survived" is satisfied equally by a garbage collector that never collects
+anything. That is the `KSP_GUARD_ALWAYS` lesson pointed at a premise rather than at a predicate.
+
+**Two functions rather than one, for a boot-order reason worth recording.** The first draft ran
+both phases from the existing call site and failed at `IOMMUTEST: FAIL peer-cap-install`: that
+site is before `scheduler_init`, so task 0 has no cspace, and `cap_install_object` refuses.
+The frame phase needs no capability at all, which is why it can run that early; phase 2 runs after
+`scheduler_init`. Only phase 2 prints `IOMMUTEST: PASS`, so the base gate cannot pass on the frame
+half alone -- the harness ends a boot at its required marker, so an intermediate `PASS` would have
+stopped the run before the second phase ever executed.
+
+Measured 2026-09-09: `IOMMUTEST: FAIL device-still-translates-after-driver-death` under the flag,
+`IOMMUTEST: PASS` without it, and the base gate red under the flag through
+`tools/check_base_gate_reddens.sh` -- which also had to be taught the row, since its parser reads
+`docs/BUILDING.md` for the exact phrase `make smoke-X` must go red` and a bolded **red** does not
+match it.
 
 ---
 

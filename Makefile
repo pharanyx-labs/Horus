@@ -6579,6 +6579,24 @@ smoke-iommu-teardown-control:
 		REQUIRE_MARKER='IOMMUTEST: FAIL device-still-translates-destroyed-frame' \
 		tools/smoke_test.sh boot.iso
 
+# The OTHER path S53 closed, and the frame arm above cannot reach it: a frame a
+# second task still holds is not destroyed when its driver dies, so nothing but
+# task_teardown removes the device's translation of it. IOMMU_NO_TASK_TEARDOWN=1
+# restores the teardown that released every other device resource a dying task
+# held -- the IRQ route, the MSI route, the port grant, the console -- and left
+# its IOMMU domain populated. The flag shipped on 2026-08-29 with NO GATE, on the
+# recorded grounds that no workload here kills a driver while a peer holds the
+# frame; phase 2 of the selftest is that workload.
+.PHONY: smoke-iommu-teardown-task-control
+smoke-iommu-teardown-task-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory IOMMU_TEARDOWN_SELFTEST=1 IOMMU_NO_TASK_TEARDOWN=1
+	@$(MAKE) --no-print-directory IOMMU_TEARDOWN_SELFTEST=1 IOMMU_NO_TASK_TEARDOWN=1 boot.iso
+	@SMOKE_NET=e1000 SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='IOMMUTEST: FAIL device-still-translates-after-driver-death' \
+		tools/smoke_test.sh boot.iso
+	@echo "[iommu-teardown] CONTROL PASS - a dead driver's device kept reading a frame its peer still holds"
+
 # S47's arm. The kernel honours a caller-supplied vector and netd asks for 13,
 # so the NIC raises #GP at the machine. The kernel then processes a
 # general-protection fault that never happened, against whatever context the

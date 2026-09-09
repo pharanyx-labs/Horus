@@ -941,6 +941,20 @@ embedded_blockprobe_bin_start:
 .incbin "userspace/blockprobe.bin"
 .global embedded_blockprobe_bin_end
 embedded_blockprobe_bin_end:
+
+/* PIE execprobe binary: endowed with ONE CAP_DEBUG and nothing else, it enters
+ * SYS_EXEC_IMAGE -- a handler body no build in this tree had ever reached, on
+ * any arm -- and replaces itself with an image carried inside its own bytes.
+ * Only execprobe is embedded here: its successor, execimgee, travels as a byte
+ * array INSIDE this image, which is the point of the syscall. Embedded on the
+ * same terms as the two probes above: a task whose whole purpose is to hold a
+ * capability has no business in the ship image. */
+.align 16
+.global embedded_execprobe_bin_start
+embedded_execprobe_bin_start:
+.incbin "userspace/execprobe.bin"
+.global embedded_execprobe_bin_end
+embedded_execprobe_bin_end:
 #endif
 
 #ifdef FRAME_SELFTEST

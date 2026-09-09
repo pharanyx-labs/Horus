@@ -808,6 +808,15 @@ static void elf64_build_min(uint64_t e_phoff, uint64_t p_offset,
                             uint64_t p_memsz) {
     for (uint32_t i = 0; i < 256; i++) loader_staging[i] = 0;
     uint8_t *st = loader_staging;
+
+    /* 256 bytes are staged, so say so. try_elf_load bounds every parse by
+     * armed_hdr.size since 2026-09-09 (staged_bytes() in loader.c); a fixture
+     * that wrote the buffer and left the size behind would be validated against
+     * whatever the last real arm happened to leave there, which is the same
+     * class of mistake the bound was tightened to close. */
+    armed_hdr.size  = 256;
+    armed_hdr.entry = 0;
+
     st[0] = 0x7f; st[1] = 'E'; st[2] = 'L'; st[3] = 'F';
     st[4] = 2;                            /* ELFCLASS64  */
     st[5] = 1;                            /* ELFDATA2LSB */
@@ -3081,6 +3090,44 @@ void captest_selftest(void) {
     tasks[bpid].uid = 1000;
     if (cap_install_from_root(bpid, CAPSLOT_AUDIT, CAPSLOT_STORAGE, 0) != 0) {
         print("BLOCKPROBE: FAIL endow\n");
+        for (;;) asm volatile("hlt");
+    }
+
+    /* ---- execprobe: the handler nothing had ever entered ---------------------
+     *
+     * SYS_EXEC_IMAGE carries SC_NONE in the dispatch table -- it replaces the
+     * CALLER's own image and creates no task, so there is no object for a table
+     * row to name -- and its `uncovered` entry read "NOT entered by any of the
+     * five selftest builds tried. No build in this tree is known to reach it."
+     * Not a tracked workload, not a selftest, not a defect arm; and it had a
+     * userspace wrapper with no caller, which is the shape this same manifest
+     * apologised for on syscall 19 three days earlier.
+     *
+     * SO THE GATE IS NOT WHAT KEPT IT OUT, which makes it different from its two
+     * neighbours here. auditprobe and blockprobe exist because the central gate
+     * refuses captest before the body runs; captest could have entered THIS one
+     * any time it liked. What stopped it is that the call would have SUCCEEDED
+     * and replaced captest with something else, and a conformance suite that
+     * execs itself away has no section 14. A probe of its own is the answer to
+     * that, exactly as it was to the other two, for an unrelated reason.
+     *
+     * ONE CAP_DEBUG, and the capability is also the instrument. SYS_CAP_ENUMERATE
+     * is gated on it, so the post-exec call both shows the capability still
+     * authorises and reads back the identity it authorised with -- S42's two
+     * halves from one endowment. Any second capability would have widened this
+     * task's authority to say the same thing.
+     *
+     * uid 1000, and fatal on failure, for the reasons given above. */
+    extern uint8_t embedded_execprobe_bin_start[], embedded_execprobe_bin_end[];
+    int xpid = fs_spawn_embedded(embedded_execprobe_bin_start,
+                                 embedded_execprobe_bin_end, "execprobe");
+    if (xpid <= 0) {
+        print("EXECPROBE: FAIL spawn\n");
+        for (;;) asm volatile("hlt");
+    }
+    tasks[xpid].uid = 1000;
+    if (cap_install_from_root(xpid, CAPSLOT_DEBUG, 18, 0) != 0) {
+        print("EXECPROBE: FAIL endow\n");
         for (;;) asm volatile("hlt");
     }
 

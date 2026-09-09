@@ -1,6 +1,7 @@
 #include "syscall.h"
 #include "exit_reason.h"   /* format_exit_reason(): the exact renderer init prints with */
 #include "hello_image.h"   /* hello_image[]/hello_image_len: a real .bin for SYS_SPAWN_IMAGE */
+#include "overreach_image.h" /* the same .bin with one PT_LOAD inflated past its end */
 
 /*
  * Process-control self-test driver (PROC_SELFTEST builds only).
@@ -289,6 +290,57 @@ void _start(void) {
     }
     if (!ii_gone) { report("PROC_SELFTEST: FAIL image-stuck\n"); sys_exit(); }
     report("PROC_SELFTEST: image OK\n");
+
+    /* --- A CONTAINER CLAIMING MORE THAN ITS BUFFER HOLDS IS REFUSED ---------
+     *
+     * hello's real image, handed over at HALF its length: the header (in the
+     * bytes that ARE covered by `len`) still declares the whole payload, so
+     * `len` and the header disagree. arm_image_from_user must refuse that rather
+     * than read h.size bytes out of a len-byte buffer -- past the caller's own
+     * image and into whatever else its address space maps.
+     *
+     * The fixture is a static array, so the bytes past `len` are really the rest
+     * of hello; that is deliberate. Under IMAGE_LEN_UNCHECKED=1 the refusal is
+     * gone and the FULL image loads and spawns, which is a defect the ELF bound
+     * below has no quarrel with (the bytes it reads are a valid image). That is
+     * what makes this a witness for the length check specifically, separate from
+     * the overreach check that follows.
+     *
+     * The child is not resumed: the call must FAIL. A pid means the loader read
+     * past what it was given. --- */
+    int tr = sys_spawn_image(hello_image, hello_image_len / 2, 0, 0);
+    if (tr > 0) {
+        report("PROC_SELFTEST: FAIL truncated-image-spawned\n");
+        sys_exit();
+    }
+    report("PROC_SELFTEST: truncated-image refused OK\n");
+
+    /* --- AND AN IMAGE THAT LIES ONLY IN ITS PROGRAM HEADERS IS REFUSED TOO ---
+     *
+     * The container above was short. This one is not: its header's `size` is
+     * exactly the payload that follows, `len` matches, and every byte is what
+     * mkheadered wrote -- except two fields of one PT_LOAD, raised so the
+     * segment's `p_offset + p_filesz` reaches a page past the end of the image
+     * (tools/make_overreach_image.py).
+     *
+     * WHY BOTH CHECKS EXIST. The truncation is what a short read produces by
+     * accident and is refused by the container parse; this is what an attacker
+     * writes on purpose, and until 2026-09-09 it was refused by nothing. The ELF
+     * parses bounded `p_offset + p_filesz` against the SIZE OF THE STAGING
+     * REGION -- 8 MiB shared by every task, holding the residue of every image
+     * staged before -- rather than against the size of this image, so the
+     * loader copied that page of residue into the child. The check was there,
+     * in safe Rust, bounding the wrong thing (SECURITY.md S84).
+     *
+     * A truncated container cannot reach that bound now, because the check above
+     * refuses it first. So this is the only witness for it, and it is why each
+     * of the two rules has its own control arm rather than sharing one. --- */
+    int ov = sys_spawn_image(overreach_image, overreach_image_len, 0, 0);
+    if (ov > 0) {
+        report("PROC_SELFTEST: FAIL overreaching-image-spawned\n");
+        sys_exit();
+    }
+    report("PROC_SELFTEST: overreaching-image refused OK\n");
 
     /* --- SYS_SIGALTSTACK argument validation (fail-closed): a valid stack is
      * accepted, a too-small one and one below the user address space are refused,

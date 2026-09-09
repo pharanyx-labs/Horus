@@ -114,7 +114,8 @@ int  arm_named_binary(const char *name);                                   /* lo
 int  arm_image_from_user(addr_t ubuf, uint32_t len, const char *name_hint); /* loader.c */
 int  try_elf_load(uint64_t load_base, uint64_t *out_entry, uint64_t *out_img_end); /* loader.c */
 void choose_image_placement(int tid, uint64_t *out_load_base, uint64_t *out_stack_top); /* loader.c */
-void load_staged_image_into(int tid, uint64_t load_base);                  /* loader.c */
+int  load_staged_image_into(int tid, uint64_t load_base);                  /* loader.c: 0, or negative if a recognised ELF was rejected */
+int  staged_elf_valid(uint64_t load_base);                                 /* loader.c: 0 if the staged image loads (or is not an ELF), else the rejection code */
 #if defined(DEBUG_SHELL) || defined(LEGACY_SYSCALLS_PRESENT)
 int  do_receive_program(struct horus_image_header *hdr_out);               /* loader.c */
 #endif

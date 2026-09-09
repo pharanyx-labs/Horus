@@ -409,7 +409,16 @@ static int do_spawn_inner(int caller, uint32_t stdio_spec, uint32_t untyped_inde
      * lookup, and before S55 it would have resolved the ROOT cnode). */
     if (tasks[new_id].state == 0) return -2;
 
-    load_staged_image_into(new_id, load_base);
+    if (load_staged_image_into(new_id, load_base) != 0) {
+        /* A recognised ELF the loader refused (S84 and the flat-fallback
+         * backstop under it). Unwind the child slot the way the clone-failure
+         * path below does: state 0 makes it allocatable again and cr3 0 keeps the
+         * scheduler off it. No frame has been published yet, so nothing can have
+         * claimed it. */
+        tasks[new_id].state = 0;
+        tasks[new_id].cr3   = 0;
+        return -3;
+    }
 
     /* load_staged_image_into left `new_id` current, so copy_to_user targets its
      * address space: marshal any staged argv onto its stack before its initial
@@ -922,7 +931,13 @@ int exec_reenter_take(void) {
  * success we switch to the freshly-built image's CR3 and drop to ring 3 at its
  * entry, so this never returns. The old page directory/frames leak, consistent
  * with the kernel's non-freeing task teardown (task_teardown only marks slots
- * dead). Capability (slot 3, WRITE|EXEC) is enforced centrally by the table. */
+ * dead). NO CAPABILITY IS REQUIRED and none is claimed: this replaces the
+ * CALLER's own image and creates no task, so there is no object for a dispatch
+ * row to name (SC_NONE since 2026-08-30, when the slot-3 decoy was retired --
+ * S57, docs/LIMITATIONS.md 1.6b). What makes that safe is that the caller could
+ * already run whatever code it liked in its own address space; what it must not
+ * do is change WHOSE authority runs it, which is S42 (the cspace is untouched)
+ * and the uid check in userspace/execimgee.c. */
 /* Shared tail of SYS_EXEC_NAMED / SYS_EXEC_IMAGE: replace the current task's
  * image in place with the currently-armed staged image, keeping its task id and
  * cspace (capabilities survive the exec, POSIX-style). Preconditions: a program
@@ -935,18 +950,44 @@ int exec_reenter_take(void) {
  * Takes no trap frame: it never returns to the caller, so it has no return value
  * to write, and the frame it would write to is the one it just overwrote with
  * the new image's fresh ring-3 context. */
-static void exec_into_armed_image(void) {
+static int exec_into_armed_image(void) {
     int cur = get_current_task();
 
-    /* Past this point the caller's image is torn down and replaced; there is no
-     * clean return path. Switch to the kernel address space for the rebuild. */
+    /* Switch to the kernel address space for the rebuild. tasks[cur].cr3 still
+     * names the caller's OLD address space until create_user_pagedir overwrites
+     * it below -- so up to that point, and only up to that point, there is a
+     * clean return: restore that CR3 and the caller is exactly as it was. That
+     * window is what the image validation just below uses. */
     extern uint64_t pml4[];
     uint64_t kcr3 = virt_to_phys(pml4);   /* CR3 takes a physical address */
+    uint64_t old_user_cr3 = tasks[cur].cr3;
     __asm__ volatile ("mov %0, %%cr3" :: "r"(kcr3) : "memory");
 
     uint64_t load_base = USER_AREA_BASE;
     uint64_t stack_top = 0;
     choose_image_placement(cur, &load_base, &stack_top);
+
+    /* VALIDATE THE IMAGE BEFORE THE OLD ADDRESS SPACE IS DESTROYED.
+     *
+     * arm_image_from_user checked the CONTAINER but not the ELF inside it, so a
+     * valid-container image whose program headers are malformed (S84's overreach
+     * shape, or any other try_elf_load rejection) survives arming and would
+     * otherwise be discovered only by load_staged_image_into -- AFTER
+     * create_user_pagedir has torn down the caller, past any clean return.
+     *
+     * staged_elf_valid runs the same non-copying validators try_elf_load runs,
+     * with the real load_base, so a verdict here is the verdict there. On a
+     * rejection the caller's image is still intact: restore its CR3, drop the
+     * staging, and return the error for h_exec_* to hand back as SYS_ERR_INVAL.
+     * A non-ELF self-test payload passes (staged_elf_valid returns 0 for it) and
+     * the flat path loads it as before. */
+    {
+        if (staged_elf_valid(load_base) != 0) {
+            __asm__ volatile ("mov %0, %%cr3" :: "r"(old_user_cr3) : "memory");
+            loader_disarm();
+            return -1;
+        }
+    }
 
     /* ---- THE CSPACE IS NOT TOUCHED, AND THAT IS THE PROPERTY (S42) --------
      *
@@ -992,7 +1033,10 @@ static void exec_into_armed_image(void) {
     tasks[cur].argv_ptr     = 0;
     create_user_pagedir(cur);
 
-    load_staged_image_into(cur, load_base);   /* sets eip/heap/name, disarms */
+    /* Pre-validated above, so this cannot reject the image now; the old address
+     * space is already gone, so there is nothing to fail back to if it somehow
+     * did. The return is checked to keep the contract explicit. */
+    (void)load_staged_image_into(cur, load_base);   /* sets eip/heap/name, disarms */
 
     /* Marshal any staged argv onto the freshly-built stack (load_staged_image_into
      * left `cur` current, so copy_to_user targets its new address space); this
@@ -1011,18 +1055,20 @@ static void exec_into_armed_image(void) {
     uint64_t new_esp = tasks[cur].esp ? (uint64_t)tasks[cur].esp : 0x007ff000ULL;
     sched_prepare_user_context(cur, new_eip, new_esp);
     exec_reenter_arm(cur);
-    /* No return value is written. `r` IS the fabricated frame -- sched_prepare_
-     * user_context built the new ring-3 context over this same memory (top of
-     * the task's kernel stack), so a store to r->rax would land on the new
-     * image's initial rax rather than on a caller that no longer exists. This
-     * used to write 0 into a throwaway 32-bit copy of the frame; with the
-     * handler operating on the real frame it would be writing the new context. */
+    /* Success: the fabricated frame IS `r` -- sched_prepare_user_context built
+     * the new ring-3 context over this same memory (top of the task's kernel
+     * stack), so a store to r->rax would land on the new image's initial rax
+     * rather than on a caller that no longer exists. The 0 return is the
+     * function's own contract (re-entry armed), not a value written to a frame;
+     * the caller writes nothing to r on this path. */
+    return 0;
 }
 
 /* SYS_EXEC_NAMED (64): replace the caller's image with a named embedded binary.
  * Resolve+arm the name and stage argv while the caller's address space is still
  * live (a bad name fails cleanly, image intact), then hand off to the shared
- * exec tail. Capability (slot 3, WRITE|EXEC) is enforced centrally by the table. */
+ * exec tail. SC_NONE in the table: self only, creating no task -- see the
+ * comment above exec_into_armed_image for why that needs no capability. */
 void h_exec_named(struct interrupt_frame64 *r) {
     int cur = get_current_task();
     if (cur <= 0 || cur >= g_max_tasks) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
@@ -1054,11 +1100,13 @@ void h_exec_named(struct interrupt_frame64 *r) {
      * strings; it is marshalled onto the fresh stack after the rebuild. */
     stage_spawn_args(r->rsi, r->rdi);
 
-    exec_into_armed_image();   /* consumes the staging; no clean return on success */
-    /* Reached with the new image's ring-3 context already fabricated and armed:
-     * exec_into_armed_image returns to us, and the ISR epilogue -- not this
-     * function -- performs the switch. The staged state is consumed by now, so
-     * the window is over and the release is on the CPU that acquired. */
+    /* On success the new image's ring-3 context is fabricated and armed;
+     * exec_into_armed_image returns to us and the ISR epilogue performs the
+     * switch. A negative return means the image was rejected (a malformed ELF
+     * inside a valid container -- arm_named_binary does not run the ELF loader),
+     * and the caller's own image is intact: hand back the error. Either way the
+     * staging is consumed/released on the CPU that acquired it. */
+    if (exec_into_armed_image() != 0) r->rax = (uint32_t)SYS_ERR_INVAL;
     spawn_stage_release();
 }
 
@@ -1067,7 +1115,9 @@ void h_exec_named(struct interrupt_frame64 *r) {
  * the fs_server). Validate+arm the image and stage argv while the caller's
  * address space is still live (a bad image fails cleanly, image intact), then
  * hand off to the shared exec tail. ebx=image, ecx=len, esi=argv, edi=argc.
- * Capability (slot 3, WRITE|EXEC) is enforced centrally by the table. */
+ * SC_NONE in the table: self only, creating no task -- see the comment above
+ * exec_into_armed_image. The bytes are untrusted and are bounded by what this
+ * call actually staged; staged_bytes() in loader.c is where that is enforced. */
 void h_exec_image(struct interrupt_frame64 *r) {
     int cur = get_current_task();
     if (cur <= 0 || cur >= g_max_tasks) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
@@ -1083,7 +1133,11 @@ void h_exec_image(struct interrupt_frame64 *r) {
     /* Stage argv while the caller's old address space is still active. */
     stage_spawn_args(r->rsi, r->rdi);
 
-    exec_into_armed_image();   /* consumes the staging; no clean return on success */
+    /* A negative return is a rejected image (validated before the old address
+     * space is torn down, so the caller is intact); report it. On success this
+     * does not return through here in the usual sense -- the ISR epilogue enters
+     * the new image. */
+    if (exec_into_armed_image() != 0) r->rax = (uint32_t)SYS_ERR_INVAL;
     spawn_stage_release();
 }
 
@@ -1091,7 +1145,8 @@ void h_exec_image(struct interrupt_frame64 *r) {
  * its own memory (execve-from-fd, spawn form). Mirrors h_spawn but arms the
  * loader from the caller's buffer instead of a named embedded binary.
  * ebx=image, ecx=len, edx=one-word spawn arg, esi=argv, edi=argc. Returns the
- * child pid, or a negative SYS_ERR_*. Slot-3 WRITE|EXEC enforced by the table. */
+ * child pid, or a negative SYS_ERR_*. Authority is a CAP_UNTYPED resolved in the
+ * handler, like every task-creating syscall (S57). */
 void h_spawn_image(struct interrupt_frame64 *r) {
     uint32_t ut;
     if (spawn_untyped_region(&ut) != 0) { r->rax = (uint32_t)SYS_ERR_PERM; return; }

@@ -718,6 +718,23 @@ jobs:
       - name: Control arm — a bad block and a missing capability answer alike
         run: make smoke-blockprobe-control
 
+      # The fourth uncovered-handler probe, and the one whose reason was the
+      # strongest on the list: SYS_EXEC_IMAGE was "NOT entered by any of the five
+      # selftest builds tried", while SECURITY.md S42 named it beside
+      # SYS_EXEC_NAMED with a witness that drove only the second. execprobe holds
+      # one CAP_DEBUG, refuses five malformed images plus a truncated one, then
+      # execs a real image it supplies and -- across the exec -- proves the
+      # capability, its serial and its parent edge survived (S42, from the image
+      # side).
+      - name: A task holding one CAP_DEBUG runs SYS_EXEC_IMAGE and keeps its authority across it
+        run: make smoke-execprobe
+      # S42's two arms, applied to the syscall S42 also names: the exec tail is
+      # shared, so EXEC_RESET_CSPACE / EXEC_ROOT_CSPACE falsify the image form too.
+      - name: Control arm — an exec that drops the inherited capability
+        run: make smoke-execprobe-reset-control
+      - name: Control arm — an exec that re-mints the inherited capability
+        run: make smoke-execprobe-root-control
+
   smoke-modules:
     name: QEMU boot-module transport (printf / tail provisioned into /bin, run from FS)
     runs-on: ubuntu-latest
@@ -1278,6 +1295,17 @@ jobs:
       # SYS_READ_AUDIT check, and no CAP_DEBUG.
       - name: Control arm — a CAP_AUDIT must not buy cross-task introspection
         run: make smoke-proc-taskinfo-control
+
+      # S84 and the length check beside it. proctest hands SYS_SPAWN_IMAGE a real
+      # image at half its length (the container claims more than the buffer
+      # holds) and an image whose container is honest but whose ELF program
+      # headers reach a page past it (the disclosure: the parse was bounded by
+      # the 8 MiB staging REGION, shared by every task, not by the image). Both
+      # must be refused.
+      - name: Control arm — a container claiming more than its buffer holds is loaded
+        run: make smoke-proc-truncated-image-control
+      - name: Control arm — an ELF reaching past its image reads the shared staging region
+        run: make smoke-proc-overreach-control
 
   smoke-cow:
     name: QEMU copy-on-write self-test (headless)

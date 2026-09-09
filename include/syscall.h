@@ -1333,7 +1333,8 @@ static inline int sys_exec_named_argv(const char *name, int argc, char *const ar
  * ELF; the kernel validates it with the same loader a named binary uses. The
  * child is handed a full argv (marshalled onto its stack; read via
  * sys_get_argv). Returns the child pid, or a negative SYS_ERR_* (the caller is
- * unaffected on failure). Needs slot-3 WRITE|EXEC, like sys_spawn_named. */
+ * unaffected on failure). Authority is a CAP_UNTYPED, resolved in the handler
+ * like every other task-creating syscall (S57). */
 static inline int sys_spawn_image(const void *image, uint32_t len, int argc, char *const argv[]) {
     return (int)syscall6(SYS_SPAWN_IMAGE, (uint64_t)(uintptr_t)image, len, 0,
                          (uint64_t)(uintptr_t)argv, (uint32_t)argc, 0);
@@ -1385,7 +1386,10 @@ static inline int sys_stdio_info(void) {
  * (execve-from-fd, in place), keeping the same task id and cspace (capabilities
  * survive, POSIX-style). On success this does not return — control resumes at the
  * new image's entry. A negative return means the image was rejected and the
- * caller's image is intact. Needs slot-3 WRITE|EXEC. */
+ * caller's image is intact. NO capability is required: it replaces the caller's
+ * own image and creates no task, so there is nothing for a dispatch row to name.
+ * The authority the new image runs with is the authority the caller already had
+ * -- exec does not touch the cspace (S42) and does not change the uid. */
 static inline int sys_exec_image(const void *image, uint32_t len, int argc, char *const argv[]) {
     return (int)syscall6(SYS_EXEC_IMAGE, (uint64_t)(uintptr_t)image, len, 0,
                          (uint64_t)(uintptr_t)argv, (uint32_t)argc, 0);

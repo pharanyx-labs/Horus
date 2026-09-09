@@ -440,9 +440,21 @@ void h_fs_inode_link(struct interrupt_frame64 *r) {
     if (inode.type == 2 /* dir */ || inode.type == 0)            { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
     if (inode.links == 0xFFFFFFFFu)                              { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
 
+#ifdef FS_LINK_UNCOUNTED
+    /* The defect on demand: report success without recording the extra name.
+     * The new directory entry is still made (that is fs_server's), so the file
+     * has two names but a link count of one -- so unlinking either name frees
+     * the inode while the other name still points at it. This is the exact shape
+     * that makes SYS_FS_INODE_LINK worth having: the count, not the entry, is
+     * what keeps a linked file alive. SESSION_LINK_UNCOUNTED asserts stat reports
+     * one link where two were made (make smoke-session-hardlink-control). */
+    r->rax = 0;
+    return;
+#else
     inode.links++;
     r->rax = (storage_write_inode(mfs->bd, &mfs->sb, ino, &inode) == 0)
                  ? 0 : (uint32_t)SYS_ERR_IO;
+#endif
 }
 
 void h_fblock_read(struct interrupt_frame64 *r) {

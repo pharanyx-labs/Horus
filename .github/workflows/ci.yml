@@ -2913,6 +2913,12 @@ jobs:
       # it and cannot write in it.
       - name: Withhold ownership of the home directory and require the account to be locked out
         run: make smoke-session-home-control
+      # SYS_FS_INODE_LINK, covered on 2026-09-09 by the new `ln` command -- the
+      # last member of the coverage list's "the gate would pass" group. The arm
+      # makes the kernel record the link without counting it; the session then
+      # requires `stat` to show one link where two names were made.
+      - name: A hard link that does not count leaves the file at one link
+        run: make smoke-session-hardlink-control
 
   smoke-session-smp:
     name: Scripted integration session under SMP (-smp 4, drives the real shell)

@@ -814,6 +814,15 @@ static const char *const d_touch[] = {
     "The new file is owned by your uid with mode 0644.",
     0 };
 
+static const char *const d_ln[] = {
+    "Give an existing regular file a second name (a hard link).",
+    "",
+    "Both names live in the current directory. The two names refer to one file",
+    "and one inode: writing through either is seen through the other, and the",
+    "file's data survives until its LAST name is removed (see the link count in",
+    "stat(1)). You must own the file, and directories cannot be hard-linked.",
+    0 };
+
 static const char *const d_stat[] = {
     "Show a file's type, permissions, owner, size, link count and inode.",
     "",
@@ -993,6 +1002,8 @@ static const struct man_page man_pages[] = {
  { "rm","1","remove a file or empty directory","rm NAME",d_rm,0,
    "0 on success; non-zero if the name is missing, or a directory is not empty.","mkdir(1), stat(1)" },
  { "touch","1","create an empty file","touch FILE",d_touch,0,0,"echo(1), stat(1)" },
+ { "ln","1","make a hard link to a file","ln OLD NEW",d_ln,0,
+   "0 on success; non-zero if OLD is missing or not a regular file, NEW exists, or you do not own OLD.","rm(1), stat(1)" },
  { "stat","1","show a file's metadata","stat FILE",d_stat,0,0,"ls(1)" },
  { "chmod","1","change a file's permission bits","chmod MODE FILE",d_chmod,0,
    "0 on success; non-zero if the mode is malformed, the name is missing, or you are neither the owner nor root.","chown(8), stat(1), ls(1)" },
@@ -1287,6 +1298,14 @@ static void show_topic_help_us(const char *topic) {
         help_line("Example:", "touch /notes.txt");
         help_line("Notes:",   "Fails if the name already exists.");
         help_line("See also:","echo, mkdir, rm");
+    } else if (strcmp(t,"ln")==0) {
+        help_line("Purpose:", "Make a second name for an existing file (a hard link).");
+        help_line("Usage:",   "ln <old> <new>");
+        help_line("Example:", "ln note note.bak");
+        help_line("Notes:",   "Both names are in the current directory and refer to one");
+        help_line("",         "inode. Removing one name leaves the file until its last name");
+        help_line("",         "is gone. You must own the file; directories cannot be linked.");
+        help_line("See also:","rm, stat, touch");
     } else if (strcmp(t,"mkdir")==0) {
         help_line("Purpose:", "Create a new directory.");
         help_line("Usage:",   "mkdir <dir>");
@@ -1956,6 +1975,42 @@ static void handle_command(char *cmd) {
         int t = fss_call(&rq, &rp);
         if (t < 0 || rp.rc < 0) fs_fail("touch", t, &rp);
         else { print("touch: created "); println(name); }
+    } else if (strncmp(cmd, "ln ", 3) == 0) {
+        /* Hard link: give an existing regular file a second name in the current
+         * directory. `ln OLD NEW`. OLD is resolved to an inode here; the actual
+         * link -- the ++links and the new directory entry, as one act so a
+         * crash cannot leave a name with no reference or a reference with no name
+         * -- is fs_server's (FS_OP_LINK), which also enforces owner-or-root on the
+         * source and write on the new parent. Both names are bare, in the cwd,
+         * matching touch/rm; there is no cross-directory form yet. This is the one
+         * shell command that reaches SYS_FS_INODE_LINK (docs/LIMITATIONS.md 1.8). */
+        const char *p = cmd + 3; while (*p == ' ') p++;
+        char oldn[FS_NAME_MAX]; int n = 0;
+        while (*p && *p != ' ' && n < (int)sizeof(oldn) - 1) oldn[n++] = *p++;
+        oldn[n] = 0;
+        while (*p == ' ') p++;
+        const char *newn = p;
+        if (oldn[0] == 0 || newn[0] == 0) {
+            println("ln: usage: ln <existing file> <new name>");
+        } else {
+            uint32_t type;
+            uint32_t ino = sh_lookup(oldn, &type);
+            if (ino == (uint32_t)-1) {
+                print("ln: "); print(oldn); println(": not found");
+            } else if (type != FS_TYPE_FILE) {
+                /* fs_server refuses this too; saying so here is the clearer
+                 * message, since a directory has no second name by design. */
+                print("ln: "); print(oldn); println(": not a regular file");
+            } else {
+                struct fs_request  rq = {0};
+                struct fs_response rp;
+                rq.op = FS_OP_LINK; rq.ino = ino; rq.dir_ino = sh_cwd_ino;
+                fss_strcpy(rq.name, newn);
+                int t = fss_call(&rq, &rp);
+                if (t < 0 || rp.rc < 0) fs_fail("ln", t, &rp);
+                else { print("ln: "); print(newn); print(" -> "); println(oldn); }
+            }
+        }
     } else if (strncmp(cmd, "chmod ", 6) == 0) {
         /* WHO MAY DO THIS IS NOT DECIDED HERE, and that is deliberate.
          *

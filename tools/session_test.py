@@ -74,6 +74,14 @@ CHOWN_UNGATED = os.environ.get("SESSION_CHOWN_UNGATED", "0") == "1"
 # which is the state the tree was in before it created them at all, reached by a
 # route the account can observe.
 HOME_ROOT_OWNED = os.environ.get("SESSION_HOME_ROOT_OWNED", "0") == "1"
+# The hard-link arm (SYS_FS_INODE_LINK, the last member of the coverage list's
+# "the gate would pass" group). FS_LINK_UNCOUNTED=1 makes the kernel report the
+# link without bumping the on-disk link count, so `stat` shows ONE link where two
+# names were made -- and removing the first name frees the file while the second
+# still points at it. The two arms type the identical commands and differ only in
+# the count they require, and in whether the file survives its first name's
+# removal.
+LINK_UNCOUNTED = os.environ.get("SESSION_LINK_UNCOUNTED", "0") == "1"
 
 
 def fs_err(cmd, reason):
@@ -613,9 +621,55 @@ def run():
         # stat's labels are padded into a column now, and a regular file is
         # named as one (POSIX's term, and what real stat(1) prints), so match the
         # value rather than the old unpadded "Type: file".
-        s.send("stat note"); s.expect("regular file", STEP_TIMEOUT)
-        s.expect("-rw-r--r--", STEP_TIMEOUT)   # symbolic mode column
+        # HARD LINKS, and a coverage reason as pointed as `rm`'s below.
+        # SYS_FS_INODE_LINK was the last member of .github/syscall-coverage.yml's
+        # "the gate would pass" group: fs_server holds the CAP_ENCRYPTED_STORAGE
+        # the syscall is gated on and issues it on FS_OP_LINK, so the handler was
+        # one shell command away from running -- and no command made a hard link
+        # until `ln` existed. This is that command, and the steps below are what
+        # move the syscall to `covered`.
+        #
+        # The DISCRIMINATOR between the arms is the link COUNT, not the directory
+        # entry: a second name is added either way (that is fs_server's dir_add,
+        # not the kernel's), so `ln` prints the same line in both arms. What only
+        # the increment produces is `stat` reporting two links -- and, because the
+        # count is what keeps a linked file alive, the file surviving the removal
+        # of its first name. A fresh file is used so `note` (read again later) is
+        # untouched.
+        s.send("echo linked > lf")                # no output on success
         s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("ln lf lf2"); s.expect("ln: lf2 -> lf", STEP_TIMEOUT)
+        s.expect("root@horus#", STEP_TIMEOUT)
+        if LINK_UNCOUNTED:
+            # The defect: the entry was made, the count was not bumped, so the
+            # file the two names share still reports ONE link. `print_pad` pads
+            # "Links:" to width 8 (two trailing spaces), so the exact cells are
+            # "Links:  1". This is the whole discriminator, and it is chosen for
+            # being deterministic: the freed-inode CONSEQUENCE (removing lf then
+            # reading lf2) depends on whether the block allocator zeroes a freed
+            # inode's record, which is not the property under test. The count is.
+            s.send("stat lf"); s.expect("Links:  1", STEP_TIMEOUT)
+            s.expect("root@horus#", STEP_TIMEOUT)
+            step("a hard link that did not count left the file at one link "
+                 "(FS_LINK_UNCOUNTED)")
+        else:
+            s.send("stat lf"); s.expect("Links:  2", STEP_TIMEOUT)
+            s.expect("root@horus#", STEP_TIMEOUT)
+            s.send("cat lf2"); s.expect("linked", STEP_TIMEOUT)  # the same inode's data
+            s.expect("root@horus#", STEP_TIMEOUT)
+            # The heart of it: remove the first name and the file survives, because
+            # the SECOND name still holds a reference. A kernel that did not count
+            # the link would free the inode here (that is the arm above).
+            s.send("rm lf"); s.expect("rm: removed lf", STEP_TIMEOUT)
+            s.expect("root@horus#", STEP_TIMEOUT)
+            s.send("cat lf2"); s.expect("linked", STEP_TIMEOUT)
+            s.expect("root@horus#", STEP_TIMEOUT)
+            s.send("stat lf2"); s.expect("Links:  1", STEP_TIMEOUT)  # one name left
+            s.expect("root@horus#", STEP_TIMEOUT)
+            s.send("rm lf2"); s.expect("rm: removed lf2", STEP_TIMEOUT)
+            s.expect("root@horus#", STEP_TIMEOUT)
+            step("a hard link shares one inode under two names and the file "
+                 "outlives the removal of its first name (SYS_FS_INODE_LINK)")
         # `rm` is here for a coverage reason as much as a functional one, and the
         # reason is worth stating. SYS_FS_INODE_FREE sat in the `uncovered` list of
         # .github/syscall-coverage.yml with the reason "fs_server inode teardown;

@@ -126,6 +126,7 @@ DEFECT_FLAGS = \
 	KEYSLOT_REMOVE_NOOP USERS_PEPPER_PER_BOOT STORAGE_AUTOFORMAT \
 	STORAGE_FORMAT_UNGATED INSTALLER_NO_CONFIRM BLOCK_ERRNO_LEGACY \
 	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED \
+	FS_LINK_UNCOUNTED \
 	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY \
 	AHCI_PROBE_ABSENT AHCI_CAPACITY_CONSTANT SDHCI_PROBE_ABSENT \
 	SDHCI_CSD_SPEC_BITS SDHCI_ADDR_MODE_INVERTED \
@@ -565,6 +566,21 @@ IMAGE_LEN_UNCHECKED ?= 0
 ifeq ($(IMAGE_LEN_UNCHECKED),1)
 CFLAGS  += -DIMAGE_LEN_UNCHECKED
 ASFLAGS += -DIMAGE_LEN_UNCHECKED
+endif
+
+# FS_LINK_UNCOUNTED=1 makes SYS_FS_INODE_LINK report success without incrementing
+# the inode's on-disk link count. The new directory entry is still created (that
+# is fs_server's, not the kernel's), so the file ends up with two names and a
+# link count of one -- and unlinking either name frees the inode while the other
+# name still points at it. It is the defect that shows what the syscall is FOR:
+# the link count, not the directory entry, is what keeps a hard-linked file
+# alive. Paired with SESSION_LINK_UNCOUNTED, which has the session require `stat`
+# to report ONE link where two names were made (make
+# smoke-session-hardlink-control).
+FS_LINK_UNCOUNTED ?= 0
+ifeq ($(FS_LINK_UNCOUNTED),1)
+CFLAGS  += -DFS_LINK_UNCOUNTED
+ASFLAGS += -DFS_LINK_UNCOUNTED
 endif
 
 # CONSOLE_TIMESTAMPS_LEGACY=1 restores the pre-2026-09-06 console: no line
@@ -7009,6 +7025,21 @@ smoke-session-home-control:
 	@$(MAKE) --no-print-directory HOME_DIR_ROOT_OWNED=1 boot.iso
 	@SESSION_HOME_ROOT_OWNED=1 python3 tools/session_test.py boot.iso
 	@echo "[session] CONTROL PASS - the home exists and its account cannot write in it"
+
+# Control arm for the hard-link half of the session (SYS_FS_INODE_LINK, the last
+# member of the coverage list's "the gate would pass" group -- docs/LIMITATIONS.md
+# 1.8). FS_LINK_UNCOUNTED=1 makes the kernel report the link without bumping the
+# count; the session then REQUIRES `stat` to show ONE link where two names were
+# made, and requires the file to VANISH when the first name is removed -- the
+# freed-inode consequence that is the whole reason the count exists. Both arms
+# type the identical commands and differ only in the count they require back.
+.PHONY: smoke-session-hardlink-control
+smoke-session-hardlink-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FS_LINK_UNCOUNTED=1
+	@$(MAKE) --no-print-directory FS_LINK_UNCOUNTED=1 boot.iso
+	@SESSION_LINK_UNCOUNTED=1 python3 tools/session_test.py boot.iso
+	@echo "[session] CONTROL PASS - a hard link left the count at one and the file died with its first name"
 
 # Regression guard for the SMP console-INPUT corruption: drive the real ring-3
 # shell over serial under -smp 4. Where smoke-console-smp covers console *output*

@@ -711,6 +711,12 @@ void kernel_main(uint32_t mb_info) {
     keyslot_selftest();
 #endif
     scheduler_init();
+#ifdef PIPE_SELFTEST
+    /* Phase 2, and it must be AFTER scheduler_init: the dying stage needs a
+     * cspace to hold its pipe end in, and task 0 needs one to grant it from.
+     * This is the only thing in the tree that reaches pipe_close_task_ends. */
+    pipe_task_teardown_selftest();
+#endif
 #ifdef IOMMU_TEARDOWN_SELFTEST
     /* Phase 2, and it must be AFTER scheduler_init: before it, task 0 has no
      * cspace, so cap_install_object refuses and the peer this phase needs cannot

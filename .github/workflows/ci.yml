@@ -3357,6 +3357,14 @@ jobs:
         run: rustup target add x86_64-unknown-none
       - name: Boot PIPE_SELFTEST kernel and assert the pipe object round-trips with correct EOF/EPIPE/back-pressure
         run: make smoke-pipe
+      # The teardown backstop's ordering, gated for the first time on 2026-09-09.
+      # cap_release_cspace empties the cspace pipe_close_task_ends walks, so
+      # releasing first means a stage that dies holding an end never releases it
+      # and its peer waits on a writer that no longer exists. The flag had no arm
+      # for ten days: every pipe user here closes explicitly, so nothing reached
+      # the backstop until phase 2 of the selftest did.
+      - name: Control arm — a stage dies holding a pipe end and its peer sees no EOF
+        run: make smoke-pipe-cspace-order-control
 
   smoke-init-fs:
     name: QEMU delegated boot-through-init filesystem self-test (headless)

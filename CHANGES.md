@@ -5,7 +5,7 @@ All notable changes to Horus are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it has a public ABI to break.
 
 **The reasoning behind these lines is in
-[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 138 entries recording what was
+[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 139 entries recording what was
 tried, what failed, and how each measurement was taken. In a security project that record is
 evidence, not commentary, so it is kept in full rather than compressed away. Entries here cite
 finding IDs; their **current** status is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), never
@@ -16,6 +16,29 @@ in this file.
 ## [Unreleased]
 
 ### Added
+
+- **The pipe teardown backstop has a workload, and therefore a gate**
+  (`src/kernel/pipe.c`, `src/kernel/scheduler.c`). `CSPACE_RELEASE_BEFORE_PIPES=1` moves the
+  cspace release ahead of `pipe_close_task_ends`, so a stage that dies holding a pipe end never
+  releases it and its peer waits forever on a writer that no longer exists. Measured on
+  2026-08-30, `smoke-pipe` and `smoke-modules` -- the latter a real two-stage pipeline out of
+  `/bin` -- **both passed under the flag**, because every pipe user in this tree closes its ends
+  explicitly, so nothing reached the backstop. It was kept ungated on that measurement, for the
+  day a workload killed a task mid-pipeline.
+  Phase 2 of the pipe selftest is that workload, and it is the only thing in the tree that
+  reaches `pipe_close_task_ends`: a real task slot holds a `CAP_PIPE` writer end -- granted from
+  the peer's own capability, so the rights are a delegation rather than a fabrication -- and is
+  torn down without closing it. The peer's read must then be EOF. The phase asserts its premise
+  first: while that end is open the read must be would-block, or the assertion after the death
+  would be satisfied by a pipe that never had a writer.
+  The marker is the peer's, `PIPE_SELFTEST: FAIL peer-never-saw-eof`, and it is one literal write
+  rather than `pst_fail`'s three, for the reason `docs/LIMITATIONS.md` 2.6a gives: a gated marker
+  assembled from several calls can be split by another writer on the shared console. It was
+  caught immediately -- the arm's first run asserted `FAIL peer-never-saw-eof` and the wire said
+  `FAIL (peer-never-saw-eof)`, so the defect reproduced and the gate reported a timeout.
+  Falsified by `make smoke-pipe-cspace-order-control`, with `smoke-pipe` measured red under the
+  same flag. The comment beside `cap_release_cspace` had named that target since 2026-08-30; it
+  now exists. Added as a step in the existing required pipe job, so no ruleset context changes.
 
 - **The other half of S53: a dead driver's device stops reaching a frame its peer still holds**
   (`src/kernel/untyped.c`, `docs/LIMITATIONS.md` 2.12). `IOMMU_NO_TASK_TEARDOWN=1` has existed

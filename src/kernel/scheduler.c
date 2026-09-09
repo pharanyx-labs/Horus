@@ -3596,19 +3596,22 @@ void task_teardown(int id, const struct task_exit_cause *cause) {
      * domain, the port grant, the console) works from tasks[id] fields that this
      * does not touch.
      *
-     * AND THE ORDERING HAS NO GATE, WHICH WAS MEASURED RATHER THAN ASSUMED.
-     * CSPACE_RELEASE_BEFORE_PIPES=1 exists and makes the move; both `smoke-pipe`
-     * and `smoke-modules` -- the latter running a real two-stage pipeline out of
-     * /bin -- pass under it. The reason is that every pipe user in this tree
-     * closes its ends EXPLICITLY (userspace/shell.c after the pipeline,
-     * userspace/posix.c on fd close), so by the time a stage dies there is
-     * nothing left for pipe_close_task_ends to find. That function is a backstop
-     * for a task that dies WITHOUT closing -- a fault, a SYS_KILL -- and no
-     * workload here does that while holding a pipe end.
+     * AND THE ORDERING IS GATED SINCE 2026-09-09, WHICH TOOK A WORKLOAD.
+     * CSPACE_RELEASE_BEFORE_PIPES=1 makes the move, and for ten days it had no
+     * arm: both `smoke-pipe` and `smoke-modules` -- the latter running a real
+     * two-stage pipeline out of /bin -- PASSED under it, because every pipe user
+     * in this tree closes its ends EXPLICITLY (userspace/shell.c after the
+     * pipeline, userspace/posix.c on fd close), so by the time a stage died
+     * there was nothing left for pipe_close_task_ends to find. This function is
+     * a backstop for a task that dies WITHOUT closing -- a fault, a SYS_KILL --
+     * and nothing here did that while holding a pipe end. A control arm that
+     * cannot fail cannot gate, so it was kept ungated, the same call
+     * SPAWN_STAGE_UNSERIALISED and NET_NO_BUSMASTER got.
      *
-     * So the arm is kept and not gated: a control arm that cannot fail cannot
-     * gate, which is the same call SPAWN_STAGE_UNSERIALISED and NET_NO_BUSMASTER
-     * got. It becomes a gate the day a workload kills a task mid-pipeline.
+     * Phase 2 of pipe_selftest is now that workload, and it is the only thing in
+     * the tree that reaches this backstop: a task holding a CAP_PIPE writer end
+     * is torn down without closing it, and the peer's read must be EOF rather
+     * than would-block. See make smoke-pipe-cspace-order-control.
      *
      * Safe to call with interrupts masked — task_teardown is reached from the
      * page-fault handler (idt.c), and it is the first thing on that path to take

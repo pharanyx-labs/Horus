@@ -1,6 +1,6 @@
 # Horus development log, 2026
 
-The narrative record of how Horus was built: 139 entries, newest first, each explaining what
+The narrative record of how Horus was built: 140 entries, newest first, each explaining what
 changed and (the part that matters here) **why, including what was tried and failed**.
 
 This is not the changelog. [`../../CHANGES.md`](../../CHANGES.md) is, and it summarises the
@@ -16,6 +16,38 @@ Finding IDs (**[C-n]**, **[I-n]**, **[G-n]**, **[H-n]**, **[M-n]**) are global a
 project. Their **current** status lives in [`../LIMITATIONS.md`](../LIMITATIONS.md) and
 [`../AUDIT.md`](../AUDIT.md), an entry below records a status as of the day it was written,
 which is exactly what a historical record should do and exactly why it is not authoritative.
+
+---
+
+### Added: the third ungated arm, and the one where the workload had to be admitted as synthetic
+
+Three flags in this tree were kept buildable with no gate on the same reasoning, and this sweep
+closed all three in a night. The first two -- `IOMMU_NO_TASK_TEARDOWN` and
+`CSPACE_RELEASE_BEFORE_PIPES` -- were waiting for a workload that a few lines of kernel could
+supply honestly: a driver that dies while a peer holds its frame, a stage that dies holding a pipe
+end. Both are things a real system does.
+
+`META_CACHE_EVICT_NOWB` is not, and the difference is worth writing down rather than papering
+over. The eviction write-back runs only when a transaction dirties more metadata lines than the
+cache holds, and nothing here can: the block allocator hands out CONSECUTIVE physical blocks, 128
+of them share one metadata line, and every multi-block path -- `storage_free_inode_blocks`,
+`storage_users_save`, the file write path -- commits between them or touches one line. That is
+structural, not incidental. Even the free path avoids it deliberately: its comment says clearing
+the metadata there "would flush one metadata block (and the tree above it) per freed block".
+
+So the workload is synthetic: one transaction writing three blocks a metadata block apart, in raw
+physical blocks because a file cannot produce the spread. It is labelled as synthetic in the
+selftest header, in `docs/BUILDING.md` and in `TESTS.md`, and what it claims is exactly what it
+shows -- the structure holds: a line pushed out mid-transaction is on the disk when that
+transaction commits. Under `META_CACHE_EVICT_NOWB=1` the same run reports `METAEVICT: FAIL an
+evicted line lost block 0`, because the nonce and tag for that block were in RAM and RAM is where
+they stayed. The block is not corrupt in a way a reader could notice; it simply stops decrypting,
+which is the failure this whole stage exists to prevent.
+
+`META_CACHE_TINY=1` is set in BOTH arms, and the gate asserts the eviction HAPPENED before
+concluding anything. That is not ceremony: at the shipped 32 lines, three touched lines evict
+nothing at all, and the read-back would then pass with the backstop deleted -- the gate would
+measure its own assertion rather than the property.
 
 ---
 

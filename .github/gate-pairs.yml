@@ -146,6 +146,7 @@ control_arms:
   smoke-iommu-teardown-control: smoke-iommu-teardown
   smoke-iommu-teardown-task-control: smoke-iommu-teardown
   smoke-pipe-cspace-order-control: smoke-pipe
+  smoke-meta-evict-control: smoke-meta-evict
   smoke-kfault-legacy: smoke-kfault
   smoke-klog-forge-abi-control: smoke-klog-forge
   smoke-klog-forge-control: smoke-klog-forge
@@ -293,6 +294,7 @@ gates:
   - smoke-mapphys
   - smoke-measured-boot-required
   - smoke-measured-persist
+  - smoke-meta-evict
   - smoke-measured-persist-sealed
   - smoke-modules
   - smoke-modules-tamper

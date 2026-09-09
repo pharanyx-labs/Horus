@@ -468,6 +468,12 @@ void smp_bringup(void) {
      * tree cannot see, because its root lives in the superblock it protects. */
     { extern void rollback_selftest(void); rollback_selftest();
       for (;;) __asm__ volatile ("hlt"); }
+#elif defined(META_EVICT_SELFTEST)
+    /* Gated: a dirty metadata line evicted mid-transaction is still on the disk
+     * when that transaction commits -- the eviction write-back backstop, which no
+     * live path in this tree reaches. */
+    { extern void meta_evict_selftest(void); meta_evict_selftest();
+      for (;;) __asm__ volatile ("hlt"); }
 #elif defined(MEASURED_PERSIST_SELFTEST)
     /* Gated: a persistent volume that was never sealed is refused when measured
      * boot is required (S85). Two boots on one disk; the second one is the

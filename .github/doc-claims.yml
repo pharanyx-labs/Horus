@@ -251,6 +251,17 @@ counts:
         pattern: 'make smoke-captest\s+<span class="c"># (\d+) capability checks'
 
 forbidden:
+  - pattern: 'What is still not gated is a persistent disk under the policy'
+    reason: >-
+      docs/LIMITATIONS.md 2.9's open remainder, carried from 2026-08-23 and true
+      for every day of it: the sealed-volume refusal had only ever been executed
+      on the ephemeral vdisk, by an arm (MEASURED_VOLUME_EXEMPT_NONE=1) whose
+      whole job was to remove that volume's exemption. Closed 2026-09-09 by
+      SECURITY.md S85 and make smoke-measured-persist, which formats a real disk
+      on a machine with no TPM and presents it to the policy kernel on one with.
+      Retired here so the sentence cannot come back beside the gate that answers
+      it -- the failure mode section 3 of CLAUDE.md exists to prevent, a document
+      still advertising a gap as open after it closed.
   - pattern: '\*\*All ten are now single writes\.\*\*'
     reason: >-
       docs/LIMITATIONS.md 2.6a's closure claim, and it was false when written.

@@ -1559,8 +1559,31 @@ fresh each boot with a full-entropy key that is discarded at power-off, and neve
 a later boot could read it; there is nothing for a measurement to protect. Because the default
 boot runs on exactly that volume, the refusal branch is unreachable in an ordinary run, which is
 why `MEASURED_VOLUME_EXEMPT_NONE=1` exists: it removes the exemption so the branch executes and
-can be falsified. **What is still not gated is a persistent disk under the policy**, the arm
-proves the refusal fires, not that a real on-disk volume reaches it. That remains open.
+can be falsified.
+
+**A persistent disk under the policy is gated since 2026-09-09** (`SECURITY.md` **S85**), and it
+had to be a separate gate rather than another assertion in the arms above. Those run on the
+exempt volume under a flag whose only job is to make it non-exempt, so what they witness is that
+the branch fires when it is entered. The claim is about a disk: present a re-formatted drive to a
+machine that requires measured boot and the requirement must not evaporate.
+
+`make smoke-measured-persist` is two boots on one disk and **two kernels**, because a
+password-only volume can only be MADE by a machine with no TPM and the policy kernel refuses to
+boot on one. Boot 1 is an ordinary kernel with the disk and no TPM, so the format takes the
+`tpm_mode 0` path and leaves the drive as an operator's would be; boot 2 is the policy kernel
+**with** a TPM, so `tpm: measured boot OK` reaches the wire and the volume is the only thing
+wrong with the machine. Booting boot 2 without a TPM would halt at `tpm_init` and never look at a
+volume -- that is `smoke-measured-boot-required-control`, not this. The guest reports the volume
+it MET before it touches it, so an arm that formatted the wrong kind of volume fails as itself
+rather than as a missing refusal, which is the `STORAGE_NOFORMAT_SELFTEST` lesson (2.6's
+neighbour) applied in advance.
+
+`make smoke-measured-persist-sealed` is the other direction and is not optional: a check that
+rejected every persistent volume would satisfy the refusal arm perfectly. It formats under the
+policy with the TPM present, so the volume seals, powers the machine off, and requires the same
+TPM to release the secret again on the next boot -- one ISO for both boots, since a secret sealed
+under `PolicyPCR(8,9)` is released only to the same measurements and a differently built boot 2
+would be refused by the TPM rather than by us.
 
 **Default behaviour is unchanged**, which is deliberate: this is a flag, not a new default, and
 S11/S12 still do not apply to a boot without a TPM. What changed is that a deployment can now

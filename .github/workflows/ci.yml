@@ -823,6 +823,25 @@ jobs:
         env:
           SWTPM_REQUIRED: "1"
         run: make smoke-measured-boot-required-volume-control
+      # The three arms above all run on the ephemeral vdisk, which is exempt by
+      # design -- so the volume half is reached only by removing the exemption.
+      # These put a REAL DISK in front of the policy, which is what
+      # docs/LIMITATIONS.md 2.9 recorded as still ungated. Two boots each: the
+      # first formats the disk, the second presents it to the policy kernel.
+      - name: A disk formatted without a TPM is refused by a kernel that requires one
+        env:
+          SWTPM_REQUIRED: "1"
+        run: make smoke-measured-persist
+      # The other direction, and it is not optional: a check that rejected every
+      # persistent volume would satisfy the arm above perfectly.
+      - name: A volume sealed under the policy opens again on the next boot
+        env:
+          SWTPM_REQUIRED: "1"
+        run: make smoke-measured-persist-sealed
+      - name: Control arm — without the check, a never-sealed disk unlocks under the policy
+        env:
+          SWTPM_REQUIRED: "1"
+        run: make smoke-measured-persist-control
 
   smoke-tpm-tamper:
     name: Measured boot falsification (a tampered module diverges the PCRs)

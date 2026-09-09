@@ -1446,6 +1446,30 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           </li>
           <li>
             <div>
+              <h3>And a disk that was never sealed cannot satisfy a machine that requires it</h3>
+              <p>
+                The reverse of the property above, and the one with the downgrade in it. A
+                volume formatted on a machine with no TPM opens on its password alone, forever
+                &mdash; so presenting a re-formatted drive to a machine that requires measured
+                boot would make the requirement evaporate, with the TPM present, the PCRs
+                extended and nothing else out of place. A kernel built with
+                <code>MEASURED_BOOT_REQUIRED=1</code> refuses to unlock it. The ephemeral RAM
+                volume is exempt, because its key is generated each boot and discarded at
+                power-off: there is nothing there for a measurement to protect.
+              </p>
+              <p class="falsified">
+                <b>Falsified by</b> <code>smoke-measured-persist-control</code>, which deletes
+                the refusal and requires the unsealed disk to unlock; the gate it extends,
+                <code>smoke-measured-persist</code>, formats a real disk on a machine with no TPM
+                and presents it to one that has. The opposite direction is
+                <code>smoke-measured-persist-sealed</code>, which requires a volume sealed under
+                the policy to open again on the next boot &mdash; without it, a check that
+                rejected every disk would pass.
+              </p>
+            </div>
+          </li>
+          <li>
+            <div>
               <h3>init starts, and hands out every capability anything else will hold</h3>
               <p>
                 <code>init</code> launches <code>fs_server</code>, endows it, resumes it, then
@@ -1536,7 +1560,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 304 test targets, and the troubleshooting
+          Every configuration flag, every one of the 307 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1657,7 +1681,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             The security argument rests entirely on the tests, so they are treated as engineering
             artifacts rather than an afterthought. There are three layers: Rust unit tests and
-            Kani proofs on the host; 146 QEMU integration targets that boot a purpose-built kernel
+            Kani proofs on the host; 148 QEMU integration targets that boot a purpose-built kernel
             and assert a marker on the serial console; and scripted sessions that type into the
             real ring-3 shell over serial and read what comes back.
           </p>

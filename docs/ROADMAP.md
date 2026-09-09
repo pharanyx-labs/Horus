@@ -1458,6 +1458,14 @@ assembling the image with `xorriso` directly or deriving the UUID from `SOURCE_D
 TPM 2.0 PCR 8/9 measurement of kernel and modules; vdisk KEK sealed under `PolicyPCR`.
 Adversarially tested: `smoke-tpm-tamper`, `smoke-tpm-seal`.
 
+**The policy that makes it mandatory is met by a real disk since 2026-09-09** (`SECURITY.md`
+**S85**). `MEASURED_BOOT_REQUIRED=1` has refused a never-sealed volume since 2026-08-23, and
+until now every arm for that refusal ran on the ephemeral vdisk -- exempt by design, so the
+branch was reachable only under a flag that removes the exemption. `make smoke-measured-persist`
+formats a disk on a machine with no TPM and presents it to the policy kernel on a machine that
+has one, and `make smoke-measured-persist-sealed` is the direction that stops a check which
+refused everything from passing. That closes the remainder `docs/LIMITATIONS.md` 2.9 carried.
+
 ### 3.3 ✅ Boot-module integrity manifest
 
 SHA-256 manifest embedded in the kernel image; unverified modules cannot be read, hence never
@@ -1743,7 +1751,7 @@ table already has the four columns a registry needs (id, statement, enforcing co
 the table *is* the registry. A hand-maintained parallel manifest would be a second copy of
 claims that already exist, which is **[H-3]**'s shape: two descriptions of one thing, drifting.
 The manifest that remains (`.github/invariants.yml`) holds exemptions only, and today it is
-**empty**, all 86 properties name a witness that resolves.
+**empty**, all 87 properties name a witness that resolves.
 
 **What the survey found on the way.** **S16** had no witness at all, an em-dash against
 `fpu_save`/`fpu_restore`, real code called on every ring transition and exercised by nothing.
@@ -1782,7 +1790,7 @@ past it.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue`, §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 304 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 158 of them control arms that must reproduce a defect |
+| ✅ | 307 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 159 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

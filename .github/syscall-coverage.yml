@@ -32,8 +32,9 @@
 # SYSCALL_COVERAGE=1, and each now records what was OBSERVED rather than what was
 # assumed. Six were confirmed; FOUR WERE WRONG -- SIGNAL_SELFTEST does not drive
 # sigaction or sigreturn (it passes while entering only syscalls 0 and 11), and
-# IRQ_POLICY_AUDIT does not drive SYS_IRQ_POLICY_INFO. Two more, SYS_EXEC and
-# SYS_EXEC_IMAGE, are reached by no build known in this tree.
+# IRQ_POLICY_AUDIT does not drive SYS_IRQ_POLICY_INFO. SYS_EXEC (19) was reached
+# by no build and has since been retired; SYS_EXEC_IMAGE was reached by none
+# either until execprobe covered it on 2026-09-09 (see the covered list).
 #
 # The confirmed ones are NOT promoted to `covered`, and the reason is a cost
 # judgement rather than a doubt: `covered` means "a TRACKED arm enters it", and
@@ -242,6 +243,23 @@ covered:
   - SYS_BLOCK_WRITE
   - SYS_AUDIT_DIGEST
   - SYS_READ_AUDIT
+  # Promoted 2026-09-09 by execprobe (userspace/execprobe.c), a fourth probe
+  # holding one CAP_DEBUG. SYS_EXEC_IMAGE had the strongest "uncovered" reason on
+  # this list -- "NOT entered by any of the five selftest builds tried" -- and
+  # SECURITY.md S42 named it beside SYS_EXEC_NAMED with a witness that drove only
+  # the second. The obstacle was never the gate (SC_NONE): it was that entering
+  # the body REPLACES the caller, so a conformance suite that calls it has no
+  # section 14. execprobe answers that by making the successor image
+  # (userspace/execimgee.c) the second half of the witness -- the S42 checks run
+  # after the exec, in the image it entered. The first entry into it found a
+  # disclosure (S84) one and two layers down: the ELF parse bounded by the
+  # staging region rather than the image, and a rejected ELF flat-loaded instead
+  # of refused.
+  #
+  # Witness: make smoke-execprobe. Under SYSCOV_PROBES_ABSENT=1 execprobe's calls
+  # are compiled out, so this body is not entered and the coverage control arm
+  # names it (SYSCOV_CONTROL_EXPECTED in the Makefile).
+  - SYS_EXEC_IMAGE
   # Promoted 2026-08-29 with S52, and the promotion is the point rather than a
   # side effect. All three were listed below as "not entered by any tracked
   # workload, and by no build known in this tree" -- and all three reached a
@@ -415,10 +433,13 @@ uncovered:
   # reason it is written out. It read: "THE GATE IS THE [C-1] DECOY ... These
   # carry (slot 3, WRITE|EXEC, SC_ANYTYPE) ... So captest PASSES the table check
   # on all five." That was true of five entries when it was written and of none
-  # of the three left here now. SYS_FORK, SYS_EXEC_NAMED and SYS_EXEC_IMAGE are
-  # SC_NONE and gated in their handlers -- fork on CAP_UNTYPED (S57), the other
-  # two self-only, replacing the caller's own image and creating no task -- and
-  # they moved there on 2026-08-30 without this comment being touched.
+  # of the three left here now. SYS_FORK and SYS_EXEC_NAMED are SC_NONE and gated
+  # in their handlers -- fork on CAP_UNTYPED (S57), exec_named self-only,
+  # replacing the caller's own image and creating no task. SYS_EXEC_IMAGE was the
+  # third here until 2026-09-09, when execprobe covered it -- see the covered
+  # list. What made that possible where "a suite that execs itself away has no
+  # section 14" said it was not: the SUCCESSOR image is the second half of the
+  # probe, so the checks run AFTER the exec, in the image it entered.
   #
   # The two the header was STILL right about were SYS_EXEC (19) and
   # SYS_RECEIVE_PROGRAM (27), which is the whole lesson: a reason field went on
@@ -430,9 +451,6 @@ uncovered:
     MEASURED 2026-08-28: not entered by the tracked workloads -- nothing in a tracked image forks, because fork's only client so far is its own witness. Entered by FORK_SELFTEST, which is its gate (make smoke-fork, plus four control arms). A captest probe would pass the slot-3 check and then actually fork captest
   SYS_EXEC_NAMED: >-
     MEASURED 2026-08-20: entered by a PROC_SELFTEST=1 boot, which is not a tracked arm. Also gated by make smoke-forkexec since 2026-08-28 (S42). A probe would replace captest's image
-  SYS_EXEC_IMAGE: >-
-    MEASURED 2026-08-20: NOT entered by any of the five selftest builds tried. No build in this tree is known to reach it, as SYS_EXEC
-
   # (3) SC_NONE, AND STILL NOT PROBEABLE. The sweep of 2026-08-30 promoted twelve
   # SC_NONE handlers on the argument that the dispatch table admits everyone, so
   # a refusal test runs the body. These two are where that argument stops, and

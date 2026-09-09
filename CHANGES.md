@@ -402,6 +402,34 @@ in this file.
 
 ### Fixed
 
+- **A program image could read past its own bytes into the shared staging buffer** (S84;
+  `src/kernel/loader.c`, `src/kernel/kspawn.c`). The ELF loader stages every image in
+  `loader_staging`, a fixed 8 MiB region at the base of the physical pool that is shared by
+  every task and holds the residue of every image staged before it. The three attacker-controlled
+  ELF parses (header, load-plan, relocations) were bounds-checked — in safe Rust — against the
+  size of that **region** rather than against the bytes the image actually staged, so a program
+  header declaring `p_offset + p_filesz` past the end of its own image passed the check and the
+  loader copied up to 8 MiB of residue into the new task at an offset the image chose.
+  `SYS_EXEC_IMAGE` is `SC_NONE`, so this was one syscall from any ring-3 task; `run <file>`
+  reached it on a truncated file. The check being present and memory-safe was the trap: a
+  bounds-checked read of a byte that is none of the caller's business is still a disclosure.
+  **Fixed** by bounding every parse with `staged_bytes()`; by failing closed on a **recognised**
+  ELF the loader rejects (it used to fall through to the flat-image path and copy the ELF's own
+  header bytes to the load base and enter them); by validating on the exec path **before** the
+  caller's old address space is torn down, so a rejection is a clean `SYS_ERR_INVAL` with the
+  caller intact; and by refusing a container that claims more payload than its buffer holds.
+  **Found by the first probe ever to enter `SYS_EXEC_IMAGE`** — `userspace/execprobe.c`, a task
+  holding one `CAP_DEBUG`, written to cover the handler with the strongest "not entered by any
+  build" reason on `.github/syscall-coverage.yml`. That handler was also named, beside
+  `SYS_EXEC_NAMED`, in the mechanism of `SECURITY.md` S42 while only the named form had a witness
+  — the [C-1] shape at the level of a claim, which roadmap 4.12 exists to prevent. execprobe
+  answers "a suite that execs itself away has no section 14" by making the successor image
+  (`userspace/execimgee.c`) the second half of the witness: the S42 checks run after the exec, in
+  the image it entered. Falsified by `ELF_LOAD_BOUND_STAGING=1` (`smoke-proc-overreach-control`,
+  the disclosure) and `IMAGE_LEN_UNCHECKED=1` (`smoke-proc-truncated-image-control`, the length
+  refusal) — two locks on one door, each with a fixture the other cannot catch, because a
+  truncated ELF trips both. `SYS_EXEC_IMAGE` moves to the coverage `covered` list (87 of 96).
+
 - **A gate read a kernel marker from the one place it can be cut in half** (`Makefile`,
   `smoke-kstack-park` and its control arm). Both read the SHARED console, where `proctest`'s
   ring-3 output interleaves with the kernel's, so an exact-string grep misses a marker that was

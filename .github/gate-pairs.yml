@@ -67,6 +67,10 @@ control_arms:
   smoke-auditprobe-control: smoke-auditprobe
   smoke-auditprobe-abi-control: smoke-auditprobe
   smoke-blockprobe-control: smoke-blockprobe
+  smoke-execprobe-reset-control: smoke-execprobe
+  smoke-execprobe-root-control: smoke-execprobe
+  smoke-proc-truncated-image-control: smoke-proc
+  smoke-proc-overreach-control: smoke-proc
   smoke-readdir-end-control: smoke-readdir-end
   smoke-ls-path-control: smoke-ls-path
   smoke-boot-media-control: smoke-boot-media
@@ -197,6 +201,7 @@ gates:
   - smoke-captest
   - smoke-auditprobe
   - smoke-blockprobe
+  - smoke-execprobe
   - smoke-readdir-end
   - smoke-ls-path
   - smoke-boot-media

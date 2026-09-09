@@ -125,6 +125,7 @@ DEFECT_FLAGS = \
 	CAP_LOOKUP_ROOT_FALLBACK CAP_LOOKUP_RANGE_FALLBACK CAP_LOOKUP_TYPE_UNCHECKED \
 	KEYSLOT_REMOVE_NOOP USERS_PEPPER_PER_BOOT STORAGE_AUTOFORMAT \
 	STORAGE_FORMAT_UNGATED INSTALLER_NO_CONFIRM BLOCK_ERRNO_LEGACY \
+	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED \
 	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY \
 	AHCI_PROBE_ABSENT AHCI_CAPACITY_CONSTANT SDHCI_PROBE_ABSENT \
 	SDHCI_CSD_SPEC_BITS SDHCI_ADDR_MODE_INVERTED \
@@ -519,6 +520,51 @@ BLOCK_ERRNO_LEGACY ?= 0
 ifeq ($(BLOCK_ERRNO_LEGACY),1)
 CFLAGS  += -DBLOCK_ERRNO_LEGACY
 ASFLAGS += -DBLOCK_ERRNO_LEGACY
+endif
+
+# ELF_LOAD_BOUND_STAGING=1 restores the pre-2026-09-09 bound in the ELF loader:
+# every parse of the staged image is bounded by the size of the staging REGION
+# (8 MiB) instead of by the number of bytes the image actually staged.
+#
+# `loader_staging` is a fixed region at the base of the physical pool, shared by
+# every task in the system and holding the residue of every image staged before
+# this one. Under this flag a program header declaring `p_offset + p_filesz` past
+# the end of its own image passes the bounds check and the loader copies that
+# residue into the new task's address space, at an offset the image chooses.
+#
+# The checks were REAL and were in safe Rust; they bounded the wrong thing. That
+# is the whole lesson and it is why this is one switch over all seven call sites:
+# a half-applied bound is a hole with a test in front of it.
+#
+# The marker is proctest's, not execprobe's, and that is not a preference. Under
+# the flag the exec form SUCCEEDS, so the caller that would have reported it has
+# been replaced by whatever the loader assembled; the spawn form returns, so its
+# caller is still there to say what it got. Control arm for make smoke-proc; both
+# smoke-proc and smoke-execprobe go red under it.
+ELF_LOAD_BOUND_STAGING ?= 0
+ifeq ($(ELF_LOAD_BOUND_STAGING),1)
+CFLAGS  += -DELF_LOAD_BOUND_STAGING
+ASFLAGS += -DELF_LOAD_BOUND_STAGING
+endif
+
+# IMAGE_LEN_UNCHECKED=1 drops the refusal arm_image_from_user makes when a
+# user-supplied container's header claims more payload than the buffer it came in
+# (`HORUS_IMAGE_HDR_BYTES + h.size > len`): under the flag the loader copies
+# h.size bytes from a len-byte buffer, reading past the caller's image.
+#
+# A SEPARATE FLAG FROM ELF_LOAD_BOUND_STAGING, because they are separate locks on
+# the same door and a truncated ELF trips BOTH -- so an arm against this one needs
+# a fixture the OTHER cannot also catch. proctest's is a whole, valid image behind
+# a lying `len` (hello_image at half its length): the bytes past `len` are the
+# real rest of the static array, so with the check gone the FULL image loads and
+# spawns, which the ELF bound has no quarrel with. The first attempt shared one
+# arm between the two locks and TIMED OUT, because the ELF bound refused the
+# truncated ELF before this check's absence could matter.
+# Control arm for make smoke-proc.
+IMAGE_LEN_UNCHECKED ?= 0
+ifeq ($(IMAGE_LEN_UNCHECKED),1)
+CFLAGS  += -DIMAGE_LEN_UNCHECKED
+ASFLAGS += -DIMAGE_LEN_UNCHECKED
 endif
 
 # CONSOLE_TIMESTAMPS_LEGACY=1 restores the pre-2026-09-06 console: no line
@@ -1095,6 +1141,7 @@ CFLAGS  += -DCAPTEST_SELFTEST
 ASFLAGS += -DCAPTEST_SELFTEST
 AUDITPROBE_DEP = userspace/auditprobe.bin
 BLOCKPROBE_DEP = userspace/blockprobe.bin
+EXECPROBE_DEP = userspace/execprobe.bin
 endif
 
 # The set of utilities ported so far. Each is an unmodified upstream .c in
@@ -3283,7 +3330,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin userspace/installer.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(BLOCKPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin userspace/installer.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(BLOCKPROBE_DEP) $(EXECPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -4170,7 +4217,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.stripped.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/tuitest.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -4183,7 +4230,35 @@ userspace/hello_image.h: userspace/hello.bin
 	@od -An -v -tu1 $< | tr -s ' ' '\n' | grep -v '^$$' | paste -sd, >> $@
 	@printf '};\nstatic const unsigned hello_image_len = sizeof(hello_image);\n' >> $@
 
-userspace/proctest.o: userspace/hello_image.h
+# A container that is self-consistent and whose ELF lies: exactly two program
+# header fields of hello's payload are inflated so one PT_LOAD reaches a page
+# past the end of the image (SECURITY.md S84). It is the only witness that can
+# reach the loader's bound -- a truncated container is refused by
+# arm_image_from_user first, so the truncation arm never gets there. See
+# tools/make_overreach_image.py for what it does and does not change.
+userspace/overreach.bin: userspace/hello.bin tools/make_overreach_image.py
+	@python3 tools/make_overreach_image.py $< $@
+
+userspace/overreach_image.h: userspace/overreach.bin
+	@printf 'static const unsigned char overreach_image[] = {' > $@
+	@od -An -v -tu1 $< | tr -s ' ' '\n' | grep -v '^$$' | paste -sd, >> $@
+	@printf '};\nstatic const unsigned overreach_image_len = sizeof(overreach_image);\n' >> $@
+
+userspace/proctest.o: userspace/hello_image.h userspace/overreach_image.h
+
+# The image execprobe hands to SYS_EXEC_IMAGE, embedded in its own binary the
+# same way -- the bytes a client would have read from a file. A purpose-built
+# successor rather than `hello`, because the half of the witness that runs after
+# the exec has to CHECK something: it compares the task id, and the type, rights,
+# serial and badge of the one capability the probe holds, against the pre-exec
+# sample carried across in the exec's own argv (S42, for the syscall that half of
+# that claim had never been asserted about).
+userspace/execimgee_image.h: userspace/execimgee.bin
+	@printf 'static const unsigned char execimgee_image[] = {' > $@
+	@od -An -v -tu1 $< | tr -s ' ' '\n' | grep -v '^$$' | paste -sd, >> $@
+	@printf '};\nstatic const unsigned execimgee_image_len = sizeof(execimgee_image);\n' >> $@
+
+userspace/execprobe.o: userspace/execimgee_image.h
 
 # The shared library's layout, derived from the object rather than written down
 # in the tests. shlibtest.c and shlibpeer.c held a hardcoded export-table offset
@@ -5145,6 +5220,95 @@ smoke-blockprobe-control:
 		REQUIRE_MARKER='BLOCKPROBE: FAIL bad-block-is-indistinguishable-from-refusal' \
 		tools/smoke_test.sh boot.iso
 
+# execprobe rides in the same CAPTEST_SELFTEST image as a FOURTH task, holding
+# exactly one CAP_DEBUG. SYS_EXEC_IMAGE carried the strongest reason any entry on
+# .github/syscall-coverage.yml's `uncovered` list has carried -- "NOT entered by
+# any of the five selftest builds tried. No build in this tree is known to reach
+# it" -- and SECURITY.md S42 named it anyway, beside SYS_EXEC_NAMED, with a
+# witness that drives only the second. Half a security property, asserted about a
+# syscall nothing ran.
+#
+# WHAT IT IS NOT KEPT OUT BY is the gate, which makes it unlike its two
+# neighbours: SYS_EXEC_IMAGE is SC_NONE and captest could have called it any time.
+# What stopped it is that the call would have SUCCEEDED and replaced captest, and
+# a conformance suite that execs itself away has no section 14.
+.PHONY: smoke-execprobe
+smoke-execprobe:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='EXECPROBE: PASS' \
+		FAIL_MARKER='EXECPROBE: FAIL' tools/smoke_test.sh boot.iso
+
+# S42's two arms, applied to the syscall S42 also names. They live in
+# exec_into_armed_image -- the tail SYS_EXEC_NAMED and SYS_EXEC_IMAGE share -- so
+# they reach this form unchanged, which is the point of writing execprobe's checks
+# in S42's vocabulary rather than inventing new ones. No new defect flag was
+# needed for either.
+#
+# EXEC_RESET_CSPACE=1 discards the cspace ("a fresh start for a fresh image"):
+# the capability is gone, and because SYS_CAP_ENUMERATE is gated on the very
+# capability that was dropped, the probe cannot even ask -- which is what the
+# marker says.
+.PHONY: smoke-execprobe-reset-control
+smoke-execprobe-reset-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 EXEC_RESET_CSPACE=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 EXEC_RESET_CSPACE=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='EXECPROBE: FAIL exec-dropped-our-capability' \
+		tools/smoke_test.sh boot.iso
+
+# EXEC_ROOT_CSPACE=1 re-mints it instead ("the new image should own what it
+# holds"): identical type, identical rights, a new serial and no parent edge. The
+# authority is the same and the lineage is gone, so every functional check still
+# passes and only the two structural ones fail -- which is why this arm exists
+# separately from the one above.
+.PHONY: smoke-execprobe-root-control
+smoke-execprobe-root-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 EXEC_ROOT_CSPACE=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 EXEC_ROOT_CSPACE=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='EXECPROBE: FAIL exec-recreated-our-capability' \
+		tools/smoke_test.sh boot.iso
+
+# The falsifying arm for the loader bound (S84). ELF_LOAD_BOUND_STAGING=1 puts
+# back the bound the ELF parses used until 2026-09-09: the size of the 8 MiB
+# staging REGION rather than the size of the image staged in it.
+#
+# THE MARKER IS proctest's, AND THAT IS THE WHOLE DESIGN OF THIS PAIR. Under the
+# flag the truncated image is ACCEPTED, so the exec form's caller is replaced by
+# whatever the loader assembled out of the residue and cannot report anything;
+# the spawn form returns a pid to a caller that is still running. The child is
+# never resumed, so nothing executes the image that should not exist.
+.PHONY: smoke-proc-truncated-image-control
+smoke-proc-truncated-image-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 IMAGE_LEN_UNCHECKED=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 IMAGE_LEN_UNCHECKED=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='PROC_SELFTEST: FAIL truncated-image-spawned' \
+		tools/smoke_test.sh boot.iso
+
+# The second rule's arm, and the one aimed at the disclosure itself.
+# ELF_LOAD_BOUND_STAGING=1 restores the region bound in the ELF parses; the
+# fixture is a container that is entirely self-consistent and whose program
+# headers reach one page past it, so nothing but that bound can refuse it.
+#
+# TWO ARMS RATHER THAN ONE, and the ordering is why: with the container refusal
+# in place a truncated image never reaches the ELF parses, so the arm above
+# cannot speak to this rule at all -- it would pass under this flag and did,
+# measured, on the first attempt at sharing one arm between them.
+.PHONY: smoke-proc-overreach-control
+smoke-proc-overreach-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 ELF_LOAD_BOUND_STAGING=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 ELF_LOAD_BOUND_STAGING=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='PROC_SELFTEST: FAIL overreaching-image-spawned' \
+		tools/smoke_test.sh boot.iso
+
 .PHONY: smoke-auditprobe-abi-control
 smoke-auditprobe-abi-control:
 	@$(MAKE) --no-print-directory clean
@@ -5152,6 +5316,8 @@ smoke-auditprobe-abi-control:
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 AUDIT_ABI_LEGACY=1 boot.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='AUDITPROBE: FAIL read-audit-wrote-past-the-array' \
+		tools/smoke_test.sh boot.iso
+
 # The one call in this system that DESTROYS a volume answers to a capability
 # nothing else holds (roadmap 2.9, S72). The arm removes the whole dispatch-table
 # row -- slot, rights and type -- so captest, holding no CAP_STORAGE_FORMAT,
@@ -5636,7 +5802,7 @@ SYSCOV_CONTROL_EXPECTED = \
 	SYS_AUDIT_DIGEST SYS_BRK SYS_FRAME_PAGES SYS_IPC_REPLY SYS_MAP_FRAME \
 	SYS_MAP_REGION SYS_READ SYS_READ_AUDIT SYS_REGISTER_STORAGE_BACKEND \
 	SYS_SIGACTION SYS_SIGRETURN SYS_SPAWN_ARG SYS_TASK_EXIT_INFO \
-	SYS_UNMAP_FRAME SYS_BLOCK_READ SYS_BLOCK_WRITE
+	SYS_UNMAP_FRAME SYS_BLOCK_READ SYS_BLOCK_WRITE SYS_EXEC_IMAGE
 
 smoke-syscall-coverage-control:
 	@set -eu; \

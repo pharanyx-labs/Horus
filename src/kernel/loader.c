@@ -391,8 +391,9 @@ done:
  * checks, SMAP-safe) against the *current* task, so it must run while the
  * caller's address space is still active. Fails closed (program_armed left 0,
  * negative return) on a bad pointer, an over-long/short image, or an
- * unrecognised container. `name_hint` (may be NULL) names a bare-ELF image and
- * backfills an empty Horus name. Returns 0 on success, negative on error. */
+ * unrecognised container, or a header describing more payload than the buffer
+ * holds (-7). `name_hint` (may be NULL) names a bare-ELF image and backfills an
+ * empty Horus name. Returns 0 on success, negative on error. */
 int arm_image_from_user(addr_t ubuf, uint32_t len, const char *name_hint) {
     loader_disarm();
     if (ubuf == 0)                             return -1;
@@ -418,8 +419,32 @@ int arm_image_from_user(addr_t ubuf, uint32_t len, const char *name_hint) {
         if (image_header_decode(raw, HORUS_IMAGE_HDR_BYTES, &h) != 0) return -5;
         if (h.size == 0 || h.size > MAX_PROGRAM_SIZE) return -4;
 
+        /* REFUSE A CONTAINER CLAIMING MORE PAYLOAD THAN THE BUFFER HOLDS.
+         *
+         * `len` is what the caller says it handed us; `h.size` is what the
+         * header inside it claims. When the second exceeds the first, the copy
+         * loop below would read `h.size` bytes from a `len`-byte buffer -- past
+         * the caller's own image and into whatever else its address space maps.
+         * That is a bad read even when it stays inside the caller (same
+         * principal), and `run <file>` reaches it on any short read of the file.
+         *
+         * image_container_parse -- the arm_named_binary path -- CLAMPS instead of
+         * refusing, and that is right THERE: a boot module is delimited by the
+         * linker's own _start/_end symbols, so the measured length is the truth
+         * and the header's size is the redundant copy. Here `len` is a second
+         * claim by the same untrusted caller, not a measurement, so the two
+         * disagreeing is a refusal rather than a smaller number to trust. An
+         * existing call's partial-failure policy is a precedent to argue with,
+         * not to inherit.
+         *
+         * IMAGE_LEN_UNCHECKED=1 drops the refusal -- the defect on demand. It is
+         * a SEPARATE lock from the ELF bound below (staged_bytes): a truncated
+         * ELF trips both, so this arm's fixture (a whole image behind a lying
+         * `len`) is what isolates this one. */
+#ifndef IMAGE_LEN_UNCHECKED
+        if ((uint64_t)HORUS_IMAGE_HDR_BYTES + h.size > (uint64_t)len) return -7;
+#endif
         uint32_t h_size = h.size;
-        if (HORUS_IMAGE_HDR_BYTES + h_size > len) h_size = len - HORUS_IMAGE_HDR_BYTES;
         h_entry     = h.entry;
         payload_off = HORUS_IMAGE_HDR_BYTES;
         payload_len = h_size;
@@ -529,6 +554,44 @@ _Static_assert(sizeof(struct elf_i386_reloc_table) == 8, "elf_i386_reloc_table s
 _Static_assert(__builtin_offsetof(struct elf_i386_reloc_table, rel_file_off) == 0, "reloc.rel_file_off");
 _Static_assert(__builtin_offsetof(struct elf_i386_reloc_table, nrel)         == 4, "reloc.nrel");
 
+/* How many bytes of the staged image are actually THERE.
+ *
+ * Every parse of the staged image is bounded by this and not by
+ * MAX_PROGRAM_SIZE, and the difference between those two numbers is a defect
+ * this loader carried until 2026-09-09.
+ *
+ * `loader_staging` is not a buffer sized to the image. It is a fixed 8 MiB
+ * region reserved at the base of the physical pool and shared by every task in
+ * the system, and an arm writes `armed_hdr.size` bytes into the FRONT of it.
+ * Everything behind that is the residue of whatever was staged before -- other
+ * tasks' program images, including images read out of the encrypted filesystem
+ * by a task authorised for them and handed to SYS_SPAWN_IMAGE.
+ *
+ * The ELF parses were bounded by the REGION. They were bounds-checked, in safe
+ * Rust, against the wrong bound: a program header declaring
+ * `p_offset + p_filesz` past the end of its own image passed
+ * `p_offset + p_filesz > buf.len()` and the loader copied the residue into the
+ * new task's address space, up to 8 MiB of it, at an offset the image chose.
+ * SYS_EXEC_IMAGE is SC_NONE, so that was reachable from any ring-3 task in one
+ * syscall, and `run <file>` reached it by accident on any truncated file.
+ *
+ * The lesson is not that the check was missing -- it was there, and the comment
+ * beside it said "cannot walk off the staging buffer", which was true. It
+ * bounded the wrong thing. A memory-safe read of a byte that is none of the
+ * caller's business is still a disclosure.
+ *
+ * ELF_LOAD_BOUND_STAGING=1 restores the region bound: the defect on demand.
+ * One switch for all seven call sites deliberately -- a half-applied bound is
+ * a hole with a test in front of it. */
+static uint32_t staged_bytes(void) {
+#ifdef ELF_LOAD_BOUND_STAGING
+    return MAX_PROGRAM_SIZE;
+#else
+    uint32_t n = armed_hdr.size;
+    return n > MAX_PROGRAM_SIZE ? MAX_PROGRAM_SIZE : n;
+#endif
+}
+
 /* Apply i386 dynamic relocations for a static-PIE (ET_DYN) image after its
  * segments have been copied into the task address space (still writable) and
  * before the W^X protection pass.
@@ -555,12 +618,12 @@ static int elf_apply_relocations_i386(const uint8_t *st, const uint8_t *ph,
     uint32_t e_phoff = (uint32_t)(ph - st);
 
     struct elf_i386_reloc_table rt;
-    int rc = rust_elf_i386_reloc_locate(st, MAX_PROGRAM_SIZE, e_phoff, e_phnum, &rt);
+    int rc = rust_elf_i386_reloc_locate(st, staged_bytes(), e_phoff, e_phnum, &rt);
     if (rc != 0) return rc;
 
     for (uint32_t k = 0; k < rt.nrel; k++) {
         uint64_t target;
-        int tr = rust_elf_i386_reloc_target(st, MAX_PROGRAM_SIZE, rt.rel_file_off, k, slide,
+        int tr = rust_elf_i386_reloc_target(st, staged_bytes(), rt.rel_file_off, k, slide,
                                             seg_va, seg_memsz, (uint32_t)nseg, &target);
         if (tr < 0) return tr;      /* -16: malformed / out-of-segment entry */
         if (tr == 1) continue;      /* R_386_NONE */
@@ -602,12 +665,12 @@ static int elf_apply_relocations_x86_64(const uint8_t *st, const uint8_t *ph,
     uint32_t e_phoff = (uint32_t)(ph - st);
 
     struct elf_x86_64_reloc_table rt;
-    int rc = rust_elf_x86_64_reloc_locate(st, MAX_PROGRAM_SIZE, e_phoff, e_phnum, &rt);
+    int rc = rust_elf_x86_64_reloc_locate(st, staged_bytes(), e_phoff, e_phnum, &rt);
     if (rc != 0) return rc;
 
     for (uint64_t k = 0; k < rt.nrela; k++) {
         uint64_t target, value;
-        int r = rust_elf_x86_64_reloc_resolve(st, MAX_PROGRAM_SIZE, rt.rela_file_off,
+        int r = rust_elf_x86_64_reloc_resolve(st, staged_bytes(), rt.rela_file_off,
                                               rt.sym_file_off, k, slide, USER_MAX_VADDR,
                                               seg_va, seg_memsz, (uint32_t)nseg,
                                               &target, &value);
@@ -638,7 +701,7 @@ static inline uint64_t elf64_rd(const uint8_t *p) {
  * Reading only the low half does not just lose range, it defeats the bounds
  * checks: they would validate a number that is not the one in the file. A
  * header declaring p_offset = 0x1_0000_0000 narrows to 0 and sails through
- * `p_offset + p_filesz > MAX_PROGRAM_SIZE`. Fail closed instead. */
+ * `p_offset + p_filesz > staged_bytes()`. Fail closed instead. */
 static inline int elf64_narrow(const uint8_t *p, uint32_t *out) {
     uint64_t v = elf64_rd(p);
     if (v > 0xFFFFFFFFu) return -1;
@@ -692,7 +755,7 @@ uint32_t staged_image_span_pages(void) {
         return USER_ASPACE_PREMAP_PAGES;   /* bad class: try_elf_load rejects it */
     }
     if (e_phnum == 0 || e_phnum > 8)                  return USER_ASPACE_PREMAP_PAGES;
-    if (e_phoff == 0 || e_phoff > (MAX_PROGRAM_SIZE - 64)) return USER_ASPACE_PREMAP_PAGES;
+    if (e_phoff == 0 || e_phoff + 64 > staged_bytes()) return USER_ASPACE_PREMAP_PAGES;
 
     uint32_t phentsize = (ei_class == 1) ? 32 : 56;
     const uint8_t *ph = st + e_phoff;
@@ -759,12 +822,13 @@ int try_elf_load(uint64_t load_base, uint64_t *out_entry, uint64_t *out_img_end)
     /* Parse+validate the ELF identity and program-header locator in safe Rust.
      * The staged image is fully attacker-controlled, so the header parse — the
      * part that reads untrusted offsets — is done with bounds-checked slice reads
-     * that cannot walk off the staging buffer. rust_elf_validate_header returns
+     * that cannot walk off the bytes this image staged (staged_bytes(); reading
+     * on to the end of the REGION was memory-safe and was still a disclosure). rust_elf_validate_header returns
      * the same negative codes this loader has always used (-2..-8, -17), so
      * behaviour is unchanged; only the memory safety of the parse improves. The
      * PT_LOAD segment walk below still parses in C (moved to Rust in J10.2). */
     struct elf_header_info hdr;
-    int hrc = rust_elf_validate_header(st, MAX_PROGRAM_SIZE, &hdr);
+    int hrc = rust_elf_validate_header(st, staged_bytes(), &hdr);
     if (hrc != 0) return hrc;
 
     uint8_t  ei_class  = hdr.ei_class;
@@ -780,13 +844,14 @@ int try_elf_load(uint64_t load_base, uint64_t *out_entry, uint64_t *out_img_end)
     /* Parse+validate the PT_LOAD program headers in safe Rust and get back a
      * load plan (validated segments + slide). The program-header table is
      * attacker-controlled, so this walk — bounds-checked slice reads, u64 length
-     * arithmetic — cannot read off the staging buffer, nor wrap p_offset+p_filesz
-     * past its bound the way the old hand-rolled u32 parse could. Same negative
+     * arithmetic — cannot read past the bytes this image staged, nor wrap
+     * p_offset+p_filesz past its bound the way the old hand-rolled u32 parse
+     * could. Same negative
      * codes as before (-9,-10,-11,-12,-13,-17). The privileged copy_to_user below
      * stays in C; the relocation pass (which re-parses phdrs via ph/phentsize) is
      * still C too (moved to Rust in J10.3). */
     struct elf_load_plan plan;
-    int prc = rust_elf_build_load_plan(st, MAX_PROGRAM_SIZE, ei_class, e_phoff,
+    int prc = rust_elf_build_load_plan(st, staged_bytes(), ei_class, e_phoff,
                                        e_phnum, load_base, USER_AREA_BASE,
                                        USER_MAX_VADDR, &plan);
     if (prc != 0) return prc;
@@ -815,7 +880,9 @@ int try_elf_load(uint64_t load_base, uint64_t *out_entry, uint64_t *out_img_end)
          * walks the page tables with present/user/write checks, handles huge
          * pages, switches to the kernel CR3 (SMAP-safe) and fails closed on any
          * unmapped page. The source range [p_offset, p_offset+p_filesz) is inside
-         * the staging buffer — validated by rust_elf_build_load_plan. */
+         * the bytes this image actually STAGED -- validated by
+         * rust_elf_build_load_plan against staged_bytes() rather than against the
+         * size of the region; see staged_bytes() for why those differ. */
         const uint8_t *s = st + p_offset;
         for (uint32_t off = 0; off < p_filesz; ) {
             uint32_t chunk = p_filesz - off;
@@ -924,13 +991,48 @@ void choose_image_placement(int tid, uint64_t *out_load_base, uint64_t *out_stac
     *out_stack_top  = aslr_random_stack_top(0x007ff000u);
 }
 
+/* Does the staged image validate as loadable, WITHOUT copying it anywhere?
+ *
+ * try_elf_load is the authoritative validator, but it validates by LOADING: it
+ * copy_to_user's each segment into a built address space as it goes. Two callers
+ * need the verdict before that is possible or safe:
+ *
+ *  - the exec path, which must know before it destroys the caller's old address
+ *    space (create_user_pagedir), because after that there is no clean return;
+ *  - both paths, so that a recognised-but-REJECTED ELF fails closed instead of
+ *    falling through to the flat-image path, which would copy the ELF's own
+ *    header bytes to the load base and run them as code.
+ *
+ * So this runs the same two Rust validators try_elf_load runs -- the header
+ * parse and the load-plan build, both non-copying, both bounded by staged_bytes()
+ * -- with the real `load_base` so the dest_va range checks match what the load
+ * will do. A non-ELF payload (the gated flat self-test images) returns 0: it is
+ * not this function's business, the flat path is legitimate for it.
+ *
+ * Returns 0 if the image is loadable (or is not an ELF), else the same negative
+ * code try_elf_load would return. */
+int staged_elf_valid(uint64_t load_base) {
+    const uint8_t *st = loader_staging;
+    uint32_t n = staged_bytes();
+    if (!(n >= 4 && st[0] == 0x7f && st[1] == 'E' && st[2] == 'L' && st[3] == 'F'))
+        return 0;   /* not an ELF: the flat path handles it, nothing to reject */
+
+    struct elf_header_info hdr;
+    int hrc = rust_elf_validate_header(st, n, &hdr);
+    if (hrc != 0) return hrc;
+
+    struct elf_load_plan plan;
+    return rust_elf_build_load_plan(st, n, hdr.ei_class, hdr.e_phoff, hdr.e_phnum,
+                                    load_base, USER_AREA_BASE, USER_MAX_VADDR, &plan);
+}
+
 /* Load the currently-armed staged image into task `tid`'s (already-built)
  * address space: run the ELF loader (or the flat-image fallback), then set
  * eip/image_end/heap/name and disarm the loader. Makes `tid` the current task so
  * the loader's copy_to_user writes into its address space. Shared by spawn and
  * exec; the caller is responsible for building the address space beforehand
  * (create_task for spawn, create_user_pagedir for exec). */
-void load_staged_image_into(int tid, uint64_t load_base) {
+int load_staged_image_into(int tid, uint64_t load_base) {
     set_current_task(tid);
 
     uint64_t entry_point = armed_hdr.entry;
@@ -945,6 +1047,22 @@ void load_staged_image_into(int tid, uint64_t load_base) {
     if (elf_loaded) {
         entry_point = elf_entry;
     } else {
+        /* A RECOGNISED ELF THAT try_elf_load REJECTED FAILS CLOSED HERE.
+         *
+         * The flat path below is for a genuinely headerless payload, not for an
+         * ELF the loader refused. Falling through to it with an ELF was a
+         * fail-open one layer under S84: the rejected header bytes would be
+         * copied to the load base and the task entered on them. Both live callers
+         * pre-validate with staged_elf_valid() before they reach here (the exec
+         * path MUST, before it tears down the old address space), so this is a
+         * backstop rather than the primary gate -- but a backstop at the actual
+         * fail-open site is the one that cannot be bypassed by a third caller. */
+        const uint8_t *st = loader_staging;
+        if (staged_bytes() >= 4 && st[0] == 0x7f && st[1] == 'E' &&
+            st[2] == 'L' && st[3] == 'F') {
+            loader_disarm();
+            return elf_rc ? elf_rc : -1;
+        }
 
         /* Flat image (no ELF header): copy it verbatim to the load base. Only
          * the gated self-test payloads take this path — everything shipped is a
@@ -1021,6 +1139,7 @@ void load_staged_image_into(int tid, uint64_t load_base) {
     }
 
     loader_disarm();
+    return 0;
 }
 
 /* --- spawn argument vector staging ------------------------------------------

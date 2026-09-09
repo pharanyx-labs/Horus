@@ -535,12 +535,12 @@ a page at the bogus address and reported success.
 ### 1.8 Part of the syscall table has no test that runs its handler, and one of those gaps hid a defect
 
 **Measured since 2026-08-20**, and re-derived on every merge rather than restated: as of
-2026-09-06, and gated since: **86 of 96** implemented syscalls have their handler
+2026-09-09, and gated since: **87 of 96** implemented syscalls have their handler
 body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
-boot-modules session). The other 10 are listed in `.github/syscall-coverage.yml`, each with a written reason.
+boot-modules session). The other 9 are listed in `.github/syscall-coverage.yml`, each with a written reason.
 
 This was stated as a limitation rather than a finding, on the grounds that nothing here was
-known to be broken. **That is no longer the honest framing, and it has now been wrong three times.**
+known to be broken. **That is no longer the honest framing, and it has now been wrong four times.**
 
 On 2026-08-29 three of the syscalls on the uncovered list, `SYS_CAP_MINT`, `SYS_CAP_TRANSFER`
 and `SYS_CAP_MOVE`, turned out to reach a helper that spun forever on a NULL capability lookup
@@ -592,7 +592,7 @@ once rather than the one syscall that motivated it. And third, **neither would h
 by a wider `captest`**: both syscalls are gated on a real capability, so the only way in is a
 task that holds one, which is why the answer was a new task rather than a bigger suite.
 
-So the standing risk is not hypothetical: a defect in any of those 10 handlers is invisible in
+So the standing risk is not hypothetical: a defect in any of those 9 handlers is invisible in
 the same way issue #176 was, and in the way S52, S71 and the block-syscall error vocabulary just
 were. `captest` is a **refusal** suite by
 construction: its checks for `SYS_DMESG` and `SYS_AUDIT_DIGEST` both assert `SYS_ERR_PERM`, and
@@ -643,14 +643,15 @@ number without ever running the gate the syscall is interesting for. **"The body
 stops being coverage when the body is one branch of a feature that is compiled out.**
 
 **Falsified by `SYSCOV_PROBES_ABSENT=1`**, which compiles the probes out; `make
-smoke-syscall-coverage` must then go red naming *exactly* the twelve, and
+smoke-syscall-coverage` must then go red naming *exactly* the set the probes cover
+(`SYSCOV_CONTROL_EXPECTED` in the Makefile — read the count there, it has grown), and
 `make smoke-syscall-coverage-control` asserts that set rather than merely asserting a failure.
 The arm rebuilds and reboots all three workloads even though the flag changes only `captest`,
 because running the one arm would leave the other two transcripts missing and redden the gate
 without the defect contributing anything. Without the arm, a promotion the probes earned would
 be indistinguishable from one that was free all along.
 
-**What is left is twelve, in three groups, and the grouping is the useful part** because it
+**What is left is nine, in three groups, and the grouping is the useful part** because it
 says what each would cost. **Five** have a real capability in their dispatch row, so the table
 refuses before the handler runs and `captest` holds none of `CAP_ENCRYPTED_STORAGE` or
 `CAP_STORAGE_FORMAT` — covering one needs a probe task that holds exactly one of them, not a
@@ -665,9 +666,45 @@ volume the run is using. Its sibling `SYS_STORAGE_INFO` is `covered` instead —
 it at boot from the same capability (roadmap 2.9), which is the same capability and the opposite
 consequence.
 
-Five carry the slot-3 `[C-1]` decoy (§1.6b), which is not a gate, so `captest` passes the table
-check and is stopped by the opposite problem — the call would *succeed*, replacing or
-duplicating the caller. Two are the SC_NONE pair above.
+Two are `SC_NONE` and stopped by the opposite problem — the call would *succeed*, replacing or
+duplicating the caller: `SYS_FORK` (covered by its own `FORK_SELFTEST` build) and
+`SYS_EXEC_NAMED` (by `PROC_SELFTEST`). `SYS_EXEC_IMAGE` was the third of these until 2026-09-09,
+when `execprobe` covered it by making the successor image the second half of the witness. The
+last two are the `SC_NONE` pair above (`SYS_GET_PASS`, which blocks, and `SYS_SHLIB_INFO`, whose
+body is compiled out of every tracked image).
+
+On 2026-09-09 it happened a fourth time, to the fifth of those "the call would succeed" entries.
+`SYS_EXEC_IMAGE` carried the strongest reason on the list — "NOT entered by any of the five
+selftest builds tried. No build in this tree is known to reach it" — and `SECURITY.md` **S42**
+named it, beside `SYS_EXEC_NAMED`, in the mechanism column of a security property whose only
+witness (`smoke-forkexec`) drove the *other* syscall. Half a property, asserted about a handler
+nothing ran: the `[C-1]` shape one level up, at a claim rather than a gate, which is what roadmap
+4.12 exists to catch. The obstacle was never the gate — `SYS_EXEC_IMAGE` is `SC_NONE` and
+`captest` could have called it any time — it was that entering the body *replaces the caller*, so
+a conformance suite that calls it has no section 14. `userspace/execprobe.c`, a task holding one
+`CAP_DEBUG`, answers that by making the SUCCESSOR image (`userspace/execimgee.c`) the second half
+of the witness: the S42 checks run *after* the exec, in the image it entered, and read the
+capability's type, rights, serial and parent edge back out of the kernel to confirm they survived.
+
+The first entry into that handler found a disclosure (**S84**) and, under it, a second fail-open.
+The three attacker-controlled ELF parses were bounds-checked in safe Rust — against the size of
+the 8 MiB `loader_staging` **region**, which is shared by every task and holds the residue of
+every image staged before, rather than against the bytes the image actually staged. So a program
+header reaching `p_offset + p_filesz` past the end of its own image passed the check and the
+loader copied that residue into the new task. The check was present and memory-safe; it bounded
+the wrong thing, which is the sharpest form this file's lesson takes — a bounds-checked read of a
+byte that is none of the caller's business is still a disclosure. And a *recognised* ELF the
+loader then rejected fell through to the flat-image path, which copied the ELF's own header bytes
+to the load base and entered them. Fixed by bounding every parse with `staged_bytes()`, failing
+closed on a rejected ELF (validated on the exec path *before* the old address space is torn
+down), and refusing a container that claims more payload than its buffer holds. Witnessed by
+`make smoke-proc` and `make smoke-execprobe`, falsified by `ELF_LOAD_BOUND_STAGING=1` and
+`IMAGE_LEN_UNCHECKED=1` — two locks on one door, each with a fixture the other cannot catch.
+
+The lesson repeats with the prescription: the gap named the probe (`SYS_AUDIT_DIGEST` had said "a
+probe task holding one `CAP_AUDIT` is worth writing" nine days before it was), and the defect was
+in a *neighbour* of what was being covered — here the loader the syscall reaches, not the gate in
+front of it.
 
 ### 1.9 ~~S16 had no witness at all~~: CLOSED 2026-08-28
 

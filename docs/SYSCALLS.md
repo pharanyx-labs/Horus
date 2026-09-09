@@ -297,11 +297,19 @@ first one stood. They are `SC_NONE` and self-only: `h_exec_named` operates on
 `get_current_task()` and can reach no other task.
 
 An image supplied by the caller (`SYS_EXEC_IMAGE`) is validated by the same loader as a named one
-(W^X, bounds, fail-closed relocations) because the bytes are untrusted in both cases.
+(W^X, bounds, fail-closed relocations) because the bytes are untrusted in both cases. Every parse
+is bounded by the bytes the image actually staged, never by the size of the shared staging region
+(**S84**): an ELF whose program headers reach past its own image is refused, not loaded from the
+residue behind it. On the exec path that validation runs **before** the caller's old address
+space is torn down, so a rejected image is a clean `SYS_ERR_INVAL` with the caller intact rather
+than a task entered on a half-built image; a recognised ELF the loader rejects fails closed
+instead of falling through to the flat-image path.
 
 **Errors** (the image is left intact, and the call returns): `SYS_ERR_NOENT` (no embedded binary
-by that name. `SYS_ERR_INVAL`) the supplied image failed validation. Past the point of no return
-there is no error path: the caller's image is gone.
+by that name), `SYS_ERR_INVAL` (the supplied image failed validation, including a container
+claiming more payload than it holds or an ELF reaching past itself). Once the exec has passed
+validation and torn down the old address space there is no further error path — but validation is
+now the last thing that can fail, and it precedes the tear-down.
 
 ## IPC arguments are cspace slots, not object indices
 >

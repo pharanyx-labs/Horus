@@ -705,7 +705,8 @@ int  pipe_write(int idx, const uint8_t *src, uint32_t len);
 /* Close every CAP_PIPE end in a dying task's cspace (task_teardown). */
 void pipe_close_task_ends(int task_id);
 #ifdef PIPE_SELFTEST
-void pipe_selftest(void);   /* in-kernel pipe mechanics exercise (smoke-pipe) */
+void pipe_selftest(void);                 /* in-kernel pipe mechanics exercise (smoke-pipe) */
+void pipe_task_teardown_selftest(void);   /* its phase 2: a stage that dies holding an end */
 #endif
 
 #define MAX_NOTIFICATIONS 64

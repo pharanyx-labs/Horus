@@ -1,6 +1,6 @@
 # Horus development log, 2026
 
-The narrative record of how Horus was built: 138 entries, newest first, each explaining what
+The narrative record of how Horus was built: 139 entries, newest first, each explaining what
 changed and (the part that matters here) **why, including what was tried and failed**.
 
 This is not the changelog. [`../../CHANGES.md`](../../CHANGES.md) is, and it summarises the
@@ -16,6 +16,40 @@ Finding IDs (**[C-n]**, **[I-n]**, **[G-n]**, **[H-n]**, **[M-n]**) are global a
 project. Their **current** status lives in [`../LIMITATIONS.md`](../LIMITATIONS.md) and
 [`../AUDIT.md`](../AUDIT.md), an entry below records a status as of the day it was written,
 which is exactly what a historical record should do and exactly why it is not authoritative.
+
+---
+
+### Added: the second arm waiting for a workload, and what its first run reported instead
+
+Two flags in this tree were kept buildable with no gate on the same reasoning -- a control arm
+that cannot fail cannot gate -- and both were waiting for a workload rather than for a decision.
+`IOMMU_NO_TASK_TEARDOWN` was one (see the entry above). `CSPACE_RELEASE_BEFORE_PIPES` is the
+other, and its measurement on 2026-08-30 was the honest kind: `smoke-pipe` and `smoke-modules`
+were run under the flag and **passed**, because every pipe user in this tree closes its ends
+explicitly, so `pipe_close_task_ends` -- the backstop for a stage that dies *without* closing --
+had nothing to find.
+
+The workload is phase 2 of the pipe selftest, and the shape is the same as the IOMMU one: the
+interesting object needs TWO holders, one of which dies. Here the peer holds a `CAP_PIPE` with
+READ|WRITE|GRANT and the dying task holds a WRITE-only capability *granted from it*, so the
+rights are a delegation rather than a fabrication. It asserts its premise before the death --
+while the writer end is open the peer's read must be would-block -- because otherwise the EOF
+after the death is satisfied by a pipe that never had a writer.
+
+**What its first run reported is the part worth keeping.** The arm asserted
+`PIPE_SELFTEST: FAIL peer-never-saw-eof`; the wire said `PIPE_SELFTEST: FAIL
+(peer-never-saw-eof)`, because `pst_fail` wraps its reason in parentheses and emits it in three
+writes. So the defect reproduced perfectly and the gate reported *timed out after 40s without
+required marker* -- a real reproduction wearing the costume of a broken runner, which is exactly
+the failure mode `tools/check_split_markers.py` exists to prevent and which its rule would have
+caught the moment the marker was gate-asserted. The repair is the rule: the gated marker is one
+literal write, and the neighbouring diagnostics keep `pst_fail`.
+
+Measured 2026-09-09: `PIPE_SELFTEST: PASS` without the flag, `PIPE_SELFTEST: FAIL
+peer-never-saw-eof` under it, and `smoke-pipe` red under it via
+`tools/check_base_gate_reddens.sh`. The comment beside `cap_release_cspace` in `scheduler.c` had
+been naming `make smoke-pipe-cspace-order-control` since the day the flag landed, and the target
+did not exist until now -- a documented gate nobody could run, which nothing checks for.
 
 ---
 

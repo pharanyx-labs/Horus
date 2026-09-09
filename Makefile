@@ -6166,6 +6166,24 @@ smoke-pipe:
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PIPE_SELFTEST: PASS' \
 		FAIL_MARKER='PIPE_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
 
+# The ordering inside task_teardown, which had a defect flag and no arm from
+# 2026-08-30: cap_release_cspace empties the cspace pipe_close_task_ends walks,
+# so releasing first means a stage that dies holding an end never releases it and
+# its peer waits forever on a writer that no longer exists. Measured that day,
+# both smoke-pipe and smoke-modules PASSED under the flag -- every pipe user in
+# this tree closes explicitly, so nothing reached the backstop. Phase 2 of the
+# selftest is the workload that does. The marker is the peer's, because the dying
+# task cannot report what its peer did not see.
+.PHONY: smoke-pipe-cspace-order-control
+smoke-pipe-cspace-order-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PIPE_SELFTEST=1 CSPACE_RELEASE_BEFORE_PIPES=1
+	@$(MAKE) --no-print-directory PIPE_SELFTEST=1 CSPACE_RELEASE_BEFORE_PIPES=1 boot.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='PIPE_SELFTEST: FAIL peer-never-saw-eof' \
+		FAIL_MARKER='PIPE_SELFTEST: PASS' tools/smoke_test.sh boot.iso
+	@echo "[pipe] CONTROL PASS - a stage that died holding a pipe end never released it, and its peer saw no EOF"
+
 .PHONY: smoke-fs-large
 smoke-fs-large:
 	@$(MAKE) --no-print-directory clean

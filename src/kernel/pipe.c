@@ -270,6 +270,93 @@ void pipe_selftest(void) {
     for (uint32_t i = 0; i < PIPE_BUF_BYTES; i++)
         if (pipes[idx].buf[i] != 0) { pst_fail("residue"); return; }
 
+    println("PIPE_SELFTEST: object phase ok");
+}
+
+/* PHASE 2: a task that dies WITHOUT closing its end, and the peer that must
+ * still see EOF.
+ *
+ * WHY THE PHASE ABOVE CANNOT REACH IT. Everything there is a direct call on the
+ * pipe object: refs taken and dropped by hand, so the EOF it witnesses is the
+ * one an orderly close produces. `pipe_close_task_ends` is the BACKSTOP for a
+ * stage that dies holding an end -- a fault, a SYS_KILL -- and it works by
+ * walking the dead task's cspace for CAP_PIPE. Its ordering inside
+ * `task_teardown` is load-bearing: `cap_release_cspace` empties that cspace, so
+ * releasing before the walk means the walk finds nothing, no end is unreffed,
+ * and the peer waits forever on a writer that no longer exists.
+ *
+ * THAT ORDERING HAD A DEFECT FLAG AND NO GATE. `CSPACE_RELEASE_BEFORE_PIPES=1`
+ * makes the move, and was measured on 2026-08-30 against `smoke-pipe` and
+ * `smoke-modules` -- both PASSED under it, because every pipe user in this tree
+ * closes its ends explicitly, so by the time a stage dies there is nothing left
+ * to find. A control arm that cannot fail cannot gate, so it was kept and not
+ * gated, "for the day a workload kills a task mid-pipeline". This is that
+ * workload: it is the ONLY thing in the tree that reaches the backstop.
+ *
+ * IT RUNS AFTER scheduler_init, because before it task 0 has no cspace and the
+ * capability the dying task must hold cannot be granted from anywhere. Only this
+ * phase prints PASS, so `smoke-pipe` cannot pass on the object phase alone -- the
+ * harness ends a boot at its required marker, so an earlier PASS would stop the
+ * run before this ever executed. */
+void pipe_task_teardown_selftest(void) {
+    int idx = pipe_alloc();
+    if (idx < 0) { pst_fail("teardown-alloc"); return; }
+    pipe_end_ref(idx, 0);   /* the reader end, held by this task: the peer */
+    pipe_end_ref(idx, 1);   /* the writer end, held by the task about to die */
+
+    /* The peer's own capability, and the source of the grant. It carries WRITE
+     * because rights can only be reduced on delegation, and the end the dying
+     * task must hold is the writer's. */
+    uint32_t src_slot = KERNEL_RESERVED_CAPS;
+    if (!cap_install_object(src_slot, CAP_PIPE, (uint64_t)idx,
+                            CAP_RIGHT_READ | CAP_RIGHT_WRITE | CAP_RIGHT_GRANT, 0)) {
+        pst_fail("teardown-cap-install"); return;
+    }
+
+    /* The doomed stage: a real task slot, taken from the top so nothing the boot
+     * goes on to spawn lands in it. It never runs -- create_task leaves
+     * runnable_ctx and saved_ksp at 0, which every selection loop tests. */
+    int dying = g_max_tasks - 1;
+    create_task(dying, 0, 0, 0, 0, UNTYPED_KERNEL);
+    if (tasks[dying].state != 1 || !tasks[dying].cspace) {
+        pst_fail("teardown-task-create"); return;
+    }
+    if (!cap_grant_into(dying, KERNEL_RESERVED_CAPS, src_slot, CAP_RIGHT_WRITE)) {
+        pst_fail("teardown-cap-grant"); return;
+    }
+
+    /* The premise: while that end is open, an empty read is would-block rather
+     * than EOF. Without this the assertion after the death is satisfied by a
+     * pipe that had no writer to begin with. */
+    uint8_t in[8] = { 0 };
+    if (pipe_read_bytes(idx, in, 8) != SYS_ERR_AGAIN) {
+        pst_fail("teardown-not-blocking-before-death"); return;
+    }
+
+    struct task_exit_cause cause = { .reason = TASK_EXIT_KILLED, .detail = 0,
+                                     .err = 0, .rip = 0, .addr = 0 };
+    task_teardown(dying, &cause);
+
+    /* The backstop must have run: the writer end is gone, so the peer's read is
+     * EOF. Under CSPACE_RELEASE_BEFORE_PIPES it is still SYS_ERR_AGAIN -- the
+     * stage died, its end was never released, and the peer waits on nobody. */
+    int rc = pipe_read_bytes(idx, in, 8);
+    if (rc != 0) {
+        if (rc == SYS_ERR_AGAIN) {
+            /* ONE literal write, unlike its pst_fail neighbours: this is the
+             * marker smoke-pipe-cspace-order-control asserts on, and a gated
+             * marker assembled from three calls can be split by another writer
+             * on the shared console -- docs/LIMITATIONS.md 2.6a, which
+             * tools/check_split_markers.py enforces. */
+            println("PIPE_SELFTEST: FAIL peer-never-saw-eof");
+            return;
+        }
+        pst_fail("teardown-read-unexpected"); return;
+    }
+
+    pipe_end_unref(idx, 0);   /* the peer lets go; the pipe is freed */
+    if (pipes[idx].in_use != 0) { pst_fail("teardown-not-freed"); return; }
+
     println("PIPE_SELFTEST: PASS");
 }
 #endif

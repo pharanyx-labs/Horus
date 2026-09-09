@@ -524,6 +524,17 @@ in this file.
   by `SDHCI_PROBE_ABSENT=1` (`make smoke-sdhci-detect-control`), an absence assertion that also
   requires the kernel to have reached `kernel ready`.
 
+### Changed
+
+- **`horus.py` is `tools/horus.py`** (roadmap 4.6, audit finding **[M-2]**). It was the only
+  development-tool file in the repository index. The move carried one change with it, because the
+  move is what made it wrong: the script read `system_prompt.txt` and wrote `horus_usage.log` by
+  bare relative name, so both meant "wherever the operator was standing" -- from a subdirectory
+  that is a different system prompt, or none, and the failure is a `sys.exit` that names a file
+  the repository does have. Both now resolve from the script's own location to the repository
+  root. Nothing else references it: no target, no workflow, no document besides the roadmap and
+  the 2026-07 audit that asked for the move.
+
 ### Fixed
 
 - **A program image could read past its own bytes into the shared staging buffer** (S84;
@@ -1009,8 +1020,6 @@ in this file.
   tree passes -- three "is it caught" arms are all satisfied by a checker that rejects everything.
   That script's own first run scored every rule a miss: under `set -o pipefail`,
   `checker | grep -q` reports the checker's deliberate exit 1 even when grep matched.
-
-### Changed
 
 - **The installer's own progress markers were being drawn across its screens, and had been all
   along.** `say()` emits a marker as a cooked `CON_OP_WRITE` to the same UART the TUI draws on, so

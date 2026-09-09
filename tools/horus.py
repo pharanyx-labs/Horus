@@ -20,8 +20,14 @@ from anthropic import Anthropic
 MODEL      = "claude-opus-4-8"
 MAX_TOKENS = 8192
 
-SYSTEM_PROMPT_FILE = "system_prompt.txt"
-LOG_FILE           = "horus_usage.log"
+# Both live at the REPOSITORY ROOT, resolved from this file's location rather
+# than from the working directory: the script moved under tools/ (roadmap 4.6,
+# audit finding M-2), and a bare relative name would then mean "wherever the
+# operator happened to be standing" -- which for the prompt is a silent change of
+# what the assistant is told, and for the log is a second log nobody reads.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SYSTEM_PROMPT_FILE = os.path.join(_ROOT, "system_prompt.txt")
+LOG_FILE           = os.path.join(_ROOT, "horus_usage.log")
 
 # USD per 1M tokens, for the cost read-out only. Keep in sync with MODEL.
 PRICE = {

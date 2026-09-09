@@ -1707,7 +1707,7 @@ that nothing yet enforces.
   `boot.iso`.
 - **4.5 ⬜ Tagged releases** carrying artifacts, SBOM, provenance, and the expected
   PCR[8]/PCR[9] values, so a relying party can pre-compute the measured-boot quote.
-- **4.6 ⬜ Move `horus.py` under `tools/`: [M-2].** Minor; the index is otherwise clean.
+- **4.6 ✅ Move `horus.py` under `tools/`: [M-2]** *landed 2026-09-09*. It is `tools/horus.py`, and the move carried one change with it: the script read `system_prompt.txt` and wrote `horus_usage.log` by bare relative name, which meant "wherever the operator was standing" and, from a subdirectory, a different system prompt (or none) with no error. Both paths now resolve from the script's own location to the repository root.
 - **4.7 ✅ Governance files: [M-3].** *Landed 2026-07-27.* PR template moved to
   `.github/pull_request_template.md` (it was in `docs/`, where GitHub never looked for it,
   so no contributor had ever seen it); `.github/ISSUE_TEMPLATE/` added with security-report

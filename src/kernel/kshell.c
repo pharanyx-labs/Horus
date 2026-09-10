@@ -203,8 +203,27 @@ int process_user_command(const char *cmd) {
         return 0;
     }
     if (action == 48) {
-        struct capability *c = cap_lookup(CAPSLOT_FRAME, CAP_FRAME, CAP_RIGHT_WRITE);
-        if (!c) return -1;
+        /* CAP_CONSOLE, like every other console command in this file, and NOT
+         * the slot-3 CAP_FRAME this line tested until 2026-09-10.
+         *
+         * `create_task` installs a CAP_FRAME in slot 3 of EVERY task with
+         * exactly READ|WRITE|EXEC, so `cap_lookup(CAPSLOT_FRAME, CAP_FRAME,
+         * WRITE)` could not fail for anyone -- S28's "a gate satisfied by a
+         * capability every task already holds is not a gate", one file over from
+         * the dispatch table S79's checker reads. Adding the type argument
+         * (S60) made it look MORE like enforcement while changing nothing: the
+         * decoy has that type.
+         *
+         * It mattered because this is not ring-0-only. SYS_DEBUG_EXEC (7) is
+         * SC_NONE and reaches process_user_command from ring 3 in any
+         * DEBUG_SHELL build, resolving against the CALLER's cspace -- so the
+         * check ran against a task that always holds slot 3. Clearing the screen
+         * is a console operation and has_console_cap() is the gate the six
+         * commands around it already use; it can actually fail. */
+        if (!has_console_cap()) {
+            println("Permission denied (CAP_CONSOLE required to clear)");
+            return -1;
+        }
         clear_screen();
         return 0;
     }
@@ -310,12 +329,15 @@ int process_user_command(const char *cmd) {
     }
 
     if (cmd[0] == 'l' && cmd[1] == 'o' && cmd[2] == 'a' && cmd[3] == 'd' && cmd[4] == 0) {
-        struct capability *c = cap_lookup(CAPSLOT_FRAME, CAP_FRAME,
-                                          CAP_RIGHT_WRITE | CAP_RIGHT_EXEC);
-        if (!c) {
-            println("Permission denied (need FRAME cap slot 3)");
-            return -1;
-        }
+        /* The slot-3 CAP_FRAME test that stood here until 2026-09-10 is gone
+         * rather than replaced. It could not fail (every task is born holding
+         * that capability, S28), and the real gate was already the line below
+         * it -- so its only effect was to print "need FRAME cap slot 3", naming
+         * a requirement that did not exist. Deliberately NOT re-gated on
+         * CAP_UNTYPED: the spawn path charges the child's cspace to the caller's
+         * untyped region in spawn_untyped_region (S57), and a second copy of
+         * that authority here would be two descriptions of one quantity, which
+         * is the [H-3] shape. */
         if (!has_console_cap()) {
             println("Permission denied (CAP_CONSOLE also required to load/spawn)");
             return -1;

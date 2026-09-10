@@ -44,10 +44,38 @@ those slots hold capabilities `init` delegates rather than ones the kernel hands
 everybody. `SC_ANYTYPE` is likewise not the defect on its own -- the type field
 is a separate question, enforced since S60 inside cap_lookup. The decoy is what
 makes slot 3 different from every other number that appears in this column.
+
+RULE 3, ADDED 2026-09-10: THE TABLE IS NOT THE ONLY PLACE A GATE LIVES. Rules 1
+and 2 read the dispatch table, and a handler BODY is one file over from it --
+which is where two survivors were found. `src/kernel/kshell.c` gated its `clear`
+and `load` commands on `cap_lookup(CAPSLOT_FRAME, CAP_FRAME, ...)`: slot 3, so
+neither could fail for anybody, and `load` then called has_console_cap() anyway,
+so the decoy test's only effect was to print "need FRAME cap slot 3" -- naming a
+requirement that did not exist.
+
+Adding the type argument (S60) had made those lines read MORE like enforcement
+while changing nothing, because the decoy HAS that type. S28 is about which
+capability, not which type.
+
+And it was not ring-0-only, which is what makes it worth a rule rather than a
+comment: SYS_DEBUG_EXEC (7) is SC_NONE and reaches process_user_command from
+ring 3 in any DEBUG_SHELL build, resolving against the CALLER's cspace -- a task
+that always holds slot 3.
+
+So rule 3 requires every literal slot-3 cap_lookup in src/kernel/ to be either
+behind a macro this file knows is absent from the ship build, or declared in
+.github/slot3-lookups.yml with a reason. Declared, because a static rule cannot
+tell a refusal from a snapshot: sys_ipc_send and sys_ipc_recv both resolve slot 3
+deliberately and never refuse on the result, and only intent separates them from
+the two this rule was written for. Comments are stripped before matching -- a
+symbol named in prose is not a call site, the lesson S86's checker learned the
+same week.
 """
 import pathlib
 import re
 import sys
+
+import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SYSCALL_C = ROOT / "src" / "kernel" / "syscall.c"
@@ -62,7 +90,22 @@ SHIP_ABSENT = {
     "LEGACY_SYSCALLS_PRESENT",  # retired syscalls, restored for their control arms
     "RAMFS_SLOT3_GATE",         # the four [H-3] gates, restored for smoke-passwd-probe-control
     "DEBUG_SHELL",              # in-kernel debug shell; documented dev-only surface (CLAUDE.md 6)
+    # Rule 3's two. Both are DEFECT_FLAGS members with a row in
+    # docs/BUILDING.md and `?= 0` in the Makefile, and `make
+    # print-defect-flags` answers "none" for a default build -- which is the
+    # check this list's own comment asks for, run rather than assumed.
+    "GETLINE_SLOT3_FALLBACK",   # h_get_line's pre-2026-08-24 slot-3 fallback (S28)
+    "SPAWN_SLOT3_DECOY_GATE",   # the pre-2026-08-30 spawn gate (S57)
 }
+
+SLOT3_LOOKUPS = ROOT / ".github" / "slot3-lookups.yml"
+KERNEL_DIR = ROOT / "src" / "kernel"
+
+# A literal slot-3 resolve, either spelling. CAPSLOT_FRAME is 3.
+SLOT3_CALL = re.compile(r"cap_lookup\s*\(\s*(?:3|CAPSLOT_FRAME)\s*,")
+
+# A function definition at column 0: `static void h_foo(` / `int bar(`.
+FUNC_DEF = re.compile(r"^[A-Za-z_][\w \t*]*?([A-Za-z_]\w*)\s*\([^;]*$")
 
 ROW = re.compile(
     r"^\s*\[\s*(SYS_[A-Z_0-9]+)\s*\]\s*=\s*\{\s*([A-Za-z_0-9]+)\s*,\s*([A-Za-z_0-9]+)\s*,")
@@ -113,6 +156,80 @@ def table_rows():
     return rows
 
 
+def _strip_comments(text):
+    """Comments are prose. A slot-3 lookup named in one is not a call site --
+    including this checker's own explanation of the sites it retired.
+
+    LINE NUMBERING IS PRESERVED, and it has to be: a block comment replaced by a
+    single space collapses every line it spanned, which both misreports the
+    location AND resolves the site against the wrong #ifdef stack, since guards
+    are counted by line. The first draft did exactly that and put a kspawn.c
+    site 149 lines from where it lives."""
+    def blank(m):
+        return "\n" * m.group(0).count("\n")
+    text = re.sub(r"/\*.*?\*/", blank, text, flags=re.S)
+    return re.sub(r"//[^\n]*", "", text)
+
+
+def _guards_at(lines, upto):
+    """The macro guards open at line index `upto`, innermost last."""
+    stack = []
+    for line in lines[:upto]:
+        if IF.match(line):
+            stack.append(set(IDENT.findall(IF.match(line).group(2))))
+        elif ELIF.match(line):
+            if stack:
+                stack[-1] = set(IDENT.findall(ELIF.match(line).group(1)))
+        elif ELSE.match(line):
+            if stack:
+                stack[-1] = set()      # the #else arm is NOT guarded by the macro
+        elif ENDIF.match(line):
+            if stack:
+                stack.pop()
+    out = set()
+    for frame in stack:
+        out |= frame
+    return out
+
+
+def _enclosing_symbol(lines, upto):
+    """The function a line sits in: nearest preceding definition at column 0."""
+    for i in range(upto, -1, -1):
+        m = FUNC_DEF.match(lines[i])
+        if m:
+            return m.group(1)
+    return "?"
+
+
+def slot3_lookup_sites():
+    """Literal slot-3 cap_lookup call sites in src/kernel/, with guards and the
+    function each sits in."""
+    sites = []
+    for path in sorted(KERNEL_DIR.rglob("*.c")):
+        # Strip comments but KEEP line numbering, so guards resolve correctly.
+        lines = _strip_comments(path.read_text(errors="replace")).splitlines()
+        for i, line in enumerate(lines):
+            if SLOT3_CALL.search(line):
+                sites.append((path.relative_to(ROOT).as_posix(), i + 1,
+                              _guards_at(lines, i), _enclosing_symbol(lines, i)))
+    return sites
+
+
+def declared_exemptions():
+    """(file, symbol) pairs, NOT bare files.
+
+    A per-file exemption would silently permit the next slot-3 lookup added to
+    that file -- and syscall_ipc.c, the only file with an entry, is precisely
+    where a new one would be plausible. Naming the function keeps the exemption
+    the size of the thing that was actually reasoned about."""
+    if not SLOT3_LOOKUPS.exists():
+        return set()
+    data = yaml.safe_load(SLOT3_LOOKUPS.read_text()) or {}
+    return {(e["file"], e["symbol"])
+            for e in (data.get("exempt") or [])
+            if e.get("reason") and e.get("symbol")}
+
+
 def main():
     rows = table_rows()
     if rows is None:
@@ -154,6 +271,30 @@ def main():
                 f"provably not shipped: add the macro to SHIP_ABSENT if `make` really does "
                 f"not define it, on purpose and with a reason")
 
+    # RULE 3: a handler BODY is one file over from the table, and that is where
+    # kshell.c's `clear` and `load` were found. Every literal slot-3 cap_lookup
+    # in src/kernel/ must be provably unshipped, or declared with a reason.
+    exempt_files = declared_exemptions()
+    sites = slot3_lookup_sites()
+    if not sites:
+        problems.append(
+            "found no literal slot-3 cap_lookup call sites at all. Three are "
+            "expected behind control-arm macros, so SLOT3_CALL has probably "
+            "stopped matching -- fix it rather than accepting the silence, "
+            "because rule 3 is vacuous without it")
+    for path, lineno, guards, symbol in sites:
+        if guards & SHIP_ABSENT:
+            continue
+        if (path, symbol) in exempt_files:
+            continue
+        problems.append(
+            f"{path}:{lineno} (in {symbol}) resolves cspace slot {DECOY_SLOT} and is in the SHIP "
+            f"build. `create_task` installs a CAP_FRAME there in EVERY task, so "
+            f"this lookup cannot fail for anybody -- S28. If it gates something, "
+            f"gate it on a capability the caller had to be granted; if it is not "
+            f"a gate (a snapshot, a diagnostic), declare it in "
+            f".github/slot3-lookups.yml with the reason it never refuses")
+
     if problems:
         print("FAIL: check_dispatch_gates")
         for p in problems:
@@ -164,7 +305,10 @@ def main():
     print(f"rows gating on slot {DECOY_SLOT}     : {len(decoy)}")
     for name, handler, _slot, guards in decoy:
         print(f"  {name} ({handler}) -- restored only under {' / '.join(guards)}")
-    print("\nPASS: no ship-build syscall is gated on the slot-3 decoy")
+    print(f"slot-3 cap_lookup sites   : {len(sites)} "
+          f"({len([1 for _, _, g, _s in sites if g & SHIP_ABSENT])} behind a control arm, "
+          f"{len([1 for pth, _, _, sym in sites if (pth, sym) in exempt_files])} declared non-gates)")
+    print("\nPASS: no ship-build syscall or handler is gated on the slot-3 decoy")
     return 0
 
 

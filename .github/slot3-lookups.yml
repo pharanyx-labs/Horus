@@ -1,0 +1,35 @@
+# Literal slot-3 `cap_lookup` call sites in src/kernel/ that are NOT gates.
+#
+# `create_task` installs a CAP_FRAME in cspace slot 3 of EVERY task, so a lookup
+# on that slot cannot fail for anyone: by SECURITY.md S28 it is not a gate.
+# `tools/check_dispatch_gates.py` rule 3 refuses such a call site unless it is
+# behind a macro absent from the ship build, or declared here with a reason.
+#
+# WHY DECLARED RATHER THAN INFERRED. A static rule cannot reliably tell a
+# refusal from a snapshot: both resolve slot 3, and only what the caller does
+# with the result separates "authorise" from "record what was held". Intent is
+# not recoverable from the source, which is the argument .github/gate-pairs.yml
+# makes about classifying targets and .github/ffi-exports.yml about exports.
+#
+# The bar for an entry is that the site must not REFUSE on the result. If a
+# reader could mistake it for enforcement, fix the site instead -- that is what
+# happened to kshell.c's `clear` and `load` on 2026-09-10, which is why rule 3
+# exists at all.
+
+exempt:
+  - file: src/kernel/syscall_ipc.c
+    symbol: sys_ipc_send
+    reason: >-
+      cap_snapshot(cap_lookup(3, CAP_ANYTYPE, WRITE)) is an ADDITIVE TOCTOU
+      guard, not an authority test: the result feeds `if (auth.valid &&
+      !cap_revalidate(...))`, so a caller holding nothing is not newly rejected.
+      The actual gate is ipc_ep_from_slot, which resolves the endpoint from the
+      capability's own object. Demanding a type here would turn a detector into
+      a gate and change who may send. Investigated and rejected as a finding by
+      the 2026-08-30 audit (docs/AUDIT.md section 5).
+  - file: src/kernel/syscall_ipc.c
+    symbol: sys_ipc_recv
+    reason: >-
+      The receive half of the same snapshot/revalidate pair, and the same
+      reasoning: additive, never refusing on its own, with ipc_ep_from_slot as
+      the real gate.

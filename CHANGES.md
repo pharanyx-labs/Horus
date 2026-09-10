@@ -17,6 +17,34 @@ in this file.
 
 ### Added
 
+- **`CLAUDE.md`'s references are checked** (`tools/check_claude_md.py`). The operating manual
+  every session reads first is gitignored and untracked, so nothing in this tree has ever seen
+  it -- and it went stale the way an unchecked document does: two defect flags described as
+  having "no gate, deliberately" hours after both were gated, and three line-number references
+  pointing at unrelated code. The checker resolves every reference the file makes (`make`
+  targets, paths, build flags, the symbols it names, the files it tells the reader to run) and
+  **forbids line-number citations outright**, because a line number is the reference that goes
+  stale silently while still looking right.
+  **It is developer-local by design and is not a CI job.** The file it checks is not in the
+  repository, so in CI it could never fail, and this project does not ship checks that cannot
+  fail; it exits 0 with a note when there is no `CLAUDE.md` -- which is what a fresh clone and CI
+  both see -- and earns its place in the local `for f in tools/check_*.py` sweep instead.
+  Falsified nine ways (`tools/test_check_claude_md.sh`). Two of those arms are about the arms:
+  renaming `foo` to `foo_RENAMED` leaves `foo` in the file, so the symbol check had to grow a
+  word boundary before its own mutation could fail it; and the fixture is now the whole tracked
+  tree via `git archive` plus the gitignored files the manual names, because a fixture assembled
+  by guessing which files matter reported three findings in a row that do not exist in the real
+  tree.
+  **A new arm that plants an absent target has to be registered as one.** Arm 1 appends
+  `make smoke-not-a-target` to its fixture, and that literal sits in a tracked file, so
+  `tools/check_named_targets.py` read it as a stale reference in the tree and failed the
+  `kani-bounded` job -- a required check, on a documentation-checker PR that could not
+  plausibly have broken a proof. Three sibling falsification scripts were already in that
+  checker's `EXEMPT` list for exactly this reason; this one was written from the same template
+  and missed the one registration step they all have. The exemption is not an escape hatch:
+  `test_check_named_targets.sh` arm 5 removes an exemption and requires the planted names to
+  become visible again.
+
 - **Every `make` target named in the tree has to exist** (`tools/check_named_targets.py`, required
   in the source-only checker job). The defect it catches is the quietest kind of stale claim here:
   a comment or a document telling a reader to run a gate that is not there. The reader who follows

@@ -563,6 +563,21 @@ in this file.
 
 ### Fixed
 
+- **A boot with a deliberately corrupted disk did not say so** (`Makefile`, `docs/BUILDING.md`).
+  `USERS_TAMPER_INJECT=1` flips a byte inside the sealed user table on the platter, raw, before it
+  is read -- an adversary rather than a defect of ours, and the arm behind `make
+  smoke-users-tamper`. It was not a member of `DEFECT_FLAGS`, so the boot it produces printed
+  `DEFECT FLAGS: STORAGE_AUTOFORMAT` and said nothing about the tampering. That is precisely what
+  the stamp exists to prevent: `KFAULT_INJECT`, `RESUME_RSP_INJECT` and `KSP_GUARD_INJECT` are all
+  listed for the same reason -- a transcript taken under an injector describes a different
+  machine. Measured after the change: the tampered boot now prints `DEFECT FLAGS:
+  USERS_TAMPER_INJECT STORAGE_AUTOFORMAT`, and `make smoke-users-tamper` still passes.
+  Found by asking the inverse of rule 3's question -- not *is the flag read*, but *does a build
+  that reads it announce itself*. Of the 84 build flags outside `DEFECT_FLAGS`, this was the only
+  injector; the rest are selftest builds and ordinary knobs (`SMP`, `DEBUG_SHELL`, `STORAGE_ATA`),
+  which the stamp is deliberately not about. That boundary is stated here because it is the reason
+  the other 83 were left alone.
+
 - **`smoke-smt` watched for a marker nothing prints** (`Makefile`). It carried
   `FAIL_MARKER='SMT_SELFTEST: FAIL'` from the day it was written, and no file in this tree has
   ever printed that string: there is no SMT selftest, because sibling parking is always-on rather

@@ -93,6 +93,7 @@ DEFECT_FLAGS = \
 	KFAULT_INJECT KFAULT_LEGACY_PRINTLN \
 	KDIAG_LEGACY_COM1 KDIAG_SPLIT_WIDEN KDIAG_PORTS_GRANTABLE KDIAG_NOISE KDIAG_PROBE KDIAG_RING3_PROBE \
 	PS2_PROBE \
+	INSTALLER_NO_BACK \
 	KSTACK_RELEASE_EARLY KSTACK_RACE_WIDEN KSTACK0_SHARED_PARK KSTACK0_PARK_TRACE \
 	RESUME_GUARD_FLOOR_ONLY RESUME_GUARD_BSS_ONLY RESUME_GUARD_DISABLE \
 	RESUME_GUARD_LEGACY_FATAL RESUME_RSP_INJECT RESUME_RSP_INJECT_PRECLAIM \
@@ -385,6 +386,19 @@ endif
 # The `?= 0` default lives here with the explanation; the -D is applied down
 # beside SYSCALL_PTR_TRUNC32's, after USERSPACE_CFLAGS is assigned.
 PASSWD_TARGET_IGNORED ?= 0
+
+# INSTALLER_NO_BACK=1 restores the pre-2026-09-10 installer: the questions are a
+# straight pipeline, so esc ends the run and every answer already given is
+# discarded instead of stepping back one screen.
+#
+# USERSPACE ONLY, same placement trap as the flag above: the -D goes on
+# USERSPACE_CFLAGS after that variable is assigned, not here.
+#
+# `make smoke-installer-back` is the arm, and it must go RED under this. The
+# shape of the failure is the point: the root-password marker is emitted once
+# rather than twice, so the scenario times out waiting for a screen the pipeline
+# never shows a second time. Never ship it.
+INSTALLER_NO_BACK ?= 0
 
 # PASSWD_NO_KEYSLOT=1 restores the pre-2026-09-02 do_passwd: an administrator
 # sets another account's password and NO KEY SLOT IS GRANTED, so that password
@@ -3737,6 +3751,9 @@ endif
 # the arm silently builds a clean shell. See its comment beside STORAGE_ATA.
 ifeq ($(PASSWD_TARGET_IGNORED),1)
 USERSPACE_CFLAGS += -DPASSWD_TARGET_IGNORED
+endif
+ifeq ($(INSTALLER_NO_BACK),1)
+USERSPACE_CFLAGS += -DINSTALLER_NO_BACK
 endif
 # captest's section-13 arm, and it needs exactly the placement above for exactly
 # the reason recorded there.
@@ -10155,6 +10172,32 @@ smoke-installer-sd-stride-control:
 	echo "[installer-sd] CONTROL PASS - unscaled, the volume is recognised and the password is not"
 
 .PHONY: smoke-installer-target
+# The installer's questions can be walked BACKWARDS.
+#
+# esc used to end the run: the screens were a straight pipeline, so an operator
+# on the fourth question who wanted to correct the second had one route, which
+# was to cancel and answer all four again. This drives to the username prompt,
+# presses esc, and requires the ROOT PASSWORD screen to be shown a second time --
+# a marker a pipeline never emits twice, which is what makes this a measurement
+# rather than a screenshot. It then walks forward to a completed install, because
+# a back button that strands the operator one screen earlier is not navigation.
+.PHONY: smoke-installer-back
+smoke-installer-back:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 $(BACKARM)
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 $(BACKARM) horus.iso
+	@rm -f installer-back.img installer-back-serial.log
+	@truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-back.img
+	@SESSION_DISK=installer-back.img \
+		INSTALLER_MODE=walkback SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		INSTALLER_FORMAT_STALL=$(INSTALLER_FORMAT_STALL) INSTALLER_FORMAT_CAP=$(INSTALLER_FORMAT_CAP) \
+		SESSION_SERIAL_LOG=installer-back-serial.log BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		python3 tools/installer_session.py horus.iso \
+	  || { echo "[installer] ----- guest serial -----"; \
+	       tail -60 installer-back-serial.log 2>/dev/null | sed 's/^/  /'; exit 1; }
+	@rm -f installer-back.img
+	@echo "[installer] PASS - esc walks back a question, and the walk still reaches an install"
+
 smoke-installer-target:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory STORAGE_ATA=1

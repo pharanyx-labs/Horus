@@ -2121,6 +2121,13 @@ jobs:
       # same wrong word and differ solely in what the program does about it.
       - name: Control arm — the confirmation read and not compared
         run: make smoke-installer-refuse-control
+      # The questions can be walked backwards. esc used to END the run, so an
+      # operator on the fourth question who wanted to correct the second had one
+      # route: cancel, and answer all four again. This drives to the username
+      # prompt, presses esc, and requires the ROOT PASSWORD screen a second time
+      # -- a marker the old pipeline never emitted twice.
+      - name: The installer's questions can be walked backwards
+        run: make smoke-installer-back
 
   store-locked:
     name: "A sealed volume answers nothing, and the next boot finishes the install (S74)"

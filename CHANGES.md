@@ -52,6 +52,53 @@ in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **The ring-0 boundary is declared and gated** (**S87**, `tools/check_ring0_budget.py`,
+  required job `ring0-budget`). The kernel is **37 linked objects, 40,316 physical / 20,532
+  code lines**, and nothing said which of them are the security core — so "shrink ring 0" was
+  unanswerable rather than merely unmet: the seven files a reviewer named are **13,977
+  physical but 6,318 code**, and the target is met or missed depending on which you count.
+  `.github/ring0-classification.yml` assigns every linked object to `core` (9,676 code lines,
+  18 files), `driver` (2,482, 8), `service` (5,684, 10) or `selftest` (2,690, 1).
+  **The classification is the property; the budget is a ratchet on top.** The rule that bites
+  is that an object linked into `kernel.elf` and not listed fails the build, so putting code in
+  ring 0 is a decision written down rather than a side effect of adding a file.
+  **The budget counts code lines, not physical lines**, and that is not a convenience: §7
+  requires long explanatory comments and cites `scheduler.c`'s as an exemplar, so a
+  physical-line budget would create pressure to delete the text that makes the kernel
+  auditable. It is set at exactly the measured 9,676 with **no headroom** — a budget with slack
+  quietly absorbs the growth it was meant to prompt a discussion about.
+  **What it does not claim:** that `core` is verified, verifiable, or small. 9,676 code lines
+  is a lot. The value is that the number exists, has a boundary somebody chose, and cannot move
+  without a commit saying why.
+  **The job failed on its own first CI run, and the failure was undiagnosable** — it reported
+  *"resolved only 0 linked sources"* and nothing else. The cause was that the `Makefile`
+  `$(error)`s at **parse** time when the bare-metal Rust target is absent, which is the state
+  of a runner that has not run `rustup target add`, so `make -n` printed nothing at all. The
+  checker discarded `make`'s stderr; it now reports it, because a gate must keep its evidence
+  in the case it goes red. Measuring with `RUST_ENABLED=0` to dodge the dependency was
+  rejected: that would classify a configuration which cannot link at all (§5.3b) rather than
+  the one that ships.
+  *(A second defect surfaced in the falsification harness itself: it restored the file an arm
+  had edited with `git checkout --`, which restores from the index and **silently discarded
+  the unstaged fix arm 9 exists to test**. It now restores from a copy taken at startup.)*
+  **It then failed a second time, differently.** With the toolchain present, `make -n` on an
+  unbuilt tree prints **nine** `ld` lines — the userspace `.bin` links as well as `kernel.elf` —
+  and the parser took objects from all of them, so `userspace/init.o`, `shell.o`, `captest.o`
+  and the AP trampoline were reported as unclassified ring-0 code. A built tree prints one,
+  which is why it passed locally both times: **the tree being measured was not the tree the
+  gate measures**. The parse now selects the line whose output is `kernel.elf`, and is split
+  into a function fed synthetic input so arm 10 tests it without depending on build state.
+- **Roadmap 2.7a and `ARCHITECTURE.md` §14 G-14: the in-kernel services, which were tracked
+  nowhere.** 2.6 tracks the network stack and 2.7 the drivers, both ◧. Nothing tracked
+  `storage.c` (2,500 code lines — encrypted object store *and* on-disk filesystem, WAL, Merkle,
+  fsck), `kusers.c` (601 — accounts and Argon2id, whose authority is already `CAP_USER`), the
+  ELF loader (1,273), `crypto.c` or `syscall_fs.c`. That is **5,684 code lines of policy at the
+  same privilege as the capability engine**, against a 9,676-line core. Stated as blocked on a
+  design decision rather than a mechanism: `storage.c` holds the volume key, and `kusers.c` is
+  reached from a capability-minting `SYS_SUDO`.
+
 ### Fixed
 
 - **`docs/AUDIT.md` §5 said "Eight leads were investigated and rejected" beside a table of

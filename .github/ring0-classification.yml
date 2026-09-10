@@ -1,0 +1,85 @@
+# What each object linked into kernel.elf is, and whether it belongs in a core
+# somebody could hope to verify.
+#
+# WHY THIS FILE EXISTS. The kernel is 40,316 physical / 20,532 code lines across
+# 37 linked objects (measured 2026-09-10). No document said which of those are
+# the security core and which are passengers, so "shrink ring 0" had no subject:
+# the seven files a reviewer named come to 13,977 physical but 6,318 code, and
+# the same target is met or missed depending on which you count.
+#
+# THE BUDGET IS ON CODE LINES, NOT PHYSICAL ONES, and that is not a convenience.
+# CLAUDE.md section 7 requires long explanatory comments -- ring 0 here is about
+# half comment and blank by line, and the comments are load-bearing for
+# auditability. A budget on physical lines would create pressure to delete them,
+# which is a perverse incentive dressed as rigour.
+#
+# THE CLASSIFICATION IS THE POINT; the budget is a ratchet on top of it. A new
+# object linked into kernel.elf that is not listed here fails the build, so
+# adding to ring 0 is a decision somebody wrote down rather than a side effect
+# of adding a file.
+
+# Code lines permitted in `core`, set to the measured value on 2026-09-10 with ZERO
+# headroom. Exact rather than generous on purpose: growth in the set somebody
+# would have to verify should be conspicuous, and a budget with slack quietly
+# absorbs the first few hundred lines that were supposed to prompt a discussion.
+# Raising it is allowed -- say why in the commit. It ratchets rather than
+# failing retroactively, since it starts where the tree already is.
+core_budget_loc: 9676
+
+classify:
+  # ---- core: the capability, memory, task and IPC machinery, plus the machine
+  # bring-up that has nowhere else to live. This is the set a verification
+  # effort would have to cover.
+  core:
+    - src/kernel/capability.c      # the capability engine (S3, S4, S26, S55, S60)
+    - src/kernel/untyped.c         # untyped retype/split; every kernel object comes from here
+    - src/kernel/paging.c          # the pager, CR3 ownership, COW
+    - src/kernel/scheduler.c       # the scheduler and the claim invariant (S20)
+    - src/kernel/syscall.c         # dispatch table and its authorisation column (S6, S79)
+    - src/kernel/syscall_vm.c      # map/unmap: the pager's ring-3 surface
+    - src/kernel/syscall_ipc.c     # endpoints, notifications, reply capabilities
+    - src/kernel/pipe.c            # the other IPC object
+    - src/kernel/terminal.c        # the stub console the reviewer's core includes
+    - src/kernel/idt.c             # interrupts and the fault path
+    - src/kernel/gdt.c             # descriptor tables
+    - src/kernel/smp.c             # AP bring-up and TLB shootdown
+    - src/kernel/acpi.c            # table discovery, needed before anything else runs
+    - src/kernel/aslr.c            # address-space randomisation
+    - src/kernel/main.c            # boot sequencing
+    - src/boot/multiboot.S         # entry, long-mode bring-up
+    - src/kernel/lowlevel64.S      # trap entry/exit, context switch
+    - src/kernel/rust_memory_stubs.c  # the C side the Rust ABI requires
+
+  # ---- driver: hardware. Roadmap 2.7 ("real device drivers as ring-3 servers")
+  # is the eviction track; the CAP_IO_DEVICE mechanism landed, the drivers did
+  # not move.
+  driver:
+    - src/kernel/pci.c
+    - src/kernel/sdhci.c
+    - src/kernel/ata.c
+    - src/kernel/ahci.c
+    - src/kernel/iommu.c
+    - src/kernel/ioapic.c
+    - src/kernel/msi.c
+    - src/kernel/tpm.c
+
+  # ---- service: things a finished system runs in ring 3. Each is a policy blob
+  # holding authority the capability graph could describe instead.
+  service:
+    - src/kernel/storage.c         # encrypted object store + on-disk fs, WAL, Merkle, fsck
+    - src/kernel/syscall_fs.c      # its ring-3 surface
+    - src/kernel/kusers.c          # accounts, Argon2id; the authority is already CAP_USER
+    - src/kernel/crypto.c          # CSPRNG seeding and key handling
+    - src/kernel/kaudit.c          # the audit ring (S19)
+    - src/kernel/kshell.c          # boot glue plus the DEBUG_SHELL commands
+    - src/kernel/loader.c          # ELF loading: the surface that produced [G-10] and [G-11]
+    - src/kernel/kspawn.c          # spawn/exec staging
+    - src/kernel/shlib.c           # shared-library mapping
+    - src/kernel/syscall_hw.c      # device-capability syscalls
+
+  # ---- selftest: in-tree tests. Dominates a physical-line budget while being
+  # nearly free in the shipped image (its own header notes the default build
+  # yields an almost-empty object), which is a second reason the budget counts
+  # code lines in `core` rather than lines in the tree.
+  selftest:
+    - src/kernel/selftest.c

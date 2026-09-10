@@ -3975,6 +3975,33 @@ jobs:
         run: python3 tools/check_named_targets.py
       - name: Falsify that checker in every direction
         run: tools/test_check_named_targets.sh
+      # Four checkers that consume a BUILD ARTEFACT -- a serial log, an IDE
+      # trace, a shared object -- rather than the source tree, so they are driven
+      # from Makefile targets and had no falsification of their own. Their arms
+      # use synthetic artefacts, which is what lets them test the RULES rather
+      # than whatever last night's boot happened to emit; they need no build and
+      # ride along here.
+      - name: Falsify the artefact-consuming checkers
+        run: |
+          set -euo pipefail
+          tools/test_check_console_timestamps.sh
+          tools/test_check_wal_order.sh
+          tools/test_check_shared_object.sh
+          tools/test_check_syscall_coverage.sh
+      # The last two, and the widest blast radius of any checker here: doc-claims
+      # gates every declared number in the documentation, and ci-gating decides
+      # which contexts the branch ruleset requires. Both were unfalsified.
+      - name: Falsify the doc-claims and ci-gating checkers
+        run: |
+          set -euo pipefail
+          tools/test_check_ci_gating.sh
+          tools/test_check_doc_claims.sh
+      # The last unfalsified checker. Only its PARSER half is armed -- the
+      # measuring half is 88 clean builds and QEMU boots -- and that is where the
+      # silent failure was: with no pairs derived, or a selector matching none,
+      # it reported "every base gate reddens" having booted nothing.
+      - name: Falsify the base-gate-reddens parser
+        run: tools/test_check_base_gate_reddens.sh
       - name: Install Kani
         run: |
           cargo install --locked kani-verifier

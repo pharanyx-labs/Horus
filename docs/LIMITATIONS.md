@@ -3666,6 +3666,44 @@ post-process the UUID to a value derived from `SOURCE_DATE_EPOCH`. Neither is do
 one is, **[I-9]** covers the ISO twice over: no provenance on the way out, and no rebuild that
 would confirm it.
 
+### 5.3d A checker's natural failure is to examine nothing and pass
+
+**Measured across the whole checker set, 2026-09-10.** Writing a falsification
+suite for every checker in the tree turned up the same defect in **six of the
+thirteen** that had none:
+
+| Checker | What it did with its own pattern broken |
+|---|---|
+| `check_capslots` | Parsed no `CAPSLOT_*` definitions, so no collisions and no cross-header disagreements, and printed PASS |
+| `check_abi_structs` | Parsed **zero fields** for all fourteen boundary structs, so every pair compared **equal** — two empty lists agree |
+| `check_syscall_abi` | Its macro rules read the header directly and kept passing while the wrapper scan went silent, so the rule that catches **#176** stopped looking |
+| `check_ring0_budget` | Resolved zero linked objects, so nothing was unclassified and `core` measured 0 — under any budget |
+| `check_lock_order` | Saw no function take a lock, so nothing nested and nothing reversed |
+| `check_base_gate_reddens` | Derived zero flag/gate pairs — and separately, a selector matching none skipped all 88 — printing *"every base gate reddens"* having booted nothing |
+
+**The rate is what makes this a finding rather than six bugs.** Nearly half, and
+none of them was a careless checker: they are the ones with the longest
+explanatory headers in the tree. The shape is structural. A checker is a loop
+over a parsed collection, and the natural failure of a parser is to return an
+empty one — at which point every rule inside the loop is vacuously satisfied and
+the summary line, which counts *problems found*, says zero.
+
+**What follows for anything written next.** A checker needs a rule about its own
+input before it needs any rule about the tree: *did I actually see the thing I am
+about to make claims regarding?* Every one of the six now asserts a floor on what
+it parsed, deliberately set far below the real count so that legitimate shrinkage
+never trips it — the guard is there to catch a parser that has gone silent, not
+to police the tree's size. And every one has an arm that breaks the pattern and
+requires a failure, because a guard nothing tests is the same class of thing as
+the defect it guards against.
+
+**Not claimed**: that the remaining seven were sound by design. Three of them
+turned out to be guarded *by accident* — `check_kani_harnesses` fails on a broken
+pattern only because its manifest then names harnesses the scan cannot find, and
+`check_miri_scope` only because every `skip` entry then reads as rotted.
+Accidental protection is real protection, and it is now asserted by an arm so it
+stays.
+
 ### 5.4 Cryptography is unaudited
 
 Every primitive (ChaCha20, SHA-256, BLAKE2b, Argon2, the AEAD) is a from-scratch `no_std` Rust

@@ -515,6 +515,65 @@ static inline void cell_put(int y, int x, uint16_t v) {
     else VIDEO_MEMORY[y * VGA_COLS + x] = v;
 }
 
+#ifdef PS2_PROBE
+/* A PS/2 liveness readout, painted into the top-right corner of the console.
+ *
+ * WHY IT CANNOT USE print(). Once the ring-3 console_server owns the console,
+ * print_core computes `drive_hw = (console_owner_task == 0)` and emits to klog
+ * ONLY -- so a kernel diagnostic is invisible on the machine's own screen at
+ * exactly the moment somebody is standing in front of it trying to type. This
+ * writes cells directly instead.
+ *
+ * WHY IT CANNOT USE 0xB8000 EITHER. GRUB sets a graphics mode on any machine
+ * that offers a linear framebuffer -- which is most laptops -- and there the
+ * legacy text window "is not a display and may not even be decoded" (see the
+ * note above fb_blit_cell). `cell_put` is the mode-agnostic accessor and paints
+ * in both.
+ *
+ * WHAT IT COSTS, because an instrument is not passive. Two stores in the IRQ 1
+ * handler, and ~24 cells painted per second from the timer tick. It takes NO
+ * console lock (it is called from interrupt context, where the lock is a
+ * deadlock) and writes NO serial -- COM1 from interrupt context is what killed
+ * 8 of 20 boots when KSTACK0_PARK_TRACE did it. In framebuffer mode it can tear
+ * against console_server's own writes; a corner readout is worth that and a
+ * torn digit is legible.
+ *
+ * HOW TO READ IT:  PS2 n=<irq1 count> sc=<last scancode> st=<8042 status>
+ *   n > 0                -> the controller exists and IRQ 1 reaches us, so the
+ *                           bytes are arriving and nothing is reading them:
+ *                           the ring-3 keyboard driver (J4) is the fix.
+ *   n == 0, st == ff     -> no 8042 responding at all. A USB-only machine; the
+ *                           fix is a USB HID stack, which this kernel has not.
+ *   n == 0, st != ff     -> a controller is there but IRQ 1 is not arriving --
+ *                           masked, or routed somewhere this kernel is not
+ *                           listening. A different problem from the other two.
+ */
+volatile uint32_t g_ps2_irq_count = 0;
+volatile uint8_t  g_ps2_last_sc = 0;
+
+static void ps2_probe_put(int col, char c) {
+    if (col < 0 || col >= VGA_COLS) return;
+    cell_put(0, col, (uint16_t)((uint16_t)0x0E00 | (uint8_t)c));  /* yellow on black */
+}
+
+void ps2_probe_paint(void) {
+    static const char hex[] = "0123456789abcdef";
+    uint8_t st = inb(0x64);
+    uint32_t n = g_ps2_irq_count;
+    uint8_t sc = g_ps2_last_sc;
+    char line[24];
+    int i = 0;
+    line[i++] = 'P'; line[i++] = 'S'; line[i++] = '2'; line[i++] = ' ';
+    line[i++] = 'n'; line[i++] = '=';
+    for (int sh = 16; sh >= 0; sh -= 4) line[i++] = hex[(n >> sh) & 0xF];
+    line[i++] = ' '; line[i++] = 's'; line[i++] = 'c'; line[i++] = '=';
+    line[i++] = hex[(sc >> 4) & 0xF]; line[i++] = hex[sc & 0xF];
+    line[i++] = ' '; line[i++] = 's'; line[i++] = 't'; line[i++] = '=';
+    line[i++] = hex[(st >> 4) & 0xF]; line[i++] = hex[st & 0xF];
+    for (int k = 0; k < i; k++) ps2_probe_put(VGA_COLS - i + k, line[k]);
+}
+#endif /* PS2_PROBE */
+
 static void update_cursor(void) {
     if (g_fb_console) { fb_draw_cursor(); return; }
     uint16_t pos = cursor_y * VGA_COLS + cursor_x;

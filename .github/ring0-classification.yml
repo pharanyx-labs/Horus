@@ -24,7 +24,19 @@
 # absorbs the first few hundred lines that were supposed to prompt a discussion.
 # Raising it is allowed -- say why in the commit. It ratchets rather than
 # failing retroactively, since it starts where the tree already is.
-core_budget_loc: 9676
+# 2026-09-10: 9676 -> 9707, +31 for PS2_PROBE. terminal.c +24 (the painter,
+# where the mode-agnostic cell accessor lives), idt.c +7 (two counters in the
+# IRQ 1 path and the tick call). ALL of it is behind `#ifdef PS2_PROBE` and none
+# of it is in the ship build -- `make print-defect-flags` answers `none` and the
+# default build defines no such macro.
+#
+# THE BUDGET COUNTS SOURCE LINES, NOT SHIPPED LINES, and this is the first time
+# that distinction has cost anything. Raised rather than special-cased: teaching
+# the checker to evaluate the preprocessor would be a large amount of new
+# machinery to make a number smaller, and a reader auditing core still has to
+# read these lines whether or not the compiler keeps them. Recorded here so the
+# imprecision is known rather than discovered later.
+core_budget_loc: 9707
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

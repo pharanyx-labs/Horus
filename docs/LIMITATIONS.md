@@ -2430,6 +2430,25 @@ old allocator and the new one read the same single block and no workload could t
   SD/eMMC card can, since 2026-09-08 -- see §4, so a machine whose internal storage is soldered
   eMMC *is* installable onto and one with a SATA or NVMe SSD is not); and a machine that provides
   no 8042 emulation has **no keyboard**, since there is no USB stack.
+
+  **And a machine that DOES emulate 8042 has no keyboard either, at the login prompt.** That
+  is a second and separate fact, and this bullet implied the opposite by naming only the 8042
+  case. `userspace/console_server.c`'s `con_getc` polls **COM1 and nothing else** -- its own
+  comment says so: *"Keyboard (PS/2) input stays with the kernel for now."* The kernel's PS/2
+  path is real and works (`src/kernel/idt.c` vector 33 translates scancodes into
+  `keyboard_buffer`, and `src/kernel/terminal.c` reads it), but that is the **in-kernel**
+  console reader, and `console_server` owns the console from early boot onwards. So on real
+  hardware the machine reaches a login prompt on its own screen and accepts nothing typed on
+  its own keyboard: output goes to VGA, input is only ever read from a serial port a laptop
+  does not have. Observed on an IdeaPad, 2026-09-10.
+
+  **The mechanism for the fix already exists and is already exercised.** Vector 33 has an
+  `irq_reg[1].active` branch that deliberately leaves the scancode in the controller for a
+  ring-3 driver and fires a notification, and `userspace/devcaptest.c` already registers for
+  `IRQ_KEYBOARD` through `sys_irq_register`. Nothing registers for it in production -- the
+  documented J4 follow-up in `docs/design/console-server.md`. What is unknown per machine is
+  whether that machine's 8042 is there at all, which `PS2_PROBE=1` answers on the wire (see
+  `docs/BUILDING.md`).
   Since 2026-09-07 the SATA half is *identified*: `src/kernel/ahci.c` finds an AHCI controller,
   brings each attached port up and asks the drive to IDENTIFY itself, so the boot log names the
   model and the capacity (`make smoke-ahci-detect`, which boots a q35 machine because QEMU's

@@ -2194,6 +2194,13 @@ void print_hrule(uint8_t color);
 void set_text_colour(uint8_t color);
 uint64_t read_tsc(void);
 uint32_t get_system_ticks(void);   /* low 32 bits; for small-delta callers  */
+#ifdef PS2_PROBE
+/* PS/2 liveness readout (PS2_PROBE). Counters live in idt.c's IRQ 1 path; the
+ * painter is in terminal.c, where the mode-agnostic cell accessor is. */
+extern volatile uint32_t g_ps2_irq_count;
+extern volatile uint8_t  g_ps2_last_sc;
+void ps2_probe_paint(void);
+#endif
 uint64_t get_system_ticks64(void); /* full count; the clock's source (2.2)  */
 void outb(uint16_t port, uint8_t val);
 uint8_t inb(uint16_t port);

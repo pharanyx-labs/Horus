@@ -73,6 +73,34 @@ in this file.
   files, restored from HEAD; the uncommitted work in them was not, and was rewritten. The
   guard is on the deletion rather than on that variable, because the next bug will point
   somewhere else.
+- **`PS2_PROBE=1`: a keyboard liveness readout for real hardware.** The ISO boots to a login
+  prompt on a laptop and accepts nothing typed on its keyboard. Diagnosis:
+  `userspace/console_server.c`'s `con_getc` polls **COM1 and nothing else**, and
+  `console_server` owns the console from early boot — so output goes to VGA and input is only
+  ever read from a serial port a laptop does not have. The kernel's PS/2 path works and is
+  orphaned in a live boot.
+  The probe paints `PS2 n=<irq1 count> sc=<last scancode> st=<8042 status>` into the console's
+  top-right corner at ~1 Hz, and distinguishes the three cases that need different fixes:
+  `n > 0` (bytes arrive, nothing reads them — the ring-3 keyboard driver is the fix);
+  `n == 0, st == ff` (no 8042 at all — needs a USB HID stack); `n == 0, st != ff` (controller
+  present, IRQ 1 not arriving — masked or misrouted).
+  **It cannot use `print()`**: once `console_server` owns the console, `print_core` computes
+  `drive_hw = 0` and emits to klog only, so a kernel diagnostic is invisible on the screen at
+  exactly the moment somebody is standing in front of it. **It cannot use `0xB8000` either**:
+  GRUB sets a graphics mode on most laptops, where the legacy text window "is not a display and
+  may not even be decoded". It writes through the mode-agnostic cell accessor instead, takes no
+  console lock (interrupt context, where that lock is a deadlock) and writes no serial — COM1
+  from interrupt context is what killed 8 of 20 boots under `KSTACK0_PARK_TRACE`.
+  **Falsified under QEMU rather than assumed**: six injected PS/2 key events took the counter
+  from `n=00000` to `n=0000c` — twelve IRQs, press and release each — with `sc=9c`, Enter's
+  release code. So `n == 0` on a real machine is evidence about that machine, not about the
+  counter.
+
+### Fixed
+
+- **`docs/LIMITATIONS.md` §4 implied that a machine with 8042 emulation has a keyboard.** It
+  named only the no-8042 case, which reads as *the others are fine*. No machine has a working
+  keyboard at the login prompt, for the separate reason above. Both facts are now stated.
 
 ### Added
 

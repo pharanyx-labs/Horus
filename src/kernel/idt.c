@@ -552,8 +552,23 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
          * before the scheduler decides who runs next, so a newly-runnable waiter
          * is eligible on this same tick. */
         irq_notify_fire(0);
+#ifdef PS2_PROBE
+        /* ~1 Hz at the 100 Hz tick. Painted from here rather than from IRQ 1,
+         * so the readout keeps updating on a machine where IRQ 1 never fires --
+         * which is precisely the case it exists to identify. */
+        if ((get_system_ticks() % 100u) == 0u) ps2_probe_paint();
+#endif
         return preempt_on_tick((uint64_t)frame, frame->cs);
     } else if (vector == 33) {
+#ifdef PS2_PROBE
+        /* Counted BEFORE the ownership branch on purpose: the question this
+         * probe answers is whether the controller and IRQ 1 exist at all, which
+         * is independent of whether a ring-3 driver has claimed them. Two
+         * stores; the scancode is read non-destructively only when the output
+         * buffer is full, so this never steals a byte from either consumer. */
+        g_ps2_irq_count++;
+        if (inb(0x64) & 1) g_ps2_last_sc = inb(0x60);
+#endif
         if (irq_reg[1].active) {
             /* A userspace driver owns the keyboard: leave the scancode in the PS/2
              * output buffer for it to inb(0x60) itself (the buffer staying full

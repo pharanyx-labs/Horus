@@ -54,6 +54,53 @@ in this file.
 
 ### Added
 
+- **Every checker in the tree now has a falsification suite** — 27 suites, 178 arms across the
+  25 that report a count (`check_abi_headers` and `check_invariants` report per-rule). The last
+  three were the widest in blast radius: `check_doc_claims.py` gates every declared number in
+  the documentation, `check_ci_gating.py` decides which contexts the branch ruleset requires,
+  and `check_base_gate_reddens.sh` measures whether a base gate goes red under the flag its
+  table says it must.
+
+### Fixed
+
+- **`tools/check_base_gate_reddens.sh` could report success having measured nothing — twice
+  over, one hole inside the other.** With the row pattern broken it derived **zero** flag/gate
+  pairs, ran no builds, booted nothing, and printed *"PASS: every base gate reddens under the
+  flag its table says it must"*. And naming a flag absent from the table skipped all **88**
+  pairs and printed the same thing — so somebody checking one flag after changing it would
+  have been told their change was fine by a script that never looked at it. Both now fail
+  loudly; both arms failed before the guards existed.
+  **That is the sixth checker of thirteen found able to report success having examined
+  nothing**, which is a rate that makes the class structural rather than incidental.
+  Only the parser half is armed. The measuring half is 88 clean builds and QEMU boots at a
+  900-second-per-pair budget, and falsifying it end to end would mean deliberately breaking a
+  base gate and booting to watch it not redden — hours of machine time to re-derive what the
+  gate reports every run. The boundary is stated in the suite rather than left as a gap.
+
+### Added
+
+- **Falsification suites for the four artefact-consuming checkers** —
+  `check_console_timestamps.py`, `check_wal_order.sh`, `check_shared_object.py`,
+  `check_syscall_coverage.py`. 30 arms. These read a *build artefact* rather than the source
+  tree, so they are driven from Makefile targets and had never been tested against input they
+  should reject.
+  **Their fixtures are synthetic artefacts, and that is the advantage.** An arm built from a
+  real boot tests whatever that boot happened to emit; a synthesised serial log, IDE trace or
+  `.so` tests the rule and cannot drift with the kernel. `check_syscall_coverage`'s baseline
+  log is generated **from the manifest itself** — one `SYSCOV` line per declared-covered
+  syscall — so it passes by construction and every arm is a single deliberate divergence.
+  **All four already guarded against measuring nothing**, unlike most of the checkers examined
+  so far: an empty trace, a log with no `SYSCOV` lines, a boot that never reached the kernel's
+  first message. The arms hold those guards rather than adding them.
+  **Two arms were passing for the wrong reason and are now pinned to their messages.** The
+  `check_shared_object` relocation arm also trips the undefined-symbol rule — the smallest
+  object producing an `R_X86_64_64` has an undefined symbol — so it would have reported
+  *caught* with the relocation rule deleted entirely. And two `check_syscall_coverage` arms
+  were catching a **traceback** from an incomplete fixture rather than a rule, because
+  `src/include/kernel.h` was missing from it.
+  Also verified rather than assumed: `check_wal_order`'s own claim that collapsing runs of
+  identical IDE commands *"cannot hide a missing barrier"* — two block writes with no flush
+  between them collapse to a single `0x30`, the tail stops matching, and the check still fails.
 - **`make install.iso`: install media that runs the installer on every boot.** The shipping
   `horus.iso` decides for itself whether a machine needs installing, and fails closed in the
   direction of *not* — the right default for an image that boots a running system, and the

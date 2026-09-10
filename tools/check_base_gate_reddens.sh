@@ -55,6 +55,26 @@ for l in open('docs/BUILDING.md', encoding='utf-8'):
 PY
 )
 
+# THE PAIRS ARE THE MEASUREMENT'S SUBJECT, so an empty list is not "nothing to
+# do" -- it is this script having lost the ability to read the table it checks.
+# With no pairs the loop below never runs, GREEN stays 0, and the summary prints
+# "PASS: every base gate reddens under the flag its table says it must" having
+# booted nothing at all. That is the answer this file must never give by
+# accident, and it could give it until 2026-09-10: the guard was added when its
+# own falsification suite was written, which is the same defect five other
+# checkers in this tree turned out to have.
+#
+# The bound is deliberately far below the real count (88 on 2026-09-10) so that
+# retiring arms never trips it; it is here to catch a parser that has gone
+# silent, not to police the table's size.
+if [ "${#PAIRS[@]}" -lt 20 ]; then
+  echo "FAIL: derived only ${#PAIRS[@]} flag/gate pairs from docs/BUILDING.md," >&2
+  echo "      which is far fewer than that table has ever held. The row pattern" >&2
+  echo "      has probably stopped matching -- fix it rather than lowering this" >&2
+  echo "      bound, because every measurement below is vacuous without it." >&2
+  exit 1
+fi
+
 RED=0; GREEN=0; SKIP=0; ERR=0
 declare -a NOT_RED
 
@@ -81,6 +101,24 @@ for p in "${PAIRS[@]}"; do
     echo "*** STAYED GREEN ***"; GREEN=$((GREEN+1)); NOT_RED+=("$flag -> $gate")
   fi
 done
+
+# A SELECTOR THAT MATCHED NOTHING IS NOT A CLEAN RUN EITHER, and this is the same
+# defect one level down. `check_base_gate_reddens.sh SOME_FLAG` where SOME_FLAG
+# has no row in the table skipped all 88 pairs and reported "PASS: every base gate
+# reddens under the flag its table says it must" -- having built nothing and
+# booted nothing. Somebody checking one flag after changing it would have been
+# told their change was fine by a script that never looked at it.
+#
+# Found on 2026-09-10 by this file's own falsification suite, immediately after
+# the empty-table guard above was added for the identical reason.
+if [ ${#WANT[@]} -gt 0 ] && [ $((RED + GREEN)) -eq 0 ]; then
+  echo >&2
+  echo "FAIL: named ${WANT[*]} on the command line and matched no pair at all," >&2
+  echo "      so nothing was built and nothing was measured. Check the spelling" >&2
+  echo "      against the flag column of docs/BUILDING.md -- a run that measures" >&2
+  echo "      nothing must not report that everything reddens." >&2
+  exit 1
+fi
 
 echo
 echo "went red      : $RED"

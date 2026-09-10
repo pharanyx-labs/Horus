@@ -4627,9 +4627,16 @@ smoke-flush:
 smoke-smt:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory boot.iso
+# NO FAIL_MARKER, and its absence is deliberate rather than an omission. This
+# recipe carried FAIL_MARKER='SMT_SELFTEST: FAIL' from the day it was written and
+# NOTHING IN THE TREE HAS EVER PRINTED THAT STRING -- there is no SMT selftest,
+# because parking is always-on rather than a build flag, so the marker named a
+# reporter that does not exist. It cost nothing (the required marker still gates)
+# and it claimed something: that a failure had a voice here, when the only
+# failure signal is the absence of the kernel's own line. Found 2026-09-10 by
+# sweeping every gate marker against everything in this tree that can print.
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) QEMU_SMP='4,cores=2,threads=2' \
-		REQUIRE_MARKER='SMT siblings parked' \
-		FAIL_MARKER='SMT_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		REQUIRE_MARKER='SMT siblings parked' tools/smoke_test.sh boot.iso
 
 .PHONY: smoke-stackguard
 smoke-stackguard:

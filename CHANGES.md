@@ -552,6 +552,21 @@ in this file.
 
 ### Changed
 
+- **`tools/horus.py` runs on Claude Opus 5** (`claude-opus-5`). It was pinned to
+  `claude-opus-4-8`, which is still served; the move is a capability change and **not** a price
+  one, since both tiers are $5/$25 per MTok. The `PRICE` table follows the model rather than
+  accumulating rows -- a stale tier there would put a wrong number in `horus_usage.log`, and a
+  MISSING one makes `estimate_cost()` return 0.0 instead of guessing, which is the safe
+  direction. The cheaper alternative named in the comment is now `claude-sonnet-5` ($2/$10).
+  **Thinking is deliberately not configured.** On Opus 5, omitting the parameter runs adaptive
+  thinking, which is what this tool wants; setting it explicitly buys nothing, `budget_tokens` is
+  rejected outright on this model, and `{"type": "disabled"}` would cost something real -- with
+  thinking off the model occasionally writes what should be a tool call, or a `<thinking>` tag,
+  into the visible text.
+  Verified statically only: this environment has no `anthropic` package and no credentials, so
+  the script was checked for parse and for the model id and prices against the current model
+  table, and **not** run against the API.
+
 - **`horus.py` is `tools/horus.py`** (roadmap 4.6, audit finding **[M-2]**). It was the only
   development-tool file in the repository index. The move carried one change with it, because the
   move is what made it wrong: the script read `system_prompt.txt` and wrote `horus_usage.log` by

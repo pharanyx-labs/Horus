@@ -54,6 +54,51 @@ in this file.
 
 ### Changed
 
+- **The installer's questions are a state machine, not a pipeline: `esc` walks back one step.**
+  They were a straight line of `if (!screen()) leave_untouched(...)`, so an operator on the
+  fourth question who wanted to correct the second had exactly one route — cancel, and answer
+  all four again. The answers all live in statics that outlive a screen, so walking backwards
+  costs nothing and re-shows what was typed.
+  **No screen changed its return contract.** `0` still means *this question was not completed*;
+  what changed is that the caller decides what that means, and it means something different in
+  the two places it can happen — "go back one" in the walk, and "abandon this correction" in
+  the review menu. That is why neither needed a third return value.
+  **Step 1 is where back and cancel coincide**, since there is nothing before the disk screen;
+  both disk screens also carry an explicit *Cancel, change nothing*, so `esc` is never the only
+  way out. `esc` at the confirmation word returns to the review rather than cancelling — it is
+  the last screen before the disk is destroyed.
+  **`esc` at the confirmation word deliberately does NOT walk back**, and the attempt to make
+  it is recorded in place because two gates caught it in one CI run.
+  `screen_confirm_word` returns the same value for `esc` and for a wrong word — it cannot tell
+  them apart, and its own text promises it will not: *"Anything else, or esc, stops and changes
+  nothing."* Routing that value to the review made a **wrong word** return to the review too,
+  so the screen contradicted its own printed promise on the one screen where an operator is
+  deciding whether to destroy a disk, and `smoke-installer-refuse` hung for its full 300s
+  waiting for a refusal that never came. The word stays all-or-nothing.
+  Each ordered screen now shows **step N of 5**. The refusals, the review and the confirmation
+  deliberately show none: numbering a screen that has no next implies one.
+- **An abandoned edit in the review returns to the review menu.** `esc` out of a correction
+  used to throw away every answer and leave — so the screen that exists to let an operator
+  change their mind punished changing it twice. The one exception is documented in place: after
+  a root-password change collides with the everyday password, that password has just been
+  wiped, so abandoning there would reach the review with no password set for that account, and
+  it re-asks instead.
+  Key hints were corrected in the same commit; three of them still said *esc to cancel the
+  install*, which the change had made false.
+  **A second regression, caught by the same CI run**: the two disk screens were reordered, and
+  the survey must come before the target. The survey is what is at stake — *this DESTROYS
+  everything on the attached disk* — and the target is which disk that is, so showing the
+  choice first asks an operator to pick a disk before being told what picking one means. It
+  passed every one-disk gate, because a one-disk machine never sees the target screen at all,
+  and hung the two-disk gate for 300s showing the disk menu to a harness waiting for the
+  warning.
+
+### Added
+
+- **`smoke-installer-back`**, and `INSTALLER_NO_BACK=1` as its control arm.
+
+### Changed
+
 - **The bootable image is `horus.iso`, not `boot.iso`.** 771 occurrences across 38 files —
   the `Makefile`, `tools/`, `.github/`, the live docs and the site. `make horus.iso` builds it;
   `make run`, every `smoke-*` target and every harness follow the new name.

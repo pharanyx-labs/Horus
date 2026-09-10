@@ -231,6 +231,34 @@ static void frame(const char *title)
     rule(ROW_RULE_B);
 }
 
+/* The same frame, plus "step N of M" on the title row.
+ *
+ * WHY THE COUNT IS SHOWN AT ALL: the screens below can now be walked backwards,
+ * and a sequence you can move around in without being told where you are is one
+ * you get lost in. It is drawn right-aligned so it does not move as titles
+ * change length, and only the screens that are ACTUALLY part of the ordered walk
+ * get one -- the refusals ("Nothing to install onto"), the review and the
+ * confirmation are not steps and deliberately show none, because numbering a
+ * screen that has no next implies one. */
+#define INSTALL_STEPS 5
+static void frame_step(const char *title, int step)
+{
+    char buf[24];
+    char n[12];
+    unsigned i = 0;
+
+    frame(title);
+    utoa10((unsigned)step, n, sizeof(n));
+    buf[i++] = 's'; buf[i++] = 't'; buf[i++] = 'e'; buf[i++] = 'p'; buf[i++] = ' ';
+    for (unsigned k = 0; n[k] && i < sizeof(buf) - 8; k++) buf[i++] = n[k];
+    buf[i++] = ' '; buf[i++] = 'o'; buf[i++] = 'f'; buf[i++] = ' ';
+    utoa10((unsigned)INSTALL_STEPS, n, sizeof(n));
+    for (unsigned k = 0; n[k] && i < sizeof(buf) - 1; k++) buf[i++] = n[k];
+    buf[i] = 0;
+
+    tui_text(ROW_TITLE, tui_cols() - MARGIN - (int)i, buf, C_HINT);
+}
+
 /* The status line: one sentence about what just happened, or what is wrong. */
 static void status(const char *s, uint16_t attr)
 {
@@ -429,7 +457,7 @@ static int screen_target(void)
         return 1;
     }
 
-    frame("Choose the disk to install onto");
+    frame_step("Choose the disk to install onto", 1);
     int r = para(ROW_BODY, "This machine has more than one disk. Everything on the one you "
                            "choose is erased; the others are not touched.", C_TEXT);
     r += 2;
@@ -454,7 +482,7 @@ static int screen_survey(void)
     char blocks[24], mib[24];
     disk_size(blocks, sizeof(blocks), mib, sizeof(mib));
 
-    frame("Install onto the attached disk");
+    frame_step("Install onto the attached disk", 1);
 
     int r = para(ROW_BODY, "This will DESTROY everything on the attached disk.", C_DANGER);
     r++;
@@ -503,7 +531,7 @@ static int screen_survey(void)
 static int ask_root_password(void)
 {
     for (;;) {
-        frame("Choose the root password");
+        frame_step("Choose the root password", 2);
         int r = para(ROW_BODY,
                      "This password does two things, and it must be one password: it seals "
                      "the volume's encryption key, and it is the password for the root "
@@ -513,7 +541,7 @@ static int ask_root_password(void)
 
         label(r + 2, "password");
         label(r + 4, "again");
-        hint("typing is not shown  -  esc to cancel the install");
+        hint("typing is not shown  -  esc goes back one step");
         tui_flush();
 
         mark("INSTALLER: waiting on the password", "");
@@ -564,7 +592,7 @@ static int name_ok(const char *n)
 static int ask_user_name(void)
 {
     for (;;) {
-        frame("Create your everyday account");
+        frame_step("Create your everyday account", 3);
         int r = para(ROW_BODY,
                      "Day-to-day work should not be done as root, so this machine gets a "
                      "second account with no administrative authority.", C_TEXT);
@@ -573,7 +601,7 @@ static int ask_user_name(void)
                     "the first login after the machine is powered on.", C_TEXT);
 
         label(r + 2, "username");
-        hint("lowercase letters and digits  -  esc to cancel the install");
+        hint("lowercase letters and digits  -  esc goes back one step");
         tui_flush();
 
         mark("INSTALLER: waiting on the user name", "");
@@ -592,7 +620,7 @@ static int ask_user_name(void)
 static int ask_user_password(void)
 {
     for (;;) {
-        frame("Set the password for your account");
+        frame_step("Set the password for your account", 4);
         int r = para(ROW_BODY,
                      "This is the password for the everyday account. It must be different "
                      "from the root password.", C_TEXT);
@@ -602,7 +630,7 @@ static int ask_user_password(void)
 
         label(r + 3, "password");
         label(r + 5, "again");
-        hint("typing is not shown  -  esc to cancel the install");
+        hint("typing is not shown  -  esc goes back one step");
         tui_flush();
 
         mark("INSTALLER: waiting on the user password", "");
@@ -657,7 +685,7 @@ static int review_returns_install(void)
 
     for (;;) {
         disk_size(blocks, sizeof(blocks), mib, sizeof(mib));
-        frame("Review before installing");
+        frame_step("Review before installing", 5);
 
         int r = para(ROW_BODY, "Check this, then choose. Nothing has been written yet.", C_TEXT);
         r++;
@@ -691,10 +719,17 @@ static int review_returns_install(void)
         if (sel == 0) return 1;
         if (sel == 4) return 0;
 
+        /* AN ABANDONED EDIT RETURNS TO THIS MENU, and does not cancel the
+         * install. Until 2026-09-10 esc out of a correction here threw away
+         * every answer and left the installer -- so the screen that exists to
+         * let an operator change their mind punished changing it twice. The
+         * question was "which of these do you want to correct?"; backing out of
+         * one correction answers "none of them", not "abandon the install".
+         * Cancel is still one keypress away and is spelled out in the menu. */
         if (sel == 1) {
-            if (!ask_user_name()) return 0;
+            if (!ask_user_name()) continue;
         } else if (sel == 2) {
-            if (!ask_root_password()) return 0;
+            if (!ask_root_password()) continue;
             /* CHANGING ROOT'S PASSWORD CAN INVALIDATE THE OTHER ONE, and the
              * check that catches it lives in ask_user_password -- which is not
              * running. Without this, an operator who changes root's password to
@@ -705,10 +740,17 @@ static int review_returns_install(void)
              * asked for again. */
             if (ustreq(g_upw, g_pw)) {
                 wipe_user_password();
-                if (!ask_user_password()) return 0;
+                /* NOT `continue`: the everyday password has just been wiped
+                 * because it collided, so abandoning here would walk to the
+                 * review with no password set for that account. Re-ask until it
+                 * is answered or the install is cancelled outright. */
+                while (!ask_user_password()) {
+                    status("That account still needs a password.", C_DANGER);
+                    tui_flush();
+                }
             }
         } else if (sel == 3) {
-            if (!ask_user_password()) return 0;
+            if (!ask_user_password()) continue;
         }
     }
 }
@@ -947,13 +989,112 @@ void _start(void)
      * rather than second. Every question is asked before anything is written,
      * so an operator who changes their mind at any point up to the word has
      * cost themselves nothing but typing. */
-    if (!screen_survey())            leave_untouched("You chose not to install.");
-    if (!screen_target())            leave_untouched("You chose not to install.");
-    if (!ask_root_password())        leave_untouched("The install was cancelled.");
-    if (!ask_user_name())            leave_untouched("The install was cancelled.");
-    if (!ask_user_password())        leave_untouched("The install was cancelled.");
-    if (!review_returns_install())   leave_untouched("You chose not to install.");
-    if (!screen_confirm_word())      leave_untouched("The disk was not erased.");
+    /* THE WALK IS A STATE MACHINE RATHER THAN A PIPELINE, so esc goes BACK one
+     * question instead of throwing every answer away.
+     *
+     * It was a straight line of `if (!screen()) leave_untouched(...)` until
+     * 2026-09-10, which meant an operator on the fourth question who wanted to
+     * correct the second had exactly one route: cancel, and answer all four
+     * again. The answers all live in statics that outlive a screen, so walking
+     * backwards costs nothing and re-shows what was typed.
+     *
+     * `0` STILL MEANS "this question was not completed" -- no screen changed its
+     * contract. What changed is that the CALLER decides what that means, and it
+     * means something different in the two places it can happen: here it is
+     * "go back one", and in the review menu it is "abandon this correction".
+     * That is why neither of them needed a third return value, and why the
+     * review's own call sites are unaffected by this loop.
+     *
+     * STEP 1 IS WHERE BACK AND CANCEL COINCIDE. There is nothing before the disk
+     * screen, so its esc keeps meaning cancel -- both disk screens also carry an
+     * explicit "Cancel, change nothing" choice, so the operator is never relying
+     * on esc to get out. Cancelling from anywhere later walks back to step 1 and
+     * out, which is the only path that ends in leave_untouched.
+     *
+     * There is no back FROM the review: it is not a question, it is the summary
+     * of the answers, and every one of them is editable from its menu. */
+    enum { ST_DISK = 1, ST_ROOTPW, ST_USER, ST_USERPW, ST_REVIEW, ST_WORD, ST_GO };
+    int st = ST_DISK;
+    while (st != ST_GO) {
+        switch (st) {
+        case ST_DISK:
+            /* SURVEY BEFORE TARGET, and the order is load-bearing rather than
+             * incidental. The survey is what is at stake -- "this DESTROYS
+             * everything on the attached disk" -- and the target screen is which
+             * disk that is; showing the choice before the warning asks an
+             * operator to pick a disk before being told what picking one means.
+             *
+             * It is also what smoke-installer-target drives: that scenario waits
+             * on the destroy-this-disk marker first and the disk-choice marker
+             * second. Reversing the two here passed every one-disk gate -- a
+             * one-disk machine never sees the target screen at all, because
+             * screen_target returns immediately -- and hung the two-disk gate for
+             * its full 300s, showing the disk menu to a harness waiting for the
+             * warning. Caught by that gate on the first CI run of this change. */
+            if (!screen_survey())  leave_untouched("You chose not to install.");
+            if (!screen_target())  leave_untouched("You chose not to install.");
+            st = ST_ROOTPW;
+            break;
+#ifdef INSTALLER_NO_BACK
+        /* CONTROL ARM -- never ship. The pre-2026-09-10 pipeline: a question
+         * that is not completed ends the install instead of stepping back, so
+         * every answer already given is discarded. `make smoke-installer-back`
+         * must go RED under this, and the shape of its failure is the point --
+         * the root-password marker is emitted once instead of twice, so the
+         * scenario times out waiting for a screen the pipeline never shows a
+         * second time. */
+        case ST_ROOTPW:
+            if (!ask_root_password()) leave_untouched("The install was cancelled.");
+            st = ST_USER;
+            break;
+        case ST_USER:
+            if (!ask_user_name()) leave_untouched("The install was cancelled.");
+            st = ST_USERPW;
+            break;
+        case ST_USERPW:
+            if (!ask_user_password()) leave_untouched("The install was cancelled.");
+            st = ST_REVIEW;
+            break;
+#else
+        case ST_ROOTPW:
+            st = ask_root_password() ? ST_USER : ST_DISK;
+            break;
+        case ST_USER:
+            st = ask_user_name() ? ST_USERPW : ST_ROOTPW;
+            break;
+        case ST_USERPW:
+            st = ask_user_password() ? ST_REVIEW : ST_USER;
+            break;
+#endif
+        case ST_REVIEW:
+            if (!review_returns_install()) leave_untouched("You chose not to install.");
+            st = ST_WORD;
+            break;
+        case ST_WORD:
+            /* A FAILED CONFIRMATION LEAVES. It does not walk back, and the
+             * attempt to make it walk back is worth recording because two gates
+             * caught it within one CI run.
+             *
+             * screen_confirm_word returns 0 for esc AND for a wrong word -- it
+             * cannot tell them apart, and its own text promises it will not:
+             * "Anything else, or esc, stops and changes nothing." Routing 0 to
+             * the review made a WRONG WORD return to the review too, so the
+             * screen contradicted its own printed promise on the one screen
+             * where an operator is deciding whether to destroy a disk, and
+             * smoke-installer-refuse hung for its full 300s waiting for a
+             * refusal that never came.
+             *
+             * Distinguishing the two would mean changing what this screen
+             * promises, which is a decision about the most dangerous call in the
+             * system and not a navigation tidy-up. The word stays all-or-nothing:
+             * type it exactly, or nothing happens. */
+            if (!screen_confirm_word()) leave_untouched("The disk was not erased.");
+            st = ST_GO;
+            break;
+        default:
+            leave_untouched("The install was cancelled.");
+        }
+    }
 
     int rc = do_install();
     wipe_passwords();

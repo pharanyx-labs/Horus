@@ -240,6 +240,7 @@ gates:
   - smoke-installer-provision
   - smoke-installer-accounts
   - smoke-installer-target
+  - smoke-installer-back
   - smoke-installer-sd
   - smoke-fb-tag
   - smoke-fb-tag-gfx

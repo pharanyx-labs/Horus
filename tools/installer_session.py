@@ -71,6 +71,9 @@ USER_UID = os.environ.get("INSTALL_USER_UID", "1000")
 
 ENTER = b"\r"
 DOWN = b"\x1b[B"
+# A bare escape. tui.c yields TUI_KEY_ESC for a partial or malformed sequence,
+# so this is the same byte the operator's escape key sends.
+ESC  = b"\x1b"
 
 
 _step_t0 = [time.time()]
@@ -797,6 +800,58 @@ def twodisk(disk):
         s.close()
 
 
+def walkback(disk):          # noqa: ARG001 - uniform scenario signature
+    """esc walks BACK one question instead of throwing away every answer.
+
+    THE FALSIFICATION IS THE WHOLE POINT OF THIS SCENARIO. Until 2026-09-10 the
+    installer was a straight pipeline -- `if (!screen()) leave_untouched(...)` --
+    so esc at the username prompt ended the run with "The install was cancelled"
+    and every answer already given was gone. Under that code this scenario fails
+    at its first assertion: the marker it waits for is the ROOT PASSWORD screen
+    being shown a second time, which a pipeline never does.
+
+    It also proves the walk goes FORWARD again afterwards, because a back button
+    that strands the operator one screen earlier is not navigation. The run ends
+    in a completed install, so the property is "you can move around in the
+    questions and still finish", not merely "esc drew something".
+    """
+    s = Serial(ISO)
+    try:
+        answer_survey(s, first_timeout=BOOT)
+
+        # Forward to the username question, answering the root password on the way.
+        s.expect("INSTALLER: waiting on the password", STEP)
+        os.write(s.fd, PASSWORD.encode() + ENTER)
+        s.expect("INSTALLER: waiting on the password again", STEP)
+        os.write(s.fd, PASSWORD.encode() + ENTER)
+        s.expect("INSTALLER: waiting on the user name", STEP)
+        step("reached the user-name question")
+
+        # BACK. The root-password screen must be shown again.
+        os.write(s.fd, ESC)
+        s.expect("INSTALLER: waiting on the password", STEP)
+        step("esc from the user name went back to the root password")
+
+        # And forward again, to a completed install.
+        os.write(s.fd, PASSWORD.encode() + ENTER)
+        s.expect("INSTALLER: waiting on the password again", STEP)
+        os.write(s.fd, PASSWORD.encode() + ENTER)
+        s.expect("INSTALLER: waiting on the user name", STEP)
+        os.write(s.fd, USER_NAME.encode() + ENTER)
+        s.expect("INSTALLER: waiting on the user password", STEP)
+        os.write(s.fd, USER_PASSWORD.encode() + ENTER)
+        s.expect("INSTALLER: waiting on the user password again", STEP)
+        os.write(s.fd, USER_PASSWORD.encode() + ENTER)
+        step("walked forward again after going back")
+
+        answer_review_and_confirm(s)
+        expect_while_doing_io(s, "INSTALLER: PASS installed",
+                              FORMAT_STALL, FORMAT_CAP)
+        step("the install completed after walking backwards and forwards")
+    finally:
+        s.close()
+
+
 def run():
     disk = os.environ.get("SESSION_DISK", "")
     if not disk:
@@ -812,6 +867,10 @@ def run():
         return 0
     if mode == "accounts":
         accounts(disk)
+        print("INSTALLER_SESSION: PASS")
+        return 0
+    if mode == "walkback":
+        walkback(disk)
         print("INSTALLER_SESSION: PASS")
         return 0
     if mode == "twodisk":

@@ -71,6 +71,36 @@ arm "3b" "an empty run count falls back to the default"  ""  admitted
 arm "4a" "a single boot is a legitimate run"        1     admitted
 arm "4b" "the default-sized run"                    20    admitted
 
+# ---- EVERY FAILURE IS CAPTURED, not just the first.
+#
+# docs/investigations/G-12 records the cost of the old behaviour: "three of the
+# four reproductions in the 1000-boot run were not recoverable". It happened
+# again on 2026-09-10 during the campaign that measured the rate below -- the
+# first failure was a different KIND, so the one capture of the marker under
+# investigation was discarded.
+#
+# THIS ARM NEEDS AN ISO, because the capture path only runs on a real failed
+# boot, and it skips without one. It therefore does NOT run in the source-only
+# checker job, and saying so is the point: the property is gated where an ISO
+# exists and merely verified by hand where one does not. Everything above this
+# line still boots nothing.
+printf '  5: '
+if [ ! -f "$ROOT/horus.iso" ]; then
+  echo "SKIPPED (no horus.iso; the capture path needs a real failed boot)"
+else
+  out="$(cd "$ROOT" && rm -f stress-failure-*.log && \
+         STRESS_RUNS=2 SMOKE_TIMEOUT=8 STRESS_ALLOW_BUSY=1 MARKER_ONLY=1 \
+         REQUIRE_MARKER='A MARKER THAT NEVER APPEARS' \
+         bash "$S" horus.iso 2>&1)"
+  n=$(grep -cE '^----- failure' <<<"$out")
+  ( cd "$ROOT" && rm -f stress-failure-*.log stress-first-failure.log )
+  if [ "$n" -eq 2 ]; then
+    echo "both failures captured, correctly"; PASSES=$((PASSES+1))
+  else
+    echo "WRONG -- $n of 2 failures captured (the first-only defect is back)"; FAILS=$((FAILS+1))
+  fi
+fi
+
 echo
 echo "arms passed: $PASSES   failed: $FAILS"
 [ "$FAILS" -eq 0 ]

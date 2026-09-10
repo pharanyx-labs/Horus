@@ -74,6 +74,7 @@ if [ "$RUNS" -lt 1 ]; then
 fi
 CPUSET="${STRESS_CPUSET-0,1}"
 MAX_FAIL="${STRESS_MAX_FAIL:-0}"
+KEEP_FAILURES="${STRESS_KEEP_FAILURES:-5}"
 STRESS_GATE="${STRESS_GATE:-any}"
 # Consumed by smoke_test.sh via the environment; defaulted here too because this
 # script now READS it to classify failures, and `set -u` aborts on an unset var.
@@ -125,6 +126,7 @@ echo "stress: $RUNS boots of '$ISO' (${SMP_CPUS} vCPUs, host cpus '${CPUSET:-all
 
 pass=0
 fail=0
+kept=0            # failure captures printed so far
 fail_marker=0     # runs that tripped FAIL_MARKER -- the property under test broke
 fail_other=0      # runs that died some other way (timeout/hang) before proving anything
 failed_runs=""
@@ -149,11 +151,33 @@ for i in $(seq 1 "$RUNS"); do
         # on GitHub with the one artifact needed to diagnose it sitting in a file
         # nobody would ever read. Same defect the session soak had (it piped every
         # run to /dev/null); fixed here for the same reason.
-        if [ "$fail" -eq 1 ]; then
-            printf '%s\n' "$out" > stress-first-failure.log
-            echo "----- first failure, last 30 lines (full log: stress-first-failure.log) -----"
+        # EVERY FAILURE, not just the first, and the reason is written into
+        # docs/investigations/G-12: "tools/stress_boot.sh keeps only the FIRST
+        # failure's log per campaign, so three of the four reproductions in the
+        # 1000-boot run were not recoverable". A campaign hunting a 0.31%/boot
+        # race is a campaign whose whole product is those captures, and it was
+        # discarding three quarters of them.
+        #
+        # That entry excuses itself with "in a script that gates nothing and
+        # therefore never got the repair". THAT IS NO LONGER TRUE: this script
+        # backs smoke-console-smp-stress and smoke-sched-invariants-stress, both
+        # required. The reason not to fix it expired before the sentence was
+        # written down.
+        #
+        # PRINTED, not merely saved -- CI destroys the workspace with the runner,
+        # so a file nobody reads is the same as no capture at all. Bounded by
+        # STRESS_KEEP_FAILURES because a catastrophic run should not bury its own
+        # first reproduction under two hundred more; when the cap bites it says
+        # so, rather than going quiet like the thing it replaces.
+        if [ "$kept" -lt "$KEEP_FAILURES" ]; then
+            kept=$((kept + 1))
+            printf '%s\n' "$out" > "stress-failure-$i.log"
+            echo "----- failure $fail (run $i), last 30 lines (full log: stress-failure-$i.log) -----"
             printf '%s\n' "$out" | tail -30
             echo "----------------------------------------------------------------------------"
+        else
+            echo "  (failure $fail not printed: STRESS_KEEP_FAILURES=$KEEP_FAILURES reached;" \
+                 "raise it to capture more)"
         fi
     fi
 done

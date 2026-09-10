@@ -3666,6 +3666,52 @@ post-process the UUID to a value derived from `SOURCE_DATE_EPOCH`. Neither is do
 one is, **[I-9]** covers the ISO twice over: no provenance on the way out, and no rebuild that
 would confirm it.
 
+### 5.3e `stale scheduler claim` still reproduces under the switch-commit injection
+
+**Measured 2026-09-10, on a `main` whose kernel is byte-identical to the one CI ran.**
+`smoke-switch-commit` went red on an unrelated pull request with
+`SMOKE FAIL: saw fail marker 'stale scheduler claim' on serial`. The change under
+test touched five files and none of them reach the kernel, so it could not have
+caused it — which made the question whether the gate is flaky or the defect is
+real.
+
+**It is real.** Building that gate's exact configuration
+(`PROC_SELFTEST=1 SCHED_INVARIANTS=1 KSP_GUARD_INJECT=1`) and booting it 200
+times:
+
+| | |
+|---|---|
+| `stale scheduler claim` | **1 / 200** |
+| died without reaching the required marker | 31 / 200 |
+
+**What that rate is and is not.** It was measured under
+`tools/stress_boot.sh`'s deliberate contention — four guest CPUs pinned onto two
+host cores — which is a *widener*, not the configuration `smoke-switch-commit`
+runs in. So 1/200 is the rate under widening and an upper bound on the gate's own
+red rate; the 31/200 is very largely the widener plus `KSP_GUARD_INJECT`, which
+exists to inject a bogus kernel stack pointer and is not a passive instrument.
+Neither number is the gate's flake rate, and neither should be quoted as one.
+
+**Why this is filed rather than closed.** `[G-12]` was attributed and fixed
+2026-09-03, and its investigation states the rate at HEAD was *"already 0 in 3500
+boots before this fix"*. That campaign was not this configuration, so this is not
+evidence the fix regressed — but it is evidence that a claim can still go stale
+under injection at a measurable rate, which is the mechanism `[G-9]` and
+`[G-12]` are about. An earlier 20-boot run found 0/20 and proves nothing: against
+a 0.5% event that is about 10% power, which is the arithmetic
+`docs/investigations/G-12` already insists on.
+
+**The capture is gone, and that is a second finding.** `tools/stress_boot.sh`
+kept only the *first* failure's log, and the first failure of this campaign was
+one of the 31 "died otherwise" runs — so the one reproduction of the marker under
+investigation was discarded. That is precisely the loss G-12's investigation
+recorded (*"three of the four reproductions in the 1000-boot run were not
+recoverable"*), excusing it as being *"in a script that gates nothing and
+therefore never got the repair"*. **That premise had expired**: the script backs
+`smoke-console-smp-stress` and `smoke-sched-invariants-stress`, both required.
+Fixed in the same commit as this entry — every failure is captured now, bounded
+by `STRESS_KEEP_FAILURES` — so the next reproduction survives to be read.
+
 ### 5.3d A checker's natural failure is to examine nothing and pass
 
 **Measured across the whole checker set, 2026-09-10.** Writing a falsification

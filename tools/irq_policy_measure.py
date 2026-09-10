@@ -29,7 +29,7 @@ the totals session-scale.
 Requires a build with IRQ_POLICY_AUDIT=1 (quiet is the default, and is what you
 want here). `make measure-irq-policy` builds it and runs this.
 
-Usage:  tools/irq_policy_measure.py boot.iso
+Usage:  tools/irq_policy_measure.py horus.iso
 Env:    BOOT_TIMEOUT (default 90), STEP_TIMEOUT (default 60)
 """
 
@@ -68,7 +68,7 @@ WORKLOAD = [
 
 def main():
     if len(sys.argv) < 2:
-        print("usage: irq_policy_measure.py <boot.iso>", file=sys.stderr)
+        print("usage: irq_policy_measure.py <horus.iso>", file=sys.stderr)
         sys.exit(2)
 
     s = st.Serial(sys.argv[1])

@@ -5,7 +5,7 @@
  * The only storage driver in this tree is `ata.c`: legacy IDE PIO on ports
  * 0x1F0/0x170. That is what QEMU gives by default and it is not what a laptop
  * has. A machine built this decade exposes its SSD through AHCI (SATA) or NVMe,
- * so `boot.iso` boots on real hardware -- since 2026-09-07 it boots from a USB
+ * so `horus.iso` boots on real hardware -- since 2026-09-07 it boots from a USB
  * stick under UEFI too -- and then the installer surveys the machine and finds
  * NO DISK, because nothing here can see one. That is the item that actually
  * gates installing onto a laptop, and `docs/LIMITATIONS.md` §4 says so.

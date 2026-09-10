@@ -8,7 +8,7 @@ un-echoed key. We send exactly one raw byte ('A' = 0x41) and assert termtest rea
 it and reports PASS — exercising CON_OP_WINSZ, CON_OP_WRITE_RAW, CON_OP_READ_RAW,
 and tcsetattr raw/cooked switching.
 
-Usage:  tools/term_session.py [boot.iso]
+Usage:  tools/term_session.py [horus.iso]
 Exit:   0 and "TERM_SESSION: PASS" on success; 1 and a FAIL line otherwise.
 """
 import os
@@ -17,7 +17,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from session_test import Serial, SessionFail  # noqa: E402
 
-ISO = sys.argv[1] if len(sys.argv) > 1 else "boot.iso"
+ISO = sys.argv[1] if len(sys.argv) > 1 else "horus.iso"
 STEP = float(os.environ.get("SESSION_TIMEOUT", "45"))
 BOOT = float(os.environ.get("BOOT_TIMEOUT", "90"))
 

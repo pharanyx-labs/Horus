@@ -17,7 +17,7 @@ path (sys_auth / sys_getuid / sys_useradd), not a compiled-in shortcut:
     standard user — i.e. no ambient authority; least privilege is enforced
     against the login identity, not anything the client asserts.
 
-Usage:  tools/session_test.py [boot.iso]
+Usage:  tools/session_test.py [horus.iso]
 Env:    SESSION_TIMEOUT   per-step expect timeout, seconds (default 45). Raise to
                           ~60 under QEMU_SMP>1 in CI: 4-core TCG emulation (no KVM)
                           runs the coreutils steps slowly, not a correctness issue.
@@ -46,7 +46,7 @@ import subprocess
 import sys
 import time
 
-ISO = sys.argv[1] if len(sys.argv) > 1 else "boot.iso"
+ISO = sys.argv[1] if len(sys.argv) > 1 else "horus.iso"
 STEP_TIMEOUT = float(os.environ.get("SESSION_TIMEOUT", "45"))
 BOOT_TIMEOUT = float(os.environ.get("BOOT_TIMEOUT", "90"))
 SMP = os.environ.get("QEMU_SMP", "1")
@@ -131,7 +131,7 @@ class Serial:
             print("SESSION SKIP: qemu-system-x86_64 not found", file=sys.stderr)
             sys.exit(2)
         if not os.path.isfile(iso):
-            raise SessionFail(f"ISO '{iso}' not found (run 'make boot.iso' first)")
+            raise SessionFail(f"ISO '{iso}' not found (run 'make horus.iso' first)")
 
         # -serial pty: QEMU allocates a pty for COM1 and prints its path on
         # stderr. -accel tcg for CI hosts without /dev/kvm; -no-reboot so a

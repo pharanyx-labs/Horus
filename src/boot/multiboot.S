@@ -704,7 +704,7 @@ embedded_hello_newlib_bin_end:
  * image. They are shipped as GRUB multiboot2 modules (grub.cfg `module2` lines),
  * which GRUB loads into RAM outside the image, so they cost nothing against the
  * 16 MiB budget and all of them fit at once. The fs_server provisions each module
- * into /bin at boot, and the shell runs them from there. See the boot.iso rule in
+ * into /bin at boot, and the shell runs them from there. See the horus.iso rule in
  * the Makefile and provision_boot_modules() in userspace/fs_server.c. */
 
 

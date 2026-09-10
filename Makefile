@@ -1190,15 +1190,15 @@ COREUTILS_PROGS = echo true false basename dirname cat head seq wc printf tail
 COREUTILS_BINS  = $(addprefix userspace/coreutils_,$(addsuffix .bin,$(COREUTILS_PROGS)))
 
 # The utilities are NOT baked into the kernel image. COREUTILS_MODULES=1 ships
-# them as GRUB multiboot2 modules: the boot.iso rule copies each utility .bin onto
+# them as GRUB multiboot2 modules: the horus.iso rule copies each utility .bin onto
 # the ISO and emits a `module2` line, GRUB loads them into RAM outside the kernel
 # image (so the 16 MiB image budget stops applying and ALL of them fit at once),
 # the fs_server provisions each into /bin at boot, and the shell runs them from
-# there (see boot.iso below, provision_boot_modules() in userspace/fs_server.c,
+# there (see horus.iso below, provision_boot_modules() in userspace/fs_server.c,
 # and try_run_from_bin() in userspace/shell.c). Off by default, so the shipped ISO
 # carries no GPLv3-derived binary; the coreutils smoke tests turn it on.
 #
-# BOOT_MODULES is a space-separated list of `<file>:<dest-path>` pairs the boot.iso
+# BOOT_MODULES is a space-separated list of `<file>:<dest-path>` pairs the horus.iso
 # rule consumes; `dest-path` is where the fs_server provisions the module in the
 # store (relative to the root) — `bin/<name>` for a runnable binary,
 # `usr/share/man/<name>` for a man page. The fs_server creates any missing parent
@@ -3354,7 +3354,7 @@ RUST_EXTRA_OBJS := src/kernel/rust_shims.o
 endif
 
 # Boot-module hash manifest (audit A4). Generated from the very same BOOT_MODULES
-# list the boot.iso rule ships, so the kernel embeds the SHA-256 of exactly the
+# list the horus.iso rule ships, so the kernel embeds the SHA-256 of exactly the
 # payloads it was built to carry and refuses anything else at boot
 # (boot_module_verify_all). A build with no modules gets an empty manifest and
 # therefore refuses every module it is handed — fail closed.
@@ -3449,7 +3449,7 @@ endif
 # `run` is the interactive/dev target: it ships the ported coreutils and their man
 # pages as boot modules (RUN_MODULES=1 by default), so an interactive session comes
 # up with /bin populated and `man` reading /usr/share/man. Set RUN_MODULES=0 for a
-# module-free (GPLv3-clean) boot; the plain `boot.iso` / release target stays
+# module-free (GPLv3-clean) boot; the plain `horus.iso` / release target stays
 # module-free regardless.
 RUN_MODULES ?= 1
 # `make run` boots WITH an emulated TPM when swtpm is installed, and without one
@@ -3471,14 +3471,14 @@ run: kernel.elf
 
 .PHONY: run-plain
 run-plain: kernel.elf
-	@$(MAKE) --no-print-directory COREUTILS_MODULES=$(RUN_MODULES) TCC_MODULE=$(RUN_MODULES) boot.iso
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=$(RUN_MODULES) TCC_MODULE=$(RUN_MODULES) horus.iso
 	@echo "Console on this terminal. Quit QEMU with Ctrl-A X; QEMU monitor with Ctrl-A C."
 	qemu-system-x86_64 -m 512M -cpu qemu64,+aes,+rdrand,+smep,+smap \
 		-smp $(SMP_CPUS) \
 		-machine accel=kvm:tcg -display none \
 		-serial mon:stdio \
 		-device isa-debug-exit,iobase=0x604,iosize=0x04 \
-		-net none -no-reboot -no-shutdown -cdrom boot.iso
+		-net none -no-reboot -no-shutdown -cdrom horus.iso
 
 # Like `run`, but with an emulated TPM 2.0 (swtpm) attached so measured boot
 # (roadmap 2.2) engages — you'll see the `[tpm] PCR8=.. PCR9=..` line and, once a
@@ -3486,7 +3486,7 @@ run-plain: kernel.elf
 .PHONY: run-tpm
 run-tpm: kernel.elf
 	@command -v swtpm >/dev/null 2>&1 || { echo "run-tpm needs swtpm (apt install swtpm)"; exit 1; }
-	@$(MAKE) --no-print-directory COREUTILS_MODULES=$(RUN_MODULES) boot.iso
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=$(RUN_MODULES) horus.iso
 	@D=$$(mktemp -d); swtpm_setup --tpm2 --tpmstate $$D --overwrite >/dev/null 2>&1; \
 	 swtpm socket --tpm2 --tpmstate dir=$$D --ctrl type=unixio,path=$$D/sock --daemon --pid file=$$D/pid; \
 	 echo "TPM state in $$D. Quit QEMU with Ctrl-A X."; \
@@ -3495,7 +3495,7 @@ run-tpm: kernel.elf
 	    -chardev socket,id=chrtpm,path=$$D/sock -tpmdev emulator,id=tpm0,chardev=chrtpm \
 	    -device tpm-tis,tpmdev=tpm0 \
 	    -device isa-debug-exit,iobase=0x604,iosize=0x04 \
-	    -net none -no-reboot -no-shutdown -cdrom boot.iso; \
+	    -net none -no-reboot -no-shutdown -cdrom horus.iso; \
 	 kill $$(cat $$D/pid) 2>/dev/null; rm -rf $$D
 
 # `make run-ata` — the interactive boot with a PERSISTENT disk attached, and the
@@ -3543,7 +3543,7 @@ run-ata:
 	 fi
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 kernel.elf
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 \
-		COREUTILS_MODULES=$(RUN_MODULES) TCC_MODULE=$(RUN_MODULES) boot.iso
+		COREUTILS_MODULES=$(RUN_MODULES) TCC_MODULE=$(RUN_MODULES) horus.iso
 	@echo "Console on this terminal. Quit QEMU with Ctrl-A X; QEMU monitor with Ctrl-A C."
 	qemu-system-x86_64 -m 512M -cpu qemu64,+aes,+rdrand,+smep,+smap \
 		-smp $(SMP_CPUS) \
@@ -3551,7 +3551,7 @@ run-ata:
 		-serial mon:stdio \
 		-device isa-debug-exit,iobase=0x604,iosize=0x04 \
 		-drive file=$(HORUS_DISK),format=raw,if=ide,index=0,cache=writethrough \
-		-net none -no-reboot -no-shutdown -cdrom boot.iso
+		-net none -no-reboot -no-shutdown -cdrom horus.iso
 
 # Throw the volume away and install again. Separate from `run-ata` because
 # destroying a filesystem is a different act from booting one, and the two should
@@ -3567,7 +3567,17 @@ run-ata-wipe:
 # BOOT_MODULES entry (empty when none), so GRUB loads each utility image into RAM
 # alongside the kernel. Modules live outside kernel.elf — the kernel records them
 # from the multiboot2 tags and the fs_server installs them into /bin.
-boot.iso: kernel.elf grub.cfg $(BOOT_MODULE_DEP)
+# `make boot.iso` was the name until 2026-09-10. Left as a target that FAILS and
+# says where the artefact went, rather than removed outright: bare `make boot.iso`
+# answers "No rule to make target", which is correct and tells a reader with the
+# old name in their fingers nothing. It deliberately does NOT build anything --
+# an alias would keep the old name working and the rename would never finish.
+.PHONY: boot.iso
+boot.iso:
+	@echo "boot.iso was renamed to horus.iso on 2026-09-10. Use: make horus.iso"
+	@false
+
+horus.iso: kernel.elf grub.cfg $(BOOT_MODULE_DEP)
 	@rm -rf isofiles
 	@mkdir -p isofiles/boot/grub
 	@cp kernel.elf isofiles/boot/kernel.elf
@@ -3596,12 +3606,12 @@ clean: userspace-clean
 clean-rust:
 	rm -rf rust/target
 
-# A bare ISO with no boot modules -- `boot.iso` above is the one that boots a
+# A bare ISO with no boot modules -- `horus.iso` above is the one that boots a
 # usable system, and the one `make run`/`make smoke` use. The grub-mkrescue
 # line here used to end `2>/dev/null || true`, so `make iso` announced success
 # and left no horus.iso when the tool was missing. Same defect class as the
 # build-hash recording step (see reproducible-build below): a step that cannot
-# fail. It now reports like boot.iso's does.
+# fail. It now reports like horus.iso's does.
 iso: kernel.elf
 	@mkdir -p iso/boot/grub && cp kernel.elf iso/boot/ && cp grub.cfg iso/boot/grub/grub.cfg
 	@grub-mkrescue -o horus.iso iso 2>&1 || (echo "grub-mkrescue failed (install grub-pc-bin xorriso)" && exit 1)
@@ -4383,9 +4393,9 @@ userspace-clean:
 smoke-aspace:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory ASPACE_SELFTEST=1
-	@$(MAKE) --no-print-directory ASPACE_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory ASPACE_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='ASPACE_SELFTEST: PASS' \
-		FAIL_MARKER='ASPACE_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='ASPACE_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # The task ceiling is real, not merely compiled. A boot uses about six tasks, all
 # of them below 64, so every defect the MAX_TASKS 64 -> 256 change could
@@ -4404,10 +4414,10 @@ smoke-aspace:
 smoke-proc-spawn-decoy-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SPAWN_SLOT3_DECOY_GATE=1
-	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SPAWN_SLOT3_DECOY_GATE=1 boot.iso
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SPAWN_SLOT3_DECOY_GATE=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='PROC_SELFTEST: FAIL spawn-without-untyped' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # The falsifying arm for SYS_UNTYPED_SPLIT. Without the parent's watermark
 # advancing, the split creates memory rather than moving it -- and captest's
@@ -4415,10 +4425,10 @@ smoke-proc-spawn-decoy-control:
 smoke-captest-split-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 UNTYPED_SPLIT_FREE_BYTES=1
-	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 UNTYPED_SPLIT_FREE_BYTES=1 boot.iso
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 UNTYPED_SPLIT_FREE_BYTES=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='CAPTEST: FAIL split-did-not-charge-the-parent' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # The falsifying arm for the typed resolver (S60). CAP_LOOKUP_TYPE_UNCHECKED=1
 # restores the pre-2026-08-31 cap_lookup, which returned whatever the slot held
@@ -4433,10 +4443,10 @@ smoke-captest-split-control:
 smoke-captest-lookup-type-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 CAP_LOOKUP_TYPE_UNCHECKED=1
-	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 CAP_LOOKUP_TYPE_UNCHECKED=1 boot.iso
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 CAP_LOOKUP_TYPE_UNCHECKED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='CAPTEST: FAIL notification-cap-authorised-endpoint-recv' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # init provisions a server on an endpoint it MADE, not one it was handed
 # (roadmap 2.4, S59). Every other server init launches gets a primordial endpoint
@@ -4445,44 +4455,44 @@ smoke-captest-lookup-type-control:
 smoke-init-provision:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory INIT_PROVISION_SELFTEST=1
-	@$(MAKE) --no-print-directory INIT_PROVISION_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory INIT_PROVISION_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='INIT_PROVISION: PASS' \
-		FAIL_MARKER='INIT_PROVISION: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='INIT_PROVISION: FAIL' tools/smoke_test.sh horus.iso
 
 # The falsifying arm: init retypes from a slot with no CAP_UNTYPED in it, so the
 # endpoint is never made and provisioning stops at step 1.
 smoke-init-provision-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory INIT_PROVISION_SELFTEST=1 INIT_PROVISION_NO_UNTYPED=1
-	@$(MAKE) --no-print-directory INIT_PROVISION_SELFTEST=1 INIT_PROVISION_NO_UNTYPED=1 boot.iso
+	@$(MAKE) --no-print-directory INIT_PROVISION_SELFTEST=1 INIT_PROVISION_NO_UNTYPED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='INIT_PROVISION: FAIL provisioning stopped at step 1' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 smoke-cspace-release:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CSPACE_RELEASE_SELFTEST=1
-	@$(MAKE) --no-print-directory CSPACE_RELEASE_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory CSPACE_RELEASE_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='CSPACE_RELEASE_SELFTEST: PASS' \
-		FAIL_MARKER='CSPACE_RELEASE_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='CSPACE_RELEASE_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # The falsifying arm: teardown leaves the capabilities in place, so the dead
 # task still holds the primordial CAP_CONSOLE.
 smoke-cspace-release-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CSPACE_RELEASE_SELFTEST=1 CSPACE_KEEP_ON_TEARDOWN=1
-	@$(MAKE) --no-print-directory CSPACE_RELEASE_SELFTEST=1 CSPACE_KEEP_ON_TEARDOWN=1 boot.iso
+	@$(MAKE) --no-print-directory CSPACE_RELEASE_SELFTEST=1 CSPACE_KEEP_ON_TEARDOWN=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='CSPACE_RELEASE_SELFTEST: FAIL a dead task still holds capability slot' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 smoke-cap-lookup:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CAPLOOKUP_SELFTEST=1
-	@$(MAKE) --no-print-directory CAPLOOKUP_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory CAPLOOKUP_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='CAPLOOKUP_SELFTEST: PASS' \
-		FAIL_MARKER='CAPLOOKUP_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='CAPLOOKUP_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # The falsifying arm. Restores the fallback; the cspace-less probe then resolves a
 # live primordial CAP_CONSOLE, and the witness must say so by name. Without it,
@@ -4490,10 +4500,10 @@ smoke-cap-lookup:
 smoke-cap-lookup-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CAPLOOKUP_SELFTEST=1 CAP_LOOKUP_ROOT_FALLBACK=1
-	@$(MAKE) --no-print-directory CAPLOOKUP_SELFTEST=1 CAP_LOOKUP_ROOT_FALLBACK=1 boot.iso
+	@$(MAKE) --no-print-directory CAPLOOKUP_SELFTEST=1 CAP_LOOKUP_ROOT_FALLBACK=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='CAPLOOKUP_SELFTEST: FAIL cspace-less task resolved a primordial capability' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # The second arm, for the rule the first cannot reach. The witness returns at its
 # first failure, so under CAP_LOOKUP_ROOT_FALLBACK the cspace-less probe fails and
@@ -4502,17 +4512,17 @@ smoke-cap-lookup-control:
 smoke-cap-lookup-range-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CAPLOOKUP_SELFTEST=1 CAP_LOOKUP_RANGE_FALLBACK=1
-	@$(MAKE) --no-print-directory CAPLOOKUP_SELFTEST=1 CAP_LOOKUP_RANGE_FALLBACK=1 boot.iso
+	@$(MAKE) --no-print-directory CAPLOOKUP_SELFTEST=1 CAP_LOOKUP_RANGE_FALLBACK=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='CAPLOOKUP_SELFTEST: FAIL a slot past the caller' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 smoke-task-ceiling:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory TASKCEIL_SELFTEST=1
-	@$(MAKE) --no-print-directory TASKCEIL_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory TASKCEIL_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='TASKCEIL_SELFTEST: PASS' \
-		FAIL_MARKER='TASKCEIL_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='TASKCEIL_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # The falsifying arm. Restores the single-word inflight mask, under which
 # setting task 255's bit also sets task 191's -- so the gate above must go RED,
@@ -4521,10 +4531,10 @@ smoke-task-ceiling:
 smoke-task-ceiling-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory TASKCEIL_SELFTEST=1 KSTACK_INFLIGHT_LEGACY_WORD=1
-	@$(MAKE) --no-print-directory TASKCEIL_SELFTEST=1 KSTACK_INFLIGHT_LEGACY_WORD=1 boot.iso
+	@$(MAKE) --no-print-directory TASKCEIL_SELFTEST=1 KSTACK_INFLIGHT_LEGACY_WORD=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='TASKCEIL_SELFTEST: FAIL setting task 255 also set task 191' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # The second falsifying arm, for the other rule. KSTACK_INFLIGHT_LEGACY_WORD
 # blinds the DETECTOR for S20; this creates the CONDITION S20 describes -- two
@@ -4534,10 +4544,10 @@ smoke-task-ceiling-control:
 smoke-task-ceiling-stack-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory TASKCEIL_SELFTEST=1 KSTACK_SLOT_INDEX_TRUNC=1
-	@$(MAKE) --no-print-directory TASKCEIL_SELFTEST=1 KSTACK_SLOT_INDEX_TRUNC=1 boot.iso
+	@$(MAKE) --no-print-directory TASKCEIL_SELFTEST=1 KSTACK_SLOT_INDEX_TRUNC=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='TASKCEIL_SELFTEST: FAIL alias pair shares a kernel stack slot' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # Drive the generic (non-zero) copy-on-write break end-to-end: a shared, non-zero
 # COW frame (refcount 2) aliased by two PTEs; the first write must copy to a
@@ -4548,9 +4558,9 @@ smoke-task-ceiling-stack-control:
 smoke-nzcow:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory NZCOW_SELFTEST=1
-	@$(MAKE) --no-print-directory NZCOW_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory NZCOW_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='NZCOW_SELFTEST: PASS' \
-		FAIL_MARKER='NZCOW_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='NZCOW_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # Control arm -- the arena guard. COW_ARENA_UNGUARDED=1 lets a copy-on-write
 # break proceed on a page belonging to a kernel object. The selftest drives it
@@ -4563,19 +4573,19 @@ smoke-nzcow:
 smoke-nzcow-arena-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory NZCOW_SELFTEST=1 COW_ARENA_UNGUARDED=1
-	@$(MAKE) --no-print-directory NZCOW_SELFTEST=1 COW_ARENA_UNGUARDED=1 boot.iso
+	@$(MAKE) --no-print-directory NZCOW_SELFTEST=1 COW_ARENA_UNGUARDED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='NZCOW_SELFTEST: FAIL arena-cow-broken' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "NZCOW ARENA CONTROL: PASS - unguarded, a kernel object's page is copied out from under it"
 
 .PHONY: smoke-wx
 smoke-wx:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory WX_SELFTEST=1
-	@$(MAKE) --no-print-directory WX_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory WX_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='WX_SELFTEST: PASS' \
-		FAIL_MARKER='WX_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='WX_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # The W^X self-test built SMP=1, booted on multiple cores: the same PASS marker,
 # plus the per-CPU AP IST fault-stack guard assertions that only exist (and only
@@ -4585,17 +4595,17 @@ smoke-wx:
 smoke-wx-smp:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory WX_SELFTEST=1 SMP=1
-	@$(MAKE) --no-print-directory WX_SELFTEST=1 SMP=1 boot.iso
+	@$(MAKE) --no-print-directory WX_SELFTEST=1 SMP=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=$(SMP_CPUS) REQUIRE_MARKER='WX_SELFTEST: PASS' \
-		FAIL_MARKER='WX_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='WX_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-cpu
 smoke-cpu:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CPU_SELFTEST=1
-	@$(MAKE) --no-print-directory CPU_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory CPU_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='CPU_SELFTEST: PASS' \
-		FAIL_MARKER='CPU_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='CPU_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # Per-CPU identity self-test. Boots multi-core and requires every online core to
 # have confirmed, on itself, that the TSS-selector derivation in this_cpu()
@@ -4607,9 +4617,9 @@ smoke-cpu:
 smoke-percpu:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PERCPU_SELFTEST=1
-	@$(MAKE) --no-print-directory PERCPU_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory PERCPU_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) REQUIRE_MARKER='PERCPU_SELFTEST: PASS' \
-		FAIL_MARKER='PERCPU_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='PERCPU_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # Flush-on-switch self-test. NOTE: TCG (the CI accelerator -- no KVM) does not
 # emulate the IBPB / L1D-flush / MDS CPUID features, so under CI they read absent
@@ -4622,9 +4632,9 @@ smoke-percpu:
 smoke-flush:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FLUSH_SELFTEST=1
-	@$(MAKE) --no-print-directory FLUSH_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory FLUSH_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='FLUSH_SELFTEST: PASS' \
-		FAIL_MARKER='FLUSH_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='FLUSH_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # SMT co-residency: boot the shipped kernel under an SMT topology (2 cores x 2
 # threads) and assert the two sibling threads are PARKED -- never scheduled -- so
@@ -4635,7 +4645,7 @@ smoke-flush:
 .PHONY: smoke-smt
 smoke-smt:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory horus.iso
 # NO FAIL_MARKER, and its absence is deliberate rather than an omission. This
 # recipe carried FAIL_MARKER='SMT_SELFTEST: FAIL' from the day it was written and
 # NOTHING IN THE TREE HAS EVER PRINTED THAT STRING -- there is no SMT selftest,
@@ -4645,15 +4655,15 @@ smoke-smt:
 # failure signal is the absence of the kernel's own line. Found 2026-09-10 by
 # sweeping every gate marker against everything in this tree that can print.
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) QEMU_SMP='4,cores=2,threads=2' \
-		REQUIRE_MARKER='SMT siblings parked' tools/smoke_test.sh boot.iso
+		REQUIRE_MARKER='SMT siblings parked' tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-stackguard
 smoke-stackguard:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory STACKGUARD_SELFTEST=1
-	@$(MAKE) --no-print-directory STACKGUARD_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory STACKGUARD_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='STACKGUARD_SELFTEST: PASS' \
-		FAIL_MARKER='STACKGUARD_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='STACKGUARD_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # Build the kernel with the gated ELF-loader self-test, boot it headless, and
 # require the in-kernel self-test to report PASS on serial (in addition to the
@@ -4662,16 +4672,16 @@ smoke-stackguard:
 smoke-elf:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory ELF_SELFTEST=1
-	@$(MAKE) --no-print-directory ELF_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory ELF_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='ELF_SELFTEST: PASS' \
-		FAIL_MARKER='ELF_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='ELF_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 smoke-elf64:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory ELF64_SELFTEST=1
-	@$(MAKE) --no-print-directory ELF64_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory ELF64_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='ELF64_SELFTEST: PASS' \
-		FAIL_MARKER='ELF64_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='ELF64_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # Image-base ASLR: spawn several PIE images and assert the load base actually
 # varies and stays inside the premap-containment bound (ASLR_SELFTEST: PASS).
@@ -4679,9 +4689,9 @@ smoke-elf64:
 smoke-aslr:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory ASLR_SELFTEST=1
-	@$(MAKE) --no-print-directory ASLR_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory ASLR_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='ASLR_SELFTEST: PASS' \
-		FAIL_MARKER='ASLR_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='ASLR_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # Build with the gated preemption self-test, boot headless, and require the
 # in-kernel test to report PASS -- runtime proof that the timer time-slices two
@@ -4690,9 +4700,9 @@ smoke-aslr:
 smoke-preempt:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PREEMPT_SELFTEST=1
-	@$(MAKE) --no-print-directory PREEMPT_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory PREEMPT_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PREEMPT_SELFTEST: PASS' \
-		FAIL_MARKER='PREEMPT_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='PREEMPT_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # Build with the gated signal self-test, boot headless, and require the handler
 # to run on a deliberate fault -- runtime proof that a ring-3 fault is delivered
@@ -4701,18 +4711,18 @@ smoke-preempt:
 smoke-signal:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SIGNAL_SELFTEST=1
-	@$(MAKE) --no-print-directory SIGNAL_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory SIGNAL_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='SIGNAL_SELFTEST: PASS' \
-		FAIL_MARKER='SIGNAL_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='SIGNAL_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # Build with the gated TSD self-test, boot headless, and require the marker that
 # proves a ring-3 RDTSC faulted into its handler (CR4.TSD engaged).
 smoke-tsd:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory TSD_SELFTEST=1
-	@$(MAKE) --no-print-directory TSD_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory TSD_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='TSD_SELFTEST: PASS' \
-		FAIL_MARKER='TSD_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='TSD_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # Build with the gated E820 self-test, boot headless, and require the marker
 # proving the physical pool was sized from the multiboot2 memory map (boots to
@@ -4720,9 +4730,9 @@ smoke-tsd:
 smoke-e820:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory E820_SELFTEST=1 STORAGE_AUTOFORMAT=1
-	@$(MAKE) --no-print-directory E820_SELFTEST=1 boot.iso STORAGE_AUTOFORMAT=1
+	@$(MAKE) --no-print-directory E820_SELFTEST=1 horus.iso STORAGE_AUTOFORMAT=1
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='E820_SELFTEST: PASS' \
-		FAIL_MARKER='E820_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='E820_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # Build with the gated filesystem self-test, boot headless, and require the
 # client to report PASS -- runtime proof that the userspace fs_server serves a
@@ -4748,10 +4758,10 @@ endif
 smoke-fs:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FS_SELFTEST=1 $(SMOKE_FS_FLAGS)
-	@$(MAKE) --no-print-directory FS_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory FS_SELFTEST=1 horus.iso
 	@$(SMOKE_FS_PREP)
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 $(SMOKE_FS_ENV) REQUIRE_MARKER='FS_SELFTEST: PASS' \
-		FAIL_MARKER='FS_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='FS_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # The readdir contract's own gate. smoke-fs already asserts FS_SELFTEST: PASS,
 # which these checks ride in; this target exists so the contract has a gate that
@@ -4760,10 +4770,10 @@ smoke-fs:
 smoke-readdir-end:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FS_SELFTEST=1 $(SMOKE_FS_FLAGS)
-	@$(MAKE) --no-print-directory FS_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory FS_SELFTEST=1 horus.iso
 	@$(SMOKE_FS_PREP)
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 $(SMOKE_FS_ENV) REQUIRE_MARKER='FS_SELFTEST: PASS' \
-		FAIL_MARKER='FS_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='FS_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # The falsifying arm. READDIR_END_IS_NOENT=1 restores the overloaded reply --
 # SYS_ERR_NOENT for "past the last entry" AND for "I could not stat that
@@ -4779,11 +4789,11 @@ smoke-readdir-end:
 smoke-readdir-end-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FS_SELFTEST=1 READDIR_END_IS_NOENT=1 $(SMOKE_FS_FLAGS)
-	@$(MAKE) --no-print-directory FS_SELFTEST=1 READDIR_END_IS_NOENT=1 boot.iso
+	@$(MAKE) --no-print-directory FS_SELFTEST=1 READDIR_END_IS_NOENT=1 horus.iso
 	@$(SMOKE_FS_PREP)
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 $(SMOKE_FS_ENV) \
 		REQUIRE_MARKER='FS_SELFTEST: FAIL readdir-end-and-missing-dir-are-the-same' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # Boot-time FS integration test: ring-3 init brings up the fs_server by delegation
 # (SYS_CAP_GRANT) and the delegated server serves the client end-to-end. Reuses
@@ -4793,10 +4803,10 @@ smoke-readdir-end-control:
 smoke-init-fs:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory INIT_FS_SELFTEST=1 $(SMOKE_FS_FLAGS)
-	@$(MAKE) --no-print-directory INIT_FS_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory INIT_FS_SELFTEST=1 horus.iso
 	@$(SMOKE_FS_PREP)
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 $(SMOKE_FS_ENV) REQUIRE_MARKER='FS_SELFTEST: PASS' \
-		FAIL_MARKER='FS_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='FS_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # Reboot-survival test: boot twice against ONE persistent ATA disk image. Boot 1
 # writes a sentinel file (PERSIST_SELFTEST: WROTE); boot 2, on the same image,
@@ -4837,16 +4847,16 @@ META_CRASH_TIMEOUT ?= 600
 smoke-fs-persist:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PERSIST_SELFTEST=1 STORAGE_ATA=1 HANG_WATCHDOG=1 HANG_WATCHDOG_TICKS=6000 STORAGE_AUTOFORMAT=1
-	@$(MAKE) --no-print-directory PERSIST_SELFTEST=1 STORAGE_ATA=1 HANG_WATCHDOG=1 HANG_WATCHDOG_TICKS=6000 boot.iso STORAGE_AUTOFORMAT=1
+	@$(MAKE) --no-print-directory PERSIST_SELFTEST=1 STORAGE_ATA=1 HANG_WATCHDOG=1 HANG_WATCHDOG_TICKS=6000 horus.iso STORAGE_AUTOFORMAT=1
 	@rm -f persist.img && truncate -s $$(( $(PERSIST_BLOCKS) * $(FS_BLOCK_SIZE) )) persist.img
 	@echo "[persist] boot 1/2 — write sentinel to a fresh encrypted disk"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=persist.img \
 		REQUIRE_MARKER='PERSIST_SELFTEST: WROTE' FAIL_MARKER='PERSIST_SELFTEST: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "[persist] boot 2/2 — verify the file survived (same disk image)"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=persist.img \
 		REQUIRE_MARKER='PERSIST_SELFTEST: PASS' FAIL_MARKER='PERSIST_SELFTEST: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "[persist] PASS — encrypted file survived a reboot"
 
 # Zero-trust ownership & permissions: root builds a scenario, the client then
@@ -4858,9 +4868,9 @@ smoke-fs-persist:
 smoke-fs-perms:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PERM_SELFTEST=1
-	@$(MAKE) --no-print-directory PERM_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory PERM_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PERM_SELFTEST: PASS' \
-		FAIL_MARKER='PERM_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='PERM_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # Multi-client concurrency: one fs_server, several clients hammering it at once,
 # each verifying it receives its own replies (no cross-talk, no lost replies).
@@ -4873,17 +4883,17 @@ smoke-fs-perms:
 smoke-fs-wal:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 STORAGE_AUTOFORMAT=1
-	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 boot.iso STORAGE_AUTOFORMAT=1
+	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 horus.iso STORAGE_AUTOFORMAT=1
 	@rm -f wal.img && truncate -s $$(( $(PERSIST_BLOCKS) * $(FS_BLOCK_SIZE) )) wal.img
 	@echo "[wal] boot 1/2 — commit a write, then crash before applying it"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=wal.img \
 		WAIT_FOR_EXIT=1 \
 		REQUIRE_MARKER='WAL_CRASHTEST: crashed-after-commit' FAIL_MARKER='WAL_CRASHTEST: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "[wal] boot 2/2 — recover the committed transaction, verify the data"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=wal.img \
 		REQUIRE_MARKER='WAL_CRASHTEST: PASS' FAIL_MARKER='WAL_CRASHTEST: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "[wal] PASS — committed transaction replayed after a crash"
 
 # smoke-fs-wal-flush — the [I-10] durability gate.
@@ -4927,14 +4937,14 @@ check-gating:
 smoke-fs-wal-flush:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 STORAGE_AUTOFORMAT=1
-	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 boot.iso STORAGE_AUTOFORMAT=1
+	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 horus.iso STORAGE_AUTOFORMAT=1
 	@rm -f wal-flush.img && truncate -s $$(( $(PERSIST_BLOCKS) * $(FS_BLOCK_SIZE) )) wal-flush.img
 	@echo "[wal-flush] every FLUSH CACHE fails with EIO; the journal must refuse to commit"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=wal-flush.img \
 		SMOKE_DISK_BLKDEBUG=tools/blkdebug-flush-eio.conf SMOKE_DISK_CACHE=writeback \
 		REQUIRE_MARKER='WAL: FLUSH FAILED before commit header' \
 		FAIL_MARKER='WAL_CRASHTEST: crashed-after-commit' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "[wal-flush] PASS — the commit record is flushed, and the flush's result is checked"
 
 # The control arm for the gate above: the same run against a kernel built with
@@ -4944,14 +4954,14 @@ smoke-fs-wal-flush:
 smoke-fs-wal-flush-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 WAL_NO_FLUSH=1 STORAGE_AUTOFORMAT=1
-	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 WAL_NO_FLUSH=1 boot.iso STORAGE_AUTOFORMAT=1
+	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 WAL_NO_FLUSH=1 horus.iso STORAGE_AUTOFORMAT=1
 	@rm -f wal-flush-control.img && truncate -s $$(( $(PERSIST_BLOCKS) * $(FS_BLOCK_SIZE) )) wal-flush-control.img
 	@echo "[wal-flush-control] barriers compiled out: the refusal must NOT appear"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=wal-flush-control.img \
 		SMOKE_DISK_BLKDEBUG=tools/blkdebug-flush-eio.conf SMOKE_DISK_CACHE=writeback \
 		REQUIRE_MARKER='WAL_CRASHTEST: crashed-after-commit' \
 		ABSENT_MARKER='WAL: FLUSH FAILED' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "[wal-flush-control] PASS — the defect reproduces: no flush is issued, nothing objects"
 
 # smoke-fs-wal-order — the [I-10] ORDERING gate.
@@ -4968,7 +4978,7 @@ smoke-fs-wal-flush-control:
 smoke-fs-wal-order:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 STORAGE_AUTOFORMAT=1
-	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 boot.iso STORAGE_AUTOFORMAT=1
+	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 horus.iso STORAGE_AUTOFORMAT=1
 	@rm -f wal-order.img && truncate -s $$(( $(PERSIST_BLOCKS) * $(FS_BLOCK_SIZE) )) wal-order.img
 	@rm -f wal-order.trace
 	@echo "[wal-order] tracing IDE commands through one journal commit"
@@ -4976,7 +4986,7 @@ smoke-fs-wal-order:
 		SMOKE_TRACE=ide_ioport_write SMOKE_TRACE_FILE=wal-order.trace \
 		REQUIRE_MARKER='WAL_CRASHTEST: crashed-after-commit' \
 		FAIL_MARKER='WAL_CRASHTEST: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@tools/check_wal_order.sh wal-order.trace
 	@echo "[wal-order] PASS — the barriers bracket the commit record in the right order"
 
@@ -4987,14 +4997,14 @@ smoke-fs-wal-order:
 smoke-fs-wal-order-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 WAL_NO_FLUSH=1 STORAGE_AUTOFORMAT=1
-	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 WAL_NO_FLUSH=1 boot.iso STORAGE_AUTOFORMAT=1
+	@$(MAKE) --no-print-directory WAL_CRASHTEST=1 WAL_NO_FLUSH=1 horus.iso STORAGE_AUTOFORMAT=1
 	@rm -f wal-order-control.img && truncate -s $$(( $(PERSIST_BLOCKS) * $(FS_BLOCK_SIZE) )) wal-order-control.img
 	@rm -f wal-order-control.trace
 	@echo "[wal-order-control] barriers compiled out: the ordering check must REJECT this"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=wal-order-control.img \
 		SMOKE_TRACE=ide_ioport_write SMOKE_TRACE_FILE=wal-order-control.trace \
 		REQUIRE_MARKER='WAL_CRASHTEST: crashed-after-commit' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@if tools/check_wal_order.sh wal-order-control.trace; then \
 		echo "[wal-order-control] FAIL — the checker accepted a kernel with no barriers"; \
 		exit 1; \
@@ -5019,9 +5029,9 @@ CONC_TIMEOUT ?= 120
 smoke-fs-conc:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CONC_SELFTEST=1 HANG_WATCHDOG=1 HANG_WATCHDOG_TICKS=6000
-	@$(MAKE) --no-print-directory CONC_SELFTEST=1 HANG_WATCHDOG=1 HANG_WATCHDOG_TICKS=6000 boot.iso
+	@$(MAKE) --no-print-directory CONC_SELFTEST=1 HANG_WATCHDOG=1 HANG_WATCHDOG_TICKS=6000 horus.iso
 	@SMOKE_TIMEOUT=$(CONC_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CONC_SELFTEST: PASS' \
-		FAIL_MARKER='CONC_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='CONC_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # Supply-chain falsification: prove the pinned newlib SHA-256 actually refuses a
 # tampered artifact, and still accepts the genuine one.
@@ -5044,9 +5054,9 @@ smoke-newlib-tamper:
 smoke-newlib:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory NEWLIB_SELFTEST=1
-	@$(MAKE) --no-print-directory NEWLIB_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory NEWLIB_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='NEWLIB_SELFTEST: PASS' \
-		FAIL_MARKER='NEWLIB_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='NEWLIB_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # ---- roadmap 2.4: the libc walks paths through hvfs -------------------------
 # Both arms assert on hello_newlib's "." / ".." checks, which are the migration's
@@ -5059,10 +5069,10 @@ smoke-newlib:
 smoke-newlib-walk-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory NEWLIB_SELFTEST=1 POSIX_LEGACY_WALK=1
-	@$(MAKE) --no-print-directory NEWLIB_SELFTEST=1 POSIX_LEGACY_WALK=1 boot.iso
+	@$(MAKE) --no-print-directory NEWLIB_SELFTEST=1 POSIX_LEGACY_WALK=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='NEWLIB_SELFTEST: FAIL dot-here' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # Control arm 2 -- the ".." branch hvfs shipped with. HVFS_DOTDOT_SERVER=1 asks
 # the server for a ".." entry it never creates, so the pinned case still works
@@ -5073,10 +5083,10 @@ smoke-newlib-walk-control:
 smoke-newlib-dotdot-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory NEWLIB_SELFTEST=1 HVFS_DOTDOT_SERVER=1
-	@$(MAKE) --no-print-directory NEWLIB_SELFTEST=1 HVFS_DOTDOT_SERVER=1 boot.iso
+	@$(MAKE) --no-print-directory NEWLIB_SELFTEST=1 HVFS_DOTDOT_SERVER=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='NEWLIB_SELFTEST: FAIL dotdot-back' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # Build with the vendored GNU coreutils utilities and run them at boot as ring-3
 # tasks. The required marker is produced by UPSTREAM's own code path -- echo
@@ -5110,10 +5120,10 @@ smoke-newlib-dotdot-control:
 smoke-captest-getline-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 GETLINE_SLOT3_FALLBACK=1
-	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 GETLINE_SLOT3_FALLBACK=1 boot.iso
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 GETLINE_SLOT3_FALLBACK=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_STALL='CAPTEST: begin' \
 		ABSENT_MARKER='CAPTEST: PASS' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # Control arm for S52: a refused capability operation must RETURN, not halt.
 # CAP_LOOKUP_ASSERT_HANG=1 puts back the helper that spun on a NULL lookup inside
@@ -5132,10 +5142,10 @@ smoke-captest-getline-control:
 smoke-captest-mint-hang-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 CAP_LOOKUP_ASSERT_HANG=1
-	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 CAP_LOOKUP_ASSERT_HANG=1 boot.iso
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 CAP_LOOKUP_ASSERT_HANG=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_STALL='CAPTEST: cap-derivation-probes' \
 		ABSENT_MARKER='CAPTEST: PASS' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # The device half of captest: this task holds no CAP_IO_DEVICE, and the four
 # device syscalls have no dispatch-table slot, so the handler's own lookup is the
@@ -5144,10 +5154,10 @@ smoke-captest-mint-hang-control:
 smoke-captest-devcap-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 IO_DEVICE_CAP_UNCHECKED=1
-	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 IO_DEVICE_CAP_UNCHECKED=1 boot.iso
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 IO_DEVICE_CAP_UNCHECKED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='CAPTEST: FAIL map-phys-without-cap-io-device' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # SYS_IRQ_ACK's authority. Unmasking an interrupt line decides that a device may
 # interrupt this machine again; drop the capability check and any task can do it
@@ -5167,37 +5177,37 @@ smoke-captest-devcap-control:
 smoke-captest-poll-notify-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 POLL_NOTIFY_UNGATED=1
-	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 POLL_NOTIFY_UNGATED=1 boot.iso
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 POLL_NOTIFY_UNGATED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='CAPTEST: FAIL poll-notify-with-wrong-cap-type' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-captest-irq-ack-control
 smoke-captest-irq-ack-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 IRQ_ACK_UNGATED=1
-	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 IRQ_ACK_UNGATED=1 boot.iso
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 IRQ_ACK_UNGATED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='CAPTEST: FAIL irq-ack-without-cap-io-device' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-captest-clock-control
 smoke-captest-clock-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 CLOCK_TSC_RESOLUTION=1
-	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 CLOCK_TSC_RESOLUTION=1 boot.iso
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 CLOCK_TSC_RESOLUTION=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='CAPTEST: FAIL clock-resolution-finer-than-a-pit-tick' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-captest-capenum-control
 smoke-captest-capenum-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 CAP_ENUMERATE_UNGATED=1
-	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 CAP_ENUMERATE_UNGATED=1 boot.iso
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 CAP_ENUMERATE_UNGATED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='CAPTEST: FAIL cap-enumerate-without-cap-debug' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # ---- the audit probe: two handler bodies, and #176's runtime witness --------
 #
@@ -5215,9 +5225,9 @@ smoke-captest-capenum-control:
 smoke-auditprobe:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1
-	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='AUDITPROBE: PASS' \
-		FAIL_MARKER='AUDITPROBE: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='AUDITPROBE: FAIL' tools/smoke_test.sh horus.iso
 
 # The falsifying arm. SYSCALL_PTR_TRUNC32=1 rebuilds the pre-2026-08-20 wrappers,
 # which narrowed the caller's buffer pointer to 32 bits (issue #176).
@@ -5235,10 +5245,10 @@ smoke-auditprobe:
 smoke-auditprobe-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 SYSCALL_PTR_TRUNC32=1
-	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 SYSCALL_PTR_TRUNC32=1 boot.iso
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 SYSCALL_PTR_TRUNC32=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='AUDITPROBE: FAIL digest-into-a-static-buffer' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # The ABI arm. AUDIT_ABI_LEGACY=1 puts back the two disagreeing declarations of
 # the audit record and the raw kernel-sized copy between them.
@@ -5264,9 +5274,9 @@ smoke-auditprobe-control:
 smoke-blockprobe:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1
-	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='BLOCKPROBE: PASS' \
-		FAIL_MARKER='BLOCKPROBE: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='BLOCKPROBE: FAIL' tools/smoke_test.sh horus.iso
 
 # The falsifying arm. BLOCK_ERRNO_LEGACY=1 puts back the bare -1 the storage
 # layer returns for a block the device refuses.
@@ -5281,10 +5291,10 @@ smoke-blockprobe:
 smoke-blockprobe-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 BLOCK_ERRNO_LEGACY=1
-	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 BLOCK_ERRNO_LEGACY=1 boot.iso
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 BLOCK_ERRNO_LEGACY=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='BLOCKPROBE: FAIL bad-block-is-indistinguishable-from-refusal' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # execprobe rides in the same CAPTEST_SELFTEST image as a FOURTH task, holding
 # exactly one CAP_DEBUG. SYS_EXEC_IMAGE carried the strongest reason any entry on
@@ -5302,9 +5312,9 @@ smoke-blockprobe-control:
 smoke-execprobe:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1
-	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='EXECPROBE: PASS' \
-		FAIL_MARKER='EXECPROBE: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='EXECPROBE: FAIL' tools/smoke_test.sh horus.iso
 
 # S42's two arms, applied to the syscall S42 also names. They live in
 # exec_into_armed_image -- the tail SYS_EXEC_NAMED and SYS_EXEC_IMAGE share -- so
@@ -5320,10 +5330,10 @@ smoke-execprobe:
 smoke-execprobe-reset-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 EXEC_RESET_CSPACE=1
-	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 EXEC_RESET_CSPACE=1 boot.iso
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 EXEC_RESET_CSPACE=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='EXECPROBE: FAIL exec-dropped-our-capability' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # EXEC_ROOT_CSPACE=1 re-mints it instead ("the new image should own what it
 # holds"): identical type, identical rights, a new serial and no parent edge. The
@@ -5334,10 +5344,10 @@ smoke-execprobe-reset-control:
 smoke-execprobe-root-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 EXEC_ROOT_CSPACE=1
-	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 EXEC_ROOT_CSPACE=1 boot.iso
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 EXEC_ROOT_CSPACE=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='EXECPROBE: FAIL exec-recreated-our-capability' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # The falsifying arm for the loader bound (S84). ELF_LOAD_BOUND_STAGING=1 puts
 # back the bound the ELF parses used until 2026-09-09: the size of the 8 MiB
@@ -5352,10 +5362,10 @@ smoke-execprobe-root-control:
 smoke-proc-truncated-image-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 IMAGE_LEN_UNCHECKED=1
-	@$(MAKE) --no-print-directory PROC_SELFTEST=1 IMAGE_LEN_UNCHECKED=1 boot.iso
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 IMAGE_LEN_UNCHECKED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='PROC_SELFTEST: FAIL truncated-image-spawned' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # The second rule's arm, and the one aimed at the disclosure itself.
 # ELF_LOAD_BOUND_STAGING=1 restores the region bound in the ELF parses; the
@@ -5370,19 +5380,19 @@ smoke-proc-truncated-image-control:
 smoke-proc-overreach-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 ELF_LOAD_BOUND_STAGING=1
-	@$(MAKE) --no-print-directory PROC_SELFTEST=1 ELF_LOAD_BOUND_STAGING=1 boot.iso
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 ELF_LOAD_BOUND_STAGING=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='PROC_SELFTEST: FAIL overreaching-image-spawned' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-auditprobe-abi-control
 smoke-auditprobe-abi-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 AUDIT_ABI_LEGACY=1
-	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 AUDIT_ABI_LEGACY=1 boot.iso
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 AUDIT_ABI_LEGACY=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='AUDITPROBE: FAIL read-audit-wrote-past-the-array' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # The one call in this system that DESTROYS a volume answers to a capability
 # nothing else holds (roadmap 2.9, S72). The arm removes the whole dispatch-table
@@ -5395,10 +5405,10 @@ smoke-auditprobe-abi-control:
 smoke-captest-storage-format-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 STORAGE_FORMAT_UNGATED=1
-	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 STORAGE_FORMAT_UNGATED=1 boot.iso
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 STORAGE_FORMAT_UNGATED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='CAPTEST: FAIL storage-format-without-cap-storage-format' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # S78: reading the account table answers to CAP_USER. The arm removes that test
 # and nothing else, and the ungated call SUCCEEDS -- a booted system always has
@@ -5421,21 +5431,21 @@ smoke-captest-storage-format-control:
 smoke-claim-reread:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 CLAIM_REREAD_SELFTEST=1
-	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 CLAIM_REREAD_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 CLAIM_REREAD_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) MARKER_ONLY=1 \
 		REQUIRE_MARKER='CLAIMREREAD_SELFTEST: PASS' \
 		FAIL_MARKER='CLAIMREREAD_SELFTEST: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # Control arm: the pre-fix auditor, which accuses without re-reading.
 .PHONY: smoke-claim-reread-control
 smoke-claim-reread-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 CLAIM_REREAD_SELFTEST=1 CLAIM_AUDIT_NO_REREAD=1
-	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 CLAIM_REREAD_SELFTEST=1 CLAIM_AUDIT_NO_REREAD=1 boot.iso
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 CLAIM_REREAD_SELFTEST=1 CLAIM_AUDIT_NO_REREAD=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) MARKER_ONLY=1 \
 		REQUIRE_MARKER='CLAIMREREAD_SELFTEST: FAIL a resolved mismatch was still accused' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # ---- [G-12]: two CPUs current on one task, via the user-entry path ---------
 #
@@ -5462,12 +5472,12 @@ smoke-claim-reread-control:
 smoke-enter-user-claim:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 ENTER_USER_STEAL_WIDEN=1
-	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 ENTER_USER_STEAL_WIDEN=1 boot.iso
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 ENTER_USER_STEAL_WIDEN=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) \
 		REQUIRE_MARKER='ENTERUSER: steal-widen tid=1 cpu=0 holder=-1' \
 		ABSENT_MARKER='ENTERUSER: refused entry to task' \
 		FAIL_MARKER='PANIC:' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # Arm 1: the pre-fix ORDERING, with the guard left in place. The AP takes init
 # inside the window (measured 912 to 45245 spins, 3 boots in 3), so the guard is
@@ -5491,11 +5501,11 @@ smoke-enter-user-claim:
 smoke-enter-user-claim-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 ENTER_USER_STEAL_WIDEN=1 ENTER_USER_PUBLISH_EARLY=1
-	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 ENTER_USER_STEAL_WIDEN=1 ENTER_USER_PUBLISH_EARLY=1 boot.iso
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 ENTER_USER_STEAL_WIDEN=1 ENTER_USER_PUBLISH_EARLY=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) \
 		REQUIRE_MARKER='ENTERUSER: refused entry to task 1' \
 		FAIL_MARKER='PANIC:' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # Arm 2: the pre-fix ordering AND the guard removed -- the kernel as it was, and
 # it reproduces [G-12]'s own signature, percpu_current=[1,1,0,0] with
@@ -5544,13 +5554,13 @@ ENTER_USER_COLLIDE_MIN_CONCLUSIVE ?= 3
 smoke-enter-user-collide-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 ENTER_USER_STEAL_WIDEN=1 ENTER_USER_PUBLISH_EARLY=1 ENTER_USER_CLAIM_UNCHECKED=1
-	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 ENTER_USER_STEAL_WIDEN=1 ENTER_USER_PUBLISH_EARLY=1 ENTER_USER_CLAIM_UNCHECKED=1 boot.iso
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 ENTER_USER_STEAL_WIDEN=1 ENTER_USER_PUBLISH_EARLY=1 ENTER_USER_CLAIM_UNCHECKED=1 horus.iso
 	@echo "[enter-user] pre-fix ordering + no guard: the two-CPU collision must reproduce"
 	@log=$$(mktemp); hit=0; ok=0; incon=0; n=0; \
 	while [ $$n -lt $(ENTER_USER_COLLIDE_CONTROL_BOOTS) ]; do \
 	    n=$$((n+1)); one=$$(mktemp); \
 	    if SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) SMOKE_LOG="$$one" \
-	           EXPECT_FAULT='task 1' tools/smoke_test.sh boot.iso >/dev/null 2>&1; then \
+	           EXPECT_FAULT='task 1' tools/smoke_test.sh horus.iso >/dev/null 2>&1; then \
 	        hit=$$n; echo "  boot $$n/$(ENTER_USER_COLLIDE_CONTROL_BOOTS): HIT, two CPUs on one task"; \
 	        cat "$$one" >> "$$log"; rm -f "$$one"; break; \
 	    fi; \
@@ -5587,11 +5597,11 @@ smoke-enter-user-collide-control:
 smoke-kstack-imp:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory KSTACK_IMP_SELFTEST=1
-	@$(MAKE) --no-print-directory KSTACK_IMP_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory KSTACK_IMP_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) MARKER_ONLY=1 \
 		REQUIRE_MARKER='KSTACKIMP_SELFTEST: PASS' \
 		FAIL_MARKER='KSTACKIMP_SELFTEST: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # Control arm: the pre-2026-09-02 identity restored, so the detector reads
 # percpu_current_task[] and accuses the impersonating CPU.
@@ -5599,27 +5609,27 @@ smoke-kstack-imp:
 smoke-kstack-imp-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory KSTACK_IMP_SELFTEST=1 KSTACK_COLLIDE_IMPERSONATED=1
-	@$(MAKE) --no-print-directory KSTACK_IMP_SELFTEST=1 KSTACK_COLLIDE_IMPERSONATED=1 boot.iso
+	@$(MAKE) --no-print-directory KSTACK_IMP_SELFTEST=1 KSTACK_COLLIDE_IMPERSONATED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) MARKER_ONLY=1 \
 		REQUIRE_MARKER='KSTACKIMP_SELFTEST: FAIL an impersonating cpu was accused of sharing a kernel stack' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-captest-userlist-control
 smoke-captest-userlist-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 USERLIST_UNGATED=1
-	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 USERLIST_UNGATED=1 boot.iso
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 USERLIST_UNGATED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='CAPTEST: FAIL userlist-without-cap-user' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-captest
 smoke-captest:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1
-	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CAPTEST: PASS' \
-		FAIL_MARKER='CAPTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='CAPTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # Modules + residency gate: ship ALL ported coreutils as GRUB boot modules, boot
 # normally, and prove (a) every one is provisioned into /bin FROM the modules (not
@@ -5649,9 +5659,9 @@ smoke-captest:
 smoke-klog-forge:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory KLOG_FORGE_SELFTEST=1
-	@$(MAKE) --no-print-directory KLOG_FORGE_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory KLOG_FORGE_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='KLOGTEST: PASS' \
-		FAIL_MARKER='KLOGTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='KLOGTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # Control arm for the above: KLOG_WRITE_UNGATED=1 restores the pre-2026-08-20
 # h_write, which appended every ring-3 byte to the kernel log with no authority
@@ -5666,10 +5676,10 @@ smoke-klog-forge:
 smoke-defect-flags:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='DEFECT FLAGS: none' \
-		FAIL_MARKER='DEFECT FLAGS: unknown' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='DEFECT FLAGS: unknown' tools/smoke_test.sh horus.iso
 
 # The same kernel built WITH a defect arm must name it. Without this, the gate
 # above is satisfied by a kernel that prints "none" unconditionally.
@@ -5677,9 +5687,9 @@ smoke-defect-flags:
 smoke-defect-flags-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory KSP_GUARD_INJECT=1
-	@$(MAKE) --no-print-directory KSP_GUARD_INJECT=1 boot.iso
+	@$(MAKE) --no-print-directory KSP_GUARD_INJECT=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
-		REQUIRE_MARKER='DEFECT FLAGS: KSP_GUARD_INJECT' tools/smoke_test.sh boot.iso
+		REQUIRE_MARKER='DEFECT FLAGS: KSP_GUARD_INJECT' tools/smoke_test.sh horus.iso
 
 # THE FOOTGUN ITSELF. Build with an injection, then rebuild WITHOUT `clean` and
 # without the flag -- exactly the sequence that produced a false [G-9]
@@ -5689,10 +5699,10 @@ smoke-defect-flags-rebuild:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory KSP_GUARD_INJECT=1
 	@$(MAKE) --no-print-directory
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='DEFECT FLAGS: none' \
-		FAIL_MARKER='DEFECT FLAGS: KSP_GUARD_INJECT' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='DEFECT FLAGS: KSP_GUARD_INJECT' tools/smoke_test.sh horus.iso
 
 # Control arm for it: BUILD_FLAGS_UNSTAMPED=1 drops the dependency, so the
 # flagless rebuild recompiles nothing and the injected kernel survives. The stale
@@ -5703,9 +5713,9 @@ smoke-defect-flags-rebuild-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory BUILD_FLAGS_UNSTAMPED=1 KSP_GUARD_INJECT=1
 	@$(MAKE) --no-print-directory BUILD_FLAGS_UNSTAMPED=1
-	@$(MAKE) --no-print-directory BUILD_FLAGS_UNSTAMPED=1 boot.iso
+	@$(MAKE) --no-print-directory BUILD_FLAGS_UNSTAMPED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
-		REQUIRE_MARKER='DEFECT FLAGS: KSP_GUARD_INJECT' tools/smoke_test.sh boot.iso
+		REQUIRE_MARKER='DEFECT FLAGS: KSP_GUARD_INJECT' tools/smoke_test.sh horus.iso
 
 # ---- [G-9]: a bogus resume %rsp is refused where it is produced -------------
 # The FALSE-POSITIVE arm, and the one whose absence is a known way to ship a
@@ -5727,9 +5737,9 @@ smoke-defect-flags-rebuild-control:
 smoke-ksp-guard:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) FAIL_MARKER='SCHED BOGUS KSP' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 
 # The producer-side half of the resume guard. KSP_GUARD_INJECT=1 forges -7 -- the
@@ -5743,10 +5753,10 @@ smoke-ksp-guard:
 smoke-ksp-guard-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSP_GUARD_INJECT=1
-	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSP_GUARD_INJECT=1 boot.iso
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSP_GUARD_INJECT=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='SCHED BOGUS KSP from task_exit_switch' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # ---- CSPRNG seed gate (S30) ------------------------------------------------
 # RngState::fill refuses to emit keystream from a pool that has never been
@@ -5769,11 +5779,11 @@ smoke-ksp-guard-control:
 smoke-rng-seed:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory RNG_UNSEEDED_PROBE=1
-	@$(MAKE) --no-print-directory RNG_UNSEEDED_PROBE=1 boot.iso
+	@$(MAKE) --no-print-directory RNG_UNSEEDED_PROBE=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
 		REQUIRE_MARKER='RNGPROBE: REFUSED unseeded request' \
 		FAIL_MARKER='RNGPROBE: SERVED unseeded keystream' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # The falsifying arm. RNG_UNSEEDED_LEGACY=1 passes the `rng_unseeded_legacy`
 # cargo feature down, compiling the check out of RngState::fill; the same probe
@@ -5788,10 +5798,10 @@ smoke-rng-seed:
 smoke-rng-seed-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory RNG_UNSEEDED_PROBE=1 RNG_UNSEEDED_LEGACY=1
-	@$(MAKE) --no-print-directory RNG_UNSEEDED_PROBE=1 RNG_UNSEEDED_LEGACY=1 boot.iso
+	@$(MAKE) --no-print-directory RNG_UNSEEDED_PROBE=1 RNG_UNSEEDED_LEGACY=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='RNGPROBE: SERVED unseeded keystream' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # ---- syscall handler-entry coverage ----------------------------------------
 # Measures which syscall HANDLER BODIES a tracked workload actually enters, and
@@ -5821,19 +5831,19 @@ smoke-syscall-coverage:
 	cov="$(SYSCOV_EVIDENCE_DIR)"; rm -rf "$$cov"; mkdir -p "$$cov"; \
 	$(MAKE) --no-print-directory clean; \
 	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1; \
-	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 boot.iso; \
+	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 horus.iso; \
 	SESSION_SERIAL_LOG="$$cov/session.log" SESSION_TIMEOUT=$(SYSCOV_SESSION_TIMEOUT) \
-	    python3 tools/session_test.py boot.iso >/dev/null 2>&1 || true; \
+	    python3 tools/session_test.py horus.iso >/dev/null 2>&1 || true; \
 	$(MAKE) --no-print-directory clean; \
 	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 CAPTEST_SELFTEST=1; \
-	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 CAPTEST_SELFTEST=1 boot.iso; \
+	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 CAPTEST_SELFTEST=1 horus.iso; \
 	SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CAPTEST: PASS' \
-	    tools/smoke_test.sh boot.iso > "$$cov/captest.log" 2>&1 || true; \
+	    tools/smoke_test.sh horus.iso > "$$cov/captest.log" 2>&1 || true; \
 	$(MAKE) --no-print-directory clean; \
 	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 COREUTILS_MODULES=1; \
-	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 COREUTILS_MODULES=1 boot.iso; \
+	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 COREUTILS_MODULES=1 horus.iso; \
 	SESSION_SERIAL_LOG="$$cov/modules.log" SESSION_TIMEOUT=$(SYSCOV_SESSION_TIMEOUT) \
-	    tools/modules_session.py boot.iso >/dev/null 2>&1 || true; \
+	    tools/modules_session.py horus.iso >/dev/null 2>&1 || true; \
 	echo "syscov: serial transcripts kept in $$cov/"; \
 	python3 tools/check_syscall_coverage.py "$$cov/session.log" "$$cov/captest.log" \
 	    "$$cov/modules.log"
@@ -5875,19 +5885,19 @@ smoke-syscall-coverage-control:
 	cov="$(SYSCOV_EVIDENCE_DIR)-control"; rm -rf "$$cov"; mkdir -p "$$cov"; \
 	$(MAKE) --no-print-directory clean; \
 	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 SYSCOV_PROBES_ABSENT=1; \
-	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 SYSCOV_PROBES_ABSENT=1 boot.iso; \
+	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 SYSCOV_PROBES_ABSENT=1 horus.iso; \
 	SESSION_SERIAL_LOG="$$cov/session.log" SESSION_TIMEOUT=$(SYSCOV_SESSION_TIMEOUT) \
-	    python3 tools/session_test.py boot.iso >/dev/null 2>&1 || true; \
+	    python3 tools/session_test.py horus.iso >/dev/null 2>&1 || true; \
 	$(MAKE) --no-print-directory clean; \
 	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 SYSCOV_PROBES_ABSENT=1 CAPTEST_SELFTEST=1; \
-	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 SYSCOV_PROBES_ABSENT=1 CAPTEST_SELFTEST=1 boot.iso; \
+	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 SYSCOV_PROBES_ABSENT=1 CAPTEST_SELFTEST=1 horus.iso; \
 	SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CAPTEST: PASS' \
-	    tools/smoke_test.sh boot.iso > "$$cov/captest.log" 2>&1 || true; \
+	    tools/smoke_test.sh horus.iso > "$$cov/captest.log" 2>&1 || true; \
 	$(MAKE) --no-print-directory clean; \
 	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 SYSCOV_PROBES_ABSENT=1 COREUTILS_MODULES=1; \
-	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 SYSCOV_PROBES_ABSENT=1 COREUTILS_MODULES=1 boot.iso; \
+	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 SYSCOV_PROBES_ABSENT=1 COREUTILS_MODULES=1 horus.iso; \
 	SESSION_SERIAL_LOG="$$cov/modules.log" SESSION_TIMEOUT=$(SYSCOV_SESSION_TIMEOUT) \
-	    tools/modules_session.py boot.iso >/dev/null 2>&1 || true; \
+	    tools/modules_session.py horus.iso >/dev/null 2>&1 || true; \
 	echo "syscov-control: serial transcripts kept in $$cov/"; \
 	if python3 tools/check_syscall_coverage.py "$$cov/session.log" "$$cov/captest.log" \
 	       "$$cov/modules.log" > "$$cov/checker.out" 2>&1; then \
@@ -5925,17 +5935,17 @@ SYSCOV_SESSION_TIMEOUT ?= 180
 smoke-klog-forge-abi-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory KLOG_FORGE_SELFTEST=1 SYSCALL_PTR_TRUNC32=1
-	@$(MAKE) --no-print-directory KLOG_FORGE_SELFTEST=1 SYSCALL_PTR_TRUNC32=1 boot.iso
+	@$(MAKE) --no-print-directory KLOG_FORGE_SELFTEST=1 SYSCALL_PTR_TRUNC32=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='KLOGTEST: FAIL setup' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-klog-forge-control
 smoke-klog-forge-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory KLOG_FORGE_SELFTEST=1 KLOG_WRITE_UNGATED=1
-	@$(MAKE) --no-print-directory KLOG_FORGE_SELFTEST=1 KLOG_WRITE_UNGATED=1 boot.iso
+	@$(MAKE) --no-print-directory KLOG_FORGE_SELFTEST=1 KLOG_WRITE_UNGATED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='KLOGTEST: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-modules-tamper
 smoke-modules-tamper:
@@ -5962,8 +5972,8 @@ tamper.iso: kernel.elf grub.cfg $(BOOT_MODULE_DEP)
 smoke-tpm:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory COREUTILS_MODULES=1
-	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 boot.iso
-	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) tools/smoke_tpm.sh boot.iso
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) tools/smoke_tpm.sh horus.iso
 
 # Falsification twin: tamper one module payload, boot under the TPM, and require
 # that the module is refused AND that the measured PCRs DIVERGE from the clean
@@ -5984,10 +5994,10 @@ smoke-tpm-tamper:
 smoke-tpm-seal-roundtrip:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 TPM_SELFTEST=1
-	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 TPM_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 TPM_SELFTEST=1 horus.iso
 	@SWTPM_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='TPM_SEAL_SELFTEST: PASS' \
 		FAIL_MARKER='TPM_SEAL_SELFTEST: FAIL' \
-		tools/run_with_swtpm.sh boot.iso
+		tools/run_with_swtpm.sh horus.iso
 
 # TPM-sealed vdisk KEK (roadmap 2.2 stage 3): boot the TPM_KEK_SELFTEST kernel
 # under an emulated TPM and require the in-kernel test to PASS — proof that a
@@ -5997,10 +6007,10 @@ smoke-tpm-seal-roundtrip:
 smoke-tpm-seal:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 TPM_KEK_SELFTEST=1
-	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 TPM_KEK_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 TPM_KEK_SELFTEST=1 horus.iso
 	@SWTPM_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='TPM_KEK_SELFTEST: PASS' \
 		FAIL_MARKER='TPM_KEK_SELFTEST: FAIL' \
-		tools/run_with_swtpm.sh boot.iso
+		tools/run_with_swtpm.sh horus.iso
 
 # ---- fail-closed measured boot (docs/LIMITATIONS.md 2.9) --------------------
 # The kernel used to boot happily with no TPM: PCRs unextended, volume key never
@@ -6016,10 +6026,10 @@ smoke-tpm-seal:
 smoke-measured-boot-required:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory MEASURED_BOOT_REQUIRED=1
-	@$(MAKE) --no-print-directory MEASURED_BOOT_REQUIRED=1 boot.iso
+	@$(MAKE) --no-print-directory MEASURED_BOOT_REQUIRED=1 horus.iso
 	@SWTPM_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='tpm: measured boot OK' \
 		FAIL_MARKER='PANIC: measured boot required' \
-		tools/run_with_swtpm.sh boot.iso
+		tools/run_with_swtpm.sh horus.iso
 
 # CONTROL ARM 1: the same kernel with NO TPM -- which is what an ordinary
 # `tools/smoke_test.sh` run gives, since QEMU has no TPM unless swtpm is wired in.
@@ -6035,10 +6045,10 @@ smoke-measured-boot-required:
 smoke-measured-boot-required-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory MEASURED_BOOT_REQUIRED=1
-	@$(MAKE) --no-print-directory MEASURED_BOOT_REQUIRED=1 boot.iso
+	@$(MAKE) --no-print-directory MEASURED_BOOT_REQUIRED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
 		EXPECT_FAULT='PANIC: measured boot required but unavailable (no TPM present)' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # CONTROL ARM 2: the volume half. A never-sealed volume unlocks on the password
 # alone, which is the downgrade the policy exists to refuse -- but the default
@@ -6050,10 +6060,10 @@ smoke-measured-boot-required-control:
 smoke-measured-boot-required-volume-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory MEASURED_BOOT_REQUIRED=1 MEASURED_VOLUME_EXEMPT_NONE=1
-	@$(MAKE) --no-print-directory MEASURED_BOOT_REQUIRED=1 MEASURED_VOLUME_EXEMPT_NONE=1 boot.iso
+	@$(MAKE) --no-print-directory MEASURED_BOOT_REQUIRED=1 MEASURED_VOLUME_EXEMPT_NONE=1 horus.iso
 	@SWTPM_TIMEOUT=$(SMOKE_TIMEOUT) \
 		EXPECT_FAULT='PANIC: measured boot required but the volume is not sealed' \
-		tools/run_with_swtpm.sh boot.iso
+		tools/run_with_swtpm.sh horus.iso
 
 # ---- the policy, met by a REAL DISK (docs/LIMITATIONS.md 2.9, S85) ----------
 #
@@ -6079,14 +6089,14 @@ MEASURED_PERSIST_B1   = measured-persist-b1.iso
 smoke-measured-persist:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS)
-	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS) boot.iso
-	@cp boot.iso $(MEASURED_PERSIST_B1)
+	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS) horus.iso
+	@cp horus.iso $(MEASURED_PERSIST_B1)
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS) MEASURED_BOOT_REQUIRED=1
-	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS) MEASURED_BOOT_REQUIRED=1 boot.iso
+	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS) MEASURED_BOOT_REQUIRED=1 horus.iso
 	@$(MEASURED_PERSIST_ENV) MP_IMG=measured-persist.img \
 		MP_ISO1=$(MEASURED_PERSIST_B1) MP_TPM1=0 \
-		MP_ISO2=boot.iso MP_TPM2=1 \
+		MP_ISO2=horus.iso MP_TPM2=1 \
 		MP_REQUIRE1='MEASURED_PERSIST: UNLOCKED a persistent password-only volume' \
 		MP_EXPECT_FAULT2='PANIC: measured boot required but the volume is not sealed' \
 		MP_ALSO2='MEASURED_PERSIST: met a persistent password-only volume|MEASURED_PERSIST: PASS an unsealed persistent volume was refused' \
@@ -6104,14 +6114,14 @@ smoke-measured-persist:
 smoke-measured-persist-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS)
-	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS) boot.iso
-	@cp boot.iso $(MEASURED_PERSIST_B1)
+	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS) horus.iso
+	@cp horus.iso $(MEASURED_PERSIST_B1)
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS) MEASURED_BOOT_REQUIRED=1 MEASURED_VOLUME_UNCHECKED=1
-	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS) MEASURED_BOOT_REQUIRED=1 MEASURED_VOLUME_UNCHECKED=1 boot.iso
+	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS) MEASURED_BOOT_REQUIRED=1 MEASURED_VOLUME_UNCHECKED=1 horus.iso
 	@$(MEASURED_PERSIST_ENV) MP_IMG=measured-persist-c.img \
 		MP_ISO1=$(MEASURED_PERSIST_B1) MP_TPM1=0 \
-		MP_ISO2=boot.iso MP_TPM2=1 \
+		MP_ISO2=horus.iso MP_TPM2=1 \
 		MP_REQUIRE1='MEASURED_PERSIST: UNLOCKED a persistent password-only volume' \
 		MP_REQUIRE2='MEASURED_PERSIST: FAIL an unsealed persistent volume unlocked under the policy' \
 		MP_FAIL='MEASURED_PERSIST: PASS' \
@@ -6131,10 +6141,10 @@ smoke-measured-persist-control:
 smoke-measured-persist-sealed:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS) MEASURED_BOOT_REQUIRED=1
-	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS) MEASURED_BOOT_REQUIRED=1 boot.iso
+	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS) MEASURED_BOOT_REQUIRED=1 horus.iso
 	@$(MEASURED_PERSIST_ENV) MP_IMG=measured-persist-s.img \
-		MP_ISO1=boot.iso MP_TPM1=1 \
-		MP_ISO2=boot.iso MP_TPM2=1 \
+		MP_ISO1=horus.iso MP_TPM1=1 \
+		MP_ISO2=horus.iso MP_TPM2=1 \
 		MP_REQUIRE1='MEASURED_PERSIST: UNLOCKED a persistent TPM-sealed volume' \
 		MP_REQUIRE2='MEASURED_PERSIST: UNLOCKED a persistent TPM-sealed volume' \
 		MP_ALSO2='MEASURED_PERSIST: met a persistent TPM-sealed volume' \
@@ -6145,8 +6155,8 @@ smoke-measured-persist-sealed:
 smoke-modules:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory COREUTILS_MODULES=1
-	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 boot.iso
-	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) tools/modules_session.py boot.iso
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 horus.iso
+	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) tools/modules_session.py horus.iso
 
 # Ship head/seq/wc as GRUB modules and drive them through the REAL ring-3 shell
 # over serial: create a file, run head/wc/seq on it and assert the counts and
@@ -6158,8 +6168,8 @@ smoke-modules:
 smoke-coreutils-shell:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 COREUTILS_MODULE_SET="head seq wc"
-	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 COREUTILS_MODULE_SET="head seq wc" boot.iso
-	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) tools/coreutils_session.py boot.iso
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 COREUTILS_MODULE_SET="head seq wc" horus.iso
+	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) tools/coreutils_session.py horus.iso
 
 # smoke-tcc ships the ported Tiny C Compiler as a boot module, has the fs_server
 # provision it into /bin, then runs `tcc -v` through the real ring-3 shell and
@@ -6168,8 +6178,8 @@ smoke-coreutils-shell:
 smoke-tcc:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory TCC_MODULE=1
-	@$(MAKE) --no-print-directory TCC_MODULE=1 boot.iso
-	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) tools/tcc_session.py boot.iso
+	@$(MAKE) --no-print-directory TCC_MODULE=1 horus.iso
+	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) tools/tcc_session.py horus.iso
 
 # smoke-term proves the console raw-terminal layer (termios raw mode, TIOCGWINSZ,
 # raw read/write through the ring-3 console_server) by running termtest from /bin,
@@ -6178,8 +6188,8 @@ smoke-tcc:
 smoke-term:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory TERM_MODULE=1
-	@$(MAKE) --no-print-directory TERM_MODULE=1 boot.iso
-	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) tools/term_session.py boot.iso
+	@$(MAKE) --no-print-directory TERM_MODULE=1 horus.iso
+	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) tools/term_session.py horus.iso
 
 # Build with the gated large-file self-test, boot headless, and require the
 # in-kernel test to report PASS -- runtime proof that a single inode can map
@@ -6189,9 +6199,9 @@ smoke-term:
 smoke-pipe:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PIPE_SELFTEST=1
-	@$(MAKE) --no-print-directory PIPE_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory PIPE_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PIPE_SELFTEST: PASS' \
-		FAIL_MARKER='PIPE_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='PIPE_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # The ordering inside task_teardown, which had a defect flag and no arm from
 # 2026-08-30: cap_release_cspace empties the cspace pipe_close_task_ends walks,
@@ -6205,19 +6215,19 @@ smoke-pipe:
 smoke-pipe-cspace-order-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PIPE_SELFTEST=1 CSPACE_RELEASE_BEFORE_PIPES=1
-	@$(MAKE) --no-print-directory PIPE_SELFTEST=1 CSPACE_RELEASE_BEFORE_PIPES=1 boot.iso
+	@$(MAKE) --no-print-directory PIPE_SELFTEST=1 CSPACE_RELEASE_BEFORE_PIPES=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='PIPE_SELFTEST: FAIL peer-never-saw-eof' \
-		FAIL_MARKER='PIPE_SELFTEST: PASS' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='PIPE_SELFTEST: PASS' tools/smoke_test.sh horus.iso
 	@echo "[pipe] CONTROL PASS - a stage that died holding a pipe end never released it, and its peer saw no EOF"
 
 .PHONY: smoke-fs-large
 smoke-fs-large:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory BIGFILE_SELFTEST=1
-	@$(MAKE) --no-print-directory BIGFILE_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory BIGFILE_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='BIGFILE_SELFTEST: PASS' \
-		FAIL_MARKER='BIGFILE_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='BIGFILE_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # Build with the gated SMP self-test, boot headless under -smp 4, and require the
 # in-kernel test to report PASS -- runtime proof that the application processors
@@ -6228,9 +6238,9 @@ SMP_CPUS ?= 4
 smoke-smp:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SMP_SELFTEST=1
-	@$(MAKE) --no-print-directory SMP_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=$(SMP_CPUS) REQUIRE_MARKER='SMP_SELFTEST: PASS' \
-		FAIL_MARKER='SMP_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='SMP_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # Build with the gated process-control self-test, boot headless, and require the
 # in-kernel driver to report PASS -- runtime proof that SYS_EXIT and SYS_KILL
@@ -6244,23 +6254,23 @@ smoke-smp:
 smoke-proc-taskinfo-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 TASKINFO_WIDE_AUTHORITY=1
-	@$(MAKE) --no-print-directory PROC_SELFTEST=1 TASKINFO_WIDE_AUTHORITY=1 boot.iso
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 TASKINFO_WIDE_AUTHORITY=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='PROC_SELFTEST: FAIL grant-audit-bought-introspection' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-proc
 smoke-proc:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1
-	@$(MAKE) --no-print-directory PROC_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 horus.iso
 	@# Require the LAST marker proctest prints. The '+signal' marker is emitted by
 	@# sigtarget partway through; requiring it let the harness kill QEMU before the
 	@# closing spawn-suspend witness ever ran, so that check was dead code. The
 	@# suspend marker strictly follows it (proctest waits for sigtarget to exit
 	@# first), so requiring it proves the whole chain completed.
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PROC_SELFTEST: suspend OK' \
-		FAIL_MARKER='PROC_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='PROC_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # Build with the gated notification self-test, boot headless, and require the
 # in-kernel waiter to report PASS -- runtime proof that SYS_NOTIFY delivers a
@@ -6269,9 +6279,9 @@ smoke-proc:
 smoke-notify:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory NOTIFY_SELFTEST=1
-	@$(MAKE) --no-print-directory NOTIFY_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory NOTIFY_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='NOTIFY_SELFTEST: PASS' \
-		FAIL_MARKER='NOTIFY_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='NOTIFY_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # Build with the gated map-phys self-test, boot headless, and require the ring-3
 # probe to report PASS -- runtime proof that a CAP_IO_DEVICE-endowed task can map
@@ -6282,9 +6292,9 @@ smoke-notify:
 smoke-mapphys:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory MAPPHYS_SELFTEST=1
-	@$(MAKE) --no-print-directory MAPPHYS_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory MAPPHYS_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='MAPPHYS_SELFTEST: PASS' \
-		FAIL_MARKER='MAPPHYS_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='MAPPHYS_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # Build with the gated port-I/O self-test, boot headless, and require the ring-3
 # probe to report PASS -- runtime proof that a CAP_IO_DEVICE-endowed task granted
@@ -6295,9 +6305,9 @@ smoke-mapphys:
 smoke-ioport:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory IOPORT_SELFTEST=1
-	@$(MAKE) --no-print-directory IOPORT_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory IOPORT_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='IOPORT_SELFTEST: PASS' \
-		FAIL_MARKER='IOPORT_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='IOPORT_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # Build with the gated IRQ-notification self-test, boot headless, and require the
 # ring-3 probe to report PASS -- runtime proof that a CAP_IO_DEVICE-endowed task
@@ -6308,9 +6318,9 @@ smoke-ioport:
 smoke-irq:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory IRQ_SELFTEST=1
-	@$(MAKE) --no-print-directory IRQ_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory IRQ_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='IRQ_SELFTEST: PASS' \
-		FAIL_MARKER='IRQ_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='IRQ_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # Build with the gated ring-3 console-server self-test, boot headless, and require
 # the client's line to appear on serial -- runtime proof that a ring-3
@@ -6321,9 +6331,9 @@ smoke-irq:
 smoke-console:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CONSOLE_SELFTEST=1
-	@$(MAKE) --no-print-directory CONSOLE_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory CONSOLE_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CONSOLE_SELFTEST: PASS' \
-		FAIL_MARKER='CONSOLE_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='CONSOLE_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # ---- A network driver in ring 3, holding one device capability --------------
 #
@@ -6345,9 +6355,9 @@ smoke-console:
 smoke-shlib:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1
-	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='SHLIBTEST: PASS' \
-		FAIL_MARKER='SHLIBTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='SHLIBTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # The arm for S49, and it is the attack rather than a stand-in for one: the
 # capability carries WRITE, shlibtest maps the library a second time writable and
@@ -6361,10 +6371,10 @@ smoke-shlib:
 smoke-shlib-writable-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_TEXT_WRITABLE=1
-	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_TEXT_WRITABLE=1 boot.iso
+	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_TEXT_WRITABLE=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='SHLIBTEST: FAIL peer-saw-patched-code' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # ---- S50, arm 1: the library's writable data, SHARED ------------------------
 #
@@ -6432,7 +6442,7 @@ smoke-shlib-writable-control:
 smoke-shlibc-link:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SHLIBC_SELFTEST=1
-	@$(MAKE) --no-print-directory SHLIBC_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory SHLIBC_SELFTEST=1 horus.iso
 	@# Every libc symbol hello_shared defines must be a thunk, not an
 	@# implementation. 16 bytes is the ceiling for `mov m64,%r11; jmp *disp(%r11)`.
 	@python3 -c "import subprocess,sys; \
@@ -6442,13 +6452,13 @@ sys.exit('[shlibc-link] FAIL: '+', '.join(x.split()[3]+' is '+str(int(x.split()[
 	@echo "[shlibc-link] every libc symbol in hello_shared is a thunk; the code is in the library"
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='HELLOSHARED: PASS' FAIL_MARKER='FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-shlibc
 smoke-shlibc:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SHLIBC_SELFTEST=1
-	@$(MAKE) --no-print-directory SHLIBC_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory SHLIBC_SELFTEST=1 horus.iso
 	@# The probe must not carry a static copy of what it is testing. If libctest
 	@# defined strlen itself, the call would resolve locally, the library would
 	@# never be entered, and LIBCTEST: PASS would mean nothing -- a witness has to
@@ -6463,18 +6473,18 @@ smoke-shlibc:
 	@echo "[shlibc] libctest defines none of the symbols it calls; they can only come from the library"
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='LIBCTEST: PASS' FAIL_MARKER='LIBCTEST: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 smoke-shlib-aslr:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1
-	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 horus.iso
 	@$(MAKE) --no-print-directory shlib-aslr-compare EXPECT=differ
 
 smoke-shlib-aslr-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_BASE_FIXED=1
-	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_BASE_FIXED=1 boot.iso
+	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_BASE_FIXED=1 horus.iso
 	@$(MAKE) --no-print-directory shlib-aslr-compare EXPECT=same
 
 # The shared half. Boots twice, keeps each boot's serial log, and compares the
@@ -6486,11 +6496,11 @@ shlib-aslr-compare:
 	@echo "[shlib-aslr] boot 1/2"
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMOKE_LOG=.shlib-base-1.log \
 		REQUIRE_MARKER='SHLIBTEST: PASS' FAIL_MARKER='SHLIBTEST: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "[shlib-aslr] boot 2/2"
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMOKE_LOG=.shlib-base-2.log \
 		REQUIRE_MARKER='SHLIBTEST: PASS' FAIL_MARKER='SHLIBTEST: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@b1=$$(grep -m1 -o 'SHLIBBASE: [0-9a-f]*' .shlib-base-1.log | awk '{print $$2}'); \
 	 b2=$$(grep -m1 -o 'SHLIBBASE: [0-9a-f]*' .shlib-base-2.log | awk '{print $$2}'); \
 	 if [ -z "$$b1" ] || [ -z "$$b2" ]; then \
@@ -6517,10 +6527,10 @@ shlib-aslr-compare:
 smoke-shlib-info-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_INFO_UNGATED=1
-	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_INFO_UNGATED=1 boot.iso
+	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_INFO_UNGATED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='SHLIBTEST: FAIL shlib-info-with-wrong-cap-type' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # The object half of the same gate: the type is right, the frame is not the
 # library's. Under this arm the wrong-TYPE probe is still refused, so the probe
@@ -6529,18 +6539,18 @@ smoke-shlib-info-control:
 smoke-shlib-info-object-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_INFO_TYPE_ONLY=1
-	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_INFO_TYPE_ONLY=1 boot.iso
+	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_INFO_TYPE_ONLY=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='SHLIBTEST: FAIL shlib-info-with-data-frame' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 smoke-shlib-data-shared-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_DATA_SHARED=1
-	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_DATA_SHARED=1 boot.iso
+	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_DATA_SHARED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='SHLIBTEST: FAIL peer-saw-our-data' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # ---- S50, arm 2: the copy is private, but never initialised -----------------
 #
@@ -6569,10 +6579,10 @@ smoke-shlib-data-shared-control:
 smoke-shlib-data-init-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_DATA_UNINITIALISED=1
-	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_DATA_UNINITIALISED=1 boot.iso
+	@$(MAKE) --no-print-directory SHLIB_SELFTEST=1 SHLIB_DATA_UNINITIALISED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='SHLIBTEST: FAIL data-not-initialised' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # The MSI path, on an 82574L -- the device model that HAS an MSI capability, and
 # the one whose receive path works (5 boots in 5), so this gate also asserts a
@@ -6584,10 +6594,10 @@ smoke-shlib-data-init-control:
 smoke-net:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory NET_SELFTEST=1
-	@$(MAKE) --no-print-directory NET_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 horus.iso
 	@SMOKE_NET=e1000e SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='NETTEST: RX PASS' \
-		FAIL_MARKER='NETTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='NETTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # S53. A device translation must not outlive the capability that authorised it.
 # SYS_DMA_ADDR installs an IOMMU entry for a frame; frame_map_refcount counts CPU
@@ -6606,10 +6616,10 @@ smoke-net:
 smoke-iommu-teardown:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory IOMMU_TEARDOWN_SELFTEST=1
-	@$(MAKE) --no-print-directory IOMMU_TEARDOWN_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory IOMMU_TEARDOWN_SELFTEST=1 horus.iso
 	@SMOKE_NET=e1000 SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='IOMMUTEST: PASS' \
-		FAIL_MARKER='IOMMUTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='IOMMUTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # The falsifying arm: destroy_dyn_frame as it stood until 2026-08-29, scrubbing
 # and releasing the run while leaving every device translation of it in place.
@@ -6619,10 +6629,10 @@ smoke-iommu-teardown:
 smoke-iommu-teardown-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory IOMMU_TEARDOWN_SELFTEST=1 IOMMU_NO_FRAME_TEARDOWN=1
-	@$(MAKE) --no-print-directory IOMMU_TEARDOWN_SELFTEST=1 IOMMU_NO_FRAME_TEARDOWN=1 boot.iso
+	@$(MAKE) --no-print-directory IOMMU_TEARDOWN_SELFTEST=1 IOMMU_NO_FRAME_TEARDOWN=1 horus.iso
 	@SMOKE_NET=e1000 SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='IOMMUTEST: FAIL device-still-translates-destroyed-frame' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # The OTHER path S53 closed, and the frame arm above cannot reach it: a frame a
 # second task still holds is not destroyed when its driver dies, so nothing but
@@ -6636,10 +6646,10 @@ smoke-iommu-teardown-control:
 smoke-iommu-teardown-task-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory IOMMU_TEARDOWN_SELFTEST=1 IOMMU_NO_TASK_TEARDOWN=1
-	@$(MAKE) --no-print-directory IOMMU_TEARDOWN_SELFTEST=1 IOMMU_NO_TASK_TEARDOWN=1 boot.iso
+	@$(MAKE) --no-print-directory IOMMU_TEARDOWN_SELFTEST=1 IOMMU_NO_TASK_TEARDOWN=1 horus.iso
 	@SMOKE_NET=e1000 SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='IOMMUTEST: FAIL device-still-translates-after-driver-death' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "[iommu-teardown] CONTROL PASS - a dead driver's device kept reading a frame its peer still holds"
 
 # S47's arm. The kernel honours a caller-supplied vector and netd asks for 13,
@@ -6657,9 +6667,9 @@ smoke-iommu-teardown-task-control:
 smoke-net-msi-vector-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory NET_SELFTEST=1 MSI_VECTOR_FROM_USER=1
-	@$(MAKE) --no-print-directory NET_SELFTEST=1 MSI_VECTOR_FROM_USER=1 boot.iso
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 MSI_VECTOR_FROM_USER=1 horus.iso
 	@SMOKE_NET=e1000e SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
-		EXPECT_FAULT='task 1' tools/smoke_test.sh boot.iso
+		EXPECT_FAULT='task 1' tools/smoke_test.sh horus.iso
 
 # S48's arm. The MSI-X vector table lives in a BAR, so without an explicit
 # refusal a driver maps it like any other register page and writes its own
@@ -6669,9 +6679,9 @@ smoke-net-msi-vector-control:
 smoke-net-msix-table-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory NET_SELFTEST=1 MSIX_TABLE_MAPPABLE=1
-	@$(MAKE) --no-print-directory NET_SELFTEST=1 MSIX_TABLE_MAPPABLE=1 boot.iso
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 MSIX_TABLE_MAPPABLE=1 horus.iso
 	@SMOKE_NET=e1000e SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
-		REQUIRE_MARKER='NETTEST: FAIL msix-table-mapped' tools/smoke_test.sh boot.iso
+		REQUIRE_MARKER='NETTEST: FAIL msix-table-mapped' tools/smoke_test.sh horus.iso
 
 # The INTx path, on an 82540EM -- a device model with NO MSI capability, so the
 # driver falls back to a wire and S46's mask-until-acknowledged applies. Both
@@ -6681,10 +6691,10 @@ smoke-net-msix-table-control:
 smoke-net-intx:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory NET_SELFTEST=1
-	@$(MAKE) --no-print-directory NET_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 horus.iso
 	@SMOKE_NET=e1000 SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='NETTEST: MASK PASS' \
-		FAIL_MARKER='NETTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='NETTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # S46's mask, tested DIRECTLY and on the routing the ship build uses. Since
 # SYS_POLL_NOTIFY exists a driver can observe that a notification did NOT arrive,
@@ -6696,9 +6706,9 @@ smoke-net-intx:
 smoke-net-mask-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory NET_SELFTEST=1 IRQ_NO_MASK_ON_FIRE=1
-	@$(MAKE) --no-print-directory NET_SELFTEST=1 IRQ_NO_MASK_ON_FIRE=1 boot.iso
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 IRQ_NO_MASK_ON_FIRE=1 horus.iso
 	@SMOKE_NET=e1000 SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
-		REQUIRE_MARKER='NETTEST: FAIL irq-while-masked' tools/smoke_test.sh boot.iso
+		REQUIRE_MARKER='NETTEST: FAIL irq-while-masked' tools/smoke_test.sh horus.iso
 
 # ON THE PIC PATH (IRQ_FORCE_PIC=1), deliberately. Measured 2026-08-28: QEMU
 # storms on the 8259 and does NOT on the I/O APIC, so this arm can only fail on
@@ -6715,10 +6725,10 @@ smoke-net-mask-control:
 smoke-net-irq-storm-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory NET_SELFTEST=1 IRQ_NO_MASK_ON_FIRE=1 IRQ_FORCE_PIC=1
-	@$(MAKE) --no-print-directory NET_SELFTEST=1 IRQ_NO_MASK_ON_FIRE=1 IRQ_FORCE_PIC=1 boot.iso
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 IRQ_NO_MASK_ON_FIRE=1 IRQ_FORCE_PIC=1 horus.iso
 	@SMOKE_NET=e1000 SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
 		EXPECT_STALL='NETTEST: PASS' ABSENT_MARKER='NETTEST: IRQ PASS' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # The arm for S45, and the reason the IOMMU is a property rather than a boot
 # message. Same driver, same device, same capability checks -- only the device
@@ -6728,9 +6738,9 @@ smoke-net-irq-storm-control:
 smoke-net-iommu-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory NET_SELFTEST=1 NET_IOMMU_NO_MAP=1
-	@$(MAKE) --no-print-directory NET_SELFTEST=1 NET_IOMMU_NO_MAP=1 boot.iso
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 NET_IOMMU_NO_MAP=1 horus.iso
 	@SMOKE_NET=e1000 SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
-		REQUIRE_MARKER='NETTEST: FAIL dma-never-completed' tools/smoke_test.sh boot.iso
+		REQUIRE_MARKER='NETTEST: FAIL dma-never-completed' tools/smoke_test.sh horus.iso
 
 # Control arm 1 of 2: no decode bits at all, so the device stops answering its own
 # I/O BAR. The arm for SYS_DEVICE_ENABLE -- it writes the one configuration-space
@@ -6744,9 +6754,9 @@ smoke-net-iommu-control:
 smoke-net-decode-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory NET_SELFTEST=1 NET_NO_DECODE=1
-	@$(MAKE) --no-print-directory NET_SELFTEST=1 NET_NO_DECODE=1 boot.iso
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 NET_NO_DECODE=1 horus.iso
 	@SMOKE_NET=e1000 SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
-		REQUIRE_MARKER='NETTEST: FAIL mac-not-valid' tools/smoke_test.sh boot.iso
+		REQUIRE_MARKER='NETTEST: FAIL mac-not-valid' tools/smoke_test.sh horus.iso
 
 # S44's other half, and the arm that spent thirteen days changing nothing.
 #
@@ -6765,9 +6775,9 @@ smoke-net-decode-control:
 smoke-net-busmaster-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory NET_SELFTEST=1 NET_NO_BUSMASTER=1
-	@$(MAKE) --no-print-directory NET_SELFTEST=1 NET_NO_BUSMASTER=1 boot.iso
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 NET_NO_BUSMASTER=1 horus.iso
 	@SMOKE_NET=e1000 SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
-		REQUIRE_MARKER='NETTEST: FAIL dma-never-completed' tools/smoke_test.sh boot.iso
+		REQUIRE_MARKER='NETTEST: FAIL dma-never-completed' tools/smoke_test.sh horus.iso
 	@echo "[net] CONTROL PASS - without bus mastering the device never reads its own ring"
 
 # ---- Device capabilities: a CAP_IO_DEVICE names a device --------------------
@@ -6781,9 +6791,9 @@ smoke-net-busmaster-control:
 smoke-devcap:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1
-	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 horus.iso
 	@SMOKE_NET=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='DEVCAPTEST: PASS' \
-		FAIL_MARKER='DEVCAPTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='DEVCAPTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # Control arm 1 of 3: the capability's object is not consulted and SYS_MAP_PHYS
 # tests the frame against the old compiled-in VGA allowlist, so the NIC
@@ -6792,9 +6802,9 @@ smoke-devcap:
 smoke-devcap-object-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 IO_DEVICE_OBJECT_UNCHECKED=1
-	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 IO_DEVICE_OBJECT_UNCHECKED=1 boot.iso
+	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 IO_DEVICE_OBJECT_UNCHECKED=1 horus.iso
 	@SMOKE_NET=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
-		REQUIRE_MARKER='DEVCAPTEST: FAIL nic-cap-mapped-vga' tools/smoke_test.sh boot.iso
+		REQUIRE_MARKER='DEVCAPTEST: FAIL nic-cap-mapped-vga' tools/smoke_test.sh horus.iso
 
 # Control arm 2 of 3: one global TSS I/O bitmap, loaded with the console's ports
 # by every grant whatever device was named, so the NIC capability reads COM1.
@@ -6807,9 +6817,9 @@ smoke-devcap-object-control:
 smoke-devcap-ports-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 IO_DEVICE_PORTS_GLOBAL=1
-	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 IO_DEVICE_PORTS_GLOBAL=1 boot.iso
+	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 IO_DEVICE_PORTS_GLOBAL=1 horus.iso
 	@SMOKE_NET=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
-		REQUIRE_MARKER='DEVCAPTEST: FAIL nic-cap-got-console-ports' tools/smoke_test.sh boot.iso
+		REQUIRE_MARKER='DEVCAPTEST: FAIL nic-cap-got-console-ports' tools/smoke_test.sh horus.iso
 
 # Control arm 3 of 3: SYS_IRQ_REGISTER does not check the line against the named
 # device, so the NIC capability subscribes to the console's keyboard interrupt.
@@ -6817,9 +6827,9 @@ smoke-devcap-ports-control:
 smoke-devcap-irq-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 IO_DEVICE_IRQ_UNCHECKED=1
-	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 IO_DEVICE_IRQ_UNCHECKED=1 boot.iso
+	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 IO_DEVICE_IRQ_UNCHECKED=1 horus.iso
 	@SMOKE_NET=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
-		REQUIRE_MARKER='DEVCAPTEST: FAIL nic-cap-took-platform-irq' tools/smoke_test.sh boot.iso
+		REQUIRE_MARKER='DEVCAPTEST: FAIL nic-cap-took-platform-irq' tools/smoke_test.sh horus.iso
 
 # Build with the gated console blast-radius test, boot headless, and require the
 # marker proving the ring-3 console_server's deliberate fault was contained (the
@@ -6828,9 +6838,9 @@ smoke-devcap-irq-control:
 smoke-console-isolation:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CONSOLE_ISOLATION_TEST=1
-	@$(MAKE) --no-print-directory CONSOLE_ISOLATION_TEST=1 boot.iso
+	@$(MAKE) --no-print-directory CONSOLE_ISOLATION_TEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CONSOLE_ISOLATION: PASS' \
-		FAIL_MARKER='CONSOLE_ISOLATION: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='CONSOLE_ISOLATION: FAIL' tools/smoke_test.sh horus.iso
 
 # Build with the gated copy-on-write self-test, boot headless, and require that a
 # write to a read-only shared-zero page breaks COW into a private page without
@@ -6839,9 +6849,9 @@ smoke-console-isolation:
 smoke-cow:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory COW_SELFTEST=1
-	@$(MAKE) --no-print-directory COW_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory COW_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='COW_SELFTEST: PASS' \
-		FAIL_MARKER='COW_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='COW_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # Scripted integration session: build the shipped kernel and drive the *real*
 # ring-3 shell over serial (login, identity, and a capability-gated admin op
@@ -6851,8 +6861,8 @@ smoke-cow:
 .PHONY: smoke-session
 smoke-session:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory boot.iso
-	@python3 tools/session_test.py boot.iso
+	@$(MAKE) --no-print-directory horus.iso
+	@python3 tools/session_test.py horus.iso
 
 # Control arm for the error-reporting half of that session: the shell is built
 # with SHELL_FS_ERR_FLAT=1, so it prints the pre-2026-09-02 sentence -- one guess
@@ -6874,7 +6884,7 @@ smoke-session:
 # accepted, a missing path is named, a file is refused differently from a missing
 # path) must be able to fail separately from the rest of the session.
 # The image booted the way people actually boot it. Every other gate in this tree
-# runs `-cdrom boot.iso` under SeaBIOS, which is ONE CELL of a four-cell table --
+# runs `-cdrom horus.iso` under SeaBIOS, which is ONE CELL of a four-cell table --
 # {BIOS, UEFI} x {optical, raw disk} -- and three of the other cells were broken
 # with nothing able to see it. A USB stick written with dd is the same bytes
 # presented as a raw disk rather than as optical media, which is what a laptop
@@ -6913,9 +6923,9 @@ smoke-console-handover:
 # the wire, because that stamp describes the KERNEL and the stale object was
 # console_server's.
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='horus login:' \
-		FAIL_MARKER='CONSOLE_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='CONSOLE_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # The falsifying arm. CONSOLE_VGA_CHECK_FAIL=1 makes the round-trip check fail --
 # what a firmware-set graphics mode does to the legacy text window -- and the gate
@@ -6929,9 +6939,9 @@ smoke-console-handover:
 smoke-console-handover-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CONSOLE_VGA_CHECK_FAIL=1
-	@$(MAKE) --no-print-directory CONSOLE_VGA_CHECK_FAIL=1 boot.iso
+	@$(MAKE) --no-print-directory CONSOLE_VGA_CHECK_FAIL=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
-		REQUIRE_MARKER='CONSOLE_SELFTEST: FAIL vga' tools/smoke_test.sh boot.iso
+		REQUIRE_MARKER='CONSOLE_SELFTEST: FAIL vga' tools/smoke_test.sh horus.iso
 # The console must not be able to stop the machine.
 #
 # serial_wait() spins on COM1's THRE bit from inside emit_char, which runs under
@@ -6953,9 +6963,9 @@ smoke-serial-bound:
 # one commit earlier: the lesson is not learned until every arm built from the
 # same template has it.
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='horus login:' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # The falsifying arm. SERIAL_TX_NEVER_DRAINS=1 makes the drain test never
 # succeed, so every byte the kernel prints runs the bound to its end.
@@ -6976,9 +6986,9 @@ smoke-serial-bound-control:
 # neighbouring arm in the same job is not covered by it.
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SERIAL_TX_NEVER_DRAINS=1
-	@$(MAKE) --no-print-directory SERIAL_TX_NEVER_DRAINS=1 boot.iso
+	@$(MAKE) --no-print-directory SERIAL_TX_NEVER_DRAINS=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_SERIAL_BOUND_TIMEOUT) MARKER_ONLY=1 \
-		REQUIRE_MARKER='horus login:' tools/smoke_test.sh boot.iso
+		REQUIRE_MARKER='horus login:' tools/smoke_test.sh horus.iso
 	@echo "[serial] CONTROL PASS - a UART that never drains no longer stops the boot"
 
 # What storage a LAPTOP has. ata.c reaches legacy IDE and ahci.c reaches SATA;
@@ -6992,8 +7002,8 @@ smoke-serial-bound-control:
 .PHONY: smoke-sdhci-detect
 smoke-sdhci-detect:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory boot.iso
-	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) tools/sdhci_detect_test.sh boot.iso
+	@$(MAKE) --no-print-directory horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) tools/sdhci_detect_test.sh horus.iso
 # A SECOND size, on the other side of the CSD version boundary. Cards up to 2 GiB
 # describe themselves with CSD v1 (a capacity computed from three fields); larger
 # ones with CSD v2 (a single 22-bit count). They are different decoders, and one
@@ -7001,9 +7011,9 @@ smoke-sdhci-detect:
 # specification's own bit numbers, and is therefore wrong by eight bits in every
 # field, can pass a gate.
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SDHCI_CARD_MB=4096 \
-		SDHCI_EVIDENCE=.sdhci-evidence-large tools/sdhci_detect_test.sh boot.iso
+		SDHCI_EVIDENCE=.sdhci-evidence-large tools/sdhci_detect_test.sh horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SDHCI_EXPECT=empty \
-		SDHCI_EVIDENCE=.sdhci-evidence-empty tools/sdhci_detect_test.sh boot.iso
+		SDHCI_EVIDENCE=.sdhci-evidence-empty tools/sdhci_detect_test.sh horus.iso
 
 # The WRITE round trip, in a build of its own.
 #
@@ -7017,9 +7027,9 @@ smoke-sdhci-detect:
 smoke-sdhci-write:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SDHCI_WRITE_SELFTEST=1
-	@$(MAKE) --no-print-directory SDHCI_WRITE_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory SDHCI_WRITE_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SDHCI_EXPECT_WRITE=1 \
-		SDHCI_EVIDENCE=.sdhci-evidence-write tools/sdhci_detect_test.sh boot.iso
+		SDHCI_EVIDENCE=.sdhci-evidence-write tools/sdhci_detect_test.sh horus.iso
 
 # The falsifying arm. SDHCI_PROBE_ABSENT=1 compiles the probe out, which is the
 # state this tree was in before 2026-09-07.
@@ -7043,10 +7053,10 @@ smoke-sdhci-write:
 smoke-sdhci-addr-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SDHCI_ADDR_MODE_INVERTED=1
-	@$(MAKE) --no-print-directory SDHCI_ADDR_MODE_INVERTED=1 boot.iso
+	@$(MAKE) --no-print-directory SDHCI_ADDR_MODE_INVERTED=1 horus.iso
 	@set -e; \
 	 if SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SDHCI_EVIDENCE=.sdhci-evidence-addr \
-	    tools/sdhci_detect_test.sh boot.iso > .sdhci-addr.out 2>&1; then \
+	    tools/sdhci_detect_test.sh horus.iso > .sdhci-addr.out 2>&1; then \
 	    echo "CONTROL FAIL: an inverted addressing mode still read every block"; \
 	    cat .sdhci-addr.out; rm -f .sdhci-addr.out; exit 1; \
 	 fi; \
@@ -7064,10 +7074,10 @@ smoke-sdhci-addr-control:
 smoke-sdhci-csd-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SDHCI_CSD_SPEC_BITS=1
-	@$(MAKE) --no-print-directory SDHCI_CSD_SPEC_BITS=1 boot.iso
+	@$(MAKE) --no-print-directory SDHCI_CSD_SPEC_BITS=1 horus.iso
 	@set -e; \
 	 if SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SDHCI_EVIDENCE=.sdhci-evidence-csd \
-	    tools/sdhci_detect_test.sh boot.iso > .sdhci-csd.out 2>&1; then \
+	    tools/sdhci_detect_test.sh horus.iso > .sdhci-csd.out 2>&1; then \
 	    echo "CONTROL FAIL: the shifted CSD decode still reported the right size"; \
 	    cat .sdhci-csd.out; rm -f .sdhci-csd.out; exit 1; \
 	 fi; \
@@ -7081,14 +7091,14 @@ smoke-sdhci-csd-control:
 smoke-sdhci-detect-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SDHCI_PROBE_ABSENT=1
-	@$(MAKE) --no-print-directory SDHCI_PROBE_ABSENT=1 boot.iso
+	@$(MAKE) --no-print-directory SDHCI_PROBE_ABSENT=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SDHCI_EXPECT=absent \
-		SDHCI_EVIDENCE=.sdhci-evidence-control tools/sdhci_detect_test.sh boot.iso
+		SDHCI_EVIDENCE=.sdhci-evidence-control tools/sdhci_detect_test.sh horus.iso
 
 .PHONY: smoke-ahci-detect
 smoke-ahci-detect:
-	@$(MAKE) --no-print-directory boot.iso
-	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) tools/ahci_detect_test.sh boot.iso
+	@$(MAKE) --no-print-directory horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) tools/ahci_detect_test.sh horus.iso
 
 # The falsifying arm. AHCI_PROBE_ABSENT=1 compiles the probe out, which is the
 # state this tree was in before 2026-09-07.
@@ -7104,10 +7114,10 @@ smoke-ahci-detect:
 # to avoid.
 .PHONY: smoke-ahci-capacity-control
 smoke-ahci-capacity-control:
-	@$(MAKE) --no-print-directory AHCI_CAPACITY_CONSTANT=1 boot.iso
+	@$(MAKE) --no-print-directory AHCI_CAPACITY_CONSTANT=1 horus.iso
 	@set -e; \
 	 if SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) AHCI_DISK_MB=64 \
-	    AHCI_EVIDENCE=.ahci-evidence-capacity tools/ahci_detect_test.sh boot.iso \
+	    AHCI_EVIDENCE=.ahci-evidence-capacity tools/ahci_detect_test.sh horus.iso \
 	    > .ahci-capacity.out 2>&1; then \
 	    echo "CONTROL FAIL: a constant capacity passed the gate on a 64 MiB disk"; \
 	    cat .ahci-capacity.out; rm -f .ahci-capacity.out; exit 1; \
@@ -7120,14 +7130,14 @@ smoke-ahci-capacity-control:
 
 .PHONY: smoke-ahci-detect-control
 smoke-ahci-detect-control:
-	@$(MAKE) --no-print-directory AHCI_PROBE_ABSENT=1 boot.iso
+	@$(MAKE) --no-print-directory AHCI_PROBE_ABSENT=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) AHCI_EXPECT=absent \
-		AHCI_EVIDENCE=.ahci-evidence-control tools/ahci_detect_test.sh boot.iso
+		AHCI_EVIDENCE=.ahci-evidence-control tools/ahci_detect_test.sh horus.iso
 
 .PHONY: smoke-boot-media
 smoke-boot-media:
-	@$(MAKE) --no-print-directory boot.iso
-	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) tools/boot_media_test.sh boot.iso
+	@$(MAKE) --no-print-directory horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) tools/boot_media_test.sh horus.iso
 
 # The falsifying arm. BOOT_ROOT_CD_ONLY=1 puts `set root=(cd)` back into the
 # STAGED grub.cfg, so the source file is untouched and the arm cannot be left
@@ -7139,10 +7149,10 @@ smoke-boot-media:
 # the whole column is what distinguishes this from a build that broke somehow.
 .PHONY: smoke-boot-media-control
 smoke-boot-media-control:
-	@$(MAKE) --no-print-directory BOOT_ROOT_CD_ONLY=1 boot.iso
+	@$(MAKE) --no-print-directory BOOT_ROOT_CD_ONLY=1 horus.iso
 	@set -e; \
 	 if SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) BOOT_MEDIA_EVIDENCE=.boot-media-evidence-control \
-	    tools/boot_media_test.sh boot.iso > .boot-media-control.out 2>&1; then \
+	    tools/boot_media_test.sh horus.iso > .boot-media-control.out 2>&1; then \
 	    echo "CONTROL FAIL: every medium still booted with the root device hard-coded"; \
 	    cat .boot-media-control.out; rm -f .boot-media-control.out; exit 1; \
 	 fi; \
@@ -7160,8 +7170,8 @@ smoke-boot-media-control:
 .PHONY: smoke-ls-path
 smoke-ls-path:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory boot.iso
-	@python3 tools/session_test.py boot.iso
+	@$(MAKE) --no-print-directory horus.iso
+	@python3 tools/session_test.py horus.iso
 
 # The falsifying arm. SHELL_LS_NO_PATH_ARG=1 restores the exact-match dispatch,
 # and the harness then REQUIRES "Unknown command" from the same keystrokes -- so
@@ -7174,16 +7184,16 @@ smoke-ls-path:
 smoke-ls-path-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SHELL_LS_NO_PATH_ARG=1
-	@$(MAKE) --no-print-directory SHELL_LS_NO_PATH_ARG=1 boot.iso
-	@SESSION_LS_NO_PATH=1 python3 tools/session_test.py boot.iso
+	@$(MAKE) --no-print-directory SHELL_LS_NO_PATH_ARG=1 horus.iso
+	@SESSION_LS_NO_PATH=1 python3 tools/session_test.py horus.iso
 	@echo "[ls-path] CONTROL PASS - a path argument was not dispatched at all"
 
 .PHONY: smoke-session-fs-err-control
 smoke-session-fs-err-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SHELL_FS_ERR_FLAT=1
-	@$(MAKE) --no-print-directory SHELL_FS_ERR_FLAT=1 boot.iso
-	@SESSION_FS_ERR_FLAT=1 python3 tools/session_test.py boot.iso
+	@$(MAKE) --no-print-directory SHELL_FS_ERR_FLAT=1 horus.iso
+	@SESSION_FS_ERR_FLAT=1 python3 tools/session_test.py horus.iso
 	@echo "[session] CONTROL PASS - the flattened sentence is back, and it still names two causes and not the one that fired"
 
 # S77's two arms. Each removes ONE of the fs_server's metadata checks and the
@@ -7197,16 +7207,16 @@ smoke-session-fs-err-control:
 smoke-session-chmod-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FS_CHMOD_ANY_OWNER=1
-	@$(MAKE) --no-print-directory FS_CHMOD_ANY_OWNER=1 boot.iso
-	@SESSION_CHMOD_UNGATED=1 python3 tools/session_test.py boot.iso
+	@$(MAKE) --no-print-directory FS_CHMOD_ANY_OWNER=1 horus.iso
+	@SESSION_CHMOD_UNGATED=1 python3 tools/session_test.py horus.iso
 	@echo "[session] CONTROL PASS - a standard user set the mode of a file they do not own"
 
 .PHONY: smoke-session-chown-control
 smoke-session-chown-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FS_CHOWN_ANY_UID=1
-	@$(MAKE) --no-print-directory FS_CHOWN_ANY_UID=1 boot.iso
-	@SESSION_CHOWN_UNGATED=1 python3 tools/session_test.py boot.iso
+	@$(MAKE) --no-print-directory FS_CHOWN_ANY_UID=1 horus.iso
+	@SESSION_CHOWN_UNGATED=1 python3 tools/session_test.py horus.iso
 	@echo "[session] CONTROL PASS - a standard user took ownership of root's file"
 
 # S78's arm: the home directory is created and then not given away. The account
@@ -7216,8 +7226,8 @@ smoke-session-chown-control:
 smoke-session-home-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory HOME_DIR_ROOT_OWNED=1
-	@$(MAKE) --no-print-directory HOME_DIR_ROOT_OWNED=1 boot.iso
-	@SESSION_HOME_ROOT_OWNED=1 python3 tools/session_test.py boot.iso
+	@$(MAKE) --no-print-directory HOME_DIR_ROOT_OWNED=1 horus.iso
+	@SESSION_HOME_ROOT_OWNED=1 python3 tools/session_test.py horus.iso
 	@echo "[session] CONTROL PASS - the home exists and its account cannot write in it"
 
 # Control arm for the hard-link half of the session (SYS_FS_INODE_LINK, the last
@@ -7231,8 +7241,8 @@ smoke-session-home-control:
 smoke-session-hardlink-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FS_LINK_UNCOUNTED=1
-	@$(MAKE) --no-print-directory FS_LINK_UNCOUNTED=1 boot.iso
-	@SESSION_LINK_UNCOUNTED=1 python3 tools/session_test.py boot.iso
+	@$(MAKE) --no-print-directory FS_LINK_UNCOUNTED=1 horus.iso
+	@SESSION_LINK_UNCOUNTED=1 python3 tools/session_test.py horus.iso
 	@echo "[session] CONTROL PASS - a hard link left the count at one and the file died with its first name"
 
 # Regression guard for the SMP console-INPUT corruption: drive the real ring-3
@@ -7253,8 +7263,8 @@ smoke-session-hardlink-control:
 .PHONY: smoke-session-smp
 smoke-session-smp:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory boot.iso
-	@QEMU_SMP=4 SESSION_TIMEOUT=120 python3 tools/session_test.py boot.iso
+	@$(MAKE) --no-print-directory horus.iso
+	@QEMU_SMP=4 SESSION_TIMEOUT=120 python3 tools/session_test.py horus.iso
 
 # Soak of the above. The IPC lost-reply race this gates against (see CHANGES.md:
 # a reply delivered while the client was committed to blocking but not yet
@@ -7322,7 +7332,7 @@ SOAK_EVIDENCE_DIR ?= soak-evidence
 .PHONY: smoke-session-smp-soak
 smoke-session-smp-soak:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory horus.iso
 	@echo "[soak] $(SOAK_RUNS) boots; any single hang fails the gate"
 	@echo "[soak] evidence from failing runs is kept in $(SOAK_EVIDENCE_DIR)/"
 	@rm -rf $(SOAK_EVIDENCE_DIR); mkdir -p $(SOAK_EVIDENCE_DIR); \
@@ -7331,7 +7341,7 @@ smoke-session-smp-soak:
 	    rc=0; n=$$(printf '%03d' $$i); \
 	    ser=$(SOAK_EVIDENCE_DIR)/run-$$n.serial.log; \
 	    QEMU_SMP=4 SESSION_TIMEOUT=120 SESSION_SERIAL_LOG="$$ser" \
-	        python3 tools/session_test.py boot.iso >"$$log" 2>&1 || rc=$$?; \
+	        python3 tools/session_test.py horus.iso >"$$log" 2>&1 || rc=$$?; \
 	    checks=$$(grep -c '\[ok\]' "$$log" 2>/dev/null || echo 0); \
 	    if [ $$rc -eq 0 ] && grep -q 'SESSION_TEST: PASS' "$$log" && [ "$$checks" -ge $(SOAK_MIN_CHECKS) ]; then \
 	        echo "[soak] run $$i/$(SOAK_RUNS): pass ($$checks checks)"; \
@@ -7374,9 +7384,9 @@ smoke-session-smp-soak:
 smoke-console-smp:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) FAIL_MARKER='HHoorruuss' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # Same boot, N times, on ONE build, with QEMU pinned to a small host CPU set.
 #
@@ -7393,9 +7403,9 @@ smoke-console-smp:
 smoke-console-smp-stress:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory horus.iso
 	@SMP_CPUS=$(SMP_CPUS) SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) FAIL_MARKER='HHoorruuss' \
-		tools/stress_boot.sh boot.iso
+		tools/stress_boot.sh horus.iso
 
 # The same startup handshake with the scheduler's claim invariant machine-checked
 # (SCHED_INVARIANTS=1): a violation panics naming the task, the CPU and the site,
@@ -7433,17 +7443,17 @@ smoke-console-smp-stress:
 measure-irq-policy:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory IRQ_POLICY_AUDIT=1
-	@$(MAKE) --no-print-directory IRQ_POLICY_AUDIT=1 boot.iso
-	@python3 tools/irq_policy_measure.py boot.iso
+	@$(MAKE) --no-print-directory IRQ_POLICY_AUDIT=1 horus.iso
+	@python3 tools/irq_policy_measure.py horus.iso
 
 .PHONY: smoke-irq-policy
 smoke-irq-policy:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory IRQ_POLICY_AUDIT=1 IRQ_POLICY_QUIET=0
-	@$(MAKE) --no-print-directory IRQ_POLICY_AUDIT=1 IRQ_POLICY_QUIET=0 boot.iso
+	@$(MAKE) --no-print-directory IRQ_POLICY_AUDIT=1 IRQ_POLICY_QUIET=0 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='IRQ_POLICY: PASS' FAIL_MARKER='IRQ_POLICY: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # ---- The kernel's diagnostic channel (SECURITY.md S81) --------------------
 #
@@ -7491,8 +7501,8 @@ smoke-irq-policy:
 smoke-kdiag:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory KDIAG_PROBE=1 KDIAG_NOISE=1 KDIAG_SPLIT_WIDEN=1
-	@$(MAKE) --no-print-directory KDIAG_PROBE=1 KDIAG_NOISE=1 KDIAG_SPLIT_WIDEN=1 boot.iso
-	@KDIAG_MIN=$(KDIAG_MIN) MODE=channel tools/kdiag_test.sh boot.iso
+	@$(MAKE) --no-print-directory KDIAG_PROBE=1 KDIAG_NOISE=1 KDIAG_SPLIT_WIDEN=1 horus.iso
+	@KDIAG_MIN=$(KDIAG_MIN) MODE=channel tools/kdiag_test.sh horus.iso
 
 .PHONY: smoke-kdiag-split-control
 # THE SPLIT IS A RACE, SO ONE BOOT CANNOT ASSERT IT.
@@ -7528,20 +7538,20 @@ KDIAG_SPLIT_CONTROL_ATTEMPTS ?= 16
 smoke-kdiag-split-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory KDIAG_PROBE=1 KDIAG_NOISE=1 KDIAG_SPLIT_WIDEN=1
-	@$(MAKE) --no-print-directory KDIAG_PROBE=1 KDIAG_NOISE=1 KDIAG_SPLIT_WIDEN=1 boot.iso
+	@$(MAKE) --no-print-directory KDIAG_PROBE=1 KDIAG_NOISE=1 KDIAG_SPLIT_WIDEN=1 horus.iso
 	@echo "[kdiag] widened window + ring-3 noise: the split must reproduce"
-	@out=.kdiag-split-control.out; hit=0; conc=0; att=0; incon=0; 	while [ $$conc -lt $(KDIAG_SPLIT_CONTROL_BOOTS) ] && [ $$att -lt $(KDIAG_SPLIT_CONTROL_ATTEMPTS) ]; do 	    att=$$((att+1)); 	    if KDIAG_MIN=$(KDIAG_MIN) MODE=split tools/kdiag_test.sh boot.iso >"$$out" 2>&1; then 	        hit=$$att; break; 	    fi; 	    if grep -q 'Inconclusive' "$$out"; then 	        incon=$$((incon+1)); 	        echo "  attempt $$att: INCONCLUSIVE -- the run ended before there was anything to split, not counted"; 	        continue; 	    fi; 	    conc=$$((conc+1)); 	    echo "  boot $$conc/$(KDIAG_SPLIT_CONTROL_BOOTS): the markers arrived intact, no split yet"; 	done; 	if [ $$hit -eq 0 ]; then 	    echo "KDIAG SPLIT CONTROL: FAIL - the widened build did NOT reproduce the split"; 	    echo "  in $$conc conclusive boot(s) ($$att attempt(s), $$incon inconclusive)."; 	    echo "  It reproduced 13 of 20 when this bound was set, so a clean sweep of"; 	    echo "  $(KDIAG_SPLIT_CONTROL_BOOTS) is about one run in four thousand by chance. This arm is what"; 	    echo "  makes smoke-kdiag a measurement; if it stops reproducing, the widener"; 	    echo "  or the detector has decayed rather than the property having improved."; 	    echo "  ----- the last run's own verdict -----"; 	    cat "$$out" | sed 's/^/  /'; 	    exit 1; 	fi; 	if [ $$incon -gt 0 ]; then 	    echo "  ($$incon inconclusive attempt(s) along the way, not scored either way)"; 	fi; 	rm -f "$$out"; 	echo "KDIAG SPLIT CONTROL: PASS -- the split reproduced on attempt $$hit of at most $(KDIAG_SPLIT_CONTROL_ATTEMPTS)"
+	@out=.kdiag-split-control.out; hit=0; conc=0; att=0; incon=0; 	while [ $$conc -lt $(KDIAG_SPLIT_CONTROL_BOOTS) ] && [ $$att -lt $(KDIAG_SPLIT_CONTROL_ATTEMPTS) ]; do 	    att=$$((att+1)); 	    if KDIAG_MIN=$(KDIAG_MIN) MODE=split tools/kdiag_test.sh horus.iso >"$$out" 2>&1; then 	        hit=$$att; break; 	    fi; 	    if grep -q 'Inconclusive' "$$out"; then 	        incon=$$((incon+1)); 	        echo "  attempt $$att: INCONCLUSIVE -- the run ended before there was anything to split, not counted"; 	        continue; 	    fi; 	    conc=$$((conc+1)); 	    echo "  boot $$conc/$(KDIAG_SPLIT_CONTROL_BOOTS): the markers arrived intact, no split yet"; 	done; 	if [ $$hit -eq 0 ]; then 	    echo "KDIAG SPLIT CONTROL: FAIL - the widened build did NOT reproduce the split"; 	    echo "  in $$conc conclusive boot(s) ($$att attempt(s), $$incon inconclusive)."; 	    echo "  It reproduced 13 of 20 when this bound was set, so a clean sweep of"; 	    echo "  $(KDIAG_SPLIT_CONTROL_BOOTS) is about one run in four thousand by chance. This arm is what"; 	    echo "  makes smoke-kdiag a measurement; if it stops reproducing, the widener"; 	    echo "  or the detector has decayed rather than the property having improved."; 	    echo "  ----- the last run's own verdict -----"; 	    cat "$$out" | sed 's/^/  /'; 	    exit 1; 	fi; 	if [ $$incon -gt 0 ]; then 	    echo "  ($$incon inconclusive attempt(s) along the way, not scored either way)"; 	fi; 	rm -f "$$out"; 	echo "KDIAG SPLIT CONTROL: PASS -- the split reproduced on attempt $$hit of at most $(KDIAG_SPLIT_CONTROL_ATTEMPTS)"
 
 .PHONY: smoke-kdiag-legacy-control
 smoke-kdiag-legacy-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory KDIAG_PROBE=1 KDIAG_NOISE=1 KDIAG_SPLIT_WIDEN=1 KDIAG_LEGACY_COM1=1
-	@$(MAKE) --no-print-directory KDIAG_PROBE=1 KDIAG_NOISE=1 KDIAG_SPLIT_WIDEN=1 KDIAG_LEGACY_COM1=1 boot.iso
+	@$(MAKE) --no-print-directory KDIAG_PROBE=1 KDIAG_NOISE=1 KDIAG_SPLIT_WIDEN=1 KDIAG_LEGACY_COM1=1 horus.iso
 	@: "The base gate must go RED here. Inverted, so this target is green when"
 	@: "smoke-kdiag's assertion fails -- and the verdict it fails with names the"
 	@: "condition (markers on the console, nothing on the channel) rather than"
 	@: "the generic not-a-result a broken boot gets."
-	@if KDIAG_MIN=$(KDIAG_MIN) MODE=channel tools/kdiag_test.sh boot.iso; then \
+	@if KDIAG_MIN=$(KDIAG_MIN) MODE=channel tools/kdiag_test.sh horus.iso; then \
 		echo "KDIAG LEGACY CONTROL: FAIL - the base gate passed with the kernel"; \
 		echo "  reporting only to the shared console. It is not testing the channel."; \
 		exit 1; \
@@ -7552,15 +7562,15 @@ smoke-kdiag-legacy-control:
 smoke-kdiag-ioport:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory KDIAG_PROBE=1 KDIAG_NOISE=1 KDIAG_SPLIT_WIDEN=1 KDIAG_RING3_PROBE=1
-	@$(MAKE) --no-print-directory KDIAG_PROBE=1 KDIAG_NOISE=1 KDIAG_SPLIT_WIDEN=1 KDIAG_RING3_PROBE=1 boot.iso
-	@MODE=ioport tools/kdiag_test.sh boot.iso
+	@$(MAKE) --no-print-directory KDIAG_PROBE=1 KDIAG_NOISE=1 KDIAG_SPLIT_WIDEN=1 KDIAG_RING3_PROBE=1 horus.iso
+	@MODE=ioport tools/kdiag_test.sh horus.iso
 
 .PHONY: smoke-kdiag-grant-control
 smoke-kdiag-grant-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory KDIAG_PROBE=1 KDIAG_NOISE=1 KDIAG_SPLIT_WIDEN=1 KDIAG_RING3_PROBE=1 KDIAG_PORTS_GRANTABLE=1
-	@$(MAKE) --no-print-directory KDIAG_PROBE=1 KDIAG_NOISE=1 KDIAG_SPLIT_WIDEN=1 KDIAG_RING3_PROBE=1 KDIAG_PORTS_GRANTABLE=1 boot.iso
-	@MODE=grant tools/kdiag_test.sh boot.iso
+	@$(MAKE) --no-print-directory KDIAG_PROBE=1 KDIAG_NOISE=1 KDIAG_SPLIT_WIDEN=1 KDIAG_RING3_PROBE=1 KDIAG_PORTS_GRANTABLE=1 horus.iso
+	@MODE=grant tools/kdiag_test.sh horus.iso
 
 # Can the kernel be heard when it faults in its own code?
 #
@@ -7583,16 +7593,16 @@ smoke-kdiag-grant-control:
 smoke-heap64:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 USER_HEAP_HIGH_BASE=1
-	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 USER_HEAP_HIGH_BASE=1 boot.iso
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 USER_HEAP_HIGH_BASE=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CAPTEST: PASS' \
-		FAIL_MARKER='CAPTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='CAPTEST: FAIL' tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-kfault
 smoke-kfault:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory KFAULT_INJECT=1
-	@$(MAKE) --no-print-directory KFAULT_INJECT=1 boot.iso
-	@KFAULT_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_REPORT=1 tools/kfault_test.sh boot.iso
+	@$(MAKE) --no-print-directory KFAULT_INJECT=1 horus.iso
+	@KFAULT_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_REPORT=1 tools/kfault_test.sh horus.iso
 
 # The control arm. Same injection, reporting restored to println(): the report
 # must NOT reach serial. A gate whose failing arm has never been built is not
@@ -7601,8 +7611,8 @@ smoke-kfault:
 smoke-kfault-legacy:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory KFAULT_INJECT=1 KFAULT_LEGACY_PRINTLN=1
-	@$(MAKE) --no-print-directory KFAULT_INJECT=1 KFAULT_LEGACY_PRINTLN=1 boot.iso
-	@KFAULT_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_REPORT=0 tools/kfault_test.sh boot.iso
+	@$(MAKE) --no-print-directory KFAULT_INJECT=1 KFAULT_LEGACY_PRINTLN=1 horus.iso
+	@KFAULT_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_REPORT=0 tools/kfault_test.sh horus.iso
 
 # Does the resume-%rsp floor guard in idt.c actually fire, and can it be heard?
 #
@@ -7628,10 +7638,10 @@ RESUME_GUARD_NEG_RE = PANIC: dispatcher returned a bogus resume rsp=0xffffffffff
 smoke-resume-guard:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1
-	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 boot.iso
+	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 horus.iso
 	@KFAULT_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_REPORT=1 \
 		REPORT_RE='$(RESUME_GUARD_RE)' REPORT_LABEL='bogus resume rsp' \
-		tools/kfault_test.sh boot.iso
+		tools/kfault_test.sh horus.iso
 
 # The negative half of the guard. A floor with no ceiling catches a returned 0,
 # 1 or 4 and misses every small NEGATIVE value: -7 is 0xFFFFFFFFFFFFFFF9, which
@@ -7643,10 +7653,10 @@ smoke-resume-guard:
 smoke-resume-guard-negative:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 RESUME_RSP_INJECT_VALUE=-7
-	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 RESUME_RSP_INJECT_VALUE=-7 boot.iso
+	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 RESUME_RSP_INJECT_VALUE=-7 horus.iso
 	@KFAULT_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_REPORT=1 \
 		REPORT_RE='$(RESUME_GUARD_NEG_RE)' REPORT_LABEL='bogus negative resume rsp' \
-		tools/kfault_test.sh boot.iso
+		tools/kfault_test.sh horus.iso
 
 # The control arm, and the one that makes the pair a measurement. Same -7, but
 # with the floor-only predicate restored: the guard must NOT be heard. Without
@@ -7658,10 +7668,10 @@ smoke-resume-guard-negative:
 smoke-resume-guard-negative-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 RESUME_RSP_INJECT_VALUE=-7 RESUME_GUARD_FLOOR_ONLY=1
-	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 RESUME_RSP_INJECT_VALUE=-7 RESUME_GUARD_FLOOR_ONLY=1 boot.iso
+	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 RESUME_RSP_INJECT_VALUE=-7 RESUME_GUARD_FLOOR_ONLY=1 horus.iso
 	@KFAULT_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_REPORT=0 \
 		REPORT_RE='$(RESUME_GUARD_NEG_RE)' REPORT_LABEL='bogus negative resume rsp' \
-		tools/kfault_test.sh boot.iso
+		tools/kfault_test.sh horus.iso
 
 # The arm that witnesses the fix. Same injection, but the permanent panic claim
 # is taken first -- the state another CPU's FATAL exception leaves behind, and
@@ -7672,10 +7682,10 @@ smoke-resume-guard-negative-control:
 smoke-resume-guard-preclaim:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 RESUME_RSP_INJECT_PRECLAIM=1
-	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 RESUME_RSP_INJECT_PRECLAIM=1 boot.iso
+	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 RESUME_RSP_INJECT_PRECLAIM=1 horus.iso
 	@KFAULT_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_REPORT=1 \
 		REPORT_RE='$(RESUME_GUARD_RE)' REPORT_LABEL='bogus resume rsp' \
-		tools/kfault_test.sh boot.iso
+		tools/kfault_test.sh horus.iso
 
 # Control arm for the FIX. Same injection, same preclaim, but the guard's pre-fix
 # kfault_begin(1)/kfault_end(1) bracket restored: the permanent claim is already
@@ -7688,10 +7698,10 @@ smoke-resume-guard-legacy:
 	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 RESUME_RSP_INJECT_PRECLAIM=1 \
 		RESUME_GUARD_LEGACY_FATAL=1
 	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 RESUME_RSP_INJECT_PRECLAIM=1 \
-		RESUME_GUARD_LEGACY_FATAL=1 boot.iso
+		RESUME_GUARD_LEGACY_FATAL=1 horus.iso
 	@KFAULT_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_REPORT=0 \
 		REPORT_RE='$(RESUME_GUARD_RE)' REPORT_LABEL='bogus resume rsp' \
-		tools/kfault_test.sh boot.iso
+		tools/kfault_test.sh horus.iso
 
 # Control arm for the GUARD: same injected value, guard compiled out. The PANIC
 # line must NOT appear -- this is G-8's silence, reproduced on demand.
@@ -7699,10 +7709,10 @@ smoke-resume-guard-legacy:
 smoke-resume-guard-nofloor:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 RESUME_GUARD_DISABLE=1
-	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 RESUME_GUARD_DISABLE=1 boot.iso
+	@$(MAKE) --no-print-directory RESUME_RSP_INJECT=1 RESUME_GUARD_DISABLE=1 horus.iso
 	@KFAULT_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_REPORT=0 \
 		REPORT_RE='$(RESUME_GUARD_RE)' REPORT_LABEL='bogus resume rsp' \
-		tools/kfault_test.sh boot.iso
+		tools/kfault_test.sh horus.iso
 
 # Does the guard stay SILENT on a legal resume %rsp? Every arm above injects a
 # bogus value and asks whether the report appears -- they measure false negatives,
@@ -7738,17 +7748,17 @@ RESUME_GUARD_IST_RE = PANIC: dispatcher returned a bogus resume rsp=0xffffffff8
 smoke-resume-guard-ist:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1
-	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CAPTEST: PASS' \
-		ABSENT_MARKER='$(RESUME_GUARD_IST_RE)' tools/smoke_test.sh boot.iso
+		ABSENT_MARKER='$(RESUME_GUARD_IST_RE)' tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-resume-guard-ist-control
 smoke-resume-guard-ist-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 RESUME_GUARD_BSS_ONLY=1
-	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 RESUME_GUARD_BSS_ONLY=1 boot.iso
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 RESUME_GUARD_BSS_ONLY=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_FAULT='$(RESUME_GUARD_IST_RE)' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # Two CPUs on one kernel stack -- finding G-8, and the gate that closes it.
 #
@@ -7823,13 +7833,13 @@ KSTACK_RACE_BOOTS ?= 4
 .PHONY: smoke-kstack-race
 smoke-kstack-race:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory KSTACK_RACE_WIDEN=1 boot.iso
+	@$(MAKE) --no-print-directory KSTACK_RACE_WIDEN=1 horus.iso
 	@echo "[kstack] widened window + deferred release: the session must complete"
 	@log=$$(mktemp); n=0; done=0; incon=0; \
 	while [ $$n -lt $(KSTACK_RACE_BOOTS) ]; do \
 	    n=$$((n+1)); rc=0; \
 	    QEMU_SMP=4 SESSION_TIMEOUT=$(KSTACK_RACE_TIMEOUT) SESSION_SERIAL_LOG="$$log" \
-	        python3 tools/session_test.py boot.iso || rc=$$?; \
+	        python3 tools/session_test.py horus.iso || rc=$$?; \
 	    if grep -qa '$(KSTACK_RACE_RE)' "$$log"; then \
 	        echo "KSTACK RACE: FAIL - two CPUs shared a kernel stack with the fix in place (attempt $$n)"; \
 	        grep -a -A 6 '$(KSTACK_RACE_RE)' "$$log" | sed 's/^/  /'; rm -f "$$log"; exit 1; \
@@ -7882,13 +7892,13 @@ KSTACK_RACE_CONTROL_BOOTS ?= 8
 
 smoke-kstack-race-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory KSTACK_RACE_WIDEN=1 KSTACK_RELEASE_EARLY=1 boot.iso
+	@$(MAKE) --no-print-directory KSTACK_RACE_WIDEN=1 KSTACK_RELEASE_EARLY=1 horus.iso
 	@echo "[kstack] widened window + PRE-FIX release: the race must reproduce"
 	@log=$$(mktemp); hit=0; n=0; rc=0; \
 	while [ $$n -lt $(KSTACK_RACE_CONTROL_BOOTS) ]; do \
 	    n=$$((n+1)); rc=0; \
 	    QEMU_SMP=4 SESSION_TIMEOUT=$(KSTACK_RACE_TIMEOUT) SESSION_SERIAL_LOG="$$log" \
-	        python3 tools/session_test.py boot.iso || rc=$$?; \
+	        python3 tools/session_test.py horus.iso || rc=$$?; \
 	    if grep -qa '$(KSTACK_RACE_RE)' "$$log"; then hit=$$n; break; fi; \
 	    echo "  boot $$n/$(KSTACK_RACE_CONTROL_BOOTS): no race yet"; \
 	done; \
@@ -7989,12 +7999,12 @@ KSTACK_PARK_TIMEOUT ?= 180
 smoke-kstack-park:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1
-	@$(MAKE) --no-print-directory PROC_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 horus.iso
 	@log=$$(mktemp); diag=$$(mktemp); rc=0; \
 	SMOKE_TIMEOUT=$(KSTACK_PARK_TIMEOUT) SMOKE_LOG="$$log" SMOKE_KDIAG_LOG="$$diag" \
 	    MARKER_ONLY=1 SMP_CPUS=4 \
 	    REQUIRE_MARKER='PROC_SELFTEST: suspend OK' FAIL_MARKER='PROC_SELFTEST: FAIL' \
-	    tools/smoke_test.sh boot.iso >/dev/null 2>&1 || rc=$$?; \
+	    tools/smoke_test.sh horus.iso >/dev/null 2>&1 || rc=$$?; \
 	if [ $$rc -ne 0 ]; then \
 	    echo "KSTACK PARK: FAIL - the task-killing self-test did not complete (exit $$rc)"; \
 	    tail -20 "$$log" 2>/dev/null | sed 's/^/  /'; rm -f "$$log" "$$diag"; exit 1; \
@@ -8126,7 +8136,7 @@ KSTACK_PARK_CONTROL_ATTEMPTS ?= 24
 smoke-kstack-park-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSTACK0_PARK_TRACE=1 KSTACK0_SHARED_PARK=1
-	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSTACK0_PARK_TRACE=1 KSTACK0_SHARED_PARK=1 boot.iso
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSTACK0_PARK_TRACE=1 KSTACK0_SHARED_PARK=1 horus.iso
 	@log=$$(mktemp); diag=$$(mktemp); hit=0; n=0; good=0; bad=0; rc=0; dup=""; \
 	while [ $$n -lt $(KSTACK_PARK_CONTROL_ATTEMPTS) ] \
 	      && [ $$good -lt $(KSTACK_PARK_CONTROL_BOOTS) ]; do \
@@ -8134,7 +8144,7 @@ smoke-kstack-park-control:
 	    SMOKE_TIMEOUT=$(KSTACK_PARK_TIMEOUT) SMOKE_LOG="$$log" SMOKE_KDIAG_LOG="$$diag" \
 	        MARKER_ONLY=1 SMP_CPUS=4 \
 	        REQUIRE_MARKER='PROC_SELFTEST: suspend OK' FAIL_MARKER='PROC_SELFTEST: FAIL' \
-	        tools/smoke_test.sh boot.iso >/dev/null 2>&1 || rc=$$?; \
+	        tools/smoke_test.sh horus.iso >/dev/null 2>&1 || rc=$$?; \
 	    : "captured, and deliberately NOT the assertion: this arm halts a CPU on"; \
 	    : "purpose, so whether the self-test still finishes is a property of the"; \
 	    : "schedule. The assertion is the shared park stack below. rc=$$rc"; \
@@ -8273,13 +8283,13 @@ EXEC_REENTER_EXTRA ?= 15
 smoke-exec-reenter:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1
-	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 boot.iso
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 horus.iso
 	@log=$$(mktemp); rc=0; live=0; \
 	for i in $$(seq 1 $(EXEC_REENTER_RUNS)); do \
 	    one=$$(mktemp); \
 	    SMOKE_TIMEOUT=$(EXEC_REENTER_TIMEOUT) SMOKE_LOG="$$one" MARKER_ONLY=1 SMP_CPUS=4 \
 	        REQUIRE_MARKER='PROC_SELFTEST: suspend OK' FAIL_MARKER='PANIC:' \
-	        tools/smoke_test.sh boot.iso >/dev/null 2>&1 || rc=$$?; \
+	        tools/smoke_test.sh horus.iso >/dev/null 2>&1 || rc=$$?; \
 	    grep -qa '$(EXEC_REENTER_LIVE_RE)' "$$one" && live=$$((live+1)); \
 	    cat "$$one" >> "$$log"; rm -f "$$one"; \
 	done; \
@@ -8341,13 +8351,13 @@ CR3_RECLAIM_CONTROL_FLAG ?= 1
 smoke-cr3-reclaim:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1
-	@$(MAKE) --no-print-directory PROC_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 horus.iso
 	@log=$$(mktemp); rc=0; live=0; \
 	for i in $$(seq 1 $(CR3_RECLAIM_RUNS)); do \
 	    one=$$(mktemp); \
 	    SMOKE_TIMEOUT=$(CR3_RECLAIM_TIMEOUT) SMOKE_LOG="$$one" MARKER_ONLY=1 SMP_CPUS=4 \
 	        REQUIRE_MARKER='PROC_SELFTEST: suspend OK' FAIL_MARKER='PROC_SELFTEST: FAIL' \
-	        tools/smoke_test.sh boot.iso >/dev/null 2>&1 || rc=$$?; \
+	        tools/smoke_test.sh horus.iso >/dev/null 2>&1 || rc=$$?; \
 	    grep -qa '$(CR3_RECLAIM_LIVE_RE)' "$$one" && live=$$((live+1)); \
 	    cat "$$one" >> "$$log"; rm -f "$$one"; \
 	done; \
@@ -8374,13 +8384,13 @@ smoke-cr3-reclaim:
 smoke-cr3-reclaim-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 CR3_RECLAIM_UNGUARDED=$(CR3_RECLAIM_CONTROL_FLAG)
-	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 CR3_RECLAIM_UNGUARDED=$(CR3_RECLAIM_CONTROL_FLAG) boot.iso
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 CR3_RECLAIM_UNGUARDED=$(CR3_RECLAIM_CONTROL_FLAG) horus.iso
 	@log=$$(mktemp); rc=0; hits=0; ok=0; incon=0; \
 	for i in $$(seq 1 $(CR3_RECLAIM_CONTROL_BOOTS)); do \
 	    one=$$(mktemp); \
 	    SMOKE_TIMEOUT=$(CR3_RECLAIM_TIMEOUT) SMOKE_LOG="$$one" MARKER_ONLY=1 SMP_CPUS=4 \
 	        REQUIRE_MARKER='PROC_SELFTEST: suspend OK' FAIL_MARKER='PANIC:' \
-	        tools/smoke_test.sh boot.iso >/dev/null 2>&1 || rc=$$?; \
+	        tools/smoke_test.sh horus.iso >/dev/null 2>&1 || rc=$$?; \
 	    if grep -qa 'CR3UAF' "$$one"; then \
 	        hits=$$((hits+1)); \
 	        echo "  boot $$i/$(CR3_RECLAIM_CONTROL_BOOTS): HIT, a tree in use was freed"; \
@@ -8430,19 +8440,19 @@ smoke-cr3-reclaim-control:
 smoke-spawn-owner:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SPAWN_OWNER_SELFTEST=1
-	@$(MAKE) --no-print-directory SPAWN_OWNER_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory SPAWN_OWNER_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='SPAWN_OWNER_SELFTEST: PASS' \
-		FAIL_MARKER='SPAWN_OWNER_SELFTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='SPAWN_OWNER_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-spawn-owner-control
 smoke-spawn-owner-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SPAWN_OWNER_SELFTEST=1 SPAWN_OWNER_UNCHECKED=1
-	@$(MAKE) --no-print-directory SPAWN_OWNER_SELFTEST=1 SPAWN_OWNER_UNCHECKED=1 boot.iso
+	@$(MAKE) --no-print-directory SPAWN_OWNER_SELFTEST=1 SPAWN_OWNER_UNCHECKED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='SPAWN_OWNER_SELFTEST: FAIL foreign-image-spawned' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "SPAWN OWNER CONTROL: PASS - unchecked, a foreign staged image is spawned"
 
 # ---- Why these two control arms classify every boot -----------------------
@@ -8483,13 +8493,13 @@ smoke-spawn-owner-control:
 smoke-exec-reenter-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 EXEC_REENTER_GLOBAL=$(EXEC_REENTER_CONTROL_FLAG)
-	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 EXEC_REENTER_GLOBAL=$(EXEC_REENTER_CONTROL_FLAG) boot.iso
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 EXEC_REENTER_GLOBAL=$(EXEC_REENTER_CONTROL_FLAG) horus.iso
 	@log=$$(mktemp); rc=0; hits=0; ok=0; incon=0; \
 	for i in $$(seq 1 $(EXEC_REENTER_RUNS)); do \
 	    one=$$(mktemp); \
 	    SMOKE_TIMEOUT=$(EXEC_REENTER_TIMEOUT) SMOKE_LOG="$$one" MARKER_ONLY=1 SMP_CPUS=4 \
 	        REQUIRE_MARKER='PROC_SELFTEST: suspend OK' FAIL_MARKER='PANIC:' \
-	        tools/smoke_test.sh boot.iso >/dev/null 2>&1 || rc=$$?; \
+	        tools/smoke_test.sh horus.iso >/dev/null 2>&1 || rc=$$?; \
 	    if grep -qa '$(EXEC_REENTER_RE)' "$$one"; then \
 	        hits=$$((hits+1)); \
 	        echo "  boot $$i/$(EXEC_REENTER_RUNS): HIT, the wrong CPU took the re-entry"; \
@@ -8519,7 +8529,7 @@ smoke-exec-reenter-control:
 	        extra=$$((extra+1)); one=$$(mktemp); \
 	        SMOKE_TIMEOUT=$(EXEC_REENTER_TIMEOUT) SMOKE_LOG="$$one" MARKER_ONLY=1 SMP_CPUS=4 \
 	            REQUIRE_MARKER='PROC_SELFTEST: suspend OK' FAIL_MARKER='PANIC:' \
-	            tools/smoke_test.sh boot.iso >/dev/null 2>&1 || rc=$$?; \
+	            tools/smoke_test.sh horus.iso >/dev/null 2>&1 || rc=$$?; \
 	        if grep -qa '$(EXEC_REENTER_RE)' "$$one"; then \
 	            hits=1; echo "  extra boot $$extra/$(EXEC_REENTER_EXTRA): HIT"; \
 	            cat "$$one" >> "$$log"; rm -f "$$one"; break; \
@@ -8599,11 +8609,11 @@ DEFER_EXEMPTION_BOOTS ?= 8
 smoke-defer-exemption:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 DEFER_WINDOW_WIDEN=1
-	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 DEFER_WINDOW_WIDEN=1 boot.iso
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 DEFER_WINDOW_WIDEN=1 horus.iso
 	@SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='PROC_SELFTEST: suspend OK' \
 		FAIL_MARKER='stale scheduler claim' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # Control arm. Same widening, exemption cleared early: the audit must accuse.
 # Reproduces in 8 boots of 10, so this tries up to DEFER_EXEMPTION_BOOTS and
@@ -8614,7 +8624,7 @@ smoke-defer-exemption:
 smoke-defer-exemption-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 DEFER_WINDOW_WIDEN=1 DEFER_CLEAR_EARLY=1
-	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 DEFER_WINDOW_WIDEN=1 DEFER_CLEAR_EARLY=1 boot.iso
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 DEFER_WINDOW_WIDEN=1 DEFER_CLEAR_EARLY=1 horus.iso
 	@n=0; hit=0; live=0; incon=0; \
 	: "The boot's output is CAPTURED rather than piped into grep -q. Piping it"; \
 	: "discarded every boot: a boot that died at GRUB and a boot that ran"; \
@@ -8623,7 +8633,7 @@ smoke-defer-exemption-control:
 	: "arms, found in the same sweep on 2026-08-30."; \
 	while [ $$n -lt $(DEFER_EXEMPTION_BOOTS) ]; do \
 	    n=$$((n+1)); \
-	    out=$$(SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) tools/smoke_test.sh boot.iso 2>&1); \
+	    out=$$(SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) tools/smoke_test.sh horus.iso 2>&1); \
 	    if echo "$$out" | grep -q 'stale scheduler claim'; then \
 	        echo "  boot $$n/$(DEFER_EXEMPTION_BOOTS): HIT, a stale claim reached ring 3"; \
 	        hit=1; break; \
@@ -8652,11 +8662,11 @@ smoke-defer-exemption-control:
 smoke-switch-commit:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 KSP_GUARD_INJECT=1
-	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 KSP_GUARD_INJECT=1 boot.iso
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 KSP_GUARD_INJECT=1 horus.iso
 	@SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='SCHED BOGUS KSP from task_exit_switch' \
 		FAIL_MARKER='stale scheduler claim' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # Control arm: same injection, pre-fix ordering. The claim is taken before the
 # value is validated, the refusal parks the CPU, and the claim is orphaned --
@@ -8665,13 +8675,13 @@ smoke-switch-commit:
 smoke-switch-commit-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 KSP_GUARD_INJECT=1 SWITCH_COMMIT_EARLY=1
-	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 KSP_GUARD_INJECT=1 SWITCH_COMMIT_EARLY=1 boot.iso
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 KSP_GUARD_INJECT=1 SWITCH_COMMIT_EARLY=1 horus.iso
 	@n=0; hit=0; \
 	while [ $$n -lt $(SWITCH_COMMIT_CONTROL_BOOTS) ]; do \
 	    n=$$((n+1)); \
 	    out=$$(SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
 	        EXPECT_FAULT='stale scheduler claim' \
-	        tools/smoke_test.sh boot.iso 2>&1); rc=$$?; \
+	        tools/smoke_test.sh horus.iso 2>&1); rc=$$?; \
 	    echo "$$out" | tail -2 | sed 's/^/  /'; \
 	    if [ $$rc -eq 0 ]; then hit=$$n; break; fi; \
 	    case "$$out" in \
@@ -8694,10 +8704,10 @@ smoke-switch-commit-control:
 smoke-claim-release:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1
-	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 boot.iso
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 horus.iso
 	@SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
 		FAIL_MARKER='deferred release outstanding' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # Control arm. CLAIM_RELEASE_SKIP=1 removes the release from the ISR epilogue, so
 # every switching CPU reaches ring 3 owing one and the guard must fire. Without
@@ -8729,13 +8739,13 @@ SWITCH_COMMIT_CONTROL_BOOTS ?= 3
 smoke-claim-release-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 CLAIM_RELEASE_SKIP=1
-	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 CLAIM_RELEASE_SKIP=1 boot.iso
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 CLAIM_RELEASE_SKIP=1 horus.iso
 	@n=0; hit=0; \
 	while [ $$n -lt $(CLAIM_RELEASE_CONTROL_BOOTS) ]; do \
 	    n=$$((n+1)); \
 	    out=$$(SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
 	        EXPECT_FAULT='ring 3 reached with a deferred release outstanding' \
-	        tools/smoke_test.sh boot.iso 2>&1); rc=$$?; \
+	        tools/smoke_test.sh horus.iso 2>&1); rc=$$?; \
 	    echo "$$out" | tail -2 | sed 's/^/  /'; \
 	    if [ $$rc -eq 0 ]; then hit=$$n; break; fi; \
 	    case "$$out" in \
@@ -8773,11 +8783,11 @@ smoke-claim-release-control:
 smoke-vfs:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory VFS_SELFTEST=1
-	@$(MAKE) --no-print-directory VFS_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory VFS_SELFTEST=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='VFSTEST: PASS' \
 		FAIL_MARKER='VFSTEST: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # Control arm 1 -- routing. VFS_FIRST_MATCH=1 returns the first matching mount,
 # and "/" matches everything, so /dev/zero is addressed to the root filesystem.
@@ -8787,10 +8797,10 @@ smoke-vfs:
 smoke-vfs-prefix-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory VFS_SELFTEST=1 VFS_FIRST_MATCH=1
-	@$(MAKE) --no-print-directory VFS_SELFTEST=1 VFS_FIRST_MATCH=1 boot.iso
+	@$(MAKE) --no-print-directory VFS_SELFTEST=1 VFS_FIRST_MATCH=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='VFSTEST: FAIL wrong-server-answered' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "VFS PREFIX CONTROL: PASS - first match sends /dev/zero to the wrong server"
 
 # Control arm 2 -- the mount gate. VFS_MOUNT_UNGATED=1 removes hvfs_mount's
@@ -8800,10 +8810,10 @@ smoke-vfs-prefix-control:
 smoke-vfs-mount-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory VFS_SELFTEST=1 VFS_MOUNT_UNGATED=1
-	@$(MAKE) --no-print-directory VFS_SELFTEST=1 VFS_MOUNT_UNGATED=1 boot.iso
+	@$(MAKE) --no-print-directory VFS_SELFTEST=1 VFS_MOUNT_UNGATED=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='VFSTEST: FAIL mounted-without-a-capability' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "VFS MOUNT CONTROL: PASS - a prefix alone installs a mount"
 
 # ---- The in-kernel ramfs is not reachable from ring 3 ----------------------
@@ -8814,11 +8824,11 @@ smoke-vfs-mount-control:
 smoke-image-abi:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory IMAGE_ABI_SELFTEST=1
-	@$(MAKE) --no-print-directory IMAGE_ABI_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory IMAGE_ABI_SELFTEST=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='IMAGE_ABI: PASS' \
 		FAIL_MARKER='IMAGE_ABI: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # Control arm: mkheadered writes `name` four bytes further into the same 44-byte
 # header. Magic, entry, size and the payload offset stay correct, so the image
@@ -8829,20 +8839,20 @@ smoke-image-abi:
 smoke-image-abi-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory IMAGE_ABI_SELFTEST=1 IMAGE_HDR_WRITER_SKEW=1
-	@$(MAKE) --no-print-directory IMAGE_ABI_SELFTEST=1 IMAGE_HDR_WRITER_SKEW=1 boot.iso
+	@$(MAKE) --no-print-directory IMAGE_ABI_SELFTEST=1 IMAGE_HDR_WRITER_SKEW=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='IMAGE_ABI: FAIL name-mismatch' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-passwd-probe
 smoke-passwd-probe:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PASSWD_PROBE=1
-	@$(MAKE) --no-print-directory PASSWD_PROBE=1 boot.iso
+	@$(MAKE) --no-print-directory PASSWD_PROBE=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='PASSWDPROBE: PASS' \
 		FAIL_MARKER='PASSWDPROBE: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # Control arm. RAMFS_SLOT3_GATE=1 restores the four slot-3 gates AND rebuilds the
 # in-kernel ramfs they lead to (it is out of the ship build entirely since its
@@ -8858,10 +8868,10 @@ smoke-passwd-probe:
 smoke-passwd-probe-legacy-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PASSWD_PROBE=1 LEGACY_SYSCALLS_PRESENT=1
-	@$(MAKE) --no-print-directory PASSWD_PROBE=1 LEGACY_SYSCALLS_PRESENT=1 boot.iso
+	@$(MAKE) --no-print-directory PASSWD_PROBE=1 LEGACY_SYSCALLS_PRESENT=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='PASSWDPROBE: FAIL legacy-exec-spawned-a-task' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # Control arms 3 and 4: the two ship-build rows the earlier sweeps did not count.
 # SYS_RECEIVE_PROGRAM (27) and SYS_EXEC (19) carried the same
@@ -8883,28 +8893,28 @@ smoke-passwd-probe-legacy-control:
 smoke-passwd-probe-recv27-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PASSWD_PROBE=1 LEGACY_SYSCALLS_PRESENT=1
-	@$(MAKE) --no-print-directory PASSWD_PROBE=1 LEGACY_SYSCALLS_PRESENT=1 boot.iso
+	@$(MAKE) --no-print-directory PASSWD_PROBE=1 LEGACY_SYSCALLS_PRESENT=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='PASSWDPROBE: FAIL receive-program-reachable-on-the-slot-3-decoy' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-passwd-probe-exec19-control
 smoke-passwd-probe-exec19-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PASSWD_PROBE=1 LEGACY_SYSCALLS_PRESENT=1 SYSCALL_COVERAGE=1
-	@$(MAKE) --no-print-directory PASSWD_PROBE=1 LEGACY_SYSCALLS_PRESENT=1 SYSCALL_COVERAGE=1 boot.iso
+	@$(MAKE) --no-print-directory PASSWD_PROBE=1 LEGACY_SYSCALLS_PRESENT=1 SYSCALL_COVERAGE=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='SYSCOV 19' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-passwd-probe-control
 smoke-passwd-probe-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PASSWD_PROBE=1 RAMFS_SLOT3_GATE=1
-	@$(MAKE) --no-print-directory PASSWD_PROBE=1 RAMFS_SLOT3_GATE=1 boot.iso
+	@$(MAKE) --no-print-directory PASSWD_PROBE=1 RAMFS_SLOT3_GATE=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='PASSWDPROBE: FAIL opened-a-ramfs-file' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "PASSWD PROBE CONTROL: PASS - slot-3 gated, an ordinary user reads the store"
 
 # ---- XMM register-file isolation (SECURITY.md S16) ------------------------
@@ -8916,11 +8926,11 @@ smoke-passwd-probe-control:
 smoke-fpu:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FPU_SELFTEST=1
-	@$(MAKE) --no-print-directory FPU_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory FPU_SELFTEST=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='FPUTEST: PASS no-xmm-leak' \
 		FAIL_MARKER='FPUTEST: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # Control arm 1 -- the disclosure, and the one S16 is about. FPU_NO_RESTORE=1
 # drops the fxrstor on the way back to ring 3, so a task inherits whatever the
@@ -8930,10 +8940,10 @@ smoke-fpu:
 smoke-fpu-leak-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FPU_SELFTEST=1 FPU_NO_RESTORE=1
-	@$(MAKE) --no-print-directory FPU_SELFTEST=1 FPU_NO_RESTORE=1 boot.iso
+	@$(MAKE) --no-print-directory FPU_SELFTEST=1 FPU_NO_RESTORE=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='FPUTEST: FAIL peer-saw-sentinel' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "FPU LEAK CONTROL: PASS - unrestored, a task reads its predecessor's xmm"
 
 # Control arm 2 -- the other half, which is loss rather than disclosure.
@@ -8945,10 +8955,10 @@ smoke-fpu-leak-control:
 smoke-fpu-save-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FPU_SELFTEST=1 FPU_NO_SAVE=1
-	@$(MAKE) --no-print-directory FPU_SELFTEST=1 FPU_NO_SAVE=1 boot.iso
+	@$(MAKE) --no-print-directory FPU_SELFTEST=1 FPU_NO_SAVE=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='FPUTEST: FAIL own-xmm-lost' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "FPU SAVE CONTROL: PASS - unsaved, a task loses its own register file"
 
 # ---- fork (roadmap 2.3) ---------------------------------------------------
@@ -8963,11 +8973,11 @@ smoke-fpu-save-control:
 smoke-fork:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FORK_SELFTEST=1
-	@$(MAKE) --no-print-directory FORK_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory FORK_SELFTEST=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='FORKTEST: PASS' \
 		FAIL_MARKER='FORKTEST: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # Control arm 1 -- the copy. FORK_SHARE_WRITABLE=1 leaves both trees' leaves
 # writable and unmarked, so parent and child share every page. The child's write
@@ -8977,10 +8987,10 @@ smoke-fork:
 smoke-fork-share-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FORK_SELFTEST=1 FORK_SHARE_WRITABLE=1
-	@$(MAKE) --no-print-directory FORK_SELFTEST=1 FORK_SHARE_WRITABLE=1 boot.iso
+	@$(MAKE) --no-print-directory FORK_SELFTEST=1 FORK_SHARE_WRITABLE=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='FORKTEST: FAIL parent-clobbered' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "FORK SHARE CONTROL: PASS - unmarked, a fork shares its parent's pages"
 
 # Control arm 2 -- the kernel object. FORK_ARENA_UNCHECKED=1 clones a PTE whose
@@ -8991,10 +9001,10 @@ smoke-fork-share-control:
 smoke-fork-arena-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FORK_SELFTEST=1 FORK_ARENA_UNCHECKED=1
-	@$(MAKE) --no-print-directory FORK_SELFTEST=1 FORK_ARENA_UNCHECKED=1 boot.iso
+	@$(MAKE) --no-print-directory FORK_SELFTEST=1 FORK_ARENA_UNCHECKED=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='FORKTEST: FAIL forked-with-frame-mapped' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "FORK ARENA CONTROL: PASS - unchecked, a mapped kernel object is cloned"
 
 # Control arm 3 -- the derivation. FORK_CSPACE_FLAT_COPY=1 copies the parent's
@@ -9008,10 +9018,10 @@ smoke-fork-arena-control:
 smoke-fork-cspace-flat-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FORK_SELFTEST=1 FORK_CSPACE_FLAT_COPY=1
-	@$(MAKE) --no-print-directory FORK_SELFTEST=1 FORK_CSPACE_FLAT_COPY=1 boot.iso
+	@$(MAKE) --no-print-directory FORK_SELFTEST=1 FORK_CSPACE_FLAT_COPY=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='FORKTEST: FAIL child-cap-shares-serial' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "FORK CSPACE FLAT CONTROL: PASS - copied verbatim, two caps share one serial"
 
 # Control arm 4 -- the parent edge, and the one the whole change exists for.
@@ -9024,10 +9034,10 @@ smoke-fork-cspace-flat-control:
 smoke-fork-cspace-orphan-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FORK_SELFTEST=1 FORK_CSPACE_ORPHAN_COPY=1
-	@$(MAKE) --no-print-directory FORK_SELFTEST=1 FORK_CSPACE_ORPHAN_COPY=1 boot.iso
+	@$(MAKE) --no-print-directory FORK_SELFTEST=1 FORK_CSPACE_ORPHAN_COPY=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='FORKTEST: FAIL child-cap-not-derived' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "FORK CSPACE ORPHAN CONTROL: PASS - fresh serial, no parent edge, revoke misses it"
 
 # ---- fork + exec, the pairing (roadmap 2.3) -------------------------------
@@ -9045,11 +9055,11 @@ smoke-fork-cspace-orphan-control:
 smoke-forkexec:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FORKEXEC_SELFTEST=1
-	@$(MAKE) --no-print-directory FORKEXEC_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory FORKEXEC_SELFTEST=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='FORKEXECTEST: PASS' \
 		FAIL_MARKER='FORKEXECTEST: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # Control arm 1 -- the exec discards. EXEC_RESET_CSPACE=1 nulls every capability
 # above the birth endowment, so the execed image arrives holding nothing it was
@@ -9058,10 +9068,10 @@ smoke-forkexec:
 smoke-forkexec-reset-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FORKEXEC_SELFTEST=1 EXEC_RESET_CSPACE=1
-	@$(MAKE) --no-print-directory FORKEXEC_SELFTEST=1 EXEC_RESET_CSPACE=1 boot.iso
+	@$(MAKE) --no-print-directory FORKEXEC_SELFTEST=1 EXEC_RESET_CSPACE=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='FORKEXECTEST: FAIL exec-dropped-inherited-cap' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "FORKEXEC RESET CONTROL: PASS - a clean slate loses what the task was given"
 
 # Control arm 2 -- the exec launders, and the one the property exists for.
@@ -9073,21 +9083,21 @@ smoke-forkexec-reset-control:
 smoke-forkexec-root-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FORKEXEC_SELFTEST=1 EXEC_ROOT_CSPACE=1
-	@$(MAKE) --no-print-directory FORKEXEC_SELFTEST=1 EXEC_ROOT_CSPACE=1 boot.iso
+	@$(MAKE) --no-print-directory FORKEXEC_SELFTEST=1 EXEC_ROOT_CSPACE=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='FORKEXECTEST: FAIL child-cap-survived-revoke-after-exec' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "FORKEXEC ROOT CONTROL: PASS - re-minted as a root, the parent's revoke misses it"
 
 .PHONY: smoke-frame
 smoke-frame:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FRAME_SELFTEST=1
-	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='FRAMETEST: PASS' \
 		FAIL_MARKER='FRAMETEST: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # Control arm 1 -- the index bound. FRAME_INDEX_UNCHECKED=1 makes
 # CAP_FRAME.object a physical address that is mapped directly, which is the
@@ -9099,10 +9109,10 @@ smoke-frame:
 smoke-frame-index-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 FRAME_INDEX_UNCHECKED=1
-	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 FRAME_INDEX_UNCHECKED=1 boot.iso
+	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 FRAME_INDEX_UNCHECKED=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='FRAMETEST: FAIL legacy-cap-mapped' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "FRAME INDEX CONTROL: PASS - unchecked, the legacy slot-3 CAP_FRAME maps"
 
 # Control arm 2 -- the rights floor. FRAME_RIGHTS_UNCHECKED=1 asks cap_lookup for
@@ -9116,10 +9126,10 @@ smoke-frame-index-control:
 smoke-frame-rights-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 FRAME_RIGHTS_UNCHECKED=1
-	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 FRAME_RIGHTS_UNCHECKED=1 boot.iso
+	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 FRAME_RIGHTS_UNCHECKED=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='FRAMETEST: FAIL readonly-delegate-wrote' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "FRAME RIGHTS CONTROL: PASS - unchecked, a READ-only delegate writes"
 
 # Control arm 3 -- the partial-failure policy. FRAME_REGION_NO_ROLLBACK=1 drops
@@ -9133,10 +9143,10 @@ smoke-frame-rights-control:
 smoke-frame-region-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 FRAME_REGION_NO_ROLLBACK=1
-	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 FRAME_REGION_NO_ROLLBACK=1 boot.iso
+	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 FRAME_REGION_NO_ROLLBACK=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='FRAMETEST: FAIL region-rollback-page0' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "FRAME REGION CONTROL: PASS - without the unwind, a failed region keeps its pages"
 
 # Control arm 4 -- the same policy from the other side. FRAME_REGION_ROLLBACK_WIDE=1
@@ -9150,10 +9160,10 @@ smoke-frame-region-control:
 smoke-frame-region-wide-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 FRAME_REGION_ROLLBACK_WIDE=1
-	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 FRAME_REGION_ROLLBACK_WIDE=1 boot.iso
+	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 FRAME_REGION_ROLLBACK_WIDE=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='FRAMETEST: FAIL region-rollback-ate-blocker' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "FRAME REGION WIDE CONTROL: PASS - a whole-range unwind eats the mapping that refused it"
 
 # Control arm 5 -- the length a frame carries. FRAME_PAGES_SAME_PHYS=1 advances
@@ -9166,10 +9176,10 @@ smoke-frame-region-wide-control:
 smoke-frame-pages-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 FRAME_PAGES_SAME_PHYS=1
-	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 FRAME_PAGES_SAME_PHYS=1 boot.iso
+	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 FRAME_PAGES_SAME_PHYS=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='FRAMETEST: FAIL sized-pages-distinct' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "FRAME PAGES CONTROL: PASS - a sized frame whose pages all alias page 0"
 
 # Control arm 6 -- SYS_FRAME_PAGES' authority. FRAME_INFO_BY_INDEX=1 reads the
@@ -9182,10 +9192,10 @@ smoke-frame-pages-control:
 smoke-frame-info-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 FRAME_INFO_BY_INDEX=1
-	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 FRAME_INFO_BY_INDEX=1 boot.iso
+	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 FRAME_INFO_BY_INDEX=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='FRAMETEST: FAIL peer-frame-pages-not-an-index' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "FRAME INFO CONTROL: PASS - a delegate reads frames it holds no capability to"
 
 # SYS_DMA_ADDR's second capability. The call answers with a physical address, and
@@ -9198,21 +9208,21 @@ smoke-frame-info-control:
 smoke-frame-dma-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 DMA_ADDR_FRAME_ONLY=1
-	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 DMA_ADDR_FRAME_ONLY=1 boot.iso
+	@$(MAKE) --no-print-directory FRAME_SELFTEST=1 DMA_ADDR_FRAME_ONLY=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='FRAMETEST: FAIL dma-addr-without-device-cap' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "FRAME DMA CONTROL: PASS - a task with no device capability learns a bus address"
 
 .PHONY: smoke-libhorus
 smoke-libhorus:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory LIBHORUS_SELFTEST=1
-	@$(MAKE) --no-print-directory LIBHORUS_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory LIBHORUS_SELFTEST=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='LIBHORUS_SELFTEST: PASS' \
 		FAIL_MARKER='LIBHORUS_SELFTEST: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # Control arm 1 -- the security one. LIBHORUS_RETRY_ANY=1 restores the loop that
 # retries EVERY negative rc, so the selftest's call against an empty capability
@@ -9227,11 +9237,11 @@ smoke-libhorus:
 smoke-libhorus-retry-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory LIBHORUS_SELFTEST=1 LIBHORUS_RETRY_ANY=1
-	@$(MAKE) --no-print-directory LIBHORUS_SELFTEST=1 LIBHORUS_RETRY_ANY=1 boot.iso
+	@$(MAKE) --no-print-directory LIBHORUS_SELFTEST=1 LIBHORUS_RETRY_ANY=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='LIBHORUS_SELFTEST: calling an empty slot' \
 		FAIL_MARKER='LIBHORUS_SELFTEST: PASS' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # Control arm 2 -- the termination guarantee. LIBHORUS_STRNCPY_UNTERMINATED=1
 # restores C strncpy's semantics, so the truncating copy leaves no NUL and the
@@ -9242,21 +9252,21 @@ smoke-libhorus-retry-control:
 smoke-libhorus-strncpy-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory LIBHORUS_SELFTEST=1 LIBHORUS_STRNCPY_UNTERMINATED=1
-	@$(MAKE) --no-print-directory LIBHORUS_SELFTEST=1 LIBHORUS_STRNCPY_UNTERMINATED=1 boot.iso
+	@$(MAKE) --no-print-directory LIBHORUS_SELFTEST=1 LIBHORUS_STRNCPY_UNTERMINATED=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='LIBHORUS_SELFTEST: FAIL strncpy-truncate-unterminated' \
 		FAIL_MARKER='LIBHORUS_SELFTEST: PASS' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-recvblock
 smoke-recvblock:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory RECVBLOCK_SELFTEST=1
-	@$(MAKE) --no-print-directory RECVBLOCK_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory RECVBLOCK_SELFTEST=1 horus.iso
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='RECVBLOCK_SELFTEST: PASS' \
 		FAIL_MARKER='RECVBLOCK_SELFTEST: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # The same gate under -smp 4. The interesting half of the blocking receive is a
 # CROSS-CPU wake: the sender completes the receive, so the reply right has to be
@@ -9270,19 +9280,19 @@ smoke-recvblock:
 smoke-recvblock-smp:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory RECVBLOCK_SELFTEST=1
-	@$(MAKE) --no-print-directory RECVBLOCK_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory RECVBLOCK_SELFTEST=1 horus.iso
 	@SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='RECVBLOCK_SELFTEST: PASS' \
 		FAIL_MARKER='RECVBLOCK_SELFTEST: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-sched-invariants
 smoke-sched-invariants:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1
-	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 boot.iso
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) FAIL_MARKER='PANIC:' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # The gating form: N pinned boots of the claim-checking kernel, reported as a rate.
 #
@@ -9304,9 +9314,9 @@ smoke-sched-invariants:
 smoke-sched-invariants-stress:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1
-	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 boot.iso
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 horus.iso
 	@STRESS_RUNS=$${STRESS_RUNS:-30} SMP_CPUS=$(SMP_CPUS) SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
-		FAIL_MARKER='PANIC:' STRESS_GATE=marker tools/stress_boot.sh boot.iso
+		FAIL_MARKER='PANIC:' STRESS_GATE=marker tools/stress_boot.sh horus.iso
 
 .PHONY: test
 # The local sweep: the Rust unit tests, then a clean full build.
@@ -9332,8 +9342,8 @@ test:
 SMOKE_TIMEOUT ?= 40
 .PHONY: smoke
 # Clean-build like every sibling smoke-* target, and for the same reason. As a
-# plain `boot.iso` dependency this booted whatever kernel the *previous* target
-# happened to leave behind: run `make smoke-newlib && make smoke` and boot.iso is
+# plain `horus.iso` dependency this booted whatever kernel the *previous* target
+# happened to leave behind: run `make smoke-newlib && make smoke` and horus.iso is
 # already newer than its prerequisites, so make rebuilds nothing and `smoke`
 # silently tests the NEWLIB_SELFTEST kernel. That reads as a spurious failure
 # here (it times out waiting for the shell banner), but the same staleness can
@@ -9343,8 +9353,8 @@ SMOKE_TIMEOUT ?= 40
 smoke:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory
-	@$(MAKE) --no-print-directory boot.iso
-	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) tools/smoke_test.sh boot.iso
+	@$(MAKE) --no-print-directory horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) tools/smoke_test.sh horus.iso
 
 # ---- every line of the boot log carries a timestamp ------------------------
 #
@@ -9369,11 +9379,11 @@ CONSOLE_TS_LOG ?= .console-timestamps.log
 smoke-console-timestamps:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory horus.iso
 	@set -eu; \
 	rm -f $(CONSOLE_TS_LOG); \
 	SMOKE_LOG=$(CONSOLE_TS_LOG) SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
-	    tools/smoke_test.sh boot.iso; \
+	    tools/smoke_test.sh horus.iso; \
 	python3 tools/check_console_timestamps.py $(CONSOLE_TS_LOG)
 
 # CONTROL ARM 1 -- nothing is stamped, on either side of the handover.
@@ -9387,11 +9397,11 @@ smoke-console-timestamps:
 smoke-console-timestamps-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CONSOLE_TIMESTAMPS_LEGACY=1
-	@$(MAKE) --no-print-directory CONSOLE_TIMESTAMPS_LEGACY=1 boot.iso
+	@$(MAKE) --no-print-directory CONSOLE_TIMESTAMPS_LEGACY=1 horus.iso
 	@set -eu; \
 	rm -f $(CONSOLE_TS_LOG); \
 	SMOKE_LOG=$(CONSOLE_TS_LOG) SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
-	    tools/smoke_test.sh boot.iso; \
+	    tools/smoke_test.sh horus.iso; \
 	out="$$(python3 tools/check_console_timestamps.py $(CONSOLE_TS_LOG) || true)"; \
 	echo "$$out"; \
 	case "$$out" in \
@@ -9416,11 +9426,11 @@ smoke-console-timestamps-control:
 smoke-console-timestamps-epoch-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CLOCK_EPOCH_FROM_FIRST_TICK=1
-	@$(MAKE) --no-print-directory CLOCK_EPOCH_FROM_FIRST_TICK=1 boot.iso
+	@$(MAKE) --no-print-directory CLOCK_EPOCH_FROM_FIRST_TICK=1 horus.iso
 	@set -eu; \
 	rm -f $(CONSOLE_TS_LOG); \
 	SMOKE_LOG=$(CONSOLE_TS_LOG) SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
-	    tools/smoke_test.sh boot.iso; \
+	    tools/smoke_test.sh horus.iso; \
 	out="$$(python3 tools/check_console_timestamps.py $(CONSOLE_TS_LOG) || true)"; \
 	echo "$$out"; \
 	case "$$out" in \
@@ -9440,12 +9450,12 @@ smoke-console-timestamps-epoch-control:
 
 # ---- reproducible builds -------------------------------------------------
 #
-# The artifacts a reproducible build must cover. boot.iso is on this list
+# The artifacts a reproducible build must cover. horus.iso is on this list
 # because it is the artifact a third party actually obtains; until 2026-08-19
 # the recording step silently settled for kernel.elf alone (see
 # tools/record_build_sha.sh for how three mechanisms conspired to keep that
 # quiet, and TESTS.md for the gate that now refuses it).
-REPRO_ARTIFACTS := kernel.elf boot.iso
+REPRO_ARTIFACTS := kernel.elf horus.iso
 
 # The epoch is pinned rather than taken from the environment: a build whose
 # timestamps depend on when it ran cannot be compared to one that ran later,
@@ -9456,12 +9466,12 @@ ifeq ($(REPRO_SHA_UNCHECKED),1)
 # CONTROL ARM -- restores the pre-2026-08-19 behaviour, and it takes BOTH
 # halves to reproduce the defect. Recording with a swallowed status is harmless
 # while every artifact exists; what made it silent is that the goal list did not
-# build boot.iso, so the sha256sum it hid was always a failing one. Restore only
+# build horus.iso, so the sha256sum it hid was always a failing one. Restore only
 # the `|| true` and the arm passes for the wrong reason.
 REPRO_GOALS  := all
 REPRO_RECORD := sha256sum $(REPRO_ARTIFACTS) > .build.sha 2>/dev/null || true
 else
-REPRO_GOALS  := all boot.iso
+REPRO_GOALS  := all horus.iso
 REPRO_RECORD := $(CURDIR)/tools/record_build_sha.sh $(REPRO_ARTIFACTS)
 endif
 
@@ -9492,7 +9502,7 @@ smoke-repro-sha:
 	@rm -rf .repro-sha-test && mkdir -p .repro-sha-test
 	@: > .repro-sha-test/kernel.elf
 	@cd .repro-sha-test && if $(REPRO_RECORD) >record.log 2>&1; then 	    echo "REPRO_SHA: FAIL recorded-a-build-missing-$(word 2,$(REPRO_ARTIFACTS))"; 	    exit 1; 	 elif [ -e .build.sha ]; then 	    echo "REPRO_SHA: FAIL partial-record-left-behind"; 	    exit 1; 	 else 	    echo "REPRO_SHA: PASS refused an incomplete build, wrote nothing"; 	 fi
-	@: > .repro-sha-test/boot.iso
+	@: > .repro-sha-test/horus.iso
 	@cd .repro-sha-test && if $(REPRO_RECORD) >>record.log 2>&1; then 	    n=$$(wc -l < .build.sha); 	    if [ "$$n" -ne $(words $(REPRO_ARTIFACTS)) ]; then 	        echo "REPRO_SHA: FAIL recorded $$n of $(words $(REPRO_ARTIFACTS)) artifacts"; exit 1; 	    fi; 	    for a in $(REPRO_ARTIFACTS); do 	        grep -q " $$a$$" .build.sha || { echo "REPRO_SHA: FAIL $$a not recorded"; exit 1; }; 	    done; 	    echo "REPRO_SHA: PASS recorded $$n artifacts, $(REPRO_ARTIFACTS)"; 	 else 	    echo "REPRO_SHA: FAIL refused a complete build"; 	    cat record.log; exit 1; 	 fi
 	@rm -rf .repro-sha-test
 
@@ -9637,16 +9647,16 @@ KEYSLOT_TIMEOUT    ?= 300
 smoke-keyslots:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory KEYSLOT_SELFTEST=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
-	@$(MAKE) --no-print-directory KEYSLOT_SELFTEST=1 STORAGE_ATA=1 boot.iso STORAGE_AUTOFORMAT=1
+	@$(MAKE) --no-print-directory KEYSLOT_SELFTEST=1 STORAGE_ATA=1 horus.iso STORAGE_AUTOFORMAT=1
 	@rm -f keyslots.img && truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) keyslots.img
 	@echo "[keyslots] boot 1/2 - format with one password, add a second slot"
 	@SMOKE_TIMEOUT=$(KEYSLOT_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=keyslots.img \
 		REQUIRE_MARKER='KEYSLOT_SELFTEST: WROTE' FAIL_MARKER='KEYSLOT_SELFTEST: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "[keyslots] boot 2/2 - both open it; revoke one; the other survives"
 	@SMOKE_TIMEOUT=$(KEYSLOT_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=keyslots.img \
 		REQUIRE_MARKER='KEYSLOT_SELFTEST: PASS' FAIL_MARKER='KEYSLOT_SELFTEST: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@rm -f keyslots.img
 	@echo "[keyslots] PASS - two passwords, one volume, and revocation that revokes"
 
@@ -9657,14 +9667,14 @@ smoke-keyslots:
 smoke-keyslots-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory KEYSLOT_SELFTEST=1 STORAGE_ATA=1 KEYSLOT_REMOVE_NOOP=1 STORAGE_AUTOFORMAT=1
-	@$(MAKE) --no-print-directory KEYSLOT_SELFTEST=1 STORAGE_ATA=1 KEYSLOT_REMOVE_NOOP=1 boot.iso STORAGE_AUTOFORMAT=1
+	@$(MAKE) --no-print-directory KEYSLOT_SELFTEST=1 STORAGE_ATA=1 KEYSLOT_REMOVE_NOOP=1 horus.iso STORAGE_AUTOFORMAT=1
 	@rm -f keyslots-c.img && truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) keyslots-c.img
 	@SMOKE_TIMEOUT=$(KEYSLOT_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=keyslots-c.img \
 		REQUIRE_MARKER='KEYSLOT_SELFTEST: WROTE' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@SMOKE_TIMEOUT=$(KEYSLOT_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=keyslots-c.img \
 		REQUIRE_MARKER='KEYSLOT_SELFTEST: FAIL revoked-password-still-opens-the-volume' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@rm -f keyslots-c.img
 	@echo "[keyslots] CONTROL PASS - a no-op revocation leaves the password working"
 
@@ -9678,16 +9688,16 @@ USERS_PERSIST_TIMEOUT ?= 300
 smoke-users-persist:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
-	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 boot.iso STORAGE_AUTOFORMAT=1
+	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 horus.iso STORAGE_AUTOFORMAT=1
 	@rm -f users.img && truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) users.img
 	@echo "[users] boot 1/2 - add an account and set its password"
 	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=users.img \
 		REQUIRE_MARKER='USERS_SELFTEST: WROTE' FAIL_MARKER='USERS_SELFTEST: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "[users] boot 2/2 - the password verifies, and a wrong one does not"
 	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=users.img \
 		REQUIRE_MARKER='USERS_SELFTEST: PASS' FAIL_MARKER='USERS_SELFTEST: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@rm -f users.img
 	@echo "[users] PASS - an account outlived a power cycle"
 
@@ -9698,14 +9708,14 @@ smoke-users-persist:
 smoke-users-persist-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 USERS_PEPPER_PER_BOOT=1 STORAGE_AUTOFORMAT=1
-	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 USERS_PEPPER_PER_BOOT=1 boot.iso STORAGE_AUTOFORMAT=1
+	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 USERS_PEPPER_PER_BOOT=1 horus.iso STORAGE_AUTOFORMAT=1
 	@rm -f users-c.img && truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) users-c.img
 	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=users-c.img \
 		REQUIRE_MARKER='USERS_SELFTEST: WROTE' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=users-c.img \
 		REQUIRE_MARKER='USERS_SELFTEST: FAIL hash-did-not-survive-the-reboot' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@rm -f users-c.img
 	@echo "[users] CONTROL PASS - a per-boot pepper defeats a faithfully stored table"
 
@@ -9716,16 +9726,16 @@ smoke-users-persist-control:
 smoke-users-tamper:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
-	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 boot.iso STORAGE_AUTOFORMAT=1
+	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 horus.iso STORAGE_AUTOFORMAT=1
 	@rm -f users-t.img && truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) users-t.img
 	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=users-t.img \
 		REQUIRE_MARKER='USERS_SELFTEST: WROTE' FAIL_MARKER='USERS_SELFTEST: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 USERS_TAMPER_INJECT=1 STORAGE_AUTOFORMAT=1
-	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 USERS_TAMPER_INJECT=1 boot.iso STORAGE_AUTOFORMAT=1
+	@$(MAKE) --no-print-directory USERS_PERSIST_SELFTEST=1 STORAGE_ATA=1 USERS_TAMPER_INJECT=1 horus.iso STORAGE_AUTOFORMAT=1
 	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=users-t.img \
 		REQUIRE_MARKER='USERS_SELFTEST: TAMPER-REFUSED' FAIL_MARKER='USERS_SELFTEST: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@rm -f users-t.img
 	@echo "[users] TAMPER PASS - a corrupted table refuses logins instead of reseeding"
 
@@ -9737,12 +9747,12 @@ smoke-users-tamper:
 smoke-storage-noformat:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_NOFORMAT_SELFTEST=1
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_NOFORMAT_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_NOFORMAT_SELFTEST=1 horus.iso
 	@rm -f noformat.img && truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) noformat.img
 	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=noformat.img \
 		REQUIRE_MARKER='NOFORMAT_SELFTEST: REFUSED' \
 		FAIL_MARKER='NOFORMAT_SELFTEST: FORMATTED' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@rm -f noformat.img
 	@echo "[noformat] PASS - a login did not format an unrecognised disk"
 
@@ -9800,14 +9810,14 @@ INSTALLER_SLOWDISK_IOPS ?= 12
 smoke-installer:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory STORAGE_ATA=1
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 boot.iso
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 horus.iso
 	@rm -f installer.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer.img
 	@rm -f installer-serial.log
 	@SESSION_DISK=installer.img SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) \
 		INSTALLER_FORMAT_STALL=$(INSTALLER_FORMAT_STALL) INSTALLER_FORMAT_CAP=$(INSTALLER_FORMAT_CAP) \
 		SESSION_SERIAL_LOG=installer-serial.log \
 		BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
-		python3 tools/installer_session.py boot.iso \
+		python3 tools/installer_session.py horus.iso \
 	  || { echo "[installer] ----- guest serial (installer-serial.log) -----"; \
 	       tail -60 installer-serial.log 2>/dev/null | sed 's/^/  /'; exit 1; }
 	@rm -f installer.img
@@ -9853,14 +9863,14 @@ smoke-installer:
 .PHONY: smoke-fb-tag
 smoke-fb-tag:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory boot.iso
-	@FB_EXPECT=text tools/fb_tag_test.sh boot.iso
+	@$(MAKE) --no-print-directory horus.iso
+	@FB_EXPECT=text tools/fb_tag_test.sh horus.iso
 
 .PHONY: smoke-fb-tag-control
 smoke-fb-tag-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory FB_TAG_IGNORED=1 boot.iso
-	@FB_EXPECT=unparsed tools/fb_tag_test.sh boot.iso
+	@$(MAKE) --no-print-directory FB_TAG_IGNORED=1 horus.iso
+	@FB_EXPECT=unparsed tools/fb_tag_test.sh horus.iso
 
 # The arm that matters, and the only configuration in which the non-text branch
 # is reachable at all: the header's type-5 request tag plus the video driver
@@ -9869,15 +9879,15 @@ smoke-fb-tag-control:
 .PHONY: smoke-fb-tag-gfx
 smoke-fb-tag-gfx:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory FB_REQUEST=1 boot.iso
-	@FB_EXPECT=rgb tools/fb_tag_test.sh boot.iso
+	@$(MAKE) --no-print-directory FB_REQUEST=1 horus.iso
+	@FB_EXPECT=rgb tools/fb_tag_test.sh horus.iso
 
 .PHONY: smoke-fb-tag-gfx-control
 smoke-fb-tag-gfx-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory FB_REQUEST=1 FB_TAG_ASSUME_TEXT=1 boot.iso
+	@$(MAKE) --no-print-directory FB_REQUEST=1 FB_TAG_ASSUME_TEXT=1 horus.iso
 	@echo "[fb] the type field is stored and not consulted: a pixel mode must be misreported"
-	@if FB_EXPECT=rgb tools/fb_tag_test.sh boot.iso >.fb-gfx-control.out 2>&1; then \
+	@if FB_EXPECT=rgb tools/fb_tag_test.sh horus.iso >.fb-gfx-control.out 2>&1; then \
 	    echo "FB GFX CONTROL: FAIL - the gate passed with the type field ignored,"; \
 	    echo "  so nothing it asserts depends on that field."; \
 	    cat .fb-gfx-control.out | sed 's/^/  /'; rm -f .fb-gfx-control.out; exit 1; \
@@ -9946,15 +9956,15 @@ smoke-fb-tag-gfx-control:
 .PHONY: smoke-fb-grid
 smoke-fb-grid:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory FB_REQUEST=1 FB_REQUEST_H=480 boot.iso
-	@FB_EXPECT=grid tools/fb_tag_test.sh boot.iso
+	@$(MAKE) --no-print-directory FB_REQUEST=1 FB_REQUEST_H=480 horus.iso
+	@FB_EXPECT=grid tools/fb_tag_test.sh horus.iso
 
 .PHONY: smoke-fb-grid-control
 smoke-fb-grid-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory FB_REQUEST=1 FB_REQUEST_H=480 FB_GRID_FIXED_ROWS=1 boot.iso
+	@$(MAKE) --no-print-directory FB_REQUEST=1 FB_REQUEST_H=480 FB_GRID_FIXED_ROWS=1 horus.iso
 	@echo "[fb] the row count is nailed to 50: the console must claim rows the display has not got"
-	@if FB_EXPECT=grid tools/fb_tag_test.sh boot.iso >.fb-grid-control.out 2>&1; then \
+	@if FB_EXPECT=grid tools/fb_tag_test.sh horus.iso >.fb-grid-control.out 2>&1; then \
 	    echo "FB GRID CONTROL: FAIL - the gate passed with the row count hardcoded,"; \
 	    echo "  so nothing it asserts depends on the display's height."; \
 	    cat .fb-grid-control.out | sed 's/^/  /'; rm -f .fb-grid-control.out; exit 1; \
@@ -9972,74 +9982,74 @@ smoke-fb-grid-control:
 .PHONY: smoke-fb-console-server
 smoke-fb-console-server:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory FB_REQUEST=1 boot.iso
-	@FB_CONSOLE_EXPECT=server tools/fb_console_test.sh boot.iso
+	@$(MAKE) --no-print-directory FB_REQUEST=1 horus.iso
+	@FB_CONSOLE_EXPECT=server tools/fb_console_test.sh horus.iso
 
 .PHONY: smoke-fb-console-server-control
 smoke-fb-console-server-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory CONSOLE_FB_ABSENT=1 FB_REQUEST=1 boot.iso
+	@$(MAKE) --no-print-directory CONSOLE_FB_ABSENT=1 FB_REQUEST=1 horus.iso
 	@echo "[fb] console_server never asks what the display is: the screen must keep the kernel's log"
-	@FB_CONSOLE_EXPECT=server-absent tools/fb_console_test.sh boot.iso
+	@FB_CONSOLE_EXPECT=server-absent tools/fb_console_test.sh horus.iso
 
 .PHONY: smoke-devcap-fb
 smoke-devcap-fb:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 FB_REQUEST=1
-	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 FB_REQUEST=1 boot.iso
+	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 FB_REQUEST=1 horus.iso
 	@SMOKE_NET=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='DEVCAPTEST: fb-geometry is gated to the platform device' \
-		FAIL_MARKER='DEVCAPTEST: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='DEVCAPTEST: FAIL' tools/smoke_test.sh horus.iso
 	@echo "[devcap-fb] the geometry answered the platform device and refused the NIC"
 
 .PHONY: smoke-devcap-fb-control
 smoke-devcap-fb-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 FB_REQUEST=1 FB_INFO_ANY_DEVICE=1
-	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 FB_REQUEST=1 FB_INFO_ANY_DEVICE=1 boot.iso
+	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 FB_REQUEST=1 FB_INFO_ANY_DEVICE=1 horus.iso
 	@echo "[devcap-fb] the object check is gone: the NIC must read the display's geometry"
 	@SMOKE_NET=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='DEVCAPTEST: FAIL nic-cap-read-fb-geometry' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "[devcap-fb] CONTROL PASS - ungated by object, a NIC capability reads the display"
 
 .PHONY: smoke-fb-console
 smoke-fb-console:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory FB_REQUEST=1 FB_CONSOLE_SELFTEST=1 boot.iso
-	@FB_CONSOLE_EXPECT=ok tools/fb_console_test.sh boot.iso
+	@$(MAKE) --no-print-directory FB_REQUEST=1 FB_CONSOLE_SELFTEST=1 horus.iso
+	@FB_CONSOLE_EXPECT=ok tools/fb_console_test.sh horus.iso
 
 .PHONY: smoke-fb-console-control
 smoke-fb-console-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory FB_REQUEST=1 FB_CONSOLE_SELFTEST=1 FB_CONSOLE_MIRRORED=1 boot.iso
+	@$(MAKE) --no-print-directory FB_REQUEST=1 FB_CONSOLE_SELFTEST=1 FB_CONSOLE_MIRRORED=1 horus.iso
 	@echo "[fb] the blitter reads bit 0 as the leftmost pixel: the glyph must come out mirrored"
-	@FB_CONSOLE_EXPECT=mirrored tools/fb_console_test.sh boot.iso
+	@FB_CONSOLE_EXPECT=mirrored tools/fb_console_test.sh horus.iso
 
 .PHONY: smoke-fb-map
 smoke-fb-map:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory FB_REQUEST=1 FB_MAP_SELFTEST=1 boot.iso
-	@FB_EXPECT=map tools/fb_tag_test.sh boot.iso
+	@$(MAKE) --no-print-directory FB_REQUEST=1 FB_MAP_SELFTEST=1 horus.iso
+	@FB_EXPECT=map tools/fb_tag_test.sh horus.iso
 
 .PHONY: smoke-fb-map-control
 smoke-fb-map-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory FB_REQUEST=1 FB_MAP_SELFTEST=1 FB_MAP_LOW_HALF=1 boot.iso
+	@$(MAKE) --no-print-directory FB_REQUEST=1 FB_MAP_SELFTEST=1 FB_MAP_LOW_HALF=1 horus.iso
 	@echo "[fb] the window is in the low half: no task address space may have it"
-	@FB_EXPECT=map-lowhalf tools/fb_tag_test.sh boot.iso
+	@FB_EXPECT=map-lowhalf tools/fb_tag_test.sh horus.iso
 
 .PHONY: smoke-installer-sd
 smoke-installer-sd:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory boot.iso
+	@$(MAKE) --no-print-directory horus.iso
 	@rm -f installer-sd.img installer-sd-serial.log
 	@truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-sd.img
 	@SESSION_DISK=installer-sd.img SESSION_DISK_SD=1 \
 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) \
 		INSTALLER_FORMAT_STALL=$(INSTALLER_FORMAT_STALL) INSTALLER_FORMAT_CAP=$(INSTALLER_FORMAT_CAP) \
 		SESSION_SERIAL_LOG=installer-sd-serial.log BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
-		python3 tools/installer_session.py boot.iso \
+		python3 tools/installer_session.py horus.iso \
 	  || { echo "[installer-sd] ----- guest serial -----"; \
 	       tail -60 installer-sd-serial.log 2>/dev/null | sed 's/^/  /'; exit 1; }
 	@rm -f installer-sd.img
@@ -10062,7 +10072,7 @@ smoke-installer-sd:
 .PHONY: smoke-installer-sd-devregs-control
 smoke-installer-sd-devregs-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory DEVREGS_KERNEL_ONLY=1 boot.iso
+	@$(MAKE) --no-print-directory DEVREGS_KERNEL_ONLY=1 horus.iso
 	@rm -f installer-sdd.img installer-sdd-serial.log
 	@truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-sdd.img
 	@echo "[installer-sd] the register file is in the kernel pml4 only: the format must fault"
@@ -10070,7 +10080,7 @@ smoke-installer-sd-devregs-control:
 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) \
 		INSTALLER_FORMAT_STALL=$(INSTALLER_FORMAT_STALL) INSTALLER_FORMAT_CAP=$(INSTALLER_FORMAT_CAP) \
 		SESSION_SERIAL_LOG=installer-sdd-serial.log BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
-		python3 tools/installer_session.py boot.iso 2>&1); rc=$$?; \
+		python3 tools/installer_session.py horus.iso 2>&1); rc=$$?; \
 	rm -f installer-sdd.img; \
 	log=installer-sdd-serial.log; \
 	if [ $$rc -eq 0 ]; then \
@@ -10110,7 +10120,7 @@ smoke-installer-sd-devregs-control:
 .PHONY: smoke-installer-sd-stride-control
 smoke-installer-sd-stride-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory SD_BLOCK_ADDR_UNSCALED=1 boot.iso
+	@$(MAKE) --no-print-directory SD_BLOCK_ADDR_UNSCALED=1 horus.iso
 	@rm -f installer-sds.img installer-sds-serial.log
 	@truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-sds.img
 	@echo "[installer-sd] the block number passed through as an LBA: the install must not survive the reboot"
@@ -10118,7 +10128,7 @@ smoke-installer-sd-stride-control:
 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) \
 		INSTALLER_FORMAT_STALL=$(INSTALLER_FORMAT_STALL) INSTALLER_FORMAT_CAP=$(INSTALLER_FORMAT_CAP) \
 		SESSION_SERIAL_LOG=installer-sds-serial.log BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
-		python3 tools/installer_session.py boot.iso 2>&1); rc=$$?; \
+		python3 tools/installer_session.py horus.iso 2>&1); rc=$$?; \
 	rm -f installer-sds.img; \
 	log=installer-sds-serial.log; \
 	if [ $$rc -eq 0 ]; then \
@@ -10148,7 +10158,7 @@ smoke-installer-sd-stride-control:
 smoke-installer-target:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory STORAGE_ATA=1
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 boot.iso
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 horus.iso
 	@rm -f installer-t0.img installer-t1.img installer-target-serial.log
 	@truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-t0.img
 	@truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-t1.img
@@ -10156,7 +10166,7 @@ smoke-installer-target:
 		INSTALLER_MODE=twodisk SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) \
 		INSTALLER_FORMAT_STALL=$(INSTALLER_FORMAT_STALL) INSTALLER_FORMAT_CAP=$(INSTALLER_FORMAT_CAP) \
 		SESSION_SERIAL_LOG=installer-target-serial.log BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
-		python3 tools/installer_session.py boot.iso \
+		python3 tools/installer_session.py horus.iso \
 	  || { echo "[installer] ----- guest serial -----"; \
 	       tail -60 installer-target-serial.log 2>/dev/null | sed 's/^/  /'; exit 1; }
 	@rm -f installer-t0.img installer-t1.img
@@ -10171,7 +10181,7 @@ smoke-installer-target:
 smoke-installer-target-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_FORMAT_TARGET_IGNORED=1
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_FORMAT_TARGET_IGNORED=1 boot.iso
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_FORMAT_TARGET_IGNORED=1 horus.iso
 	@rm -f installer-t0.img installer-t1.img installer-target-serial.log
 	@truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-t0.img
 	@truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-t1.img
@@ -10179,7 +10189,7 @@ smoke-installer-target-control:
 		INSTALLER_MODE=twodisk SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) \
 		INSTALLER_FORMAT_STALL=$(INSTALLER_FORMAT_STALL) INSTALLER_FORMAT_CAP=$(INSTALLER_FORMAT_CAP) \
 		SESSION_SERIAL_LOG=installer-target-serial.log BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
-		python3 tools/installer_session.py boot.iso > installer-target-run.log 2>&1 \
+		python3 tools/installer_session.py horus.iso > installer-target-run.log 2>&1 \
 	  && { echo "[installer] CONTROL FAIL - the install went onto the chosen disk with the target ignored"; \
 	       rm -f installer-t0.img installer-t1.img; exit 1; } || true
 	@# THE HARNESS'S OWN OUTPUT, not the guest's serial. The verdict this arm has
@@ -10198,7 +10208,7 @@ smoke-installer-target-control:
 smoke-installer-slowdisk:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory STORAGE_ATA=1
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 boot.iso
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 horus.iso
 	@rm -f installer-s.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-s.img
 	@rm -f installer-s-serial.log
 	@echo "[installer] disk throttled to $(INSTALLER_SLOWDISK_IOPS) IOPS: the format must still finish"
@@ -10207,7 +10217,7 @@ smoke-installer-slowdisk:
 		INSTALLER_FORMAT_STALL=$(INSTALLER_FORMAT_STALL) INSTALLER_FORMAT_CAP=$(INSTALLER_FORMAT_CAP) \
 		SESSION_SERIAL_LOG=installer-s-serial.log \
 		BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
-		python3 tools/installer_session.py boot.iso \
+		python3 tools/installer_session.py horus.iso \
 	  || { echo "[installer] ----- guest serial -----"; \
 	       tail -60 installer-s-serial.log 2>/dev/null | sed 's/^/  /'; exit 1; }
 	@rm -f installer-s.img
@@ -10225,7 +10235,7 @@ smoke-installer-slowdisk:
 smoke-installer-wedge-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_FORMAT_WEDGE=1
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_FORMAT_WEDGE=1 boot.iso
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_FORMAT_WEDGE=1 horus.iso
 	@rm -f installer-w.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-w.img
 	@rm -f installer-w-serial.log
 	@echo "[installer] format wedged on purpose: the stall bound must catch it and say so"
@@ -10234,7 +10244,7 @@ smoke-installer-wedge-control:
 		INSTALLER_FORMAT_STALL=$(INSTALLER_FORMAT_STALL) INSTALLER_FORMAT_CAP=$(INSTALLER_FORMAT_CAP) \
 		SESSION_SERIAL_LOG=installer-w-serial.log \
 		BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
-		python3 tools/installer_session.py boot.iso 2>&1); rc=$$?; \
+		python3 tools/installer_session.py horus.iso 2>&1); rc=$$?; \
 	rm -f installer-w.img; \
 	if [ $$rc -eq 0 ]; then \
 	    echo "INSTALLER WEDGE CONTROL: FAIL - the wedged format was reported as a PASS"; \
@@ -10258,11 +10268,11 @@ smoke-installer-wedge-control:
 smoke-installer-refuse:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory STORAGE_ATA=1
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 boot.iso
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 horus.iso
 	@rm -f installer-r.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-r.img
 	@SESSION_DISK=installer-r.img INSTALLER_MODE=refuse \
 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
-		python3 tools/installer_session.py boot.iso
+		python3 tools/installer_session.py horus.iso
 	@rm -f installer-r.img
 	@echo "[installer] PASS - the wrong confirmation word wrote nothing"
 
@@ -10272,11 +10282,11 @@ smoke-installer-refuse:
 smoke-installer-refuse-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 INSTALLER_NO_CONFIRM=1
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 INSTALLER_NO_CONFIRM=1 boot.iso
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 INSTALLER_NO_CONFIRM=1 horus.iso
 	@rm -f installer-c.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-c.img
 	@SESSION_DISK=installer-c.img INSTALLER_MODE=refuse INSTALLER_EXPECT_FORMAT=1 \
 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
-		python3 tools/installer_session.py boot.iso
+		python3 tools/installer_session.py horus.iso
 	@rm -f installer-c.img
 	@echo "[installer] CONTROL PASS - without the comparison the disk is formatted anyway"
 
@@ -10301,9 +10311,9 @@ smoke-installer-refuse-control:
 smoke-installer-provision:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory STORAGE_ATA=1
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 COREUTILS_MODULES=1 boot.iso
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 COREUTILS_MODULES=1 horus.iso
 	@rm -f installer-p.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-p.img
-	@SESSION_DISK=installer-p.img INSTALLER_MODE=provision 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) 		python3 tools/installer_session.py boot.iso
+	@SESSION_DISK=installer-p.img INSTALLER_MODE=provision 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) 		python3 tools/installer_session.py horus.iso
 	@rm -f installer-p.img
 	@echo "[installer] PASS - a sealed store defers provisioning, and the next boot completes it"
 
@@ -10314,9 +10324,9 @@ smoke-installer-provision:
 smoke-installer-provision-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORE_LOCKED_UNCHECKED=1
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORE_LOCKED_UNCHECKED=1 COREUTILS_MODULES=1 boot.iso
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORE_LOCKED_UNCHECKED=1 COREUTILS_MODULES=1 horus.iso
 	@rm -f installer-pc.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-pc.img
-	@SESSION_DISK=installer-pc.img INSTALLER_MODE=provision INSTALLER_EXPECT_EMPTY_BIN=1 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) 		python3 tools/installer_session.py boot.iso
+	@SESSION_DISK=installer-pc.img INSTALLER_MODE=provision INSTALLER_EXPECT_EMPTY_BIN=1 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) 		python3 tools/installer_session.py horus.iso
 	@rm -f installer-pc.img
 	@echo "[installer] CONTROL PASS - a sealed store that answers leaves /bin empty for good"
 
@@ -10341,9 +10351,9 @@ smoke-installer-provision-control:
 smoke-installer-accounts:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory STORAGE_ATA=1
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 boot.iso
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 horus.iso
 	@rm -f installer-a.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-a.img
-	@SESSION_DISK=installer-a.img INSTALLER_MODE=accounts 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) 		python3 tools/installer_session.py boot.iso
+	@SESSION_DISK=installer-a.img INSTALLER_MODE=accounts 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) 		python3 tools/installer_session.py horus.iso
 	@rm -f installer-a.img
 	@echo "[installer] PASS - the everyday account boots the machine, and the built-in one is gone"
 
@@ -10356,9 +10366,9 @@ smoke-installer-accounts:
 smoke-installer-accounts-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 PASSWD_NO_KEYSLOT=1
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 PASSWD_NO_KEYSLOT=1 boot.iso
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 PASSWD_NO_KEYSLOT=1 horus.iso
 	@rm -f installer-ac.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-ac.img
-	@SESSION_DISK=installer-ac.img INSTALLER_MODE=accounts INSTALLER_EXPECT_NO_SLOT=1 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) 		python3 tools/installer_session.py boot.iso
+	@SESSION_DISK=installer-ac.img INSTALLER_MODE=accounts INSTALLER_EXPECT_NO_SLOT=1 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) 		python3 tools/installer_session.py horus.iso
 	@rm -f installer-ac.img
 	@echo "[installer] CONTROL PASS - without a key slot the account cannot open the machine it belongs to"
 
@@ -10381,9 +10391,9 @@ PASSWD_TARGET_TIMEOUT ?= 300
 smoke-passwd-target:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_AUTOFORMAT=1 boot.iso
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_AUTOFORMAT=1 horus.iso
 	@rm -f passwd-t.img && truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) passwd-t.img
-	@SESSION_DISK=passwd-t.img SESSION_TIMEOUT=$(PASSWD_TARGET_TIMEOUT) 		BOOT_TIMEOUT=$(PASSWD_TARGET_TIMEOUT) 		python3 tools/passwd_session.py boot.iso
+	@SESSION_DISK=passwd-t.img SESSION_TIMEOUT=$(PASSWD_TARGET_TIMEOUT) 		BOOT_TIMEOUT=$(PASSWD_TARGET_TIMEOUT) 		python3 tools/passwd_session.py horus.iso
 	@rm -f passwd-t.img
 	@echo "[passwd] PASS - passwd <uid> wrote that account, left root's password and the volume's seal alone"
 
@@ -10394,9 +10404,9 @@ smoke-passwd-target:
 smoke-passwd-target-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_AUTOFORMAT=1 PASSWD_TARGET_IGNORED=1
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_AUTOFORMAT=1 PASSWD_TARGET_IGNORED=1 boot.iso
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_AUTOFORMAT=1 PASSWD_TARGET_IGNORED=1 horus.iso
 	@rm -f passwd-tc.img && truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) passwd-tc.img
-	@SESSION_DISK=passwd-tc.img PASSWD_EXPECT_SELF=1 SESSION_TIMEOUT=$(PASSWD_TARGET_TIMEOUT) 		BOOT_TIMEOUT=$(PASSWD_TARGET_TIMEOUT) 		python3 tools/passwd_session.py boot.iso
+	@SESSION_DISK=passwd-tc.img PASSWD_EXPECT_SELF=1 SESSION_TIMEOUT=$(PASSWD_TARGET_TIMEOUT) 		BOOT_TIMEOUT=$(PASSWD_TARGET_TIMEOUT) 		python3 tools/passwd_session.py horus.iso
 	@rm -f passwd-tc.img
 	@echo "[passwd] CONTROL PASS - the dropped argument re-sealed the volume to another account's password"
 
@@ -10417,30 +10427,30 @@ smoke-passwd-target-control:
 smoke-storage-survey:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory STORAGE_ATA=1
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 boot.iso
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 horus.iso
 	@rm -f survey.img && truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) survey.img
 	@echo "[survey] boot 1: a blank disk attached -- an install is needed"
 	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=survey.img \
 		REQUIRE_MARKER='INIT_STORAGE: disk present' \
 		ABSENT_MARKER='INIT_STORAGE: no persistent volume' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "[survey] boot 2: no disk at all -- the ephemeral store"
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='INIT_STORAGE: no persistent volume' \
 		ABSENT_MARKER='INIT_STORAGE: disk present' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "[survey] boot 3: TWO blank disks -- the survey must enumerate both"
 	@rm -f survey2.img && truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) survey2.img
 	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 \
 		SMOKE_DISK=survey.img SMOKE_DISK2=survey2.img \
 		REQUIRE_MARKER='INIT_STORAGE: 2 persistent device(s)' \
 		ABSENT_MARKER='INIT_STORAGE: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "[survey] boot 4: an index past the last device must be REFUSED"
 	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 \
 		SMOKE_DISK=survey.img SMOKE_DISK2=survey2.img \
 		REQUIRE_MARKER='INIT_STORAGE: an index past the last device was refused' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@rm -f survey.img survey2.img
 	@echo "[survey] PASS - a capability holder learns what volume this machine has, and the answer differs with the machine"
 
@@ -10448,12 +10458,12 @@ smoke-storage-survey:
 smoke-storage-noformat-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_NOFORMAT_SELFTEST=1 STORAGE_AUTOFORMAT=1
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_NOFORMAT_SELFTEST=1 STORAGE_AUTOFORMAT=1 boot.iso
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_NOFORMAT_SELFTEST=1 STORAGE_AUTOFORMAT=1 horus.iso
 	@rm -f noformat-c.img && truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) noformat-c.img
 	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=noformat-c.img \
 		REQUIRE_MARKER='NOFORMAT_SELFTEST: FORMATTED' \
 		FAIL_MARKER='NOFORMAT_SELFTEST: REFUSED' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@rm -f noformat-c.img
 	@echo "[noformat] CONTROL PASS - with the flag a login formats the disk, as it used to"
 
@@ -10464,10 +10474,10 @@ smoke-storage-noformat-control:
 smoke-tui:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory TUI_SELFTEST=1
-	@$(MAKE) --no-print-directory TUI_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory TUI_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='TUITEST: PASS' FAIL_MARKER='TUITEST: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # Damage diffing is what makes a full-screen UI usable over a serial line, and
 # it cannot be seen: the screen looks identical either way. TUI_NO_DAMAGE_DIFF=1
@@ -10477,10 +10487,10 @@ smoke-tui:
 smoke-tui-diff-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_NO_DAMAGE_DIFF=1
-	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_NO_DAMAGE_DIFF=1 boot.iso
+	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_NO_DAMAGE_DIFF=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='TUITEST: FAIL a one-cell change repainted the screen' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # The memory-safety half. Every drawing call funnels through one bounds check;
 # TUI_CLAMP_OFF=1 removes it, so a write one row past the end lands in the
@@ -10489,10 +10499,10 @@ smoke-tui-diff-control:
 smoke-tui-clamp-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_CLAMP_OFF=1
-	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_CLAMP_OFF=1 boot.iso
+	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_CLAMP_OFF=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='TUITEST: FAIL an out-of-range write reached the buffer' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # A password on the screen is a password disclosed, and the caller cannot tell:
 # tui_input returns the same bytes whether it masked or echoed. Only the CELLS
@@ -10502,10 +10512,10 @@ smoke-tui-clamp-control:
 smoke-tui-mask-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_INPUT_ECHO_SECRET=1
-	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_INPUT_ECHO_SECRET=1 boot.iso
+	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_INPUT_ECHO_SECRET=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='TUITEST: FAIL a masked field showed its characters' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # The memory-safety half of the editor. The `cap` bound goes and the visible
 # width bound stays, so the write lands past the caller's declared capacity and
@@ -10515,10 +10525,10 @@ smoke-tui-mask-control:
 smoke-tui-bound-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_INPUT_UNBOUNDED=1
-	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_INPUT_UNBOUNDED=1 boot.iso
+	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_INPUT_UNBOUNDED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='TUITEST: FAIL an input overran the buffer it was given' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # The menu's clamp is a bounds check on the CALLER's array. An unclamped menu
 # draws an identical screen -- every cell it paints is clamped by tui_putc
@@ -10528,10 +10538,10 @@ smoke-tui-bound-control:
 smoke-tui-menu-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_MENU_UNCLAMPED=1
-	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_MENU_UNCLAMPED=1 boot.iso
+	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_MENU_UNCLAMPED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='TUITEST: FAIL a menu selected past its last item' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # The charset restore. Line drawing works by telling the terminal to reinterpret
 # ordinary letters, and the shift BACK is the half that matters: a flush that
@@ -10544,10 +10554,10 @@ smoke-tui-menu-control:
 smoke-tui-acs-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_ACS_NO_RESTORE=1
-	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_ACS_NO_RESTORE=1 boot.iso
+	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_ACS_NO_RESTORE=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='TUITEST: FAIL a flush left the terminal in the line-drawing charset' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # The wrap bound. A word longer than its column is broken at the column rather
 # than run past it; the space-breaking path is the one that gets tested and this
@@ -10563,19 +10573,19 @@ smoke-tui-acs-control:
 smoke-tui-invalidate-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_NO_INVALIDATE=1
-	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_NO_INVALIDATE=1 boot.iso
+	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_NO_INVALIDATE=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='TUITEST: FAIL an invalidated screen was not repainted' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-tui-wrap-control
 smoke-tui-wrap-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_WRAP_NO_BREAK=1
-	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_WRAP_NO_BREAK=1 boot.iso
+	@$(MAKE) --no-print-directory TUI_SELFTEST=1 TUI_WRAP_NO_BREAK=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='TUITEST: FAIL a wrapped word ran out of its column' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # The enumeration, from the side that shows it is one. The base gate boots two
 # blank disks and requires the survey to say two; this restores the pre-2026-09-06
@@ -10590,14 +10600,14 @@ smoke-tui-wrap-control:
 smoke-storage-survey-single-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_SINGLE_DEVICE=1
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_SINGLE_DEVICE=1 boot.iso
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_SINGLE_DEVICE=1 horus.iso
 	@rm -f survey.img survey2.img
 	@truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) survey.img
 	@truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) survey2.img
 	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 \
 		SMOKE_DISK=survey.img SMOKE_DISK2=survey2.img \
 		REQUIRE_MARKER='INIT_STORAGE: 1 persistent device(s)' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@rm -f survey.img survey2.img
 	@echo "[survey] CONTROL PASS - a master-only probe reports one disk on a two-disk machine"
 
@@ -10610,11 +10620,11 @@ smoke-storage-survey-single-control:
 smoke-storage-device-clamp-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_DEVICE_INDEX_CLAMP=1
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_DEVICE_INDEX_CLAMP=1 boot.iso
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_DEVICE_INDEX_CLAMP=1 horus.iso
 	@rm -f survey.img && truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) survey.img
 	@SMOKE_TIMEOUT=$(USERS_PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=survey.img \
 		REQUIRE_MARKER='INIT_STORAGE: FAIL an index past the last device was answered' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@rm -f survey.img
 	@echo "[survey] CONTROL PASS - a clamped index answered about a disk nobody asked for"
 
@@ -10625,11 +10635,11 @@ smoke-storage-device-clamp-control:
 smoke-vdisk-bound:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory VDISK_BOUND_SELFTEST=1
-	@$(MAKE) --no-print-directory VDISK_BOUND_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory VDISK_BOUND_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='VDISKBOUND: PASS last-block-writable out-of-range-refused' \
 		FAIL_MARKER='VDISKBOUND: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # The falsifying arm: the device advertises BLOCKS_PER_DISK over a
 # VDISK_BLOCKS-sized reservation, as it did until 2026-08-31. The marker asserts
@@ -10639,10 +10649,10 @@ smoke-vdisk-bound:
 smoke-vdisk-bound-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory VDISK_BOUND_SELFTEST=1 VDISK_TOTAL_UNBOUNDED=1
-	@$(MAKE) --no-print-directory VDISK_BOUND_SELFTEST=1 VDISK_TOTAL_UNBOUNDED=1 boot.iso
+	@$(MAKE) --no-print-directory VDISK_BOUND_SELFTEST=1 VDISK_TOTAL_UNBOUNDED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='VDISKBOUND: FAIL a write past the backing store reached the free page pool' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "[vdisk-bound] CONTROL PASS - a block past the backing store reached the free page pool"
 
 # The anchor itself, before anything is built on it: the TPM NV counter
@@ -10657,11 +10667,11 @@ smoke-vdisk-bound-control:
 smoke-nvcounter:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory NVCOUNTER_SELFTEST=1
-	@$(MAKE) --no-print-directory NVCOUNTER_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory NVCOUNTER_SELFTEST=1 horus.iso
 	@SWTPM_TIMEOUT=$(SMOKE_TIMEOUT) \
 		REQUIRE_MARKER='NVCOUNTER: PASS the counter provisions, reads, and only goes up' \
 		FAIL_MARKER='NVCOUNTER: FAIL' \
-		tools/run_with_swtpm.sh boot.iso
+		tools/run_with_swtpm.sh horus.iso
 
 # S70: a WHOLE-VOLUME rollback is refused -- the attack the Merkle tree cannot
 # see, because its root lives in the superblock it protects.
@@ -10678,11 +10688,11 @@ ROLLBACK_ENV     = ROLLBACK_BS=$(FS_BLOCK_SIZE) ROLLBACK_BLOCKS=$(PERSIST_BLOCKS
 smoke-rollback:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(ROLLBACK_ARGS)
-	@$(MAKE) --no-print-directory $(ROLLBACK_ARGS) boot.iso
+	@$(MAKE) --no-print-directory $(ROLLBACK_ARGS) horus.iso
 	@$(ROLLBACK_ENV) ROLLBACK_IMG=rollback.img \
 		ROLLBACK_EXPECT='ROLLBACK: PASS a rolled-back volume was refused' \
 		ROLLBACK_OPPOSITE='ROLLBACK: found era' \
-		tools/rollback_replay.sh boot.iso
+		tools/rollback_replay.sh horus.iso
 	@echo "[rollback] PASS - a volume older than the machine is refused"
 
 # The metadata cache's eviction write-back, which no live path in this tree
@@ -10701,10 +10711,10 @@ smoke-rollback:
 smoke-meta-evict:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory META_EVICT_SELFTEST=1 META_CACHE_TINY=1
-	@$(MAKE) --no-print-directory META_EVICT_SELFTEST=1 META_CACHE_TINY=1 boot.iso
+	@$(MAKE) --no-print-directory META_EVICT_SELFTEST=1 META_CACHE_TINY=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='METAEVICT: PASS an evicted dirty line was still on the disk' \
-		FAIL_MARKER='METAEVICT: FAIL' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='METAEVICT: FAIL' tools/smoke_test.sh horus.iso
 
 # The falsifying arm: the eviction write-back removed, so the line pushed out of
 # the cache takes the only copy of its nonces with it. The marker names the block
@@ -10714,10 +10724,10 @@ smoke-meta-evict:
 smoke-meta-evict-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory META_EVICT_SELFTEST=1 META_CACHE_TINY=1 META_CACHE_EVICT_NOWB=1
-	@$(MAKE) --no-print-directory META_EVICT_SELFTEST=1 META_CACHE_TINY=1 META_CACHE_EVICT_NOWB=1 boot.iso
+	@$(MAKE) --no-print-directory META_EVICT_SELFTEST=1 META_CACHE_TINY=1 META_CACHE_EVICT_NOWB=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='METAEVICT: FAIL an evicted line lost block 0' \
-		FAIL_MARKER='METAEVICT: PASS' tools/smoke_test.sh boot.iso
+		FAIL_MARKER='METAEVICT: PASS' tools/smoke_test.sh horus.iso
 	@echo "[meta-evict] CONTROL PASS - a dirty line pushed out of the cache took its nonces with it"
 
 # The falsifying arm: the comparison against the NV counter is gone, so the
@@ -10727,11 +10737,11 @@ smoke-meta-evict-control:
 smoke-rollback-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(ROLLBACK_ARGS) ROLLBACK_ANCHOR_IGNORE=1
-	@$(MAKE) --no-print-directory $(ROLLBACK_ARGS) ROLLBACK_ANCHOR_IGNORE=1 boot.iso
+	@$(MAKE) --no-print-directory $(ROLLBACK_ARGS) ROLLBACK_ANCHOR_IGNORE=1 horus.iso
 	@$(ROLLBACK_ENV) ROLLBACK_IMG=rollback-c.img \
 		ROLLBACK_EXPECT='ROLLBACK: found era 1 and wrote era 2' \
 		ROLLBACK_OPPOSITE='ROLLBACK: PASS' \
-		tools/rollback_replay.sh boot.iso
+		tools/rollback_replay.sh horus.iso
 	@echo "[rollback] CONTROL PASS - without the anchor an old volume mounts and serves stale data"
 
 # A sector transfer happens only when the drive says it is ready (S69).
@@ -10745,11 +10755,11 @@ smoke-rollback-control:
 smoke-ata-ready:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory ATA_READY_SELFTEST=1
-	@$(MAKE) --no-print-directory ATA_READY_SELFTEST=1 boot.iso
+	@$(MAKE) --no-print-directory ATA_READY_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='ATAREADY: PASS only a ready drive is transferred against' \
 		FAIL_MARKER='ATAREADY: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 
 # The falsifying arm: ERR alone decides, as it did until 2026-09-01. The marker
 # names the first status wrongly accepted and why -- a transfer that WOULD have
@@ -10758,11 +10768,11 @@ smoke-ata-ready:
 smoke-ata-ready-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory ATA_READY_SELFTEST=1 ATA_READY_ERR_ONLY=1
-	@$(MAKE) --no-print-directory ATA_READY_SELFTEST=1 ATA_READY_ERR_ONLY=1 boot.iso
+	@$(MAKE) --no-print-directory ATA_READY_SELFTEST=1 ATA_READY_ERR_ONLY=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='ATAREADY: FAIL a transfer was allowed against a drive that was not ready' \
 		FAIL_MARKER='ATAREADY: PASS' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "[ata-ready] CONTROL PASS - ERR alone lets a transfer proceed against a drive that is not ready"
 
 # A block allocation does not rescan the whole data bitmap.
@@ -10787,12 +10797,12 @@ ALLOCHINT_TIMEOUT ?= 400
 smoke-alloc-hint:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(ALLOCHINT_ARGS)
-	@$(MAKE) --no-print-directory $(ALLOCHINT_ARGS) boot.iso
+	@$(MAKE) --no-print-directory $(ALLOCHINT_ARGS) horus.iso
 	@rm -f allochint.img && truncate -s $$(( $(ALLOCHINT_BLOCKS) * $(FS_BLOCK_SIZE) )) allochint.img
 	@SMOKE_TIMEOUT=$(ALLOCHINT_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=allochint.img \
 		REQUIRE_MARKER='ALLOCHINT: PASS' \
 		FAIL_MARKER='ALLOCHINT: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@rm -f allochint.img
 	@echo "[alloc-hint] PASS - an allocation does not rescan the bitmap, and the scan still wraps"
 
@@ -10803,12 +10813,12 @@ smoke-alloc-hint:
 smoke-alloc-hint-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(ALLOCHINT_ARGS) ALLOC_NO_HINT=1
-	@$(MAKE) --no-print-directory $(ALLOCHINT_ARGS) ALLOC_NO_HINT=1 boot.iso
+	@$(MAKE) --no-print-directory $(ALLOCHINT_ARGS) ALLOC_NO_HINT=1 horus.iso
 	@rm -f allochint-c.img && truncate -s $$(( $(ALLOCHINT_BLOCKS) * $(FS_BLOCK_SIZE) )) allochint-c.img
 	@SMOKE_TIMEOUT=$(ALLOCHINT_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=allochint-c.img \
 		REQUIRE_MARKER='ALLOCHINT: FAIL every allocation rescans the bitmap from the start' \
 		FAIL_MARKER='ALLOCHINT: PASS' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@rm -f allochint-c.img
 	@echo "[alloc-hint] CONTROL PASS - without the hint every allocation rescans from block 0"
 
@@ -10828,20 +10838,20 @@ SHRINK_SMALL ?= 8192
 smoke-fs-shrink:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(SHRINK_ARGS)
-	@$(MAKE) --no-print-directory $(SHRINK_ARGS) boot.iso
+	@$(MAKE) --no-print-directory $(SHRINK_ARGS) horus.iso
 	@rm -f shrink.img && truncate -s $$(( $(SHRINK_BIG) * $(FS_BLOCK_SIZE) )) shrink.img
 	@echo "[shrink] boot 1/2 - format a 128 MiB volume"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=shrink.img \
 		REQUIRE_MARKER='SHRINK: boot1 formatted a volume the disk can hold' \
 		FAIL_MARKER='SHRINK: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "[shrink] the disk shrinks under the volume"
 	@truncate -s $$(( $(SHRINK_SMALL) * $(FS_BLOCK_SIZE) )) shrink.img
 	@echo "[shrink] boot 2/2 - the truncated volume must be refused"
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=shrink.img \
 		REQUIRE_MARKER='SHRINK: PASS a volume larger than its disk was refused' \
 		FAIL_MARKER='SHRINK: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@rm -f shrink.img
 	@echo "[shrink] PASS - a truncated volume is refused, not served in part"
 
@@ -10851,17 +10861,17 @@ smoke-fs-shrink:
 smoke-fs-shrink-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(SHRINK_ARGS) STORAGE_MOUNT_ANY_SIZE=1
-	@$(MAKE) --no-print-directory $(SHRINK_ARGS) STORAGE_MOUNT_ANY_SIZE=1 boot.iso
+	@$(MAKE) --no-print-directory $(SHRINK_ARGS) STORAGE_MOUNT_ANY_SIZE=1 horus.iso
 	@rm -f shrink-c.img && truncate -s $$(( $(SHRINK_BIG) * $(FS_BLOCK_SIZE) )) shrink-c.img
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=shrink-c.img \
 		REQUIRE_MARKER='SHRINK: boot1 formatted a volume the disk can hold' \
 		FAIL_MARKER='SHRINK: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@truncate -s $$(( $(SHRINK_SMALL) * $(FS_BLOCK_SIZE) )) shrink-c.img
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=shrink-c.img \
 		REQUIRE_MARKER='SHRINK: FAIL a volume larger than its disk mounted' \
 		FAIL_MARKER='SHRINK: PASS' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@rm -f shrink-c.img
 	@echo "[shrink] CONTROL PASS - without the check, part of a filesystem is served as whole"
 
@@ -10894,23 +10904,23 @@ BIGVOL_TIMEOUT ?= 900
 smoke-fs-16g:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(BIGVOL_ARGS)
-	@$(MAKE) --no-print-directory $(BIGVOL_ARGS) boot.iso
+	@$(MAKE) --no-print-directory $(BIGVOL_ARGS) horus.iso
 	@rm -f bigvol.img && truncate -s $$(( $(BIGVOL_BLOCKS) * $(FS_BLOCK_SIZE) )) bigvol.img
 	@echo "[16g] boot 1/2 - format 16 GiB and write past the 1 GiB ceiling"
 	@SMOKE_TIMEOUT=$(BIGVOL_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=bigvol.img \
 		REQUIRE_MARKER='BIGVOL: boot1 formatted 16 GiB and wrote past the 1 GiB ceiling' \
 		FAIL_MARKER='BIGVOL: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "[16g] boot 2/3 - mount what boot 1 left, then commit and crash"
 	@SMOKE_TIMEOUT=$(BIGVOL_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=bigvol.img \
 		REQUIRE_MARKER='WAL_CRASHTEST: crashed-after-commit' \
 		FAIL_MARKER='BIGVOL: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "[16g] boot 3/3 - replay, then read everything back"
 	@SMOKE_TIMEOUT=$(BIGVOL_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=bigvol.img \
 		REQUIRE_MARKER='BIGVOL: PASS' \
 		FAIL_MARKER='BIGVOL: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@rm -f bigvol.img
 	@echo "[16g] PASS - 16 GiB volume, reboot and crash survived, offsets past 1 GiB"
 
@@ -10925,16 +10935,16 @@ FSCKREF_ARGS = FSCKREF_SELFTEST=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
 smoke-fsck-refs:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(FSCKREF_ARGS)
-	@$(MAKE) --no-print-directory $(FSCKREF_ARGS) boot.iso
+	@$(MAKE) --no-print-directory $(FSCKREF_ARGS) horus.iso
 	@rm -f fsckref.img && truncate -s $$(( $(PERSIST_BLOCKS) * $(FS_BLOCK_SIZE) )) fsckref.img
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=fsckref.img \
 		REQUIRE_MARKER='FSCKREF: boot1 wrote a double-indirect file' \
 		FAIL_MARKER='FSCKREF: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=fsckref.img \
 		REQUIRE_MARKER='FSCKREF: PASS' \
 		FAIL_MARKER='FSCKREF: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@rm -f fsckref.img
 	@echo "[fsck-refs] PASS - a live file's deep blocks survived fsck"
 
@@ -10945,14 +10955,14 @@ smoke-fsck-refs:
 smoke-fsck-refs-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(FSCKREF_ARGS) FSCK_SHALLOW_REFS=1
-	@$(MAKE) --no-print-directory $(FSCKREF_ARGS) FSCK_SHALLOW_REFS=1 boot.iso
+	@$(MAKE) --no-print-directory $(FSCKREF_ARGS) FSCK_SHALLOW_REFS=1 horus.iso
 	@rm -f fsckref-c.img && truncate -s $$(( $(PERSIST_BLOCKS) * $(FS_BLOCK_SIZE) )) fsckref-c.img
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=fsckref-c.img \
 		REQUIRE_MARKER='FSCKREF: boot1 wrote a double-indirect file' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=fsckref-c.img \
 		REQUIRE_MARKER="FSCKREF: FAIL a live file's blocks were freed by fsck" \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@rm -f fsckref-c.img
 	@echo "[fsck-refs] CONTROL PASS - a shallow reference walk frees a live file's blocks"
 
@@ -10970,11 +10980,11 @@ MERKLE_ENV  = MERKLE_BS=$(FS_BLOCK_SIZE) MERKLE_BLOCKS=$(PERSIST_BLOCKS) \
 smoke-merkle-replay:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(MERKLE_ARGS)
-	@$(MAKE) --no-print-directory $(MERKLE_ARGS) boot.iso
+	@$(MAKE) --no-print-directory $(MERKLE_ARGS) horus.iso
 	@$(MERKLE_ENV) MERKLE_IMG=merkle.img \
 		MERKLE_EXPECT='MERKLE: PASS stale node refused' \
 		MERKLE_OPPOSITE='MERKLE: FAIL' \
-		tools/merkle_replay.sh boot.iso
+		tools/merkle_replay.sh horus.iso
 	@echo "[merkle] PASS - a node that was valid earlier is not valid now"
 
 # Arm B's falsifying arm (failure mode R1). The node line's `verified` flag is
@@ -10986,11 +10996,11 @@ smoke-merkle-replay:
 smoke-merkle-replay-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(MERKLE_ARGS) MERKLE_NODE_TRUST_CACHED=1
-	@$(MAKE) --no-print-directory $(MERKLE_ARGS) MERKLE_NODE_TRUST_CACHED=1 boot.iso
+	@$(MAKE) --no-print-directory $(MERKLE_ARGS) MERKLE_NODE_TRUST_CACHED=1 horus.iso
 	@$(MERKLE_ENV) MERKLE_IMG=merkle-c.img \
 		MERKLE_EXPECT='MERKLE: FAIL stale node accepted - subtree served a rolled-back block' \
 		MERKLE_OPPOSITE='MERKLE: PASS' \
-		tools/merkle_replay.sh boot.iso
+		tools/merkle_replay.sh horus.iso
 	@echo "[merkle] CONTROL PASS - a node trusted for being resident serves a rollback"
 
 # The second arm, because the witness returns at its first failure and the arm
@@ -11003,11 +11013,11 @@ smoke-merkle-replay-control:
 smoke-merkle-parent-bind-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(MERKLE_ARGS) MERKLE_SKIP_PARENT_BIND=1
-	@$(MAKE) --no-print-directory $(MERKLE_ARGS) MERKLE_SKIP_PARENT_BIND=1 boot.iso
+	@$(MAKE) --no-print-directory $(MERKLE_ARGS) MERKLE_SKIP_PARENT_BIND=1 horus.iso
 	@$(MERKLE_ENV) MERKLE_IMG=merkle-p.img \
 		MERKLE_EXPECT='MERKLE: FAIL stale node accepted - subtree served a rolled-back block' \
 		MERKLE_OPPOSITE='MERKLE: PASS' \
-		tools/merkle_replay.sh boot.iso
+		tools/merkle_replay.sh horus.iso
 	@echo "[merkle] CONTROL PASS - a node verified without its parent chain serves a rollback"
 
 # Arm A: a metadata update in a committed transaction is durable across a crash,
@@ -11027,18 +11037,18 @@ META_CRASH_ARGS = $(META_CRASH_BASE) META_CACHE_TINY=1
 smoke-meta-crash:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(META_CRASH_ARGS)
-	@$(MAKE) --no-print-directory $(META_CRASH_ARGS) boot.iso
+	@$(MAKE) --no-print-directory $(META_CRASH_ARGS) horus.iso
 	@rm -f meta-crash.img && truncate -s $$(( $(PERSIST_BLOCKS) * $(FS_BLOCK_SIZE) )) meta-crash.img
 	@echo "[meta-crash] boot 1/2 - write the working set, commit, crash"
 	@SMOKE_TIMEOUT=$(META_CRASH_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=meta-crash.img \
 		REQUIRE_MARKER='WAL_CRASHTEST: crashed-after-commit' \
 		FAIL_MARKER='METACACHE: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@echo "[meta-crash] boot 2/2 - replay, then verify every block"
 	@SMOKE_TIMEOUT=$(META_CRASH_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=meta-crash.img \
 		REQUIRE_MARKER='METACACHE: PASS' \
 		FAIL_MARKER='METACACHE: FAIL' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@rm -f meta-crash.img
 	@echo "[meta-crash] PASS - a committed metadata update survived the crash"
 
@@ -11051,14 +11061,14 @@ smoke-meta-crash:
 smoke-meta-crash-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(META_CRASH_ARGS) META_CACHE_NO_WRITEBACK=1
-	@$(MAKE) --no-print-directory $(META_CRASH_ARGS) META_CACHE_NO_WRITEBACK=1 boot.iso
+	@$(MAKE) --no-print-directory $(META_CRASH_ARGS) META_CACHE_NO_WRITEBACK=1 horus.iso
 	@rm -f meta-crash-c.img && truncate -s $$(( $(PERSIST_BLOCKS) * $(FS_BLOCK_SIZE) )) meta-crash-c.img
 	@SMOKE_TIMEOUT=$(META_CRASH_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=meta-crash-c.img \
 		REQUIRE_MARKER='WAL_CRASHTEST: crashed-after-commit' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@SMOKE_TIMEOUT=$(META_CRASH_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=meta-crash-c.img \
 		REQUIRE_MARKER='METACACHE: FAIL block' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@rm -f meta-crash-c.img
 	@echo "[meta-crash] CONTROL PASS - a cache that never writes back loses the committed update"
 
@@ -11072,14 +11082,14 @@ smoke-meta-crash-control:
 smoke-meta-crash-txn-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(META_CRASH_ARGS) META_CACHE_WB_OUTSIDE_TXN=1
-	@$(MAKE) --no-print-directory $(META_CRASH_ARGS) META_CACHE_WB_OUTSIDE_TXN=1 boot.iso
+	@$(MAKE) --no-print-directory $(META_CRASH_ARGS) META_CACHE_WB_OUTSIDE_TXN=1 horus.iso
 	@rm -f meta-crash-t.img && truncate -s $$(( $(PERSIST_BLOCKS) * $(FS_BLOCK_SIZE) )) meta-crash-t.img
 	@SMOKE_TIMEOUT=$(META_CRASH_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=meta-crash-t.img \
 		REQUIRE_MARKER='WAL_CRASHTEST: crashed-after-commit' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@SMOKE_TIMEOUT=$(META_CRASH_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=meta-crash-t.img \
 		REQUIRE_MARKER='METACACHE: FAIL block' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@rm -f meta-crash-t.img
 	@echo "[meta-crash] CONTROL PASS - a write-back outside its transaction is not covered by the commit"
 
@@ -11098,11 +11108,11 @@ smoke-meta-crash-txn-control:
 smoke-meta-crash-vacuity-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(META_CRASH_BASE)
-	@$(MAKE) --no-print-directory $(META_CRASH_BASE) boot.iso
+	@$(MAKE) --no-print-directory $(META_CRASH_BASE) horus.iso
 	@rm -f meta-crash-v.img && truncate -s $$(( $(PERSIST_BLOCKS) * $(FS_BLOCK_SIZE) )) meta-crash-v.img
 	@SMOKE_TIMEOUT=$(META_CRASH_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=meta-crash-v.img \
 		REQUIRE_MARKER='METACACHE: FAIL no eviction occurred' \
-		tools/smoke_test.sh boot.iso
+		tools/smoke_test.sh horus.iso
 	@rm -f meta-crash-v.img
 	@echo "[meta-crash] CONTROL PASS - a run whose working set fits the cache refuses to conclude"
 

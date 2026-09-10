@@ -21,7 +21,7 @@ what the previous screen left behind. Expecting on drawn text would be reading a
 picture. Each point at which the installer blocks for a key announces itself with
 one console write instead, and those are the sync points.
 
-Usage:  installer_session.py [boot.iso]
+Usage:  installer_session.py [horus.iso]
 Env:    SESSION_DISK      the disk image; REQUIRED, and the same one for both boots
         INSTALLER_MODE    "refuse" or "provision"; default is the install-then-login pair
         INSTALLER_EXPECT_EMPTY_BIN  provision mode's control arm: require the empty /bin
@@ -37,7 +37,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from session_test import Serial, SessionFail  # noqa: E402
 
-ISO = sys.argv[1] if len(sys.argv) > 1 else "boot.iso"
+ISO = sys.argv[1] if len(sys.argv) > 1 else "horus.iso"
 STEP = float(os.environ.get("SESSION_TIMEOUT", "90"))
 BOOT = float(os.environ.get("BOOT_TIMEOUT", "120"))
 PASSWORD = os.environ.get("INSTALL_PASSWORD", "installpw1")

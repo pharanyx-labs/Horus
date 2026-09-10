@@ -9,7 +9,7 @@
  * be attested at runtime rather than only checked at build time.
  *
  * Best-effort by design: on a machine with no TPM (the default, and the plain
- * release boot.iso) the whole subsystem is a no-op and boot continues normally.
+ * release horus.iso) the whole subsystem is a no-op and boot continues normally.
  * A dedicated CI gate (`make smoke-tpm`) always attaches an emulated TPM and
  * asserts the measured PCRs equal the values recomputed from the reproducible
  * manifest on the host.

@@ -4,7 +4,7 @@
 # Usage: gen_module_manifest.sh <out-header> [<file>:<dest-path> ...]
 #
 # Each argument after the output path is one BOOT_MODULES pair, exactly as the
-# boot.iso rule consumes it: the host file to ship, and the '/'-relative path the
+# horus.iso rule consumes it: the host file to ship, and the '/'-relative path the
 # fs_server provisions it to in the store. For each pair we emit the destination
 # path, the payload size, and the SHA-256 of the file's contents.
 #

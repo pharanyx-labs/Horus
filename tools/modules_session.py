@@ -9,7 +9,7 @@ Fixtures use the raw `fss_create` + `fss_write` builtins (not coreutil names),
 because /bin/echo now shadows the shell's echo builtin so its redirection cannot
 create a file.
 
-Usage:  tools/modules_session.py [boot.iso]
+Usage:  tools/modules_session.py [horus.iso]
 Exit:   0 and "MODULES_SESSION: PASS" on success; 1 and a FAIL line otherwise.
 """
 import os
@@ -18,7 +18,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from session_test import Serial, SessionFail, _dump_serial  # noqa: E402
 
-ISO = sys.argv[1] if len(sys.argv) > 1 else "boot.iso"
+ISO = sys.argv[1] if len(sys.argv) > 1 else "horus.iso"
 STEP = float(os.environ.get("SESSION_TIMEOUT", "60"))
 BOOT = float(os.environ.get("BOOT_TIMEOUT", "300"))
 

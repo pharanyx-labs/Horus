@@ -61,7 +61,7 @@
 #                            witnessed is that ring 3 REACHED the channel, and a
 #                            string it wrote says that with no arithmetic.
 #
-# Usage: tools/kdiag_test.sh [boot.iso]
+# Usage: tools/kdiag_test.sh [horus.iso]
 # Env:   KDIAG_TIMEOUT   seconds to wait (default 90)
 #        KDIAG_MIN       markers required before asserting (default 3)
 #        MODE            channel | split | grant  (default channel)
@@ -72,7 +72,7 @@
 #                        kernel reporter cannot overlap at all)
 set -u
 
-ISO="${1:-boot.iso}"
+ISO="${1:-horus.iso}"
 TIMEOUT="${KDIAG_TIMEOUT:-90}"
 MIN="${KDIAG_MIN:-3}"
 MODE="${MODE:-channel}"
@@ -97,7 +97,7 @@ if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
     exit 2
 fi
 if [ ! -f "$ISO" ]; then
-    echo "KDIAG FAIL: ISO '$ISO' not found (run 'make boot.iso' first)" >&2
+    echo "KDIAG FAIL: ISO '$ISO' not found (run 'make horus.iso' first)" >&2
     exit 1
 fi
 

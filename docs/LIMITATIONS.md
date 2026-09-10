@@ -196,7 +196,7 @@ list is derived from, because that is what it got wrong: it enumerates gates tha
 | `SYS_WRITE` fd 1 → the console | none | Correct and deliberate: every task has a stdout, and writing to a terminal is not an authority this system rations. Marked ambient in `SYSCALLS.md` |
 | `SYS_WRITE` fd 1 → `klog` | `CAP_KERNEL_LOG` + `CAP_RIGHT_WRITE` | **Fixed 2026-08-20**: **[H-2]**, below |
 | `SYS_READ` fd 0 / `SYS_GET_LINE` | none, but both refuse once `console_hw_owned()` | Correctly mitigated; the guard is present and deliberate |
-| `SYS_SYSINFO` | none | A version string. Acceptable, and marked ambient in `SYSCALLS.md` |
+| `SYS_SYSINFO` | none | **Retired 2026-08-23** (§2.10): a version readout nothing read is surface, not a feature. The ship kernel answers `SYS_ERR_NOSYS`; the row exists only under `LEGACY_SYSCALLS_PRESENT=1` |
 | `SYS_OPEN`, `15` (ramfs create), `16` (ramfs list), `SYS_READ` fd ≥ 3 | cspace slot 3, `SC_ANYTYPE` | **Missing from this table until 2026-08-22, and the omission is the point**: see **[H-3]** below. Slot 3 holds the legacy `CAP_FRAME` every task is born with, so all four were gated on nothing. **Fixed 2026-08-22**: retired |
 | `SYS_EXEC` (19), `SYS_RECEIVE_PROGRAM` (27) | cspace slot 3, `SC_ANYTYPE` | **Missing from this table until 2026-09-03, which is the third time this table was short.** Same decoy, in the **ship** build, on a call that drops the caller to ring 3 at an address it picks and one that arms a program image. **Retired 2026-09-03** (**S79**): see §1.6c |
 
@@ -2367,7 +2367,7 @@ old allocator and the new one read the same single block and no workload could t
 
 ## 4. Functionality that does not exist
 
-- **Networking.** No drivers, no stack, no sockets.
+- **Networking above Ethernet.** No stack, no sockets, no ARP table, no IP, no TCP. One ring-3 e1000 driver exists and completes a DMA round trip on the wire (§2.14, **S44**/**S45**, witness `make smoke-net`); everything above the frame does not.
 - **Graphics.** No windowing, and no graphics beyond a text grid. **The KERNEL's console draws on
   a linear framebuffer since 2026-09-08** -- an 80x50 cell grid blitted from a font, with the VGA
   text path kept for machines that boot in text mode -- so a UEFI machine with no CSM, where the
@@ -2470,11 +2470,11 @@ old allocator and the new one read the same single block and no workload could t
   *This bullet read "`fork` does not [exist]" for a day after it landed.*
 - **Dynamic linking.** Every binary statically links newlib (~70 KiB of libc text each once
   stripped; the file used to look far larger because 77% of it was debug info, §2.16).
-- **Multiple filesystems or mount points.** One `fs_server`, one volume.
+- **Multiple filesystems.** One volume, one `fs_server` over it. Mount POINTS exist -- `hvfs` is a per-task mount table and walker, and `dev_server` is a second server mounted at `/dev` (§2.7, **S29**) -- but the prefix decides which server a path is addressed to and confines nothing on its own.
 - **Threads within a task.** One thread per address space.
 - **Swap or memory pressure handling.** Pool exhaustion is a hard failure.
 - **KASLR.** Userspace has 30-bit ASLR; the kernel is loaded at a fixed address.
-- **IOMMU.** A DMA-capable device can read all of physical memory.
+- **IOMMU.** Closed as stated: VT-d is brought up before any ring-3 task and a device's address space starts EMPTY, so it reaches exactly the frames its driver mapped (**S45**, witness `make smoke-net`). What remains is narrower and is in §2.12: on a machine with no DMAR `iommu_active()` is 0 and the kernel says so rather than pretending, and interrupt remapping is still off.
 - **Signals beyond the basics.** No `SIGCHLD`, no job control, no process groups.
 - **ARM or RISC-V.** x86-64 only. The boot path is Multiboot2, reached through GRUB under
   **either** BIOS or UEFI since 2026-09-07 (`make smoke-boot-media`); the kernel itself never
@@ -3622,14 +3622,14 @@ Against "a complete, self-hosting operating system":
 | Boot and low-level x86-64 | 85% |
 | Memory management | 70% |
 | Capability model, *design* | 80% |
-| Capability model, *enforcement* | **70%** (IPC namespace mediated and identity retired; three ambient console/version paths remain, §1.6) |
+| Capability model, *enforcement* | **70%** (IPC namespace mediated and identity retired; two ambient console paths remain -- `SYS_WRITE` fd 1 and `SYS_READ` fd 0, §1.6) |
 | Scheduling | 55% |
 | SMP | 45% |
 | IPC | 40% |
 | Filesystem | 65% |
 | Userspace and libc | 55% |
 | Drivers | 15% |
-| Networking | 0% |
+| Networking | **10%** (one ring-3 e1000 driver, DMA round trip gated; nothing above Ethernet) |
 | Formal verification | 10% |
 | Build and supply chain | 80% |
 | Governance and review | 35% |
@@ -3638,9 +3638,11 @@ Against "a complete, self-hosting operating system":
 it (reproducible builds, measured boot, adversarial CI, formal proofs) is substantially more
 mature than the kernel it verifies. Closing **[C-1]** and moving to untyped-memory object
 allocation were the two changes that most raised the honest numbers above; both landed on
-2026-07-27. The two that would raise them next are migrating `tasks[]` off `.bss` (**[I-7]**'s
-remainder) and getting a second pair of eyes on the capability paths (**[C-5]**), which is not a
-technical change at all and is the dominant residual risk.
+2026-07-27. `tasks[]` left `.bss` on 2026-08-30, which
+closed **[I-7]**'s remainder (§3.1: the TCB table is `tcb_t *tasks`, one block carved from the
+kernel's untyped reserve by `tasks_init()`). What would raise them next is getting a second pair
+of eyes on the capability paths (**[C-5]**), which is not a technical change at all and is the
+dominant residual risk.
 
 *The enforcement row read "**45%** (IPC namespace unmediated)" until 2026-08-15: a parenthetical
 naming the defect §1.1 of this same document records as fixed. It was never revised.*

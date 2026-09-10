@@ -88,7 +88,7 @@ suite was falsified against the pre-fix kernel to prove it detects the bug. Reti
 ### 0.2 ✅ Retire ambient `uid == 0` authority (**[I-1]**) *landed 2026-07-27*
 
 Replace each `tasks[cur].uid != 0` gate with a distinct capability type, `CAP_KERNEL_LOG`
-(dmesg), `CAP_BOOT_MODULE` (module read surface), `CAP_OBJECT_STORE` (the encrypted store API):
+(dmesg), `CAP_BOOT_MODULE` (module read surface), `CAP_ENCRYPTED_STORAGE` (the encrypted store API):
 minted by `init` and delegated to exactly the server that needs it. Remove the root promotion in
 `SYS_GET_TASK_INFO` and zero `info.eip` for other tasks (**[I-4]**).
 

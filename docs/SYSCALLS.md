@@ -418,7 +418,7 @@ fails closed.
 | 62 | `SYS_BRK` | `addr` (0 queries) | none (own heap) |
 
 Both grow the authorised ceiling on demand; physical pages arrive lazily via the demand pager.
-Both currently perform 32-bit arithmetic on 64-bit heap bounds, finding **[I-2]**.
+Both are 64-bit end to end (**[I-2]**, fixed 2026-08-13): the overflow check runs before the range test, and no value is narrowed on the way to the TCB. Witness `make smoke-heap64`, against `USER_HEAP_HIGH_BASE=1`, which puts the heap at 8 GiB so the old truncation would be reachable.
 
 ## Pointer arguments
 

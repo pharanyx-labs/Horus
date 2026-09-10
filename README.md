@@ -73,12 +73,12 @@ Three principles drive every design decision.
 **Least privilege by construction.** Authority is a capability: an unforgeable token naming one
 object and one set of rights. There is no `root` bit that opens every door, and since **[H-1]**
 landed no kernel path grants authority for *who the caller claims to be*. A task can only do
-what it holds a capability for, and can only delegate a *subset* of what it holds. Three
-console-adjacent syscalls are still ungated by any capability: `SYS_WRITE` fd 1, `SYS_READ` fd 0
-and `SYS_SYSINFO`; they are enumerated in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) §1.6 and
-marked *ambient* at each entry in [`docs/SYSCALLS.md`](docs/SYSCALLS.md), because a claim stated
-absolutely and enforced partially is worse than no claim. Those three are ungated
-*deliberately*: a terminal write, a terminal read and a version string are not authorities this
+what it holds a capability for, and can only delegate a *subset* of what it holds. Two
+console-adjacent syscalls are still ungated by any capability: `SYS_WRITE` fd 1 and `SYS_READ`
+fd 0; they are enumerated in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) §1.6 and marked
+*ambient* at each entry in [`docs/SYSCALLS.md`](docs/SYSCALLS.md), because a claim stated
+absolutely and enforced partially is worse than no claim. Those two are ungated
+*deliberately*: a terminal write and a terminal read are not authorities this
 system rations. Writing to fd 1 no longer carries anything else with it: it once also appended
 to the kernel message ring, whose *read* side requires `CAP_KERNEL_LOG`, and that half is gated
 now (**[H-2]**, S23).
@@ -148,7 +148,7 @@ per item.
 | **Filesystem** | `fs_server` in ring 3 over an AEAD-encrypted kernel object store; POSIX rwx against kernel-attested uid/gid; write-ahead journal and mount-time fsck; double-indirect large files; a per-task VFS mount table routing paths to per-mount capabilities |
 | **Console** | `console_server` in ring 3 owning the UART and VGA framebuffer; raw terminal mode (termios + winsize) |
 | **Devices** | A `CAP_IO_DEVICE` names **one device** in a boot-time table (PCI bus-0 scan plus the non-enumerable legacy platform hardware) and confers only that device's frames, port ranges and interrupt lines. Two ring-3 drivers: `console_server` and `netd`, an Intel e1000 driver proved by a full DMA round trip. It drives e1000 rather than virtio deliberately: a paravirtual device accesses guest memory directly and is not on the far side of the IOMMU at all, so it could not witness DMA confinement. **VT-d DMA remapping**: each device gets an address space that starts **empty**, so it reaches only the frames its driver mapped. An interrupt reaches its ring-3 driver either as an **MSI on a vector the kernel chose** (the driver cannot name one) or through the I/O APIC and masked until acknowledged, so an unserviced device cannot livelock the machine. A device's **MSI-X vector table is unmappable by its driver**, it lives in a BAR, so the vector-choice question had to be answered again there. MSI-X is protected but not yet enabled; no interrupt remapping, no bridge walk |
-| **Network** | `netd` drives an e1000 from ring 3 holding one device capability and one untyped region, and its DMA reaches only what it mapped. It is woken by its device's own interrupt and acknowledges it. It transmits; it does **not** receive yet, and there is no ARP table, IP, TCP or socket capability |
+| **Network** | `netd` drives an e1000 from ring 3 holding one device capability and one untyped region, and its DMA reaches only what it mapped. It is woken by its device's own interrupt and acknowledges it. It transmits, and it receives on the 82574L reliably enough that `make smoke-net` gates on it (5 boots in 5); on the 82540EM reception has been seen exactly once, so receiving is a property of the device model here rather than of the driver (§2.14). There is no ARP table, IP, TCP or socket capability |
 | **Storage crypto** | Per-`(inode, block)` AEAD subkeys, Merkle rollback tree, and a TPM NV monotonic counter anchoring the volume against whole-volume rollback; key material never leaves the kernel |
 | **Installing** | A ring-3 `installer`, launched by `init` when the machine has a disk carrying no volume. Its whole authority is `CAP_STORAGE_FORMAT` (a capability type of its own — deliberately **not** a rights bit on the storage capability `fs_server` and the shell already hold, since those are granted with every right there is and defining the bit would confer it on both with nothing in the diff to show for it), `CAP_USER` to set the first root password, and a console endpoint. It cannot read the volume it replaces and cannot create a task. **Consent is a typed word, not a menu choice**: a menu whose default is Cancel still becomes a format with two keystrokes. A login still refuses to format a volume it does not recognise. **No partitioning, no bootloader step, one disk**, and installing over an existing volume is refused rather than offered. Installs onto legacy IDE and onto **SD/eMMC** &mdash; the latter is what a budget laptop's soldered internal storage actually is, and is reached by neither the IDE nor the SATA driver; a SATA disk is identified but not yet mountable |
 | **Boot integrity** | SHA-256 module manifest embedded in the kernel image; TPM 2.0 measurement into PCR 8 and 9; vdisk KEK sealed under `PolicyPCR` |

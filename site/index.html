@@ -1617,7 +1617,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">SMEP/SMAP in CR4, kernel W^X swept, CSPRNG-reseeded stack canary, <code>CR4.TSD</code></th><td class="t-note">smoke-cpu · smoke-wx · smoke-stackguard</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">The CSPRNG refuses to emit keystream before it is seeded, a draw from an unseeded pool halts the kernel rather than returning a stream derived from a published constant</th><td class="t-note">smoke-rng-seed</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Per-task VFS namespace; the shell and the libc resolve every path through one walker, over the capabilities each task already holds</th><td class="t-note">smoke-vfs · smoke-newlib</td></tr>
-              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Four syscalls with no caller anywhere in the tree retired, including one that created a task on the capability every task already holds</th><td class="t-note">smoke-passwd-probe</td></tr>
+              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Six syscalls with no caller anywhere in the tree retired, including one that created a task on the capability every task already holds</th><td class="t-note">smoke-passwd-probe</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Kani proofs of the capability algebra that <em>gate</em>, mint, grant, lookup and revocation, over the whole input space, on every pull request</th><td class="t-note">kani-bounded</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">The capability graph is observable; <code>capview</code> prints every task's slots, under a capability that observes and cannot be widened to write</th><td class="t-note">smoke-session · smoke-captest</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">The security core is interpreted for undefined behaviour on every pull request, aliasing and pointer provenance across the whole C&nbsp;FFI boundary</th><td class="t-note">miri</td></tr>
@@ -1632,16 +1632,12 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">Kernel object lifecycle, retyped objects are destroyed; well-known service objects and <code>tasks[]</code> are still static</th><td class="t-note">roadmap 0.3</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Crash-atomic filesystem, write-ahead journal, mount-time fsck, and ATA <code>FLUSH CACHE</code> barriers bracketing the commit record</th><td class="t-note">smoke-fs-wal-flush · smoke-fs-wal-order</td></tr>
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">Copy-on-write, zero-page and generic breaks both tested; the only producer is the demand pager, and nothing breaks COW over a shared frame yet</th><td class="t-note">smoke-cow · smoke-nzcow</td></tr>
-              <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">Process control, spawn, exec, kill, wait, signals with mask and altstack; no <code>fork</code>, no job control</th><td class="t-note">smoke-proc</td></tr>
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">SMP scheduling, a shared runnable pool with a linear scan; no affinity, no priorities</th><td class="t-note">roadmap</td></tr>
 
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Virtual-memory objects</strong>, frame capabilities, capability-mediated shared memory, multi-page mapping and sized frames landed; copy-on-write over a kernel object is refused by design</th><td class="t-note">smoke-frame</td></tr>
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Process model</strong>, <code>fork</code> gives a child a copy-on-write clone of its parent's address space, and refuses outright while a frame capability is mapped; the child inherits its parent's capabilities as <em>derived</em> copies, so revoking one still sweeps the child's; <code>exec</code> then replaces the image and touches no capability, so <code>fork(); exec();</code> cannot turn delegated authority into a root of its own; there are no process groups, job control or <code>/proc</code></th><td class="t-note">smoke-fork · smoke-forkexec</td></tr>
-              <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Timers and a monotonic clock: no <code>clock_gettime</code>, no IPC timeouts</th><td class="t-note">roadmap 2.2</td></tr>
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>A VFS and mount points</strong>, a per-task mount table routes each path to the capability for that mount, and a second filesystem server proves it; the existing clients still carry their own path walkers</th><td class="t-note">smoke-vfs</td></tr>
-              <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Dynamic linking and a shared libc, every binary statically links newlib</th><td class="t-note">roadmap 2.5</td></tr>
-              <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Networking: no drivers, no stack, no sockets</th><td class="t-note">roadmap 2.6</td></tr>
-              <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">KASLR, USB, sound, windowing or graphics beyond a text grid, interrupt remapping</th><td class="t-note">; </td></tr>
+              <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">KASLR, USB, sound, windowing or graphics beyond a text grid, interrupt remapping</th><td class="t-note">roadmap 3.8 (KASLR); the rest are out of scope for now</td></tr>
             </tbody>
           </table>
         </div>
@@ -2456,13 +2452,20 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               is the one that would otherwise let the whole check pass while measuring nothing.
             </p>
             <p>
-              It deliberately does not demand all 76. That would be a large amount of
+              It deliberately does not demand all 96. That would be a large amount of
               test-writing wearing the costume of a guarantee. What it demands is that the number
               be decided rather than drifting, and that every gap be written down; the same
               bargain this project already makes with which tests are allowed to block a merge.
-              Two of the gaps are cheap: a family of calls is untested only because the scripted
-              session never runs a command pipeline, which is a gap in the script rather than in
-              the kernel.
+              The pipe family used to be the cheap example here &mdash; untested only because no
+              scripted session ran a command pipeline, a gap in the script rather than in the
+              kernel. It is covered now. What is left is eight calls, in five groups: three answer
+              to a capability the conformance suite deliberately does not hold, and one of those
+              three formats the attached disk, so no tracked workload can enter it without
+              destroying the volume the run is using; one is reached only on a start-up failure
+              path, which a tracked workload would have to break itself to take; two would
+              SUCCEED, and either duplicate the caller or replace its image; one blocks on a
+              keystroke; and one enters a body that returns at its first line, because the feature
+              it reports on is compiled out of every tracked image.
             </p>
           </li>
           <li>

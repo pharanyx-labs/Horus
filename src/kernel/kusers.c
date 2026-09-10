@@ -217,16 +217,23 @@ static int verify_user_password(const char *name, const char *password) {
  *      is stored in. compute_userdb_tag MAC'd under the same pepper, so even a
  *      correctly written file could never have validated across a reboot.
  *
- * Any one of those alone made it dead; all three were present. Deleting is the
- * honest state -- accounts are seeded from the constants below on every boot and
- * useradd/userdel/passwd last until reboot. docs/LIMITATIONS.md 2.6 says so.
+ * Any one of those alone made it dead; all three were present. Deleting was the
+ * honest state at the time: accounts were seeded from the constants below on
+ * every boot, and useradd/userdel/passwd lasted until reboot.
  *
- * Making it real is a separate change and it is the pepper that decides it, not
- * the storage: the pepper has to survive the reboot for a stored hash to mean
- * anything, which is why the plan is to TPM-seal it under PolicyPCR(8,9) exactly
- * as storage.c already seals the volume KEK. Note fs_superblock.kek_salt, which
- * excludes the pepper with the comment "must be reproducible across reboots from
- * the same pwd" -- the same conclusion, reached earlier, one field away. */
+ * THAT IS NO LONGER TRUE, AND THIS PARAGRAPH SAID IT WAS UNTIL 2026-09-10.
+ * Accounts persist since 2026-08-31 (SECURITY.md S62, docs/LIMITATIONS.md 2.6,
+ * which is CLOSED): storage_users_save/storage_users_load seal the table under
+ * HKDF(disk_key, "horus-users-v1"), and this file calls both. The prediction
+ * below was right about what decided it -- the pepper, not the storage -- which
+ * is why USERS_PEPPER_PER_BOOT=1 is the arm that reproduces the old behaviour.
+ *
+ * It was the pepper that decided it, not the storage: a per-boot pepper makes a
+ * stored hash meaningless on the next boot, which is why the table is sealed
+ * under the volume key rather than hashed against a value that does not outlive
+ * the boot. Note fs_superblock.kek_salt, which excludes the pepper with the
+ * comment "must be reproducible across reboots from the same pwd" -- the same
+ * conclusion, reached earlier, one field away. */
 
 void users_init(void) {
     for (int i = 0; i < MAX_USERS; i++) {

@@ -54,6 +54,28 @@ in this file.
 
 ### Added
 
+- **Falsification suites for three more checkers** — `check_abi_structs.py` (8 arms),
+  `check_syscall_abi.py` (7), `check_image_abi.py` (8) — and **two more vacuity guards the
+  arms proved were missing**.
+  `check_abi_structs.py` compares fourteen structs written down in both headers. With its
+  `FIELD` pattern broken **every struct parses as zero fields, so all fourteen pairs compare
+  equal** and it reports a clean boundary having read none of their contents. Its
+  enrolled-but-absent rule does not catch that: the structs are still *discovered*, only their
+  bodies have gone quiet. `check_syscall_abi.py` is the same shape — its two macro rules read
+  the header directly and keep passing while the wrapper scan goes silent, so the rule that
+  catches **#176** stops looking while the file prints PASS.
+  `check_image_abi.py` already guarded all three of its vacuity cases; its arms keep them.
+- **Every falsification suite now refuses to delete a non-temp directory.** Fourteen suites
+  ended their arms with `rm -rf "$d"` unguarded. That is a hazard whatever points it
+  somewhere real — and something did: a new suite's fixture helper used `d` as a for-loop
+  variable, the same name `arm` uses for its temp directory and not declared `local`, so the
+  loop left `d=tools` and the cleanup ran **`rm -rf tools` at the repository root**. 87 tracked
+  files, restored from HEAD; the uncommitted work in them was not, and was rewritten. The
+  guard is on the deletion rather than on that variable, because the next bug will point
+  somewhere else.
+
+### Added
+
 - **Falsification suites for three checkers that had none** — `check_capslots.py` (6 arms),
   `check_kani_harnesses.py` (7), `check_miri_scope.py` (6). All three are required CI checks
   that had never been tested against a tree they should reject.

@@ -2859,6 +2859,11 @@ jobs:
       # including ones nothing calls yet, because it is a property of the source.
       - name: Refuse any syscall wrapper that narrows a pointer
         run: python3 tools/check_syscall_abi.py
+      # Its arm 4 is why this checker now asserts it examined some pointer
+      # arguments: the two macro rules read the header directly and kept
+      # passing while the wrapper scan went silent.
+      - name: Falsify that checker in every direction
+        run: tools/test_check_syscall_abi.sh
 
   smoke-klog-forge:
     name: A ring-3 task cannot forge into or evict from the kernel log (H-2/S23; control arm proves it)
@@ -3914,6 +3919,11 @@ jobs:
       # user buffer or a driver reading the wrong MMIO range.
       - name: Every ABI struct is identical in both headers
         run: python3 tools/check_abi_structs.py
+      # Its arm 5b is why this checker now refuses a zero-field parse: with
+      # the FIELD pattern broken all fourteen structs compared EQUAL, because
+      # two empty field lists agree.
+      - name: Falsify that checker in every direction
+        run: tools/test_check_abi_structs.sh
       # Fourth instance, and the one with the longest history of being missed by
       # hand. A dispatch row gated on cspace slot 3 is gated on the CAP_FRAME
       # create_task installs in EVERY task -- [C-1]'s decoy, and by S28 not a
@@ -3930,6 +3940,8 @@ jobs:
       # seven the first time it ran, which is the argument for it in one line.
       - name: The .bin container format has exactly one declaration
         run: python3 tools/check_image_abi.py
+      - name: Falsify that checker in every direction
+        run: tools/test_check_image_abi.sh
       # Third instance of the same class in the same job: a property two places
       # must agree on, with nothing comparing them. Here the two places are the
       # marker a gate asserts and the writes that emit it. docs/LIMITATIONS.md

@@ -23,10 +23,26 @@ mktree () {
   cp "$ROOT/.github/gate-evidence.yml" "$1/.github/"
 }
 
+# Refuse to delete anything that is not a fresh temp directory.
+#
+# On 2026-09-10 a sibling suite's fixture helper used `d` as a for-loop variable
+# -- the same name `arm` uses for its temp dir, and not declared local -- so the
+# loop left d=tools, and this cleanup ran `rm -rf tools` at the REPOSITORY ROOT.
+# 87 tracked files, restored from HEAD; the uncommitted work in them was not.
+# A harness that can delete a real directory is a hazard whatever the bug that
+# points it there, so the guard is on the deletion rather than on that variable.
+_rmtree () {
+  case "${1:-}" in
+    /tmp/*|/var/tmp/*|/var/folders/*) rm -rf "$1" ;;
+    *) echo "REFUSING to rm -rf '${1:-<empty>}' -- not a temp directory" >&2
+       exit 1 ;;
+  esac
+}
+
 arm () {  # $1 rule, $2 desc, $3 mutation, $4 expect(caught|clean), $5 must-name
   local rule="$1" desc="$2" mut="$3" expect="$4" want="${5:-}" d out rc
   d="$(mktemp -d)"; mktree "$d"
-  ( cd "$d" && eval "$mut" ) || { echo "  $rule: MUTATION FAILED ($desc)"; FAILS=$((FAILS+1)); rm -rf "$d"; return; }
+  ( cd "$d" && eval "$mut" ) || { echo "  $rule: MUTATION FAILED ($desc)"; FAILS=$((FAILS+1)); _rmtree "$d"; return; }
   out="$(cd "$d" && python3 tools/check_gate_evidence.py 2>&1)"; rc=$?
   if [ "$expect" = caught ]; then
     if [ $rc -eq 0 ]; then echo "  $rule: NOT CAUGHT -- $desc"; FAILS=$((FAILS+1))
@@ -37,7 +53,7 @@ arm () {  # $1 rule, $2 desc, $3 mutation, $4 expect(caught|clean), $5 must-name
     if [ $rc -ne 0 ]; then echo "  $rule: WRONGLY CAUGHT -- $desc"; grep '^  - ' <<<"$out" | head -2; FAILS=$((FAILS+1))
     else echo "  $rule: clean, correctly -- $desc"; PASSES=$((PASSES+1)); fi
   fi
-  rm -rf "$d"
+  _rmtree "$d"
 }
 
 echo "Falsifying tools/check_gate_evidence.py:"

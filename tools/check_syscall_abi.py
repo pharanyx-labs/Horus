@@ -104,6 +104,21 @@ def main():
                             f"the kernel -- `{a}`. Use SYSCALL_UPTR({var})."
                         )
 
+    # SELF-CHECK. The two macro rules above read the header directly, so they
+    # still pass when the WRAPPER pattern stops matching -- and rule 1, the one
+    # that catches #176 itself, goes silent while this file reports PASS. Its own
+    # falsification suite found that. The header has carried dozens of pointer
+    # arguments for the life of the project (56 on 2026-09-10).
+    if checked < 20:
+        problems.append(
+            "checked no pointer arguments at all" if checked == 0 else
+            f"checked only {checked} pointer arguments, fewer than this header "
+            f"has ever had")
+        problems.append(
+            "the wrapper or call pattern has probably stopped matching -- fix it "
+            "rather than lowering this bound, because the narrowing rule is "
+            "vacuous over a header nothing was read from")
+
     print(f"checked {checked} pointer arguments in {HEADER.name}")
     if problems:
         print("\nFAIL: a user pointer does not reach the kernel full-width\n")

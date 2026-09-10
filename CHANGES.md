@@ -552,6 +552,24 @@ in this file.
 
 ### Changed
 
+- **`tools/horus.py` opts into server-side refusal fallbacks** (`fallbacks: "default"`, beta
+  `server-side-fallback-2026-07-01`). Opus 5's classifiers can decline a request; without this the
+  turn stops, and with it the API re-runs the declined request on another model inside the same
+  call. `"default"` routes by refusal **category** rather than pinning a substitute -- different
+  fallback models carry different classifiers, so the right one depends on why the request was
+  declined, and a pinned one becomes a migration the day it is deprecated.
+  **The billing follows the model that answered, so the accounting does too.** A rescue is billed
+  at the fallback model's rates, so `estimate_cost` and `horus_usage.log` key on `response.model`
+  rather than on `MODEL`, and `claude-opus-4-8` gains a `PRICE` row -- not as a selectable model
+  but because it is where `"default"` routes a cyber-category refusal, and without the row exactly
+  those turns would read `$0.0000`.
+  The served-by signal is `usage.iterations`, not the content blocks: a `fallback` block appears
+  once per model that declined **this** turn, and a sticky turn -- one already routed to the
+  fallback by an earlier decline -- carries none while still being served by it. Both shapes were
+  exercised against stand-in objects, since this environment has neither the `anthropic` package
+  nor credentials; **the API call itself was not run**, which is also why the first `400` naming
+  the beta turns fallbacks off for the session with one message rather than failing every turn.
+
 - **`tools/horus.py` runs on Claude Opus 5** (`claude-opus-5`). It was pinned to
   `claude-opus-4-8`, which is still served; the move is a capability change and **not** a price
   one, since both tiers are $5/$25 per MTok. The `PRICE` table follows the model rather than

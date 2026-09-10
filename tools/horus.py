@@ -29,6 +29,28 @@ from anthropic import Anthropic
 MODEL      = "claude-opus-5"
 MAX_TOKENS = 8192
 
+# SERVER-SIDE REFUSAL FALLBACKS, the recommended default for Opus 5 callers.
+#
+# The safety classifiers can decline a request (HTTP 200, stop_reason "refusal").
+# Without this the turn simply stops; with it the API re-runs the declined
+# request on another model INSIDE THE SAME CALL and hands back that model's
+# answer. "default" routes by refusal CATEGORY rather than pinning a substitute,
+# which is the form to prefer: different fallback models carry different
+# classifiers, so the right substitute depends on why the request was declined,
+# and a pinned one becomes a migration the day it is deprecated.
+#
+# BILLING IS NOT THE CONFIGURED MODEL'S. A decline before any output is not
+# billed; the rescue bills at the fallback model's own rates. That is why the
+# cost read-out below keys on the model that ANSWERED rather than on MODEL --
+# see estimate_cost(). A model absent from PRICE reports 0.0, deliberately.
+#
+# The header and the parameter shape are a matched pair: "default" needs
+# server-side-fallback-2026-07-01, and the older array form
+# (fallbacks=[{"model": ...}]) needs -2026-06-01. Crossing them is a 400, which
+# is what FALLBACK_UNSUPPORTED below degrades on.
+FALLBACKS      = "default"
+FALLBACK_BETA  = "server-side-fallback-2026-07-01"
+
 # Both live at the REPOSITORY ROOT, resolved from this file's location rather
 # than from the working directory: the script moved under tools/ (roadmap 4.6,
 # audit finding M-2), and a bare relative name would then mean "wherever the
@@ -45,6 +67,11 @@ LOG_FILE           = os.path.join(_ROOT, "horus_usage.log")
 PRICE = {
     "claude-opus-5":     {"in": 5.0, "out": 25.0},
     "claude-sonnet-5":   {"in": 2.0, "out": 10.0},
+    # Not selectable as MODEL. It is here because it is where `fallbacks:
+    # "default"` routes a cyber-category refusal, so a rescued turn is billed at
+    # this tier -- and without the row the read-out for exactly those turns would
+    # be a silent 0.00.
+    "claude-opus-4-8":   {"in": 5.0, "out": 25.0},
 }
 # ================================================================
 
@@ -68,20 +95,42 @@ def extract_text(message) -> str:
     return "\n".join(parts).strip() or "[No text in the response.]"
 
 
-def estimate_cost(usage) -> float:
-    p = PRICE.get(MODEL)
+def served_model(message) -> str:
+    """The model that actually answered, which is not always MODEL.
+
+    A rescued refusal is served by the fallback model and BILLED AT ITS RATES, so
+    every number derived from a turn has to key on this rather than on the
+    configured model."""
+    return getattr(message, "model", None) or MODEL
+
+
+def fallback_ran(message) -> bool:
+    """Did a fallback serve this turn?
+
+    Read from usage.iterations rather than from the content blocks: a `fallback`
+    block appears once per model that declined THIS turn, and a sticky turn --
+    one already routed to the fallback by an earlier decline -- carries none at
+    all while still being served by it."""
+    for entry in getattr(message.usage, "iterations", None) or []:
+        if getattr(entry, "type", None) == "fallback_message":
+            return True
+    return False
+
+
+def estimate_cost(usage, model: str) -> float:
+    p = PRICE.get(model)
     if not p:
         return 0.0
     return (usage.input_tokens * p["in"] + usage.output_tokens * p["out"]) / 1_000_000
 
 
-def log_usage(usage, cost: float) -> None:
+def log_usage(usage, cost: float, model: str) -> None:
     # Best-effort: logging must never break the chat.
     try:
         with open(LOG_FILE, "a") as f:
             json.dump({
                 "ts": datetime.now().isoformat(),
-                "model": MODEL,
+                "model": model,
                 "in": usage.input_tokens,
                 "out": usage.output_tokens,
                 "cost": round(cost, 6),
@@ -106,9 +155,11 @@ def main() -> None:
 
     messages: list[dict] = []
     total_cost = 0.0
+    use_fallbacks = True   # cleared for the session if the beta is unavailable
 
     print("=== Horus - Secure Microkernel Assistant ===")
-    print(f"Model: {MODEL}  |  Commands: 'new' (reset), 'exit'\n")
+    print(f"Model: {MODEL} (refusal fallbacks: {FALLBACKS})"
+          f"  |  Commands: 'new' (reset), 'exit'\n")
 
     while True:
         try:
@@ -130,13 +181,44 @@ def main() -> None:
         messages.append({"role": "user", "content": user_input})
 
         try:
-            response = client.messages.create(
-                model=MODEL,
-                max_tokens=MAX_TOKENS,
-                system=system,
-                messages=messages,
-            )
+            if use_fallbacks:
+                response = client.beta.messages.create(
+                    model=MODEL,
+                    max_tokens=MAX_TOKENS,
+                    system=system,
+                    messages=messages,
+                    betas=[FALLBACK_BETA],
+                    fallbacks=FALLBACKS,
+                )
+            else:
+                response = client.messages.create(
+                    model=MODEL,
+                    max_tokens=MAX_TOKENS,
+                    system=system,
+                    messages=messages,
+                )
         except Exception as e:
+            # DEGRADE ONCE, LOUDLY, IF THE BETA IS NOT AVAILABLE TO THIS CALLER.
+            #
+            # fallbacks is a beta parameter: an account or an SDK without it
+            # answers 400 for every turn, and a REPL that dies on every turn is
+            # worse than one that answers without the rescue. So the first such
+            # failure turns it off for the session and says so -- once, not per
+            # turn. Any OTHER failure keeps its existing behaviour: report, drop
+            # the unanswered turn, and stay alive.
+            #
+            # Matched on the parameter and header names rather than on an
+            # exception class, because the SDK reports this as an ordinary
+            # BadRequestError; if the string ever stops matching, the result is
+            # the old behaviour (a reported failure), not a wrong answer.
+            text = str(e)
+            if use_fallbacks and ("fallback" in text or FALLBACK_BETA in text):
+                use_fallbacks = False
+                print("[!] Server-side refusal fallbacks are not available to this "
+                      "caller; continuing without them.")
+                print(f"    ({text})\n")
+                messages.pop()
+                continue
             # Keep the REPL alive; drop the unanswered turn so history stays valid.
             print(f"[X] Request failed: {e}\n")
             messages.pop()
@@ -146,11 +228,18 @@ def main() -> None:
         print(f"\nHorus:\n{reply}\n")
         messages.append({"role": "assistant", "content": reply})
 
-        cost = estimate_cost(response.usage)
+        # WHICH MODEL ANSWERED is a fact about the turn, not a detail: a rescued
+        # refusal is served -- and billed -- by the fallback model, so it is said
+        # out loud and it is what the cost and the log key on.
+        answered_by = served_model(response)
+        if fallback_ran(response) and response.stop_reason != "refusal":
+            print(f"[!] {MODEL} declined; answered by {answered_by}.\n")
+
+        cost = estimate_cost(response.usage, answered_by)
         total_cost += cost
         print(f"[in {response.usage.input_tokens} / out {response.usage.output_tokens}"
               f" | ${cost:.4f} this | ${total_cost:.4f} total]\n")
-        log_usage(response.usage, cost)
+        log_usage(response.usage, cost, answered_by)
 
 
 if __name__ == "__main__":

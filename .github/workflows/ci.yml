@@ -3843,6 +3843,8 @@ jobs:
       # nobody classified -- so it runs before the toolchain install.
       - name: Every test module is run under Miri or excused with a reason
         run: python3 tools/check_miri_scope.py
+      - name: Falsify that checker in every direction
+        run: tools/test_check_miri_scope.sh
       # A pinned nightly rather than a floating one: Miri ships as a rustup
       # component and is occasionally absent for a given date, so a floating
       # nightly turns "is there UB" into "did today's nightly build a component",
@@ -3890,12 +3892,19 @@ jobs:
       # nobody wired up -- so it runs before the expensive install.
       - name: Every Kani proof is classified as gating or excused
         run: python3 tools/check_kani_harnesses.py
+      - name: Falsify that checker in every direction
+        run: tools/test_check_kani_harnesses.sh
       # Cheap and source-only, so it rides along here rather than paying for its
       # own runner. The cspace slot map is written down twice -- kernel.h and
       # syscall.h -- and nothing compared them until a new CAPSLOT_DEBUG was
       # added as 18, which CAPSLOT_UNTYPED already was.
       - name: The cspace slot map is consistent across both headers
         run: python3 tools/check_capslots.py
+      # Its arm 4 is why check_capslots.py has a vacuity guard at all: it was the
+      # only one of these three that reported a clean tree with its own pattern
+      # deliberately broken.
+      - name: Falsify that checker in every direction
+        run: tools/test_check_capslots.sh
       # Same shape, same file pair, same reason it rides along here. Seven structs
       # cross the ring-3 boundary and are written down in BOTH headers because
       # neither includes the other; nothing compared them. All seven agree today,

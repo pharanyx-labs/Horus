@@ -14,10 +14,19 @@ from datetime import datetime
 from anthropic import Anthropic
 
 # ============================ CONFIG ============================
-# One fixed model, so behaviour and cost are predictable. Opus 4.8 is the most
-# capable model and the right default for security-critical kernel work.
-# Swap to "claude-sonnet-4-6" if you want ~40% lower cost.
-MODEL      = "claude-opus-4-8"
+# One fixed model, so behaviour and cost are predictable. Opus 5 is the current
+# Opus and the right default for security-critical kernel work, at the same
+# $5/$25 per MTok Opus 4.8 cost -- so this is a capability change and not a
+# price one. Swap to "claude-sonnet-5" ($2/$10) if you want the cheaper tier.
+#
+# THINKING IS NOT CONFIGURED HERE, AND THAT IS THE CORRECT CALL RATHER THAN AN
+# OMISSION. On Opus 5 thinking is on by default: omitting the parameter runs
+# adaptive thinking, which is what this tool wants. Setting it explicitly buys
+# nothing, and `{"type": "disabled"}` would cost something real -- with thinking
+# off the model occasionally writes what should be a tool call, or a <thinking>
+# tag, into the visible text. The old `budget_tokens` form is rejected outright
+# on this model.
+MODEL      = "claude-opus-5"
 MAX_TOKENS = 8192
 
 # Both live at the REPOSITORY ROOT, resolved from this file's location rather
@@ -29,10 +38,13 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SYSTEM_PROMPT_FILE = os.path.join(_ROOT, "system_prompt.txt")
 LOG_FILE           = os.path.join(_ROOT, "horus_usage.log")
 
-# USD per 1M tokens, for the cost read-out only. Keep in sync with MODEL.
+# USD per 1M tokens, for the cost read-out only. Keep in sync with MODEL: an
+# entry that is missing makes estimate_cost() return 0.0 rather than guess, which
+# is the safe direction -- a silent zero in the log is better than a number
+# derived from the wrong tier.
 PRICE = {
-    "claude-opus-4-8":   {"in": 5.0, "out": 25.0},
-    "claude-sonnet-4-6": {"in": 3.0, "out": 15.0},
+    "claude-opus-5":     {"in": 5.0, "out": 25.0},
+    "claude-sonnet-5":   {"in": 2.0, "out": 10.0},
 }
 # ================================================================
 

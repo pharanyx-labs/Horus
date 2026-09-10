@@ -534,8 +534,20 @@ int sys_ipc_recv(uint32_t ep, void *msg, size_t max_len) {
     /* Mint the one-shot right to answer THIS request (roadmap 1.3).
      *
      * Deliberately after ipc_unlock(): cap_install_object takes cap_lock, and
-     * taking cap_lock underneath endpoint_lock would create a second lock order
-     * between two locks that are otherwise unrelated. Nothing between the unlock
+     * this path does not need to hold the endpoint lock across the mint.
+     *
+     * THIS COMMENT USED TO SAY the nesting "would create a second lock order
+     * between two locks that are otherwise unrelated". Written 2026-08-10; the
+     * publish path above began nesting cap_lock inside endpoint_lock on
+     * 2026-08-11, so the two locks HAVE been related since the day after, and
+     * this sentence had been false for a month. Both paths are still correct --
+     * exactly one of them nests -- but the reason given here was not. The order
+     * is declared once in .github/lock-order.yml and checked by
+     * tools/check_lock_order.py (S88), which refuses an undeclared nesting AND
+     * the reverse of a declared one; that is what makes "keep it that way",
+     * forty lines up, something other than an instruction with no addressee.
+     *
+     * Nothing between the unlock
      * and here can invalidate the mint — `sender` is a value, not a pointer, and
      * a sender that dies before the reply is handled by the liveness check in
      * h_ipc_reply_to.

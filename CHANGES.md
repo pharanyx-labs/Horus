@@ -54,6 +54,36 @@ in this file.
 
 ### Added
 
+- **The kernel's lock order is declared and gated** (**S88**, `tools/check_lock_order.py`,
+  required job `lock-order`). Nine locks, and the order between them lived in **five comments
+  across four files** with no registry and nothing that could fail.
+  **Two of those comments were in the same file and disagreed about the same pair.**
+  `sys_ipc_send` mints the one-shot `CAP_REPLY` under the IPC lock and calls that nesting *"a
+  NEW lock order… it is the only one… Keep it that way"* (2026-08-11). `sys_ipc_recv` mints
+  after unlocking and said the same nesting *"would create a second lock order between two
+  locks that are otherwise unrelated"* (2026-08-10) — **false the day after it was written, and
+  false for a month**. Both paths are correct and exactly one nests; the reason given in the
+  second was not, and it is corrected in place.
+  **A nesting is not a defect; a cycle is.** Two exist and both are declared:
+  `endpoint_lock -> cap_lock` (minting after the wake loses a race measured at ~33% of sessions
+  with a second CPU loaded, 0% for the control) and `endpoint_lock -> page_lock` (through
+  `copy_to_user` on the delivery path). The second is the pair the 2026-08-30 audit
+  investigated and rejected on the grounds that *"no `page_lock` holder enters IPC"* — **an
+  argument about the absence of the reverse edge, checked by hand once.** The checker's second
+  rule, *the reverse of a declared nesting fails the build*, is what keeps it checked.
+  **Three of the nine arms found real gaps in the checker on their first run**: it was blind to
+  a nesting written as two `spin_lock` calls in one function, because it only looked through
+  calls; its self-check counted lock-taking *functions*, a total the surviving `ipc_lock()`
+  alias kept high while eight of nine locks went invisible, so it is per-lock now; and its body
+  parser could not match a one-line definition, which is exactly how `untyped.c` takes its lock.
+  **Not a runtime lockdep, and the limits are stated rather than implied**: lexical, callees
+  matched by name, no model of conditional locking or interrupt context. `spin_lock` records
+  nesting depth and saved IF but **no lock identity**, so a runtime check would need a per-lock
+  id and a per-CPU held stack — a new subsystem on the hottest path in a kernel whose last four
+  SMP defects were found by hanging.
+
+### Added
+
 - **The ring-0 boundary is declared and gated** (**S87**, `tools/check_ring0_budget.py`,
   required job `ring0-budget`). The kernel is **37 linked objects, 40,316 physical / 20,532
   code lines**, and nothing said which of them are the security core — so "shrink ring 0" was

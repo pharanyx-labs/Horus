@@ -3697,6 +3697,19 @@ to police the tree's size. And every one has an arm that breaks the pattern and
 requires a failure, because a guard nothing tests is the same class of thing as
 the defect it guards against.
 
+**And it is not confined to checkers.** `tools/stress_boot.sh` is a gate *harness*,
+not a checker, and it had the identical defect: `for i in $(seq 1 $RUNS)` with
+`STRESS_RUNS=0` iterates never, so the failure counters stayed 0 and it printed
+*"STRESS PASS: 0 failure(s) within the permitted 0"* having booted nothing. Its
+own summary line said **"out of 0"** one row above — the evidence was on the
+screen and nothing acted on it. It backs `smoke-console-smp-stress` and
+`smoke-sched-invariants-stress`, both required, and `STRESS_RUNS=0` is what
+somebody sets to skip a slow gate for one run. Guarded and falsified 2026-09-10
+(`tools/test_stress_boot.sh`). The bound is 1 rather than a minimum sample size:
+`STRESS_RUNS=1` did measure something, and refusing it would trade a real defect
+for an obstacle — what a small N costs in *detection power* is a separate
+question, and the summary already reports N so it stays visible.
+
 **Not claimed**: that the remaining seven were sound by design. Three of them
 turned out to be guarded *by accident* — `check_kani_harnesses` fails on a broken
 pattern only because its manifest then names harnesses the scan cannot find, and

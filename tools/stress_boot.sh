@@ -39,6 +39,39 @@ set -u
 
 ISO="${1:-horus.iso}"
 RUNS="${STRESS_RUNS:-20}"
+
+# A STRESS RUN OF ZERO BOOTS IS NOT A PASS, and until 2026-09-10 it was one.
+#
+# `for i in $(seq 1 0)` iterates never, so `fail` and `fail_marker` stayed 0 and
+# the verdict below printed "STRESS PASS: 0 failure(s) within the permitted 0"
+# and exited 0 -- having booted nothing at all. The summary line even said
+# "out of 0" one line above it: the evidence was on the screen and nothing acted
+# on it. This backs smoke-console-smp-stress and smoke-sched-invariants-stress,
+# both required, so the answer mattered.
+#
+# STRESS_RUNS=0 is reachable rather than exotic -- it is what somebody sets to
+# skip a slow gate for one run, and what an unset shell variable evaluates to in
+# arithmetic. A non-numeric value has the same shape: `seq` fails, the loop is
+# empty, and the run reports success.
+#
+# The bound is 1, not a minimum sample size. STRESS_RUNS=1 is a legitimate check
+# that the harness itself works, and it did measure something; refusing it would
+# trade a real defect for an obstacle. What a small N costs in DETECTION POWER is
+# a separate question, and the summary already reports N so it is visible --
+# 30 clean boots is only 26% power against a 1% defect, which is why the rates in
+# this tree are always quoted over their sample size.
+case "$RUNS" in
+    ''|*[!0-9]*)
+        echo "STRESS FAIL: STRESS_RUNS='$RUNS' is not a number, so seq would" >&2
+        echo "STRESS FAIL: produce nothing and this run would report success" >&2
+        echo "STRESS FAIL: having booted nothing." >&2
+        exit 1 ;;
+esac
+if [ "$RUNS" -lt 1 ]; then
+    echo "STRESS FAIL: STRESS_RUNS=$RUNS boots nothing, and a measurement of" >&2
+    echo "STRESS FAIL: nothing is not a pass. Use 1 or more." >&2
+    exit 1
+fi
 CPUSET="${STRESS_CPUSET-0,1}"
 MAX_FAIL="${STRESS_MAX_FAIL:-0}"
 STRESS_GATE="${STRESS_GATE:-any}"

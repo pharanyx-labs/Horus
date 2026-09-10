@@ -211,6 +211,22 @@ def main():
                     problems.append(f"    field {i}: kernel.h has {fmt(a)}, "
                                     f"syscall.h has {fmt(b)}")
 
+    # SELF-CHECK, and the one rule 3 does NOT cover. If FIELD stops matching,
+    # every struct parses as ZERO fields -- so `k == s` holds for all fourteen,
+    # the comparison agrees having read none of their contents, and this file
+    # reports a clean boundary. Rule 3 misses it because the structs are still
+    # DISCOVERED; only their bodies have gone quiet. Its own falsification suite
+    # found this, and a struct that crosses this boundary always has fields.
+    empty = [n for n in SHARED
+             if (fields(KERNEL_H, n) == [] or fields(SYSCALL_H, n) == [])]
+    if empty:
+        problems.append(
+            f"parsed no fields for {', '.join(sorted(empty)[:4])}"
+            f"{' and others' if len(empty) > 4 else ''}. A struct crossing this "
+            f"boundary always has fields, so the FIELD pattern has probably "
+            f"stopped matching -- fix it rather than accepting the silence, "
+            f"because two structs that both parse as empty compare EQUAL")
+
     print(f"structs in both headers : {len(discovered)}")
     print(f"  enrolled SHARED       : {len(SHARED)}")
     print(f"  compared              : {checked}")

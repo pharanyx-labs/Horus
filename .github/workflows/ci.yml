@@ -4002,6 +4002,12 @@ jobs:
       # it reported "every base gate reddens" having booted nothing.
       - name: Falsify the base-gate-reddens parser
         run: tools/test_check_base_gate_reddens.sh
+      # Not a checker, a GATE HARNESS -- and the same defect. stress_boot.sh
+      # backs two required gates and reported "STRESS PASS" on STRESS_RUNS=0,
+      # having booted nothing. None of these arms boots anything: the guard runs
+      # before the first boot.
+      - name: Falsify the stress harness input guard
+        run: tools/test_stress_boot.sh
       - name: Install Kani
         run: |
           cargo install --locked kani-verifier

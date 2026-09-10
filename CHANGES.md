@@ -52,6 +52,50 @@ in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`tools/stress_boot.sh` reported PASS on zero boots.** `for i in $(seq 1 $RUNS)` iterates
+  never when `STRESS_RUNS=0`, so the failure counters stayed 0 and the verdict printed
+  *"STRESS PASS: 0 failure(s) within the permitted 0"* and exited 0 — having booted nothing.
+  The summary line one row above said **"out of 0"**: the evidence was already on the screen
+  and nothing acted on it.
+  It backs `smoke-console-smp-stress` and `smoke-sched-invariants-stress`, both required, and
+  `STRESS_RUNS=0` is reachable rather than exotic — it is what somebody sets to skip a slow
+  gate for one run, and what an unset shell variable evaluates to in arithmetic. A non-numeric
+  value has the same shape: `seq` fails, the loop is empty, the run reports success.
+  **The bound is 1, not a minimum sample size.** `STRESS_RUNS=1` did measure something, and
+  refusing it would trade a real defect for an obstacle; what a small N costs in *detection
+  power* is a separate question, and the summary already reports N so it stays visible.
+  **This is the same defect one layer out from the checkers** — a gate harness rather than a
+  checker — so `docs/LIMITATIONS.md` §5.3d now records both. Falsified six ways by
+  `tools/test_stress_boot.sh`, none of which boots anything: the guard runs before the first
+  boot, and the silent direction is checked by admitting a legitimate count and letting the
+  run stop on a missing ISO instead.
+- **`tools/stress_boot.sh` kept only the FIRST failure's log, discarding the rest.**
+  `docs/investigations/G-12` already recorded the cost — *"three of the four reproductions in
+  the 1000-boot run were not recoverable"* — and excused it as being *"in a script that gates
+  nothing and therefore never got the repair"*. **That premise had expired**: it backs
+  `smoke-console-smp-stress` and `smoke-sched-invariants-stress`, both required.
+  It cost a reproduction again the same night. A 200-boot campaign hunting `stale scheduler
+  claim` hit it once — and the first failure of that campaign was a *different kind*, so the
+  one capture of the marker under investigation was thrown away. A campaign hunting a rare race
+  is a campaign whose entire product is those captures.
+  Every failure is captured now, bounded by `STRESS_KEEP_FAILURES` (default 5) so a
+  catastrophic run cannot bury its own first reproduction — and when the cap bites it says so,
+  rather than going quiet like the thing it replaces.
+
+### Measured
+
+- **`stale scheduler claim` reproduces at 1 in 200 boots** under `smoke-switch-commit`'s exact
+  configuration (`PROC_SELFTEST=1 SCHED_INVARIANTS=1 KSP_GUARD_INJECT=1`), on a kernel
+  byte-identical to `main`. Filed as `docs/LIMITATIONS.md` §5.3e.
+  It was measured under `stress_boot.sh`'s deliberate contention — four guest CPUs on two host
+  cores — which is a **widener**, so 1/200 is an upper bound on the gate's own red rate and not
+  its flake rate. The 31/200 that died without reaching the marker are very largely the widener
+  plus the bogus-KSP injection, which is not a passive instrument. An earlier 20-boot run found
+  0/20 and proves nothing: about 10% power against a 0.5% event.
+
+
 ### Added
 
 - **Every checker in the tree now has a falsification suite** — 27 suites, 178 arms across the

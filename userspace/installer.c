@@ -768,7 +768,7 @@ static int screen_confirm_word(void)
 
     label(r + 2, "confirm");
     status("", C_TEXT);
-    hint("type the word  -  enter to accept  -  esc returns to the review");
+    hint("type the word  -  enter to accept  -  esc to stop");
     tui_flush();
 
     char typed[16];
@@ -1018,10 +1018,21 @@ void _start(void)
     while (st != ST_GO) {
         switch (st) {
         case ST_DISK:
-            /* Both, in order: screen_target returns immediately when there is
-             * only one disk, and screen_survey is what a one-disk machine sees. */
-            if (!screen_target())  leave_untouched("You chose not to install.");
+            /* SURVEY BEFORE TARGET, and the order is load-bearing rather than
+             * incidental. The survey is what is at stake -- "this DESTROYS
+             * everything on the attached disk" -- and the target screen is which
+             * disk that is; showing the choice before the warning asks an
+             * operator to pick a disk before being told what picking one means.
+             *
+             * It is also what smoke-installer-target drives: that scenario waits
+             * on the destroy-this-disk marker first and the disk-choice marker
+             * second. Reversing the two here passed every one-disk gate -- a
+             * one-disk machine never sees the target screen at all, because
+             * screen_target returns immediately -- and hung the two-disk gate for
+             * its full 300s, showing the disk menu to a harness waiting for the
+             * warning. Caught by that gate on the first CI run of this change. */
             if (!screen_survey())  leave_untouched("You chose not to install.");
+            if (!screen_target())  leave_untouched("You chose not to install.");
             st = ST_ROOTPW;
             break;
 #ifdef INSTALLER_NO_BACK
@@ -1060,11 +1071,25 @@ void _start(void)
             st = ST_WORD;
             break;
         case ST_WORD:
-            /* Back from the word returns to the review rather than cancelling.
-             * It is the last screen before the disk is destroyed, so the reflex
-             * it should reward is hesitation -- and the review is where an
-             * operator who hesitated can see what they are about to lose. */
-            st = screen_confirm_word() ? ST_GO : ST_REVIEW;
+            /* A FAILED CONFIRMATION LEAVES. It does not walk back, and the
+             * attempt to make it walk back is worth recording because two gates
+             * caught it within one CI run.
+             *
+             * screen_confirm_word returns 0 for esc AND for a wrong word -- it
+             * cannot tell them apart, and its own text promises it will not:
+             * "Anything else, or esc, stops and changes nothing." Routing 0 to
+             * the review made a WRONG WORD return to the review too, so the
+             * screen contradicted its own printed promise on the one screen
+             * where an operator is deciding whether to destroy a disk, and
+             * smoke-installer-refuse hung for its full 300s waiting for a
+             * refusal that never came.
+             *
+             * Distinguishing the two would mean changing what this screen
+             * promises, which is a decision about the most dangerous call in the
+             * system and not a navigation tidy-up. The word stays all-or-nothing:
+             * type it exactly, or nothing happens. */
+            if (!screen_confirm_word()) leave_untouched("The disk was not erased.");
+            st = ST_GO;
             break;
         default:
             leave_untouched("The install was cancelled.");

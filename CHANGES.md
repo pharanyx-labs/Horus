@@ -66,7 +66,15 @@ in this file.
   **Step 1 is where back and cancel coincide**, since there is nothing before the disk screen;
   both disk screens also carry an explicit *Cancel, change nothing*, so `esc` is never the only
   way out. `esc` at the confirmation word returns to the review rather than cancelling — it is
-  the last screen before the disk is destroyed, so the reflex to reward is hesitation.
+  the last screen before the disk is destroyed.
+  **`esc` at the confirmation word deliberately does NOT walk back**, and the attempt to make
+  it is recorded in place because two gates caught it in one CI run.
+  `screen_confirm_word` returns the same value for `esc` and for a wrong word — it cannot tell
+  them apart, and its own text promises it will not: *"Anything else, or esc, stops and changes
+  nothing."* Routing that value to the review made a **wrong word** return to the review too,
+  so the screen contradicted its own printed promise on the one screen where an operator is
+  deciding whether to destroy a disk, and `smoke-installer-refuse` hung for its full 300s
+  waiting for a refusal that never came. The word stays all-or-nothing.
   Each ordered screen now shows **step N of 5**. The refusals, the review and the confirmation
   deliberately show none: numbering a screen that has no next implies one.
 - **An abandoned edit in the review returns to the review menu.** `esc` out of a correction
@@ -77,6 +85,13 @@ in this file.
   it re-asks instead.
   Key hints were corrected in the same commit; three of them still said *esc to cancel the
   install*, which the change had made false.
+  **A second regression, caught by the same CI run**: the two disk screens were reordered, and
+  the survey must come before the target. The survey is what is at stake — *this DESTROYS
+  everything on the attached disk* — and the target is which disk that is, so showing the
+  choice first asks an operator to pick a disk before being told what picking one means. It
+  passed every one-disk gate, because a one-disk machine never sees the target screen at all,
+  and hung the two-disk gate for 300s showing the disk menu to a harness waiting for the
+  warning.
 
 ### Added
 

@@ -48,11 +48,18 @@ import sys
 STAMP = re.compile(r"^\[\s*(\d+)\.(\d{6})\] ")
 
 # The window. START is the kernel's first message. END is the first line of the
-# SESSION, which is the shell's banner (userspace/shell.c _start) -- and the
-# banner is a box, so the first line of it is the box's top rule and not the
-# text. Matching the text alone left the rule above it inside the window and the
-# gate reported one unstamped line for a system behaving exactly as intended;
-# whichever of the two comes first ends the window.
+# SESSION, which is the shell's banner (print_banner() in userspace/shell.c).
+#
+# THE TITLE IS ON THE BANNER'S FIRST LINE, and that is a requirement rather than
+# a layout preference: the shell's output is not stamped, so anything the banner
+# prints ABOVE the line this matches lands inside the window and is reported as
+# an unstamped line for a system behaving exactly as intended. That happened once
+# already, when the banner was a box drawn with `+---+` rules and the title sat on
+# the second line -- END_RULE is what was added to close the window on the rule
+# instead, and it stays as the guard for the day somebody puts a rule back on top.
+# The neofetch-style banner that replaced the box keeps the title on row 0 beside
+# the top of the logo, so today END_TEXT is what fires. Whichever comes first ends
+# the window.
 START     = "Horus secure microkernel (x86_64) booting"
 END_TEXT  = "Horus Secure Microkernel"
 END_RULE  = re.compile(r"^\s*\+[-+]{10,}\+\s*$")

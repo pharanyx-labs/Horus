@@ -400,6 +400,21 @@ PASSWD_TARGET_IGNORED ?= 0
 # never shows a second time. Never ship it.
 INSTALLER_NO_BACK ?= 0
 
+# INSTALL_ALWAYS=1 builds INSTALL MEDIA: init runs the installer on every boot,
+# onto a disk that already holds a volume as readily as onto a blank one.
+#
+# NOT A DEFECT FLAG, and deliberately not in DEFECT_FLAGS. It is a product
+# variant in the way COREUTILS_MODULES and STORAGE_ATA are -- an image built to
+# do a different job -- rather than a defect reintroduced or an instrument
+# perturbing a measurement. What it DOES get is a line on the wire: init prints
+# "INSTALL MEDIA (INSTALL_ALWAYS)" before the installer draws anything, so a boot
+# log from a machine that is now blank says why.
+#
+# `make install.iso` is the target. The shipping image is unaffected: without
+# this the recognised-volume branch does not exist and init still fails closed in
+# the direction of NOT installing.
+INSTALL_ALWAYS ?= 0
+
 # PASSWD_NO_KEYSLOT=1 restores the pre-2026-09-02 do_passwd: an administrator
 # sets another account's password and NO KEY SLOT IS GRANTED, so that password
 # opens the account and not the volume. h_auth unlocks before it consults the
@@ -3591,6 +3606,26 @@ boot.iso:
 	@echo "boot.iso was renamed to horus.iso on 2026-09-10. Use: make horus.iso"
 	@false
 
+# INSTALL MEDIA: the image you write to a USB stick to install Horus onto a
+# machine. It runs the installer on every boot rather than only on a disk with no
+# volume, so it installs over a previous Horus as readily as onto a blank disk.
+#
+# A SEPARATE TARGET RATHER THAN A FLAG ON horus.iso, because the two images have
+# opposite jobs and 46 gates boot the shipping one with a disk attached. Making
+# the installer unconditional there would hang every one of them waiting for a
+# keystroke -- which is exactly what machine_needs_install's comment warns about,
+# and is why that guard is relocated rather than removed.
+#
+# It is a full rebuild into a differently-named artefact, not a rename of the
+# same bytes: USERSPACE_CFLAGS differs, so the objects differ.
+.PHONY: install.iso
+install.iso:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory INSTALL_ALWAYS=1 STORAGE_ATA=1
+	@$(MAKE) --no-print-directory INSTALL_ALWAYS=1 STORAGE_ATA=1 horus.iso
+	@mv horus.iso install.iso
+	@echo "[install] install.iso - boots straight into the installer, every time"
+
 horus.iso: kernel.elf grub.cfg $(BOOT_MODULE_DEP)
 	@rm -rf isofiles
 	@mkdir -p isofiles/boot/grub
@@ -3754,6 +3789,9 @@ USERSPACE_CFLAGS += -DPASSWD_TARGET_IGNORED
 endif
 ifeq ($(INSTALLER_NO_BACK),1)
 USERSPACE_CFLAGS += -DINSTALLER_NO_BACK
+endif
+ifeq ($(INSTALL_ALWAYS),1)
+USERSPACE_CFLAGS += -DINSTALL_ALWAYS
 endif
 # captest's section-13 arm, and it needs exactly the placement above for exactly
 # the reason recorded there.

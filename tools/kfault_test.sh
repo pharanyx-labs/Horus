@@ -16,7 +16,7 @@
 # AFTER the login prompt is what distinguishes "reported" from "reported while
 # anyone could hear it".
 #
-# Usage: tools/kfault_test.sh [boot.iso]
+# Usage: tools/kfault_test.sh [horus.iso]
 # Env:   KFAULT_TIMEOUT   seconds to wait (default 60)
 #        EXPECT_REPORT    1 (default): the report must appear after the login
 #                         prompt. 0: it must NOT appear -- the control arm, for
@@ -34,7 +34,7 @@
 #
 set -u
 
-ISO="${1:-boot.iso}"
+ISO="${1:-horus.iso}"
 TIMEOUT="${KFAULT_TIMEOUT:-60}"
 EXPECT_REPORT="${EXPECT_REPORT:-1}"
 
@@ -50,7 +50,7 @@ if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
     exit 2
 fi
 if [ ! -f "$ISO" ]; then
-    echo "KFAULT FAIL: ISO '$ISO' not found (run 'make boot.iso' first)" >&2
+    echo "KFAULT FAIL: ISO '$ISO' not found (run 'make horus.iso' first)" >&2
     exit 1
 fi
 

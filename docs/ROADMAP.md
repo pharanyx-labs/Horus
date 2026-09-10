@@ -1468,13 +1468,13 @@ and for a full-screen program those are different questions.
 
 ## Track 3: Assurance and observability
 
-### 3.1 ◧ Reproducible builds: `kernel.elf` yes, `boot.iso` no
+### 3.1 ◧ Reproducible builds: `kernel.elf` yes, `horus.iso` no
 
 `make reproducible-build` records one clean `SOURCE_DATE_EPOCH` build, `kernel.elf` **and**
-`boot.iso`; the `reproducible` CI job runs it twice, requires the record to name both, and diffs
+`horus.iso`; the `reproducible` CI job runs it twice, requires the record to name both, and diffs
 the `kernel.elf` hashes. Gated in CI.
 
-`◧` rather than `✅` since 2026-08-19: **`boot.iso` is not byte-reproducible.** `grub-mkrescue`
+`◧` rather than `✅` since 2026-08-19: **`horus.iso` is not byte-reproducible.** `grub-mkrescue`
 stamps a wall-clock UUID into every image and embeds it in the EFI loaders it generates, so the
 artifact a third party would actually obtain does not reproduce, while everything this project
 authors inside it does. It went unnoticed because the recording step deleted the ISO, never
@@ -1739,7 +1739,7 @@ that nothing yet enforces.
 
 - **4.4 ⬜ Build provenance and signed artifacts: [I-9].**
   `actions/attest-build-provenance` (SLSA v1) plus cosign signatures on `kernel.elf` and
-  `boot.iso`.
+  `horus.iso`.
 - **4.5 ⬜ Tagged releases** carrying artifacts, SBOM, provenance, and the expected
   PCR[8]/PCR[9] values, so a relying party can pre-compute the measured-boot quote.
 - **4.6 ✅ Move `horus.py` under `tools/`: [M-2]** *landed 2026-09-09*. It is `tools/horus.py`, and the move carried one change with it: the script read `system_prompt.txt` and wrote `horus_usage.log` by bare relative name, which meant "wherever the operator was standing" and, from a subdirectory, a different system prompt (or none) with no error. Both paths now resolve from the script's own location to the repository root.

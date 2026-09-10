@@ -6,11 +6,11 @@
 # This is a script rather than a line in the Makefile because the line it
 # replaced could not fail:
 #
-#     sha256sum kernel.elf boot.iso > .build.sha 2>/dev/null || true
+#     sha256sum kernel.elf horus.iso > .build.sha 2>/dev/null || true
 #
 # Three separate mechanisms had to line up for that to be silent, and all three
-# did. `reproducible-build` deletes boot.iso and then builds `all`, which is
-# `all: kernel.elf` -- so boot.iso was never rebuilt. sha256sum therefore exited
+# did. `reproducible-build` deletes horus.iso and then builds `all`, which is
+# `all: kernel.elf` -- so horus.iso was never rebuilt. sha256sum therefore exited
 # 1 on a missing operand, `2>/dev/null` discarded the message naming it, and
 # `|| true` discarded the status. The target printed "Reproducible build
 # recorded." over a .build.sha that had only ever held one line, for as long as

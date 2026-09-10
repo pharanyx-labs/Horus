@@ -218,14 +218,14 @@ jobs:
       - name: Build kernel.elf
         run: make
       - name: Build bootable ISO
-        run: make boot.iso
+        run: make horus.iso
       - name: Upload kernel artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: horus-kernel-x86_64
           path: |
             kernel.elf
-            boot.iso
+            horus.iso
           if-no-files-found: error
 
   # Keep the non-default build configurations compiling. The default config is
@@ -3556,7 +3556,7 @@ jobs:
     timeout-minutes: 105
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
-      # reproducible-build now builds boot.iso as well, because recording a
+      # reproducible-build now builds horus.iso as well, because recording a
       # hash for an artifact the target never built is what this commit fixes.
       - name: Install build toolchain
         uses: ./.github/actions/apt
@@ -3564,9 +3564,9 @@ jobs:
           packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools
       - name: Add bare-metal Rust target
         run: rustup target add x86_64-unknown-none
-      # The recording step used to be `sha256sum kernel.elf boot.iso >
+      # The recording step used to be `sha256sum kernel.elf horus.iso >
       # .build.sha 2>/dev/null || true`, over a build that never produced
-      # boot.iso -- so it hashed one artifact, hid the error naming the other,
+      # horus.iso -- so it hashed one artifact, hid the error naming the other,
       # swallowed the status, and announced success. These two steps are the
       # gate on that: an incomplete build must be refused, and the arm that
       # restores the old line must record an incomplete build and report
@@ -3586,13 +3586,13 @@ jobs:
           for f in first.sha second.sha; do
             n=$(wc -l < "$f")
             if [ "$n" -ne 2 ]; then
-              echo "::error::$f records $n artifacts, expected 2 (kernel.elf, boot.iso)"
+              echo "::error::$f records $n artifacts, expected 2 (kernel.elf, horus.iso)"
               cat "$f"; exit 1
             fi
           done
           # kernel.elf is the reproducible artifact and the one gated here.
           #
-          # boot.iso is deliberately NOT compared, and the reason is measured
+          # horus.iso is deliberately NOT compared, and the reason is measured
           # rather than assumed. grub-mkrescue stamps a marker named for the
           # wall-clock second -- /.disk/YYYY-MM-DD-HH-MM-SS-00.uuid -- into the
           # tree it hands to xorriso, and embeds that same UUID in the EFI

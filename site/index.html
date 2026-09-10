@@ -1561,7 +1561,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
 <pre class="code"><span class="c"># build and boot</span>
 <span class="p">$</span> rustup target add x86_64-unknown-none
 <span class="p">$</span> make              <span class="c"># kernel.elf</span>
-<span class="p">$</span> make run          <span class="c"># boot.iso + QEMU</span>
+<span class="p">$</span> make run          <span class="c"># horus.iso + QEMU</span>
                     <span class="c"># Ctrl-A X quits</span>
 <span class="p">$</span> make run-tpm      <span class="c"># with an emulated TPM</span></pre>
           </div>
@@ -2637,7 +2637,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               marks in place and iterates to a fixpoint since 2026-08-16, so it is exact at any
               subtree size (I-3).
               There are no tagged releases, no signed artifacts and no SLSA provenance, so a third
-              party cannot verify that a <code>boot.iso</code> came from this repository's CI
+              party cannot verify that a <code>horus.iso</code> came from this repository's CI
               (I-9). A frame spans at most 64 pages, which is the untyped arena's bound rather
               than the design's; that arena is 4 MiB in total and shared with every other kernel
               object, so a frame able to span it would be a denial-of-service against every other

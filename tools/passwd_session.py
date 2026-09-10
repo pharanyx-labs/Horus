@@ -24,7 +24,7 @@ the control arm requires the machine to open with the OTHER account's password -
 a login that succeeds, not one that fails, because an assertion of refusal is
 satisfied by a boot that never got to a prompt.
 
-Usage:  passwd_session.py [boot.iso]
+Usage:  passwd_session.py [horus.iso]
 Env:    SESSION_DISK    the disk image; REQUIRED, and the same one for both boots
         ROOT_PASSWORD   the password the volume is sealed to (default "rootpass",
                         the compiled-in default from users_init)
@@ -40,7 +40,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from session_test import Serial, SessionFail  # noqa: E402
 
-ISO = sys.argv[1] if len(sys.argv) > 1 else "boot.iso"
+ISO = sys.argv[1] if len(sys.argv) > 1 else "horus.iso"
 STEP = float(os.environ.get("SESSION_TIMEOUT", "120"))
 BOOT = float(os.environ.get("BOOT_TIMEOUT", "300"))
 ROOT_PW = os.environ.get("ROOT_PASSWORD", "rootpass")

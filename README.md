@@ -89,7 +89,7 @@ handler; it returns `SYS_ERR_NOSYS`. A compile-time assertion makes it impossibl
 syscall number without adding its table entry.
 
 **Verify, don't assert.** Claims are backed by artifacts. `kernel.elf` is verified reproducible
-by building twice and diffing; `boot.iso` is not, and `docs/LIMITATIONS.md` §5.3a says why.
+by building twice and diffing; `horus.iso` is not, and `docs/LIMITATIONS.md` §5.3a says why.
 Boot-module integrity is tested by *corrupting a module* and asserting rejection. Measured boot
 is tested by tampering and asserting the PCRs diverge. Capability revocation carries Kani
 proofs. `.github/workflows/ci.yml` runs 111 jobs, most of them QEMU integration self-tests.
@@ -269,9 +269,9 @@ Two of those are weaker than their names suggest, and it is better to say so her
 someone rely on them.
 
 `make reproducible-build` builds **once** and records `sha256sum` for `kernel.elf` and
-`boot.iso` in `.build.sha`. The double-build-and-diff that actually establishes the property
+`horus.iso` in `.build.sha`. The double-build-and-diff that actually establishes the property
 lives only in the `reproducible` CI job, which is a required check; locally, run the target
-twice and compare the `kernel.elf` line. Compare that line and not the file: **`boot.iso` is not
+twice and compare the `kernel.elf` line. Compare that line and not the file: **`horus.iso` is not
 byte-reproducible**, because grub-mkrescue stamps a wall-clock UUID into every image it builds.
 The ISO's *payload*; the kernel, every boot module, `grub.cfg`, is identical across builds; four
 grub-generated objects are not. See `docs/LIMITATIONS.md` §5.3a.

@@ -15,10 +15,10 @@
 # internally consistent: every hash checks out locally, and the only thing wrong
 # is that the pair is old. Nothing but the chain to the current root can say so.
 #
-# Usage: MERKLE_EXPECT='<phase-3 marker>' tools/merkle_replay.sh boot.iso
+# Usage: MERKLE_EXPECT='<phase-3 marker>' tools/merkle_replay.sh horus.iso
 set -euo pipefail
 
-ISO=${1:-boot.iso}
+ISO=${1:-horus.iso}
 IMG=${MERKLE_IMG:-merkle.img}
 SNAP="${IMG%.img}-snap.img"
 LOG="${IMG%.img}"

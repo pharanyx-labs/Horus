@@ -77,7 +77,7 @@ loader.
 ## Building and running
 
 The utilities are **not baked into the kernel image**. They ship as GRUB multiboot2 *modules*
-(`module2` lines the `boot.iso` rule writes onto the ISO), which GRUB loads into RAM outside the
+(`module2` lines the `horus.iso` rule writes onto the ISO), which GRUB loads into RAM outside the
 kernel. At boot the kernel records each module from the multiboot2 tags, the `fs_server` copies
 it to its destination path in the encrypted store (`provision_boot_modules()`), and the shell
 runs it from there: typing a bare name resolves `/bin/<name>`, the shell loads the ~400–610 KiB

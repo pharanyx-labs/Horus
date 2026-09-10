@@ -27,7 +27,7 @@
 #   SMOKE_TIMEOUT      seconds (default 60)
 set -u
 
-ISO="${1:-boot.iso}"
+ISO="${1:-horus.iso}"
 TIMEOUT="${SMOKE_TIMEOUT:-60}"
 EXPECT="${FB_EXPECT:-text}"
 EVID="${FB_EVIDENCE:-.fb-evidence}"

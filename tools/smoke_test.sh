@@ -11,7 +11,7 @@
 # panic on the serial line, or failing to reach the banner before the timeout,
 # is a failure.
 #
-# Usage: tools/smoke_test.sh [boot.iso]
+# Usage: tools/smoke_test.sh [horus.iso]
 # Env:   SMOKE_TIMEOUT  (seconds, default 40)
 #        REQUIRE_MARKER (optional: an extra string that must also appear on
 #                        serial for the run to pass — e.g. "ELF_SELFTEST: PASS")
@@ -78,7 +78,7 @@
 #
 set -u
 
-ISO="${1:-boot.iso}"
+ISO="${1:-horus.iso}"
 TIMEOUT="${SMOKE_TIMEOUT:-40}"
 REQUIRE_MARKER="${REQUIRE_MARKER:-}"
 FAIL_MARKER="${FAIL_MARKER:-}"
@@ -111,7 +111,7 @@ if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
     exit 2
 fi
 if [ ! -f "$ISO" ]; then
-    echo "SMOKE FAIL: ISO '$ISO' not found (run 'make boot.iso' first)" >&2
+    echo "SMOKE FAIL: ISO '$ISO' not found (run 'make horus.iso' first)" >&2
     exit 1
 fi
 

@@ -13,10 +13,10 @@
 # counter would be a fresh counter each time and the gate would be measuring
 # nothing -- so it is created once, passed to every boot, and removed at the end.
 #
-# Usage: ROLLBACK_EXPECT='<boot-3 marker>' tools/rollback_replay.sh boot.iso
+# Usage: ROLLBACK_EXPECT='<boot-3 marker>' tools/rollback_replay.sh horus.iso
 set -euo pipefail
 
-ISO=${1:-boot.iso}
+ISO=${1:-horus.iso}
 IMG=${ROLLBACK_IMG:-rollback.img}
 SNAP="${IMG%.img}-snap.img"
 LOG="${IMG%.img}"

@@ -8,7 +8,7 @@ its version banner ("tcc version 0.9.27 (x86_64 ...)") and returns 0, so the
 the shell resolves /bin/tcc, loads the ~1 MiB image over the fs_server, and spawns
 it as a child, which writes to stdout through the console server.
 
-Usage:  tools/tcc_session.py [boot.iso]
+Usage:  tools/tcc_session.py [horus.iso]
 Exit:   0 and "TCC_SESSION: PASS" on success; 1 and a FAIL line otherwise.
 """
 import os
@@ -17,7 +17,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from session_test import Serial, SessionFail  # noqa: E402
 
-ISO = sys.argv[1] if len(sys.argv) > 1 else "boot.iso"
+ISO = sys.argv[1] if len(sys.argv) > 1 else "horus.iso"
 STEP = float(os.environ.get("SESSION_TIMEOUT", "45"))
 BOOT = float(os.environ.get("BOOT_TIMEOUT", "90"))
 # The tcc image is ~1 MiB — several times a coreutil — and loads block-by-block

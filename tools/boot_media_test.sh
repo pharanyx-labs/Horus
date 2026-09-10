@@ -2,7 +2,7 @@
 # Boot one ISO the ways a person actually boots it, and require the kernel to
 # come up in every one of them.
 #
-# WHY THIS EXISTS. Every other gate in this tree boots `-cdrom boot.iso` under
+# WHY THIS EXISTS. Every other gate in this tree boots `-cdrom horus.iso` under
 # SeaBIOS, which is one cell of a four-cell table. The other three were broken
 # and nothing could see it: `grub.cfg` said `set root=(cd)`, naming the BIOS El
 # Torito CD-ROM, which is not a device that exists when the same image is
@@ -24,7 +24,7 @@
 #   OVMF_CODE         firmware path (default: the Debian/Ubuntu location)
 set -u
 
-ISO="${1:-boot.iso}"
+ISO="${1:-horus.iso}"
 MODES="${BOOT_MEDIA_MODES:-bios-disk uefi-cd uefi-disk}"
 TIMEOUT="${SMOKE_TIMEOUT:-60}"
 OVMF_CODE="${OVMF_CODE:-/usr/share/OVMF/OVMF_CODE_4M.fd}"

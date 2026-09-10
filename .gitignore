@@ -23,7 +23,6 @@
 # booting a guest with a TPM that cannot initialise.
 *-tpmstate/
 kernel.elf
-boot.iso
 horus.iso
 .build.sha
 # Scratch output of a local double-build reproducibility check. Both were tracked

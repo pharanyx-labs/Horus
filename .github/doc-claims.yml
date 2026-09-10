@@ -647,8 +647,13 @@ forbidden:
 
   - pattern: 'currently also \*commits\* a prebuilt'
     reason: >-
-      No build artefact is tracked. kernel.elf and boot.iso are gitignored
-      (.gitignore:10-11) and `git ls-files` lists neither. Corrected 2026-08-19.
+      No build artefact is tracked. kernel.elf and horus.iso are both named in
+      .gitignore (and covered by its `*.iso` rule besides), and `git ls-files`
+      lists neither. Corrected 2026-08-19. The line-number citation that stood
+      here until 2026-09-10 pointed at .gitignore:10-11, which had been wrong
+      for some time -- the entries had moved to 25-26 -- and is exactly the
+      reference CLAUDE.md forbids: it goes stale silently while still looking
+      precise. Naming the file and the rule survives an edit above them.
 
   - pattern: 'that App does not exist yet|inert until (that|its read-only GitHub) App is created|stays open until the App is created'
     reason: >-

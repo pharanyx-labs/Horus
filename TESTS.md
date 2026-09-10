@@ -196,7 +196,7 @@ it:
 
 ```sh
 for i in 1 2 3; do taskset -c 6 sh -c 'while :; do :; done' & done   # hogs
-QEMU_SMP=4 SESSION_TIMEOUT=120 taskset -c 6 python3 tools/session_test.py boot.iso
+QEMU_SMP=4 SESSION_TIMEOUT=120 taskset -c 6 python3 tools/session_test.py horus.iso
 ```
 
 Four guest vCPUs squeezed onto one host core, against three hogs. That is the same discipline
@@ -985,7 +985,7 @@ address space is torn down.
 | `smoke-tcc` | TCC is provisioned into `/bin` and `tcc -v` runs. (Needs `SMOKE_TIMEOUT=320`.) |
 | `smoke-session` | A scripted session drives the real shell over serial and asserts on output. |
 | `smoke-ls-path` | **`ls` takes a path argument.** The builtin matched the literal strings `ls` and `ls -l` and nothing else, so `ls /bin` fell through the whole chain to `Unknown command`. Three facts, asserted separately because they fail separately: an argument is accepted at all; a path that does not resolve is refused **by name** (`ls: no such directory: /nope`) rather than silently; and `ls -l <path>` keeps the long format. The positive check is `cd bin` then **`ls ..`**, which proves the listing came from a directory that is not the cwd without depending on `/bin` having been populated — this ISO carries no coreutils, so asserting on `ls /bin`'s contents would have measured the image rather than the dispatch. Falsified by `SHELL_LS_NO_PATH_ARG=1` (`make smoke-ls-path-control`), which restores the exact-match dispatch; both arms type the **identical** commands and differ only in what the shell is required to say back — measured 2026-09-06. |
-| `smoke-boot-media` | **The image booted the way people actually boot it.** Every other gate in this tree runs `-cdrom boot.iso` under SeaBIOS — one cell of a four-cell table, {BIOS, UEFI} × {optical, raw disk} — and the other three were broken with nothing able to see it. A USB stick written with `dd` is the same bytes presented as a raw disk, which is what a laptop install starts from. This boots `bios-disk`, `uefi-cd` and `uefi-disk` and requires the kernel banner in each; `bios-cd` is deliberately absent because every other target already covers it. Needs OVMF, and the script **refuses rather than skips** when the firmware is missing, so "we could not test UEFI" can never read as "UEFI works". Falsified by `BOOT_ROOT_CD_ONLY=1` (`make smoke-boot-media-control`), which restores `set root=(cd)` in the **staged** config and requires all three modes to fail *and* to name the unresolved root device — measured 2026-09-06, both arms. |
+| `smoke-boot-media` | **The image booted the way people actually boot it.** Every other gate in this tree runs `-cdrom horus.iso` under SeaBIOS — one cell of a four-cell table, {BIOS, UEFI} × {optical, raw disk} — and the other three were broken with nothing able to see it. A USB stick written with `dd` is the same bytes presented as a raw disk, which is what a laptop install starts from. This boots `bios-disk`, `uefi-cd` and `uefi-disk` and requires the kernel banner in each; `bios-cd` is deliberately absent because every other target already covers it. Needs OVMF, and the script **refuses rather than skips** when the firmware is missing, so "we could not test UEFI" can never read as "UEFI works". Falsified by `BOOT_ROOT_CD_ONLY=1` (`make smoke-boot-media-control`), which restores `set root=(cd)` in the **staged** config and requires all three modes to fail *and* to name the unresolved root device — measured 2026-09-06, both arms. |
 | `smoke-ahci-detect` | **What storage the machine actually has.** Only legacy ATA PIO exists, so a laptop's SSD is invisible and the installer finds no disk — the item that gates installing onto real hardware. This boots a **q35** machine with a disk on its AHCI bus and requires three things separately: the HBA is recognised, **port 0 is reported as a SATA disk** (the signature, not merely "something present" — the boot CD-ROM appears on another port as an ATAPI device), and the count line the installer would act on. Its own machine type is the point: on QEMU's default i440fx there is no AHCI at all, so "no SATA controller" is the only answer any other gate could observe and a probe that always said that would pass every one of them. Since 2026-09-07 it also requires the drive to **answer IDENTIFY** and the reported capacity to equal the size of the disk the harness attached — a full DMA command round trip, not a link-status read. Falsified twice: `AHCI_PROBE_ABSENT=1` (`make smoke-ahci-detect-control`) is an **absence** assertion, so that arm also requires the kernel to have reached `kernel ready`, without which a boot that died before the probe ran would satisfy "said nothing about AHCI" and pass for an unrelated reason; and `AHCI_CAPACITY_CONSTANT=1` (`make smoke-ahci-capacity-control`) reports a plausible fixed 128 MiB **against a 64 MiB disk**, because a constant that happened to match could not fail. Measured 2026-09-07, all three arms. |
 | `smoke-sdhci-detect` | **What storage a laptop actually has.** `ata.c` reaches legacy IDE and `ahci.c` reaches SATA; neither reaches an SD/eMMC host controller, which is what a budget machine's soldered internal storage sits behind — so the installer surveys such a machine and finds no disk. Boots a q35 machine with an `sdhci-pci` controller and asserts three things separately: the controller is recognised, a card is reported **present and stable** (the detect line settling is what separates a card from one still being debounced), and the count line. It then boots the **same controller with no card** and requires the empty slot to be reported as empty — a third distinct answer. **No other gate attaches an SD controller**, so "no SD/eMMC host controller" is the only answer any of them could observe and a probe that always said that would pass every one. Falsified by `SDHCI_PROBE_ABSENT=1` (`make smoke-sdhci-detect-control`) — an **absence** assertion, so the arm also requires `kernel ready`. Measured 2026-09-07, all three states. |
 | `smoke-console-handover` | **A console driver that fails after taking the console must still be heard.** Ownership passes on `console_server`'s first successful VGA map, and from then the kernel's `print()` records to the klog ring and stops driving serial and VGA — so a driver that then fails its own start-up check reports into a buffer nobody reads and parks, leaving **total silence with no marker**. The base arm is the ordinary boot reaching `horus login:`, which is what says handing the console back did not break the handover. Falsified by `CONSOLE_VGA_CHECK_FAIL=1` (`make smoke-console-handover-control`), which forces the round-trip check to fail and requires `CONSOLE_SELFTEST: FAIL vga` **on the wire** — the check failing is the arm's doing, the defect is whether anyone can hear about it. **Ablated:** with `sys_console_release` removed the same arm times out with the marker absent, so the arm reproduces the silence rather than merely exercising the fix. Measured 2026-09-07. |
@@ -1364,7 +1364,7 @@ assertions on kernel-emitted strings still read the shared console and are uncha
 
 | Target | Proves |
 |---|---|
-| `reproducible-build` | `kernel.elf` is byte-for-byte identical across two clean builds, and the record covers every artifact the build produces. **A required CI check.** `boot.iso` is recorded but deliberately not compared; it is not byte-reproducible (`docs/LIMITATIONS.md` §5.3a). |
+| `reproducible-build` | `kernel.elf` is byte-for-byte identical across two clean builds, and the record covers every artifact the build produces. **A required CI check.** `horus.iso` is recorded but deliberately not compared; it is not byte-reproducible (`docs/LIMITATIONS.md` §5.3a). |
 | `smoke-repro-sha` | The hash-recording step refuses a build missing an artifact, and writes no `.build.sha` at all when it refuses; and records every artifact when the build is complete. Both directions. Host-side, sub-second. Falsified by `smoke-repro-sha-control`. |
 | `smoke-repro-sha-control` | `REPRO_SHA_UNCHECKED=1`. Restores the pre-2026-08-19 recording step *and* the goal list that made it silent; the incomplete record and the success report must both appear. |
 | `doc-claims` | Every count declared in `.github/doc-claims.yml` matches the value derived from the tree, every declared occurrence still matches its pattern, and no retired phrasing has reappeared unquoted. **A required CI check.** `tools/check_doc_claims.py`; static, no QEMU. |
@@ -1375,11 +1375,11 @@ assertions on kernel-emitted strings still read the shared console and are uncha
 **Fixed 2026-08-19.** The recording step at the end of `reproducible-build` was:
 
 ```make
-@sha256sum kernel.elf boot.iso > .build.sha 2>/dev/null || true
+@sha256sum kernel.elf horus.iso > .build.sha 2>/dev/null || true
 ```
 
 and the target's build goal was `all`, which is `all: kernel.elf`. Since the target *deletes*
-`boot.iso` at the top and nothing rebuilt it, that `sha256sum` failed on a missing operand on
+`horus.iso` at the top and nothing rebuilt it, that `sha256sum` failed on a missing operand on
 every run it has ever had. `2>/dev/null` discarded the message naming the file and `|| true`
 discarded the status, so the target printed "Reproducible build recorded." over a `.build.sha`
 containing one line. Three mechanisms had to line up for that to be silent and all three did.
@@ -1394,16 +1394,16 @@ be told apart from a complete record of a smaller build.
 | Arm | Command | Required |
 |---|---|---|
 | fixed, incomplete build | `make smoke-repro-sha` | `REPRO_SHA: PASS refused an incomplete build, wrote nothing`, and no `.build.sha` on disk |
-| fixed, complete build | `make smoke-repro-sha` | `REPRO_SHA: PASS recorded 2 artifacts, kernel.elf boot.iso` |
+| fixed, complete build | `make smoke-repro-sha` | `REPRO_SHA: PASS recorded 2 artifacts, kernel.elf horus.iso` |
 | control | `make smoke-repro-sha-control` | `REPRO_SHA_CONTROL: FAIL recorded 1 of 2 artifacts and reported success` |
-| the gate against the defect | `make smoke-repro-sha REPRO_SHA_UNCHECKED=1` | **must fail**: `REPRO_SHA: FAIL recorded-a-build-missing-boot.iso`, make exits 1 |
+| the gate against the defect | `make smoke-repro-sha REPRO_SHA_UNCHECKED=1` | **must fail**: `REPRO_SHA: FAIL recorded-a-build-missing-horus.iso`, make exits 1 |
 
 Both directions matter here for the usual reason: a recording step that refused everything
 would satisfy the first row while making `reproducible-build` permanently red, so the second
 row is what stops the fix from being "refuse always".
 
 The control arm restores **both** halves: the swallowed status *and* the goal list that omitted
-`boot.iso`. That is deliberate and was checked: with the ISO present, a swallowed status changes
+`horus.iso`. That is deliberate and was checked: with the ISO present, a swallowed status changes
 nothing observable, so an arm that restored only the `|| true` would pass for the wrong reason
 and prove nothing about the gate.
 
@@ -1412,7 +1412,7 @@ real build, because what is under test is the step's behaviour when an artifact 
 end-to-end half lives in the `reproducible` CI job, which now requires the record to name both
 artifacts before it diffs the `kernel.elf` line.
 
-**What building the ISO revealed:** `boot.iso` is not byte-reproducible. `grub-mkrescue`
+**What building the ISO revealed:** `horus.iso` is not byte-reproducible. `grub-mkrescue`
 stamps `/.disk/<wall-clock-second>.uuid` into the image and embeds that UUID in the EFI loaders
 it generates, while everything this project authors inside the ISO is byte-identical across
 builds. The CI job therefore compares only the `kernel.elf` line. The first measurement said

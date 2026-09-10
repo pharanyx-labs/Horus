@@ -6,7 +6,7 @@
  * 2026-09-07, enough of `ahci.c` to make a SATA disk identify itself. Neither
  * reaches the machine this is for. A budget laptop's internal storage is
  * frequently soldered eMMC behind an SD host controller -- a third controller
- * type, sharing nothing with either of the others -- so `boot.iso` boots on that
+ * type, sharing nothing with either of the others -- so `horus.iso` boots on that
  * hardware, the installer surveys the machine, and finds NO DISK.
  *
  * This is the first half of answering that, and deliberately only the first

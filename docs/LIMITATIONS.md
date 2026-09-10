@@ -3535,7 +3535,7 @@ what made the table above checkable against a real failure.
 
 `kernel.elf` is verified reproducible and an SBOM is produced, but there are no tags, no
 releases, no signed artifacts, and no SLSA provenance. A third party cannot verify that a
-`boot.iso` they obtained came from this repository's CI, and, per §5.3a, could not confirm it by
+`horus.iso` they obtained came from this repository's CI, and, per §5.3a, could not confirm it by
 rebuilding either.
 
 *Inbound* dependency verification is in better shape than outbound provenance: the one network
@@ -3578,7 +3578,7 @@ about whether a no-Rust build is a goal, and that is not a decision to take as a
 of a dead-surface sweep. Recorded rather than fixed, and `SECURITY.md` **S86**'s checker now
 refuses a *new* shim with no subject, which is the half that can be gated today.
 
-### 5.3a `boot.iso` is not byte-reproducible, and `kernel.elf` is
+### 5.3a `horus.iso` is not byte-reproducible, and `kernel.elf` is
 
 **Found 2026-08-19**, while fixing the build-hash recording step, which had been concealing it
 by construction.
@@ -3586,18 +3586,18 @@ by construction.
 The recording step read:
 
 ```make
-@sha256sum kernel.elf boot.iso > .build.sha 2>/dev/null || true
+@sha256sum kernel.elf horus.iso > .build.sha 2>/dev/null || true
 ```
 
 over a target whose build goal was `all`, and `all: kernel.elf`. `reproducible-build` deletes
-`boot.iso` at the top and never rebuilds it, so that `sha256sum` failed on a missing operand
+`horus.iso` at the top and never rebuilds it, so that `sha256sum` failed on a missing operand
 **every time it has ever run**: `2>/dev/null` discarded the message naming the file, `|| true`
 discarded the status, and the target printed "Reproducible build recorded." over a `.build.sha`
 that had only ever contained one line. The ISO was not compared because it was not built,
 and it was not noticed because two of the three mechanisms existed to stop anyone noticing.
 
 **With the ISO actually built, it does not reproduce.** Two clean builds of identical source
-give a byte-identical `kernel.elf` and two different `boot.iso` files. The cause is entirely
+give a byte-identical `kernel.elf` and two different `horus.iso` files. The cause is entirely
 outside this repository, and extracting both images and diffing them shows exactly how far it
 reaches:
 
@@ -3707,7 +3707,7 @@ the IPC authorisation logic. All fixed as of 2026-07-27; the `require_code_owner
 setting that would make `CODEOWNERS` binding is still off (§5.1).
 
 *(Repository hygiene itself is fine: `git ls-files` reports **254** tracked files with no build
-artefacts or vendored binaries: no `kernel.elf`, no `boot.iso`, no object files. A working
+artefacts or vendored binaries: no `kernel.elf`, no `horus.iso`, no object files. A working
 checkout accumulates ~70 MB of untracked build output, which is correctly `.gitignore`d. This
 sentence said 243 until 2026-08-15; it is a checkable number offered as evidence, so it is
 re-derived rather than carried forward.)*

@@ -54,6 +54,31 @@ in this file.
 
 ### Changed
 
+- **The bootable image is `horus.iso`, not `boot.iso`.** 771 occurrences across 38 files —
+  the `Makefile`, `tools/`, `.github/`, the live docs and the site. `make horus.iso` builds it;
+  `make run`, every `smoke-*` target and every harness follow the new name.
+  **The dated record is deliberately not renamed.** `docs/history/DEVLOG-2026.md`,
+  `docs/history/AUDIT-2026-07.md` and the released entries of this file say `boot.iso` because
+  that is what the artefact was called when those measurements were taken. An August entry
+  naming `boot.iso` is correct history, and rewriting it is what §3 forbids.
+  **`make boot.iso` now fails with the new name rather than being removed outright.** Bare
+  `make boot.iso` would answer *"No rule to make target"*, which is accurate and tells a reader
+  with the old name in their fingers nothing. The target prints where the artefact went and
+  exits 1; it deliberately builds nothing, because an alias that worked would keep the old name
+  alive and the rename would never finish.
+  Also fixed in passing: `.gitignore` named both `boot.iso` and `horus.iso`, so a mechanical
+  rename produced a duplicate line — removed.
+
+### Fixed
+
+- **A line-number citation in `.github/doc-claims.yml` that had gone stale.** A `reason:` field
+  cited `.gitignore:10-11` for where the build artefacts are ignored; they had moved to 25-26.
+  It is exactly the reference CLAUDE.md forbids — precise-looking and silently wrong — and is
+  replaced by naming the file and its `*.iso` rule, which survive an edit above them. Prose
+  only: the `forbidden:` pattern it explains is unchanged, so no gate behaviour moves.
+
+### Changed
+
 - **The login banner reports the machine it is running on, instead of a box that says the same
   four lines on every boot.** neofetch's shape: the Eye of Horus in ASCII on the left, a column
   of facts on the right, printed by `print_banner()` in `userspace/shell.c`.

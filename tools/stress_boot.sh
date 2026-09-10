@@ -24,7 +24,7 @@
 #      workstation can report 20/20 green on a kernel that fails a third of the
 #      time in CI, which is worse than not measuring at all.
 #
-# Usage: tools/stress_boot.sh [boot.iso]
+# Usage: tools/stress_boot.sh [horus.iso]
 # Env:   STRESS_RUNS    how many boots (default 20)
 #        STRESS_CPUSET  host CPUs to pin QEMU to (default "0,1"; empty = no pinning)
 #        SMP_CPUS       guest vCPUs (default 4)
@@ -37,7 +37,7 @@
 #
 set -u
 
-ISO="${1:-boot.iso}"
+ISO="${1:-horus.iso}"
 RUNS="${STRESS_RUNS:-20}"
 CPUSET="${STRESS_CPUSET-0,1}"
 MAX_FAIL="${STRESS_MAX_FAIL:-0}"

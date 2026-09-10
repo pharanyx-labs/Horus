@@ -126,7 +126,7 @@ rustup target add x86_64-unknown-none
 
 ```bash
 make            # kernel.elf
-make iso        # boot.iso (implies kernel.elf)
+make iso        # horus.iso (implies kernel.elf)
 make clean      # remove build products
 make clean-rust # also clear the Cargo target directory
 ```
@@ -162,7 +162,7 @@ assembly, since the compiler is forbidden from emitting SSE.
 ## Running
 
 ```bash
-make run        # boot boot.iso under QEMU with a serial console
+make run        # boot horus.iso under QEMU with a serial console
 make run-tpm    # same, under an emulated TPM (requires swtpm)
 ```
 
@@ -233,11 +233,11 @@ exercised, against a kernel that is not moving.
 
 ### On real hardware
 
-`boot.iso` is a hybrid image: El Torito for BIOS, and an EFI system partition for UEFI. Write it
+`horus.iso` is a hybrid image: El Torito for BIOS, and an EFI system partition for UEFI. Write it
 to a USB stick with `dd` and boot from it either way.
 
 ```sh
-sudo dd if=boot.iso of=/dev/sdX bs=4M status=progress conv=fsync   # sdX, not sdX1
+sudo dd if=horus.iso of=/dev/sdX bs=4M status=progress conv=fsync   # sdX, not sdX1
 ```
 
 **Until 2026-09-07 that did not work**, and the instruction above was here anyway. `grub.cfg`
@@ -372,7 +372,7 @@ failing arm. A gate that has only ever been run against the fixed kernel is not 
 | `SPAWN_STAGE_UNSERIALISED=1` | Restores the pre-2026-08-18 spawn path: no lock over the arm → consume window on the process-wide staging (the ELF staging buffer, the armed header, the staged argv), so two CPUs interleave through it (**[G-10]**). Kept buildable even though **no current workload reaches the window twice** (see `TESTS.md`, finding G-10) so the arm exists the day a second live spawner does. | No gate: a control arm that cannot fail cannot gate anything. The refusal it would produce is `SPAWN STAGE: theft`, and `do_spawn`'s owner check makes it fail closed. |
 | `SPAWN_STAGE_WIDEN=1` | Not a defect: holds each of the first `SPAWN_STAGE_WIDEN_WINDOWS` (24) staging windows open for `SPAWN_STAGE_WIDEN_SPINS` (12,000,000) `pause` iterations, so an overlap happens if one is possible at all. Set in **both** arms when measuring. | Used with `SPAWN_STAGE_TRACE=1` for the measurement in `TESTS.md`; not a gate |
 | `SPAWN_STAGE_TRACE=1` | Not a defect, reports every entry to the staging window and every arrival that finds another CPU already inside one. This is the *reachability* instrument: a serialised build with zero incidents says nothing unless the window was entered twice, and this is what established that in this tree it never is. Same role `KSTACK0_PARK_TRACE` plays for the park path. | Used for the measurement in `TESTS.md`; not a gate |
-| `REPRO_SHA_UNCHECKED=1` | Restores the pre-2026-08-19 build-hash recording step **and** the goal list that made it silent: `reproducible-build` builds `all` (which is `kernel.elf` alone) and records with `sha256sum kernel.elf boot.iso > .build.sha 2>/dev/null \|\| true`. Both halves are needed: a swallowed status is harmless while every artifact exists, so restoring only the `\|\| true` makes the arm pass for the wrong reason. Gate: `make smoke-repro-sha-control`, which requires the incomplete record **and** the success report; `make smoke-repro-sha` must FAIL under the same flag. |
+| `REPRO_SHA_UNCHECKED=1` | Restores the pre-2026-08-19 build-hash recording step **and** the goal list that made it silent: `reproducible-build` builds `all` (which is `kernel.elf` alone) and records with `sha256sum kernel.elf horus.iso > .build.sha 2>/dev/null \|\| true`. Both halves are needed: a swallowed status is harmless while every artifact exists, so restoring only the `\|\| true` makes the arm pass for the wrong reason. Gate: `make smoke-repro-sha-control`, which requires the incomplete record **and** the success report; `make smoke-repro-sha` must FAIL under the same flag. |
 | `KSP_GUARD_ALWAYS=1` | Makes `ksp_is_bogus()` reject **every** stack pointer: the false-positive mutation that every inject-and-look arm passes happily. `make smoke-ksp-guard` must go red under it; if it does not, that gate is testing nothing. | `make smoke-ksp-guard` must **FAIL** under this flag (against the unflagged run, where the guard must stay silent through a boot to ring 3) |
 | `BUILD_FLAGS_UNSTAMPED=1` | Restores the pre-2026-08-21 build, in which a `-D` flag was invisible to make: objects do not depend on the flag strings, so `make FLAG=1` followed by `make` recompiles nothing and the flag silently survives. That sequence produced a false **[G-9]** "reproduction" on 2026-08-20; the guard fired in 2 boots of 3 with the control arm's own injected constant. | `make smoke-defect-flags-rebuild-control`, which requires the stale `DEFECT FLAGS: KSP_GUARD_INJECT` to be **present** after a flagless rebuild (against `make smoke-defect-flags-rebuild`, where it must report `none`) |
 | `KSP_GUARD_INJECT=1` | Forges `-7` (the exact value **[G-9]** was seen to hand back) as the return of `task_exit_switch`, the producer the `PROC_SELFTEST` workload drives. Not a defect arm in the usual sense: it exists so the producer-side guard has a falsifying arm, because a guard nobody has seen fire is not a guard. | `make smoke-ksp-guard-control`, which requires `SCHED BOGUS KSP from task_exit_switch` to be **present** |
@@ -613,7 +613,7 @@ make verify-build         # alias
 ```
 
 **The target does not build twice, and its name suggests otherwise.** It removes
-`kernel.elf`/`boot.iso`, builds both once with `SOURCE_DATE_EPOCH` pinned, and records their
+`kernel.elf`/`horus.iso`, builds both once with `SOURCE_DATE_EPOCH` pinned, and records their
 hashes in `.build.sha`. The double-build-and-diff that actually proves reproducibility lives
 only in the `reproducible` CI job, which runs the target twice, requires the record to name both
 artifacts, and diffs the `kernel.elf` hashes. Locally, run it twice and diff yourself, a single
@@ -626,8 +626,8 @@ have against the record.
 
 1. It said the target built twice. It never has.
 2. The recording step could not fail. It was
-   `sha256sum kernel.elf boot.iso > .build.sha 2>/dev/null || true`, run over a build goal of
-   `all`, and `all: kernel.elf`. The target deletes `boot.iso` and never rebuilt it, so that
+   `sha256sum kernel.elf horus.iso > .build.sha 2>/dev/null || true`, run over a build goal of
+   `all`, and `all: kernel.elf`. The target deletes `horus.iso` and never rebuilt it, so that
    `sha256sum` failed on a missing operand every time it ran, `2>/dev/null` hid the message and
    `|| true` hid the status. `.build.sha` had only ever held one line, and the artifact a third
    party actually obtains was the one the supply-chain control did not cover.
@@ -636,7 +636,7 @@ The step is now `tools/record_build_sha.sh`, which fails on a missing artifact a
 `.build.sha` by rename so a failed run leaves no file rather than a plausible partial. Witness
 `make smoke-repro-sha`, falsified by `make smoke-repro-sha-control` (`REPRO_SHA_UNCHECKED=1`).
 
-**`boot.iso` is not byte-reproducible**, which is what building it revealed. `grub-mkrescue`
+**`horus.iso` is not byte-reproducible**, which is what building it revealed. `grub-mkrescue`
 stamps `/.disk/<wall-clock-second>.uuid` into the image and embeds that UUID in the EFI loaders
 it generates; everything this project authors inside the ISO is identical across builds. Two
 builds within one second are bit-identical and two seconds apart are not, which is also how a
@@ -650,13 +650,13 @@ image.
 **A reproducible build is a supply-chain control, not a nicety:** it is what lets a third party
 confirm that a binary corresponds to the source beside it. What is still missing is the outbound
 half (no tags, no releases, no signed artifacts, no SLSA provenance) so a third party cannot tie
-a `boot.iso` they obtained to this repository's CI (**[I-9]**, `docs/LIMITATIONS.md` §5.3).
+a `horus.iso` they obtained to this repository's CI (**[I-9]**, `docs/LIMITATIONS.md` §5.3).
 
 This paragraph previously said the repository "currently also *commits* a prebuilt `kernel.elf`"
-and pointed at §5.6. Neither half was true: `kernel.elf` and `boot.iso` are gitignored
+and pointed at §5.6. Neither half was true: `kernel.elf` and `horus.iso` are gitignored
 (`.gitignore:10-11`), `git ls-files` tracks no build artefact, and §5.6 is the
 mislocated-governance-files finding. Recorded rather than silently deleted, because
-`docs/LIMITATIONS.md` had been asserting the opposite ("no `kernel.elf`, no `boot.iso`, no
+`docs/LIMITATIONS.md` had been asserting the opposite ("no `kernel.elf`, no `horus.iso`, no
 object files") for as long as this paragraph asserted it.
 
 ---

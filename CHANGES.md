@@ -72,6 +72,13 @@ in this file.
   loudly; both arms failed before the guards existed.
   **That is the sixth checker of thirteen found able to report success having examined
   nothing**, which is a rate that makes the class structural rather than incidental.
+  The pattern across the whole set is recorded as `docs/LIMITATIONS.md` §5.3d: **a checker's
+  natural failure is to examine nothing and pass**, found in six of the thirteen that had no
+  suite. Not six careless checkers — they have the longest explanatory headers in the tree.
+  A checker is a loop over a parsed collection, the natural failure of a parser is to return
+  an empty one, and every rule inside the loop is then vacuously satisfied while the summary
+  counts zero problems. All six now assert a floor on what they parsed, and each floor has an
+  arm that breaks the pattern and requires a failure.
   Only the parser half is armed. The measuring half is 88 clean builds and QEMU boots at a
   900-second-per-pair budget, and falsifying it end to end would mean deliberately breaking a
   base gate and booting to watch it not redden — hours of machine time to re-derive what the

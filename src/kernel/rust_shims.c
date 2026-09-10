@@ -53,24 +53,7 @@ uint32_t rust_get_user_page_protection(uint32_t task_id, uint64_t vaddr) {
 }
 
 __attribute__((weak))
-int rust_validate_fs_operation(uint32_t task_id, uint32_t op, uint32_t rights, const uint8_t *name, size_t nlen) {
-    (void)task_id; (void)op; (void)name; (void)nlen;
-    return (rights != 0) ? 0 : -1;
-}
-
-__attribute__((weak))
-int rust_validate_ipc(uint32_t task_id, uint32_t ep_slot, uint32_t rights) {
-    (void)task_id; (void)ep_slot;
-    return (rights != 0) ? 0 : -1;
-}
-
-__attribute__((weak))
 bool rust_cow_copy_required(bool is_cow, bool is_write, uint16_t ref_count) {
     (void)is_cow; (void)is_write;
     return (ref_count > 1);
-}
-
-__attribute__((weak))
-bool rust_should_demand_zero(uint32_t err_code) {
-    return ((err_code & 1) == 0) && ((err_code & 4) != 0);
 }

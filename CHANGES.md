@@ -17,6 +17,50 @@ in this file.
 
 ### Added
 
+- **Twelve FFI exports nobody called, deleted; the boundary is now gated** (**S86**,
+  `tools/check_ffi_deadsurface.py`, required job `ffi-deadsurface`). `kernel.elf` links the
+  Rust security core with `--whole-archive` and no `--gc-sections`, so a
+  `#[no_mangle] pub extern "C"` symbol ships whether or not anything calls it. Sixty exports;
+  **twelve had no caller in C, in Rust, or in any Kani harness** -- 20% of the security core's
+  entry surface. They were three clusters, not twelve slips: a user-physical-page allocator
+  `src/kernel/paging.c` never adopted; a **second, superseded audit chain** beside the `fs_*`
+  and `pub_*` chains `src/kernel/kaudit.c` actually uses; and six singles, of which
+  rust_password_hash was a **PBKDF2 password hash sitting beside the live Argon2id path**.
+  **Every one of the twelve had passing unit tests, and that is why they survived**: the tests
+  made dead code look maintained, and from outside an export nobody calls is indistinguishable
+  from one that works -- the shape already recorded as "a flag can define a macro nothing
+  reads". An `unsafe` FFI function is a promise about its caller, and each carried a
+  `# Safety` clause naming obligations no caller existed to discharge; one named "the refcount
+  discipline in paging.c", which was not calling it. **S54** gates that such a clause is
+  *written*, never that it is upheld. Surface is now **48 exports, all live**.
+  The PBKDF2 implementation behind the dead wrapper went too: `-D warnings` proved the whole
+  path was dead, not merely its export, which is the compiler settling a judgement call the
+  author was hedging on. One test was **re-pointed rather than deleted** -- the finding-3.3
+  TOCTOU property (a pre-revoke snapshot must fail its generation re-check) belonged to
+  `rust_cap_revoke_global`, the path the kernel takes, not to the dead entry point that
+  happened to exercise it; it was then **ablated** (revoke removed) to confirm it fails,
+  because a re-pointed test that still passes may be passing for a new reason.
+- **The `RUST_ENABLED=0` build arm cannot link, and has not for a long time**
+  (`docs/LIMITATIONS.md` §5.3b). Found while confirming that deleting three dead C fallback
+  shims did not break the no-Rust build. It did not: that build was already broken. The shims
+  define seven symbols and the kernel calls forty-nine, so **43 distinct symbols are
+  unresolved** -- `rust_cap_lookup`, `rust_cap_mint`, `rust_page_ref_inc`, `rust_sha256`
+  among them. Measured on a pristine `origin/main` worktree and on this branch: **identical,
+  43 either way**, so the deletions narrowed nothing. It fails two different ways depending on
+  what is lying around -- from clean it stops at *"No rule to make target ...libhorus_shell.a"*,
+  because `kernel.elf` names the Rust archive as a prerequisite unconditionally, so the arm
+  meant to build *without* Rust cannot start without it. Recorded rather than fixed: removing
+  the remaining shims is a decision about whether a no-Rust build is a goal, and that is not a
+  decision to take as a side effect of a dead-surface sweep.
+
+- **A comment in `src/kernel/capability.c` described a call graph that did not exist.** It
+  stated that every lineage bump "goes through rust_lineage_bump (inside rust_cap_revoke /
+  *_by_values)". The sweeps call the crate-internal `bump_lineage`; the exported wrapper had
+  no caller in its entire life, and `*_by_values` was itself one of the twelve. **This is also
+  how it came to be recorded as "called once by capability.c"** -- the only mention of it in
+  that file was the sentence claiming it was called. `src/include/kernel.h` carried the
+  matching claim and is corrected too (§7: a comment is a claim).
+
 - **`CLAUDE.md`'s references are checked** (`tools/check_claude_md.py`). The operating manual
   every session reads first is gitignored and untracked, so nothing in this tree has ever seen
   it -- and it went stale the way an unchecked document does: two defect flags described as

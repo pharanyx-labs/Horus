@@ -96,17 +96,6 @@ pub struct SafeCapability {
     pub raw: u32,
 }
 
-/// # Safety
-/// `cap` must be null or a valid, aligned pointer to a `SafeCapability` that
-/// stays live for the call. Null is handled; any other invalid pointer is UB.
-#[no_mangle]
-pub unsafe extern "C" fn rust_cap_has_rights(cap: *const SafeCapability, required: u32) -> bool {
-    if cap.is_null() {
-        return false;
-    }
-    ((*cap).raw & required) == required
-}
-
 #[no_mangle]
 pub extern "C" fn rust_get_user_page_protection(_task_id: u32, vaddr: u64) -> u32 {
     // [0xA00000, 0xB00000) is deliberately absent. It used to be excluded because
@@ -185,11 +174,6 @@ pub extern "C" fn rust_cow_copy_required(is_cow: bool, is_write: bool, ref_count
     is_cow && is_write && ref_count > 1
 }
 
-#[no_mangle]
-pub extern "C" fn rust_should_demand_zero(err_code: u32) -> bool {
-    (err_code & 1) == 0 && (err_code & 4) != 0
-}
-
 /// Validate a would-be ring-3 signal-handler entry address against *this task's*
 /// image. On a fault the kernel iretq's ring 3 to this address, so it must be a
 /// plausible user *code* location; anything else (the stack, the heap, the
@@ -224,25 +208,6 @@ pub enum FsOp {
     Read   = 3,
     Write  = 4,
     Mint   = 5,
-}
-
-#[no_mangle]
-pub extern "C" fn rust_validate_fs_operation(
-    task_id: u32,
-    _op: u32,
-    rights_held: u32,
-    name_ptr: *const u8,
-    name_len: usize,
-) -> i32 {
-    if !name_ptr.is_null() && name_len > 0 && name_len < 32 {
-        let _ = (task_id,);
-    }
-
-    if rights_held == 0 {
-        return -1;
-    }
-
-    0
 }
 
 /// Constant-time equality of two `len`-byte buffers. Returns 1 if equal, else 0;
@@ -1578,10 +1543,6 @@ mod tests {
         }
     }
 
-    // err_code bit layout used throughout: present=1, write=2, user=4.
-    const PRESENT: u32 = 1;
-    const USER: u32 = 4;
-
     #[test]
     fn ct_eq_matches_only_on_equal_buffers() {
         let a = [0x11u8, 0x22, 0x33, 0x44];
@@ -1636,18 +1597,6 @@ mod tests {
 
     #[test]
     fn cap_rights_are_subset_checked() {
-        let held = SafeCapability { raw: 0b1011 };
-        unsafe {
-            // A null capability grants nothing.
-            assert!(!rust_cap_has_rights(core::ptr::null(), 0b0001));
-            // Holding a superset of the required bits passes.
-            assert!(rust_cap_has_rights(&held, 0b0001));
-            assert!(rust_cap_has_rights(&held, 0b1010));
-            assert!(rust_cap_has_rights(&held, 0b1011));
-            // Requiring any bit not held fails — no rights escalation.
-            assert!(!rust_cap_has_rights(&held, 0b0100));
-            assert!(!rust_cap_has_rights(&held, 0b1111));
-        }
         assert!(SafeCap { raw: 0b110 }.has_rights(0b100));
         assert!(!SafeCap { raw: 0b110 }.has_rights(0b001));
     }
@@ -1739,22 +1688,6 @@ mod tests {
         assert!(!rust_cow_copy_required(true, true, 1)); // sole owner -> no copy
         assert!(!rust_cow_copy_required(false, true, 2)); // not a COW page
         assert!(!rust_cow_copy_required(true, false, 2)); // not a write
-    }
-
-    #[test]
-    fn should_demand_zero_bits() {
-        assert!(rust_should_demand_zero(USER)); // not-present + user
-        assert!(!rust_should_demand_zero(USER | PRESENT)); // already present
-        assert!(!rust_should_demand_zero(0)); // not a user fault
-    }
-
-    #[test]
-    fn fs_operation_requires_some_right() {
-        let name = b"file";
-        // No rights held -> denied.
-        assert_eq!(rust_validate_fs_operation(1, FsOp::Read as u32, 0, name.as_ptr(), name.len()), -1);
-        // Any right held -> allowed (per-op masking is enforced in C capfs).
-        assert_eq!(rust_validate_fs_operation(1, FsOp::Read as u32, 0x1, name.as_ptr(), name.len()), 0);
     }
 
     #[test]

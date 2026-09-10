@@ -257,85 +257,6 @@ pub unsafe extern "C" fn rust_audit_pub_extend(
 // the keyed-hash logic lives here).
 // ---------------------------------------------------------------------------
 
-/// Initialize the chain head: `head_0 = HMAC(key, DOMAIN)`. Writes 32 bytes.
-///
-/// # Safety
-/// `key` must point to `key_len` readable bytes and `out_head32` to 32 writable
-/// bytes; both must outlive the call. Null is rejected.
-#[no_mangle]
-pub unsafe extern "C" fn rust_audit_chain_init(
-    key: *const u8,
-    key_len: usize,
-    out_head32: *mut u8,
-) -> i32 {
-    if key.is_null() || out_head32.is_null() {
-        return -1;
-    }
-    let k = core::slice::from_raw_parts(key, key_len);
-    let h = head_init(k);
-    core::ptr::copy_nonoverlapping(h.as_ptr(), out_head32, AUDIT_MAC_LEN);
-    0
-}
-
-/// Record one event: compute `mac = HMAC(key, LE64(seq) || event)`, then advance
-/// the running head to `HMAC(key, head || mac)`. `head32` is read and updated in
-/// place; the per-entry MAC is written to `out_mac32`. Writes 32 bytes to each.
-///
-/// # Safety
-/// `key`/`event` must be valid for their lengths (event may be null iff
-/// `event_len == 0`); `head32` and `out_mac32` must each point to 32
-/// readable+writable bytes. Null (other than the empty-event case) is rejected.
-#[no_mangle]
-pub unsafe extern "C" fn rust_audit_chain_record(
-    key: *const u8,
-    key_len: usize,
-    seq: u64,
-    event: *const u8,
-    event_len: usize,
-    head32: *mut u8,
-    out_mac32: *mut u8,
-) -> i32 {
-    if key.is_null() || head32.is_null() || out_mac32.is_null() || (event.is_null() && event_len != 0) {
-        return -1;
-    }
-    let k = core::slice::from_raw_parts(key, key_len);
-    let ev = if event_len == 0 { &[][..] } else { core::slice::from_raw_parts(event, event_len) };
-
-    let mac = entry_mac(k, seq, ev);
-
-    let mut head = [0u8; AUDIT_MAC_LEN];
-    core::ptr::copy_nonoverlapping(head32 as *const u8, head.as_mut_ptr(), AUDIT_MAC_LEN);
-    let new_head = head_extend(k, &head, &mac);
-
-    core::ptr::copy_nonoverlapping(new_head.as_ptr(), head32, AUDIT_MAC_LEN);
-    core::ptr::copy_nonoverlapping(mac.as_ptr(), out_mac32, AUDIT_MAC_LEN);
-    0
-}
-
-/// Recompute a single entry's MAC for verification:
-/// `mac = HMAC(key, LE64(seq) || event)`. Writes 32 bytes on success.
-///
-/// # Safety
-/// As `rust_audit_chain_record` for `key`/`event`/`out_mac32`.
-#[no_mangle]
-pub unsafe extern "C" fn rust_audit_entry_mac(
-    key: *const u8,
-    key_len: usize,
-    seq: u64,
-    event: *const u8,
-    event_len: usize,
-    out_mac32: *mut u8,
-) -> i32 {
-    if key.is_null() || out_mac32.is_null() || (event.is_null() && event_len != 0) {
-        return -1;
-    }
-    let k = core::slice::from_raw_parts(key, key_len);
-    let ev = if event_len == 0 { &[][..] } else { core::slice::from_raw_parts(event, event_len) };
-    let mac = entry_mac(k, seq, ev);
-    core::ptr::copy_nonoverlapping(mac.as_ptr(), out_mac32, AUDIT_MAC_LEN);
-    0
-}
-
 /// Constant-time comparison of two 32-byte MACs. Returns 1 if equal, else 0.
 /// Used by the kernel's audit-verify path so a mismatch search does not leak a
 /// timing oracle on where the chain diverged.
@@ -400,47 +321,6 @@ mod tests {
     }
 
     #[test]
-    fn full_chain_records_and_verifies() {
-        // Drive the FFI exactly as the kernel does: init, then record N events,
-        // keeping per-entry MACs; then verify each recomputes.
-        let events: [&[u8]; 3] = [b"cap mint", b"login success", b"sudo success"];
-        let mut head = [0u8; 32];
-        unsafe {
-            assert_eq!(rust_audit_chain_init(KEY.as_ptr(), KEY.len(), head.as_mut_ptr()), 0);
-        }
-        let mut macs = [[0u8; 32]; 3];
-        for (i, ev) in events.iter().enumerate() {
-            let mut mac = [0u8; 32];
-            unsafe {
-                assert_eq!(
-                    rust_audit_chain_record(
-                        KEY.as_ptr(), KEY.len(),
-                        i as u64,
-                        ev.as_ptr(), ev.len(),
-                        head.as_mut_ptr(), mac.as_mut_ptr(),
-                    ),
-                    0
-                );
-            }
-            macs[i] = mac;
-        }
-        // Every retained entry re-verifies against its stored MAC.
-        for (i, ev) in events.iter().enumerate() {
-            let mut recomputed = [0u8; 32];
-            unsafe {
-                rust_audit_entry_mac(KEY.as_ptr(), KEY.len(), i as u64, ev.as_ptr(), ev.len(), recomputed.as_mut_ptr());
-                assert_eq!(rust_audit_mac_eq(recomputed.as_ptr(), macs[i].as_ptr()), 1);
-            }
-        }
-        // Tamper with the middle event -> its MAC no longer verifies.
-        let mut tampered = [0u8; 32];
-        unsafe {
-            rust_audit_entry_mac(KEY.as_ptr(), KEY.len(), 1, b"login FAILURE".as_ptr(), 13, tampered.as_mut_ptr());
-            assert_eq!(rust_audit_mac_eq(tampered.as_ptr(), macs[1].as_ptr()), 0);
-        }
-    }
-
-    #[test]
     fn mac_eq_is_correct() {
         let a = entry_mac(KEY, 1, b"x");
         let b = a;
@@ -454,10 +334,8 @@ mod tests {
 
     #[test]
     fn ffi_rejects_null() {
-        let mut out = [0u8; 32];
+        let out = [0u8; 32];
         unsafe {
-            assert_eq!(rust_audit_chain_init(core::ptr::null(), 0, out.as_mut_ptr()), -1);
-            assert_eq!(rust_audit_chain_init(KEY.as_ptr(), KEY.len(), core::ptr::null_mut()), -1);
             assert_eq!(rust_audit_mac_eq(core::ptr::null(), out.as_ptr()), 0);
         }
     }

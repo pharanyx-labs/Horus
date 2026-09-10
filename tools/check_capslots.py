@@ -52,6 +52,24 @@ def main():
                     f"-- one cspace slot, two meanings"
                 )
 
+    # SELF-CHECK. Both rules above are vacuous against a regex that matches
+    # nothing: no slots parsed means no collisions and no disagreements, and this
+    # file reports a clean tree having looked at nothing. It had no such guard
+    # until 2026-09-10, when its own falsification suite was written and arm 4
+    # -- the only arm of the three suites in that commit to fail -- showed it
+    # passing with the CAPSLOT pattern deliberately broken. Both headers have
+    # carried at least a dozen slots for the life of the project.
+    for h_name, found in maps.items():
+        if len(found) < 10:
+            problems.append(
+                f"{h_name}: parsed no CAPSLOT definitions at all" if not found
+                else f"{h_name}: parsed only {len(found)} CAPSLOT definitions, "
+                     f"fewer than this header has ever had")
+    if any("parsed" in p for p in problems):
+        problems.append(
+            "the slot regex has probably stopped matching -- fix it rather than "
+            "lowering this bound, because every rule here is vacuous without it")
+
     (a_name, a), (b_name, b) = maps.items()
     for name in sorted(set(a) & set(b)):
         if a[name] != b[name]:

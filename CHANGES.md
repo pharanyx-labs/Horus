@@ -54,6 +54,25 @@ in this file.
 
 ### Added
 
+- **Falsification suites for three checkers that had none** — `check_capslots.py` (6 arms),
+  `check_kani_harnesses.py` (7), `check_miri_scope.py` (6). All three are required CI checks
+  that had never been tested against a tree they should reject.
+  **`check_capslots.py` could not fail on an empty parse.** With its `CAPSLOT_*` pattern
+  deliberately broken it found no slots, and therefore no collisions and no cross-header
+  disagreements, and printed PASS having looked at nothing. It had no vacuity guard; one was
+  added in the same commit, and its own arm 4 is what found the gap.
+  **The other two are guarded by accident, and the arms now say so.** Break `#[kani::proof]`
+  and rule 3 fires, because the manifest names harnesses the scan can no longer find; break
+  `#[test]` and every `skip` entry reads as rotted. Accidental protection is still protection,
+  but only once something asserts it stays.
+  **One rule deliberately has no arm.** `check_miri_scope`'s "every test module is run under
+  Miri or skipped" cannot be violated: `run` is computed as modules-minus-skip, and the CI job
+  builds its command from `--print-skip-args` rather than repeating the list, so the two cannot
+  drift because only one exists. Arm 4 checks that derivation instead — the property the rule
+  actually rests on — rather than asserting something true by construction.
+
+### Added
+
 - **The kernel's lock order is declared and gated** (**S88**, `tools/check_lock_order.py`,
   required job `lock-order`). Nine locks, and the order between them lived in **five comments
   across four files** with no registry and nothing that could fail.

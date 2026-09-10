@@ -1532,6 +1532,23 @@ named subset rather than "run everything".
   is the Rust half: `rust_cap_lookup` still resolves without a type, so the Kani harness
   "lookup refuses a type-mismatched capability" needs the expected type pushed through the FFI
   boundary before it can be stated.
+
+  > **It is not only a signature change, and the extra half is the reason this entry is still
+  > open rather than easy.** `CAP_LOOKUP_TYPE_UNCHECKED` is the control arm that proves the
+  > type test is load-bearing: it compiles out the check in `cap_lookup` and requires
+  > `make smoke-captest-lookup-type-control` to go red. That flag reaches **`CFLAGS` and
+  > `ASFLAGS` only** — it appears nowhere in `rust/`, and the Rust build takes its features
+  > from the separate `RUST_FEATURES` mechanism. So a `rust_cap_lookup` that checked the type
+  > itself would keep refusing under the arm, the arm would stop reproducing the defect, and
+  > the gate would stop going red **while still reporting PASS**: a control arm that has
+  > silently become vacuous, which is the failure this project keeps finding one layer at a
+  > time (`docs/LIMITATIONS.md` §5.3d).
+  >
+  > So the work is three things, not one: push the type through the FFI; give the arm a way to
+  > disarm the Rust check too (a cargo feature threaded from the same `make` flag, so one
+  > switch still moves both halves); and re-measure that the base gate reddens under it. Doing
+  > the first without the second leaves the tree *more* verified and *less* checked than it is
+  > today. Noted 2026-09-10 rather than discovered later by the arm quietly passing.
 - **IPC authority implies a held endpoint capability naming that endpoint.** 0.1 landed, so
   this is now expressible; it needs a model of `ipc_ep_from_slot` on the Rust side.
 - **A sound TLA+ specification, which this project does not have.** Two were committed on

@@ -69,6 +69,7 @@ CLAIMS_YML = ".github/doc-claims.yml"
 HISTORICAL = "docs/history/"
 MAKEFILE = "Makefile"
 GATE_PAIRS_YML = ".github/gate-pairs.yml"
+AUDIT_MD = "docs/AUDIT.md"
 CAPTEST = "userspace/captest.c"
 AUDITPROBE = "userspace/auditprobe.c"
 DEVLOG = "docs/history/DEVLOG-2026.md"
@@ -82,6 +83,27 @@ def _gate_pairs():
     three derivations that were tried and how each one is wrong.
     """
     return yaml.safe_load(Path(GATE_PAIRS_YML).read_text()) or {}
+
+
+def _audit_rejected_candidates():
+    """Data rows in docs/AUDIT.md section 5's rejected-candidates table.
+
+    Counted rather than trusted, because this is the claim that went wrong: the
+    prose said EIGHT while the table held nine and section 2's summary said 9.
+    Nothing checked it, and the phrase wrapped across a newline ("Eight leads
+    were / investigated"), so a line-by-line matcher could never have caught it
+    even if someone had declared it.
+
+    Header and separator are not data. A first attempt bounded the section with
+    /^---/ and got 10 lines, which is the shape of the original defect: a count
+    derived from an enumeration that stopped early.
+    """
+    text = Path(AUDIT_MD).read_text()
+    m = re.search(r"^## 5\. Candidates rejected\b(.*?)^## 6\.", text, re.S | re.M)
+    if not m:
+        return 0
+    rows = [ln for ln in m.group(1).splitlines() if ln.startswith("|")]
+    return max(0, len(rows) - 2)
 
 
 def _grep_count(path, pattern):
@@ -137,6 +159,7 @@ def derive():
                     for c in ctxs]
 
     return {
+        "audit_rejected_candidates": _audit_rejected_candidates(),
         "ci_jobs": len(jobs_by_wf[CI_YML]),
         "all_jobs": len(all_jobs),
         "contexts": len(contexts),

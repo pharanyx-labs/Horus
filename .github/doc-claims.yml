@@ -25,6 +25,19 @@
 #              of this file that catches prose rather than digits.
 
 counts:
+  - id: audit_rejected_candidates
+    describe: data rows in docs/AUDIT.md section 5's rejected-candidates table
+    derive: audit_rejected_candidates
+    # BOTH halves are declared, deliberately. Section 2's summary already said 9
+    # while section 5's prose said "Eight", and gating only one of them would
+    # leave the other free to drift -- a gated numerator makes the ungated
+    # remainder beside it look verified.
+    occurrences:
+      - file: docs/AUDIT.md
+        pattern: '\| Candidates investigated and \*\*rejected\*\* \| \*\*(\d+)\*\* \|'
+      - file: docs/AUDIT.md
+        pattern: '\*\*(\d+) leads were investigated and rejected\*\*'
+
   - id: ci_jobs
     describe: jobs defined in .github/workflows/ci.yml
     derive: ci_jobs

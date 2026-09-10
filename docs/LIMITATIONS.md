@@ -3546,6 +3546,37 @@ so it is a control rather than an assumption. That says nothing about what leave
 which is what **[I-9]** is actually about; it only means the tree is no longer trusting an
 unverified 9 MiB blob on the way in.
 
+### 5.3c Horus cannot be reinstalled over an existing Horus volume
+
+**Measured 2026-09-10**, while building `install.iso` (the image that runs the installer on
+every boot). Driving that image through a second install on a disk it had just written
+completes the entire walk -- survey, accounts, review, the typed word -- and then answers
+`INSTALLER: FAIL format refused rc=-22`.
+
+**Two independent kernel guards refuse it, and both are deliberate:**
+
+- `storage_authorize_format` (`src/kernel/storage.c`) refuses a device that is the currently
+  mounted volume. Its comment says why: naming the mounted device would set
+  `g_needs_format_bd` to a device the format path never looks at, *"a silent no-op dressed as
+  consent"*.
+- `storage_unlock`'s `g_needs_format` gate is consumed the moment a volume exists, so even
+  past the first guard there is no permission left to format with (**S63**, **S83**).
+
+**Neither is a bug, and the installer's own refusal is a third layer** -- `userspace/installer.c`
+declines a recognised volume with a screen, for the reason its header gives: overwriting a
+filesystem somebody may still want is a different act needing a different confirmation.
+
+**What this costs.** A machine with Horus on it cannot be re-installed from install media; the
+disk has to be wiped by other means first. That is a real limitation of an operating system
+that intends to be installable, and it is recorded rather than worked around because the
+work-around would be to weaken one of the two guards that make S63 and S83 true.
+
+**What was deliberately NOT done.** An earlier draft of `install.iso` offered a "replace the
+volume on it" screen. It was removed before it shipped: the kernel refuses the format, so the
+screen would have promised an act the system declines, and a screen that offers something
+impossible is worse than one that refuses honestly. `install.iso` shows the existing
+already-has-a-volume screen and changes nothing.
+
 ### 5.3b The `RUST_ENABLED=0` build arm cannot link, and nothing said so
 
 **Found 2026-09-10**, while checking that removing three dead C fallback shims did not break

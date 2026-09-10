@@ -556,9 +556,44 @@ static int launch_shell(void) {
 static int machine_needs_install(void) {
     if (!g_si_valid)         return 0;
     if (!g_si.present)       return 0;   /* the ephemeral store; nothing to install onto */
+#ifdef INSTALL_ALWAYS
+    /* INSTALL MEDIA. Build with INSTALL_ALWAYS=1 (`make install.iso`) and this
+     * image runs the installer on EVERY boot, rather than only on a machine
+     * whose disk has no volume -- which is what an installer ISO is for, and the
+     * opposite of what the shipping image must do.
+     *
+     * THE FAIL-CLOSED REASONING ABOVE IS NOT WEAKENED, IT IS RELOCATED. The
+     * default build answers NO to every uncertainty because the cost of a wrong
+     * YES is an installer offering to erase a disk on a machine that did not
+     * ask. An image somebody deliberately wrote to a USB stick and booted DID
+     * ask -- that is the whole act -- so the question "should we install?" is
+     * answered by the operator having booted this image, and the guard against
+     * erasing a disk they still want stays where they can see what they are
+     * about to lose: the installer's survey, its review, and its typed word.
+     *
+     * IT STILL CANNOT REPLACE AN EXISTING VOLUME, and that is a KERNEL refusal
+     * rather than a policy this flag can move. Two independent guards say so,
+     * both deliberate and both load-bearing: storage_authorize_format refuses a
+     * device that is the currently mounted volume, and storage_unlock's
+     * g_needs_format gate is consumed the moment a volume exists (S63, S83).
+     * Measured 2026-09-10 by driving this image through a second install on a
+     * disk it had just written: the walk completes and the format answers
+     * `INSTALLER: FAIL format refused rc=-22`. So on a recognised volume this
+     * image shows the installer's existing "already has a Horus volume" screen
+     * and changes nothing -- which is honest, where an offer to replace would
+     * not be. Reinstalling over a Horus volume needs those kernel guards
+     * revisited, and that is a security-critical change with its own argument to
+     * make, not a build flag.
+     *
+     * `format_on_login` is still honoured: that kernel formats an unrecognised
+     * volume by itself at the login prompt, so an installer would be racing it. */
+    if (g_si.format_on_login) return 0;
+    return 1;
+#else
     if (g_si.recognised)     return 0;   /* a volume is already here */
     if (g_si.format_on_login) return 0;  /* this kernel formats at login by itself */
     return g_si.needs_format ? 1 : 0;
+#endif
 }
 
 /* Launch the installer and wait for it. Returns the task id, or negative.
@@ -666,6 +701,13 @@ void _start(void) {
      * do in parallel. When it returns -- installed, cancelled, or dead -- the
      * shell loop below runs exactly as it always did. */
     if (machine_needs_install()) {
+#ifdef INSTALL_ALWAYS
+        /* Announced before the installer draws anything. A reader of a boot log
+         * -- or of a serial capture from a machine that is now blank -- should
+         * be able to see that this image was built to install, rather than infer
+         * it from what happened next. */
+        report("init: INSTALL MEDIA (INSTALL_ALWAYS): the installer runs on every boot\n");
+#endif
         int in = launch_installer();
         if (in < 0) {
             report(in == -1 ? "init: FAIL could not spawn the installer\n"

@@ -52,6 +52,38 @@ in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`make install.iso`: install media that runs the installer on every boot.** The shipping
+  `horus.iso` decides for itself whether a machine needs installing, and fails closed in the
+  direction of *not* — the right default for an image that boots a running system, and the
+  wrong one for an image somebody deliberately wrote to a USB stick. `INSTALL_ALWAYS=1` moves
+  that decision to the operator having booted this image, and leaves the guards against
+  erasing a disk they still want exactly where they can see what they are about to lose: the
+  survey, the review and the typed word.
+  **A separate target rather than a flag on `horus.iso`**, because **46 gates** boot the
+  shipping image with a disk attached and an unconditional installer would hang every one of
+  them waiting for a keystroke — which is what `machine_needs_install`'s own comment warns
+  about. It is **not** a defect flag: it is a product variant like `COREUTILS_MODULES`, not a
+  defect or an instrument. It does announce itself — `init` prints
+  `INSTALL MEDIA (INSTALL_ALWAYS)` before the installer draws anything, so a boot log from a
+  machine that is now blank says why.
+
+### Fixed
+
+- **A screen that would have promised something the kernel refuses.** The first draft of
+  `install.iso` offered *"Replace the volume on it"* on a disk that already held one. Driving
+  it end-to-end showed the walk completing and the format then answering
+  `INSTALLER: FAIL format refused rc=-22`: **two independent kernel guards** decline it —
+  `storage_authorize_format` refuses the mounted device, and `storage_unlock`'s
+  `g_needs_format` gate is consumed once a volume exists (**S63**, **S83**). The screen was
+  removed before it shipped. `install.iso` shows the installer's existing
+  already-has-a-volume refusal instead, which is honest where an offer would not have been.
+  Recorded as `docs/LIMITATIONS.md` §5.3c: **Horus cannot be reinstalled over an existing
+  Horus volume**, which is a real limitation of a system that intends to be installable, and
+  is written down rather than worked around because the work-around is weakening one of the
+  two guards that make S63 and S83 true.
+
 ### Changed
 
 - **The installer's questions are a state machine, not a pipeline: `esc` walks back one step.**

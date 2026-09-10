@@ -2827,6 +2827,24 @@ jobs:
       - name: Falsify that checker in every direction
         run: tools/test_check_ring0_budget.sh
 
+  lock-order:
+    name: "The kernel's lock order is declared, and no path violates it"
+    runs-on: ubuntu-latest
+    # Source analysis only -- no build, no QEMU. Seconds.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      # Nine locks, and the order between them lived in five comments in four
+      # files -- two of which were in the SAME file and disagreed about the same
+      # pair. A nesting is not a defect; a CYCLE is, so the rule with teeth is
+      # that the REVERSE of a declared nesting fails the build. The audit's
+      # "no page_lock holder enters IPC" was checked by hand once; this keeps it
+      # checked (S88).
+      - name: Refuse an undeclared lock nesting, or the reverse of a declared one
+        run: python3 tools/check_lock_order.py
+      - name: Falsify that checker in every direction
+        run: tools/test_check_lock_order.sh
+
   syscall-abi:
     name: "Every user pointer reaches the kernel full-width (issue #176)"
     runs-on: ubuntu-latest

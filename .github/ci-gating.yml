@@ -111,6 +111,10 @@ required:
   # object can be linked into ring 0 by adding one line to OBJS; this is the
   # only thing that makes that a decision somebody had to write down.
   - ring0-budget
+  # Gating. A nesting is not a defect and a cycle is, so what this protects is
+  # the ABSENCE of the reverse edge -- an argument the 2026-08-30 audit made by
+  # hand and nothing has re-checked since.
+  - lock-order
   # Gating. The boot log is the only record a reader has of what the system did
   # before there was a shell to ask, and half of it used to arrive with no
   # timestamp at all -- so nothing in it could be ordered against anything else,

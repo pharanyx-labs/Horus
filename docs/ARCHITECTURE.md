@@ -1224,6 +1224,53 @@ mapped (**S45**, `src/kernel/iommu.c`), and `iommu_active()` reports 0 where the
 
 ---
 
+### Lock order
+
+Nine locks. Until 2026-09-10 the order between them was stated only in five
+comments across four files, and **two of them, in the same file, disagreed about
+the same pair** -- see **S88**. It is declared once now, in
+`.github/lock-order.yml`, and `tools/check_lock_order.py` (required job
+`lock-order`) refuses anything that contradicts it.
+
+| Lock | Owns |
+|---|---|
+| `spawn_stage_lock` | The spawn/exec staging singletons. **The outermost lock in the kernel**: taken by syscall entry points holding nothing |
+| `storage_lock` | The encrypted object store and on-disk filesystem |
+| `ata_lock` | The ATA driver. Always `storage_lock -> ata_lock`, never the reverse |
+| `endpoint_lock` | Endpoints and notifications. Taken via `ipc_lock()` / `ipc_unlock()`, never by name |
+| `cap_lock` | Every cspace |
+| `page_lock` | The pager's structures |
+| `untyped_lock` | The untyped regions. `cap_lock -> untyped_lock`; `untyped_retype` releases the untyped lock before taking `cap_lock` |
+| `pipe_lock` | Pipe objects |
+| `scheduler_lock` | The run queue and the claim invariant |
+
+**Two nestings exist, and both are deliberate:**
+
+- **`endpoint_lock -> cap_lock`** -- `ipc_publish_pending_block` mints the
+  one-shot `CAP_REPLY` under the IPC lock, *before* waking the receiver. Minting
+  after the wake loses the race against a receiver already running on another
+  CPU: ~33% of sessions with a second CPU loaded, 0% for the control, and
+  invisible on one CPU because there is no second CPU to run the server inside
+  the window.
+- **`endpoint_lock -> page_lock`** -- the same function calls `copy_to_user` to
+  deliver the body, and the user-copy path faults the destination in.
+
+**Neither is a defect, because a nesting is not a cycle.** They are safe exactly
+while the reverse edges stay absent -- no `cap_lock` holder and no `page_lock`
+holder enters IPC. That was the 2026-08-30 audit's reasoning for rejecting the
+second as a finding (`docs/AUDIT.md` §5), and it was checked by hand, once. The
+checker's second rule -- **the reverse of a declared nesting fails the build** --
+is what keeps it checked.
+
+**There is no runtime lock order check, and adding one is not cheap.**
+`spin_lock` tracks per-CPU nesting depth and saved `RFLAGS.IF` but **no lock
+identity**, so ordering cannot be observed at run time without giving every lock
+an id and every CPU a held-stack: a new subsystem on the hottest path in a kernel
+whose last four SMP defects were found by hanging. The static declaration is the
+half that can be gated today.
+
+---
+
 ## 14. Known architectural gaps
 
 These are design-level, not bugs to be patched in place. Each is tracked in

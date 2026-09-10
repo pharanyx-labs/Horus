@@ -1,0 +1,53 @@
+# The kernel's locks, and every nesting between them that exists on purpose.
+#
+# tools/check_lock_order.py (S88) reads this file and fails the build on a
+# nesting that is not here, and on the REVERSE of one that is. The second rule
+# is the one with teeth: a nesting is not a defect, a CYCLE is, and a declared
+# order is safe exactly while the other direction stays absent.
+#
+# Until 2026-09-10 this order lived in five comments across four files, with no
+# registry and nothing that could fail. Two of them were in the same file and
+# disagreed about the same pair of locks -- see the `endpoint_lock -> cap_lock`
+# entry below, which records how that happened.
+
+locks:
+  - scheduler_lock     # src/kernel/scheduler.c
+  - page_lock          # src/kernel/scheduler.c (the pager's structures)
+  - cap_lock           # src/kernel/scheduler.c (every cspace)
+  - endpoint_lock      # src/kernel/scheduler.c; taken via ipc_lock()/ipc_unlock()
+  - storage_lock       # src/kernel/scheduler.c
+  - pipe_lock          # src/kernel/pipe.c
+  - untyped_lock       # src/kernel/untyped.c
+  - ata_lock           # src/kernel/ata.c
+  - spawn_stage_lock   # src/kernel/kspawn.c -- the outermost lock in the kernel
+
+nesting:
+  - outer: endpoint_lock
+    inner: cap_lock
+    reason: >-
+      ipc_publish_pending_block mints the one-shot CAP_REPLY under the IPC lock,
+      BEFORE waking the receiver, via cap_install_reply_for. Minting after the
+      wake loses the race against a receiver already running on another CPU:
+      measured at ~33% of sessions with a second CPU loaded, 0% for the control,
+      and invisible on one CPU because there is no second CPU to run the server
+      inside the window. Safe because it is the only direction that exists --
+      no path takes an IPC lock while holding cap_lock, and rule 2 of the
+      checker is what keeps that true rather than a comment saying "keep it
+      that way".
+
+      THE COMMENT THAT DISAGREED. sys_ipc_recv mints AFTER ipc_unlock and its
+      comment says doing otherwise "would create a second lock order between two
+      locks that are otherwise unrelated". That was written 2026-08-10; the
+      nesting above landed 2026-08-11 and made it false the next day. Both
+      paths are still correct -- exactly one of them nests -- but the reason
+      given in the second is not.
+  - outer: endpoint_lock
+    inner: page_lock
+    reason: >-
+      ipc_publish_pending_block calls copy_to_user to deliver the message body,
+      and the user-copy path takes page_lock to fault the destination in. The
+      2026-08-30 audit investigated this pair and rejected it as a finding
+      (docs/AUDIT.md section 5) on the grounds that matter: "checked in the
+      direction that matters: no page_lock holder enters IPC." That argument is
+      about the ABSENCE of the reverse edge, it was checked by hand once, and
+      rule 2 of this checker is what now keeps it checked.

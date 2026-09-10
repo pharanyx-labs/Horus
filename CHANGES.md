@@ -52,6 +52,78 @@ in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **The login banner reports the machine it is running on, instead of a box that says the same
+  four lines on every boot.** neofetch's shape: the Eye of Horus in ASCII on the left, a column
+  of facts on the right, printed by `print_banner()` in `userspace/shell.c`.
+  **Every fact is asked of the running system at print time**, and a fact the shell holds no
+  capability to ask for is left out rather than guessed: uptime (`SYS_CLOCK_GETTIME`, no
+  capability, quantised to a 10 ms tick so the hundredths are exact rather than invented), the
+  tasks this caller may observe (`SYS_GET_TASK_INFO` — labelled *visible*, because a caller
+  holding no `CAP_DEBUG` sees itself and the word stops that reading as a one-task machine), the
+  shell's own pid and the number of capabilities `init` chose to delegate to it, and the
+  watermark of the untyped region every `spawn` is carved out of (`SYS_UNTYPED_INFO` on
+  `CAPSLOT_UNTYPED`). No new syscall and no new grant: a banner is not a reason to widen what
+  the shell may ask.
+  **What is absent is the part worth recording.** CPU count, total RAM, TPM presence and whether
+  measured boot engaged are kernel facts with no ring-3 surface, and adding one is a capability
+  question rather than a decoration question. Storage — persistent versus ephemeral — needs
+  `SYS_STORAGE_INFO`, which answers to `CAP_STORAGE_FORMAT`, a capability only the installer is
+  granted because the survey is the first screen of the call that destroys the volume; the shell
+  is not given it and must not be given it for a banner line. The `DEFECT FLAGS:` list is not
+  repeated: the kernel prints it from a string stamped into `.build-flags`, which forces a
+  rebuild when the flags change, and userspace objects carry no such prerequisite — so a ring-3
+  copy could survive a flagless rebuild and answer `none` for a build carrying one. A second,
+  weaker copy of that line is worse than no copy. Nothing is said about accounts either: this
+  prints *before* authentication, so anything it says is said to an unauthenticated reader.
+  **The marker moved to the first line, and that is a gate requirement rather than a layout
+  taste.** `tools/smoke_test.sh` takes `Horus Secure Microkernel` as its `PASS_MARKER`,
+  `assert_banner_clean()` in `tools/session_test.py` uses it to prove the console has one writer
+  under SMP, and `tools/check_console_timestamps.py` closes its every-line-is-stamped window on
+  it — and nothing the shell prints is stamped, so a banner line above the title lands *inside*
+  that window. Falsified by moving the title down one row and rebuilding:
+  `CONSOLE TIMESTAMPS: FAIL 1 unstamped line(s) and 0 backwards step(s) in 29 boot-log lines`,
+  naming the logo row that had overtaken it; restored, `PASS 28 boot-log lines`. `make smoke`,
+  `make smoke-console-smp` and `make smoke-session` all pass against the new banner with the
+  marker unchanged. The art is ASCII by necessity: `font_8x8` in `src/kernel/terminal.c` has no
+  glyph above 0x7F, and the 80-column cell grid drives the framebuffer console as well as VGA
+  text, so the logo is drawn to 34 columns.
+
+- **`smoke-fb-console-server`'s cleared band had one row of margin, and the banner was taller
+  than that.** The gate reads pixels: ring 3 must have painted near the top *and* a band lower
+  down must be blank, the second being the evidence that `console_server` cleared the kernel's
+  boot log rather than that nothing happened. That band was `y 200-400`, measured on 2026-09-08
+  when the login banner was a four-line box reaching `y 192` — **one row** of margin beneath the
+  session. The new banner reaches `y 299` and put 1281 pixels inside a band asserted to be empty,
+  so CI went red on a gate that was not describing a defect.
+  **The margin was the defect, not the banner.** At one row that band would equally have reddened
+  for a kernel line added before the console handover, which shifts the session down and says
+  nothing about the clear. Re-measured on this tree, both builds, 1024x768 at a 16px cell:
+  `y 200-400` is now 1281 cleared / 11492 not cleared (it no longer separates); `y 320-512` is
+  0 / 10307; **`y 352-512` is 0 / 9116**; `y 384-512` is 0 / 7593. `y 352-512` is chosen: 53
+  pixels (3.3 rows) below the session's deepest ink, and nearly three times the 3217 the old band
+  had on the broken side. Same assertion, more room on both sides.
+  The band is now declared **once**, as `CLEARED_BAND`, and both arms read it — the gate requiring
+  it empty and the control requiring it full — so the pair cannot drift onto different bands and
+  quietly stop being a pair. Falsified in both directions: the control arm passes on the defect
+  build with 9024 pixels in the band, and the assertion is demonstrably able to fail, because the
+  old band on the *fixed* build is exactly the CI red this started from. Recorded with it: the
+  kernel's log ends near `y 512`, so a change that shortens it by eight rows quiets this band on
+  the broken build too and both arms must be re-measured.
+
+### Fixed
+
+- **`site/index.html` told visitors to log in as `root` / `horus`.** The seeded root password is
+  `rootpass` (`set_user_password(0, "rootpass")`, `src/kernel/kusers.c`), which is what
+  `docs/BUILDING.md`, `tools/session_test.py` and the run driver have always used. It was the one
+  instruction on the public page a reader follows literally, sitting next to a transcript proving
+  the machine boots, so a visitor who typed it got `Login incorrect` with no way to tell a wrong
+  page from a broken build. Nothing derives a password, so no `counts:` entry can guard it; the
+  old phrasing is in `.github/doc-claims.yml`'s `forbidden:` ratchet instead, falsified by
+  planting it back (the checker named the line) and kept on one line because that checker matches
+  line by line.
+
 ### Added
 
 - **Falsification suites for three more checkers** — `check_abi_structs.py` (8 arms),

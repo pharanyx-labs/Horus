@@ -104,6 +104,13 @@ def rgb(x, y):
     o = (y * W + x) * 3
     return (px[o], px[o+1], px[o+2])
 
+# The one band both arms of this pair measure: empty when ring 3 cleared the
+# display and painted its session, full of the kernel's boot log when it did not.
+# Declared once so the gate and its control can never drift onto different bands
+# and stop being a pair. Derived by measurement -- the numbers, and why it moved
+# on 2026-09-10, are in the `server` arm below.
+CLEARED_BAND = (352, 512)
+
 # Where the guest drew it: directly below the 80x50 grid, plus the 8px gap the
 # kernel leaves. Both the font height and the scale are read off the guest's own
 # report so this does not have to know either.
@@ -125,14 +132,13 @@ if expect == "server-absent":
             for x in range(0, min(700, W)):
                 if rgb(x, y) != (0, 0, 0): n += 1
         return n
-    # THE BAND IS MEASURED, NOT GUESSED. The kernel's console grid is 80x50 at
-    # 8x8, so it occupies y 0..400 and nothing below that is ever painted by
-    # anyone -- a band chosen there separates nothing, which is what the first
-    # version of this check did. Measured 2026-09-08 on both builds:
-    #   y 200-400:  0 when ring 3 cleared and painted,  3217 when it did not.
-    # That is the discriminator, so that is the band.
-    mid = ink(200, 400)
-    print(f"  non-black pixels in y 200-400: {mid}")
+    # THE BAND IS MEASURED, NOT GUESSED, and it is the SAME band the `server` arm
+    # requires to be empty -- one measurement, two opposite expectations, which is
+    # what makes this pair a pair rather than two checks that happen to disagree.
+    # See the `server` arm below for why it moved from y 200-400 on 2026-09-10 and
+    # for the numbers on both builds.
+    mid = ink(*CLEARED_BAND)
+    print(f"  non-black pixels in y {CLEARED_BAND[0]}-{CLEARED_BAND[1]}: {mid}")
     check("the kernel's boot log is still on the screen", mid > 0)
     check("ring 3 never took the display (it failed its VGA check)",
           b"CONSOLE_SELFTEST: FAIL vga" in open(log, "rb").read())
@@ -159,14 +165,35 @@ if expect == "server":
                 if rgb(x, y) != (0, 0, 0): n += 1
         return n
 
-    # Bands measured on both builds rather than guessed (see the arm below):
-    #   y   0-200:  2073 painted by ring 3   vs 10161 of kernel log
-    #   y 200-400:     0 after the clear      vs  3217 of kernel log
-    top = ink(0, 200)        # the banner and prompt console_server writes
-    mid = ink(200, 400)      # inside the kernel's grid, and blank once cleared
-    print(f"  non-black pixels: {top} in y 0-200, {mid} in y 200-400")
+    # THE CLEARED BAND HAS TO SIT BELOW ANYTHING THE SESSION PAINTS, and on
+    # 2026-09-10 it stopped doing so. It was y 200-400, measured when the login
+    # banner was a four-line box: ring 3 then reached y 192 and the band had ONE
+    # row of margin under it. The neofetch-style banner is fifteen lines with the
+    # blank line and the prompt, reaches y 299, and put 1281 pixels inside a band
+    # asserted to be empty -- a red gate that was not describing a defect. Note
+    # what the old margin means: at one row, the band would equally have reddened
+    # for a kernel line added before the handover, which shifts the session down
+    # without changing anything about the clear.
+    #
+    # Re-measured on this tree, both builds, same host, 1024x768 at a 16px cell:
+    #   band        cleared (server)   not cleared (server-absent)
+    #   y 200-400            1281                    11492   <- no longer separates
+    #   y 320-512               0                    10307
+    #   y 352-512               0                     9116   <- chosen
+    #   y 384-512               0                     7593
+    # 352 is 53 pixels (3.3 rows) below the session's deepest ink, and the broken
+    # build still puts 9116 pixels in the band -- nearly three times the 3217 the
+    # old band had to work with. So this is the same assertion with more room on
+    # both sides, not a softer one. The kernel's log ends near y 512; a change
+    # that shortened it by eight rows would quiet this band on the broken build
+    # too, so re-measure both arms if that log gets materially shorter.
+    top = ink(0, 200)          # the banner console_server writes
+    mid = ink(*CLEARED_BAND)   # inside the kernel's grid, and blank once cleared
+    print(f"  non-black pixels: {top} in y 0-200, "
+          f"{mid} in y {CLEARED_BAND[0]}-{CLEARED_BAND[1]}")
     check("ring 3 painted text near the top", top > 500)
-    check("the display was cleared: y 200-400 is blank", mid == 0)
+    check(f"the display was cleared: y {CLEARED_BAND[0]}-{CLEARED_BAND[1]} is blank",
+          mid == 0)
     sys.exit(fail)
 
 m = re.search(rb"(\d+)x(\d+) font at (\d+)x", open(log, "rb").read())

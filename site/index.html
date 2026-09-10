@@ -1511,6 +1511,14 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             hands part way down that list, so both writers stamp, in one format, from one epoch.
             The real log is readable afterwards with <code>dmesg</code>.
           </p>
+          <p>
+            The banner is not a constant. Everything to the right of the eye is asked of the
+            running kernel when it prints &mdash; uptime, the tasks this caller may observe, the
+            shell&rsquo;s own pid and how many capabilities <code>init</code> chose to delegate to
+            it, and the watermark of the untyped region every <code>spawn</code> is carved out of.
+            Facts the shell holds no capability to ask for are left out rather than guessed at,
+            which is why there is no line here for RAM, CPUs or the disk.
+          </p>
         </div>
 
         <div class="term">
@@ -1526,15 +1534,23 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
 <span class="d">  [console_server] ready (ring-3; owns serial + VGA framebuffer)</span>
   init: starting, launching shell
 
-<span class="b">  +--------------------------------------------+</span>
-<span class="b">  |        Horus Secure Microkernel            |</span>
-<span class="b">  |  capability-based - privilege-separated    |</span>
-<span class="b">  +--------------------------------------------+</span>
+  <span class="b">       _.-------------._</span>            Horus Secure Microkernel
+  <span class="b">    .-'                 `-.</span>         capability-based - privilege-separated
+  <span class="b">  .'      _.-------._      `.</span>       --------------------------------------
+  <span class="b"> /      .'           `.      \</span>      Arch       x86_64
+  <span class="b">|      |     ( o )     |      |___</span>  Uptime     1.57s
+  <span class="b"> \      `.           .'      /</span>      Tasks      5 visible
+  <span class="b">  `.      `-._____.-'      .'</span>       Shell      pid 4, 7 capabilities
+  <span class="b">    `-._               _.-'</span>         Untyped    24K of 3.5M used, 3 objects
+  <span class="b">        `-.._______..-'</span>             Console    ring-3 server
+  <span class="b">           |  \</span>
+  <span class="b">           |   `--.__</span>
+  <span class="b">           |__       _)</span>
 
   horus login: <span class="term__caret"></span></pre>
         </div>
         <p class="cap">
-          Log in as <code>root</code> / <code>horus</code>. Then try <code>ls /bin</code>,
+          Log in as <code>root</code> / <code>rootpass</code>. Then try <code>ls /bin</code>,
           <code>ps</code>, <code>dmesg</code>, <code>man hier</code>, <code>tcc -v</code>, or
           <code>cat /etc/motd | wc -l</code>; the pipeline runs over a real bounded in-kernel
           pipe.

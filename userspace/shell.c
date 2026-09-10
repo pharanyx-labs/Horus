@@ -2852,12 +2852,253 @@ static void do_login(void) {
     }
 }
 
-void _start(void) {
+/* ---- the login banner ------------------------------------------------------
+ *
+ * neofetch's shape: a logo on the left, a column of facts about the running
+ * machine on the right. The logo is the Eye of Horus (wedjat) in ASCII, drawn to
+ * fit the 34 columns left of BANNER_INFO_COL so the fact column still has 44 --
+ * VGA_COLS is 80 and the same cell grid drives the framebuffer console, so
+ * anything wider wraps and the picture comes apart. It is ASCII by necessity and
+ * not by taste: font_8x8 in src/kernel/terminal.c has no glyph above 0x7F, so a
+ * box-drawing character renders as whatever happens to sit at that index.
+ *
+ * EVERY FACT IS ASKED OF THE RUNNING SYSTEM, and a fact the shell cannot get is
+ * left out rather than guessed. That is the whole reason this is worth more than
+ * the box it replaces: a banner that prints a constant tells a reader nothing
+ * about the machine in front of them, and a banner that prints a plausible
+ * constant tells them something false. So:
+ *
+ *   - Uptime, tasks, the shell's own pid/heap/capability count and the untyped
+ *     watermark all come from syscalls this task can already make. Nothing here
+ *     needed a new syscall or a new grant, which matters: a banner is not a
+ *     reason to widen what the shell may ask (CLAUDE.md §1).
+ *   - `Untyped` is labelled untyped and not "Memory" on purpose. It is the
+ *     kernel-object region named by the shell's own CAP_UNTYPED, not the
+ *     machine's RAM, and the shell has no capability that would let it ask about
+ *     the latter. Calling it "Memory" would be a number that looks like a
+ *     different, larger, wrong one.
+ *   - Row counts are read at print time. `Tasks` says "visible" because
+ *     SYS_GET_TASK_INFO answers about what this caller may observe; a caller
+ *     holding no CAP_DEBUG sees itself, and the word stops that reading as a
+ *     machine with one task on it.
+ *
+ * WHAT IS DELIBERATELY ABSENT, and why, so the next person does not re-derive it:
+ *
+ *   - CPU count, total RAM, TPM presence and whether measured boot engaged are
+ *     all kernel facts with no ring-3 surface. Adding one would mean adding a
+ *     syscall, which is a capability question and not a decoration question.
+ *   - Storage (persistent vs ephemeral) needs SYS_STORAGE_INFO, which answers to
+ *     CAP_STORAGE_FORMAT -- a capability only the installer is granted, because
+ *     the survey is the first screen of the call that destroys the volume. The
+ *     shell is not given it and must not be given it for a banner line.
+ *   - The DEFECT FLAGS list is not repeated here. The kernel already prints it
+ *     from a string stamped into .build-flags, which forces a rebuild when the
+ *     flags change; userspace objects carry no such prerequisite (see the
+ *     USERSPACE_CFLAGS notes in the Makefile), so a ring-3 copy could survive a
+ *     flagless rebuild and answer "none" for a build that carries one. A second,
+ *     weaker copy of that line is worse than no copy at all.
+ *   - Nothing about who may log in, and no account count: this prints BEFORE
+ *     authentication, so anything it says is said to an unauthenticated reader.
+ *
+ * THE FIRST LINE CARRIES "Horus Secure Microkernel", contiguously and in one
+ * write. Three things depend on it and none of them are optional:
+ * tools/smoke_test.sh takes it as its PASS_MARKER, assert_banner_clean() in
+ * tools/session_test.py uses it to prove the console has exactly one writer under
+ * SMP, and tools/check_console_timestamps.py closes its "every boot-log line is
+ * stamped" window at it -- the shell's output is not stamped, so any banner line
+ * printed BEFORE the marker would land inside that window and fail the gate as an
+ * unstamped line. Hence the title sits on row 0 beside the top of the logo rather
+ * than under it, which is where neofetch puts it anyway.
+ */
+#define BANNER_INFO_COL 36   /* 34 columns of art + a 2-column gutter */
+
+static const char *const banner_art[] = {
+    "       _.-------------._",
+    "    .-'                 `-.",
+    "  .'      _.-------._      `.",
+    " /      .'           `.      \\",
+    "|      |     ( o )     |      |___",
+    " \\      `.           .'      /",
+    "  `.      `-._____.-'      .'",
+    "    `-._               _.-'",
+    "        `-.._______..-'",
+    "           |  \\",
+    "           |   `--.__",
+    "           |__       _)",
+};
+#define BANNER_ART_ROWS ((int)(sizeof(banner_art) / sizeof(banner_art[0])))
+
+/* Append to a bounded buffer, returning the new length. `max` is the buffer
+ * size; the terminator is always written by the caller once. Returning the
+ * offset rather than taking a cursor pointer keeps every call a single
+ * expression, which is what makes the row builders below readable. */
+static int b_str(char *d, int n, int max, const char *s) {
+    while (*s && n < max - 1) d[n++] = *s++;
+    return n;
+}
+
+static int b_u32(char *d, int n, int max, uint32_t v) {
+    char t[12];
+    cv_u32(t, v);
+    return b_str(d, n, max, t);
+}
+
+/* A neofetch fact row: an 11-column label, then the value. Fixed-width via the
+ * same padding discipline as `ls -l` and `ps` -- hand-counted spaces are what
+ * let those two drift out of column. */
+static int b_label(char *d, int n, int max, const char *label) {
+    int start = n;
+    n = b_str(d, n, max, label);
+    while (n < start + 11 && n < max - 1) d[n++] = ' ';
+    return n;
+}
+
+#define BANNER_INFO_ROWS 9
+#define BANNER_INFO_MAX  48   /* 80 - BANNER_INFO_COL, plus room for the NUL */
+
+static void print_banner(void) {
+    char info[BANNER_INFO_ROWS][BANNER_INFO_MAX];
+    int  rows = 0;
+    int  n;
+
+    /* Row 0 must be the marker, contiguous and first (see the note above). The
+     * first three rows are unconditional and BANNER_INFO_ROWS is sized for the
+     * full set, so the `rows < BANNER_INFO_ROWS` guard on every optional row
+     * below can never fire today. It is there because the next row somebody adds
+     * is the one that would overflow this array silently, and a banner is
+     * exactly the kind of code that gets one line appended without a recount. */
+    for (int i = 0; i < BANNER_INFO_ROWS; i++) info[i][0] = 0;
+
+    n = b_str(info[rows], 0, BANNER_INFO_MAX, "Horus Secure Microkernel");
+    info[rows][n] = 0; rows++;
+    n = b_str(info[rows], 0, BANNER_INFO_MAX, "capability-based - privilege-separated");
+    info[rows][n] = 0; rows++;
+    n = b_str(info[rows], 0, BANNER_INFO_MAX, "--------------------------------------");
+    info[rows][n] = 0; rows++;
+
+    /* Arch is the one compile-time fact here, and it is one the build cannot get
+     * wrong: userspace is built -m64 and the kernel refuses to start without long
+     * mode, so there is no configuration in which this string is a guess. */
+    n = b_label(info[rows], 0, BANNER_INFO_MAX, "Arch");
+    n = b_str(info[rows], n, BANNER_INFO_MAX, "x86_64");
+    info[rows][n] = 0; rows++;
+
+    /* Uptime. SYS_CLOCK_GETTIME needs no capability and is quantised to a 10 ms
+     * PIT tick, so hundredths are exact and anything finer would be invented.
+     * Printed at THIS moment it is also the time the machine took to reach a
+     * ring-3 login, which is the number a reader of a boot banner wants. */
+    {
+        struct horus_timespec ts;
+        if (rows < BANNER_INFO_ROWS &&
+            sys_clock_gettime(HORUS_CLOCK_MONOTONIC, &ts) == 0) {
+            n = b_label(info[rows], 0, BANNER_INFO_MAX, "Uptime");
+            if (ts.sec >= 60) {
+                n = b_u32(info[rows], n, BANNER_INFO_MAX, (uint32_t)(ts.sec / 60));
+                n = b_str(info[rows], n, BANNER_INFO_MAX, "m ");
+                n = b_u32(info[rows], n, BANNER_INFO_MAX, (uint32_t)(ts.sec % 60));
+                n = b_str(info[rows], n, BANNER_INFO_MAX, "s");
+            } else {
+                uint32_t cs = ts.nsec / 10000000u;   /* exact: nsec is a multiple */
+                n = b_u32(info[rows], n, BANNER_INFO_MAX, (uint32_t)ts.sec);
+                n = b_str(info[rows], n, BANNER_INFO_MAX, ".");
+                if (cs < 10) n = b_str(info[rows], n, BANNER_INFO_MAX, "0");
+                n = b_u32(info[rows], n, BANNER_INFO_MAX, cs);
+                n = b_str(info[rows], n, BANNER_INFO_MAX, "s");
+            }
+            info[rows][n] = 0; rows++;
+        }
+    }
+
+    /* Tasks, and this shell's own row, from one pass over the table `ps` reads. */
+    {
+        int mypid = sys_getpid();
+        int live = 0, have_self = 0;
+        struct task_info self;
+        for (int i = 0; i < 16; i++) {
+            struct task_info ti;
+            if (sys_get_task_info(i, &ti) != 0 || ti.state == 0) continue;
+            live++;
+            if ((int)ti.id == mypid) { self = ti; have_self = 1; }
+        }
+        if (rows < BANNER_INFO_ROWS && live > 0) {
+            n = b_label(info[rows], 0, BANNER_INFO_MAX, "Tasks");
+            n = b_u32(info[rows], n, BANNER_INFO_MAX, (uint32_t)live);
+            n = b_str(info[rows], n, BANNER_INFO_MAX, " visible");
+            info[rows][n] = 0; rows++;
+        }
+        /* The shell's own row. Its heap is deliberately not here: nothing has
+         * allocated yet at banner time, so the number is 0 on every boot, and a
+         * column that is always zero is decoration rather than a fact. The
+         * capability count is the opposite -- it is exactly the authority `init`
+         * chose to delegate to this task, and it changes when that choice does. */
+        if (rows < BANNER_INFO_ROWS && have_self) {
+            n = b_label(info[rows], 0, BANNER_INFO_MAX, "Shell");
+            n = b_str(info[rows], n, BANNER_INFO_MAX, "pid ");
+            n = b_u32(info[rows], n, BANNER_INFO_MAX, self.id);
+            n = b_str(info[rows], n, BANNER_INFO_MAX, ", ");
+            n = b_u32(info[rows], n, BANNER_INFO_MAX, self.caps_in_use);
+            n = b_str(info[rows], n, BANNER_INFO_MAX, " capabilities");
+            info[rows][n] = 0; rows++;
+        }
+    }
+
+    /* The untyped region the shell's own CAP_UNTYPED names -- the budget every
+     * `spawn` from this shell is carved out of. Omitted entirely, rather than
+     * shown as zero, if the capability is absent: a zero would read as a machine
+     * out of memory instead of a shell that was never given the authority. */
+    {
+        struct untyped_info ui;
+        /* The 4 GiB bound is not a guess about the machine: human_size() takes a
+         * uint32_t, and a silent truncation here would print a small, confident,
+         * wrong number for a large region. Refuse the row instead. */
+        if (rows < BANNER_INFO_ROWS &&
+            sys_untyped_info(CAPSLOT_UNTYPED, &ui) == 0 &&
+            ui.size > 0 && ui.size <= 0xFFFFFFFFull) {
+            char used[8], total[8];
+            human_size((uint32_t)ui.watermark, used);
+            human_size((uint32_t)ui.size, total);
+            n = b_label(info[rows], 0, BANNER_INFO_MAX, "Untyped");
+            n = b_str(info[rows], n, BANNER_INFO_MAX, used);
+            n = b_str(info[rows], n, BANNER_INFO_MAX, " of ");
+            n = b_str(info[rows], n, BANNER_INFO_MAX, total);
+            n = b_str(info[rows], n, BANNER_INFO_MAX, " used, ");
+            n = b_u32(info[rows], n, BANNER_INFO_MAX, ui.objects);
+            n = b_str(info[rows], n, BANNER_INFO_MAX, " objects");
+            info[rows][n] = 0; rows++;
+        }
+    }
+
+    /* Who owns the console hardware. SYS_CONSOLE_OWNED is read-only status and
+     * self-authorising, and the answer is a real architectural fact about this
+     * boot: the driver for the wire this text is arriving on is either a ring-3
+     * task or the kernel, and the smoke gates care which. */
+    if (rows < BANNER_INFO_ROWS) {
+        n = b_label(info[rows], 0, BANNER_INFO_MAX, "Console");
+        n = b_str(info[rows], n, BANNER_INFO_MAX,
+                  sys_console_owned() == 1 ? "ring-3 server" : "in-kernel");
+        info[rows][n] = 0; rows++;
+    }
+
     println("");
-    println("  +--------------------------------------------+");
-    println("  |        Horus Secure Microkernel            |");
-    println("  |  capability-based - privilege-separated    |");
-    println("  +--------------------------------------------+");
+    for (int r = 0; r < BANNER_ART_ROWS || r < rows; r++) {
+        char line[BANNER_INFO_COL + BANNER_INFO_MAX];
+        int  len = 0;
+
+        if (r < BANNER_ART_ROWS)
+            len = b_str(line, 0, (int)sizeof(line), banner_art[r]);
+
+        if (r < rows && info[r][0]) {
+            while (len < BANNER_INFO_COL && len < (int)sizeof(line) - 1)
+                line[len++] = ' ';
+            len = b_str(line, len, (int)sizeof(line), info[r]);
+        }
+        line[len] = 0;
+        println(line);   /* ONE write per row: row 0 carries the gated marker */
+    }
+}
+
+void _start(void) {
+    print_banner();
 
     do_login();
 

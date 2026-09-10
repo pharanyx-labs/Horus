@@ -477,7 +477,10 @@ in this file.
   `SDHCI_WRITE_NO_FLUSH=1` exists and is **deliberately not gated**: measured 2026-09-07, QEMU's
   `sd-card` completes a write synchronously, so both the round trip and the host-side check pass
   with the flush removed and there is no window for the race the flag creates. A control arm that
-  cannot fail cannot gate -- the same call `NET_NO_BUSMASTER` got, for the same reason. It is kept
+  cannot fail cannot gate -- the same call `SPAWN_STAGE_UNSERIALISED` got, for the same reason.
+  (That measurement was retaken on 2026-09-10 with the flag actually wired, since until then it
+  defined a macro nothing read; the answer held. `NET_NO_BUSMASTER` was the comparison here until
+  the same sweep turned it into a gate.) It is kept
   because a real card does hold DAT0 low while programming.
   Still no `block_device` registration: that touches the installer's device enumeration, which is
   the path S83 is about, and belongs in a change of its own.
@@ -595,6 +598,35 @@ in this file.
   the 2026-07 audit that asked for the move.
 
 ### Fixed
+
+- **Fourteen documentation claims the tree had moved past**, found by an audit of every
+  non-historical doc and the public site against the code. The house rule decided each one: where
+  they disagree, the code is the truth.
+  Four were **claims the code contradicts**. `docs/SYSCALLS.md` carried **[I-2]** as open ("both
+  currently perform 32-bit arithmetic on 64-bit heap bounds") 27 days after `h_sbrk`/`h_brk`
+  became 64-bit end to end -- one finding ID with two statuses in one tree, which is the exact
+  defect CLAUDE.md §3 exists to catch. `docs/LIMITATIONS.md` §4 advertised "a DMA-capable device
+  can read all of physical memory" and "no drivers, no stack, no sockets" while §2.12 and §2.14 of
+  the **same file** recorded VT-d (S45) and `netd`; §4 also listed mount points as absent while
+  §2.7 is written about the mount namespace.
+  Three were **counts of retired things**: `README.md` and §1.6 still named `SYS_SYSINFO` among
+  the ungated console paths (retired 2026-08-23, and the ship kernel answers `SYS_ERR_NOSYS`), and
+  the site said four syscalls were retired where six were.
+  Four were on **the public site**, in one `<tbody>` where a reader sees both rows: "no `fork`"
+  beside the row describing `fork`'s copy-on-write clone, "no `clock_gettime`" beside the
+  monotonic clock, "every binary statically links newlib" beside the shared libc, and "no drivers,
+  no stack, no sockets" beside `netd`. The superseded rows are gone; the newer ones already said
+  the true thing. A fifth site row rendered its witness cell as a bare semicolon.
+  The rest: `docs/ROADMAP.md` named `CAP_OBJECT_STORE`, a capability type that exists nowhere (it
+  is `CAP_ENCRYPTED_STORAGE`); §6's completeness table called networking 0% and said `tasks[]`
+  still had to leave `.bss`, which happened on 2026-08-30; the site's syscall-coverage paragraph
+  contradicted itself seven lines apart (96 against 76) and named the pipe family as an easy gap
+  after it was covered; and `src/kernel/kusers.c` told the reader accounts last only until reboot,
+  which S62 made false on 2026-08-31.
+  **Four of the corrected wordings are now in `.github/doc-claims.yml`'s `forbidden:` ratchet**,
+  and each was falsified by planting it back. The first version of the fourth could never have
+  fired: the checker matches line by line and the pattern spanned a newline, so it was re-anchored
+  on the enumeration's comma form and re-tested.
 
 - **A boot with a deliberately corrupted disk did not say so** (`Makefile`, `docs/BUILDING.md`).
   `USERS_TAMPER_INJECT=1` flips a byte inside the sealed user table on the platter, raw, before it

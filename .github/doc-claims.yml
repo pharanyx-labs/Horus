@@ -251,6 +251,40 @@ counts:
         pattern: 'make smoke-captest\s+<span class="c"># (\d+) capability checks'
 
 forbidden:
+  - pattern: 'A DMA-capable device can read all of physical memory'
+    reason: >-
+      docs/LIMITATIONS.md section 4's IOMMU bullet, and false since 2026-08-28.
+      VT-d is brought up before any ring-3 task and a device's address space
+      starts EMPTY (SECURITY.md S45, witness make smoke-net); section 2.12 of the
+      SAME file recorded the closure while section 4 went on advertising the
+      hole. Corrected 2026-09-10 by the docs audit. The residue that IS true --
+      no DMAR means iommu_active() is 0, and interrupt remapping is still off --
+      lives in 2.12 and is stated there rather than as a blanket.
+  - pattern: '\*\*Networking\.\*\* No drivers, no stack, no sockets'
+    reason: >-
+      The same section's networking bullet, false since 2026-08-28: netd is a
+      ring-3 e1000 driver that completes a DMA round trip on the wire, gated by
+      make smoke-net (S44/S45), and section 2.14 of the same file describes it.
+      What is true is narrower and is now what the bullet says: nothing above
+      Ethernet. Corrected 2026-09-10.
+  - pattern: 'Both currently perform 32-bit arithmetic on 64-bit heap bounds'
+    reason: >-
+      docs/SYSCALLS.md's sbrk/brk note, carrying [I-2] as OPEN since it was fixed
+      on 2026-08-13. h_sbrk and h_brk are 64-bit end to end with the overflow
+      check ahead of the range test; LIMITATIONS 2.1 and ROADMAP 1.5 both said
+      so. A finding ID with two statuses in one tree is the exact defect
+      CLAUDE.md section 3 exists to catch. Corrected 2026-09-10.
+  - pattern: 'fd 1, `SYS_READ` fd 0'
+    reason: >-
+      README's ambient-path claim, which enumerated THREE by listing SYS_WRITE,
+      SYS_READ and SYS_SYSINFO. Anchored on the comma form of the enumeration
+      rather than on the word "Three", which sat alone on its own line: this
+      checker matches line by line, so a pattern spanning the newline could never
+      fire -- measured, on the first version of this entry.
+      SYS_SYSINFO was retired on 2026-08-23 and
+      lives only under LEGACY_SYSCALLS_PRESENT=1; the ship kernel answers
+      SYS_ERR_NOSYS and userspace/passwdprobe.c asserts it. Two remain, both
+      console: SYS_WRITE fd 1 and SYS_READ fd 0. Corrected 2026-09-10.
   - pattern: 'What is still not gated is a persistent disk under the policy'
     reason: >-
       docs/LIMITATIONS.md 2.9's open remainder, carried from 2026-08-23 and true

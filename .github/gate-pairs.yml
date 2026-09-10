@@ -159,6 +159,7 @@ control_arms:
   smoke-measured-boot-required-volume-control: smoke-measured-boot-required
   smoke-measured-persist-control: smoke-measured-persist
   smoke-net-decode-control: smoke-net
+  smoke-net-busmaster-control: smoke-net
   smoke-net-iommu-control: smoke-net
   smoke-net-irq-storm-control: smoke-net
   smoke-net-mask-control: smoke-net

@@ -545,10 +545,24 @@ static int sd_write_block(uint64_t bar, uint64_t lba, const void *buf, int is_hc
  * block device cannot silently inherit "durability not implemented" while the
  * journal keeps advertising crash atomicity. */
 static int sd_flush(uint64_t bar) {
+#ifdef SDHCI_WRITE_NO_FLUSH
+    /* CONTROL ARM -- never ship. The wait is gone, so a write reports success
+     * while the card is still programming: a power cut in that window loses data
+     * the journal was told was durable.
+     *
+     * IT WAS DEFINED AND UNREAD UNTIL 2026-09-10. The Makefile added
+     * -DSDHCI_WRITE_NO_FLUSH and nothing tested it, so the arm built an
+     * identical kernel -- and the measurement recorded against it ("QEMU's
+     * sd-card completes a write synchronously, so both checks pass with the
+     * flush removed") was taken on a build where the flush was still there. */
+    (void)bar;
+    return 0;
+#else
     for (uint32_t i = 0; ; i++) {
         if ((sdhci_read32(bar, SDHCI_PRESENT_STATE) & PSTATE_DAT_INHIBIT) == 0) return 0;
         if (i >= SDHCI_SPINS) return -1;
     }
+#endif
 }
 
 /* The controller, if the machine has one.

@@ -5,7 +5,7 @@ All notable changes to Horus are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it has a public ABI to break.
 
 **The reasoning behind these lines is in
-[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 141 entries recording what was
+[`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md)**: 142 entries recording what was
 tried, what failed, and how each measurement was taken. In a security project that record is
 evidence, not commentary, so it is kept in full rather than compressed away. Entries here cite
 finding IDs; their **current** status is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), never
@@ -562,6 +562,34 @@ in this file.
   the 2026-07 audit that asked for the move.
 
 ### Fixed
+
+- **Two defect flags defined a macro that nothing read, and both had measurements recorded
+  against them** (`userspace/netd.c`, `src/kernel/sdhci.c`, `tools/check_defect_flags.py`).
+  `NET_NO_BUSMASTER` (since 2026-08-28) and `SDHCI_WRITE_NO_FLUSH` (since 2026-09-07) each had a
+  Makefile block adding `-DFLAG` to the compiler line, a row in the defect-flag table, and **no
+  source file that tested them**. Building with either produced a byte-identical, defect-free
+  system -- so both arms ran, passed, and were written up as *"measured: the defect does not
+  reproduce on this emulator"*. That is a sentence about QEMU which was really a sentence about a
+  macro nobody read.
+  Both are wired now, and **the two re-measurements differ, which is the whole argument for
+  checking this**. `NET_NO_BUSMASTER` reproduces immediately: QEMU's e1000 checks the bus-master
+  bit on the RECEIVE path (`e1000x_rx_ready`), so the descriptor ring is never read back and the
+  round trip never completes. It becomes a gate -- `make smoke-net-busmaster-control`, `NETTEST:
+  FAIL dma-never-completed`, with `smoke-net` red under the same flag. The record it replaces was
+  wrong in both halves: it cited virtio, on a tree whose driver is an e1000, and it cited an arm
+  that did nothing. `SDHCI_WRITE_NO_FLUSH` still cannot fail on QEMU, whose `sd-card` completes a
+  write synchronously, so it stays ungated -- with a reason that is now true.
+  **The ratchet is rule 3 of `tools/check_defect_flags.py`**: every `DEFECT_FLAGS` member must be
+  read by a source `#ifdef`, a cargo feature, a host tool, or a declared build-level effect that
+  names what consumes it. Seven flags carry such a declaration (the grub root line, the
+  `.build-flags` prerequisite, `-DMETA_CACHE_LINES=2`, `MKHEADERED_SKEW`, a cargo feature, a shell
+  script, and the coverage instrumentation), and dropping one makes its flag a finding -- an arm
+  in the new self-test, because an exemption nobody has watched fire is a line of configuration
+  rather than a decision. The code and tool corpora are scanned **separately**: the first draft
+  merged them, and the self-test's own quotation of `#elif defined(NET_NO_BUSMASTER)` then
+  satisfied the rule for a tree where the flag had been un-wired. That arm reported NOT CAUGHT,
+  which is how the split came to exist.
+  `tools/check_defect_flags.py` had no self-test until now; it has seven arms.
 
 - **A program image could read past its own bytes into the shared staging buffer** (S84;
   `src/kernel/loader.c`, `src/kernel/kspawn.c`). The ELF loader stages every image in

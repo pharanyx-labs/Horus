@@ -273,8 +273,19 @@ void _start(void) {
      * can reach. Both call sites below carry it -- the rewrite from virtio to
      * e1000 dropped the ifdef once, the arm silently stopped being wired, and the
      * gate went green for the wrong reason. */
-#ifdef NET_NO_DECODE
+#if defined(NET_NO_DECODE)
     if (sys_device_enable(NIC_SLOT, 0) != 0) {
+#elif defined(NET_NO_BUSMASTER)
+    /* NET_NO_BUSMASTER withholds the bus-master bit ALONE: decode stays on, so
+     * the register file answers and every configuration read below still works.
+     * The flag has existed since 2026-08-28 and until 2026-09-10 NOTHING READ IT
+     * -- the Makefile added -DNET_NO_BUSMASTER to USERSPACE_CFLAGS and no source
+     * file tested it, so the arm built an identical driver. The measurement
+     * recorded against it ("QEMU does not enforce the bit for virtio-net") was
+     * therefore taken on a build where the flag did nothing, and it was about a
+     * driver this tree no longer has. See the comment at the second call site
+     * for what the bit actually costs on the e1000. */
+    if (sys_device_enable(NIC_SLOT, DEV_ENABLE_MEM) != 0) {
 #else
     if (sys_device_enable(NIC_SLOT, DEV_ENABLE_MEM | DEV_ENABLE_BUSMASTER) != 0) {
 #endif
@@ -342,8 +353,15 @@ void _start(void) {
      *
      * Re-asserting is cheap, idempotent, and the honest response to "a device
      * reset may clear state the driver set before it". */
-#ifdef NET_NO_DECODE
+#if defined(NET_NO_DECODE)
     if (sys_device_enable(NIC_SLOT, 0) != 0) {
+#elif defined(NET_NO_BUSMASTER)
+    /* And here too, for the reason the paragraph above gives about the RESET:
+     * an arm wired at one of two call sites is an arm that reproduces nothing
+     * once the device clears what the first site set. NET_NO_DECODE says the
+     * same thing three lines up, and it says it because that is how it was
+     * broken once. */
+    if (sys_device_enable(NIC_SLOT, DEV_ENABLE_MEM) != 0) {
 #else
     if (sys_device_enable(NIC_SLOT, DEV_ENABLE_MEM | DEV_ENABLE_BUSMASTER) != 0) {
 #endif

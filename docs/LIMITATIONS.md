@@ -1727,9 +1727,14 @@ stays legible.
   (**S44**), which sets the three decode bits of the device a capability names and nothing else
   in configuration space. The DMA question above was answered rather than inherited: the
   capability decides **who** may turn bus mastering on and **for which device**, and the first
-  bullet is what it still cannot decide. Note one measured caveat; QEMU does not enforce the
-  bus-master bit for virtio-net, so on this emulator the bit is not what permits the DMA; `netd`
-  sets it because real hardware requires it, and no gate can witness that half here.
+  bullet is what it still cannot decide. **That caveat was wrong, and the way it was wrong is the lesson.** It read: QEMU does not
+  enforce the bus-master bit for virtio-net, so on this emulator the bit is not what permits the
+  DMA and no gate can witness that half here. Two things had moved underneath it -- the driver is
+  an **e1000** now, and QEMU checks the bit on that device's RECEIVE path -- and the arm that
+  "measured" it, `NET_NO_BUSMASTER=1`, **defined a macro no source file read** from 2026-08-28 to
+  2026-09-10, so what was measured was the base build. Wired, it reproduces at once, and
+  `make smoke-net-busmaster-control` is the gate that half now has (`NETTEST: FAIL
+  dma-never-completed`).
 - **A driver cannot learn a bus address without a device capability**, and that is deliberate
   rather than missing: `SYS_DMA_ADDR` requires the frame capability *and* a device capability. A
   physical address is a disclosure, and the two-capability rule makes it a disclosure to somebody

@@ -83,6 +83,13 @@ in this file.
   *(A second defect surfaced in the falsification harness itself: it restored the file an arm
   had edited with `git checkout --`, which restores from the index and **silently discarded
   the unstaged fix arm 9 exists to test**. It now restores from a copy taken at startup.)*
+  **It then failed a second time, differently.** With the toolchain present, `make -n` on an
+  unbuilt tree prints **nine** `ld` lines — the userspace `.bin` links as well as `kernel.elf` —
+  and the parser took objects from all of them, so `userspace/init.o`, `shell.o`, `captest.o`
+  and the AP trampoline were reported as unclassified ring-0 code. A built tree prints one,
+  which is why it passed locally both times: **the tree being measured was not the tree the
+  gate measures**. The parse now selects the line whose output is `kernel.elf`, and is split
+  into a function fed synthetic input so arm 10 tests it without depending on build state.
 - **Roadmap 2.7a and `ARCHITECTURE.md` §14 G-14: the in-kernel services, which were tracked
   nowhere.** 2.6 tracks the network stack and 2.7 the drivers, both ◧. Nothing tracked
   `storage.c` (2,500 code lines — encrypted object store *and* on-disk filesystem, WAL, Merkle,

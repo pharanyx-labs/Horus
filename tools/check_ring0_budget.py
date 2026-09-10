@@ -46,6 +46,32 @@ MANIFEST = ROOT / ".github" / "ring0-classification.yml"
 CLASSES = ("core", "driver", "service", "selftest")
 
 
+def objects_from_make_output(text):
+    """The objects on the link line for kernel.elf, and no others.
+
+    NOT every line starting with `ld `. On a tree with nothing built -- which is
+    every CI runner -- `make -n` also prints the userspace .bin links, NINE `ld`
+    lines in total, and a filter on the prefix alone scoops up userspace/init.o,
+    shell.o, captest.o and the AP trampoline as though they were ring 0.
+
+    Locally those lines are absent, because the artefacts already exist. That is
+    exactly why the first version passed here and failed on CI twice: the tree I
+    measured was not the tree the gate measures. Split out from the subprocess
+    call so it can be falsified against synthetic input rather than only against
+    whatever state the working tree happens to be in.
+    """
+    for line in text.splitlines():
+        if not line.startswith("ld "):
+            continue
+        toks = line.split()
+        if "-o" not in toks:
+            continue
+        if pathlib.PurePath(toks[toks.index("-o") + 1]).name != "kernel.elf":
+            continue
+        return [t for t in toks if t.endswith(".o")]
+    return []
+
+
 def linked_sources():
     """The sources behind every object on kernel.elf's link line.
 
@@ -56,8 +82,14 @@ def linked_sources():
     """
     proc = subprocess.run(["make", "-n", "kernel.elf"], cwd=ROOT,
                           capture_output=True, text=True)
-    objs = [t for line in proc.stdout.splitlines() if line.startswith("ld ")
-            for t in line.split() if t.endswith(".o")]
+    # THE LINK LINE FOR kernel.elf, not every `ld` the recipe prints. On a tree
+    # with nothing built -- which is every CI runner -- `make -n` also prints the
+    # userspace .bin links, nine `ld` lines in total, and a filter on "ld " alone
+    # scoops up userspace/init.o, shell.o, captest.o and the AP trampoline as
+    # though they were ring 0. Locally those lines are absent because the
+    # artefacts already exist, which is exactly why this passed here and failed
+    # there: the tree I measured was not the tree the gate measures.
+    objs = objects_from_make_output(proc.stdout)
     if not objs:
         # STDERR IS THE DIAGNOSIS, and the first version of this file threw it
         # away. On CI it resolved zero sources and could say only that -- true,

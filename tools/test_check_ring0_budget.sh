@@ -104,8 +104,14 @@ arm "7" "an unknown class name" \
 #      Here `make` SUCCEEDS and this file's own parser is what has gone quiet,
 #      so there is no stderr to report -- and saying so is the honest answer,
 #      distinct from arm 9's, where make itself refused.
+#      The mutation VERIFIES ITSELF. `sed` exits 0 when it matches nothing, so a
+#      mutation whose anchor has moved leaves the file untouched and the arm
+#      reports NOT CAUGHT for a reason that has nothing to do with the rule --
+#      which is what happened when the parser was extracted into its own
+#      function and this anchor moved with it.
 arm "8" "a parser that stops matching fails rather than passing vacuously" \
-    "sed -i 's|if line.startswith(\"ld \")|if line.startswith(\"NOPE \")|' tools/check_ring0_budget.py" \
+    "sed -i 's|startswith(\"ld \")|startswith(\"NOPE \")|' tools/check_ring0_budget.py
+     grep -q 'startswith(\"NOPE \")' tools/check_ring0_budget.py" \
     caught "no error explaining why"
 
 # ---- ARM 9, added after this checker failed on CI and could not say why. The
@@ -116,6 +122,27 @@ arm "8" "a parser that stops matching fails rather than passing vacuously" \
 #      case it goes red; here the evidence is make's stderr.
 ARM_NO_CARGO=1 arm "9" "an unparseable Makefile is reported WITH the reason make gave" \
     "true" caught "cargo not found"
+
+# ---- ARM 10, the regression test for the second CI failure. On an unbuilt tree
+#      `make -n` prints NINE `ld` lines -- the userspace .bin links as well as
+#      kernel.elf -- and the first parser took objects from all of them, so
+#      userspace/init.o and friends were reported as unclassified ring-0 code.
+#      It passed locally only because a built tree prints one. Fed synthetic
+#      input here rather than a build state, so the arm tests the parser instead
+#      of testing which artefacts happen to exist.
+printf '  10: '
+if ( cd "$ROOT" && python3 - <<'PYEOF'
+import importlib.util, sys
+sp = importlib.util.spec_from_file_location("m", "tools/check_ring0_budget.py")
+m = importlib.util.module_from_spec(sp); sp.loader.exec_module(m)
+sample = """ld -m elf_x86_64 -pie --gc-sections -T userspace/pie.ld -o userspace/init.bin userspace/init.o userspace/libhorus.o
+ld -T linker64.ld -m elf_x86_64 -o kernel.elf --whole-archive rust/x.a --no-whole-archive src/kernel/main.o src/kernel/idt.o
+ld -m elf_x86_64 -pie -o userspace/shell.bin userspace/shell.o"""
+got = m.objects_from_make_output(sample)
+sys.exit(0 if got == ["src/kernel/main.o", "src/kernel/idt.o"] else 1)
+PYEOF
+); then echo "clean, correctly -- userspace ld lines are not ring 0"; PASSES=$((PASSES+1))
+else echo "WRONG -- the parser took objects from a non-kernel.elf ld line"; FAILS=$((FAILS+1)); fi
 
 # Arm 8 edits the checker itself, so it is restored from a COPY taken at
 # startup -- never with `git checkout --`, which restores from the index and

@@ -49,9 +49,21 @@ void syscall_handler64(void)
  * answers a different question (do not race the owner), and a question about
  * racing is not an answer about authority.
  *
- * `cap_lookup` does not test type -- by design, it is the rights-and-liveness
- * check -- so every caller must, and the five call sites in this tree that did
- * not were found by looking for exactly that. */
+ * HOW THE FIVE WERE FOUND, and why that sentence no longer describes the tree:
+ * `cap_lookup` used to take only `(slot, required_rights)`. Type was every
+ * caller's job, five call sites were not doing it, and looking for exactly that
+ * omission is what found them. Since 2026-08-31 the primitive takes an expected
+ * type itself (S60) -- the line directly below passes CAP_CONSOLE -- so the
+ * class cannot recur by omission. The finding is kept because the METHOD still
+ * applies: a check whose subject every caller must remember is a check that some
+ * caller will forget, and the repair is to move it into the primitive rather
+ * than to audit the callers again.
+ *
+ * The type argument is necessary and not sufficient. A typed lookup on a slot
+ * every task already holds still cannot fail -- kshell.c's `clear` tested
+ * CAP_FRAME on slot 3 and admitted everyone until 2026-09-10, and the type made
+ * it read MORE like enforcement. S28 is about which capability, not which
+ * type. */
 static void h_get_line(struct interrupt_frame64 *r) {
     struct capability *c = cap_lookup(CAPSLOT_CONSOLE, CAP_CONSOLE, CAP_RIGHT_READ);
     if (!c) {

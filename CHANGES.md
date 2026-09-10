@@ -52,6 +52,62 @@ in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Two vacuous slot-3 gates in `src/kernel/kshell.c`, and the checker that could not see
+  them.** The `clear` and `load` debug-shell commands authorised on
+  `cap_lookup(CAPSLOT_FRAME, CAP_FRAME, ...)` — cspace slot 3, which `create_task` installs in
+  **every** task with `READ|WRITE|EXEC`. By **S28** that is not a gate: it could not fail for
+  anybody. `load` then called `has_console_cap()` on the next line, so the decoy test's only
+  effect was to print *"Permission denied (need FRAME cap slot 3)"*, **naming a requirement
+  that did not exist**.
+  **Adding the type argument (S60) had made both lines read *more* like enforcement while
+  changing nothing**, because the decoy has exactly that type. S28 is about *which capability*,
+  not which type — and that is the trap, because a typed lookup looks checked.
+  **It was not ring-0-only.** `SYS_DEBUG_EXEC` (7) is `SC_NONE` — no capability at all — and
+  reaches `process_user_command` from ring 3 in any `DEBUG_SHELL` build, resolving against the
+  **caller's** cspace, which always holds slot 3. Not a ship-build hole (the dispatch entry does
+  not exist there) but a check that reads as enforcement while admitting everyone is the harm
+  `docs/LIMITATIONS.md` §1.6b records.
+  `clear` now asks `has_console_cap()`, like the six commands around it; the in-kernel shell is
+  unaffected because `main.c` does `set_current_task(0)` immediately before
+  `shell_prompt_loop()`, and `cap_lookup` resolves task 0 against `root_cnode`, whose slot 8 is
+  a `CAP_CONSOLE`. `load`'s decoy test is **deleted rather than replaced**: the real gate was
+  already the next line, and re-gating it on `CAP_UNTYPED` would duplicate the authority
+  `spawn_untyped_region` already charges (**S57**) — two descriptions of one quantity, the
+  **[H-3]** shape.
+- **A comment in `src/kernel/syscall.c` that S60 had made false.** It told the reader
+  *"`cap_lookup` does not test type — by design ... so every caller must"*, with the line
+  directly beneath it passing `CAP_CONSOLE`. Rewritten to keep the finding it records (five call
+  sites that omitted the type, and the method that found them) while stating what is true now,
+  plus the part the fix does not cover: a *typed* lookup on a slot every task holds still cannot
+  fail.
+
+### Added
+
+- **`tools/check_dispatch_gates.py` rule 3: the dispatch table is not the only place a gate
+  lives.** A literal slot-3 `cap_lookup` anywhere in `src/kernel/` must now be behind a macro
+  absent from the ship build, or declared in `.github/slot3-lookups.yml` with the reason it
+  never refuses. After the fix: three behind control arms, two declared
+  (`sys_ipc_send`/`sys_ipc_recv`, the snapshot/revalidate pair `docs/AUDIT.md` §5 investigated
+  and rejected as a finding). **Exemptions are per (file, symbol), not per file** — a per-file
+  entry would licence the next slot-3 lookup added to `syscall_ipc.c`, which is precisely the
+  file where one would be plausible.
+- **`tools/test_check_dispatch_gates.sh`, which did not exist.** `SECURITY.md` **S79** has
+  claimed this checker was *"falsified in four directions"* since 2026-09-03; those four were
+  done by hand while it was written and never again. **A falsification claim with no artefact is
+  a historical statement, not a standing guarantee** — the same class of stale claim this
+  project keeps finding. All four are arms now, joined by six more: a second self-check for rule
+  3's own regex, both silent directions, the numeric spelling of slot 3, a lookup named only in
+  a comment, and a new lookup in an already-declared file.
+  **Writing the arms caught two bugs in the rule they test.** The comment stripper replaced
+  block comments with a single space, collapsing every line they spanned — which mis-reported a
+  `kspawn.c` site by 149 lines **and resolved it against the wrong `#ifdef` stack**, since
+  guards are counted by line. And `GETLINE_SLOT3_FALLBACK` and `SPAWN_SLOT3_DECOY_GATE` were
+  missing from `SHIP_ABSENT`, so three legitimate control-arm sites were reported as ship-build
+  defects; both were confirmed absent with `make print-defect-flags` rather than assumed, which
+  is what that list's own comment asks for.
+
 ### Added
 
 - **Twelve FFI exports nobody called, deleted; the boundary is now gated** (**S86**,

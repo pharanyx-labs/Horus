@@ -67,13 +67,15 @@ evidence. Their **current status** is in [LIMITATIONS.md](LIMITATIONS.md), not h
 
 | File | Contents |
 |---|---|
-| [`cap_algebra.tla`](cap_algebra.tla) | TLA+ specification of the capability algebra |
-| [`paging_isolation.tla`](paging_isolation.tla) | TLA+ specification of address-space isolation |
 | [`design/console-server.md`](design/console-server.md) | The design behind the ring-3 console driver, as built |
 | [`history/DEVLOG-2026.md`](history/DEVLOG-2026.md) | The development log: 117 narrative entries, newest first |
 | [`../CHANGES.md`](../CHANGES.md) | The changelog |
 
-The TLA+ specifications are **not yet model-checked in CI**, see roadmap item 3.5.
+**There is no TLA+ specification.** Two were committed on 2026-06-25 and removed on
+2026-09-10: neither would parse, and the capability one's `Revoke` action was
+unsatisfiable, so the property it existed to model could never be reached. The formal
+methods in this project are the Kani harnesses (`rust/KANI.md`). See roadmap item 3.5 and
+`LIMITATIONS.md` §5.5.
 
 ---
 

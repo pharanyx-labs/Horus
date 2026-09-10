@@ -3624,10 +3624,60 @@ them as research code.
 
 ### 5.5 Formal verification is narrow
 
-Kani proves properties of capability revocation. TLA+ specifications exist for the capability
-algebra and paging isolation (`docs/cap_algebra.tla`, `docs/paging_isolation.tla`) but are
-**not model-checked in CI**. The kernel as a whole is not verified, and there is no
-refinement proof connecting the specifications to the implementation.
+Kani proves properties of capability revocation and the ELF validator: 16 harnesses, 11 of
+them gating in the required `kani-bounded` job. **That is the whole of the formal methods in
+this project.** The kernel as a whole is not verified, and there is no refinement proof
+connecting any specification to the implementation.
+
+#### The two TLA+ specifications were removed on 2026-09-10, and "not model-checked" understated why
+
+Until then this section, `docs/README.md`, `docs/ROADMAP.md` §3.5 and the public site all said
+the specs were *"committed but not model-checked in CI"*, and §3.5 named the blocker as *"TLC
+is a second toolchain (a JVM)"*. A reader takes that to mean the specifications are sound and
+only the wiring is missing. **They were not sound. Wiring TLC in would not have gone green; it
+would have failed at parse.** The predecessor audit (`docs/history/AUDIT-2026-07.md`) rated
+formal methods *"Excellent for stage"* partly on their existence.
+
+Both files were untouched from the repository's first commit (2026-06-25) to their deletion —
+across which the capability engine moved to Rust, revocation became an unbounded closure
+(roadmap 1.6), `fork`/COW landed, and SMP landed. **The specific defects are recorded here
+because they are what makes "unsound" a checkable claim rather than an assertion**, and
+because the same mistakes are available to whoever writes the replacement:
+
+- **Neither file would survive SANY.** Both use hex literals (`0x10000`, `0xFFFFFFFF`), which
+  TLA+ does not have. `cap_algebra.tla` applied the **boolean** connective `/\` to numbers as
+  if it were bitwise AND (`eff == new_rights /\ src.rights`, and again in `ValidateLookup`),
+  extending only `Naturals` and `FiniteSets`, so no bitwise operator was in scope. Its
+  `Revoke` used an `EXCEPT` whose index was a function constructor, which is not the form
+  `EXCEPT` takes. `paging_isolation.tla`'s `Inv` juxtaposed two `\A` expressions with no `/\`
+  between them.
+- **`cap_algebra.tla`'s `Revoke` could never fire.** It conjoined `cspaces' = ...` with
+  `BumpGen(to)`, and `BumpGen` itself asserts `UNCHANGED <<cspaces, ...>>`. The one action the
+  specification existed to model was unsatisfiable.
+- **Its safety property was a tautology.** `NoEscalation` reduced to
+  `c.rights <= 0xFFFFFFFF`, true of every value in the declared domain. **The invariant this
+  whole system rests on — that delegation may only ever reduce rights — was not stated
+  anywhere in the specification of the capability algebra.** A predicate that accepts
+  everything is precisely what a control arm must never be (§2).
+- **`paging_isolation.tla` never modelled isolation.** `CreateUserPML4` was absent from
+  `Next`, so no PML4 was ever created and the second conjunct of `Inv` was vacuous; `Inv`
+  never mentioned `page_tables` at all, so the property the file was named for was never
+  asserted; and `Next` quantified over `Nat`, which TLC cannot enumerate.
+- **Its one substantive invariant contradicted the implementation.** `Inv` required every
+  non-zero kernel-half PML4 entry to satisfy `flags % 4 = 0` — neither present nor writable.
+  In `src/kernel/paging.c` the real entry is
+  `pml4[510] = virt_to_phys(pml4) | 0x3 | PAGE_NX`: the **recursive self-map**, present and
+  writable, so `% 4 = 3`. The spec also treated slot 510 as the kernel image base, which lives
+  in `high_pdpt[510]` — a different table. Even after repairing every syntax error above, the
+  invariant would fail on the first state that modelled the real system.
+
+**Why deleted rather than repaired.** Kani is the formal-methods track that actually gates,
+and a second toolchain plus a specification that must track a Rust engine is not maintainable
+by one person — the specs went 2.5 months and four subsystem rewrites without an edit, which
+is the evidence rather than the prediction. An unsound specification that nothing runs is a
+claim with nothing behind it, and removing the artefact removes the claim. Roadmap **3.5**
+keeps the intent, restated as ⬜ with the honest scope: **no TLA+ specification exists**, and
+writing a sound one is the work, not wiring up TLC.
 
 ### 5.6 Governance files were mislocated: **[M-3]**
 

@@ -2626,8 +2626,9 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               than the design's; that arena is 4 MiB in total and shared with every other kernel
               object, so a frame able to span it would be a denial-of-service against every other
               object class dressed up as a feature. Formal verification is
-              narrow: Kani covers revocation, and the TLA+ specifications are committed but not
-              model-checked in CI.
+              narrow: Kani covers revocation and the ELF validator, and there is no TLA+
+              specification &mdash; the two committed in June were removed in September as
+              unsound rather than merely unchecked.
             </p>
           </li>
         </ul>

@@ -1506,8 +1506,15 @@ named subset rather than "run everything".
   boundary before it can be stated.
 - **IPC authority implies a held endpoint capability naming that endpoint.** 0.1 landed, so
   this is now expressible; it needs a model of `ipc_ep_from_slot` on the Rust side.
-- **The TLA+ specifications (`cap_algebra.tla`, `paging_isolation.tla`) are still only
-  committed, not model-checked in CI.** TLC is a second toolchain (a JVM) on top of Kani's.
+- **A sound TLA+ specification, which this project does not have.** Two were committed on
+  2026-06-25 and removed on 2026-09-10 without ever being edited. This entry used to say they
+  were "still only committed, not model-checked in CI" and named the blocker as a second
+  toolchain; **both halves were wrong**. Neither file would have survived SANY, the capability
+  spec's `Revoke` was unsatisfiable so revocation was unreachable in the model, its
+  `NoEscalation` was a tautology that never stated the rights-reduction invariant, and the
+  paging spec's one substantive invariant contradicted `paging.c`. TLC was never the blocker;
+  having something worth running through it is. `docs/LIMITATIONS.md` §5.5 records each defect,
+  since a replacement can repeat them.
 
 ### 3.6 ◧ A debug/observability capability (**[F-3.2]**) *CAP_DEBUG and capview landed
 2026-08-23*

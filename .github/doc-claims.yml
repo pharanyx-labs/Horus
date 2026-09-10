@@ -251,6 +251,28 @@ counts:
         pattern: 'make smoke-captest\s+<span class="c"># (\d+) capability checks'
 
 forbidden:
+  - pattern: 'TLA\+ specifications are committed but not'
+    reason: >-
+      site/index.html's assurance paragraph, and the framing every copy of this
+      claim shared: it says the specifications are sound and only the CI wiring
+      is missing. They were not. Neither docs/cap_algebra.tla nor
+      docs/paging_isolation.tla would have survived SANY, cap_algebra's Revoke
+      conjoined an action asserting UNCHANGED cspaces so it could never fire, and
+      its NoEscalation reduced to a tautology that never stated the
+      rights-reduction invariant. Both were removed 2026-09-10. LIMITATIONS 5.5
+      records each defect. Kept on ONE LINE because this checker matches line by
+      line and a pattern spanning a newline can never fire.
+  - pattern: 'not yet model-checked in CI'
+    reason: >-
+      docs/README.md's reference-material note. Same understatement as above: the
+      files were not merely unchecked, they were unsound, and wiring TLC in would
+      have failed at parse rather than gone green. Removed 2026-09-10; there is
+      no TLA+ specification in this repository.
+  - pattern: 'TLC is a second toolchain'
+    reason: >-
+      docs/ROADMAP.md 3.5, which named the blocker as a JVM. The blocker was
+      never the toolchain -- it was having a specification worth running through
+      it. Corrected 2026-09-10 when both specs were removed as unsound.
   - pattern: 'A DMA-capable device can read all of physical memory'
     reason: >-
       docs/LIMITATIONS.md section 4's IOMMU bullet, and false since 2026-08-28.

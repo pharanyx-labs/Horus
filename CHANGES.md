@@ -13,6 +13,43 @@ in this file.
 
 ---
 
+### Removed
+
+- **Both TLA+ specifications, as unsound rather than merely unchecked.**
+  `docs/cap_algebra.tla` and `docs/paging_isolation.tla` were committed on 2026-06-25 and
+  **never edited once** — across which the capability engine moved to Rust, revocation became
+  an unbounded closure, `fork`/COW landed and SMP landed. Nothing in CI or the `Makefile` ever
+  ran TLC over them.
+  **The tree's own description understated the problem in four places.** `docs/README.md`,
+  `docs/LIMITATIONS.md` §5.5, `docs/ROADMAP.md` §3.5 and `site/index.html` all said the specs
+  were *"committed but not model-checked in CI"*, and §3.5 named the blocker as *"TLC is a
+  second toolchain (a JVM)"* — which reads as *the specifications are sound, the wiring is
+  missing*. **Wiring TLC in would not have gone green; it would have failed at parse.** The
+  July audit rated formal methods *"Excellent for stage"* partly on their existence.
+  Neither file would survive SANY (hex literals, which TLA+ does not have; the boolean `/\`
+  applied to numbers as bitwise AND with no such operator in scope; an `EXCEPT` whose index was
+  a function constructor; two `\A` expressions juxtaposed with no `/\`). Beyond syntax:
+  `cap_algebra`'s **`Revoke` could never fire**, because it conjoined `cspaces' = ...` with an
+  action asserting `UNCHANGED cspaces` — the one thing the spec existed to model was
+  unsatisfiable; its `NoEscalation` reduced to `c.rights <= 0xFFFFFFFF`, **a tautology, so the
+  invariant this system rests on (delegation may only reduce rights) was never stated at all**;
+  and `paging_isolation`'s `Inv` never mentioned `page_tables`, so the property it was named
+  for was never asserted. Its one substantive invariant **contradicted the implementation**:
+  it required kernel-half PML4 entries to be neither present nor writable, where
+  `src/kernel/paging.c` has `pml4[510] = virt_to_phys(pml4) | 0x3 | PAGE_NX`, the recursive
+  self-map — so even after repairing every syntax error it would fail on the first realistic
+  state.
+  Removed rather than repaired: Kani is the formal-methods track that actually gates (16
+  harnesses, 11 in the required `kani-bounded` job), and a second toolchain plus a spec that
+  must track a Rust engine is not maintainable by one person — 2.5 months and four subsystem
+  rewrites without an edit is the evidence, not the prediction. **Each defect is preserved in
+  `docs/LIMITATIONS.md` §5.5**, because they are what make "unsound" checkable rather than
+  asserted, and because a replacement can repeat them. Roadmap **3.5** keeps the intent with
+  the honest scope: no TLA+ specification exists, and writing a sound one is the work.
+  The three retired phrasings are in `.github/doc-claims.yml`'s `forbidden:` ratchet, each
+  falsified by planting it back, and each kept on one line because that checker matches line by
+  line.
+
 ## [Unreleased]
 
 ### Added

@@ -2814,6 +2814,14 @@ jobs:
       # file. The budget is a ratchet on top, counted in CODE lines because
       # CLAUDE.md section 7 requires the long comments a physical-line budget
       # would punish (S87).
+      # The Makefile `$(error)`s at PARSE time without the bare-metal Rust
+      # target, so `make -n` prints nothing and the link line cannot be read.
+      # This job failed exactly that way on its first run. Measuring with
+      # RUST_ENABLED=0 to dodge the dependency would classify a configuration
+      # that cannot link at all (docs/LIMITATIONS.md 5.3b) rather than the one
+      # that ships.
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
       - name: Refuse an unclassified linked object, or a core over budget
         run: python3 tools/check_ring0_budget.py
       - name: Falsify that checker in every direction

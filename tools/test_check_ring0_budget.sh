@@ -13,15 +13,23 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MANIFEST="$ROOT/.github/ring0-classification.yml"
 BAK="$(mktemp)"
+CHECKER_BAK="$(mktemp)"
 cp "$MANIFEST" "$BAK"
-trap 'cp "$BAK" "$MANIFEST"; rm -f "$BAK"' EXIT
+cp "$ROOT/tools/check_ring0_budget.py" "$CHECKER_BAK"
+trap 'cp "$BAK" "$MANIFEST"; cp "$CHECKER_BAK" "$ROOT/tools/check_ring0_budget.py"; rm -f "$BAK" "$CHECKER_BAK"' EXIT
 PASSES=0; FAILS=0
 
-run () { (cd "$ROOT" && python3 tools/check_ring0_budget.py 2>&1); }
+run () {
+  if [ "${ARM_NO_CARGO:-0}" = 1 ]; then
+    (cd "$ROOT" && env PATH=/usr/bin:/bin python3 tools/check_ring0_budget.py 2>&1)
+  else
+    (cd "$ROOT" && python3 tools/check_ring0_budget.py 2>&1)
+  fi
+}
 
 arm () {  # $1 rule, $2 desc, $3 mutation, $4 expect(caught|clean), $5 must-name
   local rule="$1" desc="$2" mut="$3" expect="$4" want="${5:-}" out rc
-  cp "$BAK" "$MANIFEST"
+  cp "$BAK" "$MANIFEST"; cp "$CHECKER_BAK" "$ROOT/tools/check_ring0_budget.py"
   ( cd "$ROOT" && eval "$mut" ) || { echo "  $rule: MUTATION FAILED ($desc)"; FAILS=$((FAILS+1)); cp "$BAK" "$MANIFEST"; return; }
   out="$(run)"; rc=$?
   if [ "$expect" = caught ]; then
@@ -93,12 +101,28 @@ arm "7" "an unknown class name" \
 
 # ---- THE SELF-CHECK. Every rule above is vacuous against an empty link line:
 #      nothing is unclassified and core measures 0, which is under any budget.
-arm "8" "an unparseable link line fails rather than passing vacuously" \
+#      Here `make` SUCCEEDS and this file's own parser is what has gone quiet,
+#      so there is no stderr to report -- and saying so is the honest answer,
+#      distinct from arm 9's, where make itself refused.
+arm "8" "a parser that stops matching fails rather than passing vacuously" \
     "sed -i 's|if line.startswith(\"ld \")|if line.startswith(\"NOPE \")|' tools/check_ring0_budget.py" \
-    caught "fewer than this kernel has ever had"
+    caught "no error explaining why"
 
-# Arm 8 edited the checker; put it back.
-( cd "$ROOT" && git checkout -- tools/check_ring0_budget.py 2>/dev/null ) || true
+# ---- ARM 9, added after this checker failed on CI and could not say why. The
+#      Makefile $(error)s at parse time without the bare-metal Rust target, so
+#      `make -n` prints NOTHING -- and the first version reported only "resolved
+#      only 0 linked sources", which is true, useless, and indistinguishable
+#      from a bug in the checker itself. A gate must keep its evidence in the
+#      case it goes red; here the evidence is make's stderr.
+ARM_NO_CARGO=1 arm "9" "an unparseable Makefile is reported WITH the reason make gave" \
+    "true" caught "cargo not found"
+
+# Arm 8 edits the checker itself, so it is restored from a COPY taken at
+# startup -- never with `git checkout --`, which restores from the index and
+# silently discards unstaged work. That is not hypothetical: an earlier version
+# of this line reverted the very fix arm 9 exists to test, and the run that
+# followed reported both arms failing for a reason that was no longer in the
+# file.
 
 echo
 echo "arms passed: $PASSES   failed: $FAILS"

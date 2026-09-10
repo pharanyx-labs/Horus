@@ -54,10 +54,20 @@ def linked_sources():
     linked only under a control arm, and a glob would demand they be classified
     as though they ship.
     """
-    out = subprocess.run(["make", "-n", "kernel.elf"], cwd=ROOT,
-                         capture_output=True, text=True).stdout
-    objs = [t for line in out.splitlines() if line.startswith("ld ")
+    proc = subprocess.run(["make", "-n", "kernel.elf"], cwd=ROOT,
+                          capture_output=True, text=True)
+    objs = [t for line in proc.stdout.splitlines() if line.startswith("ld ")
             for t in line.split() if t.endswith(".o")]
+    if not objs:
+        # STDERR IS THE DIAGNOSIS, and the first version of this file threw it
+        # away. On CI it resolved zero sources and could say only that -- true,
+        # and indistinguishable from a bug in this file's own parser. The actual
+        # cause was that the Makefile `$(error)`s at PARSE time when the
+        # bare-metal Rust target is absent, which is the state of a runner that
+        # has not run `rustup target add`, so `make -n` printed nothing at all.
+        # A gate must keep its evidence in the case it goes red.
+        return None, (proc.stderr.strip() or
+                      "make printed no link line, and no error explaining why")
     srcs = set()
     for obj in objs:
         for ext in (".c", ".S"):
@@ -65,7 +75,7 @@ def linked_sources():
             if cand.exists():
                 srcs.add(cand.relative_to(ROOT).as_posix())
                 break
-    return srcs
+    return srcs, None
 
 
 def code_lines(rel):
@@ -99,7 +109,20 @@ def main():
         if cls not in CLASSES:
             problems.append(f"unknown class '{cls}' -- expected one of {', '.join(CLASSES)}")
 
-    linked = linked_sources()
+    linked, why = linked_sources()
+    if linked is None:
+        print("FAIL: check_ring0_budget")
+        print("  - could not resolve the link line, so nothing below could be")
+        print("    checked. `make` said:\n")
+        for line in why.splitlines():
+            print("      " + line)
+        print("\n    This check needs the bare-metal Rust target, because the")
+        print("    Makefile refuses to parse without it -- `rustup target add")
+        print("    x86_64-unknown-none`. Measuring with RUST_ENABLED=0 instead")
+        print("    would classify a configuration that cannot link at all")
+        print("    (docs/LIMITATIONS.md 5.3b), which is not the shipped one.")
+        return 1
+
 
     # SELF-CHECK. Every rule below is vacuous against an empty link line: if
     # `make -n` stops naming objects, an unclassified file cannot be detected and

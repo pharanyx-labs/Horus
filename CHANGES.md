@@ -72,6 +72,17 @@ in this file.
   **What it does not claim:** that `core` is verified, verifiable, or small. 9,676 code lines
   is a lot. The value is that the number exists, has a boundary somebody chose, and cannot move
   without a commit saying why.
+  **The job failed on its own first CI run, and the failure was undiagnosable** — it reported
+  *"resolved only 0 linked sources"* and nothing else. The cause was that the `Makefile`
+  `$(error)`s at **parse** time when the bare-metal Rust target is absent, which is the state
+  of a runner that has not run `rustup target add`, so `make -n` printed nothing at all. The
+  checker discarded `make`'s stderr; it now reports it, because a gate must keep its evidence
+  in the case it goes red. Measuring with `RUST_ENABLED=0` to dodge the dependency was
+  rejected: that would classify a configuration which cannot link at all (§5.3b) rather than
+  the one that ships.
+  *(A second defect surfaced in the falsification harness itself: it restored the file an arm
+  had edited with `git checkout --`, which restores from the index and **silently discarded
+  the unstaged fix arm 9 exists to test**. It now restores from a copy taken at startup.)*
 - **Roadmap 2.7a and `ARCHITECTURE.md` §14 G-14: the in-kernel services, which were tracked
   nowhere.** 2.6 tracks the network stack and 2.7 the drivers, both ◧. Nothing tracked
   `storage.c` (2,500 code lines — encrypted object store *and* on-disk filesystem, WAL, Merkle,

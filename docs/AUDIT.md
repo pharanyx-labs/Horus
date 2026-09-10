@@ -206,9 +206,16 @@ and witnessed by a gate that runs.
 
 ## 5. Candidates rejected
 
-An audit that reports only what it confirmed is not showing its work. Eight leads were
-investigated and rejected; each is recorded because the reasoning is what stops the next audit
-re-raising it.
+An audit that reports only what it confirmed is not showing its work.
+**9 leads were investigated and rejected**; each is recorded because the reasoning is what
+stops the next audit re-raising it.
+
+> ***This sentence said "Eight" until 2026-09-10, beside a table of nine and a summary that
+> said 9.*** It is reflowed so the number and its noun sit on ONE line, because
+> `tools/check_doc_claims.py` matches line by line: the old phrasing wrapped between "were"
+> and "investigated", so no declared pattern could have caught it even if one had existed.
+> The count is now derived from the table below rather than typed, and both places that state
+> it are checked.
 
 | Candidate | Why it is not a finding |
 |---|---|

@@ -54,6 +54,23 @@ in this file.
 
 ### Fixed
 
+- **`docs/AUDIT.md` §5 said "Eight leads were investigated and rejected" beside a table of
+  nine**, while §2's summary said 9. The count was undeclared, so nothing checked it — and the
+  phrase **wrapped across a newline** ("Eight leads were / investigated"), which is precisely
+  the case `tools/check_doc_claims.py` matches line by line and could never have caught even if
+  someone had declared it. Corrected to 9, reflowed so the number and its noun sit on one line,
+  and now **derived from the table rather than typed**.
+  **Both places that state it are declared**, not just one: gating only the summary would leave
+  the prose free to drift again, and a gated numerator makes the ungated remainder beside it
+  look verified. Falsified four ways — add a table row (both numbers go stale), change the
+  prose number, change the summary number, and reword the sentence so the pattern stops
+  matching, which the checker reports as a deleted claim rather than passing quietly.
+  *(The deriver's own first attempt bounded the section with `/^---/` and counted 10 lines —
+  the same shape as the original defect, an enumeration that stopped in the wrong place. It
+  bounds on the next `##` heading and subtracts the header and separator rows.)*
+
+### Fixed
+
 - **Two vacuous slot-3 gates in `src/kernel/kshell.c`, and the checker that could not see
   them.** The `clear` and `load` debug-shell commands authorised on
   `cap_lookup(CAPSLOT_FRAME, CAP_FRAME, ...)` — cspace slot 3, which `create_task` installs in

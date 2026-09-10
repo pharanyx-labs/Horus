@@ -2799,6 +2799,26 @@ jobs:
       - name: Falsify that checker in every direction
         run: tools/test_check_ffi_deadsurface.sh
 
+  ring0-budget:
+    name: "Every object linked into the kernel is classified, and the core stays in budget"
+    runs-on: ubuntu-latest
+    # Source analysis only -- `make -n`, no build, no QEMU. Seconds.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      # "Shrink ring 0" was a recommendation with no subject: nothing said which
+      # of the 37 linked objects are the security core. The rule that bites is
+      # the classification -- a new object linked into kernel.elf and not listed
+      # in .github/ring0-classification.yml fails the build, so putting code in
+      # ring 0 is a decision written down rather than a side effect of adding a
+      # file. The budget is a ratchet on top, counted in CODE lines because
+      # CLAUDE.md section 7 requires the long comments a physical-line budget
+      # would punish (S87).
+      - name: Refuse an unclassified linked object, or a core over budget
+        run: python3 tools/check_ring0_budget.py
+      - name: Falsify that checker in every direction
+        run: tools/test_check_ring0_budget.sh
+
   syscall-abi:
     name: "Every user pointer reaches the kernel full-width (issue #176)"
     runs-on: ubuntu-latest

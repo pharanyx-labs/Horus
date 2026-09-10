@@ -1228,6 +1228,34 @@ before 2026-08-28.
 written truthfully: there was no such thing as "`CAP_IO_DEVICE` for one NIC", because the
 capability named no device and conferred the console.
 
+### 2.7a ⬜ Evict the in-kernel services (**[F-2.7a]**) *scoped 2026-09-10*
+
+**This entry exists because the largest candidate was tracked nowhere.** 2.6 covers the
+network stack and 2.7 covers drivers, both ◧. Nothing covered the *services*, which are the
+bigger half: `.github/ring0-classification.yml` (**S87**) measures `service` at **5,684 code
+lines against a 9,676-line core**, so ring 0 carries more evictable policy than it does
+verifiable machinery in every category except the core itself.
+
+Ordered by size, with what each actually is:
+
+| File | Code lines | What it is |
+|---|---|---|
+| `src/kernel/storage.c` | 2,500 | The encrypted object store **and** the on-disk filesystem: superblock, inodes, WAL, Merkle tree, fsck. The single largest policy blob in ring 0, and `userspace/fs_server.c` already proves half the pattern in ring 3 |
+| `src/kernel/kusers.c` | 601 | Accounts, Argon2id hashing, the encrypted user database. The authority is **already** `CAP_USER` (**S18**), so nothing here needs ring 0 |
+| `src/kernel/loader.c` + `kspawn.c` + `shlib.c` | 1,273 | ELF loading and spawn staging — the surface that produced **[G-10]** and **[G-11]** |
+| `src/kernel/crypto.c` | 250 | CSPRNG seeding and key handling |
+| `src/kernel/syscall_fs.c` | 274 | The ring-3 surface of `storage.c`; moves with it |
+
+**Not a mechanical lift, and this is the honest part.** `storage.c` holds the volume key, so
+moving it means deciding what a ring-3 storage server may hold and what the kernel keeps
+sealed (**S19**'s ratchet and the TPM path both touch it). `kusers.c` is reached from
+`SYS_SUDO`, which mints capabilities — the delegation has to survive the move. Neither is
+blocked on a mechanism; both are blocked on a design decision nobody has written down.
+
+**What this item is NOT.** A LOC target. **S87** deliberately declines to set one for the
+whole kernel: the classification is the property, and shrinking `core` by relabelling is the
+bypass its falsification suite tests for.
+
 ### 2.7 ◧ Real device drivers as ring-3 servers: *the device capability landed 2026-08-28*
 
 Following the `console_server` pattern: an AHCI/NVMe storage driver, a keyboard/mouse
@@ -1641,7 +1669,7 @@ neither, in both, or names a job that no longer exists. No default, defaulting i
 caught CodeQL unclassified on its first run, which is the same omission class the finding
 describes.
 
-The intended set is **111 required, 3 exempted** (111 jobs, 114 contexts (re-derive it with
+The intended set is **112 required, 3 exempted** (112 jobs, 115 contexts (re-derive it with
 `tools/check_ci_gating.py`, never from this line)) `fuzz` (a 30-second time-boxed search is
 evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on), and
 `ruleset-audit` (schedule-only, so it never runs on a pull request). `smoke-fs-wal` was an
@@ -1758,7 +1786,7 @@ table already has the four columns a registry needs (id, statement, enforcing co
 the table *is* the registry. A hand-maintained parallel manifest would be a second copy of
 claims that already exist, which is **[H-3]**'s shape: two descriptions of one thing, drifting.
 The manifest that remains (`.github/invariants.yml`) holds exemptions only, and today it is
-**empty**, all 88 properties name a witness that resolves.
+**empty**, all 89 properties name a witness that resolves.
 
 **What the survey found on the way.** **S16** had no witness at all, an em-dash against
 `fpu_save`/`fpu_restore`, real code called on every ring transition and exercised by nothing.

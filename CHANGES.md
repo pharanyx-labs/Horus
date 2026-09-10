@@ -52,6 +52,35 @@ in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **The ring-0 boundary is declared and gated** (**S87**, `tools/check_ring0_budget.py`,
+  required job `ring0-budget`). The kernel is **37 linked objects, 40,316 physical / 20,532
+  code lines**, and nothing said which of them are the security core — so "shrink ring 0" was
+  unanswerable rather than merely unmet: the seven files a reviewer named are **13,977
+  physical but 6,318 code**, and the target is met or missed depending on which you count.
+  `.github/ring0-classification.yml` assigns every linked object to `core` (9,676 code lines,
+  18 files), `driver` (2,482, 8), `service` (5,684, 10) or `selftest` (2,690, 1).
+  **The classification is the property; the budget is a ratchet on top.** The rule that bites
+  is that an object linked into `kernel.elf` and not listed fails the build, so putting code in
+  ring 0 is a decision written down rather than a side effect of adding a file.
+  **The budget counts code lines, not physical lines**, and that is not a convenience: §7
+  requires long explanatory comments and cites `scheduler.c`'s as an exemplar, so a
+  physical-line budget would create pressure to delete the text that makes the kernel
+  auditable. It is set at exactly the measured 9,676 with **no headroom** — a budget with slack
+  quietly absorbs the growth it was meant to prompt a discussion about.
+  **What it does not claim:** that `core` is verified, verifiable, or small. 9,676 code lines
+  is a lot. The value is that the number exists, has a boundary somebody chose, and cannot move
+  without a commit saying why.
+- **Roadmap 2.7a and `ARCHITECTURE.md` §14 G-14: the in-kernel services, which were tracked
+  nowhere.** 2.6 tracks the network stack and 2.7 the drivers, both ◧. Nothing tracked
+  `storage.c` (2,500 code lines — encrypted object store *and* on-disk filesystem, WAL, Merkle,
+  fsck), `kusers.c` (601 — accounts and Argon2id, whose authority is already `CAP_USER`), the
+  ELF loader (1,273), `crypto.c` or `syscall_fs.c`. That is **5,684 code lines of policy at the
+  same privilege as the capability engine**, against a 9,676-line core. Stated as blocked on a
+  design decision rather than a mechanism: `storage.c` holds the volume key, and `kusers.c` is
+  reached from a capability-minting `SYS_SUDO`.
+
 ### Fixed
 
 - **`docs/AUDIT.md` §5 said "Eight leads were investigated and rejected" beside a table of

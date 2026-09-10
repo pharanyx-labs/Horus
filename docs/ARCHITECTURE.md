@@ -1666,3 +1666,25 @@ wedge rather than merely to fail -- before this both cases printed the same time
 what left the finding unattributable). Which case the two CI runs were is not recoverable: the
 gate kept no serial log then, and does now. The budget was never raised; see `LIMITATIONS.md`
 §5.2h.
+
+**G-14: ring 0 carries more evictable policy than verifiable machinery.** *Measured and
+classified 2026-09-10.* The kernel is 37 linked objects, 40,316 physical and 20,532 code
+lines. Until this was classified, nothing in the tree said which of those constitute the
+security core, so "shrink ring 0" had no subject: the seven files a reviewer named come to
+13,977 physical lines but 6,318 code lines, and the same target is met or missed depending on
+which you count. `.github/ring0-classification.yml` (**S87**) now assigns each object to
+`core` (9,676 code lines), `driver` (2,482), `service` (5,684) or `selftest` (2,690).
+
+**The gap the numbers expose** is not the core's size but the company it keeps: `service` --
+the encrypted object store and on-disk filesystem, accounts and Argon2id, ELF loading, the
+CSPRNG -- is 5,684 code lines of policy sitting at the same privilege as the capability
+engine, and a defect in any of it is a defect in ring 0. `driver` adds 2,482 more. Roadmap
+2.6 and 2.7 track the network stack and the drivers; **2.7a, added with this entry, tracks
+the services, which were tracked nowhere** and are the larger half.
+
+**What is gated and what is not.** The classification is gated: an object linked into
+`kernel.elf` and not listed fails the build, so ring 0 cannot grow by accident. The core's
+size is ratcheted at exactly its measured value. **Neither of those evicts anything** --
+`storage.c` holds the volume key and `kusers.c` is reached from a capability-minting
+`SYS_SUDO`, so both moves are blocked on a design decision rather than a mechanism. This
+entry stays open until 2.7a closes.

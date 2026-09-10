@@ -2500,9 +2500,9 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand: **[C-6]**
 
-`.github/workflows/ci.yml` defines **108** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more: **110** across the three, producing **113** status-check contexts. Ruleset `21815299`
-requires all **110** today, `smoke-kdiag` (**S81**) among them since 2026-09-03 -- one
+`.github/workflows/ci.yml` defines **109** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more: **111** across the three, producing **114** status-check contexts. Ruleset `21815299`
+requires all **111** today, `smoke-kdiag` (**S81**) among them since 2026-09-03 -- one
 `--sync-ruleset` run after the pull request that added the job, which is the lag this finding is
 about rather than an exception to it. Its predecessor `19007209` required **22** of them before
 2026-08-16, and until 2026-08-15 exactly **zero** of those 22 were security gates: capability
@@ -2548,7 +2548,7 @@ the right name with the wrong verdict. Step-level `continue-on-error` is untouch
 allowed; it lets one step be advisory while the job's own status still reports the truth, which
 is how the `security` job keeps its scanners advisory without becoming unfailable itself.
 
-That intended set is **110 required contexts and 3 reasoned exemptions**: `fuzz` (a 30-second
+That intended set is **111 required contexts and 3 reasoned exemptions**: `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` was a fifth until **[G-9]** closed on 2026-08-21; it was promoted on
@@ -3526,6 +3526,38 @@ left in place when it fails. `make smoke-newlib-tamper` exercises that gate in b
 so it is a control rather than an assumption. That says nothing about what leaves the build,
 which is what **[I-9]** is actually about; it only means the tree is no longer trusting an
 unverified 9 MiB blob on the way in.
+
+### 5.3b The `RUST_ENABLED=0` build arm cannot link, and nothing said so
+
+**Found 2026-09-10**, while checking that removing three dead C fallback shims did not break
+the no-Rust build. It did not, because that build has not linked for a long time.
+
+`src/kernel/rust_shims.c` provides weak C fallbacks for the Rust core, selected by
+`RUST_EXTRA_OBJS` when `RUST_ENABLED` is not 1, and it reads as a supported configuration:
+build Horus without the Rust security core and get C implementations instead. **It is not
+one.** The shims define seven symbols; the kernel calls forty-nine. Measured on a pristine
+`origin/main` worktree with the Rust archive present so the link is actually attempted:
+**43 distinct symbols unresolved**, among them `rust_cap_lookup`, `rust_cap_mint`,
+`rust_page_ref_inc`, `rust_sha256` and `rust_ct_eq` -- the capability engine, the page
+refcounts and the hashes. There is no C fallback for any of them and there never was.
+
+**Why nothing caught it.** `RUST_ENABLED` is assigned 1 inside the `Makefile` and CI never
+overrides it, so no job has ever built this arm. It fails two different ways depending on
+what is lying around: from clean, `make RUST_ENABLED=0` stops at *"No rule to make target
+`rust/target/x86_64-unknown-none/release/libhorus_shell.a`"*, because `kernel.elf` lists the
+Rust archive as a prerequisite unconditionally -- so the arm that is supposed to build
+*without* Rust cannot start without it. Only if a previously built archive is present does it
+get as far as the link and produce the undefined references. **A configuration that fails
+before it reaches the failure is a configuration nobody diagnoses.**
+
+**What was changed here, and what was not.** Three shims with no Rust export and no caller
+were deleted (`rust_validate_ipc` had never had a subject at all -- there is no Rust function
+of that name and never was; the other two lost theirs when the dead exports went). The arm's
+symbol set was measured before and after and is **identical, 43 either way**, so this
+narrowed nothing. The remaining four shims are left in place: deleting them is a decision
+about whether a no-Rust build is a goal, and that is not a decision to take as a side effect
+of a dead-surface sweep. Recorded rather than fixed, and `SECURITY.md` **S86**'s checker now
+refuses a *new* shim with no subject, which is the half that can be gated today.
 
 ### 5.3a `boot.iso` is not byte-reproducible, and `kernel.elf` is
 

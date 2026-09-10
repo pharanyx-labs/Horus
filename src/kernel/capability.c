@@ -41,8 +41,17 @@ uint32_t cap_alloc_fresh_serial(void) {
  * independently-hashed `lineages[]` table here; the two could desync, letting a
  * stale derived capability pass one generation check while the other lineage had
  * already been bumped (use-after-revoke). The C table has been removed: every
- * bump goes through rust_lineage_bump (inside rust_cap_revoke / *_by_values) and
- * every check goes through rust_lineage_check via the thin wrapper below.
+ * bump happens inside the Rust revoke sweeps themselves (rust_cap_revoke and
+ * rust_cap_revoke_global call the crate-internal `bump_lineage`), and every
+ * check goes through rust_lineage_check via the thin wrapper below.
+ *
+ * THIS SENTENCE NAMED `rust_lineage_bump` UNTIL 2026-09-10, and that was a call
+ * graph that did not exist: the exported `rust_lineage_bump` was a one-line
+ * wrapper nothing ever called, from C, from Rust or from a test, while the
+ * sweeps used the internal helper directly. It read as a description of the
+ * live path and it was a description of a dead one -- which is also how it was
+ * recorded as "called once by capability.c" when the only reference here was
+ * this comment. The export is gone; the sweeps are unchanged.
  */
 bool capability_validate_generation(const capability_t *cap){
     if(!cap||cap->type==CAP_NULL) return false;

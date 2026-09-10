@@ -894,50 +894,6 @@ pub unsafe extern "C" fn rust_cap_revoke_global(
     true
 }
 
-/// Single-cspace revoke by explicit values. Retained for compatibility; the
-/// system-wide path is `rust_cap_revoke_global`. Revokes the derivation subtree
-/// rooted at `target_serial` (audit A1) — `target_badge` is no longer used for
-/// matching, since the subtree is defined by the serial→badge derivation links.
-///
-/// # Safety
-/// `cspace` must be null, or point to at least `cspace_size` valid
-/// `Capability`s -- and `cspace_size` must be the TRUE length of that array, not
-/// a larger number the C side hoped was right. Null is handled and every slot
-/// index is bounds-checked against `cspace_size`, so the one obligation this
-/// code cannot discharge for itself is the truthfulness of that length. Call
-/// under `cap_lock`: these read and write the array non-atomically, and a
-/// concurrent revoke would otherwise be able to change a capability between the
-/// validity check and the use.
-#[no_mangle]
-pub unsafe extern "C" fn rust_cap_revoke_by_values(
-    cspace: *mut Capability,
-    cspace_size: u32,
-    target_serial: u32,
-    _target_badge: u32,
-    target_obj: u64,
-) -> bool {
-    if cspace.is_null() {
-        return false;
-    }
-    // Bump the target's own serial generation so a pre-revoke snapshot fails the
-    // generation re-check at point of use (the TOCTOU close, finding 3.3); the
-    // sweep bumps each descendant serial too. `target_obj` is still passed to the
-    // sweep for the overflow object-match fallback, not for generation keying.
-    let _ = bump_lineage(target_serial);
-    let desc = CSpaceDesc {
-        caps: cspace,
-        size: cspace_size,
-        caps_in_use: core::ptr::null_mut(),
-    };
-    revoke_subtree(&desc as *const CSpaceDesc, 1, target_serial, target_obj);
-    true
-}
-
-/// FFI: bump the lineage generation for `serial`. Sole way for C to invalidate a
-/// single serial's lineage outside the revoke sweeps.
-#[no_mangle]
-pub extern "C" fn rust_lineage_bump(serial: u32) -> u32 { bump_lineage(serial) }
-
 /// FFI: check whether a capability recording `gen` for `serial` is still valid.
 /// C's `capability_validate_generation` delegates here so both sides agree.
 #[no_mangle]
@@ -1303,13 +1259,18 @@ mod tests {
             "generation 0 is stale once the serial has been bumped away from pristine");
     }
 
-    /// `rust_cap_revoke_by_values` is the explicit-values, single-cspace revoke
-    /// behind the IPC snapshot/revalidate guard: it nulls every matching
-    /// capability AND bumps the object's lineage, so a snapshot a caller took
-    /// before the revoke fails a generation re-check at point of use (the TOCTOU
-    /// close).
+    /// A revoke nulls every matching capability AND bumps the object's lineage,
+    /// so a snapshot a caller took before the revoke fails a generation re-check
+    /// at point of use (the TOCTOU close, finding 3.3).
+    ///
+    /// This exercised `rust_cap_revoke_by_values` until 2026-09-10. That export
+    /// described itself as "retained for compatibility" and had no caller in the
+    /// kernel, in Rust or in any other test, so it was deleted -- but the
+    /// property is real and belongs to the path the kernel actually takes, which
+    /// is `rust_cap_revoke_global`. Re-pointed rather than deleted with it: the
+    /// coverage was never about which entry point was called.
     #[test]
-    fn test_revoke_by_values_invalidates_snapshot() {
+    fn test_revoke_invalidates_pre_revoke_snapshot() {
         let _lin = LineageTestGuard::new();
         let obj = 0xA300u64;
         let serial: u32 = 0xA301;
@@ -1324,9 +1285,16 @@ mod tests {
             let snapshot = cs[5];
             assert!(lineage_check(snapshot.serial, snapshot.generation),
                 "snapshot is valid before the revoke");
-            assert!(!rust_cap_lookup(cs.as_mut_ptr(), 16, 5, 0x1).is_null());
+            // ONE `as_mut_ptr()`, reused -- taking it twice retags `cs` and
+            // invalidates the pointer already stored in `spaces`. The C kernel
+            // passes one `struct capability *`, which is one provenance.
+            let cs_ptr = cs.as_mut_ptr();
+            assert!(!rust_cap_lookup(cs_ptr, 16, 5, 0x1).is_null());
 
-            assert!(rust_cap_revoke_by_values(cs.as_mut_ptr(), 16, serial, 0, obj));
+            let mut ciu = 1u32;
+            let spaces = [CSpaceDesc { caps: cs_ptr, size: 16, caps_in_use: addr_of_mut!(ciu) }];
+            assert!(rust_cap_revoke_global(
+                cs_ptr, 16, 5, addr_of_mut!(ciu), spaces.as_ptr(), 1, core::ptr::null_mut()));
 
             // The live slot is nulled structurally...
             assert_eq!(cs[5].typ, CAP_NULL);

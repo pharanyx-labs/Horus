@@ -100,6 +100,13 @@ required:
   # index of the control arms, and an arm nobody can find is one nobody
   # re-runs -- so a silent omission there quietly retires a falsification.
   - defect-flags-documented
+  # Gating, and for the same reason. An FFI export with no caller is an unsafe
+  # entry point whose `# Safety` clause names an obligation nobody discharges,
+  # shipped in the binary because the Rust core is linked --whole-archive with
+  # no --gc-sections. Twelve of sixty were in that state on 2026-09-10, each
+  # with passing unit tests that made the dead code look maintained -- which is
+  # exactly why a reader cannot be the check.
+  - ffi-deadsurface
   # Gating. The boot log is the only record a reader has of what the system did
   # before there was a shell to ask, and half of it used to arrive with no
   # timestamp at all -- so nothing in it could be ordered against anything else,

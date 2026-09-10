@@ -1,0 +1,21 @@
+# FFI exports that may have no C caller, and why.
+#
+# tools/check_ffi_deadsurface.py refuses a `#[no_mangle] pub extern "C"` symbol in
+# rust/src/ that nothing calls, and a rust_* definition in the C fallback shims that
+# has neither a Rust export nor a caller. `kernel.elf` links the Rust archive with
+# --whole-archive and no --gc-sections, so an export nobody calls still ships.
+#
+# An entry here is a claim that a symbol MUST exist without a caller. It is declared
+# rather than inferred for the reason .github/gate-pairs.yml gives about intent: a
+# tool can see that nothing calls a symbol, but not whether that is a defect or an
+# ABI requirement. Every entry needs a reason a reader can check.
+#
+# This list is deliberately short. On 2026-09-10 twelve exports had no caller and
+# none of them belonged here: they were a page allocator paging.c never adopted, a
+# superseded second audit chain, and six singles. All were deleted.
+
+exempt:
+  rust_eh_personality: >-
+    Required by the Rust ABI, not by any Horus code path. Defined on the C side in
+    src/kernel/rust_memory_stubs.c because a no_std staticlib still emits a
+    reference to it. Nothing calls it and nothing should.

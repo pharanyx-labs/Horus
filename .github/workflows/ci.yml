@@ -2779,6 +2779,26 @@ jobs:
       - name: Falsify that checker in every direction
         run: tools/test_check_defect_flags.sh
 
+  ffi-deadsurface:
+    name: "Every symbol the security core exports across the FFI has a live caller"
+    runs-on: ubuntu-latest
+    # Source analysis only -- no build, no QEMU. Seconds.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      # kernel.elf links the Rust core with --whole-archive and no --gc-sections,
+      # so every #[no_mangle] pub extern "C" symbol ships whether or not anything
+      # calls it. Measured 2026-09-10: 60 exports, TWELVE with no caller anywhere
+      # -- a page allocator paging.c never adopted, a superseded second audit
+      # chain, and six singles. Every one had passing unit tests, which is why
+      # nobody noticed: the tests made dead code look maintained. An unsafe entry
+      # point whose `# Safety` clause names a caller that does not exist has
+      # nothing upholding it (S86).
+      - name: Refuse an FFI export with no caller, or a shim with no subject
+        run: python3 tools/check_ffi_deadsurface.py
+      - name: Falsify that checker in every direction
+        run: tools/test_check_ffi_deadsurface.sh
+
   syscall-abi:
     name: "Every user pointer reaches the kernel full-width (issue #176)"
     runs-on: ubuntu-latest

@@ -181,35 +181,6 @@ pub fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; SHA256_OUT] {
     outer.finalize()
 }
 
-/// PBKDF2-HMAC-SHA256 (RFC 8018). Writes `out.len()` derived bytes.
-/// `iterations` must be >= 1 (we clamp to 1).
-pub fn pbkdf2_hmac_sha256(password: &[u8], salt: &[u8], iterations: u32, out: &mut [u8]) {
-    let iters = if iterations == 0 { 1 } else { iterations };
-    let mut block_index: u32 = 1;
-    let mut offset = 0usize;
-
-    while offset < out.len() {
-        // U1 = PRF(password, salt || INT_32_BE(block_index))
-        let mut salt_ctr = Sha256Hmac::new(password);
-        salt_ctr.update(salt);
-        salt_ctr.update(&block_index.to_be_bytes());
-        let mut u = salt_ctr.finalize();
-        let mut t = u;
-
-        for _ in 1..iters {
-            u = hmac_sha256(password, &u);
-            for j in 0..SHA256_OUT {
-                t[j] ^= u[j];
-            }
-        }
-
-        let take = core::cmp::min(SHA256_OUT, out.len() - offset);
-        out[offset..offset + take].copy_from_slice(&t[..take]);
-        offset += take;
-        block_index = block_index.wrapping_add(1);
-    }
-}
-
 /// HKDF-SHA256 (RFC 5869): extract-then-expand. Writes `out.len()` bytes
 /// (capped at 255*32). `salt` empty => zero salt per spec.
 pub fn hkdf_sha256(ikm: &[u8], salt: &[u8], info: &[u8], out: &mut [u8]) {
@@ -287,36 +258,6 @@ impl Sha256Hmac {
 // FFI surface used by the C kernel.
 // ---------------------------------------------------------------------------
 
-/// PBKDF2-HMAC-SHA256 password hash. Returns 0 on success, -1 on bad args.
-///
-/// # Safety
-/// `password` must point to `password_len` readable bytes, `salt` to `salt_len`,
-/// and `out` to `out_len` WRITABLE bytes; all three are null-checked, and a zero
-/// `out_len` is refused. Note the asymmetry: a null pointer is rejected but a
-/// LENGTH that overstates its buffer cannot be, so the truthfulness of
-/// `password_len`, `salt_len` and `out_len` is the caller's obligation and the
-/// one this code cannot discharge. `iterations` is a cost parameter with no
-/// safety role.
-#[no_mangle]
-pub unsafe extern "C" fn rust_password_hash(
-    password: *const u8,
-    password_len: usize,
-    salt: *const u8,
-    salt_len: usize,
-    iterations: u32,
-    out: *mut u8,
-    out_len: usize,
-) -> i32 {
-    if password.is_null() || salt.is_null() || out.is_null() || out_len == 0 {
-        return -1;
-    }
-    let pw = core::slice::from_raw_parts(password, password_len);
-    let st = core::slice::from_raw_parts(salt, salt_len);
-    let o = core::slice::from_raw_parts_mut(out, out_len);
-    pbkdf2_hmac_sha256(pw, st, iterations, o);
-    0
-}
-
 /// Plain SHA-256 digest of `data`, writing 32 bytes to `out32`.
 ///
 /// Used to verify boot-module payloads against the hash manifest embedded in the
@@ -372,7 +313,7 @@ pub unsafe extern "C" fn rust_hmac_sha256(
 /// bytes; both are null-checked and a zero `out_len` is refused. `salt` and
 /// `info` are OPTIONAL: null or a zero length is treated as the empty string,
 /// which is what RFC 5869 specifies, so only a non-null pointer must be backed
-/// by its stated length. As with `rust_password_hash`, a length that overstates
+/// by its stated length. As elsewhere in this module, a length that overstates
 /// its buffer is the caller's obligation.
 #[no_mangle]
 pub unsafe extern "C" fn rust_hkdf_sha256(
@@ -478,25 +419,6 @@ mod tests {
         assert_hex(
             &tag,
             "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
-        );
-    }
-
-    #[test]
-    fn pbkdf2_rfc_like_vector() {
-        // RFC 7914 PBKDF2-HMAC-SHA256: P="passwd", S="salt", c=1, dkLen=64
-        let mut out = [0u8; 64];
-        pbkdf2_hmac_sha256(b"passwd", b"salt", 1, &mut out);
-        assert_hex(&out[..16], "55ac046e56e3089fec1691c22544b605");
-    }
-
-    #[test]
-    fn pbkdf2_two_iterations() {
-        // P="password", S="salt", c=2, dkLen=32 (known answer)
-        let mut out = [0u8; 32];
-        pbkdf2_hmac_sha256(b"password", b"salt", 2, &mut out);
-        assert_hex(
-            &out,
-            "ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43",
         );
     }
 

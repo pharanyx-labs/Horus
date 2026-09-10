@@ -159,6 +159,19 @@ between the 32- and 64-bit targets.
 
 `rust/fuzz/` runs cargo-fuzz over the pointer and scalar predicates at this boundary.
 
+**The boundary is kept minimal, and that is checked** (**S86**). The Rust core is linked
+`--whole-archive` with no `--gc-sections`, so every `#[no_mangle] pub extern "C"` symbol is in
+the shipping binary whether or not the kernel calls it. `tools/check_ffi_deadsurface.py`
+(required job `ffi-deadsurface`) refuses an export with no live caller, and the mirror defect:
+a `rust_*` fallback defined in `src/kernel/rust_shims.c` with neither a Rust export nor a
+caller. Twelve exports of sixty were dead when the checker was written, each one an `unsafe`
+entry point whose `# Safety` clause named a caller that did not exist -- and each with passing
+unit tests, which is why they had survived. Deliberate exceptions are declared in
+`.github/ffi-exports.yml`; there is one, `rust_eh_personality`, which the Rust ABI requires.
+
+A `# Safety` clause is a statement about the *caller*, so an export without one is not a
+contract but a hope. **S54** requires the clause to exist; **S86** requires the caller to.
+
 ---
 
 ## 4. Capabilities

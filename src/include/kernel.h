@@ -480,7 +480,6 @@ extern uint8_t stack_top[];
 #define INODES_PER_BLOCK        16
 uint32_t rust_get_user_page_protection(uint32_t t, uint64_t v);
 bool rust_user_page_is_noexec(uint64_t vaddr);
-int rust_validate_fs_operation(uint32_t task_id, uint32_t op, uint32_t rights, const uint8_t *name, size_t nlen);
 /* Endpoint index space.
  *
  * [0, REPLY_EP_BASE)                  service endpoints (well-known + general)
@@ -1815,8 +1814,10 @@ void cap_tables_init(void);
 /* Lineage/generation tracking is owned by the safe-Rust authority
  * (rust/src/capability.rs). The legacy C `lineages[]` table and its helpers
  * (lineage_register/lineage_revoke/next_lineage_id) have been removed to avoid a
- * C/Rust desync that allowed use-after-revoke; use rust_lineage_check /
- * rust_lineage_bump instead. */
+ * C/Rust desync that allowed use-after-revoke; use rust_lineage_check. Bumping
+ * is not a C-side operation at all: it happens inside the revoke sweeps, which
+ * is why there is no bump entry point here. `rust_lineage_bump` was one until
+ * 2026-09-10 and had no caller in its life. */
 
 
 typedef struct block_device {
@@ -2378,7 +2379,6 @@ int try_deliver_fault_signal(struct interrupt_frame64 *frame, int cur,
  * n_pages width — they previously drifted to `int`). */
 int32_t  rust_page_ref_dec(uint32_t phys, uint16_t *refcounts, uint32_t n_pages);
 uint16_t rust_page_ref_inc(uint32_t phys, uint16_t *refcounts, uint32_t n_pages);
-bool     rust_page_is_valid_user_phys(uint32_t phys, uint32_t n_pages);
 bool     rust_page_refcounts_register(const uint16_t *refcounts, uint32_t n_pages);
 bool     rust_cow_copy_required(bool is_cow, bool is_write, uint16_t ref_count);
 /* Validate a would-be ring-3 signal-handler entry: it must lie in the user code
@@ -2710,7 +2710,6 @@ bool rust_cap_grant_into(const capability_t *src, capability_t *dest_cspace,
                          uint32_t dest_cspace_size, uint32_t dest_slot,
                          uint32_t new_rights, uint32_t *next_serial);
 bool rust_cap_revoke(capability_t *cspace, uint32_t sz, uint32_t slot, uint32_t *next_serial);
-bool rust_cap_revoke_by_values(capability_t *cspace, uint32_t sz, uint32_t target_serial, uint32_t target_badge, uint64_t target_obj);
 
 /* One capability space, for the system-wide revocation sweep. Layout MUST match
  * `struct CSpaceDesc` in rust/src/capability.rs. */
@@ -3185,15 +3184,11 @@ bool     capability_validate_generation(const capability_t *cap);
  * precise use-after-revoke backstop no longer needs the old gen-0 immunity that
  * left every capability's snapshot un-invalidatable. Every C capability-creation
  * site stamps `cap.generation = rust_lineage_current(cap.serial)`. */
-uint32_t rust_lineage_bump(uint32_t serial);
 bool     rust_lineage_check(uint32_t serial, uint32_t gen);
 uint32_t rust_lineage_current(uint32_t serial);
 
 /* ---- Cryptography & entropy (audited primitives implemented in Rust) ---- */
 /* SHA-256 suite */
-int  rust_password_hash(const uint8_t *password, size_t password_len,
-                        const uint8_t *salt, size_t salt_len,
-                        uint32_t iterations, uint8_t *out, size_t out_len);
 /* Argon2id password hash (rust/src/argon2.rs). memory-hard; `p_cost` lanes;
  * `mem` is a caller-owned scratch buffer of `mem_words` u64 (>= 128 * blocks,
  * blocks a multiple of 4*p_cost). Returns 0/-1. */
@@ -3207,12 +3202,6 @@ int  rust_hmac_sha256(const uint8_t *key, size_t key_len,
 /* Plain SHA-256 digest (boot-module manifest verification). */
 int  rust_sha256(const uint8_t *data, size_t data_len, uint8_t *out32);
 /* Tamper-evident audit log (rust/src/audit.rs). */
-int  rust_audit_chain_init(const uint8_t *key, size_t key_len, uint8_t *out_head32);
-int  rust_audit_chain_record(const uint8_t *key, size_t key_len, uint64_t seq,
-                             const uint8_t *event, size_t event_len,
-                             uint8_t *head32, uint8_t *out_mac32);
-int  rust_audit_entry_mac(const uint8_t *key, size_t key_len, uint64_t seq,
-                          const uint8_t *event, size_t event_len, uint8_t *out_mac32);
 int  rust_audit_mac_eq(const uint8_t *a32, const uint8_t *b32);
 /* Forward-secure (forward-integrity) audit log: the per-entry key is ratcheted
  * one-way and erased in place, so a kernel compromised at time t cannot forge or

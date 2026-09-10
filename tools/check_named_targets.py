@@ -67,6 +67,7 @@ EXEMPT = {
     "tools/test_check_invariants.sh": "plants absent targets to falsify check_invariants.py",
     "tools/check_named_targets.py":   "this file quotes the five stale names it was written for",
     "tools/test_check_named_targets.sh": "plants absent targets to falsify this checker",
+    "tools/test_check_claude_md.sh":   "plants absent targets to falsify check_claude_md.py",
 }
 
 TARGET = r"smoke-[a-z0-9]+(?:-[a-z0-9]+)*"

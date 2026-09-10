@@ -35,6 +35,15 @@ in this file.
   tree via `git archive` plus the gitignored files the manual names, because a fixture assembled
   by guessing which files matter reported three findings in a row that do not exist in the real
   tree.
+  **A new arm that plants an absent target has to be registered as one.** Arm 1 appends
+  `make smoke-not-a-target` to its fixture, and that literal sits in a tracked file, so
+  `tools/check_named_targets.py` read it as a stale reference in the tree and failed the
+  `kani-bounded` job -- a required check, on a documentation-checker PR that could not
+  plausibly have broken a proof. Three sibling falsification scripts were already in that
+  checker's `EXEMPT` list for exactly this reason; this one was written from the same template
+  and missed the one registration step they all have. The exemption is not an escape hatch:
+  `test_check_named_targets.sh` arm 5 removes an exemption and requires the planted names to
+  become visible again.
 
 - **Every `make` target named in the tree has to exist** (`tools/check_named_targets.py`, required
   in the source-only checker job). The defect it catches is the quietest kind of stale claim here:

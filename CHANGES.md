@@ -563,6 +563,15 @@ in this file.
 
 ### Fixed
 
+- **`smoke-smt` watched for a marker nothing prints** (`Makefile`). It carried
+  `FAIL_MARKER='SMT_SELFTEST: FAIL'` from the day it was written, and no file in this tree has
+  ever printed that string: there is no SMT selftest, because sibling parking is always-on rather
+  than a build flag. The gate was never wrong -- its required marker, the kernel's own `SMT
+  siblings parked (co-residency avoided)`, is what gates it -- but the fail marker claimed that a
+  failure had a voice here, when the only failure signal is that line's absence. Removed, with the
+  reason in the recipe. Found by sweeping all 289 gate-asserted markers against everything in the
+  tree that can print; it was the only one, which is the other half of the finding.
+
 - **Two defect flags defined a macro that nothing read, and both had measurements recorded
   against them** (`userspace/netd.c`, `src/kernel/sdhci.c`, `tools/check_defect_flags.py`).
   `NET_NO_BUSMASTER` (since 2026-08-28) and `SDHCI_WRITE_NO_FLUSH` (since 2026-09-07) each had a

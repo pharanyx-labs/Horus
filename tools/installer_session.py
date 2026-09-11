@@ -76,6 +76,67 @@ DOWN = b"\x1b[B"
 ESC  = b"\x1b"
 
 
+# ---- who is typing --------------------------------------------------------
+#
+# THE CONVERSATION IS WRITTEN ONCE AND CAN BE DRIVEN FROM TWO INPUTS. The three
+# answer_* functions below are the only description of what the installer asks
+# and in what order; the comment on answer_accounts records what four copies of
+# it cost. A keyboard-driven install is a fifth copy waiting to happen -- the
+# same argument the kernel and console_server share one scancode table rather
+# than keeping one each -- so the SCREENS stay here and only the typing is
+# swapped.
+#
+# The two typists are not interchangeable in what they prove, which is the point
+# of having both. Serial writes a byte into the guest's UART and exercises no
+# part of the keyboard path. The keyboard drives QEMU's emulated 8042, so the
+# guest gets a real scancode and a real IRQ 1 and has to translate it in ring 3.
+# Every installer gate in this file used the first kind until 2026-09-11, which
+# is why an install that no one at the machine could actually perform passed all
+# of them.
+
+
+class SerialTypist:
+    """Types by writing bytes into the guest's COM1 pty.
+
+    The default, and what every scenario in this file used before there was a
+    choice. Writes are unbuffered and instantaneous from the guest's side: the
+    UART has a receive register the guest polls, so a burst arrives intact.
+    """
+
+    def __init__(self, s):
+        self.s = s
+
+    def text(self, t):
+        os.write(self.s.fd, t.encode() if isinstance(t, str) else t)
+
+    def key(self, name):
+        os.write(self.s.fd, {"enter": ENTER, "down": DOWN, "esc": ESC}[name])
+
+
+class KeyboardTypist:
+    """Types on the machine's own keyboard, over QEMU's emulated 8042.
+
+    PACED, AND THE PACING IS NOT POLITENESS. The 8042 holds exactly ONE byte and
+    stops raising IRQ 1 until it is read, so a keystroke waits for the reader
+    rather than being lost -- but only one does. Typing faster than
+    console_server polls drops everything after the first, and the way that
+    presents is a password whose two entries differ and an installer that
+    silently asks again. The delay is the harness matching a human's rate, not
+    working around a defect: a person cannot outrun a polled reader either.
+    """
+
+    def __init__(self, s, delay=0.15):
+        self.s = s
+        self.delay = delay
+
+    def text(self, t):
+        self.s.send_key_text(t.decode() if isinstance(t, bytes) else t, self.delay)
+
+    def key(self, name):
+        self.s.send_key({"enter": "ret", "down": "down", "esc": "esc"}[name],
+                        self.delay)
+
+
 _step_t0 = [time.time()]
 _timeline = []
 
@@ -289,7 +350,7 @@ def login(s, user, pw, timeout=None):
     return expect_any(s, ["@horus", "Login incorrect"], t) == 0
 
 
-def answer_accounts(s, root_pw=None, user=None, user_pw=None):
+def answer_accounts(s, root_pw=None, user=None, user_pw=None, typist=None):
     """Answer every account screen the installer asks, in order.
 
     ONE PLACE, BECAUSE FOUR COPIES IS WHAT BROKE. Each scenario in this file
@@ -308,34 +369,36 @@ def answer_accounts(s, root_pw=None, user=None, user_pw=None):
     root_pw = PASSWORD if root_pw is None else root_pw
     user = USER_NAME if user is None else user
     user_pw = USER_PASSWORD if user_pw is None else user_pw
+    t = typist or SerialTypist(s)
 
     s.expect("INSTALLER: waiting on the password", STEP)
-    os.write(s.fd, root_pw.encode() + ENTER)
+    t.text(root_pw); t.key("enter")
     s.expect("INSTALLER: waiting on the password again", STEP)
-    os.write(s.fd, root_pw.encode() + ENTER)
+    t.text(root_pw); t.key("enter")
 
     s.expect("INSTALLER: waiting on the user name", STEP)
-    os.write(s.fd, user.encode() + ENTER)
+    t.text(user); t.key("enter")
     s.expect("INSTALLER: waiting on the user password", STEP)
-    os.write(s.fd, user_pw.encode() + ENTER)
+    t.text(user_pw); t.key("enter")
     s.expect("INSTALLER: waiting on the user password again", STEP)
-    os.write(s.fd, user_pw.encode() + ENTER)
+    t.text(user_pw); t.key("enter")
 
 
-def answer_survey(s, first_timeout=None):
+def answer_survey(s, first_timeout=None, typist=None):
     """Choose Continue on the destroy-this-disk screen.
 
     Cancel is the default and the cursor starts on it, so reaching Continue takes
     a deliberate keystroke -- which is the property being relied on, so the
     harness presses it rather than assuming it.
     """
+    t = typist or SerialTypist(s)
     s.expect("INSTALLER: waiting on the destroy-this-disk choice",
              STEP if first_timeout is None else first_timeout)
-    os.write(s.fd, DOWN)
-    os.write(s.fd, ENTER)
+    t.key("down")
+    t.key("enter")
 
 
-def answer_review_and_confirm(s, word=b"FORMAT"):
+def answer_review_and_confirm(s, word="FORMAT", typist=None):
     """Accept the review, then type the confirmation word.
 
     THE WORD IS LAST NOW, AND THE ORDER IS THE POINT. Until 2026-09-06 it was the
@@ -350,10 +413,11 @@ def answer_review_and_confirm(s, word=b"FORMAT"):
     that is typed and compared, and no sequence of enters spells FORMAT. The
     keystroke that costs something is the next one.
     """
+    t = typist or SerialTypist(s)
     s.expect("INSTALLER: waiting on the review choice", STEP)
-    os.write(s.fd, ENTER)
+    t.key("enter")
     s.expect("INSTALLER: waiting on the typed confirmation", STEP)
-    os.write(s.fd, word + ENTER)
+    t.text(word); t.key("enter")
 
 
 def boot1(disk):

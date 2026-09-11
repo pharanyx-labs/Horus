@@ -54,6 +54,43 @@ in this file.
 
 ### Added
 
+- **An entire install, typed on the machine's own keyboard.** `make smoke-keyboard-install`
+  completes the install and then logs into what was installed, with nothing typed at COM1 from
+  the first menu to the shell prompt — the claim the ring-3 keyboard exists to support, gated
+  rather than asserted. It is the first thing to put characters through `tui_input` in **raw
+  mode**: a masked field, entered twice and compared, plus the typed confirmation word. That
+  path is where a dropped keystroke hides, because it does not announce itself — it makes the
+  two entries differ and the installer quietly asks again. A serial-driven gate cannot fail
+  there at all, since a UART burst arrives intact; on a polled one-byte controller it is the
+  whole risk of the design.
+
+  It also makes the password-not-on-the-wire check **stronger than the serial gate's**: there
+  the harness writes the password into the pty, so its absence from the output says only that
+  the guest did not echo it. Here the password never touches the serial line in either
+  direction, so a hit is unambiguously a masked field reaching a terminal.
+
+  **The install conversation stays in one place.** The screens are imported from
+  `tools/installer_session.py`'s `answer_*` functions rather than restated, and those functions
+  gained a *typist* — serial or keyboard — so both inputs drive the same conversation. That file
+  already records what four copies of it cost when the installer grew two screens and exactly
+  one copy was taught about them; a fifth copy in the keyboard harness would have been the same
+  defect, and the same argument as the kernel and `console_server` sharing one scancode table.
+  Every existing installer gate is unchanged and was re-run to prove it.
+
+  **No control arm of its own**, recorded rather than left implicit: both existing keyboard arms
+  redden it, measured rather than assumed and with distinguishable logs — `CONSOLE_NO_KBD=1`
+  leaves the guest on a survey screen that never advanced, `CONSOLE_KBD_SPLIT_ESC=1` cancels
+  that screen and falls through to a login prompt. A third flag dropping keystrokes on a
+  schedule would reproduce the consequence faithfully but not the cause. Repeatability was
+  measured **5 of 5** before it was promoted, since the masked-field typing is the flake-prone
+  part and a flaky gate is worse than none.
+
+  One thing the measurement corrected in the harness itself: the runner printed *"chose
+  Continue"* after sending Down and Enter at the survey, having observed nothing — and under
+  `CONSOLE_NO_KBD` it printed exactly that while the guest sat on the untouched screen. It now
+  says what it did rather than what it hoped, and the next screen's marker is what proves the
+  selection moved.
+
 - **The machine's own keyboard, read from ring 3 — and no new authority to do it (S89).**
   `console_server` drove the screen and polled COM1 for input, so a machine with a keyboard and
   no serial cable reached a login prompt on its own display and accepted nothing typed at it.

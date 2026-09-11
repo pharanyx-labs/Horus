@@ -3745,7 +3745,21 @@ install.iso:
 	@$(MAKE) --no-print-directory STORAGE_ATA=1
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 GRUB_CFG=grub-menu.cfg horus.iso
 	@mv horus.iso install.iso
+# SAY WHICH FILE TO WRITE, AND SAY THAT THE OTHER ONE IS NOT IT.
+#
+# The rename to install.iso is not tidiness: `horus.iso` is the artifact EVERY
+# smoke gate builds, and each one overwrites it with the shipping grub.cfg --
+# one entry, timeout=0, no menu, STORAGE_ATA=0. So a horus.iso left lying in the
+# tree is whichever gate ran last, and writing it to a stick gives a login
+# prompt and no menu. That happened on 2026-09-11, twice, and the second time
+# the stale file was three hours old.
+#
+# Naming the install media horus.iso would not fix it -- it would make the
+# collision worse, since the next gate run would silently replace the image
+# somebody was about to write. The names stay distinct and the build says so.
 	@echo "[install] install.iso - a boot menu: live boot (default) or install"
+	@echo "[install]   write THIS file:  sudo dd if=install.iso of=/dev/sdX bs=4M status=progress conv=fsync"
+	@echo "[install]   NOT horus.iso, which every smoke gate rebuilds without the menu"
 
 # GRUB_CFG selects the boot configuration staged into the ISO. The default is the
 # single-entry, no-timeout grub.cfg every gate boots; install media overrides it

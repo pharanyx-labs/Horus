@@ -233,12 +233,30 @@ exercised, against a kernel that is not moving.
 
 ### On real hardware
 
-`horus.iso` is a hybrid image: El Torito for BIOS, and an EFI system partition for UEFI. Write it
-to a USB stick with `dd` and boot from it either way.
+**Write `install.iso`, not `horus.iso`.** Both are hybrid images -- El Torito for BIOS, an EFI
+system partition for UEFI -- and both boot either way, but they are not the same image:
+
+| | built by | boot config | storage | what you get |
+|---|---|---|---|---|
+| `install.iso` | `make install.iso` | `grub-menu.cfg` | `STORAGE_ATA=1` | a menu: **live boot** (default, changes nothing) or **install** |
+| `horus.iso` | `make horus.iso`, and **every smoke gate** | `grub.cfg` | `STORAGE_ATA=0` | one entry, `timeout=0`, straight to a login prompt, no disk detected |
 
 ```sh
-sudo dd if=horus.iso of=/dev/sdX bs=4M status=progress conv=fsync   # sdX, not sdX1
+make install.iso
+sudo dd if=install.iso of=/dev/sdX bs=4M status=progress conv=fsync   # sdX, not sdX1
 ```
+
+**This section said `horus.iso` until 2026-09-11, and following it is how the mistake gets
+made.** `horus.iso` is the gate artifact: roughly 160 smoke targets build it, each overwriting
+whatever was there with the menu-less shipping configuration. So a `horus.iso` sitting in the tree
+is whichever gate ran last, and writing it to a stick gives a login prompt with no menu and no
+disk -- which reads as the installer being missing rather than as the wrong file having been
+written. Check the timestamp before you write: a stale `install.iso` from before your last build
+is the other way this bites.
+
+Renaming the install media to `horus.iso` would not fix it and was considered and rejected: the
+next gate run would silently replace the image you were about to write. The names stay distinct,
+and `make install.iso` prints the `dd` line for the file it just built.
 
 **Until 2026-09-07 that did not work**, and the instruction above was here anyway. `grub.cfg`
 named the boot device as `set root=(cd)` -- the BIOS El Torito CD-ROM -- which does not exist

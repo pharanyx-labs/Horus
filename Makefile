@@ -3757,8 +3757,17 @@ GRUB_CFG ?= grub.cfg
 # agree about which GRUB built the boot image, or the modules embedded in it
 # and the MBR wrapped around it come from different installs.
 GRUB_I386_DIR ?= /usr/lib/grub/i386-pc
+# The UEFI half's modules. Both boot images are built from one memdisk, so a
+# machine that boots either way pins the same kernel.
+GRUB_EFI_DIR  ?= /usr/lib/grub/x86_64-efi
 
-horus.iso: kernel.elf $(GRUB_CFG) $(BOOT_MODULE_DEP)
+# tools/mkbootimg.sh IS A PREREQUISITE, and leaving it out cost a confusing
+# half hour: the boot image is this rule's real output, so a change to the
+# script that builds it must rebuild the ISO. Without this, editing
+# mkbootimg.sh and re-running `make horus.iso` reports nothing to be done and
+# leaves the OLD image in place -- a stale artifact that makes the next boot
+# test a measurement of the previous build.
+horus.iso: kernel.elf $(GRUB_CFG) $(BOOT_MODULE_DEP) tools/mkbootimg.sh
 	@rm -rf isofiles
 	@mkdir -p isofiles/boot/grub
 	@cp kernel.elf isofiles/boot/kernel.elf
@@ -3796,23 +3805,28 @@ horus.iso: kernel.elf $(GRUB_CFG) $(BOOT_MODULE_DEP)
 # beside the kernel -- unmeasured, and editable by exactly the attacker this
 # exists to stop. tools/mkbootimg.sh builds the image with the config and the
 # pin in a memdisk INSIDE it, which is what SeaBIOS measures into PCR[4].
-	@GRUB_DIR=$(GRUB_I386_DIR) tools/mkbootimg.sh kernel.elf .bootcfg.staged isofiles/boot/grub/eltorito.img >/dev/null
+	@GRUB_DIR=$(GRUB_I386_DIR) EFI_GRUB_DIR=$(GRUB_EFI_DIR) \
+	    EFI_OUT=isofiles/boot/grub/efi.img \
+	    tools/mkbootimg.sh kernel.elf .bootcfg.staged isofiles/boot/grub/eltorito.img >/dev/null
 	@rm -f .bootcfg.staged
-# xorriso directly, with the arguments grub-mkrescue would have used for the
-# BIOS half. --grub2-mbr is the hybrid MBR, and it is not optional: without it
-# the image boots from CD and NOT from a USB stick written with dd, which is the
-# case grub-menu.cfg exists for. Verified 2026-09-11 both ways, -cdrom and
-# -drive if=ide.
+# xorriso directly, with the arguments grub-mkrescue would have used for BOTH
+# halves. --grub2-mbr is the hybrid MBR and is not optional: without it the image
+# boots from CD and NOT from a USB stick written with dd, which is the case
+# grub-menu.cfg exists for. -eltorito-alt-boot plus -e is the UEFI half, and
+# -isohybrid-gpt-basdat is what makes the EFI partition visible when the same
+# bytes are presented as a raw disk rather than as optical media.
 #
-# The EFI half grub-mkrescue also emits is deliberately GONE. Horus is
-# BIOS/Multiboot2, nothing in this tree has ever booted the EFI path, and an
-# unmeasured second door beside a measured one is only as strong as the weaker
-# of the two -- an attacker would simply boot the ISO in EFI mode. Recorded in
-# docs/LIMITATIONS.md rather than left to be noticed.
+# ALL FOUR CELLS OF tools/boot_media_test.sh's TABLE, and that list is why this
+# is spelled out rather than trimmed. The first version of this rule dropped the
+# EFI half on the claim that nothing here had ever booted it; `smoke-boot-media`
+# boots uefi-cd and uefi-disk on every CI run and went red on the first push.
+# Both boot images carry the same pinned kernel hash (tools/mkbootimg.sh), so
+# neither firmware path is the weaker door.
 	@xorriso -as mkisofs -quiet -o $@ \
 	    -b boot/grub/eltorito.img -no-emul-boot -boot-load-size 4 -boot-info-table \
 	    --grub2-boot-info --grub2-mbr $(GRUB_I386_DIR)/boot_hybrid.img \
-	    isofiles 2>&1 || (echo "xorriso failed (install xorriso grub-pc-bin)" && exit 1)
+	    -eltorito-alt-boot -e boot/grub/efi.img -no-emul-boot -isohybrid-gpt-basdat \
+	    isofiles 2>&1 || (echo "xorriso failed (install xorriso grub-pc-bin grub-efi-amd64-bin mtools)" && exit 1)
 	@rm -rf isofiles
 
 clean: userspace-clean
@@ -3835,12 +3849,15 @@ iso: kernel.elf
 # whose kernel was NOT pinned would be a second boot path with a different
 # security property, and the one a developer reaches for most often.
 	@sed 's|@HORUS_MODULES@||' grub.cfg > .bootcfg.staged
-	@GRUB_DIR=$(GRUB_I386_DIR) tools/mkbootimg.sh kernel.elf .bootcfg.staged iso/boot/grub/eltorito.img >/dev/null
+	@GRUB_DIR=$(GRUB_I386_DIR) EFI_GRUB_DIR=$(GRUB_EFI_DIR) \
+	    EFI_OUT=iso/boot/grub/efi.img \
+	    tools/mkbootimg.sh kernel.elf .bootcfg.staged iso/boot/grub/eltorito.img >/dev/null
 	@rm -f .bootcfg.staged
 	@xorriso -as mkisofs -quiet -o horus.iso \
 	    -b boot/grub/eltorito.img -no-emul-boot -boot-load-size 4 -boot-info-table \
 	    --grub2-boot-info --grub2-mbr $(GRUB_I386_DIR)/boot_hybrid.img \
-	    iso 2>&1 || (echo "xorriso failed (install xorriso grub-pc-bin)" && exit 1)
+	    -eltorito-alt-boot -e boot/grub/efi.img -no-emul-boot -isohybrid-gpt-basdat \
+	    iso 2>&1 || (echo "xorriso failed (install xorriso grub-pc-bin grub-efi-amd64-bin mtools)" && exit 1)
 
 # Userspace is built position-independent (-fPIE): the shipped binaries are
 # linked as static-PIE ELFs (ET_DYN) and loaded by the kernel at a randomized

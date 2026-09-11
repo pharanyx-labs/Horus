@@ -69,7 +69,13 @@ fi
 # THE BOOT IMAGE PINS THE REAL KERNEL. Built from the genuine binary, before it
 # is tampered -- so the image, and therefore PCR[4], is exactly what a real
 # build produces.
-GRUB_DIR="$GRUB_I386_DIR" "$(dirname "$0")/mkbootimg.sh" \
+#
+# BOTH images, so the attack is staged on the UEFI path as well as the BIOS one.
+# A tampered medium carrying only the BIOS image would leave the UEFI refusal
+# untested -- and an attacker picks the door, not us. Verified 2026-09-11 under
+# OVMF: HASH MISMATCH, then REFUSED, on that path too.
+GRUB_DIR="$GRUB_I386_DIR" EFI_GRUB_DIR="${GRUB_EFI_DIR:-/usr/lib/grub/x86_64-efi}" \
+    EFI_OUT="$WORK/iso/boot/grub/efi.img" "$(dirname "$0")/mkbootimg.sh" \
     "$KERNEL" "$WORK/grub.cfg" "$WORK/iso/boot/grub/eltorito.img" >/dev/null
 
 # THE MEDIUM CARRIES A DIFFERENT ONE. One byte, deep enough to be past the ELF
@@ -91,6 +97,7 @@ FAKE=$(sha256sum "$WORK/iso/boot/kernel.elf" | awk '{print $1}')
 xorriso -as mkisofs -quiet -o "$OUT" \
     -b boot/grub/eltorito.img -no-emul-boot -boot-load-size 4 -boot-info-table \
     --grub2-boot-info --grub2-mbr "$GRUB_I386_DIR/boot_hybrid.img" \
+    -eltorito-alt-boot -e boot/grub/efi.img -no-emul-boot -isohybrid-gpt-basdat \
     "$WORK/iso"
 
 echo "tamper_kernel_iso: $OUT pins $REAL and carries $FAKE"

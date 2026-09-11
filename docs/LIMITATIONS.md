@@ -1606,14 +1606,20 @@ would reasonably think something had broken.
   image — and that is the reason one was **not** used: it would make `PCR[4]` identical across every
   such kernel and give back the property being removed.
 
-- **The ISO no longer carries a UEFI boot path.** `grub-mkrescue` emitted a hybrid image bootable
-  both ways; the ISO is now assembled directly with `xorriso` around a BIOS boot image, because
-  `grub-mkimage -m` is the only way to get the config and the pin *inside* what the firmware
-  measures. Nothing in this tree ever booted the EFI half — Horus is BIOS/Multiboot2 — and an
-  unmeasured second door beside a measured one is only as strong as the weaker of the two, so an
-  attacker would simply have booted the ISO in EFI mode. The hybrid MBR is kept, so a stick written
-  with `dd` still boots; verified 2026-09-11 both ways, `-cdrom` and `-drive if=ide`. A machine that
-  can only boot UEFI can no longer boot this image at all, which is a real loss of reach.
+- **A volume sealed under one firmware does not open under the other.** `PCR[4]` is extended by
+  the firmware, and OVMF and SeaBIOS do not measure the same bytes, so the same medium booted the
+  other way presents a different value and the TPM declines. That is correct rather than
+  unfortunate — a different boot chain *is* a different boot chain — but it means a machine that
+  changes firmware mode after an install must reseal.
+
+  **This entry first said the UEFI path had been removed, and that was wrong twice over.** The
+  first version of the ISO rule dropped `grub-mkrescue`'s EFI half on the claim that nothing here
+  had ever booted it; `tools/boot_media_test.sh` boots `uefi-cd` and `uefi-disk` on every CI run,
+  and exists because those exact modes were measured broken on 2026-09-06 and deliberately fixed.
+  CI caught it on the first push. Both boot images are now built from the same memdisk by
+  `tools/mkbootimg.sh`, so both pin the same kernel; verified 2026-09-11 that a substituted kernel
+  is refused under OVMF as well as SeaBIOS. The hybrid MBR is kept, so a stick written with `dd`
+  still boots — all four cells of the media/firmware table pass.
 
 **What this does not fix.** GRUB's own `tpm` module measures loaded binaries into `PCR[9]`, and
 would have been the conventional answer — it **does not exist for i386-pc** in Debian's

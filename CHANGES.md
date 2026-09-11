@@ -42,8 +42,10 @@ in this file.
 
   Gates: `make smoke-boot-pin` and `make smoke-tpm-bootimg`, each falsified by its own arm
   (`BOOT_PIN_UNCHECKED=1`, `BOOT_IMAGE_UNBOUND=1`) and the first measured red under its flag. The
-  ISO is now assembled with `xorriso` directly and **no longer carries a UEFI boot path**; the
-  hybrid MBR is kept, so a stick written with `dd` still boots.
+  ISO is now assembled with `xorriso` directly, carrying **both** boot images — BIOS and UEFI —
+  built from the same memdisk so neither firmware path is the weaker door; a substituted kernel is
+  refused under OVMF as well as SeaBIOS. A volume sealed under one firmware will not open under the
+  other, since `PCR[4]` is the firmware's own measurement (`docs/LIMITATIONS.md` 2.9a).
 
 ### Removed
 

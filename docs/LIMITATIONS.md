@@ -3707,6 +3707,24 @@ under injection at a measurable rate, which is the mechanism `[G-9]` and
 a 0.5% event that is about 10% power, which is the arithmetic
 `docs/investigations/G-12` already insists on.
 
+**Why this is a limitation and not a `[G-n]` finding** (decided 2026-09-11, and
+recorded so it is not re-litigated). A G-number is a defect that has been
+attributed and that carries a witness able to fail; neither is true here. The
+only number this entry has is **conditioned on a widener** -- four guest CPUs
+pinned onto two host cores, plus `KSP_GUARD_INJECT`, which injects a bogus kernel
+stack pointer and is not a passive instrument -- so 1/200 is an upper bound on a
+rate nobody has measured in the configuration the gate actually runs in.
+Promoting that to a finding would state a precision the measurement does not
+have, and would attach a status to it that every other document then has to
+carry consistently.
+
+**What would change the classification**, in either direction: a campaign of the
+same size **without** the pinning, which measures the gate's own configuration
+rather than the widened one; or a captured reproduction, which is now possible
+where it was not -- `tools/stress_boot.sh` keeps every failure since 2026-09-10,
+bounded by `STRESS_KEEP_FAILURES`. Either result is worth more than re-arguing
+the classification from the number already here.
+
 **The capture is gone, and that is a second finding.** `tools/stress_boot.sh`
 kept only the *first* failure's log, and the first failure of this campaign was
 one of the 31 "died otherwise" runs — so the one reproduction of the marker under

@@ -114,6 +114,15 @@ conditional:
       MEASURED 2026-08-20: NOT entered even by an IRQ_POLICY_AUDIT=1 boot, which an earlier entry claimed would reach it. Nothing in that image calls it
 
 covered:
+  # SYS_BOOT_FLAGS runs on EVERY boot and needed no probe to reach it: init calls
+  # it from machine_needs_install() to learn which boot-menu entry the operator
+  # chose, so the handler body executes before the login prompt on every session
+  # scenario in the suite. Listed here rather than under `conditional` because
+  # nothing gates it -- it is SC_NONE and takes no capability, by the argument in
+  # its dispatch comment: it returns a fact about how the machine was started,
+  # not an authority.
+  - SYS_BOOT_FLAGS           # init reads it at boot to pick installer or login
+
   # Promoted 2026-08-30. All twelve are `SC_NONE` dispatch rows, and that single
   # structural fact is the whole reason they could be promoted at once: an
   # SC_NONE row means the central check in syscall_handler admits every caller

@@ -198,6 +198,7 @@ struct task_info {
 #define SYS_USERLIST          112  /* (index, struct user_entry*) -> 1 filled, 0 past the last account, SYS_ERR_PERM without CAP_USER. Account METADATA only -- name, uid, gid, home -- and deliberately nothing else: no hash, no salt, no key slot, no lockout state. A dense index over the valid accounts, so a caller loops until 0 and never needs the kernel's MAX_USERS. */
 #define SYS_CONSOLE_RELEASE  114  /* (dev_slot) -> 0; give the console hardware back to the kernel. CAP_IO_DEVICE + WRITE in dev_slot, and the caller must BE the current owner. Exists so a console driver that fails AFTER taking the console can still be heard: its own diagnostic goes to the klog and nowhere else while it owns the wire. */
 #define SYS_FB_INFO           115  /* (dev_slot, struct fb_geometry*) -> 0; the SHAPE of the linear framebuffer (width/height/pitch/bpp), or SYS_ERR_NOENT if this display is not one. CAP_IO_DEVICE + READ in dev_slot, and it must name the PLATFORM device. Where the framebuffer is comes from SYS_DEVICE_INFO's mmio[] ranges, not from here. */
+#define SYS_BOOT_FLAGS        116  /* (void) -> a bitmask of BOOT_FLAG_*; which entry the operator chose at the boot menu. SC_NONE, and deliberately: the value is a FACT about how this machine was started, not an authority. Knowing that the installer entry was picked lets a task do nothing -- installing still needs CAP_STORAGE_FORMAT, which only init grants and only to the installer. It is set once from the multiboot2 command line before any task exists and is never writable from ring 3. */
 #define SYS_STORAGE_DEVICE   113  /* (index, struct storage_info*) -> 0; the survey for ONE enumerated persistent device (CAP_STORAGE_FORMAT + READ). Refuses an index past the end rather than clamping. */
 #define SYS_IRQ_POLICY_INFO    92   /* (struct irq_policy_info*) -> 0; roadmap 1.1 audit counters. IRQ_POLICY_AUDIT builds only; NOSYS otherwise. CAP_KERNEL_LOG (READ). */
 #define SYS_DMESG              88   /* (buf, offset, max) -> bytes; copy a chunk of the kernel message ring at `offset` to buf. CAP_KERNEL_LOG (READ) in CAPSLOT_KERNEL_LOG, else SYS_ERR_PERM */
@@ -636,6 +637,25 @@ struct fb_geometry {
  * negative SYS_ERR_*. */
 static inline int sys_fb_info(uint32_t dev_slot, struct fb_geometry *out) {
     return (int)syscall(SYS_FB_INFO, dev_slot, (uint64_t)(uintptr_t)out, 0);
+}
+
+/* Boot-mode flags: which entry the operator chose at the boot menu.
+ *
+ * BOOT_FLAG_INSTALL is the only one today. Zero is the safe answer and is what
+ * every uncertainty produces -- no command line, an oversized one, a word the
+ * kernel does not recognise -- so a caller that treats 0 as "live boot" is
+ * treating a broken boot the same way it treats a deliberate one. */
+#define BOOT_FLAG_INSTALL  (1u << 0)
+/* BOOT_FLAG_LIVE says the operator picked the live entry, and it is a POSITIVE
+ * statement rather than the absence of the other one. Without it, "live" and
+ * "this image has no boot menu at all" are the same value -- and they are not
+ * the same request: a shipping image meeting a blank disk offers to install it,
+ * which is right for that image and makes a menu entry promising to change
+ * nothing a lie. With both words present the kernel keeps LIVE and drops
+ * INSTALL; an ambiguous command line resolves to the mode that writes nothing. */
+#define BOOT_FLAG_LIVE     (1u << 1)
+static inline uint64_t sys_boot_flags(void) {
+    return syscall(SYS_BOOT_FLAGS, 0, 0, 0);
 }
 
 /* Report what the device named by the CAP_IO_DEVICE (READ right) at `dev_slot`

@@ -92,10 +92,10 @@ syscall number without adding its table entry.
 by building twice and diffing; `horus.iso` is not, and `docs/LIMITATIONS.md` §5.3a says why.
 Boot-module integrity is tested by *corrupting a module* and asserting rejection. Measured boot
 is tested by tampering and asserting the PCRs diverge. Capability revocation carries Kani
-proofs. `.github/workflows/ci.yml` runs 111 jobs, most of them QEMU integration self-tests.
+proofs. `.github/workflows/ci.yml` runs 115 jobs, most of them QEMU integration self-tests.
 Which of them may block a merge is a decision recorded in `.github/ci-gating.yml` and enforced
 by the `ci-gating` job: every job must be listed as gating, or exempted with a written reason
-(**[C-6]**). The intended set is 113 of its 116 contexts, including every security test; the
+(**[C-6]**). The intended set is 117 of its 120 contexts, including every security test; the
 ruleset is reconciled to it by hand and lags whenever a gate is added. Read the live count from
 `gh api repos/pharanyx-labs/Horus/rulesets/21815299`, not from this sentence; the ruleset is
 reconciled by hand, so only the API knows.
@@ -151,7 +151,7 @@ per item.
 | **Network** | `netd` drives an e1000 from ring 3 holding one device capability and one untyped region, and its DMA reaches only what it mapped. It is woken by its device's own interrupt and acknowledges it. It transmits, and it receives on the 82574L reliably enough that `make smoke-net` gates on it (5 boots in 5); on the 82540EM reception has been seen exactly once, so receiving is a property of the device model here rather than of the driver (§2.14). There is no ARP table, IP, TCP or socket capability |
 | **Storage crypto** | Per-`(inode, block)` AEAD subkeys, Merkle rollback tree, and a TPM NV monotonic counter anchoring the volume against whole-volume rollback; key material never leaves the kernel |
 | **Installing** | A ring-3 `installer`, launched by `init` when the machine has a disk carrying no volume. Its whole authority is `CAP_STORAGE_FORMAT` (a capability type of its own — deliberately **not** a rights bit on the storage capability `fs_server` and the shell already hold, since those are granted with every right there is and defining the bit would confer it on both with nothing in the diff to show for it), `CAP_USER` to set the first root password, and a console endpoint. It cannot read the volume it replaces and cannot create a task. **Consent is a typed word, not a menu choice**: a menu whose default is Cancel still becomes a format with two keystrokes. A login still refuses to format a volume it does not recognise. **No partitioning and no bootloader step.** Install media **may replace an existing volume** (**S90**): the kernel refuses a target whose volume has been *unlocked* -- a machine somebody proved they own and is using -- rather than one merely recognised, which is the state install media is always in because it never logs in. Replacing asks for a different typed word (`REPLACE`, not `FORMAT`) and the disk menu marks a disk that already holds one. Installs onto legacy IDE and onto **SD/eMMC** &mdash; the latter is what a budget laptop's soldered internal storage actually is, and is reached by neither the IDE nor the SATA driver; a SATA disk is identified but not yet mountable |
-| **Boot integrity** | SHA-256 module manifest embedded in the kernel image; TPM 2.0 measurement into PCR 8 and 9; vdisk KEK sealed under `PolicyPCR` |
+| **Boot integrity** | Kernel SHA-256 pinned inside the firmware-measured boot image; SHA-256 module manifest embedded in the kernel image; TPM 2.0 measurement into PCR 4, 8 and 9; vdisk KEK sealed under `PolicyPCR` |
 | **Userspace** | newlib libc, a shell with pipelines, GNU coreutils, TCC |
 | **Shared libraries** | A shared object is loaded once into frames and mapped read+exec by many tasks through capabilities that never carry write, so no task can modify code another executes. **Not** yet a dynamic linker: no symbol resolution, and newlib is still statically linked into each program |
 | **Assurance** | Every property in `SECURITY.md` is bound by CI to a witness that exists and runs (`tools/check_invariants.py`); every declared count in the docs is derived and compared; every control arm is paired with a base gate |
@@ -227,10 +227,14 @@ CR0.WP, EFER.NXE, kernel W^X swept for violations at boot, unmapped kernel-stack
 pages, stack canaries reseeded from the CSPRNG, `CR4.TSD` denying ring-3 `RDTSC`,
 microarchitectural flush on task switch, SMT siblings parked.
 
-**Trusted boot.** GRUB loads the kernel and modules; the kernel verifies each module against
-a SHA-256 manifest embedded in its own image and refuses unverified payloads outright. Both
-kernel and modules are measured into TPM PCR 8 and 9. The vdisk key-encryption key is sealed
-to those PCRs, so a tampered boot cannot unlock the volume.
+**Trusted boot.** The kernel's SHA-256 is pinned inside the El Torito boot image, which the
+firmware measures into TPM `PCR[4]`; GRUB refuses a kernel that does not match. The kernel in turn
+verifies each module against a manifest embedded in its own image and refuses unverified payloads
+outright, and extends a kernel-identity token into `PCR[8]` and each module's digest into `PCR[9]`.
+The vdisk key-encryption key is sealed to **PCR 4, 8 and 9**, so neither a substituted kernel nor a
+boot image rebuilt without the check can unlock the volume. `PCR[4]` is the one of the three the
+kernel does not extend itself, which is what stops the measurement being a claim the kernel makes
+about itself — see `SECURITY.md` **S92**, and `docs/LIMITATIONS.md` 2.9a for what it costs.
 
 Full detail, including the threat model and what is explicitly out of scope, in
 [`SECURITY.md`](SECURITY.md).
@@ -309,7 +313,7 @@ Horus's assurance rests on its tests, so they are treated as first-class. Three 
 
 1. **Rust unit tests and Kani proofs**, `cargo test`, plus formal proofs that revocation
    hits exactly the target's derivation subtree.
-2. **QEMU integration self-tests**, the bulk of CI's 111 jobs; each boots a purpose-built
+2. **QEMU integration self-tests**, the bulk of CI's 115 jobs; each boots a purpose-built
    kernel configuration and asserts a marker on the serial console. These cover W^X,
    capability refusals, COW, TLB shootdown, preemption, signals, SMEP/SMAP, measured boot,
    untyped retyping, blocking receive, and more.

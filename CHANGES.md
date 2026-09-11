@@ -13,6 +13,40 @@ in this file.
 
 ---
 
+### Security
+
+- **BREAKING — the measured boot now measures the kernel, and the seal is bound to `PCR[4]`.**
+  Until 2026-09-11 nothing in the boot chain measured the kernel. `PCR[8]` and `PCR[9]` are
+  extended *by the kernel*, from a tag, the command line and the module manifest compiled into it,
+  so `PolicyPCR(8,9)` asked the kernel to vouch for itself. **Measured rather than argued: two
+  kernels with different SHA-256, booted on the same machine, produced byte-identical PCR 0..9** —
+  so an attacker with no key, no write access to the victim's disk and no exploit, only the ability
+  to boot the machine, could present a kernel of their own reproducing a released build's manifest
+  and command line and have the TPM release the volume key to it. That defeated **S11**, **S12**,
+  **S85** and threat-model **A4**.
+
+  Two candidate repairs were ruled out by measurement, not by reading. GRUB's `tpm` module, which
+  measures loaded binaries, **does not exist for i386-pc** in Debian's `grub-pc-bin` — only for
+  `x86_64-efi`. And the firmware PCRs alone bind nothing: two ISOs differing *only* in `kernel.elf`
+  gave identical `PCR 0..7`, because SeaBIOS measures the boot image rather than what it loads.
+
+  What ships instead: `tools/mkbootimg.sh` builds the El Torito image with `grub-mkimage -m`,
+  packing `grub.cfg` and the kernel's expected SHA-256 into a memdisk **inside** it; the config
+  refuses a kernel that does not match; and `put_pcr_selection` adds `PCR[4]`, the firmware's
+  measurement of that image, to the seal policy. The pin makes the kernel unforgeable and `PCR[4]`
+  makes the pin unremovable — **neither half is a control on its own**. No signing key: a signature
+  would leave `PCR[4]` identical across every kernel the key vouched for, which is the property
+  being removed. The measurement tag is bumped to `horus-measured-boot-v3`, so **a volume sealed
+  under v2 will not open**; the serialization did not change, but what the volume is bound to did.
+  See `SECURITY.md` **S92** and `docs/LIMITATIONS.md` 2.9a for what it costs.
+
+  Gates: `make smoke-boot-pin` and `make smoke-tpm-bootimg`, each falsified by its own arm
+  (`BOOT_PIN_UNCHECKED=1`, `BOOT_IMAGE_UNBOUND=1`) and the first measured red under its flag. The
+  ISO is now assembled with `xorriso` directly, carrying **both** boot images — BIOS and UEFI —
+  built from the same memdisk so neither firmware path is the weaker door; a substituted kernel is
+  refused under OVMF as well as SeaBIOS. A volume sealed under one firmware will not open under the
+  other, since `PCR[4]` is the firmware's own measurement (`docs/LIMITATIONS.md` 2.9a).
+
 ### Removed
 
 - **Both TLA+ specifications, as unsound rather than merely unchecked.**
@@ -53,6 +87,39 @@ in this file.
 ## [Unreleased]
 
 ### Added
+
+- **A boot menu on install media: install, or run live and change nothing (S91).** One image,
+  and the choice is made by the person holding the machine rather than baked into which ISO they
+  downloaded. `make install.iso` no longer compiles `INSTALL_ALWAYS` in; it ships `grub-menu.cfg`
+  with two entries, and the kernel learns which was chosen from its **command line**
+  (`horus.install` / `horus.live`, matched as whole words, read into `BOOT_FLAG_*` and readable
+  with the new `SYS_BOOT_FLAGS`).
+
+  **The command line is measured into PCR[8], and that is the part that matters.** It is an input
+  that changes what the kernel does, and an unmeasured input that changes behaviour makes measured
+  boot a claim about the wrong thing. Without it, an attacker with physical access takes a
+  machine's own measured media, adds the token at the GRUB prompt, and **every PCR is identical**:
+  measured boot passes and a TPM-sealed volume unseals for a boot nobody authorised. PCR[8] now
+  commits to `TAG` + length-prefixed command line + manifest, and the tag is bumped to
+  `horus-measured-boot-v2`. **Breaking: a volume sealed under v1 will not unseal on a v2 kernel**
+  and must be re-sealed — recorded here rather than smuggled in under the same tag, because a
+  measurement whose definition changes silently is worse than one that refuses.
+
+  **What that buys, stated exactly**: an edited command line cannot *unseal* a sealed volume, so
+  confidentiality survives an attacker who can boot the machine. It does not stop that attacker
+  *erasing* the disk — a format needs no key, and no measurement prevents it. `docs/LIMITATIONS.md`
+  now says so outright rather than leaving it to be inferred.
+
+  Three other things the work turned up, each found by running it rather than reasoning about it:
+  the menu's live entry was a **lie** on the machine most likely to boot it — with no token the
+  kernel behaves like the shipping image, which offers to install a *blank* disk, so the entry
+  promising to change nothing ran the installer; GRUB draws no menu on a terminal it was told to
+  use before being told its speed, so the original `terminal_output` ordering left the menu
+  invisible on the wire; and `grub.cfg` selected **serial only**, which is correct for a headless
+  gate and useless on a laptop, where a menu nobody can see is a machine that appears to hang and
+  then does something unchosen. Both terminals are listed now, and GRUB's editor is locked
+  (`set superusers=""` with `--unrestricted` entries) so this media's entries cannot be edited in
+  place.
 
 - **Install media can replace an existing volume, and a running system's disk still cannot be
   taken from under it (S90).** Booting install media on a machine that already has an operating

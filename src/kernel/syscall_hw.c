@@ -369,6 +369,24 @@ void h_device_info(struct interrupt_frame64 *r) {
  * them by default. A caller must be able to tell "no framebuffer" from "a
  * framebuffer 0 pixels wide" without inspecting fields, because the second is a
  * shape it might then try to draw into. */
+/* SYS_BOOT_FLAGS(): which entry the operator chose at the boot menu.
+ *
+ * SC_NONE, and the reasoning is worth stating because "no capability" usually
+ * needs an argument here. This returns a FACT about how the machine was
+ * started, not an authority: a task that learns BOOT_FLAG_INSTALL is set can do
+ * nothing with it that it could not do before. Installing still requires
+ * CAP_STORAGE_FORMAT, which init grants to the installer and to no other task.
+ *
+ * It is read-only by construction rather than by check. The flags are derived
+ * once from the multiboot2 command line during the boot-info walk, before any
+ * task exists, and no syscall writes them -- so there is no path by which ring 3
+ * could set the mode it then reads. That is what makes this safe to hand out
+ * without a capability, and it is why the derivation lives in main.c rather
+ * than anywhere a later change might make it writable. */
+void h_boot_flags(struct interrupt_frame64 *r) {
+    r->rax = boot_flags();
+}
+
 void h_fb_info(struct interrupt_frame64 *r) {
     uint64_t index = 0;
     const struct io_device *d = iodev_from_slot((uint32_t)r->rbx, CAP_RIGHT_READ, &index);

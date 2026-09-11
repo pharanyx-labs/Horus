@@ -140,6 +140,7 @@ static void assert_higher_half(void) {
  * RAM, read through PHYS_KVA — valid from boot, before paging_init runs. */
 #define MB2_BOOT_MAGIC     0x36d76289u
 #define MB2_TAG_END        0u
+#define MB2_TAG_CMDLINE    1u
 #define MB2_TAG_MODULE     3u
 #define MB2_TAG_MMAP       6u
 #define MB2_TAG_FRAMEBUFFER 8u
@@ -153,6 +154,89 @@ static void assert_higher_half(void) {
 
 struct mb2_tag        { uint32_t type; uint32_t size; };
 struct mb2_mmap_entry { uint64_t base; uint64_t len; uint32_t type; uint32_t reserved; };
+
+/* THE KERNEL'S OWN COMMAND LINE, and what it is allowed to decide.
+ *
+ * GRUB passes the words after `multiboot2 /boot/kernel.elf` as tag type 1. The
+ * only thing this kernel reads from it is which boot-menu entry the operator
+ * chose, because a single image that can either install or run live has to be
+ * told which -- and the honest place for that choice is the boot menu, where
+ * the person holding the machine makes it.
+ *
+ * WHO CAN SET IT is the whole security question, and the answer is: whoever
+ * controls the boot media. That is the same authority install media already
+ * rests on, and it is not reachable from ring 3 -- no syscall writes here, the
+ * buffer is filled once during the tag walk before any task exists, and it is
+ * const to everything afterwards. A ring-3 task can READ the resulting flags
+ * (SYS_BOOT_FLAGS) and learn nothing it can act on: knowing that the operator
+ * picked "Install" confers no ability to install, which still needs
+ * CAP_STORAGE_FORMAT that only init grants and only to the installer.
+ *
+ * IT FAILS CLOSED. An absent tag, an oversized one, or a word this kernel does
+ * not recognise all leave the flags at zero, which means "live boot" -- the
+ * mode that changes nothing on the disk. The dangerous answer requires the
+ * token to be present and spelled correctly; every uncertainty resolves to the
+ * safe one. That is the same direction machine_needs_install() argues for.
+ *
+ * BOUNDED AND COPIED, not pointed at. The tag lives in low physical memory that
+ * the frame allocator will later hand out, so a pointer into it would dangle
+ * the moment the pool is in use. 255 bytes is far more than the one token this
+ * kernel reads and keeps the buffer in .bss rather than on a stack. */
+#define BOOT_CMDLINE_MAX 256
+static char     g_boot_cmdline[BOOT_CMDLINE_MAX];
+static uint64_t g_boot_flags;
+
+/* Whether `needle` appears in the command line as a WHOLE word.
+ *
+ * Word-exact on purpose: a substring match would let `horus.installer-notes` or
+ * `nohorus.install` turn on a mode nobody asked for, and the mode in question
+ * decides whether a program that erases disks is launched. Words are separated
+ * by spaces and tabs, which is all GRUB produces. */
+static int cmdline_has_word(const char *needle)
+{
+    unsigned nlen = 0;
+    while (needle[nlen]) nlen++;
+    if (nlen == 0) return 0;
+
+    for (unsigned i = 0; i < BOOT_CMDLINE_MAX && g_boot_cmdline[i]; ) {
+        while (i < BOOT_CMDLINE_MAX && (g_boot_cmdline[i] == ' ' || g_boot_cmdline[i] == '\t'))
+            i++;
+        unsigned start = i;
+        while (i < BOOT_CMDLINE_MAX && g_boot_cmdline[i] &&
+               g_boot_cmdline[i] != ' ' && g_boot_cmdline[i] != '\t')
+            i++;
+        if (i - start == nlen) {
+            unsigned k = 0;
+            while (k < nlen && g_boot_cmdline[start + k] == needle[k]) k++;
+            if (k == nlen) return 1;
+        }
+    }
+    return 0;
+}
+
+static void mb_record_cmdline(const uint8_t *info, uint32_t off, uint32_t size)
+{
+    /* type+size is 8 bytes; the rest is a NUL-terminated string. A tag that
+     * claims less than the header, or more than the buffer, is dropped whole
+     * rather than truncated -- half a command line could end mid-token and
+     * match a word nobody wrote. */
+    if (size <= 8) return;
+    uint32_t len = size - 8;
+    if (len > BOOT_CMDLINE_MAX) return;
+    for (uint32_t i = 0; i < len; i++) g_boot_cmdline[i] = (char)info[off + 8 + i];
+    g_boot_cmdline[BOOT_CMDLINE_MAX - 1] = 0;
+}
+
+uint64_t boot_flags(void) { return g_boot_flags; }
+
+/* The raw command line, for the measurement that covers it.
+ *
+ * Returned rather than re-derived so the bytes PCR[8] commits to are exactly
+ * the bytes the flags were parsed from -- one source, so a future flag cannot
+ * be read from text the measurement never saw. NUL-terminated; empty when the
+ * boot loader passed none, which is the ordinary case and hashes as a length of
+ * zero rather than as an absent field. */
+const char *boot_cmdline(void) { return g_boot_cmdline; }
 
 /* Boot-module table, filled by the same tag walk that sizes the pool. Kept in
  * .bss as 24 * ~48 bytes of descriptors — the module *payloads* stay where GRUB
@@ -380,7 +464,9 @@ static uint32_t mb_scan_boot_info(void) {
         if (tag->type == MB2_TAG_END) break;
         if (tag->size < sizeof(struct mb2_tag) || (uint64_t)off + tag->size > total) break;
 
-        if (tag->type == MB2_TAG_MODULE) {
+        if (tag->type == MB2_TAG_CMDLINE) {
+            mb_record_cmdline(info, off, tag->size);
+        } else if (tag->type == MB2_TAG_MODULE) {
             mb_record_module(info, off, tag->size);
         } else if (tag->type == MB2_TAG_FRAMEBUFFER) {
             mb_record_framebuffer(info, off, tag->size);
@@ -401,6 +487,33 @@ static uint32_t mb_scan_boot_info(void) {
         }
         off += (tag->size + 7u) & ~7u;   /* tags are 8-byte aligned */
     }
+
+    /* SAID ON THE WIRE, because a line that changes what the kernel does and is
+     * committed to a PCR must be visible in the boot log that explains the
+     * machine. It is also the only way to know what the measurement covers
+     * without reading the tag yourself -- GRUB puts the image path in front of
+     * the arguments, so the measured string is longer than what the menu entry
+     * appears to pass, and a verifier that guessed would be wrong. */
+    print("boot: cmdline \"");
+    print(g_boot_cmdline);
+    print("\"\n");
+
+    /* Derived once, here, from the line the tag walk just copied -- rather than
+     * re-scanned wherever somebody asks. One place that turns text into a flag
+     * is one place to audit, and the flag is what the rest of the kernel and
+     * ring 3 see. */
+    g_boot_flags = 0;
+    if (cmdline_has_word("horus.install")) g_boot_flags |= BOOT_FLAG_INSTALL;
+    if (cmdline_has_word("horus.live"))    g_boot_flags |= BOOT_FLAG_LIVE;
+
+    /* BOTH WORDS IS NOT A CHOICE, so it is refused rather than resolved. A
+     * command line carrying install AND live is one somebody edited or
+     * concatenated, and guessing which half they meant is how an ambiguous
+     * input becomes a formatted disk. Dropping to live is the answer that
+     * changes nothing, and it is the same direction every other uncertainty
+     * here resolves to. */
+    if ((g_boot_flags & BOOT_FLAG_INSTALL) && (g_boot_flags & BOOT_FLAG_LIVE))
+        g_boot_flags &= ~(uint64_t)BOOT_FLAG_INSTALL;
 
     if (region_top <= (uint64_t)USER_PHYS_BASE) return 0;
     if (region_top > PHYS_POOL_CEIL) region_top = PHYS_POOL_CEIL;   /* PHYS_KVA window */

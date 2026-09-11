@@ -1197,19 +1197,34 @@ match is flagged unverified: `SYS_BOOT_MODULE_INFO` reports it as an empty slot 
 `SYS_BOOT_MODULE_READ` refuses its payload outright. Since provisioning into `/bin` goes
 through that read path, an unverified module can never become a root-owned executable.
 
-**2. Measured boot.** The kernel image and each module are extended into **TPM PCR 8 and 9**
-over the TIS interface. `tools/tpm_expected_pcr.py` recomputes the expected values on the
-host, and CI asserts they match.
+**2. Measured boot.** A kernel-identity token (the tag, the command line and the module
+manifest) is extended into **PCR[8]** and each verified module's digest into **PCR[9]**, over the
+TIS interface. `tools/tpm_expected_pcr.py` recomputes both on the host, and CI asserts they match.
 
-**3. Sealed volume key.** The vdisk key-encryption key is sealed to PCR 8 and 9 under a
-`PolicyPCR` session. A measured-good boot unseals it; any change to the kernel or modules
-changes the PCRs and the volume stays locked. The KEK derivation uses HKDF rather than Argon2,
+**This section said "the kernel image ... extended into PCR 8 and 9" until 2026-09-11, and that was
+false.** Both PCRs are extended *by the kernel*, from values compiled into it; nothing hashed the
+kernel's own bytes, and measured on that day, two kernels with different SHA-256 produced
+byte-identical PCR 0..9. The kernel is now covered a layer down instead: `tools/mkbootimg.sh`
+packs `grub.cfg` and the kernel's expected SHA-256 into a memdisk **inside the El Torito boot
+image**, GRUB refuses a kernel that does not match, and the firmware measures that image into
+**`PCR[4]`** — which the seal policy includes, so the pin cannot be removed without changing what
+the volume is sealed to. See `SECURITY.md` **S92**.
+
+**3. Sealed volume key.** The vdisk key-encryption key is sealed to **PCR 4, 8 and 9** under a
+`PolicyPCR` session. A measured-good boot unseals it; a change to the modules changes PCR[9], and
+a change to the kernel or to the boot image changes PCR[4] — which is the one of the three the
+kernel does not extend itself, and therefore the only one that can bind the seal to something
+other than the kernel's own word (**S92**). The KEK derivation uses HKDF rather than Argon2,
 which cut `ramfs_init` from 1.5 s to 0.25 s without weakening the seal; the security comes from
 the TPM policy, not from KDF hardness.
 
 **Adversarial tests.** `smoke-modules-tamper` corrupts a module payload in the ISO and
 asserts the kernel refuses it. `smoke-tpm-tamper` asserts the PCRs additionally *diverge*.
-`smoke-tpm-seal` asserts a changed PCR leaves the volume locked. These test that the control
+`smoke-tpm-seal` asserts a changed PCR leaves the volume locked. `smoke-boot-pin` substitutes the
+kernel behind a genuine boot image and asserts GRUB refuses it; `smoke-tpm-bootimg` seals under
+one boot image and asserts a second cannot unseal. Each of the last two has a control arm that
+restores the pre-2026-09-11 behaviour and requires the attack to succeed — note that the first
+three tamper with a *module*, which is why none of them ever witnessed the kernel. These test that the control
 fires, not merely that the happy path works.
 
 ---

@@ -41,7 +41,23 @@ for pair in "$@"; do
 done
 
 awk '/@HORUS_MODULES@/{while((getline l < "'"$stage"'/mods.txt")>0) print l; next} {print}' \
-    "$cfg" > "$stage/iso/boot/grub/grub.cfg"
+    "$cfg" > "$stage/grub.cfg"
 
-grub-mkrescue -o "$out" "$stage/iso" >/dev/null 2>&1 \
-    || { echo "tamper_module_iso: grub-mkrescue failed" >&2; exit 1; }
+# THE SAME MEASURED BOOT IMAGE THE REAL ISO GETS, since 2026-09-11 (S92). This
+# used grub-mkrescue and staged grub.cfg onto the ISO, which stopped working the
+# moment the config began checking a hash that lives in a memdisk INSIDE the
+# boot image: with no memdisk the check finds no pin, fails, and the kernel
+# never runs -- so this gate would have gone red asserting the absence of a
+# marker its own ISO made unreachable, which looks exactly like the module check
+# regressing. The kernel here is NOT tampered, so it matches its pin and boots;
+# what is tampered is a module, which is this gate's subject.
+GRUB_I386_DIR=${GRUB_I386_DIR:-/usr/lib/grub/i386-pc}
+GRUB_DIR="$GRUB_I386_DIR" "$(dirname "$0")/mkbootimg.sh" \
+    "$kernel" "$stage/grub.cfg" "$stage/iso/boot/grub/eltorito.img" >/dev/null \
+    || { echo "tamper_module_iso: mkbootimg failed" >&2; exit 1; }
+
+xorriso -as mkisofs -quiet -o "$out" \
+    -b boot/grub/eltorito.img -no-emul-boot -boot-load-size 4 -boot-info-table \
+    --grub2-boot-info --grub2-mbr "$GRUB_I386_DIR/boot_hybrid.img" \
+    "$stage/iso" >/dev/null 2>&1 \
+    || { echo "tamper_module_iso: xorriso failed" >&2; exit 1; }

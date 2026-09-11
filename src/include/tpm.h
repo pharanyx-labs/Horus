@@ -20,10 +20,20 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* THE FIRMWARE'S measurement of the boot image, which this kernel does NOT
+ * extend and cannot influence -- the only input it does not produce, and
+ * therefore the only one that can bind a seal to something other than the
+ * kernel's own word about itself. SeaBIOS extends it with the El Torito boot
+ * image, i.e. the output of tools/mkbootimg.sh, which carries the pinned kernel
+ * hash. See put_pcr_selection in src/kernel/tpm.c for what was measured before
+ * relying on it, and SECURITY.md S92. */
+#define TPM_PCR_BOOT_IMAGE        4
+
 /* OS-owned PCRs (firmware/SeaBIOS measures into 0..7). We extend:
- *   PCR[8] <- H(kernel identity token || serialized module manifest)
+ *   PCR[8] <- H(kernel identity token || command line || module manifest)
  *   PCR[9] <- each verified boot module's SHA-256, in manifest order
- * SHA-256 bank. */
+ * SHA-256 bank. Both are extended BY THIS KERNEL, which is why neither can be
+ * the root of the seal policy on its own (S92). */
 #define TPM_PCR_KERNEL_IDENTITY   8
 #define TPM_PCR_BOOT_MODULES      9
 

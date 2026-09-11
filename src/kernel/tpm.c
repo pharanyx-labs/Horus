@@ -6,14 +6,29 @@
  * off and no other CPU touching the device — so the transport is a straight
  * poll-with-timeout loop, no locking, no interrupt handshake.
  *
- * What it measures (SHA-256 PCR bank, OS-owned PCRs — SeaBIOS already owns 0..7):
- *   PCR[8] <- H( "horus-measured-boot-v1" || serialized boot-module manifest )
+ * What it measures (SHA-256 PCR bank, OS-owned PCRs — SeaBIOS owns 0..7):
+ *   PCR[8] <- H( "horus-measured-boot-v3" || be32(len) || kernel command line
+ *                || serialized boot-module manifest )
  *             a kernel-identity token bound to the exact module set this
- *             reproducible image attests to (audit A4's embedded manifest).
+ *             reproducible image attests to (audit A4's embedded manifest) and
+ *             to the command line that selects what the kernel DOES (S91).
  *   PCR[9] <- each verified boot module's SHA-256, extended in manifest order.
  *             A module that fails A4 verification is not measured, so tampering
- *             with a module payload changes PCR[9] — the property the Track 2
- *             sealing work (stages 2-3) will bind a secret to.
+ *             with a module payload changes PCR[9].
+ *
+ * WHAT THIS FILE DOES NOT MEASURE, STATED FIRST BECAUSE IT IS THE POINT:
+ * nothing here hashes the kernel's own bytes, and nothing can -- a kernel that
+ * measures itself is measured by whatever replaced it. Both PCRs above are
+ * extended by THIS kernel from values compiled into it, so a policy over 8 and
+ * 9 alone is a circle. Measured 2026-09-11: two kernels with different SHA-256
+ * produced byte-identical PCR 0..9, and a substituted kernel unsealed the
+ * volume.
+ *
+ * The root of trust is therefore PCR[4], which the FIRMWARE extends with the
+ * boot image, and which the seal policy now includes (put_pcr_selection). The
+ * boot image carries the kernel's expected hash and refuses a kernel that does
+ * not match (tools/mkbootimg.sh, grub.cfg), so the pin makes the kernel
+ * unforgeable and PCR[4] makes the pin unremovable. `SECURITY.md` **S92**.
  *
  * Best-effort: if no TPM is discovered the whole thing is a no-op and boot
  * continues. A machine legitimately without a TPM is not a failure; a store that
@@ -542,11 +557,49 @@ static int name_eq(const char *a, const char *b) {
     return *a == 0 && *b == 0;
 }
 
-/* Fixed-length so kernel and host verifier agree byte-for-byte. */
-static const char KERNEL_ID_TAG[] = "horus-measured-boot-v1";
+/* Fixed-length so kernel and host verifier agree byte-for-byte.
+ *
+ * v2 SINCE 2026-09-11, and the bump is the point: the serialization now covers
+ * the kernel COMMAND LINE. A volume sealed under a v1 measurement will not
+ * unseal on a v2 kernel -- that is a breaking change for existing sealed
+ * volumes and is recorded as one in CHANGES.md, not smuggled in under the same
+ * tag. A measurement whose definition changes silently is worse than one that
+ * refuses.
+ *
+ * v3 THE SAME DAY, and for a reason that is NOT a change to these bytes: the
+ * seal POLICY now covers PCR[4] as well (put_pcr_selection), so what a sealed
+ * volume is bound to has changed even though this serialization has not. The
+ * tag is the one field that records which definition a volume was sealed under,
+ * and leaving it at v2 while the meaning moved underneath it is exactly the
+ * silent change the paragraph above refuses. A v2 volume could not have
+ * unsealed on a v3 kernel in any case -- the policy digest differs -- so the
+ * bump costs nothing and makes the reason legible instead of leaving an
+ * operator to infer it from a failed unlock. */
+static const char KERNEL_ID_TAG[] = "horus-measured-boot-v3";
 
-/* Build H = SHA256( TAG || for each manifest entry: path || be32(size) || sha256 )
- * and extend it into PCR[8]. TAG excludes the trailing NUL. */
+/* Build H = SHA256( TAG || be32(cmdline_len) || cmdline
+ *                       || for each manifest entry: path || be32(size) || sha256 )
+ * and extend it into PCR[8]. TAG excludes the trailing NUL.
+ *
+ * WHY THE COMMAND LINE IS IN HERE. It is an input that changes what this kernel
+ * DOES -- `horus.install` makes init launch the installer rather than a login --
+ * and an unmeasured input that changes behaviour makes the measurement a claim
+ * about the wrong thing. Without this, an attacker with physical access could
+ * take a machine's own measured boot media, add the token at the GRUB prompt,
+ * and every PCR would be identical: measured boot would succeed, a TPM-sealed
+ * volume would unseal, and the installer would run. The measurement is supposed
+ * to cover the boot; this is part of the boot.
+ *
+ * WHAT IT DOES AND DOES NOT BUY. It makes an edited command line UNABLE TO
+ * UNSEAL a sealed volume -- confidentiality holds against exactly the attack
+ * above. It does not stop that attacker erasing the disk: anyone who can boot
+ * their own media can destroy data, and no measurement prevents it. See
+ * docs/LIMITATIONS.md; claiming otherwise would be the kind of assurance
+ * statement this project exists not to make.
+ *
+ * LENGTH-PREFIXED, so a command line cannot be confused with the manifest bytes
+ * that follow it. Concatenating two variable-length fields without a length is
+ * how two different boots hash the same. */
 static int measure_kernel_identity(void) {
     static uint8_t ser[4096];
     uint32_t p = 0;
@@ -555,6 +608,23 @@ static int measure_kernel_identity(void) {
         if (p >= sizeof(ser)) return -1;
         ser[p++] = (uint8_t)KERNEL_ID_TAG[i];
     }
+
+#ifndef BOOT_CMDLINE_UNMEASURED
+    {
+        const char *cl = boot_cmdline();
+        uint32_t cl_len = 0;
+        while (cl[cl_len]) cl_len++;
+        if (p + 4 + cl_len > sizeof(ser)) return -1;
+        be32(ser + p, cl_len); p += 4;
+        for (uint32_t i = 0; i < cl_len; i++) ser[p++] = (uint8_t)cl[i];
+    }
+#else
+    /* CONTROL ARM -- never ship. The pre-2026-09-11 serialization, which left
+     * the command line out. Under it a boot with `horus.install` measures
+     * IDENTICALLY to one without, so a sealed volume unseals for a boot the
+     * operator never authorised. See make smoke-tpm-cmdline-control. */
+    (void)0;
+#endif
     const uint32_t ndig = BOOT_MODULE_DIGEST_COUNT;
     for (uint32_t d = 0; d < ndig; d++) {
         const struct boot_module_digest *e = &BOOT_MODULE_DIGESTS[d];
@@ -638,9 +708,45 @@ void tpm_measured_boot(void) {
         return;
     }
 
-    int ok = (tpm_startup() == 0)
-          && (measure_kernel_identity() == 0)
-          && (measure_boot_modules() == 0);
+    /* THE KERNEL CHECKS THAT THE THING IT RELIES ON ACTUALLY HAPPENED.
+     *
+     * The seal policy binds PCR[4] because the firmware, not this kernel,
+     * extends it (put_pcr_selection). That argument holds only where a firmware
+     * measured something: on a platform whose firmware ignores the TPM, PCR[4]
+     * reads as never-extended, the policy binds it to all-zero, and an
+     * attacker's boot chain presents the same all-zero value. The binding would
+     * then be decorative -- present in the policy, worth nothing -- which is the
+     * "safe by circumstance rather than by property" shape this tree keeps
+     * finding.
+     *
+     * So it is asked rather than assumed. Under MEASURED_BOOT_REQUIRED an
+     * unextended PCR[4] is fatal: a deployment that requires measured boot is
+     * told its platform cannot provide it, instead of running with a seal that
+     * binds nothing. Without the flag it is reported and the boot continues,
+     * which is the same bargain the no-TPM case already makes.
+     *
+     * Deliberately read BEFORE measure_kernel_identity(): this kernel only ever
+     * extends 8 and 9, so PCR[4] cannot change underneath us -- but reading it
+     * first keeps the check about the firmware and not about our own ordering. */
+    int ok = (tpm_startup() == 0);
+    if (ok) {
+        uint8_t pcr4[32];
+        if (tpm_pcr_read(TPM_PCR_BOOT_IMAGE, pcr4) != 0) {
+            println("tpm: could not read PCR[4]; the seal's root of trust is unverified");
+            measured_boot_unavailable("PCR[4] unreadable");
+        } else {
+            int any = 0;
+            for (int i = 0; i < 32; i++) any |= pcr4[i];
+            if (!any) {
+                println("tpm: PCR[4] is unextended -- this platform's firmware measured "
+                        "no boot image, so a sealed volume would be bound to nothing");
+                measured_boot_unavailable("PCR[4] unextended");
+            }
+        }
+    }
+
+    ok = ok && (measure_kernel_identity() == 0)
+            && (measure_boot_modules() == 0);
 
     if (!ok) {
         println("tpm: measured boot FAILED (transport)");
@@ -695,12 +801,62 @@ static uint32_t put_pw_auth(uint8_t *b, uint32_t p) {
     p = put16(b, p, 0);           /* hmac size */
     return p;
 }
-/* TPML_PCR_SELECTION selecting PCR[8] and PCR[9] in the SHA-256 bank */
+/* TPML_PCR_SELECTION selecting PCR[4], PCR[8] and PCR[9] in the SHA-256 bank.
+ *
+ * ---- WHY PCR[4] IS IN HERE, AND WHY THE POLICY WAS A CIRCLE WITHOUT IT ------
+ *
+ * PCR[8] and PCR[9] are extended BY THIS KERNEL, from a tag, the command line
+ * and the module manifest compiled into it. Every input to both is therefore a
+ * value supplied by the thing being measured, and a policy over 8 and 9 alone
+ * asks the kernel to vouch for itself.
+ *
+ * That is not a theoretical objection. Measured 2026-09-11: two kernels with
+ * different SHA-256, booted on the same machine, produced BYTE-IDENTICAL PCR
+ * 0..9. A purpose-built kernel reproducing a released build's manifest and
+ * command line satisfied PolicyPCR(8,9) exactly, and the TPM handed it the
+ * sealed volume key -- which is S12, S85 and threat-model A4 defeated by an
+ * attacker who only has to boot the machine.
+ *
+ * PCR[4] is the one measurement on this platform that this kernel does not
+ * produce: the firmware extends it with the BOOT IMAGE. Two facts were measured
+ * before relying on it, because each could have made it useless:
+ *
+ *   it TRACKS CONTENT -- two boot images differing only in their embedded
+ *   module set gave different PCR[4]; and
+ *
+ *   it is STABLE -- two builds of identical input gave the same PCR[4] even
+ *   though the ISOs around them had different SHA-256, because grub-mkrescue's
+ *   wall-clock UUID (docs/LIMITATIONS.md 5.3a) does not reach the boot image. A
+ *   measurement that moved on every rebuild would make every sealed volume
+ *   unopenable after a no-op build.
+ *
+ * On its own PCR[4] would still bind nothing: the firmware measures the
+ * bootloader, not the kernel it loads, so a kernel swapped on the same medium
+ * leaves PCR[4] untouched -- measured, same day, same result. What closes the
+ * loop is that the boot image now CARRIES THE KERNEL'S HASH and refuses a
+ * kernel that does not match (tools/mkbootimg.sh, grub.cfg). Editing that pin
+ * or deleting that check changes the boot image, so it changes PCR[4], so the
+ * volume stays sealed. The pin makes the kernel unforgeable; PCR[4] makes the
+ * pin unremovable. Neither is a control alone.
+ *
+ * The selection is used for BOTH the trial session that computes the seal
+ * policy digest and the policy session that unseals, so seal and unseal cannot
+ * drift apart -- they are the same six lines.
+ *
+ * `SECURITY.md` **S92**. */
 static uint32_t put_pcr_selection(uint8_t *b, uint32_t p) {
     p = put32(b, p, 1);                 /* count */
     p = put16(b, p, TPM_ALG_SHA256);    /* hash */
     b[p++] = 3;                         /* sizeofSelect */
+#ifdef BOOT_IMAGE_UNBOUND
+    /* CONTROL ARM -- never ship. The pre-2026-09-11 selection, over the two PCRs
+     * this kernel extends about itself and nothing else. Under it the seal is
+     * bound to no measurement the kernel did not produce, so a substituted
+     * kernel unseals. See make smoke-tpm-bootimg-control. */
     b[p++] = 0;                         /* PCR 0..7 */
+#else
+    b[p++] = (uint8_t)(1u << TPM_PCR_BOOT_IMAGE);              /* PCR 0..7  */
+#endif
     b[p++] = (uint8_t)((1u << (TPM_PCR_KERNEL_IDENTITY - 8)) |
                        (1u << (TPM_PCR_BOOT_MODULES  - 8)));   /* PCR 8..15 */
     b[p++] = 0;                         /* PCR 16..23 */

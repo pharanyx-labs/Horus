@@ -509,6 +509,21 @@ jobs:
         run: make smoke-replace-oneshot
       - name: Control arm — the authorisation token is never cleared
         run: make smoke-replace-oneshot-control
+      # S91. The boot menu's entries differ only by a word on the kernel command
+      # line, so that word has to be MEASURED -- otherwise an attacker with
+      # physical access adds it to a machine's own measured media, every PCR is
+      # unchanged, and a sealed volume unseals for a boot nobody authorised.
+      - name: The kernel command line is part of the measured boot
+        run: make smoke-tpm-cmdline
+      - name: Control arm — the command line is left out of PCR[8]
+        run: make smoke-tpm-cmdline-control
+      # And the menu means what its labels say: the default changes nothing,
+      # tested on a blank disk, which is where this image would otherwise offer
+      # to install.
+      - name: The boot menu's default entry changes nothing
+        run: make smoke-boot-menu
+      - name: Control arm — the live entry without its token installs
+        run: make smoke-boot-menu-control
       # The console must not be able to stop the machine. serial_wait spins on
       # COM1's THRE from inside emit_char, which runs under console_lock with
       # interrupts disabled -- unbounded, that is the whole machine stopped with
@@ -916,6 +931,82 @@ jobs:
         env:
           SWTPM_REQUIRED: "1"   # a missing swtpm must fail, not skip
         run: make smoke-tpm-tamper
+
+  smoke-boot-pin:
+    name: "S92: a kernel the measured boot image does not pin is refused"
+    runs-on: ubuntu-latest
+    # Backstop, not a performance budget. Same bound and same reason as the
+    # measured-boot jobs above: without it a runner wedged on its package
+    # install idles for six hours and the run never concludes.
+    timeout-minutes: 105
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86 swtpm swtpm-tools python3
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Substitute the kernel behind a genuine boot image; assert GRUB refuses
+        run: make smoke-boot-pin
+
+  smoke-boot-pin-control:
+    name: "S92 falsification: with the pin check disabled the substituted kernel boots"
+    runs-on: ubuntu-latest
+    # Backstop, not a performance budget. Same bound and same reason as the
+    # measured-boot jobs above: without it a runner wedged on its package
+    # install idles for six hours and the run never concludes.
+    timeout-minutes: 105
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86 swtpm swtpm-tools python3
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: The same medium with the check rewritten to `true` must boot it
+        run: make smoke-boot-pin-control
+
+  smoke-tpm-bootimg:
+    name: "S92: a volume sealed under one boot image stays sealed under another"
+    runs-on: ubuntu-latest
+    # Backstop, not a performance budget. Same bound and same reason as the
+    # measured-boot jobs above: without it a runner wedged on its package
+    # install idles for six hours and the run never concludes.
+    timeout-minutes: 105
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU + swtpm
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86 swtpm swtpm-tools python3
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Seal under image A, present the disk and TPM to image B, assert refusal
+        env:
+          SWTPM_REQUIRED: "1"   # a missing swtpm must fail, not skip
+        run: make smoke-tpm-bootimg
+
+  smoke-tpm-bootimg-control:
+    name: "S92 falsification: with PCR[4] out of the policy the other image unseals"
+    runs-on: ubuntu-latest
+    # Backstop, not a performance budget. Same bound and same reason as the
+    # measured-boot jobs above: without it a runner wedged on its package
+    # install idles for six hours and the run never concludes.
+    timeout-minutes: 105
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU + swtpm
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86 swtpm swtpm-tools python3
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: The pre-2026-09-11 policy must let the other image open the volume
+        env:
+          SWTPM_REQUIRED: "1"
+        run: make smoke-tpm-bootimg-control
 
   smoke-tpm-seal-roundtrip:
     name: TPM seal/unseal round-trip (PolicyPCR-bound secret)

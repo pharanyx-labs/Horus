@@ -535,7 +535,7 @@ a page at the bogus address and reported success.
 ### 1.8 Part of the syscall table has no test that runs its handler, and one of those gaps hid a defect
 
 **Measured since 2026-08-20**, and re-derived on every merge rather than restated: as of
-2026-09-09, and gated since: **88 of 96** implemented syscalls have their handler
+2026-09-09, and gated since: **89 of 97** implemented syscalls have their handler
 body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
 boot-modules session). The other 8 are listed in `.github/syscall-coverage.yml`, each with a written reason.
 
@@ -1589,6 +1589,45 @@ would be refused by the TPM rather than by us.
 S11/S12 still do not apply to a boot without a TPM. What changed is that a deployment can now
 make them apply or refuse to run.
 
+### 2.9a What pinning the kernel into the boot image costs
+
+*Added 2026-09-11 with `SECURITY.md` **S92**.*
+
+The kernel's expected SHA-256 lives in a memdisk inside the El Torito boot image, and the seal
+binds `PCR[4]`, the firmware's measurement of that image. Two consequences follow, and both are
+prices rather than defects — they are recorded because a reader who meets them at the wrong moment
+would reasonably think something had broken.
+
+- **Updating the kernel rebuilds the boot image, and a TPM-sealed volume must be resealed.** A new
+  kernel has a new hash, the pin changes, so the image changes, so `PCR[4]` changes, and a volume
+  sealed under the old image will not open. That is the mechanism working: a seal that survived a
+  kernel change would be a seal that does not bind the kernel, which is exactly the defect S92
+  closes. A signature scheme would avoid it — any kernel the key vouched for would boot on the same
+  image — and that is the reason one was **not** used: it would make `PCR[4]` identical across every
+  such kernel and give back the property being removed.
+
+- **A volume sealed under one firmware does not open under the other.** `PCR[4]` is extended by
+  the firmware, and OVMF and SeaBIOS do not measure the same bytes, so the same medium booted the
+  other way presents a different value and the TPM declines. That is correct rather than
+  unfortunate — a different boot chain *is* a different boot chain — but it means a machine that
+  changes firmware mode after an install must reseal.
+
+  **This entry first said the UEFI path had been removed, and that was wrong twice over.** The
+  first version of the ISO rule dropped `grub-mkrescue`'s EFI half on the claim that nothing here
+  had ever booted it; `tools/boot_media_test.sh` boots `uefi-cd` and `uefi-disk` on every CI run,
+  and exists because those exact modes were measured broken on 2026-09-06 and deliberately fixed.
+  CI caught it on the first push. Both boot images are now built from the same memdisk by
+  `tools/mkbootimg.sh`, so both pin the same kernel; verified 2026-09-11 that a substituted kernel
+  is refused under OVMF as well as SeaBIOS. The hybrid MBR is kept, so a stick written with `dd`
+  still boots — all four cells of the media/firmware table pass.
+
+**What this does not fix.** GRUB's own `tpm` module measures loaded binaries into `PCR[9]`, and
+would have been the conventional answer — it **does not exist for i386-pc** in Debian's
+`grub-pc-bin`, only for `x86_64-efi`. Moving to UEFI and using it would let the kernel be measured
+by the bootloader rather than pinned by it, and would restore the EFI path; it is the obvious next
+step and is not taken here.
+
+
 ### 2.10 ~~Four live syscalls have no caller anywhere in this tree~~: CLOSED 2026-08-23
 
 *Found 2026-08-23, while teaching the coverage deriver to evaluate the preprocessor.*
@@ -2425,6 +2464,36 @@ old allocator and the new one read the same single block and no workload could t
   leaves is part of that server's contract. Doing it properly means the kernel and
   `console_server` learning about a linear framebuffer together, with the VGA path kept for BIOS
   machines that still have one.
+- **Physical access still gets destruction, and nothing here prevents that.** Install media now
+  offers a boot menu (**S91**), and it is worth being exact about what that does and does not
+  change, because "locked down" is easy to claim and hard to mean.
+
+  **What holds.** The kernel command line is measured into PCR[8], so a boot whose command line
+  was edited -- at the GRUB prompt, or by rewriting the media -- produces a different measurement
+  and a **TPM-sealed volume will not unseal**. Confidentiality survives an attacker who can boot
+  the machine. The menu's editor is also locked (`set superusers=""` with `--unrestricted`
+  entries), so this media's own entries cannot be edited in place; the entries fail closed, with
+  live boot the default and every parsing uncertainty -- no tag, an oversized tag, an
+  unrecognised word, both words at once -- resolving to the mode that writes nothing.
+
+  **What does not hold, and cannot.** Anyone who can boot their own media can erase the disk.
+  That is true of every machine without a locked firmware and a signed boot chain, it was true
+  before the menu existed, and no measurement prevents it: a format needs no key. The volume's
+  contents stay unreadable, but the volume can be destroyed. Horus has **no Secure Boot
+  integration, no firmware password, and no write protection**, so availability against a
+  physical attacker is not a property this system offers. It is named here rather than left to be
+  inferred from the absence of a claim.
+
+  **"The volume's contents stay unreadable" was FALSE when it was written, and was corrected on
+  2026-09-11.** It rested on the seal binding a tampered boot to different PCRs, and nothing
+  measured the kernel: `PCR[8]` and `PCR[9]` are extended by the kernel from values compiled into
+  it, so an attacker booting a kernel of their own that reproduced a released build's manifest and
+  command line presented identical PCRs and the TPM released the volume key. Measured that day,
+  two kernels with different SHA-256 gave byte-identical PCR 0..9. The sentence holds now, for the
+  reason **S92** gives — the kernel's hash is pinned inside the boot image and the seal binds
+  `PCR[4]` — and it is left standing above with this paragraph beneath it rather than quietly
+  rewritten, because the claim was published and a reader who saw it is owed the correction.
+
 - **USB, sound, or any modern bus.** ATA PIO and PS/2 only for *driving* hardware. Two
   consequences on real hardware: a laptop's **NVMe or AHCI SSD cannot be read or written** (an
   SD/eMMC card can, since 2026-09-08 -- see §4, so a machine whose internal storage is soldered
@@ -2525,9 +2594,9 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand: **[C-6]**
 
-`.github/workflows/ci.yml` defines **111** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more: **113** across the three, producing **116** status-check contexts. Ruleset `21815299`
-requires all **113** today, `smoke-kdiag` (**S81**) among them since 2026-09-03 -- one
+`.github/workflows/ci.yml` defines **115** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more: **117** across the three, producing **120** status-check contexts. Ruleset `21815299`
+requires all **117** today, `smoke-kdiag` (**S81**) among them since 2026-09-03 -- one
 `--sync-ruleset` run after the pull request that added the job, which is the lag this finding is
 about rather than an exception to it. Its predecessor `19007209` required **22** of them before
 2026-08-16, and until 2026-08-15 exactly **zero** of those 22 were security gates: capability
@@ -2573,7 +2642,7 @@ the right name with the wrong verdict. Step-level `continue-on-error` is untouch
 allowed; it lets one step be advisory while the job's own status still reports the truth, which
 is how the `security` job keeps its scanners advisory without becoming unfailable itself.
 
-That intended set is **113 required contexts and 3 reasoned exemptions**: `fuzz` (a 30-second
+That intended set is **117 required contexts and 3 reasoned exemptions**: `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` was a fifth until **[G-9]** closed on 2026-08-21; it was promoted on

@@ -487,6 +487,28 @@ jobs:
       # installer quietly asks again rather than failing.
       - name: An entire install, typed on the machine's own keyboard
         run: make smoke-keyboard-install
+      # S90's two halves. This one drives the kernel predicate: a LOCKED volume
+      # may be reformatted (install media never logs in, so that is the state it
+      # is always in) and an UNLOCKED one may not (somebody proved they own the
+      # machine and is using it).
+      - name: An unlocked volume cannot be reformatted
+        run: make smoke-replace-live
+      # The arm drops the unlocked check, so a running system's disk can be
+      # taken from under it. Asserted on the ALLOWED branch, positively.
+      - name: Control arm — the unlocked check is gone
+        run: make smoke-replace-live-control
+      # The other half, end to end: install media replaces a volume it wrote
+      # earlier, and only the NEW password opens the result. Two passwords,
+      # because a format returning 0 is reached by an installer that did nothing.
+      - name: Install media replaces an existing volume
+        run: make smoke-installer-replace
+      # The format authorisation is a one-shot token, witnessed directly rather
+      # than through a login -- a login cannot observe it, which two discarded
+      # arms established on 2026-09-11.
+      - name: The format authorisation is spent by the format it authorised
+        run: make smoke-replace-oneshot
+      - name: Control arm — the authorisation token is never cleared
+        run: make smoke-replace-oneshot-control
       # The console must not be able to stop the machine. serial_wait spins on
       # COM1's THRE from inside emit_char, which runs under console_lock with
       # interrupts disabled -- unbounded, that is the whole machine stopped with

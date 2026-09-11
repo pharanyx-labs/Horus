@@ -705,6 +705,12 @@ void kernel_main(uint32_t mb_info) {
      * decided; the selftest then drives the unlock the login prompt never does. */
     storage_noformat_selftest();
 #endif
+#ifdef STORAGE_REPLACE_SELFTEST
+    /* After storage_init for the same reason as the one above: the disk has been
+     * probed and g_needs_format decided, so the first authorise is answered
+     * about a real device rather than about nothing. */
+    storage_replace_selftest();
+#endif
 #ifdef KEYSLOT_SELFTEST
     /* After storage_init so a device is registered; before scheduler_init so the
      * whole test runs on the boot CPU with nothing else touching the volume. */

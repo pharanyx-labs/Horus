@@ -126,11 +126,11 @@ DEFECT_FLAGS = \
 	SYSCOV_PROBES_ABSENT KSTACK_INFLIGHT_LEGACY_WORD KSTACK_SLOT_INDEX_TRUNC \
 	CAP_LOOKUP_ROOT_FALLBACK CAP_LOOKUP_RANGE_FALLBACK CAP_LOOKUP_TYPE_UNCHECKED \
 	KEYSLOT_REMOVE_NOOP USERS_PEPPER_PER_BOOT USERS_TAMPER_INJECT STORAGE_AUTOFORMAT \
-	STORAGE_REPLACE_UNLOCKED STORAGE_FORMAT_AUTH_STICKY \
+	STORAGE_REPLACE_UNLOCKED STORAGE_FORMAT_AUTH_STICKY BOOT_CMDLINE_UNMEASURED \
 	STORAGE_FORMAT_UNGATED INSTALLER_NO_CONFIRM BLOCK_ERRNO_LEGACY \
 	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED \
 	FS_LINK_UNCOUNTED \
-	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY \
+	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY BOOT_MENU_NO_LIVE_TOKEN \
 	AHCI_PROBE_ABSENT AHCI_CAPACITY_CONSTANT SDHCI_PROBE_ABSENT \
 	SDHCI_CSD_SPEC_BITS SDHCI_ADDR_MODE_INVERTED \
 	SDHCI_WRITE_SELFTEST SDHCI_WRITE_NO_FLUSH \
@@ -412,9 +412,18 @@ INSTALLER_NO_BACK ?= 0
 # "INSTALL MEDIA (INSTALL_ALWAYS)" before the installer draws anything, so a boot
 # log from a machine that is now blank says why.
 #
-# `make install.iso` is the target. The shipping image is unaffected: without
-# this the recognised-volume branch does not exist and init still fails closed in
-# the direction of NOT installing.
+# NO LONGER WHAT `make install.iso` BUILDS, since 2026-09-11. Install media is now
+# ONE kernel with a boot menu (grub-menu.cfg): the operator picks live boot or
+# install, and the kernel learns which from its command line (BOOT_FLAG_INSTALL,
+# measured into PCR[8]). That is a choice a person makes at the machine rather
+# than one baked into an image, and it means the media they install from is the
+# media they can also boot live.
+#
+# THIS FLAG REMAINS FOR THE GATES, which need an unattended install with no menu
+# to drive -- smoke-installer-replace is the caller. Keeping it is what lets the
+# menu default to LIVE without making the automated installs unreachable. The
+# shipping image is unaffected either way: without this the recognised-volume
+# branch does not exist and init still fails closed toward NOT installing.
 INSTALL_ALWAYS ?= 0
 
 # PASSWD_NO_KEYSLOT=1 restores the pre-2026-09-02 do_passwd: an administrator
@@ -538,6 +547,13 @@ STORAGE_AUTOFORMAT ?= 0
 # a policy in userspace. The arm for `make smoke-replace-live`.
 STORAGE_REPLACE_UNLOCKED ?= 0
 
+# BOOT_CMDLINE_UNMEASURED=1 restores the pre-2026-09-11 PCR[8] serialization,
+# which covered the boot-module manifest and NOT the kernel command line. Under
+# it a boot carrying `horus.install` measures identically to one without, so an
+# edited command line unseals a TPM-sealed volume and the installer runs on a
+# boot nobody authorised. The arm for `make smoke-tpm-cmdline`.
+BOOT_CMDLINE_UNMEASURED ?= 0
+
 # STORAGE_FORMAT_AUTH_STICKY=1 restores the pre-2026-09-11 lifetime of
 # g_format_authorized: set once by storage_authorize_format and NEVER cleared.
 #
@@ -557,6 +573,10 @@ endif
 ifeq ($(STORAGE_REPLACE_UNLOCKED),1)
 CFLAGS  += -DSTORAGE_REPLACE_UNLOCKED
 ASFLAGS += -DSTORAGE_REPLACE_UNLOCKED
+endif
+ifeq ($(BOOT_CMDLINE_UNMEASURED),1)
+CFLAGS  += -DBOOT_CMDLINE_UNMEASURED
+ASFLAGS += -DBOOT_CMDLINE_UNMEASURED
 endif
 ifeq ($(STORAGE_FORMAT_AUTH_STICKY),1)
 CFLAGS  += -DSTORAGE_FORMAT_AUTH_STICKY
@@ -1561,6 +1581,16 @@ SHELL_LS_NO_PATH_ARG ?= 0
 # It rewrites the STAGED grub.cfg rather than the source file, so the arm cannot
 # be left behind in the tree. Control arm for make smoke-boot-media.
 BOOT_ROOT_CD_ONLY ?= 0
+
+# BOOT_MENU_NO_LIVE_TOKEN=1 strips `horus.live` from the menu's live entry, so it
+# passes no command line at all -- which is how that entry was first written, and
+# it was a LIE. With no token the kernel behaves like the shipping image, and the
+# shipping image offers to install a disk carrying no volume: the entry promising
+# to change nothing runs the installer, on exactly the machine somebody is most
+# likely to boot install media at. A grub.cfg rewrite rather than a -D, like
+# BOOT_ROOT_CD_ONLY, because the defect is in the boot configuration.
+# The arm for `make smoke-boot-menu`.
+BOOT_MENU_NO_LIVE_TOKEN ?= 0
 
 # AHCI_PROBE_ABSENT=1 compiles out the SATA probe, so a machine WITH an AHCI
 # controller attached says nothing about it -- which is the state this tree was
@@ -3681,12 +3711,17 @@ boot.iso:
 .PHONY: install.iso
 install.iso:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory INSTALL_ALWAYS=1 STORAGE_ATA=1
-	@$(MAKE) --no-print-directory INSTALL_ALWAYS=1 STORAGE_ATA=1 horus.iso
+	@$(MAKE) --no-print-directory STORAGE_ATA=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 GRUB_CFG=grub-menu.cfg horus.iso
 	@mv horus.iso install.iso
-	@echo "[install] install.iso - boots straight into the installer, every time"
+	@echo "[install] install.iso - a boot menu: live boot (default) or install"
 
-horus.iso: kernel.elf grub.cfg $(BOOT_MODULE_DEP)
+# GRUB_CFG selects the boot configuration staged into the ISO. The default is the
+# single-entry, no-timeout grub.cfg every gate boots; install media overrides it
+# with grub-menu.cfg, which offers live boot and install as separate entries.
+GRUB_CFG ?= grub.cfg
+
+horus.iso: kernel.elf $(GRUB_CFG) $(BOOT_MODULE_DEP)
 	@rm -rf isofiles
 	@mkdir -p isofiles/boot/grub
 	@cp kernel.elf isofiles/boot/kernel.elf
@@ -3698,8 +3733,12 @@ horus.iso: kernel.elf grub.cfg $(BOOT_MODULE_DEP)
 	    printf '    module2 /boot/%s %s\n' "$$base" "$$name" >> isofiles/mods.txt; \
 	 done
 	@awk '/@HORUS_MODULES@/{while((getline l < "isofiles/mods.txt")>0) print l; next} {print}' \
-	    grub.cfg > isofiles/boot/grub/grub.cfg
+	    $(GRUB_CFG) > isofiles/boot/grub/grub.cfg
 	@rm -f isofiles/mods.txt
+	@if [ "$(BOOT_MENU_NO_LIVE_TOKEN)" = 1 ]; then \
+	    sed -i 's|^    multiboot2 /boot/kernel.elf horus.live$$|    multiboot2 /boot/kernel.elf|' \
+	        isofiles/boot/grub/grub.cfg; \
+	 fi
 	@if [ "$(BOOT_ROOT_CD_ONLY)" = 1 ]; then \
 	    sed -i 's|^    search --no-floppy --set=root --file /boot/kernel.elf$$|    set root=(cd)|' \
 	        isofiles/boot/grub/grub.cfg; \
@@ -6090,6 +6129,92 @@ tamper.iso: kernel.elf grub.cfg $(BOOT_MODULE_DEP)
 # the boot hash chain, not the guest's own word. Skips cleanly where swtpm is
 # absent.
 .PHONY: smoke-tpm
+# THE BOOT MENU MEANS WHAT IT SAYS (S91).
+#
+# Install media offers two entries and they must differ in the way the labels
+# claim: the default changes nothing on the disk, and the other one installs.
+# This boots the menu media with a BLANK disk and lets the timeout expire --
+# the unattended case, and the one where a wrong default costs a disk. The
+# assertion is a login prompt AND the absence of the installer.
+#
+# A blank disk is the discriminating case on purpose. On a disk that already
+# holds a volume both entries would reach a login prompt and the gate would
+# pass without the live entry meaning anything; a blank disk is exactly where
+# this image would otherwise offer to install.
+SMOKE_BOOT_MENU_TIMEOUT ?= 180
+.PHONY: smoke-boot-menu
+smoke-boot-menu:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 GRUB_CFG=grub-menu.cfg horus.iso
+	@rm -f boot-menu.img && truncate -s 64M boot-menu.img
+	@SMOKE_TIMEOUT=$(SMOKE_BOOT_MENU_TIMEOUT) MARKER_ONLY=1 \
+		SMOKE_DISK=boot-menu.img \
+		REQUIRE_MARKER='init: boot mode LIVE' \
+		FAIL_MARKER='running the installer' \
+		tools/smoke_test.sh horus.iso
+	@rm -f boot-menu.img
+	@echo "[menu] PASS - the default entry changes nothing, even on a blank disk"
+
+# The falsifying arm. BOOT_MENU_NO_LIVE_TOKEN=1 strips `horus.live` from the live
+# entry, which is how it was first written: with no token the kernel behaves like
+# the shipping image and offers to install a blank disk, so the entry promising
+# to change nothing runs the installer. Asserted positively on the installer.
+.PHONY: smoke-boot-menu-control
+smoke-boot-menu-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 BOOT_MENU_NO_LIVE_TOKEN=1 GRUB_CFG=grub-menu.cfg horus.iso
+	@rm -f boot-menu.img && truncate -s 64M boot-menu.img
+	@SMOKE_TIMEOUT=$(SMOKE_BOOT_MENU_TIMEOUT) MARKER_ONLY=1 \
+		SMOKE_DISK=boot-menu.img \
+		REQUIRE_MARKER='running the installer' \
+		tools/smoke_test.sh horus.iso
+	@rm -f boot-menu.img
+	@echo "[menu] CONTROL PASS - without the token the live entry installs"
+
+# THE KERNEL COMMAND LINE IS PART OF THE MEASUREMENT (S91).
+#
+# The command line decides what this kernel DOES -- `horus.install` makes init
+# launch the installer rather than a login -- so leaving it out of PCR[8] would
+# make measured boot a claim about the wrong thing. Concretely: an attacker with
+# physical access could take a machine's own measured media, add the token at
+# the GRUB prompt, and every PCR would be identical. Measured boot would pass
+# and a TPM-sealed volume would unseal for a boot the operator never authorised.
+#
+# This boots the MENU media, whose default entry carries `horus.live`, and
+# requires the guest's PCR[8] to equal the value the host computes for that same
+# string. A match proves the guest hashed the line it booted with.
+SMOKE_TPM_CMDLINE_TIMEOUT ?= 120
+.PHONY: smoke-tpm-cmdline
+smoke-tpm-cmdline:
+	@$(MAKE) --no-print-directory clean
+# The generated manifest survives `clean`, and the host verifier reads it. Built
+# with a different module set from the one it describes, PCR[9] is computed from
+# modules the guest never loaded and the gate fails on the half it is not about.
+# Measured 2026-09-11: PCR[8] matched exactly and PCR[9] did not, which reads as
+# "the measurement is broken" and was a stale header.
+	@rm -f src/kernel/boot_module_manifest.h
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 GRUB_CFG=grub-menu.cfg horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TPM_CMDLINE_TIMEOUT) TPM_CMDLINE=horus.live \
+		tools/smoke_tpm.sh horus.iso
+	@echo "[tpm] PASS - the measurement covers the kernel command line"
+
+# The falsifying arm. BOOT_CMDLINE_UNMEASURED=1 restores the pre-2026-09-11
+# serialization, which hashed the manifest and nothing else -- so a boot with a
+# command line measures the same as one without, and the host value computed for
+# `horus.live` no longer matches. Asserted as a DIVERGENCE, positively.
+.PHONY: smoke-tpm-cmdline-control
+smoke-tpm-cmdline-control:
+	@$(MAKE) --no-print-directory clean
+	@rm -f src/kernel/boot_module_manifest.h
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 BOOT_CMDLINE_UNMEASURED=1
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 BOOT_CMDLINE_UNMEASURED=1 GRUB_CFG=grub-menu.cfg horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TPM_CMDLINE_TIMEOUT) TPM_CMDLINE=horus.live \
+		EXPECT_CMDLINE_MISMATCH=1 tools/smoke_tpm.sh horus.iso
+	@echo "[tpm] CONTROL PASS - an unmeasured command line hides itself from PCR[8]"
+
 smoke-tpm:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory COREUTILS_MODULES=1

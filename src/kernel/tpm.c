@@ -542,11 +542,39 @@ static int name_eq(const char *a, const char *b) {
     return *a == 0 && *b == 0;
 }
 
-/* Fixed-length so kernel and host verifier agree byte-for-byte. */
-static const char KERNEL_ID_TAG[] = "horus-measured-boot-v1";
+/* Fixed-length so kernel and host verifier agree byte-for-byte.
+ *
+ * v2 SINCE 2026-09-11, and the bump is the point: the serialization now covers
+ * the kernel COMMAND LINE. A volume sealed under a v1 measurement will not
+ * unseal on a v2 kernel -- that is a breaking change for existing sealed
+ * volumes and is recorded as one in CHANGES.md, not smuggled in under the same
+ * tag. A measurement whose definition changes silently is worse than one that
+ * refuses. */
+static const char KERNEL_ID_TAG[] = "horus-measured-boot-v2";
 
-/* Build H = SHA256( TAG || for each manifest entry: path || be32(size) || sha256 )
- * and extend it into PCR[8]. TAG excludes the trailing NUL. */
+/* Build H = SHA256( TAG || be32(cmdline_len) || cmdline
+ *                       || for each manifest entry: path || be32(size) || sha256 )
+ * and extend it into PCR[8]. TAG excludes the trailing NUL.
+ *
+ * WHY THE COMMAND LINE IS IN HERE. It is an input that changes what this kernel
+ * DOES -- `horus.install` makes init launch the installer rather than a login --
+ * and an unmeasured input that changes behaviour makes the measurement a claim
+ * about the wrong thing. Without this, an attacker with physical access could
+ * take a machine's own measured boot media, add the token at the GRUB prompt,
+ * and every PCR would be identical: measured boot would succeed, a TPM-sealed
+ * volume would unseal, and the installer would run. The measurement is supposed
+ * to cover the boot; this is part of the boot.
+ *
+ * WHAT IT DOES AND DOES NOT BUY. It makes an edited command line UNABLE TO
+ * UNSEAL a sealed volume -- confidentiality holds against exactly the attack
+ * above. It does not stop that attacker erasing the disk: anyone who can boot
+ * their own media can destroy data, and no measurement prevents it. See
+ * docs/LIMITATIONS.md; claiming otherwise would be the kind of assurance
+ * statement this project exists not to make.
+ *
+ * LENGTH-PREFIXED, so a command line cannot be confused with the manifest bytes
+ * that follow it. Concatenating two variable-length fields without a length is
+ * how two different boots hash the same. */
 static int measure_kernel_identity(void) {
     static uint8_t ser[4096];
     uint32_t p = 0;
@@ -555,6 +583,23 @@ static int measure_kernel_identity(void) {
         if (p >= sizeof(ser)) return -1;
         ser[p++] = (uint8_t)KERNEL_ID_TAG[i];
     }
+
+#ifndef BOOT_CMDLINE_UNMEASURED
+    {
+        const char *cl = boot_cmdline();
+        uint32_t cl_len = 0;
+        while (cl[cl_len]) cl_len++;
+        if (p + 4 + cl_len > sizeof(ser)) return -1;
+        be32(ser + p, cl_len); p += 4;
+        for (uint32_t i = 0; i < cl_len; i++) ser[p++] = (uint8_t)cl[i];
+    }
+#else
+    /* CONTROL ARM -- never ship. The pre-2026-09-11 serialization, which left
+     * the command line out. Under it a boot with `horus.install` measures
+     * IDENTICALLY to one without, so a sealed volume unseals for a boot the
+     * operator never authorised. See make smoke-tpm-cmdline-control. */
+    (void)0;
+#endif
     const uint32_t ndig = BOOT_MODULE_DIGEST_COUNT;
     for (uint32_t d = 0; d < ndig; d++) {
         const struct boot_module_digest *e = &BOOT_MODULE_DIGESTS[d];

@@ -553,6 +553,52 @@ static int launch_shell(void) {
  * kernel formats an unrecognised volume at the login prompt by itself, so there
  * is nothing for an installer to do, and launching one would leave a dozen
  * unattended test images waiting forever for a keystroke. */
+/* Did the operator ask for the installer?
+ *
+ * ONE DECISION POINT, TWO INPUTS, and they mean different things. The boot menu
+ * is the operator's answer on this boot -- a single image that offers "Install"
+ * and "Live boot" has to be told which was chosen, and the boot media is where
+ * a person holding the machine makes that choice. INSTALL_ALWAYS is the
+ * build-time variant: an image that installs unattended, which the gates need
+ * and which no human boots. Collapsing them into one flag would lose that
+ * distinction; leaving them as two branches in two places would be worse.
+ *
+ * ZERO IS LIVE BOOT, and every uncertainty produces zero: no command line, a
+ * malformed one, a word the kernel does not recognise. The safe answer is the
+ * one that changes nothing on the disk, which is the same direction
+ * machine_needs_install() argues for below. */
+/* Read ONCE, reported, and answered from afterwards.
+ *
+ * One call means one value: a mode that could be re-read per question could in
+ * principle answer two of them differently, and the questions here decide
+ * whether a program that erases disks runs. It is also what makes the boot log
+ * honest -- the line below is printed from the same word the decisions use,
+ * rather than from a second read that might not agree. */
+static uint64_t g_boot_flags_cached;
+
+static void report_boot_mode(void) {
+    g_boot_flags_cached = sys_boot_flags();
+
+    /* SAID ON EVERY BOOT, not only the interesting ones. A machine that is about
+     * to offer to erase a disk should have said why in its own log, and a
+     * machine that did nothing should have said that too -- otherwise the only
+     * boots that explain themselves are the ones that went wrong. */
+    if (g_boot_flags_cached & BOOT_FLAG_INSTALL)
+        report("init: boot mode INSTALL (the installer entry was chosen at the boot menu)\n");
+    else if (g_boot_flags_cached & BOOT_FLAG_LIVE)
+        report("init: boot mode LIVE (nothing on the disk will be changed)\n");
+    else
+        report("init: boot mode default (no boot menu; this image decides for itself)\n");
+}
+
+static int install_requested(void) {
+#ifdef INSTALL_ALWAYS
+    return 1;
+#else
+    return (g_boot_flags_cached & BOOT_FLAG_INSTALL) ? 1 : 0;
+#endif
+}
+
 static int machine_needs_install(void) {
     if (!g_si_valid)         return 0;
     if (!g_si.present)       return 0;   /* the ephemeral store; nothing to install onto */
@@ -599,6 +645,27 @@ static int machine_needs_install(void) {
     if (g_si.format_on_login) return 0;
     return 1;
 #else
+    /* THE BOOT MENU'S "INSTALL" ENTRY REACHES HERE, and it is the same act
+     * install media performs -- so it gets the same answer, including on a
+     * machine that already holds a volume (S90). What it does NOT do is bypass
+     * anything: the installer still shows what will be destroyed, still asks
+     * every question, and still needs the typed word, which is REPLACE rather
+     * than FORMAT when the disk is not empty.
+     *
+     * Live boot is the default and the fall-through. A machine booted without
+     * the token behaves exactly as it did before this existed: the installer
+     * runs only where there is a disk carrying no volume. */
+    if (install_requested()) {
+        if (g_si.format_on_login) return 0;   /* that kernel formats by itself */
+        return 1;
+    }
+    /* LIVE WAS ASKED FOR EXPLICITLY, so it is honoured exactly -- including on a
+     * blank disk, where this image would otherwise offer to install. That is
+     * what makes the menu entry's promise true: an operator who picked "changes
+     * nothing on disk" gets a login prompt, not an installer. Without this the
+     * two entries behave identically on the machine most likely to be booted
+     * from install media, which is a menu that does not mean anything. */
+    if (g_boot_flags_cached & BOOT_FLAG_LIVE) return 0;
     if (g_si.recognised)     return 0;   /* a volume is already here */
     if (g_si.format_on_login) return 0;  /* this kernel formats at login by itself */
     return g_si.needs_format ? 1 : 0;
@@ -698,6 +765,12 @@ void _start(void) {
         report("init: WARNING console_server launch failed (shell output falls back to kernel console)\n");
     else
         report("init: console_server launched\n");
+
+    /* Asked and answered before anything consults it, and unconditionally --
+     * including on a machine with no disk, where no install question is ever
+     * reached. A boot mode that is only read when it might matter is one that
+     * cannot be seen in the log of a boot where it did not. */
+    report_boot_mode();
 
     /* THE INSTALLER RUNS BEFORE THE SHELL AND AFTER THE CONSOLE SERVER, and both
      * halves of that are required. It needs the console server, because the whole

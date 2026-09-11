@@ -5,7 +5,8 @@ boot-module manifest — the external verifier for `make smoke-tpm`.
 The kernel (src/kernel/tpm.c) measures, into the SHA-256 PCR bank:
 
   PCR[8] <- extend( H )  where
-            H = SHA256( "horus-measured-boot-v1"
+            H = SHA256( "horus-measured-boot-v2"
+                        || be32(len(cmdline)) || cmdline_bytes
                         || for each manifest entry, in table order:
                              path_bytes || be32(size) || sha256[32] )
   PCR[9] <- extend( each manifest entry's sha256, in table order )
@@ -15,14 +16,25 @@ This script replays that math purely from src/kernel/boot_module_manifest.h, so 
 match against the guest-printed values proves the guest measured exactly the
 reproducible manifest — not merely that it printed a plausible-looking hash.
 
-Usage: tpm_expected_pcr.py [path/to/boot_module_manifest.h]
+Usage: tpm_expected_pcr.py [path/to/boot_module_manifest.h] [--cmdline=<kernel command line>]
 Prints: PCR8=<hex> PCR9=<hex>
 """
 import hashlib
 import re
 import sys
 
-KERNEL_ID_TAG = b"horus-measured-boot-v1"
+KERNEL_ID_TAG = b"horus-measured-boot-v2"
+
+# THE KERNEL COMMAND LINE IS PART OF THE MEASUREMENT since 2026-09-11, because it
+# is an input that changes what the kernel does (`horus.install` launches the
+# installer). Left out, an attacker with physical access could add that token to
+# a machine's own measured media and every PCR would be unchanged -- measured
+# boot would pass and a sealed volume would unseal.
+#
+# Empty is the default because that is what GRUB passes for the ordinary entry,
+# and it hashes as a length of zero rather than as an absent field: a boot with
+# no command line and a boot with an empty one are the same boot, and must not
+# be two different measurements.
 
 
 def parse_manifest(path):
@@ -57,11 +69,18 @@ def extend(pcr, measurement):
 
 
 def main():
-    path = sys.argv[1] if len(sys.argv) > 1 else "src/kernel/boot_module_manifest.h"
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    cmdline = ""
+    for a in sys.argv[1:]:
+        if a.startswith("--cmdline="):
+            cmdline = a.split("=", 1)[1]
+    path = args[0] if args else "src/kernel/boot_module_manifest.h"
     entries = parse_manifest(path)
 
     # H for PCR[8]
     ser = bytearray(KERNEL_ID_TAG)
+    ser += be32(len(cmdline.encode()))
+    ser += cmdline.encode()
     for dest, size, digest in entries:
         ser += dest.encode()
         ser += be32(size)

@@ -26,7 +26,11 @@ if ! swtpm_available; then
     echo "SMOKE-TPM SKIP: swtpm not installed"; exit 0
 fi
 
-EXPECTED=$(python3 "$HERE/tpm_expected_pcr.py" "$MANIFEST")
+# TPM_CMDLINE is the kernel command line the ISO's boot entry carries. It is part
+# of the measurement since 2026-09-11, so the host verifier has to be told the
+# same string the guest booted with -- an empty default, which is what the
+# ordinary entry passes.
+EXPECTED=$(python3 "$HERE/tpm_expected_pcr.py" "$MANIFEST" --cmdline="${TPM_CMDLINE:-}")
 echo "expected (host, from manifest): $EXPECTED"
 
 SERIAL=$(mktemp)
@@ -43,6 +47,23 @@ echo "observed (guest, from TPM):     $OBSERVED"
 
 if [ -z "$OBSERVED" ]; then
     echo "SMOKE-TPM FAIL: no PCR line on serial"; exit 1
+fi
+
+if [ "${EXPECT_CMDLINE_MISMATCH:-}" = 1 ]; then
+    # Falsification for "the kernel command line is measured". The guest booted an
+    # entry carrying a command line and the host computed the PCRs for that same
+    # string; under BOOT_CMDLINE_UNMEASURED the kernel leaves the line out of the
+    # serialization, so the two must DIFFER.
+    #
+    # A separate mode from EXPECT_MISMATCH rather than a reuse of it: that one
+    # also requires `boot module refused` on the wire, which is the tamper arm's
+    # signature and has nothing to do with this one. An arm that asserts another
+    # arm's precondition passes for the wrong reason.
+    if [ "$OBSERVED" = "$EXPECTED" ]; then
+        echo "SMOKE-TPM FAIL: the command line was measured after all -- the arm reproduces nothing"; exit 1
+    fi
+    echo "SMOKE-TPM PASS: with the command line left out, the measurement no longer matches it"
+    exit 0
 fi
 
 if [ "${EXPECT_MISMATCH:-}" = 1 ]; then

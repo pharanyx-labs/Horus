@@ -54,6 +54,39 @@ in this file.
 
 ### Added
 
+- **A boot menu on install media: install, or run live and change nothing (S91).** One image,
+  and the choice is made by the person holding the machine rather than baked into which ISO they
+  downloaded. `make install.iso` no longer compiles `INSTALL_ALWAYS` in; it ships `grub-menu.cfg`
+  with two entries, and the kernel learns which was chosen from its **command line**
+  (`horus.install` / `horus.live`, matched as whole words, read into `BOOT_FLAG_*` and readable
+  with the new `SYS_BOOT_FLAGS`).
+
+  **The command line is measured into PCR[8], and that is the part that matters.** It is an input
+  that changes what the kernel does, and an unmeasured input that changes behaviour makes measured
+  boot a claim about the wrong thing. Without it, an attacker with physical access takes a
+  machine's own measured media, adds the token at the GRUB prompt, and **every PCR is identical**:
+  measured boot passes and a TPM-sealed volume unseals for a boot nobody authorised. PCR[8] now
+  commits to `TAG` + length-prefixed command line + manifest, and the tag is bumped to
+  `horus-measured-boot-v2`. **Breaking: a volume sealed under v1 will not unseal on a v2 kernel**
+  and must be re-sealed — recorded here rather than smuggled in under the same tag, because a
+  measurement whose definition changes silently is worse than one that refuses.
+
+  **What that buys, stated exactly**: an edited command line cannot *unseal* a sealed volume, so
+  confidentiality survives an attacker who can boot the machine. It does not stop that attacker
+  *erasing* the disk — a format needs no key, and no measurement prevents it. `docs/LIMITATIONS.md`
+  now says so outright rather than leaving it to be inferred.
+
+  Three other things the work turned up, each found by running it rather than reasoning about it:
+  the menu's live entry was a **lie** on the machine most likely to boot it — with no token the
+  kernel behaves like the shipping image, which offers to install a *blank* disk, so the entry
+  promising to change nothing ran the installer; GRUB draws no menu on a terminal it was told to
+  use before being told its speed, so the original `terminal_output` ordering left the menu
+  invisible on the wire; and `grub.cfg` selected **serial only**, which is correct for a headless
+  gate and useless on a laptop, where a menu nobody can see is a machine that appears to hang and
+  then does something unchosen. Both terminals are listed now, and GRUB's editor is locked
+  (`set superusers=""` with `--unrestricted` entries) so this media's entries cannot be edited in
+  place.
+
 - **Install media can replace an existing volume, and a running system's disk still cannot be
   taken from under it (S90).** Booting install media on a machine that already has an operating
   system is the one thing somebody boots install media *for*, and until now it exited with

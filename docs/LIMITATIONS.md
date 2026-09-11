@@ -535,7 +535,7 @@ a page at the bogus address and reported success.
 ### 1.8 Part of the syscall table has no test that runs its handler, and one of those gaps hid a defect
 
 **Measured since 2026-08-20**, and re-derived on every merge rather than restated: as of
-2026-09-09, and gated since: **88 of 96** implemented syscalls have their handler
+2026-09-09, and gated since: **89 of 97** implemented syscalls have their handler
 body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
 boot-modules session). The other 8 are listed in `.github/syscall-coverage.yml`, each with a written reason.
 
@@ -2425,6 +2425,26 @@ old allocator and the new one read the same single block and no workload could t
   leaves is part of that server's contract. Doing it properly means the kernel and
   `console_server` learning about a linear framebuffer together, with the VGA path kept for BIOS
   machines that still have one.
+- **Physical access still gets destruction, and nothing here prevents that.** Install media now
+  offers a boot menu (**S91**), and it is worth being exact about what that does and does not
+  change, because "locked down" is easy to claim and hard to mean.
+
+  **What holds.** The kernel command line is measured into PCR[8], so a boot whose command line
+  was edited -- at the GRUB prompt, or by rewriting the media -- produces a different measurement
+  and a **TPM-sealed volume will not unseal**. Confidentiality survives an attacker who can boot
+  the machine. The menu's editor is also locked (`set superusers=""` with `--unrestricted`
+  entries), so this media's own entries cannot be edited in place; the entries fail closed, with
+  live boot the default and every parsing uncertainty -- no tag, an oversized tag, an
+  unrecognised word, both words at once -- resolving to the mode that writes nothing.
+
+  **What does not hold, and cannot.** Anyone who can boot their own media can erase the disk.
+  That is true of every machine without a locked firmware and a signed boot chain, it was true
+  before the menu existed, and no measurement prevents it: a format needs no key. The volume's
+  contents stay unreadable, but the volume can be destroyed. Horus has **no Secure Boot
+  integration, no firmware password, and no write protection**, so availability against a
+  physical attacker is not a property this system offers. It is named here rather than left to be
+  inferred from the absence of a claim.
+
 - **USB, sound, or any modern bus.** ATA PIO and PS/2 only for *driving* hardware. Two
   consequences on real hardware: a laptop's **NVMe or AHCI SSD cannot be read or written** (an
   SD/eMMC card can, since 2026-09-08 -- see §4, so a machine whose internal storage is soldered

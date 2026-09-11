@@ -85,6 +85,8 @@ control_arms:
   smoke-keyboard-installer-control: smoke-keyboard-installer
   smoke-replace-live-control: smoke-replace-live
   smoke-replace-oneshot-control: smoke-replace-oneshot
+  smoke-tpm-cmdline-control: smoke-tpm-cmdline
+  smoke-boot-menu-control: smoke-boot-menu
   smoke-serial-bound-control: smoke-serial-bound
   smoke-keyslots-control: smoke-keyslots
   smoke-users-persist-control: smoke-users-persist
@@ -224,6 +226,8 @@ gates:
   - smoke-keyboard-install
   - smoke-replace-live
   - smoke-replace-oneshot
+  - smoke-tpm-cmdline
+  - smoke-boot-menu
   - smoke-installer-replace
   - smoke-serial-bound
   - smoke-claim-release

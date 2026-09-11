@@ -509,6 +509,21 @@ jobs:
         run: make smoke-replace-oneshot
       - name: Control arm — the authorisation token is never cleared
         run: make smoke-replace-oneshot-control
+      # S91. The boot menu's entries differ only by a word on the kernel command
+      # line, so that word has to be MEASURED -- otherwise an attacker with
+      # physical access adds it to a machine's own measured media, every PCR is
+      # unchanged, and a sealed volume unseals for a boot nobody authorised.
+      - name: The kernel command line is part of the measured boot
+        run: make smoke-tpm-cmdline
+      - name: Control arm — the command line is left out of PCR[8]
+        run: make smoke-tpm-cmdline-control
+      # And the menu means what its labels say: the default changes nothing,
+      # tested on a blank disk, which is where this image would otherwise offer
+      # to install.
+      - name: The boot menu's default entry changes nothing
+        run: make smoke-boot-menu
+      - name: Control arm — the live entry without its token installs
+        run: make smoke-boot-menu-control
       # The console must not be able to stop the machine. serial_wait spins on
       # COM1's THRE from inside emit_char, which runs under console_lock with
       # interrupts disabled -- unbounded, that is the whole machine stopped with

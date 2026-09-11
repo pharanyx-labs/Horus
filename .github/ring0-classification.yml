@@ -67,7 +67,17 @@
 # beside the mount it undoes. All three are in the format path, which is core by
 # any reading -- the code that decides whether a disk is destroyed is not a
 # driver detail.
-core_budget_loc: 9682
+# 2026-09-11: 9682 -> 9727, +45 for the boot menu (S91). main.c gains the
+# multiboot2 command-line tag, a bounded copy of it, whole-word matching and the
+# flag derivation; tpm.c gains the length-prefixed command line in the PCR[8]
+# serialization; syscall_hw.c gains a four-line handler. ALL OF IT IS CORE and
+# none of it is a candidate for eviction: it decides whether the installer runs
+# and what the machine commits to its TPM. The parsing is the part worth
+# counting, because it reads bytes an attacker may influence -- whoever controls
+# the boot media writes them -- which is exactly the code a verified core should
+# be small enough to read. It is one loop over a bounded buffer, with no
+# allocation and no pointer arithmetic leaving it.
+core_budget_loc: 9727
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

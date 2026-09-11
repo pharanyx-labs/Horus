@@ -1152,6 +1152,7 @@ void users_init(void);
 #define SYS_USERLIST          112   /* (index, struct user_entry*) -> 1 filled, 0 past the last account, SYS_ERR_PERM without CAP_USER at CAPSLOT_USER. Account METADATA only: name, uid, gid, home. No hash, no salt, no key slot, no lockout state. The index is dense over VALID accounts, so a deleted slot in the middle of the table does not read as the end of it and MAX_USERS never crosses the boundary. */
 #define SYS_CONSOLE_RELEASE  114   /* (dev_slot) -> 0; give the console hardware back to the kernel. CAP_IO_DEVICE + WRITE in dev_slot, and the caller must BE the current owner. Exists so a console driver that fails AFTER taking the console can still be heard: while it owns the wire its own diagnostic reaches the klog ring and nothing else. */
 #define SYS_FB_INFO          115   /* (dev_slot, struct fb_geometry*) -> 0; the SHAPE of the linear framebuffer (width/height/pitch/bpp), or SYS_ERR_NOENT if this display is not one. CAP_IO_DEVICE + READ in dev_slot, and it must name the PLATFORM device. Where the framebuffer is comes from SYS_DEVICE_INFO's mmio[] ranges, not from here. */
+#define SYS_BOOT_FLAGS       116   /* (void) -> a bitmask of BOOT_FLAG_*; which entry the operator chose at the boot menu. SC_NONE, and deliberately: the value is a FACT about how this machine was started, not an authority. Knowing that the installer entry was picked lets a task do nothing -- installing still needs CAP_STORAGE_FORMAT, which only init grants and only to the installer. It is set once from the multiboot2 command line before any task exists and is never writable from ring 3. */
 #define SYS_STORAGE_DEVICE   113   /* (index, struct storage_info*) -> 0; the survey for ONE enumerated persistent device (CAP_STORAGE_FORMAT + READ at CAPSLOT_STORAGE_FORMAT). An index past the end is REFUSED rather than clamped: a survey that answered about a different disk would be read as a description of the disk about to be erased. */
 #define SYS_POLL_NOTIFY       106   /* (notif_slot, uint32_t*) -> 0 with a badge, or IPC_AGAIN; sys_wait_notify's non-blocking twin. Same gate (CAP_NOTIFICATION + READ): being non-blocking changes when the answer comes, never who may ask. Lets a caller witness the ABSENCE of a notification, which a blocking wait cannot. */
 #define SYS_IRQ_ACK           105   /* (dev_slot, irq) -> 0; the driver has serviced its device, so unmask the line. A registered line is masked by the kernel when it fires and stays masked until this call, which is what stops an unserviced level-triggered device livelocking the machine (CAP_IO_DEVICE + WRITE naming a device that declares the line, AND the registration must be the caller's) */
@@ -2890,6 +2891,23 @@ int  storage_authorize_format(int index);  /* 0 authorised, -1 refused: the targ
  * to render. */
 void storage_query(struct storage_info *out);
 int  storage_device_query(int index, struct storage_info *out);
+/* Boot-mode flags, decided by the boot menu and readable with SYS_BOOT_FLAGS.
+ *
+ * BOOT_FLAG_INSTALL says the operator picked the installer entry. Absence is
+ * the safe answer and is what every uncertainty resolves to -- no tag, an
+ * oversized tag, an unrecognised word. See the note above g_boot_cmdline. */
+#define BOOT_FLAG_INSTALL  (1u << 0)
+/* BOOT_FLAG_LIVE says the operator picked the live entry, and it is a POSITIVE
+ * statement rather than the absence of the other one. Without it, "live" and
+ * "this image has no boot menu at all" are the same value -- and they are not
+ * the same request: a shipping image meeting a blank disk offers to install it,
+ * which is right for that image and makes a menu entry promising to change
+ * nothing a lie. With both words present the kernel keeps LIVE and drops
+ * INSTALL; an ambiguous command line resolves to the mode that writes nothing. */
+#define BOOT_FLAG_LIVE     (1u << 1)
+uint64_t boot_flags(void);
+const char *boot_cmdline(void);
+
 #ifdef STORAGE_REPLACE_SELFTEST
 void storage_replace_selftest(void);
 #endif

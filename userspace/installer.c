@@ -315,6 +315,16 @@ static void label(int row, const char *s)
  * is what a menu is for -- it just is not what consent is for.
  */
 #define CONFIRM_WORD "FORMAT"
+/* A DIFFERENT ACT GETS A DIFFERENT WORD, which is the whole of why there are two.
+ *
+ * Replacing a volume somebody may still want is not the same decision as writing
+ * to blank media, and the roadmap's note on this item says so: offering them in
+ * the same menu is how the two get confused. Two words means consent to one can
+ * never be reused as consent to the other -- an operator who has typed FORMAT
+ * before, on a machine where it was the right answer, does not get through this
+ * screen by muscle memory. It is also what makes the refusal testable: typing
+ * FORMAT at a disk that holds a volume must change nothing. */
+#define REPLACE_WORD "REPLACE"
 
 /* ---- state -------------------------------------------------------------- */
 
@@ -410,6 +420,14 @@ static void disk_size(char *blocks, unsigned bcap, char *mib, unsigned mcap)
  */
 #define TARGET_MAX 8
 
+/* Whether the disk the operator chose already carries a Horus volume. Set from
+ * the per-device survey rather than from the machine-wide one: `recognised` in
+ * the machine survey means "this MACHINE has a volume", and on a two-disk
+ * machine that is a different question from "the disk I am about to erase has
+ * one". Reading the wrong one is how the stronger confirmation gets skipped on
+ * exactly the machine that needs it. */
+static int  g_target_occupied;
+
 static char g_target_labels[TARGET_MAX][40];
 static const char *g_target_items[TARGET_MAX];
 static unsigned g_target_count;
@@ -438,11 +456,40 @@ static void build_target_list(void)
         for (const char *c = mib; *c && n < sizeof(g_target_labels[0]) - 1; c++) out[n++] = *c;
         const char *suf = " MiB";
         for (const char *c = suf; *c && n < sizeof(g_target_labels[0]) - 1; c++) out[n++] = *c;
+        /* SAY WHICH DISKS ARE NOT EMPTY, on the screen where the choice is made.
+         * The menu lists every device, and until an operator is told which of
+         * them already holds a volume the list gives them no way to tell the
+         * disk they are installing onto from the one they are about to
+         * overwrite. The later screens ask harder about an occupied disk; this
+         * is where the fact first has to be visible. */
+        if (di.recognised) {
+            const char *occ = "  (has a volume)";
+            for (const char *c = occ; *c && n < sizeof(g_target_labels[0]) - 1; c++) out[n++] = *c;
+        }
         out[n] = 0;
 
         g_target_items[g_target_count] = out;
         g_target_count++;
     }
+}
+
+/* Ask the KERNEL whether the chosen disk holds a volume, and record it.
+ *
+ * Asked again here rather than remembered from build_target_list, because the
+ * label is a string for a person and this is a flag that decides which
+ * confirmation an operator has to satisfy. Deriving a security-relevant branch
+ * by parsing back the text that was drawn would be reading a picture; the two
+ * happen to agree today and only one of them is the source.
+ *
+ * A survey that FAILS is treated as occupied, not as empty. This flag only ever
+ * makes the installer ask harder, so the direction of an unknown is the one that
+ * asks for the stronger word rather than the weaker. */
+static void target_note_occupied(void)
+{
+    struct storage_info di;
+    for (unsigned z = 0; z < sizeof(di); z++) ((char *)&di)[z] = 0;
+    if (sys_storage_device(g_target, &di) != 0) { g_target_occupied = 1; return; }
+    g_target_occupied = di.recognised ? 1 : 0;
 }
 
 /* Returns 1 with g_target set, 0 if the operator cancelled. */
@@ -454,6 +501,7 @@ static int screen_target(void)
      * screen is shown. */
     if (g_target_count <= 1) {
         g_target = 0;
+        target_note_occupied();
         return 1;
     }
 
@@ -474,6 +522,7 @@ static int screen_target(void)
      * Re-checked here anyway -- the bound belongs to whoever indexes with it. */
     if (sel < 0 || (unsigned)sel >= g_target_count) return 0;
     g_target = (unsigned)sel;
+    target_note_occupied();
     return 1;
 }
 
@@ -484,7 +533,10 @@ static int screen_survey(void)
 
     frame_step("Install onto the attached disk", 1);
 
-    int r = para(ROW_BODY, "This will DESTROY everything on the attached disk.", C_DANGER);
+    int r = para(ROW_BODY, g_si.recognised
+                 ? "This disk ALREADY HOLDS A HORUS VOLUME, and installing replaces it. "
+                   "Everything in it -- every account, every file -- is destroyed."
+                 : "This will DESTROY everything on the attached disk.", C_DANGER);
     r++;
     label(r, "device");
     /* NOT "the attached ATA disk", which this said until 2026-09-08 and which
@@ -757,14 +809,18 @@ static int review_returns_install(void)
 
 /* The word. Immediately before the format, with nothing between it and the
  * call that destroys the disk. */
-static int screen_confirm_word(void)
+static int screen_confirm_word(const char *word)
 {
-    frame("Type the word to erase this disk");
+    frame(g_target_occupied ? "Type the word to replace this volume"
+                            : "Type the word to erase this disk");
 
-    int r = para(ROW_BODY, "This is the last question before the disk is erased.", C_DANGER);
+    int r = para(ROW_BODY, g_target_occupied
+                 ? "This is the last question before the volume on this disk is destroyed."
+                 : "This is the last question before the disk is erased.", C_DANGER);
     r++;
-    r = para(r, "Type " CONFIRM_WORD " to go ahead. Anything else, or esc, stops and "
+    r = para(r, "Type the word below to go ahead. Anything else, or esc, stops and "
                 "changes nothing.", C_TEXT);
+    r = para(r, word, C_DANGER);
 
     label(r + 2, "confirm");
     status("", C_TEXT);
@@ -788,7 +844,7 @@ static int screen_confirm_word(void)
     (void)typed;
     return 1;
 #else
-    return ustreq(typed, CONFIRM_WORD);
+    return ustreq(typed, word);
 #endif
 }
 
@@ -959,30 +1015,37 @@ void _start(void)
         status("", C_TEXT);
         hint("press any key");
         tui_flush();
+        /* SAID BEFORE THE WAIT, NOT AFTER IT. This marker used to follow
+         * tui_getkey(), so a machine that install media cannot do anything with
+         * printed NOTHING and sat on a screen -- indistinguishable, to anything
+         * reading the wire, from a boot that had hung. The keypress is for the
+         * person standing there; the marker is for everyone else, and they are
+         * not the same audience. Found 2026-09-11 while driving install media
+         * headlessly, which is the only way to notice it. */
+        say("INSTALLER: no disk", "");
         (void)tui_getkey();
         tui_end();
-        say("INSTALLER: no disk", "");
         sys_exit();
     }
 
-    if (g_si.recognised) {
-        /* Refused, not offered. See the header: installing over a filesystem
-         * somebody may still want is a different act needing a different
-         * confirmation, and putting it in the same menu is how the two get
-         * confused. */
-        frame("This disk already has a Horus volume");
-        int r = para(ROW_BODY, "Installing over an existing volume is not something this "
-                               "installer will do.", C_TEXT);
-        r++;
-        (void)para(r, "Nothing has been changed.", C_TEXT);
-        status("", C_TEXT);
-        hint("press any key");
-        tui_flush();
-        (void)tui_getkey();
-        tui_end();
-        say("INSTALLER: nothing was written; the disk already holds a volume", "");
-        sys_exit();
-    }
+    /* A DISK THAT ALREADY HOLDS A VOLUME IS NOW A TARGET, NOT A REFUSAL (S90),
+     * and what replaced the refusal is a different confirmation rather than a
+     * weaker one.
+     *
+     * Until 2026-09-11 this screen said "installing over an existing volume is
+     * not something this installer will do" and exited. That was honest while
+     * the kernel refused it outright, and it made install media useless for the
+     * one job somebody boots install media to do on a machine that already has
+     * an operating system on it. What made it safe to allow is not this program:
+     * storage_authorize_format refuses a target whose volume has been UNLOCKED,
+     * so a running system cannot be reformatted from under itself whatever this
+     * installer asks. Install media never logs in, so it never holds that state.
+     *
+     * What this program adds is that the operator is told, on every screen where
+     * it matters, and has to type a DIFFERENT word: the disk menu marks the disk,
+     * the survey says a volume is being replaced rather than a disk erased, and
+     * the last question asks for REPLACE where a blank disk asks for FORMAT.
+     * Consent to one is not consent to the other. */
 
     /* THE ORDER: show what is at stake, collect every answer, show them back,
      * and only then ask for the word. See the header for why the word is last
@@ -1088,7 +1151,9 @@ void _start(void)
              * promises, which is a decision about the most dangerous call in the
              * system and not a navigation tidy-up. The word stays all-or-nothing:
              * type it exactly, or nothing happens. */
-            if (!screen_confirm_word()) leave_untouched("The disk was not erased.");
+            if (!screen_confirm_word(g_target_occupied ? REPLACE_WORD : CONFIRM_WORD))
+                leave_untouched(g_target_occupied ? "The volume was not replaced."
+                                                  : "The disk was not erased.");
             st = ST_GO;
             break;
         default:

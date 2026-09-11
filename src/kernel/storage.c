@@ -3133,6 +3133,26 @@ int storage_mount(struct block_device *bd) {
     return 0;
 }
 
+/* Forget the volume g_mounted_fs currently describes, key material included.
+ *
+ * The inverse of storage_mount, and deliberately not called by it: a mount that
+ * replaces the description of another device is the case this exists for. The
+ * key arrays are zeroed with secure_zero rather than assigned, so the compiler
+ * may not elide the write -- these are the four derived keys that open the
+ * volume, and leaving them behind while the struct starts describing a
+ * different disk is the shape this guards against. inode_cache is a vestigial
+ * field with no allocator behind it, so there is nothing here to free. */
+static void storage_forget_mounted(void)
+{
+    secure_zero(g_mounted_fs.disk_key,        sizeof(g_mounted_fs.disk_key));
+    secure_zero(g_mounted_fs.volume_key,      sizeof(g_mounted_fs.volume_key));
+    secure_zero(g_mounted_fs.meta_mac_key,    sizeof(g_mounted_fs.meta_mac_key));
+    secure_zero(g_mounted_fs.journal_mac_key, sizeof(g_mounted_fs.journal_mac_key));
+    g_mounted_fs.mounted  = 0;
+    g_mounted_fs.unlocked = 0;
+    g_mounted_fs.bd       = 0;
+}
+
 struct mounted_fs *storage_get_mounted_fs(void) {
     return &g_mounted_fs;
 }
@@ -3168,12 +3188,38 @@ int storage_authorize_format(int index)
     if (storage_usable_count() > 0) {
         struct block_device *bd = storage_device_at(index);
         if (!bd) return -1;
-        /* A device already carrying a mounted volume is not a target here. That
-         * is not this function's policy -- storage_unlock's g_needs_format gate
-         * is what decides whether a format happens at all -- but naming the
-         * mounted device would set g_needs_format_bd to a device the format path
-         * will never look at, which is a silent no-op dressed as consent. */
-        if (bd == g_mounted_fs.bd && g_mounted_fs.mounted) return -1;
+        /* WHAT IS REFUSED IS AN UNLOCKED VOLUME, NOT A MOUNTED ONE, and the
+         * distinction is the whole of how install media may replace a volume
+         * while a running system may not (S90).
+         *
+         * A recognised volume is `mounted = 1, unlocked = 0` from boot until
+         * somebody proves they own it: storage_init mounts what it recognises
+         * and defers the unlock to a login. So "mounted" says only that this
+         * disk carries a Horus volume -- which is the state install media is
+         * ALWAYS in, because it never logs in, and refusing on it is what made
+         * a reinstall impossible rather than merely deliberate.
+         *
+         * "Unlocked" says something much stronger: the volume's password has
+         * been supplied this boot, so the machine is being USED and not
+         * installed. Reformatting from under a running system is the case that
+         * stays refused, and it is refused in the kernel rather than by a
+         * policy in userspace.
+         *
+         * The capability is still the authority. Nothing reaches this function
+         * without CAP_STORAGE_FORMAT, which `init` grants to the installer and
+         * to no other task; on the shipping image it grants it to nobody at all
+         * when a volume is present, because machine_needs_install() answers no.
+         * This function's job is to make the dangerous case unreachable even if
+         * that capability ever went somewhere it should not. */
+#ifndef STORAGE_REPLACE_UNLOCKED
+        if (bd == g_mounted_fs.bd && g_mounted_fs.mounted && g_mounted_fs.unlocked)
+            return -1;
+#else
+        /* CONTROL ARM -- never ship. Drop the unlocked check, and a disk can be
+         * reformatted out from under the running system that has it open. See
+         * make smoke-replace-live-control. */
+        (void)0;
+#endif
 #ifndef STORAGE_FORMAT_TARGET_IGNORED
         g_needs_format_bd = bd;
 #else
@@ -3283,7 +3329,40 @@ int storage_device_query(int index, struct storage_info *out)
 
 int storage_unlock(const char *password, size_t plen)
 {
-    if (g_needs_format) {
+    /* CONSUMED HERE, WHATEVER HAPPENS NEXT, and this is the edit the rest of the
+     * change hangs on.
+     *
+     * g_format_authorized was set once and never cleared, which was safe only
+     * because this branch was guarded by g_needs_format -- and THAT is cleared
+     * the moment a volume exists. The permission was therefore consumed by a
+     * different variable than the one that granted it: a coupling that held
+     * exactly as long as the two meant the same thing. Widening the branch so an
+     * authorised format can replace an EXISTING volume breaks the coupling, and
+     * the failure mode is not subtle: with the token still set, every subsequent
+     * login would reformat the disk it had just installed.
+     *
+     * So the token is read and cleared together, before anything can return. It
+     * is consumed by a FAILED format too -- an operator whose format was refused
+     * must authorise again rather than have a live permission lying around for
+     * whatever calls next. That is the same argument as the one-shot CAP_REPLY.
+     */
+    int authorized = g_format_authorized;
+#ifndef STORAGE_FORMAT_AUTH_STICKY
+    g_format_authorized = 0;
+#else
+    /* CONTROL ARM -- never ship. The pre-2026-09-11 lifetime: set once, never
+     * cleared. Harmless while g_needs_format was the real gate, because that is
+     * consumed by the format; beside a branch that no longer needs it, the token
+     * outlives the format it authorised and the next unlock re-enters the
+     * branch. What that then does is the guard below: the completed format
+     * cleared g_needs_format_bd, so there is no target and it refuses. Before
+     * that guard existed it faulted the kernel at addr=0x20 and killed the shell
+     * in a relaunch loop, which is how the guard got written.
+     * See make smoke-replace-oneshot-control. */
+    (void)0;
+#endif
+
+    if (g_needs_format || authorized) {
 #ifndef STORAGE_AUTOFORMAT
         /* A LOGIN IS NOT CONSENT TO FORMAT A DISK (SECURITY.md S63).
          *
@@ -3306,7 +3385,7 @@ int storage_unlock(const char *password, size_t plen)
          * STORAGE_AUTOFORMAT=1 restores the old behaviour for the test targets
          * that boot a deliberately blank image, and is the control arm for
          * make smoke-storage-noformat. */
-        if (!g_format_authorized) {
+        if (!authorized) {
             print("STORAGE: refusing to format an unrecognised volume at login; "
                   "no format was authorised\n");
             return -6;
@@ -3329,7 +3408,53 @@ int storage_unlock(const char *password, size_t plen)
          * This is the same shape as the drive-select ordering in ata.c that the
          * same gate found an hour earlier: a variable that was always equal to
          * the thing it stood for, until something made them differ. */
+        /* AN AUTHORISED FORMAT WITH NO TARGET IS REFUSED, NOT PERFORMED, and
+         * this guard exists because widening the branch above created the hole
+         * it closes. It was found by the control arm for the one-shot token,
+         * which is the argument for writing arms before believing a change.
+         *
+         * Two ways in, and neither was reachable before. storage_authorize_format
+         * sets g_format_authorized on a machine with NO persistent device
+         * (index 0 means "the one thing that could be meant") without ever
+         * setting g_needs_format_bd; and after a completed format both
+         * g_needs_format and g_needs_format_bd are cleared, so a token that
+         * outlived its format names nothing either. While this branch was
+         * guarded by g_needs_format alone, both states simply kept it out. Now
+         * that an authorisation can open it, `current_bd = g_needs_format_bd`
+         * would set the machine's notion of its own disk to NULL and hand that
+         * to storage_format_sealed -- observed as a kernel fault at addr=0x20
+         * taken from a login, killing the shell in a relaunch loop.
+         *
+         * Refusing costs nothing real: a format with no device to write cannot
+         * succeed, and the only question is whether it fails as a return code or
+         * as a fault. */
+        if (!g_needs_format_bd) {
+            print("STORAGE: a format was authorised with no target device; refusing\n");
+            /* -8 because -1, -2, -3, -5, -6, -7 and -9 are all taken in this
+             * function and each means something else. A distinct code is what
+             * lets a caller tell "no target" from "wrong password". */
+            return -8;
+        }
         current_bd = g_needs_format_bd;
+        /* FORGET WHATEVER VOLUME THIS STRUCT STILL DESCRIBES, and be precise
+         * about which hazard that is for, because it is not the obvious one.
+         *
+         * On the replace path the old volume's keys were provably never
+         * derived: storage_authorize_format refuses an UNLOCKED target, and key
+         * material only exists after an unlock. So there is nothing stale to
+         * clear for the disk being replaced, and storage_mount below rewrites
+         * bd, sb and the flags anyway.
+         *
+         * What this IS for is that g_mounted_fs is one global for the whole
+         * machine, so it may describe a DIFFERENT device -- one whose volume was
+         * unlocked, whose keys are therefore live, and which storage_mount would
+         * then overwrite the description of while leaving the key arrays
+         * untouched. That leaves derived keys in memory for a volume this struct
+         * no longer names. It is not reachable today (a machine that has
+         * unlocked a volume is not running an installer), which is exactly why
+         * it is worth zeroing rather than reasoning about: the zero costs
+         * nothing, and being wrong about reachability costs key material. */
+        storage_forget_mounted();
         if (storage_format_sealed(g_needs_format_bd, password, plen) != 0) return -1;
         if (storage_mount(g_needs_format_bd) != 0) return -1;
         g_needs_format    = 0;

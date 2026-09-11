@@ -571,19 +571,28 @@ static int machine_needs_install(void) {
      * erasing a disk they still want stays where they can see what they are
      * about to lose: the installer's survey, its review, and its typed word.
      *
-     * IT STILL CANNOT REPLACE AN EXISTING VOLUME, and that is a KERNEL refusal
-     * rather than a policy this flag can move. Two independent guards say so,
-     * both deliberate and both load-bearing: storage_authorize_format refuses a
-     * device that is the currently mounted volume, and storage_unlock's
-     * g_needs_format gate is consumed the moment a volume exists (S63, S83).
-     * Measured 2026-09-10 by driving this image through a second install on a
-     * disk it had just written: the walk completes and the format answers
-     * `INSTALLER: FAIL format refused rc=-22`. So on a recognised volume this
-     * image shows the installer's existing "already has a Horus volume" screen
-     * and changes nothing -- which is honest, where an offer to replace would
-     * not be. Reinstalling over a Horus volume needs those kernel guards
-     * revisited, and that is a security-critical change with its own argument to
-     * make, not a build flag.
+     * IT CAN NOW REPLACE AN EXISTING VOLUME (S90, 2026-09-11), and the thing
+     * that makes that safe is not this flag.
+     *
+     * Until then two kernel guards refused it: storage_authorize_format refused
+     * a device carrying the MOUNTED volume, and storage_unlock's format branch
+     * was reachable only while g_needs_format was set, which is consumed the
+     * moment a volume exists. Driving this image through a second install on a
+     * disk it had just written answered `INSTALLER: FAIL format refused rc=-22`.
+     *
+     * The refusal now turns on UNLOCKED rather than mounted. A recognised volume
+     * is mounted-but-locked from boot until somebody proves they own it, which
+     * is the state install media is always in because it never logs in; an
+     * unlocked volume means the machine is being USED, and reformatting it from
+     * underneath is still refused in the kernel. The format authorisation became
+     * a one-shot token in the same change, because it had been retired by
+     * g_needs_format rather than by itself -- see storage_unlock.
+     *
+     * THE SHIPPING IMAGE IS UNAFFECTED, and the line that does it is four below
+     * this comment: without INSTALL_ALWAYS, `g_si.recognised` returns 0 here and
+     * the installer is never launched on a machine that has a volume, so nothing
+     * on that image is ever granted CAP_STORAGE_FORMAT in that situation. The
+     * kernel permits the act; only install media ever asks for it.
      *
      * `format_on_login` is still honoured: that kernel formats an unrecognised
      * volume by itself at the login prompt, so an installer would be racing it. */

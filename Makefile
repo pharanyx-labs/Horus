@@ -126,6 +126,7 @@ DEFECT_FLAGS = \
 	SYSCOV_PROBES_ABSENT KSTACK_INFLIGHT_LEGACY_WORD KSTACK_SLOT_INDEX_TRUNC \
 	CAP_LOOKUP_ROOT_FALLBACK CAP_LOOKUP_RANGE_FALLBACK CAP_LOOKUP_TYPE_UNCHECKED \
 	KEYSLOT_REMOVE_NOOP USERS_PEPPER_PER_BOOT USERS_TAMPER_INJECT STORAGE_AUTOFORMAT \
+	STORAGE_REPLACE_UNLOCKED STORAGE_FORMAT_AUTH_STICKY \
 	STORAGE_FORMAT_UNGATED INSTALLER_NO_CONFIRM BLOCK_ERRNO_LEGACY \
 	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED \
 	FS_LINK_UNCOUNTED \
@@ -512,6 +513,15 @@ endif
 # unformatted ATA volume at the login prompt formats it on the strength of the
 # password typed. Test targets that boot a deliberately blank image set it; the
 # shipping kernel does not, and refuses instead.
+# STORAGE_REPLACE_SELFTEST=1 drives S90's predicate directly: authorise a format
+# while the volume is locked (must be allowed), unlock it, authorise again (must
+# be refused). Not a defect flag -- a selftest, like STORAGE_NOFORMAT_SELFTEST.
+STORAGE_REPLACE_SELFTEST ?= 0
+ifeq ($(STORAGE_REPLACE_SELFTEST),1)
+CFLAGS  += -DSTORAGE_REPLACE_SELFTEST
+ASFLAGS += -DSTORAGE_REPLACE_SELFTEST
+endif
+
 STORAGE_NOFORMAT_SELFTEST ?= 0
 ifeq ($(STORAGE_NOFORMAT_SELFTEST),1)
 CFLAGS  += -DSTORAGE_NOFORMAT_SELFTEST
@@ -519,9 +529,38 @@ ASFLAGS += -DSTORAGE_NOFORMAT_SELFTEST
 endif
 
 STORAGE_AUTOFORMAT ?= 0
+
+# STORAGE_REPLACE_UNLOCKED=1 drops storage_authorize_format's refusal of a target
+# whose volume is UNLOCKED, so a disk can be reformatted out from under the
+# running system that has it open. The mounted-but-locked case is what install
+# media legitimately needs (S90); the unlocked case is a machine somebody has
+# proved they own and is using, and it stays refused in the KERNEL rather than by
+# a policy in userspace. The arm for `make smoke-replace-live`.
+STORAGE_REPLACE_UNLOCKED ?= 0
+
+# STORAGE_FORMAT_AUTH_STICKY=1 restores the pre-2026-09-11 lifetime of
+# g_format_authorized: set once by storage_authorize_format and NEVER cleared.
+#
+# That was harmless while the format branch was guarded by g_needs_format, which
+# IS consumed the moment a volume exists -- the permission was retired by a
+# different variable than the one that granted it, a coupling that held exactly
+# as long as the two meant the same thing. S90 widens that branch so an
+# authorised format can replace an EXISTING volume, and the coupling is gone: with
+# the token still set, the next login reformats the disk that was just installed,
+# sealing it to whatever was typed at the login prompt. The arm for
+# `make smoke-replace-oneshot`.
+STORAGE_FORMAT_AUTH_STICKY ?= 0
 ifeq ($(STORAGE_AUTOFORMAT),1)
 CFLAGS  += -DSTORAGE_AUTOFORMAT
 ASFLAGS += -DSTORAGE_AUTOFORMAT
+endif
+ifeq ($(STORAGE_REPLACE_UNLOCKED),1)
+CFLAGS  += -DSTORAGE_REPLACE_UNLOCKED
+ASFLAGS += -DSTORAGE_REPLACE_UNLOCKED
+endif
+ifeq ($(STORAGE_FORMAT_AUTH_STICKY),1)
+CFLAGS  += -DSTORAGE_FORMAT_AUTH_STICKY
+ASFLAGS += -DSTORAGE_FORMAT_AUTH_STICKY
 endif
 
 # STORAGE_FORMAT_UNGATED=1 removes the dispatch-table gate in front of
@@ -7174,6 +7213,124 @@ smoke-keyboard-install:
 	       rm -f keyboard-install.img; exit 1; }
 	@rm -f keyboard-install.img
 	@echo "[keyboard] PASS - installed and logged in without touching the serial line"
+
+# S90: INSTALL MEDIA MAY REPLACE A VOLUME; A RUNNING SYSTEM'S DISK MAY NOT BE
+# TAKEN FROM UNDER IT.
+#
+# Two gates, because the property has two halves and they are reachable from
+# different places. This one drives the kernel predicate directly: authorise a
+# format while the volume is LOCKED (must be allowed -- that is the state install
+# media is always in, because it never logs in), unlock it, authorise again (must
+# be refused -- an unlocked volume means somebody proved they own this machine
+# and is using it). Both calls report which branch they took, so an arm that
+# stops the test running fails loudly rather than passing quietly.
+#
+# It is a selftest and not an end-to-end run because no shipping path can reach
+# the state: install media never unlocks, and the installed system grants
+# CAP_STORAGE_FORMAT to nobody. Minting that capability into a ring-3 task just
+# to drive it would test a situation the design exists to prevent.
+SMOKE_REPLACE_TIMEOUT ?= 180
+.PHONY: smoke-replace-live
+smoke-replace-live:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_REPLACE_SELFTEST=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_REPLACE_SELFTEST=1 horus.iso
+	@rm -f replace-live.img && truncate -s 64M replace-live.img
+	@SMOKE_TIMEOUT=$(SMOKE_REPLACE_TIMEOUT) MARKER_ONLY=1 \
+		SMOKE_DISK=replace-live.img \
+		REQUIRE_MARKER='REPLACE_SELFTEST: unlocked target REFUSED' \
+		FAIL_MARKER='REPLACE_SELFTEST: unlocked target ALLOWED' \
+		tools/smoke_test.sh horus.iso
+	@rm -f replace-live.img
+	@echo "[replace] PASS - an unlocked volume cannot be reformatted"
+
+# The falsifying arm. STORAGE_REPLACE_UNLOCKED=1 drops the unlocked check, so a
+# disk can be reformatted out from under the running system that has it open.
+# Asserted POSITIVELY on the ALLOWED branch rather than on the absence of the
+# refusal: an absence is satisfied by a boot that never reached the test.
+.PHONY: smoke-replace-live-control
+smoke-replace-live-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_REPLACE_SELFTEST=1 STORAGE_REPLACE_UNLOCKED=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_REPLACE_SELFTEST=1 STORAGE_REPLACE_UNLOCKED=1 horus.iso
+	@rm -f replace-live.img && truncate -s 64M replace-live.img
+	@SMOKE_TIMEOUT=$(SMOKE_REPLACE_TIMEOUT) MARKER_ONLY=1 \
+		SMOKE_DISK=replace-live.img \
+		REQUIRE_MARKER='REPLACE_SELFTEST: unlocked target ALLOWED' \
+		tools/smoke_test.sh horus.iso
+	@rm -f replace-live.img
+	@echo "[replace] CONTROL PASS - without the check an unlocked volume is reformattable"
+
+# The other half, end to end: install media replaces a volume it wrote earlier,
+# and the NEW password is the only one that opens the result.
+#
+# THE TWO PASSWORDS ARE THE ASSERTION. A format returning 0 proves nothing here --
+# an installer that quietly did nothing reaches the same marker as one that
+# replaced the volume. So the two installs use different passwords and the
+# machine is then booted normally and asked to REFUSE the first and accept the
+# second. Only a genuinely new volume sealed to a new key behaves that way.
+SMOKE_INSTALLER_REPLACE_TIMEOUT ?= 400
+.PHONY: smoke-installer-replace
+smoke-installer-replace:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory INSTALL_ALWAYS=1 STORAGE_ATA=1
+	@$(MAKE) --no-print-directory INSTALL_ALWAYS=1 STORAGE_ATA=1 horus.iso
+	@mv horus.iso replace-media.iso
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 horus.iso
+	@rm -f replace.img && truncate -s 64M replace.img
+	@rm -f replace-serial.log
+	@INSTALLER_MODE=replace INSTALLER_ISO=replace-media.iso \
+		SESSION_DISK=replace.img SESSION_SERIAL_LOG=replace-serial.log \
+		SESSION_TIMEOUT=$(SMOKE_INSTALLER_REPLACE_TIMEOUT) \
+		BOOT_TIMEOUT=$(SMOKE_INSTALLER_REPLACE_TIMEOUT) \
+		python3 tools/installer_session.py horus.iso \
+	  || { echo "[replace] ----- guest serial -----"; \
+	       tail -60 replace-serial.log 2>/dev/null | sed 's/^/  /'; \
+	       rm -f replace.img replace-media.iso; exit 1; }
+	@rm -f replace.img replace-media.iso
+	@echo "[replace] PASS - install media replaced a volume, and only the new password opens it"
+
+# THE FORMAT AUTHORISATION IS A ONE-SHOT TOKEN, witnessed directly.
+#
+# NOT THROUGH A LOGIN, and the reason is worth keeping: a login cannot observe
+# it. A correct password is satisfied by the account check and never reaches
+# storage_unlock; a wrong one fails before the answer matters. Both were built
+# as arms on 2026-09-11 and both reported a clean result under a flag that
+# plainly changed something -- a gate agreeing with a defect rather than
+# detecting it. The selftest asks the kernel instead: after a completed format,
+# a second unlock must return 0 without re-entering the format branch.
+.PHONY: smoke-replace-oneshot
+smoke-replace-oneshot:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_REPLACE_SELFTEST=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_REPLACE_SELFTEST=1 horus.iso
+	@rm -f replace-oneshot.img && truncate -s 64M replace-oneshot.img
+	@SMOKE_TIMEOUT=$(SMOKE_REPLACE_TIMEOUT) MARKER_ONLY=1 \
+		SMOKE_DISK=replace-oneshot.img \
+		REQUIRE_MARKER='REPLACE_SELFTEST: authorisation SPENT' \
+		FAIL_MARKER='REPLACE_SELFTEST: authorisation UNSPENT' \
+		tools/smoke_test.sh horus.iso
+	@rm -f replace-oneshot.img
+	@echo "[replace] PASS - the format authorisation is spent by the format it authorised"
+
+# The falsifying arm. STORAGE_FORMAT_AUTH_STICKY=1 restores the never-cleared
+# token, so a second unlock re-enters the format branch -- which now finds no
+# target device, because the completed format cleared it, and refuses. Asserted
+# positively on UNSPENT rather than on the absence of SPENT.
+.PHONY: smoke-replace-oneshot-control
+smoke-replace-oneshot-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_REPLACE_SELFTEST=1 STORAGE_FORMAT_AUTH_STICKY=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_REPLACE_SELFTEST=1 STORAGE_FORMAT_AUTH_STICKY=1 horus.iso
+	@rm -f replace-oneshot.img && truncate -s 64M replace-oneshot.img
+	@SMOKE_TIMEOUT=$(SMOKE_REPLACE_TIMEOUT) MARKER_ONLY=1 \
+		SMOKE_DISK=replace-oneshot.img \
+		REQUIRE_MARKER='REPLACE_SELFTEST: authorisation UNSPENT' \
+		tools/smoke_test.sh horus.iso
+	@rm -f replace-oneshot.img
+	@echo "[replace] CONTROL PASS - an unspent token re-enters the format branch"
 
 # The console must not be able to stop the machine.
 #

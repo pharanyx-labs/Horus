@@ -916,6 +916,114 @@ def walkback(disk):          # noqa: ARG001 - uniform scenario signature
         s.close()
 
 
+def replace(disk):
+    """Install media replaces a volume it wrote earlier (S90).
+
+    THE SECOND PASSWORD IS THE WHOLE ASSERTION. A format that returns 0 proves
+    nothing here: an installer that quietly did nothing and an installer that
+    replaced the volume both reach the same marker. So the two installs use
+    DIFFERENT passwords, and the machine is then booted normally and asked to
+    accept the second and refuse the first. Only a genuinely new volume, sealed
+    to a new key, behaves that way -- the old password opening the disk would
+    mean the replace was cosmetic.
+
+    Pass 1 and pass 2 both run from INSTALL MEDIA (INSTALLER_ISO); pass 3 boots
+    the ordinary image, because what is being checked is that an installed
+    machine works, not that install media can log in.
+    """
+    media = os.environ.get("INSTALLER_ISO", "install.iso")
+    pw1 = os.environ.get("REPLACE_PW_FIRST", "firstpass1")
+    pw2 = os.environ.get("REPLACE_PW_SECOND", "secondpw22")
+
+    for tag, pw, word in (("blank", pw1, "FORMAT"), ("replace", pw2, "REPLACE")):
+        s = Serial(media)
+        try:
+            # answer_survey waits for the marker itself; waiting for it here too
+            # would consume it and the second wait would never match.
+            answer_survey(s, first_timeout=BOOT)
+            step(f"install media reached the disk screen ({tag})")
+            answer_accounts(s, root_pw=pw)
+            answer_review_and_confirm(s, word=word)
+            step(f"answered every screen and typed {word}")
+            took = expect_while_doing_io(s, "INSTALLER: PASS installed",
+                                         FORMAT_STALL, FORMAT_CAP)
+            step(f"the {tag} install completed [{took:.0f}s of writing]")
+
+            if tag != "replace":
+                continue
+
+            # THE FORMAT AUTHORISATION MUST BE SPENT, AND THIS IS THE ONLY BOOT
+            # IN WHICH THAT CAN BE ASKED. g_format_authorized is a per-boot
+            # global, so a later power cycle starts at zero and can witness
+            # nothing. The window is the boot the installer ran in, which ends
+            # at a login prompt -- so the probe is simply to log in there, with
+            # the password that was just installed. It must work.
+            #
+            # WHAT AN UNSPENT TOKEN ACTUALLY DOES, measured rather than assumed
+            # (2026-09-11), because the guess was wrong and worth recording. It
+            # does NOT reformat the disk: the first format clears
+            # g_needs_format_bd along with g_needs_format, so a re-entered
+            # branch calls storage_format_sealed on a NULL device and fails --
+            # after assigning current_bd = NULL, which leaves the machine's
+            # notion of its own disk broken. The visible result is that the
+            # CORRECT password stops opening the machine, on the boot that just
+            # installed it. Less destructive than "it reformats", and still a
+            # machine you cannot log into minutes after installing it.
+            # AND THE MACHINE IS USABLE ON THE BOOT THAT INSTALLED IT. The
+            # install boot ends at a login prompt, so this costs one extra
+            # login and covers the window in which the format authorisation
+            # exists at all -- g_format_authorized is a per-boot global, so no
+            # later boot can say anything about it.
+            #
+            # WHAT THIS CANNOT WITNESS, stated so nobody builds an arm on it:
+            # whether the token was SPENT. A correct password is satisfied by
+            # the account check and never reaches storage_unlock; a wrong one
+            # fails before the answer matters. Both were tried as arms on
+            # 2026-09-11 and both reported a clean result under a flag that
+            # plainly changed something -- a gate agreeing with a defect rather
+            # than detecting it. The token is witnessed directly instead, by
+            # make smoke-replace-oneshot.
+            s.expect("horus login: ", BOOT)
+            os.write(s.fd, b"root" + ENTER)
+            s.expect("assword", STEP)
+            os.write(s.fd, pw2.encode() + ENTER)
+            if expect_any(s, ["@horus", "Login incorrect"], STEP) != 0:
+                raise SessionFail("the password just installed does not open the "
+                                  "machine on the boot that installed it")
+            step("the newly installed password logs in on the install boot")
+        finally:
+            keep_serial(s.buf)
+            s.close()
+
+    s = Serial(ISO)
+    try:
+        s.expect("horus login: ", BOOT)
+        # The OLD password first. If the volume were untouched this is the one
+        # that would work, so its refusal is the evidence -- and asking it first
+        # means a pass cannot come from the machine being generous twice.
+        os.write(s.fd, b"root" + ENTER)
+        s.expect("assword", STEP)
+        os.write(s.fd, pw1.encode() + ENTER)
+        i = expect_any(s, ["@horus", "Login incorrect"], STEP)
+        if i == 0:
+            raise SessionFail("the password from the REPLACED volume still opens "
+                              "the disk; the volume was not replaced")
+        step("the password the replaced volume was sealed to is refused")
+
+        s.expect("horus login: ", STEP)
+        os.write(s.fd, b"root" + ENTER)
+        s.expect("assword", STEP)
+        os.write(s.fd, pw2.encode() + ENTER)
+        j = expect_any(s, ["@horus", "Login incorrect"], STEP)
+        if j != 0:
+            raise SessionFail("the new password does not open the volume the "
+                              "replace install wrote")
+        step("logged in with the password the replace install was given")
+    finally:
+        keep_serial(s.buf)
+        s.close()
+
+
 def run():
     disk = os.environ.get("SESSION_DISK", "")
     if not disk:
@@ -935,6 +1043,10 @@ def run():
         return 0
     if mode == "walkback":
         walkback(disk)
+        print("INSTALLER_SESSION: PASS")
+        return 0
+    if mode == "replace":
+        replace(disk)
         print("INSTALLER_SESSION: PASS")
         return 0
     if mode == "twodisk":

@@ -1455,12 +1455,26 @@ and for a full-screen program those are different questions.
   was handed. Neither produced an error -- the first stopped the guest issuing disk I/O at all,
   reaching the harness as the installer's format WEDGING. Both were found by the first gate that
   ever wrote to the second disk, which is the argument for the gate.
-- **Installing over an existing volume.** Refused outright today, with a message. It is a
-  different act needing a different confirmation, and offering it in the same menu as "install
-  onto blank media" is how the two get confused.
+- ~~**Installing over an existing volume.**~~ **Done 2026-09-11** (`SECURITY.md` **S90**), and
+  the "different act needing a different confirmation" is what it got rather than a relaxed
+  gate. The kernel's refusal moved from *mounted* to *unlocked*: a recognised volume is
+  `mounted = 1, unlocked = 0` from boot until somebody supplies its password, which is the state
+  install media is always in because it never logs in, while an unlocked volume means the
+  machine is being used and cannot be reformatted from under itself. The authority is still
+  `CAP_STORAGE_FORMAT`, which the shipping image grants to nobody when a volume is present.
+  Userspace asks *differently*: the disk menu marks a disk that holds a volume, the survey says
+  a volume is being replaced, and the last question asks for `REPLACE` where a blank disk asks
+  for `FORMAT`. Gated by `make smoke-replace-live` (the kernel predicate, both directions in one
+  boot) and `make smoke-installer-replace` (end to end, two passwords).
 - **No partitioning and no bootloader step.** The volume is the disk.
-- **Nothing re-runs the installer on demand.** It is launched by `init` when the machine needs
-  it; there is no way to ask for it from a shell, which a recovery workflow would want.
+- **Nothing re-runs the installer on demand *from a shell*.** Booting install media is now the
+  answer for a machine that already has a volume, which is what closed the item above; what is
+  still absent is asking for it from a running system. That is deliberate rather than pending:
+  a shell-invoked installer needs `CAP_STORAGE_FORMAT` to reach a login-adjacent task, and
+  `launch_installer` calls that "the one capability no other task is given a copy of". Reaching
+  it would also put the volume in the `unlocked` state **S90** exists to refuse. So this is not
+  a gap to be filled mechanically -- it needs that invariant rewritten deliberately, or a
+  different mechanism.
 
 ---
 
@@ -1803,7 +1817,7 @@ table already has the four columns a registry needs (id, statement, enforcing co
 the table *is* the registry. A hand-maintained parallel manifest would be a second copy of
 claims that already exist, which is **[H-3]**'s shape: two descriptions of one thing, drifting.
 The manifest that remains (`.github/invariants.yml`) holds exemptions only, and today it is
-**empty**, all 91 properties name a witness that resolves.
+**empty**, all 92 properties name a witness that resolves.
 
 **What the survey found on the way.** **S16** had no witness at all, an em-dash against
 `fpu_save`/`fpu_restore`, real code called on every ring transition and exercised by nothing.
@@ -1842,7 +1856,7 @@ past it.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue`, §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 318 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 165 of them control arms that must reproduce a defect |
+| ✅ | 323 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 167 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

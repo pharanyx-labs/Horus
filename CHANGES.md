@@ -54,6 +54,54 @@ in this file.
 
 ### Added
 
+- **Install media can replace an existing volume, and a running system's disk still cannot be
+  taken from under it (S90).** Booting install media on a machine that already has an operating
+  system is the one thing somebody boots install media *for*, and until now it exited with
+  "installing over an existing volume is not something this installer will do". Two kernel guards
+  refused it: `storage_authorize_format` refused the **mounted** device, and `storage_unlock`'s
+  format branch was reachable only while `g_needs_format` was set, which is consumed the moment a
+  volume exists.
+
+  **The refusal moved from *mounted* to *unlocked*, and that distinction is the whole change.** A
+  recognised volume is `mounted = 1, unlocked = 0` from boot until somebody supplies its password
+  — `storage_init` mounts what it recognises and defers the unlock to a login. So *mounted* says
+  only that the disk carries a Horus volume, which is the state install media is **always** in
+  because it never logs in; *unlocked* says the machine is being **used**, and reformatting it
+  from underneath stays refused **in the kernel** rather than by a policy in userspace.
+
+  **The authority is still the capability.** Nothing reaches the call without
+  `CAP_STORAGE_FORMAT`, which `init` grants to the installer and no other task, and which the
+  shipping image grants to nobody when a volume is present. The kernel permits the act; only
+  install media ever asks for it.
+
+  **The format authorisation is now a one-shot token, and that was the sharp edge.**
+  `g_format_authorized` was set once and **never cleared** — safe only because `g_needs_format`
+  retired it, so the permission was consumed by a different variable than the one that granted
+  it. Widening the branch removes that coupling. It is now read and cleared together before
+  anything can return, and consumed by a **failed** format too.
+
+  **Its arm then found a hole this change had opened, which is the argument for writing arms
+  before believing a change.** An unspent token re-enters the format branch, and the completed
+  format has cleared `g_needs_format_bd` along with `g_needs_format` — so the branch had no
+  target, set `current_bd = NULL` and handed that to `storage_format_sealed`, faulting the kernel
+  at `addr=0x20` from a login and killing the shell in an init relaunch loop. The same shape is
+  reachable on a diskless machine, where `storage_authorize_format` sets the token without ever
+  setting a target. A NULL-target format is now refused with a distinct return code. Neither state
+  could open the branch before this change, which is why neither had a guard.
+
+  **Two arms were built through the login path and discarded**, and the reason is recorded so the
+  next person does not rebuild them: a login cannot observe the token. A correct password is
+  satisfied by the account check and never reaches `storage_unlock`; a wrong one fails before the
+  answer matters. Both reported a clean login under a flag that plainly changed something — a gate
+  agreeing with a defect rather than detecting it. The token is witnessed directly by a selftest
+  instead. The first guess at the signature was wrong too: an unspent token does **not** reformat
+  the disk.
+
+  Userspace asks *differently* rather than less: the disk menu marks a disk that holds a volume,
+  the survey says a volume is being replaced rather than a disk erased, and the last question
+  asks for `REPLACE` where a blank disk asks for `FORMAT` — so consent to one is never consent to
+  the other.
+
 - **An entire install, typed on the machine's own keyboard.** `make smoke-keyboard-install`
   completes the install and then logs into what was installed, with nothing typed at COM1 from
   the first menu to the shell prompt — the claim the ring-3 keyboard exists to support, gated
@@ -143,6 +191,14 @@ in this file.
   names that as a measurement artefact rather than banking it as assurance.
 
 ### Fixed
+
+- **Install media said nothing at all on a machine it could not use.** The installer's two
+  dead-end screens — no disk, and (until S90) a disk that already held a volume — emitted their
+  marker *after* `tui_getkey()`, so a headless boot printed nothing and sat on a drawn screen,
+  indistinguishable on the wire from a boot that had hung. The marker now precedes the wait: the
+  keypress is for the person standing there, the marker is for everyone else, and they are not
+  the same audience. Found while driving install media headlessly, which is the only way to
+  notice it.
 
 - **The `PS2_PROBE` instrument consumed the keystroke it reported.** The probe sampled the
   scancode with its own `inb(0x60)` in the IRQ 1 handler, ahead of the branch that reads the

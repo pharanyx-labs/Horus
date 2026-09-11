@@ -83,6 +83,8 @@ control_arms:
   smoke-console-handover-control: smoke-console-handover
   smoke-keyboard-control: smoke-keyboard
   smoke-keyboard-installer-control: smoke-keyboard-installer
+  smoke-replace-live-control: smoke-replace-live
+  smoke-replace-oneshot-control: smoke-replace-oneshot
   smoke-serial-bound-control: smoke-serial-bound
   smoke-keyslots-control: smoke-keyslots
   smoke-users-persist-control: smoke-users-persist
@@ -220,6 +222,9 @@ gates:
   - smoke-keyboard
   - smoke-keyboard-installer
   - smoke-keyboard-install
+  - smoke-replace-live
+  - smoke-replace-oneshot
+  - smoke-installer-replace
   - smoke-serial-bound
   - smoke-claim-release
   - smoke-console

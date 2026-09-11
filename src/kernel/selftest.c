@@ -3636,6 +3636,77 @@ void storage_noformat_selftest(void)
 }
 #endif
 
+#ifdef STORAGE_REPLACE_SELFTEST
+/* An UNLOCKED volume cannot be reformatted, and a locked one can (S90).
+ *
+ * WHY A SELFTEST AND NOT AN END-TO-END GATE. The property is about a kernel
+ * predicate in a state no shipping path can reach from outside: a task holding
+ * CAP_STORAGE_FORMAT while the volume is unlocked. Install media never logs in,
+ * so it never sees an unlocked volume; the installed system unlocks at login but
+ * grants that capability to nobody. Driving it from ring 3 would mean minting
+ * the capability into a task on a machine that has no reason to have one, and
+ * the test would then be exercising a situation the design exists to prevent
+ * rather than the check that prevents it. So the state is built here, where it
+ * is honest to build it, and the predicate is asked directly.
+ *
+ * BOTH DIRECTIONS ARE EXERCISED IN ONE BOOT, which is the STORAGE_NOFORMAT_SELFTEST
+ * lesson three screens up: a pair in which neither arm reaches the path can have
+ * one of them green. The locked call must be ALLOWED and the unlocked call must
+ * be REFUSED, and each reports which branch it took rather than the absence of a
+ * message -- so an arm that stops the whole test running fails loudly instead of
+ * passing quietly.
+ *
+ * The order is forced by what it is testing: authorise while locked, unlock
+ * (which formats the blank disk and leaves unlocked = 1), then authorise again.
+ * The second call is the one S90 is about. */
+void storage_replace_selftest(void)
+{
+    const char *pw = "replace-selftest-pw";
+
+    int first = storage_authorize_format(0);
+    print(first == 0 ? "REPLACE_SELFTEST: locked target ALLOWED\n"
+                     : "REPLACE_SELFTEST: locked target REFUSED\n");
+
+    int rc = storage_unlock(pw, kstrlen(pw));
+    if (rc != 0) {
+        print("REPLACE_SELFTEST: FAIL unlock rc=");
+        print_decimal(rc);
+        print("\n");
+        return;
+    }
+
+    /* The volume is now unlocked: somebody has proved they own this machine and
+     * it is in use. This is the call that must fail. */
+    int second = storage_authorize_format(0);
+    print(second == 0 ? "REPLACE_SELFTEST: unlocked target ALLOWED\n"
+                      : "REPLACE_SELFTEST: unlocked target REFUSED\n");
+
+    /* AND THE AUTHORISATION MUST HAVE BEEN SPENT BY THE FORMAT ABOVE.
+     *
+     * Asked here rather than through a login, because a login cannot ask it: a
+     * correct password is satisfied by the account check and never reaches
+     * storage_unlock, and a wrong one fails before the answer matters. Measured
+     * the hard way on 2026-09-11 -- an end-to-end arm built on each of those in
+     * turn reported a clean login under a flag that plainly changed something,
+     * which is a gate agreeing with a defect rather than detecting it.
+     *
+     * The observation is direct instead. A second unlock on an already-unlocked
+     * volume returns 0 without doing anything, PROVIDED the format branch is
+     * not re-entered. If the token outlived its format the branch is entered
+     * again, finds g_needs_format_bd cleared -- the completed format cleared it
+     * -- and refuses with -8. So the return code says which happened, and it
+     * says it without depending on any of the machinery above the kernel. */
+    int again = storage_unlock(pw, kstrlen(pw));
+    if (again == 0) {
+        print("REPLACE_SELFTEST: authorisation SPENT\n");
+    } else {
+        print("REPLACE_SELFTEST: authorisation UNSPENT rc=");
+        print_decimal(again);
+        print("\n");
+    }
+}
+#endif
+
 #ifdef ROLLBACK_SELFTEST
 /* A whole-volume rollback is refused (S70).
  *

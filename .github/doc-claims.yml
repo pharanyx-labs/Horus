@@ -264,6 +264,21 @@ counts:
         pattern: 'make smoke-captest\s+<span class="c"># (\d+) capability checks'
 
 forbidden:
+  - pattern: 'Installing over an existing volume is not something this'
+    reason: >-
+      The installer's own refusal screen, retired 2026-09-11 by S90. Install
+      media may now replace a volume: the kernel refuses an UNLOCKED target
+      rather than a mounted one, and the operator types REPLACE instead of
+      FORMAT. Restoring this sentence would restore a screen that exits on the
+      one machine install media exists to serve. Kept on ONE LINE because this
+      checker matches line by line.
+  - pattern: 'IT STILL CANNOT REPLACE AN EXISTING VOLUME'
+    reason: >-
+      userspace/init.c said this of install media, naming two kernel guards as
+      load-bearing. S90 revisited both on 2026-09-11 -- deliberately, with its
+      own argument, which is what that comment asked for. The claim is now
+      false and the shipping image is protected by init never granting
+      CAP_STORAGE_FORMAT when a volume is present, not by the kernel refusing.
   - pattern: 'has no keyboard either, at the login prompt'
     reason: >-
       docs/LIMITATIONS.md said this of every machine, 8042 or not, until

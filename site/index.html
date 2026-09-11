@@ -1285,6 +1285,17 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               keystrokes, and somebody holding return through a wizard has not decided anything.
             </p>
             <p>
+              <strong>Install media may replace a volume that is already there</strong>, and what
+              makes that safe is a distinction rather than a relaxed gate. A volume the machine
+              merely <em>recognises</em> is mounted but locked &mdash; which is the state install
+              media is always in, because it never logs in. A volume that has been
+              <em>unlocked</em> means somebody proved they own the machine and is using it, and
+              the kernel refuses to reformat that one whatever the installer asks. Replacing is
+              also a different question to answer: the disk menu marks a disk that holds a volume,
+              and the last screen asks you to type <code>REPLACE</code> rather than
+              <code>FORMAT</code>, so consent to one is never consent to the other.
+            </p>
+            <p>
               That word is the <em>last</em> thing it asks. It used to be the second: you consented,
               then answered five more screens about passwords and account names, and by the time the
               disk was erased the consent was about a machine state you could no longer see. Now the
@@ -1359,7 +1370,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               place. What failed was the login, seconds later and a layer above the mistake. A
               test that stopped at &ldquo;the volume is there&rdquo; would have passed on it.
             </p>
-            <span class="witness">smoke-installer &middot; smoke-installer-refuse &middot; smoke-installer-provision &middot; smoke-installer-accounts &middot; smoke-passwd-target &middot; smoke-captest &middot; smoke-storage-survey &middot; smoke-installer-sd</span>
+            <span class="witness">smoke-installer &middot; smoke-installer-replace &middot; smoke-replace-live &middot; smoke-installer-refuse &middot; smoke-installer-provision &middot; smoke-installer-accounts &middot; smoke-passwd-target &middot; smoke-captest &middot; smoke-storage-survey &middot; smoke-installer-sd</span>
           </article>
           <article>
             <h3>A usable userland</h3>
@@ -1576,7 +1587,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 318 test targets, and the troubleshooting
+          Every configuration flag, every one of the 323 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1694,7 +1705,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             The security argument rests entirely on the tests, so they are treated as engineering
             artifacts rather than an afterthought. There are three layers: Rust unit tests and
-            Kani proofs on the host; 153 QEMU integration targets that boot a purpose-built kernel
+            Kani proofs on the host; 156 QEMU integration targets that boot a purpose-built kernel
             and assert a marker on the serial console; and scripted sessions that type into the
             real ring-3 shell over serial and read what comes back.
           </p>

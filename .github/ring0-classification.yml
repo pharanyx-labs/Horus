@@ -61,7 +61,13 @@
 # early reader needs one extra line to keep taking characters only. It has
 # nowhere to put an arrow: it fills a byte ring feeding a line reader with no
 # cursor movement, which is what it did before those keys had names.
-core_budget_loc: 9679
+# 2026-09-11: 9679 -> 9682, +3 in storage.c for S90. The unlocked check gained a
+# conjunct and an #ifdef pair, the format authorisation became a read-and-clear
+# token rather than a bare test, and storage_forget_mounted() is a new static
+# beside the mount it undoes. All three are in the format path, which is core by
+# any reading -- the code that decides whether a disk is destroyed is not a
+# driver detail.
+core_budget_loc: 9682
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

@@ -2890,6 +2890,9 @@ int  storage_authorize_format(int index);  /* 0 authorised, -1 refused: the targ
  * to render. */
 void storage_query(struct storage_info *out);
 int  storage_device_query(int index, struct storage_info *out);
+#ifdef STORAGE_REPLACE_SELFTEST
+void storage_replace_selftest(void);
+#endif
 #ifdef STORAGE_NOFORMAT_SELFTEST
 void storage_noformat_selftest(void);
 #endif

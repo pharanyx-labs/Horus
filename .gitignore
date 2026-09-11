@@ -214,3 +214,12 @@ soak-evidence/
 # committed table of seventeen FAILs that were not real is worse than no table.
 SWEEP.txt
 sweep_*.log
+
+# Third-party audit report, rendered locally to PDF from the HTML source in the
+# session scratchpad. Ignored for the same reason SWEEP.txt is: it is the output
+# of one review on one machine, not a tracked deliverable, and a stale copy of an
+# assessment is worse than none -- a reader cannot tell which tree it describes
+# without opening it. If a review is ever adopted as a project document it belongs
+# under docs/ with its commit SHA in the filename, not at the root as a build
+# artifact. The .html source is never in the tree at all.
+horus-audit-*.pdf

@@ -3968,7 +3968,25 @@ void measured_persist_selftest(void)
         for (;;) asm volatile ("hlt");
     }
     if (rc != 0) {
-        print("MEASURED_PERSIST: FAIL the unlock failed for a reason that is not the policy\n");
+        /* A SEALED volume that does not open is a DIFFERENT FACT from an
+         * unlock that failed for some unrelated reason, and it gets its own
+         * marker rather than borrowing the one below.
+         *
+         * It is what S92's binding arm asserts: boot 2 presents the same disk
+         * and the same TPM to a DIFFERENT boot image, so PCR[4] differs, the
+         * TPM declines the PolicyPCR session, and the key is never released.
+         * That is the mechanism working. Reporting it through a line with the
+         * word FAIL in it would make a passing gate's log read like a failing
+         * one -- and the next person to tidy that up would be right to, which
+         * is how a gate that means one thing comes to assert another.
+         *
+         * The old marker stays for the unsealed case, which is S85's, and is
+         * unchanged: `sealed` is false there, so no existing gate moves. */
+        if (sealed) {
+            print("MEASURED_PERSIST: SEALED-REFUSED the TPM did not release this volume's key to this boot\n");
+        } else {
+            print("MEASURED_PERSIST: FAIL the unlock failed for a reason that is not the policy\n");
+        }
         for (;;) asm volatile ("hlt");
     }
 

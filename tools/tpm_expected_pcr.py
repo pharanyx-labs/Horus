@@ -5,7 +5,7 @@ boot-module manifest — the external verifier for `make smoke-tpm`.
 The kernel (src/kernel/tpm.c) measures, into the SHA-256 PCR bank:
 
   PCR[8] <- extend( H )  where
-            H = SHA256( "horus-measured-boot-v2"
+            H = SHA256( "horus-measured-boot-v3"
                         || be32(len(cmdline)) || cmdline_bytes
                         || for each manifest entry, in table order:
                              path_bytes || be32(size) || sha256[32] )
@@ -23,7 +23,7 @@ import hashlib
 import re
 import sys
 
-KERNEL_ID_TAG = b"horus-measured-boot-v2"
+KERNEL_ID_TAG = b"horus-measured-boot-v3"
 
 # THE KERNEL COMMAND LINE IS PART OF THE MEASUREMENT since 2026-09-11, because it
 # is an input that changes what the kernel does (`horus.install` launches the

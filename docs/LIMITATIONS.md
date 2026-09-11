@@ -1589,6 +1589,39 @@ would be refused by the TPM rather than by us.
 S11/S12 still do not apply to a boot without a TPM. What changed is that a deployment can now
 make them apply or refuse to run.
 
+### 2.9a What pinning the kernel into the boot image costs
+
+*Added 2026-09-11 with `SECURITY.md` **S92**.*
+
+The kernel's expected SHA-256 lives in a memdisk inside the El Torito boot image, and the seal
+binds `PCR[4]`, the firmware's measurement of that image. Two consequences follow, and both are
+prices rather than defects — they are recorded because a reader who meets them at the wrong moment
+would reasonably think something had broken.
+
+- **Updating the kernel rebuilds the boot image, and a TPM-sealed volume must be resealed.** A new
+  kernel has a new hash, the pin changes, so the image changes, so `PCR[4]` changes, and a volume
+  sealed under the old image will not open. That is the mechanism working: a seal that survived a
+  kernel change would be a seal that does not bind the kernel, which is exactly the defect S92
+  closes. A signature scheme would avoid it — any kernel the key vouched for would boot on the same
+  image — and that is the reason one was **not** used: it would make `PCR[4]` identical across every
+  such kernel and give back the property being removed.
+
+- **The ISO no longer carries a UEFI boot path.** `grub-mkrescue` emitted a hybrid image bootable
+  both ways; the ISO is now assembled directly with `xorriso` around a BIOS boot image, because
+  `grub-mkimage -m` is the only way to get the config and the pin *inside* what the firmware
+  measures. Nothing in this tree ever booted the EFI half — Horus is BIOS/Multiboot2 — and an
+  unmeasured second door beside a measured one is only as strong as the weaker of the two, so an
+  attacker would simply have booted the ISO in EFI mode. The hybrid MBR is kept, so a stick written
+  with `dd` still boots; verified 2026-09-11 both ways, `-cdrom` and `-drive if=ide`. A machine that
+  can only boot UEFI can no longer boot this image at all, which is a real loss of reach.
+
+**What this does not fix.** GRUB's own `tpm` module measures loaded binaries into `PCR[9]`, and
+would have been the conventional answer — it **does not exist for i386-pc** in Debian's
+`grub-pc-bin`, only for `x86_64-efi`. Moving to UEFI and using it would let the kernel be measured
+by the bootloader rather than pinned by it, and would restore the EFI path; it is the obvious next
+step and is not taken here.
+
+
 ### 2.10 ~~Four live syscalls have no caller anywhere in this tree~~: CLOSED 2026-08-23
 
 *Found 2026-08-23, while teaching the coverage deriver to evaluate the preprocessor.*
@@ -2445,6 +2478,16 @@ old allocator and the new one read the same single block and no workload could t
   physical attacker is not a property this system offers. It is named here rather than left to be
   inferred from the absence of a claim.
 
+  **"The volume's contents stay unreadable" was FALSE when it was written, and was corrected on
+  2026-09-11.** It rested on the seal binding a tampered boot to different PCRs, and nothing
+  measured the kernel: `PCR[8]` and `PCR[9]` are extended by the kernel from values compiled into
+  it, so an attacker booting a kernel of their own that reproduced a released build's manifest and
+  command line presented identical PCRs and the TPM released the volume key. Measured that day,
+  two kernels with different SHA-256 gave byte-identical PCR 0..9. The sentence holds now, for the
+  reason **S92** gives — the kernel's hash is pinned inside the boot image and the seal binds
+  `PCR[4]` — and it is left standing above with this paragraph beneath it rather than quietly
+  rewritten, because the claim was published and a reader who saw it is owed the correction.
+
 - **USB, sound, or any modern bus.** ATA PIO and PS/2 only for *driving* hardware. Two
   consequences on real hardware: a laptop's **NVMe or AHCI SSD cannot be read or written** (an
   SD/eMMC card can, since 2026-09-08 -- see §4, so a machine whose internal storage is soldered
@@ -2545,9 +2588,9 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand: **[C-6]**
 
-`.github/workflows/ci.yml` defines **111** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more: **113** across the three, producing **116** status-check contexts. Ruleset `21815299`
-requires all **113** today, `smoke-kdiag` (**S81**) among them since 2026-09-03 -- one
+`.github/workflows/ci.yml` defines **115** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more: **117** across the three, producing **120** status-check contexts. Ruleset `21815299`
+requires all **117** today, `smoke-kdiag` (**S81**) among them since 2026-09-03 -- one
 `--sync-ruleset` run after the pull request that added the job, which is the lag this finding is
 about rather than an exception to it. Its predecessor `19007209` required **22** of them before
 2026-08-16, and until 2026-08-15 exactly **zero** of those 22 were security gates: capability
@@ -2593,7 +2636,7 @@ the right name with the wrong verdict. Step-level `continue-on-error` is untouch
 allowed; it lets one step be advisory while the job's own status still reports the truth, which
 is how the `security` job keeps its scanners advisory without becoming unfailable itself.
 
-That intended set is **113 required contexts and 3 reasoned exemptions**: `fuzz` (a 30-second
+That intended set is **117 required contexts and 3 reasoned exemptions**: `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` was a fifth until **[G-9]** closed on 2026-08-21; it was promoted on

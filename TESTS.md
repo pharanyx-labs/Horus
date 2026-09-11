@@ -755,6 +755,10 @@ These are the most adversarial tests in the suite.
 | `smoke-modules-tamper` | **Corrupts a module payload inside the ISO** and asserts the kernel refuses it; the manifest gate fires. |
 | `smoke-tpm` | Kernel and modules are measured into PCR 8 and 9, and the values equal an independent host recomputation (`tools/tpm_expected_pcr.py`). |
 | `smoke-tpm-tamper` | A corrupted module is refused **and** the measured PCRs diverge, detection as well as prevention. |
+| `smoke-boot-pin` | A kernel substituted behind a **genuine** boot image is refused by GRUB before it executes (`HORUS: REFUSED`). Fail marker is `DEFECT FLAGS`, the line every kernel here prints on every boot and therefore the one string that means the substituted kernel ran. Falsified by `BOOT_PIN_UNCHECKED=1`; base gate measured red under it. |
+| `smoke-boot-pin-control` | With the pin check rewritten to `true`, the substituted kernel **boots** — the pre-2026-09-11 defect, reproduced. Requires the boot positively rather than requiring the refusal to be absent. |
+| `smoke-tpm-bootimg` | Two boots, one disk, one TPM, two boot images from the **same kernel**: a volume sealed under image A must be **met but not opened** under image B. Both halves asserted, since a boot that never found the volume would satisfy "did not unlock" while testing nothing. |
+| `smoke-tpm-bootimg-control` | With `BOOT_IMAGE_UNBOUND=1` restoring `PolicyPCR(8,9)`, image B **unseals** the volume — the defect S92 closes, and the demonstration that the pin alone secures nothing once the image carrying it can be replaced. |
 | `smoke-tpm-seal-roundtrip` | A secret sealed under `PolicyPCR(8,9)` unseals on a good boot and is **denied after a PCR change**. |
 | `smoke-tpm-seal` | The real vdisk KEK: a measured-good boot unlocks the volume; a changed PCR leaves it locked. |
 
@@ -1508,10 +1512,10 @@ measures false *negatives*. A checker with three rules needs three arms, not one
 
 ## CI
 
-`.github/workflows/ci.yml` defines **111** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **115** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below: **113** jobs, **116** contexts. Counts from `tools/check_ci_gating.py`, which prints
+below: **117** jobs, **120** contexts. Counts from `tools/check_ci_gating.py`, which prints
 them; do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20, a backstop, not a budget. The default is
@@ -1563,7 +1567,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **113 required contexts and 3 reasoned exemptions** (read off
+The intended set is **117 required contexts and 3 reasoned exemptions** (read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence) `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
@@ -2120,7 +2124,7 @@ three ways: a planted phrasing in a `.c` file is caught with file and line; the 
 phrasing inside a quotation stays exempt, so a comment can record the wrong thing while
 correcting it.
 
-`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 93 properties
+`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 94 properties
 name a witness that resolves to a make target or a CI job.
 
 | Rule | Rejects |

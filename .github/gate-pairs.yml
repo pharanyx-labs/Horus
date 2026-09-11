@@ -87,6 +87,8 @@ control_arms:
   smoke-replace-oneshot-control: smoke-replace-oneshot
   smoke-tpm-cmdline-control: smoke-tpm-cmdline
   smoke-boot-menu-control: smoke-boot-menu
+  smoke-boot-pin-control: smoke-boot-pin
+  smoke-tpm-bootimg-control: smoke-tpm-bootimg
   smoke-serial-bound-control: smoke-serial-bound
   smoke-keyslots-control: smoke-keyslots
   smoke-users-persist-control: smoke-users-persist
@@ -228,6 +230,8 @@ gates:
   - smoke-replace-oneshot
   - smoke-tpm-cmdline
   - smoke-boot-menu
+  - smoke-boot-pin
+  - smoke-tpm-bootimg
   - smoke-installer-replace
   - smoke-serial-bound
   - smoke-claim-release

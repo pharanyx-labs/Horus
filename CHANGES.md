@@ -13,6 +13,38 @@ in this file.
 
 ---
 
+### Security
+
+- **BREAKING — the measured boot now measures the kernel, and the seal is bound to `PCR[4]`.**
+  Until 2026-09-11 nothing in the boot chain measured the kernel. `PCR[8]` and `PCR[9]` are
+  extended *by the kernel*, from a tag, the command line and the module manifest compiled into it,
+  so `PolicyPCR(8,9)` asked the kernel to vouch for itself. **Measured rather than argued: two
+  kernels with different SHA-256, booted on the same machine, produced byte-identical PCR 0..9** —
+  so an attacker with no key, no write access to the victim's disk and no exploit, only the ability
+  to boot the machine, could present a kernel of their own reproducing a released build's manifest
+  and command line and have the TPM release the volume key to it. That defeated **S11**, **S12**,
+  **S85** and threat-model **A4**.
+
+  Two candidate repairs were ruled out by measurement, not by reading. GRUB's `tpm` module, which
+  measures loaded binaries, **does not exist for i386-pc** in Debian's `grub-pc-bin` — only for
+  `x86_64-efi`. And the firmware PCRs alone bind nothing: two ISOs differing *only* in `kernel.elf`
+  gave identical `PCR 0..7`, because SeaBIOS measures the boot image rather than what it loads.
+
+  What ships instead: `tools/mkbootimg.sh` builds the El Torito image with `grub-mkimage -m`,
+  packing `grub.cfg` and the kernel's expected SHA-256 into a memdisk **inside** it; the config
+  refuses a kernel that does not match; and `put_pcr_selection` adds `PCR[4]`, the firmware's
+  measurement of that image, to the seal policy. The pin makes the kernel unforgeable and `PCR[4]`
+  makes the pin unremovable — **neither half is a control on its own**. No signing key: a signature
+  would leave `PCR[4]` identical across every kernel the key vouched for, which is the property
+  being removed. The measurement tag is bumped to `horus-measured-boot-v3`, so **a volume sealed
+  under v2 will not open**; the serialization did not change, but what the volume is bound to did.
+  See `SECURITY.md` **S92** and `docs/LIMITATIONS.md` 2.9a for what it costs.
+
+  Gates: `make smoke-boot-pin` and `make smoke-tpm-bootimg`, each falsified by its own arm
+  (`BOOT_PIN_UNCHECKED=1`, `BOOT_IMAGE_UNBOUND=1`) and the first measured red under its flag. The
+  ISO is now assembled with `xorriso` directly and **no longer carries a UEFI boot path**; the
+  hybrid MBR is kept, so a stick written with `dd` still boots.
+
 ### Removed
 
 - **Both TLA+ specifications, as unsound rather than merely unchecked.**

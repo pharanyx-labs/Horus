@@ -1431,11 +1431,14 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           </li>
           <li>
             <div>
-              <h3>Kernel and modules are measured into the TPM</h3>
+              <h3>The kernel is pinned, and the pin is measured</h3>
               <p>
-                Each is extended into TPM 2.0 PCR 8 and 9 over the TIS interface. A host-side
-                script recomputes the expected values independently and CI asserts they match, so
-                the measurement is checked against something other than itself.
+                The kernel's SHA-256 is packed inside the boot image the firmware measures into
+                PCR 4, and GRUB refuses a kernel that does not match. A kernel-identity token goes
+                into PCR 8 and each module's digest into PCR 9, over the TIS interface; a host-side
+                script recomputes those independently and CI asserts they match. The volume key is
+                sealed to all three &mdash; PCR 4 being the one the kernel does not extend itself,
+                so the seal is not bound to the kernel's own word about itself.
               </p>
             </div>
           </li>
@@ -1587,7 +1590,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 327 test targets, and the troubleshooting
+          Every configuration flag, every one of the 331 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1639,7 +1642,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>A network driver in ring 3</strong>, <code>netd</code> brings up an Intel e1000 holding one device capability and one untyped region, and completes a full DMA round trip: the device reads its descriptor ring, reads the packet buffer, and writes completion status back, every address of which its driver had to map. It drives e1000 rather than virtio deliberately, because a paravirtual device accesses guest memory directly and is not on the far side of the IOMMU at all. It receives on the 82574L (5 boots in 5, which is what <code>smoke-net</code> gates on) and has been seen to receive exactly once on the 82540EM, so reception is a property of the device model here rather than of the driver. Nothing above Ethernet exists: no ARP table, no IP, no TCP, no socket capabilities</th><td class="t-note">smoke-net</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Ring-3 <code>fs_server</code> over an AEAD-encrypted object store</th><td class="t-note">smoke-fs</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">POSIX rwx against a kernel-attested uid, never a client-supplied one</th><td class="t-note">smoke-fs-perms</td></tr>
-              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Measured boot</strong>. TPM 2.0 PCR 8/9, disk KEK sealed under <code>PolicyPCR</code></th><td class="t-note">smoke-tpm-seal</td></tr>
+              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Measured boot</strong>. Kernel pinned in the firmware-measured boot image; TPM 2.0 PCR 4/8/9, disk KEK sealed under <code>PolicyPCR</code></th><td class="t-note">smoke-boot-pin · smoke-tpm-bootimg · smoke-tpm-seal</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Boot-module SHA-256 manifest embedded in the kernel image</th><td class="t-note">smoke-modules-tamper</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">ELF parsing and relocation in memory-safe Rust, under W^X, randomised base</th><td class="t-note">smoke-elf · smoke-elf64</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">SMEP/SMAP in CR4, kernel W^X swept, CSPRNG-reseeded stack canary, <code>CR4.TSD</code></th><td class="t-note">smoke-cpu · smoke-wx · smoke-stackguard</td></tr>
@@ -1705,7 +1708,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             The security argument rests entirely on the tests, so they are treated as engineering
             artifacts rather than an afterthought. There are three layers: Rust unit tests and
-            Kani proofs on the host; 158 QEMU integration targets that boot a purpose-built kernel
+            Kani proofs on the host; 160 QEMU integration targets that boot a purpose-built kernel
             and assert a marker on the serial console; and scripted sessions that type into the
             real ring-3 shell over serial and read what comes back.
           </p>
@@ -1974,7 +1977,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               be listed as merge-gating, or exempted <em>with a written reason</em>, and CI fails
               the build if any is in neither; there is no default, because defaulting was the
               defect. It caught an unclassified static-analysis job on its first run. The
-              intended set is 113 gating and 3 exempted, and the promotions are backed by
+              intended set is 117 gating and 3 exempted, and the promotions are backed by
               measurement rather than optimism: across 18 sampled runs, 64 of 66 jobs had zero
               failures in 1152 job-executions.
             </p>

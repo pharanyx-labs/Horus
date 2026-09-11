@@ -304,6 +304,10 @@ required:
   - smoke-mapphys
   - smoke-modules
   - smoke-modules-tamper
+  - smoke-boot-pin
+  - smoke-boot-pin-control
+  - smoke-tpm-bootimg
+  - smoke-tpm-bootimg-control
   - smoke-newlib
   - smoke-newlib-tamper
   - smoke-notify

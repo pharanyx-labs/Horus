@@ -131,6 +131,7 @@ DEFECT_FLAGS = \
 	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED \
 	FS_LINK_UNCOUNTED \
 	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY BOOT_MENU_NO_LIVE_TOKEN \
+	BOOT_PIN_UNCHECKED BOOT_IMAGE_UNBOUND \
 	AHCI_PROBE_ABSENT AHCI_CAPACITY_CONSTANT SDHCI_PROBE_ABSENT \
 	SDHCI_CSD_SPEC_BITS SDHCI_ADDR_MODE_INVERTED \
 	SDHCI_WRITE_SELFTEST SDHCI_WRITE_NO_FLUSH \
@@ -1591,6 +1592,36 @@ BOOT_ROOT_CD_ONLY ?= 0
 # BOOT_ROOT_CD_ONLY, because the defect is in the boot configuration.
 # The arm for `make smoke-boot-menu`.
 BOOT_MENU_NO_LIVE_TOKEN ?= 0
+
+# BOOT_PIN_UNCHECKED=1 turns the boot image's kernel hash check into `true`, so
+# GRUB boots whatever is at /boot/kernel.elf and the pin inside the measured
+# image is decorative. That is the pre-2026-09-11 boot chain, and the whole of
+# S92: measured 2026-09-11, two kernels with different SHA-256 gave byte-identical
+# PCR 0..9, so a substituted kernel satisfied PolicyPCR exactly and the TPM handed
+# it the sealed volume key.
+#
+# IT EDITS THE CHECK, NOT THE PIN, and that distinction is the arm. Deleting
+# kernel.sha256 instead would make `hashsum --check` fail and the machine refuse
+# to boot -- the SAFE direction, proving nothing. An arm has to make the defect
+# reachable; one that trips a different refusal is an arm that passes for the
+# wrong reason, which is the shape docs/BUILDING.md keeps recording.
+#
+# A grub.cfg rewrite rather than a -D, like BOOT_ROOT_CD_ONLY above, because the
+# defect is in the boot configuration. Control arm for make smoke-boot-pin.
+BOOT_PIN_UNCHECKED ?= 0
+
+# BOOT_IMAGE_UNBOUND=1 restores the pre-2026-09-11 seal policy: PolicyPCR over
+# PCR[8] and PCR[9] only, the two this kernel extends about itself. The pin in
+# the boot image still refuses a substituted kernel, so this arm does not make
+# the machine bootable by a foreign kernel -- what it removes is the binding
+# that stops an attacker REBUILDING the boot image without the check. It is the
+# other half of S92, and it has its own arm because an arm against the pin says
+# nothing about the policy: each half is useless alone, so each needs its own
+# falsification. Control arm for make smoke-tpm-bootimg.
+BOOT_IMAGE_UNBOUND ?= 0
+ifeq ($(BOOT_IMAGE_UNBOUND),1)
+CFLAGS += -DBOOT_IMAGE_UNBOUND
+endif
 
 # AHCI_PROBE_ABSENT=1 compiles out the SATA probe, so a machine WITH an AHCI
 # controller attached says nothing about it -- which is the state this tree was
@@ -3721,6 +3752,12 @@ install.iso:
 # with grub-menu.cfg, which offers live boot and install as separate entries.
 GRUB_CFG ?= grub.cfg
 
+# Where the i386-pc GRUB modules and the hybrid MBR live. Named once rather
+# than spelled in both the ISO rule and tools/mkbootimg.sh: the two have to
+# agree about which GRUB built the boot image, or the modules embedded in it
+# and the MBR wrapped around it come from different installs.
+GRUB_I386_DIR ?= /usr/lib/grub/i386-pc
+
 horus.iso: kernel.elf $(GRUB_CFG) $(BOOT_MODULE_DEP)
 	@rm -rf isofiles
 	@mkdir -p isofiles/boot/grub
@@ -3733,17 +3770,49 @@ horus.iso: kernel.elf $(GRUB_CFG) $(BOOT_MODULE_DEP)
 	    printf '    module2 /boot/%s %s\n' "$$base" "$$name" >> isofiles/mods.txt; \
 	 done
 	@awk '/@HORUS_MODULES@/{while((getline l < "isofiles/mods.txt")>0) print l; next} {print}' \
-	    $(GRUB_CFG) > isofiles/boot/grub/grub.cfg
+	    $(GRUB_CFG) > .bootcfg.staged
 	@rm -f isofiles/mods.txt
 	@if [ "$(BOOT_MENU_NO_LIVE_TOKEN)" = 1 ]; then \
 	    sed -i 's|^    multiboot2 /boot/kernel.elf horus.live$$|    multiboot2 /boot/kernel.elf|' \
-	        isofiles/boot/grub/grub.cfg; \
+	        .bootcfg.staged; \
 	 fi
 	@if [ "$(BOOT_ROOT_CD_ONLY)" = 1 ]; then \
 	    sed -i 's|^    search --no-floppy --set=root --file /boot/kernel.elf$$|    set root=(cd)|' \
-	        isofiles/boot/grub/grub.cfg; \
+	        .bootcfg.staged; \
 	 fi
-	@grub-mkrescue -o $@ isofiles 2>&1 || (echo "grub-mkrescue failed (install grub-pc-bin xorriso)" && exit 1)
+# CONTROL ARM for S92 -- never ship. The hash check becomes `true`, so the
+# config boots whatever is at /boot/kernel.elf and the pin is decorative. It is
+# applied to the CONFIG rather than by dropping the pin file, because a missing
+# pin makes `hashsum --check` fail and the machine refuses -- which is the SAFE
+# direction and would prove nothing. The arm has to make the defect reachable,
+# not make the gate error out. See make smoke-boot-pin-control.
+	@if [ "$(BOOT_PIN_UNCHECKED)" = 1 ]; then \
+	    sed -i 's|^    hashsum --hash sha256 --check .*$$|    true|' .bootcfg.staged; \
+	 fi
+# THE BOOT IMAGE IS BUILT BEFORE THE ISO AND CARRIES THE KERNEL'S HASH.
+#
+# grub-mkrescue cannot do this: it builds its own core.img and offers no way to
+# put anything inside it, so the config and any pin would have to sit on the ISO
+# beside the kernel -- unmeasured, and editable by exactly the attacker this
+# exists to stop. tools/mkbootimg.sh builds the image with the config and the
+# pin in a memdisk INSIDE it, which is what SeaBIOS measures into PCR[4].
+	@GRUB_DIR=$(GRUB_I386_DIR) tools/mkbootimg.sh kernel.elf .bootcfg.staged isofiles/boot/grub/eltorito.img >/dev/null
+	@rm -f .bootcfg.staged
+# xorriso directly, with the arguments grub-mkrescue would have used for the
+# BIOS half. --grub2-mbr is the hybrid MBR, and it is not optional: without it
+# the image boots from CD and NOT from a USB stick written with dd, which is the
+# case grub-menu.cfg exists for. Verified 2026-09-11 both ways, -cdrom and
+# -drive if=ide.
+#
+# The EFI half grub-mkrescue also emits is deliberately GONE. Horus is
+# BIOS/Multiboot2, nothing in this tree has ever booted the EFI path, and an
+# unmeasured second door beside a measured one is only as strong as the weaker
+# of the two -- an attacker would simply boot the ISO in EFI mode. Recorded in
+# docs/LIMITATIONS.md rather than left to be noticed.
+	@xorriso -as mkisofs -quiet -o $@ \
+	    -b boot/grub/eltorito.img -no-emul-boot -boot-load-size 4 -boot-info-table \
+	    --grub2-boot-info --grub2-mbr $(GRUB_I386_DIR)/boot_hybrid.img \
+	    isofiles 2>&1 || (echo "xorriso failed (install xorriso grub-pc-bin)" && exit 1)
 	@rm -rf isofiles
 
 clean: userspace-clean
@@ -3761,8 +3830,17 @@ clean-rust:
 # build-hash recording step (see reproducible-build below): a step that cannot
 # fail. It now reports like horus.iso's does.
 iso: kernel.elf
-	@mkdir -p iso/boot/grub && cp kernel.elf iso/boot/ && cp grub.cfg iso/boot/grub/grub.cfg
-	@grub-mkrescue -o horus.iso iso 2>&1 || (echo "grub-mkrescue failed (install grub-pc-bin xorriso)" && exit 1)
+	@rm -rf iso && mkdir -p iso/boot/grub && cp kernel.elf iso/boot/
+# The same measured boot image horus.iso gets, for the same reason: a `make iso`
+# whose kernel was NOT pinned would be a second boot path with a different
+# security property, and the one a developer reaches for most often.
+	@sed 's|@HORUS_MODULES@||' grub.cfg > .bootcfg.staged
+	@GRUB_DIR=$(GRUB_I386_DIR) tools/mkbootimg.sh kernel.elf .bootcfg.staged iso/boot/grub/eltorito.img >/dev/null
+	@rm -f .bootcfg.staged
+	@xorriso -as mkisofs -quiet -o horus.iso \
+	    -b boot/grub/eltorito.img -no-emul-boot -boot-load-size 4 -boot-info-table \
+	    --grub2-boot-info --grub2-mbr $(GRUB_I386_DIR)/boot_hybrid.img \
+	    iso 2>&1 || (echo "xorriso failed (install xorriso grub-pc-bin)" && exit 1)
 
 # Userspace is built position-independent (-fPIE): the shipped binaries are
 # linked as static-PIE ELFs (ET_DYN) and loaded by the kernel at a randomized
@@ -6156,6 +6234,65 @@ smoke-boot-menu:
 	@rm -f boot-menu.img
 	@echo "[menu] PASS - the default entry changes nothing, even on a blank disk"
 
+# ---- S92: the kernel is pinned inside the measured boot image ---------------
+#
+# The attack this gates is the one measured on 2026-09-11, before the pin
+# existed: two kernels with different SHA-256 produced byte-identical PCR 0..9,
+# so a substituted kernel satisfied PolicyPCR exactly and the TPM handed it the
+# sealed volume key. Nothing on this platform measured the kernel -- GRUB has no
+# tpm.mod for i386-pc, and the firmware measures the BOOT IMAGE, not what it
+# loads.
+#
+# tools/tamper_kernel_iso.sh stages it honestly: the boot image is built around
+# the REAL kernel, so everything the firmware measures is authentic, and only
+# the kernel beside it on the medium is swapped.
+#
+# THE BASE ARM IS THE REFUSAL, AND ITS FAIL MARKER IS A BOOT. `DEFECT FLAGS` is
+# printed by every kernel this tree builds, on every boot, before anything else
+# -- so it is the one marker that means "the substituted kernel ran", which is
+# exactly what must not happen. Asserting only the refusal string would pass on
+# a machine that printed it and booted anyway.
+#
+# There is deliberately NO separate arm for "the untampered image still boots":
+# every other smoke target in this file boots horus.iso, so a pin that refused a
+# genuine kernel would redden all of them at once. A gate whose base case is
+# already load-bearing elsewhere does not need restating here.
+.PHONY: smoke-boot-pin
+smoke-boot-pin:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory
+	@tools/tamper_kernel_iso.sh kernelpin.iso kernel.elf grub.cfg
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='HORUS: REFUSED' \
+		FAIL_MARKER='DEFECT FLAGS' \
+		tools/smoke_test.sh kernelpin.iso
+	@rm -f kernelpin.iso
+	@echo "[pin] PASS - a kernel the measured boot image does not pin is not booted"
+
+# CONTROL ARM. The check becomes `true`, so the same substituted kernel boots --
+# and the assertions are the base arm's, exchanged. Requiring the BOOT rather
+# than merely the absence of the refusal is what makes this a reproduction: an
+# arm that only checked for a missing string would pass on an image that failed
+# to boot for any other reason.
+.PHONY: smoke-boot-pin-control
+smoke-boot-pin-control:
+	@$(MAKE) --no-print-directory clean
+# THE FLAG GOES TO THE KERNEL BUILD AS WELL AS TO THE TAMPER SCRIPT, and only
+# the second is what actually rewrites the config. The first is there so the
+# boot ANNOUNCES itself: DEFECT_FLAGS is compiled in, so a kernel built without
+# the flag prints `DEFECT FLAGS: none` while running under a rewritten config --
+# an instrumented boot that reads as a clean one, which is the trap §6 of the
+# operating manual exists to stop. Caught by running the base gate under the
+# flag and noticing the two arms disagreed about what they were.
+	@$(MAKE) --no-print-directory BOOT_PIN_UNCHECKED=1
+	@BOOT_PIN_UNCHECKED=1 tools/tamper_kernel_iso.sh kernelpin.iso kernel.elf grub.cfg
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='DEFECT FLAGS' \
+		FAIL_MARKER='HORUS: REFUSED' \
+		tools/smoke_test.sh kernelpin.iso
+	@rm -f kernelpin.iso
+	@echo "[pin] control PASS - with the check disabled the substituted kernel boots"
+
 # The falsifying arm. BOOT_MENU_NO_LIVE_TOKEN=1 strips `horus.live` from the live
 # entry, which is how it was first written: with no token the kernel behaves like
 # the shipping image and offers to install a blank disk, so the entry promising
@@ -6396,6 +6533,80 @@ smoke-measured-persist-sealed:
 		MP_ALSO2='MEASURED_PERSIST: met a persistent TPM-sealed volume' \
 		tools/measured_persist_replay.sh
 	@echo "[measured-persist] PASS - a volume sealed under the policy opens again on the next boot"
+
+# ---- S92, the binding half: the seal is bound to the boot image -------------
+#
+# The pin (smoke-boot-pin) stops a kernel being swapped on a medium. On its own
+# that is not enough: an attacker does not have to defeat the pin, they can
+# REBUILD THE BOOT IMAGE WITHOUT IT. What stops that is PCR[4] -- the firmware's
+# measurement of the boot image -- being in the seal policy, so an image built
+# without the check is a different image and the TPM declines.
+#
+# TWO BOOTS, ONE DISK, ONE TPM, TWO BOOT IMAGES. Boot 1 formats and seals a
+# TPM-mode volume under the real image. Boot 2 presents the same disk and the
+# same TPM to an image built with BOOT_PIN_UNCHECKED=1 -- which is precisely
+# what the attacker must build, since they need an image that will boot a kernel
+# it does not pin. The KERNEL IS THE SAME BINARY in both boots: the only thing
+# that differs is the boot image, which is the variable under test.
+#
+# Boot 2 must MEET the sealed volume and must not OPEN it, and both halves are
+# asserted -- a boot that never found the volume would satisfy "did not unlock"
+# perfectly while testing nothing.
+.PHONY: smoke-tpm-bootimg
+smoke-tpm-bootimg:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS) MEASURED_BOOT_REQUIRED=1
+	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS) MEASURED_BOOT_REQUIRED=1 horus.iso
+	@mv horus.iso bootimg-a.iso
+# The attacker's image, from the SAME kernel. Only the config inside the memdisk
+# differs, which is the whole of the difference in PCR[4].
+	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS) MEASURED_BOOT_REQUIRED=1 \
+		BOOT_PIN_UNCHECKED=1 horus.iso
+	@mv horus.iso bootimg-b.iso
+	@$(MEASURED_PERSIST_ENV) MP_IMG=bootimg.img \
+		MP_ISO1=bootimg-a.iso MP_TPM1=1 \
+		MP_ISO2=bootimg-b.iso MP_TPM2=1 \
+		MP_REQUIRE1='MEASURED_PERSIST: UNLOCKED a persistent TPM-sealed volume' \
+		MP_REQUIRE2='MEASURED_PERSIST: SEALED-REFUSED' \
+		MP_ALSO2='MEASURED_PERSIST: met a persistent TPM-sealed volume' \
+		tools/measured_persist_replay.sh
+# NO MP_FAIL, and that is not an omission. It fails EITHER boot, and boot 1's
+# whole job is to unlock the volume it just sealed -- naming the unlock as a
+# fail marker reddened boot 1 on the first run. It is not needed: the selftest
+# halts inside exactly one branch, so a boot 2 that unlocked could not also
+# reach SEALED-REFUSED, and MP_REQUIRE2 discriminates on its own.
+	@rm -f bootimg-a.iso bootimg-b.iso bootimg.img
+	@echo "[bootimg] PASS - a volume sealed under one boot image stays sealed under another"
+
+# CONTROL ARM. BOOT_IMAGE_UNBOUND=1 takes PCR[4] back out of the policy, which
+# is the pre-2026-09-11 seal: bound to PCR[8] and PCR[9], the two the kernel
+# extends about itself. The attacker's image then unseals the volume, and the
+# assertions are the base arm's exchanged -- boot 2 must UNLOCK.
+#
+# Note what this arm does NOT do: it does not touch the pin. Both images still
+# refuse a substituted kernel. What it shows is that the pin alone secures
+# nothing once the image carrying it can be replaced -- which is why the two
+# halves ship together and why each has its own arm.
+.PHONY: smoke-tpm-bootimg-control
+smoke-tpm-bootimg-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS) MEASURED_BOOT_REQUIRED=1 \
+		BOOT_IMAGE_UNBOUND=1
+	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS) MEASURED_BOOT_REQUIRED=1 \
+		BOOT_IMAGE_UNBOUND=1 horus.iso
+	@mv horus.iso bootimg-a.iso
+	@$(MAKE) --no-print-directory $(MEASURED_PERSIST_ARGS) MEASURED_BOOT_REQUIRED=1 \
+		BOOT_IMAGE_UNBOUND=1 BOOT_PIN_UNCHECKED=1 horus.iso
+	@mv horus.iso bootimg-b.iso
+	@$(MEASURED_PERSIST_ENV) MP_IMG=bootimg.img \
+		MP_ISO1=bootimg-a.iso MP_TPM1=1 \
+		MP_ISO2=bootimg-b.iso MP_TPM2=1 \
+		MP_REQUIRE1='MEASURED_PERSIST: UNLOCKED a persistent TPM-sealed volume' \
+		MP_REQUIRE2='MEASURED_PERSIST: UNLOCKED a persistent TPM-sealed volume' \
+		MP_ALSO2='MEASURED_PERSIST: met a persistent TPM-sealed volume' \
+		tools/measured_persist_replay.sh
+	@rm -f bootimg-a.iso bootimg-b.iso bootimg.img
+	@echo "[bootimg] control PASS - with PCR[4] out of the policy the other image unseals"
 
 .PHONY: smoke-modules
 smoke-modules:

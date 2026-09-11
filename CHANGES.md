@@ -54,6 +54,20 @@ in this file.
 
 ### Fixed
 
+- **The `PS2_PROBE` instrument consumed the keystroke it reported.** The probe sampled the
+  scancode with its own `inb(0x60)` in the IRQ 1 handler, ahead of the branch that reads the
+  byte for the kernel's console reader, under a comment stating it "never steals a byte from
+  either consumer". `inb(0x60)` **pops** the 8042's one-byte output buffer, so the reader below
+  then found OBF clear and got nothing: the probe build's own keyboard was dead, and the
+  instrument was the cause. Measured with a temporary counter on the consumer branch, four
+  keys injected over QMP (`n=8` IRQs both times): the consumer saw a byte **0 of 8** times with
+  the upstream read and **8 of 8** with the sample moved onto the consumer's own read. `n`,
+  `sc` and `st` were identical across the pair, so no diagnostic value was traded for it.
+  The readout's `sc` field now reports the last scancode the *kernel's* reader took and stops
+  advancing once a ring-3 driver owns the line — sampling it there would consume it, which is
+  the same defect one branch over. This is the `an-instrument-is-not-passive` shape a second
+  time: the first cost 8 of 20 boots to a trace, this one cost the keyboard to a probe.
+
 - **`tools/stress_boot.sh` reported PASS on zero boots.** `for i in $(seq 1 $RUNS)` iterates
   never when `STRESS_RUNS=0`, so the failure counters stayed 0 and the verdict printed
   *"STRESS PASS: 0 failure(s) within the permitted 0"* and exited 0 — having booted nothing.

@@ -2195,8 +2195,12 @@ void set_text_colour(uint8_t color);
 uint64_t read_tsc(void);
 uint32_t get_system_ticks(void);   /* low 32 bits; for small-delta callers  */
 #ifdef PS2_PROBE
-/* PS/2 liveness readout (PS2_PROBE). Counters live in idt.c's IRQ 1 path; the
- * painter is in terminal.c, where the mode-agnostic cell accessor is. */
+/* PS/2 liveness readout (PS2_PROBE). The counter lives in idt.c's IRQ 1 path;
+ * the painter is in terminal.c, where the mode-agnostic cell accessor is.
+ *
+ * g_ps2_last_sc is written by the CONSUMER of the scancode, never by the probe:
+ * reading 0x60 pops the controller's one-byte buffer, so an extra read would
+ * take the byte rather than observe it. See the note above ps2_probe_paint. */
 extern volatile uint32_t g_ps2_irq_count;
 extern volatile uint8_t  g_ps2_last_sc;
 void ps2_probe_paint(void);

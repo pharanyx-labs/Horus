@@ -563,11 +563,10 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
 #ifdef PS2_PROBE
         /* Counted BEFORE the ownership branch on purpose: the question this
          * probe answers is whether the controller and IRQ 1 exist at all, which
-         * is independent of whether a ring-3 driver has claimed them. Two
-         * stores; the scancode is read non-destructively only when the output
-         * buffer is full, so this never steals a byte from either consumer. */
+         * is independent of whether a ring-3 driver has claimed them. One store,
+         * and no port read: sampling the SCANCODE here would consume it. See the
+         * note on g_ps2_last_sc, which is set from the consumer's own read. */
         g_ps2_irq_count++;
-        if (inb(0x64) & 1) g_ps2_last_sc = inb(0x60);
 #endif
         if (irq_reg[1].active) {
             /* A userspace driver owns the keyboard: leave the scancode in the PS/2
@@ -582,6 +581,16 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
              * so a spurious IRQ never re-reads a stale byte. */
             if (inb(0x64) & 1) {
                 uint8_t scancode = inb(0x60);
+#ifdef PS2_PROBE
+                /* The probe samples the byte the CONSUMER read, rather than
+                 * reading 0x60 itself before this branch. inb(0x60) POPS the
+                 * 8042's one-byte output buffer, so a second read upstream does
+                 * not observe the byte -- it takes it, and the reader below then
+                 * finds OBF clear and gets nothing. Measured: with the sample
+                 * taken upstream, this branch saw a byte 0 times in 8 IRQs; with
+                 * it taken here, 8 in 8. An instrument is not passive. */
+                g_ps2_last_sc = scancode;
+#endif
                 char c = ps2_translate(scancode);
                 if (c) {
                     keyboard_buffer[kb_tail] = c;

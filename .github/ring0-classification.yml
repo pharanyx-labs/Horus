@@ -36,7 +36,13 @@
 # machinery to make a number smaller, and a reader auditing core still has to
 # read these lines whether or not the compiler keeps them. Recorded here so the
 # imprecision is known rather than discovered later.
-core_budget_loc: 9707
+# 2026-09-11: 9707 -> 9709, +2 in idt.c, fixing the probe defect above. The
+# scancode sample moved out of the IRQ 1 handler's common path and into the
+# branch that consumes the byte -- one line net, plus the `#ifdef PS2_PROBE` /
+# `#endif` pair the new site needs. Still entirely behind that macro and still
+# absent from the ship build. Not worth a macro wrapper to avoid: hiding two
+# lines behind five would make the number smaller and the code worse.
+core_budget_loc: 9709
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

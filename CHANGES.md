@@ -13,6 +13,20 @@ in this file.
 
 ---
 
+### Fixed
+
+- **Choosing "Install Horus" at the boot menu and getting a login prompt, with nothing said.**
+  `machine_needs_install()` returns 0 in five places, and four of them can fire on a boot where
+  somebody stood at the machine and selected the install entry — most often because no disk this
+  kernel can drive was found. All four were silent, so the outcome was indistinguishable from
+  having chosen live boot, and from the menu entry not working at all. Reported from real
+  hardware twice; the second report had to be diagnosed by reading the function rather than the
+  machine. `init` now reports the reason on the asked-for path only — a boot that never requested
+  an install has nothing to explain, and a reason printed on every ordinary boot would bury the
+  one that matters. The no-disk case names the limitation rather than saying "no disk": Horus
+  drives ATA PIO and SD/eMMC only, so a laptop's NVMe or AHCI SSD is not a disk it failed to
+  read, it is one it cannot see (`docs/LIMITATIONS.md` 4).
+
 ### Security
 
 - **BREAKING — the measured boot now measures the kernel, and the seal is bound to `PCR[4]`.**

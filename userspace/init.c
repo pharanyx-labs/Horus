@@ -599,9 +599,46 @@ static int install_requested(void) {
 #endif
 }
 
+/* WHEN THE OPERATOR ASKED AND THE ANSWER IS NO, SAY WHY.
+ *
+ * Every `return 0` below is a decision not to run the installer, and four of
+ * them can fire on a boot where somebody stood at the menu and chose "Install
+ * Horus". Until 2026-09-11 all of them were silent: the entry was selected, the
+ * installer never appeared, and the machine arrived at a login prompt -- which
+ * is indistinguishable from having chosen live boot, and from the menu entry
+ * not working at all. Reported on a real laptop, twice, and the second report
+ * had to be diagnosed by reading this function rather than the machine.
+ *
+ * That is the failure this project refuses everywhere else: an act that does
+ * nothing and does not say so. `report_boot_mode` already prints what was
+ * CHOSEN; these print why the choice could not be honoured, which is the half
+ * that was missing.
+ *
+ * Only on the asked-for path. A boot that never requested an install has
+ * nothing to explain, and printing a reason on every ordinary boot would bury
+ * the one that matters. */
 static int machine_needs_install(void) {
-    if (!g_si_valid)         return 0;
-    if (!g_si.present)       return 0;   /* the ephemeral store; nothing to install onto */
+    const int asked = install_requested();
+
+    if (!g_si_valid) {
+        if (asked)
+            report("init: INSTALL was chosen, but the storage survey could not be read "
+                   "(SYS_STORAGE_INFO failed) -- there is nothing to install onto\n");
+        return 0;
+    }
+    if (!g_si.present) {
+        /* THE COMMON CASE ON REAL HARDWARE, and worth spelling out rather than
+         * reporting as a bare "no disk": this kernel drives ATA PIO and SD/eMMC
+         * and nothing else, so a laptop's NVMe or AHCI SSD is not a disk it
+         * failed to read -- it is a disk it cannot see at all. An operator who
+         * is told "no disk" checks their cabling; one who is told this checks
+         * docs/LIMITATIONS.md section 4. */
+        if (asked)
+            report("init: INSTALL was chosen, but no disk this kernel can drive was found. "
+                   "Horus drives ATA PIO and SD/eMMC only -- an NVMe or AHCI SSD is invisible "
+                   "to it (docs/LIMITATIONS.md 4). Nothing was written; this is a login prompt.\n");
+        return 0;
+    }
 #ifdef INSTALL_ALWAYS
     /* INSTALL MEDIA. Build with INSTALL_ALWAYS=1 (`make install.iso`) and this
      * image runs the installer on EVERY boot, rather than only on a machine
@@ -655,8 +692,15 @@ static int machine_needs_install(void) {
      * Live boot is the default and the fall-through. A machine booted without
      * the token behaves exactly as it did before this existed: the installer
      * runs only where there is a disk carrying no volume. */
-    if (install_requested()) {
-        if (g_si.format_on_login) return 0;   /* that kernel formats by itself */
+    if (asked) {
+        if (g_si.format_on_login) {
+            /* Reachable only on a kernel built to format at login, which install
+             * media is not -- but silent here would be the same defect as above,
+             * and the arm that builds such a kernel is one flag away. */
+            report("init: INSTALL was chosen, but this kernel formats an unrecognised volume "
+                   "at the login prompt by itself, so an installer would be racing it\n");
+            return 0;
+        }
         return 1;
     }
     /* LIVE WAS ASKED FOR EXPLICITLY, so it is honoured exactly -- including on a

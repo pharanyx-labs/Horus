@@ -7130,6 +7130,51 @@ smoke-keyboard-installer-control:
 	       rm -f keyboard-installer.img; exit 1; }
 	@rm -f keyboard-installer.img
 
+# AN ENTIRE INSTALL, TYPED ON THE MACHINE'S OWN KEYBOARD, then a login into what
+# was installed -- with nothing typed at COM1 from the first menu to the shell
+# prompt.
+#
+# WHAT IT COVERS THAT THE OTHER TWO KEYBOARD GATES DO NOT. smoke-keyboard
+# reaches a login prompt; smoke-keyboard-installer moves a menu selection. This
+# is the first thing to put characters through `tui_input` in RAW mode -- a
+# MASKED field, twice, compared -- and through the typed confirmation word. The
+# masked field is the sharp one: a dropped keystroke does not announce itself,
+# it makes the two entries differ and the installer quietly asks again. On a
+# serial-driven gate that path cannot fail, because a UART burst arrives intact;
+# on a polled one-byte controller it is the whole risk of the design.
+#
+# IT DRIVES THE SAME CONVERSATION AS THE SERIAL GATES. The screens live in
+# tools/installer_session.py's answer_* functions and are imported rather than
+# restated -- that file records what four copies of this conversation cost when
+# the installer grew two screens and one copy was taught about them. Only the
+# typist differs.
+#
+# NO CONTROL ARM OF ITS OWN, and that is stated rather than quietly absent: the
+# two existing keyboard arms already redden it, measured rather than assumed
+# (see docs/BUILDING.md). Inventing a third flag that drops keystrokes on a
+# schedule would reproduce the CONSEQUENCE faithfully but not the cause, and a
+# synthetic arm whose fidelity has to be argued for is worth less than two real
+# ones that already fire.
+SMOKE_KEYBOARD_INSTALL_TIMEOUT ?= 300
+.PHONY: smoke-keyboard-install
+smoke-keyboard-install:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 horus.iso
+	@rm -f keyboard-install.img && truncate -s 64M keyboard-install.img
+	@rm -f keyboard-install-serial.log
+	@SESSION_DISK=keyboard-install.img \
+		SESSION_SERIAL_LOG=keyboard-install-serial.log \
+		python3 tools/keyboard_session.py --iso horus.iso --install \
+		--boot-timeout $(SMOKE_KEYBOARD_INSTALL_TIMEOUT) \
+		--timeout $(SMOKE_KEYBOARD_INSTALL_TIMEOUT) \
+		--serial-log keyboard-install-serial.log \
+	  || { echo "[keyboard] ----- guest serial -----"; \
+	       tail -60 keyboard-install-serial.log 2>/dev/null | sed 's/^/  /'; \
+	       rm -f keyboard-install.img; exit 1; }
+	@rm -f keyboard-install.img
+	@echo "[keyboard] PASS - installed and logged in without touching the serial line"
+
 # The console must not be able to stop the machine.
 #
 # serial_wait() spins on COM1's THRE bit from inside emit_char, which runs under

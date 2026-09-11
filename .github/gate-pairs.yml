@@ -219,6 +219,7 @@ gates:
   - smoke-console-handover
   - smoke-keyboard
   - smoke-keyboard-installer
+  - smoke-keyboard-install
   - smoke-serial-bound
   - smoke-claim-release
   - smoke-console

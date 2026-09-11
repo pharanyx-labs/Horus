@@ -480,6 +480,13 @@ jobs:
       # reads a bare ESC and the screen cancels instead of moving.
       - name: Control arm — an arrow split across two replies reads as Escape
         run: make smoke-keyboard-installer-control
+      # The whole claim end to end: install and then log into what was
+      # installed, with nothing typed at COM1. First thing to put characters
+      # through a MASKED tui_input in raw mode, which is where a dropped
+      # keystroke hides -- it makes the two password entries differ and the
+      # installer quietly asks again rather than failing.
+      - name: An entire install, typed on the machine's own keyboard
+        run: make smoke-keyboard-install
       # The console must not be able to stop the machine. serial_wait spins on
       # COM1's THRE from inside emit_char, which runs under console_lock with
       # interrupts disabled -- unbounded, that is the whole machine stopped with

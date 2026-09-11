@@ -31,6 +31,92 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from session_test import Serial, SessionFail   # noqa: E402
 
+def run_install(g, args):
+    """Complete an entire install on the keyboard, then log into it with one.
+
+    THE CLAIM THIS EXISTS FOR: a person standing at the machine, with no serial
+    cable, can install Horus and then use it. Nothing in this run types at COM1
+    -- every keystroke from the first menu to the shell prompt goes through
+    QEMU's emulated 8042, so the guest sees a real scancode and a real IRQ 1 and
+    must translate it in ring 3.
+
+    IT DRIVES THE SAME CONVERSATION AS THE SERIAL GATES, deliberately. The
+    screens live in installer_session.py's answer_* functions and are imported
+    rather than restated; that file's own comment records what four copies of
+    this conversation cost when the installer grew two screens and exactly one
+    copy was taught about them. Only the typist differs.
+
+    WHAT IT COVERS THAT smoke-keyboard AND smoke-keyboard-installer DO NOT.
+    Those reach a login prompt and a menu selection. This is the first thing to
+    put characters through `tui_input` in RAW mode -- a masked field, twice,
+    compared -- and through the typed confirmation word. The masked field is the
+    sharp one: a dropped keystroke does not announce itself, it makes the two
+    entries differ, and the installer quietly asks again. On a serial-driven
+    gate that path cannot fail, because a UART burst arrives intact; on a polled
+    one-byte controller it is the whole risk of the design.
+    """
+    import installer_session as ins
+
+    kbd = ins.KeyboardTypist(g, args.key_delay)
+
+    g.expect("init: this machine has a disk and no volume; running the installer",
+             args.boot_timeout)
+    print("KEYBOARD: init launched the installer", flush=True)
+
+    ins.answer_survey(g, typist=kbd)
+    # What this line may claim is bounded by what has been OBSERVED. answer_survey
+    # waits for the screen and then sends Down and Enter; nothing is expected
+    # after, so at this point the keystrokes have been sent and not one of them
+    # is known to have arrived. Saying "chose Continue" here would be the
+    # harness asserting an outcome it has not seen -- and under CONSOLE_NO_KBD
+    # it printed exactly that while the guest sat on the survey screen
+    # untouched. The next step's marker is what proves the screen advanced.
+    print("KEYBOARD: sent Down and Enter at the destroy-this-disk screen",
+          flush=True)
+    # Verified, unlike the line above: answer_accounts waits for each screen's
+    # own marker before typing into it, so reaching the end means every screen
+    # was reached -- which also means the survey did advance.
+    ins.answer_accounts(g, typist=kbd)
+    print("KEYBOARD: typed both passwords twice and the account name, each at "
+          "its own prompt", flush=True)
+    ins.answer_review_and_confirm(g, typist=kbd)
+    print("KEYBOARD: accepted the review and typed the confirmation word", flush=True)
+
+    g.expect("INSTALLER: formatting", args.timeout)
+
+    # NEITHER PASSWORD MAY BE ON THE WIRE, and this is a sharper version of the
+    # same check the serial gate makes. There, the harness writes the password
+    # INTO the pty, so its absence from the output says the guest did not echo
+    # it. Here the password never touches the serial line in either direction --
+    # it was typed on the keyboard -- so a hit is unambiguously the guest
+    # putting a masked field's contents on a terminal.
+    for secret in (ins.PASSWORD, ins.USER_PASSWORD):
+        if secret in g.buf:
+            raise SessionFail(f"a password typed on the keyboard reached the "
+                              f"serial line: {secret!r}")
+    print("KEYBOARD: neither password reached the terminal", flush=True)
+
+    took = ins.expect_while_doing_io(g, "INSTALLER: PASS installed",
+                                     ins.FORMAT_STALL, ins.FORMAT_CAP)
+    print(f"KEYBOARD: the install completed [{took:.0f}s of writing]", flush=True)
+
+    # AND THEN USE IT. A format that returns 0 is not an install: the volume is
+    # sealed to a password and the root account is verified against one, by
+    # different mechanisms with different salts, and only a login proves the
+    # same typed string satisfied both. Typed on the keyboard, so the password
+    # that opens the machine is one the keyboard produced end to end.
+    g.expect("horus login: ", args.timeout)
+    kbd.text("root")
+    kbd.key("enter")
+    g.expect("assword", args.timeout)
+    kbd.text(ins.PASSWORD)
+    kbd.key("enter")
+    g.expect("@horus", args.timeout)
+    print("KEYBOARD: PASS installed and logged in, entirely on the keyboard",
+          flush=True)
+    return 0
+
+
 def run_installer(g, args):
     """Drive the installer's disk survey with the arrow keys.
 
@@ -89,6 +175,9 @@ def main():
     ap.add_argument("--timeout", type=float, default=120.0)
     ap.add_argument("--key-delay", type=float, default=0.15)
     ap.add_argument("--serial-log", default=None)
+    ap.add_argument("--install", action="store_true",
+                    help="complete an ENTIRE install on the keyboard, then log "
+                         "into what was installed with it")
     ap.add_argument("--installer", action="store_true",
                     help="drive the installer's disk survey with the ARROW keys "
                          "instead of logging in")
@@ -103,6 +192,8 @@ def main():
     g = Serial(args.iso)
     rc = 1
     try:
+        if args.install:
+            return run_install(g, args)
         if args.installer:
             return run_installer(g, args)
         g.expect("horus login: ", args.boot_timeout)

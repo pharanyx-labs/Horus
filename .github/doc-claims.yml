@@ -264,6 +264,22 @@ counts:
         pattern: 'make smoke-captest\s+<span class="c"># (\d+) capability checks'
 
 forbidden:
+  - pattern: 'has no keyboard either, at the login prompt'
+    reason: >-
+      docs/LIMITATIONS.md said this of every machine, 8042 or not, until
+      2026-09-11. It is now false for the 8042 case: console_server reads ports
+      0x60/0x64 itself, through the port grant it already held, and the kernel
+      stops draining the controller once ring 3 owns the console. Gated by
+      make smoke-keyboard, which types an entire login on the emulated 8042 over
+      QMP send-key. The USB-only case is still keyboardless and the bullet still
+      says so. Kept on ONE LINE because this checker matches line by line.
+  - pattern: 'Keyboard \(PS/2\) input stays with the kernel for now'
+    reason: >-
+      The comment above con_getc in userspace/console_server.c, and the sentence
+      the whole defect hid behind: it read as a deliberate deferral rather than
+      the reason a laptop could not be typed at. Retired 2026-09-11 when that
+      server started reading the controller. Anything restoring this wording is
+      restoring the defect with it.
   - pattern: 'TLA\+ specifications are committed but not'
     reason: >-
       site/index.html's assurance paragraph, and the framing every copy of this

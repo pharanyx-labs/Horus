@@ -3,9 +3,11 @@
  * The console (VGA text / serial) driver, moved out of ring 0 into a ring-3
  * server that owns the hardware directly. At startup it takes ownership of the
  * console hardware using the three device-delegation mechanisms:
- *   - SYS_IOPORT_GRANT  (J3): native in/out on the serial UART + VGA registers;
+ *   - SYS_IOPORT_GRANT  (J3): native in/out on the serial UART, the VGA
+ *                            registers, and the PS/2 controller at 0x60/0x64;
  *   - SYS_MAP_PHYS      (J2): the VGA text framebuffer mapped into its own AS.
- * (Keyboard input via SYS_IRQ_REGISTER (J4) is a later job.) It then serves
+ * The PS/2 keyboard is read here too (J4), through that same port grant and
+ * with no new capability -- see ps2_poll. It then serves
  * console-write requests over IPC: a client sends CON_OP_WRITE and the server
  * emits the bytes to the serial port and the framebuffer with its own hands — no
  * kernel console code on the path. A bug in this parsing/output logic can no
@@ -20,6 +22,7 @@
 #include "console_proto.h"
 #include "libhorus.h"
 #include "console_font.h"   /* the same glyphs the kernel blits */
+#include "ps2_scancode.h"   /* the same scancode table the kernel reads */
 
 /* How many times to retry the startup SYS_IOPORT_GRANT while init finishes
  * endowing us with CAP_IO_DEVICE (see _start). Each attempt yields, so this is a
@@ -240,6 +243,91 @@ static void ser_u32(uint32_t v) {
     while (n) con_putc(b[--n]);
 }
 
+/* ---- PS/2 keyboard --------------------------------------------------------- */
+/* The machine's own keyboard, read from ring 3 (S89).
+ *
+ * NO NEW AUTHORITY IS TAKEN FOR THIS, and that is worth being precise about
+ * because a keyboard sounds like it should need some. Ports 0x60 and 0x64 are
+ * declared by the platform device in src/kernel/pci.c, the same device our
+ * CAP_IO_DEVICE names and the same declaration that gives us COM1 and the VGA
+ * register file. The SYS_IOPORT_GRANT in _start therefore already opened the TSS
+ * I/O bitmap for them: this code adds two `inb`s to a grant we hold, and adds
+ * nothing to what we are allowed to touch. The alternative -- SYS_IRQ_REGISTER
+ * on IRQ 1 -- would have required a CAP_NOTIFICATION init does not grant us and
+ * that we would never wait on, so it would have been a new delegation existing
+ * only for a side effect in the kernel's interrupt handler. See the vector-33
+ * note in src/kernel/idt.c for the other end of the handover.
+ *
+ * POLLED, NOT INTERRUPT-DRIVEN, and the cost is one byte. The 8042 holds exactly
+ * one byte and stops raising IRQ 1 until it is read, so a keystroke waits for us
+ * rather than being lost -- but only one does. A burst typed while we are
+ * servicing a write loses everything after the first character. That is
+ * acceptable for a console at a prompt and would not be for a game; the fix when
+ * it matters is the notification bridge, which irqtest already proves works.
+ *
+ * AUX BYTES ARE DROPPED, NOT TRANSLATED. Status bit 5 means the byte came from
+ * the second PS/2 port -- a mouse. Nothing here speaks mouse, and feeding mouse
+ * movement packets through a keyboard table would type random characters at
+ * whatever prompt is open. Read it (so it stops blocking the buffer) and discard
+ * it. */
+#define PS2_DATA    0x60
+#define PS2_STATUS  0x64
+#define PS2_STATUS_OBF  0x01      /* output buffer full: a byte is waiting     */
+#define PS2_STATUS_AUX  0x20      /* it came from the mouse port, not the keys */
+
+#ifndef CONSOLE_NO_KBD
+static struct ps2_state kbd;      /* inside the guard: unused under the arm */
+
+/* The unread tail of an escape sequence an extended key expanded into.
+ *
+ * An arrow is three bytes and this reader hands back one at a time, so the
+ * remainder has to live somewhere between calls. A pointer into a string
+ * literal rather than a buffer: there is nothing to overflow, nothing to reset,
+ * and "no sequence in progress" is the null pointer rather than a length of
+ * zero that some path forgot to clear. */
+static const char *kbd_pending;
+#endif
+
+/* Return the next character from the keyboard, or 0 if it has nothing to say.
+ * Never blocks: a scancode that produces no character (a modifier, a key
+ * release) returns 0 exactly as an empty controller does, and the caller polls
+ * again. */
+static char ps2_poll(void) {
+#ifdef CONSOLE_NO_KBD
+    /* CONTROL ARM -- never ship. console_server as it was before 2026-09-11: it
+     * drives the screen but reads only COM1, so on a machine whose only input is
+     * the keyboard there is no way to answer the prompt it just painted. The
+     * kernel's half of the handover still fires, so the scancode is left in the
+     * controller and nobody reads it at all. See make smoke-keyboard-control. */
+    return 0;
+#else
+    /* Finish an escape sequence before reading new hardware. Draining the
+     * controller first would interleave the tail of one arrow with the head of
+     * the next key, and "ESC [ ESC [ A B" decodes as a bare ESC -- a cancel on
+     * the screen that chooses which disk to erase. */
+    if (kbd_pending && *kbd_pending) return *kbd_pending++;
+
+    uint8_t st = inb(PS2_STATUS);
+    if (!(st & PS2_STATUS_OBF)) return 0;
+    uint8_t sc = inb(PS2_DATA);
+    if (st & PS2_STATUS_AUX) return 0;
+
+    int k = ps2_feed(&kbd, sc);
+    if (k == PS2_KEY_NONE) return 0;
+    if (k < 0x100) return (char)k;
+
+    /* An extended key: hand back the sequence a serial terminal would have
+     * sent, so userspace/tui.c decodes the machine's own arrows through exactly
+     * the same path as a remote terminal's and needs no keyboard special case.
+     * A key with no sequence yields nothing rather than a bare ESC -- see the
+     * note on PS2_KEY_* for why that distinction is load-bearing. */
+    const char *seq = ps2_key_escape(k);
+    if (!seq || !seq[0]) return 0;
+    kbd_pending = seq + 1;
+    return seq[0];
+#endif
+}
+
 /* ---- input ----------------------------------------------------------------- */
 /* Read one console character. Serial RX is polled (the COM1 line-status data-ready
  * bit, then the data register) exactly as the in-kernel console_getc does — this
@@ -247,13 +335,18 @@ static void ser_u32(uint32_t v) {
  * the CPU rather than busy-spin, so the (preemptible, ring-3) wait does not starve
  * the rest of the system the way the old unpreemptible ring-0 console read did.
  *
- * Keyboard (PS/2) input stays with the kernel for now; moving it here needs the
- * IRQ->notification bridge wired so the kernel stops draining the controller
- * (a follow-up). See docs/design/console-server.md. */
+ * BOTH INPUTS ARE POLLED, and a machine normally has only one of them in use.
+ * Serial first because it is what every test and every headless boot drives, and
+ * because checking it costs one `inb` whether or not anything is there; the
+ * keyboard is checked on the same pass, so a physical machine with no serial
+ * cable answers its prompts too. That second check is what "boots to a prompt
+ * but you cannot type" was missing. See docs/design/console-server.md. */
 static char con_getc(void) {
     for (;;) {
         if (inb(COM1_LSR) & 0x01)          /* serial receive-data-ready */
             return (char)inb(COM1);
+        char k = ps2_poll();               /* the machine's own keyboard */
+        if (k) return k;
         sys_yield();
     }
 }
@@ -295,6 +388,34 @@ static int con_read_raw(uint8_t *out, unsigned max) {
     out[n++] = (uint8_t)con_getc();                 /* block for at least one byte */
     while (n < max && (inb(COM1_LSR) & 0x01))        /* grab the rest of the burst */
         out[n++] = inb(COM1);
+#ifndef CONSOLE_NO_KBD
+    /* THE REST OF AN ARROW MUST TRAVEL IN THIS REPLY, not the next one.
+     * tui_getkey decodes only what is already in the burst it was handed and
+     * reports a sequence cut short as a bare ESC -- which the installer reads
+     * as "cancel this screen". So a Down arrow split across two replies would
+     * not merely fail to move the selection, it would abandon the screen that
+     * chooses which disk to erase. The UART burst above has the same
+     * requirement and solves it the same way; this is that loop for the
+     * keyboard, and the two are deliberately adjacent.
+     *
+     * The controller itself needs no draining here: it holds one byte, so by
+     * the time con_getc returned a keyboard character it is already empty. What
+     * remains is only the tail ps2_poll expanded. */
+#ifndef CONSOLE_KBD_SPLIT_ESC
+    while (n < max && kbd_pending && *kbd_pending)
+        out[n++] = (uint8_t)*kbd_pending++;
+#else
+    /* CONTROL ARM -- never ship. Leave the tail for the next call, so an arrow
+     * reaches the decoder split across two replies. tui_getkey sees ESC with
+     * nothing after it, reports the bare ESC that a real Escape key produces,
+     * and the installer cancels the screen. This arm exists because the loop
+     * above is a one-line fix for a failure that does not look like a keyboard
+     * bug at all: the arrow does not merely fail to move the selection, it
+     * abandons the screen that chooses which disk to erase.
+     * See make smoke-keyboard-installer-control. */
+    (void)0;
+#endif
+#endif
     return (int)n;
 }
 

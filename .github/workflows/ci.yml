@@ -456,6 +456,30 @@ jobs:
       # HEARD. Before the fix it existed only in the kernel log ring.
       - name: Control arm — the console driver fails after taking the console
         run: make smoke-console-handover-control
+      # THE MACHINE'S OWN KEYBOARD, and the only gate in this file that uses it.
+      # Every other session test types at COM1, which exercises no part of the
+      # keyboard path -- so a kernel that swallowed every scancode into a buffer
+      # nothing read passed the entire suite while the machine could not be
+      # typed at on real hardware. This one drives the emulated 8042 over QMP
+      # send-key and asserts a complete login: name typed and echoed, password
+      # typed, shell reached. Both steps clean first, per the ordering note
+      # above -- CONSOLE_NO_KBD is a userspace-only -D.
+      - name: A login typed on the machine's own keyboard
+        run: make smoke-keyboard
+      # The arm is console_server before 2026-09-11: it paints the prompt and
+      # reads only COM1, so nothing can answer it. It asserts an ABSENCE within
+      # a bounded window rather than reading a refusal off a timeout.
+      - name: Control arm — the console server does not read the keyboard
+        run: make smoke-keyboard-control
+      # The arrows, gated on the one screen that cannot be passed without them:
+      # the installer's disk survey defaults to "Cancel, change nothing", so a
+      # person at the machine must press Down to install at all.
+      - name: The arrow keys drive the installer's disk survey
+        run: make smoke-keyboard-installer
+      # The arm splits the escape sequence across two replies, so the decoder
+      # reads a bare ESC and the screen cancels instead of moving.
+      - name: Control arm — an arrow split across two replies reads as Escape
+        run: make smoke-keyboard-installer-control
       # The console must not be able to stop the machine. serial_wait spins on
       # COM1's THRE from inside emit_char, which runs under console_lock with
       # interrupts disabled -- unbounded, that is the whole machine stopped with

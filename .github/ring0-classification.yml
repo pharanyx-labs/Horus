@@ -42,7 +42,26 @@
 # `#endif` pair the new site needs. Still entirely behind that macro and still
 # absent from the ship build. Not worth a macro wrapper to avoid: hiding two
 # lines behind five would make the number smaller and the code worse.
-core_budget_loc: 9709
+# 2026-09-11: 9709 -> 9678, and the -31 is TWO different things, which is why it
+# is spelled out rather than banked quietly. About 40 lines are the kernel's
+# private ps2_translate if-chain, deleted in favour of include/ps2_scancode.h,
+# which both the kernel and the ring-3 console_server now read -- the code still
+# executes in ring 0 and this checker no longer counts it, because it counts
+# linked objects and not the headers they include. That part of the drop is a
+# MEASUREMENT ARTEFACT and buys no real assurance; naming it here is the whole
+# mitigation, since teaching the checker to follow includes would pull half of
+# src/include into every file's total. The rest is genuine: the vector-33
+# handover replaced a translation path with an EOI. Ratcheted down anyway rather
+# than left as slack, per the zero-headroom rule at the top -- a budget that
+# quietly keeps room it stopped needing is how the first few hundred lines get
+# absorbed.
+# 2026-09-11: 9678 -> 9679, +1 in idt.c. ps2_feed grew a return type -- it
+# reports the arrows and Home/End symbolically now, so the ring-3 console can
+# expand them into the escape sequences a terminal sends -- and the kernel's
+# early reader needs one extra line to keep taking characters only. It has
+# nowhere to put an arrow: it fills a byte ring feeding a line reader with no
+# cursor movement, which is what it did before those keys had names.
+core_budget_loc: 9679
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

@@ -1576,7 +1576,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 313 test targets, and the troubleshooting
+          Every configuration flag, every one of the 317 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1619,6 +1619,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">SMT siblings parked; microarchitectural flush between distrusting tasks</th><td class="t-note">smoke-smt · smoke-flush</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Ring-3 <code>init</code> (PID 1) supervising the shell</th><td class="t-note">smoke-session</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Ring-3 <code>console_server</code>, single writer, owns UART and framebuffer</th><td class="t-note">smoke-console-smp</td></tr>
+              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">The machine's own PS/2 keyboard, read in ring 3 under the port grant <code>console_server</code> already held</th><td class="t-note">smoke-keyboard</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Every boot-console line timestamped, by the writer, across the console handover</th><td class="t-note">smoke-console-timestamps</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Raw terminal mode, termios and winsize</th><td class="t-note">smoke-term</td></tr>
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Shared library text, private library data</strong>, a shared object is loaded once into frames and mapped read+exec by many tasks through capabilities that never carry write, so no task can modify code another executes. Its <em>writable</em> segment is not shared at all: each task gets a private copy, carved from the library&rsquo;s initial image and endowed read+write and never exec. The library&rsquo;s load address is drawn afresh on every boot rather than compiled in, and a task learns it only by presenting a capability over the library&rsquo;s own text, so the address of shared code is not something an attacker reads off the binary, nor something any task can simply ask for. The security argument matters more than the size one, sharing a libc&rsquo;s text is an optimisation, but sharing its data means one task reading and writing another&rsquo;s <code>errno</code>, stdio buffers and malloc arena, which is worse than the per-program static copies it replaces. The shared libc now builds, is gated, and a ring-3 task calls newlib out of it, 36 pages, 34 of shared text and 2 of per-task data, with the library&rsquo;s own reentrancy state resolving inside each task&rsquo;s private copy, and a program now links against it, ordinary C calling <code>printf</code> by name, carrying no libc of its own, 106,392 bytes static against 13,088 shared, and it is not a dynamic linker: there is no symbol resolution, and a program&rsquo;s direct reference to a libc <em>data</em> symbol cannot be redirected without a GOT</th><td class="t-note">smoke-shlib</td></tr>
@@ -1693,7 +1694,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             The security argument rests entirely on the tests, so they are treated as engineering
             artifacts rather than an afterthought. There are three layers: Rust unit tests and
-            Kani proofs on the host; 150 QEMU integration targets that boot a purpose-built kernel
+            Kani proofs on the host; 152 QEMU integration targets that boot a purpose-built kernel
             and assert a marker on the serial console; and scripted sessions that type into the
             real ring-3 shell over serial and read what comes back.
           </p>

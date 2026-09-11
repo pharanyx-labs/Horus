@@ -156,7 +156,8 @@ DEFECT_FLAGS = \
 	DEVREGS_KERNEL_ONLY SD_BLOCK_ADDR_UNSCALED FB_REQUEST \
 	FB_TAG_IGNORED FB_TAG_ASSUME_TEXT \
 	FB_MAP_SELFTEST FB_MAP_LOW_HALF FB_CONSOLE_SELFTEST \
-	FB_CONSOLE_MIRRORED FB_INFO_ANY_DEVICE CONSOLE_FB_ABSENT \
+	FB_CONSOLE_MIRRORED FB_INFO_ANY_DEVICE CONSOLE_FB_ABSENT CONSOLE_NO_KBD \
+	CONSOLE_KBD_SPLIT_ESC \
 	FB_GRID_FIXED_ROWS
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
@@ -2908,6 +2909,26 @@ endif
 # and there is no shell. Userspace-only, so it goes on USERSPACE_CFLAGS.
 CONSOLE_FB_ABSENT ?= 0
 
+# CONSOLE_NO_KBD=1 is console_server before 2026-09-11: it drives the screen but
+# reads only COM1, so on a machine whose only input device is the keyboard there
+# is no way to answer the prompt it has just painted. The kernel's half of the
+# handover still fires -- it stops draining 0x60 the moment ring 3 owns the
+# console -- so under this flag the scancode is left in the controller and NOBODY
+# reads it. That is deliberately the real historical defect and not a synthetic
+# one: it is what the ideapad did. Userspace-only, so it goes on
+# USERSPACE_CFLAGS. The arm for `make smoke-keyboard`.
+CONSOLE_NO_KBD ?= 0
+
+# CONSOLE_KBD_SPLIT_ESC=1 stops con_read_raw draining the tail of an expanded
+# arrow into the SAME reply, so the sequence reaches tui_getkey split across two.
+# That decoder reads only what it was handed and reports a sequence cut short as
+# a bare ESC -- a real key -- so the arrow becomes an Escape and the installer
+# cancels the screen. The failure does not look like a keyboard bug: the arrow
+# does not fail to move the selection, it abandons the screen that chooses which
+# disk to erase. Userspace-only, so it goes on USERSPACE_CFLAGS. The arm for
+# `make smoke-keyboard-installer`.
+CONSOLE_KBD_SPLIT_ESC ?= 0
+
 # FB_GRID_FIXED_ROWS=1 nails the console's row count to 50 whatever the display
 # can show -- what it was before 2026-09-08. NOTHING FAULTS under it: every cell
 # is clipped against the real geometry, so the rows that do not exist are simply
@@ -3715,6 +3736,12 @@ USERSPACE_CFLAGS += -DCONSOLE_VGA_CHECK_FAIL
 endif
 ifeq ($(CONSOLE_FB_ABSENT),1)
 USERSPACE_CFLAGS += -DCONSOLE_FB_ABSENT
+endif
+ifeq ($(CONSOLE_NO_KBD),1)
+USERSPACE_CFLAGS += -DCONSOLE_NO_KBD
+endif
+ifeq ($(CONSOLE_KBD_SPLIT_ESC),1)
+USERSPACE_CFLAGS += -DCONSOLE_KBD_SPLIT_ESC
 endif
 ifeq ($(FB_GRID_FIXED_ROWS),1)
 USERSPACE_CFLAGS += -DFB_GRID_FIXED_ROWS
@@ -6997,6 +7024,112 @@ smoke-console-handover-control:
 	@$(MAKE) --no-print-directory CONSOLE_VGA_CHECK_FAIL=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='CONSOLE_SELFTEST: FAIL vga' tools/smoke_test.sh horus.iso
+# THE MACHINE'S OWN KEYBOARD, gated end to end.
+#
+# Every other session gate types at COM1 -- `Serial.send` writes to the serial
+# pty and the guest reads a UART byte, so not one instruction of the keyboard
+# path runs. That is exactly how a kernel that swallowed every scancode into a
+# buffer nothing read shipped and passed the whole suite: the machine booted to
+# a login prompt on real hardware and could not be typed at, and no gate could
+# see it, because the gates do not use the keyboard. A property nothing
+# exercises is not guarded by a passing test.
+#
+# tools/keyboard_session.py drives QEMU's emulated 8042 over QMP `send-key`
+# instead, so the guest gets a real scancode and a real IRQ 1 and has to
+# translate it in ring 3. The assertion is the entire login -- user name typed
+# and echoed, password typed, shell prompt reached -- none of which is
+# reachable without the whole path working.
+#
+# `clean` first, for the reason its neighbours do: CONSOLE_NO_KBD is a
+# USERSPACE-only -D and userspace/%.o has no .build-flags prerequisite, so
+# without the clean this arm links a stale console_server.o from whichever
+# neighbour ran before it and measures the wrong build entirely.
+SMOKE_KEYBOARD_TIMEOUT ?= 240
+.PHONY: smoke-keyboard
+smoke-keyboard:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory horus.iso
+	@python3 tools/keyboard_session.py --iso horus.iso \
+		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
+		--serial-log /tmp/horus-keyboard.log
+
+# The falsifying arm. CONSOLE_NO_KBD=1 is console_server as it was before
+# 2026-09-11: it drives the screen but reads only COM1, so the prompt it just
+# painted cannot be answered from the keyboard.
+#
+# IT REPRODUCES THE REAL DEFECT AND NOT A SYNTHETIC ONE. The kernel's half of
+# the handover still fires under the flag -- it stops draining 0x60 the moment
+# ring 3 owns the console -- so the scancode is left in the controller and
+# nobody reads it at all. That is what the ideapad did.
+#
+# The arm asserts an ABSENCE, so it waits a bounded window and then checks that
+# nothing arrived, rather than reading a refusal off a timeout: a timeout is
+# indistinguishable from a broken harness, and it would cost the whole budget
+# to reach.
+.PHONY: smoke-keyboard-control
+smoke-keyboard-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CONSOLE_NO_KBD=1
+	@$(MAKE) --no-print-directory CONSOLE_NO_KBD=1 horus.iso
+	@python3 tools/keyboard_session.py --iso horus.iso --expect-no-keyboard \
+		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
+		--serial-log /tmp/horus-keyboard-control.log
+
+# THE ARROW KEYS, gated on the screen that cannot be passed without them.
+#
+# The installer's disk survey offers { "Cancel, change nothing", "Continue" }
+# with the cursor on Cancel, so a person at the machine cannot install without
+# pressing Down first. That makes "the arrows work" a property with a
+# consequence rather than a nicety, and it is why this is gated separately from
+# smoke-keyboard: a keyboard that types but cannot move a menu selection is most
+# of a working installer and the wrong most.
+#
+# TWO DIFFERENT FAILURES LAND ON ONE MARKER, which is what makes the assertion
+# simple. An arrow that is DROPPED leaves the cursor on Cancel and Enter
+# cancels. An arrow delivered SPLIT across two console replies is decoded as a
+# bare ESC -- a real key -- and cancels on arrival. Either way the installer
+# prints `INSTALLER: nothing was written`, so the gate requires that marker
+# ABSENT and the password screen reached, and the arm requires it present.
+#
+# A blank disk rather than install.iso: `machine_needs_install()` runs the
+# installer when the attached disk holds no volume, so this needs only
+# STORAGE_ATA and a truncated image, and it exercises the shipping ISO rather
+# than the install-media variant.
+SMOKE_KEYBOARD_INSTALLER_TIMEOUT ?= 300
+.PHONY: smoke-keyboard-installer
+smoke-keyboard-installer:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 horus.iso
+	@rm -f keyboard-installer.img && truncate -s 64M keyboard-installer.img
+	@SESSION_DISK=keyboard-installer.img \
+		python3 tools/keyboard_session.py --iso horus.iso --installer \
+		--boot-timeout $(SMOKE_KEYBOARD_INSTALLER_TIMEOUT) \
+		--serial-log /tmp/horus-keyboard-installer.log \
+	  || { echo "[keyboard] ----- guest serial -----"; \
+	       tail -40 /tmp/horus-keyboard-installer.log 2>/dev/null | sed 's/^/  /'; \
+	       rm -f keyboard-installer.img; exit 1; }
+	@rm -f keyboard-installer.img
+
+# The falsifying arm. CONSOLE_KBD_SPLIT_ESC=1 stops con_read_raw draining the
+# tail of an expanded arrow into the same reply, so tui_getkey is handed an ESC
+# with nothing after it and reports the bare Escape a real key produces.
+.PHONY: smoke-keyboard-installer-control
+smoke-keyboard-installer-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 CONSOLE_KBD_SPLIT_ESC=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 CONSOLE_KBD_SPLIT_ESC=1 horus.iso
+	@rm -f keyboard-installer.img && truncate -s 64M keyboard-installer.img
+	@SESSION_DISK=keyboard-installer.img \
+		python3 tools/keyboard_session.py --iso horus.iso --installer \
+		--expect-cancel \
+		--boot-timeout $(SMOKE_KEYBOARD_INSTALLER_TIMEOUT) \
+		--serial-log /tmp/horus-keyboard-installer-control.log \
+	  || { echo "[keyboard] ----- guest serial -----"; \
+	       tail -40 /tmp/horus-keyboard-installer-control.log 2>/dev/null | sed 's/^/  /'; \
+	       rm -f keyboard-installer.img; exit 1; }
+	@rm -f keyboard-installer.img
+
 # The console must not be able to stop the machine.
 #
 # serial_wait() spins on COM1's THRE bit from inside emit_char, which runs under

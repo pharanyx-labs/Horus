@@ -19,15 +19,27 @@ each job behavior-verified with a gated smoke test:
 | J2 | `SYS_MAP_PHYS`, map an allowlisted device frame into a task's address space | `smoke-mapphys` |
 | J3 | Per-task TSS I/O-permission bitmap, native ring-3 port I/O | `smoke-ioport` |
 | J4 | IRQ→notification bridge (`SYS_IRQ_REGISTER`) | `smoke-irq` |
+| J4b | **The keyboard itself, read from ring 3** (2026-09-11) | `smoke-keyboard` |
 | J5a | `console_server` owns the hardware, serves a client over IPC | `smoke-console` |
 | J5b | The real shell's **output** routed through the ring-3 console | `smoke-session`, `smoke-modules` |
 | J5c | Console **input** (line editing, echo, password masking) moved to ring 3 | `smoke-session` |
 | J6 | Blast-radius proof, a console fault is contained in ring 3 | `smoke-console-isolation` |
 
-Two items in this document remain deliberately unbuilt: keyboard (PS/2) input stays in the
-kernel for now (the tests and headless deployment drive serial), and the in-kernel console is
-retained as a robustness fallback and for coreutils output, boot, and panic, see the notes
-inline.
+J4b closed the one item this document had left deliberately unbuilt, and it closed it without
+the notification bridge J4 built. `console_server` polls ports `0x60`/`0x64` inside the same
+`con_getc` loop that polls COM1, under the port grant it already held -- the platform device
+declares those ports beside COM1 and the VGA register file, so no new capability was
+delegated. `SYS_IRQ_REGISTER` would have required a `CAP_NOTIFICATION` `init` does not grant
+and that the server would never wait on, so it was rejected as a delegation existing only for
+a side effect. What makes the kernel let go is `console_hw_owned()` in vector 33: the same
+predicate that already stops `print()` driving the screen now stops ring 0 draining the
+controller (**S89**). The bridge J4 built is still the right answer when a driver needs to
+sleep rather than poll, and `userspace/irqtest.c` still proves it works end to end.
+
+The remaining deliberate item is the in-kernel console, retained as a robustness fallback and
+for coreutils output, boot, and panic -- see the notes inline. It is also the reader that
+serves the keyboard before the handover, which is why its scancode table is now shared with
+`console_server` (`include/ps2_scancode.h`) rather than duplicated.
 
 ---
 
@@ -261,6 +273,7 @@ enabling mechanisms; J5 is the single cutover; J6 realizes and proves the win.
 | **J2** | `SYS_MAP_PHYS` + `CAP_IO_DEVICE` (mmio-frame) + allowlist, over `user_map_page`. | new `smoke-*`: a probe maps `0xB8000`, writes a cell, asserts it. |
 | **J3** | TSS I/O-bitmap: grow TSS, `iomap_base`, per-task swap in `set_tss_kernel_stack`, cap-gated grant. | new `smoke-*`: probe `outb`/`inb` on an allowed port (ok) and a denied port (`#GP`→signal); falsification: neuter the grant → allowed access faults. |
 | **J4** | `SYS_IRQ_REGISTER` + vector-33 → `sys_notify`; serial re-poll wake. | new `smoke-*`: probe registers, keys scripted via `tools/session_test.py`, receives notifications, reads scancodes natively. |
+| **J4b** | Ring-3 keyboard: poll `0x60`/`0x64` in `con_getc`; vector 33 leaves the byte once `console_hw_owned()`. No new capability -- the ports were already in the platform device's declaration. | `smoke-keyboard`: a whole login typed on QEMU's emulated 8042 over QMP `send-key`, against `smoke-keyboard-control` (`CONSOLE_NO_KBD=1`), which must not be able to answer the prompt. |
 | **J5** | `console_proto.h` + `console_server` + `init` reorder + client syscalls→IPC shims; keep panic serial writer. | existing `smoke-session`, `smoke-modules`, `smoke-coreutils-shell` pass unchanged, now over the ring-3 console. |
 | **J6** | Remove dead in-kernel console (leave panic serial); prove isolation; update `ROADMAP.md` + `LIMITATIONS.md`. | new negative `smoke-*`: a fault inside the driver kills only `console_server`, kernel + capability system + audit log survive. |
 

@@ -1,4 +1,5 @@
 #include "kernel.h"
+#include "ps2_scancode.h"
 
 int handle_demand_page_fault(uint64_t fault_addr, uint32_t err_code);
 
@@ -26,7 +27,6 @@ char keyboard_buffer[256];
 uint32_t kb_head = 0;
 uint32_t kb_tail = 0;
 
-static uint8_t ps2_e0_prefix;
 
 /* IRQ -> userspace notification bridge (J4, driver privilege separation): a task
  * holding a CAP_IO_DEVICE that DECLARES a line can register (SYS_IRQ_REGISTER) to
@@ -142,46 +142,17 @@ static inline void irq_notify_fire(int irq) {
         sys_notify(irq_reg[irq].slot, irq_reg[irq].badge);
 }
 
-static char ps2_translate(uint8_t sc) {
-    if (ps2_e0_prefix) {
-        ps2_e0_prefix = 0;
-        if (sc >= 0x80) return 0; 
-        if (sc == 0x53) return 0x7F; 
-        
-        return 0;
-    }
-    if (sc == 0xE0) {
-        ps2_e0_prefix = 1;
-        return 0;
-    }
-    if (sc >= 0x80) return 0; 
-
-    if (sc == 0x0E) return '\b';
-    if (sc == 0x0F) return '\t';
-    if (sc == 0x01) return 0x1B; 
-
-    if (sc >= 0x02 && sc <= 0x0B) return "1234567890"[sc-0x02];
-    if (sc >= 0x10 && sc <= 0x19) return "qwertyuiop"[sc-0x10];
-    if (sc >= 0x1E && sc <= 0x26) return "asdfghjkl"[sc-0x1E];
-    if (sc >= 0x2C && sc <= 0x32) return "zxcvbnm"[sc-0x2C];
-
-    if (sc == 0x39) return ' ';
-    if (sc == 0x1C) return '\n';
-
-    if (sc == 0x0C) return '-';
-    if (sc == 0x0D) return '=';
-    if (sc == 0x1A) return '[';
-    if (sc == 0x1B) return ']';
-    if (sc == 0x2B) return '\\';
-    if (sc == 0x27) return ';';
-    if (sc == 0x28) return '\'';
-    if (sc == 0x29) return '`';
-    if (sc == 0x33) return ',';
-    if (sc == 0x34) return '.';
-    if (sc == 0x35) return '/';
-
-    return 0;
-}
+/* The kernel's own keyboard reader state. It serves from boot until the ring-3
+ * console_server takes the console; from then on that server reads the
+ * controller and this state stops advancing (see the vector-33 handler).
+ *
+ * The table it reads is include/ps2_scancode.h, shared with console_server
+ * rather than copied, so a keystroke means the same thing either side of the
+ * handover -- a password typed at the kernel's prompt and the same password
+ * typed at the ring-3 one must produce the same bytes. The kernel used to carry
+ * a private if-chain here with no shift or caps handling at all, so the two
+ * would have disagreed on every capital letter. */
+static struct ps2_state kbd_state;
 
 extern void isr0(void); extern void isr1(void); extern void isr2(void); extern void isr3(void);
 extern void isr4(void); extern void isr5(void); extern void isr6(void); extern void isr7(void);
@@ -575,8 +546,42 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
              * The kernel does not translate or buffer it here. */
             irq_eoi(33);
             irq_notify_fire(1);
+        } else if (console_hw_owned()) {
+            /* THE INPUT HALF OF THE CONSOLE HANDOVER (S89), and it is the same
+             * fact as the output half. Once a ring-3 task owns the console hardware,
+             * print_core stops driving the screen (drive_hw is
+             * `console_owner_task == 0`) because the screen is that task's to
+             * paint. The keyboard is that task's to read for exactly the same
+             * reason and at exactly the same moment -- so the byte is left in the
+             * controller for it, and the kernel only acknowledges the line.
+             *
+             * UNTIL 2026-09-11 ONLY THE OUTPUT HALF EXISTED, and that asymmetry
+             * was the whole of the "boots to a prompt but you cannot type" report
+             * from real hardware. console_server drove the screen and polled COM1
+             * for input; the kernel went on draining 0x60 into keyboard_buffer,
+             * where nothing read it. Every keystroke was consumed by a reader
+             * that had been retired. On a serial-driven test machine this is
+             * invisible, which is why it survived: the tests type at COM1.
+             *
+             * NO STORM RISK FROM LEAVING IT. The 8042 raises IRQ 1 on the output
+             * buffer going empty->full and not again while it stays full, so an
+             * unread byte quiets the line rather than repeating it. That also
+             * gives one byte of type-ahead for free: a key pressed while
+             * console_server is servicing a write is still there when it next
+             * polls. What it costs is the SECOND key pressed in that window,
+             * which the controller has nowhere to put.
+             *
+             * IT IS NOT AN IRQ REGISTRATION, deliberately. Routing the line
+             * through SYS_IRQ_REGISTER would need console_server to hold a
+             * CAP_NOTIFICATION it does not have and would never wait on -- a new
+             * delegation whose only purpose was this branch's side effect. The
+             * ownership it already has is the more honest gate, and it is the
+             * one the console's authority is actually defined by. */
+            irq_eoi(33);
         } else {
-            /* No driver registered: the in-kernel console reader owns the key.
+            /* Nobody in ring 3 owns the console: the in-kernel console reader
+             * owns the key -- early boot, and any build where console_server
+             * never started.
              * Only consume a scancode when the controller output buffer is full,
              * so a spurious IRQ never re-reads a stale byte. */
             if (inb(0x64) & 1) {
@@ -591,7 +596,14 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
                  * it taken here, 8 in 8. An instrument is not passive. */
                 g_ps2_last_sc = scancode;
 #endif
-                char c = ps2_translate(scancode);
+                /* Characters only. ps2_feed also reports the arrows and
+                 * Home/End symbolically, and this reader has nowhere to put
+                 * them: it fills a byte ring that feeds a plain line reader
+                 * with no cursor movement. The ring-3 console expands them into
+                 * the escape sequences a terminal sends; here they are dropped,
+                 * which is exactly what happened before they had names. */
+                int k = ps2_feed(&kbd_state, scancode);
+                char c = (k > 0 && k < 0x100) ? (char)k : 0;
                 if (c) {
                     keyboard_buffer[kb_tail] = c;
                     kb_tail = (kb_tail + 1) % 256;

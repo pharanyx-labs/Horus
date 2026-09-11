@@ -978,13 +978,26 @@ write regardless.
 
 ### `console_server`
 
-Owns the serial UART and the VGA framebuffer in ring 3. It receives from `init` a
-`CAP_IO_DEVICE` **naming the platform device**, which gates `SYS_MAP_PHYS` (map the
+Owns the serial UART, the VGA framebuffer **and the PS/2 keyboard** in ring 3. It receives from
+`init` a `CAP_IO_DEVICE` **naming the platform device**, which gates `SYS_MAP_PHYS` (map the
 framebuffer), `SYS_IOPORT_GRANT` (native ring-3 `in`/`out` on that device's ports via the TSS
-I/O bitmap), and `SYS_IRQ_REGISTER` (keyboard IRQ → notification). Each of those checks the
+I/O bitmap), and `SYS_IRQ_REGISTER` (a device's IRQ → notification). Each of those checks the
 frame, port range or line against what the platform device declares in the I/O-device table (see
 "Device capabilities" below) so the same capability reaches none of the machine's other
 hardware.
+
+The keyboard is read through the **port grant**, not the IRQ bridge, and it is worth saying why
+because the bridge exists and was the obvious choice. Ports `0x60` and `0x64` are in the
+platform device's declaration beside COM1 and the VGA registers, so `SYS_IOPORT_GRANT` already
+covered them: reading the controller costs two `inb`s against a grant the server holds, and
+adds nothing to what it may touch. `SYS_IRQ_REGISTER` on IRQ 1 would instead have required a
+`CAP_NOTIFICATION` that `init` does not delegate to this server and that the server would never
+wait on, since it polls — a new delegation whose only effect would have been a side effect in
+the kernel's interrupt handler. What tells ring 0 to stop reading the controller is
+`console_hw_owned()`, the same predicate that already stops `print()` driving the screen, so the
+console's input and output change hands together (**S89**). Both readers share one scancode
+table, `include/ps2_scancode.h`. The IRQ bridge remains the right mechanism for a driver that
+must sleep rather than poll, and `userspace/irqtest.c` proves it end to end.
 
 It is the **single writer** to the console. The kernel keeps a minimal serial writer for
 panics and early boot, and fails closed on the in-kernel read path while a server owns the

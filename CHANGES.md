@@ -52,6 +52,59 @@ in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **The machine's own keyboard, read from ring 3 — and no new authority to do it (S89).**
+  `console_server` drove the screen and polled COM1 for input, so a machine with a keyboard and
+  no serial cable reached a login prompt on its own display and accepted nothing typed at it.
+  Observed on an IdeaPad, 2026-09-10; `PS2_PROBE=1` read `PS2 n=00004 sc=a4 st=14` there, which
+  says the controller is present, IRQ 1 arrives and the scancodes are real — the case a ring-3
+  reader fixes rather than the USB-only case, which still has no keyboard.
+
+  **The handover had an output half and no input half.** The kernel stops driving the screen the
+  instant a ring-3 task takes the console; it went on draining the PS/2 controller into
+  `keyboard_buffer`, where the retired in-kernel reader was the only consumer. Every keystroke
+  was eaten by a reader that no longer existed. Vector 33 now leaves the byte whenever
+  `console_hw_owned()` — the *same predicate* the output half uses, so the two cannot drift.
+
+  **Nothing was delegated for this.** Ports `0x60`/`0x64` are declared by the platform device in
+  `src/kernel/pci.c` beside COM1 and the VGA register file, so the startup `SYS_IOPORT_GRANT`
+  had already opened them; `userspace/init.c` grants `console_server` exactly what it granted
+  before. `SYS_IRQ_REGISTER` on IRQ 1 was rejected deliberately: it would have needed a
+  `CAP_NOTIFICATION` init does not grant and that a polling server would never wait on — a new
+  delegation existing only for a side effect in an interrupt handler.
+
+  The scancode table moved to `include/ps2_scancode.h` and is **shared** with the kernel's early
+  reader rather than copied, so a password typed either side of the handover produces the same
+  bytes; the kernel's private version had no shift or caps handling at all, so the two would have
+  disagreed on every capital letter. It gained shift, caps lock, control and the Delete key,
+  verified exhaustively on the host over all 58 make codes in both shift states, all 127 break
+  codes and all 70 codes above the table.
+
+  **The arrow keys work, and they are gated on the screen that cannot be passed without them.**
+  `ps2_feed` returns the arrows and Home/End symbolically and the ring-3 console expands each into
+  the `ESC [ A` a serial terminal sends, so `tui_getkey` decodes the machine's own keyboard and a
+  remote terminal through one path. This is not a nicety: the installer's disk survey offers
+  `{ "Cancel, change nothing", "Continue" }` with the cursor on **Cancel**, so a person at the
+  machine cannot install without pressing Down. Page Up and Page Down are deliberately *not*
+  mapped although the hardware sends them — the TUI decodes only the sequences it knows and reads
+  anything else as a bare `ESC`, which in the installer means cancel, so emitting an unknown
+  sequence would have turned Page Down into a cancel on the screen that chooses which disk to
+  erase. A key that does nothing is correct; a key that cancels is a defect.
+
+  **Gated by `make smoke-keyboard`, the only gate in the tree that uses a keyboard.** That is why
+  this survived a suite of 315 targets: every other session test types at COM1, which exercises
+  no part of the keyboard path. The new gate types an entire login on QEMU's emulated 8042 over
+  QMP `send-key`. Falsified in all four directions with `CONSOLE_NO_KBD=1`: gate PASS fixed, gate
+  exit 1 under the arm, arm PASS under the arm, arm FAIL against fixed. `make
+  smoke-keyboard-installer` covers the arrows the same way, against `CONSOLE_KBD_SPLIT_ESC=1` —
+  which delivers the sequence split across two console replies, so the decoder reads a bare `ESC`
+  and the screen cancels. Also measured in all four directions.
+
+  Ring-0 budget 9709 → 9678. About 40 of those lines are the deleted private translator, which
+  still executes in ring 0 and is simply no longer counted — `.github/ring0-classification.yml`
+  names that as a measurement artefact rather than banking it as assurance.
+
 ### Fixed
 
 - **The `PS2_PROBE` instrument consumed the keystroke it reported.** The probe sampled the

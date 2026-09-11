@@ -190,6 +190,17 @@ in this file.
   still executes in ring 0 and is simply no longer counted — `.github/ring0-classification.yml`
   names that as a measurement artefact rather than banking it as assurance.
 
+### Changed
+
+- **The `stale scheduler claim` reproduction is a limitation, not a `[G-n]` finding** — decided
+  2026-09-11 and recorded so it is not re-litigated from the same number. A G-number is a defect
+  that has been attributed and that carries a witness able to fail; neither is true here. The one
+  number the entry has is conditioned on a widener — four guest CPUs pinned onto two host cores,
+  plus `KSP_GUARD_INJECT`, which is not a passive instrument — so 1/200 is an upper bound on a
+  rate nobody has measured in the configuration the gate actually runs in. `docs/LIMITATIONS.md`
+  §5.3e now says what would change the classification in either direction: the same campaign
+  without the pinning, or a captured reproduction, which `tools/stress_boot.sh` can finally keep.
+
 ### Fixed
 
 - **Install media said nothing at all on a machine it could not use.** The installer's two

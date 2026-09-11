@@ -81,6 +81,8 @@ control_arms:
   smoke-sdhci-csd-control: smoke-sdhci-detect
   smoke-sdhci-addr-control: smoke-sdhci-detect
   smoke-console-handover-control: smoke-console-handover
+  smoke-keyboard-control: smoke-keyboard
+  smoke-keyboard-installer-control: smoke-keyboard-installer
   smoke-serial-bound-control: smoke-serial-bound
   smoke-keyslots-control: smoke-keyslots
   smoke-users-persist-control: smoke-users-persist
@@ -215,6 +217,8 @@ gates:
   - smoke-sdhci-detect
   - smoke-sdhci-write
   - smoke-console-handover
+  - smoke-keyboard
+  - smoke-keyboard-installer
   - smoke-serial-bound
   - smoke-claim-release
   - smoke-console

@@ -363,6 +363,27 @@ class Serial:
         Returns None if QMP is unreachable; the caller must decide what to do
         rather than being handed a zero that looks like a stall.
         """
+        msg = self.qmp("query-blockstats")
+        if msg is None:
+            return None
+        total = 0
+        for dev in msg:
+            st = dev.get("stats") or {}
+            total += st.get("rd_operations", 0) + st.get("wr_operations", 0)
+        return total
+
+    def qmp(self, execute, **arguments):
+        """Run one QMP command and return its "return" value, or None.
+
+        Returns None rather than raising for every transport failure, because
+        every caller here is a DETECTOR and a detector that dies on a closed
+        socket turns an interesting guest state into a harness traceback. The
+        caller decides what an unreachable monitor means for it.
+
+        Asynchronous events are skipped rather than treated as the reply: QEMU
+        interleaves them with command results on the same socket, and reading one
+        as a reply desynchronises every later command on the connection.
+        """
         try:
             if self._qmp is None:
                 sock = socket.socket(socket.AF_UNIX)
@@ -379,7 +400,10 @@ class Serial:
                     return None
                 self._qmp = (sock, f)
             _, f = self._qmp
-            f.write(json.dumps({"execute": "query-blockstats"}) + "\n")
+            cmd = {"execute": execute}
+            if arguments:
+                cmd["arguments"] = arguments
+            f.write(json.dumps(cmd) + "\n")
             f.flush()
             while True:
                 line = f.readline()
@@ -390,14 +414,88 @@ class Serial:
                     continue
                 if "return" not in msg:
                     return None
-                total = 0
-                for dev in msg["return"]:
-                    st = dev.get("stats") or {}
-                    total += st.get("rd_operations", 0) + st.get("wr_operations", 0)
-                return total
+                return msg["return"]
         except (OSError, ValueError, KeyError, json.JSONDecodeError):
             self._qmp = None
             return None
+
+    # QMP names for the characters a console test needs to type. QEMU wants a
+    # qcode ("a", "minus", "shift"), never an ASCII byte, so the mapping has to
+    # be explicit -- and it is deliberately small: this exists to type a login
+    # and a password at a prompt, not to be a general keyboard.
+    QCODE = {
+        " ": "spc", "-": "minus", "=": "equal", ".": "dot", ",": "comma",
+        "/": "slash", ";": "semicolon", "'": "apostrophe", "`": "grave_accent",
+        "[": "bracket_left", "]": "bracket_right", "\\": "backslash",
+        "\n": "ret", "\t": "tab", "\b": "backspace",
+    }
+
+    def send_key(self, qcode, delay=0.15):
+        """Press one named key on the emulated keyboard (a QMP qcode).
+
+        Separate from send_key_text because the keys that matter most here have
+        no character at all -- "down", "ret", "esc". Typing text is the common
+        case and gets the friendlier signature; this is the one that reaches the
+        arrows, which the installer's disk survey cannot be passed without.
+        """
+        if self.qmp("send-key", keys=[{"type": "qcode", "data": qcode}]) is None:
+            raise SessionFail(f"send_key: QMP send-key failed for {qcode!r}")
+        self._pump(delay)
+
+    def send_key_text(self, text, per_key_delay=0.15):
+        """Type `text` on the guest's emulated PS/2 KEYBOARD, not the serial line.
+
+        THIS IS THE POINT OF THE WHOLE HARNESS ADDITION. `send()` writes to the
+        COM1 pty, which reaches the guest as a UART byte and exercises no part of
+        the keyboard path. QEMU's send-key drives the emulated 8042 instead, so
+        the guest sees a real scancode, a real IRQ 1, and has to translate it --
+        which is the only way to witness a keyboard driver at all. A test that
+        types at the serial port passes identically with no keyboard support
+        whatsoever, and that is precisely how the missing ring-3 reader survived.
+
+        Uppercase and the shifted symbols are sent as a two-key combination, the
+        way a person presses them, so the guest's own shift handling is what
+        produces the capital rather than the harness.
+
+        Returns the number of keys sent. Raises SessionFail on a character with
+        no qcode, rather than silently typing a shorter string -- a test that
+        types "rootpas" and reports a refused password would be a bad hour.
+        """
+        shifted = {"!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6",
+                   "&": "7", "*": "8", "(": "9", ")": "0", "_": "minus",
+                   "+": "equal", ":": "semicolon", '"': "apostrophe",
+                   "~": "grave_accent", "{": "bracket_left",
+                   "}": "bracket_right", "|": "backslash", "<": "comma",
+                   ">": "dot", "?": "slash"}
+        sent = 0
+        for ch in text:
+            keys, hold_shift = None, False
+            if ch.isupper():
+                keys, hold_shift = ch.lower(), True
+            elif ch in shifted:
+                keys, hold_shift = shifted[ch], True
+            elif ch in self.QCODE:
+                keys = self.QCODE[ch]
+            elif ch.isalnum():
+                keys = ch
+            if keys is None:
+                raise SessionFail(f"send_key_text: no QMP qcode for {ch!r}")
+            combo = ([{"type": "qcode", "data": "shift"}] if hold_shift else []) + \
+                    [{"type": "qcode", "data": keys}]
+            if self.qmp("send-key", keys=combo) is None:
+                raise SessionFail("send_key_text: QMP send-key failed "
+                                  "(is the monitor socket up?)")
+            sent += 1
+            # _pump rather than time.sleep: the wait has to DRAIN the serial pty
+            # as well as pace the typing. A guest echoing what it is being typed
+            # fills that pipe, and a full pipe blocks QEMU's emulation -- so a
+            # sleeping harness can stall the very guest it is typing at, and the
+            # symptom is a keyboard that looks like it stopped working after N
+            # characters. The pause also gives a POLLED reader time to notice the
+            # byte: the 8042 holds one, so typing faster than the guest polls
+            # drops everything after the first.
+            self._pump(per_key_delay)
+        return sent
 
     def send(self, line):
         os.write(self.fd, (line + "\n").encode("latin-1"))

@@ -2431,24 +2431,30 @@ old allocator and the new one read the same single block and no workload could t
   eMMC *is* installable onto and one with a SATA or NVMe SSD is not); and a machine that provides
   no 8042 emulation has **no keyboard**, since there is no USB stack.
 
-  **And a machine that DOES emulate 8042 has no keyboard either, at the login prompt.** That
-  is a second and separate fact, and this bullet implied the opposite by naming only the 8042
-  case. `userspace/console_server.c`'s `con_getc` polls **COM1 and nothing else** -- its own
-  comment says so: *"Keyboard (PS/2) input stays with the kernel for now."* The kernel's PS/2
-  path is real and works (`src/kernel/idt.c` vector 33 translates scancodes into
-  `keyboard_buffer`, and `src/kernel/terminal.c` reads it), but that is the **in-kernel**
-  console reader, and `console_server` owns the console from early boot onwards. So on real
-  hardware the machine reaches a login prompt on its own screen and accepts nothing typed on
-  its own keyboard: output goes to VGA, input is only ever read from a serial port a laptop
-  does not have. Observed on an IdeaPad, 2026-09-10.
+  **A machine that does emulate 8042 now has a keyboard at every prompt**, since 2026-09-11
+  (J4). `userspace/console_server.c` reads the controller itself, through the port grant it
+  already held: ports `0x60` and `0x64` are declared by the platform device in
+  `src/kernel/pci.c` alongside COM1 and the VGA registers, so the startup `SYS_IOPORT_GRANT`
+  had opened them all along. **No new capability was delegated for this**, and the check that
+  it was not is that `userspace/init.c` grants `console_server` exactly what it granted before.
+  The kernel stops draining the controller the moment a ring-3 task owns the console hardware
+  (`console_hw_owned()`), which is the same fact that already stops `print()` driving the
+  screen -- the handover now has both halves rather than only the output one. Both sides read
+  one shared table, `include/ps2_scancode.h`, so a password typed either side of the handover
+  produces the same bytes.
 
-  **The mechanism for the fix already exists and is already exercised.** Vector 33 has an
-  `irq_reg[1].active` branch that deliberately leaves the scancode in the controller for a
-  ring-3 driver and fires a notification, and `userspace/devcaptest.c` already registers for
-  `IRQ_KEYBOARD` through `sys_irq_register`. Nothing registers for it in production -- the
-  documented J4 follow-up in `docs/design/console-server.md`. What is unknown per machine is
-  whether that machine's 8042 is there at all, which `PS2_PROBE=1` answers on the wire (see
-  `docs/BUILDING.md`).
+  Gated by `make smoke-keyboard`, which types a whole login on QEMU's emulated 8042 over QMP
+  `send-key` -- **the only gate in the tree that uses the keyboard at all**. That is the
+  reason this survived: every other session test types at COM1, which exercises no part of the
+  keyboard path, so the entire suite passed while the machine could not be typed at. Falsified
+  in all four directions on 2026-09-11 (`CONSOLE_NO_KBD=1`): gate PASS on the fixed build, gate
+  exit 1 under the arm, arm PASS under the arm, arm FAIL against the fixed build.
+
+  What remains true is the first half of this bullet: a machine with **no 8042 at all** still
+  has no keyboard, because there is no USB HID stack. `PS2_PROBE=1` answers which machine you
+  are on, from the screen and with no serial cable (see `docs/BUILDING.md`). On the IdeaPad
+  that prompted this it read `PS2 n=00004 sc=a4 st=14` -- a controller present, IRQ 1 arriving,
+  scancodes real -- which is the case the ring-3 reader fixes rather than the USB one.
   Since 2026-09-07 the SATA half is *identified*: `src/kernel/ahci.c` finds an AHCI controller,
   brings each attached port up and asks the drive to IDENTIFY itself, so the boot log names the
   model and the capacity (`make smoke-ahci-detect`, which boots a q35 machine because QEMU's

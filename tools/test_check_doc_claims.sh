@@ -130,6 +130,26 @@ open("README.md", "a").write("\nIt used to say `" + lit + "`, which was wrong.\n
 PY' \
     clean
 
+# ---- THOUSANDS SEPARATORS, BOTH DIRECTIONS. SECURITY.md writes the larger
+#      figures as "9,732 code lines", and int() rejects that -- so the
+#      comparison strips the comma. Both arms, because a strip that was too
+#      eager would make a WRONG comma'd number compare equal to nothing and pass
+#      silently, which is worse than the crash it replaced.
+arm "7" "a comma'd figure the tree contradicts is caught" \
+    'python3 - <<PY
+import pathlib, re
+budget = int(re.search(r"^core_budget_loc:\s*(\d+)",
+                       pathlib.Path(".github/ring0-classification.yml").read_text(),
+                       re.M).group(1))
+live = "{:,}".format(budget)
+p = pathlib.Path("SECURITY.md"); s = p.read_text()
+assert live in s, "expected the live figure in SECURITY.md"
+p.write_text(s.replace(live, "{:,}".format(budget + 267), 1))
+PY' \
+    caught "ring0_core_loc"
+
+arm "8" "a comma'd figure that matches the tree stays silent" "true" clean
+
 echo
 echo "arms passed: $PASSES   failed: $FAILS"
 [ "$FAILS" -eq 0 ]

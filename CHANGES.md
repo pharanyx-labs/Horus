@@ -15,6 +15,23 @@ in this file.
 
 ### Fixed
 
+- **A keyboard that never answers now says so.** `keyboard_init` sends the keyboard `0xF4`
+  (enable scanning), waits for its `0xFA` acknowledgement, and then `(void)got_ack;` — it asked,
+  was answered, and discarded the reply. A machine with no usable keyboard therefore booted
+  looking exactly like one with a working keyboard, and the first symptom was a login prompt that
+  ignored typing, with nothing anywhere explaining it. Diagnosed from real hardware the hard way:
+  `PS2 n=0 sc=00 st=14` under `PS2_PROBE=1` — a controller present and healthy, IRQ 1 never once
+  fired, on a machine where IRQ 0 was delivering and GRUB's own menu took keystrokes. The kernel
+  had the answer in a local variable the whole time. Reported on failure only; a working keyboard
+  gains nothing from a line saying so.
+- **`SECURITY.md` S87's ring-0 figures, which had drifted twice unnoticed** (9,676 stated against
+  a budget that moved to 9,682 and then 9,727). Corrected, and **declared in
+  `.github/doc-claims.yml`** so the document now follows the ratchet: the chain is tree →
+  `core_budget_loc` (gated by `ring0-budget`) → prose (gated by `doc-claims`). The figure is read
+  from the budget rather than recounted, because the zero-headroom rule makes the budget the
+  measured value and a second count would be two implementations of one quantity.
+
+
 - **Choosing "Install Horus" at the boot menu and getting a login prompt, with nothing said.**
   `machine_needs_install()` returns 0 in five places, and four of them can fire on a boot where
   somebody stood at the machine and selected the install entry — most often because no disk this

@@ -1054,7 +1054,40 @@ static void keyboard_init(void) {
     }
 
     while (inb(0x64) & 1) { inb(0x60); }
-    (void)got_ack;
+
+    /* SAY IT WHEN THE KEYBOARD DOES NOT ANSWER.
+     *
+     * `(void)got_ack;` until 2026-09-11: the kernel asked the keyboard to start
+     * scanning, waited for its 0xFA, and DISCARDED the answer. So a machine
+     * whose keyboard never replied booted looking exactly like one whose
+     * keyboard was fine, and the first symptom was a login prompt that would not
+     * accept typing -- with nothing anywhere saying why.
+     *
+     * That cost a real diagnosis. A laptop reported `PS2 n=0 sc=00 st=14`: a
+     * controller present and healthy (SYS set, no parity or timeout error, not
+     * the 0xff of a floating bus) with IRQ 1 never once fired. IRQ 0 was
+     * delivering on the same machine -- the scheduler ran -- and both lines are
+     * unmasked by the same ioapic_set_irq path, so delivery was not the
+     * question. The question was whether anything was attached that generates
+     * scancodes at all, and this function already knew the answer and dropped it.
+     *
+     * THE COMMON CAUSE IS A USB KEYBOARD. Firmware presents an SMM-emulated 8042
+     * to BIOS INT 16h, which is why GRUB's menu takes keystrokes on exactly the
+     * machines where this kernel's polling gets nothing: the emulation serves
+     * the firmware's own path, and an OS that reprograms the controller for
+     * itself is commonly taken as an OS that has its own USB driver -- which
+     * this kernel has not (docs/LIMITATIONS.md 4).
+     *
+     * Reported only on FAILURE. A machine whose keyboard answered gains nothing
+     * from a line saying so, and the boot log is not improved by one more [ OK ];
+     * a machine whose keyboard did not answer currently gets NOTHING, which is
+     * the defect. */
+    if (!got_ack) {
+        print("  [WARN] PS/2 keyboard did not acknowledge enable-scanning (0xF4). The 8042 is\n");
+        print("         present but nothing is answering it -- commonly a USB keyboard served by\n");
+        print("         firmware legacy emulation, which this kernel cannot read (no USB stack).\n");
+        print("         Typing at the console will not work; serial input still does.\n");
+    }
 }
 
 static void serial_init(void) {

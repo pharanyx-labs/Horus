@@ -2500,6 +2500,20 @@ old allocator and the new one read the same single block and no workload could t
   eMMC *is* installable onto and one with a SATA or NVMe SSD is not); and a machine that provides
   no 8042 emulation has **no keyboard**, since there is no USB stack.
 
+  **A machine whose keyboard does not answer now says so.** `keyboard_init` sends `0xF4`
+  (enable scanning), waits for the keyboard's `0xFA`, and until 2026-09-11 discarded the
+  answer — so a machine with no usable keyboard booted looking exactly like one with a working
+  one, and the first symptom was a login prompt that would not take typing. A laptop reported
+  `PS2 n=0 sc=00 st=14` under `PS2_PROBE=1`: a controller present and healthy (SYS set, no
+  parity or timeout error, not the `0xff` of a floating bus) with IRQ 1 never once fired, on a
+  machine where IRQ 0 was delivering and the scheduler was running. **GRUB's menu took
+  keystrokes on that same machine**, which is the signature rather than a contradiction: GRUB
+  uses BIOS `INT 16h` and reaches the firmware's SMM-emulated 8042, where this kernel polls
+  `0x60`/`0x64` directly and an OS that reprograms the controller for itself is commonly taken
+  by that emulation as one with its own USB driver. There is no USB stack here, so there is no
+  fix available short of one — but the boot now reports the fact instead of leaving it to be
+  inferred from a prompt that ignores the keys.
+
   **A machine that does emulate 8042 now has a keyboard at every prompt**, since 2026-09-11
   (J4). `userspace/console_server.c` reads the controller itself, through the port grant it
   already held: ports `0x60` and `0x64` are declared by the platform device in

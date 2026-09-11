@@ -113,6 +113,15 @@ counts:
         pattern: 'intended set is \d+ gating and (\d+) exempted'
 
 
+  - id: ring0_core_loc
+    describe: "code lines in the ring-0 core, from the classification ratchet"
+    derive: ring0_core_loc
+    occurrences:
+      - file: SECURITY.md
+        pattern: '`core` \((\d[\d,]*) code lines, \d+ files\)'
+      - file: SECURITY.md
+        pattern: '(\d[\d,]*) code lines is a lot'
+
   - id: smoke_targets
     describe: "smoke-* targets in the Makefile"
     derive: smoke_targets

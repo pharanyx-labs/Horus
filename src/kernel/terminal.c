@@ -530,8 +530,18 @@ static inline void cell_put(int y, int x, uint16_t v) {
  * note above fb_blit_cell). `cell_put` is the mode-agnostic accessor and paints
  * in both.
  *
- * WHAT IT COSTS, because an instrument is not passive. Two stores in the IRQ 1
- * handler, and ~24 cells painted per second from the timer tick. It takes NO
+ * WHAT IT COSTS, because an instrument is not passive. One store in the IRQ 1
+ * handler, and ~24 cells painted per second from the timer tick.
+ *
+ * IT MUST NOT READ 0x60 ITSELF, and that is the whole of why the scancode is
+ * sampled where it is. inb(0x60) POPS the 8042's one-byte output buffer: a read
+ * placed upstream of the console reader does not observe the byte, it TAKES it,
+ * and the reader then finds OBF clear and gets nothing. The probe did exactly
+ * that until 2026-09-11, under a comment claiming it "never steals a byte from
+ * either consumer" -- measured afterwards, the consumer branch saw a byte 0
+ * times in 8 IRQs with the upstream read and 8 in 8 without it. So only the IRQ
+ * COUNT is taken in the handler's common path, and g_ps2_last_sc is assigned by
+ * the consumer from the byte it read for itself. It takes NO
  * console lock (it is called from interrupt context, where the lock is a
  * deadlock) and writes NO serial -- COM1 from interrupt context is what killed
  * 8 of 20 boots when KSTACK0_PARK_TRACE did it. In framebuffer mode it can tear
@@ -542,6 +552,12 @@ static inline void cell_put(int y, int x, uint16_t v) {
  *   n > 0                -> the controller exists and IRQ 1 reaches us, so the
  *                           bytes are arriving and nothing is reading them:
  *                           the ring-3 keyboard driver (J4) is the fix.
+ *   sc                   -> the last scancode the KERNEL's console reader took.
+ *                           It stops advancing once a ring-3 driver owns the
+ *                           line, because the byte is then that driver's and
+ *                           sampling it here would consume it. `n` is the live
+ *                           half of the readout in that case; a frozen `sc`
+ *                           beside a rising `n` is the handover, not a fault.
  *   n == 0, st == ff     -> no 8042 responding at all. A USB-only machine; the
  *                           fix is a USB HID stack, which this kernel has not.
  *   n == 0, st != ff     -> a controller is there but IRQ 1 is not arriving --

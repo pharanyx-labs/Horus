@@ -15,6 +15,22 @@ in this file.
 
 ### Fixed
 
+- **Backspace did not erase on the screen, only in the line buffer.** `console_server`'s
+  `fb_putc` and `vga_putc` had no case for `0x08`, so a backspace fell through to the glyph
+  branch and was **drawn** — `con_getline`'s `"\b \b"` erase painted three cells of rubbish and
+  advanced three columns instead of rubbing one character out. What the guest accepted was always
+  correct; only the display disagreed, which is worst in a **masked password field**, where the
+  contents are hidden and so the disagreement cannot be noticed.
+  **Every gate missed it for the same reason the UART defect above was missed**: they all type at
+  COM1, and a terminal on the far end of a UART interprets `0x08` itself, so the erase looked
+  right on all of them. The kernel's `emit_char` has handled `\b` since it was written, so
+  backspace worked during early boot and broke at the console handover — a ring-3 console failing
+  to inherit a case the kernel path had, for the second time in two days.
+  Gated by `make smoke-console-backspace`, which asserts a **round trip** on pixels over QMP:
+  type twelve characters, erase twelve, require the screen back where it started. Falsified in
+  all four directions (fixed erased 333 against a 216-byte blink, arm
+  `CONSOLE_BACKSPACE_NO_ERASE=1` 1147, gate red under the arm, arm red against fixed).
+
 - **A machine with no serial port could not be typed at, and the keyboard fix that shipped the
   day before only worked where a UART was present.** `con_getc` asked the COM1 line-status
   register whether a byte was waiting without first asking whether there is a 16550 at `0x3F8`

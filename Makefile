@@ -162,6 +162,7 @@ DEFECT_FLAGS = \
 	FB_MAP_SELFTEST FB_MAP_LOW_HALF FB_CONSOLE_SELFTEST \
 	FB_CONSOLE_MIRRORED FB_INFO_ANY_DEVICE CONSOLE_FB_ABSENT CONSOLE_NO_KBD \
 	SERIAL_PRESENCE_UNCHECKED \
+	CONSOLE_BACKSPACE_NO_ERASE \
 	CONSOLE_KBD_SPLIT_ESC \
 	FB_GRID_FIXED_ROWS
 
@@ -4013,6 +4014,16 @@ endif
 ifeq ($(SERIAL_PRESENCE_UNCHECKED),1)
 USERSPACE_CFLAGS += -DSERIAL_PRESENCE_UNCHECKED
 endif
+# CONSOLE_BACKSPACE_NO_ERASE=1 restores console_server's screen output as it
+# stood before 2026-09-12: fb_putc and vga_putc had no case for 0x08, so a
+# backspace fell through to the glyph branch and was DRAWN. con_getline's
+# "\b \b" erase then painted three cells of rubbish and advanced three columns
+# instead of rubbing one character out -- the line buffer stayed correct and only
+# the screen lied. Invisible to every gate that types at COM1, because a terminal
+# on the far end of a UART interprets 0x08 itself. Userspace-only.
+ifeq ($(CONSOLE_BACKSPACE_NO_ERASE),1)
+USERSPACE_CFLAGS += -DCONSOLE_BACKSPACE_NO_ERASE
+endif
 ifeq ($(READDIR_END_IS_NOENT),1)
 USERSPACE_CFLAGS += -DREADDIR_END_IS_NOENT
 endif
@@ -7690,6 +7701,31 @@ smoke-keyboard:
 # with an IDLE CONTROL inside the run -- the blinking cursor moves 216 bytes of
 # an 864,015-byte screendump all by itself, and the first version of this
 # experiment scored that blink as a working keyboard.
+# BACKSPACE MUST ERASE ON THE SCREEN, not merely shorten the line buffer.
+# console_server's fb_putc/vga_putc had no case for 0x08, so the byte fell into
+# the glyph branch and was DRAWN: con_getline's "\b \b" painted three cells of
+# rubbish and advanced three columns. Invisible to every gate that types at COM1,
+# because a terminal on the far end of a UART interprets 0x08 itself -- so this
+# is gated on PIXELS. The assertion is a ROUND TRIP: type six characters, erase
+# six, and require the screen back where it started.
+.PHONY: smoke-console-backspace
+smoke-console-backspace:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory horus.iso
+	@python3 tools/backspace_session.py --iso horus.iso \
+		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
+		--shots /tmp/horus-backspace
+
+# The falsifying arm: 0x08 drawn as a glyph, as it was before 2026-09-12.
+.PHONY: smoke-console-backspace-control
+smoke-console-backspace-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CONSOLE_BACKSPACE_NO_ERASE=1
+	@$(MAKE) --no-print-directory CONSOLE_BACKSPACE_NO_ERASE=1 horus.iso
+	@python3 tools/backspace_session.py --iso horus.iso --expect-no-erase \
+		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
+		--shots /tmp/horus-backspace-control
+
 .PHONY: smoke-keyboard-noserial
 smoke-keyboard-noserial:
 	@$(MAKE) --no-print-directory clean

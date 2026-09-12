@@ -85,6 +85,7 @@ control_arms:
   smoke-console-handover-control: smoke-console-handover
   smoke-keyboard-control: smoke-keyboard
   smoke-keyboard-noserial-control: smoke-keyboard-noserial
+  smoke-console-backspace-control: smoke-console-backspace
   smoke-keyboard-installer-control: smoke-keyboard-installer
   smoke-replace-live-control: smoke-replace-live
   smoke-replace-oneshot-control: smoke-replace-oneshot
@@ -230,6 +231,7 @@ gates:
   - smoke-console-handover
   - smoke-keyboard
   - smoke-keyboard-noserial
+  - smoke-console-backspace
   - smoke-keyboard-installer
   - smoke-keyboard-install
   - smoke-replace-live

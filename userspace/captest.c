@@ -1367,6 +1367,93 @@ void _start(void) {
               "userlist-wrote-through-on-refusal");
     }
 
+    /* ---- 17. A CAPABILITY A TASK HOLDS COSTS IT BUDGET ----------------
+     *
+     * MAX_CAPS_PER_TASK is a stated bound: docs/SYSCALLS.md gives it as the
+     * ceiling on what one task may hold, and SYS_GET_TASK_INFO reports the
+     * task's own count back to it. Until 2026-09-12 two ways of acquiring a
+     * capability did not go through the accounted path at all -- SYS_PIPE
+     * installed two pipe-end capabilities with a raw cspace store, and every
+     * SYS_SPAWN / SYS_FORK installed a CAP_TCB in the spawner's cspace the same
+     * way. Neither incremented the count, so the ceiling bounded only the
+     * capabilities a task minted, not the ones it held.
+     *
+     * The second direction is the worse one. cap_consume_slot DOES decrement, so
+     * an uncounted capability could be handed BACK for credit: spawn children to
+     * accumulate CAP_TCBs the budget never saw, consume those slots, and the
+     * counter falls while the cspace fills. The bound is then not merely loose,
+     * it is reversible.
+     *
+     * THIS PROBE IS LAST, and has to be: its second half deliberately fills this
+     * task's cspace to the ceiling, after which nothing that needs a capability
+     * can succeed. Everything above it has already run.
+     *
+     * Under PIPE_CAP_UNACCOUNTED both halves fail, which is the point -- they
+     * fail as `CAPTEST: FAIL`, so the smoke-captest gate itself reddens under
+     * the flag rather than needing a gate of its own. */
+    out("CAPTEST: cap-accounting\n");
+    {
+        int self = sys_getpid();
+        struct task_info ti;
+        uint32_t before = 0, after = 0, freed = 0;
+
+        check(sys_get_task_info(self, &ti) == 0, "task-info-on-self-refused");
+        before = ti.caps_in_use;
+
+        int slots = sys_pipe();
+        check(slots >= 0, "sys-pipe-refused-before-the-ceiling");
+        uint32_t rslot = ((uint32_t)slots >> 16) & 0xFFFFu;
+        uint32_t wslot = (uint32_t)slots & 0xFFFFu;
+
+        /* THE ACCOUNTING HALF. Two capabilities were installed, so the count
+         * this task reads about itself must have risen by exactly two. Under the
+         * defect it has not moved at all. */
+        check(sys_get_task_info(self, &ti) == 0, "task-info-after-pipe-refused");
+        after = ti.caps_in_use;
+        check(after == before + 2, "pipe-ends-cost-no-capability-budget");
+
+        /* And closing them returns the budget, so the count is a balance rather
+         * than a high-water mark. The old close path nulled `type` alone and
+         * decremented nothing, which was self-consistent with not counting; what
+         * it could not survive was one direction being fixed without the other. */
+        check(sys_pipe_close(rslot) == 0, "pipe-close-read-end-refused");
+        check(sys_pipe_close(wslot) == 0, "pipe-close-write-end-refused");
+        check(sys_get_task_info(self, &ti) == 0, "task-info-after-close-refused");
+        freed = ti.caps_in_use;
+        check(freed == before, "closing-a-pipe-did-not-return-its-budget");
+
+        /* THE CEILING HALF. Mint from a capability this task holds until the
+         * kernel refuses. The loop does NOT name MAX_CAPS_PER_TASK, deliberately:
+         * that constant is kernel-private (src/include/kernel.h), and copying it
+         * into a ring-3 probe would be a second definition no checker can see --
+         * stale the first time the ceiling moves. What the probe asserts instead
+         * is the behaviour the constant exists to produce.
+         *
+         * SCAN_LO..SCAN_HI is wide enough that running out of SLOTS is
+         * distinguishable from hitting the CEILING, which is the whole
+         * discriminator: if the refusal came because the range was exhausted,
+         * `minted` would equal the range, and the refusal below would prove
+         * nothing about a budget. Slots are taken from 60 up, clear of every
+         * identity and service slot this task needs to keep working (0, 3, 4, 5,
+         * and the stdio pair) -- this probe is last precisely because it may
+         * clobber the scratch slots above that. */
+        uint32_t minted = 0, tried = 0;
+        for (uint32_t s = 60; s < CAP_ENUM_MAX_SLOT; s++) {
+            tried++;
+            if (sys_cap_mint((int)s, SLOT_RETYPED_EP, CAP_RIGHT_READ) != 0) break;
+            minted++;
+        }
+
+        /* The loop stopped on a refusal, not on the end of the range. */
+        check(minted > 0, "no-capability-was-minted-so-the-ceiling-is-untested");
+        check(minted < tried, "minting-exhausted-the-slot-range-not-the-budget");
+
+        /* A task at its ceiling may not acquire two more capabilities by asking
+         * for a pipe. Under the defect the raw store does not consult the budget,
+         * so this succeeds and the stated ceiling is not a ceiling. */
+        check(sys_pipe() < 0, "pipe-past-the-capability-ceiling");
+    }
+
     /* ---- done -------------------------------------------------------- */
 
     /* One write, for `fail`'s reason above. The gate requires only the

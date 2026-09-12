@@ -15,6 +15,31 @@ in this file.
 
 ### Security
 
+- **Five writes to a capability slot did not take the lock the revocation sweep depends on.**
+  A capability is six fields and a C assignment writes them one at a time.
+  `rust_cap_revoke_global` reads every live cspace and decides from what it finds which
+  capabilities belong to a revoked lineage and which kernel objects no capability names any more —
+  and the kernel's own comment at the `kobj_gc` call inside `cap_revoke` says it relies on
+  `cap_lock` making those cspaces quiescent. That is a property of the set of writers that take
+  the lock, not of the lock, and `SYS_PIPE`, `SYS_PIPE_CLOSE`, the teardown backstop, `do_spawn`'s
+  stdio wiring and the `CAP_TCB` every spawn and fork installs all wrote slots without it. The
+  class had already been diagnosed in this tree: `cap_install_object` exists because
+  `SYS_CONNECT_FS_SERVER` had the same defect, and its header names it — the repair was made at
+  that one site and never swept to the five siblings. **The accounting half is a bypass of a
+  stated bound**: a raw-stored slot is occupied but uncounted, so `MAX_CAPS_PER_TASK` bounded only
+  what a task minted, and because `cap_consume_slot` does decrement, uncounted capabilities could
+  be handed back for credit — a bound that is reversible, not merely loose. All five now go
+  through `cap_install_object_first_free` (scan and store in one lock acquisition),
+  `cap_consume_slot_of` (returns what the slot held, so only the CPU that emptied it releases the
+  pipe end) and `cap_install_child_pipe_end` (type, destination slot and rights all bounded, and
+  a revoked source refused rather than copied). `SECURITY.md` **S94**; witness `make
+  smoke-captest`, falsified by `PIPE_CAP_UNACCOUNTED=1`. The locking half is gated statically by
+  `tools/check_cap_writes.py` against `.github/cap-write-sites.yml`, because a runtime arm for a
+  race inside a twelve-field store would be probabilistic at an unmeasured rate. Two sites stay
+  open and are tracked rather than implied: `create_task` (**HORUS-20260911-03b**,
+  `docs/LIMITATIONS.md` 1.13) and the `badge = 0` on inherited stdio ends
+  (**HORUS-20260911-04**, 1.14).
+
 - **A console client could read the password typed at the next `sudo` prompt.** Every task the
   shell spawns inherits a send-only console endpoint capability — that is how `ls` gets a stdout —
   and until now that same capability bought `CON_OP_GETPASS`. `console_server` served input reads

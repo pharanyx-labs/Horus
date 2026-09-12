@@ -842,6 +842,69 @@ smoke-rollback` restores an entire earlier disk image between boots and requires
 
 ---
 
+### 1.13 `create_task` builds a cspace unlocked, and the task is already published **[HORUS-20260911-03b]**
+
+`rust_cap_revoke_global` reads every live cspace and decides from what it finds which capabilities
+belong to a revoked lineage and which kernel objects no capability names any more. It is documented
+to rely on `cap_lock` making every cspace quiescent — and that is a property of the set of writers
+that take the lock, not of the lock. Five writers that did not were closed on 2026-09-12
+(`SECURITY.md` **S94**); this is the sixth, and it is left open deliberately.
+
+`create_task` zeroes all `CNODE_SIZE` slots of a new task's cspace and then installs its primordial
+capabilities — TCB, frame, reply endpoint, console, encrypted storage — with no lock held. The
+comfortable reading is that the task is private until it is published, and **that reading is false**:
+`tasks[id].state = 1` is set some seventy lines earlier, and the sweep enumerates exactly
+`state != 0 && tasks[t].cspace != NULL`. So a sweep on another CPU can observe this cspace mid-build,
+in two distinguishable windows:
+
+- **Before the zeroing loop**, for a kernel-reserve task where the cspace pointer is inherited from
+  the slot's previous occupant, it holds a **dead task's capabilities**. `kobj_gc` then counts them as
+  live references and declines to reclaim objects it should — a missed reclaim, which is the safe
+  direction.
+- **After the zeroing and before the installs**, it reads empty. `kobj_gc` may then conclude the
+  reply endpoint this function is about to install a capability to is unreachable and destroy it, so
+  `create_task` installs a capability naming a freed object. That is the unsafe direction, and it is
+  the one that matters.
+
+**Why it is not fixed in the same commit.** The region that would have to be covered calls
+`kobj_alloc`, which takes the untyped lock. Covering it means holding `cap_lock` across that, which
+is consistent with the existing `cap_lock` -> `untyped_lock` order but is still a lock-ordering
+change in the function that runs for every task on every boot — a deadlock there is a kernel that
+does not boot, and it wants its own commit, its own witness and its own arm rather than riding
+along with five call-site rewrites.
+
+**What bounds it today.** Reaching it needs a revoke on one CPU concurrent with a task creation on
+another, so `SMP=0` builds are unaffected, and the dangerous window is the ~60 lines between the
+zeroing loop and the endpoint install. Nothing in the tree is known to have hit it; that is a
+statement about observation, not about safety. It is declared `status: unlocked` with this finding ID
+in `.github/cap-write-sites.yml`, so `tools/check_cap_writes.py` fails the build if the declaration
+is ever dropped without the site being fixed.
+
+### 1.14 An inherited stdio pipe end is a derivation root, so revoking the parent does not reach it **[HORUS-20260911-04]**
+
+`cap_clone_cspace` gets this right and says so — `SECURITY.md` **S41**: every capability a forked
+child receives is *derived*, carrying its own fresh serial and a `badge` naming the parent
+capability's serial, which is the edge `revoke_subtree` walks. `do_spawn`'s stdio wiring does the
+opposite for the one capability it propagates: `cap_install_child_pipe_end` gives the child's end a
+fresh serial and **`badge = 0`**. `revoke_subtree` skips `badge == 0` outright, so the child's end is
+outside every subtree and a revoke of the spawner's end does not reach it. No race is needed; it is
+deterministic.
+
+The consequence is bounded by who revokes a pipe end, and **nothing in the tree does**, which is why
+this is a latent contradiction of S3 rather than a live hole. It is still a contradiction: S3 says a
+revoke reaches the whole derivation subtree, and this capability is outside the subtree it belongs to.
+
+**Why the one-field fix cannot land alone.** Setting `badge` to the source's serial makes pipe
+capabilities reachable by `revoke_subtree` for the first time — and `revoke_subtree` nulls slots
+without releasing what the capability owned. A pipe end is two pieces of state, the capability and a
+direction refcount, and `pipe.c`'s own header claims `reader_ends`/`writer_ends` "count the live end
+caps across all cspaces". A revoke that nulls the cap and leaves the count would make that claim
+false and leave the peer waiting on an EOF that can never arrive. So the fix needs end-refcount
+reconciliation beside it, under the same `cap_lock` the sweep already holds — the point `kobj_gc` is
+called from, and the same reachability recount `kobj_gc` performs for endpoints, notifications and
+frames, which pipes are not yet part of.
+
+
 ## 2. Correctness limitations
 
 ### 2.0 ~~Spinlock interrupt state is global, and the bug is load-bearing~~ (**FIXED
@@ -2630,9 +2693,9 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand: **[C-6]**
 
-`.github/workflows/ci.yml` defines **117** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more: **119** across the three, producing **122** status-check contexts. Ruleset `21815299`
-requires all **119** today, `smoke-kdiag` (**S81**) among them since 2026-09-03 -- one
+`.github/workflows/ci.yml` defines **118** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more: **120** across the three, producing **123** status-check contexts. Ruleset `21815299`
+requires all **120** today, `smoke-kdiag` (**S81**) among them since 2026-09-03 -- one
 `--sync-ruleset` run after the pull request that added the job, which is the lag this finding is
 about rather than an exception to it. Its predecessor `19007209` required **22** of them before
 2026-08-16, and until 2026-08-15 exactly **zero** of those 22 were security gates: capability
@@ -2678,7 +2741,7 @@ the right name with the wrong verdict. Step-level `continue-on-error` is untouch
 allowed; it lets one step be advisory while the job's own status still reports the truth, which
 is how the `security` job keeps its scanners advisory without becoming unfailable itself.
 
-That intended set is **119 required contexts and 3 reasoned exemptions**: `fuzz` (a 30-second
+That intended set is **120 required contexts and 3 reasoned exemptions**: `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` was a fifth until **[G-9]** closed on 2026-08-21; it was promoted on

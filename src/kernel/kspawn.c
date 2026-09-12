@@ -278,30 +278,34 @@ static void wire_child_stdio(int child, int caller, uint32_t spec) {
     if (spec == 0) return;
 
     if (caller <= 0 || caller >= g_max_tasks) return;
-    capability_t *pcs = tasks[caller].cspace;     /* spawner */
-    capability_t *ccs = tasks[child].cspace;      /* child   */
-    if (!pcs || !ccs) return;
+    /* Both cspaces are re-checked inside cap_install_child_pipe_end, under the
+     * lock, which is where the check has to be: a pointer tested here and used
+     * there is a pointer tested outside the lock that makes it stable. */
+    if (!tasks[caller].cspace || !tasks[child].cspace) return;
     uint32_t psz = tasks[caller].cspace_size ? tasks[caller].cspace_size : CNODE_SIZE;
 
     uint32_t in_slot  = spec & 0xFFFFu;           /* read end -> child stdin  */
     uint32_t out_slot = (spec >> 16) & 0xFFFFu;   /* write end -> child stdout */
 
+    /* THE COPY GOES THROUGH THE LOCKED PATH, and the end is ref'd only if it
+     * succeeded. The old code tested `pcs[slot].type == CAP_PIPE` and then
+     * struct-copied the capability with no lock held: a revocation sweep landing
+     * between the test and the copy handed the child an end that had just been
+     * destroyed, and a sweep landing DURING the copy could read the child's slot
+     * with some fields written and some not. cap_install_child_pipe_end does the
+     * lookup and the install under one cap_lock, with cap_lookup's validity rules
+     * applied to the source, so a revoked or stale end is refused instead. */
+    uint64_t obj = 0;
     if (in_slot && in_slot < psz &&
-        pcs[in_slot].type == CAP_PIPE && (pcs[in_slot].rights & CAP_RIGHT_READ)) {
-        ccs[STDIN_PIPE_SLOT] = pcs[in_slot];
-        ccs[STDIN_PIPE_SLOT].serial     = cap_alloc_fresh_serial();
-        ccs[STDIN_PIPE_SLOT].badge      = 0;
-        ccs[STDIN_PIPE_SLOT].generation = rust_lineage_current(ccs[STDIN_PIPE_SLOT].serial); /* finding 3.3 */
-        pipe_end_ref((int)pcs[in_slot].object, 0);   /* +1 read end */
+        cap_install_child_pipe_end(child, STDIN_PIPE_SLOT, caller, in_slot,
+                                   CAP_RIGHT_READ, &obj)) {
+        pipe_end_ref((int)obj, 0);                   /* +1 read end */
         tasks[child].stdio_flags |= STDIO_STDIN_PIPE;
     }
     if (out_slot && out_slot < psz &&
-        pcs[out_slot].type == CAP_PIPE && (pcs[out_slot].rights & CAP_RIGHT_WRITE)) {
-        ccs[STDOUT_PIPE_SLOT] = pcs[out_slot];
-        ccs[STDOUT_PIPE_SLOT].serial     = cap_alloc_fresh_serial();
-        ccs[STDOUT_PIPE_SLOT].badge      = 0;
-        ccs[STDOUT_PIPE_SLOT].generation = rust_lineage_current(ccs[STDOUT_PIPE_SLOT].serial); /* finding 3.3 */
-        pipe_end_ref((int)pcs[out_slot].object, 1);  /* +1 write end */
+        cap_install_child_pipe_end(child, STDOUT_PIPE_SLOT, caller, out_slot,
+                                   CAP_RIGHT_WRITE, &obj)) {
+        pipe_end_ref((int)obj, 1);                   /* +1 write end */
         tasks[child].stdio_flags |= STDIO_STDOUT_PIPE;
     }
 }
@@ -489,19 +493,24 @@ static int do_spawn_inner(int caller, uint32_t stdio_spec, uint32_t untyped_inde
  * serial so cap_lookup accepts it. No-op for the kernel/idle spawner. */
 static void grant_child_tcb_cap(int spawner, int pid) {
     if (spawner <= 0 || spawner >= g_max_tasks || pid <= 0 || pid >= g_max_tasks) return;
-    capability_t *cs = tasks[spawner].cspace;
-    if (!cs) return;
-    for (uint32_t s = 16; s < tasks[spawner].cspace_size; s++) {
-        if (cs[s].type == CAP_NULL) {
-            cs[s].type       = CAP_TCB;
-            cs[s].rights     = CAP_RIGHT_READ | CAP_RIGHT_WRITE;
-            cs[s].object     = (uint64_t)pid;
-            cs[s].badge      = 0;
-            cs[s].serial     = cap_alloc_fresh_serial();
-            cs[s].generation = rust_lineage_current(cs[s].serial); /* finding 3.3 */
-            break;
-        }
-    }
+    /* cap_install_object_first_free installs into the CURRENT task's cspace, and
+     * `spawner` is the current task at both call sites: h_fork reads it from
+     * get_current_task(), and do_spawn_charged restores it with
+     * set_current_task(caller_task) before calling here, precisely because
+     * do_spawn_inner leaves the child current. Checked rather than assumed --
+     * if that ever stops holding, the child's supervisor does not get a TCB and
+     * SYS_WAIT refuses, which is the fail-closed direction; silently installing
+     * the TCB into whichever cspace happened to be current is not. */
+    if (spawner != get_current_task()) return;
+    /* Unlocked and unaccounted until 2026-09-12: scanned for a free slot and
+     * filled six fields by hand. The scan raced a competing scan of the same
+     * cspace, the store raced rust_cap_revoke_global's sweep, and the capability
+     * cost the spawner nothing against MAX_CAPS_PER_TASK -- so a task could
+     * accumulate one uncounted CAP_TCB per spawn, and then be CREDITED for each
+     * one by cap_consume_slot, which does decrement. That is the stated ceiling
+     * made void in both directions. */
+    (void)cap_install_object_first_free(16, CAP_TCB, (uint64_t)pid,
+                                        CAP_RIGHT_READ | CAP_RIGHT_WRITE, 0, NULL);
 }
 
 /* do_spawn must run in the kernel address space: create_user_pagedir and the

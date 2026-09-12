@@ -133,16 +133,37 @@ int pipe_write(int idx, const uint8_t *src, uint32_t len) {
  * the peer sees EOF/EPIPE and the pipe is freed once both directions reach 0. */
 void pipe_close_task_ends(int task_id) {
     if (task_id <= 0 || task_id >= g_max_tasks) return;
-    capability_t *cs = tasks[task_id].cspace;
-    if (!cs) return;
     uint32_t sz = tasks[task_id].cspace_size ? tasks[task_id].cspace_size : CNODE_SIZE;
-    for (uint32_t s = 0; s < sz; s++) {
-        if (cs[s].type == CAP_PIPE) {
-            int idx       = (int)cs[s].object;
-            int is_writer = (cs[s].rights & CAP_RIGHT_WRITE) != 0;
-            cs[s].type = CAP_NULL;
-            pipe_end_unref(idx, is_writer);
+    if (!tasks[task_id].cspace) return;
+
+    /* ONE SLOT PER PASS, re-scanning from the start each time, rather than one
+     * walk that nulls and unrefs as it goes. The walk has to read the cspace and
+     * the null has to be under cap_lock (a teardown races a revocation sweep on
+     * another CPU like any other cap-write), but pipe_end_unref takes pipe_lock --
+     * so doing both inside one locked walk would establish cap_lock -> pipe_lock
+     * while holding it across an unbounded number of ends. Releasing cap_lock
+     * between the null and the unref keeps the two locks strictly sequential.
+     *
+     * The cost is O(slots^2) on a cspace that is all pipe ends: 256 slots, so at
+     * most ~32k trivial comparisons, once, on a task that is already dead. The
+     * re-scan is also what makes it correct to drop the lock: the slot we just
+     * emptied can never be found again, so the loop cannot double-unref an end
+     * even if another CPU is closing the same cspace. */
+    for (uint32_t pass = 0; pass < sz; pass++) {
+        capability_t prev;
+        uint32_t found = sz;
+        spin_lock(&cap_lock);
+        capability_t *cs = tasks[task_id].cspace;
+        if (cs) {
+            for (uint32_t s = 0; s < sz; s++) {
+                if (cs[s].type == CAP_PIPE) { found = s; break; }
+            }
         }
+        spin_unlock(&cap_lock);
+        if (found >= sz) return;                 /* no ends left to release */
+        if (!cap_consume_slot_of(task_id, found, &prev)) return;
+        if (prev.type != CAP_PIPE) continue;      /* another CPU got there first */
+        pipe_end_unref((int)prev.object, (prev.rights & CAP_RIGHT_WRITE) != 0);
     }
 }
 
@@ -152,32 +173,79 @@ void pipe_close_task_ends(int task_id) {
  * cspace at the first two free slots >= 16. Returns (read_slot<<16)|write_slot. */
 void h_pipe(struct interrupt_frame64 *r) {
     int cur = get_current_task();
-    capability_t *cs = tasks[cur].cspace;
-    uint32_t sz = tasks[cur].cspace_size ? tasks[cur].cspace_size : CNODE_SIZE;
-    if (!cs) { r->rax = (uint64_t)(uint32_t)SYS_ERR_PERM; return; }
-
-    int rslot = -1, wslot = -1;
-    for (uint32_t s = 16; s < sz; s++) {
-        if (cs[s].type == CAP_NULL) {
-            if (rslot < 0) rslot = (int)s;
-            else { wslot = (int)s; break; }
-        }
-    }
-    if (rslot < 0 || wslot < 0) { r->rax = (uint64_t)(uint32_t)SYS_ERR_NOMEM; return; }
+    if (!tasks[cur].cspace) { r->rax = (uint64_t)(uint32_t)SYS_ERR_PERM; return; }
 
     int idx = pipe_alloc();
     if (idx < 0) { r->rax = (uint64_t)(uint32_t)SYS_ERR_NOMEM; return; }
 
-    cs[rslot].type = CAP_PIPE; cs[rslot].rights = CAP_RIGHT_READ;
-    cs[rslot].object = (uint64_t)(uint32_t)idx; cs[rslot].badge = 0;
-    cs[rslot].serial = cap_alloc_fresh_serial(); cs[rslot].generation = rust_lineage_current(cs[rslot].serial); /* finding 3.3 */
-    cs[wslot].type = CAP_PIPE; cs[wslot].rights = CAP_RIGHT_WRITE;
-    cs[wslot].object = (uint64_t)(uint32_t)idx; cs[wslot].badge = 0;
-    cs[wslot].serial = cap_alloc_fresh_serial(); cs[wslot].generation = rust_lineage_current(cs[wslot].serial); /* finding 3.3 */
+    /* THE TWO ENDS GO IN THROUGH THE LOCKED, ACCOUNTED CAP-WRITE PATH.
+     *
+     * Until 2026-09-12 this scanned its own cspace for two free slots and then
+     * filled twelve fields by hand with no lock and no accounting. Three defects,
+     * all of them in cap_install_object_first_free's header: the scan and the
+     * store were not atomic against each other, the store was not atomic against
+     * rust_cap_revoke_global's sweep (which is documented to rely on cap_lock
+     * making every cspace quiescent), and a pipe end cost a task nothing against
+     * MAX_CAPS_PER_TASK -- so SYS_PIPE was a way to hold capabilities the stated
+     * ceiling did not bound, and SYS_PIPE_CLOSE a way to be credited for them.
+     *
+     * `pipe_end_ref` is called only after BOTH installs succeed. The old code
+     * could not fail between them so it did not have to think about it; this one
+     * can (the ceiling), and a ref taken for a capability that was never
+     * installed is an end no holder can ever release. */
+    uint32_t rslot = 0, wslot = 0;
+#ifdef PIPE_CAP_UNACCOUNTED
+    /* CONTROL ARM: the pre-2026-09-12 raw store. Same two slots, same fields, no
+     * cap_lock and no caps_in_use -- so the ceiling does not bind and SYS_PIPE
+     * succeeds on a task that already holds MAX_CAPS_PER_TASK capabilities. */
+    {
+        capability_t *cs = tasks[cur].cspace;
+        uint32_t sz = tasks[cur].cspace_size ? tasks[cur].cspace_size : CNODE_SIZE;
+        int rs = -1, ws = -1;
+        for (uint32_t s = 16; s < sz; s++) {
+            if (cs[s].type == CAP_NULL) {
+                if (rs < 0) rs = (int)s;
+                else { ws = (int)s; break; }
+            }
+        }
+        if (rs < 0 || ws < 0) {
+            pipe_end_unref(idx, 0);
+            r->rax = (uint64_t)(uint32_t)SYS_ERR_NOMEM;
+            return;
+        }
+        cs[rs].type = CAP_PIPE; cs[rs].rights = CAP_RIGHT_READ;
+        cs[rs].object = (uint64_t)(uint32_t)idx; cs[rs].badge = 0;
+        cs[rs].serial = cap_alloc_fresh_serial();
+        cs[rs].generation = rust_lineage_current(cs[rs].serial);
+        cs[ws].type = CAP_PIPE; cs[ws].rights = CAP_RIGHT_WRITE;
+        cs[ws].object = (uint64_t)(uint32_t)idx; cs[ws].badge = 0;
+        cs[ws].serial = cap_alloc_fresh_serial();
+        cs[ws].generation = rust_lineage_current(cs[ws].serial);
+        rslot = (uint32_t)rs; wslot = (uint32_t)ws;
+    }
+#else
+    if (!cap_install_object_first_free(16, CAP_PIPE, (uint64_t)(uint32_t)idx,
+                                       CAP_RIGHT_READ, 0, &rslot)) {
+        /* Nothing has been installed and no end has been ref'd, so the pipe has
+         * no holders: unref'ing either direction at zero is what frees and
+         * scrubs it (pipe_end_unref), which is the rollback. */
+        pipe_end_unref(idx, 0);
+        r->rax = (uint64_t)(uint32_t)SYS_ERR_NOMEM;
+        return;
+    }
+    if (!cap_install_object_first_free(16, CAP_PIPE, (uint64_t)(uint32_t)idx,
+                                       CAP_RIGHT_WRITE, 0, &wslot)) {
+        capability_t prev;
+        cap_consume_slot_of(cur, rslot, &prev);   /* give the read end back */
+        pipe_end_unref(idx, 0);                   /* and free the pipe */
+        r->rax = (uint64_t)(uint32_t)SYS_ERR_NOMEM;
+        return;
+    }
+#endif
     pipe_end_ref(idx, 0);   /* read end  */
     pipe_end_ref(idx, 1);   /* write end */
 
-    r->rax = ((uint64_t)(uint32_t)rslot << 16) | (uint32_t)wslot;
+    r->rax = ((uint64_t)rslot << 16) | wslot;
 }
 
 void h_pipe_read(struct interrupt_frame64 *r) {
@@ -201,15 +269,19 @@ void h_pipe_write(struct interrupt_frame64 *r) {
 void h_pipe_close(struct interrupt_frame64 *r) {
     uint32_t slot = (uint32_t)r->rbx;
     int cur = get_current_task();
-    capability_t *cs = tasks[cur].cspace;
-    uint32_t sz = tasks[cur].cspace_size ? tasks[cur].cspace_size : CNODE_SIZE;
-    if (!cs || slot >= sz || cs[slot].type != CAP_PIPE) {
+
+    /* The read of the slot, the null, and the accounting are one locked step, and
+     * the unref happens after it on what the slot ACTUALLY held. The old code
+     * tested the type, then read object and rights, then nulled -- three
+     * unsynchronised touches of a slot a revocation sweep may be reading, and two
+     * CPUs closing the same slot could both pass the test and both unref, taking
+     * writer_ends to 0 while a holder remained. cap_consume_slot_of hands the
+     * contents back only to the CPU that emptied the slot. */
+    capability_t prev;
+    if (!cap_consume_slot_of(cur, slot, &prev) || prev.type != CAP_PIPE) {
         r->rax = (uint64_t)(uint32_t)SYS_ERR_INVAL; return;
     }
-    int idx       = (int)cs[slot].object;
-    int is_writer = (cs[slot].rights & CAP_RIGHT_WRITE) != 0;
-    cs[slot].type = CAP_NULL;
-    pipe_end_unref(idx, is_writer);
+    pipe_end_unref((int)prev.object, (prev.rights & CAP_RIGHT_WRITE) != 0);
     r->rax = 0;
 }
 

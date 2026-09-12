@@ -494,8 +494,64 @@ bool rust_user_page_is_noexec(uint64_t vaddr);
  * structurally, and — with capability addressing (finding C-1) — means a task can
  * only ever block on, and be woken through, an endpoint no other task holds a
  * capability for. reply_ep_for_task() is the single mapping. */
-#define MAX_ENDPOINTS   128
 #define REPLY_EP_BASE   64
+
+/* THE STATIC TABLE IS SIZED TO HOLD WHAT THE MAP ABOVE SAYS IT HOLDS, which it
+ * was not until 2026-09-12 (`SECURITY.md` S95).
+ *
+ * `MAX_ENDPOINTS` was the literal 128 while the map said the reply region runs to
+ * `REPLY_EP_BASE + MAX_TASKS` = 320, and `DYN_EP_BASE` is `MAX_ENDPOINTS`. So for
+ * every task id >= 64, `reply_ep_for_task(id)` returned an index of 128 or more,
+ * and `endpoint_by_index` -- the single resolver -- sent it to `dyn_eps[id - 64]`:
+ * a RETYPED endpoint carved out of some task's untyped region, not this task's
+ * private one. Measured on the shipping QEMU configuration, `g_max_tasks` is 256,
+ * so the colliding half of the task space was provisioned on every boot.
+ *
+ * Two consequences, and the benign one is what hid the other. An unallocated
+ * `dyn_eps` slot resolves to NULL and every IPC path checks it, so a task at id
+ * >= 64 simply could not complete a synchronous call -- a task that never ran
+ * being more common than one that did, this never showed up as a bug report. But
+ * once anything HAS retyped an endpoint at the colliding index, that task's
+ * "private" reply endpoint IS an endpoint another task holds a capability for,
+ * which is precisely the guarantee this region exists to provide and which the
+ * paragraph above claims: "an endpoint no other task holds a capability for"
+ * (finding [C-1]). A peer could then receive the task's replies, or send it one.
+ *
+ * DERIVED, NOT A LITERAL, so the table cannot fall behind the map again: raising
+ * MAX_TASKS now raises the table with it. The cost is one `struct endpoint` per
+ * provisionable task in `.bss` (~201 KiB at MAX_TASKS 256), paid against the
+ * `__bss_end <= USER_PHYS_BASE` assert, which had 7.6 MiB of headroom when this
+ * was measured. The static assert below is deliberately kept even though the
+ * derivation makes it true today: it is what fails the build the moment somebody
+ * replaces the derivation with a number again, which is the mistake being fixed.
+ *
+ * A runtime clamp backs it up in `tasks_init`, because `g_max_tasks` is derived
+ * from the machine's memory rather than from this constant, and a guard that
+ * compares a runtime value against the table is the only one that is not merely
+ * restating the definition. */
+#ifdef REPLY_EP_SPACE_OVERLAP
+/* CONTROL ARM. The literal the table carried until 2026-09-12. It must restore
+ * ALL THREE halves of the defect -- this size, the unbounded reply_ep_for_task
+ * below, and the boot clamp in tasks_init -- because any one of them left in
+ * place makes the defect unreachable and the arm would pass for the wrong reason:
+ * the clamp alone would reduce g_max_tasks to 64, the selftest would never reach
+ * a colliding task id, and "the defect did not reproduce" would be indistinguishable
+ * from "the build had no defect in it". */
+#define MAX_ENDPOINTS   128
+#else
+#define MAX_ENDPOINTS   (REPLY_EP_BASE + MAX_TASKS)
+#endif
+#ifndef REPLY_EP_SPACE_OVERLAP
+_Static_assert(REPLY_EP_BASE + MAX_TASKS <= MAX_ENDPOINTS,
+               "the per-task reply endpoint region must fit inside endpoints[]: "
+               "otherwise endpoint_by_index sends a high task id's PRIVATE reply "
+               "endpoint into the dynamic range, where it aliases a retyped "
+               "endpoint some other task holds a capability for (S95)");
+#endif
+/* And the service region must not grow into the reply region from below. */
+_Static_assert(REPLY_EP_BASE > 0 && REPLY_EP_BASE < MAX_ENDPOINTS,
+               "the well-known service endpoint region must be non-empty and must "
+               "end before the per-task reply region begins");
 #define IPC_MSG_MAX     256
 
 /* Retyped endpoints live in their own index range ABOVE the static table, so an
@@ -512,9 +568,21 @@ bool rust_user_page_is_noexec(uint64_t vaddr);
 #define DYN_EP_BASE            MAX_ENDPOINTS
 #define EP_INDEX_MAX           (DYN_EP_BASE + MAX_DYN_ENDPOINTS)
 
-/* The private reply endpoint belonging to task `tid`, or -1 if out of range. */
+/* The private reply endpoint belonging to task `tid`, or -1 if out of range.
+ *
+ * BOUNDED AGAINST THE TABLE, not just against MAX_TASKS. The static assert above
+ * makes the two agree, so this cannot currently refuse a live task -- it is here
+ * because the alternative to refusing is returning an index that resolves into
+ * the dynamic endpoint range, and THAT is the failure being guarded: a task's
+ * private reply endpoint silently becoming an object another task holds a
+ * capability for (S95). Refusing gives the caller -1, which every caller already
+ * handles as "no reply endpoint" and fails closed on. */
 static inline int reply_ep_for_task(int tid) {
-    return (tid > 0 && tid < MAX_TASKS) ? (REPLY_EP_BASE + tid) : -1;
+    if (tid <= 0 || tid >= MAX_TASKS) return -1;
+#ifndef REPLY_EP_SPACE_OVERLAP
+    if (REPLY_EP_BASE + tid >= MAX_ENDPOINTS) return -1;   /* never into dyn_eps */
+#endif
+    return REPLY_EP_BASE + tid;
 }
 
 /* Well-known service endpoint / notification objects. These MUST match the
@@ -706,6 +774,17 @@ void pipe_close_task_ends(int task_id);
 #ifdef PIPE_SELFTEST
 void pipe_selftest(void);                 /* in-kernel pipe mechanics exercise (smoke-pipe) */
 void pipe_task_teardown_selftest(void);   /* its phase 2: a stage that dies holding an end */
+#endif
+
+/* DELIBERATELY OUTSIDE the PIPE_SELFTEST block above. Placed inside it first, and
+ * the ship build compiled fine because nothing references it there -- the arm that
+ * defines REPLY_EP_SELFTEST without PIPE_SELFTEST is the one that failed, with an
+ * implicit-declaration error in main.c. Same shape as the console server's input
+ * owner landing inside a CONSOLE_TIMESTAMPS_LEGACY branch on 2026-09-12: a
+ * declaration guarded by an UNRELATED flag is a build that works for exactly the
+ * flag combinations somebody happened to try. */
+#ifdef REPLY_EP_SELFTEST
+void reply_ep_selftest(void);             /* S95: every task's reply endpoint is private (smoke-reply-ep) */
 #endif
 
 #define MAX_NOTIFICATIONS 64

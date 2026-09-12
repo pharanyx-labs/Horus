@@ -460,6 +460,41 @@ void tasks_init(void) {
      * At least one task, because task 0 is the kernel's own. */
     int cap = untyped_reserve_task_capacity();
     if (cap > MAX_TASKS) cap = MAX_TASKS;
+
+    /* AND CLAMPED TO WHAT THE ENDPOINT TABLE CAN GIVE A PRIVATE REPLY ENDPOINT TO
+     * (S95). Every task gets one, at index REPLY_EP_BASE + id, and
+     * endpoint_by_index sends an index at or above MAX_ENDPOINTS into the DYNAMIC
+     * range -- where it names a retyped endpoint some other task holds a
+     * capability for, instead of this task's private one. Provisioning a task that
+     * cannot be given a private reply endpoint is the condition that makes the
+     * aliasing reachable, so it is refused here.
+     *
+     * THIS IS NOT THE STATIC ASSERT RESTATED. `cap` comes from the machine's
+     * physical memory by way of untyped_reserve_task_capacity(), not from
+     * MAX_TASKS, so this compares a runtime quantity against the table's real
+     * size -- which is the only form of this check that can fail. The assert in
+     * kernel.h guards the constants; this guards the boot.
+     *
+     * A CLAMP RATHER THAN A HALT, unlike kstack_region_fits below, and the
+     * asymmetry is deliberate: a kernel stack outside its region ALIASES another
+     * task's stack, so there is no safe number of tasks to continue with. Here
+     * the safe number exists and is computable, so the machine provisions fewer
+     * tasks and says so, rather than refusing to boot on a large-memory host. It
+     * announces itself because a silently smaller task ceiling is the kind of
+     * thing that gets diagnosed as a spawn bug months later. */
+    int ep_cap = MAX_ENDPOINTS - REPLY_EP_BASE;
+#ifdef REPLY_EP_SPACE_OVERLAP
+    ep_cap = MAX_TASKS;            /* CONTROL ARM: the clamp that did not exist */
+#endif
+    if (cap > ep_cap) {
+        print("tasks: clamped ");
+        print_decimal((uint64_t)cap);
+        print(" -> ");
+        print_decimal((uint64_t)ep_cap);
+        println(" by the private reply endpoint region (S95)");
+        cap = ep_cap;
+    }
+
     if (cap < 1)         cap = 1;
     g_max_tasks = cap;
 
@@ -1203,7 +1238,7 @@ static void watchdog_dump(int seq) {
         if (!e) continue;
         /* Skip endpoints that have never carried traffic. NB the idle value here
          * is -1, not 0: an earlier version tested `last_sender == 0` and so
-         * skipped nothing, printing all 128 and flushing the later dumps out of
+         * skipped nothing, printing every one of them and flushing the later dumps out of
          * the capture window. */
         if (e->count == 0 && e->blocked_waiter < 0 && e->last_sender <= 0) continue;
         panic_str("ep "); panic_dec((int)i);
@@ -4472,3 +4507,122 @@ int irq_locks_held_here(void) {
 }
 
 
+
+#ifdef REPLY_EP_SELFTEST
+/* EVERY PROVISIONABLE TASK'S PRIVATE REPLY ENDPOINT IS IN THE PRIVATE TABLE (S95).
+ *
+ * The property this witnesses is structural, so the test is structural: it walks
+ * every task id the machine provisioned and asks, of each, where that id's reply
+ * endpoint actually lives. It needs no task to be created and no IPC to be
+ * performed, which matters because the defect's reachable precondition -- 65
+ * concurrent live tasks, since slot allocation scans from 0 for state == 0 -- is
+ * expensive to stage and is NOT what is being tested. What is being tested is the
+ * mapping, and the mapping is a pure function of the index space.
+ *
+ * THE SECURITY ASSERTION IS STATED POSITIVELY, as `rep < DYN_EP_BASE`, rather than
+ * as "endpoint_by_index returned something". Under the defect a colliding index
+ * resolves to dyn_eps[i].mem, which on a boot where nothing has retyped an
+ * endpoint yet is NULL -- so a test that only checked for NULL would report the
+ * BENIGN consequence (the task cannot complete a synchronous call) and say nothing
+ * about the one that matters (the task's private reply endpoint IS an object
+ * another task holds a capability for, the moment anything retypes at that
+ * index). The index range is the condition for both, so it is the thing asserted.
+ *
+ * The pointer-range check after it is not redundant with the index check: it is
+ * what would catch the index space being split correctly while the resolver sent
+ * the range to the wrong storage. Index and storage are two claims.
+ *
+ * Runs from main() after tasks_init, before any ring-3 task exists, so g_max_tasks
+ * is final and nothing has retyped an endpoint -- the cleanest state in which the
+ * mapping is the only variable. */
+/* ONE WRITE, and tools/check_split_markers.py is what said so -- it caught this
+ * emitting the prefix, the reason and the id as three separate writes while
+ * smoke-reply-ep-control asserts the whole string contiguously. The arm passed
+ * anyway, because on a quiet boot the three land adjacent on the wire; the defect
+ * is that another task's output interleaving turns the reproduction into a
+ * TIMEOUT, which reads as a broken runner rather than as the marker it is. */
+static int res_fail(const char *why, int tid) {
+    static char line[128];
+    const char *pfx = "REPLY_EP_SELFTEST: FAIL ";
+    unsigned n = 0;
+    while (*pfx && n < sizeof(line) - 16) line[n++] = *pfx++;
+    while (why && *why && n < sizeof(line) - 16) line[n++] = *why++;
+    const char *mid = " tid=";
+    while (*mid && n < sizeof(line) - 12) line[n++] = *mid++;
+    /* Decimal, most significant digit first, no libc. */
+    unsigned v = (unsigned)(tid < 0 ? 0 : tid);
+    char digits[12];
+    unsigned d = 0;
+    do { digits[d++] = (char)('0' + (v % 10)); v /= 10; } while (v && d < sizeof(digits));
+    while (d && n < sizeof(line) - 2) line[n++] = digits[--d];
+    line[n++] = '\n';
+    line[n] = 0;
+    print(line);
+    return 0;
+}
+
+void reply_ep_selftest(void) {
+    print("REPLY_EP_SELFTEST: begin, g_max_tasks=");
+    print_decimal((uint64_t)g_max_tasks);
+    print(" MAX_ENDPOINTS=");
+    print_decimal((uint64_t)MAX_ENDPOINTS);
+    print(" DYN_EP_BASE=");
+    print_decimal((uint64_t)DYN_EP_BASE);
+    println("");
+
+    /* A task id the suite must actually reach, or the walk below proves nothing
+     * about the colliding half of the space. REPLY_EP_BASE is where the region
+     * starts, so a provisioned count at or below it means every id is trivially
+     * safe and the test is vacuous -- which is a result worth reporting rather
+     * than passing quietly, because it is how this gate would silently stop
+     * testing anything if the clamp ever bit. */
+    if (g_max_tasks <= REPLY_EP_BASE + 1) {
+        /* Through res_fail so this marker is one write too. */
+        res_fail("vacuous-provisioned-count-never-reaches-the-colliding-range",
+                 g_max_tasks);
+        return;
+    }
+
+    const struct endpoint *lo = &endpoints[0];
+    const struct endpoint *hi = &endpoints[MAX_ENDPOINTS];
+
+    for (int tid = 1; tid < g_max_tasks; tid++) {
+        int rep = reply_ep_for_task(tid);
+        if (rep < 0) { res_fail("no-private-reply-endpoint", tid); return; }
+
+        /* THE SECURITY ASSERTION. An index at or above DYN_EP_BASE is resolved by
+         * endpoint_by_index into dyn_eps[], where the object is one a task had to
+         * hold a CAP_UNTYPED to create and therefore holds a capability for. */
+        if ((uint32_t)rep >= DYN_EP_BASE) {
+            res_fail("reply-endpoint-index-in-the-dynamic-range", tid); return;
+        }
+
+        struct endpoint *e = endpoint_by_index((uint32_t)rep);
+        if (!e) { res_fail("reply-endpoint-does-not-resolve", tid); return; }
+        if (e < lo || e >= hi) {
+            res_fail("reply-endpoint-is-not-in-the-private-table", tid); return;
+        }
+
+        /* Distinctness, which is the other half of "private": two tasks must not
+         * share one. The mapping is affine so this cannot fail while the bounds
+         * hold, and it is asserted anyway because the bound and the injectivity
+         * are separate claims and a future mapping need not be affine. */
+        if (e != &endpoints[REPLY_EP_BASE + tid]) {
+            res_fail("reply-endpoint-is-not-this-task-s-slot", tid); return;
+        }
+
+        /* And the table really was initialised to its full size -- a size that
+         * grew with this fix, so an init loop left at the old bound would leave
+         * the new tail holding blocked_waiter 0, which names TASK 0 and would send
+         * it a wake it never asked for (the reason scheduler_init initialises to
+         * the sentinel rather than to zero). */
+        if (e->blocked_waiter != -1) {
+            res_fail("reply-endpoint-was-never-initialised", tid); return;
+        }
+    }
+
+    print("REPLY_EP_SELFTEST: PASS ");
+    print_decimal((uint64_t)(g_max_tasks - 1));
+    println(" private reply endpoints, none in the dynamic range");
+}
+#endif

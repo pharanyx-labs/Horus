@@ -783,6 +783,18 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             is listed there with the finding that tracks it rather than left to be discovered.
           </p>
           <p>
+            A capability naming the right object is only half of it &mdash; the object has to be the
+            one the design says it is. Every task here is born holding exactly one endpoint
+            capability, to a reply endpoint that is supposed to be private to it. On 2026-09-12 that
+            turned out to hold for task ids below 64 and not above them: the table was sized 128
+            while the region it was meant to contain ran to 320, and the index space's own dividing
+            line sat at the table's end &mdash; so a high-numbered task's &ldquo;private&rdquo;
+            endpoint resolved to one carved out of another task's memory. The table's size is now
+            derived from the task ceiling rather than written next to it, and three separate guards
+            fail the build, refuse the index, or reduce the task count if that ever stops being
+            true.
+          </p>
+          <p>
             The example below is not an illustration; it is how the shell actually reaches the
             filesystem. Step through it.
           </p>
@@ -1602,7 +1614,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 334 test targets, and the troubleshooting
+          Every configuration flag, every one of the 336 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1720,7 +1732,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             The security argument rests entirely on the tests, so they are treated as engineering
             artifacts rather than an afterthought. There are three layers: Rust unit tests and
-            Kani proofs on the host; 161 QEMU integration targets that boot a purpose-built kernel
+            Kani proofs on the host; 162 QEMU integration targets that boot a purpose-built kernel
             and assert a marker on the serial console; and scripted sessions that type into the
             real ring-3 shell over serial and read what comes back.
           </p>

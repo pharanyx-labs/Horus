@@ -32,6 +32,7 @@
 
 control_arms:
   smoke-cap-accounting-control: smoke-captest
+  smoke-reply-ep-control: smoke-reply-ep
   smoke-captest-capenum-control: smoke-captest
   smoke-captest-clock-control: smoke-captest
   smoke-captest-devcap-control: smoke-captest
@@ -222,6 +223,7 @@ gates:
   - smoke-ls-path
   - smoke-boot-media
   - smoke-ahci-detect
+  - smoke-reply-ep
   - smoke-sdhci-detect
   - smoke-sdhci-write
   - smoke-console-handover

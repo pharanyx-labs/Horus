@@ -909,6 +909,18 @@ intercepted and a blocked caller cannot be woken spuriously. This also retires t
 Until 2026-07-27 none of this held: indices came straight from a register and the dispatch
 table gated IPC on slot 3, which holds a `CAP_FRAME` in every task. See finding **[C-1]**.
 
+**And "no other task holds a capability for it" depends on the endpoint table being big enough to
+hold the region**, which until 2026-09-12 it was not (`SECURITY.md` **S95**,
+**[HORUS-20260912-01]**). The index-space map gives the per-task reply region as
+`[REPLY_EP_BASE, REPLY_EP_BASE + MAX_TASKS)` = `[64, 320)`, `MAX_ENDPOINTS` was the literal `128`,
+and `DYN_EP_BASE` **is** `MAX_ENDPOINTS` — so for every task id ≥ 64, `endpoint_by_index` resolved
+that task's reply endpoint into the *dynamic* range, naming an endpoint retyped out of some task's
+untyped region. With `g_max_tasks` at 256 on the shipping configuration, half the task id space
+was provisioned into that collision. `MAX_ENDPOINTS` is now **derived** as
+`(REPLY_EP_BASE + MAX_TASKS)`, so the table follows the task ceiling instead of trailing it; a
+`_Static_assert`, a bound inside `reply_ep_for_task`, and a boot clamp on the machine-derived
+`g_max_tasks` each guard a different way of reintroducing it.
+
 ---
 
 ## 9. The syscall layer

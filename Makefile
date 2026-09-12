@@ -133,6 +133,7 @@ DEFECT_FLAGS = \
 	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY BOOT_MENU_NO_LIVE_TOKEN \
 	BOOT_PIN_UNCHECKED BOOT_IMAGE_UNBOUND CONSOLE_PASS_UNGATED \
 	PIPE_CAP_UNACCOUNTED \
+	REPLY_EP_SPACE_OVERLAP \
 	AHCI_PROBE_ABSENT AHCI_CAPACITY_CONSTANT SDHCI_PROBE_ABSENT \
 	SDHCI_CSD_SPEC_BITS SDHCI_ADDR_MODE_INVERTED \
 	SDHCI_WRITE_SELFTEST SDHCI_WRITE_NO_FLUSH \
@@ -696,6 +697,38 @@ PIPE_CAP_UNACCOUNTED ?= 0
 ifeq ($(PIPE_CAP_UNACCOUNTED),1)
 CFLAGS  += -DPIPE_CAP_UNACCOUNTED
 ASFLAGS += -DPIPE_CAP_UNACCOUNTED
+endif
+
+# REPLY_EP_SPACE_OVERLAP=1 restores the pre-2026-09-12 endpoint index space, where
+# the static table was the literal 128 while the map above it said the per-task
+# reply region ran to REPLY_EP_BASE + MAX_TASKS = 320. Since DYN_EP_BASE is
+# MAX_ENDPOINTS, every task id >= 64 got a "private" reply endpoint index that
+# endpoint_by_index resolved into the DYNAMIC range -- a retyped endpoint carved
+# from some task's untyped region (S95).
+#
+# ALL THREE HALVES OF THE DEFECT, and that is the point of the flag rather than an
+# implementation detail: the literal size, the unbounded reply_ep_for_task, and
+# the absent boot clamp. Leaving any one of the repairs in place makes the defect
+# UNREACHABLE and the arm would pass for the wrong reason -- the clamp alone
+# reduces g_max_tasks to 64, the selftest then never reaches a colliding task id,
+# and a clean run would mean nothing. This is the shape docs/BUILDING.md keeps
+# recording under "an arm that trips a different refusal".
+#
+# Control arm for make smoke-reply-ep-control.
+REPLY_EP_SPACE_OVERLAP ?= 0
+ifeq ($(REPLY_EP_SPACE_OVERLAP),1)
+CFLAGS  += -DREPLY_EP_SPACE_OVERLAP
+ASFLAGS += -DREPLY_EP_SPACE_OVERLAP
+endif
+
+# REPLY_EP_SELFTEST=1 builds the in-kernel structural proof that every
+# provisionable task's private reply endpoint lives in the private static table
+# and not in the dynamic range. Not a defect flag -- an opt-in selftest, like
+# PIPE_SELFTEST.
+REPLY_EP_SELFTEST ?= 0
+ifeq ($(REPLY_EP_SELFTEST),1)
+CFLAGS  += -DREPLY_EP_SELFTEST
+ASFLAGS += -DREPLY_EP_SELFTEST
 endif
 
 # CONSOLE_TIMESTAMPS_LEGACY=1 restores the pre-2026-09-06 console: no line
@@ -5938,6 +5971,50 @@ smoke-captest-userlist-control:
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='CAPTEST: FAIL userlist-without-cap-user' \
 		tools/smoke_test.sh horus.iso
+
+# ---- Every task's private reply endpoint is actually private (S95) ---------
+#
+# The endpoint index space had the static table at a literal 128 while the map
+# above it said the per-task reply region ran to REPLY_EP_BASE + MAX_TASKS = 320.
+# DYN_EP_BASE is MAX_ENDPOINTS, so every task id >= 64 got a reply endpoint index
+# that endpoint_by_index resolved into the DYNAMIC range -- an endpoint carved
+# from some task's untyped region, which that task holds a capability for. On the
+# shipping QEMU configuration g_max_tasks is 256, so half the task space was
+# provisioned into the collision on every boot.
+#
+# STRUCTURAL, NOT STAGED. Reaching the defect in a running system needs 65
+# concurrent live tasks, because slot allocation scans from 0 for state == 0 --
+# expensive to stage and not what is under test. The mapping is a pure function of
+# the index space, so the selftest walks every provisioned id and asks where that
+# id's reply endpoint lives.
+.PHONY: smoke-reply-ep
+smoke-reply-ep:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory REPLY_EP_SELFTEST=1
+	@$(MAKE) --no-print-directory REPLY_EP_SELFTEST=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='REPLY_EP_SELFTEST: PASS' \
+		FAIL_MARKER='REPLY_EP_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
+
+# CONTROL ARM. REPLY_EP_SPACE_OVERLAP=1 restores ALL THREE halves of the defect
+# (the literal table size, the unbounded reply_ep_for_task, and the absent boot
+# clamp) -- leaving any single repair in place makes the defect unreachable and
+# the arm would pass for the wrong reason, since the clamp alone drops
+# g_max_tasks to 64 and the walk never reaches a colliding id.
+#
+# It requires the NAMED failure rather than the absence of a PASS, so the
+# evidence is positive and says which assertion broke: the index landing in the
+# dynamic range, which is the condition for the aliasing rather than the
+# benign NULL that a boot with nothing retyped happens to produce.
+.PHONY: smoke-reply-ep-control
+smoke-reply-ep-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory REPLY_EP_SELFTEST=1 REPLY_EP_SPACE_OVERLAP=1
+	@$(MAKE) --no-print-directory REPLY_EP_SELFTEST=1 REPLY_EP_SPACE_OVERLAP=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='REPLY_EP_SELFTEST: FAIL reply-endpoint-index-in-the-dynamic-range' \
+		FAIL_MARKER='REPLY_EP_SELFTEST: PASS' tools/smoke_test.sh horus.iso
+	@echo "[reply-ep] CONTROL PASS - a task's private reply endpoint resolved into the dynamic range"
 
 .PHONY: smoke-captest
 smoke-captest:

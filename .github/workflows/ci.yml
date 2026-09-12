@@ -3669,6 +3669,29 @@ jobs:
       # the backstop until phase 2 of the selftest did.
       - name: Control arm — a stage dies holding a pipe end and its peer sees no EOF
         run: make smoke-pipe-cspace-order-control
+      # S95. STEPS OF THIS JOB rather than a job of their own, so they add no
+      # required context: this job already builds a selftest kernel and boots it,
+      # which is the whole shape of the new pair, and a promotion is a ruleset
+      # change that has to lag the merge by one PR.
+      #
+      # The endpoint index space had the static table at a literal 128 while its
+      # own map declared the per-task reply region running to REPLY_EP_BASE +
+      # MAX_TASKS = 320. DYN_EP_BASE *is* MAX_ENDPOINTS, so every task id >= 64
+      # had its PRIVATE reply endpoint resolved into the dynamic range -- an
+      # endpoint carved from some task's untyped region, which that task holds a
+      # capability for. g_max_tasks is 256 on this configuration, so half the task
+      # space was provisioned into the collision on every boot.
+      - name: Boot REPLY_EP_SELFTEST kernel and assert no task's private reply endpoint lands in the dynamic range
+        run: make smoke-reply-ep
+      # Restores all three halves of the defect -- the literal size, the unbounded
+      # reply_ep_for_task, and the absent boot clamp. Any single repair left in
+      # place makes it unreachable: the clamp alone drops g_max_tasks to 64 and the
+      # walk never reaches a colliding id, so the arm would pass for the wrong
+      # reason. It requires the NAMED failure, the index landing in the dynamic
+      # range, because that is the condition for the aliasing rather than the
+      # benign NULL a boot with nothing retyped happens to produce.
+      - name: Control arm — a task's private reply endpoint resolves into the dynamic range
+        run: make smoke-reply-ep-control
 
   smoke-init-fs:
     name: QEMU delegated boot-through-init filesystem self-test (headless)

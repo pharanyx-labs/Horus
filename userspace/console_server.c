@@ -132,6 +132,37 @@ static void fb_blit(unsigned idx) {
     }
 }
 
+/* SCROLL, DO NOT WRAP TO THE TOP.
+ *
+ * Both putc paths ended a full screen with `pos = 0`, so the next line landed on
+ * top of the OLDEST one and the display became a ring buffer with no marker
+ * saying where the seam was. What a reader sees after that is a screen of text
+ * in no order at all -- the bottom half older than the top half, and nothing
+ * indicating it. The kernel's emit_char has called scroll_screen at exactly this
+ * point since it was written; the ring-3 console that took the hardware over did
+ * not inherit it, which is the same shape as the backspace and UART defects
+ * before it and the third time in one day.
+ *
+ * IT IS WHY A BOOT LOG CANNOT BE READ ON A MACHINE WITH NO SERIAL PORT, which is
+ * the whole population these fixes are for. A laptop reported exactly that on
+ * 2026-09-12: the interesting lines scrolled past and were then overwritten in
+ * place by later ones, so they could not be recovered by looking -- and with no
+ * UART there is no second copy anywhere.
+ *
+ * THE SHADOW BUFFER IS THE SCROLL, and the blit follows it. fb_cells is the
+ * truth; moving it and repainting every cell is O(grid) per scrolled line, which
+ * is what the kernel already pays through cell_put, and correctness before
+ * cleverness on a console that scrolls at human speed. */
+static void fb_scroll(void) {
+    const unsigned cells = 80u * fb_rows;
+    if (cells < 80u) return;
+    for (unsigned i = 80u; i < cells; i++) fb_cells[i - 80u] = fb_cells[i];
+    for (unsigned i = cells - 80u; i < cells; i++)
+        fb_cells[i] = (uint16_t)((VGA_ATTR << 8) | ' ');
+    for (unsigned i = 0; i < cells; i++) fb_blit(i);
+    fb_pos = cells - 80u;
+}
+
 /* BACKSPACE MOVES THE CURSOR BACK; IT IS NOT A GLYPH. Without this case a 0x08
  * fell into the `else` below and was DRAWN -- so `con_getline`'s "\b \b" erase
  * painted three cells of rubbish and advanced three columns instead of rubbing
@@ -158,7 +189,13 @@ static void fb_putc(char c) {
         fb_blit(fb_pos);
         fb_pos++;
     }
-    if (fb_pos >= 80u * fb_rows) fb_pos = 0;   /* wrap, exactly as vga_putc does */
+#ifdef CONSOLE_NO_SCROLL
+    /* CONTROL ARM -- never ship. The ring buffer: a full screen restarts at the
+     * top and overwrites the oldest line with the newest. */
+    if (fb_pos >= 80u * fb_rows) fb_pos = 0;
+#else
+    if (fb_pos >= 80u * fb_rows) fb_scroll();
+#endif
 }
 
 /* ---- VGA text framebuffer -------------------------------------------------- */
@@ -167,6 +204,15 @@ static void fb_putc(char c) {
 #define VGA_CELLS  (80 * 50)
 static volatile uint16_t *const vga = (volatile uint16_t *)VGA_VADDR;
 static unsigned vga_pos = 0;
+
+/* The VGA text half of fb_scroll, against the hardware cell array rather than a
+ * shadow: at 0xB8000 the display IS the buffer, so the move is the repaint. */
+static void vga_scroll(void) {
+    for (unsigned i = 80u; i < VGA_CELLS; i++) vga[i - 80u] = vga[i];
+    for (unsigned i = VGA_CELLS - 80u; i < VGA_CELLS; i++)
+        vga[i] = (uint16_t)((VGA_ATTR << 8) | ' ');
+    vga_pos = VGA_CELLS - 80u;
+}
 
 static void vga_putc(char c) {
     if (c == '\n') {
@@ -182,7 +228,11 @@ static void vga_putc(char c) {
     } else {
         vga[vga_pos++] = (uint16_t)((VGA_ATTR << 8) | (uint8_t)c);
     }
-    if (vga_pos >= VGA_CELLS) vga_pos = 0;    /* wrap (no scroll in this first slice) */
+#ifdef CONSOLE_NO_SCROLL
+    if (vga_pos >= VGA_CELLS) vga_pos = 0;   /* CONTROL ARM -- the ring buffer */
+#else
+    if (vga_pos >= VGA_CELLS) vga_scroll();
+#endif
 }
 
 /* ---- the timestamped boot log, continued in ring 3 --------------------------

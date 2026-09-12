@@ -87,6 +87,7 @@ control_arms:
   smoke-keyboard-control: smoke-keyboard
   smoke-keyboard-noserial-control: smoke-keyboard-noserial
   smoke-console-backspace-control: smoke-console-backspace
+  smoke-console-scroll-control: smoke-console-scroll
   smoke-keyboard-installer-control: smoke-keyboard-installer
   smoke-replace-live-control: smoke-replace-live
   smoke-replace-oneshot-control: smoke-replace-oneshot
@@ -234,6 +235,7 @@ gates:
   - smoke-keyboard
   - smoke-keyboard-noserial
   - smoke-console-backspace
+  - smoke-console-scroll
   - smoke-keyboard-installer
   - smoke-keyboard-install
   - smoke-replace-live

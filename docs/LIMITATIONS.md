@@ -2567,9 +2567,20 @@ old allocator and the new one read the same single block and no workload could t
   (`THIRD_PARTY.md`): real descenders, a comma distinguishable from a full stop, a slashed zero.
   It fits only because the grid is derived -- 48 rows of a 16-pixel cell on a 768-line panel,
   where the old fixed 50 would have been refused.
-  **What is still missing is scrolling**, and the 8x8's provenance. The console wraps rather
-  than scrolls, exactly as the VGA text path it mirrors always has, so a full screen overwrites
-  from the top. And `font_8x8` is still uploaded into the VGA font plane for 80x50 text mode --
+  **Scrolling landed 2026-09-12**, and what is still missing is the 8x8's provenance. The console wrapped rather
+  than scrolled until then, exactly as the VGA text path it mirrors always had, so a full screen
+  overwrote from the top — the newest line landing on the oldest, with nothing marking the seam.
+  That is why a boot log could not be read back on a machine with no serial port: the lines were
+  not merely gone off the top, they had been overwritten in place, and with no UART there is no
+  second copy. Both `console_server` paths now scroll, the shadow buffer moving and the blit
+  following it, as the kernel's `emit_char` has since it was written. Gated by
+  `make smoke-console-scroll` (85161 bytes change on a scroll against 681 on a wrap), falsified
+  by `CONSOLE_NO_SCROLL=1`.
+  **The cursor is a separate and still-open gap**: `console_server` never writes the VGA cursor
+  registers, so after the console handover the hardware cursor stays frozen wherever the kernel
+  left it — measured at row 36, column 0 on 2026-09-12, unmoved while a user name was typed at
+  the login prompt and again at the password prompt. The framebuffer console draws no cursor at
+  all, and never has. And `font_8x8` is still uploaded into the VGA font plane for 80x50 text mode --
   that mode is an 8x8 cell by definition -- so the unattributed asset still ships on a BIOS
   boot; `THIRD_PARTY.md` records the question as open rather than guessing an answer.
 

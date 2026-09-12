@@ -508,6 +508,16 @@ jobs:
       # The arm draws the 0x08, as the shipping build did until 2026-09-12.
       - name: Control arm — backspace drawn instead of rubbing out
         run: make smoke-console-backspace-control
+      # A full screen must scroll rather than restart at the top. Input over
+      # serial, assertion on pixels; three dmesg runs fill the screen with
+      # DISTINCT lines, because scrolling uniform content gives an identical
+      # image and one dmesg leaves the top blank.
+      - name: A full screen scrolls instead of overwriting from the top
+        run: make smoke-console-scroll
+      # The arm's expected answer is a small delta, which a dead boot also gives
+      # -- the script demands the login, the shell and a dense screen first.
+      - name: Control arm — the console wraps to the top
+        run: make smoke-console-scroll-control
       # The arrows, gated on the one screen that cannot be passed without them:
       # the installer's disk survey defaults to "Cancel, change nothing", so a
       # person at the machine must press Down to install at all.

@@ -134,13 +134,29 @@
 # PIPE_CAP_UNACCOUNTED's arm is counted above: an arm the budget could not see
 # would be a place to hide code.
 #
+# RAISED AGAIN 2026-09-12, 9929 -> 9942 (+13), for the UART presence probe. A
+# machine with no 16550 at 0x3F8 floats every register in the range to 0xFF, and
+# bit 0 of the line-status register means "receive data ready" -- so console_getc
+# believed a byte was waiting forever and never reached the keyboard beneath it.
+# Measured per file:
+#
+#     terminal.c    +11   probe_com1_present (5 lines, two scratch-register
+#                         round trips) and the guarded branch in console_getc
+#     idt.c          +2   the call in serial_init and its assignment
+#
+# NOT MOVED OUT TO DODGE THE BUDGET, for the reason the PS2_PROBE note above
+# gives about the 8042 bring-up: the console's input path is core because the
+# console is, and a probe relocated to `driver` purely to keep a number down
+# would make the figure better and the kernel no easier to verify. Eleven of the
+# thirteen are in the one function that reads the port.
+#
 # The fix proper cost ZERO code lines in the core -- it is a derived constant and
 # two static asserts in src/include/kernel.h, which is a header and not a linked
 # object. That is worth recording because it is the cheap direction: a defect that
 # existed because two numbers were written in two places was closed by deriving one
 # from the other, and the only code the kernel gained is the runtime check that
 # catches the case the constants cannot see.
-core_budget_loc: 9929
+core_budget_loc: 9942
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

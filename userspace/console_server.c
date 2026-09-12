@@ -42,6 +42,7 @@ static inline uint8_t inb(uint16_t port) {
 /* ---- serial (COM1) --------------------------------------------------------- */
 #define COM1      0x3F8
 #define COM1_LSR  (COM1 + 5)
+#define COM1_SCR  (COM1 + 7)      /* scratch: the register that answers "are you there?" */
 #define LSR_THRE  0x20            /* transmitter holding register empty */
 static void ser_putc(char c) {
     while (!(inb(COM1_LSR) & LSR_THRE)) { }   /* wait for the UART to drain */
@@ -263,6 +264,60 @@ static void ser_u32(uint32_t v) {
     while (n) con_putc(b[--n]);
 }
 
+/* ---- is there a UART at COM1 at all? --------------------------------------- */
+/* THE BUG THIS CLOSES IS WHY A LAPTOP COULD NOT BE TYPED AT. With no 16550 at
+ * 0x3F8 every register in the range reads 0xFF, because nothing drives the ISA
+ * bus. Bit 0 of the line-status register means "receive data ready", and 0xFF
+ * has bit 0 set -- so `inb(COM1_LSR) & 0x01` in con_getc was true on every pass,
+ * con_getc returned that floating 0xFF as a character, and ps2_poll() below it
+ * was NEVER CALLED. The machine's own keyboard was unreachable on exactly the
+ * machines that have no other input.
+ *
+ * THE 8042 SAYS THE SAME THING FROM THE OTHER SIDE. A scancode arrives, sets the
+ * controller's output-buffer-full bit, raises IRQ 1 once -- and then nothing,
+ * because the 8042 holds one byte and raises no further interrupt until it is
+ * read. A laptop reported exactly that on 2026-09-12: `PS2 n=00001 sc=00 st=15`,
+ * a stuck count of 1 beside a status register with OBF set. The byte was
+ * waiting for a reader that could not get past the serial branch above it.
+ *
+ * REPRODUCED WITHOUT THE LAPTOP, under QEMU with `-serial none` (unassigned
+ * ports read 0xFF there too): typing on the emulated 8042 moved the screen by
+ * 216 bytes of an 864,015-byte screendump, which is the cursor blink, and an
+ * idle control over the same elapsed time moved by the identical 216. The run
+ * before that control existed read the blink as a working keyboard.
+ *
+ * WHY THE SCRATCH REGISTER AND NOT THE LINE-STATUS ONE: +7 is a plain read/write
+ * byte on a 16450 and every 16550 since, and a floating bus returns 0xFF
+ * whatever is written to it. Two distinct probe values, neither 0x00 nor 0xFF,
+ * so a bus floating to one of them still cannot pass both. An original 8250 has
+ * no scratch register and would be called absent -- the safe direction, since
+ * that costs serial input where the opposite costs the keyboard.
+ *
+ * OUTPUT IS DELIBERATELY NOT GUARDED. con_putc's spin waits for the
+ * transmitter-empty bit, which is set in a floating 0xFF, so it falls through
+ * instead of hanging, and the write lands on a port nobody decodes. Guarding it
+ * would change where the boot log goes on machines that are working today, for
+ * no defect. Only the READ was ever wrong. */
+static int g_com1_present;
+
+static int probe_com1(void) {
+    outb(COM1_SCR, 0xAA);
+    if (inb(COM1_SCR) != 0xAA) return 0;
+    outb(COM1_SCR, 0x55);
+    if (inb(COM1_SCR) != 0x55) return 0;
+    return 1;
+}
+
+/* Is serial RX worth reading on this machine? Under the control arm, always --
+ * which is the defect. */
+static int serial_rx_ready(void) {
+#ifdef SERIAL_PRESENCE_UNCHECKED
+    return (inb(COM1_LSR) & 0x01) != 0;
+#else
+    return g_com1_present && (inb(COM1_LSR) & 0x01) != 0;
+#endif
+}
+
 /* ---- PS/2 keyboard --------------------------------------------------------- */
 /* The machine's own keyboard, read from ring 3 (S89).
  *
@@ -363,7 +418,7 @@ static char ps2_poll(void) {
  * but you cannot type" was missing. See docs/design/console-server.md. */
 static char con_getc(void) {
     for (;;) {
-        if (inb(COM1_LSR) & 0x01)          /* serial receive-data-ready */
+        if (serial_rx_ready())             /* serial receive-data-ready */
             return (char)inb(COM1);
         char k = ps2_poll();               /* the machine's own keyboard */
         if (k) return k;
@@ -406,7 +461,7 @@ static int con_read_raw(uint8_t *out, unsigned max) {
     if (max > CON_LINE_MAX) max = CON_LINE_MAX;
     unsigned n = 0;
     out[n++] = (uint8_t)con_getc();                 /* block for at least one byte */
-    while (n < max && (inb(COM1_LSR) & 0x01))        /* grab the rest of the burst */
+    while (n < max && serial_rx_ready())             /* grab the rest of the burst */
         out[n++] = inb(COM1);
 #ifndef CONSOLE_NO_KBD
     /* THE REST OF AN ARROW MUST TRAVEL IN THIS REPLY, not the next one.
@@ -496,6 +551,12 @@ void _start(void) {
         sys_yield();
     }
     if (!granted) { kput("CONSOLE_SELFTEST: FAIL grant\n"); for (;;) sys_yield(); }
+
+    /* MEASURED THE MOMENT THE PORTS ARE OURS, and not before: the probe writes
+     * to 0x3FF, so it needs the grant above to have landed. Asked once and
+     * cached -- the answer cannot change while we run, and con_getc is the
+     * hottest loop in this server. */
+    g_com1_present = probe_com1();
 
     /* WHAT KIND OF DISPLAY THIS MACHINE HAS, asked before anything is mapped.
      *

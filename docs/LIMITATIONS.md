@@ -2658,6 +2658,36 @@ old allocator and the new one read the same single block and no workload could t
   are on, from the screen and with no serial cable (see `docs/BUILDING.md`). On the IdeaPad
   that prompted this it read `PS2 n=00004 sc=a4 st=14` -- a controller present, IRQ 1 arriving,
   scancodes real -- which is the case the ring-3 reader fixes rather than the USB one.
+
+  **THE RING-3 READER WAS ITSELF UNREACHABLE ON A MACHINE WITH NO SERIAL PORT, and that was
+  fixed on 2026-09-12.** The J4 reader above polls the 8042 in `con_getc`, *after* a serial
+  check -- and that check asked the COM1 line-status register whether a byte was waiting
+  without first asking whether there is a UART at `0x3F8` to answer. A machine with no serial
+  header reads `0xFF` from every register in that range, because nothing drives the ISA bus;
+  bit 0 of `0xFF` is the *receive-data-ready* bit, so the serial branch claimed a byte on every
+  pass, returned that floating `0xFF` as a character, and `ps2_poll()` beneath it never ran. So
+  the keyboard fix shipped working only on machines that also had a serial port -- which the
+  gates all do, and most laptops do not.
+  The same IdeaPad reported the second half of the story on 2026-09-12: `PS2 n=00001 sc=00
+  st=15`, an IRQ 1 count stuck at exactly 1 beside a status register with the output-buffer-full
+  bit set. One scancode had arrived and was sitting unread, and the 8042 raises no further
+  interrupt until the byte it is holding is taken -- so a dead keyboard and a full buffer are
+  one fact seen from two sides.
+  `console_getc` (kernel) and `con_getc` (`console_server`) now probe the UART's scratch
+  register at `+7` -- a plain read/write byte on a 16450 and every 16550 since, where a floating
+  bus returns `0xFF` whatever is written -- and skip serial RX entirely when it does not answer.
+  Two distinct probe values, neither `0x00` nor `0xFF`. An original 8250 has no scratch register
+  and would be called absent; that direction costs serial input, where the opposite costs the
+  keyboard, so it is the safe one. Only the READ is guarded: writes to an absent UART already
+  fall through, because a floating `0xFF` has the transmitter-empty bit set.
+  Gated by `make smoke-keyboard-noserial`, which boots under `-serial none` and reads the SCREEN
+  over QMP, there being no serial line to read. **The idle control is inside the gate**, because
+  the blinking cursor moves 216 bytes of an 864,015-byte screendump on its own and the first
+  version of that experiment scored the blink as a working keyboard. Falsified in all four
+  directions on 2026-09-12: fixed build 216 idle / 853 typed, arm (`SERIAL_PRESENCE_UNCHECKED=1`)
+  216 / 216, gate red under the arm, arm red against the fixed build. `make smoke-session` and
+  `make smoke-keyboard` both still pass, which is the check that the probe does not call a real
+  UART absent.
   Since 2026-09-07 the SATA half is *identified*: `src/kernel/ahci.c` finds an AHCI controller,
   brings each attached port up and asks the drive to IDENTIFY itself, so the boot log names the
   model and the capacity (`make smoke-ahci-detect`, which boots a q35 machine because QEMU's

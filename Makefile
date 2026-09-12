@@ -161,6 +161,7 @@ DEFECT_FLAGS = \
 	FB_TAG_IGNORED FB_TAG_ASSUME_TEXT \
 	FB_MAP_SELFTEST FB_MAP_LOW_HALF FB_CONSOLE_SELFTEST \
 	FB_CONSOLE_MIRRORED FB_INFO_ANY_DEVICE CONSOLE_FB_ABSENT CONSOLE_NO_KBD \
+	SERIAL_PRESENCE_UNCHECKED \
 	CONSOLE_KBD_SPLIT_ESC \
 	FB_GRID_FIXED_ROWS
 
@@ -3096,6 +3097,26 @@ CONSOLE_FB_ABSENT ?= 0
 # USERSPACE_CFLAGS. The arm for `make smoke-keyboard`.
 CONSOLE_NO_KBD ?= 0
 
+# SERIAL_PRESENCE_UNCHECKED=1 restores the console input path as it stood before
+# 2026-09-12: `inb(COM1_LSR) & 1` believed without first asking whether there is
+# a UART at 0x3F8 to answer. On a machine with no serial port every register in
+# the range floats to 0xFF, bit 0 of which is the line-status "receive data
+# ready" bit -- so the serial branch claims a byte forever, con_getc returns that
+# 0xFF, and the keyboard poll beneath it never runs. That is the whole of why a
+# laptop with no serial header booted to a prompt it could not be typed at.
+#
+# BOTH RINGS, because the defect is in both and fixing one would leave the other
+# to be rediscovered: src/kernel/terminal.c's console_getc drives early boot and
+# the debug shell, userspace/console_server.c's con_getc drives every prompt
+# after the handover. One flag so a single arm reddens the pair.
+# The USERSPACE half is applied after USERSPACE_CFLAGS is assigned (that variable
+# is a plain `=` further down, so a += here would be discarded); only the kernel
+# half belongs at top level.
+SERIAL_PRESENCE_UNCHECKED ?= 0
+ifeq ($(SERIAL_PRESENCE_UNCHECKED),1)
+CFLAGS += -DSERIAL_PRESENCE_UNCHECKED
+endif
+
 # CONSOLE_KBD_SPLIT_ESC=1 stops con_read_raw draining the tail of an expanded
 # arrow into the SAME reply, so the sequence reaches tui_getkey split across two.
 # That decoder reads only what it was handed and reports a sequence cut short as
@@ -3988,6 +4009,9 @@ USERSPACE_CFLAGS += -DTUI_CLAMP_OFF
 endif
 ifeq ($(INSTALLER_NO_CONFIRM),1)
 USERSPACE_CFLAGS += -DINSTALLER_NO_CONFIRM
+endif
+ifeq ($(SERIAL_PRESENCE_UNCHECKED),1)
+USERSPACE_CFLAGS += -DSERIAL_PRESENCE_UNCHECKED
 endif
 ifeq ($(READDIR_END_IS_NOENT),1)
 USERSPACE_CFLAGS += -DREADDIR_END_IS_NOENT
@@ -7653,6 +7677,40 @@ smoke-keyboard:
 # nothing arrived, rather than reading a refusal off a timeout: a timeout is
 # indistinguishable from a broken harness, and it would cost the whole budget
 # to reach.
+# THE KEYBOARD ON A MACHINE WITH NO SERIAL PORT, which is the configuration
+# smoke-keyboard structurally cannot test: that gate reads the guest's echo off
+# COM1, so it only ever runs where a UART exists. With none, every register at
+# 0x3F8 floats to 0xFF, whose bit 0 is the line-status "receive data ready" bit,
+# and con_getc's serial branch claims a byte forever -- so ps2_poll() below it
+# never runs and the machine cannot be typed at. A laptop reported exactly that
+# on 2026-09-12 (`PS2 n=00001 sc=00 st=15`: one scancode held unread, IRQ 1
+# stuck at 1 because the 8042 raises no more until the byte is taken).
+#
+# OBSERVED ON THE SCREEN over QMP, because there is no serial line to read, and
+# with an IDLE CONTROL inside the run -- the blinking cursor moves 216 bytes of
+# an 864,015-byte screendump all by itself, and the first version of this
+# experiment scored that blink as a working keyboard.
+.PHONY: smoke-keyboard-noserial
+smoke-keyboard-noserial:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory horus.iso
+	@python3 tools/noserial_keyboard_session.py --iso horus.iso \
+		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
+		--shots /tmp/horus-noserial
+
+# The falsifying arm. SERIAL_PRESENCE_UNCHECKED=1 is the console input path
+# before 2026-09-12: the line-status bit believed without first asking whether a
+# UART is there to answer. It must NOT be able to type.
+.PHONY: smoke-keyboard-noserial-control
+smoke-keyboard-noserial-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SERIAL_PRESENCE_UNCHECKED=1
+	@$(MAKE) --no-print-directory SERIAL_PRESENCE_UNCHECKED=1 horus.iso
+	@python3 tools/noserial_keyboard_session.py --iso horus.iso \
+		--expect-no-keyboard \
+		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
+		--shots /tmp/horus-noserial-control
+
 .PHONY: smoke-keyboard-control
 smoke-keyboard-control:
 	@$(MAKE) --no-print-directory clean

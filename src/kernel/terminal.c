@@ -168,9 +168,67 @@ uint8_t inb(uint16_t port) {
     return ret;
 }
 
+/* ---- is there a UART at COM1 at all? --------------------------------------- */
+/* A MACHINE WITH NO 16550 AT 0x3F8 READS 0xFF FROM EVERY REGISTER IN THE RANGE,
+ * because nothing drives the ISA bus and the pull-ups win. Bit 0 of 0xFF is set,
+ * and bit 0 of the line-status register means "receive data ready" -- so the
+ * unguarded `inb(0x3FD) & 1` in console_getc was TRUE forever on such a machine,
+ * and it returned that floating 0xFF as a character instead of ever reaching the
+ * keyboard buffer underneath it. The prompt could not be typed at, and the
+ * reason was that the console believed a bus nobody was driving.
+ *
+ * THAT IS NOT A THEORETICAL MACHINE, IT IS MOST LAPTOPS: a soldered-eMMC
+ * notebook has no serial header at all. Reproduced under QEMU with `-serial
+ * none` on 2026-09-12 -- typing on the emulated 8042 moved the screen by exactly
+ * the cursor-blink delta (216 bytes of an 864,015-byte screendump) and by
+ * nothing else, measured against an idle control of the same elapsed time that
+ * moved by the identical 216. The first run of that experiment had no control
+ * and read the blink as a live keyboard.
+ *
+ * THE MATCHING SYMPTOM ON THE HARDWARE is `PS2 n=00001 sc=00 st=15`: the 8042
+ * status register with its output-buffer-full bit set, one scancode sitting
+ * unread, and an IRQ 1 count stopped at exactly 1 -- because the controller
+ * raises no further interrupt until the byte it is holding is taken. A dead
+ * keyboard and a full buffer are the same fact seen from two sides.
+ *
+ * THE SCRATCH REGISTER IS THE TEST, NOT THE LINE-STATUS ONE. A 16450 and every
+ * 16550 after it carry a read/write scratch byte at +7 that holds what is
+ * written to it; a floating bus returns 0xFF whatever is written. TWO distinct
+ * values are written rather than one, so a bus that happens to float to the
+ * probe value cannot pass -- and neither value is 0x00 or 0xFF, which are the
+ * two a dead bus is likeliest to hand back. The cost is a false NEGATIVE on an
+ * original 8250, which has no scratch register; no machine this kernel targets
+ * has one, and the failure direction is the safe one -- a working serial port
+ * declared absent loses serial input, where the opposite loses the keyboard and
+ * is the defect being fixed.
+ *
+ * ONLY THE INPUT PATH IS GUARDED BY THIS. Writes to an absent UART are already
+ * harmless: they go to a port nobody decodes, and the transmitter-empty spin
+ * that precedes them reads 0xFF, whose THRE bit is set, so it falls straight
+ * through rather than hanging. The defect was only ever that a floating READ was
+ * believed. Leaving the write path alone also keeps the boot log exactly where
+ * it was on every machine that does have a port. */
+int g_com1_present = 1;   /* until serial_init measures it */
+
+int probe_com1_present(void) {
+    outb(0x3FF, 0xAA);
+    if (inb(0x3FF) != 0xAA) return 0;
+    outb(0x3FF, 0x55);
+    if (inb(0x3FF) != 0x55) return 0;
+    return 1;
+}
+
 char console_getc(void) {
     for (;;) {
+#ifdef SERIAL_PRESENCE_UNCHECKED
+        /* CONTROL ARM -- never ship. The unguarded read, which is TRUE forever
+         * on a machine with no UART: console_getc then returns a floating 0xFF
+         * and the keyboard branch below is unreachable. See
+         * `make smoke-keyboard-noserial-control`. */
         if (inb(0x3FD) & 1) {
+#else
+        if (g_com1_present && (inb(0x3FD) & 1)) {
+#endif
             return (char)inb(0x3F8);
         }
 

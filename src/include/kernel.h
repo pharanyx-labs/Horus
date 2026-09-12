@@ -2237,6 +2237,12 @@ uint64_t exec_reenter_switch(int t);
 void exec_reenter_arm(int t);
 int  exec_reenter_take(void);
 char console_getc(void);
+/* COM1 presence, measured by probe_com1_present() in serial_init rather than
+ * assumed. A machine with no UART reads 0xFF from the line-status register,
+ * whose bit 0 means "data ready" -- so an unguarded console_getc believes a byte
+ * is always waiting and never reaches the keyboard. See terminal.c. */
+extern int g_com1_present;
+int probe_com1_present(void);
 /* Set by the Makefile from DEFECT_ACTIVE: the space-separated list of
  * defect-reproducing flags this kernel was built with, or "none". Printed at
  * boot so a serial transcript is self-describing -- see main.c. The fallback

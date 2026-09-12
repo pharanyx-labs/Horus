@@ -471,6 +471,21 @@ jobs:
       # a bounded window rather than reading a refusal off a timeout.
       - name: Control arm — the console server does not read the keyboard
         run: make smoke-keyboard-control
+      # THE MACHINE WITH NO SERIAL PORT, which the two steps above structurally
+      # cannot cover: they read the guest's echo off COM1, so they only ever run
+      # where a UART exists. With none, every register at 0x3F8 floats to 0xFF,
+      # whose bit 0 is the line-status "receive data ready" bit, so con_getc's
+      # serial branch claims a byte forever and the keyboard poll beneath it is
+      # unreachable. Observed on the SCREEN over QMP, with an idle control in the
+      # run: the blinking cursor moves 216 bytes of an 864,015-byte screendump by
+      # itself, and scoring that as a keystroke is the mistake this gate encodes
+      # against.
+      - name: A keyboard on a machine with no serial port
+        run: make smoke-keyboard-noserial
+      # The arm is the input path before 2026-09-12: the line-status bit believed
+      # without asking whether a UART is there to answer it.
+      - name: Control arm — no UART, and the floating bus believed
+        run: make smoke-keyboard-noserial-control
       # The arrows, gated on the one screen that cannot be passed without them:
       # the installer's disk survey defaults to "Cancel, change nothing", so a
       # person at the machine must press Down to install at all.

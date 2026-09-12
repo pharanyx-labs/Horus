@@ -13,6 +13,35 @@ in this file.
 
 ---
 
+### Fixed
+
+- **A machine with no serial port could not be typed at, and the keyboard fix that shipped the
+  day before only worked where a UART was present.** `con_getc` asked the COM1 line-status
+  register whether a byte was waiting without first asking whether there is a 16550 at `0x3F8`
+  to answer. On a machine with no serial header every register in that range floats to `0xFF`,
+  because nothing drives the ISA bus, and bit 0 of `0xFF` is the *receive-data-ready* bit — so
+  the serial branch claimed a byte on every pass, returned that floating `0xFF` as a character,
+  and the `ps2_poll()` beneath it was **never reached**. The ring-3 keyboard reader (J4, **S89**)
+  was therefore unreachable on exactly the machines with no other way in: a laptop boots to a
+  prompt on its own screen and ignores its own keyboard. **Both rings had it** —
+  `console_getc` in `src/kernel/terminal.c` drives early boot and the debug shell, `con_getc` in
+  `userspace/console_server.c` drives every prompt after the handover — so both now probe the
+  UART's scratch register at `+7` and skip serial RX when nothing answers. Only the READ is
+  guarded; writes to an absent UART already fell through, a floating `0xFF` having the
+  transmitter-empty bit set.
+  **The hardware reading that identified it** was `PS2 n=00001 sc=00 st=15` from an IdeaPad: an
+  IRQ 1 count stuck at exactly 1 beside a status register with the output-buffer-full bit set —
+  one scancode delivered and sitting unread, the 8042 raising no further interrupt until it is
+  taken. A dead keyboard and a full buffer are one fact seen from two sides.
+  **Reproduced without the laptop**, under QEMU with `-serial none`, and gated by
+  `make smoke-keyboard-noserial`, which reads the SCREEN over QMP since there is no serial line
+  to read. **The idle control is inside the gate**: the blinking cursor moves 216 bytes of an
+  864,015-byte screendump by itself, and the first version of the experiment scored that blink
+  as a working keyboard. Falsified in all four directions (fixed 216 idle / 853 typed; arm
+  `SERIAL_PRESENCE_UNCHECKED=1` 216 / 216; gate red under the arm; arm red against fixed), with
+  `make smoke-session` and `make smoke-keyboard` still passing as the check that the probe does
+  not call a real UART absent.
+
 ### Security
 
 - **A finding published the same day was withdrawn: `create_task`'s unlocked cspace build is

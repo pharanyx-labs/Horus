@@ -1091,6 +1091,12 @@ static void keyboard_init(void) {
 }
 
 static void serial_init(void) {
+    /* ASKED BEFORE THE PORT IS CONFIGURED, and the order is deliberate: the
+     * scratch register at 0x3FF is untouched by the baud-rate programming
+     * below, so the answer is the same either way -- but a probe placed after a
+     * block of writes reads as though it depended on them. It does not. */
+    g_com1_present = probe_com1_present();
+
     outb(0x3F9, 0x00);
     outb(0x3FB, 0x80);
     outb(0x3F8, 0x03);

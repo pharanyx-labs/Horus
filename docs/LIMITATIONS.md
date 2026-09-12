@@ -2576,11 +2576,19 @@ old allocator and the new one read the same single block and no workload could t
   following it, as the kernel's `emit_char` has since it was written. Gated by
   `make smoke-console-scroll` (85161 bytes change on a scroll against 681 on a wrap), falsified
   by `CONSOLE_NO_SCROLL=1`.
-  **The cursor is a separate and still-open gap**: `console_server` never writes the VGA cursor
-  registers, so after the console handover the hardware cursor stays frozen wherever the kernel
-  left it — measured at row 36, column 0 on 2026-09-12, unmoved while a user name was typed at
-  the login prompt and again at the password prompt. The framebuffer console draws no cursor at
-  all, and never has. And `font_8x8` is still uploaded into the VGA font plane for 80x50 text mode --
+  **The cursor followed on 2026-09-12 too.** `console_server` had never written the 6845's cursor
+  registers, and the position lives there rather than in the cell array — so from the console
+  handover onward the hardware cursor stayed frozen wherever the kernel left it (measured at row
+  36, column 0, unmoved while a user name was typed at the login prompt and again at the password
+  prompt). It now moves with every character, as the kernel's `update_cursor` always has. Gated by
+  `make smoke-console-cursor`, which asserts a *displacement* — five characters, five columns —
+  because the frozen position varies between boots with wherever the boot log ended; falsified by
+  `CONSOLE_NO_CURSOR=1`.
+  **What remains open is the framebuffer console, which draws no cursor at all and never has.**
+  There is no hardware cursor on a linear framebuffer, so it needs a drawn one — an underline
+  painted into the cell and restored from `fb_cells` when it moves. Nothing on that path is
+  wrong today; it is simply absent, and it is a different piece of work from the register write
+  that fixed the text console. And `font_8x8` is still uploaded into the VGA font plane for 80x50 text mode --
   that mode is an 8x8 cell by definition -- so the unattributed asset still ships on a BIOS
   boot; `THIRD_PARTY.md` records the question as open rather than guessing an answer.
 

@@ -624,7 +624,7 @@ forbidden:
       (`security_properties`), with the deriver mirroring
       tools/check_invariants.py's own row regex so the two cannot disagree about
       what a property is.
-  - pattern: '68 QEMU integration targets'
+  - pattern: '(?<![0-9])68 QEMU integration targets'
     reason: >-
       site/index.html carried this from whenever the gate count was 68 until
       2026-08-28, when it was 88 -- undeclared, so nothing compared it to the
@@ -632,6 +632,14 @@ forbidden:
       not drift again. Found while auditing the public page for numbers that no
       checker owned; the lesson is that adding a checker does not retrofit
       coverage over claims nobody declared to it.
+      ANCHORED ON THE LEFT since 2026-09-12, and the reason is the failure it
+      caused: the gate count reached 168, whose text CONTAINS "68 QEMU
+      integration targets", so the ratchet fired on the correct number and the
+      build failed on a document that was right. A bare digit string is a
+      substring of every larger number ending in it, and this pattern was always
+      going to collide the moment the count passed 100. The lookbehind refuses a
+      preceding digit, so 68 is still caught and 168, 268 and 1068 are not. The
+      lesson generalises to every numeric entry in this list.
   - pattern: 'the capability space a child inherits is not'
     reason: >-
       site/index.html said this in the Track 2 summary for one day, between the

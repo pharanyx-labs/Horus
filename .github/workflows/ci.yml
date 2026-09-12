@@ -3251,6 +3251,39 @@ jobs:
         run: rustup target add x86_64-unknown-none
       - name: Drive the ring-3 shell over serial and assert auth + least-privilege enforcement
         run: make smoke-session
+      # THE CONSOLE'S OWN BEHAVIOUR, gated here rather than in the smoke-boot job
+      # on purpose. That job had grown from 33 to 52 minutes against a 105-minute
+      # backstop as this session's console gates landed in it, and each of these
+      # costs a `make clean` and a full rebuild -- the userspace-only -D they turn
+      # on is invisible to make, because .build-flags stamps CFLAGS only and
+      # userspace/%.o has no prerequisite on it. This job drives the real shell,
+      # runs in about two minutes, and is the right home for them until that
+      # build dependency is fixed.
+      #
+      # The cursor must follow the text: console_server never wrote the 6845's
+      # cursor registers, so it froze where the kernel left it. The assertion is
+      # a DISPLACEMENT -- five characters, five columns -- because the frozen
+      # position varies between boots with wherever the boot log happened to end.
+      - name: The hardware cursor follows the text
+        run: make smoke-console-cursor
+      - name: Control arm — the cursor is frozen where the kernel left it
+        run: make smoke-console-cursor-control
+      # And the console must CONTINUE the boot log where the kernel stopped it
+      # rather than restart at the top, which left the tail of the kernel's log
+      # stranded below the login prompt. The assertion is a shape: no row below
+      # the cursor may carry text.
+      - name: The log ends where the prompt is, with nothing stranded below
+        run: make smoke-console-resume
+      - name: Control arm — the old boot log stranded below the prompt
+        run: make smoke-console-resume-control
+      # An arrow key must not type its own escape sequence into the line. The
+      # assertion is the consequence -- press Up, then log in normally and
+      # require the login to succeed -- so a guest that merely stopped reading
+      # the serial line cannot pass it.
+      - name: An arrow key does nothing instead of typing its escape sequence
+        run: make smoke-console-escape
+      - name: Control arm — the arrow types `[A` and the login fails
+        run: make smoke-console-escape-control
       # `ls` takes a path. It matched the literal strings "ls" and "ls -l" and
       # nothing else, so `ls /bin` fell through the whole builtin chain and came
       # back "Unknown command" -- which reads as "no such command" rather than

@@ -842,43 +842,55 @@ smoke-rollback` restores an entire earlier disk image between boots and requires
 
 ---
 
-### 1.13 `create_task` builds a cspace unlocked, and the task is already published **[HORUS-20260911-03b]**
+### 1.13 ~~`create_task` builds a cspace unlocked, and the task is already published~~ **WITHDRAWN 2026-09-12** — **[HORUS-20260911-03b]** was not a defect
 
-`rust_cap_revoke_global` reads every live cspace and decides from what it finds which capabilities
-belong to a revoked lineage and which kernel objects no capability names any more. It is documented
-to rely on `cap_lock` making every cspace quiescent — and that is a property of the set of writers
-that take the lock, not of the lock. Five writers that did not were closed on 2026-09-12
-(`SECURITY.md` **S94**); this is the sixth, and it is left open deliberately.
+**This finding was wrong, and the correction is the content of this section.** It was published on
+2026-09-12 alongside `SECURITY.md` **S94**, claiming that because `create_task` builds a new task's
+cspace with no lock held while `tasks[id].state = 1` is already set, a revocation sweep on another
+CPU could see the cspace empty mid-build and let `kobj_gc` destroy the reply endpoint a capability
+was about to name — a use-after-free reachable from a concurrent revoke.
 
-`create_task` zeroes all `CNODE_SIZE` slots of a new task's cspace and then installs its primordial
-capabilities — TCB, frame, reply endpoint, console, encrypted storage — with no lock held. The
-comfortable reading is that the task is private until it is published, and **that reading is false**:
-`tasks[id].state = 1` is set some seventy lines earlier, and the sweep enumerates exactly
-`state != 0 && tasks[t].cspace != NULL`. So a sweep on another CPU can observe this cspace mid-build,
-in two distinguishable windows:
+**The premise about visibility is true. The conclusion does not follow.** The sweep does enumerate
+exactly `state != 0 && tasks[t].cspace != NULL`, so it genuinely can read this cspace mid-build.
+What it cannot do is act on anything it reads there:
 
-- **Before the zeroing loop**, for a kernel-reserve task where the cspace pointer is inherited from
-  the slot's previous occupant, it holds a **dead task's capabilities**. `kobj_gc` then counts them as
-  live references and declines to reclaim objects it should — a missed reclaim, which is the safe
-  direction.
-- **After the zeroing and before the installs**, it reads empty. `kobj_gc` may then conclude the
-  reply endpoint this function is about to install a capability to is unreachable and destroy it, so
-  `create_task` installs a capability naming a freed object. That is the unsafe direction, and it is
-  the one that matters.
+- **`kobj_gc` only ever destroys dynamic objects** — `dyn_eps`, `dyn_notifs`, `dyn_frames` — and
+  `mark_cap` only marks an object inside those index ranges. Every capability `create_task`
+  installs names something outside them: `USER_AREA_BASE` for the slot-3 frame (`mark_cap`'s own
+  comment says so), `0` for console and encrypted storage, whose types `mark_cap` does not handle
+  at all, the task's own id for its `CAP_TCB`, and the reply endpoint index, which is a *static*
+  table index — `reply_ep_for_task` is `REPLY_EP_BASE + tid`, not an allocation. **The object that
+  was supposed to be destroyed cannot be destroyed by that code at all.**
+- **`revoke_subtree` skips `badge == 0`**, and every capability `create_task` installs has
+  `badge = 0`. No revocation can match one regardless of how partially written it is.
+- **A slot read mid-install has `serial == 0`**, and `mark_cap`'s first statement returns on that.
+- **A reused task slot's cspace was already fully zeroed** under `cap_lock` by
+  `cap_release_cspace` at teardown, which clears `serial` too — so the window between
+  `state = 1` and the zeroing loop exposes an empty cspace, not a dead task's capabilities.
 
-**Why it is not fixed in the same commit.** The region that would have to be covered calls
-`kobj_alloc`, which takes the untyped lock. Covering it means holding `cap_lock` across that, which
-is consistent with the existing `cap_lock` -> `untyped_lock` order but is still a lock-ordering
-change in the function that runs for every task on every boot — a deadlock there is a kernel that
-does not boot, and it wants its own commit, its own witness and its own arm rather than riding
-along with five call-site rewrites.
+**How the error was made, since that is the part worth keeping.** The hazard was reasoned from the
+*shape* of the problem — an unlocked writer, a sweep that reads every cspace, the kernel's own
+comment about observing a slot mid-install — and written up without following the object through to
+the code that frees it. The kernel comment it leaned on is real and the class it describes is real;
+it simply does not reach this site. **The audit instruction it violated was its own**: point to the
+enforcing code path and say what happens on failure. One `grep` for what `kobj_gc` destroys would
+have settled it, and did, a day later.
 
-**What bounds it today.** Reaching it needs a revoke on one CPU concurrent with a task creation on
-another, so `SMP=0` builds are unaffected, and the dangerous window is the ~60 lines between the
-zeroing loop and the endpoint install. Nothing in the tree is known to have hit it; that is a
-statement about observation, not about safety. It is declared `status: unlocked` with this finding ID
-in `.github/cap-write-sites.yml`, so `tools/check_cap_writes.py` fails the build if the declaration
-is ever dropped without the site being fixed.
+**What replaced it.** `create_task` is declared `status: invisible-to-the-sweep` in
+`.github/cap-write-sites.yml` — the sweep can read these slots and cannot act on them — and the
+guards that make that true are **pinned** there in a `depends_on:` list that
+`tools/check_cap_writes.py` verifies still exists, because an exemption resting on code in three
+other files is one that expires the day somebody edits one of them. One of the five pins is S95's
+static assert: the reply endpoint index has to stay below `DYN_EP_BASE`, and before S95 it did not
+for task ids ≥ 64 — so reason one above was not sound until that landed, though its failure
+direction was a missed reclaim rather than a premature free.
+
+**What is still true and not claimed as a defect:** `create_task` does not hold `cap_lock`, so it
+is not covered by the discipline S94 establishes for every other cap-write. It is exempt by
+argument rather than by construction, and an argument is weaker than a lock. Taking the lock there
+would mean holding it across a `kobj_alloc` — a lock-ordering change in the function that runs for
+every task on every boot — which is work that wants a reason, and "to close a defect" is no longer
+one.
 
 ### 1.14 An inherited stdio pipe end is a derivation root, so revoking the parent does not reach it **[HORUS-20260911-04]**
 

@@ -15,6 +15,28 @@ in this file.
 
 ### Security
 
+- **A finding published the same day was withdrawn: `create_task`'s unlocked cspace build is
+  safe.** `[HORUS-20260911-03b]` S94 listed it as an open defect on the reasoning that a
+  revocation sweep can read a new task's cspace mid-build — `tasks[id].state = 1` is set some
+  seventy lines before the cspace exists and the sweep enumerates exactly
+  `state != 0 && cspace != NULL` — and that `kobj_gc` could therefore destroy the reply endpoint
+  a capability was about to name. **The visibility premise is true; the conclusion is not.**
+  `reply_ep_for_task` returns a *static* table index and `kobj_gc` destroys only `dyn_eps` /
+  `dyn_notifs` / `dyn_frames`, so the object in question cannot be freed by that code at all.
+  Nor can a revocation match anything there: every capability `create_task` installs carries
+  `badge = 0`, which `revoke_subtree` skips outright, and every object it names is outside every
+  range `mark_cap` reclaims. The error was reasoning from the *shape* of the hazard — an unlocked
+  writer, a sweep that reads every cspace — without following the object through to the code that
+  frees it, which is the audit instruction it broke: point at the enforcing path. The site is now
+  declared `status: invisible-to-the-sweep` in `.github/cap-write-sites.yml`, and because that
+  argument rests on guards in three *other* files, they are **pinned** there in a `depends_on:`
+  list that `tools/check_cap_writes.py` verifies still exists — a new rule with its own
+  falsification arms, including the silent direction (reindenting a guard must not fail the
+  build). One of the five pins is S95's static assert: `mark_cap`'s dynamic-range bound only
+  misses the slot-4 reply endpoint while that index stays below `DYN_EP_BASE`, which was not true
+  for task ids ≥ 64 before S95 landed. `docs/LIMITATIONS.md` 1.13 records how the error was made.
+
+
 - **A task's "private" reply endpoint was another task's object, for half the task id space.**
   `[HORUS-20260912-01]` Every task gets its own reply endpoint because a blocking `SYS_IPC_CALL`
   parks on that endpoint's single `blocked_waiter`, and the index-space map in
@@ -59,10 +81,10 @@ in this file.
   a revoked source refused rather than copied). `SECURITY.md` **S94**; witness `make
   smoke-captest`, falsified by `PIPE_CAP_UNACCOUNTED=1`. The locking half is gated statically by
   `tools/check_cap_writes.py` against `.github/cap-write-sites.yml`, because a runtime arm for a
-  race inside a twelve-field store would be probabilistic at an unmeasured rate. Two sites stay
-  open and are tracked rather than implied: `create_task` (**HORUS-20260911-03b**,
-  `docs/LIMITATIONS.md` 1.13) and the `badge = 0` on inherited stdio ends
-  (**HORUS-20260911-04**, 1.14).
+  race inside a twelve-field store would be probabilistic at an unmeasured rate. One site remains
+  open: the `badge = 0` on inherited stdio ends (**HORUS-20260911-04**, `docs/LIMITATIONS.md`
+  1.14). `create_task` was listed here as a second open site, **HORUS-20260911-03b**, and that
+  was wrong — see the entry below; it is exempt by a checked argument, not an open defect.
 
 - **A console client could read the password typed at the next `sudo` prompt.** Every task the
   shell spawns inherits a send-only console endpoint capability — that is how `ls` gets a stdout —

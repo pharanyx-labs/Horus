@@ -483,9 +483,13 @@ cspace and decides object reachability from what it finds; a capability is six f
 store writes them one at a time, so an unlocked writer can show the sweep a slot whose `type` is
 already set while `object` and `serial` still describe the slot's previous occupant. Which
 functions write a capability slot, and what makes each write safe, is declared in
-`.github/cap-write-sites.yml` and gated by `tools/check_cap_writes.py`. One site is still
-unlocked and is listed there with the finding that tracks it (`create_task`,
-**HORUS-20260911-03b**).
+`.github/cap-write-sites.yml` and gated by `tools/check_cap_writes.py`. One site does not take the
+lock -- `create_task`, building a cspace for a task that is already published -- and is exempt by a
+*stated argument* rather than by construction: the sweep can read those slots but cannot act on
+them, because every capability there has `badge = 0` (which `revoke_subtree` skips) and names an
+object outside every range `kobj_gc` reclaims. The guards that argument rests on are pinned in that
+manifest and checked, since they live in three other files. It was briefly published as an open
+defect, **[HORUS-20260911-03b]**, and withdrawn on 2026-09-12 (`docs/LIMITATIONS.md` 1.13).
 
 ### Revocation
 

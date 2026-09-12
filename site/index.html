@@ -779,8 +779,10 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             occupant. On 2026-09-12 five writes were found that did not take the lock, thirteen
             days after the same defect had been diagnosed and fixed at a sixth site. Which
             functions write a capability slot, and what makes each write safe, is now
-            <em>declared</em> in a manifest a CI job checks, and one site that is still unlocked
-            is listed there with the finding that tracks it rather than left to be discovered.
+            <em>declared</em> in a manifest a CI job checks. One site does not take the lock and
+            is exempt by a written argument instead &mdash; and the guards that argument leans on,
+            which live in other files, are pinned in the manifest so the exemption cannot quietly
+            expire when one of them is edited.
           </p>
           <p>
             A capability naming the right object is only half of it &mdash; the object has to be the

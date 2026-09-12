@@ -163,6 +163,8 @@ DEFECT_FLAGS = \
 	FB_CONSOLE_MIRRORED FB_INFO_ANY_DEVICE CONSOLE_FB_ABSENT CONSOLE_NO_KBD \
 	SERIAL_PRESENCE_UNCHECKED \
 	CONSOLE_BACKSPACE_NO_ERASE \
+	PCI_SCAN_TRACE \
+	PCI_BUS0_ONLY \
 	CONSOLE_KBD_SPLIT_ESC \
 	FB_GRID_FIXED_ROWS
 
@@ -2702,6 +2704,30 @@ KDIAG_SPLIT_WIDEN ?= 0
 KDIAG_PORTS_GRANTABLE ?= 0
 KDIAG_NOISE ?= 0
 PS2_PROBE ?= 0
+# PCI_SCAN_TRACE=1 walks all 256 PCI buses and prints every function it finds --
+# bus:dev.fn, vendor:device, class -- naming SD/eMMC controllers, mass storage and
+# PCI-to-PCI bridges (with their secondary bus) as it goes. NOT a defect and NOT a
+# change of authority: it only reads config space and prints, and adds nothing to
+# iodev_table, so what is delegatable is exactly what it was. It is behind a flag
+# because iodev_init's own closing line is deliberately a COUNT -- the kernel log
+# is readable by anything holding CAP_KERNEL_LOG, and a full hardware enumeration
+# is the bus walk that line refuses to hand out. It answers one question on real
+# hardware: when `sdhci: no SD/eMMC host controller` is printed, is the controller
+# behind a bridge (the shipping scan walks bus 0 only), on bus 0 under a class
+# find_sdhci_controller does not match, or not on PCI at all?
+PCI_SCAN_TRACE ?= 0
+# PCI_BUS0_ONLY=1 restores the enumeration as it stood before 2026-09-12: walk
+# bus 0 and do not follow PCI-to-PCI bridges. A device behind a bridge is then
+# absent from iodev_table, so no capability can name it and no driver can find
+# it -- which is why an IdeaPad whose eMMC controller is not on bus 0 printed
+# `sdhci: no SD/eMMC host controller` and could not be installed onto.
+PCI_BUS0_ONLY ?= 0
+ifeq ($(PCI_BUS0_ONLY),1)
+CFLAGS += -DPCI_BUS0_ONLY
+endif
+ifeq ($(PCI_SCAN_TRACE),1)
+CFLAGS += -DPCI_SCAN_TRACE
+endif
 KDIAG_PROBE ?= 0
 KDIAG_RING3_PROBE ?= 0
 KDIAG_WIDEN_SPINS ?= 200000000
@@ -8031,6 +8057,30 @@ smoke-serial-bound-control:
 #
 # Cleans first: it shares its job with userspace-flag arms, and userspace/%.o has
 # no .build-flags prerequisite (see the ordering note in ci.yml).
+# AN SD/eMMC CONTROLLER BEHIND A PCI-TO-PCI BRIDGE. smoke-sdhci-detect attaches
+# the controller with no bus argument, so QEMU puts it on bus 0 -- where the
+# enumeration has always looked. Every SD gate was therefore blind to WHERE the
+# controller is, while the walk did not follow bridges, and an IdeaPad whose
+# storage is eMMC printed `sdhci: no SD/eMMC host controller` and could not be
+# installed onto. The topology is spelled out rather than left to defaults.
+#
+# The pair asserts the topology between them: the arm walks bus 0 only and
+# reports the controller ABSENT on the same command line, which is what proves it
+# is not on bus 0. Neither half establishes that alone.
+.PHONY: smoke-sdhci-bridge
+smoke-sdhci-bridge:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) tools/sdhci_bridge_test.sh horus.iso
+
+.PHONY: smoke-sdhci-bridge-control
+smoke-sdhci-bridge-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PCI_BUS0_ONLY=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SDHCI_BRIDGE_EXPECT=absent \
+		SDHCI_BRIDGE_EVIDENCE=.sdhci-bridge-control-evidence \
+		tools/sdhci_bridge_test.sh horus.iso
+
 .PHONY: smoke-sdhci-detect
 smoke-sdhci-detect:
 	@$(MAKE) --no-print-directory clean

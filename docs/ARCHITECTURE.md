@@ -241,9 +241,12 @@ the identical instruction takes a #GP.
 
 Index 0 is reserved and names nothing, so the two fields that default to zero (a task's
 `io_device` and a capability's `object`) fail closed instead of resolving to the console. The
-bus scan does not follow PCI-to-PCI bridges: a device behind one is *absent* from the table, so
-no capability can name it and no authority over it can be granted. Missing a device costs a
-feature; inventing one would cost the property.
+bus scan walks the tree, breadth-first from bus 0 through each PCI-to-PCI bridge's secondary bus
+(since 2026-09-12, when a laptop's eMMC controller turned out not to be on bus 0). A bus is
+scanned at most once and a bridge is followed only downward, so hardware reporting a cyclic
+topology costs nothing. A device the walk does not reach is still *absent* from the table, so no
+capability can name it and no authority over it can be granted: missing a device costs a feature;
+inventing one would cost the property.
 
 ### `netd`: a network driver in ring 3
 

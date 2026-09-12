@@ -13,6 +13,40 @@ in this file.
 
 ---
 
+### Added
+
+- **The PCI scan walks the bus tree, so a device behind a bridge is no longer invisible.**
+  `iodev_init` covered bus 0 and did not follow PCI-to-PCI bridges, on the reasoning — written
+  into `src/kernel/pci.c` — that bus 0 "is every device on the machines this kernel targets" and
+  that missing one merely costs a feature. Both halves held for QEMU's i440fx and q35 and failed
+  on the first real laptop: an IdeaPad whose internal storage is soldered eMMC printed
+  `sdhci: no SD/eMMC host controller`, because its controller is not on bus 0, and the cost was
+  not a feature but the machine being uninstallable.
+  **This makes devices reachable that were not reachable before**, which is the security-relevant
+  half and is stated first: a function behind a bridge now enters `iodev_table`, so a capability
+  can be minted naming it. Nothing else about the model moves — configuration space is still
+  never exposed, ring 3 still names a table index and never a bus address, and every BAR goes
+  through the validation `pci_add_function` already applied. What changed is the *set* of
+  devices, not what may be done with one; a device the walk still does not reach stays absent and
+  ungrantable.
+  **Breadth-first over an explicit 256-byte queue, not recursion**, because bus numbers come from
+  hardware and a depth of 255 is reachable from malformed config space. **Two independent guards
+  against a cycle**: each bus is scanned at most once, and a bridge is followed only downward
+  (`sec > bus`). Either alone terminates the walk.
+  Gated by `make smoke-sdhci-bridge`, with `PCI_BUS0_ONLY=1` as the arm — which is also what
+  asserts the topology, since a controller bus 0 cannot see is not on bus 0. Falsified in all
+  four directions; `smoke-sdhci-detect` and `smoke-net` still pass, the check that enumeration
+  order and therefore every `iodev_table` index is unchanged where there are no bridges.
+- **`PCI_SCAN_TRACE=1`, an instrument that says what is actually on the bus.** Walks all 256
+  buses and prints every function (`bus:dev.fn  vendor:device  class=…`), naming SD/eMMC
+  controllers, mass storage and bridges with their secondary bus. It changes no authority — it
+  reads config space and prints, and adds nothing to `iodev_table`. Behind a flag because
+  `iodev_init`'s own closing line is deliberately a count: the kernel log is readable by anything
+  holding `CAP_KERNEL_LOG`, and a full hardware enumeration is the bus walk that line refuses to
+  hand out. It exists to separate the three explanations for `no SD/eMMC host controller` — behind
+  an unreached bridge, an unmatched class, or not on PCI at all — which want different fixes and
+  are indistinguishable from that one line.
+
 ### Fixed
 
 - **Backspace did not erase on the screen, only in the line buffer.** `console_server`'s

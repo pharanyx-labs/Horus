@@ -89,6 +89,8 @@ static inline uint32_t inl(uint16_t port) {
 #define PCI_MSI_CTRL      0x02   /* offset from the capability header */
 
 #define PCI_HDR_MULTIFN   0x80
+#define PCI_SECONDARY_BUS 0x19   /* type-1 header: the bus number behind a bridge */
+#define PCI_CLASS_BRIDGE_PCI 0x0604u  /* class:subclass of a PCI-to-PCI bridge   */
 #define PCI_HDR_TYPE_MASK 0x7F
 #define PCI_HDR_GENERAL   0x00   /* type 0: the only header with 6 BARs */
 
@@ -441,29 +443,182 @@ static void pci_add_function(uint8_t bus, uint8_t dev, uint8_t fn,
  *
  * Called from kernel_main BEFORE cap_init, because cap_init mints the primordial
  * device capabilities and each one has to name an index that already exists. */
+#ifdef PCI_SCAN_TRACE
+/* WALK EVERY BUS AND SAY WHAT IS THERE. An instrument, not a defect and not a
+ * change of authority: it reads configuration space and prints, and it adds
+ * NOTHING to iodev_table. What is delegatable after this runs is exactly what
+ * was delegatable before it -- the shipping scan above still walks bus 0 only,
+ * and a device this trace names but that scan did not find remains absent from
+ * the table, so no capability can be minted over it.
+ *
+ * WHY IT IS BEHIND A FLAG AND NOT ALWAYS ON. iodev_init's closing line is
+ * deliberately a COUNT rather than a listing, because the kernel log is readable
+ * by anything holding CAP_KERNEL_LOG and a full enumeration of the machine's
+ * hardware is exactly the bus walk that line refuses to hand out. This does hand
+ * it out, so it is opt-in at build time and announces itself in DEFECT_FLAGS
+ * like every other instrument that changes what the machine says.
+ *
+ * WHAT IT IS FOR. An IdeaPad whose internal storage is eMMC reported `sdhci: no
+ * SD/eMMC host controller` on 2026-09-12. Three explanations fit that line and
+ * they want completely different fixes: the controller sits on a bus behind a
+ * PCI-to-PCI bridge, which this scan does not follow (see the note at the top of
+ * this file); it is on bus 0 but does not carry class 08:05, so
+ * find_sdhci_controller skips it; or it is not on PCI at all, which no extension
+ * of this walk would ever reach. Guessing between them is how a week gets spent
+ * on the wrong one. The trace answers it in one boot, off the machine itself.
+ *
+ * BRIDGES ARE NAMED WITH THEIR SECONDARY BUS, so the topology is readable rather
+ * than inferred: a bridge line followed by devices on that bus number is the
+ * first case above, stated outright. */
+static void trace_hex(uint32_t v, int digits) {
+    static const char hex[] = "0123456789abcdef";
+    for (int sh = (digits - 1) * 4; sh >= 0; sh -= 4)
+        print_char(hex[(v >> sh) & 0xF]);
+}
+
+static void pci_scan_trace(void) {
+    print("PCISCAN: walking all 256 buses -- an instrument; the shipping scan is bus 0 only\n");
+    uint32_t found = 0, bridges = 0, sdhci = 0;
+
+    for (uint32_t bus = 0; bus < 256; bus++) {
+        for (uint8_t dev = 0; dev < 32; dev++) {
+            for (uint8_t fn = 0; fn < 8; fn++) {
+                uint32_t id = pci_cfg_read32((uint8_t)bus, dev, fn, PCI_VENDOR_ID);
+                uint16_t vendor = (uint16_t)(id & 0xFFFF);
+                if (vendor == 0xFFFF) {
+                    if (fn == 0) break;       /* no function 0 => no device here */
+                    continue;
+                }
+                uint32_t rev = pci_cfg_read32((uint8_t)bus, dev, fn, PCI_REVISION);
+                uint32_t cls = rev >> 8;      /* class:subclass:prog-if */
+                uint8_t  hdr = pci_cfg_read8((uint8_t)bus, dev, fn, PCI_HEADER_TYPE);
+
+                print("PCISCAN: ");
+                trace_hex(bus, 2); print(":"); trace_hex(dev, 2);
+                print("."); trace_hex(fn, 1);
+                print("  "); trace_hex(vendor, 4);
+                print(":"); trace_hex(id >> 16, 4);
+                print("  class="); trace_hex(cls, 6);
+
+                if ((cls >> 8) == 0x0805u) {
+                    print("  <== SD/eMMC HOST CONTROLLER");
+                    sdhci++;
+                } else if ((cls >> 8) == 0x0604u) {
+                    uint8_t sec = pci_cfg_read8((uint8_t)bus, dev, fn, PCI_SECONDARY_BUS);
+                    print("  <== PCI-to-PCI bridge, secondary bus ");
+                    trace_hex(sec, 2);
+                    bridges++;
+                } else if ((cls >> 16) == 0x01u) {
+                    print("  <== mass storage");
+                }
+                print("\n");
+                found++;
+
+                if (fn == 0 && !(hdr & PCI_HDR_MULTIFN)) break;
+            }
+        }
+    }
+
+    print("PCISCAN: ");
+    print_decimal(found);
+    print(" functions, ");
+    print_decimal(bridges);
+    print(" bridges, ");
+    print_decimal(sdhci);
+    print(" SD/eMMC host controller(s)\n");
+    /* SAID OUTRIGHT RATHER THAN LEFT TO BE COUNTED. The whole question this
+     * instrument exists to answer is whether the controller is reachable by a
+     * walk that does not follow bridges, and a reader should not have to compare
+     * bus numbers by eye to find out. */
+    if (sdhci == 0)
+        print("PCISCAN: no SD/eMMC controller anywhere on PCI -- extending the bus walk "
+              "would not find one, so the device is not on PCI at all\n");
+}
+#endif /* PCI_SCAN_TRACE */
+
+/* WALK THE BUS TREE, NOT JUST BUS 0.
+ *
+ * THIS MAKES DEVICES REACHABLE THAT WERE NOT REACHABLE BEFORE, which is the
+ * whole point and is stated first because it is the security-relevant half: a
+ * function behind a PCI-to-PCI bridge now enters iodev_table, so a capability
+ * CAN be minted naming it. Nothing else about the authority model moves --
+ * config space is still never exposed, ring 3 still names an index and never a
+ * bus address, and every BAR still goes through the same validation
+ * pci_add_function has always applied. What changes is the SET of devices, not
+ * what may be done with one.
+ *
+ * WHY IT HAD TO CHANGE. The header of this file argued that bus 0 was enough
+ * because "on the machines this kernel targets (QEMU i440fx and q35) every
+ * device is on bus 0", and that missing a device merely costs a feature. Both
+ * halves held right up until somebody booted a laptop: an IdeaPad whose internal
+ * storage is eMMC printed `sdhci: no SD/eMMC host controller` on 2026-09-12,
+ * because its controller is not on bus 0. The cost of missing that device is not
+ * a feature, it is the machine being uninstallable. Reproduced exactly under
+ * QEMU -- `-device sdhci-pci` behind a `pcie-pci-bridge` lands at 01:01.0 and
+ * produced that identical line.
+ *
+ * BREADTH-FIRST WITH AN EXPLICIT QUEUE, NOT RECURSION. A recursive walk is the
+ * obvious shape and is wrong here: bus numbers come from hardware, so a depth of
+ * 255 is reachable from malformed or hostile config space, and this kernel has
+ * spent enough on kernel-stack exhaustion already. The queue is 256 bytes and
+ * the visited bitmap 32, both fixed and both on this frame.
+ *
+ * TWO INDEPENDENT GUARDS AGAINST A CYCLE, because one of them is about trust. A
+ * bus is scanned at most once (the bitmap), and a bridge is only followed
+ * DOWNWARD (sec > bus). Either alone terminates the walk; together they mean a
+ * bridge reporting a secondary bus of 0, or its own, or one already seen, costs
+ * nothing at all. Bridges number their buses monotonically downward in every
+ * conformant topology, so the second guard rejects only hardware that is already
+ * lying. The direction of the failure is unchanged from the note at the top of
+ * this file: a device the walk does not reach stays ABSENT and ungrantable. */
+static void pci_walk_tree(void) {
+    uint8_t queue[256];
+    uint8_t seen[32];
+    uint32_t head = 0, tail = 0;
+
+    for (uint32_t i = 0; i < sizeof(seen); i++) seen[i] = 0;
+    queue[tail++] = 0;
+    seen[0] |= 1u;
+
+    while (head < tail) {
+        const uint8_t bus = queue[head++];
+
+        for (uint8_t dev = 0; dev < 32; dev++) {
+            uint32_t id = pci_cfg_read32(bus, dev, 0, PCI_VENDOR_ID);
+            if ((uint16_t)(id & 0xFFFF) == 0xFFFF) continue;  /* no fn 0 => no device */
+
+            const uint8_t hdr = pci_cfg_read8(bus, dev, 0, PCI_HEADER_TYPE);
+            const uint8_t last_fn = (hdr & PCI_HDR_MULTIFN) ? 7 : 0;
+
+            for (uint8_t fn = 0; fn <= last_fn; fn++) {
+                uint32_t fid = pci_cfg_read32(bus, dev, fn, PCI_VENDOR_ID);
+                uint16_t fv = (uint16_t)(fid & 0xFFFF);
+                if (fv == 0xFFFF) continue;
+
+                pci_add_function(bus, dev, fn, fv, (uint16_t)(fid >> 16));
+
+#ifndef PCI_BUS0_ONLY
+                const uint32_t cls = pci_cfg_read32(bus, dev, fn, PCI_REVISION) >> 8;
+                if ((cls >> 8) != PCI_CLASS_BRIDGE_PCI) continue;
+
+                const uint8_t sec = pci_cfg_read8(bus, dev, fn, PCI_SECONDARY_BUS);
+                if (sec <= bus) continue;                     /* downward only */
+                if (seen[sec >> 3] & (uint8_t)(1u << (sec & 7))) continue;
+                if (tail >= sizeof(queue)) continue;          /* cannot overflow; be explicit */
+                seen[sec >> 3] |= (uint8_t)(1u << (sec & 7));
+                queue[tail++] = sec;
+#endif
+            }
+        }
+    }
+}
+
 void iodev_init(void) {
     for (uint32_t i = 0; i < IODEV_MAX; i++) iodev_table[i].present = 0;
     iodev_count = 0;
     iodev_add_platform();   /* claims index IODEV_PLATFORM; index 0 stays absent */
 
-    for (uint8_t dev = 0; dev < 32; dev++) {
-        uint32_t id = pci_cfg_read32(0, dev, 0, PCI_VENDOR_ID);
-        uint16_t vendor = (uint16_t)(id & 0xFFFF);
-        if (vendor == 0xFFFF) continue;             /* no function 0 => no device */
-        uint16_t device = (uint16_t)(id >> 16);
-
-        uint8_t hdr = pci_cfg_read8(0, dev, 0, PCI_HEADER_TYPE);
-        pci_add_function(0, dev, 0, vendor, device);
-
-        if (hdr & PCI_HDR_MULTIFN) {
-            for (uint8_t fn = 1; fn < 8; fn++) {
-                uint32_t fid = pci_cfg_read32(0, dev, fn, PCI_VENDOR_ID);
-                uint16_t fv = (uint16_t)(fid & 0xFFFF);
-                if (fv == 0xFFFF) continue;
-                pci_add_function(0, dev, fn, fv, (uint16_t)(fid >> 16));
-            }
-        }
-    }
+    pci_walk_tree();
     iodev_ready = 1;
 
     /* Map every resolved MSI-X table page for the KERNEL, here at boot and not
@@ -494,7 +649,19 @@ void iodev_init(void) {
      * a bus walk anyone with CAP_KERNEL_LOG could read. */
     print("iodev: ");
     print_decimal((uint64_t)(iodev_count - IODEV_PLATFORM));
+#ifdef PCI_BUS0_ONLY
+    /* The arm does not walk the tree, and a log that said it did would mislead
+     * exactly the reader who is debugging why a device is missing. */
     print(" delegatable devices (platform + PCI bus 0)\n");
+#else
+    print(" delegatable devices (platform + the PCI bus tree)\n");
+#endif
+
+#ifdef PCI_SCAN_TRACE
+    /* After the real scan, so the count above still describes what is
+     * delegatable and this cannot be mistaken for part of it. */
+    pci_scan_trace();
+#endif
 }
 
 /* ---- queries ------------------------------------------------------------- */

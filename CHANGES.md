@@ -13,6 +13,24 @@ in this file.
 
 ---
 
+### Security
+
+- **A console client could read the password typed at the next `sudo` prompt.** Every task the
+  shell spawns inherits a send-only console endpoint capability — that is how `ls` gets a stdout —
+  and until now that same capability bought `CON_OP_GETPASS`. `console_server` served input reads
+  to whoever asked: the file contained no call to `sys_ipc_sender` at all, against `fs_server` next
+  door which calls it on every request. So any program a person ran could loop on `GETPASS` and
+  collect the password for `sudo`, which is uid 0 — and, since the same password opens the
+  volume's key slot, the volume. The kernel-side `SYS_GET_LINE` was hardened for this exact class
+  on 2026-08-24 ([H-3]'s sixth door, console input); the ring-3 server that replaced it as the live
+  input path inherited the gate's absence rather than its repair. `GETPASS` is now served only to
+  an **input owner** that `init` registers immediately before it resumes the shell, and an unset
+  owner refuses rather than serves. `SYS_IPC_SENDER` gained an optional third out-parameter
+  reporting the sender's task id — an attestation from the endpoint's own record, not a field any
+  caller fills in — because the uid cannot separate a shell from the programs it spawns. See
+  `SECURITY.md` **S93**, and `docs/LIMITATIONS.md` 2.9b for the half this does not close:
+  `GETLINE` and `READ_RAW` stay open, so typed command lines remain readable.
+
 ### Fixed
 
 - **A keyboard that never answers now says so.** `keyboard_init` sends the keyboard `0xF4`

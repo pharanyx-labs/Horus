@@ -1195,6 +1195,22 @@ static inline uint32_t sys_ipc_sender(int ep, uint32_t *out_gid) {
     return syscall(SYS_IPC_SENDER, (uint32_t)ep, (uint64_t)(uintptr_t)out_gid, 0);
 }
 
+/* As sys_ipc_sender, and additionally reports the sender's TASK ID.
+ *
+ * For a server whose clients share a uid and must still be told apart --
+ * console_server's, where one client is the task a person is typing at and the
+ * rest are programs that person ran (S93). `fs_server` needs only the uid,
+ * because file permissions are a property of the user; console input is a
+ * property of the terminal, which one task at a time holds.
+ *
+ * Both out-pointers are optional. The kernel reports who the sender WAS, from
+ * the endpoint's record of the message it dequeued -- not a field any caller
+ * filled in. */
+static inline uint32_t sys_ipc_sender_task(int ep, uint32_t *out_gid, uint32_t *out_pid) {
+    return syscall(SYS_IPC_SENDER, (uint32_t)ep, (uint64_t)(uintptr_t)out_gid,
+                   (uint64_t)(uintptr_t)out_pid);
+}
+
 static inline int sys_notify(int notif_slot, uint32_t badge) {
     return syscall(SYS_NOTIFY, (uint32_t)notif_slot, badge, 0);
 }

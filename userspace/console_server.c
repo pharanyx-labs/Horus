@@ -132,9 +132,27 @@ static void fb_blit(unsigned idx) {
     }
 }
 
+/* BACKSPACE MOVES THE CURSOR BACK; IT IS NOT A GLYPH. Without this case a 0x08
+ * fell into the `else` below and was DRAWN -- so `con_getline`'s "\b \b" erase
+ * painted three cells of rubbish and advanced three columns instead of rubbing
+ * one character out. The line buffer was always right; only the screen lied,
+ * which is the worst shape for a password field.
+ *
+ * It worked on serial the whole time, because a terminal on the other end of a
+ * UART interprets 0x08 itself -- so every gate that types at COM1 saw a correct
+ * erase, and the machines that draw their own glyphs were the ones nobody drove.
+ * The kernel's emit_char in src/kernel/terminal.c has had this case since it was
+ * written; the ring-3 console that took the hardware over did not inherit it, so
+ * backspace worked during early boot and stopped at the handover.
+ *
+ * No blit here: moving the cursor changes no cell. The ' ' that follows clears
+ * the character and blits it, and the second "\b" steps back onto it. */
 static void fb_putc(char c) {
     if (c == '\n')      fb_pos = (fb_pos / 80 + 1) * 80;
     else if (c == '\r') fb_pos = (fb_pos / 80) * 80;
+#ifndef CONSOLE_BACKSPACE_NO_ERASE
+    else if (c == '\b') { if (fb_pos) fb_pos--; }
+#endif
     else {
         fb_cells[fb_pos] = (uint16_t)((VGA_ATTR << 8) | (uint8_t)c);
         fb_blit(fb_pos);
@@ -155,6 +173,12 @@ static void vga_putc(char c) {
         vga_pos = (vga_pos / 80 + 1) * 80;
     } else if (c == '\r') {
         vga_pos = (vga_pos / 80) * 80;
+#ifndef CONSOLE_BACKSPACE_NO_ERASE
+    /* See the note on fb_putc: a 0x08 is a cursor movement, not something to
+     * draw. CONTROL ARM -- never ship -- restores the version that drew it. */
+    } else if (c == '\b') {
+        if (vga_pos) vga_pos--;
+#endif
     } else {
         vga[vga_pos++] = (uint16_t)((VGA_ATTR << 8) | (uint8_t)c);
     }

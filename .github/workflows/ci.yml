@@ -486,6 +486,16 @@ jobs:
       # without asking whether a UART is there to answer it.
       - name: Control arm — no UART, and the floating bus believed
         run: make smoke-keyboard-noserial-control
+      # Backspace on the SCREEN. console_server drew the 0x08 as a glyph, so the
+      # "\b \b" erase painted rubbish and advanced three columns while the line
+      # buffer stayed correct -- worst of all in a masked password field. Every
+      # COM1-typing gate missed it, because a terminal interprets 0x08 itself.
+      # The assertion is a round trip: type six, erase six, screen back to start.
+      - name: Backspace erases on the screen, not just in the buffer
+        run: make smoke-console-backspace
+      # The arm draws the 0x08, as the shipping build did until 2026-09-12.
+      - name: Control arm — backspace drawn instead of rubbing out
+        run: make smoke-console-backspace-control
       # The arrows, gated on the one screen that cannot be passed without them:
       # the installer's disk survey defaults to "Cancel, change nothing", so a
       # person at the machine must press Down to install at all.

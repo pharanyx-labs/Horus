@@ -205,6 +205,45 @@ static void fb_putc(char c) {
 static volatile uint16_t *const vga = (volatile uint16_t *)VGA_VADDR;
 static unsigned vga_pos = 0;
 
+/* MOVE THE HARDWARE CURSOR WITH THE TEXT.
+ *
+ * The 6845 keeps the cursor position in its own register pair, not in the cell
+ * array, so writing characters does not move it: it stays wherever the last
+ * writer put it. The kernel calls update_cursor after every emit_char; this
+ * server never wrote those registers at all, so from the moment it took the
+ * console the cursor FROZE where the kernel had left it. Measured 2026-09-12 on
+ * a boot to a login prompt: the blinking cell sat at row 36, column 0, and did
+ * not move while a user name was typed, nor at the password prompt after it.
+ * A cursor that does not follow the text is worse than none -- it points
+ * confidently at the wrong place, and on a password field the wrong place is the
+ * only feedback there is.
+ *
+ * REGISTER 14 IS THE HIGH BYTE AND 15 THE LOW, indexed through 0x3D4 and written
+ * at 0x3D5, which is the same pair terminal.c has always used. No new authority:
+ * the VGA register file is part of the platform device this server already holds,
+ * and the startup SYS_IOPORT_GRANT opened it alongside COM1 and 0x60/0x64.
+ *
+ * Clamped, because the register pair addresses a cell and a position past the
+ * end of the grid would place the cursor on a row the display does not have. */
+/* WHERE THE KERNEL LEFT THE CURSOR, which is where our first character belongs.
+ *
+ * The kernel has been calling update_cursor after every emit_char all through
+ * the boot, so at the instant of the handover this register pair is an accurate
+ * record of how far down the screen the boot log has got. Reading it is how this
+ * server finds out; there is no other channel, and guessing zero is what the bug
+ * below was. */
+static unsigned vga_get_cursor(void) {
+    outb(0x3D4, 14); unsigned hi = inb(0x3D5);
+    outb(0x3D4, 15); unsigned lo = inb(0x3D5);
+    return (unsigned)((hi << 8) | lo);
+}
+
+static void vga_set_cursor(unsigned pos) {
+    if (pos >= VGA_CELLS) pos = VGA_CELLS - 1u;
+    outb(0x3D4, 14); outb(0x3D5, (uint8_t)(pos >> 8));
+    outb(0x3D4, 15); outb(0x3D5, (uint8_t)(pos & 0xFF));
+}
+
 /* The VGA text half of fb_scroll, against the hardware cell array rather than a
  * shadow: at 0xB8000 the display IS the buffer, so the move is the repaint. */
 static void vga_scroll(void) {
@@ -232,6 +271,12 @@ static void vga_putc(char c) {
     if (vga_pos >= VGA_CELLS) vga_pos = 0;   /* CONTROL ARM -- the ring buffer */
 #else
     if (vga_pos >= VGA_CELLS) vga_scroll();
+#endif
+#ifndef CONSOLE_NO_CURSOR
+    /* Last, so it reports where the NEXT character will go -- including after a
+     * scroll, which moves the write position as well as the text. CONTROL ARM --
+     * never ship -- leaves the registers alone, which is the frozen cursor. */
+    vga_set_cursor(vga_pos);
 #endif
 }
 
@@ -490,6 +535,49 @@ static char ps2_poll(void) {
  * keyboard is checked on the same pass, so a physical machine with no serial
  * cable answers its prompts too. That second check is what "boots to a prompt
  * but you cannot type" was missing. See docs/design/console-server.md. */
+/* Whatever is ALREADY waiting, or 0. The non-blocking half of con_getc, and the
+ * only way to tell an escape SEQUENCE from somebody pressing the Escape key:
+ * both start with 0x1b, and the difference is whether anything follows. */
+static char con_trygetc(void) {
+    if (serial_rx_ready()) return (char)inb(COM1);
+    return ps2_poll();
+}
+
+/* ARROW KEYS MUST NOT TYPE THEIR OWN ESCAPE SEQUENCE INTO THE LINE.
+ *
+ * con_getline drops bytes below 32, which disposes of the ESC -- and then the
+ * REST of the sequence is ordinary printable text, so `ESC [ A` left `[A` in the
+ * buffer and on the screen. Measured 2026-09-12 at the login prompt: Up echoed
+ * `[A`, Down `[B`, Left `[D`, Right `[C`. Pressing Up for history, which is the
+ * first thing anybody does at a prompt, put two junk characters into the user
+ * name -- and at the PASSWORD prompt it put them into the password, where the
+ * masking means nobody can see what went wrong.
+ *
+ * This swallows the sequence instead. It does NOT implement history or editing;
+ * an arrow now does nothing, which is the honest behaviour for a line editor
+ * that has no cursor movement, and it is a great deal better than typing.
+ *
+ * BOUNDED AND NON-BLOCKING, because a bare ESC is a real key. Reading the next
+ * byte with con_getc would block until the user typed something else and then
+ * eat it. Instead this takes only what is already pending, yielding a few times
+ * so the tail of a sequence split across a UART read still arrives: on the
+ * keyboard path the whole sequence is already in kbd_pending, and on serial the
+ * three bytes arrive in one burst. If nothing follows, it was the Escape key and
+ * nothing is consumed. */
+#define CON_ESC_TRIES 64
+
+static void con_swallow_escape(void) {
+    for (int tries = 0; tries < CON_ESC_TRIES; tries++) {
+        char c = con_trygetc();
+        if (!c) { sys_yield(); continue; }
+        /* The introducers are inside the final-byte range, so they are tested
+         * first or the sequence would end on its own '['. */
+        if (c == '[' || c == 'O') continue;
+        if ((unsigned char)c >= 0x40 && (unsigned char)c <= 0x7E) return;
+        /* 0x30-0x3F parameters and 0x20-0x2F intermediates: keep reading. */
+    }
+}
+
 static char con_getc(void) {
     for (;;) {
         if (serial_rx_ready())             /* serial receive-data-ready */
@@ -515,6 +603,12 @@ static int con_getline(uint8_t *out, unsigned max, int mask) {
             if (len > 0) { len--; ser_puts("\b \b"); }
             continue;
         }
+#ifndef CONSOLE_ESC_LITERAL
+        if (ch == 0x1b) { con_swallow_escape(); continue; }
+#else
+        /* CONTROL ARM -- never ship. Drop the ESC and let the rest of the
+         * sequence be typed, which is what an arrow key did until 2026-09-12. */
+#endif
         if ((unsigned char)ch < 32) continue;      /* ignore other control chars */
         if (len >= max) continue;                  /* line full: drop extra input */
         con_putc(mask ? '*' : ch);
@@ -770,6 +864,41 @@ void _start(void) {
     }
 
 display_ready:
+    /* CONTINUE THE BOOT LOG WHERE THE KERNEL STOPPED IT, rather than at the top.
+     *
+     * vga_pos started at 0, so the first line this server printed landed on row
+     * 0 -- on top of the OLDEST line of a boot log that was already most of a
+     * screen long. What the operator then saw was the tail of the kernel's log
+     * still sitting BELOW the login prompt, stranded there, with the prompt
+     * apparently in the middle of the screen. Measured 2026-09-12 on a clean
+     * boot: the prompt at row 16 and eighteen rows of earlier output beneath it.
+     *
+     * THE LOG'S CONTINUITY ACROSS THE HANDOVER WAS ALREADY THE INTENT, and this
+     * is the half that was missing. The timestamp note above records the trouble
+     * taken so the log does not change FORMAT at an instant nothing marks; the
+     * position changed just as invisibly, and for the same kind of reason.
+     *
+     * Only the text console needs it: the framebuffer path clears its grid when
+     * it maps, and starts from a blank screen by construction.
+     *
+     * THE ROUND-TRIP PROBE'S BYTE IS CLEARED HERE TOO. The check above writes a
+     * '.' into the last cell to prove the mapping is really the text window, and
+     * never took it back -- so every VGA boot has left a full stop in the bottom
+     * right corner of the screen. It is one cell and it is cosmetic, which is
+     * exactly why nothing ever chased it. */
+    if (!fbp) {
+        vga[VGA_CELLS - 1] = (uint16_t)((VGA_ATTR << 8) | ' ');
+#ifdef CONSOLE_NO_RESUME
+        /* CONTROL ARM -- never ship. Start at the top-left, as this server did
+         * until 2026-09-12: the first line lands on the oldest one and the tail
+         * of the kernel's boot log is stranded below the login prompt. */
+        vga_pos = 0;
+#else
+        unsigned resume = vga_get_cursor();
+        vga_pos = resume < VGA_CELLS ? resume : 0;
+#endif
+    }
+
     /* From here on the console output is ours, produced entirely in ring 3. */
     ser_puts(fbp ? "[console_server] ready (ring-3; owns serial + a linear framebuffer)\n"
                  : "[console_server] ready (ring-3; owns serial + VGA framebuffer)\n");

@@ -15,6 +15,61 @@ in this file.
 
 ### Fixed
 
+- **Arrow keys typed their own escape sequence into the line.** `con_getline` drops bytes below
+  32, which disposes of the ESC — and the **rest** of an escape sequence is ordinary printable
+  text, so `ESC [ A` left `[A` in the line buffer and on the screen. Up gave `[A`, Down `[B`,
+  Left `[D`, Right `[C`. Pressing Up for history is the first thing anyone does at a prompt, and
+  it corrupted the user name; at the **password** prompt the same two characters went into the
+  password, where the masking hides them and the only symptom is a login that fails for no
+  visible reason.
+  An arrow now does nothing, which is the honest behaviour for a line editor with no cursor
+  movement and a great deal better than typing. Escape sequences are swallowed **non-blocking and
+  bounded**, because a bare ESC is a real key: reading the next byte with `con_getc` would block
+  until the user typed something else and then eat it.
+  **Raw mode is untouched.** The installer's TUI decodes arrows itself through `con_read_raw` —
+  that is how its disk survey is navigated — and `make smoke-keyboard-installer` was re-run as
+  the regression check.
+  Gated by `make smoke-console-escape`, whose assertion is the **consequence**: press Up, then
+  log in normally and require the login to succeed. Falsified in all four directions with
+  `CONSOLE_ESC_LITERAL=1`.
+
+- **The hardware cursor stopped following the text at the console handover.** The 6845 keeps the
+  cursor position in its own register pair rather than in the cell array, so writing characters
+  does not move it. The kernel calls `update_cursor` after every `emit_char`;
+  `console_server` never wrote those registers at all, so from the moment it took the console the
+  cursor **froze where the kernel had left it** — measured at row 36, column 0, unmoved while a
+  user name was typed at the login prompt and again at the password prompt.
+  A cursor that does not follow the text is worse than none: it points confidently at the wrong
+  place, and on a **masked** password field — which the installer asks for twice and compares —
+  the cursor is the only feedback there is.
+  **The fourth case in one day of `console_server` inheriting the hardware but not a behaviour the
+  kernel path had**, after the UART presence check, the backspace erase and scrolling. No new
+  authority: the VGA register file is part of the platform device this server already holds.
+  Gated by `make smoke-console-cursor`, which locates the cursor without OCR (two screendumps
+  0.55s apart with nothing typed between them — the only cell that changes is the one that blinks)
+  and asserts a **displacement**: five characters, five columns, same row. Falsified in all four
+  directions with `CONSOLE_NO_CURSOR=1`.
+  **Still open**: the framebuffer console draws no cursor at all and never has.
+
+- **The console restarted at the top when it changed hands, stranding the old boot log below the
+  prompt.** `console_server`'s write position began at 0, so its first line landed on the
+  **oldest** line of a boot log already most of a screen long — and the tail of the kernel's log
+  was left below the login prompt, which appeared halfway up the screen with older text beneath
+  it and nothing marking it as older. Measured on a clean boot: prompt at row 16, rows 17–35
+  still carrying earlier output, plus a stray `.` in the bottom-right corner that the VGA
+  round-trip probe wrote and never took back.
+  **The position was readable the whole time.** The kernel calls `update_cursor` after every
+  `emit_char`, so the 6845's register pair is an accurate record of how far the boot log has got;
+  this server now reads it at the handover and continues there. The log's continuity across that
+  handover was already the intent — the timestamp machinery beside it exists so the log does not
+  change *format* at an instant nothing marks, and the position was changing just as invisibly.
+  Gated by `make smoke-console-resume`, whose assertion is a shape rather than a string: locate
+  the cursor and require no row below it to carry text. Falsified in all four directions with
+  `CONSOLE_NO_RESUME=1` (fixed: cursor row 49, nothing below; arm: cursor row 15, rows 16–35
+  stranded). There is no
+  hardware cursor on a linear framebuffer, so it needs a drawn one — a different piece of work
+  from the register write that fixed the text console.
+
 - **A full screen restarted at the top instead of scrolling, so a boot log could not be read
   back.** Both of `console_server`'s putc paths ended a full screen with `pos = 0`: the newest
   line overwrote the **oldest**, and the display became a ring buffer with nothing marking the

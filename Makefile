@@ -164,6 +164,9 @@ DEFECT_FLAGS = \
 	SERIAL_PRESENCE_UNCHECKED \
 	CONSOLE_BACKSPACE_NO_ERASE \
 	CONSOLE_NO_SCROLL \
+	CONSOLE_NO_CURSOR \
+	CONSOLE_NO_RESUME \
+	CONSOLE_ESC_LITERAL \
 	PCI_SCAN_TRACE \
 	PCI_BUS0_ONLY \
 	CONSOLE_KBD_SPLIT_ESC \
@@ -4061,6 +4064,34 @@ endif
 ifeq ($(CONSOLE_NO_SCROLL),1)
 USERSPACE_CFLAGS += -DCONSOLE_NO_SCROLL
 endif
+# CONSOLE_NO_CURSOR=1 restores console_server as it stood before 2026-09-12: it
+# never wrote the 6845's cursor registers, so from the moment it took the console
+# the hardware cursor FROZE where the kernel had left it. Measured that day: the
+# blinking cell sat at row 36 column 0 and did not move while a user name was
+# typed, nor at the password prompt after it. The kernel calls update_cursor
+# after every emit_char; ring 3 inherited the hardware and not the habit.
+ifeq ($(CONSOLE_NO_CURSOR),1)
+USERSPACE_CFLAGS += -DCONSOLE_NO_CURSOR
+endif
+# CONSOLE_NO_RESUME=1 restores console_server starting at the TOP-LEFT when it
+# takes the text console, as it did before 2026-09-12. Its first line then lands
+# on the oldest line of a boot log that is already most of a screen long, and the
+# tail of the kernel's log is left stranded BELOW the login prompt -- measured
+# that day as a prompt at row 16 with eighteen rows of earlier output beneath it.
+# The kernel has maintained the cursor registers all through the boot, so the
+# position was available to read the whole time.
+ifeq ($(CONSOLE_NO_RESUME),1)
+USERSPACE_CFLAGS += -DCONSOLE_NO_RESUME
+endif
+# CONSOLE_ESC_LITERAL=1 restores con_getline as it stood before 2026-09-12: the
+# ESC is dropped as a control byte and the REST of the escape sequence is typed
+# into the line as ordinary text. An arrow key then enters two junk characters --
+# measured at the login prompt as `[A` for Up, `[B` Down, `[D` Left, `[C` Right.
+# At the password prompt they go into the password, where the masking means the
+# user cannot see what went wrong.
+ifeq ($(CONSOLE_ESC_LITERAL),1)
+USERSPACE_CFLAGS += -DCONSOLE_ESC_LITERAL
+endif
 ifeq ($(READDIR_END_IS_NOENT),1)
 USERSPACE_CFLAGS += -DREADDIR_END_IS_NOENT
 endif
@@ -7755,6 +7786,85 @@ smoke-keyboard:
 # runs fill the screen densely with DISTINCT lines -- uniform content scrolls to
 # an identical image, and one dmesg leaves the top still blank, which is how the
 # first two versions of this test measured nothing on either build.
+# THE HARDWARE CURSOR MUST FOLLOW THE TEXT. The 6845 keeps the cursor position in
+# its own registers, not in the cell array, so writing characters does not move
+# it. The kernel calls update_cursor after every emit_char; console_server never
+# wrote those registers, so from the handover the cursor froze where the kernel
+# left it -- measured at row 36 column 0, unmoved while a user name was typed.
+#
+# The assertion is a DISPLACEMENT, not a position: type five characters, require
+# five columns on the same row. The frozen position varies between boots with
+# wherever the boot log ended, so an absolute check would be testing the wrong
+# thing. The cursor is located by taking two screendumps with nothing typed
+# between them -- the only cell that changes is the one that blinks.
+# NOTHING MAY BE STRANDED BELOW THE PROMPT when the console changes hands.
+# console_server's write position started at 0, so its first line landed on the
+# OLDEST line of a boot log already most of a screen long, and the tail of the
+# kernel's log was left below the login prompt -- prompt at row 16 with eighteen
+# rows of earlier output beneath it. The kernel maintains the cursor registers
+# all through the boot, so where it had got to was readable the whole time.
+#
+# The assertion is a SHAPE: find the cursor, require no row below it to carry
+# text. No OCR, and a blank screen is reported inconclusive rather than passed.
+# AN ARROW KEY MUST NOT TYPE ITS OWN ESCAPE SEQUENCE. con_getline drops bytes
+# below 32, which disposes of the ESC -- and the rest of the sequence is ordinary
+# printable text, so Up left `[A` in the line. At the login prompt that goes into
+# the user name; at the password prompt it goes into the password, where masking
+# hides it. The assertion is the CONSEQUENCE: press Up, then log in normally and
+# require the login to succeed, so a guest that simply stopped reading the line
+# cannot pass. Raw mode is untouched -- smoke-keyboard-installer covers the
+# installer's own arrow decoding, and is the regression check for this.
+.PHONY: smoke-console-escape
+smoke-console-escape:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory horus.iso
+	@python3 tools/console_escape_test.py --iso horus.iso \
+		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT)
+
+.PHONY: smoke-console-escape-control
+smoke-console-escape-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CONSOLE_ESC_LITERAL=1
+	@$(MAKE) --no-print-directory CONSOLE_ESC_LITERAL=1 horus.iso
+	@python3 tools/console_escape_test.py --iso horus.iso --expect-literal \
+		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
+		--log /tmp/horus-escape-control-evidence.log
+
+.PHONY: smoke-console-resume
+smoke-console-resume:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory horus.iso
+	@python3 tools/console_resume_test.py --iso horus.iso \
+		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
+		--shots /tmp/horus-resume-evidence
+
+.PHONY: smoke-console-resume-control
+smoke-console-resume-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CONSOLE_NO_RESUME=1
+	@$(MAKE) --no-print-directory CONSOLE_NO_RESUME=1 horus.iso
+	@python3 tools/console_resume_test.py --iso horus.iso --expect-stranded \
+		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
+		--shots /tmp/horus-resume-control-evidence
+
+.PHONY: smoke-console-cursor
+smoke-console-cursor:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory horus.iso
+	@python3 tools/console_cursor_test.py --iso horus.iso \
+		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
+		--shots /tmp/horus-cursor-evidence
+
+# The falsifying arm: the registers left alone, which is the frozen cursor.
+.PHONY: smoke-console-cursor-control
+smoke-console-cursor-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CONSOLE_NO_CURSOR=1
+	@$(MAKE) --no-print-directory CONSOLE_NO_CURSOR=1 horus.iso
+	@python3 tools/console_cursor_test.py --iso horus.iso --expect-frozen \
+		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
+		--shots /tmp/horus-cursor-control-evidence
+
 .PHONY: smoke-console-scroll
 smoke-console-scroll:
 	@$(MAKE) --no-print-directory clean

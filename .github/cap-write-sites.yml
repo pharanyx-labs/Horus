@@ -28,7 +28,21 @@
 #   boot-single-cpu               runs before smp_bringup, so there is no racer
 #   unreachable-until-published   the cspace belongs to a task no CPU can select
 #   control-arm                   a defect-reproducing store behind a DEFECT_FLAGS flag
+#   invisible-to-the-sweep        the sweep CAN read these slots but cannot act on
+#                                 them; requires `depends_on:`, naming the guards
+#                                 elsewhere that make that true, which the checker
+#                                 verifies still exist
 #   unlocked                      a KNOWN OPEN DEFECT; requires a `finding:`
+#
+# ON `invisible-to-the-sweep` SPECIFICALLY, because it is the status most likely to
+# be reached for wrongly. It does NOT mean "I could not see how this would break".
+# It means the slots are reachable by the sweep and every way the sweep could act on
+# them is closed by a named guard, each of which is pinned in `depends_on` and
+# checked. `create_task` below was first declared `unlocked` with a finding on the
+# strength of a hazard reasoned from the shape of the problem; checking the code
+# showed the hazard did not exist, and the pins are what stop the corrected argument
+# from quietly becoming wrong again. If you cannot name the guards, the status is not
+# this one.
 
 sites:
   # ---- capability.c: the locked path itself --------------------------------
@@ -120,26 +134,70 @@ sites:
   # ---- lock-free, and why ---------------------------------------------------
   - file: src/kernel/scheduler.c
     function: create_task
-    status: unlocked
-    finding: HORUS-20260911-03b
+    status: invisible-to-the-sweep
     reason: >
-      Builds a brand-new task's cspace -- zeroes all CNODE_SIZE slots, then
-      installs the primordial TCB/FRAME/endpoint/console/storage capabilities --
-      with no lock held. It is NOT safe on the reasoning that the task is private:
-      `tasks[id].state = 1` is set some seventy lines EARLIER, and a revocation
-      sweep enumerates exactly `state != 0 && cspace != NULL`. So a sweep on
-      another CPU can observe this cspace while it is being built: before the
-      zeroing loop it still holds the previous occupant of the task slot's
-      capabilities (for a kernel-reserve task, where the cspace pointer is reused),
-      and after the zeroing but before the installs it looks empty -- at which
-      point kobj_gc may conclude the reply endpoint this function is about to
-      install a capability to is unreachable, and destroy it.
-      Left open deliberately rather than fixed in the same commit as the five
-      sites above: create_task runs for every task on every boot and calls
-      kobj_alloc (which takes the untyped lock) in the middle of the region that
-      would have to be covered, so the change is a lock-ordering change in the
-      kernel's most load-bearing function and wants its own commit and its own
-      witness. Tracked as HORUS-20260911-03b in docs/LIMITATIONS.md.
+      Builds a brand-new task's cspace -- zeroes all CNODE_SIZE slots, then installs
+      the primordial TCB/FRAME/reply-endpoint/console/storage capabilities -- with no
+      lock held, and a revocation sweep CAN observe it: `tasks[id].state = 1` is set
+      some seventy lines earlier and the sweep enumerates exactly
+      `state != 0 && cspace != NULL`. So the question is not whether the sweep sees
+      this cspace mid-build. It does. The question is whether it can ACT on anything
+      it sees, and the answer is no, for three reasons that hold together:
+      (1) every capability this function installs carries `badge = 0`, and
+      `revoke_subtree` skips a badge-0 capability outright, so no revocation can
+      match one;
+      (2) every object it names is outside every range `mark_cap` can reclaim --
+      `USER_AREA_BASE` for the slot-3 frame, `0` for console and storage (types
+      `mark_cap` does not handle at all), the task id for its own TCB, and the reply
+      endpoint index, which is below `DYN_EP_BASE` because of S95's static assert --
+      so `kobj_gc` can neither free something this function is about to name nor be
+      misled about reachability by it;
+      (3) a reused slot's cspace was already fully zeroed under `cap_lock` by
+      `cap_release_cspace` at teardown, so the pre-zeroing window exposes nothing
+      stale either, and a slot read mid-install has `serial == 0`, which `mark_cap`
+      returns on immediately.
+      DECLARED THIS WAY AFTER BEING WRONG THE OTHER WAY. It was declared `unlocked`
+      with finding HORUS-20260911-03b on 2026-09-12, on the reasoning that `kobj_gc`
+      could destroy the reply endpoint a capability was about to name. That was
+      reasoned from the shape of the hazard rather than checked against the code, and
+      it is false: `reply_ep_for_task` returns a STATIC index, and `kobj_gc` only ever
+      destroys `dyn_eps` / `dyn_notifs` / `dyn_frames`. The finding is withdrawn
+      (docs/LIMITATIONS.md 1.13) -- and the three guards above are pinned below,
+      because an exemption that rests on code elsewhere is one that expires the day
+      somebody edits that code.
+    depends_on:
+      - file: rust/src/capability.rs
+        contains: "c.serial == 0 || c.badge == 0"
+        because: >
+          revoke_subtree skips any capability with badge 0, and every capability
+          create_task installs has badge 0 -- so no revocation can match one, however
+          partially written it is when the sweep reads it
+      - file: src/kernel/untyped.c
+        contains: "if (c->serial == 0) return;"
+        because: >
+          mark_cap treats a slot whose serial is not yet written as empty, so a slot
+          caught mid-install contributes nothing to the reachability decision
+      - file: src/kernel/untyped.c
+        contains: "if (c->object >= DYN_EP_BASE && c->object < EP_INDEX_MAX)"
+        because: >
+          mark_cap reclaims only objects inside the dynamic index ranges, and every
+          object create_task names is outside them -- this is the bound that makes
+          "kobj_gc cannot free what this function is about to name" true
+      - file: src/kernel/capability.c
+        contains: "cs[s].serial = 0;"
+        because: >
+          cap_release_cspace zeroes every slot of a dying task's cspace under
+          cap_lock, so a REUSED task slot's cspace holds nothing before create_task
+          rebuilds it -- the window between state = 1 and the zeroing loop exposes an
+          already-empty cspace rather than a dead task's capabilities
+      - file: src/include/kernel.h
+        contains: "_Static_assert(REPLY_EP_BASE + MAX_TASKS <= MAX_ENDPOINTS"
+        because: >
+          S95. The slot-4 reply endpoint index must stay below DYN_EP_BASE, or
+          mark_cap's dynamic-range bound starts matching it and reason (2) above
+          fails. Before S95 this did not hold for task ids >= 64; the consequence was
+          a missed reclaim rather than a premature free, but the argument was not
+          sound and is only sound now because that assert holds it
   - file: src/kernel/pipe.c
     function: h_pipe
     status: control-arm

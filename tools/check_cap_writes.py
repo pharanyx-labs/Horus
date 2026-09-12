@@ -76,7 +76,13 @@ FUNC = re.compile(r"^(?:static\s+)?(?:[A-Za-z_][A-Za-z0-9_ \*]*?)\b(?P<name>[A-Z
 NOT_A_FUNC = ("if", "for", "while", "switch", "return", "}", "else", "#")
 
 VALID_STATUS = {"locked", "boot-single-cpu", "unreachable-until-published",
-                "control-arm", "unlocked"}
+                "control-arm", "invisible-to-the-sweep", "unlocked"}
+
+# A site exempted on "the sweep cannot act on anything this function writes" is
+# making a claim about OTHER code -- the guards inside the sweep that make it
+# true. Those guards are what rots. So such a site must name them, and rule 5
+# checks they are still there.
+NEEDS_DEPENDS_ON = {"invisible-to-the-sweep"}
 
 
 def enclosing_functions(path):
@@ -179,6 +185,58 @@ def main():
                 f"FALSE `locked` claim: {key[0]} in {key[1]}() is declared "
                 f"`locked` but never takes cap_lock.")
 
+    # RULE 5: a site exempted because the revocation sweep cannot act on what it
+    # writes must NAME THE GUARDS that make that true, and they must still exist.
+    #
+    # WHY THIS RULE EXISTS, and it is the reason the whole status was added. On
+    # 2026-09-12 `create_task` was declared `unlocked` with a finding, on the
+    # reasoning that a sweep could see its cspace mid-build and let `kobj_gc`
+    # destroy the reply endpoint it was about to install a capability to. Checked
+    # against the code rather than reasoned from the shape, that was WRONG: every
+    # capability create_task installs carries `badge = 0`, which `revoke_subtree`
+    # skips outright, and names an object outside every range `mark_cap` can
+    # reclaim. The site is safe -- but it is safe BECAUSE OF CODE SOMEWHERE ELSE,
+    # and an exemption resting on a guard nobody re-checks is an exemption that
+    # expires silently. Remove `mark_cap`'s empty-slot return, or let
+    # `revoke_subtree` stop skipping badge 0, and this site becomes a live defect
+    # with nothing reporting it.
+    #
+    # Matched on WHITESPACE-NORMALISED text, so reindenting a guard does not fail
+    # the build while deleting it does.
+    for key, entry in sorted(declared.items()):
+        if entry["status"] not in NEEDS_DEPENDS_ON:
+            continue
+        deps = entry.get("depends_on") or []
+        if not deps:
+            errors.append(
+                f"UNPINNED exemption: {key[0]} in {key[1]}() is declared "
+                f"`{entry['status']}` but names no `depends_on:` guards. The claim "
+                f"rests on code elsewhere; name it, or the exemption expires silently.")
+            continue
+        for dep in deps:
+            for field in ("file", "contains", "because"):
+                if field not in dep:
+                    errors.append(
+                        f"INCOMPLETE depends_on for {key[0]} in {key[1]}(): "
+                        f"an entry is missing `{field}`: {dep}")
+                    break
+            else:
+                dpath = ROOT / dep["file"]
+                if not dpath.exists():
+                    errors.append(
+                        f"MISSING guard file for {key[0]} in {key[1]}(): "
+                        f"{dep['file']} does not exist")
+                    continue
+                hay = " ".join(dpath.read_text().split())
+                needle = " ".join(str(dep["contains"]).split())
+                if needle not in hay:
+                    errors.append(
+                        f"GUARD GONE: {key[0]} in {key[1]}() is exempted because "
+                        f"{dep['because']}\n"
+                        f"      but {dep['file']} no longer contains: {needle}\n"
+                        f"      Either the guard moved (update the declaration) or it "
+                        f"was removed, and this site is now a live defect.")
+
     # RULE 4: a status must be one this file knows, and an `unlocked` site -- a
     # KNOWN OPEN DEFECT -- must name the finding that tracks it. An exemption
     # with no finding is how one stops being tracked.
@@ -206,7 +264,9 @@ def main():
     for entry in declared.values():
         by_status[entry["status"]] = by_status.get(entry["status"], 0) + 1
     total_writes = sum(len(v) for v in sites.values())
+    pinned = sum(len(e.get("depends_on") or []) for e in declared.values())
     print(f"capability-slot write sites : {len(sites)} functions, {total_writes} stores")
+    print(f"guards pinned by exemptions : {pinned}")
     for status in sorted(by_status):
         print(f"  {status:<28}: {by_status[status]}")
     print("\nPASS: every capability-slot write is declared, and every `locked` one takes cap_lock")

@@ -124,17 +124,25 @@ PY' \
 # ---- RULE 4: an open defect with nothing tracking it. The `unlocked` status is
 #      the honest one -- it says a site is known-broken -- and it is only honest
 #      while a finding ID carries it.
+# NB the mutation PLANTS the `unlocked` site rather than finding one. It used to
+# find one -- create_task was declared `unlocked` until its exemption was corrected
+# on 2026-09-12 -- and when that entry changed, this arm started failing at the
+# MUTATION step rather than reporting the rule was broken. An arm that depends on
+# the tree still containing an example of the thing it tests is an arm that retires
+# itself the day the tree improves.
 arm "6" "an \`unlocked\` site with no finding tracking it" \
     'python3 - <<PY
-import yaml
+import yaml, pathlib
 p = ".github/cap-write-sites.yml"
 d = yaml.safe_load(open(p))
+# A real write site, declared `unlocked` and deliberately missing its finding.
 for s in d["sites"]:
-    if s["status"] == "unlocked":
+    if s["function"] == "cap_consume_slot":
+        s["status"] = "unlocked"
         s.pop("finding", None)
         break
 else:
-    raise SystemExit("no unlocked site found")
+    raise SystemExit("cap_consume_slot entry not found")
 yaml.safe_dump(d, open(p, "w"))
 PY' \
     caught "UNTRACKED open defect"
@@ -162,6 +170,70 @@ d["sites"][0].pop("reason")
 yaml.safe_dump(d, open(p, "w"))
 PY' \
     caught "missing \`reason\`"
+
+# ---- RULE 5, AND THE REASON THE STATUS EXISTS: an exemption that rests on code
+#      somewhere else must name that code, and the named guard must still be there.
+#      This is the rule that keeps `create_task`'s corrected argument honest -- it is
+#      safe because revoke_subtree skips badge 0 and mark_cap reclaims only dynamic
+#      objects, neither of which is in the file being exempted.
+arm "9" "a pinned guard that has been deleted from the file it lives in" \
+    'python3 - <<PY
+import yaml, pathlib
+d = yaml.safe_load(open(".github/cap-write-sites.yml"))
+dep = None
+for s in d["sites"]:
+    for x in (s.get("depends_on") or []):
+        dep = x; break
+    if dep: break
+if not dep:
+    raise SystemExit("no depends_on entry to falsify")
+p = pathlib.Path(dep["file"]); txt = p.read_text()
+needle = " ".join(str(dep["contains"]).split())
+# Delete the guard the way a refactor would: remove the line carrying it.
+out = [l for l in txt.split("\n") if needle not in " ".join(l.split())]
+assert len(out) < len(txt.split("\n")), "guard line not found to delete"
+p.write_text("\n".join(out))
+PY' \
+    caught "GUARD GONE"
+
+arm "10" "an \`invisible-to-the-sweep\` site that names no guards at all" \
+    'python3 - <<PY
+import yaml
+p = ".github/cap-write-sites.yml"
+d = yaml.safe_load(open(p))
+for s in d["sites"]:
+    if s["status"] == "invisible-to-the-sweep":
+        s.pop("depends_on", None)
+        break
+else:
+    raise SystemExit("no invisible-to-the-sweep site found")
+yaml.safe_dump(d, open(p, "w"))
+PY' \
+    caught "UNPINNED exemption"
+
+# ---- AND THE SILENT DIRECTION FOR RULE 5: reindenting a guard must NOT fail the
+#      build. The match is whitespace-normalised for exactly this reason -- a rule
+#      that broke on `clang-format` would be removed rather than fixed.
+arm "11" "a pinned guard that has only been reindented" \
+    'python3 - <<PY
+import yaml, pathlib
+d = yaml.safe_load(open(".github/cap-write-sites.yml"))
+dep = None
+for s in d["sites"]:
+    for x in (s.get("depends_on") or []):
+        dep = x; break
+    if dep: break
+p = pathlib.Path(dep["file"]); txt = p.read_text()
+needle = " ".join(str(dep["contains"]).split())
+out = []
+for l in txt.split("\n"):
+    if needle in " ".join(l.split()):
+        stripped = l.strip()
+        l = "        " + "  ".join(stripped.split(" "))   # re-space it, same tokens
+    out.append(l)
+p.write_text("\n".join(out))
+PY' \
+    clean
 
 echo
 echo "arms passed: $PASSES   failed: $FAILS"

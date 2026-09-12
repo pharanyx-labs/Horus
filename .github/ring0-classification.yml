@@ -134,7 +134,20 @@
 # PIPE_CAP_UNACCOUNTED's arm is counted above: an arm the budget could not see
 # would be a place to hide code.
 #
-# RAISED AGAIN 2026-09-12, 9929 -> 9942 (+13), for the UART presence probe. A
+# RAISED AGAIN 2026-09-12, 9942 -> 9960 (+18), for 24-bit framebuffer pixels.
+# A 24bpp pixel is three bytes with no padding and the pitch is not a whole
+# number of words, so the blitter had to stop addressing the framebuffer as an
+# array of uint32_t. All 18 lines are in terminal.c: the fb_store helper and the
+# byte arithmetic at the three sites that write pixels (glyph, cursor underline,
+# full-screen clear), plus the widened depth check.
+#
+# THE ALTERNATIVE WAS A BLACK SCREEN, which is why this is worth core lines: the
+# console refused 24bpp and fell back to a VGA text window that a UEFI machine
+# does not have, so console_server halted and the display stayed dark. QEMU's
+# default -vga std under OVMF is such a display. A console that cannot be driven
+# is not a smaller attack surface, it is a machine that cannot report anything.
+#
+# RAISED 2026-09-12, 9929 -> 9942 (+13), for the UART presence probe. A
 # machine with no 16550 at 0x3F8 floats every register in the range to 0xFF, and
 # bit 0 of the line-status register means "receive data ready" -- so console_getc
 # believed a byte was waiting forever and never reached the keyboard beneath it.
@@ -156,7 +169,7 @@
 # existed because two numbers were written in two places was closed by deriving one
 # from the other, and the only code the kernel gained is the runtime check that
 # catches the case the constants cannot see.
-core_budget_loc: 9942
+core_budget_loc: 9960
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

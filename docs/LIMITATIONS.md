@@ -1850,9 +1850,32 @@ stays legible.
   worth stating precisely: the confinement is of **memory**, and only on a machine that *has* an
   IOMMU. `iommu_active()` is 0 where there is no DMAR; the kernel says so on the wire rather
   than pretending, and on such a machine this bullet still reads as it did.
-- **PCI-to-PCI bridges are not walked.** The scan covers bus 0, which is every device on the
-  machines this kernel targets. A device behind a bridge is *absent* from the table, so no
-  capability can name it; the failure is un-delegatable hardware, not unmediated hardware.
+- ~~**PCI-to-PCI bridges are not walked.**~~ **Closed 2026-09-12.** The claim that bus 0 "is
+  every device on the machines this kernel targets" held for QEMU's i440fx and q35 and failed on
+  the first real laptop: an IdeaPad whose internal storage is eMMC printed `sdhci: no SD/eMMC
+  host controller`, because its controller is not on bus 0. The cost of missing that device was
+  not a feature, it was the machine being uninstallable — which is the half of the old reasoning
+  that was wrong, not the fail-closed direction. `iodev_init` now walks the bus **tree**,
+  breadth-first from bus 0 through each PCI-to-PCI bridge's secondary bus number.
+  **This makes devices reachable that were not reachable before**, and that is the
+  security-relevant half: a function behind a bridge now enters `iodev_table`, so a capability
+  can be minted naming it. Nothing else moves — configuration space is still never exposed, ring
+  3 still names a table index and never a bus address, and every BAR goes through the validation
+  `pci_add_function` already applied. What changed is the *set* of devices, not what may be done
+  with one, and a device the walk still does not reach stays absent and ungrantable exactly as
+  before.
+  **Two independent guards against a cycle**, because bus numbers come from hardware: each bus is
+  scanned at most once, and a bridge is followed only *downward* (`sec > bus`). Either alone
+  terminates the walk. It is breadth-first over an explicit 256-byte queue rather than recursive,
+  because a depth of 255 is reachable from malformed config space and this kernel has spent
+  enough on kernel-stack exhaustion.
+  Gated by `make smoke-sdhci-bridge`, which places an SD controller behind a `pcie-pci-bridge`
+  (it lands at `01:01.0`) and requires the driver to bring it up. **The control arm is what
+  asserts the topology**: `PCI_BUS0_ONLY=1` walks bus 0 only and reports the same controller
+  absent on the same command line, which is what proves it is not on bus 0. Falsified in all four
+  directions on 2026-09-12, with `smoke-sdhci-detect` and `smoke-net` still passing — the check
+  that enumeration order, and so every `iodev_table` index, is unchanged on a machine with no
+  bridges.
 - ~~**MSI/MSI-X are not routed.**~~ **Closed 2026-08-29** (**S47**, **S48**). `SYS_MSI_REGISTER`
   programs the device's MSI capability, and the vector is chosen by the kernel: there is no field
   in the ABI for a driver to name one, which is why a driver cannot aim an interrupt at a vector

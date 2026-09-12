@@ -341,6 +341,18 @@ jobs:
       # from the controller's buffer.
       - name: A block written to the card reaches the medium
         run: make smoke-sdhci-write
+      # WHERE the controller is, which every gate above is blind to: they attach
+      # it with no bus argument, so QEMU puts it on bus 0 -- exactly where the
+      # enumeration has always looked. The walk did not follow PCI-to-PCI
+      # bridges, so an IdeaPad whose eMMC controller is not on bus 0 printed
+      # `sdhci: no SD/eMMC host controller` and could not be installed onto.
+      - name: An SD/eMMC controller behind a PCI bridge is found
+        run: make smoke-sdhci-bridge
+      # The arm walks bus 0 only and must report the same controller ABSENT --
+      # which is what proves it really is behind the bridge rather than quietly
+      # placed on bus 0 by QEMU. The gate is worthless without this half.
+      - name: Control arm — bus 0 only, and the controller vanishes
+        run: make smoke-sdhci-bridge-control
       # THE ONE THAT MATTERS FOR A LAPTOP. Everything above tests the driver
       # against the driver's own harness; this drives the whole install onto a
       # card through the block layer, the filesystem and the installer, then

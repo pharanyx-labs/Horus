@@ -31,6 +31,7 @@
 # like an old one.
 
 control_arms:
+  smoke-cap-accounting-control: smoke-captest
   smoke-captest-capenum-control: smoke-captest
   smoke-captest-clock-control: smoke-captest
   smoke-captest-devcap-control: smoke-captest

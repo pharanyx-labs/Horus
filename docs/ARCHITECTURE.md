@@ -460,6 +460,33 @@ kernel-reserved slots `0..3`, and are non-revocable.
 All four hold `cap_lock` across the read-modify-write, count newly-occupied slots against
 `MAX_CAPS_PER_TASK`, and refuse a cspace-less caller (the no-ambient-authority guard).
 
+Three more primitives exist for the cases those four do not fit, and they keep the same
+discipline (`SECURITY.md` **S94**):
+
+- **`cap_install_object_first_free(min_slot, …, out_slot)`**, install into the first free slot
+  at or above `min_slot` of the caller's own cspace, with the **scan inside the same lock
+  acquisition as the store**. `SYS_PIPE` and the `CAP_TCB` a spawn hands its spawner used to
+  scan and then store separately, which lets two CPUs choose one slot — and the loser's
+  `pipe_end_ref` has already counted an end that no capability names.
+- **`cap_consume_slot_of(pid, slot, out_prev)`**, null one slot of a task's cspace and return
+  what it held, so only the CPU that actually emptied it releases what the capability owned.
+  It takes a pid where the installs do not, because removing a capability can never widen
+  anything.
+- **`cap_install_child_pipe_end(child, slot, spawner, src, rights)`**, the second bounded
+  cross-cspace install after `cap_install_reply_for`: type fixed to `CAP_PIPE`, destination
+  restricted to the two stdio slots, rights refused unless already a subset of the source's,
+  and the source looked up under the lock with `cap_lookup`'s validity rules so a revoked end
+  is refused instead of copied.
+
+**Why the lock matters for more than the slot being written.** Revocation (below) reads *every*
+cspace and decides object reachability from what it finds; a capability is six fields and a C
+store writes them one at a time, so an unlocked writer can show the sweep a slot whose `type` is
+already set while `object` and `serial` still describe the slot's previous occupant. Which
+functions write a capability slot, and what makes each write safe, is declared in
+`.github/cap-write-sites.yml` and gated by `tools/check_cap_writes.py`. One site is still
+unlocked and is listed there with the finding that tracks it (`create_task`,
+**HORUS-20260911-03b**).
+
 ### Revocation
 
 `cap_revoke(slot)` is **system-wide** and **subtree-scoped**. It collects every live task's

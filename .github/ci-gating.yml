@@ -56,6 +56,7 @@ required:
 
   # ci.yml
   - altconfigs
+  - cap-writes
   - ci-gating
   # Gating rather than advisory on purpose. It checks the documentation against
   # the tree, and documentation that lies is how [G-2] survived nineteen days

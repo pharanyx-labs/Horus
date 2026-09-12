@@ -95,7 +95,31 @@
 # check, a narrowing, a copy_to_user and its failure path. In `core` because the
 # IPC authorisation path is, and because the alternative -- a new syscall --
 # would have cost a dispatch entry and a number for the same four lines.
-core_budget_loc: 9736
+# RAISED 2026-09-12, 9736 -> 9857 (+121), for S94: the five raw capability-slot
+# stores in pipe.c and kspawn.c were replaced by three locked primitives in
+# capability.c. The growth is measured per file rather than asserted:
+#
+#     capability.c   642 -> 733   (+91)   cap_install_object_first_free,
+#                                         cap_consume_slot_of,
+#                                         cap_install_child_pipe_end
+#     pipe.c         235 -> 265   (+30)   of which 27 are the control arm
+#     scheduler.c   1938 -> 1938   (0)
+#
+# WHY THIS IS THE RIGHT DIRECTION FOR A VERIFICATION BUDGET even though the
+# number went up. What the core gained is three functions on ONE locked path; what
+# the kernel lost is five ad-hoc cap-writes spread across two files that a
+# verification effort would have had to discover and reason about separately --
+# and two of those five were in `service`, outside this budget entirely, which is
+# the perverse part of counting only core: moving a cap-write INTO the audited set
+# makes the figure worse while making the kernel easier to verify. The budget is a
+# ratchet on accidental growth, not an argument against consolidation.
+#
+# 27 of pipe.c's 30 are `#ifdef PIPE_CAP_UNACCOUNTED`, the defect arm. The
+# SHIPPING path in pipe.c is shorter than it was: h_pipe_close went from a
+# four-step unsynchronised slot edit to one cap_consume_slot_of, and h_pipe no
+# longer scans. The arm is counted because check_ring0_budget counts source, which
+# is correct -- an arm that the budget could not see would be a place to hide code.
+core_budget_loc: 9857
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

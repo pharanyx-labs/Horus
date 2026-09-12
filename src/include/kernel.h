@@ -2641,6 +2641,14 @@ capability_t *cap_lookup(uint32_t slot, uint32_t expected_type,
                          uint32_t required_rights);
 bool cap_mint(uint32_t dest_slot, uint32_t src_slot, uint32_t new_rights);
 bool cap_install_endpoint(uint32_t dest_slot, uint32_t object, uint32_t rights, uint32_t badge);
+/* Install a fresh capability into the first free slot at or above `min_slot` of
+ * the CURRENT task's own cspace, scan and write under one cap_lock, reporting the
+ * slot in `*out_slot` (may be NULL). The replacement for a scan-then-raw-store,
+ * which was neither atomic against a competing scan nor against the revocation
+ * sweep's documented requirement that every cspace be quiescent under cap_lock,
+ * and which never counted against MAX_CAPS_PER_TASK. */
+bool cap_install_object_first_free(uint32_t min_slot, uint32_t type, uint64_t object,
+                                   uint32_t rights, uint32_t badge, uint32_t *out_slot);
 /* Install a freshly-minted capability of `type` naming `object` into the CURRENT
  * task's own cspace, under cap_lock and with the same authority guard,
  * reserved-slot rule and MAX_CAPS_PER_TASK accounting as cap_mint. The general
@@ -2655,6 +2663,14 @@ bool cap_install_object(uint32_t dest_slot, uint32_t type, uint64_t object,
  * matching consume leaks toward MAX_CAPS_PER_TASK. NOT a revoke — it forgets one
  * slot in the caller's own cspace and touches no derived capability. */
 bool cap_consume_slot(uint32_t dest_slot);
+/* As cap_consume_slot, but for one slot of TASK `pid`'s cspace, returning what
+ * the slot held in `*out_prev` (may be NULL) so the caller can release whatever
+ * the capability owned -- a pipe end's direction refcount -- knowing it was the
+ * CPU that emptied the slot. A cross-cspace reduction of authority, never a
+ * widening, which is why this takes a pid where cap_install_* does not. Call
+ * pipe_end_unref OUTSIDE this: it takes pipe_lock, and the order here is
+ * cap_lock -> pipe_lock. */
+bool cap_consume_slot_of(int pid, uint32_t slot, struct capability *out_prev);
 /* Release the capabilities a dead task held (task_teardown). The cspace's BYTES
  * stay with the slot -- the arena is a monotonic bump allocator and the kernel
  * reserve holds exactly MAX_TASKS cspaces -- so what is reclaimed is its
@@ -2676,6 +2692,16 @@ void cap_release_cspace(int id);
  * established when it proved READ on the endpoint to block on it; this only
  * completes the receive it was already entitled to. */
 bool cap_install_reply_for(int pid, int sender);
+/* Install the child's end of a spawner's pipe into the child's STDIN/STDOUT pipe
+ * slot (do_spawn's stdio wiring). The second bounded exception to "no general
+ * cross-cspace install": type fixed to CAP_PIPE, destination restricted to the
+ * two stdio slots, rights refused unless already a subset of the source's, and
+ * the source looked up under cap_lock with cap_lookup's validity rules so a
+ * revoked end cannot be copied. Keeps badge 0 (HORUS-20260911-04 is a separate
+ * change; see the definition for why it cannot land alone). */
+bool cap_install_child_pipe_end(int child, uint32_t dest_slot, int spawner,
+                                uint32_t src_slot, uint32_t rights,
+                                uint64_t *out_object);
 /* Read-only view of the kernel root cnode, so the object-reachability sweep in
  * untyped.c can see kernel-held capabilities too. root_cnode is otherwise
  * file-private to capability.c and must stay that way: handing out a mutable

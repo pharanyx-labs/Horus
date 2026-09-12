@@ -1,0 +1,152 @@
+# Every function in the kernel that writes a capability slot, and what makes that
+# write safe. tools/check_cap_writes.py gates it (required job `cap-writes`).
+#
+# THE PROPERTY. A capability is six fields -- type, rights, object, badge, serial,
+# generation -- and a C assignment writes them one at a time. rust_cap_revoke_global
+# reads every live cspace and decides from what it finds which capabilities belong
+# to a revoked lineage, and which kernel objects no capability names any more
+# (kobj_gc, called from inside cap_revoke). It is documented to depend on cap_lock
+# making those cspaces quiescent. That is not a property of the lock; it is a
+# property of the set of writers that take it.
+#
+# WHY IT IS WRITTEN DOWN. Three sites below are legitimately lock-free, for three
+# different reasons, and none of the three is derivable from the source: "no second
+# CPU exists yet", "no other CPU can reach this cspace yet", and "this store IS the
+# defect, under a control-arm flag". A checker can verify that a site claiming the
+# lock takes it; it cannot verify a claim about reachability. So the claim is
+# recorded and signed here, the bargain .github/gate-pairs.yml makes for arms.
+#
+# WHAT THE CHECK DOES NOT COVER, stated here rather than left to be discovered: it
+# asks whether a function claiming `locked` mentions spin_lock(&cap_lock) at all.
+# A function that takes the lock and then writes a slot OUTSIDE the locked region
+# satisfies it. Brace-accurate region tracking would be a second C parser; the
+# rule that actually prevents the defect is rule 1 -- a NEW raw store, anywhere,
+# in any function, fails the build until somebody declares it.
+#
+# status values:
+#   locked                        takes cap_lock; the checker verifies this much
+#   boot-single-cpu               runs before smp_bringup, so there is no racer
+#   unreachable-until-published   the cspace belongs to a task no CPU can select
+#   control-arm                   a defect-reproducing store behind a DEFECT_FLAGS flag
+#   unlocked                      a KNOWN OPEN DEFECT; requires a `finding:`
+
+sites:
+  # ---- capability.c: the locked path itself --------------------------------
+  - file: src/kernel/capability.c
+    function: cap_init
+    status: boot-single-cpu
+    reason: >
+      Builds the kernel root cnode during cap_init, called from kernel_main before
+      smp_bringup brings a second CPU out of reset, so there is no concurrent
+      sweep to be seen by. It takes cap_lock anyway; the classification records
+      that the safety does not rest on that.
+  - file: src/kernel/capability.c
+    function: cap_install_from_root
+    status: locked
+    reason: Copies a primordial root capability into a task's slot under cap_lock.
+  - file: src/kernel/capability.c
+    function: cap_install_object
+    status: locked
+    reason: The locked, accounted, authority-checked install into the current cspace.
+  - file: src/kernel/capability.c
+    function: cap_install_object_first_free
+    status: locked
+    reason: >
+      As cap_install_object, with the free-slot scan inside the same lock
+      acquisition as the store -- which is the point of it, since a scan and a
+      store that are separately atomic still let two CPUs choose one slot.
+  - file: src/kernel/capability.c
+    function: cap_install_reply_for
+    status: locked
+    reason: >
+      Mints the one-shot CAP_REPLY into the blocking receiver's cspace. The first
+      of the two bounded cross-cspace installs; type, rights and slot are all
+      fixed at the definition so it cannot be reused to place arbitrary authority.
+  - file: src/kernel/capability.c
+    function: cap_install_child_pipe_end
+    status: locked
+    reason: >
+      The second bounded cross-cspace install: do_spawn's stdio wiring. Type fixed
+      to CAP_PIPE, destination restricted to the two stdio slots, rights refused
+      unless already a subset of the source's, and the source looked up under the
+      same lock with cap_lookup's validity rules.
+  - file: src/kernel/capability.c
+    function: cap_consume_slot
+    status: locked
+    reason: Nulls one slot of the current cspace and returns its budget.
+  - file: src/kernel/capability.c
+    function: cap_consume_slot_of
+    status: locked
+    reason: >
+      As cap_consume_slot for another task's slot, reporting what the slot held so
+      the caller can release what the capability owned. A reduction of authority,
+      never a widening, which is why it accepts a pid where the installs do not.
+  - file: src/kernel/capability.c
+    function: cap_release_cspace
+    status: locked
+    reason: Empties a dead task's cspace at teardown under cap_lock.
+  - file: src/kernel/capability.c
+    function: cap_mint_untyped_child
+    status: locked
+    reason: Installs the child region of an untyped split under cap_lock.
+  - file: src/kernel/capability.c
+    function: cap_exec_mutate_cspace
+    status: locked
+    reason: Rewrites a cspace across SYS_EXEC under cap_lock.
+  - file: src/kernel/capability.c
+    function: cap_create_revocation_set
+    status: locked
+    reason: Installs a CAP_REVOCATION_SET under cap_lock, as mint and transfer do.
+
+  # ---- the three locked sites outside capability.c -------------------------
+  - file: src/kernel/kspawn.c
+    function: do_spawn_inner
+    status: locked
+    reason: >
+      Propagates the creator's CAP_USER into the child's identity slot 6 under
+      cap_lock, with the creator's serial as the derivation badge.
+  - file: src/kernel/kusers.c
+    function: h_sudo
+    status: locked
+    reason: >
+      Re-stamps the identity slots (3, 6, 7) when SYS_SUDO changes who a task is,
+      under cap_lock, with the three fresh serials allocated before the lock is
+      taken because cap_alloc_fresh_serial takes it too and it is not recursive.
+  - file: src/kernel/kshell.c
+    function: spawn_initial_userspace_shell
+    status: locked
+    reason: Stamps fresh serials on the initial shell's console/storage slots under cap_lock.
+
+  # ---- lock-free, and why ---------------------------------------------------
+  - file: src/kernel/scheduler.c
+    function: create_task
+    status: unlocked
+    finding: HORUS-20260911-03b
+    reason: >
+      Builds a brand-new task's cspace -- zeroes all CNODE_SIZE slots, then
+      installs the primordial TCB/FRAME/endpoint/console/storage capabilities --
+      with no lock held. It is NOT safe on the reasoning that the task is private:
+      `tasks[id].state = 1` is set some seventy lines EARLIER, and a revocation
+      sweep enumerates exactly `state != 0 && cspace != NULL`. So a sweep on
+      another CPU can observe this cspace while it is being built: before the
+      zeroing loop it still holds the previous occupant of the task slot's
+      capabilities (for a kernel-reserve task, where the cspace pointer is reused),
+      and after the zeroing but before the installs it looks empty -- at which
+      point kobj_gc may conclude the reply endpoint this function is about to
+      install a capability to is unreachable, and destroy it.
+      Left open deliberately rather than fixed in the same commit as the five
+      sites above: create_task runs for every task on every boot and calls
+      kobj_alloc (which takes the untyped lock) in the middle of the region that
+      would have to be covered, so the change is a lock-ordering change in the
+      kernel's most load-bearing function and wants its own commit and its own
+      witness. Tracked as HORUS-20260911-03b in docs/LIMITATIONS.md.
+  - file: src/kernel/pipe.c
+    function: h_pipe
+    status: control-arm
+    reason: >
+      The only raw store left in pipe.c is inside `#ifdef PIPE_CAP_UNACCOUNTED`,
+      which exists to BE the pre-2026-09-12 defect: the two pipe-end capabilities
+      written field by field with no cap_lock and no caps_in_use. The shipping path
+      goes through cap_install_object_first_free. Listed because the checker reads
+      source, not the preprocessor -- and a defect arm that the gate could not see
+      would be a blind spot in the gate, not a tidier manifest.

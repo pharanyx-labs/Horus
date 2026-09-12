@@ -423,6 +423,94 @@ bool cap_install_endpoint(uint32_t dest_slot, uint32_t object,
     return cap_install_object(dest_slot, CAP_ENDPOINT, (uint64_t)object, rights, badge);
 }
 
+/* Install a fresh capability into the FIRST FREE slot at or above `min_slot` of
+ * the current task's own cspace -- the scan and the write under ONE cap_lock
+ * acquisition -- and report which slot it landed in.
+ *
+ * WHY THIS EXISTS, AND WHAT THE CALLERS USED TO DO INSTEAD. `h_pipe` walked its
+ * own cspace for two free slots and then filled them field by field;
+ * `grant_child_tcb_cap` walked for one and did the same. Neither took cap_lock.
+ * Two separate defects, and the scan being duplicated was the least of them.
+ *
+ *   1. THE SCAN AND THE STORE WERE NOT ATOMIC AGAINST EACH OTHER. Two CPUs in
+ *      h_pipe on one cspace -- reachable the moment two threads share one, and
+ *      already reachable today between h_pipe and grant_child_tcb_cap, which
+ *      writes the SPAWNER's cspace from a spawn the spawner is blocked in -- can
+ *      both choose the same free slot. The second store wins and the first
+ *      capability is gone, while `pipe_end_ref` has already counted an end that
+ *      no capability names any more. The pipe then never reaches writer_ends == 0
+ *      and its reader waits for EOF forever.
+ *
+ *   2. THE STORE ITSELF WAS UNSYNCHRONISED, which is the security half. A
+ *      capability is six fields; a raw store writes them one at a time with
+ *      `type` FIRST. rust_cap_revoke_global's sweep reads every live cspace and
+ *      is documented -- in cap_revoke below, at the kobj_gc call -- to depend on
+ *      cap_lock making them QUIESCENT: "cap-writes are field-by-field, so running
+ *      it unlocked would let it observe a slot mid-install -- type already
+ *      written, `object` still stale -- and conclude a live object is
+ *      unreachable." That guarantee is only as good as the set of writers that
+ *      take the lock, and these two did not. A sweep on another CPU could read a
+ *      slot whose `type` says CAP_PIPE while `object`, `badge` and `serial` still
+ *      describe the slot's previous occupant, then decide that object's
+ *      reachability, or that lineage's membership, from a capability that never
+ *      existed.
+ *
+ *   3. AND NEITHER COUNTED. caps_in_use is the MAX_CAPS_PER_TASK budget; a slot
+ *      filled by a raw store is occupied but uncounted, so the ceiling -- stated
+ *      in docs/SYSCALLS.md and reported to ring 3 by SYS_GET_TASK_INFO -- did not
+ *      bound what a task could actually hold. Worse in the other direction:
+ *      cap_consume_slot DOES decrement, so a task could acquire uncounted
+ *      capabilities (one CAP_TCB per spawn, free) and consume them for credit,
+ *      driving the counter to zero while its cspace filled up.
+ *
+ * The current task's own cspace, deliberately: no `pid` parameter. See
+ * cap_install_reply_for's header for why a general cross-cspace install is
+ * refused in this file, and cap_install_child_pipe_end below for the one narrow
+ * exception and what fixes its type, slot and rights.
+ *
+ * Returns false on authority failure, an out-of-range or wholly-full scan range,
+ * or when the task is at its capability ceiling -- the same refusals
+ * cap_install_object makes, for the same reasons. `out_slot` may be NULL. */
+bool cap_install_object_first_free(uint32_t min_slot, uint32_t type, uint64_t object,
+                                   uint32_t rights, uint32_t badge, uint32_t *out_slot) {
+    /* Allocate the serial before taking cap_lock: cap_alloc_fresh_serial() takes
+     * the same (non-recursive) lock. Mirrors cap_install_object. A serial burnt
+     * on a refused install costs nothing -- serials are a 32-bit monotonic
+     * counter whose only requirement is freshness. */
+    uint32_t serial = cap_alloc_fresh_serial();
+    spin_lock(&cap_lock);
+    if (!caller_has_authority()) { spin_unlock(&cap_lock); return false; }
+    int cur = get_current_task();
+    struct capability *cspace = tasks[cur].cspace;
+    uint32_t cspace_sz = tasks[cur].cspace_size ? tasks[cur].cspace_size : CNODE_SIZE;
+    if (!cspace || min_slot < KERNEL_RESERVED_CAPS || min_slot >= cspace_sz) {
+        spin_unlock(&cap_lock);
+        return false;
+    }
+    /* The ceiling is checked BEFORE the scan, not after it: every slot this
+     * function can fill is a NULL -> occupied transition by construction, so
+     * there is no was_null case in which the budget does not apply. */
+    if (tasks[cur].caps_in_use >= MAX_CAPS_PER_TASK) {
+        spin_unlock(&cap_lock);
+        return false;
+    }
+    uint32_t slot = cspace_sz;
+    for (uint32_t s = min_slot; s < cspace_sz; s++) {
+        if (cspace[s].type == CAP_NULL) { slot = s; break; }
+    }
+    if (slot >= cspace_sz) { spin_unlock(&cap_lock); return false; }
+    cspace[slot].type       = type;
+    cspace[slot].rights     = rights;
+    cspace[slot].object     = object;
+    cspace[slot].badge      = badge;
+    cspace[slot].serial     = serial;
+    cspace[slot].generation = rust_lineage_current(serial); /* finding 3.3 */
+    tasks[cur].caps_in_use++;
+    spin_unlock(&cap_lock);
+    if (out_slot) *out_slot = slot;
+    return true;
+}
+
 /* Mint the one-shot reply right into ANOTHER task's cspace — the blocking
  * receiver's. See the header for why this is not, and must not become, a general
  * cross-cspace install: type, rights and slot are all fixed here.
@@ -499,6 +587,137 @@ bool cap_consume_slot(uint32_t dest_slot) {
         if (tasks[cur].caps_in_use > 0) tasks[cur].caps_in_use--;
     }
     spin_unlock(&cap_lock);
+    return true;
+}
+
+/* Drop ONE capability out of task `pid`'s cspace and hand the caller what was
+ * there -- the read and the null under one cap_lock acquisition.
+ *
+ * The reason the previous contents come back matters more than it looks. The
+ * callers are the pipe close paths, and a pipe end is TWO pieces of state: the
+ * capability, and a refcount on the pipe's reader/writer direction. Releasing
+ * them needs the cap's `object` and `rights` AFTER it is certain the cap was
+ * there and is now gone, or the same end is released twice (two CPUs closing the
+ * same slot both read CAP_PIPE, both unref, and writer_ends reaches 0 while a
+ * holder remains -- the peer sees EOF with a live writer). Returning the slot's
+ * contents from inside the lock makes the unref the exclusive right of whichever
+ * CPU actually emptied the slot.
+ *
+ * `pipe_end_unref` is then called by the caller OUTSIDE this lock, deliberately:
+ * it takes pipe_lock, and cap_lock -> pipe_lock would be a new lock order. Every
+ * cap-write in pipe.c now happens with pipe_lock unheld for exactly that reason.
+ *
+ * A cross-cspace REDUCTION of authority, which is why it takes a pid where
+ * cap_install_* does not: removing a capability can never widen anything, so the
+ * argument that refuses a general cross-cspace install (cap_install_reply_for)
+ * does not apply. `pid` is still kernel-chosen at every call site -- the current
+ * task, or a task being torn down -- and no syscall passes one through.
+ *
+ * `out_prev` may be NULL. Returns false only for a bad pid/slot or a task with no
+ * cspace; an already-empty slot is a successful no-op, since the postcondition
+ * the callers need ("this slot holds nothing") is satisfied either way. The
+ * occupied case is distinguishable by out_prev->type != CAP_NULL. */
+bool cap_consume_slot_of(int pid, uint32_t slot, struct capability *out_prev) {
+    if (out_prev) {
+        out_prev->type = CAP_NULL; out_prev->rights = 0; out_prev->object = 0;
+        out_prev->badge = 0; out_prev->serial = 0; out_prev->generation = 0;
+    }
+    if (pid <= 0 || pid >= g_max_tasks) return false;
+    spin_lock(&cap_lock);
+    struct capability *cspace = tasks[pid].cspace;
+    uint32_t cspace_sz = tasks[pid].cspace_size ? tasks[pid].cspace_size : CNODE_SIZE;
+    if (!cspace || slot >= cspace_sz) { spin_unlock(&cap_lock); return false; }
+    if (cspace[slot].type != CAP_NULL) {
+        if (out_prev) *out_prev = cspace[slot];
+        cspace[slot].type       = CAP_NULL;
+        cspace[slot].rights     = 0;
+        cspace[slot].object     = 0;
+        cspace[slot].badge      = 0;
+        /* serial 0 is what cap_lookup reads as "empty". The pipe close paths used
+         * to write `type = CAP_NULL` alone and leave serial, rights and object
+         * behind, which is the residue cap_consume_slot's comment warns about: a
+         * slot that looks empty to a type check and occupied to the lineage
+         * check. */
+        cspace[slot].serial     = 0;
+        cspace[slot].generation = 0;
+        if (tasks[pid].caps_in_use > 0) tasks[pid].caps_in_use--;
+    }
+    spin_unlock(&cap_lock);
+    return true;
+}
+
+/* Install the child's end of a spawner's pipe into one of the child's two stdio
+ * slots: the SECOND narrow exception to "no general cross-cspace install", and
+ * bounded the same way cap_install_reply_for is -- the type is fixed (CAP_PIPE),
+ * the destination slot must be one of the two stdio slots, and the rights can
+ * only be a subset of what the source capability already carries.
+ *
+ * No caller_has_authority() check, for cap_install_reply_for's reason: the
+ * current task at this point in do_spawn_inner is the CHILD (load_staged_image_into
+ * leaves it current so copy_to_user targets its address space), not the spawner
+ * whose authority is being delegated. Asking the guard about the current task
+ * would ask about the wrong one. The authority argument is the spawner's, and it
+ * is established by two things the caller has already done: do_spawn_stdio checked
+ * that `spawner` is the task that armed this image, and the source capability is
+ * looked up HERE, under the lock, with the same validity rules cap_lookup applies
+ * -- so a revoked or stale source is refused rather than copied.
+ *
+ * WHAT THIS DOES NOT YET FIX. The installed capability keeps badge 0, which makes
+ * it a derivation ROOT rather than a child of the spawner's end, so revoking the
+ * spawner's end does not reach it (audit HORUS-20260911-04). That is preserved
+ * here on purpose: correcting it makes pipe capabilities reachable by
+ * revoke_subtree for the first time, and revoke_subtree nulls slots without
+ * releasing the pipe-end refcount those slots own -- so the fix needs the
+ * refcount reconciliation to land with it, or a revoke leaves a reader waiting on
+ * EOF that can never come. This commit is the locking and accounting half only;
+ * the badge is a separate change with its own witness. */
+bool cap_install_child_pipe_end(int child, uint32_t dest_slot, int spawner,
+                                uint32_t src_slot, uint32_t rights,
+                                uint64_t *out_object) {
+    if (out_object) *out_object = 0;
+    if (child <= 0 || child >= g_max_tasks) return false;
+    if (spawner <= 0 || spawner >= g_max_tasks) return false;
+    if (dest_slot != STDIN_PIPE_SLOT && dest_slot != STDOUT_PIPE_SLOT) return false;
+    if (src_slot >= CNODE_SIZE) return false;
+
+    uint32_t serial = cap_alloc_fresh_serial();   /* takes cap_lock: before it */
+    spin_lock(&cap_lock);
+    struct capability *pcs = tasks[spawner].cspace;
+    struct capability *ccs = tasks[child].cspace;
+    uint32_t psz = tasks[spawner].cspace_size ? tasks[spawner].cspace_size : CNODE_SIZE;
+    uint32_t csz = tasks[child].cspace_size ? tasks[child].cspace_size : CNODE_SIZE;
+    if (!pcs || !ccs || dest_slot >= csz) { spin_unlock(&cap_lock); return false; }
+
+    /* Authoritative source lookup under the lock, as cap_grant_into does it:
+     * rights(0) means possession is enough, but type/serial/lineage validity is
+     * enforced. The old code tested `pcs[src_slot].type == CAP_PIPE` outside any
+     * lock and then copied the struct -- a revoke landing between the test and
+     * the copy handed the child a capability that had just been destroyed. */
+    struct capability *src = rust_cap_lookup(pcs, psz, src_slot, 0);
+    if (src && !rust_lineage_check(src->serial, src->generation)) src = NULL;
+    if (!src || src->type != CAP_PIPE) { spin_unlock(&cap_lock); return false; }
+    if ((src->rights & rights) != rights) { spin_unlock(&cap_lock); return false; }
+
+    bool was_null = (ccs[dest_slot].type == CAP_NULL);
+    if (was_null && tasks[child].caps_in_use >= MAX_CAPS_PER_TASK) {
+        spin_unlock(&cap_lock);
+        return false;
+    }
+    uint64_t object = src->object;
+    ccs[dest_slot].type       = CAP_PIPE;
+    ccs[dest_slot].rights     = rights;          /* already proved a subset */
+    ccs[dest_slot].object     = object;
+    ccs[dest_slot].badge      = 0;               /* HORUS-20260911-04, above */
+    ccs[dest_slot].serial     = serial;
+    ccs[dest_slot].generation = rust_lineage_current(serial); /* finding 3.3 */
+    if (was_null) tasks[child].caps_in_use++;
+    spin_unlock(&cap_lock);
+    /* The caller must take a pipe-end refcount for this install, and it needs the
+     * object to do it. Reporting it from inside the lock is the point: re-reading
+     * the spawner's slot afterwards would be one more unlocked read of a cspace,
+     * and a revoke landing in between would send the refcount to a different
+     * pipe than the one the child now holds. */
+    if (out_object) *out_object = object;
     return true;
 }
 

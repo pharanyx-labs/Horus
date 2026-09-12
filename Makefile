@@ -132,6 +132,7 @@ DEFECT_FLAGS = \
 	FS_LINK_UNCOUNTED \
 	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY BOOT_MENU_NO_LIVE_TOKEN \
 	BOOT_PIN_UNCHECKED BOOT_IMAGE_UNBOUND CONSOLE_PASS_UNGATED \
+	PIPE_CAP_UNACCOUNTED \
 	AHCI_PROBE_ABSENT AHCI_CAPACITY_CONSTANT SDHCI_PROBE_ABSENT \
 	SDHCI_CSD_SPEC_BITS SDHCI_ADDR_MODE_INVERTED \
 	SDHCI_WRITE_SELFTEST SDHCI_WRITE_NO_FLUSH \
@@ -672,6 +673,29 @@ FS_LINK_UNCOUNTED ?= 0
 ifeq ($(FS_LINK_UNCOUNTED),1)
 CFLAGS  += -DFS_LINK_UNCOUNTED
 ASFLAGS += -DFS_LINK_UNCOUNTED
+endif
+
+# PIPE_CAP_UNACCOUNTED=1 restores the pre-2026-09-12 SYS_PIPE: the two pipe-end
+# capabilities are written into the caller's cspace by a raw, unsynchronised
+# field-by-field store that takes no cap_lock and never touches caps_in_use.
+#
+# The flag is named for the half a test can OBSERVE. The locking half is the
+# graver one -- rust_cap_revoke_global's sweep is documented to rely on cap_lock
+# making every cspace quiescent, and a raw store breaks that for every cspace a
+# pipe is created in -- but observing it needs a sweep to land inside a
+# twelve-field store on another CPU, which is a race, not a gate. The ACCOUNTING
+# half of the same store is deterministic and rides the existing smoke-captest:
+# captest's cap-accounting section asks the kernel for its own caps_in_use after
+# SYS_PIPE and finds it unchanged, then fills its cspace to MAX_CAPS_PER_TASK and
+# is granted two more capabilities anyway. So the base gate reddens under this
+# flag with no new gate, and the invariant the flag cannot reach is held by
+# tools/check_cap_writes.py instead, statically.
+#
+# Control arm for make smoke-cap-accounting-control, which REQUIRES the FAIL.
+PIPE_CAP_UNACCOUNTED ?= 0
+ifeq ($(PIPE_CAP_UNACCOUNTED),1)
+CFLAGS  += -DPIPE_CAP_UNACCOUNTED
+ASFLAGS += -DPIPE_CAP_UNACCOUNTED
 endif
 
 # CONSOLE_TIMESTAMPS_LEGACY=1 restores the pre-2026-09-06 console: no line
@@ -5922,6 +5946,28 @@ smoke-captest:
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CAPTEST: PASS' \
 		FAIL_MARKER='CAPTEST: FAIL' tools/smoke_test.sh horus.iso
+
+# CONTROL ARM for the capability-accounting half of smoke-captest (S94).
+#
+# PIPE_CAP_UNACCOUNTED=1 puts the raw, unlocked, unaccounted cspace store back in
+# SYS_PIPE. captest's cap-accounting section then reads its own caps_in_use after
+# a SYS_PIPE and finds it unmoved, so the arm REQUIRES that named FAIL rather
+# than the absence of a PASS: the probe reaches its verdict under the defect and
+# says which assertion broke, so there is positive evidence and a hang stays
+# distinguishable from a reproduction.
+#
+# The named check is the FIRST of the section's assertions to fail, which is what
+# makes it the one to require -- captest's `fail` stops at the first, so requiring
+# a later one would be requiring a line the arm never reaches.
+.PHONY: smoke-cap-accounting-control
+smoke-cap-accounting-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 PIPE_CAP_UNACCOUNTED=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 PIPE_CAP_UNACCOUNTED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CAPTEST: FAIL pipe-ends-cost-no-capability-budget' \
+		FAIL_MARKER='CAPTEST: PASS' tools/smoke_test.sh horus.iso
+	@echo "[captest] CONTROL PASS - a pipe end cost the task no capability budget"
 
 # Modules + residency gate: ship ALL ported coreutils as GRUB boot modules, boot
 # normally, and prove (a) every one is provisioned into /bin FROM the modules (not

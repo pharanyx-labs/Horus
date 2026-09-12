@@ -705,6 +705,16 @@ jobs:
       # arm shows the rule moved into one place rather than that a hole existed.
       - name: Control arm — a lookup that returns whatever the slot holds
         run: make smoke-captest-lookup-type-control
+      # S94. A capability a task holds must cost it budget. The arm restores the
+      # raw, unlocked, unaccounted cspace store in SYS_PIPE, after which captest
+      # reads its own caps_in_use and finds it unmoved by two installed pipe
+      # ends, and is then granted two more capabilities while already at
+      # MAX_CAPS_PER_TASK. A STEP of this job rather than a job of its own, so it
+      # adds no required context: the base gate it falsifies is `make
+      # smoke-captest` at the top of this same job, which reddens under the same
+      # flag because captest reports the failure as `CAPTEST: FAIL`.
+      - name: Control arm — a pipe end that costs no capability budget
+        run: make smoke-cap-accounting-control
       # S72. The one call that DESTROYS a volume answers to a capability of its
       # own. The arm removes the whole dispatch row -- slot, rights and type --
       # so captest reaches the handler and SUCCEEDS, which is the condition a
@@ -2941,6 +2951,26 @@ jobs:
       # the base gate above goes red against this build.
       - name: Control arm — without the check, the unseeded pool serves keystream
         run: make smoke-rng-seed-control
+
+  cap-writes:
+    name: "Every write to a capability slot is a declared write"
+    runs-on: ubuntu-latest
+    # Source analysis only -- no build, no QEMU. Seconds, and deliberately its own
+    # job for defect-flags-documented's reason: a check this cheap should not wait
+    # behind one that boots QEMU to tell you a raw cap store reached the tree.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      # A capability is six fields and a C store writes them one at a time.
+      # rust_cap_revoke_global reads every live cspace and is documented to rely
+      # on cap_lock making them quiescent -- which is a property of the set of
+      # writers that take the lock, not of the lock. On 2026-09-12 five writers
+      # did not, in pipe.c and kspawn.c, thirteen days after cap_install_object's
+      # own header diagnosed the class for a sixth site and fixed only that one.
+      - name: Refuse an undeclared capability-slot write
+        run: python3 tools/check_cap_writes.py
+      - name: Falsify that checker in every direction
+        run: ./tools/test_check_cap_writes.sh
 
   defect-flags-documented:
     name: "Every defect flag has a row in the table that claims to list them all"

@@ -676,7 +676,7 @@ that path.
 
 | # | Name | Arguments | Authorisation |
 |---|---|---|---|
-| 83 | `SYS_PIPE` |: → `(read_slot<<16)\|write_slot` | none (own cspace) |
+| 83 | `SYS_PIPE` |: → `(read_slot<<16)\|write_slot` | none (own cspace), but the two ends **count against `MAX_CAPS_PER_TASK`** and the call is refused with `SYS_ERR_NOMEM` at the ceiling (S94) |
 | 84 | `SYS_PIPE_READ` | `slot`, `buf`, `len` | `CAP_PIPE` READ at `slot` |
 | 85 | `SYS_PIPE_WRITE` | `slot`, `buf`, `len` | `CAP_PIPE` WRITE at `slot` |
 | 86 | `SYS_PIPE_CLOSE` | `slot` | `CAP_PIPE` at `slot` |

@@ -87,7 +87,15 @@
 # local variable. The five lines are the test and the report; they are in `core`
 # because the 8042 bring-up is, and moving them out to dodge the budget would be
 # the reclassification bypass the arm below exists to catch.
-core_budget_loc: 9732
+# 2026-09-12: 9732 -> 9736, +4 in syscall_ipc.c. SYS_IPC_SENDER reports the
+# sender's TASK ID through an out-parameter that was already unused, because a
+# server whose clients share a uid cannot tell them apart with it -- and
+# console_server's clients are exactly that population: one is the task a person
+# is typing at, the rest are programs that person ran (S93). Four lines: a null
+# check, a narrowing, a copy_to_user and its failure path. In `core` because the
+# IPC authorisation path is, and because the alternative -- a new syscall --
+# would have cost a dispatch entry and a number for the same four lines.
+core_budget_loc: 9736
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

@@ -1628,6 +1628,28 @@ by the bootloader rather than pinned by it, and would restore the EFI path; it i
 step and is not taken here.
 
 
+### 2.9b Console input has an owner for passwords only
+
+*Added 2026-09-12 with `SECURITY.md` **S93**.*
+
+`CON_OP_GETPASS` is served only to the registered input owner. `CON_OP_GETLINE` and
+`CON_OP_READ_RAW` are **not**, and a task holding an inherited console capability can still read
+them — so a program a person ran can eavesdrop on typed **command lines**, though no longer on
+passwords.
+
+**Why the line is drawn there rather than around all input.** `GETPASS` has exactly one
+legitimate caller, `shell.c`. The other two have several: `cat` with no arguments reads stdin
+through `READ_RAW` (`posix.c`), and the installer's own masked password fields do too
+(`tui.c`) — it does not use `GETPASS` at all. Restricting them to one owner therefore needs a
+**foreground-ownership model**: exactly one task owns console input at a time, ownership passes
+from a task to one it spawned and returns when that child exits, and the shell hands off before
+waiting on any child that reads stdin. That is a controlling-terminal feature, it touches every
+shell spawn site, and it is a larger change than the one that closes the credential theft.
+
+**What an attacker still gets**, stated so it is not inferred from the absence of a claim: the
+commands typed at the prompt, in real time, from any program the person ran. What they no longer
+get is the password those commands are authorised by.
+
 ### 2.10 ~~Four live syscalls have no caller anywhere in this tree~~: CLOSED 2026-08-23
 
 *Found 2026-08-23, while teaching the coverage deriver to evaluate the preprocessor.*
@@ -2608,9 +2630,9 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand: **[C-6]**
 
-`.github/workflows/ci.yml` defines **115** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more: **117** across the three, producing **120** status-check contexts. Ruleset `21815299`
-requires all **117** today, `smoke-kdiag` (**S81**) among them since 2026-09-03 -- one
+`.github/workflows/ci.yml` defines **117** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more: **119** across the three, producing **122** status-check contexts. Ruleset `21815299`
+requires all **119** today, `smoke-kdiag` (**S81**) among them since 2026-09-03 -- one
 `--sync-ruleset` run after the pull request that added the job, which is the lag this finding is
 about rather than an exception to it. Its predecessor `19007209` required **22** of them before
 2026-08-16, and until 2026-08-15 exactly **zero** of those 22 were security gates: capability
@@ -2656,7 +2678,7 @@ the right name with the wrong verdict. Step-level `continue-on-error` is untouch
 allowed; it lets one step be advisory while the job's own status still reports the truth, which
 is how the `security` job keeps its scanners advisory without becoming unfailable itself.
 
-That intended set is **117 required contexts and 3 reasoned exemptions**: `fuzz` (a 30-second
+That intended set is **119 required contexts and 3 reasoned exemptions**: `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` was a fifth until **[G-9]** closed on 2026-08-21; it was promoted on

@@ -120,6 +120,29 @@ static void console_boot_done(void) {
     }
 }
 
+/* Tell console_server which task may read a password from the console (S93).
+ *
+ * Shares init_con_rq/rp with console_boot_done above: init sends both, one at a
+ * time, from its own single thread, so one pair of buffers is the honest shape.
+ *
+ * BOUNDED RETRY AND A REPORTED FAILURE, unlike console_boot_done, which returns
+ * on any non-transient error because a missing boot-done only means the log
+ * keeps its timestamps. This one decides whether the shell can read a password
+ * at all, so the caller is told. Returns 0 when the server accepted it. */
+static int console_set_input_owner(uint32_t pid) {
+    init_con_rq.magic = CON_PROTO_MAGIC;
+    init_con_rq.op    = CON_OP_SET_INPUT_OWNER;
+    init_con_rq.len   = pid;
+    for (int tries = 0; tries < 20000; tries++) {
+        int rc = sys_ipc_call(INIT_CON_CLIENT_SLOT, 0,
+                              &init_con_rq, sizeof(init_con_rq), &init_con_rp);
+        if (rc >= 0) return init_con_rp.rc == 0 ? 0 : -1;
+        if (!ipc_transient(rc)) return -1;
+        sys_yield();
+    }
+    return -1;
+}
+
 /* Report why the supervised shell ended, using the record SYS_TASK_EXIT_INFO
  * hands back after a completed sys_wait().
  *
@@ -533,6 +556,27 @@ static int launch_shell(void) {
      * per-delegate accounting is what a `SYS_UNTYPED_SPLIT` would buy, and is not
      * needed for the authority property this closes. */
     if (sys_cap_grant(sh, CAPSLOT_UNTYPED, CAPSLOT_UNTYPED) != 0) return -9;
+    /* WHICH TASK MAY READ A PASSWORD FROM THE CONSOLE (S93), told to the server
+     * BEFORE the shell can run -- so the registration is in place before the
+     * first `horus login:` prompt, and before any task the shell spawns exists
+     * to race it.
+     *
+     * This is the one moment it can safely be done. init holds a console client
+     * capability and, right now, is the only ring-3 task that does: console_server
+     * is running, the shell is spawned but suspended, and nothing else has been
+     * launched. The server's rule is "unset, or the current owner", so this
+     * first registration is accepted and every later attempt by anything other
+     * than the shell is refused.
+     *
+     * A failure is reported and NOT fatal. The server fails closed on an unset
+     * owner -- GETPASS is refused rather than served -- so the cost of this not
+     * landing is a shell that cannot read a password, which is visible
+     * immediately at the login prompt. Killing the boot instead would turn a
+     * console-server hiccup into an unbootable machine. */
+    if (console_set_input_owner((uint32_t)sh) != 0)
+        report("init: WARN could not register the shell as the console input owner; "
+               "password entry will be refused\n");
+
     /* The shell's console capability is granted above; resuming only now is what
      * guarantees it can never start writing before it holds one. That race is
      * what made the shell come up silent under SMP and time out CI. */

@@ -67,6 +67,29 @@
  * smoke-* workload that never reaches a login prompt -- prints nothing BUT a
  * boot log. Serving any input request has the same effect, as a backstop: a
  * console someone is typing at is a terminal whether or not anyone said so. */
+/* WHICH TASK MAY READ A PASSWORD FROM THIS CONSOLE (S93).
+ *
+ * `len` carries the task id. Sent once by `init`, immediately before it resumes
+ * the shell -- the moment at which init is the only ring-3 task in the system
+ * holding a console client capability, so nothing can get in first.
+ *
+ * THE RULE IS "UNSET, OR THE OWNER". An owner that has not been set yet may be
+ * set by anybody, which is the bootstrap; once set, only the current owner may
+ * change it. That makes the boot-time registration safe without the server
+ * having to recognise init, which it cannot do and should not learn to: knowing
+ * "this sender is init" would be authority by identity, and the thing being
+ * registered is precisely the authority.
+ *
+ * GETPASS is the only operation this gates, and that is the whole of the
+ * finding rather than a first slice of it. Every task the shell spawns inherits
+ * a send-only console capability -- that is how `ls` gets a stdout -- so before
+ * this, any program a person ran could sit in a loop on CON_OP_GETPASS and
+ * receive the password typed at the next `sudo` prompt. GETLINE and READ_RAW
+ * stay open because `cat` with no arguments and the installer's own TUI read
+ * through them; closing those needs a foreground-ownership model, which is
+ * recorded in docs/LIMITATIONS.md rather than half-built here. */
+#define CON_OP_SET_INPUT_OWNER 8  /* len = task id -> rc = 0, or SYS_ERR_PERM */
+
 #define CON_OP_BOOT_DONE 7  /* (no payload) -> rc = 0; stop stamping: the session begins */
 
 #define CON_IO_MAX   200  /* max payload bytes per write request */

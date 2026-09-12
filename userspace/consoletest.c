@@ -35,6 +35,19 @@ static int rpc(struct con_request *rq, struct con_response *rp) {
     return rp->rc;
 }
 
+/* Emit a marker through the console SERVER, which writes to serial natively.
+ * See the note in _start: kput cannot be seen once the server owns the console. */
+static void say(const char *m) {
+    struct con_request  q;
+    struct con_response r;
+    umemset(&q, 0, sizeof(q));
+    q.op  = CON_OP_WRITE;
+    unsigned k = uslen(m); if (k > CON_IO_MAX) k = CON_IO_MAX;
+    umemcpy(q.data, m, k);
+    q.len = k;
+    (void)rpc(&q, &r);
+}
+
 void _start(void) {
     /* The payload IS the success marker: the server writes it to serial natively,
      * so its appearance proves the ring-3 console served this write end-to-end. */
@@ -50,6 +63,52 @@ void _start(void) {
 
     int rc = rpc(&rq, &rp);
     if (rc != (int)n) { kput("CONSOLE_SELFTEST: FAIL rc\n"); sys_exit(); }
+
+    /* ---- S93: a console client is not entitled to read a password ---------
+     *
+     * This task holds exactly what every task the shell spawns holds -- one
+     * send-only console capability, inherited so that it has a stdout. Before
+     * 2026-09-12 that also bought the right to sit on CON_OP_GETPASS and
+     * collect the password typed at the next `sudo` prompt, from any program a
+     * person had run.
+     *
+     * OWNERSHIP IS CLAIMED FOR SOMEBODY ELSE FIRST, and that is what makes the
+     * refusal below mean anything. The server fails closed on an UNSET owner,
+     * so a probe that simply asked would be refused for the wrong reason -- it
+     * would prove the fail-closed default and say nothing about the gate. So
+     * the owner is set to a task id that is not this one, and the refusal is
+     * then specifically "you are not the owner".
+     *
+     * Setting it is allowed here because in a CONSOLE_SELFTEST build there is
+     * no init and no shell, so the owner is still unset and the bootstrap rule
+     * applies -- the same rule, exercised from the other side. */
+    /* MARKERS GO THROUGH THE SERVER, not through kput.
+     *
+     * kput reaches print(), which is klog-only once a ring-3 console server owns
+     * the hardware -- so everything this probe said with it landed in the ring
+     * buffer and nothing reached serial. The first run of this gate timed out
+     * with no CONSOLE_PASS line at all, which looked like the code not running.
+     * CONSOLE_SELFTEST: PASS above is visible for exactly this reason: the
+     * SERVER writes it with its own hands. */
+    uint32_t me = sys_getpid();
+    umemset(&rq, 0, sizeof(rq));
+    rq.op  = CON_OP_SET_INPUT_OWNER;
+    rq.len = me + 1;                  /* deliberately not us */
+    if (rpc(&rq, &rp) != 0) { say("CONSOLE_PASS: FAIL could-not-set-owner\n"); sys_exit(); }
+
+    /* Said BEFORE the request, because under CONSOLE_PASS_UNGATED the server
+     * serves it and blocks in the read, so nothing after this line is reached.
+     * The arm asserts this marker present and the verdict below absent, which
+     * is the same shape smoke-captest-getline-control uses: a task admitted to
+     * a console read prints nothing, so absence is the evidence. */
+    say("CONSOLE_PASS: asking for a password as a non-owner\n");
+
+    umemset(&rq, 0, sizeof(rq));
+    rq.op  = CON_OP_GETPASS;
+    rq.len = 16;
+    int prc = rpc(&rq, &rp);
+    if (prc == SYS_ERR_PERM) say("CONSOLE_PASS: PASS refused a non-owner\n");
+    else                     say("CONSOLE_PASS: FAIL a non-owner was served\n");
 
     sys_exit();
 }

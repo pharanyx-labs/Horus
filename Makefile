@@ -131,7 +131,7 @@ DEFECT_FLAGS = \
 	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED \
 	FS_LINK_UNCOUNTED \
 	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY BOOT_MENU_NO_LIVE_TOKEN \
-	BOOT_PIN_UNCHECKED BOOT_IMAGE_UNBOUND \
+	BOOT_PIN_UNCHECKED BOOT_IMAGE_UNBOUND CONSOLE_PASS_UNGATED \
 	AHCI_PROBE_ABSENT AHCI_CAPACITY_CONSTANT SDHCI_PROBE_ABSENT \
 	SDHCI_CSD_SPEC_BITS SDHCI_ADDR_MODE_INVERTED \
 	SDHCI_WRITE_SELFTEST SDHCI_WRITE_NO_FLUSH \
@@ -1609,6 +1609,26 @@ BOOT_MENU_NO_LIVE_TOKEN ?= 0
 # A grub.cfg rewrite rather than a -D, like BOOT_ROOT_CD_ONLY above, because the
 # defect is in the boot configuration. Control arm for make smoke-boot-pin.
 BOOT_PIN_UNCHECKED ?= 0
+
+# CONSOLE_PASS_UNGATED=1 restores the pre-2026-09-12 console server, which served
+# CON_OP_GETPASS to any holder of the send-only console capability -- which is
+# every task the shell has ever spawned, since that capability is how a child
+# gets a stdout. Under it a program a person ran can sit on GETPASS and receive
+# the password typed at the next `sudo` prompt (S93).
+#
+# THE ARM'S EVIDENCE IS AN ABSENCE, and deliberately: under the flag the server
+# SERVES the read, so the probe blocks inside it and never reaches its verdict.
+# smoke-console-pass-control therefore requires the "asking" marker and fails on
+# the refusal verdict -- the same shape smoke-captest-getline-control uses,
+# where a task admitted to a console read prints nothing.
+#
+# The -D is applied further down, AFTER USERSPACE_CFLAGS is assigned with `=`,
+# and NOT here. A `+=` beside this declaration is silently discarded -- the trap
+# SYSCALL_PTR_TRUNC32's comment records and the TUI arms hit, where the flags
+# were set, the build succeeded, and not one -D reached the compiler. Written
+# here first, and caught by asking `make -n` whether the -D was on the command
+# line rather than by assuming it.
+CONSOLE_PASS_UNGATED ?= 0
 
 # BOOT_IMAGE_UNBOUND=1 restores the pre-2026-09-11 seal policy: PolicyPCR over
 # PCR[8] and PCR[9] only, the two this kernel extends about itself. The pin in
@@ -3920,6 +3940,9 @@ USERSPACE_CFLAGS += -DSHELL_LS_NO_PATH_ARG
 endif
 ifeq ($(CONSOLE_VGA_CHECK_FAIL),1)
 USERSPACE_CFLAGS += -DCONSOLE_VGA_CHECK_FAIL
+endif
+ifeq ($(CONSOLE_PASS_UNGATED),1)
+USERSPACE_CFLAGS += -DCONSOLE_PASS_UNGATED
 endif
 ifeq ($(CONSOLE_FB_ABSENT),1)
 USERSPACE_CFLAGS += -DCONSOLE_FB_ABSENT
@@ -6822,6 +6845,41 @@ smoke-console:
 	@$(MAKE) --no-print-directory CONSOLE_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CONSOLE_SELFTEST: PASS' \
 		FAIL_MARKER='CONSOLE_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
+
+# ---- S93: a console client is not entitled to read a password ---------------
+#
+# Every task the shell spawns inherits a send-only console capability -- that is
+# how `ls` gets a stdout -- and before 2026-09-12 that capability also bought
+# CON_OP_GETPASS. A program a person ran could sit in a loop on it and receive
+# the password typed at the next `sudo` prompt.
+#
+# The probe holds exactly that and nothing more. It first registers a DIFFERENT
+# task as the input owner, so the refusal it then gets is specifically "you are
+# not the owner" rather than the server's fail-closed default for an unset one
+# -- a probe that merely asked would prove the default and say nothing about the
+# gate.
+.PHONY: smoke-console-pass
+smoke-console-pass:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CONSOLE_SELFTEST=1
+	@$(MAKE) --no-print-directory CONSOLE_SELFTEST=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CONSOLE_PASS: PASS refused a non-owner' \
+		FAIL_MARKER='CONSOLE_PASS: FAIL' tools/smoke_test.sh horus.iso
+
+# CONTROL ARM. Under the flag the server SERVES the read, so the probe blocks
+# inside it and never reaches its verdict -- the evidence is an absence, the
+# same shape smoke-captest-getline-control uses. So the arm requires the marker
+# printed BEFORE the request and fails on the refusal verdict: the request was
+# made, and it was not refused.
+.PHONY: smoke-console-pass-control
+smoke-console-pass-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CONSOLE_SELFTEST=1 CONSOLE_PASS_UNGATED=1
+	@$(MAKE) --no-print-directory CONSOLE_SELFTEST=1 CONSOLE_PASS_UNGATED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CONSOLE_PASS: asking for a password as a non-owner' \
+		FAIL_MARKER='CONSOLE_PASS: PASS refused' tools/smoke_test.sh horus.iso
 
 # ---- A network driver in ring 3, holding one device capability --------------
 #

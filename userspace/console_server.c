@@ -194,6 +194,18 @@ static void vga_putc(char c) {
 static int con_stamping = 0;
 #else
 static int con_stamping = 1;      /* until CON_OP_BOOT_DONE, or the first read */
+
+/* WHICH TASK MAY READ A PASSWORD (S93). 0 is "nobody yet", and a GETPASS while
+ * it is 0 is REFUSED rather than served -- fail closed, so a build whose init
+ * never registers an owner cannot have passwords read by whoever asks first.
+ *
+ * Every task the shell spawns inherits a send-only console capability, which is
+ * how `ls` gets a stdout. Before this, that capability also bought the right to
+ * sit in a loop on CON_OP_GETPASS and collect the password typed at the next
+ * `sudo` prompt -- from any program the person had run. The capability cannot
+ * be withheld without taking stdout away with it, so the discrimination has to
+ * happen here, against the kernel's attestation of who sent the request. */
+static uint32_t con_input_owner;  /* task id; 0 = unset */
 #endif
 static int con_line_start = 1;
 
@@ -674,6 +686,18 @@ display_ready:
             sys_exit();
         }
 
+        /* WHO SENT IT, asked of the kernel and never of the message. The
+         * request carries no identity field and must not grow one: a client
+         * that could name itself could name somebody else (S93).
+         *
+         * Read BEFORE the dispatch below, because sys_ipc_reply_to and the next
+         * receive both move the endpoint's record of the last sender on. A
+         * failure here reports 0, which no task has, so every gated operation
+         * fails closed. */
+        uint32_t sender_gid = 0, sender_pid = 0;
+        if (sys_ipc_sender_task(CAPSLOT_CONSOLE_EP, &sender_gid, &sender_pid) == (uint32_t)-1)
+            sender_pid = 0;
+
         umemset(&rp, 0, sizeof(rp));
         rp.magic = CON_PROTO_MAGIC;
         int was_pass = 0;
@@ -686,8 +710,24 @@ display_ready:
         } else if (rq.op == CON_OP_GETLINE) {
             rp.rc = con_getline(rp.data, rq.len ? rq.len : (CON_LINE_MAX - 1), 0);
         } else if (rq.op == CON_OP_GETPASS) {
+#ifdef CONSOLE_PASS_UNGATED
+            /* CONTROL ARM -- never ship. The pre-2026-09-12 server, which served
+             * a password read to any holder of the send-only console capability
+             * -- which is every task the shell has ever spawned. See
+             * make smoke-console-pass-control. */
             rp.rc = con_getline(rp.data, rq.len ? rq.len : (CON_LINE_MAX - 1), 1);
             was_pass = 1;
+#else
+            if (con_input_owner == 0 || sender_pid != con_input_owner) {
+                /* REFUSED WITHOUT READING, which is the half that matters: a
+                 * server that read the line and then declined to return it
+                 * would have taken the keystrokes out of the owner's hands. */
+                rp.rc = SYS_ERR_PERM;
+            } else {
+                rp.rc = con_getline(rp.data, rq.len ? rq.len : (CON_LINE_MAX - 1), 1);
+                was_pass = 1;
+            }
+#endif
         } else if (rq.op == CON_OP_READ_RAW) {
             rp.rc = con_read_raw(rp.data, rq.len ? rq.len : (CON_LINE_MAX - 1));
         } else if (rq.op == CON_OP_WRITE_RAW) {
@@ -696,6 +736,16 @@ display_ready:
             rp.rc = (int)n;
         } else if (rq.op == CON_OP_WINSZ) {
             rp.rc = (CON_ROWS << 16) | CON_COLS;
+        } else if (rq.op == CON_OP_SET_INPUT_OWNER) {
+            /* Unset, or the current owner. See include/console_proto.h for why
+             * the bootstrap is safe and why the server does not try to
+             * recognise init instead. */
+            if (con_input_owner == 0 || sender_pid == con_input_owner) {
+                con_input_owner = rq.len;
+                rp.rc = 0;
+            } else {
+                rp.rc = SYS_ERR_PERM;
+            }
         } else if (rq.op == CON_OP_BOOT_DONE) {
             /* The boot log ends and the session begins: stop stamping. Idempotent
              * on purpose -- init sends it once, but a second sender costs nothing

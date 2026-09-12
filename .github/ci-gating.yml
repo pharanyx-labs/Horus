@@ -304,6 +304,8 @@ required:
   - smoke-mapphys
   - smoke-modules
   - smoke-modules-tamper
+  - smoke-console-pass
+  - smoke-console-pass-control
   - smoke-boot-pin
   - smoke-boot-pin-control
   - smoke-tpm-bootimg

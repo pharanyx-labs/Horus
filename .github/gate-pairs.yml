@@ -88,6 +88,7 @@ control_arms:
   smoke-tpm-cmdline-control: smoke-tpm-cmdline
   smoke-boot-menu-control: smoke-boot-menu
   smoke-boot-pin-control: smoke-boot-pin
+  smoke-console-pass-control: smoke-console-pass
   smoke-tpm-bootimg-control: smoke-tpm-bootimg
   smoke-serial-bound-control: smoke-serial-bound
   smoke-keyslots-control: smoke-keyslots
@@ -231,6 +232,7 @@ gates:
   - smoke-tpm-cmdline
   - smoke-boot-menu
   - smoke-boot-pin
+  - smoke-console-pass
   - smoke-tpm-bootimg
   - smoke-installer-replace
   - smoke-serial-bound

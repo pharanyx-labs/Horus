@@ -902,6 +902,27 @@ void h_ipc_sender(struct interrupt_frame64 *r) {
         uint32_t g = tasks[t].gid;
         if (copy_to_user((void *)(addr_t)r->rcx, &g, sizeof(g)) != 0) { r->rax = (uint32_t)-1; return; }
     }
+    /* THE SENDER'S TASK ID, optionally, in the argument that was already unused.
+     *
+     * A server that has to tell its clients APART cannot do it with the uid: the
+     * shell and everything it spawns run as the same user, which is exactly the
+     * population console_server needs to distinguish -- one of them is the task
+     * a person is typing at and the rest are programs that person ran (S93).
+     *
+     * ABI-compatible rather than a new syscall: rdx was ignored here, and every
+     * existing caller passes 0 through the two-argument wrapper. A third
+     * wrapper writes it; nothing else changes.
+     *
+     * THIS IS AN ATTESTATION, NOT A CLAIM, and the distinction is the only thing
+     * that makes it usable. The kernel reports who the sender WAS, from the
+     * endpoint's own record of the message it dequeued; it is not a field the
+     * caller filled in. CLAUDE.md refuses authority granted on a task id the
+     * CALLER asserts -- this is the opposite, and it is the same basis
+     * `fs_server` already authorises on (S14), one identity narrower. */
+    if (r->rdx) {
+        uint32_t pid = (uint32_t)t;
+        if (copy_to_user((void *)(addr_t)r->rdx, &pid, sizeof(pid)) != 0) { r->rax = (uint32_t)-1; return; }
+    }
     r->rax = tasks[t].uid;
 }
 

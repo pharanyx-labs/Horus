@@ -2218,6 +2218,29 @@ codes DIFFER, comparing the observed values against each other** rather than aga
 under the defect both are `NOENT` and neither equals `FS_RC_ENDDIR`, so an arm written the
 obvious way would have passed and witnessed nothing.
 
+### 2.20 The per-task reply endpoint table is a fixed array, sized for every provisionable task
+
+`MAX_ENDPOINTS` is now `(REPLY_EP_BASE + MAX_TASKS)` so the table cannot fall behind the reply
+region it is supposed to contain (`SECURITY.md` **S95**). That is the correct fix for the
+*security* property, and it is the wrong shape for the memory model.
+
+One `struct endpoint` is ~1 KiB — four queue slots of `IPC_MSG_MAX` each — so the **whole table** is
+~336 KiB of `.bss` at `MAX_TASKS` 256, of which ~201 KiB is what S95 added (`.bss` measured at
+7,016,448 bytes before and 7,221,248 after). It is present in the image whether or not a single task
+ever performs a synchronous call, and charged against the `__bss_end <= USER_PHYS_BASE` linker
+assert. This is
+precisely the pattern finding **[I-7]** and roadmap 0.3 moved *away* from for cspaces, whose
+comment in `create_task` records the same argument about `cspace_pool`: fixed per-task storage that
+the image pays for unconditionally and that caps the task ceiling by spending the image budget.
+
+The consistent end state is a reply endpoint carved from the untyped region that pays for the task,
+the way its cspace already is — then the table disappears, the index space needs no reserved
+sub-range, and the class of defect S95 closed becomes unrepresentable rather than asserted. That is
+a larger change than the one that had to land: it touches `endpoint_by_index`'s resolution, the
+object-reachability sweep, and teardown. Headroom was measured at 7.6 MiB when this was written, so
+the present cost is affordable and is not what blocks anything.
+
+
 ## 3. Scale and performance limitations
 
 ### 3.1 Hard compile-time ceilings: **[I-7]**

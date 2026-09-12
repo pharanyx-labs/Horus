@@ -830,6 +830,17 @@ void kernel_main(uint32_t mb_info) {
     keyslot_selftest();
 #endif
     scheduler_init();
+#ifdef REPLY_EP_SELFTEST
+    /* S95, and it must be AFTER scheduler_init -- which the selftest itself is what
+     * established. Placed after tasks_init first, on the reasoning that g_max_tasks
+     * is final there and nothing has retyped an endpoint yet; it failed on its
+     * first run with `reply-endpoint-was-never-initialised tid=1`, because
+     * scheduler_init is what writes the blocked_waiter sentinel and the table was
+     * still .bss zero. Zero is not a harmless default for that field: it NAMES
+     * TASK 0, which is the reason scheduler_init sets -1 explicitly rather than
+     * relying on the zeroing. g_max_tasks is equally final here. */
+    reply_ep_selftest();
+#endif
 #ifdef PIPE_SELFTEST
     /* Phase 2, and it must be AFTER scheduler_init: the dying stage needs a
      * cspace to hold its pipe end in, and task 0 needs one to grant it from.

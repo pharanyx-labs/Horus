@@ -15,6 +15,30 @@ in this file.
 
 ### Security
 
+- **A task's "private" reply endpoint was another task's object, for half the task id space.**
+  `[HORUS-20260912-01]` Every task gets its own reply endpoint because a blocking `SYS_IPC_CALL`
+  parks on that endpoint's single `blocked_waiter`, and the index-space map in
+  `src/include/kernel.h` has said since the region was introduced that this means an endpoint
+  "no other task holds a capability for" (finding **[C-1]**). The table was not big enough to
+  keep that promise: the map declares the reply region as `[REPLY_EP_BASE, REPLY_EP_BASE +
+  MAX_TASKS)` = `[64, 320)`, `MAX_ENDPOINTS` was the literal `128`, and `DYN_EP_BASE` **is**
+  `MAX_ENDPOINTS` — so for every task id ≥ 64, `endpoint_by_index` resolved that task's reply
+  endpoint to `dyn_eps[id - 64]`, a retyped endpoint carved from some task's untyped region.
+  The kernel prints `tasks: 256 provisioned` on the shipping QEMU configuration, so half the
+  task id space was provisioned into the collision on every boot. **The benign consequence hid
+  the dangerous one**: an unretyped `dyn_eps` slot resolves to NULL and every IPC path fails
+  closed on it, so the first-order effect was an obscure "task at a high id cannot make a
+  synchronous call". Once anything has retyped at the colliding index, the task's reply endpoint
+  and the peer's object are the same endpoint — reply interception and spurious wake-up, the two
+  failures the per-task region exists to remove. `MAX_ENDPOINTS` is now derived as
+  `(REPLY_EP_BASE + MAX_TASKS)` so the two cannot drift again, with a `_Static_assert` that bites
+  the moment somebody writes a literal back, a bound in `reply_ep_for_task` that refuses rather
+  than returns a colliding index, and a boot clamp on the machine-derived `g_max_tasks` that
+  announces itself. Costs ~201 KiB of `.bss` (7.6 MiB of headroom was measured against the
+  `__bss_end <= USER_PHYS_BASE` assert). Notifications and frames were checked and have no
+  per-task sub-region, so the defect has no sibling. `SECURITY.md` **S95**; witness `make
+  smoke-reply-ep`, falsified by `REPLY_EP_SPACE_OVERLAP=1` reproducing at exactly tid 64.
+
 - **Five writes to a capability slot did not take the lock the revocation sweep depends on.**
   A capability is six fields and a C assignment writes them one at a time.
   `rust_cap_revoke_global` reads every live cspace and decides from what it finds which

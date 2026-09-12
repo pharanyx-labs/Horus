@@ -194,6 +194,8 @@ static void vga_putc(char c) {
 static int con_stamping = 0;
 #else
 static int con_stamping = 1;      /* until CON_OP_BOOT_DONE, or the first read */
+#endif
+static int con_line_start = 1;
 
 /* WHICH TASK MAY READ A PASSWORD (S93). 0 is "nobody yet", and a GETPASS while
  * it is 0 is REFUSED rather than served -- fail closed, so a build whose init
@@ -204,10 +206,16 @@ static int con_stamping = 1;      /* until CON_OP_BOOT_DONE, or the first read *
  * sit in a loop on CON_OP_GETPASS and collect the password typed at the next
  * `sudo` prompt -- from any program the person had run. The capability cannot
  * be withheld without taking stdout away with it, so the discrimination has to
- * happen here, against the kernel's attestation of who sent the request. */
+ * happen here, against the kernel's attestation of who sent the request.
+ *
+ * OUTSIDE THE CONSOLE_TIMESTAMPS_LEGACY #ifdef, and it was not on the first
+ * try. Written beside `con_stamping`, it landed in that flag's #else branch --
+ * so the ship build compiled, every local gate passed, and the TIMESTAMP
+ * control arm failed to build with `con_input_owner undeclared`. Two unrelated
+ * flags, one declaration, and the only build that noticed was an arm for
+ * something else entirely. A declaration belongs where its OWN flag scopes it,
+ * which for this one is nowhere. */
 static uint32_t con_input_owner;  /* task id; 0 = unset */
-#endif
-static int con_line_start = 1;
 
 /* One byte to both outputs, expanding \n to \r\n on serial. No stamping: this is
  * what the prefix itself is written with. */

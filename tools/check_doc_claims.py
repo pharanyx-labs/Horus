@@ -160,6 +160,21 @@ def derive():
 
     return {
         "audit_rejected_candidates": _audit_rejected_candidates(),
+        # The ring-0 core's size, read from the RATCHET rather than recounted
+        # here. .github/ring0-classification.yml carries a zero-headroom budget
+        # -- check_ring0_budget.py fails the build if core exceeds it, and the
+        # rule at the top of that file requires it to be lowered when core
+        # shrinks -- so the budget IS the measured value, gated against the tree
+        # by a checker that already exists. Recounting it here would be two
+        # implementations of one quantity, which is the defect this file exists
+        # to catch in prose. Chain: tree -> budget (ring0-budget) -> docs (here).
+        #
+        # Added 2026-09-11 because S87's figure had drifted twice unnoticed: the
+        # budget moved 9676 -> 9682 -> 9727 while SECURITY.md still said 9,676,
+        # and nothing could see it, since no checker read that sentence.
+        "ring0_core_loc": int(re.search(
+            r"^core_budget_loc:\s*(\d+)",
+            Path(".github/ring0-classification.yml").read_text(), re.M).group(1)),
         "ci_jobs": len(jobs_by_wf[CI_YML]),
         "all_jobs": len(all_jobs),
         "contexts": len(contexts),
@@ -286,7 +301,13 @@ def main():
                 continue
             for got in found:
                 checked += 1
-                if int(got) != want:
+                # Thousands separators are the house style for the larger
+                # figures (SECURITY.md writes "9,732 code lines"), and int()
+                # rejects them. Stripped rather than banned from the prose: a
+                # checker that forced documents to write 9732 so the checker
+                # could read them would be the tail wagging the dog, and the
+                # comma carries no meaning the comparison needs.
+                if int(got.replace(",", "")) != want:
                     problems.append(
                         f"{path}: says {got} for {cid} ({claim['describe']}), "
                         f"live value is {want}")

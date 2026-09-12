@@ -77,7 +77,17 @@
 # the boot media writes them -- which is exactly the code a verified core should
 # be small enough to read. It is one loop over a bounded buffer, with no
 # allocation and no pointer arithmetic leaving it.
-core_budget_loc: 9727
+# 2026-09-11: 9727 -> 9732, +5 in idt.c. keyboard_init sent the keyboard 0xF4,
+# waited for its 0xFA acknowledgement, and then `(void)got_ack;` -- it asked, was
+# answered, and discarded the reply. A machine whose keyboard never responded
+# therefore booted looking exactly like one whose keyboard was fine, and the
+# first symptom was a login prompt that ignored typing, with nothing anywhere
+# saying why. Diagnosed from real hardware the hard way (PS2 n=0 st=14: a healthy
+# controller, IRQ 1 never fired) when the kernel already had the answer in a
+# local variable. The five lines are the test and the report; they are in `core`
+# because the 8042 bring-up is, and moving them out to dodge the budget would be
+# the reclassification bypass the arm below exists to catch.
+core_budget_loc: 9732
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

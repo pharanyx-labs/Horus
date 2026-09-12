@@ -151,6 +151,12 @@ if expect == "server-absent":
     check("the kernel's boot log is still on the screen", mid > 0)
     check("ring 3 never took the display (it failed its VGA check)",
           b"CONSOLE_SELFTEST: FAIL vga" in open(log, "rb").read())
+    # EXITS HERE. Without this the branch falls through to the glyph checks at
+    # the bottom, which this arm cannot satisfy -- no glyph is ever drawn when
+    # ring 3 does not take the display. It was lost on 2026-09-12 when the
+    # `refused` branch below was inserted between these checks and the exit that
+    # used to close them, and CI caught it.
+    sys.exit(fail)
 
 elif expect == "refused":
     fail = 0

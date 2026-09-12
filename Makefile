@@ -167,6 +167,7 @@ DEFECT_FLAGS = \
 	CONSOLE_NO_CURSOR \
 	CONSOLE_NO_RESUME \
 	CONSOLE_ESC_LITERAL \
+	FB_24BPP_REFUSED \
 	PCI_SCAN_TRACE \
 	PCI_BUS0_ONLY \
 	CONSOLE_KBD_SPLIT_ESC \
@@ -2708,6 +2709,18 @@ KDIAG_SPLIT_WIDEN ?= 0
 KDIAG_PORTS_GRANTABLE ?= 0
 KDIAG_NOISE ?= 0
 PS2_PROBE ?= 0
+# FB_24BPP_REFUSED=1 restores the framebuffer console's 32-bit-only check, as it
+# stood before 2026-09-12. A 24bpp display then falls back to the VGA text window
+# -- which a UEFI machine does not have -- so console_server fails its round-trip
+# check and halts: a black screen and a login prompt that never appears. QEMU's
+# default `-vga std` under OVMF is exactly such a display (800x600x24), which is
+# how this shipped unnoticed: virtio, vmware and qxl all give 32bpp. The kernel
+# half and the ring-3 half are the same defect in two places, so one flag sets
+# both.
+FB_24BPP_REFUSED ?= 0
+ifeq ($(FB_24BPP_REFUSED),1)
+CFLAGS += -DFB_24BPP_REFUSED
+endif
 # PCI_SCAN_TRACE=1 walks all 256 PCI buses and prints every function it finds --
 # bus:dev.fn, vendor:device, class -- naming SD/eMMC controllers, mass storage and
 # PCI-to-PCI bridges (with their secondary bus) as it goes. NOT a defect and NOT a
@@ -3904,6 +3917,20 @@ GRUB_I386_DIR ?= /usr/lib/grub/i386-pc
 # machine that boots either way pins the same kernel.
 GRUB_EFI_DIR  ?= /usr/lib/grub/x86_64-efi
 
+# OVMF, and the QEMU arguments that produce a 24-bit display. `-vga std` is
+# QEMU's DEFAULT adapter and OVMF gives it 800x600x24; that combination is both
+# the most likely way somebody tries a release ISO and the one depth the console
+# used to refuse. Named here so the gate and its arm cannot drift apart.
+OVMF_CODE ?= /usr/share/OVMF/OVMF_CODE_4M.fd
+OVMF_VARS ?= /usr/share/OVMF/OVMF_VARS_4M.fd
+FB_UEFI_TIMEOUT ?= 150
+UEFI_STD_ARGS   = -vga std \
+  -drive if=pflash,format=raw,unit=0,readonly=on,file=$(OVMF_CODE) \
+  -drive if=pflash,format=raw,unit=1,file=.fbcon-24-vars.fd
+UEFI_STD_ARGS_C = -vga std \
+  -drive if=pflash,format=raw,unit=0,readonly=on,file=$(OVMF_CODE) \
+  -drive if=pflash,format=raw,unit=1,file=.fbcon-24c-vars.fd
+
 # tools/mkbootimg.sh IS A PREREQUISITE, and leaving it out cost a confusing
 # half hour: the boot image is this rule's real output, so a change to the
 # script that builds it must rebuild the ISO. Without this, editing
@@ -4091,6 +4118,9 @@ endif
 # user cannot see what went wrong.
 ifeq ($(CONSOLE_ESC_LITERAL),1)
 USERSPACE_CFLAGS += -DCONSOLE_ESC_LITERAL
+endif
+ifeq ($(FB_24BPP_REFUSED),1)
+USERSPACE_CFLAGS += -DFB_24BPP_REFUSED
 endif
 ifeq ($(READDIR_END_IS_NOENT),1)
 USERSPACE_CFLAGS += -DREADDIR_END_IS_NOENT
@@ -11252,6 +11282,42 @@ smoke-fb-console:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FB_REQUEST=1 FB_CONSOLE_SELFTEST=1 horus.iso
 	@FB_CONSOLE_EXPECT=ok tools/fb_console_test.sh horus.iso
+
+# THE SAME PIXEL CHECK, ON A 24-BIT DISPLAY. A 24bpp pixel is three bytes with
+# no padding and the pitch is not a whole number of words (800*3 = 2400), so a
+# 32-bit store shears every glyph. Refusing the depth was worse than shearing:
+# on a UEFI machine there is no VGA text window to fall back to, so the console
+# gave up and console_server halted -- a black screen and no login prompt. QEMU's
+# default `-vga std` under OVMF is such a display, which is how this shipped
+# unnoticed (virtio, vmware and qxl all give 32bpp, and so does BIOS+GRUB).
+#
+# It checks the LETTER, not the boot: `L` drawn in exactly the two colours it was
+# given and left-heavy. "It reached a login prompt" cannot tell a correct blitter
+# from one that is off by a byte per pixel.
+.PHONY: smoke-fb-console-24bpp
+smoke-fb-console-24bpp:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FB_CONSOLE_SELFTEST=1 horus.iso
+	@cp $(OVMF_VARS) .fbcon-24-vars.fd
+	@FB_CONSOLE_EXPECT=ok FB_CONSOLE_EVIDENCE=.fbcon-24-evidence \
+		FB_CONSOLE_QMP_PORT=4473 SMOKE_TIMEOUT=$(FB_UEFI_TIMEOUT) \
+		FB_CONSOLE_QEMU_EXTRA="$(UEFI_STD_ARGS)" \
+		tools/fb_console_test.sh horus.iso
+	@rm -f .fbcon-24-vars.fd
+
+# The arm: 32-bit only, as it was. The console refuses the display, falls back to
+# a text window UEFI does not have, and console_server halts -- which is what
+# `server-absent` requires to appear.
+.PHONY: smoke-fb-console-24bpp-control
+smoke-fb-console-24bpp-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FB_CONSOLE_SELFTEST=1 FB_24BPP_REFUSED=1 horus.iso
+	@cp $(OVMF_VARS) .fbcon-24c-vars.fd
+	@FB_CONSOLE_EXPECT=refused FB_CONSOLE_EVIDENCE=.fbcon-24c-evidence \
+		FB_CONSOLE_QMP_PORT=4474 SMOKE_TIMEOUT=$(FB_UEFI_TIMEOUT) \
+		FB_CONSOLE_QEMU_EXTRA="$(UEFI_STD_ARGS_C)" \
+		tools/fb_console_test.sh horus.iso
+	@rm -f .fbcon-24c-vars.fd
 
 .PHONY: smoke-fb-console-control
 smoke-fb-console-control:

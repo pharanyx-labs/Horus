@@ -88,8 +88,22 @@ static void ser_putc(char c) {
 #define FB_CELL_W  8u
 #define FB_CELL_H  16u
 
-static volatile uint32_t *fbp;      /* 0 until mapped */
-static uint32_t fb_pitch_px, fb_w, fb_h, fb_scale = 1;
+static volatile uint8_t *fbp;       /* framebuffer bytes; 0 until mapped */
+
+/* BYTES, not 32-bit pixels: OVMF's default GOP is 800x600 at 24bpp, where a
+ * pixel is three bytes with no padding and the pitch (2400) is not a whole
+ * number of words. A uint32_t store there writes a byte into the next pixel. */
+static uint32_t fb_pitch_b, fb_w, fb_h, fb_scale = 1, fb_bypp = 4;
+
+/* One pixel, at whichever depth this display gave us. Declared after fb_bypp,
+ * which it reads. */
+static inline void fb_store(volatile uint8_t *p, uint32_t c) {
+    if (fb_bypp == 4) {
+        *(volatile uint32_t *)p = c;
+    } else {
+        p[0] = (uint8_t)c; p[1] = (uint8_t)(c >> 8); p[2] = (uint8_t)(c >> 16);
+    }
+}
 static uint16_t fb_cells[80 * 50];      /* sized for the MAXIMUM grid */
 
 /* How many rows this console actually has -- 50 is the maximum, not the count.
@@ -126,9 +140,11 @@ static void fb_blit(unsigned idx) {
     const uint8_t *g = &font_8x16[ch][0];
     for (uint32_t ry = 0; ry < chh; ry++) {
         uint8_t bits = g[ry / fb_scale];
-        volatile uint32_t *row = fbp + (uint64_t)(py0 + ry) * fb_pitch_px + px0;
+        volatile uint8_t *row = fbp + (uint64_t)(py0 + ry) * fb_pitch_b
+                                    + (uint64_t)px0 * fb_bypp;
         for (uint32_t rx = 0; rx < cw; rx++)
-            row[rx] = (bits & (0x80u >> (rx / fb_scale))) ? fg : bg;
+            fb_store(row + (uint64_t)rx * fb_bypp,
+                     (bits & (0x80u >> (rx / fb_scale))) ? fg : bg);
     }
 }
 
@@ -754,9 +770,19 @@ void _start(void) {
 #endif
         if (frc != 0) {
             kput("CONSOLE_FB: no linear framebuffer; the VGA text window it is\n");
-        } else if (fbg.bpp != 32) {
-            /* REFUSED, NOT APPROXIMATED. 24bpp needs a byte-wise store and
-             * 15/16bpp needs channel packing; each is a different blitter, and
+#ifdef FB_24BPP_REFUSED
+        } else if (fbg.bpp != 32) {          /* CONTROL ARM -- never ship */
+#else
+        } else if (fbg.bpp != 32 && fbg.bpp != 24) {
+#endif
+            /* REFUSED, NOT APPROXIMATED -- but 24bpp is supported since
+             * 2026-09-12, because refusing it was FATAL rather than
+             * conservative: on a UEFI machine there is no VGA text window to
+             * fall back to, so this server failed its round-trip check and
+             * halted, leaving a black screen and no login prompt. QEMU's default
+             * `-vga std` under OVMF is exactly that display. What remains
+             * refused is 15/16bpp, which needs channel packing; each is a
+             * different blitter, and
              * on a machine with no serial port a console that draws WRONG is
              * harder to diagnose than one that says it did not start. */
             kput("CONSOLE_FB: unsupported pixel depth; the VGA text window it is\n");
@@ -792,8 +818,9 @@ void _start(void) {
                     sys_console_release(CAPSLOT_IO_DEVICE);
                     ser_puts("CONSOLE_FB: FAIL map\n");
                 } else {
-                    fbp = (volatile uint32_t *)(uintptr_t)FB_VADDR;
-                    fb_pitch_px = fbg.pitch / 4u;
+                    fbp = (volatile uint8_t *)(uintptr_t)FB_VADDR;
+                    fb_bypp     = (uint32_t)fbg.bpp / 8u;
+                    fb_pitch_b  = fbg.pitch;
                     fb_w = fbg.width; fb_h = fbg.height;
                     fb_scale = (fbg.width >= 1600u) ? 2u : 1u;
                     if (fbg.width < 80u * FB_CELL_W * fb_scale) fb_scale = 1u;

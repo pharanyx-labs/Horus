@@ -299,8 +299,25 @@ char console_getc(void) {
 struct console_font { const uint8_t *bits; uint8_t w, h; };
 
 static struct console_font g_font;
-static uint32_t *g_fbp;             /* framebuffer as 32-bit pixels; 0 = inactive */
-static uint32_t  g_fb_pitch_px;     /* pitch in PIXELS, not bytes */
+/* THE FRAMEBUFFER IS ADDRESSED AS BYTES, because not every display gives four
+ * of them per pixel. OVMF's default GOP is 800x600 at 24bpp, and a 24-bit pixel
+ * is three bytes with no padding -- so a uint32_t store would write one byte
+ * into the NEXT pixel and shear every glyph by a third of a pixel per column.
+ * Pitch is kept in bytes for the same reason: at 24bpp it is not a whole number
+ * of 32-bit words (800 * 3 = 2400). */
+static uint8_t  *g_fbp;             /* framebuffer bytes; 0 = inactive        */
+static uint32_t  g_fb_pitch_b;      /* pitch in BYTES                         */
+static uint32_t  g_fb_bypp = 4;     /* BYTES per pixel: 3 or 4                */
+
+/* One pixel. The branch is on a value that does not change after start-up, so it
+ * predicts perfectly; correctness first on a path that runs at human speed. */
+static inline void fb_store(uint8_t *p, uint32_t c) {
+    if (g_fb_bypp == 4) {
+        *(uint32_t *)p = c;
+    } else {
+        p[0] = (uint8_t)c; p[1] = (uint8_t)(c >> 8); p[2] = (uint8_t)(c >> 16);
+    }
+}
 static uint32_t  g_fb_w, g_fb_h;
 static uint32_t  g_scale = 1;
 static uint16_t  fb_cells[VGA_ROWS * VGA_COLS];   /* sized for the MAXIMUM grid */
@@ -370,7 +387,8 @@ static void fb_draw_glyph(uint32_t px0, uint32_t py0, uint8_t ch,
     const uint8_t *glyph = g_font.bits + (uint32_t)ch * g_font.h;
     for (uint32_t ry = 0; ry < chh; ry++) {
         uint8_t bits = glyph[ry / g_scale];
-        uint32_t *row = g_fbp + (uint64_t)(py0 + ry) * g_fb_pitch_px + px0;
+        uint8_t *row = g_fbp + (uint64_t)(py0 + ry) * g_fb_pitch_b
+                            + (uint64_t)px0 * g_fb_bypp;
         for (uint32_t rx = 0; rx < cw; rx++) {
 #ifdef FB_CONSOLE_MIRRORED
             /* CONTROL ARM -- never ship. LSB-first: bit 0 as the leftmost pixel,
@@ -378,9 +396,11 @@ static void fb_draw_glyph(uint32_t px0, uint32_t py0, uint8_t ch,
              * and one no serial log can show -- the console reports itself
              * started and every message is present and correct in the log while
              * the screen is unreadable. */
-            row[rx] = (bits & (1u << (rx / g_scale))) ? fg : bg;
+            fb_store(row + (uint64_t)rx * g_fb_bypp,
+                     (bits & (1u << (rx / g_scale))) ? fg : bg);
 #else
-            row[rx] = (bits & (0x80u >> (rx / g_scale))) ? fg : bg;
+            fb_store(row + (uint64_t)rx * g_fb_bypp,
+                     (bits & (0x80u >> (rx / g_scale))) ? fg : bg);
 #endif
         }
     }
@@ -421,8 +441,9 @@ static void fb_draw_cursor(void) {
     uint16_t cell = fb_cells[cursor_y * VGA_COLS + cursor_x];
     uint32_t fg = vga_palette[(cell >> 8) & 0x0F];
     for (uint32_t ry = chh - (g_scale * 2u); ry < chh; ry++) {
-        uint32_t *row = g_fbp + (uint64_t)(py0 + ry) * g_fb_pitch_px + px0;
-        for (uint32_t rx = 0; rx < cw; rx++) row[rx] = fg;
+        uint8_t *row = g_fbp + (uint64_t)(py0 + ry) * g_fb_pitch_b
+                            + (uint64_t)px0 * g_fb_bypp;
+        for (uint32_t rx = 0; rx < cw; rx++) fb_store(row + (uint64_t)rx * g_fb_bypp, fg);
     }
 }
 
@@ -448,7 +469,23 @@ void fb_console_init(void) {
     if (!fb->valid || fb->type != MB2_FB_RGB) return;
     uint64_t va = fb_vaddr();
     if (va == 0) return;
+    /* 24 AND 32, and nothing else. 15/16bpp still needs channel packing, which is
+     * a third blitter and has no machine to test it on here; it is refused with
+     * the same message as before. 24bpp had one, and refusing it was fatal
+     * rather than conservative: on a UEFI machine there is no VGA text window to
+     * fall back TO, so the console gave up and console_server halted on its
+     * round-trip check -- a black screen and a login prompt that never appears.
+     * Measured 2026-09-12 under OVMF with QEMU's default `-vga std`, which is
+     * 800x600x24; virtio, vmware and qxl all give 32 and booted fine, which is
+     * why nothing had noticed. */
+#ifdef FB_24BPP_REFUSED
+    /* CONTROL ARM -- never ship. 32-bit only, as before 2026-09-12: a 24bpp
+     * display then falls back to a VGA text window that a UEFI machine does not
+     * have, and console_server halts on its round-trip check. */
     if (fb->bpp != 32) {
+#else
+    if (fb->bpp != 32 && fb->bpp != 24) {
+#endif
         print("fb: "); print_decimal(fb->bpp);
         print("-bit pixels are not supported; console stays on VGA text\n");
         return;
@@ -520,8 +557,9 @@ void fb_console_init(void) {
         return;
     }
 
-    g_fbp         = (uint32_t *)(uintptr_t)va;
-    g_fb_pitch_px = fb->pitch / 4u;
+    g_fbp         = (uint8_t *)(uintptr_t)va;
+    g_fb_bypp     = (uint32_t)fb->bpp / 8u;
+    g_fb_pitch_b  = fb->pitch;
     g_fb_w        = fb->width;
     g_fb_h        = fb->height;
 
@@ -531,8 +569,9 @@ void fb_console_init(void) {
     for (int i = 0; i < g_rows * VGA_COLS; i++) fb_cells[i] = (uint16_t)((current_attr << 8) | ' ');
     g_fb_console = 1;
     for (uint32_t py = 0; py < g_fb_h; py++) {
-        uint32_t *row = g_fbp + (uint64_t)py * g_fb_pitch_px;
-        for (uint32_t px = 0; px < g_fb_w; px++) row[px] = vga_palette[(current_attr >> 4) & 0x07];
+        uint8_t *row = g_fbp + (uint64_t)py * g_fb_pitch_b;
+        for (uint32_t px = 0; px < g_fb_w; px++)
+            fb_store(row + (uint64_t)px * g_fb_bypp, vga_palette[(current_attr >> 4) & 0x07]);
     }
     fb_repaint();
 

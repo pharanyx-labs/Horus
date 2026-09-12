@@ -71,8 +71,30 @@ for mode in $MODES; do
 
     timeout "$TIMEOUT" qemu-system-x86_64 "${args[@]}" >/dev/null 2>&1
 
+    # THE BANNER IS THE KERNEL'S FIRST LINE, AND THAT IS NOT ENOUGH ON ITS OWN.
+    # It is printed at 0.0001s, so it says the image booted and nothing about
+    # whether the machine is usable. A UEFI boot on a 24-bit display reached it
+    # and then went black: the console refused the depth, fell back to a VGA text
+    # window UEFI does not have, and console_server halted -- this gate was green
+    # throughout (fixed 2026-09-12; see FB_24BPP_REFUSED and
+    # smoke-fb-console-24bpp).
+    #
+    # So the console's own failure marker is now disqualifying. It is asserted as
+    # an ABSENCE rather than by requiring a login prompt, because the modes have
+    # different correct endings: bios-disk boots a written stick with a blank disk
+    # attached, so machine_needs_install() runs the INSTALLER and no login prompt
+    # ever appears -- correctly. What every mode shares is that ring 3 must have
+    # been able to take the display.
+    if grep -qa "CONSOLE_SELFTEST: FAIL vga" "$log"; then
+        fail=1
+        echo "  [FAIL] $mode: the kernel came up but ring 3 could not take the"
+        echo "         display -- console_server failed its VGA check and parked,"
+        echo "         which on a machine with no text window is a black screen"
+        continue
+    fi
+
     if grep -qa "$BANNER" "$log"; then
-        echo "  [ OK ] $mode: the kernel came up"
+        echo "  [ OK ] $mode: the kernel came up and the console was taken"
     else
         fail=1
         echo "  [FAIL] $mode: no kernel banner on serial"

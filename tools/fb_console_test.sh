@@ -32,6 +32,12 @@ TIMEOUT="${SMOKE_TIMEOUT:-90}"
 EXPECT="${FB_CONSOLE_EXPECT:-ok}"
 EVID="${FB_CONSOLE_EVIDENCE:-.fbcon-evidence}"
 PORT="${FB_CONSOLE_QMP_PORT:-4471}"
+# Extra QEMU arguments, word-split deliberately. It exists so the SAME pixel
+# check can be pointed at a display of a different depth: OVMF with QEMU's
+# default `-vga std` is 800x600 at 24bpp, where a pixel is three bytes and a
+# 32-bit store shears every glyph. Checking the letter is the only way to know
+# the byte-wise blitter is right -- "it reached a login prompt" does not.
+EXTRA="${FB_CONSOLE_QEMU_EXTRA:-}"
 
 rm -rf "$EVID"; mkdir -p "$EVID"
 [ -f "$ISO" ] || { echo "fb-console: no such ISO: $ISO"; exit 2; }
@@ -39,7 +45,9 @@ rm -rf "$EVID"; mkdir -p "$EVID"
 LOG="$EVID/serial.log"
 SHOT="$EVID/screen.ppm"
 
+# shellcheck disable=SC2086  # EXTRA is a deliberate word-split argument list
 qemu-system-x86_64 -m 512M -cpu qemu64 -display none -no-reboot -cdrom "$ISO" \
+    $EXTRA \
     -serial "file:$LOG" -qmp "tcp:127.0.0.1:$PORT,server=on,wait=off" >/dev/null 2>&1 &
 QPID=$!
 # shellcheck disable=SC2064
@@ -50,6 +58,7 @@ trap "kill $QPID 2>/dev/null" EXIT
 case "$EXPECT" in
   server)        WAIT_FOR="horus login:" ;;
   server-absent) WAIT_FOR="CONSOLE_SELFTEST: FAIL vga" ;;
+  refused)       WAIT_FOR="CONSOLE_SELFTEST: FAIL vga" ;;
   *)             WAIT_FOR="fb: selftest glyph drawn" ;;
 esac
 deadline=$(( $(date +%s) + TIMEOUT ))
@@ -142,6 +151,30 @@ if expect == "server-absent":
     check("the kernel's boot log is still on the screen", mid > 0)
     check("ring 3 never took the display (it failed its VGA check)",
           b"CONSOLE_SELFTEST: FAIL vga" in open(log, "rb").read())
+
+elif expect == "refused":
+    fail = 0
+    def check(desc, ok):
+        global fail
+        print(("  [ OK ] " if ok else "  [FAIL] ") + desc)
+        if not ok: fail = 1
+    # THE BLACK SCREEN, ASSERTED AS SUCH. On a UEFI machine there is no VGA text
+    # window to fall back to, so a console that refuses the display leaves
+    # NOTHING on the screen -- which is why `server-absent` (whose first check is
+    # that the kernel's log is still visible) is the wrong expectation here: that
+    # one describes a BIOS machine, where the fallback exists.
+    #
+    # Asserted from the log rather than the pixels, because "the screen is black"
+    # is also what a guest that never booted produces, and the two want different
+    # fixes. The three markers together say the machine got far enough to look at
+    # the display, decided it could not drive it, and stopped.
+    blob = open(log, "rb").read()
+    check("the kernel refused the depth and said so",
+          b"-bit pixels are not supported" in blob)
+    check("ring 3 could not take the display either",
+          b"CONSOLE_SELFTEST: FAIL vga" in blob)
+    check("no selftest glyph was ever drawn",
+          b"fb: selftest glyph drawn" not in blob)
     sys.exit(fail)
 
 if expect == "server":

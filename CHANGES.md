@@ -15,6 +15,26 @@ in this file.
 
 ### Fixed
 
+- **A UEFI machine with a 24-bit display booted to a black screen.** The framebuffer console
+  accepted 32 bits per pixel and nothing else. On a 24bpp display it refused the mode and fell
+  back to the VGA text window — **which a UEFI machine does not have** — so `console_server`
+  failed its round-trip check and halted: no console, no login prompt, and the only sign of it on
+  a serial line the target machines do not have.
+  **QEMU's default `-vga std` under OVMF is exactly that display** (800x600x24), which makes it
+  the most likely first contact anyone has with a release ISO. `virtio`, `vmware` and `qxl` all
+  give 32bpp, and so does every BIOS+GRUB path, which is why no framebuffer gate had ever driven
+  a 24-bit console.
+  Both rings now blit byte-wise: a 24bpp pixel is three bytes with no padding, and the pitch is
+  not a whole number of words (800 × 3 = 2400), so a `uint32_t` store writes a byte into the next
+  pixel and shears every glyph by a third of a pixel per column. 15/16bpp is still refused — it
+  needs channel packing, and there is no machine here to test it on.
+  **The gate that should have caught this asserted too little**: `smoke-boot-media` boots UEFI
+  and requires `Horus secure microkernel`, the kernel's *first* line, printed at 0.0001s — long
+  before the console dies. `make smoke-fb-console-24bpp` checks **the letter, not the boot**: an
+  `L` drawn in exactly the two colours it was given and left-heavy (22 foreground pixels, 20 left
+  / 2 right), which is the only way to tell a correct byte-wise blitter from one off by a byte
+  per pixel. Falsified in all four directions with `FB_24BPP_REFUSED=1`.
+
 - **Arrow keys typed their own escape sequence into the line.** `con_getline` drops bytes below
   32, which disposes of the ESC — and the **rest** of an escape sequence is ordinary printable
   text, so `ESC [ A` left `[A` in the line buffer and on the screen. Up gave `[A`, Down `[B`,

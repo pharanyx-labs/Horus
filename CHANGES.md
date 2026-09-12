@@ -13,6 +13,28 @@ in this file.
 
 ---
 
+### Fixed
+
+- **A full screen restarted at the top instead of scrolling, so a boot log could not be read
+  back.** Both of `console_server`'s putc paths ended a full screen with `pos = 0`: the newest
+  line overwrote the **oldest**, and the display became a ring buffer with nothing marking the
+  seam — its bottom half older than its top half, and no way to tell by looking. On a machine
+  with no serial port that is the whole reason a boot log is unrecoverable, and it is the
+  population these console fixes exist for: the lines were not merely gone off the top, they had
+  been overwritten in place, and with no UART there is no second copy anywhere.
+  The kernel's `emit_char` has called `scroll_screen` at exactly that point since it was written.
+  The ring-3 console that took the hardware over did not inherit it — **the third time in one day
+  that `console_server` was found missing a case the kernel path had**, after the backspace erase
+  and the UART presence check.
+  Gated by `make smoke-console-scroll`, which drives input over serial and asserts on pixels:
+  three `dmesg` runs fill the screen densely with distinct lines, and one more line then changes
+  **85161** bytes when it scrolls against **681** when it wraps. Falsified in all four directions
+  with `CONSOLE_NO_SCROLL=1`.
+  **Still open, and now stated in `docs/LIMITATIONS.md`**: `console_server` never writes the VGA
+  cursor registers, so the hardware cursor stays frozen where the kernel left it — measured at
+  row 36, column 0, unmoved while a user name was typed. The framebuffer console draws no cursor
+  at all.
+
 ### Added
 
 - **The PCI scan walks the bus tree, so a device behind a bridge is no longer invisible.**

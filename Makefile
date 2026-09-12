@@ -163,6 +163,7 @@ DEFECT_FLAGS = \
 	FB_CONSOLE_MIRRORED FB_INFO_ANY_DEVICE CONSOLE_FB_ABSENT CONSOLE_NO_KBD \
 	SERIAL_PRESENCE_UNCHECKED \
 	CONSOLE_BACKSPACE_NO_ERASE \
+	CONSOLE_NO_SCROLL \
 	PCI_SCAN_TRACE \
 	PCI_BUS0_ONLY \
 	CONSOLE_KBD_SPLIT_ESC \
@@ -4050,6 +4051,16 @@ endif
 ifeq ($(CONSOLE_BACKSPACE_NO_ERASE),1)
 USERSPACE_CFLAGS += -DCONSOLE_BACKSPACE_NO_ERASE
 endif
+# CONSOLE_NO_SCROLL=1 restores console_server's screen as it stood before
+# 2026-09-12: a full screen restarted at the TOP, so the newest line overwrote
+# the oldest and the display became a ring buffer with nothing marking the seam.
+# The kernel's emit_char has scrolled at that point since it was written; ring 3
+# took the hardware over without inheriting it. It is why a boot log cannot be
+# read back on a machine with no serial port -- the lines are not merely gone off
+# the top, they have been overwritten in place, and there is no second copy.
+ifeq ($(CONSOLE_NO_SCROLL),1)
+USERSPACE_CFLAGS += -DCONSOLE_NO_SCROLL
+endif
 ifeq ($(READDIR_END_IS_NOENT),1)
 USERSPACE_CFLAGS += -DREADDIR_END_IS_NOENT
 endif
@@ -7734,6 +7745,37 @@ smoke-keyboard:
 # because a terminal on the far end of a UART interprets 0x08 itself -- so this
 # is gated on PIXELS. The assertion is a ROUND TRIP: type six characters, erase
 # six, and require the screen back where it started.
+# A FULL SCREEN MUST SCROLL, not restart at the top. Both putc paths in
+# console_server ended a full screen with `pos = 0`, so the newest line
+# overwrote the oldest and the display became a ring buffer with nothing marking
+# the seam. On a machine with no serial port that is why a boot log cannot be
+# read back: the lines are overwritten in place, not merely gone off the top.
+#
+# Input over SERIAL (fast, reliable); the assertion is on PIXELS. Three dmesg
+# runs fill the screen densely with DISTINCT lines -- uniform content scrolls to
+# an identical image, and one dmesg leaves the top still blank, which is how the
+# first two versions of this test measured nothing on either build.
+.PHONY: smoke-console-scroll
+smoke-console-scroll:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory horus.iso
+	@python3 tools/console_scroll_test.py --iso horus.iso \
+		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
+		--shots /tmp/horus-scroll-evidence
+
+# The falsifying arm: the ring buffer, as it was before 2026-09-12. Note that its
+# expected result is a SMALL delta, which a dead boot also gives -- so the script
+# requires the login, the shell and a screen dense with text before it will
+# believe any delta at all.
+.PHONY: smoke-console-scroll-control
+smoke-console-scroll-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CONSOLE_NO_SCROLL=1
+	@$(MAKE) --no-print-directory CONSOLE_NO_SCROLL=1 horus.iso
+	@python3 tools/console_scroll_test.py --iso horus.iso --expect-no-scroll \
+		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
+		--shots /tmp/horus-scroll-control-evidence
+
 .PHONY: smoke-console-backspace
 smoke-console-backspace:
 	@$(MAKE) --no-print-directory clean

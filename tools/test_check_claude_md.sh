@@ -78,6 +78,20 @@ arm "1" "a make target that does not exist" \
     "printf '\nRun \`make smoke-not-a-target\` first.\n' >> CLAUDE.md" \
     caught "smoke-not-a-target"
 
+# 1b. A DOTTED TARGET IS A REAL TARGET. The reference pattern allowed no dot
+#     while the target set did, so `make install.iso` was read as `make install`
+#     and reported as missing -- a checker rejecting a correct manual. Both
+#     directions are exercised: the dotted target must be accepted, and a dotted
+#     name that is NOT a target must still be caught, or the fix would have been
+#     "stop looking at dotted names".
+arm "1b" "a real dotted target, which must be accepted" \
+    "printf '\nRun \`make install.iso\` before booting the bench.\n' >> CLAUDE.md" \
+    clean
+
+arm "1c" "a dotted name that is not a target" \
+    "printf '\nRun \`make nosuch.iso\` first.\n' >> CLAUDE.md" \
+    caught "nosuch.iso"
+
 arm "2" "a path that does not exist" \
     "printf '\nSee \`src/kernel/nosuchfile.c\`.\n' >> CLAUDE.md" \
     caught "nosuchfile.c"

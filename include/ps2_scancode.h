@@ -29,14 +29,28 @@
 #define PS2_SC_LCTRL   0x1D
 #define PS2_SC_LSHIFT  0x2A
 #define PS2_SC_RSHIFT  0x36
+#define PS2_SC_LALT    0x38   /* with the 0xE0 prefix this is right alt: AltGr */
 #define PS2_SC_CAPS    0x3A
 #define PS2_SC_E0      0xE0
 
-/* Highest scancode the tables below cover (space). Anything above it is a key
- * this console has no character for -- a function key, the keypad -- and yields
- * PS2_KEY_NONE rather than an arbitrary byte. Returning something plausible for
- * a key nobody pressed is worse than returning nothing. */
-#define PS2_SC_MAX     0x39
+/* The ISO 102nd key: the extra key between left shift and Z that every ISO
+ * keyboard has and no ANSI one does. On UK it carries `\` and `|`. It is the
+ * reason PS2_SC_MAX is 0x56 and not 0x39. */
+#define PS2_SC_ISO102  0x56
+
+/* Highest scancode the tables cover. Anything above it yields PS2_KEY_NONE
+ * rather than an arbitrary byte -- returning something plausible for a key
+ * nobody pressed is worse than returning nothing.
+ *
+ * IT WAS 0x39 (space) UNTIL 2026-09-14, AND THAT WAS THE WHOLE OF A REAL BUG:
+ * the ISO 102nd key is 0x56, so on every ISO keyboard the key carrying `\` and
+ * `|` was dropped before the lookup ever happened. Reported from an IdeaPad 1
+ * 14IGL05 (UK) as "I cannot type | into the shell", which the shell does support
+ * -- it runs pipelines. The range now reaches 0x56 so that key is addressable at
+ * all; the gap between 0x3A and 0x55 is spelled out below rather than skipped,
+ * so the keypad and the function keys are a table edit away rather than another
+ * range change. */
+#define PS2_SC_MAX     PS2_SC_ISO102
 
 /* ps2_feed returns either a character (1..0x7F) or one of these, which are
  * deliberately above the byte range so they cannot collide with one. A caller
@@ -58,27 +72,132 @@
 #define PS2_KEY_HOME   0x105
 #define PS2_KEY_END    0x106
 
-/* Index by make code. A '\0' entry means "no character": either an unassigned
- * code or a modifier, both of which are handled before the lookup. Split across
- * literals where a hex escape would otherwise swallow the next digit --
- * "\x1b1" is the single character 0x1b1, not ESC followed by '1'. Left unsized
- * so the tables carry their terminator: each is PS2_SC_MAX+1 = 58 entries plus
- * the NUL, and a static assert below refuses a table that has drifted. */
-static const char ps2_map_lower[] =
-    "\0\x1b" "1234567890-=\b\t" "qwertyuiop[]\n\0" "asdfghjkl;'`\0\\" "zxcvbnm,./\0*\0 ";
-static const char ps2_map_upper[] =
-    "\0\x1b" "!@#$%^&*()_+\b\t" "QWERTYUIOP{}\n\0" "ASDFGHJKL:\"~\0|" "ZXCVBNM<>?\0*\0 ";
+/* ---- layouts ---------------------------------------------------------------
+ *
+ * A LAYOUT IS DATA, NOT CODE, and that is the point of this section. Before
+ * 2026-09-14 there was one pair of tables wired straight into the lookup, so a
+ * keyboard that was not US/ANSI produced wrong characters for several keys and
+ * nothing at all for the one key ANSI does not have. Adding a keyboard is now
+ * adding a `struct ps2_layout` and a line in ps2_layouts[]; nothing in ps2_feed
+ * changes.
+ *
+ * EVERY LEVEL IS INDEXED BY MAKE CODE, 0x00..PS2_SC_MAX, so a level is a plain
+ * lookup and never a search. A '\0' means "this key produces no character at
+ * this level" -- an unassigned code, a modifier, or a key whose character is not
+ * ASCII. That last case is real and deliberate: UK Shift+3 is a pound sign and
+ * AltGr+4 a euro sign, neither of which fits in the char this console deals in,
+ * so both are '\0' and the key does nothing rather than producing a wrong byte.
+ * Say what that costs rather than papering over it: on a UK keyboard, Shift+3
+ * types nothing.
+ *
+ * THE GAP IS SPELLED OUT so the two levels of a layout cannot disagree about its
+ * width, and so the keypad becomes one edit rather than a range change. */
+#define PS2_GAP_3A_55 \
+    "\0\0\0\0\0\0\0\0\0\0"   /* 0x3A caps, 0x3B..0x44 F1-F10        */ \
+    "\0\0\0\0\0\0\0\0\0\0"   /* 0x45 num, 0x46 scroll, keypad 7..4  */ \
+    "\0\0\0\0\0\0\0\0"       /* keypad 5..0, '.', 0x54, 0x55        */
 
-_Static_assert(sizeof(ps2_map_lower) == PS2_SC_MAX + 2, "ps2_map_lower must cover 0x00..PS2_SC_MAX");
-_Static_assert(sizeof(ps2_map_upper) == PS2_SC_MAX + 2, "ps2_map_upper must cover 0x00..PS2_SC_MAX");
+/* 0x00..0x39, then the gap, then 0x56. Split across literals where a hex escape
+ * would otherwise swallow the next digit -- "\x1b1" is one character 0x1b1, not
+ * ESC followed by '1'. */
+#define PS2_ROW_US_LOWER \
+    "\0\x1b" "1234567890-=\b\t" "qwertyuiop[]\n\0" "asdfghjkl;'`\0\\" "zxcvbnm,./\0*\0 "
+#define PS2_ROW_US_UPPER \
+    "\0\x1b" "!@#$%^&*()_+\b\t" "QWERTYUIOP{}\n\0" "ASDFGHJKL:\"~\0|" "ZXCVBNM<>?\0*\0 "
+
+/* UK ISO. Five keys differ from US and one exists that US does not have:
+ *
+ *   0x03  2      "   (US @)
+ *   0x04  3      -   (US #; UK is a pound sign, not ASCII, so nothing)
+ *   0x28  '      @   (US ' ")
+ *   0x29  `      -   (US ` ~; UK shifted is a not sign, not ASCII)
+ *   0x2B  #      ~   (US \ |)
+ *   0x56  \      |   the ISO 102nd key, which US does not have at all
+ *
+ * Note where `\` and `|` went: on this keyboard they are NOT on 0x2B. That is
+ * why a UK machine running the US tables could still produce `|` -- from the
+ * key left of Enter, labelled `#` -- which is exactly the kind of "it works if
+ * you press the wrong key" that made the bug confusing to report. */
+#define PS2_ROW_UK_LOWER \
+    "\0\x1b" "1234567890-=\b\t" "qwertyuiop[]\n\0" "asdfghjkl;'`\0#" "zxcvbnm,./\0*\0 "
+#define PS2_ROW_UK_UPPER \
+    "\0\x1b" "!\"\0$%^&*()_+\b\t" "QWERTYUIOP{}\n\0" "ASDFGHJKL:@\0\0~" "ZXCVBNM<>?\0*\0 "
+
+/* One keyboard. `altgr` is the third level (right alt, 0xE0 0x38) and is NULL
+ * for both layouts shipped today, because neither produces an ASCII character
+ * that way: UK AltGr gives a euro sign, a broken bar and accented letters, none
+ * of which this console can represent. It is in the struct and honoured by
+ * ps2_feed because the layouts that need it next -- German and French put @, \,
+ * |, { and } on AltGr -- are exactly the ones "expand to other keyboards" means,
+ * and the alternative is that adding one of those changes ps2_feed instead of
+ * adding a row here. It is a hook with no user yet, and that is stated rather
+ * than hidden: the first layout to fill it is also the first to test it. */
+struct ps2_layout {
+    const char *name;    /* what the build selects and the boot log prints */
+    const char *lower;   /* unshifted                                      */
+    const char *upper;   /* shift held                                     */
+    const char *altgr;   /* right alt held; NULL if the layout has no level*/
+};
+
+static const char ps2_us_lower[] = PS2_ROW_US_LOWER PS2_GAP_3A_55 "\0";
+static const char ps2_us_upper[] = PS2_ROW_US_UPPER PS2_GAP_3A_55 "\0";
+static const char ps2_uk_lower[] = PS2_ROW_UK_LOWER PS2_GAP_3A_55 "\\";
+static const char ps2_uk_upper[] = PS2_ROW_UK_UPPER PS2_GAP_3A_55 "|";
+
+/* EVERY LEVEL IS THE SAME WIDTH AS THE SCANCODE RANGE, checked here rather than
+ * trusted. A table one byte short reads past its end for the ISO key -- which is
+ * the LAST entry, so it is the one a miscount hits first. */
+_Static_assert(sizeof(ps2_us_lower) == PS2_SC_MAX + 2, "ps2_us_lower must cover 0x00..PS2_SC_MAX");
+_Static_assert(sizeof(ps2_us_upper) == PS2_SC_MAX + 2, "ps2_us_upper must cover 0x00..PS2_SC_MAX");
+_Static_assert(sizeof(ps2_uk_lower) == PS2_SC_MAX + 2, "ps2_uk_lower must cover 0x00..PS2_SC_MAX");
+_Static_assert(sizeof(ps2_uk_upper) == PS2_SC_MAX + 2, "ps2_uk_upper must cover 0x00..PS2_SC_MAX");
+
+static const struct ps2_layout ps2_layouts[] = {
+    { "us", ps2_us_lower, ps2_us_upper, 0 },
+    { "uk", ps2_uk_lower, ps2_uk_upper, 0 },
+};
+#define PS2_LAYOUT_COUNT ((int)(sizeof(ps2_layouts) / sizeof(ps2_layouts[0])))
+
+/* The build's default, as a NAME rather than an index, so a layout can be added
+ * anywhere in the table without silently changing what an existing build
+ * selects. KEYMAP=uk sets it; see docs/BUILDING.md. */
+#ifndef PS2_LAYOUT_DEFAULT
+#define PS2_LAYOUT_DEFAULT "us"
+#endif
+
+/* Look a layout up by name. Returns the US layout for a name nothing matches,
+ * because a console that refuses to map any key at all is worse than one mapping
+ * the wrong ones: the second can be typed at and corrected, the first cannot. */
+static inline const struct ps2_layout *ps2_layout_by_name(const char *name)
+{
+    if (name) {
+        for (int i = 0; i < PS2_LAYOUT_COUNT; i++) {
+            const char *a = ps2_layouts[i].name, *b = name;
+            while (*a && *a == *b) { a++; b++; }
+            if (*a == 0 && *b == 0) return &ps2_layouts[i];
+        }
+    }
+    return &ps2_layouts[0];
+}
+
+static inline const struct ps2_layout *ps2_layout_default(void)
+{
+    return ps2_layout_by_name(PS2_LAYOUT_DEFAULT);
+}
 
 /* One reader's modifier state. Zero-initialised is the correct starting state:
  * no modifier held, caps off, no pending prefix. */
 struct ps2_state {
     unsigned char shift;   /* either shift key is down                         */
     unsigned char ctrl;    /* either control key is down                       */
+    unsigned char altgr;   /* right alt (0xE0 0x38) is down                    */
     unsigned char caps;    /* caps lock is latched on                          */
     unsigned char e0;      /* the previous byte was the 0xE0 extended prefix   */
+    /* NULL means the build's default, so a caller that zero-initialises its
+     * state -- which both readers do -- gets a working keyboard without knowing
+     * this field exists. Resolved on use rather than at init because there is no
+     * init: the state is a plain struct the caller owns. */
+    const struct ps2_layout *layout;
 };
 
 /* Feed one scancode. Returns a character (1..0x7F), one of the PS2_KEY_* codes
@@ -111,6 +230,12 @@ static inline int ps2_feed(struct ps2_state *st, unsigned char sc)
          * that only ever saw the prefix. */
         if (sc == PS2_SC_LCTRL)          { st->ctrl = 1; return PS2_KEY_NONE; }
         if (sc == (PS2_SC_LCTRL | 0x80)) { st->ctrl = 0; return PS2_KEY_NONE; }
+        /* RIGHT ALT IS ALTGR ON EVERY LAYOUT THAT HAS ONE, and is tracked even
+         * though no shipped layout fills that level yet: a held modifier whose
+         * release is never seen is the bug that leaves a keyboard stuck, and
+         * tracking it costs two lines whether or not a table uses it. */
+        if (sc == PS2_SC_LALT)           { st->altgr = 1; return PS2_KEY_NONE; }
+        if (sc == (PS2_SC_LALT | 0x80))  { st->altgr = 0; return PS2_KEY_NONE; }
         switch (sc) {
             case 0x53: return 0x7F;              /* Delete  */
             case 0x48: return PS2_KEY_UP;
@@ -136,7 +261,29 @@ static inline int ps2_feed(struct ps2_state *st, unsigned char sc)
     if (sc & 0x80) return PS2_KEY_NONE;       /* any other break code         */
     if (sc > PS2_SC_MAX) return PS2_KEY_NONE; /* a key outside the table      */
 
-    char c = st->shift ? ps2_map_upper[sc] : ps2_map_lower[sc];
+    const struct ps2_layout *ly = st->layout ? st->layout : ps2_layout_default();
+
+#ifdef PS2_LAYOUT_IGNORED
+    /* CONTROL ARM -- never ship. The reader as it stood before 2026-09-14: one
+     * hardcoded US layout, and a range that stopped at space. Both halves of the
+     * defect are restored together because they were one defect: on an ISO
+     * keyboard the `\`/`|` key is 0x56 and is dropped here, while `"`, `@`, `#`
+     * and `~` come back as their US counterparts. */
+    if (sc > 0x39) return PS2_KEY_NONE;
+    ly = &ps2_layouts[0];
+#endif
+
+    /* ALTGR FIRST, because it is a level and not a modifier of one: on the
+     * layouts that have it, AltGr+key is its own character and neither shift nor
+     * the unshifted table has any say. A layout without the level falls through
+     * to shift/unshifted, so holding right alt on US or UK types what the key
+     * would have typed anyway rather than nothing. */
+    char c;
+    if (st->altgr && ly->altgr) {
+        c = ly->altgr[sc];
+    } else {
+        c = st->shift ? ly->upper[sc] : ly->lower[sc];
+    }
     if (c == 0) return PS2_KEY_NONE;
 
     if (st->caps && c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');

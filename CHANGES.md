@@ -384,6 +384,31 @@ in this file.
 
 ### Added
 
+- **Keyboard layouts are a framework, and UK is the first one besides US.** There was one pair of
+  tables wired straight into the reader, covering scancodes `0x00..0x39`. A layout is now data —
+  `struct ps2_layout` with an unshifted, a shifted and an AltGr level — and `ps2_layouts[]` in
+  `include/ps2_scancode.h` is the list. **Adding a keyboard is a row there**; `ps2_feed()` does not
+  change. `KEYMAP=us|uk` selects the build default, in **both rings**, because the kernel reads the
+  keyboard from boot until `console_server` takes the console and a password typed either side of
+  that line must produce the same bytes. Every boot prints `kbd: layout <name>`.
+  **What it fixes.** On an ISO keyboard the key carrying `\` and `|` is scancode **`0x56`** — the
+  102nd key, immediately right of left shift, which ANSI keyboards do not have at all — and the
+  old range stopped at `0x39`, so it was dropped before the lookup. Five more keys returned their
+  US characters: `"`/`@` swapped, and `#`/`~` where the table said `\`/`|`. Reported from an
+  IdeaPad 1 14IGL05 (UK) as *"I cannot type `|` into the shell"* — which the shell supports, it
+  runs pipelines. The confusing half of that report is now explained: `|` *was* reachable on that
+  machine, from the key left of Enter labelled `#`, because the US table puts it on `0x2B`.
+  **What a layout still cannot do.** `'\0'` means the key produces no character at that level, and
+  that includes characters that are simply not ASCII — **UK Shift+3 is a pound sign, so it types
+  nothing**. A wrong byte would be worse. The `altgr` level is honoured by the reader and NULL in
+  both shipped layouts, since neither produces ASCII that way; it exists because German and French
+  put `@`, `\`, `|`, `{` and `}` there, and the alternative is that adding one of those changes
+  the reader rather than adding a row. It is a hook with no user yet, and the first layout to fill
+  it is the first to test it.
+  Gated by `make smoke-keymap-uk`, which presses the seven keys layouts disagree about and compares
+  the **character produced** — `smoke-keyboard` cannot, because every letter it types is the same
+  on every layout. Falsified in all four directions with `PS2_LAYOUT_IGNORED=1`.
+
 - **A boot menu on install media: install, or run live and change nothing (S91).** One image,
   and the choice is made by the person holding the machine rather than baked into which ISO they
   downloaded. `make install.iso` no longer compiles `INSTALL_ALWAYS` in; it ships `grub-menu.cfg`

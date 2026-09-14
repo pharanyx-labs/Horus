@@ -134,7 +134,17 @@
 # PIPE_CAP_UNACCOUNTED's arm is counted above: an arm the budget could not see
 # would be a place to hide code.
 #
-# RAISED AGAIN 2026-09-12, 9942 -> 9960 (+18), for 24-bit framebuffer pixels.
+# RAISED AGAIN 2026-09-14, 9960 -> 9963 (+3), for the keyboard layout report.
+# All three lines are the `kbd: layout <name>` announcement in keyboard_init.
+# The layouts themselves cost the core NOTHING: include/ps2_scancode.h is a
+# header, and this budget counts linked objects. That is the cheap direction and
+# worth recording -- a whole framework arrived as data in a header, and the only
+# core lines it bought are the ones that tell an operator which keyboard the
+# build thinks it has. Without them "some keys type the wrong character" is a bug
+# report nobody can act on, because the reader, the controller and the tables all
+# look right in isolation and only the PAIRING is wrong.
+#
+# RAISED 2026-09-12, 9942 -> 9960 (+18), for 24-bit framebuffer pixels.
 # A 24bpp pixel is three bytes with no padding and the pitch is not a whole
 # number of words, so the blitter had to stop addressing the framebuffer as an
 # array of uint32_t. All 18 lines are in terminal.c: the fb_store helper and the
@@ -169,7 +179,7 @@
 # existed because two numbers were written in two places was closed by deriving one
 # from the other, and the only code the kernel gained is the runtime check that
 # catches the case the constants cannot see.
-core_budget_loc: 9960
+core_budget_loc: 9963
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

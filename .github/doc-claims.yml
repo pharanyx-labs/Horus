@@ -624,6 +624,15 @@ forbidden:
       (`security_properties`), with the deriver mirroring
       tools/check_invariants.py's own row regex so the two cannot disagree about
       what a property is.
+  - pattern: 'The first tagged state of Horus'
+    reason: >-
+      CHANGES.md's 0.1.0 section called itself this, and no v0.1.0 tag was ever
+      pushed -- the link beside it pointed at /releases/tag/v0.1.0, which had
+      always been a 404. Corrected 2026-09-14 when v0.2.0-alpha became the first
+      release that actually exists. The retired phrasing is here because the
+      tempting repair is the wrong one: tagging v0.1.0 retroactively would make
+      the repository claim a release that never happened, and this sentence
+      coming back is how that decision would quietly reverse.
   - pattern: '(?<![0-9])68 QEMU integration targets'
     reason: >-
       site/index.html carried this from whenever the gate count was 68 until

@@ -1082,6 +1082,15 @@ static void keyboard_init(void) {
      * from a line saying so, and the boot log is not improved by one more [ OK ];
      * a machine whose keyboard did not answer currently gets NOTHING, which is
      * the defect. */
+    /* SAY WHICH LAYOUT THIS BUILD SPEAKS. Without it, "some keys type the wrong
+     * character" is a bug report nobody can act on: the reader, the controller
+     * and the tables all look correct in isolation and only the PAIRING of a
+     * layout with a keyboard is wrong. One line on every boot turns that into a
+     * comparison anybody can make against the keys in front of them. */
+    print("kbd: layout ");
+    print(ps2_layout_default()->name);
+    print("\n");
+
     if (!got_ack) {
         print("  [WARN] PS/2 keyboard did not acknowledge enable-scanning (0xF4). The 8042 is\n");
         print("         present but nothing is answering it -- commonly a USB keyboard served by\n");

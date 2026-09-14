@@ -3296,6 +3296,15 @@ jobs:
         run: make smoke-console-escape
       - name: Control arm — the arrow types `[A` and the login fails
         run: make smoke-console-escape-control
+      # WHICH character a key produces. smoke-keyboard proves the keyboard path
+      # works but types only letters, which are the same on every layout. On an
+      # ISO keyboard the `\`/`|` key is scancode 0x56 -- dropped before any
+      # lookup until 2026-09-14 -- and five more keys came back as their US
+      # counterparts.
+      - name: A UK keyboard produces UK characters
+        run: make smoke-keymap-uk
+      - name: Control arm — one hardcoded US layout, and the ISO key vanishes
+        run: make smoke-keymap-uk-control
       # `ls` takes a path. It matched the literal strings "ls" and "ls -l" and
       # nothing else, so `ls /bin` fell through the whole builtin chain and came
       # back "Unknown command" -- which reads as "no such command" rather than

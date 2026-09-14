@@ -168,6 +168,7 @@ DEFECT_FLAGS = \
 	CONSOLE_NO_RESUME \
 	CONSOLE_ESC_LITERAL \
 	FB_24BPP_REFUSED \
+	PS2_LAYOUT_IGNORED \
 	PCI_SCAN_TRACE \
 	PCI_BUS0_ONLY \
 	CONSOLE_KBD_SPLIT_ESC \
@@ -2708,6 +2709,26 @@ KDIAG_LEGACY_COM1 ?= 0
 KDIAG_SPLIT_WIDEN ?= 0
 KDIAG_PORTS_GRANTABLE ?= 0
 KDIAG_NOISE ?= 0
+# KEYMAP selects the keyboard layout compiled in as the default. `us` (the
+# default) and `uk` ship today; include/ps2_scancode.h's ps2_layouts[] is the
+# list, and adding a keyboard is a row there rather than a change to any reader.
+#
+# BOTH RINGS, because the kernel reads the keyboard from boot until
+# console_server takes the console and the user cannot tell where that line is --
+# a password typed either side of it must produce the same bytes.
+KEYMAP ?= us
+CFLAGS           += -DPS2_LAYOUT_DEFAULT='"$(KEYMAP)"'
+USERSPACE_CFLAGS_KEYMAP = -DPS2_LAYOUT_DEFAULT='"$(KEYMAP)"'
+
+# PS2_LAYOUT_IGNORED=1 restores the reader as it stood before 2026-09-14: one
+# hardcoded US layout and a scancode range that stopped at space (0x39). On an
+# ISO keyboard that drops the `\`/`|` key entirely -- it is 0x56 -- and returns
+# US characters for `"`, `@`, `#` and `~`. Reported from an IdeaPad 1 14IGL05
+# (UK) as "I cannot type | into the shell".
+PS2_LAYOUT_IGNORED ?= 0
+ifeq ($(PS2_LAYOUT_IGNORED),1)
+CFLAGS += -DPS2_LAYOUT_IGNORED
+endif
 PS2_PROBE ?= 0
 # FB_24BPP_REFUSED=1 restores the framebuffer console's 32-bit-only check, as it
 # stood before 2026-09-12. A 24bpp display then falls back to the VGA text window
@@ -4121,6 +4142,10 @@ USERSPACE_CFLAGS += -DCONSOLE_ESC_LITERAL
 endif
 ifeq ($(FB_24BPP_REFUSED),1)
 USERSPACE_CFLAGS += -DFB_24BPP_REFUSED
+endif
+USERSPACE_CFLAGS += $(USERSPACE_CFLAGS_KEYMAP)
+ifeq ($(PS2_LAYOUT_IGNORED),1)
+USERSPACE_CFLAGS += -DPS2_LAYOUT_IGNORED
 endif
 ifeq ($(READDIR_END_IS_NOENT),1)
 USERSPACE_CFLAGS += -DREADDIR_END_IS_NOENT
@@ -7844,6 +7869,34 @@ smoke-keyboard:
 # require the login to succeed, so a guest that simply stopped reading the line
 # cannot pass. Raw mode is untouched -- smoke-keyboard-installer covers the
 # installer's own arrow decoding, and is the regression check for this.
+# WHICH CHARACTER A KEY PRODUCES, which smoke-keyboard cannot tell you: every
+# letter it types is the same on every layout. This presses the seven keys that
+# layouts disagree about and compares the characters. Adding a keyboard means
+# adding a row to EXPECT in tools/keymap_session.py and one to ps2_layouts[].
+#
+# `clean` first, and it is not ceremony: KEYMAP is a userspace-only -D as far as
+# console_server is concerned, and userspace/%.o has no .build-flags
+# prerequisite -- so without it ring 3 links a stale object and types the OLD
+# layout while the kernel's boot line announces the new one. That happened while
+# this was being written, and it is exactly what the gate would then have missed.
+.PHONY: smoke-keymap-uk
+smoke-keymap-uk:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory KEYMAP=uk horus.iso
+	@python3 tools/keymap_session.py --iso horus.iso --layout uk \
+		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT)
+
+# The falsifying arm: the reader as it stood before 2026-09-14 -- one hardcoded
+# US layout and a range ending at space, so the ISO key is dropped and the other
+# five come back as US. It must type US while the build asks for UK.
+.PHONY: smoke-keymap-uk-control
+smoke-keymap-uk-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory KEYMAP=uk PS2_LAYOUT_IGNORED=1 horus.iso
+	@python3 tools/keymap_session.py --iso horus.iso --layout uk --expect-ignored \
+		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
+		--log /tmp/horus-keymap-control-evidence.log
+
 .PHONY: smoke-console-escape
 smoke-console-escape:
 	@$(MAKE) --no-print-directory clean

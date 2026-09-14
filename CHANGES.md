@@ -382,6 +382,20 @@ in this file.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.2.0-alpha]: 2026-09-14
+
+**The first release of Horus that anyone can boot without a toolchain**, and the first that
+exists as a tag at all — see the note under 0.1.0. Install media for x86-64, built for a UK/ISO
+keyboard, published as an alpha for developers.
+
+Most of what is below was found by carrying the system to one laptop and using it. The pattern is
+worth naming, because it produced six separate defects in two days: the whole smoke suite drives
+the guest over a **serial port**, and the machines this is meant to run on do not have one. A
+keyboard that is never typed on, a screen that is never read, and a console handover that is
+never watched are all invisible to a suite that is otherwise 355 targets wide.
+
 ### Added
 
 - **A layout that nothing types on now fails the build.** `tools/check_keymaps.py` makes three
@@ -6969,7 +6983,13 @@ descending `..` does not.
 
 ## [0.1.0]: 2026-08-21
 
-The first tagged state of Horus: a capability-based x86-64 microkernel that boots on hardware
+> **Never tagged and never published.** This section recorded a milestone in the changelog and
+> nothing else: no `v0.1.0` tag was ever pushed and no release was ever made, so the link that
+> used to sit here pointed at a page that has never existed. It is left in place because the
+> entries below are a true account of what changed — but the first actual release of Horus is
+> **v0.2.0-alpha**, above.
+
+The first recorded state of Horus: a capability-based x86-64 microkernel that boots on hardware
 and under QEMU, drops to a ring-3 shell, and runs ordinary C programs (including GNU coreutils
 and TCC) with its filesystem and console drivers in userspace.
 
@@ -7083,5 +7103,10 @@ The full list, with what each means for a reader, is in
 
 ---
 
-[Unreleased]: https://github.com/pharanyx-labs/Horus/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/pharanyx-labs/Horus/releases/tag/v0.1.0
+[Unreleased]: https://github.com/pharanyx-labs/Horus/compare/v0.2.0-alpha...HEAD
+[0.2.0-alpha]: https://github.com/pharanyx-labs/Horus/releases/tag/v0.2.0-alpha
+
+<!-- 0.1.0 has no link because it has no tag and no release. A reference to
+     /releases/tag/v0.1.0 sat here until 2026-09-14 and had always been a 404;
+     inventing the tag retroactively would make the repository claim a release
+     that never happened, which is a worse fix than an unlinked heading. -->

@@ -99,8 +99,15 @@ def main() -> int:
     fenced = "\n".join(re.findall(r"```bash\n(.*?)```", text, re.S)).split("\n")
     seen = set()
     for chunk in spans + fenced:
-        for m in re.finditer(r"\bmake ([a-z0-9][a-z0-9-]*)", chunk):
-            t = m.group(1)
+        # A DOT IS PART OF THE TARGET NAME. The target set on line 92 already
+        # allows one -- install.iso, horus.iso and boot.iso are all real targets
+        # -- and this pattern did not, so `make install.iso` was read as
+        # `make install` and reported as a target that does not exist. The
+        # asymmetry was invisible until CLAUDE.md first referred to a dotted
+        # target (2026-09-14); every earlier reference happened to be undotted.
+        # A TRAILING dot is punctuation, not name: "`make smoke.`" is a sentence.
+        for m in re.finditer(r"\bmake ([a-z0-9][a-z0-9.-]*)", chunk):
+            t = m.group(1).rstrip(".")
             seen.add(t)
             if t != "help" and t not in targets:
                 problems.append(f"names `make {t}`, which is not a Makefile target")

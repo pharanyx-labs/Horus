@@ -384,6 +384,25 @@ in this file.
 
 ### Added
 
+- **A layout that nothing types on now fails the build.** `tools/check_keymaps.py` makes three
+  lists one list: the row in `ps2_layouts[]`, the row in `tools/keymap_session.py`'s `EXPECT`, and
+  the `smoke-keymap-<name>` target that builds and boots it. Adding a keyboard is still a row in
+  the header — but the row alone no longer compiles, because the checker then demands its
+  assertions and its gate too.
+  That matters more here than the usual "add a test" rule, because the framework's own selling
+  point is the hazard: a new layout compiles, links, ships and is selectable by `KEYMAP` with
+  nothing checking that a single key produces the right character, and the tables are the part
+  most likely to be wrong — 87 bytes of punctuation typed by hand, and nothing a compiler can
+  check. It found a real gap on its first run against the tree: `us` had a layout and an `EXPECT`
+  row and no gate, so `smoke-keymap-us` now exists. Falsified in five directions by
+  `tools/test_check_keymaps.sh`, including **both** silent ones — the tree before any arm, and the
+  tree again after every arm is undone, which is what proves the restores restored.
+- **`KEYMAP_SHIPPED=uk`**: `make install.iso` and every gate that types on the emulated 8042 now
+  build the layout the bench machine actually has, rather than the `us` a bare `make` gives. A gate
+  that tests a configuration nobody ships is testing the wrong thing. The layout-sensitive
+  assertions are unaffected — `smoke-keymap-us` and `smoke-keymap-uk` each pin their own
+  characters, so moving the knob cannot quietly stop a layout being checked.
+
 - **Keyboard layouts are a framework, and UK is the first one besides US.** There was one pair of
   tables wired straight into the reader, covering scancodes `0x00..0x39`. A layout is now data —
   `struct ps2_layout` with an unshifted, a shifted and an AltGr level — and `ps2_layouts[]` in

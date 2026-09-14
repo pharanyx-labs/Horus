@@ -244,6 +244,7 @@ gates:
   - smoke-console-cursor
   - smoke-console-resume
   - smoke-console-escape
+  - smoke-keymap-us
   - smoke-keymap-uk
   - smoke-keyboard-installer
   - smoke-keyboard-install

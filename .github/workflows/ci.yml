@@ -2150,6 +2150,16 @@ jobs:
         run: python3 tools/check_abi_headers.py
       - name: Falsify every rule of the ABI-header checker
         run: ./tools/test_check_abi_headers.sh
+      # A keyboard layout is meant to be a row in ps2_layouts[] -- which also means
+      # a new one compiles, links, ships and is selectable by KEYMAP with nothing
+      # checking that a single key on it produces the right character. The tables
+      # are the part most likely to be wrong (87 bytes of punctuation typed by
+      # hand) and the part no compiler can check. This makes the three lists one:
+      # the layout, its EXPECT row, and its smoke-keymap-<name> target.
+      - name: Every keyboard layout is asserted and run
+        run: python3 tools/check_keymaps.py
+      - name: Falsify the keymap checker, including the direction that must stay silent
+        run: ./tools/test_check_keymaps.sh
       # Five rules, and until 2026-08-30 rule 1 inferred the classification from
       # the target NAME, which was wrong for four arms and made two published
       # counts wrong with it. Seven arms: one per rule, one for a manifest entry
@@ -3301,6 +3311,12 @@ jobs:
       # ISO keyboard the `\`/`|` key is scancode 0x56 -- dropped before any
       # lookup until 2026-09-14 -- and five more keys came back as their US
       # counterparts.
+      # One per layout, and tools/check_keymaps.py refuses a layout with no target.
+      # US is gated although the bench is UK: it is what ps2_layout_by_name falls
+      # back to for a name nothing matches, so it is the layout a misconfigured
+      # build silently gets.
+      - name: A US keyboard produces US characters
+        run: make smoke-keymap-us
       - name: A UK keyboard produces UK characters
         run: make smoke-keymap-uk
       - name: Control arm — one hardcoded US layout, and the ISO key vanishes

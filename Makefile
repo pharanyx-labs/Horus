@@ -2717,6 +2717,20 @@ KDIAG_NOISE ?= 0
 # console_server takes the console and the user cannot tell where that line is --
 # a password typed either side of it must produce the same bytes.
 KEYMAP ?= us
+
+# THE LAYOUT THE SHIPPED MEDIA AND THE KEYBOARD GATES USE. Separate from KEYMAP's
+# default because they answer different questions: KEYMAP=us is what a bare
+# `make` gives, and KEYMAP_SHIPPED is what the machine this is actually carried
+# to has -- an IdeaPad 1 14IGL05 with a UK/ISO keyboard. install.iso is built
+# with it, and so is every gate that types on the emulated 8042, because a gate
+# that tests a configuration nobody ships is testing the wrong thing.
+#
+# THE LAYOUT-SENSITIVE ASSERTIONS ARE NOT HERE. smoke-keymap-<name> pins each
+# layout to its own characters and is generated per layout, so moving this knob
+# cannot quietly stop some layout being checked -- tools/check_keymaps.py refuses
+# a layout with no target. The gates below only need A working keyboard; they
+# type letters, which every layout agrees about.
+KEYMAP_SHIPPED ?= uk
 CFLAGS           += -DPS2_LAYOUT_DEFAULT='"$(KEYMAP)"'
 USERSPACE_CFLAGS_KEYMAP = -DPS2_LAYOUT_DEFAULT='"$(KEYMAP)"'
 
@@ -3905,8 +3919,8 @@ boot.iso:
 .PHONY: install.iso
 install.iso:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory STORAGE_ATA=1
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 GRUB_CFG=grub-menu.cfg horus.iso
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 KEYMAP=$(KEYMAP_SHIPPED)
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 KEYMAP=$(KEYMAP_SHIPPED) GRUB_CFG=grub-menu.cfg horus.iso
 	@mv horus.iso install.iso
 # SAY WHICH FILE TO WRITE, AND SAY THAT THE OTHER ONE IS NOT IT.
 #
@@ -7793,7 +7807,7 @@ SMOKE_KEYBOARD_TIMEOUT ?= 240
 .PHONY: smoke-keyboard
 smoke-keyboard:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory horus.iso
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) horus.iso
 	@python3 tools/keyboard_session.py --iso horus.iso \
 		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
 		--serial-log /tmp/horus-keyboard.log
@@ -7879,6 +7893,23 @@ smoke-keyboard:
 # prerequisite -- so without it ring 3 links a stale object and types the OLD
 # layout while the kernel's boot line announces the new one. That happened while
 # this was being written, and it is exactly what the gate would then have missed.
+# ONE TARGET PER LAYOUT, and tools/check_keymaps.py refuses a layout that has
+# none. That is what makes "adding a keyboard is a row in ps2_layouts[]" true
+# rather than aspirational: the row alone does not build, because the checker
+# then demands its EXPECT row and its target too. A layout nothing types on is a
+# layout nobody has tested, and the tables are the part most likely to be wrong --
+# 87 bytes of punctuation typed by hand, and nothing a compiler can check.
+#
+# US IS GATED EVEN THOUGH THE BENCH IS UK. It is the fallback ps2_layout_by_name
+# returns for a name nothing matches, so it is the layout a misconfigured build
+# silently gets, and the one whose breakage would be hardest to attribute.
+.PHONY: smoke-keymap-us
+smoke-keymap-us:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory KEYMAP=us horus.iso
+	@python3 tools/keymap_session.py --iso horus.iso --layout us \
+		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT)
+
 .PHONY: smoke-keymap-uk
 smoke-keymap-uk:
 	@$(MAKE) --no-print-directory clean
@@ -7933,7 +7964,7 @@ smoke-console-resume-control:
 .PHONY: smoke-console-cursor
 smoke-console-cursor:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory horus.iso
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) horus.iso
 	@python3 tools/console_cursor_test.py --iso horus.iso \
 		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
 		--shots /tmp/horus-cursor-evidence
@@ -7942,8 +7973,8 @@ smoke-console-cursor:
 .PHONY: smoke-console-cursor-control
 smoke-console-cursor-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory CONSOLE_NO_CURSOR=1
-	@$(MAKE) --no-print-directory CONSOLE_NO_CURSOR=1 horus.iso
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) CONSOLE_NO_CURSOR=1
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) CONSOLE_NO_CURSOR=1 horus.iso
 	@python3 tools/console_cursor_test.py --iso horus.iso --expect-frozen \
 		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
 		--shots /tmp/horus-cursor-control-evidence
@@ -7972,7 +8003,7 @@ smoke-console-scroll-control:
 .PHONY: smoke-console-backspace
 smoke-console-backspace:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory horus.iso
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) horus.iso
 	@python3 tools/backspace_session.py --iso horus.iso \
 		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
 		--shots /tmp/horus-backspace
@@ -7981,8 +8012,8 @@ smoke-console-backspace:
 .PHONY: smoke-console-backspace-control
 smoke-console-backspace-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory CONSOLE_BACKSPACE_NO_ERASE=1
-	@$(MAKE) --no-print-directory CONSOLE_BACKSPACE_NO_ERASE=1 horus.iso
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) CONSOLE_BACKSPACE_NO_ERASE=1
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) CONSOLE_BACKSPACE_NO_ERASE=1 horus.iso
 	@python3 tools/backspace_session.py --iso horus.iso --expect-no-erase \
 		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
 		--shots /tmp/horus-backspace-control
@@ -7990,7 +8021,7 @@ smoke-console-backspace-control:
 .PHONY: smoke-keyboard-noserial
 smoke-keyboard-noserial:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory horus.iso
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) horus.iso
 	@python3 tools/noserial_keyboard_session.py --iso horus.iso \
 		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
 		--shots /tmp/horus-noserial
@@ -8001,8 +8032,8 @@ smoke-keyboard-noserial:
 .PHONY: smoke-keyboard-noserial-control
 smoke-keyboard-noserial-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory SERIAL_PRESENCE_UNCHECKED=1
-	@$(MAKE) --no-print-directory SERIAL_PRESENCE_UNCHECKED=1 horus.iso
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) SERIAL_PRESENCE_UNCHECKED=1
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) SERIAL_PRESENCE_UNCHECKED=1 horus.iso
 	@python3 tools/noserial_keyboard_session.py --iso horus.iso \
 		--expect-no-keyboard \
 		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
@@ -8011,8 +8042,8 @@ smoke-keyboard-noserial-control:
 .PHONY: smoke-keyboard-control
 smoke-keyboard-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory CONSOLE_NO_KBD=1
-	@$(MAKE) --no-print-directory CONSOLE_NO_KBD=1 horus.iso
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) CONSOLE_NO_KBD=1
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) CONSOLE_NO_KBD=1 horus.iso
 	@python3 tools/keyboard_session.py --iso horus.iso --expect-no-keyboard \
 		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
 		--serial-log /tmp/horus-keyboard-control.log
@@ -8041,8 +8072,8 @@ SMOKE_KEYBOARD_INSTALLER_TIMEOUT ?= 300
 .PHONY: smoke-keyboard-installer
 smoke-keyboard-installer:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory STORAGE_ATA=1
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 horus.iso
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) STORAGE_ATA=1
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) STORAGE_ATA=1 horus.iso
 	@rm -f keyboard-installer.img && truncate -s 64M keyboard-installer.img
 	@SESSION_DISK=keyboard-installer.img \
 		python3 tools/keyboard_session.py --iso horus.iso --installer \
@@ -8059,8 +8090,8 @@ smoke-keyboard-installer:
 .PHONY: smoke-keyboard-installer-control
 smoke-keyboard-installer-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 CONSOLE_KBD_SPLIT_ESC=1
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 CONSOLE_KBD_SPLIT_ESC=1 horus.iso
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) STORAGE_ATA=1 CONSOLE_KBD_SPLIT_ESC=1
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) STORAGE_ATA=1 CONSOLE_KBD_SPLIT_ESC=1 horus.iso
 	@rm -f keyboard-installer.img && truncate -s 64M keyboard-installer.img
 	@SESSION_DISK=keyboard-installer.img \
 		python3 tools/keyboard_session.py --iso horus.iso --installer \
@@ -8101,8 +8132,8 @@ SMOKE_KEYBOARD_INSTALL_TIMEOUT ?= 300
 .PHONY: smoke-keyboard-install
 smoke-keyboard-install:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory STORAGE_ATA=1
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 horus.iso
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) STORAGE_ATA=1
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) STORAGE_ATA=1 horus.iso
 	@rm -f keyboard-install.img && truncate -s 64M keyboard-install.img
 	@rm -f keyboard-install-serial.log
 	@SESSION_DISK=keyboard-install.img \

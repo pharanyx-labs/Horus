@@ -120,6 +120,13 @@ rustup target add x86_64-unknown-none
 | `swtpm`, `swtpm-tools` *(optional)* | Measured-boot and sealed-key testing |
 | `python3` *(optional)* | Scripted shell sessions and PCR recomputation |
 
+The commands above are for Ubuntu, which is what CI runs. Other distributions build too, and
+their toolchains differ in defaults the build must not depend on. The one measured so far: Void
+Linux's binutils 2.44 assembler emits a `.note.gnu.property` section into every object, and
+Ubuntu's does not. Every flat image the build produces (the AP trampoline, the raw self-test
+payloads) therefore removes notes explicitly; `make smoke-ap-trampoline` forces the note on so
+CI tests the case its own toolchain would never produce.
+
 ---
 
 ## Building
@@ -408,6 +415,7 @@ failing arm. A gate that has only ever been run against the fixed kernel is not 
 | `SPAWN_STAGE_WIDEN=1` | Not a defect: holds each of the first `SPAWN_STAGE_WIDEN_WINDOWS` (24) staging windows open for `SPAWN_STAGE_WIDEN_SPINS` (12,000,000) `pause` iterations, so an overlap happens if one is possible at all. Set in **both** arms when measuring. | Used with `SPAWN_STAGE_TRACE=1` for the measurement in `TESTS.md`; not a gate |
 | `SPAWN_STAGE_TRACE=1` | Not a defect, reports every entry to the staging window and every arrival that finds another CPU already inside one. This is the *reachability* instrument: a serialised build with zero incidents says nothing unless the window was entered twice, and this is what established that in this tree it never is. Same role `KSTACK0_PARK_TRACE` plays for the park path. | Used for the measurement in `TESTS.md`; not a gate |
 | `REPRO_SHA_UNCHECKED=1` | Restores the pre-2026-08-19 build-hash recording step **and** the goal list that made it silent: `reproducible-build` builds `all` (which is `kernel.elf` alone) and records with `sha256sum kernel.elf horus.iso > .build.sha 2>/dev/null \|\| true`. Both halves are needed: a swallowed status is harmless while every artifact exists, so restoring only the `\|\| true` makes the arm pass for the wrong reason. Gate: `make smoke-repro-sha-control`, which requires the incomplete record **and** the success report; `make smoke-repro-sha` must FAIL under the same flag. |
+| `AP_TRAMPOLINE_FLAT_LINK=1` | Restores the pre-2026-09-19 AP trampoline link, `ld -m elf_i386 -Ttext=0x8000 --oformat binary`, **and** forces the assembler's `.note.gnu.property` on with `-Wa,-mx86-used-note=yes`. Both halves are needed: Ubuntu's binutils emits no note by default, so the old link alone reproduces nothing on CI, which is how the defect stayed invisible there. With the note, the default i386 script places it at 0x080480d4 and the flat image zero-fills up to it: a 134,479,912-byte blob. Gate: `make smoke-ap-trampoline-control`, which requires the embed bound in `src/boot/ap_trampoline_embed.S` to refuse an oversized blob; `make smoke-ap-trampoline` must go red under it, and a kernel build under it fails at `multiboot.o` on the same bound. |
 | `KSP_GUARD_ALWAYS=1` | Makes `ksp_is_bogus()` reject **every** stack pointer: the false-positive mutation that every inject-and-look arm passes happily. `make smoke-ksp-guard` must go red under it; if it does not, that gate is testing nothing. | `make smoke-ksp-guard` must **FAIL** under this flag (against the unflagged run, where the guard must stay silent through a boot to ring 3) |
 | `BUILD_FLAGS_UNSTAMPED=1` | Restores the pre-2026-08-21 build, in which a `-D` flag was invisible to make: objects do not depend on the flag strings, so `make FLAG=1` followed by `make` recompiles nothing and the flag silently survives. That sequence produced a false **[G-9]** "reproduction" on 2026-08-20; the guard fired in 2 boots of 3 with the control arm's own injected constant. | `make smoke-defect-flags-rebuild-control`, which requires the stale `DEFECT FLAGS: KSP_GUARD_INJECT` to be **present** after a flagless rebuild (against `make smoke-defect-flags-rebuild`, where it must report `none`) |
 | `KSP_GUARD_INJECT=1` | Forges `-7` (the exact value **[G-9]** was seen to hand back) as the return of `task_exit_switch`, the producer the `PROC_SELFTEST` workload drives. Not a defect arm in the usual sense: it exists so the producer-side guard has a falsifying arm, because a guard nobody has seen fire is not a guard. | `make smoke-ksp-guard-control`, which requires `SCHED BOGUS KSP from task_exit_switch` to be **present** |
@@ -641,6 +649,7 @@ Individual self-tests are `make smoke-<name>`. A few of the important ones:
 | `smoke-tpm-tamper` | A corrupted module additionally diverges the measured PCRs |
 | `smoke-tpm-seal` | A changed PCR leaves the volume locked |
 | `smoke-repro-sha` | The build-hash record covers every artifact, or the recording step refuses and writes nothing |
+| `smoke-ap-trampoline` | The AP trampoline blob is code and data only and fits below its cells at 0x8FD8, with the assembler's note forced on |
 | `smoke-vfs` | Two filesystem servers, two mounts, one namespace; a mount needs a capability |
 | `smoke-passwd-probe` | The in-kernel ramfs is unreachable from ring 3 |
 | `smoke-frame` | A frame capability names a kernel-managed object, and a delegate maps only what its rights allow |

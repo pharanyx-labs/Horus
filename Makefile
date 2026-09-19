@@ -99,7 +99,7 @@ DEFECT_FLAGS = \
 	RESUME_GUARD_LEGACY_FATAL RESUME_RSP_INJECT RESUME_RSP_INJECT_PRECLAIM \
 	CR3_RECLAIM_UNGUARDED EXEC_REENTER_GLOBAL \
 	SPAWN_OWNER_UNCHECKED SPAWN_STAGE_UNSERIALISED SPAWN_STAGE_WIDEN SPAWN_STAGE_TRACE \
-	REPRO_SHA_UNCHECKED WAL_NO_FLUSH WAL_CRASHTEST \
+	REPRO_SHA_UNCHECKED WAL_NO_FLUSH WAL_CRASHTEST AP_TRAMPOLINE_FLAT_LINK \
 	KLOG_WRITE_UNGATED SYSCALL_PTR_TRUNC32 KSP_GUARD_INJECT KSP_GUARD_ALWAYS \
 	BUILD_FLAGS_UNSTAMPED SYSCALL_COVERAGE \
 	LIBHORUS_RETRY_ANY LIBHORUS_STRNCPY_UNTERMINATED CLAIM_TRACE CLAIM_RELEASE_SKIP SWITCH_COMMIT_EARLY DEFER_CLEAR_EARLY DEFER_WINDOW_WIDEN \
@@ -3544,7 +3544,7 @@ SMP ?= 1
 ifeq ($(SMP),1)
 CFLAGS  += -DSMP
 ASFLAGS += -DSMP
-AP_TRAMPOLINE_DEP = src/boot/ap_trampoline.bin
+AP_TRAMPOLINE_DEP = src/boot/ap_trampoline.bin src/boot/ap_trampoline_embed.S
 endif
 
 # SCHED_INVARIANTS=1 machine-checks the scheduler's claim invariant
@@ -3720,11 +3720,39 @@ src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
-# 0x8000, then emitted as a raw binary that multiboot.S embeds via .incbin.
+# 0x8000, then emitted as a raw binary that multiboot.S embeds via .incbin
+# (src/boot/ap_trampoline_embed.S, which refuses a blob that does not fit).
+#
+# The link goes through src/boot/ap_trampoline.ld, never `-Ttext=0x8000
+# --oformat binary`. That form placed .text only, and left any other allocated
+# section to the default i386 script; a binary image spans all of them. Void's
+# binutils 2.44 emits a .note.gnu.property by default, the default script put it
+# at 0x080480d4, and the blob came out at 128 MiB, which failed the kernel link
+# on 2026-09-19 while CI's Ubuntu toolchain, which emits no note, stayed green.
+# The ap_trampoline.ld header has the whole account.
+#
+# AP_TRAMPOLINE_FLAT_LINK=1 restores that link AND forces the note on, so the
+# defect reproduces on a host whose assembler would not emit it. A control arm,
+# never a build option: `smoke-ap-trampoline-control` requires it to be refused.
+AP_TRAMPOLINE_FLAT_LINK ?= 0
+AP_TRAMPOLINE_ASFLAGS = -m32 -ffreestanding -fno-pic -x assembler-with-cpp -c
+ifeq ($(AP_TRAMPOLINE_FLAT_LINK),1)
+AP_TRAMPOLINE_ASFLAGS += -Wa,-mx86-used-note=yes
+AP_TRAMPOLINE_LINK = $(LD) -m elf_i386 -Ttext=0x8000 --oformat binary
+else
+AP_TRAMPOLINE_LINK = $(LD) -m elf_i386 -T src/boot/ap_trampoline.ld
+endif
+
 src/boot/ap_trampoline.o: src/boot/ap_trampoline.S
-	$(CC) -m32 -ffreestanding -fno-pic -x assembler-with-cpp -c $< -o $@
-src/boot/ap_trampoline.bin: src/boot/ap_trampoline.o
-	$(LD) -m elf_i386 -Ttext=0x8000 --oformat binary -o $@ $<
+	$(CC) $(AP_TRAMPOLINE_ASFLAGS) $< -o $@
+src/boot/ap_trampoline.bin: src/boot/ap_trampoline.o src/boot/ap_trampoline.ld
+	$(AP_TRAMPOLINE_LINK) -o $@ $<
+# Not in $(OBJS), so the .build-flags stamp does not reach these on its own, and
+# a `make AP_TRAMPOLINE_FLAT_LINK=1` followed by `make` would keep the 128 MiB
+# blob. BUILD_FLAGS_UNSTAMPED gates this as it gates the $(OBJS) dependency.
+ifneq ($(BUILD_FLAGS_UNSTAMPED),1)
+src/boot/ap_trampoline.o src/boot/ap_trampoline.bin: .build-flags
+endif
 
 src/kernel/rust_shims.o: src/kernel/rust_shims.c
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -4783,8 +4811,16 @@ userspace/elftest64.o: userspace/elftest.c
 userspace/elftest64.elf: userspace/elftest64.o userspace/elftest.ld
 	$(LD) -m elf_x86_64 -pie -T userspace/elftest.ld -o $@ $<
 
+# Notes are removed because a flat image copies every allocated section, and
+# whether the assembler emits a .note.gnu.property is a host default: Void's
+# binutils 2.44 does, Ubuntu's does not. Linked with the default script above,
+# the note landed at 0x400190, between .text and .rodata, so the payload's bytes
+# depended on which machine built it. The same default turned the AP trampoline
+# into a 128 MiB blob (see src/boot/ap_trampoline.ld). Removing the section after
+# the link moves nothing else: measured on sigtest, the image keeps its size and
+# only the note's own 16 bytes change, to the zeros an Ubuntu build has there.
 userspace/%.raw: userspace/%.elf
-	objcopy -O binary $< $@
+	objcopy -O binary -R '.note*' $< $@
 
 # -I include so the tool compiles the ONE declaration of the container format
 # (include/program_abi.h) rather than a private copy -- that copy is what
@@ -10868,6 +10904,82 @@ repro-sha-control-arm:
 	@: > .repro-sha-test/kernel.elf
 	@cd .repro-sha-test && if $(REPRO_RECORD); then 	    n=$$(wc -l < .build.sha 2>/dev/null || echo 0); 	    echo "REPRO_SHA_CONTROL: FAIL recorded $$n of $(words $(REPRO_ARTIFACTS)) artifacts and reported success"; 	 else 	    echo "REPRO_SHA_CONTROL: the control arm REFUSED -- it no longer reproduces the defect"; 	    exit 1; 	 fi
 	@rm -rf .repro-sha-test
+
+# ---- The AP trampoline fits its page, whatever the host assembler emits -------
+#
+# The property: the blob the kernel embeds and copies to 0x8000 is the
+# trampoline's code and data and nothing else, and it ends below the cells at
+# AP_STACK_BASE_CELL (0x8FD8). On 2026-09-19 a host binutils default broke it and
+# CI could not see it, because CI's assembler never emits the note that did the
+# damage (see src/boot/ap_trampoline.ld). So this gate FORCES the note on, with
+# -Wa,-mx86-used-note=yes, and asserts it is present before trusting anything
+# after: on a host where the flag did nothing, the gate would be testing the
+# easy case and passing for the wrong reason.
+#
+# Host-side and sub-second: it builds the trampoline through the build's own
+# $(AP_TRAMPOLINE_ASFLAGS) and $(AP_TRAMPOLINE_LINK) in a scratch directory, then
+# assembles src/boot/ap_trampoline_embed.S, the same file multiboot.S includes,
+# against that blob. The bound that refuses it is the kernel build's bound, not a
+# copy of it.
+#
+# The scratch directory is kept whenever the result is not the expected one, so
+# the logs survive the only run anyone needs them from.
+AP_TRAMP_TEST = .ap-trampoline-test
+define AP_TRAMP_BUILD
+rm -rf $(AP_TRAMP_TEST) && mkdir -p $(AP_TRAMP_TEST) && \
+$(CC) $(AP_TRAMPOLINE_ASFLAGS) -Wa,-mx86-used-note=yes src/boot/ap_trampoline.S -o $(AP_TRAMP_TEST)/ap.o && \
+readelf -SW $(AP_TRAMP_TEST)/ap.o > $(AP_TRAMP_TEST)/sections.txt && \
+{ grep -q '\.note\.gnu\.property' $(AP_TRAMP_TEST)/sections.txt || \
+  { echo "$(1): FAIL the forced .note.gnu.property is absent, so this run tests nothing (kept $(AP_TRAMP_TEST)/)"; exit 1; }; } && \
+{ $(AP_TRAMPOLINE_LINK) -o $(AP_TRAMP_TEST)/ap.bin $(AP_TRAMP_TEST)/ap.o > $(AP_TRAMP_TEST)/link.log 2>&1 || \
+  { echo "$(1): FAIL the trampoline link was refused (kept $(AP_TRAMP_TEST)/)"; cat $(AP_TRAMP_TEST)/link.log; exit 1; }; } && \
+size -A $(AP_TRAMP_TEST)/ap.o | awk '$$1 ~ /^\.(text|rodata|data)/ { s += $$2 } END { print s + 0 }' > $(AP_TRAMP_TEST)/payload.txt && \
+wc -c < $(AP_TRAMP_TEST)/ap.bin | tr -d ' ' > $(AP_TRAMP_TEST)/size.txt
+endef
+AP_TRAMP_EMBED = $(CC) -m64 -ffreestanding -x assembler-with-cpp -c \
+	-DAP_TRAMPOLINE_BIN='"$(AP_TRAMP_TEST)/ap.bin"' src/boot/ap_trampoline_embed.S \
+	-o $(AP_TRAMP_TEST)/embed.o > $(AP_TRAMP_TEST)/embed.log 2>&1
+
+.PHONY: smoke-ap-trampoline
+smoke-ap-trampoline:
+	@$(call AP_TRAMP_BUILD,AP_TRAMPOLINE)
+	@n=$$(cat $(AP_TRAMP_TEST)/size.txt); p=$$(cat $(AP_TRAMP_TEST)/payload.txt); \
+	 if ! $(AP_TRAMP_EMBED); then \
+	     echo "AP_TRAMPOLINE: FAIL $$n-byte blob refused by the embed bound (0xFD8 = 4056 bytes; kept $(AP_TRAMP_TEST)/)"; \
+	     cat $(AP_TRAMP_TEST)/embed.log; exit 1; \
+	 elif [ "$$n" -ne "$$p" ]; then \
+	     echo "AP_TRAMPOLINE: FAIL the blob is $$n bytes but its code and data are $$p: it carries something else (kept $(AP_TRAMP_TEST)/)"; \
+	     exit 1; \
+	 else \
+	     echo "AP_TRAMPOLINE: PASS $$n bytes with the note forced on, all of it code and data, embedded below the cells at 0x8FD8"; \
+	 fi
+	@rm -rf $(AP_TRAMP_TEST)
+
+# The load-bearing arm: the pre-2026-09-19 link, with the note forced on so it
+# reproduces on any host. It REQUIRES the embed bound to refuse the blob, and
+# requires the blob to actually be oversized, so an arm that was refused for some
+# other reason does not count as a reproduction.
+.PHONY: smoke-ap-trampoline-control ap-trampoline-control-arm
+smoke-ap-trampoline-control:
+	@$(MAKE) --no-print-directory AP_TRAMPOLINE_FLAT_LINK=1 ap-trampoline-control-arm
+
+# Not named smoke-*, for the reason given at repro-sha-control-arm above.
+ap-trampoline-control-arm:
+	@$(call AP_TRAMP_BUILD,AP_TRAMPOLINE_CONTROL)
+	@n=$$(cat $(AP_TRAMP_TEST)/size.txt); \
+	 if $(AP_TRAMP_EMBED); then \
+	     echo "AP_TRAMPOLINE_CONTROL: the embed bound ACCEPTED a $$n-byte blob, so the arm no longer reproduces the defect (kept $(AP_TRAMP_TEST)/)"; \
+	     exit 1; \
+	 elif [ "$$n" -le 4056 ]; then \
+	     echo "AP_TRAMPOLINE_CONTROL: refused, but the blob is only $$n bytes, so the refusal was not the defect (kept $(AP_TRAMP_TEST)/)"; \
+	     cat $(AP_TRAMP_TEST)/embed.log; exit 1; \
+	 elif ! grep -q 'does not fit below its cells' $(AP_TRAMP_TEST)/embed.log; then \
+	     echo "AP_TRAMPOLINE_CONTROL: refused, but not by the embed bound (kept $(AP_TRAMP_TEST)/)"; \
+	     cat $(AP_TRAMP_TEST)/embed.log; exit 1; \
+	 else \
+	     echo "AP_TRAMPOLINE_CONTROL: FAIL $$n-byte blob refused by the embed bound: the defect reproduces"; \
+	 fi
+	@rm -rf $(AP_TRAMP_TEST)
 
 .PHONY: security security-install semgrep trivy gitleaks cppcheck flawfinder cargo-audit
 

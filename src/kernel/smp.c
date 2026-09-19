@@ -337,8 +337,22 @@ static void smp_start_aps(int expected_cpus) {
      * the number as a virtual address. (The low identity map still resolves it,
      * but the kernel no longer lives there and should not address through it.) */
     uint8_t *dst = (uint8_t *)PHYS_KVA(AP_TRAMP_PHYS);
-    uint32_t n = (uint32_t)(ap_trampoline_end - ap_trampoline_start);
-    for (uint32_t i = 0; i < n; i++) dst[i] = ap_trampoline_start[i];
+    uint64_t n = (uint64_t)(ap_trampoline_end - ap_trampoline_start);
+    /* The blob must end below the cells it shares a page with. Two build-time
+     * checks already hold this (the ASSERT in src/boot/ap_trampoline.ld and the
+     * .error after the .incbin in multiboot.S), so this cannot fire on a build
+     * that passed them. It is here because the copy below is otherwise bounded
+     * by nothing but a symbol difference: on 2026-09-19 a host toolchain turned
+     * a 270-byte blob into 128 MiB, and had the kernel still linked, this loop
+     * would have written that much over low physical memory, the kernel image
+     * at 1 MiB included. A kernel carrying a malformed trampoline must not boot
+     * as though it were sound, so this halts with a name rather than starting
+     * the APs on a truncated copy. */
+    if (n > AP_STACK_BASE_CELL - AP_TRAMP_PHYS) {
+        println("PANIC: AP trampoline overlaps its cells at AP_STACK_BASE_CELL");
+        for (;;) __asm__ volatile ("cli; hlt");
+    }
+    for (uint64_t i = 0; i < n; i++) dst[i] = ap_trampoline_start[i];
 
     /* Publish the cells the trampoline reads (CR3, entry, idle-stack base).
      * CR3 is already physical. The entry and stack are kernel VAs, and stay

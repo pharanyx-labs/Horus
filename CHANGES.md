@@ -382,7 +382,25 @@ in this file.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **The kernel did not build on Void Linux: a 270-byte trampoline came out as 128 MiB.** The
+  link failed with "`.bss` overruns `USER_PHYS_BASE`", but `.bss` was fine; `.rodata` held a
+  134,479,912-byte AP trampoline. Void's binutils 2.44 assembler emits a `.note.gnu.property`
+  by default, and the trampoline was linked with `-Ttext=0x8000 --oformat binary`, which placed
+  `.text` and left the note to the default i386 script, at 0x080480d4. The flat image
+  zero-filled the gap. CI's Ubuntu binutils emits no note, so every check stayed green.
+  The link now goes through `src/boot/ap_trampoline.ld`, which places everything at 0x8000,
+  discards notes and bounds the result below the cells at 0x8FD8. The blob is byte-identical to
+  before. Behind the build failure was a missing bound: `smp_start_aps` copied the blob to
+  physical 0x8000 limited by nothing but its length, so a blob a few KiB too large would have
+  linked and been written over its own cells and past them. The embed in `multiboot.S`
+  (`src/boot/ap_trampoline_embed.S`) now refuses to assemble an oversized blob, and
+  `smp_start_aps` halts with a named panic rather than copy one. The flat self-test payloads had
+  the same dependence (a 16-byte note inside the image) and now remove notes when flattened.
+  Witness: `make smoke-ap-trampoline`, which forces the note on so CI tests the case its own
+  toolchain never produces; falsified by `make smoke-ap-trampoline-control`
+  (`AP_TRAMPOLINE_FLAT_LINK=1`), and the base gate itself goes red under the flag.
 
 ## [0.2.0-alpha]: 2026-09-14
 

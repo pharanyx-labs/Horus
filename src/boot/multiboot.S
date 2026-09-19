@@ -500,17 +500,13 @@ boot_tables_end:
 
 .section .rodata
 #ifdef SMP
-/* Real-mode AP startup trampoline (src/boot/ap_trampoline.S), linked flat at
- * 0x8000 and copied there by smp_start_aps before the broadcast SIPI. Only
- * embedded in the SMP build. */
-.align 16
-.global ap_trampoline_start
-ap_trampoline_start:
-.incbin "src/boot/ap_trampoline.bin"
-.global ap_trampoline_end
-ap_trampoline_end:
+/* The real-mode AP startup trampoline, only in the SMP build. The embed and its
+ * size bound live in their own file so `make smoke-ap-trampoline` can assemble
+ * the same bound against a test blob. */
+#include "ap_trampoline_embed.S"
 #endif
 
+.section .rodata
 .align 16
 .global embedded_shell_bin_start
 embedded_shell_bin_start:

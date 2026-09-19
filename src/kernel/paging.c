@@ -582,8 +582,9 @@ static void kernel_remap_init(void) {
      * real one is high") — and all of it is finished before paging_init runs.
      * The AP trampoline is the single exception: it far-jumps to `long_mode` at
      * ~0x8000 *after* enabling paging on this CR3, and then reads the cells at
-     * 0x8FD8/0x8FE8. Blob and cells share one page (the blob is 286 bytes at
-     * 0x8000; the cells sit at offset 0xFD8), so one page covers it.
+     * 0x8FD8/0x8FE8. Blob and cells share one page (the blob starts at 0x8000
+     * and is bounded below the cells at offset 0xFD8, by src/boot/ap_trampoline.ld,
+     * src/boot/ap_trampoline_embed.S and smp_start_aps), so one page covers it.
      *
      * That page is R+X, not RWX. The BSP writes the blob through the PHYS_KVA
      * window (smp.c copies to PHYS_KVA(AP_TRAMP_PHYS)) and the AP executes it

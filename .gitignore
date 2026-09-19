@@ -31,6 +31,8 @@ horus.iso
 .build2.sha
 # scratch dir for smoke-repro-sha; removed on success, left behind on a failure
 .repro-sha-test/
+# scratch dir for smoke-ap-trampoline and its arm; removed on the expected result, kept otherwise
+.ap-trampoline-test/
 # the reproducible CI job's scratch files, if you run its steps by hand
 first.sha
 second.sha

@@ -696,7 +696,10 @@ saves the pre-signal frame for `SYS_SIGRETURN`. `SIG_KILL` is uncatchable and un
 SMP is **on by default**. `SMP=0` compiles it out.
 
 - CPU count comes from the ACPI MADT; APs are started with INIT-SIPI-SIPI via a real-mode
-  trampoline (`src/boot/ap_trampoline.S`).
+  trampoline (`src/boot/ap_trampoline.S`). It is linked flat at 0x8000 by its own script
+  (`src/boot/ap_trampoline.ld`) and shares that page with three cells the BSP fills from
+  0x8FD8 up, so its size is bounded three times: by the script, by the embed in `multiboot.S`,
+  and by `smp_start_aps` before it copies. `make smoke-ap-trampoline` is the witness.
 - Each CPU takes its own LAPIC timer tick and pulls from a **shared runnable pool**.
 - `task_running_cpu[]` is the mutual-exclusion guard: a CPU only claims a task whose entry is
   `-1`, so a task's single kernel stack and saved trap frame are never touched by two CPUs.

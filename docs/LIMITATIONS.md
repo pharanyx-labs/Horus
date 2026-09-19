@@ -916,6 +916,39 @@ reconciliation beside it, under the same `cap_lock` the sweep already holds — 
 called from, and the same reachability recount `kobj_gc` performs for endpoints, notifications and
 frames, which pipes are not yet part of.
 
+### 1.15 ~~A verified boot module could change after its hash was taken~~ (**FIXED 2026-09-19**, `SECURITY.md` S96) **[HORUS-20260919-02]**
+
+*Found 2026-09-19 while working audit F2, and fixed the same day.* **S10** says a boot module that
+fails its hash check cannot be executed. `boot_module_verify_all` hashes each payload once, before
+userspace exists, and `SYS_BOOT_MODULE_READ` then checks only the flag. That is sound only while
+nothing else writes the module's bytes, and the kernel did not make sure of it. Two regions below
+`PHYS_POOL_CEIL` are written without consulting the module table: the kernel image, and the page
+pool's base reserves, `[USER_PHYS_BASE, USER_PHYS_BASE + POOL_RESERVE_PAGES)`, which hold loader
+staging, the RAM vdisk and the untyped arena every boot-time kernel object is carved from. The free
+list skips any frame a module touches (`phys_in_boot_module`), but only above the reserves.
+
+GRUB places modules upward from the end of the kernel image, so they sit below 16 MiB until `.bss`
+and the module total leave no room. Measured, with a padding module pushing the real ones up: a
+verified `bin/tcc` at 0x11B0000 (inside loader staging) happened to be untouched when read, and at
+0x1AB0000 (inside the RAM vdisk) it verified at boot and **no longer matched its manifest hash when
+`fs_server` read it**, which would have installed the vdisk's bytes as `/bin/tcc`. A module in the
+arena would have served kernel objects (cspaces, TCBs) to `fs_server`. No shipped configuration
+reached it: the coreutils and TCC together are 1.9 MiB and ended at 12.1 MiB on the measured boot.
+
+The kernel now checks placement straight after the tag walk records the modules and before
+`paging_init`, so before anything writes either region, and **halts** if any module, verified or
+not, overlaps the image or the reserves (`boot_module_placement_check`, `src/kernel/main.c`). A
+halt and not a refusal of the one module, because a module where the kernel writes means the boot
+environment is broken or hostile. Witness `make smoke-boot-module-reserve`, falsified by
+`BOOT_MODULE_RESERVE_UNCHECKED=1`.
+
+**What remains, and it is a capacity limit rather than a hole.** The room for modules is now the gap
+between the end of what GRUB loads first and `USER_PHYS_BASE`: modules started at 0xA73000 on the
+measured boot, so about 5.5 MiB fit, and a module set larger than that stops the machine rather
+than booting. Every byte `.bss` grows comes out of that room, which is what audit F2 (§3.1) tracks.
+Getting the room back would mean placing the base reserves above the highest module instead of at
+a fixed address; that is not built.
+
 
 ## 2. Correctness limitations
 
@@ -2320,7 +2353,9 @@ and `argon2_scratch` alone is 4 MiB of the headroom, over half of it: the argon2
 buy room. So the dominant `.bss` term is not a table in this section but the password hasher's
 scratch, and any bump to a ceiling above competes with it for that 7 MiB. Raising `MAX_TASKS`,
 `BLOCKS_PER_DISK`, or the argon2 cost is the way this fires, silently, exactly as the trampoline
-overrun did.
+overrun did. The same headroom is also the room GRUB has for boot modules, and a module set that no
+longer fits below 16 MiB halts the boot (§1.15, **S96**), so `.bss` growth now spends module
+capacity as well.
 
 *This table said "Endpoints 64 / Notifications 64 … These are `.bss` arrays, not dynamically
 allocated objects. There is no retyping discipline and no per-task kernel-memory accounting"
@@ -2351,8 +2386,8 @@ The chain, since none of its links is visible from the array's declaration:
   kernel's own mapping uses 4 KiB pages rather than 2 MiB ones, and therefore the only window in
   which a guard page can be expressed at all.
 - The headroom was not free either. GRUB stages the boot modules in the gap between `__bss_end`
-  and the pool base, and nothing checks that. Growing `.bss` toward the assert eats the staging
-  area silently.
+  and the pool base, so growing `.bss` toward the assert shrinks the room modules have. A module
+  pushed past the pool base now halts the boot rather than being overwritten (**S96**, §1.15).
 
 So the stacks left `.bss` for a region of their own under `high_pdpt[511]` — one previously
 unused PDPT entry, 1 GiB of kernel-half VA, inside the `pml4[256..511]` range every address

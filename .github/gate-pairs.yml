@@ -196,6 +196,7 @@ control_arms:
   smoke-proc-taskinfo-control: smoke-proc
   smoke-repro-sha-control: smoke-repro-sha
   smoke-ap-trampoline-control: smoke-ap-trampoline
+  smoke-boot-module-reserve-control: smoke-boot-module-reserve
   smoke-resume-guard-ist-control: smoke-resume-guard-ist
   smoke-resume-guard-legacy: smoke-resume-guard
   smoke-resume-guard-negative-control: smoke-resume-guard-negative
@@ -223,6 +224,7 @@ control_arms:
 gates:
   - smoke-ap-trampoline
   - smoke-aslr
+  - smoke-boot-module-reserve
   - smoke-aspace
   - smoke-cap-lookup
   - smoke-cspace-release

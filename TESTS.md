@@ -753,6 +753,8 @@ These are the most adversarial tests in the suite.
 |---|---|
 | `smoke-modules` | Boot modules are provisioned into `/bin` and run from the filesystem. |
 | `smoke-modules-tamper` | **Corrupts a module payload inside the ISO** and asserts the kernel refuses it; the manifest gate fires. |
+| `smoke-boot-module-reserve` | **A boot module the kernel verified is the one it serves (S96).** Two boots. The first ships a 16 MiB padding module ahead of the coreutils, so GRUB's upward placement puts every module in the page pool's base reserves, and requires the kernel to halt, naming the module (`boot: HALT boot module usr/share/boot-module-pad at <start>..<end> overlaps the page pool's base reserves`; the addresses move with `.bss`), and then stall: the manifest verdict a continuing boot prints next must never appear. The second ships the same modules without the pad and requires an ordinary boot to the shell, because a check that halted every boot with modules would pass the first half. |
+| `smoke-boot-module-reserve-control` | With `BOOT_MODULE_RESERVE_UNCHECKED=1` the padded boot **verifies every module where it lies and carries on**, the pre-2026-09-19 kernel. Requires the manifest verdict the base gate forbids and fails on the halt. Base gate measured red under the flag. |
 | `smoke-tpm` | Kernel and modules are measured into PCR 8 and 9, and the values equal an independent host recomputation (`tools/tpm_expected_pcr.py`). |
 | `smoke-tpm-tamper` | A corrupted module is refused **and** the measured PCRs diverge, detection as well as prevention. |
 | `smoke-console-pass` | **A console client is not entitled to read a password.** The probe holds exactly what every shell-spawned task holds -- one send-only console capability -- registers a *different* task as input owner, and must be refused `CON_OP_GETPASS` with `SYS_ERR_PERM`. |
@@ -2182,7 +2184,7 @@ three ways: a planted phrasing in a `.c` file is caught with file and line; the 
 phrasing inside a quotation stays exempt, so a comment can record the wrong thing while
 correcting it.
 
-`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 97 properties
+`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 98 properties
 name a witness that resolves to a make target or a CI job.
 
 | Rule | Rejects |

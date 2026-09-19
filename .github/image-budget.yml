@@ -1,0 +1,35 @@
+# The kernel image's static footprint, and the line it must stay below.
+#
+# WHY THIS FILE EXISTS (audit F2, 2026-09-19). linker64.ld asserts that the image
+# ends below USER_PHYS_BASE (16 MiB), because the physical page pool starts there.
+# That assert fails LOUDLY, but only when the line is crossed, and everything
+# before that is silent: each routine bump to MAX_TASKS, BLOCKS_PER_DISK or the
+# argon2 cost spends headroom that nothing reports. And the headroom is not idle:
+# GRUB stages the boot modules in it, upward from the end of the image.
+#
+# So growth has to be a decision somebody writes down, the same rule
+# .github/ring0-classification.yml applies to ring-0 code.
+#
+# THE BUDGET IS ON .bss, NOT ON THE END OF THE IMAGE, and that is measured rather
+# than preferred. The same tree built on 2026-09-19 ended the image at 0x8B4000
+# on CI (Ubuntu) and at 0x8B7000 on Void (GCC 14.2, binutils 2.44): .text and
+# .rodata differ by 12 KiB between the two compilers. .bss was 0x6E3000 bytes on
+# both, because it is static arrays sized by constants. An exact budget on the
+# end of the image would have been red on the maintainer's machine and green on
+# CI, which is the hazard that cost #400. .bss is also where every term F2 names
+# lives: argon2_scratch is 4096 KiB of it, and the rest is tables sized by
+# MAX_TASKS and friends.
+#
+# EXACT, IN BOTH DIRECTIONS. tools/check_image_budget.py fails when .bss is larger
+# than this AND when it is smaller. Larger: raise it here and say why in the
+# commit. Smaller: lower it, so the room is banked in the number rather than left
+# as slack that the next growth absorbs without anybody deciding.
+#
+# The code, text and read-only data are not budgeted here. Code growth is what
+# the ring-0 budget counts, and a byte budget on it would move with the compiler.
+#
+# History:
+# 2026-09-19: 7,221,248 bytes (0x6E3000, 7,052 KiB), the measured value at
+#   06dbf07. argon2_scratch 4,096 KiB, referenced.2 and free_page_stack 512 KiB
+#   each, endpoints 335 KiB, ap_idle_stacks 272 KiB, page_refcounts 256 KiB.
+bss_bytes: 7221248

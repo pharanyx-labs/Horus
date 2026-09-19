@@ -382,6 +382,17 @@ in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **The kernel's `.bss` has a budget, and CI holds it exactly (audit F2).** `linker64.ld` refuses
+  an image that reaches the page pool at 16 MiB, but only once it gets there; every bump to
+  `MAX_TASKS`, `BLOCKS_PER_DISK` or the argon2 cost before that was silent, in room GRUB also uses
+  for the boot modules. `tools/check_image_budget.py` now fails the `kernel` job when `.bss` differs
+  from `.github/image-budget.yml` in either direction (7,052 KiB today, 4,096 KiB of it the argon2
+  scratch), and when `linker64.ld`'s 16 MiB literal and `USER_PHYS_BASE` disagree. The budget is on
+  `.bss` rather than the end of the image because the same tree ends 12 KiB apart on CI's compiler
+  and on Void's. Falsified by `tools/test_check_image_budget.sh` (11 arms).
+
 ### Fixed
 
 - **The kernel did not build on Void Linux: a 270-byte trampoline came out as 128 MiB.** The

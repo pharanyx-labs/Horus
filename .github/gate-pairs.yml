@@ -195,6 +195,7 @@ control_arms:
   smoke-image-abi-control: smoke-image-abi
   smoke-proc-taskinfo-control: smoke-proc
   smoke-repro-sha-control: smoke-repro-sha
+  smoke-ap-trampoline-control: smoke-ap-trampoline
   smoke-resume-guard-ist-control: smoke-resume-guard-ist
   smoke-resume-guard-legacy: smoke-resume-guard
   smoke-resume-guard-negative-control: smoke-resume-guard-negative
@@ -220,6 +221,7 @@ control_arms:
 # "gate" is exactly the failure this file fixes: an arm silently counted as a
 # gate is an arm nobody notices is missing its pair.
 gates:
+  - smoke-ap-trampoline
   - smoke-aslr
   - smoke-aspace
   - smoke-cap-lookup

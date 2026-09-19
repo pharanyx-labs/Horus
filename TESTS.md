@@ -1395,6 +1395,8 @@ assertions on kernel-emitted strings still read the shared console and are uncha
 | `reproducible-build` | `kernel.elf` is byte-for-byte identical across two clean builds, and the record covers every artifact the build produces. **A required CI check.** `horus.iso` is recorded but deliberately not compared; it is not byte-reproducible (`docs/LIMITATIONS.md` §5.3a). |
 | `smoke-repro-sha` | The hash-recording step refuses a build missing an artifact, and writes no `.build.sha` at all when it refuses; and records every artifact when the build is complete. Both directions. Host-side, sub-second. Falsified by `smoke-repro-sha-control`. |
 | `smoke-repro-sha-control` | `REPRO_SHA_UNCHECKED=1`. Restores the pre-2026-08-19 recording step *and* the goal list that made it silent; the incomplete record and the success report must both appear. |
+| `smoke-ap-trampoline` | The AP trampoline blob the kernel embeds is its code and data and nothing else, and ends below the cells at 0x8FD8, with the assembler's `.note.gnu.property` forced on so the host default cannot decide the result. Host-side, sub-second. Falsified by `smoke-ap-trampoline-control`. |
+| `smoke-ap-trampoline-control` | `AP_TRAMPOLINE_FLAT_LINK=1`. Restores the pre-2026-09-19 `-Ttext --oformat binary` link with the note forced on; the embed bound must refuse the 128 MiB blob it produces. |
 | `doc-claims` | Every count declared in `.github/doc-claims.yml` matches the value derived from the tree, every declared occurrence still matches its pattern, and no retired phrasing has reappeared unquoted. **A required CI check.** `tools/check_doc_claims.py`; static, no QEMU. |
 | `security` | Semgrep, Trivy, gitleaks, cppcheck, flawfinder, cargo-audit, plus a CycloneDX SBOM. **A required status check.** Since 2026-08-30 (roadmap 4.3) `gitleaks` and `cargo-audit` findings **fail the build**, in a step above the advisory one so `continue-on-error` cannot hide them; both are falsified by `tools/test_security_gates.sh` (five arms: a planted credential must fail gitleaks, an innocuous tree must not, the finding must be redacted, a failing `cargo audit` must fail the target, and a *missing* cargo-audit must fail rather than report a clean scan — which is what the previous `|| echo "not installed or no advisories found"` did). The other four scanners' *findings* stay advisory (one deliberate `continue-on-error`), but since #154 the job asserts each scanner is actually installed and fails if one is missing; it had previously been a required check on which every step carried `continue-on-error`, so it could not go red for any reason, including scanning nothing at all. |
 
@@ -1523,6 +1525,46 @@ Rule 2's loop skipped any flag absent from the Makefile (which is precisely the 
 existed to catch) so a row naming a flag no build defines passed silently. It is the same shape
 as the `smoke-ksp-guard` gap this suite recorded three days earlier: an arm that only injects
 measures false *negatives*. A checker with three rules needs three arms, not one.
+
+### The AP trampoline: a 270-byte blob that one toolchain made 128 MiB
+
+On 2026-09-19 `make` failed on a Void Linux machine at the kernel link, with `linker64.ld`'s
+"`.bss` overruns `USER_PHYS_BASE`". `.bss` was fine. `.rodata` was 128 MiB, because
+`src/boot/ap_trampoline.bin` was 134,479,912 bytes. Void's binutils 2.44 assembler emits a
+`.note.gnu.property` by default; the trampoline was linked with `-Ttext=0x8000 --oformat binary`,
+which places `.text` only, so the default i386 script put the note at 0x080480d4 and the flat
+image zero-filled everything between. CI's Ubuntu binutils emits no note, so every required
+check stayed green.
+
+Two things were wrong, and the second is the one that matters. The link depended on a host
+default. And `smp_start_aps` copies the blob to physical 0x8000 bounded only by the difference
+of two symbols: nothing required it to end below the cells at 0x8FD8 that it shares a page with.
+The `.bss` assertion caught a 128 MiB blob by coincidence; a few KiB would have linked and been
+copied over the cells and past them.
+
+**The fix is three bounds and a script.** `src/boot/ap_trampoline.ld` places everything at
+0x8000, discards notes and asserts the end is at most 0x8FD8. `src/boot/ap_trampoline_embed.S`
+(included by `multiboot.S`) refuses to assemble a blob larger than 0xFD8 bytes, however it was
+produced. `smp_start_aps` halts with a named panic rather than copy an oversized blob. The flat
+self-test payloads (`userspace/%.raw`) had the same dependence, with a harmless 16-byte note at
+0x400190, and now remove notes when they are flattened.
+
+**The gate forces the case CI would never see.** `smoke-ap-trampoline` assembles the trampoline
+with `-Wa,-mx86-used-note=yes`, and fails if the note is absent, because on a host where the flag
+did nothing the gate would pass for the wrong reason. Each rule was falsified on its own:
+
+| Arm | Command | Required |
+|---|---|---|
+| fixed | `make smoke-ap-trampoline` | `AP_TRAMPOLINE: PASS 270 bytes with the note forced on, all of it code and data, embedded below the cells at 0x8FD8` |
+| control | `make smoke-ap-trampoline-control` | `AP_TRAMPOLINE_CONTROL: FAIL 134479912-byte blob refused by the embed bound: the defect reproduces` |
+| the gate against the defect | `make smoke-ap-trampoline AP_TRAMPOLINE_FLAT_LINK=1` | **must fail**: `AP_TRAMPOLINE: FAIL 134479912-byte blob refused by the embed bound`, make exits 2, scratch directory kept |
+| a link that keeps the note inside the image | `AP_TRAMPOLINE_LINK` pointed at a copy of the script that places `*(.note*)` in `.text` | **must fail**: `the blob is 312 bytes but its code and data are 270` |
+| an assembler that ignores the forced flag | `CC` wrapped to pass `-mx86-used-note=no` | **must fail**: `the forced .note.gnu.property is absent, so this run tests nothing` |
+| the linker script's own bound | the script with its `ASSERT` lowered to 0x8010 | the link fails with `AP trampoline overlaps the cells at AP_STACK_BASE_CELL (0x8FD8)` |
+
+The control arm also requires the refused blob to be larger than 4056 bytes and the refusal to
+carry the embed bound's own message, so an arm refused for some unrelated reason does not count
+as a reproduction.
 
 ---
 

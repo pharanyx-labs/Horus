@@ -71,7 +71,8 @@ TUNING = {
 # what reads it, because "it works some other way" is exactly the claim rule 3
 # exists to stop being made without evidence.
 BUILD_EFFECT = {
-    "BOOT_ROOT_CD_ONLY":     "the Makefile's grub.cfg generation: the root line it writes",
+    "AP_TRAMPOLINE_FLAT_LINK": "the Makefile's AP_TRAMPOLINE_LINK and AP_TRAMPOLINE_ASFLAGS, which build src/boot/ap_trampoline.bin",
+    "BOOT_ROOT_CD_ONLY":    "the Makefile's grub.cfg generation: the root line it writes",
     "BOOT_MENU_NO_LIVE_TOKEN": "the Makefile's grub.cfg generation: it strips horus.live from the menu's live entry",
     "BUILD_FLAGS_UNSTAMPED": "the Makefile's .build-flags prerequisite, dropped so a -D survives a rebuild",
     "META_CACHE_TINY":       "the Makefile: -DMETA_CACHE_LINES=2, which src/include/kernel.h reads",

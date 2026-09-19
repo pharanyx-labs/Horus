@@ -3928,6 +3928,16 @@ jobs:
         run: make smoke-repro-sha
       - name: Restore the swallowed status and require the incomplete record
         run: make smoke-repro-sha-control
+      # The AP trampoline blob is code and data only and fits below its cells,
+      # with the assembler's .note.gnu.property forced on. This runner's
+      # binutils never emits that note by default, which is why a 128 MiB
+      # trampoline built on Void on 2026-09-19 while this job stayed green; the
+      # gate forces it so the host default no longer decides the outcome.
+      # Host-side and sub-second, like the pair above.
+      - name: The AP trampoline fits its page with the note forced on
+        run: make smoke-ap-trampoline
+      - name: Restore the flat link and require the embed bound to refuse it
+        run: make smoke-ap-trampoline-control
       - name: Build twice and compare kernel.elf hashes
         run: |
           make reproducible-build

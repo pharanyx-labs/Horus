@@ -1223,6 +1223,18 @@ would have needed a cross-task *observability* capability to learn about its **o
 capability that names the object is the entitlement to know how big it is, so the authority is
 that capability.
 
+### 2.5a The physical free path is safe by its callers, not by construction (audit F3) **[HORUS-20260919-01]**
+
+*Added 2026-09-19.* `free_user_physical_page` (`src/kernel/paging.c`) bounds the refcount index it
+clears, but pushes the frame onto `free_page_stack` guarded only by the stack not being full: no
+range check on the value, no double-free check. It is safe today because every caller frees a leaf
+only through `user_leaf_release`, which acts on an exact refcount of zero, and frees page-table
+pages that are never aliased. That is a "by remembering" guarantee where the project prefers "by
+construction" (`CLAUDE.md` §1), so a future caller that reaches the free without the refcount would
+double-issue a page with no complaint. Not a live defect: no such caller exists. The fix is a cheap
+in-function guard (index in range, and the frame not already at count zero), so the function fails
+closed on its own. Low.
+
 ### 2.6 ~~User accounts do not survive a reboot~~ (**FIXED 2026-08-31**, `SECURITY.md` S62)
 
 *Restated 2026-08-22; closed 2026-08-31. This section previously read "`ramfs_write` ignores
@@ -2299,6 +2311,16 @@ the present cost is affordable and is not what blocks anything.
 | Inodes | one per 32 blocks (128 KiB of volume) | `storage_format_sealed`; the inode bitmap spans blocks |
 | Disk the ATA driver can address | 128 GiB | LBA28; `_Static_assert` in `storage.c` |
 | Staged program image | 8 MiB | `LOADER_STAGING_BYTES` |
+
+**The whole kernel image is itself a ceiling, and one static object dominates it (audit F2,
+2026-09-19).** `.bss` must end below `USER_PHYS_BASE` (16 MiB), enforced by the `linker64.ld`
+ASSERT the AP-trampoline fix relied on. As of `dfb57ec` the image ends 7.29 MiB below that line,
+and `argon2_scratch` alone is 4 MiB of the headroom, over half of it: the argon2 `m_cost`
+(`ARGON2_M_COST_KIB = 4096`), a deliberate memory-hardness parameter that must not be trimmed to
+buy room. So the dominant `.bss` term is not a table in this section but the password hasher's
+scratch, and any bump to a ceiling above competes with it for that 7 MiB. Raising `MAX_TASKS`,
+`BLOCKS_PER_DISK`, or the argon2 cost is the way this fires, silently, exactly as the trampoline
+overrun did.
 
 *This table said "Endpoints 64 / Notifications 64 … These are `.bss` arrays, not dynamically
 allocated objects. There is no retyping discipline and no per-task kernel-memory accounting"

@@ -1821,9 +1821,9 @@ void storage_vdisk_bound_selftest(void)
     g_vdisk_bd.write_block(&g_vdisk_bd, last, saved);   /* put the volume back */
 
     /* 2. One block past the backing store. The bytes it WOULD write start at
-     * g_vdisk_backing + VDISK_BYTES, which is the first frame of the free page
-     * pool -- so the arm can read them back from there and say so, rather than
-     * inferring reach from a missing refusal. */
+     * g_vdisk_backing + VDISK_BYTES, which is the first frame of the untyped
+     * arena (the next base reserve), so the arm can read them back from there
+     * and say so, rather than inferring reach from a missing refusal. */
     uint8_t *past = g_vdisk_backing + VDISK_BYTES;
     for (size_t i = 0; i < BLOCK_SIZE; i++) saved[i] = past[i];
 

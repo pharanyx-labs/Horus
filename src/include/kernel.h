@@ -128,15 +128,15 @@ typedef uint64_t vaddr_t;
  * before validating and mapping it into a new address space. It used to be a
  * static .bss array (`loader_staging[MAX_PROGRAM_SIZE]`), which pinned the image
  * cap at ~1 MiB: .bss must end below USER_PHYS_BASE and only ~1.9 MiB of headroom
- * was left. Instead it is now a fixed region reserved at the *base of the
- * physical pool* — [USER_PHYS_BASE, USER_PHYS_BASE + LOADER_STAGING_BYTES) — that
- * init_user_page_allocator holds back from the free list and points
+ * was left. Instead it is now the first of the pool's base reserves, starting
+ * at pool_reserve_base() (USER_PHYS_BASE unless a boot module is in the way),
+ * which init_user_page_allocator holds back from the free list and points
  * `loader_staging` at through the PHYS_KVA window. That decouples the image cap
  * from the .bss ceiling entirely: raising it just reserves a few more pool
  * frames (of the ~495 MiB E820 pool), costing no .bss. */
 #define LOADER_STAGING_BYTES    (8u * 1024u * 1024u)          /* 8 MiB staged-image cap */
 #define LOADER_STAGING_PAGES    (LOADER_STAGING_BYTES / PAGE_SIZE)
-extern uint8_t *loader_staging;                               /* set at boot -> PHYS_KVA(USER_PHYS_BASE) */
+extern uint8_t *loader_staging;                               /* set at boot -> PHYS_KVA(pool_reserve_base()) */
 
 /* The ephemeral RAM virtual disk's backing store. Sized to the whole volume
  * (BLOCKS_PER_DISK * BLOCK_SIZE), it used to be a static .bss array — fine at a
@@ -160,7 +160,7 @@ extern uint8_t *loader_staging;                               /* set at boot -> 
  * survived only as prose. */
 _Static_assert(VDISK_BLOCKS <= BLOCKS_PER_DISK,
                "the RAM vdisk must fit inside the crypto-metadata array's ceiling");
-extern uint8_t *g_vdisk_backing;                             /* set at boot -> PHYS_KVA(USER_PHYS_BASE + LOADER_STAGING_BYTES) */
+extern uint8_t *g_vdisk_backing;                             /* set at boot -> PHYS_KVA(pool_reserve_base() + LOADER_STAGING_BYTES) */
 
 /* The untyped-memory arena: the RAM every retypable kernel object is carved out
  * of (roadmap 0.3, audit finding I-7). Reserved contiguously at the base of the
@@ -220,9 +220,10 @@ extern uint8_t *g_vdisk_backing;                             /* set at boot -> P
 #define UNTYPED_USER_BYTES      (3u * 1024u * 1024u + 512u * 1024u)
 #define UNTYPED_ARENA_BYTES     (UNTYPED_KERNEL_BYTES + UNTYPED_USER_BYTES)
 #define UNTYPED_ARENA_PAGES     (UNTYPED_ARENA_BYTES / PAGE_SIZE)
-extern uint8_t *g_untyped_arena;   /* set at boot -> PHYS_KVA(USER_PHYS_BASE + LOADER_STAGING_BYTES + VDISK_BYTES) */
+extern uint8_t *g_untyped_arena;   /* set at boot -> PHYS_KVA(pool_reserve_base() + LOADER_STAGING_BYTES + VDISK_BYTES) */
 
-/* Total pool frames held back at the base before the free list starts. */
+/* Total pool frames held back for the three base reserves, one contiguous window
+ * that starts at pool_reserve_base(). */
 #define POOL_RESERVE_PAGES      (LOADER_STAGING_PAGES + VDISK_PAGES + UNTYPED_ARENA_PAGES)
 
 /* Boot modules. GRUB loads each `module2` line in grub.cfg into physical RAM and
@@ -234,15 +235,15 @@ extern uint8_t *g_untyped_arena;   /* set at boot -> PHYS_KVA(USER_PHYS_BASE + L
  * nothing executes a module in place.
  *
  * WHERE THEY LAND IS NOT OURS TO CHOOSE, AND IT DECIDES WHETHER THE HASH HOLDS.
- * GRUB places modules upward from the end of the kernel image, so they sit in
- * the gap below USER_PHYS_BASE (measured 2026-09-19: from 0xA73000) while .bss
- * and the module total leave room. The base reserves at the bottom of the pool
- * (loader staging, the RAM vdisk, the untyped arena) are at FIXED addresses and
- * do not move for a module, so a module pushed past 16 MiB lands inside them,
- * and the kernel writes there after the hash is taken.
- * boot_module_placement_check halts the boot in that case (S96). A module above
- * the reserves is fine: its frames are held back from the free list
- * (phys_in_boot_module), so no anonymous page is ever handed out on top of it. */
+ * GRUB places modules upward from the end of the kernel image, from 0xA73000 on
+ * the boot measured 2026-09-19, and past USER_PHYS_BASE once the set outgrows
+ * the gap below it. The kernel therefore works around them rather than the
+ * other way about: the pool's base reserves (loader staging, the RAM vdisk, the
+ * untyped arena) are placed where no module is (pool_reserve_base), every
+ * other frame a module touches is held back from the free list
+ * (phys_in_boot_module), boot_module_placement_check halts the boot if a module
+ * lies in the kernel image or the reserves anyway, and boot_module_reverify_all
+ * hashes every verified module again before userspace starts (S96). */
 #define MAX_BOOT_MODULES        48
 #define BOOT_MODULE_NAME_MAX    32
 struct boot_module {
@@ -275,8 +276,13 @@ const struct boot_module *boot_module_get(uint32_t index);
  * manifest. Call once at boot, after the multiboot tags are parsed and before
  * anything can read a module. Returns the number that failed (0 == all good). */
 uint32_t boot_module_verify_all(void);
-/* Highest physical address any module occupies, page-rounded (0 if none). */
-uint64_t boot_module_top(void);
+/* Hash every VERIFIED module again and halt if any has changed. Called once,
+ * after the pool reserves have been written and before userspace starts (S96). */
+void boot_module_reverify_all(void);
+/* Where the page pool's base reserves start: the lowest page-aligned address at
+ * or above USER_PHYS_BASE whose window touches no boot module. Defined in
+ * paging.c; a pure function of the module table. */
+uint64_t pool_reserve_base(void);
 
 /* What GRUB says the display is, from the multiboot2 framebuffer tag (type 8).
  *
@@ -372,8 +378,10 @@ void ensure_tpm_tis_mapped(uint64_t *root_pml4);
 void storage_tpm_kek_selftest(void);
 #endif
 
-/* Floor keeps 16 MiB *usable* after the base reserves (staging + RAM vdisk), so
- * even a tiny E820 pool still boots with the historical headroom. */
+/* Floor keeps 16 MiB *usable* after the base reserves (staging, RAM vdisk,
+ * untyped arena), so even a tiny E820 pool still boots with the historical
+ * headroom. Boot modules past USER_PHYS_BASE push the reserves up and eat into
+ * that; init_user_page_allocator halts if the reserves no longer fit. */
 #define PHYS_POOL_MIN_PAGES     (4096 + POOL_RESERVE_PAGES)   /* floor: 16 MiB usable + reserves */
 #define PHYS_POOL_CEIL          0x40000000ULL       /* pool top must stay < 1 GiB (PHYS_KVA) */
 /* CNODE_SIZE and MAX_TASKS moved ABOVE the untyped arena (see there): the

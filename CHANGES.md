@@ -401,6 +401,19 @@ in this file.
   Witness: `make smoke-ap-trampoline`, which forces the note on so CI tests the case its own
   toolchain never produces; falsified by `make smoke-ap-trampoline-control`
   (`AP_TRAMPOLINE_FLAT_LINK=1`), and the base gate itself goes red under the flag.
+- **A verified boot module could change after its hash was taken (HORUS-20260919-02).** The
+  kernel hashes each module once at boot and then trusts the flag, but it writes its own image and
+  the page pool's base reserves (loader staging, the RAM vdisk, the untyped arena) without asking
+  whether GRUB put a module there. GRUB places modules upward from the end of the kernel, so a
+  large enough module set lands in the reserves. Measured with a padding module: a verified
+  `bin/tcc` pushed into the RAM vdisk no longer matched its hash when `fs_server` read it, and
+  would have been installed as `/bin/tcc`. No shipped configuration reached it. The kernel now
+  halts, naming the module, if any module overlaps its image or the reserves, before anything
+  writes either. Module capacity is therefore the gap below 16 MiB, about 5.5 MiB today, and a
+  larger set stops the boot (`docs/LIMITATIONS.md` 1.15). Witness: `make
+  smoke-boot-module-reserve`; falsified by `make smoke-boot-module-reserve-control`
+  (`BOOT_MODULE_RESERVE_UNCHECKED=1`), and the base gate itself goes red under the flag.
+  Found while working audit F2.
 
 ## [0.2.0-alpha]: 2026-09-14
 

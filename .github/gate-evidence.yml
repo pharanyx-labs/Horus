@@ -72,6 +72,15 @@ liveness:
 # Targets that establish liveness another way. A reason here must say WHICH
 # mechanism, specifically enough that a reader can check it against the recipe.
 exempt:
+  smoke-boot-module-reserve: >
+    Two boots, each through tools/smoke_test.sh with a PRESENCE requirement, so
+    a boot that died cannot pass either half. The padded boot runs in
+    EXPECT_STALL mode, which fails with "timed out without ever reaching" unless
+    `boot: HALT boot module usr/share/boot-module-pad` appeared. That line is
+    printed only by boot_module_placement_halt, which ends in `cli; hlt` and
+    never returns, so the ABSENT manifest verdict after it is the halt and not a
+    death. The unpadded boot must reach the shell banner and the manifest
+    verdict. S96.
   smoke-kdiag-split-control: >
     Up to KDIAG_SPLIT_CONTROL_BOOTS conclusive boots, and the assertion is that a
     marker is PRESENT -- the split reproduced -- with the loop stopping at the

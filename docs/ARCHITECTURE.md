@@ -66,8 +66,9 @@ Everything else (the shell, coreutils, tcc, user programs) is outside the TCB by
    initial page tables, enables `EFER.LME` and `EFER.NXE`, enters long mode, and jumps to
    the higher-half kernel.
 3. **`kernel_main`** (`src/kernel/main.c`) scans the multiboot2 tags for the E820 memory map
-   and boot modules, sizes the physical pool, verifies module hashes against the embedded
-   manifest, measures kernel and modules into the TPM, initialises paging, capabilities, the
+   and boot modules, sizes the physical pool, halts if any module lies in the kernel image or
+   the pool's base reserves (S96), verifies module hashes against the embedded manifest,
+   measures kernel and modules into the TPM, initialises paging, capabilities, the
    scheduler, storage, and launches `init` in ring 3.
 
 ### Virtual memory layout

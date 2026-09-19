@@ -229,15 +229,20 @@ extern uint8_t *g_untyped_arena;   /* set at boot -> PHYS_KVA(USER_PHYS_BASE + L
  * describes it with a multiboot2 type-3 tag; mb_scan_boot_info() records them
  * here at boot. This is how program images reach the system WITHOUT being
  * incbin'd into kernel.elf: a module is ordinary RAM outside the image, so it
- * costs nothing against the 16 MiB budget the linker ASSERT enforces
- * (__bss_end <= USER_PHYS_BASE). init reads them over SYS_BOOT_MODULE and writes
- * them into the encrypted store; nothing executes a module in place.
+ * costs nothing against the linker ASSERT (__bss_end <= USER_PHYS_BASE). init
+ * reads them over SYS_BOOT_MODULE and writes them into the encrypted store;
+ * nothing executes a module in place.
  *
- * Module frames are held back from the physical pool's free list
- * (init_user_page_allocator), because GRUB places modules wherever it likes —
- * in practice just above the kernel image, i.e. inside the pool — and handing
- * one out as an anonymous user page would corrupt the image before init reads
- * it. Their extent also pushes the staged-image reserve upward. */
+ * WHERE THEY LAND IS NOT OURS TO CHOOSE, AND IT DECIDES WHETHER THE HASH HOLDS.
+ * GRUB places modules upward from the end of the kernel image, so they sit in
+ * the gap below USER_PHYS_BASE (measured 2026-09-19: from 0xA73000) while .bss
+ * and the module total leave room. The base reserves at the bottom of the pool
+ * (loader staging, the RAM vdisk, the untyped arena) are at FIXED addresses and
+ * do not move for a module, so a module pushed past 16 MiB lands inside them,
+ * and the kernel writes there after the hash is taken.
+ * boot_module_placement_check halts the boot in that case (S96). A module above
+ * the reserves is fine: its frames are held back from the free list
+ * (phys_in_boot_module), so no anonymous page is ever handed out on top of it. */
 #define MAX_BOOT_MODULES        48
 #define BOOT_MODULE_NAME_MAX    32
 struct boot_module {

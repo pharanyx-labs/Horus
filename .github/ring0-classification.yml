@@ -134,6 +134,18 @@
 # PIPE_CAP_UNACCOUNTED's arm is counted above: an arm the budget could not see
 # would be a place to hide code.
 #
+# RAISED 2026-09-19, 9963 -> 10009 (+46), for S96, the boot-module placement
+# check. All 46 are in main.c: boot_module_placement_check (the two overlap tests,
+# with its BOOT_MODULE_RESERVE_UNCHECKED arm counted for the reason given above)
+# and boot_module_placement_halt with its two line helpers, which build the halt
+# message as ONE write because a gate asserts it as a contiguous string.
+#
+# IT CANNOT LEAVE RING 0. It has to run after the tag walk records the modules and
+# before paging_init writes the pool's base reserves, which is before any task
+# exists: there is nothing in ring 3 yet to ask. And the property it holds, that a
+# verified module is still the bytes the hash approved, is one only the kernel can
+# keep, because the kernel is the writer it guards against.
+#
 # RAISED AGAIN 2026-09-14, 9960 -> 9963 (+3), for the keyboard layout report.
 # All three lines are the `kbd: layout <name>` announcement in keyboard_init.
 # The layouts themselves cost the core NOTHING: include/ps2_scancode.h is a
@@ -179,7 +191,7 @@
 # existed because two numbers were written in two places was closed by deriving one
 # from the other, and the only code the kernel gained is the runtime check that
 # catches the case the constants cannot see.
-core_budget_loc: 9963
+core_budget_loc: 10009
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

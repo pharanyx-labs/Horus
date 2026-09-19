@@ -909,6 +909,12 @@ jobs:
         run: rustup target add x86_64-unknown-none
       - name: Corrupt one module payload in the ISO and assert the kernel refuses it
         run: make smoke-modules-tamper
+      # S96. Same subsystem, so the same job: no new required context and no
+      # ruleset change. The witness and its falsifying arm both run here.
+      - name: A module lying in the page pool's base reserves halts the boot; one below them boots
+        run: make smoke-boot-module-reserve
+      - name: Control arm, the unchecked kernel boots on with a module in the reserves
+        run: make smoke-boot-module-reserve-control
 
   smoke-tpm:
     name: Measured boot (TPM PCRs match the reproducible manifest)

@@ -328,6 +328,102 @@ uint32_t boot_module_verify_all(void) {
     return failed;
 }
 
+static unsigned line_append(char *line, unsigned n, unsigned cap, const char *s) {
+    while (*s && n < cap - 1) line[n++] = *s++;
+    return n;
+}
+
+static unsigned line_append_hex64(char *line, unsigned n, unsigned cap, uint64_t v) {
+    n = line_append(line, n, cap, "0x");
+    for (int shift = 60; shift >= 0 && n < cap - 1; shift -= 4)
+        line[n++] = "0123456789ABCDEF"[(v >> shift) & 0xF];
+    return n;
+}
+
+/* Halt, naming the module and the region it lies in. Never returns.
+ *
+ * ONE WRITE, like the DEFECT FLAGS line in assert_higher_half: a gate asserts
+ * the module name after the prefix as one contiguous string, and several print()
+ * calls would give an AP or a driver a place to land between them. */
+static void boot_module_placement_halt(const struct boot_module *m, const char *region) {
+    char line[192];
+    const unsigned cap = sizeof(line) - 1;   /* room kept for the newline */
+    unsigned n = 0;
+    n = line_append(line, n, cap, "boot: HALT boot module ");
+    n = line_append(line, n, cap, m->name);
+    n = line_append(line, n, cap, " at ");
+    n = line_append_hex64(line, n, cap, m->start);
+    n = line_append(line, n, cap, "..");
+    n = line_append_hex64(line, n, cap, m->end);
+    n = line_append(line, n, cap, " overlaps ");
+    n = line_append(line, n, cap, region);
+    n = line_append(line, n, cap, "; refusing to boot");
+    line[n++] = '\n';
+    line[n]   = 0;
+    print(line);
+    for (;;) asm volatile("cli; hlt");
+}
+
+/*
+ * Refuse to boot if any module GRUB loaded lies where the kernel writes.
+ *
+ * boot_module_verify_all hashes each payload ONCE and the read syscalls then
+ * consult only the flag, so "verified" means "these bytes, for the rest of the
+ * boot" only while nothing else writes them. Two regions below PHYS_POOL_CEIL
+ * are written by the kernel without consulting the module table:
+ *
+ *   - the kernel image, [_boot_lma_start, __bss_end);
+ *   - the page pool's base reserves, [USER_PHYS_BASE, + POOL_RESERVE_PAGES):
+ *     loader staging, the RAM vdisk and the untyped arena, which
+ *     init_user_page_allocator points at unconditionally. Every kernel object
+ *     retyped at boot lives in the last of these.
+ *
+ * Frames above the reserves need nothing here: the free-list build skips any
+ * frame a module touches (phys_in_boot_module). The reserves were the one part
+ * of the pool that check never covered.
+ *
+ * GRUB places modules upward from the end of the image, so today they sit in
+ * the gap [__bss_end, USER_PHYS_BASE), and they stay there only while .bss plus
+ * the module total leave room. Measured 2026-09-19 by pushing bin/tcc to
+ * 0x1AB0000 with a padding module: it verified at boot, and when fs_server read
+ * it the bytes no longer matched the manifest, because the RAM vdisk had been
+ * formatted over them. fs_server would have installed those bytes as /bin/tcc.
+ * A module in the arena would instead have served kernel objects to ring 3.
+ *
+ * HALT rather than refuse the one module: a module where the kernel writes means
+ * the boot environment is broken or hostile, and the maintainer's call
+ * (2026-09-19) is that such a machine does not run. The verdict is about WHERE
+ * the bytes are, not WHAT they are, so it covers unverified modules too.
+ *
+ * Runs straight after the tag walk records the modules and before paging_init,
+ * which is before anything writes either region. Carries S96.
+ */
+static void boot_module_placement_check(void) {
+#ifdef BOOT_MODULE_RESERVE_UNCHECKED
+    /* CONTROL ARM, never ship. The pre-2026-09-19 kernel: modules are recorded
+     * and verified wherever GRUB put them, and nothing asks whether the kernel is
+     * about to write there. */
+    return;
+#else
+    /* Both bounds come from the linker, not from a copy of its numbers. */
+    extern uint8_t _boot_lma_start[], __bss_end[];
+    const uint64_t image_lo   = (uint64_t)(uintptr_t)_boot_lma_start;   /* linked VA == PA */
+    const uint64_t image_hi   = virt_to_phys(__bss_end);
+    const uint64_t reserve_lo = (uint64_t)USER_PHYS_BASE;
+    const uint64_t reserve_hi = (uint64_t)USER_PHYS_BASE + (uint64_t)POOL_RESERVE_PAGES * PAGE_SIZE;
+
+    for (uint32_t i = 0; i < g_boot_module_count; i++) {
+        const struct boot_module *m = &g_boot_modules[i];
+        /* [start, end) against [lo, hi): exclusive ends on both sides, so a
+         * module ending exactly at a region's base does not overlap it. */
+        if (m->start < image_hi && m->end > image_lo)
+            boot_module_placement_halt(m, "the kernel image");
+        if (m->start < reserve_hi && m->end > reserve_lo)
+            boot_module_placement_halt(m, "the page pool's base reserves");
+    }
+#endif
+}
+
 /* Record one type-3 module tag. Rejects anything whose extent is not a sane
  * ascending range inside the PHYS_KVA window — a module the pager cannot reach
  * is worse than no module, and mod_start/mod_end come from outside the kernel. */
@@ -338,11 +434,13 @@ static void mb_record_module(const uint8_t *info, uint32_t off, uint32_t tag_siz
     uint64_t start = *(const uint32_t *)(info + off + 8);
     uint64_t end   = *(const uint32_t *)(info + off + 12);
     if (end <= start) return;
-    /* GRUB places modules wherever it likes — in practice just below the 16 MiB
-     * pool base, not above it. Accept anything in low RAM above 1 MiB (the BIOS/
+    /* GRUB places modules upward from the end of the kernel image, so in practice
+     * below the 16 MiB pool base. Accept anything in low RAM above 1 MiB (the BIOS/
      * real-mode area) and within the PHYS_KVA window, so the pager can reach it.
-     * A module inside the pool [USER_PHYS_BASE, …) is separately held back from the
-     * free list (phys_in_boot_module); one below it needs no reservation. */
+     * WHERE it is gets judged separately, once all are recorded: one in the kernel
+     * image or the pool's base reserves halts the boot (boot_module_placement_check),
+     * and one above the reserves is held back from the free list
+     * (phys_in_boot_module). One below the pool base needs no reservation. */
     if (start < 0x100000ULL) return;                 /* below usable RAM */
     if (end > PHYS_POOL_CEIL) return;                /* unreachable through PHYS_KVA */
 
@@ -609,6 +707,9 @@ void kernel_main(uint32_t mb_info) {
              * stopped being true is worse than none. */
         }
     }
+    /* Before the hash, and before paging_init: a module lying where the kernel is
+     * about to write cannot stay the bytes the hash approved. Halts if so. */
+    boot_module_placement_check();
     /* Integrity-check the modules before anything can read one. Runs here, right
      * after the tag walk that recorded them and well before init/fs_server exist,
      * so no unverified payload is ever reachable over SYS_BOOT_MODULE_READ. */

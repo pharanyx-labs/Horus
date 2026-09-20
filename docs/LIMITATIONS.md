@@ -4446,12 +4446,38 @@ dynamic workflow with 422, the repository has no code security configuration att
 **Copilot cloud agent repository access** set to no repositories, exists on the same page if the
 account-wide policy is ever unwanted.
 
-**Do not reach for the Advanced Security toggle instead**, which is the trap this entry exists
-to mark: it also disables code scanning, and `CodeQL analyse (c-cpp)` is one of the 120 required
-status checks, so it would fail a required check on every pull request and block all merges,
-taking `secret_scanning` and `secret_scanning_push_protection` with it.
+**The Advanced Security toggle carries a risk, and the size of it was overstated here first.**
+The general settings documentation warns that disabling Code Security disables code scanning and
+that *"any workflows, SARIF uploads, or API calls for code scanning will fail"*, and this entry
+first repeated that as a flat prohibition, on the grounds that `CodeQL analyse (c-cpp)` is one of
+the 120 required status checks and losing it would block every merge. Read more carefully, the
+troubleshooting page scopes that failure: *"GitHub Code Security is enabled by default for all
+public repositories"*, and *"you will only see this error for repositories with private or
+internal visibility"*. **Horus is public.** So the prohibition is probably wrong for this
+repository, and it is recorded as probably rather than certainly because nobody has tested it.
+What is certain is that the failure would be immediate, visible and reversible: `CodeQL analyse
+(c-cpp)` would report a failure on the next pull request, and re-enabling the setting restores
+it. Prefer a granular control if one exists; this is a recoverable experiment, not a cliff.
 
-**The workflow registration stays `active`, and that is not the signal to read.** Checked
+**TESTED 2026-09-20, and the Copilot policy did NOT stop it.** The account's "Show Copilot"
+policy was set to Disabled, and the very next push to a pull request
+(`f2b2189`, 11:28:56Z) produced another **GitHub Advanced Security** run, failing with the
+identical `You are not licensed to use Copilot` 403. That error was never evidence about the
+policy: the account was unlicensed before and after, so the message could not change. The
+question was only whether the workflow would still be *triggered*, and it was.
+
+**Because the trigger is not Copilot and not a pull request.** Reading the run rather than
+guessing: `event=dynamic`, `actor=github-advanced-security[bot]`,
+`path=dynamic/agents/github-advanced-security`. It is dispatched by a **GitHub App**, the
+`github-advanced-security[bot]`, on its own event type. Copilot is only what the agent calls
+once it is already running, which is why an account-level Copilot policy has no effect on
+whether it starts. **The lever is whatever governs that app's access to this repository**, which
+is a repository Advanced Security setting, not a Copilot one. No REST route reaches it:
+`code-security/configurations`, the billing and trial paths are all 404, the Actions disable
+endpoint is 422, and listing app installations needs GitHub App authentication this session does
+not have.
+
+**The workflow registration also stays `active`, and that is not the signal to read.** Checked
 immediately after the policy was disabled on 2026-09-20:
 `GET /repos/.../actions/workflows/362053816` still answers `state: active`, and the workflow
 still appears in the workflow list beside `CI` and `CodeQL`. GitHub does not delete a dynamic

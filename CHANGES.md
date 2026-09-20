@@ -410,9 +410,16 @@ in this file.
   and Copilot code review is not in the Free plan so making it pass was never free. The argument
   that decides it is the last one: the agent is injected, unpinned, reads the repository on every
   PR and makes network egress, so removing it **shrinks the TCB** rather than removing a check.
-  The control is an account setting (Copilot settings, Visibility, "Show Copilot" to Disabled),
-  not anything reachable from this repository, and 5.7 says to verify afterwards rather than
-  assume, because GitHub's wording is general and does not name pull-request review.
+  **The account-level Copilot policy was tried on 2026-09-20 and did not stop it**, which is why
+  5.7 insisted on verifying rather than assuming: the next push produced another run with the
+  identical 403. Reading the run gives the reason. `event=dynamic`,
+  `actor=github-advanced-security[bot]`: it is dispatched by a **GitHub App** on its own event
+  type, not by a pull request and not by Copilot, which is merely what the agent calls once it is
+  already running. The lever is whatever governs that app's access to the repository, and no REST
+  route reaches it. Also corrected there: this entry first said the Advanced Security toggle
+  would block every merge by taking out `CodeQL analyse (c-cpp)`. That warning is scoped to
+  private and internal repositories; **Horus is public**, where code scanning is free and on by
+  default, so the risk is smaller than first recorded, untested either way, and reversible.
   Also recorded there: `actions/permissions` reports `sha_pinning_required: false`, so the
   pinning this tree already does by hand is a habit rather than a rule.
 - **The full `kani` job cannot fail and has never been run** (`LIMITATIONS.md` 5.8). It carries

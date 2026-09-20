@@ -404,10 +404,15 @@ in this file.
   required check on every PR and block all merges, taking `secret_scanning` and
   `secret_scanning_push_protection` with it. The ruleset is not the source either:
   `automatic_copilot_code_review` is a supported rule parameter and is absent from 21815299.
-  **What closes it is an account setting**: Copilot settings, Visibility, "Show Copilot" set to
-  Disabled, which removes the agent without touching `CodeQL analyse (c-cpp)`, `secret_scanning`
-  or push protection. 5.7 says to verify it afterwards rather than assume, because GitHub's
-  wording is general and does not name pull-request review.
+  **Decided 2026-09-20: it is being removed rather than fixed**, and 5.7 records why, because
+  "we turned off a security check" is a sentence that needs a reason. It is new (first run
+  2026-09-19), nothing rests on it, it has never worked, it cannot read the code that matters,
+  and Copilot code review is not in the Free plan so making it pass was never free. The argument
+  that decides it is the last one: the agent is injected, unpinned, reads the repository on every
+  PR and makes network egress, so removing it **shrinks the TCB** rather than removing a check.
+  The control is an account setting (Copilot settings, Visibility, "Show Copilot" to Disabled),
+  not anything reachable from this repository, and 5.7 says to verify afterwards rather than
+  assume, because GitHub's wording is general and does not name pull-request review.
   Also recorded there: `actions/permissions` reports `sha_pinning_required: false`, so the
   pinning this tree already does by hand is a habit rather than a rule.
 - **The full `kani` job cannot fail and has never been run** (`LIMITATIONS.md` 5.8). It carries

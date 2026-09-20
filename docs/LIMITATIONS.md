@@ -4415,40 +4415,53 @@ currently enabled. The blanket toggle must not be used.
 is a supported `pull_request` rule parameter, and it is **absent** from 21815299, the only
 ruleset on this repository.
 
-**What closes it is an account setting, not a repository one.** The workflow is a Copilot agent:
-its log carries `COPILOT_AGENT_*` environment, reports to `sweagentd`, and its detector is named
-`ccr_security`. GitHub's documented control for a personal account is
-**Copilot settings, Visibility, the "Show Copilot" policy, set to Disabled**, which GitHub
-describes as disabling all features of Copilot on GitHub. It is reached from the profile menu
-rather than from this repository, there is no REST endpoint for it (`GET /user/copilot` is 404),
-and it applies to the account rather than to one repository.
+**DECIDED 2026-09-20: this project does not want Copilot code review, and it is being removed
+rather than fixed.** The reasoning is recorded because "we turned off a security check" is a
+sentence that needs one:
 
-**This is the safe direction, and that is why it is the recommendation rather than the Advanced
-Security toggle.** It removes the agent without touching `CodeQL analyse (c-cpp)`,
-`secret_scanning` or `secret_scanning_push_protection`, which is exactly what the blanket
-Advanced Security control would have taken out. A narrower policy exists on the same page,
-**Copilot cloud agent repository access**, which can be set to no repositories and would
-plausibly stop the agent on its own; the account-wide policy is the one to use if Copilot is
-unwanted generally.
+1. **It is new here and nothing rests on it.** First run 2026-09-19. No property in
+   `SECURITY.md` names it, no gate depends on it, and it is in neither list in
+   `.github/ci-gating.yml` because that file cannot see it.
+2. **It has never worked.** Twelve runs, twelve failures, all of them the same 403.
+3. **It cannot read the code that matters.** 291 of 421 tracked files excluded, including every
+   C source, every header and the whole Rust security core. The job runs exactly one detector,
+   `ccr_security`, and its exclusion list is the only one in the log, so this is the whole
+   picture rather than a sample.
+4. **Making it pass is not free.** Copilot code review is not part of the Copilot Free plan; it
+   begins at Pro. So the choice was never "green at no cost", it was between paying for a
+   reviewer that cannot see the kernel and removing it.
+5. **Removing it shrinks the trusted computing base.** This is the argument that decides it. The
+   agent is injected rather than committed, unpinned and unpinnable, reads the repository on
+   every pull request, and makes network egress to `api.individual.githubcopilot.com`, in a tree
+   that pins every action by commit SHA and treats CI as part of the TCB. Taking it out is not
+   removing a check, it is removing an unpinned third party from the path between a pull request
+   and `main`.
 
-**Verify rather than assume it worked.** GitHub's wording ("all features of Copilot on GitHub")
-is general and does not name pull-request review, and this has not been tested here. After
-changing it, open a pull request and confirm two things: that the **GitHub Advanced Security**
-workflow no longer appears in the Actions run list, and that **`CodeQL analyse (c-cpp)` still
-reports a conclusion**, because that is the required check a mistake in this area removes. Then
-record the result in this section.
+**How it is removed.** Not from a commit, and not from this repository. The control is
+**Copilot settings, Visibility, the "Show Copilot" policy, set to Disabled**, reached from the
+account's profile menu, which GitHub describes as disabling all features of Copilot on GitHub.
+There is no REST endpoint (`GET /user/copilot` is 404), the Actions disable endpoint refuses a
+dynamic workflow with 422, the repository has no code security configuration attached, and
+`automatic_copilot_code_review` is absent from the only ruleset. A narrower control,
+**Copilot cloud agent repository access** set to no repositories, exists on the same page if the
+account-wide policy is ever unwanted.
 
-**Also worth a look while on that page, given this project's threat model.** The same settings
-carry a **third-party coding agents** policy governing whether partner agents (Anthropic Claude,
-OpenAI Codex) may be granted access to repositories through GitHub. That is a different thing
-from a developer running a model locally against a checkout, and it is the GitHub-hosted variety
-that would put another unpinned agent on the same footing as the one this section is about.
+**Do not reach for the Advanced Security toggle instead**, which is the trap this entry exists
+to mark: it also disables code scanning, and `CodeQL analyse (c-cpp)` is one of the 120 required
+status checks, so it would fail a required check on every pull request and block all merges,
+taking `secret_scanning` and `secret_scanning_push_protection` with it.
 
-**A second GitHub-side setting, found the same way.** `GET /repos/.../actions/permissions`
-reports `sha_pinning_required: false`. Every action in this tree is already pinned by commit
-SHA by hand, and `allowed_actions` is `all`. Turning the enforcement on would make the property
-a rule rather than a habit, and would cost nothing today because the tree already satisfies it.
-Not done here for the same reason as the above: it is a repository setting, not a file.
+**Still to verify, and this entry is not closed until it is.** GitHub's wording ("all features of
+Copilot on GitHub") is general and does not name pull-request review, and nothing here has
+tested it. On the next pull request after the policy change, confirm both: that the **GitHub
+Advanced Security** workflow is absent from the Actions run list, and that
+**`CodeQL analyse (c-cpp)` still reports a conclusion**. Record the result here. If the agent
+survives the account policy, the repository-access policy above is the next lever.
+
+**One related setting worth checking while on that page**, given this project's threat model: a
+**third-party coding agents** policy governs whether partner agents may be granted repository
+access through GitHub. That is a different thing from a model run locally against a checkout,
+and it is the GitHub-hosted variety that would put another unpinned agent where this one was.
 
 ### 5.8 The full `kani` job cannot fail, and has never been run
 

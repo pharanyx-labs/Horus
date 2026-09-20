@@ -147,8 +147,8 @@ Recorded here so the next session does not have to re-derive them from the revie
 is a status; each is either an open finding with an ID or a roadmap item.
 
 - **[HORUS-20260911-04]**, the pipe-end badge. The review proposed the one-field change plus
-  refcount accounting plus a `smoke-pipe-revoke-child` gate with a `PIPE_CHILD_BADGE_ZERO=1`
-  control arm. That is the right shape and the design is now written out in section 1.14. It is
+  refcount accounting plus a smoke-pipe-revoke-child gate (a target that does not exist yet, so
+  it is named here without backticks) with a `PIPE_CHILD_BADGE_ZERO=1` control arm. That is the right shape and the design is now written out in section 1.14. It is
   not in this change: it is a change to authorisation spanning `capability.c`, the Rust
   revocation sweep and `pipe.c`, and it wants its own pull request.
 - **[HORUS-20260920-03]**, crypto. Filed; the fix (vendor an audited `no_std` implementation, or

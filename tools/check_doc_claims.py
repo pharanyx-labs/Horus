@@ -281,6 +281,16 @@ def derive():
         "syscalls_uncovered": len(
             (yaml.safe_load(Path(SYSCALL_COVERAGE_YML).read_text()) or {}).get(
                 "uncovered") or {}),
+        # Tracked files, straight from git. LIMITATIONS 5.6 offers this number as
+        # evidence of repository hygiene and says in the same breath that it is
+        # "re-derived rather than carried forward" -- and it had been carried
+        # forward since 2026-08-15, reading 254 against a tree of 421 by
+        # 2026-09-20. A sentence that claims to be derived and is not is worse
+        # than one that makes no claim, because it tells the reader not to check.
+        # Chain: git -> here -> docs, with no hand-typed step in it.
+        "tracked_files": len(subprocess.run(
+            ["git", "ls-files"], capture_output=True, text=True,
+            check=True).stdout.split()),
     }
 
 

@@ -4341,11 +4341,202 @@ so neither was ever presented to a contributor. There was no code of conduct, an
 the IPC authorisation logic. All fixed as of 2026-07-27; the `require_code_owner_review`
 setting that would make `CODEOWNERS` binding is still off (§5.1).
 
-*(Repository hygiene itself is fine: `git ls-files` reports **254** tracked files with no build
+*(Repository hygiene itself is fine: `git ls-files` reports **421** tracked files with no build
 artefacts or vendored binaries: no `kernel.elf`, no `horus.iso`, no object files. A working
 checkout accumulates ~70 MB of untracked build output, which is correctly `.gitignore`d. This
-sentence said 243 until 2026-08-15; it is a checkable number offered as evidence, so it is
-re-derived rather than carried forward.)*
+sentence said 243 until 2026-08-15 and **254 until 2026-09-20**, by which point the tree had
+grown to 421: a number offered as evidence that it is re-derived rather than carried forward
+had been carried forward for five weeks. It is now declared as `tracked_files` in
+`.github/doc-claims.yml`, so the checker re-derives it and the sentence cannot rot again.)*
+
+### 5.7 Two CI facts live outside the tree, and one of them has never worked
+
+*Found 2026-09-20 while reconciling the external review, which noted a "GitHub Advanced
+Security dynamic workflow visible" without saying what it was or whether it ran.*
+
+**The tree's CI discipline has a blind spot: it can only see the workflows in
+`.github/workflows/`.** `tools/check_ci_gating.py` reads exactly three of them and requires
+every job in `ci.yml` to be classified gating or exempt. GitHub also injects **dynamic**
+workflows, which live at paths like `dynamic/agents/...`, appear in the Actions API and on
+every pull request, and are in no commit. Nothing in this repository could mention one without
+breaking the checker, which errors on an entry naming a job it cannot find.
+
+**The GitHub Advanced Security workflow has failed every time it has ever run: 12 runs, 12
+failures, 0 successes**, beginning 2026-09-19 and covering the branches behind #400 to #406.
+The cause is not this tree:
+
+```
+Error creating PR review request: SessionModelError: You are not licensed to use Copilot.
+statusCode: 403, errorCode: authentication
+```
+
+It is an agentic code-scanning reviewer that invokes a Copilot-backed model, and the account
+is not licensed for Copilot, so it fails after downloading its runtime and before reaching any
+repository content.
+
+**It is not a required check.** It is absent from ruleset 21815299's 120 required contexts,
+which is why every affected pull request still merged with a clean merge state, and why
+`gh pr checks` reports all green while the Actions tab shows a red cross.
+
+**Even licensed, it would not read the kernel.** Its detector runs with a file-exclusion list
+covering `*.c`, `*.h`, `*.rs`, `*.py`, `*.yml`, `*.github/workflows/*.yml` and `Cargo.toml`,
+among others. Measured against the tree on 2026-09-20: **291 of 421 tracked files are
+excluded**, including every C source, every header and the whole `no_std` Rust security core.
+What remains is Markdown, shell, assembly, the linker scripts and the `Makefile`.
+
+**The part that is a security question rather than an annoyance.** This project treats CI as
+part of the trusted computing base, pins every action by commit SHA, and grants workflow tokens
+least privilege. This workflow is none of those things: it is injected rather than committed,
+unpinned and unpinnable, it reads the repository on every pull request, and it makes network
+egress to `api.individual.githubcopilot.com`. That is a supply-chain surface no file in this
+tree describes, and it was invisible here until an outside reader happened to mention it.
+
+**A standing red is its own defect.** A check that fails on every pull request trains a reader
+to skim past red, which is the habit the control-arm discipline in section 2 of the maintainer's
+rules exists to prevent. Leaving it failing is a decision and belongs here either way.
+
+**It cannot be disabled through the Actions API, and that was tested rather than assumed.**
+`PUT /repos/pharanyx-labs/Horus/actions/workflows/362053816/disable` answers **422 Unable to
+disable this workflow**. GitHub does not permit disabling or deleting a dynamic workflow
+registration: the enable/disable endpoints exist for committed workflows, and a
+`dynamic/agents/...` path is not one.
+
+**The obvious alternative would break the repository, and this is the part to read twice.** The
+repository setting that governs the feature sits under Advanced Security, and GitHub's own
+documentation warns that disabling Code Security disables dependency review, secret scanning
+alerts and **code scanning**, and that *"any workflows, SARIF uploads, or API calls for code
+scanning will fail"*. In this repository that is not a trade, it is a self-inflicted outage:
+**`CodeQL analyse (c-cpp)` is one of the 120 required status checks in ruleset 21815299**, so
+turning Code Security off would fail a required check on every pull request and block all
+merges, while also dropping `secret_scanning` and `secret_scanning_push_protection`, both
+currently enabled. The blanket toggle must not be used.
+
+**The ruleset is not the source either**, which was also checked: `automatic_copilot_code_review`
+is a supported `pull_request` rule parameter, and it is **absent** from 21815299, the only
+ruleset on this repository.
+
+**DECIDED 2026-09-20: this project does not want Copilot code review, and it is being removed
+rather than fixed.** The reasoning is recorded because "we turned off a security check" is a
+sentence that needs one:
+
+1. **It is new here and nothing rests on it.** First run 2026-09-19. No property in
+   `SECURITY.md` names it, no gate depends on it, and it is in neither list in
+   `.github/ci-gating.yml` because that file cannot see it.
+2. **It has never worked.** Twelve runs, twelve failures, all of them the same 403.
+3. **It cannot read the code that matters.** 291 of 421 tracked files excluded, including every
+   C source, every header and the whole Rust security core. The job runs exactly one detector,
+   `ccr_security`, and its exclusion list is the only one in the log, so this is the whole
+   picture rather than a sample.
+4. **Making it pass is not free.** Copilot code review is not part of the Copilot Free plan; it
+   begins at Pro. So the choice was never "green at no cost", it was between paying for a
+   reviewer that cannot see the kernel and removing it.
+5. **Removing it shrinks the trusted computing base.** This is the argument that decides it. The
+   agent is injected rather than committed, unpinned and unpinnable, reads the repository on
+   every pull request, and makes network egress to `api.individual.githubcopilot.com`, in a tree
+   that pins every action by commit SHA and treats CI as part of the TCB. Taking it out is not
+   removing a check, it is removing an unpinned third party from the path between a pull request
+   and `main`.
+
+**How it is removed.** Not from a commit, and not from this repository. The control is
+**Copilot settings, Visibility, the "Show Copilot" policy, set to Disabled**, reached from the
+account's profile menu, which GitHub describes as disabling all features of Copilot on GitHub.
+There is no REST endpoint (`GET /user/copilot` is 404), the Actions disable endpoint refuses a
+dynamic workflow with 422, the repository has no code security configuration attached, and
+`automatic_copilot_code_review` is absent from the only ruleset. A narrower control,
+**Copilot cloud agent repository access** set to no repositories, exists on the same page if the
+account-wide policy is ever unwanted.
+
+**The Advanced Security toggle carries a risk, and the size of it was overstated here first.**
+The general settings documentation warns that disabling Code Security disables code scanning and
+that *"any workflows, SARIF uploads, or API calls for code scanning will fail"*, and this entry
+first repeated that as a flat prohibition, on the grounds that `CodeQL analyse (c-cpp)` is one of
+the 120 required status checks and losing it would block every merge. Read more carefully, the
+troubleshooting page scopes that failure: *"GitHub Code Security is enabled by default for all
+public repositories"*, and *"you will only see this error for repositories with private or
+internal visibility"*. **Horus is public.** So the prohibition is probably wrong for this
+repository, and it is recorded as probably rather than certainly because nobody has tested it.
+What is certain is that the failure would be immediate, visible and reversible: `CodeQL analyse
+(c-cpp)` would report a failure on the next pull request, and re-enabling the setting restores
+it. Prefer a granular control if one exists; this is a recoverable experiment, not a cliff.
+
+**TESTED 2026-09-20, and the Copilot policy did NOT stop it.** The account's "Show Copilot"
+policy was set to Disabled, and the very next push to a pull request
+(`f2b2189`, 11:28:56Z) produced another **GitHub Advanced Security** run, failing with the
+identical `You are not licensed to use Copilot` 403. That error was never evidence about the
+policy: the account was unlicensed before and after, so the message could not change. The
+question was only whether the workflow would still be *triggered*, and it was.
+
+**Because the trigger is not Copilot and not a pull request.** Reading the run rather than
+guessing: `event=dynamic`, `actor=github-advanced-security[bot]`,
+`path=dynamic/agents/github-advanced-security`. It is dispatched by a **GitHub App**, the
+`github-advanced-security[bot]`, on its own event type. Copilot is only what the agent calls
+once it is already running, which is why an account-level Copilot policy has no effect on
+whether it starts. **The lever is whatever governs that app's access to this repository**, which
+is a repository Advanced Security setting, not a Copilot one. No REST route reaches it:
+`code-security/configurations`, the billing and trial paths are all 404, the Actions disable
+endpoint is 422, and listing app installations needs GitHub App authentication this session does
+not have.
+
+**The workflow registration also stays `active`, and that is not the signal to read.** Checked
+immediately after the policy was disabled on 2026-09-20:
+`GET /repos/.../actions/workflows/362053816` still answers `state: active`, and the workflow
+still appears in the workflow list beside `CI` and `CodeQL`. GitHub does not delete a dynamic
+registration once created; it is retained as provider metadata. **A reader who checks the
+registration will conclude the change did not work, and be wrong.** The only signal that means
+anything is whether a *new* event produces a *new run*.
+
+**So the test is an event, not a setting.** On the next pull-request event after the policy
+change, confirm both: that no **GitHub Advanced Security** run appears for that head SHA in
+`GET /repos/.../actions/workflows/362053816/runs`, and that
+**`CodeQL analyse (c-cpp)` still reports a conclusion**, because that is the required check a
+mistake in this area removes. Record the result here. If a run still appears, the
+repository-access policy above is the next lever.
+
+**One related setting worth checking while on that page**, given this project's threat model: a
+**third-party coding agents** policy governs whether partner agents may be granted repository
+access through GitHub. That is a different thing from a model run locally against a checkout,
+and it is the GitHub-hosted variety that would put another unpinned agent where this one was.
+
+### 5.8 The full `kani` job cannot fail, and has never been run
+
+*Found 2026-09-20, by asking whether it works rather than whether it is green.*
+
+`.github/ci-gating.yml` already states the first half plainly: the `kani` job "stays advisory
+and manual", and "for as long as it has existed none of the capability-algebra proofs could
+have reddened a build". Reading the job confirms something stronger. It carries
+`if: github.event_name == 'workflow_dispatch'`, so it never runs on a push or a pull request,
+**and** `continue-on-error: true` on both of its steps, so neither the install nor `cargo kani`
+can fail it. **It has never been dispatched: zero `workflow_dispatch` runs in the workflow's
+entire history.**
+
+So the job has never executed, and if it did it could not report anything. It still appears in
+every pull request's check list, named *"Formal verification (Kani, advisory)"*, reporting
+`skipping`. That is a check which cannot fail sitting in CI, which section 8 of the maintainer's
+rules rules out by name: a check that cannot fail in CI is not added to CI, it lives in the
+local sweep instead.
+
+**It would also not finish.** `cargo kani` with no `--harness` runs all fifteen proofs,
+including the two that `.github/kani-harnesses.yml` excuses with a measurement: both
+`revoke_invalidates_recorded_generation` and
+`revoke_does_not_touch_a_distinct_lineage_cell` were measured on 2026-08-23 as not finishing in
+1500 s, and the pair is recorded there as what "pushed a full `cargo kani` past GitHub's 6-hour
+job ceiling". The job's own `timeout-minutes` is 45. A dispatch would time out, and
+`continue-on-error` would report success.
+
+**The formal methods themselves are not the problem, and this section should not be read as
+saying they are.** Of fifteen proofs, thirteen gate a merge through `kani-bounded`, which runs
+without `continue-on-error` and refuses a proof in neither list, and
+`tools/check_kani_harnesses.py` fails the build if a new proof is classified as neither. The
+two excused proofs are excused with a measurement rather than an opinion. That machinery works.
+What does not work is the vestigial job beside it.
+
+**What closes this.** Either delete the `kani` job, or give it a reason to exist: drop
+`continue-on-error`, point it at the two excused harnesses by name rather than at all fifteen,
+and set a timeout that matches their measured cost, so that a dispatch of it means "the two
+proofs that cannot gate still hold" instead of meaning nothing. The second is the
+recommendation, because `kani-harnesses.yml` already promises those two are "still verified on
+demand", and today nothing delivers that. Both are CI-classification changes, so both want the
+maintainer rather than a commit.
 
 ---
 

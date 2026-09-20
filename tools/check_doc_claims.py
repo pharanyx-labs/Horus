@@ -147,6 +147,15 @@ def _syscalls_implemented():
     return len(implemented())
 
 
+KANI_HARNESSES_YML = ".github/kani-harnesses.yml"
+
+
+def _kani(key):
+    """The gating / manual harness lists, from the classification manifest."""
+    d = yaml.safe_load(Path(KANI_HARNESSES_YML).read_text()) or {}
+    return d.get(key) or []
+
+
 def derive():
     """Every value the manifest may refer to, computed from the tree."""
     jobs_by_wf = {wf: load_jobs(wf) for wf in WORKFLOWS}
@@ -281,6 +290,24 @@ def derive():
         "syscalls_uncovered": len(
             (yaml.safe_load(Path(SYSCALL_COVERAGE_YML).read_text()) or {}).get(
                 "uncovered") or {}),
+        # The Kani harness counts, read from the CLASSIFICATION rather than
+        # recounted from the sources. .github/kani-harnesses.yml must name every
+        # #[kani::proof] in rust/src and nothing else, and
+        # check_kani_harnesses.py (in the required kani-bounded job) fails the
+        # build otherwise, so the manifest IS the measured value, already gated
+        # against the tree. Recounting here would be a second implementation of
+        # one quantity, the defect this file exists to catch.
+        # Chain: rust/src -> manifest (check_kani_harnesses) -> docs (here).
+        #
+        # Added 2026-09-20 because FIVE files stated this count and no two
+        # agreed: SECURITY.md S31 said fifteen harnesses and "four excused",
+        # TESTS.md said eleven, LIMITATIONS 5.5 said "16 harnesses, 11 of them
+        # gating", rust/KANI.md said eight in a pasted transcript and eleven in
+        # its prose, and the tree held thirteen gating and two excused. Nothing
+        # in CI could see any of them.
+        "kani_harnesses": len(_kani("gating")) + len(_kani("manual")),
+        "kani_gating": len(_kani("gating")),
+        "kani_manual": len(_kani("manual")),
         # Tracked files, straight from git. LIMITATIONS 5.6 offers this number as
         # evidence of repository hygiene and says in the same breath that it is
         # "re-derived rather than carried forward" -- and it had been carried

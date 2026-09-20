@@ -1,13 +1,14 @@
 # Formal verification of the capability engine (Kani)
 
 An application of [Kani](https://github.com/model-checking/kani) (a bounded model checker for
-Rust) to the security core's capability algebra and the ELF-load validators. Where the
+Rust) to the security core's capability algebra, the ELF-load validators, and the page-refcount
+arithmetic that guards the physical page pool. Where the
 `#[cfg(test)] mod tests` in `capability.rs` *samples* inputs, Kani proves a property over the
 **entire** input space by symbolic execution, so it covers boundaries the samples miss.
 
 ## What is proved
 
-The harnesses live under `#[cfg(kani)]` in `capability.rs` and `lib.rs` and are compiled
+The harnesses live under `#[cfg(kani)]` in `capability.rs`, `lib.rs` and `memory.rs` and are compiled
 **only** by `cargo kani`, invisible to the kernel build, `cargo test`, clippy, and the fuzz
 crate.
 
@@ -27,6 +28,11 @@ crate.
 | `grant_from_an_invalid_source_refuses_and_writes_nothing` | Authority cannot be fabricated: granting from an empty source, or one with the lookup-invalid serial 0, refuses **and leaves the destination untouched**. |
 | `grant_refuses_every_out_of_range_slot` | For every slot index, grant is bounded by the destination cspace. |
 | *(two ELF validators in `lib.rs`)* | The ELF header / load-plan validators reject malformed inputs without out-of-bounds access, over the whole input space. |
+| `refc_index_is_always_inside_the_table` | **The bound between a `u32` C chose and a raw write.** For every address and every pool size up to the table's capacity, an accepted index is inside both the caller's table and the fixed-size one `refc_table_ok` insists on. This is what `rust_page_ref_inc` and `rust_page_ref_dec` rely on before `refcounts.add(idx)`. |
+| `refc_index_names_the_page_that_contains_the_address` | The index is not merely in range: it names the page that actually contains the address. Stated as containment rather than by recomputing the division, so the proof characterises the result instead of restating the implementation. A harness that recomputed it would pass against a wrong derivation copied into both call sites. |
+| `every_page_in_the_pool_has_an_index` | The completeness half: every page the table can track is reachable, so the derivation has no gap that would silently stop refcounting a page. Without it, a derivation that refused everything would satisfy the two above. |
+| `an_increment_never_wraps_a_refcount` | For every `u16`, an increment saturates and never wraps to 0. A count that wrapped to 0 would let a page somebody still holds reach the free stack, the shortest path to one frame in two address spaces. |
+| `a_decrement_never_underflows_a_refcount` | For every `u16`, a decrement is refused **exactly** when the count is already 0, and otherwise strictly decreases. Stated as an equivalence so a refusal that is too eager cannot satisfy it vacuously. A wrap to 65535 would pin the page for the rest of the boot. |
 
 Kani also discharges the implicit memory-safety checks on these paths (no overflow, no
 invalid/null/out-of-bounds dereference) and the loop-unwinding assertions for the revocation
@@ -49,8 +55,9 @@ cargo kani --harness mint_never_escalates_rights   # or a single one
 
 **Which of these gate a merge is written down in `.github/kani-harnesses.yml`**, and
 `tools/check_kani_harnesses.py` (the required `kani-bounded` job) fails the build if a proof
-is in neither list. Eleven gate; four are excused with a reason, and run only in the manual
-`kani` job.
+is in neither list. **18** gate; **2** are excused with a reason, and run only in the manual
+`kani` job. Those counts are declared in `.github/doc-claims.yml` and re-derived from the
+manifest on every run, because until 2026-09-20 five documents stated them and no two agreed.
 
 That split exists because **none of them used to run at all**. The `kani` job is
 `workflow_dispatch`-only *and* carries `continue-on-error: true` on both steps, so for as long
@@ -82,9 +89,20 @@ Expected tail:
 ```
 VERIFICATION:- SUCCESSFUL
 Manual Harness Summary:
-Complete - 8 successfully verified harnesses, 0 failures, 8 total.
+Complete - N successfully verified harnesses, 0 failures, N total.
 ```
 
-(Eight harnesses: the six capability proofs above plus the two ELF header/load-plan validators in `lib.rs`.)
+**No count is written into that sample**, on purpose. It said *"8 successfully verified
+harnesses, 0 failures, 8 total"* from the day it was written until 2026-09-20, by which point
+the table above listed thirteen and the tree held twenty. A transcript of a run is evidence of
+that run; pasted into a document as if it were current, it is a number nobody re-derives. The
+live counts are declared in `.github/doc-claims.yml` and stated in the section below.
 
-CI runs this as a **non-gating advisory** job (`kani` in `.github/workflows/ci.yml`), like the `fuzz` and `security` jobs: a regression or a flaky toolchain install surfaces without reddening the pipeline. The four required-status hard gates stay `rust`, `kernel`, `smoke`, `reproducible`.
+**`kani-bounded` is a required check**, and has been since 2026-08-23. This paragraph said the
+opposite until 2026-09-20: that CI ran Kani as a *"non-gating advisory job ... like the `fuzz`
+and `security` jobs"*, and that *"the four required-status hard gates stay `rust`, `kernel`,
+`smoke`, `reproducible`"*. Both went false when `kani-bounded` landed. What remains true of the
+**manual** `kani` job, and only of that one, is in section `kani` of
+`.github/ci-gating.yml`: it is `workflow_dispatch`-only and carries `continue-on-error`, so it
+has never been able to fail anything. That is recorded as a defect in `docs/LIMITATIONS.md`
+5.8, not as a design.

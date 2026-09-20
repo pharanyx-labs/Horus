@@ -279,6 +279,42 @@ counts:
       - file: site/index.html
         pattern: 'make smoke-captest\s+<span class="c"># (\d+) capability checks'
 
+  - id: kani_harnesses
+    describe: "`#[kani::proof]` harnesses classified in .github/kani-harnesses.yml"
+    derive: kani_harnesses
+    occurrences:
+      - file: SECURITY.md
+        pattern: '\*\*(\d+)\*\* `#\[kani::proof\]` harnesses'
+      - file: docs/LIMITATIONS.md
+        pattern: 'arithmetic: \*\*(\d+)\*\* harnesses'
+
+  - id: kani_gating
+    describe: Kani harnesses that gate a merge via the kani-bounded job
+    derive: kani_gating
+    # THREE sites, all declared. Until 2026-09-20 this count lived in five
+    # documents as a hand-typed word and no two agreed. Gating one of them would
+    # have left the rest free to drift, and a gated figure beside an ungated one
+    # makes the ungated one look verified: the same argument as
+    # audit_rejected_candidates above.
+    occurrences:
+      - file: rust/KANI.md
+        pattern: 'is in neither list\. \*\*(\d+)\*\* gate'
+      - file: TESTS.md
+        pattern: 'can fail anything\.\*\* \*\*(\d+)\*\* harnesses'
+      - file: docs/LIMITATIONS.md
+        pattern: 'harnesses, \*\*(\d+)\*\* of them gating'
+
+  - id: kani_manual
+    describe: Kani harnesses excused from gating, with a recorded reason
+    derive: kani_manual
+    occurrences:
+      - file: rust/KANI.md
+        pattern: 'gate; \*\*(\d+)\*\* are excused'
+      - file: TESTS.md
+        pattern: '\*\*(\d+)\*\* excused harnesses are named'
+      - file: SECURITY.md
+        pattern: '\*\*(\d+)\*\* excused harnesses, the serial-keyed lineage pair'
+
   - id: tracked_files
     describe: files tracked by git in the whole repository
     derive: tracked_files

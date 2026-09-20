@@ -30,6 +30,15 @@
 # invocation may or may not need, not the solving. Quoting either figure alone
 # would mislead whoever budgets this job next, so both are here. The 45-minute
 # job bound is set against the cold case with room to spare.
+#
+# THIRD MEASUREMENT, 2026-09-20: **368 s** for all EIGHTEEN gating harnesses on
+# Kani 0.68.0 / CBMC 6.11.0, on the maintainer's machine, warm target directory.
+# Not comparable like-for-like with the two figures above, which were taken on
+# 0.67.0: the version is part of the measurement and is recorded rather than
+# elided. Five more harnesses for 49 s more than the 319 s cold run, because the
+# five added that day are pure integer arithmetic and cost about a second each.
+# The 45-minute bound still has room; revisit it if a harness is added whose
+# cost is not a rounding error.
 
 # Merge-gating: run on every pull request by the `kani-bounded` job.
 gating:
@@ -46,6 +55,25 @@ gating:
   - revoke_root_nulls_every_descendant                       # 120s
   - elf_header_validation_is_sound                           # 2s
   - elf_load_plan_is_sound                                   # 2s
+  # The page-refcount arithmetic (rust/src/memory.rs), added 2026-09-20. Pure
+  # integer properties: no pointer, no allocation, no global state, which is why
+  # they are the cheapest harnesses in this file.
+  #
+  # MEASURED ON KANI 0.68.0 / CBMC 6.11.0, not on the 0.67.0 the times above were
+  # taken with, so these five are not strictly comparable with them. The version
+  # is recorded rather than the difference ignored.
+  #
+  # EACH ONE WAS FALSIFIED before it was added, by reintroducing the defect it
+  # forbids and requiring `VERIFICATION:- FAILED`: dropping the upper-bound test
+  # from refc_index; halving the page divisor; refusing every address; swapping
+  # saturating_add for wrapping_add; swapping the zero test for wrapping_sub.
+  # Five arms, five reds, source restored clean. A proof that cannot fail proves
+  # nothing, and this file is the wrong place to find that out later.
+  - refc_index_is_always_inside_the_table                    # 1s
+  - refc_index_names_the_page_that_contains_the_address      # 0s
+  - every_page_in_the_pool_has_an_index                      # 1s
+  - an_increment_never_wraps_a_refcount                      # 0s
+  - a_decrement_never_underflows_a_refcount                  # 1s
 
 # Not gating, with a reason. These run in the manual `kani` job.
 #

@@ -122,6 +122,13 @@ counts:
       - file: SECURITY.md
         pattern: '(\d[\d,]*) code lines is a lot'
 
+  - id: bss_budget_kib
+    describe: "the kernel's .bss budget in KiB, from the budget check_image_budget.py holds kernel.elf to"
+    derive: bss_budget_kib
+    occurrences:
+      - file: docs/LIMITATIONS.md
+        pattern: '`\.bss` is budgeted at \*\*(\d[\d,]*) KiB\*\*'
+
   - id: smoke_targets
     describe: "smoke-* targets in the Makefile"
     derive: smoke_targets
@@ -945,3 +952,12 @@ forbidden:
       transcript proving the machine boots. A visitor who typed it got "Login incorrect" and had no
       way to tell a wrong page from a broken build. Nothing derives a password, so no `counts:`
       entry can guard this; the ratchet is the only thing that can. Corrected 2026-09-10.
+
+  - pattern: 'the image ends 7.29 MiB below'
+    reason: >-
+      docs/LIMITATIONS.md section 3.1's F2 figure, typed once from one build at dfb57ec. The end of
+      the image is not a property of the source: the same tree ended at 0x8B4000 on CI and at
+      0x8B7000 on Void (2026-09-19), so a single typed headroom was wrong on one machine or the
+      other from the day it was written. The paragraph now states the .bss budget, which is
+      toolchain-independent and derived (bss_budget_kib), and gives the image end as a range with
+      both measurements. Retired 2026-09-19 when audit F2 closed.

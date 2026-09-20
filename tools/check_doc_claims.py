@@ -175,6 +175,15 @@ def derive():
         "ring0_core_loc": int(re.search(
             r"^core_budget_loc:\s*(\d+)",
             Path(".github/ring0-classification.yml").read_text(), re.M).group(1)),
+        # The kernel's .bss budget in KiB, read from the budget file for the same
+        # reason ring0_core_loc reads its ratchet: tools/check_image_budget.py
+        # holds the budget to the built kernel.elf EXACTLY, so the budget is the
+        # measured size, and recounting it here would need a build this checker
+        # deliberately does not do. Chain: kernel.elf -> budget (image-budget) ->
+        # docs (here). Audit F2 asked for exactly this claim, 2026-09-19.
+        "bss_budget_kib": int(re.search(
+            r"^bss_bytes:\s*(\d+)",
+            Path(".github/image-budget.yml").read_text(), re.M).group(1)) // 1024,
         "ci_jobs": len(jobs_by_wf[CI_YML]),
         "all_jobs": len(all_jobs),
         "contexts": len(contexts),

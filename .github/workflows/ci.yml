@@ -217,6 +217,14 @@ jobs:
         run: rustup target add x86_64-unknown-none
       - name: Build kernel.elf
         run: make
+      # Audit F2. The .bss budget is exact in both directions, so any growth or
+      # shrink is a line in .github/image-budget.yml that a reviewer sees. Checked
+      # on THIS job's kernel.elf because it is the default build; a selftest or
+      # defect build carries extra statics and is not what the budget describes.
+      - name: The kernel's .bss is exactly its budget, and the image stays below the page pool
+        run: python3 tools/check_image_budget.py kernel.elf
+      - name: Falsify every rule of the image-budget checker
+        run: ./tools/test_check_image_budget.sh
       - name: Build bootable ISO
         run: make horus.iso
       - name: Upload kernel artifacts

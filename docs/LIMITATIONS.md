@@ -2355,16 +2355,19 @@ the present cost is affordable and is not what blocks anything.
 | Staged program image | 8 MiB | `LOADER_STAGING_BYTES` |
 
 **The whole kernel image is itself a ceiling, and one static object dominates it (audit F2,
-2026-09-19).** `.bss` must end below `USER_PHYS_BASE` (16 MiB), enforced by the `linker64.ld`
-ASSERT the AP-trampoline fix relied on. As of `dfb57ec` the image ends 7.29 MiB below that line,
-and `argon2_scratch` alone is 4 MiB of the headroom, over half of it: the argon2 `m_cost`
-(`ARGON2_M_COST_KIB = 4096`), a deliberate memory-hardness parameter that must not be trimmed to
-buy room. So the dominant `.bss` term is not a table in this section but the password hasher's
-scratch, and any bump to a ceiling above competes with it for that 7 MiB. Raising `MAX_TASKS`,
-`BLOCKS_PER_DISK`, or the argon2 cost is the way this fires, silently, exactly as the trampoline
-overrun did. The same headroom is also the room GRUB has for boot modules, and a module set that no
-longer fits below 16 MiB halts the boot (§1.15, **S96**), so `.bss` growth now spends module
-capacity as well.
+closed 2026-09-19).** The image must end below `USER_PHYS_BASE` (16 MiB), enforced by the
+`linker64.ld` ASSERT. `.bss` is budgeted at **7,052 KiB** (`.github/image-budget.yml`), and
+`argon2_scratch` alone is 4,096 KiB of it: the argon2 `m_cost` (`ARGON2_M_COST_KIB = 4096`), a
+deliberate memory-hardness parameter that must not be trimmed to buy room. The whole image ends
+about 7.3 MiB below the line: 0x8B4000 on CI and 0x8B7000 on a Void build of the same tree, because
+the code differs between compilers and `.bss` does not. Raising `MAX_TASKS`, `BLOCKS_PER_DISK` or
+the argon2 cost spends that room, and GRUB stages the boot modules in the same room (§1.15).
+
+**Growth is no longer silent.** `tools/check_image_budget.py` holds the default build's `.bss` to
+the budget exactly, in both directions, so every change to it is a line in the budget file that a
+reviewer sees, and it checks that the ASSERT's literal is `USER_PHYS_BASE`, which the two files
+used to keep in step only by a comment. What is not closed is the ceiling itself: it is still
+16 MiB, for the `KERN_SPLIT_PDES` reason given below.
 
 *This table said "Endpoints 64 / Notifications 64 … These are `.bss` arrays, not dynamically
 allocated objects. There is no retyping discipline and no per-task kernel-memory accounting"

@@ -48,7 +48,7 @@ reason it is rated Critical rather than a build annoyance.
 | Syscall ABI and dispatch (`syscall.c`, `include/syscall.h`) | close read | robust |
 | ELF loader and load-plan validation (`rust/src/lib.rs`) | close read | robust |
 | Build and CI TCB (action pinning, token scopes, deps, newlib pin) | mechanical | robust |
-| Memory footprint (`.bss`/`.rodata` top objects, headroom) | measured | **F2** (observation) |
+| Memory footprint (`.bss`/`.rodata` top objects, headroom) | measured | **F2**, closed |
 | Syscall-dispatch efficiency | static | O(1) table, robust |
 | IPC/endpoints/notifications, storage-at-rest, crypto, TPM, measured boot, MSI/IOAPIC, `ahci`/`sdhci`, the ring-3 servers | swept, not close-read | no finding; **not cleared** |
 
@@ -89,7 +89,7 @@ payloads, which had the same latent dependence. Witness `make smoke-ap-trampolin
 the note on so CI tests the case its own toolchain never produces; falsified by
 `make smoke-ap-trampoline-control`.
 
-### 3.2 The kernel `.bss` headroom is one buffer deep, *Low*, open, **[F2]**
+### 3.2 The kernel `.bss` headroom is one buffer deep, *Low*, **closed 2026-09-19**, **[F2]**
 
 After the fix, `.bss` ends 0x74a000 (7.29 MiB) below `USER_PHYS_BASE`. The single largest static
 is `argon2_scratch` at 4 MiB, over half the remaining room. That 4 MiB is a deliberate
@@ -99,6 +99,17 @@ closer to firing than the numbers suggest: a routine bump to `MAX_TASKS`, `BLOCK
 argon2 cost collides the image with the page pool. Recommended: declare the headroom as a
 doc-claim so the next bump is caught in review, and note in `LIMITATIONS.md` §3.1 that the argon2
 buffer is the dominant `.bss` term. No code change.
+
+**Closed, with a checker rather than a doc-claim alone.** `tools/check_doc_claims.py` derives every
+value statically and never builds, so it cannot read a figure that exists only in the linked ELF.
+The budget therefore lives in `.github/image-budget.yml`, and `tools/check_image_budget.py` holds
+the default build's `.bss` to it exactly, in both directions, in CI's `kernel` job; the doc-claim
+the recommendation asked for then reads the budget file. The budget is on `.bss` and not on the end
+of the image because the end is not a property of the source: the same tree ended at 0x8B4000 on CI
+and at 0x8B7000 on Void, while `.bss` was 0x6E3000 on both. The checker also ties `linker64.ld`'s
+16 MiB literal to `USER_PHYS_BASE`, which the two files had kept in step only by a comment. Working
+this finding also turned up **HORUS-20260919-02**, a verified boot module that could change after
+its hash was taken, fixed in PR #402 (`LIMITATIONS.md` 1.15).
 
 ### 3.3 The physical free path is safe only by its callers' discipline, *Low*, open, **[F3]**
 
@@ -196,8 +207,8 @@ claim.
   had come to depend on a host toolchain default, with a latent low-memory copy behind it. It is
   fixed, gated, and the gate is falsified in both directions.
 - Every security boundary read closely, the user-copy path, the capability core, revocation, the
-  ELF loader, held to the standard the rest of the tree sets. The two open findings are
-  defence-in-depth, not holes.
+  ELF loader, held to the standard the rest of the tree sets. F3, the one finding still open, is
+  defence-in-depth, not a hole; F2 is closed.
 - The build and CI TCB is in good order: actions pinned, tokens minimal, no external Rust
   dependency, newlib hash-anchored.
 - The coverage is partial and section 2 says where. IPC internals, storage-at-rest, measured boot,

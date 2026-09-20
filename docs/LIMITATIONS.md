@@ -4451,12 +4451,20 @@ to mark: it also disables code scanning, and `CodeQL analyse (c-cpp)` is one of 
 status checks, so it would fail a required check on every pull request and block all merges,
 taking `secret_scanning` and `secret_scanning_push_protection` with it.
 
-**Still to verify, and this entry is not closed until it is.** GitHub's wording ("all features of
-Copilot on GitHub") is general and does not name pull-request review, and nothing here has
-tested it. On the next pull request after the policy change, confirm both: that the **GitHub
-Advanced Security** workflow is absent from the Actions run list, and that
-**`CodeQL analyse (c-cpp)` still reports a conclusion**. Record the result here. If the agent
-survives the account policy, the repository-access policy above is the next lever.
+**The workflow registration stays `active`, and that is not the signal to read.** Checked
+immediately after the policy was disabled on 2026-09-20:
+`GET /repos/.../actions/workflows/362053816` still answers `state: active`, and the workflow
+still appears in the workflow list beside `CI` and `CodeQL`. GitHub does not delete a dynamic
+registration once created; it is retained as provider metadata. **A reader who checks the
+registration will conclude the change did not work, and be wrong.** The only signal that means
+anything is whether a *new* event produces a *new run*.
+
+**So the test is an event, not a setting.** On the next pull-request event after the policy
+change, confirm both: that no **GitHub Advanced Security** run appears for that head SHA in
+`GET /repos/.../actions/workflows/362053816/runs`, and that
+**`CodeQL analyse (c-cpp)` still reports a conclusion**, because that is the required check a
+mistake in this area removes. Record the result here. If a run still appears, the
+repository-access policy above is the next lever.
 
 **One related setting worth checking while on that page**, given this project's threat model: a
 **third-party coding agents** policy governs whether partner agents may be granted repository

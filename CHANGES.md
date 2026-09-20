@@ -384,6 +384,56 @@ in this file.
 
 ### Added
 
+- **Two CI facts that live outside the tree are now written down** (`LIMITATIONS.md` 5.7).
+  `tools/check_ci_gating.py` reads three workflow files and requires every job in `ci.yml` to be
+  classified, but GitHub also injects *dynamic* workflows that are in no commit, and nothing in
+  this repository could name one without breaking that checker. The **GitHub Advanced Security**
+  workflow is one: 12 runs since 2026-09-19, **12 failures, 0 successes**, all of them
+  `You are not licensed to use Copilot` (403) before it reaches any repository content. It is not
+  among ruleset 21815299's 120 required contexts, which is why every affected PR still merged
+  clean while the Actions tab showed red. Measured against the tree: its detector excludes **291
+  of 421 tracked files**, including every `.c`, every `.h` and the whole Rust security core, so
+  even licensed it would not read the kernel. The part that is a security question rather than an
+  annoyance is that it is an unpinned, injected agent with repository read access and network
+  egress on every PR, in a project that pins every action by SHA and calls CI part of the TCB.
+  **It cannot be turned off through the Actions API**, which was tested: the disable endpoint
+  answers `422 Unable to disable this workflow`, because a `dynamic/agents/...` registration is
+  not a committed workflow. **And the obvious alternative would brick the repository**: the
+  Advanced Security toggle that governs it also disables code scanning, and
+  `CodeQL analyse (c-cpp)` is one of the 120 required status checks, so using it would fail a
+  required check on every PR and block all merges, taking `secret_scanning` and
+  `secret_scanning_push_protection` with it. The ruleset is not the source either:
+  `automatic_copilot_code_review` is a supported rule parameter and is absent from 21815299.
+  **Decided 2026-09-20: it is being removed rather than fixed**, and 5.7 records why, because
+  "we turned off a security check" is a sentence that needs a reason. It is new (first run
+  2026-09-19), nothing rests on it, it has never worked, it cannot read the code that matters,
+  and Copilot code review is not in the Free plan so making it pass was never free. The argument
+  that decides it is the last one: the agent is injected, unpinned, reads the repository on every
+  PR and makes network egress, so removing it **shrinks the TCB** rather than removing a check.
+  **The account-level Copilot policy was tried on 2026-09-20 and did not stop it**, which is why
+  5.7 insisted on verifying rather than assuming: the next push produced another run with the
+  identical 403. Reading the run gives the reason. `event=dynamic`,
+  `actor=github-advanced-security[bot]`: it is dispatched by a **GitHub App** on its own event
+  type, not by a pull request and not by Copilot, which is merely what the agent calls once it is
+  already running. The lever is whatever governs that app's access to the repository, and no REST
+  route reaches it. Also corrected there: this entry first said the Advanced Security toggle
+  would block every merge by taking out `CodeQL analyse (c-cpp)`. That warning is scoped to
+  private and internal repositories; **Horus is public**, where code scanning is free and on by
+  default, so the risk is smaller than first recorded, untested either way, and reversible.
+  Also recorded there: `actions/permissions` reports `sha_pinning_required: false`, so the
+  pinning this tree already does by hand is a habit rather than a rule.
+- **The full `kani` job cannot fail and has never been run** (`LIMITATIONS.md` 5.8). It carries
+  `if: github.event_name == 'workflow_dispatch'` *and* `continue-on-error: true` on both steps,
+  and has **zero** dispatch runs in its entire history, yet it appears on every PR as
+  *"Formal verification (Kani, advisory)"*. That is a check which cannot fail sitting in CI,
+  which section 8 of the maintainer's rules rules out by name. It would not finish either:
+  `cargo kani` with no `--harness` runs all fifteen proofs including the two that
+  `.github/kani-harnesses.yml` excuses with a measurement (neither finishes in 1500 s, and the
+  pair was what pushed a full run past GitHub's 6-hour ceiling), against the job's own 45-minute
+  timeout. **The formal methods themselves are sound and this entry should not be read as saying
+  otherwise**: 13 of 15 proofs gate through `kani-bounded`, which runs without
+  `continue-on-error`, and `check_kani_harnesses.py` fails the build on a proof classified as
+  neither. What does not work is the vestigial job beside them.
 - **The first external review of this tree is reconciled, not filed away**
   (`docs/AUDIT-EXTERNAL-2026-09-20.md`). An unsolicited third-party review arrived on 2026-09-20
   against `91a388b`. The new file records which of its claims the tree confirms, which it
@@ -419,6 +469,15 @@ in this file.
 
 ### Fixed
 
+- **A number that advertised its own freshness had been stale for five weeks.**
+  `LIMITATIONS.md` 5.6 said *"`git ls-files` reports **254** tracked files"* and, in the same
+  sentence, that this is *"a checkable number offered as evidence, so it is re-derived rather
+  than carried forward"*. The tree had 421. It is now **declared as `tracked_files` in
+  `.github/doc-claims.yml` and derived straight from `git`**, so the claim and the checker cannot
+  drift apart again. Falsified by restoring 254 and confirming the checker reddens; the
+  `test_check_doc_claims.sh` harness still passes 8 of 8 arms. A sentence that tells the reader
+  it is derived and is not is worse than one that makes no claim, because it tells them there is
+  nothing to check.
 - **[G-9] was open and closed in the same tree, and an outside reader believed the wrong one.**
   `docs/README.md`'s investigations table listed `G-09-scheduler-claim-leak.md` as **Open**. [G-9]
   closed on 2026-08-21, and every other statement of that status agreed: the investigation file's

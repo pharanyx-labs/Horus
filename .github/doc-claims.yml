@@ -279,6 +279,21 @@ counts:
       - file: site/index.html
         pattern: 'make smoke-captest\s+<span class="c"># (\d+) capability checks'
 
+  - id: tracked_files
+    describe: files tracked by git in the whole repository
+    derive: tracked_files
+    # LIMITATIONS 5.6 offers this as evidence of repository hygiene and says in
+    # the same sentence that it is "re-derived rather than carried forward". It
+    # had been carried forward since 2026-08-15: the sentence read 254 against a
+    # tree of 421 on 2026-09-20, five weeks and 167 files stale. A number that
+    # advertises its own freshness and is not fresh is worse than an undeclared
+    # one, because it tells the reader there is nothing to check. Found while
+    # reconciling the 2026-09-20 external review, in the same sweep that found
+    # the [G-9] status row, and declared here so it cannot recur.
+    occurrences:
+      - file: docs/LIMITATIONS.md
+        pattern: '`git ls-files` reports \*\*(\d+)\*\* tracked files'
+
 forbidden:
   - pattern: 'Installing over an existing volume is not something this'
     reason: >-

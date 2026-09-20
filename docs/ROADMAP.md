@@ -1642,6 +1642,28 @@ with a justification the measurement disproved.
 - **KASLR for the kernel image.** Ring-3 ASLR exists (`src/kernel/aslr.c`, 30 bits, rejection
   sampled); the kernel's own image base is fixed by the linker script and the high-half
   relocation.
+
+  **The disclosure surface was surveyed first, on 2026-09-20**
+  ([`docs/investigations/kernel-pointer-disclosure.md`](investigations/kernel-pointer-disclosure.md)),
+  because a randomised base a task can read back through a syscall is a decoration rather than a
+  mitigation. It found two paths that must close before randomising anything: a supervisor-mode
+  fault writes a kernel text address into a ring-3 task's exit record, readable with no capability
+  (**[HORUS-20260920-01]**, `LIMITATIONS.md` §1.16), and a reused task slot keeps the previous
+  occupant's wait record (**[HORUS-20260920-02]**, §1.17). It also leaves two decisions that bound
+  what KASLR could claim: what the kernel does on a machine with no UMIP, where `SIDT` and `SGDT`
+  defeat the randomisation outright from ring 3, and whether the kernel log keeps printing raw
+  kernel addresses to a `CAP_KERNEL_LOG` holder. On the credit side CR4.TSD is already set, so the
+  cycle-accurate timer the prefetch and TLB-timing attacks need is not available to ring 3.
+
+  **The relocation work itself is larger than it looks.** The kernel is built `-mcmodel=kernel
+  -fno-pic -fno-pie`, so every symbol reference is a 32-bit sign-extended absolute and a slide has
+  to stay inside the top 2 GiB: about 9 bits at 2 MiB alignment. Buying more means PIE or
+  `-mcmodel=large` across the whole kernel. Even the 9-bit version needs `--emit-relocs`, a
+  build-time tool to pack the relocations into the image, a relocator that runs before any absolute
+  reference is touched, delta-aware early paging in `src/boot/multiboot.S` and the AP trampoline,
+  and an entropy source that exists before the CSPRNG does. All three of the new pieces are inside
+  the TCB, which is why this sits behind **2.7a**, where the same effort removes code from ring 0
+  instead of adding it.
 - **CFI on indirect calls in the C kernel.** The dispatch table is the obvious target. gcc's
   `-fcf-protection` gives CET/IBT, which is a different and weaker property than
   `-fsanitize=cfi`; that one wants clang and LTO, i.e. a second toolchain.

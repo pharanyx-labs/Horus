@@ -9,8 +9,6 @@ operating system built from the ground up.**
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 [![Target: x86-64](https://img.shields.io/badge/target-x86__64-informational)](docs/ARCHITECTURE.md)
-[![Kernel image: byte-for-byte reproducible](https://img.shields.io/badge/kernel.elf-byte--for--byte%20reproducible-brightgreen)](docs/BUILDING.md#reproducible-builds)
-[![Boot: TPM 2.0 measured](https://img.shields.io/badge/boot-TPM%202.0%20measured-brightgreen)](docs/ARCHITECTURE.md#12-trusted-boot-and-the-tpm)
 
 Horus boots on x86-64 hardware and under QEMU, drops to a ring-3 shell, and runs ordinary C
 programs (including GNU coreutils and the Tiny C Compiler) on a microkernel whose device drivers

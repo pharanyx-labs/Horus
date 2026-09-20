@@ -384,6 +384,29 @@ in this file.
 
 ### Added
 
+- **The page pool's refcount arithmetic is proved, not reviewed** (`rust/src/memory.rs`, five
+  new Kani harnesses, `SECURITY.md` **S31**). The bounds arithmetic standing between a `u32` the
+  C kernel chose and a write through a raw pointer was written out twice, once in
+  `rust_page_ref_inc` and once in `rust_page_ref_dec`, and neither copy could be reached by a
+  proof because both sat inside an `unsafe extern "C"` function dereferencing a pointer Kani has
+  no model of. It is now one `refc_index`, with `refc_inc_value`/`refc_dec_value` beside it, and
+  the five proofs establish for **every** `u32` address and **every** `u16` count that an
+  accepted index is inside the table, that it names the page actually containing the address,
+  that no page in the pool is unreachable, that an increment saturates rather than wrapping to 0
+  (which would free a page somebody holds), and that a decrement is refused **exactly** when the
+  count is already 0 rather than wrapping to 65535 (which would pin the page for the boot).
+  Behaviour is unchanged: the same 87 unit tests passed before and after the extraction, and two
+  more now exercise the helpers so an ordinary `cargo test` covers them too.
+  **Each proof was falsified before it was added**, by reintroducing the defect it forbids and
+  requiring `VERIFICATION:- FAILED`: the upper-bound test dropped, the page divisor halved, every
+  address refused, `saturating_add` swapped for `wrapping_add`, the zero test swapped for
+  `wrapping_sub`. Five arms, five reds, source restored clean. Verified on Kani 0.68.0 / CBMC
+  6.11.0, under a second each.
+  **What this does not do**, stated in the module so nobody reads more into it: it says nothing
+  about the raw-pointer write or about `refc_table_ok`, which reads process-global atomics a
+  harness cannot quantify over, and it does **not** close **[HORUS-20260919-01]**, whose caller
+  discipline lives in `src/kernel/paging.c`. It makes the Rust half of that refcount a proved
+  boundary instead of a second place discipline is required.
 - **Two CI facts that live outside the tree are now written down** (`LIMITATIONS.md` 5.7).
   `tools/check_ci_gating.py` reads three workflow files and requires every job in `ci.yml` to be
   classified, but GitHub also injects *dynamic* workflows that are in no commit, and nothing in
@@ -469,6 +492,24 @@ in this file.
 
 ### Fixed
 
+- **Five documents stated the Kani harness count and no two agreed.** `SECURITY.md` **S31** said
+  *"Fifteen"* harnesses and *"the four excused"*; `TESTS.md` said eleven; `docs/LIMITATIONS.md`
+  5.5 said *"16 harnesses, 11 of them gating"*, in a section headed *"Formal verification is
+  narrow"*; `rust/KANI.md` said eight in a pasted transcript and eleven in its prose. The tree
+  held thirteen gating and two excused, so **not one of them was right**, and nothing in CI could
+  see any of them. All corrected, and **declared as `kani_harnesses`, `kani_gating` and
+  `kani_manual` in `.github/doc-claims.yml`**, derived from the classification manifest that
+  `check_kani_harnesses.py` already gates against the sources: the same
+  tree to manifest to docs chain `ring0_core_loc` uses. Eight occurrences across four files are
+  now checked on every run. Falsified by typing 11 back into `rust/KANI.md` and confirming the
+  checker reddens.
+- **`rust/KANI.md` carried two claims that had gone false.** A pasted `cargo kani` transcript
+  asserting *"8 successfully verified harnesses, 0 failures, 8 total"*, which is evidence of the
+  run it came from and a number nobody re-derives once it is in a document (the count is now
+  written as `N`, with the live figures declared instead); and a paragraph stating CI runs Kani
+  as a *"non-gating advisory job ... like the `fuzz` and `security` jobs"* with *"the four
+  required-status hard gates stay `rust`, `kernel`, `smoke`, `reproducible`"*. Both went false
+  when `kani-bounded` became required on 2026-08-23.
 - **A number that advertised its own freshness had been stale for five weeks.**
   `LIMITATIONS.md` 5.6 said *"`git ls-files` reports **254** tracked files"* and, in the same
   sentence, that this is *"a checkable number offered as evidence, so it is re-derived rather

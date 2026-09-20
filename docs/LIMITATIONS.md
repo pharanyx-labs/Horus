@@ -4278,8 +4278,11 @@ direction** and is ruled out here so it is not proposed later.
 
 ### 5.5 Formal verification is narrow
 
-Kani proves properties of capability revocation and the ELF validator: 16 harnesses, 11 of
-them gating in the required `kani-bounded` job. **That is the whole of the formal methods in
+Kani proves properties of capability revocation, the ELF validator and the page-pool refcount
+arithmetic: **20** harnesses, **18** of them gating in the required `kani-bounded` job. Those
+counts are declared in `.github/doc-claims.yml` and re-derived on every run; this sentence read
+*"16 harnesses, 11 of them gating"* until 2026-09-20, when neither figure had ever been right
+at the same time as the four other documents stating it. **That is the whole of the formal methods in
 this project.** The kernel as a whole is not verified, and there is no refinement proof
 connecting any specification to the implementation.
 

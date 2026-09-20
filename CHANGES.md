@@ -396,6 +396,14 @@ in this file.
   even licensed it would not read the kernel. The part that is a security question rather than an
   annoyance is that it is an unpinned, injected agent with repository read access and network
   egress on every PR, in a project that pins every action by SHA and calls CI part of the TCB.
+  **It cannot be turned off through the Actions API**, which was tested: the disable endpoint
+  answers `422 Unable to disable this workflow`, because a `dynamic/agents/...` registration is
+  not a committed workflow. **And the obvious alternative would brick the repository**: the
+  Advanced Security toggle that governs it also disables code scanning, and
+  `CodeQL analyse (c-cpp)` is one of the 120 required status checks, so using it would fail a
+  required check on every PR and block all merges, taking `secret_scanning` and
+  `secret_scanning_push_protection` with it. The ruleset is not the source either:
+  `automatic_copilot_code_review` is a supported rule parameter and is absent from 21815299.
   Also recorded there: `actions/permissions` reports `sha_pinning_required: false`, so the
   pinning this tree already does by hand is a habit rather than a rule.
 - **The full `kani` job cannot fail and has never been run** (`LIMITATIONS.md` 5.8). It carries

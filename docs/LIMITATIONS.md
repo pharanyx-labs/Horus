@@ -4395,13 +4395,40 @@ tree describes, and it was invisible here until an outside reader happened to me
 to skim past red, which is the habit the control-arm discipline in section 2 of the maintainer's
 rules exists to prevent. Leaving it failing is a decision and belongs here either way.
 
-**What closes this**, and neither half can be done from a commit:
+**It cannot be disabled through the Actions API, and that was tested rather than assumed.**
+`PUT /repos/pharanyx-labs/Horus/actions/workflows/362053816/disable` answers **422 Unable to
+disable this workflow**. GitHub does not permit disabling or deleting a dynamic workflow
+registration: the enable/disable endpoints exist for committed workflows, and a
+`dynamic/agents/...` path is not one.
 
-1. Disable the workflow (Settings, or `PUT
-   /repos/pharanyx-labs/Horus/actions/workflows/362053816/disable`), or license Copilot for the
-   account. Disabling is reversible with the matching `/enable`.
-2. Record whichever was chosen here, because this section is the only place in the tree that
-   can name a workflow the gating checker cannot see.
+**The obvious alternative would break the repository, and this is the part to read twice.** The
+repository setting that governs the feature sits under Advanced Security, and GitHub's own
+documentation warns that disabling Code Security disables dependency review, secret scanning
+alerts and **code scanning**, and that *"any workflows, SARIF uploads, or API calls for code
+scanning will fail"*. In this repository that is not a trade, it is a self-inflicted outage:
+**`CodeQL analyse (c-cpp)` is one of the 120 required status checks in ruleset 21815299**, so
+turning Code Security off would fail a required check on every pull request and block all
+merges, while also dropping `secret_scanning` and `secret_scanning_push_protection`, both
+currently enabled. The blanket toggle must not be used.
+
+**The ruleset is not the source either**, which was also checked: `automatic_copilot_code_review`
+is a supported `pull_request` rule parameter, and it is **absent** from 21815299, the only
+ruleset on this repository.
+
+**What closes this**, none of which can be done from a commit:
+
+1. Find the granular repository setting (GitHub's own community threads report that its location
+   moves and that personal-account repositories often do not show the documented path at all),
+   and disable **only** the automatic Copilot review, leaving code scanning and secret scanning
+   enabled. Verify afterwards that `CodeQL analyse (c-cpp)` still reports, because that is the
+   check a mistake here takes out.
+2. Or license Copilot for the account, which makes the job pass without making it useful, given
+   the exclusion list above.
+3. Or decide to leave it failing, and say so here, so that a permanent red is a recorded
+   decision rather than something everyone has learned to skip past.
+
+Whichever is chosen belongs in this section, because it is the only place in the tree that can
+name a workflow the gating checker cannot see.
 
 **A second GitHub-side setting, found the same way.** `GET /repos/.../actions/permissions`
 reports `sha_pinning_required: false`. Every action in this tree is already pinned by commit

@@ -238,7 +238,8 @@ approval.** See [Process security](#process-security).
   `docs/LIMITATIONS.md`).
 - **Cryptographic primitives themselves.** Horus implements ChaCha20, SHA-256, BLAKE2b,
   Argon2, and an AEAD in `no_std` Rust. They are unaudited and not constant-time-verified.
-  Treat them as research code.
+  Treat them as research code. Tracked as **[HORUS-20260920-03]**, `docs/LIMITATIONS.md` 5.4,
+  which states what rests on each primitive and what would close it.
 
 ---
 
@@ -377,8 +378,8 @@ up, and are tested by the refusal checks in `smoke-captest`.
 | Integrity | Hierarchical rollback MAC over block metadata |
 
 All primitives are implemented in `no_std` Rust in `rust/src/`. They are **not** independently
-audited and **not** verified constant-time. The CSPRNG replaced an earlier LCG-plus-raw-TSC
-construction that was predictable from ring 3.
+audited and **not** verified constant-time (**[HORUS-20260920-03]**). The CSPRNG replaced an
+earlier LCG-plus-raw-TSC construction that was predictable from ring 3.
 
 ---
 

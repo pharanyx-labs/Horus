@@ -916,6 +916,58 @@ reconciliation beside it, under the same `cap_lock` the sweep already holds — 
 called from, and the same reachability recount `kobj_gc` performs for endpoints, notifications and
 frames, which pipes are not yet part of.
 
+#### The design, written out 2026-09-20 so the next attempt starts from it
+
+*The external review proposed (C-K3) exactly the one-field change plus "account the extra ref in
+the pipe object". That is the right destination and it understates the work, in the direction
+this section already warned about. Recorded here rather than attempted in the same change that
+records it: this is a change to authorisation spanning `capability.c`, the Rust revocation sweep
+and `pipe.c`, and it wants its own pull request.*
+
+**Recount, do not track deltas.** The obvious shape is to have `revoke_subtree` report which pipe
+ends it nulled so the caller can unref them. It is the wrong one. The sweep runs in Rust across
+every live cspace and would have to hand a bounded list back over the FFI boundary, where a list
+that overflowed, or a caller that dropped it, silently desynchronises a refcount that nothing
+recomputes. That is the "never assume the C side did it" hazard the house rules place at exactly
+this boundary. A **recount** is idempotent and self-correcting: recompute `reader_ends` and
+`writer_ends` for every pipe from the cspaces themselves, the way `mark_reachable` recomputes
+reachability for endpoints, notifications and frames by walking every task's cspace plus the
+kernel root cnode. A recount that runs twice is harmless; a delta that is lost is not
+recoverable.
+
+**The lock order is the open decision, and it is why this is not a small change.**
+`pipe_end_unref` takes `pipe_lock`, the sweep holds `cap_lock`, and `.github/lock-order.yml`
+declares neither `cap_lock` over `pipe_lock` nor `untyped_lock` over `pipe_lock` today. It
+declares two nestings, both with `endpoint_lock` outermost, and S88's checker fails the build on
+any nesting not in the file **and on the reverse of one that is**. `pipe_close_task_ends` faced
+the same pair and deliberately refused to establish `cap_lock` over `pipe_lock`, using a
+one-slot-per-pass rescan that keeps the two locks strictly sequential, on the grounds that the
+alternative holds a lock across an unbounded number of ends. A bulk sweep cannot copy that trick.
+So the fix must either declare the nesting (and accept that the checker then guards it, which is
+the better outcome) or run the recount as a second phase after the sweep has dropped `cap_lock`,
+taking the counts under `pipe_lock` alone. **The second phase is the recommendation**, because it
+needs no new nesting, and because a recount does not have to be atomic with the sweep: it
+converges on the same answer whenever it runs, provided it runs after.
+
+**What it must not do.** It must not null the capability and leave the count, which is the state
+the one-field change alone would produce, and which would make `pipe.c`'s own header false and
+leave the peer blocked on an EOF that can never arrive. It must not widen an auditor exemption to
+make a sweep fit, which is the direction [G-12] rejected on the scheduler side.
+
+**The witness, and the arm that must redden it.** A new smoke target, proposed name
+smoke-pipe-revoke-child, which does not exist yet and is written here without backticks so that
+`tools/check_named_targets.py` does not read it as one that does: a parent creates a pipe, spawns
+a child that inherits an end, revokes its own end, and the child's end must be gone and the peer
+must see EOF. The control arm is `PIPE_CHILD_BADGE_ZERO=1`, restoring `badge = 0`, under which
+the child's end survives the revoke and the **base gate** must go red, not merely the arm's
+private assertion. It is registered in `.github/gate-pairs.yml` when it lands, with a row in the
+defect-flag table of `docs/BUILDING.md`, like every other arm.
+
+**S3 stays as it is until that arm exists.** The property says a revoke reaches the whole
+derivation subtree. Closing this finding on the one-field change would make S3 true of the
+capability graph and false of the pipe objects underneath it, which is a narrower claim wearing
+the old one's wording.
+
 ### 1.15 ~~A verified boot module could change after its hash was taken~~ (**FIXED 2026-09-19**, `SECURITY.md` S96) **[HORUS-20260919-02]**
 
 *Found 2026-09-19 while working audit F2, and fixed the same day.* **S10** says a boot module that
@@ -4187,11 +4239,42 @@ pattern only because its manifest then names harnesses the scan cannot find, and
 Accidental protection is real protection, and it is now asserted by an arm so it
 stays.
 
-### 5.4 Cryptography is unaudited
+### 5.4 Cryptography is unaudited and not verified constant-time **[HORUS-20260920-03]**
+
+*Stated in prose here and in `SECURITY.md` since the primitives landed. Given a finding ID on
+2026-09-20, on the external review's point (C-K7) that a gap without an ID has no status, cannot
+be cited by a pull request, and cannot be closed: every other gap in this project is reconciled
+across files by its ID, and this one was reconciled nowhere.*
 
 Every primitive (ChaCha20, SHA-256, BLAKE2b, Argon2, the AEAD) is a from-scratch `no_std` Rust
-implementation. None has been independently audited, and none is verified constant-time. Treat
-them as research code.
+implementation with no external dependency. None has been independently audited, and none is
+verified constant-time. Treat them as research code.
+
+**What rests on them**, so the scope is a fact rather than an impression:
+
+| Primitive | What it protects | Where |
+|---|---|---|
+| SHA-256 | the boot module manifest and the TPM PCR 8/9 extends, so the whole measured-boot chain and the volume KEK sealed under `PolicyPCR(8,9)` | `main.c`, `tpm.c` |
+| The AEAD (ChaCha20-based) | every block of the encrypted object store, keyed per inode and block, and the `disk_key` unwrap that `storage_unlock` authenticates a password against | `storage.c`, `crypto.c` |
+| Argon2id | every account password at rest | `kusers.c` |
+| BLAKE2b | nothing directly; it exists because Argon2 is built on it | `rust/src/argon2.rs` |
+| ChaCha20 | the CSPRNG, whose seeded-before-use property is S30 | `rust/src/rng.rs` |
+
+**What is claimed and what is not.** The algebraic and parsing properties of this crate are
+witnessed: `SECURITY.md` carries S30 for the CSPRNG's seed gate and S96 for the boot measurement,
+and both have control arms that redden the base gate. Those witness the *use* of the primitives,
+not the primitives. **No timing property is claimed, and none has been measured.** This entry does
+not assert that a timing attack exists; it asserts that nothing in the tree would detect one, and
+that the two places it would matter most are a password comparison path reachable from a login
+prompt and an AEAD operating on attacker-chosen block contents.
+
+**What would close it.** Either an independent audit of the implementations, or replacing them
+with an audited `no_std` implementation or a verified extracted subset (HACL\*/EverCrypt and
+libsodium were the external review's suggestions), vendored and hash-pinned the way
+`THIRD_PARTY.md` pins newlib. Both are dependency decisions: the crate's zero-dependency property
+is itself a supply-chain argument recorded in `SECURITY.md`, and trading it away is the
+maintainer's call, not a refactor. **Writing a new primitive to fix this would be the wrong
+direction** and is ruled out here so it is not proposed later.
 
 ### 5.5 Formal verification is narrow
 

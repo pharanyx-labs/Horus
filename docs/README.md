@@ -33,6 +33,11 @@ Technical documentation for the Horus microkernel. Start with the
    whole-tree audit, and **[history/AUDIT-2026-07.md](history/AUDIT-2026-07.md)**, the 2026-07-27
    audit, which itself carries the July 2026 one as its Appendix A.
 
+   **[AUDIT-EXTERNAL-2026-09-20.md](AUDIT-EXTERNAL-2026-09-20.md)** reconciles the first
+   third-party review of this tree against the checkout. It sets no statuses: it records which
+   of the review's claims the tree confirms, which it contradicts, and the one stale status line
+   in this file that the review read and repeated.
+
 **Working on the system**
 
 6. **[BUILDING.md](BUILDING.md)**. Toolchain, build targets, configuration flags, running
@@ -58,7 +63,7 @@ evidence. Their **current status** is in [LIMITATIONS.md](LIMITATIONS.md), not h
 | Investigation | Status |
 |---|---|
 | [`G-08-two-cpus-one-kernel-stack.md`](investigations/G-08-two-cpus-one-kernel-stack.md) | Closed 2026-08-17 |
-| [`G-09-scheduler-claim-leak.md`](investigations/G-09-scheduler-claim-leak.md) | **Open** |
+| [`G-09-scheduler-claim-leak.md`](investigations/G-09-scheduler-claim-leak.md) | Closed 2026-08-21 |
 | [`G-10-spawn-path-uaf.md`](investigations/G-10-spawn-path-uaf.md) | Closed 2026-08-18 |
 | [`G-11-armed-image-ownership.md`](investigations/G-11-armed-image-ownership.md) | Closed 2026-08-18 |
 | [`G-12-claim-invariant-residue.md`](investigations/G-12-claim-invariant-residue.md) | Closed 2026-09-03 |

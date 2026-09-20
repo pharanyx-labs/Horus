@@ -384,6 +384,30 @@ in this file.
 
 ### Added
 
+- **The first external review of this tree is reconciled, not filed away**
+  (`docs/AUDIT-EXTERNAL-2026-09-20.md`). An unsolicited third-party review arrived on 2026-09-20
+  against `91a388b`. The new file records which of its claims the tree confirms, which it
+  contradicts and why, and what it added that the tree did not have. It sets **no** statuses:
+  `docs/LIMITATIONS.md` stays authoritative, and the review is deliberately not quoted in full,
+  because pasting it verbatim would have imported *"[G-9], open"* into the tree in the same commit
+  that fixes an instance of exactly that defect. Most of its findings turned out to be faithful
+  re-reads of `LIMITATIONS.md` and `SECURITY.md`, which is worth knowing in both directions: the
+  self-disclosure is legible to a hostile outside reader, and the independent discovery rate is
+  correspondingly low.
+- **Cryptography has a finding ID (`[HORUS-20260920-03]`, `LIMITATIONS.md` 5.4).** That the
+  primitives are from-scratch, unaudited and not verified constant-time was already stated in
+  prose, here and in `SECURITY.md`, and that was the whole problem: every other gap in this
+  project is reconciled across files by an ID, and a gap without one has no status, cannot be
+  cited by a pull request and cannot be closed. 5.4 now also names what rests on each primitive
+  (SHA-256 carries the measured-boot chain and the sealed KEK, the AEAD carries every block of the
+  object store, Argon2id carries every password at rest), states plainly that **no timing property
+  is claimed and none has been measured**, and rules out writing a new primitive as the fix.
+- **The design for `[HORUS-20260911-04]` is written out** in `LIMITATIONS.md` 1.14, so the next
+  attempt starts from it rather than from the one-field change that cannot land alone. The short
+  version: recount `reader_ends`/`writer_ends` from the cspaces after the sweep rather than
+  tracking deltas out of the Rust revocation sweep across the FFI boundary, and run the recount as
+  a second phase under `pipe_lock` alone so no new lock nesting has to be declared. The witness and
+  its `PIPE_CHILD_BADGE_ZERO=1` control arm are specified there too.
 - **The kernel's `.bss` has a budget, and CI holds it exactly (audit F2).** `linker64.ld` refuses
   an image that reaches the page pool at 16 MiB, but only once it gets there; every bump to
   `MAX_TASKS`, `BLOCKS_PER_DISK` or the argon2 cost before that was silent, in room GRUB also uses
@@ -395,6 +419,20 @@ in this file.
 
 ### Fixed
 
+- **[G-9] was open and closed in the same tree, and an outside reader believed the wrong one.**
+  `docs/README.md`'s investigations table listed `G-09-scheduler-claim-leak.md` as **Open**. [G-9]
+  closed on 2026-08-21, and every other statement of that status agreed: the investigation file's
+  own header, `LIMITATIONS.md` 5.2d, `ARCHITECTURE.md`, `TESTS.md`, `CHANGES.md`, `README.md`,
+  `.github/ci-gating.yml` and the public site. The index disagreed with all of them, and the index
+  is what a reader reaches first. The 2026-09-20 external review duly filed its highest-rated
+  kernel finding against [G-9] as an open ID, when the item it was describing is 5.3e, which is
+  deliberately **not** G-numbered. This is the second time [G-9] has carried two statuses at once;
+  the first was inside `TESTS.md` and was corrected on 2026-08-21, and this row survived that sweep
+  because the sweep read the prose and not the index. Corrected, and ratcheted: the stale row is
+  now a `forbidden:` pattern in `.github/doc-claims.yml`, falsified before it was committed by
+  restoring the row and confirming `check_doc_claims.py` goes red on it. CLAUDE.md section 3's rule
+  that one ID must have one status everywhere now has a measured cost behind it rather than a
+  hygiene argument: a stale line in an index became somebody else's wrong conclusion.
 - **The kernel did not build on Void Linux: a 270-byte trampoline came out as 128 MiB.** The
   link failed with "`.bss` overruns `USER_PHYS_BASE`", but `.bss` was fine; `.rodata` held a
   134,479,912-byte AP trampoline. Void's binutils 2.44 assembler emits a `.note.gnu.property`

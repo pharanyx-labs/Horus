@@ -66,10 +66,11 @@ Everything else (the shell, coreutils, tcc, user programs) is outside the TCB by
    initial page tables, enables `EFER.LME` and `EFER.NXE`, enters long mode, and jumps to
    the higher-half kernel.
 3. **`kernel_main`** (`src/kernel/main.c`) scans the multiboot2 tags for the E820 memory map
-   and boot modules, sizes the physical pool, halts if any module lies in the kernel image or
-   the pool's base reserves (S96), verifies module hashes against the embedded manifest,
-   measures kernel and modules into the TPM, initialises paging, capabilities, the
-   scheduler, storage, and launches `init` in ring 3.
+   and boot modules, sizes the physical pool, places the pool's base reserves clear of the
+   modules and halts if any module lies in the kernel image or that window (S96), verifies
+   module hashes against the embedded manifest, measures kernel and modules into the TPM,
+   initialises paging, capabilities, the scheduler, storage, hashes every verified module
+   again (S96), and launches `init` in ring 3.
 
 ### Virtual memory layout
 
@@ -93,11 +94,15 @@ Everything else (the shell, coreutils, tcc, user programs) is outside the TCB by
 ### Physical memory
 
 The pool starts at `USER_PHYS_BASE` (16 MiB, above the kernel image) and is sized at boot
-from the E820 map, falling back to 64 MiB. Three regions are reserved at the base before the
-free list begins: the 8 MiB loader staging buffer, the RAM vdisk backing store, and the untyped
-arena (§4). All three used to be `.bss` arrays, which capped them against the
+from the E820 map, falling back to 64 MiB. Three regions are reserved as one window and held
+back from the free list: the 8 MiB loader staging buffer, the RAM vdisk backing store, and the
+untyped arena (§4). All three used to be `.bss` arrays, which capped them against the
 `__bss_end <= USER_PHYS_BASE` linker assertion; moving them into the pool decoupled their
-size from that ceiling entirely.
+size from that ceiling entirely. The window starts at `USER_PHYS_BASE` unless a boot module is
+there: GRUB places modules upward from the end of the kernel image, so a large module set runs
+past 16 MiB, and `pool_reserve_base` then places the window at the lowest address that touches no
+module (S96). Every other frame a module touches is held back too, so no frame a module occupies
+is ever written by the kernel or handed out.
 
 **The per-task kernel stacks joined them on 2026-08-30**, by a different route: rather than the
 pool's reserve they took a region of kernel-half virtual address space under `high_pdpt[511]`,

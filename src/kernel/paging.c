@@ -81,6 +81,53 @@ static int phys_in_boot_module(uint32_t phys) {
     return 0;
 }
 
+/* Where the page pool's base reserves go: the lowest page-aligned address at or
+ * above USER_PHYS_BASE whose POOL_RESERVE_PAGES window touches no boot module.
+ *
+ * The reserves (loader staging, the RAM vdisk, the untyped arena) used to sit at
+ * USER_PHYS_BASE unconditionally. GRUB places modules upward from the end of the
+ * kernel image, so a module set that did not fit below 16 MiB landed inside
+ * them, where the kernel writes after the module's hash was taken (S96). The fix
+ * of #402 halted such a boot, which capped module capacity at the gap below
+ * USER_PHYS_BASE. Placing the reserves after the modules removes the cap
+ * instead: the modules keep their frames (phys_in_boot_module holds them back
+ * from the free list), the reserves go where no module is, and the frames left
+ * between USER_PHYS_BASE and the reserves are ordinary free pool.
+ *
+ * FIRST FIT, not "above the highest module": a module far up the pool leaves
+ * the reserves where they fit below it, rather than dragging them past it.
+ * Each pass either finds the window clear or moves `base` to the end of a
+ * module it overlaps. `base` only rises, so a module once passed can never
+ * overlap again, and n modules need at most n moving passes; the (n + 1)th finds
+ * the window clear. boot_module_placement_check asserts the result regardless,
+ * so a bug here halts the boot rather than overlapping a module.
+ *
+ * A pure function of the module table, which the tag walk fills once before
+ * anything asks, so every caller gets the same answer. */
+uint64_t pool_reserve_base(void) {
+#ifdef POOL_RESERVE_FIXED_BASE
+    /* CONTROL ARM, never ship. The pre-2026-09-19 layout: the reserves at
+     * USER_PHYS_BASE whatever GRUB put there. */
+    return (uint64_t)USER_PHYS_BASE;
+#else
+    const uint64_t len = (uint64_t)POOL_RESERVE_PAGES * PAGE_SIZE;
+    const uint32_t n   = boot_module_count();
+    uint64_t base      = (uint64_t)USER_PHYS_BASE;
+    for (uint32_t pass = 0; pass <= n; pass++) {
+        int moved = 0;
+        for (uint32_t i = 0; i < n; i++) {
+            const struct boot_module *m = boot_module_get(i);
+            /* Rounded outward to whole pages, as phys_in_boot_module rounds. */
+            uint64_t mstart = m->start & ~((uint64_t)PAGE_SIZE - 1);
+            uint64_t mend   = (m->end + PAGE_SIZE - 1) & ~((uint64_t)PAGE_SIZE - 1);
+            if (mstart < base + len && mend > base) { base = mend; moved = 1; }
+        }
+        if (!moved) break;
+    }
+    return base;
+#endif
+}
+
 static void init_user_page_allocator(void) {
 
     free_page_count = 0;
@@ -90,38 +137,45 @@ static void init_user_page_allocator(void) {
     for (int i = 0; i < USER_PHYS_PAGES; i++) {
         page_refcounts[i] = 0;
     }
-    /* Reserve the staged-image buffer at the base of the pool:
-     * [USER_PHYS_BASE, USER_PHYS_BASE + LOADER_STAGING_BYTES) is held back from
-     * the free list and never handed out, and loader_staging points at it through
-     * the PHYS_KVA window (mapped rw+NX for the whole pool, from boot). This is
-     * why the staged-image cap no longer costs .bss — it is pool RAM, not a static
-     * array. The PHYS_POOL_MIN_PAGES floor guarantees g_phys_pool_pages exceeds
-     * the reserve, so usable frames remain; assert it rather than trust it. */
-    loader_staging  = (uint8_t *)PHYS_KVA(USER_PHYS_BASE);
-    /* The RAM vdisk's backing store sits right after the staging reserve. Both are
-     * held back from the free list; the vdisk (diskless boots) is sized to the
-     * whole volume, which is why the volume can grow past 2 MiB without touching
-     * the .bss ceiling. */
-    g_vdisk_backing = (uint8_t *)PHYS_KVA(USER_PHYS_BASE + LOADER_STAGING_BYTES);
-    /* The untyped arena follows the vdisk in the base reserve. Every retypable
-     * kernel object is carved out of it (roadmap 0.3), which is what lets the
-     * cspace pool — 512 KiB of `.bss` under the 16 MiB linker ASSERT — become
-     * pool RAM instead. Same reason as the two reserves above: a kernel object
-     * table that lives in the image is a ceiling on system size that costs image
-     * budget whether used or not. */
-    g_untyped_arena = (uint8_t *)PHYS_KVA(USER_PHYS_BASE + LOADER_STAGING_BYTES + VDISK_BYTES);
-    if (g_phys_pool_pages <= POOL_RESERVE_PAGES) {
-        for (;;) { __asm__ volatile("cli; hlt"); }   /* pool too small for the base reserves: refuse to run */
+    /* The three base reserves, contiguous, starting where pool_reserve_base says:
+     * USER_PHYS_BASE when no module reaches past it, otherwise above the modules
+     * that do. Each is held back from the free list and never handed out, and is
+     * reached through the PHYS_KVA window (mapped rw+NX for the whole pool, from
+     * boot). They are pool RAM rather than .bss so that none of them costs image
+     * budget:
+     *   - loader_staging, the staged program image (LOADER_STAGING_BYTES);
+     *   - g_vdisk_backing, the RAM vdisk (VDISK_BYTES), which a diskless boot
+     *     formats and so WRITES before userspace exists;
+     *   - g_untyped_arena, every retypable kernel object (roadmap 0.3), which
+     *     scheduler_init writes when it carves the first cspace. */
+    const uint64_t reserve_base = pool_reserve_base();
+    const uint64_t reserve_idx  = (reserve_base - (uint64_t)USER_PHYS_BASE) / PAGE_SIZE;
+    const uint64_t reserve_end  = reserve_idx + (uint64_t)POOL_RESERVE_PAGES;
+    /* The reserves must end inside the pool, which also keeps them inside the
+     * refcount table and below PHYS_POOL_CEIL (phys_set_pool_pages clamps the
+     * pool to both), and must leave at least one frame to hand out. With the
+     * reserves at USER_PHYS_BASE the PHYS_POOL_MIN_PAGES floor guaranteed this;
+     * with them above the modules it depends on how much GRUB loaded, so it is
+     * checked here, and a machine where they do not fit does not run. */
+    if (reserve_end >= (uint64_t)g_phys_pool_pages) {
+        print("mem: HALT the page pool's base reserves do not fit above the boot modules; refusing to boot\n");
+        for (;;) { __asm__ volatile("cli; hlt"); }
     }
+    loader_staging  = (uint8_t *)PHYS_KVA(reserve_base);
+    g_vdisk_backing = (uint8_t *)PHYS_KVA(reserve_base + LOADER_STAGING_BYTES);
+    g_untyped_arena = (uint8_t *)PHYS_KVA(reserve_base + LOADER_STAGING_BYTES + VDISK_BYTES);
 
-    /* Push only the frames the pool actually covers (E820-sized) above the base
-     * reserves. Frame i maps to USER_PHYS_BASE + i*PAGE_SIZE; the cap keeps the top
-     * below PHYS_POOL_CEIL. A frame that a boot module occupies is skipped — GRUB
-     * dropped a program image there, and handing it out as an anonymous page would
-     * corrupt the image before init copies it into the store. Module frames stay
-     * reserved for the life of the boot (a few MiB of a ~495 MiB pool); not
-     * reclaiming them post-provision keeps the allocator branch-free. */
-    for (int i = (int)g_phys_pool_pages - 1; i >= (int)POOL_RESERVE_PAGES; i--) {
+    /* Push every frame the pool covers (E820-sized) except the reserve window
+     * and the frames a boot module occupies. Frame i maps to USER_PHYS_BASE +
+     * i*PAGE_SIZE; the cap keeps the top below PHYS_POOL_CEIL. A module frame is
+     * skipped because GRUB dropped a program image there, and handing it out as
+     * an anonymous page would corrupt the image before init copies it into the
+     * store. Module frames stay reserved for the life of the boot (a few MiB of a
+     * ~495 MiB pool); not reclaiming them post-provision keeps the allocator
+     * branch-free. Frames below the reserve window that no module touches are
+     * ordinary pool now, which is where the room the reserves vacated goes. */
+    for (int i = (int)g_phys_pool_pages - 1; i >= 0; i--) {
+        if ((uint64_t)i >= reserve_idx && (uint64_t)i < reserve_end) continue;
         uint32_t phys = USER_PHYS_BASE + ((uint32_t)i * PAGE_SIZE);
         if (phys_in_boot_module(phys)) continue;
         free_page_stack[free_page_count++] = phys;

@@ -910,11 +910,15 @@ jobs:
       - name: Corrupt one module payload in the ISO and assert the kernel refuses it
         run: make smoke-modules-tamper
       # S96. Same subsystem, so the same job: no new required context and no
-      # ruleset change. The witness and its falsifying arm both run here.
-      - name: A module lying in the page pool's base reserves halts the boot; one below them boots
+      # ruleset change. The witness and its three falsifying arms all run here.
+      - name: Modules past 16 MiB boot intact and run from /bin; a module in the kernel image halts
         run: make smoke-boot-module-reserve
-      - name: Control arm, the unchecked kernel boots on with a module in the reserves
+      - name: Control arm, the reserves back at USER_PHYS_BASE land on the modules and halt the boot
         run: make smoke-boot-module-reserve-control
+      - name: Control arm, with the placement check also gone the re-verification catches the overwrite
+        run: make smoke-boot-module-reverify-control
+      - name: Control arm, without the placement check a module in the kernel image boots on
+        run: make smoke-boot-module-image-control
 
   smoke-tpm:
     name: Measured boot (TPM PCRs match the reproducible manifest)

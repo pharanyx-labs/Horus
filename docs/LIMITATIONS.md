@@ -958,6 +958,62 @@ the 512 MiB QEMU configuration the pool is 495 MiB, so that is roughly 465 MiB o
 re-verification runs once, before userspace; a write after that is kept off the modules by the
 placement alone.
 
+### 1.16 A supervisor-mode fault writes a kernel text address into a ring-3 task's exit record **[HORUS-20260920-01]**
+
+*Found 2026-09-20 by the kernel-pointer disclosure survey,
+[`investigations/kernel-pointer-disclosure.md`](investigations/kernel-pointer-disclosure.md),
+which roadmap 3.8 needs before KASLR can mean anything.*
+
+`page_fault_handler` deliberately kills the current task for a **supervisor** fault as well as a
+ring-3 one, so that the kernel touching a bad user address mid-syscall costs a task rather than the
+machine. The cause it builds carries `f64->rip` verbatim, and for a CPL-0 fault that is kernel text;
+`task_teardown` copies it into the task's exit record. Both readers are ungated: `SYS_WAIT` and
+`SYS_TASK_EXIT_INFO` are `SC_NONE` in the dispatch table, and `h_wait` tests neither parentage nor
+any capability, so any task may wait on any tid and a tid already `TASK_DEAD` is answered at once
+from the corpse.
+
+Measured under `KFAULT_INJECT`, which reproduces the [G-8] supervisor read of 0x94: the record for
+the killed `console_server` carried `rip=0xffffffff80108479`, which `nm -n kernel.elf` resolves to
+`interrupt_handler64 + 0x7b9`.
+
+**What it costs today is nothing, and that is not the point.** With the base fixed by the linker
+script the address is already in `kernel.elf` for anyone to read. This is the same shape as §1.3,
+where `info.cr3` is zeroed and another task's `eip` withheld for exactly this reason, and it turns
+into a slide oracle the day roadmap 3.8 moves the base, disclosed with no authority and at the
+moment a kernel memory-safety defect is being exercised. The fix is to record `rip` only for a
+ring-3 frame; the kernel-side value already reaches the maintainer through the `kfault_frame`
+banner at the UART, which is where it belongs.
+
+### 1.17 A reused task slot keeps the previous occupant's wait record **[HORUS-20260920-02]**
+
+*Found by the same survey.*
+
+`create_task` resets fifteen fields of a reused slot by hand, and states the discipline in place:
+set here, not left to slot-reuse staleness. `exit_info` and `wait_exit_info` are not among them. The
+task table is carved from untyped memory, which the allocator zeroes, so a slot is clean on first
+use and only reuse is at issue.
+
+`h_task_exit_info` answers `tasks[cur].wait_exit_info` with no capability and no test that this task
+ever waited, and `include/syscall.h` documents the opposite: asking before any wait has completed is
+promised `TASK_EXIT_NONE` rather than a stale answer. In a reused slot it answers the previous
+occupant's record instead, which names the tid it supervised, that task's faulting RIP and fault
+address, and its name. A dead task's RIP defeats the ASLR of a task that shared its image, and under
+roadmap 3.8 the same field can carry a kernel address by §1.16.
+
+**Latent rather than observed, measured both ways.** Under `PROC_SELFTEST` the record is
+demonstrably left in the freed slot: `proctest` dies holding the death record of the `faulter` child
+it supervised, with `faulter`'s ASLR'd RIP in it. No measured workload then reuses that slot: the
+scan in `do_spawn_inner` takes the lowest free slot, so short-lived programs churn the low slots
+while the tasks that wait are long-lived, and across a whole `tools/session_test.py` run
+`create_task` is called four times without one inheriting a non-empty record. Forcing the reuse by
+reversing the scan was tried and rejected as evidence, since it perturbs the workload rather than
+the defect. The end-to-end read is therefore the witness that lands with the fix, not a claim made
+ahead of it.
+
+The fix is to clear both fields in `create_task` beside the other fifteen. It also disposes of a
+smaller residue: `task_teardown` writes the dead task's name and terminates it, leaving the bytes
+past the terminator as whatever the slot last held, and all 32 are copied to the waiter.
+
 
 ## 2. Correctness limitations
 

@@ -425,6 +425,19 @@ in this file.
   smoke-boot-module-reserve`; falsified by `make smoke-boot-module-reserve-control`
   (`BOOT_MODULE_RESERVE_UNCHECKED=1`), and the base gate itself goes red under the flag.
   Found while working audit F2.
+- **Boot modules are no longer limited to the room below 16 MiB.** The fix above halted a boot whose
+  modules reached the page pool's base reserves, which capped module capacity at about 5.5 MiB. The
+  reserves now move clear of the modules instead: they go at the lowest address at or above
+  `USER_PHYS_BASE` that touches no module, and the frames they vacate are ordinary pool. The
+  placement check stays as the assertion of it, and every verified module is now hashed a second
+  time after the kernel has written the reserves and before userspace starts, halting on any that
+  changed (28.7 ms for the coreutils, 38.3 ms with TCC, under QEMU without KVM). Module capacity is
+  now bounded by the pool, roughly 465 MiB on a 512 MiB machine (`docs/LIMITATIONS.md` 1.15).
+  `boot_module_top()`, which had no caller, is gone. Witness: `make smoke-boot-module-reserve`, where
+  modules pushed past 16 MiB must boot intact and run from `/bin` and a module in the kernel image
+  must halt; falsified by `make smoke-boot-module-reserve-control` (`POOL_RESERVE_FIXED_BASE=1`),
+  `make smoke-boot-module-reverify-control` (with `BOOT_MODULE_RESERVE_UNCHECKED=1` as well) and
+  `make smoke-boot-module-image-control` (`BOOT_MODULE_RESERVE_UNCHECKED=1`).
 
 ## [0.2.0-alpha]: 2026-09-14
 

@@ -4,10 +4,10 @@
  * (declared extern in syscall_internal.h). Split out of syscall.c. */
 #include "syscall_internal.h"
 
-/* The staged-image buffer is no longer a static .bss array — it is a fixed
- * LOADER_STAGING_BYTES region reserved at the base of the physical pool, which
- * init_user_page_allocator points this at (PHYS_KVA(USER_PHYS_BASE)) before any
- * image is armed. 0 until then; nothing arms an image that early. */
+/* The staged-image buffer is no longer a static .bss array: it is the first
+ * LOADER_STAGING_BYTES of the physical pool's base reserves, which
+ * init_user_page_allocator points this at (PHYS_KVA(pool_reserve_base())) before
+ * any image is armed. 0 until then; nothing arms an image that early. */
 uint8_t *loader_staging = 0;
 struct horus_image_header armed_hdr;
 int program_armed = 0;

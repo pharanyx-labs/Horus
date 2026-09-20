@@ -923,9 +923,9 @@ fails its hash check cannot be executed. `boot_module_verify_all` hashes each pa
 userspace exists, and `SYS_BOOT_MODULE_READ` then checks only the flag. That is sound only while
 nothing else writes the module's bytes, and the kernel did not make sure of it. Two regions below
 `PHYS_POOL_CEIL` are written without consulting the module table: the kernel image, and the page
-pool's base reserves, `[USER_PHYS_BASE, USER_PHYS_BASE + POOL_RESERVE_PAGES)`, which hold loader
-staging, the RAM vdisk and the untyped arena every boot-time kernel object is carved from. The free
-list skips any frame a module touches (`phys_in_boot_module`), but only above the reserves.
+pool's base reserves, which sat at `[USER_PHYS_BASE, USER_PHYS_BASE + POOL_RESERVE_PAGES)` and hold
+loader staging, the RAM vdisk and the untyped arena every boot-time kernel object is carved from. The
+free list skipped any frame a module touches (`phys_in_boot_module`), but only above the reserves.
 
 GRUB places modules upward from the end of the kernel image, so they sit below 16 MiB until `.bss`
 and the module total leave no room. Measured, with a padding module pushing the real ones up: a
@@ -935,19 +935,28 @@ verified `bin/tcc` at 0x11B0000 (inside loader staging) happened to be untouched
 arena would have served kernel objects (cspaces, TCBs) to `fs_server`. No shipped configuration
 reached it: the coreutils and TCC together are 1.9 MiB and ended at 12.1 MiB on the measured boot.
 
-The kernel now checks placement straight after the tag walk records the modules and before
-`paging_init`, so before anything writes either region, and **halts** if any module, verified or
-not, overlaps the image or the reserves (`boot_module_placement_check`, `src/kernel/main.c`). A
-halt and not a refusal of the one module, because a module where the kernel writes means the boot
-environment is broken or hostile. Witness `make smoke-boot-module-reserve`, falsified by
-`BOOT_MODULE_RESERVE_UNCHECKED=1`.
+The first fix (#402) made the kernel **halt** if any module overlapped the image or the reserves,
+which closed the hole and capped module capacity at the gap below 16 MiB, about 5.5 MiB. The
+reserves now **move clear of the modules** instead (`pool_reserve_base`, `src/kernel/paging.c`):
+the window goes at the lowest page-aligned address at or above `USER_PHYS_BASE` that touches no
+module, and the frames it vacates below are ordinary pool. `boot_module_placement_check` still runs
+before `paging_init` and halts if a module overlaps the image or the reserve window, which the
+placement makes unreachable and the check keeps as its assertion. And `boot_module_reverify_all`
+hashes every verified module again once `storage_init` and `scheduler_init` have written the
+reserves and before userspace starts, halting on any that changed: 28.7 ms for the coreutils and
+38.3 ms with TCC, measured under QEMU without KVM. Witness `make smoke-boot-module-reserve`, where a
+16 MiB padding module pushes head, seq and wc past 16 MiB and they must boot intact and run from
+`/bin`; falsified by `POOL_RESERVE_FIXED_BASE=1`, by that flag with
+`BOOT_MODULE_RESERVE_UNCHECKED=1`, and by `BOOT_MODULE_RESERVE_UNCHECKED=1` under a synthetic
+module in the kernel image.
 
-**What remains, and it is a capacity limit rather than a hole.** The room for modules is now the gap
-between the end of what GRUB loads first and `USER_PHYS_BASE`: modules started at 0xA73000 on the
-measured boot, so about 5.5 MiB fit, and a module set larger than that stops the machine rather
-than booting. Every byte `.bss` grows comes out of that room, which is what audit F2 (§3.1) tracks.
-Getting the room back would mean placing the base reserves above the highest module instead of at
-a fixed address; that is not built.
+**What remains.** Module capacity is now bounded by the page pool rather than by the gap below
+16 MiB: the modules GRUB places in the pool plus the 30 MiB reserve window must fit inside it, or
+the boot halts with `mem: HALT the page pool's base reserves do not fit above the boot modules`. On
+the 512 MiB QEMU configuration the pool is 495 MiB, so that is roughly 465 MiB of modules, and the
+16 MiB store volume the modules are provisioned into is the tighter limit in practice. The
+re-verification runs once, before userspace; a write after that is kept off the modules by the
+placement alone.
 
 
 ## 2. Correctness limitations
@@ -2389,8 +2398,8 @@ The chain, since none of its links is visible from the array's declaration:
   kernel's own mapping uses 4 KiB pages rather than 2 MiB ones, and therefore the only window in
   which a guard page can be expressed at all.
 - The headroom was not free either. GRUB stages the boot modules in the gap between `__bss_end`
-  and the pool base, so growing `.bss` toward the assert shrinks the room modules have. A module
-  pushed past the pool base now halts the boot rather than being overwritten (**S96**, §1.15).
+  and the pool base, so growing `.bss` toward the assert pushes modules past it. The pool's base
+  reserves now move clear of any module that lands there (**S96**, §1.15).
 
 So the stacks left `.bss` for a region of their own under `high_pdpt[511]` — one previously
 unused PDPT entry, 1 GiB of kernel-half VA, inside the `pml4[256..511]` range every address

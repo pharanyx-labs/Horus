@@ -134,6 +134,29 @@
 # PIPE_CAP_UNACCOUNTED's arm is counted above: an arm the budget could not see
 # would be a place to hide code.
 #
+# RAISED 2026-09-19, 10009 -> 10081 (+72), for S96's second half: the pool's
+# base reserves follow the boot modules, and every verified module is hashed
+# again before userspace. Measured per file against 06dbf07:
+#
+#     paging.c   1239 -> 1264   (+25)   pool_reserve_base (the first-fit walk
+#                                       and its POOL_RESERVE_FIXED_BASE arm), the
+#                                       halt when the reserves no longer fit, and
+#                                       the free-list loop now skipping a window
+#                                       rather than a prefix
+#     main.c      494 ->  541   (+47)   boot_module_reverify_all and its one-write
+#                                       marker, boot_module_matches_manifest split
+#                                       out so verify and re-verify share one
+#                                       definition of "matches", and the
+#                                       BOOT_MODULE_IMAGE_PROBE selftest (counted
+#                                       for the reason given for the arms above)
+#
+# IT CANNOT LEAVE RING 0, for the same reason as the check below: the reserves
+# are placed and the modules re-hashed before any task exists, and the property
+# is about what the kernel itself writes. What it bought is a capacity limit
+# gone, not a new mechanism: #402 held the property by halting any boot whose
+# modules reached 16 MiB, which capped modules at about 5.5 MiB, and this holds
+# it by moving the reserves instead.
+#
 # RAISED 2026-09-19, 9963 -> 10009 (+46), for S96, the boot-module placement
 # check. All 46 are in main.c: boot_module_placement_check (the two overlap tests,
 # with its BOOT_MODULE_RESERVE_UNCHECKED arm counted for the reason given above)
@@ -191,7 +214,7 @@
 # existed because two numbers were written in two places was closed by deriving one
 # from the other, and the only code the kernel gained is the runtime check that
 # catches the case the constants cannot see.
-core_budget_loc: 10009
+core_budget_loc: 10081
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

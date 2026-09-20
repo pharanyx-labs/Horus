@@ -137,7 +137,8 @@ DEFECT_FLAGS = \
 	AHCI_PROBE_ABSENT AHCI_CAPACITY_CONSTANT SDHCI_PROBE_ABSENT \
 	SDHCI_CSD_SPEC_BITS SDHCI_ADDR_MODE_INVERTED \
 	SDHCI_WRITE_SELFTEST SDHCI_WRITE_NO_FLUSH \
-	CONSOLE_VGA_CHECK_FAIL BOOT_MODULE_RESERVE_UNCHECKED \
+	CONSOLE_VGA_CHECK_FAIL BOOT_MODULE_RESERVE_UNCHECKED POOL_RESERVE_FIXED_BASE \
+	BOOT_MODULE_IMAGE_PROBE \
 	AHCI_PROBE_ABSENT AHCI_CAPACITY_CONSTANT SERIAL_TX_NEVER_DRAINS \
 	META_CACHE_NO_WRITEBACK META_CACHE_WB_OUTSIDE_TXN META_CACHE_EVICT_NOWB \
 	META_CACHE_TINY MERKLE_NODE_TRUST_CACHED MERKLE_SKIP_PARENT_BIND \
@@ -1368,12 +1369,14 @@ COREUTILS_BINS  = $(addprefix userspace/coreutils_,$(addsuffix .bin,$(COREUTILS_
 # its plain-text man page (userspace/man/<name>) to usr/share/man, and hier(7) —
 # the filesystem-layout page — always ships.
 # BOOT_MODULE_RESERVE_PAD=1 ships a 16 MiB padding module AHEAD of every other
-# module, for smoke-boot-module-reserve and its control arm only. GRUB places
+# module, for smoke-boot-module-reserve and its control arms only. GRUB places
 # modules upward from the end of the kernel image, so a 16 MiB module starting
-# anywhere below USER_PHYS_BASE necessarily runs into the page pool's base
-# reserves, and every module after it lands inside them: the placement the
-# kernel must refuse (S96). First in BOOT_MODULES on purpose, so the verified
-# executables behind it are pushed in too, which is the realistic failure.
+# anywhere below USER_PHYS_BASE necessarily runs past it, and every module after
+# it lands above 16 MiB: where the page pool's base reserves sat until
+# 2026-09-19, and where they must now move out of the way of (S96). First in
+# BOOT_MODULES on purpose, so the verified executables behind it are pushed up
+# too, which is the realistic case. It does not fit the store volume, so
+# fs_server skips it and provisions the rest.
 BOOT_MODULE_RESERVE_PAD ?= 0
 ifeq ($(BOOT_MODULE_RESERVE_PAD),1)
 BOOT_MODULES    += userspace/boot_module_pad.bin:usr/share/boot-module-pad
@@ -1383,14 +1386,37 @@ endif
 userspace/boot_module_pad.bin:
 	@head -c 16777216 /dev/zero > $@
 
-# BOOT_MODULE_RESERVE_UNCHECKED=1 restores the pre-2026-09-19 kernel, which
-# recorded and verified a module wherever GRUB put it and never asked whether it
-# was about to write there. A control arm, never a build option:
-# smoke-boot-module-reserve-control requires the padded boot to carry on.
+# BOOT_MODULE_RESERVE_UNCHECKED=1 removes boot_module_placement_check: a module
+# is recorded and verified wherever GRUB put it and nothing asks whether the
+# kernel is about to write there. A control arm, never a build option:
+# smoke-boot-module-image-control requires the image probe's boot to carry on,
+# and smoke-boot-module-reverify-control combines it with the next flag.
 BOOT_MODULE_RESERVE_UNCHECKED ?= 0
 ifeq ($(BOOT_MODULE_RESERVE_UNCHECKED),1)
 CFLAGS  += -DBOOT_MODULE_RESERVE_UNCHECKED
 ASFLAGS += -DBOOT_MODULE_RESERVE_UNCHECKED
+endif
+
+# POOL_RESERVE_FIXED_BASE=1 puts the page pool's base reserves back at
+# USER_PHYS_BASE whatever GRUB loaded there, the layout before 2026-09-19. A
+# control arm, never a build option: smoke-boot-module-reserve-control requires
+# the padded boot to halt on the overlap.
+POOL_RESERVE_FIXED_BASE ?= 0
+ifeq ($(POOL_RESERVE_FIXED_BASE),1)
+CFLAGS  += -DPOOL_RESERVE_FIXED_BASE
+ASFLAGS += -DPOOL_RESERVE_FIXED_BASE
+endif
+
+# BOOT_MODULE_IMAGE_PROBE=1 records a synthetic module over the first page of
+# the kernel's .text before the placement check runs. GRUB never places a module
+# there, so this is the only way to reach the image half of the check. A
+# selftest for smoke-boot-module-reserve, never a build option. It is listed in
+# DEFECT_FLAGS although it restores no defect: it fabricates a boot module, so a
+# boot under it must say so rather than announce `none` (CLAUDE.md section 6).
+BOOT_MODULE_IMAGE_PROBE ?= 0
+ifeq ($(BOOT_MODULE_IMAGE_PROBE),1)
+CFLAGS  += -DBOOT_MODULE_IMAGE_PROBE
+ASFLAGS += -DBOOT_MODULE_IMAGE_PROBE
 endif
 
 COREUTILS_MODULE_SET ?= $(COREUTILS_PROGS)
@@ -6612,50 +6638,85 @@ smoke-modules-tamper:
 tamper.iso: kernel.elf grub.cfg $(BOOT_MODULE_DEP)
 	@tools/tamper_module_iso.sh $@ kernel.elf grub.cfg $(BOOT_MODULES)
 
-# ---- S96: a module where the kernel writes halts the boot -------------------
+# ---- S96: a verified boot module is the one the kernel serves ---------------
 #
 # The hash is taken once, so a verified module stays verified only while nothing
 # else writes its bytes. The kernel writes its own image and the page pool's base
-# reserves (loader staging, the RAM vdisk, the untyped arena) without consulting
-# the module table; measured 2026-09-19, a verified bin/tcc pushed into the vdisk
-# no longer matched its manifest hash when fs_server read it.
+# reserves (loader staging, the RAM vdisk, the untyped arena). Until 2026-09-19
+# the reserves sat at USER_PHYS_BASE whatever GRUB put there; measured then, a
+# verified bin/tcc pushed into the vdisk no longer matched its manifest hash when
+# fs_server read it. #402 halted such a boot; the reserves now move clear of the
+# modules (pool_reserve_base), and every verified module is hashed again once
+# the reserves have been written and before userspace starts.
 #
-# TWO BOOTS, because a refusal alone proves nothing. The first ships the 16 MiB
-# pad, so every module lands in the reserves, and requires the kernel to name the
-# overlap and then STALL: the halt is a `cli; hlt`, so the evidence it held is
-# that the next thing a continuing boot prints, the manifest verdict, never
-# comes. The second ships the same modules without the pad, below USER_PHYS_BASE
-# where GRUB puts them today, and requires an ordinary boot to the shell. A check
-# that halted every boot with modules would pass the first and fail here.
+# THREE BOOTS, one per claim.
+#  1. The 16 MiB pad ahead of head, seq and wc, so every module after it lands
+#     above 16 MiB. The boot must reach the shell and print the re-verification
+#     line, which names the reserves as MOVED: a pad that no longer pushed
+#     anything past 16 MiB would print "at USER_PHYS_BASE" and fail this, rather
+#     than pass without testing the move.
+#  2. The same ISO through coreutils_session.py: head, seq and wc, loaded above
+#     16 MiB, run from /bin. A module the kernel kept but could not serve intact
+#     would fail here.
+#  3. BOOT_MODULE_IMAGE_PROBE, a module recorded over the kernel's .text: the
+#     boot must halt naming it and then STALL, the refusal a continuing boot
+#     prints for an unmanifested module never appearing.
+PAD_MODULES = COREUTILS_MODULES=1 COREUTILS_MODULE_SET="head seq wc" BOOT_MODULE_RESERVE_PAD=1
+
 .PHONY: smoke-boot-module-reserve
 smoke-boot-module-reserve:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 BOOT_MODULE_RESERVE_PAD=1
-	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 BOOT_MODULE_RESERVE_PAD=1 horus.iso
+	@$(MAKE) --no-print-directory $(PAD_MODULES)
+	@$(MAKE) --no-print-directory $(PAD_MODULES) horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
-		EXPECT_STALL="boot: HALT boot module usr/share/boot-module-pad" \
-		ABSENT_MARKER='boot modules verified against the embedded manifest' \
+		REQUIRE_MARKER='boot: all boot modules re-verified after the pool was built, with the pool reserves moved clear of them' \
+		FAIL_MARKER='boot: HALT' \
 		tools/smoke_test.sh horus.iso
+	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) tools/coreutils_session.py horus.iso
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory COREUTILS_MODULES=1
-	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 horus.iso
+	@$(MAKE) --no-print-directory BOOT_MODULE_IMAGE_PROBE=1
+	@$(MAKE) --no-print-directory BOOT_MODULE_IMAGE_PROBE=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
-		REQUIRE_MARKER='boot modules verified against the embedded manifest' \
-		FAIL_MARKER='boot: HALT boot module' \
+		EXPECT_STALL="boot: HALT boot module image-probe" \
+		ABSENT_MARKER='boot module refused (no manifest match)' \
 		tools/smoke_test.sh horus.iso
-	@echo "[module-reserve] PASS - a module in the base reserves halts the boot; one below them does not"
+	@echo "[module-reserve] PASS - modules past 16 MiB boot intact and run; a module in the kernel image halts"
 
-# The falsifying arm: the same padded ISO on a kernel that does not check, which
-# verifies every module where it lies and boots on. It requires the manifest
-# verdict (the line the base gate forbids) and fails on the halt.
+# The falsifying arm for the MOVE: the reserves back at USER_PHYS_BASE, under the
+# same padded ISO. The placement check must catch the overlap and name it.
 .PHONY: smoke-boot-module-reserve-control
 smoke-boot-module-reserve-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 BOOT_MODULE_RESERVE_PAD=1 BOOT_MODULE_RESERVE_UNCHECKED=1
-	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 BOOT_MODULE_RESERVE_PAD=1 BOOT_MODULE_RESERVE_UNCHECKED=1 horus.iso
+	@$(MAKE) --no-print-directory $(PAD_MODULES) POOL_RESERVE_FIXED_BASE=1
+	@$(MAKE) --no-print-directory $(PAD_MODULES) POOL_RESERVE_FIXED_BASE=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
-		REQUIRE_MARKER='boot modules verified against the embedded manifest' \
-		FAIL_MARKER='boot: HALT boot module' \
+		REQUIRE_MARKER="overlaps the page pool's base reserves; refusing to boot" \
+		tools/smoke_test.sh horus.iso
+
+# The falsifying arm for the RE-VERIFICATION: the reserves back on the modules AND
+# the placement check gone, the pre-#402 kernel. The vdisk is formatted over the
+# modules behind the pad, and the re-verification must catch it by name before
+# userspace starts.
+.PHONY: smoke-boot-module-reverify-control
+smoke-boot-module-reverify-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(PAD_MODULES) POOL_RESERVE_FIXED_BASE=1 BOOT_MODULE_RESERVE_UNCHECKED=1
+	@$(MAKE) --no-print-directory $(PAD_MODULES) POOL_RESERVE_FIXED_BASE=1 BOOT_MODULE_RESERVE_UNCHECKED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='changed after it was verified; refusing to boot' \
+		tools/smoke_test.sh horus.iso
+
+# The falsifying arm for the IMAGE half: the placement check gone, under the image
+# probe. The boot carries on to the manifest, which refuses the synthetic module
+# because it was never in it; the halt the base gate requires never comes.
+.PHONY: smoke-boot-module-image-control
+smoke-boot-module-image-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory BOOT_MODULE_IMAGE_PROBE=1 BOOT_MODULE_RESERVE_UNCHECKED=1
+	@$(MAKE) --no-print-directory BOOT_MODULE_IMAGE_PROBE=1 BOOT_MODULE_RESERVE_UNCHECKED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='boot module refused (no manifest match)' \
+		FAIL_MARKER='boot: HALT' \
 		tools/smoke_test.sh horus.iso
 
 # Measured boot (roadmap 2.2): boot under an emulated TPM (swtpm) and assert the

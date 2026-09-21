@@ -67,7 +67,7 @@ evidence. Their **current status** is in [LIMITATIONS.md](LIMITATIONS.md), not h
 | [`G-10-spawn-path-uaf.md`](investigations/G-10-spawn-path-uaf.md) | Closed 2026-08-18 |
 | [`G-11-armed-image-ownership.md`](investigations/G-11-armed-image-ownership.md) | Closed 2026-08-18 |
 | [`G-12-claim-invariant-residue.md`](investigations/G-12-claim-invariant-residue.md) | Closed 2026-09-03 |
-| [`kernel-pointer-disclosure.md`](investigations/kernel-pointer-disclosure.md) | **Open**: two findings, roadmap 3.8 |
+| [`kernel-pointer-disclosure.md`](investigations/kernel-pointer-disclosure.md) | **Open**: one of two findings closed (§1.16); §1.17 remains, roadmap 3.8 |
 
 ---
 

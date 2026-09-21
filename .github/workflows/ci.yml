@@ -1853,6 +1853,32 @@ jobs:
       - name: Restore println() reporting and require the report to be INAUDIBLE
         run: make smoke-kfault-legacy SMOKE_TIMEOUT=180
 
+  smoke-kfault-record:
+    name: A kernel fault's exit record carries no kernel address (S97)
+    runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes;
+    # that cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 105
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # HORUS-20260920-01. The exit record is readable by any task with no
+      # authority, so a supervisor fault must not put kernel text (or a
+      # kernel-half fault address) in it: under KASLR one such value is the slide.
+      - name: Make the kernel fault on a task's behalf and read the record back from ring 3
+        run: make smoke-kfault-record SMOKE_TIMEOUT=180
+      # The control arm, in the same job: the defect put back, and proctest
+      # must name the kernel rip it finds.
+      - name: Put the kernel rip back in the record and require proctest to catch it
+        run: make smoke-kfault-record-control SMOKE_TIMEOUT=180
+
   smoke-kdiag:
     name: A kernel marker cannot be cut in half by ring-3 output (S81)
     runs-on: ubuntu-latest

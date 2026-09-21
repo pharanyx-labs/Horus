@@ -1106,9 +1106,46 @@ task could block on any tid, and a tid that read `TASK_DEAD` (which is also what
 reads) was answered at once from the slot, handing over its exit record: the reason, the killer,
 the faulting rip and address, and the name.
 
-**Not closed by this:** a `CAP_TCB` names a task by its slot number, and a spawner's copy outlives the
-child. Whether it then names whatever task next occupies that slot, and so what `SYS_KILL`, the
-signal calls and now `SYS_WAIT` authorise after a reuse, is being measured separately.
+A second question this raised, whether a `CAP_TCB` for a dead task names whatever reuses its slot,
+was measured the same day and was a finding of its own: §1.19.
+
+### 1.19 ~~A capability for a dead task names whatever reuses its slot~~ (**FIXED 2026-09-21**, `SECURITY.md` S100) **[HORUS-20260921-02]**
+
+*Measured and fixed 2026-09-21, from the question §1.18 left open.*
+
+**Closed.** A `CAP_TCB` carries `tcb_object(id)`: the slot number and the slot's generation, which
+`create_task` increments before the slot goes live and nothing else writes. `task_tcb_held` compares
+both, so a capability names one incarnation and never its successor; a bare slot number has
+generation 0 and names nothing. Every writer of a `CAP_TCB` object encodes it: `create_task` (a
+task's own slot 0), the spawn grant, `h_sudo`, and `cap_install_from_root`, which encodes for its
+callers rather than trusting each. The check alone would leave a window between checking and acting,
+so the five syscalls a `CAP_TCB` authorises (`SYS_KILL`, `SYS_SIGNAL`, `SYS_TASK_RESUME`,
+`SYS_CAP_GRANT`, `SYS_WAIT`) now check and act under the spawn lock, which every task-creating path
+already holds: a slot cannot be reused between the two. A pending `SYS_WAIT` records the generation
+it was authorised against, and `ipc_publish_pending_block` re-checks it under the same lock before
+registering the waiter, so a wait authorised for one task can never be registered on its successor.
+
+`make smoke-proc` reproduces the reuse end to end without changing how the kernel picks a slot: the
+driver keeps the `CAP_TCB` for a child that has died, and `slotheir`, which the driver spawned
+first, spawns a task into the lowest free slot (the child's) and keeps that task's capability. Every
+one of the five operations is then tried with the stale capability and must be refused while the
+heir stays alive; the phase fails the test by name if the heir did not land in the slot. The control
+arm, `TCB_GENERATION_UNCHECKED=1`, compares by slot number alone and is caught by name. The account
+of the finding follows.
+
+A task slot is handed out again as soon as its occupant dies (`do_spawn_inner` takes the lowest free
+one), and nothing revoked the `CAP_TCB` a spawner holds for its child when the child died. The
+capability's object was the bare slot number, so after a reuse it named the new occupant. Measured
+on the kernel before the fix, with nothing but that stale capability, the driver:
+
+- **signalled** the heir with `SIGUSR1`, which has no handler in it, so the default action
+  **killed** it;
+- then **waited** on the slot and was handed the heir's death record (`reason=3`, the heir's tid);
+- in a second run, **delegated** one of its own capabilities into the heir with `SYS_CAP_GRANT`,
+  and **killed** it with `SYS_KILL`.
+
+A `CAP_TCB` spreads further than its spawner: fork copies a parent's into the child, and
+`SYS_CAP_GRANT` delegates it. Each copy outlived its task in the same way.
 
 ## 2. Correctness limitations
 
@@ -2489,7 +2526,7 @@ the present cost is affordable and is not what blocks anything.
 |---|---|---|
 | Tasks | 256 **provisioned**, derived at boot | `g_max_tasks` (from the reserve; `MAX_TASKS` provisions it) |
 | Capabilities per task | 128 in use, 256 slots | `MAX_CAPS_PER_TASK`, `CNODE_SIZE` |
-| CPUs | 4 | `MAX_CPUS` |
+| CPUs | 8, and 8 by default; fewer boot and run on what is present | `MAX_CPUS` (`src/include/cpu_limits.h`) |
 | Static endpoints (well-known + per-task reply) | 128 | `MAX_ENDPOINTS` |
 | Retyped endpoint descriptors | 256 | `MAX_DYN_ENDPOINTS`, indices from `DYN_EP_BASE` |
 | Static notifications | 64 | `MAX_NOTIFICATIONS` |
@@ -2507,12 +2544,13 @@ the present cost is affordable and is not what blocks anything.
 
 **The whole kernel image is itself a ceiling, and one static object dominates it (audit F2,
 closed 2026-09-19).** The image must end below `USER_PHYS_BASE` (16 MiB), enforced by the
-`linker64.ld` ASSERT. `.bss` is budgeted at **7,052 KiB** (`.github/image-budget.yml`), and
+`linker64.ld` ASSERT. `.bss` is budgeted at **7,452 KiB** (`.github/image-budget.yml`), and
 `argon2_scratch` alone is 4,096 KiB of it: the argon2 `m_cost` (`ARGON2_M_COST_KIB = 4096`), a
 deliberate memory-hardness parameter that must not be trimmed to buy room. The whole image ends
-about 7.3 MiB below the line: 0x8B4000 on CI and 0x8B7000 on a Void build of the same tree, because
-the code differs between compilers and `.bss` does not. Raising `MAX_TASKS`, `BLOCKS_PER_DISK` or
-the argon2 cost spends that room, and GRUB stages the boot modules in the same room (§1.15).
+about 6.9 MiB below the line: 0x91B000 on a Void build on 2026-09-21, after `MAX_CPUS` went from
+four to eight and took 400 KiB of it (CI's compiler has measured about 12 KiB lower, because the
+code differs between compilers and `.bss` does not). Raising `MAX_TASKS`, `MAX_CPUS`,
+`BLOCKS_PER_DISK` or the argon2 cost spends that room, and GRUB stages the boot modules in the same room (§1.15).
 
 **Growth is no longer silent.** `tools/check_image_budget.py` holds the default build's `.bss` to
 the budget exactly, in both directions, so every change to it is a line in the budget file that a
@@ -2729,6 +2767,18 @@ A shared runnable pool with a linear scan and no affinity, no load balancing bey
 "whoever asks first", no priorities beyond a stored-but-unused field, and no real-time
 guarantees. Under TCG emulation four cores are measurably *slower* than one; the
 multi-core benefit needs KVM or real hardware to appear.
+
+**Why the ceiling is eight, and what going further takes** (2026-09-21, when it rose from four).
+Each supported CPU costs about 104 KiB of `.bss` whether or not it is present (a 68 KiB idle
+stack with its guard page, three IST fault stacks, and a TSS with its I/O bitmap), and all of it
+must fit below `USER_PHYS_BASE`, where GRUB stages the boot modules. Past about 16 those per-CPU
+blocks need allocating at boot instead of reserving statically. The harder limit is contention:
+the scheduler, capability, IPC-endpoint, spawn, page and storage locks are each global, and
+selection scans the whole task table, so beyond eight to sixteen cores extra CPUs mostly wait on
+those locks. Using them needs per-CPU run queues and finer locking. xAPIC ids are eight bits, so
+more than 255 CPUs would also need x2APIC and interrupt remapping. The race gates of §5.2 were
+measured at four CPUs; `smoke-smp-topology` covers bring-up and scheduling at eight on four
+topologies, including sparse LAPIC ids and SMT.
 
 ### 3.4 No timers or clock
 
@@ -4399,7 +4449,7 @@ so neither was ever presented to a contributor. There was no code of conduct, an
 the IPC authorisation logic. All fixed as of 2026-07-27; the `require_code_owner_review`
 setting that would make `CODEOWNERS` binding is still off (§5.1).
 
-*(Repository hygiene itself is fine: `git ls-files` reports **428** tracked files with no build
+*(Repository hygiene itself is fine: `git ls-files` reports **430** tracked files with no build
 artefacts or vendored binaries: no `kernel.elf`, no `horus.iso`, no object files. A working
 checkout accumulates ~70 MB of untracked build output, which is correctly `.gitignore`d. This
 sentence said 243 until 2026-08-15 and **254 until 2026-09-20**, by which point the tree had

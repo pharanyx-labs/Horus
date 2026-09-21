@@ -53,6 +53,90 @@ static int apic_is_smt_sibling(uint32_t apic_id) {
     return (apic_id & ((1u << (unsigned)shift) - 1u)) != 0;
 }
 
+/* ---- Dense CPU numbering (2026-09-21) ----------------------------------------
+ *
+ * A CPU's INDEX (0..MAX_CPUS-1: its TSS, its idle stack, every per-CPU array) is
+ * not its LAPIC id. It was, until this change: the trampoline picked a stack by
+ * LAPIC id and every core whose id reached MAX_CPUS parked. That holds on QEMU's
+ * default topology and nowhere else it has to: firmware numbers LAPICs with gaps
+ * on SMT and multi-socket parts (a two-socket, three-core, two-thread machine
+ * numbers them 0-5 then 8-11), and the BSP need not be id 0. So a machine could
+ * offer eight cores and bring up six.
+ *
+ * apic_to_cpu[] maps every possible LAPIC id to an index, or CPU_INDEX_NONE for a
+ * core with no slot, and is written ONCE, by the BSP, before any AP is woken; the
+ * trampoline and this_cpu_lapic() only read it. cpu_to_apic[] is the inverse, for
+ * anything that needs the id of a CPU it knows by index.
+ *
+ * WHICH CORES GET THE SLOTS is a security decision as much as a capacity one.
+ * An SMT sibling is parked in ap_entry64 (it shares its core's L1/L2 with the
+ * primary thread, and flush-on-switch cannot cover that), but it still takes a
+ * slot: it runs ap_entry64 on its own stack with its own TSS. Handing slots out
+ * in MADT order would let siblings take slots a schedulable core needed -- four
+ * cores and four parked siblings on an eight-slot machine -- so primaries are
+ * numbered first and siblings get whatever is left. A sibling left without a
+ * slot parks in the trampoline instead, which is no less parked.
+ *
+ * The MADT is firmware, and firmware is outside the trusted core: an id listed
+ * twice is numbered once, and the index is bounded here and again in the
+ * trampoline, which does not trust the map. */
+uint8_t apic_to_cpu[256];
+uint8_t cpu_to_apic[MAX_CPUS];
+
+/* The LAPIC id of the CPU executing this, read from the hardware. Not an index:
+ * use this_cpu() for that. */
+uint32_t this_apic_id(void) {
+    volatile uint32_t *lapic = (volatile uint32_t *)0xFEE00000UL;
+    return (lapic[0x20 / 4] >> 24) & 0xFFu;
+}
+
+/* Is the CPU at dense index `cpu` a secondary SMT thread? Answered from the
+ * LAPIC id the map recorded for it, never from the index. For SMP_SELFTEST's
+ * witness that no task ran on a sibling. */
+int cpu_is_smt_sibling(int cpu) {
+    if (cpu < 0 || cpu >= MAX_CPUS || cpu_to_apic[cpu] == CPU_INDEX_NONE) return 0;
+    return apic_is_smt_sibling(cpu_to_apic[cpu]);
+}
+
+#ifdef SMP
+/* Build apic_to_cpu[] from the MADT's enabled LAPIC ids (`ids`, `n` of them), or,
+ * when the MADT could not be read (n < 1), from the assumption the kernel always
+ * made: ids 0..MAX_CPUS-1. Returns the number of CPUs given an index (the BSP
+ * included), which is how many bringup waits for. */
+static int smp_build_cpu_map(const uint8_t *ids, int n) {
+    for (int i = 0; i < 256; i++) apic_to_cpu[i] = CPU_INDEX_NONE;
+    for (int c = 0; c < MAX_CPUS; c++) cpu_to_apic[c] = CPU_INDEX_NONE;
+
+    uint32_t bsp = this_apic_id();
+    apic_to_cpu[bsp] = 0;
+    cpu_to_apic[0]   = (uint8_t)bsp;
+    int next = 1;
+
+#ifdef APIC_ID_IS_CPU_INDEX
+    /* CONTROL ARM: the pre-2026-09-21 numbering, index == LAPIC id, whatever the
+     * MADT says. A core whose id reaches MAX_CPUS gets no slot and parks. */
+    n = 0;
+#endif
+    if (n < 1) {
+        for (uint32_t id = 0; id < MAX_CPUS && next < MAX_CPUS; id++) {
+            if (apic_to_cpu[id] != CPU_INDEX_NONE) continue;
+            apic_to_cpu[id] = (uint8_t)next; cpu_to_apic[next] = (uint8_t)id; next++;
+        }
+        return next;
+    }
+    /* Pass 0: primary threads. Pass 1: SMT siblings, into what is left. */
+    for (int pass = 0; pass < 2; pass++) {
+        for (int i = 0; i < n && next < MAX_CPUS; i++) {
+            uint32_t id = ids[i];
+            if (apic_to_cpu[id] != CPU_INDEX_NONE) continue;   /* BSP, or listed twice */
+            if (apic_is_smt_sibling(id) != (pass == 1)) continue;
+            apic_to_cpu[id] = (uint8_t)next; cpu_to_apic[next] = (uint8_t)id; next++;
+        }
+    }
+    return next;
+}
+#endif
+
 /* Set once the local APIC is up on the BSP (so this_cpu() is safe to call).
  * Gates the per-CPU TSS routing in set_tss_kernel_stack(); stays 0 in the
  * single-CPU default build. Read by gdt.c. */
@@ -64,6 +148,7 @@ volatile int smp_active = 0;
 #define AP_STACK_BASE_CELL   0x8FD8UL
 #define AP_CR3_CELL          0x8FE0UL
 #define AP_ENTRY_CELL        0x8FE8UL
+#define AP_CPUMAP_CELL       0x8FF0UL   /* &apic_to_cpu[0]; see ap_trampoline.S */
 /* Per-CPU ring-0 idle/park slot: one guard page plus KERNEL_STACK_SIZE of usable
  * stack, so the space a parked CPU gets is exactly what it got on task 0's stack
  * before the [G-8] park fix moved it here.
@@ -156,12 +241,10 @@ uint32_t ap_idle_guard_count(void) { return (uint32_t)MAX_CPUS; }
 uint64_t ap_idle_guard_vaddr(int i) { return (uint64_t)(uintptr_t)ap_idle_guard(i); }
 #endif
 
-/* ap_trampoline.S bounds the LAPIC id against its own AP_MAX_CPUS: it is
- * assembled with -x assembler-with-cpp and cannot include a header full of C
- * declarations, so the value is duplicated there. Pin the two together — if
- * this fires, update AP_MAX_CPUS in src/boot/ap_trampoline.S to match. */
-_Static_assert(MAX_CPUS == 4,
-               "MAX_CPUS changed: update AP_MAX_CPUS in src/boot/ap_trampoline.S to match");
+/* MAX_CPUS is no longer duplicated in ap_trampoline.S: both include
+ * cpu_limits.h, so the assert that pinned the two copies together is gone with
+ * the second copy. The trampoline still bounds the index itself (see there). */
+_Static_assert(MAX_CPUS >= 2 && MAX_CPUS < CPU_INDEX_NONE, "CPU index must fit a map byte");
 /* The trampoline strides the idle-stack array by this value in assembly, where it
  * is a literal. Nothing detected a mismatch before: the size was duplicated with
  * no assertion at all, so changing it on one side alone would hand every AP a
@@ -285,7 +368,17 @@ void ap_entry64(void) {
      * are ON, so TLB-shootdown IPIs are handled (and acked) here; only the LOCAL
      * timer that would drive scheduling is left off. This is "disable SMT" done in
      * software, without needing to suppress the AP in firmware. */
+    /* Carries S101: no task runs on a secondary SMT thread.
+     * The LAPIC id, NOT `cpu`: the index is dense and says nothing about SMT
+     * position. Passing the index was correct only while index == LAPIC id, and
+     * getting it wrong would schedule tasks on a sibling thread. */
+#ifndef SMT_SIBLING_BY_INDEX
+    if (apic_is_smt_sibling(this_apic_id())) {
+#else
+    /* CONTROL ARM: decide sibling-ness from the dense index, which parks the
+     * wrong CPUs and schedules tasks on real siblings. */
     if (apic_is_smt_sibling((uint32_t)cpu)) {
+#endif
         /* Parked and holding no task, like any other idle CPU. This one never
          * starts its timer so preempt_on_tick never runs here, but the flag is
          * the honest description of the state and keeps the claim invariant
@@ -363,6 +456,7 @@ static void smp_start_aps(int expected_cpus) {
     *(volatile uint64_t *)PHYS_KVA(AP_CR3_CELL)        = cr3;
     *(volatile uint64_t *)PHYS_KVA(AP_ENTRY_CELL)      = (uint64_t)(uintptr_t)&ap_entry64;
     *(volatile uint64_t *)PHYS_KVA(AP_STACK_BASE_CELL) = (uint64_t)(uintptr_t)&ap_idle_stacks[0][0];
+    *(volatile uint64_t *)PHYS_KVA(AP_CPUMAP_CELL)     = (uint64_t)(uintptr_t)&apic_to_cpu[0];
     __asm__ volatile ("mfence" ::: "memory");
 
     lapic_broadcast_init_sipi((uint8_t)(AP_TRAMP_PHYS >> 12));   /* vector 0x08 */
@@ -394,6 +488,23 @@ void smp_bringup(void) {
      * per-CPU TSS routing can turn on before any AP or context switch runs. */
     smp_active = 1;
 
+    /* Number the CPUs before anything asks which one it is: percpu_id_verify_self
+     * below checks this CPU's STR-derived index against apic_to_cpu[], and the
+     * trampoline reads the map the moment an AP wakes. 256 entries, not MAX_CPUS:
+     * a primary thread listed after the first MAX_CPUS entries must still be seen
+     * before the siblings are numbered. */
+    static uint8_t apic_ids[256];
+    int ncpu = acpi_detect_cpus(apic_ids, 256);
+    if (ncpu < 1) {
+        println("smp: ACPI MADT unreadable, assuming LAPIC ids 0..MAX_CPUS-1");
+    } else if (ncpu > MAX_CPUS) {
+        /* More CPUs than slots: the map gives the first MAX_CPUS (primaries
+         * first) an index and the rest park in the trampoline, so this only
+         * forgoes their compute, never faults. */
+        println("smp: MADT reports more CPUs than MAX_CPUS, capping");
+    }
+    ncpu = smp_build_cpu_map(apic_ids, ncpu > 256 ? 256 : ncpu);
+
     /* The BSP's TSS (selector 0x38) was ltr'd by setup_tss64 in the boot asm, so
      * its STR path is already live; this is the first point the LAPIC oracle is
      * safe to read, which is what the check needs to compare against. */
@@ -405,23 +516,9 @@ void smp_bringup(void) {
      * on CPU 0" and break single-CPU scheduling. */
     for (int i = 0; i < g_max_tasks; i++) task_running_cpu[i] = -1;
 
-    /* Ask ACPI how many CPUs actually exist. On success we wake and wait for
-     * exactly that many; a uniprocessor skips AP bringup entirely (no trampoline
-     * staging, no INIT-SIPI, no wait). If the MADT can't be parsed, fall back to
-     * the old conservative broadcast that assumes up to MAX_CPUS. */
-    uint8_t apic_ids[MAX_CPUS];
-    int ncpu = acpi_detect_cpus(apic_ids, MAX_CPUS);
-    if (ncpu < 1) {
-        println("smp: ACPI MADT unreadable, assuming up to MAX_CPUS");
-        ncpu = MAX_CPUS;
-    } else if (ncpu > MAX_CPUS) {
-        /* More CPUs than we have idle-stack slots for: cap here; any AP whose
-         * LAPIC id lands outside the array parks in the trampoline (see
-         * ap_trampoline.S), so this only forgoes their compute, never faults. */
-        println("smp: MADT reports more CPUs than MAX_CPUS, capping");
-        ncpu = MAX_CPUS;
-    }
-
+    /* `ncpu` is how many CPUs the map numbered above, the BSP included: we wake
+     * and wait for exactly that many; a uniprocessor skips AP bringup entirely
+     * (no trampoline staging, no INIT-SIPI, no wait). */
     if (ncpu > 1) {
         smp_start_aps(ncpu);
     } else {

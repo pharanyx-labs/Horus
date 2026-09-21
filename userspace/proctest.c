@@ -521,6 +521,63 @@ void _start(void) {
         if (!reached) { report("PROC_SELFTEST: FAIL slot-reuse-not-reached\n"); sys_exit(); }
         report("PROC_SELFTEST: slot-reuse OK\n");
     }
+
+    /* --- HORUS-20260921-02 (docs/LIMITATIONS.md 1.19): a CAP_TCB names ONE
+     * task, not a slot number. We spawn a child `c`, keep the CAP_TCB the spawn
+     * gave us, and let `c` die. `slotheir` then spawns "hello" into the lowest
+     * free slot, which is c's, and leaves it suspended; the new occupant's
+     * CAP_TCB went to slotheir, not to us. Every operation a CAP_TCB authorises
+     * is then tried on that slot number with the stale capability, and each must
+     * be refused. Signal first: under the defect it is the least destructive, so
+     * the arm names the defect before anything is killed.
+     *
+     * slotheir is spawned BEFORE c, so it holds the lower slot and c takes the
+     * next; nothing below c is freed in between, so c's slot is the lowest free
+     * when slotheir spawns. Checked, not assumed: not reaching the slot fails the
+     * TEST by name. The positive direction is every earlier phase, where a fresh
+     * CAP_TCB still authorises kill, signal, resume, grant and wait.
+     *
+     * Last in the ordinary sequence: the heir stays suspended in its slot, and
+     * nothing here may kill it (that is the point), so it must not sit under the
+     * timing-coupled phases above. --- */
+    {
+        int r = sys_spawn_named("slotheir");
+        if (r <= 0) { report("PROC_SELFTEST: FAIL tcb-reuse-heir-spawn\n"); sys_exit(); }
+        if (sys_cap_grant(r, CAPSLOT_UNTYPED, CAPSLOT_UNTYPED) != 0) {
+            report("PROC_SELFTEST: FAIL tcb-reuse-heir-untyped\n"); sys_exit();
+        }
+        int c = sys_spawn_named("hello");
+        if (c <= 0) { report("PROC_SELFTEST: FAIL tcb-reuse-child-spawn\n"); sys_exit(); }
+        sys_task_resume(c);
+        if (sys_wait(c) != 0) { report("PROC_SELFTEST: FAIL tcb-reuse-child-wait\n"); sys_exit(); }
+        sys_task_resume(r);
+        if (sys_wait(r) != 0) { report("PROC_SELFTEST: FAIL tcb-reuse-heir-wait\n"); sys_exit(); }
+
+        struct task_info hi;
+        if (sys_get_task_info(c, &hi) != 0 || hi.state == 0 || !name_eq(hi.name, "hello")) {
+            report("PROC_SELFTEST: FAIL tcb-reuse-not-reached\n"); sys_exit();
+        }
+        if (sys_send_signal(c, SIG_USR1) != SYS_ERR_PERM) {
+            report("PROC_SELFTEST: FAIL tcb-stale-signal\n"); sys_exit();
+        }
+        if (sys_task_resume(c) != SYS_ERR_PERM) {
+            report("PROC_SELFTEST: FAIL tcb-stale-resume\n"); sys_exit();
+        }
+        if (sys_cap_grant(c, 7, DELEGATED_TCB_SLOT) != SYS_ERR_PERM) {
+            report("PROC_SELFTEST: FAIL tcb-stale-grant\n"); sys_exit();
+        }
+        if (sys_kill(c) != SYS_ERR_PERM) {
+            report("PROC_SELFTEST: FAIL tcb-stale-kill\n"); sys_exit();
+        }
+        /* Last: under the defect a wait would block for the heir's lifetime. */
+        if (sys_wait(c) != SYS_ERR_PERM) {
+            report("PROC_SELFTEST: FAIL tcb-stale-wait\n"); sys_exit();
+        }
+        if (sys_get_task_info(c, &hi) != 0 || hi.state == 0) {
+            report("PROC_SELFTEST: FAIL tcb-reuse-heir-gone\n"); sys_exit();
+        }
+        report("PROC_SELFTEST: tcb-reuse OK\n");
+    }
 #ifdef KFAULT_RECORD_SELFTEST
     /* --- HORUS-20260920-01 (docs/LIMITATIONS.md 1.16): a SUPERVISOR fault's
      * record carries no kernel address. kfaulter makes the kernel read an address

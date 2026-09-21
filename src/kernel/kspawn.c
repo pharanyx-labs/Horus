@@ -509,7 +509,9 @@ static void grant_child_tcb_cap(int spawner, int pid) {
      * accumulate one uncounted CAP_TCB per spawn, and then be CREDITED for each
      * one by cap_consume_slot, which does decrement. That is the stated ceiling
      * made void in both directions. */
-    (void)cap_install_object_first_free(16, CAP_TCB, (uint64_t)pid,
+    /* tcb_object, not the bare pid: the capability names this child, and stops
+     * naming anything once the child's slot is reused (HORUS-20260921-02). */
+    (void)cap_install_object_first_free(16, CAP_TCB, tcb_object(pid),
                                         CAP_RIGHT_READ | CAP_RIGHT_WRITE, 0, NULL);
 }
 

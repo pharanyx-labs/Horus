@@ -31,6 +31,8 @@
 # like an old one.
 
 control_arms:
+  smoke-smp-topology-sparse-control: smoke-smp-topology
+  smoke-smp-topology-sibling-control: smoke-smp-topology
   smoke-cap-accounting-control: smoke-captest
   smoke-reply-ep-control: smoke-reply-ep
   smoke-captest-capenum-control: smoke-captest
@@ -171,6 +173,7 @@ control_arms:
   smoke-kfault-record-control: smoke-kfault-record
   smoke-proc-exit-record-control: smoke-proc
   smoke-proc-wait-control: smoke-proc
+  smoke-proc-tcb-reuse-control: smoke-proc
   smoke-klog-forge-abi-control: smoke-klog-forge
   smoke-klog-forge-control: smoke-klog-forge
   smoke-ksp-guard-control: smoke-ksp-guard
@@ -386,6 +389,7 @@ gates:
   - smoke-shlibc-link
   - smoke-signal
   - smoke-smp
+  - smoke-smp-topology
   - smoke-smt
   - smoke-spawn-owner
   - smoke-stackguard

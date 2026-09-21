@@ -779,11 +779,14 @@ Requires `swtpm` and `swtpm-tools`. Driven through `tools/run_with_swtpm.sh`.
 |---|---|
 | `smoke-preempt` | The timer genuinely time-slices two ring-3 tasks. |
 | `smoke-signal` | A ring-3 fault is delivered to a registered handler. |
-| `smoke-smp` | APs come online from the MADT, run scheduled tasks on distinct CPUs, and TLB shootdown completes. |
+| `smoke-smp` | APs come online from the MADT, **every** schedulable AP runs a scheduled task (not merely two CPUs), no task runs on an SMT sibling, and TLB shootdown completes. Eight CPUs by default. |
+| `smoke-smp-topology` | Eight CPUs on four topologies: contiguous LAPIC ids; sparse ids (four sockets of three cores, ids 0-2, 4-6, 8, 9); sixteen threads on eight cores, where the primaries must get all eight slots; four cores of two threads, where four must come online and four siblings park; and plain 4 and 2 CPUs, since a machine below the ceiling must run as it is (1 CPU is `make smoke`). The online count is part of the required marker. |
+| `smoke-smp-topology-sparse-control` | Control arm. `APIC_ID_IS_CPU_INDEX=1`: on the sparse topology two cores have ids past the ceiling and park, and the kernel must say six. |
+| `smoke-smp-topology-sibling-control` | Control arm for **S101**. `SMT_SIBLING_BY_INDEX=1`: counts still read four online and four parked, so the self-test's per-CPU check must catch a task on a sibling. |
 | `smoke-smt` | SMT sibling threads are parked, closing same-core co-residency. |
 | `smoke-flush` | Flush-on-switch detection matches CPUID, the gated barriers execute without faulting, and the **policy** flushes only on a genuine task change. (Barriers are no-ops under TCG; they engage on hardware or KVM.) |
 | `smoke-tsd` | A ring-3 `RDTSC` faults under `CR4.TSD`. |
-| `smoke-proc` | Process control: spawn, wait, kill, signals (incl. mask/unmask and altstack delivery), and the `CAP_TCB` authority behind them, including the refusal of a wait on a task the caller holds no `CAP_TCB` for (**S99**). |
+| `smoke-proc` | Process control: spawn, wait, kill, signals (incl. mask/unmask and altstack delivery), and the `CAP_TCB` authority behind them, including the refusal of a wait on a task the caller holds no `CAP_TCB` for (**S99**), and of all five `CAP_TCB` operations with a capability for a dead task whose slot has been reused (**S100**). |
 | `smoke-notify` | Async notifications wake a blocked waiter with the accumulated badge. |
 | `smoke-recvblock` | A ring-3 server waiting with `SYS_IPC_RECV_BLOCK` makes **exactly one receive syscall per message** while the client dawdles before each send (the witness that it slept rather than polled) and the wake leaves it holding the one-shot reply right. Roadmap 1.3. |
 | `smoke-recvblock-smp` | The same, under `-smp 4`, so the CROSS-CPU wake path runs at all. It does not reliably catch the ordering race that path is prone to (see "The lost wakeup none of those gates caught") but it is one boot. |
@@ -801,6 +804,7 @@ Both run in CI and both are required: a red `smoke-recvblock` blocks a merge.
 | `smoke-proc` (slot reuse, 2026-09-21) | **A task in a reused slot starts with no wait record**, property **S98** (**[HORUS-20260920-02]**). Last in `proctest`, so it is now the marker `smoke-proc` requires (`PROC_SELFTEST: slot-reuse OK`). A `waiter` completes a real wait on a suspended `hello` and checks the record it got, so the slot provably holds one. The driver then spawns `exitprobe` tasks suspended until one lands in the waiter's old slot: the kernel takes the lowest free slot, so each earlier probe holds a lower one, and the kernel's scan is not changed. Every probe then runs, asks for its record before any wait, and requires all 64 bytes to be zero, reporting through how it dies (a clean exit, or `ud2`). Not reaching the slot is its own named failure, `slot-reuse-not-reached`, rather than a pass or a miss. 10 of 10 boots passed locally. |
 | `smoke-proc-exit-record-control` | Control arm. `EXIT_RECORD_STALE_ON_REUSE=1` leaves the old record in a reused slot, and the probe must report `FAIL exitprobe-stale-record`. `smoke-proc` goes red on this build. |
 | `smoke-proc-wait-control` | Control arm for **S99**. `WAIT_TCB_UNCHECKED=1` removes `SYS_WAIT`'s `CAP_TCB` check, and `proctest`, waiting on a dead slot it was never given a TCB for before it has spawned anything, must report `FAIL wait-without-tcb-answered`. `smoke-proc` goes red on this build. The positive direction is in the base gate: every wait on the driver's own children, and `sigwaiter` and `waiter` holding a delegated `CAP_TCB`, still succeed. |
+| `smoke-proc-tcb-reuse-control` | Control arm for **S100**. `TCB_GENERATION_UNCHECKED=1` compares a `CAP_TCB` by slot number alone, and `proctest`, holding the capability for a dead child whose slot `slotheir` has since filled, must report `FAIL tcb-stale-signal`. `smoke-proc` goes red on this build. |
 | `cargo fuzz` (`rust/fuzz/`) | The pointer and scalar predicates at the FFI boundary do not panic or misbehave on adversarial input. |
 
 The ELF loader migration to Rust found two real out-of-bounds bugs in the C original; a third,
@@ -2220,7 +2224,7 @@ three ways: a planted phrasing in a `.c` file is caught with file and line; the 
 phrasing inside a quotation stays exempt, so a comment can record the wrong thing while
 correcting it.
 
-`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 101 properties
+`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 103 properties
 name a witness that resolves to a make target or a CI job.
 
 | Rule | Rejects |

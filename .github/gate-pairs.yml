@@ -179,6 +179,7 @@ control_arms:
   smoke-ksp-guard-control: smoke-ksp-guard
   smoke-kstack-park-control: smoke-kstack-park
   smoke-kstack-race-control: smoke-kstack-race
+  smoke-kstack-reuse-control: smoke-kstack-reuse
   smoke-libhorus-retry-control: smoke-libhorus
   smoke-libhorus-strncpy-control: smoke-libhorus
   smoke-measured-boot-required-control: smoke-measured-boot-required
@@ -347,6 +348,7 @@ gates:
   - smoke-ksp-guard
   - smoke-kstack-park
   - smoke-kstack-race
+  - smoke-kstack-reuse
   - smoke-libhorus
   - smoke-mapphys
   - smoke-measured-boot-required

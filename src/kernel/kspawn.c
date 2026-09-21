@@ -386,13 +386,10 @@ static int do_spawn_inner(int caller, uint32_t stdio_spec, uint32_t untyped_inde
         return -1;
     }
 
-    int new_id = -1;
-    for (int i = 1; i < g_max_tasks; i++) {
-        if (tasks[i].state == 0) {
-            new_id = i;
-            break;
-        }
-    }
+    /* Not the first `state == 0` slot: the first one no CPU is still on (S20). A
+     * slot freed a moment ago can still carry the trap frame of the CPU that ran
+     * its last occupant, and create_task writes the new frame on top of it. */
+    int new_id = sched_pick_free_slot();
     if (new_id < 0) {
         return -2;
     }
@@ -724,10 +721,7 @@ void h_fork(struct interrupt_frame64 *r) {
 
     spawn_stage_acquire();
 
-    int child = -1;
-    for (int i = 1; i < g_max_tasks; i++) {
-        if (tasks[i].state == 0) { child = i; break; }
-    }
+    int child = sched_pick_free_slot();   /* S20: see do_spawn_inner */
     if (child < 0) {
         spawn_stage_release();
         r->rax = (uint64_t)(uint32_t)SYS_ERR_NOMEM;

@@ -670,6 +670,15 @@ embedded_exitprobe_bin_start:
 .incbin "userspace/exitprobe.bin"
 .global embedded_exitprobe_bin_end
 embedded_exitprobe_bin_end:
+/* slotheir: puts a task the driver has no fresh authority over into a freed
+ * slot, so a stale CAP_TCB for that slot number can be probed
+ * (HORUS-20260921-02). Only in PROC_SELFTEST. */
+.align 16
+.global embedded_slotheir_bin_start
+embedded_slotheir_bin_start:
+.incbin "userspace/slotheir.bin"
+.global embedded_slotheir_bin_end
+embedded_slotheir_bin_end:
 
 /* sigwaiter: blocks in SYS_WAIT on an immortal target, to exercise async signal
  * delivery interrupting a blocked wait. Only in PROC_SELFTEST. */

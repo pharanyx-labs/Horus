@@ -171,6 +171,7 @@ control_arms:
   smoke-kfault-record-control: smoke-kfault-record
   smoke-proc-exit-record-control: smoke-proc
   smoke-proc-wait-control: smoke-proc
+  smoke-proc-tcb-reuse-control: smoke-proc
   smoke-klog-forge-abi-control: smoke-klog-forge
   smoke-klog-forge-control: smoke-klog-forge
   smoke-ksp-guard-control: smoke-ksp-guard

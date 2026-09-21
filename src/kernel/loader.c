@@ -119,6 +119,8 @@ extern uint8_t embedded_waiter_bin_start[];
 extern uint8_t embedded_waiter_bin_end[];
 extern uint8_t embedded_exitprobe_bin_start[];
 extern uint8_t embedded_exitprobe_bin_end[];
+extern uint8_t embedded_slotheir_bin_start[];
+extern uint8_t embedded_slotheir_bin_end[];
 extern uint8_t embedded_sigwaiter_bin_start[];
 extern uint8_t embedded_sigwaiter_bin_end[];
 extern uint8_t embedded_argtest_bin_start[];
@@ -178,6 +180,9 @@ static const struct embedded_binary embedded_binaries[] = {
      * reusing it starts with no record (HORUS-20260920-02). PROC_SELFTEST only. */
     { "waiter",    embedded_waiter_bin_start,   embedded_waiter_bin_end   },
     { "exitprobe", embedded_exitprobe_bin_start, embedded_exitprobe_bin_end },
+    /* slotheir: spawns a task into a freed slot the driver holds only a stale
+     * CAP_TCB for (HORUS-20260921-02). PROC_SELFTEST only. */
+    { "slotheir",  embedded_slotheir_bin_start, embedded_slotheir_bin_end },
     /* sigwaiter: blocks in SYS_WAIT on an immortal target so the driver can
      * verify a signal interrupts the blocked wait. PROC_SELFTEST only. */
     { "sigwaiter", embedded_sigwaiter_bin_start, embedded_sigwaiter_bin_end},

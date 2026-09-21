@@ -1106,9 +1106,46 @@ task could block on any tid, and a tid that read `TASK_DEAD` (which is also what
 reads) was answered at once from the slot, handing over its exit record: the reason, the killer,
 the faulting rip and address, and the name.
 
-**Not closed by this:** a `CAP_TCB` names a task by its slot number, and a spawner's copy outlives the
-child. Whether it then names whatever task next occupies that slot, and so what `SYS_KILL`, the
-signal calls and now `SYS_WAIT` authorise after a reuse, is being measured separately.
+A second question this raised, whether a `CAP_TCB` for a dead task names whatever reuses its slot,
+was measured the same day and was a finding of its own: §1.19.
+
+### 1.19 ~~A capability for a dead task names whatever reuses its slot~~ (**FIXED 2026-09-21**, `SECURITY.md` S100) **[HORUS-20260921-02]**
+
+*Measured and fixed 2026-09-21, from the question §1.18 left open.*
+
+**Closed.** A `CAP_TCB` carries `tcb_object(id)`: the slot number and the slot's generation, which
+`create_task` increments before the slot goes live and nothing else writes. `task_tcb_held` compares
+both, so a capability names one incarnation and never its successor; a bare slot number has
+generation 0 and names nothing. Every writer of a `CAP_TCB` object encodes it: `create_task` (a
+task's own slot 0), the spawn grant, `h_sudo`, and `cap_install_from_root`, which encodes for its
+callers rather than trusting each. The check alone would leave a window between checking and acting,
+so the five syscalls a `CAP_TCB` authorises (`SYS_KILL`, `SYS_SIGNAL`, `SYS_TASK_RESUME`,
+`SYS_CAP_GRANT`, `SYS_WAIT`) now check and act under the spawn lock, which every task-creating path
+already holds: a slot cannot be reused between the two. A pending `SYS_WAIT` records the generation
+it was authorised against, and `ipc_publish_pending_block` re-checks it under the same lock before
+registering the waiter, so a wait authorised for one task can never be registered on its successor.
+
+`make smoke-proc` reproduces the reuse end to end without changing how the kernel picks a slot: the
+driver keeps the `CAP_TCB` for a child that has died, and `slotheir`, which the driver spawned
+first, spawns a task into the lowest free slot (the child's) and keeps that task's capability. Every
+one of the five operations is then tried with the stale capability and must be refused while the
+heir stays alive; the phase fails the test by name if the heir did not land in the slot. The control
+arm, `TCB_GENERATION_UNCHECKED=1`, compares by slot number alone and is caught by name. The account
+of the finding follows.
+
+A task slot is handed out again as soon as its occupant dies (`do_spawn_inner` takes the lowest free
+one), and nothing revoked the `CAP_TCB` a spawner holds for its child when the child died. The
+capability's object was the bare slot number, so after a reuse it named the new occupant. Measured
+on the kernel before the fix, with nothing but that stale capability, the driver:
+
+- **signalled** the heir with `SIGUSR1`, which has no handler in it, so the default action
+  **killed** it;
+- then **waited** on the slot and was handed the heir's death record (`reason=3`, the heir's tid);
+- in a second run, **delegated** one of its own capabilities into the heir with `SYS_CAP_GRANT`,
+  and **killed** it with `SYS_KILL`.
+
+A `CAP_TCB` spreads further than its spawner: fork copies a parent's into the child, and
+`SYS_CAP_GRANT` delegates it. Each copy outlived its task in the same way.
 
 ## 2. Correctness limitations
 
@@ -4399,7 +4436,7 @@ so neither was ever presented to a contributor. There was no code of conduct, an
 the IPC authorisation logic. All fixed as of 2026-07-27; the `require_code_owner_review`
 setting that would make `CODEOWNERS` binding is still off (§5.1).
 
-*(Repository hygiene itself is fine: `git ls-files` reports **428** tracked files with no build
+*(Repository hygiene itself is fine: `git ls-files` reports **429** tracked files with no build
 artefacts or vendored binaries: no `kernel.elf`, no `horus.iso`, no object files. A working
 checkout accumulates ~70 MB of untracked build output, which is correctly `.gitignore`d. This
 sentence said 243 until 2026-08-15 and **254 until 2026-09-20**, by which point the tree had

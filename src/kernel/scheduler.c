@@ -656,6 +656,14 @@ void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base,
         for (;;) __asm__ volatile ("cli; hlt");
     }
 #endif
+    /* A new incarnation of this slot (HORUS-20260921-02). Before the slot goes
+     * live, and never undone -- not even if this call then fails and leaves the
+     * slot free -- so a CAP_TCB minted for any earlier occupant can never match
+     * the one about to exist. The compiler barrier keeps the store ahead of
+     * `state = 1`; x86 keeps stores in order, so any CPU that sees the slot
+     * live also sees its new generation. */
+    tasks[id].slot_gen++;
+    __asm__ volatile ("" ::: "memory");
     tasks[id].state = 1;
     tasks[id].esp = (addr_t)(stack_top ? (stack_top - 256) : 0);
     tasks[id].eip = entry;
@@ -784,7 +792,7 @@ create_user_pagedir(id);
 
     tasks[id].cspace[0].type   = CAP_TCB;
     tasks[id].cspace[0].rights = CAP_RIGHT_ALL;
-    tasks[id].cspace[0].object = id;
+    tasks[id].cspace[0].object = tcb_object(id);   /* this incarnation only */
     tasks[id].cspace[0].badge  = 0;
     tasks[id].cspace[0].serial = (0xB0000000U | ((uint32_t)id << 16) | 0U);
     /* Serial-keyed generation stamp (finding 3.3). These structured serials are

@@ -90,7 +90,7 @@ RUST_TARGET ?= x86_64-unknown-none
 # as CLAUDE.md already requires for that table.
 DEFECT_FLAGS = \
 	IRQ_LEGACY_GLOBAL_LOCK USER_HEAP_HIGH_BASE \
-	KFAULT_INJECT KFAULT_LEGACY_PRINTLN KFAULT_RECORD_SELFTEST EXIT_RECORD_KERNEL_RIP \
+	KFAULT_INJECT KFAULT_LEGACY_PRINTLN KFAULT_RECORD_SELFTEST EXIT_RECORD_KERNEL_RIP EXIT_RECORD_STALE_ON_REUSE \
 	KDIAG_LEGACY_COM1 KDIAG_SPLIT_WIDEN KDIAG_PORTS_GRANTABLE KDIAG_NOISE KDIAG_PROBE KDIAG_RING3_PROBE \
 	PS2_PROBE \
 	INSTALLER_NO_BACK \
@@ -3387,7 +3387,7 @@ PROC_SELFTEST ?= 0
 ifeq ($(PROC_SELFTEST),1)
 CFLAGS  += -DPROC_SELFTEST
 ASFLAGS += -DPROC_SELFTEST
-PROC_SELFTEST_DEP = userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/preempttest.bin
+PROC_SELFTEST_DEP = userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/preempttest.bin
 endif
 
 # KFAULT_RECORD_SELFTEST=1 (with PROC_SELFTEST=1) is the witness for
@@ -3409,6 +3409,14 @@ endif
 EXIT_RECORD_KERNEL_RIP ?= 0
 ifeq ($(EXIT_RECORD_KERNEL_RIP),1)
 CFLAGS  += -DEXIT_RECORD_KERNEL_RIP
+endif
+
+# EXIT_RECORD_STALE_ON_REUSE=1 puts HORUS-20260920-02 back: create_task leaves a
+# reused slot's exit_info and wait_exit_info as the previous occupant left them.
+# The control arm for smoke-proc's slot-reuse phase. Never a shipping config.
+EXIT_RECORD_STALE_ON_REUSE ?= 0
+ifeq ($(EXIT_RECORD_STALE_ON_REUSE),1)
+CFLAGS  += -DEXIT_RECORD_STALE_ON_REUSE
 endif
 
 # SMP brings up the application processors (multi-core) at boot: the BSP reads the
@@ -4921,7 +4929,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.stripped.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -7269,8 +7277,11 @@ smoke-proc:
 	@# sigtarget partway through; requiring it let the harness kill QEMU before the
 	@# closing spawn-suspend witness ever ran, so that check was dead code. The
 	@# suspend marker strictly follows it (proctest waits for sigtarget to exit
-	@# first), so requiring it proves the whole chain completed.
-	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PROC_SELFTEST: suspend OK' \
+	@# first), so requiring it proves the whole chain completed. Since 2026-09-21
+	@# the last marker is the slot-reuse phase's (HORUS-20260920-02), which runs
+	@# after the suspend witness, so it is the one required now: requiring the
+	@# suspend marker would let the harness stop the guest before that phase ran.
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PROC_SELFTEST: slot-reuse OK' \
 		FAIL_MARKER='PROC_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # Does a task's exit record keep kernel addresses away from ring 3?
@@ -7302,6 +7313,18 @@ smoke-kfault-record-control:
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KFAULT_RECORD_SELFTEST=1 EXIT_RECORD_KERNEL_RIP=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		EXPECT_FAULT='PROC_SELFTEST: FAIL kfault-exitinfo-kernel-rip' \
+		tools/smoke_test.sh horus.iso
+
+# The control arm for the slot-reuse phase: create_task leaves the previous
+# occupant's wait record in place, and the probe in the waiter's old slot must
+# find it and say so by name.
+.PHONY: smoke-proc-exit-record-control
+smoke-proc-exit-record-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 EXIT_RECORD_STALE_ON_REUSE=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 EXIT_RECORD_STALE_ON_REUSE=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='PROC_SELFTEST: FAIL exitprobe-stale-record' \
 		tools/smoke_test.sh horus.iso
 
 # Build with the gated notification self-test, boot headless, and require the

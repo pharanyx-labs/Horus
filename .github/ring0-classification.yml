@@ -226,7 +226,16 @@
 # Two of those 8 are comment continuation lines, a MEASUREMENT ARTEFACT: this
 # checker's .S rule strips only lines that begin with `#` or `/`, so the ` * `
 # lines of a block comment count as code.
-core_budget_loc: 10108
+#
+# RAISED 2026-09-21, 10108 -> 10128 (+20), for S98 (HORUS-20260920-02): a task
+# in a reused slot no longer inherits the previous occupant's death records.
+# 6 are in scheduler.c and are the fix: create_task clearing exit_info and
+# wait_exit_info, two of them the EXIT_RECORD_STALE_ON_REUSE control arm's
+# #ifdef pair (task_teardown's whole-name zeroing replaced one line with one).
+# The other 14 are in multiboot.S and embed the waiter and exitprobe test
+# children, only under PROC_SELFTEST: 12 directives and 2 comment continuation
+# lines, the .S counting artefact recorded in the S97 entry above.
+core_budget_loc: 10128
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

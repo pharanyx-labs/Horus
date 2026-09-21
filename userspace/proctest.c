@@ -401,6 +401,57 @@ void _start(void) {
         if (!sd) { report("PROC_SELFTEST: FAIL susp-no-run-after-resume\n"); sys_exit(); }
         report("PROC_SELFTEST: suspend OK\n");
     }
+
+    /* --- HORUS-20260920-02 (docs/LIMITATIONS.md 1.17): a task in a REUSED slot
+     * does not inherit the previous occupant's wait record.
+     *
+     * The slot is reused the way the kernel always reuses one, by spawning, and
+     * not by changing the kernel's scan order (tried when the finding was made,
+     * and rejected because it changes the workload rather than the defect). The
+     * kernel takes the lowest free slot, so the driver spawns probes SUSPENDED
+     * until one lands in the waiter's old slot: each earlier probe holds a lower
+     * free slot and pushes the next spawn up. Then every probe runs, the one in
+     * the waiter's slot included, and each reports through how it dies.
+     *
+     * Also last, for the reason the suspend test above is: probes held suspended
+     * occupy slots, and the choreography earlier in this file is timing-coupled.
+     * --- */
+    {
+        int t = sys_spawn_named("hello");            /* suspended: the waiter's target */
+        if (t <= 0) { report("PROC_SELFTEST: FAIL slot-target-spawn\n"); sys_exit(); }
+        int w = sys_spawn_named_arg("waiter", (uint32_t)t);
+        if (w <= 0) { report("PROC_SELFTEST: FAIL slot-waiter-spawn\n"); sys_exit(); }
+        sys_task_resume(w);
+        for (int i = 0; i < 4000; i++) settle();     /* let it block in its wait */
+        sys_task_resume(t);
+        if (sys_wait(w) != 0) { report("PROC_SELFTEST: FAIL slot-waiter-wait\n"); sys_exit(); }
+        struct task_exit_info wr;
+        if (exit_info(&wr) != 0 || wr.reason != TASK_EXIT_NORMAL) {
+            report("PROC_SELFTEST: FAIL slot-waiter-died\n"); sys_exit();   /* it printed why */
+        }
+
+        int probes[64];
+        int np = 0, hit = -1;
+        while (np < 64) {
+            int p = sys_spawn_named("exitprobe");
+            if (p <= 0) break;
+            probes[np++] = p;
+            if (p == w) { hit = p; break; }
+        }
+        /* Not reaching the slot is a failure of the TEST, not of the property,
+         * and it is named as one rather than scored either way. */
+        int reached = (hit > 0);
+        for (int k = 0; k < np; k++) {
+            sys_task_resume(probes[k]);
+            if (sys_wait(probes[k]) != 0) { report("PROC_SELFTEST: FAIL slot-probe-wait\n"); sys_exit(); }
+            struct task_exit_info pr;
+            if (exit_info(&pr) != 0 || pr.reason != TASK_EXIT_NORMAL) {
+                report("PROC_SELFTEST: FAIL slot-reuse-stale-record\n"); sys_exit();
+            }
+        }
+        if (!reached) { report("PROC_SELFTEST: FAIL slot-reuse-not-reached\n"); sys_exit(); }
+        report("PROC_SELFTEST: slot-reuse OK\n");
+    }
 #ifdef KFAULT_RECORD_SELFTEST
     /* --- HORUS-20260920-01 (docs/LIMITATIONS.md 1.16): a SUPERVISOR fault's
      * record carries no kernel address. kfaulter makes the kernel read an address

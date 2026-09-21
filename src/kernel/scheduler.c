@@ -680,6 +680,21 @@ void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base,
     tasks[id].spawn_arg    = 0;   /* no spawn argument */
     tasks[id].argc         = 0;   /* no argument vector */
     tasks[id].argv_ptr     = 0;
+#ifndef EXIT_RECORD_STALE_ON_REUSE
+    /* Both death records, cleared for the same reason as everything above (S98,
+     * HORUS-20260920-02, docs/LIMITATIONS.md 1.17). SYS_TASK_EXIT_INFO answers
+     * wait_exit_info with no authority and no test that this task ever waited,
+     * and syscall.h promises TASK_EXIT_NONE before a first wait. In a reused slot
+     * it would otherwise answer the previous occupant's last wait: the tid it
+     * supervised, that task's name and faulting rip, which defeats the ASLR of
+     * any task sharing the image. exit_info is cleared too, so a record is only
+     * ever written whole by task_teardown and never inherited.
+     * EXIT_RECORD_STALE_ON_REUSE is the control arm that leaves both in place. */
+    for (unsigned z = 0; z < sizeof(tasks[id].exit_info); z++) {
+        ((char *)&tasks[id].exit_info)[z] = 0;
+        ((char *)&tasks[id].wait_exit_info)[z] = 0;
+    }
+#endif
 
 create_user_pagedir(id);
 
@@ -3486,7 +3501,10 @@ void task_teardown(int id, const struct task_exit_cause *cause) {
      * supervisor's whole question is *which* task this was. */
     int n = 0;
     for (; n < 31 && tasks[id].name[n]; n++) rec->name[n] = tasks[id].name[n];
-    rec->name[n] = 0;
+    /* Zero the whole tail, not just the terminator: all 32 bytes are copied to
+     * the waiter, and past the terminator they would otherwise be whatever the
+     * slot's record last held (HORUS-20260920-02). */
+    for (; n < (int)sizeof(rec->name); n++) rec->name[n] = 0;
 
     /* Drop any IRQ->notification routing this task registered, so a hardware IRQ
      * cannot keep notifying a dead task's slot. */

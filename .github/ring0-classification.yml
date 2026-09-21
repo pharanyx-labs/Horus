@@ -255,16 +255,18 @@
 # directives and 2 comment continuation lines, the .S counting artefact recorded
 # in the S97 entry above. Authorisation of a syscall is ring 0 by nature.
 #
-# RAISED 2026-09-21, 10177 -> 10242 (+65), for S20's slot-reuse path
+# RAISED 2026-09-21, 10177 -> 10254 (+77), for S20's slot-reuse path
 # (HORUS-20260921-03): a slot is not handed out while a CPU is on its kernel
-# stack. All 65 are in scheduler.c: sched_slot_reusable and
-# sched_pick_free_slot (with the SLOT_REUSE_UNCHECKED arm), create_task's
+# stack. All 77 are in scheduler.c: sched_slot_reusable and
+# sched_pick_free_slot (with the SLOT_REUSE_UNCHECKED arm), their 12-line
+# one-CPU definitions for SMP=0 builds (where no other CPU can be on a dead
+# slot's stack, so the pick is the lowest dead slot as before), create_task's
 # refusal of a busy slot and the two forward declarations it needs, and, only
 # under KSTACK_REUSE_WIDEN, the smoke-kstack-reuse widener and its skip log.
 # The spawn paths themselves got shorter (kspawn.c -9), since both now call
 # the one picker instead of scanning for themselves; kspawn.c is not core.
 # Scheduling is ring 0 by nature.
-core_budget_loc: 10242
+core_budget_loc: 10254
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

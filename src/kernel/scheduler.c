@@ -4764,3 +4764,23 @@ void reply_ep_selftest(void) {
     println(" private reply endpoints, none in the dynamic range");
 }
 #endif
+
+#ifndef SMP
+/* S20 slot reuse, one-CPU build. sched_slot_reusable and sched_pick_free_slot
+ * live in the SMP block above, because what they guard against is another CPU
+ * still on a dead slot's stack. With one CPU that cannot happen: the CPU that
+ * tore a task down is the one now spawning, and it left the dead stack when the
+ * teardown's ISR returned. So a dead slot is reusable, and the lowest one is the
+ * pick, exactly as before 2026-09-21. */
+int sched_slot_reusable(int id)
+{
+    return id > 0 && id < g_max_tasks && tasks[id].state == 0;
+}
+
+int sched_pick_free_slot(void)
+{
+    for (int i = 1; i < g_max_tasks; i++)
+        if (sched_slot_reusable(i)) return i;
+    return -1;
+}
+#endif

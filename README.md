@@ -28,8 +28,10 @@ measured into a TPM, and the volume encryption key is sealed against those measu
 > up in [`docs/investigations/`](docs/investigations/), including the ones this project got
 > wrong for days before getting right.
 >
-> Notable open findings: **[C-5]** (no independent review), **[C-6]** (the branch ruleset is
-> reconciled to the checked-in gating decision by hand, so it lags a merge). **[G-13]** closed on
+> Notable open finding: **[C-5]** (no independent review). **[C-6]** closed on 2026-09-21: the
+> branch ruleset requires one aggregated check that is proved, in each PR, to cover every job the
+> checked-in gating decision marks required, so a new gate no longer waits on a hand sync.
+> **[G-13]** closed on
 > 2026-09-03: the installer's format was bounded by a total timeout, which cannot separate a slow
 > disk from a wedge at any value; it is bounded by a stall now, and a 12-IOPS disk reproduces the
 > whole CI signature including the normal boot step that was used to rule slowness out.
@@ -90,13 +92,13 @@ syscall number without adding its table entry.
 by building twice and diffing; `horus.iso` is not, and `docs/LIMITATIONS.md` §5.3a says why.
 Boot-module integrity is tested by *corrupting a module* and asserting rejection. Measured boot
 is tested by tampering and asserting the PCRs diverge. Capability revocation carries Kani
-proofs. `.github/workflows/ci.yml` runs 120 jobs, most of them QEMU integration self-tests.
+proofs. `.github/workflows/ci.yml` runs 121 jobs, most of them QEMU integration self-tests.
 Which of them may block a merge is a decision recorded in `.github/ci-gating.yml` and enforced
 by the `ci-gating` job: every job must be listed as gating, or exempted with a written reason
-(**[C-6]**). The intended set is 122 of its 125 contexts, including every security test; the
-ruleset is reconciled to it by hand and lags whenever a gate is added. Read the live count from
-`gh api repos/pharanyx-labs/Horus/rulesets/21815299`, not from this sentence; the ruleset is
-reconciled by hand, so only the API knows.
+(**[C-6]**). The gating set is 123 of its 126 contexts, including every security test. The
+branch ruleset requires just two: an aggregated check that needs every gating `ci.yml` job and
+passes only if all of them succeeded, and CodeQL. The `ci-gating` job proves the aggregate covers
+exactly the gating set, so a new gate blocks merges from the PR that adds it.
 
 ---
 
@@ -311,7 +313,7 @@ Horus's assurance rests on its tests, so they are treated as first-class. Three 
 
 1. **Rust unit tests and Kani proofs**, `cargo test`, plus formal proofs that revocation
    hits exactly the target's derivation subtree.
-2. **QEMU integration self-tests**, the bulk of CI's 120 jobs; each boots a purpose-built
+2. **QEMU integration self-tests**, the bulk of CI's 121 jobs; each boots a purpose-built
    kernel configuration and asserts a marker on the serial console. These cover W^X,
    capability refusals, COW, TLB shootdown, preemption, signals, SMEP/SMAP, measured boot,
    untyped retyping, blocking receive, and more.

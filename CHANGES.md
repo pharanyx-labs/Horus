@@ -506,6 +506,22 @@ in this file.
 
 ### Fixed
 
+- **A new CI gate did not block merges until someone synced the ruleset by hand** (**[C-6]**,
+  closed; roadmap 4.2 done). The branch ruleset listed every required job, 122 contexts, and
+  `--sync-ruleset` (which needs an admin token) had to run after the merge that added a job,
+  because a required context `main` cannot produce never reports and froze every pull request on
+  2026-08-16. In between, a gate was classified and not enforced: five merges in a row once. The
+  ruleset now requires two contexts: **All required gates passed** (the new `gates` job in
+  `ci.yml`) and CodeQL. `gates` needs every required `ci.yml` job, runs whatever they did
+  (`if: always()`), and passes only if each one reported success; skipped and cancelled count as
+  failures (`tools/ci_gate_verdict.py`), because GitHub treats a skipped required check as
+  satisfied. `ci-gating` now proves `gates` needs exactly the `required:` list, runs under
+  `always()`, and hands the verdict every result, so a job classified as required gates in the PR
+  that classifies it. Nine new arms in `tools/test_check_ci_gating.sh` and ten in the new
+  `tools/test_ci_gate_verdict.sh` show each rule and each verdict going red. `ruleset-audit`
+  still compares the live ruleset daily. Two older statements corrected on the way: `TESTS.md`
+  said `smoke-recvblock` and `smoke-fs-wal` were not required, and both are.
+
 - **A kernel fault handed ring 3 the kernel's own address** (`SECURITY.md` **S97**,
   **[HORUS-20260920-01]**). When the kernel faulted while working for a task, it killed that task
   and wrote the kernel's faulting `rip` into the task's exit record, which any task can read with

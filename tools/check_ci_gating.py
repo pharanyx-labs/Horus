@@ -16,8 +16,22 @@ permissions that the workflow GITHUB_TOKEN does not have. `--print-required`
 emits the list to sync by hand, and `--check-ruleset` verifies it locally where a
 maintainer token is available.
 
-Exit status is 0 only when every job is classified and every advisory entry names
-a real job and carries a reason.
+THE RULESET REQUIRES ONE CONTEXT PER WORKFLOW, NOT ONE PER JOB (2026-09-21).
+ci.yml's required jobs are aggregated by the job named `aggregator:` in
+.github/ci-gating.yml, which `needs:` every one of them, runs whatever they did,
+and passes only if all of them succeeded (tools/ci_gate_verdict.py). The ruleset
+then requires that job's context plus the required jobs of the OTHER workflows,
+which a job in ci.yml cannot `needs:`. Before this it required 122 contexts, one
+per job, synced by hand, and each addition had to lag its merge by one or freeze
+every pull request. Now a job added to `required:` gates in the same PR that adds
+it, because the aggregator's `needs:` list is what is checked here, and nothing
+about the ruleset changes. The aggregator is therefore the single point every
+ci.yml gate passes through, so the rules that protect it are below and each has
+an arm in tools/test_check_ci_gating.sh.
+
+Exit status is 0 only when every job is classified, every advisory entry names
+a real job and carries a reason, and the aggregator gates exactly the required
+ci.yml jobs.
 """
 import argparse
 import re
@@ -165,6 +179,62 @@ def sync_ruleset(want):
     return 0
 
 
+# The verdict step's exact inputs. Checked rather than trusted: the verdict is
+# only as good as what it is handed, and `toJSON(needs)` is the one expression
+# that hands it every needed job's result.
+VERDICT_SCRIPT = "tools/ci_gate_verdict.py"
+VERDICT_ENV = "${{ toJSON(needs) }}"
+ALWAYS = ("always()", "${{ always() }}")
+
+
+def check_aggregator(agg, required_ids, origin):
+    """Problems with the job that stands in for every required ci.yml job."""
+    if not agg:
+        return [f"{GATING_YML} names no `aggregator:`; the ruleset would require "
+                f"nothing from {CI_YML}"]
+    if origin.get(agg) != CI_YML:
+        return [f"aggregator '{agg}' is not a job in {CI_YML}"]
+    problems = []
+    if agg not in required_ids:
+        problems.append(f"aggregator '{agg}' is not in `required:`, so nothing "
+                        f"requires the one check that stands for every gate")
+    spec = yaml.safe_load(open(CI_YML))["jobs"][agg] or {}
+
+    # Without `always()` a failed gate SKIPS the aggregator (a dependent job does
+    # not run when a need fails), and GitHub counts a skipped required check as
+    # satisfied: every red gate would read as a green merge.
+    cond = str(spec.get("if", "")).strip()
+    if cond not in ALWAYS:
+        problems.append(f"aggregator '{agg}' has `if: {cond or '<none>'}`; it must "
+                        f"be `always()`, or a failed gate skips it and a skipped "
+                        f"required check counts as passed")
+
+    needs = spec.get("needs") or []
+    needs = {needs} if isinstance(needs, str) else set(needs)
+    want = {j for j in required_ids if origin.get(j) == CI_YML and j != agg}
+    for j in sorted(want - needs):
+        problems.append(f"required job '{j}' is not in aggregator '{agg}'s needs, "
+                        f"so it cannot block a merge")
+    for j in sorted(needs - want):
+        problems.append(f"aggregator '{agg}' needs '{j}', which is not a required "
+                        f"{CI_YML} job; classify it `required:` or drop the need")
+
+    steps = spec.get("steps") or []
+    verdict = [st for st in steps if VERDICT_SCRIPT in str(st.get("run", ""))]
+    if not verdict:
+        problems.append(f"aggregator '{agg}' never runs {VERDICT_SCRIPT}, so it "
+                        f"reports success whatever its needs did")
+    for st in verdict:
+        if str((st.get("env") or {}).get("NEEDS", "")).strip() != VERDICT_ENV:
+            problems.append(f"aggregator '{agg}''s verdict step is not handed "
+                            f"NEEDS: {VERDICT_ENV}")
+    for st in steps:
+        if st.get("continue-on-error") not in (None, False):
+            problems.append(f"aggregator '{agg}' has a step with continue-on-error, "
+                            f"so a failed verdict can still report success")
+    return problems
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--print-required", action="store_true",
@@ -176,19 +246,22 @@ def main():
                          "gh token). Prints the promotions and demotions first.")
     args = ap.parse_args()
 
-    jobs, masks = {}, {}
+    jobs, masks, origin = {}, {}, {}
     for wf in WORKFLOWS:
         for jid, contexts in load_jobs(wf).items():
             if jid in jobs:
                 sys.exit(f"check_ci_gating: job id '{jid}' is defined in more than "
                          f"one workflow; ids must be unique across {WORKFLOWS}")
             jobs[jid] = contexts
+            origin[jid] = wf
         masks.update(load_job_masks(wf))
     gating = yaml.safe_load(open(GATING_YML)) or {}
     advisory = gating.get("advisory") or {}
     required_ids = set(gating.get("required") or [])
+    agg = gating.get("aggregator")
 
     problems = []
+    problems.extend(check_aggregator(agg, required_ids, origin))
 
     # A job `name:` carrying an UNQUOTED '#' loses everything from the '#' on --
     # YAML reads it as a comment. The name is the status-check context, so the
@@ -288,9 +361,17 @@ def main():
             problems.append(f"advisory job '{jid}' has no substantive reason "
                             f"(got {len(reason)} chars; say why, with a finding id)")
 
-    required, advisory_ctx = [], []
+    # `required` is what the RULESET must require: the aggregator's context and
+    # the required jobs of every other workflow. The required ci.yml jobs are
+    # gated through the aggregator, so they are counted, not required directly.
+    required, aggregated, advisory_ctx = [], [], []
     for jid, contexts in sorted(jobs.items()):
-        (advisory_ctx if jid in advisory else required).extend(contexts)
+        if jid in advisory:
+            advisory_ctx.extend(contexts)
+        elif origin[jid] == CI_YML and jid != agg:
+            aggregated.extend(contexts)
+        else:
+            required.extend(contexts)
 
     if args.print_required:
         for c in sorted(required):
@@ -341,8 +422,9 @@ def main():
             problems.append(f"could not read the ruleset: {e.stderr.strip()}")
 
     print(f"jobs across {len(WORKFLOWS)} workflows      : {len(jobs)}")
-    print(f"status-check contexts      : {len(required) + len(advisory_ctx)}")
-    print(f"  required (gating)        : {len(required)}")
+    print(f"status-check contexts      : {len(required) + len(aggregated) + len(advisory_ctx)}")
+    print(f"  required by the ruleset  : {len(required)}")
+    print(f"  gated through aggregator : {len(aggregated)} (job '{agg}')")
     print(f"  advisory (with a reason) : {len(advisory_ctx)}")
     for jid in sorted(advisory):
         if jid in jobs:

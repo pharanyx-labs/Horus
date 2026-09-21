@@ -48,9 +48,10 @@ means in practice. A scheduled `ruleset-audit` job now verifies the live ruleset
 classification daily, as a GitHub App with `Administration: read`: the permission a workflow
 token cannot be granted. **That App went live on 2026-08-19**: the scheduled run that morning
 read the ruleset and reported `live ruleset 19007209 : 73 required contexts, matches`, where the
-run 24 hours earlier had failed on the absent secrets. What keeps **[C-6]** open is now only the
-other half (reconciliation is manual and lags by one merge) so it narrows again rather than
-closing. **[I-7] closed on 2026-08-30**, and it closed in code rather than by reclassification. Its three
+run 24 hours earlier had failed on the absent secrets. **[C-6]** closed on 2026-09-21, when the
+ruleset stopped listing jobs one by one: it requires an aggregated check whose `needs:` the
+`ci-gating` job proves equal to the gating classification in the PR itself, and CodeQL, so a new
+gate no longer waits on a hand sync. **[I-7] closed on 2026-08-30**, and it closed in code rather than by reclassification. Its three
 clauses ("no retyping discipline, no per-task kernel-memory accounting, hard ceiling on system
 size") are each answered. The retyping discipline landed 2026-07-27 for cspaces, endpoints and
 notifications, and on 2026-08-30 for the TCB table, which was the last object class outside it.
@@ -63,9 +64,9 @@ would actually have capped it (the revocation sweep's `cspace_desc_t spaces[MAX_
 stack. The remaining scale parameters are listed in
 [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) §3.1.
 
-**The findings that remain are both process findings, and neither is closable by code**:
-**[C-5]** (every security-critical path has been modified by one person) and **[C-6]**'s
-remaining half (ruleset reconciliation lags a merge). **[G-9]** closed on 2026-08-21 (its last component was the claim auditor clearing
+**The finding that remains is a process finding, and it is not closable by code**:
+**[C-5]** (every security-critical path has been modified by one person). **[C-6]** (ruleset
+reconciliation lagged a merge) closed on 2026-09-21. **[G-9]** closed on 2026-08-21 (its last component was the claim auditor clearing
 its own exemption before the release it exempts: a false positive of the checker, not a leak;
 9/200 → 0/200 boots, mechanism proven 8/10 against 0/10 with the window widened in both arms) ,
 are in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md). **[G-10]** closed on 2026-08-18: the
@@ -405,11 +406,8 @@ cargo-fuzz on the FFI boundary; Kani proofs on capability revocation.
   structural limitation, and it is stated here rather than glossed over: **the assurance
   Horus can currently claim is "thoroughly automatically verified", not "independently
   reviewed".** Finding **[C-5]**.
-- **Which CI jobs gate a merge cannot be verified by CI itself.** Finding **[C-6]**, and what
-  remains of it is narrow. *This bullet said "most security-specific CI jobs are **not**
-  merge-gating … the rest are still advisory, and the mechanism that produced the omission is
-  untouched" for a day after all three of those clauses stopped being true. Corrected
-  2026-08-17.*
+- **Which CI jobs gate a merge is decided in the tree, and the ruleset is checked daily.**
+  Finding **[C-6]**, **fixed 2026-09-21**.
 
 Every security gate now blocks a merge, kernel W^X, measured boot, module and newlib tamper
 rejection, SMEP/SMAP, flush-on-switch, stack-guard reseed, the 64-bit heap, interrupt policy,
@@ -419,15 +417,15 @@ build if any job is unclassified, double-classified, or names a job that no long
 is no default, because defaulting is what produced the finding. The ruleset required **22**
 contexts before 2026-08-16.
 
-  **What keeps it open:** reading a ruleset needs the `Administration` permission, which is not
-  among the scopes a workflow `GITHUB_TOKEN` can be granted, so `ci-gating` proves the
-  classification is *complete* and not that the ruleset *matches* it. A scheduled
-  `ruleset-audit` job closes that by authenticating as a GitHub App with `Administration: read`
-  scoped to this repository. **Live since 2026-08-19**, it now reads the ruleset and states the
-  comparison, having failed loudly rather than skipped for the days it was unconfigured. Syncing
-  the ruleset remains a manual step that must lag a job landing by one merge, which is what is
-  left of this finding. Read the count from
-  `gh api repos/pharanyx-labs/Horus/rulesets/21815299`, not from this sentence.
+  **How it closed:** the ruleset requires two contexts, the `gates` job in `ci.yml` and CodeQL.
+  `gates` needs every required `ci.yml` job, runs whatever they did, and passes only if all of
+  them succeeded; skipped and cancelled count as failures, because GitHub treats a skipped
+  required check as satisfied. `ci-gating` proves its `needs:` is exactly the classification, so
+  a job classified as required gates in the PR that classifies it, where the per-job ruleset left
+  it unenforced until a hand sync after the merge (five merges, once). Reading a ruleset needs the
+  `Administration` permission, which no workflow token can hold, so a scheduled `ruleset-audit`
+  job reads it daily as a GitHub App with `Administration: read` scoped to this repository,
+  **live since 2026-08-19**, and fails loudly on any difference.
 - No build provenance attestation or signed release artifacts. Finding **[I-9]**.
 
 If you are evaluating Horus, weigh those gaps against the claims in the table above.

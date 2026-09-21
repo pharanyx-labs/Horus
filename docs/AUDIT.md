@@ -191,9 +191,11 @@ outstanding.
 been modified by one person, and this audit was performed by a tool the same person directed. It
 is not a substitute for outside review.
 
-**[C-6] Ruleset reconciliation lags a merge.** *High (process)*, open. F1's CI witness was added as
-two steps inside the existing `reproducible` job precisely so it introduces no new required context
-and needs no ruleset change; the general lag the predecessor recorded is unchanged.
+**[C-6] Ruleset reconciliation lags a merge.** *High (process)*, open at this audit and **fixed
+2026-09-21** (`LIMITATIONS.md` 5.2): the ruleset now requires one aggregated check from `ci.yml`,
+whose `needs:` is proved equal to the gating classification in the PR itself, so a new gate no
+longer waits on a hand sync. F1's CI witness was added as two steps inside the existing
+`reproducible` job, before that, precisely so it needed no ruleset change.
 
 ---
 

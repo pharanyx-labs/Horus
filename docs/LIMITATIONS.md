@@ -2992,13 +2992,23 @@ the property the author had in mind rather than the property the documentation c
 The assurance Horus can honestly claim today is *"thoroughly automatically verified"*, not
 *"independently reviewed"*.
 
-### 5.2 Which tests gate a merge is reconciled by hand: **[C-6]**
+### 5.2 ~~Which tests gate a merge is reconciled by hand~~ (**FIXED 2026-09-21**) **[C-6]**
 
-`.github/workflows/ci.yml` defines **120** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more: **122** across the three, producing **125** status-check contexts. Ruleset `21815299`
-requires all **122** today, `smoke-kdiag` (**S81**) among them since 2026-09-03: one
-`--sync-ruleset` run after the pull request that added the job, which is the lag this finding is
-about rather than an exception to it. Its predecessor `19007209` required **22** of them before
+**Closed.** `.github/workflows/ci.yml` defines **121** jobs, `codeql.yml` one more and
+`ruleset-audit.yml` one more: **123** across the three, producing **126** status-check contexts.
+**123** of them gate a merge, and ruleset `21815299` requires the two contexts that carry them
+all: **All required gates passed** (the `gates` job, which needs every required ci.yml job and
+passes only if each one succeeded, skipped and cancelled counting as failures) and CodeQL's
+`analyze`, which lives in its own workflow. The `ci-gating` job proves `gates` needs exactly the
+`required:` list in `.github/ci-gating.yml`, so a job classified as required gates in the PR that
+classifies it, and no change to the classification waits on a hand sync. The ruleset needs one
+only when its own two contexts change (`gates` renamed, or a required job added outside
+`ci.yml`), and `ruleset-audit` compares it against the classification daily. The account of the
+finding follows.
+
+Before that, the ruleset listed every job: **122** contexts by 2026-09-21, `smoke-kdiag`
+(**S81**) among them since 2026-09-03, one `--sync-ruleset` run after the pull request that added
+the job, which was the lag this finding was about rather than an exception to it. Its predecessor `19007209` required **22** of them before
 2026-08-16, and until 2026-08-15 exactly **zero** of those 22 were security gates: capability
 conformance, kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence,
 flush-on-switch and stack-guard reseed could all fail while a PR merged green. The required set
@@ -3042,7 +3052,7 @@ the right name with the wrong verdict. Step-level `continue-on-error` is untouch
 allowed; it lets one step be advisory while the job's own status still reports the truth, which
 is how the `security` job keeps its scanners advisory without becoming unfailable itself.
 
-That intended set is **122 required contexts and 3 reasoned exemptions**: `fuzz` (a 30-second
+That set is **123 gating contexts and 3 reasoned exemptions**: `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` was a fifth until **[G-9]** closed on 2026-08-21; it was promoted on
@@ -3106,13 +3116,15 @@ and this repository has been bitten by that three times now (`make test`'s `|| t
 scanner-presence step before #154, and `smoke-kstack-park`'s job-level `continue-on-error`
 above, which is the first of the three to have been *required* while it was unfailable).
 
-**What keeps [C-6] open is now only the second half.** `--sync-ruleset` writes the ruleset and
-needs an admin token, so a PR that adds a gating job leaves the ruleset one context behind until
-someone runs it afterwards. This very commit demonstrates it: adding the `doc-claims` job took
-the checked-in set to 74 while the live ruleset stayed at 73, and `--check-ruleset` reports
-`DIVERGED (1 missing, 0 unexpected)` until the sync is run. Promotion lags a merge by construction; the audit is what makes the
-lag visible the next morning instead of indefinitely. Read the count from the API or from that
-job's log, never from this paragraph.
+**The second half closed on 2026-09-21, by taking the per-job list out of the ruleset.**
+`--sync-ruleset` writes the ruleset and needs an admin token, so while the ruleset named every
+job, a PR that added a gating job left it one context behind until someone ran the sync
+afterwards. The commit that added the `doc-claims` job demonstrated it: the checked-in set went to
+74 while the live ruleset stayed at 73, and `--check-ruleset` reported `DIVERGED (1 missing, 0
+unexpected)` until the sync. Promotion lagged a merge by construction, and the audit only made the
+lag visible the next morning. The ruleset now requires the `gates` aggregator and CodeQL, and
+`gates`' `needs:` is checked against the classification inside the PR itself, so there is no lag
+left to fall into.
 
 **Measured 2026-09-02, and the number to keep is not the lag but what fits inside it.** The
 `installer` job: the S73 witness, "a disk is erased only after the word that means erase this
@@ -4361,7 +4373,7 @@ so neither was ever presented to a contributor. There was no code of conduct, an
 the IPC authorisation logic. All fixed as of 2026-07-27; the `require_code_owner_review`
 setting that would make `CODEOWNERS` binding is still off (§5.1).
 
-*(Repository hygiene itself is fine: `git ls-files` reports **426** tracked files with no build
+*(Repository hygiene itself is fine: `git ls-files` reports **428** tracked files with no build
 artefacts or vendored binaries: no `kernel.elf`, no `horus.iso`, no object files. A working
 checkout accumulates ~70 MB of untracked build output, which is correctly `.gitignore`d. This
 sentence said 243 until 2026-08-15 and **254 until 2026-09-20**, by which point the tree had

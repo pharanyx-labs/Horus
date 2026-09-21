@@ -114,6 +114,81 @@ yaml.safe_dump(d, open(p, "w"))
 PY' \
     caught "substantive"
 
+# ---- THE AGGREGATOR (2026-09-21). The ruleset requires one context from ci.yml,
+#      the aggregator's, so every rule below guards a way for a red gate to stop
+#      reaching a merge while every job still reads correctly on its own.
+#      Mutations edit the raw text (python str.replace on an exact line), not a
+#      YAML round trip, so the rest of the workflow stays byte-identical.
+mutate_ci () {  # $1 old text, $2 new text; fails if $1 is not present exactly once
+  python3 - "$1" "$2" <<'PY'
+import sys
+p = ".github/workflows/ci.yml"
+s = open(p).read()
+old, new = sys.argv[1], sys.argv[2]
+assert s.count(old) == 1, f"fixture drift: {old!r} occurs {s.count(old)} times"
+open(p, "w").write(s.replace(old, new))
+PY
+}
+export -f mutate_ci 2>/dev/null || true
+
+arm "6" "no aggregator named, so the ruleset would require nothing from ci.yml" \
+    'python3 - <<PY
+import yaml
+p = ".github/ci-gating.yml"
+d = yaml.safe_load(open(p)); d.pop("aggregator")
+yaml.safe_dump(d, open(p, "w"))
+PY' \
+    caught "names no \`aggregator:\`"
+
+arm "7" "the aggregator names a job ci.yml does not define" \
+    'python3 - <<PY
+import yaml
+p = ".github/ci-gating.yml"
+d = yaml.safe_load(open(p)); d["aggregator"] = "no-such-job"
+yaml.safe_dump(d, open(p, "w"))
+PY' \
+    caught "is not a job in"
+
+arm "8" "the aggregator is classified advisory, so nothing requires it" \
+    'python3 - <<PY
+import yaml
+p = ".github/ci-gating.yml"
+d = yaml.safe_load(open(p)); d["required"].remove(d["aggregator"])
+d["advisory"][d["aggregator"]] = "planted by the falsification suite, a reason long enough to be substantive"
+yaml.safe_dump(d, open(p, "w"))
+PY' \
+    caught "is not in \`required:\`"
+
+arm "9" "the aggregator loses if: always(), so a failed gate skips it" \
+    'mutate_ci "    if: \${{ always() }}
+    needs:" "    needs:"' \
+    caught "must be \`always()\`"
+
+arm "10" "a required job is dropped from the aggregator's needs" \
+    'mutate_ci "      - smoke-captest
+" ""' \
+    caught "required job 'smoke-captest' is not in aggregator"
+
+arm "11" "the aggregator needs an advisory job, which is not a required one" \
+    'mutate_ci "    needs:
+      - " "    needs:
+      - fuzz
+      - "' \
+    caught "which is not a required"
+
+arm "12" "the verdict step is removed, so the aggregator always succeeds" \
+    'mutate_ci "        run: python3 tools/ci_gate_verdict.py" "        run: \"true\""' \
+    caught "never runs tools/ci_gate_verdict.py"
+
+arm "13" "the verdict is handed something other than every result" \
+    'mutate_ci "          NEEDS: \${{ toJSON(needs) }}" "          NEEDS: \"{}\""' \
+    caught "is not handed"
+
+arm "14" "the verdict step may fail without failing the aggregator" \
+    'mutate_ci "        run: python3 tools/ci_gate_verdict.py" "        run: python3 tools/ci_gate_verdict.py
+        continue-on-error: true"' \
+    caught "has a step with continue-on-error"
+
 echo
 echo "arms passed: $PASSES   failed: $FAILS"
 [ "$FAILS" -eq 0 ]

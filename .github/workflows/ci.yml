@@ -38,11 +38,151 @@ jobs:
       # touches, so a job added here landed advisory BY DEFAULT and nothing asked
       # whether it should have. This fails the build when ci.yml and
       # .github/ci-gating.yml disagree, which forces that question at review time.
-      # It cannot check the ruleset itself -- reading one needs Administration
-      # permissions the GITHUB_TOKEN does not have -- so it enforces that the
-      # checked-in decision record is COMPLETE, and syncing stays a manual step.
+      # It also proves the `gates` job needs exactly the required ci.yml jobs,
+      # which is what makes a job added to `required:` gate in the PR that adds
+      # it. It cannot read the ruleset itself (that needs Administration, which
+      # the GITHUB_TOKEN cannot hold); ruleset-audit.yml does that daily.
       - name: Check CI gating classification
         run: tools/check_ci_gating.py
+
+  # THE ONE REQUIRED CHECK FROM THIS WORKFLOW (2026-09-21). The branch ruleset
+  # requires this job's context and CodeQL's, and no other. It needs every job
+  # `.github/ci-gating.yml` lists as required here, so a red, skipped or
+  # cancelled gate makes it red. tools/check_ci_gating.py proves its `needs:`
+  # is exactly that list, that it runs `if: always()` (without which a failed
+  # gate would SKIP it, and GitHub counts a skipped required check as passed),
+  # and that the verdict is handed every result. A job added to `required:`
+  # therefore gates in the PR that adds it, with no ruleset change.
+  gates:
+    name: All required gates passed
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: ${{ always() }}
+    needs:
+      - altconfigs
+      - apt-hardening
+      - cap-writes
+      - ci-gating
+      - claim-release
+      - console-timestamps
+      - defect-flags
+      - defect-flags-documented
+      - defer-exemption
+      - devcap
+      - doc-claims
+      - ffi-deadsurface
+      - fork
+      - forkexec
+      - fpu
+      - frame
+      - gate-pairs
+      - image-abi
+      - installer
+      - installer-accounts
+      - invariants
+      - kani-bounded
+      - kernel
+      - ksp-guard
+      - libhorus
+      - lock-order
+      - measured-boot-required
+      - miri
+      - net
+      - passwd-probe
+      - passwd-target
+      - prose-style
+      - reproducible
+      - ring0-budget
+      - rng-seed
+      - rust
+      - security
+      - shared-objects
+      - shlib
+      - smoke
+      - smoke-aslr
+      - smoke-aspace
+      - smoke-boot-pin
+      - smoke-boot-pin-control
+      - smoke-captest
+      - smoke-console
+      - smoke-console-isolation
+      - smoke-console-pass
+      - smoke-console-pass-control
+      - smoke-console-smp
+      - smoke-coreutils-shell
+      - smoke-cow
+      - smoke-cpu
+      - smoke-cr3-reclaim
+      - smoke-e820
+      - smoke-elf
+      - smoke-elf64
+      - smoke-exec-reenter
+      - smoke-flush
+      - smoke-fs
+      - smoke-fs-conc
+      - smoke-fs-large
+      - smoke-fs-perms
+      - smoke-fs-persist
+      - smoke-fs-wal
+      - smoke-fs-wal-flush
+      - smoke-fs-wal-order
+      - smoke-heap64
+      - smoke-init-fs
+      - smoke-ioport
+      - smoke-irq
+      - smoke-irq-policy
+      - smoke-kdiag
+      - smoke-kfault
+      - smoke-kfault-record
+      - smoke-klog-forge
+      - smoke-kstack-park
+      - smoke-kstack-race
+      - smoke-mapphys
+      - smoke-modules
+      - smoke-modules-tamper
+      - smoke-newlib
+      - smoke-newlib-tamper
+      - smoke-notify
+      - smoke-nzcow
+      - smoke-percpu
+      - smoke-pipe
+      - smoke-preempt
+      - smoke-proc
+      - smoke-recvblock
+      - smoke-recvblock-smp
+      - smoke-resume-guard
+      - smoke-sched-invariants
+      - smoke-session
+      - smoke-session-smp
+      - smoke-session-smp-soak
+      - smoke-signal
+      - smoke-smp
+      - smoke-smt
+      - smoke-spawn-owner
+      - smoke-stackguard
+      - smoke-tcc
+      - smoke-term
+      - smoke-tpm
+      - smoke-tpm-bootimg
+      - smoke-tpm-bootimg-control
+      - smoke-tpm-seal
+      - smoke-tpm-seal-roundtrip
+      - smoke-tpm-tamper
+      - smoke-tsd
+      - smoke-wx
+      - smoke-wx-smp
+      - store-locked
+      - switch-commit
+      - syscall-abi
+      - syscall-coverage
+      - unsafe-safety
+      - vfs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Every required job succeeded (skipped and cancelled are failures)
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: python3 tools/ci_gate_verdict.py
 
   invariants:
     name: "Every security property is bound to a witness that exists"
@@ -825,10 +965,6 @@ jobs:
       # property of cap_lookup: both rest on what create_task happens to do, in
       # another file. The witness manufactures both conditions, because a refusal
       # test whose ungated path could not have succeeded witnesses nothing.
-      #
-      # THREE STEPS IN THIS JOB, not a job of their own: a new job is a new
-      # required context, and the ruleset is synced by hand after the merge
-      # ([C-6]), so a new gating job would leave it one context behind.
       - name: A cspace-less task and an out-of-range slot are both refused
         run: make smoke-cap-lookup
       - name: Control arm — restore the fallback and require the escalation
@@ -853,10 +989,6 @@ jobs:
       # capability goes to a task of its own, holding it and nothing else, rather
       # than to captest, whose negative probes are only worth anything because its
       # absence of authority is real.
-      #
-      # THESE ARE STEPS IN THIS JOB, not a job of their own, for the reason given
-      # forty lines up: a new job is a new required context and the ruleset is
-      # synced by hand after the merge ([C-6]).
       - name: A task holding one CAP_AUDIT runs both audit handlers, and nothing else
         run: make smoke-auditprobe
       # Issue #176 itself, on the wrapper it was about and nothing had called.
@@ -2010,11 +2142,6 @@ jobs:
       # below 64, so neither defect is reachable by anything else in this job --
       # which is why the ceiling needs a witness of its own rather than trusting
       # the sessions above.
-      #
-      # THREE STEPS IN THIS JOB RATHER THAN A JOB OF THEIR OWN: a new job is a
-      # new required context, and the ruleset that decides required contexts is
-      # synced by hand after the merge ([C-6]), so a new gating job would leave
-      # the ruleset one context behind until someone ran --sync-ruleset.
       - name: An alias pair (t, t-64) has distinct stacks, cspaces and inflight bits
         run: make smoke-task-ceiling
       - name: Restore the single-word mask and require the witness to ALIAS
@@ -2187,12 +2314,6 @@ jobs:
       # The falsifying arm for the 2026-08-30 SC_NONE promotions. Without it, a
       # promotion captest's probes EARNED is indistinguishable from one that was
       # free all along, and deleting the probes would leave this gate green.
-      #
-      # A STEP IN THIS JOB RATHER THAN A JOB OF ITS OWN, deliberately: a new job
-      # is a new required context, and the ruleset that decides required contexts
-      # is synced by hand after the merge ([C-6]), so a new gating job leaves the
-      # ruleset one context behind until someone runs --sync-ruleset. A step adds
-      # the check without adding that lag.
       - name: Remove the probes and require the gate to name exactly its twelve
         run: make smoke-syscall-coverage-control
 
@@ -4422,6 +4543,7 @@ jobs:
         run: |
           set -euo pipefail
           tools/test_check_ci_gating.sh
+          tools/test_ci_gate_verdict.sh
           tools/test_check_doc_claims.sh
       # The last unfalsified checker. Only its PARSER half is armed -- the
       # measuring half is 88 clean builds and QEMU boots -- and that is where the

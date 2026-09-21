@@ -1010,11 +1010,20 @@ the 512 MiB QEMU configuration the pool is 495 MiB, so that is roughly 465 MiB o
 re-verification runs once, before userspace; a write after that is kept off the modules by the
 placement alone.
 
-### 1.16 A supervisor-mode fault writes a kernel text address into a ring-3 task's exit record **[HORUS-20260920-01]**
+### 1.16 ~~A supervisor-mode fault writes a kernel text address into a ring-3 task's exit record~~ (**FIXED 2026-09-21**, `SECURITY.md` S97) **[HORUS-20260920-01]**
 
 *Found 2026-09-20 by the kernel-pointer disclosure survey,
 [`investigations/kernel-pointer-disclosure.md`](investigations/kernel-pointer-disclosure.md),
-which roadmap 3.8 needs before KASLR can mean anything.*
+which roadmap 3.8 needs before KASLR can mean anything; fixed 2026-09-21.*
+
+**Closed.** Every cause built from a trap frame goes through `exit_record_rip`, which records `rip`
+only for a ring-3 frame, and `exit_record_addr`, which records a fault address only in the user
+half (`src/kernel/idt.c`). The second goes one step past the original finding: a supervisor fault
+on a kernel-half address would have put that address in the same record. `make
+smoke-kfault-record` makes the kernel take a supervisor #PF in a task's own syscall, once at 0x94
+and once at a kernel-half address, and reads both records back from ring 3; its control arm,
+`EXIT_RECORD_KERNEL_RIP=1`, puts the kernel rip back and is caught by name. The account of the
+finding follows.
 
 `page_fault_handler` deliberately kills the current task for a **supervisor** fault as well as a
 ring-3 one, so that the kernel touching a bad user address mid-syscall costs a task rather than the
@@ -1032,9 +1041,8 @@ the killed `console_server` carried `rip=0xffffffff80108479`, which `nm -n kerne
 script the address is already in `kernel.elf` for anyone to read. This is the same shape as §1.3,
 where `info.cr3` is zeroed and another task's `eip` withheld for exactly this reason, and it turns
 into a slide oracle the day roadmap 3.8 moves the base, disclosed with no authority and at the
-moment a kernel memory-safety defect is being exercised. The fix is to record `rip` only for a
-ring-3 frame; the kernel-side value already reaches the maintainer through the `kfault_frame`
-banner at the UART, which is where it belongs.
+moment a kernel memory-safety defect is being exercised. The kernel-side value still reaches the
+maintainer through the `kfault_frame` banner at the UART, which is where it belongs.
 
 ### 1.17 ~~A reused task slot keeps the previous occupant's wait record~~ (**FIXED 2026-09-21**, `SECURITY.md` S98) **[HORUS-20260920-02]**
 
@@ -1058,8 +1066,8 @@ use and only reuse is at issue.
 ever waited, and `include/syscall.h` documents the opposite: asking before any wait has completed is
 promised `TASK_EXIT_NONE` rather than a stale answer. In a reused slot it answers the previous
 occupant's record instead, which names the tid it supervised, that task's faulting RIP and fault
-address, and its name. A dead task's RIP defeats the ASLR of a task that shared its image, and under
-roadmap 3.8 the same field can carry a kernel address by §1.16.
+address, and its name. A dead task's RIP defeats the ASLR of a task that shared its image. (Until
+§1.16 closed, the same field could also carry a kernel address.)
 
 **Latent rather than observed, measured both ways.** Under `PROC_SELFTEST` the record is
 demonstrably left in the freed slot: `proctest` dies holding the death record of the `faulter` child
@@ -2986,9 +2994,9 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand: **[C-6]**
 
-`.github/workflows/ci.yml` defines **119** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more: **121** across the three, producing **124** status-check contexts. Ruleset `21815299`
-requires all **121** today, `smoke-kdiag` (**S81**) among them since 2026-09-03: one
+`.github/workflows/ci.yml` defines **120** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more: **122** across the three, producing **125** status-check contexts. Ruleset `21815299`
+requires all **122** today, `smoke-kdiag` (**S81**) among them since 2026-09-03: one
 `--sync-ruleset` run after the pull request that added the job, which is the lag this finding is
 about rather than an exception to it. Its predecessor `19007209` required **22** of them before
 2026-08-16, and until 2026-08-15 exactly **zero** of those 22 were security gates: capability
@@ -3034,7 +3042,7 @@ the right name with the wrong verdict. Step-level `continue-on-error` is untouch
 allowed; it lets one step be advisory while the job's own status still reports the truth, which
 is how the `security` job keeps its scanners advisory without becoming unfailable itself.
 
-That intended set is **121 required contexts and 3 reasoned exemptions**: `fuzz` (a 30-second
+That intended set is **122 required contexts and 3 reasoned exemptions**: `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` was a fifth until **[G-9]** closed on 2026-08-21; it was promoted on
@@ -4353,7 +4361,7 @@ so neither was ever presented to a contributor. There was no code of conduct, an
 the IPC authorisation logic. All fixed as of 2026-07-27; the `require_code_owner_review`
 setting that would make `CODEOWNERS` binding is still off (§5.1).
 
-*(Repository hygiene itself is fine: `git ls-files` reports **423** tracked files with no build
+*(Repository hygiene itself is fine: `git ls-files` reports **426** tracked files with no build
 artefacts or vendored binaries: no `kernel.elf`, no `horus.iso`, no object files. A working
 checkout accumulates ~70 MB of untracked build output, which is correctly `.gitignore`d. This
 sentence said 243 until 2026-08-15 and **254 until 2026-09-20**, by which point the tree had

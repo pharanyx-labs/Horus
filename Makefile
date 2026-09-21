@@ -90,7 +90,7 @@ RUST_TARGET ?= x86_64-unknown-none
 # as CLAUDE.md already requires for that table.
 DEFECT_FLAGS = \
 	IRQ_LEGACY_GLOBAL_LOCK USER_HEAP_HIGH_BASE \
-	KFAULT_INJECT KFAULT_LEGACY_PRINTLN EXIT_RECORD_STALE_ON_REUSE \
+	KFAULT_INJECT KFAULT_LEGACY_PRINTLN KFAULT_RECORD_SELFTEST EXIT_RECORD_KERNEL_RIP EXIT_RECORD_STALE_ON_REUSE \
 	KDIAG_LEGACY_COM1 KDIAG_SPLIT_WIDEN KDIAG_PORTS_GRANTABLE KDIAG_NOISE KDIAG_PROBE KDIAG_RING3_PROBE \
 	PS2_PROBE \
 	INSTALLER_NO_BACK \
@@ -3387,7 +3387,28 @@ PROC_SELFTEST ?= 0
 ifeq ($(PROC_SELFTEST),1)
 CFLAGS  += -DPROC_SELFTEST
 ASFLAGS += -DPROC_SELFTEST
-PROC_SELFTEST_DEP = userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/preempttest.bin
+PROC_SELFTEST_DEP = userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/preempttest.bin
+endif
+
+# KFAULT_RECORD_SELFTEST=1 (with PROC_SELFTEST=1) is the witness for
+# HORUS-20260920-01, docs/LIMITATIONS.md 1.16. It compiles a hook into h_yield
+# that lets a task named "kfaulter" make the kernel read an address of its
+# choosing at CPL 0, and appends a phase to proctest that reads the resulting
+# exit record from ring 3 and requires it to carry no kernel address. A hook that
+# lets ring 3 steer a kernel read is instrumentation, never a shipping config, so
+# it is in DEFECT_FLAGS and the kernel announces it at boot.
+KFAULT_RECORD_SELFTEST ?= 0
+ifeq ($(KFAULT_RECORD_SELFTEST),1)
+CFLAGS  += -DKFAULT_RECORD_SELFTEST
+endif
+
+# EXIT_RECORD_KERNEL_RIP=1 puts the defect back: the exit record takes a
+# supervisor fault's rip and a kernel-half fault address verbatim, as it did
+# before 2026-09-21. The control arm for smoke-kfault-record. Never a shipping
+# config.
+EXIT_RECORD_KERNEL_RIP ?= 0
+ifeq ($(EXIT_RECORD_KERNEL_RIP),1)
+CFLAGS  += -DEXIT_RECORD_KERNEL_RIP
 endif
 
 # EXIT_RECORD_STALE_ON_REUSE=1 puts HORUS-20260920-02 back: create_task leaves a
@@ -4194,6 +4215,11 @@ endif
 ifeq ($(SERIAL_PRESENCE_UNCHECKED),1)
 USERSPACE_CFLAGS += -DSERIAL_PRESENCE_UNCHECKED
 endif
+# proctest's kfaulter phase exists only in this build (smoke-kfault-record), so
+# userspace must be told; applied here for the reason the TUI flags above are.
+ifeq ($(KFAULT_RECORD_SELFTEST),1)
+USERSPACE_CFLAGS += -DKFAULT_RECORD_SELFTEST
+endif
 # CONSOLE_BACKSPACE_NO_ERASE=1 restores console_server's screen output as it
 # stood before 2026-09-12: fb_putc and vga_putc had no case for 0x08, so a
 # backspace fell through to the glyph branch and was DRAWN. con_getline's
@@ -4903,7 +4929,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.stripped.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -7257,6 +7283,37 @@ smoke-proc:
 	@# suspend marker would let the harness stop the guest before that phase ran.
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PROC_SELFTEST: slot-reuse OK' \
 		FAIL_MARKER='PROC_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
+
+# Does a task's exit record keep kernel addresses away from ring 3?
+# (HORUS-20260920-01, docs/LIMITATIONS.md 1.16, SECURITY.md S97.)
+#
+# proctest runs its whole sequence, then spawns kfaulter twice. Each time the
+# kernel takes a supervisor #PF in kfaulter's own syscall and kills it, and
+# proctest reads the record back with no authority, as any task can. The kernel
+# prints its PAGE FAULT banner for those faults, which the harness otherwise
+# scores as a failure; so the fault is EXPECTED here, and what ends the run as a
+# pass is proctest's verdict after reading the record. Under EXPECT_FAULT only the
+# named string passes: a FAIL marker still fails, and a run that never prints the
+# verdict fails when it ends. smoke-proc runs without this phase and stays as
+# strict as it was.
+.PHONY: smoke-kfault-record
+smoke-kfault-record:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KFAULT_RECORD_SELFTEST=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KFAULT_RECORD_SELFTEST=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 EXPECT_FAULT='PROC_SELFTEST: kfault-record OK' \
+		FAIL_MARKER='PROC_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
+
+# The control arm: the same run with the defect put back. The record then
+# carries kernel text as its rip, and proctest must say so by name.
+.PHONY: smoke-kfault-record-control
+smoke-kfault-record-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KFAULT_RECORD_SELFTEST=1 EXIT_RECORD_KERNEL_RIP=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KFAULT_RECORD_SELFTEST=1 EXIT_RECORD_KERNEL_RIP=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		EXPECT_FAULT='PROC_SELFTEST: FAIL kfault-exitinfo-kernel-rip' \
+		tools/smoke_test.sh horus.iso
 
 # The control arm for the slot-reuse phase: create_task leaves the previous
 # occupant's wait record in place, and the probe in the waiter's old slot must

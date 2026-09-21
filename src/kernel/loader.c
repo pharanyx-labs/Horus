@@ -113,6 +113,8 @@ extern uint8_t embedded_sigtarget_bin_start[];
 extern uint8_t embedded_sigtarget_bin_end[];
 extern uint8_t embedded_faulter_bin_start[];
 extern uint8_t embedded_faulter_bin_end[];
+extern uint8_t embedded_kfaulter_bin_start[];
+extern uint8_t embedded_kfaulter_bin_end[];
 extern uint8_t embedded_waiter_bin_start[];
 extern uint8_t embedded_waiter_bin_end[];
 extern uint8_t embedded_exitprobe_bin_start[];
@@ -168,6 +170,10 @@ static const struct embedded_binary embedded_binaries[] = {
     /* faulter: child that takes an unhandled #UD fault, so the driver can verify
      * a SYS_WAIT waiter is woken on a *fault* death too. PROC_SELFTEST only. */
     { "faulter",   embedded_faulter_bin_start,  embedded_faulter_bin_end  },
+    /* kfaulter: child that makes the kernel take a supervisor #PF on its behalf,
+     * so the driver can check the exit record carries no kernel address
+     * (HORUS-20260920-01). PROC_SELFTEST only. */
+    { "kfaulter",  embedded_kfaulter_bin_start, embedded_kfaulter_bin_end },
     /* waiter, exitprobe: leave a completed wait in a slot, then check a task
      * reusing it starts with no record (HORUS-20260920-02). PROC_SELFTEST only. */
     { "waiter",    embedded_waiter_bin_start,   embedded_waiter_bin_end   },

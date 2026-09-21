@@ -452,6 +452,42 @@ void _start(void) {
         if (!reached) { report("PROC_SELFTEST: FAIL slot-reuse-not-reached\n"); sys_exit(); }
         report("PROC_SELFTEST: slot-reuse OK\n");
     }
+#ifdef KFAULT_RECORD_SELFTEST
+    /* --- HORUS-20260920-01 (docs/LIMITATIONS.md 1.16): a SUPERVISOR fault's
+     * record carries no kernel address. kfaulter makes the kernel read an address
+     * at CPL 0 in kfaulter's own syscall, so the kernel kills it for a #PF whose
+     * rip is kernel text. The record is read here from ring 3, with no authority,
+     * exactly as any task could read it. Two runs:
+     *   "user"   addr 0x94 is in the user half and must be reported as-is (so a
+     *            filter that zeroed everything could not pass), rip must be 0
+     *   "kernel" a kernel-half addr: both it and rip must be 0
+     * The reason is required to be a page fault first, so a child that died some
+     * other way cannot pass by having nothing recorded.
+     *
+     * Last, and only in a KFAULT_RECORD_SELFTEST build (`make
+     * smoke-kfault-record`): the kernel prints its PAGE FAULT banner for these,
+     * which smoke-proc rightly treats as a failure, so smoke-proc runs without
+     * this block and stays exactly as strict as it was. --- */
+    {
+        const char *mode[2] = { "user", "kernel" };
+        const uint64_t want_addr[2] = { 0x94, 0 };
+        for (int m = 0; m < 2; m++) {
+            char *kv[3];
+            kv[0] = "kfaulter"; kv[1] = (char *)mode[m]; kv[2] = 0;
+            int kc = sys_spawn_named_argv("kfaulter", 2, kv);
+            if (kc > 0) sys_task_resume(kc);
+            if (kc <= 0) { report("PROC_SELFTEST: FAIL kfault-spawn\n"); sys_exit(); }
+            if (sys_wait(kc) != 0) { report("PROC_SELFTEST: FAIL kfault-wait-rc\n"); sys_exit(); }
+            struct task_exit_info kei;
+            if (exit_info(&kei) != 0)              { report("PROC_SELFTEST: FAIL kfault-exitinfo-rc\n"); sys_exit(); }
+            if (kei.reason != TASK_EXIT_PAGEFAULT) { report("PROC_SELFTEST: FAIL kfault-exitinfo-reason\n"); sys_exit(); }
+            if (kei.tid != kc)                     { report("PROC_SELFTEST: FAIL kfault-exitinfo-tid\n"); sys_exit(); }
+            if (kei.rip != 0)                      { report("PROC_SELFTEST: FAIL kfault-exitinfo-kernel-rip\n"); sys_exit(); }
+            if (kei.addr != want_addr[m])          { report("PROC_SELFTEST: FAIL kfault-exitinfo-addr\n"); sys_exit(); }
+        }
+    }
+    report("PROC_SELFTEST: kfault-record OK\n");
+#endif
     /* sigtarget's handler printed the final "+signal" PASS marker on delivery. */
     sys_exit();
 }

@@ -1030,6 +1030,8 @@ address space is torn down.
 |---|---|
 | `smoke-kfault` | A page fault taken at **CPL 0** is reported on the **serial line**, after the console handover. `KFAULT_INJECT=1` makes the kernel fault on purpose (a read of `0x94`, G-8's exact address) on a timer tick once `console_server` owns the console, and the harness requires the report to appear *after* the login prompt. |
 | `smoke-kfault-legacy` | The same injection with reporting restored to `println()` (`KFAULT_LEGACY_PRINTLN=1`): the report must **not** reach serial. The control arm. |
+| `smoke-kfault-record` | A task's exit record carries **no kernel address**, property **S97** (**[HORUS-20260920-01]**). Built `PROC_SELFTEST=1 KFAULT_RECORD_SELFTEST=1`: after its usual sequence, `proctest` spawns `kfaulter` twice, and each time the kernel reads an address at CPL 0 in `kfaulter`'s own syscall (`0x94`, then `0xffff900000000000`) and kills it for the supervisor #PF. `proctest` reads each record back from ring 3 with no authority, as any task can, and requires a page-fault reason, `rip` 0, and the fault address kept in the user half (`0x94`) and dropped in the kernel half (0). Requiring `0x94` to survive is what stops a filter that zeroes everything from passing. The kernel's PAGE FAULT banner is expected here, so the run passes only on `PROC_SELFTEST: kfault-record OK` and fails on any `PROC_SELFTEST: FAIL`; `smoke-proc` runs without this phase and treats a banner as the failure it normally is. |
+| `smoke-kfault-record-control` | The same run with `EXIT_RECORD_KERNEL_RIP=1`: the record keeps the kernel rip, and `proctest` must report `FAIL kfault-exitinfo-kernel-rip`. The base gate goes red on this build. |
 | `smoke-kdiag` | Every marker the kernel emits is **contiguous** on its own channel, COM3 (0x3E8), which no capability names. The property **S81** states, and the answer to a marker being cut in half by ring-3 output. |
 | `smoke-kdiag-split-control` | The **same build and the same boot**, read on the shared console: fewer of those markers arrived intact there. The hazard, on demand. **Bounded since 2026-09-08**: the split is a race, so it boots until it reproduces (`KDIAG_SPLIT_CONTROL_BOOTS`, 8 conclusive boots within `KDIAG_SPLIT_CONTROL_ATTEMPTS`, 16) and stops at the first hit. Measured that day, 13 of 20 boots, so the single-boot form it replaced was **red on about a third of runs**, and it reddened a PR containing only `.gitignore` and a checker. A boot that ended before there was anything to split is **inconclusive**, named and retried against the attempt bound rather than scored as a miss: the distinction `smoke-kstack-park-control` was scored wrongly on for months, in an arm built from the same template. Falsified in the other direction: with the ring-3 writer removed (`KDIAG_NOISE` off) the same loop goes red **8 conclusive boots in 8**, so it depends on the mechanism rather than on luck. |
 | `tools/test_kdiag_counts.sh` | **The kdiag harness's own measurement, falsified.** Until 2026-09-08 the verdict's counts came from two separate reads of a capture QEMU was still writing, so a marker completing between them made `prefix` exceed `whole`, the shape of a split. The skew is **one-directional** (`whole` is read first), so it could only ever manufacture a false RED, which is why it read as flakiness rather than as a broken measurement. It reddened a dependabot PR whose diff was three SHA pin bumps, and the gate's own evidence dump then printed all seven markers intact, contradicting its verdict. Reproduced **on demand** against a live writer (20 of 40 samples skew with two reads, 0 of 40 with one) because the rate in CI is about 1 job run in 35 and waiting for it is not a falsification. The test extracts `counts_for()` from `kdiag_test.sh` rather than copying it, so the two cannot drift. |
@@ -1577,10 +1579,10 @@ as a reproduction.
 
 ## CI
 
-`.github/workflows/ci.yml` defines **119** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **120** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below: **121** jobs, **124** contexts. Counts from `tools/check_ci_gating.py`, which prints
+below: **122** jobs, **125** contexts. Counts from `tools/check_ci_gating.py`, which prints
 them; do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20, a backstop, not a budget. The default is
@@ -1632,7 +1634,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **121 required contexts and 3 reasoned exemptions** (read off
+The intended set is **122 required contexts and 3 reasoned exemptions** (read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence) `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
@@ -2205,7 +2207,7 @@ three ways: a planted phrasing in a `.c` file is caught with file and line; the 
 phrasing inside a quotation stays exempt, so a comment can record the wrong thing while
 correcting it.
 
-`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 98 properties
+`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 100 properties
 name a witness that resolves to a make target or a CI job.
 
 | Rule | Rejects |

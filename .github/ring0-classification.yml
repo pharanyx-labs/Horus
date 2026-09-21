@@ -214,7 +214,28 @@
 # existed because two numbers were written in two places was closed by deriving one
 # from the other, and the only code the kernel gained is the runtime check that
 # catches the case the constants cannot see.
-core_budget_loc: 10081
+#
+# RAISED 2026-09-21, 10081 -> 10108 (+27), for S97 (HORUS-20260920-01): a task's
+# exit record no longer carries a kernel rip or a kernel-half fault address. Only
+# 15 of the 27 are in the ship kernel's source path, and all 15 are in idt.c:
+# exit_record_rip and exit_record_addr, of which six lines are the
+# EXIT_RECORD_KERNEL_RIP control arm's #ifdef branches. The fix belongs where the
+# cause is built from the trap frame, which is ring 0 by nature. The other 12 are
+# compiled out of the ship kernel: 4 in syscall.c are the KFAULT_RECORD_SELFTEST
+# hook, and 8 in multiboot.S embed the kfaulter test child under PROC_SELFTEST.
+# Two of those 8 are comment continuation lines, a MEASUREMENT ARTEFACT: this
+# checker's .S rule strips only lines that begin with `#` or `/`, so the ` * `
+# lines of a block comment count as code.
+#
+# RAISED 2026-09-21, 10108 -> 10128 (+20), for S98 (HORUS-20260920-02): a task
+# in a reused slot no longer inherits the previous occupant's death records.
+# 6 are in scheduler.c and are the fix: create_task clearing exit_info and
+# wait_exit_info, two of them the EXIT_RECORD_STALE_ON_REUSE control arm's
+# #ifdef pair (task_teardown's whole-name zeroing replaced one line with one).
+# The other 14 are in multiboot.S and embed the waiter and exitprobe test
+# children, only under PROC_SELFTEST: 12 directives and 2 comment continuation
+# lines, the .S counting artefact recorded in the S97 entry above.
+core_budget_loc: 10128
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

@@ -644,6 +644,16 @@ embedded_faulter_bin_start:
 .global embedded_faulter_bin_end
 embedded_faulter_bin_end:
 
+/* kfaulter: makes the KERNEL take a supervisor #PF on its behalf, so proctest
+ * can check the exit record carries no kernel address (HORUS-20260920-01).
+ * Only in PROC_SELFTEST. */
+.align 16
+.global embedded_kfaulter_bin_start
+embedded_kfaulter_bin_start:
+.incbin "userspace/kfaulter.bin"
+.global embedded_kfaulter_bin_end
+embedded_kfaulter_bin_end:
+
 /* waiter and exitprobe: leave a completed wait in a task slot, then check a task
  * reusing that slot does not inherit it (HORUS-20260920-02). Only in
  * PROC_SELFTEST. */

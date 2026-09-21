@@ -106,8 +106,8 @@ is ever written by the kernel or handed out.
 
 **The per-task kernel stacks joined them on 2026-08-30**, by a different route: rather than the
 pool's reserve they took a region of kernel-half virtual address space under `high_pdpt[511]`,
-mapped from ordinary pool frames on first use. They were 4 MiB of `.bss` — a static array of one
-64 KiB slot per task — and were what actually pinned `MAX_TASKS` at 64, not the 72 KiB table of
+mapped from ordinary pool frames on first use. They were 4 MiB of `.bss`, a static array of one
+64 KiB slot per task, and were what actually pinned `MAX_TASKS` at 64, not the 72 KiB table of
 task records that `docs/LIMITATIONS.md` §3.1 had been naming. The ceiling is 256 now and the
 image is smaller than it was at 64.
 
@@ -115,7 +115,7 @@ The arena's size is no longer a single constant. It is a **kernel reserve** deri
 `MAX_TASKS` (the per-task cspaces, which no capability names and ring 3 cannot reach) plus a
 **fixed 3.5 MiB user half** (`UNTYPED_ROOT`, what `init` delegates). It used to be a fixed 4 MiB
 total with the reserve carved out of it, so raising the task ceiling silently shrank what
-userspace could allocate — and the user half is the number `MAX_FRAME_PAGES`' denial-of-service
+userspace could allocate, and the user half is the number `MAX_FRAME_PAGES`' denial-of-service
 reasoning rests on.
 
 Boot-module frames are also held back from the free list; GRUB places modules wherever it likes,
@@ -171,7 +171,7 @@ the shipping binary whether or not the kernel calls it. `tools/check_ffi_deadsur
 (required job `ffi-deadsurface`) refuses an export with no live caller, and the mirror defect:
 a `rust_*` fallback defined in `src/kernel/rust_shims.c` with neither a Rust export nor a
 caller. Twelve exports of sixty were dead when the checker was written, each one an `unsafe`
-entry point whose `# Safety` clause named a caller that did not exist -- and each with passing
+entry point whose `# Safety` clause named a caller that did not exist, and each with passing
 unit tests, which is why they had survived. Deliberate exceptions are declared in
 `.github/ffi-exports.yml`; there is one, `rust_eh_personality`, which the Rust ABI requires.
 
@@ -205,7 +205,7 @@ Two of those are splits rather than additions, and the reason is the same both t
 `CAP_DEBUG` (roadmap 3.6) exists because `ps` used to run on a `CAP_AUDIT` that also rotated
 the audit chain's keys; `CAP_STORAGE_FORMAT` (roadmap 2.9, **S72**) exists because destroying a
 volume would otherwise have been a rights bit on the `CAP_ENCRYPTED_STORAGE` `fs_server` and the
-shell already hold -- and `root_cnode[9]` carries `CAP_RIGHT_ALL`, so defining the bit would
+shell already hold, and `root_cnode[9]` carries `CAP_RIGHT_ALL`, so defining the bit would
 have conferred it on both with no diff at the grant. A new type fails closed where a new bit
 inside `CAP_RIGHT_ALL` fails open.
 
@@ -236,13 +236,13 @@ stack as a ring-3 server) and 2.7 (real device drivers) both stand on.
 **What that table does NOT declare is load-bearing too.** COM3 (`0x3E8`) appears in no entry, and
 that omission is the kernel's diagnostic channel (`SECURITY.md` **S81**). The kernel reports a
 trap by writing the UART directly, because `print()` reaches only the klog once `console_server`
-owns the console -- and `console_server` writes that same UART from ring 3, one byte at a time,
+owns the console, and `console_server` writes that same UART from ring 3, one byte at a time,
 so a report could be cut in half between two characters by an unrelated task's output. A channel
 no capability names has one writer by construction: `SYS_IOPORT_GRANT` walks the device's
 declared ranges, so a port that is in none of them cannot be granted to anyone. `panic_ch` writes
 COM3 first and the shared console second; the second copy is best-effort and nothing asserts on
 it. The falsifying arm declares `0x3E8` in the platform entry and watches ring 3 write into the
-kernel's channel -- `make smoke-kdiag-grant-control`, against `make smoke-kdiag-ioport`, where
+kernel's channel, `make smoke-kdiag-grant-control`, against `make smoke-kdiag-ioport`, where
 the identical instruction takes a #GP.
 
 Index 0 is reserved and names nothing, so the two fields that default to zero (a task's
@@ -435,7 +435,7 @@ alone was correct only while every region base happened to be a multiple of 64.
 trap frame. `KOBJ_CNODE` is allocatable by the kernel but refused to ring 3: no capability type
 names a CNode and no syscall installs one as a task's cspace, so minting one would be authority
 with no defined meaning. (The per-task kernel STACKS did move, on 2026-08-30, to a region under
-`high_pdpt[511]` — they were the 4 MiB that actually bound the task ceiling, against this
+`high_pdpt[511]`: they were the 4 MiB that actually bound the task ceiling, against this
 table's 72 KiB. See §14 G-3.)
 
 **Object lifetime is capability-governed.** An object exists exactly as long as some capability
@@ -475,7 +475,7 @@ discipline (`SECURITY.md` **S94**):
 - **`cap_install_object_first_free(min_slot, …, out_slot)`**, install into the first free slot
   at or above `min_slot` of the caller's own cspace, with the **scan inside the same lock
   acquisition as the store**. `SYS_PIPE` and the `CAP_TCB` a spawn hands its spawner used to
-  scan and then store separately, which lets two CPUs choose one slot — and the loser's
+  scan and then store separately, which lets two CPUs choose one slot, and the loser's
   `pipe_end_ref` has already counted an end that no capability names.
 - **`cap_consume_slot_of(pid, slot, out_prev)`**, null one slot of a task's cspace and return
   what it held, so only the CPU that actually emptied it releases what the capability owned.
@@ -493,7 +493,7 @@ store writes them one at a time, so an unlocked writer can show the sweep a slot
 already set while `object` and `serial` still describe the slot's previous occupant. Which
 functions write a capability slot, and what makes each write safe, is declared in
 `.github/cap-write-sites.yml` and gated by `tools/check_cap_writes.py`. One site does not take the
-lock -- `create_task`, building a cspace for a task that is already published -- and is exempt by a
+lock (`create_task`, building a cspace for a task that is already published) and is exempt by a
 *stated argument* rather than by construction: the sweep can read those slots but cannot act on
 them, because every capability there has `badge = 0` (which `revoke_subtree` skips) and names an
 object outside every range `kobj_gc` reclaims. The guards that argument rests on are pinned in that
@@ -929,7 +929,7 @@ table gated IPC on slot 3, which holds a `CAP_FRAME` in every task. See finding 
 hold the region**, which until 2026-09-12 it was not (`SECURITY.md` **S95**,
 **[HORUS-20260912-01]**). The index-space map gives the per-task reply region as
 `[REPLY_EP_BASE, REPLY_EP_BASE + MAX_TASKS)` = `[64, 320)`, `MAX_ENDPOINTS` was the literal `128`,
-and `DYN_EP_BASE` **is** `MAX_ENDPOINTS` — so for every task id ≥ 64, `endpoint_by_index` resolved
+and `DYN_EP_BASE` **is** `MAX_ENDPOINTS`, so for every task id ≥ 64, `endpoint_by_index` resolved
 that task's reply endpoint into the *dynamic* range, naming an endpoint retyped out of some task's
 untyped region. With `g_max_tasks` at 256 on the shipping configuration, half the task id space
 was provisioned into that collision. `MAX_ENDPOINTS` is now **derived** as
@@ -992,7 +992,7 @@ server may consume at most this much of the kernel" expressible.
 `CAP_STORAGE_FORMAT` is the one it holds in order to ASK rather than to wield: `init` calls
 `SYS_STORAGE_INFO` at boot and says on the wire what volume the machine has, which is the
 question that decides whether a machine needs installing (roadmap 2.9). Nothing a login reaches
-is given a copy -- not the shell, not `fs_server`.
+is given a copy, not the shell, not `fs_server`.
 
 ### `fs_server`
 
@@ -1009,7 +1009,7 @@ double-indirect blocks for large files, and concurrent multi-client service via
 `SYS_IPC_REPLY_TO`.
 
 At provisioning it also gives every account a home directory the **account** owns (**S78**),
-reading the account list with `SYS_USERLIST` -- the `CAP_USER` it already holds as the
+reading the account list with `SYS_USERLIST`: the `CAP_USER` it already holds as the
 registration gate. This is the only component that can: it has the list, it has the sole ring-3
 `CAP_ENCRYPTED_STORAGE` that `sys_fs_set_meta` answers to, and its provisioning already waits for
 the volume to unlock, which an installed machine does not do until a login. A directory that
@@ -1019,7 +1019,7 @@ Metadata carries **two different rules**, and the difference is deliberate (**S7
 mode may be set by its owner or by root, while its owner may be set by root alone. Changing a
 mode is something an owner does to their own file; giving one away is not. Both are decided
 against the attested `cuid`, like every other request. They were reachable only in principle
-until 2026-09-02 -- the shell had no `chmod` or `chown`, so neither rule had ever been exercised
+until 2026-09-02: the shell had no `chmod` or `chown`, so neither rule had ever been exercised
 from a login.
 
 The journal's crash atomicity is an ordering property over what is on *stable media*, not over
@@ -1047,7 +1047,7 @@ platform device's declaration beside COM1 and the VGA registers, so `SYS_IOPORT_
 covered them: reading the controller costs two `inb`s against a grant the server holds, and
 adds nothing to what it may touch. `SYS_IRQ_REGISTER` on IRQ 1 would instead have required a
 `CAP_NOTIFICATION` that `init` does not delegate to this server and that the server would never
-wait on, since it polls — a new delegation whose only effect would have been a side effect in
+wait on, since it polls, a new delegation whose only effect would have been a side effect in
 the kernel's interrupt handler. What tells ring 0 to stop reading the controller is
 `console_hw_owned()`, the same predicate that already stops `print()` driving the screen, so the
 console's input and output change hands together (**S89**). Both readers share one scancode
@@ -1071,13 +1071,13 @@ Every line the console accepts between the kernel's first message and the start 
 carries `[    S.uuuuuu] `. **The writer stamps it, not the caller**: `print_core`
 (`src/kernel/terminal.c`) emits the prefix in front of the first printable byte of each line, and
 `con_putc` (`userspace/console_server.c`) does the same after the handover. Before 2026-09-06 a
-line was stamped only if its author called `kmsg()`, and roughly half the boot console did not --
+line was stamped only if its author called `kmsg()`, and roughly half the boot console did not,
 the `  [ OK ]` status lines, and every ring-3 line arriving through `SYS_WRITE`, which could not
 call it at all. `kmsg()`/`kmsg_begin()` no longer exist; there is nothing to remember.
 
 The prefix goes out **inside the same critical section as the text**. `kmsg_begin(); print(msg);`
 was two `console_lock` acquisitions, so a ring-3 `SYS_WRITE` on another CPU could land between a
-kernel line's timestamp and its text -- the 2.6a hazard, on every timestamped line the system
+kernel line's timestamp and its text, the 2.6a hazard, on every timestamped line the system
 printed. In the server the same guarantee comes from it being the only writer of the UART after
 the handover, serving one request at a time. (Neither serialises against `kfault_str`/`panic_ch`,
 which bypass every lock by design: `docs/LIMITATIONS.md` 2.6c, unchanged.)
@@ -1086,15 +1086,15 @@ which bypass every lock by design: `docs/LIMITATIONS.md` 2.6c, unchanged.)
 `console_server` has only `SYS_CLOCK_GETTIME`, quantised to a 10 ms PIT tick because `CR4.TSD`
 denies ring 3 anything finer and a syscall must not hand it back, so its microsecond field is
 always a multiple of 10,000. They share an epoch: `clock_epoch_ticks` (`src/kernel/scheduler.c`)
-adds the time the tick counter could not see, which is everything before the first timer interrupt
--- 1.07 s on a measured SMP boot, and the reason the log used to run *backwards* by a second at
+adds the time the tick counter could not see, which is everything before the first timer interrupt:
+1.07 s on a measured SMP boot, and the reason the log used to run *backwards* by a second at
 the handover.
 
 **The window closes at the session.** `init` sends `CON_OP_BOOT_DONE` immediately before it
 launches the shell, and the server passes bytes through verbatim from then on: after that the
 console is a terminal, and a timestamp in front of a prompt, an echoed keystroke or a column of
 `ls -l` is wrong rather than merely noisy. Serving any input request has the same effect, as a
-backstop -- which is also what makes the installer's raw-mode session unstamped, correctly, on a
+backstop, which is also what makes the installer's raw-mode session unstamped, correctly, on a
 machine that has one. A server that is never told keeps stamping, which is right for the
 self-test images whose output is nothing but a boot log.
 
@@ -1175,16 +1175,16 @@ the ring-3 FS server never sees a key.
 - A **Merkle rollback tree** over block metadata, fanout `BLOCK_SIZE/32` = 128. Level 0's
   hashes are the metadata blocks' MACs; level k+1's are the hashes of level k's node blocks;
   the top block's hash is `sb.meta_root`. A metadata write costs one hash and one staged
-  block write per level — four of each at a 16 GiB volume — and unlock verifies **one node**
+  block write per level, four of each at a 16 GiB volume, and unlock verifies **one node**
   against the root rather than reading the whole region. Everything below the root is
   verified lazily, on the path from the root, when a metadata block is first loaded.
 - Every node hash covers (tag, level, index, bytes) **and** is checked against the value its
   parent records, up to the root (**S66**). Position binding alone stops two nodes being
   swapped; the parent chain is what stops a node that was genuinely valid at an *earlier*
-  time from verifying now, which is the attack — a physical attacker rewinding part of the
+  time from verifying now, which is the attack, a physical attacker rewinding part of the
   region writes bytes this volume really did produce.
 - **The tree alone does not make the volume monotonic**, because its root lives in the superblock
-  it protects — an attacker replacing superblock, metadata and tree together with a consistent
+  it protects, an attacker replacing superblock, metadata and tree together with a consistent
   earlier snapshot defeats every check inside the disk. The anchor is outside it: `sb.rollback_gen`
   is a **TPM NV monotonic counter** value, bound into the root's preimage so it cannot be edited,
   and unlock refuses a volume whose generation is behind the counter (**S70**). The generation is
@@ -1192,14 +1192,14 @@ the ring-3 FS server never sees a key.
   than bricking. Only volumes formatted on a machine with a TPM are anchored, and
   `sb.rollback_anchored` says which kind a volume is; the granularity is one boot. See
   `docs/LIMITATIONS.md` 1.12 for what that still leaves.
-- The volume is sized **from the disk** (ATA IDENTIFY words 60–61), clamped to `BLOCKS_PER_DISK`
-  — a 16 GiB ceiling, not every volume's size (**S68**). Both bitmaps span blocks; the inode
+- The volume is sized **from the disk** (ATA IDENTIFY words 60–61), clamped to `BLOCKS_PER_DISK`,
+  a 16 GiB ceiling, not every volume's size (**S68**). Both bitmaps span blocks; the inode
   table is zeroed a block at a time, the first time an inode in it is allocated, rather than
   wholly at format.
 - A file's mapping is 12 direct, then single-, double- and triple-indirect trees of
   `BLOCK_SIZE/8` = 512 fan-out: 512 GiB, so a file is bounded by the volume rather than by the
   mapping. It stopped at double-indirect (1.00 GiB) until 2026-08-31.
-- `storage_free_inode_blocks` runs as **several** transactions — one atomic free of a large file
+- `storage_free_inode_blocks` runs as **several** transactions, one atomic free of a large file
   would touch more bitmap blocks than the journal can hold and abort. It kills the inode first,
   in a transaction of its own, so a crash anywhere after that leaves the dangling inode fsck is
   written to repair; the other order leaves freed blocks a live inode still points at.
@@ -1210,8 +1210,8 @@ the ring-3 FS server never sees a key.
   `META_CACHE_LINES` on-disk metadata blocks, not an in-RAM mirror of the volume. A dirty line
   is written back into the journal transaction that dirtied it, before that transaction commits
   (**S65**); `journal_commit` flushes and `journal_abort` discards. The mirror it replaced was
-  *self-healing* against a lost metadata write — it held every entry, so the next flush
-  regenerated the lost one — and a bounded cache removes that, which is why the journal is now
+  *self-healing* against a lost metadata write (it held every entry, so the next flush
+  regenerated the lost one) and a bounded cache removes that, which is why the journal is now
   load-bearing for metadata durability rather than merely convenient.
 - The metadata region is sized from the **device** (`sb.meta_blocks`), not from
   `BLOCKS_PER_DISK`. Only fixed-size arrays may be sized from the latter.
@@ -1220,17 +1220,17 @@ the ring-3 FS server never sees a key.
 - `storage_fsck_pass` reclaims blocks the bitmap marks allocated but no live inode references,
   and its reference walk descends **every** level of the mapping (**S67**). Until 2026-08-31 it
   stopped at single-indirect, so a live file's double-indirect blocks were freed at every
-  unlock — and read back correctly until the allocator collided with them, which is why nothing
+  unlock, and read back correctly until the allocator collided with them, which is why nothing
   caught it.
 
 - **The store answers only an UNLOCKED volume** (**S74**). `mounted` and `unlocked` are
   different states and a sealed ATA volume sits in the gap between them from power-on until a
-  login opens a key slot -- the normal state of an installed machine, not an edge case. All
+  login opens a key slot, the normal state of an installed machine, not an edge case. All
   eight object-store handlers test both, in one place (`store_open`). They tested `mounted`
   alone until 2026-09-01: the AEAD enforced the rule for file data as a side effect of needing
   the key, and the **inode table is plaintext on disk**, so the six metadata calls enforced
   nothing and a sealed volume served real inode records and accepted edits to its own inode
-  table. `h_block_read`/`h_block_write` are outside the rule on purpose -- they move ciphertext
+  table. `h_block_read`/`h_block_write` are outside the rule on purpose: they move ciphertext
   below the volume abstraction, which is what the journal and crash gates need.
 
 Authority is one capability, checked in one place: the dispatch table requires a
@@ -1262,12 +1262,12 @@ kernel's own bytes, and measured on that day, two kernels with different SHA-256
 byte-identical PCR 0..9. The kernel is now covered a layer down instead: `tools/mkbootimg.sh`
 packs `grub.cfg` and the kernel's expected SHA-256 into a memdisk **inside the El Torito boot
 image**, GRUB refuses a kernel that does not match, and the firmware measures that image into
-**`PCR[4]`** — which the seal policy includes, so the pin cannot be removed without changing what
+**`PCR[4]`**, which the seal policy includes, so the pin cannot be removed without changing what
 the volume is sealed to. See `SECURITY.md` **S92**.
 
 **3. Sealed volume key.** The vdisk key-encryption key is sealed to **PCR 4, 8 and 9** under a
 `PolicyPCR` session. A measured-good boot unseals it; a change to the modules changes PCR[9], and
-a change to the kernel or to the boot image changes PCR[4] — which is the one of the three the
+a change to the kernel or to the boot image changes PCR[4], which is the one of the three the
 kernel does not extend itself, and therefore the only one that can bind the seal to something
 other than the kernel's own word (**S92**). The KEK derivation uses HKDF rather than Argon2,
 which cut `ramfs_init` from 1.5 s to 0.25 s without weakening the seal; the security comes from
@@ -1278,7 +1278,7 @@ asserts the kernel refuses it. `smoke-tpm-tamper` asserts the PCRs additionally 
 `smoke-tpm-seal` asserts a changed PCR leaves the volume locked. `smoke-boot-pin` substitutes the
 kernel behind a genuine boot image and asserts GRUB refuses it; `smoke-tpm-bootimg` seals under
 one boot image and asserts a second cannot unseal. Each of the last two has a control arm that
-restores the pre-2026-09-11 behaviour and requires the attack to succeed — note that the first
+restores the pre-2026-09-11 behaviour and requires the attack to succeed: note that the first
 three tamper with a *module*, which is why none of them ever witnessed the kernel. These test that the control
 fires, not merely that the happy path works.
 
@@ -1311,7 +1311,7 @@ mapped (**S45**, `src/kernel/iommu.c`), and `iommu_active()` reports 0 where the
 
 Nine locks. Until 2026-09-10 the order between them was stated only in five
 comments across four files, and **two of them, in the same file, disagreed about
-the same pair** -- see **S88**. It is declared once now, in
+the same pair**: see **S88**. It is declared once now, in
 `.github/lock-order.yml`, and `tools/check_lock_order.py` (required job
 `lock-order`) refuses anything that contradicts it.
 
@@ -1329,20 +1329,20 @@ the same pair** -- see **S88**. It is declared once now, in
 
 **Two nestings exist, and both are deliberate:**
 
-- **`endpoint_lock -> cap_lock`** -- `ipc_publish_pending_block` mints the
+- **`endpoint_lock -> cap_lock`**, `ipc_publish_pending_block` mints the
   one-shot `CAP_REPLY` under the IPC lock, *before* waking the receiver. Minting
   after the wake loses the race against a receiver already running on another
   CPU: ~33% of sessions with a second CPU loaded, 0% for the control, and
   invisible on one CPU because there is no second CPU to run the server inside
   the window.
-- **`endpoint_lock -> page_lock`** -- the same function calls `copy_to_user` to
+- **`endpoint_lock -> page_lock`**, the same function calls `copy_to_user` to
   deliver the body, and the user-copy path faults the destination in.
 
 **Neither is a defect, because a nesting is not a cycle.** They are safe exactly
-while the reverse edges stay absent -- no `cap_lock` holder and no `page_lock`
+while the reverse edges stay absent, no `cap_lock` holder and no `page_lock`
 holder enters IPC. That was the 2026-08-30 audit's reasoning for rejecting the
 second as a finding (`docs/AUDIT.md` §5), and it was checked by hand, once. The
-checker's second rule -- **the reverse of a declared nesting fails the build** --
+checker's second rule, **the reverse of a declared nesting fails the build**,
 is what keeps it checked.
 
 **There is no runtime lock order check, and adding one is not cheap.**
@@ -1412,12 +1412,12 @@ one that was quietly removed.
 **One layout, written down once** (2026-09-03, **S80**). The `.bin` container the build writes
 and the loader reads was declared four times and parsed in eleven places, each parse spelling the
 magic and the offsets 4, 8 and 44 by hand. Two of the declarations shared the name
-`struct program_header` and described different things -- 104 bytes in the kernel, 44 in ring 3 --
+`struct program_header` and described different things, 104 bytes in the kernel, 44 in ring 3,
 and neither was used by anything; the copy that defined the format was a private struct inside
 `tools/mkheadered.c`. It is one declaration now (`struct horus_image_header`,
 `include/program_abi.h`, included by the kernel, ring 3 **and** the host tool) and one parse
 (`image_container_parse`). The header is deliberately freestanding so the host tool can compile
-it -- a dependency on `kernel.h` would push the writer back to a private copy. This is
+it: a dependency on `kernel.h` would push the writer back to a private copy. This is
 `include/block_size.h`'s lesson and `audit_abi.h`'s repair applied a third time; the count of
 copies came from `tools/check_image_abi.py`, not from a person, because §2.18's own title said
 four and the number was eleven. `docs/LIMITATIONS.md` 2.18.
@@ -1433,7 +1433,7 @@ enumerated `SYS_EXEC` (19) or `SYS_RECEIVE_PROGRAM` (27), which carried the iden
 
 The fact was not even unknown. `.github/syscall-coverage.yml` had recorded it against both since
 2026-08-20, in a group header that asserted the same shape for three syscalls which had been
-fixed on 2026-08-30 without it being touched -- one accurate sentence beside three stale ones,
+fixed on 2026-08-30 without it being touched, one accurate sentence beside three stale ones,
 gating nothing. So the lesson is not "sweep again": it is that **a property this cheap to state
 should be enforced by something that reads the table**, which `tools/check_dispatch_gates.py`
 does on every build. `docs/LIMITATIONS.md` §1.6c has the finding, 2.18 has the repair this
@@ -1599,7 +1599,7 @@ a live page of the parent's on the free page stack.
 **G-3: Kernel objects are fixed-size `.bss` tables.** *Closed 2026-08-30* (roadmap 0.3, finding
 **[I-7]**). `CAP_UNTYPED` + `SYS_RETYPE` are in: cspaces, endpoints and notifications are carved
 from untyped memory (§4), which removed 504 KiB of `.bss` and made object creation an exercise
-of authority the capability graph describes. The per-task kernel stacks followed on 2026-08-30 —
+of authority the capability graph describes. The per-task kernel stacks followed on 2026-08-30:
 4 MiB, and the thing that had actually been pinning `MAX_TASKS` at 64, which this entry (and
 §3.1 of `LIMITATIONS.md`) had been attributing to the 72 KiB `tasks[]` table. The ceiling is 256
 now.
@@ -1612,23 +1612,23 @@ with none cannot create one, and the five task-creating syscalls no longer autho
 replace the caller's own image, create no task and touch no capability (**S42**).
 
 **The storage half closed on the same day**, and with it the finding. `tasks[]` is carved from
-the kernel's untyped reserve rather than declared in `.bss` — the last object class outside the
-retyping discipline — and `g_max_tasks` is derived at boot from the reserve that exists, so the
+the kernel's untyped reserve rather than declared in `.bss`, the last object class outside the
+retyping discipline, and `g_max_tasks` is derived at boot from the reserve that exists, so the
 task count is a property of the machine rather than of the image. What would actually have capped
 that count was not this table at all but the revocation sweep's `cspace_desc_t
 spaces[MAX_TASKS + 1]` **on the kernel stack**: 19% of one at 256 tasks and an overflow at 2048,
 unmeasured until it was looked for. It is allocated now. Reclaiming a dead task's cspace needed `cap_lookup`'s NULL-cspace → root-cnode
-fallback removed first; that closed on 2026-08-30, and it was two defects rather than one — the
+fallback removed first; that closed on 2026-08-30, and it was two defects rather than one, the
 documented cspace-less case, and a slot past the end of the caller's own cspace resolving as
 `root_cnode[slot]`, the same escalation reached by arithmetic. Both were unreachable by
 circumstance (what `create_task` happens to do) rather than by any property of `cap_lookup`.
-`KOBJ_TASK`'s ordering constraint — a task object whose cspace slot can be NULL is one the
-fallback turns into a root cnode — is discharged.
+`KOBJ_TASK`'s ordering constraint, a task object whose cspace slot can be NULL is one the
+fallback turns into a root cnode, is discharged.
 
 **Reclaiming a dead task's cspace landed the same day, and not as the phrase suggests.** Its
 BYTES are not returned and must not be: the arena is a monotonic bump allocator, which is what
 makes type-confusion-through-reuse structurally impossible, and the kernel reserve holds exactly
-`MAX_TASKS` cspaces. Its CONTENTS are — `task_teardown` empties it (**S56**), where it previously
+`MAX_TASKS` cspaces. Its CONTENTS are, `task_teardown` empties it (**S56**), where it previously
 left a dead task's capabilities in memory until the slot was next used, the property resting on
 three separate readers each testing `state == 0` rather than on the data. That is the same
 meaning of "reclaim" `destroy_dyn_endpoint` has always had: the bytes stay consumed, only the
@@ -1686,7 +1686,7 @@ control arms.
 
 **G-9: claims leak and kernel stacks collide on the spawn/reap path under SMP.** *Closed
 2026-08-21; narrowed 2026-08-17 and again 2026-08-20 on the way there.* This entry read "Open,
-narrowed 2026-08-17" until 2026-09-02, eleven days after the closure it contradicted -- a fixed
+narrowed 2026-08-17" until 2026-09-02, eleven days after the closure it contradicted, a fixed
 defect still advertised as open, in the section that is supposed to be the list of what is not
 fixed. It was a cluster rather than one defect. The component that is closed was
 architectural in the same way G-10 is: `g_exec_reenter_task`, the hand-off telling
@@ -1754,45 +1754,45 @@ Witness `make smoke-spawn-owner`, falsified by `SPAWN_OWNER_UNCHECKED=1`
 attributed and closed 2026-09-03.* `sched_enter_user()` claimed its task **unconditionally**, and
 `spawn_initial_userspace_init()` published that task as schedulable one call earlier. Between the
 publish and the claim the task satisfies every condition of `preempt_on_tick()`'s selection loop
-and is claimed by nobody, so an AP's timer tick landing there takes it -- and the entering CPU
+and is claimed by nobody, so an AP's timer tick landing there takes it, and the entering CPU
 then takes it as well. Two CPUs current on one task, neither impersonating, both `iretq`ing onto
 its single kernel stack: `percpu_current=[1,1,0,0]` with `imp=[0,0,0,0]`, which is the `<-` claim
 direction breaking and the consequence this file's own claim-invariant note gives for it. All
-three surviving symptoms follow -- a resume `%rsp` of `0x1`, the stack canary, and an instruction
+three surviving symptoms follow, a resume `%rsp` of `0x1`, the stack canary, and an instruction
 fetch into `KSTACK_REGION_VMA`.
 
 Fixed in two rules. `enter_user_impl()` re-validates under the scheduler lock and fails closed: a
-CPU does not enter a task another CPU holds, nor one that has stopped being schedulable -- it
+CPU does not enter a task another CPU holds, nor one that has stopped being schedulable: it
 parks and reports, because a refusal means some launch site still has the window.
 `sched_publish_and_enter_user()` removes the window at the launch site, doing the publish, the
 claim and `set_current_task()` in one acquisition of the lock. Witness `make smoke-enter-user-claim`,
 falsified by `ENTER_USER_PUBLISH_EARLY=1` (the steal, 3 boots in 3) and by
 `+ ENTER_USER_CLAIM_UNCHECKED=1` (the collision, 6 boots in 6), with `ENTER_USER_STEAL_WIDEN=1`
 set in all three arms. **It was not [G-9] reopened**: [G-9]'s mechanisms are fixed and falsified,
-and the deferred-release hand-over machinery was positively **excluded** here -- `CLAIM_TRACE=1`
+and the deferred-release hand-over machinery was positively **excluded** here: `CLAIM_TRACE=1`
 was silent across 1000 boots including all four reproductions. See
 `docs/investigations/G-12-claim-invariant-residue.md`.
 
 **G-13: the installer's format on a slow disk.** *Filed 2026-09-02 as "cause unestablished";
 measured and the gate repaired 2026-09-03.* `smoke-installer` timed out twice on `main` after
 300 s waiting for `INSTALLER: PASS installed`, having seen `INSTALLER: formatting` and nothing
-after it -- no fault, no panic. The argument that ruled out a slow runner appealed to the boot
+after it, no fault, no panic. The argument that ruled out a slow runner appealed to the boot
 step, which was normal in both captures, and **the boot step cannot answer that question**:
-throttling the guest's disk gives `format ≈ 5.2 s + 4700/IOPS` -- the format is ~4,700
-synchronous PIO operations -- with the boot step **flat at 1.7 s at every point**. Twelve CPU
+throttling the guest's disk gives `format ≈ 5.2 s + 4700/IOPS`, the format is ~4,700
+synchronous PIO operations, with the boot step **flat at 1.7 s at every point**. Twelve CPU
 burners, by contrast, slow both by ~2.1x and leave the format:boot ratio at 2.6. At ≤16 IOPS the
 format crosses 300 s, and `SESSION_DISK_IOPS=12` reproduces the CI signature exactly.
 
 The repair is a **stall** bound rather than a bigger budget, because no total budget separates a
 slow disk from a wedge at any value: raise it and a wedge takes longer to report, lower it and a
 slow disk fails. `INSTALLER_FORMAT_STALL` (30 s) measures seconds with no guest disk operation,
-read from QEMU's block statistics over QMP -- the image's mtime and the QEMU process's
+read from QEMU's block statistics over QMP, the image's mtime and the QEMU process's
 `write_bytes` both freeze for ~200 s during the format's `merkle_build` read phase, and
 `/proc/PID/io` `syscr` keeps advancing even when the guest is wedged, so all three cheaper
 signals are wrong in one direction or the other. Witnessed by `make smoke-installer-slowdisk`
 (12 IOPS, format ~420 s, the install must still succeed) and falsified by
 `STORAGE_FORMAT_WEDGE=1` (`smoke-installer-wedge-control`, which requires the failure to NAME a
-wedge rather than merely to fail -- before this both cases printed the same timeout, which is
+wedge rather than merely to fail, before this both cases printed the same timeout, which is
 what left the finding unattributable). Which case the two CI runs were is not recoverable: the
 gate kept no serial log then, and does now. The budget was never raised; see `LIMITATIONS.md`
 §5.2h.
@@ -1805,16 +1805,16 @@ security core, so "shrink ring 0" had no subject: the seven files a reviewer nam
 which you count. `.github/ring0-classification.yml` (**S87**) now assigns each object to
 `core` (9,676 code lines), `driver` (2,482), `service` (5,684) or `selftest` (2,690).
 
-**The gap the numbers expose** is not the core's size but the company it keeps: `service` --
+**The gap the numbers expose** is not the core's size but the company it keeps: `service`,
 the encrypted object store and on-disk filesystem, accounts and Argon2id, ELF loading, the
-CSPRNG -- is 5,684 code lines of policy sitting at the same privilege as the capability
+CSPRNG, is 5,684 code lines of policy sitting at the same privilege as the capability
 engine, and a defect in any of it is a defect in ring 0. `driver` adds 2,482 more. Roadmap
 2.6 and 2.7 track the network stack and the drivers; **2.7a, added with this entry, tracks
 the services, which were tracked nowhere** and are the larger half.
 
 **What is gated and what is not.** The classification is gated: an object linked into
 `kernel.elf` and not listed fails the build, so ring 0 cannot grow by accident. The core's
-size is ratcheted at exactly its measured value. **Neither of those evicts anything** --
+size is ratcheted at exactly its measured value. **Neither of those evicts anything**:
 `storage.c` holds the volume key and `kusers.c` is reached from a capability-minting
 `SYS_SUDO`, so both moves are blocked on a design decision rather than a mechanism. This
 entry stays open until 2.7a closes.

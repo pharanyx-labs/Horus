@@ -36,7 +36,7 @@ passes were written up as measurements of the emulator:
 Neither sentence was about the emulator. They were about a macro nobody read.
 
 **Wired, the two answers differ, and that is the argument for the rule rather than for the fix.**
-`NET_NO_BUSMASTER` reproduces at once -- `NETTEST: FAIL dma-never-completed`, `smoke-net` red --
+`NET_NO_BUSMASTER` reproduces at once, `NETTEST: FAIL dma-never-completed`, `smoke-net` red,
 because QEMU's e1000 checks the bus-master bit on the RECEIVE path (`e1000x_rx_ready`), which the
 driver's own comment in `netd.c` had recorded a morning of debugging ago. The old record was
 wrong twice: it named virtio, and this tree replaced virtio with an e1000 precisely because a
@@ -45,7 +45,7 @@ fail: `PSTATE_DAT_INHIBIT` is clear by the time the driver looks. It stays ungat
 reason is true.
 
 **Rule 3 nearly could not fail either**, which is the part worth keeping. The first draft scanned
-one corpus -- sources plus `tools/` -- and the new self-test QUOTES `#elif
+one corpus, sources plus `tools/`, and the new self-test QUOTES `#elif
 defined(NET_NO_BUSMASTER)` in the text of an arm. Un-wire the flag in a mutated tree and the
 checker still "found" it, in the file whose job is to prove the finding. The arm reported NOT
 CAUGHT. Code and tools are now separate corpora, and `test_*.sh` is excluded from the tool one: a
@@ -66,9 +66,9 @@ smoke-pipe-cspace-order-control." No such target had ever existed. The comment w
 correct about everything except the one part a reader would act on.
 
 That is worth a checker rather than a fix, and the argument is the usual one here: a hand sweep
-certifies itself. So the measurement came first -- every tracked file outside `docs/history/` and
+certifies itself. So the measurement came first, every tracked file outside `docs/history/` and
 `CHANGES.md`, every `make smoke-*` and every backticked `smoke-*`, compared against the Makefile's
-own target list. **Five.** Four were near-misses of a real name -- `smoke-captest-cspaceless-control`
+own target list. **Five.** Four were near-misses of a real name, `smoke-captest-cspaceless-control`
 for `smoke-cap-lookup-control`, `smoke-irq-ack-control` for `smoke-captest-irq-ack-control`,
 `smoke-sdhci-card` for `smoke-sdhci-detect`, and a `docs/BUILDING.md` pair described against
 `smoke-resume-guard-preclaim-control` when the other arm is `smoke-resume-guard-legacy`. The fifth
@@ -78,7 +78,7 @@ was the pipe one, and it was not a typo: it named a gate that should have existe
 `make smoke-syscall-\n * coverage` across a comment line, at the hyphen. Joining continuations with
 a space invents `smoke-syscall`, which does not exist, so the checker reported a stale reference
 that was not one. A line ending in a hyphen now joins with nothing and every other continuation
-joins with a space -- and both directions of that rule are arms in the self-test, because the
+joins with a space, and both directions of that rule are arms in the self-test, because the
 false-positive direction is the one a checker's author never runs.
 
 Three of the findings were documentation PLACEHOLDERS: `make smoke-name`, `make smoke-x`, standing
@@ -95,23 +95,23 @@ findings. An exemption nobody has watched fire is a line of configuration, not a
 ### Added: the third ungated arm, and the one where the workload had to be admitted as synthetic
 
 Three flags in this tree were kept buildable with no gate on the same reasoning, and this sweep
-closed all three in a night. The first two -- `IOMMU_NO_TASK_TEARDOWN` and
-`CSPACE_RELEASE_BEFORE_PIPES` -- were waiting for a workload that a few lines of kernel could
+closed all three in a night. The first two: `IOMMU_NO_TASK_TEARDOWN` and
+`CSPACE_RELEASE_BEFORE_PIPES`, were waiting for a workload that a few lines of kernel could
 supply honestly: a driver that dies while a peer holds its frame, a stage that dies holding a pipe
 end. Both are things a real system does.
 
 `META_CACHE_EVICT_NOWB` is not, and the difference is worth writing down rather than papering
 over. The eviction write-back runs only when a transaction dirties more metadata lines than the
 cache holds, and nothing here can: the block allocator hands out CONSECUTIVE physical blocks, 128
-of them share one metadata line, and every multi-block path -- `storage_free_inode_blocks`,
-`storage_users_save`, the file write path -- commits between them or touches one line. That is
+of them share one metadata line, and every multi-block path, `storage_free_inode_blocks`,
+`storage_users_save`, the file write path, commits between them or touches one line. That is
 structural, not incidental. Even the free path avoids it deliberately: its comment says clearing
 the metadata there "would flush one metadata block (and the tree above it) per freed block".
 
 So the workload is synthetic: one transaction writing three blocks a metadata block apart, in raw
 physical blocks because a file cannot produce the spread. It is labelled as synthetic in the
 selftest header, in `docs/BUILDING.md` and in `TESTS.md`, and what it claims is exactly what it
-shows -- the structure holds: a line pushed out mid-transaction is on the disk when that
+shows: the structure holds: a line pushed out mid-transaction is on the disk when that
 transaction commits. Under `META_CACHE_EVICT_NOWB=1` the same run reports `METAEVICT: FAIL an
 evicted line lost block 0`, because the nonce and tag for that block were in RAM and RAM is where
 they stayed. The block is not corrupt in a way a reader could notice; it simply stops decrypting,
@@ -119,33 +119,33 @@ which is the failure this whole stage exists to prevent.
 
 `META_CACHE_TINY=1` is set in BOTH arms, and the gate asserts the eviction HAPPENED before
 concluding anything. That is not ceremony: at the shipped 32 lines, three touched lines evict
-nothing at all, and the read-back would then pass with the backstop deleted -- the gate would
+nothing at all, and the read-back would then pass with the backstop deleted: the gate would
 measure its own assertion rather than the property.
 
 ---
 
 ### Added: the second arm waiting for a workload, and what its first run reported instead
 
-Two flags in this tree were kept buildable with no gate on the same reasoning -- a control arm
-that cannot fail cannot gate -- and both were waiting for a workload rather than for a decision.
+Two flags in this tree were kept buildable with no gate on the same reasoning, a control arm
+that cannot fail cannot gate, and both were waiting for a workload rather than for a decision.
 `IOMMU_NO_TASK_TEARDOWN` was one (see the entry above). `CSPACE_RELEASE_BEFORE_PIPES` is the
 other, and its measurement on 2026-08-30 was the honest kind: `smoke-pipe` and `smoke-modules`
 were run under the flag and **passed**, because every pipe user in this tree closes its ends
-explicitly, so `pipe_close_task_ends` -- the backstop for a stage that dies *without* closing --
+explicitly, so `pipe_close_task_ends`, the backstop for a stage that dies *without* closing,
 had nothing to find.
 
 The workload is phase 2 of the pipe selftest, and the shape is the same as the IOMMU one: the
 interesting object needs TWO holders, one of which dies. Here the peer holds a `CAP_PIPE` with
 READ|WRITE|GRANT and the dying task holds a WRITE-only capability *granted from it*, so the
-rights are a delegation rather than a fabrication. It asserts its premise before the death --
-while the writer end is open the peer's read must be would-block -- because otherwise the EOF
+rights are a delegation rather than a fabrication. It asserts its premise before the death,
+while the writer end is open the peer's read must be would-block, because otherwise the EOF
 after the death is satisfied by a pipe that never had a writer.
 
 **What its first run reported is the part worth keeping.** The arm asserted
 `PIPE_SELFTEST: FAIL peer-never-saw-eof`; the wire said `PIPE_SELFTEST: FAIL
 (peer-never-saw-eof)`, because `pst_fail` wraps its reason in parentheses and emits it in three
 writes. So the defect reproduced perfectly and the gate reported *timed out after 40s without
-required marker* -- a real reproduction wearing the costume of a broken runner, which is exactly
+required marker*, a real reproduction wearing the costume of a broken runner, which is exactly
 the failure mode `tools/check_split_markers.py` exists to prevent and which its rule would have
 caught the moment the marker was gate-asserted. The repair is the rule: the gated marker is one
 literal write, and the neighbouring diagnostics keep `pst_fail`.
@@ -154,7 +154,7 @@ Measured 2026-09-09: `PIPE_SELFTEST: PASS` without the flag, `PIPE_SELFTEST: FAI
 peer-never-saw-eof` under it, and `smoke-pipe` red under it via
 `tools/check_base_gate_reddens.sh`. The comment beside `cap_release_cspace` in `scheduler.c` had
 been naming `make smoke-pipe-cspace-order-control` since the day the flag landed, and the target
-did not exist until now -- a documented gate nobody could run, which nothing checks for.
+did not exist until now: a documented gate nobody could run, which nothing checks for.
 
 ---
 
@@ -163,26 +163,26 @@ did not exist until now -- a documented gate nobody could run, which nothing che
 `IOMMU_NO_TASK_TEARDOWN=1` shipped on 2026-08-29 with no gate, and the reason was written down at
 the time: reproducing it needs a driver holding a device capability to die under `SMOKE_IOMMU`
 while a peer still holds the frame, and nothing in this tree did that. It sat that way for eleven
-days beside a sibling flag that *did* have an arm, which is the shape worth noticing -- the pair
+days beside a sibling flag that *did* have an arm, which is the shape worth noticing, the pair
 looks complete from the outside, and the half without an arm is the half whose repair nothing
 would have caught.
 
 **Why the sibling arm cannot reach it.** `smoke-iommu-teardown-control` destroys the frame, so
 `destroy_dyn_frame` is what removes the translation. The task path only matters when the frame
 does *not* die with its driver, which happens exactly when someone else still names it. So the
-workload is not a driver and a device at all -- it is a frame with **two** names, one of which is
+workload is not a driver and a device at all: it is a frame with **two** names, one of which is
 in a dying task's cspace.
 
 **The workload is in the kernel, and that is the same judgement the frame phase made.** Proving it
 with a packet means pointing a live device at a page whose owner is gone. The peer is task 0
 holding a real `CAP_FRAME`; the driver is a real task slot holding a capability derived from it via
-`cap_grant_into`, with `tasks[drv].io_device` set the way `h_ioport_grant` sets it -- that syscall
+`cap_grant_into`, with `tasks[drv].io_device` set the way `h_ioport_grant` sets it, that syscall
 being the only writer of the field and reachable only from ring 3. What is under test is
 `task_teardown`, the shipping path; the field is its input.
 
 **It asserts its own premise in both directions, and the second direction is the one that would
 have been skipped.** After the death the frame must still exist, or the phase is the frame half
-under another name. And then revoking the peer's capability and sweeping again must collect it --
+under another name. And then revoking the peer's capability and sweeping again must collect it,
 without which "the frame survived" is satisfied equally by a garbage collector that never collects
 anything. That is the `KSP_GUARD_ALWAYS` lesson pointed at a premise rather than at a predicate.
 
@@ -191,12 +191,12 @@ both phases from the existing call site and failed at `IOMMUTEST: FAIL peer-cap-
 site is before `scheduler_init`, so task 0 has no cspace, and `cap_install_object` refuses.
 The frame phase needs no capability at all, which is why it can run that early; phase 2 runs after
 `scheduler_init`. Only phase 2 prints `IOMMUTEST: PASS`, so the base gate cannot pass on the frame
-half alone -- the harness ends a boot at its required marker, so an intermediate `PASS` would have
+half alone, the harness ends a boot at its required marker, so an intermediate `PASS` would have
 stopped the run before the second phase ever executed.
 
 Measured 2026-09-09: `IOMMUTEST: FAIL device-still-translates-after-driver-death` under the flag,
 `IOMMUTEST: PASS` without it, and the base gate red under the flag through
-`tools/check_base_gate_reddens.sh` -- which also had to be taught the row, since its parser reads
+`tools/check_base_gate_reddens.sh`, which also had to be taught the row, since its parser reads
 `docs/BUILDING.md` for the exact phrase `make smoke-X` must go red` and a bolded **red** does not
 match it.
 
@@ -214,8 +214,8 @@ flag whose sole purpose is to make it non-exempt. What that witnesses is that th
 it is entered. The claim is about a disk.
 
 **Two boots and two kernels, and the second kernel is the constraint.** A password-only volume can
-only be MADE by a machine with no TPM -- `storage_format_sealed` takes the sealing path whenever
-`tpm_present()` and the volume is not the vdisk -- and the policy kernel halts at `tpm_init` on a
+only be MADE by a machine with no TPM, `storage_format_sealed` takes the sealing path whenever
+`tpm_present()` and the volume is not the vdisk, and the policy kernel halts at `tpm_init` on a
 machine without one. So boot 1 has to be an ordinary kernel (no policy, no TPM), and boot 2 the
 policy kernel **with** a TPM: measured boot itself succeeds, `tpm: measured boot OK` is on the
 wire, and the volume is the only thing wrong with the machine. Booting boot 2 without a TPM would
@@ -223,32 +223,32 @@ have been the first refusal wearing this one's name, and would have proved nothi
 
 **The guest reports the volume it met before it touches it**, which is `STORAGE_NOFORMAT_SELFTEST`'s
 lesson applied in advance: a gate whose evidence is the absence of a message passes in the arm where
-nothing ran. It matters twice here. The refusal says `PANIC` -- deliberately, so a refusal reddens
-CI rather than scrolling past -- and the harness ends the boot on it, so a fact printed after the
+nothing ran. It matters twice here. The refusal says `PANIC` (deliberately, so a refusal reddens
+CI rather than scrolling past) and the harness ends the boot on it, so a fact printed after the
 refusal is in a race with the kill. Measured: the PANIC and the selftest's own marker are 0.2 ms
 apart on the wire, against a 1 s poll, so the race is not close; the ordering is still the reason
 `met a persistent password-only volume` comes first.
 
 **The harness refuses to run boot 2 if boot 1 left the image blank.** That is the vacuity this
 particular pair invites: a boot 2 meeting a blank disk would FORMAT it under the policy, with the
-TPM present -- sealing it -- and then pass the refusal arm by never having had an unsealed volume
+TPM present, sealing it, and then pass the refusal arm by never having had an unsealed volume
 at all. The check is `tr -d '\0'` over the image, the cheapest form of "boot 1 actually wrote".
 
 **The other direction is a separate gate, not an extra assertion.** A check that rejected every
 persistent volume satisfies the refusal arm perfectly, which is `KSP_GUARD_ALWAYS`'s lesson.
 `smoke-measured-persist-sealed` formats under the policy with the TPM present, powers the machine
-off and requires the same TPM to release the secret again -- one ISO for both boots, because a
+off and requires the same TPM to release the secret again, one ISO for both boots, because a
 secret sealed under `PolicyPCR(8,9)` is released only to the same measurements, so a differently
 built boot 2 would be refused by the TPM rather than by us and the arm would fail for a reason that
 is not the policy.
 
 **Falsified in both directions on 2026-09-09.** `MEASURED_VOLUME_UNCHECKED=1` deletes the refusal
-itself -- the opposite of `MEASURED_VOLUME_EXEMPT_NONE`, which only makes it reachable -- and boot 2
+itself (the opposite of `MEASURED_VOLUME_EXEMPT_NONE`, which only makes it reachable) and boot 2
 then reports `MEASURED_PERSIST: FAIL an unsealed persistent volume unlocked under the policy`,
 `DEFECT FLAGS` naming the arm on the same wire. Under that flag the base gate goes red on the FAIL
 marker rather than on a timeout, which is worth recording: a control arm that reddens its base gate
-by *timing out* is indistinguishable from a broken runner. Run the other way -- the control arm's
-expectations against the fixed build -- it goes red on `MEASURED_PERSIST: PASS`, which is what stops
+by *timing out* is indistinguishable from a broken runner. Run the other way, the control arm's
+expectations against the fixed build, it goes red on `MEASURED_PERSIST: PASS`, which is what stops
 an inverted arm being merely a way to pass.
 
 All three arms are steps in the existing required `measured-boot-required` job, so the required
@@ -280,7 +280,7 @@ same machine.
 | 12 CPU burners on 12 cores | 5.07s | 13.07s | 2.58 |
 | 3 concurrent `fdatasync` writers | **1.9s** | **15.0s** | **7.9** |
 
-CPU contention slows both by ~2.1x and leaves the ratio alone -- which is worth recording as a
+CPU contention slows both by ~2.1x and leaves the ratio alone, which is worth recording as a
 *negative*, because it is the lever a reader would reach for first and it does not decouple
 them. Disk contention leaves the boot at full speed and hits the format only.
 
@@ -293,13 +293,13 @@ Then dial the one variable with QEMU's own limiter instead of arguing about it:
 | 200 IOPS | 1.7s | 27.6s |
 | 100 IOPS | 1.7s | 52.1s |
 
-`format ≈ 5.2s + 4700/IOPS`, so the format is ~4,700 synchronous PIO operations -- and **the boot
+`format ≈ 5.2s + 4700/IOPS`, so the format is ~4,700 synchronous PIO operations, and **the boot
 step is flat at 1.7s at every point**. It is not merely a poor probe for disk speed; it is
 perfectly insensitive to it. Bandwidth is the wrong knob too: throttling to 2 MB/s changes
 nothing, because the format writes only ~2.3 MB, and reaching 300s that way would need ~8 KB/s.
 
 Solving for the old budget gives **≈16 IOPS**, and `SESSION_DISK_IOPS=12` reproduced the CI
-signature on the first try -- normal boot step at 2.2s, `INSTALLER: formatting` last on the
+signature on the first try, normal boot step at 2.2s, `INSTALLER: formatting` last on the
 wire, 300s timeout, no fault. A finding that had no reproduction now has one on demand.
 
 **What that does and does not establish.** It does not prove the CI runner was at 16 IOPS; that
@@ -331,20 +331,20 @@ t=190  write_bytes 8450048   mtime ...256.818   syscr 4534580
 t=240  write_bytes 8450048   mtime ...256.818   syscr 4851380
 ```
 
-At ~180s the format stops writing and starts READING -- `merkle_build` hashes the metadata
+At ~180s the format stops writing and starts READING, `merkle_build` hashes the metadata
 region off the device rather than an in-RAM assumption about it, deliberately, and that read
 phase is ~200s at 12 IOPS. Both write-shaped signals freeze for the whole of it. **A detector
 built on writes calls a read phase a wedge.**
 
 `syscr` moves through both phases, and is also wrong: it counts QEMU's own `read()` calls, so it
 keeps climbing while the guest is wedged, because the event loop is polling the serial pty. **A
-detector that cannot go quiet cannot fire** -- the same shape as a checker that cannot fail,
+detector that cannot go quiet cannot fire**, the same shape as a checker that cannot fail,
 arriving through a counter instead of a predicate.
 
 The signal that is right is QEMU's `query-blockstats` over QMP: `rd_operations + wr_operations`
 counts what the GUEST issued against its disk and nothing else. It moves in both phases, stops
 dead when the guest does, and is immune to host page caching. If QMP is unreachable the gate
-fails closed rather than degrading to a total budget -- degrading silently would put it back
+fails closed rather than degrading to a total budget: degrading silently would put it back
 where it started while still printing the new wording.
 
 #### Falsified both ways
@@ -353,8 +353,8 @@ where it started while still printing the new wording.
 **420s** against a predicted 392s, and requires the install to SUCCEED. That is the direction an
 inject-and-look arm cannot cover: without it, a detector that never fires passes the arm below.
 `make smoke-installer-wedge-control` (`STORAGE_FORMAT_WEDGE=1`) spins the format halfway through
-the metadata region -- halfway, because a format that wedges before its first write is
-indistinguishable from an installer that never reached the syscall -- and requires the failure
+the metadata region (halfway, because a format that wedges before its first write is
+indistinguishable from an installer that never reached the syscall) and requires the failure
 to NAME a wedge rather than merely to be non-zero. Before this change both cases printed `the
 format did not complete within INSTALLER_FORMAT_TIMEOUT=300s`, and that identity is the whole
 reason the finding sat open.
@@ -363,7 +363,7 @@ reason the finding sat open.
 
 It did not. `tools/installer_session.py` never called `_dump_serial` at all, so both CI captures
 exist only as a quoted tail. It writes `SESSION_SERIAL_LOG` on every exit path now, appended and
-labelled per boot -- appended because every scenario in that file drives two or three boots and
+labelled per boot, appended because every scenario in that file drives two or three boots and
 `_dump_serial`'s `"w"` would have kept the wrong one. Same lesson as `smoke-exec-reenter`, in a
 harness that never got the repair.
 
@@ -371,7 +371,7 @@ harness that never got the repair.
 
 ### Fixed: [G-12] was in the door, not in the room
 
-`sched_enter_user()` is the first-entry path -- a task with a fabricated trap frame, entered by
+`sched_enter_user()` is the first-entry path, a task with a fabricated trap frame, entered by
 `iretq` from an inlined copy of the ISR epilogue. Under SMP it claimed its task like this:
 
 ```c
@@ -380,7 +380,7 @@ harness that never got the repair.
     task_running_cpu[tid] = cpu;
 ```
 
-No test of who held it. That is fine as long as nobody else can have it -- and the one live
+No test of who held it. That is fine as long as nobody else can have it, and the one live
 launch site made sure they could:
 
 ```c
@@ -405,7 +405,7 @@ Two ring-3 threads on one kernel stack, each pushing its trap frames where the o
 The investigation had already excluded the deferred-release machinery (`CLAIM_TRACE=1` silent
 through 1000 boots including all four reproductions) and the impersonation-tear hypothesis
 (`CLAIM_IMP_TRACE=1`, `torn=0` every time), and had corrected three checker false positives. What
-was left was a signature -- `percpu_current=[1,1,0,0]` with `imp=[0,0,0,0]` -- and no path.
+was left was a signature, `percpu_current=[1,1,0,0]` with `imp=[0,0,0,0]`, and no path.
 
 The step that worked was not a probe on the suspected path. It was reading the *writers* of
 `percpu_current_task[]` and asking, of each, "what stops a second CPU being here". Ten of the
@@ -417,7 +417,7 @@ the time the launcher has finished endowing the child.
 narrowing on 2026-08-17: *"the `sched_enter_user()` lead was wrong ... every one of its callers
 is a boot-time path on the BSP where no deferred release is ever pending, so it cannot leak."*
 That is still correct. It clears the path of *leaking a deferred release*, which is the property
-[G-9] was about, and says nothing about claiming a task twice -- the opposite failure. **A lead
+[G-9] was about, and says nothing about claiming a task twice, the opposite failure. **A lead
 cleared for one property is not cleared**, and the only reason that note was recoverable rather
 than actively misleading is that it named the property it had cleared.
 
@@ -430,7 +430,7 @@ a fixed ~60 ms and printed what it found:
 ENTERUSER-WIDEN: tid=1 cpu=0 holder=-1 state=4 runnable_ctx=0 ap_ticks_delta=63
 ```
 
-`state=4` is `TASK_BLOCKED_WAIT`. In 60 ms the AP had not merely taken init -- it had run it to
+`state=4` is `TASK_BLOCKED_WAIT`. In 60 ms the AP had not merely taken init: it had run it to
 `SYS_WAIT` and *released* it, so the claim was free again and the task was not runnable. That is
 a real second defect on the same path (the precondition check reads `runnable_ctx`, `saved_ksp`
 and `cr3` before queueing for the lock and never looks again), and it is **not** the two-CPU
@@ -445,7 +445,7 @@ PANIC: dispatcher returned a bogus resume rsp=0xfee000b0 task=1 'prog1'
   claim: task 1 running_cpu=0  percpu_current=[1,1,0,0]  imp=[0,0,0,0]
 ```
 
-The AP takes the task within **912 to 45245 spins** across nine measured boots -- essentially
+The AP takes the task within **912 to 45245 spins** across nine measured boots: essentially
 immediately once the window is open, because an AP is normally already inside `preempt_on_tick`
 or queued for the scheduler lock. The window in the shipped tree was a few instructions wide,
 which is the whole distance between 0.31% per boot and 100%.
@@ -459,7 +459,7 @@ selftest launchers that still publish the whole task table with `selftest_resume
 entering one of them. And `sched_publish_and_enter_user()` does the publish, the claim and
 `set_current_task()` in **one** acquisition of the lock, so the window does not exist.
 
-The obvious alternative -- claim in one critical section, publish and enter in a second -- was
+The obvious alternative (claim in one critical section, publish and enter in a second) was
 written and thrown away. It leaves the CPU holding a claim it is not yet current on, which is the
 commit gap, and the claim auditor does not exempt that. The repair would then have been to widen
 an exemption in the auditor to fix a defect in a launch path, and the auditor is the thing that
@@ -480,7 +480,7 @@ Falsified the other way too: `make smoke-enter-user-claim` goes RED under
 `make smoke-sched-invariants-stress STRESS_RUNS=60` is 60/60 on the fix.
 
 The collision arm asserts a **fault attributed to task 1** rather than a named panic. Three
-shapes were observed -- the claim auditor, the resume-`%rsp` floor guard, the stack canary -- and
+shapes were observed (the claim auditor, the resume-`%rsp` floor guard, the stack canary) and
 which one fires depends on which of two CPUs sharing a stack corrupts what first.
 
 #### The marker was splittable, and the defect proved it on the first CI run
@@ -493,32 +493,32 @@ ENTERUSER: refused entIry to task NIT_STORAGE: no persistent volume; this boot r
 on the on cpu  ephemeral store
 ```
 
-The defect had reproduced perfectly -- `holder=3`, the AP had taken init at spin 41428 -- and the
+The defect had reproduced perfectly, `holder=3`, the AP had taken init at spin 41428, and the
 gate reported *a timeout without its marker*. That is the shape `CLAUDE.md` already records as
 "a split marker fails like a broken runner", arriving through a writer nobody had connected to
 it.
 
 `kfault` and `panic` bypass the console lock **deliberately**: at a halt there is no owner left
 to be polite to, and `terminal.c` says so at length. That reasoning does not transfer to a
-*survivable* report which by construction races a ring-3 task on another CPU -- reporting exactly
+*survivable* report which by construction races a ring-3 task on another CPU, reporting exactly
 that race is its whole job. `print_core()` already holds the console lock for the length of the
 string, "so a line is emitted whole to one sink, never split across a handoff", so the report is
 now formatted into a buffer and emitted with one `print()`.
 
 **Shortening the marker was the obvious repair and is the wrong one.** It lowers the probability
 of the same failure without removing it, and the property wanted is that a marker cannot be split
-by the condition it asserts. The collision arm cannot be repaired this way -- a panic cannot
-politely take a lock held by a CPU it is about to halt -- so it gets the remedy `CLAUDE.md`
+by the condition it asserts. The collision arm cannot be repaired this way: a panic cannot
+politely take a lock held by a CPU it is about to halt, so it gets the remedy `CLAUDE.md`
 prescribes for a probabilistic arm instead: a bounded retry, `ENTER_USER_COLLIDE_CONTROL_BOOTS`
 = 5, stopping at the first reproduction, keeping the serial on the failure path, and **falsified
-in the other direction** -- run against the fixed build the loop still goes red, so it is not
+in the other direction**, run against the fixed build the loop still goes red, so it is not
 just a way to pass.
 
 The first version of that loop shipped without liveness accounting and `tools/check_gate_evidence.py`
 refused it on the next CI run: *"boots more than once and is not classified in
 .github/gate-evidence.yml. Declare how it tells a boot that ran from one that died."* It was
 right. A boot that dies before reaching the entry path cannot produce the fault, so the loop
-scored it as a miss -- and a run whose boots all died would have reported "the collision stopped
+scored it as a miss, and a run whose boots all died would have reported "the collision stopped
 reproducing, read the log, do not raise the bound", which is a confident wrong diagnosis. That is
 the [G-9] pair's 2026-08-30 defect pointed at a red instead of a green: the same vacuum, the
 other sign. The `ENTERUSER: steal-widen` line is printed by every boot that reaches
@@ -532,7 +532,7 @@ regression; and the loop body against the fixed build goes red with 3 of 3 concl
 **Worth stating plainly: the checker caught this in an arm written by someone who had just read
 the worked example it exists to enforce.** That is the argument for mechanising a lesson rather
 than writing it down, and it is the same argument `tools/check_split_markers.py` won a fortnight
-earlier -- twice in one change, in fact, since the shredded marker above is that checker's family
+earlier, twice in one change, in fact, since the shredded marker above is that checker's family
 appearing on the kernel side of the console.
 
 One further note on that falsification, because the first attempt did not test what it looked
@@ -558,7 +558,7 @@ and the rest were overwritten.
 The tree shipped with a scope limit written into four documents: it catches PARTIAL rollback, and
 it does not make the volume monotonic, because its root lives in the superblock it is meant to
 protect. Rewind superblock, metadata region and tree together and every check inside the disk
-passes -- every byte really was produced by this volume with this key. Nothing on the disk can
+passes: every byte really was produced by this volume with this key. Nothing on the disk can
 tell "this volume" from "this volume, last week". This entry is about building the thing that can.
 
 **The mechanism.** A TPM NV monotonic counter. `sb.rollback_gen` is the counter value the volume
@@ -568,19 +568,19 @@ was last written at, and unlock refuses a volume whose generation is behind the 
 MERKLE ROOT'S PREIMAGE. Without that the field is unauthenticated and the attack is one byte
 wider: take the old superblock, write the current counter value into it, keep everything else.
 With it, changing the generation changes the root that verifies, and the attacker would need the
-meta MAC key -- which needs the password, or the TPM-sealed factor.
+meta MAC key, which needs the password, or the TPM-sealed factor.
 
 **Monotonicity is the only property required of the counter, and it is worth being explicit that
 secrecy is not.** The NV index is defined AUTHWRITE/AUTHREAD with an empty nvAuth, so anyone who
 can talk to the TPM can read it and advance it. Neither helps them: `TPM_NT_COUNTER` cannot be
 decreased by anyone including the owner, and a re-created index starts above every value any
 counter on that TPM has ever held, so undefining it does not rewind it. What an attacker with TPM
-access gets is denial of service -- a volume that will not mount -- and they had that anyway.
+access gets is denial of service, a volume that will not mount, and they had that anyway.
 
 **The ordering, which is the difference between a security property and a bricked disk.** The
 superblock's new generation is written FIRST and the counter is raised to meet it. A crash between
 them leaves `gen == counter + 1`, and that is the ONLY state above the counter that can exist,
-because the generation is only ever written one ahead -- so it is the current volume, not an old
+because the generation is only ever written one ahead, so it is the current volume, not an old
 one, and the next boot accepts it and completes the increment. The opposite order leaves the
 volume behind its own anchor after a power cut, which is indistinguishable from a rollback: the
 machine would refuse to mount its own disk, forever, because the lights went out at the wrong
@@ -591,11 +591,11 @@ microsecond.
 1. The NV commands failed with a TIS state-machine error (-5: "the TPM wanted more bytes than I
    sent"). I decoded the 45-byte NV_DefineSpace command byte by byte against the TPM 2.0
    structures. It was correct. What settled it in one try was a three-line probe asking whether
-   the TPM answered a PCR_Read AT ALL at that point in the boot -- it did not. `tpm_transact` does
+   the TPM answered a PCR_Read AT ALL at that point in the boot: it did not. `tpm_transact` does
    not request locality; every other caller in that file brackets its own run of commands with
    `tpm_request_locality()`/`tpm_release_locality()`, and mine did not. WHEN A DEVICE STOPS
    ANSWERING, ASK WHETHER IT IS ANSWERING ANYTHING BEFORE ASKING WHETHER IT LIKED WHAT YOU SAID.
-2. The gate booted with no disk: `run_with_swtpm.sh` never handled `SMOKE_DISK` -- it is a
+2. The gate booted with no disk: `run_with_swtpm.sh` never handled `SMOKE_DISK`: it is a
    different harness from `smoke_test.sh` and only the latter attaches a drive. The volume was the
    ephemeral RAM vdisk, which is deliberately unanchored, so the selftest correctly reported that
    it had tested nothing. It now honours the same variable with the same cache mode, because two
@@ -604,7 +604,7 @@ microsecond.
 3. It worked from /tmp and failed in the repo. `swtpm_setup` and `swtpm` do not agree about a
    RELATIVE state directory: the setup step failed silently (its output is discarded), the
    emulator started on an empty state dir, and QEMU reported "TPM result for CMD_INIT: 0x9
-   operation failed" -- which reaches the harness as a ZERO-LENGTH SERIAL LOG, indistinguishable
+   operation failed", which reaches the harness as a ZERO-LENGTH SERIAL LOG, indistinguishable
    from a kernel that hung before its first print. The path is absolute now. The harness also
    passes SERIAL_OUT so a failed boot leaves its serial log behind, which it did not before: I
    spent a round looking at the guest for a problem that was in the emulator's startup.
@@ -612,7 +612,7 @@ microsecond.
 **The witness restores an entire disk image**, because that is the attack rather than a model of
 it. Three boots with a kept TPM state directory; the host images the disk after boot 1, boot 2
 moves the volume on, the host puts the image back, boot 3 must refuse. Before boot 3 the harness
-asserts POSITIVELY that boot 2 both changed the image and advanced the generation -- a restore
+asserts POSITIVELY that boot 2 both changed the image and advanced the generation, a restore
 that replays nothing, or an anchor that is not moving, would let boot 3 pass having tested
 nothing.
 
@@ -620,14 +620,14 @@ nothing.
 cannot identify itself from inside the guest. The restored volume is byte-identical to a volume
 that legitimately reached that state, so era 1 looks the same to boot 2 (which should see it) and
 to a rolled-back boot 3 (which should not). The first version of the selftest tried to detect
-"stale data" from inside and could not -- it also wrote before reading, so it was reading its own
+"stale data" from inside and could not: it also wrote before reading, so it was reading its own
 bytes back. The guest reports what it found; the harness, which knows which boot this is, supplies
 the context. Under `ROLLBACK_ANCHOR_IGNORE=1` boot 3 reports `found era 1`, and a current volume
 holds era 2.
 
 **A fourth wrong turn, found by CI rather than by me, and it is the most reusable.** The gate
 passed four times locally and failed on the first CI run: boot 2 timed out waiting to find era 1.
-Boot 1 had printed its marker and been killed FOUR SECONDS IN -- because the marker was printed
+Boot 1 had printed its marker and been killed FOUR SECONDS IN, because the marker was printed
 BEFORE the write the next boot depends on. The harness ends a boot the moment it sees the marker
 it is waiting for, which is exactly what makes these two-boot gates fast and deterministic, and it
 means A MARKER A LATER BOOT DEPENDS ON MUST BE EMITTED ONLY ONCE THE STATE IT DEPENDS ON IS
@@ -636,7 +636,7 @@ below the write. This tree has a rule about markers being written as ONE STRING;
 rule in the other axis, about WHEN.
 
 Worth noting what the failure looked like: not a wrong answer, but boot 2 honestly reporting that
-the volume was empty -- which is what boot 1 actually left. Nothing was broken except the order of
+the volume was empty, which is what boot 1 actually left. Nothing was broken except the order of
 two lines.
 
 **What it does not cover** is in `docs/LIMITATIONS.md` 1.12 rather than here, and it is not
@@ -665,18 +665,18 @@ The next occurrence was two hours later, on a pull request, and it read:
 0xD0 is BSY set, DRQ clear, eleven seconds into the boot. The drive was not wedged and the command
 was not malformed: `ata_wait_busy()` gave up while the drive was still working, because the host
 had descheduled the emulator. Before the fail-closed change, that same event pushed 256 words at a
-busy drive and returned SUCCESS -- a write that never happened -- which is exactly the "block N
+busy drive and returned SUCCESS, a write that never happened, which is exactly the "block N
 lost after eviction" the first flake reported.
 
 **The bound was 2e6 spins, and its comment said "QEMU and real drives clear BSY almost
 immediately, so the cap is never reached in practice".** That sentence was true of every machine
 anyone had run it on and false of a loaded CI runner. It is the same shape as the fsck comment
-from the day before -- an accurate description of the implementation standing in for a statement
+from the day before, an accurate description of the implementation standing in for a statement
 about the requirement.
 
 **What the bound was actually for.** Not how long a drive may take: how not to hang the boot on a
 bus with nothing on it. A floating bus reads 0xFF forever, which has BSY set. Once that case is
-detected directly -- `ata_bus_absent()`, all-ones or all-zero, exiting on the first read -- the
+detected directly (`ata_bus_absent()`, all-ones or all-zero, exiting on the first read) the
 count is free to be what ATA-8 allows, and it now matches the flush path's for the reason that one
 is large. A diskless boot still reports "primary master not present" at 0.026 s.
 
@@ -694,7 +694,7 @@ the fix was the honest position at the time, and it is what made this entry poss
 
 ### Fixed: the disk driver reported reads that did not happen
 
-`smoke-meta-crash` went red on main -- `METACACHE: FAIL block 130 lost after eviction` -- and
+`smoke-meta-crash` went red on main, `METACACHE: FAIL block 130 lost after eviction`, and
 passed on re-run. Roughly one run in thirty, and 8 out of 8 locally. This entry is about what
 looking for the cause turned up, which is not the same thing as the cause.
 
@@ -710,9 +710,9 @@ failed AEAD. Nothing in the log separated them. The failure path now prints `phy
 > operation as failed.
 
 That is true of `ata_init`, which tests for 0xFF and 0x00 explicitly. It is FALSE of
-`ata_read_sector`, which tested `status & 0x01` -- ERR. BSY is 0x80. So a wait that reached its
+`ata_read_sector`, which tested `status & 0x01`, ERR. BSY is 0x80. So a wait that reached its
 2e6-iteration bound left BSY set, ERR clear, DRQ unexamined, and the function went on to read 256
-words from the data port of a drive that had not said it had any -- and returned 0. A read that
+words from the data port of a drive that had not said it had any, and returned 0. A read that
 did not happen, reported as a read that did.
 
 `ata_write_sector` was the same shape three times over: three unchecked waits, no DRQ test before
@@ -726,12 +726,12 @@ anywhere. The Merkle tree covers the crypto-metadata region and nothing else, an
 layer beneath all of it.
 
 **The witness is a pure function, and that is the whole design of it.** The statuses that matter
-are the ones a working QEMU never produces -- BSY still set after the wait gave up, DRQ never
+are the ones a working QEMU never produces, BSY still set after the wait gave up, DRQ never
 asserted, DF raised. An integration test can only exercise what the emulator chooses to generate,
 so it would pass over every case the rule exists for. So the decision is factored out as
 `ata_transfer_ready(uint8_t)` and checked against all 256 bytes: exactly the 16 with DRQ set and
 BSY, ERR and DF clear are accepted. `ATA_READY_ERR_ONLY=1` restores the old rule and accepts 128
-of 256, the first being 0x00 -- a drive that said nothing at all. The scheduler factors
+of 256, the first being 0x00, a drive that said nothing at all. The scheduler factors
 `sched_domain_switch_would_flush` out for the same reason and it is the pattern to copy.
 
 **What is NOT established.** That this was the cause of the CI failure. The re-run passed, I could
@@ -746,20 +746,20 @@ me if it recurs for this reason, and that is the honest state of it.
 When the 16 GiB work landed this was written up as an open limitation rather than fixed, on the
 grounds that it was UNMEASURED: nothing in the tree filled a large volume, so there was no number
 to improve on and no gate that would notice a regression. That was the right call and it left the
-obvious next step, which is not the fix -- it is the workload.
+obvious next step, which is not the fix: it is the workload.
 
 **The instrument first.** `storage_alloc_block` scans the data bitmap for a clear bit, and how far
 it scans is invisible from outside: a scan that reads a hundred bitmap blocks and one that reads a
 single block both return a block number and both look instantaneous beside the disk I/O the caller
-is about to do. So the instrument is a COUNTER on the bitmap read, not a timer -- a count is the
+is about to do. So the instrument is a COUNTER on the bitmap read, not a timer: a count is the
 same number on a fast host and a slow one, which matters for something that will be re-measured
 on a CI runner.
 
 **Then the workload, and the honest shortcut in it.** Reaching bitmap block 16 by allocating is
 524288 calls, each reading and writing a bitmap block through emulated PIO: hours, to arrive at a
 state that is four bytes of description. The selftest writes the bitmap blocks directly instead.
-The bytes are EXACTLY the bytes those allocations would leave -- a bitmap block of all ones is a
-bitmap block of all ones -- and what is skipped is the time, not the state. Every allocation
+The bytes are EXACTLY the bytes those allocations would leave, a bitmap block of all ones is a
+bitmap block of all ones, and what is skipped is the time, not the state. Every allocation
 measured afterwards is a real one out of the region that is left.
 
 **Measured, before touching the allocator:** 2 GiB volume, bitmap spans 16 blocks, 15 marked full,
@@ -769,11 +769,11 @@ starts at block 0 every single time.
 **After: 47.** Sixteen for the first allocation, one each for the thirty-one after it. The change
 is four lines: start at `g_alloc_hint`, wrap, record where you succeeded.
 
-**What made the hint safe to get wrong.** It is a starting POINT and never a bound -- the loop
+**What made the hint safe to get wrong.** It is a starting POINT and never a bound, the loop
 still covers every bitmap block, so the set of allocations that succeed is identical to before. A
 stale hint costs one wasted read. That property is what let this be a small change rather than a
-careful one, and it is worth stating because the tempting version -- remember which blocks are
-free -- is neither.
+careful one, and it is worth stating because the tempting version, remember which blocks are
+free, is neither.
 
 One real subtlety: the old loop carried `remaining -= bits_here` down the blocks in order, which
 only describes the last block correctly while the index counts up from zero. A wrapping scan has
@@ -781,8 +781,8 @@ to derive the bit count from the block index instead. That is the kind of thing 
 worked in every test and been wrong on exactly one block of a full volume.
 
 **The gate asserts two things, and the second is the one that matters.** After the measurement it
-fills the volume completely, frees a single block in bitmap block 0 -- BEHIND the hint, which is
-by then near the end -- and requires the next allocation to return exactly that block. It can only
+fills the volume completely, frees a single block in bitmap block 0, BEHIND the hint, which is
+by then near the end, and requires the next allocation to return exactly that block. It can only
 do so by wrapping. A gate that measured the read count alone would pass a "fix" that made the
 allocator fast by giving up early, and that fix is easier to write than the real one.
 
@@ -796,27 +796,27 @@ tree was large enough for it to exist.
 
 ### Changed: 16 GiB, and the constant that had to stop being the volume's size
 
-Stage 4. `BLOCKS_PER_DISK` went from 32768 to 4194304, which is one number -- and almost none of
+Stage 4. `BLOCKS_PER_DISK` went from 32768 to 4194304, which is one number, and almost none of
 the work was in changing it.
 
 **The thing that had to happen first was making it a CEILING.** It was every ATA volume's size:
 `g_ata_bd.total_blocks = BLOCKS_PER_DISK`, so the filesystem was laid out against a compile-time
-constant and the disk in front of it was never consulted. Wrong in both directions -- a smaller
-disk got a data region running off the end of it, a larger one was truncated silently -- and,
+constant and the disk in front of it was never consulted. Wrong in both directions (a smaller
+disk got a data region running off the end of it, a larger one was truncated silently) and,
 practically, it meant raising the constant would make every persistence gate allocate a 16 GiB
 image. `ata_init` already read the 256-word IDENTIFY block and threw it away; words 60-61 are
 the LBA28 sector count, so the size was there all along, being drained in a loop that discarded
 it.
 
 With that in place the raise is cheap: the gates keep running on 128 MiB images against a
-16 GiB-capable kernel, and `smoke-fs-16g` is the one gate that allocates a real one. Sparsely --
+16 GiB-capable kernel, and `smoke-fs-16g` is the one gate that allocates a real one. Sparsely,
 `truncate`, not `dd count=N`, which would write sixteen actual gigabytes of zeros first. The
 declared image is 16 GiB; 130 MiB is what lands on the host's disk.
 
 **What a 16 GiB volume actually costs, measured.** Boot 1 of that gate takes about four minutes,
 and essentially all of it is format: zeroing a 128 MiB metadata region and reading it back to
 hash into the tree, through emulated PIO. Boot 2 mounts in the ordinary time, because the mount
-check is one node against the root instead of a walk of the whole region -- that difference is
+check is one node against the root instead of a walk of the whole region, that difference is
 exactly what stage 3 bought, and this is the first place it is visible rather than argued.
 
 **Triple-indirect, and why it is a loop.** 12 direct + 512 + 512^2 stops at 1.00 GiB, which is a
@@ -827,8 +827,8 @@ copy would be the same code a third time, and the place a transcription slip lan
 nothing exercises until a file is a gigabyte long. One `walk_ptr_tree(depth)` instead, bounded
 by FSCK_MAX_DEPTH because each level is a BLOCK_SIZE stack frame and the BSP stack is 16 KiB.
 
-`bigfile_selftest` now writes one block from every region including 2000000 -- an offset of 8 GB
-into a file -- and asserts against the INODE that `triple_indirect` is non-zero. Without that
+`bigfile_selftest` now writes one block from every region including 2000000, an offset of 8 GB
+into a file, and asserts against the INODE that `triple_indirect` is non-zero. Without that
 assertion an off-by-one in the region arithmetic would leave every one of those writes landing in
 the double-indirect tree and the test passing without touching the level it was added for. It
 also caught a collision immediately: block 524 is the first double-indirect block AND inside the
@@ -837,22 +837,22 @@ reason that had nothing to do with the mapping.
 
 **Three scaling problems that were invisible at 128 MiB.**
 
-1. The inode bitmap was ONE block, so any volume capped at 32768 inodes -- at 16 GiB that is one
+1. The inode bitmap was ONE block, so any volume capped at 32768 inodes, at 16 GiB that is one
    inode per 128 blocks, and the cap was the bitmap rather than a judgement about how many files
    anyone wants. It spans blocks now, as the data bitmap already did.
 2. `INODES_PER_BLOCK` was 2, chosen when a block was 512 bytes. At 4 KiB it left each 248-byte
-   inode 2048 bytes, so the table was eight times the size it needed to be -- 64 MiB against
+   inode 2048 bytes, so the table was eight times the size it needed to be: 64 MiB against
    8 MiB at 16 GiB, all of it zeroed at format and walked by fsck. 16 now. And the table is no
    longer zeroed wholly at format: `storage_alloc_inode` zeros a table block the first time an
    inode in it is allocated, which the bitmap already knows.
-3. `storage_free_inode_blocks` was ONE transaction, on the reasoning -- written down, and correct
-   when it was written -- that every bitmap clear coalesces onto a single sector. That stopped
+3. `storage_free_inode_blocks` was ONE transaction, on the reasoning, written down, and correct
+   when it was written, that every bitmap clear coalesces onto a single sector. That stopped
    being true when the data region outgrew one bitmap block. At 16 GiB the bitmap spans 128
    blocks against JOURNAL_DATA_MAX of 16, so freeing a large file would OVERFLOW AND ABORT,
    leaving the file whole and the caller told it was deleted. It is several transactions now,
    and the ordering is the part that matters: the inode is killed FIRST, in a transaction of its
    own, so a crash anywhere afterwards leaves the dangling inode fsck already repairs. The other
-   order -- free the blocks, then mark the inode dead -- cannot be interrupted safely at all: a
+   order, free the blocks, then mark the inode dead, cannot be interrupted safely at all: a
    crash midway leaves blocks in the free list that a LIVE inode still points at, and the next
    allocation hands one out twice.
 
@@ -860,12 +860,12 @@ reason that had nothing to do with the mapping.
 whole inode table; at 16 GiB that is megabytes of PIO reads before the login prompt on a boot
 where nothing is wrong. It cannot simply be dropped, because the chunked free above is genuinely
 multi-transaction and an interrupted one leaves exactly what fsck repairs. So it runs when the
-journal replayed, or when `sb.needs_fsck` -- raised across the free, in the same transaction that
-kills the inode -- says an operation was in flight.
+journal replayed, or when `sb.needs_fsck` (raised across the free, in the same transaction that
+kills the inode) says an operation was in flight.
 
 **That change silently defanged the gate landed one PR earlier.** `smoke-fsck-refs` asserts that
 fsck does not free a live file's blocks. With the sweep gated, boot 2 no longer ran fsck at all,
-and the gate passed -- green, in the same change that made it meaningless, for the opposite of
+and the gate passed, green, in the same change that made it meaningless, for the opposite of
 the reason its name claims. Caught by grepping the boot log for the sweep's own line and finding
 it absent. The witness now asserts `storage_fsck_runs() != 0` and boot 1 arms `needs_fsck` the
 way a crash inside a chunked free would, so the gate exercises the real trigger rather than a
@@ -874,14 +874,14 @@ test-only one.
 **A control arm had to follow its defect rather than its constant.**
 `smoke-vdisk-bound-control` sets `total_blocks = BLOCKS_PER_DISK` over a `VDISK_BLOCKS`-sized
 reservation, which reproduced exactly while that constant was 32768. At 4194304 it stopped
-reproducing -- not because the defect was fixed, but because it became catastrophic: format lays
+reproducing, not because the defect was fixed, but because it became catastrophic: format lays
 a 16 GiB volume over a 16 MiB reservation, the metadata region alone runs a hundred megabytes
 past the end, and the boot dies before the probe can say anything. An arm that kills the boot
 witnesses nothing. It advertises eight times the backing now, which is the same defect at a size
 the probe survives.
 
 **One more coupling the raise exposed.** The multi-boot harnesses kept their phase counter in the
-block one past BLOCKS_PER_DISK -- fine while that was the volume's size, and off the end of a
+block one past BLOCKS_PER_DISK, fine while that was the volume's size, and off the end of a
 128 MiB image the moment it was not. It lives in the TPM blob block now: reserved unconditionally
 at format so the geometry does not depend on whether a TPM is present, zeroed and never read on a
 password-only volume, inside the volume so no games with the image size, and outside the metadata
@@ -894,12 +894,12 @@ region so a rollback tamper does not carry the phase back with it. Refused outri
 Found while planning the triple-indirect work, by reading `storage_fsck_pass` to see what a
 third level would have to be added to. There was no second level to add it to.
 
-The function reclaims data blocks the bitmap marks allocated but no live inode references --
+The function reclaims data blocks the bitmap marks allocated but no live inode references,
 the repair for a crash between allocating a block and linking it into an inode. It builds that
 reference set by walking each live inode, and the walk was `direct[0..11]`, then
 `nd->indirect` and its entries, and then nothing. `nd->double_indirect` is never read. So every
 block reachable only through the double-indirect tree, and the single-indirect blocks under it,
-and the double-indirect block itself, were absent from the reference set -- and the sweep below
+and the double-indirect block itself, were absent from the reference set, and the sweep below
 cleared their bitmap bits. At every unlock.
 
 **The threshold is 12 + PTRS_PER_BLOCK blocks.** That is 2.048 MiB at today's 4 KiB block, and
@@ -917,8 +917,8 @@ runs over it; `smoke-fs-persist` mounts twice but writes a file of a few blocks.
 **So the witness asks the bitmap, not the file.** Boot 2 resolves each of the file's logical
 blocks to a physical one and reads the data bitmap directly: `FSCKREF: FAIL fsck freed 4 of 4
 blocks of a live file, first at 4396`. Counted, so a partial reproduction stays visible. The
-consequence is checked afterwards rather than instead -- allocate a block, require it not to be
-one the file owns -- so the marker names the cause and the run still demonstrates the harm.
+consequence is checked afterwards rather than instead (allocate a block, require it not to be
+one the file owns) so the marker names the cause and the run still demonstrates the harm.
 
 Boot 1 asserts, against the inode, that the file it wrote actually reached the double-indirect
 tree. Without that the gate is one constant away from testing the single-indirect path and
@@ -926,7 +926,7 @@ passing while saying nothing, which is the same shape as a crash gate whose work
 cache.
 
 **The comment was the reason it looked deliberate.** It read "Data blocks reachable from a live
-inode's direct/single-indirect pointers" -- an accurate description of what the code did, sitting
+inode's direct/single-indirect pointers", an accurate description of what the code did, sitting
 above code that was incomplete. A comment that describes the implementation rather than the
 requirement cannot tell you the implementation is wrong.
 
@@ -949,7 +949,7 @@ blocks' MACs, level k+1's are the hashes of level k's node blocks, the top block
 `sb.meta_root`. At a 16 GiB volume that is 32768 -> 256 -> 2 -> 1, so a write costs four hashes
 and four staged block writes, and **unlock verifies one node against the root** rather than
 reading 128 MiB. Everything below the root is verified LAZILY, when a metadata block is first
-loaded into the cache stage 2 built -- which is where the two stages meet, and why they had to
+loaded into the cache stage 2 built, which is where the two stages meet, and why they had to
 land in this order.
 
 **What the design doc got right, and it is the whole of Arm B.** "The replayed node must be
@@ -963,7 +963,7 @@ so is the chain to the current root.
 
 Restoring the metadata block ALONE would have proved nothing, and this is the trap the doc was
 pointing at: the block's own leaf hash no longer matches what the node records, so the leaf check
-refuses it -- and a design that MAC'd every block independently would refuse it identically. I
+refuses it, and a design that MAC'd every block independently would refuse it identically. I
 measured that rather than assuming it. Under `MERKLE_SKIP_PARENT_BIND=1`, the build with the
 chain removed, restoring the block without its node is still refused 6 of 6. So what that arm
 removes is provably the chain and not the check, and `tools/merkle_replay.sh` keeps the
@@ -973,32 +973,32 @@ removes is provably the chain and not the check, and `tools/merkle_replay.sh` ke
 
 - `MERKLE_NODE_TRUST_CACHED=1` sets a node line's `verified` flag where the line is FILLED
   rather than where it is checked. Residency becomes the trust criterion. This is one edit away
-  from the correct code and it is the edit a performance shortcut makes -- re-checking a node on
+  from the correct code and it is the edit a performance shortcut makes, re-checking a node on
   every cache HIT genuinely is wasteful, the flag exists to skip it, and setting the flag one
   line too early skips the one check that mattered.
 - `MERKLE_SKIP_PARENT_BIND=1` checks the leaf against the node that records it and never places
   that node under the root. Forgeries and swaps are still refused; only the question of whether
   the state is the CURRENT one is gone.
 
-Both serve all 6 rolled-back blocks, and both markers are positive -- the volume handed the
-earlier contents back -- rather than "no refusal arrived", which a boot that never reached the
+Both serve all 6 rolled-back blocks, and both markers are positive, the volume handed the
+earlier contents back, rather than "no refusal arrived", which a boot that never reached the
 read would satisfy.
 
 **The harness needed somewhere to keep a phase counter across three boots, and the answer was
 outside the volume.** A phase file on the filesystem would live in the same subtree the tamper
 rewinds; a reserved block in the layout would put test scaffolding in a format that ships. The
-image is made one block LONGER than the device instead, and the counter lives there -- storage
+image is made one block LONGER than the device instead, and the counter lives there: storage
 the filesystem can never reach and no shipping layout has to know about. The tampering itself is
 done by the host with `dd`, not by the kernel, because that is what a physical attacker with the
 disk actually does.
 
 **The anti-vacuity check is on the tamper, not on the read.** If boot 2 did not actually change
-both target blocks, the restore undoes nothing and boot 3 passes having replayed nothing -- the
+both target blocks, the restore undoes nothing and boot 3 passes having replayed nothing, the
 same shape as a crash gate whose working set fits in its cache. So the script `cmp`s both blocks
 between the snapshot and the live image and refuses to reach boot 3 unless both differ.
 
 **A gate that reddens by TIMEOUT is a gate that says nothing.** Falsifying the base gate against
-each defect flag worked -- both went red -- and each took 600 seconds to do it, because boot 3
+each defect flag worked, both went red, and each took 600 seconds to do it, because boot 3
 was waiting out its budget for a marker the defect build never prints. The run ends "timed out
 without required marker", which is what an infrastructure problem looks like, and it is what a
 real regression in CI would have looked like too. Each target now passes its counterpart's marker
@@ -1006,8 +1006,8 @@ as FAIL_MARKER, so the base gate stops the moment it sees a FAIL and the arms st
 they see a PASS: 600 s became 44 s, and the line printed names which way it went.
 
 **A checker's reach, and the two gates it had been missing.** `tools/check_gate_evidence.py`
-counted boot-harness invocations in the MAKEFILE RECIPE, so `smoke-merkle-replay` -- three boots,
-all of them inside `tools/merkle_replay.sh` -- counted as booting once and was never asked how it
+counted boot-harness invocations in the MAKEFILE RECIPE, so `smoke-merkle-replay` (three boots,
+all of them inside `tools/merkle_replay.sh`) counted as booting once and was never asked how it
 knows those boots ran. That is the exact silence the file exists to refuse, reappearing one level
 of indirection down: the rule was right and its reach was not. Folding in the text of any
 `tools/*.sh` a recipe calls surfaced **two pre-existing gates** that had been booting thirty
@@ -1015,10 +1015,10 @@ times each, invisibly, for months: `smoke-console-smp-stress` and `smoke-sched-i
 
 Getting that widening right took three tries and every one of them is a lesson about checkers.
 (1) Expanding every script made EVERY single-boot target look multi-boot, because the boot
-harness itself contains the word the pattern matches and a poll loop of its own -- so the two
+harness itself contains the word the pattern matches and a poll loop of its own, so the two
 harnesses are excluded from expansion. (2) `smoke-tpm` and `smoke-tpm-tamper` then read as
 two-boot gates because `tools/smoke_tpm.sh` NAMES `run_with_swtpm.sh` in a comment above the one
-line that runs it -- so whole-line comments are stripped before counting. (3) Stripping comments
+line that runs it, so whole-line comments are stripped before counting. (3) Stripping comments
 made the stress pair invisible AGAIN, because the only reason they had shown up was three
 mentions of `smoke_test.sh` in `stress_boot.sh`'s prose, and the loop pattern spelled the
 Makefile's `$$(seq` and not the shell's `$(seq`. A checker whose first version flags the right
@@ -1030,13 +1030,13 @@ targets for the wrong reason is a checker that will stop flagging them.
 Stage 2 of `docs/design/meta-cache-merkle.md`. `g_block_meta[BLOCKS_PER_DISK]` was a complete
 in-RAM mirror of the on-disk nonce/tag region: 32 bytes per block of the LARGEST volume the
 kernel could describe, whether or not the volume in front of it was that large. 1 MiB of .bss at
-128 MiB, and 128 MiB at the 16 GiB volume this work exists to reach -- against a linker budget of
+128 MiB, and 128 MiB at the 16 GiB volume this work exists to reach, against a linker budget of
 16 MiB for the whole image's .bss. It is now 32 lines of one metadata block each, 128 KiB
 resident whatever the volume is, and `storage_unlock` no longer reads the region into RAM at all.
 
 **The design decision that took the longest, and the reasoning that settled it.** The line could
 be a single 32-byte ENTRY keyed by physical block, or a whole 4 KiB METADATA BLOCK. Entry
-granularity is what the design doc's Arm A assumes -- "boot 1 writes META_CACHE_ENTRIES + N
+granularity is what the design doc's Arm A assumes, "boot 1 writes META_CACHE_ENTRIES + N
 distinct blocks" is counted in data blocks, and at 128 entries per metadata block a 64-block
 working set fits in one of them, so a block-granular cache would never evict and the eviction
 assertion could not be satisfied at all. What decided it against entry granularity is the WRITE
@@ -1045,11 +1045,11 @@ path: writing one entry back means read-modify-writing the metadata block it liv
 resident entries is a whole class of aliasing bug (failure mode E3) that block granularity does
 not have. A line is a block; 128 consecutive data blocks share one; a sequential write of a large
 file walks the region with one line resident. The harness's working set grew from 64 blocks to
-400 instead, and both arms build with `META_CACHE_TINY=1`, which drops the cache to two lines --
+400 instead, and both arms build with `META_CACHE_TINY=1`, which drops the cache to two lines,
 a widener set in both arms, the `KSTACK_RACE_WIDEN` pattern, not a defect.
 
-**What I expected the arms to be, and what they had to become.** The design doc names E1 -- "a
-dirty line is evicted without write-back" -- as Arm A's defect, and `META_CACHE_EVICT_NOWB=1` is
+**What I expected the arms to be, and what they had to become.** The design doc names E1, "a
+dirty line is evicted without write-back", as Arm A's defect, and `META_CACHE_EVICT_NOWB=1` is
 the obvious injection. It does not reproduce, and the reason is structural rather than accidental:
 durability requires the write-back to happen inside the transaction that dirtied the line, so
 `journal_commit` flushes; every workload in this tree dirties exactly ONE line per transaction;
@@ -1059,18 +1059,18 @@ BACKSTOP, and its arm cannot fail.
 That is not an argument to leave in a comment, so it is a number instead. `g_meta_dirty_evictions`
 counts evictions of a dirty line, every crash-gate boot prints it beside the eviction count, and
 it reads `evictions=2 dirty=0` in both boots of every run. `META_CACHE_EVICT_NOWB=1` therefore
-gets the treatment `SPAWN_STAGE_UNSERIALISED` got -- kept, documented, no gate -- and if that
+gets the treatment `SPAWN_STAGE_UNSERIALISED` got, kept, documented, no gate, and if that
 counter is ever non-zero the arm has become reachable and should gate.
 
 The two arms that DO reproduce are the ones the failure modes actually describe, and they name
 **different blocks**, which is what shows they fail independently:
 
 - `META_CACHE_NO_WRITEBACK=1` removes the write-back entirely. Nothing ever reaches the disk;
-  boot 2 mounts -- the region and its HMAC still agree, both being the format-time zeros -- and
+  boot 2 mounts (the region and its HMAC still agree, both being the format-time zeros) and
   then fails on `METACACHE: FAIL block 0`.
 - `META_CACHE_WB_OUTSIDE_TXN=1` keeps the write-back and moves it PAST the end of
   `journal_commit`, where `do_block_write` goes straight home. Every value written is correct;
-  what is gone is the atomicity. Boot 2 fails on `METACACHE: FAIL block 399` -- precisely the
+  what is gone is the atomicity. Boot 2 fails on `METACACHE: FAIL block 399`, precisely the
   block the crash committed, whose ciphertext the journal replayed and whose nonce was never
   written. That is E2 in one line of output, and it is why E2 earns its own arm: it is the mode
   that turns a recoverable loss into a lost block.
@@ -1078,7 +1078,7 @@ The two arms that DO reproduce are the ones the failure modes actually describe,
 **The arm on the gate, not on the property.** `smoke-meta-crash` is only a test of eviction while
 the working set exceeds the cache, and nothing about "400 blocks" and "2 lines" says so out loud.
 Raise the cache or shrink the set and every block still verifies, from a cache that never evicted,
-and the marker still says PASS -- the gate becomes a no-op with nothing to say so. So both boots
+and the marker still says PASS: the gate becomes a no-op with nothing to say so. So both boots
 assert `meta_cache_evictions() != 0`, and `smoke-meta-crash-vacuity-control` builds the same
 kernel WITHOUT the widener and requires boot 1 to print
 `METACACHE: FAIL no eviction occurred - this run tested nothing`. That assertion has been the
@@ -1087,7 +1087,7 @@ fail rather than merely to exist.
 
 **Two things the change forced that were not on the list.** The metadata region was sized from
 `BLOCKS_PER_DISK` rather than from the device, which gave a 4096-block RAM disk a 256-block
-region -- and at 16 GiB would ask that RAM disk for 32768 blocks, more than the whole disk, so
+region, and at 16 GiB would ask that RAM disk for 32768 blocks, more than the whole disk, so
 format would fail its own "disk too small" check and a diskless boot would not come up. It is
 `ceil(total_blocks / META_ENTRIES_PER_BLOCK)` now, and only fixed-size ARRAYS may still be sized
 from the ceiling (renamed `META_BLOCKS_MAX` so the distinction is in the name). And
@@ -1098,7 +1098,7 @@ unwritten would have bricked the volume at its first mount, with a check that co
 
 Both change the on-disk format, and the second changes the HMAC PREIMAGE, so the version is v10.
 A v9 volume read as v10 would fail its integrity check and be reported as partial metadata
-rollback -- a far worse thing to tell someone than "unsupported version".
+rollback, a far worse thing to tell someone than "unsupported version".
 
 **Measured.** Boot 1 and boot 2 each: 2 evictions, 0 of them dirty. Boot 1 takes 58 s against an
 emulated IDE disk for 400 journal transactions, which is what sized the working set: 800 blocks
@@ -1117,7 +1117,7 @@ smoke-init-fs, smoke-modules.
 Found while reading `storage.c` for the metadata cache, not by a failing gate, and it had been
 live since the 4 KiB block size landed the day before.
 
-`g_vdisk_bd.total_blocks` was `BLOCKS_PER_DISK` -- 32768 -- and `vdisk_read`/`vdisk_write` both
+`g_vdisk_bd.total_blocks` was `BLOCKS_PER_DISK`, 32768, and `vdisk_read`/`vdisk_write` both
 bounded against exactly that field. The backing store is `g_vdisk_backing`, a `VDISK_BYTES`
 reservation in the physical pool: `VDISK_BLOCKS` (4096) blocks, 16 MiB. So block 4096 was
 accepted, and `vd->data + block * BLOCK_SIZE` addressed the first frame of the FREE PAGE POOL,
@@ -1126,7 +1126,7 @@ the end of it.
 
 **Why the two numbers came apart.** They were one expression until 2026-08-31. `VDISK_BLOCKS`
 exists precisely because raising `BLOCK_SIZE` to 4 KiB would otherwise have made the RAM disk
-128 MiB of physical-pool reservation as a side effect of a constant change -- the comment on it
+128 MiB of physical-pool reservation as a side effect of a constant change: the comment on it
 says so. What that split did not carry with it was the device's advertised size, and nothing
 related the two but prose. There is now a `_Static_assert(VDISK_BLOCKS <= BLOCKS_PER_DISK)` for
 the relationship that does remain, and the transport bounds against `vd->block_count` as well
@@ -1137,15 +1137,15 @@ caller can set wrong, and the defect was the second disagreeing with the first.
 on a diskless boot the volume's data region genuinely extended past the reservation and ring 3
 reached it by writing files. No gate had ever written that much, which is why it was silent.
 
-**What the arm had to be careful about.** The obvious control arm -- "is the out-of-range write
-refused?" -- asserts an absence, and this tree has been caught by that shape twice. So the probe
+**What the arm had to be careful about.** The obvious control arm, "is the out-of-range write
+refused?", asserts an absence, and this tree has been caught by that shape twice. So the probe
 writes a known pattern to block `VDISK_BLOCKS`, then **reads it back from
 `g_vdisk_backing + VDISK_BYTES`** and reports having found it there. That is a positive claim
 about where the bytes went, not an inference from a missing message, and it restores what it
 displaced so the boot survives to print it. The base gate needs the other direction as well and
 gets it in the same boot: the last in-range block must still be writable and read back, because
 a bound that refuses everything satisfies a refusal test (`KSP_GUARD_ALWAYS`, four months of this
-file ago). Falsified both ways -- `make smoke-vdisk-bound VDISK_TOTAL_UNBOUNDED=1` goes red on
+file ago). Falsified both ways: `make smoke-vdisk-bound VDISK_TOTAL_UNBOUNDED=1` goes red on
 the control's own marker.
 
 ### Changed: 512 was not a constant, it was an assumption in six places
@@ -1156,24 +1156,24 @@ that number down took six failures, and the shape of them is the point.
 
 At 512 the indirect fan-out is BLOCK_SIZE/8 = 64 pointers, so a file was capped at 2.04 MiB no
 matter how large the volume; at 4 KiB the fan-out is 512 and the same double-indirect structure
-reaches 1.00 GiB. Every per-block table -- crypto metadata, bitmaps, MAC input -- is eight times
+reaches 1.00 GiB. Every per-block table, crypto metadata, bitmaps, MAC input, is eight times
 smaller, which is what makes the metadata cache and Merkle tree that 16 GiB needs tractable.
 
 **Where 512 was hiding.**
 
 1. `kernel.h`, the definition everyone knows about.
 2. `multiboot.S`, the BSP kernel stack, a bare `.space 16384`. Raising KERNEL_STACK_SIZE did NOT
-   touch it -- that constant sizes per-task stacks, and kernel_main runs storage_init on a
+   touch it, that constant sizes per-task stacks, and kernel_main runs storage_init on a
    different one. Every gate failed identically, including plain `smoke`. The stack overflowed
    into bsp_stack_guard and faulted at a nameable address; `nm` put it squarely inside the guard
    page, so the guard turned a silent neighbour-corruption into a one-line diagnosis.
 3. `ap_trampoline.S`, which strides the AP idle-stack array by a literal. A _Static_assert
    existed for exactly this and caught it within a minute of the stack change. The size now comes
-   from BSP_STACK_SIZE in kernel_vma.h, single-sourced -- strictly better than the assert next
+   from BSP_STACK_SIZE in kernel_vma.h, single-sourced, strictly better than the assert next
    door, which is only needed because its value IS duplicated.
 4. `userspace/fs_server.c`: `#define BLK 512u`. Two independent definitions of one number on
    opposite sides of a syscall ABI. SYS_FBLOCK_READ returns a whole block, so the size is part of
-   that ABI -- and the server was reading 4 KiB into a 512-byte buffer. It had done nothing wrong;
+   that ABI, and the server was reading 4 KiB into a 512-byte buffer. It had done nothing wrong;
    it believed a constant nobody had told it about.
 5. The Makefile: fourteen `bs=512` in dd invocations whose `count=` already derived from the
    header. Half a coupling is worse than none, because it looks maintained. Every test image was
@@ -1184,7 +1184,7 @@ smaller, which is what makes the metadata cache and Merkle tree that 16 GiB need
    bytes from an eighth of the intended offset into a 4096-byte buffer.
 
 **The failure pattern named the layer three runs before I read it.** The four failing gates were
-exactly the ATA-backed ones -- persist, wal, keyslots, users-persist -- while every RAM-disk gate
+exactly the ATA-backed ones, persist, wal, keyslots, users-persist, while every RAM-disk gate
 passed, because vdisk_read scales by block * BLOCK_SIZE and was always correct. That partition
 identified the block device without opening it. I went to the Makefile first because the previous
 failure had been there, which is availability bias rather than evidence; the dd sizing was a real
@@ -1206,7 +1206,7 @@ they would otherwise each keep their own answer.
 The installer needs a screen, and the reflex answer is to port ncurses. That would have been
 wrong here twice over: terminfo and a compiled terminal database are a large unaudited addition to
 a tree whose whole argument is a small auditable TCB, and Horus talks to exactly one kind of
-terminal -- a VT/ANSI console on a serial line, at a fixed 80x24 that console_proto.h explains.
+terminal, a VT/ANSI console on a serial line, at a fixed 80x24 that console_proto.h explains.
 Targeting only that removes the database and most of the library with it.
 
 **The substrate turned out to already exist**, which shaped everything. console_proto.h has
@@ -1214,7 +1214,7 @@ CON_OP_READ_RAW, CON_OP_WRITE_RAW and CON_OP_WINSZ, and its comment says outrigh
 there so "a curses program running on Horus drives it by passing escape sequences through
 verbatim". So the TUI needed no kernel change and no new syscall: every operation is a request on
 the console endpoint the caller already holds. A task that can print can draw, and a task that
-cannot, cannot. That is the safest shape a feature can have -- it cannot grant what it does not
+cannot, cannot. That is the safest shape a feature can have: it cannot grant what it does not
 touch.
 
 READ_RAW returning "the whole immediately-available burst (so ESC-[-A arrives together)" also
@@ -1223,14 +1223,14 @@ mid-sequence, so a truncated escape yields ESC instead of waiting for bytes that
 
 The self-test is the part worth reading. **Every property here is invisible on a terminal**: a
 correct damage diff and a full repaint draw the identical picture, and so do a bounds check and
-its absence -- right up until the latter corrupts something. So the assertions are on the BYTE
+its absence, right up until the latter corrupts something. So the assertions are on the BYTE
 COUNT handed to the console and on the library's own cells, both of which a control arm can move
 and a screen cannot show. That is also why there are two arms rather than one:
 TUI_NO_DAMAGE_DIFF=1 for the diff, TUI_CLAMP_OFF=1 for the bounds check, each with its own marker.
 
 **Five wiring mistakes, all caught by building rather than by assuming**, and one of them was the
 trap this repository already documents. USERSPACE_CFLAGS is assigned with `=` at line ~2400, so
-the three `+=` lines placed beside the flags' own ifeq near line 400 were silently discarded --
+the three `+=` lines placed beside the flags' own ifeq near line 400 were silently discarded:
 the flags were set, the build succeeded, and not one -D reached the compiler. SYSCALL_PTR_TRUNC32's
 comment records exactly this, which is why the fix sits beside it now. Verified by asking make
 whether each -D actually appears on the compile line rather than trusting a green build. The
@@ -1239,14 +1239,14 @@ LIBHORUS_SELFTEST; a first-occurrence string replace that appended tuitest.bin t
 SHLIBC_SELFTEST_DEP instead of PIE_TEST_BINS; and two #ifdef guards that needed widening.
 
 **CodeQL found a high-severity bug in it, and the honest response was not to invent a witness.**
-`tui_field` read `s[i] && i < width` -- dereference, then bound -- so a caller passing a
+`tui_field` read `s[i] && i < width`, dereference, then bound, so a caller passing a
 non-terminated buffer of exactly `width` bytes, which is what a fixed form field IS, had s[width]
 read one byte past the end before the condition short-circuited. In a library whose header claims
 safety by construction, the one place it reads caller memory had the test on the wrong side of the
 `&&`.
 
 The self-test could not have caught it: every string it passes is NUL-terminated well inside the
-width, so the over-read never happened. And had it happened, nothing would have shown -- the byte
+width, so the over-read never happened. And had it happened, nothing would have shown, the byte
 fed only the loop condition, so the rendered output is identical either way. It is a pure
 memory-safety fault, invisible without a sanitiser. So no control arm was manufactured for it. A
 check now pins the BEHAVIOUR (exactly `width` cells from a non-terminated buffer) so a later
@@ -1263,7 +1263,7 @@ believed correct at the time.
 nothing followed. console_server owns the hardware in that build, so a ring-3 kput goes to a
 kernel console that is no longer the wire: the markers were written and inaudible. consoletest has
 the same shape for the same reason, which is what pointed at it. The tell was the shape of the
-failure again -- a timeout with the setup marker present and no verdict either way, rather than a
+failure again, a timeout with the setup marker present and no verdict either way, rather than a
 FAIL naming a check. Markers now go through CON_OP_WRITE, one request each, which makes them
 atomic at the protocol level and satisfies 2.6a for free.
 
@@ -1281,7 +1281,7 @@ account hashes, and the table is sealed under a key derived from disk_key instea
 rest does the job the pepper was being asked to do, and unlike the superseded proposal to
 TPM-seal the pepper it works on a machine with no TPM.
 
-The ordering inverted as 2.6 predicted -- the table cannot be read until the volume opens, so
+The ordering inverted as 2.6 predicted: the table cannot be read until the volume opens, so
 login became unlock-then-identify. What 2.6 could not predict is that the identity would come for
 free: the key slots added the same day seal the uid INSIDE the slot, so the slot that opens says
 who opened it. The thing 2.6 called an orthogonal, pre-existing limitation turned out to be the
@@ -1291,8 +1291,8 @@ enabling half.
 raw bd->write_block, bypassing do_block_write and therefore the write-ahead log. A crash part-way
 left a new header over partly-old ciphertext, the tag failed, and the caller treated ANY load
 failure as "no table yet" and reseeded the compiled-in accounts. A power cut during useradd
-silently rolled every account back to root/user. The function's own comment claimed the opposite
--- "a tag failure is NOT silently treated as no accounts yet" -- which was aspirational; the
+silently rolled every account back to root/user. The function's own comment claimed the opposite,
+"a tag failure is NOT silently treated as no accounts yet", which was aspirational; the
 caller did exactly what the comment said it did not. Fixed by staging the whole table in one
 journal transaction (a _Static_assert now proves it fits: 13 blocks against JOURNAL_DATA_MAX 16)
 and by distinguishing -2 "none written" from -3 "tag failed". A present-but-unauthentic table now
@@ -1302,12 +1302,12 @@ as recovery.
 **THREE TESTS WERE WRONG BEFORE THE CODE WAS**, and the pattern is one thing said three ways.
 
 The keyslot selftest reported a clean build while the compiler had reused a stale object file and
-never seen the new code. Both its arms then failed with rc=2 and NO marker -- and that shape,
+never seen the new code. Both its arms then failed with rc=2 and NO marker, and that shape,
 which the gate-evidence work earlier in the week put there, is what said "never ran" rather than
 "disagreed" and pointed at the build instead of the logic.
 
 The pepper control arm passed when it should have reddened. The selftest was hooked in main.c
-before scheduler_init, which is where users_init is called from -- so at test time kernel_pepper
+before scheduler_init, which is where users_init is called from, so at test time kernel_pepper
 had never been randomised and was all zeros in both boots. USERS_PEPPER_PER_BOOT swapped in a
 pepper that was, at that moment, also zeros. The base arm was unaffected and genuinely green, so
 with only a base arm this would have shipped as a witness that proved nothing about the pepper.
@@ -1315,7 +1315,7 @@ A control arm found its own test's defect by refusing to go red.
 
 The format-refusal pair could not fail at all. The base required the refusal message on the
 serial console; the boot reaches `horus login:` and stops, so nothing ever called storage_unlock
-and nothing refused. The CONTROL arm passed anyway -- it required that message to be ABSENT, and
+and nothing refused. The CONTROL arm passed anyway: it required that message to be ABSENT, and
 it is absent in both arms when neither attempts a login. A pair in which neither arm exercises
 the path, one of them green. Rewritten so both arms drive the unlock directly and each asserts
 which branch was taken, positively: REFUSED against FORMATTED.
@@ -1323,15 +1323,15 @@ which branch was taken, positively: REFUSED against FORMATTED.
 **The lesson those three share is worth stating on its own: a gate that asserts a marker is
 ABSENT is satisfied by a run that never reached the code.** That is the same defect as the
 vacuous PASS found in smoke-exec-reenter this week, and as the stale-object build, and it has now
-cost three separate arms in one day. The remedy is always the same -- assert something positive
+cost three separate arms in one day. The remedy is always the same, assert something positive
 that only the intended path can produce.
 
 **And a login is no longer consent to format a disk.** Meeting an unformatted ATA volume at the
 login prompt ran storage_format_sealed on the strength of whatever had been typed: a mistyped
 password on a machine whose disk the kernel did not recognise destroyed it, made it key slot 0,
 and said nothing. Recognising a volume is not the same as owning it, and failing to recognise one
-is not grounds for destroying it. The ephemeral vdisk never reaches that path -- it is formatted
-inside storage_init with a per-boot throwaway key -- so a diskless boot still comes up unattended,
+is not grounds for destroying it. The ephemeral vdisk never reaches that path, it is formatted
+inside storage_init with a per-boot throwaway key, so a diskless boot still comes up unattended,
 which is the exemption that makes the refusal safe to ship.
 
 ---
@@ -1353,8 +1353,8 @@ have added to it for no gain.
 
 **The uid is sealed inside the slot, not stored beside it.** A slot that opens therefore says WHO
 opened it, and a stolen disk shows how many slots are active and nothing about whose they are.
-That is what turns 2.6's ordering problem — hashes live in the encrypted store, so login must
-become unlock-then-identify — from a workaround into a property: the slot supplies the identity.
+That is what turns 2.6's ordering problem (hashes live in the encrypted store, so login must
+become unlock-then-identify) from a workaround into a property: the slot supplies the identity.
 
 Two consequences are forced rather than chosen, and both are written down where someone will meet
 them. Revocation is by slot INDEX, because locating a user's slot by uid would require that
@@ -1368,7 +1368,7 @@ means always deriving all eight to hide an index from an observer who, in the lo
 person supplying the password.
 
 **The witness is two boots on one disk, and boot 1 does more than set up.** It requires the newly
-added password to open the volume *in the boot that added it* — without that check, a boot-2
+added password to open the volume *in the boot that added it*, without that check, a boot-2
 failure cannot be told from "never worked", and the test would report the wrong defect. Boot 2
 requires both passwords to survive, revokes one, and requires the revoked one refused and the
 other untouched.
@@ -1382,7 +1382,7 @@ that defect and witnesses nothing. The marker is therefore the password itself:
 **Two false greens on the way, both mine, both from trusting an exit code.** The first build check
 after adding the selftest reported OK while reusing a stale `selftest.o`; the code did not compile
 at all, because this kernel has no `kprintf`. A clean rebuild is what the check should have been.
-Then the first run of both arms failed with `rc=2` and NO marker — and that shape is what said
+Then the first run of both arms failed with `rc=2` and NO marker, and that shape is what said
 "this never ran" rather than "this disagreed", pointing at the build instead of at the keyslot
 logic. The gate-evidence work earlier in the week is why the summary recorded the marker
 separately from the exit code at all.
@@ -1407,8 +1407,8 @@ harmless: three were inside comments quoting removed code, three were self-tests
 cspace-less task resolves nothing at all, three sat inside control-arm `#ifdef`s
 (`SPAWN_SLOT3_DECOY_GATE`, `GETLINE_SLOT3_FALLBACK`, `RAMFS_SLOT3_GATE`) that never ship, and the
 rest were `cap_revalidate`, whose snapshot already fixes identity, and the grant path, where any
-type may legitimately be delegated. The three that looked most alarming — live-looking lookups on
-cspace slot 3, the [C-1] decoy every task holds — were all control arms. **No hole was open.**
+type may legitimately be delegated. The three that looked most alarming (live-looking lookups on
+cspace slot 3, the [C-1] decoy every task holds) were all control arms. **No hole was open.**
 
 So this change fixes nothing and hardens the same property by construction instead. The type is
 now an argument, a mismatch is refused inside the resolver, and forgetting is no longer possible.
@@ -1417,8 +1417,8 @@ finding.
 
 Two things came out of it that were not the point.
 
-The dispatch table carried its own copy of the rule — `d->ctype != SC_ANYTYPE && c->type !=
-d->ctype`, immediately after the lookup — and it is now passed INTO the lookup instead. Two
+The dispatch table carried its own copy of the rule (`d->ctype != SC_ANYTYPE && c->type !=
+d->ctype`, immediately after the lookup) and it is now passed INTO the lookup instead. Two
 expressions of one rule are two things to drift, and this repository has spent the week finding
 exactly that shape.
 
@@ -1432,7 +1432,7 @@ same commit; the Rust half of it is still genuinely open.
 checks passed before this change and pass after it, so a green captest says nothing on its own.
 What the control arm shows is that the enforcement MOVED: with `CAP_LOOKUP_TYPE_UNCHECKED=1` the
 resolver stops testing, the dispatch table no longer has its own copy to fall back on, and
-captest reports `FAIL notification-cap-authorised-endpoint-recv` — a `CAP_NOTIFICATION`
+captest reports `FAIL notification-cap-authorised-endpoint-recv`, a `CAP_NOTIFICATION`
 authorising an endpoint receive, type confusion named on the wire. Base green, arm red, measured
 2026-08-31. An arm that reproduced a hole would be claiming something untrue; this one claims
 only that the rule now lives in one place, by deleting that place.
@@ -1449,8 +1449,8 @@ actually said.
 
 `gitleaks` ended in `|| true`: honest, visible, and obviously a hole. `cargo-audit` ended in
 `|| echo "cargo-audit not installed or no advisories found"`, which is worse. The message names
-two conditions that need **opposite** responses — one is "nothing to do", the other is "your scan
-did not happen" — and it printed the reassuring one in both cases while exiting 0. A real advisory
+two conditions that need **opposite** responses (one is "nothing to do", the other is "your scan
+did not happen") and it printed the reassuring one in both cases while exiting 0. A real advisory
 against a dependency would have scrolled past as good news. That is the same defect as the gates
 fixed earlier this week: a check whose failure and whose absence are indistinguishable in its
 output.
@@ -1462,13 +1462,13 @@ falsification arm impossible to write, since you cannot make a file on `PATH` no
 
 Three things surfaced only by running the targets rather than parsing them.
 
-**The recipe comments broke the shell.** `: "... ends in `|| echo ...`"` — the backticks inside a
+**The recipe comments broke the shell.** `: "... ends in `|| echo ...`"`, the backticks inside a
 `:` no-op became command substitution and the target died with "EOF in backquote substitution".
 `make -n` printed it happily and the YAML parsed; only an actual run failed. Recipe comments in
 this file must not contain backticks.
 
 **The Makefile aborts at parse time without a toolchain.** The arm for "cargo-audit is missing"
-first emptied `PATH`, which tripped `cargo not found. Install Rust` — a different failure that
+first emptied `PATH`, which tripped `cargo not found. Install Rust`, a different failure that
 would have let the arm pass for the wrong reason. Stubbing `cargo` to answer everything except
 `audit` tripped the *next* guard, on the bare-metal rust target. The arm now stubs `cargo` as a
 pass-through to the real one, failing only on `audit`, which also makes it deterministic whether
@@ -1479,7 +1479,7 @@ Writing a detectable credential into `tools/test_security_gates.sh` would have m
 `make gitleaks` fail on the test's own source, permanently, with no way to remove it short of
 rewriting history. The planted value is assembled from fragments at runtime that do not match the
 pattern individually. Verified the only way that means anything: `make gitleaks` against the real
-tree with the harness committed — 891 commits scanned, no leaks found.
+tree with the harness committed: 891 commits scanned, no leaks found.
 
 `--redact` was added in the same change and is not cosmetic. The gate previously never failed, so
 its output was never anyone's problem; now that it runs and fails on a public repository, an
@@ -1508,26 +1508,26 @@ there.
 
 **The sample was conditioned on the outcome.** A green run of this arm is by definition a run
 with at least one hit. Sampling only green runs therefore excludes every 0-hit run by
-construction -- the exact event being investigated could not appear in the evidence gathered
+construction: the exact event being investigated could not appear in the evidence gathered
 about it. The agreement with 25% was not confirmation; both figures were drawn the same biased
 way.
 
 Including the red run and every run since gives **43 hits in 200 boots across ten runs, 21.5%**.
-At 21.5% a clean sweep of 20 is `(1-0.215)^20` = 0.79%, about one PR in 127 -- not the 0.2% (one
+At 21.5% a clean sweep of 20 is `(1-0.215)^20` = 0.79%, about one PR in 127, not the 0.2% (one
 in 500) that the biased figure implied. On a required gate that is a spurious red roughly every
 four months of steady work, which is not acceptable and is not what "correctly provisioned"
 means.
 
 A second claim made along the way was also too strong. The observations
 (6, 5, 4, 6, 3, 8, 0, 2, 5, 4) have sample variance 5.12 against a binomial 3.38, a ratio of
-1.52, and this was described as the data not supporting a fixed p -- runner-dependent rates, the
+1.52, and this was described as the data not supporting a fixed p, runner-dependent rates, the
 `smoke-kstack-park` story again. The dispersion test says otherwise: chi-square 13.66 on 9
 degrees of freedom is p = 0.14, nowhere near significant. Ten runs cannot resolve a 1.5x variance
 ratio. The honest statement is that the pooled rate is 21.5% and the spread is consistent with
 chance.
 
 The repair keeps the measurement and fixes the bound. The first `EXEC_REENTER_RUNS` boots always
-run, so the hit count stays comparable across CI runs -- that comparability is the only reason
+run, so the hit count stays comparable across CI runs, that comparability is the only reason
 this gate was diagnosable at all, and an early-exit loop would have destroyed it. Only when that
 sweep finds nothing do up to `EXEC_REENTER_EXTRA` (15) further boots follow, stopping at the
 first hit, so the common case costs nothing and the false-red rate falls to 0.03%. It is not a
@@ -1547,7 +1547,7 @@ tell a dead boot from a real miss, what about the *base* gates beside it? Sweepi
 rather than waiting for a failure found something worse than the original.
 
 `smoke-exec-reenter` and `smoke-cr3-reclaim` assert that a marker is **absent**. Both capture each
-boot's exit status into `rc` and deliberately do not assert it — for a reason that is documented,
+boot's exit status into `rc` and deliberately do not assert it, for a reason that is documented,
 was correct when written and is still correct: the workload stalls ~7% of boots on causes outside
 the property, and gating on completion would make each gate a detector for that instead. But an
 absence assertion over boots that never happened is vacuous, and nothing else stood in the way.
@@ -1563,8 +1563,8 @@ is strictly worse than what #259 fixed: that was a spurious red, which is noisy 
 announcing. This is a silent green, and a silent green on a required gate is indistinguishable
 from working.
 
-The repair is not to assert completion — that would discard the tolerance the marker-only
-assertion exists for — but to count the boots that reached the path and refuse to conclude below a
+The repair is not to assert completion, that would discard the tolerance the marker-only
+assertion exists for, but to count the boots that reached the path and refuse to conclude below a
 floor (10 of 20). The tolerance survives; the vacuum does not. Falsified in both directions:
 starved, red with "the gate never ran the experiment"; unstarved, PASS over 20 live boots.
 
@@ -1575,7 +1575,7 @@ connected.
 **What this cost to find, and why the checker is declarative.** The sweep flagged six targets and
 **four were false positives**: `smoke-session-smp-soak`, `smoke-kstack-park-control`,
 `smoke-claim-release-control` and `smoke-switch-commit-control` all establish liveness correctly,
-in four different ways — a per-run exit status plus a check-count floor, inline good/bad attempt
+in four different ways: a per-run exit status plus a check-count floor, inline good/bad attempt
 counting, and retry-on-inconclusive with the completed-but-clean case explicitly called out as "a
 real miss and is not retried". A checker inferring intent from shell shape would reject all four,
 and a checker that people route around is worse than none. So `tools/check_gate_evidence.py` reads
@@ -1594,14 +1594,14 @@ caught" arms are all satisfied by a checker that rejects everything.
 
 ### Fixed: a control arm that could not tell a dead boot from a safe kernel
 
-`smoke-exec-reenter-control` went red on PR #258 on 2026-08-30 — a PR about `init`
+`smoke-exec-reenter-control` went red on PR #258 on 2026-08-30, a PR about `init`
 provisioning an endpoint, which has no plausible connection to the exec hand-off. Following
 the house rule, the same arm was built on both branches before the diff was read at all. The
 two kernels were byte-identical (`c58b6ecbdc485d4f`), which settled causation in two builds
 rather than forty boots: everything in #258 sits behind `INIT_PROVISION_SELFTEST`, undefined
 in a `PROC_SELFTEST` build.
 
-The first hypothesis was that the arm's rate had drifted — the `smoke-kstack-park` precedent,
+The first hypothesis was that the arm's rate had drifted, the `smoke-kstack-park` precedent,
 where a laptop-measured 25% was really ~75% red on the runner. That was **falsified**. The arm
 prints its hit count on success, so the rate is recoverable from CI's own logs: over the six
 preceding green runs of `main` it hit **32 times in 120 boots (26.7%)**, against the 25%
@@ -1614,12 +1614,12 @@ a defect that was not there. A clean sweep of 20 is `(1-0.267)^20` ≈ 0.2%.
 > sweep of 20 is 0.79%, and the bound *did* need raising. The measurement above is left as taken;
 > the inference drawn from it is withdrawn. See the entry on green-run sampling.
 
-That estimate carries a proviso — *provided every boot actually ran* — and the proviso is the
+That estimate carries a proviso, *provided every boot actually ran*, and the proviso is the
 real finding. The arm scored a boot two ways: the marker appeared, or it did not. A boot that
 died before reaching the exec path was therefore counted as the defect failing to reproduce,
 which is the mistake #193 fixed in `smoke-kstack-park-control` after it reddened an unrelated
 PR. `smoke-exec-reenter-control` and `smoke-cr3-reclaim-control` were written from the same
-template and never got the lesson — the third time in this file that a repair has failed to
+template and never got the lesson, the third time in this file that a repair has failed to
 propagate to the arm beside it.
 
 Worse, both arms ran `rm -f` over the serial log on the failure path. So the red run above and
@@ -1636,8 +1636,8 @@ the new branch, and under the old code it was indistinguishable from the second.
 
 Note what this does not do. It raises no bound, adds no retry, and lowers nothing: a run in
 which every boot dies fails either way. It changes red into red-that-names-the-cause. The
-`CONTROL_FLAG` knobs can only ever turn an arm red — with the defect absent there are no hits
-— so they are not a route to a green.
+`CONTROL_FLAG` knobs can only ever turn an arm red, with the defect absent there are no hits,
+so they are not a route to a green.
 
 Two counts were wrong while this was written: `CHANGES.md` and this file's own header both
 said 117 entries against 116 present. Neither was gated, so nothing compared them. Both are
@@ -2768,7 +2768,7 @@ sentinel.
 
 | Workload, `-smp 4` | Parks per boot | Two CPUs on one park stack |
 |---|---|---|
-| healthy scripted session | **0** (3 boots) |, |
+| healthy scripted session | **0** (3 boots) | n/a |
 | `PROC_SELFTEST`, which kills tasks on purpose | **5–8** | **2–3 per boot, 3 boots of 3** |
 
 Three healthy sessions say the path is never entered, and that reading would have retired the
@@ -4364,7 +4364,7 @@ that each entry uses a fresh (ratcheted) key, and public-chain order-sensitivity
 ### Changed: capability use-after-revoke backstop is now active and precise: serial-keyed
 generations (finding 3.3)
 
-The per-lineage generation counter (the defense-in-depth backstop behind use-after-revoke and
+The per-lineage generation counter (the defence-in-depth backstop behind use-after-revoke and
 the IPC lookup/use TOCTOU revalidate guard) was in practice **dormant**. It was keyed by a
 capability's `object`, and `lineage_check` treated generation 0 as *always valid*. Because every
 capability in the running kernel is created with generation 0 (all primordial roots, every
@@ -4513,7 +4513,7 @@ practice), the null pass *also* nulls every cap sharing the target's `object`. B
 mint/transfer/grant all preserve `object`, that is a complete superset of the descendant set, so
 the fallback can only over-approximate, a descendant can never survive.
 
-While fixing this, the lineage-**generation** mechanism (audit A3) was found to be **dormant**: no code path assigns a capability a non-zero `generation`, and `lineage_check` treats generation 0 as always-valid, so the object-keyed generation bump on revoke is a no-op and its hash collisions cannot invalidate anything today. Structural (descendant-only) revocation is the sole enforcement; the generation table is retained as dormant defense-in-depth and documented for a future per-object-exact rework if ever activated.
+While fixing this, the lineage-**generation** mechanism (audit A3) was found to be **dormant**: no code path assigns a capability a non-zero `generation`, and `lineage_check` treats generation 0 as always-valid, so the object-keyed generation bump on revoke is a no-op and its hash collisions cannot invalidate anything today. Structural (descendant-only) revocation is the sole enforcement; the generation table is retained as dormant defence-in-depth and documented for a future per-object-exact rework if ever activated.
 
 New Rust regression tests (revoke-child-leaves-parent/siblings, independent-same-object-cap-survives, overflow-fallback-is-complete) plus the existing suite pass; verified on hardware by `smoke-captest` / `smoke-proc` / `smoke-aspace` / `smoke-session` / `smoke-fs-conc`. Docs updated (AUDIT-2026-07, ROADMAP Track 1.1/1.3, SECURITY, LIMITATIONS, ARCHITECTURE, README).
 
@@ -4583,7 +4583,7 @@ The highest-risk, ring-3-reachable driver (the VGA/serial console, which parses 
 handles password entry) has been moved out of the kernel's flat trust domain into a ring-3
 server, `console_server`. A bug in it is now an ordinary ring-3 fault rather than a kernel-wide
 compromise. It landed as a design proposal (`docs/design/console-server.md`) followed by a
-commit-per-job program, each behavior-verified with a gated smoke test.
+commit-per-job program, each behaviour-verified with a gated smoke test.
 
 - **Three new device-delegation mechanisms** let a ring-3 driver own device hardware, all gated on a new `CAP_IO_DEVICE` capability that only the console server holds:
   - `SYS_MAP_PHYS` maps an **allowlisted** physical device frame (the VGA framebuffer / graphics plane) into a task's own address space (present, user, non-executable) over the existing page-table plumbing (`make smoke-mapphys`).
@@ -4649,7 +4649,7 @@ pass)
 ### Added: a real directory/coreutils surface on the userspace shell and libc (this pass)
 
 - **Directory enumeration end-to-end.** The `fs_server`'s `FS_OP_READDIR` op existed but nothing above it did: newlib shipped no `<dirent.h>` backend (its own is a `#error` stub) and the shell could not stat entries. `opendir`/`readdir`/`closedir` are now provided in `newlib_glue.c` over new `posix_diropen`/`posix_readdir` (`posix.c`) with a project `include/dirent.h` that shadows newlib's stub, and the shell's `ls` gained a real `-l` long format (mode string, owning uid, size per entry).
-- **A working directory.** `posix.c` gained cwd state; `path_walk`/`path_parent` now resolve relative paths against it, with `getcwd`/`chdir`/`mkdir` wired through newlib and `cd`/`pwd` builtins (plus cwd-relative `ls`/`cat`/`touch`/`mkdir`/`rm`) in the shell. `..`/`.` are folded by pure string normalization, so it never depends on on-disk `.`/`..` entries the store does not keep.
+- **A working directory.** `posix.c` gained cwd state; `path_walk`/`path_parent` now resolve relative paths against it, with `getcwd`/`chdir`/`mkdir` wired through newlib and `cd`/`pwd` builtins (plus cwd-relative `ls`/`cat`/`touch`/`mkdir`/`rm`) in the shell. `..`/`.` are folded by pure string normalisation, so it never depends on on-disk `.`/`..` entries the store does not keep.
 - **A coreutils command pack** built on the above (`cp`, `mv` (over `FS_OP_RENAME`), `wc`, `stat`) all riding existing syscalls, no new kernel surface. Gated: `make smoke-newlib` exercises `opendir`/`readdir` and `mkdir`/`chdir`/`getcwd` + relative resolution end-to-end, and `make smoke-session` drives `cd`/`pwd`/`ls -l`/`cp`/`mv`/`wc`/`stat` through the real ring-3 shell over serial.
 
 ### Fixed: SMEP and SMAP were never enabled (this pass)

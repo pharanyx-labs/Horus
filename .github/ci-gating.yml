@@ -64,6 +64,10 @@ required:
   # doc check nobody reads, which is the state this job exists to leave.
   - doc-claims
   - kernel
+  # Gating for the reason doc-claims is: a documentation rule only a reviewer
+  # enforces is one that comes back. Added 2026-09-21; promotion lags the merge,
+  # so --sync-ruleset runs after the PR that introduces it has merged.
+  - prose-style
   - reproducible
   - rust
   - security

@@ -187,7 +187,7 @@ prints a line per park:
 
 | Workload, `-smp 4` | Parks per boot | Two CPUs on one park stack |
 |---|---|---|
-| healthy scripted session | **0** (3 boots) |, |
+| healthy scripted session | **0** (3 boots) | n/a |
 | `PROC_SELFTEST` (kills tasks on purpose) | **5–8** | **2–3 per boot, 3 boots of 3** |
 
 Every park used the same `rsp=0xffffffff80202ff0`. The collision report is exact:

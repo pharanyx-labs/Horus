@@ -12,7 +12,7 @@ design, the boot-ordering and panic consequences, and how each step is verified.
 document and the code disagree, the code is the source of truth, open an issue.
 
 **Implementation status.** The program landed as the commit-per-job plan in §9,
-each job behavior-verified with a gated smoke test:
+each job behaviour-verified with a gated smoke test:
 
 | Job | What landed | Gate |
 |-----|-------------|------|
@@ -27,7 +27,7 @@ each job behavior-verified with a gated smoke test:
 
 J4b closed the one item this document had left deliberately unbuilt, and it closed it without
 the notification bridge J4 built. `console_server` polls ports `0x60`/`0x64` inside the same
-`con_getc` loop that polls COM1, under the port grant it already held -- the platform device
+`con_getc` loop that polls COM1, under the port grant it already held, the platform device
 declares those ports beside COM1 and the VGA register file, so no new capability was
 delegated. `SYS_IRQ_REGISTER` would have required a `CAP_NOTIFICATION` `init` does not grant
 and that the server would never wait on, so it was rejected as a delegation existing only for
@@ -37,7 +37,7 @@ controller (**S89**). The bridge J4 built is still the right answer when a drive
 sleep rather than poll, and `userspace/irqtest.c` still proves it works end to end.
 
 The remaining deliberate item is the in-kernel console, retained as a robustness fallback and
-for coreutils output, boot, and panic -- see the notes inline. It is also the reader that
+for coreutils output, boot, and panic: see the notes inline. It is also the reader that
 serves the keyboard before the handover, which is why its scancode table is now shared with
 `console_server` (`include/ps2_scancode.h`) rather than duplicated.
 
@@ -182,7 +182,7 @@ kernel-shell operations (`ps` full view, `kill`, `dmesg`, poweroff, `rotate_keys
 `src/kernel/kshell.c`), not hardware. It is not reused here.
 
 Add a **hardware device capability** (e.g. `CAP_IO_DEVICE`) carrying which of {port-range,
-mmio-frame, irq-line} it authorizes, following the cap-type enum in `src/include/kernel.h` and
+mmio-frame, irq-line} it authorises, following the cap-type enum in `src/include/kernel.h` and
 the root-cnode template in `src/kernel/capability.c`. The three new syscalls (§3) are gated on
 it in the `src/kernel/syscall.c` dispatch table exactly as `CAP_BLOCK_DEV` gates the
 object-store syscalls today. Only `console_server` is ever endowed with it: by `init`, via
@@ -194,13 +194,13 @@ port, or claim an IRQ.
 
 ## 5. `console_server` (ring-3 process)
 
-Modeled directly on `fs_server` (`userspace/fs_server.c`).
+Modelled directly on `fs_server` (`userspace/fs_server.c`).
 
 - **Protocol** `include/console_proto.h`, mirroring `include/fs_proto.h`: a magic,
   a request/response pair ≤256 B, `CON_OP_*` operations (`WRITE`, `GETLINE`,
   `READ`, `GETPASS`, and likely `CLEAR` / `SETCOLOR`), and well-known endpoint
   indices.
-- **`_start` loop**, copied in shape from `fs_server.c`: initialize hardware (map
+- **`_start` loop**, copied in shape from `fs_server.c`: initialise hardware (map
   `0xB8000`, program the VGA mode, `serial_init`, `keyboard_init`, all now native
   in ring 3), `sys_notify` a readiness badge to `init`, then a select-style loop
   that services **both** the request endpoint (`sys_ipc_recv` + `sys_ipc_sender` +
@@ -209,9 +209,9 @@ Modeled directly on `fs_server` (`userspace/fs_server.c`).
   read blocks the *requesting client's* IPC call, while the server blocks on the
   notification for input; the scheduler runs everyone else. This is precisely what
   dissolves the unpreemptible-spin problem.
-- **Logic moved out of the kernel**, behavior-preserving (the ELF-loader-to-Rust
+- **Logic moved out of the kernel**, behaviour-preserving (the ELF-loader-to-Rust
   discipline, move first, improve later):
-  - Output: `print_char`, ANSI/SGR coloring, cursor, scroll,
+  - Output: `print_char`, ANSI/SGR colouring, cursor, scroll,
     `vga_initialize_text_mode_80x50`, `load_8x8_font` (from `src/kernel/terminal.c`).
   - Input, `ps2_translate` (`src/kernel/idt.c`), line editing / echo / backspace
     (from `h_get_line`), password masking (from `h_get_pass`).
@@ -222,11 +222,11 @@ Modeled directly on `fs_server` (`userspace/fs_server.c`).
 
 `SYS_WRITE`, `SYS_GET_LINE`, `SYS_READ`, `SYS_GET_PASS` (`src/kernel/syscall.c`) become thin IPC
 shims to `console_server`, or clients connect and call it directly. Add
-`SYS_CONNECT_CONSOLE_SERVER`, modeled on `h_connect_fs_server` (`src/kernel/syscall_fs.c`), so
+`SYS_CONNECT_CONSOLE_SERVER`, modelled on `h_connect_fs_server` (`src/kernel/syscall_fs.c`), so
 any task can obtain an endpoint cap; the server is a reference monitor. The console is a shared
 resource, so kernel-attested identity matters mostly for **reply routing** (`SYS_IPC_REPLY_TO`
 delivers each reply into the requesting client's blocked call, never a shared mailbox) rather
-than for authorization, but the attested-identity discipline is kept.
+than for authorisation, but the attested-identity discipline is kept.
 
 The ring-3 shell (`userspace/shell.c`) needs **no logic change**: its `println` /
 `sys_get_line` / `sys_get_pass` calls traverse IPC transparently.
@@ -263,17 +263,17 @@ unaffected, and the `SMP=1` matrix (`altconfigs` CI) stays green.
 
 ## 9. Implementation plan (commit-per-job)
 
-Each job is one focused, behavior-verified change with a smoke gate where
+Each job is one focused, behaviour-verified change with a smoke gate where
 applicable, on the same cadence as the ELF-loader jobs. J2–J4 are independent
-enabling mechanisms; J5 is the single cutover; J6 realizes and proves the win.
+enabling mechanisms; J5 is the single cutover; J6 realises and proves the win.
 
 | Job | Change | Gate |
 |-----|--------|------|
-| **J1** | This RFC (docs only). |, |
+| **J1** | This RFC (docs only). | n/a |
 | **J2** | `SYS_MAP_PHYS` + `CAP_IO_DEVICE` (mmio-frame) + allowlist, over `user_map_page`. | new `smoke-*`: a probe maps `0xB8000`, writes a cell, asserts it. |
 | **J3** | TSS I/O-bitmap: grow TSS, `iomap_base`, per-task swap in `set_tss_kernel_stack`, cap-gated grant. | new `smoke-*`: probe `outb`/`inb` on an allowed port (ok) and a denied port (`#GP`→signal); falsification: neuter the grant → allowed access faults. |
 | **J4** | `SYS_IRQ_REGISTER` + vector-33 → `sys_notify`; serial re-poll wake. | new `smoke-*`: probe registers, keys scripted via `tools/session_test.py`, receives notifications, reads scancodes natively. |
-| **J4b** | Ring-3 keyboard: poll `0x60`/`0x64` in `con_getc`; vector 33 leaves the byte once `console_hw_owned()`. No new capability -- the ports were already in the platform device's declaration. | `smoke-keyboard`: a whole login typed on QEMU's emulated 8042 over QMP `send-key`, against `smoke-keyboard-control` (`CONSOLE_NO_KBD=1`), which must not be able to answer the prompt. |
+| **J4b** | Ring-3 keyboard: poll `0x60`/`0x64` in `con_getc`; vector 33 leaves the byte once `console_hw_owned()`. No new capability: the ports were already in the platform device's declaration. | `smoke-keyboard`: a whole login typed on QEMU's emulated 8042 over QMP `send-key`, against `smoke-keyboard-control` (`CONSOLE_NO_KBD=1`), which must not be able to answer the prompt. |
 | **J5** | `console_proto.h` + `console_server` + `init` reorder + client syscalls→IPC shims; keep panic serial writer. | existing `smoke-session`, `smoke-modules`, `smoke-coreutils-shell` pass unchanged, now over the ring-3 console. |
 | **J6** | Remove dead in-kernel console (leave panic serial); prove isolation; update `ROADMAP.md` + `LIMITATIONS.md`. | new negative `smoke-*`: a fault inside the driver kills only `console_server`, kernel + capability system + audit log survive. |
 
@@ -287,7 +287,7 @@ enabling mechanisms; J5 is the single cutover; J6 realizes and proves the win.
 - **End-to-end (J5):** the existing black-box session tests (`make smoke-session`,
   `smoke-modules`, `smoke-coreutils-shell`, `tools/session_test.py`) must pass
   unchanged (login, `whoami`, coreutils, man pages) now served by the ring-3
-  console. This is the behavior-preserving proof.
+  console. This is the behaviour-preserving proof.
 - **Isolation (J6):** a scripted scenario provokes a fault inside the console driver
   and asserts the kernel survives, serial still responds, the capability system
   and audit log are intact. This is the actual privilege-separation guarantee, made
@@ -308,7 +308,7 @@ enabling mechanisms; J5 is the single cutover; J6 realizes and proves the win.
   line never transits a shared or pollable buffer; the identity-routed
   `SYS_IPC_REPLY_TO` reply delivers it only to the caller.
 - **Deliberate residual:** the in-kernel panic serial writer means the console is
-  not *entirely* out of the kernel. Stated here as a limitation, not theater, an
+  not *entirely* out of the kernel. Stated here as a limitation, not theatre, an
   unused-looking control is worse than an honestly-scoped one (the lesson recorded
   in the Phase 6 "don't wire up empty validators" non-goal).
 
@@ -321,5 +321,5 @@ enabling mechanisms; J5 is the single cutover; J6 realizes and proves the win.
   the same likelihood-reduction the ELF loader got, now on top of the
   consequence-reduction this RFC delivers.
 - Per-CPU I/O-bitmap migration (drop the BSP pin).
-- Generalizing the three mechanisms into a reusable device-driver framework if a
+- Generalising the three mechanisms into a reusable device-driver framework if a
   second driver (block, network) follows the console out of the kernel.

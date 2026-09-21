@@ -771,7 +771,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             struct in your address space to modify and no name to guess.
           </p>
           <p>
-            Six fields, and a C assignment writes them one at a time — which is why every write
+            Six fields, and a C assignment writes them one at a time, which is why every write
             to a slot is made under one lock. Revocation reads <em>every</em> task's capability
             space and decides from what it finds which capabilities a revoke reaches and which
             kernel objects nothing names any more; an unlocked writer can show that sweep a slot
@@ -780,17 +780,17 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             days after the same defect had been diagnosed and fixed at a sixth site. Which
             functions write a capability slot, and what makes each write safe, is now
             <em>declared</em> in a manifest a CI job checks. One site does not take the lock and
-            is exempt by a written argument instead &mdash; and the guards that argument leans on,
+            is exempt by a written argument instead, and the guards that argument leans on,
             which live in other files, are pinned in the manifest so the exemption cannot quietly
             expire when one of them is edited.
           </p>
           <p>
-            A capability naming the right object is only half of it &mdash; the object has to be the
+            A capability naming the right object is only half of it: the object has to be the
             one the design says it is. Every task here is born holding exactly one endpoint
             capability, to a reply endpoint that is supposed to be private to it. On 2026-09-12 that
             turned out to hold for task ids below 64 and not above them: the table was sized 128
             while the region it was meant to contain ran to 320, and the index space's own dividing
-            line sat at the table's end &mdash; so a high-numbered task's &ldquo;private&rdquo;
+            line sat at the table's end, so a high-numbered task's &ldquo;private&rdquo;
             endpoint resolved to one carved out of another task's memory. The table's size is now
             derived from the task ceiling rather than written next to it, and three separate guards
             fail the build, refuse the index, or reduce the task count if that ever stops being
@@ -1217,7 +1217,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
             <p>
               Those nonces used to live in a complete in-RAM mirror of the volume, under a flat
-              MAC recomputed over every one of them on each write &mdash; which is also why the
+              MAC recomputed over every one of them on each write, which is also why the
               volume could not grow, since both scale with the disk. They live in a bounded cache
               now, under a Merkle tree: a write touches four hashes instead of a megabyte, and
               mounting checks one node instead of reading the whole region.
@@ -1227,7 +1227,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               against a lost metadata write, because it holds every entry and can regenerate the
               one that was lost; a bounded cache cannot, so the write-ahead log is now the only
               thing keeping a block's nonce and its ciphertext in the same atomic unit. And the
-              tree catches <em>partial</em> rollback &mdash; a subtree rewound while the rest of
+              tree catches <em>partial</em> rollback, a subtree rewound while the rest of
               the volume moves on. On its own it could not catch the whole volume being replaced
               with a consistent earlier snapshot, because its root lives in the superblock it
               protects: rewind both together and every check inside the disk still passes. Nothing
@@ -1238,8 +1238,8 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               So the anchor is somewhere the attacker holding the disk isn't: a TPM counter that
               only goes up. The volume records the value it was last written at, bound into the
               tree's root so it can't be edited, and a volume behind the counter is refused. The
-              test restores an entire earlier disk image between boots &mdash; the actual attack,
-              not a model of it &mdash; and requires the refusal. It applies to volumes formatted
+              test restores an entire earlier disk image between boots, the actual attack,
+              not a model of it, and requires the refusal. It applies to volumes formatted
               on a machine that has a TPM, at a granularity of one boot; the volume records which
               kind it is rather than leaving you to guess.
             </p>
@@ -1254,7 +1254,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <h3>Erasing a disk is its own authority</h3>
             <p>
               The kernel refuses to format a volume it does not recognise just because someone
-              typed a password at the login prompt &mdash; a mistyped password on a machine
+              typed a password at the login prompt, a mistyped password on a machine
               whose disk it did not know used to destroy that disk, silently. Formatting became
               a deliberate act instead, and for a while that act had <em>no caller at all</em>:
               a refusal that is absolute because nothing can reach it is a weaker claim than one
@@ -1270,15 +1270,15 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               bit inside &ldquo;all rights&rdquo; fails open.
             </p>
             <p>
-              The same capability answers the survey &mdash; what disk is here, how big, does it
-              already carry a volume &mdash; because that readout is the first screen of the same
+              The same capability answers the survey (what disk is here, how big, does it
+              already carry a volume) because that readout is the first screen of the same
               act. A task that cannot destroy the volume is not told what is on it.
             </p>
             <p>
               Since September 2026 that survey can count past one. The driver probes both devices
               on the bus, each is a block device carrying its own identity rather than writing
               through a global &ldquo;current disk&rdquo;, and the kernel mounts the first device
-              that actually <em>carries</em> a volume rather than simply the first device &mdash;
+              that actually <em>carries</em> a volume rather than simply the first device,
               with one disk those are the same sentence, and with two they are not. Asking about a
               device that is not there is refused rather than answered about a different one. That
               last part is not politeness: a clamped index faults nothing and overruns nothing, it
@@ -1299,21 +1299,21 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               equal to it. The driver selected a drive and then waited for whichever drive was
               selected <em>before</em>. Thirty-one places reached the disk through a global
               &ldquo;current&rdquo; pointer while the format wrote through the device it had been
-              handed. Neither produced an error &mdash; the first simply stopped the machine
+              handed. Neither produced an error: the first simply stopped the machine
               doing disk I/O at all. Both were found by the first test that ever wrote to the
               second disk, which is the argument for having the test.
             </p>
             <p>
               The caller is an installer, and it is the only task that gets a copy. It cannot read
               the volume it replaces, and it cannot create a task, so nothing it does outlives it.
-              Before it erases anything you type the word <code>FORMAT</code> &mdash; not a
+              Before it erases anything you type the word <code>FORMAT</code>, not a
               menu choice, because a menu whose default is Cancel still becomes a format with two
               keystrokes, and somebody holding return through a wizard has not decided anything.
             </p>
             <p>
               <strong>Install media may replace a volume that is already there</strong>, and what
               makes that safe is a distinction rather than a relaxed gate. A volume the machine
-              merely <em>recognises</em> is mounted but locked &mdash; which is the state install
+              merely <em>recognises</em> is mounted but locked, which is the state install
               media is always in, because it never logs in. A volume that has been
               <em>unlocked</em> means somebody proved they own the machine and is using it, and
               the kernel refuses to reformat that one whatever the installer asks. Replacing is
@@ -1326,7 +1326,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               then answered five more screens about passwords and account names, and by the time the
               disk was erased the consent was about a machine state you could no longer see. Now the
               installer shows what is at stake, collects every answer, shows them back on a review
-              screen you can correct any of, and only then asks for the word &mdash; with nothing
+              screen you can correct any of, and only then asks for the word, with nothing
               between it and the format.
             </p>
             <p>
@@ -1334,7 +1334,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               in with the password that was typed. That last step is the whole claim: a format
               that returns success is not an install, and an installer that sealed the volume but
               left the root account on its built-in password would produce a perfectly installed
-              disk nobody can log into &mdash; which the first boot cannot detect, because
+              disk nobody can log into, which the first boot cannot detect, because
               everything it can see succeeded.
             </p>
             <p>
@@ -1343,7 +1343,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               where an installed machine actually lives: the base system is copied into the store
               when the volume unlocks, so an install nobody logs into leaves the copy unfinished,
               and finishing it is the next boot's job. It was not being done. A sealed volume is
-              mounted and locked, and the object store answered anyway &mdash; the encryption
+              mounted and locked, and the object store answered anyway, the encryption
               layer refused, because it needs the key, but the inode table is plaintext on disk
               and nothing there refused at all. The filesystem server asks the store whether it
               is usable, was told yes by a volume nobody had opened, copied into a locked disk
@@ -1354,12 +1354,12 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <p>
               It asks for two passwords, not one. A machine whose only login is root is a machine
               every session is administered from, so the install creates an everyday account
-              alongside it &mdash; and <em>either</em> password opens the disk at boot. That last
+              alongside it, and <em>either</em> password opens the disk at boot. That last
               part was the missing piece rather than a convenience: the volume is sealed to key
               slots, and the kernel unlocks it with the typed password <em>before</em> it can read
               the account table, so an account without a slot of its own opens nothing and is not
               found. It worked perfectly on a machine somebody else had already unlocked, which is
-              why nobody noticed &mdash; every test and every operator logs in as root first. The
+              why nobody noticed, every test and every operator logs in as root first. The
               test now logs in as the unprivileged account, on a machine nobody has opened.
             </p>
             <p>
@@ -1371,7 +1371,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <p>
               A third checks who a password command actually writes. Creating an account and
               giving it a password is the ordinary next thing an operator does, and the shell was
-              matching the account argument and then discarding it &mdash; so
+              matching the account argument and then discarding it, so
               <code>passwd 1001</code> reported success and changed the administrator's own
               password instead. Not a cosmetic mis-print: changing your own password re-seals the
               volume to it, so the string typed for somebody else became the disk's, and the only
@@ -1386,13 +1386,13 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               scenario that only ever attached IDE said nothing about the hardware the driver
               exists for. Driving the whole install onto a card found two defects the driver's own
               tests could not. The register file is memory-mapped, and the probe maps it into the
-              <em>kernel's</em> address space &mdash; but a syscall reaches the driver on the
+              <em>kernel's</em> address space, but a syscall reaches the driver on the
               calling program's, where it was not mapped at all, so the format wrote to a page
               that was not there and the installer was killed. The second is quieter: the card
               addresses 512-byte sectors and the filesystem addresses 4096-byte blocks, and the
               first version handed one to the other unconverted. Block zero is sector zero either
               way, so the volume header read back, the install reported success and the next boot
-              recognised the disk &mdash; and every other block came from an eighth of the right
+              recognised the disk, and every other block came from an eighth of the right
               place. What failed was the login, seconds later and a layer above the mistake. A
               test that stopped at &ldquo;the volume is there&rdquo; would have passed on it.
             </p>
@@ -1463,7 +1463,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
                 PCR 4, and GRUB refuses a kernel that does not match. A kernel-identity token goes
                 into PCR 8 and each module's digest into PCR 9, over the TIS interface; a host-side
                 script recomputes those independently and CI asserts they match. The volume key is
-                sealed to all three &mdash; PCR 4 being the one the kernel does not extend itself,
+                sealed to all three, PCR 4 being the one the kernel does not extend itself,
                 so the seal is not bound to the kernel's own word about itself.
               </p>
             </div>
@@ -1489,8 +1489,8 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <h3>And a disk that was never sealed cannot satisfy a machine that requires it</h3>
               <p>
                 The reverse of the property above, and the one with the downgrade in it. A
-                volume formatted on a machine with no TPM opens on its password alone, forever
-                &mdash; so presenting a re-formatted drive to a machine that requires measured
+                volume formatted on a machine with no TPM opens on its password alone, forever,
+                so presenting a re-formatted drive to a machine that requires measured
                 boot would make the requirement evaporate, with the TPM present, the PCRs
                 extended and nothing else out of place. A kernel built with
                 <code>MEASURED_BOOT_REQUIRED=1</code> refuses to unlock it. The ephemeral RAM
@@ -1503,7 +1503,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
                 <code>smoke-measured-persist</code>, formats a real disk on a machine with no TPM
                 and presents it to one that has. The opposite direction is
                 <code>smoke-measured-persist-sealed</code>, which requires a volume sealed under
-                the policy to open again on the next boot &mdash; without it, a check that
+                the policy to open again on the next boot, without it, a check that
                 rejected every disk would pass.
               </p>
             </div>
@@ -1546,14 +1546,14 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             An x86-64 Linux host, Debian or Ubuntu; no cross-compiler needed. This is what the
             boot looks like, abridged for width, and with the microsecond timestamps stripped.
-            On a real boot <em>every</em> line above the banner carries one &mdash; including the
+            On a real boot <em>every</em> line above the banner carries one: including the
             lines ring 3 printed, which is the half that used to go unstamped. The console changes
             hands part way down that list, so both writers stamp, in one format, from one epoch.
             The real log is readable afterwards with <code>dmesg</code>.
           </p>
           <p>
             The banner is not a constant. Everything to the right of the eye is asked of the
-            running kernel when it prints &mdash; uptime, the tasks this caller may observe, the
+            running kernel when it prints: uptime, the tasks this caller may observe, the
             shell&rsquo;s own pid and how many capabilities <code>init</code> chose to delegate to
             it, and the watermark of the untyped region every <code>spawn</code> is carved out of.
             Facts the shell holds no capability to ask for are left out rather than guessed at,
@@ -1659,7 +1659,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">SMT siblings parked; microarchitectural flush between distrusting tasks</th><td class="t-note">smoke-smt · smoke-flush</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Ring-3 <code>init</code> (PID 1) supervising the shell</th><td class="t-note">smoke-session</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Ring-3 <code>console_server</code>, single writer, owns UART and framebuffer</th><td class="t-note">smoke-console-smp</td></tr>
-              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">The machine's own PS/2 keyboard, read in ring 3 under the port grant <code>console_server</code> already held &mdash; including on a machine with no serial port, where the console once believed a floating bus and never polled the keyboard at all</th><td class="t-note">smoke-keyboard, smoke-keyboard-noserial</td></tr>
+              <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">The machine's own PS/2 keyboard, read in ring 3 under the port grant <code>console_server</code> already held, including on a machine with no serial port, where the console once believed a floating bus and never polled the keyboard at all</th><td class="t-note">smoke-keyboard, smoke-keyboard-noserial</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Every boot-console line timestamped, by the writer, across the console handover</th><td class="t-note">smoke-console-timestamps</td></tr>
               <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Raw terminal mode, termios and winsize</th><td class="t-note">smoke-term</td></tr>
               <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Shared library text, private library data</strong>, a shared object is loaded once into frames and mapped read+exec by many tasks through capabilities that never carry write, so no task can modify code another executes. Its <em>writable</em> segment is not shared at all: each task gets a private copy, carved from the library&rsquo;s initial image and endowed read+write and never exec. The library&rsquo;s load address is drawn afresh on every boot rather than compiled in, and a task learns it only by presenting a capability over the library&rsquo;s own text, so the address of shared code is not something an attacker reads off the binary, nor something any task can simply ask for. The security argument matters more than the size one, sharing a libc&rsquo;s text is an optimisation, but sharing its data means one task reading and writing another&rsquo;s <code>errno</code>, stdio buffers and malloc arena, which is worse than the per-program static copies it replaces. The shared libc now builds, is gated, and a ring-3 task calls newlib out of it, 36 pages, 34 of shared text and 2 of per-task data, with the library&rsquo;s own reentrancy state resolving inside each task&rsquo;s private copy, and a program now links against it, ordinary C calling <code>printf</code> by name, carrying no libc of its own, 106,392 bytes static against 13,088 shared, and it is not a dynamic linker: there is no symbol resolution, and a program&rsquo;s direct reference to a libc <em>data</em> symbol cannot be redirected without a GOT</th><td class="t-note">smoke-shlib</td></tr>
@@ -1702,19 +1702,19 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         <p class="note">
           Compile-time ceilings still apply to most of the system: 256 capability slots per
           task, a 256-byte message, a 16 GiB volume. The <em>volume</em> is no longer among them
-          either &mdash; that number is a ceiling, and the actual size is read from the disk at
+          either, that number is a ceiling, and the actual size is read from the disk at
           boot. The number of <em>tasks</em> is no longer
-          among them &mdash; it is worked out at boot from the memory the machine actually has.
+          among them: it is worked out at boot from the memory the machine actually has.
           <br><br>
           Getting there is a small lesson in taking a codebase's own account of itself on trust.
           The ceiling was 64, and every document here blamed the table of task records: 72 KiB.
-          Beside it sat the per-task kernel stacks, a 4 MiB static array &mdash; fifty-six times
+          Beside it sat the per-task kernel stacks, a 4 MiB static array, fifty-six times
           larger, and the actual constraint. Moving those lifted the ceiling fourfold and made the
           image <em>smaller</em>. Then the table itself moved, into the same memory every other
           kernel object is allocated from, so creating a task costs something a program has to
           hold permission for. And the thing that would genuinely have capped the count next was
           neither: a scratch buffer in the revocation code, sized by the task count and placed on
-          a 32 KiB kernel stack &mdash; a fifth of it at 256 tasks, and past the end of it at 2048.
+          a 32 KiB kernel stack, a fifth of it at 256 tasks, and past the end of it at 2048.
           Nobody had measured it. Three obstacles, and the first two guesses were both wrong.
         </p>
       </div>
@@ -1882,19 +1882,19 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
             <p>
               <strong>The same shape had a second home, and it took until 2026-08-30 to find and
-              close.</strong> The five calls that create a task &mdash; spawn, fork, and their
-              variants &mdash; checked the same slot 3, so every task in the system could create
+              close.</strong> The five calls that create a task, spawn, fork, and their
+              variants, checked the same slot 3, so every task in the system could create
               tasks and the check could not fail. It gave away nothing, because a spawned child
               is only ever endowed from what its parent holds; what it gave away was the
               <em>description</em>, and two comments in the source disagreed with each other about
               a restriction neither of them enforced. The fix was not a better check but a real
               cost: a task's capability table is kernel memory, and creating one is now paid for
               out of the memory budget the parent holds a capability to. A task given no such
-              budget cannot create tasks &mdash; which is what that check had always claimed to
+              budget cannot create tasks, which is what that check had always claimed to
               mean.
             </p>
             <p>
-              <strong>And a third home, closed 2026-09-03 &mdash; the part that changed how this
+              <strong>And a third home, closed 2026-09-03, the part that changed how this
               is checked.</strong> Two more calls still carried the identical row in the shipping
               kernel: one dropped the caller into user mode at an address it chose, the other
               armed a program image for execution. Neither had a caller anywhere in the tree, and
@@ -1902,7 +1902,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               makes this worth publishing is not the two calls but how they survived: <em>the
               project had already written the fact down.</em> A machine-readable manifest of
               syscall test coverage had said of one of them, for two weeks, that &ldquo;the slot-3
-              check does not stop a caller, and a successful call arms an image&rdquo; &mdash;
+              check does not stop a caller, and a successful call arms an image&rdquo;,
               sitting under a heading that made the same claim about three calls which had since
               been fixed. One true sentence beside three stale ones, in a field nothing asserts.
             </p>
@@ -1910,12 +1910,12 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               A fact in a comment is not a gate, and three sweeps in a row certified themselves
               complete. So the fix is not a fourth sweep: a required check now parses the kernel's
               dispatch table the way the compiler does and fails the build on any shipping entry
-              gated on that slot. It is falsified four ways, including against a renamed table
-              &mdash; because every other rule in it is vacuous if the parser has quietly stopped
+              gated on that slot. It is falsified four ways, including against a renamed table,
+              because every other rule in it is vacuous if the parser has quietly stopped
               matching, and a check that cannot fail is the thing this whole finding is about.
             </p>
             <p>
-              <strong>The same week, the same mistake, in a different file &mdash; and this time
+              <strong>The same week, the same mistake, in a different file, and this time
               the checker found it.</strong> The container format the build writes and the kernel
               reads was recorded as being written down four times. A checker added to refuse a
               second copy of it reported <em>eleven</em> on its first run, including two on the
@@ -1929,7 +1929,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               claim about the code that nothing re-checks; every time this project has written one
               down by hand, it has drifted. The format now has a single declaration that the
               kernel, the userspace side and the host build tool all compile, and a test that boots
-              the system and confirms the bytes on disk really came from it &mdash; because the
+              the system and confirms the bytes on disk really came from it, because the
               build tool is a separate program built by a separate compiler, and no amount of
               static checking can bridge that gap.
             </p>
@@ -1939,13 +1939,13 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <p>
               When the kernel traps in its own code it writes the serial line directly, one byte
               at a time, because the ordinary logging path is silenced the moment a userspace
-              process takes ownership of the console &mdash; and that process writes the same
+              process takes ownership of the console, and that process writes the same
               serial line. So an unrelated program&rsquo;s output can land <em>between two
               characters</em> of a single kernel report. On 2026-09-02 that is exactly what
               happened on a pull request that touched none of the code involved: a kernel panic
               reached the log beginning mid-word, the gate&rsquo;s pattern did not match, and it
-              announced that the defect it was hunting <em>had not reproduced in eight boots</em>
-              &mdash; with the panic printed four lines below that sentence, in the gate&rsquo;s
+              announced that the defect it was hunting <em>had not reproduced in eight boots</em>,
+              with the panic printed four lines below that sentence, in the gate&rsquo;s
               own evidence dump.
             </p>
             <p>
@@ -1953,7 +1953,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               and there is no lock available: the writer the kernel would have to exclude is a
               process it does not schedule. The repair is a channel with only one writer, and what
               makes it one is not a convention but the capability model itself. The kernel now
-              reports on a serial port that <strong>no capability names</strong> &mdash; it is
+              reports on a serial port that <strong>no capability names</strong>: it is
               absent from every entry in the device table, so the syscall that hands out port
               access has nothing to hand out. It is not that userspace does not write there; it is
               that it cannot, and the test proves that by having a userspace process attempt the
@@ -2003,7 +2003,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               be listed as merge-gating, or exempted <em>with a written reason</em>, and CI fails
               the build if any is in neither; there is no default, because defaulting was the
               defect. It caught an unclassified static-analysis job on its first run. The
-              intended set is 120 gating and 3 exempted, and the promotions are backed by
+              intended set is 121 gating and 3 exempted, and the promotions are backed by
               measurement rather than optimism: across 18 sampled runs, 64 of 66 jobs had zero
               failures in 1152 job-executions.
             </p>
@@ -2209,7 +2209,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
             <p>
               <strong>The mechanism is one line of ordering.</strong> The function that enters a
-              brand-new task claimed it unconditionally &mdash; it wrote &ldquo;this core owns
+              brand-new task claimed it unconditionally: it wrote &ldquo;this core owns
               this task&rdquo; without asking whether another core already did. And the one place
               in the running system that calls it published the task as runnable a call earlier.
               Between those two statements the task is visible to every other core, satisfies
@@ -2222,7 +2222,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               <strong>Fixed in two rules, because it was two failures.</strong> The entry path now
               re-checks under the scheduler lock and refuses: a core will not enter a task another
               core holds, nor one that has stopped being runnable, and parks itself with a report
-              instead. That second clause is not theoretical &mdash; with the window held open for
+              instead. That second clause is not theoretical, with the window held open for
               sixty milliseconds, the other core ran the task all the way to a blocking wait and
               gave it back, and the old code entered a blocked task because it had checked before
               queueing for the lock and never looked again. Separately, the launch site now
@@ -2231,7 +2231,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
             <p>
               <strong>The obvious alternative was written and thrown away.</strong> Claiming first
-              and publishing second leaves a core holding a claim it is not yet running &mdash; a
+              and publishing second leaves a core holding a claim it is not yet running, a
               gap the claim auditor deliberately does not excuse. Fixing a launch path by widening
               an exemption in the checker that catches this entire class is the wrong direction,
               however tidy the diff.
@@ -2250,7 +2250,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <p>
               <strong>What is deliberately not claimed.</strong> That this accounts for the 0.31%.
               The campaign that measured that figure was also counting three checker false
-              positives &mdash; which is why the rate had already fallen to zero in 3500 boots
+              positives, which is why the rate had already fallen to zero in 3500 boots
               before this fix landed, on checker repairs alone. The arms establish that the
               mechanism was real, reachable from an ordinary boot, and is now impossible. The
               share of the historical rate it owned is not recoverable, and no number here
@@ -2258,8 +2258,8 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
             <p>
               <strong>The gate stays exactly as it is.</strong> It permits zero failures over
-              thirty boots, which made it red on about 9% of runs while the defect was open
-              &mdash; a fact about the defect, not about the gate. Relaxing it at any point in
+              thirty boots, which made it red on about 9% of runs while the defect was open,
+              a fact about the defect, not about the gate. Relaxing it at any point in
               those two weeks would have converted a detector of real memory corruption into a
               silence, and there would have been nothing left to attribute.
             </p>
@@ -2277,14 +2277,14 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               It was written off as a slow test runner, and then that was rejected on what looked
               like solid ground: a runner slow enough to turn six seconds into five minutes would
               have to be fifty times slower, and the <em>boot</em> step in both captures was
-              perfectly normal. Two explanations &mdash; a contended runner, or a genuine hang in
-              the format &mdash; and nothing to choose between them. The budget was deliberately
+              perfectly normal. Two explanations (a contended runner, or a genuine hang in
+              the format) and nothing to choose between them. The budget was deliberately
               not raised, which was the right call and left the finding stuck.
             </p>
             <p>
               <strong>The boot step cannot answer that question, and that is the whole finding.</strong>
               Slowing the machine's processors slows the boot and the format together, in lockstep,
-              leaving their ratio unchanged &mdash; so that lever would indeed have shown up in the
+              leaving their ratio unchanged, so that lever would indeed have shown up in the
               boot step. Contending the <em>disk</em> does something else entirely: the boot stays
               at full speed while the format triples. Dial the guest's disk down with the
               emulator's own limiter and the format's cost is a clean straight line in one over
@@ -2295,15 +2295,15 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               The format turns out to be about 4,700 synchronous device operations and only about
               2.3 megabytes of data, which is why throughput is the wrong knob and operation rate
               is the right one. Solve the line for the five-minute budget and it gives roughly
-              sixteen operations per second &mdash; and a guest throttled to twelve reproduces the
+              sixteen operations per second, and a guest throttled to twelve reproduces the
               continuous-integration failure exactly, first try, including the normal boot step
               that had been the reason for disbelieving it.
             </p>
             <p>
               <strong>The repair is not a bigger budget.</strong> No total budget can separate the
               two candidates at any value: raise it and a real hang takes longer to report, lower
-              it and a slow disk fails. They differ in one thing only &mdash; whether the machine
-              is still making progress &mdash; so that is what the bound measures now. Thirty
+              it and a slow disk fails. They differ in one thing only, whether the machine
+              is still making progress, so that is what the bound measures now. Thirty
               seconds with no disk operation at all is a wedge; anything still moving is a slow
               disk and is not a failure. A genuine hang is now caught in thirty seconds instead of
               five minutes, and the failure says which of the two it saw.
@@ -2311,7 +2311,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <p>
               <strong>Three ways to measure progress, two of them wrong, in opposite directions.</strong>
               Watching the disk image change declares a hang the moment the format stops writing
-              and starts reading its own metadata back &mdash; a two-hundred-second read phase on a
+              and starts reading its own metadata back: a two-hundred-second read phase on a
               throttled disk, and the first implementation failed exactly there. Counting the
               emulator's read calls instead keeps climbing even when the guest is wedged, because
               the emulator is polling its serial port; a detector that cannot go quiet cannot fire.
@@ -2441,7 +2441,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
           </li>
           <li>
-            <h3><span class="id">coverage</span>Ten system calls still have no test that runs them &mdash; and covering four of them found a fault</h3>
+            <h3><span class="id">coverage</span>Ten system calls still have no test that runs them, and covering four of them found a fault</h3>
             <p>
               <strong>Measured 2026-08-20</strong>, and checked on every merge since.
               <strong>89 of 97</strong> system calls have their handler actually executed by the
@@ -2451,8 +2451,8 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
             <p>
               The technique has now found a defect three times out of three. The most recent, on
-              2026-09-06, was the raw block pair &mdash; <code>SYS_BLOCK_READ</code> and
-              <code>SYS_BLOCK_WRITE</code>, the medium beneath the filesystem &mdash; which no
+              2026-09-06, was the raw block pair (<code>SYS_BLOCK_READ</code> and
+              <code>SYS_BLOCK_WRITE</code>, the medium beneath the filesystem) which no
               build in this tree had ever entered. Both returned the storage layer's bare
               <code>-1</code> for a block the device refuses, and <code>-1</code> is the value of
               &ldquo;you hold no capability for this&rdquo;. A caller could not tell a bad block
@@ -2476,7 +2476,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               The conformance suite is a <em>refusal</em> suite by design: it checks that a
               program without permission is turned away, and a refusal is decided before the
               call's body ever runs. So a call can be named by the suite, counted as tested, and
-              have its implementation never once execute &mdash; which is precisely what happened,
+              have its implementation never once execute, which is precisely what happened,
               and why a fault reproducible for every fixed variable in the system survived a
               hundred passing checks.
             </p>
@@ -2485,8 +2485,8 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               That has now been wrong twice. In August, three of the calls on it turned out to
               share a helper that spun forever holding a lock with interrupts off, reachable by
               any unprivileged program in a single call. On 1 September, writing the program that
-              would finally run the audit calls &mdash; a task holding exactly one permission and
-              nothing else &mdash; found a fault on its first boot: the record the kernel sends
+              would finally run the audit calls, a task holding exactly one permission and
+              nothing else, found a fault on its first boot: the record the kernel sends
               back was described in two places, 256 bytes in the kernel and 72 in the header
               programs compile against, under the same name. Every field was read from the wrong
               place, and the kernel wrote 184 bytes past the end of the array it was handed, for
@@ -2497,8 +2497,8 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <p>
               The pattern is worth stating plainly, because it is the argument for the whole
               exercise: <em>both</em> faults were found by the act of running the code, not by
-              reading it, and neither could have been found by widening the conformance suite
-              &mdash; both calls are gated on a permission that suite deliberately does not hold.
+              reading it, and neither could have been found by widening the conformance suite:
+              both calls are gated on a permission that suite deliberately does not hold.
             </p>
             <p>
               The build can record the first time each call's body is entered and say so on the
@@ -2513,7 +2513,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               test-writing wearing the costume of a guarantee. What it demands is that the number
               be decided rather than drifting, and that every gap be written down; the same
               bargain this project already makes with which tests are allowed to block a merge.
-              The pipe family used to be the cheap example here &mdash; untested only because no
+              The pipe family used to be the cheap example here, untested only because no
               scripted session ran a command pipeline, a gap in the script rather than in the
               kernel. It is covered now. What is left is eight calls, in five groups: three answer
               to a capability the conformance suite deliberately does not hold, and one of those
@@ -2685,7 +2685,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               object, so a frame able to span it would be a denial-of-service against every other
               object class dressed up as a feature. Formal verification is
               narrow: Kani covers revocation and the ELF validator, and there is no TLA+
-              specification &mdash; the two committed in June were removed in September as
+              specification: the two committed in June were removed in September as
               unsound rather than merely unchecked.
             </p>
           </li>

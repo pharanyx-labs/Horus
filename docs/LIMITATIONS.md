@@ -376,19 +376,19 @@ check that admits everyone.
 **Closed on 2026-08-30, and the premise recorded here was wrong.** This section said the fix
 needed *"a `CAP_TCB`-shaped authority to create tasks"* and that it was blocked because *"the
 capability would have to name something, and the thing it would name does not yet exist as a
-kernel object"*. Two things were wrong with that. A task **is** already named by a capability —
-`CAP_TCB` carries a task id, and a spawner gets one for each child — so the object existed all
+kernel object"*. Two things were wrong with that. A task **is** already named by a capability,
+`CAP_TCB` carries a task id, and a spawner gets one for each child, so the object existed all
 along. And a capability naming the task cannot gate its *creation* anyway: you cannot hold a
 capability to a task that does not exist yet.
 
 **What the authority actually is, is the resource.** A task's cspace is a `KOBJ_CNODE`, and
 every other kernel object in this system is carved from an untyped region by an authority that
-holds one. That is roadmap 0.3's premise — *"creating a kernel object is an exercise of authority
-the capability graph describes"* — and tasks were the one exception to it. They are not now:
+holds one. That is roadmap 0.3's premise, *"creating a kernel object is an exercise of authority
+the capability graph describes"*, and tasks were the one exception to it. They are not now:
 `SYS_SPAWN`, `SYS_SPAWN_IMAGE` and `SYS_FORK` resolve the caller's `CAP_UNTYPED` and carve the
 child's cspace **out of that region**, so a task endowed with none cannot create one, and a task
 given a small region can spawn a bounded number of times. That is precisely the property this
-section asked for — *"a task could be spawned without the right to spawn further tasks"* — and
+section asked for, *"a task could be spawned without the right to spawn further tasks"*, and
 it needed no new object class.
 
 **The charge is the allocation, deliberately.** Debiting a counter while still carving from the
@@ -402,21 +402,21 @@ region they do not consume would be a second vacuous check in place of the first
 `SC_NONE` and self-only, and say so.
 
 **Why a fixed slot is legitimate here and was not for slot 3.** The defect in the old gate is not
-that the slot number is fixed — `CAPSLOT_CONSOLE`, `CAPSLOT_DEBUG` and `CAPSLOT_USER` are all
+that the slot number is fixed: `CAPSLOT_CONSOLE`, `CAPSLOT_DEBUG` and `CAPSLOT_USER` are all
 fixed. It is that slot 3 is **always occupied**, by a capability the kernel installs itself, so
 the test could not fail. `CAPSLOT_UNTYPED` is empty unless somebody delegated into it, and the
 type is checked.
 
 **What it changed about the running system**, stated because it is a real behaviour change and not
 only a check: `init` now delegates `CAP_UNTYPED` to the shell, because `spawn` is a shell command
-and a task with no untyped cannot spawn. That grant is the point rather than a workaround — "may
+and a task with no untyped cannot spawn. That grant is the point rather than a workaround, "may
 this task create tasks?" is now a question with an answer that is written down and revocable. The
 kernel's own task creation (task 0, `init`, the boot shell, `SYS_SUDO`'s relaunch) is charged to
 `UNTYPED_KERNEL`, which is not delegable and is sized at exactly `MAX_TASKS` cspaces, so no ring-3
 allocation pattern can starve it.
 
 Witness `make smoke-proc`: `grantee` is spawned by `proctest` and deliberately **not** given
-untyped — it is exactly "a task spawned without the right to spawn further tasks" — and asserts
+untyped, it is exactly "a task spawned without the right to spawn further tasks", and asserts
 that spawn, fork and spawn-image all return `SYS_ERR_PERM`. `SYS_ERR_PERM` specifically, because
 a spawn can fail for want of a slot or a bad name and neither says anything about authority.
 Falsified by `SPAWN_SLOT3_DECOY_GATE=1` (`make smoke-proc-spawn-decoy-control`), which restores
@@ -424,7 +424,7 @@ the slot-3 check: `grantee` can then spawn, and reports `FAIL spawn-without-unty
 
 **What this does not do.** There is no region splitting, so a delegate shares its grantor's budget
 rather than receiving a sub-budget; per-delegate accounting is what a `SYS_UNTYPED_SPLIT` would
-buy. And a task is still not retyped from untyped as a `KOBJ_TASK` in the seL4 sense — the TCB
+buy. And a task is still not retyped from untyped as a `KOBJ_TASK` in the seL4 sense: the TCB
 storage is still `tasks[]`. What is now true is that creating one costs authority somebody holds.
 
 ### 1.6c ~~Two ship-build syscalls were gated on the same decoy, and the count had said so~~: CLOSED 2026-09-03
@@ -436,7 +436,7 @@ list. Both read `{ handler, 3, CAP_RIGHT_WRITE|CAP_RIGHT_EXEC, SC_ANYTYPE }` in 
 dispatch table, so both were authorised by the `CAP_FRAME` `create_task` installs in every task.
 
 **What each did, and why neither is re-gated.** `SYS_EXEC` (`h_run`) sets
-`heap_current = heap_start` and then `drop_to_ring3(load_base + entry, esp)` — it transfers
+`heap_current = heap_start` and then `drop_to_ring3(load_base + entry, esp)`: it transfers
 control to a ring-3 address of the caller's choosing with nothing validated about what is there.
 It had a wrapper (`sys_exec`, `include/syscall.h`) and **no caller anywhere in the tree**, and is
 superseded by `SYS_EXEC_NAMED` and `SYS_EXEC_IMAGE`, which validate an image through the loader
@@ -452,13 +452,13 @@ syscall and leaving one behind is how a retired number keeps looking available.
 `SYS_RECEIVE_PROGRAM` could not succeed at all (§2.18), so what a caller got was the *disarm*: a
 denial-of-service on another task's staged image, plus a blocking read whose cost is
 hardware-dependent (an absent COM2 floats and answers `0xFF` immediately; a real COM2 with
-nothing sending spins). `SYS_EXEC` is the one that could have mattered — an arbitrary ring-3
-entry point on a reset heap — and nothing called it, so nothing exercised it. Neither is an
+nothing sending spins). `SYS_EXEC` is the one that could have mattered, an arbitrary ring-3
+entry point on a reset heap, and nothing called it, so nothing exercised it. Neither is an
 escalation of the §1.6a kind. **What both were is authority the capability graph did not
 describe**, which is the property this project claims, not a severity estimate.
 
 **The ordering was forced, and it is the reason this section exists before §2.18 is fixed.**
-Repairing §2.18's struct first would have made `h_receive_program` succeed for the first time —
+Repairing §2.18's struct first would have made `h_receive_program` succeed for the first time,
 turning a decoy-gated, disarm-first handler from a dead path into a live one. The transport was
 harmless *because the header was broken*, and "safe because something else breaks first" is the
 shape **S28**, **S30** and **S38** all turned out to have. It is a coincidence, not a property.
@@ -466,7 +466,7 @@ So the gate shipped first and §2.18 stays open, correctly described.
 
 **And the fact was already written down, in a field nothing asserts.**
 `.github/syscall-coverage.yml` had recorded against `SYS_RECEIVE_PROGRAM` since 2026-08-20 that
-*"the slot-3 check does not stop a caller, and a successful call arms an image"* — accurate, and
+*"the slot-3 check does not stop a caller, and a successful call arms an image"*, accurate, and
 sitting beneath a group header that made the same claim about `SYS_FORK`, `SYS_EXEC_NAMED` and
 `SYS_EXEC_IMAGE`, all three of which §1.6b had fixed on 2026-08-30 without the header being
 touched. One true sentence beside three stale ones. Together with §1.6b's short list and
@@ -475,11 +475,11 @@ this property being maintained by hand and being wrong.
 
 **So the witness is a checker, not a fourth sweep.** `tools/check_dispatch_gates.py` (required)
 parses `syscall_table` and fails on any slot-3 row not behind a macro the ship build provably
-lacks — including one hidden in an `#else` arm, which is a ship-build arm. Falsified four ways,
+lacks, including one hidden in an `#else` arm, which is a ship-build arm. Falsified four ways,
 the fourth being a renamed table, because the other three are vacuous against a parser that has
 silently stopped matching. Runtime witness `make smoke-passwd-probe` (**10 checks**): an
 ordinary uid-1000 task holding nothing calls all six retired numbers and requires
-`SYS_ERR_NOSYS`. Falsified one arm per door —
+`SYS_ERR_NOSYS`. Falsified one arm per door,
 `make smoke-passwd-probe-recv27-control` and `make smoke-passwd-probe-exec19-control`, the second
 reporting `SYSCOV 19` from the **kernel** because `h_run` never returns and so destroys any
 ring-3 reporter. `TESTS.md` has why, including the landing pad that printed three bytes.
@@ -552,25 +552,25 @@ enters the handler.
 
 On 2026-09-01 it happened again, to the syscall this whole file was written about. **The two
 wrappers issue #176 truncated were `SYS_DMESG` and `SYS_AUDIT_DIGEST`; only the first had ever
-been covered.** Writing the probe that entered the second — `userspace/auditprobe.c`, a task
-holding one `CAP_AUDIT` and nothing else — found a defect on its first boot, in the neighbour
+been covered.** Writing the probe that entered the second (`userspace/auditprobe.c`, a task
+holding one `CAP_AUDIT` and nothing else) found a defect on its first boot, in the neighbour
 it also entered. `struct audit_event` was declared twice under one name: 256 bytes and twelve
 fields in the kernel, 72 bytes and seven in `include/syscall.h`. `h_read_audit` copied the
 kernel's size at the kernel's stride into an array ring 3 had sized with the other, so every
-field was read from the wrong offset **and** the copy ran 184 bytes past the array per record —
+field was read from the wrong offset **and** the copy ran 184 bytes past the array per record,
 into `userspace/grantee.c`'s 144-byte stack array, on every `PROC_SELFTEST` boot since that
 caller was written. Fixed by `include/audit_abi.h`, one declaration both rings compile, with a
 `_Static_assert` on the size in each (**S71**).
 
 On 2026-09-06 it happened a third time, to the pair with the longest gap on the list.
-`SYS_BLOCK_READ` and `SYS_BLOCK_WRITE` — the raw medium beneath the filesystem — had sat in
+`SYS_BLOCK_READ` and `SYS_BLOCK_WRITE`, the raw medium beneath the filesystem, had sat in
 `uncovered` since the manifest was written, and unlike every other entry there, **no build in
 this tree had ever entered them**: not a tracked workload, not a selftest image, not a defect
 arm. `userspace/blockprobe.c`, a task holding one `CAP_ENCRYPTED_STORAGE` and nothing else,
 entered both and found that each returned the storage layer's bare `-1` for a block the device
 refuses. `-1` **is** `SYS_ERR_PERM`: "that block does not exist" and "you hold no capability for
 this" were the same answer, so a refusal test against either syscall could not have told whether
-the handler ran at all — the defect and the thing that hid it were one value. A failed user copy
+the handler ran at all, the defect and the thing that hid it were one value. A failed user copy
 answered a bare `-3`, which is in no vocabulary at all; `include/errno.h` names it
 `SYS_ERR_FAULT` and says in as many words to use the names "instead of bare -1/-2/-3". Fixed to
 `SYS_ERR_IO` and `SYS_ERR_FAULT`, witnessed by `make smoke-blockprobe`, falsified by
@@ -579,14 +579,14 @@ answered a bare `-3`, which is in no vocabulary at all; `include/errno.h` names 
 The probe is also `auditprobe`'s **mirror**, and that is the part worth reusing: the two hold
 different capability *types* in the **same** slot (`CAPSLOT_AUDIT` carries `CAP_AUDIT` for the
 audit syscalls and `CAP_ENCRYPTED_STORAGE` for the block ones), and each asserts it is refused
-the other's syscalls. **S60** — the type test living in `cap_lookup` rather than in its ~40
-callers — is witnessed from both sides in one image, which neither probe could do alone.
+the other's syscalls. **S60**, the type test living in `cap_lookup` rather than in its ~40
+callers, is witnessed from both sides in one image, which neither probe could do alone.
 
 Three things are worth taking from the repeat rather than from either defect. The prescription
 was **already written down**: the `uncovered` entry for `SYS_AUDIT_DIGEST` said in as many
 words that "a probe task holding one `CAP_AUDIT` is worth writing", and it sat there for nine
 days. A gap with a costed fix beside it is not a gap anyone is working on. Second, both defects
-were in the *neighbours* of what was being covered — S52's trio and this one's `SYS_READ_AUDIT`
+were in the *neighbours* of what was being covered, S52's trio and this one's `SYS_READ_AUDIT`
 were entered incidentally, which is an argument for covering a capability's whole family at
 once rather than the one syscall that motivated it. And third, **neither would have been caught
 by a wider `captest`**: both syscalls are gated on a real capability, so the only way in is a
@@ -616,7 +616,7 @@ happened was asking it of the whole list.
 
 **The manifest had drifted in its reasons while enforcing itself perfectly on its numbers**, and
 that is the part worth keeping. Its `uncovered` entries described why each call's *success* path
-was not reached — no `CAP_UNTYPED` to retype a frame from, no pipeline in the session, login
+was not reached, no `CAP_UNTYPED` to retype a frame from, no pipeline in the session, login
 reads its password elsewhere. Every one of those sentences was true, and none of them is about
 whether the body runs, which is the distinction the file's own header says it exists to
 preserve. Two were also false: `captest` holds a `CAP_UNTYPED` and retypes from it, and
@@ -625,7 +625,7 @@ body would report anything" when its row admits every caller. The count those se
 surrounded was gated and correct throughout; the reasoning was not gated and was wrong.
 
 **The thirteenth was a gap in the workload rather than in the kernel**, which is the shape this
-paragraph used to claim for the pipe family — accurately when it was written, and stale from the
+paragraph used to claim for the pipe family, accurately when it was written, and stale from the
 day #179 closed it. `SYS_FS_INODE_FREE` is gated on `CAP_ENCRYPTED_STORAGE`, which `fs_server`
 holds and calls on its unlink path, so the handler was one shell command away from running on
 every session boot and nothing had issued it: the scenario created files and never destroyed
@@ -633,7 +633,7 @@ one. `tools/session_test.py` now runs `rm` and asserts with `stat` that the name
 resolving.
 
 **Two SC_NONE handlers were deliberately not promoted, and they are the boundary of the
-technique.** `SYS_GET_PASS` blocks — its only early return is `console_hw_owned()`, no ring-3
+technique.** `SYS_GET_PASS` blocks: its only early return is `console_hw_owned()`, no ring-3
 server owns the UART in the `captest` image, and the first draft of its probe hung the gate for
 the full timeout. It looks identical to `SYS_GET_LINE` from the dispatch table; the difference
 is that `h_get_line` tests `CAP_CONSOLE` inside the handler and refuses outright, where this one
@@ -644,7 +644,7 @@ stops being coverage when the body is one branch of a feature that is compiled o
 
 **Falsified by `SYSCOV_PROBES_ABSENT=1`**, which compiles the probes out; `make
 smoke-syscall-coverage` must then go red naming *exactly* the set the probes cover
-(`SYSCOV_CONTROL_EXPECTED` in the Makefile — read the count there, it has grown), and
+(`SYSCOV_CONTROL_EXPECTED` in the Makefile, read the count there, it has grown), and
 `make smoke-syscall-coverage-control` asserts that set rather than merely asserting a failure.
 The arm rebuilds and reboots all three workloads even though the flag changes only `captest`,
 because running the one arm would leave the other two transcripts missing and redden the gate
@@ -654,10 +654,10 @@ be indistinguishable from one that was free all along.
 **What is left is eight, in three groups, and the grouping is the useful part** because it
 says what each would cost. **Four** have a real capability in their dispatch row, so the table
 refuses before the handler runs and `captest` holds none of `CAP_ENCRYPTED_STORAGE` or
-`CAP_STORAGE_FORMAT` — covering one needs a probe task that holds exactly one of them, not a
+`CAP_STORAGE_FORMAT`: covering one needs a probe task that holds exactly one of them, not a
 wider `captest`. That prescription was followed for `CAP_AUDIT` on 2026-09-01 and it worked, so
 the cost is now known rather than estimated: one small task, and the first entry into either
-handler found a defect. `SYS_FS_INODE_LINK` used to be a fifth here with an asterisk — its gate
+handler found a defect. `SYS_FS_INODE_LINK` used to be a fifth here with an asterisk: its gate
 would have *passed*, since `fs_server` holds the capability, so the gap was a missing shell verb
 rather than a missing probe. It was covered on 2026-09-09 by adding `ln`, and the session now
 asserts with `stat` that a second name leaves the link count at two and that the file outlives
@@ -666,11 +666,11 @@ the removal of its first name.
 **`SYS_STORAGE_FORMAT` is the one member of that group a probe task cannot rescue**, and it is
 worth naming because it is the boundary of the technique rather than a gap in it: entering its
 body **formats the attached disk**, so no tracked workload can enter it without destroying the
-volume the run is using. Its sibling `SYS_STORAGE_INFO` is `covered` instead — by `init` calling
+volume the run is using. Its sibling `SYS_STORAGE_INFO` is `covered` instead, by `init` calling
 it at boot from the same capability (roadmap 2.9), which is the same capability and the opposite
 consequence.
 
-Two are `SC_NONE` and stopped by the opposite problem — the call would *succeed*, replacing or
+Two are `SC_NONE` and stopped by the opposite problem: the call would *succeed*, replacing or
 duplicating the caller: `SYS_FORK` (covered by its own `FORK_SELFTEST` build) and
 `SYS_EXEC_NAMED` (by `PROC_SELFTEST`). `SYS_EXEC_IMAGE` was the third of these until 2026-09-09,
 when `execprobe` covered it by making the successor image the second half of the witness. The
@@ -678,36 +678,36 @@ last two are the `SC_NONE` pair above (`SYS_GET_PASS`, which blocks, and `SYS_SH
 body is compiled out of every tracked image).
 
 On 2026-09-09 it happened a fourth time, to the fifth of those "the call would succeed" entries.
-`SYS_EXEC_IMAGE` carried the strongest reason on the list — "NOT entered by any of the five
-selftest builds tried. No build in this tree is known to reach it" — and `SECURITY.md` **S42**
+`SYS_EXEC_IMAGE` carried the strongest reason on the list, "NOT entered by any of the five
+selftest builds tried. No build in this tree is known to reach it", and `SECURITY.md` **S42**
 named it, beside `SYS_EXEC_NAMED`, in the mechanism column of a security property whose only
 witness (`smoke-forkexec`) drove the *other* syscall. Half a property, asserted about a handler
 nothing ran: the `[C-1]` shape one level up, at a claim rather than a gate, which is what roadmap
-4.12 exists to catch. The obstacle was never the gate — `SYS_EXEC_IMAGE` is `SC_NONE` and
-`captest` could have called it any time — it was that entering the body *replaces the caller*, so
+4.12 exists to catch. The obstacle was never the gate: `SYS_EXEC_IMAGE` is `SC_NONE` and
+`captest` could have called it any time: it was that entering the body *replaces the caller*, so
 a conformance suite that calls it has no section 14. `userspace/execprobe.c`, a task holding one
 `CAP_DEBUG`, answers that by making the SUCCESSOR image (`userspace/execimgee.c`) the second half
 of the witness: the S42 checks run *after* the exec, in the image it entered, and read the
 capability's type, rights, serial and parent edge back out of the kernel to confirm they survived.
 
 The first entry into that handler found a disclosure (**S84**) and, under it, a second fail-open.
-The three attacker-controlled ELF parses were bounds-checked in safe Rust — against the size of
+The three attacker-controlled ELF parses were bounds-checked in safe Rust, against the size of
 the 8 MiB `loader_staging` **region**, which is shared by every task and holds the residue of
 every image staged before, rather than against the bytes the image actually staged. So a program
 header reaching `p_offset + p_filesz` past the end of its own image passed the check and the
 loader copied that residue into the new task. The check was present and memory-safe; it bounded
-the wrong thing, which is the sharpest form this file's lesson takes — a bounds-checked read of a
+the wrong thing, which is the sharpest form this file's lesson takes: a bounds-checked read of a
 byte that is none of the caller's business is still a disclosure. And a *recognised* ELF the
 loader then rejected fell through to the flat-image path, which copied the ELF's own header bytes
 to the load base and entered them. Fixed by bounding every parse with `staged_bytes()`, failing
 closed on a rejected ELF (validated on the exec path *before* the old address space is torn
 down), and refusing a container that claims more payload than its buffer holds. Witnessed by
 `make smoke-proc` and `make smoke-execprobe`, falsified by `ELF_LOAD_BOUND_STAGING=1` and
-`IMAGE_LEN_UNCHECKED=1` — two locks on one door, each with a fixture the other cannot catch.
+`IMAGE_LEN_UNCHECKED=1`, two locks on one door, each with a fixture the other cannot catch.
 
 The lesson repeats with the prescription: the gap named the probe (`SYS_AUDIT_DIGEST` had said "a
 probe task holding one `CAP_AUDIT` is worth writing" nine days before it was), and the defect was
-in a *neighbour* of what was being covered — here the loader the syscall reaches, not the gate in
+in a *neighbour* of what was being covered, here the loader the syscall reaches, not the gate in
 front of it.
 
 ### 1.9 ~~S16 had no witness at all~~: CLOSED 2026-08-28
@@ -811,7 +811,7 @@ tree with every mention of a property stripped out.
 **S66**'s tree catches *partial* rollback: a subtree of the metadata region rewound while the rest
 of the volume moves on. It could not catch the whole volume being replaced with a consistent
 earlier snapshot, because every internal relationship holds and the root lives in the superblock
-it is meant to protect — nothing inside the disk can tell "this volume" from "this volume, last
+it is meant to protect: nothing inside the disk can tell "this volume" from "this volume, last
 week".
 
 There is an anchor outside it now: a **TPM NV monotonic counter**. `sb.rollback_gen` records the
@@ -823,13 +823,13 @@ smoke-rollback` restores an entire earlier disk image between boots and requires
 **What is still true, and it is a real limit, not a formality:**
 
 - **Only volumes formatted on a machine with a TPM are anchored.** `sb.rollback_anchored` records
-  which kind a volume is, so a reader is never guessing — but an unanchored volume has exactly the
+  which kind a volume is, so a reader is never guessing, but an unanchored volume has exactly the
   protection it had before, which is the tree and no more. `ROLLBACK_ANCHOR_REQUIRED` does not
   exist yet; a policy that refuses to mount an unanchored volume is the obvious next step and is
   not built.
 - **The granularity is one boot.** The counter advances once per unlock, so a rollback to any
   state from a *previous* boot is refused and a rollback to an earlier point *within the current
-  boot session* is not. Closing that would mean a TPM NV write per filesystem transaction — NV
+  boot session* is not. Closing that would mean a TPM NV write per filesystem transaction: NV
   writes are milliseconds and the endurance is finite, so it would cost more than it buys.
 - **An attacker who can talk to the TPM can deny service.** Advancing the counter, or undefining
   the index, leaves the volume refusing to mount. Neither lets them roll it back: making an old
@@ -842,59 +842,59 @@ smoke-rollback` restores an entire earlier disk image between boots and requires
 
 ---
 
-### 1.13 ~~`create_task` builds a cspace unlocked, and the task is already published~~ **WITHDRAWN 2026-09-12** — **[HORUS-20260911-03b]** was not a defect
+### 1.13 ~~`create_task` builds a cspace unlocked, and the task is already published~~ **WITHDRAWN 2026-09-12**: **[HORUS-20260911-03b]** was not a defect
 
 **This finding was wrong, and the correction is the content of this section.** It was published on
 2026-09-12 alongside `SECURITY.md` **S94**, claiming that because `create_task` builds a new task's
 cspace with no lock held while `tasks[id].state = 1` is already set, a revocation sweep on another
 CPU could see the cspace empty mid-build and let `kobj_gc` destroy the reply endpoint a capability
-was about to name — a use-after-free reachable from a concurrent revoke.
+was about to name, a use-after-free reachable from a concurrent revoke.
 
 **The premise about visibility is true. The conclusion does not follow.** The sweep does enumerate
 exactly `state != 0 && tasks[t].cspace != NULL`, so it genuinely can read this cspace mid-build.
 What it cannot do is act on anything it reads there:
 
-- **`kobj_gc` only ever destroys dynamic objects** — `dyn_eps`, `dyn_notifs`, `dyn_frames` — and
+- **`kobj_gc` only ever destroys dynamic objects**, `dyn_eps`, `dyn_notifs`, `dyn_frames`, and
   `mark_cap` only marks an object inside those index ranges. Every capability `create_task`
   installs names something outside them: `USER_AREA_BASE` for the slot-3 frame (`mark_cap`'s own
   comment says so), `0` for console and encrypted storage, whose types `mark_cap` does not handle
   at all, the task's own id for its `CAP_TCB`, and the reply endpoint index, which is a *static*
-  table index — `reply_ep_for_task` is `REPLY_EP_BASE + tid`, not an allocation. **The object that
+  table index: `reply_ep_for_task` is `REPLY_EP_BASE + tid`, not an allocation. **The object that
   was supposed to be destroyed cannot be destroyed by that code at all.**
 - **`revoke_subtree` skips `badge == 0`**, and every capability `create_task` installs has
   `badge = 0`. No revocation can match one regardless of how partially written it is.
 - **A slot read mid-install has `serial == 0`**, and `mark_cap`'s first statement returns on that.
 - **A reused task slot's cspace was already fully zeroed** under `cap_lock` by
-  `cap_release_cspace` at teardown, which clears `serial` too — so the window between
+  `cap_release_cspace` at teardown, which clears `serial` too, so the window between
   `state = 1` and the zeroing loop exposes an empty cspace, not a dead task's capabilities.
 
 **How the error was made, since that is the part worth keeping.** The hazard was reasoned from the
-*shape* of the problem — an unlocked writer, a sweep that reads every cspace, the kernel's own
-comment about observing a slot mid-install — and written up without following the object through to
+*shape* of the problem (an unlocked writer, a sweep that reads every cspace, the kernel's own
+comment about observing a slot mid-install) and written up without following the object through to
 the code that frees it. The kernel comment it leaned on is real and the class it describes is real;
 it simply does not reach this site. **The audit instruction it violated was its own**: point to the
 enforcing code path and say what happens on failure. One `grep` for what `kobj_gc` destroys would
 have settled it, and did, a day later.
 
 **What replaced it.** `create_task` is declared `status: invisible-to-the-sweep` in
-`.github/cap-write-sites.yml` — the sweep can read these slots and cannot act on them — and the
+`.github/cap-write-sites.yml`, the sweep can read these slots and cannot act on them, and the
 guards that make that true are **pinned** there in a `depends_on:` list that
 `tools/check_cap_writes.py` verifies still exists, because an exemption resting on code in three
 other files is one that expires the day somebody edits one of them. One of the five pins is S95's
 static assert: the reply endpoint index has to stay below `DYN_EP_BASE`, and before S95 it did not
-for task ids ≥ 64 — so reason one above was not sound until that landed, though its failure
+for task ids ≥ 64, so reason one above was not sound until that landed, though its failure
 direction was a missed reclaim rather than a premature free.
 
 **What is still true and not claimed as a defect:** `create_task` does not hold `cap_lock`, so it
 is not covered by the discipline S94 establishes for every other cap-write. It is exempt by
 argument rather than by construction, and an argument is weaker than a lock. Taking the lock there
-would mean holding it across a `kobj_alloc` — a lock-ordering change in the function that runs for
-every task on every boot — which is work that wants a reason, and "to close a defect" is no longer
+would mean holding it across a `kobj_alloc`, a lock-ordering change in the function that runs for
+every task on every boot, which is work that wants a reason, and "to close a defect" is no longer
 one.
 
 ### 1.14 An inherited stdio pipe end is a derivation root, so revoking the parent does not reach it **[HORUS-20260911-04]**
 
-`cap_clone_cspace` gets this right and says so — `SECURITY.md` **S41**: every capability a forked
+`cap_clone_cspace` gets this right and says so, `SECURITY.md` **S41**: every capability a forked
 child receives is *derived*, carrying its own fresh serial and a `badge` naming the parent
 capability's serial, which is the edge `revoke_subtree` walks. `do_spawn`'s stdio wiring does the
 opposite for the one capability it propagates: `cap_install_child_pipe_end` gives the child's end a
@@ -907,12 +907,12 @@ this is a latent contradiction of S3 rather than a live hole. It is still a cont
 revoke reaches the whole derivation subtree, and this capability is outside the subtree it belongs to.
 
 **Why the one-field fix cannot land alone.** Setting `badge` to the source's serial makes pipe
-capabilities reachable by `revoke_subtree` for the first time — and `revoke_subtree` nulls slots
+capabilities reachable by `revoke_subtree` for the first time, and `revoke_subtree` nulls slots
 without releasing what the capability owned. A pipe end is two pieces of state, the capability and a
 direction refcount, and `pipe.c`'s own header claims `reader_ends`/`writer_ends` "count the live end
 caps across all cspaces". A revoke that nulls the cap and leaves the count would make that claim
 false and leave the peer waiting on an EOF that can never arrive. So the fix needs end-refcount
-reconciliation beside it, under the same `cap_lock` the sweep already holds — the point `kobj_gc` is
+reconciliation beside it, under the same `cap_lock` the sweep already holds: the point `kobj_gc` is
 called from, and the same reachability recount `kobj_gc` performs for endpoints, notifications and
 frames, which pipes are not yet part of.
 
@@ -1396,7 +1396,7 @@ through the write-ahead log, so a crash leaves it wholly before or wholly after;
 gone from account hashes, which is what reason 3 below said had to happen before storage could
 matter at all; and the ordering inverted to unlock-then-identify, with the identity supplied by
 the key slot that opened (S61) rather than worked around. A table that is present and does not
-authenticate refuses every login rather than being reseeded — reseeding would restore the
+authenticate refuses every login rather than being reseeded: reseeding would restore the
 compiled-in `root` password, which is a downgrade rather than a recovery. The account below is
 kept because it is the reasoning the fix was derived from, and because reason 3 is the part a
 reader will otherwise rediscover the hard way.
@@ -1446,8 +1446,8 @@ but it interacts with the single-password limitation immediately below.
 
 **~~A related limitation, orthogonal and pre-existing: only one password can unlock the
 volume.~~ FIXED 2026-08-31 (`SECURITY.md` S61).** The volume key is now wrapped once per key
-slot — up to `HORUS_KEYSLOTS` (8) independent wraps of `disk_key[32] \|\| uid[4]`, each under a
-KEK derived from its own password and its own salt — so several passwords open one volume and
+slot, up to `HORUS_KEYSLOTS` (8) independent wraps of `disk_key[32] \|\| uid[4]`, each under a
+KEK derived from its own password and its own salt, so several passwords open one volume and
 revoking one revokes exactly that one. The uid is sealed *inside* the slot, so a slot that opens
 says who opened it; that is what supplies the identity the ordering change above needs, rather
 than it having to be worked around. Two consequences are forced rather than chosen: revocation is
@@ -1459,8 +1459,8 @@ Witness `make smoke-keyslots` (two boots on one image), falsified by `KEYSLOT_RE
 
 *Added 2026-08-31.*
 
-Several self-tests print a marker as a prefix and then a detail — `report("X: FAIL ")` followed by
-`report(name)` — while the serial console is shared with every other ring-3 task. Another task's
+Several self-tests print a marker as a prefix and then a detail, `report("X: FAIL ")` followed by
+`report(name)`, while the serial console is shared with every other ring-3 task. Another task's
 output can land between the two writes and split the exact string a gate asserts on. It is not
 hypothetical: `smoke-init-provision-control` failed on 2026-08-31 with
 `INIT_PROVISION: FAIL provisioning stopped at step [fs_server] userspace FS server starting`,
@@ -1478,8 +1478,8 @@ reddened CI on 2026-09-01.**
 `userspace/captest.c`'s `fail()` emitted `CAPTEST: FAIL `, the detail, and the newline as **three
 writes**. Ten `smoke-captest-*-control` arms assert a contiguous `CAPTEST: FAIL <detail>`, so
 every one of them was one unlucky interleave away from a spurious red. The sweep missed it for a
-specific and repeatable reason: it searched for the shape it had just fixed —
-`report(prefix); report(detail);` over `libhorus`'s helpers — and `captest` has a private `out()`
+specific and repeatable reason: it searched for the shape it had just fixed,
+`report(prefix); report(detail);` over `libhorus`'s helpers, and `captest` has a private `out()`
 and does not include `libhorus.h` at all. `src/kernel/main.c`'s `DEFECT FLAGS: ` line was the
 second, asserted by six gates and emitted in three writes.
 
@@ -1495,18 +1495,18 @@ SMOKE FAIL: timed out after 40s without required marker
 ```
 
 The marker **was** printed. The defect the arm exists to reproduce **did** reproduce. The gate
-reported a timeout — which is what a broken runner looks like, so the natural response is to
+reported a timeout, which is what a broken runner looks like, so the natural response is to
 re-run it and move on. That is the worst way for a check to be wrong, and it is why this is now
 enforced rather than swept.
 
 **The enforcement is `tools/check_split_markers.py`** (required job step, beside
-`check_capslots.py` and `check_abi_structs.py` — the same "written down twice, nothing compares
+`check_capslots.py` and `check_abi_structs.py`, the same "written down twice, nothing compares
 them" class). For every consecutive run of single-write console calls, if the first call's
 literal is a strict prefix of a marker some gate asserts contiguously, the build fails. It
 deliberately does **not** flag ungated informational output: 91 multi-write runs exist and
 rewriting them would be churn with no property behind it. The rule is not "never write twice", it
 is "never emit a gated marker in pieces". Falsified four ways by
-`tools/test_check_split_markers.sh` — a split userspace marker, a split kernel marker, an
+`tools/test_check_split_markers.sh`, a split userspace marker, a split kernel marker, an
 *ungated* split that must **not** be flagged, and the unmutated tree, since three
 "is it caught" arms are all satisfied by a checker that rejects everything.
 
@@ -1514,7 +1514,7 @@ is "never emit a gated marker in pieces". Falsified four ways by
 needs another task's output to land between two writes on demand; the interleave is timing, and it
 did not reproduce in **0 of 12** local boots of the exact failing configuration even though CI
 hits it. A control arm built on that rate would be a coin toss asserting a property. The property
-is structural — a marker is one write — so it is checked statically, where it is decidable.
+is structural, a marker is one write, so it is checked statically, where it is decidable.
 
 **And "a marker is one write" is not sufficient for a KERNEL marker.** `panic_str` writes one
 byte at a time to a UART a ring-3 server owns, so a single call is splittable and the static check
@@ -1526,13 +1526,13 @@ The volume is sealed to **key slots** (**S61**) and `h_auth` calls
 `users_unlock_and_restore(typed_password)` *before* it consults the account table, because on a
 sealed volume the table it would otherwise read is the compiled-in one `users_init` seeded. An
 account with no slot therefore opened nothing, the persisted table was never loaded, the account
-was not found, and the login was refused -- **while working perfectly on a machine somebody else
+was not found, and the login was refused, **while working perfectly on a machine somebody else
 had already opened**. That asymmetry is why it lasted: every test and every operator logs in as
 root first.
 
 `do_passwd` now grants a key slot when an administrator sets another account's password, and
-records its index in `user_account.keyslot`. **Both halves already existed with no live caller** --
-`storage_keyslot_add` had only a selftest, and the field's one assignment was also in a selftest --
+records its index in `user_account.keyslot`. **Both halves already existed with no live caller** (
+`storage_keyslot_add` had only a selftest, and the field's one assignment was also in a selftest)
 which is the shape **S63**'s `storage_authorize_format` had before **S72** gave it one.
 
 The installer asks for two passwords and lays down two accounts, so a machine comes up with an
@@ -1547,7 +1547,7 @@ on a machine nobody has opened; falsified by `PASSWD_NO_KEYSLOT=1`.
 **What is still true** is narrower and worth keeping: a slot is granted only when an *administrator
 sets a password*. `useradd` alone leaves the account locked and slotless by design, a user changing
 their own password re-seals the slot they already hold rather than taking another, and a volume has
-`HORUS_KEYSLOTS` (8) of them -- so a machine with more than eight password-holding accounts cannot
+`HORUS_KEYSLOTS` (8) of them, so a machine with more than eight password-holding accounts cannot
 give them all one. Nothing warns at the eighth; `storage_keyslot_add` returns "full" and
 `do_passwd` fails closed, which is the right direction but a poor message.
 
@@ -1563,7 +1563,7 @@ now exists in a form that cannot be cut. `make smoke-kdiag` gates it and four ar
 see `TESTS.md`.
 
 **What is not, and it is the larger half.** *Every gate that asserts a kernel-emitted string
-still reads the shared console*, so each remains exposed exactly as described below -- about
+still reads the shared console*, so each remains exposed exactly as described below, about
 twenty of them, measured 2026-09-03 (see **Scope** at the end of this entry). Until that sweep
 lands, the channel protects reports a human reads and not one merge gate.
 
@@ -1572,15 +1572,15 @@ the console handover by grepping the shared console for `[console_server] ready`
 a kernel marker landed inside that string, and the harness reported "console_server never took
 the console" for a boot whose own markers proved that it had. A harness that reads its own
 precondition off the channel it is measuring inherits the failure it exists to detect. It now
-takes that precondition from the diagnostic channel, where one marker is proof -- the probe
-emits only when `console_hw_owned()` -- and cannot be shredded.
+takes that precondition from the diagnostic channel, where one marker is proof, the probe
+emits only when `console_hw_owned()`, and cannot be shredded.
 
 2.6a's model is "a gated marker emitted as two writes can be split by another task's output",
 and its repair is "emit it as one write", enforced statically by `tools/check_split_markers.py`.
 **For a marker printed by the KERNEL while ring 3 is running, one write is not enough**, and the
 checker cannot see the difference.
 
-`panic_str` is `while (*s) panic_ch(*s++)` — one byte to the UART at a time. `console_server`
+`panic_str` is `while (*s) panic_ch(*s++)`, one byte to the UART at a time. `console_server`
 owns that UART from a ring-3 task on another CPU (a deliberate second-writer arrangement, finding
 **#126**, recorded in the comment above `kfault_begin`). A ring-3 write can therefore land between
 any two **characters** of a single `panic_str` call. The claim `kfault_begin` takes serialises
@@ -1588,7 +1588,7 @@ kernel reporters against each other and against nothing else; `kfault_begin(1)`/
 halts other CPUs that try to *report*, which is also not ring 3. There is no lock the kernel can
 take here, because the party it needs to exclude is a task it does not schedule out.
 
-**Observed 2026-09-02**, CI run `33553525177`, job `smoke-kstack-park-control` on PR #289 — a PR
+**Observed 2026-09-02**, CI run `33553525177`, job `smoke-kstack-park-control` on PR #289, a PR
 touching `userspace/shell.c`, documentation and a userspace-only build flag this gate never sets.
 `src/kernel/scheduler.c:1660` emits
 
@@ -1603,7 +1603,7 @@ Us parking on one kernel stack rsp=0xffffffffc0010ff0 this-cpu=3 already-cpu=0 t
 KERNEL FATAL SHARED PARK STACK - halting
 ```
 
-`\nPANIC: two CP` is gone — the line begins mid-word, ring-3 `PROC_SELFTEST` output having landed
+`\nPANIC: two CP` is gone, the line begins mid-word, ring-3 `PROC_SELFTEST` output having landed
 inside the call. The gate's `KSTACK_PARK_RE = PANIC: two CPUs parking on one kernel stack` did not
 match, and it reported:
 
@@ -1618,7 +1618,7 @@ reproduced; the arm scored it a clean sweep of misses.
 
 **Both of that gate's detectors failed at once, each for a reason already written down.** The
 duplicate-`PARKTRACE` test needs two trace lines, and `sched_note_park` halts on seeing the second
-CPU, so on the boot that reproduces hardest the second line is never printed — the #193 lesson,
+CPU, so on the boot that reproduces hardest the second line is never printed, the #193 lesson,
 which is *why* the panic fallback was added. The panic fallback then needs contiguity the console
 cannot provide. Each detector covers the other's blind spot in principle and neither covers this
 boot. Every `PARKTRACE` in that run was `cpu=0` while the panic reported `this-cpu=3
@@ -1627,13 +1627,13 @@ already-cpu=0`, which is exactly that shape.
 Measured both ways on the same day: CI **FAIL** with the panic present in its own dump, and the
 same arm on `origin/main` locally **PASS on boot 1 of 8**, caught by the duplicate-trace path
 (`distinct CPUs parking: 2`) because there both CPUs printed before the halt. The arm is not
-flaky about whether the defect occurs — it occurred in both — it is flaky about **which detector
+flaky about whether the defect occurs, it occurred in both, it is flaky about **which detector
 sees it**, and one of the two is unreliable by construction.
 
 **Why `check_split_markers.py` passes this.** The checker's rule is "a gated marker is one write",
 and this marker *is* one write. The invariant is correct for userspace, where `sys_write` delivers
 a buffer, and insufficient for the kernel, where the write is a character loop. A static check
-cannot distinguish the two without knowing that `panic_str` is not atomic — so the hazard is
+cannot distinguish the two without knowing that `panic_str` is not atomic, so the hazard is
 outside what the 2026-09-01 gating closed, rather than a regression of it.
 
 **What the repair is not.** "Make the emission atomic" was the first proposal and is not
@@ -1641,8 +1641,8 @@ available, for the reason above. A shorter grep is a smaller probability, not a 
 `0.4^N` reasoning about a detector is the framing CLAUDE.md's own park worked-example rejects.
 
 **What it turned out to be, and why not the obvious one.** This entry proposed `isa-debug-exit`
-at port `0x604` -- already wired into every harness invocation, already written by
-`src/kernel/kshell.c:99` -- on the grounds that an exit code cannot be split. It cannot, and it
+at port `0x604`, already wired into every harness invocation, already written by
+`src/kernel/kshell.c:99`, on the grounds that an exit code cannot be split. It cannot, and it
 was rejected anyway: it **terminates the machine**, so it can carry only a fatal report, and the
 reports that hide are the survivable ones. It also carries a number where the text is the
 diagnosis. A second UART carries both classes and keeps the words, which is what shipped
@@ -1669,7 +1669,7 @@ is the remainder recorded at the top of this entry.
 missing stamp:
 
 **The session is not stamped, and must not be.** The window ends when `init` sends
-`CON_OP_BOOT_DONE`, immediately before it launches the shell -- or earlier, at the first read
+`CON_OP_BOOT_DONE`, immediately before it launches the shell, or earlier, at the first read
 request, which is what the installer's raw-mode session trips. After that the console is a
 terminal: a prefix in front of a shell prompt, an echoed keystroke or a column of `ls -l` is
 wrong, not merely noisy, and `CON_OP_WRITE_RAW` carries escape sequences a prefix would corrupt.
@@ -1684,11 +1684,11 @@ every microsecond field after the handover is a multiple of 10,000, and the two 
 within a tick: the ring-3 stamp rounds down, and the offset that puts them on one epoch
 (`clock_epoch_ticks`) was itself captured rounded down. `tools/check_console_timestamps.py`
 therefore tolerates a backwards step of up to three ticks. It does **not** tolerate the failure it
-exists to catch -- ring 3 counting from the first timer interrupt instead of from boot, which was
+exists to catch, ring 3 counting from the first timer interrupt instead of from boot, which was
 1.07 s on the boot measured on 2026-09-06 and is what `CLOCK_EPOCH_FROM_FIRST_TICK=1` restores.
 
 **`kfault_str` and `panic_ch` are still unstamped**, because they bypass the console writer
-entirely -- which is 2.6c, and is why they are also still splittable. A kernel report arriving
+entirely, which is 2.6c, and is why they are also still splittable. A kernel report arriving
 mid-boot is therefore an unstamped line inside the checked window, and the gate goes red on it.
 That is the right direction: a boot with a kernel fault in it has a bigger problem than its
 formatting, and the gate says so rather than making an exception that would also excuse a missing
@@ -1810,7 +1810,7 @@ boot on one. Boot 1 is an ordinary kernel with the disk and no TPM, so the forma
 `tpm_mode 0` path and leaves the drive as an operator's would be; boot 2 is the policy kernel
 **with** a TPM, so `tpm: measured boot OK` reaches the wire and the volume is the only thing
 wrong with the machine. Booting boot 2 without a TPM would halt at `tpm_init` and never look at a
-volume -- that is `smoke-measured-boot-required-control`, not this. The guest reports the volume
+volume, that is `smoke-measured-boot-required-control`, not this. The guest reports the volume
 it MET before it touches it, so an arm that formatted the wrong kind of volume fails as itself
 rather than as a missing refusal, which is the `STORAGE_NOFORMAT_SELFTEST` lesson (2.6's
 neighbour) applied in advance.
@@ -1818,7 +1818,7 @@ neighbour) applied in advance.
 `make smoke-measured-persist-sealed` is the other direction and is not optional: a check that
 rejected every persistent volume would satisfy the refusal arm perfectly. It formats under the
 policy with the TPM present, so the volume seals, powers the machine off, and requires the same
-TPM to release the secret again on the next boot -- one ISO for both boots, since a secret sealed
+TPM to release the secret again on the next boot, one ISO for both boots, since a secret sealed
 under `PolicyPCR(8,9)` is released only to the same measurements and a differently built boot 2
 would be refused by the TPM rather than by us.
 
@@ -1832,21 +1832,21 @@ make them apply or refuse to run.
 
 The kernel's expected SHA-256 lives in a memdisk inside the El Torito boot image, and the seal
 binds `PCR[4]`, the firmware's measurement of that image. Two consequences follow, and both are
-prices rather than defects — they are recorded because a reader who meets them at the wrong moment
+prices rather than defects: they are recorded because a reader who meets them at the wrong moment
 would reasonably think something had broken.
 
 - **Updating the kernel rebuilds the boot image, and a TPM-sealed volume must be resealed.** A new
   kernel has a new hash, the pin changes, so the image changes, so `PCR[4]` changes, and a volume
   sealed under the old image will not open. That is the mechanism working: a seal that survived a
   kernel change would be a seal that does not bind the kernel, which is exactly the defect S92
-  closes. A signature scheme would avoid it — any kernel the key vouched for would boot on the same
-  image — and that is the reason one was **not** used: it would make `PCR[4]` identical across every
+  closes. A signature scheme would avoid it, any kernel the key vouched for would boot on the same
+  image, and that is the reason one was **not** used: it would make `PCR[4]` identical across every
   such kernel and give back the property being removed.
 
 - **A volume sealed under one firmware does not open under the other.** `PCR[4]` is extended by
   the firmware, and OVMF and SeaBIOS do not measure the same bytes, so the same medium booted the
   other way presents a different value and the TPM declines. That is correct rather than
-  unfortunate — a different boot chain *is* a different boot chain — but it means a machine that
+  unfortunate, a different boot chain *is* a different boot chain, but it means a machine that
   changes firmware mode after an install must reseal.
 
   **This entry first said the UEFI path had been removed, and that was wrong twice over.** The
@@ -1856,10 +1856,10 @@ would reasonably think something had broken.
   CI caught it on the first push. Both boot images are now built from the same memdisk by
   `tools/mkbootimg.sh`, so both pin the same kernel; verified 2026-09-11 that a substituted kernel
   is refused under OVMF as well as SeaBIOS. The hybrid MBR is kept, so a stick written with `dd`
-  still boots — all four cells of the media/firmware table pass.
+  still boots, all four cells of the media/firmware table pass.
 
 **What this does not fix.** GRUB's own `tpm` module measures loaded binaries into `PCR[9]`, and
-would have been the conventional answer — it **does not exist for i386-pc** in Debian's
+would have been the conventional answer: it **does not exist for i386-pc** in Debian's
 `grub-pc-bin`, only for `x86_64-efi`. Moving to UEFI and using it would let the kernel be measured
 by the bootloader rather than pinned by it, and would restore the EFI path; it is the obvious next
 step and is not taken here.
@@ -1871,13 +1871,13 @@ step and is not taken here.
 
 `CON_OP_GETPASS` is served only to the registered input owner. `CON_OP_GETLINE` and
 `CON_OP_READ_RAW` are **not**, and a task holding an inherited console capability can still read
-them — so a program a person ran can eavesdrop on typed **command lines**, though no longer on
+them, so a program a person ran can eavesdrop on typed **command lines**, though no longer on
 passwords.
 
 **Why the line is drawn there rather than around all input.** `GETPASS` has exactly one
 legitimate caller, `shell.c`. The other two have several: `cat` with no arguments reads stdin
 through `READ_RAW` (`posix.c`), and the installer's own masked password fields do too
-(`tui.c`) — it does not use `GETPASS` at all. Restricting them to one owner therefore needs a
+(`tui.c`): it does not use `GETPASS` at all. Restricting them to one owner therefore needs a
 **foreground-ownership model**: exactly one task owns console input at a time, ownership passes
 from a task to one it spawned and returns when that child exits, and the shell hands off before
 waiting on any child that reads stdin. That is a controlling-terminal feature, it touches every
@@ -1934,7 +1934,7 @@ Witness `make smoke-passwd-probe` (10 checks), falsified by
 ### 2.10a Two more syscalls had no caller either, and were retired with them
 
 `SYS_EXEC` (19) and `SYS_RECEIVE_PROGRAM` (27) were retired on 2026-09-03 in the same state 2.10
-describes — a live handler in the ship build with no caller in the tree — and for an additional
+describes, a live handler in the ship build with no caller in the tree, and for an additional
 reason that makes them a §1 finding rather than a §2 one: both were gated on the **[C-1]** decoy.
 The account is **§1.6c**, and the property is `SECURITY.md` **S79**. `make smoke-passwd-probe` is
 the witness both sections share, and it is 10 checks rather than 8 because of them.
@@ -2016,12 +2016,12 @@ stays legible.
   every device on the machines this kernel targets" held for QEMU's i440fx and q35 and failed on
   the first real laptop: an IdeaPad whose internal storage is eMMC printed `sdhci: no SD/eMMC
   host controller`, because its controller is not on bus 0. The cost of missing that device was
-  not a feature, it was the machine being uninstallable — which is the half of the old reasoning
+  not a feature, it was the machine being uninstallable, which is the half of the old reasoning
   that was wrong, not the fail-closed direction. `iodev_init` now walks the bus **tree**,
   breadth-first from bus 0 through each PCI-to-PCI bridge's secondary bus number.
   **This makes devices reachable that were not reachable before**, and that is the
   security-relevant half: a function behind a bridge now enters `iodev_table`, so a capability
-  can be minted naming it. Nothing else moves — configuration space is still never exposed, ring
+  can be minted naming it. Nothing else moves: configuration space is still never exposed, ring
   3 still names a table index and never a bus address, and every BAR goes through the validation
   `pci_add_function` already applied. What changed is the *set* of devices, not what may be done
   with one, and a device the walk still does not reach stays absent and ungrantable exactly as
@@ -2035,7 +2035,7 @@ stays legible.
   (it lands at `01:01.0`) and requires the driver to bring it up. **The control arm is what
   asserts the topology**: `PCI_BUS0_ONLY=1` walks bus 0 only and reports the same controller
   absent on the same command line, which is what proves it is not on bus 0. Falsified in all four
-  directions on 2026-09-12, with `smoke-sdhci-detect` and `smoke-net` still passing — the check
+  directions on 2026-09-12, with `smoke-sdhci-detect` and `smoke-net` still passing, the check
   that enumeration order, and so every `iodev_table` index, is unchanged on a machine with no
   bridges.
 - ~~**MSI/MSI-X are not routed.**~~ **Closed 2026-08-29** (**S47**, **S48**). `SYS_MSI_REGISTER`
@@ -2050,8 +2050,8 @@ stays legible.
   capability decides **who** may turn bus mastering on and **for which device**, and the first
   bullet is what it still cannot decide. **That caveat was wrong, and the way it was wrong is the lesson.** It read: QEMU does not
   enforce the bus-master bit for virtio-net, so on this emulator the bit is not what permits the
-  DMA and no gate can witness that half here. Two things had moved underneath it -- the driver is
-  an **e1000** now, and QEMU checks the bit on that device's RECEIVE path -- and the arm that
+  DMA and no gate can witness that half here. Two things had moved underneath it (the driver is
+  an **e1000** now, and QEMU checks the bit on that device's RECEIVE path) and the arm that
   "measured" it, `NET_NO_BUSMASTER=1`, **defined a macro no source file read** from 2026-08-28 to
   2026-09-10, so what was measured was the base build. Wired, it reproduces at once, and
   `make smoke-net-busmaster-control` is the gate that half now has (`NETTEST: FAIL
@@ -2073,12 +2073,12 @@ stays legible.
   before the scrub, and `task_teardown` resets a dying driver's domain. **The task-death half is
   witnessed since 2026-09-09**, by phase 2 of the same in-kernel selftest: a driver task holds a
   frame *derived from a peer's capability*, its `io_device` names a real device, and it dies. The
-  frame therefore survives -- which the gate asserts first, because if the frame went with the
-  driver the phase would be the frame half wearing a different name -- and the device's
+  frame therefore survives (which the gate asserts first, because if the frame went with the
+  driver the phase would be the frame half wearing a different name) and the device's
   translation of it must be gone. `IOMMU_NO_TASK_TEARDOWN=1` (`make
   smoke-iommu-teardown-task-control`) had shipped since 2026-08-29 with no arm at all, for want of
   exactly that workload, and the base gate is measured red under it. The last check keeps the
-  premise honest: drop the peer's name, sweep again, and the frame IS collected -- so "the frame
+  premise honest: drop the peer's name, sweep again, and the frame IS collected, so "the frame
   survived" cannot be satisfied by a garbage collector that does nothing.
 - **The table is not enumerable.** `SYS_DEVICE_INFO` reports the device the caller's capability
   names and nothing else; there is no "list the devices" call, so holding one device is not a
@@ -2305,11 +2305,11 @@ with the library's capabilities.
 ### 2.18 ~~The `.bin` container format is declared four times and parsed in eleven, none of them connected~~: CLOSED 2026-09-03
 
 *Filed 2026-09-01 as "`SYS_RECEIVE_PROGRAM` cannot succeed". Restated 2026-09-03 when that
-syscall was retired (§1.6c). Closed the same day -- and the restatement got the number wrong too,
+syscall was retired (§1.6c). Closed the same day, and the restatement got the number wrong too,
 saying four when the declarations were four and the PARSES were eleven. The checker found the
 difference; see below.* `SECURITY.md` **S80**.
 
-**The format.** A 44-byte header -- `magic` at 0, `entry` at 4, `size` at 8, `name[32]` at 12 --
+**The format.** A 44-byte header, `magic` at 0, `entry` at 4, `size` at 8, `name[32]` at 12,
 then the payload. Four declarations, eleven parses, nothing connecting them:
 
 - `struct program_header` in `src/include/kernel.h`: an ELF program header
@@ -2320,24 +2320,24 @@ then the payload. Four declarations, eleven parses, nothing connecting them:
 - **Neither was used by anything.** The `program_header_t` typedef had no uses and not one of the
   eight ELF fields was ever read. The two declarations that shared a name were the two that did
   no work.
-- A private copy inside `tools/mkheadered.c` -- which, since that tool writes every `.bin` in the
+- A private copy inside `tools/mkheadered.c`, which, since that tool writes every `.bin` in the
   tree, is the copy that actually *defined* the format.
 - And the readers used none of them: `arm_named_binary` and `arm_image_from_user` assembled the
   fields from the literals 0, 4, 8, 12 and 44, with `0x55524F48` spelled out at each site.
 
 **The count in this section's own title was short, and a checker found the rest.**
 `tools/check_image_abi.py` was written to refuse a second declaration; on its first run it named
-**seven more parses** nobody had counted -- two in `src/kernel/kshell.c`, on the boot path that
+**seven more parses** nobody had counted, two in `src/kernel/kshell.c`, on the boot path that
 spawns `init` and the shell, and five in `src/kernel/selftest.c`. Eleven sites, each with its own
 `0x55524F48` and its own `44`. Most also did `*(const uint32_t *)(bin + 4)`: an unaligned load
 through a typed pointer on a linker symbol the compiler may assume is aligned.
 
-That is **§1.6b's mistake in a different file, four days later** -- a number written by hand,
+That is **§1.6b's mistake in a different file, four days later**, a number written by hand,
 short, and reasoned from as if complete. Both were closed the same way: stop counting, and let
 something enumerate.
 
 **What the divergence cost, recorded rather than guessed.** It broke `SYS_RECEIVE_PROGRAM` in two
-independent places. `h_receive_program` copied `sizeof(k_hdr)` -- the *kernel's* 104 -- into an
+independent places. `h_receive_program` copied `sizeof(k_hdr)`, the *kernel's* 104, into an
 object ring 3 had sized at 44, so a successful transfer wrote **60 bytes past** the shell's stack
 object and then read `h.name` at offset 12, where the kernel had put the low half of `vaddr`. And
 the wire read tested `magic` at offset 96 against payload bytes, so the transfer answered **"Bad
@@ -2348,7 +2348,7 @@ commit before this one. Repairing the struct first would have made a decoy-gated
 handler succeed for the first time (§1.6c). "Safe because something else breaks first" is the
 shape **S28**, **S30** and **S38** all turned out to have. The gate shipped first; then this.
 
-**The repair.** One declaration -- `struct horus_image_header` in `include/program_abi.h` --
+**The repair.** One declaration, `struct horus_image_header` in `include/program_abi.h`,
 included by the kernel, by ring 3, and by `tools/mkheadered.c`. That header is deliberately
 freestanding (`<stdint.h>` and nothing else) so the **host** build tool can compile it: a
 dependency on `kernel.h` would have forced the writer back to a private copy and reopened the
@@ -2359,14 +2359,14 @@ once. `HORUS_IMAGE_HDR_BYTES` is `sizeof` the struct, never the literal 44.
 **The rename is S71's lesson verbatim.** `horus_image_header`, not `program_header`: sharing a
 name was half of how the divergence survived, since both sides compiled and both were
 self-consistent and only a running probe could tell them apart. A rename makes a stale caller
-fail to **build** rather than fail to **agree**. The eight ELF fields are not carried over --
+fail to **build** rather than fail to **agree**. The eight ELF fields are not carried over:
 exporting a field means promising to keep it, the same judgement `audit_abi.h` made.
 
 **Witness.** `tools/check_image_abi.py` (required) refuses a second declaration anywhere in the
 tree **under any name** (it matches the field set, not the spelling) and a second spelling of the
 magic; falsified four ways, two of them self-checks, because both rules are vacuous against a
 checker whose subject has moved. `make smoke-image-abi` (6 checks) arms a real boot module and
-requires every field to survive the round trip -- which the `_Static_assert`s cannot cover, since
+requires every field to survive the round trip, which the `_Static_assert`s cannot cover, since
 `mkheadered` is a separate program built by a separate compiler. Falsified by
 `IMAGE_HDR_WRITER_SKEW=1` (`make smoke-image-abi-control`), which emits `name` four bytes further
 into the same 44-byte header: the image still **arms**, and only the name is wrong. `make smoke`,
@@ -2375,7 +2375,7 @@ into the same 44-byte header: the image still **arms**, and only the name is wro
 
 **`check_abi_structs.py` has no `UNRESOLVED` entry now**, and its third rule is what made that a
 decision: the name left both headers, the checker refused the silence, and the entry was removed
-on purpose. It is deliberately *not* moved to `SHARED` -- a struct written down once cannot
+on purpose. It is deliberately *not* moved to `SHARED`: a struct written down once cannot
 drift, so enrolling it would be a check that cannot fail. `audit_record` is absent for the same
 reason.
 
@@ -2383,25 +2383,25 @@ reason.
 
 `FS_OP_READDIR` replied `SYS_ERR_NOENT` for two different facts: "the offset is past the last
 entry" and "I could not stat that directory". `fs_server` flattened `h_fs_stat`'s return on top
-of that, so a third fact -- "the store is not open" -- arrived as `NOENT` too. Every caller in
+of that, so a third fact, "the store is not open", arrived as `NOENT` too. Every caller in
 the tree resolved the ambiguity the same way, as end-of-directory, which is the fail-**open**
 direction for a listing: a failure was reported as a fact about the filesystem.
 
-**What a user sees is `ls` printing nothing and no error.** The full path: on a sealed volume --
-every ATA machine from power-on until a login unlocks it -- `h_fs_stat` answers `SYS_ERR_INVAL`
+**What a user sees is `ls` printing nothing and no error.** The full path: on a sealed volume,
+every ATA machine from power-on until a login unlocks it, `h_fs_stat` answers `SYS_ERR_INVAL`
 (`store_open()` refuses, `SECURITY.md` **S74**), `fs_server` turned that into `NOENT`, and the
 shell's `ls` treated `NOENT` as the end of the directory and stopped. A locked store reported
 itself as an empty filesystem. None of the three steps looks wrong in isolation, which is why
 this survived: each one is a small, locally reasonable simplification.
 
 The shell reasoned about it **explicitly and wrongly**. Its comment read "`sh_cwd_ino` is a
-directory `cd` already verified exists, so for this caller it can only be end-of-directory" --
+directory `cd` already verified exists, so for this caller it can only be end-of-directory",
 untrue of `sh_cwd_ino`'s initial value, `0`, which no `cd` ever verified, and untrue again if
 the directory is removed underneath. An assumption written down is not an assumption checked.
 
 Three callers, and the worst was not the shell. `posix_readdir` returned "no more entries" for a
 permission refusal, a missing directory **and** a transport failure, defending it in a comment as
-matching POSIX because `readdir(3)` reports the end as a NULL return -- which is half the rule,
+matching POSIX because `readdir(3)` reports the end as a NULL return, which is half the rule,
 since POSIX separates the two through `errno` and this discarded the reason before anyone could.
 So every newlib program was told an unreadable directory was empty. `fss_ls` printed one
 sentence, "(empty or server not connected)", naming two possibilities as a guess.
@@ -2421,7 +2421,7 @@ obvious way would have passed and witnessed nothing.
 region it is supposed to contain (`SECURITY.md` **S95**). That is the correct fix for the
 *security* property, and it is the wrong shape for the memory model.
 
-One `struct endpoint` is ~1 KiB — four queue slots of `IPC_MSG_MAX` each — so the **whole table** is
+One `struct endpoint` is ~1 KiB, four queue slots of `IPC_MSG_MAX` each, so the **whole table** is
 ~336 KiB of `.bss` at `MAX_TASKS` 256, of which ~201 KiB is what S95 added (`.bss` measured at
 7,016,448 bytes before and 7,221,248 after). It is present in the image whether or not a single task
 ever performs a synchronous call, and charged against the `__bss_end <= USER_PHYS_BASE` linker
@@ -2431,7 +2431,7 @@ comment in `create_task` records the same argument about `cspace_pool`: fixed pe
 the image pays for unconditionally and that caps the task ceiling by spending the image budget.
 
 The consistent end state is a reply endpoint carved from the untyped region that pays for the task,
-the way its cspace already is — then the table disappears, the index space needs no reserved
+the way its cspace already is, then the table disappears, the index space needs no reserved
 sub-range, and the class of defect S95 closed becomes unrepresentable rather than asserted. That is
 a larger change than the one that had to land: it touches `endpoint_by_index`'s resolution, the
 object-reachability sweep, and teardown. Headroom was measured at 7.6 MiB when this was written, so
@@ -2492,7 +2492,7 @@ indexes `endpoints[]` directly any more. The dynamic ceilings above bound only t
 arrays, not the objects.
 
 **The task ceiling moved from 64 to 256 on 2026-08-30, and what was actually holding it down was
-not what this section said.** It named `tasks[]` — the TCB table — as the thing to migrate. That
+not what this section said.** It named `tasks[]`, the TCB table, as the thing to migrate. That
 table is **72 KiB** at 64 tasks. `per_task_kstacks`, a static `.bss` array of one 64 KiB slot per
 task, was **4 MiB**: fifty-six times larger, and 98% of the constraint. Migrating the TCB table
 would have moved the ceiling by nothing at all.
@@ -2501,7 +2501,7 @@ The chain, since none of its links is visible from the array's declaration:
 
 - `linker64.ld` asserts `__bss_end - KERNEL_VMA <= 16 MiB`, because the physical page pool starts
   at `USER_PHYS_BASE` and nothing else stops the image growing into it. `.bss` was 12.36 MiB, so
-  a 4 MiB array left 3.64 MiB of headroom — `MAX_TASKS` could not even be **doubled**.
+  a 4 MiB array left 3.64 MiB of headroom: `MAX_TASKS` could not even be **doubled**.
 - That 16 MiB is not a policy number. It is `KERN_SPLIT_PDES` (8) × 2 MiB: the window where the
   kernel's own mapping uses 4 KiB pages rather than 2 MiB ones, and therefore the only window in
   which a guard page can be expressed at all.
@@ -2509,26 +2509,26 @@ The chain, since none of its links is visible from the array's declaration:
   and the pool base, so growing `.bss` toward the assert pushes modules past it. The pool's base
   reserves now move clear of any module that lands there (**S96**, §1.15).
 
-So the stacks left `.bss` for a region of their own under `high_pdpt[511]` — one previously
+So the stacks left `.bss` for a region of their own under `high_pdpt[511]`, one previously
 unused PDPT entry, 1 GiB of kernel-half VA, inside the `pml4[256..511]` range every address
 space shares, so a slot is visible everywhere with nothing to install per address space. Slots
 are bound on first use and kept for the life of the boot (the lifetime the array had), the guard
-page is **never mapped** rather than mapped and then unmapped — which removes the
-before-`smp_bringup` ordering requirement instead of satisfying it — and a slot maps 8 of its 16
+page is **never mapped** rather than mapped and then unmapped, which removes the
+before-`smp_bringup` ordering requirement instead of satisfying it, and a slot maps 8 of its 16
 pages, making the unused tail a second guard against an overflow of the slot below. `.bss` fell
 to **8.57 MiB even with `MAX_TASKS` at 256**, so the image is 3.8 MiB *smaller* than it was at 64.
 
 **Three things scaled with the ceiling, and all three fail silently rather than loudly**, which
 is why `make smoke-task-ceiling` exists: a boot uses about six tasks, all below 64, so every
 defect this change could introduce lives in the range no boot visits. The witness asserts on the
-alias pair (255, 191) — the pair each defect makes identical — and is falsified in two
+alias pair (255, 191), the pair each defect makes identical, and is falsified in two
 directions (`KSTACK_INFLIGHT_LEGACY_WORD`, `KSTACK_SLOT_INDEX_TRUNC`).
 
 The sharpest was `g_kstack_inflight`, the standing witness for **S20**: one `uint64_t`, bit *t*
 per task, with `src/include/kernel.h` explaining in one line that *"MAX_TASKS is 64, so one word
 covers every task exactly"*. A correctness argument about a witness in one file, resting on a
 constant in another. At 256, `1ULL << t` is undefined for *t* ≥ 64 and x86 masks the shift to 6
-bits, so the detector does not stop working — **it starts answering about the wrong task**, with
+bits, so the detector does not stop working: **it starts answering about the wrong task**, with
 no report for a genuine collision above 63 and a spurious one below it. It is an array sized from
 `MAX_TASKS` now, with the width asserted at compile time.
 
@@ -2536,11 +2536,11 @@ no report for a genuine collision above 63 and a spurious one below it. It is an
 each was blamed on the wrong thing at some point.
 
 **The TCB table left `.bss`.** `tcb_t tasks[MAX_TASKS]` was the last kernel object class outside
-the retyping discipline — every other one (cspaces, endpoints, notifications, frames) had moved
+the retyping discipline, every other one (cspaces, endpoints, notifications, frames) had moved
 years of commits earlier, and this table was described in four documents as "its own change with
 its own tests" for a month. It is `tcb_t *tasks`, one contiguous block carved from the kernel's
 untyped reserve by `tasks_init()`. All 785 `tasks[id].field` sites compile unchanged, because
-array indexing on a pointer is identical syntax — the change is tractable precisely because it is
+array indexing on a pointer is identical syntax: the change is tractable precisely because it is
 a pointer rather than an array of pointers, which would have been `tasks[id]->field` at every one
 of them and an extra indirection on the scheduler's hot path.
 
@@ -2559,7 +2559,7 @@ measured:
 | 256 | 6,168 B | 19% |
 | 512 | 12,312 B | 38% |
 | 1024 | 24,600 B | 75% |
-| 2048 | 49,176 B | **150% — overflow** |
+| 2048 | 49,176 B | **150%, overflow** |
 
 So the 64 → 256 raise had already spent a fifth of a kernel stack in the revoke path, and the
 guard page below it was what stood between the next raise and silent corruption of the adjacent
@@ -2572,7 +2572,7 @@ constrains it. That is a scale parameter of the same kind as `BLOCKS_PER_DISK`, 
 in the table above rather than tracked as a finding.
 
 **The prerequisite named here for a month closed on 2026-08-30, and it was two defects rather
-than one.** `cap_lookup` — the function every capability gate in this kernel resolves through —
+than one.** `cap_lookup`, the function every capability gate in this kernel resolves through,
 ended in an unconditional fallback:
 
 ```c
@@ -2583,13 +2583,13 @@ else                            { ...root_cnode...              }
 The half this document described is the first: a task with **no cspace** resolved every slot
 against the primordial root cnode, which is why freeing a dead task's cspace would have been an
 authority escalation rather than a crash. The half nobody had written down is the second: a task
-asking for a slot **past the end of its own cspace** was handed `root_cnode[slot]` — the identical
+asking for a slot **past the end of its own cspace** was handed `root_cnode[slot]`, the identical
 escalation, reached by arithmetic instead of by a null pointer, and needing no missing cspace at
 all.
 
 **Both were unreachable, and both by circumstance rather than by property.** The first needs
 `create_task` to keep halting rather than run a task whose cspace allocation failed; the second
-needs it to keep setting `cspace_size = CNODE_SIZE` for every task — one assignment, in another
+needs it to keep setting `cspace_size = CNODE_SIZE` for every task, one assignment, in another
 file, whose being a constant is the whole of the argument. Neither is a statement about
 `cap_lookup`.
 
@@ -2600,8 +2600,8 @@ only". Task 0 is the kernel boot/idle/reaper task and legitimately has no cspace
 every other task without one is now refused, and a slot past the caller's own cspace is out of
 range rather than a reason to consult somebody else's.
 
-Witness `make smoke-cap-lookup`, which **manufactures** both conditions — a refusal test whose
-ungated path could not have succeeded witnesses nothing — and checks the third direction too,
+Witness `make smoke-cap-lookup`, which **manufactures** both conditions, a refusal test whose
+ungated path could not have succeeded witnesses nothing, and checks the third direction too,
 that task 0 still resolves, since a `cap_lookup` returning NULL for everything would satisfy
 both refusals while breaking every gate in the kernel. Falsified one arm per rule
 (`CAP_LOOKUP_ROOT_FALLBACK`, `CAP_LOOKUP_RANGE_FALLBACK`); two arms because the witness returns
@@ -2626,13 +2626,13 @@ its task slot for the life of the boot, exactly as `cspace_pool[id]` did; what i
 **contents**.
 
 **And that was the real gap, which no document had described.** `task_teardown` released every
-device resource a task held — its IRQ route, its MSI route, its IOMMU domain, its port grant, the
-console, its pipe ends — and left the **capabilities** in place. They sat in memory from the
+device resource a task held (its IRQ route, its MSI route, its IOMMU domain, its port grant, the
+console, its pipe ends) and left the **capabilities** in place. They sat in memory from the
 task's death until its slot was next used, which may be never. Nothing could reach them, but only
 because three separate readers each test `state == 0`: `mark_reachable` when deciding which
 retyped objects are still named, `h_cap_enumerate` when reporting, and `create_task` when
 overwriting. **The property "a task's authority ends when the task does" was held by three readers
-agreeing about a flag, not by the data** — and a fourth reader that forgot the flag would have
+agreeing about a flag, not by the data**, and a fourth reader that forgot the flag would have
 found a full cspace. That is the same shape as the `cap_lookup` fallback above, and as **S38**'s
 arena guard.
 
@@ -2640,22 +2640,22 @@ arena guard.
 genuinely unnamed rather than one it is skipping on the strength of a flag; the two now agree by
 construction. `create_task`'s zeroing stays, defending the first use of a slot rather than a dead
 task's leftovers. Witness `make smoke-cspace-release`, which goes through `task_teardown` rather
-than calling the function — a witness that calls the function under test proves the function works
-and says nothing about whether anything invokes it — and checks the slot is still **reusable**
+than calling the function, a witness that calls the function under test proves the function works
+and says nothing about whether anything invokes it, and checks the slot is still **reusable**
 afterwards, since a teardown that destroyed the cspace outright would pass the emptiness check
 while breaking task creation. Falsified by `CSPACE_KEEP_ON_TEARDOWN=1`, under which the dead task
 still holds slot 0: its own `CAP_TCB`.
 
 **And the next ceiling is now the arena's, which is why its halves were separated.** The arena is
 split into a kernel half (the per-task cspaces, which no capability names and ring 3 cannot
-reach) and a user half (`UNTYPED_ROOT`, what `init` delegates onward) — and the sizing did not
+reach) and a user half (`UNTYPED_ROOT`, what `init` delegates onward), and the sizing did not
 honour that split. The **total** was a fixed 4 MiB and the kernel half was carved out of it, so
 raising `MAX_TASKS` silently **shrank what userspace could ever allocate**. That matters because
 the user half is the number the documented denial-of-service reasoning rests on: `MAX_FRAME_PAGES`
 is 64 pages precisely because a frame that could span the arena would starve every other object
 class. A bound that moves when an unrelated constant moves is not a bound. The user half is the
-fixed quantity now — 3.5 MiB, exactly what it was at `MAX_TASKS` 64, so no documented ratio
-changes — and the kernel reserve is derived from `MAX_TASKS` and added on top.
+fixed quantity now (3.5 MiB, exactly what it was at `MAX_TASKS` 64, so no documented ratio
+changes) and the kernel reserve is derived from `MAX_TASKS` and added on top.
 
 ### 3.2 ~~`this_cpu()` reads LAPIC MMIO on every call~~: **[I-6]**, fixed
 
@@ -2698,10 +2698,10 @@ blocks until woken or killed.
 
 `storage_alloc_block` read data-bitmap block 0, then 1, then 2, until it found a clear bit. On a
 nearly-full 16 GiB volume the bitmap spans 128 blocks, so an allocation near the end of a fill
-read all of them — and a sequential write allocating N blocks did that N times.
+read all of them, and a sequential write allocating N blocks did that N times.
 
 It is a **rotating start hint** now: the scan begins where the last allocation succeeded and
-wraps. The hint is a starting point and never a bound, which is what makes it safe to be wrong —
+wraps. The hint is a starting point and never a bound, which is what makes it safe to be wrong:
 a stale value costs one wasted read, not a block the allocator fails to find. `ALLOC_NO_HINT=1`
 restores the old behaviour.
 
@@ -2709,17 +2709,17 @@ restores the old behaviour.
 
 | | bitmap reads for 32 allocations |
 |---|---|
-| scan from block 0 | **512** — exactly 32 × 16 |
-| rotating hint | **47** — 16 for the first, one each thereafter |
+| scan from block 0 | **512**, exactly 32 × 16 |
+| rotating hint | **47**, 16 for the first, one each thereafter |
 
 The gate asserts both halves, and the second is the one that matters: after the measurement it
-fills the volume completely, frees a single block in bitmap block 0 — *behind* the hint — and
+fills the volume completely, frees a single block in bitmap block 0, *behind* the hint, and
 requires the next allocation to return exactly that block. It can only do so by wrapping. A gate
 that measured the cost alone would pass a "fix" that made the allocator fast by giving up early.
 
 It also refuses to conclude on a volume whose bitmap is one block, which is every volume below
 about a gigabyte: `ALLOCHINT: FAIL the bitmap is too small for a scan to exist`. That is the same
-reason the cost went unnoticed for so long — at 128 MiB there is no second block to scan, so the
+reason the cost went unnoticed for so long, at 128 MiB there is no second block to scan, so the
 old allocator and the new one read the same single block and no workload could tell them apart.
 
 ---
@@ -2728,13 +2728,13 @@ old allocator and the new one read the same single block and no workload could t
 
 - **Networking above Ethernet.** No stack, no sockets, no ARP table, no IP, no TCP. One ring-3 e1000 driver exists and completes a DMA round trip on the wire (§2.14, **S44**/**S45**, witness `make smoke-net`); everything above the frame does not.
 - **Graphics.** No windowing, and no graphics beyond a text grid. **The KERNEL's console draws on
-  a linear framebuffer since 2026-09-08** -- an 80x50 cell grid blitted from a font, with the VGA
-  text path kept for machines that boot in text mode -- so a UEFI machine with no CSM, where the
+  a linear framebuffer since 2026-09-08** (an 80x50 cell grid blitted from a font, with the VGA
+  text path kept for machines that boot in text mode) so a UEFI machine with no CSM, where the
   `0xB8000` text buffer does not exist, is no longer blind. **Since 2026-09-08 ring 3 drives it too**: `console_server` asks `SYS_FB_INFO` what the
   display is, maps the framebuffer from the platform device's own MMIO range, takes the console
   and paints the login prompt (`make smoke-fb-console-server`, which checks pixels). So a UEFI
   machine with no CSM boots to a usable console.
-  **Since 2026-09-08 the grid is what the display can show** -- `min(50, height / cell)` rows, in
+  **Since 2026-09-08 the grid is what the display can show**, `min(50, height / cell)` rows, in
   both rings (`make smoke-fb-grid`, which boots a real 360-line display and derives the expected
   count from the geometry rather than hardcoding it). Columns stay at 80 and a narrower display is
   refused, because a console that wraps every line is unreadable where one that scrolls sooner is
@@ -2742,11 +2742,11 @@ old allocator and the new one read the same single block and no workload could t
   this targets, which the fixed count could not have accommodated.
   **The framebuffer console draws an 8x16 font since 2026-09-08**, authored for this project
   (`THIRD_PARTY.md`): real descenders, a comma distinguishable from a full stop, a slashed zero.
-  It fits only because the grid is derived -- 48 rows of a 16-pixel cell on a 768-line panel,
+  It fits only because the grid is derived: 48 rows of a 16-pixel cell on a 768-line panel,
   where the old fixed 50 would have been refused.
   **Scrolling landed 2026-09-12**, and what is still missing is the 8x8's provenance. The console wrapped rather
   than scrolled until then, exactly as the VGA text path it mirrors always had, so a full screen
-  overwrote from the top — the newest line landing on the oldest, with nothing marking the seam.
+  overwrote from the top, the newest line landing on the oldest, with nothing marking the seam.
   That is why a boot log could not be read back on a machine with no serial port: the lines were
   not merely gone off the top, they had been overwritten in place, and with no UART there is no
   second copy. Both `console_server` paths now scroll, the shadow buffer moving and the blit
@@ -2754,19 +2754,19 @@ old allocator and the new one read the same single block and no workload could t
   `make smoke-console-scroll` (85161 bytes change on a scroll against 681 on a wrap), falsified
   by `CONSOLE_NO_SCROLL=1`.
   **The cursor followed on 2026-09-12 too.** `console_server` had never written the 6845's cursor
-  registers, and the position lives there rather than in the cell array — so from the console
+  registers, and the position lives there rather than in the cell array, so from the console
   handover onward the hardware cursor stayed frozen wherever the kernel left it (measured at row
   36, column 0, unmoved while a user name was typed at the login prompt and again at the password
   prompt). It now moves with every character, as the kernel's `update_cursor` always has. Gated by
-  `make smoke-console-cursor`, which asserts a *displacement* — five characters, five columns —
+  `make smoke-console-cursor`, which asserts a *displacement*, five characters, five columns,
   because the frozen position varies between boots with wherever the boot log ended; falsified by
   `CONSOLE_NO_CURSOR=1`.
   **What remains open is the framebuffer console, which draws no cursor at all and never has.**
-  There is no hardware cursor on a linear framebuffer, so it needs a drawn one — an underline
+  There is no hardware cursor on a linear framebuffer, so it needs a drawn one: an underline
   painted into the cell and restored from `fb_cells` when it moves. Nothing on that path is
   wrong today; it is simply absent, and it is a different piece of work from the register write
-  that fixed the text console. And `font_8x8` is still uploaded into the VGA font plane for 80x50 text mode --
-  that mode is an 8x8 cell by definition -- so the unattributed asset still ships on a BIOS
+  that fixed the text console. And `font_8x8` is still uploaded into the VGA font plane for 80x50 text mode,
+  that mode is an 8x8 cell by definition, so the unattributed asset still ships on a BIOS
   boot; `THIRD_PARTY.md` records the question as open rather than guessing an answer.
 
   **Since 2026-09-08 the kernel knows what the display is, and draws on it.** It parses the multiboot2 framebuffer tag (type 8), validates every field
@@ -2775,22 +2775,22 @@ old allocator and the new one read the same single block and no workload could t
   on a machine that granted a graphics mode. The window it draws through is 2 MiB pages at
   `high_pdpt[509]`, in the half of the address space every task inherits (`make smoke-fb-map`),
   and the console blits an 80x50 grid through it (`make smoke-fb-console`, which checks PIXELS
-  over QMP -- a mirrored blitter leaves the serial log complete and correct).
+  over QMP: a mirrored blitter leaves the serial log complete and correct).
 
   **How a graphics mode is actually obtained, measured 2026-09-08, because two plausible routes
   are dead ends.** `set gfxpayload` in `grub.cfg` does not apply to a multiboot2 payload and
   changes nothing. The multiboot2 framebuffer *request* tag (type 5) in the kernel header is what
-  GRUB honours -- but only if `grub.cfg` has also loaded a video driver; with the tag and no
+  GRUB honours, but only if `grub.cfg` has also loaded a video driver; with the tag and no
   driver it silently falls back to EGA text, which reads exactly like the tag being ignored.
   `grub.cfg` now carries `insmod all_video`, which is inert without the request tag (measured:
   EGA text 80x25, boot reaches the login prompt), so `FB_REQUEST=1` is the whole switch.
 
   **An inference recorded here on 2026-09-07 was wrong, and what disproved it is worth keeping.**
   That entry reported the request tag hanging `console_server`, with the serial log stopping after
-  `init: starting, launching shell` and *neither* of the server's own failure markers appearing --
+  `init: starting, launching shell` and *neither* of the server's own failure markers appearing,
   and concluded from their absence that it blocks *before* its VGA round-trip check rather than
   failing it. It does not. Re-measured 2026-09-08 on the same configuration, the boot now prints
-  `CONSOLE_SELFTEST: FAIL vga`: the server reached the check, failed it, and reported -- and the
+  `CONSOLE_SELFTEST: FAIL vga`: the server reached the check, failed it, and reported, and the
   report was **inaudible**, because the successful `SYS_MAP_PHYS` that precedes the check had
   already handed the console over, so the marker went to the kernel log ring and nowhere else.
   `sys_console_release` (2026-09-07, `make smoke-console-handover`) is what made it audible, and
@@ -2808,12 +2808,12 @@ old allocator and the new one read the same single block and no workload could t
   change, because "locked down" is easy to claim and hard to mean.
 
   **What holds.** The kernel command line is measured into PCR[8], so a boot whose command line
-  was edited -- at the GRUB prompt, or by rewriting the media -- produces a different measurement
+  was edited, at the GRUB prompt, or by rewriting the media, produces a different measurement
   and a **TPM-sealed volume will not unseal**. Confidentiality survives an attacker who can boot
   the machine. The menu's editor is also locked (`set superusers=""` with `--unrestricted`
   entries), so this media's own entries cannot be edited in place; the entries fail closed, with
-  live boot the default and every parsing uncertainty -- no tag, an oversized tag, an
-  unrecognised word, both words at once -- resolving to the mode that writes nothing.
+  live boot the default and every parsing uncertainty (no tag, an oversized tag, an
+  unrecognised word, both words at once) resolving to the mode that writes nothing.
 
   **What does not hold, and cannot.** Anyone who can boot their own media can erase the disk.
   That is true of every machine without a locked firmware and a signed boot chain, it was true
@@ -2829,19 +2829,19 @@ old allocator and the new one read the same single block and no workload could t
   it, so an attacker booting a kernel of their own that reproduced a released build's manifest and
   command line presented identical PCRs and the TPM released the volume key. Measured that day,
   two kernels with different SHA-256 gave byte-identical PCR 0..9. The sentence holds now, for the
-  reason **S92** gives — the kernel's hash is pinned inside the boot image and the seal binds
-  `PCR[4]` — and it is left standing above with this paragraph beneath it rather than quietly
+  reason **S92** gives: the kernel's hash is pinned inside the boot image and the seal binds
+  `PCR[4]`, and it is left standing above with this paragraph beneath it rather than quietly
   rewritten, because the claim was published and a reader who saw it is owed the correction.
 
 - **USB, sound, or any modern bus.** ATA PIO and PS/2 only for *driving* hardware. Two
   consequences on real hardware: a laptop's **NVMe or AHCI SSD cannot be read or written** (an
-  SD/eMMC card can, since 2026-09-08 -- see §4, so a machine whose internal storage is soldered
+  SD/eMMC card can, since 2026-09-08: see §4, so a machine whose internal storage is soldered
   eMMC *is* installable onto and one with a SATA or NVMe SSD is not); and a machine that provides
   no 8042 emulation has **no keyboard**, since there is no USB stack.
 
   **A machine whose keyboard does not answer now says so.** `keyboard_init` sends `0xF4`
   (enable scanning), waits for the keyboard's `0xFA`, and until 2026-09-11 discarded the
-  answer — so a machine with no usable keyboard booted looking exactly like one with a working
+  answer, so a machine with no usable keyboard booted looking exactly like one with a working
   one, and the first symptom was a login prompt that would not take typing. A laptop reported
   `PS2 n=0 sc=00 st=14` under `PS2_PROBE=1`: a controller present and healthy (SYS set, no
   parity or timeout error, not the `0xff` of a floating bus) with IRQ 1 never once fired, on a
@@ -2850,7 +2850,7 @@ old allocator and the new one read the same single block and no workload could t
   uses BIOS `INT 16h` and reaches the firmware's SMM-emulated 8042, where this kernel polls
   `0x60`/`0x64` directly and an OS that reprograms the controller for itself is commonly taken
   by that emulation as one with its own USB driver. There is no USB stack here, so there is no
-  fix available short of one — but the boot now reports the fact instead of leaving it to be
+  fix available short of one, but the boot now reports the fact instead of leaving it to be
   inferred from a prompt that ignores the keys.
 
   **A machine that does emulate 8042 now has a keyboard at every prompt**, since 2026-09-11
@@ -2861,12 +2861,12 @@ old allocator and the new one read the same single block and no workload could t
   it was not is that `userspace/init.c` grants `console_server` exactly what it granted before.
   The kernel stops draining the controller the moment a ring-3 task owns the console hardware
   (`console_hw_owned()`), which is the same fact that already stops `print()` driving the
-  screen -- the handover now has both halves rather than only the output one. Both sides read
+  screen: the handover now has both halves rather than only the output one. Both sides read
   one shared table, `include/ps2_scancode.h`, so a password typed either side of the handover
   produces the same bytes.
 
   Gated by `make smoke-keyboard`, which types a whole login on QEMU's emulated 8042 over QMP
-  `send-key` -- **the only gate in the tree that uses the keyboard at all**. That is the
+  `send-key`, **the only gate in the tree that uses the keyboard at all**. That is the
   reason this survived: every other session test types at COM1, which exercises no part of the
   keyboard path, so the entire suite passed while the machine could not be typed at. Falsified
   in all four directions on 2026-09-11 (`CONSOLE_NO_KBD=1`): gate PASS on the fixed build, gate
@@ -2875,26 +2875,26 @@ old allocator and the new one read the same single block and no workload could t
   What remains true is the first half of this bullet: a machine with **no 8042 at all** still
   has no keyboard, because there is no USB HID stack. `PS2_PROBE=1` answers which machine you
   are on, from the screen and with no serial cable (see `docs/BUILDING.md`). On the IdeaPad
-  that prompted this it read `PS2 n=00004 sc=a4 st=14` -- a controller present, IRQ 1 arriving,
-  scancodes real -- which is the case the ring-3 reader fixes rather than the USB one.
+  that prompted this it read `PS2 n=00004 sc=a4 st=14` (a controller present, IRQ 1 arriving,
+  scancodes real) which is the case the ring-3 reader fixes rather than the USB one.
 
   **THE RING-3 READER WAS ITSELF UNREACHABLE ON A MACHINE WITH NO SERIAL PORT, and that was
   fixed on 2026-09-12.** The J4 reader above polls the 8042 in `con_getc`, *after* a serial
-  check -- and that check asked the COM1 line-status register whether a byte was waiting
+  check, and that check asked the COM1 line-status register whether a byte was waiting
   without first asking whether there is a UART at `0x3F8` to answer. A machine with no serial
   header reads `0xFF` from every register in that range, because nothing drives the ISA bus;
   bit 0 of `0xFF` is the *receive-data-ready* bit, so the serial branch claimed a byte on every
   pass, returned that floating `0xFF` as a character, and `ps2_poll()` beneath it never ran. So
-  the keyboard fix shipped working only on machines that also had a serial port -- which the
+  the keyboard fix shipped working only on machines that also had a serial port, which the
   gates all do, and most laptops do not.
   The same IdeaPad reported the second half of the story on 2026-09-12: `PS2 n=00001 sc=00
   st=15`, an IRQ 1 count stuck at exactly 1 beside a status register with the output-buffer-full
   bit set. One scancode had arrived and was sitting unread, and the 8042 raises no further
-  interrupt until the byte it is holding is taken -- so a dead keyboard and a full buffer are
+  interrupt until the byte it is holding is taken, so a dead keyboard and a full buffer are
   one fact seen from two sides.
   `console_getc` (kernel) and `con_getc` (`console_server`) now probe the UART's scratch
-  register at `+7` -- a plain read/write byte on a 16450 and every 16550 since, where a floating
-  bus returns `0xFF` whatever is written -- and skip serial RX entirely when it does not answer.
+  register at `+7` (a plain read/write byte on a 16450 and every 16550 since, where a floating
+  bus returns `0xFF` whatever is written) and skip serial RX entirely when it does not answer.
   Two distinct probe values, neither `0x00` nor `0xFF`. An original 8250 has no scratch register
   and would be called absent; that direction costs serial input, where the opposite costs the
   keyboard, so it is the safe one. Only the READ is guarded: writes to an absent UART already
@@ -2917,7 +2917,7 @@ old allocator and the new one read the same single block and no workload could t
   Since 2026-09-07 the same is true one controller type along, and further along than for SATA:
   `src/kernel/sdhci.c` finds an **SD/eMMC host controller** (PCI class `0x0805`), resets and
   clocks it, brings the card up (`CMD0`, op-cond, `CMD2`, `CMD3`, `CMD9`, `CMD7`) and decodes its
-  capacity from the CSD. That is the storage a budget laptop actually has -- soldered eMMC,
+  capacity from the CSD. That is the storage a budget laptop actually has, soldered eMMC,
   reached by neither `ata.c` nor `ahci.c`, and since 2026-09-07 it **reads blocks** (`CMD17` by
   PIO), verified against known bytes at two blocks on both a byte-addressed and a block-addressed
   card, and since 2026-09-07 **writes** them too (`CMD24` plus a flush that waits out the card's
@@ -2926,12 +2926,12 @@ old allocator and the new one read the same single block and no workload could t
   `block_device` beside the ATA drives, the survey enumerates it, and the installer formats it:
   `make smoke-installer-sd` drives a whole install onto a card, power-cycles the machine and logs
   in with the password the installer was given. So the storage a budget laptop actually has is
-  now the storage Horus can install onto -- the driver's own write path stays compiled out of a
+  now the storage Horus can install onto: the driver's own write path stays compiled out of a
   shipped boot, because that gate writes to a card the kernel merely *found*, and the block layer
   is how a shipped boot writes to one it was told to.
   **The eMMC branch of that has never executed anywhere.** eMMC powers up with `CMD1`; SD uses
-  `CMD8`/`ACMD41`, and an SD card must not answer `CMD1`. QEMU 10.0 has no eMMC device -- only
-  `sd-card` -- so every gate here exercises the SD branch, and the code an actual laptop needs is
+  `CMD8`/`ACMD41`, and an SD card must not answer `CMD1`. QEMU 10.0 has no eMMC device, only
+  `sd-card`, so every gate here exercises the SD branch, and the code an actual laptop needs is
   written, reviewed and unrun. The branches share the reset, the clock, the command mechanism, the
   response decoding and both CSD decoders, so the unexercised delta is one command; that is a
   mitigation and not a substitute for having run it.
@@ -2939,7 +2939,7 @@ old allocator and the new one read the same single block and no workload could t
   this. Of the three controller types now visible, **SD/eMMC and legacy IDE are mountable and
   AHCI is not**: `ahci.c` identifies a SATA drive and stops there, so a laptop with a SATA SSD is
   still named on the console and not installable onto. That is the next change, and it is now the
-  read/write pair rather than the whole stack -- the `block_device` shape, the survey's
+  read/write pair rather than the whole stack, the `block_device` shape, the survey's
   enumeration and the installer's target selection are all in place and controller-independent.
 - **Process groups, job control, and `/proc`.** `SYS_SPAWN`, `SYS_EXEC_*` and `SYS_FORK` all
   exist, and `fork` + `exec` is gated as a pairing (**S42**, `make smoke-forkexec`); what a
@@ -2947,7 +2947,7 @@ old allocator and the new one read the same single block and no workload could t
   *This bullet read "`fork` does not [exist]" for a day after it landed.*
 - **Dynamic linking.** Every binary statically links newlib (~70 KiB of libc text each once
   stripped; the file used to look far larger because 77% of it was debug info, §2.16).
-- **Multiple filesystems.** One volume, one `fs_server` over it. Mount POINTS exist -- `hvfs` is a per-task mount table and walker, and `dev_server` is a second server mounted at `/dev` (§2.7, **S29**) -- but the prefix decides which server a path is addressed to and confines nothing on its own.
+- **Multiple filesystems.** One volume, one `fs_server` over it. Mount POINTS exist (`hvfs` is a per-task mount table and walker, and `dev_server` is a second server mounted at `/dev` (§2.7, **S29**)) but the prefix decides which server a path is addressed to and confines nothing on its own.
 - **Threads within a task.** One thread per address space.
 - **Swap or memory pressure handling.** Pool exhaustion is a hard failure.
 - **KASLR.** Userspace has 30-bit ASLR; the kernel is loaded at a fixed address.
@@ -2977,9 +2977,9 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 Which tests gate a merge is reconciled by hand: **[C-6]**
 
-`.github/workflows/ci.yml` defines **118** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more: **120** across the three, producing **123** status-check contexts. Ruleset `21815299`
-requires all **120** today, `smoke-kdiag` (**S81**) among them since 2026-09-03 -- one
+`.github/workflows/ci.yml` defines **119** jobs, `codeql.yml` one more and `ruleset-audit.yml`
+one more: **121** across the three, producing **124** status-check contexts. Ruleset `21815299`
+requires all **121** today, `smoke-kdiag` (**S81**) among them since 2026-09-03: one
 `--sync-ruleset` run after the pull request that added the job, which is the lag this finding is
 about rather than an exception to it. Its predecessor `19007209` required **22** of them before
 2026-08-16, and until 2026-08-15 exactly **zero** of those 22 were security gates: capability
@@ -3025,7 +3025,7 @@ the right name with the wrong verdict. Step-level `continue-on-error` is untouch
 allowed; it lets one step be advisory while the job's own status still reports the truth, which
 is how the `security` job keeps its scanners advisory without becoming unfailable itself.
 
-That intended set is **120 required contexts and 3 reasoned exemptions**: `fuzz` (a 30-second
+That intended set is **121 required contexts and 3 reasoned exemptions**: `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
 `smoke-kstack-park` was a fifth until **[G-9]** closed on 2026-08-21; it was promoted on
@@ -3098,18 +3098,18 @@ lag visible the next morning instead of indefinitely. Read the count from the AP
 job's log, never from this paragraph.
 
 **Measured 2026-09-02, and the number to keep is not the lag but what fits inside it.** The
-`installer` job -- the S73 witness, "a disk is erased only after the word that means erase this
-disk" -- entered `required:` in `c0a9f2e` on 2026-09-01 and the ruleset was not synced. When it
+`installer` job: the S73 witness, "a disk is erased only after the word that means erase this
+disk", entered `required:` in `c0a9f2e` on 2026-09-01 and the ruleset was not synced. When it
 finally was, the sync reported `103 -> 106` and named three additions: `installer`, plus
 `store-locked` and `passwd-target` from the two merges that had each added a gating job in the
 meantime. **Five merges landed in that window** (#287 through #291) with a job classified
-merge-gating and not enforced -- and `smoke-installer` went red on `main` twice inside it,
+merge-gating and not enforced, and `smoke-installer` went red on `main` twice inside it,
 where it could not have blocked anything.
 
 **The audit is not what failed, and saying so is the point.** Its last scheduled run before the
 change was 2026-09-01 12:35Z, five hours earlier; it passed correctly on the state it saw and had
 not yet had a chance to fire. The lag is therefore bounded by the schedule rather than by
-attention -- one day, at worst -- which is the guarantee this design actually offers. What the
+attention, one day, at worst, which is the guarantee this design actually offers. What the
 `doc-claims` example above does not convey, and this one does, is that a day is not small when it
 is measured in merges: the same person adds the job and holds the token, at different times, and
 nothing in between refuses.
@@ -3118,8 +3118,8 @@ Two counts moved in the right direction since. `strict_required_status_checks_po
 **true**, so a stale-base merge is no longer permitted. And the `security` job is a required
 check whose scanner-presence step no longer carries `continue-on-error` (#154), so the job goes
 red if the scanners are absent: a job that structurally could not fail now can. **`gitleaks` and `cargo-audit` findings now fail the build** (roadmap 4.3, 2026-08-30). Both are
-reproducible — gitleaks matches fixed patterns against this repository and its history, and
-cargo-audit resolves a lockfile against a dated advisory database — so a finding from either is a
+reproducible (gitleaks matches fixed patterns against this repository and its history, and
+cargo-audit resolves a lockfile against a dated advisory database) so a finding from either is a
 fact about this tree rather than an artifact of a ruleset that moved. They run in their own step
 above the advisory one, so `continue-on-error` cannot hide them.
 
@@ -3127,7 +3127,7 @@ The remaining four scanners' **findings** stay advisory, deliberately: `trivy` e
 findings, `cppcheck` and `flawfinder` pipe into `head` which discards the status, and
 `semgrep --config=auto` fetches rules from a registry that changes with no commit here. Gating on
 their content is what pinning those rulesets would unlock. Note that `cargo-audit` still depends
-on an external advisory feed, so it can redden without a change here — that is accepted
+on an external advisory feed, so it can redden without a change here, that is accepted
 deliberately: a newly disclosed advisory against a dependency *is* news about this tree.
 
 ### 5.2b ~~One required check is nondeterministic by construction~~ (**FIXED 2026-08-16**)
@@ -3414,7 +3414,7 @@ is the [G-8] trace lesson in a new place.
 #### Narrowed 2026-08-17: one component found, fixed, and falsified: the rest still open
 
 **[G-9] as filed was a cluster, not one defect.** *Written 2026-08-17, when one component was
-closed and the finding was open.* **[G-9] closed on 2026-08-21** -- see the close below, which is
+closed and the finding was open.* **[G-9] closed on 2026-08-21**: see the close below, which is
 the current status; the residue that outlived it is **[G-12]** (§5.2g). The paragraph is kept
 because the hypotheses it kills are reusable, not because its status line still holds.
 
@@ -3425,10 +3425,10 @@ cannot leak. Two further hypotheses died the same way: the unguarded "defensive 
 `preempt_on_tick`, and `create_task()` inheriting a stale claim through slot reuse. Both are
 real shapes; neither is what fires. Probes beat reading, three times over.
 
-**And `sched_enter_user()` WAS the site after all -- of a different defect** ([G-12], §5.2g,
+**And `sched_enter_user()` WAS the site after all, of a different defect** ([G-12], §5.2g,
 2026-09-03). The dismissal above is still correct on its own terms: that path orphans no
 *deferred release*, and no probe ever found one there. What it does is claim its task
-unconditionally while the launch site has already published it, which is not a leak at all --
+unconditionally while the launch site has already published it, which is not a leak at all:
 it is the opposite, a claim taken twice. **A lead cleared for one property is not cleared**, and
 the note that cleared it named the property narrowly enough to be re-read a fortnight later and
 still be true. That is the only reason this was recoverable rather than misleading.
@@ -3628,7 +3628,7 @@ difference is not significant (Fisher exact, p ≈ 0.31). See
 measurement and has been superseded**: the same signature was re-measured on 2026-09-02 at
 **0.31% per boot over 2250 boots** and is filed as **[G-12]** (§5.2g), which also excludes the
 deferred-release machinery described here. The figure above is kept because the conclusion drawn
-from it -- that the blast radius is wider than `PROC_SELFTEST` -- rests on it.
+from it, that the blast radius is wider than `PROC_SELFTEST`, rests on it.
 
 An earlier measurement of this fix reported 0 claim panics in 20 boots. It was taken with
 diagnostic scaffolding that scanned every task slot on every ISR exit, and the perturbation hid
@@ -3712,9 +3712,9 @@ can *newly* adopt the doomed tree; the only task naming it has already been rebu
 | Arm | Boots | `0xFEE000B0` fault | free-in-use |
 |---|---|---|---|
 | guarded (`SCHED_INVARIANTS`) | 30 | 0 | 0 |
-| guarded, ship config | 30 | **0** |, |
-| ship config, before the fix | 30 | 6 |, |
-| `CR3_RECLAIM_UNGUARDED=1` | 20 |, | **20** |
+| guarded, ship config | 30 | **0** | n/a |
+| ship config, before the fix | 30 | 6 | n/a |
+| `CR3_RECLAIM_UNGUARDED=1` | 20 | n/a | **20** |
 
 Gates: `make smoke-cr3-reclaim` (the fault must be **absent**) and `make
 smoke-cr3-reclaim-control` (the free-in-use must be **present**). The two arms assert different
@@ -3820,13 +3820,13 @@ foreign-image-spawned pid 1` on every boot.
 **The mechanism.** `sched_enter_user()` claimed its task **unconditionally**, and
 `spawn_initial_userspace_init()` published that task as schedulable a call *before* it. Between
 the publish and the claim, init satisfies every condition of `preempt_on_tick()`'s selection loop
-and is claimed by nobody, so an AP's timer tick landing there takes it -- and the entering CPU
+and is claimed by nobody, so an AP's timer tick landing there takes it, and the entering CPU
 then takes it too. Two CPUs current on one task, neither impersonating, both on its single kernel
 stack: `percpu_current=[1,1,0,0]` with `imp=[0,0,0,0]`, which is the survivor signature recorded
 below, verbatim.
 
 **The fix, two rules.** `enter_user_impl()` re-validates under the scheduler lock and **fails
-closed** -- a CPU does not enter a task another CPU holds, nor one that has stopped being
+closed**: a CPU does not enter a task another CPU holds, nor one that has stopped being
 schedulable; it parks and says so. And `sched_publish_and_enter_user()` removes the window at the
 launch site by doing the publish, the claim and `set_current_task()` in one acquisition of the
 lock, so there is no instant at which the task is schedulable and unclaimed.
@@ -3847,15 +3847,15 @@ The record of how it was narrowed is kept below, because the exclusions are what
 attribution findable.
 
 This is **not [G-9] reopened**: every mechanism [G-9] names is fixed and falsified and stays
-closed. This is the residue [G-9]'s own record predicted -- *"a stale claim in the boot/spawn
-phase, before any exec runs, 2 in 30"* -- measured after the closure and given a number of its
+closed. This is the residue [G-9]'s own record predicted (*"a stale claim in the boot/spawn
+phase, before any exec runs, 2 in 30"*) measured after the closure and given a number of its
 own, because calling it [G-9] would assert that [G-9]'s mechanism explains it and the
 measurement below shows that is not established.
 
 `smoke-sched-invariants-stress` reddens on `main` at **8.9%** of runs, which is the arithmetic
 consequence of 0.31% per boot over 30 boots with zero permitted failures, and matches the 2 in
 25 observed. **The gate is not the problem and must not be re-sized**: three of the four
-observed signatures are memory corruption rather than audit reports -- a resume `%rsp` of `0x1`,
+observed signatures are memory corruption rather than audit reports, a resume `%rsp` of `0x1`,
 the kernel's own stack canary, and an instruction fetch into a kernel stack address hitting NX.
 
 **The rate here supersedes the 1-in-120 figure in §5.2d**, which was measured on 2026-08-21
@@ -3870,7 +3870,7 @@ records an instrument whose cost was misread as the system's rate.
 
 **That candidate is now dead, killed by its own instrument.** `CLAIM_IMP_TRACE=1` re-reads the
 accused CPU at the instant of the accusation; across 1000 further boots and every capture,
-`torn=0` -- no impersonation tear anywhere. What it found instead is that **every audit
+`torn=0`, no impersonation tear anywhere. What it found instead is that **every audit
 accusation captured is false when it is made**: the auditor reports "task 1 claimed by cpu N but
 that cpu was running 0", and a fresh `sched_running_on(N)` microseconds later returns 1. The
 report's *"persisted across two audits"* does not mean what it says: the two-strike guard is a
@@ -3879,31 +3879,31 @@ switch are enough to panic.
 
 **There are two failure modes, and only one of them is the auditor.** One captured boot smashed
 the stack with **no audit panic at all**, and a CI capture on 2026-09-02 printed the canary
-*before* the audit panic -- which rules out the corruption being fallout from the auditor halting
+*before* the audit panic, which rules out the corruption being fallout from the auditor halting
 a CPU mid-switch, a confound the earlier captures could not settle. The `PANIC: two CPUs on one
 kernel stack` seen alongside one of them was **itself a false positive**, corrected 2026-09-02:
 the entering CPU was impersonating, and the G-8 detector took its identity from
 `percpu_current_task[]`, which lies for the duration of an impersonation window (fixed; witness
 `make smoke-kstack-imp`, arm `KSTACK_COLLIDE_IMPERSONATED=1`). **What survives as evidence of
-real corruption is the stack canary**, which is independent of both detectors -- one boot tripped
+real corruption is the stack canary**, which is independent of both detectors, one boot tripped
 it with no audit panic at all, and a CI capture printed it *before* the audit panic. That remains
 unattributed.
 
 **Since 2026-09-02** the auditor's persistence test is fixed (it re-reads before accusing;
 witness `make smoke-claim-reread`, arm `CLAIM_AUDIT_NO_REREAD=1`), and **the rate at HEAD is
 measurably lower**: 0 failures in 3500 clean idle boots against the pre-fix 7 in 2250, Fisher
-**p = 0.0014**, 95% upper bound 0.086%. Read that carefully -- both fixes it follows are
+**p = 0.0014**, 95% upper bound 0.086%. Read that carefully: both fixes it follows are
 *checker* fixes, so what it establishes is that **most of what this finding counted were the
 checkers' own false positives**, not that any hardware defect was repaired.
 
 **The survivor is named.** One failure in 600 loaded boots, with `percpu_current=[1,1,0,0]` and
-`imp=[0,0,0,0]` -- two CPUs current on one task with no impersonation to explain it -- an audit
+`imp=[0,0,0,0]`, two CPUs current on one task with no impersonation to explain it, an audit
 panic that **survived the re-read**, and a stack canary dying in **`do_spawn_charged`**
 (`src/kernel/kspawn.c`). `inflight=0`, so the S20 collision detector could not have fired. The
 faulting addresses in earlier captures are instruction fetches into `KSTACK_REGION_VMA`, the
 per-task kernel stack region. So: two CPUs become current on one task and the shared kernel stack
 corrupts the spawn path's frame. How the second CPU got there was the open question; the answer is
-the entry path above, and not the spawn path -- `do_spawn_charged`'s canary was a frame that
+the entry path above, and not the spawn path: `do_spawn_charged`'s canary was a frame that
 happened to be on the shared stack, not the thing that shared it.
 
 **A load "lever" recorded here on 2026-09-02 did not survive retesting** and should not be used
@@ -3914,11 +3914,11 @@ as well as CPU, so a build-shaped load may still be a lever while a spin-loop is
 ### 5.2h The installer's format on a slow disk: **[G-13]**, gate repaired
 
 **Filed 2026-09-02 as "cause unestablished". Measured and repaired 2026-09-03.**
-`smoke-installer` went red on `main` twice -- 2026-09-01 19:18 and 2026-09-02 00:20 -- both
+`smoke-installer` went red on `main` twice, 2026-09-01 19:18 and 2026-09-02 00:20, both
 times a **300s timeout** waiting for `INSTALLER: PASS installed`, with the guest having printed
 `INSTALLER: formatting` and then said nothing. No fault, no panic, no output at all in either
-capture. Two explanations were live -- a pathologically contended runner, or a hang in the
-format path -- and nothing distinguished them.
+capture. Two explanations were live (a pathologically contended runner, or a hang in the
+format path) and nothing distinguished them.
 
 **The argument that ruled out slowness does not hold, and this is the measurement.** It ran:
 *the same step takes ~6s on a developer machine, so a runner slow enough would have to be ~50x
@@ -3941,10 +3941,10 @@ speed and hits the format only. Dialling the one variable with QEMU's own thrott
 | 200 IOPS | 1.7s | 27.6s |
 | 100 IOPS | 1.7s | 52.1s |
 
-That is `format ≈ 5.2s + 4700/IOPS` -- the format is ~4,700 synchronous PIO operations -- with
+That is `format ≈ 5.2s + 4700/IOPS`, the format is ~4,700 synchronous PIO operations, with
 **the boot step flat at 1.7s at every point**. Bandwidth is not the variable: throttling to
 2 MB/s changes nothing, because the format writes only ~2.3 MB. Solving for the old 300s budget
-gives **≈16 IOPS**, and `SESSION_DISK_IOPS=12` reproduces the CI signature on the first try --
+gives **≈16 IOPS**, and `SESSION_DISK_IOPS=12` reproduces the CI signature on the first try,
 normal boot step, `INSTALLER: formatting` last on the wire, 300s timeout, no fault.
 
 So a slow disk produces every observed symptom, and the boot step is insensitive to exactly the
@@ -3952,7 +3952,7 @@ thing that would cause it. **This does not prove the runner was at 16 IOPS**; it
 reason for believing a hang, and it supplies a lever that makes the signature on demand.
 
 **The repair is a stall bound, not a bigger budget.** No value of a *total* budget can separate
-the two candidates -- raise it and a wedge takes longer to report, lower it and a slow disk
+the two candidates: raise it and a wedge takes longer to report, lower it and a slow disk
 fails. The format is now bounded by `INSTALLER_FORMAT_STALL` (30s), measured as seconds with
 **no guest disk operation at all**, and it says which case it saw. Applied to **every scenario in
 `tools/installer_session.py` that formats a volume**, not only the one that went red: they all
@@ -3963,18 +3963,18 @@ and is never failed; a wedge stops and is caught in 30s instead of 300.
 **The progress signal is QEMU's own block statistics over QMP, and three cheaper ones are
 wrong.** The image's `st_mtime` and the QEMU process's `write_bytes` both advance through the
 format's write phase and then freeze for ~200s while `merkle_build` reads the metadata region
-back -- a detector on either declares a wedge at the read phase, and did, on the first run.
+back, a detector on either declares a wedge at the read phase, and did, on the first run.
 `/proc/PID/io` `syscr` advances through both phases *and keeps advancing when the guest is
-wedged*, because QEMU's event loop polls the serial pty -- a detector that cannot go quiet
+wedged*, because QEMU's event loop polls the serial pty, a detector that cannot go quiet
 cannot fire. `query-blockstats` counts operations the guest issued against its disk and nothing
 else. If QMP is unreachable the gate **fails closed** rather than degrading to a total budget.
 
 **Witnessed both ways.** `make smoke-installer-slowdisk` throttles the guest to 12 IOPS, which
-puts the format at ~420s -- past the budget that used to fail it -- and requires the install to
+puts the format at ~420s, past the budget that used to fail it, and requires the install to
 **succeed**; that is the direction an inject-and-look arm cannot cover, and without it "never
 fires" would pass the arm below. `make smoke-installer-wedge-control` (`STORAGE_FORMAT_WEDGE=1`)
 spins the format halfway through the metadata region, so the image is provably being written and
-then stops, and requires the failure to **name a wedge** -- not merely to fail, because before
+then stops, and requires the failure to **name a wedge**, not merely to fail, because before
 this change both cases produced the same timeout message, which is what left this finding
 unattributable for a day.
 
@@ -4008,7 +4008,7 @@ unverified 9 MiB blob on the way in.
 
 **Measured 2026-09-10**, while building `install.iso` (the image that runs the installer on
 every boot). Driving that image through a second install on a disk it had just written
-completes the entire walk -- survey, accounts, review, the typed word -- and then answers
+completes the entire walk, survey, accounts, review, the typed word, and then answers
 `INSTALLER: FAIL format refused rc=-22`.
 
 **Two independent kernel guards refuse it, and both are deliberate:**
@@ -4020,7 +4020,7 @@ completes the entire walk -- survey, accounts, review, the typed word -- and the
 - `storage_unlock`'s `g_needs_format` gate is consumed the moment a volume exists, so even
   past the first guard there is no permission left to format with (**S63**, **S83**).
 
-**Neither is a bug, and the installer's own refusal is a third layer** -- `userspace/installer.c`
+**Neither is a bug, and the installer's own refusal is a third layer**, `userspace/installer.c`
 declines a recognised volume with a screen, for the reason its header gives: overwriting a
 filesystem somebody may still want is a different act needing a different confirmation.
 
@@ -4046,20 +4046,20 @@ build Horus without the Rust security core and get C implementations instead. **
 one.** The shims define seven symbols; the kernel calls forty-nine. Measured on a pristine
 `origin/main` worktree with the Rust archive present so the link is actually attempted:
 **43 distinct symbols unresolved**, among them `rust_cap_lookup`, `rust_cap_mint`,
-`rust_page_ref_inc`, `rust_sha256` and `rust_ct_eq` -- the capability engine, the page
+`rust_page_ref_inc`, `rust_sha256` and `rust_ct_eq`, the capability engine, the page
 refcounts and the hashes. There is no C fallback for any of them and there never was.
 
 **Why nothing caught it.** `RUST_ENABLED` is assigned 1 inside the `Makefile` and CI never
 overrides it, so no job has ever built this arm. It fails two different ways depending on
 what is lying around: from clean, `make RUST_ENABLED=0` stops at *"No rule to make target
 `rust/target/x86_64-unknown-none/release/libhorus_shell.a`"*, because `kernel.elf` lists the
-Rust archive as a prerequisite unconditionally -- so the arm that is supposed to build
+Rust archive as a prerequisite unconditionally, so the arm that is supposed to build
 *without* Rust cannot start without it. Only if a previously built archive is present does it
 get as far as the link and produce the undefined references. **A configuration that fails
 before it reaches the failure is a configuration nobody diagnoses.**
 
 **What was changed here, and what was not.** Three shims with no Rust export and no caller
-were deleted (`rust_validate_ipc` had never had a subject at all -- there is no Rust function
+were deleted (`rust_validate_ipc` had never had a subject at all: there is no Rust function
 of that name and never was; the other two lost theirs when the dead exports went). The arm's
 symbol set was measured before and after and is **identical, 43 either way**, so this
 narrowed nothing. The remaining four shims are left in place: deleting them is a decision
@@ -4130,7 +4130,7 @@ would confirm it.
 `smoke-switch-commit` went red on an unrelated pull request with
 `SMOKE FAIL: saw fail marker 'stale scheduler claim' on serial`. The change under
 test touched five files and none of them reach the kernel, so it could not have
-caused it — which made the question whether the gate is flaky or the defect is
+caused it, which made the question whether the gate is flaky or the defect is
 real.
 
 **It is real.** Building that gate's exact configuration
@@ -4143,8 +4143,8 @@ times:
 | died without reaching the required marker | 31 / 200 |
 
 **What that rate is and is not.** It was measured under
-`tools/stress_boot.sh`'s deliberate contention — four guest CPUs pinned onto two
-host cores — which is a *widener*, not the configuration `smoke-switch-commit`
+`tools/stress_boot.sh`'s deliberate contention, four guest CPUs pinned onto two
+host cores, which is a *widener*, not the configuration `smoke-switch-commit`
 runs in. So 1/200 is the rate under widening and an upper bound on the gate's own
 red rate; the 31/200 is very largely the widener plus `KSP_GUARD_INJECT`, which
 exists to inject a bogus kernel stack pointer and is not a passive instrument.
@@ -4153,7 +4153,7 @@ Neither number is the gate's flake rate, and neither should be quoted as one.
 **Why this is filed rather than closed.** `[G-12]` was attributed and fixed
 2026-09-03, and its investigation states the rate at HEAD was *"already 0 in 3500
 boots before this fix"*. That campaign was not this configuration, so this is not
-evidence the fix regressed — but it is evidence that a claim can still go stale
+evidence the fix regressed, but it is evidence that a claim can still go stale
 under injection at a measurable rate, which is the mechanism `[G-9]` and
 `[G-12]` are about. An earlier 20-boot run found 0/20 and proves nothing: against
 a 0.5% event that is about 10% power, which is the arithmetic
@@ -4162,9 +4162,9 @@ a 0.5% event that is about 10% power, which is the arithmetic
 **Why this is a limitation and not a `[G-n]` finding** (decided 2026-09-11, and
 recorded so it is not re-litigated). A G-number is a defect that has been
 attributed and that carries a witness able to fail; neither is true here. The
-only number this entry has is **conditioned on a widener** -- four guest CPUs
+only number this entry has is **conditioned on a widener** (four guest CPUs
 pinned onto two host cores, plus `KSP_GUARD_INJECT`, which injects a bogus kernel
-stack pointer and is not a passive instrument -- so 1/200 is an upper bound on a
+stack pointer and is not a passive instrument) so 1/200 is an upper bound on a
 rate nobody has measured in the configuration the gate actually runs in.
 Promoting that to a finding would state a precision the measurement does not
 have, and would attach a status to it that every other document then has to
@@ -4173,20 +4173,20 @@ carry consistently.
 **What would change the classification**, in either direction: a campaign of the
 same size **without** the pinning, which measures the gate's own configuration
 rather than the widened one; or a captured reproduction, which is now possible
-where it was not -- `tools/stress_boot.sh` keeps every failure since 2026-09-10,
+where it was not: `tools/stress_boot.sh` keeps every failure since 2026-09-10,
 bounded by `STRESS_KEEP_FAILURES`. Either result is worth more than re-arguing
 the classification from the number already here.
 
 **The capture is gone, and that is a second finding.** `tools/stress_boot.sh`
 kept only the *first* failure's log, and the first failure of this campaign was
-one of the 31 "died otherwise" runs — so the one reproduction of the marker under
+one of the 31 "died otherwise" runs, so the one reproduction of the marker under
 investigation was discarded. That is precisely the loss G-12's investigation
 recorded (*"three of the four reproductions in the 1000-boot run were not
 recoverable"*), excusing it as being *"in a script that gates nothing and
 therefore never got the repair"*. **That premise had expired**: the script backs
 `smoke-console-smp-stress` and `smoke-sched-invariants-stress`, both required.
-Fixed in the same commit as this entry — every failure is captured now, bounded
-by `STRESS_KEEP_FAILURES` — so the next reproduction survives to be read.
+Fixed in the same commit as this entry (every failure is captured now, bounded
+by `STRESS_KEEP_FAILURES`) so the next reproduction survives to be read.
 
 ### 5.3d A checker's natural failure is to examine nothing and pass
 
@@ -4197,24 +4197,24 @@ thirteen** that had none:
 | Checker | What it did with its own pattern broken |
 |---|---|
 | `check_capslots` | Parsed no `CAPSLOT_*` definitions, so no collisions and no cross-header disagreements, and printed PASS |
-| `check_abi_structs` | Parsed **zero fields** for all fourteen boundary structs, so every pair compared **equal** — two empty lists agree |
+| `check_abi_structs` | Parsed **zero fields** for all fourteen boundary structs, so every pair compared **equal**, two empty lists agree |
 | `check_syscall_abi` | Its macro rules read the header directly and kept passing while the wrapper scan went silent, so the rule that catches **#176** stopped looking |
-| `check_ring0_budget` | Resolved zero linked objects, so nothing was unclassified and `core` measured 0 — under any budget |
+| `check_ring0_budget` | Resolved zero linked objects, so nothing was unclassified and `core` measured 0, under any budget |
 | `check_lock_order` | Saw no function take a lock, so nothing nested and nothing reversed |
-| `check_base_gate_reddens` | Derived zero flag/gate pairs — and separately, a selector matching none skipped all 88 — printing *"every base gate reddens"* having booted nothing |
+| `check_base_gate_reddens` | Derived zero flag/gate pairs (and separately, a selector matching none skipped all 88) printing *"every base gate reddens"* having booted nothing |
 
 **The rate is what makes this a finding rather than six bugs.** Nearly half, and
 none of them was a careless checker: they are the ones with the longest
 explanatory headers in the tree. The shape is structural. A checker is a loop
 over a parsed collection, and the natural failure of a parser is to return an
-empty one — at which point every rule inside the loop is vacuously satisfied and
+empty one, at which point every rule inside the loop is vacuously satisfied and
 the summary line, which counts *problems found*, says zero.
 
 **What follows for anything written next.** A checker needs a rule about its own
 input before it needs any rule about the tree: *did I actually see the thing I am
 about to make claims regarding?* Every one of the six now asserts a floor on what
 it parsed, deliberately set far below the real count so that legitimate shrinkage
-never trips it — the guard is there to catch a parser that has gone silent, not
+never trips it: the guard is there to catch a parser that has gone silent, not
 to police the tree's size. And every one has an arm that breaks the pattern and
 requires a failure, because a guard nothing tests is the same class of thing as
 the defect it guards against.
@@ -4223,17 +4223,17 @@ the defect it guards against.
 not a checker, and it had the identical defect: `for i in $(seq 1 $RUNS)` with
 `STRESS_RUNS=0` iterates never, so the failure counters stayed 0 and it printed
 *"STRESS PASS: 0 failure(s) within the permitted 0"* having booted nothing. Its
-own summary line said **"out of 0"** one row above — the evidence was on the
+own summary line said **"out of 0"** one row above: the evidence was on the
 screen and nothing acted on it. It backs `smoke-console-smp-stress` and
 `smoke-sched-invariants-stress`, both required, and `STRESS_RUNS=0` is what
 somebody sets to skip a slow gate for one run. Guarded and falsified 2026-09-10
 (`tools/test_stress_boot.sh`). The bound is 1 rather than a minimum sample size:
 `STRESS_RUNS=1` did measure something, and refusing it would trade a real defect
-for an obstacle — what a small N costs in *detection power* is a separate
+for an obstacle: what a small N costs in *detection power* is a separate
 question, and the summary already reports N so it stays visible.
 
 **Not claimed**: that the remaining seven were sound by design. Three of them
-turned out to be guarded *by accident* — `check_kani_harnesses` fails on a broken
+turned out to be guarded *by accident*: `check_kani_harnesses` fails on a broken
 pattern only because its manifest then names harnesses the scan cannot find, and
 `check_miri_scope` only because every `skip` entry then reads as rotted.
 Accidental protection is real protection, and it is now asserted by an arm so it
@@ -4295,7 +4295,7 @@ only the wiring is missing. **They were not sound. Wiring TLC in would not have 
 would have failed at parse.** The predecessor audit (`docs/history/AUDIT-2026-07.md`) rated
 formal methods *"Excellent for stage"* partly on their existence.
 
-Both files were untouched from the repository's first commit (2026-06-25) to their deletion —
+Both files were untouched from the repository's first commit (2026-06-25) to their deletion,
 across which the capability engine moved to Rust, revocation became an unbounded closure
 (roadmap 1.6), `fork`/COW landed, and SMP landed. **The specific defects are recorded here
 because they are what makes "unsound" a checkable claim rather than an assertion**, and
@@ -4313,7 +4313,7 @@ because the same mistakes are available to whoever writes the replacement:
   specification existed to model was unsatisfiable.
 - **Its safety property was a tautology.** `NoEscalation` reduced to
   `c.rights <= 0xFFFFFFFF`, true of every value in the declared domain. **The invariant this
-  whole system rests on — that delegation may only ever reduce rights — was not stated
+  whole system rests on, that delegation may only ever reduce rights, was not stated
   anywhere in the specification of the capability algebra.** A predicate that accepts
   everything is precisely what a control arm must never be (§2).
 - **`paging_isolation.tla` never modelled isolation.** `CreateUserPML4` was absent from
@@ -4321,16 +4321,16 @@ because the same mistakes are available to whoever writes the replacement:
   never mentioned `page_tables` at all, so the property the file was named for was never
   asserted; and `Next` quantified over `Nat`, which TLC cannot enumerate.
 - **Its one substantive invariant contradicted the implementation.** `Inv` required every
-  non-zero kernel-half PML4 entry to satisfy `flags % 4 = 0` — neither present nor writable.
+  non-zero kernel-half PML4 entry to satisfy `flags % 4 = 0`, neither present nor writable.
   In `src/kernel/paging.c` the real entry is
   `pml4[510] = virt_to_phys(pml4) | 0x3 | PAGE_NX`: the **recursive self-map**, present and
   writable, so `% 4 = 3`. The spec also treated slot 510 as the kernel image base, which lives
-  in `high_pdpt[510]` — a different table. Even after repairing every syntax error above, the
+  in `high_pdpt[510]`, a different table. Even after repairing every syntax error above, the
   invariant would fail on the first state that modelled the real system.
 
 **Why deleted rather than repaired.** Kani is the formal-methods track that actually gates,
 and a second toolchain plus a specification that must track a Rust engine is not maintainable
-by one person — the specs went 2.5 months and four subsystem rewrites without an edit, which
+by one person: the specs went 2.5 months and four subsystem rewrites without an edit, which
 is the evidence rather than the prediction. An unsound specification that nothing runs is a
 claim with nothing behind it, and removing the artefact removes the claim. Roadmap **3.5**
 keeps the intent, restated as ⬜ with the honest scope: **no TLA+ specification exists**, and
@@ -4344,7 +4344,7 @@ so neither was ever presented to a contributor. There was no code of conduct, an
 the IPC authorisation logic. All fixed as of 2026-07-27; the `require_code_owner_review`
 setting that would make `CODEOWNERS` binding is still off (§5.1).
 
-*(Repository hygiene itself is fine: `git ls-files` reports **421** tracked files with no build
+*(Repository hygiene itself is fine: `git ls-files` reports **423** tracked files with no build
 artefacts or vendored binaries: no `kernel.elf`, no `horus.iso`, no object files. A working
 checkout accumulates ~70 MB of untracked build output, which is correctly `.gitignore`d. This
 sentence said 243 until 2026-08-15 and **254 until 2026-09-20**, by which point the tree had
@@ -4552,7 +4552,7 @@ Against "a complete, self-hosting operating system":
 | Boot and low-level x86-64 | 85% |
 | Memory management | 70% |
 | Capability model, *design* | 80% |
-| Capability model, *enforcement* | **70%** (IPC namespace mediated and identity retired; two ambient console paths remain -- `SYS_WRITE` fd 1 and `SYS_READ` fd 0, §1.6) |
+| Capability model, *enforcement* | **70%** (IPC namespace mediated and identity retired; two ambient console paths remain, `SYS_WRITE` fd 1 and `SYS_READ` fd 0, §1.6) |
 | Scheduling | 55% |
 | SMP | 45% |
 | IPC | 40% |

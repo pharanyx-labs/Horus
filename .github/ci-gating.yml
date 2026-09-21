@@ -101,6 +101,16 @@ required:
   - smoke-fs-large
   - smoke-fs-perms
   - smoke-fs-persist
+  # Shards of `smoke` and `smoke-fs-persist`, split out 2026-09-21 to cut the run's
+  # wall time; each carries steps that were already required inside those jobs.
+  - smoke-console-backspace
+  - smoke-fb
+  - smoke-fs-16g
+  - smoke-fs-integrity
+  - smoke-install-media
+  - smoke-installer-sd
+  - smoke-keyboard
+  - smoke-sdhci
   - smoke-fs-wal
   - smoke-fs-wal-flush
   - smoke-fs-wal-order

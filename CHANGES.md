@@ -504,6 +504,18 @@ in this file.
   `.bss` rather than the end of the image because the same tree ends 12 KiB apart on CI's compiler
   and on Void's. Falsified by `tools/test_check_image_budget.sh` (11 arms).
 
+### Changed
+
+- **A CI run took nearly an hour, set by two jobs.** Measured on the run for #413: 122 jobs, a
+  median of 52 seconds each, and a wall time of 56 minutes, because `smoke` ran 59 gates one
+  after another (54 minutes) and `smoke-fs-persist` 34 (33 minutes) while every other job had
+  finished in the first quarter of an hour. Both are now split into ten jobs along the seams
+  their steps already had, with every step moved verbatim, each gate beside its control arm,
+  and every shard required through `gates`. The floor is the 16 GiB volume gate at about
+  fourteen minutes; it and the next two longest jobs are defined first in `ci.yml` so they start
+  before the runner queue fills. No gate was dropped, weakened or reclassified: the same `make`
+  steps run, and `check_gate_pairs` still finds every one.
+
 ### Fixed
 
 - **A new CI gate did not block merges until someone synced the ruleset by hand** (**[C-6]**,

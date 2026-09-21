@@ -1578,10 +1578,10 @@ as a reproduction.
 
 ## CI
 
-`.github/workflows/ci.yml` defines **121** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **129** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below: **123** jobs, **126** contexts. Counts from `tools/check_ci_gating.py`, which prints
+below: **131** jobs, **134** contexts. Counts from `tools/check_ci_gating.py`, which prints
 them; do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20, a backstop, not a budget. The default is
@@ -1592,6 +1592,16 @@ measured and rejected: the median install is about 20 seconds but the legitimate
 minutes, and 12 of 74 installs exceeded 15 minutes in a run that was green on all 77 checks. A
 step budget would have reddened it. The distinction that matters is between slow and never
 returning, and only a generous cap draws it.
+
+No job holds more than about fifteen minutes of work, and that is by design. `smoke` and
+`smoke-fs-persist` each used to run every gate of their area in one job, 59 and 34 steps, and at
+54 and 33 minutes they set the wall time of every run while the other jobs finished in the first
+quarter of an hour. On 2026-09-21 they were split into ten jobs along the same seams (boot and
+SATA, SD/eMMC, installing onto SD/eMMC, the framebuffer, the keyboard, backspace, install media;
+persistence, the 16 GiB volume, integrity and accounts), with every step moved verbatim and each
+gate beside its control arm. The run's floor is now the 16 GiB volume gate at about fourteen
+minutes, and the three longest jobs are defined straight after `gates`, so that they are among
+the first scheduled when at most 20 jobs run at once.
 
 All third-party actions are pinned to full commit SHAs. Workflow `permissions:` blocks are
 least-privilege. There are no self-hosted runners.
@@ -1619,7 +1629,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The set is **123 gating contexts and 3 reasoned exemptions** (read off
+The set is **131 gating contexts and 3 reasoned exemptions** (read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence): `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on) and `ruleset-audit` (schedule-only, so it never runs on a pull request).

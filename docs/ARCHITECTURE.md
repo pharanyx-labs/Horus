@@ -188,7 +188,7 @@ contract but a hope. **S54** requires the clause to exist; **S86** requires the 
 typedef struct capability {
     uint32_t type;        /* CAP_TCB, CAP_ENDPOINT, CAP_FRAME, ... */
     uint32_t rights;      /* READ | WRITE | EXEC | GRANT | MINT | REVOKE | ... */
-    uint64_t object;      /* which instance: task id, endpoint index, address, ... */
+    uint64_t object;      /* which instance: task (slot + generation), endpoint index, address, ... */
     uint32_t badge;       /* the parent's serial: the derivation-tree link */
     uint32_t serial;      /* globally unique, monotonic */
     uint32_t generation;  /* lineage generation at creation */
@@ -957,6 +957,16 @@ Where a syscall's authority is a single fixed capability, the check happens **on
 before the handler runs, so a syscall physically cannot execute without it. `SC_NONE` means the
 authority is argument-dependent (e.g. `SYS_KILL` needs a `CAP_TCB` for a *dynamic* target) and
 the handler performs it, with the reason noted per entry.
+
+**A `CAP_TCB` names one task, not a slot** (**S100**). Its `object` is `tcb_object(id)`: the slot
+number in the low 16 bits and that slot's generation above them. `create_task` increments the
+generation every time a slot is reused, before the slot goes live, so a capability for a dead
+task can never name the task that took its place. A bare slot number has generation 0, which no
+live task has, so a writer that forgot to encode fails closed. The five syscalls a `CAP_TCB`
+authorises (`SYS_KILL`, `SYS_SIGNAL`, `SYS_TASK_RESUME`, `SYS_CAP_GRANT`, `SYS_WAIT`) check and
+act under the spawn lock, which every task-creating path holds, so a slot cannot be reused
+between the check and the act; and a pending `SYS_WAIT` records the generation it was authorised
+against and is re-checked under the same lock when it registers.
 
 **Fail-closed properties:**
 

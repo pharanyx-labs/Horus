@@ -859,7 +859,7 @@ void h_sudo(struct interrupt_frame64 *r) {
 
         tasks[pid].cspace[7].type   = CAP_TCB;
         tasks[pid].cspace[7].rights = CAP_RIGHT_ALL;
-        tasks[pid].cspace[7].object = pid;
+        tasks[pid].cspace[7].object = tcb_object(pid);   /* HORUS-20260921-02 */
         tasks[pid].cspace[7].badge  = 0;
         tasks[pid].cspace[7].serial = s7;
         tasks[pid].cspace[7].generation = rust_lineage_current(s7); /* finding 3.3 */

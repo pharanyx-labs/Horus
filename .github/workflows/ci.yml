@@ -2014,6 +2014,10 @@ jobs:
       # for its target, and proctest must say so by name.
       - name: Control arm, waiting on a task needs a CAP_TCB naming it
         run: make smoke-proc-wait-control
+      # HORUS-20260921-02 (S100). A CAP_TCB compared by slot alone names whatever
+      # reused a dead task's slot, and proctest must say so by name.
+      - name: Control arm, a CAP_TCB for a dead task names nothing
+        run: make smoke-proc-tcb-reuse-control
 
   smoke-cow:
     name: QEMU copy-on-write self-test (headless)

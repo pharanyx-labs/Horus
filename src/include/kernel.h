@@ -3202,6 +3202,9 @@ void wx_selftest(void);
 #ifdef NZCOW_SELFTEST
 void nzcow_selftest(void);   /* generic (non-zero) copy-on-write break test */
 #endif
+#ifdef PAGEFREE_SELFTEST
+void pagefree_selftest(void); /* free_user_physical_page fails closed (S99) */
+#endif
 #ifdef SPAWN_OWNER_SELFTEST
 /* Staged-image ownership ([G-11]): refuse a foreign arm, accept your own. */
 void spawn_owner_selftest(void);

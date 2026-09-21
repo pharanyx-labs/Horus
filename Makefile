@@ -90,7 +90,7 @@ RUST_TARGET ?= x86_64-unknown-none
 # as CLAUDE.md already requires for that table.
 DEFECT_FLAGS = \
 	IRQ_LEGACY_GLOBAL_LOCK USER_HEAP_HIGH_BASE \
-	KFAULT_INJECT KFAULT_LEGACY_PRINTLN \
+	KFAULT_INJECT KFAULT_LEGACY_PRINTLN PAGE_FREE_UNGUARDED \
 	KDIAG_LEGACY_COM1 KDIAG_SPLIT_WIDEN KDIAG_PORTS_GRANTABLE KDIAG_NOISE KDIAG_PROBE KDIAG_RING3_PROBE \
 	PS2_PROBE \
 	INSTALLER_NO_BACK \
@@ -3584,6 +3584,24 @@ ifeq ($(NZCOW_SELFTEST),1)
 CFLAGS  += -DNZCOW_SELFTEST
 endif
 
+# PAGEFREE_SELFTEST=1 makes kernel_main (after paging_init) check that
+# free_user_physical_page fails closed (S99, HORUS-20260919-01): a double free,
+# an address below the pool, an unaligned one and a reserve-window frame are each
+# refused without moving the free stack, and a real alloc/free still works.
+# Prints PAGEFREE_SELFTEST: PASS/FAIL; make smoke-pagefree asserts on it.
+PAGEFREE_SELFTEST ?= 0
+ifeq ($(PAGEFREE_SELFTEST),1)
+CFLAGS  += -DPAGEFREE_SELFTEST
+endif
+
+# PAGE_FREE_UNGUARDED=1 puts the defect back: free_user_physical_page pushes any
+# frame it is handed, as before 2026-09-21. The control arm for smoke-pagefree.
+# Never a shipping config.
+PAGE_FREE_UNGUARDED ?= 0
+ifeq ($(PAGE_FREE_UNGUARDED),1)
+CFLAGS  += -DPAGE_FREE_UNGUARDED
+endif
+
 SMP_SELFTEST ?= 0
 ifeq ($(SMP_SELFTEST),1)
 SMP := 1
@@ -5170,6 +5188,29 @@ smoke-nzcow:
 	@$(MAKE) --no-print-directory NZCOW_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='NZCOW_SELFTEST: PASS' \
 		FAIL_MARKER='NZCOW_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
+
+# Does the page free path fail closed on its own? (S99, HORUS-20260919-01,
+# docs/LIMITATIONS.md 2.5a.) Before the on-loan bitmap, a free was safe only
+# because every caller remembered to free once; this proves a caller that did
+# not would be refused, and that a real free still works.
+.PHONY: smoke-pagefree
+smoke-pagefree:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PAGEFREE_SELFTEST=1
+	@$(MAKE) --no-print-directory PAGEFREE_SELFTEST=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='PAGEFREE_SELFTEST: PASS' \
+		FAIL_MARKER='PAGEFREE_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
+
+# The control arm: the guard removed, so the double free is pushed and the
+# self-test must say so by name.
+.PHONY: smoke-pagefree-control
+smoke-pagefree-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PAGEFREE_SELFTEST=1 PAGE_FREE_UNGUARDED=1
+	@$(MAKE) --no-print-directory PAGEFREE_SELFTEST=1 PAGE_FREE_UNGUARDED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='PAGEFREE_SELFTEST: FAIL double-free' \
+		tools/smoke_test.sh horus.iso
 
 # Control arm -- the arena guard. COW_ARENA_UNGUARDED=1 lets a copy-on-write
 # break proceed on a page belonging to a kernel object. The selftest drives it

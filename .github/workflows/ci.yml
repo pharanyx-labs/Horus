@@ -1631,6 +1631,32 @@ jobs:
       - name: Boot COW_SELFTEST kernel and assert shared zero page breaks to private pages in isolation
         run: make smoke-cow
 
+  smoke-pagefree:
+    name: The page free path refuses a frame it did not lend (S99)
+    runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes;
+    # that cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 105
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # HORUS-20260919-01. A double free, an address outside the pool and a
+      # frame the pool never lends must each be refused with the free stack
+      # unmoved, and a real alloc and free must still work.
+      - name: Boot PAGEFREE_SELFTEST kernel and assert every free the pool did not lend is refused
+        run: make smoke-pagefree
+      # The control arm, in the same job: the guard removed, and the self-test
+      # must name the double free it now accepts.
+      - name: Remove the guard and require the self-test to catch the double free
+        run: make smoke-pagefree-control
+
   smoke-nzcow:
     name: QEMU non-zero copy-on-write self-test (generic break path, headless)
     runs-on: ubuntu-latest

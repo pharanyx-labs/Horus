@@ -305,6 +305,7 @@ required:
   - smoke-irq-policy
   - smoke-kdiag
   - smoke-kfault
+  - smoke-pagefree
   - smoke-kstack-race
   - smoke-mapphys
   - smoke-modules

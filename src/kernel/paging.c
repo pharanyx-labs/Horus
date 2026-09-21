@@ -47,6 +47,42 @@ static uint32_t g_phys_pool_pages = USER_PHYS_DEFAULT_PAGES;
 
 uint32_t get_free_user_pages(void) { return (uint32_t)free_page_count; }
 
+/* Which pool frames alloc_user_physical_page has handed out and nobody has freed
+ * since: one bit per frame, set on alloc, cleared on free (S99,
+ * HORUS-20260919-01, docs/LIMITATIONS.md 2.5a).
+ *
+ * It is what lets free_user_physical_page fail closed ON ITS OWN. Before it, the
+ * free pushed whatever it was handed, and was safe only because every caller
+ * remembered to free a leaf through the refcount and a table exactly once. A
+ * caller that did not would put one frame on the free stack twice, and the pool
+ * would then hand the same frame to two owners with no complaint. The refcount
+ * cannot stand in for this: a leaf is freed when its count reaches 0 and a table
+ * at count 1, so the count cannot tell a first free from a second. So a free is
+ * accepted only for a frame that is out on loan, which also refuses a frame the
+ * pool never lends at all (the reserve window, a boot module's frames) and any
+ * address outside the pool.
+ *
+ * 16 KiB of .bss, charged against the __bss_end budget on purpose, rather than
+ * overloading page_refcounts with a sentinel: the Kani proofs in
+ * rust/src/memory.rs reason about that table's values. Guarded by page_lock, as
+ * the free stack is. */
+static uint32_t page_on_loan[USER_PHYS_PAGES / 32];
+
+/* The pool frame `phys` names, or -1 if it names none: below the pool, not
+ * page-aligned, or past the frames this boot's pool covers. */
+static int pool_frame_index(uint32_t phys) {
+    if (phys < USER_PHYS_BASE || (phys & (PAGE_SIZE - 1)) != 0) return -1;
+    uint32_t idx = (phys - USER_PHYS_BASE) / PAGE_SIZE;
+    return idx < g_phys_pool_pages ? (int)idx : -1;
+}
+
+static int  on_loan(int idx)       { return (page_on_loan[idx >> 5] >> (idx & 31)) & 1u; }
+static void set_on_loan(int idx)   { page_on_loan[idx >> 5] |=  (1u << (idx & 31)); }
+static void clear_on_loan(int idx) { page_on_loan[idx >> 5] &= ~(1u << (idx & 31)); }
+
+/* Refusals so far, for the self-test and for anyone reading the klog. */
+static uint32_t g_page_free_refusals;
+
 void phys_set_pool_pages(uint32_t pages) {
     if (pages < PHYS_POOL_MIN_PAGES) pages = PHYS_POOL_MIN_PAGES;
     if (pages > USER_PHYS_PAGES)     pages = USER_PHYS_PAGES;
@@ -193,9 +229,10 @@ uint32_t alloc_user_physical_page(void) {
         return 0;
     }
     uint32_t phys = free_page_stack[--free_page_count];
-    int idx = (phys - USER_PHYS_BASE) / PAGE_SIZE;
-    if (idx >= 0 && idx < USER_PHYS_PAGES) {
+    int idx = pool_frame_index(phys);
+    if (idx >= 0) {
         page_refcounts[idx] = 1;
+        set_on_loan(idx);
     }
     return phys;
 }
@@ -204,8 +241,23 @@ void free_user_physical_page(uint32_t phys_addr) {
     /* The shared zero page is immortal: many PTEs across many tasks alias it, so
      * it must never return to the free list. */
     if ((uint64_t)phys_addr == g_zero_page_phys) return;
-    int idx = (phys_addr - USER_PHYS_BASE) / PAGE_SIZE;
-    if (idx >= 0 && idx < USER_PHYS_PAGES) {
+    int idx = pool_frame_index(phys_addr);
+#ifndef PAGE_FREE_UNGUARDED
+    /* Fail closed: a frame that is not out on loan is not pushed, so it can never
+     * be handed to two owners. The report goes through print(), the klog once
+     * console_server owns the console, and names the frame; the machine carries
+     * on, because refusing the push is the whole of the harm prevented.
+     * PAGE_FREE_UNGUARDED is the control arm that pushes regardless. */
+    if (idx < 0 || !on_loan(idx)) {
+        g_page_free_refusals++;
+        print("mem: refused to free frame ");
+        print_hex(phys_addr);
+        print(idx < 0 ? " (not a pool frame)\n" : " (not on loan: freed twice, or never allocated)\n");
+        return;
+    }
+    clear_on_loan(idx);
+#endif
+    if (idx >= 0) {
         page_refcounts[idx] = 0;
     }
     if (free_page_count < USER_PHYS_PAGES) {
@@ -2939,3 +2991,68 @@ void ensure_msix_mapped_current(uint64_t *root_pml4) {
 void ensure_iommu_mapped_current(uint64_t *root_pml4) {
     if (g_iommu_regs_phys) ensure_identity_mmio_page(root_pml4, g_iommu_regs_phys);
 }
+
+#ifdef PAGEFREE_SELFTEST
+/* Boot-time witness for S99 (HORUS-20260919-01): free_user_physical_page refuses
+ * every frame that is not out on loan, and still accepts one that is.
+ *
+ * Each refusal is checked two ways: the free stack must not move (the harm is a
+ * frame pushed twice, so that is the property) and the refusal count must rise
+ * (so a free that silently did nothing for some other reason cannot pass). The
+ * legitimate case comes first and last, so a guard that refused everything fails
+ * too. `make smoke-pagefree` asserts on the marker; PAGE_FREE_UNGUARDED is its
+ * control arm. */
+void pagefree_selftest(void) {
+    int ok = 1;
+    const char *why = "";
+    spin_lock(&page_lock);
+
+    uint32_t f = alloc_user_physical_page();
+    if (f == 0) { ok = 0; why = "alloc"; }
+
+    /* A real free is accepted: the stack grows by one. */
+    int before = free_page_count;
+    uint32_t refused = g_page_free_refusals;
+    if (ok) free_user_physical_page(f);
+    if (ok && (free_page_count != before + 1 || g_page_free_refusals != refused)) {
+        ok = 0; why = "legit-free";
+    }
+
+    /* Each of these must be refused. */
+    const uint32_t bad[4] = {
+        f,                                          /* the same frame again: a double free */
+        USER_PHYS_BASE - PAGE_SIZE,                 /* below the pool */
+        f + 8,                                      /* not page-aligned */
+        (uint32_t)pool_reserve_base(),              /* the reserve window: never lent */
+    };
+    const char *names[4] = { "double-free", "below-pool", "unaligned", "reserve-frame" };
+    for (int k = 0; ok && k < 4; k++) {
+        before = free_page_count;
+        refused = g_page_free_refusals;
+        free_user_physical_page(bad[k]);
+        if (free_page_count != before || g_page_free_refusals != refused + 1) {
+            ok = 0; why = names[k];
+        }
+    }
+
+    /* And the pool still works: the frame comes back out and goes back in. */
+    if (ok) {
+        uint32_t g = alloc_user_physical_page();
+        before = free_page_count;
+        if (g == 0) { ok = 0; why = "realloc"; }
+        else {
+            free_user_physical_page(g);
+            if (free_page_count != before + 1) { ok = 0; why = "refree"; }
+        }
+    }
+
+    spin_unlock(&page_lock);
+    if (ok) {
+        print("PAGEFREE_SELFTEST: PASS\n");
+    } else {
+        print("PAGEFREE_SELFTEST: FAIL ");
+        print(why);
+        print("\n");
+    }
+}
+#endif

@@ -578,6 +578,52 @@ void _start(void) {
         }
         report("PROC_SELFTEST: tcb-reuse OK\n");
     }
+    /* --- HORUS-20260921-04 (docs/LIMITATIONS.md 1.21): a task killed while it
+     * runs STOPS, and stops touching memory it shares with live tasks. Before
+     * the fix a task torn down by another CPU was resumed on every tick while
+     * nothing else was runnable, and kept writing the memory it shared after its
+     * capabilities were gone.
+     *
+     * killspin increments a counter in a frame we share with it, with no system
+     * call, so only an interrupt can take its CPU back. We watch the counter
+     * rise, which proves it is running now, kill it, allow a short grace for
+     * the kill to land, then sample the counter twice, far apart. Any change
+     * between the two samples is a dead task writing live memory. --- */
+    {
+        const int slot_frame = 40;
+        volatile unsigned long *ctr = (volatile unsigned long *)0x0000000030000000ULL;
+        if (sys_retype(CAPSLOT_UNTYPED, KOBJ_FRAME, 1, slot_frame) != 1 ||
+            sys_map_frame(slot_frame, 0x0000000030000000ULL, CAP_RIGHT_READ | CAP_RIGHT_WRITE) != 0) {
+            report("PROC_SELFTEST: FAIL killed-task-frame\n"); sys_exit();
+        }
+        *ctr = 0;
+        int k = sys_spawn_named("killspin");
+        if (k <= 0) { report("PROC_SELFTEST: FAIL killed-task-spawn\n"); sys_exit(); }
+        if (sys_cap_grant(k, (uint32_t)slot_frame, 20) != 0) {
+            report("PROC_SELFTEST: FAIL killed-task-grant\n"); sys_exit();
+        }
+        sys_task_resume(k);
+        unsigned long c0 = 0, c1 = 0;
+        int running = 0;
+        for (int i = 0; i < 4000 && !running; i++) {
+            c0 = *ctr; settle(); c1 = *ctr;
+            running = (c1 > c0 && c0 > 0);
+        }
+        if (!running) { report("PROC_SELFTEST: FAIL killed-task-never-ran\n"); sys_exit(); }
+        if (sys_kill(k) != 0) { report("PROC_SELFTEST: FAIL killed-task-kill\n"); sys_exit(); }
+        for (int i = 0; i < 200; i++) settle();            /* grace: the kill lands */
+        unsigned long a = *ctr;
+        for (int i = 0; i < 5000; i++) settle();           /* many ticks' worth */
+        unsigned long b = *ctr;
+        if (b != a) { report("PROC_SELFTEST: FAIL killed-task-still-writes\n"); sys_exit(); }
+        /* And it died of the kill, as recorded once: nothing it did afterwards
+         * may have rewritten the record (a dead task cannot die again). */
+        struct task_exit_info kr;
+        if (sys_wait(k) != 0 || exit_info(&kr) != 0 || kr.reason != TASK_EXIT_KILLED || kr.tid != k) {
+            report("PROC_SELFTEST: FAIL killed-task-record\n"); sys_exit();
+        }
+        report("PROC_SELFTEST: killed-task OK\n");
+    }
 #ifdef KFAULT_RECORD_SELFTEST
     /* --- HORUS-20260920-01 (docs/LIMITATIONS.md 1.16): a SUPERVISOR fault's
      * record carries no kernel address. kfaulter makes the kernel read an address

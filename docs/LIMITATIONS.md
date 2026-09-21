@@ -1147,6 +1147,34 @@ on the kernel before the fix, with nothing but that stale capability, the driver
 A `CAP_TCB` spreads further than its spawner: fork copies a parent's into the child, and
 `SYS_CAP_GRANT` delegates it. Each copy outlived its task in the same way.
 
+### 1.21 ~~A task killed while it ran on another CPU kept running~~ (**FIXED 2026-09-21**, `SECURITY.md` S56) **[HORUS-20260921-04]**
+
+*Found 2026-09-21 while investigating [HORUS-20260921-03]; measured and fixed the same day.*
+
+**Closed.** `preempt_on_tick` never resumes a task that has been torn down: it does not re-claim it,
+deliver its signals or save its context, and it switches the CPU to other work or parks it, with
+the dead task's kernel stack marked in flight until the CPU has left it. `task_teardown` sends the
+kill IPI (vector 0xFC) to any other CPU still running the task, so the CPU is taken back at once
+rather than at its next tick, and refuses a task that is already dead. A system call from a dead
+task is not dispatched. `make smoke-killed-task` (four CPUs) kills a task that is writing memory it
+shares with the driver, with no system call in its loop, and requires the memory to stop changing
+and the death record to still read killed; its control arm, `DEAD_TASK_RUNS=1`, restores the old
+behaviour and is caught by name. The account of the finding follows.
+
+`task_teardown` can run on one CPU for a task another CPU is running in ring 3 (`SYS_KILL`, or a
+signal's default action). That CPU's next tick found the dead task as its current task and treated
+it as live: it re-claimed it, delivered its signals, and, when nothing else was runnable, returned
+into it ("keep running cur"). Measured with a spinner that makes no system calls, killed while
+running: resumed on every tick for as long as the test watched, 383 ticks at `-smp 4` and 184 at
+`-smp 8`. Its capabilities were already gone, but its address space was not, so it kept reading
+and writing memory shared with live tasks: a task's authority outlived the task. A system call
+from it was dispatched before the death was noticed, and `SYS_EXIT` would have torn it down a
+second time and rewritten its own death record. It did not reach freed memory: a frame still
+mapped anywhere is not freed (`destroy_dyn_frame`), an address space is freed only when its slot is
+reused and never while another CPU has it loaded, and [HORUS-20260921-03] stops the slot being
+reused under it. The existing workloads never showed it because every task they killed made a
+system call soon after, and the system-call return path already noticed the death.
+
 ## 2. Correctness limitations
 
 ### 2.0 ~~Spinlock interrupt state is global, and the bug is load-bearing~~ (**FIXED
@@ -4449,7 +4477,7 @@ so neither was ever presented to a contributor. There was no code of conduct, an
 the IPC authorisation logic. All fixed as of 2026-07-27; the `require_code_owner_review`
 setting that would make `CODEOWNERS` binding is still off (§5.1).
 
-*(Repository hygiene itself is fine: `git ls-files` reports **430** tracked files with no build
+*(Repository hygiene itself is fine: `git ls-files` reports **431** tracked files with no build
 artefacts or vendored binaries: no `kernel.elf`, no `horus.iso`, no object files. A working
 checkout accumulates ~70 MB of untracked build output, which is correctly `.gitignore`d. This
 sentence said 243 until 2026-08-15 and **254 until 2026-09-20**, by which point the tree had

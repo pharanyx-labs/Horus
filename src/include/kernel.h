@@ -2216,6 +2216,9 @@ void kfault_end(int fatal);
 void kfault_str(const char *s);
 void kfault_hex(uint64_t v);
 void kfault_dec(int v);
+/* smp.c: interrupt CPU `cpu` with the kill IPI, so it stops running a task that
+ * has just been torn down (HORUS-20260921-04). No-op for this CPU and unmapped. */
+void smp_kick_cpu(int cpu);
 void kfault_task(int t);                 /* "N 'name'", name bounded */
 void kfault_pf_err(uint64_t err);        /* #PF error bits, spelled out */
 void kfault_frame(const struct interrupt_frame64 *f);   /* rip/cs/rflags/rsp/rbp/cpu */

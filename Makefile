@@ -7266,11 +7266,14 @@ smoke-fs-large:
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='BIGFILE_SELFTEST: PASS' \
 		FAIL_MARKER='BIGFILE_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
-# Build with the gated SMP self-test, boot headless under -smp 4, and require the
-# in-kernel test to report PASS -- runtime proof that the application processors
-# come online and concurrently run scheduled user tasks. SMP_CPUS drives QEMU's
-# core count.
-SMP_CPUS ?= 4
+# Build with the gated SMP self-test, boot headless under -smp $(SMP_CPUS), and
+# require the in-kernel test to report PASS -- runtime proof that the application
+# processors come online and every one of them runs scheduled user tasks.
+# SMP_CPUS drives QEMU's core count for this and every gate that does not pin its
+# own: 8 since 2026-09-21, the kernel's MAX_CPUS, so `make run` and the SMP gates
+# exercise the ceiling by default. Gates whose rates were measured at another
+# count say so and pin it (SMP_CPUS=4 in their own recipe).
+SMP_CPUS ?= 8
 .PHONY: smoke-smp
 smoke-smp:
 	@$(MAKE) --no-print-directory clean
@@ -7286,9 +7289,11 @@ smoke-smp:
 #   8 over 4 sockets of 3 cores  ids 0-2,4-6,8,9: sparse; the old numbering got 6
 #   16 threads on 8 cores        the eight primaries get the slots, siblings park
 #   8 threads on 4 cores         4 cores online, 4 siblings parked
+#   4, and 2                     fewer than the ceiling come up and run as they are
+# (one CPU is `make smoke`, which boots the shipped kernel with QEMU's default).
 # The online count is part of the required marker, so a core that failed to
 # come online fails the gate by count, not only by the self-test's own verdict.
-SMP_TOPOLOGIES = 8:8 8,maxcpus=12,sockets=4,cores=3,threads=1:8 16,sockets=1,cores=8,threads=2:8 8,sockets=1,cores=4,threads=2:4
+SMP_TOPOLOGIES = 8:8 8,maxcpus=12,sockets=4,cores=3,threads=1:8 16,sockets=1,cores=8,threads=2:8 8,sockets=1,cores=4,threads=2:4 4:4 2:2
 .PHONY: smoke-smp-topology
 smoke-smp-topology:
 	@$(MAKE) --no-print-directory clean

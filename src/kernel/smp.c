@@ -368,7 +368,8 @@ void ap_entry64(void) {
      * are ON, so TLB-shootdown IPIs are handled (and acked) here; only the LOCAL
      * timer that would drive scheduling is left off. This is "disable SMT" done in
      * software, without needing to suppress the AP in firmware. */
-    /* The LAPIC id, NOT `cpu`: the index is dense and says nothing about SMT
+    /* Carries S101: no task runs on a secondary SMT thread.
+     * The LAPIC id, NOT `cpu`: the index is dense and says nothing about SMT
      * position. Passing the index was correct only while index == LAPIC id, and
      * getting it wrong would schedule tasks on a sibling thread. */
 #ifndef SMT_SIBLING_BY_INDEX

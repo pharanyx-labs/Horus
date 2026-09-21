@@ -701,11 +701,22 @@ saves the pre-signal frame for `SYS_SIGRETURN`. `SIG_KILL` is uncatchable and un
 
 SMP is **on by default**. `SMP=0` compiles it out.
 
-- CPU count comes from the ACPI MADT; APs are started with INIT-SIPI-SIPI via a real-mode
+- Up to **eight** CPUs (`MAX_CPUS`, `src/include/cpu_limits.h`, the one definition the C side,
+  the trampoline and the GDT's reserved TSS slots all read), and whatever fewer the machine has.
+  The CPU list comes from the ACPI MADT; APs are started with INIT-SIPI-SIPI via a real-mode
   trampoline (`src/boot/ap_trampoline.S`). It is linked flat at 0x8000 by its own script
-  (`src/boot/ap_trampoline.ld`) and shares that page with three cells the BSP fills from
-  0x8FD8 up, so its size is bounded three times: by the script, by the embed in `multiboot.S`,
-  and by `smp_start_aps` before it copies. `make smoke-ap-trampoline` is the witness.
+  (`src/boot/ap_trampoline.ld`) and shares that page with four cells the BSP fills (three from
+  0x8FD8 up, and the CPU map's address at 0x8FF0), so its size is bounded three times: by the
+  script, by the embed in `multiboot.S`, and by `smp_start_aps` before it copies. `make
+  smoke-ap-trampoline` is the witness.
+- **A CPU's index is not its LAPIC id.** Before waking any AP the BSP builds `apic_to_cpu[]`
+  from the MADT: itself as 0, then primary threads, then SMT siblings, up to `MAX_CPUS`, each id
+  once however often firmware lists it. The trampoline picks an AP's idle stack by that index and
+  parks any core without one, bounding the index itself rather than trusting the map. Firmware
+  often numbers LAPICs with gaps, and with index equal to id a core whose id reached the ceiling
+  simply parked. SMT siblings are identified by their LAPIC id, never their index, and parked in
+  `ap_entry64`. `make smoke-smp-topology` boots contiguous, sparse, SMT and oversubscribed
+  topologies and requires every schedulable AP to run a task and none to be a sibling.
 - Each CPU takes its own LAPIC timer tick and pulls from a **shared runnable pool**.
 - `task_running_cpu[]` is the mutual-exclusion guard: a CPU only claims a task whose entry is
   `-1`, so a task's single kernel stack and saved trap frame are never touched by two CPUs.

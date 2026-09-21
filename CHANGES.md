@@ -384,6 +384,21 @@ in this file.
 
 ### Added
 
+- **Up to eight CPUs, and eight by default** (`MAX_CPUS`, now in `src/include/cpu_limits.h`,
+  the one definition the C side, the AP trampoline and the GDT's reserved TSS slots all read).
+  A machine with fewer boots and runs on what it has. CPU indices no longer equal LAPIC ids:
+  the BSP numbers the CPUs from the MADT before waking any AP (itself first, then primary
+  threads, then SMT siblings, each id once), because firmware often numbers LAPICs with gaps,
+  and under the old scheme a machine with ids 0-2, 4-6, 8 and 9 brought up six of its eight
+  cores, and an SMT machine failed the SMP self-test outright. SMT sibling-ness is now decided
+  from the LAPIC id, never the index (**S101**, new). The SMP self-test requires every AP to
+  run a task and none to be a sibling, and the new `make smoke-smp-topology` boots four
+  topologies with two control arms (`APIC_ID_IS_CPU_INDEX=1`, `SMT_SIBLING_BY_INDEX=1`).
+  `SMP_CPUS` defaults to 8, and every gate and control arm that follows it was run at 8 before
+  the change: all passed and every arm still reproduced. `.bss` grows by 400 KiB, about 104 KiB
+  per supported CPU; `docs/LIMITATIONS.md` 3.3 says why the ceiling is eight and what going
+  further needs.
+
 - **The docs and the website keep the writing rules by check, not by request** (required job
   `prose-style`, `tools/check_prose_style.py`, `TESTS.md`). Every em dash, `&mdash;`/`&#8212;`
   entity and spaced double hyphen is gone from the prose of the documentation set, over two

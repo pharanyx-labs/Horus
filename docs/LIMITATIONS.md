@@ -1036,9 +1036,18 @@ moment a kernel memory-safety defect is being exercised. The fix is to record `r
 ring-3 frame; the kernel-side value already reaches the maintainer through the `kfault_frame`
 banner at the UART, which is where it belongs.
 
-### 1.17 A reused task slot keeps the previous occupant's wait record **[HORUS-20260920-02]**
+### 1.17 ~~A reused task slot keeps the previous occupant's wait record~~ (**FIXED 2026-09-21**, `SECURITY.md` S98) **[HORUS-20260920-02]**
 
-*Found by the same survey.*
+*Found by the same survey; fixed 2026-09-21.*
+
+**Closed.** `create_task` clears `exit_info` and `wait_exit_info` beside the other fields it resets, and
+`task_teardown` zeroes the whole 32-byte name rather than only its terminator. `make smoke-proc` now
+reads the record end to end in a reused slot: a `waiter` completes a real wait and dies, and the
+driver spawns suspended `exitprobe` tasks until one lands in the waiter's old slot, which the
+kernel's lowest-free-slot scan guarantees without changing it. That probe asks for its record
+before ever waiting and requires every byte to be zero. The control arm,
+`EXIT_RECORD_STALE_ON_REUSE=1`, leaves the old record in place and is caught by name. The account
+of the finding follows.
 
 `create_task` resets fifteen fields of a reused slot by hand, and states the discipline in place:
 set here, not left to slot-reuse staleness. `exit_info` and `wait_exit_info` are not among them. The
@@ -1062,9 +1071,9 @@ reversing the scan was tried and rejected as evidence, since it perturbs the wor
 the defect. The end-to-end read is therefore the witness that lands with the fix, not a claim made
 ahead of it.
 
-The fix is to clear both fields in `create_task` beside the other fifteen. It also disposes of a
-smaller residue: `task_teardown` writes the dead task's name and terminates it, leaving the bytes
-past the terminator as whatever the slot last held, and all 32 are copied to the waiter.
+A smaller residue went with it: `task_teardown` wrote the dead task's name and terminated it,
+leaving the bytes past the terminator as whatever the slot last held, and all 32 are copied to the
+waiter.
 
 
 ## 2. Correctness limitations

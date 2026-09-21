@@ -506,6 +506,17 @@ in this file.
 
 ### Fixed
 
+- **A task could read the previous occupant's death record from its reused slot** (`SECURITY.md`
+  **S98**, **[HORUS-20260920-02]**). `SYS_TASK_EXIT_INFO` answers with no authority and promises
+  `TASK_EXIT_NONE` before a task's first wait, but `create_task` never cleared the record, so a
+  task landing in a reused slot was told about its predecessor's last wait: the tid it supervised,
+  that task's name, and its faulting rip. Both records are now cleared when a slot is reused, and
+  the name in a record is zeroed past its terminator. `make smoke-proc` gains the end-to-end
+  check: a `waiter` leaves a real record behind, `proctest` fills the free slots below it with
+  suspended probes until one lands in the waiter's old slot (no change to how the kernel picks a
+  slot), and that probe requires its record to be all zeros. The control arm
+  (`EXIT_RECORD_STALE_ON_REUSE=1`) is caught by name, and `smoke-proc` goes red on that build.
+
 - **Five documents stated the Kani harness count and no two agreed.** `SECURITY.md` **S31** said
   *"Fifteen"* harnesses and *"the four excused"*; `TESTS.md` said eleven; `docs/LIMITATIONS.md`
   5.5 said *"16 harnesses, 11 of them gating"*, in a section headed *"Formal verification is

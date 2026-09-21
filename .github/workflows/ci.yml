@@ -1611,6 +1611,10 @@ jobs:
         run: make smoke-proc-truncated-image-control
       - name: Control arm — an ELF reaching past its image reads the shared staging region
         run: make smoke-proc-overreach-control
+      # HORUS-20260920-02 (S98). create_task leaves a reused slot's wait record
+      # in place, and the probe spawned into a waiter's old slot must find it.
+      - name: Control arm, a reused task slot must not inherit the previous wait record
+        run: make smoke-proc-exit-record-control
 
   smoke-cow:
     name: QEMU copy-on-write self-test (headless)

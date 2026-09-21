@@ -644,6 +644,22 @@ embedded_faulter_bin_start:
 .global embedded_faulter_bin_end
 embedded_faulter_bin_end:
 
+/* waiter and exitprobe: leave a completed wait in a task slot, then check a task
+ * reusing that slot does not inherit it (HORUS-20260920-02). Only in
+ * PROC_SELFTEST. */
+.align 16
+.global embedded_waiter_bin_start
+embedded_waiter_bin_start:
+.incbin "userspace/waiter.bin"
+.global embedded_waiter_bin_end
+embedded_waiter_bin_end:
+.align 16
+.global embedded_exitprobe_bin_start
+embedded_exitprobe_bin_start:
+.incbin "userspace/exitprobe.bin"
+.global embedded_exitprobe_bin_end
+embedded_exitprobe_bin_end:
+
 /* sigwaiter: blocks in SYS_WAIT on an immortal target, to exercise async signal
  * delivery interrupting a blocked wait. Only in PROC_SELFTEST. */
 .align 16

@@ -1648,8 +1648,9 @@ with a justification the measurement disproved.
   because a randomised base a task can read back through a syscall is a decoration rather than a
   mitigation. It found two paths that must close before randomising anything: a supervisor-mode
   fault writes a kernel text address into a ring-3 task's exit record, readable with no capability
-  (**[HORUS-20260920-01]**, `LIMITATIONS.md` §1.16), and a reused task slot keeps the previous
-  occupant's wait record (**[HORUS-20260920-02]**, §1.17). It also leaves two decisions that bound
+  (**[HORUS-20260920-01]**, `LIMITATIONS.md` §1.16), and a reused task slot kept the previous
+  occupant's wait record (**[HORUS-20260920-02]**, §1.17); the second is closed (**S98**,
+  2026-09-21). It also leaves two decisions that bound
   what KASLR could claim: what the kernel does on a machine with no UMIP, where `SIDT` and `SGDT`
   defeat the randomisation outright from ring 3, and whether the kernel log keeps printing raw
   kernel addresses to a `CAP_KERNEL_LOG` holder. On the credit side CR4.TSD is already set, so the

@@ -168,6 +168,7 @@ control_arms:
   smoke-pipe-cspace-order-control: smoke-pipe
   smoke-meta-evict-control: smoke-meta-evict
   smoke-kfault-legacy: smoke-kfault
+  smoke-proc-exit-record-control: smoke-proc
   smoke-klog-forge-abi-control: smoke-klog-forge
   smoke-klog-forge-control: smoke-klog-forge
   smoke-ksp-guard-control: smoke-ksp-guard

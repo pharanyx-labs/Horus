@@ -235,7 +235,14 @@
 # The other 14 are in multiboot.S and embed the waiter and exitprobe test
 # children, only under PROC_SELFTEST: 12 directives and 2 comment continuation
 # lines, the .S counting artefact recorded in the S97 entry above.
-core_budget_loc: 10128
+#
+# RAISED 2026-09-21, 10128 -> 10136 (+8), for S99 (HORUS-20260921-01): SYS_WAIT
+# requires a CAP_TCB naming its target. All 8 are in syscall.c and in the ship
+# kernel: 3 are the check in h_wait (two of them the WAIT_TCB_UNCHECKED control
+# arm's #ifndef pair), and 5 are the net of factoring task_kill_authorized's
+# cspace scan out into task_tcb_held, so kill and wait share one scan instead of
+# carrying two. An authorisation check on a syscall is ring 0 by nature.
+core_budget_loc: 10136
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

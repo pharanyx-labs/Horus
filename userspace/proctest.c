@@ -52,6 +52,39 @@ static int find_alive(const char *name) {
 /* Ring-3 spin (preemptible) so the timer can run/reap the children. */
 static void settle(void) { for (volatile int d = 0; d < 20000; d++) { } }
 
+/* Which of our own cspace slots are occupied, one byte per slot. SYS_WAIT needs a
+ * CAP_TCB naming its target, and a spawn installs ours for the child in the first
+ * free slot at or above 16 without saying which, so a caller that must delegate
+ * it (the waiter and sigwaiter phases) finds it as the one slot that filled
+ * across the spawn. SYS_CAP_ENUMERATE does not report `object`, which is why it
+ * is found by difference rather than by asking for the tid. */
+static unsigned char occ_before[CAP_ENUM_MAX_SLOT];
+
+static void cspace_snapshot(void) {
+    int self = sys_getpid();
+    for (unsigned s = 0; s < CAP_ENUM_MAX_SLOT; s++) {
+        struct cap_info ci;
+        occ_before[s] = (sys_cap_enumerate(self, s, &ci) == 0 && ci.occupied) ? 1 : 0;
+    }
+}
+
+/* The one slot filled since cspace_snapshot(), or -1 if not exactly one was. */
+static int cspace_new_slot(void) {
+    int self = sys_getpid(), found = -1;
+    for (unsigned s = 0; s < CAP_ENUM_MAX_SLOT; s++) {
+        struct cap_info ci;
+        if (sys_cap_enumerate(self, s, &ci) == 0 && ci.occupied && !occ_before[s]) {
+            if (found >= 0) return -1;
+            found = (int)s;
+        }
+    }
+    return found;
+}
+
+/* The slot in a freshly spawned child's cspace that a delegated CAP_TCB goes
+ * into: clear of the reserved low slots, and empty in a new task. */
+#define DELEGATED_TCB_SLOT 16
+
 /* Fetch the death record of the task we last waited on (finding G-8).
  * Zeroes *ei first so a syscall that writes nothing cannot be mistaken for one
  * that reported TASK_EXIT_NONE. Returns 0 on success. */
@@ -91,6 +124,29 @@ void _start(void) {
     }
     if (!gone) { report("PROC_SELFTEST: FAIL exit\n"); sys_exit(); }
 
+    /* --- SYS_WAIT needs a CAP_TCB naming its target (2026-09-21) ---
+     * Wait on a slot we hold no CAP_TCB for: the first one that reads dead, which
+     * this early is the "hello" the kernel spawned (we were never given its TCB)
+     * or a slot nothing has used. Before the gate, a dead slot answered at once
+     * with 0 and handed over the corpse's exit record, so a wait needed no
+     * relation to its target at all. It must now be refused, and refused the same
+     * way however the slot reads. Done before this driver spawns anything, so no
+     * slot it scans can be one it has since been given a TCB for. The positive
+     * direction is every wait below on a child we spawned, which still succeeds. */
+    {
+        int probe = -1;
+        struct task_info pi;
+        for (int id = 1; id < 64; id++) {
+            if (id != sys_getpid() && sys_get_task_info(id, &pi) == 0 && pi.state == 0) {
+                probe = id; break;
+            }
+        }
+        if (probe < 0) { report("PROC_SELFTEST: FAIL wait-probe-slot\n"); sys_exit(); }
+        if (sys_wait(probe) != SYS_ERR_PERM) {
+            report("PROC_SELFTEST: FAIL wait-without-tcb-answered\n"); sys_exit();
+        }
+    }
+
     /* --- SYS_KILL: terminate the forever-looping "looper" via its TCB cap --- */
     int loop = find_alive("looper");
     if (loop < 0)            { report("PROC_SELFTEST: FAIL find-looper\n"); sys_exit(); }
@@ -103,8 +159,13 @@ void _start(void) {
      * exits (old behaviour: a signal never lands on a blocked task, so it would
      * hang). Done before we kill the looper it is parked on. --- */
     int sw = sys_spawn_named_arg("sigwaiter", (uint32_t)loop);
-    if (sw > 0) sys_task_resume(sw);   /* spawn leaves the child suspended */
     if (sw <= 0) { report("PROC_SELFTEST: FAIL sigwait-spawn\n"); sys_exit(); }
+    /* sigwaiter waits on a task it did not spawn, so it needs the looper's
+     * CAP_TCB delegated to it: ours, at slot 16, from proc_selftest. */
+    if (sys_cap_grant(sw, 16, DELEGATED_TCB_SLOT) != 0) {
+        report("PROC_SELFTEST: FAIL sigwait-grant-tcb\n"); sys_exit();
+    }
+    sys_task_resume(sw);   /* spawn leaves the child suspended */
     for (int i = 0; i < 4000; i++) settle();   /* let it register + block in the wait */
     if (sys_send_signal(sw, SIG_USR1) != 0) { report("PROC_SELFTEST: FAIL sigwait-send\n"); sys_exit(); }
     int swd = 0; struct task_info swi;
@@ -417,10 +478,18 @@ void _start(void) {
      * occupy slots, and the choreography earlier in this file is timing-coupled.
      * --- */
     {
+        cspace_snapshot();
         int t = sys_spawn_named("hello");            /* suspended: the waiter's target */
         if (t <= 0) { report("PROC_SELFTEST: FAIL slot-target-spawn\n"); sys_exit(); }
+        int t_tcb = cspace_new_slot();               /* our CAP_TCB naming t */
+        if (t_tcb < 0) { report("PROC_SELFTEST: FAIL slot-target-tcb\n"); sys_exit(); }
         int w = sys_spawn_named_arg("waiter", (uint32_t)t);
         if (w <= 0) { report("PROC_SELFTEST: FAIL slot-waiter-spawn\n"); sys_exit(); }
+        /* The waiter waits on t, which we spawned and it did not: delegate t's
+         * CAP_TCB to it, or SYS_WAIT refuses it. */
+        if (sys_cap_grant(w, (uint32_t)t_tcb, DELEGATED_TCB_SLOT) != 0) {
+            report("PROC_SELFTEST: FAIL slot-waiter-grant-tcb\n"); sys_exit();
+        }
         sys_task_resume(w);
         for (int i = 0; i < 4000; i++) settle();     /* let it block in its wait */
         sys_task_resume(t);

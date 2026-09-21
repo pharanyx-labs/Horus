@@ -115,7 +115,7 @@ DEFECT_FLAGS = \
 	MEASURED_BOOT_REQUIRED MEASURED_VOLUME_EXEMPT_NONE MEASURED_VOLUME_UNCHECKED \
 	LEGACY_SYSCALLS_PRESENT CAP_ENUMERATE_UNGATED CLOCK_TSC_RESOLUTION \
 	IMAGE_HDR_WRITER_SKEW \
-	TASKINFO_WIDE_AUTHORITY GETLINE_SLOT3_FALLBACK CAP_LOOKUP_ASSERT_HANG \
+	TASKINFO_WIDE_AUTHORITY WAIT_TCB_UNCHECKED GETLINE_SLOT3_FALLBACK CAP_LOOKUP_ASSERT_HANG \
 	IOMMU_NO_FRAME_TEARDOWN IOMMU_NO_TASK_TEARDOWN \
 	IO_DEVICE_OBJECT_UNCHECKED IO_DEVICE_PORTS_GLOBAL IO_DEVICE_IRQ_UNCHECKED \
 	IO_DEVICE_CAP_UNCHECKED NET_NO_BUSMASTER NET_NO_DECODE \
@@ -1592,6 +1592,14 @@ endif
 TASKINFO_WIDE_AUTHORITY ?= 0
 ifeq ($(TASKINFO_WIDE_AUTHORITY),1)
 CFLAGS += -DTASKINFO_WIDE_AUTHORITY
+endif
+
+# WAIT_TCB_UNCHECKED=1 restores the pre-2026-09-21 SYS_WAIT, which tested no
+# authority: any task could wait on any tid and collect its exit record. Control
+# arm for smoke-proc; never shipped.
+WAIT_TCB_UNCHECKED ?= 0
+ifeq ($(WAIT_TCB_UNCHECKED),1)
+CFLAGS += -DWAIT_TCB_UNCHECKED
 endif
 
 CLOCK_TSC_RESOLUTION ?= 0
@@ -7266,6 +7274,18 @@ smoke-proc-taskinfo-control:
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 TASKINFO_WIDE_AUTHORITY=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='PROC_SELFTEST: FAIL grant-audit-bought-introspection' \
+		tools/smoke_test.sh horus.iso
+
+# Control arm for S99: SYS_WAIT answers a caller holding no CAP_TCB for its
+# target. proctest waits on a dead slot it was never given a TCB for, before it
+# has spawned anything, and must say it was answered.
+.PHONY: smoke-proc-wait-control
+smoke-proc-wait-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 WAIT_TCB_UNCHECKED=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 WAIT_TCB_UNCHECKED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='PROC_SELFTEST: FAIL wait-without-tcb-answered' \
 		tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-proc

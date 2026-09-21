@@ -1885,6 +1885,46 @@ jobs:
       - name: Control arm, SMT sibling-ness from the index schedules a sibling
         run: make smoke-smp-topology-sibling-control
 
+  # THE SMP RACE BASE GATES AGAIN, UNDER KVM (2026-09-21). Every gate's evidence
+  # is measured under TCG and stays there; this job adds a second environment,
+  # not a replacement. Under KVM the vCPUs run truly in parallel, which TCG
+  # rarely achieves, and that is how HORUS-20260921-03 (a slot reused under a
+  # CPU still on its stack) was found: smoke-switch-commit met the window on its
+  # first KVM run. BASE gates only: under KVM three race control arms stopped
+  # reproducing, so their arms stay TCG-only, where they are proven to fail.
+  # QEMU_ACCEL=kvm makes the harness refuse to run at all without a usable
+  # /dev/kvm, so this job cannot report a TCG run as a KVM one.
+  smoke-smp-kvm:
+    name: SMP race gates again under KVM (a second environment, base gates only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 105
+    env:
+      QEMU_ACCEL: kvm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86 python3
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # GitHub's Linux runners expose /dev/kvm but not to the runner user; this is
+      # the documented udev rule. Checked afterwards, so a runner without KVM
+      # fails this step by name instead of every gate below.
+      - name: Grant /dev/kvm to the runner and require it usable
+        run: |
+          set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+          [ -r /dev/kvm ] && [ -w /dev/kvm ]
+      # The gate list is SMP_KVM_GATES in the Makefile, so this job and a local
+      # `make smoke-smp-kvm` cannot drift apart.
+      - name: The SMP race base gates, under KVM
+        run: make smoke-smp-kvm
+
   smoke-smt:
     name: QEMU SMT sibling-parking self-test (headless, -smp 4 cores=2 threads=2)
     runs-on: ubuntu-latest

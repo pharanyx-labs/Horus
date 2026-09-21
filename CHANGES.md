@@ -384,6 +384,13 @@ in this file.
 
 ### Added
 
+- **The SMP race gates also run under KVM, as a second detector** (`smoke-smp-kvm`, advisory for
+  now). Under KVM the virtual CPUs run truly in parallel, which emulation rarely achieves, and a
+  probe of the whole suite under KVM found **[HORUS-20260921-03]** on its first run. The suite
+  stays on TCG: KVM gave no net speed-up and three race control arms stopped reproducing under
+  it, so only base gates run in the new job. `QEMU_ACCEL=kvm` in `tools/smoke_test.sh` and
+  `tools/session_test.py` refuses to run without a usable `/dev/kvm` rather than falling back.
+
 - **Up to eight CPUs, and eight by default** (`MAX_CPUS`, now in `src/include/cpu_limits.h`,
   the one definition the C side, the AP trampoline and the GDT's reserved TSS slots all read).
   A machine with fewer boots and runs on what it has. CPU indices no longer equal LAPIC ids:

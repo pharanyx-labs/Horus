@@ -781,6 +781,7 @@ Requires `swtpm` and `swtpm-tools`. Driven through `tools/run_with_swtpm.sh`.
 | `smoke-signal` | A ring-3 fault is delivered to a registered handler. |
 | `smoke-smp` | APs come online from the MADT, **every** schedulable AP runs a scheduled task (not merely two CPUs), no task runs on an SMT sibling, and TLB shootdown completes. Eight CPUs by default. |
 | `smoke-smp-topology` | Eight CPUs on four topologies: contiguous LAPIC ids; sparse ids (four sockets of three cores, ids 0-2, 4-6, 8, 9); sixteen threads on eight cores, where the primaries must get all eight slots; four cores of two threads, where four must come online and four siblings park; and plain 4 and 2 CPUs, since a machine below the ceiling must run as it is (1 CPU is `make smoke`). The online count is part of the required marker. |
+| `smoke-smp-kvm` | The SMP race *base* gates again under KVM (`SMP_KVM_GATES` in the `Makefile`: `smoke-smp`, `smoke-smp-topology`, `smoke-kstack-reuse`, `smoke-switch-commit`, `smoke-exec-reenter`, `smoke-cr3-reclaim`, `smoke-kstack-race`, `smoke-session-smp`), where vCPUs run truly in parallel. A second environment, not a replacement: the arms stay under TCG. Refuses to run without a usable `/dev/kvm`. Advisory in CI until its KVM pass rate is measured. |
 | `smoke-smp-topology-sparse-control` | Control arm. `APIC_ID_IS_CPU_INDEX=1`: on the sparse topology two cores have ids past the ceiling and park, and the kernel must say six. |
 | `smoke-smp-topology-sibling-control` | Control arm for **S101**. `SMT_SIBLING_BY_INDEX=1`: counts still read four online and four parked, so the self-test's per-CPU check must catch a task on a sibling. |
 | `smoke-smt` | SMT sibling threads are parked, closing same-core co-residency. |
@@ -1584,10 +1585,10 @@ as a reproduction.
 
 ## CI
 
-`.github/workflows/ci.yml` defines **129** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **130** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below: **131** jobs, **134** contexts. Counts from `tools/check_ci_gating.py`, which prints
+below: **132** jobs, **135** contexts. Counts from `tools/check_ci_gating.py`, which prints
 them; do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20, a backstop, not a budget. The default is
@@ -1608,6 +1609,17 @@ persistence, the 16 GiB volume, integrity and accounts), with every step moved v
 gate beside its control arm. The run's floor is now the 16 GiB volume gate at about fourteen
 minutes, and the three longest jobs are defined straight after `gates`, so that they are among
 the first scheduled when at most 20 jobs run at once.
+
+Every gate runs under TCG, software emulation, and that is where its evidence and control arm
+live. One job, `smoke-smp-kvm`, runs eight of the SMP race *base* gates a second time under KVM,
+where virtual CPUs run truly in parallel, which TCG rarely achieves. That is how
+**[HORUS-20260921-03]** was found: `smoke-switch-commit` met a window under KVM that emulation had
+never shown. Only base gates run there, because under KVM three race control arms stopped
+reproducing (the CI probe of 2026-09-21, #419), so an arm's proof that it can fail stays under TCG.
+`QEMU_ACCEL=kvm` makes `tools/smoke_test.sh` and `tools/session_test.py` refuse to run without a
+usable `/dev/kvm`, so the job cannot report a TCG run as a KVM one. It is advisory until its pass
+rate under KVM has been measured on `main`; KVM gave no net speed-up (218 runner-minutes against
+213), so the suite as a whole stays on TCG.
 
 All third-party actions are pinned to full commit SHAs. Workflow `permissions:` blocks are
 least-privilege. There are no self-hosted runners.
@@ -1635,10 +1647,11 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The set is **131 gating contexts and 3 reasoned exemptions** (read off
+The set is **131 gating contexts and 4 reasoned exemptions** (read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence): `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
-conclusion to gate on) and `ruleset-audit` (schedule-only, so it never runs on a pull request).
+conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
+`smoke-smp-kvm` (a second run, under KVM, of gates already required under TCG, until its KVM pass rate is measured).
 Three more were exempt once and have been promoted back: `smoke-fs-wal` once **[I-11]** was
 fixed, `smoke-session-smp-soak` in the commit that closed **[G-8]** on 2026-08-17, and
 `smoke-kstack-park`, the one exemption that stood for an **open defect**, **promoted on
@@ -1646,8 +1659,9 @@ fixed, `smoke-session-smp-soak` in the commit that closed **[G-8]** on 2026-08-1
 workload ran 0 failures in 200 boots after the fix (95% upper bound 1.49%) against ~45% before
 [G-9]'s exec and page-table components and ~7% after them; the gate itself passed 5 of 5 in its
 exact form, which at a 7% rate is only ~70% power and is corroboration rather than the evidence.
-**No exemption now stands for an open defect**: the three that remain (`fuzz`, `kani`,
-`ruleset-audit`) are properties of those tests. The promotions are backed by measurement, not
+**No exemption now stands for an open defect**: the four that remain (`fuzz`, `kani`,
+`ruleset-audit`, `smoke-smp-kvm`) are properties of those tests or of an environment not yet
+measured. The promotions are backed by measurement, not
 optimism: across 18 CI runs sampled on 2026-08-16, **64 of 66 jobs had zero failures over 1152
 job-executions**; the only two that ever failed are `security` (2/18, both deliberate, during
 #154) and `smoke-session-smp-soak` (1/18, which was [G-8] at its documented 2–3% per boot; the

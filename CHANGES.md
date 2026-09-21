@@ -531,6 +531,20 @@ in this file.
   slot), and that probe requires its record to be all zeros. The control arm
   (`EXIT_RECORD_STALE_ON_REUSE=1`) is caught by name, and `smoke-proc` goes red on that build.
 
+- **Any task could wait on any other task and read why it died** (`SECURITY.md` **S99**,
+  **[HORUS-20260921-01]**). `SYS_WAIT` tested no authority at all, so a task could block on any
+  tid, and a slot that was dead or never used answered at once with its exit record: the reason,
+  the killer, the faulting rip and address, and the name. Every spawner was already handed a
+  `CAP_TCB` for its child, and a kernel comment said the wait would refuse without one; nothing
+  checked it. `SYS_WAIT` now requires a `CAP_TCB` naming the target with READ, checked before
+  anything else about the slot, and `CAP_USER` does not stand in for it. The two test programs
+  that waited on a task they did not spawn are now handed its `CAP_TCB` with `SYS_CAP_GRANT`, and
+  `init` stops with a named FATAL instead of relaunching the shell if a wait on it is ever refused.
+  `make smoke-proc` requires the refusal for a slot the driver holds no capability for, and its
+  control arm (`WAIT_TCB_UNCHECKED=1`) is caught by name, with `smoke-proc` red on that build.
+  `docs/SYSCALLS.md` also named `CAP_USER` / `CAP_AUDIT` as the authority for
+  `SYS_GET_TASK_INFO`, a month after it became `CAP_DEBUG`; corrected.
+
 - **Five documents stated the Kani harness count and no two agreed.** `SECURITY.md` **S31** said
   *"Fifteen"* harnesses and *"the four excused"*; `TESTS.md` said eleven; `docs/LIMITATIONS.md`
   5.5 said *"16 harnesses, 11 of them gating"*, in a section headed *"Formal verification is

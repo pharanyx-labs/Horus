@@ -788,9 +788,7 @@ Requires `swtpm` and `swtpm-tools`. Driven through `tools/run_with_swtpm.sh`.
 | `smoke-recvblock` | A ring-3 server waiting with `SYS_IPC_RECV_BLOCK` makes **exactly one receive syscall per message** while the client dawdles before each send (the witness that it slept rather than polled) and the wake leaves it holding the one-shot reply right. Roadmap 1.3. |
 | `smoke-recvblock-smp` | The same, under `-smp 4`, so the CROSS-CPU wake path runs at all. It does not reliably catch the ordering race that path is prone to (see "The lost wakeup none of those gates caught") but it is one boot. |
 
-Both run in CI as of this change. They are **not** required status checks: like every other gate
-added after the ruleset was written, they land in the advisory set (finding **[C-6]**), so a red
-`smoke-recvblock` does not block a merge. Read it anyway.
+Both run in CI and both are required: a red `smoke-recvblock` blocks a merge.
 
 ## ELF loading
 
@@ -1580,10 +1578,10 @@ as a reproduction.
 
 ## CI
 
-`.github/workflows/ci.yml` defines **120** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **121** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below: **122** jobs, **125** contexts. Counts from `tools/check_ci_gating.py`, which prints
+below: **123** jobs, **126** contexts. Counts from `tools/check_ci_gating.py`, which prints
 them; do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20, a backstop, not a budget. The default is
@@ -1598,30 +1596,16 @@ returning, and only a generous cap draws it.
 All third-party actions are pinned to full commit SHAs. Workflow `permissions:` blocks are
 least-privilege. There are no self-hosted runners.
 
-### A known weakness in the gate
+### Which jobs gate a merge
 
-Of those, **22 were required status checks** before 2026-08-16, read the current set from `gh
-api repos/pharanyx-labs/Horus/rulesets/21815299`, not from this file, which is the kind of
-hand-maintained number this document exists to distrust.
-
-`smoke-captest` joined that set on 2026-08-15. It is the named witness for eight of the
-S-numbered properties in `SECURITY.md`, and until then it could not block a merge, a change that
-broke the capability refusal suite went green, which is precisely how **[C-1]** survived every
-automated gate in the first place.
-
-This is finding **[C-6]** and roadmap item 4.2, and promoting one job never closed it. The
-mechanism was the problem: the required list lived only in the ruleset, which no commit
-touches, so every job added to `ci.yml` landed in the advisory set **by default** and nothing
-asked whether it should have. When this finding was filed there were ~30 jobs and 21 required;
-immediately before 2026-08-16 there were 66 and 22.
-
-### The classification is now checked in
-
-`.github/ci-gating.yml` lists every job in `ci.yml` and `codeql.yml` under either `required:` or
+`.github/ci-gating.yml` lists every job in the three workflows under either `required:` or
 `advisory:` **with a written reason**. The `ci-gating` job (and `make check-gating`) fails the
 build when a job is in neither, in both, or names a job that no longer exists. There is no
-default, defaulting is the defect. Run it before opening a PR; it is pure text analysis, no
-build and no QEMU.
+default, because defaulting is what produced finding **[C-6]**: while the required list lived
+only in the ruleset, every job added to `ci.yml` landed advisory and nothing asked whether it
+should have, and until 2026-08-15 not one of the 22 required checks was a security gate.
+`smoke-captest`, the witness for eight of `SECURITY.md`'s S-properties, could not block a merge.
+Run the check before opening a PR; it is pure text analysis, no build and no QEMU.
 
 Falsified on 2026-08-16, three ways, each confirmed to exit non-zero against the passing
 baseline:
@@ -1635,15 +1619,14 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **122 required contexts and 3 reasoned exemptions** (read off
-`tools/check_ci_gating.py`, which prints them, rather than from this sentence) `fuzz` (a fixed
+The set is **123 gating contexts and 3 reasoned exemptions** (read off
+`tools/check_ci_gating.py`, which prints them, rather than from this sentence): `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
-conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
-`smoke-kstack-park` (its workload trips **[G-9]**). `smoke-fs-wal` was a third until **[I-11]**
-was fixed and it was promoted back to gating; `smoke-session-smp-soak` a fourth until **[G-8]**
-was closed on 2026-08-17, and it was promoted in the same commit. Three of the four are
-properties of the test itself; `smoke-kstack-park` was the one exemption that stood for an
-**open defect**, and it was **promoted on 2026-08-22**, one merge after **[G-9]** closed. Its
+conclusion to gate on) and `ruleset-audit` (schedule-only, so it never runs on a pull request).
+Three more were exempt once and have been promoted back: `smoke-fs-wal` once **[I-11]** was
+fixed, `smoke-session-smp-soak` in the commit that closed **[G-8]** on 2026-08-17, and
+`smoke-kstack-park`, the one exemption that stood for an **open defect**, **promoted on
+2026-08-22**, one merge after **[G-9]** closed. Its
 workload ran 0 failures in 200 boots after the fix (95% upper bound 1.49%) against ~45% before
 [G-9]'s exec and page-table components and ~7% after them; the gate itself passed 5 of 5 in its
 exact form, which at a 7% rate is only ~70% power and is corroboration rather than the evidence.
@@ -1654,31 +1637,43 @@ job-executions**; the only two that ever failed are `security` (2/18, both delib
 #154) and `smoke-session-smp-soak` (1/18, which was [G-8] at its documented 2–3% per boot; the
 defect that job was correctly reporting).
 
-`smoke-fs-wal` is deliberately **demoted** from required. A flaky gate that blocks merges
-spuriously teaches the maintainer to re-run red checks, which costs more than the coverage it
-buys, and the durability property it used to be credited with is now witnessed by the
-deterministic `smoke-fs-wal-flush` and `smoke-fs-wal-order`.
+### One required check stands for the rest
+
+The ruleset requires two contexts: **All required gates passed**, the `gates` job in `ci.yml`,
+and CodeQL's `analyze`, which lives in its own workflow and so cannot be a `needs:` of a ci.yml
+job. `gates` needs every required ci.yml job, runs with `if: always()`, and passes only if every
+one of them reports `success` (`tools/ci_gate_verdict.py`). Failed, skipped and cancelled all
+count as failure, because GitHub treats a skipped required check as satisfied. The `ci-gating`
+job proves `gates` needs exactly the `required:` list, runs under `always()`, and hands the
+verdict every result, so a job classified as required gates in the PR that classifies it, with no
+ruleset change.
+
+Both halves are falsified: `tools/test_check_ci_gating.sh` has an arm for each way the
+aggregator could stop carrying a gate (no aggregator, one that is advisory, no `always()`, a
+required job missing from `needs:`, an advisory one added, the verdict step removed, handed
+something other than every result, or allowed to fail), and `tools/test_ci_gate_verdict.sh`
+requires the verdict to refuse a failed, skipped, cancelled, unknown or missing result and an
+empty or unparsable `needs`.
+
+Until 2026-09-21 the ruleset required one context per job, 122 of them, synced by hand with
+`--sync-ruleset`. The sync had to run after the merge that added a job, because a required
+context `main` cannot produce never reports (that froze every pull request on 2026-08-16), and
+before a merge that demoted one, or the red job blocked its own demotion (#167, 2026-08-17). In
+between, a gate was classified and not enforced for as long as the sync took: five merges once,
+on 2026-09-01. That lag was the rest of [C-6], and this closed it.
 
 ### What this does *not* do
 
-**CI cannot verify the ruleset.** The ruleset was synced on 2026-08-16,
-`tools/check_ci_gating.py --sync-ruleset` took it from 22 required contexts toward 67,
-preserving `strict_required_status_checks_policy` and bypass actors, and re-read it to confirm.
-Run from a feature branch, it also required three contexts `main` could not yet produce, which
-blocks every PR on a check that never reports; `tools/prune_unsatisfiable_checks.py` dropped
-them (67 → 64) and encodes the rule that promotion must **lag** the job landing by one merge. So
-every security target now blocks a merge, and the old advice to run them locally *because CI
-will not stop you* no longer applies.
+Reading a ruleset needs Administration permissions the workflow `GITHUB_TOKEN` cannot be
+granted, so `ci-gating` proves the classification is complete and that `gates` carries it, not
+that the ruleset requires `gates`. A change made in the GitHub UI could remove it.
+`ruleset-audit.yml` compares the live ruleset against the classification daily, with a read-only
+GitHub App token, and fails loudly on a difference. The ruleset needs a sync, from `main` after
+the merge, only when its own two contexts change: `gates` is renamed, or a required job is added
+to a workflow other than `ci.yml`.
 
-But reading a ruleset needs Administration permissions the workflow `GITHUB_TOKEN` does not
-have and cannot be granted, so the `ci-gating` job proves the classification is **complete**,
-not that the ruleset **matches** it. A change made in the GitHub UI could reopen the gap and
-nothing in CI would notice. `--check-ruleset` is the check; it has to be run deliberately, and
-it is the reason **[C-6]** stays open.
-
-`strict_required_status_checks_policy` is now **true**, so a PR can no longer merge having
-passed CI against a stale base. (This document previously said it was false; that was correct
-when written and is not any more.)
+`strict_required_status_checks_policy` is **true**, so a PR cannot merge having passed CI
+against a stale base.
 
 ---
 

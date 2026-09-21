@@ -1,6 +1,6 @@
 # Does the live branch ruleset still match the checked-in classification?
 #
-# This is the last open half of finding [C-6]. `.github/ci-gating.yml` is the
+# The daily check on the part of finding [C-6] no commit can prove. `.github/ci-gating.yml` is the
 # decision record and the `ci-gating` job in ci.yml proves it is COMPLETE -- every
 # job classified, no defaults. What that job cannot prove is that the ruleset
 # actually REQUIRES what the record says, because reading a ruleset needs the
@@ -106,8 +106,9 @@ jobs:
         if: failure()
         run: |
           echo "::error::The live ruleset no longer matches .github/ci-gating.yml."
-          echo "Either a required context was removed/renamed in the GitHub UI, or a"
-          echo "job was added and the ruleset was never synced. Reconcile with:"
+          echo "Either a required context was removed/renamed in the GitHub UI, or the"
+          echo "gates job was renamed or a required job added outside ci.yml and the"
+          echo "ruleset was never synced. Reconcile with:"
           echo "    python3 tools/check_ci_gating.py --check-ruleset   # see the diff"
           echo "    python3 tools/check_ci_gating.py --sync-ruleset    # write it"
           echo "Sync only from main: a required context main cannot produce never"

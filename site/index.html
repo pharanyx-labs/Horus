@@ -1982,7 +1982,16 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
           </li>
           <li>
-            <h3><span class="id">C-6</span>Which tests gate a merge is reconciled by hand</h3>
+            <h3><span class="id">C-6</span>Which tests gate a merge was reconciled by hand, closed</h3>
+            <p>
+              <strong>Closed 21 September 2026.</strong> The branch ruleset now requires two
+              checks rather than one per job: an aggregate that waits for every gating job and
+              passes only if each one succeeded, and CodeQL. A skipped or cancelled gate counts
+              as a failure, because a skipped required check otherwise counts as passed. CI proves
+              on every change that the aggregate covers exactly the jobs the checked-in decision
+              marks as gating, so a new gate blocks merges from the change that adds it. The
+              account follows.
+            </p>
             <p>
               Until 2026-08-15, <strong>not one of the 22 required status checks was a security
               gate</strong>, including <code>smoke-captest</code>, the capability conformance
@@ -2003,7 +2012,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               be listed as merge-gating, or exempted <em>with a written reason</em>, and CI fails
               the build if any is in neither; there is no default, because defaulting was the
               defect. It caught an unclassified static-analysis job on its first run. The
-              intended set is 122 gating and 3 exempted, and the promotions are backed by
+              gating set is 123 checks with 3 exempted, and the promotions are backed by
               measurement rather than optimism: across 18 sampled runs, 64 of 66 jobs had zero
               failures in 1152 job-executions.
             </p>
@@ -2024,11 +2033,10 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               The ruleset was synced toward that set on 2026-08-16, from <strong>22 required
               checks</strong>, so every security test named above blocks a merge. The first
               attempt required three checks the main branch could not yet produce, which blocks
-              every pull request on a check that never reports, promotion has to lag the job
-              landing by one merge, and a tool now enforces that.
+              every pull request on a check that never reports, so promotion had to lag the job
+              landing by one merge.
             </p>
             <p>
-              <strong>It is not closed yet, but the last gap now has a mechanism.</strong>
               Reading a ruleset needs the <code>Administration</code> permission, which is not
               among the scopes a workflow token can be granted at all, so CI proved the
               classification was complete, never that the ruleset matched it, and the two could
@@ -2045,11 +2053,12 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               is visible at all.
             </p>
             <p>
-              <strong>What is left of this finding is the other half.</strong> Writing the
-              required list back needs an administrator's credentials, so it stays a human step:
-              a change that adds a gating job leaves the list one entry behind until someone
-              runs the sync afterwards. The daily audit does not remove that lag; it makes it
-              visible the next morning instead of indefinitely.
+              <strong>What remained was the other half, and it is what closed.</strong> Writing
+              the per-job list back needed an administrator's credentials, so a change that added
+              a gating job left the list one entry behind until someone ran the sync afterwards,
+              once for five merges in a row. The aggregate removed the list: adding a gate no
+              longer touches the ruleset at all, and the daily audit still checks the two checks
+              it does require.
             </p>
             <p>
               <strong>The same class of drift, in the documents themselves, is now gated too.</strong>

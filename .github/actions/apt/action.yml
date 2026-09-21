@@ -88,3 +88,40 @@ runs:
 
         retry sudo apt-get update
         retry sudo apt-get install -y --no-install-recommends ${{ inputs.packages }}
+
+    # ---- PROBE ONLY (branch ci/probe-kvm, never to be merged) ------------------
+    # Measures the suite under KVM instead of TCG. Wherever QEMU was installed,
+    # grant /dev/kvm and put a wrapper ahead of the real qemu-system-x86_64 that
+    # turns `-accel tcg` into `-accel kvm` and adds `-accel kvm` where nothing
+    # chose an accelerator. It refuses to run if /dev/kvm is unusable, so a run
+    # that silently fell back to TCG cannot be reported as a KVM measurement.
+    - name: "PROBE: run QEMU under KVM"
+      if: contains(inputs.packages, 'qemu-system-x86')
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+          | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+        sudo udevadm control --reload-rules
+        sudo udevadm trigger --name-match=kvm
+        ls -l /dev/kvm
+        [ -r /dev/kvm ] && [ -w /dev/kvm ] || { echo "::error::/dev/kvm is not usable on this runner"; exit 1; }
+        real=$(command -v qemu-system-x86_64)
+        sudo tee /usr/local/bin/qemu-system-x86_64 >/dev/null <<SHIM
+        #!/bin/bash
+        [ -r /dev/kvm ] && [ -w /dev/kvm ] || { echo "kvm-probe: /dev/kvm unusable, refusing to fall back to TCG" >&2; exit 97; }
+        args=(); prev=""; chose=0
+        for a in "\$@"; do
+          if [ "\$prev" = "-accel" ]; then chose=1; [ "\$a" = "tcg" ] && a="kvm"; fi
+          case "\$a" in *accel=*) chose=1 ;; esac
+          args+=("\$a"); prev="\$a"
+        done
+        [ \$chose -eq 1 ] || args+=(-accel kvm)
+        exec $real "\${args[@]}"
+        SHIM
+        sudo chmod 755 /usr/local/bin/qemu-system-x86_64
+        hash -r
+        command -v qemu-system-x86_64
+        qemu-system-x86_64 -accel kvm -machine none -display none -S -monitor none -serial none &
+        sleep 1; kill $! 2>/dev/null || true
+        echo "kvm-probe: wrapper installed over $real"

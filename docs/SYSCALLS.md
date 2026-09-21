@@ -94,8 +94,8 @@ no userspace wrapper anywhere in this tree. A bare numeric index is now refused 
 | 96 | `SYS_UNMAP_FRAME` | `frame_slot`, `vaddr` | `CAP_FRAME` at `frame_slot`, any rights; withdraws the **whole run** |
 | 99 | `SYS_MAP_REGION` | `first_slot`, `count`, `vaddr`, `rights` | a `CAP_FRAME` at each of `first_slot .. first_slot+count-1`, each holding at least `rights` |
 | 100 | `SYS_FRAME_PAGES` | `frame_slot` | `CAP_FRAME` at `frame_slot`, any rights |
-| 109 | `SYS_UNTYPED_SPLIT` | `src_slot`, `dest_slot`, `bytes` | `CAP_UNTYPED` + WRITE at `src_slot`. Carves `bytes` off that region and mints a **derived** `CAP_UNTYPED` over the sub-region into `dest_slot`. The parent's watermark advances past the carve, so a split **spends** budget rather than creating it (**S58**), and it is what makes **S57**'s "a task given a small region can spawn a bounded number of times" mintable — granting a `CAP_UNTYPED` names the *same* region and shares the whole budget |
-| 101 | `SYS_FORK` |, | `CAP_UNTYPED` at `CAPSLOT_UNTYPED` (`CAP_RIGHT_WRITE`) — the same authority `SYS_SPAWN` requires, because both create a task and a task's cspace is carved from it (**S57**) |
+| 109 | `SYS_UNTYPED_SPLIT` | `src_slot`, `dest_slot`, `bytes` | `CAP_UNTYPED` + WRITE at `src_slot`. Carves `bytes` off that region and mints a **derived** `CAP_UNTYPED` over the sub-region into `dest_slot`. The parent's watermark advances past the carve, so a split **spends** budget rather than creating it (**S58**), and it is what makes **S57**'s "a task given a small region can spawn a bounded number of times" mintable, granting a `CAP_UNTYPED` names the *same* region and shares the whole budget |
+| 101 | `SYS_FORK` | n/a | `CAP_UNTYPED` at `CAPSLOT_UNTYPED` (`CAP_RIGHT_WRITE`), the same authority `SYS_SPAWN` requires, because both create a task and a task's cspace is carved from it (**S57**) |
 
 Both frame calls are `SC_NONE` in the dispatch table for the same reason `SYS_RETYPE` is, and
 here the alternative is not hypothetical: **every task is born holding a `CAP_FRAME` in slot
@@ -219,11 +219,11 @@ would stop spawning but not stop forking, so "this task can create no more tasks
 stop being true. A new path to an existing capability's effect inherits that capability's gate.
 
 **Since 2026-08-30 that shared capability is `CAP_UNTYPED`, and the gate is real for the first
-time** (**S57**, `docs/LIMITATIONS.md` §1.6b). It was cspace **slot 3** with `SC_ANYTYPE` — which
+time** (**S57**, `docs/LIMITATIONS.md` §1.6b). It was cspace **slot 3** with `SC_ANYTYPE`, which
 `create_task` fills in every task with `READ|WRITE|EXEC`, so the check could not fail and the
 paragraph above described a revocation nobody could perform. A task's cspace is a `KOBJ_CNODE`
 and is now carved from the region the caller's `CAP_UNTYPED` names, so the authority to create a
-task is the authority to spend kernel memory — which is delegable, revocable, and bounded.
+task is the authority to spend kernel memory, which is delegable, revocable, and bounded.
 
 **The child inherits the caller's capabilities as derived copies** (**S41**), in the same slots
 and with the same rights. Each copy has its **own serial** and names the caller's capability as
@@ -290,7 +290,7 @@ They used to carry the same slot-3 `WRITE|EXEC` entry as `SYS_SPAWN`, on the rea
 "replacing a task's image is a way of putting a program on a CPU, and a new path to a gated
 effect inherits the gate". That reasoning is right about `SYS_FORK`, which *creates* a task, and
 wrong here: an exec replaces the **caller's own** image, creates no task, and touches no
-capability (**S42** — the execed task keeps its serial, its badge and its place in the derivation
+capability (**S42**: the execed task keeps its serial, its badge and its place in the derivation
 graph). There is nothing to charge and no authority to confer, so the untyped gate that
 `SYS_SPAWN` and `SYS_FORK` now carry (**S57**) would be a second vacuous check standing where the
 first one stood. They are `SC_NONE` and self-only: `h_exec_named` operates on
@@ -308,7 +308,7 @@ instead of falling through to the flat-image path.
 **Errors** (the image is left intact, and the call returns): `SYS_ERR_NOENT` (no embedded binary
 by that name), `SYS_ERR_INVAL` (the supplied image failed validation, including a container
 claiming more payload than it holds or an ELF reaching past itself). Once the exec has passed
-validation and torn down the old address space there is no further error path — but validation is
+validation and torn down the old address space there is no further error path, but validation is
 now the last thing that can fail, and it precedes the tear-down.
 
 ## IPC arguments are cspace slots, not object indices
@@ -352,16 +352,16 @@ because it returns an *address* and newlib's `_sbrk` compares against `(void *)(
 
 | # | Name | Arguments | Authorisation |
 |---|---|---|---|
-| 0 | `SYS_YIELD` |, | none (self) |
-| 2 | `SYS_EXIT` |, | none (self) |
+| 0 | `SYS_YIELD` | n/a | none (self) |
+| 2 | `SYS_EXIT` | n/a | none (self) |
 | 17 | `SYS_WAIT` | `tid` | none (self) |
 | 18 | `SYS_GET_TASK_INFO` | `tid`, `struct task_info *` | self; or `CAP_USER` / `CAP_AUDIT` |
 | 19 | `SYS_EXEC` | `load_base`, `entry` | **retired 2026-09-03** (**S79**); compiles only under `LEGACY_SYSCALLS_PRESENT=1` |
-| 20 | `SYS_GETPID` |, | none (self-authorising) |
-| 28 | `SYS_SPAWN` |, | `CAP_UNTYPED` at `CAPSLOT_UNTYPED`: WRITE (**S57**) |
+| 20 | `SYS_GETPID` | n/a | none (self-authorising) |
+| 28 | `SYS_SPAWN` | n/a | `CAP_UNTYPED` at `CAPSLOT_UNTYPED`: WRITE (**S57**) |
 | 63 | `SYS_KILL` | `tid` | `CAP_TCB` for target, or `CAP_USER` |
 | 64 | `SYS_EXEC_NAMED` | `name` | none (self): replaces the caller's own image, creates no task |
-| 68 | `SYS_SPAWN_ARG` |, | none (self) |
+| 68 | `SYS_SPAWN_ARG` | n/a | none (self) |
 | 69 | `SYS_GET_ARGV` | `char ***out` | none (self) |
 | 70 | `SYS_SPAWN_IMAGE` | `image`, `len`, `arg`, `argv`, `argc` | `CAP_UNTYPED` at `CAPSLOT_UNTYPED`: WRITE (**S57**) |
 | 71 | `SYS_EXEC_IMAGE` | `image`, `len`, `0`, `argv`, `argc` | none (self), as `SYS_EXEC_NAMED` |
@@ -369,7 +369,7 @@ because it returns an *address* and newlib's `_sbrk` compares against `(void *)(
 
 **19 and 27 are retired, and the numbers are reserved** (**S79**,
 `docs/LIMITATIONS.md` §1.6c). Both read `{ handler, 3, WRITE|EXEC, SC_ANYTYPE }` in the ship
-table -- cspace slot 3 being the `CAP_FRAME` `create_task` installs in every task, so the row
+table, cspace slot 3 being the `CAP_FRAME` `create_task` installs in every task, so the row
 authorised every ring-3 caller. Neither had a caller: `SYS_EXEC` dropped the caller to ring 3 at
 `load_base + entry` with nothing validated and is superseded by `SYS_EXEC_NAMED` /
 `SYS_EXEC_IMAGE`, and `SYS_RECEIVE_PROGRAM`'s transport was a second serial port no target in
@@ -400,7 +400,7 @@ consume window is also serialised, so two CPUs cannot interleave through the sta
 | # | Name | Arguments | Authorisation |
 |---|---|---|---|
 | 54 | `SYS_SIGACTION` | `handler` | self only |
-| 55 | `SYS_SIGRETURN` |, | inside a handler only |
+| 55 | `SYS_SIGRETURN` | n/a | inside a handler only |
 | 66 | `SYS_SIGNAL` | `tid`, `signum` | `CAP_TCB` for target, or `CAP_USER` |
 | 67 | `SYS_SIGMASK` | `how`, `mask` | self only |
 | 72 | `SYS_SIGALTSTACK` | `ss_sp`, `ss_size` | self only |
@@ -462,10 +462,10 @@ Monotonic **by construction**: the source is a counter the timer interrupt only 
 goes backwards makes every timeout built on it fire early or never.
 
 **Since boot means since boot.** That counter starts at the *first timer interrupt*, not at boot,
-and the gap is whatever the machine spent getting there -- 1.07 s on an SMP boot measured on
+and the gap is whatever the machine spent getting there: 1.07 s on an SMP boot measured on
 2026-09-06, nearly all of it AP bring-up. A caller asking how long the machine had been up was
-told 0.09 s about a machine 1.16 s old, and the boot console -- stamped by the kernel from its own
-clock until `console_server` takes the wire, and by `console_server` from this one afterwards --
+told 0.09 s about a machine 1.16 s old, and the boot console, stamped by the kernel from its own
+clock until `console_server` takes the wire, and by `console_server` from this one afterwards,
 ran backwards by a second at the handover. `clock_epoch_ticks` (`src/kernel/scheduler.c`) adds the
 difference, captured once on the first tick from the kernel's TSC boot clock and **already rounded
 down to a whole tick**, so the resolution above is unchanged: a constant cannot make a clock finer.
@@ -502,7 +502,7 @@ can hold a `CAP_DEBUG` that writes, observation is not control.
 | 11 | `SYS_WRITE` | `fd`, `buf`, `len` | console: none (fd 1 = ambient). `klog`: `CAP_KERNEL_LOG` + WRITE |
 | 12 | `SYS_READ` | `fd`, `buf`, `len` | fd 0 ambient; **fd ≥ 3 retired 2026-08-22** (**[H-3]**); that branch compiles only under `RAMFS_SLOT3_GATE=1` |
 | 13 | `SYS_OPEN` | `name`, `flags` | slot 3: READ; **absent from the ship kernel since 2026-08-22** (**[H-3]**); the dispatch entry compiles only under `RAMFS_SLOT3_GATE=1` |
-| 82 | `SYS_CONSOLE_OWNED` |, | none (read-only status) |
+| 82 | `SYS_CONSOLE_OWNED` | n/a | none (read-only status) |
 | 88 | `SYS_DMESG` | `buf`, `offset`, `max` | `CAP_KERNEL_LOG` at `CAPSLOT_KERNEL_LOG` |
 
 `SYS_GET_LINE` and the fd-0 path of `SYS_READ` **fail closed while a ring-3 console server
@@ -680,7 +680,7 @@ that path.
 | 84 | `SYS_PIPE_READ` | `slot`, `buf`, `len` | `CAP_PIPE` READ at `slot` |
 | 85 | `SYS_PIPE_WRITE` | `slot`, `buf`, `len` | `CAP_PIPE` WRITE at `slot` |
 | 86 | `SYS_PIPE_CLOSE` | `slot` | `CAP_PIPE` at `slot` |
-| 87 | `SYS_STDIO_INFO` |, | none (own tcb) |
+| 87 | `SYS_STDIO_INFO` | n/a | none (own tcb) |
 
 Pipes *are* properly capability-addressed: the slot argument is a cspace slot resolved through
 `cap_lookup` with the direction's right. They are the model the IPC syscalls should follow.
@@ -693,7 +693,7 @@ Pipes *are* properly capability-addressed: the slot argument is a cspace slot re
 
 | # | Name | Arguments | Authorisation |
 |---|---|---|---|
-| 29 | `SYS_GETUID` |, | none (self) |
+| 29 | `SYS_GETUID` | n/a | none (self) |
 | 30 | `SYS_AUTH` | `user`, `pass` | none (self-authorising) |
 | 31 | `SYS_SUDO` | `pass` | re-authentication in handler **and** the armed image must be one this task armed (**S21**) |
 | 32 | `SYS_GET_PASS` | `buf` | none |
@@ -705,18 +705,18 @@ Pipes *are* properly capability-addressed: the slot argument is a cspace slot re
 `SYS_PASSWD` **also grants the target a volume key slot** when an administrator sets *another*
 account's password, and records its index in that account's record (**S76**). Without one the
 password opens the account and not the volume, and the account cannot be the first login after a
-power cycle -- see `SECURITY.md` **S61** for what a key slot is and `docs/LIMITATIONS.md` 2.6b for
+power cycle: see `SECURITY.md` **S61** for what a key slot is and `docs/LIMITATIONS.md` 2.6b for
 what its absence cost. It **fails closed**: the slot is taken before the hash changes, so a volume
 with no free slot leaves the old password working and returns an error rather than setting a
 password that cannot open the machine. Changing your **own** password re-seals the slot you
 already hold instead, and a machine with no persistent volume grants nothing.
 
-`SYS_USERLIST` reads one account's **public metadata** -- name, uid, gid, home -- and nothing
+`SYS_USERLIST` reads one account's **public metadata**, name, uid, gid, home, and nothing
 else: no hash, no salt, no key slot, no lockout state. It returns 1 when the buffer was filled,
 **0 when `index` is past the last account**, and `SYS_ERR_PERM` without the capability; the
 buffer is written only on 1, so a refusal and an empty index are not distinguishable by
 inspecting it. The index is **dense over valid accounts** rather than an array position, because
-the table is sparse -- `SYS_USERDEL` clears a slot and leaves it -- so array positions would
+the table is sparse, `SYS_USERDEL` clears a slot and leaves it, so array positions would
 export `MAX_USERS` across the boundary and make a hole in the middle read as the end. A caller
 loops from 0 until it gets 0. The one caller today is `fs_server`, which uses it to give every
 account a home directory it owns (**S78**); it already holds `CAP_USER` as the
@@ -752,7 +752,7 @@ sees key material.
 
 | # | Name | Arguments |
 |---|---|---|
-| 46 | `SYS_REGISTER_STORAGE_BACKEND` |, |
+| 46 | `SYS_REGISTER_STORAGE_BACKEND` | n/a |
 | 47 / 48 | `SYS_BLOCK_READ` / `SYS_BLOCK_WRITE` | `(block, buf, len)`; raw block I/O. `block` is 64-bit, split across two registers by the wrapper. Returns bytes transferred, `SYS_ERR_IO` for a block the storage layer refuses, `SYS_ERR_FAULT` for a bad user pointer |
 | 56 / 57 | `SYS_FS_INODE_ALLOC` / `_FREE` | `type` → `ino` / `ino` |
 | 76 | `SYS_FS_INODE_LINK` | `ino` (increment link count) |
@@ -765,7 +765,7 @@ sees key material.
 
 **Every one of the eight object-store calls above requires the volume to be UNLOCKED, not
 merely mounted** (**S74**). A sealed ATA volume is mounted and locked from power-on until a
-login opens a key slot, and in that window all eight return `SYS_ERR_INVAL` -- the same code as
+login opens a key slot, and in that window all eight return `SYS_ERR_INVAL`, the same code as
 an unmounted store, because both mean "there is no open store to act on", a statement about the
 volume rather than about the caller whose authority the dispatch table has already settled.
 Until 2026-09-01 they tested `mounted` alone: the AEAD enforced the rule for `SYS_FBLOCK_READ` /
@@ -782,7 +782,7 @@ capability, and a refusal test could not distinguish the dispatch table refusing
 handler from the handler refusing *inside* it. They now answer `SYS_ERR_IO` and `SYS_ERR_FAULT`,
 the names `include/errno.h` exists to supply. `SYS_ERR_IO` rather than a bound-specific code is
 deliberate: the block layer answers `-1` both for a block past the end of the device and for a
-device that failed, and these handlers cannot tell those apart -- a caller reading
+device that failed, and these handlers cannot tell those apart: a caller reading
 `SYS_ERR_RANGE` would wrongly conclude the device is healthy. The defect survived because
 nothing had ever called either syscall (`docs/LIMITATIONS.md` 1.8); `userspace/blockprobe.c` is
 the task that does, and `make smoke-blockprobe` is the gate.
@@ -809,7 +809,7 @@ from the primordial root cnode and grants it to the installer alone.
 
 The rights differ on purpose. READ is the survey an installer shows before it asks; WRITE is
 the destruction. A build that wanted a read-only survey tool can be handed a `READ`-only mint,
-and the primordial carries `READ|WRITE` and **not** `CAP_RIGHT_ALL` -- rights only narrow on
+and the primordial carries `READ|WRITE` and **not** `CAP_RIGHT_ALL`, rights only narrow on
 delegation, so no descendant of it can grant or mint.
 
 `struct storage_info` reports whether a **persistent** block device is attached, its size in
@@ -817,12 +817,12 @@ blocks, whether a Horus volume was recognised on it, whether that volume is unlo
 whether **this kernel would format an unrecognised volume at the login prompt**
 (`format_on_login`, 1 only under the `STORAGE_AUTOFORMAT` control arm). That last field exists
 because `init` uses this survey to decide whether to launch an installer, and a kernel that
-formats at login by itself is a machine with nothing for an installer to do — without it, the
+formats at login by itself is a machine with nothing for an installer to do, without it, the
 dozen test targets that boot a deliberately blank image would each launch an installer that
 waits forever for a keystroke nobody is there to type. It
 deliberately reports nothing about the volume's contents: it exists so an installer can tell an
 operator what is about to be destroyed, and every field is a disclosure made under this
-capability. The ephemeral RAM vdisk answers `present = 0` -- it is a block device by every
+capability. The ephemeral RAM vdisk answers `present = 0`: it is a block device by every
 internal measure, and reporting it would have an installer offering to format memory.
 
 **`SYS_STORAGE_FORMAT` names its target** (`SECURITY.md` **S83**). `device` is a position in
@@ -843,7 +843,7 @@ there are and `device_index` says which one the machine-wide survey described; t
 operator was shown rather than a drive number.
 
 **An index past the last device is refused, not clamped** (`SYS_ERR_INVAL`). Clamping would
-fault nothing and overrun nothing -- it would return a complete, well-formed description of a
+fault nothing and overrun nothing: it would return a complete, well-formed description of a
 different disk, to the one program whose next act is erasing the disk it was just told about.
 See `SECURITY.md` **S82**.
 
@@ -885,11 +885,11 @@ checked against what **that** device declares. `SECURITY.md` **S43**.
 |---|---|---|
 | 79 | `SYS_MAP_PHYS` | `dev_slot`, `paddr`, `vaddr`, `len`, `flags`, map one 4 KiB frame **the named device declares** (needs WRITE) |
 | 80 | `SYS_IOPORT_GRANT` | `dev_slot`, grant native ring-3 `in`/`out` on **the named device's** port ranges via the TSS I/O bitmap (needs WRITE) |
-| 114 | `SYS_CONSOLE_RELEASE` | `dev_slot` -> 0; give the console hardware back to the kernel. `CAP_IO_DEVICE` + `WRITE` in `dev_slot`, **and the caller must be the current owner** -- holding the capability is not holding the console. Exists so a console driver that fails *after* the handover can still be heard: while it owns the wire its own diagnostic reaches the kernel log ring and nothing else |
+| 114 | `SYS_CONSOLE_RELEASE` | `dev_slot` -> 0; give the console hardware back to the kernel. `CAP_IO_DEVICE` + `WRITE` in `dev_slot`, **and the caller must be the current owner**: holding the capability is not holding the console. Exists so a console driver that fails *after* the handover can still be heard: while it owns the wire its own diagnostic reaches the kernel log ring and nothing else |
 | 81 | `SYS_IRQ_REGISTER` | `dev_slot`, `irq`, `notif_slot`, `badge`, route an IRQ **the named device declares** to the notification named by the `CAP_NOTIFICATION` at `notif_slot` (both need WRITE) |
 | 102 | `SYS_DEVICE_INFO` | `dev_slot`, `struct dev_info *`, report the named device's ids, MMIO ranges, port ranges and IRQ lines (needs READ) |
-| 115 | `SYS_FB_INFO` | `dev_slot`, `struct fb_geometry *`, report the SHAPE of the linear framebuffer -- width, height, pitch, bits per pixel (needs READ, and the slot must name the PLATFORM device) |
-| 116 | `SYS_BOOT_FLAGS` | *(none)*, returns a bitmask of `BOOT_FLAG_*` -- which entry the operator chose at the boot menu. **No capability**, and the argument for that is in the handler: it reports a FACT about how the machine was started, not an authority. A task learning that the installer entry was picked can do nothing with it -- installing needs `CAP_STORAGE_FORMAT`, which `init` grants to the installer and to no other task. It is read-only **by construction**: the flags are derived once from the multiboot2 command line during the boot-info walk, before any task exists, and no syscall writes them |
+| 115 | `SYS_FB_INFO` | `dev_slot`, `struct fb_geometry *`, report the SHAPE of the linear framebuffer, width, height, pitch, bits per pixel (needs READ, and the slot must name the PLATFORM device) |
+| 116 | `SYS_BOOT_FLAGS` | *(none)*, returns a bitmask of `BOOT_FLAG_*`, which entry the operator chose at the boot menu. **No capability**, and the argument for that is in the handler: it reports a FACT about how the machine was started, not an authority. A task learning that the installer entry was picked can do nothing with it: installing needs `CAP_STORAGE_FORMAT`, which `init` grants to the installer and to no other task. It is read-only **by construction**: the flags are derived once from the multiboot2 command line during the boot-info walk, before any task exists, and no syscall writes them |
 | 103 | `SYS_DEVICE_ENABLE` | `dev_slot`, `flags`, set the named device's three PCI decode bits (I/O, memory, **bus master**) to exactly `flags`, and nothing else in configuration space (needs WRITE) |
 | 107 | `SYS_MSI_REGISTER` | `dev_slot`, `notif_slot`, `badge`, route the named device's message-signalled interrupt to a notification. **No vector argument**, deliberately (WRITE on both) |
 | 108 | `SYS_SHLIB_INFO` | `frame_slot`, `struct shlib_info *`: where the shared library is loaded **this boot**. The base is drawn from the ASLR source, not compiled in, so a program cannot assume it. Requires a `CAP_FRAME` + READ naming one of the library's own **text** frames: the base is the address of code every task executes, and a task's private copy of the library's data page does not qualify |
@@ -912,7 +912,7 @@ because holding one device should not be a way to enumerate the machine.
 `SYS_FB_INFO` is READ for the same reason and narrower still: it answers only for the PLATFORM
 device, because the framebuffer is declared among *that* device's MMIO ranges and belongs to
 nothing else. A NIC capability is a perfectly good `CAP_IO_DEVICE` and is refused, which is the
-type standing in for the object -- the [C-1] shape **S43** exists about, one syscall along.
+type standing in for the object: the [C-1] shape **S43** exists about, one syscall along.
 
 **It reports the shape and not the address.** Where the framebuffer is comes from
 `SYS_DEVICE_INFO`'s `mmio[]` ranges, which already carry it once the platform device declares
@@ -1019,16 +1019,16 @@ driver that could write it could move any device's BARs and defeat the frame che
 | 52 | `SYS_AUDIT_DIGEST` | `buf` | slot 7: `CAP_AUDIT` READ |
 
 `SYS_READ_AUDIT` writes up to `max` records into `buf`, **oldest first**, and returns how many
-it wrote. A record is `struct audit_record` — **160 bytes**, declared in `include/audit_abi.h`,
+it wrote. A record is `struct audit_record`: **160 bytes**, declared in `include/audit_abi.h`,
 which the kernel and ring 3 both include and both `_Static_assert` the size of. Nothing else
 declares it: the layout is the ABI, so `buf` must be an array of that type and the stride the
 kernel writes at is that type's. Until 2026-09-01 it was declared twice under one name, 256
-bytes in the kernel and 72 in `include/syscall.h`, and the copy used the kernel's — see
+bytes in the kernel and 72 in `include/syscall.h`, and the copy used the kernel's: see
 `SECURITY.md` **S71** for what that cost and `include/audit_abi.h` for why the record is a
 projection of the kernel's internal event rather than the event itself.
 
-`SYS_AUDIT_DIGEST` writes a fixed **40 bytes** — an 8-byte little-endian total event count then
-the 32-byte chain-head MAC — and returns the verify status of the retained window: `0` intact,
+`SYS_AUDIT_DIGEST` writes a fixed **40 bytes**, an 8-byte little-endian total event count then
+the 32-byte chain-head MAC, and returns the verify status of the retained window: `0` intact,
 a positive value for the first tampered index plus one, `-1` for a chain never initialised.
 
 The audit log is **forward-secure**: the chaining key is ratcheted after each record, so an

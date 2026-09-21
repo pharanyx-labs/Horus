@@ -103,7 +103,7 @@ is the precondition for any confinement, sandboxing, or MAC story.
 > the remainder closed in code, and this marker moved in the same commit.
 >
 > **A first attempt closed it by RECLASSIFICATION and was reverted.** The argument was that the
-> remaining `tasks[]` array is "a scale limitation, not a property anything asserts" -- true as
+> remaining `tasks[]` array is "a scale limitation, not a property anything asserts": true as
 > far as it went, and still a way of renaming a problem rather than fixing one. What landed
 > instead is the TCB table carved from untyped, the count derived at boot, and the
 > stack-allocated array that would actually have capped the ceiling moved off the stack. Worth
@@ -113,8 +113,8 @@ is the precondition for any confinement, sandboxing, or MAC story.
 `.bss` arrays under a hard 16 MiB linker ceiling. No retyping discipline, no per-task
 kernel-memory accounting, hard ceiling on system size.
 
-*This list was missing the one that actually bound the ceiling.* `per_task_kstacks` — one 64 KiB
-`.bss` slot per task — was **4 MiB**, against a `tasks[]` of 72 KiB. Moving the table this
+*This list was missing the one that actually bound the ceiling.* `per_task_kstacks`, one 64 KiB
+`.bss` slot per task, was **4 MiB**, against a `tasks[]` of 72 KiB. Moving the table this
 paragraph names would have shifted the limit by nothing. See `docs/LIMITATIONS.md` §3.1 for the
 chain, and for why the 16 MiB ceiling is `KERN_SPLIT_PDES` rather than a policy number.
 
@@ -160,14 +160,14 @@ authority with no defined meaning (revisit with 2.3). Reclaiming a dead task's c
 `cap_lookup`'s NULL-cspace → root-cnode fallback removed first, or freeing one would be an
 authority escalation rather than a crash. **That fallback went on 2026-08-30**
 (`make smoke-cap-lookup`), and it was two defects rather than one: the documented cspace-less
-case, and a slot past the end of the caller's own cspace resolving as `root_cnode[slot]` — the
+case, and a slot past the end of the caller's own cspace resolving as `root_cnode[slot]`, the
 same escalation by arithmetic rather than by a null pointer.
 
 **The reclaim followed the same day, and "free the cspace" turned out to be the wrong thing to
 do.** The arena is a monotonic bump allocator *by design* (it is what makes
 type-confusion-through-reuse structurally impossible) and the kernel reserve holds exactly
 `MAX_TASKS` cspaces, so returning the bytes would exhaust it on the first slot reuse and halt
-`create_task`. What is reclaimed is the **contents** — which is what "reclaim" already means for
+`create_task`. What is reclaimed is the **contents**, which is what "reclaim" already means for
 every other object class in `untyped.c`. `task_teardown` empties a dead task's cspace now
 (**S56**, `make smoke-cspace-release`); it previously left the capabilities in place until the
 slot was next used, with the property held by three readers each testing `state == 0` rather than
@@ -179,7 +179,7 @@ being one word sized by an assumption about `MAX_TASKS`, the arena's kernel and 
 given independent sizes, and the ceiling went 64 → 256 with the image 3.8 MiB *smaller* than
 before. Witness `make smoke-task-ceiling`, falsified one arm per rule.
 
-That is a bigger number, not a different kind of thing, and this item stays `◧` — but the reason
+That is a bigger number, not a different kind of thing, and this item stays `◧`, but the reason
 changed later the same day, and it is worth being exact about what is left.
 
 **The accounting half closed**, which is this item's own premise. Creating a task is now an
@@ -190,7 +190,7 @@ the slot-3 `[C-1]` decoy, and `docs/LIMITATIONS.md` §1.6b is closed.
 
 **The premise that had kept it open was wrong.** §1.6b said the authority *"would have to name a
 task object, which does not yet exist as a kernel object"*. A task has been named by `CAP_TCB`
-all along — and a capability naming the task could not gate its *creation* in any case, because
+all along, and a capability naming the task could not gate its *creation* in any case, because
 nobody can hold one to a task that does not exist yet. The authority is the **resource**, and the
 resource is untyped memory, exactly as it is for every other kernel object here.
 
@@ -202,8 +202,8 @@ The overclaim was shipped by the commit that introduced the gate, which is why i
 rather than quietly corrected.
 
 **The storage half closed too, and the ceiling with it.** `tasks[]` is carved from the kernel's
-untyped reserve rather than declared in `.bss` — the last object class outside the retyping
-discipline — and `g_max_tasks` is derived at boot from the reserve that exists, with 127 bounds
+untyped reserve rather than declared in `.bss`, the last object class outside the retyping
+discipline, and `g_max_tasks` is derived at boot from the reserve that exists, with 127 bounds
 across fourteen files reading it. `MAX_TASKS` is the provisioning constant and nothing branches
 on it.
 
@@ -212,8 +212,8 @@ on it.
 an overflow at 2048. Nobody had measured it, and it is why a runtime count could only ever have
 adjusted the ceiling downward while it stayed there. It is one allocated buffer now, shared under
 the `cap_lock` the sweep already holds throughout. **This is the second time in this item that
-the named obstacle was not the real one** — the first was `tasks[]` being blamed for
-`per_task_kstacks`, 72 KiB against 4 MiB — and both times the answer came from measuring rather
+the named obstacle was not the real one**: the first was `tasks[]` being blamed for
+`per_task_kstacks`, 72 KiB against 4 MiB, and both times the answer came from measuring rather
 than from reading the code's own account of itself.
 
 ---
@@ -1042,7 +1042,7 @@ the capability; the prefix is how you spell it. See `docs/LIMITATIONS.md` §2.7.
   endpoint for a new server; the gate uses root-cnode endpoint capabilities instead. Giving the
   delegation root that authority is a real widening and belongs in its own commit.~~
   **Two of those four clauses were false, and they had been since before this bullet was
-  written.** `init` holds `CAP_UNTYPED` at `CAPSLOT_UNTYPED` — `kshell.c` installs it at boot with
+  written.** `init` holds `CAP_UNTYPED` at `CAPSLOT_UNTYPED`, `kshell.c` installs it at boot with
   a comment saying so, and `init` grants it onward to the shell, which it could not do without
   holding it. Measured 2026-08-30 by asking `init` to do the thing it was said to be incapable
   of, on the wire:
@@ -1055,14 +1055,14 @@ the capability; the prefix is how you spell it. See `docs/LIMITATIONS.md` §2.7.
 
   What was accurate is the *observation*: the VFS gate did install `dev_server`'s listen
   capability from the root cnode. The *explanation* was wrong, and so was the conclusion drawn
-  from it — the widening "in its own commit" had already happened, so nothing was waiting on it.
+  from it, the widening "in its own commit" had already happened, so nothing was waiting on it.
   **A blocker nobody re-tested is indistinguishable from a real one**, and this one had been
   stale long enough to be the reason the item looked expensive.
 
   **`init` provisions a server now** (**S59**): `launch_dev_server` retypes a `KOBJ_ENDPOINT` out
   of `init`'s own untyped region, hands the listen right to the server it spawns, keeps a
   `WRITE`-only mint for itself, and drives a request across it. The endpoint does not exist at
-  boot and is not in the root cnode — it is created from a budget `init` holds a capability for,
+  boot and is not in the root cnode: it is created from a budget `init` holds a capability for,
   which is what "provision" was supposed to mean. Witness `make smoke-init-provision`.
 - `dev_server` is gated behind `VFS_SELFTEST=1` rather than shipped: adding a server to every
   image changes the default system, which is a separate decision from proving the VFS works.
@@ -1242,14 +1242,14 @@ Ordered by size, with what each actually is:
 |---|---|---|
 | `src/kernel/storage.c` | 2,500 | The encrypted object store **and** the on-disk filesystem: superblock, inodes, WAL, Merkle tree, fsck. The single largest policy blob in ring 0, and `userspace/fs_server.c` already proves half the pattern in ring 3 |
 | `src/kernel/kusers.c` | 601 | Accounts, Argon2id hashing, the encrypted user database. The authority is **already** `CAP_USER` (**S18**), so nothing here needs ring 0 |
-| `src/kernel/loader.c` + `kspawn.c` + `shlib.c` | 1,273 | ELF loading and spawn staging — the surface that produced **[G-10]** and **[G-11]** |
+| `src/kernel/loader.c` + `kspawn.c` + `shlib.c` | 1,273 | ELF loading and spawn staging, the surface that produced **[G-10]** and **[G-11]** |
 | `src/kernel/crypto.c` | 250 | CSPRNG seeding and key handling |
 | `src/kernel/syscall_fs.c` | 274 | The ring-3 surface of `storage.c`; moves with it |
 
 **Not a mechanical lift, and this is the honest part.** `storage.c` holds the volume key, so
 moving it means deciding what a ring-3 storage server may hold and what the kernel keeps
 sealed (**S19**'s ratchet and the TPM path both touch it). `kusers.c` is reached from
-`SYS_SUDO`, which mints capabilities — the delegation has to survive the move. Neither is
+`SYS_SUDO`, which mints capabilities: the delegation has to survive the move. Neither is
 blocked on a mechanism; both are blocked on a design decision nobody has written down.
 
 **What this item is NOT.** A LOC target. **S87** deliberately declines to set one for the
@@ -1299,27 +1299,27 @@ and a silently reverted disk.
 | stage | what it removed |
 |---|---|
 | 1 (#270) | a 512-byte block, and the 2.04 MiB file cap that came with it |
-| 2 (#273) | the whole-volume in-RAM metadata mirror — 128 MiB of `.bss` at 16 GiB (**S65**) |
-| 3 (#274) | the flat rollback MAC — 1 MiB hashed per write, and the whole region read at mount (**S66**) |
+| 2 (#273) | the whole-volume in-RAM metadata mirror: 128 MiB of `.bss` at 16 GiB (**S65**) |
+| 3 (#274) | the flat rollback MAC: 1 MiB hashed per write, and the whole region read at mount (**S66**) |
 | 4 | the constant that was every volume's size, the 1.00 GiB file ceiling, the single-block inode bitmap, the single-transaction free, and the fsck walk at every mount (**S68**) |
 
-`BLOCKS_PER_DISK` is 4,194,304 — a **ceiling**, not a size. The volume comes from ATA IDENTIFY,
+`BLOCKS_PER_DISK` is 4,194,304, a **ceiling**, not a size. The volume comes from ATA IDENTIFY,
 so the gates run on 128 MiB images against a 16 GiB-capable kernel and `smoke-fs-16g` is the one
-that allocates a real one, sparsely — three boots: format, reboot-and-crash, replay and verify.
+that allocates a real one, sparsely, three boots: format, reboot-and-crash, replay and verify.
 
 **Two defects were found by reading rather than by a failing gate**, both while doing this work:
 the RAM vdisk advertised eight times the memory it had, writing into the free page pool (#272,
 **S64**), and `fsck` freed the double-indirect blocks of every live file at every unlock (#275,
-**S67**) — reachable by any file over 38 KiB before the block size was raised.
+**S67**), reachable by any file over 38 KiB before the block size was raised.
 
-The one whole-volume walk this work did not remove at first -- the block allocator's rescan of
-the data bitmap -- is gone too: measured at 512 bitmap reads for 32 allocations, 47 with a
+The one whole-volume walk this work did not remove at first, the block allocator's rescan of
+the data bitmap, is gone too: measured at 512 bitmap reads for 32 allocations, 47 with a
 rotating start hint (`docs/LIMITATIONS.md` 3.5).
 
 **And the anchor the tree could not be** (**S70**, 2026-09-01). The tree catches *partial*
 rollback; it cannot catch the whole volume being replaced with a consistent earlier snapshot,
 because its root lives in the superblock it protects. `sb.rollback_gen` is now a TPM NV monotonic
-counter value bound into that root, and a volume behind the counter is refused —
+counter value bound into that root, and a volume behind the counter is refused,
 `make smoke-rollback` restores an entire earlier image between boots and requires it. What that
 still leaves (unanchored volumes on TPM-less machines, one-boot granularity, no migration path)
 is in `docs/LIMITATIONS.md` 1.12.
@@ -1335,7 +1335,7 @@ was landed as its groundwork.
 
 **It is also the item that finishes two others.** `storage_authorize_format()` shipped with
 **S63** carrying the comment "which an installer calls and a login never does", and had **no
-caller at all** for as long as there was no installer -- so the refusal was absolute rather
+caller at all** for as long as there was no installer, so the refusal was absolute rather
 than deliberate, and "no path exists" is a weaker claim than "one gated path exists". And the
 TUI has never been driven by a program that has to get an answer right.
 
@@ -1351,10 +1351,10 @@ worth recording because it is the cheaper-looking option and the tree shows why 
 arguing. `root_cnode[9]` carries `CAP_RIGHT_ALL`; `cap_install_from_root` copies rights
 verbatim; existing call sites already hand a full copy of that capability to `fs_server` and to
 the shell. A new bit inside `CAP_RIGHT_ALL` is therefore conferred on both **the moment it is
-defined**, with no diff at the grant -- formatting would have become something the filesystem
+defined**, with no diff at the grant: formatting would have become something the filesystem
 server and the login shell could do because of how a constant is spelled. A new type fails
-closed in the same situation. That is 3.6's split of `CAP_DEBUG` out of `CAP_AUDIT` -- "the gate
-was real, it just named far more authority than the caller needed" -- applied *before* the
+closed in the same situation. That is 3.6's split of `CAP_DEBUG` out of `CAP_AUDIT` ("the gate
+was real, it just named far more authority than the caller needed") applied *before* the
 bundling exists rather than after.
 
 The password bound is a round-trip property, not a buffer size: a login copies 31 bytes and
@@ -1374,7 +1374,7 @@ The library draws in colour and boxes it with the terminal's own line glyphs, an
 `tui_center` and `tui_wrap`. It did **not** gain a form layer, and the refusal is the part worth
 recording: tabbing between fields and re-editing an answer is genuinely friendlier than three
 questions in a row, and it is also a third blocking loop over the keyboard holding the caller's
-fields and deciding which one the next keystroke edits -- in the library that stands between a
+fields and deciding which one the next keystroke edits, in the library that stands between a
 keystroke and a decision to erase a disk. `include/tui.h` has said since it was written that a
 program which has to be READ before it is trusted does not get a widget set, and that rule
 decided this. The installer gets the same behaviour by composing the two interactions in its own
@@ -1382,7 +1382,7 @@ file. The layout calls earn their place by **subtraction**: every line of prose 
 `installer.c` was placed at a hand-counted column, which is silently wrong the moment somebody
 edits the sentence above it. Two new arms, `TUI_ACS_NO_RESTORE=1` and `TUI_WRAP_NO_BREAK=1`,
 both witnessed against the **emitted stream** because neither property is visible in a cell, a
-return value, or a byte count -- the charset restore makes the count go DOWN when it is
+return value, or a byte count: the charset restore makes the count go DOWN when it is
 dropped.
 
 **Delivered: the installer** (`userspace/installer.c`, `SECURITY.md` **S73**). `init` surveys the
@@ -1396,26 +1396,26 @@ rather than by trusting a return code.
 volume is sealed to a password and the root account is verified against one, by different
 mechanisms with different salts, and `h_auth` needs the same typed string to satisfy both. Seal
 the volume to one and leave the account on its compiled-in default and the result is a perfectly
-installed disk nobody can log into -- which boot 1 cannot detect, because everything it can
+installed disk nobody can log into, which boot 1 cannot detect, because everything it can
 observe succeeded. `make smoke-installer` therefore powers the machine off and logs in.
 
 **The base system is not copied by the installer**, and that is a capability decision rather than
 an omission: `fs_server` already provisions `/bin` and the directory skeleton the moment the
 store becomes readable, because it polls for exactly that on a sealed volume. Doing it in the
-installer would mean granting it `CAP_ENCRYPTED_STORAGE` and `CAP_BOOT_MODULE` -- the authority
-to read every boot module and write anywhere in the object store -- to duplicate a loop that
+installer would mean granting it `CAP_ENCRYPTED_STORAGE` and `CAP_BOOT_MODULE`, the authority
+to read every boot module and write anywhere in the object store, to duplicate a loop that
 already exists in the task whose job it is.
 
 **Delivered: the conversation, reordered so the consent is last (2026-09-06).** The typed word
-used to be the second question -- choose Continue, type `FORMAT`, then answer five more screens
-before anything was written -- so the consent was acted on about a machine state the operator
+used to be the second question (choose Continue, type `FORMAT`, then answer five more screens
+before anything was written) so the consent was acted on about a machine state the operator
 could no longer see. The order is now: show what is at stake, collect every answer, **show them
 back**, then ask for the word, immediately before the format with nothing in between. `SECURITY.md`
 **S73** is unchanged in substance and restated for the new position; the gate is still the word,
 and `INSTALLER_NO_CONFIRM=1` still removes only the comparison.
 
 **The review screen is also the only way to correct a typo, and it is built from the two
-interactions that already existed** -- a `tui_menu` choosing which question to ask again and a
+interactions that already existed**, a `tui_menu` choosing which question to ask again and a
 `tui_input` asking it. A form layer with tab-navigation was designed and rejected on the rule
 `include/tui.h` has always stated; see 2.5. The decision logic lives in `installer.c`, where a
 reviewer of this program's consent is already reading. One consequence worth recording: changing
@@ -1427,8 +1427,8 @@ password when it happens.
 it found.** A marker is a cooked console write to the same UART the TUI draws on, so it lands
 wherever the terminal's cursor is; the damage diff cannot see a write it did not make, so the
 text stayed on screen through every screen after it. `*******INSTALLER: waiting on the user
-password again` across a live install's password row. **No gate could have caught it** -- every
-installer gate asserts on the markers, which are on the wire either way -- and it was found by
+password again` across a live install's password row. **No gate could have caught it**, every
+installer gate asserts on the markers, which are on the wire either way, and it was found by
 rendering the installer's serial stream through a VT emulator, measured at 16 corrupted rows
 against 0 after `tui_invalidate()`, with `make smoke-installer` green in both arms. The lesson
 is narrow and worth keeping: a gate that reads the WIRE cannot see what the SCREEN looks like,
@@ -1452,7 +1452,7 @@ and for a full-screen program those are different questions.
   than loudly.** The ATA driver selected a drive and then waited on whichever drive was
   *previously* selected, which never mattered while the selection never changed; and thirty-one
   call sites reached the medium through `current_bd` while the format wrote through the device it
-  was handed. Neither produced an error -- the first stopped the guest issuing disk I/O at all,
+  was handed. Neither produced an error: the first stopped the guest issuing disk I/O at all,
   reaching the harness as the installer's format WEDGING. Both were found by the first gate that
   ever wrote to the second disk, which is the argument for the gate.
 - ~~**Installing over an existing volume.**~~ **Done 2026-09-11** (`SECURITY.md` **S90**), and
@@ -1473,7 +1473,7 @@ and for a full-screen program those are different questions.
   a shell-invoked installer needs `CAP_STORAGE_FORMAT` to reach a login-adjacent task, and
   `launch_installer` calls that "the one capability no other task is given a copy of". Reaching
   it would also put the volume in the `unlocked` state **S90** exists to refuse. So this is not
-  a gap to be filled mechanically -- it needs that invariant rewritten deliberately, or a
+  a gap to be filled mechanically: it needs that invariant rewritten deliberately, or a
   different mechanism.
 
 ---
@@ -1502,7 +1502,7 @@ Adversarially tested: `smoke-tpm-tamper`, `smoke-tpm-seal`.
 
 **The policy that makes it mandatory is met by a real disk since 2026-09-09** (`SECURITY.md`
 **S85**). `MEASURED_BOOT_REQUIRED=1` has refused a never-sealed volume since 2026-08-23, and
-until now every arm for that refusal ran on the ephemeral vdisk -- exempt by design, so the
+until now every arm for that refusal ran on the ephemeral vdisk, exempt by design, so the
 branch was reachable only under a flag that removes the exemption. `make smoke-measured-persist`
 formats a disk on a machine with no TPM and presents it to the policy kernel on a machine that
 has one, and `make smoke-measured-persist-sealed` is the direction that stops a check which
@@ -1542,7 +1542,7 @@ named subset rather than "run everything".
   does, against a caller-supplied expected type.~~ **The C side did not, and this entry was
   wrong when written**: `cap_lookup` took `(slot, required_rights)` and had no type parameter at
   all, so the test lived in each of its ~40 callers. Since 2026-08-31 it does take one
-  (**S60**), which is the FFI-contract half this entry called for — on the C side. What remains
+  (**S60**), which is the FFI-contract half this entry called for, on the C side. What remains
   is the Rust half: `rust_cap_lookup` still resolves without a type, so the Kani harness
   "lookup refuses a type-mismatched capability" needs the expected type pushed through the FFI
   boundary before it can be stated.
@@ -1551,7 +1551,7 @@ named subset rather than "run everything".
   > open rather than easy.** `CAP_LOOKUP_TYPE_UNCHECKED` is the control arm that proves the
   > type test is load-bearing: it compiles out the check in `cap_lookup` and requires
   > `make smoke-captest-lookup-type-control` to go red. That flag reaches **`CFLAGS` and
-  > `ASFLAGS` only** — it appears nowhere in `rust/`, and the Rust build takes its features
+  > `ASFLAGS` only**: it appears nowhere in `rust/`, and the Rust build takes its features
   > from the separate `RUST_FEATURES` mechanism. So a `rust_cap_lookup` that checked the type
   > itself would keep refusing under the arm, the arm would stop reproducing the defect, and
   > the gate would stop going red **while still reporting PASS**: a control arm that has
@@ -1622,12 +1622,12 @@ between the two headers.
 Record syscall and IPC traces under QEMU and replay them, making SMP race reproduction
 tractable and turning intermittent CI failures into artifacts.
 
-### 3.8 ◧ KASLR, CFI, and sanitizers (**[F-3.5]**) *the sanitizer third landed 2026-08-24*
+### 3.8 ◧ KASLR, CFI, and sanitisers (**[F-3.5]**) *the sanitiser third landed 2026-08-24*
 
 **Delivered: Miri over the Rust core, on every pull request.** `SECURITY.md` **S33**. It is a
-UB interpreter rather than a sanitizer strictly speaking, and it is the stronger tool for this
+UB interpreter rather than a sanitiser strictly speaking, and it is the stronger tool for this
 crate: 80 `unsafe` blocks, all of them at the C FFI boundary, where the failure mode is aliasing
-and provenance rather than the overflow a sanitizer catches. 77 tests, ~2 minutes, four crypto
+and provenance rather than the overflow a sanitiser catches. 77 tests, ~2 minutes, four crypto
 modules excused with reasons in `.github/miri-scope.yml`.
 
 **The first run found UB in three places: all in the tests.** A test would take
@@ -1667,7 +1667,7 @@ with a justification the measurement disproved.
 - **CFI on indirect calls in the C kernel.** The dispatch table is the obvious target. gcc's
   `-fcf-protection` gives CET/IBT, which is a different and weaker property than
   `-fsanitize=cfi`; that one wants clang and LTO, i.e. a second toolchain.
-- **A sanitizer pass proper** (ASan/UBSan) over the C kernel, which needs a freestanding
+- **A sanitiser pass proper** (ASan/UBSan) over the C kernel, which needs a freestanding
   runtime; Miri covers the Rust half only.
 
 ### 3.9 ⬜ Virtualisation hooks (VT-x): **[F-3.4]**
@@ -1722,7 +1722,7 @@ neither, in both, or names a job that no longer exists. No default, defaulting i
 caught CodeQL unclassified on its first run, which is the same omission class the finding
 describes.
 
-The intended set is **120 required, 3 exempted** (120 jobs, 123 contexts (re-derive it with
+The intended set is **121 required, 3 exempted** (121 jobs, 124 contexts (re-derive it with
 `tools/check_ci_gating.py`, never from this line)) `fuzz` (a 30-second time-boxed search is
 evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on), and
 `ruleset-audit` (schedule-only, so it never runs on a pull request). `smoke-fs-wal` was an
@@ -1818,7 +1818,7 @@ that nothing yet enforces.
   version and SHA-256 and verifies on every invocation, so nothing is committed and nothing is
   trusted for having arrived.
   **The item was written about newlib and the gap it found was a font.** `font_8x8` is uploaded
-  into the VGA font plane on every text-mode boot -- shipped and rendered -- and carries no
+  into the VGA font plane on every text-mode boot, shipped and rendered, and carries no
   attribution, no upstream and no licence statement. It resembles the small 8x8 bitmap fonts
   that circulated with early PC graphics code, several of which are public domain and several of
   which are not; resemblance is not provenance, so the file records the question as **open**
@@ -1903,7 +1903,7 @@ been pushed about as far as it goes without one, and 4.1 now says so without als
 **Track 0 is complete** (0.1, 0.2, 0.3 all landed 2026-07-27; 0.3 completed 2026-08-30 when
 **[I-7]** closed). The object model is true: IPC is capability-addressed, ambient root authority
 is retired, and creating a kernel object is an exercise of authority the capability graph
-describes — including creating a **task**, which was the last exception (**S57**), with the
+describes, including creating a **task**, which was the last exception (**S57**), with the
 budget for it subdividable so the bound is expressible (**S58**). The TCB table is carved from
 untyped like every other object class, and the task count is derived at boot from the reserve
 that exists rather than compiled in.

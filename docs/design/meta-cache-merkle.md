@@ -4,8 +4,8 @@
 a volume be large enough to install onto; stage 1 (4 KiB blocks) landed in #270.*
 
 The two falsifying arms are designed **first**, deliberately. These stages rewrite
-the rollback-protection chain — the mechanism standing between a physical
-attacker and silently reverting a disk to an earlier state — and stage 1 produced
+the rollback-protection chain, the mechanism standing between a physical
+attacker and silently reverting a disk to an earlier state, and stage 1 produced
 seven defects from what looked like a constant change. An arm designed after the
 code tends to test what the code does; an arm designed before it tests what the
 code is *for*.
@@ -18,11 +18,11 @@ code is *for*.
 
 `g_block_meta[BLOCKS_PER_DISK]` is a **complete in-RAM mirror** of the on-disk
 nonce/tag region, 32 bytes per block. Integrity is two-level: a MAC per meta
-block, then `sb.meta_hmac` over all of those. Both scale with the volume — the
+block, then `sb.meta_hmac` over all of those. Both scale with the volume: the
 top MAC's input is `META_BLOCKS_COUNT * 32`, so at 16 GiB it would hash 1 MiB on
 every metadata write, and the mirror alone would want 128 MiB of RAM.
 
-### Stage 2 — bounded write-back cache
+### Stage 2, bounded write-back cache
 
 The mirror becomes a fixed-size cache (`META_CACHE_ENTRIES`, resident regardless
 of volume size) over the on-disk region, with dirty write-back.
@@ -41,7 +41,7 @@ for. E2 is what makes E1 fatal rather than merely lossy: the journal's guarantee
 is that a committed transaction is durable, and a meta write that escapes the
 transaction is a write the journal never promised.
 
-### Stage 3 — Merkle tree
+### Stage 3, Merkle tree
 
 The two-level MAC becomes a tree of fanout `BLOCK_SIZE/32` = 128, depth 3 for a
 16 GiB volume (4.19M blocks → 32,768 leaves → 256 → 2 → root), with a bounded
@@ -57,7 +57,7 @@ R1 is **Arm B**.
 
 ---
 
-## 2. Arm A — eviction under crash
+## 2. Arm A, eviction under crash
 
 ### The property
 
@@ -66,7 +66,7 @@ R1 is **Arm B**.
 
 ### The defect to inject
 
-`META_CACHE_EVICT_NOWB=1` — eviction drops a dirty entry instead of writing it
+`META_CACHE_EVICT_NOWB=1`, eviction drops a dirty entry instead of writing it
 back. This is E1 directly, and it is the shape a real implementation gets wrong
 by forgetting the dirty bit or by writing back lazily.
 
@@ -121,11 +121,11 @@ and no later flush can reconstruct it.
 
 So this is a cost of stage 2, not merely an implementation note. The arm now
 clears the in-RAM entry as well as skipping the write, which is what eviction
-without write-back actually leaves behind — and it reproduces:
+without write-back actually leaves behind, and it reproduces:
 `METACACHE: FAIL block 31 lost after eviction`.
 
 Note what the ordering bought. Had stage 2 been written first, "skip the flush"
-WOULD have reproduced — against the cache — and the difference between *skipping
+WOULD have reproduced, against the cache, and the difference between *skipping
 a write* and *losing an entry* would never have surfaced. The arm would have
 passed for a reason nobody had understood, which is how a gate ends up testing
 something other than what its name says.
@@ -134,18 +134,18 @@ something other than what its name says.
 
 Under the defect the marker must be a **read failure of a specific block**, not a
 mount failure. If `storage_unlock` refuses outright, that is E4 destroying the
-whole region and the arm proves something weaker than intended — so the arm
+whole region and the arm proves something weaker than intended, so the arm
 distinguishes the two:
 
-- `METACACHE: FAIL block <n> lost after eviction` — the intended reproduction.
-- `METACACHE: FAIL volume did not mount` — reported separately, and treated as
+- `METACACHE: FAIL block <n> lost after eviction`, the intended reproduction.
+- `METACACHE: FAIL volume did not mount`, reported separately, and treated as
   *inconclusive for this property* rather than as a pass, in the same way
   `smoke-kstack-park-control` scores a died boot as INCONCLUSIVE rather than a
   miss.
 
 ---
 
-## 3. Arm B — stale-node replay
+## 3. Arm B, stale-node replay
 
 ### The property
 
@@ -161,25 +161,25 @@ the tree notices that it is *old*.
 
 ### The defect to inject
 
-`MERKLE_NODE_TRUST_CACHED=1` — a node found in the node cache is returned without
+`MERKLE_NODE_TRUST_CACHED=1`: a node found in the node cache is returned without
 re-verifying it against its parent. That is the natural performance shortcut, and
 it is precisely what makes a replay succeed.
 
 ### The witness, and the subtlety that decides it
 
 **The replayed node must be independently valid.** If Arm B replays garbage, or a
-node whose own MAC fails, then the arm passes because the MAC check fired — and
+node whose own MAC fails, then the arm passes because the MAC check fired, and
 it has tested nothing about the tree structure. A node MAC'd on its own is a set
 of independent MACs, not a Merkle tree; the whole point of the tree is that a
 node is bound to its *position and generation* through its parent.
 
 So the sequence is:
 
-1. Boot 1: write block set A. Snapshot the on-disk bytes of one interior node —
+1. Boot 1: write block set A. Snapshot the on-disk bytes of one interior node,
    valid, current, correctly MAC'd at this instant.
 2. Boot 1 continues: write block set B, which changes that subtree, so the node
    and every ancestor up to the root are rewritten.
-3. Overwrite that node's on-disk bytes with the **step-1 snapshot** — a genuine
+3. Overwrite that node's on-disk bytes with the **step-1 snapshot**, a genuine
    past state of this volume, not a forgery.
 4. Boot 2: read a block covered by that subtree.
 
@@ -192,8 +192,8 @@ contents:
 
 ### A second arm, because one is not enough
 
-Arm B as stated exercises the *cache* path. A separate, smaller arm —
-`MERKLE_SKIP_PARENT_BIND=1` — removes the parent binding itself (a node is
+Arm B as stated exercises the *cache* path. A separate, smaller arm,
+`MERKLE_SKIP_PARENT_BIND=1`, removes the parent binding itself (a node is
 verified by its own MAC only). Both arms must produce the same refusal, from
 different causes, or the tree is being verified in only one of the two places it
 matters. This is the lesson from `smoke-cap-lookup-range-control`: a witness that
@@ -210,11 +210,11 @@ Stated plainly, because a gate's scope is part of its claim:
   metadata region and the tree *together* with a consistent earlier snapshot
   defeats both arms, because every internal relationship holds. The Merkle root
   lives in the superblock it is meant to protect. Defending this needs a
-  freshness anchor outside the volume — a TPM NV counter is the usual answer —
+  freshness anchor outside the volume, a TPM NV counter is the usual answer,
   and is **not** in scope for stages 2 or 3. The tree improves per-write cost and
   catches *partial* rollback; it does not make the volume monotonic.
 
-  *(2026-09-01: this was built afterwards — `SECURITY.md` **S70**, witness
+  *(2026-09-01: this was built afterwards, `SECURITY.md` **S70**, witness
   `make smoke-rollback`. The paragraph above stands as written because it is
   what the design said at the time, and because its last sentence is still the
   correct description of what the TREE does. The anchor is a separate mechanism
@@ -230,14 +230,14 @@ Stated plainly, because a gate's scope is part of its claim:
 
 ## 4a. What stage 2 actually shipped, and where this document was wrong
 
-*Added 2026-08-31, after the code. The rest of this document is left as written —
+*Added 2026-08-31, after the code. The rest of this document is left as written:
 a design read after the fact is only useful if you can see what it predicted.*
 
 **The cache line is a metadata BLOCK, not an entry.** §2's witness counts the
 working set in data blocks ("`META_CACHE_ENTRIES + N` distinct blocks"), which
 presumes entry granularity. Entry granularity makes every 4 KiB data write pay a
 4 KiB metadata *read*, permanently, because writing one entry back means
-read-modify-writing the block it lives in — and that splice of an on-disk image
+read-modify-writing the block it lives in, and that splice of an on-disk image
 with resident entries is exactly failure mode E3, which block granularity does
 not have at all. So the line is a block, 128 data blocks share one, and the
 harness's working set grew from 64 blocks to 400 with the cache widened down to
@@ -248,7 +248,7 @@ requires the write-back to be inside the transaction that dirtied the line, so
 `journal_commit` flushes; every workload in this tree dirties exactly one line
 per transaction; so a line is always clean by the time anything can evict it.
 `META_CACHE_EVICT_NOWB=1` therefore passes, the eviction write-back is a
-backstop, and the arm is kept without a gate — the call `SPAWN_STAGE_UNSERIALISED`
+backstop, and the arm is kept without a gate, the call `SPAWN_STAGE_UNSERIALISED`
 got. This is measured rather than argued: every crash-gate boot prints
 `evictions=2 dirty=0`, and a non-zero dirty count is the day that arm becomes
 reachable and should gate.
@@ -258,8 +258,8 @@ actually happen, and the two name different blocks:
 
 | flag | what it removes | boot 2 reports |
 |---|---|---|
-| `META_CACHE_NO_WRITEBACK=1` | the write-back entirely (E1 + E4) | `block 0` — nothing ever reached the disk |
-| `META_CACHE_WB_OUTSIDE_TXN=1` | only its position — the flush moves past the end of `journal_commit` (E2) | `block 399` — the block the crash committed, whose ciphertext the journal replayed and whose nonce was never written |
+| `META_CACHE_NO_WRITEBACK=1` | the write-back entirely (E1 + E4) | `block 0`: nothing ever reached the disk |
+| `META_CACHE_WB_OUTSIDE_TXN=1` | only its position, the flush moves past the end of `journal_commit` (E2) | `block 399`, the block the crash committed, whose ciphertext the journal replayed and whose nonce was never written |
 
 **§2's vacuity trap needed a third arm, not just a counter.**
 `smoke-meta-crash-vacuity-control` builds the same kernel without the widener, so
@@ -278,14 +278,14 @@ independently valid" is what shaped the whole harness: the tamper restores a
 metadata block **and the level-0 node that recorded its hash**, both snapshotted
 from a copy of this very image while they were current. Restoring the block alone
 is refused by the leaf hash, and a design that MAC'd every block independently
-would refuse it identically — so that version of the arm would have tested
+would refuse it identically, so that version of the arm would have tested
 nothing. Measured rather than argued: under `MERKLE_SKIP_PARENT_BIND=1`, the
 build with the chain removed, restoring the block without its node is *still*
 refused, 6 of 6.
 
 **The tampering is done by the host**, with `dd` between boots, because that is
 what a physical attacker with the disk does. The kernel's only jobs are to report
-which two blocks to snapshot and to carry a phase counter across three boots —
+which two blocks to snapshot and to carry a phase counter across three boots,
 and the counter lives in the block one past the end of the volume, so the tamper
 cannot rewind it and no shipping layout has to reserve anything.
 
@@ -303,7 +303,7 @@ the security claims will find.
 ## 5. Order of work
 
 1. **Arm A's harness first, against the current code.** It must PASS on today's
-   full mirror — which evicts nothing — and that run is what proves the harness
+   full mirror, which evicts nothing, and that run is what proves the harness
    itself works before there is any cache to blame. The eviction-count assertion
    will fail here, which is correct and is the signal to gate it only once the
    cache exists.

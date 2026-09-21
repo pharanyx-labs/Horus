@@ -61,9 +61,9 @@ ways; the overflow leaks rather than freeing in use.
 
 | Arm | Boots | `0xFEE000B0` fault | free-in-use |
 |---|---|---|---|
-| guarded, ship config | 30 | **0** |, |
-| ship config, before the fix | 30 | 6 |, |
-| `CR3_RECLAIM_UNGUARDED=1` | 20 |, | **20** |
+| guarded, ship config | 30 | **0** | n/a |
+| ship config, before the fix | 30 | 6 | n/a |
+| `CR3_RECLAIM_UNGUARDED=1` | 20 | n/a | **20** |
 
 Gates: `make smoke-cr3-reclaim` (fault **absent**) and `make smoke-cr3-reclaim-control`
 (free-in-use **present**). Different markers on the two arms, deliberately: the free-in-use

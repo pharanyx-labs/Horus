@@ -15,8 +15,8 @@ final section below.
 
 > **The residue this document predicted is still live, and is now [G-12].** The closure above is
 > unchanged and stands: every mechanism named here is fixed and falsified. But the section below
-> headed *"G-9 stays OPEN"* also named a residue it could not attribute -- *"a stale claim in the
-> boot/spawn phase, before any exec runs, 2 in 30"* -- and on 2026-09-02 that signature was
+> headed *"G-9 stays OPEN"* also named a residue it could not attribute (*"a stale claim in the
+> boot/spawn phase, before any exec runs, 2 in 30"*) and on 2026-09-02 that signature was
 > measured still reproducing at **0.31% per boot over 2250 boots**. It is filed as **[G-12]**
 > rather than reopened here, because calling it [G-9] would assert that [G-9]'s mechanism
 > explains it, and the [G-12] campaign positively **excludes** the deferred-release machinery

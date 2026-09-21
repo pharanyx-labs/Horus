@@ -2216,6 +2216,11 @@ void kfault_end(int fatal);
 void kfault_str(const char *s);
 void kfault_hex(uint64_t v);
 void kfault_dec(int v);
+/* S20 (scheduler.c): is slot `id` dead with no CPU still on its kernel stack?
+ * Caller holds sched_raw_lock under SMP. And the lowest such slot, or -1: the one
+ * place a spawn chooses a slot. */
+int sched_slot_reusable(int id);
+int sched_pick_free_slot(void);
 /* smp.c: interrupt CPU `cpu` with the kill IPI, so it stops running a task that
  * has just been torn down (HORUS-20260921-04). No-op for this CPU and unmapped. */
 void smp_kick_cpu(int cpu);

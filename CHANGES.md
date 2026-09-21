@@ -506,6 +506,20 @@ in this file.
 
 ### Fixed
 
+- **A kernel fault handed ring 3 the kernel's own address** (`SECURITY.md` **S97**,
+  **[HORUS-20260920-01]**). When the kernel faulted while working for a task, it killed that task
+  and wrote the kernel's faulting `rip` into the task's exit record, which any task can read with
+  no authority through `SYS_WAIT` and `SYS_TASK_EXIT_INFO`. Measured as `interrupt_handler64 +
+  0x7b9`: with a fixed base it discloses nothing `kernel.elf` does not, but under the KASLR
+  roadmap 3.8 plans, one such value is the slide. The record now keeps `rip` only for a ring-3
+  frame and a fault address only in the user half; the full frame still goes to the UART in the
+  kfault banner. New gate `make smoke-kfault-record`: `proctest` makes the kernel fault in a
+  child's own syscall at 0x94 and at a kernel-half address, reads each record back from ring 3,
+  and requires `rip` 0 with 0x94 kept (so zeroing everything cannot pass). Its control arm
+  (`EXIT_RECORD_KERNEL_RIP=1`) puts the kernel rip back and is caught by name, and the base gate
+  goes red on that build. The hook that lets a test child steer a kernel read exists only under
+  `KFAULT_RECORD_SELFTEST`, which the kernel announces at boot.
+
 - **Five documents stated the Kani harness count and no two agreed.** `SECURITY.md` **S31** said
   *"Fifteen"* harnesses and *"the four excused"*; `TESTS.md` said eleven; `docs/LIMITATIONS.md`
   5.5 said *"16 harnesses, 11 of them gating"*, in a section headed *"Formal verification is

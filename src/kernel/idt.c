@@ -491,6 +491,38 @@ static uint64_t kernel_park_rsp(void)
     return rsp;
 }
 
+/* What a task's exit record may say about WHERE it died (HORUS-20260920-01,
+ * docs/LIMITATIONS.md 1.16).
+ *
+ * The record is read back from ring 3 with no authority: SYS_WAIT and
+ * SYS_TASK_EXIT_INFO are SC_NONE and any task may wait on any tid. So it may
+ * carry only addresses ring 3 could already know. A ring-3 frame's rip is the
+ * task's own code; a CPL-0 frame's rip is kernel text, and under KASLR one such
+ * value IS the slide. Likewise a fault address in the kernel half says where
+ * kernel memory is. Both are recorded as 0 instead. Nothing is lost for
+ * diagnosis: the kfault banner prints the full frame at the UART, which is where
+ * a kernel address belongs.
+ *
+ * Built here, where the cause is built, rather than filtered in task_teardown,
+ * so every caller that constructs a cause from a trap frame goes through it. */
+static uint64_t exit_record_rip(const struct interrupt_frame64 *f) {
+#ifdef EXIT_RECORD_KERNEL_RIP
+    /* DEFECT FLAG (control arm for smoke-proc): the pre-fix record, kernel rip
+     * included. Never a shipping config. */
+    return f->rip;
+#else
+    return (f->cs & 3) ? f->rip : 0;
+#endif
+}
+
+static uint64_t exit_record_addr(addr_t fault_addr) {
+#ifdef EXIT_RECORD_KERNEL_RIP
+    return (uint64_t)fault_addr;
+#else
+    return ((uint64_t)fault_addr < USER_MAX_VADDR) ? (uint64_t)fault_addr : 0;
+#endif
+}
+
 static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
 {
     uint64_t vector = frame->int_no;
@@ -735,7 +767,7 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
                  * session. The record below is what a supervisor can actually
                  * read back (SYS_TASK_EXIT_INFO). */
                 struct task_exit_cause cause = {
-                    TASK_EXIT_FAULT, (uint32_t)vector, 0, frame->rip, 0
+                    TASK_EXIT_FAULT, (uint32_t)vector, 0, exit_record_rip(frame), 0
                 };
                 task_teardown(killed, &cause);
                 uint64_t rsp = task_exit_switch(killed);
@@ -1414,7 +1446,8 @@ uint64_t page_fault_handler(struct interrupt_frame64 *f64) {
          * ring-3 task killed here dies in total silence — the case that made
          * G-8 signature A look like a hang. Record it. */
         struct task_exit_cause cause = {
-            TASK_EXIT_PAGEFAULT, 14, (uint32_t)err, f64->rip, (uint64_t)fault_addr
+            TASK_EXIT_PAGEFAULT, 14, (uint32_t)err, exit_record_rip(f64),
+            exit_record_addr(fault_addr)
         };
         task_teardown(killed, &cause);
         uint64_t rsp = task_exit_switch(killed);

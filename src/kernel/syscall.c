@@ -937,6 +937,16 @@ static void h_receive_program(struct interrupt_frame64 *r) {
 /* SYS_YIELD: request a full-context switch; interrupt_handler64 runs
  * sched_yield_switch on the live trap frame after this returns. */
 static void h_yield(struct interrupt_frame64 *r) {
+#ifdef KFAULT_RECORD_SELFTEST
+    /* Test-only, and absent from every shipping configuration: the witness for
+     * HORUS-20260920-01 (docs/LIMITATIONS.md 1.16). A task named "kfaulter" that
+     * yields with a non-zero rbx makes the kernel read that address here, at
+     * CPL 0, in the task's own syscall. That is a supervisor #PF with this task
+     * to blame, the shape G-8 took, and proctest then reads the exit record back
+     * from ring 3 and requires that it carries no kernel address. */
+    if (r->rbx && kstrcmp(tasks[get_current_task()].name, "kfaulter") == 0)
+        (void)*(volatile uint64_t *)(addr_t)r->rbx;
+#endif
     yield();
     r->rax = 0;
 }

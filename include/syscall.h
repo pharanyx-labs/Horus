@@ -457,8 +457,10 @@ struct task_exit_info {
     int32_t  reason;    /* TASK_EXIT_*                                   */
     uint32_t detail;    /* vector / signum / killer tid, per reason      */
     uint32_t err;       /* #PF error code; 0 otherwise                   */
-    uint64_t rip;       /* faulting RIP; 0 when not a fault              */
-    uint64_t addr;      /* faulting address (#PF only); 0 otherwise      */
+    uint64_t rip;       /* faulting RIP; 0 when not a fault, and 0 when
+                         * the fault was taken in the kernel (S97)       */
+    uint64_t addr;      /* faulting address (#PF only); 0 otherwise, and
+                         * 0 when it lies in the kernel half (S97)       */
     char     name[32];  /* the dead task's name, captured before reuse   */
 };
 

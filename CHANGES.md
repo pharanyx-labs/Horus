@@ -506,6 +506,13 @@ in this file.
 
 ### Changed
 
+- **Every CI build used one of the runner's four cores.** Each of the ~370 build-and-boot steps in
+  `ci.yml` does `make clean` and a full build, serially: locally 8.9 s of build against 4 s of
+  boot, and 2.0 s at `-j12`. The workflow now sets `MAKEFLAGS=-j4`. Measured locally first: every
+  artifact (`kernel.elf` and every `userspace/*.bin`) was byte-identical serially and in parallel,
+  in three configurations, twice each. The `reproducible` job now builds once serially and once in
+  parallel, so CI keeps proving that on every run. The `security` job stays serial.
+
 - **A CI run took nearly an hour, set by two jobs.** Measured on the run for #413: 122 jobs, a
   median of 52 seconds each, and a wall time of 56 minutes, because `smoke` ran 59 gates one
   after another (54 minutes) and `smoke-fs-persist` 34 (33 minutes) while every other job had

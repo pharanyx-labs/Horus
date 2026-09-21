@@ -20,6 +20,16 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Every `make` in every job builds on all four of a standard runner's cores
+  # (2026-09-21). Each of the ~370 build-and-boot steps here does `make clean`
+  # and a full build, which ran on one core: locally 8.9 s serially against 2.0 s
+  # at -j12, for a boot of 4 s. Proven not to change what is built, in both
+  # directions: every artifact (kernel.elf and every userspace/*.bin) was
+  # byte-identical serially and at -j12 in three configurations locally, and the
+  # `reproducible` job compares a serial build against a parallel one on every
+  # run, so a Makefile race that altered an artifact goes red there. Cargo
+  # shares make's jobserver, so the Rust build does not oversubscribe.
+  MAKEFLAGS: -j4
 
 jobs:
   ci-gating:
@@ -4309,9 +4319,13 @@ jobs:
         run: make smoke-ap-trampoline
       - name: Restore the flat link and require the embed bound to refuse it
         run: make smoke-ap-trampoline-control
-      - name: Build twice and compare kernel.elf hashes
+      # The first build is SERIAL and the second PARALLEL (the workflow's
+      # MAKEFLAGS), so this also proves every other job's -j4 builds are the
+      # same bytes a serial build produces: a Makefile race that changed an
+      # artifact would make the two hashes differ here.
+      - name: Build twice, serially then in parallel, and compare hashes
         run: |
-          make reproducible-build
+          MAKEFLAGS= make reproducible-build
           cp .build.sha first.sha
           make reproducible-build
           cp .build.sha second.sha
@@ -4368,6 +4382,11 @@ jobs:
   security:
     name: Security scans + SBOM generation (Semgrep, Trivy, gitleaks, etc.)
     runs-on: ubuntu-latest
+    # Serial on purpose: `make security` and `make gitleaks cargo-audit` name
+    # several scanners as prerequisites, which -j would run at once and whose
+    # logs would interleave. They are not builds, so there is nothing to gain.
+    env:
+      MAKEFLAGS: ""
     # Backstop, not a performance budget: this job normally finishes in
     # minutes. Without it the default is 360, so a runner wedged on its
     # package install idles for six hours and the run never concludes --

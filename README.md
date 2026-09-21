@@ -274,8 +274,9 @@ someone rely on them.
 
 `make reproducible-build` builds **once** and records `sha256sum` for `kernel.elf` and
 `horus.iso` in `.build.sha`. The double-build-and-diff that actually establishes the property
-lives only in the `reproducible` CI job, which is a required check; locally, run the target
-twice and compare the `kernel.elf` line. Compare that line and not the file: **`horus.iso` is not
+lives only in the `reproducible` CI job, which is a required check and builds once serially and
+once in parallel, the way every other CI job builds; locally, run the target twice and compare
+the `kernel.elf` line. Compare that line and not the file: **`horus.iso` is not
 byte-reproducible**, because grub-mkrescue stamps a wall-clock UUID into every image it builds.
 The ISO's *payload*; the kernel, every boot module, `grub.cfg`, is identical across builds; four
 grub-generated objects are not. See `docs/LIMITATIONS.md` §5.3a.

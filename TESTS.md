@@ -1603,6 +1603,13 @@ gate beside its control arm. The run's floor is now the 16 GiB volume gate at ab
 minutes, and the three longest jobs are defined straight after `gates`, so that they are among
 the first scheduled when at most 20 jobs run at once.
 
+Every `make` in `ci.yml` runs with `MAKEFLAGS=-j4`, the four cores of a standard runner, because
+each build-and-boot step does `make clean` and a full build, which had run on one core. That it
+changes nothing that is built is checked, not assumed: the `reproducible` job builds once serially
+and once in parallel and requires the same `kernel.elf` (which embeds every userspace binary), so
+a Makefile race that altered an artifact goes red there. The `security` job stays serial, since
+its make targets are scanners whose logs `-j` would interleave.
+
 All third-party actions are pinned to full commit SHAs. Workflow `permissions:` blocks are
 least-privilege. There are no self-hosted runners.
 

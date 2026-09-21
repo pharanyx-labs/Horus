@@ -518,6 +518,17 @@ in this file.
 
 ### Fixed
 
+- **A new task could be written onto a kernel stack another CPU was still using** (`SECURITY.md`
+  **S20**, **[HORUS-20260921-03]**). Kernel stacks are indexed by task slot, and a slot counted
+  as free the moment its task was torn down, while the CPU that ran it could still be unwinding
+  its own trap frame off that stack. A spawn in that window wrote the new task's first frame on
+  top of it. The shipping kernel reaches this when `init` relaunches the shell into the old
+  shell's slot. Found by the KVM probe of CI, where a resumed task's `rip` pointed into its own
+  stack, and reproduced under emulation with a window-widener. A slot is now handed out only when
+  no CPU is on its stack, and `create_task` refuses one that is. New gate `make
+  smoke-kstack-reuse` with a control arm (`SLOT_REUSE_UNCHECKED=1`); two `proctest` phases that
+  respawn into a just-freed slot now retry in rounds instead of assuming the slot is free at once.
+
 - **A capability for a dead task controlled whatever task reused its slot** (`SECURITY.md`
   **S100**, **[HORUS-20260921-02]**). A `CAP_TCB` carried the bare task-slot number, and a
   spawner's copy outlives the child, so once the slot was reused the capability named the new

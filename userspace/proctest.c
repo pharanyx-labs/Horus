@@ -499,25 +499,36 @@ void _start(void) {
             report("PROC_SELFTEST: FAIL slot-waiter-died\n"); sys_exit();   /* it printed why */
         }
 
-        int probes[64];
-        int np = 0, hit = -1;
-        while (np < 64) {
-            int p = sys_spawn_named("exitprobe");
-            if (p <= 0) break;
-            probes[np++] = p;
-            if (p == w) { hit = p; break; }
-        }
-        /* Not reaching the slot is a failure of the TEST, not of the property,
-         * and it is named as one rather than scored either way. */
-        int reached = (hit > 0);
-        for (int k = 0; k < np; k++) {
-            sys_task_resume(probes[k]);
-            if (sys_wait(probes[k]) != 0) { report("PROC_SELFTEST: FAIL slot-probe-wait\n"); sys_exit(); }
-            struct task_exit_info pr;
-            if (exit_info(&pr) != 0 || pr.reason != TASK_EXIT_NORMAL) {
-                report("PROC_SELFTEST: FAIL slot-reuse-stale-record\n"); sys_exit();
+        /* ROUNDS, not one pass (2026-09-21, S20). The kernel no longer hands out
+         * a slot while a CPU is still on its kernel stack, and the CPU that ran
+         * the waiter can still be unwinding off it when our wait returns. In that
+         * window every probe lands past the waiter's slot and the budget runs out
+         * without reaching it, which is correct kernel behaviour and a false
+         * failure of this test. So: run and reap the probes, yield, and try
+         * again; the window is microseconds on real hardware and bounded by
+         * KSTACK_REUSE_WIDEN under test. Every probe of every round is checked. */
+        int reached = 0;
+        for (int round = 0; round < 4 && !reached; round++) {
+            int probes[64];
+            int np = 0;
+            while (np < 64) {
+                int p = sys_spawn_named("exitprobe");
+                if (p <= 0) break;
+                probes[np++] = p;
+                if (p == w) { reached = 1; break; }
             }
+            for (int k = 0; k < np; k++) {
+                sys_task_resume(probes[k]);
+                if (sys_wait(probes[k]) != 0) { report("PROC_SELFTEST: FAIL slot-probe-wait\n"); sys_exit(); }
+                struct task_exit_info pr;
+                if (exit_info(&pr) != 0 || pr.reason != TASK_EXIT_NORMAL) {
+                    report("PROC_SELFTEST: FAIL slot-reuse-stale-record\n"); sys_exit();
+                }
+            }
+            if (!reached) for (int i = 0; i < 400; i++) poll_wait();
         }
+        /* Not reaching the slot in any round is a failure of the TEST, not of
+         * the property, and it is named as one rather than scored either way. */
         if (!reached) { report("PROC_SELFTEST: FAIL slot-reuse-not-reached\n"); sys_exit(); }
         report("PROC_SELFTEST: slot-reuse OK\n");
     }
@@ -541,20 +552,30 @@ void _start(void) {
      * nothing here may kill it (that is the point), so it must not sit under the
      * timing-coupled phases above. --- */
     {
-        int r = sys_spawn_named("slotheir");
-        if (r <= 0) { report("PROC_SELFTEST: FAIL tcb-reuse-heir-spawn\n"); sys_exit(); }
-        if (sys_cap_grant(r, CAPSLOT_UNTYPED, CAPSLOT_UNTYPED) != 0) {
-            report("PROC_SELFTEST: FAIL tcb-reuse-heir-untyped\n"); sys_exit();
-        }
-        int c = sys_spawn_named("hello");
-        if (c <= 0) { report("PROC_SELFTEST: FAIL tcb-reuse-child-spawn\n"); sys_exit(); }
-        sys_task_resume(c);
-        if (sys_wait(c) != 0) { report("PROC_SELFTEST: FAIL tcb-reuse-child-wait\n"); sys_exit(); }
-        sys_task_resume(r);
-        if (sys_wait(r) != 0) { report("PROC_SELFTEST: FAIL tcb-reuse-heir-wait\n"); sys_exit(); }
-
+        /* In ROUNDS, for the reason the slot-reuse phase above gives: the kernel
+         * will not hand out c's slot while the CPU that ran c is still on its
+         * kernel stack, so slotheir resumed straight after our wait can land
+         * past it. Yield first, and if it still missed, try again with a fresh
+         * child; a missed round leaves one suspended heir behind, which is
+         * harmless and is not probed. */
+        int c = -1, landed = 0;
         struct task_info hi;
-        if (sys_get_task_info(c, &hi) != 0 || hi.state == 0 || !name_eq(hi.name, "hello")) {
+        for (int round = 0; round < 3 && !landed; round++) {
+            int r = sys_spawn_named("slotheir");
+            if (r <= 0) { report("PROC_SELFTEST: FAIL tcb-reuse-heir-spawn\n"); sys_exit(); }
+            if (sys_cap_grant(r, CAPSLOT_UNTYPED, CAPSLOT_UNTYPED) != 0) {
+                report("PROC_SELFTEST: FAIL tcb-reuse-heir-untyped\n"); sys_exit();
+            }
+            c = sys_spawn_named("hello");
+            if (c <= 0) { report("PROC_SELFTEST: FAIL tcb-reuse-child-spawn\n"); sys_exit(); }
+            sys_task_resume(c);
+            if (sys_wait(c) != 0) { report("PROC_SELFTEST: FAIL tcb-reuse-child-wait\n"); sys_exit(); }
+            for (int i = 0; i < 400; i++) poll_wait();
+            sys_task_resume(r);
+            if (sys_wait(r) != 0) { report("PROC_SELFTEST: FAIL tcb-reuse-heir-wait\n"); sys_exit(); }
+            landed = (sys_get_task_info(c, &hi) == 0 && hi.state != 0 && name_eq(hi.name, "hello"));
+        }
+        if (!landed) {
             report("PROC_SELFTEST: FAIL tcb-reuse-not-reached\n"); sys_exit();
         }
         if (sys_send_signal(c, SIG_USR1) != SYS_ERR_PERM) {

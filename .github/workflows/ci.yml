@@ -1747,6 +1747,10 @@ jobs:
       # in place, and the probe spawned into a waiter's old slot must find it.
       - name: Control arm, a reused task slot must not inherit the previous wait record
         run: make smoke-proc-exit-record-control
+      # HORUS-20260921-01 (S99). SYS_WAIT answers a caller holding no CAP_TCB
+      # for its target, and proctest must say so by name.
+      - name: Control arm, waiting on a task needs a CAP_TCB naming it
+        run: make smoke-proc-wait-control
 
   smoke-cow:
     name: QEMU copy-on-write self-test (headless)

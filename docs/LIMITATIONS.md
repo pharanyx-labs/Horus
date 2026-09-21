@@ -1084,6 +1084,32 @@ leaving the bytes past the terminator as whatever the slot last held, and all 32
 waiter.
 
 
+### 1.18 ~~Any task may wait on any task~~ (**FIXED 2026-09-21**, `SECURITY.md` S99) **[HORUS-20260921-01]**
+
+*Noted by the survey that found §1.16 and §1.17; fixed 2026-09-21.*
+
+**Closed.** `h_wait` requires a `CAP_TCB` naming the target with READ, and nothing else stands in
+for it: `CAP_USER` answers `SYS_KILL` too, but administering users is not authority to observe every
+task, and that bundling is the one roadmap 3.6 removed from `SYS_GET_TASK_INFO`. The check comes before the
+slot's state, so a caller without the capability is refused in the same way whether the task is
+live, dead or was never created. `make smoke-proc` waits on a dead slot the driver holds no `CAP_TCB`
+for, before it has spawned anything, and requires the refusal; its control arm,
+`WAIT_TCB_UNCHECKED=1`, removes the check and is caught by name. The two test programs that waited on
+a task they did not spawn (`sigwaiter` and `waiter`) now hold a `CAP_TCB` delegated with
+`SYS_CAP_GRANT`, and `init` stops with a named FATAL rather than relaunching the shell if a wait on it
+is ever refused. The account of the finding follows.
+
+`SYS_WAIT` is `SC_NONE` in the dispatch table, and `h_wait` tested neither parentage nor any
+capability. The spawn path already gave every spawner a `CAP_TCB` for its child, and the comment
+beside `grant_child_tcb_cap` said `SYS_WAIT` would refuse without one, but nothing read it. So any
+task could block on any tid, and a tid that read `TASK_DEAD` (which is also what a never-used slot
+reads) was answered at once from the slot, handing over its exit record: the reason, the killer,
+the faulting rip and address, and the name.
+
+**Not closed by this:** a `CAP_TCB` names a task by its slot number, and a spawner's copy outlives the
+child. Whether it then names whatever task next occupies that slot, and so what `SYS_KILL`, the
+signal calls and now `SYS_WAIT` authorise after a reuse, is being measured separately.
+
 ## 2. Correctness limitations
 
 ### 2.0 ~~Spinlock interrupt state is global, and the bug is load-bearing~~ (**FIXED

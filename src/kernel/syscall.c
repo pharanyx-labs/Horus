@@ -483,10 +483,29 @@ static void h_exit(struct interrupt_frame64 *r) {
     r->rax = 0;
 }
 
+/* Return non-zero if the current task holds a CAP_TCB capability naming `target`
+ * with every right in `need` (every task has one to itself at slot 0; a spawner
+ * is granted one per child in do_spawn and h_fork, and a supervisor may delegate
+ * it with SYS_CAP_GRANT). The target is dynamic, so the central slot-based gate
+ * cannot express this and the handlers call it instead. */
+static int task_tcb_held(int target, uint32_t need) {
+    int cur = get_current_task();
+    if (cur <= 0 || cur >= g_max_tasks) return 0;
+
+    capability_t *cs = tasks[cur].cspace;
+    if (!cs) return 0;
+    for (uint32_t s = 0; s < tasks[cur].cspace_size; s++) {
+        if (cs[s].type == CAP_TCB && cs[s].object == (uint64_t)target &&
+            (cs[s].rights & need) == need) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* Return non-zero if the current task may terminate `target`: either it holds a
- * CAP_TCB capability to the target with WRITE rights (every task has one to
- * itself at slot 0; a spawner is granted one per child in do_spawn), or it holds
- * CAP_USER admin authority (slot 6). */
+ * CAP_TCB capability to the target with WRITE rights, or it holds CAP_USER admin
+ * authority (slot 6). */
 static int task_kill_authorized(int target) {
     int cur = get_current_task();
     if (cur <= 0 || cur >= g_max_tasks) return 0;
@@ -494,15 +513,7 @@ static int task_kill_authorized(int target) {
     struct capability *admin = cap_lookup(CAPSLOT_USER, CAP_USER, CAP_RIGHT_ALL);
     if (admin) return 1;
 
-    capability_t *cs = tasks[cur].cspace;
-    if (!cs) return 0;
-    for (uint32_t s = 0; s < tasks[cur].cspace_size; s++) {
-        if (cs[s].type == CAP_TCB && cs[s].object == (uint64_t)target &&
-            (cs[s].rights & CAP_RIGHT_WRITE)) {
-            return 1;
-        }
-    }
-    return 0;
+    return task_tcb_held(target, CAP_RIGHT_WRITE);
 }
 
 /* SYS_KILL (63): terminate task ebx. Authorised by a CAP_TCB capability to the
@@ -600,6 +611,18 @@ void h_task_resume(struct interrupt_frame64 *r) {
 
 /* SYS_WAIT (17): block until task `tid` exits.
  *
+ * Authorised by a CAP_TCB naming `tid` with READ, and by nothing else: waiting
+ * observes the target (when it dies, and the exit record that says why), so it
+ * needs authority over THAT task. Until 2026-09-21 this tested nothing, so any
+ * task could wait on any tid and collect any task's exit record, including a
+ * corpse it had no relation to. The refusal is not widened by CAP_USER the way
+ * SYS_KILL's is: an admin capability names user administration, not the power to
+ * observe every task, and the bundling h_task_info removed stays removed here.
+ *
+ * Checked BEFORE the state test, deliberately. A caller without the capability
+ * gets SYS_ERR_PERM whether the slot is live, dead or never used, so the refusal
+ * is not a task-existence oracle either.
+ *
  * Records a pending block only; ipc_block_switch saves the trap frame first and
  * only then sets tasks[tid].waiter + TASK_BLOCKED_WAIT so a concurrent teardown
  * cannot wake a task whose saved_ksp is not yet the SYS_WAIT frame. */
@@ -607,6 +630,12 @@ static void h_wait(struct interrupt_frame64 *r) {
     int cur = get_current_task();
     int tid = r->rbx;
     if (tid < 0 || tid >= g_max_tasks || tid == cur) { r->rax = (uint32_t)-1; return; }
+    /* WAIT_TCB_UNCHECKED is the CONTROL ARM: the pre-2026-09-21 SYS_WAIT, which
+     * tested no authority at all. proctest then waits on a slot it holds no
+     * CAP_TCB for and is answered. */
+#ifndef WAIT_TCB_UNCHECKED
+    if (!task_tcb_held(tid, CAP_RIGHT_READ)) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+#endif
     if (tasks[tid].state == TASK_DEAD) {
         /* Already gone: satisfied without blocking — so task_teardown never got
          * to hand us the cause. Take it from the corpse instead. Safe precisely

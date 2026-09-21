@@ -940,7 +940,14 @@ void _start(void) {
         int sh = launch_shell();
         if (sh < 0) { report("init: FATAL could not launch shell\n"); for (;;) settle(); }
 
-        sys_wait(sh);   /* returns once the shell task is dead */
+        /* Returns 0 once the shell task is dead. Anything else means it is NOT
+         * known to be dead: since 2026-09-21 SYS_WAIT refuses a caller holding no
+         * CAP_TCB for the target, and init's comes from the spawn. Relaunching on
+         * a refusal would start a second shell beside a live one, and then another,
+         * as fast as the loop turns; stop and say why instead. */
+        int wr;
+        while ((wr = sys_wait(sh)) == SYS_ERR_INTR) { }
+        if (wr != 0) { report("init: FATAL cannot wait on the shell\n"); for (;;) settle(); }
         /* Read the cause BEFORE relaunching: launch_shell() may be handed the
          * dead shell's task slot, and the record is only guaranteed until this
          * task's next completed wait. */

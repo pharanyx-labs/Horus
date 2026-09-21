@@ -1100,7 +1100,7 @@ typedef struct platform_info {
     uint64_t total_memory_bytes;
 } platform_info_t;
 extern platform_info_t platform;
-#define MAX_CPUS 4
+#include "cpu_limits.h"   /* MAX_CPUS: one definition, shared with the AP trampoline */
 /* Physical load address of the AP trampoline blob (the SIPI vector's target).
  * Shared because two subsystems need it: smp.c stages the blob here, and
  * paging.c keeps exactly this page of the low identity map present and

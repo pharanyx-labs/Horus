@@ -255,7 +255,16 @@
 # directives and 2 comment continuation lines, the .S counting artefact recorded
 # in the S97 entry above. Authorisation of a syscall is ring 0 by nature.
 #
-# RAISED 2026-09-21, 10177 -> 10254 (+77), for S20's slot-reuse path
+# RAISED 2026-09-21, 10177 -> 10223 (+46), for up to eight CPUs with CPU indices
+# independent of LAPIC ids, and S101 (no task on an SMT sibling). All 46 are in
+# the ship kernel: 43 in smp.c (apic_to_cpu[]/cpu_to_apic[], this_apic_id,
+# cpu_is_smt_sibling, smp_build_cpu_map numbering the BSP, then primaries, then
+# siblings from the MADT with each id once, and the APIC_ID_IS_CPU_INDEX and
+# SMT_SIBLING_BY_INDEX arms' #ifdef lines) and 3 in scheduler.c (this_cpu_lapic
+# resolving through the map). CPU bring-up is ring 0 by nature. The trampoline's
+# +13 are not counted: it is embedded as a binary, not linked.
+#
+# RAISED 2026-09-21, 10223 -> 10300 (+77), for S20's slot-reuse path
 # (HORUS-20260921-03): a slot is not handed out while a CPU is on its kernel
 # stack. All 77 are in scheduler.c: sched_slot_reusable and
 # sched_pick_free_slot (with the SLOT_REUSE_UNCHECKED arm), their 12-line
@@ -266,7 +275,7 @@
 # The spawn paths themselves got shorter (kspawn.c -9), since both now call
 # the one picker instead of scanning for themselves; kspawn.c is not core.
 # Scheduling is ring 0 by nature.
-core_budget_loc: 10254
+core_budget_loc: 10300
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

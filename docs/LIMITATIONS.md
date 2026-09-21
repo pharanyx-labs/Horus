@@ -2563,7 +2563,7 @@ the present cost is affordable and is not what blocks anything.
 |---|---|---|
 | Tasks | 256 **provisioned**, derived at boot | `g_max_tasks` (from the reserve; `MAX_TASKS` provisions it) |
 | Capabilities per task | 128 in use, 256 slots | `MAX_CAPS_PER_TASK`, `CNODE_SIZE` |
-| CPUs | 4 | `MAX_CPUS` |
+| CPUs | 8, and 8 by default; fewer boot and run on what is present | `MAX_CPUS` (`src/include/cpu_limits.h`) |
 | Static endpoints (well-known + per-task reply) | 128 | `MAX_ENDPOINTS` |
 | Retyped endpoint descriptors | 256 | `MAX_DYN_ENDPOINTS`, indices from `DYN_EP_BASE` |
 | Static notifications | 64 | `MAX_NOTIFICATIONS` |
@@ -2581,12 +2581,13 @@ the present cost is affordable and is not what blocks anything.
 
 **The whole kernel image is itself a ceiling, and one static object dominates it (audit F2,
 closed 2026-09-19).** The image must end below `USER_PHYS_BASE` (16 MiB), enforced by the
-`linker64.ld` ASSERT. `.bss` is budgeted at **7,052 KiB** (`.github/image-budget.yml`), and
+`linker64.ld` ASSERT. `.bss` is budgeted at **7,452 KiB** (`.github/image-budget.yml`), and
 `argon2_scratch` alone is 4,096 KiB of it: the argon2 `m_cost` (`ARGON2_M_COST_KIB = 4096`), a
 deliberate memory-hardness parameter that must not be trimmed to buy room. The whole image ends
-about 7.3 MiB below the line: 0x8B4000 on CI and 0x8B7000 on a Void build of the same tree, because
-the code differs between compilers and `.bss` does not. Raising `MAX_TASKS`, `BLOCKS_PER_DISK` or
-the argon2 cost spends that room, and GRUB stages the boot modules in the same room (§1.15).
+about 6.9 MiB below the line: 0x91B000 on a Void build on 2026-09-21, after `MAX_CPUS` went from
+four to eight and took 400 KiB of it (CI's compiler has measured about 12 KiB lower, because the
+code differs between compilers and `.bss` does not). Raising `MAX_TASKS`, `MAX_CPUS`,
+`BLOCKS_PER_DISK` or the argon2 cost spends that room, and GRUB stages the boot modules in the same room (§1.15).
 
 **Growth is no longer silent.** `tools/check_image_budget.py` holds the default build's `.bss` to
 the budget exactly, in both directions, so every change to it is a line in the budget file that a
@@ -2803,6 +2804,18 @@ A shared runnable pool with a linear scan and no affinity, no load balancing bey
 "whoever asks first", no priorities beyond a stored-but-unused field, and no real-time
 guarantees. Under TCG emulation four cores are measurably *slower* than one; the
 multi-core benefit needs KVM or real hardware to appear.
+
+**Why the ceiling is eight, and what going further takes** (2026-09-21, when it rose from four).
+Each supported CPU costs about 104 KiB of `.bss` whether or not it is present (a 68 KiB idle
+stack with its guard page, three IST fault stacks, and a TSS with its I/O bitmap), and all of it
+must fit below `USER_PHYS_BASE`, where GRUB stages the boot modules. Past about 16 those per-CPU
+blocks need allocating at boot instead of reserving statically. The harder limit is contention:
+the scheduler, capability, IPC-endpoint, spawn, page and storage locks are each global, and
+selection scans the whole task table, so beyond eight to sixteen cores extra CPUs mostly wait on
+those locks. Using them needs per-CPU run queues and finer locking. xAPIC ids are eight bits, so
+more than 255 CPUs would also need x2APIC and interrupt remapping. The race gates of §5.2 were
+measured at four CPUs; `smoke-smp-topology` covers bring-up and scheduling at eight on four
+topologies, including sparse LAPIC ids and SMT.
 
 ### 3.4 No timers or clock
 
@@ -4473,7 +4486,7 @@ so neither was ever presented to a contributor. There was no code of conduct, an
 the IPC authorisation logic. All fixed as of 2026-07-27; the `require_code_owner_review`
 setting that would make `CODEOWNERS` binding is still off (§5.1).
 
-*(Repository hygiene itself is fine: `git ls-files` reports **429** tracked files with no build
+*(Repository hygiene itself is fine: `git ls-files` reports **430** tracked files with no build
 artefacts or vendored binaries: no `kernel.elf`, no `horus.iso`, no object files. A working
 checkout accumulates ~70 MB of untracked build output, which is correctly `.gitignore`d. This
 sentence said 243 until 2026-08-15 and **254 until 2026-09-20**, by which point the tree had

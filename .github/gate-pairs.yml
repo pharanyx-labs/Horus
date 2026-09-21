@@ -31,6 +31,8 @@
 # like an old one.
 
 control_arms:
+  smoke-smp-topology-sparse-control: smoke-smp-topology
+  smoke-smp-topology-sibling-control: smoke-smp-topology
   smoke-cap-accounting-control: smoke-captest
   smoke-reply-ep-control: smoke-reply-ep
   smoke-captest-capenum-control: smoke-captest
@@ -389,6 +391,7 @@ gates:
   - smoke-shlibc-link
   - smoke-signal
   - smoke-smp
+  - smoke-smp-topology
   - smoke-smt
   - smoke-spawn-owner
   - smoke-stackguard

@@ -779,7 +779,10 @@ Requires `swtpm` and `swtpm-tools`. Driven through `tools/run_with_swtpm.sh`.
 |---|---|
 | `smoke-preempt` | The timer genuinely time-slices two ring-3 tasks. |
 | `smoke-signal` | A ring-3 fault is delivered to a registered handler. |
-| `smoke-smp` | APs come online from the MADT, run scheduled tasks on distinct CPUs, and TLB shootdown completes. |
+| `smoke-smp` | APs come online from the MADT, **every** schedulable AP runs a scheduled task (not merely two CPUs), no task runs on an SMT sibling, and TLB shootdown completes. Eight CPUs by default. |
+| `smoke-smp-topology` | Eight CPUs on four topologies: contiguous LAPIC ids; sparse ids (four sockets of three cores, ids 0-2, 4-6, 8, 9); sixteen threads on eight cores, where the primaries must get all eight slots; four cores of two threads, where four must come online and four siblings park; and plain 4 and 2 CPUs, since a machine below the ceiling must run as it is (1 CPU is `make smoke`). The online count is part of the required marker. |
+| `smoke-smp-topology-sparse-control` | Control arm. `APIC_ID_IS_CPU_INDEX=1`: on the sparse topology two cores have ids past the ceiling and park, and the kernel must say six. |
+| `smoke-smp-topology-sibling-control` | Control arm for **S101**. `SMT_SIBLING_BY_INDEX=1`: counts still read four online and four parked, so the self-test's per-CPU check must catch a task on a sibling. |
 | `smoke-smt` | SMT sibling threads are parked, closing same-core co-residency. |
 | `smoke-flush` | Flush-on-switch detection matches CPUID, the gated barriers execute without faulting, and the **policy** flushes only on a genuine task change. (Barriers are no-ops under TCG; they engage on hardware or KVM.) |
 | `smoke-tsd` | A ring-3 `RDTSC` faults under `CR4.TSD`. |
@@ -2216,7 +2219,7 @@ three ways: a planted phrasing in a `.c` file is caught with file and line; the 
 phrasing inside a quotation stays exempt, so a comment can record the wrong thing while
 correcting it.
 
-`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 102 properties
+`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 103 properties
 name a witness that resolves to a make target or a CI job.
 
 | Rule | Rejects |

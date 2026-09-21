@@ -46,18 +46,20 @@
 #define AP_STACK_BASE_CELL 0x8FD8
 #define AP_CR3_CELL        0x8FE0
 #define AP_ENTRY_CELL      0x8FE8
+/* Kernel VA of apic_to_cpu[256] (src/kernel/smp.c): the dense CPU index for each
+ * LAPIC id, CPU_INDEX_NONE for a core with no slot. Above the other cells, so the
+ * trampoline's size bound at 0x8FD8 is untouched. */
+#define AP_CPUMAP_CELL     0x8FF0
 /* MUST equal AP_IDLE_STACK_SIZE in src/kernel/smp.c, which is
  * PAGE_SIZE + KERNEL_STACK_SIZE = 0x1000 + 0x8000. A _Static_assert there pins
  * this literal; if it fires, change this line. Each slot is [guard page][stack]
- * and the stack top is base + (apic_id + 1) * this value. */
+ * and the stack top is base + (cpu + 1) * this value. */
 #define AP_IDLE_STACK_SIZE 0x11000   /* 4 KiB guard + KERNEL_STACK_SIZE (64 KiB) */
 #define LAPIC_BASE         0xFEE00000
 #define LAPIC_ID_REG       0x20
 #define COM1               0x3F8
-/* Number of idle-stack slots the BSP allocated: must equal MAX_CPUS in
- * src/include/kernel.h. A _Static_assert in smp.c pins the two together, since
- * this file cannot include a header full of C declarations. */
-#define AP_MAX_CPUS        4
+/* MAX_CPUS and CPU_INDEX_NONE: the one definition, shared with the C side. */
+#include "cpu_limits.h"
 
 .section .text
 .code16
@@ -137,27 +139,40 @@ long_mode:
     movq %rax, %cr4
     fninit
 
-    /* This AP's idle stack = base + (apic_id + 1) * AP_IDLE_STACK_SIZE, i.e. the
-     * exclusive top of slot[apic_id].  APs have apic_id >= 1, so slots never
-     * overlap the BSP's and never collide with each other. */
+    /* This AP's idle stack = base + (cpu + 1) * AP_IDLE_STACK_SIZE, i.e. the
+     * exclusive top of slot[cpu], where `cpu` is the DENSE index the BSP gave
+     * this core's LAPIC id in apic_to_cpu[] before it sent the SIPI. The BSP is
+     * index 0 whatever its own LAPIC id, so an AP's index is >= 1 and slots never
+     * overlap the BSP's or each other's.
+     *
+     * Indexed by LAPIC id directly until 2026-09-21, which assumed ids run
+     * 0..N-1. Firmware need not number them so (SMT and multi-socket parts
+     * commonly leave gaps), and every core whose id reached the ceiling parked,
+     * so a machine could offer eight cores and get six. */
     movl $LAPIC_BASE, %ebx
     movl LAPIC_ID_REG(%rbx), %eax
     shrl $24, %eax
-    andl $0xFF, %eax
+    andl $0xFF, %eax                 /* LAPIC id: 0..255, indexes the 256-entry map */
+    movl $AP_CPUMAP_CELL, %edi
+    movq (%rdi), %rdx                /* &apic_to_cpu[0] */
+    movzbl (%rdx,%rax), %eax         /* dense index, or CPU_INDEX_NONE */
 
-    /* ap_idle_stacks has exactly AP_MAX_CPUS slots, but the id just read is 8
-     * bits wide and the BSP wakes the APs with a broadcast INIT-SIPI-SIPI —
-     * "all excluding self", no enumeration — so every core on the machine
-     * arrives here regardless of how many slots exist. Without this check an id
-     * >= AP_MAX_CPUS computes a stack top past the end of the array and the
-     * first push silently corrupts whatever .bss follows it. Park instead: a
-     * core that sits out is a core fewer, not a corrupted kernel. */
-    cmpl $AP_MAX_CPUS, %eax
+    /* ap_idle_stacks has exactly MAX_CPUS slots, and the BSP wakes APs with a
+     * broadcast INIT-SIPI-SIPI ("all excluding self", no enumeration), so every
+     * core on the machine arrives here however many slots exist. A core the map
+     * gave no slot reads CPU_INDEX_NONE, which is >= MAX_CPUS, and parks. The
+     * bound is checked here and NOT trusted from the map: an index past the end
+     * would compute a stack top past the array and the first push would corrupt
+     * whatever .bss follows it. A core that sits out is a core fewer, not a
+     * corrupted kernel. */
+    cmpl $MAX_CPUS, %eax
     jae  ap_park
+    testl %eax, %eax                 /* index 0 is the BSP's: never an AP's */
+    jz   ap_park
 
-    incl %eax                        /* (apic_id + 1) */
+    incl %eax                        /* (cpu + 1) */
     movl $AP_IDLE_STACK_SIZE, %ecx
-    imulq %rcx, %rax                 /* (apic_id + 1) * size */
+    imulq %rcx, %rax                 /* (cpu + 1) * size */
     movl $AP_STACK_BASE_CELL, %edi
     movq (%rdi), %rdx                /* idle-stack array base */
     addq %rdx, %rax                  /* stack top for this AP */

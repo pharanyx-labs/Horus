@@ -1872,8 +1872,18 @@ jobs:
           packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86
       - name: Add bare-metal Rust target
         run: rustup target add x86_64-unknown-none
-      - name: Boot SMP_SELFTEST kernel under -smp 4 and assert APs run scheduled tasks + TLB shootdown
+      - name: Boot SMP_SELFTEST kernel on 8 CPUs and assert every AP runs scheduled tasks + TLB shootdown
         run: make smoke-smp
+      # Eight CPUs on the topologies firmware produces, not only QEMU's default:
+      # sparse LAPIC ids, SMT, and more threads than slots (docs/ARCHITECTURE.md
+      # section 7). Every schedulable AP must run a task and none may be an SMT
+      # sibling, and the online count is part of the required marker.
+      - name: Eight CPUs on contiguous, sparse, SMT and oversubscribed topologies
+        run: make smoke-smp-topology
+      - name: Control arm, CPU index equal to LAPIC id loses the sparse cores
+        run: make smoke-smp-topology-sparse-control
+      - name: Control arm, SMT sibling-ness from the index schedules a sibling
+        run: make smoke-smp-topology-sibling-control
 
   smoke-smt:
     name: QEMU SMT sibling-parking self-test (headless, -smp 4 cores=2 threads=2)

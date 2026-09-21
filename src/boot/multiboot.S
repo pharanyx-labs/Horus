@@ -1,3 +1,4 @@
+#include "cpu_limits.h"
 #include "kernel_vma.h"   /* KERNEL_VMA — shared with the C side */
 
 .section .multiboot, "a"
@@ -336,13 +337,13 @@ gdt64_start:
 #ifdef SMP
     /* Per-CPU (application-processor) 64-bit TSS descriptors, filled at runtime
      * by setup_ap_tss(). Each 64-bit TSS descriptor occupies two 8-byte GDT
-     * slots, so these are selectors 0x48 / 0x58 / 0x68 for CPUs 1..MAX_CPUS-1. */
-    .quad 0x0000000000000000   /* 0x48: AP cpu 1 (low)  */
-    .quad 0x0000000000000000   /* 0x50: AP cpu 1 (high) */
-    .quad 0x0000000000000000   /* 0x58: AP cpu 2 (low)  */
-    .quad 0x0000000000000000   /* 0x60: AP cpu 2 (high) */
-    .quad 0x0000000000000000   /* 0x68: AP cpu 3 (low)  */
-    .quad 0x0000000000000000   /* 0x70: AP cpu 3 (high) */
+     * slots, so CPU c (1..MAX_CPUS-1) uses selector 0x48 + (c-1)*0x10: 0x48,
+     * 0x58, 0x68, ... Reserved from MAX_CPUS rather than written out one per
+     * CPU, so the GDT and the ceiling cannot disagree (cpu_limits.h). this_cpu()
+     * derives the CPU index from this stride (scheduler.c: TSS_SEL_STRIDE). */
+    .rept (MAX_CPUS - 1) * 2
+    .quad 0x0000000000000000
+    .endr
 #endif
 gdt64_end:
 

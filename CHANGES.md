@@ -518,6 +518,20 @@ in this file.
 
 ### Fixed
 
+- **A capability for a dead task controlled whatever task reused its slot** (`SECURITY.md`
+  **S100**, **[HORUS-20260921-02]**). A `CAP_TCB` carried the bare task-slot number, and a
+  spawner's copy outlives the child, so once the slot was reused the capability named the new
+  occupant. Measured before the fix, with nothing but that stale capability: a signal killed an
+  unrelated task (it had no handler), the waiter then read its death record, and in a second run
+  the holder delegated a capability into it and killed it with `SYS_KILL`. A `CAP_TCB` now names
+  the slot and the slot's generation, which `create_task` increments on every reuse, so it names
+  one incarnation only; a bare slot number names nothing. `SYS_KILL`, `SYS_SIGNAL`,
+  `SYS_TASK_RESUME`, `SYS_CAP_GRANT` and `SYS_WAIT` check and act under the spawn lock, which every
+  task-creating path holds, so the slot cannot be reused between the two, and a pending wait is
+  re-checked against its generation before it registers. `make smoke-proc` reproduces the reuse
+  with a new helper, `slotheir`, and requires all five operations to be refused; its control arm
+  (`TCB_GENERATION_UNCHECKED=1`) is caught by name, with `smoke-proc` red on that build.
+
 - **A new CI gate did not block merges until someone synced the ruleset by hand** (**[C-6]**,
   closed; roadmap 4.2 done). The branch ruleset listed every required job, 122 contexts, and
   `--sync-ruleset` (which needs an admin token) had to run after the merge that added a job,

@@ -242,7 +242,19 @@
 # arm's #ifndef pair), and 5 are the net of factoring task_kill_authorized's
 # cspace scan out into task_tcb_held, so kill and wait share one scan instead of
 # carrying two. An authorisation check on a syscall is ring 0 by nature.
-core_budget_loc: 10136
+#
+# RAISED 2026-09-21, 10136 -> 10177 (+41), for S100 (HORUS-20260921-02): a
+# CAP_TCB names one incarnation of a task, not a slot number. 33 are in the ship
+# kernel: 22 in syscall.c (task_tcb_held comparing slot and generation, with the
+# TCB_GENERATION_UNCHECKED arm's #ifdef lines, and the five three-line wrappers
+# that run each CAP_TCB-authorised syscall under the spawn lock), 4 in
+# syscall_ipc.c (the pending wait's generation re-check under that lock), 5 in
+# capability.c (cap_install_from_root encoding a root CAP_TCB for its caller)
+# and 2 in scheduler.c (create_task bumping the generation). The other 8 are in
+# multiboot.S and embed the slotheir test child, only under PROC_SELFTEST: 6
+# directives and 2 comment continuation lines, the .S counting artefact recorded
+# in the S97 entry above. Authorisation of a syscall is ring 0 by nature.
+core_budget_loc: 10177
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

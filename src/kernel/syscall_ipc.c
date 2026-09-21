@@ -248,8 +248,19 @@ int ipc_publish_pending_block(int cur) {
 
     if (kind == TASK_BLOCKED_WAIT) {
         int tid = tasks[cur].blocked_on;
-        /* Re-check: target may have exited after the handler looked. */
-        if (tid < 0 || tid >= g_max_tasks || tasks[tid].state == TASK_DEAD) {
+        /* Under the spawn lock, like h_wait itself (HORUS-20260921-02): no task
+         * can be created while it is held, so the slot cannot be handed to a
+         * successor between the generation check below and registering as the
+         * waiter. Without it, a target that died after h_wait looked could be
+         * replaced in that gap, and this task would wait on -- and be handed the
+         * death record of -- a task it never had a capability for. */
+        spawn_stage_acquire();
+        /* Re-check: target may have exited after the handler looked, or its slot
+         * may now hold a different incarnation. Either way the task authorised
+         * is gone, and the wait is satisfied without a record. */
+        if (tid < 0 || tid >= g_max_tasks || tasks[tid].state == TASK_DEAD ||
+            tasks[tid].slot_gen != tasks[cur].blocked_on_gen) {
+            spawn_stage_release();
             tasks[cur].pending_block = 0;
             f->rax = 0;
             tasks[cur].state        = TASK_RUNNABLE;
@@ -262,6 +273,7 @@ int ipc_publish_pending_block(int cur) {
         tasks[cur].state        = TASK_BLOCKED_WAIT;
         tasks[cur].runnable_ctx = 0;
         __asm__ volatile ("" ::: "memory");
+        spawn_stage_release();
         return 1;
     }
 

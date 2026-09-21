@@ -362,10 +362,18 @@ void cap_init(void) {
 int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object) {
     if (pid < 0 || pid >= g_max_tasks || slot >= CNODE_SIZE || root_slot >= CNODE_SIZE) return -1;
     if (!tasks[pid].cspace) return -1;
+    /* A CAP_TCB copied from the root names ONE incarnation of task `object`,
+     * never a slot number (HORUS-20260921-02). Encoded here rather than by each
+     * caller, so no caller can install one that outlives its task. */
+    uint64_t obj = object;
+    if (root_cnode[root_slot].type == CAP_TCB) {
+        if ((int)object <= 0 || (int)object >= g_max_tasks) return -1;
+        obj = tcb_object((int)object);
+    }
     uint32_t serial = cap_alloc_fresh_serial();
     spin_lock(&cap_lock);
     tasks[pid].cspace[slot]            = root_cnode[root_slot];
-    tasks[pid].cspace[slot].object     = object;
+    tasks[pid].cspace[slot].object     = obj;
     tasks[pid].cspace[slot].serial     = serial;
     /* Stamp the fresh serial's current generation so the serial-keyed backstop
      * is active for this copied-from-root capability (finding 3.3), and it is

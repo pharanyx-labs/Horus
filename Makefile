@@ -115,7 +115,7 @@ DEFECT_FLAGS = \
 	MEASURED_BOOT_REQUIRED MEASURED_VOLUME_EXEMPT_NONE MEASURED_VOLUME_UNCHECKED \
 	LEGACY_SYSCALLS_PRESENT CAP_ENUMERATE_UNGATED CLOCK_TSC_RESOLUTION \
 	IMAGE_HDR_WRITER_SKEW \
-	TASKINFO_WIDE_AUTHORITY WAIT_TCB_UNCHECKED GETLINE_SLOT3_FALLBACK CAP_LOOKUP_ASSERT_HANG \
+	TASKINFO_WIDE_AUTHORITY WAIT_TCB_UNCHECKED TCB_GENERATION_UNCHECKED GETLINE_SLOT3_FALLBACK CAP_LOOKUP_ASSERT_HANG \
 	IOMMU_NO_FRAME_TEARDOWN IOMMU_NO_TASK_TEARDOWN \
 	IO_DEVICE_OBJECT_UNCHECKED IO_DEVICE_PORTS_GLOBAL IO_DEVICE_IRQ_UNCHECKED \
 	IO_DEVICE_CAP_UNCHECKED NET_NO_BUSMASTER NET_NO_DECODE \
@@ -1600,6 +1600,14 @@ endif
 WAIT_TCB_UNCHECKED ?= 0
 ifeq ($(WAIT_TCB_UNCHECKED),1)
 CFLAGS += -DWAIT_TCB_UNCHECKED
+endif
+
+# TCB_GENERATION_UNCHECKED=1 restores the pre-2026-09-21 CAP_TCB comparison, by
+# slot number alone, so a capability for a dead task names whatever reused its
+# slot (HORUS-20260921-02). Control arm for smoke-proc; never shipped.
+TCB_GENERATION_UNCHECKED ?= 0
+ifeq ($(TCB_GENERATION_UNCHECKED),1)
+CFLAGS += -DTCB_GENERATION_UNCHECKED
 endif
 
 CLOCK_TSC_RESOLUTION ?= 0
@@ -3395,7 +3403,7 @@ PROC_SELFTEST ?= 0
 ifeq ($(PROC_SELFTEST),1)
 CFLAGS  += -DPROC_SELFTEST
 ASFLAGS += -DPROC_SELFTEST
-PROC_SELFTEST_DEP = userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/preempttest.bin
+PROC_SELFTEST_DEP = userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/preempttest.bin
 endif
 
 # KFAULT_RECORD_SELFTEST=1 (with PROC_SELFTEST=1) is the witness for
@@ -4937,7 +4945,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.stripped.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -7288,6 +7296,18 @@ smoke-proc-wait-control:
 		REQUIRE_MARKER='PROC_SELFTEST: FAIL wait-without-tcb-answered' \
 		tools/smoke_test.sh horus.iso
 
+# Control arm for S100: a CAP_TCB compared by slot number alone. proctest holds a
+# stale CAP_TCB for a dead child whose slot now holds a task slotheir spawned, and
+# must report that the stale capability signalled it.
+.PHONY: smoke-proc-tcb-reuse-control
+smoke-proc-tcb-reuse-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 TCB_GENERATION_UNCHECKED=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 TCB_GENERATION_UNCHECKED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='PROC_SELFTEST: FAIL tcb-stale-signal' \
+		tools/smoke_test.sh horus.iso
+
 .PHONY: smoke-proc
 smoke-proc:
 	@$(MAKE) --no-print-directory clean
@@ -7301,7 +7321,9 @@ smoke-proc:
 	@# the last marker is the slot-reuse phase's (HORUS-20260920-02), which runs
 	@# after the suspend witness, so it is the one required now: requiring the
 	@# suspend marker would let the harness stop the guest before that phase ran.
-	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PROC_SELFTEST: slot-reuse OK' \
+	@# The stale-CAP_TCB phase (HORUS-20260921-02) runs after it, so its marker is
+	@# the one required now, for the same reason.
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PROC_SELFTEST: tcb-reuse OK' \
 		FAIL_MARKER='PROC_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # Does a task's exit record keep kernel addresses away from ring 3?

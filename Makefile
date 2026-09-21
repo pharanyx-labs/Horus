@@ -115,7 +115,7 @@ DEFECT_FLAGS = \
 	MEASURED_BOOT_REQUIRED MEASURED_VOLUME_EXEMPT_NONE MEASURED_VOLUME_UNCHECKED \
 	LEGACY_SYSCALLS_PRESENT CAP_ENUMERATE_UNGATED CLOCK_TSC_RESOLUTION \
 	IMAGE_HDR_WRITER_SKEW \
-	TASKINFO_WIDE_AUTHORITY WAIT_TCB_UNCHECKED GETLINE_SLOT3_FALLBACK CAP_LOOKUP_ASSERT_HANG \
+	TASKINFO_WIDE_AUTHORITY WAIT_TCB_UNCHECKED APIC_ID_IS_CPU_INDEX SMT_SIBLING_BY_INDEX GETLINE_SLOT3_FALLBACK CAP_LOOKUP_ASSERT_HANG \
 	IOMMU_NO_FRAME_TEARDOWN IOMMU_NO_TASK_TEARDOWN \
 	IO_DEVICE_OBJECT_UNCHECKED IO_DEVICE_PORTS_GLOBAL IO_DEVICE_IRQ_UNCHECKED \
 	IO_DEVICE_CAP_UNCHECKED NET_NO_BUSMASTER NET_NO_DECODE \
@@ -1600,6 +1600,18 @@ endif
 WAIT_TCB_UNCHECKED ?= 0
 ifeq ($(WAIT_TCB_UNCHECKED),1)
 CFLAGS += -DWAIT_TCB_UNCHECKED
+endif
+
+# APIC_ID_IS_CPU_INDEX=1 restores the pre-2026-09-21 CPU numbering (index ==
+# LAPIC id), and SMT_SIBLING_BY_INDEX=1 decides SMT sibling-ness from the dense
+# index. Control arms for smoke-smp-topology; never shipped.
+APIC_ID_IS_CPU_INDEX ?= 0
+ifeq ($(APIC_ID_IS_CPU_INDEX),1)
+CFLAGS += -DAPIC_ID_IS_CPU_INDEX
+endif
+SMT_SIBLING_BY_INDEX ?= 0
+ifeq ($(SMT_SIBLING_BY_INDEX),1)
+CFLAGS += -DSMT_SIBLING_BY_INDEX
 endif
 
 CLOCK_TSC_RESOLUTION ?= 0
@@ -3824,7 +3836,7 @@ src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin
 # defect reproduces on a host whose assembler would not emit it. A control arm,
 # never a build option: `smoke-ap-trampoline-control` requires it to be refused.
 AP_TRAMPOLINE_FLAT_LINK ?= 0
-AP_TRAMPOLINE_ASFLAGS = -m32 -ffreestanding -fno-pic -x assembler-with-cpp -c
+AP_TRAMPOLINE_ASFLAGS = -m32 -ffreestanding -fno-pic -x assembler-with-cpp -c -I src/include
 ifeq ($(AP_TRAMPOLINE_FLAT_LINK),1)
 AP_TRAMPOLINE_ASFLAGS += -Wa,-mx86-used-note=yes
 AP_TRAMPOLINE_LINK = $(LD) -m elf_i386 -Ttext=0x8000 --oformat binary
@@ -7258,6 +7270,50 @@ smoke-smp:
 	@$(MAKE) --no-print-directory SMP_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=$(SMP_CPUS) REQUIRE_MARKER='SMP_SELFTEST: PASS' \
 		FAIL_MARKER='SMP_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
+
+# Eight CPUs, on the topologies real firmware produces rather than only QEMU's
+# default (2026-09-21). One SMP_SELFTEST build, four boots, and in each every
+# schedulable AP must run a task and no task may run on an SMT sibling:
+#   8                            ids 0-7, eight cores
+#   8 over 4 sockets of 3 cores  ids 0-2,4-6,8,9: sparse; the old numbering got 6
+#   16 threads on 8 cores        the eight primaries get the slots, siblings park
+#   8 threads on 4 cores         4 cores online, 4 siblings parked
+# The online count is part of the required marker, so a core that failed to
+# come online fails the gate by count, not only by the self-test's own verdict.
+SMP_TOPOLOGIES = 8:8 8,maxcpus=12,sockets=4,cores=3,threads=1:8 16,sockets=1,cores=8,threads=2:8 8,sockets=1,cores=4,threads=2:4
+.PHONY: smoke-smp-topology
+smoke-smp-topology:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 horus.iso
+	@set -e; for tp in $(SMP_TOPOLOGIES); do \
+		topo=$${tp%:*}; want=$${tp##*:}; \
+		echo "=== -smp $$topo: expect $$want cores online"; \
+		SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS="$$topo" \
+			REQUIRE_MARKER="SMP_SELFTEST: PASS online=$$want " \
+			FAIL_MARKER='SMP_SELFTEST: FAIL' tools/smoke_test.sh horus.iso; \
+	done
+
+# Control arm: index == LAPIC id again. On the sparse topology two of the eight
+# cores have ids past the ceiling and park, and the kernel must say six.
+.PHONY: smoke-smp-topology-sparse-control
+smoke-smp-topology-sparse-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 APIC_ID_IS_CPU_INDEX=1
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 APIC_ID_IS_CPU_INDEX=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=8,maxcpus=12,sockets=4,cores=3,threads=1 \
+		REQUIRE_MARKER='smp: 6 cores online' tools/smoke_test.sh horus.iso
+
+# Control arm: SMT sibling-ness decided from the index. On four cores of two
+# threads the counts still read 4 online and 4 parked, so the self-test's own
+# per-CPU sibling check is what must catch it.
+.PHONY: smoke-smp-topology-sibling-control
+smoke-smp-topology-sibling-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SMT_SIBLING_BY_INDEX=1
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SMT_SIBLING_BY_INDEX=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=8,sockets=1,cores=4,threads=2 \
+		REQUIRE_MARKER='SMP_SELFTEST: FAIL task-ran-on-smt-sibling' tools/smoke_test.sh horus.iso
 
 # Build with the gated process-control self-test, boot headless, and require the
 # in-kernel driver to report PASS -- runtime proof that SYS_EXIT and SYS_KILL

@@ -3925,11 +3925,20 @@ uint64_t exec_reenter_switch(int t) {
  * CPU it is in order to pick that TSS -- and still the independent oracle the
  * self-test falsifies the fast path against. */
 int this_cpu_lapic(void) {
-    volatile uint32_t *lapic = (volatile uint32_t *)0xFEE00000UL;
-    uint32_t id_reg = lapic[0x20 / 4];
-    uint32_t cpu = (id_reg >> 24) & 0xFF;
-    if (cpu >= MAX_CPUS) cpu = 0;
-    return (int)cpu;
+#ifdef SMP
+    /* The LAPIC id through the map smp_bringup builds (smp.c: apic_to_cpu[]),
+     * not the id itself: indices are dense and ids need not be. The map is
+     * written once, before any AP wakes, so every CPU that can run this reads a
+     * complete one. A core with no index parks in the trampoline and never gets
+     * here; the fallback below is for the BSP's first calls, before the map
+     * exists, when every entry but its own would read CPU_INDEX_NONE. */
+    extern uint8_t apic_to_cpu[256];
+    extern uint32_t this_apic_id(void);
+    uint8_t cpu = apic_to_cpu[this_apic_id() & 0xFFu];
+    return (cpu < MAX_CPUS) ? (int)cpu : 0;
+#else
+    return 0;
+#endif
 }
 
 int this_cpu(void) {

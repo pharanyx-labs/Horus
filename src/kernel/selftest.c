@@ -1353,7 +1353,27 @@ void smp_selftest(void) {
         unsigned mask = smp_cpus_ran_tasks;
         int distinct = 0;
         for (int c = 0; c < 32; c++) if (mask & (1u << c)) distinct++;
-        if (distinct >= 2 && ap_timer_ticks > t0 + 10) {
+        /* No task may EVER run on an SMT sibling (smp.c: ap_entry64 parks them,
+         * so a sibling's core-partner cannot read it through a shared L1/L2).
+         * Checked on every poll, not only at the end: a count of cores online
+         * cannot see this, because deciding sibling-ness from the wrong number
+         * parks as many CPUs as the right one does, just not the same ones. */
+        extern int cpu_is_smt_sibling(int cpu);
+        for (int c = 0; c < MAX_CPUS; c++) {
+            if ((mask & (1u << c)) && cpu_is_smt_sibling(c)) {
+                print("SMP_SELFTEST: FAIL task-ran-on-smt-sibling cpu=");
+                print_decimal((uint64_t)c); print("\n");
+                for (;;) asm volatile("hlt");
+            }
+        }
+        /* EVERY schedulable AP must have run a task, not merely two CPUs
+         * (2026-09-21): "N cores online" is a claim about scheduling, and a core
+         * that came online and never pulled work would satisfy the old test.
+         * The BSP is excluded because it is running this loop and never
+         * schedules a worker. */
+        int aps_ran = 0;
+        for (int c = 1; c < MAX_CPUS; c++) if (mask & (1u << c)) aps_ran++;
+        if (aps_ran >= online - 1 && ap_timer_ticks > t0 + 10) {
             /* Multi-core scheduling proven. Now exercise the TLB-shootdown
              * round-trip: broadcast to the (busy, interrupts-enabled) APs and
              * confirm every one flushed and acknowledged. */

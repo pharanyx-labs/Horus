@@ -21,3 +21,17 @@ not_in_ci:
     use when investigating the console interleaving: the defect it hunts was
     intermittent, and reproducing it wants tens of boots rather than the one CI
     can afford on every pull request.
+
+  smoke-sdhci-emmc: >-
+    Needs a QEMU with an `emmc` device (QEMU 11 has one), and CI installs
+    Ubuntu 24.04's QEMU 8.2.2, which does not. The gate fails rather than
+    skips on such a QEMU, so it cannot pass vacuously in CI; it is kept local
+    until CI's QEMU is upgraded, which is a toolchain change for the
+    maintainer. What CI can run of the same host, the 3.00 divider, is gated
+    by smoke-sdhci-v3clock.
+
+  smoke-installer-emmc: >-
+    A whole install onto an emulated 64 GiB eMMC, for the same reason as
+    smoke-sdhci-emmc: CI's QEMU 8.2.2 has no `emmc` device. smoke-installer-sd
+    runs the same installer path in CI over an SD card; what this adds is the
+    eMMC identification and extended-CSD capacity underneath it.

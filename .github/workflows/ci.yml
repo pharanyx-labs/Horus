@@ -714,6 +714,12 @@ jobs:
       # absent AND say the table was full, so the absence is the table's doing.
       - name: Control arm — a 16-entry device table drops the controller
         run: make smoke-sdhci-crowded-control
+      # An SDHCI 3.00 host with the IdeaPad's 200 MHz base clock: the card must
+      # be identified at 400 kHz or less, which the 2.00 divider cannot reach.
+      - name: A 200 MHz SDHCI 3.00 host identifies its card at 400 kHz or less
+        run: make smoke-sdhci-v3clock
+      - name: Control arm — the 2.00-only divider identifies at 781 kHz
+        run: make smoke-sdhci-v3clock-control
 
   # Shard of the smoke-boot job (see `smoke`). Installing onto SD/eMMC.
   smoke-installer-sd:

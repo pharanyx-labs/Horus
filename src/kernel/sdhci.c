@@ -109,6 +109,8 @@
 #define CMD_SEND_RELATIVE_ADDR 3u   /* CMD3                      */
 #define CMD_SELECT_CARD       7u    /* CMD7                      */
 #define CMD_SEND_IF_COND      8u    /* CMD8, SD only             */
+#define CMD_MMC_SEND_EXT_CSD  8u    /* CMD8 on eMMC: a 512-byte data read, a
+                                     * different command at the same index */
 #define CMD_SEND_CSD          9u    /* CMD9                      */
 #define CMD_READ_SINGLE      17u    /* CMD17                     */
 #define CMD_WRITE_SINGLE     24u    /* CMD24                     */
@@ -144,10 +146,14 @@
 /* Forward declarations: the block operations below are defined near the
  * accessors, above the PIO implementations they call. */
 static int sd_read_block(uint64_t bar, uint64_t lba, void *buf, int is_hc);
+static int sd_pio_read512(uint64_t bar, uint32_t index, uint32_t arg, void *buf);
 static int sd_write_block(uint64_t bar, uint64_t lba, const void *buf, int is_hc);
 static int sd_flush(uint64_t bar);
 
 static uint64_t g_sdhci_bar;      /* 0 when no controller was recognised */
+/* The identification clock host_reset chose, in kHz, reported by sdhci_probe so
+ * a gate can hold it to the 400 kHz ceiling (smoke-sdhci-emmc). */
+static uint32_t g_sdhci_id_khz;
 static uint32_t g_sdhci_cards;    /* slots reporting a card present      */
 static uint64_t g_sdhci_sectors;  /* capacity of the card that came up   */
 static int      g_sdhci_is_hc;    /* block-addressed (HC) vs byte-addressed */
@@ -225,15 +231,35 @@ reset_done:
 
     /* Identification runs at 400 kHz or less, which is a requirement of the card
      * rather than a preference: a card that has not yet been told its bus speed
-     * must be clocked slowly enough to answer. The divisor is base/(2*div), and
-     * an 8-bit divisor covers every base clock this will meet. */
-    const uint32_t base_mhz = (caps >> CAP_BASE_CLK_SHIFT) & CAP_BASE_CLK_MASK;
+     * must be clocked slowly enough to answer. SDCLK is base / (2 * N).
+     *
+     * THE DIVIDER DEPENDS ON THE SPEC VERSION, and assuming 2.00 was wrong for
+     * the first real controller this met. A 2.00 host takes an 8-bit N that must
+     * be a power of two, at most 0x80, so its slowest clock is base / 256. A
+     * 3.00 host takes a 10-bit N (bits 15:8 low, 7:6 high) of any value. The
+     * IdeaPad's controller is 3.00 with a 200 MHz base clock: the 2.00 rule
+     * bottoms out at 781 kHz, nearly twice the ceiling, where N = 250 gives
+     * exactly 400 kHz. SDHCI_DIV_V2_ONLY=1 restores the 2.00-only rule. */
+    const uint32_t base_khz = ((caps >> CAP_BASE_CLK_SHIFT) & CAP_BASE_CLK_MASK) * 1000u;
+    const uint32_t spec = (uint32_t)(sdhci_read16(bar, SDHCI_HOST_VERSION) & VER_SPEC_MASK);
     uint32_t div = 1;
-    if (base_mhz > 0) { while ((base_mhz * 1000u) / (2u * div) > 400u && div < 0x80u) div <<= 1; }
+    uint16_t clk_bits;
+#ifndef SDHCI_DIV_V2_ONLY
+    if (spec >= 2u) {                              /* 3.00 or later */
+        if (base_khz > 0) div = (base_khz + 799u) / 800u;   /* ceil(base / 800 kHz) */
+        if (div > 0x3FFu) div = 0x3FFu;
+        clk_bits = (uint16_t)(((div & 0xFFu) << 8) | (((div >> 8) & 0x3u) << 6));
+    } else
+#endif
+    {
+        if (base_khz > 0) { while (base_khz / (2u * div) > 400u && div < 0x80u) div <<= 1; }
+        clk_bits = (uint16_t)((div & 0xFFu) << 8);
+    }
+    g_sdhci_id_khz = base_khz ? base_khz / (2u * div) : 0;
+    (void)spec;
 
     sdhci_write16(bar, SDHCI_CLOCK_CONTROL, 0);          /* stop before changing */
-    sdhci_write16(bar, SDHCI_CLOCK_CONTROL,
-                  (uint16_t)(((div & 0xFFu) << 8) | CLK_INTERNAL_EN));
+    sdhci_write16(bar, SDHCI_CLOCK_CONTROL, (uint16_t)(clk_bits | CLK_INTERNAL_EN));
     for (uint32_t i = 0; i < SDHCI_SPINS; i++) {
         if (sdhci_read16(bar, SDHCI_CLOCK_CONTROL) & CLK_INTERNAL_STABLE) goto clk_ok;
     }
@@ -302,17 +328,15 @@ static int sd_command_data(uint64_t bar, uint32_t index, uint32_t arg, uint32_t 
 
 /* Identify the card and learn its capacity.
  *
- * TWO OP-COND PATHS, AND ONLY ONE OF THEM IS TESTABLE HERE. An SD card is told
- * to power up with CMD8 followed by ACMD41 (CMD55 then CMD41); an eMMC device
- * uses CMD1, and an SD card must NOT answer CMD1 at all. QEMU 10.0 has no eMMC
- * device -- only `sd-card`, which speaks SD -- so `make smoke-sdhci-detect`
- * exercises the SD branch and the eMMC branch has never run anywhere.
- *
- * That is recorded rather than hidden, and it is why the two branches share
- * everything they can: the reset, the clock, the command mechanism, the response
- * decoding, CMD2/CMD3/CMD9/CMD7 and the CSD arithmetic are common, so the
- * untested delta is one command and its argument rather than a second driver.
- * The first machine to run the CMD1 path will be real hardware.
+ * TWO OP-COND PATHS. An SD card is told to power up with CMD8 followed by
+ * ACMD41 (CMD55 then CMD41); an eMMC device uses CMD1, and an SD card must NOT
+ * answer CMD1 at all. `make smoke-sdhci-detect` exercises the SD branch on
+ * QEMU's `sd-card`. The eMMC branch first ran on 2026-09-22, under QEMU 11's
+ * `emmc` device (QEMU 10.0, which CI and this note were written against, has
+ * none); `make smoke-sdhci-emmc` drives it where the host QEMU has the device.
+ * The branches share the reset, the clock, the command mechanism, the response
+ * decoding and CMD2/CMD3/CMD9/CMD7; eMMC adds CMD1 and, over 2 GiB, the
+ * extended CSD read for its capacity.
  */
 static int card_identify(uint64_t bar, uint64_t *sectors_out, int *is_mmc_out,
                          int *is_hc_out) {
@@ -338,16 +362,18 @@ static int card_identify(uint64_t bar, uint64_t *sectors_out, int *is_mmc_out,
     }
 
     if (is_mmc) {
-        /* eMMC. Sector addressing is requested with bit 30, as for SD.
-         *
-         * UNTESTED ANYWHERE -- see the note above this function. There is no
-         * control arm for this branch, deliberately: QEMU has no eMMC device, so
-         * an arm that disabled it could never be observed to fail, and a control
-         * arm that cannot fail cannot gate. */
+        /* eMMC. Sector addressing is requested with bit 30, as for SD. Run
+         * under QEMU 11's `emmc` device; see the note above this function. */
         if (sd_command(bar, CMD_GO_IDLE, 0, RESP_NONE, 0) != 0) return -1;
+        /* The voltage window offered: 2.7-3.6 V always, and 1.70-1.95 V (OCR bit
+         * 7) when the host can supply it. A device whose range the argument
+         * misses goes INACTIVE and answers nothing until power-cycled, and the
+         * IdeaPad's controller reports 1.8 V as its only supported voltage. */
+        const uint32_t mmc_ocr = 0x40FF8000u |
+            ((sdhci_read32(bar, SDHCI_CAPABILITIES) & (1u << 26)) ? (1u << 7) : 0u);
         int ok = 0;
         for (uint32_t i = 0; i < SDHCI_OPCOND_TRIES; i++) {
-            if (sd_command(bar, CMD_SEND_OP_COND_MMC, 0x40FF8000u, RESP_48, 0) != 0) return -2;
+            if (sd_command(bar, CMD_SEND_OP_COND_MMC, mmc_ocr, RESP_48, 0) != 0) return -2;
             ocr = sdhci_read32(bar, SDHCI_RESPONSE);
             if (ocr & (1u << 31)) { ok = 1; break; }
         }
@@ -422,6 +448,25 @@ static int card_identify(uint64_t bar, uint64_t *sectors_out, int *is_mmc_out,
 
     if (sd_command(bar, CMD_SELECT_CARD, rca << 16, RESP_48_BUSY, CMD_CRC_CHECK) != 0) return -6;
 
+    /* AN eMMC OVER 2 GiB DOES NOT STATE ITS SIZE IN THE CSD. A sector-mode device
+     * (OCR bit 30) sets C_SIZE to 0xFFF, a placeholder that decodes to about
+     * 1 GiB, and puts the real count in EXT_CSD SEC_COUNT, bytes 212..215,
+     * little-endian, in 512-byte sectors (JEDEC JESD84). The first run of this
+     * branch, under QEMU 11 on 2026-09-22, reported a 64 GiB device as
+     * 1024 MiB. A failed or zero read is an error, not a reason to fall back on a
+     * number known to be wrong. SDHCI_EMMC_CSD_ONLY=1 restores the placeholder
+     * for the control arm. */
+#ifndef SDHCI_EMMC_CSD_ONLY
+    if (is_mmc && (ocr & (1u << 30))) {
+        static uint8_t ext_csd[512];
+        if (sd_pio_read512(bar, CMD_MMC_SEND_EXT_CSD, 0, ext_csd) != 0) return -7;
+        uint32_t sec = (uint32_t)ext_csd[212] | ((uint32_t)ext_csd[213] << 8) |
+                       ((uint32_t)ext_csd[214] << 16) | ((uint32_t)ext_csd[215] << 24);
+        if (sec == 0) return -7;
+        sectors = sec;
+    }
+#endif
+
     *sectors_out = sectors;
     *is_mmc_out  = is_mmc;
     /* OCR bit 30 (CCS) is the ADDRESSING MODE, and it is not cosmetic: a
@@ -446,15 +491,6 @@ static int card_identify(uint64_t bar, uint64_t *sectors_out, int *is_mmc_out,
  * wrong one reads a location 512 times away from the intended -- and block 0
  * cannot show it, because 0 is 0 in both units. */
 static int sd_read_block(uint64_t bar, uint64_t lba, void *buf, int is_hc) {
-    uint32_t *out = (uint32_t *)buf;
-
-    sdhci_write16(bar, SDHCI_BLOCK_SIZE, 512);
-    sdhci_write16(bar, SDHCI_BLOCK_COUNT, 1);
-
-    /* Set the direction BEFORE issuing the command: the controller latches the
-     * transfer mode when the command register is written. */
-    sdhci_write16(bar, SDHCI_TRANSFER_MODE, XFER_READ);
-
 #ifdef SDHCI_ADDR_MODE_INVERTED
     /* Control arm: the addressing mode inverted. A high-capacity card is given a
      * byte offset and a standard-capacity card a block number, so every read
@@ -465,7 +501,22 @@ static int sd_read_block(uint64_t bar, uint64_t lba, void *buf, int is_hc) {
 #else
     const uint32_t arg = is_hc ? (uint32_t)lba : (uint32_t)(lba * 512u);
 #endif
-    if (sd_command_data(bar, CMD_READ_SINGLE, arg,
+    return sd_pio_read512(bar, CMD_READ_SINGLE, arg, buf);
+}
+
+/* One 512-byte data read by PIO: CMD17 for a block, or CMD8 on eMMC for the
+ * extended CSD, which is a data transfer of exactly the same shape. */
+static int sd_pio_read512(uint64_t bar, uint32_t index, uint32_t arg, void *buf) {
+    uint32_t *out = (uint32_t *)buf;
+
+    sdhci_write16(bar, SDHCI_BLOCK_SIZE, 512);
+    sdhci_write16(bar, SDHCI_BLOCK_COUNT, 1);
+
+    /* Set the direction BEFORE issuing the command: the controller latches the
+     * transfer mode when the command register is written. */
+    sdhci_write16(bar, SDHCI_TRANSFER_MODE, XFER_READ);
+
+    if (sd_command_data(bar, index, arg,
                         RESP_48, CMD_CRC_CHECK | CMD_INDEX_CHECK | CMD_DATA_PRESENT) != 0)
         return -1;
 
@@ -585,6 +636,42 @@ static const struct io_device *find_sdhci_controller(uint64_t *index_out) {
     return NULL;
 }
 
+#ifdef SDHCI_HW_TRACE
+/* See the SDHCI_HW_TRACE note in pci.c. One step: config state, then VER, CAP
+ * and PRESENT_STATE read from EVERY memory region the function declares, so a
+ * wrong-BAR choice shows up as the other region answering. */
+static void sdtrace_hx(uint32_t v, int digits) {
+    static const char hex[] = "0123456789abcdef";
+    for (int sh = (digits - 1) * 4; sh >= 0; sh -= 4)
+        print_char(hex[(v >> sh) & 0xF]);
+}
+
+static void sdhci_trace_step(const struct io_device *d, const char *when) {
+    iodev_trace_config(d, when);
+    for (uint32_t i = 0; i < d->n_mmio; i++) {
+        uint64_t b = d->mmio[i].base;
+        if (b == 0 || d->mmio[i].len < 0x100) continue;
+        /* Through the ordinary four-page storage-register list, so the
+         * instrument adds no code to ring 0's core (paging.c). Each region
+         * costs two pages there; the one controller measured (two adjacent
+         * 4 KiB BARs) needs three. A controller with more BARs could fill the
+         * list, and a refused page is a fault on the read below: this is a
+         * diagnostic build, and that limit is stated in docs/BUILDING.md. */
+        ensure_storage_regs_mapped(NULL, b);
+        /* Eight digits where the high half is zero, which it is below 4 GiB:
+         * the sixteen-digit form ran off an 80-column screen on the laptop. */
+        print("SDTRACE   @");
+        if (b >> 32) sdtrace_hx((uint32_t)(b >> 32), 8);
+        sdtrace_hx((uint32_t)b, 8);
+        print(" len="); sdtrace_hx((uint32_t)d->mmio[i].len, 5);
+        print(" ver="); sdtrace_hx(sdhci_read16(b, SDHCI_HOST_VERSION), 4);
+        print(" cap="); sdtrace_hx(sdhci_read32(b, SDHCI_CAPABILITIES), 8);
+        print(" ps=");  sdtrace_hx(sdhci_read32(b, SDHCI_PRESENT_STATE), 8);
+        print("\n");
+    }
+}
+#endif
+
 /* Called from kernel_main after iodev_init, which populates the table this
  * reads. Reports and returns; nothing else depends on it yet. */
 void sdhci_probe(void) {
@@ -602,13 +689,44 @@ void sdhci_probe(void) {
         return;
     }
 
-    /* The register file is in a memory BAR. As in ahci.c, struct io_device does
-     * not record which BAR index a region came from, so the highest-based MMIO
-     * region is the candidate and the hardware then has to agree. */
+#ifdef SDHCI_HW_TRACE
+    /* Read as found, then after each candidate fix in turn, so whichever step
+     * makes the registers answer is the cause. The normal probe then runs on
+     * the state the last step left. */
+    sdhci_trace_step(d, "as found");
+    iodev_trace_force_d0(d);
+    sdhci_trace_step(d, "after D0");
+    iodev_set_decode(d, IODEV_DECODE_MEM);
+    sdhci_trace_step(d, "after MEM decode");
+#endif
+
+    /* THE REGISTER FILE IS IN THE BAR THE CONTROLLER NAMES. The SDHCI Slot
+     * Information register (PCI config 0x40) gives slot 0's BAR number, and the
+     * region recorded from that BAR is the one used.
+     *
+     * Until 2026-09-22 this took the highest-based memory region, because
+     * struct io_device did not record which BAR a region came from. QEMU's
+     * controller has one BAR, so every gate agreed with that guess. An IdeaPad
+     * 1 14IGL05 (Intel 8086:31cc) has two: BAR0 at 0xa1135000 answered
+     * VER=0x1002 CAP=0x546ec881, BAR2 at 0xa1136000 read all zeros, and the
+     * probe chose BAR2 and reported "did not answer as a host controller" (read
+     * off the machine with SDHCI_HW_TRACE=1). A device that names no valid BAR,
+     * or names one that is not a memory region, is refused rather than guessed
+     * at. SDHCI_BAR_HIGHEST=1 restores the guess for the control arm. */
     uint64_t bar = 0, bar_len = 0;
+#ifdef SDHCI_BAR_HIGHEST
     for (uint32_t i = 0; i < d->n_mmio; i++) {
         if (d->mmio[i].base > bar) { bar = d->mmio[i].base; bar_len = d->mmio[i].len; }
     }
+#else
+    const int first_bar = iodev_sdhci_first_bar(d);
+    for (uint32_t i = 0; first_bar >= 0 && i < d->n_mmio && i < IODEV_MAX_MMIO; i++) {
+        if (d->mmio_bar[i] == (uint8_t)(first_bar + 1)) {   /* stored BAR + 1 */
+            bar = d->mmio[i].base; bar_len = d->mmio[i].len;
+            break;
+        }
+    }
+#endif
     if (bar == 0 || bar_len < 0x100) {
         print("sdhci: controller has no register BAR large enough; ignoring it\n");
         return;
@@ -652,6 +770,19 @@ void sdhci_probe(void) {
     /* CARD_STABLE as well as CARD_INSERTED: a card still being debounced reports
      * inserted before the line has settled, and calling that "a card" would be
      * reporting a race as a fact. */
+    /* AN EMBEDDED SLOT HOLDS A SOLDERED DEVICE, AND ITS DETECT LINE NEED NOT
+     * SAY SO. Capabilities bits 31:30 = 01 is "embedded slot for one device"
+     * (SDHCI 3.00 section 2.2.26): an eMMC chip on the board, which cannot be
+     * removed and which the specification does not require to drive card
+     * detect. The IdeaPad's controller reports exactly this. Waiting for the
+     * detect line there would report a laptop's only disk as an empty slot.
+     * SDHCI_EMBEDDED_NEEDS_CD=1 restores the wait for the control arm. */
+#ifndef SDHCI_EMBEDDED_NEEDS_CD
+    if (((caps >> 30) & 0x3u) == 0x1u) {
+        g_sdhci_cards = 1;
+        print("  [ OK ] sdhci: embedded slot, its soldered device is present by construction\n");
+    } else
+#endif
     if ((ps & PSTATE_CARD_INSERTED) && (ps & PSTATE_CARD_STABLE)) {
         g_sdhci_cards = 1;
         print("  [ OK ] sdhci: a card is present and the detect line is stable\n");
@@ -669,6 +800,9 @@ void sdhci_probe(void) {
         if (host_reset(bar) != 0) {
             print("  sdhci: the controller would not reset\n");
         } else {
+            print("         sdhci: identification clock ");
+            print_decimal(g_sdhci_id_khz);
+            print(" kHz\n");
             uint64_t sectors = 0;
             int is_mmc = 0, is_hc = 0;
             int rc = card_identify(bar, &sectors, &is_mmc, &is_hc);

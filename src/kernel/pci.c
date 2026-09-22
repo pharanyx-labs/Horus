@@ -385,6 +385,7 @@ static void pci_add_function(uint8_t bus, uint8_t dev, uint8_t fn,
                     if (d->n_mmio < IODEV_MAX_MMIO) {
                         d->mmio[d->n_mmio].base = base;
                         d->mmio[d->n_mmio].len  = size;
+                        d->mmio_bar[d->n_mmio]  = (uint8_t)(i + 1);  /* 0 = not a BAR */
                         d->n_mmio++;
                     }
                 }
@@ -822,6 +823,93 @@ int iodev_set_decode(const struct io_device *d, uint32_t flags) {
     pci_cfg_write32(bus, dev, fn, PCI_COMMAND, hi | low);
     return 0;
 }
+
+/* SDHCI Slot Information register (PCI config 0x40, SD Host Controller spec
+ * section 2.1): bits 2:0 are the first BAR number, bits 6:4 the slot count less
+ * one. Slot 0's registers are in that BAR and in no other.
+ *
+ * WHY THIS EXISTS. sdhci_probe used to take the highest-based memory region. On
+ * an IdeaPad 1 14IGL05 (Intel 8086:31cc) the controller has two 4 KiB BARs: BAR0
+ * at 0xa1135000 answered VER=0x1002 CAP=0x546ec881, and BAR2 at 0xa1136000, the
+ * higher one, read all zeros. This register said BAR0. Read here because this
+ * is the only file that touches configuration space; the answer is validated
+ * rather than believed, since config space is device-supplied input. */
+int iodev_sdhci_first_bar(const struct io_device *d) {
+    if (!d || d->bdf == IODEV_BDF_NONE || (d->classcode >> 8) != 0x0805u) return -1;
+    uint8_t first = pci_cfg_read8((uint8_t)(d->bdf >> 8), (uint8_t)((d->bdf >> 3) & 0x1F),
+                                  (uint8_t)(d->bdf & 0x07), 0x40) & 0x7u;
+    return (first <= 5) ? (int)first : -1;
+}
+
+#ifdef SDHCI_HW_TRACE
+/* ---- SDHCI_HW_TRACE: why a real eMMC controller reads as zeros -------------
+ *
+ * AN INSTRUMENT, NEVER SHIPPED. On an IdeaPad 1 14IGL05 (Gemini Lake) the
+ * controller was found at last (#426) and then read VER=0 CAP=0. Three causes fit
+ * and want different fixes: firmware left the function in D3, left memory decode
+ * off (nothing in this kernel turns it on for sdhci or ahci, and QEMU's firmware
+ * always does), or sdhci_probe chose the wrong BAR (it takes the highest-based
+ * region, not the one the SDHCI Slot Information register names). Two diagnoses
+ * of this machine have been reasoned rather than read already; this reads.
+ *
+ * It lives here because this is the only file that touches configuration space.
+ * It WRITES config space (PMCSR, then the command register via iodev_set_decode),
+ * which is why it is a DEFECT_FLAGS instrument and announces itself at boot. */
+static void hx(uint32_t v, int digits) {
+    static const char hex[] = "0123456789abcdef";
+    for (int sh = (digits - 1) * 4; sh >= 0; sh -= 4)
+        print_char(hex[(v >> sh) & 0xF]);
+}
+
+static uint8_t pci_find_pm_cap(uint8_t bus, uint8_t dev, uint8_t fn) {
+    if (!(pci_cfg_read16(bus, dev, fn, PCI_STATUS) & PCI_STATUS_CAPLIST)) return 0;
+    uint8_t off = pci_cfg_read8(bus, dev, fn, PCI_CAP_PTR) & 0xFCu;
+    for (int hops = 0; hops < 48 && off >= 0x40 && off < 0xFC; hops++) {
+        if (pci_cfg_read8(bus, dev, fn, off) == 0x01) return off;   /* PM */
+        uint8_t next = pci_cfg_read8(bus, dev, fn, (uint8_t)(off + 1)) & 0xFCu;
+        if (next == off) break;
+        off = next;
+    }
+    return 0;
+}
+
+/* One or two lines: identity, command, power state, slot info, raw BARs. */
+void iodev_trace_config(const struct io_device *d, const char *when) {
+    uint8_t bus = (uint8_t)(d->bdf >> 8), dev = (uint8_t)((d->bdf >> 3) & 0x1F),
+            fn = (uint8_t)(d->bdf & 7);
+    uint8_t pm = pci_find_pm_cap(bus, dev, fn);
+    print("SDTRACE ["); print(when); print("] ");
+    hx(bus, 2); print(":"); hx(dev, 2); print("."); hx(fn, 1);
+    print(" "); hx(d->vendor, 4); print(":"); hx(d->device, 4);
+    print(" cmd="); hx(pci_cfg_read16(bus, dev, fn, PCI_COMMAND), 4);
+    if (pm) {
+        print(" pm=D");
+        hx(pci_cfg_read16(bus, dev, fn, (uint8_t)(pm + 4)) & 3u, 1);
+    } else {
+        print(" pm=none");
+    }
+    print(" slot="); hx(pci_cfg_read8(bus, dev, fn, 0x40), 2);
+    print("\nSDTRACE   bars");
+    for (uint8_t i = 0; i < 6; i++) {
+        print(" "); hx(pci_cfg_read32(bus, dev, fn, (uint8_t)(PCI_BAR0 + 4 * i)), 8);
+    }
+    print("\n");
+}
+
+/* Put the function in D0 if it is not. 10 ms is the PCI PM D3hot->D0 recovery
+ * time; each config read is an I/O-port round trip of about a microsecond, so
+ * 20000 of them is comfortably more, with no timer needed this early. */
+void iodev_trace_force_d0(const struct io_device *d) {
+    uint8_t bus = (uint8_t)(d->bdf >> 8), dev = (uint8_t)((d->bdf >> 3) & 0x1F),
+            fn = (uint8_t)(d->bdf & 7);
+    uint8_t pm = pci_find_pm_cap(bus, dev, fn);
+    if (!pm) return;
+    uint32_t v = pci_cfg_read32(bus, dev, fn, (uint8_t)(pm + 4));
+    if ((v & 3u) == 0) return;
+    pci_cfg_write32(bus, dev, fn, (uint8_t)(pm + 4), v & ~3u);
+    for (uint32_t i = 0; i < 20000; i++) (void)pci_cfg_read32(bus, dev, fn, PCI_VENDOR_ID);
+}
+#endif /* SDHCI_HW_TRACE */
 
 /* ---- MSI programming ------------------------------------------------------
  *

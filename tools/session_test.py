@@ -219,6 +219,19 @@ class Serial:
                          # `info qtree` reveals the real name, because both error
                          # messages point at the drive rather than the bus.
                          "-device", "sd-card,drive=sdmmc,bus=sd-bus"]
+            # SESSION_DISK_EMMC=1: the same, but shaped like the IdeaPad 1
+            # 14IGL05's controller and device rather than QEMU's defaults: an
+            # SDHCI 3.00 host with that machine's capabilities (200 MHz base clock,
+            # 1.8 V only) and an `emmc` device, which QEMU 11 has and QEMU 10.0 did
+            # not. The capabilities are the laptop's 0x546ec881 with bits 31:30
+            # (slot type: embedded) cleared, because QEMU refuses an embedded
+            # slot; everything else is as read off the machine on 2026-09-22.
+            if os.environ.get("SESSION_DISK_EMMC", "") == "1":
+                drive = ["-device", "sdhci-pci,id=sd,sd-spec-version=3,"
+                                    "capareg=0x146ec881",
+                         "-drive", "id=sdmmc,file=%s,format=raw,if=none,"
+                                   "cache=writethrough" % disk,
+                         "-device", "emmc,drive=sdmmc,bus=sd-bus"]
 
             # A SECOND persistent disk, attached as the primary SLAVE (index=1),
             # which is the second device the ATA driver probes. Off unless
@@ -249,7 +262,9 @@ class Serial:
             # q35 for the SD path: the default i440fx has no PCIe root the SDHCI
             # controller can sit on, and attaching one there gives a machine the
             # kernel never finds.
-            + (["-machine", "q35"] if os.environ.get("SESSION_DISK_SD", "") == "1" else [])
+            + (["-machine", "q35"] if (os.environ.get("SESSION_DISK_SD", "") == "1"
+                                       or os.environ.get("SESSION_DISK_EMMC", "") == "1")
+               else [])
             + [
              "-display", "none", "-no-reboot", "-no-shutdown",
              "-device", "isa-debug-exit,iobase=0x604,iosize=0x04",
@@ -377,6 +392,13 @@ class Serial:
 
         Returns None if QMP is unreachable; the caller must decide what to do
         rather than being handed a zero that looks like a stall.
+
+        BLIND ON SD AND eMMC. QEMU's sd-card and emmc models do not account
+        their I/O, so with SESSION_DISK_SD or SESSION_DISK_EMMC the card's
+        counters stay at zero however much the guest reads and writes (measured
+        2026-09-22: an SD boot that read blocks left `rd 0 wr 0`). On those
+        paths a stall detector built on this is an elapsed-time bound. The
+        Makefile sizes each such gate's INSTALLER_FORMAT_STALL for that.
         """
         msg = self.qmp("query-blockstats")
         if msg is None:

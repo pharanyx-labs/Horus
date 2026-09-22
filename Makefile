@@ -174,6 +174,10 @@ DEFECT_FLAGS = \
 	PCI_BUS0_ONLY \
 	IODEV_TABLE_16 \
 	SDHCI_HW_TRACE \
+	SDHCI_BAR_HIGHEST \
+	SDHCI_DIV_V2_ONLY \
+	SDHCI_EMBEDDED_NEEDS_CD \
+	SDHCI_EMMC_CSD_ONLY \
 	CONSOLE_KBD_SPLIT_ESC \
 	FB_GRID_FIXED_ROWS
 
@@ -2902,6 +2906,39 @@ endif
 SDHCI_HW_TRACE ?= 0
 ifeq ($(SDHCI_HW_TRACE),1)
 CFLAGS += -DSDHCI_HW_TRACE
+endif
+# Three defects, each read off an IdeaPad 1 14IGL05 (Intel 8086:31cc, SDHCI 3.00,
+# 200 MHz base clock, embedded slot) on 2026-09-22 and each restoring the
+# pre-fix sdhci.c for a control arm. Never ship any of them.
+#   SDHCI_BAR_HIGHEST=1       take the highest-based BAR, not the one the Slot
+#                             Information register names (that laptop's BAR2
+#                             reads all zeros). No arm: QEMU's controller has one
+#                             BAR, so both choices agree there.
+#   SDHCI_DIV_V2_ONLY=1       the 2.00 power-of-two divider on a 3.00 host, so a
+#                             200 MHz base clock identifies at 781 kHz, not 400.
+#                             Arm: smoke-sdhci-v3clock-control.
+#   SDHCI_EMBEDDED_NEEDS_CD=1 wait for card detect on an embedded slot, whose
+#                             soldered device need not drive it. No arm: QEMU
+#                             refuses an embedded slot type.
+#   SDHCI_EMMC_CSD_ONLY=1     size a sector-mode eMMC from its CSD placeholder
+#                             (1024 MiB) instead of the extended CSD. Falsified
+#                             locally against smoke-sdhci-emmc; no CI arm, since
+#                             CI's QEMU has no emmc device.
+SDHCI_BAR_HIGHEST ?= 0
+ifeq ($(SDHCI_BAR_HIGHEST),1)
+CFLAGS += -DSDHCI_BAR_HIGHEST
+endif
+SDHCI_DIV_V2_ONLY ?= 0
+ifeq ($(SDHCI_DIV_V2_ONLY),1)
+CFLAGS += -DSDHCI_DIV_V2_ONLY
+endif
+SDHCI_EMMC_CSD_ONLY ?= 0
+ifeq ($(SDHCI_EMMC_CSD_ONLY),1)
+CFLAGS += -DSDHCI_EMMC_CSD_ONLY
+endif
+SDHCI_EMBEDDED_NEEDS_CD ?= 0
+ifeq ($(SDHCI_EMBEDDED_NEEDS_CD),1)
+CFLAGS += -DSDHCI_EMBEDDED_NEEDS_CD
 endif
 ifeq ($(PCI_SCAN_TRACE),1)
 CFLAGS += -DPCI_SCAN_TRACE
@@ -8908,6 +8945,69 @@ smoke-sdhci-crowded-control:
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SDHCI_CROWDED_EXPECT=absent \
 		SDHCI_CROWDED_EVIDENCE=.sdhci-crowded-control-evidence \
 		tools/sdhci_crowded_test.sh horus.iso
+
+# AN SDHCI 3.00 HOST SHAPED LIKE THE IDEAPAD'S (200 MHz base clock, 1.8 V only),
+# with an SD card behind it. The 2.00 divider cannot reach the 400 kHz
+# identification ceiling from 200 MHz; the arm restores it and must report a
+# faster clock. See tools/sdhci_v3_test.sh.
+.PHONY: smoke-sdhci-v3clock
+smoke-sdhci-v3clock:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) tools/sdhci_v3_test.sh horus.iso
+
+.PHONY: smoke-sdhci-v3clock-control
+smoke-sdhci-v3clock-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SDHCI_DIV_V2_ONLY=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SDHCI_V3_EXPECT=fast \
+		SDHCI_V3_EVIDENCE=.sdhci-v3-control-evidence tools/sdhci_v3_test.sh horus.iso
+
+# THE SAME HOST WITH A 64 GiB eMMC BEHIND IT: the eMMC branch (CMD1, then the
+# extended CSD for the capacity). LOCAL ONLY, listed in .github/gate-exceptions.yml:
+# it needs a QEMU with an `emmc` device, which CI's 8.2.2 does not have. It fails,
+# never skips, on a QEMU without one.
+.PHONY: smoke-sdhci-emmc
+smoke-sdhci-emmc:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SDHCI_V3_MODE=emmc tools/sdhci_v3_test.sh horus.iso
+
+# A WHOLE INSTALL ONTO THAT eMMC: installer, format, power cycle, login. The
+# machine this exists for is a laptop whose only disk is soldered eMMC. LOCAL
+# ONLY, for the same reason as smoke-sdhci-emmc. 64 GiB sparse, the laptop's size.
+#
+# ITS FORMAT BOUND IS AN ELAPSED-TIME BOUND, AND SAYS SO. The installer session's
+# stall detector counts QEMU's block statistics, and QEMU does not account I/O on
+# an SD or eMMC device at all: during an SD boot that read blocks, the card's
+# counters read `rd 0 wr 0` (measured 2026-09-22). On this path the detector
+# therefore fires INSTALLER_FORMAT_STALL seconds into the format whatever the
+# guest is doing. smoke-installer-sd's 256 MiB format fits inside the default 30 s;
+# a 64 GiB one takes about 40 s here, so this gate gets a bound sized for it.
+#
+# THE IMAGE LIVES ON tmpfs, NOT IN THE CHECKOUT. With the same ISO and settings,
+# the 64 GiB sparse image took 39 s of writing on tmpfs and 1009 s in a btrfs
+# checkout (measured 2026-09-22), so in the checkout this gate failed three runs
+# in three as a "wedge" at 180 s while the guest was still writing. The format's
+# many flushes are what a copy-on-write filesystem makes slow. /dev/shm is tmpfs
+# on every Linux; the image is sparse, so it costs about 130 MiB of memory.
+INSTALLER_EMMC_FORMAT_STALL ?= 180
+INSTALLER_EMMC_IMG ?= /dev/shm/horus-installer-emmc.img
+.PHONY: smoke-installer-emmc
+smoke-installer-emmc:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory horus.iso
+	@rm -f $(INSTALLER_EMMC_IMG) installer-emmc-serial.log
+	@truncate -s 64G $(INSTALLER_EMMC_IMG)
+	@SESSION_DISK=$(INSTALLER_EMMC_IMG) SESSION_DISK_EMMC=1 \
+		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		INSTALLER_FORMAT_STALL=$(INSTALLER_EMMC_FORMAT_STALL) INSTALLER_FORMAT_CAP=$(INSTALLER_FORMAT_CAP) \
+		SESSION_SERIAL_LOG=installer-emmc-serial.log BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		python3 tools/installer_session.py horus.iso \
+	  || { echo "[installer-emmc] ----- guest serial -----"; \
+	       tail -60 installer-emmc-serial.log 2>/dev/null | sed 's/^/  /'; \
+	       rm -f $(INSTALLER_EMMC_IMG); exit 1; }
+	@rm -f $(INSTALLER_EMMC_IMG)
 
 .PHONY: smoke-sdhci-detect
 smoke-sdhci-detect:

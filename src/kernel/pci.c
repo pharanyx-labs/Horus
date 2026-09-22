@@ -385,6 +385,7 @@ static void pci_add_function(uint8_t bus, uint8_t dev, uint8_t fn,
                     if (d->n_mmio < IODEV_MAX_MMIO) {
                         d->mmio[d->n_mmio].base = base;
                         d->mmio[d->n_mmio].len  = size;
+                        d->mmio_bar[d->n_mmio]  = (uint8_t)(i + 1);  /* 0 = not a BAR */
                         d->n_mmio++;
                     }
                 }
@@ -821,6 +822,23 @@ int iodev_set_decode(const struct io_device *d, uint32_t flags) {
     low |= want;
     pci_cfg_write32(bus, dev, fn, PCI_COMMAND, hi | low);
     return 0;
+}
+
+/* SDHCI Slot Information register (PCI config 0x40, SD Host Controller spec
+ * section 2.1): bits 2:0 are the first BAR number, bits 6:4 the slot count less
+ * one. Slot 0's registers are in that BAR and in no other.
+ *
+ * WHY THIS EXISTS. sdhci_probe used to take the highest-based memory region. On
+ * an IdeaPad 1 14IGL05 (Intel 8086:31cc) the controller has two 4 KiB BARs: BAR0
+ * at 0xa1135000 answered VER=0x1002 CAP=0x546ec881, and BAR2 at 0xa1136000, the
+ * higher one, read all zeros. This register said BAR0. Read here because this
+ * is the only file that touches configuration space; the answer is validated
+ * rather than believed, since config space is device-supplied input. */
+int iodev_sdhci_first_bar(const struct io_device *d) {
+    if (!d || d->bdf == IODEV_BDF_NONE || (d->classcode >> 8) != 0x0805u) return -1;
+    uint8_t first = pci_cfg_read8((uint8_t)(d->bdf >> 8), (uint8_t)((d->bdf >> 3) & 0x1F),
+                                  (uint8_t)(d->bdf & 0x07), 0x40) & 0x7u;
+    return (first <= 5) ? (int)first : -1;
 }
 
 #ifdef SDHCI_HW_TRACE

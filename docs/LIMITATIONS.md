@@ -2203,9 +2203,9 @@ stays legible.
   longer silent, and that 64 covers every chipset this kernel has been pointed at. **This makes
   more devices delegatable on a large machine**, the same security-relevant half as the bridge
   walk above, and it is bounded the same way: every entry still goes through the BAR validation
-  in `pci_add_function`. **Not yet confirmed on the laptop itself**: a boot of the IdeaPad
-  printing `iodev: 15 delegatable devices` would confirm it. Gated by `make smoke-sdhci-crowded`
-  with `IODEV_TABLE_16=1` as the arm.
+  in `pci_add_function`. **Confirmed on the laptop, 2026-09-22**: with the 64-entry table it
+  printed `iodev: 27 delegatable devices` and found the controller. Gated by
+  `make smoke-sdhci-crowded` with `IODEV_TABLE_16=1` as the arm.
 - ~~**MSI/MSI-X are not routed.**~~ **Closed 2026-08-29** (**S47**, **S48**). `SYS_MSI_REGISTER`
   programs the device's MSI capability, and the vector is chosen by the kernel: there is no field
   in the ABI for a driver to name one, which is why a driver cannot aim an interrupt at a vector
@@ -3113,12 +3113,26 @@ old allocator and the new one read the same single block and no workload could t
   now the storage Horus can install onto: the driver's own write path stays compiled out of a
   shipped boot, because that gate writes to a card the kernel merely *found*, and the block layer
   is how a shipped boot writes to one it was told to.
-  **The eMMC branch of that has never executed anywhere.** eMMC powers up with `CMD1`; SD uses
-  `CMD8`/`ACMD41`, and an SD card must not answer `CMD1`. QEMU 10.0 has no eMMC device, only
-  `sd-card`, so every gate here exercises the SD branch, and the code an actual laptop needs is
-  written, reviewed and unrun. The branches share the reset, the clock, the command mechanism, the
-  response decoding and both CSD decoders, so the unexercised delta is one command; that is a
-  mitigation and not a substitute for having run it.
+  **The eMMC branch has run under emulation, and not yet end to end on hardware.** eMMC powers
+  up with `CMD1`; SD uses `CMD8`/`ACMD41`. QEMU 11 has an `emmc` device, and on 2026-09-22 the
+  branch ran for the first time against it, behind a controller given the IdeaPad 1 14IGL05's
+  capability value: a 64 GiB device identified, sized from its extended CSD, read, and installed
+  onto across a power cycle (`make smoke-sdhci-emmc`, `make smoke-installer-emmc`). **Both are
+  local-only**, listed in `.github/gate-exceptions.yml`: CI installs Ubuntu 24.04's QEMU 8.2.2,
+  which has no `emmc` device, so CI still exercises the SD branch only.
+  Reading the laptop itself (with `SDHCI_HW_TRACE=1`) found four defects no emulated gate could
+  have: the probe chose the higher of the controller's two BARs where the SDHCI Slot Information
+  register names BAR0 (the other reads all zeros); the 2.00 clock divider cannot reach the
+  400 kHz identification ceiling from a 3.00 host's 200 MHz base clock; an embedded slot's
+  soldered device need not drive card detect; and an eMMC over 2 GiB states only a 1024 MiB
+  placeholder in its CSD. All four are fixed. **Two are witnessed on hardware only**, because QEMU
+  cannot present them: its controller has one BAR, and it refuses the embedded slot type. The
+  divider is gated in CI (`make smoke-sdhci-v3clock`, with `SDHCI_DIV_V2_ONLY=1` as the arm).
+  **An install onto the laptop's eMMC has not yet been run**; until one has, this paragraph
+  says so. **The installer gates' stall detector is blind on this path**: it counts QEMU's block
+  statistics, which the SD and eMMC device models do not keep, so for `smoke-installer-sd` and
+  `smoke-installer-emmc` it is an elapsed-time bound on the format (30 s and 180 s) rather than a
+  detector of the guest going quiet.
   **NVMe remains entirely unaddressed**, so a machine whose SSD is NVMe is not reached by any of
   this. Of the three controller types now visible, **SD/eMMC and legacy IDE are mountable and
   AHCI is not**: `ahci.c` identifies a SATA drive and stops there, so a laptop with a SATA SSD is
@@ -4541,7 +4555,7 @@ so neither was ever presented to a contributor. There was no code of conduct, an
 the IPC authorisation logic. All fixed as of 2026-07-27; the `require_code_owner_review`
 setting that would make `CODEOWNERS` binding is still off (§5.1).
 
-*(Repository hygiene itself is fine: `git ls-files` reports **432** tracked files with no build
+*(Repository hygiene itself is fine: `git ls-files` reports **433** tracked files with no build
 artefacts or vendored binaries: no `kernel.elf`, no `horus.iso`, no object files. A working
 checkout accumulates ~70 MB of untracked build output, which is correctly `.gitignore`d. This
 sentence said 243 until 2026-08-15 and **254 until 2026-09-20**, by which point the tree had

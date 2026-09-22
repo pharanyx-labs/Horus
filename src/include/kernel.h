@@ -2630,6 +2630,15 @@ struct io_device {
                              * driver that could program it could raise any vector
                              * on the machine (S47). */
     struct { uint64_t base, len; } mmio[IODEV_MAX_MMIO];
+    /* Which BAR each mmio[] region came from, PLUS ONE: 1..6 for BAR0..BAR5, and
+     * 0 for a region that is not a BAR (the platform device's fixed windows). A
+     * driver whose device names its register BAR (SDHCI's Slot Information
+     * register does) must be able to find THAT region; "the highest address"
+     * picked the wrong one on real hardware (2026-09-22, see sdhci_probe).
+     * Offset by one so that zero, which every entry starts as (iodev_table is
+     * static), means "not a BAR": a platform region added later cannot claim
+     * BAR0 by being forgotten. Kernel-internal: struct dev_info does not carry it. */
+    uint8_t     mmio_bar[IODEV_MAX_MMIO];
     struct { uint16_t base, len; } port[IODEV_MAX_PORT];
     uint32_t    n_mmio, n_port;
 };
@@ -2713,8 +2722,10 @@ int iodev_set_decode(const struct io_device *d, uint32_t flags);
 /* Instrument only (pci.c): see the SDHCI_HW_TRACE note there. */
 void iodev_trace_config(const struct io_device *d, const char *when);
 void iodev_trace_force_d0(const struct io_device *d);
-void sdhci_trace_map(uint64_t regs_phys);   /* paging.c */
 #endif
+/* SDHCI Slot Information (config 0x40): the BAR holding slot 0's registers,
+ * 0..5, or -1 if the device is not an SD host controller or names no valid BAR. */
+int iodev_sdhci_first_bar(const struct io_device *d);
 int iodev_program_msi(const struct io_device *d, uint8_t vector);
 int iodev_program_msix(const struct io_device *d, uint16_t entry, uint8_t vector);
 void ensure_msix_mapped(uint64_t *root_pml4, uint64_t page_phys);

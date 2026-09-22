@@ -547,6 +547,32 @@ in this file.
 
 ### Fixed
 
+- **A laptop's eMMC controller was found and then read as zeros, so it could not be installed
+  onto.** Read off an IdeaPad 1 14IGL05 with a new instrument (`SDHCI_HW_TRACE=1`), which found
+  four defects, each fixed:
+  - **The wrong BAR.** The controller (Intel `8086:31cc`) has two 4 KiB BARs. The probe took the
+    higher, BAR2, which reads all zeros; the SDHCI Slot Information register (PCI config `0x40`)
+    names BAR0, which answered `VER=0x1002 CAP=0x546ec881`. The probe now uses the BAR that
+    register names, and refuses a controller that names none. `struct io_device` now records
+    which BAR each memory region came from.
+  - **The clock.** It is an SDHCI 3.00 host with a 200 MHz base clock. The driver knew only the
+    2.00 divider, whose slowest setting is base/256, 781 kHz, and a card must be identified at
+    400 kHz or less. A 3.00 host now gets the 10-bit divider: exactly 400 kHz.
+  - **Card detect.** The slot is an embedded one (a soldered device), whose card-detect line need
+    not report anything, and the driver waited for it. An embedded slot's device is now present
+    by construction.
+  - **The capacity.** An eMMC over 2 GiB puts a placeholder in its CSD (1024 MiB) and its real
+    size in the extended CSD. A sector-mode eMMC is now sized from `EXT_CSD` `SEC_COUNT`; a failed
+    read fails identification instead of installing onto a 1 GiB volume.
+  The eMMC power-up command also offers the 1.70-1.95 V range when the host supports it; this
+  controller supports only 1.8 V.
+  The eMMC path had never run anywhere. It now runs under QEMU 11's `emmc` device: identified,
+  sized, read, and installed onto across a power cycle (`smoke-sdhci-emmc`,
+  `smoke-installer-emmc`, local-only because CI's QEMU 8.2.2 has no such device). The divider is
+  gated in CI by `smoke-sdhci-v3clock`. The BAR choice and the embedded slot cannot be
+  emulated and are witnessed on the laptop. This also confirms the device-table diagnosis below:
+  the laptop printed `iodev: 27 delegatable devices`.
+
 - **A laptop with more than fourteen PCI functions lost the rest, eMMC controller included.**
   The kernel's device table (`IODEV_MAX`) held 16 entries, fourteen PCI functions once index 0
   and the platform device are taken, and `pci_add_function` dropped every function past the end

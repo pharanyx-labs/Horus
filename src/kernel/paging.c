@@ -2931,16 +2931,6 @@ void ensure_storage_regs_mapped(uint64_t *root_pml4, uint64_t regs_phys) {
     devregs_map_page(root_pml4, (regs_phys & ~0xFFFULL) + 0x1000ULL);
 }
 
-#ifdef SDHCI_HW_TRACE
-/* Instrument only: map one register page into the KERNEL pml4 for a boot-time
- * read, bypassing g_devregs_pages. That list holds four pages and refuses the
- * fifth silently, so tracing a second BAR through it could leave the real
- * register file unmapped. Nothing here is replicated into a task. */
-void sdhci_trace_map(uint64_t regs_phys) {
-    ensure_identity_mmio_page(NULL, regs_phys & ~0xFFFULL);
-}
-#endif
-
 /* Re-establish them in a freshly built address space. A no-op on a machine with
  * neither controller, which is every machine the existing gates boot.
  *

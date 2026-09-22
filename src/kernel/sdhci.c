@@ -205,6 +205,69 @@ static inline uint8_t sdhci_read8(uint64_t bar, uint32_t off) {
     return *(volatile uint8_t *)(uintptr_t)(bar + off);
 }
 
+#ifdef SDHCI_HW_TRACE
+/* Hex, fixed width, for the SDTRACE lines. It lives up here rather than beside
+ * the rest of the trace code near sdhci_probe() because sd_cmd_failed() below
+ * reports through it, and that is called from the command path. */
+static void sdtrace_hx(uint32_t v, int digits) {
+    static const char hex[] = "0123456789abcdef";
+    for (int sh = (digits - 1) * 4; sh >= 0; sh -= 4)
+        print_char(hex[(v >> sh) & 0xF]);
+}
+
+/* Name the command that failed and what the controller said about it.
+ *
+ * The shipped probe reports one line per STAGE ("the card did not come up"),
+ * which is the right amount of noise for a machine that is working. It is not
+ * enough to diagnose one that is not: "which command, and what did the error
+ * register say" is the whole question, and on a laptop with no serial cable the
+ * screen is the only place to ask it. Under the instrument every failed command
+ * answers; without it this compiles away entirely. */
+static void sd_cmd_failed(uint64_t bar, uint32_t index, const char *why) {
+    print("SDTRACE   CMD");
+    print_decimal(index);
+    print(" ");
+    print(why);
+    print(" err=");  sdtrace_hx(sdhci_read16(bar, SDHCI_ERR_STATUS), 4);
+    print(" int=");  sdtrace_hx(sdhci_read16(bar, SDHCI_INT_STATUS), 4);
+    print(" ps=");   sdtrace_hx(sdhci_read32(bar, SDHCI_PRESENT_STATE), 8);
+    print("\n");
+}
+#else
+#define sd_cmd_failed(bar, index, why) ((void)0)
+#endif
+
+/* Put the command line, and optionally the data line, back into a state where
+ * the next command can be issued.
+ *
+ * A FAILED COMMAND LEAVES THE LINE INHIBITED, AND THE NEXT COMMAND THEN FAILS
+ * FOR A REASON THAT IS NOT ITS OWN. SD Host Controller specification 3.00
+ * section 3.10.1: when a command error is raised the host driver sets Software
+ * Reset For CMD Line and waits for the bit to clear; until it does, Command
+ * Inhibit (CMD) in the present state register stays set and every later command
+ * times out against it. A command that had a data phase, or a busy response
+ * that holds DAT low, needs Software Reset For DAT Line as well.
+ *
+ * NOTHING IN THIS DRIVER DID THAT UNTIL 2026-09-22, and no emulated gate could
+ * have noticed: QEMU's `sd-card` and `emmc` models drop the inhibit by
+ * themselves, so a missing recovery is invisible under every gate this tree
+ * runs. Real silicon does not. RESET_CMD and RESET_DAT were defined from the
+ * first version of this file and never used, which is the shape of a step that
+ * was understood and then not written.
+ *
+ * Bounded like every other wait here, for ata.c's reason: a controller that
+ * will not clear its own reset bit must not turn a dead card into a hang. */
+static void sd_line_recover(uint64_t bar, int also_dat) {
+    const uint8_t bits = (uint8_t)(RESET_CMD | (also_dat ? RESET_DAT : 0u));
+    sdhci_write8(bar, SDHCI_SOFTWARE_RESET, bits);
+    for (uint32_t i = 0; i < SDHCI_SPINS; i++)
+        if ((sdhci_read8(bar, SDHCI_SOFTWARE_RESET) & bits) == 0) break;
+    /* Clear what caused this too. A latched error left behind would be read by
+     * the next command's own error check and reported as its failure. */
+    sdhci_write16(bar, SDHCI_INT_STATUS, 0xFFFFu);
+    sdhci_write16(bar, SDHCI_ERR_STATUS, 0xFFFFu);
+}
+
 /* Reset the controller and bring its clock and power up.
  *
  * The order is the specification's and is not interchangeable: reset first
@@ -284,13 +347,26 @@ clk_ok:
  * response registers for the caller to read. */
 static int sd_command_common(uint64_t bar, uint32_t index, uint32_t arg, uint32_t resp,
                              uint32_t extra_flags, int touch_xfer_mode) {
+    /* Whether a failure here has to reset the DATA line as well as the command
+     * line: a command with a data phase, or one whose response signals busy by
+     * holding DAT low. Both leave the data line inhibited when they go wrong. */
+    const int uses_dat = ((extra_flags & CMD_DATA_PRESENT) != 0) || (resp == RESP_48_BUSY);
+
     /* Both inhibit bits: the command line for every command, and the data line
      * too, because a command that changes card state must not be issued while a
      * previous data transfer is still using it. */
     for (uint32_t i = 0; ; i++) {
         uint32_t ps = sdhci_read32(bar, SDHCI_PRESENT_STATE);
         if ((ps & (PSTATE_CMD_INHIBIT | PSTATE_DAT_INHIBIT)) == 0) break;
-        if (i >= SDHCI_SPINS) return -1;
+        if (i >= SDHCI_SPINS) {
+            /* Still inhibited from something earlier. Reset BOTH lines, not the
+             * one this command would have used: whatever is holding the bus is
+             * not this command's doing, so this is the last chance to clear it
+             * before every remaining command inherits the same failure. */
+            sd_cmd_failed(bar, index, "line still inhibited");
+            sd_line_recover(bar, 1);
+            return -1;
+        }
     }
 
     sdhci_write16(bar, SDHCI_INT_STATUS, 0xFFFFu);   /* write-1-to-clear */
@@ -308,9 +384,21 @@ static int sd_command_common(uint64_t bar, uint32_t index, uint32_t arg, uint32_
     for (uint32_t i = 0; ; i++) {
         uint16_t st  = sdhci_read16(bar, SDHCI_INT_STATUS);
         uint16_t err = sdhci_read16(bar, SDHCI_ERR_STATUS);
-        if (err) return -1;                          /* timeout, CRC, index... */
+        if (err) {                                   /* timeout, CRC, index... */
+            sd_cmd_failed(bar, index, "error");
+            sd_line_recover(bar, uses_dat);
+            return -1;
+        }
         if (st & INT_CMD_COMPLETE) return 0;
-        if (i >= SDHCI_SPINS) return -1;
+        if (i >= SDHCI_SPINS) {
+            /* No error and no completion either: the controller never answered.
+             * The line is reset all the same, because a command that was
+             * accepted and never completed leaves the inhibit set exactly as a
+             * failed one does. */
+            sd_cmd_failed(bar, index, "no completion");
+            sd_line_recover(bar, uses_dat);
+            return -1;
+        }
     }
 }
 
@@ -348,8 +436,30 @@ static int card_identify(uint64_t bar, uint64_t *sectors_out, int *is_mmc_out,
     /* SD first: CMD8 asks whether the card understands the 2.0 interface
      * condition. A card that does not answer is either pre-2.0 SD or eMMC, and
      * the CMD1 path below tells those apart. 0x1AA is "2.7-3.6V, check pattern
-     * 0xAA", and the card echoes it. */
-    int sd_v2 = (sd_command(bar, CMD_SEND_IF_COND, 0x1AAu, RESP_48, CMD_CRC_CHECK) == 0);
+     * 0xAA", and the card echoes it.
+     *
+     * THE ANSWER IS BELIEVED ONLY IF IT IS SD'S, and "the command completed" is
+     * not that answer. Index 8 is SEND_IF_COND on SD and SEND_EXT_CSD on eMMC,
+     * two different commands at one number, and the eMMC one is a 512-byte data
+     * read. Asking for it here, with no data phase programmed, gets a response
+     * from an eMMC device that then starts sending on DAT with nobody draining
+     * it: the data line stays inhibited and every later command fails against
+     * it, which is why an IdeaPad 1 14IGL05 reported "the card did not come up"
+     * with the device present and answering.
+     *
+     * The specification's own test is the echo, so that is the test used: an SD
+     * 2.0 card returns the check pattern and voltage range it was given in R7.
+     * Anything else, including a completed command that echoes something other
+     * than 0x1AA, is not an SD 2.0 card.
+     *
+     * Then both lines are put back regardless of the outcome. This is the one
+     * command in the sequence that can leave a data phase dangling behind a
+     * response that looked like a success, so it is the one place recovering
+     * after a FAILURE is not enough. */
+    int sd_v2 = 0;
+    if (sd_command(bar, CMD_SEND_IF_COND, 0x1AAu, RESP_48, CMD_CRC_CHECK) == 0)
+        sd_v2 = ((sdhci_read32(bar, SDHCI_RESPONSE) & 0xFFFu) == 0x1AAu);
+    sd_line_recover(bar, 1);
 
     for (uint32_t i = 0; i < SDHCI_OPCOND_TRIES; i++) {
         if (sd_command(bar, CMD_APP_CMD, 0, RESP_48, CMD_CRC_CHECK) != 0) { is_mmc = 1; break; }
@@ -364,7 +474,7 @@ static int card_identify(uint64_t bar, uint64_t *sectors_out, int *is_mmc_out,
     if (is_mmc) {
         /* eMMC. Sector addressing is requested with bit 30, as for SD. Run
          * under QEMU 11's `emmc` device; see the note above this function. */
-        if (sd_command(bar, CMD_GO_IDLE, 0, RESP_NONE, 0) != 0) return -1;
+        if (sd_command(bar, CMD_GO_IDLE, 0, RESP_NONE, 0) != 0) return -8;
         /* The voltage window offered: 2.7-3.6 V always, and 1.70-1.95 V (OCR bit
          * 7) when the host can supply it. A device whose range the argument
          * misses goes INACTIVE and answers nothing until power-cycled, and the
@@ -639,13 +749,8 @@ static const struct io_device *find_sdhci_controller(uint64_t *index_out) {
 #ifdef SDHCI_HW_TRACE
 /* See the SDHCI_HW_TRACE note in pci.c. One step: config state, then VER, CAP
  * and PRESENT_STATE read from EVERY memory region the function declares, so a
- * wrong-BAR choice shows up as the other region answering. */
-static void sdtrace_hx(uint32_t v, int digits) {
-    static const char hex[] = "0123456789abcdef";
-    for (int sh = (digits - 1) * 4; sh >= 0; sh -= 4)
-        print_char(hex[(v >> sh) & 0xF]);
-}
-
+ * wrong-BAR choice shows up as the other region answering. sdtrace_hx() is
+ * defined above the command path, which reports through it too. */
 static void sdhci_trace_step(const struct io_device *d, const char *when) {
     iodev_trace_config(d, when);
     for (uint32_t i = 0; i < d->n_mmio; i++) {
@@ -877,8 +982,28 @@ void sdhci_probe(void) {
                     print("\n");
                 }
             } else {
+                /* NAME THE STEP, NOT JUST THE NUMBER. On 2026-09-22 this
+                 * printed "(1)" on the laptop, and 1 was two different places:
+                 * the opening CMD0 and the one that reopens the eMMC branch.
+                 * Which of them it was is the whole difference between "the
+                 * card never answered at all" and "the card answered and then
+                 * something wedged the bus", and the number could not say.
+                 * Indexed by -rc; keep it in step with the returns above. */
+                static const char *const step[] = {
+                    "",                             /*  0, unused */
+                    "CMD0 go-idle",                 /* -1 */
+                    "CMD1 eMMC op-cond",            /* -2 */
+                    "CMD2 all-send-CID",            /* -3 */
+                    "CMD3 relative address",        /* -4 */
+                    "CMD9 send-CSD",                /* -5 */
+                    "CMD7 select-card",             /* -6 */
+                    "CMD8 extended CSD read",       /* -7 */
+                    "CMD0 go-idle, eMMC retry",     /* -8 */
+                };
+                const int nsteps = (int)(sizeof(step) / sizeof(step[0]));
                 print("  sdhci: the card did not come up (");
                 print_decimal((uint64_t)(-rc));
+                if (-rc > 0 && -rc < nsteps) { print(", "); print(step[-rc]); }
                 print(")\n");
             }
         }

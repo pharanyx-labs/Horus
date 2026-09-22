@@ -376,6 +376,14 @@ advisory:
     adding no assurance. A crash it does find is a finding to triage, not a
     check to re-run.
 
+  smoke-smp-kvm: >-
+    A second environment for gates that are already required under TCG, where
+    their evidence and control arms live, not a gate of its own. Added
+    2026-09-21 after the KVM probe (#419) found HORUS-20260921-03; its pass
+    rate under KVM has not yet been measured, and a job whose flake rate is
+    unknown would teach red-means-rerun. Promote it to required once a
+    measured run of green on main says it is stable, with the rate quoted.
+
   ruleset-audit: >-
     Schedule-only (daily cron plus workflow_dispatch), so it never runs on a
     pull request and has no conclusion to gate one with. It is listed here

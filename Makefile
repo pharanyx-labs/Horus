@@ -7305,6 +7305,22 @@ smoke-smp:
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=$(SMP_CPUS) REQUIRE_MARKER='SMP_SELFTEST: PASS' \
 		FAIL_MARKER='SMP_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
+# The SMP race BASE gates again, under KVM: a second environment for gates whose
+# evidence and control arms live under TCG (TESTS.md, "CI"). Needs a usable
+# /dev/kvm; QEMU_ACCEL=kvm makes the harness refuse to run without one rather
+# than quietly using TCG. Each gate is run as it is under TCG, in turn, and the
+# first failure stops the target. CI runs this as the advisory smoke-smp-kvm
+# job; locally it needs VT-x or AMD-V enabled and the kvm module loaded.
+SMP_KVM_GATES = smoke-smp smoke-smp-topology smoke-kstack-reuse smoke-switch-commit \
+	smoke-exec-reenter smoke-cr3-reclaim smoke-kstack-race smoke-session-smp \
+	smoke-killed-task
+.PHONY: smoke-smp-kvm
+smoke-smp-kvm:
+	@set -e; for g in $(SMP_KVM_GATES); do \
+		echo "=== $$g under KVM"; \
+		QEMU_ACCEL=kvm $(MAKE) --no-print-directory $$g; \
+	done
+
 # Eight CPUs, on the topologies real firmware produces rather than only QEMU's
 # default (2026-09-21). One SMP_SELFTEST build, four boots, and in each every
 # schedulable AP must run a task and no task may run on an SMT sibling:

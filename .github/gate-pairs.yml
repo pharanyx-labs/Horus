@@ -394,6 +394,7 @@ gates:
   - smoke-signal
   - smoke-smp
   - smoke-smp-topology
+  - smoke-smp-kvm
   - smoke-smt
   - smoke-spawn-owner
   - smoke-stackguard

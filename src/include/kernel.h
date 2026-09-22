@@ -2566,8 +2566,26 @@ void set_tss_kernel_stack(uint64_t kstack_top);
  * comment of pci.c for why that is the [C-1] shape one layer down.
  *
  * Built once at boot by iodev_init(), read-only afterwards, and never reachable
- * from a syscall: ring 3 names a capability, never a bus address. */
-#define IODEV_MAX          16    /* table entries; a bounded, boot-time array   */
+ * from a syscall: ring 3 names a capability, never a bus address.
+ *
+ * WHY 64 AND NOT 16 (2026-09-22). Sixteen entries is fourteen PCI functions
+ * once index 0 and the platform device are taken, which held for QEMU and is
+ * far short of a laptop: an Intel Gemini Lake chipset puts twenty-odd functions
+ * on bus 0 (I2C, UART and SPI controllers, xHCI, audio, the TXE...), and the
+ * eMMC controller at 00:1c.0 comes near the END of the walk. pci_add_function
+ * dropped the tail silently, so the one device that makes the machine
+ * installable was never recorded and sdhci_probe reported it absent. Being
+ * absent is the safe direction (nothing can be delegated over a device the table
+ * does not hold), but it is the wrong answer, and 64 covers every chipset this
+ * kernel has been pointed at with room to spare. iodev_init now says how many it
+ * could not record, so a machine larger than this is visible, not silent.
+ *
+ * IODEV_TABLE_16=1 restores the old size for smoke-sdhci-crowded-control. */
+#ifdef IODEV_TABLE_16
+#define IODEV_MAX          16    /* the defect arm: the pre-2026-09-22 size     */
+#else
+#define IODEV_MAX          64    /* table entries; a bounded, boot-time array   */
+#endif
 #define IODEV_MAX_MMIO      8    /* physical ranges one device may declare      */
 #define IODEV_MAX_PORT      8    /* I/O port ranges one device may declare      */
 #define IODEV_NONE          0    /* "no device": index 0 is permanently absent  */

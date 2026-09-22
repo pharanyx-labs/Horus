@@ -704,6 +704,16 @@ jobs:
       # placed on bus 0 by QEMU. The gate is worthless without this half.
       - name: Control arm — bus 0 only, and the controller vanishes
         run: make smoke-sdhci-bridge-control
+      # HOW MANY functions come before the controller, which every gate above is
+      # also blind to: each boots about six. The device table held 16 entries and
+      # dropped the rest in silence, and a Gemini Lake laptop's eMMC controller
+      # is at 00:1c.0 behind twenty-odd others. 24 functions go ahead of it here.
+      - name: An SD/eMMC controller at the end of a crowded bus is found
+        run: make smoke-sdhci-crowded
+      # The arm restores the 16-entry table and must report the controller
+      # absent AND say the table was full, so the absence is the table's doing.
+      - name: Control arm — a 16-entry device table drops the controller
+        run: make smoke-sdhci-crowded-control
 
   # Shard of the smoke-boot job (see `smoke`). Installing onto SD/eMMC.
   smoke-installer-sd:

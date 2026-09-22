@@ -2167,9 +2167,12 @@ stays legible.
 - ~~**PCI-to-PCI bridges are not walked.**~~ **Closed 2026-09-12.** The claim that bus 0 "is
   every device on the machines this kernel targets" held for QEMU's i440fx and q35 and failed on
   the first real laptop: an IdeaPad whose internal storage is eMMC printed `sdhci: no SD/eMMC
-  host controller`, because its controller is not on bus 0. The cost of missing that device was
-  not a feature, it was the machine being uninstallable, which is the half of the old reasoning
-  that was wrong, not the fail-closed direction. `iodev_init` now walks the bus **tree**,
+  host controller`, and a controller behind a bridge was the first explanation. That was
+  reproduced under QEMU and never read off the laptop; on its chipset (Gemini Lake) the eMMC
+  controller is normally on bus 0, and the likelier cause is the full device table in the next
+  bullet. The cost of missing a device there is not a feature, it is the machine being
+  uninstallable, which is the half of the old reasoning that was wrong, not the fail-closed
+  direction. `iodev_init` now walks the bus **tree**,
   breadth-first from bus 0 through each PCI-to-PCI bridge's secondary bus number.
   **This makes devices reachable that were not reachable before**, and that is the
   security-relevant half: a function behind a bridge now enters `iodev_table`, so a capability
@@ -2190,6 +2193,19 @@ stays legible.
   directions on 2026-09-12, with `smoke-sdhci-detect` and `smoke-net` still passing, the check
   that enumeration order, and so every `iodev_table` index, is unchanged on a machine with no
   bridges.
+- ~~**The device table held sixteen entries.**~~ **Closed 2026-09-22.** `IODEV_MAX` was 16,
+  fourteen PCI functions once index 0 and the platform device are taken, and `pci_add_function`
+  dropped every function past the end in silence. A Gemini Lake laptop has twenty-odd functions
+  on bus 0 with the eMMC controller at `00:1c.0`, near the end of the walk, so the one device
+  that makes it installable was never recorded. The table now holds **64**, and a full table is
+  reported on the console with a count of what was not recorded. The direction of failure is
+  unchanged (a function past the end is absent and ungrantable); what changed is that it is no
+  longer silent, and that 64 covers every chipset this kernel has been pointed at. **This makes
+  more devices delegatable on a large machine**, the same security-relevant half as the bridge
+  walk above, and it is bounded the same way: every entry still goes through the BAR validation
+  in `pci_add_function`. **Not yet confirmed on the laptop itself**: a boot of the IdeaPad
+  printing `iodev: 15 delegatable devices` would confirm it. Gated by `make smoke-sdhci-crowded`
+  with `IODEV_TABLE_16=1` as the arm.
 - ~~**MSI/MSI-X are not routed.**~~ **Closed 2026-08-29** (**S47**, **S48**). `SYS_MSI_REGISTER`
   programs the device's MSI capability, and the vector is chosen by the kernel: there is no field
   in the ABI for a driver to name one, which is why a driver cannot aim an interrupt at a vector
@@ -2308,9 +2324,11 @@ but has no arm of its own yet.
 - **A vector is never reclaimed.** `msi_clear_task` stops delivering to a dead driver's route but
   leaves the device enabled and the vector allocated. Freeing it means the next device allocated
   that vector inherits any message this one already put in flight; disabling the capability means
-  writing configuration space of a device that may be mid-transaction. Sixteen vectors and
-  sixteen delegatable devices, so exhaustion needs a machine larger than the table; the leak is
-  the safe direction, and reclaiming needs a quiesce step this tree does not have.
+  writing configuration space of a device that may be mid-transaction. Sixteen vectors and up
+  to 64 delegatable devices, so exhaustion needs seventeen drivers to ask for a message-signalled
+  interrupt, and the seventeenth is refused (`msi_alloc_vector` fails closed rather than sharing
+  a vector); the leak is the safe direction, and reclaiming needs a quiesce step this tree does
+  not have.
 - **Interrupt remapping still is not on**, and with MSI that finally matters in the way the I/O
   APIC work anticipated: an MSI is a memory write, so a device that could DMA anywhere could in
   principle compose a message itself rather than being programmed to. What stops that today is
@@ -4522,7 +4540,7 @@ so neither was ever presented to a contributor. There was no code of conduct, an
 the IPC authorisation logic. All fixed as of 2026-07-27; the `require_code_owner_review`
 setting that would make `CODEOWNERS` binding is still off (§5.1).
 
-*(Repository hygiene itself is fine: `git ls-files` reports **431** tracked files with no build
+*(Repository hygiene itself is fine: `git ls-files` reports **432** tracked files with no build
 artefacts or vendored binaries: no `kernel.elf`, no `horus.iso`, no object files. A working
 checkout accumulates ~70 MB of untracked build output, which is correctly `.gitignore`d. This
 sentence said 243 until 2026-08-15 and **254 until 2026-09-20**, by which point the tree had

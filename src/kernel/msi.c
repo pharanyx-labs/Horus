@@ -63,9 +63,11 @@ extern int sys_notify(uint32_t notif_slot, uint32_t badge);
 
 /* Allocate a vector, or 0 if the range is exhausted.
  *
- * Linear and small on purpose: MSI_VECTOR_COUNT is 16, one per delegatable
- * device, and a machine that runs out has more devices than the io-device table
- * holds. Failing closed here means SYS_MSI_REGISTER refuses rather than reusing a
+ * Linear and small on purpose. MSI_VECTOR_COUNT is 16 and the io-device table
+ * holds up to IODEV_MAX (64) devices, so the range CAN run out, but only when
+ * seventeen drivers ask for a message-signalled interrupt; most of a laptop's
+ * functions never get a driver at all. Failing closed here means
+ * SYS_MSI_REGISTER refuses rather than reusing a
  * vector two devices would then share -- and a shared vector is two drivers each
  * being told about the other's interrupts, which is S43's confusion arriving one
  * layer further in. */

@@ -172,6 +172,7 @@ DEFECT_FLAGS = \
 	PS2_LAYOUT_IGNORED \
 	PCI_SCAN_TRACE \
 	PCI_BUS0_ONLY \
+	IODEV_TABLE_16 \
 	CONSOLE_KBD_SPLIT_ESC \
 	FB_GRID_FIXED_ROWS
 
@@ -2868,17 +2869,27 @@ endif
 # is readable by anything holding CAP_KERNEL_LOG, and a full hardware enumeration
 # is the bus walk that line refuses to hand out. It answers one question on real
 # hardware: when `sdhci: no SD/eMMC host controller` is printed, is the controller
-# behind a bridge (the shipping scan walks bus 0 only), on bus 0 under a class
+# unreachable by the walk, past the end of a full device table, under a class
 # find_sdhci_controller does not match, or not on PCI at all?
 PCI_SCAN_TRACE ?= 0
 # PCI_BUS0_ONLY=1 restores the enumeration as it stood before 2026-09-12: walk
 # bus 0 and do not follow PCI-to-PCI bridges. A device behind a bridge is then
 # absent from iodev_table, so no capability can name it and no driver can find
-# it -- which is why an IdeaPad whose eMMC controller is not on bus 0 printed
-# `sdhci: no SD/eMMC host controller` and could not be installed onto.
+# it. This was the first explanation for an IdeaPad printing `sdhci: no SD/eMMC
+# host controller`; it was reproduced under QEMU and never read off the laptop.
 PCI_BUS0_ONLY ?= 0
 ifeq ($(PCI_BUS0_ONLY),1)
 CFLAGS += -DPCI_BUS0_ONLY
+endif
+# IODEV_TABLE_16=1 restores the device table as it stood before 2026-09-22:
+# IODEV_MAX = 16, which is fourteen PCI functions once index 0 and the platform
+# device are taken. A Gemini Lake laptop has twenty-odd functions on bus 0 and
+# its eMMC controller (00:1c.0) near the end of the walk, so pci_add_function
+# dropped it without a word and the machine had nothing to install onto. The
+# base gate is `make smoke-sdhci-crowded`; this is its arm. Never ship it.
+IODEV_TABLE_16 ?= 0
+ifeq ($(IODEV_TABLE_16),1)
+CFLAGS += -DIODEV_TABLE_16
 endif
 ifeq ($(PCI_SCAN_TRACE),1)
 CFLAGS += -DPCI_SCAN_TRACE
@@ -8864,6 +8875,27 @@ smoke-sdhci-bridge-control:
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SDHCI_BRIDGE_EXPECT=absent \
 		SDHCI_BRIDGE_EVIDENCE=.sdhci-bridge-control-evidence \
 		tools/sdhci_bridge_test.sh horus.iso
+
+# AN SD/eMMC CONTROLLER AT THE END OF A CROWDED BUS. Every other SD gate boots a
+# machine with half a dozen PCI functions, so the device table (IODEV_MAX) never
+# came close to filling, and a 16-entry table dropped the tail of a real laptop's
+# bus in silence. This one puts 24 functions on bus 0 ahead of the controller,
+# which sits at 00:1c.0 as a Gemini Lake eMMC controller does. The arm restores
+# the 16-entry table and must report the controller absent AND say the table was
+# full; without the second half a dead probe would pass it.
+.PHONY: smoke-sdhci-crowded
+smoke-sdhci-crowded:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) tools/sdhci_crowded_test.sh horus.iso
+
+.PHONY: smoke-sdhci-crowded-control
+smoke-sdhci-crowded-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory IODEV_TABLE_16=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SDHCI_CROWDED_EXPECT=absent \
+		SDHCI_CROWDED_EVIDENCE=.sdhci-crowded-control-evidence \
+		tools/sdhci_crowded_test.sh horus.iso
 
 .PHONY: smoke-sdhci-detect
 smoke-sdhci-detect:

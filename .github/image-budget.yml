@@ -44,4 +44,9 @@
 #   loan. Chosen over a sentinel value in page_refcounts, which costs no bytes
 #   but overloads a table the Kani proofs in rust/src/memory.rs reason about.
 #   The 4-byte refusal counter beside it fitted in existing padding.
-bss_bytes: 7647232
+# 2026-09-22: 7,659,520 bytes (+12,288), IODEV_MAX 16 -> 64. iodev_table grows
+#   3,712 -> 14,848 bytes (232 per entry) and iommu.c's domains[] 256 -> 1,024
+#   (16 per entry), 11,904 bytes that the section's page rounding makes 12 KiB.
+#   A Gemini Lake laptop has twenty-odd PCI functions on bus 0 and a 16-entry
+#   table dropped its eMMC controller, the only disk it has, in silence.
+bss_bytes: 7659520

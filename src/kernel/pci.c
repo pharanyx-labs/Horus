@@ -26,7 +26,8 @@
  * permanently absent (see IODEV_NONE in kernel.h: zero must not name a device).
  * Entry 1 is the legacy platform device — the PIT, the PS/2 controller, the two
  * UARTs, and the VGA register file with its framebuffer, none of which are
- * enumerable — and entries 2.. are PCI functions found on bus 0. Each entry declares exactly three
+ * enumerable — and entries 2.. are PCI functions found by walking the bus tree
+ * from bus 0 (pci_walk_tree). Each entry declares exactly three
  * kinds of resource, because those are exactly the three things the syscalls hand
  * out: physical frames (SYS_MAP_PHYS), I/O port ranges (SYS_IOPORT_GRANT), and
  * interrupt lines (SYS_IRQ_REGISTER).
@@ -38,15 +39,16 @@
  * config space could reprogram its own BARs and point them at somebody else's
  * device, which would make every check below decorative.
  *
- * WHY BUS 0 ONLY, AND WHY THAT IS NOT A HOLE
- * ------------------------------------------
- * The scan walks bus 0 and does not follow PCI-to-PCI bridges. On the machines
- * this kernel targets (QEMU i440fx and q35) every device is on bus 0, so this
- * finds all of them. It matters which direction the limitation errs in: a device
- * behind a bridge is simply ABSENT from the table, so no capability can be minted
- * naming it and no authority can be granted over it. Missing a device costs a
- * feature; inventing one would cost the property. Extending the walk is a
- * bounded, additive change when a bridge first appears.
+ * WHICH WAY A LIMIT ERRS
+ * ----------------------
+ * Every limit on the scan (a bus the walk does not reach, a table that is full)
+ * errs the same way: the device is ABSENT from the table, so no capability can
+ * be minted naming it and no authority can be granted over it. Missing a device
+ * is safe; inventing one would cost the property. Safe is not the same as
+ * harmless, though. On a laptop the missing device can be the only disk, which
+ * is why the walk follows bridges (pci_walk_tree), the table holds IODEV_MAX = 64
+ * entries (kernel.h says why not 16), and a full table is reported on the
+ * console rather than dropped in silence.
  */
 #include "syscall_internal.h"
 
@@ -329,11 +331,16 @@ static uint8_t pci_find_msix_cap(uint8_t bus, uint8_t dev, uint8_t fn) {
 }
 
 /* Record one PCI function. Bounded by IODEV_MAX: a machine with more functions
- * than the table holds loses the tail, which is the same direction of failure as
- * the bus-0 limit — absent, therefore un-delegatable. */
+ * than the table holds loses the tail, which is the safe direction (absent,
+ * therefore un-delegatable) but must never be a SILENT one. Until 2026-09-22 it
+ * was, and a 16-entry table dropped a laptop's eMMC controller without a word:
+ * the only symptom was sdhci reporting no controller. The count of what was not
+ * recorded is kept so iodev_init can say so. */
+static uint32_t iodev_dropped;
+
 static void pci_add_function(uint8_t bus, uint8_t dev, uint8_t fn,
                              uint16_t vendor, uint16_t device) {
-    if (iodev_count >= IODEV_MAX) return;
+    if (iodev_count >= IODEV_MAX) { iodev_dropped++; return; }
     struct io_device *d = &iodev_table[iodev_count];
 
     uint32_t rev = pci_cfg_read32(bus, dev, fn, PCI_REVISION);
@@ -439,7 +446,8 @@ static void pci_add_function(uint8_t bus, uint8_t dev, uint8_t fn,
 
 /* ---- boot-time construction ---------------------------------------------- */
 
-/* Build the table: the platform device, then every function on bus 0.
+/* Build the table: the platform device, then every function the bus-tree walk
+ * reaches, up to IODEV_MAX.
  *
  * Called from kernel_main BEFORE cap_init, because cap_init mints the primordial
  * device capabilities and each one has to name an index that already exists. */
@@ -447,9 +455,9 @@ static void pci_add_function(uint8_t bus, uint8_t dev, uint8_t fn,
 /* WALK EVERY BUS AND SAY WHAT IS THERE. An instrument, not a defect and not a
  * change of authority: it reads configuration space and prints, and it adds
  * NOTHING to iodev_table. What is delegatable after this runs is exactly what
- * was delegatable before it -- the shipping scan above still walks bus 0 only,
- * and a device this trace names but that scan did not find remains absent from
- * the table, so no capability can be minted over it.
+ * was delegatable before it: a device this trace names but the shipping walk did
+ * not record (unreachable, or past a full table) remains absent from the table,
+ * so no capability can be minted over it.
  *
  * WHY IT IS BEHIND A FLAG AND NOT ALWAYS ON. iodev_init's closing line is
  * deliberately a COUNT rather than a listing, because the kernel log is readable
@@ -459,13 +467,15 @@ static void pci_add_function(uint8_t bus, uint8_t dev, uint8_t fn,
  * like every other instrument that changes what the machine says.
  *
  * WHAT IT IS FOR. An IdeaPad whose internal storage is eMMC reported `sdhci: no
- * SD/eMMC host controller` on 2026-09-12. Three explanations fit that line and
- * they want completely different fixes: the controller sits on a bus behind a
- * PCI-to-PCI bridge, which this scan does not follow (see the note at the top of
- * this file); it is on bus 0 but does not carry class 08:05, so
- * find_sdhci_controller skips it; or it is not on PCI at all, which no extension
- * of this walk would ever reach. Guessing between them is how a week gets spent
- * on the wrong one. The trace answers it in one boot, off the machine itself.
+ * SD/eMMC host controller` on 2026-09-12. Several explanations fit that line and
+ * they want completely different fixes: the controller sits behind a PCI-to-PCI
+ * bridge (the walk did not follow bridges until 2026-09-12); it is on the bus but
+ * past the end of a full table (IODEV_MAX was 16 until 2026-09-22); it does not
+ * carry class 08:05, so find_sdhci_controller skips it; or it is not on PCI at
+ * all, which no extension of the walk would ever reach. Guessing between them is
+ * how a week gets spent on the wrong one, and both fixes so far were reasoned
+ * from the chipset rather than read off the machine. The trace answers it in one
+ * boot, off the machine itself.
  *
  * BRIDGES ARE NAMED WITH THEIR SECONDARY BUS, so the topology is readable rather
  * than inferred: a bridge line followed by devices on that bus number is the
@@ -477,7 +487,7 @@ static void trace_hex(uint32_t v, int digits) {
 }
 
 static void pci_scan_trace(void) {
-    print("PCISCAN: walking all 256 buses -- an instrument; the shipping scan is bus 0 only\n");
+    print("PCISCAN: walking all 256 buses -- an instrument; what is delegatable is the count above\n");
     uint32_t found = 0, bridges = 0, sdhci = 0;
 
     for (uint32_t bus = 0; bus < 256; bus++) {
@@ -549,13 +559,16 @@ static void pci_scan_trace(void) {
  *
  * WHY IT HAD TO CHANGE. The header of this file argued that bus 0 was enough
  * because "on the machines this kernel targets (QEMU i440fx and q35) every
- * device is on bus 0", and that missing a device merely costs a feature. Both
- * halves held right up until somebody booted a laptop: an IdeaPad whose internal
- * storage is eMMC printed `sdhci: no SD/eMMC host controller` on 2026-09-12,
- * because its controller is not on bus 0. The cost of missing that device is not
- * a feature, it is the machine being uninstallable. Reproduced exactly under
- * QEMU -- `-device sdhci-pci` behind a `pcie-pci-bridge` lands at 01:01.0 and
- * produced that identical line.
+ * device is on bus 0", and that missing a device merely costs a feature. An
+ * IdeaPad whose internal storage is eMMC printed `sdhci: no SD/eMMC host
+ * controller` on 2026-09-12, and a controller behind a bridge was the first
+ * explanation: `-device sdhci-pci` behind a `pcie-pci-bridge` lands at 01:01.0
+ * and produced that identical line under QEMU. It was never read off the laptop,
+ * and on that chipset (Gemini Lake) the eMMC controller is normally on bus 0 at
+ * 00:1c.0, where the 16-entry table had already filled; see IODEV_MAX in
+ * kernel.h. Following bridges is right regardless, since real machines put
+ * devices behind them, but it is not established to be what that laptop
+ * needed.
  *
  * BREADTH-FIRST WITH AN EXPLICIT QUEUE, NOT RECURSION. A recursive walk is the
  * obvious shape and is wrong here: bus numbers come from hardware, so a depth of
@@ -616,6 +629,7 @@ static void pci_walk_tree(void) {
 void iodev_init(void) {
     for (uint32_t i = 0; i < IODEV_MAX; i++) iodev_table[i].present = 0;
     iodev_count = 0;
+    iodev_dropped = 0;
     iodev_add_platform();   /* claims index IODEV_PLATFORM; index 0 stays absent */
 
     pci_walk_tree();
@@ -656,6 +670,14 @@ void iodev_init(void) {
 #else
     print(" delegatable devices (platform + the PCI bus tree)\n");
 #endif
+    /* A count, like the line above, and for the same reason. Printed only when
+     * nonzero so a machine that fits says nothing new. smoke-sdhci-crowded
+     * asserts this line is ABSENT; its control arm asserts it is present. */
+    if (iodev_dropped) {
+        print("iodev: table full, ");
+        print_decimal((uint64_t)iodev_dropped);
+        print(" PCI function(s) not recorded\n");
+    }
 
 #ifdef PCI_SCAN_TRACE
     /* After the real scan, so the count above still describes what is

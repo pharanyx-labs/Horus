@@ -1861,6 +1861,34 @@ void sched_note_park(uint64_t rsp)
     int cpu = this_cpu();
     if (cpu < 0 || cpu >= MAX_CPUS || !rsp) return;
 
+    /* ---- A CPU PARKS ON ITS OWN STACK, OR NOT AT ALL (S20, 2026-09-22) -------
+     *
+     * The check below catches two CPUs that have both parked on one stack, which
+     * is the hazard, but it needs a second CPU to take the park path during the
+     * same boot. Whether one does is scheduling luck: a run of
+     * smoke-kstack-park-control once put all 2 parks of all 8 boots on CPU 1, so
+     * the shared park was restored and never seen, and that arm failed 3 times in
+     * 31 runs with the defect present. A park on any stack other than this CPU's
+     * own IS the defect, on the first park and on one CPU, so it is checked
+     * directly. In a fixed kernel kernel_park_rsp() computes exactly this value,
+     * so the check holds by construction; it is here for the change that one day
+     * hands a CPU a stack from somewhere else. */
+    {
+        extern uint64_t ap_park_stack_top(int cpu);
+        uint64_t own = ap_park_stack_top(cpu);
+        if (rsp != own) {
+            kfault_begin(0);
+            kfault_str("\nPANIC: cpu "); kfault_dec(cpu);
+            kfault_str(" parking on a kernel stack that is not its own rsp=");
+            kfault_hex(rsp);
+            kfault_str(" own="); kfault_hex(own);
+            kfault_str(" task="); kfault_task(get_current_task());
+            kfault_str("\nKERNEL FATAL SHARED PARK STACK - halting\n");
+            kfault_end(0);
+            for (;;) __asm__ volatile ("cli; hlt");
+        }
+    }
+
     for (int c = 0; c < MAX_CPUS; c++) {
         if (c == cpu) continue;
         if (percpu_park_rsp[c] != rsp) continue;

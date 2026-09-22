@@ -540,6 +540,18 @@ in this file.
 
 ### Fixed
 
+- **The kernel-stack park control arm went red about one run in ten with the defect present.**
+  `smoke-kstack-park-control` restores the shared park stack and recognised it only when two
+  different CPUs parked in the same boot. In about half of boots only one CPU did, and on 3 of 31
+  measured runs none of the 8 boots had a second parking CPU (one run put all 2 parks of all 8
+  boots on CPU 1), so the arm failed while the defect was plainly there. It is the arm CLAUDE.md
+  names as its worked example of an unreliable gate. `sched_note_park` now also halts on the
+  first park on any stack that is not the parking CPU's own, which is the defect itself seen on
+  one CPU: caught on 20 boots of 20, including the 10 with a single park, and 10 arm runs of 10
+  on their first boot. The base gate gets the same check, so it can fail on a single wrong park
+  too. Found while measuring whether `MAKEFLAGS=-j4` (#418) caused the arm's failures; it did
+  not (the arm failed serially too).
+
 - **A new task could be written onto a kernel stack another CPU was still using** (`SECURITY.md`
   **S20**, **[HORUS-20260921-03]**). Kernel stacks are indexed by task slot, and a slot counted
   as free the moment its task was torn down, while the CPU that ran it could still be unwinding

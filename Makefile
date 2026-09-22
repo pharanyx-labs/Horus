@@ -9766,6 +9766,10 @@ smoke-kstack-race-control:
 # stack, and the collision report is absent. Without the "was it entered" check a
 # kernel that simply never parks would score a green gate.
 KSTACK_PARK_RE = PANIC: two CPUs parking on one kernel stack
+# The same defect seen on ONE CPU: a park on a stack that is not the parking
+# CPU's own (sched_note_park, 2026-09-22). Deterministic under the shared park,
+# where the pattern above needs a second CPU to park in the same boot.
+KSTACK_PARK_OWN_RE = parking on a kernel stack that is not its own
 # A boot that ends here did not run the workload to the end, so it never got the
 # chance to park a second CPU. It is INCONCLUSIVE for the control arm, not a
 # miss -- see the note above smoke-kstack-park-control. It is caused by this
@@ -9839,9 +9843,9 @@ smoke-kstack-park:
 	: "ABSENT, so a copy that ring-3 output can cut in half is one this gate would"; \
 	: "fail to find and pass. The kernel writes it to COM3 through panic_ch, where"; \
 	: "no capability names the port and nothing else can interleave (S81)."; \
-	if grep -qa '$(KSTACK_PARK_RE)' "$$diag"; then \
+	if grep -qa -e '$(KSTACK_PARK_RE)' -e '$(KSTACK_PARK_OWN_RE)' "$$diag"; then \
 	    echo "KSTACK PARK: FAIL - two CPUs parked on one kernel stack"; \
-	    grep -a -A 4 '$(KSTACK_PARK_RE)' "$$diag" | sed 's/^/  /'; rm -f "$$log" "$$diag"; exit 1; \
+	    grep -a -A 4 -e '$(KSTACK_PARK_RE)' -e '$(KSTACK_PARK_OWN_RE)' "$$diag" | sed 's/^/  /'; rm -f "$$log" "$$diag"; exit 1; \
 	fi; \
 	rm -f "$$log" "$$diag"; \
 	echo "KSTACK PARK: PASS - task-killing workload completed on 4 CPUs, no shared park stack"
@@ -9994,8 +9998,8 @@ smoke-kstack-park-control:
 	    : "therefore MISSES exactly the boots where the defect fired hardest --"; \
 	    : "observed 2026-08-22, a boot whose log carried the PANIC and was still"; \
 	    : "scored as a miss. Either signal is the same event."; \
-	    if [ -z "$$dup" ] && grep -qa '$(KSTACK_PARK_RE)' "$$diag"; then \
-	        dup=$$(grep -ha '$(KSTACK_PARK_RE)' "$$diag" \
+	    if [ -z "$$dup" ] && grep -qa -e '$(KSTACK_PARK_RE)' -e '$(KSTACK_PARK_OWN_RE)' "$$diag"; then \
+	        dup=$$(grep -ha -e '$(KSTACK_PARK_RE)' -e '$(KSTACK_PARK_OWN_RE)' "$$diag" \
 	               | sed -n 's/.*rsp=\([^ ]*\).*/\1 (from the kernel panic)/p' | head -1); \
 	    fi; \
 	    if [ -n "$$dup" ]; then hit=$$n; break; fi; \
@@ -10027,9 +10031,9 @@ smoke-kstack-park-control:
 	if [ $$hit -eq 0 ]; then \
 	    echo "KSTACK PARK CONTROL: FAIL - the shared park did NOT reproduce in"; \
 	    echo "  $$good boots that ran to completion ($$bad more died and were not counted)."; \
-	    echo "  EVERY conclusive boot reproduced it when this arm was measured -- 10 of 10"; \
-	    echo "  on 2026-08-22 -- so a clean sweep of $$good is evidence that the shared park"; \
-	    echo "  has stopped being restored or the PARKTRACE detector has decayed, not noise."; \
+	    echo "  Since 2026-09-22 every boot that parks at all catches it on one CPU (20 of"; \
+	    echo "  20 measured), so a clean sweep of $$good is evidence that the shared park has"; \
+	    echo "  stopped being restored or the park check has decayed, not noise."; \
 	    echo "  ----- the kernel's own channel, which is what the verdict read -----"; \
 	    tail -20 "$$diag" 2>/dev/null | sed 's/^/  /'; \
 	    echo "  ----- the shared console -----"; \
@@ -10038,11 +10042,13 @@ smoke-kstack-park-control:
 	fi; \
 	cpus=$$(grep -ha PARKTRACE "$$diag" | grep -o 'cpu=[0-9]*' | sort -u | wc -l); \
 	echo "  shared park stack(s): $$dup   (distinct CPUs parking: $$cpus)"; \
-	if grep -qa '$(KSTACK_PARK_RE)' "$$diag"; then \
-	    grep -a -A 3 '$(KSTACK_PARK_RE)' "$$diag" | head -4 | sed 's/^/  /'; \
+	if grep -qa -e '$(KSTACK_PARK_RE)' -e '$(KSTACK_PARK_OWN_RE)' "$$diag"; then \
+	    grep -a -A 3 -e '$(KSTACK_PARK_RE)' -e '$(KSTACK_PARK_OWN_RE)' "$$diag" | head -4 | sed 's/^/  /'; \
 	fi; \
+	how="two CPUs parked on one stack"; \
+	if grep -qa '$(KSTACK_PARK_OWN_RE)' "$$diag"; then how="a CPU parked on a stack that is not its own"; fi; \
 	rm -f "$$log" "$$diag"; \
-	echo "KSTACK PARK CONTROL: PASS - the shared park puts two CPUs on one stack, as it must (boot $$hit of $(KSTACK_PARK_CONTROL_BOOTS))"
+	echo "KSTACK PARK CONTROL: PASS - the shared park is restored and caught: $$how (boot $$hit of $(KSTACK_PARK_CONTROL_BOOTS))"
 
 # ---- [G-9], exec hand-off component: the re-entry belongs to the CPU that armed it
 #

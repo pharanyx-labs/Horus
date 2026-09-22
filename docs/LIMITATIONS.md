@@ -2634,11 +2634,12 @@ the present cost is affordable and is not what blocks anything.
 
 **The whole kernel image is itself a ceiling, and one static object dominates it (audit F2,
 closed 2026-09-19).** The image must end below `USER_PHYS_BASE` (16 MiB), enforced by the
-`linker64.ld` ASSERT. `.bss` is budgeted at **7,468 KiB** (`.github/image-budget.yml`), and
+`linker64.ld` ASSERT. `.bss` is budgeted at **7,480 KiB** (`.github/image-budget.yml`), and
 `argon2_scratch` alone is 4,096 KiB of it: the argon2 `m_cost` (`ARGON2_M_COST_KIB = 4096`), a
 deliberate memory-hardness parameter that must not be trimmed to buy room. The whole image ends
-about 6.9 MiB below the line: 0x91F000 on a Void build on 2026-09-22, after `MAX_CPUS` went from
-four to eight and took 400 KiB of it and the S102 on-loan bitmap took 16 KiB (CI's compiler has measured about 12 KiB lower, because the
+about 6.9 MiB below the line: 0x922000 on a Void build on 2026-09-22, after `MAX_CPUS` went from
+four to eight and took 400 KiB of it, the S102 on-loan bitmap took 16 KiB and the 64-entry
+device table took 12 KiB (CI's compiler has measured about 12 KiB lower, because the
 code differs between compilers and `.bss` does not). Raising `MAX_TASKS`, `MAX_CPUS`,
 `BLOCKS_PER_DISK` or the argon2 cost spends that room, and GRUB stages the boot modules in the same room (§1.15).
 

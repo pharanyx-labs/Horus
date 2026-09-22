@@ -781,7 +781,7 @@ Requires `swtpm` and `swtpm-tools`. Driven through `tools/run_with_swtpm.sh`.
 | `smoke-signal` | A ring-3 fault is delivered to a registered handler. |
 | `smoke-smp` | APs come online from the MADT, **every** schedulable AP runs a scheduled task (not merely two CPUs), no task runs on an SMT sibling, and TLB shootdown completes. Eight CPUs by default. |
 | `smoke-smp-topology` | Eight CPUs on four topologies: contiguous LAPIC ids; sparse ids (four sockets of three cores, ids 0-2, 4-6, 8, 9); sixteen threads on eight cores, where the primaries must get all eight slots; four cores of two threads, where four must come online and four siblings park; and plain 4 and 2 CPUs, since a machine below the ceiling must run as it is (1 CPU is `make smoke`). The online count is part of the required marker. |
-| `smoke-smp-kvm` | The SMP race *base* gates again under KVM (`SMP_KVM_GATES` in the `Makefile`: `smoke-smp`, `smoke-smp-topology`, `smoke-kstack-reuse`, `smoke-switch-commit`, `smoke-exec-reenter`, `smoke-cr3-reclaim`, `smoke-kstack-race`, `smoke-session-smp`), where vCPUs run truly in parallel. A second environment, not a replacement: the arms stay under TCG. Refuses to run without a usable `/dev/kvm`. Advisory in CI until its KVM pass rate is measured. |
+| `smoke-smp-kvm` | The SMP race *base* gates again under KVM (`SMP_KVM_GATES` in the `Makefile`: `smoke-smp`, `smoke-smp-topology`, `smoke-kstack-reuse`, `smoke-switch-commit`, `smoke-exec-reenter`, `smoke-cr3-reclaim`, `smoke-kstack-race`, `smoke-session-smp`, `smoke-killed-task`), where vCPUs run truly in parallel. A second environment, not a replacement: the arms stay under TCG. Refuses to run without a usable `/dev/kvm`. Advisory in CI until its KVM pass rate is measured. |
 | `smoke-smp-topology-sparse-control` | Control arm. `APIC_ID_IS_CPU_INDEX=1`: on the sparse topology two cores have ids past the ceiling and park, and the kernel must say six. |
 | `smoke-smp-topology-sibling-control` | Control arm for **S101**. `SMT_SIBLING_BY_INDEX=1`: counts still read four online and four parked, so the self-test's per-CPU check must catch a task on a sibling. |
 | `smoke-smt` | SMT sibling threads are parked, closing same-core co-residency. |
@@ -808,6 +808,8 @@ Both run in CI and both are required: a red `smoke-recvblock` blocks a merge.
 | `smoke-proc-tcb-reuse-control` | Control arm for **S100**. `TCB_GENERATION_UNCHECKED=1` compares a `CAP_TCB` by slot number alone, and `proctest`, holding the capability for a dead child whose slot `slotheir` has since filled, must report `FAIL tcb-stale-signal`. `smoke-proc` goes red on this build. |
 | `smoke-kstack-reuse` | **S20**, slot reuse (**[HORUS-20260921-03]**). `PROC_SELFTEST` with `KSTACK_REUSE_WIDEN`, five boots: each must finish the workload with no slot chosen while a CPU is still on its kernel stack, and across the boots the picker must have refused at least one busy slot, or the window never opened and a clean run proves nothing. The two `proctest` phases that respawn into a dead child's slot retry in rounds, since the kernel now rightly declines that slot until its CPU has left. |
 | `smoke-kstack-reuse-control` | Control arm. `SLOT_REUSE_UNCHECKED=1` restores selection by `state == 0` alone, and `create_task` must report a busy slot chosen. `smoke-kstack-reuse` goes red on this build. |
+| `smoke-killed-task` | **S56**, **[HORUS-20260921-04]**: a task killed while it runs on another CPU stops, and stops writing memory it shares with live tasks. `PROC_SELFTEST` at four CPUs (not `smoke-proc`, which boots one CPU, where the victim cannot be running while the driver kills it): `killspin` increments a counter in a frame shared with the driver, with no system call in its loop, and is killed while the counter is visibly rising; after a short grace the counter must not change across many ticks, and the death record must still read killed. |
+| `smoke-proc-killed-task-control` | Control arm. `DEAD_TASK_RUNS=1` restores the tick that returns into a dead task, and the driver must report `FAIL killed-task-still-writes`. `smoke-killed-task` goes red on this build. |
 | `cargo fuzz` (`rust/fuzz/`) | The pointer and scalar predicates at the FFI boundary do not panic or misbehave on adversarial input. |
 
 The ELF loader migration to Rust found two real out-of-bounds bugs in the C original; a third,
@@ -1611,7 +1613,7 @@ minutes, and the three longest jobs are defined straight after `gates`, so that 
 the first scheduled when at most 20 jobs run at once.
 
 Every gate runs under TCG, software emulation, and that is where its evidence and control arm
-live. One job, `smoke-smp-kvm`, runs eight of the SMP race *base* gates a second time under KVM,
+live. One job, `smoke-smp-kvm`, runs nine of the SMP race *base* gates a second time under KVM,
 where virtual CPUs run truly in parallel, which TCG rarely achieves. That is how
 **[HORUS-20260921-03]** was found: `smoke-switch-commit` met a window under KVM that emulation had
 never shown. Only base gates run there, because under KVM three race control arms stopped

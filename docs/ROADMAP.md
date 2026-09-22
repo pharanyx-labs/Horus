@@ -1723,10 +1723,10 @@ neither, in both, or names a job that no longer exists. No default, defaulting i
 caught CodeQL unclassified on its first run, which is the same omission class the finding
 describes.
 
-The gating set is **131 required, 3 exempted** (131 jobs, 134 contexts (re-derive it with
+The gating set is **131 required, 4 exempted** (132 jobs, 135 contexts (re-derive it with
 `tools/check_ci_gating.py`, never from this line)) `fuzz` (a 30-second time-boxed search is
-evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on), and
-`ruleset-audit` (schedule-only, so it never runs on a pull request). `smoke-fs-wal` was an
+evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on),
+`ruleset-audit` (schedule-only, so it never runs on a pull request), and `smoke-smp-kvm` (a second run, under KVM, of gates already required under TCG, until its KVM pass rate is measured). `smoke-fs-wal` was an
 exemption until **[I-11]** was fixed on 2026-08-16 and it was promoted back;
 `smoke-session-smp-soak` until **[G-8]** was closed on 2026-08-17 and it was promoted with it;
 `smoke-kstack-park` until **[G-9]** closed on 2026-08-21, promoted in #190 the day after. **All
@@ -1878,7 +1878,7 @@ past it.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue`, §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 373 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 195 of them control arms that must reproduce a defect |
+| ✅ | 374 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 195 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

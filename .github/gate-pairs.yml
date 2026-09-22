@@ -174,11 +174,13 @@ control_arms:
   smoke-proc-exit-record-control: smoke-proc
   smoke-proc-wait-control: smoke-proc
   smoke-proc-tcb-reuse-control: smoke-proc
+  smoke-proc-killed-task-control: smoke-killed-task
   smoke-klog-forge-abi-control: smoke-klog-forge
   smoke-klog-forge-control: smoke-klog-forge
   smoke-ksp-guard-control: smoke-ksp-guard
   smoke-kstack-park-control: smoke-kstack-park
   smoke-kstack-race-control: smoke-kstack-race
+  smoke-kstack-reuse-control: smoke-kstack-reuse
   smoke-libhorus-retry-control: smoke-libhorus
   smoke-libhorus-strncpy-control: smoke-libhorus
   smoke-measured-boot-required-control: smoke-measured-boot-required
@@ -347,6 +349,7 @@ gates:
   - smoke-ksp-guard
   - smoke-kstack-park
   - smoke-kstack-race
+  - smoke-kstack-reuse
   - smoke-libhorus
   - smoke-mapphys
   - smoke-measured-boot-required
@@ -367,6 +370,7 @@ gates:
   - smoke-pipe
   - smoke-preempt
   - smoke-proc
+  - smoke-killed-task
   - smoke-recvblock
   - smoke-recvblock-smp
   - smoke-repro-sha

@@ -263,7 +263,30 @@
 # SMT_SIBLING_BY_INDEX arms' #ifdef lines) and 3 in scheduler.c (this_cpu_lapic
 # resolving through the map). CPU bring-up is ring 0 by nature. The trampoline's
 # +13 are not counted: it is embedded as a binary, not linked.
-core_budget_loc: 10223
+#
+# RAISED 2026-09-21, 10223 -> 10300 (+77), for S20's slot-reuse path
+# (HORUS-20260921-03): a slot is not handed out while a CPU is on its kernel
+# stack. All 77 are in scheduler.c: sched_slot_reusable and
+# sched_pick_free_slot (with the SLOT_REUSE_UNCHECKED arm), their 12-line
+# one-CPU definitions for SMP=0 builds (where no other CPU can be on a dead
+# slot's stack, so the pick is the lowest dead slot as before), create_task's
+# refusal of a busy slot and the two forward declarations it needs, and, only
+# under KSTACK_REUSE_WIDEN, the smoke-kstack-reuse widener and its skip log.
+# The spawn paths themselves got shorter (kspawn.c -9), since both now call
+# the one picker instead of scanning for themselves; kspawn.c is not core.
+# Scheduling is ring 0 by nature.
+#
+# RAISED 2026-09-21, 10300 -> 10354 (+54), for HORUS-20260921-04: a task
+# killed while another CPU runs it stops. 47 are in the ship kernel: 24 in
+# scheduler.c (preempt_on_tick never resuming, re-claiming or signalling a dead
+# task and parking the CPU instead, task_teardown refusing a dead task and
+# kicking any CPU still running it, and the DEAD_TASK_RUNS arm's lines), 11 in
+# smp.c (smp_kick_cpu, the targeted kill IPI), 8 in idt.c (vector 0xFC and the
+# syscall-entry check) and 4 in lowlevel64.S (the 0xFC stub). The other 7 are in
+# multiboot.S and embed the killspin test child, only under PROC_SELFTEST: 5
+# directives and 2 comment continuation lines, the .S counting artefact recorded
+# in the S97 entry above. Stopping a task is ring 0 by nature.
+core_budget_loc: 10354
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

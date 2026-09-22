@@ -233,6 +233,11 @@ isr64: pushq $0; pushq $0x40; jmp isr_common_stub64
  * asking this CPU to flush its TLB. */
 .global isr251
 isr251: pushq $0; pushq $0xFB; jmp isr_common_stub64
+/* 0xFC: the kill IPI (smp_kick_cpu). Sent to a CPU still running a task another
+ * CPU has just torn down, so it takes the CPU back now instead of at its next
+ * tick. Handled exactly like a tick, minus the tick count. */
+.global isr252
+isr252: pushq $0; pushq $0xFC; jmp isr_common_stub64
 
 isr34: pushq $0; pushq $34; jmp isr_common_stub64
 isr35: pushq $0; pushq $35; jmp isr_common_stub64

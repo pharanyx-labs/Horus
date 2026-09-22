@@ -652,6 +652,14 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
         lapic_eoi();
         __sync_fetch_and_add(&ap_timer_ticks, 1ul);
         return preempt_on_tick((uint64_t)frame, frame->cs);
+    } else if (vector == 0xFC) {
+        /* Kill IPI (smp_kick_cpu): the task this CPU is running was torn down by
+         * another CPU. preempt_on_tick never returns into a dead task, so this
+         * takes the CPU back immediately; without it the dead task ran on until
+         * this CPU's next tick at best, and indefinitely if nothing else was
+         * runnable (HORUS-20260921-04). */
+        lapic_eoi();
+        return preempt_on_tick((uint64_t)frame, frame->cs);
     } else if (vector == 0xFB) {
         /* TLB-shootdown IPI: a remote CPU changed a shared mapping. Flush this
          * CPU's TLB (reload CR3 drops all non-global entries) and acknowledge. */
@@ -687,7 +695,18 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
          * the frame the CPU actually pushed. SYS_WAIT_NOTIFY still returns its
          * badge in rbx; it just writes it directly now. */
         int ipc_caller = get_current_task();
-        syscall_handler(frame);
+        /* A task that has been torn down makes no more system calls. It can
+         * still be here: another CPU killed it while this one ran it in ring 3,
+         * and it trapped before the kill IPI or a tick took the CPU back. Until
+         * 2026-09-21 the call was dispatched first and the death noticed only
+         * afterwards (the `st == 0` exit below), so a dead task's syscall ran
+         * with its identity: its capabilities are gone, but SYS_EXIT ran a
+         * second teardown that rewrote its own death record (HORUS-20260921-04).
+         * Skipping the dispatch sends it straight to that exit path. */
+#ifndef DEAD_TASK_RUNS
+        if (!(ipc_caller > 0 && ipc_caller < g_max_tasks && tasks[ipc_caller].state == 0))
+#endif
+            syscall_handler(frame);
         /* SYS_EXEC_NAMED replaced the caller's image in place and fabricated a
          * fresh ring-3 context for it at the top of its kernel stack — which is
          * the SAME memory as this trap `frame`. Resume that context via the
@@ -1300,8 +1319,10 @@ void idt_init64(void)
 #ifdef SMP
     extern void isr64(void);    /* LAPIC timer (per-CPU preemption tick) */
     extern void isr251(void);   /* TLB-shootdown IPI */
+    extern void isr252(void);   /* kill IPI: take a dead task's CPU back now */
     idt64_set_gate(0x40, (uint64_t)isr64,  0x08, 0, 0x8E);
     idt64_set_gate(0xFB, (uint64_t)isr251, 0x08, 0, 0x8E);
+    idt64_set_gate(0xFC, (uint64_t)isr252, 0x08, 0, 0x8E);
 #endif
 
     idt64_ptr.limit = sizeof(idt64) - 1;

@@ -2038,6 +2038,12 @@ jobs:
       # reused a dead task's slot, and proctest must say so by name.
       - name: Control arm, a CAP_TCB for a dead task names nothing
         run: make smoke-proc-tcb-reuse-control
+      # HORUS-20260921-04 (S56). At four CPUs, since smoke-proc's single CPU can
+      # never have the victim running while it is killed.
+      - name: A task killed while it runs stops, and stops writing shared memory
+        run: make smoke-killed-task
+      - name: Control arm, a dead task resumed by the tick keeps writing
+        run: make smoke-proc-killed-task-control
 
   smoke-cow:
     name: QEMU copy-on-write self-test (headless)
@@ -2376,6 +2382,13 @@ jobs:
       # is fatal at the pre-fix release site and harmless at the shipped one.
       - name: Restore the pre-fix release site and require the race to REPRODUCE
         run: make smoke-kstack-race-control
+      # S20, slot reuse (HORUS-20260921-03): a spawn must not reuse a slot whose
+      # kernel stack a CPU is still on. The window is held open, busy slots must
+      # be refused, and at least one refusal must happen or the run proves nothing.
+      - name: A slot is not reused while a CPU is still on its kernel stack
+        run: make smoke-kstack-reuse
+      - name: Control arm, slot choice by state alone reuses a busy slot
+        run: make smoke-kstack-reuse-control
       # S20 AT THE NEW WIDTH. MAX_TASKS went 64 -> 256 on 2026-08-30, and both
       # things this job rests on were sized for 64: the per-task kernel stacks
       # (a static .bss array, one slot per task) and g_kstack_inflight (ONE

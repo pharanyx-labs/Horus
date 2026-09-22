@@ -540,6 +540,27 @@ in this file.
 
 ### Fixed
 
+- **A new task could be written onto a kernel stack another CPU was still using** (`SECURITY.md`
+  **S20**, **[HORUS-20260921-03]**). Kernel stacks are indexed by task slot, and a slot counted
+  as free the moment its task was torn down, while the CPU that ran it could still be unwinding
+  its own trap frame off that stack. A spawn in that window wrote the new task's first frame on
+  top of it. The shipping kernel reaches this when `init` relaunches the shell into the old
+  shell's slot. Found by the KVM probe of CI, where a resumed task's `rip` pointed into its own
+  stack, and reproduced under emulation with a window-widener. A slot is now handed out only when
+  no CPU is on its stack, and `create_task` refuses one that is. New gate `make
+  smoke-kstack-reuse` with a control arm (`SLOT_REUSE_UNCHECKED=1`); two `proctest` phases that
+  respawn into a just-freed slot now retry in rounds instead of assuming the slot is free at once.
+- **A task killed while it ran on another CPU kept running** (`SECURITY.md` **S56**,
+  **[HORUS-20260921-04]**). When `SYS_KILL` (or a signal's default action) tore down a task that
+  another CPU was running in ring 3, that CPU's tick re-claimed the dead task and, if nothing else
+  was runnable, returned into it. Measured: a spinner killed mid-spin was resumed on every tick
+  for as long as the test watched (383 in a row at four CPUs), still reading and writing memory it
+  shared with live tasks after its capabilities were gone. A dead task's system calls were also
+  dispatched before its death was noticed, so its `SYS_EXIT` could rewrite its own death record.
+  The tick now never resumes a dead task; the CPU running it is sent a kill IPI (vector 0xFC) at
+  once; a dead task's system calls are not dispatched; and a dead task cannot be torn down again.
+  New gate `make smoke-killed-task` (four CPUs) with a control arm (`DEAD_TASK_RUNS=1`).
+
 - **A capability for a dead task controlled whatever task reused its slot** (`SECURITY.md`
   **S100**, **[HORUS-20260921-02]**). A `CAP_TCB` carried the bare task-slot number, and a
   spawner's copy outlives the child, so once the slot was reused the capability named the new

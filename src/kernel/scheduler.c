@@ -605,10 +605,36 @@ void scheduler_init(void) {
     current_kernel_stack_top = KERNEL_TSS_STACK;
 }
 
+#ifdef SMP
+static void sched_raw_lock(void);     /* defined below, with the scheduler lock */
+static void sched_raw_unlock(void);
+#endif
+
 void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base,
                  uint32_t premap_pages, uint32_t untyped_index) {
     if (id >= g_max_tasks) return;
     if (untyped_index >= MAX_UNTYPED) return;
+    /* Fail closed on a slot a CPU is still on (S20; see sched_slot_reusable):
+     * leave it dead, which every caller already reads as "could not create".
+     * sched_pick_free_slot never hands one out, so this fires only for a caller
+     * that chose its own slot, or for a regression in the picker. The line is on
+     * the diagnostic channel because it is a kernel invariant, not a message. */
+    if (id > 0) {
+#ifdef SMP
+        sched_raw_lock();
+#endif
+        int ok = sched_slot_reusable(id);
+#ifdef SMP
+        sched_raw_unlock();
+#endif
+        if (!ok && tasks[id].state == 0) {
+            kfault_str("\nKSTACK REUSE: slot "); kfault_dec(id);
+            kfault_str(" chosen while a CPU is still on its kernel stack\n");
+#ifndef SLOT_REUSE_UNCHECKED
+            return;
+#endif
+        }
+    }
 
     /* Record the (possibly ASLR-randomized) image base before create_user_pagedir
      * runs, so it premaps the image window at the right virtual address. Default
@@ -1914,6 +1940,74 @@ static int sched_real_task_on(int c) {
 }
 #endif
 
+/* ---- A SLOT IS NOT FREE UNTIL NO CPU IS ON ITS STACK -- S20, 2026-09-21 ------
+ *
+ * per_task_kstacks[] is indexed by slot, so reusing a slot reuses its kernel
+ * stack, and create_task fabricates the new task's first trap frame at the very
+ * top of it: exactly where a CPU that was running the previous occupant pushed
+ * ITS trap frame. task_teardown marks a slot dead (state 0) while a CPU can still
+ * be on that stack:
+ *   - the CPU tearing it down, still unwinding its own ISR frame off the stack
+ *     until the epilogue leaves it (every exit path: switch, park, and a switch
+ *     the resume guard refused);
+ *   - a CPU that was running it when another CPU killed it, which carries on
+ *     until its next tick.
+ * Slot selection tested `state == 0` alone, so a spawn in that window wrote its
+ * frame over a trap frame in use. Found under KVM on 2026-09-21, where vCPUs run
+ * truly in parallel: `sigwaiter`, spawned into the slot the kernel's `hello` had
+ * just exited from, resumed with rip pointing into its own kernel stack.
+ *
+ * A slot is reusable when it is dead AND no CPU is on its stack: none has it as
+ * the task it is really running (sched_real_task_on, which unlike
+ * percpu_current_task does not lie during impersonation), and none has its stack
+ * marked in flight (set by every switch away from it, cleared by
+ * sched_release_deferred once the CPU has moved its %rsp off). Both conditions
+ * only ever go from true to false for a dead slot: a dead task cannot be picked
+ * up again, so a CPU that has left it never returns. Callers hold
+ * sched_raw_lock, and every spawn path holds the spawn lock, so the slot cannot
+ * be picked twice. */
+int sched_slot_reusable(int id)
+{
+    if (id <= 0 || id >= g_max_tasks) return 0;
+    if (tasks[id].state != 0) return 0;
+#ifdef SMP
+    if (kstack_inflight_test(id)) return 0;
+    for (int c = 0; c < MAX_CPUS; c++)
+        if (sched_real_task_on(c) == id) return 0;
+#endif
+    return 1;
+}
+
+/* The lowest reusable slot, or -1. The one place a spawn chooses a slot. */
+int sched_pick_free_slot(void)
+{
+    int pick = -1;
+#ifdef SMP
+    sched_raw_lock();
+#endif
+    for (int i = 1; i < g_max_tasks; i++) {
+#ifdef SLOT_REUSE_UNCHECKED
+        /* CONTROL ARM: the pre-2026-09-21 test, `state == 0` alone. */
+        if (tasks[i].state == 0) { pick = i; break; }
+#else
+        if (sched_slot_reusable(i)) { pick = i; break; }
+#ifdef KSTACK_REUSE_WIDEN
+        /* Instrument: a dead slot passed over because a CPU is still on its
+         * stack. smoke-kstack-reuse requires at least one, so a clean run
+         * cannot be a run in which the window simply never opened. */
+        if (tasks[i].state == 0) {
+            kfault_str("\nKSTACK REUSE: skipped slot "); kfault_dec(i);
+            kfault_str(", a CPU is still on its kernel stack\n");
+        }
+#endif
+#endif
+    }
+#ifdef SMP
+    sched_raw_unlock();
+#endif
+    return pick;
+}
+
 int sched_kstack_collision(void)
 {
 #ifdef SMP
@@ -2532,6 +2626,10 @@ static uint64_t ksp_refuse(const char *who, int t, uint64_t ksp)
     return 0;
 }
 
+#ifdef SMP
+static uint64_t enter_cpu_idle(int cpu);   /* defined below; parks a CPU */
+#endif
+
 uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
     if (!preempt_enabled) return frame_rsp;
 #ifndef SMP
@@ -2681,9 +2779,28 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
 
     int cur = percpu_current_task[cpu];
 
+    /* ---- A TORN-DOWN TASK IS NEVER RESUMED -- HORUS-20260921-04 -------------
+     *
+     * task_teardown can run on another CPU while this one runs the task in ring
+     * 3 (SYS_KILL, a signal's default action). This path then used to treat the
+     * dead task as live: re-claim it below ("defensively"), deliver its signals,
+     * and, when nothing else was runnable, return into it -- "keep running cur".
+     * Measured on 2026-09-21: a spinner killed mid-spin was resumed on every
+     * tick for as long as the test watched (383 ticks at -smp 4), still reading
+     * and writing memory it shared with live tasks after its capabilities were
+     * gone. A dead task is now switched away from, or its CPU parked, and
+     * nothing of the task is touched: its claim, its signals and its saved
+     * context stay as teardown left them. The kill IPI (smp_kick_cpu) brings
+     * this CPU here as soon as the kill happens. */
+#ifndef DEAD_TASK_RUNS
+    int cur_dead = (cur > 0 && cur < g_max_tasks && tasks[cur].state == 0);
+#else
+    int cur_dead = 0;   /* CONTROL ARM: the pre-fix tick, which cannot tell */
+#endif
+
     /* Defensively claim the task we are currently running, so another CPU cannot
      * grab a task that was launched onto this CPU outside the timer path. */
-    if (cur > 0 && cur < g_max_tasks && task_running_cpu[cur] < 0) {
+    if (!cur_dead && cur > 0 && cur < g_max_tasks && task_running_cpu[cur] < 0) {
         task_running_cpu[cur] = cpu;
         CLAIM_NOTE(cur, cpu, "preempt_on_tick/defensive");
     }
@@ -2695,7 +2812,7 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
      * place, so both the save-and-switch and the no-switch return below carry the
      * redirected frame. Safe under the raw lock: the delivery helper takes no lock
      * and touches only tasks[cur] plus this CPU's own frame. */
-    if (ring3 && cur > 0 && cur < g_max_tasks)
+    if (!cur_dead && ring3 && cur > 0 && cur < g_max_tasks)
         deliver_pending_signal(frame_rsp, cur);
 
     int next = -1;
@@ -2708,11 +2825,25 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
             break;
         }
     }
+    if (cur_dead) {
+        /* This CPU is still on the dead task's kernel stack (its trap frame is
+         * the one being handled), so the stack is marked in flight until the
+         * ISR epilogue has left it, exactly as for any outgoing task. */
+        sched_release_outgoing(cpu, cur);
+        if (next < 0) {
+            uint64_t idle = enter_cpu_idle(cpu);   /* park; nothing else to run */
+            sched_raw_unlock();
+            KSTACK_WIDEN(cpu);
+            return idle;
+        }
+    }
+
     if (next < 0) { sched_raw_unlock(); return frame_rsp; }   /* keep running cur */
 
     /* Save + release the outgoing task if it was a real user task in ring 3. A
-     * ring-0 (idle) context is stateless and simply abandoned. */
-    if (cur > 0 && cur < g_max_tasks && ring3) {
+     * ring-0 (idle) context is stateless and simply abandoned. A dead one was
+     * released above and has no context worth saving. */
+    if (!cur_dead && cur > 0 && cur < g_max_tasks && ring3) {
         tasks[cur].saved_ksp    = frame_rsp;
         tasks[cur].runnable_ctx = 1;
         sched_release_outgoing(cpu, cur);
@@ -3493,6 +3624,14 @@ uint64_t sched_yield_switch(int cur, uint64_t frame_rsp) {
  * CPU away from the task if it happens to be the one currently running. */
 void task_teardown(int id, const struct task_exit_cause *cause) {
     if (id <= 0 || id >= g_max_tasks) return;
+    /* A dead task cannot die again (HORUS-20260921-04). A task killed while it
+     * ran on another CPU used to go on running, and its SYS_EXIT or its next
+     * fault tore it down a second time: rewriting the death record its
+     * supervisor reads (a kill re-reported as a normal exit) and waking a
+     * waiter a second time. Nothing that is dead has anything left to release. */
+#ifndef DEAD_TASK_RUNS
+    if (tasks[id].state == 0) return;
+#endif
 
     /* Record the cause BEFORE anything else can fail or switch away: this is the
      * only account of why the task died, and the paths that reach here (a ring-3
@@ -3617,6 +3756,14 @@ void task_teardown(int id, const struct task_exit_cause *cause) {
     task_running_cpu[id]  = -1;  /* release the SMP mutual-exclusion guard */
     REL_LOG(id, this_cpu(), "task_teardown");
     sched_raw_unlock();
+    /* Any OTHER CPU still running `id` is sent the kill IPI, so it stops now.
+     * preempt_on_tick, which the IPI runs, never returns into a dead task. Read
+     * after the state change is published: a CPU that picks up the task after
+     * this cannot, since it is no longer selectable. (HORUS-20260921-04) */
+#ifndef DEAD_TASK_RUNS
+    for (int c = 0; c < MAX_CPUS; c++)
+        if (c != this_cpu() && percpu_current_task[c] == id) smp_kick_cpu(c);
+#endif
 #endif
 
     /* A dead task's capabilities stop EXISTING, not merely stop counting.
@@ -3699,7 +3846,25 @@ void task_teardown(int id, const struct task_exit_cause *cause) {
  * trap frame — the same iretq mechanism the timer and blocking IPC use — and
  * return its kernel %rsp for the ISR epilogue. Returns 0 if nothing else is
  * runnable, so the caller can fall back to the kernel idle/reaper. */
+#ifdef KSTACK_REUSE_WIDEN
+/* Instrument, never shipped: hold the dying CPU on the dead task's kernel stack
+ * for a while after task_teardown has marked the slot free, so a spawn on
+ * another CPU meets the S20 window instead of missing it by microseconds. Only
+ * the first few exits, which is when the PROC_SELFTEST driver respawns into the
+ * slots its children just left, so the rest of the boot runs at normal speed.
+ * Spins BEFORE taking the scheduler lock, so it widens the window without
+ * serialising anything else. */
+static volatile int kstack_reuse_widen_left = 16;
+static void kstack_reuse_widen(void) {
+    if (__sync_fetch_and_sub(&kstack_reuse_widen_left, 1) <= 0) return;
+    for (volatile uint32_t i = 0; i < 20000u; i++) __asm__ volatile ("pause");
+}
+#endif
+
 uint64_t task_exit_switch(int dead) {
+#ifdef KSTACK_REUSE_WIDEN
+    kstack_reuse_widen();
+#endif
 #ifdef SMP
     sched_raw_lock();
     int cpu = this_cpu();
@@ -4659,5 +4824,25 @@ void reply_ep_selftest(void) {
     print("REPLY_EP_SELFTEST: PASS ");
     print_decimal((uint64_t)(g_max_tasks - 1));
     println(" private reply endpoints, none in the dynamic range");
+}
+#endif
+
+#ifndef SMP
+/* S20 slot reuse, one-CPU build. sched_slot_reusable and sched_pick_free_slot
+ * live in the SMP block above, because what they guard against is another CPU
+ * still on a dead slot's stack. With one CPU that cannot happen: the CPU that
+ * tore a task down is the one now spawning, and it left the dead stack when the
+ * teardown's ISR returned. So a dead slot is reusable, and the lowest one is the
+ * pick, exactly as before 2026-09-21. */
+int sched_slot_reusable(int id)
+{
+    return id > 0 && id < g_max_tasks && tasks[id].state == 0;
+}
+
+int sched_pick_free_slot(void)
+{
+    for (int i = 1; i < g_max_tasks; i++)
+        if (sched_slot_reusable(i)) return i;
+    return -1;
 }
 #endif

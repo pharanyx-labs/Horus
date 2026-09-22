@@ -175,6 +175,25 @@ static inline uint32_t lapic_read(uint32_t reg) {
     return lapic[reg / 4];
 }
 
+#ifdef SMP
+/* Interrupt CPU `cpu` with the kill IPI (vector 0xFC, idt.c), addressed by the
+ * LAPIC id the CPU map recorded for it. Sent by task_teardown when the task it
+ * tears down is still running on another CPU, so that CPU stops running a dead
+ * task now rather than at its next tick (HORUS-20260921-04). Fixed delivery,
+ * physical destination. Waits for the ICR to be idle first so it cannot clobber
+ * an IPI this CPU is still sending; the shootdown broadcast uses the same ICR
+ * and is only ever sent with no scheduler lock held, as is this. */
+void smp_kick_cpu(int cpu) {
+    if (cpu < 0 || cpu >= MAX_CPUS || cpu == this_cpu()) return;
+    uint8_t apic = cpu_to_apic[cpu];
+    if (apic == CPU_INDEX_NONE) return;
+    for (int i = 0; i < 100000 && (lapic_read(0x300) & (1u << 12)); i++)
+        __asm__ volatile ("pause");
+    lapic_write(0x310, (uint32_t)apic << 24);
+    lapic_write(0x300, 0x00004000u | 0xFCu);
+}
+#endif
+
 /* Enable the local APIC: clear the task-priority register (accept every vector)
  * and set the spurious-interrupt vector register (enable bit 8 + vector 0xFF).
  * Run once by the BSP and once by every AP. */

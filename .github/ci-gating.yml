@@ -327,6 +327,7 @@ required:
   - smoke-kdiag
   - smoke-kfault
   - smoke-kfault-record
+  - smoke-pagefree
   - smoke-kstack-race
   - smoke-mapphys
   - smoke-modules

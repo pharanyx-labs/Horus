@@ -42,7 +42,7 @@ reason it is rated Critical rather than a build annoyance.
 | AP trampoline link and SMP bring-up copy | close read | **F1**, fixed |
 | User-copy boundary (`user_copy`, `copy_{from,to}_user`, `paging.c`) | close read | robust |
 | User address-space construction (`create_user_pagedir`) | close read | robust |
-| Physical allocator and refcounted free (`paging.c`, `untyped.c`) | close read | **F3** (hardening), else robust |
+| Physical allocator and refcounted free (`paging.c`, `untyped.c`) | close read | **F3** (hardening, closed 2026-09-21), else robust |
 | Capability core and FFI (`rust/src/capability.rs`, `capability.c`) | close read | robust |
 | Revocation subtree, and the §1.14 stdio-pipe root | close read | §1.14 confirmed still accurate |
 | Syscall ABI and dispatch (`syscall.c`, `include/syscall.h`) | close read | robust |
@@ -111,7 +111,11 @@ and at 0x8B7000 on Void, while `.bss` was 0x6E3000 on both. The checker also tie
 this finding also turned up **HORUS-20260919-02**, a verified boot module that could change after
 its hash was taken, fixed in PR #402 (`LIMITATIONS.md` 1.15).
 
-### 3.3 The physical free path is safe only by its callers' discipline, *Low*, open, **[F3]**
+### 3.3 The physical free path is safe only by its callers' discipline, *Low*, closed 2026-09-22, **[F3]**
+
+**Closed** as **S102** (`LIMITATIONS.md` 2.5a): the free path now refuses any frame that is not out on
+loan, tracked by a separate bitmap, because the refcount check recommended below cannot tell a
+first free from a second (tables are freed at count one, leaves at zero).
 
 `free_user_physical_page` bounds the refcount index it clears, but pushes the frame onto
 `free_page_stack` guarded only by the stack not being full: no range check on the value, no
@@ -209,8 +213,8 @@ claim.
   had come to depend on a host toolchain default, with a latent low-memory copy behind it. It is
   fixed, gated, and the gate is falsified in both directions.
 - Every security boundary read closely, the user-copy path, the capability core, revocation, the
-  ELF loader, held to the standard the rest of the tree sets. F3, the one finding still open, is
-  defence-in-depth, not a hole; F2 is closed.
+  ELF loader, held to the standard the rest of the tree sets. F2 and F3 are both closed; F3 was
+  defence-in-depth, not a hole.
 - The build and CI TCB is in good order: actions pinned, tokens minimal, no external Rust
   dependency, newlib hash-anchored.
 - The coverage is partial and section 2 says where. IPC internals, storage-at-rest, measured boot,

@@ -860,6 +860,12 @@ void kernel_main(uint32_t mb_info) {
      * up. */
     nzcow_selftest();
 #endif
+#ifdef PAGEFREE_SELFTEST
+    /* Boot continues; make smoke-pagefree asserts on the marker. The page free
+     * path refuses a double free, an address outside the pool and a frame the
+     * pool never lends (S102). Needs only the page pool paging_init set up. */
+    pagefree_selftest();
+#endif
     fpu_init_template();   /* the x87/SSE image every new task starts from */
     /* Enumerate delegatable hardware BEFORE cap_init: the primordial CAP_IO_DEVICE
      * capabilities name entries in this table by index, so the table has to exist

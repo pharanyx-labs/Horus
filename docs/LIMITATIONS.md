@@ -1512,9 +1512,22 @@ would have needed a cross-task *observability* capability to learn about its **o
 capability that names the object is the entitlement to know how big it is, so the authority is
 that capability.
 
-### 2.5a The physical free path is safe by its callers, not by construction (audit F3) **[HORUS-20260919-01]**
+### 2.5a ~~The physical free path is safe by its callers, not by construction~~ (**FIXED 2026-09-22**, `SECURITY.md` S102) (audit F3) **[HORUS-20260919-01]**
 
-*Added 2026-09-19.* `free_user_physical_page` (`src/kernel/paging.c`) bounds the refcount index it
+*Added 2026-09-19; fixed 2026-09-22.* **Closed.** `free_user_physical_page` now accepts a frame only if
+it is out on loan: `page_on_loan` in `src/kernel/paging.c` holds one bit per pool frame, set by
+`alloc_user_physical_page` and cleared by the free. A double free, an address outside the pool, an
+unaligned one, and a frame the pool never lends (the reserve window, a boot module's frames) are
+each refused without touching the free stack, and reported to the klog. The free path takes the
+full 64-bit address: its callers used to cast a page-table address to 32 bits, and an address above
+4 GiB truncated that way could alias a frame on loan and pass the guard. The fix recommended below
+(refuse a frame "already at count zero") could not have worked: a leaf is freed when its count
+reaches zero and a table at count one, so the count cannot tell a first free from a second. That
+is why the state is separate, at 16 KiB of `.bss`. `make smoke-pagefree` checks each refusal and a
+real alloc and free, and its control arm, `PAGE_FREE_UNGUARDED=1`, is caught by name. The account
+of the finding follows.
+
+*As found:* `free_user_physical_page` (`src/kernel/paging.c`) bounds the refcount index it
 clears, but pushes the frame onto `free_page_stack` guarded only by the stack not being full: no
 range check on the value, no double-free check. It is safe today because every caller frees a leaf
 only through `user_leaf_release`, which acts on an exact refcount of zero, and frees page-table
@@ -2603,11 +2616,11 @@ the present cost is affordable and is not what blocks anything.
 
 **The whole kernel image is itself a ceiling, and one static object dominates it (audit F2,
 closed 2026-09-19).** The image must end below `USER_PHYS_BASE` (16 MiB), enforced by the
-`linker64.ld` ASSERT. `.bss` is budgeted at **7,452 KiB** (`.github/image-budget.yml`), and
+`linker64.ld` ASSERT. `.bss` is budgeted at **7,468 KiB** (`.github/image-budget.yml`), and
 `argon2_scratch` alone is 4,096 KiB of it: the argon2 `m_cost` (`ARGON2_M_COST_KIB = 4096`), a
 deliberate memory-hardness parameter that must not be trimmed to buy room. The whole image ends
-about 6.9 MiB below the line: 0x91B000 on a Void build on 2026-09-21, after `MAX_CPUS` went from
-four to eight and took 400 KiB of it (CI's compiler has measured about 12 KiB lower, because the
+about 6.9 MiB below the line: 0x91F000 on a Void build on 2026-09-22, after `MAX_CPUS` went from
+four to eight and took 400 KiB of it and the S102 on-loan bitmap took 16 KiB (CI's compiler has measured about 12 KiB lower, because the
 code differs between compilers and `.bss` does not). Raising `MAX_TASKS`, `MAX_CPUS`,
 `BLOCKS_PER_DISK` or the argon2 cost spends that room, and GRUB stages the boot modules in the same room (§1.15).
 
@@ -3129,9 +3142,9 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 ~~Which tests gate a merge is reconciled by hand~~ (**FIXED 2026-09-21**) **[C-6]**
 
-**Closed.** `.github/workflows/ci.yml` defines **130** jobs, `codeql.yml` one more and
-`ruleset-audit.yml` one more: **132** across the three, producing **135** status-check contexts.
-**131** of them gate a merge, and ruleset `21815299` requires the two contexts that carry them
+**Closed.** `.github/workflows/ci.yml` defines **131** jobs, `codeql.yml` one more and
+`ruleset-audit.yml` one more: **133** across the three, producing **136** status-check contexts.
+**132** of them gate a merge, and ruleset `21815299` requires the two contexts that carry them
 all: **All required gates passed** (the `gates` job, which needs every required ci.yml job and
 passes only if each one succeeded, skipped and cancelled counting as failures) and CodeQL's
 `analyze`, which lives in its own workflow. The `ci-gating` job proves `gates` needs exactly the
@@ -3187,7 +3200,7 @@ the right name with the wrong verdict. Step-level `continue-on-error` is untouch
 allowed; it lets one step be advisory while the job's own status still reports the truth, which
 is how the `security` job keeps its scanners advisory without becoming unfailable itself.
 
-That set is **131 gating contexts and 4 reasoned exemptions**: `fuzz` (a 30-second
+That set is **132 gating contexts and 4 reasoned exemptions**: `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request),
 `smoke-smp-kvm` (a second run, under KVM, of gates already required under TCG, until its KVM pass rate is measured), and

@@ -292,7 +292,15 @@
 # ship kernel. In a fixed kernel it holds by construction; it exists so the
 # shared-park defect is caught on one CPU on the first park, which is what makes
 # smoke-kstack-park-control deterministic (it failed 3 runs in 31 before).
-core_budget_loc: 10369
+# RAISED 2026-09-22, 10369 -> 10450 (+81), for S102 (HORUS-20260919-01): a
+# physical frame is never on the free list twice. 78 are in paging.c: the
+# page_on_loan bitmap and its accessors, pool_frame_index, the refusal in
+# free_user_physical_page (which now takes the full 64-bit address, since a
+# truncated one above 4 GiB could alias a frame on loan), and pagefree_selftest,
+# compiled only under PAGEFREE_SELFTEST (its failure line is assembled
+# and printed in one write, docs/LIMITATIONS.md 2.6a). 3 are in main.c and call the self-test.
+# The free list is ring 0 by nature: it is the kernel's own allocator.
+core_budget_loc: 10450
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

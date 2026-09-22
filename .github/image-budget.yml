@@ -38,4 +38,10 @@
 #   IST fault stacks per AP), ap_tss 28 -> 65 KiB (a TSS with its 8 KiB I/O
 #   bitmap per AP), plus apic_to_cpu[256], cpu_to_apic[8] and the MADT id buffer
 #   (520 bytes). See docs/LIMITATIONS.md 3.3 for why the ceiling is eight.
-bss_bytes: 7630848
+# 2026-09-22: 7,647,232 bytes (+16,384), for S102 (HORUS-20260919-01):
+#   page_on_loan in src/kernel/paging.c, one bit for each of USER_PHYS_PAGES
+#   frames, so free_user_physical_page can refuse a frame that is not out on
+#   loan. Chosen over a sentinel value in page_refcounts, which costs no bytes
+#   but overloads a table the Kani proofs in rust/src/memory.rs reason about.
+#   The 4-byte refusal counter beside it fitted in existing padding.
+bss_bytes: 7647232

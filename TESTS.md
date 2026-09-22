@@ -741,6 +741,8 @@ would read at 3am.
 | `smoke-cow` | Copy-on-write breaks correctly for the shared zero page. |
 | `smoke-heap64` | The heap syscalls **and the pager's region gate** are 64-bit clean (**[I-2]**, roadmap 1.5). Builds `USER_HEAP_HIGH_BASE=1`, which places every heap at **8 GiB** (above the 4 GiB line, below `USER_IMAGE_ASLR_BASE`) so the truncation is *reachable* instead of latent, then runs `captest`, which calls `sbrk`/`brk` directly and writes to the page it is handed. **Control arm:** built from a tree without the fix, the same target reports `CAPTEST: FAIL (sbrk-grow-failed)`. Verified in both directions before the target existed. |
 | `smoke-nzcow` | The generic (non-zero) COW break is correct, added after a real bug in that path. Since 2026-08-27 it also asserts the break is **refused** on a page belonging to a kernel object (**S38**); arm `smoke-nzcow-arena-control`. |
+| `smoke-pagefree` | **The page free path fails closed on its own**, property **S102** (**[HORUS-20260919-01]**). At boot, `PAGEFREE_SELFTEST=1` frees a real frame (accepted), then the same frame again, an address below the pool, an unaligned address, a reserve-window frame, and an address above 4 GiB that truncates to a frame held on loan; each must be refused with the free stack unmoved and the refusal count up by one, so a free that did nothing for some other reason cannot pass. A real alloc and free come last, so a guard that refused everything fails too. |
+| `smoke-pagefree-control` | Control arm. `PAGE_FREE_UNGUARDED=1` removes the guard, and the self-test must report `FAIL double-free`. `smoke-pagefree` goes red on this build. |
 | `smoke-stackguard` | The stack canary is re-seeded from the CSPRNG at boot and is no longer the compile-time default. |
 | `smoke-aslr` | Image, heap, and stack bases are randomised. |
 | `smoke-e820` | The physical pool is sized from the multiboot2 memory map, not a hardcoded fallback. |
@@ -1587,10 +1589,10 @@ as a reproduction.
 
 ## CI
 
-`.github/workflows/ci.yml` defines **130** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **131** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below: **132** jobs, **135** contexts. Counts from `tools/check_ci_gating.py`, which prints
+below: **133** jobs, **136** contexts. Counts from `tools/check_ci_gating.py`, which prints
 them; do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20, a backstop, not a budget. The default is
@@ -1655,7 +1657,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The set is **131 gating contexts and 4 reasoned exemptions** (read off
+The set is **132 gating contexts and 4 reasoned exemptions** (read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence): `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
@@ -2241,7 +2243,7 @@ three ways: a planted phrasing in a `.c` file is caught with file and line; the 
 phrasing inside a quotation stays exempt, so a comment can record the wrong thing while
 correcting it.
 
-`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 103 properties
+`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 104 properties
 name a witness that resolves to a make target or a CI job.
 
 | Rule | Rejects |

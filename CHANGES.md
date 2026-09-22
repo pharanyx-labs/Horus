@@ -648,6 +648,22 @@ in this file.
   control arm (`WAIT_TCB_UNCHECKED=1`) is caught by name, with `smoke-proc` red on that build.
   `docs/SYSCALLS.md` also named `CAP_USER` / `CAP_AUDIT` as the authority for
   `SYS_GET_TASK_INFO`, a month after it became `CAP_DEBUG`; corrected.
+- **The page free path now refuses a frame it did not lend** (`SECURITY.md` **S102**,
+  **[HORUS-20260919-01]**, audit F3). `free_user_physical_page` pushed whatever it was handed onto
+  the free stack, so a caller that freed a frame twice would have made the pool hand it to two
+  owners; nothing did, but only because every caller remembered. The audit's suggested guard (refuse
+  a frame already at count zero) could not have worked, since page tables are freed at count one and
+  leaves at zero. The pool now keeps one bit per frame, set when a frame is handed out and cleared
+  when it comes back, and a free is accepted only for a frame that is out on loan. A double free, an
+  address outside the pool and a reserve or boot-module frame are refused and reported to the klog.
+  The free path now takes the full 64-bit address: every caller cast it to 32 bits, so an address
+  above 4 GiB could have been truncated onto a frame on loan and passed the guard; the self-test
+  checks exactly that alias, and a truncating build fails it by name.
+  This costs 16 KiB of `.bss`, recorded in `.github/image-budget.yml`. New gate `make
+  smoke-pagefree`, with a control arm (`PAGE_FREE_UNGUARDED=1`) caught by name. Before landing it,
+  six gates (`smoke`, `smoke-proc`, `smoke-cow`, `smoke-captest`, `smoke-fs`, `smoke-nzcow`) were
+  run with the refusal routed to the UART: none refused a single frame, so no existing caller
+  depended on the old behaviour.
 
 - **Five documents stated the Kani harness count and no two agreed.** `SECURITY.md` **S31** said
   *"Fifteen"* harnesses and *"the four excused"*; `TESTS.md` said eleven; `docs/LIMITATIONS.md`

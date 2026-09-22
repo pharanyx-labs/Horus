@@ -1622,6 +1622,12 @@ reproducing (the CI probe of 2026-09-21, #419), so an arm's proof that it can fa
 usable `/dev/kvm`, so the job cannot report a TCG run as a KVM one. It is advisory until its pass
 rate under KVM has been measured on `main`; KVM gave no net speed-up (218 runner-minutes against
 213), so the suite as a whole stays on TCG.
+Every `make` in `ci.yml` runs with `MAKEFLAGS=-j4`, the four cores of a standard runner, because
+each build-and-boot step does `make clean` and a full build, which had run on one core. That it
+changes nothing that is built is checked, not assumed: the `reproducible` job builds once serially
+and once in parallel and requires the same `kernel.elf` (which embeds every userspace binary), so
+a Makefile race that altered an artifact goes red there. The `security` job stays serial, since
+its make targets are scanners whose logs `-j` would interleave.
 
 All third-party actions are pinned to full commit SHAs. Workflow `permissions:` blocks are
 least-privilege. There are no self-hosted runners.

@@ -148,8 +148,22 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# -accel tcg: GitHub runners have no /dev/kvm; force software emulation so the
-#   run is deterministic instead of depending on host virtualization.
+# -accel: TCG, software emulation, unless QEMU_ACCEL=kvm. TCG is what every
+#   gate's evidence was measured under, and its timing is what the race control
+#   arms reproduce against: under KVM three of them stopped reproducing (the CI
+#   probe of 2026-09-21). QEMU_ACCEL=kvm exists for the one CI job that re-runs
+#   the SMP race BASE gates under true vCPU parallelism as a second detector,
+#   which is how HORUS-20260921-03 was found. Anything other than tcg or kvm is
+#   refused, and kvm without a usable /dev/kvm fails here rather than letting
+#   QEMU or a fallback quietly run the gate under TCG while the job says KVM.
+QEMU_ACCEL="${QEMU_ACCEL:-tcg}"
+case "$QEMU_ACCEL" in
+    tcg) ;;
+    kvm) if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
+             echo "SMOKE FAIL: QEMU_ACCEL=kvm but /dev/kvm is not usable" >&2; exit 1
+         fi ;;
+    *)   echo "SMOKE FAIL: QEMU_ACCEL must be tcg or kvm, not '$QEMU_ACCEL'" >&2; exit 1 ;;
+esac
 # -no-reboot: a triple fault halts QEMU instead of looping, so we detect it.
 # isa-debug-exit: present for parity with `make run`; not relied on here.
 # Optional persistent ATA disk (SMOKE_DISK=<image>): attaches it as the primary
@@ -325,7 +339,7 @@ if [ "${TPM:-0}" = 1 ]; then
 fi
 
 qemu-system-x86_64 \
-    -m 512M -cpu "${QEMU_CPU:-qemu64,+aes,+rdrand,+smep,+smap,+umip}" -accel tcg \
+    -m 512M -cpu "${QEMU_CPU:-qemu64,+aes,+rdrand,+smep,+smap,+umip}" -accel "$QEMU_ACCEL" \
     -display none -no-reboot -no-shutdown \
     -device isa-debug-exit,iobase=0x604,iosize=0x04 \
     -serial file:"$LOG" -serial none -serial file:"$KDIAG" $NET_ARG \

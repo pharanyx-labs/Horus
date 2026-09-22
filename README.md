@@ -28,8 +28,10 @@ measured into a TPM, and the volume encryption key is sealed against those measu
 > up in [`docs/investigations/`](docs/investigations/), including the ones this project got
 > wrong for days before getting right.
 >
-> Notable open findings: **[C-5]** (no independent review), **[C-6]** (the branch ruleset is
-> reconciled to the checked-in gating decision by hand, so it lags a merge). **[G-13]** closed on
+> Notable open finding: **[C-5]** (no independent review). **[C-6]** closed on 2026-09-21: the
+> branch ruleset requires one aggregated check that is proved, in each PR, to cover every job the
+> checked-in gating decision marks required, so a new gate no longer waits on a hand sync.
+> **[G-13]** closed on
 > 2026-09-03: the installer's format was bounded by a total timeout, which cannot separate a slow
 > disk from a wedge at any value; it is bounded by a stall now, and a 12-IOPS disk reproduces the
 > whole CI signature including the normal boot step that was used to rule slowness out.
@@ -90,13 +92,13 @@ syscall number without adding its table entry.
 by building twice and diffing; `horus.iso` is not, and `docs/LIMITATIONS.md` §5.3a says why.
 Boot-module integrity is tested by *corrupting a module* and asserting rejection. Measured boot
 is tested by tampering and asserting the PCRs diverge. Capability revocation carries Kani
-proofs. `.github/workflows/ci.yml` runs 119 jobs, most of them QEMU integration self-tests.
+proofs. `.github/workflows/ci.yml` runs 131 jobs, most of them QEMU integration self-tests.
 Which of them may block a merge is a decision recorded in `.github/ci-gating.yml` and enforced
 by the `ci-gating` job: every job must be listed as gating, or exempted with a written reason
-(**[C-6]**). The intended set is 121 of its 124 contexts, including every security test; the
-ruleset is reconciled to it by hand and lags whenever a gate is added. Read the live count from
-`gh api repos/pharanyx-labs/Horus/rulesets/21815299`, not from this sentence; the ruleset is
-reconciled by hand, so only the API knows.
+(**[C-6]**). The gating set is 132 of its 136 contexts, including every security test. The
+branch ruleset requires just two: an aggregated check that needs every gating `ci.yml` job and
+passes only if all of them succeeded, and CodeQL. The `ci-gating` job proves the aggregate covers
+exactly the gating set, so a new gate blocks merges from the PR that adds it.
 
 ---
 
@@ -141,7 +143,7 @@ per item.
 | **Capabilities** | 18 object types, rights masking on delegation, system-wide subtree revocation with a serial-keyed generation backstop; kernel objects (cspaces, endpoints, notifications and memory frames) retyped out of untyped memory a task must hold authority over |
 | **Processes** | `spawn` from an embedded or caller-supplied image, exec-in-place, `fork` with a copy-on-write address space and a capability space inherited as *derived* copies, `exec` that replaces the image and touches no capability, `wait` reporting how a task died, signals with handlers and an alternate stack. **No** process groups, job control or `/proc` |
 | **Scheduling** | Preemptive (100 Hz PIT / per-CPU LAPIC), full trap-frame context switches, microarchitectural flush on task switch |
-| **SMP** | Default on; ACPI MADT enumeration, INIT-SIPI-SIPI bringup, shared runnable pool, acknowledged TLB-shootdown IPIs, SMT siblings parked in software |
+| **SMP** | Default on, up to 8 CPUs (and fewer run fine); ACPI MADT enumeration with CPU indices independent of LAPIC ids, INIT-SIPI-SIPI bringup, shared runnable pool, acknowledged TLB-shootdown IPIs, SMT siblings parked in software |
 | **IPC** | Capability-addressed synchronous send/recv/call/reply over bounded-FIFO endpoints, a blocking receive that sleeps on an empty queue, one-shot reply capabilities, async notifications, per-task private reply endpoints, bounded byte-stream pipes |
 | **Filesystem** | `fs_server` in ring 3 over an AEAD-encrypted kernel object store; POSIX rwx against kernel-attested uid/gid; write-ahead journal and mount-time fsck; double-indirect large files; a per-task VFS mount table routing paths to per-mount capabilities |
 | **Console** | `console_server` in ring 3 owning the UART, the VGA framebuffer **and the PS/2 keyboard**; raw terminal mode (termios + winsize). The keyboard is read through the port grant the server already held (the platform device declares `0x60`/`0x64` beside COM1), so it cost no new capability; the kernel stops draining the controller at the same moment it stops driving the screen (**S89**, `smoke-keyboard`). A machine with **no serial port** is covered too, since 2026-09-12: the serial branch ahead of the keyboard poll asked the COM1 line-status register for a byte without first asking whether a UART is there to answer, and a floating `0xFF` says yes forever (`smoke-keyboard-noserial`) |
@@ -272,8 +274,9 @@ someone rely on them.
 
 `make reproducible-build` builds **once** and records `sha256sum` for `kernel.elf` and
 `horus.iso` in `.build.sha`. The double-build-and-diff that actually establishes the property
-lives only in the `reproducible` CI job, which is a required check; locally, run the target
-twice and compare the `kernel.elf` line. Compare that line and not the file: **`horus.iso` is not
+lives only in the `reproducible` CI job, which is a required check and builds once serially and
+once in parallel, the way every other CI job builds; locally, run the target twice and compare
+the `kernel.elf` line. Compare that line and not the file: **`horus.iso` is not
 byte-reproducible**, because grub-mkrescue stamps a wall-clock UUID into every image it builds.
 The ISO's *payload*; the kernel, every boot module, `grub.cfg`, is identical across builds; four
 grub-generated objects are not. See `docs/LIMITATIONS.md` §5.3a.
@@ -311,7 +314,7 @@ Horus's assurance rests on its tests, so they are treated as first-class. Three 
 
 1. **Rust unit tests and Kani proofs**, `cargo test`, plus formal proofs that revocation
    hits exactly the target's derivation subtree.
-2. **QEMU integration self-tests**, the bulk of CI's 119 jobs; each boots a purpose-built
+2. **QEMU integration self-tests**, the bulk of CI's 131 jobs; each boots a purpose-built
    kernel configuration and asserts a marker on the serial console. These cover W^X,
    capability refusals, COW, TLB shootdown, preemption, signals, SMEP/SMAP, measured boot,
    untyped retyping, blocking receive, and more.

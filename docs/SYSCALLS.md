@@ -354,8 +354,8 @@ because it returns an *address* and newlib's `_sbrk` compares against `(void *)(
 |---|---|---|---|
 | 0 | `SYS_YIELD` | n/a | none (self) |
 | 2 | `SYS_EXIT` | n/a | none (self) |
-| 17 | `SYS_WAIT` | `tid` | none (self) |
-| 18 | `SYS_GET_TASK_INFO` | `tid`, `struct task_info *` | self; or `CAP_USER` / `CAP_AUDIT` |
+| 17 | `SYS_WAIT` | `tid` | `CAP_TCB` naming `tid`: READ (**S99**). No `CAP_USER` fallback |
+| 18 | `SYS_GET_TASK_INFO` | `tid`, `struct task_info *` | self; or `CAP_DEBUG` at `CAPSLOT_DEBUG`: READ (**S32**) |
 | 19 | `SYS_EXEC` | `load_base`, `entry` | **retired 2026-09-03** (**S79**); compiles only under `LEGACY_SYSCALLS_PRESENT=1` |
 | 20 | `SYS_GETPID` | n/a | none (self-authorising) |
 | 28 | `SYS_SPAWN` | n/a | `CAP_UNTYPED` at `CAPSLOT_UNTYPED`: WRITE (**S57**) |

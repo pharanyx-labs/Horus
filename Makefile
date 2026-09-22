@@ -90,7 +90,7 @@ RUST_TARGET ?= x86_64-unknown-none
 # as CLAUDE.md already requires for that table.
 DEFECT_FLAGS = \
 	IRQ_LEGACY_GLOBAL_LOCK USER_HEAP_HIGH_BASE \
-	KFAULT_INJECT KFAULT_LEGACY_PRINTLN PAGE_FREE_UNGUARDED \
+	KFAULT_INJECT KFAULT_LEGACY_PRINTLN KFAULT_RECORD_SELFTEST EXIT_RECORD_KERNEL_RIP EXIT_RECORD_STALE_ON_REUSE PAGE_FREE_UNGUARDED \
 	KDIAG_LEGACY_COM1 KDIAG_SPLIT_WIDEN KDIAG_PORTS_GRANTABLE KDIAG_NOISE KDIAG_PROBE KDIAG_RING3_PROBE \
 	PS2_PROBE \
 	INSTALLER_NO_BACK \
@@ -115,7 +115,7 @@ DEFECT_FLAGS = \
 	MEASURED_BOOT_REQUIRED MEASURED_VOLUME_EXEMPT_NONE MEASURED_VOLUME_UNCHECKED \
 	LEGACY_SYSCALLS_PRESENT CAP_ENUMERATE_UNGATED CLOCK_TSC_RESOLUTION \
 	IMAGE_HDR_WRITER_SKEW \
-	TASKINFO_WIDE_AUTHORITY GETLINE_SLOT3_FALLBACK CAP_LOOKUP_ASSERT_HANG \
+	TASKINFO_WIDE_AUTHORITY WAIT_TCB_UNCHECKED TCB_GENERATION_UNCHECKED APIC_ID_IS_CPU_INDEX SMT_SIBLING_BY_INDEX SLOT_REUSE_UNCHECKED KSTACK_REUSE_WIDEN DEAD_TASK_RUNS GETLINE_SLOT3_FALLBACK CAP_LOOKUP_ASSERT_HANG \
 	IOMMU_NO_FRAME_TEARDOWN IOMMU_NO_TASK_TEARDOWN \
 	IO_DEVICE_OBJECT_UNCHECKED IO_DEVICE_PORTS_GLOBAL IO_DEVICE_IRQ_UNCHECKED \
 	IO_DEVICE_CAP_UNCHECKED NET_NO_BUSMASTER NET_NO_DECODE \
@@ -1592,6 +1592,57 @@ endif
 TASKINFO_WIDE_AUTHORITY ?= 0
 ifeq ($(TASKINFO_WIDE_AUTHORITY),1)
 CFLAGS += -DTASKINFO_WIDE_AUTHORITY
+endif
+
+# WAIT_TCB_UNCHECKED=1 restores the pre-2026-09-21 SYS_WAIT, which tested no
+# authority: any task could wait on any tid and collect its exit record. Control
+# arm for smoke-proc; never shipped.
+WAIT_TCB_UNCHECKED ?= 0
+ifeq ($(WAIT_TCB_UNCHECKED),1)
+CFLAGS += -DWAIT_TCB_UNCHECKED
+endif
+
+# TCB_GENERATION_UNCHECKED=1 restores the pre-2026-09-21 CAP_TCB comparison, by
+# slot number alone, so a capability for a dead task names whatever reused its
+# slot (HORUS-20260921-02). Control arm for smoke-proc; never shipped.
+TCB_GENERATION_UNCHECKED ?= 0
+ifeq ($(TCB_GENERATION_UNCHECKED),1)
+CFLAGS += -DTCB_GENERATION_UNCHECKED
+endif
+
+# APIC_ID_IS_CPU_INDEX=1 restores the pre-2026-09-21 CPU numbering (index ==
+# LAPIC id), and SMT_SIBLING_BY_INDEX=1 decides SMT sibling-ness from the dense
+# index. Control arms for smoke-smp-topology; never shipped.
+APIC_ID_IS_CPU_INDEX ?= 0
+ifeq ($(APIC_ID_IS_CPU_INDEX),1)
+CFLAGS += -DAPIC_ID_IS_CPU_INDEX
+endif
+SMT_SIBLING_BY_INDEX ?= 0
+ifeq ($(SMT_SIBLING_BY_INDEX),1)
+CFLAGS += -DSMT_SIBLING_BY_INDEX
+endif
+
+# SLOT_REUSE_UNCHECKED=1 restores slot selection by `state == 0` alone, so a
+# spawn can reuse a slot whose kernel stack a CPU is still on (S20). The control
+# arm for smoke-kstack-reuse; never shipped. KSTACK_REUSE_WIDEN=1 is that gate's
+# instrument: it holds a dying CPU on the dead stack so the window is met, and
+# logs every slot the picker skips for it.
+SLOT_REUSE_UNCHECKED ?= 0
+ifeq ($(SLOT_REUSE_UNCHECKED),1)
+CFLAGS += -DSLOT_REUSE_UNCHECKED
+endif
+KSTACK_REUSE_WIDEN ?= 0
+ifeq ($(KSTACK_REUSE_WIDEN),1)
+CFLAGS += -DKSTACK_REUSE_WIDEN
+endif
+
+# DEAD_TASK_RUNS=1 restores the pre-2026-09-21 handling of a task torn down by
+# another CPU while it runs (HORUS-20260921-04): the tick returns into it, its
+# syscalls are dispatched, it can be torn down twice, and no kill IPI is sent.
+# Control arm for smoke-proc's killed-task phase; never shipped.
+DEAD_TASK_RUNS ?= 0
+ifeq ($(DEAD_TASK_RUNS),1)
+CFLAGS += -DDEAD_TASK_RUNS
 endif
 
 CLOCK_TSC_RESOLUTION ?= 0
@@ -3387,7 +3438,36 @@ PROC_SELFTEST ?= 0
 ifeq ($(PROC_SELFTEST),1)
 CFLAGS  += -DPROC_SELFTEST
 ASFLAGS += -DPROC_SELFTEST
-PROC_SELFTEST_DEP = userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/preempttest.bin
+PROC_SELFTEST_DEP = userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/preempttest.bin
+endif
+
+# KFAULT_RECORD_SELFTEST=1 (with PROC_SELFTEST=1) is the witness for
+# HORUS-20260920-01, docs/LIMITATIONS.md 1.16. It compiles a hook into h_yield
+# that lets a task named "kfaulter" make the kernel read an address of its
+# choosing at CPL 0, and appends a phase to proctest that reads the resulting
+# exit record from ring 3 and requires it to carry no kernel address. A hook that
+# lets ring 3 steer a kernel read is instrumentation, never a shipping config, so
+# it is in DEFECT_FLAGS and the kernel announces it at boot.
+KFAULT_RECORD_SELFTEST ?= 0
+ifeq ($(KFAULT_RECORD_SELFTEST),1)
+CFLAGS  += -DKFAULT_RECORD_SELFTEST
+endif
+
+# EXIT_RECORD_KERNEL_RIP=1 puts the defect back: the exit record takes a
+# supervisor fault's rip and a kernel-half fault address verbatim, as it did
+# before 2026-09-21. The control arm for smoke-kfault-record. Never a shipping
+# config.
+EXIT_RECORD_KERNEL_RIP ?= 0
+ifeq ($(EXIT_RECORD_KERNEL_RIP),1)
+CFLAGS  += -DEXIT_RECORD_KERNEL_RIP
+endif
+
+# EXIT_RECORD_STALE_ON_REUSE=1 puts HORUS-20260920-02 back: create_task leaves a
+# reused slot's exit_info and wait_exit_info as the previous occupant left them.
+# The control arm for smoke-proc's slot-reuse phase. Never a shipping config.
+EXIT_RECORD_STALE_ON_REUSE ?= 0
+ifeq ($(EXIT_RECORD_STALE_ON_REUSE),1)
+CFLAGS  += -DEXIT_RECORD_STALE_ON_REUSE
 endif
 
 # SMP brings up the application processors (multi-core) at boot: the BSP reads the
@@ -3585,7 +3665,7 @@ CFLAGS  += -DNZCOW_SELFTEST
 endif
 
 # PAGEFREE_SELFTEST=1 makes kernel_main (after paging_init) check that
-# free_user_physical_page fails closed (S99, HORUS-20260919-01): a double free,
+# free_user_physical_page fails closed (S102, HORUS-20260919-01): a double free,
 # an address below the pool, an unaligned one and a reserve-window frame are each
 # refused without moving the free stack, and a real alloc/free still works.
 # Prints PAGEFREE_SELFTEST: PASS/FAIL; make smoke-pagefree asserts on it.
@@ -3805,7 +3885,7 @@ src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin
 # defect reproduces on a host whose assembler would not emit it. A control arm,
 # never a build option: `smoke-ap-trampoline-control` requires it to be refused.
 AP_TRAMPOLINE_FLAT_LINK ?= 0
-AP_TRAMPOLINE_ASFLAGS = -m32 -ffreestanding -fno-pic -x assembler-with-cpp -c
+AP_TRAMPOLINE_ASFLAGS = -m32 -ffreestanding -fno-pic -x assembler-with-cpp -c -I src/include
 ifeq ($(AP_TRAMPOLINE_FLAT_LINK),1)
 AP_TRAMPOLINE_ASFLAGS += -Wa,-mx86-used-note=yes
 AP_TRAMPOLINE_LINK = $(LD) -m elf_i386 -Ttext=0x8000 --oformat binary
@@ -4203,6 +4283,11 @@ USERSPACE_CFLAGS += -DINSTALLER_NO_CONFIRM
 endif
 ifeq ($(SERIAL_PRESENCE_UNCHECKED),1)
 USERSPACE_CFLAGS += -DSERIAL_PRESENCE_UNCHECKED
+endif
+# proctest's kfaulter phase exists only in this build (smoke-kfault-record), so
+# userspace must be told; applied here for the reason the TUI flags above are.
+ifeq ($(KFAULT_RECORD_SELFTEST),1)
+USERSPACE_CFLAGS += -DKFAULT_RECORD_SELFTEST
 endif
 # CONSOLE_BACKSPACE_NO_ERASE=1 restores console_server's screen output as it
 # stood before 2026-09-12: fb_putc and vga_putc had no case for 0x08, so a
@@ -4913,7 +4998,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.stripped.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -5189,7 +5274,7 @@ smoke-nzcow:
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) REQUIRE_MARKER='NZCOW_SELFTEST: PASS' \
 		FAIL_MARKER='NZCOW_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
-# Does the page free path fail closed on its own? (S99, HORUS-20260919-01,
+# Does the page free path fail closed on its own? (S102, HORUS-20260919-01,
 # docs/LIMITATIONS.md 2.5a.) Before the on-loan bitmap, a free was safe only
 # because every caller remembered to free once; this proves a caller that did
 # not would be refused, and that a real free still works.
@@ -7245,11 +7330,14 @@ smoke-fs-large:
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='BIGFILE_SELFTEST: PASS' \
 		FAIL_MARKER='BIGFILE_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
-# Build with the gated SMP self-test, boot headless under -smp 4, and require the
-# in-kernel test to report PASS -- runtime proof that the application processors
-# come online and concurrently run scheduled user tasks. SMP_CPUS drives QEMU's
-# core count.
-SMP_CPUS ?= 4
+# Build with the gated SMP self-test, boot headless under -smp $(SMP_CPUS), and
+# require the in-kernel test to report PASS -- runtime proof that the application
+# processors come online and every one of them runs scheduled user tasks.
+# SMP_CPUS drives QEMU's core count for this and every gate that does not pin its
+# own: 8 since 2026-09-21, the kernel's MAX_CPUS, so `make run` and the SMP gates
+# exercise the ceiling by default. Gates whose rates were measured at another
+# count say so and pin it (SMP_CPUS=4 in their own recipe).
+SMP_CPUS ?= 8
 .PHONY: smoke-smp
 smoke-smp:
 	@$(MAKE) --no-print-directory clean
@@ -7257,6 +7345,68 @@ smoke-smp:
 	@$(MAKE) --no-print-directory SMP_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=$(SMP_CPUS) REQUIRE_MARKER='SMP_SELFTEST: PASS' \
 		FAIL_MARKER='SMP_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
+
+# The SMP race BASE gates again, under KVM: a second environment for gates whose
+# evidence and control arms live under TCG (TESTS.md, "CI"). Needs a usable
+# /dev/kvm; QEMU_ACCEL=kvm makes the harness refuse to run without one rather
+# than quietly using TCG. Each gate is run as it is under TCG, in turn, and the
+# first failure stops the target. CI runs this as the advisory smoke-smp-kvm
+# job; locally it needs VT-x or AMD-V enabled and the kvm module loaded.
+SMP_KVM_GATES = smoke-smp smoke-smp-topology smoke-kstack-reuse smoke-switch-commit \
+	smoke-exec-reenter smoke-cr3-reclaim smoke-kstack-race smoke-session-smp \
+	smoke-killed-task
+.PHONY: smoke-smp-kvm
+smoke-smp-kvm:
+	@set -e; for g in $(SMP_KVM_GATES); do \
+		echo "=== $$g under KVM"; \
+		QEMU_ACCEL=kvm $(MAKE) --no-print-directory $$g; \
+	done
+
+# Eight CPUs, on the topologies real firmware produces rather than only QEMU's
+# default (2026-09-21). One SMP_SELFTEST build, four boots, and in each every
+# schedulable AP must run a task and no task may run on an SMT sibling:
+#   8                            ids 0-7, eight cores
+#   8 over 4 sockets of 3 cores  ids 0-2,4-6,8,9: sparse; the old numbering got 6
+#   16 threads on 8 cores        the eight primaries get the slots, siblings park
+#   8 threads on 4 cores         4 cores online, 4 siblings parked
+#   4, and 2                     fewer than the ceiling come up and run as they are
+# (one CPU is `make smoke`, which boots the shipped kernel with QEMU's default).
+# The online count is part of the required marker, so a core that failed to
+# come online fails the gate by count, not only by the self-test's own verdict.
+SMP_TOPOLOGIES = 8:8 8,maxcpus=12,sockets=4,cores=3,threads=1:8 16,sockets=1,cores=8,threads=2:8 8,sockets=1,cores=4,threads=2:4 4:4 2:2
+.PHONY: smoke-smp-topology
+smoke-smp-topology:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 horus.iso
+	@set -e; for tp in $(SMP_TOPOLOGIES); do \
+		topo=$${tp%:*}; want=$${tp##*:}; \
+		echo "=== -smp $$topo: expect $$want cores online"; \
+		SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS="$$topo" \
+			REQUIRE_MARKER="SMP_SELFTEST: PASS online=$$want " \
+			FAIL_MARKER='SMP_SELFTEST: FAIL' tools/smoke_test.sh horus.iso; \
+	done
+
+# Control arm: index == LAPIC id again. On the sparse topology two of the eight
+# cores have ids past the ceiling and park, and the kernel must say six.
+.PHONY: smoke-smp-topology-sparse-control
+smoke-smp-topology-sparse-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 APIC_ID_IS_CPU_INDEX=1
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 APIC_ID_IS_CPU_INDEX=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=8,maxcpus=12,sockets=4,cores=3,threads=1 \
+		REQUIRE_MARKER='smp: 6 cores online' tools/smoke_test.sh horus.iso
+
+# Control arm: SMT sibling-ness decided from the index. On four cores of two
+# threads the counts still read 4 online and 4 parked, so the self-test's own
+# per-CPU sibling check is what must catch it.
+.PHONY: smoke-smp-topology-sibling-control
+smoke-smp-topology-sibling-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SMT_SIBLING_BY_INDEX=1
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SMT_SIBLING_BY_INDEX=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=8,sockets=1,cores=4,threads=2 \
+		REQUIRE_MARKER='SMP_SELFTEST: FAIL task-ran-on-smt-sibling' tools/smoke_test.sh horus.iso
 
 # Build with the gated process-control self-test, boot headless, and require the
 # in-kernel driver to report PASS -- runtime proof that SYS_EXIT and SYS_KILL
@@ -7275,6 +7425,115 @@ smoke-proc-taskinfo-control:
 		REQUIRE_MARKER='PROC_SELFTEST: FAIL grant-audit-bought-introspection' \
 		tools/smoke_test.sh horus.iso
 
+# Control arm for S99: SYS_WAIT answers a caller holding no CAP_TCB for its
+# target. proctest waits on a dead slot it was never given a TCB for, before it
+# has spawned anything, and must say it was answered.
+.PHONY: smoke-proc-wait-control
+smoke-proc-wait-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 WAIT_TCB_UNCHECKED=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 WAIT_TCB_UNCHECKED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='PROC_SELFTEST: FAIL wait-without-tcb-answered' \
+		tools/smoke_test.sh horus.iso
+
+# Control arm for S100: a CAP_TCB compared by slot number alone. proctest holds a
+# stale CAP_TCB for a dead child whose slot now holds a task slotheir spawned, and
+# must report that the stale capability signalled it.
+.PHONY: smoke-proc-tcb-reuse-control
+smoke-proc-tcb-reuse-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 TCB_GENERATION_UNCHECKED=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 TCB_GENERATION_UNCHECKED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='PROC_SELFTEST: FAIL tcb-stale-signal' \
+		tools/smoke_test.sh horus.iso
+
+# S20, slot reuse: a spawn must never reuse a slot whose kernel stack a CPU is
+# still on (the dying CPU unwinding its own ISR frame, or a CPU that was running
+# the task when another killed it). PROC_SELFTEST respawns into slots its
+# children have just left; KSTACK_REUSE_WIDEN holds the dying CPU on the dead
+# stack so the spawn meets the window. Each boot must finish the workload with
+# no reuse on the diagnostic channel, and across the boots the picker must have
+# skipped at least one slot for this reason, or the window was never opened and
+# a clean result proves nothing.
+KSTACK_REUSE_BOOTS ?= 5
+.PHONY: smoke-kstack-reuse
+smoke-kstack-reuse:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSTACK_REUSE_WIDEN=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSTACK_REUSE_WIDEN=1 horus.iso
+	@skips=0; n=0; diag=$$(mktemp); \
+	while [ $$n -lt $(KSTACK_REUSE_BOOTS) ]; do n=$$((n+1)); : > "$$diag"; \
+	    SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMOKE_KDIAG_LOG="$$diag" MARKER_ONLY=1 SMP_CPUS=4 \
+	        REQUIRE_MARKER='PROC_SELFTEST: tcb-reuse OK' FAIL_MARKER='PROC_SELFTEST: FAIL' \
+	        tools/smoke_test.sh horus.iso >/dev/null 2>&1 \
+	        || { echo "KSTACK REUSE: FAIL - boot $$n did not complete the workload"; cat "$$diag"; exit 1; }; \
+	    if grep -q 'chosen while a CPU is still on its kernel stack' "$$diag"; then \
+	        echo "KSTACK REUSE: FAIL - boot $$n chose a slot a CPU was still on"; cat "$$diag"; exit 1; fi; \
+	    s=$$(grep -c 'KSTACK REUSE: skipped slot' "$$diag"); skips=$$((skips+s)); \
+	    echo "  boot $$n/$(KSTACK_REUSE_BOOTS): completed, $$s slot(s) skipped while a CPU was on them"; \
+	done; rm -f "$$diag"; \
+	if [ $$skips -eq 0 ]; then \
+	    echo "KSTACK REUSE: FAIL - the window never opened in $$n boots; a clean run proves nothing"; exit 1; fi; \
+	echo "KSTACK REUSE: PASS - $$n boots, $$skips reuses of a busy slot refused, none made"
+
+# Control arm: slot selection by `state == 0` alone. The same widened workload
+# must choose a slot a CPU is still on, and create_task names it.
+.PHONY: smoke-kstack-reuse-control
+smoke-kstack-reuse-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSTACK_REUSE_WIDEN=1 SLOT_REUSE_UNCHECKED=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSTACK_REUSE_WIDEN=1 SLOT_REUSE_UNCHECKED=1 horus.iso
+	@n=0; miss=0; incon=0; diag=$$(mktemp); out=$$(mktemp); \
+	: "Three outcomes per boot, and only two are scored. A reuse on the"; \
+	: "diagnostic channel is a HIT, whether or not the boot survived it. A boot"; \
+	: "that completed the workload without one is a conclusive MISS. A boot"; \
+	: "that died with neither never ran the experiment and is not counted,"; \
+	: "which is the distinction smoke-kstack-park-control was once scored"; \
+	: "wrongly on."; \
+	while [ $$n -lt $(KSTACK_REUSE_BOOTS) ]; do n=$$((n+1)); : > "$$diag"; \
+	    SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMOKE_KDIAG_LOG="$$diag" MARKER_ONLY=1 SMP_CPUS=4 \
+	        REQUIRE_MARKER='PROC_SELFTEST: tcb-reuse OK' tools/smoke_test.sh horus.iso >"$$out" 2>&1 || true; \
+	    if grep -q 'chosen while a CPU is still on its kernel stack' "$$diag"; then \
+	        echo "KSTACK REUSE CONTROL: PASS - boot $$n chose a slot a CPU was still on, as the old picker must ($$miss conclusive miss(es), $$incon inconclusive before it)"; \
+	        rm -f "$$diag" "$$out"; exit 0; fi; \
+	    if grep -q 'PROC_SELFTEST: tcb-reuse OK' "$$out"; then miss=$$((miss+1)); \
+	        echo "  boot $$n/$(KSTACK_REUSE_BOOTS): completed with no reuse"; \
+	    else incon=$$((incon+1)); \
+	        echo "  boot $$n/$(KSTACK_REUSE_BOOTS): INCONCLUSIVE, the workload died before the respawns -- not counted"; fi; \
+	done; rm -f "$$diag" "$$out"; \
+	if [ $$miss -eq 0 ]; then \
+	    echo "KSTACK REUSE CONTROL: FAIL - the arm never ran the experiment: all $$n boots died first"; exit 1; fi; \
+	echo "KSTACK REUSE CONTROL: FAIL - the old picker never reused a busy slot in $$miss conclusive boot(s) of $$n"; exit 1
+# HORUS-20260921-04: a task killed while it runs on another CPU stops, and stops
+# writing memory it shares with live tasks. NOT smoke-proc: that boots with
+# QEMU's default of one CPU, where the victim can never be running while the
+# driver kills it, so the phase passes there without testing anything. Four
+# CPUs, so the kill lands on a task running elsewhere, and nothing else is
+# runnable, so the pre-fix tick would return into it.
+.PHONY: smoke-killed-task
+smoke-killed-task:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=4 \
+		REQUIRE_MARKER='PROC_SELFTEST: killed-task OK' FAIL_MARKER='PROC_SELFTEST: FAIL' \
+		tools/smoke_test.sh horus.iso
+
+# Control arm for HORUS-20260921-04: the pre-fix handling of a task torn down
+# by another CPU while it runs. killspin, killed mid-write with nothing else
+# runnable, is resumed on every tick and keeps writing the frame it shares with
+# the driver, which must say so by name.
+.PHONY: smoke-proc-killed-task-control
+smoke-proc-killed-task-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 DEAD_TASK_RUNS=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 DEAD_TASK_RUNS=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=4 \
+		REQUIRE_MARKER='PROC_SELFTEST: FAIL killed-task-still-writes' \
+		tools/smoke_test.sh horus.iso
+
 .PHONY: smoke-proc
 smoke-proc:
 	@$(MAKE) --no-print-directory clean
@@ -7284,9 +7543,58 @@ smoke-proc:
 	@# sigtarget partway through; requiring it let the harness kill QEMU before the
 	@# closing spawn-suspend witness ever ran, so that check was dead code. The
 	@# suspend marker strictly follows it (proctest waits for sigtarget to exit
-	@# first), so requiring it proves the whole chain completed.
-	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PROC_SELFTEST: suspend OK' \
+	@# first), so requiring it proves the whole chain completed. Since 2026-09-21
+	@# the last marker is the slot-reuse phase's (HORUS-20260920-02), which runs
+	@# after the suspend witness, so it is the one required now: requiring the
+	@# suspend marker would let the harness stop the guest before that phase ran.
+	@# The stale-CAP_TCB phase (HORUS-20260921-02) and then the killed-task phase
+	@# (HORUS-20260921-04) run after it, so the last of them is required now, for
+	@# the same reason.
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PROC_SELFTEST: killed-task OK' \
 		FAIL_MARKER='PROC_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
+
+# Does a task's exit record keep kernel addresses away from ring 3?
+# (HORUS-20260920-01, docs/LIMITATIONS.md 1.16, SECURITY.md S97.)
+#
+# proctest runs its whole sequence, then spawns kfaulter twice. Each time the
+# kernel takes a supervisor #PF in kfaulter's own syscall and kills it, and
+# proctest reads the record back with no authority, as any task can. The kernel
+# prints its PAGE FAULT banner for those faults, which the harness otherwise
+# scores as a failure; so the fault is EXPECTED here, and what ends the run as a
+# pass is proctest's verdict after reading the record. Under EXPECT_FAULT only the
+# named string passes: a FAIL marker still fails, and a run that never prints the
+# verdict fails when it ends. smoke-proc runs without this phase and stays as
+# strict as it was.
+.PHONY: smoke-kfault-record
+smoke-kfault-record:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KFAULT_RECORD_SELFTEST=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KFAULT_RECORD_SELFTEST=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 EXPECT_FAULT='PROC_SELFTEST: kfault-record OK' \
+		FAIL_MARKER='PROC_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
+
+# The control arm: the same run with the defect put back. The record then
+# carries kernel text as its rip, and proctest must say so by name.
+.PHONY: smoke-kfault-record-control
+smoke-kfault-record-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KFAULT_RECORD_SELFTEST=1 EXIT_RECORD_KERNEL_RIP=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KFAULT_RECORD_SELFTEST=1 EXIT_RECORD_KERNEL_RIP=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		EXPECT_FAULT='PROC_SELFTEST: FAIL kfault-exitinfo-kernel-rip' \
+		tools/smoke_test.sh horus.iso
+
+# The control arm for the slot-reuse phase: create_task leaves the previous
+# occupant's wait record in place, and the probe in the waiter's old slot must
+# find it and say so by name.
+.PHONY: smoke-proc-exit-record-control
+smoke-proc-exit-record-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 EXIT_RECORD_STALE_ON_REUSE=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 EXIT_RECORD_STALE_ON_REUSE=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='PROC_SELFTEST: FAIL exitprobe-stale-record' \
+		tools/smoke_test.sh horus.iso
 
 # Build with the gated notification self-test, boot headless, and require the
 # in-kernel waiter to report PASS -- runtime proof that SYS_NOTIFY delivers a
@@ -9499,6 +9807,10 @@ smoke-kstack-race-control:
 # stack, and the collision report is absent. Without the "was it entered" check a
 # kernel that simply never parks would score a green gate.
 KSTACK_PARK_RE = PANIC: two CPUs parking on one kernel stack
+# The same defect seen on ONE CPU: a park on a stack that is not the parking
+# CPU's own (sched_note_park, 2026-09-22). Deterministic under the shared park,
+# where the pattern above needs a second CPU to park in the same boot.
+KSTACK_PARK_OWN_RE = parking on a kernel stack that is not its own
 # A boot that ends here did not run the workload to the end, so it never got the
 # chance to park a second CPU. It is INCONCLUSIVE for the control arm, not a
 # miss -- see the note above smoke-kstack-park-control. It is caused by this
@@ -9572,9 +9884,9 @@ smoke-kstack-park:
 	: "ABSENT, so a copy that ring-3 output can cut in half is one this gate would"; \
 	: "fail to find and pass. The kernel writes it to COM3 through panic_ch, where"; \
 	: "no capability names the port and nothing else can interleave (S81)."; \
-	if grep -qa '$(KSTACK_PARK_RE)' "$$diag"; then \
+	if grep -qa -e '$(KSTACK_PARK_RE)' -e '$(KSTACK_PARK_OWN_RE)' "$$diag"; then \
 	    echo "KSTACK PARK: FAIL - two CPUs parked on one kernel stack"; \
-	    grep -a -A 4 '$(KSTACK_PARK_RE)' "$$diag" | sed 's/^/  /'; rm -f "$$log" "$$diag"; exit 1; \
+	    grep -a -A 4 -e '$(KSTACK_PARK_RE)' -e '$(KSTACK_PARK_OWN_RE)' "$$diag" | sed 's/^/  /'; rm -f "$$log" "$$diag"; exit 1; \
 	fi; \
 	rm -f "$$log" "$$diag"; \
 	echo "KSTACK PARK: PASS - task-killing workload completed on 4 CPUs, no shared park stack"
@@ -9727,8 +10039,8 @@ smoke-kstack-park-control:
 	    : "therefore MISSES exactly the boots where the defect fired hardest --"; \
 	    : "observed 2026-08-22, a boot whose log carried the PANIC and was still"; \
 	    : "scored as a miss. Either signal is the same event."; \
-	    if [ -z "$$dup" ] && grep -qa '$(KSTACK_PARK_RE)' "$$diag"; then \
-	        dup=$$(grep -ha '$(KSTACK_PARK_RE)' "$$diag" \
+	    if [ -z "$$dup" ] && grep -qa -e '$(KSTACK_PARK_RE)' -e '$(KSTACK_PARK_OWN_RE)' "$$diag"; then \
+	        dup=$$(grep -ha -e '$(KSTACK_PARK_RE)' -e '$(KSTACK_PARK_OWN_RE)' "$$diag" \
 	               | sed -n 's/.*rsp=\([^ ]*\).*/\1 (from the kernel panic)/p' | head -1); \
 	    fi; \
 	    if [ -n "$$dup" ]; then hit=$$n; break; fi; \
@@ -9760,9 +10072,9 @@ smoke-kstack-park-control:
 	if [ $$hit -eq 0 ]; then \
 	    echo "KSTACK PARK CONTROL: FAIL - the shared park did NOT reproduce in"; \
 	    echo "  $$good boots that ran to completion ($$bad more died and were not counted)."; \
-	    echo "  EVERY conclusive boot reproduced it when this arm was measured -- 10 of 10"; \
-	    echo "  on 2026-08-22 -- so a clean sweep of $$good is evidence that the shared park"; \
-	    echo "  has stopped being restored or the PARKTRACE detector has decayed, not noise."; \
+	    echo "  Since 2026-09-22 every boot that parks at all catches it on one CPU (20 of"; \
+	    echo "  20 measured), so a clean sweep of $$good is evidence that the shared park has"; \
+	    echo "  stopped being restored or the park check has decayed, not noise."; \
 	    echo "  ----- the kernel's own channel, which is what the verdict read -----"; \
 	    tail -20 "$$diag" 2>/dev/null | sed 's/^/  /'; \
 	    echo "  ----- the shared console -----"; \
@@ -9771,11 +10083,13 @@ smoke-kstack-park-control:
 	fi; \
 	cpus=$$(grep -ha PARKTRACE "$$diag" | grep -o 'cpu=[0-9]*' | sort -u | wc -l); \
 	echo "  shared park stack(s): $$dup   (distinct CPUs parking: $$cpus)"; \
-	if grep -qa '$(KSTACK_PARK_RE)' "$$diag"; then \
-	    grep -a -A 3 '$(KSTACK_PARK_RE)' "$$diag" | head -4 | sed 's/^/  /'; \
+	if grep -qa -e '$(KSTACK_PARK_RE)' -e '$(KSTACK_PARK_OWN_RE)' "$$diag"; then \
+	    grep -a -A 3 -e '$(KSTACK_PARK_RE)' -e '$(KSTACK_PARK_OWN_RE)' "$$diag" | head -4 | sed 's/^/  /'; \
 	fi; \
+	how="two CPUs parked on one stack"; \
+	if grep -qa '$(KSTACK_PARK_OWN_RE)' "$$diag"; then how="a CPU parked on a stack that is not its own"; fi; \
 	rm -f "$$log" "$$diag"; \
-	echo "KSTACK PARK CONTROL: PASS - the shared park puts two CPUs on one stack, as it must (boot $$hit of $(KSTACK_PARK_CONTROL_BOOTS))"
+	echo "KSTACK PARK CONTROL: PASS - the shared park is restored and caught: $$how (boot $$hit of $(KSTACK_PARK_CONTROL_BOOTS))"
 
 # ---- [G-9], exec hand-off component: the re-entry belongs to the CPU that armed it
 #

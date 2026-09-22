@@ -741,7 +741,7 @@ would read at 3am.
 | `smoke-cow` | Copy-on-write breaks correctly for the shared zero page. |
 | `smoke-heap64` | The heap syscalls **and the pager's region gate** are 64-bit clean (**[I-2]**, roadmap 1.5). Builds `USER_HEAP_HIGH_BASE=1`, which places every heap at **8 GiB** (above the 4 GiB line, below `USER_IMAGE_ASLR_BASE`) so the truncation is *reachable* instead of latent, then runs `captest`, which calls `sbrk`/`brk` directly and writes to the page it is handed. **Control arm:** built from a tree without the fix, the same target reports `CAPTEST: FAIL (sbrk-grow-failed)`. Verified in both directions before the target existed. |
 | `smoke-nzcow` | The generic (non-zero) COW break is correct, added after a real bug in that path. Since 2026-08-27 it also asserts the break is **refused** on a page belonging to a kernel object (**S38**); arm `smoke-nzcow-arena-control`. |
-| `smoke-pagefree` | **The page free path fails closed on its own**, property **S99** (**[HORUS-20260919-01]**). At boot, `PAGEFREE_SELFTEST=1` frees a real frame (accepted), then the same frame again, an address below the pool, an unaligned address and a reserve-window frame; each must be refused with the free stack unmoved and the refusal count up by one, so a free that did nothing for some other reason cannot pass. A real alloc and free come last, so a guard that refused everything fails too. |
+| `smoke-pagefree` | **The page free path fails closed on its own**, property **S102** (**[HORUS-20260919-01]**). At boot, `PAGEFREE_SELFTEST=1` frees a real frame (accepted), then the same frame again, an address below the pool, an unaligned address, a reserve-window frame, and an address above 4 GiB that truncates to a frame held on loan; each must be refused with the free stack unmoved and the refusal count up by one, so a free that did nothing for some other reason cannot pass. A real alloc and free come last, so a guard that refused everything fails too. |
 | `smoke-pagefree-control` | Control arm. `PAGE_FREE_UNGUARDED=1` removes the guard, and the self-test must report `FAIL double-free`. `smoke-pagefree` goes red on this build. |
 | `smoke-stackguard` | The stack canary is re-seeded from the CSPRNG at boot and is no longer the compile-time default. |
 | `smoke-aslr` | Image, heap, and stack bases are randomised. |
@@ -781,18 +781,20 @@ Requires `swtpm` and `swtpm-tools`. Driven through `tools/run_with_swtpm.sh`.
 |---|---|
 | `smoke-preempt` | The timer genuinely time-slices two ring-3 tasks. |
 | `smoke-signal` | A ring-3 fault is delivered to a registered handler. |
-| `smoke-smp` | APs come online from the MADT, run scheduled tasks on distinct CPUs, and TLB shootdown completes. |
+| `smoke-smp` | APs come online from the MADT, **every** schedulable AP runs a scheduled task (not merely two CPUs), no task runs on an SMT sibling, and TLB shootdown completes. Eight CPUs by default. |
+| `smoke-smp-topology` | Eight CPUs on four topologies: contiguous LAPIC ids; sparse ids (four sockets of three cores, ids 0-2, 4-6, 8, 9); sixteen threads on eight cores, where the primaries must get all eight slots; four cores of two threads, where four must come online and four siblings park; and plain 4 and 2 CPUs, since a machine below the ceiling must run as it is (1 CPU is `make smoke`). The online count is part of the required marker. |
+| `smoke-smp-kvm` | The SMP race *base* gates again under KVM (`SMP_KVM_GATES` in the `Makefile`: `smoke-smp`, `smoke-smp-topology`, `smoke-kstack-reuse`, `smoke-switch-commit`, `smoke-exec-reenter`, `smoke-cr3-reclaim`, `smoke-kstack-race`, `smoke-session-smp`, `smoke-killed-task`), where vCPUs run truly in parallel. A second environment, not a replacement: the arms stay under TCG. Refuses to run without a usable `/dev/kvm`. Advisory in CI until its KVM pass rate is measured. |
+| `smoke-smp-topology-sparse-control` | Control arm. `APIC_ID_IS_CPU_INDEX=1`: on the sparse topology two cores have ids past the ceiling and park, and the kernel must say six. |
+| `smoke-smp-topology-sibling-control` | Control arm for **S101**. `SMT_SIBLING_BY_INDEX=1`: counts still read four online and four parked, so the self-test's per-CPU check must catch a task on a sibling. |
 | `smoke-smt` | SMT sibling threads are parked, closing same-core co-residency. |
 | `smoke-flush` | Flush-on-switch detection matches CPUID, the gated barriers execute without faulting, and the **policy** flushes only on a genuine task change. (Barriers are no-ops under TCG; they engage on hardware or KVM.) |
 | `smoke-tsd` | A ring-3 `RDTSC` faults under `CR4.TSD`. |
-| `smoke-proc` | Process control: spawn, wait, kill, signals (incl. mask/unmask and altstack delivery), and the `CAP_TCB` authority behind them. |
+| `smoke-proc` | Process control: spawn, wait, kill, signals (incl. mask/unmask and altstack delivery), and the `CAP_TCB` authority behind them, including the refusal of a wait on a task the caller holds no `CAP_TCB` for (**S99**), and of all five `CAP_TCB` operations with a capability for a dead task whose slot has been reused (**S100**). |
 | `smoke-notify` | Async notifications wake a blocked waiter with the accumulated badge. |
 | `smoke-recvblock` | A ring-3 server waiting with `SYS_IPC_RECV_BLOCK` makes **exactly one receive syscall per message** while the client dawdles before each send (the witness that it slept rather than polled) and the wake leaves it holding the one-shot reply right. Roadmap 1.3. |
 | `smoke-recvblock-smp` | The same, under `-smp 4`, so the CROSS-CPU wake path runs at all. It does not reliably catch the ordering race that path is prone to (see "The lost wakeup none of those gates caught") but it is one boot. |
 
-Both run in CI as of this change. They are **not** required status checks: like every other gate
-added after the ruleset was written, they land in the advisory set (finding **[C-6]**), so a red
-`smoke-recvblock` does not block a merge. Read it anyway.
+Both run in CI and both are required: a red `smoke-recvblock` blocks a merge.
 
 ## ELF loading
 
@@ -802,6 +804,14 @@ added after the ruleset was written, they land in the advisory set (finding **[C
 | `smoke-elf64` | x86-64 RELA relocations are applied correctly. |
 | `smoke-proc-overreach-control` | **S84.** The ELF loader staged every image in `loader_staging` (a fixed 8 MiB region **shared by every task**, holding the residue of every image staged before) and bounded its three attacker-controlled parses against the size of that **region**, not against the bytes the image actually staged. So a program header reaching `p_offset + p_filesz` one page past its own image passed a bounds check that was present and memory-safe, and the loader copied that page of residue into the new task. The witness (`tools/make_overreach_image.py`) inflates exactly two program-header fields of a real `hello` image so it is otherwise self-consistent (magic, entry, size, name and every payload byte are what `mkheadered` wrote) and `proctest` requires `SYS_SPAWN_IMAGE` to refuse it. `ELF_LOAD_BOUND_STAGING=1` restores the region bound and the image spawns; marker `PROC_SELFTEST: FAIL overreaching-image-spawned`, and `smoke-proc` goes red under it. |
 | `smoke-proc-truncated-image-control` | **S84's second lock.** `arm_image_from_user` refuses a user-supplied container whose header claims more payload than the buffer holds, so the copy never reads past the caller's own buffer. `proctest` hands `SYS_SPAWN_IMAGE` a whole `hello` image at half its declared length; the fixture is a static array, so the bytes past `len` are the real rest of the image, and with the check gone the full image loads and spawns. A truncated ELF trips **both** locks (the container check and the ELF bound above), which is why each has a fixture the other cannot catch, the first attempt shared one arm between them and timed out, because the ELF bound refused the truncated ELF before the container check's absence could matter. `IMAGE_LEN_UNCHECKED=1` drops the refusal; marker `PROC_SELFTEST: FAIL truncated-image-spawned`. |
+| `smoke-proc` (slot reuse, 2026-09-21) | **A task in a reused slot starts with no wait record**, property **S98** (**[HORUS-20260920-02]**). Last in `proctest`, so it is now the marker `smoke-proc` requires (`PROC_SELFTEST: slot-reuse OK`). A `waiter` completes a real wait on a suspended `hello` and checks the record it got, so the slot provably holds one. The driver then spawns `exitprobe` tasks suspended until one lands in the waiter's old slot: the kernel takes the lowest free slot, so each earlier probe holds a lower one, and the kernel's scan is not changed. Every probe then runs, asks for its record before any wait, and requires all 64 bytes to be zero, reporting through how it dies (a clean exit, or `ud2`). Not reaching the slot is its own named failure, `slot-reuse-not-reached`, rather than a pass or a miss. 10 of 10 boots passed locally. |
+| `smoke-proc-exit-record-control` | Control arm. `EXIT_RECORD_STALE_ON_REUSE=1` leaves the old record in a reused slot, and the probe must report `FAIL exitprobe-stale-record`. `smoke-proc` goes red on this build. |
+| `smoke-proc-wait-control` | Control arm for **S99**. `WAIT_TCB_UNCHECKED=1` removes `SYS_WAIT`'s `CAP_TCB` check, and `proctest`, waiting on a dead slot it was never given a TCB for before it has spawned anything, must report `FAIL wait-without-tcb-answered`. `smoke-proc` goes red on this build. The positive direction is in the base gate: every wait on the driver's own children, and `sigwaiter` and `waiter` holding a delegated `CAP_TCB`, still succeed. |
+| `smoke-proc-tcb-reuse-control` | Control arm for **S100**. `TCB_GENERATION_UNCHECKED=1` compares a `CAP_TCB` by slot number alone, and `proctest`, holding the capability for a dead child whose slot `slotheir` has since filled, must report `FAIL tcb-stale-signal`. `smoke-proc` goes red on this build. |
+| `smoke-kstack-reuse` | **S20**, slot reuse (**[HORUS-20260921-03]**). `PROC_SELFTEST` with `KSTACK_REUSE_WIDEN`, five boots: each must finish the workload with no slot chosen while a CPU is still on its kernel stack, and across the boots the picker must have refused at least one busy slot, or the window never opened and a clean run proves nothing. The two `proctest` phases that respawn into a dead child's slot retry in rounds, since the kernel now rightly declines that slot until its CPU has left. |
+| `smoke-kstack-reuse-control` | Control arm. `SLOT_REUSE_UNCHECKED=1` restores selection by `state == 0` alone, and `create_task` must report a busy slot chosen. `smoke-kstack-reuse` goes red on this build. |
+| `smoke-killed-task` | **S56**, **[HORUS-20260921-04]**: a task killed while it runs on another CPU stops, and stops writing memory it shares with live tasks. `PROC_SELFTEST` at four CPUs (not `smoke-proc`, which boots one CPU, where the victim cannot be running while the driver kills it): `killspin` increments a counter in a frame shared with the driver, with no system call in its loop, and is killed while the counter is visibly rising; after a short grace the counter must not change across many ticks, and the death record must still read killed. |
+| `smoke-proc-killed-task-control` | Control arm. `DEAD_TASK_RUNS=1` restores the tick that returns into a dead task, and the driver must report `FAIL killed-task-still-writes`. `smoke-killed-task` goes red on this build. |
 | `cargo fuzz` (`rust/fuzz/`) | The pointer and scalar predicates at the FFI boundary do not panic or misbehave on adversarial input. |
 
 The ELF loader migration to Rust found two real out-of-bounds bugs in the C original; a third,
@@ -1030,6 +1040,8 @@ address space is torn down.
 |---|---|
 | `smoke-kfault` | A page fault taken at **CPL 0** is reported on the **serial line**, after the console handover. `KFAULT_INJECT=1` makes the kernel fault on purpose (a read of `0x94`, G-8's exact address) on a timer tick once `console_server` owns the console, and the harness requires the report to appear *after* the login prompt. |
 | `smoke-kfault-legacy` | The same injection with reporting restored to `println()` (`KFAULT_LEGACY_PRINTLN=1`): the report must **not** reach serial. The control arm. |
+| `smoke-kfault-record` | A task's exit record carries **no kernel address**, property **S97** (**[HORUS-20260920-01]**). Built `PROC_SELFTEST=1 KFAULT_RECORD_SELFTEST=1`: after its usual sequence, `proctest` spawns `kfaulter` twice, and each time the kernel reads an address at CPL 0 in `kfaulter`'s own syscall (`0x94`, then `0xffff900000000000`) and kills it for the supervisor #PF. `proctest` reads each record back from ring 3 with no authority, as any task can, and requires a page-fault reason, `rip` 0, and the fault address kept in the user half (`0x94`) and dropped in the kernel half (0). Requiring `0x94` to survive is what stops a filter that zeroes everything from passing. The kernel's PAGE FAULT banner is expected here, so the run passes only on `PROC_SELFTEST: kfault-record OK` and fails on any `PROC_SELFTEST: FAIL`; `smoke-proc` runs without this phase and treats a banner as the failure it normally is. |
+| `smoke-kfault-record-control` | The same run with `EXIT_RECORD_KERNEL_RIP=1`: the record keeps the kernel rip, and `proctest` must report `FAIL kfault-exitinfo-kernel-rip`. The base gate goes red on this build. |
 | `smoke-kdiag` | Every marker the kernel emits is **contiguous** on its own channel, COM3 (0x3E8), which no capability names. The property **S81** states, and the answer to a marker being cut in half by ring-3 output. |
 | `smoke-kdiag-split-control` | The **same build and the same boot**, read on the shared console: fewer of those markers arrived intact there. The hazard, on demand. **Bounded since 2026-09-08**: the split is a race, so it boots until it reproduces (`KDIAG_SPLIT_CONTROL_BOOTS`, 8 conclusive boots within `KDIAG_SPLIT_CONTROL_ATTEMPTS`, 16) and stops at the first hit. Measured that day, 13 of 20 boots, so the single-boot form it replaced was **red on about a third of runs**, and it reddened a PR containing only `.gitignore` and a checker. A boot that ended before there was anything to split is **inconclusive**, named and retried against the attempt bound rather than scored as a miss: the distinction `smoke-kstack-park-control` was scored wrongly on for months, in an arm built from the same template. Falsified in the other direction: with the ring-3 writer removed (`KDIAG_NOISE` off) the same loop goes red **8 conclusive boots in 8**, so it depends on the mechanism rather than on luck. |
 | `tools/test_kdiag_counts.sh` | **The kdiag harness's own measurement, falsified.** Until 2026-09-08 the verdict's counts came from two separate reads of a capture QEMU was still writing, so a marker completing between them made `prefix` exceed `whole`, the shape of a split. The skew is **one-directional** (`whole` is read first), so it could only ever manufacture a false RED, which is why it read as flakiness rather than as a broken measurement. It reddened a dependabot PR whose diff was three SHA pin bumps, and the gate's own evidence dump then printed all seven markers intact, contradicting its verdict. Reproduced **on demand** against a live writer (20 of 40 samples skew with two reads, 0 of 40 with one) because the rate in CI is about 1 job run in 35 and waiting for it is not a falsification. The test extracts `counts_for()` from `kdiag_test.sh` rather than copying it, so the two cannot drift. |
@@ -1042,7 +1054,7 @@ address space is torn down.
 | `smoke-resume-guard-nofloor` | Control arm for the guard: same injection, guard compiled out (`RESUME_GUARD_DISABLE=1`). The PANIC line must **not** appear; the kernel instead faults at `0x94` on `out->cs`, which is G-8's original datapoint reproduced deliberately. |
 | `smoke-kstack-race` | **S20**, a task's kernel stack is executed by at most one CPU at a time. `KSTACK_RACE_WIDEN=1` stretches the window between handing a task to another CPU and the ISR epilogue leaving that task's stack, so it is entered on essentially every switch instead of at **[G-8]**'s 2–3% per boot. With the deferred release the claim is held across the window, so nothing can take the stack: the session must complete and `PANIC: two CPUs on one kernel stack` must be **absent**. Since 2026-08-27 it distinguishes a **broken property** from an **inconclusive run**: up to `KSTACK_RACE_BOOTS` (4) attempts, stopping at the first completed session; a detected race fails immediately on any attempt and is never retried; all-inconclusive **fails**. |
 | `smoke-kstack-park` | **Merge-gating since #190** (advisory before that, for **[G-9]**, now closed). **S20**, park path: a CPU whose last runnable task dies parks on its **own** ring-0 stack. Boots the task-killing `PROC_SELFTEST` at `-smp 4` (a healthy session never enters the path: 0 parks in 3 boots) and asserts four things, because three of them pass vacuously alone: the self-test completes, at least two CPUs actually parked, no park stack was used by more than one CPU, and `sched_note_park()`'s report is absent. |
-| `smoke-kstack-park-control` | Control arm. Same workload with `KSTACK0_SHARED_PARK=1` restoring `tasks[0].kernel_stack_top` as the shared park target; at least one park stack must come back used by **more than one CPU**. Accepts either that or the kernel's own collision PANIC, `sched_note_park` *halts* on detecting the second CPU, so on exactly those boots the second `PARKTRACE` line never prints and a trace-only test scores the hardest reproduction as a miss. **Boots until it reproduces, up to `KSTACK_PARK_CONTROL_BOOTS` (8) boots that RAN TO COMPLETION or `KSTACK_PARK_CONTROL_ATTEMPTS` (24) attempts, whichever comes first.** A boot the workload *died* in (`PROC_SELFTEST: FAIL`) is **inconclusive**, not a miss: the park path was never exercised to the end, so it is evidence in neither direction, and it is named, tallied and re-booted rather than spent. That distinction is the whole gate: the deaths are `KSTACK0_PARK_TRACE`'s doing, 8 of 20 boots against 0 of 20 without it on the same *fixed* kernel (p = 0.0016): so they say nothing about the park target. Exhausting the attempts is a *differently worded* red, because a run that could not measure must not read like one that measured. **Both of its signals are read from the kernel's diagnostic channel since 2026-09-08, not from the shared console.** `PARKTRACE` and the panic are emitted with `kfault_str`, which writes COM3 via `panic_ch`, one writer, and no capability names the port, so a marker there is contiguous or absent (**S81**). On the console, ring-3 output from `proctest` cuts them in half and an exact-string grep then misses an event that *did* happen: observed in CI 2026-09-08, where this arm swept 8 boots reporting no reproduction while its own dump held `ROC_SELFTEPANIC: ST: two CPASS PUsexit+ parking on one kernel skitack`, the panic and `PROC_SELFTEST` interleaved character by character. The comment above the arm had warned about that shredding since 2026-08-22; the channel that removes it landed with S81 on 2026-09-03 and this gate was never moved onto it. |
+| `smoke-kstack-park-control` | Control arm. Same workload with `KSTACK0_SHARED_PARK=1` restoring `tasks[0].kernel_stack_top` as the shared park target. **Since 2026-09-22 it is caught on one CPU, on the first park of every boot**: `sched_note_park` halts, naming the defect, when a CPU parks on any stack but its own, which is 20 boots in 20 measured. Until then it relied on at least one park stack coming back used by **more than one CPU**, which needs a second CPU to take the park path in the same boot; in about half of boots only one CPU did, and on 3 of 31 runs no boot of the 8 did (a run once put all 2 parks of all 8 boots on CPU 1), so the arm went red with the defect present. It still accepts that older signal too. Accepts either that or the kernel's own collision PANIC, `sched_note_park` *halts* on detecting the second CPU, so on exactly those boots the second `PARKTRACE` line never prints and a trace-only test scores the hardest reproduction as a miss. **Boots until it reproduces, up to `KSTACK_PARK_CONTROL_BOOTS` (8) boots that RAN TO COMPLETION or `KSTACK_PARK_CONTROL_ATTEMPTS` (24) attempts, whichever comes first.** A boot the workload *died* in (`PROC_SELFTEST: FAIL`) is **inconclusive**, not a miss: the park path was never exercised to the end, so it is evidence in neither direction, and it is named, tallied and re-booted rather than spent. That distinction is the whole gate: the deaths are `KSTACK0_PARK_TRACE`'s doing, 8 of 20 boots against 0 of 20 without it on the same *fixed* kernel (p = 0.0016): so they say nothing about the park target. Exhausting the attempts is a *differently worded* red, because a run that could not measure must not read like one that measured. **Both of its signals are read from the kernel's diagnostic channel since 2026-09-08, not from the shared console.** `PARKTRACE` and the panic are emitted with `kfault_str`, which writes COM3 via `panic_ch`, one writer, and no capability names the port, so a marker there is contiguous or absent (**S81**). On the console, ring-3 output from `proctest` cuts them in half and an exact-string grep then misses an event that *did* happen: observed in CI 2026-09-08, where this arm swept 8 boots reporting no reproduction while its own dump held `ROC_SELFTEPANIC: ST: two CPASS PUsexit+ parking on one kernel skitack`, the panic and `PROC_SELFTEST` interleaved character by character. The comment above the arm had warned about that shredding since 2026-08-22; the channel that removes it landed with S81 on 2026-09-03 and this gate was never moved onto it. |
 | `smoke-resume-guard-negative` | **[G-9]** residual, detector half. The resume-`%rsp` guard must reject a *negative* bogus value. `RESUME_RSP_INJECT_VALUE=-7` forces the dispatcher to return `-7` once after the console handover; the guard's PANIC line must reach serial. Until 2026-08-18 the predicate was `rsp < 0xFFFF800000000000ULL` (a floor with no ceiling) so `-7` (`0xFFFFFFFFFFFFFFF9`) sailed over it and faulted inside the ISR epilogue instead, with a banner naming the stub and nothing about the value. The bound is now `[__bss_start, __bss_end)`, taken from the linker, because every 64-bit kernel stack is a `.bss` array. |
 | `smoke-resume-guard-negative-control` | Control arm. `RESUME_GUARD_FLOOR_ONLY=1` restores the floor-only predicate; the report must be **absent**. Note the regex matches the injected *value*, not just the banner; the first version of this pair reused the `rsp=0x4` regex from `smoke-resume-guard`, which made the `EXPECT_REPORT=1` arm fail against a guard that was working correctly and, worse, made this control arm **pass vacuously**: a pattern that can never match is trivially absent. A control arm that cannot fail is not a control arm. |
 | `smoke-resume-guard-ist` | The guard's **false-positive** arm, and the one whose absence let a regression ship. Every other arm injects a bogus value and asks whether the report appears: they measure false *negatives*, so a predicate that rejected the whole address space would pass all of them. This one injects nothing: it boots the captest workload, which faults through IST1 as a matter of course, and requires `CAPTEST: PASS 100 checks` with the guard's report **absent**. |
@@ -1577,10 +1589,10 @@ as a reproduction.
 
 ## CI
 
-`.github/workflows/ci.yml` defines **119** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **131** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below: **121** jobs, **124** contexts. Counts from `tools/check_ci_gating.py`, which prints
+below: **133** jobs, **136** contexts. Counts from `tools/check_ci_gating.py`, which prints
 them; do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20, a backstop, not a budget. The default is
@@ -1592,33 +1604,46 @@ minutes, and 12 of 74 installs exceeded 15 minutes in a run that was green on al
 step budget would have reddened it. The distinction that matters is between slow and never
 returning, and only a generous cap draws it.
 
+No job holds more than about fifteen minutes of work, and that is by design. `smoke` and
+`smoke-fs-persist` each used to run every gate of their area in one job, 59 and 34 steps, and at
+54 and 33 minutes they set the wall time of every run while the other jobs finished in the first
+quarter of an hour. On 2026-09-21 they were split into ten jobs along the same seams (boot and
+SATA, SD/eMMC, installing onto SD/eMMC, the framebuffer, the keyboard, backspace, install media;
+persistence, the 16 GiB volume, integrity and accounts), with every step moved verbatim and each
+gate beside its control arm. The run's floor is now the 16 GiB volume gate at about fourteen
+minutes, and the three longest jobs are defined straight after `gates`, so that they are among
+the first scheduled when at most 20 jobs run at once.
+
+Every gate runs under TCG, software emulation, and that is where its evidence and control arm
+live. One job, `smoke-smp-kvm`, runs nine of the SMP race *base* gates a second time under KVM,
+where virtual CPUs run truly in parallel, which TCG rarely achieves. That is how
+**[HORUS-20260921-03]** was found: `smoke-switch-commit` met a window under KVM that emulation had
+never shown. Only base gates run there, because under KVM three race control arms stopped
+reproducing (the CI probe of 2026-09-21, #419), so an arm's proof that it can fail stays under TCG.
+`QEMU_ACCEL=kvm` makes `tools/smoke_test.sh` and `tools/session_test.py` refuse to run without a
+usable `/dev/kvm`, so the job cannot report a TCG run as a KVM one. It is advisory until its pass
+rate under KVM has been measured on `main`; KVM gave no net speed-up (218 runner-minutes against
+213), so the suite as a whole stays on TCG.
+Every `make` in `ci.yml` runs with `MAKEFLAGS=-j4`, the four cores of a standard runner, because
+each build-and-boot step does `make clean` and a full build, which had run on one core. That it
+changes nothing that is built is checked, not assumed: the `reproducible` job builds once serially
+and once in parallel and requires the same `kernel.elf` (which embeds every userspace binary), so
+a Makefile race that altered an artifact goes red there. The `security` job stays serial, since
+its make targets are scanners whose logs `-j` would interleave.
+
 All third-party actions are pinned to full commit SHAs. Workflow `permissions:` blocks are
 least-privilege. There are no self-hosted runners.
 
-### A known weakness in the gate
+### Which jobs gate a merge
 
-Of those, **22 were required status checks** before 2026-08-16, read the current set from `gh
-api repos/pharanyx-labs/Horus/rulesets/21815299`, not from this file, which is the kind of
-hand-maintained number this document exists to distrust.
-
-`smoke-captest` joined that set on 2026-08-15. It is the named witness for eight of the
-S-numbered properties in `SECURITY.md`, and until then it could not block a merge, a change that
-broke the capability refusal suite went green, which is precisely how **[C-1]** survived every
-automated gate in the first place.
-
-This is finding **[C-6]** and roadmap item 4.2, and promoting one job never closed it. The
-mechanism was the problem: the required list lived only in the ruleset, which no commit
-touches, so every job added to `ci.yml` landed in the advisory set **by default** and nothing
-asked whether it should have. When this finding was filed there were ~30 jobs and 21 required;
-immediately before 2026-08-16 there were 66 and 22.
-
-### The classification is now checked in
-
-`.github/ci-gating.yml` lists every job in `ci.yml` and `codeql.yml` under either `required:` or
+`.github/ci-gating.yml` lists every job in the three workflows under either `required:` or
 `advisory:` **with a written reason**. The `ci-gating` job (and `make check-gating`) fails the
 build when a job is in neither, in both, or names a job that no longer exists. There is no
-default, defaulting is the defect. Run it before opening a PR; it is pure text analysis, no
-build and no QEMU.
+default, because defaulting is what produced finding **[C-6]**: while the required list lived
+only in the ruleset, every job added to `ci.yml` landed advisory and nothing asked whether it
+should have, and until 2026-08-15 not one of the 22 required checks was a security gate.
+`smoke-captest`, the witness for eight of `SECURITY.md`'s S-properties, could not block a merge.
+Run the check before opening a PR; it is pure text analysis, no build and no QEMU.
 
 Falsified on 2026-08-16, three ways, each confirmed to exit non-zero against the passing
 baseline:
@@ -1632,50 +1657,63 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The intended set is **121 required contexts and 3 reasoned exemptions** (read off
-`tools/check_ci_gating.py`, which prints them, rather than from this sentence) `fuzz` (a fixed
+The set is **132 gating contexts and 4 reasoned exemptions** (read off
+`tools/check_ci_gating.py`, which prints them, rather than from this sentence): `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
-`smoke-kstack-park` (its workload trips **[G-9]**). `smoke-fs-wal` was a third until **[I-11]**
-was fixed and it was promoted back to gating; `smoke-session-smp-soak` a fourth until **[G-8]**
-was closed on 2026-08-17, and it was promoted in the same commit. Three of the four are
-properties of the test itself; `smoke-kstack-park` was the one exemption that stood for an
-**open defect**, and it was **promoted on 2026-08-22**, one merge after **[G-9]** closed. Its
+`smoke-smp-kvm` (a second run, under KVM, of gates already required under TCG, until its KVM pass rate is measured).
+Three more were exempt once and have been promoted back: `smoke-fs-wal` once **[I-11]** was
+fixed, `smoke-session-smp-soak` in the commit that closed **[G-8]** on 2026-08-17, and
+`smoke-kstack-park`, the one exemption that stood for an **open defect**, **promoted on
+2026-08-22**, one merge after **[G-9]** closed. Its
 workload ran 0 failures in 200 boots after the fix (95% upper bound 1.49%) against ~45% before
 [G-9]'s exec and page-table components and ~7% after them; the gate itself passed 5 of 5 in its
 exact form, which at a 7% rate is only ~70% power and is corroboration rather than the evidence.
-**No exemption now stands for an open defect**: the three that remain (`fuzz`, `kani`,
-`ruleset-audit`) are properties of those tests. The promotions are backed by measurement, not
+**No exemption now stands for an open defect**: the four that remain (`fuzz`, `kani`,
+`ruleset-audit`, `smoke-smp-kvm`) are properties of those tests or of an environment not yet
+measured. The promotions are backed by measurement, not
 optimism: across 18 CI runs sampled on 2026-08-16, **64 of 66 jobs had zero failures over 1152
 job-executions**; the only two that ever failed are `security` (2/18, both deliberate, during
 #154) and `smoke-session-smp-soak` (1/18, which was [G-8] at its documented 2–3% per boot; the
 defect that job was correctly reporting).
 
-`smoke-fs-wal` is deliberately **demoted** from required. A flaky gate that blocks merges
-spuriously teaches the maintainer to re-run red checks, which costs more than the coverage it
-buys, and the durability property it used to be credited with is now witnessed by the
-deterministic `smoke-fs-wal-flush` and `smoke-fs-wal-order`.
+### One required check stands for the rest
+
+The ruleset requires two contexts: **All required gates passed**, the `gates` job in `ci.yml`,
+and CodeQL's `analyze`, which lives in its own workflow and so cannot be a `needs:` of a ci.yml
+job. `gates` needs every required ci.yml job, runs with `if: always()`, and passes only if every
+one of them reports `success` (`tools/ci_gate_verdict.py`). Failed, skipped and cancelled all
+count as failure, because GitHub treats a skipped required check as satisfied. The `ci-gating`
+job proves `gates` needs exactly the `required:` list, runs under `always()`, and hands the
+verdict every result, so a job classified as required gates in the PR that classifies it, with no
+ruleset change.
+
+Both halves are falsified: `tools/test_check_ci_gating.sh` has an arm for each way the
+aggregator could stop carrying a gate (no aggregator, one that is advisory, no `always()`, a
+required job missing from `needs:`, an advisory one added, the verdict step removed, handed
+something other than every result, or allowed to fail), and `tools/test_ci_gate_verdict.sh`
+requires the verdict to refuse a failed, skipped, cancelled, unknown or missing result and an
+empty or unparsable `needs`.
+
+Until 2026-09-21 the ruleset required one context per job, 122 of them, synced by hand with
+`--sync-ruleset`. The sync had to run after the merge that added a job, because a required
+context `main` cannot produce never reports (that froze every pull request on 2026-08-16), and
+before a merge that demoted one, or the red job blocked its own demotion (#167, 2026-08-17). In
+between, a gate was classified and not enforced for as long as the sync took: five merges once,
+on 2026-09-01. That lag was the rest of [C-6], and this closed it.
 
 ### What this does *not* do
 
-**CI cannot verify the ruleset.** The ruleset was synced on 2026-08-16,
-`tools/check_ci_gating.py --sync-ruleset` took it from 22 required contexts toward 67,
-preserving `strict_required_status_checks_policy` and bypass actors, and re-read it to confirm.
-Run from a feature branch, it also required three contexts `main` could not yet produce, which
-blocks every PR on a check that never reports; `tools/prune_unsatisfiable_checks.py` dropped
-them (67 → 64) and encodes the rule that promotion must **lag** the job landing by one merge. So
-every security target now blocks a merge, and the old advice to run them locally *because CI
-will not stop you* no longer applies.
+Reading a ruleset needs Administration permissions the workflow `GITHUB_TOKEN` cannot be
+granted, so `ci-gating` proves the classification is complete and that `gates` carries it, not
+that the ruleset requires `gates`. A change made in the GitHub UI could remove it.
+`ruleset-audit.yml` compares the live ruleset against the classification daily, with a read-only
+GitHub App token, and fails loudly on a difference. The ruleset needs a sync, from `main` after
+the merge, only when its own two contexts change: `gates` is renamed, or a required job is added
+to a workflow other than `ci.yml`.
 
-But reading a ruleset needs Administration permissions the workflow `GITHUB_TOKEN` does not
-have and cannot be granted, so the `ci-gating` job proves the classification is **complete**,
-not that the ruleset **matches** it. A change made in the GitHub UI could reopen the gap and
-nothing in CI would notice. `--check-ruleset` is the check; it has to be run deliberately, and
-it is the reason **[C-6]** stays open.
-
-`strict_required_status_checks_policy` is now **true**, so a PR can no longer merge having
-passed CI against a stale base. (This document previously said it was false; that was correct
-when written and is not any more.)
+`strict_required_status_checks_policy` is **true**, so a PR cannot merge having passed CI
+against a stale base.
 
 ---
 
@@ -2205,7 +2243,7 @@ three ways: a planted phrasing in a `.c` file is caught with file and line; the 
 phrasing inside a quotation stays exempt, so a comment can record the wrong thing while
 correcting it.
 
-`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 98 properties
+`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 104 properties
 name a witness that resolves to a make target or a CI job.
 
 | Rule | Rejects |

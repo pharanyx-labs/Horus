@@ -863,7 +863,7 @@ void kernel_main(uint32_t mb_info) {
 #ifdef PAGEFREE_SELFTEST
     /* Boot continues; make smoke-pagefree asserts on the marker. The page free
      * path refuses a double free, an address outside the pool and a frame the
-     * pool never lends (S99). Needs only the page pool paging_init set up. */
+     * pool never lends (S102). Needs only the page pool paging_init set up. */
     pagefree_selftest();
 #endif
     fpu_init_template();   /* the x87/SSE image every new task starts from */

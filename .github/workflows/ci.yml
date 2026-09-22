@@ -20,6 +20,16 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Every `make` in every job builds on all four of a standard runner's cores
+  # (2026-09-21). Each of the ~370 build-and-boot steps here does `make clean`
+  # and a full build, which ran on one core: locally 8.9 s serially against 2.0 s
+  # at -j12, for a boot of 4 s. Proven not to change what is built, in both
+  # directions: every artifact (kernel.elf and every userspace/*.bin) was
+  # byte-identical serially and at -j12 in three configurations locally, and the
+  # `reproducible` job compares a serial build against a parallel one on every
+  # run, so a Makefile race that altered an artifact goes red there. Cargo
+  # shares make's jobserver, so the Rust build does not oversubscribe.
+  MAKEFLAGS: -j4
 
 jobs:
   ci-gating:
@@ -38,11 +48,299 @@ jobs:
       # touches, so a job added here landed advisory BY DEFAULT and nothing asked
       # whether it should have. This fails the build when ci.yml and
       # .github/ci-gating.yml disagree, which forces that question at review time.
-      # It cannot check the ruleset itself -- reading one needs Administration
-      # permissions the GITHUB_TOKEN does not have -- so it enforces that the
-      # checked-in decision record is COMPLETE, and syncing stays a manual step.
+      # It also proves the `gates` job needs exactly the required ci.yml jobs,
+      # which is what makes a job added to `required:` gate in the PR that adds
+      # it. It cannot read the ruleset itself (that needs Administration, which
+      # the GITHUB_TOKEN cannot hold); ruleset-audit.yml does that daily.
       - name: Check CI gating classification
         run: tools/check_ci_gating.py
+
+  # THE ONE REQUIRED CHECK FROM THIS WORKFLOW (2026-09-21). The branch ruleset
+  # requires this job's context and CodeQL's, and no other. It needs every job
+  # `.github/ci-gating.yml` lists as required here, so a red, skipped or
+  # cancelled gate makes it red. tools/check_ci_gating.py proves its `needs:`
+  # is exactly that list, that it runs `if: always()` (without which a failed
+  # gate would SKIP it, and GitHub counts a skipped required check as passed),
+  # and that the verdict is handed every result. A job added to `required:`
+  # therefore gates in the PR that adds it, with no ruleset change.
+  gates:
+    name: All required gates passed
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: ${{ always() }}
+    needs:
+      - altconfigs
+      - apt-hardening
+      - cap-writes
+      - ci-gating
+      - claim-release
+      - console-timestamps
+      - defect-flags
+      - defect-flags-documented
+      - defer-exemption
+      - devcap
+      - doc-claims
+      - ffi-deadsurface
+      - fork
+      - forkexec
+      - fpu
+      - frame
+      - gate-pairs
+      - image-abi
+      - installer
+      - installer-accounts
+      - invariants
+      - kani-bounded
+      - kernel
+      - ksp-guard
+      - libhorus
+      - lock-order
+      - measured-boot-required
+      - miri
+      - net
+      - passwd-probe
+      - passwd-target
+      - prose-style
+      - reproducible
+      - ring0-budget
+      - rng-seed
+      - rust
+      - security
+      - shared-objects
+      - shlib
+      - smoke
+      - smoke-aslr
+      - smoke-aspace
+      - smoke-boot-pin
+      - smoke-boot-pin-control
+      - smoke-captest
+      - smoke-console
+      - smoke-console-backspace
+      - smoke-console-isolation
+      - smoke-console-pass
+      - smoke-console-pass-control
+      - smoke-console-smp
+      - smoke-coreutils-shell
+      - smoke-cow
+      - smoke-cpu
+      - smoke-cr3-reclaim
+      - smoke-e820
+      - smoke-elf
+      - smoke-elf64
+      - smoke-exec-reenter
+      - smoke-fb
+      - smoke-flush
+      - smoke-fs
+      - smoke-fs-16g
+      - smoke-fs-conc
+      - smoke-fs-integrity
+      - smoke-fs-large
+      - smoke-fs-perms
+      - smoke-fs-persist
+      - smoke-fs-wal
+      - smoke-fs-wal-flush
+      - smoke-fs-wal-order
+      - smoke-heap64
+      - smoke-init-fs
+      - smoke-install-media
+      - smoke-installer-sd
+      - smoke-ioport
+      - smoke-irq
+      - smoke-irq-policy
+      - smoke-kdiag
+      - smoke-keyboard
+      - smoke-kfault
+      - smoke-kfault-record
+      - smoke-klog-forge
+      - smoke-kstack-park
+      - smoke-kstack-race
+      - smoke-mapphys
+      - smoke-modules
+      - smoke-modules-tamper
+      - smoke-newlib
+      - smoke-newlib-tamper
+      - smoke-notify
+      - smoke-nzcow
+      - smoke-pagefree
+      - smoke-percpu
+      - smoke-pipe
+      - smoke-preempt
+      - smoke-proc
+      - smoke-recvblock
+      - smoke-recvblock-smp
+      - smoke-resume-guard
+      - smoke-sched-invariants
+      - smoke-sdhci
+      - smoke-session
+      - smoke-session-smp
+      - smoke-session-smp-soak
+      - smoke-signal
+      - smoke-smp
+      - smoke-smt
+      - smoke-spawn-owner
+      - smoke-stackguard
+      - smoke-tcc
+      - smoke-term
+      - smoke-tpm
+      - smoke-tpm-bootimg
+      - smoke-tpm-bootimg-control
+      - smoke-tpm-seal
+      - smoke-tpm-seal-roundtrip
+      - smoke-tpm-tamper
+      - smoke-tsd
+      - smoke-wx
+      - smoke-wx-smp
+      - store-locked
+      - switch-commit
+      - syscall-abi
+      - syscall-coverage
+      - unsafe-safety
+      - vfs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Every required job succeeded (skipped and cancelled are failures)
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: python3 tools/ci_gate_verdict.py
+
+  # THE LONGEST JOBS COME FIRST (2026-09-21). With about 130 jobs and at most
+  # 20 running at once, a job defined late starts ten minutes into the run.
+  # These three are the run's floor (14, 13 and 11 minutes), so they are
+  # defined here, where they are scheduled among the first.
+
+  # Shard of the filesystem job (see `smoke-fs-persist`). The 16 GiB gate alone
+  # takes about fourteen minutes, so it is the floor of the whole run: it is
+  # defined early in this file so that it is among the first jobs scheduled.
+  smoke-fs-16g:
+    name: "A 16 GiB volume, and a volume never served on a disk too small for it"
+    runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 105
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # The end-to-end gate for the storage track. Two boots on a SPARSE 16 GiB
+      # image (~130 MiB actually written): format, write past the old 1.00 GiB
+      # double-indirect ceiling, reboot, read it back. Boot 1 pays for zeroing a
+      # 128 MiB metadata region and hashing it into the tree through emulated
+      # PIO, hence the minutes-long budget; boot 2 mounts in the ordinary time,
+      # which is the difference the Merkle tree bought.
+      - name: A 16 GiB volume formats, survives a reboot, and holds a file past 1 GiB
+        run: make smoke-fs-16g
+      # S68's other half. Now that the device is sized from IDENTIFY, a superblock
+      # claiming more blocks than the disk has means a truncated copy — serving it
+      # would present part of a filesystem as whole. The host shrinks the image
+      # between the two boots.
+      - name: A volume is never served on a disk too small to hold it
+        run: make smoke-fs-shrink
+      - name: Control arm — part of a filesystem served as whole
+        run: make smoke-fs-shrink-control
+
+  installer-accounts:
+    name: "An installed machine has two accounts and either one boots it (S76)"
+    runs-on: ubuntu-latest
+    # Raised from 45 on 2026-09-03 because the job genuinely does more work, not
+    # because anything got slower: the [G-13] steps below add a deliberately
+    # THROTTLED install, and its format is ~4,700 disk operations at 12 IOPS, so
+    # it costs ~392s by construction on any host. Backstop, not a performance
+    # budget -- the four steps measure ~20 minutes locally.
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # The first login of boot 2 is the whole property. h_auth unlocks the
+      # volume with the typed password BEFORE it consults the account table, so
+      # an account with no key slot opens nothing and is not found -- while
+      # working perfectly on a machine somebody else has already opened. A test
+      # that logs in as root first can never see it, so this logs in as the USER.
+      - name: The everyday account is the first login after a power cycle
+        run: make smoke-installer-accounts
+      # The arm, and its third step is what makes the pair mean something: after
+      # the refusal it logs root in and then the SAME user, separating "the
+      # account is broken" from "the account has no key slot".
+      - name: Control arm — no key slot, so the account cannot open its own machine
+        run: make smoke-installer-accounts-control
+      # S83. Two blank disks, install onto the SECOND, then power on again and
+      # require the volume to be on device 1 and device 0 still blank. No return
+      # code can say which disk was erased -- the format reports 0 either way --
+      # so the assertion is the next boot's survey.
+      - name: The install goes onto the disk that was chosen (S83)
+        run: make smoke-installer-target
+      - name: Control arm — the chosen disk ignored, another one erased
+        run: make smoke-installer-target-control
+      # [G-13]. The format's bound is a STALL, not a total, because no total can
+      # separate a slow disk from a wedge at any value. The base gate throttles
+      # the guest to 12 IOPS -- format ~420s, past the 300s that used to fail
+      # this -- and requires the install to SUCCEED; the arm wedges the format
+      # halfway through the metadata region and requires the failure to NAME a
+      # wedge, which is the distinction the old message could not draw.
+      - name: A 12-IOPS disk is slow, not wedged, and the install still completes (G-13)
+        run: make smoke-installer-slowdisk
+      - name: Wedge the format halfway and require the stall bound to catch and NAME it
+        run: make smoke-installer-wedge-control
+
+  smoke-resume-guard:
+    name: The resume-%rsp floor guard fires and is heard (and both control arms are not)
+    runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 105
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Return a bogus resume rsp on purpose and require the guard's PANIC line on serial
+        run: make smoke-resume-guard SMOKE_TIMEOUT=180
+      # The state another CPU's FATAL exception leaves behind. This is the arm
+      # that would have caught G-8's mute guard: before the fix, the report was
+      # bracketed fatal=1, lost the permanent claim, and halted without printing.
+      - name: Hold the permanent panic claim first and require the report ANYWAY
+        run: make smoke-resume-guard-preclaim SMOKE_TIMEOUT=180
+      # Both control arms, in the same job. Without them a green run above is
+      # consistent with the gate measuring the existence of the injection rather
+      # than whether the guard reported it.
+      - name: Restore the pre-fix fatal bracket and require the report to be INAUDIBLE
+        run: make smoke-resume-guard-legacy SMOKE_TIMEOUT=180
+      - name: Compile the guard out and require the report to be INAUDIBLE
+        run: make smoke-resume-guard-nofloor SMOKE_TIMEOUT=180
+      # The guard's OTHER half. Everything above injects 4, which is below the
+      # floor; -7 is 0xFFFFFFFFFFFFFFF9 and sits ABOVE it, so a floor-only test
+      # missed the whole negative class. A real boot produced exactly -7.
+      - name: Return a NEGATIVE bogus resume rsp and require the guard's PANIC line
+        run: make smoke-resume-guard-negative SMOKE_TIMEOUT=180
+      - name: Restore the floor-only predicate and require the report to be INAUDIBLE
+        run: make smoke-resume-guard-negative-control SMOKE_TIMEOUT=180
+      # FALSE POSITIVES. Every arm above injects a bogus value and asks whether
+      # the report APPEARS, so a predicate that rejected the entire address space
+      # would pass all of them -- and one that rejected the IST stacks did. The
+      # ceiling shipped bounded to .bss on the premise that every kernel stack is
+      # a .bss array; the IST stacks are in .data, IST1 takes #PF, and the guard
+      # halts on rejection, so the kernel died on the first ring-3 page fault of
+      # any workload. Ten gates went red and this job stayed green.
+      - name: Require the guard to stay SILENT on a legal IST resume rsp
+        run: make smoke-resume-guard-ist SMOKE_TIMEOUT=180
+      - name: Restore the bss-only bound and require the FALSE rejection to appear
+        run: make smoke-resume-guard-ist-control SMOKE_TIMEOUT=180
+
 
   invariants:
     name: "Every security property is bound to a witness that exists"
@@ -296,8 +594,12 @@ jobs:
       - name: Build kernel.elf (${{ matrix.config }})
         run: make ${{ matrix.config }}
 
+  # SHARD of what was one 59-step job, split 2026-09-21 because it ran for 54
+  # minutes and set the wall time of every CI run. Steps are unchanged and in
+  # their original order; only the job boundary moved.
+  # Boot, boot media and SATA.
   smoke:
-    name: QEMU smoke-boot (headless)
+    name: "QEMU smoke-boot (headless)"
     runs-on: ubuntu-latest
     # Backstop, not a performance budget: this job normally finishes in
     # minutes. Without it the default is 360, so a runner wedged on its
@@ -344,6 +646,24 @@ jobs:
       # NOT the constant, or it could not fail.
       - name: Control arm — a plausible constant capacity is caught
         run: make smoke-ahci-capacity-control
+
+  # Shard of the smoke-boot job (see `smoke`). SD/eMMC probing.
+  smoke-sdhci:
+    name: "SD/eMMC host controller: detection, capacity, writes, bridges"
+    runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 105
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86 grub-efi-amd64-bin ovmf
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
       # What storage a LAPTOP has. ata.c reaches legacy IDE and ahci.c reaches
       # SATA; neither reaches an SD/eMMC host controller, which is what a budget
       # machine's soldered internal storage sits behind. No other gate attaches
@@ -384,6 +704,24 @@ jobs:
       # placed on bus 0 by QEMU. The gate is worthless without this half.
       - name: Control arm — bus 0 only, and the controller vanishes
         run: make smoke-sdhci-bridge-control
+
+  # Shard of the smoke-boot job (see `smoke`). Installing onto SD/eMMC.
+  smoke-installer-sd:
+    name: "An install onto an SD/eMMC card, and its control arms"
+    runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 105
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86 grub-efi-amd64-bin ovmf
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
       # THE ONE THAT MATTERS FOR A LAPTOP. Everything above tests the driver
       # against the driver's own harness; this drives the whole install onto a
       # card through the block layer, the filesystem and the installer, then
@@ -407,6 +745,24 @@ jobs:
       # superblock.
       - name: Control arm — an unscaled card block address is caught
         run: make smoke-installer-sd-stride-control
+
+  # Shard of the smoke-boot job (see `smoke`). The framebuffer and its console.
+  smoke-fb:
+    name: "Framebuffer: the GRUB tag, the mapping, the console and its grid"
+    runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 105
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86 grub-efi-amd64-bin ovmf
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
       # WHAT THE DISPLAY IS. The multiboot2 framebuffer tag is always present, so
       # this arm runs on an ordinary boot and asserts the GEOMETRY as well as the
       # mode -- a parser reading a field from the wrong offset still prints
@@ -491,6 +847,24 @@ jobs:
         run: make smoke-fb-grid
       - name: Control arm — a console claiming rows the display lacks is caught
         run: make smoke-fb-grid-control
+
+  # Shard of the smoke-boot job (see `smoke`). Console handover and the keyboard.
+  smoke-keyboard:
+    name: "The machine's own keyboard, with and without a serial port"
+    runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 105
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86 grub-efi-amd64-bin ovmf
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
       # A console driver that fails AFTER taking the console must still be heard.
       # Ownership passes on the first successful VGA map, and from then the
       # kernel's print() records to the klog and stops driving the wire -- so a
@@ -541,6 +915,25 @@ jobs:
       # without asking whether a UART is there to answer it.
       - name: Control arm — no UART, and the floating bus believed
         run: make smoke-keyboard-noserial-control
+
+  # Shard of the smoke-boot job (see `smoke`). A job of its own because each
+  # boot types a whole session and the pair takes nine minutes.
+  smoke-console-backspace:
+    name: "Backspace erases on the screen, and its control arm"
+    runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 105
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86 grub-efi-amd64-bin ovmf
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
       # Backspace on the SCREEN. console_server drew the 0x08 as a glyph, so the
       # "\b \b" erase painted rubbish and advanced three columns while the line
       # buffer stayed correct -- worst of all in a masked password field. Every
@@ -551,6 +944,26 @@ jobs:
       # The arm draws the 0x08, as the shipping build did until 2026-09-12.
       - name: Control arm — backspace drawn instead of rubbing out
         run: make smoke-console-backspace-control
+
+  # Shard of the smoke-boot job (see `smoke`). The console's last two gates, then
+  # install media, the format authorisation, the measured command line and the
+  # boot menu.
+  smoke-install-media:
+    name: "Scrolling, a typed install, and replacing or measuring what boots"
+    runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 105
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86 grub-efi-amd64-bin ovmf
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
       # A full screen must scroll rather than restart at the top. Input over
       # serial, assertion on pixels; three dmesg runs fill the screen with
       # DISTINCT lines, because scrolling uniform content gives an identical
@@ -625,6 +1038,7 @@ jobs:
       # hang it reproduces.
       - name: Control arm — every byte pays the full bound
         run: make smoke-serial-bound-control
+
 
   smoke-aspace:
     name: QEMU address-space reclaim self-test (a rebuilt slot leaks nothing)
@@ -825,10 +1239,6 @@ jobs:
       # property of cap_lookup: both rest on what create_task happens to do, in
       # another file. The witness manufactures both conditions, because a refusal
       # test whose ungated path could not have succeeded witnesses nothing.
-      #
-      # THREE STEPS IN THIS JOB, not a job of their own: a new job is a new
-      # required context, and the ruleset is synced by hand after the merge
-      # ([C-6]), so a new gating job would leave it one context behind.
       - name: A cspace-less task and an out-of-range slot are both refused
         run: make smoke-cap-lookup
       - name: Control arm — restore the fallback and require the escalation
@@ -853,10 +1263,6 @@ jobs:
       # capability goes to a task of its own, holding it and nothing else, rather
       # than to captest, whose negative probes are only worth anything because its
       # absence of authority is real.
-      #
-      # THESE ARE STEPS IN THIS JOB, not a job of their own, for the reason given
-      # forty lines up: a new job is a new required context and the ruleset is
-      # synced by hand after the merge ([C-6]).
       - name: A task holding one CAP_AUDIT runs both audit handlers, and nothing else
         run: make smoke-auditprobe
       # Issue #176 itself, on the wrapper it was about and nothing had called.
@@ -1477,8 +1883,58 @@ jobs:
           packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86
       - name: Add bare-metal Rust target
         run: rustup target add x86_64-unknown-none
-      - name: Boot SMP_SELFTEST kernel under -smp 4 and assert APs run scheduled tasks + TLB shootdown
+      - name: Boot SMP_SELFTEST kernel on 8 CPUs and assert every AP runs scheduled tasks + TLB shootdown
         run: make smoke-smp
+      # Eight CPUs on the topologies firmware produces, not only QEMU's default:
+      # sparse LAPIC ids, SMT, and more threads than slots (docs/ARCHITECTURE.md
+      # section 7). Every schedulable AP must run a task and none may be an SMT
+      # sibling, and the online count is part of the required marker.
+      - name: Eight CPUs on contiguous, sparse, SMT and oversubscribed topologies
+        run: make smoke-smp-topology
+      - name: Control arm, CPU index equal to LAPIC id loses the sparse cores
+        run: make smoke-smp-topology-sparse-control
+      - name: Control arm, SMT sibling-ness from the index schedules a sibling
+        run: make smoke-smp-topology-sibling-control
+
+  # THE SMP RACE BASE GATES AGAIN, UNDER KVM (2026-09-21). Every gate's evidence
+  # is measured under TCG and stays there; this job adds a second environment,
+  # not a replacement. Under KVM the vCPUs run truly in parallel, which TCG
+  # rarely achieves, and that is how HORUS-20260921-03 (a slot reused under a
+  # CPU still on its stack) was found: smoke-switch-commit met the window on its
+  # first KVM run. BASE gates only: under KVM three race control arms stopped
+  # reproducing, so their arms stay TCG-only, where they are proven to fail.
+  # QEMU_ACCEL=kvm makes the harness refuse to run at all without a usable
+  # /dev/kvm, so this job cannot report a TCG run as a KVM one.
+  smoke-smp-kvm:
+    name: SMP race gates again under KVM (a second environment, base gates only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 105
+    env:
+      QEMU_ACCEL: kvm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86 python3
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # GitHub's Linux runners expose /dev/kvm but not to the runner user; this is
+      # the documented udev rule. Checked afterwards, so a runner without KVM
+      # fails this step by name instead of every gate below.
+      - name: Grant /dev/kvm to the runner and require it usable
+        run: |
+          set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+          [ -r /dev/kvm ] && [ -w /dev/kvm ]
+      # The gate list is SMP_KVM_GATES in the Makefile, so this job and a local
+      # `make smoke-smp-kvm` cannot drift apart.
+      - name: The SMP race base gates, under KVM
+        run: make smoke-smp-kvm
 
   smoke-smt:
     name: QEMU SMT sibling-parking self-test (headless, -smp 4 cores=2 threads=2)
@@ -1611,6 +2067,24 @@ jobs:
         run: make smoke-proc-truncated-image-control
       - name: Control arm — an ELF reaching past its image reads the shared staging region
         run: make smoke-proc-overreach-control
+      # HORUS-20260920-02 (S98). create_task leaves a reused slot's wait record
+      # in place, and the probe spawned into a waiter's old slot must find it.
+      - name: Control arm, a reused task slot must not inherit the previous wait record
+        run: make smoke-proc-exit-record-control
+      # HORUS-20260921-01 (S99). SYS_WAIT answers a caller holding no CAP_TCB
+      # for its target, and proctest must say so by name.
+      - name: Control arm, waiting on a task needs a CAP_TCB naming it
+        run: make smoke-proc-wait-control
+      # HORUS-20260921-02 (S100). A CAP_TCB compared by slot alone names whatever
+      # reused a dead task's slot, and proctest must say so by name.
+      - name: Control arm, a CAP_TCB for a dead task names nothing
+        run: make smoke-proc-tcb-reuse-control
+      # HORUS-20260921-04 (S56). At four CPUs, since smoke-proc's single CPU can
+      # never have the victim running while it is killed.
+      - name: A task killed while it runs stops, and stops writing shared memory
+        run: make smoke-killed-task
+      - name: Control arm, a dead task resumed by the tick keeps writing
+        run: make smoke-proc-killed-task-control
 
   smoke-cow:
     name: QEMU copy-on-write self-test (headless)
@@ -1632,7 +2106,7 @@ jobs:
         run: make smoke-cow
 
   smoke-pagefree:
-    name: The page free path refuses a frame it did not lend (S99)
+    name: The page free path refuses a frame it did not lend (S102)
     runs-on: ubuntu-latest
     # Backstop, not a performance budget: this job normally finishes in
     # minutes. Without it the default is 360, so a runner wedged on its
@@ -1879,6 +2353,32 @@ jobs:
       - name: Restore println() reporting and require the report to be INAUDIBLE
         run: make smoke-kfault-legacy SMOKE_TIMEOUT=180
 
+  smoke-kfault-record:
+    name: A kernel fault's exit record carries no kernel address (S97)
+    runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes;
+    # that cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 105
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # HORUS-20260920-01. The exit record is readable by any task with no
+      # authority, so a supervisor fault must not put kernel text (or a
+      # kernel-half fault address) in it: under KASLR one such value is the slide.
+      - name: Make the kernel fault on a task's behalf and read the record back from ring 3
+        run: make smoke-kfault-record SMOKE_TIMEOUT=180
+      # The control arm, in the same job: the defect put back, and proctest
+      # must name the kernel rip it finds.
+      - name: Put the kernel rip back in the record and require proctest to catch it
+        run: make smoke-kfault-record-control SMOKE_TIMEOUT=180
+
   smoke-kdiag:
     name: A kernel marker cannot be cut in half by ring-3 output (S81)
     runs-on: ubuntu-latest
@@ -1916,55 +2416,6 @@ jobs:
       - name: Declaring the port lets ring 3 into the kernel's channel
         run: make smoke-kdiag-grant-control
 
-  smoke-resume-guard:
-    name: The resume-%rsp floor guard fires and is heard (and both control arms are not)
-    runs-on: ubuntu-latest
-    # Backstop, not a performance budget: this job normally finishes in
-    # minutes. Without it the default is 360, so a runner wedged on its
-    # package install idles for six hours and the run never concludes --
-    # which cost three runs on 2026-08-19. See CHANGES.md.
-    timeout-minutes: 105
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
-      - name: Install build toolchain + QEMU
-        uses: ./.github/actions/apt
-        with:
-          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86
-      - name: Add bare-metal Rust target
-        run: rustup target add x86_64-unknown-none
-      - name: Return a bogus resume rsp on purpose and require the guard's PANIC line on serial
-        run: make smoke-resume-guard SMOKE_TIMEOUT=180
-      # The state another CPU's FATAL exception leaves behind. This is the arm
-      # that would have caught G-8's mute guard: before the fix, the report was
-      # bracketed fatal=1, lost the permanent claim, and halted without printing.
-      - name: Hold the permanent panic claim first and require the report ANYWAY
-        run: make smoke-resume-guard-preclaim SMOKE_TIMEOUT=180
-      # Both control arms, in the same job. Without them a green run above is
-      # consistent with the gate measuring the existence of the injection rather
-      # than whether the guard reported it.
-      - name: Restore the pre-fix fatal bracket and require the report to be INAUDIBLE
-        run: make smoke-resume-guard-legacy SMOKE_TIMEOUT=180
-      - name: Compile the guard out and require the report to be INAUDIBLE
-        run: make smoke-resume-guard-nofloor SMOKE_TIMEOUT=180
-      # The guard's OTHER half. Everything above injects 4, which is below the
-      # floor; -7 is 0xFFFFFFFFFFFFFFF9 and sits ABOVE it, so a floor-only test
-      # missed the whole negative class. A real boot produced exactly -7.
-      - name: Return a NEGATIVE bogus resume rsp and require the guard's PANIC line
-        run: make smoke-resume-guard-negative SMOKE_TIMEOUT=180
-      - name: Restore the floor-only predicate and require the report to be INAUDIBLE
-        run: make smoke-resume-guard-negative-control SMOKE_TIMEOUT=180
-      # FALSE POSITIVES. Every arm above injects a bogus value and asks whether
-      # the report APPEARS, so a predicate that rejected the entire address space
-      # would pass all of them -- and one that rejected the IST stacks did. The
-      # ceiling shipped bounded to .bss on the premise that every kernel stack is
-      # a .bss array; the IST stacks are in .data, IST1 takes #PF, and the guard
-      # halts on rejection, so the kernel died on the first ring-3 page fault of
-      # any workload. Ten gates went red and this job stayed green.
-      - name: Require the guard to stay SILENT on a legal IST resume rsp
-        run: make smoke-resume-guard-ist SMOKE_TIMEOUT=180
-      - name: Restore the bss-only bound and require the FALSE rejection to appear
-        run: make smoke-resume-guard-ist-control SMOKE_TIMEOUT=180
-
   smoke-kstack-race:
     name: A task's kernel stack is executed by at most one CPU (S20; and the control arm proves it)
     runs-on: ubuntu-latest
@@ -1998,6 +2449,13 @@ jobs:
       # is fatal at the pre-fix release site and harmless at the shipped one.
       - name: Restore the pre-fix release site and require the race to REPRODUCE
         run: make smoke-kstack-race-control
+      # S20, slot reuse (HORUS-20260921-03): a spawn must not reuse a slot whose
+      # kernel stack a CPU is still on. The window is held open, busy slots must
+      # be refused, and at least one refusal must happen or the run proves nothing.
+      - name: A slot is not reused while a CPU is still on its kernel stack
+        run: make smoke-kstack-reuse
+      - name: Control arm, slot choice by state alone reuses a busy slot
+        run: make smoke-kstack-reuse-control
       # S20 AT THE NEW WIDTH. MAX_TASKS went 64 -> 256 on 2026-08-30, and both
       # things this job rests on were sized for 64: the per-task kernel stacks
       # (a static .bss array, one slot per task) and g_kstack_inflight (ONE
@@ -2006,11 +2464,6 @@ jobs:
       # below 64, so neither defect is reachable by anything else in this job --
       # which is why the ceiling needs a witness of its own rather than trusting
       # the sessions above.
-      #
-      # THREE STEPS IN THIS JOB RATHER THAN A JOB OF THEIR OWN: a new job is a
-      # new required context, and the ruleset that decides required contexts is
-      # synced by hand after the merge ([C-6]), so a new gating job would leave
-      # the ruleset one context behind until someone ran --sync-ruleset.
       - name: An alias pair (t, t-64) has distinct stacks, cspaces and inflight bits
         run: make smoke-task-ceiling
       - name: Restore the single-word mask and require the witness to ALIAS
@@ -2183,12 +2636,6 @@ jobs:
       # The falsifying arm for the 2026-08-30 SC_NONE promotions. Without it, a
       # promotion captest's probes EARNED is indistinguishable from one that was
       # free all along, and deleting the probes would leave this gate green.
-      #
-      # A STEP IN THIS JOB RATHER THAN A JOB OF ITS OWN, deliberately: a new job
-      # is a new required context, and the ruleset that decides required contexts
-      # is synced by hand after the merge ([C-6]), so a new gating job leaves the
-      # ruleset one context behind until someone runs --sync-ruleset. A step adds
-      # the check without adding that lag.
       - name: Remove the probes and require the gate to name exactly its twelve
         run: make smoke-syscall-coverage-control
 
@@ -2480,54 +2927,6 @@ jobs:
       # and the empty /bin is the consequence checked after it.
       - name: Control arm — a sealed store that answers leaves /bin empty for good
         run: make smoke-installer-provision-control
-
-  installer-accounts:
-    name: "An installed machine has two accounts and either one boots it (S76)"
-    runs-on: ubuntu-latest
-    # Raised from 45 on 2026-09-03 because the job genuinely does more work, not
-    # because anything got slower: the [G-13] steps below add a deliberately
-    # THROTTLED install, and its format is ~4,700 disk operations at 12 IOPS, so
-    # it costs ~392s by construction on any host. Backstop, not a performance
-    # budget -- the four steps measure ~20 minutes locally.
-    timeout-minutes: 75
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
-      - name: Install build toolchain + QEMU
-        uses: ./.github/actions/apt
-        with:
-          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86
-      - name: Add bare-metal Rust target
-        run: rustup target add x86_64-unknown-none
-      # The first login of boot 2 is the whole property. h_auth unlocks the
-      # volume with the typed password BEFORE it consults the account table, so
-      # an account with no key slot opens nothing and is not found -- while
-      # working perfectly on a machine somebody else has already opened. A test
-      # that logs in as root first can never see it, so this logs in as the USER.
-      - name: The everyday account is the first login after a power cycle
-        run: make smoke-installer-accounts
-      # The arm, and its third step is what makes the pair mean something: after
-      # the refusal it logs root in and then the SAME user, separating "the
-      # account is broken" from "the account has no key slot".
-      - name: Control arm — no key slot, so the account cannot open its own machine
-        run: make smoke-installer-accounts-control
-      # S83. Two blank disks, install onto the SECOND, then power on again and
-      # require the volume to be on device 1 and device 0 still blank. No return
-      # code can say which disk was erased -- the format reports 0 either way --
-      # so the assertion is the next boot's survey.
-      - name: The install goes onto the disk that was chosen (S83)
-        run: make smoke-installer-target
-      - name: Control arm — the chosen disk ignored, another one erased
-        run: make smoke-installer-target-control
-      # [G-13]. The format's bound is a STALL, not a total, because no total can
-      # separate a slow disk from a wedge at any value. The base gate throttles
-      # the guest to 12 IOPS -- format ~420s, past the 300s that used to fail
-      # this -- and requires the install to SUCCEED; the arm wedges the format
-      # halfway through the metadata region and requires the failure to NAME a
-      # wedge, which is the distinction the old message could not draw.
-      - name: A 12-IOPS disk is slow, not wedged, and the install still completes (G-13)
-        run: make smoke-installer-slowdisk
-      - name: Wedge the format halfway and require the stall bound to catch and NAME it
-        run: make smoke-installer-wedge-control
 
   passwd-target:
     name: "passwd <uid> changes that account, and only that account (S75)"
@@ -3585,8 +3984,12 @@ jobs:
       - name: Boot CONC_SELFTEST kernel and assert concurrent clients each receive only their own replies
         run: make smoke-fs-conc
 
+  # SHARD of what was one 34-step job, split 2026-09-21 because it ran for 33
+  # minutes. Steps are unchanged and in their original order; only the job
+  # boundary moved.
+  # Persistence and the crash-consistency of the metadata cache.
   smoke-fs-persist:
-    name: QEMU filesystem persistence self-test (two-boot, headless)
+    name: "QEMU filesystem persistence self-test (two-boot, headless)"
     runs-on: ubuntu-latest
     # Backstop, not a performance budget: this job normally finishes in
     # minutes. Without it the default is 360, so a runner wedged on its
@@ -3632,6 +4035,26 @@ jobs:
       # conclude instead of passing.
       - name: Control arm — a run whose working set fits the cache tests nothing
         run: make smoke-meta-crash-vacuity-control
+
+  # Shard of the filesystem job (see `smoke-fs-persist`). Merkle freshness, fsck,
+  # allocation, the ATA and vdisk bounds, key slots, persisted accounts and the
+  # storage survey.
+  smoke-fs-integrity:
+    name: "Filesystem integrity, the block layer, key slots and accounts"
+    runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 105
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
       # S66, Arm B. Three boots on one image, with the HOST restoring a genuine
       # past state of one metadata block and the level-0 node that recorded it
       # between boots 2 and 3 — bytes this volume really did produce, so the
@@ -3652,22 +4075,6 @@ jobs:
         run: make smoke-fsck-refs
       - name: Control arm — a shallow reference walk frees a live file's blocks
         run: make smoke-fsck-refs-control
-      # The end-to-end gate for the storage track. Two boots on a SPARSE 16 GiB
-      # image (~130 MiB actually written): format, write past the old 1.00 GiB
-      # double-indirect ceiling, reboot, read it back. Boot 1 pays for zeroing a
-      # 128 MiB metadata region and hashing it into the tree through emulated
-      # PIO, hence the minutes-long budget; boot 2 mounts in the ordinary time,
-      # which is the difference the Merkle tree bought.
-      - name: A 16 GiB volume formats, survives a reboot, and holds a file past 1 GiB
-        run: make smoke-fs-16g
-      # S68's other half. Now that the device is sized from IDENTIFY, a superblock
-      # claiming more blocks than the disk has means a truncated copy — serving it
-      # would present part of a filesystem as whole. The host shrinks the image
-      # between the two boots.
-      - name: A volume is never served on a disk too small to hold it
-        run: make smoke-fs-shrink
-      - name: Control arm — part of a filesystem served as whole
-        run: make smoke-fs-shrink-control
       # The allocator scans the data bitmap for a free bit, and where it starts
       # decides the cost: from block 0 every time, a mostly-full volume costs a
       # scan of the whole bitmap PER ALLOCATION. One boot on a 2 GiB image,
@@ -3736,6 +4143,7 @@ jobs:
       # the wrong disk, handed to a program deciding which disk to erase.
       - name: Control arm — an out-of-range device index answered anyway
         run: make smoke-storage-device-clamp-control
+
 
   smoke-fs-wal:
     name: QEMU filesystem journal crash-recovery self-test (two-boot, headless)
@@ -4005,9 +4413,13 @@ jobs:
         run: make smoke-ap-trampoline
       - name: Restore the flat link and require the embed bound to refuse it
         run: make smoke-ap-trampoline-control
-      - name: Build twice and compare kernel.elf hashes
+      # The first build is SERIAL and the second PARALLEL (the workflow's
+      # MAKEFLAGS), so this also proves every other job's -j4 builds are the
+      # same bytes a serial build produces: a Makefile race that changed an
+      # artifact would make the two hashes differ here.
+      - name: Build twice, serially then in parallel, and compare hashes
         run: |
-          make reproducible-build
+          MAKEFLAGS= make reproducible-build
           cp .build.sha first.sha
           make reproducible-build
           cp .build.sha second.sha
@@ -4064,6 +4476,11 @@ jobs:
   security:
     name: Security scans + SBOM generation (Semgrep, Trivy, gitleaks, etc.)
     runs-on: ubuntu-latest
+    # Serial on purpose: `make security` and `make gitleaks cargo-audit` name
+    # several scanners as prerequisites, which -j would run at once and whose
+    # logs would interleave. They are not builds, so there is nothing to gain.
+    env:
+      MAKEFLAGS: ""
     # Backstop, not a performance budget: this job normally finishes in
     # minutes. Without it the default is 360, so a runner wedged on its
     # package install idles for six hours and the run never concludes --
@@ -4418,6 +4835,7 @@ jobs:
         run: |
           set -euo pipefail
           tools/test_check_ci_gating.sh
+          tools/test_ci_gate_verdict.sh
           tools/test_check_doc_claims.sh
       # The last unfalsified checker. Only its PARSER half is armed -- the
       # measuring half is 88 clean builds and QEMU boots -- and that is where the

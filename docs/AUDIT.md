@@ -111,9 +111,9 @@ and at 0x8B7000 on Void, while `.bss` was 0x6E3000 on both. The checker also tie
 this finding also turned up **HORUS-20260919-02**, a verified boot module that could change after
 its hash was taken, fixed in PR #402 (`LIMITATIONS.md` 1.15).
 
-### 3.3 The physical free path is safe only by its callers' discipline, *Low*, closed 2026-09-21, **[F3]**
+### 3.3 The physical free path is safe only by its callers' discipline, *Low*, closed 2026-09-22, **[F3]**
 
-**Closed** as **S99** (`LIMITATIONS.md` 2.5a): the free path now refuses any frame that is not out on
+**Closed** as **S102** (`LIMITATIONS.md` 2.5a): the free path now refuses any frame that is not out on
 loan, tracked by a separate bitmap, because the refcount check recommended below cannot tell a
 first free from a second (tables are freed at count one, leaves at zero).
 
@@ -195,9 +195,11 @@ outstanding.
 been modified by one person, and this audit was performed by a tool the same person directed. It
 is not a substitute for outside review.
 
-**[C-6] Ruleset reconciliation lags a merge.** *High (process)*, open. F1's CI witness was added as
-two steps inside the existing `reproducible` job precisely so it introduces no new required context
-and needs no ruleset change; the general lag the predecessor recorded is unchanged.
+**[C-6] Ruleset reconciliation lags a merge.** *High (process)*, open at this audit and **fixed
+2026-09-21** (`LIMITATIONS.md` 5.2): the ruleset now requires one aggregated check from `ci.yml`,
+whose `needs:` is proved equal to the gating classification in the PR itself, so a new gate no
+longer waits on a hand sync. F1's CI witness was added as two steps inside the existing
+`reproducible` job, before that, precisely so it needed no ruleset change.
 
 ---
 

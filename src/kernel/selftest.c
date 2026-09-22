@@ -1305,6 +1305,24 @@ static int smp_spawn_worker(uint32_t entry, uint32_t size, const uint8_t *payloa
     return pid;
 }
 
+/* Build a marker line in a caller's buffer, bounded, for one print(). */
+static void smp_marker_str(char *b, int *n, int cap, const char *t) {
+    while (*t && *n < cap - 1) b[(*n)++] = *t++;
+}
+static void smp_marker_dec(char *b, int *n, int cap, uint64_t v) {
+    char d[24]; int k = 0;
+    do { d[k++] = (char)('0' + (v % 10)); v /= 10; } while (v && k < 24);
+    while (k > 0 && *n < cap - 1) b[(*n)++] = d[--k];
+}
+static void smp_marker_hex(char *b, int *n, int cap, uint64_t v) {
+    static const char hx[] = "0123456789abcdef";
+    int started = 0;
+    for (int sh = 60; sh >= 0; sh -= 4) {
+        int dgt = (int)((v >> sh) & 0xF);
+        if (dgt || started || sh == 0) { started = 1; if (*n < cap - 1) b[(*n)++] = hx[dgt]; }
+    }
+}
+
 void smp_selftest(void) {
     extern uint8_t embedded_preempttest_bin_start[];
     extern uint8_t embedded_preempttest_bin_end[];
@@ -1353,7 +1371,27 @@ void smp_selftest(void) {
         unsigned mask = smp_cpus_ran_tasks;
         int distinct = 0;
         for (int c = 0; c < 32; c++) if (mask & (1u << c)) distinct++;
-        if (distinct >= 2 && ap_timer_ticks > t0 + 10) {
+        /* No task may EVER run on an SMT sibling (smp.c: ap_entry64 parks them,
+         * so a sibling's core-partner cannot read it through a shared L1/L2).
+         * Checked on every poll, not only at the end: a count of cores online
+         * cannot see this, because deciding sibling-ness from the wrong number
+         * parks as many CPUs as the right one does, just not the same ones. */
+        extern int cpu_is_smt_sibling(int cpu);
+        for (int c = 0; c < MAX_CPUS; c++) {
+            if ((mask & (1u << c)) && cpu_is_smt_sibling(c)) {
+                print("SMP_SELFTEST: FAIL task-ran-on-smt-sibling cpu=");
+                print_decimal((uint64_t)c); print("\n");
+                for (;;) asm volatile("hlt");
+            }
+        }
+        /* EVERY schedulable AP must have run a task, not merely two CPUs
+         * (2026-09-21): "N cores online" is a claim about scheduling, and a core
+         * that came online and never pulled work would satisfy the old test.
+         * The BSP is excluded because it is running this loop and never
+         * schedules a worker. */
+        int aps_ran = 0;
+        for (int c = 1; c < MAX_CPUS; c++) if (mask & (1u << c)) aps_ran++;
+        if (aps_ran >= online - 1 && ap_timer_ticks > t0 + 10) {
             /* Multi-core scheduling proven. Now exercise the TLB-shootdown
              * round-trip: broadcast to the (busy, interrupts-enabled) APs and
              * confirm every one flushed and acknowledged. */
@@ -1366,12 +1404,22 @@ void smp_selftest(void) {
                 print_decimal(smp_shootdown_pending); print("\n");
                 for (;;) asm volatile("hlt");
             }
-            print("SMP_SELFTEST: PASS online="); print_decimal(online);
-            print(" cpus_ran=0x"); print_hex(mask);
-            print(" distinct="); print_decimal(distinct);
-            print(" ap_ticks="); print_decimal((uint32_t)ap_timer_ticks);
-            print(" shootdown=ok");
-            print("\n");
+            /* ONE write (docs/LIMITATIONS.md 2.6a): smoke-smp-topology asserts
+             * "SMP_SELFTEST: PASS online=<n> " as a single string, so the line
+             * is assembled whole and printed once rather than in six pieces
+             * another CPU's output could land between. */
+            char line[160]; int n = 0;
+            smp_marker_str(line, &n, sizeof(line), "SMP_SELFTEST: PASS online=");
+            smp_marker_dec(line, &n, sizeof(line), (uint64_t)online);
+            smp_marker_str(line, &n, sizeof(line), " cpus_ran=0x");
+            smp_marker_hex(line, &n, sizeof(line), (uint64_t)mask);
+            smp_marker_str(line, &n, sizeof(line), " distinct=");
+            smp_marker_dec(line, &n, sizeof(line), (uint64_t)distinct);
+            smp_marker_str(line, &n, sizeof(line), " ap_ticks=");
+            smp_marker_dec(line, &n, sizeof(line), (uint64_t)(uint32_t)ap_timer_ticks);
+            smp_marker_str(line, &n, sizeof(line), " shootdown=ok\n");
+            line[n] = 0;
+            print(line);
             for (;;) asm volatile("hlt");
         }
     }

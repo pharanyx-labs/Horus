@@ -384,6 +384,28 @@ in this file.
 
 ### Added
 
+- **The SMP race gates also run under KVM, as a second detector** (`smoke-smp-kvm`, advisory for
+  now). Under KVM the virtual CPUs run truly in parallel, which emulation rarely achieves, and a
+  probe of the whole suite under KVM found **[HORUS-20260921-03]** on its first run. The suite
+  stays on TCG: KVM gave no net speed-up and three race control arms stopped reproducing under
+  it, so only base gates run in the new job. `QEMU_ACCEL=kvm` in `tools/smoke_test.sh` and
+  `tools/session_test.py` refuses to run without a usable `/dev/kvm` rather than falling back.
+
+- **Up to eight CPUs, and eight by default** (`MAX_CPUS`, now in `src/include/cpu_limits.h`,
+  the one definition the C side, the AP trampoline and the GDT's reserved TSS slots all read).
+  A machine with fewer boots and runs on what it has. CPU indices no longer equal LAPIC ids:
+  the BSP numbers the CPUs from the MADT before waking any AP (itself first, then primary
+  threads, then SMT siblings, each id once), because firmware often numbers LAPICs with gaps,
+  and under the old scheme a machine with ids 0-2, 4-6, 8 and 9 brought up six of its eight
+  cores, and an SMT machine failed the SMP self-test outright. SMT sibling-ness is now decided
+  from the LAPIC id, never the index (**S101**, new). The SMP self-test requires every AP to
+  run a task and none to be a sibling, and the new `make smoke-smp-topology` boots four
+  topologies with two control arms (`APIC_ID_IS_CPU_INDEX=1`, `SMT_SIBLING_BY_INDEX=1`).
+  `SMP_CPUS` defaults to 8, and every gate and control arm that follows it was run at 8 before
+  the change: all passed and every arm still reproduced. `.bss` grows by 400 KiB, about 104 KiB
+  per supported CPU; `docs/LIMITATIONS.md` 3.3 says why the ceiling is eight and what going
+  further needs.
+
 - **The docs and the website keep the writing rules by check, not by request** (required job
   `prose-style`, `tools/check_prose_style.py`, `TESTS.md`). Every em dash, `&mdash;`/`&#8212;`
   entity and spaced double hyphen is gone from the prose of the documentation set, over two
@@ -504,9 +526,129 @@ in this file.
   `.bss` rather than the end of the image because the same tree ends 12 KiB apart on CI's compiler
   and on Void's. Falsified by `tools/test_check_image_budget.sh` (11 arms).
 
+### Changed
+
+- **Every CI build used one of the runner's four cores.** Each of the ~370 build-and-boot steps in
+  `ci.yml` does `make clean` and a full build, serially: locally 8.9 s of build against 4 s of
+  boot, and 2.0 s at `-j12`. The workflow now sets `MAKEFLAGS=-j4`. Measured locally first: every
+  artifact (`kernel.elf` and every `userspace/*.bin`) was byte-identical serially and in parallel,
+  in three configurations, twice each. The `reproducible` job now builds once serially and once in
+  parallel, so CI keeps proving that on every run. The `security` job stays serial.
+
+- **A CI run took nearly an hour, set by two jobs.** Measured on the run for #413: 122 jobs, a
+  median of 52 seconds each, and a wall time of 56 minutes, because `smoke` ran 59 gates one
+  after another (54 minutes) and `smoke-fs-persist` 34 (33 minutes) while every other job had
+  finished in the first quarter of an hour. Both are now split into ten jobs along the seams
+  their steps already had, with every step moved verbatim, each gate beside its control arm,
+  and every shard required through `gates`. The floor is the 16 GiB volume gate at about
+  fourteen minutes; it and the next two longest jobs are defined first in `ci.yml` so they start
+  before the runner queue fills. No gate was dropped, weakened or reclassified: the same `make`
+  steps run, and `check_gate_pairs` still finds every one.
+
 ### Fixed
 
-- **The page free path now refuses a frame it did not lend** (`SECURITY.md` **S99**,
+- **The kernel-stack park control arm went red about one run in ten with the defect present.**
+  `smoke-kstack-park-control` restores the shared park stack and recognised it only when two
+  different CPUs parked in the same boot. In about half of boots only one CPU did, and on 3 of 31
+  measured runs none of the 8 boots had a second parking CPU (one run put all 2 parks of all 8
+  boots on CPU 1), so the arm failed while the defect was plainly there. It is the arm CLAUDE.md
+  names as its worked example of an unreliable gate. `sched_note_park` now also halts on the
+  first park on any stack that is not the parking CPU's own, which is the defect itself seen on
+  one CPU: caught on 20 boots of 20, including the 10 with a single park, and 10 arm runs of 10
+  on their first boot. The base gate gets the same check, so it can fail on a single wrong park
+  too. Found while measuring whether `MAKEFLAGS=-j4` (#418) caused the arm's failures; it did
+  not (the arm failed serially too).
+
+- **A new task could be written onto a kernel stack another CPU was still using** (`SECURITY.md`
+  **S20**, **[HORUS-20260921-03]**). Kernel stacks are indexed by task slot, and a slot counted
+  as free the moment its task was torn down, while the CPU that ran it could still be unwinding
+  its own trap frame off that stack. A spawn in that window wrote the new task's first frame on
+  top of it. The shipping kernel reaches this when `init` relaunches the shell into the old
+  shell's slot. Found by the KVM probe of CI, where a resumed task's `rip` pointed into its own
+  stack, and reproduced under emulation with a window-widener. A slot is now handed out only when
+  no CPU is on its stack, and `create_task` refuses one that is. New gate `make
+  smoke-kstack-reuse` with a control arm (`SLOT_REUSE_UNCHECKED=1`); two `proctest` phases that
+  respawn into a just-freed slot now retry in rounds instead of assuming the slot is free at once.
+- **A task killed while it ran on another CPU kept running** (`SECURITY.md` **S56**,
+  **[HORUS-20260921-04]**). When `SYS_KILL` (or a signal's default action) tore down a task that
+  another CPU was running in ring 3, that CPU's tick re-claimed the dead task and, if nothing else
+  was runnable, returned into it. Measured: a spinner killed mid-spin was resumed on every tick
+  for as long as the test watched (383 in a row at four CPUs), still reading and writing memory it
+  shared with live tasks after its capabilities were gone. A dead task's system calls were also
+  dispatched before its death was noticed, so its `SYS_EXIT` could rewrite its own death record.
+  The tick now never resumes a dead task; the CPU running it is sent a kill IPI (vector 0xFC) at
+  once; a dead task's system calls are not dispatched; and a dead task cannot be torn down again.
+  New gate `make smoke-killed-task` (four CPUs) with a control arm (`DEAD_TASK_RUNS=1`).
+
+- **A capability for a dead task controlled whatever task reused its slot** (`SECURITY.md`
+  **S100**, **[HORUS-20260921-02]**). A `CAP_TCB` carried the bare task-slot number, and a
+  spawner's copy outlives the child, so once the slot was reused the capability named the new
+  occupant. Measured before the fix, with nothing but that stale capability: a signal killed an
+  unrelated task (it had no handler), the waiter then read its death record, and in a second run
+  the holder delegated a capability into it and killed it with `SYS_KILL`. A `CAP_TCB` now names
+  the slot and the slot's generation, which `create_task` increments on every reuse, so it names
+  one incarnation only; a bare slot number names nothing. `SYS_KILL`, `SYS_SIGNAL`,
+  `SYS_TASK_RESUME`, `SYS_CAP_GRANT` and `SYS_WAIT` check and act under the spawn lock, which every
+  task-creating path holds, so the slot cannot be reused between the two, and a pending wait is
+  re-checked against its generation before it registers. `make smoke-proc` reproduces the reuse
+  with a new helper, `slotheir`, and requires all five operations to be refused; its control arm
+  (`TCB_GENERATION_UNCHECKED=1`) is caught by name, with `smoke-proc` red on that build.
+
+- **A new CI gate did not block merges until someone synced the ruleset by hand** (**[C-6]**,
+  closed; roadmap 4.2 done). The branch ruleset listed every required job, 122 contexts, and
+  `--sync-ruleset` (which needs an admin token) had to run after the merge that added a job,
+  because a required context `main` cannot produce never reports and froze every pull request on
+  2026-08-16. In between, a gate was classified and not enforced: five merges in a row once. The
+  ruleset now requires two contexts: **All required gates passed** (the new `gates` job in
+  `ci.yml`) and CodeQL. `gates` needs every required `ci.yml` job, runs whatever they did
+  (`if: always()`), and passes only if each one reported success; skipped and cancelled count as
+  failures (`tools/ci_gate_verdict.py`), because GitHub treats a skipped required check as
+  satisfied. `ci-gating` now proves `gates` needs exactly the `required:` list, runs under
+  `always()`, and hands the verdict every result, so a job classified as required gates in the PR
+  that classifies it. Nine new arms in `tools/test_check_ci_gating.sh` and ten in the new
+  `tools/test_ci_gate_verdict.sh` show each rule and each verdict going red. `ruleset-audit`
+  still compares the live ruleset daily. Two older statements corrected on the way: `TESTS.md`
+  said `smoke-recvblock` and `smoke-fs-wal` were not required, and both are.
+
+- **A kernel fault handed ring 3 the kernel's own address** (`SECURITY.md` **S97**,
+  **[HORUS-20260920-01]**). When the kernel faulted while working for a task, it killed that task
+  and wrote the kernel's faulting `rip` into the task's exit record, which any task can read with
+  no authority through `SYS_WAIT` and `SYS_TASK_EXIT_INFO`. Measured as `interrupt_handler64 +
+  0x7b9`: with a fixed base it discloses nothing `kernel.elf` does not, but under the KASLR
+  roadmap 3.8 plans, one such value is the slide. The record now keeps `rip` only for a ring-3
+  frame and a fault address only in the user half; the full frame still goes to the UART in the
+  kfault banner. New gate `make smoke-kfault-record`: `proctest` makes the kernel fault in a
+  child's own syscall at 0x94 and at a kernel-half address, reads each record back from ring 3,
+  and requires `rip` 0 with 0x94 kept (so zeroing everything cannot pass). Its control arm
+  (`EXIT_RECORD_KERNEL_RIP=1`) puts the kernel rip back and is caught by name, and the base gate
+  goes red on that build. The hook that lets a test child steer a kernel read exists only under
+  `KFAULT_RECORD_SELFTEST`, which the kernel announces at boot.
+
+- **A task could read the previous occupant's death record from its reused slot** (`SECURITY.md`
+  **S98**, **[HORUS-20260920-02]**). `SYS_TASK_EXIT_INFO` answers with no authority and promises
+  `TASK_EXIT_NONE` before a task's first wait, but `create_task` never cleared the record, so a
+  task landing in a reused slot was told about its predecessor's last wait: the tid it supervised,
+  that task's name, and its faulting rip. Both records are now cleared when a slot is reused, and
+  the name in a record is zeroed past its terminator. `make smoke-proc` gains the end-to-end
+  check: a `waiter` leaves a real record behind, `proctest` fills the free slots below it with
+  suspended probes until one lands in the waiter's old slot (no change to how the kernel picks a
+  slot), and that probe requires its record to be all zeros. The control arm
+  (`EXIT_RECORD_STALE_ON_REUSE=1`) is caught by name, and `smoke-proc` goes red on that build.
+
+- **Any task could wait on any other task and read why it died** (`SECURITY.md` **S99**,
+  **[HORUS-20260921-01]**). `SYS_WAIT` tested no authority at all, so a task could block on any
+  tid, and a slot that was dead or never used answered at once with its exit record: the reason,
+  the killer, the faulting rip and address, and the name. Every spawner was already handed a
+  `CAP_TCB` for its child, and a kernel comment said the wait would refuse without one; nothing
+  checked it. `SYS_WAIT` now requires a `CAP_TCB` naming the target with READ, checked before
+  anything else about the slot, and `CAP_USER` does not stand in for it. The two test programs
+  that waited on a task they did not spawn are now handed its `CAP_TCB` with `SYS_CAP_GRANT`, and
+  `init` stops with a named FATAL instead of relaunching the shell if a wait on it is ever refused.
+  `make smoke-proc` requires the refusal for a slot the driver holds no capability for, and its
+  control arm (`WAIT_TCB_UNCHECKED=1`) is caught by name, with `smoke-proc` red on that build.
+  `docs/SYSCALLS.md` also named `CAP_USER` / `CAP_AUDIT` as the authority for
+  `SYS_GET_TASK_INFO`, a month after it became `CAP_DEBUG`; corrected.
+- **The page free path now refuses a frame it did not lend** (`SECURITY.md` **S102**,
   **[HORUS-20260919-01]**, audit F3). `free_user_physical_page` pushed whatever it was handed onto
   the free stack, so a caller that freed a frame twice would have made the pool hand it to two
   owners; nothing did, but only because every caller remembered. The audit's suggested guard (refuse
@@ -514,6 +656,9 @@ in this file.
   leaves at zero. The pool now keeps one bit per frame, set when a frame is handed out and cleared
   when it comes back, and a free is accepted only for a frame that is out on loan. A double free, an
   address outside the pool and a reserve or boot-module frame are refused and reported to the klog.
+  The free path now takes the full 64-bit address: every caller cast it to 32 bits, so an address
+  above 4 GiB could have been truncated onto a frame on loan and passed the guard; the self-test
+  checks exactly that alias, and a truncating build fails it by name.
   This costs 16 KiB of `.bss`, recorded in `.github/image-budget.yml`. New gate `make
   smoke-pagefree`, with a control arm (`PAGE_FREE_UNGUARDED=1`) caught by name. Before landing it,
   six gates (`smoke`, `smoke-proc`, `smoke-cow`, `smoke-captest`, `smoke-fs`, `smoke-nzcow`) were

@@ -1646,10 +1646,11 @@ with a justification the measurement disproved.
   **The disclosure surface was surveyed first, on 2026-09-20**
   ([`docs/investigations/kernel-pointer-disclosure.md`](investigations/kernel-pointer-disclosure.md)),
   because a randomised base a task can read back through a syscall is a decoration rather than a
-  mitigation. It found two paths that must close before randomising anything: a supervisor-mode
-  fault writes a kernel text address into a ring-3 task's exit record, readable with no capability
-  (**[HORUS-20260920-01]**, `LIMITATIONS.md` §1.16), and a reused task slot keeps the previous
-  occupant's wait record (**[HORUS-20260920-02]**, §1.17). It also leaves two decisions that bound
+  mitigation. It found two paths that had to close before randomising anything, and both are
+  closed (2026-09-21): a supervisor-mode fault wrote a kernel text address into a ring-3 task's
+  exit record, readable with no capability (**[HORUS-20260920-01]**, `LIMITATIONS.md` §1.16,
+  now **S97**), and a reused task slot kept the previous occupant's wait record
+  (**[HORUS-20260920-02]**, §1.17, now **S98**). It also leaves two decisions that bound
   what KASLR could claim: what the kernel does on a machine with no UMIP, where `SIDT` and `SGDT`
   defeat the randomisation outright from ring 3, and whether the kernel log keeps printing raw
   kernel addresses to a `CAP_KERNEL_LOG` holder. On the credit side CR4.TSD is already set, so the
@@ -1701,7 +1702,7 @@ both files carrying the **[C-1]** logic, `src/kernel/syscall_ipc.c` and
   buy an approval nobody independent gave. `SECURITY.md` scopes the claim to *"thoroughly
   automatically verified"* rather than *"independently reviewed"*; that is a mitigation and is
   labelled as one.
-- **4.2 🚧 Gate the security tests: [C-6].** `strict_required_status_checks_policy` is now
+- **4.2 ✅ Gate the security tests: [C-6]** (2026-09-21). `strict_required_status_checks_policy` is now
   **true**, and `smoke-captest`; the witness for eight of `SECURITY.md`'s S-numbered
   properties, and the single most consequential omission, became a required check on
   2026-08-15, when the required set was 22 of 66 jobs and it was the only security gate among
@@ -1722,10 +1723,10 @@ neither, in both, or names a job that no longer exists. No default, defaulting i
 caught CodeQL unclassified on its first run, which is the same omission class the finding
 describes.
 
-The intended set is **121 required, 3 exempted** (121 jobs, 124 contexts (re-derive it with
+The gating set is **132 required, 4 exempted** (133 jobs, 136 contexts (re-derive it with
 `tools/check_ci_gating.py`, never from this line)) `fuzz` (a 30-second time-boxed search is
-evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on), and
-`ruleset-audit` (schedule-only, so it never runs on a pull request). `smoke-fs-wal` was an
+evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on),
+`ruleset-audit` (schedule-only, so it never runs on a pull request), and `smoke-smp-kvm` (a second run, under KVM, of gates already required under TCG, until its KVM pass rate is measured). `smoke-fs-wal` was an
 exemption until **[I-11]** was fixed on 2026-08-16 and it was promoted back;
 `smoke-session-smp-soak` until **[G-8]** was closed on 2026-08-17 and it was promoted with it;
 `smoke-kstack-park` until **[G-9]** closed on 2026-08-21, promoted in #190 the day after. **All
@@ -1738,16 +1739,14 @@ claims, and `doc-claims` can only check the one that is a number.) The count ros
 72 on 2026-08-17 with `smoke-exec-reenter` and `smoke-cr3-reclaim`, the gates for [G-9]'s exec
 component and [G-10]'s page-table use-after-free, each with a control arm. The promotions are
 backed by measurement: across 18 CI runs sampled on 2026-08-16, 64 of 66 jobs had zero failures
-in 1152 job-executions. `smoke-fs-wal` is *demoted*, a flaky required check trains the
-maintainer to re-run red, and its durability claim is now carried by the deterministic
-`smoke-fs-wal-flush` / `smoke-fs-wal-order`.
+in 1152 job-executions.
 
 **Synced 2026-08-16**, 22 required contexts toward 67, strict policy true, no bypass actors. The
 first attempt was run from a feature branch and so required three contexts `main` could not
 produce (the `ci-gating` job and the two [I-10] gates) which blocks every PR on a check that
 never reports. `tools/prune_unsatisfiable_checks.py` dropped them (67 → 64) and encodes the
-rule: **never require a context the base branch cannot produce.** Promotion lags the job landing
-by one merge; re-run `--sync-ruleset` after each such PR.
+rule: **never require a context the base branch cannot produce.** Promotion therefore had to lag
+the job landing by one merge, with `--sync-ruleset` re-run after each such PR, until 2026-09-21.
 
 **What kept 4.2 open was verification, not promotion**, and the mechanism for it landed on
 2026-08-17. Reading a ruleset needs the `Administration` permission, which is not among the
@@ -1768,15 +1767,16 @@ audit that skips when unconfigured is a check that cannot fail, which is the def
 repository has already been bitten by twice, and that is why the day it started working is
 visible at all.
 
-**4.2 stays 🚧 for the other reason: syncing is still manual.** `--sync-ruleset` writes the
-ruleset and needs an admin token, so a PR adding a gating job leaves the ruleset one context
-behind until someone runs it afterwards. The audit now makes that lag visible the next morning
-rather than indefinitely, which is a different thing from removing it. **Marking this ✅ while
-promotion is still a human step would be the [G-2] mistake**, a document asserting a property
-that nothing yet enforces.
-
-  Until then, `python3 tools/check_ci_gating.py --check-ruleset` is the check, and it has to be
-  run deliberately. Read the count from the API, never from this paragraph.
+**4.2 closed on 2026-09-21, when promotion stopped being a human step.** While the ruleset
+listed every job, `--sync-ruleset` (which needs an admin token) had to run after each PR that
+added a gating job, and the audit could only make the lag visible the next morning. The ruleset
+now requires two contexts: the `gates` job in `ci.yml`, which needs every required `ci.yml` job
+and passes only if all of them succeeded (skipped and cancelled count as failures), and CodeQL.
+The `ci-gating` job proves `gates` needs exactly the classification's `required:` list, so a job
+classified as required gates in the PR that classifies it. Both the rules and the verdict are
+falsified, one arm per way the aggregate could stop carrying a gate (`TESTS.md`, "One required
+check stands for the rest"). The ruleset needs a sync only when those two contexts change, and
+`ruleset-audit` still compares it daily.
 - **4.3 ✅ Hard-fail `gitleaks` and `cargo-audit`** (2026-08-30). Both run in their own step
   above the advisory one, so `continue-on-error` cannot hide a finding. Semgrep and Trivy stay
   advisory as planned, until their false-positive rate on a freestanding kernel is characterised;
@@ -1839,7 +1839,7 @@ table already has the four columns a registry needs (id, statement, enforcing co
 the table *is* the registry. A hand-maintained parallel manifest would be a second copy of
 claims that already exist, which is **[H-3]**'s shape: two descriptions of one thing, drifting.
 The manifest that remains (`.github/invariants.yml`) holds exemptions only, and today it is
-**empty**, all 98 properties name a witness that resolves.
+**empty**, all 104 properties name a witness that resolves.
 
 **What the survey found on the way.** **S16** had no witness at all, an em-dash against
 `fpu_save`/`fpu_restore`, real code called on every ring transition and exercised by nothing.
@@ -1878,7 +1878,7 @@ past it.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue`, §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 361 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 187 of them control arms that must reproduce a defect |
+| ✅ | 376 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 196 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

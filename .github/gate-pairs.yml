@@ -31,6 +31,8 @@
 # like an old one.
 
 control_arms:
+  smoke-smp-topology-sparse-control: smoke-smp-topology
+  smoke-smp-topology-sibling-control: smoke-smp-topology
   smoke-cap-accounting-control: smoke-captest
   smoke-reply-ep-control: smoke-reply-ep
   smoke-captest-capenum-control: smoke-captest
@@ -168,12 +170,18 @@ control_arms:
   smoke-pipe-cspace-order-control: smoke-pipe
   smoke-meta-evict-control: smoke-meta-evict
   smoke-kfault-legacy: smoke-kfault
+  smoke-kfault-record-control: smoke-kfault-record
+  smoke-proc-exit-record-control: smoke-proc
+  smoke-proc-wait-control: smoke-proc
+  smoke-proc-tcb-reuse-control: smoke-proc
+  smoke-proc-killed-task-control: smoke-killed-task
   smoke-pagefree-control: smoke-pagefree
   smoke-klog-forge-abi-control: smoke-klog-forge
   smoke-klog-forge-control: smoke-klog-forge
   smoke-ksp-guard-control: smoke-ksp-guard
   smoke-kstack-park-control: smoke-kstack-park
   smoke-kstack-race-control: smoke-kstack-race
+  smoke-kstack-reuse-control: smoke-kstack-reuse
   smoke-libhorus-retry-control: smoke-libhorus
   smoke-libhorus-strncpy-control: smoke-libhorus
   smoke-measured-boot-required-control: smoke-measured-boot-required
@@ -337,11 +345,13 @@ gates:
   - smoke-irq
   - smoke-irq-policy
   - smoke-kfault
+  - smoke-kfault-record
   - smoke-pagefree
   - smoke-klog-forge
   - smoke-ksp-guard
   - smoke-kstack-park
   - smoke-kstack-race
+  - smoke-kstack-reuse
   - smoke-libhorus
   - smoke-mapphys
   - smoke-measured-boot-required
@@ -362,6 +372,7 @@ gates:
   - smoke-pipe
   - smoke-preempt
   - smoke-proc
+  - smoke-killed-task
   - smoke-recvblock
   - smoke-recvblock-smp
   - smoke-repro-sha
@@ -384,6 +395,8 @@ gates:
   - smoke-shlibc-link
   - smoke-signal
   - smoke-smp
+  - smoke-smp-topology
+  - smoke-smp-kvm
   - smoke-smt
   - smoke-spawn-owner
   - smoke-stackguard

@@ -1010,11 +1010,20 @@ the 512 MiB QEMU configuration the pool is 495 MiB, so that is roughly 465 MiB o
 re-verification runs once, before userspace; a write after that is kept off the modules by the
 placement alone.
 
-### 1.16 A supervisor-mode fault writes a kernel text address into a ring-3 task's exit record **[HORUS-20260920-01]**
+### 1.16 ~~A supervisor-mode fault writes a kernel text address into a ring-3 task's exit record~~ (**FIXED 2026-09-21**, `SECURITY.md` S97) **[HORUS-20260920-01]**
 
 *Found 2026-09-20 by the kernel-pointer disclosure survey,
 [`investigations/kernel-pointer-disclosure.md`](investigations/kernel-pointer-disclosure.md),
-which roadmap 3.8 needs before KASLR can mean anything.*
+which roadmap 3.8 needs before KASLR can mean anything; fixed 2026-09-21.*
+
+**Closed.** Every cause built from a trap frame goes through `exit_record_rip`, which records `rip`
+only for a ring-3 frame, and `exit_record_addr`, which records a fault address only in the user
+half (`src/kernel/idt.c`). The second goes one step past the original finding: a supervisor fault
+on a kernel-half address would have put that address in the same record. `make
+smoke-kfault-record` makes the kernel take a supervisor #PF in a task's own syscall, once at 0x94
+and once at a kernel-half address, and reads both records back from ring 3; its control arm,
+`EXIT_RECORD_KERNEL_RIP=1`, puts the kernel rip back and is caught by name. The account of the
+finding follows.
 
 `page_fault_handler` deliberately kills the current task for a **supervisor** fault as well as a
 ring-3 one, so that the kernel touching a bad user address mid-syscall costs a task rather than the
@@ -1032,13 +1041,21 @@ the killed `console_server` carried `rip=0xffffffff80108479`, which `nm -n kerne
 script the address is already in `kernel.elf` for anyone to read. This is the same shape as §1.3,
 where `info.cr3` is zeroed and another task's `eip` withheld for exactly this reason, and it turns
 into a slide oracle the day roadmap 3.8 moves the base, disclosed with no authority and at the
-moment a kernel memory-safety defect is being exercised. The fix is to record `rip` only for a
-ring-3 frame; the kernel-side value already reaches the maintainer through the `kfault_frame`
-banner at the UART, which is where it belongs.
+moment a kernel memory-safety defect is being exercised. The kernel-side value still reaches the
+maintainer through the `kfault_frame` banner at the UART, which is where it belongs.
 
-### 1.17 A reused task slot keeps the previous occupant's wait record **[HORUS-20260920-02]**
+### 1.17 ~~A reused task slot keeps the previous occupant's wait record~~ (**FIXED 2026-09-21**, `SECURITY.md` S98) **[HORUS-20260920-02]**
 
-*Found by the same survey.*
+*Found by the same survey; fixed 2026-09-21.*
+
+**Closed.** `create_task` clears `exit_info` and `wait_exit_info` beside the other fields it resets, and
+`task_teardown` zeroes the whole 32-byte name rather than only its terminator. `make smoke-proc` now
+reads the record end to end in a reused slot: a `waiter` completes a real wait and dies, and the
+driver spawns suspended `exitprobe` tasks until one lands in the waiter's old slot, which the
+kernel's lowest-free-slot scan guarantees without changing it. That probe asks for its record
+before ever waiting and requires every byte to be zero. The control arm,
+`EXIT_RECORD_STALE_ON_REUSE=1`, leaves the old record in place and is caught by name. The account
+of the finding follows.
 
 `create_task` resets fifteen fields of a reused slot by hand, and states the discipline in place:
 set here, not left to slot-reuse staleness. `exit_info` and `wait_exit_info` are not among them. The
@@ -1049,8 +1066,8 @@ use and only reuse is at issue.
 ever waited, and `include/syscall.h` documents the opposite: asking before any wait has completed is
 promised `TASK_EXIT_NONE` rather than a stale answer. In a reused slot it answers the previous
 occupant's record instead, which names the tid it supervised, that task's faulting RIP and fault
-address, and its name. A dead task's RIP defeats the ASLR of a task that shared its image, and under
-roadmap 3.8 the same field can carry a kernel address by §1.16.
+address, and its name. A dead task's RIP defeats the ASLR of a task that shared its image. (Until
+§1.16 closed, the same field could also carry a kernel address.)
 
 **Latent rather than observed, measured both ways.** Under `PROC_SELFTEST` the record is
 demonstrably left in the freed slot: `proctest` dies holding the death record of the `faulter` child
@@ -1062,10 +1079,132 @@ reversing the scan was tried and rejected as evidence, since it perturbs the wor
 the defect. The end-to-end read is therefore the witness that lands with the fix, not a claim made
 ahead of it.
 
-The fix is to clear both fields in `create_task` beside the other fifteen. It also disposes of a
-smaller residue: `task_teardown` writes the dead task's name and terminates it, leaving the bytes
-past the terminator as whatever the slot last held, and all 32 are copied to the waiter.
+A smaller residue went with it: `task_teardown` wrote the dead task's name and terminated it,
+leaving the bytes past the terminator as whatever the slot last held, and all 32 are copied to the
+waiter.
 
+
+### 1.18 ~~Any task may wait on any task~~ (**FIXED 2026-09-21**, `SECURITY.md` S99) **[HORUS-20260921-01]**
+
+*Noted by the survey that found §1.16 and §1.17; fixed 2026-09-21.*
+
+**Closed.** `h_wait` requires a `CAP_TCB` naming the target with READ, and nothing else stands in
+for it: `CAP_USER` answers `SYS_KILL` too, but administering users is not authority to observe every
+task, and that bundling is the one roadmap 3.6 removed from `SYS_GET_TASK_INFO`. The check comes before the
+slot's state, so a caller without the capability is refused in the same way whether the task is
+live, dead or was never created. `make smoke-proc` waits on a dead slot the driver holds no `CAP_TCB`
+for, before it has spawned anything, and requires the refusal; its control arm,
+`WAIT_TCB_UNCHECKED=1`, removes the check and is caught by name. The two test programs that waited on
+a task they did not spawn (`sigwaiter` and `waiter`) now hold a `CAP_TCB` delegated with
+`SYS_CAP_GRANT`, and `init` stops with a named FATAL rather than relaunching the shell if a wait on it
+is ever refused. The account of the finding follows.
+
+`SYS_WAIT` is `SC_NONE` in the dispatch table, and `h_wait` tested neither parentage nor any
+capability. The spawn path already gave every spawner a `CAP_TCB` for its child, and the comment
+beside `grant_child_tcb_cap` said `SYS_WAIT` would refuse without one, but nothing read it. So any
+task could block on any tid, and a tid that read `TASK_DEAD` (which is also what a never-used slot
+reads) was answered at once from the slot, handing over its exit record: the reason, the killer,
+the faulting rip and address, and the name.
+
+A second question this raised, whether a `CAP_TCB` for a dead task names whatever reuses its slot,
+was measured the same day and was a finding of its own: §1.19.
+
+### 1.19 ~~A capability for a dead task names whatever reuses its slot~~ (**FIXED 2026-09-21**, `SECURITY.md` S100) **[HORUS-20260921-02]**
+
+*Measured and fixed 2026-09-21, from the question §1.18 left open.*
+
+**Closed.** A `CAP_TCB` carries `tcb_object(id)`: the slot number and the slot's generation, which
+`create_task` increments before the slot goes live and nothing else writes. `task_tcb_held` compares
+both, so a capability names one incarnation and never its successor; a bare slot number has
+generation 0 and names nothing. Every writer of a `CAP_TCB` object encodes it: `create_task` (a
+task's own slot 0), the spawn grant, `h_sudo`, and `cap_install_from_root`, which encodes for its
+callers rather than trusting each. The check alone would leave a window between checking and acting,
+so the five syscalls a `CAP_TCB` authorises (`SYS_KILL`, `SYS_SIGNAL`, `SYS_TASK_RESUME`,
+`SYS_CAP_GRANT`, `SYS_WAIT`) now check and act under the spawn lock, which every task-creating path
+already holds: a slot cannot be reused between the two. A pending `SYS_WAIT` records the generation
+it was authorised against, and `ipc_publish_pending_block` re-checks it under the same lock before
+registering the waiter, so a wait authorised for one task can never be registered on its successor.
+
+`make smoke-proc` reproduces the reuse end to end without changing how the kernel picks a slot: the
+driver keeps the `CAP_TCB` for a child that has died, and `slotheir`, which the driver spawned
+first, spawns a task into the lowest free slot (the child's) and keeps that task's capability. Every
+one of the five operations is then tried with the stale capability and must be refused while the
+heir stays alive; the phase fails the test by name if the heir did not land in the slot. The control
+arm, `TCB_GENERATION_UNCHECKED=1`, compares by slot number alone and is caught by name. The account
+of the finding follows.
+
+A task slot is handed out again as soon as its occupant dies (`do_spawn_inner` takes the lowest free
+one), and nothing revoked the `CAP_TCB` a spawner holds for its child when the child died. The
+capability's object was the bare slot number, so after a reuse it named the new occupant. Measured
+on the kernel before the fix, with nothing but that stale capability, the driver:
+
+- **signalled** the heir with `SIGUSR1`, which has no handler in it, so the default action
+  **killed** it;
+- then **waited** on the slot and was handed the heir's death record (`reason=3`, the heir's tid);
+- in a second run, **delegated** one of its own capabilities into the heir with `SYS_CAP_GRANT`,
+  and **killed** it with `SYS_KILL`.
+
+A `CAP_TCB` spreads further than its spawner: fork copies a parent's into the child, and
+`SYS_CAP_GRANT` delegates it. Each copy outlived its task in the same way.
+
+### 1.20 ~~A spawn could reuse a slot whose kernel stack a CPU was still on~~ (**FIXED 2026-09-21**, `SECURITY.md` S20) **[HORUS-20260921-03]**
+
+*Found 2026-09-21 by the KVM probe of CI, and demonstrated under emulation the same day.*
+
+**Closed.** A slot is handed out only when it is dead and no CPU is on its kernel stack:
+`sched_pick_free_slot()` (`src/kernel/scheduler.c`) requires the slot's in-flight bit clear and no
+CPU's real task to be it, under the scheduler lock, inside the spawn lock, and both spawn paths
+(`do_spawn_inner`, `h_fork`) use it. `create_task` refuses a slot that fails the same test, so a
+caller choosing its own slot fails closed too. Both conditions only go from true to false for a
+dead slot, so the choice cannot go stale before it is used. `make smoke-kstack-reuse` widens the
+window and requires busy slots refused and none reused; its control arm restores the old picker and
+is caught by name. The account of the finding follows.
+
+Kernel stacks are indexed by slot (`per_task_kstacks[]`), and `create_task` fabricates a new task's
+first trap frame at the top of its slot's stack: exactly where the hardware pushed the previous
+occupant's trap frame. `task_teardown` marks a slot dead while a CPU can still be on its stack: the
+dying CPU itself, still unwinding its own ISR frame until the epilogue leaves the stack (whether it
+switches, parks because nothing is runnable, or parks after the resume guard refused a value), or a
+CPU that was running the task when another CPU killed it. Slot selection tested `state == 0` alone,
+so a spawn in that window wrote a new frame over one still in use.
+
+The shipping kernel reaches it: `init` relaunches the shell as soon as its wait returns, the wait
+returns when the dying shell's teardown wakes it, and the new shell takes the lowest free slot,
+which is usually the old shell's. Under emulation the window is almost never met, which is why no
+gate saw it. Under KVM, where virtual CPUs run truly in parallel, `smoke-switch-commit` met it on
+its first run: `sigwaiter`, spawned into the slot the kernel's `hello` had just exited from, resumed
+with `rip` pointing into its own kernel stack. Held open with `KSTACK_REUSE_WIDEN`, the old picker
+reused a busy slot on the first boot every time it was tried.
+
+**The open question this entry recorded was answered the same day, and was a finding of its own.**
+A task torn down by another CPU while it ran in ring 3 was resumed by the tick when nothing else
+was runnable; measured and closed as §1.21.
+
+*Found 2026-09-21 while investigating [HORUS-20260921-03]; measured and fixed the same day.*
+
+**Closed.** `preempt_on_tick` never resumes a task that has been torn down: it does not re-claim it,
+deliver its signals or save its context, and it switches the CPU to other work or parks it, with
+the dead task's kernel stack marked in flight until the CPU has left it. `task_teardown` sends the
+kill IPI (vector 0xFC) to any other CPU still running the task, so the CPU is taken back at once
+rather than at its next tick, and refuses a task that is already dead. A system call from a dead
+task is not dispatched. `make smoke-killed-task` (four CPUs) kills a task that is writing memory it
+shares with the driver, with no system call in its loop, and requires the memory to stop changing
+and the death record to still read killed; its control arm, `DEAD_TASK_RUNS=1`, restores the old
+behaviour and is caught by name. The account of the finding follows.
+
+`task_teardown` can run on one CPU for a task another CPU is running in ring 3 (`SYS_KILL`, or a
+signal's default action). That CPU's next tick found the dead task as its current task and treated
+it as live: it re-claimed it, delivered its signals, and, when nothing else was runnable, returned
+into it ("keep running cur"). Measured with a spinner that makes no system calls, killed while
+running: resumed on every tick for as long as the test watched, 383 ticks at `-smp 4` and 184 at
+`-smp 8`. Its capabilities were already gone, but its address space was not, so it kept reading
+and writing memory shared with live tasks: a task's authority outlived the task. A system call
+from it was dispatched before the death was noticed, and `SYS_EXIT` would have torn it down a
+second time and rewritten its own death record. It did not reach freed memory: a frame still
+mapped anywhere is not freed (`destroy_dyn_frame`), an address space is freed only when its slot is
+reused and never while another CPU has it loaded, and [HORUS-20260921-03] stops the slot being
+reused under it. The existing workloads never showed it because every task they killed made a
+system call soon after, and the system-call return path already noticed the death.
 
 ## 2. Correctness limitations
 
@@ -1373,13 +1512,15 @@ would have needed a cross-task *observability* capability to learn about its **o
 capability that names the object is the entitlement to know how big it is, so the authority is
 that capability.
 
-### 2.5a ~~The physical free path is safe by its callers, not by construction~~ (**FIXED 2026-09-21**, `SECURITY.md` S99) (audit F3) **[HORUS-20260919-01]**
+### 2.5a ~~The physical free path is safe by its callers, not by construction~~ (**FIXED 2026-09-22**, `SECURITY.md` S102) (audit F3) **[HORUS-20260919-01]**
 
-*Added 2026-09-19; fixed 2026-09-21.* **Closed.** `free_user_physical_page` now accepts a frame only if
+*Added 2026-09-19; fixed 2026-09-22.* **Closed.** `free_user_physical_page` now accepts a frame only if
 it is out on loan: `page_on_loan` in `src/kernel/paging.c` holds one bit per pool frame, set by
 `alloc_user_physical_page` and cleared by the free. A double free, an address outside the pool, an
 unaligned one, and a frame the pool never lends (the reserve window, a boot module's frames) are
-each refused without touching the free stack, and reported to the klog. The fix recommended below
+each refused without touching the free stack, and reported to the klog. The free path takes the
+full 64-bit address: its callers used to cast a page-table address to 32 bits, and an address above
+4 GiB truncated that way could alias a frame on loan and pass the guard. The fix recommended below
 (refuse a frame "already at count zero") could not have worked: a leaf is freed when its count
 reaches zero and a table at count one, so the count cannot tell a first free from a second. That
 is why the state is separate, at 16 KiB of `.bss`. `make smoke-pagefree` checks each refusal and a
@@ -2457,7 +2598,7 @@ the present cost is affordable and is not what blocks anything.
 |---|---|---|
 | Tasks | 256 **provisioned**, derived at boot | `g_max_tasks` (from the reserve; `MAX_TASKS` provisions it) |
 | Capabilities per task | 128 in use, 256 slots | `MAX_CAPS_PER_TASK`, `CNODE_SIZE` |
-| CPUs | 4 | `MAX_CPUS` |
+| CPUs | 8, and 8 by default; fewer boot and run on what is present | `MAX_CPUS` (`src/include/cpu_limits.h`) |
 | Static endpoints (well-known + per-task reply) | 128 | `MAX_ENDPOINTS` |
 | Retyped endpoint descriptors | 256 | `MAX_DYN_ENDPOINTS`, indices from `DYN_EP_BASE` |
 | Static notifications | 64 | `MAX_NOTIFICATIONS` |
@@ -2475,12 +2616,13 @@ the present cost is affordable and is not what blocks anything.
 
 **The whole kernel image is itself a ceiling, and one static object dominates it (audit F2,
 closed 2026-09-19).** The image must end below `USER_PHYS_BASE` (16 MiB), enforced by the
-`linker64.ld` ASSERT. `.bss` is budgeted at **7,068 KiB** (`.github/image-budget.yml`), and
+`linker64.ld` ASSERT. `.bss` is budgeted at **7,468 KiB** (`.github/image-budget.yml`), and
 `argon2_scratch` alone is 4,096 KiB of it: the argon2 `m_cost` (`ARGON2_M_COST_KIB = 4096`), a
 deliberate memory-hardness parameter that must not be trimmed to buy room. The whole image ends
-about 7.3 MiB below the line: at 0x8BA000 on a Void build (measured 2026-09-21), and a few pages
-lower on CI's compiler, because the code differs between compilers and `.bss` does not. Raising `MAX_TASKS`, `BLOCKS_PER_DISK` or
-the argon2 cost spends that room, and GRUB stages the boot modules in the same room (§1.15).
+about 6.9 MiB below the line: 0x91F000 on a Void build on 2026-09-22, after `MAX_CPUS` went from
+four to eight and took 400 KiB of it and the S102 on-loan bitmap took 16 KiB (CI's compiler has measured about 12 KiB lower, because the
+code differs between compilers and `.bss` does not). Raising `MAX_TASKS`, `MAX_CPUS`,
+`BLOCKS_PER_DISK` or the argon2 cost spends that room, and GRUB stages the boot modules in the same room (§1.15).
 
 **Growth is no longer silent.** `tools/check_image_budget.py` holds the default build's `.bss` to
 the budget exactly, in both directions, so every change to it is a line in the budget file that a
@@ -2697,6 +2839,18 @@ A shared runnable pool with a linear scan and no affinity, no load balancing bey
 "whoever asks first", no priorities beyond a stored-but-unused field, and no real-time
 guarantees. Under TCG emulation four cores are measurably *slower* than one; the
 multi-core benefit needs KVM or real hardware to appear.
+
+**Why the ceiling is eight, and what going further takes** (2026-09-21, when it rose from four).
+Each supported CPU costs about 104 KiB of `.bss` whether or not it is present (a 68 KiB idle
+stack with its guard page, three IST fault stacks, and a TSS with its I/O bitmap), and all of it
+must fit below `USER_PHYS_BASE`, where GRUB stages the boot modules. Past about 16 those per-CPU
+blocks need allocating at boot instead of reserving statically. The harder limit is contention:
+the scheduler, capability, IPC-endpoint, spawn, page and storage locks are each global, and
+selection scans the whole task table, so beyond eight to sixteen cores extra CPUs mostly wait on
+those locks. Using them needs per-CPU run queues and finer locking. xAPIC ids are eight bits, so
+more than 255 CPUs would also need x2APIC and interrupt remapping. The race gates of §5.2 were
+measured at four CPUs; `smoke-smp-topology` covers bring-up and scheduling at eight on four
+topologies, including sparse LAPIC ids and SMT.
 
 ### 3.4 No timers or clock
 
@@ -2986,13 +3140,23 @@ the property the author had in mind rather than the property the documentation c
 The assurance Horus can honestly claim today is *"thoroughly automatically verified"*, not
 *"independently reviewed"*.
 
-### 5.2 Which tests gate a merge is reconciled by hand: **[C-6]**
+### 5.2 ~~Which tests gate a merge is reconciled by hand~~ (**FIXED 2026-09-21**) **[C-6]**
 
-`.github/workflows/ci.yml` defines **119** jobs, `codeql.yml` one more and `ruleset-audit.yml`
-one more: **121** across the three, producing **124** status-check contexts. Ruleset `21815299`
-requires all **121** today, `smoke-kdiag` (**S81**) among them since 2026-09-03: one
-`--sync-ruleset` run after the pull request that added the job, which is the lag this finding is
-about rather than an exception to it. Its predecessor `19007209` required **22** of them before
+**Closed.** `.github/workflows/ci.yml` defines **131** jobs, `codeql.yml` one more and
+`ruleset-audit.yml` one more: **133** across the three, producing **136** status-check contexts.
+**132** of them gate a merge, and ruleset `21815299` requires the two contexts that carry them
+all: **All required gates passed** (the `gates` job, which needs every required ci.yml job and
+passes only if each one succeeded, skipped and cancelled counting as failures) and CodeQL's
+`analyze`, which lives in its own workflow. The `ci-gating` job proves `gates` needs exactly the
+`required:` list in `.github/ci-gating.yml`, so a job classified as required gates in the PR that
+classifies it, and no change to the classification waits on a hand sync. The ruleset needs one
+only when its own two contexts change (`gates` renamed, or a required job added outside
+`ci.yml`), and `ruleset-audit` compares it against the classification daily. The account of the
+finding follows.
+
+Before that, the ruleset listed every job: **122** contexts by 2026-09-21, `smoke-kdiag`
+(**S81**) among them since 2026-09-03, one `--sync-ruleset` run after the pull request that added
+the job, which was the lag this finding was about rather than an exception to it. Its predecessor `19007209` required **22** of them before
 2026-08-16, and until 2026-08-15 exactly **zero** of those 22 were security gates: capability
 conformance, kernel W^X, measured boot, boot-module tamper rejection, SMEP/SMAP presence,
 flush-on-switch and stack-guard reseed could all fail while a PR merged green. The required set
@@ -3036,9 +3200,10 @@ the right name with the wrong verdict. Step-level `continue-on-error` is untouch
 allowed; it lets one step be advisory while the job's own status still reports the truth, which
 is how the `security` job keeps its scanners advisory without becoming unfailable itself.
 
-That intended set is **121 required contexts and 3 reasoned exemptions**: `fuzz` (a 30-second
+That set is **132 gating contexts and 4 reasoned exemptions**: `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
-conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
+conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request),
+`smoke-smp-kvm` (a second run, under KVM, of gates already required under TCG, until its KVM pass rate is measured), and
 `smoke-kstack-park` was a fifth until **[G-9]** closed on 2026-08-21; it was promoted on
 2026-08-22 and **no exemption now stands for an open defect**. `smoke-fs-wal` was a third until
 [I-11] was fixed on 2026-08-16 and it was promoted back, and `smoke-session-smp-soak` a fourth
@@ -3100,13 +3265,15 @@ and this repository has been bitten by that three times now (`make test`'s `|| t
 scanner-presence step before #154, and `smoke-kstack-park`'s job-level `continue-on-error`
 above, which is the first of the three to have been *required* while it was unfailable).
 
-**What keeps [C-6] open is now only the second half.** `--sync-ruleset` writes the ruleset and
-needs an admin token, so a PR that adds a gating job leaves the ruleset one context behind until
-someone runs it afterwards. This very commit demonstrates it: adding the `doc-claims` job took
-the checked-in set to 74 while the live ruleset stayed at 73, and `--check-ruleset` reports
-`DIVERGED (1 missing, 0 unexpected)` until the sync is run. Promotion lags a merge by construction; the audit is what makes the
-lag visible the next morning instead of indefinitely. Read the count from the API or from that
-job's log, never from this paragraph.
+**The second half closed on 2026-09-21, by taking the per-job list out of the ruleset.**
+`--sync-ruleset` writes the ruleset and needs an admin token, so while the ruleset named every
+job, a PR that added a gating job left it one context behind until someone ran the sync
+afterwards. The commit that added the `doc-claims` job demonstrated it: the checked-in set went to
+74 while the live ruleset stayed at 73, and `--check-ruleset` reported `DIVERGED (1 missing, 0
+unexpected)` until the sync. Promotion lagged a merge by construction, and the audit only made the
+lag visible the next morning. The ruleset now requires the `gates` aggregator and CodeQL, and
+`gates`' `needs:` is checked against the classification inside the PR itself, so there is no lag
+left to fall into.
 
 **Measured 2026-09-02, and the number to keep is not the lag but what fits inside it.** The
 `installer` job: the S73 witness, "a disk is erased only after the word that means erase this
@@ -4355,7 +4522,7 @@ so neither was ever presented to a contributor. There was no code of conduct, an
 the IPC authorisation logic. All fixed as of 2026-07-27; the `require_code_owner_review`
 setting that would make `CODEOWNERS` binding is still off (§5.1).
 
-*(Repository hygiene itself is fine: `git ls-files` reports **423** tracked files with no build
+*(Repository hygiene itself is fine: `git ls-files` reports **431** tracked files with no build
 artefacts or vendored binaries: no `kernel.elf`, no `horus.iso`, no object files. A working
 checkout accumulates ~70 MB of untracked build output, which is correctly `.gitignore`d. This
 sentence said 243 until 2026-08-15 and **254 until 2026-09-20**, by which point the tree had

@@ -46,6 +46,21 @@ import subprocess
 import sys
 import time
 
+
+def qemu_accel():
+    """TCG unless QEMU_ACCEL=kvm; see the note at -accel in tools/smoke_test.sh.
+
+    kvm without a usable /dev/kvm is an error, not a silent fall back to TCG: a
+    job that reports KVM results must have run under KVM."""
+    accel = os.environ.get("QEMU_ACCEL", "tcg")
+    if accel == "tcg":
+        return accel
+    if accel == "kvm":
+        if not (os.access("/dev/kvm", os.R_OK) and os.access("/dev/kvm", os.W_OK)):
+            sys.exit("SESSION FAIL: QEMU_ACCEL=kvm but /dev/kvm is not usable")
+        return accel
+    sys.exit(f"SESSION FAIL: QEMU_ACCEL must be tcg or kvm, not {accel!r}")
+
 ISO = sys.argv[1] if len(sys.argv) > 1 else "horus.iso"
 STEP_TIMEOUT = float(os.environ.get("SESSION_TIMEOUT", "45"))
 BOOT_TIMEOUT = float(os.environ.get("BOOT_TIMEOUT", "90"))
@@ -229,7 +244,7 @@ class Serial:
 
         self.proc = subprocess.Popen(
             [qemu,
-             "-m", "512M", "-cpu", "qemu64,+aes,+rdrand,+smep,+smap", "-accel", "tcg",
+             "-m", "512M", "-cpu", "qemu64,+aes,+rdrand,+smep,+smap", "-accel", qemu_accel(),
              "-smp", SMP]
             # q35 for the SD path: the default i440fx has no PCIe root the SDHCI
             # controller can sit on, and attaching one there gives a machine the

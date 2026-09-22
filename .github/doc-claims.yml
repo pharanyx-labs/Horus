@@ -67,7 +67,7 @@ counts:
     derive: contexts
     occurrences:
       - file: README.md
-        pattern: 'The intended set is \d+ of its (\d+) contexts'
+        pattern: 'The gating set is \d+ of its (\d+) contexts'
       - file: TESTS.md
         pattern: '\*\*\d+\*\* jobs, \*\*(\d+)\*\* contexts'
       - file: docs/LIMITATIONS.md
@@ -80,37 +80,36 @@ counts:
     derive: required
     occurrences:
       - file: README.md
-        pattern: 'The intended set is (\d+) of its \d+ contexts'
+        pattern: 'The gating set is (\d+) of its \d+ contexts'
       - file: TESTS.md
-        pattern: 'The intended set is \*\*(\d+) required contexts'
+        pattern: 'The set is \*\*(\d+) gating contexts'
       - file: docs/LIMITATIONS.md
-        pattern: 'That intended set is \*\*(\d+) required contexts'
-      # Undeclared until 2026-08-30, and stale by one the moment a job landed.
+        pattern: 'That set is \*\*(\d+) gating contexts'
       # A second sentence stating the same gated number, three lines from a
       # declared one -- which is what the manifest means by opt-in per sentence:
       # deleting or never adding an occurrence deletes the check for it.
       - file: docs/LIMITATIONS.md
-        pattern: 'requires all \*\*(\d+)\*\* today'
+        pattern: '\*\*(\d+)\*\* of them gate a merge'
       - file: docs/ROADMAP.md
-        pattern: 'The intended set is \*\*(\d+) required, \d+ exempted\*\*'
+        pattern: 'The gating set is \*\*(\d+) required, \d+ exempted\*\*'
       # site/index.html said 73 here for as long as the count had been 89. It was
       # the only statement of this number that nothing derived, which is exactly
       # why it was the one that rotted -- and it is the PUBLIC one.
       - file: site/index.html
-        pattern: 'intended set is (\d+) gating and \d+ exempted'
+        pattern: 'gating set is (\d+) checks with \d+ exempted'
 
   - id: advisory
     describe: contexts exempted with a written reason
     derive: advisory
     occurrences:
       - file: TESTS.md
-        pattern: '\*\*\d+ required contexts and (\d+) reasoned exemptions\*\*'
+        pattern: '\*\*\d+ gating contexts and (\d+) reasoned exemptions\*\*'
       - file: docs/LIMITATIONS.md
-        pattern: '\*\*\d+ required contexts and (\d+) reasoned exemptions\*\*'
+        pattern: '\*\*\d+ gating contexts and (\d+) reasoned exemptions\*\*'
       - file: docs/ROADMAP.md
         pattern: '\*\*\d+ required, (\d+) exempted\*\*'
       - file: site/index.html
-        pattern: 'intended set is \d+ gating and (\d+) exempted'
+        pattern: 'gating set is \d+ checks with (\d+) exempted'
 
 
   - id: ring0_core_loc
@@ -331,6 +330,12 @@ counts:
         pattern: '`git ls-files` reports \*\*(\d+)\*\* tracked files'
 
 forbidden:
+  - pattern: 'What keeps \*\*\[C-6\]\*\* open|What keeps \[C-6\] open|reconciled to it by hand and lags|\*\*\[C-6\]\*\*, ruleset'
+    reason: >-
+      [C-6] closed on 2026-09-21. The ruleset requires the `gates` aggregator and
+      CodeQL, and `gates`' needs are proved equal to the gating classification in
+      the PR itself, so a new gate no longer waits on a hand sync. Kept on ONE
+      LINE because this checker matches line by line.
   - pattern: 'Installing over an existing volume is not something this'
     reason: >-
       The installer's own refusal screen, retired 2026-09-11 by S90. Install
@@ -773,8 +778,8 @@ forbidden:
   - pattern: 'that App does not exist yet|inert until (that|its read-only GitHub) App is created|stays open until the App is created'
     reason: >-
       The ruleset-audit GitHub App went live 2026-08-19; the scheduled run that
-      morning read the ruleset and reported it matching. What remains of [C-6]
-      is that syncing is manual and lags a merge.
+      morning read the ruleset and reported it matching. [C-6] closed on
+      2026-09-21.
 
   - pattern: 'pt_walk\(tasks\[cur\]\.cr3, v\) disagrees with the hardware walk|refuses a user address that ring 3 demonstrably has mapped'
     reason: >-

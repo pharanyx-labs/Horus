@@ -48,7 +48,7 @@ static uint32_t g_phys_pool_pages = USER_PHYS_DEFAULT_PAGES;
 uint32_t get_free_user_pages(void) { return (uint32_t)free_page_count; }
 
 /* Which pool frames alloc_user_physical_page has handed out and nobody has freed
- * since: one bit per frame, set on alloc, cleared on free (S99,
+ * since: one bit per frame, set on alloc, cleared on free (S102,
  * HORUS-20260919-01, docs/LIMITATIONS.md 2.5a).
  *
  * It is what lets free_user_physical_page fail closed ON ITS OWN. Before it, the
@@ -70,9 +70,9 @@ static uint32_t page_on_loan[USER_PHYS_PAGES / 32];
 
 /* The pool frame `phys` names, or -1 if it names none: below the pool, not
  * page-aligned, or past the frames this boot's pool covers. */
-static int pool_frame_index(uint32_t phys) {
+static int pool_frame_index(uint64_t phys) {
     if (phys < USER_PHYS_BASE || (phys & (PAGE_SIZE - 1)) != 0) return -1;
-    uint32_t idx = (phys - USER_PHYS_BASE) / PAGE_SIZE;
+    uint64_t idx = (phys - USER_PHYS_BASE) / PAGE_SIZE;
     return idx < g_phys_pool_pages ? (int)idx : -1;
 }
 
@@ -237,7 +237,13 @@ uint32_t alloc_user_physical_page(void) {
     return phys;
 }
 
-void free_user_physical_page(uint32_t phys_addr) {
+/* Takes the FULL 64-bit physical address (2026-09-22). It took a uint32_t, and
+ * every caller cast a PTE-derived 64-bit address down to fit, so an address above
+ * 4 GiB was truncated into one that could alias a pool frame: USER_PHYS_BASE +
+ * 4 GiB became exactly USER_PHYS_BASE, frame 0, which is usually on loan, and the
+ * on-loan guard below would have accepted it and freed another owner's frame. The
+ * guard's promise to refuse an address outside the pool needs the whole address. */
+void free_user_physical_page(uint64_t phys_addr) {
     /* The shared zero page is immortal: many PTEs across many tasks alias it, so
      * it must never return to the free list. */
     if ((uint64_t)phys_addr == g_zero_page_phys) return;
@@ -1335,7 +1341,7 @@ uint64_t kern_fixed_stack_guard_vaddr(int i) { return fixed_stack_guard_addr(i);
 static void user_leaf_release(uint64_t phys) {
     int32_t refs = rust_page_ref_dec((uint32_t)phys, page_refcounts,
                                      (uint32_t)USER_PHYS_PAGES);
-    if (refs == 0) free_user_physical_page((uint32_t)phys);
+    if (refs == 0) free_user_physical_page(phys);
 }
 
 /* Free one level of a user page-table tree, then the table itself.
@@ -1358,7 +1364,7 @@ static void free_user_table(uint64_t table_phys, int level) {
             free_user_table(child, level - 1);
         }
     }
-    free_user_physical_page((uint32_t)table_phys);
+    free_user_physical_page(table_phys);
 }
 
 /* Release the address space a previous task left behind in this slot. Walks the
@@ -1392,7 +1398,7 @@ static void free_user_aspace(uint64_t pml4_phys) {
         free_user_table(e & PTE_ADDR_MASK, 3);
         p4[i] = 0;
     }
-    free_user_physical_page((uint32_t)pml4_phys);
+    free_user_physical_page(pml4_phys);
 }
 
 /* ---- Building a user address space ----------------------------------------
@@ -1476,7 +1482,7 @@ static int user_map_fresh_page(uint64_t *pml4_tab, uint64_t vaddr, uint64_t flag
     uint8_t *pg = (uint8_t *)PHYS_KVA(phys);
     for (int b = 0; b < PAGE_SIZE; b++) pg[b] = 0;
     if (user_map_page(pml4_tab, vaddr, phys, flags) != 0) {
-        free_user_physical_page((uint32_t)phys);
+        free_user_physical_page(phys);
         return -1;
     }
     return 0;
@@ -2491,8 +2497,8 @@ void nzcow_selftest(void) {
     if (ok && page_refcounts[sidx] != 1) ok = 0;
 
     /* Reclaim the live frames (private copy + the now-sole-owned shared frame). */
-    if (f1 != shared && f1 != 0) free_user_physical_page((uint32_t)f1);
-    free_user_physical_page((uint32_t)shared);
+    if (f1 != shared && f1 != 0) free_user_physical_page(f1);
+    free_user_physical_page(shared);
 
     /* (3) AN ARENA PAGE IS REFUSED. The two cases above are the machinery working;
      * this is the machinery declining to work on memory that belongs to a kernel
@@ -2993,7 +2999,7 @@ void ensure_iommu_mapped_current(uint64_t *root_pml4) {
 }
 
 #ifdef PAGEFREE_SELFTEST
-/* Boot-time witness for S99 (HORUS-20260919-01): free_user_physical_page refuses
+/* Boot-time witness for S102 (HORUS-20260919-01): free_user_physical_page refuses
  * every frame that is not out on loan, and still accepts one that is.
  *
  * Each refusal is checked two ways: the free stack must not move (the harm is a
@@ -3007,8 +3013,16 @@ void pagefree_selftest(void) {
     const char *why = "";
     spin_lock(&page_lock);
 
-    uint32_t f = alloc_user_physical_page();
-    if (f == 0) { ok = 0; why = "alloc"; }
+    /* A frame held on loan for the whole test, so the last case below has
+     * something real to alias: its address plus 4 GiB truncates to exactly
+     * `held`, which a 32-bit free path would find on loan and accept. Taken
+     * BEFORE `f`: the free list is a stack, so a frame allocated after `f` is
+     * freed would be `f` itself, and the double free would become a real one. */
+    uint32_t held = alloc_user_physical_page();
+    if (held == 0) { ok = 0; why = "alloc-held"; }
+
+    uint32_t f = ok ? alloc_user_physical_page() : 0;
+    if (ok && f == 0) { ok = 0; why = "alloc"; }
 
     /* A real free is accepted: the stack grows by one. */
     int before = free_page_count;
@@ -3019,14 +3033,16 @@ void pagefree_selftest(void) {
     }
 
     /* Each of these must be refused. */
-    const uint32_t bad[4] = {
+    const uint64_t bad[5] = {
         f,                                          /* the same frame again: a double free */
         USER_PHYS_BASE - PAGE_SIZE,                 /* below the pool */
-        f + 8,                                      /* not page-aligned */
-        (uint32_t)pool_reserve_base(),              /* the reserve window: never lent */
+        (uint64_t)f + 8,                            /* not page-aligned */
+        pool_reserve_base(),                        /* the reserve window: never lent */
+        (uint64_t)held + (1ull << 32),              /* above 4 GiB, aliasing a frame on loan */
     };
-    const char *names[4] = { "double-free", "below-pool", "unaligned", "reserve-frame" };
-    for (int k = 0; ok && k < 4; k++) {
+    const char *names[5] = { "double-free", "below-pool", "unaligned", "reserve-frame",
+                             "above-4g-alias" };
+    for (int k = 0; ok && k < 5; k++) {
         before = free_page_count;
         refused = g_page_free_refusals;
         free_user_physical_page(bad[k]);
@@ -3045,14 +3061,24 @@ void pagefree_selftest(void) {
             if (free_page_count != before + 1) { ok = 0; why = "refree"; }
         }
     }
+    if (held) free_user_physical_page(held);
 
     spin_unlock(&page_lock);
     if (ok) {
         print("PAGEFREE_SELFTEST: PASS\n");
     } else {
-        print("PAGEFREE_SELFTEST: FAIL ");
-        print(why);
-        print("\n");
+        /* ONE write (docs/LIMITATIONS.md 2.6a): smoke-pagefree-control asserts
+         * "PAGEFREE_SELFTEST: FAIL double-free" as a single string, so the line
+         * is assembled whole rather than printed in pieces another CPU's output
+         * could land between. */
+        static const char pre[] = "PAGEFREE_SELFTEST: FAIL ";
+        char line[64];
+        int n = 0;
+        for (int i = 0; pre[i]; i++) line[n++] = pre[i];
+        for (int i = 0; why[i] && n < (int)sizeof(line) - 2; i++) line[n++] = why[i];
+        line[n++] = '\n';
+        line[n] = 0;
+        print(line);
     }
 }
 #endif

@@ -72,6 +72,21 @@ liveness:
 # Targets that establish liveness another way. A reason here must say WHICH
 # mechanism, specifically enough that a reader can check it against the recipe.
 exempt:
+  smoke-kstack-reuse: >
+    Every one of KSTACK_REUSE_BOOTS boots has a PRESENCE requirement: the
+    PROC_SELFTEST workload must reach `PROC_SELFTEST: tcb-reuse OK`, and the
+    recipe asserts each boot's exit status, so a boot that died fails the gate
+    at once rather than counting as clean. The absence it checks (no slot chosen
+    while a CPU is still on its kernel stack) is therefore only ever read off a
+    boot that ran the whole workload. It also floors the experiment itself: at
+    least one `skipped slot` line across the boots, or the window never opened.
+  smoke-kstack-reuse-control: >
+    Scores three outcomes per boot and counts two. A reuse on the diagnostic
+    channel is a hit whether or not the boot survived it, and stops the loop. A
+    boot that reached `PROC_SELFTEST: tcb-reuse OK` without one is a conclusive
+    miss. A boot with neither is named INCONCLUSIVE and not counted, and a run
+    with no conclusive boot fails as "never ran the experiment" rather than as
+    "did not reproduce".
   smoke-boot-module-reserve: >
     Three boots, each with a PRESENCE requirement, so a boot that died cannot
     pass any of them. The padded boot must reach the shell banner and print the

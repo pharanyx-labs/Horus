@@ -1,3 +1,4 @@
+#include "cpu_limits.h"
 #include "kernel_vma.h"   /* KERNEL_VMA — shared with the C side */
 
 .section .multiboot, "a"
@@ -336,13 +337,13 @@ gdt64_start:
 #ifdef SMP
     /* Per-CPU (application-processor) 64-bit TSS descriptors, filled at runtime
      * by setup_ap_tss(). Each 64-bit TSS descriptor occupies two 8-byte GDT
-     * slots, so these are selectors 0x48 / 0x58 / 0x68 for CPUs 1..MAX_CPUS-1. */
-    .quad 0x0000000000000000   /* 0x48: AP cpu 1 (low)  */
-    .quad 0x0000000000000000   /* 0x50: AP cpu 1 (high) */
-    .quad 0x0000000000000000   /* 0x58: AP cpu 2 (low)  */
-    .quad 0x0000000000000000   /* 0x60: AP cpu 2 (high) */
-    .quad 0x0000000000000000   /* 0x68: AP cpu 3 (low)  */
-    .quad 0x0000000000000000   /* 0x70: AP cpu 3 (high) */
+     * slots, so CPU c (1..MAX_CPUS-1) uses selector 0x48 + (c-1)*0x10: 0x48,
+     * 0x58, 0x68, ... Reserved from MAX_CPUS rather than written out one per
+     * CPU, so the GDT and the ceiling cannot disagree (cpu_limits.h). this_cpu()
+     * derives the CPU index from this stride (scheduler.c: TSS_SEL_STRIDE). */
+    .rept (MAX_CPUS - 1) * 2
+    .quad 0x0000000000000000
+    .endr
 #endif
 gdt64_end:
 
@@ -643,6 +644,49 @@ embedded_faulter_bin_start:
 .incbin "userspace/faulter.bin"
 .global embedded_faulter_bin_end
 embedded_faulter_bin_end:
+
+/* kfaulter: makes the KERNEL take a supervisor #PF on its behalf, so proctest
+ * can check the exit record carries no kernel address (HORUS-20260920-01).
+ * Only in PROC_SELFTEST. */
+.align 16
+.global embedded_kfaulter_bin_start
+embedded_kfaulter_bin_start:
+.incbin "userspace/kfaulter.bin"
+.global embedded_kfaulter_bin_end
+embedded_kfaulter_bin_end:
+
+/* waiter and exitprobe: leave a completed wait in a task slot, then check a task
+ * reusing that slot does not inherit it (HORUS-20260920-02). Only in
+ * PROC_SELFTEST. */
+.align 16
+.global embedded_waiter_bin_start
+embedded_waiter_bin_start:
+.incbin "userspace/waiter.bin"
+.global embedded_waiter_bin_end
+embedded_waiter_bin_end:
+.align 16
+.global embedded_exitprobe_bin_start
+embedded_exitprobe_bin_start:
+.incbin "userspace/exitprobe.bin"
+.global embedded_exitprobe_bin_end
+embedded_exitprobe_bin_end:
+/* slotheir: puts a task the driver has no fresh authority over into a freed
+ * slot, so a stale CAP_TCB for that slot number can be probed
+ * (HORUS-20260921-02). Only in PROC_SELFTEST. */
+.align 16
+.global embedded_slotheir_bin_start
+embedded_slotheir_bin_start:
+.incbin "userspace/slotheir.bin"
+.global embedded_slotheir_bin_end
+embedded_slotheir_bin_end:
+/* killspin: writes a shared frame forever with no syscall, so the driver can
+ * check a killed task stops (HORUS-20260921-04). Only in PROC_SELFTEST. */
+.align 16
+.global embedded_killspin_bin_start
+embedded_killspin_bin_start:
+.incbin "userspace/killspin.bin"
+.global embedded_killspin_bin_end
+embedded_killspin_bin_end:
 
 /* sigwaiter: blocks in SYS_WAIT on an immortal target, to exercise async signal
  * delivery interrupting a blocked wait. Only in PROC_SELFTEST. */

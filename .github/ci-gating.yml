@@ -18,26 +18,30 @@
 # An entry naming a job that no longer exists is also an error, so this file
 # cannot rot into a list of things that are not there.
 #
-# After changing this file, sync the ruleset — CI cannot do it, because reading
-# a ruleset needs Administration permissions the workflow GITHUB_TOKEN does not
-# have and cannot be granted:
+# THE RULESET REQUIRES TWO CONTEXTS, AND ADDING A GATE CHANGES NEITHER
+# (2026-09-21). Every required ci.yml job is gated through `aggregator:` below:
+# the `gates` job needs all of them, runs whatever they did, and passes only if
+# each one succeeded (tools/ci_gate_verdict.py). The ruleset requires that job's
+# context and CodeQL's `analyze`, which lives in its own workflow and cannot be
+# a `needs:` of a ci.yml job. The ci-gating job proves `gates` needs exactly the
+# jobs listed under `required:` here, so classifying a ci.yml job as required
+# makes it gate in the PR that does it, and demoting one stops it gating in the
+# PR that does that. No --sync-ruleset, and no merge-ordering rule.
 #
-#     tools/check_ci_gating.py --sync-ruleset       # write it
-#     tools/check_ci_gating.py --check-ruleset      # verify it took
+# Before this, the ruleset required one context per job (122 of them), synced
+# by hand, and every change to this file had to be ordered around a merge:
+# promotion after it, because a required context `main` cannot produce never
+# reports and froze every pull request on 2026-08-16; demotion before it, or a
+# red job blocked the PR demoting it (#167, 2026-08-17). In between, a gate was
+# classified and not enforced for as long as the sync took (five merges once,
+# 2026-09-01). That was the rest of [C-6], and this is what closed it.
 #
-# NEVER REQUIRE A CONTEXT THE BASE BRANCH CANNOT PRODUCE. A required context whose
-# job does not exist on `main` never reports, so every pull request is blocked on
-# it indefinitely — and it presents as an ordinary red check rather than as a
-# misconfiguration. Promotion therefore LAGS the job landing by one merge: add the
-# job here in the PR that introduces it, and re-run --sync-ruleset only after that
-# PR has merged. Syncing from a feature branch froze the repository on 2026-08-16;
-# `tools/prune_unsatisfiable_checks.py` recovers from that and encodes the rule.
+# The ruleset still needs a sync, from `main` after the merge, only when its
+# own two contexts change: `gates` is renamed, or a required job is added to a
+# workflow other than ci.yml. ruleset-audit.yml checks it daily either way:
 #
-# DEMOTION IS THE MIRROR IMAGE, AND MUST LEAD THE MERGE. Moving a job from
-# `required` to `advisory` here changes nothing in the ruleset, so the context is
-# still required and a failing one blocks the very pull request that demotes it.
-# That deadlocked #167 on 2026-08-17: the job it was demoting was red, which was
-# the whole reason for the demotion. Run --sync-ruleset BEFORE merging a demotion.
+#     tools/check_ci_gating.py --check-ruleset      # compare
+#     tools/check_ci_gating.py --sync-ruleset       # write, then compare again
 # It is the safe direction — removing a requirement cannot freeze anything, where
 # adding one can — and it leaves `main` disagreeing with the ruleset for exactly
 # one merge, the same one-merge window promotion leaves in the other direction.
@@ -48,8 +52,15 @@
 # So the checked-in classification is the decision record, CI enforces that it
 # is COMPLETE, and reconciling the ruleset to it stays a visible manual step.
 
+# The ci.yml job that stands for every required ci.yml job in the ruleset. See
+# the header above and tools/check_ci_gating.py's check_aggregator.
+aggregator: gates
+
 # Merge-gating. Any of these can block a pull request.
 required:
+  # The aggregator itself. Required, so the ruleset carries its context.
+  - gates
+
   # codeql.yml. The static-analysis gate; roadmap 4.2 named it as still to
   # promote, and this mechanism caught it sitting unclassified on first run.
   - analyze
@@ -90,6 +101,16 @@ required:
   - smoke-fs-large
   - smoke-fs-perms
   - smoke-fs-persist
+  # Shards of `smoke` and `smoke-fs-persist`, split out 2026-09-21 to cut the run's
+  # wall time; each carries steps that were already required inside those jobs.
+  - smoke-console-backspace
+  - smoke-fb
+  - smoke-fs-16g
+  - smoke-fs-integrity
+  - smoke-install-media
+  - smoke-installer-sd
+  - smoke-keyboard
+  - smoke-sdhci
   - smoke-fs-wal
   - smoke-fs-wal-flush
   - smoke-fs-wal-order
@@ -305,6 +326,7 @@ required:
   - smoke-irq-policy
   - smoke-kdiag
   - smoke-kfault
+  - smoke-kfault-record
   - smoke-pagefree
   - smoke-kstack-race
   - smoke-mapphys
@@ -355,13 +377,21 @@ advisory:
     adding no assurance. A crash it does find is a finding to triage, not a
     check to re-run.
 
+  smoke-smp-kvm: >-
+    A second environment for gates that are already required under TCG, where
+    their evidence and control arms live, not a gate of its own. Added
+    2026-09-21 after the KVM probe (#419) found HORUS-20260921-03; its pass
+    rate under KVM has not yet been measured, and a job whose flake rate is
+    unknown would teach red-means-rerun. Promote it to required once a
+    measured run of green on main says it is stable, with the rate quoted.
+
   ruleset-audit: >-
     Schedule-only (daily cron plus workflow_dispatch), so it never runs on a
     pull request and has no conclusion to gate one with. It is listed here
     rather than excluded from the checker so that deleting it trips ci-gating:
     it is the job that verifies this file against the live ruleset, which is
-    the last open half of [C-6], and a control that can be removed silently is
-    the defect that finding describes. It fails loudly if its GitHub App
+    how a change made in the GitHub UI is caught, and a control that can be
+    removed silently is the defect [C-6] described. It fails loudly if its GitHub App
     credential is unconfigured rather than skipping.
 
   kani: >-

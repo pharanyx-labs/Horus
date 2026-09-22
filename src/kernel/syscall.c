@@ -483,10 +483,49 @@ static void h_exit(struct interrupt_frame64 *r) {
     r->rax = 0;
 }
 
+/* Return non-zero if the current task holds a CAP_TCB capability naming the
+ * task that NOW occupies slot `target`, with every right in `need` (every task
+ * has one to itself at slot 0; a spawner is granted one per child in do_spawn
+ * and h_fork, and a supervisor may delegate it with SYS_CAP_GRANT). The target
+ * is dynamic, so the central slot-based gate cannot express this and the
+ * handlers call it instead.
+ *
+ * THE COMPARISON IS AGAINST tcb_object(target), SLOT AND GENERATION, and that
+ * is the fix for HORUS-20260921-02. It compared the bare slot number until
+ * 2026-09-21, and a spawner's CAP_TCB outlives the child, so once the slot was
+ * reused a dead child's capability authorised signal, kill, grant, resume and
+ * wait on whatever task had taken its place: measured, a stale capability
+ * killed an unrelated task with SIGUSR1 and then read its death record.
+ *
+ * Every caller holds the spawn lock (see the tcb_locked wrappers below), which
+ * every task-creating path also holds, so the slot cannot be reused between
+ * this check and the operation it authorises. */
+static int task_tcb_held(int target, uint32_t need) {
+    int cur = get_current_task();
+    if (cur <= 0 || cur >= g_max_tasks) return 0;
+    if (target < 0 || target >= g_max_tasks) return 0;
+
+    capability_t *cs = tasks[cur].cspace;
+    if (!cs) return 0;
+#ifndef TCB_GENERATION_UNCHECKED
+    uint64_t want = tcb_object(target);
+#endif
+    for (uint32_t s = 0; s < tasks[cur].cspace_size; s++) {
+        if (cs[s].type != CAP_TCB || (cs[s].rights & need) != need) continue;
+#ifndef TCB_GENERATION_UNCHECKED
+        if (cs[s].object == want) return 1;
+#else
+        /* CONTROL ARM: the pre-2026-09-21 comparison, slot number only, so a
+         * CAP_TCB for a dead task names whatever reused its slot. */
+        if ((cs[s].object & TCB_OBJ_TID_MASK) == (uint64_t)target) return 1;
+#endif
+    }
+    return 0;
+}
+
 /* Return non-zero if the current task may terminate `target`: either it holds a
- * CAP_TCB capability to the target with WRITE rights (every task has one to
- * itself at slot 0; a spawner is granted one per child in do_spawn), or it holds
- * CAP_USER admin authority (slot 6). */
+ * CAP_TCB capability to the target with WRITE rights, or it holds CAP_USER admin
+ * authority (slot 6). */
 static int task_kill_authorized(int target) {
     int cur = get_current_task();
     if (cur <= 0 || cur >= g_max_tasks) return 0;
@@ -494,22 +533,14 @@ static int task_kill_authorized(int target) {
     struct capability *admin = cap_lookup(CAPSLOT_USER, CAP_USER, CAP_RIGHT_ALL);
     if (admin) return 1;
 
-    capability_t *cs = tasks[cur].cspace;
-    if (!cs) return 0;
-    for (uint32_t s = 0; s < tasks[cur].cspace_size; s++) {
-        if (cs[s].type == CAP_TCB && cs[s].object == (uint64_t)target &&
-            (cs[s].rights & CAP_RIGHT_WRITE)) {
-            return 1;
-        }
-    }
-    return 0;
+    return task_tcb_held(target, CAP_RIGHT_WRITE);
 }
 
 /* SYS_KILL (63): terminate task ebx. Authorised by a CAP_TCB capability to the
  * target (or CAP_USER admin) — enforced in the handler because the target is
  * dynamic, so the central slot-based gate cannot express it. Killing yourself
  * behaves like SYS_EXIT (interrupt_handler64 redirects on the state==0 return). */
-static void h_kill(struct interrupt_frame64 *r) {
+static void h_kill_locked(struct interrupt_frame64 *r) {
     int target = (int)r->rbx;
     if (target <= 0 || target >= g_max_tasks || tasks[target].state == 0) {
         r->rax = (uint32_t)SYS_ERR_INVAL;
@@ -553,7 +584,7 @@ static void signal_interrupt_wait(int t) {
  * pending until SYS_SIGMASK unblocks it. With no handler — or for the uncatchable
  * SIG_KILL — the default action applies and the target is terminated. Signalling
  * yourself is permitted (self-TCB). */
-static void h_signal(struct interrupt_frame64 *r) {
+static void h_signal_locked(struct interrupt_frame64 *r) {
     int target      = (int)r->rbx;
     uint32_t signum = r->rcx;
     if (target <= 0 || target >= g_max_tasks || tasks[target].state == 0) {
@@ -587,7 +618,7 @@ static void h_signal(struct interrupt_frame64 *r) {
  * runnable_ctx, which a live task already has. Refuses a task with no fabricated
  * context (saved_ksp == 0), since making that schedulable would hand the
  * scheduler a null frame. */
-void h_task_resume(struct interrupt_frame64 *r) {
+static void h_task_resume_locked(struct interrupt_frame64 *r) {
     int target = (int)r->rbx;
     if (target <= 0 || target >= g_max_tasks || tasks[target].state == 0) {
         r->rax = (uint32_t)SYS_ERR_INVAL; return;
@@ -600,13 +631,31 @@ void h_task_resume(struct interrupt_frame64 *r) {
 
 /* SYS_WAIT (17): block until task `tid` exits.
  *
+ * Authorised by a CAP_TCB naming `tid` with READ, and by nothing else: waiting
+ * observes the target (when it dies, and the exit record that says why), so it
+ * needs authority over THAT task. Until 2026-09-21 this tested nothing, so any
+ * task could wait on any tid and collect any task's exit record, including a
+ * corpse it had no relation to. The refusal is not widened by CAP_USER the way
+ * SYS_KILL's is: an admin capability names user administration, not the power to
+ * observe every task, and the bundling h_task_info removed stays removed here.
+ *
+ * Checked BEFORE the state test, deliberately. A caller without the capability
+ * gets SYS_ERR_PERM whether the slot is live, dead or never used, so the refusal
+ * is not a task-existence oracle either.
+ *
  * Records a pending block only; ipc_block_switch saves the trap frame first and
  * only then sets tasks[tid].waiter + TASK_BLOCKED_WAIT so a concurrent teardown
  * cannot wake a task whose saved_ksp is not yet the SYS_WAIT frame. */
-static void h_wait(struct interrupt_frame64 *r) {
+static void h_wait_locked(struct interrupt_frame64 *r) {
     int cur = get_current_task();
     int tid = r->rbx;
     if (tid < 0 || tid >= g_max_tasks || tid == cur) { r->rax = (uint32_t)-1; return; }
+    /* WAIT_TCB_UNCHECKED is the CONTROL ARM: the pre-2026-09-21 SYS_WAIT, which
+     * tested no authority at all. proctest then waits on a slot it holds no
+     * CAP_TCB for and is answered. */
+#ifndef WAIT_TCB_UNCHECKED
+    if (!task_tcb_held(tid, CAP_RIGHT_READ)) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+#endif
     if (tasks[tid].state == TASK_DEAD) {
         /* Already gone: satisfied without blocking — so task_teardown never got
          * to hand us the cause. Take it from the corpse instead. Safe precisely
@@ -617,9 +666,11 @@ static void h_wait(struct interrupt_frame64 *r) {
         return;
     }
 
-    /* Intent only — not wake-visible until ipc_publish_pending_block. */
-    tasks[cur].blocked_on    = tid;
-    tasks[cur].pending_block = TASK_BLOCKED_WAIT;
+    /* Intent only — not wake-visible until ipc_publish_pending_block, which
+     * re-checks that `tid` is still the incarnation authorised here. */
+    tasks[cur].blocked_on     = tid;
+    tasks[cur].blocked_on_gen = tasks[tid].slot_gen;
+    tasks[cur].pending_block  = TASK_BLOCKED_WAIT;
     r->rax = 0;   /* the value the caller sees once task_teardown wakes it */
 }
 
@@ -937,6 +988,16 @@ static void h_receive_program(struct interrupt_frame64 *r) {
 /* SYS_YIELD: request a full-context switch; interrupt_handler64 runs
  * sched_yield_switch on the live trap frame after this returns. */
 static void h_yield(struct interrupt_frame64 *r) {
+#ifdef KFAULT_RECORD_SELFTEST
+    /* Test-only, and absent from every shipping configuration: the witness for
+     * HORUS-20260920-01 (docs/LIMITATIONS.md 1.16). A task named "kfaulter" that
+     * yields with a non-zero rbx makes the kernel read that address here, at
+     * CPL 0, in the task's own syscall. That is a supervisor #PF with this task
+     * to blame, the shape G-8 took, and proctest then reads the exit record back
+     * from ring 3 and requires that it carries no kernel address. */
+    if (r->rbx && kstrcmp(tasks[get_current_task()].name, "kfaulter") == 0)
+        (void)*(volatile uint64_t *)(addr_t)r->rbx;
+#endif
     yield();
     r->rax = 0;
 }
@@ -975,7 +1036,7 @@ static void h_cap_revoke(struct interrupt_frame64 *r) {
  * exactly like SYS_KILL: a task may only push capabilities down into children it
  * supervises (no ambient authority upward). The target must be a live task other
  * than the caller. The caller can only delegate a capability it actually holds. */
-static void h_cap_grant(struct interrupt_frame64 *r) {
+static void h_cap_grant_locked(struct interrupt_frame64 *r) {
     int cur = get_current_task();
     int target = (int)r->rbx;
     uint32_t src_slot  = r->rcx;
@@ -1020,6 +1081,34 @@ static void h_cap_grant(struct interrupt_frame64 *r) {
 
     audit_log(AUDIT_CAP_TRANSFER, (uint32_t)target, 0, "cap grant");
     r->rax = 0;
+}
+
+/* THE CAP_TCB-AUTHORISED SYSCALLS RUN UNDER THE SPAWN LOCK (HORUS-20260921-02).
+ *
+ * task_tcb_held compares a capability against the generation of the task in
+ * the slot NOW. That closes the finding only if the slot cannot be reused
+ * between the check and the act, or a capability that was valid when checked
+ * would be applied to the successor. Every path that creates a task
+ * (do_spawn_inner, h_fork, h_sudo, and the kernel's own launchers) runs under
+ * spawn_stage_acquire, so holding it here makes check-and-act atomic with
+ * respect to slot reuse, by construction rather than by a race being unlikely.
+ * These are syscall entry points holding nothing, so taking the kernel's
+ * outermost lock here keeps its documented order; cap_lock and the scheduler
+ * lock are taken underneath, as they already are on the spawn path. */
+static void h_kill(struct interrupt_frame64 *r) {
+    spawn_stage_acquire(); h_kill_locked(r); spawn_stage_release();
+}
+static void h_signal(struct interrupt_frame64 *r) {
+    spawn_stage_acquire(); h_signal_locked(r); spawn_stage_release();
+}
+void h_task_resume(struct interrupt_frame64 *r) {
+    spawn_stage_acquire(); h_task_resume_locked(r); spawn_stage_release();
+}
+static void h_wait(struct interrupt_frame64 *r) {
+    spawn_stage_acquire(); h_wait_locked(r); spawn_stage_release();
+}
+static void h_cap_grant(struct interrupt_frame64 *r) {
+    spawn_stage_acquire(); h_cap_grant_locked(r); spawn_stage_release();
 }
 
 #ifdef LEGACY_SYSCALLS_PRESENT

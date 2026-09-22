@@ -214,7 +214,93 @@
 # existed because two numbers were written in two places was closed by deriving one
 # from the other, and the only code the kernel gained is the runtime check that
 # catches the case the constants cannot see.
-core_budget_loc: 10081
+#
+# RAISED 2026-09-21, 10081 -> 10108 (+27), for S97 (HORUS-20260920-01): a task's
+# exit record no longer carries a kernel rip or a kernel-half fault address. Only
+# 15 of the 27 are in the ship kernel's source path, and all 15 are in idt.c:
+# exit_record_rip and exit_record_addr, of which six lines are the
+# EXIT_RECORD_KERNEL_RIP control arm's #ifdef branches. The fix belongs where the
+# cause is built from the trap frame, which is ring 0 by nature. The other 12 are
+# compiled out of the ship kernel: 4 in syscall.c are the KFAULT_RECORD_SELFTEST
+# hook, and 8 in multiboot.S embed the kfaulter test child under PROC_SELFTEST.
+# Two of those 8 are comment continuation lines, a MEASUREMENT ARTEFACT: this
+# checker's .S rule strips only lines that begin with `#` or `/`, so the ` * `
+# lines of a block comment count as code.
+#
+# RAISED 2026-09-21, 10108 -> 10128 (+20), for S98 (HORUS-20260920-02): a task
+# in a reused slot no longer inherits the previous occupant's death records.
+# 6 are in scheduler.c and are the fix: create_task clearing exit_info and
+# wait_exit_info, two of them the EXIT_RECORD_STALE_ON_REUSE control arm's
+# #ifdef pair (task_teardown's whole-name zeroing replaced one line with one).
+# The other 14 are in multiboot.S and embed the waiter and exitprobe test
+# children, only under PROC_SELFTEST: 12 directives and 2 comment continuation
+# lines, the .S counting artefact recorded in the S97 entry above.
+#
+# RAISED 2026-09-21, 10128 -> 10136 (+8), for S99 (HORUS-20260921-01): SYS_WAIT
+# requires a CAP_TCB naming its target. All 8 are in syscall.c and in the ship
+# kernel: 3 are the check in h_wait (two of them the WAIT_TCB_UNCHECKED control
+# arm's #ifndef pair), and 5 are the net of factoring task_kill_authorized's
+# cspace scan out into task_tcb_held, so kill and wait share one scan instead of
+# carrying two. An authorisation check on a syscall is ring 0 by nature.
+#
+# RAISED 2026-09-21, 10136 -> 10177 (+41), for S100 (HORUS-20260921-02): a
+# CAP_TCB names one incarnation of a task, not a slot number. 33 are in the ship
+# kernel: 22 in syscall.c (task_tcb_held comparing slot and generation, with the
+# TCB_GENERATION_UNCHECKED arm's #ifdef lines, and the five three-line wrappers
+# that run each CAP_TCB-authorised syscall under the spawn lock), 4 in
+# syscall_ipc.c (the pending wait's generation re-check under that lock), 5 in
+# capability.c (cap_install_from_root encoding a root CAP_TCB for its caller)
+# and 2 in scheduler.c (create_task bumping the generation). The other 8 are in
+# multiboot.S and embed the slotheir test child, only under PROC_SELFTEST: 6
+# directives and 2 comment continuation lines, the .S counting artefact recorded
+# in the S97 entry above. Authorisation of a syscall is ring 0 by nature.
+#
+# RAISED 2026-09-21, 10177 -> 10223 (+46), for up to eight CPUs with CPU indices
+# independent of LAPIC ids, and S101 (no task on an SMT sibling). All 46 are in
+# the ship kernel: 43 in smp.c (apic_to_cpu[]/cpu_to_apic[], this_apic_id,
+# cpu_is_smt_sibling, smp_build_cpu_map numbering the BSP, then primaries, then
+# siblings from the MADT with each id once, and the APIC_ID_IS_CPU_INDEX and
+# SMT_SIBLING_BY_INDEX arms' #ifdef lines) and 3 in scheduler.c (this_cpu_lapic
+# resolving through the map). CPU bring-up is ring 0 by nature. The trampoline's
+# +13 are not counted: it is embedded as a binary, not linked.
+#
+# RAISED 2026-09-21, 10223 -> 10300 (+77), for S20's slot-reuse path
+# (HORUS-20260921-03): a slot is not handed out while a CPU is on its kernel
+# stack. All 77 are in scheduler.c: sched_slot_reusable and
+# sched_pick_free_slot (with the SLOT_REUSE_UNCHECKED arm), their 12-line
+# one-CPU definitions for SMP=0 builds (where no other CPU can be on a dead
+# slot's stack, so the pick is the lowest dead slot as before), create_task's
+# refusal of a busy slot and the two forward declarations it needs, and, only
+# under KSTACK_REUSE_WIDEN, the smoke-kstack-reuse widener and its skip log.
+# The spawn paths themselves got shorter (kspawn.c -9), since both now call
+# the one picker instead of scanning for themselves; kspawn.c is not core.
+# Scheduling is ring 0 by nature.
+#
+# RAISED 2026-09-21, 10300 -> 10354 (+54), for HORUS-20260921-04: a task
+# killed while another CPU runs it stops. 47 are in the ship kernel: 24 in
+# scheduler.c (preempt_on_tick never resuming, re-claiming or signalling a dead
+# task and parking the CPU instead, task_teardown refusing a dead task and
+# kicking any CPU still running it, and the DEAD_TASK_RUNS arm's lines), 11 in
+# smp.c (smp_kick_cpu, the targeted kill IPI), 8 in idt.c (vector 0xFC and the
+# syscall-entry check) and 4 in lowlevel64.S (the 0xFC stub). The other 7 are in
+# multiboot.S and embed the killspin test child, only under PROC_SELFTEST: 5
+# directives and 2 comment continuation lines, the .S counting artefact recorded
+# in the S97 entry above. Stopping a task is ring 0 by nature.
+#
+# RAISED 2026-09-22, 10354 -> 10369 (+15): sched_note_park refuses a park on
+# any stack but the parking CPU's own (S20). All 15 are in scheduler.c and in the
+# ship kernel. In a fixed kernel it holds by construction; it exists so the
+# shared-park defect is caught on one CPU on the first park, which is what makes
+# smoke-kstack-park-control deterministic (it failed 3 runs in 31 before).
+# RAISED 2026-09-22, 10369 -> 10450 (+81), for S102 (HORUS-20260919-01): a
+# physical frame is never on the free list twice. 78 are in paging.c: the
+# page_on_loan bitmap and its accessors, pool_frame_index, the refusal in
+# free_user_physical_page (which now takes the full 64-bit address, since a
+# truncated one above 4 GiB could alias a frame on loan), and pagefree_selftest,
+# compiled only under PAGEFREE_SELFTEST (its failure line is assembled
+# and printed in one write, docs/LIMITATIONS.md 2.6a). 3 are in main.c and call the self-test.
+# The free list is ring 0 by nature: it is the kernel's own allocator.
+core_budget_loc: 10450
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

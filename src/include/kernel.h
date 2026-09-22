@@ -1100,7 +1100,7 @@ typedef struct platform_info {
     uint64_t total_memory_bytes;
 } platform_info_t;
 extern platform_info_t platform;
-#define MAX_CPUS 4
+#include "cpu_limits.h"   /* MAX_CPUS: one definition, shared with the AP trampoline */
 /* Physical load address of the AP trampoline blob (the SIPI vector's target).
  * Shared because two subsystems need it: smp.c stages the blob here, and
  * paging.c keeps exactly this page of the low identity map present and
@@ -1865,6 +1865,19 @@ typedef struct tcb {
     uint32_t sig_altstack_size;
     uint32_t sig_on_stack;
 
+    /* Which incarnation of this slot is the live task (HORUS-20260921-02).
+     * create_task increments it, and nothing else writes it: never reset, never
+     * copied, so every task a slot has ever held has a different value. A
+     * CAP_TCB names a task by (slot, slot_gen) -- see tcb_object -- so a
+     * capability for a dead task can never name the one that reused its slot.
+     * Starts at 0 in a zeroed table and is at least 1 once a task exists, which
+     * is what makes a bare slot number (generation 0) name nothing. */
+    uint64_t slot_gen;
+    /* The slot_gen SYS_WAIT was authorised against, for the pending wait that
+     * ipc_publish_pending_block registers later. Re-checked there, so a wait
+     * authorised for one task can never be registered on its successor. */
+    uint64_t blocked_on_gen;
+
     uint8_t  padding[8];
 } tcb_t;
 
@@ -1883,6 +1896,26 @@ _Static_assert(sizeof(tcb_t) <= TCB_BYTES_RESERVED,
  * every one of its call sites; NULL until tasks_init() runs, which is
  * immediately after untyped_init() and before anything references a task. */
 extern tcb_t *tasks;
+
+/* The object a CAP_TCB carries for task `id`: its slot in the low 16 bits and
+ * the slot's current generation above them (HORUS-20260921-02).
+ *
+ * A CAP_TCB used to carry the bare slot number, and a spawner's copy outlives
+ * the child. Once the slot was reused, that copy named the NEW occupant, so a
+ * dead child's capability could signal, kill, delegate into, resume and wait on
+ * an unrelated task. With the generation in the object, a capability names one
+ * incarnation and nothing else; the comparison in task_tcb_held is exact.
+ * Every writer of a CAP_TCB object goes through this: create_task (a task's own
+ * slot 0), the spawn grant, h_sudo, and cap_install_from_root. One that forgot
+ * would write generation 0, which no live task has, so the mistake fails
+ * closed. MAX_TASKS is far below 2^16; the generation has 48 bits. */
+#define TCB_OBJ_TID_BITS 16
+#define TCB_OBJ_TID_MASK ((1ull << TCB_OBJ_TID_BITS) - 1)
+_Static_assert(MAX_TASKS <= (1 << TCB_OBJ_TID_BITS), "CAP_TCB object cannot hold a slot number");
+static inline uint64_t tcb_object(int id) {
+    return (tasks[id].slot_gen << TCB_OBJ_TID_BITS) | ((uint64_t)id & TCB_OBJ_TID_MASK);
+}
+
 /* Tasks provisioned this boot. Every runtime bound reads this; MAX_TASKS is the
  * compile-time provisioning input alone and nothing branches on it. */
 extern int g_max_tasks;
@@ -2183,6 +2216,14 @@ void kfault_end(int fatal);
 void kfault_str(const char *s);
 void kfault_hex(uint64_t v);
 void kfault_dec(int v);
+/* S20 (scheduler.c): is slot `id` dead with no CPU still on its kernel stack?
+ * Caller holds sched_raw_lock under SMP. And the lowest such slot, or -1: the one
+ * place a spawn chooses a slot. */
+int sched_slot_reusable(int id);
+int sched_pick_free_slot(void);
+/* smp.c: interrupt CPU `cpu` with the kill IPI, so it stops running a task that
+ * has just been torn down (HORUS-20260921-04). No-op for this CPU and unmapped. */
+void smp_kick_cpu(int cpu);
 void kfault_task(int t);                 /* "N 'name'", name bounded */
 void kfault_pf_err(uint64_t err);        /* #PF error bits, spelled out */
 void kfault_frame(const struct interrupt_frame64 *f);   /* rip/cs/rflags/rsp/rbp/cpu */
@@ -3203,7 +3244,7 @@ void wx_selftest(void);
 void nzcow_selftest(void);   /* generic (non-zero) copy-on-write break test */
 #endif
 #ifdef PAGEFREE_SELFTEST
-void pagefree_selftest(void); /* free_user_physical_page fails closed (S99) */
+void pagefree_selftest(void); /* free_user_physical_page fails closed (S102) */
 #endif
 #ifdef SPAWN_OWNER_SELFTEST
 /* Staged-image ownership ([G-11]): refuse a foreign arm, accept your own. */

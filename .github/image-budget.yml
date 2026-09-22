@@ -32,10 +32,16 @@
 # 2026-09-19: 7,221,248 bytes (0x6E3000, 7,052 KiB), the measured value at
 #   06dbf07. argon2_scratch 4,096 KiB, referenced.2 and free_page_stack 512 KiB
 #   each, endpoints 335 KiB, ap_idle_stacks 272 KiB, page_refcounts 256 KiB.
-# 2026-09-21: 7,237,632 bytes (+16,384), for S99 (HORUS-20260919-01):
+# 2026-09-21: 7,630,848 bytes (0x747000, +400 KiB), MAX_CPUS 4 -> 8. Every
+#   supported CPU is reserved whether present or not: ap_idle_stacks 272 -> 544
+#   KiB (a guard page and 64 KiB of stack each), ap_ist 84 -> 192 KiB (three
+#   IST fault stacks per AP), ap_tss 28 -> 65 KiB (a TSS with its 8 KiB I/O
+#   bitmap per AP), plus apic_to_cpu[256], cpu_to_apic[8] and the MADT id buffer
+#   (520 bytes). See docs/LIMITATIONS.md 3.3 for why the ceiling is eight.
+# 2026-09-22: 7,647,232 bytes (+16,384), for S102 (HORUS-20260919-01):
 #   page_on_loan in src/kernel/paging.c, one bit for each of USER_PHYS_PAGES
 #   frames, so free_user_physical_page can refuse a frame that is not out on
 #   loan. Chosen over a sentinel value in page_refcounts, which costs no bytes
 #   but overloads a table the Kani proofs in rust/src/memory.rs reason about.
 #   The 4-byte refusal counter beside it fitted in existing padding.
-bss_bytes: 7237632
+bss_bytes: 7647232

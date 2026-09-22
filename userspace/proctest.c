@@ -52,6 +52,39 @@ static int find_alive(const char *name) {
 /* Ring-3 spin (preemptible) so the timer can run/reap the children. */
 static void settle(void) { for (volatile int d = 0; d < 20000; d++) { } }
 
+/* Which of our own cspace slots are occupied, one byte per slot. SYS_WAIT needs a
+ * CAP_TCB naming its target, and a spawn installs ours for the child in the first
+ * free slot at or above 16 without saying which, so a caller that must delegate
+ * it (the waiter and sigwaiter phases) finds it as the one slot that filled
+ * across the spawn. SYS_CAP_ENUMERATE does not report `object`, which is why it
+ * is found by difference rather than by asking for the tid. */
+static unsigned char occ_before[CAP_ENUM_MAX_SLOT];
+
+static void cspace_snapshot(void) {
+    int self = sys_getpid();
+    for (unsigned s = 0; s < CAP_ENUM_MAX_SLOT; s++) {
+        struct cap_info ci;
+        occ_before[s] = (sys_cap_enumerate(self, s, &ci) == 0 && ci.occupied) ? 1 : 0;
+    }
+}
+
+/* The one slot filled since cspace_snapshot(), or -1 if not exactly one was. */
+static int cspace_new_slot(void) {
+    int self = sys_getpid(), found = -1;
+    for (unsigned s = 0; s < CAP_ENUM_MAX_SLOT; s++) {
+        struct cap_info ci;
+        if (sys_cap_enumerate(self, s, &ci) == 0 && ci.occupied && !occ_before[s]) {
+            if (found >= 0) return -1;
+            found = (int)s;
+        }
+    }
+    return found;
+}
+
+/* The slot in a freshly spawned child's cspace that a delegated CAP_TCB goes
+ * into: clear of the reserved low slots, and empty in a new task. */
+#define DELEGATED_TCB_SLOT 16
+
 /* Fetch the death record of the task we last waited on (finding G-8).
  * Zeroes *ei first so a syscall that writes nothing cannot be mistaken for one
  * that reported TASK_EXIT_NONE. Returns 0 on success. */
@@ -91,6 +124,29 @@ void _start(void) {
     }
     if (!gone) { report("PROC_SELFTEST: FAIL exit\n"); sys_exit(); }
 
+    /* --- SYS_WAIT needs a CAP_TCB naming its target (2026-09-21) ---
+     * Wait on a slot we hold no CAP_TCB for: the first one that reads dead, which
+     * this early is the "hello" the kernel spawned (we were never given its TCB)
+     * or a slot nothing has used. Before the gate, a dead slot answered at once
+     * with 0 and handed over the corpse's exit record, so a wait needed no
+     * relation to its target at all. It must now be refused, and refused the same
+     * way however the slot reads. Done before this driver spawns anything, so no
+     * slot it scans can be one it has since been given a TCB for. The positive
+     * direction is every wait below on a child we spawned, which still succeeds. */
+    {
+        int probe = -1;
+        struct task_info pi;
+        for (int id = 1; id < 64; id++) {
+            if (id != sys_getpid() && sys_get_task_info(id, &pi) == 0 && pi.state == 0) {
+                probe = id; break;
+            }
+        }
+        if (probe < 0) { report("PROC_SELFTEST: FAIL wait-probe-slot\n"); sys_exit(); }
+        if (sys_wait(probe) != SYS_ERR_PERM) {
+            report("PROC_SELFTEST: FAIL wait-without-tcb-answered\n"); sys_exit();
+        }
+    }
+
     /* --- SYS_KILL: terminate the forever-looping "looper" via its TCB cap --- */
     int loop = find_alive("looper");
     if (loop < 0)            { report("PROC_SELFTEST: FAIL find-looper\n"); sys_exit(); }
@@ -103,8 +159,13 @@ void _start(void) {
      * exits (old behaviour: a signal never lands on a blocked task, so it would
      * hang). Done before we kill the looper it is parked on. --- */
     int sw = sys_spawn_named_arg("sigwaiter", (uint32_t)loop);
-    if (sw > 0) sys_task_resume(sw);   /* spawn leaves the child suspended */
     if (sw <= 0) { report("PROC_SELFTEST: FAIL sigwait-spawn\n"); sys_exit(); }
+    /* sigwaiter waits on a task it did not spawn, so it needs the looper's
+     * CAP_TCB delegated to it: ours, at slot 16, from proc_selftest. */
+    if (sys_cap_grant(sw, 16, DELEGATED_TCB_SLOT) != 0) {
+        report("PROC_SELFTEST: FAIL sigwait-grant-tcb\n"); sys_exit();
+    }
+    sys_task_resume(sw);   /* spawn leaves the child suspended */
     for (int i = 0; i < 4000; i++) settle();   /* let it register + block in the wait */
     if (sys_send_signal(sw, SIG_USR1) != 0) { report("PROC_SELFTEST: FAIL sigwait-send\n"); sys_exit(); }
     int swd = 0; struct task_info swi;
@@ -401,6 +462,225 @@ void _start(void) {
         if (!sd) { report("PROC_SELFTEST: FAIL susp-no-run-after-resume\n"); sys_exit(); }
         report("PROC_SELFTEST: suspend OK\n");
     }
+
+    /* --- HORUS-20260920-02 (docs/LIMITATIONS.md 1.17): a task in a REUSED slot
+     * does not inherit the previous occupant's wait record.
+     *
+     * The slot is reused the way the kernel always reuses one, by spawning, and
+     * not by changing the kernel's scan order (tried when the finding was made,
+     * and rejected because it changes the workload rather than the defect). The
+     * kernel takes the lowest free slot, so the driver spawns probes SUSPENDED
+     * until one lands in the waiter's old slot: each earlier probe holds a lower
+     * free slot and pushes the next spawn up. Then every probe runs, the one in
+     * the waiter's slot included, and each reports through how it dies.
+     *
+     * Also last, for the reason the suspend test above is: probes held suspended
+     * occupy slots, and the choreography earlier in this file is timing-coupled.
+     * --- */
+    {
+        cspace_snapshot();
+        int t = sys_spawn_named("hello");            /* suspended: the waiter's target */
+        if (t <= 0) { report("PROC_SELFTEST: FAIL slot-target-spawn\n"); sys_exit(); }
+        int t_tcb = cspace_new_slot();               /* our CAP_TCB naming t */
+        if (t_tcb < 0) { report("PROC_SELFTEST: FAIL slot-target-tcb\n"); sys_exit(); }
+        int w = sys_spawn_named_arg("waiter", (uint32_t)t);
+        if (w <= 0) { report("PROC_SELFTEST: FAIL slot-waiter-spawn\n"); sys_exit(); }
+        /* The waiter waits on t, which we spawned and it did not: delegate t's
+         * CAP_TCB to it, or SYS_WAIT refuses it. */
+        if (sys_cap_grant(w, (uint32_t)t_tcb, DELEGATED_TCB_SLOT) != 0) {
+            report("PROC_SELFTEST: FAIL slot-waiter-grant-tcb\n"); sys_exit();
+        }
+        sys_task_resume(w);
+        for (int i = 0; i < 4000; i++) settle();     /* let it block in its wait */
+        sys_task_resume(t);
+        if (sys_wait(w) != 0) { report("PROC_SELFTEST: FAIL slot-waiter-wait\n"); sys_exit(); }
+        struct task_exit_info wr;
+        if (exit_info(&wr) != 0 || wr.reason != TASK_EXIT_NORMAL) {
+            report("PROC_SELFTEST: FAIL slot-waiter-died\n"); sys_exit();   /* it printed why */
+        }
+
+        /* ROUNDS, not one pass (2026-09-21, S20). The kernel no longer hands out
+         * a slot while a CPU is still on its kernel stack, and the CPU that ran
+         * the waiter can still be unwinding off it when our wait returns. In that
+         * window every probe lands past the waiter's slot and the budget runs out
+         * without reaching it, which is correct kernel behaviour and a false
+         * failure of this test. So: run and reap the probes, yield, and try
+         * again; the window is microseconds on real hardware and bounded by
+         * KSTACK_REUSE_WIDEN under test. Every probe of every round is checked. */
+        int reached = 0;
+        for (int round = 0; round < 4 && !reached; round++) {
+            int probes[64];
+            int np = 0;
+            while (np < 64) {
+                int p = sys_spawn_named("exitprobe");
+                if (p <= 0) break;
+                probes[np++] = p;
+                if (p == w) { reached = 1; break; }
+            }
+            for (int k = 0; k < np; k++) {
+                sys_task_resume(probes[k]);
+                if (sys_wait(probes[k]) != 0) { report("PROC_SELFTEST: FAIL slot-probe-wait\n"); sys_exit(); }
+                struct task_exit_info pr;
+                if (exit_info(&pr) != 0 || pr.reason != TASK_EXIT_NORMAL) {
+                    report("PROC_SELFTEST: FAIL slot-reuse-stale-record\n"); sys_exit();
+                }
+            }
+            if (!reached) for (int i = 0; i < 400; i++) poll_wait();
+        }
+        /* Not reaching the slot in any round is a failure of the TEST, not of
+         * the property, and it is named as one rather than scored either way. */
+        if (!reached) { report("PROC_SELFTEST: FAIL slot-reuse-not-reached\n"); sys_exit(); }
+        report("PROC_SELFTEST: slot-reuse OK\n");
+    }
+
+    /* --- HORUS-20260921-02 (docs/LIMITATIONS.md 1.19): a CAP_TCB names ONE
+     * task, not a slot number. We spawn a child `c`, keep the CAP_TCB the spawn
+     * gave us, and let `c` die. `slotheir` then spawns "hello" into the lowest
+     * free slot, which is c's, and leaves it suspended; the new occupant's
+     * CAP_TCB went to slotheir, not to us. Every operation a CAP_TCB authorises
+     * is then tried on that slot number with the stale capability, and each must
+     * be refused. Signal first: under the defect it is the least destructive, so
+     * the arm names the defect before anything is killed.
+     *
+     * slotheir is spawned BEFORE c, so it holds the lower slot and c takes the
+     * next; nothing below c is freed in between, so c's slot is the lowest free
+     * when slotheir spawns. Checked, not assumed: not reaching the slot fails the
+     * TEST by name. The positive direction is every earlier phase, where a fresh
+     * CAP_TCB still authorises kill, signal, resume, grant and wait.
+     *
+     * Last in the ordinary sequence: the heir stays suspended in its slot, and
+     * nothing here may kill it (that is the point), so it must not sit under the
+     * timing-coupled phases above. --- */
+    {
+        /* In ROUNDS, for the reason the slot-reuse phase above gives: the kernel
+         * will not hand out c's slot while the CPU that ran c is still on its
+         * kernel stack, so slotheir resumed straight after our wait can land
+         * past it. Yield first, and if it still missed, try again with a fresh
+         * child; a missed round leaves one suspended heir behind, which is
+         * harmless and is not probed. */
+        int c = -1, landed = 0;
+        struct task_info hi;
+        for (int round = 0; round < 3 && !landed; round++) {
+            int r = sys_spawn_named("slotheir");
+            if (r <= 0) { report("PROC_SELFTEST: FAIL tcb-reuse-heir-spawn\n"); sys_exit(); }
+            if (sys_cap_grant(r, CAPSLOT_UNTYPED, CAPSLOT_UNTYPED) != 0) {
+                report("PROC_SELFTEST: FAIL tcb-reuse-heir-untyped\n"); sys_exit();
+            }
+            c = sys_spawn_named("hello");
+            if (c <= 0) { report("PROC_SELFTEST: FAIL tcb-reuse-child-spawn\n"); sys_exit(); }
+            sys_task_resume(c);
+            if (sys_wait(c) != 0) { report("PROC_SELFTEST: FAIL tcb-reuse-child-wait\n"); sys_exit(); }
+            for (int i = 0; i < 400; i++) poll_wait();
+            sys_task_resume(r);
+            if (sys_wait(r) != 0) { report("PROC_SELFTEST: FAIL tcb-reuse-heir-wait\n"); sys_exit(); }
+            landed = (sys_get_task_info(c, &hi) == 0 && hi.state != 0 && name_eq(hi.name, "hello"));
+        }
+        if (!landed) {
+            report("PROC_SELFTEST: FAIL tcb-reuse-not-reached\n"); sys_exit();
+        }
+        if (sys_send_signal(c, SIG_USR1) != SYS_ERR_PERM) {
+            report("PROC_SELFTEST: FAIL tcb-stale-signal\n"); sys_exit();
+        }
+        if (sys_task_resume(c) != SYS_ERR_PERM) {
+            report("PROC_SELFTEST: FAIL tcb-stale-resume\n"); sys_exit();
+        }
+        if (sys_cap_grant(c, 7, DELEGATED_TCB_SLOT) != SYS_ERR_PERM) {
+            report("PROC_SELFTEST: FAIL tcb-stale-grant\n"); sys_exit();
+        }
+        if (sys_kill(c) != SYS_ERR_PERM) {
+            report("PROC_SELFTEST: FAIL tcb-stale-kill\n"); sys_exit();
+        }
+        /* Last: under the defect a wait would block for the heir's lifetime. */
+        if (sys_wait(c) != SYS_ERR_PERM) {
+            report("PROC_SELFTEST: FAIL tcb-stale-wait\n"); sys_exit();
+        }
+        if (sys_get_task_info(c, &hi) != 0 || hi.state == 0) {
+            report("PROC_SELFTEST: FAIL tcb-reuse-heir-gone\n"); sys_exit();
+        }
+        report("PROC_SELFTEST: tcb-reuse OK\n");
+    }
+    /* --- HORUS-20260921-04 (docs/LIMITATIONS.md 1.21): a task killed while it
+     * runs STOPS, and stops touching memory it shares with live tasks. Before
+     * the fix a task torn down by another CPU was resumed on every tick while
+     * nothing else was runnable, and kept writing the memory it shared after its
+     * capabilities were gone.
+     *
+     * killspin increments a counter in a frame we share with it, with no system
+     * call, so only an interrupt can take its CPU back. We watch the counter
+     * rise, which proves it is running now, kill it, allow a short grace for
+     * the kill to land, then sample the counter twice, far apart. Any change
+     * between the two samples is a dead task writing live memory. --- */
+    {
+        const int slot_frame = 40;
+        volatile unsigned long *ctr = (volatile unsigned long *)0x0000000030000000ULL;
+        if (sys_retype(CAPSLOT_UNTYPED, KOBJ_FRAME, 1, slot_frame) != 1 ||
+            sys_map_frame(slot_frame, 0x0000000030000000ULL, CAP_RIGHT_READ | CAP_RIGHT_WRITE) != 0) {
+            report("PROC_SELFTEST: FAIL killed-task-frame\n"); sys_exit();
+        }
+        *ctr = 0;
+        int k = sys_spawn_named("killspin");
+        if (k <= 0) { report("PROC_SELFTEST: FAIL killed-task-spawn\n"); sys_exit(); }
+        if (sys_cap_grant(k, (uint32_t)slot_frame, 20) != 0) {
+            report("PROC_SELFTEST: FAIL killed-task-grant\n"); sys_exit();
+        }
+        sys_task_resume(k);
+        unsigned long c0 = 0, c1 = 0;
+        int running = 0;
+        for (int i = 0; i < 4000 && !running; i++) {
+            c0 = *ctr; settle(); c1 = *ctr;
+            running = (c1 > c0 && c0 > 0);
+        }
+        if (!running) { report("PROC_SELFTEST: FAIL killed-task-never-ran\n"); sys_exit(); }
+        if (sys_kill(k) != 0) { report("PROC_SELFTEST: FAIL killed-task-kill\n"); sys_exit(); }
+        for (int i = 0; i < 200; i++) settle();            /* grace: the kill lands */
+        unsigned long a = *ctr;
+        for (int i = 0; i < 5000; i++) settle();           /* many ticks' worth */
+        unsigned long b = *ctr;
+        if (b != a) { report("PROC_SELFTEST: FAIL killed-task-still-writes\n"); sys_exit(); }
+        /* And it died of the kill, as recorded once: nothing it did afterwards
+         * may have rewritten the record (a dead task cannot die again). */
+        struct task_exit_info kr;
+        if (sys_wait(k) != 0 || exit_info(&kr) != 0 || kr.reason != TASK_EXIT_KILLED || kr.tid != k) {
+            report("PROC_SELFTEST: FAIL killed-task-record\n"); sys_exit();
+        }
+        report("PROC_SELFTEST: killed-task OK\n");
+    }
+#ifdef KFAULT_RECORD_SELFTEST
+    /* --- HORUS-20260920-01 (docs/LIMITATIONS.md 1.16): a SUPERVISOR fault's
+     * record carries no kernel address. kfaulter makes the kernel read an address
+     * at CPL 0 in kfaulter's own syscall, so the kernel kills it for a #PF whose
+     * rip is kernel text. The record is read here from ring 3, with no authority,
+     * exactly as any task could read it. Two runs:
+     *   "user"   addr 0x94 is in the user half and must be reported as-is (so a
+     *            filter that zeroed everything could not pass), rip must be 0
+     *   "kernel" a kernel-half addr: both it and rip must be 0
+     * The reason is required to be a page fault first, so a child that died some
+     * other way cannot pass by having nothing recorded.
+     *
+     * Last, and only in a KFAULT_RECORD_SELFTEST build (`make
+     * smoke-kfault-record`): the kernel prints its PAGE FAULT banner for these,
+     * which smoke-proc rightly treats as a failure, so smoke-proc runs without
+     * this block and stays exactly as strict as it was. --- */
+    {
+        const char *mode[2] = { "user", "kernel" };
+        const uint64_t want_addr[2] = { 0x94, 0 };
+        for (int m = 0; m < 2; m++) {
+            char *kv[3];
+            kv[0] = "kfaulter"; kv[1] = (char *)mode[m]; kv[2] = 0;
+            int kc = sys_spawn_named_argv("kfaulter", 2, kv);
+            if (kc > 0) sys_task_resume(kc);
+            if (kc <= 0) { report("PROC_SELFTEST: FAIL kfault-spawn\n"); sys_exit(); }
+            if (sys_wait(kc) != 0) { report("PROC_SELFTEST: FAIL kfault-wait-rc\n"); sys_exit(); }
+            struct task_exit_info kei;
+            if (exit_info(&kei) != 0)              { report("PROC_SELFTEST: FAIL kfault-exitinfo-rc\n"); sys_exit(); }
+            if (kei.reason != TASK_EXIT_PAGEFAULT) { report("PROC_SELFTEST: FAIL kfault-exitinfo-reason\n"); sys_exit(); }
+            if (kei.tid != kc)                     { report("PROC_SELFTEST: FAIL kfault-exitinfo-tid\n"); sys_exit(); }
+            if (kei.rip != 0)                      { report("PROC_SELFTEST: FAIL kfault-exitinfo-kernel-rip\n"); sys_exit(); }
+            if (kei.addr != want_addr[m])          { report("PROC_SELFTEST: FAIL kfault-exitinfo-addr\n"); sys_exit(); }
+        }
+    }
+    report("PROC_SELFTEST: kfault-record OK\n");
+#endif
     /* sigtarget's handler printed the final "+signal" PASS marker on delivery. */
     sys_exit();
 }

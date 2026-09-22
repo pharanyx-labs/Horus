@@ -585,6 +585,32 @@ static const struct io_device *find_sdhci_controller(uint64_t *index_out) {
     return NULL;
 }
 
+#ifdef SDHCI_HW_TRACE
+/* See the SDHCI_HW_TRACE note in pci.c. One step: config state, then VER, CAP
+ * and PRESENT_STATE read from EVERY memory region the function declares, so a
+ * wrong-BAR choice shows up as the other region answering. */
+static void sdtrace_hx(uint32_t v, int digits) {
+    static const char hex[] = "0123456789abcdef";
+    for (int sh = (digits - 1) * 4; sh >= 0; sh -= 4)
+        print_char(hex[(v >> sh) & 0xF]);
+}
+
+static void sdhci_trace_step(const struct io_device *d, const char *when) {
+    iodev_trace_config(d, when);
+    for (uint32_t i = 0; i < d->n_mmio; i++) {
+        uint64_t b = d->mmio[i].base;
+        if (b == 0 || d->mmio[i].len < 0x100) continue;
+        sdhci_trace_map(b);
+        print("SDTRACE   @"); sdtrace_hx((uint32_t)(b >> 32), 8); sdtrace_hx((uint32_t)b, 8);
+        print(" len="); sdtrace_hx((uint32_t)d->mmio[i].len, 5);
+        print(" ver="); sdtrace_hx(sdhci_read16(b, SDHCI_HOST_VERSION), 4);
+        print(" cap="); sdtrace_hx(sdhci_read32(b, SDHCI_CAPABILITIES), 8);
+        print(" ps=");  sdtrace_hx(sdhci_read32(b, SDHCI_PRESENT_STATE), 8);
+        print("\n");
+    }
+}
+#endif
+
 /* Called from kernel_main after iodev_init, which populates the table this
  * reads. Reports and returns; nothing else depends on it yet. */
 void sdhci_probe(void) {
@@ -601,6 +627,17 @@ void sdhci_probe(void) {
         print("sdhci: no SD/eMMC host controller\n");
         return;
     }
+
+#ifdef SDHCI_HW_TRACE
+    /* Read as found, then after each candidate fix in turn, so whichever step
+     * makes the registers answer is the cause. The normal probe then runs on
+     * the state the last step left. */
+    sdhci_trace_step(d, "as found");
+    iodev_trace_force_d0(d);
+    sdhci_trace_step(d, "after D0");
+    iodev_set_decode(d, IODEV_DECODE_MEM);
+    sdhci_trace_step(d, "after MEM decode");
+#endif
 
     /* The register file is in a memory BAR. As in ahci.c, struct io_device does
      * not record which BAR index a region came from, so the highest-based MMIO

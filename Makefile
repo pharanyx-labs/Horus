@@ -173,6 +173,7 @@ DEFECT_FLAGS = \
 	PCI_SCAN_TRACE \
 	PCI_BUS0_ONLY \
 	IODEV_TABLE_16 \
+	SDHCI_HW_TRACE \
 	CONSOLE_KBD_SPLIT_ESC \
 	FB_GRID_FIXED_ROWS
 
@@ -2890,6 +2891,17 @@ endif
 IODEV_TABLE_16 ?= 0
 ifeq ($(IODEV_TABLE_16),1)
 CFLAGS += -DIODEV_TABLE_16
+endif
+# SDHCI_HW_TRACE=1 is an INSTRUMENT, not a defect: when a real SD/eMMC controller
+# reads as zeros it prints the function's command register, power state, Slot
+# Information register and raw BARs, and VER/CAP/PRESENT_STATE from every memory
+# region, then puts it in D0 and turns memory decode on, re-reading after each
+# step. It WRITES configuration space, so it is never shipped and announces
+# itself in DEFECT_FLAGS. Build `make install.iso SDHCI_HW_TRACE=1` and read the
+# SDTRACE lines on the machine's screen.
+SDHCI_HW_TRACE ?= 0
+ifeq ($(SDHCI_HW_TRACE),1)
+CFLAGS += -DSDHCI_HW_TRACE
 endif
 ifeq ($(PCI_SCAN_TRACE),1)
 CFLAGS += -DPCI_SCAN_TRACE

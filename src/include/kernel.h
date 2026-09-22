@@ -2709,6 +2709,12 @@ int iodev_allows_irq(const struct io_device *d, int irq);
 #define IODEV_DECODE_MEM        0x2u
 #define IODEV_DECODE_BUSMASTER  0x4u
 int iodev_set_decode(const struct io_device *d, uint32_t flags);
+#ifdef SDHCI_HW_TRACE
+/* Instrument only (pci.c): see the SDHCI_HW_TRACE note there. */
+void iodev_trace_config(const struct io_device *d, const char *when);
+void iodev_trace_force_d0(const struct io_device *d);
+void sdhci_trace_map(uint64_t regs_phys);   /* paging.c */
+#endif
 int iodev_program_msi(const struct io_device *d, uint8_t vector);
 int iodev_program_msix(const struct io_device *d, uint16_t entry, uint8_t vector);
 void ensure_msix_mapped(uint64_t *root_pml4, uint64_t page_phys);

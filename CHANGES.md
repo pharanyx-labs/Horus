@@ -547,6 +547,39 @@ in this file.
 
 ### Fixed
 
+- **A laptop's eMMC answered every command and the bus then wedged, so the installer still found
+  no disk.** With the four fixes below in place, an IdeaPad 1 14IGL05 found its controller, chose
+  the right BAR, clocked at 400 kHz and reported its embedded slot as occupied, and then printed
+  `sdhci: the card did not come up (1)`. Two further defects, both of which only real silicon can
+  show:
+  - **A failed command was never recovered from.** SD Host Controller specification 3.00 section
+    3.10.1 requires the host driver to reset the command line after a command error and wait for
+    the bit to clear; until it does, Command Inhibit stays set and every later command times out
+    against it, and a command with a data phase or a busy response needs the data line reset as
+    well. This driver did neither. `RESET_CMD` and `RESET_DAT` were defined in the first version
+    of the file and never used once, which is the shape of a step that was understood and then
+    not written. Both lines are now reset on every failure.
+  - **CMD8 was asked speculatively and its answer believed on completion alone.** Index 8 is
+    `SEND_IF_COND` on SD and `SEND_EXT_CSD` on eMMC, two different commands at one number, and
+    the eMMC one is a 512-byte data read. Issued here with no data phase programmed, an eMMC
+    device responds and then starts sending on DAT with nobody draining it, which is what left
+    the data line inhibited for everything after it. The answer is now believed only when the
+    card echoes the check pattern it was given (`0x1AA` in R7), which is the specification's own
+    test for an SD 2.0 card, and both lines are put back after the probe whatever it returned.
+
+  The failure report was unreadable as well. `(1)` was two different places, the opening CMD0 and
+  the one that reopens the eMMC branch, and which of them it was is the whole difference between
+  "the card never answered" and "the card answered and something then wedged the bus". The eMMC
+  retry returns its own code now and every code prints the command it belongs to, so a laptop
+  with no serial cable can say what failed from its screen. Under `SDHCI_HW_TRACE` each failed
+  command also reports its error, interrupt and present-state registers.
+
+  **Confirmed on the laptop, 2026-09-22**: the device identifies, and the installer surveys it
+  instead of reporting nothing to install onto. No control arm, and the reason is structural, as
+  for `SDHCI_BAR_HIGHEST`: QEMU's `sd-card` and `emmc` models drop the inhibit themselves, so an
+  arm that removed the recovery would pass. `smoke-sdhci-detect` and `smoke-sdhci-emmc` both
+  still pass.
+
 - **A laptop's eMMC controller was found and then read as zeros, so it could not be installed
   onto.** Read off an IdeaPad 1 14IGL05 with a new instrument (`SDHCI_HW_TRACE=1`), which found
   four defects, each fixed:

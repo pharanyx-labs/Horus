@@ -3128,8 +3128,21 @@ old allocator and the new one read the same single block and no workload could t
   placeholder in its CSD. All four are fixed. **Two are witnessed on hardware only**, because QEMU
   cannot present them: its controller has one BAR, and it refuses the embedded slot type. The
   divider is gated in CI (`make smoke-sdhci-v3clock`, with `SDHCI_DIV_V2_ONLY=1` as the arm).
+  **Running the laptop again with those four fixed found two more, and the same reasoning applies
+  to both**: the driver never reset the command or data line after a failed command, which SD
+  Host Controller specification 3.00 section 3.10.1 requires and without which Command Inhibit
+  stays set and every later command fails against it; and `CMD8` was issued as SD's
+  `SEND_IF_COND` and its answer believed on completion alone, where on eMMC that index is
+  `SEND_EXT_CSD`, a 512-byte data read that leaves the device sending on DAT with nobody draining
+  it. Both are fixed, the second by believing the answer only when the card echoes the `0x1AA`
+  check pattern. **Neither can have a control arm**, for the same structural reason as the BAR
+  choice: QEMU's `sd-card` and `emmc` models drop the inhibit themselves, so an arm that removed
+  the recovery would pass. With them fixed the laptop's device identifies and the installer
+  surveys it (2026-09-22).
   **An install onto the laptop's eMMC has not yet been run**; until one has, this paragraph
-  says so. **The installer gates' stall detector is blind on this path**: it counts QEMU's block
+  says so. What stops one now is no longer storage: the installer's own screen is drawn through
+  `CON_OP_WRITE_RAW`, which reaches the serial line and nothing else, and this machine has no
+  serial port. That is a separate finding and is tracked as one. **The installer gates' stall detector is blind on this path**: it counts QEMU's block
   statistics, which the SD and eMMC device models do not keep, so for `smoke-installer-sd` and
   `smoke-installer-emmc` it is an elapsed-time bound on the format (30 s and 180 s) rather than a
   detector of the guest going quiet.

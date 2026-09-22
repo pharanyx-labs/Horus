@@ -2626,6 +2626,10 @@ static uint64_t ksp_refuse(const char *who, int t, uint64_t ksp)
     return 0;
 }
 
+#ifdef SMP
+static uint64_t enter_cpu_idle(int cpu);   /* defined below; parks a CPU */
+#endif
+
 uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
     if (!preempt_enabled) return frame_rsp;
 #ifndef SMP
@@ -2775,9 +2779,28 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
 
     int cur = percpu_current_task[cpu];
 
+    /* ---- A TORN-DOWN TASK IS NEVER RESUMED -- HORUS-20260921-04 -------------
+     *
+     * task_teardown can run on another CPU while this one runs the task in ring
+     * 3 (SYS_KILL, a signal's default action). This path then used to treat the
+     * dead task as live: re-claim it below ("defensively"), deliver its signals,
+     * and, when nothing else was runnable, return into it -- "keep running cur".
+     * Measured on 2026-09-21: a spinner killed mid-spin was resumed on every
+     * tick for as long as the test watched (383 ticks at -smp 4), still reading
+     * and writing memory it shared with live tasks after its capabilities were
+     * gone. A dead task is now switched away from, or its CPU parked, and
+     * nothing of the task is touched: its claim, its signals and its saved
+     * context stay as teardown left them. The kill IPI (smp_kick_cpu) brings
+     * this CPU here as soon as the kill happens. */
+#ifndef DEAD_TASK_RUNS
+    int cur_dead = (cur > 0 && cur < g_max_tasks && tasks[cur].state == 0);
+#else
+    int cur_dead = 0;   /* CONTROL ARM: the pre-fix tick, which cannot tell */
+#endif
+
     /* Defensively claim the task we are currently running, so another CPU cannot
      * grab a task that was launched onto this CPU outside the timer path. */
-    if (cur > 0 && cur < g_max_tasks && task_running_cpu[cur] < 0) {
+    if (!cur_dead && cur > 0 && cur < g_max_tasks && task_running_cpu[cur] < 0) {
         task_running_cpu[cur] = cpu;
         CLAIM_NOTE(cur, cpu, "preempt_on_tick/defensive");
     }
@@ -2789,7 +2812,7 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
      * place, so both the save-and-switch and the no-switch return below carry the
      * redirected frame. Safe under the raw lock: the delivery helper takes no lock
      * and touches only tasks[cur] plus this CPU's own frame. */
-    if (ring3 && cur > 0 && cur < g_max_tasks)
+    if (!cur_dead && ring3 && cur > 0 && cur < g_max_tasks)
         deliver_pending_signal(frame_rsp, cur);
 
     int next = -1;
@@ -2802,11 +2825,25 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
             break;
         }
     }
+    if (cur_dead) {
+        /* This CPU is still on the dead task's kernel stack (its trap frame is
+         * the one being handled), so the stack is marked in flight until the
+         * ISR epilogue has left it, exactly as for any outgoing task. */
+        sched_release_outgoing(cpu, cur);
+        if (next < 0) {
+            uint64_t idle = enter_cpu_idle(cpu);   /* park; nothing else to run */
+            sched_raw_unlock();
+            KSTACK_WIDEN(cpu);
+            return idle;
+        }
+    }
+
     if (next < 0) { sched_raw_unlock(); return frame_rsp; }   /* keep running cur */
 
     /* Save + release the outgoing task if it was a real user task in ring 3. A
-     * ring-0 (idle) context is stateless and simply abandoned. */
-    if (cur > 0 && cur < g_max_tasks && ring3) {
+     * ring-0 (idle) context is stateless and simply abandoned. A dead one was
+     * released above and has no context worth saving. */
+    if (!cur_dead && cur > 0 && cur < g_max_tasks && ring3) {
         tasks[cur].saved_ksp    = frame_rsp;
         tasks[cur].runnable_ctx = 1;
         sched_release_outgoing(cpu, cur);
@@ -3587,6 +3624,14 @@ uint64_t sched_yield_switch(int cur, uint64_t frame_rsp) {
  * CPU away from the task if it happens to be the one currently running. */
 void task_teardown(int id, const struct task_exit_cause *cause) {
     if (id <= 0 || id >= g_max_tasks) return;
+    /* A dead task cannot die again (HORUS-20260921-04). A task killed while it
+     * ran on another CPU used to go on running, and its SYS_EXIT or its next
+     * fault tore it down a second time: rewriting the death record its
+     * supervisor reads (a kill re-reported as a normal exit) and waking a
+     * waiter a second time. Nothing that is dead has anything left to release. */
+#ifndef DEAD_TASK_RUNS
+    if (tasks[id].state == 0) return;
+#endif
 
     /* Record the cause BEFORE anything else can fail or switch away: this is the
      * only account of why the task died, and the paths that reach here (a ring-3
@@ -3711,6 +3756,14 @@ void task_teardown(int id, const struct task_exit_cause *cause) {
     task_running_cpu[id]  = -1;  /* release the SMP mutual-exclusion guard */
     REL_LOG(id, this_cpu(), "task_teardown");
     sched_raw_unlock();
+    /* Any OTHER CPU still running `id` is sent the kill IPI, so it stops now.
+     * preempt_on_tick, which the IPI runs, never returns into a dead task. Read
+     * after the state change is published: a CPU that picks up the task after
+     * this cannot, since it is no longer selectable. (HORUS-20260921-04) */
+#ifndef DEAD_TASK_RUNS
+    for (int c = 0; c < MAX_CPUS; c++)
+        if (c != this_cpu() && percpu_current_task[c] == id) smp_kick_cpu(c);
+#endif
 #endif
 
     /* A dead task's capabilities stop EXISTING, not merely stop counting.

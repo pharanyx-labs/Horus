@@ -547,6 +547,21 @@ in this file.
 
 ### Fixed
 
+- **A laptop with more than fourteen PCI functions lost the rest, eMMC controller included.**
+  The kernel's device table (`IODEV_MAX`) held 16 entries, fourteen PCI functions once index 0
+  and the platform device are taken, and `pci_add_function` dropped every function past the end
+  without a word. An Intel Gemini Lake laptop such as the IdeaPad 1 14IGL05 has twenty-odd
+  functions on bus 0 and its eMMC controller at `00:1c.0`, near the end of the walk, so the only
+  symptom was `sdhci: no SD/eMMC host controller` and a machine with nothing to install onto.
+  The table now holds **64**, and a full table is reported on the console
+  (`iodev: table full, N PCI function(s) not recorded`) rather than dropped in silence. The
+  2026-09-12 bridge walk was the first explanation for that same symptom; it was reproduced under
+  QEMU and never read off the laptop, and on that chipset the controller is normally on bus 0.
+  Neither diagnosis has been confirmed on the machine itself. More functions become delegatable
+  on a large machine, as with the bridge walk; what can be done with any one device is
+  unchanged. Gated by `make smoke-sdhci-crowded` (24 functions on bus 0 ahead of a controller
+  at `00:1c.0`), with `IODEV_TABLE_16=1` as the arm, falsified in all four directions.
+
 - **The kernel-stack park control arm went red about one run in ten with the defect present.**
   `smoke-kstack-park-control` restores the shared park stack and recognised it only when two
   different CPUs parked in the same boot. In about half of boots only one CPU did, and on 3 of 31

@@ -286,7 +286,13 @@
 # multiboot.S and embed the killspin test child, only under PROC_SELFTEST: 5
 # directives and 2 comment continuation lines, the .S counting artefact recorded
 # in the S97 entry above. Stopping a task is ring 0 by nature.
-core_budget_loc: 10354
+#
+# RAISED 2026-09-22, 10354 -> 10369 (+15): sched_note_park refuses a park on
+# any stack but the parking CPU's own (S20). All 15 are in scheduler.c and in the
+# ship kernel. In a fixed kernel it holds by construction; it exists so the
+# shared-park defect is caught on one CPU on the first park, which is what makes
+# smoke-kstack-park-control deterministic (it failed 3 runs in 31 before).
+core_budget_loc: 10369
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

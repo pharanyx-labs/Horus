@@ -149,6 +149,7 @@ jobs:
       - smoke-irq-policy
       - smoke-kdiag
       - smoke-keyboard
+      - smoke-keyboard-installer-noserial
       - smoke-kfault
       - smoke-kfault-record
       - smoke-klog-forge
@@ -865,6 +866,40 @@ jobs:
         run: make smoke-fb-grid-control
 
   # Shard of the smoke-boot job (see `smoke`). Console handover and the keyboard.
+  # A JOB OF ITS OWN, not two more steps on smoke-keyboard. Each of the two
+  # targets cleans, rebuilds and then waits out a full boot timeout before it
+  # observes anything, so bolting them onto that job would add about twelve
+  # minutes to it and make it the run's critical path -- which #416 spent its
+  # whole effort removing (56 min to 24.3). Sharded, they run beside it.
+  smoke-keyboard-installer-noserial:
+    name: "The installer is drawn on a machine with no serial port, and its control arm"
+    runs-on: ubuntu-latest
+    # Backstop, not a performance budget, for the reason smoke-keyboard's says.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86 grub-efi-amd64-bin ovmf
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # THE INTERSECTION TWO GREEN GATES LEFT UNCOVERED. smoke-keyboard-installer
+      # drives the installer but reads its screen off the SERIAL LINE, so it only
+      # runs where a UART exists; smoke-keyboard-noserial has no UART but drives
+      # only the LOGIN prompt, which ordinary console writes do paint. The
+      # installer's TUI went out through CON_OP_WRITE_RAW, which is serial only,
+      # so on a laptop with no serial header it drew nothing while working
+      # perfectly. Observed on the SCREEN over QMP, with the idle control inside
+      # the run, as its sibling does.
+      - name: The installer is drawn on a screen with no serial port
+        run: make smoke-keyboard-installer-noserial
+      # The arm is the library before 2026-09-22: the cells are built and
+      # dropped, leaving only escape sequences bound for a UART that is not
+      # there. The installer must then draw nothing at all.
+      - name: Control arm — the TUI reaches only the serial line
+        run: make smoke-keyboard-installer-noserial-control
+
   smoke-keyboard:
     name: "The machine's own keyboard, with and without a serial port"
     runs-on: ubuntu-latest

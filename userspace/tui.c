@@ -148,6 +148,85 @@ static void oflush(void)
 static void oput(char c)  { if (olen == sizeof(obuf)) oflush(); obuf[olen++] = c; }
 static void oputs(const char *s) { for (; *s; s++) oput(*s); }
 
+/* ---- the cell channel, for the machine's own screen ---------------------
+ *
+ * THE ESCAPE SEQUENCES ABOVE REACH THE SERIAL LINE AND NOTHING ELSE. That was
+ * the whole of this library's output until 2026-09-22, and on a machine with no
+ * serial port it meant a full-screen program drew nothing at all: the installer
+ * ran correctly and invisibly on an IdeaPad 1 14IGL05, advancing through every
+ * screen as keys were pressed with the operator seeing only the boot log it had
+ * stopped on. See the note above CON_OP_DRAW_CELLS in console_proto.h.
+ *
+ * SO THE SAME WALK EMITS TWICE, and that is deliberate rather than a
+ * duplication to be tidied away. There is one source, the damage-diff loop in
+ * tui_flush, and two renderings of what it finds: escape sequences for a VT
+ * terminal on the far end of a UART, and cells for the display this machine
+ * has. A machine with both gets both, which is what a machine with both should
+ * show. Making the server parse the escape stream instead was the alternative,
+ * and it was rejected because a parser mis-renders where a cell either arrives
+ * or does not.
+ *
+ * SPANS, NOT CELLS, because the request header costs five bytes and a row of a
+ * drawn box is eighty cells of one attribute. A span is broken by a change of
+ * row, a gap in the columns, a change of attribute, or the buffer filling: all
+ * four are "the next cell does not continue this run", which is why they are
+ * one condition in span_put rather than four tests spread about. */
+static uint8_t cbuf[CON_IO_MAX];
+static unsigned clen;
+
+static void cflush(void)
+{
+#ifdef TUI_NO_CELLS
+    /* CONTROL ARM -- never ship. The cells are built and then dropped, so the
+     * only output left is the escape stream, which reaches a serial line and no
+     * display. See smoke-keyboard-installer-noserial. */
+    clen = 0;
+#else
+    if (clen) { (void)con_call(CON_OP_DRAW_CELLS, cbuf, clen); clen = 0; }
+#endif
+}
+
+/* The run being accumulated. A negative row means there is none in hand, which
+ * is the state span_emit leaves behind and the state tui_flush starts from. */
+static int      span_row = -1, span_col, span_len;
+static uint16_t span_attr;
+static char     span_ch[CON_COLS];
+
+static void span_emit(void)
+{
+    if (span_row >= 0 && span_len > 0) {
+        /* Five for the header. The drain is BEFORE the write and not after it,
+         * because a span must arrive whole: the server refuses a header that
+         * runs off the end of a payload, which is exactly what splitting one
+         * across two requests would produce. */
+        const unsigned need = 5u + (unsigned)span_len;
+        if (clen + need > sizeof(cbuf)) cflush();
+        cbuf[clen++] = (uint8_t)span_row;
+        cbuf[clen++] = (uint8_t)span_col;
+        cbuf[clen++] = (uint8_t)(span_attr & 0xFFu);
+        cbuf[clen++] = (uint8_t)(span_attr >> 8);
+        cbuf[clen++] = (uint8_t)span_len;
+        for (int i = 0; i < span_len; i++) cbuf[clen++] = (uint8_t)span_ch[i];
+    }
+    span_row = -1;
+    span_len = 0;
+}
+
+static void span_put(int row, int col, uint16_t attr, char ch)
+{
+    if (span_row == row && span_attr == attr && span_col + span_len == col &&
+        span_len < (int)sizeof(span_ch)) {
+        span_ch[span_len++] = ch;
+        return;
+    }
+    span_emit();
+    span_row  = row;
+    span_col  = col;
+    span_attr = attr;
+    span_ch[0] = ch;
+    span_len  = 1;
+}
+
 /* Decimal, no varargs, no libc. Values here are row/column numbers and SGR
  * codes: small, non-negative, and bounded by the screen. */
 static void oputn(unsigned v)
@@ -583,6 +662,8 @@ void tui_flush(void)
              * so a run of box edge costs one shift rather than one per glyph. */
             if (back[r][c].attr & TUI_A_ACS) ographics(); else oascii();
             oput(back[r][c].ch);
+            /* The same cell, in the other rendering. One walk, two surfaces. */
+            span_put(r, c, back[r][c].attr, back[r][c].ch);
             cursor_c++;                       /* the terminal advanced it too */
             front[r][c] = back[r][c];
         }
@@ -608,6 +689,12 @@ void tui_flush(void)
         shown_c = cur_c;
     }
     oflush();
+    /* The cell channel carries no cursor and needs no restore, so it drains
+     * after the escape stream rather than beside it: the run in hand is closed
+     * first, or its last span would be left for the next flush to send under a
+     * screen that has since changed. */
+    span_emit();
+    cflush();
 }
 
 /* ---- interactions -------------------------------------------------------

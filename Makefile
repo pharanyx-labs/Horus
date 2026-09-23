@@ -148,6 +148,7 @@ DEFECT_FLAGS = \
 	TUI_NO_DAMAGE_DIFF TUI_CLAMP_OFF \
 	TUI_INPUT_ECHO_SECRET TUI_INPUT_UNBOUNDED TUI_MENU_UNCLAMPED \
 	TUI_ACS_NO_RESTORE TUI_WRAP_NO_BREAK TUI_NO_INVALIDATE \
+	TUI_NO_CELLS \
 	STORAGE_SINGLE_DEVICE STORAGE_DEVICE_INDEX_CLAMP STORAGE_FORMAT_TARGET_IGNORED \
 	CSPACE_KEEP_ON_TEARDOWN \
 	CSPACE_RELEASE_BEFORE_PIPES SPAWN_SLOT3_DECOY_GATE UNTYPED_SPLIT_FREE_BYTES \
@@ -872,6 +873,20 @@ endif
 # through, so an out-of-range write lands outside the cell buffer.
 TUI_CLAMP_OFF ?= 0
 ifeq ($(TUI_CLAMP_OFF),1)
+endif
+
+# TUI_NO_CELLS=1 stops tui_flush sending its cells to CON_OP_DRAW_CELLS, leaving
+# only the escape sequences that reach the serial line. That is the library as it
+# stood before 2026-09-22, and on a machine with no serial port it means a
+# full-screen program draws NOTHING while running perfectly: the installer walked
+# its whole sequence on an IdeaPad 1 14IGL05, taking every keystroke, with the
+# operator looking at a boot log that appeared to have stopped.
+#
+# The arm is only falsifiable with no UART present, which is why it belongs to
+# smoke-keyboard-installer-noserial and not to any gate that reads a serial line:
+# with a UART the escape stream draws the screen and the arm looks correct.
+TUI_NO_CELLS ?= 0
+ifeq ($(TUI_NO_CELLS),1)
 endif
 
 # TUI_INPUT_ECHO_SECRET=1 drops the mask in tui_input, so a password field paints
@@ -4337,6 +4352,9 @@ USERSPACE_CFLAGS += -DTUI_NO_DAMAGE_DIFF
 endif
 ifeq ($(TUI_CLAMP_OFF),1)
 USERSPACE_CFLAGS += -DTUI_CLAMP_OFF
+endif
+ifeq ($(TUI_NO_CELLS),1)
+USERSPACE_CFLAGS += -DTUI_NO_CELLS
 endif
 ifeq ($(INSTALLER_NO_CONFIRM),1)
 USERSPACE_CFLAGS += -DINSTALLER_NO_CONFIRM
@@ -8603,6 +8621,55 @@ smoke-keyboard-noserial:
 	@python3 tools/noserial_keyboard_session.py --iso horus.iso \
 		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
 		--shots /tmp/horus-noserial
+
+# smoke-keyboard-installer-noserial drives the INSTALLER on a machine with NO
+# serial port and asks whether its screen is drawn at all.
+#
+# THE HOLE THIS FILLS WAS AN INTERSECTION OF TWO GATES, neither of which could
+# see it. smoke-keyboard-installer drives the installer but reads the TUI off
+# the SERIAL LINE, so it always runs on a machine that has one;
+# smoke-keyboard-noserial has no UART but drives only the LOGIN prompt, which is
+# painted by ordinary console writes that do reach the display. The installer's
+# TUI drew through CON_OP_WRITE_RAW, which is serial only, so on a laptop with no
+# serial header it rendered nothing while working perfectly. Found on an IdeaPad
+# 1 14IGL05 on 2026-09-22 by driving it blind.
+#
+# A disk is attached because init runs the installer on a machine that has one
+# and no volume, which is how smoke-keyboard-installer reaches it too. The arrows
+# are pressed and Enter never is: moving a selection repaints two rows in reverse
+# video, and Enter would answer the question that leads to erasing a disk. ONE
+# arrow, because the menu has two items and clamps at each end, so a sequence
+# that returns to where it started leaves the screendump identical and scores a
+# working installer as a dead one (measured while building this gate).
+.PHONY: smoke-keyboard-installer-noserial
+smoke-keyboard-installer-noserial:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) STORAGE_ATA=1
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) STORAGE_ATA=1 horus.iso
+	@rm -f keyboard-noserial-installer.img && truncate -s 64M keyboard-noserial-installer.img
+	@python3 tools/noserial_keyboard_session.py --iso horus.iso --installer \
+		--disk keyboard-noserial-installer.img \
+		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
+		--shots /tmp/horus-noserial-installer \
+	  || { rm -f keyboard-noserial-installer.img; exit 1; }
+	@rm -f keyboard-noserial-installer.img
+
+# The falsifying arm. TUI_NO_CELLS=1 is the library before 2026-09-22: the cells
+# are built and dropped, leaving only escape sequences bound for a UART that is
+# not there. The installer must then draw NOTHING, which is the defect exactly as
+# the laptop showed it.
+.PHONY: smoke-keyboard-installer-noserial-control
+smoke-keyboard-installer-noserial-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) STORAGE_ATA=1 TUI_NO_CELLS=1
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) STORAGE_ATA=1 TUI_NO_CELLS=1 horus.iso
+	@rm -f keyboard-noserial-installer.img && truncate -s 64M keyboard-noserial-installer.img
+	@python3 tools/noserial_keyboard_session.py --iso horus.iso --installer \
+		--expect-no-render --disk keyboard-noserial-installer.img \
+		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
+		--shots /tmp/horus-noserial-installer-control \
+	  || { rm -f keyboard-noserial-installer.img; exit 1; }
+	@rm -f keyboard-noserial-installer.img
 
 # The falsifying arm. SERIAL_PRESENCE_UNCHECKED=1 is the console input path
 # before 2026-09-12: the line-status bit believed without first asking whether a

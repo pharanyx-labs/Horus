@@ -3091,6 +3091,33 @@ old allocator and the new one read the same single block and no workload could t
   216 / 216, gate red under the arm, arm red against the fixed build. `make smoke-session` and
   `make smoke-keyboard` both still pass, which is the check that the probe does not call a real
   UART absent.
+
+  **~~AND THE INSTALLER'S OWN SCREEN WAS NEVER ON THE DISPLAY AT ALL~~ (FIXED 2026-09-22).** The
+  keyboard work above made a machine with no serial port typable. It did not make it *readable*,
+  and that was a second defect of the same shape hiding behind the first. A full-screen program
+  draws through `CON_OP_WRITE_RAW`, whose server side is `con_write_raw`, and that called
+  `ser_putc` and nothing else: the escape sequences went to the UART, and on a laptop with no
+  serial header they went to a port nobody decodes. The installer therefore ran **correctly and
+  invisibly** on the IdeaPad 1 14IGL05, walking its whole sequence as keys were pressed while the
+  operator looked at a boot log that appeared to have stopped. Its `INSTALLER:` markers were on
+  the screen throughout, because those are ordinary `CON_OP_WRITE` writes and `con_emit` paints
+  the display as well as the UART: the two halves of one program went to two different places,
+  and only the half that says what it is waiting for arrived. Found 2026-09-22 by driving the
+  machine blind, where every keypress advanced a marker and nothing was ever painted.
+
+  A full-screen program now sends **cells** as well, through `CON_OP_DRAW_CELLS`, from the same
+  one walk of the same damage-diff buffer in `tui_flush`: escape sequences for a VT terminal on
+  the far end of a UART, cells for the display this machine has, and a machine with both gets
+  both. Parsing the escape stream in the server was the alternative and was rejected, because a
+  parser mis-renders where a cell either arrives or does not.
+
+  **No gate could have caught it, and the shape of the hole is the point.**
+  `smoke-keyboard-installer` drives the installer but reads its screen off the **serial line**,
+  so it only ever runs where a UART exists; `smoke-keyboard-noserial` has no UART but drives only
+  the **login prompt**, which is painted by ordinary console writes that do reach the display.
+  The defect lived in the intersection neither covered. `make smoke-keyboard-installer-noserial`
+  is that intersection, with `TUI_NO_CELLS=1` as the arm.
+
   Since 2026-09-07 the SATA half is *identified*: `src/kernel/ahci.c` finds an AHCI controller,
   brings each attached port up and asks the drive to IDENTIFY itself, so the boot log names the
   model and the capacity (`make smoke-ahci-detect`, which boots a q35 machine because QEMU's
@@ -3140,9 +3167,9 @@ old allocator and the new one read the same single block and no workload could t
   the recovery would pass. With them fixed the laptop's device identifies and the installer
   surveys it (2026-09-22).
   **An install onto the laptop's eMMC has not yet been run**; until one has, this paragraph
-  says so. What stops one now is no longer storage: the installer's own screen is drawn through
-  `CON_OP_WRITE_RAW`, which reaches the serial line and nothing else, and this machine has no
-  serial port. That is a separate finding and is tracked as one. **The installer gates' stall detector is blind on this path**: it counts QEMU's block
+  says so. What stopped one on 2026-09-22 was no longer storage but the installer's own screen,
+  which reached the serial line and nothing else on a machine with no serial port; that was a
+  separate finding, and it is fixed and recorded in §4. **The installer gates' stall detector is blind on this path**: it counts QEMU's block
   statistics, which the SD and eMMC device models do not keep, so for `smoke-installer-sd` and
   `smoke-installer-emmc` it is an elapsed-time bound on the format (30 s and 180 s) rather than a
   detector of the guest going quiet.
@@ -3188,9 +3215,9 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 ~~Which tests gate a merge is reconciled by hand~~ (**FIXED 2026-09-21**) **[C-6]**
 
-**Closed.** `.github/workflows/ci.yml` defines **131** jobs, `codeql.yml` one more and
-`ruleset-audit.yml` one more: **133** across the three, producing **136** status-check contexts.
-**132** of them gate a merge, and ruleset `21815299` requires the two contexts that carry them
+**Closed.** `.github/workflows/ci.yml` defines **132** jobs, `codeql.yml` one more and
+`ruleset-audit.yml` one more: **134** across the three, producing **137** status-check contexts.
+**133** of them gate a merge, and ruleset `21815299` requires the two contexts that carry them
 all: **All required gates passed** (the `gates` job, which needs every required ci.yml job and
 passes only if each one succeeded, skipped and cancelled counting as failures) and CodeQL's
 `analyze`, which lives in its own workflow. The `ci-gating` job proves `gates` needs exactly the
@@ -3246,7 +3273,7 @@ the right name with the wrong verdict. Step-level `continue-on-error` is untouch
 allowed; it lets one step be advisory while the job's own status still reports the truth, which
 is how the `security` job keeps its scanners advisory without becoming unfailable itself.
 
-That set is **132 gating contexts and 4 reasoned exemptions**: `fuzz` (a 30-second
+That set is **133 gating contexts and 4 reasoned exemptions**: `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request),
 `smoke-smp-kvm` (a second run, under KVM, of gates already required under TCG, until its KVM pass rate is measured), and

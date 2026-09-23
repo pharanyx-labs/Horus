@@ -110,6 +110,7 @@ required:
   - smoke-install-media
   - smoke-installer-sd
   - smoke-keyboard
+  - smoke-keyboard-installer-noserial
   - smoke-sdhci
   - smoke-fs-wal
   - smoke-fs-wal-flush

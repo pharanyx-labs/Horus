@@ -23,6 +23,7 @@
 #include "libhorus.h"
 #include "console_font.h"   /* the same glyphs the kernel blits */
 #include "ps2_scancode.h"   /* the same scancode table the kernel reads */
+#include "tui.h"            /* CON_OP_DRAW_CELLS carries tui.h attribute words */
 
 /* How many times to retry the startup SYS_IOPORT_GRANT while init finishes
  * endowing us with CAP_IO_DEVICE (see _start). Each attempt yields, so this is a
@@ -682,9 +683,135 @@ static int con_read_raw(uint8_t *out, unsigned max) {
  * a full-screen app manages its own line endings and cursor escapes. Serial only:
  * the interactive VT terminal is on the serial line, and passing escape bytes to
  * the VGA text grid would just render them as glyphs (VGA is not the surface a
- * curses app targets, and `make run` runs with -display none). */
+ * curses app targets, and `make run` runs with -display none).
+ *
+ * THE MACHINE'S OWN SCREEN IS SERVED BY CON_OP_DRAW_CELLS INSTEAD, not by this.
+ * Until 2026-09-22 there was no such op and this was the only way a full-screen
+ * program could draw, which meant it could not draw at all on a machine with no
+ * serial port: see the note above CON_OP_DRAW_CELLS in console_proto.h. */
 static void con_write_raw(const uint8_t *data, unsigned len) {
     for (unsigned i = 0; i < len; i++) ser_putc((char)data[i]);
+}
+
+/* ---- the cell surface, for a full-screen program on this machine's screen ---
+ *
+ * THE COLOUR ORDER IS NOT THE SAME ON BOTH SIDES, and assuming it was would be
+ * a silent wrong-colour rather than a failure. tui.h numbers its colours in the
+ * ANSI order the SGR codes use (red 1, green 2, yellow 3, blue 4); the VGA
+ * attribute byte and `fb_pal` number them in the IBM order (blue 1, green 2,
+ * cyan 3, red 4). The two differ by a swap of bits 0 and 2, which is what this
+ * table is: writing it out rather than computing it means the reader can check
+ * it against either specification by eye. */
+static uint8_t ansi_to_vga(unsigned c) {
+    static const uint8_t m[8] = { 0u, 4u, 2u, 6u, 1u, 5u, 3u, 7u };
+    return m[c & 7u];
+}
+
+/* A tui.h attribute word as a VGA attribute byte.
+ *
+ * TUI_C_DEFAULT is 0 and means "the terminal's own colour", which on a cell
+ * grid is the light-grey-on-black this console has always used, so it maps to
+ * VGA_ATTR's halves rather than to colour 0. Getting that wrong paints default
+ * text black on black, which is indistinguishable from not painting at all.
+ *
+ * BOLD becomes the intensity bit, which is the VGA text mode's only rendering
+ * of it. DIM and UNDERLINE have no cell-grid equivalent and are dropped: a
+ * monochrome underline attribute exists on MDA and not here. REVERSE is applied
+ * last, after both halves are known, because it is a swap of the result and not
+ * a property of either colour. */
+static uint8_t tui_attr_to_vga(uint16_t attr) {
+    unsigned fg = (unsigned)(attr & 0x0Fu);
+    unsigned bg = (unsigned)((attr >> 4) & 0x0Fu);
+    uint8_t v_fg = (fg >= 1u && fg <= 8u) ? ansi_to_vga(fg - 1u) : (uint8_t)(VGA_ATTR & 0x0Fu);
+    uint8_t v_bg = (bg >= 1u && bg <= 8u) ? ansi_to_vga(bg - 1u) : (uint8_t)((VGA_ATTR >> 4) & 0x07u);
+    if (attr & TUI_A_BOLD) v_fg = (uint8_t)(v_fg | 0x08u);
+    if (attr & TUI_A_REVERSE) { uint8_t t = v_fg; v_fg = v_bg; v_bg = t; }
+    return (uint8_t)(((v_bg & 0x07u) << 4) | (v_fg & 0x0Fu));
+}
+
+/* A DEC Special Graphics letter as the code page 437 glyph that draws the same
+ * line. The library shifts G0 and sends ordinary letters, which is how a VT100
+ * draws a box; this console has no charset to shift, it has a font whose high
+ * half already contains the line-drawing glyphs, so the letter is translated
+ * once here. Only the characters tui_box and tui_fill can emit are mapped, and
+ * anything else is passed through: an unmapped letter drawn as itself is a
+ * visibly wrong glyph, where a blank would be an invisibly missing one. */
+static uint8_t acs_to_cp437(uint8_t c) {
+    switch (c) {
+        case 'q': return 0xC4u;   /* horizontal   */
+        case 'x': return 0xB3u;   /* vertical     */
+        case 'l': return 0xDAu;   /* upper left   */
+        case 'k': return 0xBFu;   /* upper right  */
+        case 'm': return 0xC0u;   /* lower left   */
+        case 'j': return 0xD9u;   /* lower right  */
+        case 't': return 0xC3u;   /* left tee     */
+        case 'u': return 0xB4u;   /* right tee    */
+        case 'w': return 0xC2u;   /* top tee      */
+        case 'v': return 0xC1u;   /* bottom tee   */
+        case 'n': return 0xC5u;   /* cross        */
+        case 'a': return 0xB1u;   /* chequerboard */
+        default:  return c;
+    }
+}
+
+/* Put one cell on whichever display this machine has.
+ *
+ * It does NOT move the write position. fb_putc and vga_putc are a stream with a
+ * cursor; this is a grid with coordinates, and a full-screen program owns the
+ * whole surface. Mixing the two would leave the boot log's cursor wherever the
+ * last painted cell happened to be, so that when the program exits the next
+ * ordinary line continues from the middle of a box. */
+static void cell_put(unsigned row, unsigned col, uint8_t ch, uint8_t attr) {
+    if (fbp) {
+        if (row >= fb_rows || col >= 80u) return;
+        unsigned idx = row * 80u + col;
+        fb_cells[idx] = (uint16_t)(((uint16_t)attr << 8) | ch);
+        fb_blit(idx);
+    } else {
+        unsigned idx = row * 80u + col;
+        if (idx >= VGA_CELLS) return;
+        vga[idx] = (uint16_t)(((uint16_t)attr << 8) | ch);
+    }
+}
+
+/* How many rows a span may address: whatever fitted on the framebuffer, or the
+ * mapped text window's own height. One accessor so the bound the parser checks
+ * and the bound cell_put enforces cannot drift apart. */
+static unsigned cell_rows(void) { return fbp ? fb_rows : (VGA_CELLS / 80u); }
+
+/* Paint a request's worth of spans. Returns the number of cells painted, or
+ * SYS_ERR_INVAL on the first malformed span.
+ *
+ * VALIDATED BEFORE ANYTHING IS DRAWN, span by span, because this is a message
+ * from another ring-3 task and the shadow buffer is this server's own memory.
+ * The three ways a span can be wrong are all checked: a header that runs off the
+ * end of the payload, a length of zero (which would make no progress and is the
+ * shape of a parser that loops), and a row or column range outside the grid.
+ * The whole request is refused on any of them rather than the offending span
+ * being skipped, since a sender that has one span wrong has lost track of the
+ * screen and the rest of its message is not to be trusted onto the display. */
+static int con_draw_cells(const uint8_t *d, unsigned len) {
+    const unsigned rows = cell_rows();
+    unsigned i = 0, painted = 0;
+    while (i < len) {
+        if (len - i < 5u) return SYS_ERR_INVAL;
+        unsigned row = d[i];
+        unsigned col = d[i + 1];
+        uint16_t attr = (uint16_t)((uint16_t)d[i + 2] | ((uint16_t)d[i + 3] << 8));
+        unsigned n = d[i + 4];
+        i += 5u;
+        if (n == 0u || n > len - i) return SYS_ERR_INVAL;
+        if (row >= rows || col >= 80u || n > 80u - col) return SYS_ERR_INVAL;
+        const uint8_t vga_attr = tui_attr_to_vga(attr);
+        for (unsigned k = 0; k < n; k++) {
+            uint8_t ch = d[i + k];
+            if (attr & TUI_A_ACS) ch = acs_to_cp437(ch);
+            cell_put(row, col + k, ch, vga_attr);
+        }
+        i += n;
+        painted += n;
+    }
+    return (int)painted;
 }
 
 /* ---- helpers --------------------------------------------------------------- */
@@ -1033,6 +1160,11 @@ display_ready:
             unsigned n = rq.len; if (n > CON_IO_MAX) n = CON_IO_MAX;
             con_write_raw(rq.data, n);
             rp.rc = (int)n;
+        } else if (rq.op == CON_OP_DRAW_CELLS) {
+            /* Clamped to the buffer before the parser sees it, so a length that
+             * overstates the payload cannot read past what was delivered. */
+            unsigned n = rq.len; if (n > CON_IO_MAX) n = CON_IO_MAX;
+            rp.rc = con_draw_cells(rq.data, n);
         } else if (rq.op == CON_OP_WINSZ) {
             rp.rc = (CON_ROWS << 16) | CON_COLS;
         } else if (rq.op == CON_OP_SET_INPUT_OWNER) {

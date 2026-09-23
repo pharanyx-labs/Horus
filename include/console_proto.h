@@ -52,6 +52,43 @@
                              * '\n'->'\r\n' translation), for escape sequences + screen output */
 #define CON_OP_WINSZ     6  /* (no payload) -> rc = (rows<<16)|cols; the console's size */
 
+/* THE MACHINE'S OWN SCREEN, WHICH CON_OP_WRITE_RAW NEVER REACHED.
+ *
+ * WRITE_RAW above emits to the serial line and nothing else, on the reasoning
+ * that a curses program targets the VT terminal on the far end of it. That
+ * reasoning holds for every machine the gates run on and fails for the machine
+ * this system is carried to: an IdeaPad 1 14IGL05 has no serial port, so the
+ * installer drew its screens into a UART that is not there and the operator saw
+ * a boot log that appeared to stop. Found 2026-09-22 by driving the installer
+ * blind on that laptop, where pressing Enter advanced every marker while
+ * nothing was ever painted.
+ *
+ * A FULL-SCREEN PROGRAM SENDS CELLS HERE, NOT ESCAPE SEQUENCES. The library
+ * already keeps a cell grid and a damage diff, so it sends the cells it has
+ * already computed and the server paints them on whichever display the machine
+ * has. Escape sequences still go to serial through WRITE_RAW, from the same one
+ * walk of the same buffer, so a machine with a serial terminal is unchanged and
+ * a machine with a screen is no longer blind. Parsing a VT stream in the server
+ * was the alternative and was rejected: a parser mis-renders where a mis-sent
+ * cell simply fails.
+ *
+ * THE PAYLOAD IS A SEQUENCE OF SPANS, each a five-byte header then its text:
+ *
+ *     row, col, attr_lo, attr_hi, n, ch[n]
+ *
+ * `row` and `col` place the span's first cell, `attr` is the tui.h attribute
+ * word (TUI_FG/TUI_BG/TUI_A_*) in little-endian order, and `n` is how many
+ * characters follow. A span never wraps: the whole of it must fit on its row.
+ *
+ * EVERY FIELD IS CHECKED BY THE SERVER AND NOT BY THE SENDER. This arrives from
+ * another ring-3 task, which is hostile by assumption, and a span that does not
+ * fit the grid would otherwise be a write past the shadow buffer. A malformed
+ * span stops the whole request rather than being skipped: a sender that got one
+ * span wrong has lost track of the screen, and painting the rest of its message
+ * would put half a correction on the display. */
+#define CON_OP_DRAW_CELLS 9 /* data[len] = spans (see above) -> rc = cells painted,
+                             * or SYS_ERR_INVAL if any span is malformed */
+
 /* The boot log ends here. Until this arrives, the server puts a
  * "[    S.uuuuuu] " prefix on every line of CON_OP_WRITE output and on its own
  * status lines, continuing the timestamped log the kernel was printing before

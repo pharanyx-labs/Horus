@@ -76,6 +76,7 @@ evidence. Their **current status** is in [LIMITATIONS.md](LIMITATIONS.md), not h
 | File | Contents |
 |---|---|
 | [`design/console-server.md`](design/console-server.md) | The design behind the ring-3 console driver, as built |
+| [`design/filesystem.md`](design/filesystem.md) | A capability-addressed filesystem: **design only, nothing built**, and the §4 decisions it waits on |
 | [`history/DEVLOG-2026.md`](history/DEVLOG-2026.md) | The development log: 117 narrative entries, newest first |
 | [`../CHANGES.md`](../CHANGES.md) | The changelog |
 

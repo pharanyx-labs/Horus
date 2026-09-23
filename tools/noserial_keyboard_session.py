@@ -28,6 +28,40 @@ as a keystroke. Measured 2026-09-12: idle 216, sixteen keys on the fixed build
 
   smoke-keyboard-noserial          the gate: typing moves the screen
   smoke-keyboard-noserial-control  SERIAL_PRESENCE_UNCHECKED=1, which must not
+
+--installer ASKS THE OTHER HALF OF THE SAME QUESTION, added 2026-09-22. The
+gates above prove a machine with no UART can be TYPED AT; they say nothing about
+whether a full-screen program on it can be SEEN, because the login prompt they
+drive is drawn with ordinary console writes that reach the display. The
+installer is not: its TUI drew through CON_OP_WRITE_RAW, which reaches the
+serial line and nothing else, so on a laptop with no serial port it painted
+nothing at all and looked exactly like a hang. Found on an IdeaPad 1 14IGL05 by
+driving it blind, where every keypress advanced the installer's markers while
+the screen never changed.
+
+NO GATE COULD HAVE CAUGHT THAT, and the shape of the hole is worth naming:
+smoke-keyboard-installer drives the installer but reads its screen off the
+SERIAL LINE, so it always runs on a machine that has one; smoke-keyboard-noserial
+has no UART but only drives the LOGIN prompt. The defect lived in the
+intersection neither covered. This is that intersection.
+
+ONE ARROW, AND NOT A SEQUENCE THAT RETURNS WHERE IT STARTED. A screendump
+records the screen's STATE, not the traffic that produced it, and this menu has
+two items with a clamp at each end, so down/up/down/up leaves the selection
+exactly where it began: the last dump equals the first, and a working installer
+scores as a dead one. Measured 2026-09-22 while building this gate, which
+reported 216 against an idle control of 216 while a serial capture taken beside
+it showed the menu moving on every press. It is the same mistake as scoring the
+cursor blink as a keystroke, reached from the other side: that gate measured a
+change that was not the keyboard, and this one measured a keyboard that produced
+no change. The conclusion drawn from it, that the installer stopped accepting
+input after some minutes, was wrong and cost an evening.
+
+THE ARROWS ARE PRESSED AND ENTER NEVER IS. Moving a menu selection repaints two
+rows in reverse video, which is a large and unambiguous change to the screen;
+pressing Enter would answer the question that leads to erasing a disk, and a
+gate must not be one keystroke away from that. The run ends with the selection
+back where it started.
 """
 import argparse, json, os, socket, subprocess, sys, time
 
@@ -46,6 +80,12 @@ def main():
     ap.add_argument("--iso", required=True)
     ap.add_argument("--boot-timeout", type=int, default=45)
     ap.add_argument("--expect-no-keyboard", action="store_true")
+    ap.add_argument("--installer", action="store_true",
+                    help="drive the installer's menu with the arrows and require "
+                         "the screen to repaint (the TUI is rendered at all)")
+    ap.add_argument("--expect-no-render", action="store_true",
+                    help="the installer arm: the TUI must NOT reach the screen")
+    ap.add_argument("--disk", help="a raw disk image, so init runs the installer")
     ap.add_argument("--shots", default="/tmp/horus-noserial")
     a = ap.parse_args()
 
@@ -65,7 +105,9 @@ def main():
          "-cpu", "qemu64,+aes,+rdrand,+smep,+smap", "-smp", "2",
          "-machine", "accel=kvm:tcg", "-display", "none",
          "-qmp", f"unix:{sock}", "-net", "none", "-no-reboot", "-no-shutdown",
-         "-serial", "none", "-cdrom", a.iso],
+         "-serial", "none", "-cdrom", a.iso]
+        + (["-drive", f"file={a.disk},format=raw,if=ide,index=0,media=disk,"
+                      "cache=writethrough"] if a.disk else []),
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     srv.settimeout(a.boot_timeout)
@@ -101,7 +143,11 @@ def main():
     s1 = shot("1-boot.ppm")
     time.sleep(6)
     s2 = shot("2-idle.ppm")
-    for k in KEYS:
+    # Arrows for the installer's menu, letters for the login prompt. Both move
+    # the screen when they are received AND drawn, which is the one question
+    # this gate asks; neither commits anything.
+    keys = ["down"] if a.installer else KEYS
+    for k in keys:
         qmp(execute="send-key", arguments={"keys": [{"type": "qcode", "data": k}]})
         time.sleep(0.25)
     time.sleep(2)
@@ -124,7 +170,27 @@ def main():
 
     control, signal = delta(s1, s2), delta(s2, s3)
     live = signal - control >= MARGIN
-    verdict = f"idle-control={control} after-{len(KEYS)}-keys={signal}"
+    verdict = f"idle-control={control} after-keys={signal}"
+
+    if a.installer:
+        # The SAME idle control as above, and for the same reason: a screen that
+        # moves on its own must be subtracted before a repaint can be claimed.
+        if a.expect_no_render:
+            if live:
+                print("NOSERIAL_INSTALLER: FAIL the arm painted the screen; the "
+                      f"defect did not reproduce ({verdict})")
+                return 1
+            print("NOSERIAL_INSTALLER: PASS the arm draws nothing on the screen, "
+                  f"as it must ({verdict})")
+            return 0
+        if not live:
+            print("NOSERIAL_INSTALLER: FAIL the arrows moved the screen no further "
+                  "than the cursor blink -- the installer is running and invisible "
+                  f"on a machine with no serial port ({verdict}, artifacts in {a.shots})")
+            return 1
+        print("NOSERIAL_INSTALLER: PASS the installer is drawn on the screen of a "
+              f"machine with no serial port ({verdict})")
+        return 0
 
     if a.expect_no_keyboard:
         if live:

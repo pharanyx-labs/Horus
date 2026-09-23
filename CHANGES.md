@@ -547,6 +547,43 @@ in this file.
 
 ### Fixed
 
+- **The installer drew its screens into a serial port that was not there, so on a laptop it ran
+  correctly and invisibly.** Every `INSTALLER:` marker reached the screen and nothing else did.
+  Markers are ordinary `CON_OP_WRITE` writes and `con_emit` paints the display as well as the
+  UART; the TUI drew through `CON_OP_WRITE_RAW`, whose server side called `ser_putc` and nothing
+  else. On an IdeaPad 1 14IGL05, which has no serial header, those bytes went to a port nobody
+  decodes. The two halves of one program went to two different places, and only the half that
+  says what it is waiting for arrived, so the machine looked like it had hung on the last line of
+  its boot log. Found 2026-09-22 by driving it blind: every keypress advanced a marker and
+  nothing was ever painted.
+  A full-screen program now sends **cells** as well, through the new `CON_OP_DRAW_CELLS`, from
+  the same one walk of the same damage-diff buffer in `tui_flush`: escape sequences for a VT
+  terminal on the far end of a UART, cells for the display this machine has, and a machine with
+  both gets both. The server maps the attribute word to a VGA attribute byte (the two number
+  their colours in different orders, ANSI and IBM, which differ by a swap of bits 0 and 2) and
+  translates DEC Special Graphics letters to the code page 437 glyphs the console font already
+  has. Every span is validated in the server, which is receiving a message from another ring-3
+  task: a header that runs off the payload, a zero length, or a row or column outside the grid
+  refuses the whole request rather than skipping the span. Parsing the escape stream in the
+  server was the alternative and was rejected, because a parser mis-renders where a cell either
+  arrives or does not.
+  **No gate could have caught it, and the shape of the hole is the point**:
+  `smoke-keyboard-installer` drives the installer but reads its screen off the serial line, so it
+  only ever runs where a UART exists; `smoke-keyboard-noserial` has no UART but drives only the
+  login prompt, which ordinary console writes do paint. `make smoke-keyboard-installer-noserial`
+  is that intersection, in a CI job of its own so it does not become the run's critical path.
+  Falsified in all four directions with `TUI_NO_CELLS=1`: gate PASS on the fixed build (216 idle
+  / 14040 after one arrow), arm PASS under the arm (216 / 216), gate red under the arm, arm red
+  against the fixed build.
+  **One arrow, and not a sequence that returns where it started.** A screendump records the
+  screen's state and not the traffic that produced it, and the menu has two items with a clamp at
+  each end, so `down,up,down,up` leaves the selection where it began and a working installer
+  scores as a dead one. That happened while the gate was being built, and the conclusion drawn
+  from it, that the installer stopped accepting input after some minutes, was wrong: a serial
+  capture taken beside it showed the menu moving on every press. It is the same mistake as
+  scoring the cursor blink as a keystroke, reached from the other side, and both are now written
+  into the harness.
+
 - **A laptop's eMMC answered every command and the bus then wedged, so the installer still found
   no disk.** With the four fixes below in place, an IdeaPad 1 14IGL05 found its controller, chose
   the right BAR, clocked at 400 kHz and reported its embedded slot as occupied, and then printed

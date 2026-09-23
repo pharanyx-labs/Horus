@@ -2,7 +2,8 @@
 
 **Status: design, not built. Nothing here is implemented.** It exists to be argued with before
 any code is written, because the subject is storage at rest, the authority model and the
-cryptography all at once, which is three §4 asks in one change.
+cryptography all at once, which is three §4 asks in one change. The three load-bearing questions
+were put to the maintainer and answered on 2026-09-23; §6 records them as decisions.
 
 Opened 2026-09-23 at the maintainer's request: "a much more robust filesystem, a hybrid of the
 major unix ones out there but definitely unique and most importantly, secure".
@@ -95,8 +96,9 @@ invented for storage.
   the way a disk is. **This is a security improvement on its own**, independent of capabilities:
   today an attacker who can write raw blocks can change a file's owner to 0. After this there is
   no such field to write.
-- That raises the one genuinely hard question, which §6 asks rather than answers: what a
-  capability *persists* as across a reboot, given that cspaces do not survive one.
+- That raised the one genuinely hard question, what a capability *persists* as across a reboot
+  given that cspaces do not survive one. §6 answers it: it does not persist. Nothing on the
+  medium is authority.
 
 ## 5. The copy-on-write argument, both sides
 
@@ -118,7 +120,45 @@ does not: "how much space is left" stops being "count the zero bits".
 design where nonce reuse cannot happen is worth more than one where it is merely avoided
 carefully, and that is §1's "by construction beats by remembering" applied to cryptography.
 
-## 6. The decisions that need the maintainer, before any code
+## 6. The decisions, as taken
+
+Answered by the maintainer on 2026-09-23. Recorded here as decisions, not options, because the
+work below depends on them and a design document that still asks a settled question is stale.
+
+**Decision 1: a file capability is derived fresh each boot from policy. The disk holds no
+authority at all.** At unlock `init` holds the root directory capability and everything else is
+derived from it. There is no owner field, no mode bits and no rights table on the medium, so an
+attacker who can write raw blocks gains nothing by writing them: there is nothing there to forge.
+This is the strongest form of the §1 argument and it is what makes the design worth building.
+What it costs is that "these files belong to this user" must be expressed in the boot-time policy
+rather than in the inode, and **the policy therefore becomes the protected object**: it must live
+inside the AEAD and the Merkle tree, and a rollback of it is a privilege change. That is a
+smaller and far more auditable surface than per-inode ownership, because it is one object rather
+than one per file.
+
+**Decision 2: the authority change lands first, on the existing v11 format.** Capabilities
+replace uid, gid and mode against the layout that exists today, as its own reviewable change with
+its own control arms. Extents, B-tree directories and copy on write follow as a second change
+against a new format. The security argument is then reviewable on its own rather than buried in a
+rewrite, and if the layout work stalls the ambient authority is gone regardless.
+
+**Decision 3: copy on write, in that second change.** Taken chiefly for the cryptographic
+argument in §5: a rewritten block is a new block and therefore gets a fresh nonce by
+construction, so nonce reuse becomes impossible rather than carefully avoided. The allocator work
+and the fragmentation cost are accepted with it.
+
+**Still open, and deliberately not forced:**
+
+1. **Clean break, or migration from v11?** Recommendation stands: refuse to mount v11 rather than
+   ship a converter that must stay correct forever, given that the only volume in existence is a
+   test bed that is wiped freely. This only has to be answered when the second change begins.
+2. **Does the Merkle root get anchored to the TPM?** `meta_root` is verified at unlock against the
+   superblock, which detects tampering but not **rollback**: an attacker with the disk can restore
+   a whole earlier volume, consistent root and all. Under decision 1 this now matters more than it
+   did, because the boot-time policy is on that disk and rolling it back is a privilege change.
+   Sealing a counter or the root to a PCR closes it, and it is a boot-chain change.
+
+## 6a. The decisions as they were originally put
 
 1. **Does a file capability persist across a reboot, and if so how?** A cspace is a kernel object
    and does not survive one. The options are a sealed on-disk table mapping a durable identifier

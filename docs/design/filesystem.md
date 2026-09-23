@@ -180,10 +180,60 @@ and the fragmentation cost are accepted with it.
    (§4) is separable from the layout (§3) and should land first, against the *existing* on-disk
    format, so that the security change is reviewable on its own and not buried in a rewrite.
 
-## 7. What is not a filesystem problem, and should be fixed first
+## 7. Performance, and the one design choice that costs the most
 
-Volume creation is slow, and it is tempting to design around it. It should not be, because the
-cause is transport and not layout.
+The brief is parity with the major Unix filesystems or better. That is a harder bar than it
+sounds, because the present design has a cost that none of them carry, and it was found by
+debugging a laptop rather than by reading the code.
+
+**FORMATTING IS O(VOLUME SIZE), AND IT DOES NOT HAVE TO BE.** Every block has a 32-byte entry in
+a side table holding its nonce and its authentication tag, so the table is exactly 1/128th of the
+volume. A 16 GiB volume therefore has a 128 MiB table, and formatting **writes all of it and then
+reads all of it back** (the Merkle build hashes what is actually on the medium, deliberately).
+That is 32,768 block writes and 32,768 block reads before a single byte belongs to the operator.
+On an eMMC laptop it was twenty minutes and was twice reported as a hang. ext4 formats a 16 GiB
+volume in about a second, and the difference is not implementation quality, it is this table.
+
+**THE NONCE DOES NOT NEED STORING.** It can be derived: `nonce = f(disk_key, block, generation)`.
+Under copy on write a rewritten block is a new block with a new generation, so derived nonces are
+unique by construction, which is the same argument §5 makes for copy on write and is the reason
+the two decisions belong together. That removes 12 of the 32 bytes and, more importantly, removes
+the reason the table has to exist at format time at all.
+
+**THE TAG BELONGS IN THE PARENT, NOT IN A SIDE TABLE.** This is what ZFS does and it is better
+than what Horus does now. A block's authentication tag is stored in the structure that points at
+it, which is itself authenticated by *its* parent, up to a root in the superblock. Then:
+
+- there is no side table, so a format writes a superblock, a root node and an empty allocator, and
+  costs **O(1) rather than O(volume)**;
+- the Merkle tree stops being a separate structure built by reading the whole disk, because the
+  pointer tree *is* the Merkle tree;
+- a block cannot be verified without walking the path that reaches it, which is the property that
+  makes a substituted block detectable rather than merely unlikely;
+- integrity and confidentiality stay in one AEAD construction per block, which is the part of the
+  current design worth keeping.
+
+**The rest is ordinary, and ordinary is the point:**
+
+| | why it is needed for parity |
+|---|---|
+| Extents | Sequential reads become one descriptor and one long transport run instead of a pointer per block. The transport can now carry runs (2026-09-23); nothing above it asks for them |
+| B-tree directories | The current directory is a linear array, so lookup is O(n) and every create rescans. This is the single biggest gap against ext4 and XFS on a real workload |
+| Delayed allocation | Batches writes into contiguous extents instead of allocating per block, which is what makes the extent above actually contiguous |
+| Read-ahead | Free once extents exist, because the next block's location is known rather than looked up |
+| Lazy metadata | Whatever per-block state survives, initialised on first use. `storage_alloc_inode` already does exactly this for the inode table, and the reason given there is the reason here |
+
+**WHAT PARITY WILL AND WILL NOT MEAN.** PIO is the transport, and no filesystem design recovers
+what DMA gives. Parity is to be claimed per operation, against a measurement, and never as a
+general statement: "lookup in a directory of N is O(log N)", "a format is constant time",
+"a sequential read of an extent issues one command per run". A claim that Horus is as fast as
+ext4 without naming the operation and the machine is the kind of claim
+`docs/LIMITATIONS.md` now warns about for storage generally.
+
+## 8. What is not a filesystem problem, and was fixed first
+
+Volume creation is slow for two reasons, and only one of them is the layout in §7. The other was
+transport, and it was fixed on 2026-09-23 rather than designed around.
 
 The format writes about **2.3 MB** and costs about **4,700 synchronous operations**, measured as
 `format ≈ 5.2s + 4700/IOPS` (`docs/LIMITATIONS.md` 5.2h). The reason is that both storage
@@ -191,11 +241,16 @@ backends move **one 512-byte sector per command** while a filesystem block is 40
 `ata.c` sets `ATA_SECCOUNT` to 1, and `sdcard_write` issues eight single-block `CMD24` writes per
 block. 576 blocks times 8 is 4,608, which is the measured figure.
 
-One command per block (`ATA_SECCOUNT = 8`, and `CMD25 WRITE_MULTIPLE_BLOCK` on eMMC) writes
-**identical bytes with identical cryptography** and should cost about an eighth as many
-operations. That is a separate, small, security-neutral change and it should be made before any
-filesystem work, so that the new design is measured against a transport that is not wasting
-seven eighths of its round trips.
+That was fixed on 2026-09-23: ATA issues one `READ`/`WRITE SECTORS` per run, the SD path uses
+`CMD18`/`CMD25`, and regions are cleared in runs fed from a single sector. **Identical bytes,
+identical cryptography, a fraction of the round trips.** It was done first so the new design is
+measured against a transport that is not wasting seven eighths of its commands, and so that any
+remaining slowness is attributable to the layout rather than to the wire.
+
+**It is also the reason §7 exists.** Fixing the transport moved the bottleneck onto the Merkle
+build, which reads the entire side table back; and that is not a transport problem, it is the
+consequence of storing per-block crypto metadata in a table proportional to the volume. The wire
+was the cheap half.
 
 ---
 

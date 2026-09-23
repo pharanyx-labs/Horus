@@ -1957,6 +1957,29 @@ typedef struct block_device {
      * new block device cannot silently inherit "durability not implemented"
      * while the journal keeps advertising crash atomicity. */
     int (*flush)(struct block_device *bd);
+    /* Write one SECTOR-UNIFORM block to `count` consecutive blocks.
+     *
+     * THE PRECONDITION IS THE WHOLE OF WHY THIS IS SAFE, and it is checked by
+     * bd_fill() rather than trusted: every 512-byte sector of `buf` must be
+     * identical. A backend may then feed its controller from one sector for the
+     * length of the run, which is what makes the run cheap, and a block whose
+     * sectors differ would be written as `count` copies of its FIRST sector,
+     * which is silent disk corruption. bd_fill compares the sectors and falls
+     * back to a write_block loop when they differ, so a caller cannot reach
+     * this with a block it would get wrong.
+     *
+     * OPTIONAL, AND NULL MEANS "loop write_block". It exists because formatting
+     * clears regions by writing the same all-zero block thousands of times, and
+     * a backend whose transport can carry a run (ATA's sector count, the
+     * SD/eMMC multi-block commands) does that in a handful of commands. A
+     * 16 GiB volume's crypto metadata region alone is 32,768 blocks, which on a
+     * laptop's eMMC was a format still running after twenty minutes.
+     *
+     * IT WRITES THE SAME BYTES THE LOOP WOULD. This is the transport and not
+     * the format: nothing about what lands on the disk, or how it is encrypted,
+     * depends on which path put it there. */
+    int (*fill_uniform)(struct block_device *bd, uint64_t start,
+                        const void *buf, uint64_t count);
     void *private;
 } block_device_t;
 
@@ -2316,6 +2339,18 @@ void print_from_user(const char *s, int may_klog);
  * of every line (terminal.c). There is no kmsg()/kmsg_begin() any more: the
  * stamp is applied by the writer, so a caller cannot forget it. */
 void kmsg_clock_init(void);         /* calibrate the TSC boot clock; call once, early */
+/* The format progress panel, painted straight into the console's cells.
+ *
+ * Called from SYS_STORAGE_FORMAT, which blocks the installer for as long as the
+ * erase takes, so nothing in ring 3 can draw and print() reaches only the klog
+ * once ring 3 owns the console. `title` names the phase and the two `why` lines
+ * say in plain English what is being done to the disk; `done`/`total` drive the
+ * bar, which is computed from the fraction so a caller cannot run it off the
+ * end. See the note above console_progress in terminal.c. */
+void console_progress(const char *title, const char *why1, const char *why2,
+                      uint64_t done, uint64_t total);
+void console_progress_note(const char *note);
+
 uint64_t kmsg_uptime_ticks(void);   /* whole PIT ticks since boot -- quantised, see terminal.c */
 #ifdef CLOCK_TSC_RESOLUTION
 uint64_t kmsg_uptime_us(void);      /* control arm only -- see terminal.c */
@@ -2422,6 +2457,8 @@ uint64_t sdhci_sectors(void);
  * medium for). */
 int sdhci_bd_read(uint64_t lba, void *buf);
 int sdhci_bd_write(uint64_t lba, const void *buf);
+int sdhci_bd_rw_run(uint64_t lba, void *buf, uint32_t count, int is_write);
+int sdhci_bd_fill_run(uint64_t lba, const void *sector, uint64_t count);
 int sdhci_bd_flush(void);
 uint64_t ahci_abar(void);
 uint32_t ahci_device_count(void);

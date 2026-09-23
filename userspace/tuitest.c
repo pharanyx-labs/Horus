@@ -250,6 +250,22 @@ void _start(void)
             for (int i = 4; i < 32; i++) if (box[i] != '#') intact = 0;
             check(intact, "an input overran the buffer it was given");
         }
+
+        /* TAB FINISHES A FIELD THE SAME WAY ENTER DOES (2026-09-23), so an
+         * operator can move between the password and its confirmation without
+         * reaching for Enter each time. Asserted on the RETURN VALUE and on the
+         * TEXT, not on the key alone: every caller in the tree tests this
+         * return against zero, so a Tab that ended the field with any other
+         * value would be read as a cancellation on the screens that collect a
+         * disk password, and the field's contents would be thrown away. */
+        static char tabbed[8];
+        static const uint8_t typed_tab[] = { 'h','i', '\t' };
+        tui_test_feed(typed_tab, sizeof(typed_tab));
+        int trc = tui_input(9, 0, 20, tabbed, sizeof(tabbed), 0);
+        check(trc == 0, "tab did not end the input the way enter does");
+        check(tui_test_keys_left() == 0, "the editor returned with keys unread after tab");
+        check(tabbed[0] == 'h' && tabbed[1] == 'i' && tabbed[2] == 0,
+              "tab did not keep what was typed before it");
     }
 
     /* Backspace removes exactly one character and clears exactly one cell.

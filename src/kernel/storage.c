@@ -1449,6 +1449,20 @@ static int merkle_build(struct block_device *bd, struct fs_superblock *sb,
     static uint8_t node[BLOCK_SIZE];
     uint8_t h[32];
 
+    /* THE WORK IS THE CHILD READS, so that is what the panel counts.
+     *
+     * This is the longest phase of a format on a real disk and it had no
+     * progress reporting at all: its caller passed a placeholder 0 of 1, so a
+     * laptop sat on "block 0 of 1" at 0% for the whole of it and was reported
+     * as stuck (2026-09-23). It was not stuck. Every leaf of the tree is a
+     * metadata block read back off the medium -- deliberately, so the tree
+     * hashes the bytes that are actually there rather than what was meant to be
+     * written -- and on a 16 GiB volume that is 32,768 reads before the top
+     * node exists. A phase that long has to say where it is. */
+    uint64_t total_children = sb->meta_blocks;
+    for (uint32_t l = 1; l < levels; l++) total_children += counts[l - 1];
+    uint64_t done_children = 0;
+
     uint64_t base = sb->merkle_start;
     for (uint32_t l = 0; l < levels; l++) {
         uint64_t children = (l == 0) ? sb->meta_blocks : counts[l - 1];
@@ -1461,11 +1475,23 @@ static int merkle_build(struct block_device *bd, struct fs_superblock *sb,
                 if (bd->read_block(bd, child_base + child, img) != 0) return -1;
                 if (merkle_hash(l, child, mac_key, img, h) != 0) return -1;
                 my_memcpy(node + k * 32, h, 32);
+                /* On a stride: the panel costs a few hundred cell blits and the
+                 * loop body is one block read, so painting every time would
+                 * make the reporting a measurable part of the phase. */
+                if ((++done_children & 0xFFu) == 0)
+                    console_progress("Checking the volume it just wrote",
+                                     "Reading every block back and hashing it into one root,",
+                                     "so later tampering with the disk can be detected.",
+                                     done_children, total_children);
             }
             if (bd->write_block(bd, base + n, node) != 0) return -1;
         }
         base += counts[l];
     }
+    console_progress("Checking the volume it just wrote",
+                     "Reading every block back and hashing it into one root,",
+                     "so later tampering with the disk can be detected.",
+                     total_children, total_children);
 
     /* The root is the hash of the single top node block, which merkle_build has
      * just written -- read it back for the same reason the leaves are read back. */
@@ -1555,7 +1581,7 @@ _Static_assert(BLOCK_SIZE % 512u == 0,
 
 /* THE LBA28 WALL, asserted rather than discovered on somebody's disk.
  *
- * ata_read_sector selects the drive with `0xE0 | ((lba >> 24) & 0x0F)`, which is
+ * ata_xfer selects the drive with `0xE0 | ((lba >> 24) & 0x0F)`, which is
  * LBA28: 2^28 sectors, 128 GiB at 512 bytes each. Past that the top bits are
  * silently DROPPED and the transfer lands at lba mod 2^28 -- a read of the wrong
  * block that succeeds, which the AEAD then rejects, so the symptom would be a
@@ -1657,21 +1683,19 @@ static int sdcard_write(struct block_device *bd, uint64_t block, const void *buf
     (void)bd; return sdhci_bd_write(block, buf);
 }
 #else
+/* ONE COMMAND PER BLOCK, not one per sector. A block is SD_SECTORS_PER_BLOCK
+ * card sectors and these used to issue that many CMD17s or CMD24s, each with a
+ * command round trip and, on a write, its own wait for the card to leave
+ * programming state. See the note on sd_rw_blocks for the arithmetic that made
+ * a laptop's format look like a hang. */
 static int sdcard_read(struct block_device *bd, uint64_t block, void *buf) {
     (void)bd;
-    uint8_t *p = (uint8_t *)buf;
-    uint64_t lba = block * SD_SECTORS_PER_BLOCK;
-    for (unsigned i = 0; i < SD_SECTORS_PER_BLOCK; i++)
-        if (sdhci_bd_read(lba + i, p + i * 512u) != 0) return -1;
-    return 0;
+    return sdhci_bd_rw_run(block * SD_SECTORS_PER_BLOCK, buf, SD_SECTORS_PER_BLOCK, 0);
 }
 static int sdcard_write(struct block_device *bd, uint64_t block, const void *buf) {
     (void)bd;
-    const uint8_t *p = (const uint8_t *)buf;
-    uint64_t lba = block * SD_SECTORS_PER_BLOCK;
-    for (unsigned i = 0; i < SD_SECTORS_PER_BLOCK; i++)
-        if (sdhci_bd_write(lba + i, p + i * 512u) != 0) return -1;
-    return 0;
+    return sdhci_bd_rw_run(block * SD_SECTORS_PER_BLOCK,
+                           (void *)(uintptr_t)buf, SD_SECTORS_PER_BLOCK, 1);
 }
 #endif
 /* A REAL IMPLEMENTATION AND NOT A STUB: raw_block_flush treats a NULL flush as a
@@ -1684,10 +1708,69 @@ static int sdcard_flush(struct block_device *bd) {
     (void)bd; return sdhci_bd_flush();
 }
 
+/* Feeds the controller from the block's FIRST sector for the whole run, which is
+ * correct only because bd_fill has already established that every sector of the
+ * block is identical. See the precondition on fill_uniform. */
+static int sdcard_fill(struct block_device *bd, uint64_t start,
+                       const void *buf, uint64_t count) {
+    (void)bd;
+    return sdhci_bd_fill_run(start * SD_SECTORS_PER_BLOCK, buf,
+                             count * SD_SECTORS_PER_BLOCK);
+}
+
 static struct block_device g_sd_bd = {
     .name = "sd0", .total_blocks = 0, .read_block = sdcard_read,
-    .write_block = sdcard_write, .flush = sdcard_flush, .private = NULL,
+    .write_block = sdcard_write, .flush = sdcard_flush,
+    .fill_uniform = sdcard_fill, .private = NULL,
 };
+
+/* Write one block to `count` consecutive blocks, using the backend's run
+ * transport when it has one and a plain loop when it does not.
+ *
+ * THE UNIFORMITY CHECK IS HERE AND NOT IN THE BACKENDS, so there is one place
+ * that decides whether the fast path is safe rather than one per driver. A
+ * backend's fill_uniform feeds its controller from the block's first sector for
+ * the length of the run; if the sectors differ, that would write `count` copies
+ * of the first sector and call it success, which is silent disk corruption. So
+ * the sectors are compared first and a block that fails the test takes the
+ * ordinary loop. Every caller today passes an all-zero block and passes the
+ * test; the check exists so that the next caller, which may not, cannot be
+ * quietly wrong.
+ *
+ * RETURNS THE LOOP'S ERROR SEMANTICS EITHER WAY: a partial run is a failure,
+ * and reported as one. */
+static int bd_fill(struct block_device *bd, uint64_t start,
+                   const void *buf, uint64_t count) {
+    if (count == 0) return 0;
+    if (bd->fill_uniform) {
+        const uint8_t *b = (const uint8_t *)buf;
+        int uniform = 1;
+        for (unsigned sec = 1; sec * 512u < BLOCK_SIZE && uniform; sec++)
+            for (unsigned i = 0; i < 512u; i++)
+                if (b[sec * 512u + i] != b[i]) { uniform = 0; break; }
+        if (uniform && bd->fill_uniform(bd, start, buf, count) == 0) return 0;
+        /* A backend that refused the run falls through to the loop rather than
+         * failing the format: the slow path is always correct. It SAYS SO, once
+         * per boot, because the difference between the two is minutes on a real
+         * disk and a silent fallback is how a performance fix comes to be
+         * believed in while never actually running. */
+        if (bd->fill_uniform) {
+            static int said;
+            if (!said) { said = 1;
+                /* ON THE PANEL, not through println: ring 3 owns the console by
+                 * the time a format runs, so println reaches the klog and
+                 * nobody standing at the machine. This is the one message that
+                 * explains a format taking half an hour instead of a minute. */
+                console_progress_note("This controller refused multi-block writes; "
+                                      "clearing one block at a time, which is much slower.");
+            }
+        }
+    }
+    for (uint64_t i = 0; i < count; i++)
+        if (bd->write_block(bd, start + i, buf) != 0) return -1;
+    return 0;
+}
+
 static int g_sd_usable;
 
 /* Which of the above are usable: probed present, and large enough to hold a
@@ -2728,6 +2811,15 @@ static int derive_kek(const char *password, size_t plen,
         return rust_hkdf_sha256((const uint8_t *)password, plen,
                                 kek_salt, 32, info, n, kek32, 32);
     }
+    /* SAY SO BEFORE IT STARTS, because this is deliberately slow and a silent
+     * pause is indistinguishable from a stall. Argon2id is memory-hard on
+     * purpose: the cost is what makes a stolen disk expensive to attack by
+     * guessing, so the seconds it spends here are the feature. It reports no
+     * fraction because it has no steps to count. */
+    console_progress("Turning your password into a key",
+                     "Deliberately slow, and that is the point: this is the work an",
+                     "attacker must repeat for every password they want to guess.",
+                     0, 0);
     /* Uses kernel_argon2id (syscall.c) to share the single 4MiB scratch buffer.
      * No kernel_pepper: kek_salt is random per-format and stable across reboots,
      * so the same password always yields the same KEK from the same disk. */
@@ -2966,8 +3058,40 @@ static int storage_format_sealed(struct block_device *bd,
      * wrote the region afterwards; the two happened to agree, and a volume whose
      * format left one byte of the region unwritten would have been bricked at its
      * first mount by a check that could not say why. */
-    for (uint64_t m = 0; m < sb.meta_blocks; m++) {
-        bd->write_block(bd, sb.meta_start + m, zero);
+    /* SAY WHAT THIS IS, because it is the phase that takes the minutes and the
+     * one that gets reported as a hang. On a 16 GiB volume the region is one
+     * 32-byte entry per 4 KiB block, which is 32,768 blocks and 128 MiB of
+     * writing before a single byte of the operator's data exists. */
+    console_progress("Preparing the encrypted volume",
+                     "Every block on this disk gets its own encryption nonce and",
+                     "authentication tag. Horus is clearing that index now.",
+                     0, sb.meta_blocks);
+    /* IN RUNS, and the runs are bounded so the panel still moves. bd_fill can
+     * clear the whole region in a handful of commands, which is the point; a
+     * single call would also mean one progress update for a phase that takes
+     * the minutes, so it is cut into pieces that are large enough to be cheap
+     * and small enough to be visible. */
+    /* SMALL ENOUGH TO SEE, large enough to be cheap. At 1024 blocks the region
+     * was 32 chunks, so the bar could only move in three-percent steps and the
+     * first one reported nothing -- which on a slow disk is indistinguishable
+     * from a wedge, and was reported as one on 2026-09-23. 64 blocks is 256 KiB
+     * per command, still ~500 commands instead of a quarter of a million, and
+     * it updates the panel 512 times. */
+    const uint64_t FILL_RUN = 64;
+    for (uint64_t m = 0; m < sb.meta_blocks; m += FILL_RUN) {
+        uint64_t n = sb.meta_blocks - m;
+        if (n > FILL_RUN) n = FILL_RUN;
+        if (bd_fill(bd, sb.meta_start + m, zero, n) != 0) {
+            secure_zero(disk_key, sizeof(disk_key));
+            return -1;
+        }
+        /* m + n, NOT m: the work just finished is done, and reporting the
+         * cursor instead made the first chunk paint 0% and the bar lag a whole
+         * chunk behind the disk. */
+        console_progress("Preparing the encrypted volume",
+                         "Every block on this disk gets its own encryption nonce and",
+                         "authentication tag. Horus is clearing that index now.",
+                         m + n, sb.meta_blocks);
 #ifdef STORAGE_FORMAT_WEDGE
         /* CONTROL ARM -- never ship. Wedges the format HALFWAY through the
          * metadata region, which is the shape [G-13] needs a witness for: the
@@ -2979,7 +3103,7 @@ static int storage_format_sealed(struct block_device *bd,
          * asserting on a run in which the interesting thing never started. This
          * way the arm reproduces the case the detector exists to separate from a
          * slow disk: writes, then silence. */
-        if (m == sb.meta_blocks / 2) { for (;;) __asm__ volatile ("pause"); }
+        if (m >= sb.meta_blocks / 2) { for (;;) __asm__ volatile ("pause"); }
 #endif
     }
 
@@ -3041,13 +3165,23 @@ static int storage_format_sealed(struct block_device *bd,
 
     /* Zero the journal region: a cleared header (magic 0) means "no committed
      * transaction to replay" — a fresh volume has nothing to recover. */
-    for (uint32_t j = 0; j < sb.journal_blocks; j++) {
-        bd->write_block(bd, sb.journal_start + j, zero);
+    console_progress("Preparing the encrypted volume",
+                     "Clearing the write-ahead journal, which is what lets a power cut",
+                     "leave the volume whole rather than half written.",
+                     0, 0);
+    if (bd_fill(bd, sb.journal_start, zero, sb.journal_blocks) != 0) {
+        secure_zero(disk_key, sizeof(disk_key));
+        return -1;
     }
 
     /* Zero every block-bitmap block (the data allocator may span several). */
-    for (uint64_t b = 0; b < bm_blocks; b++) {
-        bd->write_block(bd, sb.block_bitmap_start + b, zero);
+    console_progress("Preparing the encrypted volume",
+                     "Clearing the maps that record which blocks and which files",
+                     "are in use. A fresh volume has none.",
+                     0, 0);
+    if (bd_fill(bd, sb.block_bitmap_start, zero, bm_blocks) != 0) {
+        secure_zero(disk_key, sizeof(disk_key));
+        return -1;
     }
 
     /* Zero every inode-BITMAP block. The TABLE is not zeroed here: at a 16 GiB
@@ -3056,8 +3190,9 @@ static int storage_format_sealed(struct block_device *bd,
      * must not read back as garbage off a second-hand disk -- is met instead by
      * storage_alloc_inode, which zeros a table block the first time any inode in
      * it is allocated. The bitmap is what says whether that has happened. */
-    for (uint64_t b = 0; b < ib_blocks; b++) {
-        bd->write_block(bd, sb.inode_bitmap_start + b, zero);
+    if (bd_fill(bd, sb.inode_bitmap_start, zero, ib_blocks) != 0) {
+        secure_zero(disk_key, sizeof(disk_key));
+        return -1;
     }
 
     /* Root inode 0 is written directly rather than allocated, so the lazy

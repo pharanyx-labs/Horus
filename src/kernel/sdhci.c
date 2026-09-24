@@ -277,8 +277,33 @@ static void sd_cmd_failed(uint64_t bar, uint32_t index, const char *why) {
     print(" ps=");   sdtrace_hx(sdhci_read32(bar, SDHCI_PRESENT_STATE), 8);
     print("\n");
 }
+
+/* Name the DATA-PHASE step of a multi-block transfer that failed.
+ *
+ * sd_cmd_failed covers the command; it says nothing once the command has been
+ * accepted, and every failure after that point in sd_rw_blocks returned a bare
+ * code. That is the gap a laptop fell into on 2026-09-24: the installer's first
+ * read after the format (the key-slot region, for SYS_PASSWD) failed with the
+ * installer's rc=-32, and a trace build would have printed nothing at all.
+ * `stage` is which wait gave up (the per-block buffer-ready wait, or the final
+ * transfer-complete), `b` how many blocks of the run had already moved. */
+static void sd_rw_failed(uint64_t bar, const char *stage, int is_write,
+                         uint64_t lba, uint32_t count, uint32_t b) {
+    print("SDTRACE   ");
+    print(is_write ? "WRITE" : "READ");
+    print(" ");
+    print(stage);
+    print(" lba=");  sdtrace_hx((uint32_t)lba, 8);
+    print(" n=");    print_decimal(count);
+    print(" at=");   print_decimal(b);
+    print(" err=");  sdtrace_hx(sdhci_read16(bar, SDHCI_ERR_STATUS), 4);
+    print(" int=");  sdtrace_hx(sdhci_read16(bar, SDHCI_INT_STATUS), 4);
+    print(" ps=");   sdtrace_hx(sdhci_read32(bar, SDHCI_PRESENT_STATE), 8);
+    print("\n");
+}
 #else
 #define sd_cmd_failed(bar, index, why) ((void)0)
+#define sd_rw_failed(bar, stage, is_write, lba, count, b) ((void)0)
 #endif
 
 /* Put the command line, and optionally the data line, back into a state where
@@ -401,7 +426,19 @@ static int sd_command_common(uint64_t bar, uint32_t index, uint32_t arg, uint32_
      * previous data transfer is still using it. */
     for (uint32_t i = 0; ; i++) {
         uint32_t ps = sdhci_read32(bar, SDHCI_PRESENT_STATE);
-        if ((ps & (PSTATE_CMD_INHIBIT | PSTATE_DAT_INHIBIT)) == 0) break;
+        if ((ps & (PSTATE_CMD_INHIBIT | PSTATE_DAT_INHIBIT)) == 0) {
+#ifdef SDHCI_HW_TRACE
+            /* A NEAR MISS IS EVIDENCE TOO. How long the card held the line
+             * before this command could go, whenever that is more than an
+             * eighth of the bound: a busy card after a long write run is the
+             * state no emulator produces, and this says how close it came. */
+            if (i > SDHCI_SPINS / 8) {
+                print("SDTRACE   CMD"); print_decimal(index);
+                print(" waited "); print_decimal(i); print(" spins for the line\n");
+            }
+#endif
+            break;
+        }
         if (i >= SDHCI_SPINS) {
             /* Still inhibited from something earlier. Reset BOTH lines, not the
              * one this command would have used: whatever is holding the bus is
@@ -744,9 +781,12 @@ static int sd_rw_blocks(uint64_t bar, uint64_t lba, void *buf, uint32_t count,
         for (uint32_t i = 0; ; i++) {
             uint16_t st  = sdhci_read16(bar, SDHCI_INT_STATUS);
             uint16_t err = sdhci_read16(bar, SDHCI_ERR_STATUS);
-            if (err) return -2;
+            if (err) { sd_rw_failed(bar, "block error", is_write, lba, count, b); return -2; }
             if (st & ready) break;
-            if (i >= SDHCI_SPINS) return -3;
+            if (i >= SDHCI_SPINS) {
+                sd_rw_failed(bar, "block not ready", is_write, lba, count, b);
+                return -3;
+            }
         }
         /* Cleared BEFORE the data moves, so the next block's assertion is this
          * loop's own and not the one just consumed. */
@@ -771,9 +811,12 @@ static int sd_rw_blocks(uint64_t bar, uint64_t lba, void *buf, uint32_t count,
     for (uint32_t i = 0; ; i++) {
         uint16_t st  = sdhci_read16(bar, SDHCI_INT_STATUS);
         uint16_t err = sdhci_read16(bar, SDHCI_ERR_STATUS);
-        if (err) return -4;
+        if (err) { sd_rw_failed(bar, "completion error", is_write, lba, count, count); return -4; }
         if (st & INT_XFER_COMPLETE) return 0;
-        if (i >= SDHCI_SPINS) return -5;
+        if (i >= SDHCI_SPINS) {
+            sd_rw_failed(bar, "no completion", is_write, lba, count, count);
+            return -5;
+        }
     }
 }
 
@@ -848,7 +891,10 @@ static int sd_flush(uint64_t bar) {
 #else
     for (uint32_t i = 0; ; i++) {
         if ((sdhci_read32(bar, SDHCI_PRESENT_STATE) & PSTATE_DAT_INHIBIT) == 0) return 0;
-        if (i >= SDHCI_SPINS) return -1;
+        if (i >= SDHCI_SPINS) {
+            sd_rw_failed(bar, "flush: card still busy", 1, 0, 0, 0);
+            return -1;
+        }
     }
 #endif
 }

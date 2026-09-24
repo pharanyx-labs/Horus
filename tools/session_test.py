@@ -657,6 +657,26 @@ def run():
         s.send("ls"); s.expect("bin/", STEP_TIMEOUT)
         step("ls shows the boot-provisioned directory skeleton")
 
+        # --- 4a1. a builtin typed without its operand says how to use it ----
+        #        Until 2026-09-24 a bare `touch` (or cat, cp, rm, ...) fell through
+        #        every builtin, matched with its trailing space, to "Unknown
+        #        command", which says the command does not exist. The fallthrough
+        #        now prints the man page's synopsis. Both directions: the usage
+        #        line must appear AND "Unknown command" must not.
+        # Settle on the prompt ls printed first, or the expect below matches
+        # that one and reads the output before the command's has arrived (the
+        # first run of this check did exactly that).
+        s.expect("root@horus#", STEP_TIMEOUT)
+        for bare, want in (("touch", "usage: touch FILE"), ("cat", "usage: cat")):
+            mark = len(s.buf)
+            s.send(bare)
+            s.expect("root@horus#", STEP_TIMEOUT)
+            out = s.buf[mark:]
+            if "Unknown command" in out or want not in out:
+                raise SessionFail(f"a bare `{bare}` said Unknown command instead of "
+                                  f"its usage ({want!r}); saw {out[-200:]!r}")
+        step("a builtin typed without its operand prints its usage")
+
         # --- 4a2. ls takes a PATH, and it names a directory other than the cwd -
         #        `ls /bin` answered "Unknown command" until 2026-09-06: the builtin
         #        matched the literal strings "ls" and "ls -l", so any argument fell

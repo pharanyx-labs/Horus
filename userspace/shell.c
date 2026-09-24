@@ -1040,6 +1040,39 @@ static const struct man_page *man_find(const char *name) {
     return 0;
 }
 
+/* A COMMAND TYPED WITH NO ARGUMENTS IS NOT AN UNKNOWN COMMAND.
+ *
+ * Most builtins that take arguments are matched with their trailing space
+ * (`strncmp(cmd, "touch ", 6)`), so a bare `touch` matched none of them and fell
+ * through to "Unknown command", which tells the reader the command does not
+ * exist when it does and they have only left out its operand (reported
+ * 2026-09-24). This runs at that fallthrough: a single word that names a man
+ * page can only have got here by missing its arguments, because a command that
+ * works bare is matched bare above, so it prints the page's synopsis. The man
+ * table is the one source, so a new command with a page is covered without a
+ * second list to keep in step. The two IPC debugging builtins have no page and
+ * take their line from `help`. Returns 1 when it printed. */
+static int usage_for_bare(const char *cmd) {
+#ifdef SHELL_BARE_UNKNOWN
+    /* CONTROL ARM -- never ship. The shell before 2026-09-24: a builtin typed
+     * without its operand is reported as an unknown command. See
+     * make smoke-session-usage-control. */
+    (void)cmd;
+    return 0;
+#endif
+    for (const char *c = cmd; *c; c++) if (*c == ' ') return 0;   /* has arguments */
+    const char *syn = 0;
+    const struct man_page *m = man_find(cmd);
+    if (m) syn = m->synopsis;
+    else if (strcmp(cmd, "ipc_send") == 0) syn = "ipc_send <msg>";
+    else if (strcmp(cmd, "notify") == 0)   syn = "notify <badge>";
+    if (!syn) return 0;
+    print(cmd); println(": missing operand");
+    print("usage: "); println(syn);
+    if (m) { print("Try 'man "); print(cmd); println("' for more."); }
+    return 1;
+}
+
 /* Section heading, then an indented body -- the two-level indent is what makes
  * a man page scannable, so it is kept rather than flattened. */
 static void man_section(const char *head) { println(""); println(head); }
@@ -2791,6 +2824,8 @@ static void handle_command(char *cmd) {
         } else {
             println("fss commands: fss fss_connect fss_ls fss_cat <name> fss_write <file> <txt> fss_create <name>");
         }
+    } else if (usage_for_bare(cmd)) {
+        /* printed; see usage_for_bare */
     } else {
         println("Unknown command. Type 'help' or 'help <cmd>' for usage.");
     }

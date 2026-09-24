@@ -53,6 +53,7 @@ control_arms:
   smoke-session-chmod-control: smoke-session
   smoke-session-chown-control: smoke-session
   smoke-session-home-control: smoke-session
+  smoke-session-usage-control: smoke-session
   smoke-session-hardlink-control: smoke-session
   smoke-kstack-imp-control: smoke-kstack-imp
   smoke-claim-reread-control: smoke-claim-reread

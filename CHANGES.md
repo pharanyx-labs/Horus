@@ -537,6 +537,14 @@ in this file.
 
 ### Changed
 
+- **Formatting no longer reads the whole metadata region back.** The Merkle tree over the crypto
+  metadata region hashes the block every metadata block was written from instead of reading
+  32,768 of them back (at 16 GiB), because every write in the format is now checked and a refused
+  one fails the format; five writes whose return codes were dropped are checked too. The
+  emulated 16 GiB eMMC format fell from about 90s
+  to 51.5s. The trade (a device that acknowledges a write and drops it now costs one 512 KiB
+  range, refused, instead of being papered over) is recorded as `docs/LIMITATIONS.md` 5.2i.
+
 - **Every CI build used one of the runner's four cores.** Each of the ~370 build-and-boot steps in
   `ci.yml` does `make clean` and a full build, serially: locally 8.9 s of build against 4 s of
   boot, and 2.0 s at `-j12`. The workflow now sets `MAKEFLAGS=-j4`. Measured locally first: every

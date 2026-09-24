@@ -142,6 +142,20 @@
  * STABLE is a card still being detected rather than a card that is there. */
 #define PSTATE_CARD_INSERTED  (1u << 16)
 #define PSTATE_CARD_STABLE    (1u << 17)
+/* The level of the DAT0 line itself, not the controller's opinion of it. A card
+ * that is still programming data it has already accepted holds DAT0 low, and
+ * this bit is the only place the host can see that. */
+#define PSTATE_DAT0_LEVEL     (1u << 20)
+
+/* How long a card may hold DAT0 low after a write, in polls. Separate from
+ * SDHCI_SPINS because it bounds a different thing: not "is the controller
+ * answering" but "has the card finished programming", which the SD and eMMC
+ * specifications allow to take hundreds of milliseconds per write and longer when
+ * the card flushes an internal cache. At the ~0.5 to 1 us an uncached register
+ * read costs, this is on the order of ten seconds: long enough that a working
+ * card never reaches it, short enough that a dead one still fails rather than
+ * hangs. Measured, not assumed, under SDHCI_HW_TRACE (sd_wait_not_busy). */
+#define SDHCI_BUSY_SPINS      (16u * SDHCI_SPINS)
 
 /* Capabilities, low word: the fields worth reporting. */
 #define CAP_BASE_CLK_SHIFT    8      /* MHz, 8 bits (0 = "ask another way")     */
@@ -163,6 +177,7 @@ static int sd_rw_blocks(uint64_t bar, uint64_t lba, void *buf, uint32_t count,
 static int sd_pio_read512(uint64_t bar, uint32_t index, uint32_t arg, void *buf);
 static int sd_write_block(uint64_t bar, uint64_t lba, const void *buf, int is_hc);
 static int sd_flush(uint64_t bar);
+static int sd_wait_not_busy(uint64_t bar);
 
 static uint64_t g_sdhci_bar;      /* 0 when no controller was recognised */
 /* The identification clock host_reset chose, in kHz, reported by sdhci_probe so
@@ -812,7 +827,16 @@ static int sd_rw_blocks(uint64_t bar, uint64_t lba, void *buf, uint32_t count,
         uint16_t st  = sdhci_read16(bar, SDHCI_INT_STATUS);
         uint16_t err = sdhci_read16(bar, SDHCI_ERR_STATUS);
         if (err) { sd_rw_failed(bar, "completion error", is_write, lba, count, count); return -4; }
-        if (st & INT_XFER_COMPLETE) return 0;
+        if (st & INT_XFER_COMPLETE) {
+            /* A WRITE IS NOT OVER AT TRANSFER COMPLETE. See sd_wait_not_busy:
+             * the card goes on programming with DAT0 held low, and the next
+             * command sent in that window is not answered. */
+            if (is_write && sd_wait_not_busy(bar) != 0) {
+                sd_rw_failed(bar, "card still busy after the write", is_write, lba, count, count);
+                return -6;
+            }
+            return 0;
+        }
         if (i >= SDHCI_SPINS) {
             sd_rw_failed(bar, "no completion", is_write, lba, count, count);
             return -5;
@@ -859,17 +883,66 @@ static int sd_write_block(uint64_t bar, uint64_t lba, const void *buf, int is_hc
         uint16_t st  = sdhci_read16(bar, SDHCI_INT_STATUS);
         uint16_t err = sdhci_read16(bar, SDHCI_ERR_STATUS);
         if (err) return -4;
-        if (st & INT_XFER_COMPLETE) return 0;
+        if (st & INT_XFER_COMPLETE) return sd_wait_not_busy(bar) == 0 ? 0 : -6;
         if (i >= SDHCI_SPINS) return -5;
     }
 }
 
+/* Has the card finished programming what it has already accepted?
+ *
+ * A card that is programming holds DAT0 low, and while it does it answers
+ * nothing but a status query: a read sent in that window is simply not answered,
+ * and the controller reports a COMMAND TIMEOUT for a command that was never the
+ * problem.
+ *
+ * THE CONTROLLER'S DATA-INHIBIT BIT DOES NOT SAY THIS, and this driver used to
+ * assume it did. On the IdeaPad 1 14IGL05 (2026-09-24) an install failed its first
+ * read after the format and then, on the next attempt, a later one:
+ * `SDTRACE   CMD18 error err=0001 int=8000 ps=1fef0206`, a command timeout with
+ * the DAT[3:0] levels at 1110, DAT0 low. The inhibit bit had been clear when
+ * CMD18 went out; the card was still busy with the write before it. QEMU's
+ * sd-card completes every write synchronously, so no emulated gate could show
+ * it. The level of DAT0 itself (present state bit 20) is what the card drives,
+ * and it is the bit Linux's sdhci_card_busy reads for the same purpose.
+ *
+ * Returns 0 once DAT0 is high, or -1 if it is still low after SDHCI_BUSY_SPINS:
+ * a card that never finishes fails the write rather than hanging the machine. */
+static int sd_wait_not_busy(uint64_t bar) {
+#ifdef SDHCI_WRITE_NO_FLUSH
+    /* CONTROL ARM -- never ship. See sd_flush below: the whole wait for the card
+     * to finish programming is gone, here as there. */
+    (void)bar;
+    return 0;
+#else
+    for (uint32_t i = 0; ; i++) {
+        if (sdhci_read32(bar, SDHCI_PRESENT_STATE) & PSTATE_DAT0_LEVEL) {
+#ifdef SDHCI_HW_TRACE
+            /* THE BOUND IS MEASURED HERE. Each new longest wait is printed, so the
+             * log carries a handful of lines however many writes there were, and
+             * the last one is the worst this card did on this boot. */
+            static uint32_t longest;
+            if (i > longest) {
+                longest = i;
+                print("SDTRACE   busy after a write: "); print_decimal(i);
+                print(" spins (longest so far)\n");
+            }
+#endif
+            return 0;
+        }
+        if (i >= SDHCI_BUSY_SPINS) return -1;
+    }
+#endif
+}
+
 /* Wait until the card has finished programming everything already accepted.
  *
- * A card signals internal programming by holding DAT0 low, which the controller
- * reports as the data line being inhibited. Waiting for that to clear is what
- * "the write is on stable media" means for this device -- there is no separate
- * cache-flush command in the SD protocol the way ATA has one.
+ * Two conditions, both required. The controller's data line must be free (no
+ * transfer of its own still running), and the card must have released DAT0
+ * (sd_wait_not_busy): the first alone was the whole check until 2026-09-24, and
+ * on real hardware it passes while the card is still programming, so the flush
+ * the journal relies on for durability returned before the data was on the
+ * medium. There is no separate cache-flush command in the SD protocol the way
+ * ATA has one; this wait is what "the write is on stable media" means here.
  *
  * It returns a STATUS rather than void: raw_block_flush treats a backend that
  * cannot flush as a failure rather than a no-op, deliberately, so that a new
@@ -890,12 +963,17 @@ static int sd_flush(uint64_t bar) {
     return 0;
 #else
     for (uint32_t i = 0; ; i++) {
-        if ((sdhci_read32(bar, SDHCI_PRESENT_STATE) & PSTATE_DAT_INHIBIT) == 0) return 0;
+        if ((sdhci_read32(bar, SDHCI_PRESENT_STATE) & PSTATE_DAT_INHIBIT) == 0) break;
         if (i >= SDHCI_SPINS) {
-            sd_rw_failed(bar, "flush: card still busy", 1, 0, 0, 0);
+            sd_rw_failed(bar, "flush: controller still transferring", 1, 0, 0, 0);
             return -1;
         }
     }
+    if (sd_wait_not_busy(bar) != 0) {
+        sd_rw_failed(bar, "flush: card still busy", 1, 0, 0, 0);
+        return -1;
+    }
+    return 0;
 #endif
 }
 

@@ -3156,8 +3156,10 @@ old allocator and the new one read the same single block and no workload could t
   capacity from the CSD. That is the storage a budget laptop actually has, soldered eMMC,
   reached by neither `ata.c` nor `ahci.c`, and since 2026-09-07 it **reads blocks** (`CMD17` by
   PIO), verified against known bytes at two blocks on both a byte-addressed and a block-addressed
-  card, and since 2026-09-07 **writes** them too (`CMD24` plus a flush that waits out the card's
-  programming state), verified from the host rather than only from the guest.
+  card, and since 2026-09-07 **writes** them too (`CMD24`, since 2026-09-23 `CMD25` for a run),
+  verified from the host rather than only from the guest. Every write, and the flush, waits for the
+  card to release DAT0 before anything else is sent (since 2026-09-24; see below for why the
+  controller's own busy bit was not enough).
   **Since 2026-09-08 it is mountable and installable onto.** The card is registered as a
   `block_device` beside the ATA drives, the survey enumerates it, and the installer formats it:
   `make smoke-installer-sd` drives a whole install onto a card, power-cycles the machine and logs
@@ -3208,10 +3210,19 @@ old allocator and the new one read the same single block and no workload could t
   twice. That is an emulation cost and says nothing either way about a card; ordinary reads after
   the install still go through `CMD18`.
 
-  **An install onto the laptop's eMMC has not yet been run**; until one has, this paragraph
-  says so. What stopped one on 2026-09-22 was no longer storage but the installer's own screen,
-  which reached the serial line and nothing else on a machine with no serial port; that was a
-  separate finding, and it is fixed and recorded in §4. **The installer gates' stall detector is blind on this path**: it counts QEMU's block
+  **The first real install onto the laptop's eMMC (2026-09-24) failed, and the cause is fixed;
+  a completed install on it is not yet recorded.** The format finished and the first read after
+  it was not answered (the installer's `rc=-32`); a second attempt got further and failed on a
+  later read (`rc=-22`). The trace read `CMD18 error err=0001 int=8000 ps=1fef0206`: a command
+  timeout, with DAT0 low. The card was still programming the previous write, and a card in that
+  state does not answer a read. The driver waited only for the controller's data-inhibit bit,
+  which this controller clears once the data has moved, before the card has finished with it;
+  so the flush the journal relies on returned early too. Every write and the flush now wait for
+  DAT0 itself (`sd_wait_not_busy`). **No gate can witness it**: QEMU's `sd-card` and `emmc`
+  models complete a write synchronously and never hold DAT0 low, which is also why
+  `SDHCI_WRITE_NO_FLUSH` has no gate. The witness is the laptop. Before that, what stopped an
+  install on 2026-09-22 was the installer's own screen, which reached the serial line and nothing
+  else on a machine with no serial port; that was a separate finding, fixed and recorded in §4. **The installer gates' stall detector is blind on this path**: it counts QEMU's block
   statistics, which the SD and eMMC device models do not keep, so for `smoke-installer-sd` and
   `smoke-installer-emmc` it is an elapsed-time bound on the format (30 s and 180 s) rather than a
   detector of the guest going quiet.

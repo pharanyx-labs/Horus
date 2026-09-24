@@ -592,6 +592,15 @@ in this file.
 
 ### Fixed
 
+- **An install onto a laptop's eMMC failed at the password step, a different read each time.**
+  After a write the card goes on programming with DAT0 held low, and answers no read until it has
+  finished; the SD/eMMC driver waited only for the controller's data-inhibit bit, which the
+  IdeaPad's controller clears before the card is done. The next read then timed out (the
+  installer's `rc=-32`, then `rc=-22`), and the flush the journal relies on returned before the
+  data was on the medium. Every write and the flush now wait for DAT0 itself. QEMU's card models
+  never hold DAT0 low, so no emulated gate can show this; `SDHCI_HW_TRACE` prints the longest wait
+  it saw.
+
 - **The installer sat in the top-left corner of a laptop's screen.** The console grid is 80
   columns at most, and both the kernel's framebuffer console and `console_server` drew it from
   pixel (0,0), so on a 1366-pixel panel everything was in the left half, and a full-screen

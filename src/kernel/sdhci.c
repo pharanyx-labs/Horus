@@ -176,6 +176,27 @@ uint64_t sdhci_bar(void)        { return g_sdhci_bar; }
 uint32_t sdhci_card_count(void) { return g_sdhci_cards; }
 uint64_t sdhci_sectors(void)    { return g_sdhci_sectors; }
 
+/* ONE COMMAND ON THE CONTROLLER AT A TIME, ACROSS CPUs.
+ *
+ * An SD host controller runs one command and one data transfer, and its
+ * registers (argument, transfer mode, block count, the buffer port) are a single
+ * set. Until 2026-09-24 nothing here serialised them, and on a machine with two
+ * cores two tasks reached the card at once: the IdeaPad 1 14IGL05's trace shows
+ * a CMD25 and a CMD18 failing in the same microsecond, their SDTRACE lines
+ * interleaved character by character, and every install failing at whichever
+ * read landed inside another CPU's write. Every QEMU gate that touches SD boots
+ * one CPU ("smp: uniprocessor"), which is why none of them could see it, and why
+ * three earlier diagnoses (a busy card, a stranded transfer) each explained part
+ * of the symptom and none of the cause.
+ *
+ * The same shape as ata_lock in src/kernel/ata.c and for the same reason a
+ * DEDICATED lock rather than storage_lock: the crypto layer holds storage_lock
+ * on paths that reach the block device, and a non-recursive spinlock taken
+ * twice is a hang. Held for one operation, including its abort and retry, so a
+ * recovery is never interleaved with another CPU's command either. Declared in
+ * .github/lock-order.yml (S88). */
+static spinlock_t sdhci_lock = { 0 };
+
 /* The block operations, for storage.c's block_device.
  *
  * They refuse when no card came up rather than reaching into a zero BAR, and
@@ -185,13 +206,19 @@ uint64_t sdhci_sectors(void)    { return g_sdhci_sectors; }
 int sdhci_bd_read(uint64_t lba, void *buf) {
     if (!g_sdhci_bar || !g_sdhci_sectors) return -1;
     if (lba >= g_sdhci_sectors) return -1;
-    return sd_read_block(g_sdhci_bar, lba, buf, g_sdhci_is_hc);
+    spin_lock(&sdhci_lock);
+    int rc = sd_read_block(g_sdhci_bar, lba, buf, g_sdhci_is_hc);
+    spin_unlock(&sdhci_lock);
+    return rc;
 }
 
 int sdhci_bd_write(uint64_t lba, const void *buf) {
     if (!g_sdhci_bar || !g_sdhci_sectors) return -1;
     if (lba >= g_sdhci_sectors) return -1;
-    return sd_write_block(g_sdhci_bar, lba, buf, g_sdhci_is_hc);
+    spin_lock(&sdhci_lock);
+    int rc = sd_write_block(g_sdhci_bar, lba, buf, g_sdhci_is_hc);
+    spin_unlock(&sdhci_lock);
+    return rc;
 }
 
 /* A RUN OF CONTIGUOUS SECTORS IN ONE COMMAND. Bounded against the card's own
@@ -204,7 +231,10 @@ int sdhci_bd_rw_run(uint64_t lba, void *buf, uint32_t count, int is_write) {
     if (count == 0) return 0;
     if (lba >= g_sdhci_sectors) return -1;
     if ((uint64_t)count > g_sdhci_sectors - lba) return -1;
-    return sd_rw_blocks(g_sdhci_bar, lba, buf, count, g_sdhci_is_hc, is_write, 0);
+    spin_lock(&sdhci_lock);
+    int rc = sd_rw_blocks(g_sdhci_bar, lba, buf, count, g_sdhci_is_hc, is_write, 0);
+    spin_unlock(&sdhci_lock);
+    return rc;
 }
 
 /* Write ONE 512-byte sector to `count` consecutive positions, in as few commands
@@ -217,8 +247,14 @@ int sdhci_bd_fill_run(uint64_t lba, const void *sector, uint64_t count) {
     if (count > g_sdhci_sectors - lba) return -1;
     while (count) {
         uint32_t n = count > 0xFFFFu ? 0xFFFFu : (uint32_t)count;
-        if (sd_rw_blocks(g_sdhci_bar, lba, (void *)(uintptr_t)sector, n,
-                         g_sdhci_is_hc, 1, 1) != 0) return -1;
+        /* Per command, not per run: the controller needs exclusivity for one
+         * transfer, and a format's run is minutes long on a slow card, which is
+         * too long to hold every other CPU's storage off. */
+        spin_lock(&sdhci_lock);
+        int rc = sd_rw_blocks(g_sdhci_bar, lba, (void *)(uintptr_t)sector, n,
+                              g_sdhci_is_hc, 1, 1);
+        spin_unlock(&sdhci_lock);
+        if (rc != 0) return -1;
         lba += n; count -= n;
     }
     return 0;
@@ -226,7 +262,10 @@ int sdhci_bd_fill_run(uint64_t lba, const void *sector, uint64_t count) {
 
 int sdhci_bd_flush(void) {
     if (!g_sdhci_bar) return -1;
-    return sd_flush(g_sdhci_bar);
+    spin_lock(&sdhci_lock);
+    int rc = sd_flush(g_sdhci_bar);
+    spin_unlock(&sdhci_lock);
+    return rc;
 }
 
 static inline uint32_t sdhci_read32(uint64_t bar, uint32_t off) {

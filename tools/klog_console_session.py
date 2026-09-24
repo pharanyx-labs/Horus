@@ -177,6 +177,14 @@ def main():
                 raise SessionFail("Esc closed the view but did not restore the console")
             print("KLOG_CONSOLE: Esc closes it too", flush=True)
 
+            # MEDIA-KEY MODE: Alt+Volume Down opens and Alt+Mute closes, which is
+            # what Alt+F2 and Alt+F1 send on a laptop whose F-row needs Fn.
+            chord(g, "alt", "volumedown")
+            g.expect(OPENED, a.timeout)
+            chord(g, "alt", "audiomute")
+            g.expect(CLOSED, a.timeout)
+            print("KLOG_CONSOLE: Alt+VolumeDown / Alt+Mute work as Alt+F2 / Alt+F1", flush=True)
+
         # Either way the keys must still reach the console: a view that ate the
         # keyboard, or an absent one that did, is a machine nobody can log into.
         g.send_key_text(a.user + "\n", 0.15)

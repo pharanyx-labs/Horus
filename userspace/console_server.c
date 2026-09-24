@@ -555,6 +555,17 @@ static char ps2_poll(void) {
         if (sc == 0x3C) { klog_view(); return 0; }   /* Alt+F2: the kernel log   */
         if (sc == 0x3B) return 0;                    /* Alt+F1: already here     */
     }
+    /* THE SAME TWO KEYS IN MEDIA-KEY MODE. A laptop whose top row sends media
+     * keys unless Fn is held (the IdeaPad 1 14IGL05) turns F2 into Volume Down
+     * (0xE0 0x2E) and F1 into Mute (0xE0 0x20), so Alt+F2 opened nothing without
+     * Fn. With alt held they mean F2 and F1 here; nothing else in Horus reads
+     * either key. The prefix ps2_feed already consumed is cleared as it would
+     * have cleared it. */
+    if (kbd.e0 && (kbd_lalt || kbd.altgr) && (sc == 0x2E || sc == 0x20)) {
+        kbd.e0 = 0;
+        if (sc == 0x2E) klog_view();
+        return 0;
+    }
 #endif
 
     int k = ps2_feed(&kbd, sc);
@@ -736,6 +747,8 @@ static void klog_view(void) {
         if (!kbd.e0 && sc == PS2_SC_LALT)           { kbd_lalt = 1; continue; }
         if (!kbd.e0 && sc == (PS2_SC_LALT | 0x80))  { kbd_lalt = 0; continue; }
         if (!kbd.e0 && sc == 0x3B && (kbd_lalt || kbd.altgr)) break;     /* Alt+F1 */
+        if (kbd.e0 && sc == 0x20 && (kbd_lalt || kbd.altgr)) { kbd.e0 = 0; break; } /* Alt+Mute */
+        if (kbd.e0 && sc == 0x2E && (kbd_lalt || kbd.altgr)) { kbd.e0 = 0; continue; }
         if (!kbd.e0 && sc == 0x3C && (kbd_lalt || kbd.altgr)) continue;  /* F2 again */
 
         /* PgUp and PgDn are 0xE0 0x49 and 0xE0 0x51, which ps2_feed drops, so

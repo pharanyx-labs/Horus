@@ -2731,7 +2731,15 @@ static int keyslots_read(struct block_device *bd, const struct fs_superblock *sb
     uint8_t blk[BLOCK_SIZE];
     uint8_t *dst = (uint8_t *)out;
     for (uint32_t i = 0; i < KEYSLOT_BLOCKS; i++) {
-        if (bd->read_block(bd, sb->keyslot_start + i, blk) != 0) return -1;
+        if (bd->read_block(bd, sb->keyslot_start + i, blk) != 0) {
+#ifdef SDHCI_HW_TRACE
+            /* DIAGNOSTIC (the 2026-09-24 laptop install): which block of the
+             * slot region would not read. */
+            print("SDTRACE   keyslots_read: block "); print_decimal((uint32_t)(sb->keyslot_start + i));
+            print(" (slot block "); print_decimal(i); print(") failed\n");
+#endif
+            return -1;
+        }
         uint32_t off = i * BLOCK_SIZE;
         uint32_t len = sizeof(fs_keyslot_t) * HORUS_KEYSLOTS;
         if (off >= len) break;
@@ -4585,8 +4593,22 @@ int storage_rekey(const char *new_password, size_t plen)
      * key slots this function rewrote the volume's only wrap, so it could not
      * tell the two apart. */
     fs_keyslot_t slots[HORUS_KEYSLOTS];
-    if (keyslots_read(mfs->bd, sb, slots) != 0) return -2;
+    if (keyslots_read(mfs->bd, sb, slots) != 0) {
+#ifdef SDHCI_HW_TRACE
+        print("SDTRACE   rekey: -2 because the slot region did not read\n");
+#endif
+        return -2;
+    }
     if (g_unlocked_slot >= HORUS_KEYSLOTS || !slots[g_unlocked_slot].active) {
+#ifdef SDHCI_HW_TRACE
+        /* DIAGNOSTIC: the other -2. The read reported success, so either the
+         * slot this boot opened was never written, or the bytes that came back
+         * are not the bytes that went out. */
+        print("SDTRACE   rekey: -2 because slot "); print_decimal(g_unlocked_slot);
+        print(" read back inactive (active=");
+        print_decimal(g_unlocked_slot < HORUS_KEYSLOTS ? (uint32_t)slots[g_unlocked_slot].active : 0xFFFFFFFFu);
+        print(", keyslot_start="); print_decimal((uint32_t)sb->keyslot_start); print(")\n");
+#endif
         secure_zero(slots, sizeof(slots));
         return -2;
     }

@@ -136,7 +136,7 @@ DEFECT_FLAGS = \
 	REPLY_EP_SPACE_OVERLAP \
 	AHCI_PROBE_ABSENT AHCI_CAPACITY_CONSTANT SDHCI_PROBE_ABSENT \
 	SDHCI_CSD_SPEC_BITS SDHCI_ADDR_MODE_INVERTED \
-	SDHCI_WRITE_SELFTEST SDHCI_WRITE_NO_FLUSH \
+	SDHCI_WRITE_SELFTEST SDHCI_WRITE_NO_FLUSH SDHCI_NO_LOCK \
 	CONSOLE_VGA_CHECK_FAIL BOOT_MODULE_RESERVE_UNCHECKED POOL_RESERVE_FIXED_BASE \
 	BOOT_MODULE_IMAGE_PROBE \
 	AHCI_PROBE_ABSENT AHCI_CAPACITY_CONSTANT SERIAL_TX_NEVER_DRAINS \
@@ -1921,6 +1921,16 @@ endif
 # Kept because a real card DOES hold DAT0 low while programming, and the day this
 # driver is asked to survive a power cut the flag is the arm for it.
 SDHCI_WRITE_NO_FLUSH ?= 0
+
+# SDHCI_NO_LOCK=1 is the SD/eMMC driver before 2026-09-24: no sdhci_lock, so on
+# two CPUs a write on one and a read on the other run on the controller at once.
+# That is what failed every install on the IdeaPad (two cores) and what no
+# one-CPU gate could see. The arm for the two-CPU installer gate.
+SDHCI_NO_LOCK ?= 0
+ifeq ($(SDHCI_NO_LOCK),1)
+CFLAGS  += -DSDHCI_NO_LOCK
+ASFLAGS += -DSDHCI_NO_LOCK
+endif
 ifeq ($(SDHCI_WRITE_NO_FLUSH),1)
 CFLAGS  += -DSDHCI_WRITE_NO_FLUSH
 ASFLAGS += -DSDHCI_WRITE_NO_FLUSH
@@ -12380,6 +12390,38 @@ smoke-installer-sd:
 	  || { echo "[installer-sd] ----- guest serial -----"; \
 	       tail -60 installer-sd-serial.log 2>/dev/null | sed 's/^/  /'; exit 1; }
 	@rm -f installer-sd.img
+
+# THE SAME INSTALL ON TWO CPUs. The SD/eMMC driver had no lock until 2026-09-24,
+# so a write on one CPU and a read on another ran on the controller at once; the
+# IdeaPad (two cores) failed every install at the password step, and every gate
+# here boots one CPU, so none of them could see it. Measured before the fix: this
+# target failed 3 of 3 with the laptop's own `rc=-32`. The arm is SDHCI_NO_LOCK=1.
+.PHONY: smoke-installer-sd-smp smoke-installer-sd-smp-control
+smoke-installer-sd-smp:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(SDSMPARM) horus.iso
+	@rm -f installer-sd.img installer-sd-serial.log
+	@truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-sd.img
+	@QEMU_SMP=2 SESSION_DISK=installer-sd.img SESSION_DISK_SD=1 \
+		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		INSTALLER_FORMAT_STALL=$(INSTALLER_FORMAT_STALL) INSTALLER_FORMAT_CAP=$(INSTALLER_FORMAT_CAP) \
+		SESSION_SERIAL_LOG=installer-sd-serial.log BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		python3 tools/installer_session.py horus.iso \
+	  || { echo "[installer-sd-smp] ----- guest serial -----"; \
+	       tail -60 installer-sd-serial.log 2>/dev/null | sed 's/^/  /'; exit 1; }
+	@rm -f installer-sd.img
+
+smoke-installer-sd-smp-control:
+	@out=$$($(MAKE) --no-print-directory smoke-installer-sd-smp SDSMPARM=SDHCI_NO_LOCK=1 2>&1); rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "SD SMP CONTROL: FAIL - an unlocked driver installed on two CPUs"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "could not be read back from the disk\|could not be read from the disk\|could not be written"; then \
+	    echo "SD SMP CONTROL: FAIL - it failed, but not on the disk."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "SD SMP CONTROL: PASS - two CPUs on an unlocked driver fail the install"
 
 # CONTROL ARM: the register file present only in the KERNEL's address space.
 #

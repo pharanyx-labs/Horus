@@ -168,7 +168,7 @@ DEFECT_FLAGS = \
 	CONSOLE_NO_SCROLLBACK \
 	SERIAL_PRESENCE_UNCHECKED \
 	CONSOLE_BACKSPACE_NO_ERASE SHELL_BARE_UNKNOWN \
-	CONSOLE_NO_SCROLL \
+	CONSOLE_NO_SCROLL CONSOLE_CLEAR_DRAWN \
 	CONSOLE_NO_CURSOR \
 	CONSOLE_NO_RESUME \
 	CONSOLE_ESC_LITERAL \
@@ -3401,6 +3401,12 @@ CONSOLE_FB_ABSENT ?= 0
 # USERSPACE_CFLAGS. The arm for `make smoke-keyboard`.
 CONSOLE_NO_KBD ?= 0
 
+# CONSOLE_CLEAR_DRAWN=1 is CON_OP_CLEAR before 2026-09-24: after blanking the
+# screen it wrote `ESC [2J ESC [H` through con_putc, which draws on the screen as
+# well as sending to serial, so seven glyphs appeared before `init: the installer
+# finished`. Userspace-only. The arm for `make smoke-installer-clear`.
+CONSOLE_CLEAR_DRAWN ?= 0
+
 # SHELL_BARE_UNKNOWN=1 is the shell before 2026-09-24: a builtin typed without its
 # operand (`touch`, `cat`, `cp`, ...) is reported as "Unknown command", because
 # each is matched with its trailing space. Userspace-only. The arm for the usage
@@ -4509,6 +4515,9 @@ USERSPACE_CFLAGS += -DCONSOLE_FB_ABSENT
 endif
 ifeq ($(CONSOLE_NO_KBD),1)
 USERSPACE_CFLAGS += -DCONSOLE_NO_KBD
+endif
+ifeq ($(CONSOLE_CLEAR_DRAWN),1)
+USERSPACE_CFLAGS += -DCONSOLE_CLEAR_DRAWN
 endif
 ifeq ($(SHELL_BARE_UNKNOWN),1)
 USERSPACE_CFLAGS += -DSHELL_BARE_UNKNOWN
@@ -12148,6 +12157,40 @@ smoke-installer:
 	       tail -60 installer-serial.log 2>/dev/null | sed 's/^/  /'; exit 1; }
 	@rm -f installer.img
 	@echo "[installer] PASS - installed onto a bare disk, then booted and logged into it"
+
+# THE CLEAR LEAVES THE SCREEN CLEAR (tools/installer_session.py,
+# check_clear_on_screen). The same install as smoke-installer, and after the
+# installer's final clear it compares the screen's first two rows, which both
+# begin `init: `: until 2026-09-24 the clear drew its own escape sequence on the
+# screen in front of the first. The wire was always right, so only a screendump
+# can see it. The arm is CONSOLE_CLEAR_DRAWN=1.
+.PHONY: smoke-installer-clear smoke-installer-clear-control
+smoke-installer-clear:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 $(CLEARARM)
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 $(CLEARARM) horus.iso
+	@rm -f installer-clear.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-clear.img
+	@rm -f installer-clear-serial.log
+	@INSTALLER_CHECK_CLEAR=1 SESSION_DISK=installer-clear.img SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) \
+		INSTALLER_FORMAT_STALL=$(INSTALLER_FORMAT_STALL) INSTALLER_FORMAT_CAP=$(INSTALLER_FORMAT_CAP) \
+		SESSION_SERIAL_LOG=installer-clear-serial.log BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		python3 tools/installer_session.py horus.iso \
+	  || { echo "[installer-clear] ----- guest serial -----"; \
+	       tail -40 installer-clear-serial.log 2>/dev/null | sed 's/^/  /'; rm -f installer-clear.img; exit 1; }
+	@rm -f installer-clear.img
+
+smoke-installer-clear-control:
+	@out=$$($(MAKE) --no-print-directory smoke-installer-clear CLEARARM=CONSOLE_CLEAR_DRAWN=1 2>&1); rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "CLEAR CONTROL: FAIL - a clear that draws its escape passed the gate"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "the clear drew characters onto the screen"; then \
+	    echo "CLEAR CONTROL: FAIL - it failed, but not on the screen."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "CLEAR CONTROL: PASS - a clear that draws its escape sequence is caught"
 
 # ---- [G-13]: a slow disk is not a wedge, and the gate now says which ---------
 #

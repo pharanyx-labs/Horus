@@ -613,6 +613,11 @@ in this file.
 
 ### Fixed
 
+- **Stray characters appeared before `init: the installer finished`.** The clear the installer
+  sends when it finishes wrote its serial escape sequence through the console's ordinary output,
+  which draws on the screen too, so `←[2J←[H` was painted in front of the next line. It now goes
+  to the serial line only, and `make smoke-installer-clear` reads the screen to check.
+
 - **A command typed without its operand said "Unknown command".** A bare `touch`, `cat`, `cp`,
   `rm` and the rest were each matched with a trailing space, so without an argument they matched
   nothing and the shell said the command did not exist. It now prints `touch: missing operand`,

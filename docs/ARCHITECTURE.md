@@ -1085,6 +1085,13 @@ from a typed line.
 Raw terminal mode (termios, winsize) is implemented here; the foundation for curses
 applications.
 
+**Scrollback** is kept here too: the last 512 lines to scroll off the top of the machine's own
+screen, as cells, so Shift+PgUp/PgDn can page back through them. The view is drawn over the
+display and never written into the console's own screen buffer, so returning to the live screen
+is one repaint, and any key that types something or any output returns there first. It holds
+only what the screen already showed, so it needs no capability and is in every build. A
+full-screen program's surface is drawn in place and never scrolls, so it does not fill the ring.
+
 `task_teardown` calls `console_clear_owner`, so a crashed console server releases the
 hardware back to the kernel fallback.
 

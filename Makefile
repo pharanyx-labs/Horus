@@ -167,7 +167,7 @@ DEFECT_FLAGS = \
 	FB_CONSOLE_MIRRORED FB_INFO_ANY_DEVICE CONSOLE_FB_ABSENT CONSOLE_NO_KBD KLOG_CONSOLE \
 	CONSOLE_NO_SCROLLBACK \
 	SERIAL_PRESENCE_UNCHECKED \
-	CONSOLE_BACKSPACE_NO_ERASE \
+	CONSOLE_BACKSPACE_NO_ERASE SHELL_BARE_UNKNOWN \
 	CONSOLE_NO_SCROLL CONSOLE_CLEAR_DRAWN \
 	CONSOLE_NO_CURSOR \
 	CONSOLE_NO_RESUME \
@@ -3407,6 +3407,12 @@ CONSOLE_NO_KBD ?= 0
 # finished`. Userspace-only. The arm for `make smoke-installer-clear`.
 CONSOLE_CLEAR_DRAWN ?= 0
 
+# SHELL_BARE_UNKNOWN=1 is the shell before 2026-09-24: a builtin typed without its
+# operand (`touch`, `cat`, `cp`, ...) is reported as "Unknown command", because
+# each is matched with its trailing space. Userspace-only. The arm for the usage
+# check in `make smoke-session`.
+SHELL_BARE_UNKNOWN ?= 0
+
 # KLOG_CONSOLE=1 is an INSTRUMENT, not a defect: Alt+F2 shows the kernel log on
 # the machine's own screen with nobody logged in, and Alt+F1 returns to the
 # console (klog_view in userspace/console_server.c). Built for a laptop whose
@@ -4512,6 +4518,9 @@ USERSPACE_CFLAGS += -DCONSOLE_NO_KBD
 endif
 ifeq ($(CONSOLE_CLEAR_DRAWN),1)
 USERSPACE_CFLAGS += -DCONSOLE_CLEAR_DRAWN
+endif
+ifeq ($(SHELL_BARE_UNKNOWN),1)
+USERSPACE_CFLAGS += -DSHELL_BARE_UNKNOWN
 endif
 ifeq ($(KLOG_CONSOLE),1)
 USERSPACE_CFLAGS += -DKLOG_CONSOLE
@@ -9451,6 +9460,22 @@ smoke-session-chown-control:
 # can see it and cannot write in it, which is the pre-2026-09-02 state reached by
 # a route the account can observe -- before this, /home simply had nothing in it.
 .PHONY: smoke-session-home-control
+# Control arm for the usage check in the session: the shell built as it was
+# before 2026-09-24, where a bare `touch` falls through to "Unknown command". The
+# session must fail on exactly that and on nothing earlier.
+.PHONY: smoke-session-usage-control
+smoke-session-usage-control:
+	@out=$$($(MAKE) --no-print-directory clean >/dev/null; $(MAKE) --no-print-directory SHELL_BARE_UNKNOWN=1 horus.iso >/dev/null && python3 tools/session_test.py horus.iso 2>&1); rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "USAGE CONTROL: FAIL - a shell that says Unknown command passed the session"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "said Unknown command instead of its usage"; then \
+	    echo "USAGE CONTROL: FAIL - it failed, but not on the usage."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "USAGE CONTROL: PASS - a bare builtin reported as unknown is caught"
+
 smoke-session-home-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory HOME_DIR_ROOT_OWNED=1

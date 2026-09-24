@@ -384,6 +384,16 @@ in this file.
 
 ### Added
 
+- **The installer can format without encryption, for an operator who chooses it.** A new step asks
+  whether to encrypt the volume; encryption is the default and the other answer is a deliberate
+  keystroke on a screen that says, in the danger colour, that anyone with the disk can then read
+  and change everything on it. The volume is written unsealed (`disk_key` in the clear, no TPM
+  sealing) through the same storage code as an encrypted one, and every boot says which kind it
+  mounted. Accounts still need their passwords to log in. `SYS_STORAGE_FORMAT` takes the choice as
+  a fifth argument, `STORAGE_FORMAT_UNSEALED`. It does not make installing faster. `SECURITY.md`
+  S103, `docs/LIMITATIONS.md` 2.21; witnessed by `make smoke-installer-unsealed` and falsified in
+  both directions.
+
 - **The installer can lay down a volume smaller than the disk.** A new step after the disk survey
   asks for a size in MiB, and an empty answer (the default) is the whole disk as before.
   `SYS_STORAGE_FORMAT` takes the size as a fourth argument; the kernel bounds it against the

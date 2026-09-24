@@ -804,7 +804,7 @@ from the primordial root cnode and grants it to the installer alone.
 | # | Name | Arguments | Authorisation |
 |---|---|---|---|
 | 110 | `SYS_STORAGE_INFO` | `struct storage_info *` | `CAP_STORAGE_FORMAT` at `CAPSLOT_STORAGE_FORMAT`: READ |
-| 111 | `SYS_STORAGE_FORMAT` | `password`, `plen`, `device`, `volume_blocks` | `CAP_STORAGE_FORMAT` at `CAPSLOT_STORAGE_FORMAT`: WRITE |
+| 111 | `SYS_STORAGE_FORMAT` | `password`, `plen`, `device`, `volume_blocks`, `flags` | `CAP_STORAGE_FORMAT` at `CAPSLOT_STORAGE_FORMAT`: WRITE |
 | 113 | `SYS_STORAGE_DEVICE` | `index`, `struct storage_info *` | `CAP_STORAGE_FORMAT` at `CAPSLOT_STORAGE_FORMAT`: READ |
 
 The rights differ on purpose. READ is the survey an installer shows before it asks; WRITE is
@@ -844,6 +844,14 @@ persistent devices the size must be 0, because the ephemeral store is sized by t
 `storage_info.volume_blocks` reports the size of the mounted volume, so an installer can confirm
 what was laid down rather than trusting the return code; `make smoke-installer-sized` is that
 check end to end.
+
+**`flags` is `STORAGE_FORMAT_UNSEALED` or 0**, and any other bit is refused rather than ignored,
+so a caller asking for something this kernel cannot do never gets a volume that silently lacks
+it. `STORAGE_FORMAT_UNSEALED` writes the volume without encryption: `disk_key` in the clear in key
+slot 0, no TPM sealing, and every later mount prints `this volume is NOT encrypted`. The password
+is still required (`plen` 0 is refused) because the installer sets it as root's account password
+through `SYS_PASSWD`; the volume does not use it. On a machine with no persistent device `flags`
+must be 0. See `SECURITY.md` **S103** and `docs/LIMITATIONS.md` 2.21.
 
 `SYS_STORAGE_DEVICE` (113) is the same survey for ONE enumerated persistent device rather
 than for the machine, and it answers to the same capability and the same READ right for the

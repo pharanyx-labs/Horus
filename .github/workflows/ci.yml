@@ -2954,6 +2954,15 @@ jobs:
         run: make smoke-installer-sized
       - name: Control arm — the chosen size ignored, the whole disk laid over
         run: make smoke-installer-sized-control
+      # An install without encryption, and both directions the choice can be lost:
+      # dropped (the unsealed gate's arm) and imposed on an operator who chose
+      # encryption (the ordinary install gate's arm, the dangerous one).
+      - name: An unencrypted install says so at boot, and still needs the password
+        run: make smoke-installer-unsealed
+      - name: Control arm — the choice not to encrypt dropped
+        run: make smoke-installer-unsealed-control
+      - name: Control arm — every volume written unencrypted whatever was chosen
+        run: make smoke-installer-sealed-control
 
   store-locked:
     name: "A sealed volume answers nothing, and the next boot finishes the install (S74)"

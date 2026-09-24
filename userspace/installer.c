@@ -240,7 +240,7 @@ static void frame(const char *title)
  * get one -- the refusals ("Nothing to install onto"), the review and the
  * confirmation are not steps and deliberately show none, because numbering a
  * screen that has no next implies one. */
-#define INSTALL_STEPS 6
+#define INSTALL_STEPS 7
 static void frame_step(const char *title, int step)
 {
     char buf[24];
@@ -651,8 +651,8 @@ static int screen_survey(void)
     tui_text(r, FIELD_COL, mib, C_VALUE);
     tui_text(r, FIELD_COL + 12, "MiB", C_TEXT);
     r += 2;
-    r = para(r, "A new encrypted volume will be created and sealed to a password you "
-                "choose next. Nothing on the disk survives this.", C_TEXT);
+    r = para(r, "A new volume will be created on it, encrypted unless you choose "
+                "otherwise. Nothing on the disk survives this.", C_TEXT);
 
     static const char *const choices[] = { "Cancel, change nothing", "Continue" };
     int sel = 0;   /* Cancel is the default, and the cursor starts on it. */
@@ -671,16 +671,62 @@ static int screen_survey(void)
  * growing a second copy of any question: "ask for the root password" has one
  * implementation whether it is the first pass or a correction.
  */
+/* ---- whether to encrypt -------------------------------------------------
+ *
+ * THE DEFAULT IS TO ENCRYPT, AND NOT ENCRYPTING TAKES A DELIBERATE KEYSTROKE.
+ * The menu starts on "Encrypt it", so every conversation that pressed Enter
+ * before still gets the volume it got. Choosing the other line is a choice an
+ * operator has to make on a screen that says, in the danger colour, what it
+ * costs: anyone who has the disk can read it and change it, and nothing on the
+ * machine can tell that it was changed. Decided by the maintainer on 2026-09-24
+ * as an unsealed volume (docs/LIMITATIONS.md) rather than a second, plaintext
+ * storage path: the kernel reads and writes it through exactly the same code.
+ */
+static int g_unsealed;                    /* 1 = the operator chose not to encrypt */
+
+static int ask_encryption(void)
+{
+    frame_step("Choose whether to encrypt the volume", 3);
+    int r = para(ROW_BODY,
+                 "Encrypted, the volume opens only with a password: somebody who takes "
+                 "the disk, or the whole machine, cannot read it.", C_TEXT);
+    r++;
+    r = para(r, "Not encrypted, it opens by itself. Accounts still need their passwords "
+                "to log in, but ANYONE WHO HAS THE DISK CAN READ EVERYTHING ON IT AND "
+                "CHANGE IT, and this machine cannot tell that it was changed.", C_DANGER);
+    r++;
+
+    static const char *const choices[] = {
+        "Encrypt it (recommended)",
+        "Do not encrypt it",
+    };
+    int sel = g_unsealed ? 1 : 0;
+    hint("arrows to choose  -  enter to accept  -  esc goes back one step");
+    tui_flush();
+    mark("INSTALLER: waiting on the encryption choice", "");
+    if (tui_menu(r, MARGIN + 2, 40, choices, 2, &sel) != 0) return 0;
+    g_unsealed = (sel == 1);
+    return 1;
+}
+
 static int ask_root_password(void)
 {
     for (;;) {
-        frame_step("Choose the root password", 3);
-        int r = para(ROW_BODY,
+        frame_step("Choose the root password", 4);
+        int r;
+        if (!g_unsealed) {
+            r = para(ROW_BODY,
                      "This password does two things, and it must be one password: it seals "
                      "the volume's encryption key, and it is the password for the root "
                      "account.", C_TEXT);
-        r++;
-        r = para(r, "There is no recovery. A forgotten password is a lost volume.", C_DANGER);
+            r++;
+            r = para(r, "There is no recovery. A forgotten password is a lost volume.", C_DANGER);
+        } else {
+            r = para(ROW_BODY,
+                     "This is the password for the root account, which administers this "
+                     "machine. The volume is not encrypted, so it does not protect the "
+                     "disk itself.", C_TEXT);
+        }
 
         label(r + 2, "password");
         label(r + 4, "again");
@@ -735,13 +781,14 @@ static int name_ok(const char *n)
 static int ask_user_name(void)
 {
     for (;;) {
-        frame_step("Create your everyday account", 4);
+        frame_step("Create your everyday account", 5);
         int r = para(ROW_BODY,
                      "Day-to-day work should not be done as root, so this machine gets a "
                      "second account with no administrative authority.", C_TEXT);
         r++;
-        r = para(r, "Its password also unlocks the disk at boot, so either account can be "
-                    "the first login after the machine is powered on.", C_TEXT);
+        if (!g_unsealed)
+            r = para(r, "Its password also unlocks the disk at boot, so either account can be "
+                        "the first login after the machine is powered on.", C_TEXT);
 
         label(r + 2, "username");
         hint("lowercase letters and digits  -  esc goes back one step");
@@ -763,7 +810,7 @@ static int ask_user_name(void)
 static int ask_user_password(void)
 {
     for (;;) {
-        frame_step("Set the password for your account", 5);
+        frame_step("Set the password for your account", 6);
         int r = para(ROW_BODY,
                      "This is the password for the everyday account. It must be different "
                      "from the root password.", C_TEXT);
@@ -828,7 +875,7 @@ static int review_returns_install(void)
 
     for (;;) {
         disk_size(blocks, sizeof(blocks), mib, sizeof(mib));
-        frame_step("Review before installing", 6);
+        frame_step("Review before installing", 7);
 
         int r = para(ROW_BODY, "Check this, then choose. Nothing has been written yet.", C_TEXT);
         r++;
@@ -847,6 +894,12 @@ static int review_returns_install(void)
             tui_text(r, FIELD_COL + 12, "MiB at the start - lost; the rest is left", C_DANGER);
         }
         r++;
+        label(r, "encryption");
+        if (g_unsealed)
+            tui_text(r, FIELD_COL, "NONE - anyone with the disk can read it", C_DANGER);
+        else
+            tui_text(r, FIELD_COL, "on - it opens only with a password", C_VALUE);
+        r++;
         label(r, "root");
         tui_text(r, FIELD_COL, "password set", C_VALUE);
         r++;
@@ -860,6 +913,7 @@ static int review_returns_install(void)
             "Change the root password",
             "Change the everyday password",
             "Change the volume size",
+            "Change whether it is encrypted",
             "Cancel, change nothing",
         };
         /* Defaults to Install. See the header: the gate is the typed word, not
@@ -868,10 +922,10 @@ static int review_returns_install(void)
         hint("arrows to choose  -  enter to accept  -  esc to cancel");
         tui_flush();
         mark("INSTALLER: waiting on the review choice", "");
-        if (tui_menu(r, MARGIN + 2, 40, choices, 6, &sel) != 0) return 0;
+        if (tui_menu(r, MARGIN + 2, 40, choices, 7, &sel) != 0) return 0;
 
         if (sel == 0) return 1;
-        if (sel == 5) return 0;
+        if (sel == 6) return 0;
 
         /* AN ABANDONED EDIT RETURNS TO THIS MENU, and does not cancel the
          * install. Until 2026-09-10 esc out of a correction here threw away
@@ -907,6 +961,8 @@ static int review_returns_install(void)
             if (!ask_user_password()) continue;
         } else if (sel == 4) {
             if (!ask_volume_size()) continue;
+        } else if (sel == 5) {
+            if (!ask_encryption()) continue;
         }
     }
 }
@@ -982,7 +1038,8 @@ static int screen_confirm_word(const char *word)
 static void screen_working(void)
 {
     frame("Installing");
-    int r = para(ROW_BODY, "Creating the encrypted volume.", C_TEXT);
+    int r = para(ROW_BODY, g_unsealed ? "Creating the volume. It is not encrypted."
+                                      : "Creating the encrypted volume.", C_TEXT);
     r++;
     r = para(r, "This can take several minutes on a slow disk. Horus will show what it "
                 "is doing and how far along it is.", C_TEXT);
@@ -1028,7 +1085,8 @@ static int do_install(void)
     tui_flush();
 
     unsigned plen = uslen(g_pw);
-    int rc = sys_storage_format(g_target, g_pw, plen, volume_blocks());
+    int rc = sys_storage_format(g_target, g_pw, plen, volume_blocks(),
+                                g_unsealed ? STORAGE_FORMAT_UNSEALED : 0u);
     /* THE KERNEL WROTE TO THIS SCREEN WHILE WE WERE BLOCKED. The damage diff
      * cannot see a write the library did not make, so without this the progress
      * panel's cells stay on the screen under every later flush -- the same
@@ -1222,7 +1280,7 @@ void _start(void)
      *
      * There is no back FROM the review: it is not a question, it is the summary
      * of the answers, and every one of them is editable from its menu. */
-    enum { ST_DISK = 1, ST_SIZE, ST_ROOTPW, ST_USER, ST_USERPW, ST_REVIEW, ST_WORD, ST_GO };
+    enum { ST_DISK = 1, ST_SIZE, ST_ENC, ST_ROOTPW, ST_USER, ST_USERPW, ST_REVIEW, ST_WORD, ST_GO };
     int st = ST_DISK;
     while (st != ST_GO) {
         switch (st) {
@@ -1254,6 +1312,10 @@ void _start(void)
          * second time. */
         case ST_SIZE:
             if (!ask_volume_size()) leave_untouched("The install was cancelled.");
+            st = ST_ENC;
+            break;
+        case ST_ENC:
+            if (!ask_encryption()) leave_untouched("The install was cancelled.");
             st = ST_ROOTPW;
             break;
         case ST_ROOTPW:
@@ -1270,10 +1332,13 @@ void _start(void)
             break;
 #else
         case ST_SIZE:
-            st = ask_volume_size() ? ST_ROOTPW : ST_DISK;
+            st = ask_volume_size() ? ST_ENC : ST_DISK;
+            break;
+        case ST_ENC:
+            st = ask_encryption() ? ST_ROOTPW : ST_SIZE;
             break;
         case ST_ROOTPW:
-            st = ask_root_password() ? ST_USER : ST_SIZE;
+            st = ask_root_password() ? ST_USER : ST_ENC;
             break;
         case ST_USER:
             st = ask_user_name() ? ST_USERPW : ST_ROOTPW;
@@ -1323,9 +1388,12 @@ void _start(void)
     }
 
     frame("Installed");
-    int r = para(ROW_BODY, "The volume is created, sealed and open.", C_OK);
+    int r = para(ROW_BODY, g_unsealed ? "The volume is created and open. It is NOT encrypted."
+                                      : "The volume is created, sealed and open.",
+                 g_unsealed ? C_DANGER : C_OK);
     r++;
-    r = para(r, "Two accounts exist, and either password opens the disk:", C_TEXT);
+    r = para(r, g_unsealed ? "Two accounts exist:"
+                           : "Two accounts exist, and either password opens the disk:", C_TEXT);
     r++;
     label(r, "root");
     tui_text(r, FIELD_COL, "administers this machine", C_TEXT);

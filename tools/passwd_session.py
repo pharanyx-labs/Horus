@@ -26,7 +26,7 @@ satisfied by a boot that never got to a prompt.
 
 Usage:  passwd_session.py [horus.iso]
 Env:    SESSION_DISK    the disk image; REQUIRED, and the same one for both boots
-        ROOT_PASSWORD   the password the volume is sealed to (default "rootpass",
+        ROOT_PASSWORD   the password the volume is sealed to (default "toor",
                         the compiled-in default from users_init)
         BOB_PASSWORD    the password given to the new account (default "bobpass1")
         PASSWD_EXPECT_SELF   control arm: require root's password to have become
@@ -43,7 +43,7 @@ from session_test import Serial, SessionFail  # noqa: E402
 ISO = sys.argv[1] if len(sys.argv) > 1 else "horus.iso"
 STEP = float(os.environ.get("SESSION_TIMEOUT", "120"))
 BOOT = float(os.environ.get("BOOT_TIMEOUT", "300"))
-ROOT_PW = os.environ.get("ROOT_PASSWORD", "rootpass")
+ROOT_PW = os.environ.get("ROOT_PASSWORD", "toor")
 BOB_PW = os.environ.get("BOB_PASSWORD", "bobpass1")
 CONTROL = os.environ.get("PASSWD_EXPECT_SELF") == "1"
 

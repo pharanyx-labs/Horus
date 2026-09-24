@@ -550,7 +550,7 @@ void scheduler_init(void) {
      * compiled-in accounts may exist depends on whether this machine has a
      * persistent device, known only once storage has probed. The first version
      * called this from main.c right after storage_init, which is BEFORE this
-     * function, so users_init re-seeded root/rootpass on top of it and
+     * function, so users_init re-seeded the compiled-in accounts on top of it and
      * smoke-installer caught root logging in anyway (2026-09-24). Before any
      * task exists, so no login can meet the defaults in between. */
     users_apply_boot_policy();

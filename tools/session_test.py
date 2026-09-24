@@ -602,7 +602,7 @@ def run():
         # --- 2. the correct root password is accepted --------------------
         s.expect("horus login:", STEP_TIMEOUT)
         s.send("root"); s.expect("Password:", STEP_TIMEOUT)
-        s.send("rootpass")
+        s.send("toor")
         s.expect("Welcome, root", STEP_TIMEOUT)
         s.expect("administrator (root)", STEP_TIMEOUT)
         step("root login accepted")

@@ -791,6 +791,34 @@ static unsigned klog_total_rows(void) {
     return rows;
 }
 
+/* THE LAST SCANCODES, IN THE TITLE ROW. Alt+F1 closed the view under QEMU and
+ * did nothing on the IdeaPad (2026-09-24), twice, after two guesses at what its
+ * F-row sends (the F1 make code, then the media key's). Showing the raw bytes
+ * ends the guessing: one keypress on the machine says what it sends. Display
+ * only; it changes no key's meaning. */
+static uint8_t  klog_keys[6];
+static unsigned klog_nkeys;
+
+static void klog_note_key(uint8_t sc) {
+    if (klog_nkeys == sizeof(klog_keys)) {
+        for (unsigned i = 1; i < sizeof(klog_keys); i++) klog_keys[i - 1] = klog_keys[i];
+        klog_nkeys--;
+    }
+    klog_keys[klog_nkeys++] = sc;
+}
+
+static void klog_draw_head(void) {
+    static const char hx[] = "0123456789ABCDEF";
+    for (unsigned c = 0; c < 80u; c++) klog_cell(0, c, ' ', KLOG_HEAD);
+    klog_text(0, 1, klog_scroll ? "KERNEL LOG (back)" : "KERNEL LOG", KLOG_HEAD);
+    klog_text(0, 19, "Alt+F1 back  Shift+PgUp/PgDn  Up/Down", KLOG_HEAD);
+    klog_text(0, 57, "keys:", KLOG_HEAD);
+    for (unsigned i = 0; i < klog_nkeys; i++) {
+        klog_cell(0, 63 + i * 3, hx[klog_keys[i] >> 4], KLOG_HEAD);
+        klog_cell(0, 64 + i * 3, hx[klog_keys[i] & 0xF], KLOG_HEAD);
+    }
+}
+
 static void klog_draw(void) {
     const unsigned rows = cell_rows();
     if (rows < 2) return;
@@ -800,10 +828,7 @@ static void klog_draw(void) {
     if (klog_scroll > most) klog_scroll = most;
     const unsigned first = most - klog_scroll;   /* first log row on screen */
 
-    for (unsigned c = 0; c < 80u; c++) klog_cell(0, c, ' ', KLOG_HEAD);
-    klog_text(0, 1, klog_scroll ? "KERNEL LOG (scrolled back)" : "KERNEL LOG",
-              KLOG_HEAD);
-    klog_text(0, 30, "Alt+F1 back  Shift+PgUp/PgDn  Up/Down", KLOG_HEAD);
+    klog_draw_head();
 
     for (unsigned r = 1; r < rows; r++)
         for (unsigned c = 0; c < 80u; c++) klog_cell(r, c, ' ', KLOG_ATTR);
@@ -855,6 +880,8 @@ static void klog_view(void) {
         if (!(st & PS2_STATUS_OBF)) { sys_yield(); continue; }
         uint8_t sc = inb(PS2_DATA);
         if (st & PS2_STATUS_AUX) continue;
+        klog_note_key(sc);
+        klog_draw_head();
 
         if (!kbd.e0 && sc == PS2_SC_LALT)           { kbd_lalt = 1; continue; }
         if (!kbd.e0 && sc == (PS2_SC_LALT | 0x80))  { kbd_lalt = 0; continue; }

@@ -98,6 +98,16 @@
  * writes. See sd_command_data() on why that is a separate function. */
 #define XFER_READ             (1u << 4)
 #define XFER_WRITE            0u
+/* Transfer Mode, for a MULTI-block transfer (SDHCI 3.00 section 2.2.5).
+ * Block Count Enable makes the controller honour SDHCI_BLOCK_COUNT, Multi
+ * selects the multi-block form, and Auto CMD12 has the controller send the
+ * STOP_TRANSMISSION the card needs at the end of an open-ended transfer. Doing
+ * CMD12 in the controller rather than by hand is not laziness: the stop has to
+ * land immediately after the last block, and a stop issued late leaves the card
+ * still streaming into a FIFO nobody is draining. */
+#define XFER_BLK_COUNT_EN     (1u << 1)
+#define XFER_AUTO_CMD12       (1u << 2)
+#define XFER_MULTI            (1u << 5)
 #define INT_BUF_WRITE_READY   (1u << 4)
 #define SDHCI_BUFFER_DATA     0x20
 
@@ -114,6 +124,8 @@
 #define CMD_SEND_CSD          9u    /* CMD9                      */
 #define CMD_READ_SINGLE      17u    /* CMD17                     */
 #define CMD_WRITE_SINGLE     24u    /* CMD24                     */
+#define CMD_READ_MULTI       18u    /* CMD18, many blocks in one command */
+#define CMD_WRITE_MULTI      25u    /* CMD25, many blocks in one command */
 #define CMD_APP_CMD          55u    /* CMD55, prefixes an ACMD   */
 #define ACMD_SEND_OP_COND    41u    /* ACMD41, SD only           */
 
@@ -146,6 +158,8 @@
 /* Forward declarations: the block operations below are defined near the
  * accessors, above the PIO implementations they call. */
 static int sd_read_block(uint64_t bar, uint64_t lba, void *buf, int is_hc);
+static int sd_rw_blocks(uint64_t bar, uint64_t lba, void *buf, uint32_t count,
+                        int is_hc, int is_write, int repeat_one);
 static int sd_pio_read512(uint64_t bar, uint32_t index, uint32_t arg, void *buf);
 static int sd_write_block(uint64_t bar, uint64_t lba, const void *buf, int is_hc);
 static int sd_flush(uint64_t bar);
@@ -178,6 +192,36 @@ int sdhci_bd_write(uint64_t lba, const void *buf) {
     if (!g_sdhci_bar || !g_sdhci_sectors) return -1;
     if (lba >= g_sdhci_sectors) return -1;
     return sd_write_block(g_sdhci_bar, lba, buf, g_sdhci_is_hc);
+}
+
+/* A RUN OF CONTIGUOUS SECTORS IN ONE COMMAND. Bounded against the card's own
+ * reported capacity exactly as the single-sector pair above is, and at BOTH
+ * ends: a run is refused if its LAST sector is past the medium, because a
+ * partial transfer that stops at the edge would report success for blocks that
+ * were never written (S64). */
+int sdhci_bd_rw_run(uint64_t lba, void *buf, uint32_t count, int is_write) {
+    if (!g_sdhci_bar || !g_sdhci_sectors) return -1;
+    if (count == 0) return 0;
+    if (lba >= g_sdhci_sectors) return -1;
+    if ((uint64_t)count > g_sdhci_sectors - lba) return -1;
+    return sd_rw_blocks(g_sdhci_bar, lba, buf, count, g_sdhci_is_hc, is_write, 0);
+}
+
+/* Write ONE 512-byte sector to `count` consecutive positions, in as few commands
+ * as the block-count register allows. Bounded against the medium at both ends
+ * exactly as the run above is. */
+int sdhci_bd_fill_run(uint64_t lba, const void *sector, uint64_t count) {
+    if (!g_sdhci_bar || !g_sdhci_sectors) return -1;
+    if (count == 0) return 0;
+    if (lba >= g_sdhci_sectors) return -1;
+    if (count > g_sdhci_sectors - lba) return -1;
+    while (count) {
+        uint32_t n = count > 0xFFFFu ? 0xFFFFu : (uint32_t)count;
+        if (sd_rw_blocks(g_sdhci_bar, lba, (void *)(uintptr_t)sector, n,
+                         g_sdhci_is_hc, 1, 1) != 0) return -1;
+        lba += n; count -= n;
+    }
+    return 0;
 }
 
 int sdhci_bd_flush(void) {
@@ -640,6 +684,89 @@ static int sd_pio_read512(uint64_t bar, uint32_t index, uint32_t arg, void *buf)
 
     for (uint32_t i = 0; i < 512u / 4u; i++)
         out[i] = sdhci_read32(bar, SDHCI_BUFFER_DATA);
+
+    for (uint32_t i = 0; ; i++) {
+        uint16_t st  = sdhci_read16(bar, SDHCI_INT_STATUS);
+        uint16_t err = sdhci_read16(bar, SDHCI_ERR_STATUS);
+        if (err) return -4;
+        if (st & INT_XFER_COMPLETE) return 0;
+        if (i >= SDHCI_SPINS) return -5;
+    }
+}
+
+/* Move `count` contiguous 512-byte blocks in ONE command.
+ *
+ * WHY THIS EXISTS, WITH THE ARITHMETIC. A filesystem block is 4096 bytes and a
+ * card block is 512, so every block used to be eight CMD24s, each with its own
+ * command round trip and its own wait for the card to leave programming state.
+ * Formatting a volume clears a crypto metadata region of one 32-byte entry per
+ * block: on a 16 GiB volume that is 32,768 blocks, so 262,144 single-block
+ * writes before any of the operator's data exists. On a laptop's eMMC that was
+ * measured as a format still running after ten minutes and reported as a hang
+ * (2026-09-23). It was not hung.
+ *
+ * CMD18 and CMD25 carry many blocks under one command, so the same bytes and
+ * the same cryptography cost a fraction of the round trips. NOTHING ABOUT WHAT
+ * IS WRITTEN CHANGES: this is the transport, not the format.
+ *
+ * THE BUFFER-READY BIT MUST BE CLEARED BETWEEN BLOCKS. It is write-1-to-clear
+ * and the controller raises it once per block; a loop that waits on it without
+ * clearing sees the FIRST block's assertion every time and races ahead of the
+ * card, writing block two into a FIFO that has not drained. sd_command_common
+ * clears the status once, at the command, which is enough for a single block
+ * and is exactly what is not enough here.
+ *
+ * COUNT IS BOUNDED BY THE 16-BIT BLOCK COUNT REGISTER, and callers pass small
+ * runs, so the bound is checked rather than assumed. */
+static int sd_rw_blocks(uint64_t bar, uint64_t lba, void *buf, uint32_t count,
+                        int is_hc, int is_write, int repeat_one) {
+    if (count == 0) return 0;
+    if (count > 0xFFFFu) return -1;
+
+    uint32_t *p = (uint32_t *)buf;
+    const uint16_t ready = is_write ? INT_BUF_WRITE_READY : INT_BUF_READ_READY;
+
+    sdhci_write16(bar, SDHCI_BLOCK_SIZE, 512);
+    sdhci_write16(bar, SDHCI_BLOCK_COUNT, (uint16_t)count);
+
+    uint16_t mode = (is_write ? XFER_WRITE : XFER_READ);
+    if (count > 1) mode |= XFER_MULTI | XFER_BLK_COUNT_EN | XFER_AUTO_CMD12;
+    sdhci_write16(bar, SDHCI_TRANSFER_MODE, mode);
+
+    const uint32_t index = count > 1 ? (is_write ? CMD_WRITE_MULTI : CMD_READ_MULTI)
+                                     : (is_write ? CMD_WRITE_SINGLE : CMD_READ_SINGLE);
+    const uint32_t arg = is_hc ? (uint32_t)lba : (uint32_t)(lba * 512u);
+    if (sd_command_data(bar, index, arg, RESP_48,
+                        CMD_CRC_CHECK | CMD_INDEX_CHECK | CMD_DATA_PRESENT) != 0)
+        return -1;
+
+    for (uint32_t b = 0; b < count; b++) {
+        for (uint32_t i = 0; ; i++) {
+            uint16_t st  = sdhci_read16(bar, SDHCI_INT_STATUS);
+            uint16_t err = sdhci_read16(bar, SDHCI_ERR_STATUS);
+            if (err) return -2;
+            if (st & ready) break;
+            if (i >= SDHCI_SPINS) return -3;
+        }
+        /* Cleared BEFORE the data moves, so the next block's assertion is this
+         * loop's own and not the one just consumed. */
+        sdhci_write16(bar, SDHCI_INT_STATUS, ready);
+
+        if (is_write)
+            for (uint32_t i = 0; i < 512u / 4u; i++)
+                sdhci_write32(bar, SDHCI_BUFFER_DATA, p[i]);
+        else
+            for (uint32_t i = 0; i < 512u / 4u; i++)
+                p[i] = sdhci_read32(bar, SDHCI_BUFFER_DATA);
+        /* REPEAT MODE DOES NOT ADVANCE, and that is the whole trick. Clearing
+         * the metadata region writes the SAME all-zero sector to every block in
+         * it, so the controller can be fed from one 512-byte buffer for the
+         * length of the run. A 128 MiB region is then a handful of commands
+         * instead of a quarter of a million, and it costs no memory at all: the
+         * alternative was a multi-block buffer in .bss, on a budget that is
+         * already exactly full. */
+        if (!repeat_one) p += 512u / 4u;
+    }
 
     for (uint32_t i = 0; ; i++) {
         uint16_t st  = sdhci_read16(bar, SDHCI_INT_STATUS);

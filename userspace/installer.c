@@ -593,7 +593,7 @@ static int ask_root_password(void)
 
         label(r + 2, "password");
         label(r + 4, "again");
-        hint("typing is not shown  -  esc goes back one step");
+        hint("typing is not shown  -  tab or enter for the next field  -  esc goes back");
         tui_flush();
 
         mark("INSTALLER: waiting on the password", "");
@@ -682,7 +682,7 @@ static int ask_user_password(void)
 
         label(r + 3, "password");
         label(r + 5, "again");
-        hint("typing is not shown  -  esc goes back one step");
+        hint("typing is not shown  -  tab or enter for the next field  -  esc goes back");
         tui_flush();
 
         mark("INSTALLER: waiting on the user password", "");
@@ -850,22 +850,38 @@ static int screen_confirm_word(const char *word)
 
 /* The screen shown while the format runs.
  *
- * THERE IS NO PROGRESS BAR, AND THAT IS A DECISION. sys_storage_format is one
- * blocking call: this task is inside it from the moment it starts until the
- * volume exists, and it learns nothing on the way. A bar drawn over it would be
- * an animation with no measurement behind it, which on the one screen an
- * operator is asked not to power off is worse than no bar -- a stalled real bar
- * and a smooth fake one say opposite things about whether to keep waiting. So
- * this says what is happening, says it can take minutes on a slow disk, and then
- * stops moving. [G-13] is the finding that made "how long is this allowed to
- * take" a measured question; the answer lives in the gate, not in a spinner. */
+ * THIS PROGRAM STILL DRAWS NO PROGRESS BAR, AND THE REASON IT DOES NOT IS THE
+ * REASON THE KERNEL NOW DRAWS ONE.
+ *
+ * sys_storage_format is one blocking call: this task is inside it from the
+ * moment it starts until the volume exists, and it learns nothing on the way. A
+ * bar drawn from HERE would be an animation with no measurement behind it,
+ * which on the one screen an operator is asked not to power off is worse than
+ * no bar: a stalled real bar and a smooth fake one say opposite things about
+ * whether to keep waiting. That argument has not changed and it is why nothing
+ * below moves.
+ *
+ * What changed on 2026-09-23 is WHERE the drawing happens. console_progress()
+ * paints from inside the format itself, which is the only code that knows how
+ * far along it is, straight into the console's cells -- it must bypass print()
+ * because ring 3 owns the console by then, and it must bypass this program
+ * because this program is blocked. So the bar an operator sees is a real
+ * measurement made by the thing doing the work, which is exactly what the old
+ * comment said could not be had from here. It still cannot; it is had from
+ * there.
+ *
+ * The prompt was a format on a laptop's eMMC reported as a hang after ten
+ * minutes. It was not hung: the metadata region is one 32-byte entry per block,
+ * so a 16 GiB volume writes 128 MiB before any of the operator's data exists.
+ * [G-13] is the finding that made "how long is this allowed to take" a measured
+ * question, and the answer still lives in the gate rather than in a spinner. */
 static void screen_working(void)
 {
     frame("Installing");
     int r = para(ROW_BODY, "Creating the encrypted volume.", C_TEXT);
     r++;
-    r = para(r, "This can take several minutes on a slow disk, and the screen will not "
-                "change while it runs.", C_TEXT);
+    r = para(r, "This can take several minutes on a slow disk. Horus will show what it "
+                "is doing and how far along it is.", C_TEXT);
     r++;
     (void)para(r, "Do not power off.", C_DANGER);
     status("", C_TEXT);
@@ -909,6 +925,12 @@ static int do_install(void)
 
     unsigned plen = uslen(g_pw);
     int rc = sys_storage_format(g_target, g_pw, plen);
+    /* THE KERNEL WROTE TO THIS SCREEN WHILE WE WERE BLOCKED. The damage diff
+     * cannot see a write the library did not make, so without this the progress
+     * panel's cells stay on the screen under every later flush -- the same
+     * failure the 2026-09-06 marker work found, arrived at from the kernel's
+     * side instead of this program's. */
+    tui_invalidate();
     if (rc != 0) {
         char n[24];
         utoa10((uint64_t)(unsigned)(-rc), n, sizeof(n));

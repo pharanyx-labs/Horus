@@ -253,6 +253,21 @@ def expect_while_doing_io(s, needle, stall, cap):
         if idx >= 0:
             s.pos = idx + len(needle)
             return time.time() - t0
+        # A REFUSAL IS NOT A WEDGE, and must not be reported as one. A format
+        # the kernel refused stops doing I/O too, so the stall bound below would
+        # eventually call it a wedge, 30s later and pointing at the wrong
+        # finding. It did exactly that on 2026-09-23: the SD stride arm's format
+        # came back rc=-5 and the gate said WEDGED, which sent the investigation
+        # after a hang that never happened. The installer states the refusal on
+        # the wire, so it is read from there.
+        fail = s.buf.find("INSTALLER: FAIL", s.pos)
+        if fail >= 0:
+            end = s.buf.find("\n", fail)
+            line = s.buf[fail:end if end >= 0 else fail + 160].strip()
+            raise SessionFail(
+                "the format was REFUSED, not wedged: the installer said `%s` "
+                "%.0fs after `INSTALLER: formatting`.%s"
+                % (line, time.time() - t0, _timeline_note()))
         now = time.time()
         if now >= next_poll:
             next_poll = now + poll_every

@@ -3166,6 +3166,23 @@ old allocator and the new one read the same single block and no workload could t
   choice: QEMU's `sd-card` and `emmc` models drop the inhibit themselves, so an arm that removed
   the recovery would pass. With them fixed the laptop's device identifies and the installer
   surveys it (2026-09-22).
+  **NO GATE IN THIS TREE CAN SEE A STORAGE TRANSPORT IMPROVEMENT, and that is structural.**
+  The emulated install measures 73s before the 2026-09-23 multi-block work and 74s after. That is
+  not the change failing: under QEMU the backing store is a RAM file and each 512-byte transfer is
+  128 MMIO accesses, so the emulated cost is MMIO-bound and the command count is very nearly free.
+  What multi-block removes is command round trips and the card's programming wait, and neither
+  exists in emulation. So the one number that would justify the change can only be taken on real
+  hardware, and is not taken here. **A performance claim about storage in this tree should be read
+  as a projection from the operation count unless it names the machine it was measured on.**
+  **On the SD path the emulated format got SLOWER, and that is measured.** `smoke-installer-emmc`
+  (a 16 GiB volume, TCG, one host with nothing else running, 2026-09-24): `main` 39.6s and 48.3s,
+  this change 88.6s and 91.1s, and 95.1s with the progress panel compiled out, so the panel is not
+  the cost. The time is in **reads**: the format's read-back of the metadata region goes through
+  `CMD18` now, and QEMU's SDHCI model serves those more slowly than it served `CMD17`; with the
+  read-back removed as well the same gate measures 51.5s twice. It is an emulation cost and says
+  nothing either way about a card, which is why the next change is measured against this one and
+  not against `main`.
+
   **An install onto the laptop's eMMC has not yet been run**; until one has, this paragraph
   says so. What stopped one on 2026-09-22 was no longer storage but the installer's own screen,
   which reached the serial line and nothing else on a machine with no serial port; that was a

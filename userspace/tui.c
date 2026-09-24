@@ -777,7 +777,23 @@ int tui_input(int row, int col, int width, char *buf, int cap, unsigned flags)
         }
         idle = 0;
 
-        if (k == TUI_KEY_ENTER) { buf[len] = 0; return 0; }
+        /* TAB ACCEPTS THE FIELD, EXACTLY AS ENTER DOES, and that is why it
+         * returns the same value rather than one of its own.
+         *
+         * Asked for on 2026-09-23: tab between fields rather than reaching for
+         * Enter each time, with Enter kept. Every caller in the tree tests this
+         * return against zero, so a distinct "you pressed Tab" code would be
+         * read as a failure by all of them and would have to be chased through
+         * each one -- on the screens that collect a disk password, where a
+         * misread return value abandons the answer. Two keys, one meaning:
+         * this field is finished, move on. The caller decides what "move on"
+         * means, which for the two-field screens is simply the next call.
+         *
+         * Shift+Tab is NOT a way back. It would need the callers to be a state
+         * machine over their fields rather than a sequence of calls, and the
+         * way back already exists and is documented on every screen: esc goes
+         * back one step. */
+        if (k == TUI_KEY_ENTER || k == TUI_KEY_TAB) { buf[len] = 0; return 0; }
         if (k == TUI_KEY_ESC) {
             /* Emptied rather than left holding a partial answer: a caller that
              * ignores the return value gets nothing, not half of something. */
@@ -825,9 +841,32 @@ int tui_menu(int row, int col, int width, const char *const *items, int n, int *
     int idle = 0;
 
     for (;;) {
-        for (int i = 0; i < n; i++)
-            tui_field(row + i, col, width, items[i],
-                      i == cur ? TUI_A_REVERSE : TUI_A_NORMAL);
+        for (int i = 0; i < n; i++) {
+            const uint16_t a = (i == cur) ? TUI_A_REVERSE : TUI_A_NORMAL;
+            /* A MARKER AS WELL AS THE HIGHLIGHT, and it is not the second
+             * indicator the note below warns about.
+             *
+             * That note is about the terminal's CURSOR, which is set by a
+             * different call at a different time and can therefore end up
+             * somewhere the highlight is not. This is drawn in the same loop,
+             * on the same pass, from the same `i == cur` that chooses the
+             * attribute: there is no state in which the two disagree, because
+             * there is only one piece of state.
+             *
+             * It earns its place on a machine whose screen is not a terminal.
+             * Reverse video on a VGA cell grid is a block of colour, and on the
+             * one screen that asks whether to erase a disk, "which line am I
+             * about to act on" should not rest on a colour alone. ASCII, not a
+             * drawing glyph, so the serial view and the screen view are the
+             * same characters. */
+            if (width > 2) {
+                tui_putc(row + i, col,     (i == cur) ? '>' : ' ', a);
+                tui_putc(row + i, col + 1, ' ', a);
+                tui_field(row + i, col + 2, width - 2, items[i], a);
+            } else {
+                tui_field(row + i, col, width, items[i], a);
+            }
+        }
         /* No cursor in a menu: the highlight IS the selection, and a second
          * indicator that could disagree with it is a second thing to get
          * wrong. */

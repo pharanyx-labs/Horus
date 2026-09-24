@@ -1234,7 +1234,20 @@ static void con_clear(void) {
         vga_pos = 0;
         vga_set_cursor(0);
     }
+    /* TO THE SERIAL LINE ONLY. ser_puts is not serial-only, whatever its name
+     * says: it goes through con_putc to BOTH outputs, so until 2026-09-24 this
+     * blanked the screen and then drew the escape sequence onto it as seven
+     * glyphs, `<-[2J<-[H`, directly before `init: the installer finished`. A
+     * serial terminal receives the same bytes as a real escape, which is why
+     * every serial-driven gate passed. The screen is already clear; only a
+     * serial terminal needs telling. */
+#ifndef CONSOLE_CLEAR_DRAWN
+    for (const char *e = "\033[2J\033[H"; *e; e++) ser_putc(*e);
+#else
+    /* CONTROL ARM -- never ship. The clear as it was: the escape drawn on the
+     * screen as well. See make smoke-installer-clear-control. */
     ser_puts("\033[2J\033[H");
+#endif
 }
 
 /* ---- helpers --------------------------------------------------------------- */

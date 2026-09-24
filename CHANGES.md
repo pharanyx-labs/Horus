@@ -613,6 +613,11 @@ in this file.
 
 ### Fixed
 
+- **Stray characters appeared before `init: the installer finished`.** The clear the installer
+  sends when it finishes wrote its serial escape sequence through the console's ordinary output,
+  which draws on the screen too, so `←[2J←[H` was painted in front of the next line. It now goes
+  to the serial line only, and `make smoke-installer-clear` reads the screen to check.
+
 - **An install onto a laptop's eMMC failed at the password step, on two cores and never on one.**
   The SD/eMMC driver had no lock, so on a machine with two CPUs a write on one and a read on the
   other ran on the controller at once and corrupted each other: the laptop's trace shows a CMD25

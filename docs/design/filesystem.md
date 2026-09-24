@@ -188,11 +188,13 @@ debugging a laptop rather than by reading the code.
 
 **FORMATTING IS O(VOLUME SIZE), AND IT DOES NOT HAVE TO BE.** Every block has a 32-byte entry in
 a side table holding its nonce and its authentication tag, so the table is exactly 1/128th of the
-volume. A 16 GiB volume therefore has a 128 MiB table, and formatting **writes all of it and then
-reads all of it back** (the Merkle build hashes what is actually on the medium, deliberately).
-That is 32,768 block writes and 32,768 block reads before a single byte belongs to the operator.
-On an eMMC laptop it was twenty minutes and was twice reported as a hang. ext4 formats a 16 GiB
-volume in about a second, and the difference is not implementation quality, it is this table.
+volume. A 16 GiB volume therefore has a 128 MiB table, and formatting **writes all of it**: 32,768
+block writes before a single byte belongs to the operator. It used to read all of it back as
+well, so the Merkle build hashed what was on the medium; the writes are now checked and the tree
+is built from the block they wrote (`docs/LIMITATIONS.md` 5.2i), which halved the pass count but
+not the order. On an eMMC laptop the format was twenty minutes and was twice reported as a hang.
+ext4 formats a 16 GiB volume in about a second, and the difference is not implementation
+quality, it is this table.
 
 **THE NONCE DOES NOT NEED STORING.** It can be derived: `nonce = f(disk_key, block, generation)`.
 Under copy on write a rewritten block is a new block with a new generation, so derived nonces are
@@ -206,7 +208,7 @@ it, which is itself authenticated by *its* parent, up to a root in the superbloc
 
 - there is no side table, so a format writes a superblock, a root node and an empty allocator, and
   costs **O(1) rather than O(volume)**;
-- the Merkle tree stops being a separate structure built by reading the whole disk, because the
+- the Merkle tree stops being a separate structure built over the whole table, because the
   pointer tree *is* the Merkle tree;
 - a block cannot be verified without walking the path that reaches it, which is the property that
   makes a substituted block detectable rather than merely unlikely;
@@ -248,9 +250,9 @@ measured against a transport that is not wasting seven eighths of its commands, 
 remaining slowness is attributable to the layout rather than to the wire.
 
 **It is also the reason §7 exists.** Fixing the transport moved the bottleneck onto the Merkle
-build, which reads the entire side table back; and that is not a transport problem, it is the
-consequence of storing per-block crypto metadata in a table proportional to the volume. The wire
-was the cheap half.
+build, which read the entire side table back. That read-back is gone now, and what remains is
+still not a transport problem: it is the consequence of storing per-block crypto metadata in a
+table proportional to the volume, which a format must write whole. The wire was the cheap half.
 
 ---
 

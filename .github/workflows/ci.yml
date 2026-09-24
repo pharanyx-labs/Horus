@@ -2948,6 +2948,12 @@ jobs:
       # -- a marker the old pipeline never emitted twice.
       - name: The installer's questions can be walked backwards
         run: make smoke-installer-back
+      # A volume smaller than the disk. The installer checks the size the kernel
+      # laid down and says it; the arm ignores the size and must fail ON it.
+      - name: A volume smaller than the disk is exactly the size chosen, and boots
+        run: make smoke-installer-sized
+      - name: Control arm — the chosen size ignored, the whole disk laid over
+        run: make smoke-installer-sized-control
 
   store-locked:
     name: "A sealed volume answers nothing, and the next boot finishes the install (S74)"

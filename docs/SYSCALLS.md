@@ -709,7 +709,16 @@ power cycle: see `SECURITY.md` **S61** for what a key slot is and `docs/LIMITATI
 what its absence cost. It **fails closed**: the slot is taken before the hash changes, so a volume
 with no free slot leaves the old password working and returns an error rather than setting a
 password that cannot open the machine. Changing your **own** password re-seals the slot you
-already hold instead, and a machine with no persistent volume grants nothing.
+already hold instead, **before** the hash changes, and a failed re-seal changes nothing; a
+machine with no persistent volume grants nothing.
+
+**The error says which step failed** (2026-09-24), so an installer can tell an operator more than
+"could not set the password". Granting another account's slot returns `-20 - n` for
+`storage_keyslot_add`'s code `n`: -21 the volume is not open, -22 the key slots could not be
+read, -23 no slot is free, -24 the password could not be sealed (key derivation or the TPM
+refused), -25 the slots could not be written. Re-sealing your own returns `-30 - n` for
+`storage_rekey`'s: -32 the slot could not be read, -33 the seal failed, -34 the write failed.
+-1 is still "not permitted" or "no such account".
 
 `SYS_USERLIST` reads one account's **public metadata**, name, uid, gid, home, and nothing
 else: no hash, no salt, no key slot, no lockout state. It returns 1 when the buffer was filled,
@@ -804,7 +813,7 @@ from the primordial root cnode and grants it to the installer alone.
 | # | Name | Arguments | Authorisation |
 |---|---|---|---|
 | 110 | `SYS_STORAGE_INFO` | `struct storage_info *` | `CAP_STORAGE_FORMAT` at `CAPSLOT_STORAGE_FORMAT`: READ |
-| 111 | `SYS_STORAGE_FORMAT` | `password`, `plen`, `device` | `CAP_STORAGE_FORMAT` at `CAPSLOT_STORAGE_FORMAT`: WRITE |
+| 111 | `SYS_STORAGE_FORMAT` | `password`, `plen`, `device`, `volume_blocks` | `CAP_STORAGE_FORMAT` at `CAPSLOT_STORAGE_FORMAT`: WRITE |
 | 113 | `SYS_STORAGE_DEVICE` | `index`, `struct storage_info *` | `CAP_STORAGE_FORMAT` at `CAPSLOT_STORAGE_FORMAT`: READ |
 
 The rights differ on purpose. READ is the survey an installer shows before it asks; WRITE is
@@ -833,6 +842,17 @@ global somebody else set. An index naming no such device is refused (`SYS_ERR_IN
 naming a device that already carries a mounted volume; the password buffer is wiped on those
 refusals like every other exit. On a machine with no persistent devices only `device = 0` is
 valid, and it means the ephemeral store the machine is already running on.
+
+**`volume_blocks` is how much of the device the volume spans**, and 0 means all of it. A smaller
+volume starts at block 0 and the rest of the device is not touched: not used and not erased.
+It is bounded against the device it names, at least `STORAGE_MIN_BLOCKS` (512, the smallest
+valid layout) and at most the device's size, and a size outside that is **refused, not
+clamped**, for the reason an index past the end is: a volume the operator did not choose is not
+a rounding error. The format checks the bound again as it writes. On a machine with no
+persistent devices the size must be 0, because the ephemeral store is sized by the kernel.
+`storage_info.volume_blocks` reports the size of the mounted volume, so an installer can confirm
+what was laid down rather than trusting the return code; `make smoke-installer-sized` is that
+check end to end.
 
 `SYS_STORAGE_DEVICE` (113) is the same survey for ONE enumerated persistent device rather
 than for the machine, and it answers to the same capability and the same READ right for the

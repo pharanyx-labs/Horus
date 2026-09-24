@@ -564,6 +564,18 @@ in this file.
 
 ### Fixed
 
+- **The installer sat in the top-left corner of a laptop's screen.** The console grid is 80
+  columns at most, and both the kernel's framebuffer console and `console_server` drew it from
+  pixel (0,0), so on a 1366-pixel panel everything was in the left half, and a full-screen
+  program's 24 rows were the top half of a 48-row grid. The grid is now centred on the display on
+  both axes, by the same rule in both, so the screen does not jump when ring 3 takes it over, and
+  `console_server` places the 80x24 surface `CON_OP_WINSZ` promises in the middle of a taller
+  grid. It blanks the rows around the surface that cooked output has touched (the installer's own
+  markers used to land inside the surface and be painted over; centred, they land above it) and
+  never the rows inside it, which the program's damage diff owns. Both consoles report where the
+  grid starts (`origin (x,y)`), and `tools/fb_console_test.sh` measures from there instead of
+  assuming column 0.
+
 - **An install that failed at the password step said only "could not set the password".**
   `SYS_PASSWD` flattened five different failures of granting a key slot into one code, and the
   installer printed none of it, so a failed install on a laptop with no serial port could not be

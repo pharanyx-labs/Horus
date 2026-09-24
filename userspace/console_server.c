@@ -209,15 +209,72 @@ static void sb_push(const volatile uint16_t *row) {
 #define sb_push(row) ((void)0)
 #endif
 
+#ifdef KLOG_CONSOLE
+/* DIAGNOSTIC (the 2026-09-24 laptop lag): how long a scroll takes. The display is
+ * mapped uncached and a scroll repaints every cell, which is the leading suspect
+ * for keys that take seconds to echo. SYS_CLOCK_GETTIME's 10 ms steps are coarse,
+ * but a cost worth fixing is tens of them. Every ten scrolls it reports the
+ * total and the longest to the kernel log (kput reaches the ring, not the
+ * screen), where Alt+F2 shows it. */
+static uint64_t scroll_ms_now(void) {
+    struct horus_timespec t;
+    if (sys_clock_gettime(0, &t) != 0) return 0;
+    return t.sec * 1000u + t.nsec / 1000000u;
+}
+static unsigned scroll_n;
+static uint64_t scroll_total, scroll_worst;
+
+/* THE LINES STAY IN THIS SERVER. kput cannot put them in the kernel log: that
+ * needs CAP_KERNEL_LOG with WRITE, which ring 3 is denied on purpose (H-2, a
+ * task must not forge kernel log lines), and this server holds READ only. So
+ * they are kept here and the Alt+F2 view shows them after the kernel's own. */
+#define CON_TRACE_MAX 2048u
+static char     con_trace[CON_TRACE_MAX];
+static unsigned con_trace_len;
+static void con_trace_add(const char *t) {
+    for (; *t; t++) {
+        if (con_trace_len == CON_TRACE_MAX) {
+            for (unsigned i = 1; i < CON_TRACE_MAX; i++) con_trace[i - 1] = con_trace[i];
+            con_trace_len--;
+        }
+        con_trace[con_trace_len++] = *t;
+    }
+}
+static void scroll_note(uint64_t ms) {
+    scroll_n++; scroll_total += ms;
+    if (ms > scroll_worst) scroll_worst = ms;
+    if (scroll_n < 10) return;
+    char b[96]; unsigned n = 0;
+    const char *h = "CONTRACE: 10 scrolls took ";
+    for (const char *c = h; *c; c++) b[n++] = *c;
+    char d[20]; int k = 0; uint64_t v = scroll_total;
+    do { d[k++] = (char)('0' + v % 10); v /= 10; } while (v);
+    while (k) b[n++] = d[--k];
+    for (const char *c = " ms, longest "; *c; c++) b[n++] = *c;
+    v = scroll_worst; do { d[k++] = (char)('0' + v % 10); v /= 10; } while (v);
+    while (k) b[n++] = d[--k];
+    for (const char *c = " ms\n"; *c; c++) b[n++] = *c;
+    b[n] = 0;
+    con_trace_add(b);
+    scroll_n = 0; scroll_total = 0; scroll_worst = 0;
+}
+#endif
+
 static void fb_scroll(void) {
     const unsigned cells = 80u * fb_rows;
     if (cells < 80u) return;
+#ifdef KLOG_CONSOLE
+    const uint64_t scroll_t0 = scroll_ms_now();
+#endif
     sb_push(&fb_cells[0]);
     for (unsigned i = 80u; i < cells; i++) fb_cells[i - 80u] = fb_cells[i];
     for (unsigned i = cells - 80u; i < cells; i++)
         fb_cells[i] = (uint16_t)((VGA_ATTR << 8) | ' ');
     for (unsigned i = 0; i < cells; i++) fb_blit(i);
     fb_pos = cells - 80u;
+#ifdef KLOG_CONSOLE
+    scroll_note(scroll_ms_now() - scroll_t0);
+#endif
 }
 
 /* BACKSPACE MOVES THE CURSOR BACK; IT IS NOT A GLYPH. Without this case a 0x08
@@ -700,10 +757,13 @@ static void klog_fetch(void) {
     for (;;) {
         int n = sys_dmesg(chunk, off, sizeof(chunk));
         if (n < 0) { klog_err = n; return; }
-        if (n == 0) return;
+        if (n == 0) break;
         for (int i = 0; i < n; i++) klog_keep(chunk[i], &esc);
         off += (unsigned)n;
     }
+    /* This server's own diagnostic lines, which cannot go into the kernel's
+     * ring (see con_trace_add), shown after it. */
+    for (unsigned i = 0; i < con_trace_len; i++) klog_keep(con_trace[i], &esc);
 }
 
 /* One cell of the view, drawn straight to the display. Never fb_cells: that is

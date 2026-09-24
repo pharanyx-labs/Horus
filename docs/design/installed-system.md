@@ -141,9 +141,13 @@ Under this design a live boot mounts nothing read-write.
 Answered by the maintainer on 2026-09-24. Recorded as decisions, not options, because the work
 depends on them.
 
-1. **A signed manifest decides what runs from the disk.** A file under `/bin`, `/sbin` or `/lib`
-   executes only if its SHA-256 is in a manifest whose signature verifies against a key pinned
-   in the measured boot image (§4, option A).
+1. **A manifest decides what runs from the disk, and its hash is pinned in the measured boot
+   image.** A file under `/bin`, `/sbin` or `/lib` executes only if its SHA-256 is in the
+   manifest, and the manifest is accepted only if its own SHA-256 matches the pin beside the
+   kernel's (S92). There is no signing key: the trust anchor is the one the kernel already has,
+   and updating the system means updating the boot image, as updating the kernel does now. This
+   is §4's option A with a hash in place of a signature; it needs no new cryptographic primitive
+   and no key to guard.
 2. **GNU coreutils and TCC ship in the install image.** The image carries their licence texts and
    an offer of the exact source for every binary shipped, and `/usr/share/man` their pages. This
    is the first GPL code in a Horus release, as separate programs beside the MIT system.
@@ -152,11 +156,8 @@ depends on them.
 4. **The bootloader is GPT with an EFI system partition** carrying GRUB, the kernel and the pinned
    hash, measured as today, with the Horus volume as the second partition. No Secure Boot (§6).
 
-**Still open, and asked when the work reaches it:** who holds the manifest's signing key. A key
-in CI's secrets makes every CI build installable, which is the convenient answer and the weaker
-one; a key only the maintainer holds, used for releases, keeps the trust decision with a person.
-Recommendation: the maintainer's key for releases, and development images signed with a separate
-key that no release trusts.
+The signing-key question this design first left open was answered the same day by removing the
+key: a hash pinned in the measured image needs none (decision 1).
 
 ## 9. Order of work
 

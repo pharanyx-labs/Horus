@@ -158,7 +158,8 @@ DEFECT_FLAGS = \
 	USERLIST_UNGATED HOME_DIR_ROOT_OWNED CLAIM_IMP_TRACE \
 	KSTACK_COLLIDE_IMPERSONATED CLAIM_AUDIT_NO_REREAD \
 	ENTER_USER_STEAL_WIDEN ENTER_USER_PUBLISH_EARLY ENTER_USER_CLAIM_UNCHECKED \
-	STORAGE_FORMAT_WEDGE CONSOLE_TIMESTAMPS_LEGACY CLOCK_EPOCH_FROM_FIRST_TICK \
+	STORAGE_FORMAT_WEDGE STORAGE_FORMAT_SIZE_IGNORED CONSOLE_TIMESTAMPS_LEGACY CLOCK_EPOCH_FROM_FIRST_TICK \
+	DEFAULT_ACCOUNTS_ON_DISK \
 	DEVREGS_KERNEL_ONLY SD_BLOCK_ADDR_UNSCALED FB_REQUEST \
 	FB_TAG_IGNORED FB_TAG_ASSUME_TEXT \
 	FB_MAP_SELFTEST FB_MAP_LOW_HALF FB_CONSOLE_SELFTEST \
@@ -3245,6 +3246,24 @@ endif
 STORAGE_FORMAT_WEDGE ?= 0
 ifeq ($(STORAGE_FORMAT_WEDGE),1)
 CFLAGS += -DSTORAGE_FORMAT_WEDGE
+endif
+
+# DEFAULT_ACCOUNTS_ON_DISK=1 keeps the compiled-in root/rootpass and user/password
+# on a machine with a disk, which is the pre-2026-09-24 kernel: an installed
+# machine accepted root/rootpass until its volume was unlocked. The control arm
+# for the refusal smoke-installer now asserts on its second boot.
+DEFAULT_ACCOUNTS_ON_DISK ?= 0
+ifeq ($(DEFAULT_ACCOUNTS_ON_DISK),1)
+CFLAGS += -DDEFAULT_ACCOUNTS_ON_DISK
+endif
+
+# STORAGE_FORMAT_SIZE_IGNORED=1 accepts the volume size the installer asked for,
+# bounds it, and then lays the volume over the whole device anyway. Every call
+# returns success; the defect is only visible as the size of what was written.
+# The control arm for make smoke-installer-sized.
+STORAGE_FORMAT_SIZE_IGNORED ?= 0
+ifeq ($(STORAGE_FORMAT_SIZE_IGNORED),1)
+CFLAGS += -DSTORAGE_FORMAT_SIZE_IGNORED
 endif
 
 # ---- FB_REQUEST: ask GRUB for a linear framebuffer -------------------------
@@ -11968,8 +11987,8 @@ INSTALLER_SLOWDISK_IOPS ?= 12
 .PHONY: smoke-installer
 smoke-installer:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory STORAGE_ATA=1
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 horus.iso
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 $(INSTALLERARM)
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 $(INSTALLERARM) horus.iso
 	@rm -f installer.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer.img
 	@rm -f installer-serial.log
 	@SESSION_DISK=installer.img SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) \
@@ -12453,6 +12472,58 @@ smoke-installer-slowdisk:
 # change both cases produced "the format did not complete within
 # INSTALLER_FORMAT_TIMEOUT=300s", which is what left [G-13] unattributable.
 .PHONY: smoke-installer-wedge-control
+# The compiled-in accounts kept on a machine with a disk: smoke-installer must go
+# red, and on the refusal of root/rootpass rather than on anything else.
+.PHONY: smoke-installer-defaults-control
+smoke-installer-defaults-control:
+	@out=$$($(MAKE) --no-print-directory smoke-installer INSTALLERARM=DEFAULT_ACCOUNTS_ON_DISK=1 2>&1); rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "DEFAULTS CONTROL: FAIL - root/rootpass was kept and the install gate passed"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "compiled-in root/rootpass logged in on an installed machine"; then \
+	    echo "DEFAULTS CONTROL: FAIL - it failed, but not on the default login."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "DEFAULTS CONTROL: PASS - a kernel that keeps root/rootpass on an installed machine is caught"
+
+# A VOLUME SMALLER THAN THE DISK (2026-09-24). Asks the installer for 96 MiB on
+# the 128 MiB image and requires the installer's own post-format check to report
+# exactly 24576 blocks on a disk of 32768, then powers off and logs into it: a
+# smaller volume is only a volume if the next boot recognises it and the
+# password still opens it. The arm lays the volume over the whole disk whatever
+# was asked, and must go red on the SIZE, not on anything else.
+.PHONY: smoke-installer-sized smoke-installer-sized-control
+smoke-installer-sized:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 $(SIZEDARM)
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 $(SIZEDARM) horus.iso
+	@rm -f installer-sz.img installer-sz-serial.log
+	@truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-sz.img
+	@SESSION_DISK=installer-sz.img INSTALLER_MODE=sized SIZED_MIB=96 \
+		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		INSTALLER_FORMAT_STALL=$(INSTALLER_FORMAT_STALL) INSTALLER_FORMAT_CAP=$(INSTALLER_FORMAT_CAP) \
+		SESSION_SERIAL_LOG=installer-sz-serial.log BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		python3 tools/installer_session.py horus.iso \
+	  || { echo "[installer] ----- guest serial -----"; \
+	       tail -60 installer-sz-serial.log 2>/dev/null | sed 's/^/  /'; \
+	       rm -f installer-sz.img; exit 1; }
+	@rm -f installer-sz.img
+	@echo "[installer] PASS - a 96 MiB volume on a 128 MiB disk is exactly that, and it boots"
+
+smoke-installer-sized-control:
+	@out=$$($(MAKE) --no-print-directory smoke-installer-sized SIZEDARM=STORAGE_FORMAT_SIZE_IGNORED=1 2>&1); rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "SIZED CONTROL: FAIL - the whole disk was used and the gate still passed"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "the volume is not the size that was chosen"; then \
+	    echo "SIZED CONTROL: FAIL - it failed, but not on the size."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "$$out" | grep -o "the volume is not the size that was chosen.*" | head -1 | sed 's/^/  /'; \
+	echo "SIZED CONTROL: PASS - a kernel that ignores the size is caught on the size"
+
 smoke-installer-wedge-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_FORMAT_WEDGE=1

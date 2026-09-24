@@ -194,7 +194,7 @@ struct task_info {
  * must not mean "may erase the volume". */
 #define STORAGE_FORMAT_PASSWORD_MAX 31  /* what a login can offer back; see below */
 #define SYS_STORAGE_INFO      110  /* (struct storage_info*) -> 0; what volume this machine has (CAP_STORAGE_FORMAT + READ). */
-#define SYS_STORAGE_FORMAT    111  /* (const char *password, plen, device) -> 0; DESTROY the attached volume and lay a new sealed one down (CAP_STORAGE_FORMAT + WRITE). The one caller of storage_authorize_format(), which S63 introduced and left with none. */
+#define SYS_STORAGE_FORMAT    111  /* (const char *password, plen, device, volume_blocks) -> 0; volume_blocks 0 = the whole device; DESTROY the attached volume and lay a new sealed one down (CAP_STORAGE_FORMAT + WRITE). The one caller of storage_authorize_format(), which S63 introduced and left with none. */
 #define SYS_USERLIST          112  /* (index, struct user_entry*) -> 1 filled, 0 past the last account, SYS_ERR_PERM without CAP_USER. Account METADATA only -- name, uid, gid, home -- and deliberately nothing else: no hash, no salt, no key slot, no lockout state. A dense index over the valid accounts, so a caller loops until 0 and never needs the kernel's MAX_USERS. */
 #define SYS_CONSOLE_RELEASE  114  /* (dev_slot) -> 0; give the console hardware back to the kernel. CAP_IO_DEVICE + WRITE in dev_slot, and the caller must BE the current owner. Exists so a console driver that fails AFTER taking the console can still be heard: its own diagnostic goes to the klog and nowhere else while it owns the wire. */
 #define SYS_FB_INFO           115  /* (dev_slot, struct fb_geometry*) -> 0; the SHAPE of the linear framebuffer (width/height/pitch/bpp), or SYS_ERR_NOENT if this display is not one. CAP_IO_DEVICE + READ in dev_slot, and it must name the PLATFORM device. Where the framebuffer is comes from SYS_DEVICE_INFO's mmio[] ranges, not from here. */
@@ -853,6 +853,7 @@ struct storage_info {
      * and these two are the enumeration SYS_STORAGE_DEVICE indexes into. */
     uint32_t device_count;
     uint32_t device_index;
+    uint64_t volume_blocks;  /* blocks the mounted volume spans; 0 if none; may be < total_blocks */
 };
 
 /* What volume this machine has. CAP_STORAGE_FORMAT + READ at
@@ -893,9 +894,9 @@ static inline int sys_storage_device(unsigned index, struct storage_info *out) {
  * quietly rounded to some other one would erase a disk nobody chose.
  * SECURITY.md S83. */
 static inline int sys_storage_format(unsigned int device, const char *password,
-                                     unsigned int plen) {
-    return (int)syscall(SYS_STORAGE_FORMAT, SYSCALL_UPTR(password),
-                        (uint32_t)plen, (uint64_t)device);
+                                     unsigned int plen, uint64_t volume_blocks) {
+    return (int)syscall6(SYS_STORAGE_FORMAT, SYSCALL_UPTR(password),
+                         (uint32_t)plen, (uint64_t)device, volume_blocks, 0, 0);
 }
 
 /* ---- Frame capabilities and shared memory (roadmap 2.1) -------------------

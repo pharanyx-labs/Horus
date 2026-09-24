@@ -113,6 +113,16 @@ def rgb(x, y):
     o = (y * W + x) * 3
     return (px[o], px[o+1], px[o+2])
 
+# WHERE THE GRID STARTS, read off the guest rather than assumed (2026-09-24). The
+# kernel centres the 80-column grid on the display, so on this 1024-pixel screen it
+# begins 192 pixels in, and every x below is measured from there. None when the
+# console never started, which only the `refused` arm expects; every other arm
+# requires it, because a missing origin is a boot that did not reach the console.
+_o = re.search(rb"origin \((\d+),(\d+)\)", open(log, "rb").read())
+OX, OY = (int(_o.group(1)), int(_o.group(2))) if _o else (None, None)
+if OX is None and expect != "refused":
+    print("  [FAIL] the guest never reported where its grid starts"); sys.exit(1)
+
 # The one band both arms of this pair measure: empty when ring 3 cleared the
 # display and painted its session, full of the kernel's boot log when it did not.
 # Declared once so the gate and its control can never drift onto different bands
@@ -137,8 +147,8 @@ if expect == "server-absent":
         if not ok: fail = 1
     def ink(y0, y1):
         n = 0
-        for y in range(y0, min(y1, H)):
-            for x in range(0, min(700, W)):
+        for y in range(OY + y0, min(OY + y1, H)):
+            for x in range(OX, min(OX + 700, W)):
                 if rgb(x, y) != (0, 0, 0): n += 1
         return n
     # THE BAND IS MEASURED, NOT GUESSED, and it is the SAME band the `server` arm
@@ -199,8 +209,8 @@ if expect == "server":
 
     def ink(y0, y1):
         n = 0
-        for y in range(y0, min(y1, H)):
-            for x in range(0, min(700, W)):
+        for y in range(OY + y0, min(OY + y1, H)):
+            for x in range(OX, min(OX + 700, W)):
                 if rgb(x, y) != (0, 0, 0): n += 1
         return n
 
@@ -247,8 +257,8 @@ cw, chh = fw * scale, fh * scale
 # The first version of this computed `50 * cell + 8` and went off the bottom of
 # the screen the moment the font grew -- a constant standing in for something the
 # kernel derives, which is the same defect the grid gate caught one commit back.
-px0 = 80 * cw + 8
-py0 = 0
+px0 = OX + 80 * cw + 8
+py0 = OY
 print(f"  glyph cell: {cw}x{chh} at ({px0},{py0})  [font {fw}x{fh} at {scale}x]")
 
 if px0 + cw > W or py0 + chh > H:

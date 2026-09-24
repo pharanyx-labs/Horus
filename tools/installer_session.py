@@ -23,7 +23,8 @@ one console write instead, and those are the sync points.
 
 Usage:  installer_session.py [horus.iso]
 Env:    SESSION_DISK      the disk image; REQUIRED, and the same one for both boots
-        INSTALLER_MODE    "refuse" or "provision"; default is the install-then-login pair
+        INSTALLER_MODE    "refuse", "provision", "sized", ...; default is the install-then-login pair
+        SIZED_MIB         the volume size the "sized" scenario asks for (default 96)
         INSTALLER_EXPECT_EMPTY_BIN  provision mode's control arm: require the empty /bin
         INSTALL_PASSWORD  the password to install with (default "installpw1")
         SESSION_TIMEOUT   per-step expect timeout (default 90; formatting is slow)
@@ -260,10 +261,17 @@ def expect_while_doing_io(s, needle, stall, cap):
         # came back rc=-5 and the gate said WEDGED, which sent the investigation
         # after a hang that never happened. The installer states the refusal on
         # the wire, so it is read from there.
+        #
+        # THE WHOLE LINE, NOT ITS FIRST BYTES (2026-09-24). The marker is one
+        # write ending in a newline, but it reaches the pty a few bytes at a
+        # time; reporting the moment `INSTALLER: FAIL` appeared quoted
+        # `INSTALLER: FAIL t` and tore the session down before the reason
+        # arrived, which made the size arm unable to tell WHICH refusal it saw.
+        # A guest that dies mid-line is still caught, by the stall bound below.
         fail = s.buf.find("INSTALLER: FAIL", s.pos)
-        if fail >= 0:
-            end = s.buf.find("\n", fail)
-            line = s.buf[fail:end if end >= 0 else fail + 160].strip()
+        end = s.buf.find("\n", fail) if fail >= 0 else -1
+        if end >= 0:
+            line = s.buf[fail:end].strip()
             raise SessionFail(
                 "the format was REFUSED, not wedged: the installer said `%s` "
                 "%.0fs after `INSTALLER: formatting`.%s"
@@ -385,8 +393,14 @@ def login(s, user, pw, timeout=None):
     return expect_any(s, ["@horus", "Login incorrect"], t) == 0
 
 
-def answer_accounts(s, root_pw=None, user=None, user_pw=None, typist=None):
-    """Answer every account screen the installer asks, in order.
+def answer_accounts(s, root_pw=None, user=None, user_pw=None, typist=None,
+                    volume_mib=None):
+    """Answer the volume-size screen and then every account screen, in order.
+
+    The size screen (2026-09-24) sits between the disk and the accounts, and it
+    is answered HERE rather than by a helper each scenario must remember to
+    call, for the reason the rest of this docstring gives. `volume_mib` None is
+    Enter on an empty field, which is the whole disk.
 
     ONE PLACE, BECAUSE FOUR COPIES IS WHAT BROKE. Each scenario in this file
     drives the same conversation and diverges only at the end, and when the
@@ -405,6 +419,11 @@ def answer_accounts(s, root_pw=None, user=None, user_pw=None, typist=None):
     user = USER_NAME if user is None else user
     user_pw = USER_PASSWORD if user_pw is None else user_pw
     t = typist or SerialTypist(s)
+
+    s.expect("INSTALLER: waiting on the volume size", STEP)
+    if volume_mib is not None:
+        t.text(str(volume_mib))
+    t.key("enter")
 
     s.expect("INSTALLER: waiting on the password", STEP)
     t.text(root_pw); t.key("enter")
@@ -523,6 +542,21 @@ def boot2(disk):
             raise SessionFail("the installer ran again on a machine that has a volume")
         step("no installer on a machine that already has a volume")
 
+        # THE COMPILED-IN ROOT MUST NOT OPEN AN INSTALLED MACHINE (2026-09-24).
+        # `root`/`rootpass` is printed in docs/BUILDING.md, and until this was
+        # fixed it logged in here, before the real password had unlocked
+        # anything. Asked FIRST, while the account table in RAM is still the
+        # compiled-in one, because that is exactly when it used to work. The
+        # refusal is read off the wire.
+        s.send("root")
+        s.expect("Password:", STEP)
+        s.send("rootpass")
+        if expect_any(s, ["@horus", "Login incorrect"], STEP) == 0:
+            raise SessionFail("the compiled-in root/rootpass logged in on an "
+                              "installed machine")
+        step("the compiled-in root/rootpass was refused on the installed machine")
+        s.expect("horus login:", STEP)
+
         # THE CLAIM THIS GATE EXISTS FOR. Log in with the password the installer
         # was given -- which the volume's seal and the root account must BOTH
         # accept, by two different mechanisms.
@@ -539,6 +573,45 @@ def boot2(disk):
     finally:
         keep_serial(s.buf)
         s.close()
+
+
+def sized(disk):
+    """Install a volume SMALLER than the disk, and require it to be that size.
+
+    THE INSTALLER'S OWN CHECK IS THE ASSERTION, and the harness reads it rather
+    than recomputing it: after the format the installer asks the kernel how big
+    the mounted volume is and prints `INSTALLER: volume of N blocks on a disk of
+    M`, or a FAIL if N is not what was chosen. So this requires the exact line
+    for SIZED_MIB on this disk, which a kernel that ignored the size cannot
+    produce (it would say the disk's own size, and the installer would refuse).
+    Then it powers off and back on, because a smaller volume is only a volume if
+    the next boot recognises it and the password still opens it.
+
+    The control arm is STORAGE_FORMAT_SIZE_IGNORED=1, under which the kernel lays
+    the volume over the whole device whatever it was asked for.
+    """
+    mib = int(os.environ.get("SIZED_MIB", "96"))
+    want = mib * 1024 * 1024 // 4096
+    s = Serial(ISO)
+    try:
+        s.expect("init: this machine has a disk and no volume; running the installer", BOOT)
+        answer_survey(s)
+        answer_accounts(s, volume_mib=mib)
+        step(f"asked for a {mib} MiB volume")
+        answer_review_and_confirm(s)
+        s.expect("INSTALLER: formatting", STEP)
+        expect_while_doing_io(s, "INSTALLER: volume of ", FORMAT_STALL, FORMAT_CAP)
+        s.expect(" blocks on a disk of ", STEP)
+        line = s.buf[s.buf.rfind("INSTALLER: volume of "):]
+        line = line[:line.find("\n")] if "\n" in line else line
+        if not line.startswith(f"INSTALLER: volume of {want} blocks"):
+            raise SessionFail(f"the volume is not {want} blocks: `{line.strip()}`")
+        expect_installed(s)
+        step(f"the kernel laid down exactly {want} blocks ({mib} MiB) and said so")
+    finally:
+        keep_serial(s.buf)
+        s.close()
+    boot2(disk)
 
 
 def refuse(disk):
@@ -916,6 +989,8 @@ def walkback(disk):          # noqa: ARG001 - uniform scenario signature
     s = Serial(ISO)
     try:
         answer_survey(s, first_timeout=BOOT)
+        s.expect("INSTALLER: waiting on the volume size", STEP)
+        os.write(s.fd, ENTER)
 
         # Forward to the username question, answering the root password on the way.
         s.expect("INSTALLER: waiting on the password", STEP)
@@ -1083,6 +1158,10 @@ def run():
         return 0
     if mode == "twodisk":
         twodisk(disk)
+        print("INSTALLER_SESSION: PASS")
+        return 0
+    if mode == "sized":
+        sized(disk)
         print("INSTALLER_SESSION: PASS")
         return 0
     boot1(disk)

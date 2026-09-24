@@ -382,6 +382,16 @@ in this file.
 
 ## [Unreleased]
 
+### Security
+
+- **An installed machine accepted the compiled-in `root` password until its volume was unlocked.**
+  `users_init` seeds `root`/`rootpass` and `user`/`password` on every boot, and on an installed
+  machine they stayed in RAM: after an install and a power cycle, `root`/`rootpass` got a root
+  shell before the real password had unlocked anything (the store stayed locked). The compiled-in
+  accounts now exist only on a live boot, the boot menu's live entry or a machine with no disk.
+  `SECURITY.md` S103; witnessed by `make smoke-installer`, falsified by
+  `DEFAULT_ACCOUNTS_ON_DISK=1`.
+
 ### Added
 
 - **The installer waits for a key when it has finished, then clears the screen for the login
@@ -391,6 +401,15 @@ in this file.
   banner and `horus login:` start on an empty screen; the serial terminal is sent `ESC[2J ESC[H`
   so both views agree. Every install scenario in `tools/installer_session.py` presses the key
   through one helper and requires the clear on the wire.
+
+- **The installer can lay down a volume smaller than the disk.** A new step after the disk survey
+  asks for a size in MiB, and an empty answer (the default) is the whole disk as before.
+  `SYS_STORAGE_FORMAT` takes the size as a fourth argument; the kernel bounds it against the
+  device it names (at least `STORAGE_MIN_BLOCKS`, at most the device) and refuses rather than
+  clamps anything outside that. The rest of the disk is left as it was: not used, and not erased.
+  `storage_info.volume_blocks` reports the mounted volume's size, and the installer checks it
+  after the format instead of trusting the return code. The installer's floor is 64 MiB. Witnessed
+  by `make smoke-installer-sized`, falsified by `STORAGE_FORMAT_SIZE_IGNORED=1`.
 
 - **The SMP race gates also run under KVM, as a second detector** (`smoke-smp-kvm`, advisory for
   now). Under KVM the virtual CPUs run truly in parallel, which emulation rarely achieves, and a
@@ -536,6 +555,14 @@ in this file.
 
 ### Changed
 
+- **Formatting no longer reads the whole metadata region back.** The Merkle tree over the crypto
+  metadata region hashes the block every metadata block was written from instead of reading
+  32,768 of them back (at 16 GiB), because every write in the format is now checked and a refused
+  one fails the format; five writes whose return codes were dropped are checked too. The
+  emulated 16 GiB eMMC format fell from about 90s
+  to 51.5s. The trade (a device that acknowledges a write and drops it now costs one 512 KiB
+  range, refused, instead of being papered over) is recorded as `docs/LIMITATIONS.md` 5.2i.
+
 - **Every CI build used one of the runner's four cores.** Each of the ~370 build-and-boot steps in
   `ci.yml` does `make clean` and a full build, serially: locally 8.9 s of build against 4 s of
   boot, and 2.0 s at `-j12`. The workflow now sets `MAKEFLAGS=-j4`. Measured locally first: every
@@ -554,6 +581,27 @@ in this file.
   steps run, and `check_gate_pairs` still finds every one.
 
 ### Fixed
+
+- **The installer sat in the top-left corner of a laptop's screen.** The console grid is 80
+  columns at most, and both the kernel's framebuffer console and `console_server` drew it from
+  pixel (0,0), so on a 1366-pixel panel everything was in the left half, and a full-screen
+  program's 24 rows were the top half of a 48-row grid. The grid is now centred on the display on
+  both axes, by the same rule in both, so the screen does not jump when ring 3 takes it over, and
+  `console_server` places the 80x24 surface `CON_OP_WINSZ` promises in the middle of a taller
+  grid. It blanks the rows around the surface that cooked output has touched (the installer's own
+  markers used to land inside the surface and be painted over; centred, they land above it) and
+  never the rows inside it, which the program's damage diff owns. Both consoles report where the
+  grid starts (`origin (x,y)`), and `tools/fb_console_test.sh` measures from there instead of
+  assuming column 0.
+
+- **An install that failed at the password step said only "could not set the password".**
+  `SYS_PASSWD` flattened five different failures of granting a key slot into one code, and the
+  installer printed none of it, so a failed install on a laptop with no serial port could not be
+  diagnosed. The kernel now returns which step failed (volume not open, slots unreadable, none
+  free, the seal refused by key derivation or the TPM, the write failed), and the installer prints
+  the code and its meaning on the screen and the wire. Changing your own password also re-seals
+  the volume's key slot **before** the account's hash changes, and a failed re-seal now fails the
+  change: it used to be ignored, leaving an account whose password no longer opened the volume.
 
 - **An install on a laptop's eMMC took twenty minutes and showed nothing while it did.** Both
   storage backends moved one 512-byte sector per command while a filesystem block is 4096 bytes,

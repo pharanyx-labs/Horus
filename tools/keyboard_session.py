@@ -153,9 +153,10 @@ def run_installer(g, args):
         return 0
 
     g.send_key("ret", args.key_delay)
-    # Reaching the password screen means Down moved the cursor off Cancel AND
-    # Enter accepted Continue. Nothing else gets here.
-    g.expect("INSTALLER: waiting on the password", args.timeout)
+    # Reaching the next screen (the volume size, since 2026-09-24) means Down
+    # moved the cursor off Cancel AND Enter accepted Continue. Nothing else gets
+    # here.
+    g.expect("INSTALLER: waiting on the volume size", args.timeout)
     seen = g.buf[mark:]
     if "nothing was written" in seen:
         raise SessionFail("the installer cancelled and then asked for a password; "

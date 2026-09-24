@@ -545,6 +545,15 @@ void scheduler_init(void) {
     tasks[0].gid = 0;
 
     users_init();
+    /* IMMEDIATELY after users_init, and it must be after storage_init too, which
+     * it is: main.c calls storage_init before scheduler_init. Whether the
+     * compiled-in accounts may exist depends on whether this machine has a
+     * persistent device, known only once storage has probed. The first version
+     * called this from main.c right after storage_init, which is BEFORE this
+     * function, so users_init re-seeded root/rootpass on top of it and
+     * smoke-installer caught root logging in anyway (2026-09-24). Before any
+     * task exists, so no login can meet the defaults in between. */
+    users_apply_boot_policy();
 #ifdef USERS_PERSIST_SELFTEST
     /* IMMEDIATELY after users_init, and that placement is load-bearing. The
      * first version of this hook sat in main.c before scheduler_init, which is

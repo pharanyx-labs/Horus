@@ -319,6 +319,17 @@ static inline void fb_store(uint8_t *p, uint32_t c) {
     }
 }
 static uint32_t  g_fb_w, g_fb_h;
+/* WHERE THE GRID STARTS ON THE DISPLAY, in pixels (2026-09-24).
+ *
+ * The grid is 80 columns whatever the display is, so on anything wider than
+ * 640 pixels (1280 at 2x) it used to sit against the left edge with the rest of
+ * the screen black: on the IdeaPad's 1366x768 panel the installer occupied the
+ * left half of the display and nothing the right. It is centred now, on both
+ * axes, and every pixel the console writes goes through fb_blit_cell or
+ * fb_draw_cursor, which add these. Clamped at zero rather than allowed to go
+ * negative: a grid larger than the display (FB_GRID_FIXED_ROWS) must still clip
+ * off the bottom exactly as it did, or that arm stops witnessing the lost rows. */
+static uint32_t  g_fb_ox, g_fb_oy;
 static uint32_t  g_scale = 1;
 static uint16_t  fb_cells[VGA_ROWS * VGA_COLS];   /* sized for the MAXIMUM grid */
 
@@ -418,8 +429,8 @@ static void fb_blit_cell(int y, int x) {
     uint32_t fg   = vga_palette[attr & 0x0F];
     uint32_t bg   = vga_palette[(attr >> 4) & 0x07];
 
-    fb_draw_glyph((uint32_t)x * (uint32_t)g_font.w * g_scale,
-                  (uint32_t)y * (uint32_t)g_font.h * g_scale, ch, fg, bg);
+    fb_draw_glyph(g_fb_ox + (uint32_t)x * (uint32_t)g_font.w * g_scale,
+                  g_fb_oy + (uint32_t)y * (uint32_t)g_font.h * g_scale, ch, fg, bg);
 }
 
 /* A framebuffer has no CRTC cursor, so one is drawn: an underline in the
@@ -434,8 +445,8 @@ static void fb_draw_cursor(void) {
 
     uint32_t cw = (uint32_t)g_font.w * g_scale;
     uint32_t chh = (uint32_t)g_font.h * g_scale;
-    uint32_t px0 = (uint32_t)cursor_x * cw;
-    uint32_t py0 = (uint32_t)cursor_y * chh;
+    uint32_t px0 = g_fb_ox + (uint32_t)cursor_x * cw;
+    uint32_t py0 = g_fb_oy + (uint32_t)cursor_y * chh;
     if (px0 + cw > g_fb_w || py0 + chh > g_fb_h) return;
 
     uint16_t cell = fb_cells[cursor_y * VGA_COLS + cursor_x];
@@ -562,6 +573,12 @@ void fb_console_init(void) {
     g_fb_pitch_b  = fb->pitch;
     g_fb_w        = fb->width;
     g_fb_h        = fb->height;
+    {
+        uint32_t gw = (uint32_t)VGA_COLS * g_font.w * g_scale;
+        uint32_t gh = (uint32_t)g_rows * g_font.h * g_scale;
+        g_fb_ox = (gw < g_fb_w) ? (g_fb_w - gw) / 2u : 0u;
+        g_fb_oy = (gh < g_fb_h) ? (g_fb_h - gh) / 2u : 0u;
+    }
 
     /* The shadow starts as the blank screen clear_screen would have drawn, and
      * the whole display is painted from it -- including the region outside the
@@ -587,14 +604,15 @@ void fb_console_init(void) {
      * the screen exactly and there is nothing under them. The margin to the RIGHT
      * survives by construction: columns are capped at 80, so a display wider than
      * 640 pixels has space the console never touches whatever the font is. */
-    fb_draw_glyph((uint32_t)VGA_COLS * (uint32_t)g_font.w * g_scale + 8u, 0u,
+    fb_draw_glyph(g_fb_ox + (uint32_t)VGA_COLS * (uint32_t)g_font.w * g_scale + 8u, g_fb_oy,
                   (uint8_t)'L', vga_palette[15], vga_palette[0]);
     print("fb: selftest glyph drawn below the grid\n");
 #endif
     print("fb: console on the framebuffer, ");
     print_decimal((uint32_t)VGA_COLS); print("x"); print_decimal((uint32_t)g_rows);
     print(" cells, "); print_decimal(g_font.w); print("x"); print_decimal(g_font.h);
-    print(" font at "); print_decimal(g_scale); print("x\n");
+    print(" font at "); print_decimal(g_scale); print("x, origin (");
+    print_decimal(g_fb_ox); print(","); print_decimal(g_fb_oy); print(")\n");
 }
 
 /* The console's cell grid, addressed the same way in both modes.

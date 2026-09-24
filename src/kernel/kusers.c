@@ -235,6 +235,59 @@ static int verify_user_password(const char *name, const char *password) {
  * comment "must be reproducible across reboots from the same pwd" -- the same
  * conclusion, reached earlier, one field away. */
 
+/* THE COMPILED-IN ACCOUNTS ARE FOR A LIVE BOOT ONLY (2026-09-24, SECURITY.md S103).
+ *
+ * users_init seeds `root`/`rootpass` and `user`/`password` on every boot, and
+ * until this existed they stayed there on an INSTALLED machine: h_auth checks
+ * the typed password against whatever table is in RAM, and before anybody has
+ * unlocked the volume that is the compiled-in one. Measured on main the same
+ * day: after an install and a power cycle, `root`/`rootpass` logged in and got
+ * a root shell. The store stayed locked (S74), so no file was reachable, but a
+ * password printed in docs/BUILDING.md opened a root session on a machine
+ * whose operator had chosen their own.
+ *
+ * So on a machine with a persistent device, and not booted from the live
+ * entry, neither survives past storage_init: `user` is removed, and `root`
+ * keeps its identity (uid 0 is who the installer and the persisted table set a
+ * password for) with a hash no password produces, fresh CSPRNG bytes under a
+ * fresh salt. A field saying "no password" would have been clearer and would
+ * have changed the account table's on-disk layout, which the tag over it would
+ * then refuse on every existing volume. The installer sets root's password; an
+ * installed machine's login loads the persisted table at unlock and checks that.
+ *
+ * A live boot keeps both, by the maintainer's decision: that is the boot for
+ * trying the system, and every diskless CI boot is one. STORAGE_AUTOFORMAT (a
+ * control arm, never shipped) keeps them too, because the targets built with it
+ * boot a blank disk and log in with the defaults by design.
+ */
+void users_apply_boot_policy(void)
+{
+#if defined(STORAGE_AUTOFORMAT) || defined(DEFAULT_ACCOUNTS_ON_DISK)
+    /* DEFAULT_ACCOUNTS_ON_DISK: CONTROL ARM -- never ship. The pre-2026-09-24
+     * kernel, in which an installed machine accepted root/rootpass until its
+     * volume was unlocked. See make smoke-installer-defaults-control. */
+    return;
+#else
+    const int live = (boot_flags() & BOOT_FLAG_LIVE) != 0;
+    if (live || storage_persistent_device_count() == 0) {
+        print("USERS: live boot: the compiled-in accounts are available\n");
+        return;
+    }
+    for (int i = 0; i < MAX_USERS; i++) {
+        if (!users[i].valid) continue;
+        if (users[i].uid == 0) {
+            generate_salt(users[i].salt, PASS_SALT_LEN);
+            secure_random_bytes(users[i].pass_hash, sizeof(users[i].pass_hash));
+        } else {
+            secure_zero(&users[i], sizeof(users[i]));
+            users[i].keyslot = KEYSLOT_NONE;
+            if (user_count > 0) user_count--;
+        }
+    }
+    print("USERS: this machine has a disk: no compiled-in account can log in\n");
+#endif
+}
+
 void users_init(void) {
     for (int i = 0; i < MAX_USERS; i++) {
         users[i].valid = 0;
@@ -532,10 +585,25 @@ int do_passwd(uint32_t target_uid, const char *new_password) {
     if (target_uid == my_uid) {
         /* Re-wrap disk_key under the new KEK so storage_unlock(new_password)
          * succeeds on the next boot. Without it the on-disk wrap still requires
-         * the old password and the volume is unopenable by its owner. */
+         * the old password and the volume is unopenable by its owner.
+         *
+         * THE REWRAP COMES FIRST AND ITS FAILURE IS A FAILURE (2026-09-24). It
+         * used to run after the hash had changed, with its return code dropped,
+         * so a rewrap that failed left an account whose password no longer
+         * opened the volume, reported as success. Now nothing changes unless it
+         * worked. -1 is "no volume is open", which is not a failure: a live boot,
+         * or a machine whose volume nobody has unlocked, has no wrap for this
+         * password to be part of. The other codes come back as -30 - n so a
+         * caller can say which step it was (docs/SYSCALLS.md). */
+        {
+            int rrc = storage_rekey(new_password, plen);
+            if (rrc != 0 && rrc != -1 && storage_volume_is_persistent()) {
+                audit_log(AUDIT_USER_MGMT, target_uid, -1, "passwd: volume rewrap failed");
+                return -30 + rrc;
+            }
+        }
         int rc = set_user_password(target_uid, new_password);
         if (rc != 0) return rc;
-        storage_rekey(new_password, plen);
         /* Record which slot is ours, so an admin changing this password later
          * can revoke exactly it. storage_unlocked_slot() is the slot the login
          * that started this session opened. */
@@ -554,11 +622,20 @@ int do_passwd(uint32_t target_uid, const char *new_password) {
 #else
         if (storage_volume_is_persistent()) {
             uint32_t idx = 0;
-            if (storage_keyslot_add(new_password, plen, target_uid, &idx) != 0) {
+            int krc = storage_keyslot_add(new_password, plen, target_uid, &idx);
+            if (krc != 0) {
                 /* Nothing has changed yet. Say so rather than setting a password
-                 * that cannot open the machine after a reboot. */
+                 * that cannot open the machine after a reboot.
+                 *
+                 * WHICH STEP, NOT JUST "NO SLOT" (2026-09-24). This was a flat -6
+                 * for five different failures, and an installer on a laptop with
+                 * no serial port could then say only "could not set the
+                 * password": whether the volume was not open, the slots could not
+                 * be read, none was free, the seal failed (key derivation or the
+                 * TPM) or the write failed was unrecoverable from the screen.
+                 * -20 - n, where n is storage_keyslot_add's own code. */
                 audit_log(AUDIT_USER_MGMT, target_uid, -1, "passwd: no key slot available");
-                return -6;
+                return -20 + krc;
             }
             fresh = idx;
         }

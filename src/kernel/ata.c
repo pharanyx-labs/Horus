@@ -15,7 +15,7 @@
 #define ATA_CMD_WRITE  0x30
 #define ATA_CMD_FLUSH  0xE7   /* FLUSH CACHE (LBA28). LBA48 uses 0xEA; this driver
                                * is LBA28 throughout — see the 0xE0 | lba>>24 drive
-                               * select in ata_read_sector — so 0xE7 is the correct
+                               * select in ata_xfer — so 0xE7 is the correct
                                * opcode and 0xEA would be rejected as unsupported. */
 
 static inline uint16_t inw(uint16_t port) {
@@ -31,7 +31,7 @@ static inline void outw(uint16_t port, uint16_t val) {
 /* Serialises access to the ATA PIO port sequence across CPUs. This is a
  * DEDICATED lock, deliberately NOT storage_lock: the crypto layer
  * (storage_encrypt_block) holds storage_lock while flushing per-block metadata,
- * which walks down through the metadata cache -> do_block_write -> ata_write_sector.
+ * which walks down through the metadata cache -> do_block_write -> ata_xfer.
  * If the sector ops took storage_lock too, that path would re-acquire a
  * non-recursive spinlock and self-deadlock — the exact hang that made the ATA
  * backend never complete a write end-to-end. The RAM vdisk's block ops take no
@@ -66,7 +66,7 @@ static spinlock_t ata_lock = { 0 };
  * void, and its comment said "on timeout the caller's status check sees
  * BSY/0xFF/ERR and treats the device as absent or the operation as failed."
  * That is true of the probe, which tests for 0xFF and 0x00 explicitly, and it
- * was FALSE of the sector paths: BSY is 0x80 and ata_read_sector tested only
+ * was FALSE of the sector paths: BSY is 0x80 and ata_xfer's read side tested only
  * 0x01 (ERR). A wait that timed out therefore left BSY set, ERR clear, and the
  * driver went on to read 256 words out of a drive that had not said it had any
  * — returning garbage, and returning it as SUCCESS.
@@ -274,7 +274,7 @@ int ata_flush(int drive) {
     if (!ata_drive_ok(drive)) return -1;
     spin_lock(&ata_lock);
 
-    /* Select, settle, then wait for THIS drive -- see ata_read_sector for what
+    /* Select, settle, then wait for THIS drive -- see ata_xfer for what
      * the other order does once there is more than one drive on the bus. */
     outb(ATA_DRIVE, ata_sel_lba(drive, 0));   /* this drive, LBA mode */
     ata_400ns_delay();
@@ -301,124 +301,6 @@ int ata_flush(int drive) {
     return 0;
 }
 
-
-static int ata_read_sector(int drive, uint32_t lba, uint8_t *buf) {
-    if (!ata_drive_ok(drive)) return -1;
-    spin_lock(&ata_lock);
-
-    /* SELECT THE DRIVE, THEN WAIT FOR THAT DRIVE. The order was the other way
-     * round and it did not matter while there was only ever one drive to
-     * select: ata_wait_busy() polled the status of whichever drive was already
-     * selected, which was always this one. With two drives it polls the OTHER
-     * one and then writes command registers at a drive that has not been given
-     * the 400ns it is owed to put its own status on the bus -- the command is
-     * issued into a controller still switching drives, and the transfer never
-     * starts. The symptom is not an error: it is a guest that stops doing disk
-     * I/O entirely, which reaches the harness as the installer's format WEDGING.
-     * Found by the first gate that ever wrote to the slave. */
-    outb(ATA_DRIVE, ata_sel_lba(drive, lba));
-    ata_400ns_delay();
-
-    if (ata_wait_busy() != 0) {
-        spin_unlock(&ata_lock);
-        return ata_refuse("read", lba, inb(ATA_STATUS));
-    }
-
-    outb(ATA_SECCOUNT, 1);
-    outb(ATA_LBA_LOW,  lba & 0xFF);
-    outb(ATA_LBA_MID,  (lba >> 8) & 0xFF);
-    outb(ATA_LBA_HIGH, (lba >> 16) & 0xFF);
-    outb(ATA_COMMAND, ATA_CMD_READ);
-
-    if (ata_wait_busy() != 0) {
-        spin_unlock(&ata_lock);
-        return ata_refuse("read", lba, inb(ATA_STATUS));
-    }
-    ata_400ns_delay();
-
-    /* The drive must say it HAS the data before the data port is read. Without
-     * this the loop below runs against whatever the bus happens to return and
-     * hands it back as a sector. */
-    uint8_t status = inb(ATA_STATUS);
-    if (!ata_transfer_ready(status)) {
-        spin_unlock(&ata_lock);
-        return ata_refuse("read", lba, status);
-    }
-
-    for (int i = 0; i < 256; i++) {
-        uint16_t data = inw(ATA_DATA);
-        buf[i*2 + 0] = data & 0xFF;
-        buf[i*2 + 1] = data >> 8;
-    }
-    spin_unlock(&ata_lock);
-    return 0;
-}
-
-static int ata_write_sector(int drive, uint32_t lba, const uint8_t *buf) {
-    if (!ata_drive_ok(drive)) return -1;
-    spin_lock(&ata_lock);
-
-    /* SELECT THE DRIVE, THEN WAIT FOR THAT DRIVE. The order was the other way
-     * round and it did not matter while there was only ever one drive to
-     * select: ata_wait_busy() polled the status of whichever drive was already
-     * selected, which was always this one. With two drives it polls the OTHER
-     * one and then writes command registers at a drive that has not been given
-     * the 400ns it is owed to put its own status on the bus -- the command is
-     * issued into a controller still switching drives, and the transfer never
-     * starts. The symptom is not an error: it is a guest that stops doing disk
-     * I/O entirely, which reaches the harness as the installer's format WEDGING.
-     * Found by the first gate that ever wrote to the slave. */
-    outb(ATA_DRIVE, ata_sel_lba(drive, lba));
-    ata_400ns_delay();
-
-    if (ata_wait_busy() != 0) {
-        spin_unlock(&ata_lock);
-        return ata_refuse("write", lba, inb(ATA_STATUS));
-    }
-
-    outb(ATA_SECCOUNT, 1);
-    outb(ATA_LBA_LOW,  lba & 0xFF);
-    outb(ATA_LBA_MID,  (lba >> 8) & 0xFF);
-    outb(ATA_LBA_HIGH, (lba >> 16) & 0xFF);
-    outb(ATA_COMMAND, ATA_CMD_WRITE);
-
-    if (ata_wait_busy() != 0) {
-        spin_unlock(&ata_lock);
-        return ata_refuse("write", lba, inb(ATA_STATUS));
-    }
-    ata_400ns_delay();
-
-    /* The drive must be ASKING for the data before it is pushed. Writing 256
-     * words at a drive that has not raised DRQ is a write that did not happen,
-     * and the status check afterwards will not necessarily say so. */
-    uint8_t status = inb(ATA_STATUS);
-    if (!ata_transfer_ready(status)) {
-        spin_unlock(&ata_lock);
-        return ata_refuse("write", lba, status);
-    }
-
-    for (int i = 0; i < 256; i++) {
-        uint16_t data = (buf[i*2 + 1] << 8) | buf[i*2 + 0];
-        outw(ATA_DATA, data);
-    }
-
-    if (ata_wait_busy() != 0) {
-        spin_unlock(&ata_lock);
-        return ata_refuse("write", lba, inb(ATA_STATUS));
-    }
-    ata_400ns_delay();
-
-    /* DF as well as ERR: a device fault is the drive saying the write did not
-     * land, and it was not tested for. */
-    status = inb(ATA_STATUS);
-    if (status & (ATA_ST_ERR | ATA_ST_DF)) {
-        spin_unlock(&ata_lock);
-        return ata_refuse("write", lba, status);
-    }
-
-    spin_unlock(&ata_lock);
-    return 0;
-}
 
 /* Probe ONE drive with IDENTIFY and report whether a usable ATA disk is there.
  * Returns 1 for a real ATA disk, 0 for an absent/floating bus or a non-ATA (e.g.
@@ -543,20 +425,128 @@ int ata_init(void) {
     return found;
 }
 
-int ata_read(int drive, uint32_t lba, void *buf, uint32_t sectors) {
+/* ONE COMMAND FOR THE WHOLE RUN, not one per sector.
+ *
+ * WHY THIS EXISTS. A filesystem block is 4096 bytes and a sector is 512, so
+ * every block was eight commands: eight drive selects, eight BSY waits, eight
+ * command writes and eight completions. The installer's format writes about
+ * 2.3 MB, which is ~576 blocks, and it was measured at about 4,700 synchronous
+ * operations (docs/LIMITATIONS.md 5.2h, `format ~= 5.2s + 4700/IOPS`). 576 x 8
+ * is 4,608: the whole of that figure is the sector-at-a-time transport, and
+ * none of it is the cryptography, which covers 2.3 MB and costs microseconds.
+ *
+ * READ SECTORS and WRITE SECTORS (0x20/0x30) take a sector COUNT and transfer
+ * that many back to back under one command. The data-transfer protocol is
+ * unchanged and is still per sector: the drive raises DRQ once for each, and
+ * each one is checked, because a drive that faults partway through must be
+ * caught at the sector it faulted on and not at the end of the run. What goes
+ * away is the per-sector COMMAND, which is the part the device counts as an
+ * operation.
+ *
+ * ATA_SECCOUNT IS EIGHT BITS AND 0 MEANS 256. Runs are therefore capped at 255
+ * and long transfers issue several commands. The cap is not 256 on purpose: a
+ * count of 256 has to be encoded as 0, and a run length that has to be written
+ * down as its own opposite is the kind of thing that is correct when written and
+ * wrong after the next edit. Eight sectors is what a block costs, so nothing in
+ * this tree comes near either bound.
+ *
+ * ONE PATH FOR ONE SECTOR AND FOR MANY. A single-sector transfer is
+ * this function with a count of one, rather than a second implementation kept
+ * beside it: the single-sector versions were where the drive-select ordering bug
+ * was found, and two copies of that sequence is two places
+ * for the next such bug to live in only one of. */
+static int ata_xfer(int drive, uint32_t lba, uint8_t *buf, uint32_t count, int is_write) {
+    const char *what = is_write ? "write" : "read";
     if (!ata_drive_ok(drive)) return -1;
-    uint8_t *b = (uint8_t*)buf;
-    for (uint32_t s = 0; s < sectors; s++) {
-        if (ata_read_sector(drive, lba + s, b + s * 512) != 0) return -1;
+    if (count == 0) return 0;
+    if (count > 255) return -1;          /* caller must split; see the note above */
+
+    spin_lock(&ata_lock);
+
+    /* Select the drive, THEN wait for it. See the note on ata_read for what goes
+     * wrong the other way round, and why the symptom is a wedged format rather
+     * than an error. */
+    outb(ATA_DRIVE, ata_sel_lba(drive, lba));
+    ata_400ns_delay();
+
+    if (ata_wait_busy() != 0) {
+        spin_unlock(&ata_lock);
+        return ata_refuse(what, lba, inb(ATA_STATUS));
+    }
+
+    outb(ATA_SECCOUNT, (uint8_t)count);
+    outb(ATA_LBA_LOW,  lba & 0xFF);
+    outb(ATA_LBA_MID,  (lba >> 8) & 0xFF);
+    outb(ATA_LBA_HIGH, (lba >> 16) & 0xFF);
+    outb(ATA_COMMAND, is_write ? ATA_CMD_WRITE : ATA_CMD_READ);
+
+    for (uint32_t s = 0; s < count; s++) {
+        uint8_t *sect = buf + (uint64_t)s * 512u;
+
+        if (ata_wait_busy() != 0) {
+            spin_unlock(&ata_lock);
+            return ata_refuse(what, lba + s, inb(ATA_STATUS));
+        }
+        ata_400ns_delay();
+
+        /* PER SECTOR, and not once for the run. The drive must be ASKING for
+         * this sector before its 256 words move: a transfer against a drive
+         * that has not raised DRQ reads whatever the bus returns, or writes
+         * into a drive that is not listening, and the status check afterwards
+         * will not necessarily say so. */
+        uint8_t status = inb(ATA_STATUS);
+        if (!ata_transfer_ready(status)) {
+            spin_unlock(&ata_lock);
+            return ata_refuse(what, lba + s, status);
+        }
+
+        if (is_write) {
+            for (int i = 0; i < 256; i++)
+                outw(ATA_DATA, (uint16_t)((sect[i*2 + 1] << 8) | sect[i*2 + 0]));
+        } else {
+            for (int i = 0; i < 256; i++) {
+                uint16_t data = inw(ATA_DATA);
+                sect[i*2 + 0] = data & 0xFF;
+                sect[i*2 + 1] = data >> 8;
+            }
+        }
+    }
+
+    if (is_write) {
+        /* The run is not done until the drive says so, and DF as well as ERR:
+         * a device fault is the drive saying the write did not land. */
+        if (ata_wait_busy() != 0) {
+            spin_unlock(&ata_lock);
+            return ata_refuse(what, lba, inb(ATA_STATUS));
+        }
+        ata_400ns_delay();
+        uint8_t status = inb(ATA_STATUS);
+        if (status & (ATA_ST_ERR | ATA_ST_DF)) {
+            spin_unlock(&ata_lock);
+            return ata_refuse(what, lba, status);
+        }
+    }
+
+    spin_unlock(&ata_lock);
+    return 0;
+}
+
+int ata_read(int drive, uint32_t lba, void *buf, uint32_t sectors) {
+    uint8_t *b = (uint8_t *)buf;
+    while (sectors) {
+        uint32_t n = sectors > 255u ? 255u : sectors;
+        if (ata_xfer(drive, lba, b, n, 0) != 0) return -1;
+        lba += n; b += (uint64_t)n * 512u; sectors -= n;
     }
     return 0;
 }
 
 int ata_write(int drive, uint32_t lba, const void *buf, uint32_t sectors) {
-    if (!ata_drive_ok(drive)) return -1;
-    const uint8_t *b = (const uint8_t*)buf;
-    for (uint32_t s = 0; s < sectors; s++) {
-        if (ata_write_sector(drive, lba + s, b + s * 512) != 0) return -1;
+    uint8_t *b = (uint8_t *)(uintptr_t)buf;
+    while (sectors) {
+        uint32_t n = sectors > 255u ? 255u : sectors;
+        if (ata_xfer(drive, lba, b, n, 1) != 0) return -1;
+        lba += n; b += (uint64_t)n * 512u; sectors -= n;
     }
     return 0;
 }

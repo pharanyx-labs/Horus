@@ -612,6 +612,171 @@ static inline void cell_put(int y, int x, uint16_t v) {
     else VIDEO_MEMORY[y * VGA_COLS + x] = v;
 }
 
+/* ---- the format progress panel -------------------------------------------
+ *
+ * WHY THIS PAINTS CELLS INSTEAD OF CALLING print().
+ *
+ * Formatting a volume happens inside SYS_STORAGE_FORMAT, so the installer that
+ * asked for it is BLOCKED in the syscall and cannot draw anything for as long
+ * as it takes. And once the ring-3 console_server owns the console, print_core
+ * computes drive_hw = (console_owner_task == 0) and emits to the klog ONLY, so
+ * a kernel message is invisible on the machine's own screen at exactly the
+ * moment somebody is standing in front of it wondering whether it has died.
+ * That is the same bind PS2_PROBE is in below, and this is the same answer:
+ * write the cells.
+ *
+ * IT SHIPS, which PS2_PROBE does not. A format on a real disk takes minutes
+ * (the metadata region alone is one 32-byte entry per block, so 128 MiB on a
+ * 16 GiB volume), and a machine that shows nothing for minutes while it erases
+ * a disk is indistinguishable from one that has hung. It was reported as a hang
+ * on 2026-09-23, which is what this exists to answer.
+ *
+ * IT EXPLAINS AS WELL AS COUNTS. A progress bar says how long; it does not say
+ * what is being done to the disk or why it takes this long. The caller passes
+ * two lines of plain English with each phase, because "Horus is writing a nonce
+ * and an authentication tag for every block on the disk" is the difference
+ * between a wait and a mystery.
+ *
+ * THE PANEL IS NOT RESTORED WHEN IT FINISHES. The installer owns the screen and
+ * its damage diff cannot see a write it did not make, so it repaints from its
+ * own back buffer once the syscall returns (userspace/installer.c invalidates
+ * after the format for exactly this reason). Clearing the cells here as well
+ * would be a second, racing opinion about what the screen should say. */
+#define PROG_ROWS 8
+
+static int g_prog_top = -1;      /* first row of the panel, -1 when not shown */
+
+static void prog_text(int y, int x, const char *s, uint8_t attr) {
+    for (int i = 0; s[i] && x + i < VGA_COLS; i++)
+        cell_put(y, x + i, (uint16_t)(((uint16_t)attr << 8) | (uint8_t)s[i]));
+}
+
+static unsigned prog_len(const char *s) {
+    unsigned n = 0;
+    while (s[n]) n++;
+    return n;
+}
+
+static void prog_clear_row(int y, uint8_t attr) {
+    for (int x = 0; x < VGA_COLS; x++)
+        cell_put(y, x, (uint16_t)(((uint16_t)attr << 8) | (uint8_t)' '));
+}
+
+/* Decimal into a caller-owned buffer. No varargs in this path: it runs while a
+ * disk is being erased and is not the place for a format string. */
+static void prog_utoa(uint64_t v, char *out, unsigned cap) {
+    char tmp[24];
+    unsigned n = 0;
+    if (cap == 0) return;
+    if (v == 0) tmp[n++] = '0';
+    while (v && n < sizeof(tmp)) { tmp[n++] = (char)('0' + (v % 10)); v /= 10; }
+    unsigned i = 0;
+    while (n && i + 1 < cap) out[i++] = tmp[--n];
+    out[i] = 0;
+}
+
+/* A line the panel keeps showing until the format ends. It exists for exactly
+ * one message so far: that the block-run transport was refused and the clear is
+ * going block by block. That is the difference between a format that takes a
+ * minute and one that takes half an hour, and println() cannot deliver it --
+ * ring 3 owns the console by then, which is the whole reason this file paints
+ * cells. A performance fix nobody can see not running is a performance fix
+ * nobody can trust. */
+static const char *g_prog_note;
+
+void console_progress_note(const char *note) { g_prog_note = note; }
+
+void console_progress(const char *title, const char *why1, const char *why2,
+                      uint64_t done, uint64_t total) {
+    if (g_rows < PROG_ROWS + 2) return;          /* no room; say nothing */
+    if (g_prog_top < 0) g_prog_top = g_rows - PROG_ROWS - 1;
+    const int top = g_prog_top;
+    /* CHECKED, NOT REASONED ABOUT. The guard above already implies top >= 1,
+     * but this function writes cells by computing y * VGA_COLS + x and a
+     * negative origin indexes before the console. The compiler said so; a bound
+     * that has to be derived from two other statements is one an edit can
+     * quietly break. */
+    if (top < 0 || top + PROG_ROWS > g_rows) return;
+
+    for (int r = 0; r < PROG_ROWS; r++) prog_clear_row(top + r, 0x07);
+
+    /* A DOUBLE-RULED BOX, because the panel is not part of the installer's own
+     * screen and should not pretend to be. The installer draws single-ruled
+     * frames through DEC Special Graphics; this is the kernel writing over the
+     * top of that while ring 3 is blocked, and a visibly different rule says so
+     * without a word of explanation. It is also the only surface that CAN use
+     * these glyphs: the TUI has to look the same on a serial terminal, and a
+     * VT100 has no double-line characters to send. */
+    const int L = 0, R = VGA_COLS - 1;
+    for (int x = L + 1; x < R; x++) {
+        cell_put(top, x, (uint16_t)((0x07u << 8) | 0xCDu));
+        cell_put(top + PROG_ROWS - 1, x, (uint16_t)((0x07u << 8) | 0xCDu));
+    }
+    for (int y = top + 1; y < top + PROG_ROWS - 1; y++) {
+        cell_put(y, L, (uint16_t)((0x07u << 8) | 0xBAu));
+        cell_put(y, R, (uint16_t)((0x07u << 8) | 0xBAu));
+    }
+    cell_put(top, L, (uint16_t)((0x07u << 8) | 0xC9u));
+    cell_put(top, R, (uint16_t)((0x07u << 8) | 0xBBu));
+    cell_put(top + PROG_ROWS - 1, L, (uint16_t)((0x07u << 8) | 0xC8u));
+    cell_put(top + PROG_ROWS - 1, R, (uint16_t)((0x07u << 8) | 0xBCu));
+
+    prog_text(top + 1, 3, title ? title : "", 0x0F);
+    if (why1) prog_text(top + 2, 3, why1, 0x07);
+    if (why2) prog_text(top + 3, 3, why2, 0x07);
+
+    /* THE BAR IS DRAWN FROM THE FRACTION AND NOT FROM A COUNTER OF ITS OWN, so
+     * a caller that reports the same `done` twice cannot advance it, and one
+     * that reports a `done` past `total` cannot run it off the end. */
+    const int bar_x = 3, bar_w = VGA_COLS - 6 - 7;
+    uint64_t filled = 0;
+    /* TOTAL == 0 MEANS "no fraction to report", not "nothing done". Some phases
+     * are one indivisible operation -- deriving the key is the long one -- and
+     * drawing them as 0% of a bar states something false: that the work has not
+     * started and the machine may be stuck. Those phases get a shaded bar and
+     * no percentage, which says working without claiming to know how far. */
+    const int indeterminate = (total == 0);
+    if (total > 0) {
+        if (done > total) done = total;
+        filled = ((uint64_t)bar_w * done) / total;
+    }
+    prog_text(top + 4, bar_x, "[", 0x07);
+    for (int i = 0; i < bar_w; i++) {
+        uint8_t ch = indeterminate ? 0xB1u                      /* medium shade throughout */
+                                   : (((uint64_t)i < filled) ? 0xDBu : 0xB0u);
+        cell_put(top + 4, bar_x + 1 + i, (uint16_t)((0x07u << 8) | ch));
+    }
+    prog_text(top + 4, bar_x + 1 + bar_w, "]", 0x07);
+
+    if (!indeterminate) {
+        char pct[8];
+        prog_utoa((done * 100u) / total, pct, sizeof(pct));
+        prog_text(top + 4, bar_x + 3 + bar_w, pct, 0x0F);
+        prog_text(top + 4, bar_x + 3 + bar_w + (int)prog_len(pct), "%", 0x0F);
+    }
+
+    /* THE RAW COUNT AS WELL AS THE PERCENTAGE, because a percentage that has
+     * not reached 1 yet reads exactly like a percentage that is never going to.
+     * A bar sitting at 0% was reported on 2026-09-23 and nothing on the screen
+     * could say whether the machine was working or wedged. The count moves on
+     * every update, so it answers that question by itself. */
+    if (!indeterminate) {
+        char a[24], b[24];
+        prog_utoa(done, a, sizeof(a));
+        prog_utoa(total, b, sizeof(b));
+        int x = 3;
+        prog_text(top + 5, x, "block ", 0x07);           x += 6;
+        prog_text(top + 5, x, a, 0x0F);                  x += (int)prog_len(a);
+        prog_text(top + 5, x, " of ", 0x07);             x += 4;
+        prog_text(top + 5, x, b, 0x0F);
+    } else {
+        prog_text(top + 5, 3, "working", 0x07);
+    }
+
+    prog_text(top + 6, 3, g_prog_note ? g_prog_note : "Do not power the machine off.",
+              g_prog_note ? 0x0Eu : 0x07u);
+}
+
 #ifdef PS2_PROBE
 /* A PS/2 liveness readout, painted into the top-right corner of the console.
  *

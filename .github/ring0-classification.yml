@@ -300,7 +300,68 @@
 # compiled only under PAGEFREE_SELFTEST (its failure line is assembled
 # and printed in one write, docs/LIMITATIONS.md 2.6a). 3 are in main.c and call the self-test.
 # The free list is ring 0 by nature: it is the kernel's own allocator.
-core_budget_loc: 10450
+# 2026-09-23: 10450 -> 10497, +47 for the format progress panel. All 47 are in
+# terminal.c (console_progress and its three static helpers).
+#
+# WHY IT CANNOT GO TO RING 3, which is the only question the zero-headroom rule
+# asks. Formatting a volume happens inside SYS_STORAGE_FORMAT, so the installer
+# that asked for it is BLOCKED in the syscall for the whole of it, and once the
+# ring-3 console_server owns the console print_core emits to the klog only. The
+# panel exists precisely because neither ring 3 nor print() can speak at that
+# moment: it is the same bind PS2_PROBE's painter is in (+24, 2026-09-10 above)
+# and it has the same answer, write the cells. Code that draws while ring 3 is
+# blocked is core by construction; there is no version of it that lives outside
+# the kernel.
+#
+# WHAT IT BOUGHT. A format on a laptop's eMMC writes 128 MiB of crypto metadata
+# before any of the operator's data exists, and was reported as a hang after
+# twenty minutes on 2026-09-23. It was not hung. A machine that shows nothing
+# for twenty minutes while it erases a disk is indistinguishable from one that
+# has died, and the 47 lines are what tell those two apart.
+#
+# 2026-09-23 (same day, second raise): 10497 -> 10513, +16 in terminal.c. The
+# panel gained a live block counter and a persistent note line, both because the
+# first version could not answer the question it existed to answer: a bar
+# reading 0% on a slow disk is indistinguishable from a bar that is never going
+# to move, and that is exactly how it was reported. The counter moves on every
+# update, and the note line is the only way to say "this controller refused
+# multi-block writes, so the clear is going block by block" to somebody standing
+# at the machine -- println reaches the klog, which is nobody. A performance fix
+# nobody can see failing is a performance fix nobody can trust.
+#
+# 2026-09-23 (third raise, same day): 10513 -> 10527, +14 in terminal.c. The
+# progress panel gained a double-ruled frame and an explicit bound on its own
+# origin.
+#
+# The frame is not decoration. The panel is the KERNEL writing over the
+# installer's screen while ring 3 is blocked, and the installer's own frames are
+# single-ruled DEC Special Graphics: a visibly different rule says whose screen
+# this is without a word of explanation. It is also the only surface that can
+# use those glyphs, since the TUI has to render identically on a serial terminal
+# and a VT100 has no double-line characters to send.
+#
+# The bound is four lines and exists because the compiler found it: the panel
+# writes cells as y * VGA_COLS + x, the origin was derived from two other
+# statements rather than checked, and -Warray-bounds said so. A bound that has
+# to be reasoned about is one an edit can quietly break.
+#
+# 2026-09-23 (fourth raise, same day): 10527 -> 10535, +8 across terminal.c and
+# storage.c. The panel gained an INDETERMINATE mode and merkle_build gained
+# progress reporting.
+#
+# Both come from the same report: a laptop showing "block 0 of 1" at 0% and
+# looking stuck. It was not stuck, it was inside merkle_build, which reads every
+# metadata block back off the medium to hash it -- 32,768 reads on a 16 GiB
+# volume -- and whose caller passed a placeholder fraction because the function
+# had no way to report one. A phase that long with a bar that cannot move is
+# worse than no bar: it is a positive claim that nothing is happening.
+#
+# The indeterminate mode exists for the other half of the same mistake. Deriving
+# the key is one indivisible Argon2id call, and drawing it as 0% of a bar states
+# something false. It now draws a shaded bar and the word "working", which says
+# working without claiming to know how far.
+#
+core_budget_loc: 10535
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

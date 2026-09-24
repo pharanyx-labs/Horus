@@ -547,6 +547,27 @@ in this file.
 
 ### Fixed
 
+- **An install on a laptop's eMMC took twenty minutes and showed nothing while it did.** Both
+  storage backends moved one 512-byte sector per command while a filesystem block is 4096 bytes,
+  so formatting a 16 GiB volume issued 262,144 single-sector writes to clear its crypto metadata
+  region. ATA now issues one `READ`/`WRITE SECTORS` per run and the SD path uses `CMD18`/`CMD25`
+  with Auto CMD12; a region being cleared is written in runs fed from one sector, after a check
+  that the block really is uniform. The format now draws a progress panel from inside the kernel
+  (the installer is blocked in the syscall, and ring 3 owns the console), naming each phase in
+  plain English and counting real work, and the console font gained the 46 box and shade glyphs
+  it lacked, whose absence had also been drawing the installer's frame with invisible borders on
+  a framebuffer. Tab now finishes a field as Enter does. Every byte written and every
+  cryptographic operation is unchanged. **Measured, not assumed**: under emulation the 16 GiB
+  eMMC gate got slower, not faster (the numbers are in `docs/LIMITATIONS.md` section 4, under
+  "USB, sound, or any modern bus"); the gain on a real card is projected from the command count
+  and has not yet been timed on the laptop.
+- **The SD stride control arm cleared the key slots it had just written, and the install gate
+  reported a refused format as a wedge.** `SD_BLOCK_ADDR_UNSCALED` left the new block-run fill
+  scaled, so the arm's format failed (`rc=-5`) before the step it asserts on; and
+  `tools/installer_session.py` let its stall bound call that refusal `WEDGED` 30s later. The arm
+  now unscales every transport path, and the harness reads the installer's own `INSTALLER: FAIL`
+  line and reports a refusal as one.
+
 - **The installer drew its screens into a serial port that was not there, so on a laptop it ran
   correctly and invisibly.** Every `INSTALLER:` marker reached the screen and nothing else did.
   Markers are ordinary `CON_OP_WRITE` writes and `con_emit` paints the display as well as the

@@ -504,6 +504,21 @@ def boot2(disk):
             raise SessionFail("the installer ran again on a machine that has a volume")
         step("no installer on a machine that already has a volume")
 
+        # THE COMPILED-IN ROOT MUST NOT OPEN AN INSTALLED MACHINE (2026-09-24).
+        # `root`/`rootpass` is printed in docs/BUILDING.md, and until this was
+        # fixed it logged in here, before the real password had unlocked
+        # anything. Asked FIRST, while the account table in RAM is still the
+        # compiled-in one, because that is exactly when it used to work. The
+        # refusal is read off the wire.
+        s.send("root")
+        s.expect("Password:", STEP)
+        s.send("rootpass")
+        if expect_any(s, ["@horus", "Login incorrect"], STEP) == 0:
+            raise SessionFail("the compiled-in root/rootpass logged in on an "
+                              "installed machine")
+        step("the compiled-in root/rootpass was refused on the installed machine")
+        s.expect("horus login:", STEP)
+
         # THE CLAIM THIS GATE EXISTS FOR. Log in with the password the installer
         # was given -- which the volume's seal and the root account must BOTH
         # accept, by two different mechanisms.

@@ -361,7 +361,12 @@
 # something false. It now draws a shaded bar and the word "working", which says
 # working without claiming to know how far.
 #
-core_budget_loc: 10535
+# 2026-09-24: 10535 -> 10536, +1 in scheduler.c: the call to
+# users_apply_boot_policy straight after users_init. The policy itself is in
+# kusers.c; the call has to sit where users_init is, because the first version
+# called it from main.c before scheduler_init and users_init re-seeded the
+# compiled-in accounts on top of it (SECURITY.md S103).
+core_budget_loc: 10536
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

@@ -382,6 +382,16 @@ in this file.
 
 ## [Unreleased]
 
+### Security
+
+- **An installed machine accepted the compiled-in `root` password until its volume was unlocked.**
+  `users_init` seeds `root`/`rootpass` and `user`/`password` on every boot, and on an installed
+  machine they stayed in RAM: after an install and a power cycle, `root`/`rootpass` got a root
+  shell before the real password had unlocked anything (the store stayed locked). The compiled-in
+  accounts now exist only on a live boot, the boot menu's live entry or a machine with no disk.
+  `SECURITY.md` S103; witnessed by `make smoke-installer`, falsified by
+  `DEFAULT_ACCOUNTS_ON_DISK=1`.
+
 ### Added
 
 - **The SMP race gates also run under KVM, as a second detector** (`smoke-smp-kvm`, advisory for

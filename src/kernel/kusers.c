@@ -235,6 +235,59 @@ static int verify_user_password(const char *name, const char *password) {
  * comment "must be reproducible across reboots from the same pwd" -- the same
  * conclusion, reached earlier, one field away. */
 
+/* THE COMPILED-IN ACCOUNTS ARE FOR A LIVE BOOT ONLY (2026-09-24, SECURITY.md S103).
+ *
+ * users_init seeds `root`/`rootpass` and `user`/`password` on every boot, and
+ * until this existed they stayed there on an INSTALLED machine: h_auth checks
+ * the typed password against whatever table is in RAM, and before anybody has
+ * unlocked the volume that is the compiled-in one. Measured on main the same
+ * day: after an install and a power cycle, `root`/`rootpass` logged in and got
+ * a root shell. The store stayed locked (S74), so no file was reachable, but a
+ * password printed in docs/BUILDING.md opened a root session on a machine
+ * whose operator had chosen their own.
+ *
+ * So on a machine with a persistent device, and not booted from the live
+ * entry, neither survives past storage_init: `user` is removed, and `root`
+ * keeps its identity (uid 0 is who the installer and the persisted table set a
+ * password for) with a hash no password produces, fresh CSPRNG bytes under a
+ * fresh salt. A field saying "no password" would have been clearer and would
+ * have changed the account table's on-disk layout, which the tag over it would
+ * then refuse on every existing volume. The installer sets root's password; an
+ * installed machine's login loads the persisted table at unlock and checks that.
+ *
+ * A live boot keeps both, by the maintainer's decision: that is the boot for
+ * trying the system, and every diskless CI boot is one. STORAGE_AUTOFORMAT (a
+ * control arm, never shipped) keeps them too, because the targets built with it
+ * boot a blank disk and log in with the defaults by design.
+ */
+void users_apply_boot_policy(void)
+{
+#if defined(STORAGE_AUTOFORMAT) || defined(DEFAULT_ACCOUNTS_ON_DISK)
+    /* DEFAULT_ACCOUNTS_ON_DISK: CONTROL ARM -- never ship. The pre-2026-09-24
+     * kernel, in which an installed machine accepted root/rootpass until its
+     * volume was unlocked. See make smoke-installer-defaults-control. */
+    return;
+#else
+    const int live = (boot_flags() & BOOT_FLAG_LIVE) != 0;
+    if (live || storage_persistent_device_count() == 0) {
+        print("USERS: live boot: the compiled-in accounts are available\n");
+        return;
+    }
+    for (int i = 0; i < MAX_USERS; i++) {
+        if (!users[i].valid) continue;
+        if (users[i].uid == 0) {
+            generate_salt(users[i].salt, PASS_SALT_LEN);
+            secure_random_bytes(users[i].pass_hash, sizeof(users[i].pass_hash));
+        } else {
+            secure_zero(&users[i], sizeof(users[i]));
+            users[i].keyslot = KEYSLOT_NONE;
+            if (user_count > 0) user_count--;
+        }
+    }
+    print("USERS: this machine has a disk: no compiled-in account can log in\n");
+#endif
+}
+
 void users_init(void) {
     for (int i = 0; i < MAX_USERS; i++) {
         users[i].valid = 0;

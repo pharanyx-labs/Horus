@@ -182,9 +182,37 @@ static void fb_blit(unsigned idx) { fb_paint(idx, fb_cells[idx]); }
  * truth; moving it and repainting every cell is O(grid) per scrolled line, which
  * is what the kernel already pays through cell_put, and correctness before
  * cleverness on a console that scrolls at human speed. */
+/* ---- scrollback: what scrolled off the top ------------------------------
+ *
+ * Every line the cooked console scrolls off the top of the screen is kept here,
+ * so Shift+PgUp can show it again (the maintainer's request, 2026-09-24, and the
+ * thing a machine with no serial port has no other copy of: the boot log scrolls
+ * past and is gone). The last SB_LINES lines, as cells, so a line comes back in
+ * the colours it had. It holds only what was already on the screen, so reading
+ * it grants nothing, which is why it is in every build and needs no login.
+ * A full-screen program's surface is drawn in place and never scrolls, so the
+ * installer's screens do not fill it. */
+#ifndef CONSOLE_NO_SCROLLBACK
+#define SB_LINES 512u
+static uint16_t sb_ring[SB_LINES][80];
+static unsigned sb_head;      /* the slot the next line goes into            */
+static unsigned sb_count;     /* lines held, at most SB_LINES                */
+static unsigned sb_off;       /* lines back from the live screen; 0 = live   */
+static void sb_push(const volatile uint16_t *row) {
+    for (unsigned c = 0; c < 80u; c++) sb_ring[sb_head][c] = row[c];
+    sb_head = (sb_head + 1u) % SB_LINES;
+    if (sb_count < SB_LINES) sb_count++;
+}
+#else
+/* CONTROL ARM -- never ship. console_server before 2026-09-24: what scrolls off
+ * the top is gone. See make smoke-console-scrollback-control. */
+#define sb_push(row) ((void)0)
+#endif
+
 static void fb_scroll(void) {
     const unsigned cells = 80u * fb_rows;
     if (cells < 80u) return;
+    sb_push(&fb_cells[0]);
     for (unsigned i = 80u; i < cells; i++) fb_cells[i - 80u] = fb_cells[i];
     for (unsigned i = cells - 80u; i < cells; i++)
         fb_cells[i] = (uint16_t)((VGA_ATTR << 8) | ' ');
@@ -276,6 +304,7 @@ static void vga_set_cursor(unsigned pos) {
 /* The VGA text half of fb_scroll, against the hardware cell array rather than a
  * shadow: at 0xB8000 the display IS the buffer, so the move is the repaint. */
 static void vga_scroll(void) {
+    sb_push(&vga[0]);
     for (unsigned i = 80u; i < VGA_CELLS; i++) vga[i - 80u] = vga[i];
     for (unsigned i = VGA_CELLS - 80u; i < VGA_CELLS; i++)
         vga[i] = (uint16_t)((VGA_ATTR << 8) | ' ');
@@ -373,7 +402,17 @@ static int surf_stale = 1;
 
 /* One byte to both outputs, expanding \n to \r\n on serial. No stamping: this is
  * what the prefix itself is written with. */
+#ifndef CONSOLE_NO_SCROLLBACK
+static void sb_live(void);
+#ifndef CONSOLE_NO_KBD
+static void sb_page(int up);
+#endif
+#else
+#define sb_live() ((void)0)
+#endif
+
 static void con_emit(char c) {
+    sb_live();           /* output goes to the live screen, so show it */
     if (c == '\n') ser_putc('\r');
     ser_putc(c);
     /* Whichever display this machine has. On a framebuffer the VGA text window
@@ -568,8 +607,21 @@ static char ps2_poll(void) {
     }
 #endif
 
+#ifndef CONSOLE_NO_SCROLLBACK
+    /* Shift+PgUp / Shift+PgDn: 0xE0 0x49 / 0xE0 0x51 with shift held. ps2_feed
+     * drops both, so they are read here, and the prefix it consumed is cleared
+     * the way it would have cleared it. PgUp and PgDn WITHOUT shift reach
+     * ps2_feed as before (which delivers nothing for them). */
+    if (kbd.e0 && kbd.shift && (sc == 0x49 || sc == 0x51)) {
+        kbd.e0 = 0;
+        sb_page(sc == 0x49);
+        return 0;
+    }
+#endif
+
     int k = ps2_feed(&kbd, sc);
     if (k == PS2_KEY_NONE) return 0;
+    sb_live();                     /* a key that types something: back to live */
     if (k < 0x100) return (char)k;
 
     /* An extended key: hand back the sequence a serial terminal would have
@@ -1025,6 +1077,67 @@ static void cell_put(unsigned row, unsigned col, uint8_t ch, uint8_t attr) {
  * and the bound cell_put enforces cannot drift apart. */
 static unsigned cell_rows(void) { return fbp ? fb_rows : (VGA_CELLS / 80u); }
 
+#ifndef CONSOLE_NO_SCROLLBACK
+/* ---- scrollback: showing it ------------------------------------------------
+ *
+ * The view is history followed by the live screen, as one column of lines, with
+ * the window sb_off lines up from the bottom. It is DRAWN, never stored: the
+ * framebuffer path paints with fb_paint and leaves fb_cells alone, and the text
+ * path saves the window on the way in, so going back to the live screen is one
+ * repaint and nothing the console holds is disturbed. Any output (con_emit,
+ * a full-screen draw, a clear) and any key other than Shift+PgUp/PgDn go back to
+ * the live screen first, the way a Linux console does: nothing typed or printed
+ * while scrolled back lands somewhere the reader cannot see. */
+static uint16_t sb_saved_vga[VGA_CELLS];
+
+#ifndef CONSOLE_NO_KBD             /* nothing can page without a keyboard */
+static uint16_t sb_cell(unsigned vline, unsigned col) {
+    if (vline < sb_count)
+        return sb_ring[(sb_head + SB_LINES - sb_count + vline) % SB_LINES][col];
+    unsigned idx = (vline - sb_count) * 80u + col;
+    return fbp ? fb_cells[idx] : sb_saved_vga[idx];
+}
+
+static void sb_draw(void) {
+    const unsigned rows = cell_rows();
+    const unsigned top = sb_count - sb_off;        /* sb_off <= sb_count */
+    for (unsigned r = 0; r < rows; r++)
+        for (unsigned c = 0; c < 80u; c++) {
+            uint16_t cell = sb_cell(top + r, c);
+            if (fbp) fb_paint(r * 80u + c, cell);
+            else     vga[r * 80u + c] = cell;
+        }
+}
+#endif
+
+static void sb_live(void) {
+    if (!sb_off) return;
+    sb_off = 0;
+    if (fbp) { for (unsigned i = 0; i < 80u * fb_rows; i++) fb_blit(i); }
+    else     { for (unsigned i = 0; i < VGA_CELLS; i++) vga[i] = sb_saved_vga[i]; }
+}
+
+#ifndef CONSOLE_NO_KBD
+/* A page is a screen less one row, so the row at the edge stays in view as the
+ * reader's landmark. */
+static void sb_page(int up) {
+    const unsigned rows = cell_rows();
+    const unsigned page = rows > 1 ? rows - 1 : 1;
+    if (up) {
+        if (!sb_count || sb_off == sb_count) return;
+        if (!sb_off && !fbp)
+            for (unsigned i = 0; i < VGA_CELLS; i++) sb_saved_vga[i] = vga[i];
+        sb_off = (sb_off + page > sb_count) ? sb_count : sb_off + page;
+        sb_draw();
+    } else {
+        if (!sb_off) return;
+        if (sb_off > page) { sb_off -= page; sb_draw(); }
+        else sb_live();
+    }
+}
+#endif
+#endif
+
 /* THE SURFACE A FULL-SCREEN PROGRAM DRAWS ON IS CON_ROWS HIGH, AND CENTRED.
  *
  * CON_OP_WINSZ promises CON_ROWS x CON_COLS, because a serial terminal cannot be
@@ -1083,6 +1196,7 @@ static void surf_tidy(void) {
  * being skipped, since a sender that has one span wrong has lost track of the
  * screen and the rest of its message is not to be trusted onto the display. */
 static int con_draw_cells(const uint8_t *d, unsigned len) {
+    sb_live();
     const unsigned rows = surf_rows(), top = surf_top();
     unsigned i = 0, painted = 0;
     if (surf_stale) { surf_tidy(); surf_stale = 0; }
@@ -1110,6 +1224,7 @@ static int con_draw_cells(const uint8_t *d, unsigned len) {
 /* CON_OP_CLEAR: every cell blank, the stream at the top, and the serial terminal
  * told the same. The one way cooked output can start again on an empty screen. */
 static void con_clear(void) {
+    sb_live();
     const uint16_t blank = (uint16_t)((VGA_ATTR << 8) | ' ');
     if (fbp) {
         for (unsigned i = 0; i < 80u * fb_rows; i++) { fb_cells[i] = blank; fb_blit(i); }

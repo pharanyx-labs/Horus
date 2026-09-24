@@ -394,6 +394,12 @@ in this file.
 
 ### Added
 
+- **Shift+PgUp and Shift+PgDn scroll the console back.** The last 512 lines that scrolled off the
+  top of the machine's own screen are kept, so a boot log or a long command's output can be read
+  again on a machine with no serial port. A key typed or output printed while scrolled back returns
+  to the live screen, as on a Linux console. Every build has it: it shows only what was already on
+  the screen.
+
 - **A kernel log on Alt+F2, for diagnostic builds.** `make install.iso KLOG_CONSOLE=1` builds an
   image where Alt+F2 shows the kernel log on the machine's own screen with nobody logged in,
   Shift+PgUp/PgDn and Up/Down scroll it and Alt+F1 returns to the console as it was. It exists for a machine

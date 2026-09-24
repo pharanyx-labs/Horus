@@ -165,6 +165,7 @@ DEFECT_FLAGS = \
 	FB_TAG_IGNORED FB_TAG_ASSUME_TEXT \
 	FB_MAP_SELFTEST FB_MAP_LOW_HALF FB_CONSOLE_SELFTEST \
 	FB_CONSOLE_MIRRORED FB_INFO_ANY_DEVICE CONSOLE_FB_ABSENT CONSOLE_NO_KBD KLOG_CONSOLE \
+	CONSOLE_NO_SCROLLBACK \
 	SERIAL_PRESENCE_UNCHECKED \
 	CONSOLE_BACKSPACE_NO_ERASE \
 	CONSOLE_NO_SCROLL \
@@ -3401,6 +3402,12 @@ CONSOLE_NO_KBD ?= 0
 # Userspace-only, so it goes on USERSPACE_CFLAGS. `make install.iso KLOG_CONSOLE=1`.
 KLOG_CONSOLE ?= 0
 
+# CONSOLE_NO_SCROLLBACK=1 is console_server before 2026-09-24: a line that
+# scrolls off the top of the screen is gone, and Shift+PgUp does nothing. On a
+# machine with no serial port that loses the boot log for good. Userspace-only,
+# so it goes on USERSPACE_CFLAGS. The arm for `make smoke-console-scrollback`.
+CONSOLE_NO_SCROLLBACK ?= 0
+
 # SERIAL_PRESENCE_UNCHECKED=1 restores the console input path as it stood before
 # 2026-09-12: `inb(COM1_LSR) & 1` believed without first asking whether there is
 # a UART at 0x3F8 to answer. On a machine with no serial port every register in
@@ -4489,6 +4496,9 @@ USERSPACE_CFLAGS += -DCONSOLE_NO_KBD
 endif
 ifeq ($(KLOG_CONSOLE),1)
 USERSPACE_CFLAGS += -DKLOG_CONSOLE
+endif
+ifeq ($(CONSOLE_NO_SCROLLBACK),1)
+USERSPACE_CFLAGS += -DCONSOLE_NO_SCROLLBACK
 endif
 ifeq ($(CONSOLE_KBD_SPLIT_ESC),1)
 USERSPACE_CFLAGS += -DCONSOLE_KBD_SPLIT_ESC
@@ -8465,6 +8475,30 @@ smoke-keyboard:
 # claim, that a SHIP build does nothing on Alt+F2, because reading the log
 # without a login is authority for standing at the keyboard. The control arm runs
 # the absent check against a KLOG_CONSOLE=1 build and must go red on the view.
+# SCROLLBACK ON THE MACHINE'S OWN CONSOLE (tools/scrollback_session.py): a line
+# that scrolls off the top is kept, Shift+PgUp/PgDn page through it, and a key or
+# output while scrolled back returns to the live screen. Every build has it: it
+# shows only what was already on the screen. The arm is console_server before it.
+.PHONY: smoke-console-scrollback smoke-console-scrollback-control
+smoke-console-scrollback:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) $(SCROLLARM) horus.iso
+	@python3 tools/scrollback_session.py --iso horus.iso \
+		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
+		--serial-log /tmp/horus-scrollback.log
+
+smoke-console-scrollback-control:
+	@out=$$(SCROLLBACK_SHOTS=/tmp/horus-scrollback-control $(MAKE) --no-print-directory smoke-console-scrollback SCROLLARM=CONSOLE_NO_SCROLLBACK=1 2>&1); rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "SCROLLBACK CONTROL: FAIL - a console with no scrollback passed the gate"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "Shift+PgUp showed no history"; then \
+	    echo "SCROLLBACK CONTROL: FAIL - it failed, but not on the history."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "SCROLLBACK CONTROL: PASS - a console that keeps no history is caught"
+
 .PHONY: smoke-klog-console smoke-klog-console-control smoke-klog-console-absent smoke-klog-console-absent-control
 smoke-klog-console:
 	@$(MAKE) --no-print-directory clean

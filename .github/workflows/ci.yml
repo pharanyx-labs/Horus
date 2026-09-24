@@ -957,6 +957,13 @@ jobs:
       # second is the security claim, that a SHIP build does nothing on Alt+F2,
       # since reading the log without a login is authority for standing at the
       # keyboard. The arm runs that check against a KLOG_CONSOLE=1 build.
+      # SCROLLBACK: a line that scrolls off the top of the machine's own screen is
+      # kept and Shift+PgUp/PgDn page through it; a key or output while scrolled
+      # back returns to the live screen. The arm is the console before it.
+      - name: Shift+PgUp shows what scrolled off the console
+        run: make smoke-console-scrollback
+      - name: Control arm — a console that keeps no history is caught
+        run: make smoke-console-scrollback-control
       - name: Alt+F2 shows the kernel log in an instrumented build
         run: make smoke-klog-console
       - name: Control arm — a build with no view fails the present gate

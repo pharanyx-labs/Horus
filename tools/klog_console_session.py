@@ -164,6 +164,19 @@ def main():
             print(f"KLOG_CONSOLE: Alt+F1 put the console back ({restored} bytes off, "
                   f"blink {blink})", flush=True)
 
+            # ESC, the way out that does not depend on the keyboard's
+            # function-key mode (a laptop whose F1 is Mute unless Fn is held).
+            mark = len(g.buf)
+            chord(g, "alt", "f2")
+            g.expect(OPENED, a.timeout)
+            chord(g, "esc")
+            g.expect(CLOSED, a.timeout)
+            time.sleep(1.5)
+            s_esc = shot(g, a.shots, "6-after-esc.ppm")
+            if delta(s_idle, s_esc) > tol:
+                raise SessionFail("Esc closed the view but did not restore the console")
+            print("KLOG_CONSOLE: Esc closes it too", flush=True)
+
         # Either way the keys must still reach the console: a view that ate the
         # keyboard, or an absent one that did, is a machine nobody can log into.
         g.send_key_text(a.user + "\n", 0.15)

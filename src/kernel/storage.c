@@ -4,7 +4,12 @@ int fs_server_task_id = -1;
 int fs_server_listen_ep_idx = -1;
 
 static int storage_format_sealed(struct block_device *bd, const char *password, size_t plen,
-                                 uint64_t volume_blocks);
+                                 uint64_t volume_blocks, int unsealed);
+
+/* A key slot that holds disk_key IN THE CLEAR: slot 0 of an unsealed volume and
+ * nothing else. Distinct from 1 so keyslot_open, which derives a KEK and opens
+ * an AEAD, can never be handed one and never mistake one for a sealed slot. */
+#define KEYSLOT_CLEAR 2u
 int storage_mount(struct block_device *bd);
 int storage_unlock(const char *password, size_t plen);
 int storage_read_file_block(struct mounted_fs *mfs, uint64_t ino, uint64_t block, void *buf);
@@ -124,6 +129,9 @@ static struct block_device *g_needs_format_bd = NULL;
  * is the whole device. Set with the token by storage_authorize_format, which has
  * already bounded it against that device, and consumed with it. */
 static uint64_t             g_format_blocks = 0;
+/* SYS_STORAGE_FORMAT's flags for the authorised format (STORAGE_FORMAT_UNSEALED
+ * or 0), consumed with the token exactly as the size is. */
+static uint32_t             g_format_flags = 0;
 
 /* Set for the lifetime of a boot that runs on the ephemeral in-RAM vdisk (see
  * storage_init). That volume's "password" is a 256-bit CSPRNG value discarded
@@ -2235,7 +2243,7 @@ no_disk:
     uint8_t boot_pass[32];
     secure_random_bytes(boot_pass, sizeof(boot_pass));
     if (storage_format_sealed(&g_vdisk_bd, (const char *)boot_pass,
-                              sizeof(boot_pass), 0) != 0) {
+                              sizeof(boot_pass), 0, 0) != 0) {
         secure_zero(boot_pass, sizeof(boot_pass));
         return -1;
     }
@@ -2797,7 +2805,7 @@ static int keyslot_open(struct block_device *bd, const struct fs_superblock *sb,
                         const fs_keyslot_t *slot, const char *password, size_t plen,
                         uint8_t *disk_key32, uint32_t *uid_out)
 {
-    if (!slot->active) return -1;
+    if (slot->active != 1) return -1;          /* free, or a clear slot: not ours */
 
     uint8_t kek[32];
     if (derive_kek(password, plen, slot->kek_salt, kek) != 0) return -1;
@@ -2945,7 +2953,7 @@ static int format_seal_tpm(struct block_device *bd, struct fs_superblock *sb,
  * KEK = Argon2id(password, kek_salt); wrapped = AEAD(KEK, disk_key). */
 static int storage_format_sealed(struct block_device *bd,
                                   const char *password, size_t plen,
-                                  uint64_t volume_blocks)
+                                  uint64_t volume_blocks, int unsealed)
 {
     struct fs_superblock sb;
     my_memset(&sb, 0, sizeof(sb));
@@ -3085,6 +3093,24 @@ static int storage_format_sealed(struct block_device *bd,
      * and at unlock. If sealing is not requested the reserved blob block stays
      * zero and tpm_mode stays 0 (unchanged password-only volume). */
     int want_tpm = g_tpm_force_seal || (tpm_present() && !g_vdisk_high_entropy_kek);
+#ifdef STORAGE_UNSEALED_IGNORED
+    /* CONTROL ARM -- never ship. The operator's choice not to encrypt is dropped
+     * and the volume is sealed to the password as usual: every call succeeds and
+     * the boot says "encrypted". See make smoke-installer-unsealed-control. */
+    unsealed = 0;
+#endif
+#ifdef STORAGE_UNSEALED_ALWAYS
+    /* CONTROL ARM -- never ship. The dangerous direction: every persistent
+     * volume is written UNSEALED whatever was chosen, so an operator who asked
+     * for encryption gets a disk anyone can read. Nothing fails; the only
+     * evidence is the boot's own statement about the volume. See
+     * make smoke-installer-sealed-control. */
+    if (!g_vdisk_high_entropy_kek) unsealed = 1;
+#endif
+    /* AN UNSEALED VOLUME IS NEVER SEALED TO THE TPM. There is no KEK to bind:
+     * the key is in the clear on the disk, and a PCR policy over nothing would
+     * be a lock on an open door that the boot then reports as measured. */
+    if (unsealed) want_tpm = 0;
     if (want_tpm && format_seal_tpm(bd, &sb, tpm_blob_block) != 0) {
         secure_zero(disk_key, sizeof(disk_key));
         return -1;
@@ -3096,7 +3122,18 @@ static int storage_format_sealed(struct block_device *bd,
          * other slot is left zeroed, which is what `active == 0` means. */
         fs_keyslot_t slots[HORUS_KEYSLOTS];
         secure_zero(slots, sizeof(slots));
-        if (keyslot_seal(bd, &sb, &slots[0], password, plen, disk_key, 0) != 0) {
+        if (unsealed) {
+            /* THE OPERATOR CHOSE NOT TO ENCRYPT (SECURITY.md S104), and this is
+             * where that becomes true. disk_key goes into slot 0 in the clear,
+             * uid 0, and the superblock says so; the password is not used for
+             * the volume at all (it is still root's account password, set by the
+             * installer through SYS_PASSWD). Everything below, the per-block AEAD
+             * and the Merkle tree, is laid down exactly as for a sealed volume,
+             * so the two share every line of the read and write paths. */
+            slots[0].active = (uint8_t)KEYSLOT_CLEAR;
+            my_memcpy(slots[0].ct, disk_key, 32);
+            sb.unsealed = 1;
+        } else if (keyslot_seal(bd, &sb, &slots[0], password, plen, disk_key, 0) != 0) {
             secure_zero(disk_key, sizeof(disk_key));
             secure_zero(slots, sizeof(slots));
             return -1;
@@ -3337,6 +3374,17 @@ int storage_mount(struct block_device *bd) {
     g_mounted_fs.sb       = *sb;
     g_mounted_fs.mounted  = 1;
     g_mounted_fs.unlocked = 0;
+    /* SAID AT EVERY MOUNT, in both directions, on a persistent device. A volume
+     * nobody can read without the password and one anybody can read must never
+     * look the same from the boot log, and the positive statement is what lets a
+     * gate tell "encrypted" from "said nothing" (smoke-installer asserts it). */
+    if (storage_bd_is_ata(bd)) {
+        if (g_mounted_fs.sb.unsealed)
+            println("STORAGE: this volume is NOT encrypted: anyone who has the disk "
+                    "can read and change it");
+        else
+            println("STORAGE: this volume is encrypted");
+    }
     /* Key derivation deferred to storage_unlock() — we need the user's
      * password to unwrap disk_key before any crypto work can proceed. */
     return 0;
@@ -3378,7 +3426,7 @@ struct mounted_fs *storage_get_mounted_fs(void) {
  * deliberate, which was the right way round to ship it but is not a policy --
  * "no path exists" and "one gated path exists" are different claims, and only
  * the second is what S63 says. */
-int storage_authorize_format(int index, uint64_t volume_blocks)
+int storage_authorize_format(int index, uint64_t volume_blocks, uint32_t flags)
 {
     /* THE TARGET IS AN ARGUMENT, NOT AMBIENT STATE, and that is the whole shape
      * of this function since 2026-09-06 (SECURITY.md S83). The alternative was a
@@ -3393,6 +3441,10 @@ int storage_authorize_format(int index, uint64_t volume_blocks)
      * make impossible.
      */
     if (index < 0) return -1;
+    /* Unknown flags are refused, not ignored: a caller asking for something this
+     * kernel does not know how to do must not get a volume that silently lacks
+     * it. */
+    if (flags & ~(uint32_t)STORAGE_FORMAT_UNSEALED) return -1;
 
     if (storage_usable_count() > 0) {
         struct block_device *bd = storage_device_at(index);
@@ -3448,7 +3500,7 @@ int storage_authorize_format(int index, uint64_t volume_blocks)
          * make smoke-installer-target-control. */
         (void)bd;
 #endif
-    } else if (index != 0 || volume_blocks != 0) {
+    } else if (index != 0 || volume_blocks != 0 || flags != 0) {
         /* No persistent devices: the machine has an ephemeral store and exactly
          * one thing that could be meant. Index 0 means it; anything else names a
          * device that does not exist and is refused rather than rounded down.
@@ -3457,6 +3509,7 @@ int storage_authorize_format(int index, uint64_t volume_blocks)
     }
 
     g_format_blocks     = volume_blocks;
+    g_format_flags      = flags;
     g_format_authorized = 1;
     return 0;
 }
@@ -3571,7 +3624,9 @@ int storage_unlock(const char *password, size_t plen)
     /* The size is consumed with the token it was authorised with, so a later
      * format can never inherit a size somebody chose for an earlier one. */
     const uint64_t format_blocks = g_format_blocks;
+    const uint32_t format_flags  = g_format_flags;
     g_format_blocks = 0;
+    g_format_flags  = 0;
 #ifndef STORAGE_FORMAT_AUTH_STICKY
     g_format_authorized = 0;
 #else
@@ -3680,7 +3735,8 @@ int storage_unlock(const char *password, size_t plen)
          * it is worth zeroing rather than reasoning about: the zero costs
          * nothing, and being wrong about reachability costs key material. */
         storage_forget_mounted();
-        if (storage_format_sealed(g_needs_format_bd, password, plen, format_blocks) != 0)
+        if (storage_format_sealed(g_needs_format_bd, password, plen, format_blocks,
+                                  (format_flags & STORAGE_FORMAT_UNSEALED) != 0) != 0)
             return -1;
         if (storage_mount(g_needs_format_bd) != 0) return -1;
         g_needs_format    = 0;
@@ -3774,9 +3830,25 @@ int storage_unlock(const char *password, size_t plen)
             return -3;
         }
         int opened = -1;
-        for (uint32_t i = 0; i < HORUS_KEYSLOTS; i++) {
-            if (keyslot_open(mfs->bd, sb, &slots[i], password, plen,
-                             disk_key, &slot_uid) == 0) { opened = (int)i; break; }
+        if (sb->unsealed) {
+            /* AN UNSEALED VOLUME OPENS WITHOUT THE PASSWORD (S104), because it
+             * has none; the login that called this still has to pass
+             * verify_password against the account table this makes readable.
+             * FAIL CLOSED if the
+             * superblock claims unsealed and slot 0 is not a clear slot: that is
+             * a sealed volume with its flag flipped, and it stays locked. A clear
+             * slot holding the WRONG key is refused further down, where the
+             * Merkle root no longer verifies under the keys it derives. */
+            if (slots[0].active == KEYSLOT_CLEAR) {
+                my_memcpy(disk_key, slots[0].ct, 32);
+                opened = 0;
+                slot_uid = 0;
+            }
+        } else {
+            for (uint32_t i = 0; i < HORUS_KEYSLOTS; i++) {
+                if (keyslot_open(mfs->bd, sb, &slots[i], password, plen,
+                                 disk_key, &slot_uid) == 0) { opened = (int)i; break; }
+            }
         }
         secure_zero(slots, sizeof(slots));
         if (opened < 0) {
@@ -3988,7 +4060,7 @@ void storage_tpm_kek_selftest(void)
     size_t pl = 0; for (const char *c = pw; *c; c++) pl++;
 
     int failed = 1;
-    if (storage_format_sealed(&g_vdisk_bd, pw, pl, 0) != 0) {
+    if (storage_format_sealed(&g_vdisk_bd, pw, pl, 0, 0) != 0) {
         println("TPM_KEK_SELFTEST: FAIL (format+seal)");
     } else if (storage_mount(&g_vdisk_bd) != 0) {
         println("TPM_KEK_SELFTEST: FAIL (mount)");
@@ -4391,6 +4463,9 @@ int storage_keyslot_add(const char *new_password, size_t nlen, uint32_t uid,
     if (!mfs->mounted || !mfs->unlocked) return -1;
     if (!new_password || nlen == 0)      return -1;
     struct fs_superblock *sb = &mfs->sb;
+    /* Nothing to grant: an unsealed volume opens without a password, and a
+     * sealed slot beside its clear one would only suggest otherwise. */
+    if (sb->unsealed) return -1;
 
     fs_keyslot_t slots[HORUS_KEYSLOTS];
     if (keyslots_read(mfs->bd, sb, slots) != 0) return -2;
@@ -4463,6 +4538,11 @@ int storage_keyslot_remove(uint32_t idx)
  * HORUS_KEYSLOTS and it makes a failure to add one look like a defect on a
  * machine where it never mattered. Callers that grant slots use this to tell the
  * two cases apart and to say which one they are in. */
+int storage_volume_has_keyslots(void)
+{
+    return storage_volume_is_persistent() && !g_mounted_fs.sb.unsealed;
+}
+
 int storage_volume_is_persistent(void)
 {
     return storage_bd_is_ata(current_bd) ? 1 : 0;
@@ -4492,6 +4572,12 @@ int storage_rekey(const char *new_password, size_t plen)
     struct mounted_fs *mfs = &g_mounted_fs;
     if (!mfs->mounted || !mfs->unlocked) return -1;
     struct fs_superblock *sb = &mfs->sb;
+    /* AN UNSEALED VOLUME HAS NO KEY TO REWRAP, and rewrapping "the slot this
+     * boot opened" would be actively wrong: that is the clear slot, and sealing
+     * it under this password would leave a volume flagged unsealed with no clear
+     * slot, which storage_unlock refuses. The account's password still changes;
+     * the volume never depended on it. */
+    if (sb->unsealed) return 0;
 
     /* v7: rekey the slot THIS boot opened, not "the" wrap -- there is no longer
      * a single one. Every other slot keeps working, which is the point of slots:

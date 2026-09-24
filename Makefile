@@ -159,6 +159,7 @@ DEFECT_FLAGS = \
 	KSTACK_COLLIDE_IMPERSONATED CLAIM_AUDIT_NO_REREAD \
 	ENTER_USER_STEAL_WIDEN ENTER_USER_PUBLISH_EARLY ENTER_USER_CLAIM_UNCHECKED \
 	STORAGE_FORMAT_WEDGE STORAGE_FORMAT_SIZE_IGNORED CONSOLE_TIMESTAMPS_LEGACY CLOCK_EPOCH_FROM_FIRST_TICK \
+	STORAGE_UNSEALED_IGNORED STORAGE_UNSEALED_ALWAYS \
 	DEFAULT_ACCOUNTS_ON_DISK \
 	DEVREGS_KERNEL_ONLY SD_BLOCK_ADDR_UNSCALED FB_REQUEST \
 	FB_TAG_IGNORED FB_TAG_ASSUME_TEXT \
@@ -3264,6 +3265,21 @@ endif
 STORAGE_FORMAT_SIZE_IGNORED ?= 0
 ifeq ($(STORAGE_FORMAT_SIZE_IGNORED),1)
 CFLAGS += -DSTORAGE_FORMAT_SIZE_IGNORED
+endif
+
+# The two directions an operator's encryption choice can be lost in, one arm each.
+# STORAGE_UNSEALED_IGNORED=1 drops a choice NOT to encrypt: the volume is sealed as
+# usual and the boot calls it encrypted (arm for smoke-installer-unsealed).
+# STORAGE_UNSEALED_ALWAYS=1 writes every persistent volume unsealed whatever was
+# chosen, so an operator who asked for encryption gets a disk anyone can read: the
+# dangerous direction, and the arm for smoke-installer itself.
+STORAGE_UNSEALED_IGNORED ?= 0
+ifeq ($(STORAGE_UNSEALED_IGNORED),1)
+CFLAGS += -DSTORAGE_UNSEALED_IGNORED
+endif
+STORAGE_UNSEALED_ALWAYS ?= 0
+ifeq ($(STORAGE_UNSEALED_ALWAYS),1)
+CFLAGS += -DSTORAGE_UNSEALED_ALWAYS
 endif
 
 # ---- FB_REQUEST: ask GRUB for a linear framebuffer -------------------------
@@ -12523,6 +12539,57 @@ smoke-installer-sized-control:
 	fi; \
 	echo "$$out" | grep -o "the volume is not the size that was chosen.*" | head -1 | sed 's/^/  /'; \
 	echo "SIZED CONTROL: PASS - a kernel that ignores the size is caught on the size"
+
+# AN INSTALL WITHOUT ENCRYPTION (2026-09-24). Chooses "Do not encrypt it", then
+# boots the disk and requires the boot to SAY the volume is not encrypted, a
+# wrong root password to be REFUSED (the volume opens by itself, so the account
+# check is all that guards the shell), and the right one to log in.
+.PHONY: smoke-installer-unsealed smoke-installer-unsealed-control smoke-installer-sealed-control
+smoke-installer-unsealed:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 $(UNSEALEDARM)
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 $(UNSEALEDARM) horus.iso
+	@rm -f installer-un.img installer-un-serial.log
+	@truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-un.img
+	@SESSION_DISK=installer-un.img INSTALLER_MODE=unsealed \
+		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		INSTALLER_FORMAT_STALL=$(INSTALLER_FORMAT_STALL) INSTALLER_FORMAT_CAP=$(INSTALLER_FORMAT_CAP) \
+		SESSION_SERIAL_LOG=installer-un-serial.log BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		python3 tools/installer_session.py horus.iso \
+	  || { echo "[installer] ----- guest serial -----"; \
+	       tail -60 installer-un-serial.log 2>/dev/null | sed 's/^/  /'; \
+	       rm -f installer-un.img; exit 1; }
+	@rm -f installer-un.img
+	@echo "[installer] PASS - an unencrypted install says so at boot, and still needs the password"
+
+# The choice not to encrypt, dropped. Must fail on the boot's statement, which is
+# the only place the difference shows.
+smoke-installer-unsealed-control:
+	@out=$$($(MAKE) --no-print-directory smoke-installer-unsealed UNSEALEDARM=STORAGE_UNSEALED_IGNORED=1 2>&1); rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "UNSEALED CONTROL: FAIL - the choice was dropped and the gate still passed"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "never said the volume is not encrypted"; then \
+	    echo "UNSEALED CONTROL: FAIL - it failed, but not on the boot's statement."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "UNSEALED CONTROL: PASS - a dropped choice not to encrypt is caught"
+
+# THE DANGEROUS DIRECTION, against the ordinary install gate: every volume
+# written unsealed whatever was chosen. smoke-installer (which chooses encryption)
+# must go red, and on the boot's statement.
+smoke-installer-sealed-control:
+	@out=$$($(MAKE) --no-print-directory smoke-installer INSTALLERARM=STORAGE_UNSEALED_ALWAYS=1 2>&1); rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "SEALED CONTROL: FAIL - an unencrypted volume passed the encrypted install gate"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "did not call the volume encrypted"; then \
+	    echo "SEALED CONTROL: FAIL - it failed, but not on the boot's statement."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "SEALED CONTROL: PASS - a volume written unencrypted against the choice is caught"
 
 smoke-installer-wedge-control:
 	@$(MAKE) --no-print-directory clean

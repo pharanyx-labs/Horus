@@ -1246,6 +1246,12 @@ void users_init(void);
 
 #define SYS_STORAGE_INFO      110   /* (struct storage_info*) -> 0; what volume this machine has: whether a block device is attached, its size, whether a Horus volume was recognised on it, and whether it is unlocked. CAP_STORAGE_FORMAT + READ at CAPSLOT_STORAGE_FORMAT. It is the "what will be destroyed" readout, so it answers to the capability that can destroy it rather than to the object-store capability every filesystem client holds. */
 #define SYS_STORAGE_FORMAT    111   /* (const char *password, plen, device, volume_blocks) -> 0; volume_blocks 0 is the whole device, anything else is bounded against it and refused outside [STORAGE_MIN_BLOCKS, device size]; DESTROY the volume on the attached device and lay a new encrypted one down, sealed to `password`. CAP_STORAGE_FORMAT + WRITE at CAPSLOT_STORAGE_FORMAT. This is the ONE caller of storage_authorize_format(), the function S63 introduced and left with none: "a deliberate act -- which an installer calls and a login never does". A login (SYS_AUTH -> storage_unlock) still reaches an unformatted volume and still refuses it. */
+/* SYS_STORAGE_FORMAT flags (its fifth argument). UNSEALED lays the volume down with
+ * disk_key in the clear: no password opens it because none is needed, and anyone
+ * holding the disk can read and change it. The operator's explicit choice, never a
+ * default; every mount says which kind of volume it found. Mirrored in
+ * include/syscall.h. */
+#define STORAGE_FORMAT_UNSEALED 0x1u
 #define SYS_USERLIST          112   /* (index, struct user_entry*) -> 1 filled, 0 past the last account, SYS_ERR_PERM without CAP_USER at CAPSLOT_USER. Account METADATA only: name, uid, gid, home. No hash, no salt, no key slot, no lockout state. The index is dense over VALID accounts, so a deleted slot in the middle of the table does not read as the end of it and MAX_USERS never crosses the boundary. */
 #define SYS_CONSOLE_RELEASE  114   /* (dev_slot) -> 0; give the console hardware back to the kernel. CAP_IO_DEVICE + WRITE in dev_slot, and the caller must BE the current owner. Exists so a console driver that fails AFTER taking the console can still be heard: while it owns the wire its own diagnostic reaches the klog ring and nothing else. */
 #define SYS_FB_INFO          115   /* (dev_slot, struct fb_geometry*) -> 0; the SHAPE of the linear framebuffer (width/height/pitch/bpp), or SYS_ERR_NOENT if this display is not one. CAP_IO_DEVICE + READ in dev_slot, and it must name the PLATFORM device. Where the framebuffer is comes from SYS_DEVICE_INFO's mmio[] ranges, not from here. */
@@ -2043,7 +2049,13 @@ typedef struct fs_superblock {
      * here — a 512-byte superblock has no room for it. tpm_mode == 0 is the
      * unchanged password-only volume. */
     uint8_t  tpm_mode;               /* 0 = password only, 1 = TPM-sealed KEK */
-    uint8_t  _tpm_pad;
+    /* 1 = UNSEALED: the operator chose not to encrypt (2026-09-24). disk_key is
+     * then held in the clear in key slot 0 (active == KEYSLOT_CLEAR), so the
+     * volume opens without a password and anyone holding the disk can read and
+     * rewrite it. Every mount says so. 0 on every volume formatted before this
+     * existed, which is what makes the byte safe to reuse: it was padding and
+     * always written as zero. */
+    uint8_t  unsealed;
     uint16_t tpm_pub_len;            /* bytes of TPM2B_PUBLIC in the blob block */
     uint16_t tpm_priv_len;           /* bytes of TPM2B_PRIVATE in the blob block */
     uint16_t _tpm_pad2;
@@ -2136,7 +2148,7 @@ _Static_assert(sizeof(fs_superblock_t) <= BLOCK_SIZE,
  * docs/LIMITATIONS.md 5.4 records unaudited from-scratch crypto as the largest
  * real risk in this tree, and a new construction here would add to it. */
 typedef struct fs_keyslot {
-    uint8_t  active;                 /* 0 = free; a freed slot is zeroed whole */
+    uint8_t  active;                 /* 0 = free; 1 = sealed; KEYSLOT_CLEAR = disk_key in the clear */
     uint8_t  _pad[3];
     uint32_t _reserved;
     uint8_t  kek_salt[32];           /* per-slot Argon2id salt */
@@ -3126,7 +3138,8 @@ uint32_t storage_unlocked_slot(void);
  * rest under the volume key that is already sealed to the TPM policy -- which is
  * what lets the password hashes inside it stop depending on a per-boot pepper.
  * Both require the volume unlocked. */
-int  storage_authorize_format(int index, uint64_t volume_blocks);  /* 0 authorised, -1 refused: the target is an ARGUMENT (S83) */
+int  storage_authorize_format(int index, uint64_t volume_blocks, uint32_t flags);
+int  storage_volume_has_keyslots(void);  /* persistent AND sealed: slots mean something */  /* 0 authorised, -1 refused: the target is an ARGUMENT (S83) */
 /* Fill `*out` with what SYS_STORAGE_INFO reports. Reads state only; a machine
  * with no persistent device answers `present = 0` rather than failing, because
  * "there is nothing here to install onto" is an answer an installer must be able

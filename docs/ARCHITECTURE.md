@@ -1195,6 +1195,13 @@ the ring-3 FS server never sees a key.
 
 - Per-`(inode, block)` AEAD subkeys derived from the volume key, with a fresh nonce per
   write.
+- **The volume key is sealed, unless the operator chose otherwise.** `disk_key` is normally held
+  only in key slots, each an AEAD wrap under a KEK derived with Argon2id from a password (and the
+  TPM, when there is one). An installer may instead lay the volume down **unsealed**
+  (`STORAGE_FORMAT_UNSEALED`, **S104**): `disk_key` in the clear in slot 0 and `sb.unsealed` set.
+  Everything else on this list is identical for both, so the two share one read and write path;
+  what the unsealed one gives up is confidentiality and tamper evidence against anyone holding the
+  disk (`docs/LIMITATIONS.md` 2.21), and every mount says which kind it found.
 - A **Merkle rollback tree** over block metadata, fanout `BLOCK_SIZE/32` = 128. Level 0's
   hashes are the metadata blocks' MACs; level k+1's are the hashes of level k's node blocks;
   the top block's hash is `sb.meta_root`. A metadata write costs one hash and one staged

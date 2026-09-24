@@ -394,6 +394,16 @@ in this file.
 
 ### Added
 
+- **The installer can format without encryption, for an operator who chooses it.** A new step asks
+  whether to encrypt the volume; encryption is the default and the other answer is a deliberate
+  keystroke on a screen that says, in the danger colour, that anyone with the disk can then read
+  and change everything on it. The volume is written unsealed (`disk_key` in the clear, no TPM
+  sealing) through the same storage code as an encrypted one, and every boot says which kind it
+  mounted. Accounts still need their passwords to log in. `SYS_STORAGE_FORMAT` takes the choice as
+  a fifth argument, `STORAGE_FORMAT_UNSEALED`. It does not make installing faster. `SECURITY.md`
+  S104, `docs/LIMITATIONS.md` 2.21; witnessed by `make smoke-installer-unsealed` and falsified in
+  both directions.
+
 - **The installer waits for a key when it has finished, then clears the screen for the login
   prompt.** It used to exit at once, leaving the login prompt under its last frame and the markers
   around it. The completion is still reported before the key (`INSTALLER: PASS installed`), and a

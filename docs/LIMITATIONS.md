@@ -2608,6 +2608,31 @@ object-reachability sweep, and teardown. Headroom was measured at 7.6 MiB when t
 the present cost is affordable and is not what blocks anything.
 
 
+### 2.21 An unencrypted volume is exactly as unprotected as it sounds (a deliberate option, 2026-09-24)
+
+The installer can lay down a volume **without encryption** when the operator chooses it (the
+maintainer's decision, 2026-09-24; `SECURITY.md` **S104**). Encryption stays the default and the
+other answer is a deliberate keystroke. What an unsealed volume gives up, stated rather than left
+to be discovered:
+
+- **Confidentiality at rest: none.** `disk_key` is stored in the clear in key slot 0, so anyone who
+  has the disk derives every per-block key and reads everything on it.
+- **Tamper evidence: none against someone with the disk.** The Merkle tree and the per-block tags
+  are still there and still catch accidental corruption, but their keys derive from the same clear
+  `disk_key`, so an attacker can rewrite a block and recompute everything above it.
+- **Rollback protection: nominal.** The TPM counter is still provisioned when a TPM is present,
+  but the root MAC that binds it is computable by the same attacker.
+- **What still holds:** the account passwords. The volume opens without one, and `h_auth` then
+  authenticates against the account table, so the shell is still behind a login
+  (`make smoke-installer-unsealed` requires a wrong password to be refused). And a measured-boot
+  build (`MEASURED_BOOT_REQUIRED`) refuses an unsealed volume at unlock, as it refuses any volume not
+  sealed to the TPM.
+
+**It does not make installing faster.** The time an install takes is the crypto metadata region
+and the tree over it (5.2i), which an unsealed volume lays down exactly as a sealed one does,
+because the two share every line of the storage path. The option exists for machines where
+at-rest secrecy is not wanted, not as a performance setting.
+
 ## 3. Scale and performance limitations
 
 ### 3.1 Hard compile-time ceilings: **[I-7]**

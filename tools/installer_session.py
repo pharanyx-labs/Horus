@@ -23,7 +23,7 @@ one console write instead, and those are the sync points.
 
 Usage:  installer_session.py [horus.iso]
 Env:    SESSION_DISK      the disk image; REQUIRED, and the same one for both boots
-        INSTALLER_MODE    "refuse", "provision", "sized", ...; default is the install-then-login pair
+        INSTALLER_MODE    "refuse", "provision", "sized", "unsealed", ...; default is the install-then-login pair
         SIZED_MIB         the volume size the "sized" scenario asks for (default 96)
         INSTALLER_EXPECT_EMPTY_BIN  provision mode's control arm: require the empty /bin
         INSTALL_PASSWORD  the password to install with (default "installpw1")
@@ -394,7 +394,7 @@ def login(s, user, pw, timeout=None):
 
 
 def answer_accounts(s, root_pw=None, user=None, user_pw=None, typist=None,
-                    volume_mib=None):
+                    volume_mib=None, encrypt=True):
     """Answer the volume-size screen and then every account screen, in order.
 
     The size screen (2026-09-24) sits between the disk and the accounts, and it
@@ -423,6 +423,13 @@ def answer_accounts(s, root_pw=None, user=None, user_pw=None, typist=None,
     s.expect("INSTALLER: waiting on the volume size", STEP)
     if volume_mib is not None:
         t.text(str(volume_mib))
+    t.key("enter")
+
+    # Encrypt is the default and Enter takes it; not encrypting is a deliberate
+    # Down first, which is the property the screen is built around.
+    s.expect("INSTALLER: waiting on the encryption choice", STEP)
+    if not encrypt:
+        t.key("down")
     t.key("enter")
 
     s.expect("INSTALLER: waiting on the password", STEP)
@@ -474,7 +481,7 @@ def answer_review_and_confirm(s, word="FORMAT", typist=None):
     t.text(word); t.key("enter")
 
 
-def boot1(disk):
+def boot1(disk, encrypt=True):
     """Drive the installer to completion on a blank disk."""
     s = Serial(ISO)
     try:
@@ -493,7 +500,7 @@ def boot1(disk):
         # and that is still the gate.
         answer_survey(s)
         step("chose to continue on the destroy-this-disk screen")
-        answer_accounts(s)
+        answer_accounts(s, encrypt=encrypt)
         step("answered both accounts' screens")
         answer_review_and_confirm(s)
         step("accepted the review and typed the confirmation word")
@@ -525,8 +532,19 @@ def boot1(disk):
         s.close()
 
 
-def boot2(disk):
-    """Power on again and use what was installed."""
+ENCRYPTED = "STORAGE: this volume is encrypted"
+NOT_ENCRYPTED = "STORAGE: this volume is NOT encrypted"
+
+
+def boot2(disk, unsealed=False):
+    """Power on again and use what was installed.
+
+    THE BOOT'S OWN STATEMENT ABOUT THE VOLUME IS ASSERTED, in both directions
+    (2026-09-24). An operator who chose encryption must get a volume the kernel
+    calls encrypted, and one who chose not to must be told so at every boot. It
+    is read from the whole buffer because the kernel mounts, and says it, before
+    init prints the survey this step waits on.
+    """
     s = Serial(ISO)
     try:
         s.expect("INIT_STORAGE: disk present", BOOT)
@@ -536,6 +554,16 @@ def boot2(disk):
         # absence is satisfied by a boot that got nowhere.
         s.expect("a Horus volume is present", STEP)
         step("the second boot recognised the volume the installer wrote")
+        if unsealed:
+            if NOT_ENCRYPTED not in s.buf:
+                raise SessionFail("the operator chose no encryption and the boot never "
+                                  "said the volume is not encrypted")
+            step("the boot said the volume is NOT encrypted, as chosen")
+        else:
+            if NOT_ENCRYPTED in s.buf or ENCRYPTED not in s.buf:
+                raise SessionFail("the operator chose encryption and the boot did not "
+                                  "call the volume encrypted")
+            step("the boot said the volume is encrypted, as chosen")
 
         s.expect("horus login:", BOOT)
         if "running the installer" in s.buf:
@@ -556,6 +584,18 @@ def boot2(disk):
                               "installed machine")
         step("the compiled-in root/rootpass was refused on the installed machine")
         s.expect("horus login:", STEP)
+
+        # AN UNSEALED VOLUME STILL NEEDS THE ACCOUNT PASSWORD. It opens without
+        # one, so the only thing between a keyboard and a shell is the account
+        # table's check, and a wrong password must be REFUSED by the guest (read
+        # off the wire, not inferred from a timeout) before the right one works.
+        if unsealed:
+            s.send("root")
+            s.expect("Password:", STEP)
+            s.send(PASSWORD + "x")
+            s.expect("Login incorrect", STEP)
+            step("a wrong password was refused although the volume opens by itself")
+            s.expect("horus login:", STEP)
 
         # THE CLAIM THIS GATE EXISTS FOR. Log in with the password the installer
         # was given -- which the volume's seal and the root account must BOTH
@@ -612,6 +652,18 @@ def sized(disk):
         keep_serial(s.buf)
         s.close()
     boot2(disk)
+
+
+def unsealed_install(disk):
+    """Install WITHOUT encryption, then boot it and log in.
+
+    The operator's choice is honoured (the boot says the volume is not
+    encrypted), and the accounts still guard the shell (a wrong password is
+    refused). Falsified by STORAGE_UNSEALED_IGNORED=1, under which the choice is
+    dropped and the boot calls the volume encrypted.
+    """
+    boot1(disk, encrypt=False)
+    boot2(disk, unsealed=True)
 
 
 def refuse(disk):
@@ -991,6 +1043,8 @@ def walkback(disk):          # noqa: ARG001 - uniform scenario signature
         answer_survey(s, first_timeout=BOOT)
         s.expect("INSTALLER: waiting on the volume size", STEP)
         os.write(s.fd, ENTER)
+        s.expect("INSTALLER: waiting on the encryption choice", STEP)
+        os.write(s.fd, ENTER)
 
         # Forward to the username question, answering the root password on the way.
         s.expect("INSTALLER: waiting on the password", STEP)
@@ -1162,6 +1216,10 @@ def run():
         return 0
     if mode == "sized":
         sized(disk)
+        print("INSTALLER_SESSION: PASS")
+        return 0
+    if mode == "unsealed":
+        unsealed_install(disk)
         print("INSTALLER_SESSION: PASS")
         return 0
     boot1(disk)

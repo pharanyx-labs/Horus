@@ -691,7 +691,7 @@ static void klog_draw(void) {
     for (unsigned c = 0; c < 80u; c++) klog_cell(0, c, ' ', KLOG_HEAD);
     klog_text(0, 1, klog_scroll ? "KERNEL LOG (scrolled back)" : "KERNEL LOG",
               KLOG_HEAD);
-    klog_text(0, 30, "Alt+F1/Esc back  Shift+PgUp/PgDn scroll", KLOG_HEAD);
+    klog_text(0, 30, "Alt+F1 back  Shift+PgUp/PgDn  Up/Down", KLOG_HEAD);
 
     for (unsigned r = 1; r < rows; r++)
         for (unsigned c = 0; c < 80u; c++) klog_cell(r, c, ' ', KLOG_ATTR);
@@ -766,19 +766,16 @@ static void klog_view(void) {
             continue;
         }
 
+        /* ONLY FIVE KEYS DO ANYTHING HERE (the maintainer's rule, 2026-09-24):
+         * Alt+F1 leaves, Shift+PgUp/PgDn page, Up/Down move a row. Every other
+         * key is ignored, and in particular does not re-read or jump the view:
+         * an earlier version refreshed on any key, so a reader who pressed the
+         * wrong one lost their place in a log that was still growing. To read
+         * newer lines, leave and come back. */
         int k = ps2_feed(&kbd, sc);            /* keeps shift, ctrl and e0 honest */
-        if (k == PS2_KEY_NONE) continue;
         if (k == PS2_KEY_UP)        klog_scroll++;
         else if (k == PS2_KEY_DOWN) { if (klog_scroll) klog_scroll--; }
-        else if (k == PS2_KEY_HOME) klog_scroll = ~0u >> 1;   /* clamped in draw */
-        else if (k == PS2_KEY_END)  klog_scroll = 0;
-        /* ESC LEAVES TOO, because Alt+F1 depends on the keyboard's function-key
-         * mode. On the IdeaPad the top row sends media keys unless Fn is held, so
-         * Alt+F1 arrives as Alt+Mute (0xE0 0x20) and the view could be entered
-         * with Fn+Alt+F2 and then not left (2026-09-24). A way out that needs no
-         * modifier is the one that cannot be missing. */
-        else if (k == 0x1B)         break;
-        else { klog_fetch(); klog_scroll = 0; }               /* any other key */
+        else continue;
         klog_draw();
     }
 

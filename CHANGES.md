@@ -396,7 +396,7 @@ in this file.
 
 - **A kernel log on Alt+F2, for diagnostic builds.** `make install.iso KLOG_CONSOLE=1` builds an
   image where Alt+F2 shows the kernel log on the machine's own screen with nobody logged in,
-  Shift+PgUp/PgDn scroll it and Alt+F1 or Esc returns to the console as it was. It exists for a machine
+  Shift+PgUp/PgDn and Up/Down scroll it and Alt+F1 returns to the console as it was. It exists for a machine
   with no serial port whose install failed on the boot where no account has a password, which is
   exactly where `dmesg` cannot be reached. It is an instrument: it announces itself in `DEFECT
   FLAGS` and is never in a shipped image, and `make smoke-klog-console-absent` requires a shipped

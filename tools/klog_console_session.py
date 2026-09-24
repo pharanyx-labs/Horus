@@ -164,18 +164,22 @@ def main():
             print(f"KLOG_CONSOLE: Alt+F1 put the console back ({restored} bytes off, "
                   f"blink {blink})", flush=True)
 
-            # ESC, the way out that does not depend on the keyboard's
-            # function-key mode (a laptop whose F1 is Mute unless Fn is held).
-            mark = len(g.buf)
+            # ANY OTHER KEY IS IGNORED: it must neither close the view nor move
+            # it. 'x' and Esc are the two a person is likeliest to try.
             chord(g, "alt", "f2")
             g.expect(OPENED, a.timeout)
+            g._pump(1.5)
+            s_open = shot(g, a.shots, "6-reopened.ppm")
+            mark = len(g.buf)
+            chord(g, "x")
             chord(g, "esc")
+            g._pump(1.5)
+            s_keys = shot(g, a.shots, "7-after-x-esc.ppm")
+            if CLOSED in g.buf[mark:] or delta(s_open, s_keys) > tol:
+                raise SessionFail("a key other than the five the view uses changed it")
+            chord(g, "alt", "f1")
             g.expect(CLOSED, a.timeout)
-            time.sleep(1.5)
-            s_esc = shot(g, a.shots, "6-after-esc.ppm")
-            if delta(s_idle, s_esc) > tol:
-                raise SessionFail("Esc closed the view but did not restore the console")
-            print("KLOG_CONSOLE: Esc closes it too", flush=True)
+            print("KLOG_CONSOLE: other keys are ignored in the view", flush=True)
 
             # MEDIA-KEY MODE: Alt+Volume Down opens and Alt+Mute closes, which is
             # what Alt+F2 and Alt+F1 send on a laptop whose F-row needs Fn.

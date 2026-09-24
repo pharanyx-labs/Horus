@@ -33,7 +33,7 @@ def run():
         s.expect("horus login:", BOOT)
         s.send("root")
         s.expect("Password:", STEP)
-        s.send("rootpass")
+        s.send("toor")
         s.expect(PROMPT, STEP)
         step("logged in")
 

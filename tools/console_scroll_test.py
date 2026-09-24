@@ -147,7 +147,7 @@ def main():
     sc.sendall(b"root\n")
     if not wait("Password:", 30):
         return fail("no password prompt after the user name")
-    sc.sendall(b"rootpass\n")
+    sc.sendall(b"toor\n")
     if not wait("#", 30):
         return fail("the login did not reach a shell")
 

@@ -565,6 +565,13 @@ in this file.
 
 ### Changed
 
+- **A live boot's root password is `toor`; `rootpass` is gone.** The compiled-in `root` account
+  a live boot offers (the boot menu's live entry, or a machine with no disk) now takes `toor`, and
+  `rootpass` is no longer accepted anywhere: not by the kernel, not by any test harness. `user` /
+  `password` is unchanged. An installed machine still has neither compiled-in account (S103);
+  `make smoke-installer` now requires the guest to refuse `root`/`toor` on its second boot. The
+  old login instruction is on the `doc-claims` ratchet so it cannot come back.
+
 - **Formatting no longer reads the whole metadata region back.** The Merkle tree over the crypto
   metadata region hashes the block every metadata block was written from instead of reading
   32,768 of them back (at 16 GiB), because every write in the format is now checked and a refused

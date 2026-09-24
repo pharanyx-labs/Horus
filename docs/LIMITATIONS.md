@@ -3174,14 +3174,14 @@ old allocator and the new one read the same single block and no workload could t
   exists in emulation. So the one number that would justify the change can only be taken on real
   hardware, and is not taken here. **A performance claim about storage in this tree should be read
   as a projection from the operation count unless it names the machine it was measured on.**
-  **On the SD path the emulated format got SLOWER, and that is measured.** `smoke-installer-emmc`
-  (a 16 GiB volume, TCG, one host with nothing else running, 2026-09-24): `main` 39.6s and 48.3s,
-  this change 88.6s and 91.1s, and 95.1s with the progress panel compiled out, so the panel is not
-  the cost. The time is in **reads**: the format's read-back of the metadata region goes through
-  `CMD18` now, and QEMU's SDHCI model serves those more slowly than it served `CMD17`; with the
-  read-back removed as well the same gate measures 51.5s twice. It is an emulation cost and says
-  nothing either way about a card, which is why the next change is measured against this one and
-  not against `main`.
+  **On the SD path the multi-block transport made the emulated format SLOWER, and that is
+  measured.** `smoke-installer-emmc` (a 16 GiB volume, TCG, one host with nothing else running,
+  2026-09-24): before it 39.6s and 48.3s, with it 88.6s and 91.1s, and 95.1s with the progress
+  panel compiled out, so the panel was not the cost. The time was in **reads**: the format then
+  read its whole metadata region back through `CMD18`, which QEMU's SDHCI model serves more slowly
+  than `CMD17`. The format no longer reads the region back (5.2i), and the same gate measures 51.5s
+  twice. That is an emulation cost and says nothing either way about a card; ordinary reads after
+  the install still go through `CMD18`.
 
   **An install onto the laptop's eMMC has not yet been run**; until one has, this paragraph
   says so. What stopped one on 2026-09-22 was no longer storage but the installer's own screen,
@@ -4256,6 +4256,31 @@ the harness buffered stdout and the runner timestamps the *flush*, so consecutiv
 landed microseconds apart however long the guest actually took. Nobody could have argued with
 the 300s from a CI log, ever. Steps are timed and flushed per line now, and those timings are
 what made the table above checkable against a real failure.
+
+### 5.2i The format trusts its checked writes instead of reading the metadata region back (a deliberate trade, 2026-09-24)
+
+**What changed.** `merkle_build` used to read every block of the crypto metadata region back off
+the medium and hash what it found: 32,768 block reads at a 16 GiB volume, the second of the
+format's two full passes over 128 MiB. It now hashes the one all-zero block every metadata block
+was written from. That is sound because every write in `storage_format_sealed` is now **checked**,
+and a refused write fails the format: the region's runs through `bd_fill`, and the five writes
+after the tree (superblock, TPM blob clear, the root inode's table block, the inode bitmap, the
+root inode), whose return codes were being dropped. The format does not flush on its own: the
+first journal commit after it does, and the installer reaches one before it reports success. The
+interior levels of the tree are still read back; they are a few hundred blocks.
+
+**What was traded, and it was the maintainer's decision.** A device that **acknowledges** a write
+and then does not store it now leaves a leaf whose hash disagrees with the disk. Nothing wrong is
+accepted: `merkle_verify_leaf` refuses that metadata block on first use, so the 128 data blocks it
+describes cannot be read or written until the volume is reformatted. The read-back made the tree
+agree with whatever was on the disk, so the same device used to give a working volume with
+garbage metadata entries in that range. Neither version can detect such a device at install time:
+a read straight after the write is served from the same cache that lied.
+
+**Measured**, `smoke-installer-emmc` (16 GiB, TCG, one host with nothing else running): 88.6s and
+91.1s on the multi-block transport alone, **51.5s and 51.5s** with this change. On a real card the
+saving is projected from the operation count (the reads are gone; the writes are unchanged) and
+has not been timed.
 
 ### 5.3 No release provenance: **[I-9]**
 

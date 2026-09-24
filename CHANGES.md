@@ -384,6 +384,15 @@ in this file.
 
 ### Added
 
+- **The installer can lay down a volume smaller than the disk.** A new step after the disk survey
+  asks for a size in MiB, and an empty answer (the default) is the whole disk as before.
+  `SYS_STORAGE_FORMAT` takes the size as a fourth argument; the kernel bounds it against the
+  device it names (at least `STORAGE_MIN_BLOCKS`, at most the device) and refuses rather than
+  clamps anything outside that. The rest of the disk is left as it was: not used, and not erased.
+  `storage_info.volume_blocks` reports the mounted volume's size, and the installer checks it
+  after the format instead of trusting the return code. The installer's floor is 64 MiB. Witnessed
+  by `make smoke-installer-sized`, falsified by `STORAGE_FORMAT_SIZE_IGNORED=1`.
+
 - **The SMP race gates also run under KVM, as a second detector** (`smoke-smp-kvm`, advisory for
   now). Under KVM the virtual CPUs run truly in parallel, which emulation rarely achieves, and a
   probe of the whole suite under KVM found **[HORUS-20260921-03]** on its first run. The suite
@@ -527,6 +536,14 @@ in this file.
   and on Void's. Falsified by `tools/test_check_image_budget.sh` (11 arms).
 
 ### Changed
+
+- **Formatting no longer reads the whole metadata region back.** The Merkle tree over the crypto
+  metadata region hashes the block every metadata block was written from instead of reading
+  32,768 of them back (at 16 GiB), because every write in the format is now checked and a refused
+  one fails the format; five writes whose return codes were dropped are checked too. The
+  emulated 16 GiB eMMC format fell from about 90s
+  to 51.5s. The trade (a device that acknowledges a write and drops it now costs one 512 KiB
+  range, refused, instead of being papered over) is recorded as `docs/LIMITATIONS.md` 5.2i.
 
 - **Every CI build used one of the runner's four cores.** Each of the ~370 build-and-boot steps in
   `ci.yml` does `make clean` and a full build, serially: locally 8.9 s of build against 4 s of

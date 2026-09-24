@@ -47,10 +47,19 @@ expect_fail "rule 1: a syscall number that disagrees" "is 113 in kernel.h and 11
 
 # Rule 2: a struct field on one side only. THE SILENT ONE: both headers compile,
 # and copy_to_user writes the kernel's sizeof into the caller's smaller buffer.
+#
+# ANCHORED ON THE FIELD, NOT ON THE CLOSING BRACE AFTER IT (2026-09-24). The
+# mutation used to insert after `device_index;\n};`, so when storage_info grew a
+# field after device_index the pattern matched nothing, the tree was left
+# unmutated, and this arm "passed" by testing nothing. It now refuses to run if
+# its anchor is missing, so a future layout change fails here loudly instead.
 python3 - <<'PY'
-import pathlib
+import pathlib, sys
 p = pathlib.Path("include/syscall.h"); s = p.read_text()
-s = s.replace("    uint32_t device_index;\n};", "    uint32_t device_index;\n    uint32_t sneaked_in;\n};", 1)
+anchor = "    uint32_t device_index;\n"
+if s.count(anchor) != 1:
+    sys.exit("rule 2's anchor is not in include/syscall.h exactly once; fix the arm")
+s = s.replace(anchor, anchor + "    uint32_t sneaked_in;\n", 1)
 p.write_text(s)
 PY
 expect_fail "rule 2: a struct field on one side only" "struct storage_info differs"

@@ -240,7 +240,7 @@ static void frame(const char *title)
  * get one -- the refusals ("Nothing to install onto"), the review and the
  * confirmation are not steps and deliberately show none, because numbering a
  * screen that has no next implies one. */
-#define INSTALL_STEPS 5
+#define INSTALL_STEPS 6
 static void frame_step(const char *title, int step)
 {
     char buf[24];
@@ -396,6 +396,97 @@ static void disk_size(char *blocks, unsigned bcap, char *mib, unsigned mcap)
 {
     utoa10(g_si.total_blocks, blocks, bcap);
     utoa10((g_si.total_blocks * (uint64_t)g_si.block_size) / (1024u * 1024u), mib, mcap);
+}
+
+/* ---- the size of the volume ---------------------------------------------
+ *
+ * 0 MEANS THE WHOLE DISK, and it is the default: Enter on an empty field. A
+ * size is in MiB because that is the unit the survey screen shows the disk in,
+ * and a question asked in a different unit from the answer beside it is one an
+ * operator gets wrong.
+ *
+ * THE FLOOR IS THE INSTALLER'S, NOT THE KERNEL'S. The kernel refuses anything
+ * under STORAGE_MIN_BLOCKS (2 MiB), which is the smallest volume whose layout is
+ * valid; that is not a volume anybody can use, and the base system alone is a
+ * few hundred KiB before a single file of the operator's. 64 MiB is a floor with
+ * room in it, and is still far below any disk this runs on. The ceiling is the
+ * disk, and the kernel checks it again, refusing rather than clamping.
+ */
+#define VOLUME_MIN_MIB 64u
+static uint64_t g_volume_mib;             /* 0 = the whole disk */
+
+static uint64_t disk_mib(void)
+{
+    return (g_si.total_blocks * (uint64_t)g_si.block_size) / (1024u * 1024u);
+}
+
+/* The size to hand SYS_STORAGE_FORMAT, in blocks: 0 for the whole disk. */
+static uint64_t volume_blocks(void)
+{
+    if (g_volume_mib == 0 || g_si.block_size == 0) return 0;
+    return (g_volume_mib * 1024u * 1024u) / g_si.block_size;
+}
+
+/* Decimal digits only, nothing else, no overflow. Returns 1 and the value, or 0. */
+static int parse_mib(const char *s, uint64_t *out)
+{
+    uint64_t v = 0;
+    if (!s[0]) return 0;
+    for (; *s; s++) {
+        if (*s < '0' || *s > '9') return 0;
+        if (v > 1000000000u) return 0;            /* past any disk this can drive */
+        v = v * 10u + (uint64_t)(*s - '0');
+    }
+    *out = v;
+    return 1;
+}
+
+static int ask_volume_size(void)
+{
+    char buf[12];
+    char dmib[24], lo[12];
+    for (;;) {
+        const uint64_t dm = disk_mib();
+        utoa10(dm, dmib, sizeof(dmib));
+        utoa10(VOLUME_MIN_MIB, lo, sizeof(lo));
+
+        frame_step("Choose how much of the disk to use", 2);
+        int r = para(ROW_BODY,
+                     "Horus can use the whole disk, or a volume of the size you choose at "
+                     "the start of it.", C_TEXT);
+        r++;
+        r = para(r, "Space past the end of a smaller volume is left as it is: not used "
+                    "by Horus, and not erased.", C_TEXT);
+        r++;
+        label(r, "disk");
+        tui_text(r, FIELD_COL, dmib, C_VALUE);
+        tui_text(r, FIELD_COL + 12, "MiB", C_TEXT);
+        label(r + 2, "volume, MiB");
+        hint("leave empty for the whole disk  -  enter to accept  -  esc goes back");
+        tui_flush();
+
+        mark("INSTALLER: waiting on the volume size", "");
+        if (tui_input(r + 2, FIELD_COL, 10, buf, sizeof(buf), 0) != 0) return 0;
+
+        if (!buf[0]) { g_volume_mib = 0; return 1; }
+        uint64_t v = 0;
+        if (!parse_mib(buf, &v) || v < VOLUME_MIN_MIB || v > dm || dm < VOLUME_MIN_MIB) {
+            char msg[80];
+            unsigned n = 0;
+            const char *parts[] = { "A size is a number of MiB from ", lo, " to ", dmib,
+                                    ", or empty for all of it." };
+            for (unsigned k = 0; k < 5; k++)
+                for (const char *c = parts[k]; *c && n < sizeof(msg) - 1; c++) msg[n++] = *c;
+            msg[n] = 0;
+            status(msg, C_DANGER);
+            tui_flush();
+            continue;
+        }
+        /* The whole disk typed out is the whole disk: stored as 0 so the review and
+         * the format say "all of it" rather than a number that happens to match. */
+        g_volume_mib = (v == dm) ? 0 : v;
+        return 1;
+    }
 }
 
 /* ---- choosing a disk ----------------------------------------------------
@@ -583,7 +674,7 @@ static int screen_survey(void)
 static int ask_root_password(void)
 {
     for (;;) {
-        frame_step("Choose the root password", 2);
+        frame_step("Choose the root password", 3);
         int r = para(ROW_BODY,
                      "This password does two things, and it must be one password: it seals "
                      "the volume's encryption key, and it is the password for the root "
@@ -644,7 +735,7 @@ static int name_ok(const char *n)
 static int ask_user_name(void)
 {
     for (;;) {
-        frame_step("Create your everyday account", 3);
+        frame_step("Create your everyday account", 4);
         int r = para(ROW_BODY,
                      "Day-to-day work should not be done as root, so this machine gets a "
                      "second account with no administrative authority.", C_TEXT);
@@ -672,7 +763,7 @@ static int ask_user_name(void)
 static int ask_user_password(void)
 {
     for (;;) {
-        frame_step("Set the password for your account", 4);
+        frame_step("Set the password for your account", 5);
         int r = para(ROW_BODY,
                      "This is the password for the everyday account. It must be different "
                      "from the root password.", C_TEXT);
@@ -737,14 +828,24 @@ static int review_returns_install(void)
 
     for (;;) {
         disk_size(blocks, sizeof(blocks), mib, sizeof(mib));
-        frame_step("Review before installing", 5);
+        frame_step("Review before installing", 6);
 
         int r = para(ROW_BODY, "Check this, then choose. Nothing has been written yet.", C_TEXT);
         r++;
 
         label(r, "disk");
         tui_text(r, FIELD_COL, mib, C_VALUE);
-        tui_text(r, FIELD_COL + 12, "MiB - everything on it is erased", C_DANGER);
+        tui_text(r, FIELD_COL + 12, "MiB", C_TEXT);
+        r++;
+        label(r, "volume");
+        if (g_volume_mib == 0) {
+            tui_text(r, FIELD_COL, "the whole disk - everything on it is lost", C_DANGER);
+        } else {
+            char vm[24];
+            utoa10(g_volume_mib, vm, sizeof(vm));
+            tui_text(r, FIELD_COL, vm, C_VALUE);
+            tui_text(r, FIELD_COL + 12, "MiB at the start - lost; the rest is left", C_DANGER);
+        }
         r++;
         label(r, "root");
         tui_text(r, FIELD_COL, "password set", C_VALUE);
@@ -758,6 +859,7 @@ static int review_returns_install(void)
             "Change the account name",
             "Change the root password",
             "Change the everyday password",
+            "Change the volume size",
             "Cancel, change nothing",
         };
         /* Defaults to Install. See the header: the gate is the typed word, not
@@ -766,10 +868,10 @@ static int review_returns_install(void)
         hint("arrows to choose  -  enter to accept  -  esc to cancel");
         tui_flush();
         mark("INSTALLER: waiting on the review choice", "");
-        if (tui_menu(r, MARGIN + 2, 40, choices, 5, &sel) != 0) return 0;
+        if (tui_menu(r, MARGIN + 2, 40, choices, 6, &sel) != 0) return 0;
 
         if (sel == 0) return 1;
-        if (sel == 4) return 0;
+        if (sel == 5) return 0;
 
         /* AN ABANDONED EDIT RETURNS TO THIS MENU, and does not cancel the
          * install. Until 2026-09-10 esc out of a correction here threw away
@@ -803,6 +905,8 @@ static int review_returns_install(void)
             }
         } else if (sel == 3) {
             if (!ask_user_password()) continue;
+        } else if (sel == 4) {
+            if (!ask_volume_size()) continue;
         }
     }
 }
@@ -966,7 +1070,7 @@ static int do_install(void)
     tui_flush();
 
     unsigned plen = uslen(g_pw);
-    int rc = sys_storage_format(g_target, g_pw, plen);
+    int rc = sys_storage_format(g_target, g_pw, plen, volume_blocks());
     /* THE KERNEL WROTE TO THIS SCREEN WHILE WE WERE BLOCKED. The damage diff
      * cannot see a write the library did not make, so without this the progress
      * panel's cells stay on the screen under every later flush -- the same
@@ -1044,6 +1148,26 @@ static int do_install(void)
     if (!after.recognised || !after.unlocked) {
         say("INSTALLER: FAIL the volume did not come up after formatting", "");
         return -1;
+    }
+    /* AND IT IS THE SIZE THAT WAS ASKED FOR. The kernel bounds the size and would
+     * refuse one it could not honour, but "the call succeeded" is exactly the
+     * belief this block exists not to hold. The marker carries both numbers so a
+     * gate can check the volume against the disk rather than against itself. */
+    {
+        const uint64_t want = volume_blocks() ? volume_blocks() : after.total_blocks;
+        char vb[24], db[24], line[64];
+        unsigned n = 0;
+        utoa10(after.volume_blocks, vb, sizeof(vb));
+        utoa10(after.total_blocks, db, sizeof(db));
+        const char *parts[] = { vb, " blocks on a disk of ", db };
+        for (unsigned k = 0; k < 3; k++)
+            for (const char *c = parts[k]; *c && n < sizeof(line) - 1; c++) line[n++] = *c;
+        line[n] = 0;
+        if (after.volume_blocks != want) {
+            say("INSTALLER: FAIL the volume is not the size that was chosen: ", line);
+            return -1;
+        }
+        say("INSTALLER: volume of ", line);
     }
     return 0;
 }
@@ -1152,7 +1276,7 @@ void _start(void)
      *
      * There is no back FROM the review: it is not a question, it is the summary
      * of the answers, and every one of them is editable from its menu. */
-    enum { ST_DISK = 1, ST_ROOTPW, ST_USER, ST_USERPW, ST_REVIEW, ST_WORD, ST_GO };
+    enum { ST_DISK = 1, ST_SIZE, ST_ROOTPW, ST_USER, ST_USERPW, ST_REVIEW, ST_WORD, ST_GO };
     int st = ST_DISK;
     while (st != ST_GO) {
         switch (st) {
@@ -1172,7 +1296,7 @@ void _start(void)
              * warning. Caught by that gate on the first CI run of this change. */
             if (!screen_survey())  leave_untouched("You chose not to install.");
             if (!screen_target())  leave_untouched("You chose not to install.");
-            st = ST_ROOTPW;
+            st = ST_SIZE;
             break;
 #ifdef INSTALLER_NO_BACK
         /* CONTROL ARM -- never ship. The pre-2026-09-10 pipeline: a question
@@ -1182,6 +1306,10 @@ void _start(void)
          * the root-password marker is emitted once instead of twice, so the
          * scenario times out waiting for a screen the pipeline never shows a
          * second time. */
+        case ST_SIZE:
+            if (!ask_volume_size()) leave_untouched("The install was cancelled.");
+            st = ST_ROOTPW;
+            break;
         case ST_ROOTPW:
             if (!ask_root_password()) leave_untouched("The install was cancelled.");
             st = ST_USER;
@@ -1195,8 +1323,11 @@ void _start(void)
             st = ST_REVIEW;
             break;
 #else
+        case ST_SIZE:
+            st = ask_volume_size() ? ST_ROOTPW : ST_DISK;
+            break;
         case ST_ROOTPW:
-            st = ask_root_password() ? ST_USER : ST_DISK;
+            st = ask_root_password() ? ST_USER : ST_SIZE;
             break;
         case ST_USER:
             st = ask_user_name() ? ST_USERPW : ST_ROOTPW;

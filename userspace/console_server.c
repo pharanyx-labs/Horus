@@ -244,15 +244,94 @@ static void sb_push(const volatile uint16_t *row) {
 #define sb_push(row) ((void)0)
 #endif
 
+#ifdef KLOG_CONSOLE
+/* DIAGNOSTIC (the 2026-09-24 laptop lag): how long a scroll takes. The display is
+ * mapped uncached and a scroll repaints every cell, which is the leading suspect
+ * for keys that take seconds to echo. SYS_CLOCK_GETTIME's 10 ms steps are coarse,
+ * but a cost worth fixing is tens of them. Every ten scrolls it reports the
+ * total and the longest to the kernel log (kput reaches the ring, not the
+ * screen), where Alt+F2 shows it. */
+static void con_trace_add(const char *t);
+static uint64_t scroll_ms_now(void) {
+    struct horus_timespec t;
+    /* HORUS_CLOCK_MONOTONIC, which is 1. The first version passed 0, which the
+     * kernel refuses, and this returned 0 for every reading: every scroll "took
+     * 0 ms" and no command was ever timed. A refusal is now said, once, rather
+     * than read as a time. */
+    if (sys_clock_gettime(HORUS_CLOCK_MONOTONIC, &t) != 0) {
+        static int said;
+        if (!said) { said = 1; con_trace_add("CONTRACE: the clock refused; no times below are real\n"); }
+        return 0;
+    }
+    return t.sec * 1000u + t.nsec / 1000000u;
+}
+static unsigned scroll_n;
+static uint64_t scroll_total, scroll_worst;
+
+/* THE LINES STAY IN THIS SERVER. kput cannot put them in the kernel log: that
+ * needs CAP_KERNEL_LOG with WRITE, which ring 3 is denied on purpose (H-2, a
+ * task must not forge kernel log lines), and this server holds READ only. So
+ * they are kept here and the Alt+F2 view shows them after the kernel's own. */
+#define CON_TRACE_MAX 2048u
+static char     con_trace[CON_TRACE_MAX];
+static unsigned con_trace_len;
+static void con_trace_add(const char *t);
+/* One line, "CONTRACE: <what> <ms> ms", into the local trace. */
+static void con_trace_ms(const char *what, uint64_t ms) {
+    char b[96]; unsigned n = 0; char d[20]; int k = 0;
+    for (const char *c = "CONTRACE: "; *c; c++) b[n++] = *c;
+    for (const char *c = what; *c && n < 70; c++) b[n++] = *c;
+    b[n++] = ' ';
+    do { d[k++] = (char)('0' + ms % 10); ms /= 10; } while (ms);
+    while (k) b[n++] = d[--k];
+    for (const char *c = " ms\n"; *c; c++) b[n++] = *c;
+    b[n] = 0;
+    con_trace_add(b);
+}
+static void con_trace_add(const char *t) {
+    for (; *t; t++) {
+        if (con_trace_len == CON_TRACE_MAX) {
+            for (unsigned i = 1; i < CON_TRACE_MAX; i++) con_trace[i - 1] = con_trace[i];
+            con_trace_len--;
+        }
+        con_trace[con_trace_len++] = *t;
+    }
+}
+static void scroll_note(uint64_t ms) {
+    scroll_n++; scroll_total += ms;
+    if (ms > scroll_worst) scroll_worst = ms;
+    if (scroll_n < 10) return;
+    char b[96]; unsigned n = 0;
+    const char *h = "CONTRACE: 10 scrolls took ";
+    for (const char *c = h; *c; c++) b[n++] = *c;
+    char d[20]; int k = 0; uint64_t v = scroll_total;
+    do { d[k++] = (char)('0' + v % 10); v /= 10; } while (v);
+    while (k) b[n++] = d[--k];
+    for (const char *c = " ms, longest "; *c; c++) b[n++] = *c;
+    v = scroll_worst; do { d[k++] = (char)('0' + v % 10); v /= 10; } while (v);
+    while (k) b[n++] = d[--k];
+    for (const char *c = " ms\n"; *c; c++) b[n++] = *c;
+    b[n] = 0;
+    con_trace_add(b);
+    scroll_n = 0; scroll_total = 0; scroll_worst = 0;
+}
+#endif
+
 static void fb_scroll(void) {
     const unsigned cells = 80u * fb_rows;
     if (cells < 80u) return;
+#ifdef KLOG_CONSOLE
+    const uint64_t scroll_t0 = scroll_ms_now();
+#endif
     sb_push(&fb_cells[0]);
     for (unsigned i = 80u; i < cells; i++) fb_cells[i - 80u] = fb_cells[i];
     for (unsigned i = cells - 80u; i < cells; i++)
         fb_cells[i] = (uint16_t)((VGA_ATTR << 8) | ' ');
     for (unsigned i = 0; i < cells; i++) fb_blit(i);
     fb_pos = cells - 80u;
+#ifdef KLOG_CONSOLE
+    scroll_note(scroll_ms_now() - scroll_t0);
+#endif
 }
 
 /* BACKSPACE MOVES THE CURSOR BACK; IT IS NOT A GLYPH. Without this case a 0x08
@@ -735,10 +814,13 @@ static void klog_fetch(void) {
     for (;;) {
         int n = sys_dmesg(chunk, off, sizeof(chunk));
         if (n < 0) { klog_err = n; return; }
-        if (n == 0) return;
+        if (n == 0) break;
         for (int i = 0; i < n; i++) klog_keep(chunk[i], &esc);
         off += (unsigned)n;
     }
+    /* This server's own diagnostic lines, which cannot go into the kernel's
+     * ring (see con_trace_add), shown after it. */
+    for (unsigned i = 0; i < con_trace_len; i++) klog_keep(con_trace[i], &esc);
 }
 
 /* One cell of the view, drawn straight to the display. Never fb_cells: that is
@@ -766,6 +848,34 @@ static unsigned klog_total_rows(void) {
     return rows;
 }
 
+/* THE LAST SCANCODES, IN THE TITLE ROW. Alt+F1 closed the view under QEMU and
+ * did nothing on the IdeaPad (2026-09-24), twice, after two guesses at what its
+ * F-row sends (the F1 make code, then the media key's). Showing the raw bytes
+ * ends the guessing: one keypress on the machine says what it sends. Display
+ * only; it changes no key's meaning. */
+static uint8_t  klog_keys[6];
+static unsigned klog_nkeys;
+
+static void klog_note_key(uint8_t sc) {
+    if (klog_nkeys == sizeof(klog_keys)) {
+        for (unsigned i = 1; i < sizeof(klog_keys); i++) klog_keys[i - 1] = klog_keys[i];
+        klog_nkeys--;
+    }
+    klog_keys[klog_nkeys++] = sc;
+}
+
+static void klog_draw_head(void) {
+    static const char hx[] = "0123456789ABCDEF";
+    for (unsigned c = 0; c < 80u; c++) klog_cell(0, c, ' ', KLOG_HEAD);
+    klog_text(0, 1, klog_scroll ? "KERNEL LOG (back)" : "KERNEL LOG", KLOG_HEAD);
+    klog_text(0, 19, "Alt+F1 back  Shift+PgUp/PgDn  Up/Down", KLOG_HEAD);
+    klog_text(0, 57, "keys:", KLOG_HEAD);
+    for (unsigned i = 0; i < klog_nkeys; i++) {
+        klog_cell(0, 63 + i * 3, hx[klog_keys[i] >> 4], KLOG_HEAD);
+        klog_cell(0, 64 + i * 3, hx[klog_keys[i] & 0xF], KLOG_HEAD);
+    }
+}
+
 static void klog_draw(void) {
     const unsigned rows = cell_rows();
     if (rows < 2) return;
@@ -775,10 +885,7 @@ static void klog_draw(void) {
     if (klog_scroll > most) klog_scroll = most;
     const unsigned first = most - klog_scroll;   /* first log row on screen */
 
-    for (unsigned c = 0; c < 80u; c++) klog_cell(0, c, ' ', KLOG_HEAD);
-    klog_text(0, 1, klog_scroll ? "KERNEL LOG (scrolled back)" : "KERNEL LOG",
-              KLOG_HEAD);
-    klog_text(0, 30, "Alt+F1 back  Shift+PgUp/PgDn  Up/Down", KLOG_HEAD);
+    klog_draw_head();
 
     for (unsigned r = 1; r < rows; r++)
         for (unsigned c = 0; c < 80u; c++) klog_cell(r, c, ' ', KLOG_ATTR);
@@ -836,6 +943,8 @@ static void klog_view(void) {
         if (!(st & PS2_STATUS_OBF)) { sys_yield(); continue; }
         uint8_t sc = inb(PS2_DATA);
         if (st & PS2_STATUS_AUX) continue;
+        klog_note_key(sc);
+        klog_draw_head();
 
         if (!kbd.e0 && sc == PS2_SC_LALT)           { kbd_lalt = 1; continue; }
         if (!kbd.e0 && sc == (PS2_SC_LALT | 0x80))  { kbd_lalt = 0; continue; }
@@ -936,7 +1045,17 @@ static void con_swallow_escape(void) {
 }
 
 static char con_getc(void) {
+#ifdef KLOG_CONSOLE
+    /* DIAGNOSTIC: the longest this loop went without looking at the keyboard.
+     * A gap here is time a pressed key waits, whatever caused it. */
+    uint64_t last = scroll_ms_now();
+#endif
     for (;;) {
+#ifdef KLOG_CONSOLE
+        uint64_t now = scroll_ms_now();
+        if (now - last >= 100u) con_trace_ms("keyboard not polled for", now - last);
+        last = now;
+#endif
         if (serial_rx_ready())             /* serial receive-data-ready */
             return (char)inb(COM1);
         char k = ps2_poll();               /* the machine's own keyboard */
@@ -1628,7 +1747,17 @@ display_ready:
             con_write(rq.data, n);                    /* <-- ring-3 drives the hardware */
             rp.rc = (int)n;
         } else if (rq.op == CON_OP_GETLINE) {
+#ifdef KLOG_CONSOLE
+            /* DIAGNOSTIC: how long the shell took between being handed a line and
+             * asking for the next one, i.e. how long the command ran. Only the
+             * time is kept, never the text. */
+            static uint64_t line_given;
+            if (line_given) con_trace_ms("command took", scroll_ms_now() - line_given);
+#endif
             rp.rc = con_getline(rp.data, rq.len ? rq.len : (CON_LINE_MAX - 1), 0);
+#ifdef KLOG_CONSOLE
+            line_given = scroll_ms_now();
+#endif
         } else if (rq.op == CON_OP_GETPASS) {
 #ifdef CONSOLE_PASS_UNGATED
             /* CONTROL ARM -- never ship. The pre-2026-09-12 server, which served

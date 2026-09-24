@@ -233,6 +233,26 @@ int sdhci_bd_write(uint64_t lba, const void *buf) {
  * ends: a run is refused if its LAST sector is past the medium, because a
  * partial transfer that stops at the edge would report success for blocks that
  * were never written (S64). */
+#ifdef SDHCI_HW_TRACE
+/* DIAGNOSTIC (the 2026-09-24 laptop lag): how many block transfers an operation
+ * costs and how long they take. Every 8 reads it prints how many timer ticks
+ * (10 ms each) those 64 took, and the running totals, so an `ls` on the machine
+ * shows up in the kernel log as a count and a rate. */
+static uint32_t sdtrace_io_reads, sdtrace_io_writes, sdtrace_io_t0;
+static void sdtrace_io(int is_write) {
+    if (is_write) { sdtrace_io_writes++; return; }
+    if (sdtrace_io_reads++ % 8u == 0u) { sdtrace_io_t0 = get_system_ticks(); return; }
+    if (sdtrace_io_reads % 8u == 0u) {
+        print("SDTRACE   io: 8 reads in ");
+        print_decimal(get_system_ticks() - sdtrace_io_t0);
+        print(" ticks; "); print_decimal(sdtrace_io_reads); print(" reads, ");
+        print_decimal(sdtrace_io_writes); print(" writes so far\n");
+    }
+}
+#else
+#define sdtrace_io(w) ((void)0)
+#endif
+
 int sdhci_bd_rw_run(uint64_t lba, void *buf, uint32_t count, int is_write) {
     if (!g_sdhci_bar || !g_sdhci_sectors) return -1;
     if (count == 0) return 0;
@@ -240,6 +260,7 @@ int sdhci_bd_rw_run(uint64_t lba, void *buf, uint32_t count, int is_write) {
     if ((uint64_t)count > g_sdhci_sectors - lba) return -1;
     spin_lock(&sdhci_lock);
     int rc = sd_rw_blocks(g_sdhci_bar, lba, buf, count, g_sdhci_is_hc, is_write, 0);
+    sdtrace_io(is_write);
     spin_unlock(&sdhci_lock);
     return rc;
 }

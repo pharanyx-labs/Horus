@@ -216,9 +216,18 @@ static void sb_push(const volatile uint16_t *row) {
  * but a cost worth fixing is tens of them. Every ten scrolls it reports the
  * total and the longest to the kernel log (kput reaches the ring, not the
  * screen), where Alt+F2 shows it. */
+static void con_trace_add(const char *t);
 static uint64_t scroll_ms_now(void) {
     struct horus_timespec t;
-    if (sys_clock_gettime(0, &t) != 0) return 0;
+    /* HORUS_CLOCK_MONOTONIC, which is 1. The first version passed 0, which the
+     * kernel refuses, and this returned 0 for every reading: every scroll "took
+     * 0 ms" and no command was ever timed. A refusal is now said, once, rather
+     * than read as a time. */
+    if (sys_clock_gettime(HORUS_CLOCK_MONOTONIC, &t) != 0) {
+        static int said;
+        if (!said) { said = 1; con_trace_add("CONTRACE: the clock refused; no times below are real\n"); }
+        return 0;
+    }
     return t.sec * 1000u + t.nsec / 1000000u;
 }
 static unsigned scroll_n;
@@ -231,6 +240,19 @@ static uint64_t scroll_total, scroll_worst;
 #define CON_TRACE_MAX 2048u
 static char     con_trace[CON_TRACE_MAX];
 static unsigned con_trace_len;
+static void con_trace_add(const char *t);
+/* One line, "CONTRACE: <what> <ms> ms", into the local trace. */
+static void con_trace_ms(const char *what, uint64_t ms) {
+    char b[96]; unsigned n = 0; char d[20]; int k = 0;
+    for (const char *c = "CONTRACE: "; *c; c++) b[n++] = *c;
+    for (const char *c = what; *c && n < 70; c++) b[n++] = *c;
+    b[n++] = ' ';
+    do { d[k++] = (char)('0' + ms % 10); ms /= 10; } while (ms);
+    while (k) b[n++] = d[--k];
+    for (const char *c = " ms\n"; *c; c++) b[n++] = *c;
+    b[n] = 0;
+    con_trace_add(b);
+}
 static void con_trace_add(const char *t) {
     for (; *t; t++) {
         if (con_trace_len == CON_TRACE_MAX) {
@@ -981,7 +1003,17 @@ static void con_swallow_escape(void) {
 }
 
 static char con_getc(void) {
+#ifdef KLOG_CONSOLE
+    /* DIAGNOSTIC: the longest this loop went without looking at the keyboard.
+     * A gap here is time a pressed key waits, whatever caused it. */
+    uint64_t last = scroll_ms_now();
+#endif
     for (;;) {
+#ifdef KLOG_CONSOLE
+        uint64_t now = scroll_ms_now();
+        if (now - last >= 100u) con_trace_ms("keyboard not polled for", now - last);
+        last = now;
+#endif
         if (serial_rx_ready())             /* serial receive-data-ready */
             return (char)inb(COM1);
         char k = ps2_poll();               /* the machine's own keyboard */
@@ -1654,7 +1686,17 @@ display_ready:
             con_write(rq.data, n);                    /* <-- ring-3 drives the hardware */
             rp.rc = (int)n;
         } else if (rq.op == CON_OP_GETLINE) {
+#ifdef KLOG_CONSOLE
+            /* DIAGNOSTIC: how long the shell took between being handed a line and
+             * asking for the next one, i.e. how long the command ran. Only the
+             * time is kept, never the text. */
+            static uint64_t line_given;
+            if (line_given) con_trace_ms("command took", scroll_ms_now() - line_given);
+#endif
             rp.rc = con_getline(rp.data, rq.len ? rq.len : (CON_LINE_MAX - 1), 0);
+#ifdef KLOG_CONSOLE
+            line_given = scroll_ms_now();
+#endif
         } else if (rq.op == CON_OP_GETPASS) {
 #ifdef CONSOLE_PASS_UNGATED
             /* CONTROL ARM -- never ship. The pre-2026-09-12 server, which served

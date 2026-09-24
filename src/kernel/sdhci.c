@@ -235,15 +235,15 @@ int sdhci_bd_write(uint64_t lba, const void *buf) {
  * were never written (S64). */
 #ifdef SDHCI_HW_TRACE
 /* DIAGNOSTIC (the 2026-09-24 laptop lag): how many block transfers an operation
- * costs and how long they take. Every 64 reads it prints how many timer ticks
+ * costs and how long they take. Every 8 reads it prints how many timer ticks
  * (10 ms each) those 64 took, and the running totals, so an `ls` on the machine
  * shows up in the kernel log as a count and a rate. */
 static uint32_t sdtrace_io_reads, sdtrace_io_writes, sdtrace_io_t0;
 static void sdtrace_io(int is_write) {
     if (is_write) { sdtrace_io_writes++; return; }
-    if (sdtrace_io_reads++ % 64u == 0u) { sdtrace_io_t0 = get_system_ticks(); return; }
-    if (sdtrace_io_reads % 64u == 0u) {
-        print("SDTRACE   io: 64 reads in ");
+    if (sdtrace_io_reads++ % 8u == 0u) { sdtrace_io_t0 = get_system_ticks(); return; }
+    if (sdtrace_io_reads % 8u == 0u) {
+        print("SDTRACE   io: 8 reads in ");
         print_decimal(get_system_ticks() - sdtrace_io_t0);
         print(" ticks; "); print_decimal(sdtrace_io_reads); print(" reads, ");
         print_decimal(sdtrace_io_writes); print(" writes so far\n");

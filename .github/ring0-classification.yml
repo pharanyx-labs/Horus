@@ -361,7 +361,17 @@
 # something false. It now draws a shaded bar and the word "working", which says
 # working without claiming to know how far.
 #
-core_budget_loc: 10535
+# 2026-09-24: 10535 -> 10543, +8 in terminal.c. The framebuffer console's grid is
+# centred on the display instead of drawn from pixel (0,0).
+#
+# WHY IT CANNOT GO TO RING 3. console_server centres its own copy of the grid, and
+# does; but the kernel draws the boot log before console_server exists and the
+# format's progress panel while it is blocked, both straight into the same pixels.
+# Centring only ring 3 would leave those on the left edge and make the whole screen
+# jump sideways at the handover, and the panel would sit beside the installer it
+# is describing rather than under it. The eight lines are one offset pair, its
+# computation, and the two places a pixel address is formed.
+core_budget_loc: 10543
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

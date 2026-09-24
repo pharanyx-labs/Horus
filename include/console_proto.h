@@ -80,6 +80,13 @@
  * word (TUI_FG/TUI_BG/TUI_A_*) in little-endian order, and `n` is how many
  * characters follow. A span never wraps: the whole of it must fit on its row.
  *
+ * ROWS ADDRESS A CON_ROWS-HIGH SURFACE, NOT THE WHOLE GRID (2026-09-24). CON_OP_WINSZ
+ * promises CON_ROWS, so that is all a client may address; on a taller display
+ * the server places the surface in the middle of its grid and blanks the rows
+ * around it that cooked output has touched, so a full-screen program is centred
+ * rather than drawn across the top half with the boot log beneath it. A row at
+ * or past CON_ROWS is malformed.
+ *
  * EVERY FIELD IS CHECKED BY THE SERVER AND NOT BY THE SENDER. This arrives from
  * another ring-3 task, which is hostile by assumption, and a span that does not
  * fit the grid would otherwise be a write past the shadow buffer. A malformed

@@ -487,6 +487,13 @@ static int launch_console_server(void) {
      * console server gets this; clients get the WRITE-only copy below. */
     if (sys_cap_grant(csrv, INIT_CON_LISTEN,    CAPSLOT_CONSOLE_EP) != 0) return -2;
     if (sys_cap_grant(csrv, CAP_SLOT_IO_DEVICE, CAPSLOT_IO_DEVICE)  != 0) return -3;
+#ifdef KLOG_CONSOLE
+    /* INSTRUMENT -- never ship. The kernel log for the Alt+F2 view (see klog_view
+     * in userspace/console_server.c): a copy of init's own CAP_KERNEL_LOG, which is
+     * READ only, so the server can read the ring and cannot write to it. A ship
+     * build gives this capability to the shell alone. */
+    if (sys_cap_grant(csrv, INIT_KERNEL_LOG, CAPSLOT_KERNEL_LOG) != 0) return -5;
+#endif
     if (sys_task_resume(csrv) != 0) return -4;
     return csrv;
 }

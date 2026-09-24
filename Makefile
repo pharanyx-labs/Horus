@@ -164,7 +164,7 @@ DEFECT_FLAGS = \
 	DEVREGS_KERNEL_ONLY SD_BLOCK_ADDR_UNSCALED FB_REQUEST \
 	FB_TAG_IGNORED FB_TAG_ASSUME_TEXT \
 	FB_MAP_SELFTEST FB_MAP_LOW_HALF FB_CONSOLE_SELFTEST \
-	FB_CONSOLE_MIRRORED FB_INFO_ANY_DEVICE CONSOLE_FB_ABSENT CONSOLE_NO_KBD \
+	FB_CONSOLE_MIRRORED FB_INFO_ANY_DEVICE CONSOLE_FB_ABSENT CONSOLE_NO_KBD KLOG_CONSOLE \
 	SERIAL_PRESENCE_UNCHECKED \
 	CONSOLE_BACKSPACE_NO_ERASE \
 	CONSOLE_NO_SCROLL \
@@ -3390,6 +3390,17 @@ CONSOLE_FB_ABSENT ?= 0
 # USERSPACE_CFLAGS. The arm for `make smoke-keyboard`.
 CONSOLE_NO_KBD ?= 0
 
+# KLOG_CONSOLE=1 is an INSTRUMENT, not a defect: Alt+F2 shows the kernel log on
+# the machine's own screen with nobody logged in, and Alt+F1 returns to the
+# console (klog_view in userspace/console_server.c). Built for a laptop whose
+# install failed on the one boot where no account has a password yet, so `dmesg`
+# could not be reached and the evidence sat in a ring nobody could read. Reading
+# the log without a login is authority for standing at the keyboard, which is
+# why it is in DEFECT_FLAGS and never in a shipped image: init hands
+# console_server a READ-only copy of CAP_KERNEL_LOG only under this flag.
+# Userspace-only, so it goes on USERSPACE_CFLAGS. `make install.iso KLOG_CONSOLE=1`.
+KLOG_CONSOLE ?= 0
+
 # SERIAL_PRESENCE_UNCHECKED=1 restores the console input path as it stood before
 # 2026-09-12: `inb(COM1_LSR) & 1` believed without first asking whether there is
 # a UART at 0x3F8 to answer. On a machine with no serial port every register in
@@ -4475,6 +4486,9 @@ USERSPACE_CFLAGS += -DCONSOLE_FB_ABSENT
 endif
 ifeq ($(CONSOLE_NO_KBD),1)
 USERSPACE_CFLAGS += -DCONSOLE_NO_KBD
+endif
+ifeq ($(KLOG_CONSOLE),1)
+USERSPACE_CFLAGS += -DKLOG_CONSOLE
 endif
 ifeq ($(CONSOLE_KBD_SPLIT_ESC),1)
 USERSPACE_CFLAGS += -DCONSOLE_KBD_SPLIT_ESC
@@ -8443,6 +8457,54 @@ smoke-keyboard:
 	@python3 tools/keyboard_session.py --iso horus.iso \
 		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
 		--serial-log /tmp/horus-keyboard.log
+
+# THE ALT+F2 KERNEL LOG CONSOLE, both directions (tools/klog_console_session.py).
+# KLOG_CONSOLE=1 is an instrument: Alt+F2 shows the kernel log with nobody logged
+# in, Alt+F1 returns, Shift+PgUp/PgDn scroll. smoke-klog-console proves it works
+# and gives the console back intact; smoke-klog-console-absent is the security
+# claim, that a SHIP build does nothing on Alt+F2, because reading the log
+# without a login is authority for standing at the keyboard. The control arm runs
+# the absent check against a KLOG_CONSOLE=1 build and must go red on the view.
+.PHONY: smoke-klog-console smoke-klog-console-control smoke-klog-console-absent smoke-klog-console-absent-control
+smoke-klog-console:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) $(if $(KLOGOFF),,KLOG_CONSOLE=1) horus.iso
+	@python3 tools/klog_console_session.py --iso horus.iso --present \
+		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
+		--serial-log /tmp/horus-klog-console.log
+
+smoke-klog-console-absent:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) $(KLOGARM) horus.iso
+	@python3 tools/klog_console_session.py --iso horus.iso --absent \
+		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
+		--serial-log /tmp/horus-klog-console-absent.log
+
+smoke-klog-console-absent-control:
+	@out=$$($(MAKE) --no-print-directory smoke-klog-console-absent KLOGARM=KLOG_CONSOLE=1 2>&1); rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "KLOG CONTROL: FAIL - a build WITH the view passed the absent gate"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "Alt+F2 did something in a build without KLOG_CONSOLE"; then \
+	    echo "KLOG CONTROL: FAIL - it failed, but not on the view."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "KLOG CONTROL: PASS - a build that shows the kernel log on Alt+F2 is caught"
+
+# The instrument's own gate must be able to go red: the present check against a
+# build WITHOUT the flag, where Alt+F2 opens nothing.
+smoke-klog-console-control:
+	@out=$$($(MAKE) --no-print-directory smoke-klog-console KLOGOFF=1 2>&1); rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "KLOG PRESENT CONTROL: FAIL - a build without the view passed the present gate"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "Alt+F2 did not open the kernel log view"; then \
+	    echo "KLOG PRESENT CONTROL: FAIL - it failed, but not on the view."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "KLOG PRESENT CONTROL: PASS - a build with no view fails the present gate"
 
 # The falsifying arm. CONSOLE_NO_KBD=1 is console_server as it was before
 # 2026-09-11: it drives the screen but reads only COM1, so the prompt it just

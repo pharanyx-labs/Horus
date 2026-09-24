@@ -951,6 +951,20 @@ jobs:
       # a bounded window rather than reading a refusal off a timeout.
       - name: Control arm — the console server does not read the keyboard
         run: make smoke-keyboard-control
+      # THE ALT+F2 KERNEL LOG, an instrument (KLOG_CONSOLE=1) for a machine with
+      # no serial port whose install failed where nobody could log in. The first
+      # step proves it opens, scrolls, and gives the console back intact; the
+      # second is the security claim, that a SHIP build does nothing on Alt+F2,
+      # since reading the log without a login is authority for standing at the
+      # keyboard. The arm runs that check against a KLOG_CONSOLE=1 build.
+      - name: Alt+F2 shows the kernel log in an instrumented build
+        run: make smoke-klog-console
+      - name: Control arm — a build with no view fails the present gate
+        run: make smoke-klog-console-control
+      - name: A shipped build does nothing on Alt+F2
+        run: make smoke-klog-console-absent
+      - name: Control arm — a build that shows the kernel log is caught
+        run: make smoke-klog-console-absent-control
       # THE MACHINE WITH NO SERIAL PORT, which the two steps above structurally
       # cannot cover: they read the guest's echo off COM1, so they only ever run
       # where a UART exists. With none, every register at 0x3F8 floats to 0xFF,

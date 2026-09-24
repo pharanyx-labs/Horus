@@ -867,7 +867,15 @@ static void klog_note_key(uint8_t sc) {
 static void klog_draw_head(void) {
     static const char hx[] = "0123456789ABCDEF";
     for (unsigned c = 0; c < 80u; c++) klog_cell(0, c, ' ', KLOG_HEAD);
-    klog_text(0, 1, klog_scroll ? "KERNEL LOG (back)" : "KERNEL LOG", KLOG_HEAD);
+#ifndef HORUS_BUILD_ID
+#define HORUS_BUILD_ID "unknown"
+#endif
+    /* WHICH BUILD THIS IS, on the screen. Several diagnostic images were
+     * handed over in one afternoon and there was no way to tell from the
+     * machine which one it was running (2026-09-24). */
+    klog_text(0, 1, "LOG", KLOG_HEAD);
+    klog_text(0, 5, HORUS_BUILD_ID, KLOG_HEAD);
+    if (klog_scroll) klog_text(0, 13, "(back)", KLOG_HEAD);
     klog_text(0, 19, "Alt+F1 back  Shift+PgUp/PgDn  Up/Down", KLOG_HEAD);
     klog_text(0, 57, "keys:", KLOG_HEAD);
     for (unsigned i = 0; i < klog_nkeys; i++) {

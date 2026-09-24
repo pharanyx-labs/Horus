@@ -8458,6 +8458,40 @@ smoke-keyboard:
 		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
 		--serial-log /tmp/horus-keyboard.log
 
+# THE ALT+F2 KERNEL LOG CONSOLE, both directions (tools/klog_console_session.py).
+# KLOG_CONSOLE=1 is an instrument: Alt+F2 shows the kernel log with nobody logged
+# in, Alt+F1 returns, Shift+PgUp/PgDn scroll. smoke-klog-console proves it works
+# and gives the console back intact; smoke-klog-console-absent is the security
+# claim, that a SHIP build does nothing on Alt+F2, because reading the log
+# without a login is authority for standing at the keyboard. The control arm runs
+# the absent check against a KLOG_CONSOLE=1 build and must go red on the view.
+.PHONY: smoke-klog-console smoke-klog-console-absent smoke-klog-console-absent-control
+smoke-klog-console:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) KLOG_CONSOLE=1 horus.iso
+	@python3 tools/klog_console_session.py --iso horus.iso --present \
+		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
+		--serial-log /tmp/horus-klog-console.log
+
+smoke-klog-console-absent:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) $(KLOGARM) horus.iso
+	@python3 tools/klog_console_session.py --iso horus.iso --absent \
+		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
+		--serial-log /tmp/horus-klog-console-absent.log
+
+smoke-klog-console-absent-control:
+	@out=$$($(MAKE) --no-print-directory smoke-klog-console-absent KLOGARM=KLOG_CONSOLE=1 2>&1); rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "KLOG CONTROL: FAIL - a build WITH the view passed the absent gate"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "Alt+F2 did something in a build without KLOG_CONSOLE"; then \
+	    echo "KLOG CONTROL: FAIL - it failed, but not on the view."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "KLOG CONTROL: PASS - a build that shows the kernel log on Alt+F2 is caught"
+
 # The falsifying arm. CONSOLE_NO_KBD=1 is console_server as it was before
 # 2026-09-11: it drives the screen but reads only COM1, so the prompt it just
 # painted cannot be answered from the keyboard.

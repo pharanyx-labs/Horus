@@ -703,14 +703,29 @@ static void klog_draw(void) {
 /* Straight to the serial line and nowhere else, so a gate can see the view open
  * and close without the screen being written by a line about the screen. */
 static void klog_mark(const char *t) { while (*t) { if (*t == '\n') ser_putc('\r'); ser_putc(*t++); } }
+static void klog_mark_u(unsigned v) {
+    char b[11]; int n = 0;
+    if (!v) { ser_putc('0'); return; }
+    while (v) { b[n++] = (char)('0' + (v % 10u)); v /= 10u; }
+    while (n) ser_putc(b[--n]);
+}
 
 static void klog_view(void) {
     if (!fbp) for (unsigned i = 0; i < VGA_CELLS; i++) klog_saved_vga[i] = vga[i];
     klog_fetch();
     klog_scroll = 0;
     klog_draw();
-    klog_mark(klog_err ? "KLOG_CONSOLE: opened, and SYS_DMESG refused\n"
-                       : "KLOG_CONSOLE: showing the kernel log\n");
+    if (klog_err) {
+        klog_mark("KLOG_CONSOLE: opened, and SYS_DMESG refused\n");
+    } else {
+        /* How tall the log is against the room it has, so a gate knows whether
+         * there is anything to scroll rather than guessing from the screen. */
+        klog_mark("KLOG_CONSOLE: showing the kernel log (");
+        klog_mark_u(klog_total_rows());
+        klog_mark(" rows, ");
+        klog_mark_u(cell_rows() > 1 ? cell_rows() - 1 : 0);
+        klog_mark(" on screen)\n");
+    }
 
     for (;;) {
         uint8_t st = inb(PS2_STATUS);

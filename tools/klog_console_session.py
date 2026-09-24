@@ -30,6 +30,7 @@ and is the tolerance, as in tools/backspace_session.py. Every dump is kept.
 """
 import argparse
 import os
+import re
 import sys
 import time
 
@@ -97,7 +98,11 @@ def main():
 
         mark = len(g.buf)
         chord(g, "alt", "f2")
-        time.sleep(2)
+        # PUMP, not sleep: Serial.buf only grows while something reads the line,
+        # so a marker the guest wrote during a sleep is not in it yet. The first
+        # version of this harness slept here and reported a view that had opened
+        # (the screen moved 86,641 bytes) as one that had not.
+        g._pump(3.0)
         s_view = shot(g, a.shots, "3-after-alt-f2.ppm")
         opened_wire = OPENED in g.buf[mark:]
         changed = delta(s_idle, s_view)
@@ -121,13 +126,31 @@ def main():
             print(f"KLOG_CONSOLE: Alt+F2 opened the view (screen moved {changed} bytes)",
                   flush=True)
 
+            # Whether there is anything to scroll is the guest's to say: the marker
+            # carries the log's height and the screen's. A log that fits must NOT
+            # move (a view that scrolls into blank rows is wrong too), and one that
+            # does not fit must.
+            m = re.search(r"\((\d+) rows, (\d+) on screen\)", g.buf[mark:])
+            if not m:
+                raise SessionFail("the open marker did not say how tall the log is")
+            total, room = int(m.group(1)), int(m.group(2))
             chord(g, "shift", "pgup")
-            time.sleep(1.5)
+            g._pump(1.5)
             s_back = shot(g, a.shots, "4-after-shift-pgup.ppm")
             scrolled = delta(s_view, s_back)
-            if scrolled <= tol:
-                raise SessionFail(f"Shift+PgUp did not move the view ({scrolled} bytes)")
-            print(f"KLOG_CONSOLE: Shift+PgUp scrolled it ({scrolled} bytes)", flush=True)
+            if total > room:
+                if scrolled <= tol:
+                    raise SessionFail(f"Shift+PgUp did not move a {total}-row log on a "
+                                      f"{room}-row screen ({scrolled} bytes)")
+                print(f"KLOG_CONSOLE: Shift+PgUp scrolled a {total}-row log on a "
+                      f"{room}-row screen ({scrolled} bytes)", flush=True)
+            else:
+                if scrolled > tol:
+                    raise SessionFail(f"Shift+PgUp moved a {total}-row log that fits a "
+                                      f"{room}-row screen ({scrolled} bytes)")
+                print(f"KLOG_CONSOLE: the {total}-row log fits the {room}-row screen, and "
+                      f"Shift+PgUp left it still (scrolling itself NOT exercised)",
+                      flush=True)
 
             mark = len(g.buf)
             chord(g, "alt", "f1")

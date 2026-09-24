@@ -613,6 +613,11 @@ in this file.
 
 ### Fixed
 
+- **A command typed without its operand said "Unknown command".** A bare `touch`, `cat`, `cp`,
+  `rm` and the rest were each matched with a trailing space, so without an argument they matched
+  nothing and the shell said the command did not exist. It now prints `touch: missing operand`,
+  the usage line from the command's man page, and where to read more.
+
 - **An install onto a laptop's eMMC failed at the password step, on two cores and never on one.**
   The SD/eMMC driver had no lock, so on a machine with two CPUs a write on one and a read on the
   other ran on the controller at once and corrupted each other: the laptop's trace shows a CMD25

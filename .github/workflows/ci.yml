@@ -3916,6 +3916,10 @@ jobs:
       # it and cannot write in it.
       - name: Withhold ownership of the home directory and require the account to be locked out
         run: make smoke-session-home-control
+      # A builtin typed without its operand prints its usage instead of "Unknown
+      # command"; the arm is the shell before that, and must fail on it.
+      - name: Control arm — a bare builtin reported as an unknown command
+        run: make smoke-session-usage-control
       # SYS_FS_INODE_LINK, covered on 2026-09-09 by the new `ln` command -- the
       # last member of the coverage list's "the gate would pass" group. The arm
       # makes the kernel record the link without counting it; the session then

@@ -3,7 +3,8 @@
 int fs_server_task_id = -1;
 int fs_server_listen_ep_idx = -1;
 
-static int storage_format_sealed(struct block_device *bd, const char *password, size_t plen);
+static int storage_format_sealed(struct block_device *bd, const char *password, size_t plen,
+                                 uint64_t volume_blocks);
 int storage_mount(struct block_device *bd);
 int storage_unlock(const char *password, size_t plen);
 int storage_read_file_block(struct mounted_fs *mfs, uint64_t ino, uint64_t block, void *buf);
@@ -119,6 +120,10 @@ static int                  g_needs_format    = 0;
  * a login does not. See storage_unlock. */
 static int                  g_format_authorized = 0;
 static struct block_device *g_needs_format_bd = NULL;
+/* How many blocks of the target the authorised format may lay a volume over; 0
+ * is the whole device. Set with the token by storage_authorize_format, which has
+ * already bounded it against that device, and consumed with it. */
+static uint64_t             g_format_blocks = 0;
 
 /* Set for the lifetime of a boot that runs on the ephemeral in-RAM vdisk (see
  * storage_init). That volume's "password" is a 256-bit CSPRNG value discarded
@@ -1433,13 +1438,38 @@ static int merkle_update_leaf(uint64_t meta_blk, const uint8_t *img)
     return 0;
 }
 
-/* Build the whole tree over a region whose content is already on the device.
- * Used at format, where the region is freshly zeroed. Reads each metadata block
- * back rather than assuming its content, so format and mount hash the same bytes
- * -- the assumption is what made the old construction able to brick a volume
- * whose format left one byte unwritten. */
+/* Build the whole tree over the metadata region the format has just written.
+ *
+ * THE LEAVES ARE HASHED FROM `leaf_img`, NOT READ BACK (2026-09-24). Every
+ * metadata block was written from that one buffer by bd_fill, and every one of
+ * those writes was CHECKED: a refused write fails the format before this runs.
+ * So the bytes on the medium are the bytes in `leaf_img`, and reading 32,768 of
+ * them back (128 MiB at a 16 GiB volume) to learn what is already known was the
+ * second of the format's two full passes over the region. On a laptop's eMMC it
+ * was minutes of an install whose only visible state was a progress bar.
+ *
+ * WHAT THE READ-BACK USED TO BUY, AND WHY IT IS NO LONGER NEEDED. It was added
+ * when the region's writes were UNCHECKED: the old construction hashed an
+ * in-RAM zero array while a loop that ignored every write's return code laid the
+ * region down, so one write that failed quietly left a tree that disagreed with
+ * the disk and bricked the volume at its first mount. Hashing what was read made
+ * the two agree whatever the writes did. Now a failed write is a failed format,
+ * which is the stronger answer: the old one made the tree agree with garbage.
+ *
+ * WHAT IS TRADED, stated rather than hidden (docs/LIMITATIONS.md 5.2i). A device
+ * that ACKNOWLEDGES a write and then drops it now leaves a leaf whose hash
+ * disagrees with the disk. merkle_verify_leaf finds that on first use and the
+ * 128 blocks that metadata block describes are refused, fail closed, until the
+ * volume is reformatted. Nothing wrong is ever accepted; one range becomes
+ * unusable. A read-back straight after the write would not reliably have caught
+ * such a device anyway: it is served from the same cache that lied.
+ *
+ * The interior levels are still read back. They are the node blocks this
+ * function wrote a moment ago, a few hundred of them at the largest volume, so
+ * the cost is nothing and the property "every level above the leaves hashes
+ * what is on the medium" is kept where it is free to keep. */
 static int merkle_build(struct block_device *bd, struct fs_superblock *sb,
-                        const uint8_t *mac_key)
+                        const uint8_t *mac_key, const uint8_t *leaf_img)
 {
     uint64_t counts[MERKLE_MAX_LEVELS];
     uint32_t levels = merkle_layout(sb->meta_blocks, counts);
@@ -1449,16 +1479,9 @@ static int merkle_build(struct block_device *bd, struct fs_superblock *sb,
     static uint8_t node[BLOCK_SIZE];
     uint8_t h[32];
 
-    /* THE WORK IS THE CHILD READS, so that is what the panel counts.
-     *
-     * This is the longest phase of a format on a real disk and it had no
-     * progress reporting at all: its caller passed a placeholder 0 of 1, so a
-     * laptop sat on "block 0 of 1" at 0% for the whole of it and was reported
-     * as stuck (2026-09-23). It was not stuck. Every leaf of the tree is a
-     * metadata block read back off the medium -- deliberately, so the tree
-     * hashes the bytes that are actually there rather than what was meant to be
-     * written -- and on a 16 GiB volume that is 32,768 reads before the top
-     * node exists. A phase that long has to say where it is. */
+    /* THE WORK IS ONE HMAC PER CHILD, so that is what the panel counts. On a
+     * 16 GiB volume that is 32,768 leaf hashes of 4 KiB each: seconds of CPU,
+     * not minutes of disk, but still long enough to need a moving bar. */
     uint64_t total_children = sb->meta_blocks;
     for (uint32_t l = 1; l < levels; l++) total_children += counts[l - 1];
     uint64_t done_children = 0;
@@ -1472,29 +1495,33 @@ static int merkle_build(struct block_device *bd, struct fs_superblock *sb,
             for (uint64_t k = 0; k < MERKLE_FANOUT; k++) {
                 uint64_t child = n * MERKLE_FANOUT + k;
                 if (child >= children) break;       /* a short top node: zeros */
-                if (bd->read_block(bd, child_base + child, img) != 0) return -1;
-                if (merkle_hash(l, child, mac_key, img, h) != 0) return -1;
+                const uint8_t *src = leaf_img;
+                if (l > 0) {
+                    if (bd->read_block(bd, child_base + child, img) != 0) return -1;
+                    src = img;
+                }
+                if (merkle_hash(l, child, mac_key, src, h) != 0) return -1;
                 my_memcpy(node + k * 32, h, 32);
                 /* On a stride: the panel costs a few hundred cell blits and the
-                 * loop body is one block read, so painting every time would
-                 * make the reporting a measurable part of the phase. */
+                 * loop body is one hash, so painting every time would make the
+                 * reporting a measurable part of the phase. */
                 if ((++done_children & 0xFFu) == 0)
-                    console_progress("Checking the volume it just wrote",
-                                     "Reading every block back and hashing it into one root,",
-                                     "so later tampering with the disk can be detected.",
+                    console_progress("Sealing the volume's integrity tree",
+                                     "Hashing every block's entry into one root, so later",
+                                     "tampering with the disk can be detected.",
                                      done_children, total_children);
             }
             if (bd->write_block(bd, base + n, node) != 0) return -1;
         }
         base += counts[l];
     }
-    console_progress("Checking the volume it just wrote",
-                     "Reading every block back and hashing it into one root,",
-                     "so later tampering with the disk can be detected.",
+    console_progress("Sealing the volume's integrity tree",
+                     "Hashing every block's entry into one root, so later",
+                     "tampering with the disk can be detected.",
                      total_children, total_children);
 
     /* The root is the hash of the single top node block, which merkle_build has
-     * just written -- read it back for the same reason the leaves are read back. */
+     * just written -- read back like every interior level above. */
     if (bd->read_block(bd, base - 1, node) != 0) return -1;
     if (merkle_root_hash(sb->rollback_gen, node, mac_key, levels, sb->meta_root) != 0) return -1;
     return 0;
@@ -2208,7 +2235,7 @@ no_disk:
     uint8_t boot_pass[32];
     secure_random_bytes(boot_pass, sizeof(boot_pass));
     if (storage_format_sealed(&g_vdisk_bd, (const char *)boot_pass,
-                              sizeof(boot_pass)) != 0) {
+                              sizeof(boot_pass), 0) != 0) {
         secure_zero(boot_pass, sizeof(boot_pass));
         return -1;
     }
@@ -2917,14 +2944,33 @@ static int format_seal_tpm(struct block_device *bd, struct fs_superblock *sb,
  * disk_key is randomly generated, never stored in plaintext on disk.
  * KEK = Argon2id(password, kek_salt); wrapped = AEAD(KEK, disk_key). */
 static int storage_format_sealed(struct block_device *bd,
-                                  const char *password, size_t plen)
+                                  const char *password, size_t plen,
+                                  uint64_t volume_blocks)
 {
     struct fs_superblock sb;
     my_memset(&sb, 0, sizeof(sb));
 
+    /* THE VOLUME MAY BE SMALLER THAN THE DEVICE (2026-09-24), and never larger.
+     * 0 is the whole device. Everything below lays itself out against `total`,
+     * so a volume of N blocks is exactly the volume a device of N blocks would
+     * have got, and the rest of the medium is not touched. The bound is checked
+     * here as well as where it was accepted: this function is the one that
+     * writes, and a bound it merely trusts is a bound one caller can forget. */
+#ifndef STORAGE_FORMAT_SIZE_IGNORED
+    const uint64_t total = volume_blocks ? volume_blocks : bd->total_blocks;
+#else
+    /* CONTROL ARM -- never ship. The size is accepted, bounded and then ignored,
+     * so the volume covers the whole device whatever the operator chose: every
+     * call succeeds and the disk they meant to keep part of is laid over. See
+     * make smoke-installer-sized-control. */
+    (void)volume_blocks;
+    const uint64_t total = bd->total_blocks;
+#endif
+    if (total > bd->total_blocks || total < STORAGE_MIN_BLOCKS) return -1;
+
     sb.magic = STORAGE_MAGIC;
     sb.version = STORAGE_VERSION;
-    sb.total_blocks = bd->total_blocks;
+    sb.total_blocks = total;
     sb.block_size = BLOCK_SIZE;
 
     /* Block 0: superblock.  Blocks 1..sb.meta_blocks: crypto metadata region.
@@ -2936,7 +2982,7 @@ static int storage_format_sealed(struct block_device *bd,
      * 4096-block RAM disk a 256-block region, and at a 16 GiB BLOCKS_PER_DISK it
      * would ask a 16 MiB RAM disk for 32768 blocks and fail the "disk too small"
      * check below -- so a diskless boot would not come up. */
-    sb.meta_blocks        = (uint32_t)((bd->total_blocks + META_ENTRIES_PER_BLOCK - 1)
+    sb.meta_blocks        = (uint32_t)((total + META_ENTRIES_PER_BLOCK - 1)
                                        / META_ENTRIES_PER_BLOCK);
     if (sb.meta_blocks > META_BLOCKS_MAX) return -1;   /* device past this kernel's ceiling */
     /* v6: one block reserved right after the metadata region for the TPM sealed
@@ -2984,7 +3030,7 @@ static int storage_format_sealed(struct block_device *bd,
      * blocks whatever this number said. */
     const uint64_t BITS_PER_BLOCK = (uint64_t)BLOCK_SIZE * 8;
 
-    uint64_t inodes = bd->total_blocks / 32;
+    uint64_t inodes = total / 32;
     if (inodes < 16) inodes = 16;
     uint64_t table_blocks = (inodes + INODES_PER_BLOCK - 1) / INODES_PER_BLOCK;
     inodes = table_blocks * INODES_PER_BLOCK;
@@ -3000,8 +3046,8 @@ static int storage_format_sealed(struct block_device *bd,
      * and bm_blocks = ceil(data_blocks / BITS_PER_BLOCK). Iterating converges in a
      * couple of steps (bm_blocks is tiny next to data_blocks). */
     uint64_t fixed  = after_j + ib_blocks + table_blocks;   /* everything except bitmap + data */
-    if (fixed >= bd->total_blocks) return -1;        /* disk too small */
-    uint64_t avail  = bd->total_blocks - fixed;
+    if (fixed >= total) return -1;                   /* disk too small */
+    uint64_t avail  = total - fixed;
     uint64_t bm_blocks = (avail + BITS_PER_BLOCK - 1) / BITS_PER_BLOCK;
     for (int it = 0; it < 8; it++) {
         uint64_t d = (avail > bm_blocks) ? avail - bm_blocks : 0;
@@ -3015,7 +3061,7 @@ static int storage_format_sealed(struct block_device *bd,
 
     sb.inode_table_start = sb.block_bitmap_start + bm_blocks;
     sb.data_start        = sb.inode_table_start + table_blocks;
-    if (sb.data_start >= bd->total_blocks) return -1;   /* disk too small */
+    if (sb.data_start >= total) return -1;              /* disk too small */
     sb.block_count = data_blocks;
 
     /* Per-volume HKDF diversifier — random per-format, stable on disk. */
@@ -3067,13 +3113,14 @@ static int storage_format_sealed(struct block_device *bd,
     my_memset(zero, 0, BLOCK_SIZE);
 
     /* Zero the crypto metadata region so every block starts with present=0.
-     * THIS MUST HAPPEN BEFORE THE HMAC BELOW, and the ordering is the reason the
-     * two can no longer disagree: merkle_build reads the region off the
-     * device, so it hashes the bytes that are actually there rather than an
-     * assumption about them. The old code hashed an all-zero in-RAM array and
-     * wrote the region afterwards; the two happened to agree, and a volume whose
-     * format left one byte of the region unwritten would have been bricked at its
-     * first mount by a check that could not say why. */
+     * EVERY WRITE HERE IS CHECKED, and that is what lets merkle_build below hash
+     * `zero` instead of reading 32,768 blocks back: a write the device refused
+     * fails the format, so a format that reaches the tree has put exactly these
+     * bytes on the medium. The old code hashed an all-zero array while a loop
+     * that ignored every return code wrote the region, and a volume whose format
+     * left one block unwritten was bricked at its first mount by a check that
+     * could not say why. See merkle_build for the one case this does not cover
+     * and what happens then. */
     /* SAY WHAT THIS IS, because it is the phase that takes the minutes and the
      * one that gets reported as a hang. On a 16 GiB volume the region is one
      * 32-byte entry per 4 KiB block, which is 32,768 blocks and 128 MiB of
@@ -3163,21 +3210,25 @@ static int storage_format_sealed(struct block_device *bd,
             return -1;
         }
         /* Builds the whole tree over the region just zeroed and leaves its root
-         * in sb.meta_root. Reads each block back rather than assuming its
-         * content, for the reason the zeroing moved above this in the first
-         * place: format and mount must hash the same bytes, not two sources that
-         * happen to agree. */
-        int rc = merkle_build(bd, &sb, fmt_mac_key);
+         * in sb.meta_root. `zero` is the buffer every metadata block was written
+         * from, and it has not changed since: bitmap_set marks it further down,
+         * after the tree exists. */
+        int rc = merkle_build(bd, &sb, fmt_mac_key, zero);
         secure_zero(fmt_mac_key, sizeof(fmt_mac_key));
         if (rc != 0) { secure_zero(disk_key, sizeof(disk_key)); return -1; }
     }
     secure_zero(disk_key, sizeof(disk_key));
 
-    bd->write_block(bd, 0, &sb);
+    /* FROM HERE ON EVERY WRITE IS CHECKED TOO. These five were the last in the
+     * format whose return codes were dropped, and the superblock is the one that
+     * matters most: a format that reported success over a refused superblock
+     * write left a disk that init then called blank. A refusal now fails the
+     * format, which is the only answer a caller can act on. */
+    if (bd->write_block(bd, 0, &sb) != 0) return -1;
 
     /* v6: clear the reserved TPM blob block on a password-mode volume. In TPM mode
      * format_seal_tpm already wrote the sealed blob there — must not wipe it. */
-    if (!want_tpm) bd->write_block(bd, tpm_blob_block, zero);
+    if (!want_tpm && bd->write_block(bd, tpm_blob_block, zero) != 0) return -1;
 
     /* Zero the journal region: a cleared header (magic 0) means "no committed
      * transaction to replay" — a fresh volume has nothing to recover. */
@@ -3213,19 +3264,26 @@ static int storage_format_sealed(struct block_device *bd,
 
     /* Root inode 0 is written directly rather than allocated, so the lazy
      * zeroing above never runs for its table block. Zero it here. */
-    bd->write_block(bd, sb.inode_table_start, zero);
+    if (bd->write_block(bd, sb.inode_table_start, zero) != 0) return -1;
 
     /* inode 0 (root) is allocated in the inode bitmap. */
     bitmap_set(zero, 0);
-    bd->write_block(bd, sb.inode_bitmap_start, zero);
+    if (bd->write_block(bd, sb.inode_bitmap_start, zero) != 0) return -1;
 
     struct on_disk_inode root;
     my_memset(&root, 0, sizeof(root));
     root.type = 2;          /* directory */
     root.mode = 0040755;
     root.links = 2;
-    storage_write_inode(bd, &sb, 0, &root);
+    if (storage_write_inode(bd, &sb, 0, &root) != 0) return -1;
 
+    /* NO FLUSH HERE, deliberately, and one was tried (2026-09-24). The format
+     * is made durable by the first journal commit after it, which the installer
+     * reaches before it reports success (setting the passwords persists the
+     * account table), and whose FLUSH CACHE covers everything written before it.
+     * A flush here as well made the format itself fail on a device that refuses
+     * every flush, which is exactly the device smoke-fs-wal-flush uses to prove
+     * that the JOURNAL refuses to commit: the gate never reached the commit. */
     return 0;
 }
 
@@ -3320,7 +3378,7 @@ struct mounted_fs *storage_get_mounted_fs(void) {
  * deliberate, which was the right way round to ship it but is not a policy --
  * "no path exists" and "one gated path exists" are different claims, and only
  * the second is what S63 says. */
-int storage_authorize_format(int index)
+int storage_authorize_format(int index, uint64_t volume_blocks)
 {
     /* THE TARGET IS AN ARGUMENT, NOT AMBIENT STATE, and that is the whole shape
      * of this function since 2026-09-06 (SECURITY.md S83). The alternative was a
@@ -3339,6 +3397,14 @@ int storage_authorize_format(int index)
     if (storage_usable_count() > 0) {
         struct block_device *bd = storage_device_at(index);
         if (!bd) return -1;
+        /* THE SIZE IS BOUNDED AGAINST THE DEVICE IT NAMES, here, before anything
+         * is set: at least the smallest volume worth laying out and at most the
+         * medium. A size past the end is refused rather than clamped, for the
+         * reason the index is: a volume the operator did not choose is not a
+         * rounding error. storage_format_sealed checks it again as it writes. */
+        if (volume_blocks != 0 &&
+            (volume_blocks < STORAGE_MIN_BLOCKS || volume_blocks > bd->total_blocks))
+            return -1;
         /* WHAT IS REFUSED IS AN UNLOCKED VOLUME, NOT A MOUNTED ONE, and the
          * distinction is the whole of how install media may replace a volume
          * while a running system may not (S90).
@@ -3382,13 +3448,15 @@ int storage_authorize_format(int index)
          * make smoke-installer-target-control. */
         (void)bd;
 #endif
-    } else if (index != 0) {
+    } else if (index != 0 || volume_blocks != 0) {
         /* No persistent devices: the machine has an ephemeral store and exactly
          * one thing that could be meant. Index 0 means it; anything else names a
-         * device that does not exist and is refused rather than rounded down. */
+         * device that does not exist and is refused rather than rounded down.
+         * The ephemeral store is sized by the kernel, so a size is refused too. */
         return -1;
     }
 
+    g_format_blocks     = volume_blocks;
     g_format_authorized = 1;
     return 0;
 }
@@ -3436,6 +3504,7 @@ void storage_query(struct storage_info *out)
 #endif
     out->recognised   = (out->present && g_mounted_fs.mounted) ? 1u : 0u;
     out->unlocked     = (out->recognised && g_mounted_fs.unlocked) ? 1u : 0u;
+    if (out->recognised) out->volume_blocks = g_mounted_fs.sb.total_blocks;
 }
 
 /* The survey for ONE enumerated device, rather than for the machine (SECURITY.md
@@ -3469,6 +3538,7 @@ int storage_device_query(int index, struct storage_info *out)
     int is_mounted    = (bd == g_mounted_fs.bd) && g_mounted_fs.mounted;
     out->recognised   = is_mounted ? 1u : 0u;
     out->unlocked     = (is_mounted && g_mounted_fs.unlocked) ? 1u : 0u;
+    if (is_mounted) out->volume_blocks = g_mounted_fs.sb.total_blocks;
     out->needs_format = (!is_mounted && g_needs_format && bd == g_needs_format_bd) ? 1u : 0u;
 #ifdef STORAGE_AUTOFORMAT
     out->format_on_login = 1u;
@@ -3498,6 +3568,10 @@ int storage_unlock(const char *password, size_t plen)
      * whatever calls next. That is the same argument as the one-shot CAP_REPLY.
      */
     int authorized = g_format_authorized;
+    /* The size is consumed with the token it was authorised with, so a later
+     * format can never inherit a size somebody chose for an earlier one. */
+    const uint64_t format_blocks = g_format_blocks;
+    g_format_blocks = 0;
 #ifndef STORAGE_FORMAT_AUTH_STICKY
     g_format_authorized = 0;
 #else
@@ -3606,7 +3680,8 @@ int storage_unlock(const char *password, size_t plen)
          * it is worth zeroing rather than reasoning about: the zero costs
          * nothing, and being wrong about reachability costs key material. */
         storage_forget_mounted();
-        if (storage_format_sealed(g_needs_format_bd, password, plen) != 0) return -1;
+        if (storage_format_sealed(g_needs_format_bd, password, plen, format_blocks) != 0)
+            return -1;
         if (storage_mount(g_needs_format_bd) != 0) return -1;
         g_needs_format    = 0;
         g_needs_format_bd = NULL;
@@ -3913,7 +3988,7 @@ void storage_tpm_kek_selftest(void)
     size_t pl = 0; for (const char *c = pw; *c; c++) pl++;
 
     int failed = 1;
-    if (storage_format_sealed(&g_vdisk_bd, pw, pl) != 0) {
+    if (storage_format_sealed(&g_vdisk_bd, pw, pl, 0) != 0) {
         println("TPM_KEK_SELFTEST: FAIL (format+seal)");
     } else if (storage_mount(&g_vdisk_bd) != 0) {
         println("TPM_KEK_SELFTEST: FAIL (mount)");

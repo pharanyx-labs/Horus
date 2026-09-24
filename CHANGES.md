@@ -394,6 +394,15 @@ in this file.
 
 ### Added
 
+- **The installer can lay down a volume smaller than the disk.** A new step after the disk survey
+  asks for a size in MiB, and an empty answer (the default) is the whole disk as before.
+  `SYS_STORAGE_FORMAT` takes the size as a fourth argument; the kernel bounds it against the
+  device it names (at least `STORAGE_MIN_BLOCKS`, at most the device) and refuses rather than
+  clamps anything outside that. The rest of the disk is left as it was: not used, and not erased.
+  `storage_info.volume_blocks` reports the mounted volume's size, and the installer checks it
+  after the format instead of trusting the return code. The installer's floor is 64 MiB. Witnessed
+  by `make smoke-installer-sized`, falsified by `STORAGE_FORMAT_SIZE_IGNORED=1`.
+
 - **The SMP race gates also run under KVM, as a second detector** (`smoke-smp-kvm`, advisory for
   now). Under KVM the virtual CPUs run truly in parallel, which emulation rarely achieves, and a
   probe of the whole suite under KVM found **[HORUS-20260921-03]** on its first run. The suite
@@ -538,6 +547,14 @@ in this file.
 
 ### Changed
 
+- **Formatting no longer reads the whole metadata region back.** The Merkle tree over the crypto
+  metadata region hashes the block every metadata block was written from instead of reading
+  32,768 of them back (at 16 GiB), because every write in the format is now checked and a refused
+  one fails the format; five writes whose return codes were dropped are checked too. The
+  emulated 16 GiB eMMC format fell from about 90s
+  to 51.5s. The trade (a device that acknowledges a write and drops it now costs one 512 KiB
+  range, refused, instead of being papered over) is recorded as `docs/LIMITATIONS.md` 5.2i.
+
 - **Every CI build used one of the runner's four cores.** Each of the ~370 build-and-boot steps in
   `ci.yml` does `make clean` and a full build, serially: locally 8.9 s of build against 4 s of
   boot, and 2.0 s at `-j12`. The workflow now sets `MAKEFLAGS=-j4`. Measured locally first: every
@@ -556,6 +573,15 @@ in this file.
   steps run, and `check_gate_pairs` still finds every one.
 
 ### Fixed
+
+- **An install that failed at the password step said only "could not set the password".**
+  `SYS_PASSWD` flattened five different failures of granting a key slot into one code, and the
+  installer printed none of it, so a failed install on a laptop with no serial port could not be
+  diagnosed. The kernel now returns which step failed (volume not open, slots unreadable, none
+  free, the seal refused by key derivation or the TPM, the write failed), and the installer prints
+  the code and its meaning on the screen and the wire. Changing your own password also re-seals
+  the volume's key slot **before** the account's hash changes, and a failed re-seal now fails the
+  change: it used to be ignored, leaving an account whose password no longer opened the volume.
 
 - **An install on a laptop's eMMC took twenty minutes and showed nothing while it did.** Both
   storage backends moved one 512-byte sector per command while a filesystem block is 4096 bytes,

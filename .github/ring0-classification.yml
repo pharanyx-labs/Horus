@@ -366,7 +366,18 @@
 # kusers.c; the call has to sit where users_init is, because the first version
 # called it from main.c before scheduler_init and users_init re-seeded the
 # compiled-in accounts on top of it (SECURITY.md S103).
-core_budget_loc: 10536
+#
+# 2026-09-24: 10536 -> 10544, +8 in terminal.c. The framebuffer console's grid is
+# centred on the display instead of drawn from pixel (0,0).
+#
+# WHY IT CANNOT GO TO RING 3. console_server centres its own copy of the grid, and
+# does; but the kernel draws the boot log before console_server exists and the
+# format's progress panel while it is blocked, both straight into the same pixels.
+# Centring only ring 3 would leave those on the left edge and make the whole screen
+# jump sideways at the handover, and the panel would sit beside the installer it
+# is describing rather than under it. The eight lines are one offset pair, its
+# computation, and the two places a pixel address is formed.
+core_budget_loc: 10544
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

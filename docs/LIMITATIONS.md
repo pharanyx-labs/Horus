@@ -4249,6 +4249,31 @@ landed microseconds apart however long the guest actually took. Nobody could hav
 the 300s from a CI log, ever. Steps are timed and flushed per line now, and those timings are
 what made the table above checkable against a real failure.
 
+### 5.2i The format trusts its checked writes instead of reading the metadata region back (a deliberate trade, 2026-09-24)
+
+**What changed.** `merkle_build` used to read every block of the crypto metadata region back off
+the medium and hash what it found: 32,768 block reads at a 16 GiB volume, the second of the
+format's two full passes over 128 MiB. It now hashes the one all-zero block every metadata block
+was written from. That is sound because every write in `storage_format_sealed` is now **checked**,
+and a refused write fails the format: the region's runs through `bd_fill`, and the five writes
+after the tree (superblock, TPM blob clear, the root inode's table block, the inode bitmap, the
+root inode), whose return codes were being dropped. The format also flushes before it returns, so
+"installed" means on the medium. The interior levels of the tree are still read back; they are a
+few hundred blocks.
+
+**What was traded, and it was the maintainer's decision.** A device that **acknowledges** a write
+and then does not store it now leaves a leaf whose hash disagrees with the disk. Nothing wrong is
+accepted: `merkle_verify_leaf` refuses that metadata block on first use, so the 128 data blocks it
+describes cannot be read or written until the volume is reformatted. The read-back made the tree
+agree with whatever was on the disk, so the same device used to give a working volume with
+garbage metadata entries in that range. Neither version can detect such a device at install time:
+a read straight after the write is served from the same cache that lied.
+
+**Measured**, `smoke-installer-emmc` (16 GiB, TCG, one host with nothing else running): 88.6s and
+91.1s on the multi-block transport alone, **51.5s and 51.5s** with this change. On a real card the
+saving is projected from the operation count (the reads are gone; the writes are unchanged) and
+has not been timed.
+
 ### 5.3 No release provenance: **[I-9]**
 
 `kernel.elf` is verified reproducible and an SBOM is produced, but there are no tags, no

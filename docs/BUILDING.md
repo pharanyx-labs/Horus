@@ -177,7 +177,7 @@ Log in as **`root`** / **`rootpass`**, or **`user`** / **`password`** for an unp
 session (`users_init` in `src/kernel/kusers.c` is the truth; this line said `horus` until
 2026-09-01, which was never a password the kernel accepted). Those are the accounts of a
 **live boot**: the boot menu's live entry, or any machine with no persistent disk. **A machine
-with a disk has neither** (`users_apply_boot_policy`, `SECURITY.md` S104): `user` is removed at
+with a disk has neither** (`users_apply_boot_policy`, `SECURITY.md` S103): `user` is removed at
 boot and `root` has no usable password until the installer sets one or the volume's own account
 table loads at unlock. That table carries the two accounts the installer asked you to name, with
 the passwords you chose. Until 2026-09-24 the defaults stayed in RAM on an installed machine

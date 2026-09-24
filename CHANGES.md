@@ -384,6 +384,15 @@ in this file.
 
 ### Added
 
+- **The installer can lay down a volume smaller than the disk.** A new step after the disk survey
+  asks for a size in MiB, and an empty answer (the default) is the whole disk as before.
+  `SYS_STORAGE_FORMAT` takes the size as a fourth argument; the kernel bounds it against the
+  device it names (at least `STORAGE_MIN_BLOCKS`, at most the device) and refuses rather than
+  clamps anything outside that. The rest of the disk is left as it was: not used, and not erased.
+  `storage_info.volume_blocks` reports the mounted volume's size, and the installer checks it
+  after the format instead of trusting the return code. The installer's floor is 64 MiB. Witnessed
+  by `make smoke-installer-sized`, falsified by `STORAGE_FORMAT_SIZE_IGNORED=1`.
+
 - **The SMP race gates also run under KVM, as a second detector** (`smoke-smp-kvm`, advisory for
   now). Under KVM the virtual CPUs run truly in parallel, which emulation rarely achieves, and a
   probe of the whole suite under KVM found **[HORUS-20260921-03]** on its first run. The suite

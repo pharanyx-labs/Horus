@@ -804,7 +804,7 @@ from the primordial root cnode and grants it to the installer alone.
 | # | Name | Arguments | Authorisation |
 |---|---|---|---|
 | 110 | `SYS_STORAGE_INFO` | `struct storage_info *` | `CAP_STORAGE_FORMAT` at `CAPSLOT_STORAGE_FORMAT`: READ |
-| 111 | `SYS_STORAGE_FORMAT` | `password`, `plen`, `device` | `CAP_STORAGE_FORMAT` at `CAPSLOT_STORAGE_FORMAT`: WRITE |
+| 111 | `SYS_STORAGE_FORMAT` | `password`, `plen`, `device`, `volume_blocks` | `CAP_STORAGE_FORMAT` at `CAPSLOT_STORAGE_FORMAT`: WRITE |
 | 113 | `SYS_STORAGE_DEVICE` | `index`, `struct storage_info *` | `CAP_STORAGE_FORMAT` at `CAPSLOT_STORAGE_FORMAT`: READ |
 
 The rights differ on purpose. READ is the survey an installer shows before it asks; WRITE is
@@ -833,6 +833,17 @@ global somebody else set. An index naming no such device is refused (`SYS_ERR_IN
 naming a device that already carries a mounted volume; the password buffer is wiped on those
 refusals like every other exit. On a machine with no persistent devices only `device = 0` is
 valid, and it means the ephemeral store the machine is already running on.
+
+**`volume_blocks` is how much of the device the volume spans**, and 0 means all of it. A smaller
+volume starts at block 0 and the rest of the device is not touched: not used and not erased.
+It is bounded against the device it names, at least `STORAGE_MIN_BLOCKS` (512, the smallest
+valid layout) and at most the device's size, and a size outside that is **refused, not
+clamped**, for the reason an index past the end is: a volume the operator did not choose is not
+a rounding error. The format checks the bound again as it writes. On a machine with no
+persistent devices the size must be 0, because the ephemeral store is sized by the kernel.
+`storage_info.volume_blocks` reports the size of the mounted volume, so an installer can confirm
+what was laid down rather than trusting the return code; `make smoke-installer-sized` is that
+check end to end.
 
 `SYS_STORAGE_DEVICE` (113) is the same survey for ONE enumerated persistent device rather
 than for the machine, and it answers to the same capability and the same READ right for the

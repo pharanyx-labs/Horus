@@ -126,6 +126,12 @@
 #define CMD_WRITE_SINGLE     24u    /* CMD24                     */
 #define CMD_READ_MULTI       18u    /* CMD18, many blocks in one command */
 #define CMD_WRITE_MULTI      25u    /* CMD25, many blocks in one command */
+#define CMD_STOP_TRANSMISSION 12u   /* CMD12, ends a multi-block transfer */
+/* Command Type, bits 7:6 of the Command register: 11b marks CMD12 as an ABORT,
+ * which tells the controller the data line is being torn down on purpose. */
+#define CMD_TYPE_ABORT        (3u << 6)
+/* Auto CMD Error Status: why the stop the controller sent on its own failed. */
+#define SDHCI_AUTO_CMD_ERR    0x3C
 #define CMD_APP_CMD          55u    /* CMD55, prefixes an ACMD   */
 #define ACMD_SEND_OP_COND    41u    /* ACMD41, SD only           */
 
@@ -178,6 +184,8 @@ static int sd_pio_read512(uint64_t bar, uint32_t index, uint32_t arg, void *buf)
 static int sd_write_block(uint64_t bar, uint64_t lba, const void *buf, int is_hc);
 static int sd_flush(uint64_t bar);
 static int sd_wait_not_busy(uint64_t bar);
+static int sd_rw_once(uint64_t bar, uint64_t lba, void *buf, uint32_t count,
+                      int is_hc, int is_write, int repeat_one);
 
 static uint64_t g_sdhci_bar;      /* 0 when no controller was recognised */
 /* The identification clock host_reset chose, in kHz, reported by sdhci_probe so
@@ -282,7 +290,30 @@ static void sdtrace_hx(uint32_t v, int digits) {
  * register say" is the whole question, and on a laptop with no serial cable the
  * screen is the only place to ask it. Under the instrument every failed command
  * answers; without it this compiles away entirely. */
+/* THE FIRST FAILURES ARE THE EVIDENCE, AND THE LATER ONES BURY THEM.
+ *
+ * On the laptop (2026-09-24) the card got into a state where every read failed,
+ * something kept retrying, and the kernel log filled with identical
+ * `CMD18 error` lines until the first failure, the one that says how it got
+ * there, had been pushed out of the ring. So the first SDTRACE_FULL failures
+ * print in full, and after that one line every SDTRACE_EVERY says how many
+ * there have been. Returns 1 when this failure's own line is to be skipped. */
+#define SDTRACE_FULL   16u
+#define SDTRACE_EVERY 256u
+static uint32_t g_sdtrace_fails;
+static int sdtrace_quiet(void) {
+    uint32_t n = ++g_sdtrace_fails;
+    if (n <= SDTRACE_FULL) return 0;
+    if (n % SDTRACE_EVERY == 0) {
+        print("SDTRACE   "); print_decimal(n);
+        print(" failures so far; lines after the first ");
+        print_decimal(SDTRACE_FULL); print(" are counted, not printed\n");
+    }
+    return 1;
+}
+
 static void sd_cmd_failed(uint64_t bar, uint32_t index, const char *why) {
+    if (sdtrace_quiet()) return;
     print("SDTRACE   CMD");
     print_decimal(index);
     print(" ");
@@ -304,6 +335,7 @@ static void sd_cmd_failed(uint64_t bar, uint32_t index, const char *why) {
  * transfer-complete), `b` how many blocks of the run had already moved. */
 static void sd_rw_failed(uint64_t bar, const char *stage, int is_write,
                          uint64_t lba, uint32_t count, uint32_t b) {
+    if (sdtrace_quiet()) return;
     print("SDTRACE   ");
     print(is_write ? "WRITE" : "READ");
     print(" ");
@@ -311,6 +343,7 @@ static void sd_rw_failed(uint64_t bar, const char *stage, int is_write,
     print(" lba=");  sdtrace_hx((uint32_t)lba, 8);
     print(" n=");    print_decimal(count);
     print(" at=");   print_decimal(b);
+    print(" acmd="); sdtrace_hx(sdhci_read16(bar, SDHCI_AUTO_CMD_ERR), 4);
     print(" err=");  sdtrace_hx(sdhci_read16(bar, SDHCI_ERR_STATUS), 4);
     print(" int=");  sdtrace_hx(sdhci_read16(bar, SDHCI_INT_STATUS), 4);
     print(" ps=");   sdtrace_hx(sdhci_read32(bar, SDHCI_PRESENT_STATE), 8);
@@ -770,8 +803,8 @@ static int sd_pio_read512(uint64_t bar, uint32_t index, uint32_t arg, void *buf)
  *
  * COUNT IS BOUNDED BY THE 16-BIT BLOCK COUNT REGISTER, and callers pass small
  * runs, so the bound is checked rather than assumed. */
-static int sd_rw_blocks(uint64_t bar, uint64_t lba, void *buf, uint32_t count,
-                        int is_hc, int is_write, int repeat_one) {
+static int sd_rw_once(uint64_t bar, uint64_t lba, void *buf, uint32_t count,
+                      int is_hc, int is_write, int repeat_one) {
     if (count == 0) return 0;
     if (count > 0xFFFFu) return -1;
 
@@ -975,6 +1008,60 @@ static int sd_flush(uint64_t bar) {
     }
     return 0;
 #endif
+}
+
+/* Put the card back in the transfer state after a transfer that went wrong.
+ *
+ * A MULTI-BLOCK TRANSFER THAT STOPS PART-WAY LEAVES THE CARD IN IT. Auto CMD12 is
+ * sent by the controller after the LAST block; a transfer abandoned before that
+ * (a data error, a wait that gave up) never sends it, so the card is still in its
+ * sending or receiving state and answers no further command. Resetting the host's
+ * lines, which is all this driver did, clears the controller and not the card.
+ * On the laptop (2026-09-24) that is the shape of what was seen: once one read
+ * went wrong, every CMD18 after it timed out, and the log filled with them.
+ *
+ * So: reset the lines, send CMD12 as an abort, let the card finish anything it
+ * was programming, and reset the lines again, which is SD Host Controller 3.00
+ * section 3.8's abort sequence. A card that was already in the transfer state
+ * does not answer a CMD12, and that timeout is harmless: the lines are reset
+ * after it either way. */
+static void sd_abort(uint64_t bar) {
+    sd_line_recover(bar, 1);
+    int rc = sd_command(bar, CMD_STOP_TRANSMISSION, 0, RESP_48_BUSY,
+                        CMD_CRC_CHECK | CMD_INDEX_CHECK | CMD_TYPE_ABORT);
+    int busy = sd_wait_not_busy(bar);
+    sd_line_recover(bar, 1);
+#ifdef SDHCI_HW_TRACE
+    print("SDTRACE   abort: CMD12 ");
+    print(rc == 0 ? "answered" : "not answered");
+    print(busy == 0 ? ", DAT0 released\n" : ", DAT0 STILL LOW\n");
+#else
+    (void)rc; (void)busy;
+#endif
+}
+
+/* One transfer, and on failure ONE more after an abort.
+ *
+ * The retry is what turns a transient error (a CRC on one block, a wait that
+ * lost a race with the card) into the success it should have been, instead of
+ * the permanent failure the card's stranded state made it. Exactly one: a card
+ * that fails twice in a row has a problem a loop would only hide, and the
+ * caller gets the second failure. Repeating a write is safe, since it puts the
+ * same bytes at the same address. */
+static int sd_rw_blocks(uint64_t bar, uint64_t lba, void *buf, uint32_t count,
+                        int is_hc, int is_write, int repeat_one) {
+    int rc = sd_rw_once(bar, lba, buf, count, is_hc, is_write, repeat_one);
+    if (rc == 0 || count == 0) return rc;
+    sd_abort(bar);
+    int rc2 = sd_rw_once(bar, lba, buf, count, is_hc, is_write, repeat_one);
+#ifdef SDHCI_HW_TRACE
+    print("SDTRACE   retry after abort: ");
+    print(is_write ? "WRITE" : "READ");
+    print(" lba="); sdtrace_hx((uint32_t)lba, 8);
+    print(rc2 == 0 ? " succeeded\n" : " failed again\n");
+#endif
+    if (rc2 != 0) sd_abort(bar);
+    return rc2;
 }
 
 /* The controller, if the machine has one.

@@ -96,6 +96,14 @@ static volatile uint8_t *fbp;       /* framebuffer bytes; 0 until mapped */
  * number of words. A uint32_t store there writes a byte into the next pixel. */
 static uint32_t fb_pitch_b, fb_w, fb_h, fb_scale = 1, fb_bypp = 4;
 
+/* WHERE THE GRID STARTS, in pixels, so that it is centred on the display. The
+ * same rule as the kernel's g_fb_ox/g_fb_oy in src/kernel/terminal.c, computed
+ * from the same inputs, so the screen does not jump sideways when this server
+ * takes the display over from the kernel's boot log. On the IdeaPad's 1366x768
+ * panel the 640-pixel grid used to sit against the left edge with the right half
+ * of the screen black; this is what puts the installer in the middle. */
+static uint32_t fb_ox, fb_oy;
+
 /* One pixel, at whichever depth this display gave us. Declared after fb_bypp,
  * which it reads. */
 static inline void fb_store(volatile uint8_t *p, uint32_t c) {
@@ -135,7 +143,7 @@ static void fb_blit(unsigned idx) {
     uint32_t fg = fb_pal[attr & 0x0F], bg = fb_pal[(attr >> 4) & 0x07];
 
     uint32_t cw = FB_CELL_W * fb_scale, chh = FB_CELL_H * fb_scale;
-    uint32_t px0 = (idx % 80u) * cw, py0 = (idx / 80u) * chh;
+    uint32_t px0 = fb_ox + (idx % 80u) * cw, py0 = fb_oy + (idx / 80u) * chh;
     if (px0 + cw > fb_w || py0 + chh > fb_h) return;
 
     const uint8_t *g = &font_8x16[ch][0];
@@ -354,6 +362,11 @@ static int con_line_start = 1;
  * which for this one is nowhere. */
 static uint32_t con_input_owner;  /* task id; 0 = unset */
 
+/* Cooked output has reached the display since a full-screen program last drew.
+ * See con_draw_cells for what that obliges the next draw to tidy. Starts set,
+ * because the boot log is on the screen before any program draws at all. */
+static int surf_stale = 1;
+
 /* One byte to both outputs, expanding \n to \r\n on serial. No stamping: this is
  * what the prefix itself is written with. */
 static void con_emit(char c) {
@@ -364,6 +377,7 @@ static void con_emit(char c) {
      * not a display -- silent, and the screen stays black. */
     if (fbp) fb_putc(c);
     else     vga_putc(c);
+    surf_stale = 1;
 }
 
 /* Emit one console byte, opening each line with a timestamp while the console is
@@ -779,6 +793,52 @@ static void cell_put(unsigned row, unsigned col, uint8_t ch, uint8_t attr) {
  * and the bound cell_put enforces cannot drift apart. */
 static unsigned cell_rows(void) { return fbp ? fb_rows : (VGA_CELLS / 80u); }
 
+/* THE SURFACE A FULL-SCREEN PROGRAM DRAWS ON IS CON_ROWS HIGH, AND CENTRED.
+ *
+ * CON_OP_WINSZ promises CON_ROWS x CON_COLS, because a serial terminal cannot be
+ * asked its size, and tui.c sizes its buffers to that promise. The machine's own
+ * grid is usually taller: 48 rows on the IdeaPad's panel, 50 in VGA text mode. So
+ * the installer used to occupy the top half of the screen and nothing the bottom
+ * half (2026-09-24). Its rows are now placed in the middle of
+ * the grid: row 0 of the surface is grid row surf_top(), and nothing a client
+ * sends can address a grid row outside the surface, because the bound below is
+ * surf_rows() and the offset is added only after the check. */
+static unsigned surf_rows(void) {
+    unsigned rows = cell_rows();
+    return rows < CON_ROWS ? rows : CON_ROWS;
+}
+static unsigned surf_top(void) { return (cell_rows() - surf_rows()) / 2u; }
+
+/* Blank the grid outside the surface and park the stream below it.
+ *
+ * ONLY OUTSIDE, NEVER INSIDE. The client keeps a damage diff and sends only
+ * cells it believes changed; blanking a cell under it would leave that cell
+ * blank until the program happened to redraw it. Inside the surface, cooked
+ * output is the client's to repaint, which the installer does through
+ * tui_invalidate after every marker. Outside, nothing will ever repaint it.
+ *
+ * WHY CENTRING MADE THIS NECESSARY. The stream cursor sits wherever the last
+ * cooked line left it, which after this server's takeover is a few rows from the
+ * top. While the surface was rows 0-23 that was INSIDE it, so a marker written
+ * there was painted over by the program's next full repaint and never seen.
+ * Centred, the surface starts a dozen rows down and the cursor is above it:
+ * without this, every marker would stay on the screen over the frame.
+ *
+ * THE STREAM IS PARKED ON THE ROW BELOW THE SURFACE, so the next marker lands
+ * outside the frame, where the next draw wipes it, rather than across a field. */
+static void surf_tidy(void) {
+    const unsigned rows = cell_rows(), top = surf_top(), n = surf_rows();
+    const uint8_t blank_attr = (uint8_t)VGA_ATTR;
+    for (unsigned r = 0; r < rows; r++) {
+        if (r >= top && r < top + n) continue;
+        for (unsigned c = 0; c < 80u; c++) cell_put(r, c, ' ', blank_attr);
+    }
+    if (top + n < rows) {
+        if (fbp) fb_pos = (top + n) * 80u;
+        else     vga_pos = (top + n) * 80u;
+    }
+}
+
 /* Paint a request's worth of spans. Returns the number of cells painted, or
  * SYS_ERR_INVAL on the first malformed span.
  *
@@ -786,13 +846,14 @@ static unsigned cell_rows(void) { return fbp ? fb_rows : (VGA_CELLS / 80u); }
  * from another ring-3 task and the shadow buffer is this server's own memory.
  * The three ways a span can be wrong are all checked: a header that runs off the
  * end of the payload, a length of zero (which would make no progress and is the
- * shape of a parser that loops), and a row or column range outside the grid.
+ * shape of a parser that loops), and a row or column range outside the surface.
  * The whole request is refused on any of them rather than the offending span
  * being skipped, since a sender that has one span wrong has lost track of the
  * screen and the rest of its message is not to be trusted onto the display. */
 static int con_draw_cells(const uint8_t *d, unsigned len) {
-    const unsigned rows = cell_rows();
+    const unsigned rows = surf_rows(), top = surf_top();
     unsigned i = 0, painted = 0;
+    if (surf_stale) { surf_tidy(); surf_stale = 0; }
     while (i < len) {
         if (len - i < 5u) return SYS_ERR_INVAL;
         unsigned row = d[i];
@@ -806,7 +867,7 @@ static int con_draw_cells(const uint8_t *d, unsigned len) {
         for (unsigned k = 0; k < n; k++) {
             uint8_t ch = d[i + k];
             if (attr & TUI_A_ACS) ch = acs_to_cp437(ch);
-            cell_put(row, col + k, ch, vga_attr);
+            cell_put(top + row, col + k, ch, vga_attr);
         }
         i += n;
         painted += n;
@@ -961,6 +1022,14 @@ void _start(void) {
                         fb_rows = fits > 50u ? 50u : fits;
 #endif
                     }
+                    /* Clamped at zero: a grid taller than the display
+                     * (FB_GRID_FIXED_ROWS) must clip off the bottom as before. */
+                    {
+                        uint32_t gw = 80u * FB_CELL_W * fb_scale;
+                        uint32_t gh = (uint32_t)fb_rows * FB_CELL_H * fb_scale;
+                        fb_ox = (gw < fb_w) ? (fb_w - gw) / 2u : 0u;
+                        fb_oy = (gh < fb_h) ? (fb_h - gh) / 2u : 0u;
+                    }
                     for (unsigned i = 0; i < 80u * fb_rows; i++)
                         fb_cells[i] = (uint16_t)((VGA_ATTR << 8) | ' ');
                     for (unsigned i = 0; i < 80u * fb_rows; i++) fb_blit(i);
@@ -973,7 +1042,9 @@ void _start(void) {
                     ser_puts("x"); ser_u32(fbg.bpp);
                     ser_puts(" pitch "); ser_u32(fbg.pitch);
                     ser_puts(" scale "); ser_u32(fb_scale);
-                    ser_puts(" grid 80x"); ser_u32(fb_rows); ser_puts("\n");
+                    ser_puts(" grid 80x"); ser_u32(fb_rows);
+                    ser_puts(" origin ("); ser_u32(fb_ox); ser_puts(",");
+                    ser_u32(fb_oy); ser_puts(")\n");
                 }
             }
         }

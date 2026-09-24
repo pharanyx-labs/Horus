@@ -1853,6 +1853,11 @@ static int storage_bd_is_ata(const struct block_device *bd)
  * the ENUMERATION must agree exactly -- an installer shows the operator a list
  * built from one and then names an index into the other -- so they are computed
  * from the same two facts here rather than in five places. */
+static int storage_usable_count(void);
+/* How many persistent devices this machine has. users_apply_boot_policy asks,
+ * because a machine with a disk must not accept the compiled-in accounts. */
+int storage_persistent_device_count(void) { return storage_usable_count(); }
+
 static int storage_usable_count(void)
 {
     return g_ata_usable_count + (g_sd_usable ? 1 : 0);
@@ -3118,7 +3123,7 @@ static int storage_format_sealed(struct block_device *bd,
         fs_keyslot_t slots[HORUS_KEYSLOTS];
         secure_zero(slots, sizeof(slots));
         if (unsealed) {
-            /* THE OPERATOR CHOSE NOT TO ENCRYPT (SECURITY.md S103), and this is
+            /* THE OPERATOR CHOSE NOT TO ENCRYPT (SECURITY.md S104), and this is
              * where that becomes true. disk_key goes into slot 0 in the clear,
              * uid 0, and the superblock says so; the password is not used for
              * the volume at all (it is still root's account password, set by the
@@ -3826,7 +3831,7 @@ int storage_unlock(const char *password, size_t plen)
         }
         int opened = -1;
         if (sb->unsealed) {
-            /* AN UNSEALED VOLUME OPENS WITHOUT THE PASSWORD (S103), because it
+            /* AN UNSEALED VOLUME OPENS WITHOUT THE PASSWORD (S104), because it
              * has none; the login that called this still has to pass
              * verify_password against the account table this makes readable.
              * FAIL CLOSED if the

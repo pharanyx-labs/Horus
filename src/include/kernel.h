@@ -3145,6 +3145,8 @@ int  storage_volume_has_keyslots(void);  /* persistent AND sealed: slots mean so
  * "there is nothing here to install onto" is an answer an installer must be able
  * to render. */
 void storage_query(struct storage_info *out);
+int  storage_persistent_device_count(void);
+void users_apply_boot_policy(void);   /* after storage_init: live boot or no defaults */
 int  storage_device_query(int index, struct storage_info *out);
 /* Boot-mode flags, decided by the boot menu and readable with SYS_BOOT_FLAGS.
  *

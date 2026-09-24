@@ -1198,7 +1198,7 @@ the ring-3 FS server never sees a key.
 - **The volume key is sealed, unless the operator chose otherwise.** `disk_key` is normally held
   only in key slots, each an AEAD wrap under a KEK derived with Argon2id from a password (and the
   TPM, when there is one). An installer may instead lay the volume down **unsealed**
-  (`STORAGE_FORMAT_UNSEALED`, **S103**): `disk_key` in the clear in slot 0 and `sb.unsealed` set.
+  (`STORAGE_FORMAT_UNSEALED`, **S104**): `disk_key` in the clear in slot 0 and `sb.unsealed` set.
   Everything else on this list is identical for both, so the two share one read and write path;
   what the unsealed one gives up is confidentiality and tamper evidence against anyone holding the
   disk (`docs/LIMITATIONS.md` 2.21), and every mount says which kind it found.

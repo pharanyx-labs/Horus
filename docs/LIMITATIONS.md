@@ -2611,7 +2611,7 @@ the present cost is affordable and is not what blocks anything.
 ### 2.21 An unencrypted volume is exactly as unprotected as it sounds (a deliberate option, 2026-09-24)
 
 The installer can lay down a volume **without encryption** when the operator chooses it (the
-maintainer's decision, 2026-09-24; `SECURITY.md` **S103**). Encryption stays the default and the
+maintainer's decision, 2026-09-24; `SECURITY.md` **S104**). Encryption stays the default and the
 other answer is a deliberate keystroke. What an unsealed volume gives up, stated rather than left
 to be discovered:
 

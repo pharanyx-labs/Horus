@@ -384,6 +384,14 @@ in this file.
 
 ### Added
 
+- **The installer waits for a key when it has finished, then clears the screen for the login
+  prompt.** It used to exit at once, leaving the login prompt under its last frame and the markers
+  around it. The completion is still reported before the key (`INSTALLER: PASS installed`), and a
+  new console operation, `CON_OP_CLEAR`, blanks the whole display and homes the stream so the
+  banner and `horus login:` start on an empty screen; the serial terminal is sent `ESC[2J ESC[H`
+  so both views agree. Every install scenario in `tools/installer_session.py` presses the key
+  through one helper and requires the clear on the wire.
+
 - **The SMP race gates also run under KVM, as a second detector** (`smoke-smp-kvm`, advisory for
   now). Under KVM the virtual CPUs run truly in parallel, which emulation rarely achieves, and a
   probe of the whole suite under KVM found **[HORUS-20260921-03]** on its first run. The suite

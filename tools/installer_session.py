@@ -297,6 +297,26 @@ def expect_while_doing_io(s, needle, stall, cap):
         s._pump(0.25)
 
 
+def expect_installed(s, typist=None):
+    """Wait for the install to complete, then press the key the installer asks for.
+
+    Since 2026-09-24 the installer reports `INSTALLER: PASS installed` and then
+    waits for a key before it clears the screen and hands over to the login
+    prompt. Every scenario that completes an install goes through here, so the
+    keystroke is sent in one place and cannot be forgotten by the next scenario
+    to be written. It waits for the installer's own marker before typing, as
+    every other step in this file does. Returns the format's duration.
+    """
+    took = expect_while_doing_io(s, "INSTALLER: PASS installed", FORMAT_STALL, FORMAT_CAP)
+    s.expect("INSTALLER: waiting on a key to finish", STEP)
+    (typist or SerialTypist(s)).key("enter")
+    # AND THE SCREEN WAS CLEARED for the login prompt: CON_OP_CLEAR sends this to
+    # the serial terminal as it blanks the display. Searched from after the key
+    # marker, so the clear the TUI sent when it started cannot satisfy it.
+    s.expect("\x1b[2J\x1b[H", STEP)
+    return took
+
+
 def step(msg):
     """Report the step AND how long it took.
 
@@ -475,8 +495,7 @@ def boot1(disk):
         # the format did not finish in the budget -- which on a slow runner is a
         # budget problem and not a defect -- so it is reported as its own thing
         # rather than as a generic step timeout that reads like a wedge.
-        took = expect_while_doing_io(s, "INSTALLER: PASS installed",
-                                    FORMAT_STALL, FORMAT_CAP)
+        took = expect_installed(s)
         step(f"the installer reported a completed install [{took:.0f}s of writing]")
 
         # It hands the machine back: a login prompt on the same boot.
@@ -632,7 +651,7 @@ def provision(disk):
         answer_review_and_confirm(s)
         # Same stall bound as boot1's, and for the same reason: every scenario in
         # this file formats a volume, so every one of them was exposed to [G-13].
-        expect_while_doing_io(s, "INSTALLER: PASS installed", FORMAT_STALL, FORMAT_CAP)
+        expect_installed(s)
         s.expect("horus login:", STEP)
         step("boot 1: installed, and powered off at the login prompt without logging in")
     finally:
@@ -711,7 +730,7 @@ def accounts(disk):
         answer_review_and_confirm(s)
         step("answered the root password, then named the everyday account")
 
-        expect_while_doing_io(s, "INSTALLER: PASS installed", FORMAT_STALL, FORMAT_CAP)
+        expect_installed(s)
         # NEITHER password may reach the terminal. The user's field is masked by
         # the same tui_input flag as root's, so this is the second half of the
         # check smoke-tui-mask-control makes against the cell buffers.
@@ -837,7 +856,7 @@ def twodisk(disk):
         answer_accounts(s)
         answer_review_and_confirm(s)
         s.expect("INSTALLER: formatting", STEP)
-        expect_while_doing_io(s, "INSTALLER: PASS installed", FORMAT_STALL, FORMAT_CAP)
+        expect_installed(s)
         step("the installer reported a completed install")
         s.expect("horus login:", STEP)
     finally:
@@ -924,8 +943,7 @@ def walkback(disk):          # noqa: ARG001 - uniform scenario signature
         step("walked forward again after going back")
 
         answer_review_and_confirm(s)
-        expect_while_doing_io(s, "INSTALLER: PASS installed",
-                              FORMAT_STALL, FORMAT_CAP)
+        expect_installed(s)
         step("the install completed after walking backwards and forwards")
     finally:
         s.close()
@@ -960,8 +978,7 @@ def replace(disk):
             answer_accounts(s, root_pw=pw)
             answer_review_and_confirm(s, word=word)
             step(f"answered every screen and typed {word}")
-            took = expect_while_doing_io(s, "INSTALLER: PASS installed",
-                                         FORMAT_STALL, FORMAT_CAP)
+            took = expect_installed(s)
             step(f"the {tag} install completed [{took:.0f}s of writing]")
 
             if tag != "replace":

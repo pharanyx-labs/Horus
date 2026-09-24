@@ -3248,13 +3248,13 @@ static int storage_format_sealed(struct block_device *bd,
     root.links = 2;
     if (storage_write_inode(bd, &sb, 0, &root) != 0) return -1;
 
-    /* ON THE MEDIUM BEFORE IT IS CALLED DONE. The installer tells the operator
-     * the install finished when this returns, and without a flush the last of
-     * it could still be in the device's write cache. A NULL flush is a failure
-     * here for the reason raw_block_flush gives: a backend that cannot flush has
-     * not implemented durability, and must not be reported as having it. */
-    if (!bd->flush || bd->flush(bd) != 0) return -1;
-
+    /* NO FLUSH HERE, deliberately, and one was tried (2026-09-24). The format
+     * is made durable by the first journal commit after it, which the installer
+     * reaches before it reports success (setting the passwords persists the
+     * account table), and whose FLUSH CACHE covers everything written before it.
+     * A flush here as well made the format itself fail on a device that refuses
+     * every flush, which is exactly the device smoke-fs-wal-flush uses to prove
+     * that the JOURNAL refuses to commit: the gate never reached the commit. */
     return 0;
 }
 

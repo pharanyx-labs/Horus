@@ -4265,9 +4265,9 @@ format's two full passes over 128 MiB. It now hashes the one all-zero block ever
 was written from. That is sound because every write in `storage_format_sealed` is now **checked**,
 and a refused write fails the format: the region's runs through `bd_fill`, and the five writes
 after the tree (superblock, TPM blob clear, the root inode's table block, the inode bitmap, the
-root inode), whose return codes were being dropped. The format also flushes before it returns, so
-"installed" means on the medium. The interior levels of the tree are still read back; they are a
-few hundred blocks.
+root inode), whose return codes were being dropped. The format does not flush on its own: the
+first journal commit after it does, and the installer reaches one before it reports success. The
+interior levels of the tree are still read back; they are a few hundred blocks.
 
 **What was traded, and it was the maintainer's decision.** A device that **acknowledges** a write
 and then does not store it now leaves a leaf whose hash disagrees with the disk. Nothing wrong is

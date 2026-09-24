@@ -531,8 +531,8 @@ in this file.
 - **Formatting no longer reads the whole metadata region back.** The Merkle tree over the crypto
   metadata region hashes the block every metadata block was written from instead of reading
   32,768 of them back (at 16 GiB), because every write in the format is now checked and a refused
-  one fails the format; five writes whose return codes were dropped are checked too, and the
-  format flushes before it reports success. The emulated 16 GiB eMMC format fell from about 90s
+  one fails the format; five writes whose return codes were dropped are checked too. The
+  emulated 16 GiB eMMC format fell from about 90s
   to 51.5s. The trade (a device that acknowledges a write and drops it now costs one 512 KiB
   range, refused, instead of being papered over) is recorded as `docs/LIMITATIONS.md` 5.2i.
 

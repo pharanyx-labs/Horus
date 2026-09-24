@@ -1457,9 +1457,32 @@ void _start(void)
     r += 2;
     (void)para(r, "Log in with the passwords you chose.", C_TEXT);
     status("", C_TEXT);
-    hint("");
+    hint("press any key for the login prompt");
     tui_flush();
+
+    /* THE INSTALL IS REPORTED BEFORE THE KEY, NOT AFTER IT (2026-09-24). Asked
+     * for: wait for a key once the install completes, then clear the screen and
+     * present the login prompt. The pass marker goes out first because it is a
+     * statement about the disk, which is finished; the key is only about when the
+     * operator has read this screen. Both through mark(), because each is a
+     * cooked write that lands on the screen and the next flush must repaint it. */
+    mark("INSTALLER: PASS installed", "");
+    tui_flush();
+    mark("INSTALLER: waiting on a key to finish", "");
+    tui_flush();
+    (void)tui_getkey();
+
+    /* tui_end first, so the terminal gets its cursor and charset back, and THEN
+     * the clear, so what init prints next (the banner and the login prompt)
+     * starts on an empty screen rather than under this frame. */
     tui_end();
-    say("INSTALLER: PASS installed", "");
+    {
+        static struct con_request  clr_rq;
+        static struct con_response clr_rp;
+        clr_rq.magic = CON_PROTO_MAGIC;
+        clr_rq.op    = CON_OP_CLEAR;
+        clr_rq.len   = 0;
+        (void)sys_ipc_call(CAPSLOT_CONSOLE_EP, 0, &clr_rq, sizeof(clr_rq), &clr_rp);
+    }
     sys_exit();
 }

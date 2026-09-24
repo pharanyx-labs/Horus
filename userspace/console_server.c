@@ -875,6 +875,21 @@ static int con_draw_cells(const uint8_t *d, unsigned len) {
     return (int)painted;
 }
 
+/* CON_OP_CLEAR: every cell blank, the stream at the top, and the serial terminal
+ * told the same. The one way cooked output can start again on an empty screen. */
+static void con_clear(void) {
+    const uint16_t blank = (uint16_t)((VGA_ATTR << 8) | ' ');
+    if (fbp) {
+        for (unsigned i = 0; i < 80u * fb_rows; i++) { fb_cells[i] = blank; fb_blit(i); }
+        fb_pos = 0;
+    } else {
+        for (unsigned i = 0; i < VGA_CELLS; i++) vga[i] = blank;
+        vga_pos = 0;
+        vga_set_cursor(0);
+    }
+    ser_puts("\033[2J\033[H");
+}
+
 /* ---- helpers --------------------------------------------------------------- */
 
 #ifdef CONSOLE_ISOLATION_TEST
@@ -1248,6 +1263,9 @@ display_ready:
             } else {
                 rp.rc = SYS_ERR_PERM;
             }
+        } else if (rq.op == CON_OP_CLEAR) {
+            con_clear();
+            rp.rc = 0;
         } else if (rq.op == CON_OP_BOOT_DONE) {
             /* The boot log ends and the session begins: stop stamping. Idempotent
              * on purpose -- init sends it once, but a second sender costs nothing

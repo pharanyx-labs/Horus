@@ -404,6 +404,14 @@ in this file.
   S104, `docs/LIMITATIONS.md` 2.21; witnessed by `make smoke-installer-unsealed` and falsified in
   both directions.
 
+- **The installer waits for a key when it has finished, then clears the screen for the login
+  prompt.** It used to exit at once, leaving the login prompt under its last frame and the markers
+  around it. The completion is still reported before the key (`INSTALLER: PASS installed`), and a
+  new console operation, `CON_OP_CLEAR`, blanks the whole display and homes the stream so the
+  banner and `horus login:` start on an empty screen; the serial terminal is sent `ESC[2J ESC[H`
+  so both views agree. Every install scenario in `tools/installer_session.py` presses the key
+  through one helper and requires the clear on the wire.
+
 - **The installer can lay down a volume smaller than the disk.** A new step after the disk survey
   asks for a size in MiB, and an empty answer (the default) is the whole disk as before.
   `SYS_STORAGE_FORMAT` takes the size as a fourth argument; the kernel bounds it against the

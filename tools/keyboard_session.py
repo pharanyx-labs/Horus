@@ -96,8 +96,7 @@ def run_install(g, args):
                               f"serial line: {secret!r}")
     print("KEYBOARD: neither password reached the terminal", flush=True)
 
-    took = ins.expect_while_doing_io(g, "INSTALLER: PASS installed",
-                                     ins.FORMAT_STALL, ins.FORMAT_CAP)
+    took = ins.expect_installed(g, typist=kbd)
     print(f"KEYBOARD: the install completed [{took:.0f}s of writing]", flush=True)
 
     # AND THEN USE IT. A format that returns 0 is not an install: the volume is

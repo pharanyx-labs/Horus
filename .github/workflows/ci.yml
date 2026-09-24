@@ -2934,6 +2934,10 @@ jobs:
       # everything it can observe succeeded.
       - name: An installer lays a system down, and the next boot logs into it
         run: make smoke-installer
+      # The compiled-in root/rootpass on an installed machine: refused, and the arm
+      # that keeps it must turn the install gate red on exactly that.
+      - name: Control arm — the compiled-in accounts kept on a machine with a disk
+        run: make smoke-installer-defaults-control
       # The half that matters most: the wrong confirmation word writes nothing.
       - name: A disk is erased only after the word that means erase this disk
         run: make smoke-installer-refuse

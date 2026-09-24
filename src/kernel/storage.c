@@ -1845,6 +1845,11 @@ static int storage_bd_is_ata(const struct block_device *bd)
  * the ENUMERATION must agree exactly -- an installer shows the operator a list
  * built from one and then names an index into the other -- so they are computed
  * from the same two facts here rather than in five places. */
+static int storage_usable_count(void);
+/* How many persistent devices this machine has. users_apply_boot_policy asks,
+ * because a machine with a disk must not accept the compiled-in accounts. */
+int storage_persistent_device_count(void) { return storage_usable_count(); }
+
 static int storage_usable_count(void)
 {
     return g_ata_usable_count + (g_sd_usable ? 1 : 0);

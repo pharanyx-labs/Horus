@@ -51,7 +51,7 @@ def run():
         s.expect("horus login:", BOOT)
         s.send("root")
         s.expect("Password:", STEP)
-        s.send("rootpass")
+        s.send("toor")
         s.expect(PROMPT, STEP)          # consume the first prompt after login
         step("logged in")
 

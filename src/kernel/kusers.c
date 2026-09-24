@@ -237,11 +237,11 @@ static int verify_user_password(const char *name, const char *password) {
 
 /* THE COMPILED-IN ACCOUNTS ARE FOR A LIVE BOOT ONLY (2026-09-24, SECURITY.md S103).
  *
- * users_init seeds `root`/`rootpass` and `user`/`password` on every boot, and
+ * users_init seeds `root`/`toor` and `user`/`password` on every boot, and
  * until this existed they stayed there on an INSTALLED machine: h_auth checks
  * the typed password against whatever table is in RAM, and before anybody has
  * unlocked the volume that is the compiled-in one. Measured on main the same
- * day: after an install and a power cycle, `root`/`rootpass` logged in and got
+ * day: after an install and a power cycle, the compiled-in root password logged in and got
  * a root shell. The store stayed locked (S74), so no file was reachable, but a
  * password printed in docs/BUILDING.md opened a root session on a machine
  * whose operator had chosen their own.
@@ -264,7 +264,7 @@ void users_apply_boot_policy(void)
 {
 #if defined(STORAGE_AUTOFORMAT) || defined(DEFAULT_ACCOUNTS_ON_DISK)
     /* DEFAULT_ACCOUNTS_ON_DISK: CONTROL ARM -- never ship. The pre-2026-09-24
-     * kernel, in which an installed machine accepted root/rootpass until its
+     * kernel, in which an installed machine accepted the compiled-in root password until its
      * volume was unlocked. See make smoke-installer-defaults-control. */
     return;
 #else
@@ -319,7 +319,7 @@ void users_init(void) {
     users[0].auth_lockout_until = 0;
     users[0].valid = 1;
 
-    set_user_password(0, "rootpass");
+    set_user_password(0, "toor");
     user_count = 1;
 
     users[1].uid = 1000;
@@ -1068,7 +1068,7 @@ void h_rotate_keys(struct interrupt_frame64 *r) {
  * as all-zero salts and hashes could look like. The wrong password must be
  * refused by the same restored record.
  */
-#define UPS_ROOT_PW  "rootpass"
+#define UPS_ROOT_PW  "toor"
 #define UPS_NAME     "persisted"
 #define UPS_PW       "persist-correct-horse"
 #define UPS_WRONG_PW "persist-wrong-horse"

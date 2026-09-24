@@ -76,7 +76,7 @@ def main():
         s.expect("horus login:", BOOT_TIMEOUT)
         s.send("root")
         s.expect("Password:", STEP_TIMEOUT)
-        s.send("rootpass")
+        s.send("toor")
         s.expect(PROMPT, STEP_TIMEOUT)
 
         for cmd in WORKLOAD:

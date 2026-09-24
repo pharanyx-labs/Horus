@@ -170,7 +170,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--iso", default="horus.iso")
     ap.add_argument("--user", default="root")
-    ap.add_argument("--password", default="rootpass")
+    ap.add_argument("--password", default="toor")
     ap.add_argument("--boot-timeout", type=float, default=180.0)
     ap.add_argument("--timeout", type=float, default=120.0)
     ap.add_argument("--key-delay", type=float, default=0.15)

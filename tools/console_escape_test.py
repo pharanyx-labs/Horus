@@ -93,7 +93,7 @@ def main():
     # Now log in normally. The arrow must have left the line buffer untouched.
     sc.sendall(b"root\n")
     got_pw = wait("Password:", 30)
-    sc.sendall(b"rootpass\n")
+    sc.sendall(b"toor\n")
     logged_in = wait("#", 30) if got_pw else False
 
     verdict = f"echoed={echoed!r} password_prompt={got_pw} logged_in={logged_in}"

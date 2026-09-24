@@ -122,7 +122,7 @@ void _start(void) {
      * idempotent, so on the ephemeral RAM backend (already unlocked at boot) this is
      * a harmless no-op. */
 #ifndef CONC_SELFTEST
-    (void)sys_auth("root", "rootpass", 0);   /* CONC workers are already uid 0 (kernel-set), RAM store unlocked */
+    (void)sys_auth("root", "toor", 0);   /* CONC workers are already uid 0 (kernel-set), RAM store unlocked */
 #endif
 
     /* Acquire the fs endpoint capability before issuing a single request. This is
@@ -286,7 +286,7 @@ void _start(void) {
     if (p_chown((uint32_t)m_ino, 0, 0) != SYS_ERR_PERM) pfail("user-chown-not-denied");
 
     /* --- back to root: superuser bypasses the 0600 owner-only file --- */
-    if (sys_auth("root", "rootpass", 0) != 0)        pfail("reauth-root");
+    if (sys_auth("root", "toor", 0) != 0)        pfail("reauth-root");
     if (p_read((uint32_t)m_ino, 8) != 6)             pfail("root-read-owned");
     if (!content_is("mydata", 6))                    pfail("root-content");
     if (p_chown((uint32_t)m_ino, 0, 0) != 0)         pfail("root-chown");

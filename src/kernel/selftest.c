@@ -2280,7 +2280,7 @@ void passwd_probe_selftest(void) {
      * to change their OWN password with no admin right at all, so any account
      * on the system can reach this state unaided; doing it here just keeps the
      * expensive hash off the path under test. */
-    if (do_passwd(0, "rootpass2") != 0) {
+    if (do_passwd(0, "toor2") != 0) {
         print("PASSWDPROBE: FAIL could not establish the precondition\n");
         for (;;) asm volatile("hlt");
     }

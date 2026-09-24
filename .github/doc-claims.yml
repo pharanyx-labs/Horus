@@ -1000,14 +1000,23 @@ forbidden:
 
   - pattern: "Log in as <code>root</code> / <code>horus</code>"
     reason: >-
-      site/index.html's "what it looks like" caption, and never true: the seeded root password is
-      `rootpass` (set_user_password(0, "rootpass") in src/kernel/kusers.c), which is what
-      docs/BUILDING.md, tools/session_test.py and the driver have always used. It is forbidden
+      site/index.html's "what it looks like" caption, and never true: the seeded root password was
+      then `rootpass`, as docs/BUILDING.md, tools/session_test.py and the driver used (it is `toor`
+      since 2026-09-24, see the entry below). It is forbidden
       rather than merely corrected because of where it sat: the one instruction on the public page
       that a reader follows literally, on the page that is the project's front door, next to a
       transcript proving the machine boots. A visitor who typed it got "Login incorrect" and had no
       way to tell a wrong page from a broken build. Nothing derives a password, so no `counts:`
       entry can guard this; the ratchet is the only thing that can. Corrected 2026-09-10.
+
+  - pattern: 'root</code> / <code>rootpass|\*\*`root`\*\* / \*\*`rootpass`\*\*'
+    reason: >-
+      The live boot's login instruction until 2026-09-24, in site/index.html and docs/BUILDING.md.
+      The compiled-in root password is `toor` now (set_user_password(0, "toor") in
+      src/kernel/kusers.c), at the maintainer's request, and `rootpass` is gone from the kernel and
+      every harness. Forbidden for the reason the `horus` entry above is: it is the one line a
+      reader types literally, and a stale one reads as a broken build. The history in CHANGES.md
+      names the old password in prose, which this pattern does not match.
 
   - pattern: 'the image ends 7.29 MiB below'
     reason: >-

@@ -65,6 +65,7 @@ control_arms:
   smoke-installer-sealed-control: smoke-installer
   smoke-installer-sd-devregs-control: smoke-installer-sd
   smoke-installer-sd-stride-control: smoke-installer-sd
+  smoke-installer-sd-smp-control: smoke-installer-sd-smp
   smoke-fb-tag-control: smoke-fb-tag
   smoke-fb-tag-gfx-control: smoke-fb-tag-gfx
   smoke-fb-map-control: smoke-fb-map
@@ -316,6 +317,7 @@ gates:
   - smoke-installer-sized
   - smoke-installer-unsealed
   - smoke-installer-sd
+  - smoke-installer-sd-smp
   - smoke-fb-tag
   - smoke-fb-tag-gfx
   - smoke-fb-map

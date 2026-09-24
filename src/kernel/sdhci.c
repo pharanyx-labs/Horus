@@ -196,6 +196,13 @@ uint64_t sdhci_sectors(void)    { return g_sdhci_sectors; }
  * recovery is never interleaved with another CPU's command either. Declared in
  * .github/lock-order.yml (S88). */
 static spinlock_t sdhci_lock = { 0 };
+#ifdef SDHCI_NO_LOCK
+/* CONTROL ARM -- never ship. The driver as it was before 2026-09-24: nothing
+ * serialises the controller, so two CPUs' block operations run on it at once.
+ * See make smoke-installer-sd-smp-control. */
+#define spin_lock(l)   ((void)(l))
+#define spin_unlock(l) ((void)(l))
+#endif
 
 /* The block operations, for storage.c's block_device.
  *

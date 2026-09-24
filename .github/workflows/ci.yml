@@ -747,6 +747,15 @@ jobs:
       # the hardware this driver exists for.
       - name: An install onto an SD/eMMC card survives a power cycle
         run: make smoke-installer-sd
+      # The same install on TWO CPUs. The driver had no lock, so a write on one
+      # CPU and a read on the other ran on the controller at once; a two-core
+      # laptop failed every install at the password step, and every other gate
+      # here boots one CPU. The arm (SDHCI_NO_LOCK=1) is the driver before the
+      # fix and must fail on the disk.
+      - name: An SD/eMMC install on two CPUs, the controller serialised
+        run: make smoke-installer-sd-smp
+      - name: Control arm — an unlocked SD driver on two CPUs fails the install
+        run: make smoke-installer-sd-smp-control
       # The driver's registers are memory-mapped, and a syscall reaches them on
       # the CALLING task's cr3 -- not the kernel's, which is the only one the
       # probe mapped them into. Without the replay the format takes a supervisor

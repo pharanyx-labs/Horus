@@ -555,6 +555,17 @@ static char ps2_poll(void) {
         if (sc == 0x3C) { klog_view(); return 0; }   /* Alt+F2: the kernel log   */
         if (sc == 0x3B) return 0;                    /* Alt+F1: already here     */
     }
+    /* THE SAME TWO KEYS IN MEDIA-KEY MODE. A laptop whose top row sends media
+     * keys unless Fn is held (the IdeaPad 1 14IGL05) turns F2 into Volume Down
+     * (0xE0 0x2E) and F1 into Mute (0xE0 0x20), so Alt+F2 opened nothing without
+     * Fn. With alt held they mean F2 and F1 here; nothing else in Horus reads
+     * either key. The prefix ps2_feed already consumed is cleared as it would
+     * have cleared it. */
+    if (kbd.e0 && (kbd_lalt || kbd.altgr) && (sc == 0x2E || sc == 0x20)) {
+        kbd.e0 = 0;
+        if (sc == 0x2E) klog_view();
+        return 0;
+    }
 #endif
 
     int k = ps2_feed(&kbd, sc);
@@ -680,7 +691,7 @@ static void klog_draw(void) {
     for (unsigned c = 0; c < 80u; c++) klog_cell(0, c, ' ', KLOG_HEAD);
     klog_text(0, 1, klog_scroll ? "KERNEL LOG (scrolled back)" : "KERNEL LOG",
               KLOG_HEAD);
-    klog_text(0, 30, "Alt+F1 back  Shift+PgUp/PgDn scroll", KLOG_HEAD);
+    klog_text(0, 30, "Alt+F1 back  Shift+PgUp/PgDn  Up/Down", KLOG_HEAD);
 
     for (unsigned r = 1; r < rows; r++)
         for (unsigned c = 0; c < 80u; c++) klog_cell(r, c, ' ', KLOG_ATTR);
@@ -736,6 +747,8 @@ static void klog_view(void) {
         if (!kbd.e0 && sc == PS2_SC_LALT)           { kbd_lalt = 1; continue; }
         if (!kbd.e0 && sc == (PS2_SC_LALT | 0x80))  { kbd_lalt = 0; continue; }
         if (!kbd.e0 && sc == 0x3B && (kbd_lalt || kbd.altgr)) break;     /* Alt+F1 */
+        if (kbd.e0 && sc == 0x20 && (kbd_lalt || kbd.altgr)) { kbd.e0 = 0; break; } /* Alt+Mute */
+        if (kbd.e0 && sc == 0x2E && (kbd_lalt || kbd.altgr)) { kbd.e0 = 0; continue; }
         if (!kbd.e0 && sc == 0x3C && (kbd_lalt || kbd.altgr)) continue;  /* F2 again */
 
         /* PgUp and PgDn are 0xE0 0x49 and 0xE0 0x51, which ps2_feed drops, so
@@ -753,13 +766,16 @@ static void klog_view(void) {
             continue;
         }
 
+        /* ONLY FIVE KEYS DO ANYTHING HERE (the maintainer's rule, 2026-09-24):
+         * Alt+F1 leaves, Shift+PgUp/PgDn page, Up/Down move a row. Every other
+         * key is ignored, and in particular does not re-read or jump the view:
+         * an earlier version refreshed on any key, so a reader who pressed the
+         * wrong one lost their place in a log that was still growing. To read
+         * newer lines, leave and come back. */
         int k = ps2_feed(&kbd, sc);            /* keeps shift, ctrl and e0 honest */
-        if (k == PS2_KEY_NONE) continue;
         if (k == PS2_KEY_UP)        klog_scroll++;
         else if (k == PS2_KEY_DOWN) { if (klog_scroll) klog_scroll--; }
-        else if (k == PS2_KEY_HOME) klog_scroll = ~0u >> 1;   /* clamped in draw */
-        else if (k == PS2_KEY_END)  klog_scroll = 0;
-        else { klog_fetch(); klog_scroll = 0; }               /* any other key */
+        else continue;
         klog_draw();
     }
 

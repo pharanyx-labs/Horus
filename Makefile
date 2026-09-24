@@ -8465,10 +8465,10 @@ smoke-keyboard:
 # claim, that a SHIP build does nothing on Alt+F2, because reading the log
 # without a login is authority for standing at the keyboard. The control arm runs
 # the absent check against a KLOG_CONSOLE=1 build and must go red on the view.
-.PHONY: smoke-klog-console smoke-klog-console-absent smoke-klog-console-absent-control
+.PHONY: smoke-klog-console smoke-klog-console-control smoke-klog-console-absent smoke-klog-console-absent-control
 smoke-klog-console:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) KLOG_CONSOLE=1 horus.iso
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) $(if $(KLOGOFF),,KLOG_CONSOLE=1) horus.iso
 	@python3 tools/klog_console_session.py --iso horus.iso --present \
 		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
 		--serial-log /tmp/horus-klog-console.log
@@ -8491,6 +8491,20 @@ smoke-klog-console-absent-control:
 	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
 	fi; \
 	echo "KLOG CONTROL: PASS - a build that shows the kernel log on Alt+F2 is caught"
+
+# The instrument's own gate must be able to go red: the present check against a
+# build WITHOUT the flag, where Alt+F2 opens nothing.
+smoke-klog-console-control:
+	@out=$$($(MAKE) --no-print-directory smoke-klog-console KLOGOFF=1 2>&1); rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "KLOG PRESENT CONTROL: FAIL - a build without the view passed the present gate"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "Alt+F2 did not open the kernel log view"; then \
+	    echo "KLOG PRESENT CONTROL: FAIL - it failed, but not on the view."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "KLOG PRESENT CONTROL: PASS - a build with no view fails the present gate"
 
 # The falsifying arm. CONSOLE_NO_KBD=1 is console_server as it was before
 # 2026-09-11: it drives the screen but reads only COM1, so the prompt it just

@@ -1339,7 +1339,7 @@ mapped (**S45**, `src/kernel/iommu.c`), and `iommu_active()` reports 0 where the
 
 ### Lock order
 
-Nine locks. Until 2026-09-10 the order between them was stated only in five
+Ten locks. Until 2026-09-10 the order between them was stated only in five
 comments across four files, and **two of them, in the same file, disagreed about
 the same pair**: see **S88**. It is declared once now, in
 `.github/lock-order.yml`, and `tools/check_lock_order.py` (required job
@@ -1350,6 +1350,7 @@ the same pair**: see **S88**. It is declared once now, in
 | `spawn_stage_lock` | The spawn/exec staging singletons. **The outermost lock in the kernel**: taken by syscall entry points holding nothing |
 | `storage_lock` | The encrypted object store and on-disk filesystem |
 | `ata_lock` | The ATA driver. Always `storage_lock -> ata_lock`, never the reverse |
+| `sdhci_lock` | The SD/eMMC host controller: one command and its data transfer at a time across CPUs, held for a whole block operation including its recovery. Innermost; nests with nothing |
 | `endpoint_lock` | Endpoints and notifications. Taken via `ipc_lock()` / `ipc_unlock()`, never by name |
 | `cap_lock` | Every cspace |
 | `page_lock` | The pager's structures |

@@ -607,6 +607,14 @@ in this file.
 
 ### Fixed
 
+- **An install onto a laptop's eMMC failed at the password step, on two cores and never on one.**
+  The SD/eMMC driver had no lock, so on a machine with two CPUs a write on one and a read on the
+  other ran on the controller at once and corrupted each other: the laptop's trace shows a CMD25
+  and a CMD18 failing in the same microsecond, their lines interleaved character by character.
+  Every QEMU gate that touches SD boots one CPU, which is why none could see it. `sdhci_lock` now
+  serialises every block operation, like `ata_lock` for ATA, and is declared in the lock order
+  (S88).
+
 - **The installer sat in the top-left corner of a laptop's screen.** The console grid is 80
   columns at most, and both the kernel's framebuffer console and `console_server` drew it from
   pixel (0,0), so on a 1366-pixel panel everything was in the left half, and a full-screen

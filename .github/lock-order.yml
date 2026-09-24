@@ -19,6 +19,7 @@ locks:
   - pipe_lock          # src/kernel/pipe.c
   - untyped_lock       # src/kernel/untyped.c
   - ata_lock           # src/kernel/ata.c
+  - sdhci_lock         # src/kernel/sdhci.c -- one command on the SD controller at a time
   - spawn_stage_lock   # src/kernel/kspawn.c -- the outermost lock in the kernel
 
 nesting:

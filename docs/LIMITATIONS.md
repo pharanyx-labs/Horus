@@ -3174,6 +3174,14 @@ old allocator and the new one read the same single block and no workload could t
   exists in emulation. So the one number that would justify the change can only be taken on real
   hardware, and is not taken here. **A performance claim about storage in this tree should be read
   as a projection from the operation count unless it names the machine it was measured on.**
+  **On the SD path the multi-block transport made the emulated format SLOWER, and that is
+  measured.** `smoke-installer-emmc` (a 16 GiB volume, TCG, one host with nothing else running,
+  2026-09-24): before it 39.6s and 48.3s, with it 88.6s and 91.1s, and 95.1s with the progress
+  panel compiled out, so the panel was not the cost. The time was in **reads**: the format then
+  read its whole metadata region back through `CMD18`, which QEMU's SDHCI model serves more slowly
+  than `CMD17`. The format no longer reads the region back (5.2i), and the same gate measures 51.5s
+  twice. That is an emulation cost and says nothing either way about a card; ordinary reads after
+  the install still go through `CMD18`.
 
   **An install onto the laptop's eMMC has not yet been run**; until one has, this paragraph
   says so. What stopped one on 2026-09-22 was no longer storage but the installer's own screen,

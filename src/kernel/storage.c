@@ -1704,6 +1704,18 @@ static int sdcard_read(struct block_device *bd, uint64_t block, void *buf) {
 static int sdcard_write(struct block_device *bd, uint64_t block, const void *buf) {
     (void)bd; return sdhci_bd_write(block, buf);
 }
+/* THE FILL PATH CARRIES THE DEFECT TOO. It used to sit outside this #ifdef, so
+ * the arm built a kernel that was only half defective: the metadata region was
+ * cleared at the SCALED sectors while the key slots were written unscaled, at
+ * sectors the scaled fill then covered. The fill zeroed the key slots, the
+ * format was refused (rc=-5) and the harness reported that as a wedge. That is
+ * not the defect this arm exists to reproduce, and it failed before the step it
+ * asserts on. Every transport path is unscaled here or the arm witnesses
+ * nothing. */
+static int sdcard_fill(struct block_device *bd, uint64_t start,
+                       const void *buf, uint64_t count) {
+    (void)bd; return sdhci_bd_fill_run(start, buf, count);
+}
 #else
 /* ONE COMMAND PER BLOCK, not one per sector. A block is SD_SECTORS_PER_BLOCK
  * card sectors and these used to issue that many CMD17s or CMD24s, each with a
@@ -1719,6 +1731,15 @@ static int sdcard_write(struct block_device *bd, uint64_t block, const void *buf
     return sdhci_bd_rw_run(block * SD_SECTORS_PER_BLOCK,
                            (void *)(uintptr_t)buf, SD_SECTORS_PER_BLOCK, 1);
 }
+/* Feeds the controller from the block's FIRST sector for the whole run, which is
+ * correct only because bd_fill has already established that every sector of the
+ * block is identical. See the precondition on fill_uniform. */
+static int sdcard_fill(struct block_device *bd, uint64_t start,
+                       const void *buf, uint64_t count) {
+    (void)bd;
+    return sdhci_bd_fill_run(start * SD_SECTORS_PER_BLOCK, buf,
+                             count * SD_SECTORS_PER_BLOCK);
+}
 #endif
 /* A REAL IMPLEMENTATION AND NOT A STUB: raw_block_flush treats a NULL flush as a
  * FAILURE rather than as a no-op, deliberately, so a new device cannot silently
@@ -1728,16 +1749,6 @@ static int sdcard_write(struct block_device *bd, uint64_t block, const void *buf
  * command the way ATA does. */
 static int sdcard_flush(struct block_device *bd) {
     (void)bd; return sdhci_bd_flush();
-}
-
-/* Feeds the controller from the block's FIRST sector for the whole run, which is
- * correct only because bd_fill has already established that every sector of the
- * block is identical. See the precondition on fill_uniform. */
-static int sdcard_fill(struct block_device *bd, uint64_t start,
-                       const void *buf, uint64_t count) {
-    (void)bd;
-    return sdhci_bd_fill_run(start * SD_SECTORS_PER_BLOCK, buf,
-                             count * SD_SECTORS_PER_BLOCK);
 }
 
 static struct block_device g_sd_bd = {

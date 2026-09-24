@@ -1,6 +1,6 @@
 # An installed system: what lives on the disk, and how it is trusted
 
-**Design only, nothing built.** The maintainer asked on 2026-09-24 for an install that works the
+**Design only, nothing built; its decisions are taken (§8).** The maintainer asked on 2026-09-24 for an install that works the
 way other major operating systems do: every file the system needs copied onto the volume,
 binaries in `/bin` and `/sbin` placed sensibly, `/tmp` and `/var` created, man pages copied, and
 a machine that boots from its own disk. This document says what that changes, and puts the
@@ -136,7 +136,29 @@ table yet writes the compiled-in table onto it (`users_unlock_and_restore` calli
 `users_persist`), which breaks the live entry's promise that it changes nothing on the disk.
 Under this design a live boot mounts nothing read-write.
 
-## 8. Order of work
+## 8. The decisions, as taken
+
+Answered by the maintainer on 2026-09-24. Recorded as decisions, not options, because the work
+depends on them.
+
+1. **A signed manifest decides what runs from the disk.** A file under `/bin`, `/sbin` or `/lib`
+   executes only if its SHA-256 is in a manifest whose signature verifies against a key pinned
+   in the measured boot image (§4, option A).
+2. **GNU coreutils and TCC ship in the install image.** The image carries their licence texts and
+   an offer of the exact source for every binary shipped, and `/usr/share/man` their pages. This
+   is the first GPL code in a Horus release, as separate programs beside the MIT system.
+3. **Accounts move to `/etc/passwd` and `/etc/shadow`**, files on the volume read and written by a
+   ring-3 `auth_server`; the kernel keeps only the unlock (§7).
+4. **The bootloader is GPT with an EFI system partition** carrying GRUB, the kernel and the pinned
+   hash, measured as today, with the Horus volume as the second partition. No Secure Boot (§6).
+
+**Still open, and asked when the work reaches it:** who holds the manifest's signing key. A key
+in CI's secrets makes every CI build installable, which is the convenient answer and the weaker
+one; a key only the maintainer holds, used for releases, keeps the trust decision with a person.
+Recommendation: the maintainer's key for releases, and development images signed with a separate
+key that no release trusts.
+
+## 9. Order of work
 
 1. The layout and the installer copying files, with **(A)**'s manifest check in the loader, as
    one change: executing from the disk must never exist without the check.

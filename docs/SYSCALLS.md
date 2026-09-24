@@ -709,7 +709,16 @@ power cycle: see `SECURITY.md` **S61** for what a key slot is and `docs/LIMITATI
 what its absence cost. It **fails closed**: the slot is taken before the hash changes, so a volume
 with no free slot leaves the old password working and returns an error rather than setting a
 password that cannot open the machine. Changing your **own** password re-seals the slot you
-already hold instead, and a machine with no persistent volume grants nothing.
+already hold instead, **before** the hash changes, and a failed re-seal changes nothing; a
+machine with no persistent volume grants nothing.
+
+**The error says which step failed** (2026-09-24), so an installer can tell an operator more than
+"could not set the password". Granting another account's slot returns `-20 - n` for
+`storage_keyslot_add`'s code `n`: -21 the volume is not open, -22 the key slots could not be
+read, -23 no slot is free, -24 the password could not be sealed (key derivation or the TPM
+refused), -25 the slots could not be written. Re-sealing your own returns `-30 - n` for
+`storage_rekey`'s: -32 the slot could not be read, -33 the seal failed, -34 the write failed.
+-1 is still "not permitted" or "no such account".
 
 `SYS_USERLIST` reads one account's **public metadata**, name, uid, gid, home, and nothing
 else: no hash, no salt, no key slot, no lockout state. It returns 1 when the buffer was filled,

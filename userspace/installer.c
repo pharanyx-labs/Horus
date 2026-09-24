@@ -1011,6 +1011,48 @@ static void screen_working(void)
  * task whose job it is. That is a strictly larger installer holding strictly
  * more authority to achieve the same bytes on disk.
  */
+/* A failed SYS_PASSWD, said with its code AND what the code means (2026-09-24).
+ *
+ * "could not set the password" was all an operator got, on a laptop with no
+ * serial port, for any of eight different failures. The kernel now returns which
+ * step failed (docs/SYSCALLS.md, SYS_PASSWD), and this names it in the one line
+ * the gates and the screen both show, so a failed install can be diagnosed from
+ * a photograph of the screen. Unknown codes are printed as numbers rather than
+ * guessed at. */
+static const char *passwd_reason(int rc)
+{
+    switch (rc) {
+    case -21: return "the volume was not open";
+    case -22: return "the key slots could not be read from the disk";
+    case -23: return "the volume has no free key slot";
+    case -24: return "the password could not be sealed to the volume "
+                     "(key derivation or the TPM refused)";
+    case -25: return "the key slots could not be written to the disk";
+    case -32: return "the volume's key slot could not be read back from the disk";
+    case -33: return "the password could not be sealed to the volume "
+                     "(key derivation or the TPM refused)";
+    case -34: return "the key slot could not be written to the disk";
+    default:  return "";
+    }
+}
+
+static void say_passwd_failure(const char *head, int rc)
+{
+    char line[CON_IO_MAX - 2];
+    char num[24];
+    unsigned n = 0;
+    utoa10((uint64_t)(unsigned)(-rc), num, sizeof(num));
+    const char *reason = passwd_reason(rc);
+    const char *parts[] = { head, "rc=-", num, reason[0] ? " (" : "", reason, reason[0] ? ")" : "" };
+    for (unsigned k = 0; k < 6; k++)
+        for (const char *c = parts[k]; *c && n < sizeof(line) - 1; c++) line[n++] = *c;
+    line[n] = 0;
+    say(line, "");
+    /* On the screen as well, not only on the wire: the screen is all a laptop has. */
+    status(line + sizeof("INSTALLER: FAIL ") - 1, C_DANGER);
+    tui_flush();
+}
+
 static int do_install(void)
 {
     screen_working();
@@ -1046,9 +1088,12 @@ static int do_install(void)
      * account table on a fresh volume is the compiled-in default, so `root`
      * still wants the built-in password while the VOLUME wants the one just
      * chosen, and h_auth needs the same typed string to satisfy both. */
-    if (sys_passwd(0, g_pw) != 0) {
-        say("INSTALLER: FAIL could not set the root password", "");
-        return -1;
+    {
+        int prc = sys_passwd(0, g_pw);
+        if (prc != 0) {
+            say_passwd_failure("INSTALLER: FAIL could not set the root password: ", prc);
+            return -1;
+        }
     }
 
     /* ---- the everyday account ---------------------------------------------
@@ -1078,9 +1123,18 @@ static int do_install(void)
      * authorises the password to open the volume. It fails closed: no slot, no
      * password change, and the install stops here rather than finishing with an
      * account that cannot be the first login after a power cycle. */
-    if (sys_passwd(USER_UID, g_upw) != 0) {
-        say("INSTALLER: FAIL could not set the password for ", g_user);
-        return -1;
+    {
+        int prc = sys_passwd(USER_UID, g_upw);
+        if (prc != 0) {
+            char head[64];
+            unsigned n = 0;
+            const char *parts[] = { "INSTALLER: FAIL could not set the password for ", g_user, ": " };
+            for (unsigned k = 0; k < 3; k++)
+                for (const char *c = parts[k]; *c && n < sizeof(head) - 1; c++) head[n++] = *c;
+            head[n] = 0;
+            say_passwd_failure(head, prc);
+            return -1;
+        }
     }
 
     /* VERIFY BY ASKING THE KERNEL AGAIN, not by trusting the return code. A

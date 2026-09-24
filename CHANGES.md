@@ -564,6 +564,15 @@ in this file.
 
 ### Fixed
 
+- **An install that failed at the password step said only "could not set the password".**
+  `SYS_PASSWD` flattened five different failures of granting a key slot into one code, and the
+  installer printed none of it, so a failed install on a laptop with no serial port could not be
+  diagnosed. The kernel now returns which step failed (volume not open, slots unreadable, none
+  free, the seal refused by key derivation or the TPM, the write failed), and the installer prints
+  the code and its meaning on the screen and the wire. Changing your own password also re-seals
+  the volume's key slot **before** the account's hash changes, and a failed re-seal now fails the
+  change: it used to be ignored, leaving an account whose password no longer opened the volume.
+
 - **An install on a laptop's eMMC took twenty minutes and showed nothing while it did.** Both
   storage backends moved one 512-byte sector per command while a filesystem block is 4096 bytes,
   so formatting a 16 GiB volume issued 262,144 single-sector writes to clear its crypto metadata

@@ -136,6 +136,14 @@
 
 #define CON_OP_BOOT_DONE 7  /* (no payload) -> rc = 0; stop stamping: the session begins */
 
+/* Blank the whole display and put the stream back at the top (2026-09-24).
+ * Every cell of the machine's own screen, framebuffer or VGA text, and ESC[2J
+ * ESC[H to the serial terminal so the two views agree. Added so the installer can
+ * hand the machine to the login prompt on a clean screen instead of under its last
+ * frame and the markers around it. It confers nothing: a client holding the
+ * console endpoint can already paint every cell with CON_OP_DRAW_CELLS. */
+#define CON_OP_CLEAR 10     /* (no payload) -> rc = 0 */
+
 #define CON_IO_MAX   200  /* max payload bytes per write request */
 #define CON_LINE_MAX 128  /* max input line (incl. NUL); matches the kernel's h_get_line */
 

@@ -607,7 +607,7 @@ int do_passwd(uint32_t target_uid, const char *new_password) {
         /* Record which slot is ours, so an admin changing this password later
          * can revoke exactly it. storage_unlocked_slot() is the slot the login
          * that started this session opened. */
-        if (storage_volume_is_persistent()) u->keyslot = storage_unlocked_slot();
+        if (storage_volume_has_keyslots()) u->keyslot = storage_unlocked_slot();
     } else {
         uint32_t fresh = KEYSLOT_NONE;
 #ifdef PASSWD_NO_KEYSLOT
@@ -620,7 +620,10 @@ int do_passwd(uint32_t target_uid, const char *new_password) {
          * defect was never a failure, it was a success that left out the half
          * nobody could see. See make smoke-installer-accounts-control. */
 #else
-        if (storage_volume_is_persistent()) {
+        /* has_keyslots, not is_persistent: an unsealed volume opens without a
+         * password, so there is no slot to grant and asking for one would fail
+         * the password change for a reason that does not apply. */
+        if (storage_volume_has_keyslots()) {
             uint32_t idx = 0;
             int krc = storage_keyslot_add(new_password, plen, target_uid, &idx);
             if (krc != 0) {

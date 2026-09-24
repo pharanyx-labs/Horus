@@ -61,6 +61,8 @@ control_arms:
   smoke-installer-wedge-control: smoke-installer-slowdisk
   smoke-installer-defaults-control: smoke-installer
   smoke-installer-sized-control: smoke-installer-sized
+  smoke-installer-unsealed-control: smoke-installer-unsealed
+  smoke-installer-sealed-control: smoke-installer
   smoke-installer-sd-devregs-control: smoke-installer-sd
   smoke-installer-sd-stride-control: smoke-installer-sd
   smoke-fb-tag-control: smoke-fb-tag
@@ -308,6 +310,7 @@ gates:
   - smoke-installer-target
   - smoke-installer-back
   - smoke-installer-sized
+  - smoke-installer-unsealed
   - smoke-installer-sd
   - smoke-fb-tag
   - smoke-fb-tag-gfx

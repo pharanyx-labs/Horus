@@ -164,7 +164,7 @@ DEFECT_FLAGS = \
 	DEVREGS_KERNEL_ONLY SD_BLOCK_ADDR_UNSCALED FB_REQUEST \
 	FB_TAG_IGNORED FB_TAG_ASSUME_TEXT \
 	FB_MAP_SELFTEST FB_MAP_LOW_HALF FB_CONSOLE_SELFTEST \
-	FB_CONSOLE_MIRRORED FB_INFO_ANY_DEVICE CONSOLE_FB_ABSENT CONSOLE_NO_KBD \
+	FB_CONSOLE_MIRRORED FB_INFO_ANY_DEVICE CONSOLE_FB_ABSENT CONSOLE_NO_KBD KLOG_CONSOLE \
 	SERIAL_PRESENCE_UNCHECKED \
 	CONSOLE_BACKSPACE_NO_ERASE \
 	CONSOLE_NO_SCROLL \
@@ -3389,6 +3389,17 @@ CONSOLE_FB_ABSENT ?= 0
 # USERSPACE_CFLAGS. The arm for `make smoke-keyboard`.
 CONSOLE_NO_KBD ?= 0
 
+# KLOG_CONSOLE=1 is an INSTRUMENT, not a defect: Alt+F2 shows the kernel log on
+# the machine's own screen with nobody logged in, and Alt+F1 returns to the
+# console (klog_view in userspace/console_server.c). Built for a laptop whose
+# install failed on the one boot where no account has a password yet, so `dmesg`
+# could not be reached and the evidence sat in a ring nobody could read. Reading
+# the log without a login is authority for standing at the keyboard, which is
+# why it is in DEFECT_FLAGS and never in a shipped image: init hands
+# console_server a READ-only copy of CAP_KERNEL_LOG only under this flag.
+# Userspace-only, so it goes on USERSPACE_CFLAGS. `make install.iso KLOG_CONSOLE=1`.
+KLOG_CONSOLE ?= 0
+
 # SERIAL_PRESENCE_UNCHECKED=1 restores the console input path as it stood before
 # 2026-09-12: `inb(COM1_LSR) & 1` believed without first asking whether there is
 # a UART at 0x3F8 to answer. On a machine with no serial port every register in
@@ -4474,6 +4485,9 @@ USERSPACE_CFLAGS += -DCONSOLE_FB_ABSENT
 endif
 ifeq ($(CONSOLE_NO_KBD),1)
 USERSPACE_CFLAGS += -DCONSOLE_NO_KBD
+endif
+ifeq ($(KLOG_CONSOLE),1)
+USERSPACE_CFLAGS += -DKLOG_CONSOLE
 endif
 ifeq ($(CONSOLE_KBD_SPLIT_ESC),1)
 USERSPACE_CFLAGS += -DCONSOLE_KBD_SPLIT_ESC

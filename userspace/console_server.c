@@ -136,9 +136,8 @@ static const uint32_t fb_pal[16] = {
 /* Paint one cell. Bounds-checked against the real geometry rather than the grid:
  * the grid is what this server believes and the geometry is what the hardware
  * has, and a mismatch must clip rather than scribble past the mapping. */
-static void fb_blit(unsigned idx) {
+static void fb_paint(unsigned idx, uint16_t cell) {
     if (!fbp || idx >= 80u * fb_rows) return;
-    uint16_t cell = fb_cells[idx];
     uint8_t ch = (uint8_t)(cell & 0xFF), attr = (uint8_t)(cell >> 8);
     uint32_t fg = fb_pal[attr & 0x0F], bg = fb_pal[(attr >> 4) & 0x07];
 
@@ -156,6 +155,11 @@ static void fb_blit(unsigned idx) {
                      (bits & (0x80u >> (rx / fb_scale))) ? fg : bg);
     }
 }
+
+/* The shadow buffer's cell, drawn. fb_paint takes the cell as an argument so that
+ * a view that is NOT the console (the kernel log, KLOG_CONSOLE builds) can draw
+ * over the screen without writing fb_cells, and leaving it is one repaint. */
+static void fb_blit(unsigned idx) { fb_paint(idx, fb_cells[idx]); }
 
 /* SCROLL, DO NOT WRAP TO THE TOP.
  *
@@ -513,6 +517,11 @@ static struct ps2_state kbd;      /* inside the guard: unused under the arm */
 static const char *kbd_pending;
 #endif
 
+#ifdef KLOG_CONSOLE
+static void klog_view(void);
+static unsigned char kbd_lalt;    /* LEFT alt; right alt is kbd.altgr */
+#endif
+
 /* Return the next character from the keyboard, or 0 if it has nothing to say.
  * Never blocks: a scancode that produces no character (a modifier, a key
  * release) returns 0 exactly as an empty controller does, and the caller polls
@@ -537,6 +546,17 @@ static char ps2_poll(void) {
     uint8_t sc = inb(PS2_DATA);
     if (st & PS2_STATUS_AUX) return 0;
 
+#ifdef KLOG_CONSOLE
+    /* Left alt is not a key ps2_feed tracks (it has no level of its own), so the
+     * chord is read here, before the byte reaches it. See klog_view. */
+    if (!kbd.e0 && sc == PS2_SC_LALT)          { kbd_lalt = 1; return 0; }
+    if (!kbd.e0 && sc == (PS2_SC_LALT | 0x80)) { kbd_lalt = 0; return 0; }
+    if (!kbd.e0 && (kbd_lalt || kbd.altgr)) {
+        if (sc == 0x3C) { klog_view(); return 0; }   /* Alt+F2: the kernel log   */
+        if (sc == 0x3B) return 0;                    /* Alt+F1: already here     */
+    }
+#endif
+
     int k = ps2_feed(&kbd, sc);
     if (k == PS2_KEY_NONE) return 0;
     if (k < 0x100) return (char)k;
@@ -552,6 +572,187 @@ static char ps2_poll(void) {
     return seq[0];
 #endif
 }
+
+#ifdef KLOG_CONSOLE
+/* ---- the kernel log console: Alt+F2 (KLOG_CONSOLE builds only) --------------
+ *
+ * WHY IT EXISTS. On 2026-09-24 an install onto a laptop's eMMC failed at the
+ * password step, and the evidence was in the kernel log: SDTRACE lines that the
+ * installer's screen covers and that `dmesg` could not reach, because on the boot
+ * where the install fails no account has a password yet. A machine with no serial
+ * port had no other copy. Alt+F2 shows the log on the machine's own screen, on
+ * that boot, with nobody logged in; Alt+F1 puts the console back exactly as it
+ * was.
+ *
+ * WHY IT IS AN INSTRUMENT AND NEVER SHIPS. Reading the kernel log without logging
+ * in is authority granted for standing at the keyboard, which CLAUDE.md section 1
+ * forbids in a shipped system: SYS_DMESG is gated by CAP_KERNEL_LOG, and in a ship
+ * build only the shell is given it. Here init hands console_server a copy of its
+ * own, which is READ only (root_cnode[15]), so this adds no syscall, no right and
+ * no ring-0 code. KLOG_CONSOLE is in DEFECT_FLAGS, so a kernel carrying it says so
+ * on its first line.
+ *
+ * MODAL, AND IT ONLY WAKES WHILE SOMEBODY IS READING. This server polls the
+ * keyboard when a client asks for input (see con_getc), so Alt+F2 answers at a
+ * prompt or an installer screen, which is where it is needed, and not while the
+ * kernel is busy in a format. While the log is up, every key is the view's:
+ * nothing typed reaches the program underneath. */
+#define KLOG_TAIL   16384u        /* the newest part of the ring that is shown  */
+#define KLOG_ATTR   0x07          /* light grey on black                        */
+#define KLOG_HEAD   0x70          /* the title row: black on light grey         */
+
+static char     klog_buf[KLOG_TAIL];
+static unsigned klog_len;
+static unsigned klog_scroll;      /* rows above the newest; 0 = the bottom      */
+static int      klog_err;         /* SYS_DMESG's refusal, or 0                  */
+static uint16_t klog_saved_vga[VGA_CELLS];   /* text mode: what Alt+F1 restores */
+
+static unsigned cell_rows(void);
+
+/* Keep a byte for display. Escape sequences are dropped whole (the log can carry
+ * colour codes meant for a serial terminal), as are control bytes other than the
+ * newline; a tab becomes a space. `esc` is the sequence state across chunks. */
+static void klog_keep(char c, int *esc) {
+    unsigned char u = (unsigned char)c;
+    if (*esc == 1) { *esc = (c == '[') ? 2 : 0; return; }
+    if (*esc == 2) { if (u >= 0x40 && u <= 0x7E) *esc = 0; return; }
+    if (u == 0x1B) { *esc = 1; return; }
+    if (c == '\t') c = ' ';
+    else if (c != '\n' && (u < 0x20 || u == 0x7F)) return;
+    if (klog_len == KLOG_TAIL) {                 /* keep the NEWEST bytes */
+        for (unsigned i = 1; i < KLOG_TAIL; i++) klog_buf[i - 1] = klog_buf[i];
+        klog_len--;
+    }
+    klog_buf[klog_len++] = c;
+}
+
+/* Read the whole ring again. SYS_DMESG hands it out in chunks from the oldest
+ * retained byte and returns 0 at the end. */
+static void klog_fetch(void) {
+    char chunk[1024];
+    unsigned off = 0;
+    int esc = 0;
+    klog_len = 0;
+    klog_err = 0;
+    for (;;) {
+        int n = sys_dmesg(chunk, off, sizeof(chunk));
+        if (n < 0) { klog_err = n; return; }
+        if (n == 0) return;
+        for (int i = 0; i < n; i++) klog_keep(chunk[i], &esc);
+        off += (unsigned)n;
+    }
+}
+
+/* One cell of the view, drawn straight to the display. Never fb_cells: that is
+ * the console's, and leaving the view repaints it. */
+static void klog_cell(unsigned row, unsigned col, char ch, uint8_t attr) {
+    uint16_t cell = (uint16_t)((attr << 8) | (uint8_t)ch);
+    unsigned idx = row * 80u + col;
+    if (fbp) fb_paint(idx, cell);
+    else if (idx < VGA_CELLS) vga[idx] = cell;
+}
+
+static void klog_text(unsigned row, unsigned col, const char *t, uint8_t attr) {
+    while (*t && col < 80u) klog_cell(row, col++, *t++, attr);
+}
+
+/* How many screen rows the log takes, a line wider than 80 columns wrapping. */
+static unsigned klog_total_rows(void) {
+    unsigned rows = 0, w = 0;
+    for (unsigned i = 0; i < klog_len; i++) {
+        if (klog_buf[i] == '\n') { rows++; w = 0; continue; }
+        if (w == 80u) { rows++; w = 0; }
+        w++;
+    }
+    if (w) rows++;
+    return rows;
+}
+
+static void klog_draw(void) {
+    const unsigned rows = cell_rows();
+    if (rows < 2) return;
+    const unsigned body = rows - 1;
+    const unsigned total = klog_total_rows();
+    const unsigned most = total > body ? total - body : 0;
+    if (klog_scroll > most) klog_scroll = most;
+    const unsigned first = most - klog_scroll;   /* first log row on screen */
+
+    for (unsigned c = 0; c < 80u; c++) klog_cell(0, c, ' ', KLOG_HEAD);
+    klog_text(0, 1, klog_scroll ? "KERNEL LOG (scrolled back)" : "KERNEL LOG",
+              KLOG_HEAD);
+    klog_text(0, 30, "Alt+F1 back  Shift+PgUp/PgDn scroll", KLOG_HEAD);
+
+    for (unsigned r = 1; r < rows; r++)
+        for (unsigned c = 0; c < 80u; c++) klog_cell(r, c, ' ', KLOG_ATTR);
+
+    if (klog_err) {
+        klog_text(2, 1, "SYS_DMESG refused this server: it holds no kernel log capability.",
+                  KLOG_ATTR);
+        return;
+    }
+    unsigned lr = 0, w = 0;
+    for (unsigned i = 0; i < klog_len; i++) {
+        char c = klog_buf[i];
+        if (c == '\n') { lr++; w = 0; continue; }
+        if (w == 80u) { lr++; w = 0; }
+        if (lr >= first && lr - first < body) klog_cell(1 + lr - first, w, c, KLOG_ATTR);
+        w++;
+    }
+}
+
+/* Straight to the serial line and nowhere else, so a gate can see the view open
+ * and close without the screen being written by a line about the screen. */
+static void klog_mark(const char *t) { while (*t) { if (*t == '\n') ser_putc('\r'); ser_putc(*t++); } }
+
+static void klog_view(void) {
+    if (!fbp) for (unsigned i = 0; i < VGA_CELLS; i++) klog_saved_vga[i] = vga[i];
+    klog_fetch();
+    klog_scroll = 0;
+    klog_draw();
+    klog_mark(klog_err ? "KLOG_CONSOLE: opened, and SYS_DMESG refused\n"
+                       : "KLOG_CONSOLE: showing the kernel log\n");
+
+    for (;;) {
+        uint8_t st = inb(PS2_STATUS);
+        if (!(st & PS2_STATUS_OBF)) { sys_yield(); continue; }
+        uint8_t sc = inb(PS2_DATA);
+        if (st & PS2_STATUS_AUX) continue;
+
+        if (!kbd.e0 && sc == PS2_SC_LALT)           { kbd_lalt = 1; continue; }
+        if (!kbd.e0 && sc == (PS2_SC_LALT | 0x80))  { kbd_lalt = 0; continue; }
+        if (!kbd.e0 && sc == 0x3B && (kbd_lalt || kbd.altgr)) break;     /* Alt+F1 */
+        if (!kbd.e0 && sc == 0x3C && (kbd_lalt || kbd.altgr)) continue;  /* F2 again */
+
+        /* PgUp and PgDn are 0xE0 0x49 and 0xE0 0x51, which ps2_feed drops, so
+         * they are read here; the prefix ps2_feed already consumed is cleared the
+         * way it would have cleared it. A page is one screen less a row, so the
+         * row at the edge stays in view as the reader's landmark. */
+        if (kbd.e0 && (sc == 0x49 || sc == 0x51)) {
+            kbd.e0 = 0;
+            if (kbd.shift) {
+                unsigned page = cell_rows() > 2 ? cell_rows() - 2 : 1;
+                if (sc == 0x49) klog_scroll += page;
+                else klog_scroll = klog_scroll > page ? klog_scroll - page : 0;
+                klog_draw();
+            }
+            continue;
+        }
+
+        int k = ps2_feed(&kbd, sc);            /* keeps shift, ctrl and e0 honest */
+        if (k == PS2_KEY_NONE) continue;
+        if (k == PS2_KEY_UP)        klog_scroll++;
+        else if (k == PS2_KEY_DOWN) { if (klog_scroll) klog_scroll--; }
+        else if (k == PS2_KEY_HOME) klog_scroll = ~0u >> 1;   /* clamped in draw */
+        else if (k == PS2_KEY_END)  klog_scroll = 0;
+        else { klog_fetch(); klog_scroll = 0; }               /* any other key */
+        klog_draw();
+    }
+
+    if (fbp) { for (unsigned i = 0; i < 80u * fb_rows; i++) fb_blit(i); }
+    else     { for (unsigned i = 0; i < VGA_CELLS; i++) vga[i] = klog_saved_vga[i]; }
+    klog_mark("KLOG_CONSOLE: back to the console\n");
+}
+#endif
 
 /* ---- input ----------------------------------------------------------------- */
 /* Read one console character. Serial RX is polled (the COM1 line-status data-ready

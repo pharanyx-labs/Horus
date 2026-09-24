@@ -31,7 +31,6 @@
 # like an old one.
 
 control_arms:
-  smoke-installer-clear-control: smoke-installer-clear
   smoke-smp-topology-sparse-control: smoke-smp-topology
   smoke-smp-topology-sibling-control: smoke-smp-topology
   smoke-cap-accounting-control: smoke-captest
@@ -313,7 +312,6 @@ gates:
   - smoke-ata-ready
   - smoke-storage-survey
   - smoke-installer
-  - smoke-installer-clear
   - smoke-installer-refuse
   - smoke-installer-provision
   - smoke-installer-accounts

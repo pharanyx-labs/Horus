@@ -377,7 +377,15 @@
 # jump sideways at the handover, and the panel would sit beside the installer it
 # is describing rather than under it. The eight lines are one offset pair, its
 # computation, and the two places a pixel address is formed.
-core_budget_loc: 10544
+#
+# 2026-09-24: 10544 -> 10554, +10 in terminal.c. The maintainer's rule: the
+# kernel log is left-aligned and only the installer is centred. The kernel keeps
+# the log at 0,0 and centres only the rows of its progress panel (fb_row_ox),
+# clearing them across the display first (fb_fill_px, which also replaces the
+# start-up fill it duplicated). It cannot go to ring 3 for the reason the 10543
+# entry gives: the kernel draws that panel itself while console_server is
+# blocked in the format.
+core_budget_loc: 10554
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

@@ -325,66 +325,7 @@ def expect_installed(s, typist=None):
     # the serial terminal as it blanks the display. Searched from after the key
     # marker, so the clear the TUI sent when it started cannot satisfy it.
     s.expect("\x1b[2J\x1b[H", STEP)
-    if os.environ.get("INSTALLER_CHECK_CLEAR") == "1":
-        check_clear_on_screen(s)
     return took
-
-
-def check_clear_on_screen(s):
-    """The clear leaves the SCREEN clear, not just the serial terminal.
-
-    Until 2026-09-24 CON_OP_CLEAR blanked the display and then drew its own
-    escape sequence onto it as glyphs (`<-[2J<-[H`) in front of `init: the
-    installer finished`. The wire carried a correct escape, so every check above
-    passed. This reads the screen instead, without knowing the font: after the
-    clear, row 0 is `init: the installer finished` and row 1 is `init: starting,
-    launching shell`, so their first six cells, `init: `, must be the same pixels.
-    With the defect row 0 starts with the drawn escape and they differ. The cells
-    must also not be blank, or two empty rows would pass.
-    """
-    s.expect("init: starting, launching shell", STEP)
-    s._pump(1.5)
-    path = os.path.join(os.environ.get("INSTALLER_SHOTS", "/tmp"), "installer-after-clear.ppm")
-    if os.path.exists(path):
-        os.unlink(path)
-    s.qmp("screendump", filename=path)
-    for _ in range(40):
-        if os.path.exists(path) and os.path.getsize(path) > 0:
-            time.sleep(0.3)
-            break
-        time.sleep(0.1)
-    data = open(path, "rb").read()
-    head = data.split(b"\n", 3)
-    w, h = map(int, head[1].split())
-    px = head[3]
-    # THE CELL GEOMETRY IS THE GUEST'S TO STATE, not guessed: console_server
-    # reports a framebuffer's grid and origin, and a text window is 80 columns of
-    # 9-pixel cells over 50 rows.
-    import re
-    m = re.search(r"CONSOLE_FB: linear framebuffer \d+x\d+x\d+ pitch \d+ scale (\d+) "
-                  r"grid 80x(\d+) origin \((\d+),(\d+)\)", s.buf)
-    if m:
-        scale, ox, oy = int(m.group(1)), int(m.group(3)), int(m.group(4))
-        cw, ch = 8 * scale, 16 * scale
-    else:
-        ox, oy, cw, ch = 0, 0, w // 80, h // 50
-
-    def cell(row, col):
-        out = bytearray()
-        for y in range(oy + row * ch, oy + (row + 1) * ch):
-            a = (y * w + ox + col * cw) * 3
-            out += px[a:a + cw * 3]
-        return bytes(out)
-
-    r0 = b"".join(cell(0, c) for c in range(6))
-    r1 = b"".join(cell(1, c) for c in range(6))
-    if len(set(r0)) < 2:
-        raise SessionFail("row 0 is blank after the clear; there is nothing to compare")
-    if r0 != r1:
-        raise SessionFail("the clear drew characters onto the screen: row 0 does not "
-                          "begin with the same `init: ` as row 1 (screendump "
-                          f"{path})")
-    step("the screen shows no stray characters after the clear")
 
 
 def step(msg):

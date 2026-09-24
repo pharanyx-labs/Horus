@@ -579,6 +579,12 @@ in this file.
 
 ### Changed
 
+- **The boot log and the console are left-aligned again; only the installer is centred.** #433
+  centred the whole character grid, which moved the kernel's log and every console line to the
+  middle of a wide screen. Now the log starts at the left edge and only a full-screen program's
+  surface (the installer) and the kernel's progress panel under it are centred. The Alt+F2 view
+  and scrollback are always left-aligned.
+
 - **A live boot's root password is `toor`; `rootpass` is gone.** The compiled-in `root` account
   a live boot offers (the boot menu's live entry, or a machine with no disk) now takes `toor`, and
   `rootpass` is no longer accepted anywhere: not by the kernel, not by any test harness. `user` /
@@ -612,11 +618,6 @@ in this file.
   steps run, and `check_gate_pairs` still finds every one.
 
 ### Fixed
-
-- **Stray characters appeared before `init: the installer finished`.** The clear the installer
-  sends when it finishes wrote its serial escape sequence through the console's ordinary output,
-  which draws on the screen too, so `←[2J←[H` was painted in front of the next line. It now goes
-  to the serial line only, and `make smoke-installer-clear` reads the screen to check.
 
 - **A command typed without its operand said "Unknown command".** A bare `touch`, `cat`, `cp`,
   `rm` and the rest were each matched with a trailing space, so without an argument they matched

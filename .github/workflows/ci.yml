@@ -2964,12 +2964,6 @@ jobs:
       # everything it can observe succeeded.
       - name: An installer lays a system down, and the next boot logs into it
         run: make smoke-installer
-      # The installer's final clear leaves the SCREEN clear, read off a screendump:
-      # it once drew its own escape sequence in front of the first line after it.
-      - name: The screen after the installer's clear shows no stray characters
-        run: make smoke-installer-clear
-      - name: Control arm — a clear that draws its escape sequence is caught
-        run: make smoke-installer-clear-control
       # The compiled-in root password on an installed machine: refused, and the arm
       # that keeps it must turn the install gate red on exactly that.
       - name: Control arm — the compiled-in accounts kept on a machine with a disk

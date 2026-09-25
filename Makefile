@@ -188,6 +188,7 @@ DEFECT_FLAGS = \
 	SHLIB_INHERIT_ANY_IMAGE SHLIB_DATA_TEMPLATE_SHARED SHLIB_EXEC_NO_DATA \
 	SHLIB_TEMPLATE_UNPINNED \
 	MEM_SEAL_KEEPS_WRITE MEM_SEAL_ANY_ADDRESS \
+	DYNLINK_ABI_UNCHECKED DYNLINK_UNKNOWN_ZERO DYNLINK_NO_SEAL \
 	INSTALLER_STOP_AFTER_FORMAT USERS_PERSIST_COMPILED_IN
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
@@ -1478,6 +1479,19 @@ SHLIBC_MODULE   := 1
 BOOT_MODULES    += userspace/hello_shared.bin:bin/hello_shared \
                    userspace/shlibdata.bin:bin/shlibdata userspace/shlibprobe.bin:bin/shlibprobe
 BOOT_MODULE_DEP += userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin
+endif
+
+# DYNLINK_MODULES=1 ships three programs LINKED against the shared libc (and the
+# library itself): hello_dyn, which uses getopt_long's optarg/optind, and two
+# that must be refused before main, dyncanary (a name the library does not
+# export) and dynstale (built against a different table). For make
+# smoke-shlib-link and its arms.
+DYNLINK_MODULES ?= 0
+ifeq ($(DYNLINK_MODULES),1)
+SHLIBC_MODULE   := 1
+BOOT_MODULES    += userspace/hello_dyn.bin:bin/hello_dyn userspace/dyncanary.bin:bin/dyncanary \
+                   userspace/dynstale.bin:bin/dynstale
+BOOT_MODULE_DEP += userspace/hello_dyn.bin userspace/dyncanary.bin userspace/dynstale.bin
 endif
 
 # SHLIBC_MODULE=1 ships the library alone. The kernel loads it from the module
@@ -4594,6 +4608,26 @@ INSTALLER_FAIL_NO_SCREEN ?= 0
 ifeq ($(INSTALLER_FAIL_NO_SCREEN),1)
 USERSPACE_CFLAGS += -DINSTALLER_FAIL_NO_SCREEN
 endif
+# The ring-3 linker's three arms (docs/design/shared-libc.md step 3), each for
+# make smoke-shlib-link. Userspace-only: they change crt0's linker, not the
+# kernel.
+#   DYNLINK_ABI_UNCHECKED=1  the table hash is not compared, so a program runs
+#                            against a library it was not built for.
+#   DYNLINK_UNKNOWN_ZERO=1   a name the library does not export resolves to zero
+#                            instead of refusing the program.
+#   DYNLINK_NO_SEAL=1        the resolved table is left writable.
+DYNLINK_ABI_UNCHECKED ?= 0
+ifeq ($(DYNLINK_ABI_UNCHECKED),1)
+USERSPACE_CFLAGS += -DDYNLINK_ABI_UNCHECKED
+endif
+DYNLINK_UNKNOWN_ZERO ?= 0
+ifeq ($(DYNLINK_UNKNOWN_ZERO),1)
+USERSPACE_CFLAGS += -DDYNLINK_UNKNOWN_ZERO
+endif
+DYNLINK_NO_SEAL ?= 0
+ifeq ($(DYNLINK_NO_SEAL),1)
+USERSPACE_CFLAGS += -DDYNLINK_NO_SEAL
+endif
 # INSTALLER_STOP_AFTER_FORMAT=1 is an INSTRUMENT, not a defect: the installer
 # stops between the format and the first account write, leaving a volume with no
 # account table, as a power cut there would. In DEFECT_FLAGS so a boot under it
@@ -5176,6 +5210,52 @@ userspace/shlibprobe.pie.elf: userspace/shlibprobe.o $(NEWLIB_GLUE_OBJS) userspa
 	    userspace/crt0.o $< userspace/newlib_glue.o userspace/newlib_glue64.o \
 	    userspace/posix.o userspace/malloc.o $(LIBHORUS_LIB) -L$(NEWLIB_LIB) -lc
 
+# ---- Linking a program against the shared libc by NAME (step 3) --------------
+#
+# The link stub: every exported name at default visibility, soname libc.so,
+# generated beside the table by tools/gen_libc_exports.sh. newlib is built
+# -fvisibility=hidden, so the real libc.so exports almost nothing by name and a
+# program cannot be linked against it; this is what it is linked against
+# instead. It is never loaded.
+userspace/libc_exports_link.c: userspace/libc_exports.c
+	@test -f $@ || { rm -f userspace/libc_exports.c; $(MAKE) --no-print-directory userspace/libc_exports.c; }
+
+userspace/libc_link.so: userspace/libc_exports_link.c
+	$(CC) -shared -fPIC -m64 -nostdlib -ffreestanding -Wl,--build-id=none \
+	  -Wl,-soname,libc.so -o $@ $<
+
+# crt0_dyn and the linker it runs. dynlink.c includes the generated header for
+# the table's hash, which is what a program built by this rule expects.
+userspace/dynlink.o: userspace/dynlink.c userspace/dynlink.h userspace/libc_exports.h
+	$(CC) $(USERSPACE_CFLAGS) -I userspace -c $< -o $@
+
+# The same linker, expecting a hash no library has: what a program built against
+# a different library looks like. Only dynstale is linked with it.
+userspace/dynlink_stale.o: userspace/dynlink.c userspace/dynlink.h userspace/libc_exports.h
+	$(CC) $(USERSPACE_CFLAGS) -I userspace -DDYNLINK_EXPECT_HASH=0x0123456789abcdefULL -c $< -o $@
+
+userspace/crt0_dyn.o: userspace/crt0_dyn.c userspace/dynlink.h
+	$(CC) $(USERSPACE_CFLAGS) -I userspace -c $< -o $@
+
+# -mno-direct-extern-access: a reference to library DATA (optarg, optind,
+# _impure_ptr) goes through a GOT slot rather than a copy relocation, so it
+# names the library's own variable in this task's private copy. -z nocopyreloc
+# makes any copy relocation a link error rather than a silent desync.
+DYNLINK_CFLAGS = $(NEWLIB_CFLAGS) -mno-direct-extern-access
+DYNLINK_LDFLAGS = -m elf_x86_64 -pie --no-dynamic-linker -z now -z nocopyreloc \
+                  --gc-sections -T userspace/pie_shared.ld
+
+userspace/hello_dyn.o userspace/dyncanary.o userspace/dynstale.o: userspace/%.o: userspace/%.c $(NEWLIB_LIB)/libc.a
+	$(CC) $(DYNLINK_CFLAGS) -c $< -o $@
+
+userspace/hello_dyn.pie.elf userspace/dyncanary.pie.elf: userspace/%.pie.elf: userspace/%.o \
+        userspace/crt0_dyn.o userspace/dynlink.o userspace/libc_link.so userspace/pie_shared.ld
+	$(LD) $(DYNLINK_LDFLAGS) -o $@ userspace/crt0_dyn.o userspace/dynlink.o $< userspace/libc_link.so
+
+userspace/dynstale.pie.elf: userspace/dynstale.o userspace/crt0_dyn.o userspace/dynlink_stale.o \
+        userspace/libc_link.so userspace/pie_shared.ld
+	$(LD) $(DYNLINK_LDFLAGS) -o $@ userspace/crt0_dyn.o userspace/dynlink_stale.o $< userspace/libc_link.so
+
 # The data half of make smoke-shlib-inherit: errno across spawns and across an
 # exec. Linked exactly as hello_shared is.
 userspace/shlibdata.o: userspace/shlibdata.c $(NEWLIB_LIB)/libc.a
@@ -5374,7 +5454,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.stripped.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin userspace/sealprobe.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin userspace/sealprobe.bin userspace/dynstale.bin userspace/dyncanary.bin userspace/hello_dyn.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -5456,7 +5536,7 @@ userspace/%.bin: userspace/%.raw tools/mkheadered
 userspace: $(SHIPPED_PIE_BINS)
 
 userspace-clean:
-	rm -f userspace/*.o userspace/*.a userspace/*.so userspace/*.elf userspace/*.pie.elf userspace/*.stripped.elf userspace/*.raw userspace/*.bin userspace/*_image.h userspace/shlib_offsets.h userspace/libc_exports.c userspace/libc_exports.h userspace/libc_stubs.S tools/mkheadered
+	rm -f userspace/*.o userspace/*.a userspace/*.so userspace/*.elf userspace/*.pie.elf userspace/*.stripped.elf userspace/*.raw userspace/*.bin userspace/*_image.h userspace/shlib_offsets.h userspace/libc_exports.c userspace/libc_exports.h userspace/libc_exports_link.c userspace/libc_stubs.S tools/mkheadered
 
 # Build with the gated CPU-protection self-test and require the kernel to report
 # SMEP and SMAP both detected AND present in CR4. smoke_test.sh boots QEMU with
@@ -8288,6 +8368,55 @@ smoke-mem-seal-window-control:
 	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
 	fi; \
 	echo "SEAL WINDOW CONTROL: PASS - a seal that reaches outside the image is caught"
+
+# THE RING-3 LINKER (docs/design/shared-libc.md step 3). Programs linked against
+# the library by name, resolved and sealed by crt0 before main. Through the real
+# shell (tools/dynlink_session.py): hello_dyn parses options with getopt_long
+# (library DATA, shared correctly through the GOT) and its resolved table
+# refuses a write; dyncanary and dynstale are refused before main, naming why.
+.PHONY: smoke-shlib-link smoke-shlib-link-abi-control smoke-shlib-link-unknown-control \
+        smoke-shlib-link-seal-control
+smoke-shlib-link:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory DYNLINK_MODULES=1 $(DYNARM)
+	@$(MAKE) --no-print-directory DYNLINK_MODULES=1 $(DYNARM) horus.iso
+	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) tools/dynlink_session.py horus.iso
+
+smoke-shlib-link-abi-control:
+	@out=$$($(MAKE) --no-print-directory smoke-shlib-link DYNARM=DYNLINK_ABI_UNCHECKED=1 2>&1); rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "DYNLINK ABI CONTROL: FAIL - DYNLINK_ABI_UNCHECKED passed the gate"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "a program ran against a library it was not built for"; then \
+	    echo "DYNLINK ABI CONTROL: FAIL - it failed, but not on: a program ran against a library it was not built for"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "DYNLINK ABI CONTROL: PASS - DYNLINK_ABI_UNCHECKED is caught"
+
+smoke-shlib-link-unknown-control:
+	@out=$$($(MAKE) --no-print-directory smoke-shlib-link DYNARM=DYNLINK_UNKNOWN_ZERO=1 2>&1); rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "DYNLINK UNKNOWN CONTROL: FAIL - DYNLINK_UNKNOWN_ZERO passed the gate"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "a program ran with a name the library does not export"; then \
+	    echo "DYNLINK UNKNOWN CONTROL: FAIL - it failed, but not on: a program ran with a name the library does not export"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "DYNLINK UNKNOWN CONTROL: PASS - DYNLINK_UNKNOWN_ZERO is caught"
+
+smoke-shlib-link-seal-control:
+	@out=$$($(MAKE) --no-print-directory smoke-shlib-link DYNARM=DYNLINK_NO_SEAL=1 2>&1); rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "DYNLINK SEAL CONTROL: FAIL - DYNLINK_NO_SEAL passed the gate"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "the resolved table took a write"; then \
+	    echo "DYNLINK SEAL CONTROL: FAIL - it failed, but not on: the resolved table took a write"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "DYNLINK SEAL CONTROL: PASS - DYNLINK_NO_SEAL is caught"
 
 .PHONY: smoke-shlibc
 smoke-shlibc:

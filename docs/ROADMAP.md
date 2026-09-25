@@ -1174,8 +1174,11 @@ data, mapped by the kernel and named by no capability.
 **Step 2 is built as of 2026-09-25** (**S107**, `make smoke-mem-seal`): `SYS_MEM_SEAL` makes
 pages of a program's own image read-only for good, which the linker's table will need.
 
-**Still open:** the shipped programs. Migrating the eleven coreutils needs the ring-3 linker
-(step 3). Three of them (`echo`, `true`, `false`) were measured
+**Step 3 is built as of 2026-09-25** (**S108**, `make smoke-shlib-link`): a program links against
+the library by name, and crt0's linker resolves its references, checks the table's hash and seals
+them before main. `optarg` and `optind` are shared correctly, through the GOT.
+
+**Still open:** the shipped programs (step 4). Three of them (`echo`, `true`, `false`) were measured
 to need only `_impure_ptr` among data symbols, so they can move as they are; the rest use
 `getopt`, and `optarg`/`optind` are the blocker below. Calling into shared text needs only a
 stub per function, but a program's direct reference to a **data** symbol cannot be redirected to
@@ -1848,7 +1851,7 @@ table already has the four columns a registry needs (id, statement, enforcing co
 the table *is* the registry. A hand-maintained parallel manifest would be a second copy of
 claims that already exist, which is **[H-3]**'s shape: two descriptions of one thing, drifting.
 The manifest that remains (`.github/invariants.yml`) holds exemptions only, and today it is
-**empty**, all 110 properties name a witness that resolves.
+**empty**, all 111 properties name a witness that resolves.
 
 **What the survey found on the way.** **S16** had no witness at all, an em-dash against
 `fpu_save`/`fpu_restore`, real code called on every ring transition and exercised by nothing.
@@ -1887,7 +1890,7 @@ past it.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue`, §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 422 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 221 of them control arms that must reproduce a defect |
+| ✅ | 426 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 224 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

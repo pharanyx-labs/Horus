@@ -2422,10 +2422,10 @@ refusal fails closed: `SYS_FORK` returns an error and nothing is shared. None of
 coreutils forks, `tcc` does not, and the shell is not a libc program. Since 2026-09-25 the data
 is ordinary private memory (S106), so the text is the whole of what a fork would need taught.
 
-- **It resolves nothing by name.** A caller indexes a fixed export table whose address the
-  loader takes from the object's `e_entry`. Symbol resolution, walking `.dynsym`, matching
-  `DT_NEEDED`, patching a GOT, is what makes a dynamic linker, and an index into a table is what
-  this supports until one exists.
+- **It resolves by name since 2026-09-25** (S108): a program linked against the library has its
+  references resolved by crt0's linker against the table's names, checked against the table's
+  hash, and sealed. The index-based stub archive remains for the self-test program that
+  predates it.
 - **newlib is still statically linked.** The saving from SHARING it has not been taken yet.
   The mechanism can now carry it (S50 closed the writable-data blocker on 2026-08-29) and the
   shared object itself now builds and is gated (`userspace/libc.so`, the required
@@ -2436,9 +2436,8 @@ is ordinary private memory (S106), so the text is the whole of what a fork would
 C calling `printf` by name, carrying no libc: 106,392 bytes static against 13,088 shared.
 **The kernel endows ordinary tasks since 2026-09-25** (S106): the library loads from its boot
 module, init and the shell hold the text, and a program whose image asks inherits it at spawn
-with data of its own. What remains is the ring-3 linker that resolves by name, the seal that
-makes its table read-only, and migrating the **shipped** programs (steps 2 to 4 of
-`docs/design/shared-libc.md`).
+with data of its own. What remains is migrating the **shipped** programs (step 4 of
+`docs/design/shared-libc.md`); the seal (S107) and the linker (S108) are built.
 
   **One part of it still needs a GOT, and the limit is now exact.** A tail-jump thunk forwards a
   *call*; a reference to a **variable** is an address the compiler emits directly, and redirecting
@@ -4686,9 +4685,9 @@ the IPC authorisation logic. All fixed as of 2026-07-27; the `require_code_owner
 setting that would make `CODEOWNERS` binding is still off (§5.1).
 
 <<<<<<< HEAD
-*(Repository hygiene itself is fine: `git ls-files` reports **473** tracked files with no build
+*(Repository hygiene itself is fine: `git ls-files` reports **481** tracked files with no build
 =======
-*(Repository hygiene itself is fine: `git ls-files` reports **473** tracked files with no build
+*(Repository hygiene itself is fine: `git ls-files` reports **481** tracked files with no build
 >>>>>>> origin/main
 artefacts or vendored binaries: no `kernel.elf`, no `horus.iso`, no object files. A working
 checkout accumulates ~70 MB of untracked build output, which is correctly `.gitignore`d. This

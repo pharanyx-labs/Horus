@@ -183,7 +183,8 @@ DEFECT_FLAGS = \
 	SDHCI_EMBEDDED_NEEDS_CD \
 	SDHCI_EMMC_CSD_ONLY \
 	CONSOLE_KBD_SPLIT_ESC \
-	FB_GRID_FIXED_ROWS
+	FB_GRID_FIXED_ROWS \
+	INSTALLER_FAIL_NO_SCREEN
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -4492,6 +4493,15 @@ endif
 # userspace must be told; applied here for the reason the TUI flags above are.
 ifeq ($(KFAULT_RECORD_SELFTEST),1)
 USERSPACE_CFLAGS += -DKFAULT_RECORD_SELFTEST
+endif
+# INSTALLER_FAIL_NO_SCREEN=1 restores the installer's failure path as it stood
+# before 2026-09-25: the reason goes to the wire as `INSTALLER: FAIL ...` and the
+# program exits at once, so a machine with no serial port shows the operator
+# nothing, and init's next line covers the screen. Userspace-only. The control
+# arm for make smoke-installer-failed.
+INSTALLER_FAIL_NO_SCREEN ?= 0
+ifeq ($(INSTALLER_FAIL_NO_SCREEN),1)
+USERSPACE_CFLAGS += -DINSTALLER_FAIL_NO_SCREEN
 endif
 # CONSOLE_BACKSPACE_NO_ERASE=1 restores console_server's screen output as it
 # stood before 2026-09-12: fb_putc and vga_putc had no case for 0x08, so a
@@ -12916,6 +12926,42 @@ smoke-installer-sized-control:
 	fi; \
 	echo "$$out" | grep -o "the volume is not the size that was chosen.*" | head -1 | sed 's/^/  /'; \
 	echo "SIZED CONTROL: PASS - a kernel that ignores the size is caught on the size"
+
+# A FAILED INSTALL SAYS WHY ON THE SCREEN (2026-09-25). The disk is put behind
+# QEMU's blkdebug with every write failing EIO (SESSION_DISK_WRITE_EIO=1), so the
+# format is refused by a real disk failure rather than a defect flag. The
+# installer must then show its failure screen with the whole reason in the body,
+# read by rendering the serial stream (tools/installer_session.py, failed), and
+# wait for a key before handing the console back. The arm is the old exit, and
+# must go red on the missing screen, not on anything else.
+.PHONY: smoke-installer-failed smoke-installer-failed-control
+smoke-installer-failed:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 $(FAILEDARM)
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 $(FAILEDARM) horus.iso
+	@rm -f installer-failed.img installer-failed.img.blkdebug installer-failed-serial.log
+	@truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-failed.img
+	@SESSION_DISK=installer-failed.img SESSION_DISK_WRITE_EIO=1 INSTALLER_MODE=failed \
+		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) \
+		SESSION_SERIAL_LOG=installer-failed-serial.log BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		python3 tools/installer_session.py horus.iso \
+	  || { echo "[installer] ----- guest serial -----"; \
+	       tail -60 installer-failed-serial.log 2>/dev/null | sed 's/^/  /'; \
+	       rm -f installer-failed.img installer-failed.img.blkdebug; exit 1; }
+	@rm -f installer-failed.img installer-failed.img.blkdebug
+	@echo "[installer] PASS - a disk that refuses writes gets a failure screen with the whole reason"
+
+smoke-installer-failed-control:
+	@out=$$($(MAKE) --no-print-directory smoke-installer-failed FAILEDARM=INSTALLER_FAIL_NO_SCREEN=1 2>&1); rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "FAILED CONTROL: FAIL - an installer that exits without a screen passed the gate"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "the install failed and there was no failure screen"; then \
+	    echo "FAILED CONTROL: FAIL - it failed, but not on the missing screen."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "FAILED CONTROL: PASS - an install failure with no screen is caught on the screen"
 
 # AN INSTALL WITHOUT ENCRYPTION (2026-09-24). Chooses "Do not encrypt it", then
 # boots the disk and requires the boot to SAY the volume is not encrypted, a

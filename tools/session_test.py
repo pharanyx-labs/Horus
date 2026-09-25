@@ -197,6 +197,18 @@ class Serial:
             iops = os.environ.get("SESSION_DISK_IOPS", "")
             if iops:
                 spec += ",throttling.iops-total=%s" % iops
+            # SESSION_DISK_WRITE_EIO=1 puts QEMU's blkdebug driver under the
+            # image and fails EVERY write with EIO, while reads succeed. So the
+            # guest sees a disk it can survey and cannot write: a real disk
+            # failure, reached without a defect flag, which is how
+            # smoke-installer-failed makes an install fail. The rule file sits
+            # beside the image so a kept image keeps the reason it failed.
+            if os.environ.get("SESSION_DISK_WRITE_EIO", "") == "1":
+                rules = disk + ".blkdebug"
+                with open(rules, "w") as fh:
+                    fh.write('[inject-error]\nevent = "none"\niotype = "write"\n'
+                             'errno = "5"\nonce = "off"\n')
+                spec = spec.replace("file=%s," % disk, "file=blkdebug:%s:%s," % (rules, disk), 1)
             drive = ["-drive", spec]
 
             # SESSION_DISK_SD=1 attaches the SAME image as an SD/eMMC card behind

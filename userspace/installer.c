@@ -1093,9 +1093,35 @@ static const char *passwd_reason(int rc)
     }
 }
 
+/* A failed install, said twice from one string (2026-09-25).
+ *
+ * ON THE WIRE as `INSTALLER: FAIL <reason>`, one write, for the gates; and kept
+ * in g_fail for screen_failed, which puts the same words on the screen. Until
+ * this date only the password failures reached the screen at all, and they
+ * reached it through the STATUS line: one row, 74 columns, cut by tui_field at
+ * the panel edge. `could not set the root password: rc=-24 (the password could
+ * not be sealed to the volume (key derivation or the TPM refused))` is 118
+ * characters, so the part that said WHY was the part a laptop's operator never
+ * saw. Every other failure (the format refused, the volume not up afterwards,
+ * the wrong size) went to the wire only, and the installer then exited under
+ * whatever init printed next. A machine with no serial port showed nothing.
+ *
+ * mark(), not say(): the marker is a cooked write that lands on the screen, and
+ * the failure screen drawn next must repaint over it. */
+static char g_fail[CON_IO_MAX - 20];
+
+static void fail(const char *a, const char *b)
+{
+    unsigned n = 0;
+    for (const char *c = a; c && *c && n < sizeof(g_fail) - 1; c++) g_fail[n++] = *c;
+    for (const char *c = b; c && *c && n < sizeof(g_fail) - 1; c++) g_fail[n++] = *c;
+    g_fail[n] = 0;
+    mark("INSTALLER: FAIL ", g_fail);
+}
+
 static void say_passwd_failure(const char *head, int rc)
 {
-    char line[CON_IO_MAX - 2];
+    char line[CON_IO_MAX - 20];
     char num[24];
     unsigned n = 0;
     utoa10((uint64_t)(unsigned)(-rc), num, sizeof(num));
@@ -1104,10 +1130,7 @@ static void say_passwd_failure(const char *head, int rc)
     for (unsigned k = 0; k < 6; k++)
         for (const char *c = parts[k]; *c && n < sizeof(line) - 1; c++) line[n++] = *c;
     line[n] = 0;
-    say(line, "");
-    /* On the screen as well, not only on the wire: the screen is all a laptop has. */
-    status(line + sizeof("INSTALLER: FAIL ") - 1, C_DANGER);
-    tui_flush();
+    fail(line, "");
 }
 
 static int do_install(void)
@@ -1138,7 +1161,7 @@ static int do_install(void)
     if (rc != 0) {
         char n[24];
         utoa10((uint64_t)(unsigned)(-rc), n, sizeof(n));
-        say("INSTALLER: FAIL format refused rc=-", n);
+        fail("format refused rc=-", n);
         return -1;
     }
 
@@ -1149,7 +1172,7 @@ static int do_install(void)
     {
         int prc = sys_passwd(0, g_pw);
         if (prc != 0) {
-            say_passwd_failure("INSTALLER: FAIL could not set the root password: ", prc);
+            say_passwd_failure("could not set the root password: ", prc);
             return -1;
         }
     }
@@ -1171,7 +1194,7 @@ static int do_install(void)
     (void)sys_userdel(USER_UID);
 
     if (sys_useradd(USER_UID, USER_GID, g_user) != 0) {
-        say("INSTALLER: FAIL could not create the account ", g_user);
+        fail("could not create the account ", g_user);
         return -1;
     }
 
@@ -1186,7 +1209,7 @@ static int do_install(void)
         if (prc != 0) {
             char head[64];
             unsigned n = 0;
-            const char *parts[] = { "INSTALLER: FAIL could not set the password for ", g_user, ": " };
+            const char *parts[] = { "could not set the password for ", g_user, ": " };
             for (unsigned k = 0; k < 3; k++)
                 for (const char *c = parts[k]; *c && n < sizeof(head) - 1; c++) head[n++] = *c;
             head[n] = 0;
@@ -1200,11 +1223,11 @@ static int do_install(void)
      * exactly the failure this program exists to not produce quietly. */
     struct storage_info after;
     if (sys_storage_info(&after) != 0) {
-        say("INSTALLER: FAIL cannot read the volume back", "");
+        fail("cannot read the volume back", "");
         return -1;
     }
     if (!after.recognised || !after.unlocked) {
-        say("INSTALLER: FAIL the volume did not come up after formatting", "");
+        fail("the volume did not come up after formatting", "");
         return -1;
     }
     /* AND IT IS THE SIZE THAT WAS ASKED FOR. The kernel bounds the size and would
@@ -1222,7 +1245,7 @@ static int do_install(void)
             for (const char *c = parts[k]; *c && n < sizeof(line) - 1; c++) line[n++] = *c;
         line[n] = 0;
         if (after.volume_blocks != want) {
-            say("INSTALLER: FAIL the volume is not the size that was chosen: ", line);
+            fail("the volume is not the size that was chosen: ", line);
             return -1;
         }
         say("INSTALLER: volume of ", line);
@@ -1230,6 +1253,50 @@ static int do_install(void)
     return 0;
 }
 /* ---- entry -------------------------------------------------------------- */
+
+/* Blank the console for whatever init prints next, after tui_end has given the
+ * terminal its cursor and charset back. Both ends of an install go through here,
+ * so the login prompt after a failure starts on an empty screen exactly as it
+ * does after a success. */
+static void clear_console(void)
+{
+    static struct con_request  clr_rq;
+    static struct con_response clr_rp;
+    clr_rq.magic = CON_PROTO_MAGIC;
+    clr_rq.op    = CON_OP_CLEAR;
+    clr_rq.len   = 0;
+    (void)sys_ipc_call(CAPSLOT_CONSOLE_EP, 0, &clr_rq, sizeof(clr_rq), &clr_rp);
+}
+
+/* The install failed: say why on the screen, whole, and wait to be read.
+ *
+ * THE REASON IS BODY TEXT, WRAPPED, not the status line. The status line is one
+ * row cut at the panel edge, and the longest reasons are the ones that most need
+ * reading; the body has fourteen rows. See fail() for what this replaced.
+ *
+ * IT WAITS FOR A KEY, as the success screen does, and for the same reason: the
+ * next thing on the console is init's output, and without the wait it covers
+ * this screen at once. The marker goes out before the wait so a gate knows the
+ * screen is up; the key is for the person reading it. */
+static void screen_failed(void)
+{
+    frame("The install did not finish");
+    int r = para(ROW_BODY, g_fail, C_DANGER);
+    r++;
+    r = para(r, "Some of the disk may already have been written, so it will not start "
+                "as an installed system. To try again, restart the machine from the "
+                "install media.",
+             C_TEXT);
+    r++;
+    (void)para(r, "The line in red is the whole reason. A photograph of this screen is "
+                  "enough to report it.", C_TEXT);
+    status("", C_TEXT);
+    hint("press any key");
+    tui_flush();
+    mark("INSTALLER: waiting on a key after the failure", "");
+    tui_flush();
+    (void)tui_getkey();
+}
 
 /* Every exit that changed nothing goes through here, so "nothing was written"
  * is one sentence in one place rather than five copies that can drift apart --
@@ -1437,7 +1504,16 @@ void _start(void)
     wipe_passwords();
 
     if (rc != 0) {
+#ifndef INSTALLER_FAIL_NO_SCREEN
+        screen_failed();
         tui_end();
+        clear_console();
+#else
+        /* CONTROL ARM -- never ship. The failure path as it was before
+         * 2026-09-25: the reason on the wire only, and straight out. See
+         * make smoke-installer-failed-control. */
+        tui_end();
+#endif
         sys_exit();
     }
 
@@ -1476,13 +1552,6 @@ void _start(void)
      * the clear, so what init prints next (the banner and the login prompt)
      * starts on an empty screen rather than under this frame. */
     tui_end();
-    {
-        static struct con_request  clr_rq;
-        static struct con_response clr_rp;
-        clr_rq.magic = CON_PROTO_MAGIC;
-        clr_rq.op    = CON_OP_CLEAR;
-        clr_rq.len   = 0;
-        (void)sys_ipc_call(CAPSLOT_CONSOLE_EP, 0, &clr_rq, sizeof(clr_rq), &clr_rp);
-    }
+    clear_console();
     sys_exit();
 }

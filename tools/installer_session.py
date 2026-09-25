@@ -387,6 +387,106 @@ def check_clear_on_screen(s):
     step("the screen shows no stray characters after the clear")
 
 
+def render_screen(wire, rows=24, cols=80):
+    """The 80x24 surface the installer drew, rebuilt from its bytes on the wire.
+
+    READING A PICTURE, ON PURPOSE. Everything else in this file waits on a
+    marker, because drawn text is not a contiguous string on the wire (see
+    answer_accounts). The failed scenario's property IS the picture: whether
+    the reason fits on the screen, which no marker can say. So this interprets
+    the handful of sequences tui.c emits (cursor address, SGR, the G0 charset
+    shifts, clear, cursor show and hide) and places every other byte in a grid.
+    Cooked output past the bottom row is dropped rather than scrolled: the
+    caller renders a full repaint, which addresses every cell it draws.
+    """
+    import re
+    grid = [[" "] * cols for _ in range(rows)]
+    r = c = 0
+    i = 0
+    csi = re.compile(r"\x1b\[([0-9;?]*)([A-Za-z])")
+    while i < len(wire):
+        ch = wire[i]
+        if ch == "\x1b":
+            m = csi.match(wire, i)
+            if m:
+                params, fin = m.group(1), m.group(2)
+                if fin == "H":
+                    parts = (params.split(";") + ["1", "1"])[:2]
+                    r = max(int(parts[0] or 1) - 1, 0)
+                    c = max(int(parts[1] or 1) - 1, 0)
+                elif fin == "J" and params == "2":
+                    grid = [[" "] * cols for _ in range(rows)]
+                i = m.end()
+                continue
+            i += 3 if wire[i + 1:i + 2] in ("(", ")") else 1
+            continue
+        if ch == "\r":
+            c = 0
+        elif ch == "\n":
+            r += 1
+        elif ch >= " ":
+            if r < rows and c < cols:
+                grid[r][c] = ch
+            c += 1
+        i += 1
+    return ["".join(row) for row in grid]
+
+
+def failed(disk):  # noqa: ARG001 - uniform scenario signature
+    """A disk that refuses every write: the installer says why, on the screen.
+
+    SESSION_DISK_WRITE_EIO=1 fails every write with EIO, so the format is
+    refused. The installer must then put up its failure screen and wait: its
+    title, the reason from the FAIL line WHOLE in the body, and the marker that
+    says it is waiting on a key. Until 2026-09-25 a failure exited under
+    whatever init printed next, and the one failure that did reach the screen
+    was cut at the panel edge.
+
+    The reason is compared as words, since the body wraps it across rows. The
+    control arm is INSTALLER_FAIL_NO_SCREEN=1, the old exit, which must go red
+    on "no failure screen" and on nothing else.
+    """
+    s = Serial(ISO)
+    try:
+        s.expect("init: this machine has a disk and no volume; running the installer", BOOT)
+        answer_survey(s)
+        answer_accounts(s)
+        answer_review_and_confirm(s)
+        s.expect("INSTALLER: formatting", STEP)
+        s.expect("INSTALLER: FAIL ", FORMAT_STEP)
+        start = s.pos
+        s.expect("\n", STEP)
+        reason = s.buf[start:s.pos].strip()
+        step(f"the format was refused: `{reason}`")
+        try:
+            s.expect("INSTALLER: waiting on a key after the failure", STEP)
+        except SessionFail:
+            raise SessionFail(
+                "the install failed and there was no failure screen: nothing "
+                "said it was waiting on a key after `INSTALLER: FAIL %s`" % reason)
+        s._pump(1.0)
+        # From the marker's line onward: the flush after mark() repaints every
+        # cell, so this region holds the whole screen.
+        grid = render_screen(s.buf[start:])
+        title = grid[2]
+        body = " ".join(" ".join(row[1:-1].split()) for row in grid[5:19]).split()
+        if "The install did not finish" not in title:
+            raise SessionFail("the failure screen's title is not on row 2: %r" % title.strip())
+        want = reason.split()
+        joined = " ".join(body)
+        if " ".join(want) not in joined:
+            raise SessionFail(
+                "the failure screen does not show the whole reason. Wanted %r in the "
+                "body, which reads %r" % (" ".join(want), joined))
+        step("the failure screen shows the whole reason")
+        SerialTypist(s).key("enter")
+        s.expect("init: the installer finished", STEP)
+        step("a key after the failure hands the console back to init")
+    finally:
+        keep_serial(s.buf)
+        s.close()
+
+
 def step(msg):
     """Report the step AND how long it took.
 
@@ -1306,6 +1406,10 @@ def run():
         return 0
     if mode == "unsealed":
         unsealed_install(disk)
+        print("INSTALLER_SESSION: PASS")
+        return 0
+    if mode == "failed":
+        failed(disk)
         print("INSTALLER_SESSION: PASS")
         return 0
     boot1(disk)

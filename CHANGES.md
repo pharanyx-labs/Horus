@@ -659,6 +659,16 @@ in this file.
   8x8. `tools/check_console_font.py` refuses a code point one font draws and the other does not,
   and one the box translation can send that neither draws.
 
+- **A failed install showed nothing on the screen, or only the start of the reason.** Only the
+  password failures reached the screen at all, on the one-row status line, which cut
+  `could not set the root password: rc=-24 (the password could not be sealed to the volume ...`
+  at the panel edge, just before the part that said why. Every other failure (the format
+  refused, the volume not coming up, the wrong size) went to the serial line only, and the
+  installer exited under whatever init printed next, so a laptop showed its operator nothing.
+  Every failure now gets a screen with the whole reason in the body and waits for a key, as the
+  success screen does. `make smoke-installer-failed` fails every write to the disk and reads the
+  screen back; its arm, `INSTALLER_FAIL_NO_SCREEN=1`, is the old exit.
+
 - **The website failed WCAG 2.1 AA contrast for its faintest text, and a screen reader heard
   the home page's two tokens as identical.** Faint text is now 4.6:1 or better and control
   outlines 3:1 or better in both themes; the token figure says which right is held and which

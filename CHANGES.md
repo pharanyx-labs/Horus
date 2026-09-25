@@ -648,6 +648,11 @@ in this file.
 
 ### Fixed
 
+- **The website's footer was a ragged run of links.** It is now three aligned columns (Horus, the
+  site's pages, and the repository's documents, named as documents so "Architecture" is never
+  two things), with a base line for the licence, and it stays at the bottom of the window on a
+  short page.
+
 - **A flush on an SD card or eMMC could return while the card was still writing.** The flush
   waited only for the controller's data-inhibit bit, and a laptop's eMMC left that clear while it
   was still programming. It now also waits for the card to release its DAT0 line, so the journal's

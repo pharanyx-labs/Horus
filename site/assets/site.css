@@ -99,7 +99,7 @@
 *, *::before, *::after { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; scroll-padding-top: calc(var(--top-h) + 16px); }
 body {
-  margin: 0;
+  margin: 0; min-height: 100vh; display: flex; flex-direction: column;
   background: var(--paper);
   color: var(--text);
   font: 400 1.0625rem/1.68 var(--serif);
@@ -206,7 +206,7 @@ code, kbd, samp { font-family: var(--mono); font-size: 0.86em; }
 /* ---- Documentation pages: contents rail, one reading column ---------------- */
 
 .doc {
-  max-width: var(--frame); margin: 0 auto; padding: 0 var(--gutter);
+  width: 100%; max-width: var(--frame); margin: 0 auto; padding: 0 var(--gutter);
   display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 64px;
 }
 .doc__main { min-width: 0; max-width: 780px; padding: 56px 0 72px; }
@@ -478,7 +478,7 @@ pre.code .x { color: #ffb3a5; }
 
 /* ---- Home ------------------------------------------------------------------------ */
 
-.home { font-family: var(--sans); }
+.home { width: 100%; font-family: var(--sans); }
 .home section { max-width: var(--frame); margin: 0 auto; padding-left: var(--gutter); padding-right: var(--gutter); }
 .hero {
   display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr); gap: 64px; align-items: center;
@@ -589,20 +589,42 @@ pre.code .x { color: #ffb3a5; }
   .token__stage { padding: 20px; }
 }
 
-/* ---- Footer ----------------------------------------------------------------------- */
+/* ---- Footer -----------------------------------------------------------------------
+   Three aligned columns of plain, vertical links (never a wrapping run of them), and
+   a base line. The site's pages and the repository's documents are separate lists,
+   and the documents are named as documents, so "Architecture" is never two things. */
 
-.foot { border-top: 1px solid var(--rule); background: var(--sunk); font-family: var(--sans); }
+.foot { margin-top: auto; border-top: 1px solid var(--rule); background: var(--sunk); font-family: var(--sans); }
 .foot__in {
-  max-width: var(--frame); margin: 0 auto; padding: 40px var(--gutter) 48px;
-  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 32px;
-  color: var(--muted); font-size: 0.9rem;
+  max-width: var(--frame); margin: 0 auto; padding: 48px var(--gutter) 36px;
+  display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 1fr); gap: 40px 48px;
 }
-.foot__brand p { margin: 0 0 6px; max-width: 52ch; }
-.foot__links { display: flex; flex-wrap: wrap; gap: 8px 20px; align-content: start; max-width: 520px; }
-.foot__links p { width: 100%; margin: 0 0 4px; color: var(--ink); font-weight: 650; }
-.foot__links a { color: var(--muted); }
-.foot__links a:hover { color: var(--lapis); }
-@media (max-width: 760px) { .foot__in { grid-template-columns: minmax(0, 1fr); } }
+.foot__about .brand { margin-bottom: 14px; }
+.foot__about p { margin: 0; max-width: 40ch; color: var(--muted); font-size: 0.93rem; line-height: 1.6; }
+.foot__col { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.foot__head { margin: 0 0 8px; color: var(--ink); font-size: 0.88rem; font-weight: 650; }
+.foot__col a {
+  padding: 4px 0; color: var(--muted); font-size: 0.93rem; line-height: 1.4; text-decoration: none;
+}
+.foot__col a:hover { color: var(--lapis); text-decoration: underline; }
+.foot__col a[aria-current="page"] { color: var(--ink); font-weight: 600; }
+.foot__base {
+  max-width: var(--frame); margin: 0 auto; padding: 18px var(--gutter) 28px;
+  display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 24px;
+  color: var(--faint); font-size: 0.84rem;
+  /* The dividing rule is painted inside the gutters, so it starts and ends on the
+     same edges as the columns above it rather than overhanging them. */
+  background: linear-gradient(var(--rule), var(--rule)) no-repeat var(--gutter) 0 / calc(100% - 2 * var(--gutter)) 1px;
+}
+.foot__base p { margin: 0; }
+@media (max-width: 860px) {
+  .foot__in { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .foot__about { grid-column: 1 / -1; }
+}
+@media (max-width: 480px) {
+  .foot__in { grid-template-columns: minmax(0, 1fr); gap: 32px; }
+  .foot__base { flex-direction: column; }
+}
 
 /* ---- Search -------------------------------------------------------------------------- */
 

@@ -590,8 +590,10 @@ static uint32_t sd_set_clock(uint64_t bar, uint32_t khz) {
     return base_khz / (2u * div);
 }
 
-/* The card holds DAT0 low while it is busy (after CMD6, which has an R1b
- * response). Bounded like every wait here. */
+/* The card holds DAT0 low while it is busy: after CMD6, which has an R1b
+ * response, and while it programs data it has accepted (sd_flush). Bounded like
+ * every wait here, at sixteen times the command bound, because programming may
+ * take hundreds of milliseconds where a register answers in microseconds. */
 static int sd_wait_dat0(uint64_t bar) {
     for (uint32_t i = 0; i < 16u * SDHCI_SPINS; i++)
         if (sdhci_read32(bar, SDHCI_PRESENT_STATE) & (1u << 20)) return 0;
@@ -1026,10 +1028,14 @@ static int sd_write_block(uint64_t bar, uint64_t lba, const void *buf, int is_hc
 
 /* Wait until the card has finished programming everything already accepted.
  *
- * A card signals internal programming by holding DAT0 low, which the controller
- * reports as the data line being inhibited. Waiting for that to clear is what
- * "the write is on stable media" means for this device -- there is no separate
- * cache-flush command in the SD protocol the way ATA has one.
+ * Two conditions, both required: the controller has no transfer of its own
+ * still running (PSTATE_DAT_INHIBIT clear), and the card has released DAT0
+ * (sd_wait_dat0), which it holds low while it programs. Until 2026-09-25 only
+ * the first was checked, on the assumption that the controller reports a busy
+ * card as an inhibited data line; the laptop showed it does not (below).
+ * Waiting for both is what "the write is on stable media" means for this
+ * device -- there is no separate cache-flush command in the SD protocol the way
+ * ATA has one.
  *
  * It returns a STATUS rather than void: raw_block_flush treats a backend that
  * cannot flush as a failure rather than a no-op, deliberately, so that a new
@@ -1050,12 +1056,28 @@ static int sd_flush(uint64_t bar) {
     return 0;
 #else
     for (uint32_t i = 0; ; i++) {
-        if ((sdhci_read32(bar, SDHCI_PRESENT_STATE) & PSTATE_DAT_INHIBIT) == 0) return 0;
+        if ((sdhci_read32(bar, SDHCI_PRESENT_STATE) & PSTATE_DAT_INHIBIT) == 0) break;
         if (i >= SDHCI_SPINS) {
-            sd_rw_failed(bar, "flush: card still busy", 1, 0, 0, 0);
+            sd_rw_failed(bar, "flush: controller still transferring", 1, 0, 0, 0);
             return -1;
         }
     }
+    /* THE INHIBIT BIT IS THE CONTROLLER'S, NOT THE CARD'S. It says the host has
+     * no transfer of its own running; it does not say the card has finished
+     * programming what it accepted. A programming card holds DAT0 low, and the
+     * level of DAT0 itself is the only place the host sees that (the bit Linux's
+     * sdhci_card_busy reads). On the IdeaPad 1 14IGL05 (2026-09-24) the present
+     * state read ps=1fef0206 after writes: inhibit clear, DAT[3:0] = 1110, DAT0
+     * still low. Until 2026-09-25 this flush returned there, so the barrier the
+     * journal relies on for durability could report "on the medium" while the
+     * card was still writing it. QEMU's sd-card completes every write
+     * synchronously, so no emulated gate can see the difference (see
+     * SDHCI_WRITE_NO_FLUSH in docs/BUILDING.md). */
+    if (sd_wait_dat0(bar) != 0) {
+        sd_rw_failed(bar, "flush: card still busy", 1, 0, 0, 0);
+        return -1;
+    }
+    return 0;
 #endif
 }
 

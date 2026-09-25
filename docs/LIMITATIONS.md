@@ -3157,7 +3157,12 @@ old allocator and the new one read the same single block and no workload could t
   reached by neither `ata.c` nor `ahci.c`, and since 2026-09-07 it **reads blocks** (`CMD17` by
   PIO), verified against known bytes at two blocks on both a byte-addressed and a block-addressed
   card, and since 2026-09-07 **writes** them too (`CMD24` plus a flush that waits out the card's
-  programming state), verified from the host rather than only from the guest.
+  programming state), verified from the host rather than only from the guest. Since 2026-09-25
+  the flush reads the card's own DAT0 line rather than trusting the controller's data-inhibit
+  bit, which the laptop showed clear while its eMMC was still programming. No emulated gate can
+  witness that wait: QEMU's `sd-card` finishes every write before the driver looks, so the arm
+  that removes it (`SDHCI_WRITE_NO_FLUSH`) passes every gate, and durability across a power cut
+  on real hardware rests on the code and the laptop's register reading, not on a test.
   **Since 2026-09-08 it is mountable and installable onto.** The card is registered as a
   `block_device` beside the ATA drives, the survey enumerates it, and the installer formats it:
   `make smoke-installer-sd` drives a whole install onto a card, power-cycles the machine and logs

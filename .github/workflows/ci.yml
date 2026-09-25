@@ -967,6 +967,13 @@ jobs:
       # a bounded window rather than reading a refusal off a timeout.
       - name: Control arm — the console server does not read the keyboard
         run: make smoke-keyboard-control
+      # An idle prompt must sleep: console_server blocks on IRQ 1 and the tick,
+      # so QEMU's own CPU time at the login prompt stays well under a core, and
+      # the keyboard and COM1 both still wake it. The arm is the yield loop.
+      - name: An idle console prompt sleeps, and both inputs still wake it
+        run: make smoke-console-idle
+      - name: Control arm — a console that spins at an idle prompt is caught
+        run: make smoke-console-idle-control
       # THE ALT+F2 KERNEL LOG, an instrument (KLOG_CONSOLE=1) for a machine with
       # no serial port whose install failed where nobody could log in. The first
       # step proves it opens, scrolls, and gives the console back intact; the

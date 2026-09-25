@@ -555,18 +555,17 @@ static int serial_rx_ready(void) {
  * CAP_IO_DEVICE names and the same declaration that gives us COM1 and the VGA
  * register file. The SYS_IOPORT_GRANT in _start therefore already opened the TSS
  * I/O bitmap for them: this code adds two `inb`s to a grant we hold, and adds
- * nothing to what we are allowed to touch. The alternative -- SYS_IRQ_REGISTER
- * on IRQ 1 -- would have required a CAP_NOTIFICATION init does not grant us and
- * that we would never wait on, so it would have been a new delegation existing
- * only for a side effect in the kernel's interrupt handler. See the vector-33
- * note in src/kernel/idt.c for the other end of the handover.
+ * nothing to what we are allowed to touch. Since 2026-09-25 IRQ 1 is also
+ * routed to a notification of ours so that waiting for a key does not spin (see
+ * con_idle); that is the one capability added, and the vector-33 note in
+ * src/kernel/idt.c describes the kernel's end.
  *
- * POLLED, NOT INTERRUPT-DRIVEN, and the cost is one byte. The 8042 holds exactly
- * one byte and stops raising IRQ 1 until it is read, so a keystroke waits for us
- * rather than being lost -- but only one does. A burst typed while we are
- * servicing a write loses everything after the first character. That is
- * acceptable for a console at a prompt and would not be for a game; the fix when
- * it matters is the notification bridge, which irqtest already proves works.
+ * READ WHEN WE LOOK, and the cost is one byte. The interrupt only wakes us; the
+ * byte is still read here, from the port. The 8042 holds exactly one byte and
+ * stops raising IRQ 1 until it is read, so a keystroke waits for us rather than
+ * being lost -- but only one does. A burst typed while we are servicing a write
+ * loses everything after the first character. That is acceptable for a console
+ * at a prompt and would not be for a game.
  *
  * AUX BYTES ARE DROPPED, NOT TRANSLATED. Status bit 5 means the byte came from
  * the second PS/2 port -- a mouse. Nothing here speaks mouse, and feeding mouse
@@ -593,6 +592,7 @@ static const char *kbd_pending;
 
 #ifdef KLOG_CONSOLE
 static void klog_view(void);
+static void con_idle(void);
 static unsigned char kbd_lalt;    /* LEFT alt; right alt is kbd.altgr */
 #endif
 
@@ -833,7 +833,7 @@ static void klog_view(void) {
 
     for (;;) {
         uint8_t st = inb(PS2_STATUS);
-        if (!(st & PS2_STATUS_OBF)) { sys_yield(); continue; }
+        if (!(st & PS2_STATUS_OBF)) { con_idle(); continue; }
         uint8_t sc = inb(PS2_DATA);
         if (st & PS2_STATUS_AUX) continue;
 
@@ -882,9 +882,10 @@ static void klog_view(void) {
 /* ---- input ----------------------------------------------------------------- */
 /* Read one console character. Serial RX is polled (the COM1 line-status data-ready
  * bit, then the data register) exactly as the in-kernel console_getc does — this
- * is what the headless system and the tests drive. When nothing is ready we yield
- * the CPU rather than busy-spin, so the (preemptible, ring-3) wait does not starve
- * the rest of the system the way the old unpreemptible ring-0 console read did.
+ * is what the headless system and the tests drive. When nothing is ready we sleep
+ * until the keyboard's interrupt or the next tick (con_idle), so the wait neither
+ * starves the rest of the system, as the old unpreemptible ring-0 console read
+ * did, nor keeps a core busy, as the sys_yield loop after it did.
  *
  * BOTH INPUTS ARE POLLED, and a machine normally has only one of them in use.
  * Serial first because it is what every test and every headless boot drives, and
@@ -923,6 +924,64 @@ static char con_trygetc(void) {
  * nothing is consumed. */
 #define CON_ESC_TRIES 64
 
+/* WAITING FOR INPUT WITHOUT SPINNING (2026-09-25).
+ *
+ * Until then every wait for a key was a loop of sys_yield, and a console at a
+ * prompt waits for a key nearly all the time. Measured under QEMU at the login
+ * prompt: the guest kept one host core at 100%, and on the laptop the kernel
+ * counted about 70,000 yields a second. A task that yields is still RUNNABLE, so
+ * it competed for every scheduling decision it had no work for.
+ *
+ * Now the server blocks in SYS_WAIT_NOTIFY on a notification of its own, and two
+ * interrupts end the wait: IRQ 1, the keyboard, so a key is read the moment it
+ * arrives; and IRQ 0, the 100 Hz tick, because COM1's line is not one this
+ * server's device declares, so serial input is still found by looking, now at
+ * most 10 ms late rather than immediately, and because a machine whose IRQ 1
+ * never fires (the case PS2_PROBE exists to find) must still have a keyboard.
+ * The tick makes the worst case a 10 ms poll rather than a dead keyboard.
+ *
+ * NO AUTHORITY IS ADDED BEYOND THE NOTIFICATION. Both lines are declared by the
+ * platform device this server's CAP_IO_DEVICE already names (pci.c), and
+ * SYS_IRQ_REGISTER refuses a line the device does not declare (S43). The
+ * notification is one init retypes from its own untyped memory and grants to
+ * this server alone. Without it (a build where the retype or grant failed) the
+ * registration is refused and con_idle falls back to yielding, which is slower
+ * and grants nothing. The mode is announced on the wire so a gate can tell. */
+#define CON_NOTIFY_SLOT   CAPSLOT_NOTIFY
+#define CON_BADGE_KBD     0x1u
+#define CON_BADGE_TICK    0x2u
+static int g_input_waits;          /* 1 once both lines are routed to our notification */
+
+static void con_input_setup(void) {
+#ifdef CONSOLE_INPUT_SPIN
+    /* DEFECT -- never ship. The server before 2026-09-25: it never registers, so
+     * every wait for input is a sys_yield loop. The arm for smoke-console-idle. */
+    ser_puts("[console_server] input: polled (CONSOLE_INPUT_SPIN)\n");
+    return;
+#endif
+    if (sys_irq_register(CAPSLOT_IO_DEVICE, 1, CON_NOTIFY_SLOT, CON_BADGE_KBD) == 0 &&
+        sys_irq_register(CAPSLOT_IO_DEVICE, 0, CON_NOTIFY_SLOT, CON_BADGE_TICK) == 0) {
+        g_input_waits = 1;
+        ser_puts("[console_server] input: waits on IRQ 1 and the tick\n");
+    } else {
+        ser_puts("[console_server] input: polled (no notification to wait on)\n");
+    }
+}
+
+/* Nothing to read yet: sleep until the keyboard or the tick says to look again.
+ * A badge that arrived while we were busy is still pending, so a key pressed
+ * between the look and this call wakes it at once rather than being missed. */
+static void con_idle(void) {
+    if (g_input_waits) {
+        uint32_t badge;
+        if (sys_wait_notify(CON_NOTIFY_SLOT, &badge) == 0) return;
+        /* A refusal is permanent (the capability is gone): stop waiting on it
+         * rather than turning every wait into a failed syscall. */
+        g_input_waits = 0;
+    }
+    sys_yield();
+}
+
 static void con_swallow_escape(void) {
     for (int tries = 0; tries < CON_ESC_TRIES; tries++) {
         char c = con_trygetc();
@@ -941,7 +1000,7 @@ static char con_getc(void) {
             return (char)inb(COM1);
         char k = ps2_poll();               /* the machine's own keyboard */
         if (k) return k;
-        sys_yield();
+        con_idle();
     }
 }
 
@@ -1546,6 +1605,8 @@ display_ready:
         vga_pos = resume < VGA_CELLS ? resume : 0;
 #endif
     }
+
+    con_input_setup();
 
     /* From here on the console output is ours, produced entirely in ring 3. */
     ser_puts(fbp ? "[console_server] ready (ring-3; owns serial + a linear framebuffer)\n"

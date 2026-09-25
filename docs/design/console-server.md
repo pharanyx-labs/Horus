@@ -20,21 +20,26 @@ each job behaviour-verified with a gated smoke test:
 | J3 | Per-task TSS I/O-permission bitmap, native ring-3 port I/O | `smoke-ioport` |
 | J4 | IRQ→notification bridge (`SYS_IRQ_REGISTER`) | `smoke-irq` |
 | J4b | **The keyboard itself, read from ring 3** (2026-09-11) | `smoke-keyboard` |
+| J4c | **Waiting for input sleeps** on IRQ 1 and the tick instead of spinning (2026-09-25) | `smoke-console-idle` |
 | J5a | `console_server` owns the hardware, serves a client over IPC | `smoke-console` |
 | J5b | The real shell's **output** routed through the ring-3 console | `smoke-session`, `smoke-modules` |
 | J5c | Console **input** (line editing, echo, password masking) moved to ring 3 | `smoke-session` |
 | J6 | Blast-radius proof, a console fault is contained in ring 3 | `smoke-console-isolation` |
 
-J4b closed the one item this document had left deliberately unbuilt, and it closed it without
-the notification bridge J4 built. `console_server` polls ports `0x60`/`0x64` inside the same
-`con_getc` loop that polls COM1, under the port grant it already held, the platform device
-declares those ports beside COM1 and the VGA register file, so no new capability was
-delegated. `SYS_IRQ_REGISTER` would have required a `CAP_NOTIFICATION` `init` does not grant
-and that the server would never wait on, so it was rejected as a delegation existing only for
-a side effect. What makes the kernel let go is `console_hw_owned()` in vector 33: the same
-predicate that already stops `print()` driving the screen now stops ring 0 draining the
-controller (**S89**). The bridge J4 built is still the right answer when a driver needs to
-sleep rather than poll, and `userspace/irqtest.c` still proves it works end to end.
+J4b closed the one item this document had left deliberately unbuilt. `console_server` reads
+ports `0x60`/`0x64` inside the same `con_getc` loop that reads COM1, under the port grant it
+already held: the platform device declares those ports beside COM1 and the VGA register file.
+What makes the kernel let go is `console_hw_owned()` in vector 33: the same predicate that
+already stops `print()` driving the screen now stops ring 0 draining the controller (**S89**).
+
+J4c uses the bridge J4 built. Until 2026-09-25 the loop waited with `sys_yield`, and a console
+at a prompt waits nearly all the time, so an idle machine kept a core busy (100% of a host core
+under QEMU). Now `init` retypes one `CAP_NOTIFICATION` from its own untyped memory and grants it
+to `console_server`, which routes IRQ 1 and IRQ 0 (the tick) to it with `SYS_IRQ_REGISTER` and
+sleeps in `SYS_WAIT_NOTIFY` (`con_idle`). Both lines are declared by the platform device. The
+tick is there for COM1, whose line the device does not declare, and for a machine whose IRQ 1
+never fires, where it turns a dead keyboard into a 10 ms poll. The interrupt only wakes the
+server; the byte is still read from the port.
 
 The remaining deliberate item is the in-kernel console, retained as a robustness fallback and
 for coreutils output, boot, and panic: see the notes inline. It is also the reader that
@@ -166,9 +171,10 @@ path.
   for the registered driver. The driver then reads the scancode itself via native
   `inb(0x60)` (§3.2). The PS/2 output buffer stays full until `0x60` is read, which
   naturally gates the next IRQ, so no scancode is lost and no spurious IRQ races.
-- **Serial input** is polled today (COM1 has no IRQ). The driver polls `0x3FD`/`0x3F8`
-  natively; a timer-driven wake (routing the PIT tick, or a periodic notification)
-  lets it re-poll each ~10 ms tick; the same latency the current polled path has.
+- **Serial input** has no routed IRQ (the platform device does not declare COM1's line).
+  The driver reads `0x3FD`/`0x3F8` natively each time it wakes, and it routes the tick
+  (IRQ 0) to the same notification as IRQ 1, so it looks at COM1 at least every ~10 ms
+  (J4c).
 - **Interrupt-context safety** must be confirmed: `sys_notify` only patches a saved
   frame and sets state under `ipc_lock`, with no reschedule, so it is safe in shape
   to call from the IRQ handler, to be validated under `SMP=1`.

@@ -621,6 +621,12 @@ in this file.
 
 ### Fixed
 
+- **A flush on an SD card or eMMC could return while the card was still writing.** The flush
+  waited only for the controller's data-inhibit bit, and a laptop's eMMC left that clear while it
+  was still programming. It now also waits for the card to release its DAT0 line, so the journal's
+  barriers mean the data is on the medium. QEMU finishes every write at once, so no emulated test
+  can show the difference; `docs/LIMITATIONS.md` says so.
+
 - **An idle console prompt kept a core busy.** The console server waited for each key by
   yielding the CPU in a loop, and a console at a prompt waits nearly all the time: under QEMU the
   machine used a whole host core at the login prompt, and on a two-core laptop that competed with

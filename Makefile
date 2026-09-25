@@ -1919,7 +1919,9 @@ endif
 # reason: the emulator does not enforce what the hardware requires.
 #
 # Kept because a real card DOES hold DAT0 low while programming, and the day this
-# driver is asked to survive a power cut the flag is the arm for it.
+# driver is asked to survive a power cut the flag is the arm for it. Since
+# 2026-09-25 sd_flush reads DAT0 itself, not only the controller's inhibit bit,
+# which the IdeaPad's eMMC left clear while it was still programming.
 SDHCI_WRITE_NO_FLUSH ?= 0
 
 # SDHCI_NO_LOCK=1 is the SD/eMMC driver before 2026-09-24: no sdhci_lock, so on

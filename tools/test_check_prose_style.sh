@@ -11,11 +11,11 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PASSES=0; FAILS=0
 
 mktree () {
-  mkdir -p "$1/tools" "$1/rust" "$1/site"
+  mkdir -p "$1/tools" "$1/rust"
   cp "$ROOT/tools/check_prose_style.py" "$1/tools/"
   cp "$ROOT"/{README.md,SECURITY.md,TESTS.md,CHANGES.md,CONTRIBUTING.md} "$1/"
   cp "$ROOT/rust/KANI.md" "$1/rust/"
-  cp "$ROOT/site/index.html" "$1/site/"
+  cp -r "$ROOT/site-src" "$1/"
   cp -r "$ROOT/docs" "$1/"
 }
 
@@ -61,7 +61,7 @@ arm "1" "an em dash in README prose" \
 
 # ---- RULE 2: the entity, which renders as the same dash on the website.
 arm "2" "an &mdash; entity in the website's prose" \
-    "sed -i 's#</body>#<p>Small \&mdash; smaller.</p></body>#' site/index.html" \
+    "sed -i 's#</body>#<p>Small \&mdash; smaller.</p></body>#' site-src/layout.html" \
     caught "rule 2"
 
 # ---- RULE 3: the ASCII stand-in, mid-line and at the end of a line. The sweep's
@@ -114,7 +114,7 @@ arm "8e" "an American identifier in a code span" \
     "add docs/ARCHITECTURE.md 'See \`storage_authorize_format\` and \`color\`.'" \
     clean
 arm "8f" "CSS 'color' in the website's style element" \
-    "sed -i 's#</style>#p { color: red; }</style>#' site/index.html" \
+    "sed -i 's#</head>#<style>p { color: red; }</style></head>#' site-src/layout.html" \
     clean
 arm "8g" "a cell of two code spans and a comma is not a mangled dash" \
     "add docs/SYSCALLS.md \$'| a | b |\n|---|---|\n| 1 | \`x\`, \`y\` |'" \

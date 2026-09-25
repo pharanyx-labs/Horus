@@ -1,0 +1,280 @@
+<!--page {"title": "Why Horus", "nav": "Why Horus", "order": 1, "layout": "doc", "description": "Why a kernel built around tokens rather than identities, explained with no operating-systems background assumed.", "lede": "Most security failures are not clever. They are ordinary software that was trusted with far more than its job needed. This page explains the idea Horus is built on, and why it changes what an attacker can reach."} -->
+<section class="part" aria-labelledby="what">
+<h2 id="what" data-toc="The problem">Most of what can compromise your machine is not the kernel's job.</h2>
+<div class="prose">
+  <p class="lead">
+    The kernel is the one program on a computer that hardware trusts completely. Code
+    running there can read any memory, touch any device, and change any protection the
+    machine offers. Everything else on the system runs at the mercy of that trust.
+  </p>
+  <p>
+    The trouble is what conventional systems put inside that boundary. Linux and Windows
+    place tens of millions of lines in it: every filesystem, the network stack, the
+    graphics driver, the driver for a webcam you plugged in once. A single memory-safety
+    bug anywhere in that mass is not a bug in a driver; it is total control of the
+    machine. The privileged code is enormous, so the thing you must trust is enormous.
+  </p>
+  <p>
+    A <strong>microkernel</strong> attacks that directly by making the privileged part
+    small and moving everything else out. In Horus, the filesystem is a normal program
+    called <code>fs_server</code>. The console and serial driver is a normal program
+    called <code>console_server</code>. They have no special powers; they run in the same
+    unprivileged mode as the shell. A memory-safety bug in the filesystem server
+    compromises the filesystem server, not the machine.
+  </p>
+  <p>
+    That leaves a question conventional systems answer badly: if the filesystem is just
+    another program, what stops <em>any</em> program from impersonating it, or from
+    reading its traffic? The answer is the second idea, and the one Horus is built
+    around.
+  </p>
+</div>
+
+<div class="pair">
+  <div class="pair--a">
+    <h4>How a conventional system decides</h4>
+    <p class="q">"Is this caller allowed to do this?"</p>
+    <p>
+      The kernel receives a request, looks up who the caller is, and consults a table of
+      rules, user IDs, group membership, file modes, whether the caller is
+      <code>root</code>. Authority is <em>ambient</em>: it comes from your identity, and
+      it applies to everything you name.
+    </p>
+    <p>
+      Every privileged operation therefore needs its own correct check, and the checks
+      are scattered across the whole kernel. Forgetting one is a vulnerability, and no
+      one can enumerate what a program is able to do without reading all of them.
+    </p>
+  </div>
+  <div class="pair--b">
+    <h4>How Horus decides</h4>
+    <p class="q">"Does this caller hold the token for this?"</p>
+    <p>
+      A program's power is the list of <strong>capabilities</strong> it holds, tokens
+      the kernel issued, each naming exactly one object and exactly one set of rights
+      over it. The kernel keeps them; a program refers to one only by its slot number,
+      so it cannot forge, guess, or widen one.
+    </p>
+    <p>
+      There is no identity to consult and nothing to forget to check: a program either
+      holds the token or it does not. What it can do is a list you can print, and
+      authority spreads only when something deliberately hands a token over.
+    </p>
+  </div>
+</div>
+
+<p class="note">
+  Horus takes a third position too, on how the kernel is written. The C kernel is about
+  23,000 lines; the code that parses untrusted bytes or enforces an algebraic security
+  property is 6,200 lines of memory-safe <code>no_std</code> Rust linked into it; ELF
+  parsing and relocation, the capability algebra, the cryptographic primitives, the
+  CSPRNG, the pointer and range validators. That split is argued empirically rather than
+  aesthetically: <strong>moving the ELF loader into Rust uncovered two real
+  out-of-bounds bugs in the C original.</strong>
+</p>
+</section>
+
+<section class="part" aria-labelledby="capability">
+<h2 id="capability" data-toc="Capabilities">A capability can be passed on, but it can never grow.</h2>
+<div class="prose">
+  <p>
+    A capability in Horus is a small record the kernel owns:
+    <code>{type, rights, object, badge, serial, generation}</code>. It lives in a
+    per-task <em>capability space</em> of 256 slots, and userspace only ever sees the
+    slot number. That indirection is the whole reason it cannot be forged; there is no
+    struct in your address space to modify and no name to guess.
+  </p>
+  <p>
+    Six fields, and a C assignment writes them one at a time, which is why every write
+    to a slot is made under one lock. Revocation reads <em>every</em> task's capability
+    space and decides from what it finds which capabilities a revoke reaches and which
+    kernel objects nothing names any more; an unlocked writer can show that sweep a slot
+    whose type is already set while its object still describes the slot's previous
+    occupant. On 2026-09-12 five writes were found that did not take the lock, thirteen
+    days after the same defect had been diagnosed and fixed at a sixth site. Which
+    functions write a capability slot, and what makes each write safe, is now
+    <em>declared</em> in a manifest a CI job checks. One site does not take the lock and
+    is exempt by a written argument instead, and the guards that argument leans on,
+    which live in other files, are pinned in the manifest so the exemption cannot quietly
+    expire when one of them is edited.
+  </p>
+  <p>
+    A capability naming the right object is only half of it: the object has to be the
+    one the design says it is. Every task here is born holding exactly one endpoint
+    capability, to a reply endpoint that is supposed to be private to it. On 2026-09-12 that
+    turned out to hold for task ids below 64 and not above them: the table was sized 128
+    while the region it was meant to contain ran to 320, and the index space's own dividing
+    line sat at the table's end, so a high-numbered task's &ldquo;private&rdquo;
+    endpoint resolved to one carved out of another task's memory. The table's size is now
+    derived from the task ceiling rather than written next to it, and three separate guards
+    fail the build, refuse the index, or reduce the task count if that ever stops being
+    true.
+  </p>
+  <p>
+    The example below is not an illustration; it is how the shell actually reaches the
+    filesystem. Step through it.
+  </p>
+</div>
+
+<div class="walk" id="walk" data-step="1">
+  <div class="walk__stage">
+    <svg viewBox="0 0 780 268" role="img" aria-labelledby="walk-t walk-d">
+      <title id="walk-t">How a capability is delegated, narrowed, refused, and revoked</title>
+      <desc id="walk-d">init holds a read-write capability to the filesystem server's endpoint. It mints a write-only child capability into the shell's capability space. When the shell attempts to receive on that capability, the kernel returns SYS_ERR_PERM because the read right is absent. When init revokes its capability, the shell's derived capability is nulled along with it.</desc>
+
+      <g font-family="ui-monospace, SF Mono, DejaVu Sans Mono, monospace" font-size="12">
+
+        <!-- the object -->
+        <rect x="516" y="94" width="244" height="80" rx="3" fill="#dee2e7" style="fill:var(--c-dee2e7, #dee2e7);stroke:var(--c-0f1418, #0f1418)" stroke="#0f1418" stroke-width="1.4"/>
+        <text x="538" y="122" fill="#0f1418" style="fill:var(--c-0f1418, #0f1418)" font-size="12.5" font-weight="600">fs_server endpoint</text>
+        <text x="538" y="142" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="11">a kernel object; the only way</text>
+        <text x="538" y="158" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="11">to reach the filesystem</text>
+
+        <!-- init -->
+        <rect x="20" y="24" width="196" height="66" rx="3" fill="#f2f4f6" style="fill:var(--c-f2f4f6, #f2f4f6);stroke:var(--c-0f1418, #0f1418)" stroke="#0f1418" stroke-width="1.4"/>
+        <text x="38" y="50" fill="#0f1418" style="fill:var(--c-0f1418, #0f1418)" font-size="12.5" font-weight="600">init</text>
+        <text x="38" y="70" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="11">the delegation root, PID 1</text>
+
+        <!-- shell -->
+        <rect x="20" y="178" width="196" height="66" rx="3" fill="#f2f4f6" style="fill:var(--c-f2f4f6, #f2f4f6);stroke:var(--c-0f1418, #0f1418)" stroke="#0f1418" stroke-width="1.4"/>
+        <text x="38" y="204" fill="#0f1418" style="fill:var(--c-0f1418, #0f1418)" font-size="12.5" font-weight="600">shell</text>
+        <text x="38" y="224" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="11">what you type into</text>
+
+        <!-- init's capability -->
+        <g data-show="1 2 3 4">
+          <path d="M216 57 H360 Q380 57 380 77 V124 Q380 134 396 134 H512" fill="none" stroke="#12594a" style="stroke:var(--c-12594a, #12594a)" stroke-width="1.6"/>
+          <path d="M512 134 l-9 -4.5 v9 z" fill="#12594a" style="fill:var(--c-12594a, #12594a)"/>
+          <rect x="238" y="30" width="128" height="22" rx="2" fill="#d5e6e0" style="fill:var(--c-d5e6e0, #d5e6e0)"/>
+          <text x="248" y="45" fill="#12594a" style="fill:var(--c-12594a, #12594a)" font-size="11" font-weight="600">READ | WRITE</text>
+          <text x="374" y="45" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="10.5">slot 6</text>
+        </g>
+
+        <!-- mint arrow -->
+        <g data-show="2 3 4">
+          <path d="M118 90 V178" fill="none" stroke="#5c6771" style="stroke:var(--c-5c6771, #5c6771)" stroke-width="1.3" stroke-dasharray="4 3"/>
+          <path d="M118 178 l-4.5 -9 h9 z" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)"/>
+          <rect x="128" y="118" width="132" height="34" rx="2" fill="#e8eaed" style="fill:var(--c-e8eaed, #e8eaed);stroke:var(--c-c3cad1, #c3cad1)" stroke="#c3cad1"/>
+          <text x="138" y="132" fill="#0f1418" style="fill:var(--c-0f1418, #0f1418)" font-size="10.5" font-weight="600">SYS_CAP_MINT</text>
+          <text x="138" y="146" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="10.5">rights &amp; WRITE</text>
+        </g>
+
+        <!-- shell's capability -->
+        <g data-show="2 3 4">
+          <path d="M216 211 H460 Q480 211 480 191 V154 Q480 144 496 144 H512" fill="none" stroke="#12594a" style="stroke:var(--c-12594a, #12594a)" stroke-width="1.6"/>
+          <path d="M512 144 l-9 -4.5 v9 z" fill="#12594a" style="fill:var(--c-12594a, #12594a)"/>
+          <rect x="286" y="184" width="86" height="22" rx="2" fill="#d5e6e0" style="fill:var(--c-d5e6e0, #d5e6e0)"/>
+          <text x="296" y="199" fill="#12594a" style="fill:var(--c-12594a, #12594a)" font-size="11" font-weight="600">WRITE</text>
+          <text x="380" y="199" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="10.5">slot 9, send only</text>
+        </g>
+
+        <!-- refusal -->
+        <g data-show="3">
+          <circle cx="480" cy="172" r="15" fill="#f2ded3" style="fill:var(--c-f2ded3, #f2ded3);stroke:var(--c-99330f, #99330f)" stroke="#99330f" stroke-width="1.5"/>
+          <path d="M474 166 l12 12 M486 166 l-12 12" stroke="#99330f" style="stroke:var(--c-99330f, #99330f)" stroke-width="1.8" stroke-linecap="round"/>
+          <rect x="300" y="232" width="272" height="24" rx="2" fill="#f2ded3" style="fill:var(--c-f2ded3, #f2ded3)"/>
+          <text x="310" y="248" fill="#99330f" style="fill:var(--c-99330f, #99330f)" font-size="11" font-weight="600">sys_ipc_recv(9) → SYS_ERR_PERM</text>
+        </g>
+
+        <!-- revoked: paint out both live wires in the panel colour, redraw
+             them dashed and grey, and replace each rights badge with CAP_NULL -->
+        <g data-show="4">
+          <path d="M216 57 H360 Q380 57 380 77 V124 Q380 134 396 134 H514" fill="none" stroke="#f2f4f6" style="stroke:var(--c-f2f4f6, #f2f4f6)" stroke-width="5"/>
+          <path d="M216 211 H460 Q480 211 480 191 V154 Q480 144 496 144 H514" fill="none" stroke="#f2f4f6" style="stroke:var(--c-f2f4f6, #f2f4f6)" stroke-width="5"/>
+          <rect x="498" y="125" width="16" height="18" fill="#f2f4f6" style="fill:var(--c-f2f4f6, #f2f4f6)"/>
+          <rect x="498" y="135" width="16" height="18" fill="#f2f4f6" style="fill:var(--c-f2f4f6, #f2f4f6)"/>
+          <path d="M216 57 H360 Q380 57 380 77 V124 Q380 134 396 134 H512" fill="none" stroke="#a2abb3" style="stroke:var(--c-a2abb3, #a2abb3)" stroke-width="1.3" stroke-dasharray="4 4"/>
+          <path d="M216 211 H460 Q480 211 480 191 V154 Q480 144 496 144 H512" fill="none" stroke="#a2abb3" style="stroke:var(--c-a2abb3, #a2abb3)" stroke-width="1.3" stroke-dasharray="4 4"/>
+
+          <rect x="230" y="26" width="200" height="28" fill="#f2f4f6" style="fill:var(--c-f2f4f6, #f2f4f6)"/>
+          <rect x="278" y="180" width="240" height="28" fill="#f2f4f6" style="fill:var(--c-f2f4f6, #f2f4f6)"/>
+          <rect x="238" y="30" width="128" height="22" rx="2" fill="#dee2e7" style="fill:var(--c-dee2e7, #dee2e7);stroke:var(--c-7a848d, #7a848d)" stroke="#7a848d" stroke-dasharray="3 2"/>
+          <text x="250" y="45" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="11" font-weight="600">CAP_NULL</text>
+          <rect x="286" y="184" width="128" height="22" rx="2" fill="#dee2e7" style="fill:var(--c-dee2e7, #dee2e7);stroke:var(--c-7a848d, #7a848d)" stroke="#7a848d" stroke-dasharray="3 2"/>
+          <text x="298" y="199" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="11" font-weight="600">CAP_NULL</text>
+          <rect x="300" y="232" width="308" height="24" rx="2" fill="#d5e6e0" style="fill:var(--c-d5e6e0, #d5e6e0)"/>
+          <text x="310" y="248" fill="#12594a" style="fill:var(--c-12594a, #12594a)" font-size="11" font-weight="600">SYS_CAP_REVOKE; the subtree, everywhere</text>
+        </g>
+      </g>
+    </svg>
+  </div>
+
+  <div class="walk__steps" role="group" aria-label="Walkthrough steps">
+    <button type="button" data-go="1" aria-current="true"><em>Step 1</em>A capability exists</button>
+    <button type="button" data-go="2"><em>Step 2</em>Delegation narrows it</button>
+    <button type="button" data-go="3"><em>Step 3</em>Overreach is refused</button>
+    <button type="button" data-go="4"><em>Step 4</em>Revocation is a subtree</button>
+  </div>
+
+  <div class="walk__note" aria-live="polite">
+    <div data-note="1">
+      <h4>init holds the endpoint, with both rights</h4>
+      <p>
+        When <code>init</code> starts the filesystem server, the kernel gives it a
+        capability naming that server's endpoint, carrying <code>READ</code> and
+        <code>WRITE</code>. Here <strong><code>READ</code> is the right to
+        <em>receive</em></strong>, the right that makes you the server rather than one
+        of its clients.
+      </p>
+      <p>
+        Nothing else in the system holds this. A program with no capability to the
+        endpoint cannot name it at all, which is a stronger statement than being denied
+        access to it.
+      </p>
+    </div>
+    <div data-note="2" hidden>
+      <h4>The shell gets a strictly weaker copy</h4>
+      <p>
+        <code>init</code> mints a child capability into the shell's capability space with
+        <code>rights &amp; WRITE</code>. The masking is the point: minting computes an
+        intersection, so a derived capability can only ever carry a <em>subset</em> of
+        the parent's rights.
+      </p>
+      <p>
+        Widening is not a policy the kernel declines to allow. It is an operation that
+        does not exist. There is no syscall that adds a right to a capability.
+      </p>
+    </div>
+    <div data-note="3" hidden>
+      <h4>The refusal happens before any handler runs</h4>
+      <p>
+        Suppose the shell tries to <em>receive</em> on its capability, an attempt to
+        read other clients' filesystem traffic, or to answer requests as though it were
+        the server. It calls <code>sys_ipc_recv(9)</code>.
+      </p>
+      <p>
+        The kernel looks up slot 9, finds a real capability of the right type, and checks
+        for the <code>READ</code> right. It is absent, so the call returns
+        <code>SYS_ERR_PERM</code> and the receive handler is never entered. Impersonating
+        the filesystem server is not blocked by a check somewhere; it is
+        <strong>unrepresentable</strong> with the token the shell holds.
+      </p>
+    </div>
+    <div data-note="4" hidden>
+      <h4>Taking authority back reaches everything derived from it</h4>
+      <p>
+        When <code>init</code> revokes its capability, the kernel nulls it <em>and
+        everything transitively minted from it</em>, sweeping every task's capability
+        space. The shell's slot 9 becomes <code>CAP_NULL</code>; it was not asked, and
+        it cannot decline.
+      </p>
+      <p>
+        Scope is exact: ancestors, siblings, and independent capabilities to the same
+        endpoint survive. Two mechanisms enforce it. The structural sweep walks the
+        derivation tree, and each capability's serial keys a generation counter bumped on
+        revoke, so even a stale copy that somehow escaped the sweep fails validation.
+        Both must hold; revocation carries Kani proofs that the subtree hit is exactly
+        right.
+      </p>
+    </div>
+  </div>
+</div>
+
+<p class="note">
+  This part of the system changed because an audit found it wanting. Until 2026-07-27,
+  IPC endpoints were addressed by a raw integer, so any program could intercept or forge
+  messages to any server; the diagram above described the design, not the code. That
+  finding (<strong>C-1</strong>) is fixed, and the conformance suite that missed it was
+  rebuilt and then <em>run against the vulnerable kernel</em> to prove it now detects the
+  bug.
+</p>
+</section>

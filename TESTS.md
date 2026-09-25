@@ -1616,10 +1616,10 @@ as a reproduction.
 
 ## CI
 
-`.github/workflows/ci.yml` defines **133** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **134** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below: **135** jobs, **138** contexts. Counts from `tools/check_ci_gating.py`, which prints
+below: **136** jobs, **139** contexts. Counts from `tools/check_ci_gating.py`, which prints
 them; do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20, a backstop, not a budget. The default is
@@ -1684,7 +1684,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The set is **134 gating contexts and 4 reasoned exemptions** (read off
+The set is **135 gating contexts and 4 reasoned exemptions** (read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence): `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
@@ -2111,9 +2111,20 @@ installs binutils and QEMU from the Ubuntu archive and nothing else. 87 of 101 j
 and an arm for the unmutated tree, because four "is it caught" arms are satisfied by a checker
 that rejects everything.
 
+**The website is built from its sources, its links resolve, and it loads nothing from another
+origin, gated since 2026-09-25.** The site is several pages built from `site-src/` into `site/` by
+`tools/build_site.py` (standard library only), and the built pages are committed so the site reads
+offline from a checkout. `tools/check_site.py` (required job `site`) holds four rules: `site/` is
+exactly a fresh build of `site-src/`, with no stray file; every internal link and `#anchor`
+resolves; no script, stylesheet, image, font, frame or CSS `url()` comes from another origin (plain
+outbound links are fine); and every page has one `h1`, a title and a description, and every page
+but the home page is in the navigation. `tools/test_check_site.sh` falsifies it with thirteen arms:
+ten planted defects, each caught under its own rule, and three silent directions (the site as it
+stands, an ordinary outbound link, the inline `data:` favicon).
+
 **The docs and the website carry no em dash and no listed American spelling, gated since
 2026-09-21.** `tools/check_prose_style.py` (required job `prose-style`) reads the documentation
-set CLAUDE.md names (`README.md`, `site/index.html`, everything under `docs/`, `SECURITY.md`,
+set CLAUDE.md names (`README.md`, the website's sources under `site-src/`, everything under `docs/`, `SECURITY.md`,
 `TESTS.md`, `CHANGES.md`, `CONTRIBUTING.md`, `rust/KANI.md`) and refuses six things in prose: the
 em dash character, its HTML entities, the spaced double hyphen, an en dash with whitespace beside
 it, a spelling from its American list, and a table cell holding only a comma (21 of those were

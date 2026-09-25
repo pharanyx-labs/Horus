@@ -1,0 +1,112 @@
+<!--page {"title": "Trusted boot", "nav": "Trusted boot", "order": 3, "layout": "doc", "description": "How Horus goes from firmware to a decrypted disk, and what each step refuses to trust.", "lede": "Five steps between the firmware and a mounted, decrypted disk. Nothing unverified becomes executable, and nothing tampered with can unlock the disk."} -->
+<section class="part" aria-labelledby="boot">
+<h2 id="boot" data-toc="The boot chain">Nothing unverified becomes executable, and nothing tampered with can unlock the disk.</h2>
+<div class="prose">
+  <p>
+    The capability model governs a running system. It says nothing about how that system
+    got there, which is a separate problem with a separate answer. Each step below is
+    tested by breaking it deliberately and asserting that the next step refuses.
+  </p>
+</div>
+
+<ol class="seq">
+  <li>
+    <div>
+      <h3>GRUB loads the kernel and the boot modules</h3>
+      <p>
+        A Multiboot2 handoff brings up a higher-half 64-bit kernel. The modules are the
+        userland: <code>init</code>, the two servers, the shell, coreutils, man pages.
+      </p>
+    </div>
+  </li>
+  <li>
+    <div>
+      <h3>The kernel checks every module against a manifest inside itself</h3>
+      <p>
+        A SHA-256 manifest of every module is generated at build time and compiled
+        <em>into the kernel image</em>, so it cannot be swapped alongside the payload it
+        describes. A module that fails its hash becomes unreadable, and because
+        installing a program into <code>/bin</code> goes through that same read path, an
+        unverified module can never become a root-owned executable.
+      </p>
+      <p class="falsified">
+        <b>Falsified by</b> <code>smoke-modules-tamper</code>, which corrupts a payload
+        inside the ISO and asserts the refusal.
+      </p>
+    </div>
+  </li>
+  <li>
+    <div>
+      <h3>The kernel is pinned, and the pin is measured</h3>
+      <p>
+        The kernel's SHA-256 is packed inside the boot image the firmware measures into
+        PCR 4, and GRUB refuses a kernel that does not match. A kernel-identity token goes
+        into PCR 8 and each module's digest into PCR 9, over the TIS interface; a host-side
+        script recomputes those independently and CI asserts they match. The volume key is
+        sealed to all three, PCR 4 being the one the kernel does not extend itself,
+        so the seal is not bound to the kernel's own word about itself.
+      </p>
+    </div>
+  </li>
+  <li>
+    <div>
+      <h3>The disk key is unsealed only if those measurements are right</h3>
+      <p>
+        The volume's key-encryption key is sealed to those PCRs under a
+        <code>PolicyPCR</code> session. A measured-good boot unseals it. Change the
+        kernel or any module and the PCRs change, so the TPM will not release the key and
+        the volume stays locked; the tamper is not detected after the fact, it is
+        prevented from mattering.
+      </p>
+      <p class="falsified">
+        <b>Falsified by</b> <code>smoke-tpm-tamper</code>, which asserts the PCRs
+        diverge, and <code>smoke-tpm-seal</code>, which asserts the volume stays locked.
+      </p>
+    </div>
+  </li>
+  <li>
+    <div>
+      <h3>And a disk that was never sealed cannot satisfy a machine that requires it</h3>
+      <p>
+        The reverse of the property above, and the one with the downgrade in it. A
+        volume formatted on a machine with no TPM opens on its password alone, forever,
+        so presenting a re-formatted drive to a machine that requires measured
+        boot would make the requirement evaporate, with the TPM present, the PCRs
+        extended and nothing else out of place. A kernel built with
+        <code>MEASURED_BOOT_REQUIRED=1</code> refuses to unlock it. The ephemeral RAM
+        volume is exempt, because its key is generated each boot and discarded at
+        power-off: there is nothing there for a measurement to protect.
+      </p>
+      <p class="falsified">
+        <b>Falsified by</b> <code>smoke-measured-persist-control</code>, which deletes
+        the refusal and requires the unsealed disk to unlock; the gate it extends,
+        <code>smoke-measured-persist</code>, formats a real disk on a machine with no TPM
+        and presents it to one that has. The opposite direction is
+        <code>smoke-measured-persist-sealed</code>, which requires a volume sealed under
+        the policy to open again on the next boot, without it, a check that
+        rejected every disk would pass.
+      </p>
+    </div>
+  </li>
+  <li>
+    <div>
+      <h3>init starts, and hands out every capability anything else will hold</h3>
+      <p>
+        <code>init</code> launches <code>fs_server</code>, endows it, resumes it, then
+        does the same for <code>console_server</code> and the shell. From this point the
+        capability graph is a complete description of who can do what, and it only ever
+        narrows.
+      </p>
+    </div>
+  </li>
+</ol>
+
+<p class="note">
+  One more link in the chain is worth naming because it is where most projects are
+  weakest. The single network dependency in the build (the newlib tarball) is pinned by
+  SHA-256, verified on every invocation rather than only after a fetch, refused
+  <em>before</em> unpacking, and quarantined rather than left in place when it fails.
+  <code>smoke-newlib-tamper</code> checks both directions, because a gate that refused
+  everything would pass the negative test alone.
+</p>
+</section>

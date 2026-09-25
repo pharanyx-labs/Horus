@@ -1,0 +1,163 @@
+<!--page {"title": "Horus, a capability-based microkernel", "nav": "Home", "order": 0, "layout": "home", "nav_hidden": true, "description": "Horus is an x86-64 microkernel in which no program has any power by default: every privileged action needs an unforgeable token the program was handed. Research-grade, adversarially tested, and candid about what is unfinished."} -->
+<main id="main" class="home">
+
+  <section class="hero" aria-labelledby="hero-title">
+    <div class="hero__text">
+      <p class="hero__tag">An operating-system kernel for x86-64, written in C and Rust</p>
+      <h1 id="hero-title" data-toc-skip>Authority is something you hold, not something you are.</h1>
+      <p class="hero__lede">
+        In Horus, no program has any power by default. Reading a file, talking to a
+        driver, creating anything in the kernel: each needs a specific, unforgeable token
+        that the program was deliberately handed. There is no <code>root</code> that opens
+        every door, and nothing is trusted because of who it claims to be.
+      </p>
+      <p class="hero__news">
+        <strong>Now installable.</strong> Horus installs onto a laptop's built-in eMMC
+        storage, the soldered flash many small laptops use, as well as onto IDE and ATA
+        disks. <a href="#install">What that involves</a>
+      </p>
+      <div class="actions">
+        <a class="btn btn--primary" href="why.html">Why Horus exists</a>
+        <a class="btn" href="run.html">Run it yourself</a>
+        <a class="btn btn--quiet" href="https://github.com/pharanyx-labs/Horus">Read the source</a>
+      </div>
+    </div>
+
+    <figure class="token" aria-labelledby="token-cap">
+      <div class="token__stage">
+        <div class="tok tok--parent">
+          <p class="tok__who"><code>init</code> holds</p>
+          <p class="tok__what">a token for the <code>fs_server</code> endpoint</p>
+          <ul class="tok__rights" aria-label="Rights">
+            <li class="on">READ</li><li class="on">WRITE</li>
+          </ul>
+        </div>
+        <div class="token__step token__step--mint">
+          <span>gives a narrowed copy</span>
+        </div>
+        <div class="tok tok--child">
+          <p class="tok__who">the <code>shell</code> holds</p>
+          <p class="tok__what">the same endpoint, fewer rights</p>
+          <ul class="tok__rights" aria-label="Rights">
+            <li class="off">READ</li><li class="on">WRITE</li>
+          </ul>
+        </div>
+        <div class="token__step token__step--deny">
+          <span>the shell tries to read</span>
+        </div>
+        <p class="token__verdict"><code>SYS_ERR_PERM</code> refused: the token it holds cannot do that</p>
+      </div>
+      <figcaption id="token-cap">
+        A real exchange from the running system. A token can be passed on with the same or
+        fewer rights, never more, and revoking the original revokes every copy made from it.
+        <a href="why.html#capability">Step through it</a>
+      </figcaption>
+    </figure>
+  </section>
+
+  <section class="gains" aria-labelledby="gains-title">
+    <h2 id="gains-title" data-toc-skip>What that changes</h2>
+    <p class="gains__intro">
+      When a program on an ordinary system is compromised, the attacker inherits everything
+      it was trusted with, which is usually a great deal. Horus is built so that the answer
+      is: only the tokens that program held.
+    </p>
+    <div class="gains__grid">
+      <article>
+        <h3 data-toc-skip>Nothing has power by default</h3>
+        <p>Every privileged action names the token that authorises it. A compromised program gets its own tokens and nothing else.</p>
+        <a href="why.html">How capabilities work</a>
+      </article>
+      <article>
+        <h3 data-toc-skip>Failures stay contained</h3>
+        <p>The filesystem and the console run as ordinary unprivileged programs, outside the kernel. A bug in one crashes that program, not the machine.</p>
+        <a href="architecture.html">What runs where</a>
+      </article>
+      <article>
+        <h3 data-toc-skip>Your data is sealed</h3>
+        <p>The disk is encrypted, its key derived from your password with Argon2id, and the filesystem program never sees the key at all.</p>
+        <a href="architecture.html#architecture">Storage and keys</a>
+      </article>
+      <article>
+        <h3 data-toc-skip>Safe code where attackers aim</h3>
+        <p>The parsing of untrusted bytes is memory-safe Rust, and the kernel's rules about who may do what are proved with Kani.</p>
+        <a href="testing.html">How it is checked</a>
+      </article>
+      <article>
+        <h3 data-toc-skip>You can check what runs</h3>
+        <p>The kernel builds to the same bytes every time, and the boot chain is measured into the TPM before the disk will unlock.</p>
+        <a href="boot.html">The boot chain</a>
+      </article>
+      <article>
+        <h3 data-toc-skip>Claims come with proof</h3>
+        <p>Every security claim names the test that proves it, and each gate is checked by putting its bug back on purpose to see it fail.</p>
+        <a href="testing.html#method">The method</a>
+      </article>
+    </div>
+  </section>
+
+  <section class="install" id="install" aria-labelledby="install-title">
+    <h2 id="install-title" data-toc-skip>Install it on real hardware</h2>
+    <div class="install__grid">
+      <div>
+        <p class="install__lead">
+          Horus is no longer only something you boot in an emulator. Its installer writes a
+          working system onto a machine's own storage, encrypted by default, and the
+          machine then starts from it on its own.
+        </p>
+        <ul class="install__media">
+          <li><strong>eMMC</strong>, the flash chip soldered into many small laptops,
+            installed and booted on a Lenovo IdeaPad.</li>
+          <li><strong>IDE and ATA disks</strong>, including the virtual disks QEMU and
+            other emulators provide.</li>
+          <li><strong>Not yet: NVMe and SATA SSDs.</strong> A machine whose only disk is
+            one of those can run Horus live, but cannot install it.</li>
+        </ul>
+      </div>
+      <div class="install__why">
+        <h3 data-toc-skip>Why new kinds of disk come quickly</h3>
+        <p>
+          Everything Horus does with a disk is written once, above a small interface that
+          asks a driver for four things: read a block, write a block, fill a run of blocks,
+          and make writes durable. The encryption, the integrity checks, crash safety and
+          the filesystem sit above that line and are shared by every kind of storage.
+        </p>
+        <p>
+          So supporting a new kind of storage means writing one driver that answers those
+          four requests, not reworking the system. eMMC support arrived exactly that way,
+          and the same route is open for NVMe and SATA next.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section class="paths" aria-labelledby="paths-title">
+    <h2 id="paths-title" data-toc-skip>Where to start</h2>
+    <div class="paths__grid">
+      <a class="path" href="why.html">
+        <span class="path__who">New to how operating systems work</span>
+        <span class="path__go">Start with the idea, explained from the ground up</span>
+      </a>
+      <a class="path" href="architecture.html">
+        <span class="path__who">You build systems software</span>
+        <span class="path__go">Go straight to the syscall path and the kernel's design</span>
+      </a>
+      <a class="path" href="status.html">
+        <span class="path__who">Deciding whether to trust it</span>
+        <span class="path__go">See what works, what does not, and what proves each</span>
+      </a>
+    </div>
+  </section>
+
+  <section class="honest" aria-labelledby="honest-title">
+    <h2 id="honest-title" data-toc-skip>What it is not, yet</h2>
+    <p>
+      Horus is research-grade. It has not been independently audited, and it should not be
+      trusted with anything you cannot afford to lose. Its weaknesses are published in full,
+      beside its strengths, because a security project that hides them is not making a
+      security claim.
+    </p>
+    <a class="btn" href="limitations.html">Read the limitations</a>
+  </section>
+
+</main>

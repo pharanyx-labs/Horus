@@ -4,9 +4,9 @@ British English and use no em dashes, in any form.
 
 Fail the build if the prose of the documentation set breaks either rule.
 
-The set is the one section 3 names as documentation: README.md, site/index.html,
-everything under docs/, SECURITY.md, TESTS.md, CHANGES.md, CONTRIBUTING.md and
-rust/KANI.md. The rules were first written down as a request, and a request is
+The set is the one section 3 names as documentation: README.md, the website (its
+sources, in site-src/), everything under docs/, SECURITY.md, TESTS.md, CHANGES.md,
+CONTRIBUTING.md and rust/KANI.md. The rules were first written down as a request, and a request is
 what the tree ignored: by 2026-09-21 the set carried over two thousand dashes.
 A rule that only a reviewer remembers is a rule that comes back, so this checker
 is what keeps them out.
@@ -44,7 +44,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 TOP_LEVEL = ("README.md", "SECURITY.md", "TESTS.md", "CHANGES.md",
-             "CONTRIBUTING.md", "rust/KANI.md", "site/index.html")
+             "CONTRIBUTING.md", "rust/KANI.md", "site-src/layout.html")
 
 # American stem or word -> the British spelling to use. Matched as a whole word,
 # ignoring case. An entry ending in `*` also matches any suffix, so `authoriz*`
@@ -113,6 +113,10 @@ def doc_set(root):
     files = [root / f for f in TOP_LEVEL if (root / f).is_file()]
     files += sorted(p for p in (root / "docs").rglob("*")
                     if p.is_file() and p.suffix in (".md", ".html"))
+    # The website's SOURCES, not the built site/: every word on it is written in
+    # site-src/, so a finding points at the line to fix, and site/ is held to
+    # being exactly their build by tools/check_site.py.
+    files += sorted((root / "site-src" / "pages").glob("*.html"))
     return files
 
 

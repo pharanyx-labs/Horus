@@ -3063,6 +3063,13 @@ jobs:
         run: make smoke-installer-sized
       - name: Control arm — the chosen size ignored, the whole disk laid over
         run: make smoke-installer-sized-control
+      # A failed install says why on the SCREEN. The disk refuses every write
+      # (blkdebug), and the installer must show the whole reason and wait; the arm
+      # is the old exit, which left a laptop's operator with nothing to read.
+      - name: A failed install shows the whole reason on the screen, and waits
+        run: make smoke-installer-failed
+      - name: Control arm — a failed install that exits without a screen
+        run: make smoke-installer-failed-control
       # An install without encryption, and both directions the choice can be lost:
       # dropped (the unsealed gate's arm) and imposed on an operator who chose
       # encryption (the ordinary install gate's arm, the dangerous one).

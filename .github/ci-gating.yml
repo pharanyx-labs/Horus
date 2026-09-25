@@ -79,6 +79,7 @@ required:
   # enforces is one that comes back. Added 2026-09-21; promotion lags the merge,
   # so --sync-ruleset runs after the PR that introduces it has merged.
   - prose-style
+  - site
   - reproducible
   - rust
   - security

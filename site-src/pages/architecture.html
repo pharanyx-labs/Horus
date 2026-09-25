@@ -1,0 +1,427 @@
+<!--page {"title": "Architecture", "nav": "Architecture", "order": 2, "layout": "doc", "description": "Where every request to the Horus kernel is checked, what the kernel contains, and what it leaves to ordinary programs.", "lede": "Where every request is checked, what the kernel itself contains, and what it deliberately leaves to ordinary, unprivileged programs."} -->
+<section class="part" aria-labelledby="anatomy">
+<h2 id="anatomy" data-toc="One choke point">Every syscall is authorised in the same place, before its handler runs.</h2>
+<div class="prose">
+  <p>
+    A security model is only worth as much as the code that enforces it. In Horus the
+    enforcement is not spread across handlers; each syscall <em>declares</em> the
+    capability it needs in a dispatch table, and one gate checks it before the handler
+    exists as far as the caller is concerned.
+  </p>
+  <p>
+    The ABI defines <strong>121 syscall numbers</strong>. The dispatch table is sized to
+    the highest of them plus one, and a default build installs <strong>101
+    handlers</strong>, the remainder are reserved, or are test-only calls compiled out
+    entirely. Every one of those gaps answers <code>SYS_ERR_NOSYS</code>. That difference
+    is the fail-closed property, not an oversight: a shipping kernel denies the debug
+    surface exists rather than merely declining to document it.
+  </p>
+  <p>
+    This is what a call actually passes through. Both exits on the left are refusals; a
+    handler runs only if nothing on the way out fired.
+  </p>
+</div>
+
+<figure class="fig">
+  <div class="fig__scroll" tabindex="0" role="group" aria-label="Diagram, scrolls horizontally">
+  <svg viewBox="0 0 780 300" role="img" aria-labelledby="anat-t anat-d">
+    <title id="anat-t">The syscall dispatch gate</title>
+    <desc id="anat-d">A syscall number arriving from ring 3 is checked against the table bounds and for an implemented handler; failing either returns SYS_ERR_NOSYS. If the table entry declares a required capability slot, the kernel looks it up with the required rights and checks its object type; failing either returns SYS_ERR_PERM. Only then does the handler run.</desc>
+    <g font-family="ui-monospace, SF Mono, DejaVu Sans Mono, monospace" font-size="11.5">
+
+      <rect x="24" y="20" width="230" height="46" rx="3" fill="#dee2e7" style="fill:var(--c-dee2e7, #dee2e7);stroke:var(--c-0f1418, #0f1418)" stroke="#0f1418" stroke-width="1.3"/>
+      <text x="42" y="41" fill="#0f1418" style="fill:var(--c-0f1418, #0f1418)" font-weight="600">syscall from ring 3</text>
+      <text x="42" y="57" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="10.5">number in rax, args in rdi…r9</text>
+
+      <path d="M139 66 V96" stroke="#0f1418" style="stroke:var(--c-0f1418, #0f1418)" stroke-width="1.3"/><path d="M139 96 l-4.5 -9 h9 z" fill="#0f1418" style="fill:var(--c-0f1418, #0f1418)"/>
+
+      <rect x="24" y="96" width="230" height="44" rx="3" fill="#f2f4f6" style="fill:var(--c-f2f4f6, #f2f4f6);stroke:var(--c-c3cad1, #c3cad1)" stroke="#c3cad1"/>
+      <text x="42" y="115" fill="#0f1418" style="fill:var(--c-0f1418, #0f1418)">num &lt; SYSCALL_TABLE_SIZE</text>
+      <text x="42" y="131" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="10.5">and a handler is installed?</text>
+
+      <path d="M254 118 H370" stroke="#99330f" style="stroke:var(--c-99330f, #99330f)" stroke-width="1.3" stroke-dasharray="4 3"/><path d="M370 118 l-9 -4.5 v9 z" fill="#99330f" style="fill:var(--c-99330f, #99330f)"/>
+      <rect x="376" y="103" width="200" height="30" rx="2" fill="#f2ded3" style="fill:var(--c-f2ded3, #f2ded3)"/>
+      <text x="390" y="123" fill="#99330f" style="fill:var(--c-99330f, #99330f)" font-weight="600">SYS_ERR_NOSYS</text>
+      <text x="590" y="118" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="10.5">unknown or reserved</text>
+      <text x="590" y="132" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="10.5">numbers fall through to</text>
+      <text x="590" y="146" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="10.5">nothing</text>
+
+      <path d="M139 140 V170" stroke="#0f1418" style="stroke:var(--c-0f1418, #0f1418)" stroke-width="1.3"/><path d="M139 170 l-4.5 -9 h9 z" fill="#0f1418" style="fill:var(--c-0f1418, #0f1418)"/>
+
+      <rect x="24" y="170" width="230" height="58" rx="3" fill="#f2f4f6" style="fill:var(--c-f2f4f6, #f2f4f6);stroke:var(--c-c3cad1, #c3cad1)" stroke="#c3cad1"/>
+      <text x="42" y="189" fill="#0f1418" style="fill:var(--c-0f1418, #0f1418)">cap_lookup(d-&gt;slot, d-&gt;rights)</text>
+      <text x="42" y="205" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="10.5">the slot and rights the table</text>
+      <text x="42" y="219" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="10.5">declares for this syscall</text>
+
+      <path d="M254 199 H370" stroke="#99330f" style="stroke:var(--c-99330f, #99330f)" stroke-width="1.3" stroke-dasharray="4 3"/><path d="M370 199 l-9 -4.5 v9 z" fill="#99330f" style="fill:var(--c-99330f, #99330f)"/>
+      <rect x="376" y="184" width="200" height="30" rx="2" fill="#f2ded3" style="fill:var(--c-f2ded3, #f2ded3)"/>
+      <text x="390" y="204" fill="#99330f" style="fill:var(--c-99330f, #99330f)" font-weight="600">SYS_ERR_PERM</text>
+      <text x="590" y="192" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="10.5">no capability, wrong</text>
+      <text x="590" y="206" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="10.5">rights, or wrong object</text>
+      <text x="590" y="220" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="10.5">type: one exit for all</text>
+
+      <path d="M139 228 V258" stroke="#12594a" style="stroke:var(--c-12594a, #12594a)" stroke-width="1.6"/><path d="M139 258 l-4.5 -9 h9 z" fill="#12594a" style="fill:var(--c-12594a, #12594a)"/>
+
+      <rect x="24" y="258" width="230" height="34" rx="3" fill="#d5e6e0" style="fill:var(--c-d5e6e0, #d5e6e0);stroke:var(--c-12594a, #12594a)" stroke="#12594a" stroke-width="1.3"/>
+      <text x="42" y="280" fill="#12594a" style="fill:var(--c-12594a, #12594a)" font-weight="600">d-&gt;fn(r); the handler runs</text>
+      <text x="278" y="280" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="10.5">handlers no longer repeat the check</text>
+    </g>
+  </svg>
+  </div>
+  <figcaption>
+    The gate as implemented in <code>syscall_handler()</code>. A compile-time assertion
+    ties the table's size to the highest syscall number plus one, so a new syscall number
+    cannot be added without a table entry; the build fails instead of the kernel
+    silently accepting an unauthorised call.
+  </figcaption>
+</figure>
+
+<h3>The servers get a matching guarantee on the other side</h3>
+<div class="prose">
+  <p>
+    The gate settles what a caller is <em>allowed</em> to do. It says nothing about who
+    the caller is, and a filesystem needs to know that, because POSIX permissions are
+    defined in terms of a user. Letting the client supply its own user ID would hand
+    every program the authority the permissions exist to withhold.
+  </p>
+  <p>
+    So a server never trusts what a client says about itself.
+    <code>SYS_IPC_SENDER</code> returns the user ID the <em>kernel</em> recorded for the
+    sender of a message, established only by a successful login and unforgeable by the
+    sender. <code>fs_server</code> authorises every file operation against that value
+    rather than against anything in the request, which is why the filesystem can enforce
+    rwx correctly while being an ordinary unprivileged program with no way to check
+    identity itself.
+  </p>
+</div>
+</section>
+
+<section class="part" aria-labelledby="architecture">
+<h2 id="architecture" data-toc="Inside the kernel">The kernel is the smallest thing that must be trusted.</h2>
+<div class="prose">
+  <p>
+    The kernel supplies address spaces, threads, capabilities, message passing, and an
+    encrypted block store whose keys it never releases. Everything a user would
+    recognise as "the operating system", file names, directories, permissions, terminal
+    behaviour, which program to load and how, lives outside it, in ordinary programs
+    reached over message passing.
+  </p>
+</div>
+
+<figure class="fig">
+  <div class="fig__scroll" tabindex="0" role="group" aria-label="Diagram, scrolls horizontally">
+  <svg viewBox="0 0 780 330" role="img" aria-labelledby="arch-t arch-d">
+    <title id="arch-t">The ring-3 / ring-0 split</title>
+    <desc id="arch-d">Ring 3 contains the shell, coreutils, TCC and user programs; init as the delegation root; and two servers, fs_server holding the filesystem reference monitor and console_server owning the UART and framebuffer. They reach ring 0 over capability-addressed IPC. Ring 0 contains the capability space per task, scheduler and SMP support, paging, the encrypted object store, TPM measured boot, and the no_std Rust security core.</desc>
+    <g font-family="ui-monospace, SF Mono, DejaVu Sans Mono, monospace" font-size="11.5">
+
+      <!-- ring 3 -->
+      <rect x="16" y="34" width="336" height="278" rx="3" fill="none" stroke="#c3cad1" style="stroke:var(--c-c3cad1, #c3cad1)" stroke-width="1.3"/>
+      <text x="16" y="24" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="10.5" letter-spacing="1.4">RING 3; UNPRIVILEGED</text>
+
+      <rect x="32" y="50" width="304" height="44" rx="2" fill="#f2f4f6" style="fill:var(--c-f2f4f6, #f2f4f6);stroke:var(--c-d6dbe1, #d6dbe1)" stroke="#d6dbe1"/>
+      <text x="48" y="70" fill="#0f1418" style="fill:var(--c-0f1418, #0f1418)" font-weight="600">shell · coreutils · tcc · your programs</text>
+      <text x="48" y="86" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="10.5">outside the trusted boundary by design</text>
+
+      <rect x="32" y="104" width="304" height="44" rx="2" fill="#f2f4f6" style="fill:var(--c-f2f4f6, #f2f4f6);stroke:var(--c-d6dbe1, #d6dbe1)" stroke="#d6dbe1"/>
+      <text x="48" y="124" fill="#0f1418" style="fill:var(--c-0f1418, #0f1418)" font-weight="600">init; the delegation root, PID 1</text>
+      <text x="48" y="140" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="10.5">every capability in the system starts here</text>
+
+      <rect x="32" y="158" width="146" height="138" rx="2" fill="#f2f4f6" style="fill:var(--c-f2f4f6, #f2f4f6);stroke:var(--c-12594a, #12594a)" stroke="#12594a" stroke-width="1.4"/>
+      <text x="46" y="180" fill="#12594a" style="fill:var(--c-12594a, #12594a)" font-weight="600">fs_server</text>
+      <text x="46" y="200" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="10.5">the filesystem,</text>
+      <text x="46" y="215" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="10.5">as a program</text>
+      <text x="46" y="238" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="10.5">POSIX rwx against</text>
+      <text x="46" y="253" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="10.5">kernel-attested uid</text>
+      <text x="46" y="276" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="10.5">never sees a key</text>
+
+      <rect x="190" y="158" width="146" height="138" rx="2" fill="#f2f4f6" style="fill:var(--c-f2f4f6, #f2f4f6);stroke:var(--c-12594a, #12594a)" stroke="#12594a" stroke-width="1.4"/>
+      <text x="204" y="180" fill="#12594a" style="fill:var(--c-12594a, #12594a)" font-weight="600">console_server</text>
+      <text x="204" y="200" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="10.5">the terminal driver,</text>
+      <text x="204" y="215" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="10.5">as a program</text>
+      <text x="204" y="238" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="10.5">owns the UART and</text>
+      <text x="204" y="253" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="10.5">VGA framebuffer</text>
+      <text x="204" y="276" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="10.5">single writer</text>
+
+      <!-- the boundary. The gap between the two rings is 72px, so this label
+           is centred and broken short rather than set as one run. -->
+      <path d="M354 172 H422" stroke="#0f1418" style="stroke:var(--c-0f1418, #0f1418)" stroke-width="1.5"/>
+      <path d="M354 172 l9 -4.5 v9 z" fill="#0f1418" style="fill:var(--c-0f1418, #0f1418)"/>
+      <path d="M422 172 l-9 -4.5 v9 z" fill="#0f1418" style="fill:var(--c-0f1418, #0f1418)"/>
+      <g text-anchor="middle" font-size="10.5">
+        <text x="388" y="160" fill="#0f1418" style="fill:var(--c-0f1418, #0f1418)" font-weight="600">IPC</text>
+        <text x="388" y="194" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)">every call</text>
+        <text x="388" y="208" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)">names a</text>
+        <text x="388" y="222" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)">slot</text>
+      </g>
+
+      <!-- ring 0 -->
+      <rect x="424" y="34" width="340" height="278" rx="3" fill="#dee2e7" style="fill:var(--c-dee2e7, #dee2e7);stroke:var(--c-0f1418, #0f1418)" stroke="#0f1418" stroke-width="1.4"/>
+      <text x="424" y="24" fill="#0f1418" style="fill:var(--c-0f1418, #0f1418)" font-size="10.5" letter-spacing="1.4">RING 0; THE TRUSTED BOUNDARY</text>
+
+      <text x="444" y="70" fill="#0f1418" style="fill:var(--c-0f1418, #0f1418)">capability space, per task</text>
+      <text x="444" y="94" fill="#0f1418" style="fill:var(--c-0f1418, #0f1418)">scheduler · preemption · SMP</text>
+      <text x="444" y="118" fill="#0f1418" style="fill:var(--c-0f1418, #0f1418)">paging · demand · copy-on-write</text>
+      <text x="444" y="142" fill="#0f1418" style="fill:var(--c-0f1418, #0f1418)">untyped memory and retyping</text>
+      <text x="444" y="166" fill="#0f1418" style="fill:var(--c-0f1418, #0f1418)">encrypted object store</text>
+      <text x="444" y="190" fill="#0f1418" style="fill:var(--c-0f1418, #0f1418)">TPM 2.0 measured boot</text>
+
+      <rect x="440" y="208" width="308" height="88" rx="2" fill="#f2f4f6" style="fill:var(--c-f2f4f6, #f2f4f6);stroke:var(--c-12594a, #12594a)" stroke="#12594a" stroke-width="1.4"/>
+      <text x="456" y="230" fill="#12594a" style="fill:var(--c-12594a, #12594a)" font-weight="600">no_std Rust security core</text>
+      <text x="456" y="252" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="10.5">ELF parsing and relocation · capability</text>
+      <text x="456" y="267" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="10.5">algebra · ChaCha20 · SHA-256 · BLAKE2b</text>
+      <text x="456" y="282" fill="#5c6771" style="fill:var(--c-5c6771, #5c6771)" font-size="10.5">AEAD · CSPRNG · forward-secure audit log</text>
+    </g>
+  </svg>
+  </div>
+  <figcaption>
+    The trusted computing base is the kernel plus three programs: <code>init</code>, which
+    is the source of all delegated authority; <code>fs_server</code>, which decides who
+    may read a file; and <code>console_server</code>, which sees all terminal traffic.
+    The shell, coreutils, TCC and every program you write are outside it.
+  </figcaption>
+</figure>
+
+<h3>What the kernel gives you, in one list</h3>
+<div class="cards cards--top">
+  <article>
+    <h3>Isolation</h3>
+    <p>
+      Per-task four-level page tables, demand paging, copy-on-write, non-executable
+      stacks, kernel W^X swept for violations at boot, unmapped stack guard pages, and
+      30-bit address-space randomisation for user programs. <code>fork</code> clones an
+      address space by marking it copy-on-write on <em>both</em> sides, mark only the
+      child's and the two tasks are one process sharing one stack.
+    </p>
+    <span class="witness">smoke-wx · smoke-cow · smoke-fork · smoke-forkexec · smoke-fpu · smoke-aslr</span>
+  </article>
+  <article>
+    <h3>Message passing</h3>
+    <p>
+      Synchronous send, receive, call and reply over bounded FIFO endpoints, plus
+      asynchronous notifications and byte-stream pipes. Replies use one-shot capabilities
+      naming the sender, so answering a client you never heard from is impossible rather
+      than merely refused.
+    </p>
+    <span class="witness">smoke-captest</span>
+  </article>
+  <article>
+    <h3>Memory as an authority</h3>
+    <p>
+      Kernel objects are carved out of <code>CAP_UNTYPED</code> regions with
+      <code>SYS_RETYPE</code>, following seL4. A task holding no untyped capability
+      cannot create a kernel object at all, and the region it holds bounds the kernel
+      memory it can consume.
+    </p>
+    <span class="witness">smoke-captest</span>
+  </article>
+  <article>
+    <h3>Multiprocessing</h3>
+    <p>
+      SMP is on by default: ACPI enumeration, AP bringup, a shared runnable pool,
+      acknowledged TLB-shootdown IPIs, and a microarchitectural flush when switching
+      between tasks that do not trust each other. SMT siblings are parked in software.
+    </p>
+    <span class="witness">smoke-smp · smoke-flush</span>
+  </article>
+  <article>
+    <h3>Storage the kernel keeps sealed</h3>
+    <p>
+      Each <code>(inode, block)</code> gets its own AEAD subkey with a fresh nonce per
+      write, under a Merkle rollback tree. The encryption happens entirely inside
+      the kernel; the ring-3 filesystem server never holds a key.
+    </p>
+    <p>
+      Those nonces used to live in a complete in-RAM mirror of the volume, under a flat
+      MAC recomputed over every one of them on each write, which is also why the
+      volume could not grow, since both scale with the disk. They live in a bounded cache
+      now, under a Merkle tree: a write touches four hashes instead of a megabyte, and
+      mounting checks one node instead of reading the whole region.
+    </p>
+    <p>
+      Two things are worth naming about that. A full mirror is <em>self-healing</em>
+      against a lost metadata write, because it holds every entry and can regenerate the
+      one that was lost; a bounded cache cannot, so the write-ahead log is now the only
+      thing keeping a block's nonce and its ciphertext in the same atomic unit. And the
+      tree catches <em>partial</em> rollback, a subtree rewound while the rest of
+      the volume moves on. On its own it could not catch the whole volume being replaced
+      with a consistent earlier snapshot, because its root lives in the superblock it
+      protects: rewind both together and every check inside the disk still passes. Nothing
+      on the disk can tell &ldquo;this volume&rdquo; from &ldquo;this volume, last
+      week&rdquo;.
+    </p>
+    <p>
+      So the anchor is somewhere the attacker holding the disk isn't: a TPM counter that
+      only goes up. The volume records the value it was last written at, bound into the
+      tree's root so it can't be edited, and a volume behind the counter is refused. The
+      test restores an entire earlier disk image between boots, the actual attack,
+      not a model of it, and requires the refusal. It applies to volumes formatted
+      on a machine that has a TPM, at a granularity of one boot; the volume records which
+      kind it is rather than leaving you to guess.
+    </p>
+    <p>
+      Both of those are what a 16 GiB volume needed: the mirror would have been 128 MiB
+      of static kernel memory against a 16 MiB budget, and the flat MAC would have hashed
+      a megabyte on every metadata write and read the whole region at every mount. A file
+      reaches 512 GiB now, so the disk is what you run into rather than the layout.</p>
+    <span class="witness">smoke-fs · smoke-meta-crash · smoke-merkle-replay</span>
+  </article>
+  <article>
+    <h3>Erasing a disk is its own authority</h3>
+    <p>
+      The kernel refuses to format a volume it does not recognise just because someone
+      typed a password at the login prompt, a mistyped password on a machine
+      whose disk it did not know used to destroy that disk, silently. Formatting became
+      a deliberate act instead, and for a while that act had <em>no caller at all</em>:
+      a refusal that is absolute because nothing can reach it is a weaker claim than one
+      that is deliberate.
+    </p>
+    <p>
+      It has a caller now, and the caller answers to a capability of its own.
+      <code>CAP_STORAGE_FORMAT</code> is held by <code>init</code> and passed to the
+      installer alone. It is deliberately <em>not</em> a permission bit on the storage
+      capability the filesystem server and the shell already hold: those are handed out
+      with every right there is, so defining the bit would have granted it to both, with
+      nothing in the diff to show for it. A separate capability fails closed where a new
+      bit inside &ldquo;all rights&rdquo; fails open.
+    </p>
+    <p>
+      The same capability answers the survey (what disk is here, how big, does it
+      already carry a volume) because that readout is the first screen of the same
+      act. A task that cannot destroy the volume is not told what is on it.
+    </p>
+    <p>
+      Since September 2026 that survey can count past one. The driver probes both devices
+      on the bus, each is a block device carrying its own identity rather than writing
+      through a global &ldquo;current disk&rdquo;, and the kernel mounts the first device
+      that actually <em>carries</em> a volume rather than simply the first device,
+      with one disk those are the same sentence, and with two they are not. Asking about a
+      device that is not there is refused rather than answered about a different one. That
+      last part is not politeness: a clamped index faults nothing and overruns nothing, it
+      hands back a complete and well-formed description of the wrong disk, to the one
+      program whose next act is erasing the disk it was just told about.
+    </p>
+    <p>
+      And the call that erases a disk now names the disk it erases. Not
+      &ldquo;choose the device&rdquo; followed by &ldquo;format it&rdquo;: that is a
+      confused deputy by construction, because the act that destroys would depend on a
+      global somebody else set, with any amount of anything in between. The target is an
+      argument, refused if it names no such device or one already carrying a mounted
+      volume.
+    </p>
+    <p>
+      Making that work meant finding two variables that had been standing in for the
+      target all along and were never noticed, because with one disk they were always
+      equal to it. The driver selected a drive and then waited for whichever drive was
+      selected <em>before</em>. Thirty-one places reached the disk through a global
+      &ldquo;current&rdquo; pointer while the format wrote through the device it had been
+      handed. Neither produced an error: the first simply stopped the machine
+      doing disk I/O at all. Both were found by the first test that ever wrote to the
+      second disk, which is the argument for having the test.
+    </p>
+    <p>
+      The caller is an installer, and it is the only task that gets a copy. It cannot read
+      the volume it replaces, and it cannot create a task, so nothing it does outlives it.
+      Before it erases anything you type the word <code>FORMAT</code>, not a
+      menu choice, because a menu whose default is Cancel still becomes a format with two
+      keystrokes, and somebody holding return through a wizard has not decided anything.
+    </p>
+    <p>
+      <strong>Install media may replace a volume that is already there</strong>, and what
+      makes that safe is a distinction rather than a relaxed gate. A volume the machine
+      merely <em>recognises</em> is mounted but locked, which is the state install
+      media is always in, because it never logs in. A volume that has been
+      <em>unlocked</em> means somebody proved they own the machine and is using it, and
+      the kernel refuses to reformat that one whatever the installer asks. Replacing is
+      also a different question to answer: the disk menu marks a disk that holds a volume,
+      and the last screen asks you to type <code>REPLACE</code> rather than
+      <code>FORMAT</code>, so consent to one is never consent to the other.
+    </p>
+    <p>
+      That word is the <em>last</em> thing it asks. It used to be the second: you consented,
+      then answered five more screens about passwords and account names, and by the time the
+      disk was erased the consent was about a machine state you could no longer see. Now the
+      installer shows what is at stake, collects every answer, shows them back on a review
+      screen you can correct any of, and only then asks for the word, with nothing
+      between it and the format.
+    </p>
+    <p>
+      The test installs onto a blank disk, powers the machine off, boots it again and logs
+      in with the password that was typed. That last step is the whole claim: a format
+      that returns success is not an install, and an installer that sealed the volume but
+      left the root account on its built-in password would produce a perfectly installed
+      disk nobody can log into, which the first boot cannot detect, because
+      everything it can see succeeded.
+    </p>
+    <p>
+      A second test powers the machine off <em>at the login prompt</em>, before anyone
+      types anything, and requires the boot after that to finish the install. That gap is
+      where an installed machine actually lives: the base system is copied into the store
+      when the volume unlocks, so an install nobody logs into leaves the copy unfinished,
+      and finishing it is the next boot's job. It was not being done. A sealed volume is
+      mounted and locked, and the object store answered anyway, the encryption
+      layer refused, because it needs the key, but the inode table is plaintext on disk
+      and nothing there refused at all. The filesystem server asks the store whether it
+      is usable, was told yes by a volume nobody had opened, copied into a locked disk
+      where every write failed, and recorded the job done. <code>/bin</code> was then
+      empty on that machine for good. The store now answers only an unlocked volume, in
+      one place rather than in eight handlers.
+    </p>
+    <p>
+      It asks for two passwords, not one. A machine whose only login is root is a machine
+      every session is administered from, so the install creates an everyday account
+      alongside it, and <em>either</em> password opens the disk at boot. That last
+      part was the missing piece rather than a convenience: the volume is sealed to key
+      slots, and the kernel unlocks it with the typed password <em>before</em> it can read
+      the account table, so an account without a slot of its own opens nothing and is not
+      found. It worked perfectly on a machine somebody else had already unlocked, which is
+      why nobody noticed, every test and every operator logs in as root first. The
+      test now logs in as the unprivileged account, on a machine nobody has opened.
+    </p>
+    <p>
+      The install also deletes the account the kernel compiles in. A fresh volume's account
+      table is seeded from that built-in image, so until this landed every installed
+      machine shipped a working login whose password is printed in the source. It is
+      replaced by the one you named.
+    </p>
+    <p>
+      A third checks who a password command actually writes. Creating an account and
+      giving it a password is the ordinary next thing an operator does, and the shell was
+      matching the account argument and then discarding it, so
+      <code>passwd 1001</code> reported success and changed the administrator's own
+      password instead. Not a cosmetic mis-print: changing your own password re-seals the
+      volume to it, so the string typed for somebody else became the disk's, and the only
+      place that showed was the next power-on, where the password chosen at install no
+      longer opened the machine. A malformed argument is now refused rather than quietly
+      treated as a request to change your own, and the reply names the account it wrote.
+    </p>
+    <p>
+      It installs onto a laptop's soldered eMMC, which is not the same disk as the one
+      every earlier test used. A budget machine's internal storage sits behind an SD host
+      controller that neither the IDE driver nor the SATA driver can reach, so an install
+      scenario that only ever attached IDE said nothing about the hardware the driver
+      exists for. Driving the whole install onto a card found two defects the driver's own
+      tests could not. The register file is memory-mapped, and the probe maps it into the
+      <em>kernel's</em> address space, but a syscall reaches the driver on the
+      calling program's, where it was not mapped at all, so the format wrote to a page
+      that was not there and the installer was killed. The second is quieter: the card
+      addresses 512-byte sectors and the filesystem addresses 4096-byte blocks, and the
+      first version handed one to the other unconverted. Block zero is sector zero either
+      way, so the volume header read back, the install reported success and the next boot
+      recognised the disk, and every other block came from an eighth of the right
+      place. What failed was the login, seconds later and a layer above the mistake. A
+      test that stopped at &ldquo;the volume is there&rdquo; would have passed on it.
+    </p>
+    <span class="witness">smoke-installer &middot; smoke-installer-replace &middot; smoke-replace-live &middot; smoke-installer-refuse &middot; smoke-installer-provision &middot; smoke-installer-accounts &middot; smoke-passwd-target &middot; smoke-captest &middot; smoke-storage-survey &middot; smoke-installer-sd</span>
+  </article>
+  <article>
+    <h3>A usable userland</h3>
+    <p>
+      newlib as the C library, a shell with pipelines over bounded in-kernel pipes,
+      eleven ported GNU coreutils, man pages, and the Tiny C Compiler, so you can
+      compile a program on the machine it runs on.
+    </p>
+    <span class="witness">smoke-coreutils-shell · smoke-tcc</span>
+  </article>
+</div>
+</section>

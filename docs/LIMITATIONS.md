@@ -3271,9 +3271,9 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 ~~Which tests gate a merge is reconciled by hand~~ (**FIXED 2026-09-21**) **[C-6]**
 
-**Closed.** `.github/workflows/ci.yml` defines **133** jobs, `codeql.yml` one more and
-`ruleset-audit.yml` one more: **135** across the three, producing **138** status-check contexts.
-**134** of them gate a merge, and ruleset `21815299` requires the two contexts that carry them
+**Closed.** `.github/workflows/ci.yml` defines **134** jobs, `codeql.yml` one more and
+`ruleset-audit.yml` one more: **136** across the three, producing **139** status-check contexts.
+**135** of them gate a merge, and ruleset `21815299` requires the two contexts that carry them
 all: **All required gates passed** (the `gates` job, which needs every required ci.yml job and
 passes only if each one succeeded, skipped and cancelled counting as failures) and CodeQL's
 `analyze`, which lives in its own workflow. The `ci-gating` job proves `gates` needs exactly the
@@ -3329,7 +3329,7 @@ the right name with the wrong verdict. Step-level `continue-on-error` is untouch
 allowed; it lets one step be advisory while the job's own status still reports the truth, which
 is how the `security` job keeps its scanners advisory without becoming unfailable itself.
 
-That set is **134 gating contexts and 4 reasoned exemptions**: `fuzz` (a 30-second
+That set is **135 gating contexts and 4 reasoned exemptions**: `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request),
 `smoke-smp-kvm` (a second run, under KVM, of gates already required under TCG, until its KVM pass rate is measured), and
@@ -4676,7 +4676,7 @@ so neither was ever presented to a contributor. There was no code of conduct, an
 the IPC authorisation logic. All fixed as of 2026-07-27; the `require_code_owner_review`
 setting that would make `CODEOWNERS` binding is still off (§5.1).
 
-*(Repository hygiene itself is fine: `git ls-files` reports **441** tracked files with no build
+*(Repository hygiene itself is fine: `git ls-files` reports **465** tracked files with no build
 artefacts or vendored binaries: no `kernel.elf`, no `horus.iso`, no object files. A working
 checkout accumulates ~70 MB of untracked build output, which is correctly `.gitignore`d. This
 sentence said 243 until 2026-08-15 and **254 until 2026-09-20**, by which point the tree had

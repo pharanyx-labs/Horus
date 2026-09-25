@@ -1,0 +1,119 @@
+<!--page {"title": "Run it", "nav": "Run it", "order": 7, "layout": "doc", "description": "Build Horus and boot it to a login prompt in a few minutes, or install it onto a laptop\u2019s eMMC or an ATA disk.", "lede": "From a clean checkout to a login prompt in two commands under QEMU, and from a USB stick onto a machine\u2019s own eMMC or ATA disk."} -->
+<section class="part" aria-labelledby="run">
+<h2 id="run" data-toc="Two commands">You can have this booting on your machine in a few minutes.</h2>
+<div class="prose">
+  <p>
+    An x86-64 Linux host, Debian or Ubuntu; no cross-compiler needed. This is what the
+    boot looks like, abridged for width, and with the microsecond timestamps stripped.
+    On a real boot <em>every</em> line above the banner carries one: including the
+    lines ring 3 printed, which is the half that used to go unstamped. The console changes
+    hands part way down that list, so both writers stamp, in one format, from one epoch.
+    The real log is readable afterwards with <code>dmesg</code>.
+  </p>
+  <p>
+    The banner is not a constant. Everything to the right of the eye is asked of the
+    running kernel when it prints: uptime, the tasks this caller may observe, the
+    shell&rsquo;s own pid and how many capabilities <code>init</code> chose to delegate to
+    it, and the watermark of the untyped region every <code>spawn</code> is carved out of.
+    Facts the shell holds no capability to ask for are left out rather than guessed at,
+    which is why there is no line here for RAM, CPUs or the disk.
+  </p>
+</div>
+
+<div class="term">
+  <div class="term__bar"><span>ttyS0, make run</span><span>abridged transcript</span></div>
+<pre class="term__body"><span class="d">  Booting `Horus 64-bit Secure Microkernel'</span>
+<span class="g">  [ OK ]</span> boot modules verified against the embedded manifest
+<span class="d">  smp: 8 cores online</span>
+kernel ready, starting init (PID 1)
+<span class="d">  [fs_server] userspace FS server starting (encrypted object store).</span>
+<span class="d">  [fs_server] registered; serving.</span>
+init: fs_server ready
+init: console_server launched
+<span class="d">  [console_server] ready (ring-3; owns serial + VGA framebuffer)</span>
+init: starting, launching shell
+
+<span class="b">       _.-------------._</span>            Horus Secure Microkernel
+<span class="b">    .-'                 `-.</span>         capability-based - privilege-separated
+<span class="b">  .'      _.-------._      `.</span>       --------------------------------------
+<span class="b"> /      .'           `.      \</span>      Arch       x86_64
+<span class="b">|      |     ( o )     |      |___</span>  Uptime     1.57s
+<span class="b"> \      `.           .'      /</span>      Tasks      5 visible
+<span class="b">  `.      `-._____.-'      .'</span>       Shell      pid 4, 7 capabilities
+<span class="b">    `-._               _.-'</span>         Untyped    24K of 3.5M used, 3 objects
+<span class="b">        `-.._______..-'</span>             Console    ring-3 server
+<span class="b">           |  \</span>
+<span class="b">           |   `--.__</span>
+<span class="b">           |__       _)</span>
+
+horus login: <span class="term__caret"></span></pre>
+</div>
+<p class="cap">
+  On the live boot, log in as <code>root</code> / <code>toor</code> (an installed
+  machine has only the accounts you created). Then try <code>ls /bin</code>,
+  <code>ps</code>, <code>dmesg</code>, <code>man hier</code>, <code>tcc -v</code>, or
+  <code>cat /etc/motd | wc -l</code>; the pipeline runs over a real bounded in-kernel
+  pipe.
+</p>
+
+<div class="cols2" style="margin-top:2rem">
+  <div>
+<pre class="code"><span class="c"># build and boot</span>
+<span class="p">$</span> rustup target add x86_64-unknown-none
+<span class="p">$</span> make              <span class="c"># kernel.elf</span>
+<span class="p">$</span> make run          <span class="c"># horus.iso + QEMU</span>
+            <span class="c"># Ctrl-A X quits</span>
+<span class="p">$</span> make run-tpm      <span class="c"># with an emulated TPM</span></pre>
+  </div>
+  <div>
+<pre class="code"><span class="c"># check the claims on this page</span>
+<span class="p">$</span> make smoke                 <span class="c"># boot to ring-3 login</span>
+<span class="p">$</span> make smoke-captest         <span class="c"># 195 capability checks</span>
+<span class="p">$</span> make smoke-modules-tamper  <span class="c"># <span class="x">expect a refusal</span></span>
+<span class="p">$</span> make smoke-tpm-seal        <span class="c"># <span class="x">expect a locked volume</span></span>
+<span class="p">$</span> make reproducible-build    <span class="c"># <span class="x">run twice, diff the record</span></span></pre>
+  </div>
+</div>
+
+<p class="note">
+  Every configuration flag, every one of the 410 test targets, and the troubleshooting
+  notes are in
+  <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
+  and
+  <a href="https://github.com/pharanyx-labs/Horus/blob/main/TESTS.md">TESTS.md</a>.
+</p>
+</section>
+
+<section class="part" aria-labelledby="install">
+<h2 id="install" data-toc="Installing">Install it onto a machine's own storage.</h2>
+<div class="prose">
+  <p class="lead">
+    The installer writes Horus onto a disk the machine can then boot from by itself. It
+    installs onto <strong>eMMC</strong>, the flash soldered into many small laptops (proved on
+    a Lenovo IdeaPad), and onto <strong>IDE and ATA disks</strong>. NVMe and SATA SSDs are not
+    supported yet.
+  </p>
+  <p>
+    Build the install image and write it to a USB stick. Use <code>install.iso</code>, not
+    <code>horus.iso</code>: only the install image has the boot menu.
+  </p>
+</div>
+<pre class="code"><span class="p">$</span> make install.iso
+<span class="p">$</span> sudo dd if=install.iso of=/dev/sdX bs=4M status=progress conv=fsync  <span class="c"># sdX, not sdX1</span></pre>
+<div class="prose">
+  <p>
+    Boot the machine from the stick. The menu's default is a <strong>live boot</strong>, which
+    changes nothing on the machine. Choose <strong>install</strong> to write Horus to the
+    internal disk: the installer asks for the accounts and their passwords, shows every answer
+    on a review screen, and erases nothing until you type the confirmation word. The volume is
+    encrypted unless you deliberately choose otherwise, and every later boot says which kind it
+    found.
+  </p>
+  <p class="note">
+    Supporting another kind of disk means writing one driver that reads and writes blocks.
+    The encryption, integrity checks, crash safety and filesystem above it are shared by every
+    kind of storage, so they do not change. The full procedure and its caveats are in
+    <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>.
+  </p>
+</div>
+</section>

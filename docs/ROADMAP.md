@@ -1723,7 +1723,7 @@ neither, in both, or names a job that no longer exists. No default, defaulting i
 caught CodeQL unclassified on its first run, which is the same omission class the finding
 describes.
 
-The gating set is **134 required, 4 exempted** (135 jobs, 138 contexts (re-derive it with
+The gating set is **135 required, 4 exempted** (136 jobs, 139 contexts (re-derive it with
 `tools/check_ci_gating.py`, never from this line)) `fuzz` (a 30-second time-boxed search is
 evidence of effort, not of absence), `kani` (manual-only, no conclusion to gate on),
 `ruleset-audit` (schedule-only, so it never runs on a pull request), and `smoke-smp-kvm` (a second run, under KVM, of gates already required under TCG, until its KVM pass rate is measured). `smoke-fs-wal` was an

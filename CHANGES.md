@@ -394,6 +394,18 @@ in this file.
 
 ### Added
 
+- **The website is eight pages instead of one, and it says Horus can be installed.** The single
+  2,800-line page is now a home page and seven topic pages (Why Horus, Architecture, Trusted boot,
+  Status, Testing, Limitations, Run it). Every page has a contents rail that follows your
+  position, previous and next links, a search over every heading (`/` or Ctrl+K), a proper menu
+  on phones, and light, dark and automatic themes. The Status table can be filtered by state,
+  and long rows fold. The home page and Run it say that Horus installs onto a laptop's eMMC and
+  onto IDE and ATA disks (not yet NVMe or SATA SSDs), and why a new kind of disk needs only a
+  driver. The pages are built from `site-src/` by `tools/build_site.py`, and the new required job
+  `site` fails if the built pages differ from their sources, a link or anchor is broken, or
+  anything loads from another origin. Still no CDN, webfont or analytics, and still readable
+  offline from a checkout.
+
 - **The website's mark is the Eye of Horus.** The favicon and the logo beside the name are now the
   wedjat (brow, eye, cosmetic line, tear marking and spiral), drawn to stay legible at 16 pixels.
   Both are still inline SVG, so the page continues to make no network request of any kind.

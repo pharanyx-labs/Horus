@@ -95,7 +95,7 @@ counts:
       # site/index.html said 73 here for as long as the count had been 89. It was
       # the only statement of this number that nothing derived, which is exactly
       # why it was the one that rotted -- and it is the PUBLIC one.
-      - file: site/index.html
+      - file: site-src/pages/limitations.html
         pattern: 'gating set is (\d+) checks with \d+ exempted'
 
   - id: advisory
@@ -108,7 +108,7 @@ counts:
         pattern: '\*\*\d+ gating contexts and (\d+) reasoned exemptions\*\*'
       - file: docs/ROADMAP.md
         pattern: '\*\*\d+ required, (\d+) exempted\*\*'
-      - file: site/index.html
+      - file: site-src/pages/limitations.html
         pattern: 'gating set is \d+ checks with (\d+) exempted'
 
 
@@ -135,13 +135,13 @@ counts:
       - file: docs/ROADMAP.md
         pattern: '\| (\d+) `smoke-\*` targets'
 
-      - file: site/index.html
+      - file: site-src/pages/run.html
         pattern: 'every one of the (\d+) test targets'
   - id: syscall_numbers
     describe: SYS_* numbers the ABI defines, implemented or not
     derive: syscall_numbers
     occurrences:
-      - file: site/index.html
+      - file: site-src/pages/architecture.html
         pattern: 'defines <strong>(\d+) syscall numbers'
   - id: auditprobe_checks
     describe: check() calls in userspace/auditprobe.c (the base build's count)
@@ -181,7 +181,7 @@ counts:
     describe: base gates — smoke-* targets that are not control arms
     derive: gates
     occurrences:
-      - file: site/index.html
+      - file: site-src/pages/testing.html
         pattern: '(\d+) QEMU integration targets'
   - id: control_arms
     describe: control-arm smoke targets that must reproduce a defect
@@ -200,7 +200,7 @@ counts:
         pattern: 'Currently \*\*(\d+) of \d+\*\* implemented syscalls'
       - file: docs/LIMITATIONS.md
         pattern: 'gated since: \*\*(\d+) of \d+\*\* implemented syscalls'
-      - file: site/index.html
+      - file: site-src/pages/limitations.html
         pattern: '<strong>(\d+) of \d+</strong> system calls'
 
   # The other half of those four ratios. Declared 2026-08-27, because it had
@@ -216,7 +216,7 @@ counts:
         pattern: 'The other (\d+) are listed in `\.github/syscall-coverage\.yml`'
       - file: docs/LIMITATIONS.md
         pattern: 'a defect in any of those (\d+) handlers'
-      - file: site/index.html
+      - file: site-src/pages/limitations.html
         pattern: 'The other (\d+) are each'
 
   # The DENOMINATOR of the four ratios above, which until 2026-08-22 was the
@@ -238,13 +238,13 @@ counts:
         pattern: 'Currently \*\*\d+ of (\d+)\*\* implemented syscalls'
       - file: docs/LIMITATIONS.md
         pattern: 'gated since: \*\*\d+ of (\d+)\*\* implemented syscalls'
-      - file: site/index.html
+      - file: site-src/pages/limitations.html
         pattern: '<strong>\d+ of (\d+)</strong> system calls'
       # site/index.html stated this denominator as a bare `76` from before
       # 2026-08-22, when the live value was 92 and nothing compared them. It sat
       # three paragraphs under a ratio that WAS gated, which is the same
       # half-gated shape `syscalls_uncovered` was declared for. Gated 2026-09-01.
-      - file: site/index.html
+      - file: site-src/pages/limitations.html
         pattern: 'classifies all (\d+) implemented syscalls'
 
   # frametest's parent-side checks, declared 2026-08-27 for the reason the entry
@@ -252,7 +252,7 @@ counts:
   # is quoted in SECURITY.md as the witness for S35. Read it off the wire
   # (`FRAMETEST: parent OK <n> checks`) -- this only proves the documents agree
   # with the source, not that the source ran.
-      - file: site/index.html
+      - file: site-src/pages/architecture.html
         pattern: 'installs <strong>(\d+)'
   - id: frametest_checks
     describe: parent-side check() assertions in userspace/frametest.c
@@ -275,7 +275,7 @@ counts:
         pattern: 'are all refused \((\d+) checks'
       - file: TESTS.md
         pattern: 'Capability conformance \((\d+) checks'
-      - file: site/index.html
+      - file: site-src/pages/run.html
         pattern: 'make smoke-captest\s+<span class="c"># (\d+) capability checks'
 
   - id: kani_harnesses

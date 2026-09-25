@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Horus: Trusted boot</title>
+<meta name="description" content="How Horus goes from firmware to a decrypted disk, and what each step refuses to trust.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f5f7fb" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0c1426" media="(prefers-color-scheme: dark)">
+<!-- The wedjat, the Eye of Horus, drawn for 16px. A data URI rather than a file:
+     nothing on this site is fetched that the page itself does not need. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231d3f9e'/%3E%3Cg fill='none' stroke='%23e8eaed' stroke-width='2.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4.5 7.6C10 4.2 19 4 27.5 6.8'/%3E%3Cpath d='M4.5 14.2C9 9.6 15 8.6 20.5 9.8C23.4 10.5 25.8 12 28.5 13.4'/%3E%3Cpath d='M4.5 14.2C9 17.8 15.5 18.4 22.5 14.4'/%3E%3Cpath d='M11.2 17.8L10.8 27.4'/%3E%3Cpath d='M18 17.2C18.6 22.6 21 26.4 24.6 26.4C27 26.4 28.2 24.6 27.7 23C27.2 21.4 25.3 20.9 24 21.9'/%3E%3C/g%3E%3Ccircle cx='14.2' cy='12.9' r='3.6' fill='%23e8eaed'/%3E%3C/svg%3E">
+<meta property="og:title" content="Horus: Trusted boot">
+<meta property="og:description" content="How Horus goes from firmware to a decrypted disk, and what each step refuses to trust.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Horus">
+<!-- Everything this site loads comes from this site. No CDN, no webfont, no
+     analytics: a page arguing about supply-chain provenance has no business pulling
+     bytes from other origins, and it must read the same offline, from a checkout.
+     tools/check_site.py enforces it. -->
+<link rel="stylesheet" href="assets/site.css">
+<script>
+  /* Apply a remembered theme before the first paint, so a dark-mode reader never
+     sees a flash of the light page. Storage can be unavailable; then the system
+     preference decides, which is also the default. */
+  try {
+    var t = localStorage.getItem("horus-theme");
+    if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+  } catch (e) {}
+</script>
+</head>
+<body class="page-boot">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="top">
+  <div class="top__in">
+    <a class="brand" href="index.html">
+      <svg class="brand__mark" width="28" height="28" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+          <g fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4.5 7.6C10 4.2 19 4 27.5 6.8"/>
+            <path d="M4.5 14.2C9 9.6 15 8.6 20.5 9.8C23.4 10.5 25.8 12 28.5 13.4"/>
+            <path d="M4.5 14.2C9 17.8 15.5 18.4 22.5 14.4"/>
+            <path d="M11.2 17.8L10.8 27.4"/>
+            <path d="M18 17.2C18.6 22.6 21 26.4 24.6 26.4C27 26.4 28.2 24.6 27.7 23C27.2 21.4 25.3 20.9 24 21.9"/>
+          </g>
+          <circle cx="14.2" cy="12.9" r="3.6" fill="currentColor"/>
+        </svg>
+      <span>Horus</span>
+    </a>
+    <nav class="primary" aria-label="Site">
+        <a href="why.html">Why Horus</a>
+        <a href="architecture.html">Architecture</a>
+        <a href="boot.html" aria-current="page">Trusted boot</a>
+        <a href="status.html">Status</a>
+        <a href="testing.html">Testing</a>
+        <a href="limitations.html">Limitations</a>
+        <a href="run.html">Run it</a>
+    </nav>
+    <div class="tools">
+      <button class="tool tool--search" type="button" data-search-open aria-keyshortcuts="Control+K /" aria-label="Search the site">
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.4 10.4 14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <span class="tool__label">Search</span><kbd>/</kbd>
+      </button>
+      <button class="tool tool--theme" type="button" data-theme-toggle aria-label="Colour theme: automatic" title="Colour theme: automatic">
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.4" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 2.6a5.4 5.4 0 0 1 0 10.8z" fill="currentColor"/></svg>
+      </button>
+      <a class="tool tool--source" href="https://github.com/pharanyx-labs/Horus">Source</a>
+      <details class="menu">
+        <summary class="tool" aria-label="Menu">
+          <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M2.5 5h13M2.5 9h13M2.5 13h13" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+          <span class="tool__label">Menu</span>
+        </summary>
+        <nav class="menu__panel" aria-label="Site">
+        <a href="why.html">Why Horus</a>
+        <a href="architecture.html">Architecture</a>
+        <a href="boot.html" aria-current="page">Trusted boot</a>
+        <a href="status.html">Status</a>
+        <a href="testing.html">Testing</a>
+        <a href="limitations.html">Limitations</a>
+        <a href="run.html">Run it</a>
+          <a href="https://github.com/pharanyx-labs/Horus">Source on GitHub</a>
+        </nav>
+      </details>
+    </div>
+  </div>
+</header>
+
+<div class="doc">
+  <aside class="toc" aria-labelledby="toc-title">
+    <p class="toc__title" id="toc-title">On this page</p>
+    <ol class="toc__list">
+<li><a href="#boot">The boot chain</a>
+<ol class="toc__sub">
+<li><a href="#grub-loads-the-kernel-and-the-boot-modules">GRUB loads the kernel and the boot modules</a></li>
+<li><a href="#the-kernel-checks-every-module-against-a-manifest-inside-its">The kernel checks every module against a manifest inside itself</a></li>
+<li><a href="#the-kernel-is-pinned-and-the-pin-is-measured">The kernel is pinned, and the pin is measured</a></li>
+<li><a href="#the-disk-key-is-unsealed-only-if-those-measurements-are-righ">The disk key is unsealed only if those measurements are right</a></li>
+<li><a href="#and-a-disk-that-was-never-sealed-cannot-satisfy-a-machine-th">And a disk that was never sealed cannot satisfy a machine that requires it</a></li>
+<li><a href="#init-starts-and-hands-out-every-capability-anything-else-wil">init starts, and hands out every capability anything else will hold</a></li>
+</ol>
+</li>
+</ol>
+  </aside>
+  <main id="main" class="doc__main">
+    <header class="doc__head">
+      <h1>Trusted boot</h1>
+      <p class="lede">Five steps between the firmware and a mounted, decrypted disk. Nothing unverified becomes executable, and nothing tampered with can unlock the disk.</p>
+    </header>
+<section class="part" aria-labelledby="boot">
+<h2 id="boot" data-toc="The boot chain">Nothing unverified becomes executable, and nothing tampered with can unlock the disk.</h2>
+<div class="prose">
+  <p>
+    The capability model governs a running system. It says nothing about how that system
+    got there, which is a separate problem with a separate answer. Each step below is
+    tested by breaking it deliberately and asserting that the next step refuses.
+  </p>
+</div>
+
+<ol class="seq">
+  <li>
+    <div>
+      <h3 id="grub-loads-the-kernel-and-the-boot-modules">GRUB loads the kernel and the boot modules</h3>
+      <p>
+        A Multiboot2 handoff brings up a higher-half 64-bit kernel. The modules are the
+        userland: <code>init</code>, the two servers, the shell, coreutils, man pages.
+      </p>
+    </div>
+  </li>
+  <li>
+    <div>
+      <h3 id="the-kernel-checks-every-module-against-a-manifest-inside-its">The kernel checks every module against a manifest inside itself</h3>
+      <p>
+        A SHA-256 manifest of every module is generated at build time and compiled
+        <em>into the kernel image</em>, so it cannot be swapped alongside the payload it
+        describes. A module that fails its hash becomes unreadable, and because
+        installing a program into <code>/bin</code> goes through that same read path, an
+        unverified module can never become a root-owned executable.
+      </p>
+      <p class="falsified">
+        <b>Falsified by</b> <code>smoke-modules-tamper</code>, which corrupts a payload
+        inside the ISO and asserts the refusal.
+      </p>
+    </div>
+  </li>
+  <li>
+    <div>
+      <h3 id="the-kernel-is-pinned-and-the-pin-is-measured">The kernel is pinned, and the pin is measured</h3>
+      <p>
+        The kernel's SHA-256 is packed inside the boot image the firmware measures into
+        PCR 4, and GRUB refuses a kernel that does not match. A kernel-identity token goes
+        into PCR 8 and each module's digest into PCR 9, over the TIS interface; a host-side
+        script recomputes those independently and CI asserts they match. The volume key is
+        sealed to all three, PCR 4 being the one the kernel does not extend itself,
+        so the seal is not bound to the kernel's own word about itself.
+      </p>
+    </div>
+  </li>
+  <li>
+    <div>
+      <h3 id="the-disk-key-is-unsealed-only-if-those-measurements-are-righ">The disk key is unsealed only if those measurements are right</h3>
+      <p>
+        The volume's key-encryption key is sealed to those PCRs under a
+        <code>PolicyPCR</code> session. A measured-good boot unseals it. Change the
+        kernel or any module and the PCRs change, so the TPM will not release the key and
+        the volume stays locked; the tamper is not detected after the fact, it is
+        prevented from mattering.
+      </p>
+      <p class="falsified">
+        <b>Falsified by</b> <code>smoke-tpm-tamper</code>, which asserts the PCRs
+        diverge, and <code>smoke-tpm-seal</code>, which asserts the volume stays locked.
+      </p>
+    </div>
+  </li>
+  <li>
+    <div>
+      <h3 id="and-a-disk-that-was-never-sealed-cannot-satisfy-a-machine-th">And a disk that was never sealed cannot satisfy a machine that requires it</h3>
+      <p>
+        The reverse of the property above, and the one with the downgrade in it. A
+        volume formatted on a machine with no TPM opens on its password alone, forever,
+        so presenting a re-formatted drive to a machine that requires measured
+        boot would make the requirement evaporate, with the TPM present, the PCRs
+        extended and nothing else out of place. A kernel built with
+        <code>MEASURED_BOOT_REQUIRED=1</code> refuses to unlock it. The ephemeral RAM
+        volume is exempt, because its key is generated each boot and discarded at
+        power-off: there is nothing there for a measurement to protect.
+      </p>
+      <p class="falsified">
+        <b>Falsified by</b> <code>smoke-measured-persist-control</code>, which deletes
+        the refusal and requires the unsealed disk to unlock; the gate it extends,
+        <code>smoke-measured-persist</code>, formats a real disk on a machine with no TPM
+        and presents it to one that has. The opposite direction is
+        <code>smoke-measured-persist-sealed</code>, which requires a volume sealed under
+        the policy to open again on the next boot, without it, a check that
+        rejected every disk would pass.
+      </p>
+    </div>
+  </li>
+  <li>
+    <div>
+      <h3 id="init-starts-and-hands-out-every-capability-anything-else-wil">init starts, and hands out every capability anything else will hold</h3>
+      <p>
+        <code>init</code> launches <code>fs_server</code>, endows it, resumes it, then
+        does the same for <code>console_server</code> and the shell. From this point the
+        capability graph is a complete description of who can do what, and it only ever
+        narrows.
+      </p>
+    </div>
+  </li>
+</ol>
+
+<p class="note">
+  One more link in the chain is worth naming because it is where most projects are
+  weakest. The single network dependency in the build (the newlib tarball) is pinned by
+  SHA-256, verified on every invocation rather than only after a fetch, refused
+  <em>before</em> unpacking, and quarantined rather than left in place when it fails.
+  <code>smoke-newlib-tamper</code> checks both directions, because a gate that refused
+  everything would pass the negative test alone.
+</p>
+</section>
+    <nav class="pager" aria-label="Previous and next page">
+<a class="pager__prev" href="architecture.html"><span>Previous</span>Architecture</a>
+<a class="pager__next" href="status.html"><span>Next</span>Status</a>
+</nav>
+  </main>
+</div>
+
+<footer class="foot">
+  <div class="foot__in">
+    <div class="foot__brand">
+      <p><strong>Horus</strong> is a capability-based microkernel for x86-64, MIT licensed, by Pharanyx Labs.</p>
+      <p>Research-grade: not audited, and not for anything you cannot afford to lose.</p>
+    </div>
+    <nav class="foot__links" aria-label="Documents in the repository">
+      <p>In the repository</p>
+      <a href="https://github.com/pharanyx-labs/Horus">Source</a>
+      <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/ARCHITECTURE.md">Architecture</a>
+      <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/SYSCALLS.md">System calls</a>
+      <a href="https://github.com/pharanyx-labs/Horus/blob/main/SECURITY.md">Security properties</a>
+      <a href="https://github.com/pharanyx-labs/Horus/blob/main/TESTS.md">Tests</a>
+      <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/LIMITATIONS.md">Limitations</a>
+      <a href="https://github.com/pharanyx-labs/Horus/blob/main/CHANGES.md">Changelog</a>
+    </nav>
+  </div>
+</footer>
+
+<dialog class="search" id="search" aria-labelledby="search-title">
+  <form method="dialog" class="search__box" role="search">
+    <label id="search-title" class="search__label" for="search-q">Search the site</label>
+    <input id="search-q" type="search" autocomplete="off" spellcheck="false" placeholder="Capabilities, boot, status, a test name">
+    <button class="search__close" value="close" aria-label="Close search">Esc</button>
+  </form>
+  <ol class="search__results" id="search-results" aria-live="polite"></ol>
+</dialog>
+
+<script src="assets/search-index.js"></script>
+<script src="assets/site.js"></script>
+</body>
+</html>

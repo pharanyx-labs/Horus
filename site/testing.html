@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Horus: How it is tested</title>
+<meta name="description" content="How the claims about Horus are established, and the times this project got that wrong.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f5f7fb" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0c1426" media="(prefers-color-scheme: dark)">
+<!-- The wedjat, the Eye of Horus, drawn for 16px. A data URI rather than a file:
+     nothing on this site is fetched that the page itself does not need. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231d3f9e'/%3E%3Cg fill='none' stroke='%23e8eaed' stroke-width='2.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4.5 7.6C10 4.2 19 4 27.5 6.8'/%3E%3Cpath d='M4.5 14.2C9 9.6 15 8.6 20.5 9.8C23.4 10.5 25.8 12 28.5 13.4'/%3E%3Cpath d='M4.5 14.2C9 17.8 15.5 18.4 22.5 14.4'/%3E%3Cpath d='M11.2 17.8L10.8 27.4'/%3E%3Cpath d='M18 17.2C18.6 22.6 21 26.4 24.6 26.4C27 26.4 28.2 24.6 27.7 23C27.2 21.4 25.3 20.9 24 21.9'/%3E%3C/g%3E%3Ccircle cx='14.2' cy='12.9' r='3.6' fill='%23e8eaed'/%3E%3C/svg%3E">
+<meta property="og:title" content="Horus: How it is tested">
+<meta property="og:description" content="How the claims about Horus are established, and the times this project got that wrong.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Horus">
+<!-- Everything this site loads comes from this site. No CDN, no webfont, no
+     analytics: a page arguing about supply-chain provenance has no business pulling
+     bytes from other origins, and it must read the same offline, from a checkout.
+     tools/check_site.py enforces it. -->
+<link rel="stylesheet" href="assets/site.css">
+<script>
+  /* Apply a remembered theme before the first paint, so a dark-mode reader never
+     sees a flash of the light page. Storage can be unavailable; then the system
+     preference decides, which is also the default. */
+  try {
+    var t = localStorage.getItem("horus-theme");
+    if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+  } catch (e) {}
+</script>
+</head>
+<body class="page-testing">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="top">
+  <div class="top__in">
+    <a class="brand" href="index.html">
+      <svg class="brand__mark" width="28" height="28" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+          <g fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4.5 7.6C10 4.2 19 4 27.5 6.8"/>
+            <path d="M4.5 14.2C9 9.6 15 8.6 20.5 9.8C23.4 10.5 25.8 12 28.5 13.4"/>
+            <path d="M4.5 14.2C9 17.8 15.5 18.4 22.5 14.4"/>
+            <path d="M11.2 17.8L10.8 27.4"/>
+            <path d="M18 17.2C18.6 22.6 21 26.4 24.6 26.4C27 26.4 28.2 24.6 27.7 23C27.2 21.4 25.3 20.9 24 21.9"/>
+          </g>
+          <circle cx="14.2" cy="12.9" r="3.6" fill="currentColor"/>
+        </svg>
+      <span>Horus</span>
+    </a>
+    <nav class="primary" aria-label="Site">
+        <a href="why.html">Why Horus</a>
+        <a href="architecture.html">Architecture</a>
+        <a href="boot.html">Trusted boot</a>
+        <a href="status.html">Status</a>
+        <a href="testing.html" aria-current="page">Testing</a>
+        <a href="limitations.html">Limitations</a>
+        <a href="run.html">Run it</a>
+    </nav>
+    <div class="tools">
+      <button class="tool tool--search" type="button" data-search-open aria-keyshortcuts="Control+K /" aria-label="Search the site">
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.4 10.4 14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <span class="tool__label">Search</span><kbd>/</kbd>
+      </button>
+      <button class="tool tool--theme" type="button" data-theme-toggle aria-label="Colour theme: automatic" title="Colour theme: automatic">
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.4" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 2.6a5.4 5.4 0 0 1 0 10.8z" fill="currentColor"/></svg>
+      </button>
+      <a class="tool tool--source" href="https://github.com/pharanyx-labs/Horus">Source</a>
+      <details class="menu">
+        <summary class="tool" aria-label="Menu">
+          <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M2.5 5h13M2.5 9h13M2.5 13h13" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+          <span class="tool__label">Menu</span>
+        </summary>
+        <nav class="menu__panel" aria-label="Site">
+        <a href="why.html">Why Horus</a>
+        <a href="architecture.html">Architecture</a>
+        <a href="boot.html">Trusted boot</a>
+        <a href="status.html">Status</a>
+        <a href="testing.html" aria-current="page">Testing</a>
+        <a href="limitations.html">Limitations</a>
+        <a href="run.html">Run it</a>
+          <a href="https://github.com/pharanyx-labs/Horus">Source on GitHub</a>
+        </nav>
+      </details>
+    </div>
+  </div>
+</header>
+
+<div class="doc">
+  <aside class="toc" aria-labelledby="toc-title">
+    <p class="toc__title" id="toc-title">On this page</p>
+    <ol class="toc__list">
+<li><a href="#method">Method</a>
+<ol class="toc__sub">
+<li><a href="#every-gate-is-falsified-before-it-is-trusted">Every gate is falsified before it is trusted</a></li>
+<li><a href="#and-every-claim-is-bound-to-a-gate-that-exists">And every claim is bound to a gate that exists</a></li>
+<li><a href="#a-single-green-run-says-nothing-about-a-concurrency-change">A single green run says nothing about a concurrency change</a></li>
+<li><a href="#flaky-is-a-hypothesis-not-a-diagnosis">&quot;Flaky&quot; is a hypothesis, not a diagnosis</a></li>
+</ol>
+</li>
+</ol>
+  </aside>
+  <main id="main" class="doc__main">
+    <header class="doc__head">
+      <h1>How it is tested</h1>
+      <p class="lede">How every claim on this site is established, and the several times this project got that wrong. A test that cannot fail on the bug it targets is not evidence.</p>
+    </header>
+<section class="part" aria-labelledby="method">
+<h2 id="method" data-toc="Method">A test that cannot fail on the bug it targets is not evidence.</h2>
+<div class="prose">
+  <p>
+    The security argument rests entirely on the tests, so they are treated as engineering
+    artifacts rather than an afterthought. There are three layers: Rust unit tests and
+    Kani proofs on the host; 197 QEMU integration targets that boot a purpose-built kernel
+    and assert a marker on the serial console; and scripted sessions that type into the
+    real ring-3 shell over serial and read what comes back.
+  </p>
+
+  <h3 id="every-gate-is-falsified-before-it-is-trusted">Every gate is falsified before it is trusted</h3>
+  <p>
+    The defect is deliberately reintroduced and the suite must go red. This is not
+    ceremony. The first draft of the capability conformance suite asserted
+    <code>&lt; 0</code> rather than an exact error code, and <em>passed with the
+    vulnerable IPC handler restored</em>, because <code>sys_ipc_recv</code> returns
+    <code>-2</code> for an empty mailbox, so a negative return could not distinguish "the
+    kernel refused me" from "I was allowed to read and there was nothing there". The
+    suite now asserts exact codes, and every new syscall ships with a negative test.
+  </p>
+  <p>
+    Falsification runs in both directions where it can. A refusal-only suite would be
+    passed by a kernel whose <code>SYS_RETYPE</code> denied everything unconditionally,
+    so the untyped-memory checks also assert that a held capability really does produce
+    usable, mutually distinct objects. One check was <strong>renamed</strong> after
+    falsification showed it did not test what its name claimed, a green check whose name
+    overstates it is worse than no check, because it is a claim nobody will re-derive.
+  </p>
+
+  <h3 id="and-every-claim-is-bound-to-a-gate-that-exists">And every claim is bound to a gate that exists</h3>
+  <p>
+    Falsifying a gate says nothing about the claims that have <em>no</em> gate. Every
+    security property in <code>SECURITY.md</code> is now checked by CI against the tree:
+    a property whose witness names nothing runnable fails the build, and so does a
+    witness naming a target that does not exist, a target no workflow runs, or a
+    defect-reproducing flag that would go unstamped at boot. The table is the registry; 
+    there is deliberately no second copy of these claims to drift from the first.
+  </p>
+  <p>
+    It was written because of what it found. One property; <em>a task cannot read
+    another's XMM register file</em>, had carried an em-dash where its witness should
+    be, against code that was real and ran on every ring transition. No earlier sweep
+    caught it: they looked for gates that were <strong>missing</strong> or
+    <strong>vacuous</strong>, and this one was neither. It was present, correct, and
+    attached to nothing.
+  </p>
+
+  <h3 id="a-single-green-run-says-nothing-about-a-concurrency-change">A single green run says nothing about a concurrency change</h3>
+  <p>
+    Intermittent failures are quoted as <strong>rates over pinned boots</strong>, never
+    as one passing run. The reason is specific: under QEMU's TCG each guest CPU is a host
+    thread, so on an idle many-core workstation the scheduling windows never open and a
+    <em>failing</em> kernel scored 10 out of 10 green. The bug only appears where guest
+    CPUs outnumber host cores, which is exactly what a CI runner is. The stress
+    harnesses build once and boot the same ISO many times with QEMU pinned to a small set
+    of host CPUs.
+  </p>
+  <p>
+    Sample size is part of the argument, not a detail. A 30-boot run witnesses a 2% event
+    less than half the time; when the scheduler's claim invariant had to be excluded as a
+    cause, the run was 150 pinned boots, all passing, and that is what made the exclusion
+    sound.
+  </p>
+
+  <h3 id="flaky-is-a-hypothesis-not-a-diagnosis">"Flaky" is a hypothesis, not a diagnosis</h3>
+  <p>
+    This project has been wrong in both directions and publishes both.
+    <code>smoke-console-smp</code> failed about a third of the time for months and was
+    treated as noise; it was correctly reporting an intermittent <strong>kernel
+    deadlock</strong>. Later, a scheduler invariant checker accused a correct kernel of a
+    capability leak and blocked a roadmap item for a fortnight; the checker's model of
+    "what this CPU is running" was the thing that was wrong. <strong>A checker reporting
+    a violation is making a claim about the code, and it can be the one at
+    fault.</strong>
+  </p>
+</div>
+
+<div class="tablewrap" style="margin-top:2rem">
+  <table class="table--method">
+    <caption>Measured, not asserted, figures exactly as recorded in the repository.</caption>
+    <thead>
+      <tr><th scope="col">Change</th><th scope="col">Before</th><th scope="col">After</th><th scope="col">How it was measured</th></tr>
+    </thead>
+    <tbody>
+      <tr><th scope="row">Ring-0 preemption deadlock (<code>smoke-console-smp</code>)</th><td class="t-num t-num--was">6 failures / 12</td><td class="t-num t-num--now">0/24, 0/24, 0/30</td><td class="t-note">pinned boots</td></tr>
+      <tr><th scope="row">IPC lost-reply race under SMP</th><td class="t-num t-num--was">9 hangs / 45 (20%)</td><td class="t-num t-num--now">0 / 25</td><td class="t-note">interleaved ISOs · Fisher p ≈ 0.014</td></tr>
+      <tr><th scope="row">Scheduler claim auditor (impersonation declared)</th><td class="t-num t-num--was">10 failures / 20</td><td class="t-num t-num--now">0 / 30</td><td class="t-note">pinned to two host cores</td></tr>
+      <tr><th scope="row">Permanent IPC refusal retried forever</th><td class="t-num t-num--was">3 and 5 hangs / 30</td><td class="t-num t-num--now">0 / 40</td><td class="t-note">starved single-core boots</td></tr>
+      <tr><th scope="row">Two CPUs on one kernel stack (<strong>G-8</strong>)</th><td class="t-num t-num--was">31 failures / 800</td><td class="t-num t-num--now">0 / 800</td><td class="t-note">adjacent-boot alternating, <code>-smp 4</code> · Fisher p = 6.9 × 10⁻¹⁰</td></tr>
+      <tr><th scope="row">Exec re-entry taken by the wrong CPU (<strong>G-9</strong>, exec component)</th><td class="t-num t-num--was">5 thefts / 20</td><td class="t-num t-num--now">0 / 30</td><td class="t-note">pinned, <code>-smp 4</code> · Fisher p ≈ 0.008 · one of three components</td></tr>
+      <tr><th scope="row">Page tables recycled under a live CPU (<strong>G-10</strong>)</th><td class="t-num t-num--was">6 faults / 30</td><td class="t-num t-num--now">0 / 30</td><td class="t-note">pinned, <code>-smp 4</code> · unguarded arm frees in use on 20 / 20</td></tr>
+      <tr><th scope="row">A foreign staged image spawned by <code>sudo</code> (<strong>G-11</strong>)</th><td class="t-num t-num--was">3 spawns / 3</td><td class="t-num t-num--now">0 / 3</td><td class="t-note">deterministic single boot · the control arm removes the owner check</td></tr>
+      <tr><th scope="row">Endpoint queue depth 1 → 4, four concurrent clients</th><td class="t-num t-num--was">7042 ms mean</td><td class="t-num t-num--now">5162 ms mean</td><td class="t-note">12 boots each · <code>EP_QUEUE_SLOTS=1</code> rebuilds the old design</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p class="note">
+  The endpoint-queue result is quoted for its shape rather than its 27%. The single-slot build's
+  completion times arrived in <em>three discrete clusters about 520 ms apart</em>, each
+  step one more collision-and-retry round. The queue removes the quantisation, which is
+  contention disappearing rather than the same work merely going faster.
+</p>
+</section>
+    <nav class="pager" aria-label="Previous and next page">
+<a class="pager__prev" href="status.html"><span>Previous</span>Status</a>
+<a class="pager__next" href="limitations.html"><span>Next</span>Limitations</a>
+</nav>
+  </main>
+</div>
+
+<footer class="foot">
+  <div class="foot__in">
+    <div class="foot__brand">
+      <p><strong>Horus</strong> is a capability-based microkernel for x86-64, MIT licensed, by Pharanyx Labs.</p>
+      <p>Research-grade: not audited, and not for anything you cannot afford to lose.</p>
+    </div>
+    <nav class="foot__links" aria-label="Documents in the repository">
+      <p>In the repository</p>
+      <a href="https://github.com/pharanyx-labs/Horus">Source</a>
+      <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/ARCHITECTURE.md">Architecture</a>
+      <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/SYSCALLS.md">System calls</a>
+      <a href="https://github.com/pharanyx-labs/Horus/blob/main/SECURITY.md">Security properties</a>
+      <a href="https://github.com/pharanyx-labs/Horus/blob/main/TESTS.md">Tests</a>
+      <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/LIMITATIONS.md">Limitations</a>
+      <a href="https://github.com/pharanyx-labs/Horus/blob/main/CHANGES.md">Changelog</a>
+    </nav>
+  </div>
+</footer>
+
+<dialog class="search" id="search" aria-labelledby="search-title">
+  <form method="dialog" class="search__box" role="search">
+    <label id="search-title" class="search__label" for="search-q">Search the site</label>
+    <input id="search-q" type="search" autocomplete="off" spellcheck="false" placeholder="Capabilities, boot, status, a test name">
+    <button class="search__close" value="close" aria-label="Close search">Esc</button>
+  </form>
+  <ol class="search__results" id="search-results" aria-live="polite"></ol>
+</dialog>
+
+<script src="assets/search-index.js"></script>
+<script src="assets/site.js"></script>
+</body>
+</html>

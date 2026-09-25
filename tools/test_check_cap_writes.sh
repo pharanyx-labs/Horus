@@ -255,11 +255,14 @@ PY' \
 #      serial is not an install that forgets the token; the struct copy carried
 #      it. kshell.c does exactly this, and the tree at HEAD (arm 1) passes with it,
 #      but that is an accident of the tree. This arm makes it a stated property.
+#      The copy is through `cspace`, one of the names PAT_STRUCT recognises as a
+#      capability array; a copy through any other name is not seen as a whole-slot
+#      write at all, which is the checker's stated limit, not this rule's.
 arm "13" "a whole-slot copy followed by a fresh serial" \
     'python3 - <<PY
 import pathlib
 p = pathlib.Path("src/kernel/pipe.c"); txt = p.read_text()
-txt += "\nvoid rule6_silent_probe(struct capability *cs, int a, int b) {\n    spin_lock(&cap_lock);\n    cs[a] = cs[b];\n    cs[a].serial = 7;\n    spin_unlock(&cap_lock);\n}\n"
+txt += "\nvoid rule6_silent_probe(struct capability *cspace, int a, int b) {\n    spin_lock(&cap_lock);\n    cspace[a] = cspace[b];\n    cspace[a].serial = 7;\n    spin_unlock(&cap_lock);\n}\n"
 p.write_text(txt)
 y = pathlib.Path(".github/cap-write-sites.yml"); t = y.read_text()
 t += "  - file: src/kernel/pipe.c\n    function: rule6_silent_probe\n    status: locked\n    reason: a fixture for arm 13\n"

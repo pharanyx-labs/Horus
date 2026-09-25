@@ -1,6 +1,6 @@
 # A shared libc: who holds it, how a program binds it, and what seals it
 
-**Its decisions are taken; steps 1 to 3 (S106, S107, S108) are built, step 4 is not.** Roadmap 2.5 has had a shared
+**Built: all four steps, 2026-09-25 (S106, S107, S108).** Roadmap 2.5 has had a shared
 libc object since 2026-08-29 (S49, S50, S51), but only self-test builds load it and only two
 test programs bind it. This document says how the shipped system uses it: how the library
 reaches a task, how a program links against it by name, and how the table a program resolved is
@@ -195,4 +195,6 @@ working.
 | 1, **built** (S106) | The ship kernel loads the `libc.so` module; init endowed; the slot range reserved; spawn and exec inherit by `DT_NEEDED` and map private data (§4 to §6); fork still refused | A gate that spawns a module-built program asking for the library and one that does not, then checks the second holds nothing. Arms: inheritance regardless of the image; a partial set passed on; data shared with the spawner instead of copied (one task's errno visible in another) |
 | 2, **built** (S107) | `SYS_MEM_SEAL` (§9) | A probe seals a page, then tries a write and a copy-on-write break. Arms: seal that leaves WRITE; a break path that re-grants |
 | 3, **built** (S108) | The loader's narrowing (§7), and the linker in crt0 (§8) with named exports and the ABI hash | `hello_shared` rebuilt against `libc.so` and using `getopt`. Arms: ABI hash ignored; an unknown name resolved to zero; the seal skipped (the table still writable) |
-| 4 | The eleven coreutils and `tcc` move onto it; `gen_libc_stubs.sh` retires | The existing coreutils gates, unchanged, on the shared build, plus the measured sizes in `docs/ROADMAP.md` |
+| 4, **built** | The eleven coreutils and `tcc` move onto it; `gen_libc_stubs.sh` retires | The existing coreutils gates, unchanged, on the shared build, plus the measured sizes in `docs/ROADMAP.md` |
+
+**Measured when step 4 landed**, stripped as shipped: the eleven coreutils went from **1,218,628 to 281,084 bytes**, `tcc` from **394,668 to 238,716**, and the library ships once at **208,448** (stripped): 1,613,296 bytes of programs became 728,248 including the library.

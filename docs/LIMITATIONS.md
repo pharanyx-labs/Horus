@@ -2975,8 +2975,9 @@ old allocator and the new one read the same single block and no workload could t
   painted into the cell and restored from `fb_cells` when it moves. Nothing on that path is
   wrong today; it is simply absent, and it is a different piece of work from the register write
   that fixed the text console. And `font_8x8` is still uploaded into the VGA font plane for 80x50 text mode,
-  that mode is an 8x8 cell by definition, so the unattributed asset still ships on a BIOS
-  boot; `THIRD_PARTY.md` records the question as open rather than guessing an answer.
+  that mode is an 8x8 cell by definition, so its ASCII half, the unattributed part, still ships
+  on a BIOS boot; `THIRD_PARTY.md` records the question as open rather than guessing an answer.
+  Its code points above 0x7F were authored for Horus on 2026-09-25.
 
   **Since 2026-09-08 the kernel knows what the display is, and draws on it.** It parses the multiboot2 framebuffer tag (type 8), validates every field
   before recording it, and reports the mode, geometry and base address: `fb: EGA text 80x25 at
@@ -4676,7 +4677,7 @@ so neither was ever presented to a contributor. There was no code of conduct, an
 the IPC authorisation logic. All fixed as of 2026-07-27; the `require_code_owner_review`
 setting that would make `CODEOWNERS` binding is still off (§5.1).
 
-*(Repository hygiene itself is fine: `git ls-files` reports **465** tracked files with no build
+*(Repository hygiene itself is fine: `git ls-files` reports **467** tracked files with no build
 artefacts or vendored binaries: no `kernel.elf`, no `horus.iso`, no object files. A working
 checkout accumulates ~70 MB of untracked build output, which is correctly `.gitignore`d. This
 sentence said 243 until 2026-08-15 and **254 until 2026-09-20**, by which point the tree had

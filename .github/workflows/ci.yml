@@ -2824,6 +2824,14 @@ jobs:
         run: python3 tools/check_keymaps.py
       - name: Falsify the keymap checker, including the direction that must stay silent
         run: ./tools/test_check_keymaps.sh
+      # Two console fonts, and a code point missing from one is drawn BLANK, not
+      # from the ROM font. Until 2026-09-25 the 8x8 had nothing above 0x7F, so a
+      # BIOS boot drew the installer with no frame while every framebuffer gate
+      # passed, and the serial line carries the letters, never the glyphs.
+      - name: Both console fonts draw every character the console sends
+        run: python3 tools/check_console_font.py
+      - name: Falsify every rule of the console-font checker
+        run: ./tools/test_check_console_font.sh
       # Five rules, and until 2026-08-30 rule 1 inferred the classification from
       # the target NAME, which was wrong for four arms and made two published
       # counts wrong with it. Seven arms: one per rule, one for a manifest entry

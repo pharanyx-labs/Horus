@@ -389,8 +389,9 @@ endif
 # table (**S74**). The AEAD caught it for file DATA and nothing caught it for
 # metadata, which is why it read as correct for as long as it did.
 # `make smoke-installer-provision-control` is the arm: it requires fs_server to
-# report the sealed store as OPEN at startup, and requires the empty /bin that
-# answer leaves behind for good. Never ship it.
+# report the sealed store as OPEN at startup, and requires the incomplete base
+# system that answer leaves behind (at least one of COREUTILS_PROGS missing from
+# /bin; measured 2026-09-25 at 3 or 4 of 11 present). Never ship it.
 STORE_LOCKED_UNCHECKED ?= 0
 ifeq ($(STORE_LOCKED_UNCHECKED),1)
 CFLAGS  += -DSTORE_LOCKED_UNCHECKED
@@ -13048,7 +13049,10 @@ smoke-installer-provision:
 	@$(MAKE) --no-print-directory STORAGE_ATA=1
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 COREUTILS_MODULES=1 horus.iso
 	@rm -f installer-p.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-p.img
-	@SESSION_DISK=installer-p.img INSTALLER_MODE=provision 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) 		python3 tools/installer_session.py horus.iso
+	@rm -f installer-p-serial.log
+	@SESSION_DISK=installer-p.img INSTALLER_MODE=provision INSTALLER_BIN_PROGRAMS="$(COREUTILS_PROGS)" \
+		SESSION_SERIAL_LOG=installer-p-serial.log \
+		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) 		python3 tools/installer_session.py horus.iso
 	@rm -f installer-p.img
 	@echo "[installer] PASS - a sealed store defers provisioning, and the next boot completes it"
 
@@ -13061,9 +13065,12 @@ smoke-installer-provision-control:
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORE_LOCKED_UNCHECKED=1
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORE_LOCKED_UNCHECKED=1 COREUTILS_MODULES=1 horus.iso
 	@rm -f installer-pc.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-pc.img
-	@SESSION_DISK=installer-pc.img INSTALLER_MODE=provision INSTALLER_EXPECT_EMPTY_BIN=1 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) 		python3 tools/installer_session.py horus.iso
+	@rm -f installer-pc-serial.log
+	@SESSION_DISK=installer-pc.img INSTALLER_MODE=provision INSTALLER_EXPECT_EMPTY_BIN=1 \
+		INSTALLER_BIN_PROGRAMS="$(COREUTILS_PROGS)" SESSION_SERIAL_LOG=installer-pc-serial.log \
+		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) 		python3 tools/installer_session.py horus.iso
 	@rm -f installer-pc.img
-	@echo "[installer] CONTROL PASS - a sealed store that answers leaves /bin empty for good"
+	@echo "[installer] CONTROL PASS - a sealed store that answers leaves the base system incomplete"
 
 # S76: AN ACCOUNT AN ADMINISTRATOR CREATES CAN BE THE FIRST LOGIN AFTER A POWER
 # CYCLE -- docs/LIMITATIONS.md 2.6b, closed.

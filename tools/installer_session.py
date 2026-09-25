@@ -813,7 +813,10 @@ def provision(disk):
     copy against a locked volume where every data write failed inside the AEAD,
     and recorded itself provisioned anyway; the post-login retry never ran again.
     Measured 2026-09-01 on this sequence: `/bin` empty on that disk on every
-    subsequent boot, permanently.
+    subsequent boot. Measured again 2026-09-25, and it is no longer empty: the
+    defect leaves a FEW programs behind, `echo`, `false` and `true` in 15 of 15
+    boots and `basename` as well in 6 of them, and never more than 4 of the 11. The
+    install is still broken; what changed is which parts of the copy happen to land.
 
     BOTH ARMS ASSERT A MARKER POSITIVELY, and the marker is the branch fs_server
     took rather than the absence of one. The base arm requires the store to say it
@@ -822,12 +825,25 @@ def provision(disk):
     An arm that asserted only "/bin is empty" would be satisfied by a run that
     never reached a shell, which is how the S63 pair first passed vacuously.
 
-    The `ls` is the consequence and is checked in both directions too: present in
-    the base arm, absent in the control. `basename` is the probe rather than the
-    whole listing because the listing is a shell-formatted column layout and one
-    name is a contiguous string on the wire.
+    The `ls` is the consequence and is checked in both directions too, against the
+    WHOLE base system: the base arm requires every program the image carries, and
+    the control requires at least one of them to be missing. The list comes from
+    the Makefile (INSTALLER_BIN_PROGRAMS, which is COREUTILS_PROGS), so it cannot
+    drift from what was built, and it is required rather than defaulted.
+
+    THIS USED TO PROBE ONE NAME, `basename`, and that made the control arm a coin
+    toss. Once the defect began leaving a few programs behind, the arm reported
+    "the defect did not reproduce" whenever `basename` happened to be one of them:
+    6 of 15 boots measured on 2026-09-25, and main went red on one of them. Every
+    one of those boots HAD reproduced the defect (at most 4 of 11 programs); the
+    probe could not see it. The base arm was the mirror image, satisfied by one
+    program out of eleven.
     """
     control = os.environ.get("INSTALLER_EXPECT_EMPTY_BIN") == "1"
+    expected = os.environ.get("INSTALLER_BIN_PROGRAMS", "").split()
+    if not expected:
+        raise SessionFail("INSTALLER_BIN_PROGRAMS is unset: the base system to check "
+                          "for is not known, and guessing it would be a check that cannot fail")
 
     # ---- boot 1: install, then power off at the login prompt ----
     s = Serial(ISO)
@@ -872,14 +888,22 @@ def provision(disk):
         s.expect("root@horus#", STEP)
         listing = s.buf[mark:]
 
+        # `ls` marks executables with a trailing `*` and lays them out in columns,
+        # so the entries are the whitespace-separated words with that mark removed.
+        present = {w.rstrip("*/@") for w in listing.split()}
+        missing = [n for n in expected if n not in present]
         if control:
-            if "basename" in listing:
-                raise SessionFail("CONTROL: /bin was provisioned; the defect did not reproduce")
-            step("CONTROL: /bin is empty on the installed disk, and no later boot repairs it")
+            if not missing:
+                raise SessionFail("CONTROL: every one of the %d programs was provisioned; "
+                                  "the defect did not reproduce" % len(expected))
+            step("CONTROL: the base system is incomplete on the installed disk: %d of %d "
+                 "programs missing" % (len(missing), len(expected)))
         else:
-            if "basename" not in listing:
-                raise SessionFail("/bin is empty on the installed disk")
-            step("the base system is on the volume, provisioned by the post-login pass")
+            if missing:
+                raise SessionFail("the base system is incomplete on the installed disk: "
+                                  "missing %s" % " ".join(missing))
+            step("the base system is on the volume, all %d programs, provisioned by the "
+                 "post-login pass" % len(expected))
     finally:
         keep_serial(s.buf)
         s.close()

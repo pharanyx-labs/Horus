@@ -3077,9 +3077,22 @@ jobs:
       # The arm. STORE_LOCKED_UNCHECKED=1 and nothing else, so both arms drive
       # the same install and differ only in what the store says about a volume
       # nobody has opened. Its marker is POSITIVE -- the branch fs_server took --
-      # and the empty /bin is the consequence checked after it.
-      - name: Control arm — a sealed store that answers leaves /bin empty for good
+      # and an incomplete base system is the consequence checked after it. It
+      # probed one program until 2026-09-25 and missed 6 boots in 15 that way.
+      - name: Control arm — a sealed store that answers leaves the base system incomplete
         run: make smoke-installer-provision-control
+      # Both targets append every boot's serial here. Kept only when the job fails:
+      # the one time anyone needs it, and the red run of 2026-09-25 had none.
+      - name: Upload the installer boots' serial logs (evidence of a red run)
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: installer-provision-serial
+          path: |
+            installer-p-serial.log
+            installer-pc-serial.log
+          if-no-files-found: ignore
+          retention-days: 90
 
   passwd-target:
     name: "passwd <uid> changes that account, and only that account (S75)"

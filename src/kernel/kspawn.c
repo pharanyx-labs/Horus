@@ -627,6 +627,13 @@ int do_spawn_charged(uint32_t stdio_spec, uint32_t untyped_index) {
         tasks[pid].uid = tasks[caller_task].uid;
         tasks[pid].gid = tasks[caller_task].gid;
     }
+    /* The shared libc, by inheritance (S106, docs/design/shared-libc.md §4, §5): the
+     * child gets derived copies of the spawner's text capabilities and its own
+     * private data if and only if its image asked and the spawner holds the
+     * whole set. Here, after set_current_task(caller_task), for the reason the
+     * console grant above is here: cap_grant_into resolves its source in the
+     * CURRENT task's cspace. The child is still suspended. */
+    if (pid > 0) shlib_endow_spawned(pid);
     return pid;
 }
 
@@ -1043,6 +1050,13 @@ static int exec_into_armed_image(void) {
      * space is already gone, so there is nothing to fail back to if it somehow
      * did. The return is checked to keep the contract explicit. */
     (void)load_staged_image_into(cur, load_base);   /* sets eip/heap/name, disarms */
+
+    /* The shared libc's private data belongs to the address space just built,
+     * not to the task, so a new image asking for the library gets a fresh copy
+     * from the template and never the old program's state (D5). The text
+     * capabilities are in the cspace, which exec keeps (S42). `cur` is current:
+     * load_staged_image_into left it so. */
+    shlib_endow_exec(cur);
 
     /* Marshal any staged argv onto the freshly-built stack (load_staged_image_into
      * left `cur` current, so copy_to_user targets its new address space); this

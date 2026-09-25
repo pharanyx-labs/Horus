@@ -512,6 +512,17 @@ bool cap_install_object_first_free(uint32_t min_slot, uint32_t type, uint64_t ob
     }
     uint32_t slot = cspace_sz;
     for (uint32_t s = min_slot; s < cspace_sz; s++) {
+        /* The shared libc's range is reserved (docs/design/shared-libc.md §4). A
+         * shell that has spawned two dozen children would otherwise reach slot
+         * 40 with its CAP_TCBs, and the next program's inherited text would find
+         * a TCB where a page was expected. A range that is free by convention is
+         * a range the next spawn silently writes into.
+         *
+         * DEFENSIVE, AND SAID SO. Every holder today (init, the shell, each
+         * program that asks) receives the range before it spawns anything, so
+         * no present path reaches it and no gate can witness it; a task given
+         * the library AFTER collecting CAP_TCBs is the case this closes. */
+        if (s >= LIBC_SLOT_FIRST && s < LIBC_SLOT_FIRST + SHLIB_MAX_PAGES) continue;
         if (cspace[s].type == CAP_NULL) { slot = s; break; }
     }
     if (slot >= cspace_sz) { spin_unlock(&cap_lock); return false; }

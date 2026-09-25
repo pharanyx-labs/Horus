@@ -18,6 +18,7 @@
 
 #include "../include/posix.h"
 #include "../include/syscall.h"
+#include "../include/console_proto.h"
 
 extern int main(int argc, char **argv, char **envp);
 extern void exit(int status);          /* stub -> the library's exit */
@@ -40,17 +41,48 @@ int shlib_bind(void);                  /* userspace/shlib_start.c */
 
 static char *no_argv[] = { (char *)"horus", (char *)0 };
 
-static void die(const char *s) {
+/* SAID TO THE CONSOLE ENDPOINT, NOT TO FD 2. This used to be sys_write(2, ...),
+ * and fd 2 is a descriptor posix_init creates -- which has not run yet, because
+ * it is a library call and the library is what just failed to bind. So every
+ * refused bind was SILENT: the program printed nothing and exited, and the
+ * operator saw a command that did nothing. Found 2026-09-25 driving the first
+ * spawned shared-libc programs, where three different failures all looked the
+ * same. The console endpoint is a capability every spawned task is given (the
+ * spawn propagates it, send-only), so it is the one channel that exists here.
+ * One write, the reason included, so it cannot be interleaved. */
+static struct con_request  die_rq;
+static struct con_response die_rp;
+
+static void die(const char *why) {
+    const char *head = "crt0_shared: could not bind the shared libc: ";
     unsigned n = 0;
-    while (s[n]) n++;
-    sys_write(2, s, n);
+    for (const char *c = head; *c && n < CON_IO_MAX - 1; c++) die_rq.data[n++] = (uint8_t)*c;
+    for (const char *c = why;  *c && n < CON_IO_MAX - 1; c++) die_rq.data[n++] = (uint8_t)*c;
+    die_rq.data[n++] = '\n';
+    die_rq.magic = CON_PROTO_MAGIC;
+    die_rq.op    = CON_OP_WRITE;
+    die_rq.len   = n;
+    (void)sys_ipc_call(CAPSLOT_CONSOLE_EP, 0, &die_rq, sizeof(die_rq), &die_rp);
     sys_exit();
 }
 
 void _start(void) {
     /* Before this returns 0, this program has no libc at all. */
-    if (shlib_bind() != 0)
-        die("crt0_shared: could not bind the shared libc\n");
+    switch (shlib_bind()) {
+    case 0: break;
+    case SHLIB_BIND_NO_CAP:
+        die("this program was given no library capability");
+        break;
+    case SHLIB_BIND_NO_DATA:
+        die("no private copy of the library's data was mapped");
+        break;
+    case SHLIB_BIND_TEXT:
+        die("a page of the library's code could not be mapped");
+        break;
+    default:
+        die("the library's data is not initialised");
+        break;
+    }
 
     posix_init();
 

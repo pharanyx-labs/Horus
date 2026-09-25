@@ -563,6 +563,24 @@ static void mark_reachable(uint8_t *ep_marks, uint8_t *nt_marks, uint8_t *fr_mar
     const capability_t *root = cap_root_cnode_ref();
     for (uint32_t s = 0; s < CNODE_SIZE; s++)
         mark_cap(&root[s], ep_marks, nt_marks, fr_marks);
+
+    /* THE SHARED LIBRARY'S FRAMES ARE THE KERNEL'S, for the life of the boot
+     * (src/kernel/shlib.c). Its text is named by init's capabilities and their
+     * descendants, but the TEMPLATE of its writable pages is named by no
+     * capability at all -- no task ever maps it, every task gets a copy -- so
+     * until 2026-09-25 the first program to exit after binding the library had
+     * the template collected, zeroed and its name released, and every later
+     * program's copy failed. Marked here as kernel roots, text and template
+     * alike: the library is not an object any capability's lifetime should
+     * decide, and revoking init's copy of the text must not free the code the
+     * next boot-time consumer maps. */
+#ifndef SHLIB_TEMPLATE_UNPINNED
+    for (uint32_t i = 0; i < shlib_pages(); i++) {
+        uint32_t idx = shlib_frame_index(i);
+        if (idx >= DYN_FRAME_BASE && idx < FRAME_INDEX_MAX)
+            fr_marks[idx - DYN_FRAME_BASE] = 1;
+    }
+#endif
 }
 
 /* Release an endpoint's storage index. The bytes stay consumed in the untyped

@@ -1,13 +1,13 @@
 # A shared libc: who holds it, how a program binds it, and what seals it
 
-**Design; its decisions are taken, nothing in it is built yet.** Roadmap 2.5 has had a shared
+**Its decisions are taken; step 1 is built (S106), steps 2 to 4 are not.** Roadmap 2.5 has had a shared
 libc object since 2026-08-29 (S49, S50, S51), but only self-test builds load it and only two
 test programs bind it. This document says how the shipped system uses it: how the library
 reaches a task, how a program links against it by name, and how the table a program resolved is
 made unwritable afterwards. The maintainer's decisions are recorded in §2, with the date each
 was taken; the rest of the document is how they are built.
 
-## 1. What exists today
+## 1. What existed before this work
 
 | Question | Today |
 |---|---|
@@ -33,10 +33,11 @@ was taken; the rest of the document is how they are built.
 
 ## 3. The library at boot
 
-The library is a **boot module named `libc.so`**, loaded by GRUB with the others. Every boot
+The library is a **boot module named `lib/libc.so`**, loaded by GRUB with the others. Every boot
 module is already checked against a SHA-256 pin inside the measured boot image (S92), so the
 library is pinned exactly as a program in `/bin` is, with no new mechanism. The kernel calls
-`shlib_init` on it once, before init is spawned, exactly as the self-test does today.
+`shlib_init` on it once, before init is spawned, exactly as the self-test does today. The kernel's copy is the only one: fs_server skips the module by name, `lib/` stays a
+destination no module may write, and nothing loads the library from a file.
 
 A boot with no `libc.so` module loads no library. Nothing is endowed, and every program that
 asks for it fails its bind with a fixed message. That is the fail-closed direction: a missing
@@ -59,11 +60,12 @@ can have WRITE (S27).
 - **Revocation** is by lineage. Every holder's copy descends from init's, so revoking init's
   sweeps every copy in the system.
 
-**The slot range is reserved.** `grant_child_tcb_cap` installs a spawner's `CAP_TCB` for each
-child in the first free slot at or above 16, so a shell that has spawned two dozen children today
-would reach slot 40. The range `LIBC_SLOT_FIRST` to `LIBC_SLOT_FIRST + SHLIB_MAX_PAGES - 1` is
-therefore skipped by first-free allocation. A range that is only free by convention is a range
-the next spawn silently writes into.
+**The slot range starts at 128 and is reserved** (`CAPSLOT_LIBC_FIRST`). The self-tests' slot
+40 was the first choice, and booting it found init's own retyped objects at 40 to 42, which
+overwrote init's library pages. No slot convention in the tree uses 128 to 191. The range is
+also skipped by first-free allocation, where `grant_child_tcb_cap` puts a spawner's `CAP_TCB` for
+each child: a range that is only free by convention is a range the next spawn silently writes
+into.
 
 ## 5. Private data
 
@@ -167,7 +169,7 @@ image in the range, and marks each one sealed (a software bit in the page-table 
   does not; the shell is not a libc program.
 - **The library's base is per boot, not per task** (S51, unchanged). One information leak reveals
   it for every task.
-- **Up to 64 capability slots per task** for the library's text pages, 34 today, of 128.
+- **Up to 64 capability slots per task** for the library's text pages, 35 today (the soname adds a page), of 256.
 - **The shipping ISO carries no program that binds it** until the installed-system work ships
   the coreutils ([`installed-system.md`](installed-system.md)). Gates run it on the module builds.
 
@@ -178,7 +180,7 @@ working.
 
 | Step | What | Witness, and the defect its arm puts back |
 |---|---|---|
-| 1 | The ship kernel loads the `libc.so` module; init endowed; the slot range reserved; spawn and exec inherit by `DT_NEEDED` and map private data (§4 to §6); fork still refused | A gate that spawns a module-built program asking for the library and one that does not, then checks the second holds nothing. Arms: inheritance regardless of the image; a partial set passed on; data shared with the spawner instead of copied (one task's errno visible in another) |
+| 1, **built** (S106) | The ship kernel loads the `libc.so` module; init endowed; the slot range reserved; spawn and exec inherit by `DT_NEEDED` and map private data (§4 to §6); fork still refused | A gate that spawns a module-built program asking for the library and one that does not, then checks the second holds nothing. Arms: inheritance regardless of the image; a partial set passed on; data shared with the spawner instead of copied (one task's errno visible in another) |
 | 2 | `SYS_MEM_SEAL` (§9) | A probe seals a page, then tries a write and a copy-on-write break. Arms: seal that leaves WRITE; a break path that re-grants |
 | 3 | The loader's narrowing (§7), and the linker in crt0 (§8) with named exports and the ABI hash | `hello_shared` rebuilt against `libc.so` and using `getopt`. Arms: ABI hash ignored; an unknown name resolved to zero; the seal skipped (the table still writable) |
 | 4 | The eleven coreutils and `tcc` move onto it; `gen_libc_stubs.sh` retires | The existing coreutils gates, unchanged, on the shared build, plus the measured sizes in `docs/ROADMAP.md` |

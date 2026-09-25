@@ -65,6 +65,10 @@ control_arms:
   smoke-installer-defaults-control: smoke-installer
   smoke-installer-sized-control: smoke-installer-sized
   smoke-installer-failed-control: smoke-installer-failed
+  smoke-shlib-inherit-image-control: smoke-shlib-inherit
+  smoke-shlib-inherit-data-control: smoke-shlib-inherit
+  smoke-shlib-inherit-exec-control: smoke-shlib-inherit
+  smoke-shlib-inherit-pin-control: smoke-shlib-inherit
   smoke-installer-unsealed-control: smoke-installer-unsealed
   smoke-installer-sealed-control: smoke-installer
   smoke-installer-sd-devregs-control: smoke-installer-sd
@@ -331,6 +335,7 @@ gates:
   - smoke-installer-back
   - smoke-installer-sized
   - smoke-installer-failed
+  - smoke-shlib-inherit
   - smoke-installer-unsealed
   - smoke-installer-sd
   - smoke-installer-sd-smp

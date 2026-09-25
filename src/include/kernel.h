@@ -1948,7 +1948,15 @@ typedef struct tcb {
      * authorised for one task can never be registered on its successor. */
     uint64_t blocked_on_gen;
 
-    uint8_t  padding[8];
+    /* The shared libc (docs/design/shared-libc.md). `shlib_wanted`: the image
+     * this task is running asked for it (DT_NEEDED "libc.so"), set by the loader
+     * on every spawn and exec. `shlib_data`: the kernel mapped this address
+     * space's private copy of the library's writable pages, which is what
+     * SYS_SHLIB_INFO reports as SHLIB_INFO_DATA_MAPPED. Both describe the
+     * current image and address space only, and are rewritten when either is. */
+    uint8_t  shlib_wanted;
+    uint8_t  shlib_data;
+    uint8_t  padding[6];
 } tcb_t;
 
 /* The task table is carved from the kernel's untyped reserve, and the reserve is
@@ -2791,6 +2799,29 @@ int      shlib_page_writable(uint32_t i);
 uint32_t shlib_instantiate_data(uint32_t page);
 int      shlib_owns_frame(uint32_t idx);
 
+/* The first capability slot of the library's pages, one slot per page index, in
+ * every task that holds it: init, the shell, and each program whose image asks.
+ * Slots LIBC_SLOT_FIRST .. LIBC_SLOT_FIRST + SHLIB_MAX_PAGES - 1 are skipped by
+ * first-free allocation, so a spawner's CAP_TCBs can never land in them. Must
+ * match CAPSLOT_LIBC_FIRST in include/syscall.h.
+ *
+ * 128, NOT 40, and the reason is a collision found by booting it. The self-tests
+ * used 40, and so does init for its own retyped objects (INIT_DEV_LISTEN 40,
+ * INIT_DEV_CLIENT 41, INIT_CON_NOTIFY 42 in userspace/init.c): those retypes
+ * overwrote init's library pages, and init then granted the shell a notification
+ * where page 2 belonged, so no program could inherit the set. No slot convention
+ * in the tree uses 128..191. */
+#define CAPSLOT_LIBC_FIRST 128
+#define LIBC_SLOT_FIRST    CAPSLOT_LIBC_FIRST
+
+/* The shipped endowment (docs/design/shared-libc.md §3 to §5). */
+int  user_map_private_copy(uint32_t task_id, uint64_t vaddr, const uint8_t *src);
+int  cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);
+void shlib_boot_load(void);                 /* load the verified lib/libc.so module      */
+int  shlib_endow_holder(int pid);           /* text caps from root[20]: init, at boot    */
+void shlib_endow_spawned(int child);        /* inherit + private data, current = spawner */
+void shlib_endow_exec(int task);            /* private data for a new image, current = task */
+
 /* The SYS_SHLIB_INFO payload. MUST stay byte-identical to the copy in
  * include/syscall.h -- the kernel fills this layout and ring-3 reads it across
  * copy_to_user, exactly like struct untyped_info and struct dev_info.
@@ -2800,13 +2831,16 @@ int      shlib_owns_frame(uint32_t idx);
  * 32-bit ones, so the struct is 24 bytes with no interior padding on either
  * side and no ordering either compiler could disagree about. */
 #define SHLIB_INFO_NO_DATA  0xFFFFFFFFu
+/* In `flags`: the kernel mapped the caller's private copy of the library's
+ * writable pages at spawn or exec, so crt0 maps only the text. */
+#define SHLIB_INFO_DATA_MAPPED  0x1u
 struct shlib_info {
     uint64_t base;
     uint64_t entry;
     uint32_t pages;
     uint32_t data_first;
     uint32_t data_pages;
-    uint32_t reserved;
+    uint32_t flags;
 };
 uint64_t shlib_entry(void);
 
@@ -3167,6 +3201,12 @@ struct elf_x86_64_reloc_table {
 int  rust_elf_x86_64_reloc_locate(const uint8_t *buf, size_t buf_len, uint32_t e_phoff,
                                   uint16_t e_phnum, struct elf_x86_64_reloc_table *out);
 
+/* Does the staged x86-64 image ask for the shared libc? 0 (no DT_NEEDED), 1
+ * (exactly one, naming exactly "libc.so"), or -16 (refuse the image). Parsed in
+ * safe Rust: the answer decides what a child inherits, from untrusted bytes. */
+int  rust_elf_x86_64_needs_libc(const uint8_t *buf, size_t buf_len, uint32_t e_phoff,
+                                uint16_t e_phnum);
+
 /* Validate RELA entry `k` and compute the (target, value) to write. Returns 0
  * (write *out_value at *out_target), 1 (skip — R_X86_64_NONE), or -16 (reject).
  * Because x86-64 relocations are a pure write, Rust computes the value (RELATIVE:
@@ -3514,11 +3554,9 @@ void shlib_selftest(void);
 void shlibc_selftest(void);
 /* Must match SLOT_SHLIB_FIRST in userspace/shlibtest.c and shlibpeer.c. */
 #define SHLIB_SLOT_FIRST 40
-/* libctest maps the real shared libc from the same slot base as shlibtest maps
- * the demo object -- the two selftests never build together, so one convention
- * serves both and there is no second number to keep in step. Must match
- * SLOT_LIBC_FIRST in userspace/libctest.c. */
-#define LIBC_SLOT_FIRST  40
+/* libctest maps the real shared libc from CAPSLOT_LIBC_FIRST (128), the slot every
+ * holder of the library uses, and shlibtest maps the demo object from
+ * SHLIB_SLOT_FIRST (40). Two conventions for two objects, each named once. */
 #define SHLIB_SLOT_PEER_TCB 30
 void ioport_selftest(void);
 void irq_selftest(void);

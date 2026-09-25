@@ -184,7 +184,9 @@ DEFECT_FLAGS = \
 	SDHCI_EMMC_CSD_ONLY \
 	CONSOLE_KBD_SPLIT_ESC \
 	FB_GRID_FIXED_ROWS \
-	INSTALLER_FAIL_NO_SCREEN
+	INSTALLER_FAIL_NO_SCREEN \
+	SHLIB_INHERIT_ANY_IMAGE SHLIB_DATA_TEMPLATE_SHARED SHLIB_EXEC_NO_DATA \
+	SHLIB_TEMPLATE_UNPINNED
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -1463,6 +1465,31 @@ endif
 # default (the release ISO carries no ported binary); `make run` and smoke-tcc
 # turn it on. Compiling *on* Horus additionally needs headers+libc+crt on the FS —
 # a follow-up; today /bin/tcc runs (version/help, -c to an object) from the store.
+# SHLIB_INHERIT_MODULES=1 ships the shared libc as the boot module the kernel
+# loads it from (lib/libc.so, pinned by the manifest like every module: S92) and
+# three programs that exercise how it is handed out: hello_shared and shlibdata
+# ask for it, shlibprobe does not. For make smoke-shlib-inherit and its arms;
+# the shipped ISO carries none of it until programs are built this way.
+SHLIB_INHERIT_MODULES ?= 0
+ifeq ($(SHLIB_INHERIT_MODULES),1)
+SHLIBC_MODULE   := 1
+BOOT_MODULES    += userspace/hello_shared.bin:bin/hello_shared \
+                   userspace/shlibdata.bin:bin/shlibdata userspace/shlibprobe.bin:bin/shlibprobe
+BOOT_MODULE_DEP += userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin
+endif
+
+# SHLIBC_MODULE=1 ships the library alone. The kernel loads it from the module
+# and fs_server skips it by name (it is the kernel's, not a file), so it costs
+# the store volume nothing -- which is why the syscall-coverage modules
+# workload uses this rather than SHLIB_INHERIT_MODULES: that one's three programs
+# do not fit beside every coreutil, and a coreutil that did not fit is a
+# workload that stopped exercising pipes and image spawns.
+SHLIBC_MODULE ?= 0
+ifeq ($(SHLIBC_MODULE),1)
+BOOT_MODULES    += userspace/libc.so:lib/libc.so
+BOOT_MODULE_DEP += userspace/libc.so
+endif
+
 TCC_MODULE ?= 0
 ifeq ($(TCC_MODULE),1)
 BOOT_MODULES    += userspace/tcc.bin:bin/tcc userspace/man/tcc:usr/share/man/tcc
@@ -2274,6 +2301,37 @@ endif
 SHLIB_DATA_SHARED ?= 0
 ifeq ($(SHLIB_DATA_SHARED),1)
 CFLAGS += -DSHLIB_DATA_SHARED
+endif
+
+# The shipped endowment's three arms (docs/design/shared-libc.md, step 1), each
+# for make smoke-shlib-inherit:
+#   SHLIB_INHERIT_ANY_IMAGE=1     a spawn passes the library on whether or not the
+#                                 child's image asked, so authority spreads to
+#                                 every child of a holder.
+#   SHLIB_DATA_TEMPLATE_SHARED=1  the library's writable TEMPLATE is mapped into
+#                                 every task instead of a private copy, so one
+#                                 program's errno and stdio state is the next's.
+#   SHLIB_EXEC_NO_DATA=1          exec forgets the library's data, so a new image
+#                                 that asks for the library cannot bind it.
+SHLIB_INHERIT_ANY_IMAGE ?= 0
+ifeq ($(SHLIB_INHERIT_ANY_IMAGE),1)
+CFLAGS += -DSHLIB_INHERIT_ANY_IMAGE
+endif
+SHLIB_DATA_TEMPLATE_SHARED ?= 0
+ifeq ($(SHLIB_DATA_TEMPLATE_SHARED),1)
+CFLAGS += -DSHLIB_DATA_TEMPLATE_SHARED
+endif
+SHLIB_EXEC_NO_DATA ?= 0
+ifeq ($(SHLIB_EXEC_NO_DATA),1)
+CFLAGS += -DSHLIB_EXEC_NO_DATA
+endif
+#   SHLIB_TEMPLATE_UNPINNED=1     the library's frames are not kernel roots of the
+#                                 object collector, so the data template, which no
+#                                 capability names, is collected when the first
+#                                 program that bound the library exits.
+SHLIB_TEMPLATE_UNPINNED ?= 0
+ifeq ($(SHLIB_TEMPLATE_UNPINNED),1)
+CFLAGS += -DSHLIB_TEMPLATE_UNPINNED
 endif
 
 # SHLIB_DATA_UNINITIALISED=1 gives each task a PRIVATE data frame and zero-fills
@@ -5012,8 +5070,13 @@ LIBC_SO_OBJS = userspace/libc_exports.pic.o userspace/newlib_glue.pic.o \
                userspace/newlib_glue64.pic.o userspace/posix.pic.o \
                userspace/hvfs.pic.o userspace/libhorus.pic.o
 
+# -soname libc.so is what a program linked against this object records in its
+# DT_NEEDED, and the kernel loader grants the library to an image whose one
+# DT_NEEDED is exactly "libc.so" (docs/design/shared-libc.md §6). Without it the
+# linker would record the PATH it was given, userspace/libc.so, and every
+# program would be refused as asking for a library that does not exist.
 userspace/libc.so: $(LIBC_SO_OBJS) userspace/shlib.ld $(NEWLIB_LIB)/libc.a
-	$(CC) -shared -fPIC -m64 -nostdlib -Wl,--build-id=none \
+	$(CC) -shared -fPIC -m64 -nostdlib -Wl,--build-id=none -Wl,-soname,libc.so \
 	  -Wl,-e,shlib_exports -Wl,-T,userspace/shlib.ld \
 	  -Wl,-Bsymbolic -Wl,-z,nodynamic-undefined-weak \
 	  -o $@ $(LIBC_SO_OBJS) -L$(NEWLIB_LIB) -lc
@@ -5048,10 +5111,39 @@ $(LIBC_STUB_LIB): userspace/libc_stubs.o userspace/shlib_start.o
 userspace/hello_shared.o: userspace/hello_shared.c $(NEWLIB_LIB)/libc.a
 	$(CC) $(NEWLIB_CFLAGS) -c $< -o $@
 
+# SHARED_LIBC_ASK is how a program ASKS for the library: linking against
+# libc.so after the stub archive records DT_NEEDED "libc.so" and nothing else,
+# because every symbol is already defined by a stub by the time libc.so is read.
+# --no-as-needed keeps the entry although no symbol came from libc.so, and
+# --no-dynamic-linker keeps PT_INTERP out: there is no ld.so, the kernel and
+# crt0 are the linker (docs/design/shared-libc.md §6, §8).
+SHARED_LIBC_ASK = --no-dynamic-linker --no-as-needed userspace/libc.so
+
 userspace/hello_shared.pie.elf: userspace/hello_shared.o userspace/crt0_shared.o \
-                                $(LIBC_STUB_LIB) userspace/pie.ld
+                                $(LIBC_STUB_LIB) userspace/libc.so userspace/pie.ld
 	$(LD) -m elf_x86_64 -pie --gc-sections -T userspace/pie.ld -o $@ \
-	    userspace/crt0_shared.o userspace/hello_shared.o $(LIBC_STUB_LIB)
+	    userspace/crt0_shared.o userspace/hello_shared.o $(LIBC_STUB_LIB) $(SHARED_LIBC_ASK)
+
+# The negative half of make smoke-shlib-inherit: a program linked the way the
+# coreutils are today, newlib static, no DT_NEEDED. It must be given nothing.
+userspace/shlibprobe.o: userspace/shlibprobe.c $(NEWLIB_LIB)/libc.a
+	$(CC) $(NEWLIB_CFLAGS) -c $< -o $@
+
+userspace/shlibprobe.pie.elf: userspace/shlibprobe.o $(NEWLIB_GLUE_OBJS) userspace/malloc.o \
+                              $(LIBHORUS_LIB) userspace/pie.ld
+	$(LD) -m elf_x86_64 -pie --gc-sections -T userspace/pie.ld -o $@ \
+	    userspace/crt0.o $< userspace/newlib_glue.o userspace/newlib_glue64.o \
+	    userspace/posix.o userspace/malloc.o $(LIBHORUS_LIB) -L$(NEWLIB_LIB) -lc
+
+# The data half of make smoke-shlib-inherit: errno across spawns and across an
+# exec. Linked exactly as hello_shared is.
+userspace/shlibdata.o: userspace/shlibdata.c $(NEWLIB_LIB)/libc.a
+	$(CC) $(NEWLIB_CFLAGS) -c $< -o $@
+
+userspace/shlibdata.pie.elf: userspace/shlibdata.o userspace/crt0_shared.o \
+                             $(LIBC_STUB_LIB) userspace/libc.so userspace/pie.ld
+	$(LD) -m elf_x86_64 -pie --gc-sections -T userspace/pie.ld -o $@ \
+	    userspace/crt0_shared.o userspace/shlibdata.o $(LIBC_STUB_LIB) $(SHARED_LIBC_ASK)
 
 # Every shared object in the tree must be one the loader accepts. A static gate
 # because the properties are decidable by reading the object, and because a
@@ -5230,7 +5322,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.stripped.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -6873,8 +6965,8 @@ smoke-syscall-coverage:
 	SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CAPTEST: PASS' \
 	    tools/smoke_test.sh horus.iso > "$$cov/captest.log" 2>&1 || true; \
 	$(MAKE) --no-print-directory clean; \
-	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 COREUTILS_MODULES=1; \
-	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 COREUTILS_MODULES=1 horus.iso; \
+	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 COREUTILS_MODULES=1 SHLIBC_MODULE=1; \
+	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 COREUTILS_MODULES=1 SHLIBC_MODULE=1 horus.iso; \
 	SESSION_SERIAL_LOG="$$cov/modules.log" SESSION_TIMEOUT=$(SYSCOV_SESSION_TIMEOUT) \
 	    tools/modules_session.py horus.iso >/dev/null 2>&1 || true; \
 	echo "syscov: serial transcripts kept in $$cov/"; \
@@ -6927,8 +7019,8 @@ smoke-syscall-coverage-control:
 	SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CAPTEST: PASS' \
 	    tools/smoke_test.sh horus.iso > "$$cov/captest.log" 2>&1 || true; \
 	$(MAKE) --no-print-directory clean; \
-	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 SYSCOV_PROBES_ABSENT=1 COREUTILS_MODULES=1; \
-	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 SYSCOV_PROBES_ABSENT=1 COREUTILS_MODULES=1 horus.iso; \
+	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 SYSCOV_PROBES_ABSENT=1 COREUTILS_MODULES=1 SHLIBC_MODULE=1; \
+	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 SYSCOV_PROBES_ABSENT=1 COREUTILS_MODULES=1 SHLIBC_MODULE=1 horus.iso; \
 	SESSION_SERIAL_LOG="$$cov/modules.log" SESSION_TIMEOUT=$(SYSCOV_SESSION_TIMEOUT) \
 	    tools/modules_session.py horus.iso >/dev/null 2>&1 || true; \
 	echo "syscov-control: serial transcripts kept in $$cov/"; \
@@ -8044,6 +8136,71 @@ sys.exit('[shlibc-link] FAIL: '+', '.join(x.split()[3]+' is '+str(int(x.split()[
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='HELLOSHARED: PASS' FAIL_MARKER='FAIL' \
 		tools/smoke_test.sh horus.iso
+
+# THE SHIPPED ENDOWMENT (docs/design/shared-libc.md, step 1). A module build:
+# the kernel loads the library from the verified lib/libc.so boot module, init
+# holds it, the shell is granted the text, and the REAL shell spawns programs
+# from /bin. tools/shlib_session.py asserts that a program asking for the
+# library (hello_shared) binds and runs; that one not asking (shlibprobe) holds
+# nothing; that errno set by one program is not the next program's; and that an
+# exec starts its new image from a fresh copy. Each arm puts one defect back and
+# must fail on the sentence that names it, not merely fail.
+.PHONY: smoke-shlib-inherit smoke-shlib-inherit-image-control \
+        smoke-shlib-inherit-data-control smoke-shlib-inherit-exec-control \
+        smoke-shlib-inherit-pin-control
+smoke-shlib-inherit:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SHLIB_INHERIT_MODULES=1 $(SHLIBARM)
+	@$(MAKE) --no-print-directory SHLIB_INHERIT_MODULES=1 $(SHLIBARM) horus.iso
+	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) tools/shlib_session.py horus.iso
+
+smoke-shlib-inherit-image-control:
+	@out=$$($(MAKE) --no-print-directory smoke-shlib-inherit SHLIBARM=SHLIB_INHERIT_ANY_IMAGE=1 2>&1); rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "SHLIB IMAGE CONTROL: FAIL - every child inherited the library and the gate passed"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "a program that never asked holds the library"; then \
+	    echo "SHLIB IMAGE CONTROL: FAIL - it failed, but not on the inheritance."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "SHLIB IMAGE CONTROL: PASS - a spawn that ignores the image is caught"
+
+smoke-shlib-inherit-data-control:
+	@out=$$($(MAKE) --no-print-directory smoke-shlib-inherit SHLIBARM=SHLIB_DATA_TEMPLATE_SHARED=1 2>&1); rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "SHLIB DATA CONTROL: FAIL - the template was shared and the gate passed"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "one program's library data reached the next"; then \
+	    echo "SHLIB DATA CONTROL: FAIL - it failed, but not on the shared data."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "SHLIB DATA CONTROL: PASS - library data shared between programs is caught"
+
+smoke-shlib-inherit-pin-control:
+	@out=$$($(MAKE) --no-print-directory smoke-shlib-inherit SHLIBARM=SHLIB_TEMPLATE_UNPINNED=1 2>&1); rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "SHLIB PIN CONTROL: FAIL - the template was collectable and the gate passed"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "the library's data template is gone"; then \
+	    echo "SHLIB PIN CONTROL: FAIL - it failed, but not on the template."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "SHLIB PIN CONTROL: PASS - a collected library template is caught"
+
+smoke-shlib-inherit-exec-control:
+	@out=$$($(MAKE) --no-print-directory smoke-shlib-inherit SHLIBARM=SHLIB_EXEC_NO_DATA=1 2>&1); rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "SHLIB EXEC CONTROL: FAIL - exec forgot the library's data and the gate passed"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "the image after an exec could not bind"; then \
+	    echo "SHLIB EXEC CONTROL: FAIL - it failed, but not on the exec."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "SHLIB EXEC CONTROL: PASS - an exec without the library's data is caught"
 
 .PHONY: smoke-shlibc
 smoke-shlibc:

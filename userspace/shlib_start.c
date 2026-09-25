@@ -51,31 +51,40 @@ const void *const *__horus_shlib_table;
 struct _reent;
 struct _reent *_impure_ptr;
 
-/* Must match LIBC_SLOT_FIRST in src/include/kernel.h -- the first capability
- * over the shared library's pages. */
-#define SLOT_LIBC_FIRST 40
+/* The first capability over the shared library's pages: CAPSLOT_LIBC_FIRST,
+ * one header for both rings, so the kernel and this file cannot disagree. */
+#define SLOT_LIBC_FIRST CAPSLOT_LIBC_FIRST
 
 /* Index of _impure_ptr in the export table. Generated with the table itself, so
  * this file holds no remembered number. */
 #include "libc_exports.h"
 
-/* Returns 0 on success. On failure the caller has no libc and cannot report
- * much: it writes a fixed string with a raw syscall and exits, because a
- * program that continues here dies later at an address that explains nothing. */
+/* Returns 0 on success, or one of the SHLIB_BIND_* reasons below. On failure
+ * the caller has no libc: crt0_shared says which reason, straight to the console
+ * endpoint, and exits, because a program that continues here dies later at an
+ * address that explains nothing. */
 int shlib_bind(void) {
     struct shlib_info si;
 
-    if (sys_shlib_info(SLOT_LIBC_FIRST, &si) != 0) return -1;
-    if (si.pages == 0 || si.entry == 0) return -1;
+    if (sys_shlib_info(SLOT_LIBC_FIRST, &si) != 0) return SHLIB_BIND_NO_CAP;
+    if (si.pages == 0 || si.entry == 0) return SHLIB_BIND_NO_CAP;
+
+    /* The library has data and nobody mapped it: the kernel maps a program's
+     * private copy at spawn and exec (docs/design/shared-libc.md §5), and a task
+     * that holds data capabilities of its own (the SHLIB self-tests) maps them
+     * below. If neither, the first page mapped below fails and so does the bind,
+     * before anything touches an address that is not there. */
+    int data_mapped = (si.flags & SHLIB_INFO_DATA_MAPPED) != 0;
 
     for (unsigned i = 0; i < si.pages; i++) {
         int is_data = (si.data_first != SHLIB_INFO_NO_DATA) &&
                       (i >= si.data_first) && (i < si.data_first + si.data_pages);
+        if (is_data && data_mapped) continue;   /* already this task's own memory */
         unsigned rights = is_data ? (CAP_RIGHT_READ | CAP_RIGHT_WRITE)
                                   : (CAP_RIGHT_READ | CAP_RIGHT_EXEC);
         if (sys_map_frame(SLOT_LIBC_FIRST + i,
                           si.base + (unsigned long long)i * 4096, rights) != 0)
-            return -1;
+            return is_data ? SHLIB_BIND_NO_DATA : SHLIB_BIND_TEXT;
     }
 
     /* Publish LAST of the mapping steps: a stub that read this pointer while the
@@ -89,7 +98,7 @@ int shlib_bind(void) {
      * library itself uses. */
     struct _reent **lib_impure =
         (struct _reent **)__horus_shlib_table[SHLIB_IDX__impure_ptr];
-    if (lib_impure == 0 || *lib_impure == 0) return -1;
+    if (lib_impure == 0 || *lib_impure == 0) return SHLIB_BIND_UNINIT;
     _impure_ptr = *lib_impure;
 
     return 0;

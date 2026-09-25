@@ -1135,8 +1135,8 @@ address space is torn down.
 | `check_claude_md` (2026-09-10) | **The one file nothing could check.** `CLAUDE.md` is the operating manual every session reads first, and it is gitignored and untracked, so no CI job, no reviewer and no other checker has ever seen it. It went stale exactly as an unchecked document does: two defect flags described as ungated hours after both were gated, and three line-number references pointing at unrelated code. `tools/check_claude_md.py` resolves every reference it makes (`make` targets, paths, build flags, the symbols it names in prose, the files it tells the reader to run) and forbids line-number citations outright, since a line number is the reference that goes stale silently while still looking right. **Developer-local by design and NOT a CI job**: the file is not in the repository, so in CI it could never fail, and this project does not ship checks that cannot fail. It exits 0 with a note when there is no `CLAUDE.md`, which is what a fresh clone and CI both see, and it earns its place in the local pre-commit sweep. Falsified nine ways (`tools/test_check_claude_md.sh`), including **both rename shapes**: renaming `foo` to `foo_RENAMED` leaves `foo` in the file, so a substring test passes over exactly the mutation it exists to catch, that arm reported NOT CAUGHT until the check grew a word boundary. |
 | `smoke-ksp-guard` | The **false-positive** arm for the producer-side resume-`%rsp` guard, and the direction whose absence is a known way to ship a regression. Every other arm on this guard injects a bogus value and asks whether it fires: they measure false *negatives*, and a predicate that rejected every stack pointer would satisfy all of them. This boots the **default** workload, where every resume value is legal, and requires `SCHED BOGUS KSP` to be **absent**. Falsified by `KSP_GUARD_ALWAYS=1`, which makes `ksp_is_bogus()` reject everything: the guard then fires on a legitimate address (`ipc_block_switch task=2 ksp=0xffffffff8020cf40`) and the gate goes red. The default workload rather than `PROC_SELFTEST` on purpose; the latter still trips [G-9] on ~1–2% of boots and would make this intermittently red for an unrelated reason. |
 | `smoke-ksp-guard-control` | **[G-9]**, producer side. All four switch functions (`preempt_on_tick`, `ipc_block_switch`, `sched_yield_switch`, `task_exit_switch`) end in the same three lines (take `tasks[next].saved_ksp`, drop the lock, return it) and every selection loop above them required that value to be merely **non-zero**. Each now validates it **against the page tables** (`kern_addr_present`), not an address range: `per_task_kstacks`, `ap_idle_stacks` and `ap_ist` all live inside `[__bss_start, __bss_end)` and their guards are armed by being made *absent*, so a pointer sitting in a guard page passes every range test in the tree. Both the value and the byte 8 below it are checked, since that is where the epilogue pushes. On failure it names the producing function and returns 0, so the caller parks instead of `iretq`-ing onto it. `KSP_GUARD_INJECT=1` forges `-7` and requires `SCHED BOGUS KSP from task_exit_switch` on the wire. **A detector, not a fix**, across 57 pinned boots containing a live reproduction it did not fire once, which is what rules those four producers out. |
-| `syscall-coverage` | **The coverage claim over the syscall table.** Boots three workloads under `SYSCALL_COVERAGE=1` (the scripted ring-3 session, the conformance suite, and the boot-modules session) and records which syscall **handler bodies** are entered, then diffs the union against `.github/syscall-coverage.yml`. Currently **89 of 101** implemented syscalls. It does not demand all of them; it demands the number be decided rather than drifting, and every gap be written down. Fails four ways, all falsified: a syscall in neither list, a `covered` one whose handler stopped running, an `uncovered` one whose handler *did* run (a stale reason), and a serial log with no `SYSCOV` lines at all; that last is what stops a mis-built arm from reporting a page of spurious regressions, or an empty log from passing silently. |
-| `syscall-coverage` | **The coverage claim over the syscall table.** Boots three workloads under `SYSCALL_COVERAGE=1` (the scripted ring-3 session, the conformance suite, and the boot-modules session) and records which syscall **handler bodies** are entered, then diffs the union against `.github/syscall-coverage.yml`. Currently **89 of 101** implemented syscalls. It does not demand all of them; it demands the number be decided rather than drifting, and every gap be written down. Fails four ways, all falsified: a syscall in neither list, a `covered` one whose handler stopped running, an `uncovered` one whose handler *did* run (a stale reason), and a serial log with no `SYSCOV` lines at all; that last is what stops a mis-built arm from reporting a page of spurious regressions, or an empty log from passing silently. |
+| `syscall-coverage` | **The coverage claim over the syscall table.** Boots three workloads under `SYSCALL_COVERAGE=1` (the scripted ring-3 session, the conformance suite, and the boot-modules session) and records which syscall **handler bodies** are entered, then diffs the union against `.github/syscall-coverage.yml`. Currently **90 of 101** implemented syscalls. It does not demand all of them; it demands the number be decided rather than drifting, and every gap be written down. Fails four ways, all falsified: a syscall in neither list, a `covered` one whose handler stopped running, an `uncovered` one whose handler *did* run (a stale reason), and a serial log with no `SYSCOV` lines at all; that last is what stops a mis-built arm from reporting a page of spurious regressions, or an empty log from passing silently. |
+| `syscall-coverage` | **The coverage claim over the syscall table.** Boots three workloads under `SYSCALL_COVERAGE=1` (the scripted ring-3 session, the conformance suite, and the boot-modules session) and records which syscall **handler bodies** are entered, then diffs the union against `.github/syscall-coverage.yml`. Currently **90 of 101** implemented syscalls. It does not demand all of them; it demands the number be decided rather than drifting, and every gap be written down. Fails four ways, all falsified: a syscall in neither list, a `covered` one whose handler stopped running, an `uncovered` one whose handler *did* run (a stale reason), and a serial log with no `SYSCOV` lines at all; that last is what stops a mis-built arm from reporting a page of spurious regressions, or an empty log from passing silently. |
 | `smoke-proc` (2026-08-30) | **Creating a task now costs authority**, property **S57**, and this gate is where it is witnessed. `grantee` is spawned by `proctest` and deliberately **not** endowed with `CAP_UNTYPED` (it is literally "a task spawned without the right to spawn further tasks", which is the property audit finding 4.1 asked for) and asserts that `SYS_SPAWN`, `SYS_FORK` and `SYS_SPAWN_IMAGE` all return **`SYS_ERR_PERM`**. That error specifically: a spawn can fail for want of a free slot, a bad name, or an unarmed image, and none of those says anything about authority. The distinction between "refused" and "failed" is the whole test. |
 | `smoke-proc-spawn-decoy-control` | Control arm. `SPAWN_SLOT3_DECOY_GATE=1` restores the pre-fix gate (cspace slot 3 with `SC_ANYTYPE`, which `create_task` fills in **every** task) and `grantee` can then spawn: `PROC_SELFTEST: FAIL spawn-without-untyped`, base gate red under the same flag. **The arm is what shows the old gate was vacuous rather than merely different**: the un-endowed child passes it, which is what "the check could not fail" means in practice. |
 | `smoke-proc` (what the endowments say) | Worth recording because the change is visible in *policy*, not only in code. Three tasks gained a `CAP_UNTYPED` because they create tasks: the **shell** (`spawn` is a shell command), **proctest**, and, already held, `init`. Each grant is now a written, revocable statement that this task may create tasks, where previously every task could and no grant expressed anything. `grantee` is the control: it is spawned by a task that holds one and is not given it. |
@@ -2283,7 +2283,7 @@ three ways: a planted phrasing in a `.c` file is caught with file and line; the 
 phrasing inside a quotation stays exempt, so a comment can record the wrong thing while
 correcting it.
 
-`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 107 properties
+`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 108 properties
 name a witness that resolves to a make target or a CI job.
 
 | Rule | Rejects |
@@ -2600,6 +2600,53 @@ per-task); `environ` likewise, empty on both sides; `optarg`/`optind` **are** th
 no stub, so a program needing them fails to **link** rather than running with an `optind` that
 silently stops advancing.
 
+
+### `smoke-shlib-inherit`: only a program that asks is given the shared libc, with data of its own (S106)
+
+The shipped system's half of roadmap 2.5, step 1 of `docs/design/shared-libc.md`. A module
+build (`SHLIB_INHERIT_MODULES=1`) ships the library as the `lib/libc.so` boot module and three
+programs, and `tools/shlib_session.py` drives the **real** shell over serial. Nothing is endowed
+by the test: the kernel loads the library, init holds it, init grants the shell the text, and
+each program is spawned from `/bin` by the shell.
+
+| Step | Asserts |
+|---|---|
+| `shlibprobe` | A program linked the way the coreutils are today (newlib static, no `DT_NEEDED`) holds **no** library capability: `SYS_SHLIB_INFO` refuses it |
+| `shlibdata set` | The first program since boot to bind the library does, and sets errno to 4321 |
+| `shlibdata get` | The next program finds errno **0**: its copy of the library's data is its own |
+| `shlibdata exec` | Sets errno, then execs `shlibdata get`: the new image finds errno 0 |
+| `hello_shared` | An ordinary program (`printf`, `malloc`) runs, last |
+
+**Each arm must fail on the sentence that names its defect**, not merely fail:
+
+| Arm | Defect | Required |
+|---|---|---|
+| `-image-control` | `SHLIB_INHERIT_ANY_IMAGE=1`: every child inherits | `a program that never asked holds the library` |
+| `-data-control` | `SHLIB_DATA_TEMPLATE_SHARED=1`: the template in every task | `one program's library data reached the next` |
+| `-exec-control` | `SHLIB_EXEC_NO_DATA=1`: exec forgets the data | `the image after an exec could not bind the library` |
+| `-pin-control` | `SHLIB_TEMPLATE_UNPINNED=1`: the collector frees the template | `the library's data template is gone` |
+
+**Three defects were found building it, and two of them are what the arms now hold.**
+
+- **The slot range collided.** The library's capabilities were first placed at slot 40, the
+  self-tests' convention, which is also where init keeps its own retyped objects (40, 41, 42).
+  init's retypes overwrote its library pages, and it granted the shell a notification where page
+  2 belonged, so no program could inherit the set. The range is 128 to 191 now, which no slot
+  convention in the tree uses, and first-free allocation skips it.
+- **The data template was garbage.** No capability names it, so the object collector freed and
+  zeroed it when the first program to bind the library exited. The first program worked and every
+  later one could not bind. Latent since the self-test era, when copies were made at boot and never
+  again. The library's frames are collector roots now; `-pin-control` is that defect put back.
+- **A refused bind was silent.** crt0 reported it on fd 2, which `posix_init` creates, and which
+  therefore does not exist when the library it lives in has just failed to bind. Three different
+  failures all looked like a command that printed nothing. crt0 now says why, through the console
+  endpoint every spawned task is given, and the arms match on those reasons.
+
+**Why the data steps avoid stdio.** Under the shared-template arm, a previous program's stdio
+buffers and malloc arena are in the page the next one maps, so a `printf` follows a pointer into
+a dead heap and faults before reporting anything. The arm's defect would then look like a crash,
+and a crash is what the unpinned template looks like too. `shlibdata` reports with `write(2)` and
+a number formatted by hand, and `hello_shared`, which does use stdio, runs last.
 ### `smoke-shlibc`: a ring-3 task calls newlib out of the shared library
 
 Every other shlib gate demonstrates the **mechanism's properties** (text shared and unwritable

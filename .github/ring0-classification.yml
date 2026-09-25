@@ -403,7 +403,16 @@
 # in untyped.c now adds the TCB allowance to the cspace it checks: it passed
 # while the header sized a 40-byte capability at 32, and the boot provisioned
 # 225 tasks instead of 256 (see CAP_BYTES in src/include/kernel.h).
-core_budget_loc: 10749
+#
+# 2026-09-25: 10749 -> 10776, +27, S106 (the shipped system hands out the shared
+# libc, docs/design/shared-libc.md step 1). Core because it is the capability and
+# memory machinery itself: the library's frames made roots of the object collector
+# in mark_reachable (untyped.c, the defect the pin arm puts back), the first-free
+# scan skipping the library's slot range (capability.c), the private-copy mapping
+# (paging.c), and the DT_NEEDED decision and its bookkeeping in the loader and the
+# spawn and exec paths. The endowment itself (shlib.c) is classified with the
+# rest of that file.
+core_budget_loc: 10776
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

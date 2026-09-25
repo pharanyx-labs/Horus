@@ -925,6 +925,87 @@ fn x86_64_reloc_locate(buf: &[u8], e_phoff: u32, e_phnum: u16) -> Result<ElfX866
     Ok(ElfX8664RelocTable { rela_file_off, sym_file_off, nrela })
 }
 
+/// The one shared library an image may name. Spelled once; the loader compares
+/// against it byte for byte.
+const SHARED_LIBC_NAME: &[u8] = b"libc.so";
+
+/// Does this x86-64 image ask for the shared libc (docs/design/shared-libc.md §6)?
+///
+/// `Ok(false)`: no `DT_NEEDED` at all, a static image, loaded as it always was.
+/// `Ok(true)`: exactly one `DT_NEEDED`, naming exactly `libc.so`.
+/// `Err(-16)`: anything else -- two entries, another name, a `DT_NEEDED` with no
+/// string table, or a name that runs off the table or the image. There is one
+/// shared library, so an image asking for any other is asking for something that
+/// will never be there, and it is refused rather than run with a dependency the
+/// kernel cannot meet.
+///
+/// The answer decides whether a child INHERITS the library's text capabilities
+/// at spawn, so it is an authority decision made on untrusted bytes: every read
+/// here is a bounds-checked slice access, as in x86_64_reloc_locate above, and a
+/// malformed table is a refusal, never a guess.
+fn x86_64_needs_libc(buf: &[u8], e_phoff: u32, e_phnum: u16) -> Result<bool, i32> {
+    let ph = e_phoff as usize;
+    let len = buf.len() as u64;
+
+    let (mut dyn_off, mut dyn_sz) = (0u64, 0u64);
+    for i in 0..e_phnum as usize {
+        let p = ph + i * X86_64_PHENTSIZE;
+        if elf_rd_u32(buf, p).ok_or(-16)? == 2 {
+            dyn_off = elf_rd_u64(buf, p + 8).ok_or(-16)?;
+            dyn_sz = elf_rd_u64(buf, p + 32).ok_or(-16)?;
+            break;
+        }
+    }
+    if dyn_off == 0 || dyn_sz == 0 {
+        return Ok(false);
+    }
+    if dyn_off > len || dyn_sz > len || dyn_off + dyn_sz > len {
+        return Err(-16);
+    }
+
+    let (mut needed, mut needed_off) = (0u32, 0u64);
+    let (mut strtab_vaddr, mut strsz) = (0u64, 0u64);
+    let mut o = 0u64;
+    while o + 16 <= dyn_sz {
+        let base = (dyn_off + o) as usize;
+        let tag = elf_rd_u64(buf, base).ok_or(-16)? as i64;
+        let val = elf_rd_u64(buf, base + 8).ok_or(-16)?;
+        match tag {
+            0 => break, // DT_NULL
+            1 => {
+                // DT_NEEDED: an offset into the string table.
+                needed = needed.saturating_add(1);
+                needed_off = val;
+            }
+            5 => strtab_vaddr = val, // DT_STRTAB
+            10 => strsz = val,       // DT_STRSZ
+            _ => {}
+        }
+        o += 16;
+    }
+    if needed == 0 {
+        return Ok(false);
+    }
+    if needed > 1 || strtab_vaddr == 0 || strsz == 0 || needed_off >= strsz {
+        return Err(-16);
+    }
+    let strtab = x86_64_map_vaddr_to_file_off(buf, e_phoff, e_phnum, strtab_vaddr).ok_or(-16)?;
+    let end = strtab.checked_add(strsz).ok_or(-16)?;
+    if end > len {
+        return Err(-16);
+    }
+    // The name, NUL-terminated INSIDE the declared table: a name that reaches the
+    // end of the table without a NUL is malformed, whatever follows it.
+    let start = strtab.checked_add(needed_off).ok_or(-16)? as usize;
+    let table = buf.get(start..end as usize).ok_or(-16)?;
+    let nul = table.iter().position(|&c| c == 0).ok_or(-16)?;
+    if &table[..nul] == SHARED_LIBC_NAME {
+        Ok(true)
+    } else {
+        Err(-16)
+    }
+}
+
 /// Validate RELA entry `k` and compute the (target, value) to write.
 /// `Ok(Some((target, value)))` = write `value` at `target`, `Ok(None)` = skip
 /// (R_X86_64_NONE), `Err(-16)` = reject.
@@ -1039,6 +1120,32 @@ pub unsafe extern "C" fn rust_elf_x86_64_reloc_locate(
             *out = rt;
             0
         }
+        Err(code) => code,
+    }
+}
+
+/// FFI: does the image ask for the shared libc? 0 (no), 1 (yes, exactly
+/// `libc.so`), or -16 (refuse the image: another library, two of them, or a
+/// malformed dynamic section).
+///
+/// # Safety
+/// `buf` points to `buf_len` readable bytes. The C side is not trusted to have
+/// checked anything else: a null `buf` is refused here, and every offset read out
+/// of the image is bounds-checked against `buf_len`.
+#[no_mangle]
+pub unsafe extern "C" fn rust_elf_x86_64_needs_libc(
+    buf: *const u8,
+    buf_len: usize,
+    e_phoff: u32,
+    e_phnum: u16,
+) -> i32 {
+    if buf.is_null() {
+        return -16;
+    }
+    let s = core::slice::from_raw_parts(buf, buf_len);
+    match x86_64_needs_libc(s, e_phoff, e_phnum) {
+        Ok(true) => 1,
+        Ok(false) => 0,
         Err(code) => code,
     }
 }
@@ -1529,6 +1636,71 @@ mod tests {
             x86_64_reloc_resolve(&img, rt.rela_file_off, rt.sym_file_off, 0, slide, UMV64, &seg.0, &seg.1),
             Err(-16)
         );
+    }
+
+    // A minimal image whose dynamic section carries `needed` DT_NEEDED entries,
+    // each naming the string at offset `name_off` in a string table @1536 holding
+    // `strtab`. `strsz` is what DT_STRSZ declares. PT_LOAD maps file == vaddr.
+    fn build_needed_image(needed: &[u64], strtab: &[u8], strsz: u64, with_strtab: bool) -> [u8; 2048] {
+        let mut b = [0u8; 2048];
+        put_u32(&mut b, 64, 1);
+        put_u64(&mut b, 64 + 32, 2048);
+        let dyn_off = 256u64;
+        put_u32(&mut b, 120, 2);
+        put_u64(&mut b, 120 + 8, dyn_off);
+        let mut d = dyn_off as usize;
+        for n in needed {
+            put_u64(&mut b, d, 1); // DT_NEEDED
+            put_u64(&mut b, d + 8, *n);
+            d += 16;
+        }
+        if with_strtab {
+            put_u64(&mut b, d, 5); // DT_STRTAB
+            put_u64(&mut b, d + 8, 1536);
+            d += 16;
+            put_u64(&mut b, d, 10); // DT_STRSZ
+            put_u64(&mut b, d + 8, strsz);
+            d += 16;
+        }
+        put_u64(&mut b, d, 0);
+        d += 16;
+        put_u64(&mut b, 120 + 32, d as u64 - dyn_off);
+        b[1536..1536 + strtab.len()].copy_from_slice(strtab);
+        b
+    }
+
+    #[test]
+    fn x86_64_needs_libc_answers_and_refusals() {
+        let t = b"\0libc.so\0libm.so\0libc.so.6\0";
+        let sz = t.len() as u64;
+        // No DT_NEEDED: a static image, not a refusal.
+        assert_eq!(x86_64_needs_libc(&build_needed_image(&[], t, sz, true), 64, 2), Ok(false));
+        // No dynamic section at all: static too.
+        assert_eq!(x86_64_needs_libc(&[0u8; 256], 64, 0), Ok(false));
+        // Exactly libc.so.
+        assert_eq!(x86_64_needs_libc(&build_needed_image(&[1], t, sz, true), 64, 2), Ok(true));
+        // Another library, or libc.so with a suffix: refused.
+        assert_eq!(x86_64_needs_libc(&build_needed_image(&[9], t, sz, true), 64, 2), Err(-16));
+        assert_eq!(x86_64_needs_libc(&build_needed_image(&[17], t, sz, true), 64, 2), Err(-16));
+        // Two entries, even both libc.so: refused.
+        assert_eq!(x86_64_needs_libc(&build_needed_image(&[1, 1], t, sz, true), 64, 2), Err(-16));
+        // DT_NEEDED with no string table: refused.
+        assert_eq!(x86_64_needs_libc(&build_needed_image(&[1], t, sz, false), 64, 2), Err(-16));
+        // A name offset past DT_STRSZ: refused.
+        assert_eq!(x86_64_needs_libc(&build_needed_image(&[40], t, sz, true), 64, 2), Err(-16));
+        // A table declared too short to hold the NUL: refused, even though the
+        // bytes after it would complete the name.
+        assert_eq!(x86_64_needs_libc(&build_needed_image(&[1], t, 8, true), 64, 2), Err(-16));
+        // A table that runs off the end of the image: refused.
+        assert_eq!(x86_64_needs_libc(&build_needed_image(&[1], t, 4096, true), 64, 2), Err(-16));
+    }
+
+    #[test]
+    fn x86_64_needs_libc_never_panics_on_junk() {
+        let junk = [0xCDu8; 400];
+        for phoff in [0u32, 64, 396, 0xFFFF_FFF0] {
+            let _ = x86_64_needs_libc(&junk, phoff, 8);
+        }
     }
 
     #[test]

@@ -550,6 +550,12 @@ static inline int sys_console_owned(void) {
                                    * volume (installer only). Deliberately NOT
                                    * CAPSLOT_STORAGE -- reading and writing the
                                    * object store must not confer erasing it. */
+#define CAPSLOT_LIBC_FIRST 128    /* CAP_FRAME, READ|EXEC: the shared libc's text,
+                                   * one slot per page index from here on
+                                   * (docs/design/shared-libc.md). Held by init,
+                                   * the shell, and each program whose image asks.
+                                   * First-free allocation never lands in this
+                                   * range. */
 
 /* ---- Untyped memory (roadmap 0.3, audit finding I-7) ----------------------
  *
@@ -690,6 +696,18 @@ static inline int sys_device_info(uint32_t dev_slot, struct dev_info *out) {
  * which tools/check_shared_object.py enforces at build time.
  */
 #define SHLIB_INFO_NO_DATA  0xFFFFFFFFu
+/* In `flags`: the kernel mapped this task's private copy of the library's
+ * writable pages when it spawned or exec'd the image (docs/design/shared-libc.md
+ * §5), so the caller maps only the text. Absent, the caller holds data
+ * capabilities of its own (the SHLIB self-tests) or none at all. */
+#define SHLIB_INFO_DATA_MAPPED  0x1u
+
+/* Why a shared-libc program's bind was refused (userspace/shlib_start.c), each
+ * reported by crt0_shared in words, since the program has no libc to say it with. */
+#define SHLIB_BIND_NO_CAP   (-1)   /* SYS_SHLIB_INFO refused: no text capability     */
+#define SHLIB_BIND_NO_DATA  (-2)   /* neither the kernel nor a capability gave data   */
+#define SHLIB_BIND_TEXT     (-3)   /* a text page would not map                        */
+#define SHLIB_BIND_UNINIT   (-4)   /* mapped, but _impure_ptr is null in the data     */
 
 struct shlib_info {
     uint64_t base;        /* virtual address the library is mapped at         */
@@ -697,7 +715,7 @@ struct shlib_info {
     uint32_t pages;       /* total pages, text + data                         */
     uint32_t data_first;  /* first writable page, or SHLIB_INFO_NO_DATA       */
     uint32_t data_pages;  /* how many writable pages; 0 when there are none   */
-    uint32_t reserved;    /* pad to an 8-byte multiple                        */
+    uint32_t flags;       /* SHLIB_INFO_DATA_MAPPED, or 0                     */
 };
 
 /* Report where the shared library named by the CAP_FRAME (READ right) at

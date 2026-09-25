@@ -147,9 +147,11 @@ covered:
   #   - SYS_GET_PASS blocks. See its entry below; the first draft of the probe
   #     hung the gate.
   #   - SYS_SHLIB_INFO would enter a body that returns at its first line,
-  #     because shlib_active() is false in every tracked image. Entering it
+  #     because shlib_active() was false in every tracked image. Entering it
   #     would raise this file's number without running the gate the syscall is
-  #     interesting for. See its entry below.
+  #     interesting for. It was promoted on 2026-09-25 for the right reason:
+  #     the modules workload ships the library (SHLIBC_MODULE=1), and
+  #     init's call runs the whole capability test (roadmap 2.5 step 1).
   # Those two are the boundary of the technique, and stating it is the point:
   # "the body was entered" stops being coverage when the body is one branch of
   # a feature that is compiled out.
@@ -167,6 +169,7 @@ covered:
   - SYS_IPC_REPLY            # empty slot and wrong-type slot, both refused
   - SYS_MAP_FRAME            # empty slot, the legacy slot-3 decoy, and W^X
   - SYS_UNMAP_FRAME          # empty slot
+  - SYS_SHLIB_INFO           # init, every boot of the modules workload, which ships the library
   - SYS_MAP_REGION           # a zero-length run, and an empty slot
   - SYS_FB_INFO              # no device capability, and a wrong-type slot
   - SYS_FRAME_PAGES          # empty slot, and the legacy slot-3 decoy
@@ -246,8 +249,9 @@ covered:
   # that scribbles on the filesystem it shares a boot with is a flaky gate. The
   # body is entered by writes the storage layer refuses -- which still run
   # copy_from_user, so the #176 static-buffer check is made on the write path too.
-  # That is the same boundary SYS_SHLIB_INFO records below, stated for a syscall
-  # whose success path needs a scratch device rather than a compiled-in feature.
+  # That is the same boundary SYS_SHLIB_INFO recorded until 2026-09-25 (entered,
+  # but its body one branch of a feature no tracked image had), stated for a
+  # syscall whose success path needs a scratch device rather than a feature.
   #
   # Witness: make smoke-blockprobe. Falsified by BLOCK_ERRNO_LEGACY=1, which puts
   # the bare returns back and must turn the probe red naming the
@@ -470,8 +474,6 @@ uncovered:
   # promote anything.
   SYS_GET_PASS: >-
     SC_NONE, so the body IS reachable by any caller -- and it BLOCKS. Its only early return is console_hw_owned(), and no ring-3 server owns the UART in the captest image, so the call reaches console_getc() and waits for a keystroke. MEASURED 2026-08-30, by writing the probe: it hung smoke-captest for the full 40s timeout with no marker. This is the difference from SYS_GET_LINE, which looks identical from the dispatch table and is `covered`: h_get_line tests CAP_CONSOLE inside the handler and refuses captest outright, where h_read's fd 0 branch and this one test no authority at all. Covering it needs a workload where a console server owns the UART, or a non-blocking branch this syscall does not have
-  SYS_SHLIB_INFO: >-
-    SC_NONE, so a probe would enter the body -- and the body returns at its FIRST LINE, because shlib_active() is false in every tracked image. Marking it covered on that basis would raise this file's number without ever running the capability gate the syscall is interesting for (S51, plus the SHLIB_INFO_UNGATED and SHLIB_INFO_TYPE_ONLY arms). "The body was entered" stops being coverage when the body is one branch of a feature compiled out, and this is the entry that says so. It IS entered on every boot of a SHLIB_SELFTEST build, by both shlibtest and shlibpeer, which is what make smoke-shlib asserts. It moves to `covered` when the shared library becomes part of an ordinary image, which is roadmap 2.5's remaining half
   # (4) NEW ON 2026-09-25 AND NOT YET USED BY ANY SHIPPED PROGRAM. The four
   # capability-token syscalls (docs/design/filesystem.md §5.1) have one client so
   # far, their own witness, so no tracked workload enters them. They move to

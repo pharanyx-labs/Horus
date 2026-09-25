@@ -757,6 +757,14 @@ void h_shlib_info(struct interrupt_frame64 *r) {
      * marked. */
     info.data_first = SHLIB_INFO_NO_DATA;
     info.data_pages = 0;
+    /* Whether the kernel mapped THIS task's private copy of the data at spawn or
+     * exec. crt0 maps only the text when it is set, and refuses to bind when the
+     * library has data and it is not, rather than touch an unmapped page. */
+    {
+        int me = get_current_task();
+        info.flags = (me > 0 && me < g_max_tasks && tasks[me].shlib_data)
+                   ? SHLIB_INFO_DATA_MAPPED : 0;
+    }
     for (uint32_t i = 0; i < shlib_pages(); i++) {
         if (!shlib_page_writable(i)) continue;
         if (info.data_first == SHLIB_INFO_NO_DATA) info.data_first = i;

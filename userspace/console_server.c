@@ -96,13 +96,23 @@ static volatile uint8_t *fbp;       /* framebuffer bytes; 0 until mapped */
  * number of words. A uint32_t store there writes a byte into the next pixel. */
 static uint32_t fb_pitch_b, fb_w, fb_h, fb_scale = 1, fb_bypp = 4;
 
-/* WHERE THE GRID STARTS, in pixels, so that it is centred on the display. The
- * same rule as the kernel's g_fb_ox/g_fb_oy in src/kernel/terminal.c, computed
- * from the same inputs, so the screen does not jump sideways when this server
- * takes the display over from the kernel's boot log. On the IdeaPad's 1366x768
- * panel the 640-pixel grid used to sit against the left edge with the right half
- * of the screen black; this is what puts the installer in the middle. */
+/* WHERE THE GRID STARTS, in pixels: the left edge and the top, as the kernel's
+ * g_fb_ox/g_fb_oy in src/kernel/terminal.c, so the log does not jump when this
+ * server takes the display over. Only a full-screen program's surface is moved,
+ * to fb_cx below. */
 static uint32_t fb_ox, fb_oy;
+/* WHERE A FULL-SCREEN PROGRAM'S SURFACE GOES, horizontally: centred. The boot log
+ * and every cooked line start at the left edge (fb_ox, fb_oy are 0); only the
+ * surface a program like the installer draws is moved to the middle, and only
+ * while it is being drawn (surf_on). The maintainer's rule (2026-09-24): the
+ * install screens are centred, the kernel log and the console never are. The
+ * kernel's progress panel, drawn over the installer while it formats, uses the
+ * same column (g_fb_cx in src/kernel/terminal.c). */
+static uint32_t fb_cx;
+static int surf_on;       /* a full-screen program is drawing its surface   */
+static int fb_plain;      /* a view (Alt+F2, scrollback) is up: all at x=0  */
+static unsigned surf_top(void);
+static unsigned surf_rows(void);
 
 /* One pixel, at whichever depth this display gave us. Declared after fb_bypp,
  * which it reads. */
@@ -142,7 +152,10 @@ static void fb_paint(unsigned idx, uint16_t cell) {
     uint32_t fg = fb_pal[attr & 0x0F], bg = fb_pal[(attr >> 4) & 0x07];
 
     uint32_t cw = FB_CELL_W * fb_scale, chh = FB_CELL_H * fb_scale;
-    uint32_t px0 = fb_ox + (idx % 80u) * cw, py0 = fb_oy + (idx / 80u) * chh;
+    const unsigned row = idx / 80u;
+    const uint32_t ox = (surf_on && !fb_plain && row >= surf_top()
+                         && row < surf_top() + surf_rows()) ? fb_cx : fb_ox;
+    uint32_t px0 = ox + (idx % 80u) * cw, py0 = fb_oy + row * chh;
     if (px0 + cw > fb_w || py0 + chh > fb_h) return;
 
     const uint8_t *g = &font_8x16[ch][0];
@@ -160,6 +173,28 @@ static void fb_paint(unsigned idx, uint16_t cell) {
  * a view that is NOT the console (the kernel log, KLOG_CONSOLE builds) can draw
  * over the screen without writing fb_cells, and leaving it is one repaint. */
 static void fb_blit(unsigned idx) { fb_paint(idx, fb_cells[idx]); }
+
+/* Every pixel to the background, then every cell. Used when the layout changes
+ * (a surface starts or ends, a view opens or closes): a cell drawn at one origin
+ * and then at another would otherwise leave its old pixels behind. */
+static void fb_fill_bg(void) {
+    if (!fbp) return;
+    for (uint32_t py = 0; py < fb_h; py++) {
+        volatile uint8_t *row = fbp + (uint64_t)py * fb_pitch_b;
+        for (uint32_t px = 0; px < fb_w; px++) fb_store(row + (uint64_t)px * fb_bypp, fb_pal[0]);
+    }
+}
+static void fb_repaint_all(void) {
+    if (!fbp) return;
+    fb_fill_bg();
+    for (unsigned i = 0; i < 80u * fb_rows; i++) fb_blit(i);
+}
+
+static void surf_set(int on) {
+    if (on == surf_on) return;
+    surf_on = on;
+    fb_repaint_all();
+}
 
 /* SCROLL, DO NOT WRAP TO THE TOP.
  *
@@ -775,6 +810,12 @@ static void klog_mark_u(unsigned v) {
 
 static void klog_view(void) {
     if (!fbp) for (unsigned i = 0; i < VGA_CELLS; i++) klog_saved_vga[i] = vga[i];
+    /* The log is never centred. Only when a surface IS centred do the two
+     * layouts differ, and only then must the display be cleared, or pixels the
+     * console does not own (the kernel's, from before the handover) would be
+     * wiped for nothing. */
+    fb_plain = 1;
+    if (surf_on) fb_fill_bg();
     klog_fetch();
     klog_scroll = 0;
     klog_draw();
@@ -831,7 +872,8 @@ static void klog_view(void) {
         klog_draw();
     }
 
-    if (fbp) { for (unsigned i = 0; i < 80u * fb_rows; i++) fb_blit(i); }
+    fb_plain = 0;
+    if (fbp) { if (surf_on) fb_repaint_all(); else for (unsigned i = 0; i < 80u * fb_rows; i++) fb_blit(i); }
     else     { for (unsigned i = 0; i < VGA_CELLS; i++) vga[i] = klog_saved_vga[i]; }
     klog_mark("KLOG_CONSOLE: back to the console\n");
 }
@@ -1113,7 +1155,8 @@ static void sb_draw(void) {
 static void sb_live(void) {
     if (!sb_off) return;
     sb_off = 0;
-    if (fbp) { for (unsigned i = 0; i < 80u * fb_rows; i++) fb_blit(i); }
+    fb_plain = 0;
+    if (fbp) { if (surf_on) fb_repaint_all(); else for (unsigned i = 0; i < 80u * fb_rows; i++) fb_blit(i); }
     else     { for (unsigned i = 0; i < VGA_CELLS; i++) vga[i] = sb_saved_vga[i]; }
 }
 
@@ -1127,6 +1170,7 @@ static void sb_page(int up) {
         if (!sb_count || sb_off == sb_count) return;
         if (!sb_off && !fbp)
             for (unsigned i = 0; i < VGA_CELLS; i++) sb_saved_vga[i] = vga[i];
+        if (!sb_off) { fb_plain = 1; if (surf_on) fb_fill_bg(); }   /* history is never centred */
         sb_off = (sb_off + page > sb_count) ? sb_count : sb_off + page;
         sb_draw();
     } else {
@@ -1197,6 +1241,7 @@ static void surf_tidy(void) {
  * screen and the rest of its message is not to be trusted onto the display. */
 static int con_draw_cells(const uint8_t *d, unsigned len) {
     sb_live();
+    surf_set(1);
     const unsigned rows = surf_rows(), top = surf_top();
     unsigned i = 0, painted = 0;
     if (surf_stale) { surf_tidy(); surf_stale = 0; }
@@ -1225,6 +1270,7 @@ static int con_draw_cells(const uint8_t *d, unsigned len) {
  * told the same. The one way cooked output can start again on an empty screen. */
 static void con_clear(void) {
     sb_live();
+    surf_on = 0;           /* the cleared screen is the console again */
     const uint16_t blank = (uint16_t)((VGA_ATTR << 8) | ' ');
     if (fbp) {
         for (unsigned i = 0; i < 80u * fb_rows; i++) { fb_cells[i] = blank; fb_blit(i); }
@@ -1402,8 +1448,10 @@ void _start(void) {
                     {
                         uint32_t gw = 80u * FB_CELL_W * fb_scale;
                         uint32_t gh = (uint32_t)fb_rows * FB_CELL_H * fb_scale;
-                        fb_ox = (gw < fb_w) ? (fb_w - gw) / 2u : 0u;
-                        fb_oy = (gh < fb_h) ? (fb_h - gh) / 2u : 0u;
+                        (void)gh;
+                        fb_cx = (gw < fb_w) ? (fb_w - gw) / 2u : 0u;
+                        fb_ox = 0u;             /* the log: the left edge  */
+                        fb_oy = 0u;             /* and the top             */
                     }
                     for (unsigned i = 0; i < 80u * fb_rows; i++)
                         fb_cells[i] = (uint16_t)((VGA_ATTR << 8) | ' ');

@@ -319,17 +319,24 @@ static inline void fb_store(uint8_t *p, uint32_t c) {
     }
 }
 static uint32_t  g_fb_w, g_fb_h;
-/* WHERE THE GRID STARTS ON THE DISPLAY, in pixels (2026-09-24).
+/* WHERE THE GRID STARTS ON THE DISPLAY, in pixels.
  *
- * The grid is 80 columns whatever the display is, so on anything wider than
- * 640 pixels (1280 at 2x) it used to sit against the left edge with the rest of
- * the screen black: on the IdeaPad's 1366x768 panel the installer occupied the
- * left half of the display and nothing the right. It is centred now, on both
- * axes, and every pixel the console writes goes through fb_blit_cell or
- * fb_draw_cursor, which add these. Clamped at zero rather than allowed to go
- * negative: a grid larger than the display (FB_GRID_FIXED_ROWS) must still clip
- * off the bottom exactly as it did, or that arm stops witnessing the lost rows. */
+ * The grid is 80 columns whatever the display is. The log and every console line
+ * start at the left edge, top row (0,0); only the installer's rows are centred,
+ * see g_fb_cx below. Every pixel the console writes goes through fb_blit_cell or
+ * fb_draw_cursor, which add these. A grid larger than the display
+ * (FB_GRID_FIXED_ROWS) must still clip off the bottom exactly as it did, or that
+ * arm stops witnessing the lost rows. */
 static uint32_t  g_fb_ox, g_fb_oy;
+/* THE LOG IS LEFT-ALIGNED; ONLY THE INSTALLER'S PANEL IS CENTRED (2026-09-24,
+ * the maintainer's rule: install screens centred, the kernel log never).
+ * g_fb_ox/g_fb_oy are the log's origin, 0,0. g_fb_cx is the centred column,
+ * the same one console_server centres the installer's surface on, and only
+ * the rows console_progress draws its panel into (g_cx_top..g_cx_end) use it,
+ * so the panel sits under the installer it describes. */
+static uint32_t  g_fb_cx;
+static int       g_cx_top = -1, g_cx_end = -1;
+static uint32_t fb_row_ox(int y) { return (y >= g_cx_top && y < g_cx_end) ? g_fb_cx : g_fb_ox; }
 static uint32_t  g_scale = 1;
 static uint16_t  fb_cells[VGA_ROWS * VGA_COLS];   /* sized for the MAXIMUM grid */
 
@@ -417,6 +424,13 @@ static void fb_draw_glyph(uint32_t px0, uint32_t py0, uint8_t ch,
     }
 }
 
+/* Pixel rows y0..y1 of the whole display to one palette colour. */
+static void fb_fill_px(uint32_t y0, uint32_t y1, int colour) {
+    for (uint32_t py = y0; py < y1 && py < g_fb_h; py++)
+        for (uint32_t px = 0; px < g_fb_w; px++)
+            fb_store(g_fbp + (uint64_t)py * g_fb_pitch_b + (uint64_t)px * g_fb_bypp, vga_palette[colour]);
+}
+
 /* Paint one cell. Bounds-checked against the real geometry, not against the
  * grid: the grid is what the console believes and the geometry is what the
  * hardware has, and a mismatch must clip rather than scribble. */
@@ -429,7 +443,7 @@ static void fb_blit_cell(int y, int x) {
     uint32_t fg   = vga_palette[attr & 0x0F];
     uint32_t bg   = vga_palette[(attr >> 4) & 0x07];
 
-    fb_draw_glyph(g_fb_ox + (uint32_t)x * (uint32_t)g_font.w * g_scale,
+    fb_draw_glyph(fb_row_ox(y) + (uint32_t)x * (uint32_t)g_font.w * g_scale,
                   g_fb_oy + (uint32_t)y * (uint32_t)g_font.h * g_scale, ch, fg, bg);
 }
 
@@ -445,7 +459,7 @@ static void fb_draw_cursor(void) {
 
     uint32_t cw = (uint32_t)g_font.w * g_scale;
     uint32_t chh = (uint32_t)g_font.h * g_scale;
-    uint32_t px0 = g_fb_ox + (uint32_t)cursor_x * cw;
+    uint32_t px0 = fb_row_ox(cursor_y) + (uint32_t)cursor_x * cw;
     uint32_t py0 = g_fb_oy + (uint32_t)cursor_y * chh;
     if (px0 + cw > g_fb_w || py0 + chh > g_fb_h) return;
 
@@ -576,8 +590,10 @@ void fb_console_init(void) {
     {
         uint32_t gw = (uint32_t)VGA_COLS * g_font.w * g_scale;
         uint32_t gh = (uint32_t)g_rows * g_font.h * g_scale;
-        g_fb_ox = (gw < g_fb_w) ? (g_fb_w - gw) / 2u : 0u;
-        g_fb_oy = (gh < g_fb_h) ? (g_fb_h - gh) / 2u : 0u;
+        (void)gh;
+        g_fb_cx = (gw < g_fb_w) ? (g_fb_w - gw) / 2u : 0u;
+        g_fb_ox = 0u;
+        g_fb_oy = 0u;
     }
 
     /* The shadow starts as the blank screen clear_screen would have drawn, and
@@ -585,11 +601,7 @@ void fb_console_init(void) {
      * grid, which firmware left holding whatever it left holding. */
     for (int i = 0; i < g_rows * VGA_COLS; i++) fb_cells[i] = (uint16_t)((current_attr << 8) | ' ');
     g_fb_console = 1;
-    for (uint32_t py = 0; py < g_fb_h; py++) {
-        uint8_t *row = g_fbp + (uint64_t)py * g_fb_pitch_b;
-        for (uint32_t px = 0; px < g_fb_w; px++)
-            fb_store(row + (uint64_t)px * g_fb_bypp, vga_palette[(current_attr >> 4) & 0x07]);
-    }
+    fb_fill_px(0, g_fb_h, (current_attr >> 4) & 0x07);
     fb_repaint();
 
 #ifdef FB_CONSOLE_SELFTEST
@@ -707,7 +719,14 @@ void console_progress_note(const char *note) { g_prog_note = note; }
 void console_progress(const char *title, const char *why1, const char *why2,
                       uint64_t done, uint64_t total) {
     if (g_rows < PROG_ROWS + 2) return;          /* no room; say nothing */
-    if (g_prog_top < 0) g_prog_top = g_rows - PROG_ROWS - 1;
+    if (g_prog_top < 0) {
+        g_prog_top = g_rows - PROG_ROWS - 1;
+        /* The panel's rows move to the centred column, so clear them across the
+         * whole display first: cells drawn there at the left edge would
+         * otherwise stay beside it. */
+        g_cx_top = g_prog_top; g_cx_end = g_prog_top + PROG_ROWS;
+        fb_fill_px((uint32_t)g_cx_top * g_font.h * g_scale, (uint32_t)g_cx_end * g_font.h * g_scale, 0);
+    }
     const int top = g_prog_top;
     /* CHECKED, NOT REASONED ABOUT. The guard above already implies top >= 1,
      * but this function writes cells by computing y * VGA_COLS + x and a

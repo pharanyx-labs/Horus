@@ -579,6 +579,12 @@ in this file.
 
 ### Changed
 
+- **The boot log and the console are left-aligned again; only the installer is centred.** #433
+  centred the whole character grid, which moved the kernel's log and every console line to the
+  middle of a wide screen. Now the log starts at the left edge and only a full-screen program's
+  surface (the installer) and the kernel's progress panel under it are centred. The Alt+F2 view
+  and scrollback are always left-aligned.
+
 - **A live boot's root password is `toor`; `rootpass` is gone.** The compiled-in `root` account
   a live boot offers (the boot menu's live entry, or a machine with no disk) now takes `toor`, and
   `rootpass` is no longer accepted anywhere: not by the kernel, not by any test harness. `user` /

@@ -124,11 +124,11 @@ OX, OY = (int(_o.group(1)), int(_o.group(2))) if _o else (None, None)
 if OX is None and expect != "refused":
     print("  [FAIL] the guest never reported where its grid starts"); sys.exit(1)
 
-# The one band both arms of this pair measure: empty when ring 3 cleared the
-# display and painted its session, full of the kernel's boot log when it did not.
-# Declared once so the gate and its control can never drift onto different bands
-# and stop being a pair. Derived by measurement -- the numbers, and why it moved
-# on 2026-09-10, are in the `server` arm below.
+# The band the `server-absent` arm requires to be FULL of the kernel's boot log:
+# rows 22-31 of a 16-pixel cell, where the log still is when nothing in ring 3
+# cleared it (measured 2026-09-10: 9116 pixels on that build). The `server` arm no
+# longer uses a fixed band; it derives one from the boot it is looking at, for the
+# reason given there.
 CLEARED_BAND = (352, 512)
 
 # Where the guest drew it: directly below the 80x50 grid, plus the 8px gap the
@@ -215,35 +215,62 @@ if expect == "server":
                 if rgb(x, y) != (0, 0, 0): n += 1
         return n
 
-    # THE CLEARED BAND HAS TO SIT BELOW ANYTHING THE SESSION PAINTS, and on
-    # 2026-09-10 it stopped doing so. It was y 200-400, measured when the login
-    # banner was a four-line box: ring 3 then reached y 192 and the band had ONE
-    # row of margin under it. The neofetch-style banner is fifteen lines with the
-    # blank line and the prompt, reaches y 299, and put 1281 pixels inside a band
-    # asserted to be empty -- a red gate that was not describing a defect. Note
-    # what the old margin means: at one row, the band would equally have reddened
-    # for a kernel line added before the handover, which shifts the session down
-    # without changing anything about the clear.
+    # THE CLEARED BAND IS DERIVED FROM THIS BOOT, NOT FIXED (2026-09-25).
     #
-    # Re-measured on this tree, both builds, same host, 1024x768 at a 16px cell:
-    #   band        cleared (server)   not cleared (server-absent)
-    #   y 200-400            1281                    11492   <- no longer separates
-    #   y 320-512               0                    10307
-    #   y 352-512               0                     9116   <- chosen
-    #   y 384-512               0                     7593
-    # 352 is 53 pixels (3.3 rows) below the session's deepest ink, and the broken
-    # build still puts 9116 pixels in the band -- nearly three times the 3217 the
-    # old band had to work with. So this is the same assertion with more room on
-    # both sides, not a softer one. The kernel's log ends near y 512; a change
-    # that shortened it by eight rows would quiet this band on the broken build
-    # too, so re-measure both arms if that log gets materially shorter.
+    # It was y 352-512, a band chosen to sit below the session and inside the
+    # kernel's boot log. That held only while the session always started at the
+    # same row, and it does not: init, fs_server and console_server print
+    # concurrently, and how many of their lines land AFTER console_server clears
+    # the display depends on scheduling. On a slow CI runner three more of them
+    # did, the whole session came up three rows lower, and the prompt (234 pixels
+    # of `horus login:`) was drawn inside the band -- main went red on 2333455
+    # with nothing wrong, and the margin under the session had been two rows. A
+    # fixed band cannot be both below a session whose start moves and inside a
+    # log whose length moves with it.
+    #
+    # So the band is measured from both ends of THIS boot:
+    #   K  the rows the kernel's boot log occupied: serial lines from the kernel's
+    #      first line to console_server's takeover marker (`CONSOLE_FB:`). Lines
+    #      that raced past the takeover are not in K, which is right: the kernel
+    #      never drew them.
+    #   P  the last inked row among those K rows on the screen: where the session
+    #      ends if the display was cleared.
+    # If ring 3 cleared the display, rows P+1..K-1 are blank and there are several
+    # of them. If it did not, the kernel's log still fills its own rows to K-1, P
+    # lands there, and no band is left -- which fails below, rather than passing
+    # on an empty range. The prompt can move anywhere; the property cannot.
     top = ink(0, 200)          # the banner console_server writes
-    mid = ink(*CLEARED_BAND)   # inside the kernel's grid, and blank once cleared
-    print(f"  non-black pixels: {top} in y 0-200, "
-          f"{mid} in y {CLEARED_BAND[0]}-{CLEARED_BAND[1]}")
+    print(f"  non-black pixels: {top} in y 0-200")
     check("ring 3 painted text near the top", top > 500)
-    check(f"the display was cleared: y {CLEARED_BAND[0]}-{CLEARED_BAND[1]} is blank",
-          mid == 0)
+
+    import re as _re
+    raw = open(log, "rb").read().decode("latin-1")
+    lines = _re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", raw).replace("\r", "").split("\n")
+    k0 = next((i for i, l in enumerate(lines) if "Horus secure microkernel" in l), None)
+    kt = next((i for i, l in enumerate(lines) if "CONSOLE_FB:" in l), None)
+    fm = _re.search(r"(\d+)x(\d+) font at (\d+)x", raw)
+    if k0 is None or kt is None or not fm or kt <= k0:
+        check("the boot log says where the kernel's log ended and ring 3 took over", False)
+        sys.exit(fail)
+    ch = int(fm.group(2)) * int(fm.group(3))
+    K = kt - k0
+    rows = [ink(r * ch, (r + 1) * ch) for r in range(K)]
+    inked = [r for r in range(K) if rows[r] > 0]
+    P = inked[-1] if inked else -1
+    band = (P + 1, K)
+    print(f"  kernel log: {K} rows; session ends at row {P}; "
+          f"band rows {band[0]}-{band[1] - 1} (y {band[0] * ch}-{band[1] * ch})")
+    # FOUR ROWS AT LEAST, and a smaller band is a failure, not a pass on less
+    # evidence: with the display uncleared the band is empty, and a band of a row
+    # or two is too little of the log's area to tell a clear from a short log.
+    check("the kernel's log left room below the session to show it was cleared "
+          "(at least 4 rows)", band[1] - band[0] >= 4)
+    mid = ink(band[0] * ch, band[1] * ch)
+    print(f"  non-black pixels in the band: {mid}")
+    # Only on a band that exists: an empty range is blank by definition, and an
+    # [ OK ] printed for it would read as evidence of a clear that nobody saw.
+    check("the display was cleared: every row of the kernel's log below the session "
+          "is blank", band[1] - band[0] >= 4 and mid == 0)
     sys.exit(fail)
 
 m = re.search(rb"(\d+)x(\d+) font at (\d+)x", open(log, "rb").read())
@@ -299,6 +326,12 @@ rc=$?
 if [ $rc -ne 0 ]; then
     echo "FB-CONSOLE FAIL ($EXPECT)"
     echo "  evidence: $SHOT and $LOG"
+    # THE SERIAL LOG INTO THE CI LOG. The evidence files stay on the runner, which
+    # is gone by the time anybody looks, and on 2026-09-25 that left a red main
+    # with no record of which lines moved the session. The tail is enough to see
+    # what was printed around the takeover.
+    echo "  ----- guest serial (tail) -----"
+    tail -45 "$LOG" 2>/dev/null | sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' | sed 's/^/  /'
     exit 1
 fi
 echo "FB-CONSOLE PASS ($EXPECT)"

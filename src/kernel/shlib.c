@@ -411,7 +411,7 @@ uint64_t shlib_entry(void) { return shlib_entry_table ? shlib_entry_table : shli
  * Everything above is the MECHANISM, and until 2026-09-25 only the self-tests
  * used it. What follows is who gets the library in the shipped system:
  *
- *   - the kernel loads the verified /lib/libc.so boot module once, before init;
+ *   - the kernel loads the verified lib/libc.so boot module once, before init;
  *   - init is endowed with the text capabilities at boot, and grants them to the
  *     shell (userspace/init.c), which is the one task that starts programs;
  *   - a spawned child inherits them from its spawner IF AND ONLY IF its own image
@@ -430,8 +430,10 @@ static int module_name_is(const char *a, const char *b) {
     return *a == 0 && *b == 0;
 }
 
-/* Load the library from the boot module named lib/libc.so (provisioned at
- * /lib/libc.so), if there is one.
+/* Load the library from the boot module named lib/libc.so, if there is one.
+ * The kernel's copy is the only one: fs_server does not store the module (lib/
+ * is not a destination it provisions), and nothing loads the library from a
+ * file.
  *
  * VERIFIED MODULES ONLY. boot_module_verify_all has already matched every module
  * against the SHA-256 manifest inside the measured kernel image (S92), so a
@@ -449,7 +451,7 @@ void shlib_boot_load(void) {
         if (!m || !m->verified || !module_name_is(m->name, "lib/libc.so")) continue;
         if (m->end <= m->start) return;
         if (shlib_init((const uint8_t *)PHYS_KVA(m->start), m->end - m->start) != 0)
-            print("shlib: /lib/libc.so refused by the loader; no program can bind it\n");
+            print("shlib: the lib/libc.so module was refused by the loader; no program can bind it\n");
         return;
     }
 }

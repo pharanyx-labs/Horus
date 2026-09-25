@@ -1472,10 +1472,22 @@ endif
 # the shipped ISO carries none of it until programs are built this way.
 SHLIB_INHERIT_MODULES ?= 0
 ifeq ($(SHLIB_INHERIT_MODULES),1)
-BOOT_MODULES    += userspace/libc.so:lib/libc.so userspace/hello_shared.bin:bin/hello_shared \
+SHLIBC_MODULE   := 1
+BOOT_MODULES    += userspace/hello_shared.bin:bin/hello_shared \
                    userspace/shlibdata.bin:bin/shlibdata userspace/shlibprobe.bin:bin/shlibprobe
-BOOT_MODULE_DEP += userspace/libc.so userspace/hello_shared.bin userspace/shlibdata.bin \
-                   userspace/shlibprobe.bin
+BOOT_MODULE_DEP += userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin
+endif
+
+# SHLIBC_MODULE=1 ships the library alone. The kernel loads it from the module
+# and fs_server does not store it (lib/ is not a destination it provisions), so
+# it costs the store volume nothing -- which is why the syscall-coverage modules
+# workload uses this rather than SHLIB_INHERIT_MODULES: that one's three programs
+# do not fit beside every coreutil, and a coreutil that did not fit is a
+# workload that stopped exercising pipes and image spawns.
+SHLIBC_MODULE ?= 0
+ifeq ($(SHLIBC_MODULE),1)
+BOOT_MODULES    += userspace/libc.so:lib/libc.so
+BOOT_MODULE_DEP += userspace/libc.so
 endif
 
 TCC_MODULE ?= 0
@@ -6953,8 +6965,8 @@ smoke-syscall-coverage:
 	SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CAPTEST: PASS' \
 	    tools/smoke_test.sh horus.iso > "$$cov/captest.log" 2>&1 || true; \
 	$(MAKE) --no-print-directory clean; \
-	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 COREUTILS_MODULES=1 SHLIB_INHERIT_MODULES=1; \
-	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 COREUTILS_MODULES=1 SHLIB_INHERIT_MODULES=1 horus.iso; \
+	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 COREUTILS_MODULES=1 SHLIBC_MODULE=1; \
+	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 COREUTILS_MODULES=1 SHLIBC_MODULE=1 horus.iso; \
 	SESSION_SERIAL_LOG="$$cov/modules.log" SESSION_TIMEOUT=$(SYSCOV_SESSION_TIMEOUT) \
 	    tools/modules_session.py horus.iso >/dev/null 2>&1 || true; \
 	echo "syscov: serial transcripts kept in $$cov/"; \
@@ -7007,8 +7019,8 @@ smoke-syscall-coverage-control:
 	SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CAPTEST: PASS' \
 	    tools/smoke_test.sh horus.iso > "$$cov/captest.log" 2>&1 || true; \
 	$(MAKE) --no-print-directory clean; \
-	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 SYSCOV_PROBES_ABSENT=1 COREUTILS_MODULES=1 SHLIB_INHERIT_MODULES=1; \
-	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 SYSCOV_PROBES_ABSENT=1 COREUTILS_MODULES=1 SHLIB_INHERIT_MODULES=1 horus.iso; \
+	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 SYSCOV_PROBES_ABSENT=1 COREUTILS_MODULES=1 SHLIBC_MODULE=1; \
+	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 SYSCOV_PROBES_ABSENT=1 COREUTILS_MODULES=1 SHLIBC_MODULE=1 horus.iso; \
 	SESSION_SERIAL_LOG="$$cov/modules.log" SESSION_TIMEOUT=$(SYSCOV_SESSION_TIMEOUT) \
 	    tools/modules_session.py horus.iso >/dev/null 2>&1 || true; \
 	echo "syscov-control: serial transcripts kept in $$cov/"; \

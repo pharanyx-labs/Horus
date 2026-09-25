@@ -2817,7 +2817,7 @@ int      shlib_owns_frame(uint32_t idx);
 /* The shipped endowment (docs/design/shared-libc.md §3 to §5). */
 int  user_map_private_copy(uint32_t task_id, uint64_t vaddr, const uint8_t *src);
 int  cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);
-void shlib_boot_load(void);                 /* load the verified /lib/libc.so module     */
+void shlib_boot_load(void);                 /* load the verified lib/libc.so module      */
 int  shlib_endow_holder(int pid);           /* text caps from root[20]: init, at boot    */
 void shlib_endow_spawned(int child);        /* inherit + private data, current = spawner */
 void shlib_endow_exec(int task);            /* private data for a new image, current = task */

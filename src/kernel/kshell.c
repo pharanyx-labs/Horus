@@ -402,7 +402,7 @@ void spawn_initial_userspace_init(void) {
     uint32_t h_size  = hdr_.size;
     if (hrc_ != 0) return;
     /* The shared libc, before the first task that could hold it exists: a
-     * verified /lib/libc.so boot module, or nothing (docs/design/shared-libc.md
+     * verified lib/libc.so boot module, or nothing (docs/design/shared-libc.md
      * §3). */
     shlib_boot_load();
     /* Staged by hand rather than through arm_named_binary, so the bracket goes

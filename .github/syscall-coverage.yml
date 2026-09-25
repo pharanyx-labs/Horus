@@ -150,7 +150,7 @@ covered:
   #     because shlib_active() was false in every tracked image. Entering it
   #     would raise this file's number without running the gate the syscall is
   #     interesting for. It was promoted on 2026-09-25 for the right reason:
-  #     the modules workload ships the library (SHLIB_INHERIT_MODULES=1), and
+  #     the modules workload ships the library (SHLIBC_MODULE=1), and
   #     init's call runs the whole capability test (roadmap 2.5 step 1).
   # Those two are the boundary of the technique, and stating it is the point:
   # "the body was entered" stops being coverage when the body is one branch of

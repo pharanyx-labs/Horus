@@ -727,12 +727,29 @@ struct task_exit_info {
  * the previous design is also the cheapest falsification of the claim that the
  * new one is an improvement. */
 #ifndef EP_QUEUE_SLOTS
+/* "No capability slot" in the reply-mint and carry arguments. */
+#define IPC_NO_CAP      0xFFFFFFFFu
 #define EP_QUEUE_SLOTS  4
 #endif
+
+/* What the kernel attests about the capability a message was sent THROUGH
+ * (docs/design/filesystem.md §5.1). A server reads it with SYS_IPC_INVOKER and
+ * authorises on it; the client chose neither field, because both come from the
+ * capability, not from the message. Mirrored as `struct ipc_invoker` in
+ * include/syscall.h (ABI; tools/check_abi_structs.py). */
+struct ipc_invoker {
+    uint64_t token;          /* the invoking capability's token; 0 = untokened */
+    uint32_t rights;         /* the invoking capability's rights */
+    uint32_t carried;        /* 1 if the call carried a second capability */
+    uint64_t carry_token;    /* that capability's token (same endpoint, by rule) */
+    uint32_t carry_rights;   /* and its rights */
+    uint32_t reserved;       /* always 0 */
+};
 
 struct ep_msg {
     int32_t  len;                  /* payload length in bytes */
     int32_t  sender;               /* task that deposited it (kernel-recorded) */
+    struct ipc_invoker inv;        /* what it was sent through (kernel-recorded) */
     uint8_t  data[IPC_MSG_MAX];
 };
 
@@ -742,6 +759,10 @@ struct endpoint {
     uint32_t count;            /* messages currently queued (0..EP_QUEUE_SLOTS) */
     int      last_sender;      /* sender of the most recently dequeued message */
     int      blocked_waiter;   /* task id blocked in SYS_IPC_CALL on this endpoint, -1=none */
+    /* The invoker record of the most recently dequeued message, published at the
+     * same moment as last_sender and for the same reason: only a message that
+     * has been handed to the receiver is the one being serviced. */
+    struct ipc_invoker last_invoker;
 };
 extern struct endpoint endpoints[MAX_ENDPOINTS];
 
@@ -1256,6 +1277,10 @@ void users_init(void);
 #define SYS_CONSOLE_RELEASE  114   /* (dev_slot) -> 0; give the console hardware back to the kernel. CAP_IO_DEVICE + WRITE in dev_slot, and the caller must BE the current owner. Exists so a console driver that fails AFTER taking the console can still be heard: while it owns the wire its own diagnostic reaches the klog ring and nothing else. */
 #define SYS_FB_INFO          115   /* (dev_slot, struct fb_geometry*) -> 0; the SHAPE of the linear framebuffer (width/height/pitch/bpp), or SYS_ERR_NOENT if this display is not one. CAP_IO_DEVICE + READ in dev_slot, and it must name the PLATFORM device. Where the framebuffer is comes from SYS_DEVICE_INFO's mmio[] ranges, not from here. */
 #define SYS_BOOT_FLAGS       116   /* (void) -> a bitmask of BOOT_FLAG_*; which entry the operator chose at the boot menu. SC_NONE, and deliberately: the value is a FACT about how this machine was started, not an authority. Knowing that the installer entry was picked lets a task do nothing -- installing still needs CAP_STORAGE_FORMAT, which only init grants and only to the installer. It is set once from the multiboot2 command line before any task exists and is never writable from ring 3. */
+#define SYS_CAP_MINT_TOKEN   117   /* (dest_slot, src_slot, rights, token) -> 0; a TOKENED endpoint capability, from an UNTOKENED one the caller holds with MINT. Rights are masked to the source's and lose the receive right. docs/design/filesystem.md §5.1. */
+#define SYS_IPC_CALL_CAP     118   /* (ep_slot, recv_slot, msg, len, reply_buf, carry_slot) -> reply length; SYS_IPC_CALL, naming an EMPTY slot for a reply-minted capability and optionally presenting one more capability to the same endpoint. IPC_NO_CAP for either means none. */
+#define SYS_IPC_INVOKER      119   /* (ep_slot, struct ipc_invoker *) -> 0; the token and rights of the capability the last received message came through, and of a carried one. Needs READ (the receive right) on ep_slot. */
+#define SYS_IPC_REPLY_CAP    120   /* (req_slot, msg, len, rights, token) -> 0; SYS_IPC_REPLY_TO that also mints ONE capability into the caller's named slot, derived from the capability its request came through, rights intersected with that capability's. Refused = nothing delivered, reply right kept. */
 #define SYS_STORAGE_DEVICE   113   /* (index, struct storage_info*) -> 0; the survey for ONE enumerated persistent device (CAP_STORAGE_FORMAT + READ at CAPSLOT_STORAGE_FORMAT). An index past the end is REFUSED rather than clamped: a survey that answered about a different disk would be read as a description of the disk about to be erased. */
 #define SYS_POLL_NOTIFY       106   /* (notif_slot, uint32_t*) -> 0 with a badge, or IPC_AGAIN; sys_wait_notify's non-blocking twin. Same gate (CAP_NOTIFICATION + READ): being non-blocking changes when the answer comes, never who may ask. Lets a caller witness the ABSENCE of a notification, which a blocking wait cannot. */
 #define SYS_IRQ_ACK           105   /* (dev_slot, irq) -> 0; the driver has serviced its device, so unmask the line. A registered line is masked by the kernel when it fires and stays masked until this call, which is what stops an unserviced level-triggered device livelocking the machine (CAP_IO_DEVICE + WRITE naming a device that declares the line, AND the registration must be the caller's) */
@@ -1673,6 +1698,15 @@ typedef struct capability {
     uint32_t badge;
     uint32_t serial;
     uint32_t generation;
+    uint32_t reserved;     /* always 0; pins `token` at offset 32 on every target */
+    /* A server-defined identity on an endpoint capability; 0 = none. The kernel
+     * delivers it, with `rights`, to the receiver of every message sent through
+     * the capability (SYS_IPC_INVOKER). Set ONLY by rust_cap_mint_token and
+     * rust_cap_reply_mint; every other derivation copies it and nullify clears
+     * it. Every C site that installs a capability writes it too, because a slot
+     * reused with a stale token would be a forged identity -- which is what
+     * rule 3 of tools/check_cap_writes.py enforces. docs/design/filesystem.md §5.1. */
+    uint64_t token;
 } capability_t;
 
 /* Immutable identity snapshot of a capability, taken at lookup time and
@@ -1838,6 +1872,21 @@ typedef struct tcb {
      * receiver names its own, so truncation has to respect it. */
     uint32_t ipc_recv_block;
     uint32_t ipc_recv_max;
+
+    /* The reply-mint (SYS_IPC_CALL_CAP / SYS_IPC_REPLY_CAP). Recorded by the
+     * CALLER's own handler before its request becomes visible, in the same
+     * publish order as ipc_reply_buf, and meaningful only while this task is
+     * blocked in that call:
+     *   ipc_cap_recv_slot  the empty slot the caller named for the reply's
+     *                      capability, or IPC_NO_CAP when the call named none
+     *                      (every plain SYS_IPC_CALL resets it, so a server
+     *                      cannot mint into a task that never asked);
+     *   ipc_inv_slot/serial  WHICH capability the request was sent through, so
+     *                      the mint can re-find it and refuse if it has been
+     *                      revoked or replaced since. */
+    uint32_t ipc_cap_recv_slot;
+    uint32_t ipc_inv_slot;
+    uint32_t ipc_inv_serial;
 
     /* Async signals. `pending_sigs` is a bitmask of queued signals (bit N =
      * signal N pending, 1..31), set by SYS_SIGNAL (gated on a CAP_TCB to this
@@ -2868,6 +2917,12 @@ void cap_init(void);
 capability_t *cap_lookup(uint32_t slot, uint32_t expected_type,
                          uint32_t required_rights);
 bool cap_mint(uint32_t dest_slot, uint32_t src_slot, uint32_t new_rights);
+/* SYS_CAP_MINT_TOKEN: a tokened endpoint capability from an untokened minter. */
+bool cap_mint_token(uint32_t dest_slot, uint32_t src_slot, uint32_t new_rights, uint64_t token);
+/* The reply-mint into task `pid`, derived from the capability its call came
+ * through. Called with endpoint_lock held. See capability.c. */
+bool cap_reply_mint_into(int pid, uint32_t inv_slot, uint32_t inv_serial, uint32_t ep_index,
+                         uint32_t dest_slot, uint32_t new_rights, uint64_t token);
 bool cap_install_endpoint(uint32_t dest_slot, uint32_t object, uint32_t rights, uint32_t badge);
 /* Install a fresh capability into the first free slot at or above `min_slot` of
  * the CURRENT task's own cspace, scan and write under one cap_lock, reporting the
@@ -2975,6 +3030,17 @@ bool rust_cap_transfer(capability_t *dest_array, uint32_t sz, uint32_t dest_slot
 bool rust_cap_grant_into(const capability_t *src, capability_t *dest_cspace,
                          uint32_t dest_cspace_size, uint32_t dest_slot,
                          uint32_t new_rights, uint32_t *next_serial);
+/* Mint a TOKENED endpoint capability from an untokened one holding MINT, in the
+ * caller's own cspace. Strips READ (receive) from the child. SYS_CAP_MINT_TOKEN. */
+bool rust_cap_mint_token(capability_t *cspace, uint32_t sz, uint32_t dest_slot,
+                         uint32_t src_slot, uint32_t new_rights, uint64_t token,
+                         uint32_t *next_serial);
+/* The reply-mint: derive a tokened child of *src (the capability a caller's
+ * request came through) into an EMPTY dest_cspace[dest_slot], rights
+ * new_rights & src->rights minus READ. SYS_IPC_REPLY_CAP. */
+bool rust_cap_reply_mint(const capability_t *src, capability_t *dest_cspace,
+                         uint32_t dest_cspace_size, uint32_t dest_slot,
+                         uint32_t new_rights, uint64_t token, uint32_t *next_serial);
 bool rust_cap_revoke(capability_t *cspace, uint32_t sz, uint32_t slot, uint32_t *next_serial);
 
 /* One capability space, for the system-wide revocation sweep. Layout MUST match
@@ -3466,7 +3532,9 @@ int  cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t 
 int  ipc_ep_from_slot(uint32_t slot, uint32_t need_rights, uint32_t *out_ep);
 int  ipc_notif_from_slot(uint32_t slot, uint32_t need_rights, uint32_t *out_slot);
 
-int  sys_ipc_send(uint32_t ep_slot, const void *msg, size_t len);
+/* `inv` is what the kernel attests about the capability the message came
+ * through; NULL records an all-zero invoker (a kernel-originated send). */
+int  sys_ipc_send(uint32_t ep, const void *msg, size_t len, const struct ipc_invoker *inv);
 int  sys_ipc_recv(uint32_t ep_slot, void *msg, size_t max_len);
 
 

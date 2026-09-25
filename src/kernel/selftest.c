@@ -2430,6 +2430,81 @@ void recvblock_selftest(void) {
 }
 #endif /* RECVBLOCK_SELFTEST */
 
+#ifdef TOKEN_SELFTEST
+static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
+/* TOKEN_SELFTEST builds only: install an UNTOKENED endpoint capability with
+ * chosen rights into task `pid`, the kernel standing in for init. In a real boot
+ * init holds a capability like this because it retyped the endpoint itself and
+ * so holds every right on it; no primordial endpoint capability carries MINT, and
+ * adding one to cap_init for a self-test would change the capability table to
+ * test something that is not about the capability table. It lives here, not in
+ * capability.c, because it is test code and is classified as such for the ring-0
+ * budget. Same discipline as every install: fresh serial allocated before the lock, written under it, accounted. */
+static int cap_selftest_install_endpoint(int pid, uint32_t slot, uint32_t ep, uint32_t rights) {
+    if (pid <= 0 || pid >= g_max_tasks || slot < KERNEL_RESERVED_CAPS || slot >= CNODE_SIZE) return -1;
+    uint32_t serial = cap_alloc_fresh_serial();
+    spin_lock(&cap_lock);
+    struct capability *cs = tasks[pid].cspace;
+    if (!cs || cs[slot].type != CAP_NULL || tasks[pid].caps_in_use >= MAX_CAPS_PER_TASK) {
+        spin_unlock(&cap_lock);
+        return -1;
+    }
+    cs[slot].type       = CAP_ENDPOINT;
+    cs[slot].rights     = rights;
+    cs[slot].object     = ep;
+    cs[slot].badge      = 0;
+    cs[slot].serial     = serial;
+    cs[slot].token      = 0;
+    cs[slot].generation = rust_lineage_current(serial);
+    tasks[pid].caps_in_use++;
+    spin_unlock(&cap_lock);
+    return 0;
+}
+
+/* ---- Capability-token self-test (TOKEN_SELFTEST builds only) -----------------
+ *
+ * docs/design/filesystem.md §5.1: tokens on endpoint capabilities, the reply-mint
+ * and the carried capability. Two ring-3 tasks around one endpoint, as for the
+ * blocking-receive test and on the same spare endpoint (the console request
+ * endpoint; console_server is not spawned in this build):
+ *
+ *   tokensrv  the receive end (root slot 11: READ|WRITE) and nothing else. In
+ *             particular no MINT: everything it hands out goes through the
+ *             reply-mint, which is what is under test.
+ *   tokencli  an UNTOKENED capability with WRITE, MINT, REVOKE, GRANT and four
+ *             service-defined bits, which is what init would hold after retyping
+ *             the endpoint itself; and a capability to a DIFFERENT endpoint (the
+ *             filesystem's, root slot 13, whose server is not running either) for
+ *             the carry refusal.
+ *
+ * The client decides the result and prints it from ring 3 (TOKENTEST: PASS). */
+void token_selftest(void) {
+    extern int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);
+    extern uint8_t embedded_tokensrv_bin_start[], embedded_tokensrv_bin_end[];
+    extern uint8_t embedded_tokencli_bin_start[], embedded_tokencli_bin_end[];
+
+    print("TOKENTEST: kernel harness\n");
+
+    int srv = fs_spawn_embedded(embedded_tokensrv_bin_start, embedded_tokensrv_bin_end, "tokensrv");
+    if (srv <= 0) { print("TOKENTEST: FAIL spawn-server\n"); for (;;) asm volatile("hlt"); }
+    cap_install_from_root(srv, CAPSLOT_CONSOLE_EP, 11, CON_EP_REQ);   /* READ|WRITE */
+
+    int cli = fs_spawn_embedded(embedded_tokencli_bin_start, embedded_tokencli_bin_end, "tokencli");
+    if (cli <= 0) { print("TOKENTEST: FAIL spawn-client\n"); for (;;) asm volatile("hlt"); }
+    /* The four service bits are TOK_R_SERVICE in userspace/tokentest.h. */
+    uint32_t plain = CAP_RIGHT_WRITE | CAP_RIGHT_MINT | CAP_RIGHT_REVOKE | CAP_RIGHT_GRANT | (0xFu << 8);
+    if (cap_selftest_install_endpoint(cli, 40, CON_EP_REQ, plain) != 0 ||
+        cap_install_from_root(cli, 47, 13, FS_EP_REQ) != 0) {
+        print("TOKENTEST: FAIL endow-client\n"); for (;;) asm volatile("hlt");
+    }
+
+    /* Server first, so it is already blocked in its receive when the client runs. */
+    selftest_resume_all();
+    sched_enable_preemption();
+    sched_enter_user(srv);
+}
+#endif /* TOKEN_SELFTEST */
+
 #ifdef CONSOLE_ISOLATION_TEST
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
 /* ---- Console blast-radius self-test (CONSOLE_ISOLATION_TEST builds only) ------
@@ -2481,9 +2556,9 @@ void e820_selftest(void) {
 }
 #endif /* E820_SELFTEST */
 
-#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(RECVBLOCK_SELFTEST) || defined(KLOG_FORGE_SELFTEST) \
+#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(RECVBLOCK_SELFTEST) || defined(TOKEN_SELFTEST) || defined(KLOG_FORGE_SELFTEST) \
     || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE) || defined(VFS_SELFTEST) || defined(FORK_SELFTEST) || defined(FPU_SELFTEST) || defined(FORKEXEC_SELFTEST) || defined(DEVCAP_SELFTEST) || defined(NET_SELFTEST) || defined(SHLIB_SELFTEST) || defined(SHLIBC_SELFTEST) || defined(TUI_SELFTEST)
-/* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT/IRQ/CONSOLE/RECVBLOCK/KLOG_FORGE/FORK only) ----
+/* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT/IRQ/CONSOLE/RECVBLOCK/TOKEN/KLOG_FORGE/FORK only) ----
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
 
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm) {

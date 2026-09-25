@@ -132,7 +132,7 @@ DEFECT_FLAGS = \
 	FS_LINK_UNCOUNTED \
 	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY BOOT_MENU_NO_LIVE_TOKEN \
 	BOOT_PIN_UNCHECKED BOOT_IMAGE_UNBOUND CONSOLE_PASS_UNGATED \
-	PIPE_CAP_UNACCOUNTED \
+	PIPE_CAP_UNACCOUNTED TOKEN_REPLY_MINT_UNMASKED \
 	REPLY_EP_SPACE_OVERLAP \
 	AHCI_PROBE_ABSENT AHCI_CAPACITY_CONSTANT SDHCI_PROBE_ABSENT \
 	SDHCI_CSD_SPEC_BITS SDHCI_ADDR_MODE_INVERTED \
@@ -2803,6 +2803,28 @@ LIBHORUS_RETRY_ANY ?= 0
 # tests and an attacker picks. USERSPACE only, as above.
 LIBHORUS_STRNCPY_UNTERMINATED ?= 0
 
+# TOKEN_SELFTEST=1 embeds tokensrv/tokencli around one endpoint and runs the
+# capability-token conformance checks (docs/design/filesystem.md §5.1): tokens
+# and rights attested on receive, the reply-mint bounded by the invoking
+# capability, the carried capability, and revocation through reply-minted
+# children. tokencli prints TOKENTEST: PASS <n> checks from ring 3.
+TOKEN_SELFTEST ?= 0
+ifeq ($(TOKEN_SELFTEST),1)
+CFLAGS  += -DTOKEN_SELFTEST
+ASFLAGS += -DTOKEN_SELFTEST
+TOKEN_SELFTEST_DEP = userspace/tokensrv.bin userspace/tokencli.bin
+endif
+
+# TOKEN_REPLY_MINT_UNMASKED=1 is the control arm for the reply-mint's rights
+# bound: cap_reply_mint_into derives from a copy of the invoking capability that
+# holds every right, so a server gets whatever it asks for. smoke-captoken's
+# `reply-mint-escalated` check must catch it. Never shipped.
+TOKEN_REPLY_MINT_UNMASKED ?= 0
+ifeq ($(TOKEN_REPLY_MINT_UNMASKED),1)
+CFLAGS  += -DTOKEN_REPLY_MINT_UNMASKED
+ASFLAGS += -DTOKEN_REPLY_MINT_UNMASKED
+endif
+
 RECVBLOCK_SELFTEST ?= 0
 ifeq ($(RECVBLOCK_SELFTEST),1)
 CFLAGS  += -DRECVBLOCK_SELFTEST
@@ -4044,7 +4066,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin userspace/installer.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(BLOCKPROBE_DEP) $(EXECPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin userspace/installer.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(TOKEN_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(BLOCKPROBE_DEP) $(EXECPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -5197,7 +5219,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.stripped.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -11650,6 +11672,46 @@ smoke-recvblock-smp:
 	@SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='RECVBLOCK_SELFTEST: PASS' \
 		FAIL_MARKER='RECVBLOCK_SELFTEST: FAIL' \
+		tools/smoke_test.sh horus.iso
+
+# Capability tokens, the reply-mint and the carried capability
+# (docs/design/filesystem.md §5.1; SECURITY.md S105). A ring-3 server with no
+# mint authority hands out capabilities only through SYS_IPC_REPLY_CAP, and asks
+# for every right each time; the client checks that the kernel bounded each one by
+# the capability the request came through, that tokens survive narrowing and
+# cannot be minted from a tokened capability, that a carry to another endpoint is
+# refused, that refused mints deliver nothing, and that revocation reaches every
+# reply-minted child.
+.PHONY: smoke-captoken smoke-captoken-smp smoke-captoken-unmasked-control
+smoke-captoken:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory TOKEN_SELFTEST=1
+	@$(MAKE) --no-print-directory TOKEN_SELFTEST=1 horus.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='TOKENTEST: PASS' \
+		FAIL_MARKER='TOKENTEST: FAIL' \
+		tools/smoke_test.sh horus.iso
+
+# The same gate under -smp 4: the reply-mint lands in the CALLER's cspace from the
+# server's CPU, under endpoint_lock, before the caller is woken, and that ordering
+# only has a racer to lose to when there is a second CPU.
+smoke-captoken-smp:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory TOKEN_SELFTEST=1
+	@$(MAKE) --no-print-directory TOKEN_SELFTEST=1 horus.iso
+	@SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='TOKENTEST: PASS' \
+		FAIL_MARKER='TOKENTEST: FAIL' \
+		tools/smoke_test.sh horus.iso
+
+# CONTROL ARM: TOKEN_REPLY_MINT_UNMASKED=1 removes the reply-mint's bound, and the
+# gate must name the escalation, not fail somewhere else.
+smoke-captoken-unmasked-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory TOKEN_SELFTEST=1 TOKEN_REPLY_MINT_UNMASKED=1
+	@$(MAKE) --no-print-directory TOKEN_SELFTEST=1 TOKEN_REPLY_MINT_UNMASKED=1 horus.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='TOKENTEST: FAIL reply-mint-escalated' \
 		tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-sched-invariants

@@ -535,6 +535,7 @@ void scheduler_init(void) {
         tasks[i].in_kernel = 0;
         tasks[i].blocked_on_notif = -1;
         tasks[i].pending_block = 0;
+        tasks[i].ipc_cap_recv_slot = IPC_NO_CAP;   /* no reply-mint until a call names a slot */
         tasks[i].auth_fail_count = 0;
         tasks[i].auth_lockout_until = 0;
     }
@@ -713,6 +714,9 @@ void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base,
     tasks[id].saved_ksp = 0;
     tasks[id].runnable_ctx = 0;
     tasks[id].pending_block = 0;
+    /* A reused task id must not inherit its predecessor's named reply-mint slot;
+     * only a live SYS_IPC_CALL_CAP by THIS task may name one. */
+    tasks[id].ipc_cap_recv_slot = IPC_NO_CAP;
     tasks[id].sig_handler = 0;   /* no signal handler until the task registers one */
     tasks[id].in_signal = 0;
     tasks[id].pending_sigs = 0;   /* no async signals queued */
@@ -822,6 +826,7 @@ create_user_pagedir(id);
         tasks[id].cspace[s].object     = 0;
         tasks[id].cspace[s].badge      = 0;
         tasks[id].cspace[s].serial     = 0;
+        tasks[id].cspace[s].token      = 0;
         tasks[id].cspace[s].generation = 0;
     }
 
@@ -830,6 +835,7 @@ create_user_pagedir(id);
     tasks[id].cspace[0].object = tcb_object(id);   /* this incarnation only */
     tasks[id].cspace[0].badge  = 0;
     tasks[id].cspace[0].serial = (0xB0000000U | ((uint32_t)id << 16) | 0U);
+    tasks[id].cspace[0].token = 0;
     /* Serial-keyed generation stamp (finding 3.3). These structured serials are
      * reused when a task slot is reused, so stamping the current cell value keeps
      * a reincarnated slot's capability valid even if the prior incarnation's
@@ -841,6 +847,7 @@ create_user_pagedir(id);
     tasks[id].cspace[3].object = USER_AREA_BASE;
     tasks[id].cspace[3].badge  = 0;
     tasks[id].cspace[3].serial = (0xB0000000U | ((uint32_t)id << 16) | 3U);
+    tasks[id].cspace[3].token = 0;
     tasks[id].cspace[3].generation = rust_lineage_current(tasks[id].cspace[3].serial);
 
     /* Slot 4: this task's PRIVATE reply endpoint, and the ONLY endpoint
@@ -867,6 +874,7 @@ create_user_pagedir(id);
             tasks[id].cspace[4].object = (uint64_t)rep;
             tasks[id].cspace[4].badge  = 0;
             tasks[id].cspace[4].serial = (0xB0000000U | ((uint32_t)id << 16) | 4U);
+            tasks[id].cspace[4].token = 0;
             tasks[id].cspace[4].generation = rust_lineage_current(tasks[id].cspace[4].serial);
         }
     }
@@ -878,6 +886,7 @@ create_user_pagedir(id);
         tasks[id].cspace[8].object = 0;
         tasks[id].cspace[8].badge  = 0;
         tasks[id].cspace[8].serial = 0xC0DE0008U;
+        tasks[id].cspace[8].token = 0;
         tasks[id].cspace[8].generation = 0;
 
         tasks[id].cspace[9].type   = CAP_ENCRYPTED_STORAGE;
@@ -885,6 +894,7 @@ create_user_pagedir(id);
         tasks[id].cspace[9].object = 0;
         tasks[id].cspace[9].badge  = 0;
         tasks[id].cspace[9].serial = 0xC0DE0009U;
+        tasks[id].cspace[9].token = 0;
         tasks[id].cspace[9].generation = 0;
     }
 }

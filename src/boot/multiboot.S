@@ -1015,6 +1015,22 @@ embedded_framepeer_bin_start:
 embedded_framepeer_bin_end:
 #endif
 
+#ifdef TOKEN_SELFTEST
+/* The capability-token self-test pair (smoke-captoken). */
+.balign 16
+.global embedded_tokensrv_bin_start
+embedded_tokensrv_bin_start:
+.incbin "userspace/tokensrv.bin"
+.global embedded_tokensrv_bin_end
+embedded_tokensrv_bin_end:
+.balign 16
+.global embedded_tokencli_bin_start
+embedded_tokencli_bin_start:
+.incbin "userspace/tokencli.bin"
+.global embedded_tokencli_bin_end
+embedded_tokencli_bin_end:
+#endif
+
 #ifdef RECVBLOCK_SELFTEST
 /* PIE blocking-receive pair (roadmap 1.3): a server that waits with
  * SYS_IPC_RECV_BLOCK and a client that delays before each request, so the

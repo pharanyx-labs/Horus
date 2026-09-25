@@ -10,9 +10,43 @@ pub struct Capability {
     pub badge: u32,
     pub serial: u32,
     pub generation: u32,
+    /// Always zero. Present so `token` sits at offset 32 on every target: a u64
+    /// is 4-aligned on i686 and 8-aligned on x86_64, and an implicit gap would
+    /// put the field at 28 on one and 32 on the other, which the offset
+    /// assertions below exist to make impossible.
+    pub reserved: u32,
+    /// A server-defined identity carried by an endpoint capability (design
+    /// `docs/design/filesystem.md` §5.1). Zero means "no token". The kernel
+    /// never interprets it: it delivers it, with the capability's rights, to the
+    /// receiver of every message sent through this capability, so a server can
+    /// tell which of the capabilities it issued a request arrived on.
+    ///
+    /// THE RULE THAT MAKES IT AN IDENTITY: a token is set in exactly two places,
+    /// `rust_cap_mint_token` (from an UNTOKENED endpoint capability holding MINT)
+    /// and `rust_cap_reply_mint` (by the endpoint's receiver, into a child of the
+    /// capability the request came through). Every other derivation copies it
+    /// unchanged, and `nullify` clears it. So a holder can narrow a tokened
+    /// capability's rights but can never point it at a different token.
+    pub token: u64,
 }
 
 pub const CAP_NULL: u32 = 0;
+/// The capability type the token primitives operate on (`CAP_ENDPOINT` in
+/// `src/include/kernel.h`). Pinned against the C value by the layout check below.
+pub const CAP_ENDPOINT: u32 = 3;
+/// The endpoint receive right (`CAP_RIGHT_READ`). A tokened capability never
+/// carries it: a token is a client identity, and a client that could receive
+/// could dequeue its peers' requests (finding C-1).
+pub const CAP_RIGHT_READ: u32 = 1 << 0;
+/// The mint right (`CAP_RIGHT_MINT`). On an untokened endpoint capability it is
+/// what `rust_cap_mint_token` requires. A tokened capability MAY keep it, and
+/// then it means only what it means everywhere else, the right to make narrowed
+/// copies with `rust_cap_mint`, which keep the token. It can never mint a new
+/// token, because `rust_cap_mint_token` refuses every tokened source.
+pub const CAP_RIGHT_MINT: u32 = 1 << 4;
+/// What the kernel strips from every capability it gives a token to: the
+/// receive right. MINT is deliberately NOT stripped; see `CAP_RIGHT_MINT`.
+pub const TOKEN_STRIPPED_RIGHTS: u32 = CAP_RIGHT_READ;
 
 // ---------------------------------------------------------------------------
 // FFI layout contract.
@@ -33,6 +67,9 @@ const _: () = {
     assert!(core::mem::offset_of!(Capability, badge) == 16);
     assert!(core::mem::offset_of!(Capability, serial) == 20);
     assert!(core::mem::offset_of!(Capability, generation) == 24);
+    assert!(core::mem::offset_of!(Capability, reserved) == 28);
+    assert!(core::mem::offset_of!(Capability, token) == 32);
+    assert!(core::mem::size_of::<Capability>() == 40);
     assert!(CAP_NULL == 0);
 };
 
@@ -323,6 +360,10 @@ pub unsafe extern "C" fn rust_cap_mint(
         badge: parent_serial,
         serial: fresh,
         generation: lineage_current(fresh),
+        reserved: 0,
+        // Attenuation keeps identity: a narrowed copy of a tokened capability
+        // names the same thing, with fewer rights. See `Capability::token`.
+        token: src.token,
     };
     true
 }
@@ -414,6 +455,138 @@ pub unsafe extern "C" fn rust_cap_grant_into(
         badge: parent_serial,
         serial: fresh,
         generation: lineage_current(fresh),
+        reserved: 0,
+        // Delegation keeps identity, exactly as mint does.
+        token: s.token,
+    };
+    true
+}
+
+/// FFI: mint a TOKENED endpoint capability from an untokened one, within the
+/// caller's own cspace (`SYS_CAP_MINT_TOKEN`). This is how authority over a
+/// service starts: the task that made an endpoint holds MINT on it, and mints the
+/// first capability a client will hold, for example the root directory of a
+/// filesystem (`docs/design/filesystem.md` §6.1).
+///
+/// Refuses unless ALL of these hold, and writes nothing when it refuses:
+///   - the source is a live `CAP_ENDPOINT` (non-null type, non-zero serial);
+///   - the source holds `CAP_RIGHT_MINT`;
+///   - the source carries NO token. This is the rule that keeps a token an
+///     identity: without it, a client holding a tokened capability with MINT
+///     could re-point it at any other token the server has issued;
+///   - the requested token is non-zero, since zero means "untokened" and an
+///     untokened result would be a plain copy wearing the wrong name.
+///
+/// The child's rights are `new_rights & src.rights`, minus `CAP_RIGHT_READ`
+/// (`TOKEN_STRIPPED_RIGHTS`): a tokened capability can never receive on the
+/// endpoint. It cannot mint further tokens either, but that is the tokened-source
+/// refusal above doing it, not a stripped right. It records the source as its
+/// parent, so revoking the minter's capability sweeps every token minted from it.
+///
+/// # Safety
+/// `cspace` must be null, or point to at least `cspace_size` valid
+/// `Capability`s, and `cspace_size` must be the TRUE length of that array. Every
+/// slot index is bounds-checked against it; its truthfulness is the one
+/// obligation this code cannot discharge. Call under `cap_lock`.
+/// `next_serial` carries `assign_fresh_serial`'s obligation in addition.
+#[no_mangle]
+pub unsafe extern "C" fn rust_cap_mint_token(
+    cspace: *mut Capability,
+    cspace_size: u32,
+    dest_slot: u32,
+    src_slot: u32,
+    new_rights: u32,
+    token: u64,
+    next_serial: *mut u32,
+) -> bool {
+    if cspace.is_null() || token == 0 {
+        return false;
+    }
+    if dest_slot >= cspace_size || dest_slot >= CNODE_SIZE || dest_slot < KERNEL_RESERVED_CAPS {
+        return false;
+    }
+    if src_slot >= cspace_size || src_slot >= CNODE_SIZE || src_slot == dest_slot {
+        return false;
+    }
+    let src = *cspace.add(src_slot as usize);
+    if src.typ != CAP_ENDPOINT || src.serial == 0 {
+        return false;
+    }
+    if src.rights & CAP_RIGHT_MINT == 0 || src.token != 0 {
+        return false;
+    }
+    let fresh = assign_fresh_serial(next_serial);
+    *cspace.add(dest_slot as usize) = Capability {
+        typ: CAP_ENDPOINT,
+        rights: new_rights & src.rights & !TOKEN_STRIPPED_RIGHTS,
+        object: src.object,
+        badge: src.serial,
+        serial: fresh,
+        generation: lineage_current(fresh),
+        reserved: 0,
+        token,
+    };
+    true
+}
+
+/// FFI: the reply-mint (`SYS_IPC_REPLY_CAP`, `docs/design/filesystem.md` §5.1).
+/// A server answering a call hands the caller ONE new capability, placed in the
+/// slot the caller named, and derived from `src`, which is the capability the
+/// caller's request was sent through. `src` and `dest_cspace` are both the
+/// CALLER's: the server supplies only the token and the rights it asks for.
+///
+/// What makes this safe to give a server that holds no mint authority of its own:
+///   - the child's rights are `new_rights & src.rights`, minus
+///     `TOKEN_STRIPPED_RIGHTS`. A server can narrow the caller's authority and
+///     can never widen it, whatever it asks for;
+///   - the child names the same endpoint as `src` (the server's own), so a
+///     server cannot mint a capability to anyone else's service;
+///   - the child records `src` as its parent, so revoking the capability a
+///     directory was opened through revokes everything opened through it;
+///   - the destination must be EMPTY. The caller chose the slot, but a server
+///     that could overwrite it could destroy a capability the caller holds.
+///
+/// Writes nothing when it refuses.
+///
+/// # Safety
+/// `src` must be null or point to a live `Capability`; `dest_cspace` must be
+/// null or point to at least `dest_cspace_size` `Capability` entries, that
+/// length being true; `next_serial` must be null or a valid `*mut u32`. `src`
+/// may point INTO `dest_cspace` (it usually does): it is read once, by value,
+/// before anything is written. Call under `cap_lock`.
+#[no_mangle]
+pub unsafe extern "C" fn rust_cap_reply_mint(
+    src: *const Capability,
+    dest_cspace: *mut Capability,
+    dest_cspace_size: u32,
+    dest_slot: u32,
+    new_rights: u32,
+    token: u64,
+    next_serial: *mut u32,
+) -> bool {
+    if src.is_null() || dest_cspace.is_null() || token == 0 {
+        return false;
+    }
+    if dest_slot >= dest_cspace_size || dest_slot >= CNODE_SIZE || dest_slot < KERNEL_RESERVED_CAPS {
+        return false;
+    }
+    let s = *src;
+    if s.typ != CAP_ENDPOINT || s.serial == 0 {
+        return false;
+    }
+    if (*dest_cspace.add(dest_slot as usize)).typ != CAP_NULL {
+        return false;
+    }
+    let fresh = assign_fresh_serial(next_serial);
+    *dest_cspace.add(dest_slot as usize) = Capability {
+        typ: CAP_ENDPOINT,
+        rights: new_rights & s.rights & !TOKEN_STRIPPED_RIGHTS,
+        object: s.object,
+        badge: s.serial,
+        serial: fresh,
+        generation: lineage_current(fresh),
+        reserved: 0,
+        token,
     };
     true
 }
@@ -433,6 +606,10 @@ unsafe fn nullify(c: &mut Capability) {
     c.badge = 0;
     c.serial = 0;
     c.generation = 0;
+    c.reserved = 0;
+    // A slot that is later reused must not inherit an identity: the token is
+    // what a server authorises on, so a stale one is a forged one.
+    c.token = 0;
 }
 
 /// Transient `typ` sentinels used only inside `revoke_subtree`, between its mark
@@ -913,7 +1090,7 @@ mod tests {
     use core::ptr::addr_of_mut;
 
     fn cap(typ: u32, rights: u32, object: u64, badge: u32, serial: u32, generation: u32) -> Capability {
-        Capability { typ, rights, object, badge, serial, generation }
+        Capability { typ, rights, object, badge, serial, generation, reserved: 0, token: 0 }
     }
 
     // Test isolation for the serial-keyed generation authority (finding 3.3).
@@ -1042,8 +1219,8 @@ mod tests {
     #[test]
     fn test_lookup_and_mint_basic() {
         let _lin = LineageTestGuard::new();
-        let mut cspace = [Capability { typ: 0, rights: 0, object: 0, badge: 0, serial: 0, generation: 0 }; 16];
-        cspace[0] = Capability { typ: 1, rights: 0x3f, object: 42, badge: 0, serial: 0x1000, generation: 0 };
+        let mut cspace = [Capability { typ: 0, rights: 0, object: 0, badge: 0, serial: 0, generation: 0, reserved: 0, token: 0 }; 16];
+        cspace[0] = Capability { typ: 1, rights: 0x3f, object: 42, badge: 0, serial: 0x1000, generation: 0, reserved: 0, token: 0 };
 
         let mut next = 0x1001u32;
 
@@ -1073,8 +1250,8 @@ mod tests {
     #[test]
     fn test_revoke_clears_and_serial_is_fresh() {
         let _lin = LineageTestGuard::new();
-        let mut cspace = [Capability { typ: 0, rights: 0, object: 0, badge: 0, serial: 0, generation: 0 }; 16];
-        cspace[0] = Capability { typ: 1, rights: 0x3f, object: 99, badge: 0, serial: 0x2000, generation: 0 };
+        let mut cspace = [Capability { typ: 0, rights: 0, object: 0, badge: 0, serial: 0, generation: 0, reserved: 0, token: 0 }; 16];
+        cspace[0] = Capability { typ: 1, rights: 0x3f, object: 99, badge: 0, serial: 0x2000, generation: 0, reserved: 0, token: 0 };
 
         let mut next = 0x2001u32;
         unsafe {
@@ -1106,11 +1283,11 @@ mod tests {
         // independently revocable without the old gen-0 immunity crutch.
         let sa: u32 = 0x0001_0100;
         let sb: u32 = 0x0001_0200;
-        let mut cs = [Capability { typ: 0, rights: 0, object: 0, badge: 0, serial: 0, generation: 0 }; 16];
+        let mut cs = [Capability { typ: 0, rights: 0, object: 0, badge: 0, serial: 0, generation: 0, reserved: 0, token: 0 }; 16];
         unsafe {
             // Each stamped with its own serial's current (pristine) generation.
-            cs[4] = Capability { typ: 1, rights: 0x3f, object: 0x1001, badge: 0, serial: sa, generation: lineage_current(sa) };
-            cs[5] = Capability { typ: 1, rights: 0x3f, object: 0x1101, badge: 0, serial: sb, generation: lineage_current(sb) };
+            cs[4] = Capability { typ: 1, rights: 0x3f, object: 0x1001, badge: 0, serial: sa, generation: lineage_current(sa), reserved: 0, token: 0 };
+            cs[5] = Capability { typ: 1, rights: 0x3f, object: 0x1101, badge: 0, serial: sb, generation: lineage_current(sb), reserved: 0, token: 0 };
 
             // Revoke (bump) only serial `sa`.
             let _ = bump_lineage(sa);
@@ -1125,8 +1302,8 @@ mod tests {
     #[test]
     fn test_strict_rights_and_no_escalation() {
         let _lin = LineageTestGuard::new();
-        let mut cspace = [Capability { typ: 0, rights: 0, object: 0, badge: 0, serial: 0, generation: 0 }; 16];
-        cspace[0] = Capability { typ: 5, rights: 0b0011, object: 7, badge: 0, serial: 0x3000, generation: 0 };
+        let mut cspace = [Capability { typ: 0, rights: 0, object: 0, badge: 0, serial: 0, generation: 0, reserved: 0, token: 0 }; 16];
+        cspace[0] = Capability { typ: 5, rights: 0b0011, object: 7, badge: 0, serial: 0x3000, generation: 0, reserved: 0, token: 0 };
 
         let mut next = 0x3001u32;
         unsafe {
@@ -1823,6 +2000,103 @@ mod tests {
             assert_eq!(ciu_x, 1, "the other task's accounting is untouched");
         }
     }
+
+    // ---- Tokens (docs/design/filesystem.md §5.1) -------------------------------
+
+    fn ep(rights: u32, serial: u32, token: u64) -> Capability {
+        Capability {
+            typ: CAP_ENDPOINT, rights, object: 77, badge: 0, serial,
+            generation: 0, reserved: 0, token,
+        }
+    }
+
+    const NULLCAP: Capability = Capability {
+        typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0,
+        generation: 0, reserved: 0, token: 0,
+    };
+
+    #[test]
+    fn mint_token_from_an_untokened_minter_strips_receive() {
+        let mut cs = [NULLCAP; 8];
+        cs[4] = ep(!0u32, 0x2_0000, 0);
+        let mut next = 0x2_0000u32;
+        let ok = unsafe { rust_cap_mint_token(cs.as_mut_ptr(), 8, 5, 4, !0u32, 0xABCD, &mut next) };
+        assert!(ok);
+        assert_eq!(cs[5].token, 0xABCD);
+        assert_eq!(cs[5].rights & TOKEN_STRIPPED_RIGHTS, 0, "a token never receives");
+        assert_eq!(cs[5].rights, !TOKEN_STRIPPED_RIGHTS);
+        assert_eq!(cs[5].badge, 0x2_0000, "the minter is the parent");
+        assert_eq!(cs[5].object, 77);
+    }
+
+    #[test]
+    fn mint_token_refuses_a_tokened_source_a_source_without_mint_and_a_zero_token() {
+        let mut next = 0x3_0000u32;
+        // Tokened source, even one holding every right.
+        let mut cs = [NULLCAP; 8];
+        cs[4] = ep(!0u32, 0x3_0000, 9);
+        assert!(!unsafe { rust_cap_mint_token(cs.as_mut_ptr(), 8, 5, 4, !0u32, 10, &mut next) });
+        assert_eq!(cs[5].typ, CAP_NULL);
+        // No MINT right.
+        cs[4] = ep(!CAP_RIGHT_MINT, 0x3_0000, 0);
+        assert!(!unsafe { rust_cap_mint_token(cs.as_mut_ptr(), 8, 5, 4, !0u32, 10, &mut next) });
+        assert_eq!(cs[5].typ, CAP_NULL);
+        // Zero token.
+        cs[4] = ep(!0u32, 0x3_0000, 0);
+        assert!(!unsafe { rust_cap_mint_token(cs.as_mut_ptr(), 8, 5, 4, !0u32, 0, &mut next) });
+        assert_eq!(cs[5].typ, CAP_NULL);
+        // Not an endpoint.
+        cs[4].typ = 2;
+        assert!(!unsafe { rust_cap_mint_token(cs.as_mut_ptr(), 8, 5, 4, !0u32, 10, &mut next) });
+        assert_eq!(cs[5].typ, CAP_NULL);
+    }
+
+    #[test]
+    fn narrowing_and_granting_keep_the_token() {
+        let mut cs = [NULLCAP; 8];
+        cs[4] = ep(0xFF02, 0x4_0000, 0x55);
+        let mut next = 0x4_0000u32;
+        assert!(unsafe { rust_cap_mint(cs.as_mut_ptr(), 8, 5, 4, 0x0F02, &mut next, 0) });
+        assert_eq!(cs[5].token, 0x55, "attenuation must keep identity");
+        assert_eq!(cs[5].rights, 0x0F02);
+        let mut other = [NULLCAP; 8];
+        assert!(unsafe { rust_cap_grant_into(&cs[5], other.as_mut_ptr(), 8, 6, !0u32, &mut next) });
+        assert_eq!(other[6].token, 0x55, "delegation must keep identity");
+    }
+
+    #[test]
+    fn reply_mint_is_bounded_by_the_invoking_capability() {
+        let mut cs = [NULLCAP; 8];
+        cs[4] = ep(0x0F02, 0x5_0000, 0x10);
+        let mut next = 0x5_0000u32;
+        let src = cs[4];
+        let ok = unsafe { rust_cap_reply_mint(&src, cs.as_mut_ptr(), 8, 6, !0u32, 0x11, &mut next) };
+        assert!(ok);
+        assert_eq!(cs[6].rights, 0x0F02, "a server asking for everything gets the invoker's rights");
+        assert_eq!(cs[6].token, 0x11, "the token is the server's choice");
+        assert_eq!(cs[6].badge, 0x5_0000, "the child of the capability the request came through");
+    }
+
+    #[test]
+    fn reply_mint_refuses_an_occupied_slot_and_writes_nothing() {
+        let mut cs = [NULLCAP; 8];
+        cs[4] = ep(0x0F02, 0x6_0000, 0x10);
+        cs[6] = ep(0x2, 0x6_0001, 0x99);
+        let before = cs[6];
+        let mut next = 0x6_0001u32;
+        let src = cs[4];
+        assert!(!unsafe { rust_cap_reply_mint(&src, cs.as_mut_ptr(), 8, 6, !0u32, 0x11, &mut next) });
+        assert_eq!(cs[6].token, before.token);
+        assert_eq!(cs[6].serial, before.serial);
+    }
+
+    #[test]
+    fn nullify_clears_the_token() {
+        let mut c = ep(0x2, 0x7_0000, 0x42);
+        unsafe { nullify(&mut c) };
+        assert_eq!(c.token, 0);
+        assert_eq!(c.typ, CAP_NULL);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1871,8 +2145,8 @@ mod kani_proofs {
         // 8-slot cspace: source at slot 0, mint into slot 4 (>= KERNEL_RESERVED_CAPS
         // so the mint is not refused). object==0 keeps the proof free of the
         // shared lineage table.
-        let mut cs = [Capability { typ: 0, rights: 0, object: 0, badge: 0, serial: 0, generation: 0 }; 8];
-        cs[0] = Capability { typ: 1, rights: src_rights, object: 0, badge: 0, serial: 0x10000, generation: 0 };
+        let mut cs = [Capability { typ: 0, rights: 0, object: 0, badge: 0, serial: 0, generation: 0, reserved: 0, token: 0 }; 8];
+        cs[0] = Capability { typ: 1, rights: src_rights, object: 0, badge: 0, serial: 0x10000, generation: 0, reserved: 0, token: 0 };
         let mut next: u32 = 0x10000;
 
         let ok = unsafe {
@@ -1890,9 +2164,9 @@ mod kani_proofs {
     /// proofs never touch the shared LINEAGE_GEN static.
     fn chain(p: u32, c: u32, g: u32) -> [Capability; 3] {
         [
-            Capability { typ: 1, rights: 0x3f, object: 0, badge: 0, serial: p, generation: 0 },
-            Capability { typ: 1, rights: 0x3f, object: 0, badge: p, serial: c, generation: 0 },
-            Capability { typ: 1, rights: 0x3f, object: 0, badge: c, serial: g, generation: 0 },
+            Capability { typ: 1, rights: 0x3f, object: 0, badge: 0, serial: p, generation: 0, reserved: 0, token: 0 },
+            Capability { typ: 1, rights: 0x3f, object: 0, badge: p, serial: c, generation: 0, reserved: 0, token: 0 },
+            Capability { typ: 1, rights: 0x3f, object: 0, badge: c, serial: g, generation: 0, reserved: 0, token: 0 },
         ]
     }
 
@@ -1950,7 +2224,7 @@ mod kani_proofs {
 
         let mut cs = [Capability {
             typ: 1, rights: held, object: 0, badge: 0,
-            serial: MIN_DERIVED_SERIAL, generation: 0,
+            serial: MIN_DERIVED_SERIAL, generation: 0, reserved: 0, token: 0,
         }; 1];
 
         let got = unsafe { rust_cap_lookup(cs.as_mut_ptr(), 1, 0, want) };
@@ -1972,7 +2246,7 @@ mod kani_proofs {
         let rights: u32 = kani::any();
         let mut cs = [Capability {
             typ: CAP_NULL, rights, object: 0, badge: 0,
-            serial: MIN_DERIVED_SERIAL, generation: 0,
+            serial: MIN_DERIVED_SERIAL, generation: 0, reserved: 0, token: 0,
         }; 1];
         assert!(
             unsafe { rust_cap_lookup(cs.as_mut_ptr(), 1, 0, want) }.is_null(),
@@ -1991,7 +2265,7 @@ mod kani_proofs {
 
         let mut cs = [Capability {
             typ: 1, rights: !0u32, object: 0, badge: 0,
-            serial: MIN_DERIVED_SERIAL, generation: 0,
+            serial: MIN_DERIVED_SERIAL, generation: 0, reserved: 0, token: 0,
         }; 4];
         assert!(
             unsafe { rust_cap_lookup(cs.as_mut_ptr(), 4, slot, 0) }.is_null(),
@@ -2011,10 +2285,10 @@ mod kani_proofs {
 
         let src = Capability {
             typ: 1, rights: src_rights, object: 7, badge: 0,
-            serial: MIN_DERIVED_SERIAL, generation: 0,
+            serial: MIN_DERIVED_SERIAL, generation: 0, reserved: 0, token: 0,
         };
         let mut dest = [Capability {
-            typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, generation: 0,
+            typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, generation: 0, reserved: 0, token: 0,
         }; 8];
         let mut next: u32 = MIN_DERIVED_SERIAL;
 
@@ -2040,10 +2314,10 @@ mod kani_proofs {
 
         let src = Capability {
             typ: 3, rights: 0x3f, object: 9, badge: 0,
-            serial: parent_serial, generation: 0,
+            serial: parent_serial, generation: 0, reserved: 0, token: 0,
         };
         let mut dest = [Capability {
-            typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, generation: 0,
+            typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, generation: 0, reserved: 0, token: 0,
         }; 4];
         let mut next: u32 = kani::any();
 
@@ -2071,9 +2345,9 @@ mod kani_proofs {
         // Either the source is empty, or its serial is the invalid 0.
         kani::assume(typ == CAP_NULL || serial == 0);
 
-        let src = Capability { typ, rights: !0u32, object: 1, badge: 0, serial, generation: 0 };
+        let src = Capability { typ, rights: !0u32, object: 1, badge: 0, serial, generation: 0, reserved: 0, token: 0 };
         let mut dest = [Capability {
-            typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, generation: 0,
+            typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, generation: 0, reserved: 0, token: 0,
         }; 2];
         let mut next: u32 = MIN_DERIVED_SERIAL;
 
@@ -2096,10 +2370,10 @@ mod kani_proofs {
 
         let src = Capability {
             typ: 1, rights: !0u32, object: 0, badge: 0,
-            serial: MIN_DERIVED_SERIAL, generation: 0,
+            serial: MIN_DERIVED_SERIAL, generation: 0, reserved: 0, token: 0,
         };
         let mut dest = [Capability {
-            typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, generation: 0,
+            typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, generation: 0, reserved: 0, token: 0,
         }; 4];
         let mut next: u32 = MIN_DERIVED_SERIAL;
         assert!(
@@ -2183,5 +2457,104 @@ mod kani_proofs {
         let _ = bump_lineage(a);
         assert!(lineage_check(b, gb),
             "bumping a serial in a different cell must not invalidate b");
+    }
+
+    // ---- Tokens (docs/design/filesystem.md §5.1) -------------------------------
+
+    /// A reply-mint never widens: for EVERY (invoker rights, requested rights,
+    /// token) triple, the child's rights are a subset of the capability the
+    /// request came through, never include receive, name the same
+    /// endpoint, and record that capability as their parent. This is what lets a
+    /// server hold no mint authority of its own: whatever it asks for, it can only
+    /// narrow what the caller already had.
+    #[kani::proof]
+    fn reply_mint_never_escalates_and_never_receives() {
+        let src_rights: u32 = kani::any();
+        let req_rights: u32 = kani::any();
+        let token: u64 = kani::any();
+        let src_token: u64 = kani::any();
+        kani::assume(token != 0);
+
+        let src = Capability {
+            typ: CAP_ENDPOINT, rights: src_rights, object: 7, badge: 0,
+            serial: MIN_DERIVED_SERIAL, generation: 0, reserved: 0, token: src_token,
+        };
+        let mut dest = [Capability {
+            typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, generation: 0, reserved: 0, token: 0,
+        }; 8];
+        let mut next: u32 = MIN_DERIVED_SERIAL;
+
+        let ok = unsafe {
+            rust_cap_reply_mint(&src as *const Capability, dest.as_mut_ptr(), 8, 5,
+                                req_rights, token, &mut next as *mut u32)
+        };
+        assert!(ok, "a reply-mint from a live endpoint into an empty slot must succeed");
+        assert!(dest[5].rights & !src_rights == 0, "reply-mint must not exceed the invoker's rights");
+        assert!(dest[5].rights & TOKEN_STRIPPED_RIGHTS == 0, "a tokened capability never receives");
+        assert!(dest[5].rights == (req_rights & src_rights & !TOKEN_STRIPPED_RIGHTS));
+        assert!(dest[5].token == token, "the child carries the server's token");
+        assert!(dest[5].object == src.object, "the child names the same endpoint");
+        assert!(dest[5].badge == src.serial, "the child's parent is the invoking capability");
+        assert!(dest[5].typ == CAP_ENDPOINT);
+    }
+
+    /// A token is minted only from an untokened endpoint capability that holds
+    /// MINT, for EVERY source (type, rights, token). If this could succeed from a
+    /// tokened source, a client could re-point its capability at another object.
+    #[kani::proof]
+    fn mint_token_only_from_an_untokened_minter() {
+        let typ: u32 = kani::any();
+        let src_rights: u32 = kani::any();
+        let src_token: u64 = kani::any();
+        let req_rights: u32 = kani::any();
+        let token: u64 = kani::any();
+
+        let mut cs = [Capability {
+            typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, generation: 0, reserved: 0, token: 0,
+        }; 8];
+        cs[4] = Capability {
+            typ, rights: src_rights, object: 3, badge: 0,
+            serial: MIN_DERIVED_SERIAL, generation: 0, reserved: 0, token: src_token,
+        };
+        let mut next: u32 = MIN_DERIVED_SERIAL;
+
+        let ok = unsafe {
+            rust_cap_mint_token(cs.as_mut_ptr(), 8, 5, 4, req_rights, token, &mut next as *mut u32)
+        };
+        if ok {
+            assert!(typ == CAP_ENDPOINT, "only an endpoint can mint a token");
+            assert!(src_rights & CAP_RIGHT_MINT != 0, "minting a token needs MINT");
+            assert!(src_token == 0, "a tokened capability can never mint a token");
+            assert!(token != 0);
+            assert!(cs[5].token == token);
+            assert!(cs[5].rights & !src_rights == 0, "a minted token cannot widen");
+            assert!(cs[5].rights & TOKEN_STRIPPED_RIGHTS == 0);
+        } else {
+            assert!(cs[5].typ == CAP_NULL && cs[5].token == 0, "a refusal writes nothing");
+        }
+    }
+
+    /// Narrowing keeps identity: for EVERY token and rights pair, a minted copy
+    /// carries its source's token. A copy that dropped it would be a capability
+    /// the server can no longer tell apart from an untokened one; one that could
+    /// change it is the re-pointing attack `mint_token_only_from_an_untokened_minter`
+    /// rules out on the other path.
+    #[kani::proof]
+    fn mint_keeps_the_token() {
+        let token: u64 = kani::any();
+        let src_rights: u32 = kani::any();
+        let req_rights: u32 = kani::any();
+
+        let mut cs = [Capability {
+            typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, generation: 0, reserved: 0, token: 0,
+        }; 8];
+        cs[0] = Capability {
+            typ: CAP_ENDPOINT, rights: src_rights, object: 0, badge: 0,
+            serial: 0x10000, generation: 0, reserved: 0, token,
+        };
+        let mut next: u32 = 0x10000;
+        let ok = unsafe { rust_cap_mint(cs.as_mut_ptr(), 8, 4, 0, req_rights, &mut next as *mut u32, 0) };
+        assert!(ok);
+        assert!(cs[4].token == token, "a narrowed copy names the same thing");
     }
 }

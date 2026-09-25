@@ -208,3 +208,11 @@ sites:
       goes through cap_install_object_first_free. Listed because the checker reads
       source, not the preprocessor -- and a defect arm that the gate could not see
       would be a blind spot in the gate, not a tidier manifest.
+  - file: src/kernel/selftest.c
+    function: cap_selftest_install_endpoint
+    status: locked
+    reason: >
+      TOKEN_SELFTEST only. Installs the untokened endpoint capability with MINT
+      that init would hold in a real boot, so smoke-captoken's client has something
+      to mint tokens from. Takes cap_lock, allocates the serial before it, refuses
+      an occupied slot and counts against caps_in_use like every other install.

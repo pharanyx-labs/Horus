@@ -55,7 +55,7 @@ cargo kani --harness mint_never_escalates_rights   # or a single one
 
 **Which of these gate a merge is written down in `.github/kani-harnesses.yml`**, and
 `tools/check_kani_harnesses.py` (the required `kani-bounded` job) fails the build if a proof
-is in neither list. **18** gate; **2** are excused with a reason, and run only in the manual
+is in neither list. **21** gate; **2** are excused with a reason, and run only in the manual
 `kani` job. Those counts are declared in `.github/doc-claims.yml` and re-derived from the
 manifest on every run, because until 2026-09-20 five documents stated them and no two agreed.
 

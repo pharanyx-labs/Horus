@@ -52,7 +52,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / ".github" / "cap-write-sites.yml"
 SRC = ROOT / "src" / "kernel"
 
-FIELD = r"(?:type|rights|object|badge|serial|generation)"
+FIELD = r"(?P<field>type|rights|object|badge|serial|generation|reserved|token)"
 # A write to ONE capability field through an indexed cspace-like lvalue. The
 # lvalue names are the ones this tree actually uses for a capability array; a new
 # name is caught by rule 1 the first time it is written to, because the function
@@ -122,15 +122,28 @@ def function_bodies(path):
     return bodies
 
 
-def find_sites():
+def find_sites(fields_out=None):
+    """Every cap-write site, keyed (file, function), with its line numbers.
+
+    If `fields_out` is a dict, it is filled with the set of capability fields each
+    site writes FIELD BY FIELD, plus "<struct>" when it also assigns a whole slot,
+    for rule 6."""
     sites = {}
     for path in sorted(SRC.glob("*.c")):
         funcs = enclosing_functions(path)
         for n, line in enumerate(path.read_text().split("\n"), 1):
             code = line.split("/*")[0].split("//")[0]
-            if PAT_FIELD.search(code) or PAT_STRUCT.search(code):
+            fm = PAT_FIELD.search(code)
+            sm = PAT_STRUCT.search(code)
+            if fm or sm:
                 key = (path.relative_to(ROOT).as_posix(), funcs[n])
                 sites.setdefault(key, []).append(n)
+                if fields_out is not None:
+                    got = fields_out.setdefault(key, set())
+                    for m in PAT_FIELD.finditer(code):
+                        got.add(m.group("field"))
+                    if sm:
+                        got.add("<struct>")
     return sites
 
 
@@ -147,8 +160,29 @@ def main():
                 return 1
         declared[(entry["file"], entry["function"])] = entry
 
-    sites = find_sites()
+    written = {}
+    sites = find_sites(written)
     errors = []
+
+    # RULE 6: a site that INSTALLS a capability field by field writes its token.
+    #
+    # WHY. Since 2026-09-25 a capability has a `token`, the identity a server
+    # authorises on (docs/design/filesystem.md §5.1). A field-wise install writes
+    # type, rights, object, badge, serial and generation into a slot, and if the
+    # slot last held a tokened capability, every one of those is overwritten
+    # except the token. The new capability then carries the old one's identity:
+    # a forged token, made by nothing more than reusing a slot. Writing `serial`
+    # is what marks a store as an install (a fresh serial is a new capability),
+    # so any function that writes `serial` field by field must write `token` as
+    # well. A whole-slot assignment copies or builds every field and is exempt.
+    for key, got in sorted(written.items()):
+        if "serial" in got and "token" not in got and "<struct>" not in got:
+            errors.append(
+                f"STALE-TOKEN install: {key[0]} in {key[1]}() writes a capability's "
+                f"`serial` field by field but never its `token`, so a slot that last "
+                f"held a tokened capability keeps that identity.\n"
+                f"      Write `.token = 0` (or the source's token, for a derivation) "
+                f"beside the serial.")
 
     # RULE 1: every cap-write site is declared. This is the one that catches the
     # next raw store, wherever somebody puts it.

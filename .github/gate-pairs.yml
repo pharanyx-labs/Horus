@@ -78,6 +78,7 @@ control_arms:
   smoke-fb-console-server-control: smoke-fb-console-server
   smoke-fb-grid-control: smoke-fb-grid
   smoke-captest-lookup-type-control: smoke-captest
+  smoke-captoken-unmasked-control: smoke-captoken
   smoke-auditprobe-control: smoke-auditprobe
   smoke-auditprobe-abi-control: smoke-auditprobe
   smoke-blockprobe-control: smoke-blockprobe
@@ -256,6 +257,8 @@ gates:
   - smoke-cap-lookup
   - smoke-cspace-release
   - smoke-captest
+  - smoke-captoken
+  - smoke-captoken-smp
   - smoke-auditprobe
   - smoke-blockprobe
   - smoke-execprobe

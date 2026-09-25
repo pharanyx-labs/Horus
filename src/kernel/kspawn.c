@@ -439,6 +439,7 @@ static int do_spawn_inner(int caller, uint32_t stdio_spec, uint32_t untyped_inde
         tasks[new_id].cspace[6].object = 0;
         tasks[new_id].cspace[6].badge  = creator_admin->serial ? creator_admin->serial : 0xC0DE0006U;
         tasks[new_id].cspace[6].serial = cap6_serial;
+        tasks[new_id].cspace[6].token = 0;
         /* Stamp the child admin cap from its OWN fresh serial, not the creator's
          * generation (finding 3.3): the cap is keyed by cap6_serial, so its
          * generation must track that serial's cell for revoke to invalidate it. */

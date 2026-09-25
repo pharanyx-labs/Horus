@@ -192,8 +192,21 @@ typedef struct capability {
     uint32_t badge;       /* the parent's serial: the derivation-tree link */
     uint32_t serial;      /* globally unique, monotonic */
     uint32_t generation;  /* lineage generation at creation */
+    uint32_t reserved;    /* always 0; pins token at offset 32 on every target */
+    uint64_t token;       /* an endpoint's server-defined identity; 0 = none (S105) */
 } capability_t;
 ```
+
+**The token** turns an endpoint capability into a handle on one thing a server serves, such as
+a file. The kernel never interprets it: it records the token and rights of the capability every
+message is sent through, and the receiver reads them with `SYS_IPC_INVOKER`, so a server
+authorises on what a client *holds* rather than on who it *is*. Only two operations set a token:
+`SYS_CAP_MINT_TOKEN`, from an untokened endpoint capability holding MINT (the task that made the
+endpoint), and the reply-mint, `SYS_IPC_REPLY_CAP`, in which a server hands its caller a child of
+the capability the request came through, with rights at most that capability's. Everything else
+copies the token, and the receive right is stripped wherever one is set. The design this serves
+is `docs/design/filesystem.md` §5; the rules are proved in Kani and witnessed by
+`make smoke-captoken` (**S105**).
 
 Eighteen object types, besides the empty `CAP_NULL`: `CAP_TCB`, `CAP_NOTIFICATION`,
 `CAP_ENDPOINT`, `CAP_FRAME`, `CAP_USER`, `CAP_AUDIT`, `CAP_CONSOLE`,

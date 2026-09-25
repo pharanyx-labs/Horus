@@ -1,9 +1,11 @@
 # A capability-addressed filesystem for Horus
 
-**Status: specification, not built. Nothing here is implemented.** Every load-bearing question
-has been answered by the maintainer: three on 2026-09-23 and four more on 2026-09-25. §13
-records them all as decisions. What remains open is listed there too, and none of it blocks the
-first phase.
+**Status: specification; phase 1a is built, the rest is not.** Phase 1a, the kernel primitive
+file capabilities need (§5.1: tokens, the reply-mint and the carried capability), landed on
+2026-09-25 (**S105**, `make smoke-captoken`). Nothing uses it yet: `fs_server` still authorises
+by uid and mode until phase 1b. Every load-bearing question has been answered by the
+maintainer: three on 2026-09-23 and four more on 2026-09-25. §13 records them all as decisions.
+What remains open is listed there too, and none of it blocks phase 1b.
 
 The brief, in the maintainer's words: "a much more robust filesystem, a hybrid of the major unix
 ones out there but definitely unique and most importantly, secure" (2026-09-22), and "least
@@ -189,7 +191,10 @@ more:
    and `link` need, since they name two directories.
 
 `fs_server` therefore holds no mint authority of its own. It cannot fabricate a capability; it
-can only narrow the one a client invoked. `SYS_CONNECT_FS_SERVER` and the uid/gid half of
+can only narrow the one a client invoked. The receive right is stripped from every tokened
+capability; MINT is not, so a client can still make narrowed copies of its own file capabilities
+with `SYS_CAP_MINT` (they keep the token), while `SYS_CAP_MINT_TOKEN` refuses every tokened
+source, so no client can mint a new token. `SYS_CONNECT_FS_SERVER` and the uid/gid half of
 `SYS_IPC_SENDER` retire from the filesystem path. The first capability, the root directory, is
 minted by `init`, which creates the endpoint and so holds its mint right (§6.1).
 
@@ -551,7 +556,7 @@ ambient authority is gone even if the format work stalls.
 
 | Phase | What lands | Removes |
 |---|---|---|
-| **1a** | Kernel: tokens on endpoint capabilities, reply-mint, carry-one (§5.1), with Kani proofs that a reply-minted capability never exceeds its invoking parent | Nothing yet |
+| **1a** ✅ | Kernel: tokens on endpoint capabilities, reply-mint, carry-one (§5.1), with Kani proofs that a reply-minted capability never exceeds its invoking parent. **Landed 2026-09-25, S105** | Nothing yet |
 | **1b** | `fs_server` authorises by capability; `hvfs` walks with capabilities; `init` mints the root and evaluates `/etc/fs.policy`; the truthful `stat`/`chmod`/`chown` (§7); the rename rule (§5.5) | `perm_ok`, `FS_OP_CHOWN`'s root check, `SYS_FS_SET_META`, the uid path of `SYS_IPC_SENDER` in the filesystem, `SYS_CONNECT_FS_SERVER` |
 | **2** | Kernel sealed-block service (§4.1, §4.2); the v12 tree, extents, space, transactions and snapshots-ready birth times in `fs_server` | The inode table, WAL, Merkle builder and fsck from `storage.c`; the side table; `SYS_FBLOCK_*` and `SYS_FS_INODE_*` |
 | **3** | Symbolic links, timestamps and the RTC time service, cross-directory rename, sparse files, `fallocate`, `fs_scrub` | The v11 directory array |
@@ -620,12 +625,13 @@ still asks a settled question is stale.
 
 ## Falsification
 
-Nothing here is a claim about the tree yet. When it becomes one, each property below needs a
-witness in `SECURITY.md` and a control arm that reddens the base gate, per §2:
+Phase 1a's property is a claim about the tree now: a reply-minted capability never exceeds the
+capability it was invoked through (**S105**, witnessed by `make smoke-captoken` and the Kani
+proof `reply_mint_never_escalates_and_never_receives`, falsified by `TOKEN_REPLY_MINT_UNMASKED=1`).
+The rest are not claims yet. When each becomes one, it needs a witness in `SECURITY.md` and a
+control arm that reddens the base gate, per §2:
 
 - A task holding a read-only file capability cannot write, and the arm removes the rights check.
-- A reply-minted capability never exceeds the capability it was invoked through; the Kani proof
-  covers the algebra and an arm lets the server's requested rights through unmasked.
 - Revoking a directory capability revokes every file capability derived through it.
 - No filesystem operation succeeds on the strength of the caller's uid, and the arm restores
   `perm_ok` so the gate can be shown to catch it.

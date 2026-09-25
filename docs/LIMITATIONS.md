@@ -535,9 +535,9 @@ a page at the bogus address and reported success.
 ### 1.8 Part of the syscall table has no test that runs its handler, and one of those gaps hid a defect
 
 **Measured since 2026-08-20**, and re-derived on every merge rather than restated: as of
-2026-09-09, and gated since: **89 of 97** implemented syscalls have their handler
+2026-09-09, and gated since: **89 of 101** implemented syscalls have their handler
 body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
-boot-modules session). The other 8 are listed in `.github/syscall-coverage.yml`, each with a written reason.
+boot-modules session). The other 12 are listed in `.github/syscall-coverage.yml`, each with a written reason.
 
 This was stated as a limitation rather than a finding, on the grounds that nothing here was
 known to be broken. **That is no longer the honest framing, and it has now been wrong four times.**
@@ -592,7 +592,7 @@ once rather than the one syscall that motivated it. And third, **neither would h
 by a wider `captest`**: both syscalls are gated on a real capability, so the only way in is a
 task that holds one, which is why the answer was a new task rather than a bigger suite.
 
-So the standing risk is not hypothetical: a defect in any of those 8 handlers is invisible in
+So the standing risk is not hypothetical: a defect in any of those 12 handlers is invisible in
 the same way issue #176 was, and in the way S52, S71 and the block-syscall error vocabulary just
 were. `captest` is a **refusal** suite by
 construction: its checks for `SYS_DMESG` and `SYS_AUDIT_DIGEST` both assert `SYS_ERR_PERM`, and
@@ -2659,7 +2659,7 @@ at-rest secrecy is not wanted, not as a performance setting.
 
 **The whole kernel image is itself a ceiling, and one static object dominates it (audit F2,
 closed 2026-09-19).** The image must end below `USER_PHYS_BASE` (16 MiB), enforced by the
-`linker64.ld` ASSERT. `.bss` is budgeted at **7,480 KiB** (`.github/image-budget.yml`), and
+`linker64.ld` ASSERT. `.bss` is budgeted at **7,532 KiB** (`.github/image-budget.yml`), and
 `argon2_scratch` alone is 4,096 KiB of it: the argon2 `m_cost` (`ARGON2_M_COST_KIB = 4096`), a
 deliberate memory-hardness parameter that must not be trimmed to buy room. The whole image ends
 about 6.9 MiB below the line: 0x922000 on a Void build on 2026-09-22, after `MAX_CPUS` went from
@@ -3271,9 +3271,9 @@ The assurance Horus can honestly claim today is *"thoroughly automatically verif
 
 ### 5.2 ~~Which tests gate a merge is reconciled by hand~~ (**FIXED 2026-09-21**) **[C-6]**
 
-**Closed.** `.github/workflows/ci.yml` defines **132** jobs, `codeql.yml` one more and
-`ruleset-audit.yml` one more: **134** across the three, producing **137** status-check contexts.
-**133** of them gate a merge, and ruleset `21815299` requires the two contexts that carry them
+**Closed.** `.github/workflows/ci.yml` defines **133** jobs, `codeql.yml` one more and
+`ruleset-audit.yml` one more: **135** across the three, producing **138** status-check contexts.
+**134** of them gate a merge, and ruleset `21815299` requires the two contexts that carry them
 all: **All required gates passed** (the `gates` job, which needs every required ci.yml job and
 passes only if each one succeeded, skipped and cancelled counting as failures) and CodeQL's
 `analyze`, which lives in its own workflow. The `ci-gating` job proves `gates` needs exactly the
@@ -3329,7 +3329,7 @@ the right name with the wrong verdict. Step-level `continue-on-error` is untouch
 allowed; it lets one step be advisory while the job's own status still reports the truth, which
 is how the `security` job keeps its scanners advisory without becoming unfailable itself.
 
-That set is **133 gating contexts and 4 reasoned exemptions**: `fuzz` (a 30-second
+That set is **134 gating contexts and 4 reasoned exemptions**: `fuzz` (a 30-second
 time-boxed search is evidence of effort, not absence), `kani` (manual-only, so it has no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request),
 `smoke-smp-kvm` (a second run, under KVM, of gates already required under TCG, until its KVM pass rate is measured), and
@@ -4611,7 +4611,7 @@ direction** and is ruled out here so it is not proposed later.
 ### 5.5 Formal verification is narrow
 
 Kani proves properties of capability revocation, the ELF validator and the page-pool refcount
-arithmetic: **20** harnesses, **18** of them gating in the required `kani-bounded` job. Those
+arithmetic: **23** harnesses, **21** of them gating in the required `kani-bounded` job. Those
 counts are declared in `.github/doc-claims.yml` and re-derived on every run; this sentence read
 *"16 harnesses, 11 of them gating"* until 2026-09-20, when neither figure had ever been right
 at the same time as the four other documents stating it. **That is the whole of the formal methods in
@@ -4676,7 +4676,7 @@ so neither was ever presented to a contributor. There was no code of conduct, an
 the IPC authorisation logic. All fixed as of 2026-07-27; the `require_code_owner_review`
 setting that would make `CODEOWNERS` binding is still off (§5.1).
 
-*(Repository hygiene itself is fine: `git ls-files` reports **438** tracked files with no build
+*(Repository hygiene itself is fine: `git ls-files` reports **441** tracked files with no build
 artefacts or vendored binaries: no `kernel.elf`, no `horus.iso`, no object files. A working
 checkout accumulates ~70 MB of untracked build output, which is correctly `.gitignore`d. This
 sentence said 243 until 2026-08-15 and **254 until 2026-09-20**, by which point the tree had

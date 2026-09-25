@@ -235,6 +235,38 @@ p.write_text("\n".join(out))
 PY' \
     clean
 
+# ---- RULE 6: an install that leaves the slot's previous TOKEN behind. The token
+#      is the identity a server authorises on (docs/design/filesystem.md §5.1),
+#      so a field-wise install that writes every field but it hands the new
+#      capability whatever identity the slot last held. Planted in the most
+#      general install path there is, by deleting the one line that clears it.
+arm "12" "a field-wise install that never writes the token" \
+    'python3 - <<PY
+import pathlib
+p = pathlib.Path("src/kernel/capability.c"); txt = p.read_text()
+needle = "    cspace[dest_slot].token      = 0;\n"
+start = txt.index("bool cap_install_object(")
+at = txt.index(needle, start)
+p.write_text(txt[:at] + txt[at + len(needle):])
+PY' \
+    caught "STALE-TOKEN install"
+
+# ---- AND ITS SILENT DIRECTION: copying a whole slot and then re-stamping its
+#      serial is not an install that forgets the token; the struct copy carried
+#      it. kshell.c does exactly this, and the tree at HEAD (arm 1) passes with it,
+#      but that is an accident of the tree. This arm makes it a stated property.
+arm "13" "a whole-slot copy followed by a fresh serial" \
+    'python3 - <<PY
+import pathlib
+p = pathlib.Path("src/kernel/pipe.c"); txt = p.read_text()
+txt += "\nvoid rule6_silent_probe(struct capability *cs, int a, int b) {\n    spin_lock(&cap_lock);\n    cs[a] = cs[b];\n    cs[a].serial = 7;\n    spin_unlock(&cap_lock);\n}\n"
+p.write_text(txt)
+y = pathlib.Path(".github/cap-write-sites.yml"); t = y.read_text()
+t += "  - file: src/kernel/pipe.c\n    function: rule6_silent_probe\n    status: locked\n    reason: a fixture for arm 13\n"
+y.write_text(t)
+PY' \
+    clean
+
 echo
 echo "arms passed: $PASSES   failed: $FAILS"
 [ "$FAILS" -eq 0 ]

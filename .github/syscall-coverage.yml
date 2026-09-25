@@ -395,8 +395,9 @@ covered:
   - SYS_IPC_RECV_BLOCK
 
 uncovered:
-  # Twelve left, and after the 2026-08-30 sweep they fall into exactly three
-  # groups. The grouping is the useful part: it says what each one would COST to
+  # Twelve left, in four groups: three from the 2026-08-30 sweep, and a fourth of
+  # syscalls added on 2026-09-25 that only their own witness calls yet. The
+  # grouping is the useful part: it says what each one would COST to
   # cover, which is the question this file is asked when somebody wants the
   # number to go up.
   #
@@ -471,3 +472,16 @@ uncovered:
     SC_NONE, so the body IS reachable by any caller -- and it BLOCKS. Its only early return is console_hw_owned(), and no ring-3 server owns the UART in the captest image, so the call reaches console_getc() and waits for a keystroke. MEASURED 2026-08-30, by writing the probe: it hung smoke-captest for the full 40s timeout with no marker. This is the difference from SYS_GET_LINE, which looks identical from the dispatch table and is `covered`: h_get_line tests CAP_CONSOLE inside the handler and refuses captest outright, where h_read's fd 0 branch and this one test no authority at all. Covering it needs a workload where a console server owns the UART, or a non-blocking branch this syscall does not have
   SYS_SHLIB_INFO: >-
     SC_NONE, so a probe would enter the body -- and the body returns at its FIRST LINE, because shlib_active() is false in every tracked image. Marking it covered on that basis would raise this file's number without ever running the capability gate the syscall is interesting for (S51, plus the SHLIB_INFO_UNGATED and SHLIB_INFO_TYPE_ONLY arms). "The body was entered" stops being coverage when the body is one branch of a feature compiled out, and this is the entry that says so. It IS entered on every boot of a SHLIB_SELFTEST build, by both shlibtest and shlibpeer, which is what make smoke-shlib asserts. It moves to `covered` when the shared library becomes part of an ordinary image, which is roadmap 2.5's remaining half
+  # (4) NEW ON 2026-09-25 AND NOT YET USED BY ANY SHIPPED PROGRAM. The four
+  # capability-token syscalls (docs/design/filesystem.md §5.1) have one client so
+  # far, their own witness, so no tracked workload enters them. They move to
+  # `covered` when fs_server and hvfs use them (phase 1b of that design), which is
+  # when a tracked session will enter all four on every boot.
+  SYS_CAP_MINT_TOKEN: >-
+    Entered by TOKEN_SELFTEST, whose gate is make smoke-captoken (S105), by tokencli minting a token from its untokened capability and being refused from a tokened one. No tracked image runs tokencli; init will call it to mint the root directory capability in phase 1b
+  SYS_IPC_CALL_CAP: >-
+    Entered by TOKEN_SELFTEST (make smoke-captoken, S105) on every call tokencli makes. No tracked workload has a capability-addressed server to call until phase 1b
+  SYS_IPC_INVOKER: >-
+    Entered by TOKEN_SELFTEST (make smoke-captoken, S105) on every request tokensrv receives. No tracked server reads an invoker record until fs_server does in phase 1b
+  SYS_IPC_REPLY_CAP: >-
+    Entered by TOKEN_SELFTEST (make smoke-captoken, S105), successfully and refused, by tokensrv. No tracked server reply-mints until fs_server does in phase 1b

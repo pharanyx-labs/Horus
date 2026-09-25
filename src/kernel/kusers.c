@@ -928,6 +928,7 @@ void h_sudo(struct interrupt_frame64 *r) {
         tasks[pid].cspace[3].object = USER_VIRT_BASE;
         tasks[pid].cspace[3].badge  = 0;
         tasks[pid].cspace[3].serial = s3;
+        tasks[pid].cspace[3].token = 0;
         tasks[pid].cspace[3].generation = rust_lineage_current(s3); /* finding 3.3 */
 
         tasks[pid].cspace[6].type   = CAP_USER;
@@ -935,6 +936,7 @@ void h_sudo(struct interrupt_frame64 *r) {
         tasks[pid].cspace[6].object = 0;
         tasks[pid].cspace[6].badge  = 0xC0DE0006U;
         tasks[pid].cspace[6].serial = s6;
+        tasks[pid].cspace[6].token = 0;
         tasks[pid].cspace[6].generation = rust_lineage_current(s6); /* finding 3.3 */
 
         tasks[pid].cspace[7].type   = CAP_TCB;
@@ -942,6 +944,7 @@ void h_sudo(struct interrupt_frame64 *r) {
         tasks[pid].cspace[7].object = tcb_object(pid);   /* HORUS-20260921-02 */
         tasks[pid].cspace[7].badge  = 0;
         tasks[pid].cspace[7].serial = s7;
+        tasks[pid].cspace[7].token = 0;
         tasks[pid].cspace[7].generation = rust_lineage_current(s7); /* finding 3.3 */
         spin_unlock(&cap_lock);
         audit_log(AUDIT_SUDO, 0, (uint32_t)pid, "sudo success: spawned uid 0");

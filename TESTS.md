@@ -1618,10 +1618,10 @@ as a reproduction.
 
 ## CI
 
-`.github/workflows/ci.yml` defines **134** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **135** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below: **136** jobs, **139** contexts. Counts from `tools/check_ci_gating.py`, which prints
+below: **137** jobs, **140** contexts. Counts from `tools/check_ci_gating.py`, which prints
 them; do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20, a backstop, not a budget. The default is
@@ -1686,7 +1686,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The set is **135 gating contexts and 4 reasoned exemptions** (read off
+The set is **136 gating contexts and 4 reasoned exemptions** (read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence): `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
@@ -2139,6 +2139,17 @@ double hyphen ending a line. Falsified nineteen ways by `tools/test_check_prose_
 per rule (two for the double hyphen, one of them that line-end case, and two for spelling), the
 unmutated tree, one for a new file under `docs/`, seven for the silent direction, and one for each
 of the two masker defects.
+
+**No tracked file carries a merge-conflict marker, gated since 2026-09-25.**
+`tools/check_conflict_markers.py` (required job `conflict-markers`) reads every text file in the
+index and refuses the four lines git writes into a conflict at column 0: the opening and closing
+markers, the separator alone, and the `diff3` base marker. It exists because #465 merged a
+conflict into `docs/LIMITATIONS.md` §5.6 with every job green: the two sides differed only in a
+derived count, the merge kept both, and Markdown renders the markers as text. Falsified thirteen
+ways by `tools/test_check_conflict_markers.sh`: the tree as it stands, one arm per rule in a
+different kind of file, a label-less marker, a CRLF line ending, a newly staged file, and five
+silent directions (an eight-character underline, a marker not at column 0, seven `<` followed by
+a letter, a binary file, and an untracked file, which the sweep does not see until it is staged).
 
 **Every gate-asserted marker is emitted in one write, gated since 2026-09-01.**
 `tools/check_split_markers.py` (required, beside `check_capslots.py` and `check_abi_structs.py`)

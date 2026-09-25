@@ -617,7 +617,7 @@ static int sd_wait_dat0(uint64_t bar) {
 static uint32_t sd_go_fast(uint64_t bar, int is_mmc, uint32_t rca) {
 #ifdef SDHCI_STAY_SLOW
     /* CONTROL ARM -- never ship. The driver before 2026-09-25: one data line at
-     * the identification clock for everything. See make smoke-sdhci-emmc-fast-control. */
+     * the identification clock for everything. See make smoke-sdhci-fast-control. */
     (void)bar; (void)is_mmc; (void)rca;
     return 0;
 #else

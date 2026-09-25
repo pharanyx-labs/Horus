@@ -3165,7 +3165,8 @@ old allocator and the new one read the same single block and no workload could t
   now the storage Horus can install onto: the driver's own write path stays compiled out of a
   shipped boot, because that gate writes to a card the kernel merely *found*, and the block layer
   is how a shipped boot writes to one it was told to.
-  **The eMMC branch has run under emulation, and not yet end to end on hardware.** eMMC powers
+  **The eMMC branch has run under emulation and, since 2026-09-25, end to end on hardware** (the
+  install below). eMMC powers
   up with `CMD1`; SD uses `CMD8`/`ACMD41`. QEMU 11 has an `emmc` device, and on 2026-09-22 the
   branch ran for the first time against it, behind a controller given the IdeaPad 1 14IGL05's
   capability value: a 64 GiB device identified, sized from its extended CSD, read, and installed
@@ -3208,10 +3209,18 @@ old allocator and the new one read the same single block and no workload could t
   twice. That is an emulation cost and says nothing either way about a card; ordinary reads after
   the install still go through `CMD18`.
 
-  **An install onto the laptop's eMMC has not yet been run**; until one has, this paragraph
-  says so. What stopped one on 2026-09-22 was no longer storage but the installer's own screen,
-  which reached the serial line and nothing else on a machine with no serial port; that was a
-  separate finding, and it is fixed and recorded in §4. **The installer gates' stall detector is blind on this path**: it counts QEMU's block
+  **An install onto the laptop's eMMC completes (2026-09-25), and the installed system reads at
+  about 0.7 ms per 4 KiB block.** Two faults stood in the way, and no emulated gate could see
+  either. The driver had no lock, so the laptop's two cores drove the controller at once and
+  every install failed at the password step (#444; reproduced once QEMU booted two CPUs, 5 of 5
+  failures to 5 of 5 passes). And the driver never left the identification settings, one data
+  line at 400 kHz, so every 4 KiB read spent about 83 ms moving data and a command took seconds;
+  it now switches to a 4-bit bus at 25 MHz after identification and proves the new mode with a
+  read, measured on the laptop at 661 ms down to about 6 ms of data phase per 8 reads. QEMU's
+  card models move data at one rate whatever the clock, so `make smoke-sdhci-fast` can assert
+  the mode and not the speed. Before either, what stopped an install on 2026-09-22 was the
+  installer's own screen, which reached the serial line and nothing else on a machine with no
+  serial port; that was a separate finding, fixed and recorded in §4. **The installer gates' stall detector is blind on this path**: it counts QEMU's block
   statistics, which the SD and eMMC device models do not keep, so for `smoke-installer-sd` and
   `smoke-installer-emmc` it is an elapsed-time bound on the format (30 s and 180 s) rather than a
   detector of the guest going quiet.

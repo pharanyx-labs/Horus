@@ -136,7 +136,7 @@ DEFECT_FLAGS = \
 	REPLY_EP_SPACE_OVERLAP \
 	AHCI_PROBE_ABSENT AHCI_CAPACITY_CONSTANT SDHCI_PROBE_ABSENT \
 	SDHCI_CSD_SPEC_BITS SDHCI_ADDR_MODE_INVERTED \
-	SDHCI_WRITE_SELFTEST SDHCI_WRITE_NO_FLUSH SDHCI_NO_LOCK \
+	SDHCI_WRITE_SELFTEST SDHCI_WRITE_NO_FLUSH SDHCI_NO_LOCK SDHCI_STAY_SLOW \
 	CONSOLE_VGA_CHECK_FAIL BOOT_MODULE_RESERVE_UNCHECKED POOL_RESERVE_FIXED_BASE \
 	BOOT_MODULE_IMAGE_PROBE \
 	AHCI_PROBE_ABSENT AHCI_CAPACITY_CONSTANT SERIAL_TX_NEVER_DRAINS \
@@ -1927,6 +1927,17 @@ SDHCI_WRITE_NO_FLUSH ?= 0
 # That is what failed every install on the IdeaPad (two cores) and what no
 # one-CPU gate could see. The arm for the two-CPU installer gate.
 SDHCI_NO_LOCK ?= 0
+
+# SDHCI_STAY_SLOW=1 is the SD/eMMC driver before 2026-09-25: after identification
+# it never switched the card to a 4-bit bus or raised the clock from 400 kHz, so
+# every 4 KiB read spent ~83 ms moving data on the IdeaPad (commands took seconds).
+# QEMU's card models ignore the clock, so the gate asserts the mode the probe
+# reports, and the laptop's per-phase timings are the evidence of the speed.
+SDHCI_STAY_SLOW ?= 0
+ifeq ($(SDHCI_STAY_SLOW),1)
+CFLAGS  += -DSDHCI_STAY_SLOW
+ASFLAGS += -DSDHCI_STAY_SLOW
+endif
 ifeq ($(SDHCI_NO_LOCK),1)
 CFLAGS  += -DSDHCI_NO_LOCK
 ASFLAGS += -DSDHCI_NO_LOCK
@@ -9251,6 +9262,37 @@ smoke-sdhci-detect:
 		SDHCI_EVIDENCE=.sdhci-evidence-large tools/sdhci_detect_test.sh horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SDHCI_EXPECT=empty \
 		SDHCI_EVIDENCE=.sdhci-evidence-empty tools/sdhci_detect_test.sh horus.iso
+
+# THE DATA BUS IS SWITCHED UP AFTER IDENTIFICATION. The probe must report a
+# 4-bit bus at a data clock (sd_go_fast) and must have read block 0 back at it.
+# QEMU cannot show the SPEED -- its card models move data at the same rate at any
+# clock -- so this proves the switch is issued, accepted and verified; the
+# laptop's timings (83 ms -> 0.7 ms per 4 KiB read) are the speed evidence. The
+# arm keeps the identification settings and must fail on the missing line.
+.PHONY: smoke-sdhci-fast smoke-sdhci-fast-control
+smoke-sdhci-fast:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(FASTARM) horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SDHCI_EVIDENCE=.sdhci-evidence-fast tools/sdhci_detect_test.sh horus.iso
+	@if grep -a -q 'sdhci: 4-bit bus at [0-9]* kHz' .sdhci-evidence-fast/serial.log; then \
+	    grep -a -o 'sdhci: 4-bit bus at [0-9]* kHz' .sdhci-evidence-fast/serial.log | head -1 | sed 's/^/  /'; \
+	    echo "sdhci-fast: PASS - the card runs on a 4-bit bus at a data clock"; \
+	else \
+	    echo "sdhci-fast: FAIL - the probe did not report a 4-bit bus at a data clock"; \
+	    grep -a 'sdhci:' .sdhci-evidence-fast/serial.log | tail -5 | sed 's/^/  /'; exit 1; \
+	fi
+
+smoke-sdhci-fast-control:
+	@out=$$($(MAKE) --no-print-directory smoke-sdhci-fast FASTARM=SDHCI_STAY_SLOW=1 2>&1); rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "SDHCI FAST CONTROL: FAIL - a driver that stays slow passed the gate"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "did not report a 4-bit bus"; then \
+	    echo "SDHCI FAST CONTROL: FAIL - it failed, but not on the bus mode."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "SDHCI FAST CONTROL: PASS - a driver left at the identification clock is caught"
 
 # The WRITE round trip, in a build of its own.
 #

@@ -619,6 +619,12 @@ in this file.
 
 ### Fixed
 
+- **Every disk read on a laptop's eMMC took about 83 ms, so commands and keys lagged by seconds.**
+  The SD/eMMC driver never left the settings cards are identified at: one data line at 400 kHz.
+  It now switches the card to a 4-bit bus at 25 MHz after identification, checks the new mode
+  with a read and falls back if that fails. Measured on the IdeaPad: the data phase of 8 reads
+  went from about 661 ms to about 6 ms.
+
 - **Stray characters appeared before `init: the installer finished`.** The clear the installer
   sends when it finishes wrote its serial escape sequence through the console's ordinary output,
   which draws on the screen too, so `←[2J←[H` was painted in front of the next line. It now goes

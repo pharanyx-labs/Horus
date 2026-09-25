@@ -75,6 +75,7 @@ control_arms:
   smoke-shlib-link-abi-control: smoke-shlib-link
   smoke-shlib-link-unknown-control: smoke-shlib-link
   smoke-shlib-link-seal-control: smoke-shlib-link
+  smoke-coreutils-shared-control: smoke-coreutils-shared
   smoke-installer-unsealed-control: smoke-installer-unsealed
   smoke-installer-sealed-control: smoke-installer
   smoke-installer-sd-devregs-control: smoke-installer-sd
@@ -345,6 +346,7 @@ gates:
   - smoke-shlib-inherit
   - smoke-mem-seal
   - smoke-shlib-link
+  - smoke-coreutils-shared
   - smoke-installer-unsealed
   - smoke-installer-sd
   - smoke-installer-sd-smp

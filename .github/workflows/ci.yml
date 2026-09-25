@@ -79,6 +79,7 @@ jobs:
       - defect-flags-documented
       - defer-exemption
       - devcap
+      - conflict-markers
       - doc-claims
       - ffi-deadsurface
       - fork
@@ -453,6 +454,26 @@ jobs:
       # an inline data: favicon must not be flagged.
       - name: Falsify the checker in every direction
         run: tools/test_check_site.sh
+
+  conflict-markers:
+    name: No tracked file carries a merge-conflict marker
+    runs-on: ubuntu-latest
+    # Backstop, not a performance budget: both steps take seconds and need no
+    # install. See doc-claims for why every job carries one.
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      # #465 merged a resolved-by-accident conflict into docs/LIMITATIONS.md with
+      # every job green: Markdown renders a marker as text, and every other
+      # checker reads for something else.
+      - name: Check every tracked text file for conflict markers
+        run: python3 tools/check_conflict_markers.py
+      # One arm per rule, and the silent direction (what git does not write, a
+      # binary file, and an untracked one, which the sweep never sees).
+      - name: Falsify the checker in every direction
+        run: tools/test_check_conflict_markers.sh
 
   prose-style:
     name: The docs and the website use no em dash and British spelling
@@ -3591,6 +3612,11 @@ jobs:
         run: make smoke-shlib-link-unknown-control
       - name: Control arm — the resolved table left writable
         run: make smoke-shlib-link-seal-control
+      # The shipped programs carry no libc: every coreutil and tcc link the library.
+      - name: The shipped coreutils and tcc carry no libc of their own, and run
+        run: make smoke-coreutils-shared
+      - name: Control arm — the coreutils linked with newlib inside them
+        run: make smoke-coreutils-shared-control
 
   fpu:
     name: "A task cannot read another's XMM register file"

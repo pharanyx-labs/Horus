@@ -69,6 +69,9 @@ required:
   - altconfigs
   - cap-writes
   - ci-gating
+  # Gating: a conflict marker reached main in #465 with every job green, because
+  # Markdown renders one as text and nothing else reads for it. Added 2026-09-25.
+  - conflict-markers
   # Gating rather than advisory on purpose. It checks the documentation against
   # the tree, and documentation that lies is how [G-2] survived nineteen days
   # after three files said the property was retired. An advisory doc check is a

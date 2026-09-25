@@ -1619,10 +1619,10 @@ as a reproduction.
 
 ## CI
 
-`.github/workflows/ci.yml` defines **134** jobs, run on every push and pull request;
+`.github/workflows/ci.yml` defines **135** jobs, run on every push and pull request;
 `codeql.yml` adds one more, C/C++ static analysis (plus a weekly schedule); `ruleset-audit.yml`
 adds one that runs only on a daily schedule. All three are covered by the gating classification
-below: **136** jobs, **139** contexts. Counts from `tools/check_ci_gating.py`, which prints
+below: **137** jobs, **140** contexts. Counts from `tools/check_ci_gating.py`, which prints
 them; do not copy them forward from here.
 
 Every job carries `timeout-minutes` as of 2026-08-20, a backstop, not a budget. The default is
@@ -1687,7 +1687,7 @@ baseline:
 It also caught a real one on its first run: the CodeQL `analyze` job was unclassified, which is
 the same omission class the finding describes.
 
-The set is **135 gating contexts and 4 reasoned exemptions** (read off
+The set is **136 gating contexts and 4 reasoned exemptions** (read off
 `tools/check_ci_gating.py`, which prints them, rather than from this sentence): `fuzz` (a fixed
 30-second search is evidence of effort, not of absence), `kani` (manual-only, so there is no
 conclusion to gate on), `ruleset-audit` (schedule-only, so it never runs on a pull request) and
@@ -2140,6 +2140,17 @@ double hyphen ending a line. Falsified nineteen ways by `tools/test_check_prose_
 per rule (two for the double hyphen, one of them that line-end case, and two for spelling), the
 unmutated tree, one for a new file under `docs/`, seven for the silent direction, and one for each
 of the two masker defects.
+
+**No tracked file carries a merge-conflict marker, gated since 2026-09-25.**
+`tools/check_conflict_markers.py` (required job `conflict-markers`) reads every text file in the
+index and refuses the four lines git writes into a conflict at column 0: the opening and closing
+markers, the separator alone, and the `diff3` base marker. It exists because #465 merged a
+conflict into `docs/LIMITATIONS.md` §5.6 with every job green: the two sides differed only in a
+derived count, the merge kept both, and Markdown renders the markers as text. Falsified thirteen
+ways by `tools/test_check_conflict_markers.sh`: the tree as it stands, one arm per rule in a
+different kind of file, a label-less marker, a CRLF line ending, a newly staged file, and five
+silent directions (an eight-character underline, a marker not at column 0, seven `<` followed by
+a letter, a binary file, and an untracked file, which the sweep does not see until it is staged).
 
 **Every gate-asserted marker is emitted in one write, gated since 2026-09-01.**
 `tools/check_split_markers.py` (required, beside `check_capslots.py` and `check_abi_structs.py`)
@@ -2708,6 +2719,25 @@ loaded. One extra name, the canary, is how an unknown name is tested without han
 lives in the executable, and a reference to `optind` from code becomes a text relocation. The
 loader refuses those (they are neither the kernel's nor deferred), which fails closed, but the
 program would never run. With it, every library data reference is a GOT slot.
+
+### `smoke-coreutils-shared`: the shipped programs carry no libc of their own
+
+Step 4 of `docs/design/shared-libc.md`. A `COREUTILS_MODULES=1 TCC_MODULE=1` build; before the
+boot, every shipped coreutil and `tcc` must record `DT_NEEDED "libc.so"` and import `posix_init`
+through a GOT slot (crt0 calls it in every program, and an image with its own libc defines it
+instead). The sizes are printed. Then the modules and tcc sessions run them through the real
+shell. **The image check is the property**: a statically linked utility runs exactly as well, so
+the arm, `COREUTILS_STATIC_LIBC=1`, must fail on `carries its own libc` and not on a session.
+
+Measured when it landed, stripped as shipped: the eleven coreutils went from **1,218,628 to 281,084 bytes**, `tcc` from **394,668 to 238,716**, and the library ships once at **208,448** (stripped): 1,613,296 bytes of programs became 728,248 including the library.
+
+**Three things were found moving them.** The coreutils reached `optind` and `_impure_ptr`
+PC-relative from code, a text relocation the loader refuses, until they were compiled
+`-mno-direct-extern-access`. `tcc`'s objects were not built before the export table was
+generated, because a prerequisite list expands when its rule is read and `TCC_OBJS` was defined
+below it; the generator's `nm` skipped the missing files in silence and the table lacked every
+name `tcc` needs. And `time()` pulled `gettimeofday` into the library with nothing to satisfy it,
+which the shared-objects check refuses; it now refuses honestly, since there is no wall clock.
 ### `smoke-shlibc`: a ring-3 task calls newlib out of the shared library
 
 Every other shlib gate demonstrates the **mechanism's properties** (text shared and unwritable

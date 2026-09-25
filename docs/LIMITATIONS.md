@@ -4685,9 +4685,9 @@ the IPC authorisation logic. All fixed as of 2026-07-27; the `require_code_owner
 setting that would make `CODEOWNERS` binding is still off (§5.1).
 
 <<<<<<< HEAD
-*(Repository hygiene itself is fine: `git ls-files` reports **482** tracked files with no build
+*(Repository hygiene itself is fine: `git ls-files` reports **481** tracked files with no build
 =======
-*(Repository hygiene itself is fine: `git ls-files` reports **482** tracked files with no build
+*(Repository hygiene itself is fine: `git ls-files` reports **481** tracked files with no build
 >>>>>>> origin/main
 artefacts or vendored binaries: no `kernel.elf`, no `horus.iso`, no object files. A working
 checkout accumulates ~70 MB of untracked build output, which is correctly `.gitignore`d. This

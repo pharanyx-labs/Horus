@@ -394,6 +394,10 @@ in this file.
 
 ### Added
 
+- **The website's mark is the Eye of Horus.** The favicon and the logo beside the name are now the
+  wedjat (brow, eye, cosmetic line, tear marking and spiral), drawn to stay legible at 16 pixels.
+  Both are still inline SVG, so the page continues to make no network request of any kind.
+
 - **A server can tell its clients apart by the capability they call it through.** An endpoint
   capability can now carry a token, an identity its server defines, and the kernel reports the
   token and rights of the capability every request came through (`SYS_IPC_INVOKER`). A server can

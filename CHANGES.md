@@ -648,6 +648,12 @@ in this file.
 
 ### Fixed
 
+- **The website failed WCAG 2.1 AA contrast for its faintest text, and a screen reader heard
+  the home page's two tokens as identical.** Faint text is now 4.6:1 or better and control
+  outlines 3:1 or better in both themes; the token figure says which right is held and which
+  is not; search and the status filters announce their counts; and every control is at least
+  44 pixels square on touch screens.
+
 - **The website's footer was a ragged run of links.** It is now three aligned columns (Horus, the
   site's pages, and the repository's documents, named as documents so "Architecture" is never
   two things), with a base line for the licence, and it stays at the bottom of the window on a

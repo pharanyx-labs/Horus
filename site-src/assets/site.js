@@ -94,6 +94,14 @@
   var dialog = document.getElementById("search");
   var input = document.getElementById("search-q");
   var list = document.getElementById("search-results");
+  var status = document.getElementById("search-status");
+  /* Screen readers hear a count, not the whole list on every keystroke. The
+     active result is marked with a class: aria-selected is not valid on a link,
+     and Tab still walks the results as ordinary links. */
+  function announce(n, q) {
+    if (!status) return;
+    status.textContent = !q ? "" : n === 0 ? "No results" : n + (n === 1 ? " result" : " results");
+  }
   var INDEX = window.HORUS_SEARCH || [];
   var selected = 0;
 
@@ -125,6 +133,7 @@
       li.className = "search__empty";
       li.textContent = "Nothing on this site matches that. Try a shorter word, such as boot, token or test.";
       list.appendChild(li);
+      announce(0, q);
       return;
     }
     items.forEach(function (x, i) {
@@ -133,18 +142,19 @@
       a.href = x.u;
       a.textContent = x.t;
       if (x.k !== 1) { var sp = document.createElement("span"); sp.textContent = x.p; a.appendChild(sp); }
-      if (i === 0) a.setAttribute("aria-selected", "true");
+      if (i === 0) a.classList.add("is-active");
       li.appendChild(a);
       list.appendChild(li);
     });
     selected = 0;
+    announce(items.length, q);
   }
   function move(d) {
     var links = list.querySelectorAll("a");
     if (!links.length) return;
-    links[selected].removeAttribute("aria-selected");
+    links[selected].classList.remove("is-active");
     selected = (selected + d + links.length) % links.length;
-    links[selected].setAttribute("aria-selected", "true");
+    links[selected].classList.add("is-active");
     links[selected].scrollIntoView({ block: "nearest" });
   }
   function openSearch() {
@@ -221,13 +231,27 @@
     ["working", "partial", "not yet"].forEach(function (k) {
       if (counts[k]) make(k.charAt(0).toUpperCase() + k.slice(1), k, counts[k]);
     });
+    /* What the filter left showing, said once, for screen readers and sighted
+       readers alike: a filtered table with no word about it looks complete. */
+    var shown = document.createElement("p");
+    shown.className = "filter__count";
+    shown.setAttribute("role", "status");
+    shown.textContent = "Showing all " + rows.length + " subsystems.";
     bar.addEventListener("click", function (e) {
       var b = e.target.closest("button");
       if (!b) return;
       bar.querySelectorAll("button").forEach(function (x) { x.setAttribute("aria-pressed", x === b ? "true" : "false"); });
-      rows.forEach(function (r) { r.hidden = !(b.dataset.key === "all" || stateOf(r) === b.dataset.key); });
+      var n = 0;
+      rows.forEach(function (r) {
+        r.hidden = !(b.dataset.key === "all" || stateOf(r) === b.dataset.key);
+        if (!r.hidden) n++;
+      });
+      shown.textContent = b.dataset.key === "all"
+        ? "Showing all " + rows.length + " subsystems."
+        : "Showing " + n + " of " + rows.length + " subsystems: " + b.dataset.key + ".";
     });
     var wrap = table.closest(".tablewrap") || table;
     wrap.parentNode.insertBefore(bar, wrap);
+    wrap.parentNode.insertBefore(shown, wrap);
   }
 })();

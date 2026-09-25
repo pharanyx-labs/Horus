@@ -116,7 +116,7 @@
           <p class="tok__who"><code>init</code> holds</p>
           <p class="tok__what">a token for the <code>fs_server</code> endpoint</p>
           <ul class="tok__rights" aria-label="Rights">
-            <li class="on">READ</li><li class="on">WRITE</li>
+            <li class="on">READ<span class="sr-only"> (held)</span></li><li class="on">WRITE<span class="sr-only"> (held)</span></li>
           </ul>
         </div>
         <div class="token__step token__step--mint">
@@ -126,7 +126,7 @@
           <p class="tok__who">the <code>shell</code> holds</p>
           <p class="tok__what">the same endpoint, fewer rights</p>
           <ul class="tok__rights" aria-label="Rights">
-            <li class="off">READ</li><li class="on">WRITE</li>
+            <li class="off">READ<span class="sr-only"> (not held)</span></li><li class="on">WRITE<span class="sr-only"> (held)</span></li>
           </ul>
         </div>
         <div class="token__step token__step--deny">
@@ -301,7 +301,8 @@
     <input id="search-q" type="search" autocomplete="off" spellcheck="false" placeholder="Capabilities, boot, status, a test name">
     <button class="search__close" value="close" aria-label="Close search">Esc</button>
   </form>
-  <ol class="search__results" id="search-results" aria-live="polite"></ol>
+  <p class="sr-only" id="search-status" role="status" aria-live="polite"></p>
+  <ol class="search__results" id="search-results"></ol>
 </dialog>
 
 <script src="assets/search-index.js"></script>

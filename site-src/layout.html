@@ -122,7 +122,8 @@
     <input id="search-q" type="search" autocomplete="off" spellcheck="false" placeholder="Capabilities, boot, status, a test name">
     <button class="search__close" value="close" aria-label="Close search">Esc</button>
   </form>
-  <ol class="search__results" id="search-results" aria-live="polite"></ol>
+  <p class="sr-only" id="search-status" role="status" aria-live="polite"></p>
+  <ol class="search__results" id="search-results"></ol>
 </dialog>
 
 <script src="assets/search-index.js"></script>

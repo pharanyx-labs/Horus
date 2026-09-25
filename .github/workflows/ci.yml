@@ -991,6 +991,12 @@ jobs:
         run: make smoke-klog-console
       - name: Control arm — a build with no view fails the present gate
         run: make smoke-klog-console-control
+      # On a framebuffer wider than 80 cells the view must cover all of it; the
+      # arm is the 80-column view, which left the installer's text beside it.
+      - name: The Alt+F2 view covers the whole framebuffer
+        run: make smoke-klog-console-fb
+      - name: Control arm — an 80-column view is caught
+        run: make smoke-klog-console-fb-control
       - name: A shipped build does nothing on Alt+F2
         run: make smoke-klog-console-absent
       - name: Control arm — a build that shows the kernel log is caught

@@ -102,6 +102,7 @@ control_arms:
   smoke-console-scrollback-control: smoke-console-scrollback
   smoke-klog-console-absent-control: smoke-klog-console-absent
   smoke-klog-console-control: smoke-klog-console
+  smoke-klog-console-fb-control: smoke-klog-console-fb
   smoke-keyboard-noserial-control: smoke-keyboard-noserial
   smoke-console-backspace-control: smoke-console-backspace
   smoke-console-scroll-control: smoke-console-scroll
@@ -276,6 +277,7 @@ gates:
   - smoke-console-idle
   - smoke-console-scrollback
   - smoke-klog-console
+  - smoke-klog-console-fb
   - smoke-klog-console-absent
   - smoke-keyboard-noserial
   - smoke-keyboard-installer-noserial

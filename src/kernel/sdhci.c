@@ -128,6 +128,14 @@
 #define CMD_WRITE_MULTI      25u    /* CMD25, many blocks in one command */
 #define CMD_APP_CMD          55u    /* CMD55, prefixes an ACMD   */
 #define ACMD_SEND_OP_COND    41u    /* ACMD41, SD only           */
+#define CMD_MMC_SWITCH        6u    /* CMD6 on eMMC: write one EXT_CSD byte */
+#define ACMD_SET_BUS_WIDTH    6u    /* ACMD6 on SD: 0 = 1-bit, 2 = 4-bit    */
+#define EXT_CSD_BUS_WIDTH   183u    /* 0 = 1-bit, 1 = 4-bit, 2 = 8-bit      */
+#define HOST_CTRL_4BIT       (1u << 1)
+/* The data clock once a card is identified: 26 MHz is the top of eMMC's
+ * default-speed mode and 25 MHz of SD's, neither needing a timing switch. */
+#define SDHCI_DATA_KHZ_MMC  26000u
+#define SDHCI_DATA_KHZ_SD   25000u
 
 /* How long to wait for the controller, in polls. Bounded for ata.c's reason: an
  * unbounded wait on hardware that is not going to answer turns "no card" into
@@ -553,6 +561,98 @@ static int sd_command_data(uint64_t bar, uint32_t index, uint32_t arg, uint32_t 
  * decoding and CMD2/CMD3/CMD9/CMD7; eMMC adds CMD1 and, over 2 GiB, the
  * extended CSD read for its capacity.
  */
+/* The SD clock at no more than `khz`, with the same divider rules host_reset
+ * uses for identification (a 3.00 host's 10-bit divider, a 2.00 host's power
+ * of two). Returns the clock actually set, in kHz, or 0 if it would not settle. */
+static uint32_t sd_set_clock(uint64_t bar, uint32_t khz) {
+    const uint32_t caps = sdhci_read32(bar, SDHCI_CAPABILITIES);
+    const uint32_t base_khz = ((caps >> CAP_BASE_CLK_SHIFT) & CAP_BASE_CLK_MASK) * 1000u;
+    const uint32_t spec = (uint32_t)(sdhci_read16(bar, SDHCI_HOST_VERSION) & VER_SPEC_MASK);
+    if (base_khz == 0 || khz == 0) return 0;
+    uint32_t div = 1;
+    uint16_t clk_bits;
+    if (spec >= 2u) {
+        div = (base_khz + 2u * khz - 1u) / (2u * khz);          /* ceil(base / 2khz) */
+        if (div > 0x3FFu) div = 0x3FFu;
+        clk_bits = (uint16_t)(((div & 0xFFu) << 8) | (((div >> 8) & 0x3u) << 6));
+    } else {
+        while (base_khz / (2u * div) > khz && div < 0x80u) div <<= 1;
+        clk_bits = (uint16_t)((div & 0xFFu) << 8);
+    }
+    sdhci_write16(bar, SDHCI_CLOCK_CONTROL, 0);
+    sdhci_write16(bar, SDHCI_CLOCK_CONTROL, (uint16_t)(clk_bits | CLK_INTERNAL_EN));
+    for (uint32_t i = 0; ; i++) {
+        if (sdhci_read16(bar, SDHCI_CLOCK_CONTROL) & CLK_INTERNAL_STABLE) break;
+        if (i >= SDHCI_SPINS) return 0;
+    }
+    sdhci_write16(bar, SDHCI_CLOCK_CONTROL,
+                  (uint16_t)(sdhci_read16(bar, SDHCI_CLOCK_CONTROL) | CLK_SD_EN));
+    return base_khz / (2u * div);
+}
+
+/* The card holds DAT0 low while it is busy (after CMD6, which has an R1b
+ * response). Bounded like every wait here. */
+static int sd_wait_dat0(uint64_t bar) {
+    for (uint32_t i = 0; i < 16u * SDHCI_SPINS; i++)
+        if (sdhci_read32(bar, SDHCI_PRESENT_STATE) & (1u << 20)) return 0;
+    return -1;
+}
+
+/* A 4-BIT BUS AND A DATA CLOCK, which the driver never set until 2026-09-25.
+ *
+ * Identification must run at 400 kHz or less on one data line, and the driver
+ * stayed there for everything after it. On the IdeaPad 1 14IGL05 that made the
+ * data phase of every 4 KiB read about 83 ms (per-phase timings read off the
+ * laptop: `cmd 2400 data 661600 done 3700` us per 8 reads), which is 32768 bits
+ * at 400 kHz, and it was the whole of the seconds-long lag on `ls` and on the
+ * keyboard. QEMU's card models move data at the same speed whatever the clock,
+ * so no emulated gate could see it.
+ *
+ * eMMC: CMD6 SWITCH writes EXT_CSD BUS_WIDTH = 1 (4-bit). SD: CMD55 + ACMD6
+ * with 2 (4-bit). Then the host's data width, then the clock: 26 MHz for eMMC
+ * and 25 MHz for SD, the default-speed ceilings, so no timing switch is
+ * involved. The caller proves the result with a read and falls back to the
+ * identification settings if it does not come back. Returns the data clock in
+ * kHz, or 0 if nothing was changed. */
+static uint32_t sd_go_fast(uint64_t bar, int is_mmc, uint32_t rca) {
+#ifdef SDHCI_STAY_SLOW
+    /* CONTROL ARM -- never ship. The driver before 2026-09-25: one data line at
+     * the identification clock for everything. See make smoke-sdhci-fast-control. */
+    (void)bar; (void)is_mmc; (void)rca;
+    return 0;
+#else
+    if (is_mmc) {
+        const uint32_t arg = (3u << 24) | (EXT_CSD_BUS_WIDTH << 16) | (1u << 8);
+        if (sd_command(bar, CMD_MMC_SWITCH, arg, RESP_48_BUSY, CMD_CRC_CHECK | CMD_INDEX_CHECK) != 0)
+            return 0;
+        if (sd_wait_dat0(bar) != 0) return 0;
+    } else {
+        if (sd_command(bar, CMD_APP_CMD, rca << 16, RESP_48, CMD_CRC_CHECK) != 0) return 0;
+        if (sd_command(bar, ACMD_SET_BUS_WIDTH, 2u, RESP_48, CMD_CRC_CHECK) != 0) return 0;
+    }
+    sdhci_write8(bar, SDHCI_HOST_CONTROL,
+                 (uint8_t)(sdhci_read8(bar, SDHCI_HOST_CONTROL) | HOST_CTRL_4BIT));
+    return sd_set_clock(bar, is_mmc ? SDHCI_DATA_KHZ_MMC : SDHCI_DATA_KHZ_SD);
+#endif
+}
+
+/* Back to one data line at the identification clock, for a card that did not
+ * read back after sd_go_fast. The card is told as well as the host. */
+static void sd_go_slow(uint64_t bar, int is_mmc, uint32_t rca) {
+    if (is_mmc) {
+        (void)sd_command(bar, CMD_MMC_SWITCH, (3u << 24) | (EXT_CSD_BUS_WIDTH << 16),
+                         RESP_48_BUSY, CMD_CRC_CHECK | CMD_INDEX_CHECK);
+        (void)sd_wait_dat0(bar);
+    } else if (sd_command(bar, CMD_APP_CMD, rca << 16, RESP_48, CMD_CRC_CHECK) == 0) {
+        (void)sd_command(bar, ACMD_SET_BUS_WIDTH, 0u, RESP_48, CMD_CRC_CHECK);
+    }
+    sdhci_write8(bar, SDHCI_HOST_CONTROL,
+                 (uint8_t)(sdhci_read8(bar, SDHCI_HOST_CONTROL) & (uint8_t)~HOST_CTRL_4BIT));
+    (void)sd_set_clock(bar, 400u);
+}
+
+static uint32_t g_sdhci_data_khz;      /* the data clock in use; 0 = identification */
+
 static int card_identify(uint64_t bar, uint64_t *sectors_out, int *is_mmc_out,
                          int *is_hc_out) {
     if (sd_command(bar, CMD_GO_IDLE, 0, RESP_NONE, 0) != 0) return -1;
@@ -703,6 +803,20 @@ static int card_identify(uint64_t bar, uint64_t *sectors_out, int *is_mmc_out,
         sectors = sec;
     }
 #endif
+
+    /* Now, and not before: EXT_CSD above is read at the identification settings,
+     * and the speed change is proved by reading block 0 back at the new ones. */
+    {
+        static uint8_t probe[512];
+        const int hc = (ocr & (1u << 30)) ? 1 : 0;
+        g_sdhci_data_khz = sd_go_fast(bar, is_mmc, rca);
+        if (g_sdhci_data_khz && sd_read_block(bar, 0, probe, hc) != 0) {
+            print("         sdhci: the card did not read back at the data clock; "
+                  "staying at the identification settings\n");
+            sd_go_slow(bar, is_mmc, rca);
+            g_sdhci_data_khz = 0;
+        }
+    }
 
     *sectors_out = sectors;
     *is_mmc_out  = is_mmc;
@@ -1139,6 +1253,13 @@ void sdhci_probe(void) {
                 print_decimal(sectors / 2048u);      /* 512-byte sectors -> MiB */
                 print(" MiB, ");
                 print(is_hc ? "block-addressed\n" : "byte-addressed\n");
+                if (g_sdhci_data_khz) {
+                    print("         sdhci: 4-bit bus at ");
+                    print_decimal(g_sdhci_data_khz);
+                    print(" kHz\n");
+                } else {
+                    print("         sdhci: one data line at the identification clock\n");
+                }
 
                 /* Read two blocks and report the first eight bytes of each.
                  *

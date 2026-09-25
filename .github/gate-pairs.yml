@@ -31,6 +31,7 @@
 # like an old one.
 
 control_arms:
+  smoke-sdhci-fast-control: smoke-sdhci-fast
   smoke-installer-clear-control: smoke-installer-clear
   smoke-smp-topology-sparse-control: smoke-smp-topology
   smoke-smp-topology-sibling-control: smoke-smp-topology
@@ -263,6 +264,7 @@ gates:
   - smoke-ahci-detect
   - smoke-reply-ep
   - smoke-sdhci-detect
+  - smoke-sdhci-fast
   - smoke-sdhci-write
   - smoke-sdhci-bridge
   - smoke-sdhci-crowded

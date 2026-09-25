@@ -672,6 +672,13 @@ jobs:
       # could observe.
       - name: The SD/eMMC host controller and its card are identified
         run: make smoke-sdhci-detect
+      # The data bus is switched up after identification: a 4-bit bus at a data
+      # clock, verified by a read. QEMU cannot show the speed (its cards ignore the
+      # clock), so this asserts the mode; the arm stays at 400 kHz on one line.
+      - name: The SD card runs on a 4-bit bus at a data clock after identification
+        run: make smoke-sdhci-fast
+      - name: Control arm — a driver left at the identification clock is caught
+        run: make smoke-sdhci-fast-control
       # An absence assertion, so the arm also requires `kernel ready`.
       - name: Control arm — the SD probe is compiled out and the card goes unseen
         run: make smoke-sdhci-detect-control

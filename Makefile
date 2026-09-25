@@ -186,7 +186,8 @@ DEFECT_FLAGS = \
 	FB_GRID_FIXED_ROWS \
 	INSTALLER_FAIL_NO_SCREEN \
 	SHLIB_INHERIT_ANY_IMAGE SHLIB_DATA_TEMPLATE_SHARED SHLIB_EXEC_NO_DATA \
-	SHLIB_TEMPLATE_UNPINNED
+	SHLIB_TEMPLATE_UNPINNED \
+	MEM_SEAL_KEEPS_WRITE MEM_SEAL_ANY_ADDRESS
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -1490,6 +1491,14 @@ BOOT_MODULES    += userspace/libc.so:lib/libc.so
 BOOT_MODULE_DEP += userspace/libc.so
 endif
 
+# MEM_SEAL_MODULES=1 ships /bin/sealprobe, SYS_MEM_SEAL's witness, for make
+# smoke-mem-seal and its arms.
+MEM_SEAL_MODULES ?= 0
+ifeq ($(MEM_SEAL_MODULES),1)
+BOOT_MODULES    += userspace/sealprobe.bin:bin/sealprobe
+BOOT_MODULE_DEP += userspace/sealprobe.bin
+endif
+
 TCC_MODULE ?= 0
 ifeq ($(TCC_MODULE),1)
 BOOT_MODULES    += userspace/tcc.bin:bin/tcc userspace/man/tcc:usr/share/man/tcc
@@ -2332,6 +2341,21 @@ endif
 SHLIB_TEMPLATE_UNPINNED ?= 0
 ifeq ($(SHLIB_TEMPLATE_UNPINNED),1)
 CFLAGS += -DSHLIB_TEMPLATE_UNPINNED
+endif
+
+# SYS_MEM_SEAL's two arms (docs/design/shared-libc.md step 2), for make
+# smoke-mem-seal:
+#   MEM_SEAL_KEEPS_WRITE=1   the page is marked sealed and keeps WRITE, so the
+#                            next write lands.
+#   MEM_SEAL_ANY_ADDRESS=1   the image-window check is gone, so a task can seal
+#                            its heap or stack.
+MEM_SEAL_KEEPS_WRITE ?= 0
+ifeq ($(MEM_SEAL_KEEPS_WRITE),1)
+CFLAGS += -DMEM_SEAL_KEEPS_WRITE
+endif
+MEM_SEAL_ANY_ADDRESS ?= 0
+ifeq ($(MEM_SEAL_ANY_ADDRESS),1)
+CFLAGS += -DMEM_SEAL_ANY_ADDRESS
 endif
 
 # SHLIB_DATA_UNINITIALISED=1 gives each task a PRIVATE data frame and zero-fills
@@ -5145,6 +5169,17 @@ userspace/shlibdata.pie.elf: userspace/shlibdata.o userspace/crt0_shared.o \
 	$(LD) -m elf_x86_64 -pie --gc-sections -T userspace/pie.ld -o $@ \
 	    userspace/crt0_shared.o userspace/shlibdata.o $(LIBC_STUB_LIB) $(SHARED_LIBC_ASK)
 
+# SYS_MEM_SEAL's witness: an ordinary program, newlib static, sealing its own
+# .data. See tools/seal_session.py.
+userspace/sealprobe.o: userspace/sealprobe.c $(NEWLIB_LIB)/libc.a
+	$(CC) $(NEWLIB_CFLAGS) -c $< -o $@
+
+userspace/sealprobe.pie.elf: userspace/sealprobe.o $(NEWLIB_GLUE_OBJS) userspace/malloc.o \
+                             $(LIBHORUS_LIB) userspace/pie.ld
+	$(LD) -m elf_x86_64 -pie --gc-sections -T userspace/pie.ld -o $@ \
+	    userspace/crt0.o $< userspace/newlib_glue.o userspace/newlib_glue64.o \
+	    userspace/posix.o userspace/malloc.o $(LIBHORUS_LIB) -L$(NEWLIB_LIB) -lc
+
 # Every shared object in the tree must be one the loader accepts. A static gate
 # because the properties are decidable by reading the object, and because a
 # refusal at boot is a correct behaviour with a terrible diagnostic: the library
@@ -5322,7 +5357,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.stripped.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin userspace/sealprobe.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -7003,7 +7038,8 @@ SYSCOV_CONTROL_EXPECTED = \
 	SYS_AUDIT_DIGEST SYS_BRK SYS_FRAME_PAGES SYS_IPC_REPLY SYS_MAP_FRAME \
 	SYS_MAP_REGION SYS_READ SYS_READ_AUDIT SYS_REGISTER_STORAGE_BACKEND \
 	SYS_SIGACTION SYS_SIGRETURN SYS_SPAWN_ARG SYS_TASK_EXIT_INFO \
-	SYS_UNMAP_FRAME SYS_BLOCK_READ SYS_BLOCK_WRITE SYS_EXEC_IMAGE
+	SYS_UNMAP_FRAME SYS_BLOCK_READ SYS_BLOCK_WRITE SYS_EXEC_IMAGE \
+	SYS_MEM_SEAL
 
 smoke-syscall-coverage-control:
 	@set -eu; \
@@ -8201,6 +8237,40 @@ smoke-shlib-inherit-exec-control:
 	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
 	fi; \
 	echo "SHLIB EXEC CONTROL: PASS - an exec without the library's data is caught"
+# SYS_MEM_SEAL (docs/design/shared-libc.md step 2): a program seals a page of its
+# own .data and the next write faults; a heap page, outside the image, cannot be
+# sealed. Driven through the real shell (tools/seal_session.py). Each arm must
+# fail on the sentence that names its defect.
+.PHONY: smoke-mem-seal smoke-mem-seal-write-control smoke-mem-seal-window-control
+smoke-mem-seal:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory MEM_SEAL_MODULES=1 $(SEALARM)
+	@$(MAKE) --no-print-directory MEM_SEAL_MODULES=1 $(SEALARM) horus.iso
+	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) tools/seal_session.py horus.iso
+
+smoke-mem-seal-write-control:
+	@out=$$($(MAKE) --no-print-directory smoke-mem-seal SEALARM=MEM_SEAL_KEEPS_WRITE=1 2>&1); rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "SEAL WRITE CONTROL: FAIL - a seal that keeps WRITE passed the gate"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "a sealed page took a write"; then \
+	    echo "SEAL WRITE CONTROL: FAIL - it failed, but not on the write."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "SEAL WRITE CONTROL: PASS - a seal that leaves the page writable is caught"
+
+smoke-mem-seal-window-control:
+	@out=$$($(MAKE) --no-print-directory smoke-mem-seal SEALARM=MEM_SEAL_ANY_ADDRESS=1 2>&1); rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "SEAL WINDOW CONTROL: FAIL - a seal that reaches the heap passed the gate"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "a page outside the image was sealed"; then \
+	    echo "SEAL WINDOW CONTROL: FAIL - it failed, but not on the window."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "SEAL WINDOW CONTROL: PASS - a seal that reaches outside the image is caught"
 
 .PHONY: smoke-shlibc
 smoke-shlibc:

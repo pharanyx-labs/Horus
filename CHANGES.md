@@ -401,6 +401,10 @@ in this file.
   Building it found that the library's data template was freed by the kernel's object collector
   after the first program exited, and that a program which could not bind the library said
   nothing at all; both are fixed, and the first now has a control arm.
+- **A program can make part of itself read-only for good.** `SYS_MEM_SEAL` seals pages of a
+  program's own image: they take no further write, a write to them is SIGSEGV, and nothing can
+  make them writable again (`SECURITY.md` S107, `make smoke-mem-seal`). It is what the shared
+  libc's linker will use to protect the table of library addresses it fills in.
 
 - **The website is eight pages instead of one, and it says Horus can be installed.** The single
   2,800-line page is now a home page and seven topic pages (Why Horus, Architecture, Trusted boot,

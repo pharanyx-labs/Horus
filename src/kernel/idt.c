@@ -1373,9 +1373,12 @@ uint64_t page_fault_handler(struct interrupt_frame64 *f64) {
                                  tasks[cur].image_base, tasks[cur].image_end,
                                  tasks[cur].heap_start,
                                  tasks[cur].heap_end);
-    if (allowed && handle_demand_page_fault(fault_addr, err) == 0) {
-        return 0;
-    }
+    int prc = allowed ? handle_demand_page_fault(fault_addr, err) : -1;
+    if (prc == 0) return 0;
+    /* -6: a write to a page the task sealed (SYS_MEM_SEAL). The validator approved
+     * the address, but the fault is the program's, not the kernel's: deliver it
+     * as SIGSEGV below exactly as a rejected address is. */
+    if (prc == -6) allowed = false;
 
     /* Fail-safe: a real ring-3 fault in the console owner reclaims the console for
      * the kernel, whether the task then survives via a handler (below) or is torn

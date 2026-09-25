@@ -1287,6 +1287,7 @@ void users_init(void);
 #define SYS_CAP_MINT_TOKEN   117   /* (dest_slot, src_slot, rights, token) -> 0; a TOKENED endpoint capability, from an UNTOKENED one the caller holds with MINT. Rights are masked to the source's and lose the receive right. docs/design/filesystem.md §5.1. */
 #define SYS_IPC_CALL_CAP     118   /* (ep_slot, recv_slot, msg, len, reply_buf, carry_slot) -> reply length; SYS_IPC_CALL, naming an EMPTY slot for a reply-minted capability and optionally presenting one more capability to the same endpoint. IPC_NO_CAP for either means none. */
 #define SYS_IPC_INVOKER      119   /* (ep_slot, struct ipc_invoker *) -> 0; the token and rights of the capability the last received message came through, and of a carried one. Needs READ (the receive right) on ep_slot. */
+#define SYS_MEM_SEAL         121   /* (addr, len) -> 0; make pages of the caller's own image read-only for good: WRITE and copy-on-write cleared, the page marked sealed so no break, fork or device mapping can make it writable again. Only drops rights, so no capability gates it; bounded to [image_base, image_end), page-aligned, all or nothing. For the ring-3 linker's RELRO (docs/design/shared-libc.md §9). */
 #define SYS_IPC_REPLY_CAP    120   /* (req_slot, msg, len, rights, token) -> 0; SYS_IPC_REPLY_TO that also mints ONE capability into the caller's named slot, derived from the capability its request came through, rights intersected with that capability's. Refused = nothing delivered, reply right kept. */
 #define SYS_STORAGE_DEVICE   113   /* (index, struct storage_info*) -> 0; the survey for ONE enumerated persistent device (CAP_STORAGE_FORMAT + READ at CAPSLOT_STORAGE_FORMAT). An index past the end is REFUSED rather than clamped: a survey that answered about a different disk would be read as a description of the disk about to be erased. */
 #define SYS_POLL_NOTIFY       106   /* (notif_slot, uint32_t*) -> 0 with a badge, or IPC_AGAIN; sys_wait_notify's non-blocking twin. Same gate (CAP_NOTIFICATION + READ): being non-blocking changes when the answer comes, never who may ask. Lets a caller witness the ABSENCE of a notification, which a blocking wait cannot. */
@@ -3488,6 +3489,8 @@ int user_map_device_page(uint32_t task_id, uint64_t vaddr, uint64_t phys, uint64
  * paging.c is the only file that defines them. Return 0 on success, -2 if
  * something is already mapped at `vaddr`, negative otherwise. */
 int user_map_frame_page(uint32_t task_id, uint64_t vaddr, uint64_t phys, uint32_t eff_rights);
+int user_seal_range(uint32_t task_id, uint64_t addr, uint64_t len);
+void h_mem_seal(struct interrupt_frame64 *r);
 int user_unmap_frame_page(uint32_t task_id, uint64_t vaddr, uint64_t expect_phys);
 
 /* The untyped region's own permanent reference over an arena page, so that a

@@ -9,8 +9,8 @@
     exists as far as the caller is concerned.
   </p>
   <p>
-    The ABI defines <strong>121 syscall numbers</strong>. The dispatch table is sized to
-    the highest of them plus one, and a default build installs <strong>101
+    The ABI defines <strong>122 syscall numbers</strong>. The dispatch table is sized to
+    the highest of them plus one, and a default build installs <strong>102
     handlers</strong>, the remainder are reserved, or are test-only calls compiled out
     entirely. Every one of those gaps answers <code>SYS_ERR_NOSYS</code>. That difference
     is the fail-closed property, not an oversight: a shipping kernel denies the debug

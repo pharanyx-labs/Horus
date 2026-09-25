@@ -16,6 +16,12 @@ extern uint8_t stack_top[];
 #define PAGE_PS        (1ULL << 7)
 #define PAGE_GLOBAL    (1 << 8)
 #define PAGE_COW       (1 << 9)
+/* A page SYS_MEM_SEAL made read-only for good (S107, docs/design/shared-libc.md §9).
+ * Software-defined, like PAGE_COW: the MMU ignores bit 10 of a PTE. It carries no
+ * permission itself -- PAGE_WRITE is already clear -- it is what stops the three
+ * paths that could otherwise put WRITE back: a copy-on-write break, a fork's
+ * clone, and a device mapping laid over the page. */
+#define PAGE_SEALED    (1ULL << 10)
 /* No-execute (bit 63). EFER.NXE is enabled in multiboot.S, so the CPU honours
  * it on 64-bit page-table entries. Used to map user stacks non-executable
  * (W^X): data pages must never be executable, defeating classic shellcode on
@@ -1513,6 +1519,11 @@ int user_map_device_page(uint32_t task_id, uint64_t vaddr, uint64_t phys,
     if (writable) flags |= PAGE_WRITE;
 
     spin_lock(&page_lock);
+    /* Never over a sealed page. user_map_page replaces whatever PTE is there,
+     * and a device frame laid over a sealed page would give the address WRITE
+     * again, the seal's one promise broken by a different syscall. */
+    uint64_t *cur = user_pte_slot((uint64_t *)PHYS_KVA(pml4_phys), vaddr);
+    if (cur && (*cur & PAGE_SEALED)) { spin_unlock(&page_lock); return -1; }
     int rc = user_map_page((uint64_t *)PHYS_KVA(pml4_phys), vaddr, phys, flags);
     spin_unlock(&page_lock);
 
@@ -1607,6 +1618,71 @@ int user_map_private_copy(uint32_t task_id, uint64_t vaddr, const uint8_t *src) 
         return -1;
     }
     *slot = phys | PAGE_PRESENT | PAGE_USER | PAGE_WRITE | PAGE_NX;
+    spin_unlock(&page_lock);
+    return 0;
+}
+
+/* The 4 KiB PTE slot for `vaddr`, or 0 if any level is absent or a huge page.
+ * Unlike user_pte_slot this BUILDS NOTHING: a question about what is mapped must
+ * not map anything while it asks. */
+static uint64_t *user_pte_existing(uint64_t *pml4_tab, uint64_t vaddr) {
+    if (!is_canonical_address(vaddr)) return 0;
+    uint64_t idx[4] = { (vaddr >> 39) & 511, (vaddr >> 30) & 511,
+                        (vaddr >> 21) & 511, (vaddr >> 12) & 511 };
+    if (idx[0] >= 256) return 0;
+    uint64_t *tab = pml4_tab;
+    for (int lvl = 0; lvl < 3; lvl++) {
+        uint64_t e = tab[idx[lvl]];
+        if (!(e & PAGE_PRESENT) || (e & PAGE_PS)) return 0;
+        tab = (uint64_t *)PHYS_KVA(e & PTE_ADDR_MASK);
+    }
+    return &tab[idx[3]];
+}
+
+/* SYS_MEM_SEAL's work: make [addr, addr+len) of the CURRENT task read-only for
+ * good. The handler has already checked the range lies in the task's own image
+ * window and is page-aligned; this checks the pages.
+ *
+ * ALL OR NOTHING. Every page is validated before any is changed: present, user,
+ * a 4 KiB leaf, and NOT a frame from the untyped arena (a frame's rights belong
+ * to its capability, and are changed by revoking it, not by this). A caller told
+ * the call failed must hold exactly what it held before, so a half-sealed range
+ * is never left behind.
+ *
+ * WHAT A SEAL DOES to each PTE: clears PAGE_WRITE and PAGE_COW and sets
+ * PAGE_SEALED. Clearing COW is not tidiness: a COW page's write fault is BROKEN
+ * WRITABLE, so a seal that left it would last until the first write. With both
+ * gone, a write to the page is a fault on a present read-only page, which
+ * handle_page_fault does not repair and the task does not survive. Returns 0, or
+ * -1 with nothing changed. */
+int user_seal_range(uint32_t task_id, uint64_t addr, uint64_t len) {
+    if (task_id == 0 || task_id >= (uint32_t)g_max_tasks) return -1;
+    if (task_id != (uint32_t)get_current_task()) return -1;
+    uint64_t pml4_phys = tasks[task_id].cr3;
+    if (pml4_phys == 0 || len == 0 || (addr & 0xFFF) || (len & 0xFFF)) return -1;
+    if (addr + len < addr) return -1;
+    uint64_t *pml4_tab = (uint64_t *)PHYS_KVA(pml4_phys);
+
+    spin_lock(&page_lock);
+    for (uint64_t va = addr; va < addr + len; va += PAGE_SIZE) {
+        uint64_t *slot = user_pte_existing(pml4_tab, va);
+        if (!slot) { spin_unlock(&page_lock); return -1; }
+        uint64_t pte = *slot;
+        if (!(pte & PAGE_PRESENT) || !(pte & PAGE_USER)) { spin_unlock(&page_lock); return -1; }
+        if (phys_in_untyped_arena(pte & PTE_ADDR_MASK)) { spin_unlock(&page_lock); return -1; }
+    }
+    for (uint64_t va = addr; va < addr + len; va += PAGE_SIZE) {
+        uint64_t *slot = user_pte_existing(pml4_tab, va);
+#ifndef MEM_SEAL_KEEPS_WRITE
+        *slot = (*slot & ~((uint64_t)PAGE_WRITE | (uint64_t)PAGE_COW)) | PAGE_SEALED;
+#else
+        /* CONTROL ARM -- never ship. The page is marked sealed and keeps WRITE: the
+         * bookkeeping of a seal with none of its effect, so the next write lands.
+         * See make smoke-mem-seal-write-control. */
+        *slot = *slot | PAGE_SEALED;
+#endif
+        __asm__ volatile ("invlpg (%0)" :: "r"(va) : "memory");
+    }
     spin_unlock(&page_lock);
     return 0;
 }
@@ -2063,6 +2139,14 @@ int clone_user_aspace(uint32_t child, uint64_t parent_cr3) {
 #ifndef FORK_ARENA_UNCHECKED
                     if (phys_in_untyped_arena(phys)) { failed = 1; break; }
 #endif
+                    /* A SEALED PAGE REFUSES THE FORK, rather than being marked
+                     * copy-on-write below: a COW page's first write breaks it
+                     * WRITABLE, in the child and the parent alike, which is the
+                     * one thing a seal promises never happens. Keeping it
+                     * read-only and shared in both tasks is what fork will do when
+                     * it is taught; until then it fails closed, as the arena
+                     * refusal above does. docs/design/shared-libc.md §9. */
+                    if (pte & PAGE_SEALED) { failed = 1; break; }
                     uint64_t va = ((uint64_t)i4 << 39) | ((uint64_t)i3 << 30) |
                                   ((uint64_t)i2 << 21) | ((uint64_t)i1 << 12);
 
@@ -2186,6 +2270,13 @@ void switch_cr3(addr_t cr3) {
 static int cow_break_pte(uint64_t *pte_slot, uint64_t fault_addr) {
     uint64_t pte      = *pte_slot;
     uint64_t old_phys = pte & PTE_ADDR_MASK;
+
+    /* A SEALED PAGE IS NEVER BROKEN WRITABLE. SYS_MEM_SEAL clears PAGE_COW when it
+     * seals, so no sealed PTE reaches here through the fault path; this is the
+     * backstop for one that does by any other route, because a break is exactly
+     * the operation that turns a read-only PTE writable, and the seal promises
+     * nothing ever will. */
+    if (pte & PAGE_SEALED) return -5;
 
 #ifndef COW_ARENA_UNGUARDED
     /* ---- A KERNEL-OBJECT PAGE IS NEVER COPIED OUT FROM UNDER ITS OBJECT ----
@@ -2378,6 +2469,18 @@ int handle_demand_page_fault(uint64_t fault_addr, uint32_t err_code) {
         asm volatile("invlpg (%0)" :: "r"(fault_addr) : "memory");
         spin_unlock(&page_lock);
         return 0;
+    }
+
+    /* A WRITE TO A SEALED PAGE IS THE PROGRAM'S OWN ERROR, and says so. The
+     * validator approves any fault inside the image (an image page may be COW),
+     * so without this the fault would reach the kill path as "approved but the
+     * pager could not resolve it" -- a kernel inconsistency, which a task's
+     * handler is never given. It is not one: the page is exactly as the program
+     * asked (SYS_MEM_SEAL), and a write to it is a SIGSEGV like any other write
+     * to read-only memory. -6 tells the fault path so. */
+    if (is_write && (pte & PAGE_PRESENT) && (pte & PAGE_SEALED)) {
+        spin_unlock(&page_lock);
+        return -6;
     }
 
     if ((pte & PAGE_PRESENT) != 0) {

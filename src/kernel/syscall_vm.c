@@ -288,6 +288,42 @@ static int map_one_frame_object(uint32_t slot, uint64_t vaddr, uint32_t rights,
  * Fails closed on every irregularity, and the order matters: the capability is
  * resolved first so that a caller holding no authority learns nothing about
  * which addresses are valid. */
+/* SYS_MEM_SEAL(addr, len) -> 0 (S107): make pages of the caller's own image read-only
+ * for good (docs/design/shared-libc.md §9). The ring-3 linker in crt0 resolves
+ * its table of library addresses and then seals it (RELRO), so a later write --
+ * a bug, or an attacker with a write primitive -- cannot redirect a call.
+ *
+ * NO CAPABILITY GATES IT, AND THAT IS ARGUED. It only removes authority the
+ * caller already has, over memory only the caller can reach: its own image.
+ * There is nothing to authorise, for the same reason a task may drop its own
+ * capabilities. What bounds it is the window: [image_base, image_end) of the
+ * CURRENT task, page-aligned, so no call can reach the stack, the heap, a frame
+ * mapping or another address space. SC_NONE in the table, like SYS_BRK.
+ *
+ * It only drops. There is no call that makes a sealed page writable again, and
+ * the paths that could (a copy-on-write break, a fork, a device mapping over the
+ * page) each refuse a sealed PTE in paging.c. */
+void h_mem_seal(struct interrupt_frame64 *r) {
+    int cur = get_current_task();
+    uint64_t addr = r->rbx, len = r->rcx;
+    if (cur <= 0 || cur >= g_max_tasks) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    if (len == 0 || (addr & 0xFFFULL)) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+    uint64_t end = addr + len;
+    if (end < addr || end > USER_MAX_VADDR) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+    end = (end + 0xFFFULL) & ~0xFFFULL;
+#ifndef MEM_SEAL_ANY_ADDRESS
+    if (addr < tasks[cur].image_base || end > tasks[cur].image_end) {
+        r->rax = (uint32_t)SYS_ERR_INVAL; return;
+    }
+#else
+    /* CONTROL ARM -- never ship. The window is not checked, so a task can seal
+     * its heap or stack, and the call's reach is every present user page rather
+     * than the image. See make smoke-mem-seal-window-control. */
+#endif
+    r->rax = user_seal_range((uint32_t)cur, addr, end - addr) == 0
+           ? 0 : (uint64_t)(uint32_t)SYS_ERR_INVAL;
+}
+
 void h_map_frame(struct interrupt_frame64 *r) {
     /* Maps the WHOLE frame -- every page of the run the capability names -- and
      * is all-or-nothing across it. The return stays a status rather than

@@ -204,6 +204,7 @@ struct task_info {
 #define SYS_IPC_CALL_CAP      118   /* (ep_slot, recv_slot, msg, len, reply_buf, carry_slot) -> reply length; SYS_IPC_CALL, naming an EMPTY slot for a reply-minted capability and optionally presenting one more capability to the same endpoint. IPC_NO_CAP for either means none. */
 #define SYS_IPC_INVOKER       119   /* (ep_slot, struct ipc_invoker *) -> 0; the token and rights of the capability the last received message came through, and of a carried one. Needs READ (the receive right) on ep_slot. */
 #define SYS_IPC_REPLY_CAP     120   /* (req_slot, msg, len, rights, token) -> 0; SYS_IPC_REPLY_TO that also mints ONE capability into the caller's named slot, derived from the capability its request came through, rights intersected with that capability's. Refused = nothing delivered, reply right kept. */
+#define SYS_MEM_SEAL          121   /* (addr, len) -> 0; make pages of the caller's own image read-only for good (RELRO). Only drops rights; bounded to the caller's image window, page-aligned, all or nothing. */
 #define SYS_STORAGE_DEVICE   113  /* (index, struct storage_info*) -> 0; the survey for ONE enumerated persistent device (CAP_STORAGE_FORMAT + READ). Refuses an index past the end rather than clamping. */
 #define SYS_IRQ_POLICY_INFO    92   /* (struct irq_policy_info*) -> 0; roadmap 1.1 audit counters. IRQ_POLICY_AUDIT builds only; NOSYS otherwise. CAP_KERNEL_LOG (READ). */
 #define SYS_DMESG              88   /* (buf, offset, max) -> bytes; copy a chunk of the kernel message ring at `offset` to buf. CAP_KERNEL_LOG (READ) in CAPSLOT_KERNEL_LOG, else SYS_ERR_PERM */
@@ -382,6 +383,13 @@ static inline int sys_signal(uintptr_t handler) {
 
 /* Called from a handler to resume the exact pre-signal context. Does not return
  * to the handler on success (execution jumps back to the interrupted point). */
+/* Make [addr, addr+len) of this program's own image read-only for good. addr is
+ * page-aligned and the range lies in the image; there is no way back. Returns 0
+ * or SYS_ERR_INVAL (a page outside the image, not mapped, or not the image's own). */
+static inline int sys_mem_seal(const void *addr, uint64_t len) {
+    return (int)syscall(SYS_MEM_SEAL, (uint64_t)(uintptr_t)addr, len, 0);
+}
+
 static inline void sys_sigreturn(void) {
     syscall(SYS_SIGRETURN, 0, 0, 0);
 }

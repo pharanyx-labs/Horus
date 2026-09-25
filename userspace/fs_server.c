@@ -672,6 +672,15 @@ static void provision_boot_modules(void) {
         struct boot_module_info info;
         if (sys_boot_module_info((uint32_t)i, &info) < 0) continue;
         if (info.name[0] == 0 || info.size == 0) continue;
+        /* THE SHARED LIBC IS THE KERNEL'S, not a file. The kernel loads it from
+         * this module before init exists (shlib_boot_load) and hands it out by
+         * capability; nothing ever loads it from the store, so a copy here would
+         * be a file nobody uses. Skipped by its one name, quietly and without
+         * widening the allowlist below: lib/ stays a destination no module may
+         * write. Until 2026-09-25 it fell into install_module_at, was refused as
+         * a disallowed path, and was counted as a module that "did not fit",
+         * which is a different failure reported as this one. */
+        if (uslen(info.name) == 11 && has_prefix(info.name, "lib/libc.so")) continue;
         int rc = install_module_at(info.name, (uint32_t)i, info.size);
         if (rc == 1) installed++;
         else if (rc < 0) skipped++;

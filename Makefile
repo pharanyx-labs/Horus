@@ -1479,8 +1479,8 @@ BOOT_MODULE_DEP += userspace/hello_shared.bin userspace/shlibdata.bin userspace/
 endif
 
 # SHLIBC_MODULE=1 ships the library alone. The kernel loads it from the module
-# and fs_server does not store it (lib/ is not a destination it provisions), so
-# it costs the store volume nothing -- which is why the syscall-coverage modules
+# and fs_server skips it by name (it is the kernel's, not a file), so it costs
+# the store volume nothing -- which is why the syscall-coverage modules
 # workload uses this rather than SHLIB_INHERIT_MODULES: that one's three programs
 # do not fit beside every coreutil, and a coreutil that did not fit is a
 # workload that stopped exercising pipes and image spawns.

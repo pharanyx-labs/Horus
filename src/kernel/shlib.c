@@ -431,9 +431,9 @@ static int module_name_is(const char *a, const char *b) {
 }
 
 /* Load the library from the boot module named lib/libc.so, if there is one.
- * The kernel's copy is the only one: fs_server does not store the module (lib/
- * is not a destination it provisions), and nothing loads the library from a
- * file.
+ * The kernel's copy is the only one: fs_server skips the module by name, lib/
+ * stays a destination no module may write, and nothing loads the library from
+ * a file.
  *
  * VERIFIED MODULES ONLY. boot_module_verify_all has already matched every module
  * against the SHA-256 manifest inside the measured kernel image (S92), so a

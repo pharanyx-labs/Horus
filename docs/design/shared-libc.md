@@ -36,8 +36,8 @@ was taken; the rest of the document is how they are built.
 The library is a **boot module named `lib/libc.so`**, loaded by GRUB with the others. Every boot
 module is already checked against a SHA-256 pin inside the measured boot image (S92), so the
 library is pinned exactly as a program in `/bin` is, with no new mechanism. The kernel calls
-`shlib_init` on it once, before init is spawned, exactly as the self-test does today. The kernel's copy is the only one: fs_server does not store the module, since `lib/` is not a
-destination it provisions, and nothing loads the library from a file.
+`shlib_init` on it once, before init is spawned, exactly as the self-test does today. The kernel's copy is the only one: fs_server skips the module by name, `lib/` stays a
+destination no module may write, and nothing loads the library from a file.
 
 A boot with no `libc.so` module loads no library. Nothing is endowed, and every program that
 asks for it fails its bind with a fixed message. That is the fail-closed direction: a missing

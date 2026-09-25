@@ -680,6 +680,12 @@ _Static_assert(__builtin_offsetof(struct elf_x86_64_reloc_table, rela_file_off) 
 _Static_assert(__builtin_offsetof(struct elf_x86_64_reloc_table, sym_file_off)  == 8,  "x64reloc.sym_file_off");
 _Static_assert(__builtin_offsetof(struct elf_x86_64_reloc_table, nrela)         == 16, "x64reloc.nrela");
 
+/* Whether the image try_elf_load last accepted asked for the shared libc
+ * (DT_NEEDED "libc.so"). Written only by try_elf_load and read by
+ * load_staged_image_into and the relocation pass below, both inside the staging window (spawn_stage_acquire),
+ * so one load cannot see another's answer. */
+static int g_staged_wants_libc;
+
 static int elf_apply_relocations_x86_64(const uint8_t *st, const uint8_t *ph,
                                         uint16_t e_phnum, uint32_t phentsize,
                                         uint64_t slide,
@@ -694,6 +700,20 @@ static int elf_apply_relocations_x86_64(const uint8_t *st, const uint8_t *ph,
 
     for (uint64_t k = 0; k < rt.nrela; k++) {
         uint64_t target, value;
+        /* S108. An image that asked for the shared libc leaves its references to
+         * library names for crt0, which resolves them by name against the
+         * library's table and then seals them (docs/design/shared-libc.md §7,
+         * §8). Only those: every other entry goes through the resolver below
+         * exactly as for a static image, and a skipped entry is one the
+         * resolver would have REFUSED, so this cannot widen what is written.
+         * The slot stays as the file has it, so a program whose crt0 never ran
+         * faults on it rather than calling somewhere. */
+        if (g_staged_wants_libc) {
+            int d = rust_elf_x86_64_reloc_deferred(st, staged_bytes(), rt.rela_file_off,
+                                                   rt.sym_file_off, k);
+            if (d < 0) return d;
+            if (d == 1) continue;
+        }
         int r = rust_elf_x86_64_reloc_resolve(st, staged_bytes(), rt.rela_file_off,
                                               rt.sym_file_off, k, slide, USER_MAX_VADDR,
                                               seg_va, seg_memsz, (uint32_t)nseg,
@@ -838,11 +858,6 @@ _Static_assert(__builtin_offsetof(struct elf_load_plan, max_va_end) == 8,   "pla
 _Static_assert(__builtin_offsetof(struct elf_load_plan, segs)       == 16,  "plan.segs offset");
 _Static_assert(__builtin_offsetof(struct elf_load_plan, nseg)       == 208, "plan.nseg offset");
 
-/* Whether the image try_elf_load last accepted asked for the shared libc
- * (DT_NEEDED "libc.so"). Written only by try_elf_load and read only by
- * load_staged_image_into, both inside the staging window (spawn_stage_acquire),
- * so one load cannot see another's answer. */
-static int g_staged_wants_libc;
 
 int try_elf_load(uint64_t load_base, uint64_t *out_entry, uint64_t *out_img_end)
 {

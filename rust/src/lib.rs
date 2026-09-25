@@ -1006,6 +1006,40 @@ fn x86_64_needs_libc(buf: &[u8], e_phoff: u32, e_phnum: u16) -> Result<bool, i32
     }
 }
 
+/// Is RELA entry `k` one the ring-3 linker resolves, rather than the kernel
+/// (docs/design/shared-libc.md §7)? True for R_X86_64_64 (1), GLOB_DAT (6) and
+/// JUMP_SLOT (7) against an UNDEFINED symbol (st_shndx == 0), and nothing else.
+///
+/// The loader asks this only for an image that asked for the shared libc. For
+/// such an image, a reference to a library name is exactly this shape, and the
+/// kernel neither has the library's names nor should grow a symbol resolver, so
+/// it skips the entry and crt0 fills it in before main. Every other entry is
+/// still resolved or refused by x86_64_reloc_resolve exactly as for a static
+/// image: a skipped entry is only ever one the kernel would otherwise have
+/// REFUSED, so this narrows what the loader does and cannot widen it.
+///
+/// `Err(-16)` for a malformed entry or symbol, as the resolver would say.
+fn x86_64_reloc_is_deferred(buf: &[u8], rela_file_off: u64, sym_file_off: u64, k: u64) -> Result<bool, i32> {
+    let r = (rela_file_off as usize)
+        .checked_add((k as usize).checked_mul(24).ok_or(-16)?)
+        .ok_or(-16)?;
+    let r_info = elf_rd_u64(buf, r + 8).ok_or(-16)?;
+    let r_type = (r_info & 0xFFFF_FFFF) as u32;
+    if r_type != 1 && r_type != 6 && r_type != 7 {
+        return Ok(false);
+    }
+    let sym_idx = r_info >> 32;
+    if sym_file_off == 0 || sym_idx == 0 || sym_idx > buf.len() as u64 / 24 {
+        return Err(-16);
+    }
+    let base = sym_idx
+        .checked_mul(24)
+        .and_then(|m| sym_file_off.checked_add(m))
+        .ok_or(-16)? as usize;
+    let st_shndx = elf_rd_u16(buf, base + 6).ok_or(-16)?;
+    Ok(st_shndx == 0)
+}
+
 /// Validate RELA entry `k` and compute the (target, value) to write.
 /// `Ok(Some((target, value)))` = write `value` at `target`, `Ok(None)` = skip
 /// (R_X86_64_NONE), `Err(-16)` = reject.
@@ -1144,6 +1178,31 @@ pub unsafe extern "C" fn rust_elf_x86_64_needs_libc(
     }
     let s = core::slice::from_raw_parts(buf, buf_len);
     match x86_64_needs_libc(s, e_phoff, e_phnum) {
+        Ok(true) => 1,
+        Ok(false) => 0,
+        Err(code) => code,
+    }
+}
+
+/// FFI: is RELA entry `k` left for the ring-3 linker? 1 (yes), 0 (no: resolve
+/// or refuse it as usual), or -16 (malformed).
+///
+/// # Safety
+/// `buf` points to `buf_len` readable bytes. Nothing else is assumed of the C
+/// side: a null `buf` is refused, and every offset is bounds-checked here.
+#[no_mangle]
+pub unsafe extern "C" fn rust_elf_x86_64_reloc_deferred(
+    buf: *const u8,
+    buf_len: usize,
+    rela_file_off: u64,
+    sym_file_off: u64,
+    k: u64,
+) -> i32 {
+    if buf.is_null() {
+        return -16;
+    }
+    let s = core::slice::from_raw_parts(buf, buf_len);
+    match x86_64_reloc_is_deferred(s, rela_file_off, sym_file_off, k) {
         Ok(true) => 1,
         Ok(false) => 0,
         Err(code) => code,
@@ -1693,6 +1752,35 @@ mod tests {
         assert_eq!(x86_64_needs_libc(&build_needed_image(&[1], t, 8, true), 64, 2), Err(-16));
         // A table that runs off the end of the image: refused.
         assert_eq!(x86_64_needs_libc(&build_needed_image(&[1], t, 4096, true), 64, 2), Err(-16));
+    }
+
+    #[test]
+    fn x86_64_reloc_deferred_only_undefined_symbol_refs() {
+        // sym 1 undefined (shndx 0), sym 2 defined.
+        let syms = [(0u8, 0u16, 0u64), (0x10u8, 0u16, 0u64), (0x10u8, 1u16, 0x2000u64)];
+        let relas = [
+            (0x10u64, (1u64 << 32) | 6, 0i64), // GLOB_DAT, undefined -> deferred
+            (0x18u64, (1u64 << 32) | 7, 0i64), // JUMP_SLOT, undefined -> deferred
+            (0x20u64, (1u64 << 32) | 1, 8i64), // R_X86_64_64, undefined -> deferred
+            (0x28u64, (2u64 << 32) | 6, 0i64), // GLOB_DAT, defined -> kernel's
+            (0x30u64, 8u64, 0x100i64),         // RELATIVE -> kernel's
+            (0x38u64, (1u64 << 32) | 5, 0i64), // R_X86_64_COPY, undefined -> NOT deferred
+        ];
+        let img = build_x86_64_reloc_image(&relas, &syms, false);
+        let rt = x86_64_reloc_locate(&img, 64, 2).unwrap();
+        let d = |k| x86_64_reloc_is_deferred(&img, rt.rela_file_off, rt.sym_file_off, k);
+        assert_eq!(d(0), Ok(true));
+        assert_eq!(d(1), Ok(true));
+        assert_eq!(d(2), Ok(true));
+        assert_eq!(d(3), Ok(false));
+        assert_eq!(d(4), Ok(false));
+        // COPY is never the linker's: the resolver refuses it, as it must.
+        assert_eq!(d(5), Ok(false));
+        // A symbol reference with no symbol table, or symbol 0, is malformed.
+        assert_eq!(x86_64_reloc_is_deferred(&img, rt.rela_file_off, 0, 0), Err(-16));
+        let img0 = build_x86_64_reloc_image(&[(0x10, 6, 0)], &syms, false);
+        let rt0 = x86_64_reloc_locate(&img0, 64, 2).unwrap();
+        assert_eq!(x86_64_reloc_is_deferred(&img0, rt0.rela_file_off, rt0.sym_file_off, 0), Err(-16));
     }
 
     #[test]

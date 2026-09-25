@@ -113,9 +113,10 @@ def rgb(x, y):
     o = (y * W + x) * 3
     return (px[o], px[o+1], px[o+2])
 
-# WHERE THE GRID STARTS, read off the guest rather than assumed (2026-09-24). The
-# kernel centres the 80-column grid on the display, so on this 1024-pixel screen it
-# begins 192 pixels in, and every x below is measured from there. None when the
+# WHERE THE GRID STARTS, read off the guest rather than assumed. The console's grid
+# starts at the left edge now (only the installer's surface is centred), but the
+# origin is still read rather than assumed, so a change to it cannot quietly move
+# every measurement below. None when the
 # console never started, which only the `refused` arm expects; every other arm
 # requires it, because a missing origin is a boot that did not reach the console.
 _o = re.search(rb"origin \((\d+),(\d+)\)", open(log, "rb").read())

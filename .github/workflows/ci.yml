@@ -3078,6 +3078,13 @@ jobs:
         run: make smoke-installer-failed
       - name: Control arm — a failed install that exits without a screen
         run: make smoke-installer-failed-control
+      # A live boot never writes a compiled-in password to a disk. The install
+      # stops after the format; a live login opens the table-less volume; the
+      # installed boot must then refuse user/password.
+      - name: A live boot that opens a volume with no account table writes nothing to it
+        run: make smoke-live-no-seed
+      - name: Control arm — the compiled-in accounts written to the volume
+        run: make smoke-live-no-seed-control
       # An install without encryption, and both directions the choice can be lost:
       # dropped (the unsealed gate's arm) and imposed on an operator who chose
       # encryption (the ordinary install gate's arm, the dangerous one).

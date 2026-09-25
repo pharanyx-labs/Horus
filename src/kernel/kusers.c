@@ -44,12 +44,55 @@ static int g_users_restored = 0;
  * is a better outcome than one that logs in the wrong person. */
 static int g_users_tampered = 0;
 
+/* WHICH RECORDS STILL HOLD A PASSWORD PRINTED IN THE SOURCE (SECURITY.md S109).
+ *
+ * users_init seeds `root`/`toor` and `user`/`password`. A live boot keeps them by
+ * design (users_apply_boot_policy), and until 2026-09-25 nothing stopped them
+ * reaching a disk: a live boot whose login opened an installed volume that had
+ * no account table yet (an install that stopped after the format, which is how
+ * the IdeaPad's failed installs left it) took the "first boot of this volume"
+ * branch in users_unlock_and_restore and seeded the table from RAM. The next
+ * boot from that disk loaded `user`/`password` as a real account, and once
+ * anybody had opened the volume it logged in.
+ *
+ * RAM-only and beside the table rather than in it, because a field in
+ * user_account changes the on-disk layout the tag covers. Set by users_init,
+ * cleared the moment a record stops holding its compiled-in password: a new
+ * password, a scrub, a delete, a reuse, or a table loaded off the disk. */
+static uint8_t g_users_compiled_pw[MAX_USERS];
+
+static void users_compiled_pw_clear_all(void)
+{
+    for (int i = 0; i < MAX_USERS; i++) g_users_compiled_pw[i] = 0;
+}
+
 /* Write the table back. Silent when there is no volume: a diskless or
  * unformatted machine keeps the compiled-in accounts and loses them at
  * power-off, which is the documented fallback rather than a failure -- a
- * research prototype has to boot on a machine with no disk. */
+ * research prototype has to boot on a machine with no disk.
+ *
+ * REFUSED WHILE ANY RECORD HOLDS A COMPILED-IN PASSWORD, which is the check that
+ * makes S109 true by construction rather than by every caller remembering: it
+ * does not matter which path asks for the write (the first-boot seed, passwd,
+ * useradd, userdel), a table with a password from the source in it is not
+ * written. The installer never meets it: it runs on a boot with a disk and no
+ * `horus.live`, where users_apply_boot_policy has already scrubbed both records.
+ *
+ * STORAGE_AUTOFORMAT (a control arm, never shipped) keeps the old behaviour,
+ * because the targets built with it boot a blank disk and log in with the
+ * defaults by design, as users_apply_boot_policy says. USERS_PERSIST_COMPILED_IN
+ * is this check's own arm. */
 void users_persist(void)
 {
+#if !defined(STORAGE_AUTOFORMAT) && !defined(USERS_PERSIST_COMPILED_IN)
+    for (int i = 0; i < MAX_USERS; i++) {
+        if (users[i].valid && g_users_compiled_pw[i]) {
+            print("USERS: the account table was not written: it still holds a "
+                  "compiled-in password\n");
+            return;
+        }
+    }
+#endif
     if (storage_users_save(users, sizeof(users)) == 0) g_users_restored = 1;
 }
 
@@ -83,7 +126,10 @@ static void users_unlock_and_restore(const char *pw, size_t len)
     }
     if (rc == 0) {
         g_users_restored = 1;
-        /* Rebuild the RAM-only bookkeeping the table does not carry. */
+        /* Rebuild the RAM-only bookkeeping the table does not carry. Every
+         * record now came off the disk, so none holds a compiled-in password
+         * (a table that did is one S109 would not have written). */
+        users_compiled_pw_clear_all();
         user_count = 0;
         next_uid   = 1000;
         for (int i = 0; i < MAX_USERS; i++) {
@@ -95,7 +141,15 @@ static void users_unlock_and_restore(const char *pw, size_t len)
         /* rc == -2: the volume opened and carries no table yet, so this is its
          * first boot. Seed it from what users_init put in RAM so the NEXT boot
          * has something to load. Only -2 reaches here; a failed tag was handled
-         * above and never reseeds. */
+         * above and never reseeds.
+         *
+         * On an installed machine's boot users_apply_boot_policy has already
+         * scrubbed the compiled-in accounts, so the seed is root with a hash no
+         * password produces. On a LIVE boot it has not, and users_persist
+         * refuses the write (S109): the volume keeps having no table, which is
+         * the state the live boot found it in. The line is what
+         * make smoke-live-no-seed reads to know the live login reached here. */
+        print("USERS: this volume has no account table yet\n");
         users_persist();
     }
 }
@@ -162,6 +216,9 @@ int set_user_password(uint32_t uid, const char *new_password) {
             generate_salt(users[i].salt, PASS_SALT_LEN);
             strong_password_hash(new_password, users[i].salt, ACCOUNT_PEPPER,
                                  users[i].pass_hash);
+            /* users_init sets the flag AFTER its own two calls here, so this
+             * clears it only for a password somebody chose. */
+            g_users_compiled_pw[i] = 0;
             return 0;
         }
     }
@@ -275,6 +332,7 @@ void users_apply_boot_policy(void)
     }
     for (int i = 0; i < MAX_USERS; i++) {
         if (!users[i].valid) continue;
+        g_users_compiled_pw[i] = 0;
         if (users[i].uid == 0) {
             generate_salt(users[i].salt, PASS_SALT_LEN);
             secure_random_bytes(users[i].pass_hash, sizeof(users[i].pass_hash));
@@ -332,6 +390,11 @@ void users_init(void) {
     users[1].valid = 1;
     set_user_password(1000, "password");
     user_count = 2;
+
+    /* Both passwords above are printed in the source; S109 keeps them off disk. */
+    users_compiled_pw_clear_all();
+    g_users_compiled_pw[0] = 1;
+    g_users_compiled_pw[1] = 1;
 
     /* The load that used to sit here is gone with the rest of the path (see the
      * note above): it ran at exactly this point on every boot, against a .bss
@@ -428,6 +491,8 @@ int do_useradd(uint32_t uid, uint32_t gid, const char *name, const char *initial
              * index here would have the next password change revoke a slot that
              * now belongs to somebody else. do_passwd grants the real one. */
             users[i].keyslot = KEYSLOT_NONE;
+            /* A reused entry: the compiled-in password was its previous owner's. */
+            g_users_compiled_pw[i] = 0;
             if (initial_password && *initial_password) {
                 set_user_password(uid, initial_password);
             } else {
@@ -507,6 +572,7 @@ int do_userdel(uint32_t uid) {
     for (int i = 0; i < MAX_USERS; i++) {
         if (users[i].valid && users[i].uid == uid) {
             users[i].valid = 0;
+            g_users_compiled_pw[i] = 0;
             user_count--;
             users_persist();
             return 0;

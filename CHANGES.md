@@ -384,6 +384,12 @@ in this file.
 
 ### Security
 
+- **A live boot no longer writes the built-in accounts to an installed disk.** A live boot whose
+  login opened a volume with no account table yet (an install stopped after the format) seeded
+  the table with `root`/`toor` and `user`/`password`, and the next installed boot accepted
+  `user`/`password` once anybody had opened the volume. The kernel now refuses to write any
+  table that still holds a password printed in the source (S109, `make smoke-live-no-seed`).
+
 - **An installed machine accepted the compiled-in `root` password until its volume was unlocked.**
   `users_init` seeds `root`/`rootpass` and `user`/`password` on every boot, and on an installed
   machine they stayed in RAM: after an install and a power cycle, `root`/`rootpass` got a root

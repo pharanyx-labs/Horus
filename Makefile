@@ -187,7 +187,8 @@ DEFECT_FLAGS = \
 	INSTALLER_FAIL_NO_SCREEN \
 	SHLIB_INHERIT_ANY_IMAGE SHLIB_DATA_TEMPLATE_SHARED SHLIB_EXEC_NO_DATA \
 	SHLIB_TEMPLATE_UNPINNED \
-	MEM_SEAL_KEEPS_WRITE MEM_SEAL_ANY_ADDRESS
+	MEM_SEAL_KEEPS_WRITE MEM_SEAL_ANY_ADDRESS \
+	INSTALLER_STOP_AFTER_FORMAT USERS_PERSIST_COMPILED_IN
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -3412,6 +3413,14 @@ STORAGE_UNSEALED_ALWAYS ?= 0
 ifeq ($(STORAGE_UNSEALED_ALWAYS),1)
 CFLAGS += -DSTORAGE_UNSEALED_ALWAYS
 endif
+# USERS_PERSIST_COMPILED_IN=1 lets users_persist write a table that still holds
+# a compiled-in password, as it did before 2026-09-25, so a live boot seeds an
+# installed volume that has no table with `user`/`password` (S109). The arm for
+# make smoke-live-no-seed.
+USERS_PERSIST_COMPILED_IN ?= 0
+ifeq ($(USERS_PERSIST_COMPILED_IN),1)
+CFLAGS += -DUSERS_PERSIST_COMPILED_IN
+endif
 
 # ---- FB_REQUEST: ask GRUB for a linear framebuffer -------------------------
 #
@@ -4584,6 +4593,14 @@ endif
 INSTALLER_FAIL_NO_SCREEN ?= 0
 ifeq ($(INSTALLER_FAIL_NO_SCREEN),1)
 USERSPACE_CFLAGS += -DINSTALLER_FAIL_NO_SCREEN
+endif
+# INSTALLER_STOP_AFTER_FORMAT=1 is an INSTRUMENT, not a defect: the installer
+# stops between the format and the first account write, leaving a volume with no
+# account table, as a power cut there would. In DEFECT_FLAGS so a boot under it
+# says so. Used only by make smoke-live-no-seed.
+INSTALLER_STOP_AFTER_FORMAT ?= 0
+ifeq ($(INSTALLER_STOP_AFTER_FORMAT),1)
+USERSPACE_CFLAGS += -DINSTALLER_STOP_AFTER_FORMAT
 endif
 # CONSOLE_BACKSPACE_NO_ERASE=1 restores console_server's screen output as it
 # stood before 2026-09-12: fb_putc and vga_putc had no case for 0x08, so a
@@ -13102,6 +13119,54 @@ smoke-installer-slowdisk:
 # change both cases produced "the format did not complete within
 # INSTALLER_FORMAT_TIMEOUT=300s", which is what left [G-13] unattributable.
 .PHONY: smoke-installer-wedge-control
+# A LIVE BOOT NEVER WRITES A COMPILED-IN PASSWORD TO A DISK (S109).
+#
+# Three boots on one image, and the ISO is rebuilt between them rather than
+# copied, so the only images ever in the tree are horus.iso. Boot 1 installs
+# with INSTALLER_STOP_AFTER_FORMAT, which stops where a power cut would: the
+# volume opens with the chosen password and has no account table. Boot 2 is the
+# boot menu's live entry, which keeps `root`/`toor` and `user`/`password`, and
+# logs in as root with the INSTALL password: that opens the volume, and the
+# kernel log (dmesg, as the live root) must say it found no table. Until 2026-09-25 it then seeded the table
+# from RAM. Boot 3 is the installed boot: root opens the volume again, and then
+# `user`/`password` must be refused. Under the arm it logs in, because the live
+# boot wrote it there.
+LIVE_NO_SEED_IMG = live-no-seed.img
+.PHONY: smoke-live-no-seed smoke-live-no-seed-control
+smoke-live-no-seed:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 INSTALLER_STOP_AFTER_FORMAT=1 $(LIVESEEDARM)
+	@rm -f $(LIVE_NO_SEED_IMG) live-no-seed-serial.log
+	@truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) $(LIVE_NO_SEED_IMG)
+	@for phase in stopped live installed; do \
+	    rm -f horus.iso; \
+	    if [ $$phase = live ]; then cfg=grub-menu.cfg; else cfg=grub.cfg; fi; \
+	    $(MAKE) --no-print-directory STORAGE_ATA=1 INSTALLER_STOP_AFTER_FORMAT=1 $(LIVESEEDARM) \
+	        GRUB_CFG=$$cfg horus.iso >/dev/null || exit 1; \
+	    SESSION_DISK=$(LIVE_NO_SEED_IMG) INSTALLER_MODE=live-no-seed LIVE_NO_SEED_PHASE=$$phase \
+	        SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) \
+	        INSTALLER_FORMAT_STALL=$(INSTALLER_FORMAT_STALL) INSTALLER_FORMAT_CAP=$(INSTALLER_FORMAT_CAP) \
+	        SESSION_SERIAL_LOG=live-no-seed-serial.log BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
+	        python3 tools/installer_session.py horus.iso \
+	      || { echo "[live-no-seed] ----- guest serial ($$phase) -----"; \
+	           tail -40 live-no-seed-serial.log 2>/dev/null | sed 's/^/  /'; exit 1; }; \
+	done
+	@rm -f $(LIVE_NO_SEED_IMG)
+	@echo "[live-no-seed] PASS - a live boot opened a volume with no account table and wrote nothing to it"
+
+smoke-live-no-seed-control:
+	@out=$$($(MAKE) --no-print-directory smoke-live-no-seed LIVESEEDARM=USERS_PERSIST_COMPILED_IN=1 2>&1); rc=$$?; \
+	rm -f $(LIVE_NO_SEED_IMG); \
+	if [ $$rc -eq 0 ]; then \
+	    echo "LIVE SEED CONTROL: FAIL - a kernel that writes compiled-in passwords passed the gate"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "a compiled-in password reached the installed volume"; then \
+	    echo "LIVE SEED CONTROL: FAIL - it failed, but not on the compiled-in login."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "LIVE SEED CONTROL: PASS - a live boot seeding an installed volume is caught"
+
 # The compiled-in accounts kept on a machine with a disk: smoke-installer must go
 # red, and on the refusal of the compiled-in root password rather than on anything else.
 .PHONY: smoke-installer-defaults-control

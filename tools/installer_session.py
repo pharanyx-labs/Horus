@@ -1371,6 +1371,75 @@ def replace(disk):
         s.close()
 
 
+NO_TABLE = "USERS: this volume has no account table yet"
+
+
+def live_no_seed(disk):  # noqa: ARG001 - uniform scenario signature
+    """A live boot never writes a compiled-in password to a disk (SECURITY.md S109).
+
+    One phase per invocation, because the Makefile rebuilds horus.iso between
+    them (the live phase boots the menu media) rather than keeping a second
+    image. LIVE_NO_SEED_PHASE names it:
+
+      stopped    the installer, built INSTALLER_STOP_AFTER_FORMAT, formats and
+                 stops before any account write: a volume with no table.
+      live       the menu's live entry, which keeps root/toor and user/password.
+                 root with the INSTALL password opens the volume (the login is
+                 still refused: the root in RAM is the compiled-in one), and the
+                 kernel log, read with dmesg as the live root, must say it found
+                 no table. Until 2026-09-25 it then wrote the table from RAM.
+      installed  the disk boots as an installed machine. root with the install
+                 password opens the volume again; then user/password must be
+                 refused. Under USERS_PERSIST_COMPILED_IN it logs in, because
+                 the live boot put it on the disk.
+    """
+    phase = os.environ.get("LIVE_NO_SEED_PHASE", "")
+    s = Serial(ISO)
+    try:
+        if phase == "stopped":
+            s.expect("init: this machine has a disk and no volume; running the installer", BOOT)
+            answer_survey(s)
+            answer_accounts(s)
+            answer_review_and_confirm(s)
+            s.expect("INSTALLER: formatting", STEP)
+            s.expect("INSTALLER: FAIL stopped after the format", FORMAT_STEP)
+            step("the install stopped after the format: a volume with no account table")
+        elif phase == "live":
+            s.expect("init: boot mode LIVE", BOOT)
+            step("the menu's default entry booted live")
+            if login(s, "root", PASSWORD, BOOT):
+                raise SessionFail("root logged in on a live boot with the install password, "
+                                  "which only a table on the disk could have allowed")
+            step("root with the install password was refused (the live root is the compiled-in one)")
+            # The kernel's line goes to its log, not the wire, once console_server
+            # owns the console, so it is read back with dmesg as the live root.
+            # Without it the phase could pass on a login that never opened the
+            # volume, and the installed phase would then prove nothing.
+            if not login(s, "root", LIVE_ROOT_PASSWORD):
+                raise SessionFail("the compiled-in root did not log in on a live boot")
+            s.send("dmesg")
+            if expect_any(s, [NO_TABLE, "root@horus#"], STEP) != 0:
+                raise SessionFail("the live login never reached a volume with no account table: "
+                                  "the kernel log does not say `%s`" % NO_TABLE)
+            step("the install password opened the volume on a live boot, which found no table")
+        elif phase == "installed":
+            s.expect("a Horus volume is present", BOOT)
+            if "init: boot mode LIVE" in s.buf:
+                raise SessionFail("the installed phase booted live")
+            if login(s, "root", PASSWORD, BOOT):
+                raise SessionFail("root logged in on a volume whose install never set a password")
+            step("root's login opened the volume")
+            if login(s, "user", "password"):
+                raise SessionFail("a compiled-in password reached the installed volume: "
+                                  "user/password logged in after a live boot")
+            step("the compiled-in user/password was refused on the installed machine")
+        else:
+            raise SessionFail("LIVE_NO_SEED_PHASE must be stopped, live or installed, not %r" % phase)
+    finally:
+        keep_serial(s.buf)
+        s.close()
+
+
 def run():
     disk = os.environ.get("SESSION_DISK", "")
     if not disk:
@@ -1410,6 +1479,10 @@ def run():
         return 0
     if mode == "failed":
         failed(disk)
+        print("INSTALLER_SESSION: PASS")
+        return 0
+    if mode == "live-no-seed":
+        live_no_seed(disk)
         print("INSTALLER_SESSION: PASS")
         return 0
     boot1(disk)

@@ -170,6 +170,7 @@ covered:
   - SYS_MAP_FRAME            # empty slot, the legacy slot-3 decoy, and W^X
   - SYS_UNMAP_FRAME          # empty slot
   - SYS_SHLIB_INFO           # init, every boot of the modules workload, which ships the library
+  - SYS_MEM_SEAL             # a stack page, an unaligned address, a zero length
   - SYS_MAP_REGION           # a zero-length run, and an empty slot
   - SYS_FB_INFO              # no device capability, and a wrong-type slot
   - SYS_FRAME_PAGES          # empty slot, and the legacy slot-3 decoy

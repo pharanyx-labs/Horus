@@ -1067,6 +1067,25 @@ void _start(void) {
     check(sys_map_frame(SLOT_EMPTY_HI, 0x30000000UL, CAP_RIGHT_READ) == SYS_ERR_PERM,
           "map-frame-on-empty-slot-not-refused");
 
+    /* SYS_MEM_SEAL reaches the caller's own image and nothing else, and refuses a
+     * range it cannot take whole. A stack page is the caller's own memory and
+     * still outside the window; an unaligned address and a zero length are
+     * malformed. None of these may seal anything, so captest carries on with its
+     * stack writable, which is the point of choosing refusals here. The accepted
+     * case, and the fault after it, are make smoke-mem-seal's. */
+    {
+        volatile char on_stack[16];
+        on_stack[0] = 1;
+        uintptr_t sp_page = (uintptr_t)on_stack & ~(uintptr_t)0xFFF;
+        check(sys_mem_seal((const void *)sp_page, 4096) == SYS_ERR_INVAL,
+              "mem-seal-of-a-stack-page-not-refused");
+        check(sys_mem_seal((const void *)(sp_page + 8), 4096) == SYS_ERR_INVAL,
+              "mem-seal-of-an-unaligned-address-not-refused");
+        check(sys_mem_seal((const void *)sp_page, 0) == SYS_ERR_INVAL,
+              "mem-seal-of-zero-length-not-refused");
+        on_stack[1] = 2;                  /* still writable: nothing was sealed */
+    }
+
     /* The legacy slot-3 CAP_FRAME is the interesting one, because it passes the
      * type test. It is [C-1]'s decoy: a live capability of exactly the right type
      * whose `object` is USER_AREA_BASE, a virtual address rather than an index

@@ -412,7 +412,14 @@
 # (paging.c), and the DT_NEEDED decision and its bookkeeping in the loader and the
 # spawn and exec paths. The endowment itself (shlib.c) is classified with the
 # rest of that file.
-core_budget_loc: 10776
+#
+# 2026-09-25: 10776 -> 10843, +67, S107 (SYS_MEM_SEAL, docs/design/shared-libc.md
+# step 2). Core because it is the page tables themselves: the seal walk and its
+# non-allocating PTE lookup (user_pte_existing), the three refusals of a sealed
+# PTE (copy-on-write break, fork's clone, a device mapping), the pager's report
+# that a sealed write is the program's fault, and the handler with its window
+# check and control arms.
+core_budget_loc: 10843
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

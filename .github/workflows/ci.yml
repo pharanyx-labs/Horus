@@ -3566,6 +3566,14 @@ jobs:
         run: make smoke-shlib-inherit-exec-control
       - name: Control arm — the library's frames collectable, the template freed
         run: make smoke-shlib-inherit-pin-control
+      # SYS_MEM_SEAL (S107): a sealed page takes no write, and the call reaches only
+      # the caller's own image. The ring-3 linker's RELRO rests on both.
+      - name: A sealed page takes no write, and only the program's own image seals
+        run: make smoke-mem-seal
+      - name: Control arm — a seal that leaves the page writable
+        run: make smoke-mem-seal-write-control
+      - name: Control arm — a seal that reaches outside the image
+        run: make smoke-mem-seal-window-control
 
   fpu:
     name: "A task cannot read another's XMM register file"

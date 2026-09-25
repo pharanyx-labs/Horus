@@ -1003,7 +1003,7 @@ reserves and before userspace starts, halting on any that changed: 28.7 ms for t
 module in the kernel image.
 
 **What remains.** Module capacity is now bounded by the page pool rather than by the gap below
-16 MiB: the modules GRUB places in the pool plus the 30 MiB reserve window must fit inside it, or
+16 MiB: the modules GRUB places in the pool plus the 30.5 MiB reserve window must fit inside it, or
 the boot halts with `mem: HALT the page pool's base reserves do not fit above the boot modules`. On
 the 512 MiB QEMU configuration the pool is 495 MiB, so that is roughly 465 MiB of modules, and the
 16 MiB store volume the modules are provisioned into is the tighter limit in practice. The
@@ -2642,13 +2642,13 @@ at-rest secrecy is not wanted, not as a performance setting.
 | Tasks | 256 **provisioned**, derived at boot | `g_max_tasks` (from the reserve; `MAX_TASKS` provisions it) |
 | Capabilities per task | 128 in use, 256 slots | `MAX_CAPS_PER_TASK`, `CNODE_SIZE` |
 | CPUs | 8, and 8 by default; fewer boot and run on what is present | `MAX_CPUS` (`src/include/cpu_limits.h`) |
-| Static endpoints (well-known + per-task reply) | 128 | `MAX_ENDPOINTS` |
+| Static endpoints (well-known + per-task reply) | 320 (64 well-known + one reply endpoint per task) | `MAX_ENDPOINTS` (`REPLY_EP_BASE + MAX_TASKS`) |
 | Retyped endpoint descriptors | 256 | `MAX_DYN_ENDPOINTS`, indices from `DYN_EP_BASE` |
 | Static notifications | 64 | `MAX_NOTIFICATIONS` |
 | Retyped notification descriptors | 256 | `MAX_DYN_NOTIFICATIONS`, indices from `DYN_NOTIF_BASE` |
 | Untyped arena, user half | 3.5 MiB | `UNTYPED_USER_BYTES` |
 | Untyped regions namable at once | 64 | `MAX_UNTYPED` |
-| Untyped arena, kernel reserve | 2.5 MiB (`MAX_TASKS` x (8 KiB cspace + 2 KiB TCB)) | `UNTYPED_KERNEL_BYTES` |
+| Untyped arena, kernel reserve | 3 MiB (`MAX_TASKS` x (10 KiB cspace + 2 KiB TCB)) | `UNTYPED_KERNEL_BYTES` |
 | IPC message | 256 bytes | `IPC_MSG_MAX` |
 | Boot modules | 48 | `MAX_BOOT_MODULES` |
 | Volume | 16 GiB **ceiling**; the actual size comes from the disk | `BLOCKS_PER_DISK` x `HORUS_BLOCK_SIZE`, clamped against IDENTIFY |

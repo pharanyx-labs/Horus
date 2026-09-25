@@ -3315,6 +3315,20 @@ void taskceiling_selftest(void)
         return;
     }
 
+    /* THE CEILING ITSELF. This test used to take whatever count was provisioned
+     * and test the top of it, so it passed on 2026-09-25 with 225 tasks when the
+     * kernel reserve under-provided after capability_t grew: only this test's
+     * control arm noticed, because its marker names task 255. The reserve is sized
+     * from constants for MAX_TASKS (UNTYPED_KERNEL_BYTES) and the harness boots
+     * with memory to spare, so anything less here is a sizing defect, not a
+     * property of the machine. */
+    if (g_max_tasks != MAX_TASKS) {
+        print("TASKCEIL_SELFTEST: FAIL provisioned ");
+        print_decimal((uint64_t)g_max_tasks);
+        print(" tasks, not MAX_TASKS\n");
+        return;
+    }
+
     /* Pick the pair as high as the table allows, so the test exercises the top
      * of the range rather than the first id past the old bound. */
     const int hi = g_max_tasks - 1;

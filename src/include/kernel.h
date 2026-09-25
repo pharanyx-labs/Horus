@@ -213,8 +213,15 @@ extern uint8_t *g_vdisk_backing;                             /* set at boot -> P
  * ordinary field addition does not redden the build, and tight enough that the
  * assert fires long before the reserve is actually short. */
 #define TCB_BYTES_RESERVED      2048u
+/* sizeof(capability_t), for the same reason: the reserve below is a compile-time
+ * constant and the struct is defined far below this line. It was the literal 32
+ * here until 2026-09-25, when a capability grew to 40 bytes (the token, S105)
+ * and this line did not: the reserve under-provided by 2 KiB a task and the boot
+ * provisioned 225 tasks instead of 256. Named once, and pinned to the real size by
+ * a _Static_assert beside capability_t, so it cannot drift silently again. */
+#define CAP_BYTES               40u
 #define UNTYPED_KERNEL_BYTES    ((uint64_t)MAX_TASKS * \
-                                 ((((CNODE_SIZE * 32u) + 63u) & ~63u) + \
+                                 ((((CNODE_SIZE * CAP_BYTES) + 63u) & ~63u) + \
                                   TCB_BYTES_RESERVED))
 /* The user half: fixed, and the number every published arena bound refers to. */
 #define UNTYPED_USER_BYTES      (3u * 1024u * 1024u + 512u * 1024u)
@@ -1708,6 +1715,9 @@ typedef struct capability {
      * rule 3 of tools/check_cap_writes.py enforces. docs/design/filesystem.md §5.1. */
     uint64_t token;
 } capability_t;
+_Static_assert(sizeof(capability_t) == CAP_BYTES,
+               "capability_t changed size: update CAP_BYTES, which sizes the kernel "
+               "reserve that every task's cspace is carved from (UNTYPED_KERNEL_BYTES)");
 
 /* Immutable identity snapshot of a capability, taken at lookup time and
  * reconfirmed at use time via cap_revalidate() to defend against lookup/use

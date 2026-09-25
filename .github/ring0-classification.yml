@@ -398,7 +398,12 @@
 # rust_cap_reply_mint, each checking its own inputs. The self-test's install
 # helper was first written in capability.c and moved to selftest.c, because it is
 # test code; that alone was 22 of the 216 lines first measured.
-core_budget_loc: 10748
+#
+# 2026-09-25: 10748 -> 10749, +1, in the same change. The reserve's _Static_assert
+# in untyped.c now adds the TCB allowance to the cspace it checks: it passed
+# while the header sized a 40-byte capability at 32, and the boot provisioned
+# 225 tasks instead of 256 (see CAP_BYTES in src/include/kernel.h).
+core_budget_loc: 10749
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

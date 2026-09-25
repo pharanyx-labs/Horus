@@ -802,10 +802,17 @@ int untyped_reserve_task_capacity(void)
  * independently now (see UNTYPED_KERNEL_BYTES / UNTYPED_USER_BYTES), so the
  * question worth asking is no longer "is the split fair" but "does the reserve
  * fit what it reserves for". */
+/* EVERYTHING the reserve is charged per task, not only the cspace. Until
+ * 2026-09-25 this compared the reserve against the cspaces alone, and the TCB
+ * allowance inside UNTYPED_KERNEL_BYTES was slack enough to satisfy it while
+ * the header under-counted a capability by 8 bytes: the build passed and the boot
+ * provisioned 225 tasks. tasks_init carves the TCB table from this same reserve
+ * before it counts cspaces, so both have to fit, each at its real size. */
 _Static_assert(UNTYPED_KERNEL_BYTES >=
                    (uint64_t)MAX_TASKS *
-                   align_up_const((uint64_t)CNODE_SIZE * sizeof(capability_t), KOBJ_ALIGN),
-               "UNTYPED_KERNEL_BYTES must hold MAX_TASKS cspaces at KOBJ_ALIGN");
+                   (align_up_const((uint64_t)CNODE_SIZE * sizeof(capability_t), KOBJ_ALIGN) +
+                    TCB_BYTES_RESERVED),
+               "UNTYPED_KERNEL_BYTES must hold MAX_TASKS cspaces at KOBJ_ALIGN and their TCBs");
 /* And the user half must still be able to hold the largest single object any
  * capability can name, or MAX_FRAME_PAGES is a promise the arena cannot keep. */
 _Static_assert(UNTYPED_USER_BYTES > (uint64_t)MAX_FRAME_PAGES * PAGE_SIZE,

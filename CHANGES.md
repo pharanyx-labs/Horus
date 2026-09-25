@@ -394,6 +394,17 @@ in this file.
 
 ### Added
 
+- **A server can tell its clients apart by the capability they call it through.** An endpoint
+  capability can now carry a token, an identity its server defines, and the kernel reports the
+  token and rights of the capability every request came through (`SYS_IPC_INVOKER`). A server can
+  answer a call with one new capability (`SYS_IPC_REPLY_CAP` after `SYS_IPC_CALL_CAP`), derived
+  from the one the caller used and never with more rights than it had, so a server needs no mint
+  authority of its own; revoking a capability revokes everything handed out through it. This is
+  phase 1a of the capability-addressed filesystem (`docs/design/filesystem.md` §5.1): the
+  mechanism `fs_server` will use to replace uid and mode checks with file capabilities.
+  `SECURITY.md` S105; witnessed by `make smoke-captoken` and three Kani proofs, falsified by
+  `TOKEN_REPLY_MINT_UNMASKED=1`. Every capability slot grows from 32 to 40 bytes.
+
 - **Shift+PgUp and Shift+PgDn scroll the console back.** The last 512 lines that scrolled off the
   top of the machine's own screen are kept, so a boot log or a long command's output can be read
   again on a machine with no serial port. A key typed or output printed while scrolled back returns

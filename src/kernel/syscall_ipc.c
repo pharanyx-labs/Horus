@@ -52,7 +52,10 @@ static inline void ipc_unlock(void) { }
 static inline int ep_full(const struct endpoint *e)  { return e->count >= EP_QUEUE_SLOTS; }
 static inline int ep_empty(const struct endpoint *e) { return e->count == 0; }
 
-static void ep_enqueue(struct endpoint *e, const uint8_t *src, int len, int sender) {
+static const struct ipc_invoker ipc_no_invoker;   /* all zero: untokened, no rights */
+
+static void ep_enqueue(struct endpoint *e, const uint8_t *src, int len, int sender,
+                       const struct ipc_invoker *inv) {
     uint32_t slot = (e->head + e->count) % EP_QUEUE_SLOTS;
     struct ep_msg *m = &e->q[slot];
     if (len < 0) len = 0;
@@ -60,6 +63,7 @@ static void ep_enqueue(struct endpoint *e, const uint8_t *src, int len, int send
     for (int i = 0; i < len; i++) m->data[i] = src[i];
     m->len    = len;
     m->sender = sender;
+    m->inv    = inv ? *inv : ipc_no_invoker;
     __asm__ volatile ("" ::: "memory");
     e->count++;
 }
@@ -67,19 +71,22 @@ static void ep_enqueue(struct endpoint *e, const uint8_t *src, int len, int send
 /* Dequeue into a kernel buffer. Returns the length, and writes the sender id
  * through `sender` so the caller can publish it as last_sender AFTER the copy to
  * userspace has succeeded — a failed copy must not advance the reply identity. */
-static int ep_dequeue(struct endpoint *e, uint8_t *dst, int max, int *sender) {
+static int ep_dequeue(struct endpoint *e, uint8_t *dst, int max, int *sender,
+                      struct ipc_invoker *inv) {
     struct ep_msg *m = &e->q[e->head];
     int len = m->len;
     if (len < 0) len = 0;
     if (len > max) len = max;
     for (int i = 0; i < len; i++) dst[i] = m->data[i];
     if (sender) *sender = m->sender;
+    if (inv) *inv = m->inv;
     /* Scrub the slot before releasing it. An endpoint slot outlives the message
      * in it, and the next sender may be a different, mutually distrusting task;
      * leaving the bytes would make the ring a residue channel between them. */
     for (int i = 0; i < IPC_MSG_MAX; i++) m->data[i] = 0;
     m->len    = 0;
     m->sender = -1;
+    m->inv    = ipc_no_invoker;   /* a token is an identity: never residue */
     e->head = (e->head + 1) % EP_QUEUE_SLOTS;
     e->count--;
     return len;
@@ -144,6 +151,36 @@ int ipc_notif_from_slot(uint32_t slot, uint32_t need_rights, uint32_t *out_slot)
     if (c->object >= NOTIF_INDEX_MAX)       return -1;
     if (!notification_by_index((uint32_t)c->object)) return -1;   /* see ipc_ep_from_slot */
     if (out_slot) *out_slot = (uint32_t)c->object;
+    return 0;
+}
+
+/* Resolve an endpoint slot AND record what it attests about itself -- its token
+ * and rights -- from ONE lookup (docs/design/filesystem.md §5.1).
+ *
+ * WHY ONE LOOKUP, UNDER cap_lock. Resolving the endpoint with ipc_ep_from_slot
+ * and then reading the token with a second lookup would leave a window in which
+ * the slot is replaced -- a parent's SYS_CAP_GRANT into it, say -- and the
+ * message would go to the FIRST capability's endpoint wearing the SECOND one's
+ * token: a token from one server's namespace presented to another server, which
+ * is a confused deputy built out of a race. Every cspace writer holds cap_lock,
+ * so reading all three fields under it sees one capability, whole.
+ *
+ * The same checks as ipc_ep_from_slot, in the same order: a live CAP_ENDPOINT
+ * with the required right and a current generation, then the object bound and
+ * the dead-object test. */
+static int ipc_ep_and_invoker(uint32_t slot, uint32_t need_rights, uint32_t *out_ep,
+                              struct ipc_invoker *inv, uint32_t *out_serial) {
+    *inv = ipc_no_invoker;
+    spin_lock(&cap_lock);
+    struct capability *c = cap_lookup(slot, CAP_ENDPOINT, need_rights);
+    if (!c || c->object >= EP_INDEX_MAX) { spin_unlock(&cap_lock); return -1; }
+    uint32_t ep = (uint32_t)c->object;
+    inv->token  = c->token;
+    inv->rights = c->rights;
+    if (out_serial) *out_serial = c->serial;
+    spin_unlock(&cap_lock);
+    if (!endpoint_by_index(ep)) return -1;
+    if (out_ep) *out_ep = ep;
     return 0;
 }
 
@@ -212,12 +249,14 @@ int ipc_publish_pending_block(int cur) {
             int cap_len = recv_wait ? (int)tasks[cur].ipc_recv_max : IPC_MSG_MAX;
             uint8_t kbuf[IPC_MSG_MAX];
             int sender = -1;
-            int len = ep_dequeue(e, kbuf, cap_len, &sender);
+            struct ipc_invoker inv;
+            int len = ep_dequeue(e, kbuf, cap_len, &sender, &inv);
             if (len > 0 && tasks[cur].ipc_reply_buf != 0) {
                 copy_to_user((void *)(addr_t)tasks[cur].ipc_reply_buf, kbuf,
                              (size_t)len);
             }
-            e->last_sender = sender;
+            e->last_sender  = sender;
+            e->last_invoker = inv;   /* published with last_sender, as everywhere */
             f->rax = (uint64_t)(uint32_t)len;
             /* Mint BEFORE the task is marked runnable — the same rule the wake
              * path in sys_ipc_send follows, and for the same reason (see the
@@ -345,7 +384,7 @@ void ipc_unpublish_block(int cur) {
     tasks[cur].runnable_ctx = 1;
 }
 
-int sys_ipc_send(uint32_t ep, const void *msg, size_t len) {
+int sys_ipc_send(uint32_t ep, const void *msg, size_t len, const struct ipc_invoker *inv) {
     struct endpoint *e = endpoint_by_index(ep);
     if (!e) return -1;
     if (len > IPC_MSG_MAX) len = IPC_MSG_MAX;
@@ -467,6 +506,7 @@ int sys_ipc_send(uint32_t ep, const void *msg, size_t len) {
         if (recv_wait) {
             int sender_tid = get_current_task();
             e->last_sender = sender_tid;
+            e->last_invoker = inv ? *inv : ipc_no_invoker;
             tasks[waiter].ipc_recv_block = 0;
             if (!cap_install_reply_for(waiter, sender_tid)) {
                 /* Refuse rather than wake a server into a request it has no
@@ -502,7 +542,7 @@ int sys_ipc_send(uint32_t ep, const void *msg, size_t len) {
      * of indeterminate contents visible to the receiver. */
     uint8_t kbuf2[IPC_MSG_MAX];
     if (len > 0 && copy_from_user(kbuf2, msg, len) != 0) { ipc_unlock(); return -1; }
-    ep_enqueue(e, kbuf2, (int)len, get_current_task());
+    ep_enqueue(e, kbuf2, (int)len, get_current_task(), inv);
     ipc_unlock();
     return 0;
 }
@@ -534,12 +574,15 @@ int sys_ipc_recv(uint32_t ep, void *msg, size_t max_len) {
      * a request that the sender is blocked waiting for a reply to. */
     uint8_t kbuf[IPC_MSG_MAX];
     int sender = -1;
-    int len = ep_dequeue(e, kbuf, (int)max_len, &sender);
+    struct ipc_invoker inv;
+    int len = ep_dequeue(e, kbuf, (int)max_len, &sender, &inv);
     if (len > 0 && copy_to_user(msg, kbuf, (size_t)len) != 0) { ipc_unlock(); return -1; }
 
     /* Only now is this the message being serviced, so only now does its sender
-     * become the identity SYS_IPC_SENDER answers about. */
-    e->last_sender = sender;
+     * become the identity SYS_IPC_SENDER answers about, and its invoker the one
+     * SYS_IPC_INVOKER answers about. */
+    e->last_sender  = sender;
+    e->last_invoker = inv;
     __asm__ volatile ("" ::: "memory");
     ipc_unlock();
 
@@ -576,7 +619,7 @@ int sys_ipc_recv(uint32_t ep, void *msg, size_t max_len) {
 
 int sys_ipc_reply(uint32_t ep, const void *msg, size_t len) {
 
-    return sys_ipc_send(ep, msg, len);
+    return sys_ipc_send(ep, msg, len, 0);
 }
 /* Notification objects — one 32-bit badge accumulator per slot, plus a
  * blocked-waiter field mirroring the endpoint design. */
@@ -717,10 +760,11 @@ void h_poll_notify(struct interrupt_frame64 *r) {
 /* SYS_IPC_SEND (21): rbx = cspace slot of a CAP_ENDPOINT with WRITE. */
 void h_ipc_send(struct interrupt_frame64 *r) {
     uint32_t ep;
-    if (ipc_ep_from_slot((uint32_t)r->rbx, CAP_RIGHT_WRITE, &ep) != 0) {
+    struct ipc_invoker inv;
+    if (ipc_ep_and_invoker((uint32_t)r->rbx, CAP_RIGHT_WRITE, &ep, &inv, 0) != 0) {
         r->rax = (uint32_t)SYS_ERR_PERM; return;
     }
-    r->rax = sys_ipc_send(ep, (const void*)(addr_t)r->rcx, r->rdx);
+    r->rax = sys_ipc_send(ep, (const void*)(addr_t)r->rcx, r->rdx, &inv);
 }
 
 /* SYS_IPC_CALL (23): atomic send-then-block-until-reply.
@@ -744,19 +788,61 @@ void h_ipc_send(struct interrupt_frame64 *r) {
  * endpoint's blocked_waiter is *not* published here. interrupt_handler64 calls
  * ipc_block_switch, which saves the trap frame first and only then publishes the
  * waiter (so a cross-CPU reply cannot race a null saved_ksp). */
-void h_ipc_call(struct interrupt_frame64 *r) {
-    const void *msg   = (const void *)(addr_t)r->rdx;
-    size_t   send_len = (size_t)r->rsi;
-    uint64_t reply_buf = r->rdi;   /* waiter's reply buffer: a user address, may be high */
-
-    uint32_t send_ep;
-    if (ipc_ep_from_slot((uint32_t)r->rbx, CAP_RIGHT_WRITE, &send_ep) != 0) {
+/* The body SYS_IPC_CALL and SYS_IPC_CALL_CAP share. `recv_slot` is the empty
+ * slot the caller names for a reply-minted capability, or IPC_NO_CAP; `carry` is
+ * a second capability the call presents, or IPC_NO_CAP. Plain SYS_IPC_CALL
+ * passes IPC_NO_CAP for both, which is what makes a reply-mint into a task that
+ * never asked for one impossible rather than merely unexpected. */
+static void ipc_call_common(struct interrupt_frame64 *r, uint32_t send_slot,
+                            const void *msg, size_t send_len, uint64_t reply_buf,
+                            uint32_t recv_slot, uint32_t carry_slot) {
+    uint32_t send_ep, send_serial = 0;
+    struct ipc_invoker inv;
+    if (ipc_ep_and_invoker(send_slot, CAP_RIGHT_WRITE, &send_ep, &inv, &send_serial) != 0) {
         r->rax = (uint32_t)SYS_ERR_PERM; return;
     }
     int cur = get_current_task();
+
+    /* The carried capability: presented, not transferred. The server learns its
+     * token and rights; the capability stays where it is. It must name the SAME
+     * endpoint -- a capability to another service carries a token from another
+     * namespace, and handing that to this server is the confused deputy
+     * ipc_ep_and_invoker exists to prevent. No right is demanded of it here: what
+     * it permits is the server's decision, made on the rights the kernel reports. */
+    if (carry_slot != IPC_NO_CAP) {
+        uint32_t carry_ep;
+        struct ipc_invoker cinv;
+        if (ipc_ep_and_invoker(carry_slot, 0, &carry_ep, &cinv, 0) != 0 || carry_ep != send_ep) {
+            r->rax = (uint32_t)SYS_ERR_PERM; return;
+        }
+        inv.carried      = 1;
+        inv.carry_token  = cinv.token;
+        inv.carry_rights = cinv.rights;
+    }
+
+    /* The reply-mint's destination is only NAMED here; whether it is empty is
+     * decided at the mint, under cap_lock, because this task could fill it in
+     * between. The bound is checked now so a nonsense slot fails the call rather
+     * than every reply to it. */
+    if (recv_slot != IPC_NO_CAP) {
+        uint32_t csz = tasks[cur].cspace_size ? tasks[cur].cspace_size : CNODE_SIZE;
+        if (recv_slot < KERNEL_RESERVED_CAPS || recv_slot >= csz || recv_slot == CAPSLOT_REPLY) {
+            r->rax = (uint32_t)SYS_ERR_INVAL; return;
+        }
+    }
+
     int rep = reply_ep_for_task(cur);
     if (rep < 0) { r->rax = (uint32_t)-1; return; }
     uint32_t reply_ep = (uint32_t)rep;
+
+    /* Which capability this request goes through, for the mint to re-find: the
+     * serial comes from the SAME lookup as the token the server will see, so the
+     * mint derives from exactly the capability the server authorised. If the
+     * slot is replaced before the reply, the serial will not match and the mint
+     * refuses. */
+    tasks[cur].ipc_cap_recv_slot = recv_slot;
+    tasks[cur].ipc_inv_slot      = send_slot;
+    tasks[cur].ipc_inv_serial    = send_serial;
 
     /* Declare the intent to block BEFORE the request becomes visible.
      *
@@ -786,7 +872,7 @@ void h_ipc_call(struct interrupt_frame64 *r) {
     __asm__ volatile ("" ::: "memory");
 
     /* Deposit the outgoing message into send_ep. */
-    int rc = sys_ipc_send(send_ep, msg, send_len);
+    int rc = sys_ipc_send(send_ep, msg, send_len, &inv);
     if (rc < 0) {
         /* Nothing was published, so nobody can reply: withdraw the declaration
          * rather than park on an endpoint no request was sent to. Callers retry
@@ -794,6 +880,7 @@ void h_ipc_call(struct interrupt_frame64 *r) {
         tasks[cur].pending_block = 0;
         tasks[cur].blocked_on    = -1;
         tasks[cur].ipc_reply_buf = 0;
+        tasks[cur].ipc_cap_recv_slot = IPC_NO_CAP;
         r->rax = (uint32_t)rc;
         return;
     }
@@ -801,6 +888,23 @@ void h_ipc_call(struct interrupt_frame64 *r) {
     /* r->rax is set by interrupt_handler64 after we return; a wake patches
      * saved_ksp->rax with the reply length. */
     r->rax = 0;
+}
+
+void h_ipc_call(struct interrupt_frame64 *r) {
+    ipc_call_common(r, (uint32_t)r->rbx, (const void *)(addr_t)r->rdx, (size_t)r->rsi,
+                    r->rdi, IPC_NO_CAP, IPC_NO_CAP);
+}
+
+/* SYS_IPC_CALL_CAP (118): SYS_IPC_CALL, plus the two things a capability-
+ * addressed service needs (docs/design/filesystem.md §5.1).
+ *   rbx = cspace slot of a CAP_ENDPOINT with WRITE (the capability invoked)
+ *   rcx = an EMPTY slot for the capability the reply may carry, or IPC_NO_CAP
+ *   rdx = userspace ptr to the message, rsi = its length
+ *   rdi = userspace ptr to the reply buffer (IPC_MSG_MAX bytes, as for SYS_IPC_CALL)
+ *   r8  = a second capability to the same endpoint to present, or IPC_NO_CAP */
+void h_ipc_call_cap(struct interrupt_frame64 *r) {
+    ipc_call_common(r, (uint32_t)r->rbx, (const void *)(addr_t)r->rdx, (size_t)r->rsi,
+                    r->rdi, (uint32_t)r->rcx, (uint32_t)r->r8);
 }
 /* SYS_IPC_RECV (22): rbx = cspace slot of a CAP_ENDPOINT with READ.
  * READ is the receive right: a client minted WRITE-only (the connect path) can
@@ -938,6 +1042,32 @@ void h_ipc_sender(struct interrupt_frame64 *r) {
     r->rax = tasks[t].uid;
 }
 
+/* SYS_IPC_INVOKER (119): what the kernel attests about the capability the most
+ * recently received message on this endpoint was sent through: its token and
+ * rights, and those of a carried capability (docs/design/filesystem.md §5.1).
+ *   rbx = cspace slot of a CAP_ENDPOINT with READ (the receive right)
+ *   rcx = userspace ptr to a struct ipc_invoker
+ *
+ * READ, as SYS_IPC_SENDER: only the task that legitimately receives on the
+ * endpoint may ask. This is the call that replaces the uid SYS_IPC_SENDER
+ * reports as a server's basis for authorising: it names a capability the client
+ * HOLDS, not an identity the client IS. */
+void h_ipc_invoker(struct interrupt_frame64 *r) {
+    uint32_t ep;
+    if (ipc_ep_from_slot((uint32_t)r->rbx, CAP_RIGHT_READ, &ep) != 0) {
+        r->rax = (uint32_t)SYS_ERR_PERM; return;
+    }
+    struct endpoint *e = endpoint_by_index(ep);
+    if (!e) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    ipc_lock();
+    struct ipc_invoker inv = e->last_invoker;
+    ipc_unlock();
+    if (copy_to_user((void *)(addr_t)r->rcx, &inv, sizeof(inv)) != 0) {
+        r->rax = (uint32_t)SYS_ERR_FAULT; return;
+    }
+    r->rax = 0;
+}
+
 /* SYS_IPC_REPLY_TO (75): reply to the task that sent the request most recently
  * received on `req_ep` (ebx), delivering msg (ecx, len edx) DIRECTLY into that
  * task's blocked SYS_IPC_CALL reply buffer — routed by the kernel-recorded sender
@@ -955,7 +1085,11 @@ void h_ipc_sender(struct interrupt_frame64 *r) {
  * occurs. Mirrors the blocked-waiter delivery in sys_ipc_send. */
 /* Carries S13b: a client cannot intercept or forge a server's replies. The
  * reply capability is one-shot and per-task, which is what [C-1] lacked. */
-void h_ipc_reply_to(struct interrupt_frame64 *r) {
+/* The body SYS_IPC_REPLY_TO and SYS_IPC_REPLY_CAP share; `mint` selects the
+ * reply-mint. Kept as one function so the two replies cannot drift apart in the
+ * delivery rules above, which are the ones S13b rests on. */
+static void ipc_reply_common(struct interrupt_frame64 *r, int mint,
+                             uint32_t mint_rights, uint64_t mint_token) {
     const void *msg = (const void *)(addr_t)r->rcx;
     size_t len      = (size_t)r->rdx;
 
@@ -1054,6 +1188,32 @@ void h_ipc_reply_to(struct interrupt_frame64 *r) {
         copy_len = (int)len;
     }
 
+    /* ---- The reply-mint (docs/design/filesystem.md §5.1) ----------------------
+     *
+     * AFTER the message is safely in a kernel buffer, so nothing can fail between
+     * the mint and the wake: a mint followed by a failed copy would leave the
+     * caller holding a capability for a reply it never received, and the server,
+     * told to retry, would then find the slot full and be refused.
+     *
+     * BEFORE the wake, under endpoint_lock, for the reason the blocking receive
+     * gives at length in sys_ipc_send: once the caller is RUNNABLE another CPU
+     * can run it, and it would look in its slot before the capability arrived.
+     *
+     * Refused means NOTHING delivered and the reply right KEPT, so the server can
+     * still answer with a plain SYS_IPC_REPLY_TO carrying an error. The caller
+     * never named a slot, its capability was revoked or replaced, the slot is not
+     * empty, or it is at its capability ceiling: in every case the call
+     * completes, just without a capability, and the server is the one to say so. */
+    if (mint) {
+        if (tasks[t].ipc_cap_recv_slot == IPC_NO_CAP ||
+            !cap_reply_mint_into(t, tasks[t].ipc_inv_slot, tasks[t].ipc_inv_serial, req_ep,
+                                 tasks[t].ipc_cap_recv_slot, mint_rights, mint_token)) {
+            ipc_unlock();
+            r->rax = (uint32_t)SYS_ERR_PERM;
+            return;
+        }
+    }
+
     if (copy_len > 0 && tasks[t].ipc_reply_buf != 0) {
         /* Deliver into the waiter's reply buffer, which resolves through the
          * waiter's CR3 — so make it the current task across the copy (see the
@@ -1095,6 +1255,24 @@ void h_ipc_reply_to(struct interrupt_frame64 *r) {
      * place or the server could never complete the reply it was told to retry. */
     cap_consume_slot(CAPSLOT_REPLY);
     r->rax = 0;
+}
+
+void h_ipc_reply_to(struct interrupt_frame64 *r) {
+    ipc_reply_common(r, 0, 0, 0);
+}
+
+/* SYS_IPC_REPLY_CAP (120): SYS_IPC_REPLY_TO that also hands the caller ONE
+ * capability (docs/design/filesystem.md §5.1).
+ *   rbx = cspace slot of the CAP_ENDPOINT the request arrived on, with READ
+ *   rcx = userspace ptr to the reply, rdx = its length
+ *   rsi = the rights the server asks for; the kernel intersects them with the
+ *         capability the request came through, and strips the receive right
+ *   rdi = the token for the new capability; zero is refused
+ * The capability lands in the slot the caller named in SYS_IPC_CALL_CAP. A
+ * server needs no mint authority of its own for this: it can only narrow what
+ * the caller already had. */
+void h_ipc_reply_cap(struct interrupt_frame64 *r) {
+    ipc_reply_common(r, 1, (uint32_t)r->rsi, (uint64_t)r->rdi);
 }
 
 /* SYS_NOTIFY (25): rbx = cspace slot of a CAP_NOTIFICATION with WRITE. */

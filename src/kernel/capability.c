@@ -13,6 +13,11 @@ _Static_assert(__builtin_offsetof(capability_t, object)     == 8,  "cap.object o
 _Static_assert(__builtin_offsetof(capability_t, badge)      == 16, "cap.badge offset");
 _Static_assert(__builtin_offsetof(capability_t, serial)     == 20, "cap.serial offset");
 _Static_assert(__builtin_offsetof(capability_t, generation) == 24, "cap.generation offset");
+_Static_assert(__builtin_offsetof(capability_t, reserved)   == 28, "cap.reserved offset");
+_Static_assert(__builtin_offsetof(capability_t, token)      == 32, "cap.token offset");
+_Static_assert(sizeof(capability_t) == 40, "capability_t size (matches Rust)");
+_Static_assert(CAP_ENDPOINT == 3, "CAP_ENDPOINT must match rust/src/capability.rs");
+_Static_assert(CAP_RIGHT_READ == (1u << 0), "the token-stripped right must match rust/src/capability.rs");
 _Static_assert(CAP_NULL == 0, "CAP_NULL must be 0 (matches Rust)");
 
 
@@ -74,6 +79,7 @@ void cap_init(void) {
         root_cnode[i].object = 0;
         root_cnode[i].badge = 0;
         root_cnode[i].serial = 0;
+        root_cnode[i].token = 0;
     }
     root_cnode[0].type = CAP_TCB;
     root_cnode[0].rights = CAP_RIGHT_ALL;
@@ -375,6 +381,7 @@ int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t o
     tasks[pid].cspace[slot]            = root_cnode[root_slot];
     tasks[pid].cspace[slot].object     = obj;
     tasks[pid].cspace[slot].serial     = serial;
+    tasks[pid].cspace[slot].token      = 0;
     /* Stamp the fresh serial's current generation so the serial-keyed backstop
      * is active for this copied-from-root capability (finding 3.3), and it is
      * born valid even if the serial's hash cell was bumped by a prior revoke. */
@@ -420,6 +427,7 @@ bool cap_install_object(uint32_t dest_slot, uint32_t type, uint64_t object,
     cspace[dest_slot].object     = object;
     cspace[dest_slot].badge      = badge;
     cspace[dest_slot].serial     = serial;
+    cspace[dest_slot].token      = 0;
     cspace[dest_slot].generation = rust_lineage_current(serial); /* finding 3.3 */
     if (was_null) tasks[cur].caps_in_use++;
     spin_unlock(&cap_lock);
@@ -512,6 +520,7 @@ bool cap_install_object_first_free(uint32_t min_slot, uint32_t type, uint64_t ob
     cspace[slot].object     = object;
     cspace[slot].badge      = badge;
     cspace[slot].serial     = serial;
+    cspace[slot].token      = 0;
     cspace[slot].generation = rust_lineage_current(serial); /* finding 3.3 */
     tasks[cur].caps_in_use++;
     spin_unlock(&cap_lock);
@@ -549,6 +558,7 @@ bool cap_install_reply_for(int pid, int sender) {
     cspace[CAPSLOT_REPLY].object     = (uint64_t)sender;
     cspace[CAPSLOT_REPLY].badge      = 0;
     cspace[CAPSLOT_REPLY].serial     = serial;
+    cspace[CAPSLOT_REPLY].token      = 0;
     cspace[CAPSLOT_REPLY].generation = rust_lineage_current(serial);
     if (was_null) tasks[pid].caps_in_use++;
     spin_unlock(&cap_lock);
@@ -591,6 +601,7 @@ bool cap_consume_slot(uint32_t dest_slot) {
          * a CAP_NULL slot would make the slot look occupied to the lineage check
          * while carrying no type. */
         cspace[dest_slot].serial     = 0;
+        cspace[dest_slot].token      = 0;
         cspace[dest_slot].generation = 0;
         if (tasks[cur].caps_in_use > 0) tasks[cur].caps_in_use--;
     }
@@ -647,6 +658,7 @@ bool cap_consume_slot_of(int pid, uint32_t slot, struct capability *out_prev) {
          * slot that looks empty to a type check and occupied to the lineage
          * check. */
         cspace[slot].serial     = 0;
+        cspace[slot].token      = 0;
         cspace[slot].generation = 0;
         if (tasks[pid].caps_in_use > 0) tasks[pid].caps_in_use--;
     }
@@ -717,6 +729,7 @@ bool cap_install_child_pipe_end(int child, uint32_t dest_slot, int spawner,
     ccs[dest_slot].object     = object;
     ccs[dest_slot].badge      = 0;               /* HORUS-20260911-04, above */
     ccs[dest_slot].serial     = serial;
+    ccs[dest_slot].token      = 0;
     ccs[dest_slot].generation = rust_lineage_current(serial); /* finding 3.3 */
     if (was_null) tasks[child].caps_in_use++;
     spin_unlock(&cap_lock);
@@ -818,6 +831,7 @@ void cap_release_cspace(int id)
              * CAP_NULL slot would look occupied to the lineage check while
              * carrying no type. Same reason cap_consume_slot clears it. */
             cs[s].serial     = 0;
+            cs[s].token      = 0;
             cs[s].generation = 0;
         }
     }
@@ -1095,6 +1109,99 @@ bool cap_mint(uint32_t dest_slot, uint32_t src_slot, uint32_t new_rights) {
     return ok;
 }
 
+/* SYS_CAP_MINT_TOKEN: mint a TOKENED endpoint capability into the caller's own
+ * cspace from an untokened endpoint capability it holds with MINT
+ * (docs/design/filesystem.md §5.1, §6.1). The rules that make the result an
+ * identity are rust_cap_mint_token's and are proved there; this wrapper adds
+ * what every cspace write adds -- the lock, the authority guard, the reserved-slot
+ * floor and the per-task capability ceiling -- exactly as cap_mint does.
+ *
+ * kcap_lookup demands MINT and a valid lineage generation, so a revoked or stale
+ * minter fails here before Rust sees it; Rust then re-checks the type, the MINT
+ * right and the absence of a token itself, because an FFI function never
+ * assumes the C side did (CLAUDE.md §1). */
+bool cap_mint_token(uint32_t dest_slot, uint32_t src_slot, uint32_t new_rights, uint64_t token) {
+    spin_lock(&cap_lock);
+    if (!caller_has_authority()) { spin_unlock(&cap_lock); return false; }
+    struct capability *src = kcap_lookup(src_slot, CAP_RIGHT_MINT);
+    if (!src || dest_slot >= CNODE_SIZE || dest_slot < KERNEL_RESERVED_CAPS) {
+        spin_unlock(&cap_lock);
+        return false;
+    }
+    int cur = get_current_task();
+    struct capability *cs = tasks[cur].cspace ? tasks[cur].cspace : root_cnode;
+    uint32_t cspace_sz = tasks[cur].cspace_size ? tasks[cur].cspace_size : CNODE_SIZE;
+    bool was_null = (cs[dest_slot].type == CAP_NULL);
+    if (was_null && tasks[cur].caps_in_use >= MAX_CAPS_PER_TASK) {
+        spin_unlock(&cap_lock);
+        return false;
+    }
+    bool ok = rust_cap_mint_token(cs, cspace_sz, dest_slot, src_slot, new_rights, token,
+                                  &cap_next_serial);
+    if (ok && was_null) tasks[cur].caps_in_use++;
+    spin_unlock(&cap_lock);
+    return ok;
+}
+
+/* The reply-mint's cspace half (SYS_IPC_REPLY_CAP; docs/design/filesystem.md
+ * §5.1). A server answering task `pid`'s call gives it ONE capability, derived
+ * from the capability `pid`'s request was sent through.
+ *
+ * Every input that names something comes from the KERNEL's record of the call,
+ * never from the server: `inv_slot`/`inv_serial` are what h_ipc_call_cap wrote
+ * into the caller's task before its request became visible, `ep_index` is the
+ * endpoint the server proved it receives on, and `dest_slot` is the slot the
+ * caller named. The server contributes only the token and the rights it asks
+ * for, and rust_cap_reply_mint intersects those rights with the invoker's.
+ *
+ * REFUSES, writing nothing, unless the capability at inv_slot is still the one
+ * the request came through: a live CAP_ENDPOINT, the same serial, a current
+ * lineage generation, and naming THIS endpoint. So a client that revokes or
+ * replaces its directory capability while the server is busy gets no child of
+ * it, and a server cannot mint a child of a capability to some other service.
+ *
+ * Called with endpoint_lock held (the mint must land before the caller is woken;
+ * see the ordering note in sys_ipc_send). cap_lock nests inside endpoint_lock,
+ * the one declared order (.github/lock-order.yml). */
+bool cap_reply_mint_into(int pid, uint32_t inv_slot, uint32_t inv_serial, uint32_t ep_index,
+                         uint32_t dest_slot, uint32_t new_rights, uint64_t token) {
+    if (pid <= 0 || pid >= g_max_tasks) return false;
+    spin_lock(&cap_lock);
+    struct capability *cs = tasks[pid].cspace;
+    uint32_t cspace_sz = tasks[pid].cspace_size ? tasks[pid].cspace_size : CNODE_SIZE;
+    if (!cs || inv_slot >= cspace_sz || dest_slot >= cspace_sz) {
+        spin_unlock(&cap_lock);
+        return false;
+    }
+    const struct capability *inv = &cs[inv_slot];
+    if (inv->type != CAP_ENDPOINT || inv->serial == 0 || inv->serial != inv_serial ||
+        !rust_lineage_check(inv->serial, inv->generation) ||
+        inv->object != (uint64_t)ep_index) {
+        spin_unlock(&cap_lock);
+        return false;
+    }
+    if (tasks[pid].caps_in_use >= MAX_CAPS_PER_TASK) {
+        spin_unlock(&cap_lock);
+        return false;
+    }
+#ifdef TOKEN_REPLY_MINT_UNMASKED
+    /* CONTROL ARM (smoke-captoken-unmasked-control): derive from a copy of the
+     * invoking capability that holds EVERY right, so the child gets whatever the
+     * server asks for. This is the defect the intersection exists to prevent --
+     * a server that can grant more than the client held -- and tokencli's
+     * `reply-mint-escalated` must catch it. Never shipped (DEFECT_FLAGS). */
+    capability_t widened = *inv;
+    widened.rights = CAP_RIGHT_ALL;
+    inv = &widened;
+#endif
+    bool ok = rust_cap_reply_mint(inv, cs, cspace_sz, dest_slot, new_rights, token,
+                                  &cap_next_serial);
+    if (ok) tasks[pid].caps_in_use++;   /* rust_cap_reply_mint only fills an EMPTY slot */
+    spin_unlock(&cap_lock);
+    return ok;
+}
+
+
 /* Mint the capability for a sub-region carved by untyped_split.
  *
  * NOT a general-purpose "mint over an arbitrary object". It exists because the
@@ -1155,6 +1262,7 @@ int cap_mint_untyped_child(uint32_t src_slot, uint32_t dest_slot, uint32_t child
     cs[dest_slot].object     = child_index;
     cs[dest_slot].badge      = src->serial;          /* the derivation edge */
     cs[dest_slot].serial     = serial;
+    cs[dest_slot].token      = 0;
     cs[dest_slot].generation = rust_lineage_current(serial);
     if (was_null) tasks[cur].caps_in_use++;
 
@@ -1409,11 +1517,13 @@ int cap_clone_cspace(int parent, int child) {
             /* The parent's own identity, duplicated: one serial, two capabilities. */
             cc[s].badge      = src->badge;
             cc[s].serial     = src->serial;
+            cc[s].token      = src->token;
             cc[s].generation = src->generation;
 #else
             /* Fresh identity, but no edge back to the parent's capability. */
             cc[s].badge      = src->badge;
             cc[s].serial     = rust_cap_alloc_serial(&cap_next_serial);
+            cc[s].token      = src->token;
             cc[s].generation = rust_lineage_current(cc[s].serial);
 #endif
             if (was_null) tasks[child].caps_in_use++;
@@ -1481,6 +1591,7 @@ void cap_exec_mutate_cspace(int t) {
         cs[s].object     = 0;
         cs[s].badge      = 0;
         cs[s].serial     = 0;
+        cs[s].token      = 0;
         cs[s].generation = 0;
         if (tasks[t].caps_in_use > 0) tasks[t].caps_in_use--;
 #else
@@ -1488,6 +1599,7 @@ void cap_exec_mutate_cspace(int t) {
          * only its lineage is destroyed. */
         cs[s].badge      = 0;
         cs[s].serial     = rust_cap_alloc_serial(&cap_next_serial);
+        cs[s].token      = 0;
         cs[s].generation = rust_lineage_current(cs[s].serial);
 #endif
     }
@@ -1647,6 +1759,7 @@ bool cap_create_revocation_set(uint32_t target_slot, uint32_t rev_slot) {
     cspace[rev_slot].object = target_slot;
     cspace[rev_slot].badge  = 0xDEAD0000U;
     cspace[rev_slot].serial = fresh_serial;
+    cspace[rev_slot].token = 0;
     cspace[rev_slot].generation = rust_lineage_current(fresh_serial); /* finding 3.3 */
 
     spin_unlock(&cap_lock);

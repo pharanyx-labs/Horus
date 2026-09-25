@@ -200,6 +200,10 @@ struct task_info {
 #define SYS_CONSOLE_RELEASE  114  /* (dev_slot) -> 0; give the console hardware back to the kernel. CAP_IO_DEVICE + WRITE in dev_slot, and the caller must BE the current owner. Exists so a console driver that fails AFTER taking the console can still be heard: its own diagnostic goes to the klog and nowhere else while it owns the wire. */
 #define SYS_FB_INFO           115  /* (dev_slot, struct fb_geometry*) -> 0; the SHAPE of the linear framebuffer (width/height/pitch/bpp), or SYS_ERR_NOENT if this display is not one. CAP_IO_DEVICE + READ in dev_slot, and it must name the PLATFORM device. Where the framebuffer is comes from SYS_DEVICE_INFO's mmio[] ranges, not from here. */
 #define SYS_BOOT_FLAGS        116  /* (void) -> a bitmask of BOOT_FLAG_*; which entry the operator chose at the boot menu. SC_NONE, and deliberately: the value is a FACT about how this machine was started, not an authority. Knowing that the installer entry was picked lets a task do nothing -- installing still needs CAP_STORAGE_FORMAT, which only init grants and only to the installer. It is set once from the multiboot2 command line before any task exists and is never writable from ring 3. */
+#define SYS_CAP_MINT_TOKEN    117   /* (dest_slot, src_slot, rights, token) -> 0; a TOKENED endpoint capability, from an UNTOKENED one the caller holds with MINT. Rights are masked to the source's and lose the receive right. docs/design/filesystem.md §5.1. */
+#define SYS_IPC_CALL_CAP      118   /* (ep_slot, recv_slot, msg, len, reply_buf, carry_slot) -> reply length; SYS_IPC_CALL, naming an EMPTY slot for a reply-minted capability and optionally presenting one more capability to the same endpoint. IPC_NO_CAP for either means none. */
+#define SYS_IPC_INVOKER       119   /* (ep_slot, struct ipc_invoker *) -> 0; the token and rights of the capability the last received message came through, and of a carried one. Needs READ (the receive right) on ep_slot. */
+#define SYS_IPC_REPLY_CAP     120   /* (req_slot, msg, len, rights, token) -> 0; SYS_IPC_REPLY_TO that also mints ONE capability into the caller's named slot, derived from the capability its request came through, rights intersected with that capability's. Refused = nothing delivered, reply right kept. */
 #define SYS_STORAGE_DEVICE   113  /* (index, struct storage_info*) -> 0; the survey for ONE enumerated persistent device (CAP_STORAGE_FORMAT + READ). Refuses an index past the end rather than clamping. */
 #define SYS_IRQ_POLICY_INFO    92   /* (struct irq_policy_info*) -> 0; roadmap 1.1 audit counters. IRQ_POLICY_AUDIT builds only; NOSYS otherwise. CAP_KERNEL_LOG (READ). */
 #define SYS_DMESG              88   /* (buf, offset, max) -> bytes; copy a chunk of the kernel message ring at `offset` to buf. CAP_KERNEL_LOG (READ) in CAPSLOT_KERNEL_LOG, else SYS_ERR_PERM */
@@ -1214,6 +1218,60 @@ static inline uint32_t sys_ipc_sender(int ep, uint32_t *out_gid) {
 static inline uint32_t sys_ipc_sender_task(int ep, uint32_t *out_gid, uint32_t *out_pid) {
     return syscall(SYS_IPC_SENDER, (uint32_t)ep, (uint64_t)(uintptr_t)out_gid,
                    (uint64_t)(uintptr_t)out_pid);
+}
+
+/* ---- Capability-addressed services (docs/design/filesystem.md §5.1) ----------
+ *
+ * A server tells its clients apart by the CAPABILITY a request came through, not
+ * by who sent it. Mirrors struct ipc_invoker in src/include/kernel.h. */
+struct ipc_invoker {
+    uint64_t token;          /* the invoking capability's token; 0 = untokened */
+    uint32_t rights;         /* the invoking capability's rights */
+    uint32_t carried;        /* 1 if the call carried a second capability */
+    uint64_t carry_token;    /* that capability's token (same endpoint, by rule) */
+    uint32_t carry_rights;   /* and its rights */
+    uint32_t reserved;       /* always 0 */
+};
+
+/* "No capability slot" for sys_ipc_call_cap's recv_slot and carry_slot. */
+#define IPC_NO_CAP 0xFFFFFFFFu
+
+/* Mint a TOKENED endpoint capability at dest_slot from the UNTOKENED endpoint
+ * capability at src_slot, which must carry MINT. The result has rights & the
+ * source's, never the receive right, and names the same endpoint. How a service's
+ * first client capability is made (the root directory of a filesystem). */
+static inline int sys_cap_mint_token(unsigned dest_slot, unsigned src_slot,
+                                     uint32_t rights, uint64_t token) {
+    return (int)syscall6(SYS_CAP_MINT_TOKEN, dest_slot, src_slot, rights, token, 0, 0);
+}
+
+/* sys_ipc_call, plus: `recv_slot`, an EMPTY slot for a capability the reply may
+ * carry (IPC_NO_CAP for none), and `carry_slot`, a second capability to the SAME
+ * endpoint whose token and rights the server is shown (IPC_NO_CAP for none).
+ * `rbuf` must be IPC_MSG_MAX bytes, as for sys_ipc_call. */
+static inline int sys_ipc_call_cap(unsigned ep_slot, unsigned recv_slot,
+                                   const void *msg, uint32_t len, void *rbuf,
+                                   unsigned carry_slot) {
+    return (int)syscall6(SYS_IPC_CALL_CAP, ep_slot, recv_slot,
+                         (uint64_t)(uintptr_t)msg, len, (uint64_t)(uintptr_t)rbuf,
+                         carry_slot);
+}
+
+/* Server side: the token and rights of the capability the last message received
+ * on `ep_slot` came through. Needs the receive right on ep_slot. */
+static inline int sys_ipc_invoker(unsigned ep_slot, struct ipc_invoker *out) {
+    return (int)syscall(SYS_IPC_INVOKER, ep_slot, (uint64_t)(uintptr_t)out, 0);
+}
+
+/* Server side: sys_ipc_reply_to that also mints ONE capability into the slot the
+ * caller named, derived from the capability its request came through, with
+ * `rights` intersected with that capability's and the given non-zero `token`.
+ * A refusal delivers nothing and keeps the reply right, so the server can still
+ * answer with sys_ipc_reply_to. */
+static inline int sys_ipc_reply_cap(unsigned req_slot, const void *msg, size_t len,
+                                    uint32_t rights, uint64_t token) {
+    return (int)syscall6(SYS_IPC_REPLY_CAP, req_slot, (uint64_t)(uintptr_t)msg,
+                         (uint32_t)len, rights, token, 0);
 }
 
 static inline int sys_notify(int notif_slot, uint32_t badge) {

@@ -984,8 +984,8 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             exists as far as the caller is concerned.
           </p>
           <p>
-            The ABI defines <strong>117 syscall numbers</strong>. The dispatch table is sized to
-            the highest of them plus one, and a default build installs <strong>97
+            The ABI defines <strong>121 syscall numbers</strong>. The dispatch table is sized to
+            the highest of them plus one, and a default build installs <strong>101
             handlers</strong>, the remainder are reserved, or are test-only calls compiled out
             entirely. Every one of those gaps answers <code>SYS_ERR_NOSYS</code>. That difference
             is the fail-closed property, not an oversight: a shipping kernel denies the debug
@@ -1617,7 +1617,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
         </div>
 
         <p class="note">
-          Every configuration flag, every one of the 407 test targets, and the troubleshooting
+          Every configuration flag, every one of the 410 test targets, and the troubleshooting
           notes are in
           <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
           and
@@ -1735,7 +1735,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
           <p>
             The security argument rests entirely on the tests, so they are treated as engineering
             artifacts rather than an afterthought. There are three layers: Rust unit tests and
-            Kani proofs on the host; 195 QEMU integration targets that boot a purpose-built kernel
+            Kani proofs on the host; 197 QEMU integration targets that boot a purpose-built kernel
             and assert a marker on the serial console; and scripted sessions that type into the
             real ring-3 shell over serial and read what comes back.
           </p>
@@ -2013,7 +2013,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
               be listed as merge-gating, or exempted <em>with a written reason</em>, and CI fails
               the build if any is in neither; there is no default, because defaulting was the
               defect. It caught an unclassified static-analysis job on its first run. The
-              gating set is 133 checks with 4 exempted, and the promotions are backed by
+              gating set is 134 checks with 4 exempted, and the promotions are backed by
               measurement rather than optimism: across 18 sampled runs, 64 of 66 jobs had zero
               failures in 1152 job-executions.
             </p>
@@ -2454,9 +2454,9 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             <h3><span class="id">coverage</span>Ten system calls still have no test that runs them, and covering four of them found a fault</h3>
             <p>
               <strong>Measured 2026-08-20</strong>, and checked on every merge since.
-              <strong>89 of 97</strong> system calls have their handler actually executed by the
+              <strong>89 of 101</strong> system calls have their handler actually executed by the
               three workloads this project tracks, a scripted end-to-end session, the
-              permission conformance suite, and the boot-modules session. The other 8 are each
+              permission conformance suite, and the boot-modules session. The other 12 are each
               listed with a written reason.
             </p>
             <p>
@@ -2512,7 +2512,7 @@ tbody tr:hover td, tbody tr:hover th { background: #fff; }
             </p>
             <p>
               The build can record the first time each call's body is entered and say so on the
-              wire, and a checked-in file classifies all 97 implemented syscalls, covered or not
+              wire, and a checked-in file classifies all 101 implemented syscalls, covered or not
               covered with a reason. The check fails if a call is in neither list, if a covered
               one stops being exercised, if an uncovered one starts being exercised and its
               reason has gone stale, or if the recording produced nothing at all. That last case

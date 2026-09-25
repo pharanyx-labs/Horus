@@ -385,7 +385,25 @@
 # start-up fill it duplicated). It cannot go to ring 3 for the reason the 10543
 # entry gives: the kernel draws that panel itself while console_server is
 # blocked in the format.
-core_budget_loc: 10554
+#
+# 2026-09-25: 10554 -> 10748, +194, S105 (capability tokens, filesystem phase 1a,
+# docs/design/filesystem.md §5.1). Genuinely core and nowhere else it could live:
+# it is the capability and IPC machinery itself. In C, the locked lookup that
+# reads an endpoint and its token together (ipc_ep_and_invoker), the call path's
+# carried capability and reply-slot bookkeeping (ipc_call_common), three handlers
+# (SYS_IPC_CALL_CAP, SYS_IPC_INVOKER, SYS_IPC_REPLY_CAP), the reply-mint step in
+# the shared reply body, and the two locked cspace wrappers cap_mint_token and
+# cap_reply_mint_into, plus the TOKEN_REPLY_MINT_UNMASKED arm (an arm the budget
+# could not see would be a place to hide code). In Rust, rust_cap_mint_token and
+# rust_cap_reply_mint, each checking its own inputs. The self-test's install
+# helper was first written in capability.c and moved to selftest.c, because it is
+# test code; that alone was 22 of the 216 lines first measured.
+#
+# 2026-09-25: 10748 -> 10749, +1, in the same change. The reserve's _Static_assert
+# in untyped.c now adds the TCB allowance to the cspace it checks: it passed
+# while the header sized a 40-byte capability at 32, and the boot provisioned
+# 225 tasks instead of 256 (see CAP_BYTES in src/include/kernel.h).
+core_budget_loc: 10749
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

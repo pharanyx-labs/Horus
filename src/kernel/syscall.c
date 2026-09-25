@@ -1009,6 +1009,16 @@ static void h_cap_mint(struct interrupt_frame64 *r) {
     r->rax = ok ? 0 : -1;
     audit_log(AUDIT_CAP_MINT, r->rbx, ok ? 0 : -1, ok ? "cap mint" : "cap mint denied");
 }
+/* SYS_CAP_MINT_TOKEN (117): rbx = dest slot, rcx = source slot (an UNTOKENED
+ * CAP_ENDPOINT held with MINT), rdx = rights, rsi = the token (non-zero). The
+ * authority is the source capability, resolved in cap_mint_token, which is why
+ * the table entry is SC_NONE like SYS_CAP_MINT's. docs/design/filesystem.md §5.1. */
+static void h_cap_mint_token(struct interrupt_frame64 *r) {
+    bool ok = cap_mint_token((uint32_t)r->rbx, (uint32_t)r->rcx, (uint32_t)r->rdx,
+                             (uint64_t)r->rsi);
+    r->rax = ok ? 0 : (uint64_t)(uint32_t)SYS_ERR_PERM;
+    audit_log(AUDIT_CAP_MINT, r->rbx, ok ? 0 : -1, ok ? "cap mint token" : "cap mint token denied");
+}
 static void h_cap_transfer(struct interrupt_frame64 *r) {
     bool ok = cap_transfer(r->rbx, r->rcx);
     r->rax = ok ? 0 : -1;
@@ -1427,7 +1437,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 117
+#define SYSCALL_TABLE_SIZE 121
 
 /* ------------------------------------------------------------------------- *
  *  Capability-checked dispatch table.
@@ -1792,6 +1802,15 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
      * object, and its resolution is chosen so it does not restore what CR4.TSD
      * takes away. See h_clock_gettime. */
     [SYS_CLOCK_GETTIME]           = { h_clock_gettime,           SC_NONE, 0, SC_ANYTYPE },
+    /* Capability-addressed services (docs/design/filesystem.md §5.1). All four
+     * are SC_NONE for the reason every IPC entry is: the authorising capability
+     * is the one the caller NAMES, resolved in the handler by the same locked
+     * lookup that reads the token. A fixed table slot would gate on something
+     * else (finding C-1). */
+    [SYS_CAP_MINT_TOKEN]          = { h_cap_mint_token,          SC_NONE, 0, SC_ANYTYPE }, /* MINT on the named untokened endpoint */
+    [SYS_IPC_CALL_CAP]            = { h_ipc_call_cap,            SC_NONE, 0, SC_ANYTYPE }, /* WRITE on the named endpoint */
+    [SYS_IPC_INVOKER]             = { h_ipc_invoker,             SC_NONE, 0, SC_ANYTYPE }, /* READ on the named endpoint */
+    [SYS_IPC_REPLY_CAP]           = { h_ipc_reply_cap,           SC_NONE, 0, SC_ANYTYPE }, /* READ + the one-shot CAP_REPLY */
 };
 
 /* Compile-time guard: the table must have a slot for every syscall number, so
@@ -1808,7 +1827,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
 /* Carries S6: an unknown or reserved syscall number cannot reach a handler.
  * The bound check in syscall_handler fails closed at runtime; this assertion is
  * what stops a new number being added without its table entry. */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_BOOT_FLAGS + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_IPC_REPLY_CAP + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

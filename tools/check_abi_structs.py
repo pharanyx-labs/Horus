@@ -91,6 +91,10 @@ SHARED = [
     "task_info",
     "irq_policy_info",
     "irq_policy_site_info",
+    # SYS_IPC_INVOKER's record (2026-09-25): the token and rights a server
+    # authorises on. A drift here would have a server read one capability's
+    # rights under another's token.
+    "ipc_invoker",
 ]
 
 # Structs defined in BOTH headers that do NOT agree, each with the finding that

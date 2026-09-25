@@ -48,6 +48,9 @@ gating:
   - lookup_never_returns_an_empty_slot                       # 1s
   - lookup_refuses_every_out_of_range_slot                   # 1s
   - grant_never_escalates_rights                             # 1s
+  - reply_mint_never_escalates_and_never_receives            # tokens, filesystem.md §5.1
+  - mint_token_only_from_an_untokened_minter
+  - mint_keeps_the_token
   - grant_records_its_parent_and_takes_a_fresh_serial        # 0s
   - grant_from_an_invalid_source_refuses_and_writes_nothing  # 1s
   - grant_refuses_every_out_of_range_slot                    # 1s

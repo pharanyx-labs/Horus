@@ -76,7 +76,7 @@ evidence. Their **current status** is in [LIMITATIONS.md](LIMITATIONS.md), not h
 | File | Contents |
 |---|---|
 | [`design/console-server.md`](design/console-server.md) | The design behind the ring-3 console driver, as built |
-| [`design/filesystem.md`](design/filesystem.md) | The capability-addressed filesystem: **specification, nothing built yet**. The layering (the kernel only seals blocks), file capabilities, the policy, the truthful POSIX view, the v12 copy-on-write format and the order of work |
+| [`design/filesystem.md`](design/filesystem.md) | The capability-addressed filesystem: **specification; phase 1a (the kernel's token and reply-mint primitive) is built**. The layering (the kernel only seals blocks), file capabilities, the policy, the truthful POSIX view, the v12 copy-on-write format and the order of work |
 | [`design/installed-system.md`](design/installed-system.md) | A full install onto the disk (`/bin`, `/sbin`, `/tmp`, `/var`, man pages), how a program on the disk is trusted, the bootloader, and `/etc/shadow`: **design only, nothing built**; its decisions are taken |
 | [`history/DEVLOG-2026.md`](history/DEVLOG-2026.md) | The development log: 117 narrative entries, newest first |
 | [`../CHANGES.md`](../CHANGES.md) | The changelog |

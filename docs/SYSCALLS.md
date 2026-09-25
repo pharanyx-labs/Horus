@@ -547,6 +547,7 @@ exposed.
 | 9 | *cap move* | `dest_slot`, `src_slot` | transfer + revoke |
 | 51 | `SYS_CAP_REVOKE` | `slot` | `CAP_RIGHT_REVOKE` on target |
 | 65 | `SYS_CAP_GRANT` | `target_tid`, `src_slot`, `dest_slot` | `CAP_TCB` for target, or `CAP_USER` |
+| 117 | `SYS_CAP_MINT_TOKEN` | `dest_slot`, `src_slot`, `rights`, `token` | an **untokened** `CAP_ENDPOINT` at `src_slot` with `CAP_RIGHT_MINT`; `token` non-zero |
 
 Mint and grant mask rights to `new_rights & src->rights`; **delegation can only ever reduce
 authority**. Grant pushes into a child the caller supervises; there is deliberately no
@@ -558,6 +559,15 @@ siblings, and independent capabilities to the same object intact.
 
 Kernel-reserved slots 0–3 cannot be minted into. Primordial root capabilities (serial prefix
 `0xC0DE`) cannot be revoked.
+
+**Tokens** (**S105**, `docs/design/filesystem.md` §5.1). An endpoint capability may carry a
+64-bit `token`, an identity its server defines and the kernel never interprets. It is set in
+exactly two places: `SYS_CAP_MINT_TOKEN`, from an untokened endpoint capability holding MINT
+(the endpoint's maker), and the reply-mint (`SYS_IPC_REPLY_CAP` below). Every other derivation
+(mint, transfer, grant, fork) copies it, and clearing a slot clears it, so a holder can narrow a
+tokened capability but never point it at another token. A tokened capability never carries the
+receive right. `SYS_CAP_ENUMERATE` does not report tokens, for the reason it does not report
+`object`: a token names what a capability points at.
 
 ## Untyped memory
 
@@ -608,6 +618,9 @@ simplification.
 | 26 | `SYS_WAIT_NOTIFY` | `notif_slot` | `CAP_NOTIFICATION` at `notif_slot`: READ |
 | 73 | `SYS_IPC_SENDER` | `ep_slot`, `uint32_t *out_gid` | `CAP_ENDPOINT` at `ep_slot`: **READ** |
 | 75 | `SYS_IPC_REPLY_TO` | `req_slot`, `msg`, `len` | `CAP_ENDPOINT` at `req_slot`: **READ**, *plus* the one-shot `CAP_REPLY` at `CAPSLOT_REPLY` (21), which it consumes |
+| 118 | `SYS_IPC_CALL_CAP` | `send_slot`, `recv_slot`, `msg`, `len`, `reply_buf`, `carry_slot` | `CAP_ENDPOINT` at `send_slot`: WRITE; `carry_slot`, if not `IPC_NO_CAP`, a live `CAP_ENDPOINT` to the **same** endpoint |
+| 119 | `SYS_IPC_INVOKER` | `ep_slot`, `struct ipc_invoker *` | `CAP_ENDPOINT` at `ep_slot`: **READ** |
+| 120 | `SYS_IPC_REPLY_CAP` | `req_slot`, `msg`, `len`, `rights`, `token` | as `SYS_IPC_REPLY_TO`, and the caller must have named an empty `recv_slot` |
 
 `SYS_IPC_REPLY_TO` requires **READ**, not WRITE: it writes directly into the recorded sender's
 blocked reply buffer, so only the task that legitimately *receives* requests on the endpoint may
@@ -671,6 +684,34 @@ unrepresentable rather than merely refused. That is what makes one server safe f
 clients. It may return `-2` under SMP if the sender has deposited its request but not yet
 published its block; the server retries, and the reply right is deliberately *not* consumed on
 that path.
+
+### Capability-addressed services (**S105**)
+
+Three calls let a server tell its clients apart by the **capability** a request came through
+rather than by who sent it, which is what a filesystem without owners needs
+(`docs/design/filesystem.md` §5.1).
+
+- **`SYS_IPC_INVOKER`** reports, for the message most recently received on the endpoint, the
+  token and rights of the capability it was sent through, and of a carried one. Every send
+  records them (`SYS_IPC_SEND`, `SYS_IPC_CALL` and `SYS_IPC_CALL_CAP` alike), from the same
+  locked lookup that resolves the endpoint, so a slot replaced mid-call cannot pair one
+  capability's endpoint with another's token. The client chooses neither field.
+- **`SYS_IPC_CALL_CAP`** is `SYS_IPC_CALL` with two more arguments. `recv_slot` names an empty
+  slot for a capability the reply may carry; it must be outside the reserved slots and not
+  `CAPSLOT_REPLY` (`SYS_ERR_INVAL` otherwise). `carry_slot` presents a second capability to the
+  same endpoint, whose token and rights the server is shown; the capability itself stays where
+  it is, and one to a different endpoint refuses the call (`SYS_ERR_PERM`) before anything is
+  sent. `IPC_NO_CAP` (`0xFFFFFFFF`) means none for either.
+- **`SYS_IPC_REPLY_CAP`** is `SYS_IPC_REPLY_TO` that also mints **one** capability into the
+  caller's named slot. It is derived from the capability the request came through, re-found by
+  slot and serial and refused if that capability has been revoked or replaced, or no longer
+  names this endpoint. Its rights are `rights` intersected with that capability's, minus the
+  receive right, and its parent in the derivation tree is that capability, so revoking a
+  capability revokes everything reply-minted through it. A server therefore needs no mint
+  authority of its own and can only narrow what the caller already held. The mint lands before
+  the caller is woken. A refusal (no slot named, the slot occupied, the invoker gone, the
+  caller at its capability ceiling) **delivers nothing and keeps the reply right**, so the
+  server can still answer with `SYS_IPC_REPLY_TO`.
 
 ## Pipes
 

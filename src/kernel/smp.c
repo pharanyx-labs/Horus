@@ -772,6 +772,12 @@ void smp_bringup(void) {
      * FRAMETEST: PASS <n> checks from ring 3. Falsified by
      * FRAME_INDEX_UNCHECKED=1 and FRAME_RIGHTS_UNCHECKED=1. */
     { extern void frame_selftest(void); frame_selftest(); }
+#elif defined(TOKEN_SELFTEST)
+    /* Gated: tokens on endpoint capabilities, the reply-mint and the carried
+     * capability, between a ring-3 server with no mint authority and a client
+     * that checks the kernel bounded everything the server asked for
+     * (TOKENTEST: PASS). docs/design/filesystem.md §5.1. */
+    { extern void token_selftest(void); token_selftest(); }
 #elif defined(RECVBLOCK_SELFTEST)
     /* Gated: a ring-3 server waits on an empty endpoint with SYS_IPC_RECV_BLOCK
      * while a client dawdles before each request; the server proves it made

@@ -49,4 +49,11 @@
 #   (16 per entry), 11,904 bytes that the section's page rounding makes 12 KiB.
 #   A Gemini Lake laptop has twenty-odd PCI functions on bus 0 and a 16-entry
 #   table dropped its eMMC controller, the only disk it has, in silence.
-bss_bytes: 7659520
+# 2026-09-25: 7,712,768 bytes (+53,248), for S105, capability tokens
+#   (docs/design/filesystem.md §5.1). endpoints 343,040 -> 394,240 (+51,200):
+#   each of the 320 static endpoints gains a 32-byte invoker record on every one
+#   of its 4 queue slots and one `last_invoker`, 160 bytes each, because the
+#   token and rights a server authorises on have to travel with the message they
+#   describe. root_cnode 8,192 -> 10,240 (+2,048), 256 slots of 32 -> 40 bytes.
+#   Measured with nm against the build without the change.
+bss_bytes: 7712768

@@ -114,6 +114,7 @@ jobs:
       - smoke-boot-pin
       - smoke-boot-pin-control
       - smoke-captest
+      - smoke-captoken
       - smoke-console
       - smoke-console-backspace
       - smoke-console-isolation
@@ -2334,6 +2335,32 @@ jobs:
         run: rustup target add x86_64-unknown-none
       - name: Boot RECVBLOCK_SELFTEST kernel under -smp 4 so the cross-CPU wake path runs at all (the reply right is minted into a cspace that is not the current one)
         run: make smoke-recvblock-smp
+
+  smoke-captoken:
+    name: Capability tokens and the reply-mint (S105), on one CPU and four, with its control arm
+    runs-on: ubuntu-latest
+    # Backstop, not a performance budget: this job normally finishes in
+    # minutes. Without it the default is 360, so a runner wedged on its
+    # package install idles for six hours and the run never concludes --
+    # which cost three runs on 2026-08-19. See CHANGES.md.
+    timeout-minutes: 105
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Boot TOKEN_SELFTEST and assert a server with no mint authority can only narrow what its client invoked
+        run: make smoke-captoken
+      - name: The same under -smp 4, where the mint races the caller's wake across CPUs
+        run: make smoke-captoken-smp
+      # docs/design/filesystem.md §5.1. The arm derives the reply-mint from a copy
+      # of the invoker holding every right; the greedy server's request is then
+      # granted in full and the client must name it.
+      - name: Control arm — a reply-mint not bounded by the capability the request came through
+        run: make smoke-captoken-unmasked-control
 
   smoke-mapphys:
     name: QEMU map-phys device-frame self-test (headless)

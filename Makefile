@@ -165,7 +165,7 @@ DEFECT_FLAGS = \
 	FB_TAG_IGNORED FB_TAG_ASSUME_TEXT \
 	FB_MAP_SELFTEST FB_MAP_LOW_HALF FB_CONSOLE_SELFTEST \
 	FB_CONSOLE_MIRRORED FB_INFO_ANY_DEVICE CONSOLE_FB_ABSENT CONSOLE_NO_KBD KLOG_CONSOLE \
-	CONSOLE_NO_SCROLLBACK \
+	KLOG_NARROW CONSOLE_NO_SCROLLBACK \
 	SERIAL_PRESENCE_UNCHECKED \
 	CONSOLE_BACKSPACE_NO_ERASE SHELL_BARE_UNKNOWN \
 	CONSOLE_NO_SCROLL CONSOLE_CLEAR_DRAWN \
@@ -3435,6 +3435,13 @@ SHELL_BARE_UNKNOWN ?= 0
 # Userspace-only, so it goes on USERSPACE_CFLAGS. `make install.iso KLOG_CONSOLE=1`.
 KLOG_CONSOLE ?= 0
 
+# KLOG_NARROW=1 is the Alt+F2 view before 2026-09-25: it is laid out on the
+# console's 80-column grid and clears the display only when a surface is centred,
+# so on a framebuffer wider than 80 cells the log covers the left of the screen
+# and the rest keeps what the installer drew. Userspace-only, and meaningful only
+# with KLOG_CONSOLE=1. The arm for `make smoke-klog-console-fb`.
+KLOG_NARROW ?= 0
+
 # CONSOLE_NO_SCROLLBACK=1 is console_server before 2026-09-24: a line that
 # scrolls off the top of the screen is gone, and Shift+PgUp does nothing. On a
 # machine with no serial port that loses the boot log for good. Userspace-only,
@@ -4535,6 +4542,9 @@ USERSPACE_CFLAGS += -DSHELL_BARE_UNKNOWN
 endif
 ifeq ($(KLOG_CONSOLE),1)
 USERSPACE_CFLAGS += -DKLOG_CONSOLE
+endif
+ifeq ($(KLOG_NARROW),1)
+USERSPACE_CFLAGS += -DKLOG_NARROW
 endif
 ifeq ($(CONSOLE_NO_SCROLLBACK),1)
 USERSPACE_CFLAGS += -DCONSOLE_NO_SCROLLBACK
@@ -8539,6 +8549,25 @@ smoke-console-scrollback-control:
 	echo "SCROLLBACK CONTROL: PASS - a console that keeps no history is caught"
 
 .PHONY: smoke-klog-console smoke-klog-console-control smoke-klog-console-absent smoke-klog-console-absent-control
+.PHONY: smoke-klog-console-fb smoke-klog-console-fb-control
+# The view on a framebuffer wider than 80 cells must cover all of it: its header
+# bar has to reach the right edge (header_reaches_edge in the harness). The arm is
+# the 80-column view, KLOG_NARROW=1, which must go red on exactly that.
+smoke-klog-console-fb:
+	@$(MAKE) --no-print-directory smoke-klog-console FB_REQUEST=1 $(KLOGFBARM)
+
+smoke-klog-console-fb-control:
+	@out=$$($(MAKE) --no-print-directory smoke-klog-console-fb KLOGFBARM=KLOG_NARROW=1 2>&1); rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "KLOG FB CONTROL: FAIL - an 80-column view passed the full-screen gate"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "the kernel log view does not cover the display"; then \
+	    echo "KLOG FB CONTROL: FAIL - it failed, but not on the view's width."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "KLOG FB CONTROL: PASS - a view that leaves part of the screen uncovered is caught"
+
 smoke-klog-console:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) $(if $(KLOGOFF),,KLOG_CONSOLE=1) horus.iso

@@ -13,7 +13,9 @@ an instrument that announces itself in DEFECT FLAGS and is never shipped; it
 would be a defect in a shipped image. So:
 
   --present   (KLOG_CONSOLE=1)  Alt+F2 opens the view, Shift+PgUp scrolls it,
-              Alt+F1 closes it and the screen is what it was, and a login typed
+              Alt+F1 closes it and the screen is what it was (outside the
+              console's grid on a framebuffer, cleared: see residue), the view's
+              header spans the whole display, and a login typed
               afterwards on the keyboard succeeds, so the keys went back.
   --absent    (a ship build)    Alt+F2 does nothing: no marker on the wire and
               the screen unchanged beyond the cursor's blink, and the login
@@ -65,6 +67,73 @@ def shot(g, shots, name):
 
 def delta(a, b):
     return sum(1 for p, q in zip(a, b) if p != q) + abs(len(a) - len(b))
+
+
+GRID = re.compile(r"fb: console on the framebuffer, (\d+)x(\d+) cells, (\d+)x(\d+) "
+                  r"font at (\d+)x, origin \((\d+),(\d+)\)")
+
+
+def residue(before, after, grid):
+    """Bytes by which the screen after the view differs from the one before it.
+
+    Inside the console's grid every pixel counts. Outside it, a pixel that came
+    back black does not: leaving the view repaints the whole display from the
+    console's cells, so whatever the kernel drew there before the handover (a
+    remnant of its progress panel) is cleared, and that is the point, it is
+    stale text. A pixel outside the grid that is lit and different is something
+    of the view's left behind, and counts. `grid` is (x0, y0, x1, y1) in pixels,
+    or None on VGA text, where every pixel counts."""
+    if grid is None or before[:2] != b"P6" or len(before) != len(after):
+        return delta(before, after)
+    w, _, off = ppm_offset(before)
+    x0, y0, x1, y1 = grid
+    n = 0
+    for i in range(off, len(before) - 2, 3):
+        p, q = before[i:i + 3], after[i:i + 3]
+        if p == q:
+            continue
+        px = (i - off) // 3
+        x, y = px % w, px // w
+        if q == b"\x00\x00\x00" and not (x0 <= x < x1 and y0 <= y < y1):
+            continue
+        n += sum(1 for a, b in zip(p, q) if a != b)
+    return n
+
+
+def ppm_offset(data):
+    """(width, height, offset of the first pixel) for a binary P6 screendump."""
+    fields, i = [], 0
+    while len(fields) < 4:               # magic, width, height, maxval
+        while data[i:i + 1].isspace():
+            i += 1
+        j = i
+        while not data[j:j + 1].isspace():
+            j += 1
+        fields.append(data[i:j])
+        i = j
+    if fields[0] != b"P6":
+        raise SessionFail(f"screendump is {fields[0]!r}, not a P6 PPM")
+    return int(fields[1]), int(fields[2]), i + 1   # one whitespace byte, then pixels
+
+
+def ppm(data):
+    """(width, height, pixel(x, y)) for a binary P6 screendump."""
+    w, h, i = ppm_offset(data)
+    return w, h, lambda x, y: data[i + 3 * (y * w + x):i + 3 * (y * w + x) + 3]
+
+
+def header_reaches_edge(data):
+    """Whether the view's header bar runs the full width of the display.
+
+    The header is the view's top row, painted in its own colour from the first
+    column to the last. The first version laid the view out on the console's
+    80-column grid, so on a wider framebuffer the bar stopped part-way and the
+    rest of the screen kept what the installer had drawn there (the
+    maintainer's report, 2026-09-25). Row 2 of the bar is sampled at its left
+    and right ends, where the header has only spaces."""
+    w, h, px = ppm(data)
+    left, right = px(1, 2), px(w - 2, 2)
+    return left == right, w, h, left, right
 
 
 def main():
@@ -125,6 +194,13 @@ def main():
                                   f"only {changed} bytes (blink {blink}, tolerance {tol})")
             print(f"KLOG_CONSOLE: Alt+F2 opened the view (screen moved {changed} bytes)",
                   flush=True)
+            full, w, h, left, right = header_reaches_edge(s_view)
+            if not full:
+                raise SessionFail(f"the kernel log view does not cover the display: its "
+                                  f"header is {left.hex()} at the left and {right.hex()} "
+                                  f"at the right edge of a {w}x{h} screen")
+            print(f"KLOG_CONSOLE: the view's header spans the whole {w}x{h} display",
+                  flush=True)
 
             # Whether there is anything to scroll is the guest's to say: the marker
             # carries the log's height and the screen's. A log that fits must NOT
@@ -157,11 +233,19 @@ def main():
             g.expect(CLOSED, a.timeout)
             time.sleep(1.5)
             s_after = shot(g, a.shots, "5-after-alt-f1.ppm")
-            restored = delta(s_idle, s_after)
+            # The console's grid, from the kernel's own line about it; the last
+            # one wins, as the console_server announces the layout it takes over.
+            g_all = GRID.findall(g.buf)
+            grid = None
+            if g_all:
+                cols, rows, cw, chh, sc, ox, oy = map(int, g_all[-1])
+                grid = (ox, oy, ox + cols * cw * sc, oy + rows * chh * sc)
+            restored = residue(s_idle, s_after, grid)
             if restored > tol:
                 raise SessionFail(f"Alt+F1 left the screen {restored} bytes away from "
                                   f"the console it replaced (blink {blink}, tolerance {tol})")
             print(f"KLOG_CONSOLE: Alt+F1 put the console back ({restored} bytes off, "
+                  f"{delta(s_idle, s_after)} counting pixels cleared to black; "
                   f"blink {blink})", flush=True)
 
             # ANY OTHER KEY IS IGNORED: it must neither close the view nor move

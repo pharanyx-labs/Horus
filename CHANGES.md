@@ -394,6 +394,14 @@ in this file.
 
 ### Added
 
+- **A program can be given the shared libc by the system itself, and only if it asks.** The
+  kernel loads the library from its boot module, init and the shell hold its code, and a program
+  whose image names `libc.so` inherits it when the shell starts it, with its own copy of the
+  library's data that no other program can see (`SECURITY.md` S106, `make smoke-shlib-inherit`).
+  Building it found that the library's data template was freed by the kernel's object collector
+  after the first program exited, and that a program which could not bind the library said
+  nothing at all; both are fixed, and the first now has a control arm.
+
 - **The website is eight pages instead of one, and it says Horus can be installed.** The single
   2,800-line page is now a home page and seven topic pages (Why Horus, Architecture, Trusted boot,
   Status, Testing, Limitations, Run it). Every page has a contents rail that follows your

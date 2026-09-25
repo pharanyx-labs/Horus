@@ -406,6 +406,16 @@ learns it only by presenting a capability over the library's own text (`SYS_SHLI
 residual cost is that one leak reveals it for every task rather than one, recorded in
 `docs/LIMITATIONS.md` §2.16. It is not yet a dynamic linker, §2.16 lists what it does not do.
 
+**Who holds it in the shipped system** (**S106**, `docs/design/shared-libc.md`). The kernel loads
+the library from the verified `lib/libc.so` boot module before init exists, and endows init with
+the text capabilities at `CAPSLOT_LIBC_FIRST` (128) onward. init grants them to the shell. A
+spawned child inherits derived copies only when its own image carries `DT_NEEDED "libc.so"` and
+its spawner holds the whole set; anything else is given nothing. The library's data is **not** a
+capability in this path: the kernel copies the template into fresh pages of the task's own
+address space at spawn and exec, so no capability names a task's copy, and the copy dies with the
+address space. The library's frames are roots of the object collector, because the template is
+named by no capability and would otherwise be freed when the first program exits.
+
 ### Untyped memory
 
 Kernel objects are not entries in fixed arrays. A `CAP_UNTYPED` names a region of physical

@@ -2412,10 +2412,15 @@ linker would be worse than one that says what it is.
 **One property is asserted more narrowly than it may read.** S50 gives each task a private copy
 of the library's writable segment; it does **not** give the library per-task storage in any
 richer sense. There is no TLS (`R_X86_64_TPOFF*` is refused with every other non-RELATIVE
-relocation), and a task's copy is instantiated once when the library is endowed to it; nothing
-re-initialises it, so a `fork` would need the copy-on-write path that ordinary user pages
-already take rather than a second instantiation. Neither is exercised by a test today, so
-neither is claimed.
+relocation).
+
+**A task that has bound the library cannot fork**, and that is a decision (D3 in
+`docs/design/shared-libc.md`, 2026-09-25), not an oversight. The library's text is mapped from
+frames in the untyped arena, and `clone_user_aspace` refuses a task with such a frame mapped,
+because a copy-on-write break of one would repoint a PTE at memory no capability names. The
+refusal fails closed: `SYS_FORK` returns an error and nothing is shared. None of the eleven
+coreutils forks, `tcc` does not, and the shell is not a libc program. Since 2026-09-25 the data
+is ordinary private memory (S106), so the text is the whole of what a fork would need taught.
 
 - **It resolves nothing by name.** A caller indexes a fixed export table whose address the
   loader takes from the object's `e_entry`. Symbol resolution, walking `.dynsym`, matching
@@ -2428,9 +2433,12 @@ neither is claimed.
   else, no undefined symbols.
 
 **The stub archive landed 2026-08-29** and a program links against it: `hello_shared`, ordinary
-C calling `printf` by name, carrying no libc: 106,392 bytes static against 13,088 shared. What
-remains is migrating the **shipped** programs, which needs the kernel to endow ordinary tasks
-with the library's capabilities.
+C calling `printf` by name, carrying no libc: 106,392 bytes static against 13,088 shared.
+**The kernel endows ordinary tasks since 2026-09-25** (S106): the library loads from its boot
+module, init and the shell hold the text, and a program whose image asks inherits it at spawn
+with data of its own. What remains is the ring-3 linker that resolves by name, the seal that
+makes its table read-only, and migrating the **shipped** programs (steps 2 to 4 of
+`docs/design/shared-libc.md`).
 
   **One part of it still needs a GOT, and the limit is now exact.** A tail-jump thunk forwards a
   *call*; a reference to a **variable** is an address the compiler emits directly, and redirecting
@@ -4677,7 +4685,7 @@ so neither was ever presented to a contributor. There was no code of conduct, an
 the IPC authorisation logic. All fixed as of 2026-07-27; the `require_code_owner_review`
 setting that would make `CODEOWNERS` binding is still off (§5.1).
 
-*(Repository hygiene itself is fine: `git ls-files` reports **467** tracked files with no build
+*(Repository hygiene itself is fine: `git ls-files` reports **470** tracked files with no build
 artefacts or vendored binaries: no `kernel.elf`, no `horus.iso`, no object files. A working
 checkout accumulates ~70 MB of untracked build output, which is correctly `.gitignore`d. This
 sentence said 243 until 2026-08-15 and **254 until 2026-09-20**, by which point the tree had

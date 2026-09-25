@@ -838,10 +838,17 @@ _Static_assert(__builtin_offsetof(struct elf_load_plan, max_va_end) == 8,   "pla
 _Static_assert(__builtin_offsetof(struct elf_load_plan, segs)       == 16,  "plan.segs offset");
 _Static_assert(__builtin_offsetof(struct elf_load_plan, nseg)       == 208, "plan.nseg offset");
 
+/* Whether the image try_elf_load last accepted asked for the shared libc
+ * (DT_NEEDED "libc.so"). Written only by try_elf_load and read only by
+ * load_staged_image_into, both inside the staging window (spawn_stage_acquire),
+ * so one load cannot see another's answer. */
+static int g_staged_wants_libc;
+
 int try_elf_load(uint64_t load_base, uint64_t *out_entry, uint64_t *out_img_end)
 {
     if (!out_entry) return -1;
     const uint8_t *st = loader_staging;
+    g_staged_wants_libc = 0;
 
     /* Parse+validate the ELF identity and program-header locator in safe Rust.
      * The staged image is fully attacker-controlled, so the header parse — the
@@ -883,6 +890,18 @@ int try_elf_load(uint64_t load_base, uint64_t *out_entry, uint64_t *out_img_end)
     uint64_t slide      = plan.slide;
     uint64_t max_va_end = plan.max_va_end;
     int      nseg       = (int)plan.nseg;
+
+    /* Does the image ask for the shared libc (docs/design/shared-libc.md §6)?
+     * Decided HERE, before a byte is copied, because the answer is an authority
+     * decision -- it is what a child inherits at spawn -- and an image that asks
+     * for any library other than exactly "libc.so" is refused outright rather
+     * than run with a dependency nothing will meet. Only a 64-bit image can: the
+     * i386 fixture is static by construction. */
+    if (ei_class == 2) {
+        int nl = rust_elf_x86_64_needs_libc(st, staged_bytes(), e_phoff, e_phnum);
+        if (nl < 0) return -16;
+        g_staged_wants_libc = nl;
+    }
 
     /* seg_va/seg_memsz/seg_flags feed the relocation pass and the W^X pass below,
      * exactly as the old in-loop recording did. */
@@ -1046,8 +1065,15 @@ int staged_elf_valid(uint64_t load_base) {
     if (hrc != 0) return hrc;
 
     struct elf_load_plan plan;
-    return rust_elf_build_load_plan(st, n, hdr.ei_class, hdr.e_phoff, hdr.e_phnum,
-                                    load_base, USER_AREA_BASE, USER_MAX_VADDR, &plan);
+    int prc = rust_elf_build_load_plan(st, n, hdr.ei_class, hdr.e_phoff, hdr.e_phnum,
+                                       load_base, USER_AREA_BASE, USER_MAX_VADDR, &plan);
+    if (prc != 0) return prc;
+    /* The same DT_NEEDED rule try_elf_load applies, so an exec into an image
+     * asking for another library is refused while the caller's old image is
+     * still intact, rather than after it is gone. */
+    if (hdr.ei_class == 2 && rust_elf_x86_64_needs_libc(st, n, hdr.e_phoff, hdr.e_phnum) < 0)
+        return -16;
+    return 0;
 }
 
 /* Load the currently-armed staged image into task `tid`'s (already-built)
@@ -1064,6 +1090,11 @@ int load_staged_image_into(int tid, uint64_t load_base) {
     uint64_t elf_img_end = 0;
     int elf_rc = try_elf_load(load_base, &elf_entry, &elf_img_end);
     int elf_loaded = (elf_rc == 0);
+    /* Every load rewrites both, so an exec never inherits the previous image's
+     * answer or the previous address space's data. A flat payload asks for
+     * nothing. shlib_endow_spawned / shlib_endow_exec act on them. */
+    tasks[tid].shlib_wanted = (uint8_t)(elf_loaded ? g_staged_wants_libc : 0);
+    tasks[tid].shlib_data   = 0;
 #ifdef NEWLIB_SELFTEST
     print("do_spawn: elf_rc="); print_hex((uint64_t)(uint32_t)elf_rc);
     print(" elf_entry="); print_hex(elf_entry); print("\n");

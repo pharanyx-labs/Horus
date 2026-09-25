@@ -3553,6 +3553,19 @@ jobs:
       # the same thing and prove nothing.
       - name: A program links against the shared libc and carries none of it
         run: make smoke-shlibc-link
+      # The shipped endowment (S106): the library from its boot module, handed
+      # out by inheritance to programs that ask and to nothing else, each with
+      # its own copy of the library's data across spawns and across an exec.
+      - name: Only a program that asks inherits the shared libc, with data of its own
+        run: make smoke-shlib-inherit
+      - name: Control arm — every child inherits the library, asked or not
+        run: make smoke-shlib-inherit-image-control
+      - name: Control arm — the library's data template mapped into every task
+        run: make smoke-shlib-inherit-data-control
+      - name: Control arm — an exec forgets the library's data
+        run: make smoke-shlib-inherit-exec-control
+      - name: Control arm — the library's frames collectable, the template freed
+        run: make smoke-shlib-inherit-pin-control
 
   fpu:
     name: "A task cannot read another's XMM register file"

@@ -34,8 +34,9 @@
 static unsigned slen(const char *s) { unsigned n = 0; while (s[n]) n++; return n; }
 static void wr(const char *s) { sys_write(1, s, slen(s)); }
 
-/* Must match LIBC_SLOT_FIRST in src/include/kernel.h. */
-#define SLOT_LIBC_FIRST 40
+/* The slot the kernel endows the library at: CAPSLOT_LIBC_FIRST, from the
+ * shared header rather than a second literal. */
+#define SLOT_LIBC_FIRST CAPSLOT_LIBC_FIRST
 
 /* The table the kernel put at the library's e_entry. Read-only and shared: it
  * holds pointers into shared text, so a per-task copy would be a table each

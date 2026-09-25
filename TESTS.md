@@ -2283,7 +2283,7 @@ three ways: a planted phrasing in a `.c` file is caught with file and line; the 
 phrasing inside a quotation stays exempt, so a comment can record the wrong thing while
 correcting it.
 
-`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 107 properties
+`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 108 properties
 name a witness that resolves to a make target or a CI job.
 
 | Rule | Rejects |
@@ -2600,6 +2600,53 @@ per-task); `environ` likewise, empty on both sides; `optarg`/`optind` **are** th
 no stub, so a program needing them fails to **link** rather than running with an `optind` that
 silently stops advancing.
 
+
+### `smoke-shlib-inherit`: only a program that asks is given the shared libc, with data of its own (S106)
+
+The shipped system's half of roadmap 2.5, step 1 of `docs/design/shared-libc.md`. A module
+build (`SHLIB_INHERIT_MODULES=1`) ships the library as the `lib/libc.so` boot module and three
+programs, and `tools/shlib_session.py` drives the **real** shell over serial. Nothing is endowed
+by the test: the kernel loads the library, init holds it, init grants the shell the text, and
+each program is spawned from `/bin` by the shell.
+
+| Step | Asserts |
+|---|---|
+| `shlibprobe` | A program linked the way the coreutils are today (newlib static, no `DT_NEEDED`) holds **no** library capability: `SYS_SHLIB_INFO` refuses it |
+| `shlibdata set` | The first program since boot to bind the library does, and sets errno to 4321 |
+| `shlibdata get` | The next program finds errno **0**: its copy of the library's data is its own |
+| `shlibdata exec` | Sets errno, then execs `shlibdata get`: the new image finds errno 0 |
+| `hello_shared` | An ordinary program (`printf`, `malloc`) runs, last |
+
+**Each arm must fail on the sentence that names its defect**, not merely fail:
+
+| Arm | Defect | Required |
+|---|---|---|
+| `-image-control` | `SHLIB_INHERIT_ANY_IMAGE=1`: every child inherits | `a program that never asked holds the library` |
+| `-data-control` | `SHLIB_DATA_TEMPLATE_SHARED=1`: the template in every task | `one program's library data reached the next` |
+| `-exec-control` | `SHLIB_EXEC_NO_DATA=1`: exec forgets the data | `the image after an exec could not bind the library` |
+| `-pin-control` | `SHLIB_TEMPLATE_UNPINNED=1`: the collector frees the template | `the library's data template is gone` |
+
+**Three defects were found building it, and two of them are what the arms now hold.**
+
+- **The slot range collided.** The library's capabilities were first placed at slot 40, the
+  self-tests' convention, which is also where init keeps its own retyped objects (40, 41, 42).
+  init's retypes overwrote its library pages, and it granted the shell a notification where page
+  2 belonged, so no program could inherit the set. The range is 128 to 191 now, which no slot
+  convention in the tree uses, and first-free allocation skips it.
+- **The data template was garbage.** No capability names it, so the object collector freed and
+  zeroed it when the first program to bind the library exited. The first program worked and every
+  later one could not bind. Latent since the self-test era, when copies were made at boot and never
+  again. The library's frames are collector roots now; `-pin-control` is that defect put back.
+- **A refused bind was silent.** crt0 reported it on fd 2, which `posix_init` creates, and which
+  therefore does not exist when the library it lives in has just failed to bind. Three different
+  failures all looked like a command that printed nothing. crt0 now says why, through the console
+  endpoint every spawned task is given, and the arms match on those reasons.
+
+**Why the data steps avoid stdio.** Under the shared-template arm, a previous program's stdio
+buffers and malloc arena are in the page the next one maps, so a `printf` follows a pointer into
+a dead heap and faults before reporting anything. The arm's defect would then look like a crash,
+and a crash is what the unpinned template looks like too. `shlibdata` reports with `write(2)` and
+a number formatted by hand, and `hello_shared`, which does use stdio, runs last.
 ### `smoke-shlibc`: a ring-3 task calls newlib out of the shared library
 
 Every other shlib gate demonstrates the **mechanism's properties** (text shared and unwritable

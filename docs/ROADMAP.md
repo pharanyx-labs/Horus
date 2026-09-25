@@ -1164,9 +1164,13 @@ and a `crt0_shared` that binds the library before `main`.
 *before* booting that every libc symbol the program defines is a 14-byte thunk rather than an
 implementation, a statically-linked build would print the same thing and prove nothing.
 
-**Still open:** the shipped programs. `hello_shared` is the witness; migrating the eleven
-coreutils needs the kernel to endow ordinary tasks with the library's capabilities, which is an
-authority change and gets its own commit. Three of them (`echo`, `true`, `false`) were measured
+**The kernel endows ordinary tasks as of 2026-09-25** (**S106**, `make smoke-shlib-inherit`):
+the library loads from the verified `lib/libc.so` boot module, init and the shell hold its text,
+and a program whose image asks (`DT_NEEDED "libc.so"`) inherits it at spawn with its own copy
+of the library's data, mapped by the kernel and named by no capability.
+
+**Still open:** the shipped programs. Migrating the eleven coreutils needs the ring-3 linker and
+the seal (steps 2 and 3). Three of them (`echo`, `true`, `false`) were measured
 to need only `_impure_ptr` among data symbols, so they can move as they are; the rest use
 `getopt`, and `optarg`/`optind` are the blocker below. Calling into shared text needs only a
 stub per function, but a program's direct reference to a **data** symbol cannot be redirected to
@@ -1839,7 +1843,7 @@ table already has the four columns a registry needs (id, statement, enforcing co
 the table *is* the registry. A hand-maintained parallel manifest would be a second copy of
 claims that already exist, which is **[H-3]**'s shape: two descriptions of one thing, drifting.
 The manifest that remains (`.github/invariants.yml`) holds exemptions only, and today it is
-**empty**, all 107 properties name a witness that resolves.
+**empty**, all 108 properties name a witness that resolves.
 
 **What the survey found on the way.** **S16** had no witness at all, an em-dash against
 `fpu_save`/`fpu_restore`, real code called on every ring transition and exercised by nothing.
@@ -1878,7 +1882,7 @@ past it.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue`, §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 412 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 214 of them control arms that must reproduce a defect |
+| ✅ | 417 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 218 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

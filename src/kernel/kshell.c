@@ -401,6 +401,10 @@ void spawn_initial_userspace_init(void) {
     uint32_t h_entry = hdr_.entry;
     uint32_t h_size  = hdr_.size;
     if (hrc_ != 0) return;
+    /* The shared libc, before the first task that could hold it exists: a
+     * verified /lib/libc.so boot module, or nothing (docs/design/shared-libc.md
+     * §3). */
+    shlib_boot_load();
     /* Staged by hand rather than through arm_named_binary, so the bracket goes
      * on by hand too: everything from the first write into loader_staging to the
      * spawn that consumes it is one window (roadmap 1.7). This one runs at boot
@@ -450,6 +454,13 @@ void spawn_initial_userspace_init(void) {
          * also carried the authority to rotate the audit chain's keys and read
          * the log, neither of which the shell ever used. */
         cap_install_from_root(pid, CAPSLOT_DEBUG, 18, 0);        /* root[18] = CAP_DEBUG */
+        /* The shared libc's TEXT (root[20], READ|EXEC, never WRITE: S49), one
+         * capability per page, if a library was loaded. init never binds it; it
+         * holds it to delegate to the shell, the one task that starts programs,
+         * and every other holder's copy descends from this one. No data: that is
+         * a task's own memory, mapped at spawn, never granted. */
+        if (shlib_endow_holder(pid) != 0)
+            print("shlib: init could not be given the library; no program can bind it\n");
         /* CAP_IO_DEVICE (root[10]): init delegates this to the console_server it
          * launches (userspace/init.c), so that server can own the console hardware
          * (SYS_MAP_PHYS / SYS_IOPORT_GRANT). No other task is given a copy.

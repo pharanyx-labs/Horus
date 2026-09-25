@@ -599,6 +599,36 @@ static int launch_shell(void) {
         report("init: WARN could not register the shell as the console input owner; "
                "password entry will be refused\n");
 
+    /* THE SHARED LIBC'S TEXT, and only the text (docs/design/shared-libc.md,
+     * D4). The shell is freestanding, so its own image never asks for the
+     * library, and inheritance alone would never give it a copy to pass on to
+     * the programs it starts. So init grants it explicitly, as it grants the
+     * console: one READ|EXEC capability per text page, in the same slots, each a
+     * derived copy of init's, so revoking init's sweeps the shell's and every
+     * program's after it. The shell never binds the library, and it is given no
+     * data: that is each program's own memory, mapped by the kernel at spawn.
+     *
+     * No library (a boot with no /lib/libc.so module) is not an error: init
+     * holds nothing, SYS_SHLIB_INFO refuses, and there is nothing to grant. A
+     * grant that FAILS is reported and not fatal, for the reason the console
+     * owner above is not: the cost is programs that cannot bind the library,
+     * each of which says so, and that is no reason to leave the machine without
+     * a shell. */
+    {
+        struct shlib_info li;
+        if (sys_shlib_info(CAPSLOT_LIBC_FIRST, &li) == 0) {
+            for (uint32_t p = 0; p < li.pages; p++) {
+                if (li.data_first != SHLIB_INFO_NO_DATA &&
+                    p >= li.data_first && p < li.data_first + li.data_pages)
+                    continue;
+                if (sys_cap_grant(sh, CAPSLOT_LIBC_FIRST + p, CAPSLOT_LIBC_FIRST + p) != 0) {
+                    report("init: WARN could not give the shell the shared libc\n");
+                    break;
+                }
+            }
+        }
+    }
+
     /* The shell's console capability is granted above; resuming only now is what
      * guarantees it can never start writing before it holds one. That race is
      * what made the shell come up silent under SMP and time out CI. */

@@ -1575,6 +1575,42 @@ int user_map_frame_page(uint32_t task_id, uint64_t vaddr, uint64_t phys,
     return 0;
 }
 
+/* Map a fresh PRIVATE copy of the kernel-readable page `src` at `vaddr` in task
+ * `task_id`, READ|WRITE and never EXEC. The shared libc's writable pages
+ * (docs/design/shared-libc.md §5), and nothing else.
+ *
+ * WHY A COPY FROM THE USER POOL, AND NOT A FRAME. The page is this address
+ * space's own memory, exactly like the image's .data: allocated here, counted by
+ * the same reference that user_leaf_release drops, and freed with the address
+ * space. No capability names it, so no path can hand it to a second task; the
+ * alternative, a named frame per task, ran out of names (MAX_DYN_FRAMES) before
+ * it ran out of tasks.
+ *
+ * Refuses a present PTE, for the reason user_map_frame_page does: replacing a
+ * live mapping would drop its reference without releasing it. Returns 0, or -1
+ * with nothing mapped and the page back in the pool. The caller flushes nothing:
+ * the target is a task that has not run on this address space yet. */
+int user_map_private_copy(uint32_t task_id, uint64_t vaddr, const uint8_t *src) {
+    if (task_id >= (uint32_t)g_max_tasks || !src) return -1;
+    uint64_t pml4_phys = tasks[task_id].cr3;
+    if (pml4_phys == 0) return -1;
+    uint64_t phys = alloc_user_physical_page();
+    if (phys == 0) return -1;
+    uint8_t *pg = (uint8_t *)PHYS_KVA(phys);
+    for (int b = 0; b < PAGE_SIZE; b++) pg[b] = src[b];
+
+    spin_lock(&page_lock);
+    uint64_t *slot = user_pte_slot((uint64_t *)PHYS_KVA(pml4_phys), vaddr);
+    if (!slot || (*slot & PAGE_PRESENT)) {
+        spin_unlock(&page_lock);
+        free_user_physical_page(phys);
+        return -1;
+    }
+    *slot = phys | PAGE_PRESENT | PAGE_USER | PAGE_WRITE | PAGE_NX;
+    spin_unlock(&page_lock);
+    return 0;
+}
+
 /* Tear down a frame mapping the caller installed. `expect_phys` is the frame the
  * caller's capability names; the PTE must currently point at exactly that.
  *

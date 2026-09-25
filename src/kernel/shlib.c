@@ -405,3 +405,160 @@ int shlib_owns_frame(uint32_t idx) {
  * is the dynamic linker this file is the substrate for, and pretending to have
  * one would be the harder claim without the harder implementation. */
 uint64_t shlib_entry(void) { return shlib_entry_table ? shlib_entry_table : shlib_load_base; }
+
+/* ---- The shipped endowment (docs/design/shared-libc.md §3 to §5), S106 -----
+ *
+ * Everything above is the MECHANISM, and until 2026-09-25 only the self-tests
+ * used it. What follows is who gets the library in the shipped system:
+ *
+ *   - the kernel loads the verified /lib/libc.so boot module once, before init;
+ *   - init is endowed with the text capabilities at boot, and grants them to the
+ *     shell (userspace/init.c), which is the one task that starts programs;
+ *   - a spawned child inherits them from its spawner IF AND ONLY IF its own image
+ *     asks (DT_NEEDED "libc.so", recorded by the loader in shlib_wanted) and the
+ *     spawner holds the whole set;
+ *   - a task whose image asks, and that holds the text, gets a private copy of
+ *     the library's writable pages in its address space, at spawn and at exec.
+ *
+ * The text is authority (a CAP_FRAME, READ|EXEC, never WRITE: S49), so it moves
+ * by capability and by nothing else. The data is not authority, it is this
+ * task's own memory (S50 by construction: each address space has its own pages
+ * and nothing names them), so it is mapped, not granted. */
+
+static int module_name_is(const char *a, const char *b) {
+    while (*a && *a == *b) { a++; b++; }
+    return *a == 0 && *b == 0;
+}
+
+/* Load the library from the boot module named lib/libc.so (provisioned at
+ * /lib/libc.so), if there is one.
+ *
+ * VERIFIED MODULES ONLY. boot_module_verify_all has already matched every module
+ * against the SHA-256 manifest inside the measured kernel image (S92), so a
+ * module that did not match is not a library this kernel was built to run, and
+ * it is skipped exactly as SYS_BOOT_MODULE_READ would refuse it. With no module
+ * there is no library: nothing is endowed, and a program that asks for it fails
+ * its bind with a message. Only those programs stop.
+ *
+ * A second call is a no-op, so a self-test build that loaded its own object
+ * first keeps it. */
+void shlib_boot_load(void) {
+    if (shlib_ready) return;
+    for (uint32_t i = 0; i < boot_module_count(); i++) {
+        const struct boot_module *m = boot_module_get(i);
+        if (!m || !m->verified || !module_name_is(m->name, "lib/libc.so")) continue;
+        if (m->end <= m->start) return;
+        if (shlib_init((const uint8_t *)PHYS_KVA(m->start), m->end - m->start) != 0)
+            print("shlib: /lib/libc.so refused by the loader; no program can bind it\n");
+        return;
+    }
+}
+
+/* Give `pid` the library's text capabilities from root[20], one per text page,
+ * at the page's own slot. Used for init, at boot, and for nothing else: every
+ * other holder's copy descends from init's, so revoking init's sweeps them all.
+ * Returns 0, or -1 if a page could not be installed. */
+int shlib_endow_holder(int pid) {
+    if (!shlib_ready) return 0;
+    for (uint32_t p = 0; p < shlib_text_count; p++) {
+        if (shlib_page_w[p]) continue;
+        if (cap_install_from_root(pid, LIBC_SLOT_FIRST + p, 20, shlib_text_frames[p]) != 0)
+            return -1;
+    }
+    return 0;
+}
+
+/* Does the CURRENT task hold every text page's capability, carrying READ and
+ * EXEC and naming that page's own frame?
+ *
+ * The OBJECT is checked, not only the type and the slot: a slot number is a
+ * convention, and a task that parked some other frame capability at slot 40 has
+ * not been given the library. All or nothing, because a spawner with part of
+ * the set would pass on a library its child faults inside. */
+static int shlib_text_held_by_current(void) {
+    if (!shlib_ready) return 0;
+    for (uint32_t p = 0; p < shlib_text_count; p++) {
+        if (shlib_page_w[p]) continue;
+        struct capability *c = cap_lookup(LIBC_SLOT_FIRST + p, CAP_FRAME,
+                                          CAP_RIGHT_READ | CAP_RIGHT_EXEC);
+        if (!c || (uint32_t)c->object != shlib_text_frames[p]) return 0;
+    }
+    return 1;
+}
+
+/* Map task `task`'s private copy of every writable page, copied from the
+ * relocated template. The template is never mapped by anyone (S50); a copy is
+ * made from it once per address space, so a task sees the library's
+ * initialisers and never another task's writes. */
+static int shlib_map_private_data(int task) {
+    for (uint32_t p = 0; p < shlib_text_count; p++) {
+        if (!shlib_page_w[p]) continue;
+        uint64_t phys = frame_phys_by_index(shlib_text_frames[p]);
+        if (!phys) return -1;
+        uint64_t va = shlib_load_base + (uint64_t)p * PAGE_SIZE;
+#ifndef SHLIB_DATA_TEMPLATE_SHARED
+        if (user_map_private_copy((uint32_t)task, va, (const uint8_t *)PHYS_KVA(phys)) != 0)
+            return -1;
+#else
+        /* CONTROL ARM -- never ship. The TEMPLATE mapped writable into every
+         * task instead of a copy: one program's errno, stdio buffers and heap
+         * state become the next program's starting state, and two running at
+         * once share them. See make smoke-shlib-inherit-data-control. */
+        if (user_map_frame_page((uint32_t)task, va, phys,
+                                CAP_RIGHT_READ | CAP_RIGHT_WRITE) != 0)
+            return -1;
+#endif
+    }
+    tasks[task].shlib_data = 1;
+    return 0;
+}
+
+/* After a spawn: `child` was just created by the CURRENT task. If the child's
+ * image asked for the library and the spawner holds the whole text set, give
+ * the child derived copies of it (so revoking the spawner's sweeps the child's)
+ * and its own private data. Otherwise give it nothing at all.
+ *
+ * Nothing here can leave the child half-endowed in a way it would run with: a
+ * failed grant or map leaves shlib_data clear, and crt0 refuses to bind a
+ * library whose data the kernel did not map, with a message, before main. The
+ * child is still suspended (spawn never publishes it runnable), so no failure
+ * here is observable as a race. */
+void shlib_endow_spawned(int child) {
+    if (!shlib_ready || child <= 0 || child >= g_max_tasks) return;
+    tasks[child].shlib_data = 0;
+#ifndef SHLIB_INHERIT_ANY_IMAGE
+    if (!tasks[child].shlib_wanted) return;
+#else
+    /* CONTROL ARM -- never ship. The image is not consulted: every child of a
+     * holder inherits the library, so authority spreads to tasks that never
+     * asked for it -- the widening D1 in docs/design/shared-libc.md rules out.
+     * See make smoke-shlib-inherit-image-control. */
+#endif
+    if (!shlib_text_held_by_current()) return;
+    for (uint32_t p = 0; p < shlib_text_count; p++) {
+        if (shlib_page_w[p]) continue;
+        if (!cap_grant_into(child, LIBC_SLOT_FIRST + p, LIBC_SLOT_FIRST + p,
+                            CAP_RIGHT_READ | CAP_RIGHT_EXEC))
+            return;
+    }
+    if (tasks[child].shlib_wanted) (void)shlib_map_private_data(child);
+}
+
+/* After an exec: `task` (the CURRENT task) has a new image in a new address
+ * space and the same cspace (S42). Its old private data went with the old
+ * address space, so the new image starts from the template again (D5). An image
+ * that asks gets fresh data only if the task still holds the text; one that
+ * does not ask gets none. */
+void shlib_endow_exec(int task) {
+    if (task <= 0 || task >= g_max_tasks) return;
+    tasks[task].shlib_data = 0;
+    if (!shlib_ready || !tasks[task].shlib_wanted) return;
+#ifndef SHLIB_EXEC_NO_DATA
+    if (!shlib_text_held_by_current()) return;
+    (void)shlib_map_private_data(task);
+#else
+    /* CONTROL ARM -- never ship. Exec forgets the library's data: the new image
+     * asks for the library, holds the text, and finds no data, so its bind is
+     * refused. See make smoke-shlib-inherit-exec-control. */
+#endif
+}

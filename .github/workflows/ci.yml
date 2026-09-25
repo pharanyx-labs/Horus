@@ -3574,6 +3574,16 @@ jobs:
         run: make smoke-mem-seal-write-control
       - name: Control arm — a seal that reaches outside the image
         run: make smoke-mem-seal-window-control
+      # The ring-3 linker (S108): programs linked against the library by name,
+      # resolved and sealed before main, and refused when they cannot be.
+      - name: A linked program is resolved by name and sealed, or refused before main
+        run: make smoke-shlib-link
+      - name: Control arm — the library's table hash not compared
+        run: make smoke-shlib-link-abi-control
+      - name: Control arm — an unknown name resolved to zero
+        run: make smoke-shlib-link-unknown-control
+      - name: Control arm — the resolved table left writable
+        run: make smoke-shlib-link-seal-control
 
   fpu:
     name: "A task cannot read another's XMM register file"

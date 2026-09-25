@@ -416,6 +416,14 @@ address space at spawn and exec, so no capability names a task's copy, and the c
 address space. The library's frames are roots of the object collector, because the template is
 named by no capability and would otherwise be freed when the first program exits.
 
+**A program links against it by name** (**S108**). The library's export table carries a name for
+every entry and a hash of the names, kinds and order. A program is linked against a stub with the
+same names and soname, so its library references are GOT slots, which the kernel's loader leaves
+unresolved for an image that asked (and only those). Before `main`, crt0's linker maps the text,
+refuses a library whose hash differs, resolves each slot by name or refuses the program, and seals
+the slots with `SYS_MEM_SEAL` (**S107**). No relocation parsing was added to ring 0: the loader
+only declines entries it would otherwise have refused.
+
 ### Untyped memory
 
 Kernel objects are not entries in fixed arrays. A `CAP_UNTYPED` names a region of physical

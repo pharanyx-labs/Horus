@@ -72,6 +72,8 @@ userspace/shlib_offsets.h
 # shlibdemo.so hazard fixed in #236.
 userspace/libc_exports.c
 userspace/libc_exports.h
+# The link stub's source, generated beside them (docs/design/shared-libc.md §8).
+userspace/libc_exports_link.c
 # Generated from libc_exports.c by tools/gen_libc_stubs.sh.
 userspace/libc_stubs.S
 # Generator scratch. Belt and braces behind the traps in tools/gen_*.sh: five

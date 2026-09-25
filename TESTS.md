@@ -2283,7 +2283,7 @@ three ways: a planted phrasing in a `.c` file is caught with file and line; the 
 phrasing inside a quotation stays exempt, so a comment can record the wrong thing while
 correcting it.
 
-`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 109 properties
+`.github/invariants.yml` holds exemptions only, and is currently **empty**: all 110 properties
 name a witness that resolves to a make target or a CI job.
 
 | Rule | Rejects |
@@ -2678,6 +2678,35 @@ own stack (`force_align_arg_pointer`).
 copy-on-write after a fork, and a task whose pages are sealed is a task the refusal stops from
 forking, so no present path produces a sealed COW page to test. They are backstops for a route
 that does not exist yet, and are not claimed as witnessed.
+
+### `smoke-shlib-link`: a linked program is resolved by name and sealed, or refused before main (S108)
+
+Step 3 of `docs/design/shared-libc.md`: the ring-3 linker. A module build (`DYNLINK_MODULES=1`)
+ships three programs linked against `userspace/libc_link.so`, the stub that carries every
+exported name, and `tools/dynlink_session.py` drives them through the real shell.
+
+| Step | Asserts |
+|---|---|
+| `hello_dyn -n horus a b` | `getopt_long` in the library sets `optarg` and `optind`, and the program reads `name=horus optind=3`: library DATA reached through a GOT slot, the thing the stub archive could never share |
+| `hello_dyn seal` | A write to its own resolved table faults |
+| `dyncanary` | References `__horus_link_canary`, which only the link stub has: refused before main, naming it |
+| `dynstale` | Built with the linker expecting another table's hash: refused before main |
+
+| Arm | Defect | Required |
+|---|---|---|
+| `-abi-control` | `DYNLINK_ABI_UNCHECKED=1` | `a program ran against a library it was not built for` |
+| `-unknown-control` | `DYNLINK_UNKNOWN_ZERO=1` | `a program ran with a name the library does not export` |
+| `-seal-control` | `DYNLINK_NO_SEAL=1` | `the resolved table took a write` |
+
+**Why a link stub.** newlib is built `-fvisibility=hidden`, so the real `libc.so` exports almost
+nothing by name and a program cannot be linked against it. The stub is generated with the table
+(`tools/gen_libc_exports.sh`), every name at default visibility, soname `libc.so`; it is never
+loaded. One extra name, the canary, is how an unknown name is tested without hand-editing an ELF.
+
+**Why `-mno-direct-extern-access`.** Without it GCC reaches extern data PC-relative, assuming it
+lives in the executable, and a reference to `optind` from code becomes a text relocation. The
+loader refuses those (they are neither the kernel's nor deferred), which fails closed, but the
+program would never run. With it, every library data reference is a GOT slot.
 ### `smoke-shlibc`: a ring-3 task calls newlib out of the shared library
 
 Every other shlib gate demonstrates the **mechanism's properties** (text shared and unwritable

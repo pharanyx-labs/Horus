@@ -394,6 +394,13 @@ in this file.
 
 ### Added
 
+- **A program can be linked against the shared libc like any other library.** Its references
+  to the library are resolved by name when it starts, checked against the version of the library
+  it was built for, and made read-only before `main`; a program built against a different library,
+  or naming something the library does not have, is refused with the reason (`SECURITY.md` S108,
+  `make smoke-shlib-link`). `getopt`'s `optarg` and `optind`, which could not be shared before,
+  now are.
+
 - **A program can be given the shared libc by the system itself, and only if it asks.** The
   kernel loads the library from its boot module, init and the shell hold its code, and a program
   whose image names `libc.so` inherits it when the shell starts it, with its own copy of the

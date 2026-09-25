@@ -3208,6 +3208,13 @@ int  rust_elf_x86_64_reloc_locate(const uint8_t *buf, size_t buf_len, uint32_t e
 int  rust_elf_x86_64_needs_libc(const uint8_t *buf, size_t buf_len, uint32_t e_phoff,
                                 uint16_t e_phnum);
 
+/* Is RELA entry `k` left for the ring-3 linker? 1: R_X86_64_64, GLOB_DAT or
+ * JUMP_SLOT against an undefined symbol; 0: no; -16: malformed. The loader asks
+ * only for an image that asked for the shared libc (docs/design/shared-libc.md
+ * §7). */
+int  rust_elf_x86_64_reloc_deferred(const uint8_t *buf, size_t buf_len,
+                                    uint64_t rela_file_off, uint64_t sym_file_off, uint64_t k);
+
 /* Validate RELA entry `k` and compute the (target, value) to write. Returns 0
  * (write *out_value at *out_target), 1 (skip — R_X86_64_NONE), or -16 (reject).
  * Because x86-64 relocations are a pure write, Rust computes the value (RELATIVE:

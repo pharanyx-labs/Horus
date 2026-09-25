@@ -2707,6 +2707,25 @@ loaded. One extra name, the canary, is how an unknown name is tested without han
 lives in the executable, and a reference to `optind` from code becomes a text relocation. The
 loader refuses those (they are neither the kernel's nor deferred), which fails closed, but the
 program would never run. With it, every library data reference is a GOT slot.
+
+### `smoke-coreutils-shared`: the shipped programs carry no libc of their own
+
+Step 4 of `docs/design/shared-libc.md`. A `COREUTILS_MODULES=1 TCC_MODULE=1` build; before the
+boot, every shipped coreutil and `tcc` must record `DT_NEEDED "libc.so"` and import `posix_init`
+through a GOT slot (crt0 calls it in every program, and an image with its own libc defines it
+instead). The sizes are printed. Then the modules and tcc sessions run them through the real
+shell. **The image check is the property**: a statically linked utility runs exactly as well, so
+the arm, `COREUTILS_STATIC_LIBC=1`, must fail on `carries its own libc` and not on a session.
+
+Measured when it landed, stripped as shipped: the eleven coreutils went from **1,218,628 to 281,084 bytes**, `tcc` from **394,668 to 238,716**, and the library ships once at **208,448** (stripped): 1,613,296 bytes of programs became 728,248 including the library.
+
+**Three things were found moving them.** The coreutils reached `optind` and `_impure_ptr`
+PC-relative from code, a text relocation the loader refuses, until they were compiled
+`-mno-direct-extern-access`. `tcc`'s objects were not built before the export table was
+generated, because a prerequisite list expands when its rule is read and `TCC_OBJS` was defined
+below it; the generator's `nm` skipped the missing files in silence and the table lacked every
+name `tcc` needs. And `time()` pulled `gettimeofday` into the library with nothing to satisfy it,
+which the shared-objects check refuses; it now refuses honestly, since there is no wall clock.
 ### `smoke-shlibc`: a ring-3 task calls newlib out of the shared library
 
 Every other shlib gate demonstrates the **mechanism's properties** (text shared and unwritable

@@ -3584,6 +3584,11 @@ jobs:
         run: make smoke-shlib-link-unknown-control
       - name: Control arm — the resolved table left writable
         run: make smoke-shlib-link-seal-control
+      # The shipped programs carry no libc: every coreutil and tcc link the library.
+      - name: The shipped coreutils and tcc carry no libc of their own, and run
+        run: make smoke-coreutils-shared
+      - name: Control arm — the coreutils linked with newlib inside them
+        run: make smoke-coreutils-shared-control
 
   fpu:
     name: "A task cannot read another's XMM register file"

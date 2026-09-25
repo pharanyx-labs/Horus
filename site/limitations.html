@@ -1000,20 +1000,47 @@
 
 <footer class="foot">
   <div class="foot__in">
-    <div class="foot__brand">
-      <p><strong>Horus</strong> is a capability-based microkernel for x86-64, MIT licensed, by Pharanyx Labs.</p>
-      <p>Research-grade: not audited, and not for anything you cannot afford to lose.</p>
+    <div class="foot__about">
+      <a class="brand" href="index.html">
+      <svg class="brand__mark" width="28" height="28" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+          <g fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4.5 7.6C10 4.2 19 4 27.5 6.8"/>
+            <path d="M4.5 14.2C9 9.6 15 8.6 20.5 9.8C23.4 10.5 25.8 12 28.5 13.4"/>
+            <path d="M4.5 14.2C9 17.8 15.5 18.4 22.5 14.4"/>
+            <path d="M11.2 17.8L10.8 27.4"/>
+            <path d="M18 17.2C18.6 22.6 21 26.4 24.6 26.4C27 26.4 28.2 24.6 27.7 23C27.2 21.4 25.3 20.9 24 21.9"/>
+          </g>
+          <circle cx="14.2" cy="12.9" r="3.6" fill="currentColor"/>
+        </svg>
+      <span>Horus</span>
+    </a>
+      <p>A capability-based microkernel for x86-64, where every privileged action needs a token the program was handed.</p>
     </div>
-    <nav class="foot__links" aria-label="Documents in the repository">
-      <p>In the repository</p>
-      <a href="https://github.com/pharanyx-labs/Horus">Source</a>
-      <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/ARCHITECTURE.md">Architecture</a>
-      <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/SYSCALLS.md">System calls</a>
+    <nav class="foot__col" aria-label="Pages on this site">
+      <p class="foot__head">On this site</p>
+      <a href="index.html">Home</a>
+        <a href="why.html">Why Horus</a>
+        <a href="architecture.html">Architecture</a>
+        <a href="boot.html">Trusted boot</a>
+        <a href="status.html">Status</a>
+        <a href="testing.html">Testing</a>
+        <a href="limitations.html" aria-current="page">Limitations</a>
+        <a href="run.html">Run it</a>
+    </nav>
+    <nav class="foot__col" aria-label="Documents in the repository">
+      <p class="foot__head">In the repository</p>
+      <a href="https://github.com/pharanyx-labs/Horus">Source code on GitHub</a>
+      <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/ARCHITECTURE.md">Architecture document</a>
+      <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/SYSCALLS.md">System call reference</a>
       <a href="https://github.com/pharanyx-labs/Horus/blob/main/SECURITY.md">Security properties</a>
-      <a href="https://github.com/pharanyx-labs/Horus/blob/main/TESTS.md">Tests</a>
-      <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/LIMITATIONS.md">Limitations</a>
+      <a href="https://github.com/pharanyx-labs/Horus/blob/main/TESTS.md">Test catalogue</a>
+      <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/LIMITATIONS.md">Limitations register</a>
       <a href="https://github.com/pharanyx-labs/Horus/blob/main/CHANGES.md">Changelog</a>
     </nav>
+  </div>
+  <div class="foot__base">
+    <p>MIT licence. Copyright 2026 Pharanyx Labs.</p>
+    <p>Research-grade and not independently audited.</p>
   </div>
 </footer>
 

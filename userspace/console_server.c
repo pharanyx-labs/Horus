@@ -146,16 +146,14 @@ static const uint32_t fb_pal[16] = {
 /* Paint one cell. Bounds-checked against the real geometry rather than the grid:
  * the grid is what this server believes and the geometry is what the hardware
  * has, and a mismatch must clip rather than scribble past the mapping. */
-static void fb_paint(unsigned idx, uint16_t cell) {
-    if (!fbp || idx >= 80u * fb_rows) return;
+/* One glyph with its top-left corner at pixel (px0, py0). The console's cells
+ * and the Alt+F2 view, which is laid out over the whole display rather than the
+ * 80-column grid, both draw through here. */
+static void fb_paint_px(uint32_t px0, uint32_t py0, uint16_t cell) {
+    if (!fbp) return;
     uint8_t ch = (uint8_t)(cell & 0xFF), attr = (uint8_t)(cell >> 8);
     uint32_t fg = fb_pal[attr & 0x0F], bg = fb_pal[(attr >> 4) & 0x07];
-
     uint32_t cw = FB_CELL_W * fb_scale, chh = FB_CELL_H * fb_scale;
-    const unsigned row = idx / 80u;
-    const uint32_t ox = (surf_on && !fb_plain && row >= surf_top()
-                         && row < surf_top() + surf_rows()) ? fb_cx : fb_ox;
-    uint32_t px0 = ox + (idx % 80u) * cw, py0 = fb_oy + row * chh;
     if (px0 + cw > fb_w || py0 + chh > fb_h) return;
 
     const uint8_t *g = &font_8x16[ch][0];
@@ -167,6 +165,15 @@ static void fb_paint(unsigned idx, uint16_t cell) {
             fb_store(row + (uint64_t)rx * fb_bypp,
                      (bits & (0x80u >> (rx / fb_scale))) ? fg : bg);
     }
+}
+
+static void fb_paint(unsigned idx, uint16_t cell) {
+    if (!fbp || idx >= 80u * fb_rows) return;
+    uint32_t cw = FB_CELL_W * fb_scale, chh = FB_CELL_H * fb_scale;
+    const unsigned row = idx / 80u;
+    const uint32_t ox = (surf_on && !fb_plain && row >= surf_top()
+                         && row < surf_top() + surf_rows()) ? fb_cx : fb_ox;
+    fb_paint_px(ox + (idx % 80u) * cw, fb_oy + row * chh, cell);
 }
 
 /* The shadow buffer's cell, drawn. fb_paint takes the cell as an argument so that
@@ -743,23 +750,49 @@ static void klog_fetch(void) {
 
 /* One cell of the view, drawn straight to the display. Never fb_cells: that is
  * the console's, and leaving the view repaints it. */
+/* THE VIEW USES THE WHOLE DISPLAY (the maintainer's request, 2026-09-25). The
+ * console's grid is 80 columns, and the first version drew the log into those
+ * alone, so on a 1366-pixel panel the right of the screen kept whatever the
+ * installer had left there. On a framebuffer the view is laid out over every
+ * column and row the display has (170 x 48 on that panel), capped so a line's
+ * width still fits the wrap arithmetic; text mode stays 80 columns. */
+static unsigned klog_cols(void) {
+#ifdef KLOG_NARROW
+    return 80u;                     /* defect: the console's grid, not the display */
+#endif
+    if (!fbp) return 80u;
+    unsigned c = fb_w / (FB_CELL_W * fb_scale);
+    return c > 250u ? 250u : (c < 80u ? 80u : c);
+}
+static unsigned klog_rows(void) {
+#ifdef KLOG_NARROW
+    return cell_rows();
+#endif
+    return fbp ? fb_h / (FB_CELL_H * fb_scale) : cell_rows();
+}
+
 static void klog_cell(unsigned row, unsigned col, char ch, uint8_t attr) {
     uint16_t cell = (uint16_t)((attr << 8) | (uint8_t)ch);
-    unsigned idx = row * 80u + col;
-    if (fbp) fb_paint(idx, cell);
-    else if (idx < VGA_CELLS) vga[idx] = cell;
+    if (fbp) {
+        fb_paint_px(col * FB_CELL_W * fb_scale, row * FB_CELL_H * fb_scale, cell);
+    } else {
+        unsigned idx = row * 80u + col;
+        if (col < 80u && idx < VGA_CELLS) vga[idx] = cell;
+    }
 }
 
 static void klog_text(unsigned row, unsigned col, const char *t, uint8_t attr) {
-    while (*t && col < 80u) klog_cell(row, col++, *t++, attr);
+    const unsigned cols = klog_cols();
+    while (*t && col < cols) klog_cell(row, col++, *t++, attr);
 }
 
-/* How many screen rows the log takes, a line wider than 80 columns wrapping. */
+/* How many screen rows the log takes, a line wider than the view wrapping. */
 static unsigned klog_total_rows(void) {
+    const unsigned cols = klog_cols();
     unsigned rows = 0, w = 0;
     for (unsigned i = 0; i < klog_len; i++) {
         if (klog_buf[i] == '\n') { rows++; w = 0; continue; }
-        if (w == 80u) { rows++; w = 0; }
+        if (w == cols) { rows++; w = 0; }
         w++;
     }
     if (w) rows++;
@@ -767,7 +800,7 @@ static unsigned klog_total_rows(void) {
 }
 
 static void klog_draw(void) {
-    const unsigned rows = cell_rows();
+    const unsigned rows = klog_rows(), cols = klog_cols();
     if (rows < 2) return;
     const unsigned body = rows - 1;
     const unsigned total = klog_total_rows();
@@ -775,13 +808,13 @@ static void klog_draw(void) {
     if (klog_scroll > most) klog_scroll = most;
     const unsigned first = most - klog_scroll;   /* first log row on screen */
 
-    for (unsigned c = 0; c < 80u; c++) klog_cell(0, c, ' ', KLOG_HEAD);
+    for (unsigned c = 0; c < cols; c++) klog_cell(0, c, ' ', KLOG_HEAD);
     klog_text(0, 1, klog_scroll ? "KERNEL LOG (scrolled back)" : "KERNEL LOG",
               KLOG_HEAD);
     klog_text(0, 30, "Alt+F1 back  Shift+PgUp/PgDn  Up/Down", KLOG_HEAD);
 
     for (unsigned r = 1; r < rows; r++)
-        for (unsigned c = 0; c < 80u; c++) klog_cell(r, c, ' ', KLOG_ATTR);
+        for (unsigned c = 0; c < cols; c++) klog_cell(r, c, ' ', KLOG_ATTR);
 
     if (klog_err) {
         klog_text(2, 1, "SYS_DMESG refused this server: it holds no kernel log capability.",
@@ -792,7 +825,7 @@ static void klog_draw(void) {
     for (unsigned i = 0; i < klog_len; i++) {
         char c = klog_buf[i];
         if (c == '\n') { lr++; w = 0; continue; }
-        if (w == 80u) { lr++; w = 0; }
+        if (w == cols) { lr++; w = 0; }
         if (lr >= first && lr - first < body) klog_cell(1 + lr - first, w, c, KLOG_ATTR);
         w++;
     }
@@ -810,12 +843,14 @@ static void klog_mark_u(unsigned v) {
 
 static void klog_view(void) {
     if (!fbp) for (unsigned i = 0; i < VGA_CELLS; i++) klog_saved_vga[i] = vga[i];
-    /* The log is never centred. Only when a surface IS centred do the two
-     * layouts differ, and only then must the display be cleared, or pixels the
-     * console does not own (the kernel's, from before the handover) would be
-     * wiped for nothing. */
+    /* The log is never centred, and it covers the whole display: everything is
+     * cleared first, so nothing the installer or the kernel drew before the
+     * handover shows round the edge of the log. */
     fb_plain = 1;
-    if (surf_on) fb_fill_bg();
+#ifdef KLOG_NARROW
+    if (surf_on)
+#endif
+    fb_fill_bg();
     klog_fetch();
     klog_scroll = 0;
     klog_draw();
@@ -827,7 +862,7 @@ static void klog_view(void) {
         klog_mark("KLOG_CONSOLE: showing the kernel log (");
         klog_mark_u(klog_total_rows());
         klog_mark(" rows, ");
-        klog_mark_u(cell_rows() > 1 ? cell_rows() - 1 : 0);
+        klog_mark_u(klog_rows() > 1 ? klog_rows() - 1 : 0);
         klog_mark(" on screen)\n");
     }
 
@@ -851,7 +886,7 @@ static void klog_view(void) {
         if (kbd.e0 && (sc == 0x49 || sc == 0x51)) {
             kbd.e0 = 0;
             if (kbd.shift) {
-                unsigned page = cell_rows() > 2 ? cell_rows() - 2 : 1;
+                unsigned page = klog_rows() > 2 ? klog_rows() - 2 : 1;
                 if (sc == 0x49) klog_scroll += page;
                 else klog_scroll = klog_scroll > page ? klog_scroll - page : 0;
                 klog_draw();
@@ -872,8 +907,10 @@ static void klog_view(void) {
         klog_draw();
     }
 
+    /* The view drew over the whole display, so the whole display is repainted
+     * from the console's cells; the grid alone would leave log text to its right. */
     fb_plain = 0;
-    if (fbp) { if (surf_on) fb_repaint_all(); else for (unsigned i = 0; i < 80u * fb_rows; i++) fb_blit(i); }
+    if (fbp) fb_repaint_all();
     else     { for (unsigned i = 0; i < VGA_CELLS; i++) vga[i] = klog_saved_vga[i]; }
     klog_mark("KLOG_CONSOLE: back to the console\n");
 }

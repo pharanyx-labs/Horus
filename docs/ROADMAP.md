@@ -1069,9 +1069,10 @@ the capability; the prefix is how you spell it. See `docs/LIMITATIONS.md` §2.7.
 - Mount and unmount as syscalls, `/proc`, and namespace inheritance across `spawn`; the last
   is roadmap 2.3.
 
-### 2.5 ◧ Dynamic linking and a shared libc: **[F-2.5]**
+### 2.5 ✅ Dynamic linking and a shared libc: **[F-2.5]**
 
-**The shared-runtime half landed 2026-08-21; dynamic linking has not.**
+**Done as of 2026-09-25.** The shared runtime landed 2026-08-21; the shared libc, handed out
+by capability, linked by name and sealed, and the shipped programs moved onto it, on 2026-09-25.
 
 `libhorus` (`include/libhorus.h`, `userspace/libhorus.a`) is the shared runtime for the
 **freestanding** link path; the one every server uses. It replaced 22 hand-copied definitions
@@ -1178,19 +1179,10 @@ pages of a program's own image read-only for good, which the linker's table will
 the library by name, and crt0's linker resolves its references, checks the table's hash and seals
 them before main. `optarg` and `optind` are shared correctly, through the GOT.
 
-**Still open:** the shipped programs (step 4). Three of them (`echo`, `true`, `false`) were measured
-to need only `_impure_ptr` among data symbols, so they can move as they are; the rest use
-`getopt`, and `optarg`/`optind` are the blocker below. Calling into shared text needs only a
-stub per function, but a program's direct reference to a **data** symbol cannot be redirected to
-the library's copy without a GOT. `_impure_ptr` survives that; it is a pointer *to* per-task
-state, so a program can hold its own copy of the pointer and still reach the one `struct _reent`
-in the library's private data, but `optarg`/`optind` **are** the state, and a program-local copy
-would desynchronise from the `getopt` that writes it. The honest scoping is to share the text
-and keep `getopt` static per program until there is a real dynamic linker. Every newlib-linked
-binary statically links its own libc (~70 KiB of libc text each once stripped; 11 in `/bin`). A
-shared-object loader with capability-mediated mapping cuts the store requirement by an order of
-magnitude and makes a larger userspace practical, and it needs 2.1's frame capabilities first,
-which is why it sits behind them in the Track 2 order.
+**Step 4 is built as of 2026-09-25** (`make smoke-coreutils-shared`): every shipped coreutil
+and `tcc` is linked against the library and carries no libc of its own. Measured, stripped as
+shipped: the eleven coreutils went from **1,218,628 to 281,084 bytes**, `tcc` from **394,668 to 238,716**, and the library ships once at **208,448** (stripped): 1,613,296 bytes of programs became 728,248 including the library. The gate reads each image before the boot, because a statically
+linked utility runs exactly as well and a boot could not tell them apart.
 
 ### 2.6 ◧ Network stack as a ring-3 server (**[F-2.3]**) *the driver landed 2026-08-28*
 
@@ -1890,7 +1882,7 @@ past it.
 | ✅ | newlib libc, shell with pipelines, GNU coreutils, TCC |
 | ✅ | Boot-module SHA-256 manifest; TPM measured boot; PCR-sealed volume KEK |
 | ◧ | Reproducible builds (`kernel.elf`; the ISO carries a wall-clock UUID from `grub-mkrescue`, §5.3a), SBOM, CodeQL, Dependabot, signed commits, protected `main` |
-| ✅ | 424 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 223 of them control arms that must reproduce a defect |
+| ✅ | 426 `smoke-*` targets (`grep -c '^smoke-[a-z0-9-]*:' Makefile`), nearly all QEMU integration self-tests, several adversarial, and 224 of them control arms that must reproduce a defect |
 | ✅ | Kani proofs on revocation; cargo-fuzz on the FFI boundary |
 
 ---

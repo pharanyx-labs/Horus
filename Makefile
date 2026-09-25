@@ -188,7 +188,8 @@ DEFECT_FLAGS = \
 	SHLIB_INHERIT_ANY_IMAGE SHLIB_DATA_TEMPLATE_SHARED SHLIB_EXEC_NO_DATA \
 	SHLIB_TEMPLATE_UNPINNED \
 	MEM_SEAL_KEEPS_WRITE MEM_SEAL_ANY_ADDRESS \
-	DYNLINK_ABI_UNCHECKED DYNLINK_UNKNOWN_ZERO DYNLINK_NO_SEAL
+	DYNLINK_ABI_UNCHECKED DYNLINK_UNKNOWN_ZERO DYNLINK_NO_SEAL \
+	COREUTILS_STATIC_LIBC
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -1452,6 +1453,9 @@ endif
 COREUTILS_MODULE_SET ?= $(COREUTILS_PROGS)
 COREUTILS_MODULES    ?= 0
 ifeq ($(COREUTILS_MODULES),1)
+# The utilities are linked against the shared libc, so the library ships with
+# them (the kernel loads it from the module; see SHLIBC_MODULE below).
+SHLIBC_MODULE        := 1
 BOOT_MODULES        += $(foreach p,$(COREUTILS_MODULE_SET),userspace/coreutils_$(p).bin:bin/$(p))
 BOOT_MODULE_DEP     += $(foreach p,$(COREUTILS_MODULE_SET),userspace/coreutils_$(p).bin)
 BOOT_MODULES        += userspace/man/hier:usr/share/man/hier \
@@ -1500,9 +1504,13 @@ endif
 # do not fit beside every coreutil, and a coreutil that did not fit is a
 # workload that stopped exercising pipes and image spawns.
 SHLIBC_MODULE ?= 0
-ifeq ($(SHLIBC_MODULE),1)
-BOOT_MODULES    += userspace/libc.so:lib/libc.so
-BOOT_MODULE_DEP += userspace/libc.so
+# Every build that ships a program linked against the library ships the library.
+# TCC_MODULE is named here rather than setting SHLIBC_MODULE in its own block,
+# because that block comes later in this file and an assignment there would be
+# too late for this test.
+ifneq ($(filter 1,$(SHLIBC_MODULE) $(TCC_MODULE)),)
+BOOT_MODULES    += userspace/libc.stripped.so:lib/libc.so
+BOOT_MODULE_DEP += userspace/libc.stripped.so
 endif
 
 # MEM_SEAL_MODULES=1 ships /bin/sealprobe, SYS_MEM_SEAL's witness, for make
@@ -5056,7 +5064,7 @@ COREUTILS_DIR    = userspace/ports/coreutils
 # elimination all of it lands in every binary, bloating each by ~150 KiB and
 # blowing the kernel image's 16 MiB budget once several are embedded. With it,
 # each binary carries only the functions it actually references.
-COREUTILS_CFLAGS = $(USERSPACE_CFLAGS) -ffunction-sections -fdata-sections \
+COREUTILS_CFLAGS = $(USERSPACE_CFLAGS) -ffunction-sections -fdata-sections -mno-direct-extern-access \
                    -I $(COREUTILS_DIR)/port -I $(NEWLIB_INC)
 
 # The port shim: runtime glue (port.o) plus the gnulib-module implementations
@@ -5121,12 +5129,21 @@ userspace/%.pic.o: userspace/%.c $(NEWLIB_LIB)/libc.a
 LIBC_SO_GLUE_OBJS = userspace/newlib_glue.o userspace/newlib_glue64.o \
                     userspace/posix.o userspace/hvfs.o userspace/libhorus.o
 
+# TCC is a consumer too since it links against the library (step 4): its needs
+# are part of what the table must export, or it could not be linked.
 userspace/libc_exports.c: $(COREUTILS_ALL_OBJS) $(LIBC_SO_GLUE_OBJS) $(NEWLIB_LIB)/libc.a tools/gen_libc_exports.sh
-	@./tools/gen_libc_exports.sh $(NEWLIB_LIB)/libc.a $@ $(COREUTILS_ALL_OBJS) -- $(LIBC_SO_GLUE_OBJS)
+	@./tools/gen_libc_exports.sh $(NEWLIB_LIB)/libc.a $@ $(COREUTILS_ALL_OBJS) $(TCC_OBJS) -- $(LIBC_SO_GLUE_OBJS)
 
 LIBC_SO_OBJS = userspace/libc_exports.pic.o userspace/newlib_glue.pic.o \
                userspace/newlib_glue64.pic.o userspace/posix.pic.o \
                userspace/hvfs.pic.o userspace/libhorus.pic.o
+
+# What ships, as a program's image does: without its debug sections, which are
+# three quarters of the file (949 KB against 208 KB, measured 2026-09-25) and
+# which nothing loads. The loader reads program headers and the dynamic section,
+# both kept; the shared-objects check runs on the unstripped object.
+userspace/libc.stripped.so: userspace/libc.so
+	$(OBJCOPY) --strip-debug $< $@
 
 # -soname libc.so is what a program linked against this object records in its
 # DT_NEEDED, and the kernel loader grants the library to an image whose one
@@ -5268,12 +5285,29 @@ userspace/sealprobe.pie.elf: userspace/sealprobe.o $(NEWLIB_GLUE_OBJS) userspace
 check-shared-objects: userspace/shlibdemo.so userspace/libc.so
 	@python3 tools/check_shared_object.py $^
 
+# THE COREUTILS ARE LINKED AGAINST THE SHARED LIBC (docs/design/shared-libc.md
+# step 4). Each carries its own code and the port shim, and no libc at all: its
+# references to library names are GOT slots crt0_dyn resolves by name and seals
+# before main. COREUTILS_CFLAGS has -mno-direct-extern-access so optarg, optind
+# and _impure_ptr are reached through those slots rather than copied.
+#
+# COREUTILS_STATIC_LIBC=1 is the control arm for make smoke-coreutils-shared: the
+# link as it was before step 4, newlib linked into every utility. They still run,
+# which is why a boot cannot tell the two apart and the gate reads the images.
+COREUTILS_STATIC_LIBC ?= 0
+ifeq ($(COREUTILS_STATIC_LIBC),1)
 userspace/coreutils_%.pie.elf: $(COREUTILS_DIR)/%.o $(COREUTILS_PORT_OBJS) \
                                $(NEWLIB_GLUE_OBJS) userspace/malloc.o $(LIBHORUS_LIB) userspace/pie.ld
 	$(LD) -m elf_x86_64 -pie --gc-sections -T userspace/pie.ld -o $@ \
 	    userspace/crt0.o $< $(COREUTILS_PORT_OBJS) \
 	    userspace/newlib_glue.o userspace/newlib_glue64.o userspace/posix.o \
 	    userspace/malloc.o $(LIBHORUS_LIB) -L$(NEWLIB_LIB) -lc
+else
+userspace/coreutils_%.pie.elf: $(COREUTILS_DIR)/%.o $(COREUTILS_PORT_OBJS) \
+        userspace/crt0_dyn.o userspace/dynlink.o userspace/libc_link.so userspace/pie_shared.ld
+	$(LD) $(DYNLINK_LDFLAGS) -o $@ userspace/crt0_dyn.o userspace/dynlink.o \
+	    $< $(COREUTILS_PORT_OBJS) userspace/libc_link.so
+endif
 
 # The header's embedded name is what spawn-by-name matches, so it is the plain
 # utility name ("cat"), not the coreutils_ file prefix.
@@ -5355,7 +5389,7 @@ TCC_OBJS  = $(addprefix $(TCC_DIR)/build/,$(addsuffix .o,$(TCC_UNITS))) \
 # drops <dlfcn.h>; the -run JIT (tccrun.c) is excluded and its symbols are stubbed
 # in port/horus_glue.c. getcwd/file-I/O come from posix.c + newlib_glue*.c.
 TCC_CFLAGS = -m64 -ffreestanding -fPIE -fno-plt -fno-stack-protector -mno-red-zone \
-             -O2 -std=gnu99 -fno-builtin -w \
+             -O2 -std=gnu99 -fno-builtin -w -mno-direct-extern-access \
              -I $(NEWLIB_INC) -I $(TCC_DIR) -I $(TCC_DIR)/port
 TCC_DEFS   = -DTCC_TARGET_X86_64 -DCONFIG_TCC_STATIC -DONE_SOURCE=0 \
              -DCONFIG_TCCDIR='"/usr/lib/tcc"'
@@ -5364,15 +5398,23 @@ $(TCC_DIR)/build/%.o: $(TCC_DIR)/%.c $(NEWLIB_LIB)/libc.a
 	@mkdir -p $(TCC_DIR)/build
 	$(CC) $(TCC_CFLAGS) $(TCC_DEFS) -c $< -o $@
 
+# HERE, not at the export table's own rule: a prerequisite list expands when the
+# rule is read, and TCC_OBJS is defined just above, far below that rule. Listed
+# there it expanded to nothing, the objects were not built first, the
+# generator's nm skipped the missing files in silence, and the table lacked
+# every name tcc needs.
+userspace/libc_exports.c: $(TCC_OBJS)
+
 $(TCC_DIR)/build/horus_glue.o: $(TCC_DIR)/port/horus_glue.c $(NEWLIB_LIB)/libc.a
 	@mkdir -p $(TCC_DIR)/build
 	$(CC) $(TCC_CFLAGS) $(TCC_DEFS) -c $< -o $@
 
-userspace/tcc.pie.elf: $(TCC_OBJS) $(NEWLIB_GLUE_OBJS) userspace/malloc.o $(LIBHORUS_LIB) userspace/pie.ld
-	$(LD) -m elf_x86_64 -pie --gc-sections -T userspace/pie.ld -o $@ \
-	    userspace/crt0.o $(TCC_OBJS) \
-	    userspace/newlib_glue.o userspace/newlib_glue64.o userspace/posix.o \
-	    userspace/malloc.o $(LIBHORUS_LIB) -L$(NEWLIB_LIB) -lc
+# Linked against the shared libc like the coreutils (docs/design/shared-libc.md
+# step 4): its own code and glue, no libc.
+userspace/tcc.pie.elf: $(TCC_OBJS) userspace/crt0_dyn.o userspace/dynlink.o \
+        userspace/libc_link.so userspace/pie_shared.ld
+	$(LD) $(DYNLINK_LDFLAGS) -o $@ userspace/crt0_dyn.o userspace/dynlink.o \
+	    $(TCC_OBJS) userspace/libc_link.so
 
 userspace/tcc.bin: userspace/tcc.stripped.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "tcc"
@@ -7114,12 +7156,15 @@ smoke-syscall-coverage:
 # point, and gating on its exit status would turn a coverage gate into a
 # duplicate of smoke-session. The assertion is the checker run below, which is
 # `if`-guarded and carries no `|| true` at all.
+# SYS_MAP_FRAME and SYS_MEM_SEAL left this set on 2026-09-25: every coreutil in
+# the modules workload links the shared libc, so its crt0 maps the library's text
+# and seals its resolved table on every run. They are covered by real programs
+# now, probes or no probes, which is the better kind of coverage.
 SYSCOV_CONTROL_EXPECTED = \
-	SYS_AUDIT_DIGEST SYS_BRK SYS_FRAME_PAGES SYS_IPC_REPLY SYS_MAP_FRAME \
+	SYS_AUDIT_DIGEST SYS_BRK SYS_FRAME_PAGES SYS_IPC_REPLY \
 	SYS_MAP_REGION SYS_READ SYS_READ_AUDIT SYS_REGISTER_STORAGE_BACKEND \
 	SYS_SIGACTION SYS_SIGRETURN SYS_SPAWN_ARG SYS_TASK_EXIT_INFO \
-	SYS_UNMAP_FRAME SYS_BLOCK_READ SYS_BLOCK_WRITE SYS_EXEC_IMAGE \
-	SYS_MEM_SEAL
+	SYS_UNMAP_FRAME SYS_BLOCK_READ SYS_BLOCK_WRITE SYS_EXEC_IMAGE
 
 smoke-syscall-coverage-control:
 	@set -eu; \
@@ -8400,6 +8445,44 @@ smoke-shlib-link-seal-control:
 	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
 	fi; \
 	echo "DYNLINK SEAL CONTROL: PASS - DYNLINK_NO_SEAL is caught"
+
+# THE SHIPPED PROGRAMS CARRY NO LIBC (docs/design/shared-libc.md step 4). Every
+# coreutil and tcc, as shipped: before the boot, each image must record
+# DT_NEEDED "libc.so" and IMPORT posix_init (a GLOB_DAT against it) rather than
+# define it. crt0 calls it in every program, so every program has the reference,
+# and an image with its own libc defines it instead. The sizes are
+# printed so the saving is a measurement in the log. Then the modules session
+# runs them all through the real shell.
+#
+# A boot alone could not witness this: a statically linked utility runs exactly
+# as well, which is why COREUTILS_STATIC_LIBC=1, the pre-step-4 link, must fail
+# on the image check and not on the session.
+.PHONY: smoke-coreutils-shared smoke-coreutils-shared-control
+smoke-coreutils-shared:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 TCC_MODULE=1 $(CUARM)
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 TCC_MODULE=1 $(CUARM) horus.iso
+	@fail=0; total=0; for b in $(COREUTILS_BINS) userspace/tcc.bin; do \
+	    t=$$(mktemp); tail -c +45 "$$b" > "$$t"; sz=$$(wc -c < "$$b"); total=$$((total+sz)); \
+	    if ! readelf -d "$$t" | grep -q 'Shared library: \[libc.so\]' || \
+	       ! readelf -rW "$$t" | grep -q 'R_X86_64_GLOB_DAT.* posix_init'; then \
+	        echo "[coreutils-shared] $$b carries its own libc: no DT_NEEDED libc.so, or posix_init not imported"; fail=1; \
+	    else echo "[coreutils-shared] $$b: $$sz bytes, links the shared libc"; fi; rm -f "$$t"; \
+	done; echo "[coreutils-shared] total $$total bytes"; [ $$fail -eq 0 ] || exit 1
+	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) tools/modules_session.py horus.iso
+	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) tools/tcc_session.py horus.iso
+
+smoke-coreutils-shared-control:
+	@out=$$($(MAKE) --no-print-directory smoke-coreutils-shared CUARM=COREUTILS_STATIC_LIBC=1 2>&1); rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "COREUTILS SHARED CONTROL: FAIL - statically linked utilities passed the gate"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "carries its own libc"; then \
+	    echo "COREUTILS SHARED CONTROL: FAIL - it failed, but not on the image check."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "COREUTILS SHARED CONTROL: PASS - a utility with its own libc is caught"
 
 .PHONY: smoke-shlibc
 smoke-shlibc:

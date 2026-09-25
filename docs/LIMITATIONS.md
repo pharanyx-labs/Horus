@@ -2400,14 +2400,13 @@ selftest binary rather than something the default image ships, so it costs nothi
 the same one-word difference is why `coreutils_echo` is 94 KiB and this is twelve times larger,
 and it is worth fixing before anything else links the same way.
 
-### 2.16 What the shared-library mechanism does not yet do
+### 2.16 What the shared libc does not do
 
-**S49** makes shared library text executable by many tasks and writable by none, and **S50**
-makes a shared library's writable data private to each task; the half a libc needs, since of the
-59 newlib symbols the shipped coreutils reference, three (`_impure_ptr`, `optarg`, `optind`) are
-writable. Together they are the mechanism roadmap 2.5's remainder needs, and they are not yet
-dynamic linking. Four things it does not do, stated because a mechanism that looked like a
-linker would be worse than one that says what it is.
+Since 2026-09-25 the shipped programs link against the shared libc by name: the kernel hands it
+only to programs that ask (**S106**), crt0's linker resolves each reference against the table's
+names, refuses a library it was not built for, and seals the table (**S107**, **S108**). What
+remains is below, stated because a mechanism that looked more complete than it is would be worse
+than one that says what it is.
 
 **One property is asserted more narrowly than it may read.** S50 gives each task a private copy
 of the library's writable segment; it does **not** give the library per-task storage in any
@@ -2422,49 +2421,14 @@ refusal fails closed: `SYS_FORK` returns an error and nothing is shared. None of
 coreutils forks, `tcc` does not, and the shell is not a libc program. Since 2026-09-25 the data
 is ordinary private memory (S106), so the text is the whole of what a fork would need taught.
 
-- **It resolves by name since 2026-09-25** (S108): a program linked against the library has its
-  references resolved by crt0's linker against the table's names, checked against the table's
-  hash, and sealed. The index-based stub archive remains for the self-test program that
-  predates it.
-- **newlib is still statically linked.** The saving from SHARING it has not been taken yet.
-  The mechanism can now carry it (S50 closed the writable-data blocker on 2026-08-29) and the
-  shared object itself now builds and is gated (`userspace/libc.so`, the required
-  `shared-objects` job): 135 KiB of shared text, 342 `R_X86_64_RELATIVE` relocations and nothing
-  else, no undefined symbols.
-
-**The stub archive landed 2026-08-29** and a program links against it: `hello_shared`, ordinary
-C calling `printf` by name, carrying no libc: 106,392 bytes static against 13,088 shared.
-**The kernel endows ordinary tasks since 2026-09-25** (S106): the library loads from its boot
-module, init and the shell hold the text, and a program whose image asks inherits it at spawn
-with data of its own. What remains is migrating the **shipped** programs (step 4 of
-`docs/design/shared-libc.md`); the seal (S107) and the linker (S108) are built.
-
-  **One part of it still needs a GOT, and the limit is now exact.** A tail-jump thunk forwards a
-  *call*; a reference to a **variable** is an address the compiler emits directly, and redirecting
-  it needs a GOT. So `tools/gen_libc_stubs.sh` emits stubs for the 55 exported **functions** and
-  none for the four data symbols, and the consequences differ per symbol:
-
-  - `_impure_ptr` works anyway. It is a pointer *to* per-task state, so `crt0_shared` gives the
-    program its own copy initialised from the library's, and both reach the one `struct _reent` in
-    the library's private data (S50).
-  - `environ` works the same way, and `crt0_shared` defines an empty one: the library's is empty
-    too, so there is nothing for the two copies to disagree about.
-  - `optarg`/`optind` **do not** and cannot. They *are* the state, and a program-local copy would
-    diverge from the library's `getopt` that writes it. No stub is emitted, so a program needing
-    them **fails to link**, the fail-closed outcome, and far better than one whose `optind`
-    silently stops advancing.
-  - `_ctype_` is const, so a local copy would be correct, but it is data all the same and gets no
-    stub for the same reason.
-
-  Measured: of the eleven shipped coreutils, `echo`, `true` and `false` need only `_impure_ptr`
-  among data symbols and can move as they are; the rest use `getopt`.
-  Note the figure that used to sit here was misleading: `coreutils_echo` was 404,572 bytes, but
-  **77% of that was DWARF debug info**, not libc. Stripping what ships (2026-08-29) took it to
-  94,172 and the eleven coreutils from 4,847,020 to 1,210,436 bytes in total. What sharing libc
-  would still save is its ~70 KiB of text per program, real, and no longer the headline.
-  Migrating newlib onto this mechanism is a build-system job, rebuilding it `-shared -fPIC`,
-  relinking every program against it, and it gets its own commit rather than riding on the one
-  that adds the mechanism.
+- **The index-based stub archive remains**, for one program: `hello_shared`, the self-test that
+  predates the linker (`make smoke-shlibc-link`). Its limit is the one the linker removed: a
+  thunk forwards a call and cannot redirect a reference to library DATA, so a program built
+  that way cannot use `optarg`/`optind` and fails to link if it tries. Every shipped program is
+  linked by name instead, where data goes through the GOT.
+- **There is no wall clock**, so `time()` returns -1: `gettimeofday` refuses with `ENOSYS`
+  rather than inventing a time (`SYS_CLOCK_GETTIME` answers only monotonic time since boot).
+  `tcc`'s `__DATE__` and `__TIME__` are therefore the epoch's.
 - **The library's ASLR is per BOOT, not per task.** Shared text must be identical in every address
   space, so it is relocated once and mapped at that address everywhere; text needing per-task
   relocation would not be shared text. Since 2026-08-29 that address is **drawn at boot** from the
@@ -3247,8 +3211,6 @@ old allocator and the new one read the same single block and no workload could t
   exist, and `fork` + `exec` is gated as a pairing (**S42**, `make smoke-forkexec`); what a
   shell still cannot do is group its children, put one in the background, or read `/proc`.
   *This bullet read "`fork` does not [exist]" for a day after it landed.*
-- **Dynamic linking.** Every binary statically links newlib (~70 KiB of libc text each once
-  stripped; the file used to look far larger because 77% of it was debug info, §2.16).
 - **Multiple filesystems.** One volume, one `fs_server` over it. Mount POINTS exist (`hvfs` is a per-task mount table and walker, and `dev_server` is a second server mounted at `/dev` (§2.7, **S29**)) but the prefix decides which server a path is addressed to and confines nothing on its own.
 - **Threads within a task.** One thread per address space.
 - **Swap or memory pressure handling.** Pool exhaustion is a hard failure.

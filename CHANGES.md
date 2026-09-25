@@ -394,6 +394,10 @@ in this file.
 
 ### Added
 
+- **The coreutils and `tcc` share one libc instead of carrying their own.** Measured, stripped as
+  shipped: the eleven coreutils went from **1,218,628 to 281,084 bytes**, `tcc` from **394,668 to 238,716**, and the library ships once at **208,448** (stripped): 1,613,296 bytes of programs became 728,248 including the library (`make smoke-coreutils-shared`). `time()` now returns -1 rather than
+  failing to link: there is no wall clock.
+
 - **A program can be linked against the shared libc like any other library.** Its references
   to the library are resolved by name when it starts, checked against the version of the library
   it was built for, and made read-only before `main`; a program built against a different library,

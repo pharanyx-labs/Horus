@@ -25,6 +25,7 @@
 #include <sys/times.h>
 #include <reent.h>
 #include <sys/errno.h>
+#include <sys/time.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <stdarg.h>
@@ -467,6 +468,21 @@ int ioctl(int fd, unsigned long request, ...) {
         return 0;
     }
     errno = ENOTTY;
+    return -1;
+}
+
+/* THERE IS NO WALL CLOCK, so this refuses rather than inventing one. Nothing
+ * reads an RTC and nothing attests one; SYS_CLOCK_GETTIME answers monotonic time
+ * since boot and refuses every other clock (include/syscall.h). newlib's time()
+ * calls this, and until 2026-09-25 no program that reached the shared library
+ * called time(): tcc does (for __DATE__ and __TIME__), and in libc.so the
+ * reference must resolve to something or the library has an undefined symbol,
+ * which tools/check_shared_object.py refuses. time() therefore returns -1, which
+ * is what it says on a system without a clock. */
+int gettimeofday(struct timeval *restrict tv, void *restrict tz) {
+    (void)tv;
+    (void)tz;
+    errno = ENOSYS;
     return -1;
 }
 

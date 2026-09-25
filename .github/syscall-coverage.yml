@@ -167,10 +167,10 @@ covered:
   - SYS_SPAWN_ARG            # answers about the caller; read twice for stability
   - SYS_TASK_EXIT_INFO       # likewise
   - SYS_IPC_REPLY            # empty slot and wrong-type slot, both refused
-  - SYS_MAP_FRAME            # empty slot, the legacy slot-3 decoy, and W^X
+  - SYS_MAP_FRAME            # empty slot, the legacy slot-3 decoy, W^X; and every coreutil's crt0
   - SYS_UNMAP_FRAME          # empty slot
   - SYS_SHLIB_INFO           # init, every boot of the modules workload, which ships the library
-  - SYS_MEM_SEAL             # a stack page, an unaligned address, a zero length
+  - SYS_MEM_SEAL             # a stack page, an unaligned address, a zero length; and every coreutil's crt0
   - SYS_MAP_REGION           # a zero-length run, and an empty slot
   - SYS_FB_INFO              # no device capability, and a wrong-type slot
   - SYS_FRAME_PAGES          # empty slot, and the legacy slot-3 decoy

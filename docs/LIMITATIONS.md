@@ -535,9 +535,9 @@ a page at the bogus address and reported success.
 ### 1.8 Part of the syscall table has no test that runs its handler, and one of those gaps hid a defect
 
 **Measured since 2026-08-20**, and re-derived on every merge rather than restated: as of
-2026-09-09, and gated since: **89 of 101** implemented syscalls have their handler
+2026-09-09, and gated since: **90 of 101** implemented syscalls have their handler
 body entered by the three tracked workloads (the scripted ring-3 session, the conformance suite, and the
-boot-modules session). The other 12 are listed in `.github/syscall-coverage.yml`, each with a written reason.
+boot-modules session). The other 11 are listed in `.github/syscall-coverage.yml`, each with a written reason.
 
 This was stated as a limitation rather than a finding, on the grounds that nothing here was
 known to be broken. **That is no longer the honest framing, and it has now been wrong four times.**
@@ -592,7 +592,7 @@ once rather than the one syscall that motivated it. And third, **neither would h
 by a wider `captest`**: both syscalls are gated on a real capability, so the only way in is a
 task that holds one, which is why the answer was a new task rather than a bigger suite.
 
-So the standing risk is not hypothetical: a defect in any of those 12 handlers is invisible in
+So the standing risk is not hypothetical: a defect in any of those 11 handlers is invisible in
 the same way issue #176 was, and in the way S52, S71 and the block-syscall error vocabulary just
 were. `captest` is a **refusal** suite by
 construction: its checks for `SYS_DMESG` and `SYS_AUDIT_DIGEST` both assert `SYS_ERR_PERM`, and
@@ -4685,7 +4685,11 @@ so neither was ever presented to a contributor. There was no code of conduct, an
 the IPC authorisation logic. All fixed as of 2026-07-27; the `require_code_owner_review`
 setting that would make `CODEOWNERS` binding is still off (§5.1).
 
-*(Repository hygiene itself is fine: `git ls-files` reports **470** tracked files with no build
+<<<<<<< HEAD
+*(Repository hygiene itself is fine: `git ls-files` reports **471** tracked files with no build
+=======
+*(Repository hygiene itself is fine: `git ls-files` reports **471** tracked files with no build
+>>>>>>> origin/main
 artefacts or vendored binaries: no `kernel.elf`, no `horus.iso`, no object files. A working
 checkout accumulates ~70 MB of untracked build output, which is correctly `.gitignore`d. This
 sentence said 243 until 2026-08-15 and **254 until 2026-09-20**, by which point the tree had

@@ -6953,8 +6953,8 @@ smoke-syscall-coverage:
 	SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CAPTEST: PASS' \
 	    tools/smoke_test.sh horus.iso > "$$cov/captest.log" 2>&1 || true; \
 	$(MAKE) --no-print-directory clean; \
-	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 COREUTILS_MODULES=1; \
-	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 COREUTILS_MODULES=1 horus.iso; \
+	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 COREUTILS_MODULES=1 SHLIB_INHERIT_MODULES=1; \
+	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 COREUTILS_MODULES=1 SHLIB_INHERIT_MODULES=1 horus.iso; \
 	SESSION_SERIAL_LOG="$$cov/modules.log" SESSION_TIMEOUT=$(SYSCOV_SESSION_TIMEOUT) \
 	    tools/modules_session.py horus.iso >/dev/null 2>&1 || true; \
 	echo "syscov: serial transcripts kept in $$cov/"; \
@@ -7007,8 +7007,8 @@ smoke-syscall-coverage-control:
 	SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CAPTEST: PASS' \
 	    tools/smoke_test.sh horus.iso > "$$cov/captest.log" 2>&1 || true; \
 	$(MAKE) --no-print-directory clean; \
-	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 SYSCOV_PROBES_ABSENT=1 COREUTILS_MODULES=1; \
-	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 SYSCOV_PROBES_ABSENT=1 COREUTILS_MODULES=1 horus.iso; \
+	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 SYSCOV_PROBES_ABSENT=1 COREUTILS_MODULES=1 SHLIB_INHERIT_MODULES=1; \
+	$(MAKE) --no-print-directory SYSCALL_COVERAGE=1 SYSCOV_PROBES_ABSENT=1 COREUTILS_MODULES=1 SHLIB_INHERIT_MODULES=1 horus.iso; \
 	SESSION_SERIAL_LOG="$$cov/modules.log" SESSION_TIMEOUT=$(SYSCOV_SESSION_TIMEOUT) \
 	    tools/modules_session.py horus.iso >/dev/null 2>&1 || true; \
 	echo "syscov-control: serial transcripts kept in $$cov/"; \

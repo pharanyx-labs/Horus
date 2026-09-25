@@ -1164,13 +1164,15 @@ and a `crt0_shared` that binds the library before `main`.
 *before* booting that every libc symbol the program defines is a 14-byte thunk rather than an
 implementation, a statically-linked build would print the same thing and prove nothing.
 
-**The kernel endows ordinary tasks as of 2026-09-25** (**S106**, `make smoke-shlib-inherit`):
-the library loads from the verified `lib/libc.so` boot module, init and the shell hold its text,
-and a program whose image asks (`DT_NEEDED "libc.so"`) inherits it at spawn with its own copy
-of the library's data, mapped by the kernel and named by no capability.
+**How the shipped system uses it is designed in [`design/shared-libc.md`](design/shared-libc.md)**, with its decisions taken 2026-09-25: inheritance at spawn by `DT_NEEDED`, private data as ordinary per-task memory, a ring-3 linker in crt0 that resolves by name, and a seal that makes the resolved table read-only. It lands in four steps.
 
-**Still open:** the shipped programs. Migrating the eleven coreutils needs the ring-3 linker and
-the seal (steps 2 and 3). Three of them (`echo`, `true`, `false`) were measured
+**Step 1 is built as of 2026-09-25** (**S106**, `make smoke-shlib-inherit`): the library loads
+from the verified `lib/libc.so` boot module, init and the shell hold its text, and a program
+whose image asks (`DT_NEEDED "libc.so"`) inherits it at spawn with its own copy of the library's
+data, mapped by the kernel and named by no capability.
+
+**Still open:** the shipped programs. Migrating the eleven coreutils needs the seal and the
+ring-3 linker (steps 2 and 3). Three of them (`echo`, `true`, `false`) were measured
 to need only `_impure_ptr` among data symbols, so they can move as they are; the rest use
 `getopt`, and `optarg`/`optind` are the blocker below. Calling into shared text needs only a
 stub per function, but a program's direct reference to a **data** symbol cannot be redirected to

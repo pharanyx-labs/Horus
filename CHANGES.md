@@ -671,6 +671,11 @@ in this file.
 
 ### Fixed
 
+- **A merge-conflict marker sat in `docs/LIMITATIONS.md` §5.6 for a day, with every job green.**
+  A merge in #465 kept both sides of a line that differed only in a derived count, and Markdown
+  renders the markers as text. It is removed, and the required job `conflict-markers`
+  (`tools/check_conflict_markers.py`) now refuses one in any tracked text file.
+
 - **A BIOS boot drew the installer with no frame, and the format progress bar empty.** VGA
   text mode renders from `font_8x8`, which the kernel uploads over all 256 entries of the font
   plane, and the table had nothing above 0x7F. So every line-drawing glyph `console_server`

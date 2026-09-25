@@ -648,6 +648,17 @@ in this file.
 
 ### Fixed
 
+- **A BIOS boot drew the installer with no frame, and the format progress bar empty.** VGA
+  text mode renders from `font_8x8`, which the kernel uploads over all 256 entries of the font
+  plane, and the table had nothing above 0x7F. So every line-drawing glyph `console_server`
+  translates the installer's box into, and the 0xDB and 0xB0 cells of the kernel's progress bar,
+  were drawn blank. The framebuffer console's 8x16 font had had them since 2026-09-23, which is
+  why a UEFI boot and every framebuffer gate looked right; QEMU's default BIOS boot, and any
+  machine that starts in text mode, did not. The 8x8 now has the same code points as the 8x16:
+  lines, blocks and shades sampled from its rows so strokes still meet, arrows and marks drawn at
+  8x8. `tools/check_console_font.py` refuses a code point one font draws and the other does not,
+  and one the box translation can send that neither draws.
+
 - **The website failed WCAG 2.1 AA contrast for its faintest text, and a screen reader heard
   the home page's two tokens as identical.** Faint text is now 4.6:1 or better and control
   outlines 3:1 or better in both themes; the token figure says which right is held and which

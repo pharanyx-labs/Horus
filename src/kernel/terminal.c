@@ -279,7 +279,7 @@ char console_getc(void) {
  * FONT-AGNOSTIC ON PURPOSE. The blitter takes width, height and a bitmap
  * pointer, so replacing the 8x8 font with a taller one is a data change and not
  * a code change. That matters here specifically: the font this ships with is
- * `font_8x8` below, which is ASCII-only, draws 7 pixels wide in an 8-pixel cell
+ * `font_8x8` below, whose ASCII half draws 7 pixels wide in an 8-pixel cell
  * and CARRIES NO PROVENANCE -- see THIRD_PARTY.md. Replacing it is a separate
  * commit, and this is what makes that commit small.
  *

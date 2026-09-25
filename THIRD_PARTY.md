@@ -36,10 +36,15 @@ the full cell as a result.
 **Provenance unknown, and this is the honest state rather than a placeholder.**
 
 It has been in the tree since before the current history's console work and
-carries no attribution, no upstream, and no licence statement. It is ASCII-only,
-draws seven pixels wide in an eight-pixel cell, and is uploaded into the VGA font
-plane at `0xA0000` by `vga_initialize_text_mode_80x50` -- so it is *shipped* and
-*rendered*, not merely present.
+carries no attribution, no upstream, and no licence statement. Its ASCII half
+draws seven pixels wide in an eight-pixel cell, and the table is uploaded into the
+VGA font plane at `0xA0000` by `vga_initialize_text_mode_80x50`, so it is *shipped*
+and *rendered*, not merely present.
+
+The unknown provenance is the ASCII half only. The code points above `0x7F` (line
+drawing, blocks, shades, arrows and marks, added 2026-09-25) are authored for
+Horus under the tree's MIT licence: the lines, blocks and shades are rows sampled
+from the 8x16 above, and the rest were drawn at 8x8 for this table.
 
 It resembles the many small 8x8 bitmap fonts that circulated with early PC
 graphics code, several of which are public domain and several of which are not.

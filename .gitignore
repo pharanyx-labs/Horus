@@ -225,3 +225,9 @@ sweep_*.log
 # under docs/ with its commit SHA in the filename, not at the root as a build
 # artifact. The .html source is never in the tree at all.
 horus-audit-*.pdf
+
+# The maintainer's photos of hardware under test (the IdeaPad's screen during a
+# bring-up, say). Local evidence, never tracked. Anchored to the root so that a
+# future images/ directory elsewhere in the tree (under site-src/assets/, or
+# docs/) is not silently ignored along with it.
+/images/

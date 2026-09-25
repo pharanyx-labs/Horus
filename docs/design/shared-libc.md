@@ -17,7 +17,7 @@ was taken; the rest of the document is how they are built.
 | Who holds it | The two self-test tasks, endowed by the kernel from root primordials 20 (text, READ\|EXEC) and 21 (data, READ\|WRITE), at slots `LIBC_SLOT_FIRST` (40) onward |
 | How a program binds it | `crt0_shared.c` calls `shlib_bind` (`userspace/shlib_start.c`): `SYS_SHLIB_INFO`, `SYS_MAP_FRAME` per page, then every libc call is a 14-byte thunk through an **index-ordered** export table (`tools/gen_libc_stubs.sh`) |
 | Data symbols | `_impure_ptr` works because it is a pointer; `optarg` and `optind` cannot be shared, so a program using `getopt` fails to link |
-| Private data | `shlib_instantiate_data` carves a fresh frame from `UNTYPED_KERNEL` per call, never returned |
+| Private data | `shlib_instantiate_data` carves a fresh frame from `UNTYPED_KERNEL` per call, never returned, and a capability names it |
 | Fork | `clone_user_aspace` refuses any task with a frame from the untyped arena mapped (the library's frames are), so a task that has bound the library cannot fork |
 
 ## 2. The decisions
@@ -29,7 +29,7 @@ was taken; the rest of the document is how they are built.
 | D3 | A task that has bound the library **still cannot fork**. The refusal stays, and is recorded in `docs/LIMITATIONS.md` | 2026-09-25 |
 | D4 | The shell is freestanding, so its image never asks. **init grants the shell the text capabilities** with an explicit `SYS_CAP_GRANT`, and no data page. Nothing else is granted them | 2026-09-25 |
 | D5 | **Exec** into an image that asks revokes the old data capabilities and gives fresh ones from the template; exec into an image that does not ask drops them | 2026-09-25 |
-| D6 | Private data pages are **per task slot**, from a kernel reserve, not charged to the spawner's untyped. This replaces the charging half of D1, for the reason in §5 | 2026-09-25 |
+| D6 | The library's private data is **ordinary private memory**: fresh pages from the user pool, copied from the template by the kernel at spawn and exec, named by no capability. This replaces the charging half of D1, for the reasons in §5 | 2026-09-25 |
 
 ## 3. The library at boot
 
@@ -50,8 +50,8 @@ library's code. It is not authority to change it: no descendant of a capability 
 can have WRITE (S27).
 
 - **init** is endowed at boot from root primordial 20, as the self-test tasks are today.
-- **The shell** receives derived copies from init by `SYS_CAP_GRANT` (D4). It holds no data page,
-  so it cannot map the library writable, and it never binds the library itself.
+- **The shell** receives derived copies from init by `SYS_CAP_GRANT` (D4). It is given no
+  library data, and it never binds the library itself.
 - **A spawned child** receives derived copies of its spawner's text capabilities, in the same
   slots, **if and only if** its image asks (§6) and the spawner holds **every** text page. A
   spawner holding a partial set passes nothing: a child with half a library would fault inside
@@ -68,34 +68,32 @@ the next spawn silently writes into.
 ## 5. Private data
 
 Every task that binds the library needs its own copy of the library's writable pages (S50).
-D1 said those copies are charged to the spawner's untyped memory. **That cannot work as the
-allocator stands.** An untyped region is a bump pointer that never gives a frame's bytes back
-(`docs/LIMITATIONS.md` 2.5; the seL4 rule, deliberately). Every program run would permanently
-spend 8 KiB of the 3.5 MiB region init and the shell share, so the shell would stop being able
-to start programs after at most about 440 commands a boot, and fewer in practice.
+D1 said those copies are charged to the spawner's untyped memory, and **that cannot work as the
+allocator stands**. An untyped region is a bump pointer that never gives a frame's bytes back
+(`docs/LIMITATIONS.md` 2.5; the seL4 rule, deliberately), so every program run would
+permanently spend 8 KiB of the 3.5 MiB region init and the shell share, and the shell would stop
+being able to start programs after at most about 440 commands a boot. A per-slot reserve of
+frames was considered next and fails on a different bound: those frames would be named kernel
+objects, and the kernel names at most `MAX_DYN_FRAMES` (256) at once, against 256 slots of two
+pages each.
 
-So the data pages follow the precedent cspaces already set (D6). **Each task slot owns its libc
-data frames for the life of the boot**:
+So the data is **not an object at all** (D6). It is private memory, exactly like a program's own
+`.data`:
 
-- A kernel reserve of `MAX_TASKS × SHLIB_MAX_DATA_PAGES` frames, sized at compile time
-  beside the cspace reserve. `SHLIB_MAX_DATA_PAGES` is 4 against libc's 2, and `shlib_init`
-  refuses a library with more writable pages than that, rather than overrun the reserve.
-- A slot's frames are carved the first time the slot runs a program that binds the library, and
-  are reused by every later occupant of that slot. They are the same class of object every
-  time, so reuse cannot confuse one type for another, which is the hazard the watermark exists
-  to exclude.
-- **At every spawn or exec that binds**, the frames are overwritten from the template before the
-  task can run. A new occupant sees the library's initialisers, never the previous occupant's
-  errno, stdio buffers or heap state.
-- **The capabilities are minted READ\|WRITE, without GRANT and without EXEC.** A task cannot hand
-  its data page to another task, so no second task can hold a view of the next occupant's
-  state. (Whether `SYS_CAP_GRANT` enforces the GRANT right today is checked as part of this work,
-  with a witness; if it does not, that is fixed first, since the property rests on it.)
-- **At task teardown and at exec**, the data capabilities are revoked, so nothing names the
-  frames between one occupant and the next.
+- **At spawn or exec**, when the image asks and the task receives the text capabilities, the
+  kernel allocates fresh pages from the user pool, copies the library's relocated template into
+  them, and maps them READ|WRITE and never EXEC at the library's data address, before the task
+  can run. A task that receives no text capabilities is given no data either.
+- **No capability names them.** There is nothing to grant, delegate or leak, so no second task can
+  ever hold a view of this task's errno, stdio buffers or heap state. That holds by construction,
+  not by a right that every grant path must remember to check.
+- **They are freed with the address space**, by the same reference counting that frees the image
+  and the stack. Exec builds a new address space, so the new image gets a fresh copy and the old
+  one goes with the old space (D5). Nothing is reserved, nothing is exhausted, and the cost is two
+  pages of the user pool per running task that uses the library, returned when it exits.
 
-The cost is fixed and visible: at two data pages and 256 task slots, 2 MiB of the pool, held
-back whether or not the library is used.
+`SYS_SHLIB_INFO` still reports the data range, so crt0 knows where the data is; crt0 maps only the
+text.
 
 ## 6. How an image asks
 
@@ -169,8 +167,7 @@ image in the range, and marks each one sealed (a software bit in the page-table 
   does not; the shell is not a libc program.
 - **The library's base is per boot, not per task** (S51, unchanged). One information leak reveals
   it for every task.
-- **Up to 64 capability slots per task** for the library's pages, 36 today, of 128.
-- **2 MiB of the pool** for the data reserve, held whether or not the library is used.
+- **Up to 64 capability slots per task** for the library's text pages, 34 today, of 128.
 - **The shipping ISO carries no program that binds it** until the installed-system work ships
   the coreutils ([`installed-system.md`](installed-system.md)). Gates run it on the module builds.
 
@@ -181,7 +178,7 @@ working.
 
 | Step | What | Witness, and the defect its arm puts back |
 |---|---|---|
-| 1 | The ship kernel loads the `libc.so` module; the per-slot data reserve; init endowed; the slot range reserved; spawn and exec inherit by `DT_NEEDED` (§4 to §6); fork still refused | A gate that spawns a module-built program asking for the library and one that does not, then checks the second holds nothing. Arms: inheritance regardless of the image; a partial set passed on; data not re-copied on reuse (the previous occupant's errno visible); GRANT-able data capability |
+| 1 | The ship kernel loads the `libc.so` module; init endowed; the slot range reserved; spawn and exec inherit by `DT_NEEDED` and map private data (§4 to §6); fork still refused | A gate that spawns a module-built program asking for the library and one that does not, then checks the second holds nothing. Arms: inheritance regardless of the image; a partial set passed on; data shared with the spawner instead of copied (one task's errno visible in another) |
 | 2 | `SYS_MEM_SEAL` (§9) | A probe seals a page, then tries a write and a copy-on-write break. Arms: seal that leaves WRITE; a break path that re-grants |
 | 3 | The loader's narrowing (§7), and the linker in crt0 (§8) with named exports and the ABI hash | `hello_shared` rebuilt against `libc.so` and using `getopt`. Arms: ABI hash ignored; an unknown name resolved to zero; the seal skipped (the table still writable) |
 | 4 | The eleven coreutils and `tcc` move onto it; `gen_libc_stubs.sh` retires | The existing coreutils gates, unchanged, on the shared build, plus the measured sizes in `docs/ROADMAP.md` |

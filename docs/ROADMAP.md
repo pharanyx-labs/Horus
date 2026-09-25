@@ -1164,7 +1164,7 @@ and a `crt0_shared` that binds the library before `main`.
 *before* booting that every libc symbol the program defines is a 14-byte thunk rather than an
 implementation, a statically-linked build would print the same thing and prove nothing.
 
-**How the shipped system will use it is designed in [`design/shared-libc.md`](design/shared-libc.md)**, with its decisions taken 2026-09-25: inheritance at spawn by `DT_NEEDED`, per-slot private data, a ring-3 linker in crt0 that resolves by name, and a seal that makes the resolved table read-only. It lands in four steps.
+**How the shipped system will use it is designed in [`design/shared-libc.md`](design/shared-libc.md)**, with its decisions taken 2026-09-25: inheritance at spawn by `DT_NEEDED`, private data as ordinary per-task memory, a ring-3 linker in crt0 that resolves by name, and a seal that makes the resolved table read-only. It lands in four steps.
 
 **Still open:** the shipped programs. `hello_shared` is the witness; migrating the eleven
 coreutils needs the kernel to endow ordinary tasks with the library's capabilities, which is an

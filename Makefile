@@ -164,7 +164,7 @@ DEFECT_FLAGS = \
 	DEVREGS_KERNEL_ONLY SD_BLOCK_ADDR_UNSCALED FB_REQUEST \
 	FB_TAG_IGNORED FB_TAG_ASSUME_TEXT \
 	FB_MAP_SELFTEST FB_MAP_LOW_HALF FB_CONSOLE_SELFTEST \
-	FB_CONSOLE_MIRRORED FB_INFO_ANY_DEVICE CONSOLE_FB_ABSENT CONSOLE_NO_KBD KLOG_CONSOLE \
+	FB_CONSOLE_MIRRORED FB_INFO_ANY_DEVICE CONSOLE_FB_ABSENT CONSOLE_NO_KBD CONSOLE_INPUT_SPIN KLOG_CONSOLE \
 	KLOG_NARROW CONSOLE_NO_SCROLLBACK \
 	SERIAL_PRESENCE_UNCHECKED \
 	CONSOLE_BACKSPACE_NO_ERASE SHELL_BARE_UNKNOWN \
@@ -3412,6 +3412,13 @@ CONSOLE_FB_ABSENT ?= 0
 # USERSPACE_CFLAGS. The arm for `make smoke-keyboard`.
 CONSOLE_NO_KBD ?= 0
 
+# CONSOLE_INPUT_SPIN=1 is console_server before 2026-09-25: it never routes IRQ 1
+# and the tick to its notification, so every wait for input is a sys_yield loop
+# and an idle prompt keeps a core busy (100% of a host core under QEMU).
+# Userspace-only, so it goes on USERSPACE_CFLAGS. The arm for
+# `make smoke-console-idle`.
+CONSOLE_INPUT_SPIN ?= 0
+
 # CONSOLE_CLEAR_DRAWN=1 is CON_OP_CLEAR before 2026-09-24: after blanking the
 # screen it wrote `ESC [2J ESC [H` through con_putc, which draws on the screen as
 # well as sending to serial, so seven glyphs appeared before `init: the installer
@@ -4533,6 +4540,9 @@ USERSPACE_CFLAGS += -DCONSOLE_FB_ABSENT
 endif
 ifeq ($(CONSOLE_NO_KBD),1)
 USERSPACE_CFLAGS += -DCONSOLE_NO_KBD
+endif
+ifeq ($(CONSOLE_INPUT_SPIN),1)
+USERSPACE_CFLAGS += -DCONSOLE_INPUT_SPIN
 endif
 ifeq ($(CONSOLE_CLEAR_DRAWN),1)
 USERSPACE_CFLAGS += -DCONSOLE_CLEAR_DRAWN
@@ -8528,6 +8538,30 @@ smoke-keyboard:
 # that scrolls off the top is kept, Shift+PgUp/PgDn page through it, and a key or
 # output while scrolled back returns to the live screen. Every build has it: it
 # shows only what was already on the screen. The arm is console_server before it.
+# AN IDLE PROMPT SLEEPS (tools/console_idle_session.py): console_server blocks on
+# its notification until IRQ 1 or the tick, so QEMU's CPU time at the login
+# prompt stays well under a core, and a login typed on the keyboard and a command
+# typed on COM1 are both still read. The arm is the sys_yield loop before it.
+.PHONY: smoke-console-idle smoke-console-idle-control
+smoke-console-idle:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) $(IDLEARM) horus.iso
+	@python3 tools/console_idle_session.py --iso horus.iso \
+		--boot-timeout $(SMOKE_KEYBOARD_TIMEOUT) \
+		--serial-log /tmp/horus-console-idle.log
+
+smoke-console-idle-control:
+	@out=$$($(MAKE) --no-print-directory smoke-console-idle IDLEARM=CONSOLE_INPUT_SPIN=1 2>&1); rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "CONSOLE IDLE CONTROL: FAIL - a console that spins passed the idle gate"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "the console kept a core busy at an idle prompt"; then \
+	    echo "CONSOLE IDLE CONTROL: FAIL - it failed, but not on the idle cost."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "CONSOLE IDLE CONTROL: PASS - a console that spins at an idle prompt is caught"
+
 .PHONY: smoke-console-scrollback smoke-console-scrollback-control
 smoke-console-scrollback:
 	@$(MAKE) --no-print-directory clean

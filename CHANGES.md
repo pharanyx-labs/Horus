@@ -621,6 +621,14 @@ in this file.
 
 ### Fixed
 
+- **An idle console prompt kept a core busy.** The console server waited for each key by
+  yielding the CPU in a loop, and a console at a prompt waits nearly all the time: under QEMU the
+  machine used a whole host core at the login prompt, and on a two-core laptop that competed with
+  everything else for the CPU. It now sleeps until the keyboard's interrupt or the next timer tick,
+  so an idle prompt costs a few percent (measured 3.2% to 8.2%), and `make smoke-console-idle`
+  measures it. `init` gives the console server one new capability for this, a notification of its
+  own (`SECURITY.md` S89).
+
 - **Every disk read on a laptop's eMMC took about 83 ms, so commands and keys lagged by seconds.**
   The SD/eMMC driver never left the settings cards are identified at: one data line at 400 kHz.
   It now switches the card to a 4-bit bus at 25 MHz after identification, checks the new mode

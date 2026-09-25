@@ -603,12 +603,12 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
              * polls. What it costs is the SECOND key pressed in that window,
              * which the controller has nowhere to put.
              *
-             * IT IS NOT AN IRQ REGISTRATION, deliberately. Routing the line
-             * through SYS_IRQ_REGISTER would need console_server to hold a
-             * CAP_NOTIFICATION it does not have and would never wait on -- a new
-             * delegation whose only purpose was this branch's side effect. The
-             * ownership it already has is the more honest gate, and it is the
-             * one the console's authority is actually defined by. */
+             * SINCE 2026-09-25 THIS BRANCH IS THE FALLBACK. console_server now
+             * registers IRQ 1 with a notification of its own, so that it can
+             * sleep while it waits for a key (con_idle), and the branch above
+             * takes the line. This one still answers until the registration
+             * lands and in any build where it was refused, where the server
+             * polls; the ownership it already has is what gates it either way. */
             irq_eoi(33);
         } else {
             /* Nobody in ring 3 owns the console: the in-kernel console reader

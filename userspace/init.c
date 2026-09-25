@@ -323,6 +323,7 @@ static void report_storage(void) {
  * refused, rather than silently resolving something the kernel put there. */
 #define INIT_DEV_LISTEN     40   /* CAP_ENDPOINT, retyped: READ|WRITE (listen) */
 #define INIT_DEV_CLIENT     41   /* the same endpoint, WRITE only (init as client) */
+#define INIT_CON_NOTIFY     42   /* CAP_NOTIFICATION, retyped: console_server's input wait */
 
 /* Launch the userspace fs_server and provision it entirely by delegation: init
  * grants the server all four capabilities it needs — the coarse IPC gate (slot
@@ -486,6 +487,20 @@ static int launch_console_server(void) {
     /* Console LISTEN capability: the receive right on CON_EP_REQ. Only the
      * console server gets this; clients get the WRITE-only copy below. */
     if (sys_cap_grant(csrv, INIT_CON_LISTEN,    CAPSLOT_CONSOLE_EP) != 0) return -2;
+    /* A NOTIFICATION TO WAIT FOR INPUT ON (2026-09-25), so the server sleeps
+     * until the keyboard's interrupt or the tick rather than spinning on
+     * sys_yield at every prompt (con_idle in userspace/console_server.c). A new
+     * object from init's own untyped memory, shared with nothing: the fs-ready
+     * rendezvous in INIT_NOTIFY is init's, and a server that could signal it
+     * could tell init the filesystem was ready.
+     *
+     * GRANTED BEFORE THE DEVICE CAPABILITY, on purpose. The server retries its
+     * port grant until CAP_IO_DEVICE lands and registers its interrupts after
+     * that, so on a multi-core boot seeing the device means the notification is
+     * already there. Not fatal if it fails: the server finds no notification,
+     * says so on the wire, and polls as it did before. */
+    if (sys_retype(CAPSLOT_UNTYPED, KOBJ_NOTIFICATION, 1, INIT_CON_NOTIFY) == 1)
+        (void)sys_cap_grant(csrv, INIT_CON_NOTIFY, CAPSLOT_NOTIFY);
     if (sys_cap_grant(csrv, CAP_SLOT_IO_DEVICE, CAPSLOT_IO_DEVICE)  != 0) return -3;
 #ifdef KLOG_CONSOLE
     /* INSTRUMENT -- never ship. The kernel log for the Alt+F2 view (see klog_view

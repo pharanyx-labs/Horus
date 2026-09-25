@@ -2369,7 +2369,7 @@ void console_progress(const char *title, const char *why1, const char *why2,
 void console_progress_note(const char *note);
 
 uint64_t kmsg_uptime_ticks(void);   /* whole PIT ticks since boot -- quantised, see terminal.c */
-#ifdef CLOCK_TSC_RESOLUTION
+#if defined(CLOCK_TSC_RESOLUTION) || defined(SDHCI_HW_TRACE)
 uint64_t kmsg_uptime_us(void);      /* control arm only -- see terminal.c */
 #endif
 uint32_t klog_copy(char *dst, uint32_t offset, uint32_t max); /* snapshot the kernel log ring from `offset`; backs SYS_DMESG */

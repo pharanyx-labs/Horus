@@ -1145,7 +1145,10 @@ uint64_t kmsg_uptime_ticks(void) {
     return us / (1000000u / PIT_TICK_HZ);
 }
 
-#ifdef CLOCK_TSC_RESOLUTION
+#if defined(CLOCK_TSC_RESOLUTION) || defined(SDHCI_HW_TRACE)
+/* Microseconds since boot from the calibrated TSC. Also in SDHCI_HW_TRACE
+ * builds, where only the SD trace calls it (kernel-internal; no syscall reaches
+ * it), to split a read's time between the controller and the rest. */
 /* Microseconds since boot from the calibrated TSC. Exists ONLY for the
  * CLOCK_TSC_RESOLUTION control arm (roadmap 2.2): it is the cycle-accurate
  * clock SYS_CLOCK_GETTIME deliberately does not expose, so it is compiled out

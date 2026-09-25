@@ -238,15 +238,34 @@ int sdhci_bd_write(uint64_t lba, const void *buf) {
  * costs and how long they take. Every 8 reads it prints how many timer ticks
  * (10 ms each) those 64 took, and the running totals, so an `ls` on the machine
  * shows up in the kernel log as a count and a rate. */
-static uint32_t sdtrace_io_reads, sdtrace_io_writes, sdtrace_io_t0;
+static uint32_t sdtrace_io_reads, sdtrace_io_writes;
+static uint64_t sdt_first, sdt_cmd, sdt_data, sdt_done;
+extern uint64_t sdt_t_export[4];
+extern uint32_t g_trace_switches, g_trace_flushes, g_trace_yields;
+extern uint64_t g_trace_flush_us;
+/* Per 8 reads: microseconds in each phase of the transfer inside the driver
+ * (the command, moving the data, waiting for completion), the wall time from
+ * the first read's start to the last one's end, and what the scheduler did
+ * meanwhile. Wall minus the three phases is time outside the driver. */
 static void sdtrace_io(int is_write) {
     if (is_write) { sdtrace_io_writes++; return; }
-    if (sdtrace_io_reads++ % 8u == 0u) { sdtrace_io_t0 = get_system_ticks(); return; }
     if (sdtrace_io_reads % 8u == 0u) {
-        print("SDTRACE   io: 8 reads in ");
-        print_decimal(get_system_ticks() - sdtrace_io_t0);
-        print(" ticks; "); print_decimal(sdtrace_io_reads); print(" reads, ");
-        print_decimal(sdtrace_io_writes); print(" writes so far\n");
+        sdt_first = sdt_t_export[0]; sdt_cmd = sdt_data = sdt_done = 0;
+        g_trace_switches = g_trace_flushes = g_trace_yields = 0; g_trace_flush_us = 0;
+    }
+    sdt_cmd  += sdt_t_export[1] - sdt_t_export[0];
+    sdt_data += sdt_t_export[2] - sdt_t_export[1];
+    sdt_done += sdt_t_export[3] - sdt_t_export[2];
+    if (++sdtrace_io_reads % 8u == 0u) {
+        print("SDTRACE   io8 us: cmd "); print_decimal((uint32_t)sdt_cmd);
+        print(" data "); print_decimal((uint32_t)sdt_data);
+        print(" done "); print_decimal((uint32_t)sdt_done);
+        print(" wall "); print_decimal((uint32_t)(sdt_t_export[3] - sdt_first));
+        print("; sw "); print_decimal(g_trace_switches);
+        print(" fl "); print_decimal(g_trace_flushes);
+        print(" "); print_decimal((uint32_t)g_trace_flush_us);
+        print("us y "); print_decimal(g_trace_yields);
+        print("\n");
     }
 }
 #else
@@ -822,10 +841,17 @@ static int sd_pio_read512(uint64_t bar, uint32_t index, uint32_t arg, void *buf)
  *
  * COUNT IS BOUNDED BY THE 16-BIT BLOCK COUNT REGISTER, and callers pass small
  * runs, so the bound is checked rather than assumed. */
+#ifdef SDHCI_HW_TRACE
+uint64_t sdt_t_export[4];                 /* start, command done, data done, complete */
+#define SDT_MARK(i) (sdt_t_export[(i)] = kmsg_uptime_us())
+#else
+#define SDT_MARK(i) ((void)0)
+#endif
 static int sd_rw_blocks(uint64_t bar, uint64_t lba, void *buf, uint32_t count,
                         int is_hc, int is_write, int repeat_one) {
     if (count == 0) return 0;
     if (count > 0xFFFFu) return -1;
+    SDT_MARK(0);
 
     uint32_t *p = (uint32_t *)buf;
     const uint16_t ready = is_write ? INT_BUF_WRITE_READY : INT_BUF_READ_READY;
@@ -843,6 +869,7 @@ static int sd_rw_blocks(uint64_t bar, uint64_t lba, void *buf, uint32_t count,
     if (sd_command_data(bar, index, arg, RESP_48,
                         CMD_CRC_CHECK | CMD_INDEX_CHECK | CMD_DATA_PRESENT) != 0)
         return -1;
+    SDT_MARK(1);
 
     for (uint32_t b = 0; b < count; b++) {
         for (uint32_t i = 0; ; i++) {
@@ -875,11 +902,12 @@ static int sd_rw_blocks(uint64_t bar, uint64_t lba, void *buf, uint32_t count,
         if (!repeat_one) p += 512u / 4u;
     }
 
+    SDT_MARK(2);
     for (uint32_t i = 0; ; i++) {
         uint16_t st  = sdhci_read16(bar, SDHCI_INT_STATUS);
         uint16_t err = sdhci_read16(bar, SDHCI_ERR_STATUS);
         if (err) { sd_rw_failed(bar, "completion error", is_write, lba, count, count); return -4; }
-        if (st & INT_XFER_COMPLETE) return 0;
+        if (st & INT_XFER_COMPLETE) { SDT_MARK(3); return 0; }
         if (i >= SDHCI_SPINS) {
             sd_rw_failed(bar, "no completion", is_write, lba, count, count);
             return -5;

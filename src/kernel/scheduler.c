@@ -4219,6 +4219,13 @@ void percpu_id_verify_self(void) {
 }
 #endif /* SMP */
 
+#ifdef SDHCI_HW_TRACE
+/* DIAGNOSTIC (the laptop's command lag): task switches, microarchitectural
+ * flushes and their cost, and yields, reported beside the SD read timings.
+ * Racy increments across CPUs; they are counts for a person, not a gate. */
+uint32_t g_trace_switches, g_trace_flushes, g_trace_yields;
+uint64_t g_trace_flush_us;
+#endif
 int get_current_task(void) {
     int c = this_cpu();
     if (c < 0 || c >= MAX_CPUS) c = 0;
@@ -4248,9 +4255,19 @@ void set_current_task(int v) {
      * gated on detected CPU support, so it is a no-op where unavailable. It does
      * NOT cover a sibling SMT thread running concurrently on the same core — see
      * docs/LIMITATIONS.md (disable SMT / core-schedule for that). */
+#ifdef SDHCI_HW_TRACE
+    if (percpu_current_task[c] != v) g_trace_switches++;
+#endif
     if (sched_domain_switch_would_flush(percpu_last_user_task[c], v)) {
         percpu_last_user_task[c] = v;
+#ifdef SDHCI_HW_TRACE
+        uint64_t f0 = kmsg_uptime_us();
         cpu_flush_microarch_state();
+        g_trace_flush_us += kmsg_uptime_us() - f0;
+        g_trace_flushes++;
+#else
+        cpu_flush_microarch_state();
+#endif
     }
 
     /* Taking a real task means this CPU is no longer parked in the ring-0 idle

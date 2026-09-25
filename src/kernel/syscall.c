@@ -988,6 +988,9 @@ static void h_receive_program(struct interrupt_frame64 *r) {
 /* SYS_YIELD: request a full-context switch; interrupt_handler64 runs
  * sched_yield_switch on the live trap frame after this returns. */
 static void h_yield(struct interrupt_frame64 *r) {
+#ifdef SDHCI_HW_TRACE
+    { extern uint32_t g_trace_yields; g_trace_yields++; }
+#endif
 #ifdef KFAULT_RECORD_SELFTEST
     /* Test-only, and absent from every shipping configuration: the witness for
      * HORUS-20260920-01 (docs/LIMITATIONS.md 1.16). A task named "kfaulter" that

@@ -65,6 +65,7 @@ control_arms:
   smoke-installer-defaults-control: smoke-installer
   smoke-installer-sized-control: smoke-installer-sized
   smoke-installer-failed-control: smoke-installer-failed
+  smoke-live-no-seed-control: smoke-live-no-seed
   smoke-shlib-inherit-image-control: smoke-shlib-inherit
   smoke-shlib-inherit-data-control: smoke-shlib-inherit
   smoke-shlib-inherit-exec-control: smoke-shlib-inherit
@@ -341,6 +342,7 @@ gates:
   - smoke-installer-back
   - smoke-installer-sized
   - smoke-installer-failed
+  - smoke-live-no-seed
   - smoke-shlib-inherit
   - smoke-mem-seal
   - smoke-shlib-link

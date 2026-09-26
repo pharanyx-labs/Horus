@@ -1165,6 +1165,16 @@ static int do_install(void)
         return -1;
     }
 
+#ifdef INSTALLER_STOP_AFTER_FORMAT
+    /* INSTRUMENT -- never ship. Stops the install between the format and the
+     * first account write, which is where a power cut, or a SYS_PASSWD failure
+     * like the IdeaPad's, leaves a real machine: a volume that opens with the
+     * chosen password and carries no account table. make smoke-live-no-seed
+     * then boots that disk live and installed (SECURITY.md S109). */
+    fail("stopped after the format", " (INSTALLER_STOP_AFTER_FORMAT)");
+    return -1;
+#endif
+
     /* The account half. Without it the volume opens and no login succeeds: the
      * account table on a fresh volume is the compiled-in default, so `root`
      * still wants the built-in password while the VOLUME wants the one just

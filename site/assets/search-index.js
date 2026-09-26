@@ -211,87 +211,51 @@ window.HORUS_SEARCH = [
 "k": 2
 },
 {
-"t": "H-3Four gates were satisfied by a capability everyone holds",
+"t": "C-5Nobody reviews a change before it lands",
 "p": "Limitations",
-"u": "limitations.html#h-3four-gates-were-satisfied-by-a-capability-everyone-holds",
+"u": "limitations.html#c-5nobody-reviews-a-change-before-it-lands",
 "k": 3
 },
 {
-"t": "2.6cA merge gate reported a defect as absent because its evidence was shredded",
+"t": "1.8Eleven system calls have no test that runs them",
 "p": "Limitations",
-"u": "limitations.html#2-6ca-merge-gate-reported-a-defect-as-absent-because-its-evi",
+"u": "limitations.html#1-8eleven-system-calls-have-no-test-that-runs-them",
 "k": 3
 },
 {
-"t": "C-5No independent review",
+"t": "1.14A child's inherited pipe end escapes revocation",
 "p": "Limitations",
-"u": "limitations.html#c-5no-independent-review",
+"u": "limitations.html#1-14a-child-s-inherited-pipe-end-escapes-revocation",
 "k": 3
 },
 {
-"t": "C-6Which tests gate a merge was reconciled by hand, closed",
+"t": "1.6The console is the one ambient authority",
 "p": "Limitations",
-"u": "limitations.html#c-6which-tests-gate-a-merge-was-reconciled-by-hand-closed",
+"u": "limitations.html#1-6the-console-is-the-one-ambient-authority",
 "k": 3
 },
 {
-"t": "G-8Two CPUs on one kernel stack, closed, both paths",
+"t": "2.6cMost gates still read kernel reports off a shared console",
 "p": "Limitations",
-"u": "limitations.html#g-8two-cpus-on-one-kernel-stack-closed-both-paths",
+"u": "limitations.html#2-6cmost-gates-still-read-kernel-reports-off-a-shared-consol",
 "k": 3
 },
 {
-"t": "G-9A scheduler claim that leaked, closed, and the last component was the checker",
+"t": "2.9Measured boot is opt-in",
 "p": "Limitations",
-"u": "limitations.html#g-9a-scheduler-claim-that-leaked-closed-and-the-last-compone",
+"u": "limitations.html#2-9measured-boot-is-opt-in",
 "k": 3
 },
 {
-"t": "G-12Two cores on one task, through the door marked “first entry”",
+"t": "4An installed disk does not boot on its own",
 "p": "Limitations",
-"u": "limitations.html#g-12two-cores-on-one-task-through-the-door-marked-first-entr",
+"u": "limitations.html#4an-installed-disk-does-not-boot-on-its-own",
 "k": 3
 },
 {
-"t": "G-13The measurement that was never a measurement",
+"t": "4Hardware support is narrow",
 "p": "Limitations",
-"u": "limitations.html#g-13the-measurement-that-was-never-a-measurement",
-"k": 3
-},
-{
-"t": "G-10The spawn path was written for one core",
-"p": "Limitations",
-"u": "limitations.html#g-10the-spawn-path-was-written-for-one-core",
-"k": 3
-},
-{
-"t": "G-11The armed program image belonged to nobody",
-"p": "Limitations",
-"u": "limitations.html#g-11the-armed-program-image-belonged-to-nobody",
-"k": 3
-},
-{
-"t": "coverageTen system calls still have no test that runs them, and covering four of them found a fault",
-"p": "Limitations",
-"u": "limitations.html#coverageten-system-calls-still-have-no-test-that-runs-them-a",
-"k": 3
-},
-{
-"t": "#176The kernel was handed an address nobody asked for",
-"p": "Limitations",
-"u": "limitations.html#176the-kernel-was-handed-an-address-nobody-asked-for",
-"k": 3
-},
-{
-"t": "H-2Anyone could write the kernel's log",
-"p": "Limitations",
-"u": "limitations.html#h-2anyone-could-write-the-kernel-s-log",
-"k": 3
-},
-{
-"t": "1.3Priority inheritance is inexpressible",
-"p": "Limitations",
-"u": "limitations.html#1-3priority-inheritance-is-inexpressible",
+"u": "limitations.html#4hardware-support-is-narrow",
 "k": 3
 },
 {
@@ -307,9 +271,15 @@ window.HORUS_SEARCH = [
 "k": 3
 },
 {
-"t": "miscSmaller sharp edges, all tracked",
+"t": "5.5Formal verification is narrow",
 "p": "Limitations",
-"u": "limitations.html#miscsmaller-sharp-edges-all-tracked",
+"u": "limitations.html#5-5formal-verification-is-narrow",
+"k": 3
+},
+{
+"t": "miscSmaller edges, all tracked",
+"p": "Limitations",
+"u": "limitations.html#miscsmaller-edges-all-tracked",
 "k": 3
 },
 {

@@ -3,855 +3,135 @@
 <h2 id="limits" data-toc="Findings">What is wrong with Horus right now.</h2>
 <div class="prose">
   <p class="lead">
-    Horus is <strong>research-grade</strong>, has not been independently audited, and
-    should not be trusted with anything real. These are the findings worth knowing before
-    you draw a conclusion about it. The full and deliberately unflattering account is in
+    Horus is <strong>research-grade</strong>, has not been independently reviewed, and
+    should not be trusted with anything real. These are the open limitations worth knowing
+    before you draw a conclusion about it. The authoritative list, with every closed entry and
+    the pull request that closed it, is
     <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/LIMITATIONS.md">LIMITATIONS.md</a>.
   </p>
 </div>
 
 <ul class="findings">
   <li>
-    <h3><span class="id">H-3</span>Four gates were satisfied by a capability everyone holds</h3>
+    <h3><span class="id">C-5</span>Nobody reviews a change before it lands</h3>
     <p>
-      Fixed 2026-08-22, and worth reading as a pattern rather than a bug. Every task in
-      Horus is born holding a capability in slot 3 that names a fixed memory window and
-      authorises nothing. Four ways into the kernel's internal filesystem; 
-      including the file the user database is written to, checked for
-      <em>a capability in slot 3, of any type</em>. Every task passed. A gate everyone
-      passes is not a gate.
-    </p>
-    <p>
-      It survived two previous sweeps for ambient authority, and the reason is the
-      interesting part: both looked for gates that were <em>missing</em>. These were
-      present and vacuous, which is a different shape and matches neither search. The
-      project's own limitations page carried a table calling itself the complete list of
-      ungated paths; it listed the four gated on nothing and missed the four gated on
-      something equivalent to nothing.
-    </p>
-    <p>
-      What it exposed was less than it looks: the 32 bytes recoverable from the user
-      database file are an integrity tag, not the password hashes, because a
-      <em>second</em> bug means only the last of four writes to that file survives. The
-      hashes were one bug-fix away from being world-readable. The four doors are now
-      removed outright rather than re-gated.
-    </p>
-    <p>
-      <strong>The same shape had a second home, and it took until 2026-08-30 to find and
-      close.</strong> The five calls that create a task, spawn, fork, and their
-      variants, checked the same slot 3, so every task in the system could create
-      tasks and the check could not fail. It gave away nothing, because a spawned child
-      is only ever endowed from what its parent holds; what it gave away was the
-      <em>description</em>, and two comments in the source disagreed with each other about
-      a restriction neither of them enforced. The fix was not a better check but a real
-      cost: a task's capability table is kernel memory, and creating one is now paid for
-      out of the memory budget the parent holds a capability to. A task given no such
-      budget cannot create tasks, which is what that check had always claimed to
-      mean.
-    </p>
-    <p>
-      <strong>And a third home, closed 2026-09-03, the part that changed how this
-      is checked.</strong> Two more calls still carried the identical row in the shipping
-      kernel: one dropped the caller into user mode at an address it chose, the other
-      armed a program image for execution. Neither had a caller anywhere in the tree, and
-      the second read its image from a serial port nothing in the project connects. What
-      makes this worth publishing is not the two calls but how they survived: <em>the
-      project had already written the fact down.</em> A machine-readable manifest of
-      syscall test coverage had said of one of them, for two weeks, that &ldquo;the slot-3
-      check does not stop a caller, and a successful call arms an image&rdquo;,
-      sitting under a heading that made the same claim about three calls which had since
-      been fixed. One true sentence beside three stale ones, in a field nothing asserts.
-    </p>
-    <p>
-      A fact in a comment is not a gate, and three sweeps in a row certified themselves
-      complete. So the fix is not a fourth sweep: a required check now parses the kernel's
-      dispatch table the way the compiler does and fails the build on any shipping entry
-      gated on that slot. It is falsified four ways, including against a renamed table,
-      because every other rule in it is vacuous if the parser has quietly stopped
-      matching, and a check that cannot fail is the thing this whole finding is about.
-    </p>
-    <p>
-      <strong>The same week, the same mistake, in a different file, and this time
-      the checker found it.</strong> The container format the build writes and the kernel
-      reads was recorded as being written down four times. A checker added to refuse a
-      second copy of it reported <em>eleven</em> on its first run, including two on the
-      boot path that starts the first userspace process. The recorded number had been
-      produced by a person reading the code, and it was short, exactly as the count of
-      ungated syscalls above had been short four days earlier.
-    </p>
-    <p>
-      Both were closed the same way, and it is the transferable part of all of this:
-      <em>stop counting, and let something enumerate.</em> A number in a document is a
-      claim about the code that nothing re-checks; every time this project has written one
-      down by hand, it has drifted. The format now has a single declaration that the
-      kernel, the userspace side and the host build tool all compile, and a test that boots
-      the system and confirms the bytes on disk really came from it, because the
-      build tool is a separate program built by a separate compiler, and no amount of
-      static checking can bridge that gap.
+      Claude writes most of the code and merges its own pull requests once every gate is
+      green; the maintainer sets direction and decides the questions that touch the security
+      model. No human reads a change before it merges. The automated side is extensive: the
+      gating set is 136 checks with 4 exempted, each security property has a named witness,
+      and each gate has a control arm that puts the defect back and must turn it red. But the
+      2026-07 critical finding passed every gate of its day, because the tests checked the
+      property the author had in mind rather than the one the documentation claimed. The
+      honest claim is "thoroughly automatically verified", not "independently reviewed".
     </p>
   </li>
   <li>
-    <h3><span class="id">2.6c</span>A merge gate reported a defect as absent because its evidence was shredded</h3>
+    <h3><span class="id">1.8</span>Eleven system calls have no test that runs them</h3>
     <p>
-      When the kernel traps in its own code it writes the serial line directly, one byte
-      at a time, because the ordinary logging path is silenced the moment a userspace
-      process takes ownership of the console, and that process writes the same
-      serial line. So an unrelated program&rsquo;s output can land <em>between two
-      characters</em> of a single kernel report. On 2026-09-02 that is exactly what
-      happened on a pull request that touched none of the code involved: a kernel panic
-      reached the log beginning mid-word, the gate&rsquo;s pattern did not match, and it
-      announced that the defect it was hunting <em>had not reproduced in eight boots</em>,
-      with the panic printed four lines below that sentence, in the gate&rsquo;s
-      own evidence dump.
-    </p>
-    <p>
-      A gate whose evidence can be destroyed by an unrelated program fails <em>open</em>,
-      and there is no lock available: the writer the kernel would have to exclude is a
-      process it does not schedule. The repair is a channel with only one writer, and what
-      makes it one is not a convention but the capability model itself. The kernel now
-      reports on a serial port that <strong>no capability names</strong>: it is
-      absent from every entry in the device table, so the syscall that hands out port
-      access has nothing to hand out. It is not that userspace does not write there; it is
-      that it cannot, and the test proves that by having a userspace process attempt the
-      write in both configurations. Declaring the port makes the write land. Leaving it
-      undeclared makes the identical instruction fault.
-    </p>
-    <p>
-      <strong>It stays on this list</strong>, because only the mechanism is fixed. Around
-      twenty existing gates still read the shared console for kernel output and are
-      exposed exactly as before, and migrating them is the remaining work. The first thing
-      the new channel caught, incidentally, was the test written to measure it: it had
-      been proving the console handover by searching the shared console for a marker,
-      which the same hazard ate on one boot in five.
-    </p>
-  </li>
-  <li>
-    <h3><span class="id">C-5</span>No independent review</h3>
-    <p>
-      Horus is maintained by one person, and recent pull requests merged with zero
-      reviews. The assurance it can honestly claim is <em>"thoroughly automatically
-      verified"</em>, not <em>"independently reviewed"</em>. The IPC finding is the
-      demonstration of what that combination produces: a defect that passed every
-      automated gate, because the suite tested the property the author had in mind rather
-      than the property the documentation claimed. This is the highest-leverage open
-      problem on the list, and it is not a technical one.
-    </p>
-  </li>
-  <li>
-    <h3><span class="id">C-6</span>Which tests gate a merge was reconciled by hand, closed</h3>
-    <p>
-      <strong>Closed 21 September 2026.</strong> The branch ruleset now requires two
-      checks rather than one per job: an aggregate that waits for every gating job and
-      passes only if each one succeeded, and CodeQL. A skipped or cancelled gate counts
-      as a failure, because a skipped required check otherwise counts as passed. CI proves
-      on every change that the aggregate covers exactly the jobs the checked-in decision
-      marks as gating, so a new gate blocks merges from the change that adds it. The
-      account follows.
-    </p>
-    <p>
-      Until 2026-08-15, <strong>not one of the 22 required status checks was a security
-      gate</strong>, including <code>smoke-captest</code>, the capability conformance
-      suite that is the named witness for eight of the security properties on this page.
-      That is exactly how the 2026-07 critical finding survived every automated gate.
-      Promoting it helped; it did not fix the mechanism that produced the omission.
-    </p>
-    <p>
-      The required list lived only in a branch ruleset that no commit touches, so every
-      job added to the workflow landed in the advisory set <em>by default</em> and
-      nothing asked whether it should have. It cost a security gate twice, once for
-      <code>smoke-captest</code>, and again on 2026-08-16 when the two journal
-      durability gates landed advisory in the very commit that fixed the defect they
-      witness.
-    </p>
-    <p>
-      Since 2026-08-16 the decision is checked in. Every job in all three workflows must
-      be listed as merge-gating, or exempted <em>with a written reason</em>, and CI fails
-      the build if any is in neither; there is no default, because defaulting was the
-      defect. It caught an unclassified static-analysis job on its first run. The
-      gating set is 136 checks with 4 exempted, and the promotions are backed by
-      measurement rather than optimism: across 18 sampled runs, 64 of 66 jobs had zero
-      failures in 1152 job-executions.
-    </p>
-    <p>
-      <strong>A required check can also be required and unable to fail.</strong> One of
-      them was, for as long as it took to notice. A job kept from its advisory days the
-      one line that tells GitHub to report it green whatever its steps did; the change
-      that promoted it edited the decision file and the ruleset and never opened the
-      workflow, and a later change rewrote that job's <em>name</em> one line above to
-      delete the word ADVISORY, and left the line. It was not idle: the job failed twice
-      on the main branch inside runs reported green, and the daily ruleset audit could not
-      see it, because that audit compares the <em>names</em> of checks and a masked job
-      publishes the right name with the wrong verdict. Since 2026-08-22 the classifier
-      refuses the combination outright, so a gate cannot be required and unfailable at the
-      same time.
-    </p>
-    <p>
-      The ruleset was synced toward that set on 2026-08-16, from <strong>22 required
-      checks</strong>, so every security test named above blocks a merge. The first
-      attempt required three checks the main branch could not yet produce, which blocks
-      every pull request on a check that never reports, so promotion had to lag the job
-      landing by one merge.
-    </p>
-    <p>
-      Reading a ruleset needs the <code>Administration</code> permission, which is not
-      among the scopes a workflow token can be granted at all, so CI proved the
-      classification was complete, never that the ruleset matched it, and the two could
-      diverge through a single change in the web UI with nothing noticing. A scheduled
-      job now re-checks that daily, authenticating as a GitHub App scoped to this one
-      repository with read-only administration access, minted per run. The trade is
-      written down rather than glossed: a credential that can read repository
-      administration now sits in CI secrets, to detect drift that requires
-      administration access to cause. <strong>That app went live on 2026-08-19</strong>:
-      the scheduled run that morning read the ruleset and reported it matching, where the
-      run a day earlier had failed on the missing credentials. It failed loudly rather
-      than skipping for every day it was unconfigured, an audit that quietly skips when
-      unconfigured is a check that cannot fail, which is why the day it started working
-      is visible at all.
-    </p>
-    <p>
-      <strong>What remained was the other half, and it is what closed.</strong> Writing
-      the per-job list back needed an administrator's credentials, so a change that added
-      a gating job left the list one entry behind until someone ran the sync afterwards,
-      once for five merges in a row. The aggregate removed the list: adding a gate no
-      longer touches the ruleset at all, and the daily audit still checks the two checks
-      it does require.
-    </p>
-    <p>
-      <strong>The same class of drift, in the documents themselves, is now gated too.</strong>
-      An audit on 2026-08-19 found nine stale numbers across five files in one morning,
-      while two other files carried them correctly. The house rule to re-derive every
-      number had been written down the whole time, a rule only a reader enforces fails
-      silently. Each derivable count and every place stating it is now declared in one
-      file, computed from the source, and compared on every merge. Reword a sentence so
-      a declared claim vanishes and that fails too, because a check deleted along with
-      its claim is the same failure wearing a different hat.
-    </p>
-  </li>
-  <li>
-    <h3><span class="id">G-8</span>Two CPUs on one kernel stack, closed, both paths</h3>
-    <p class="note"><a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/investigations/G-08-two-cpus-one-kernel-stack.md">Read the full investigation &rarr;</a></p>
-    <p>
-      <strong>Closed 2026-08-17.</strong> For eight days the SMP session soak failed at
-      roughly <strong>2–3% per boot</strong> and the origin resisted several
-      investigations. It was this: a scheduler switch path published the outgoing task as
-      claimable by another CPU <em>while the CPU making the switch was still executing
-      interrupt-handler frames on that task's kernel stack</em>. A CPU that took the task
-      inside that window resumed it to ring 3, and its very next trap re-entered the
-      interrupt handler on the same stack, at the same depth, running the same functions
-     , rewriting exactly the words the first CPU had not finished reading.
-    </p>
-    <p>
-      The exactness is why it hid. Two CPUs running the same code at the same depth put
-      the <em>same</em> return addresses and the <em>same</em> stack canary back into
-      their own slots, so every frame validates and every return goes where it should.
-      Only the data differs, and the first datum out is the resume stack pointer the
-      interrupt epilogue is about to load. That accounts for the whole recorded
-      signature: a plausible word from the wrong context, a canary that passed, and a
-      scheduler invariant that read perfectly consistent.
-    </p>
-    <p>
-      <strong>The invariant was never evidence against it, and that is the correction
-      worth publishing.</strong> The project had recorded that the shared-stack
-      hypothesis had "nothing observed supporting it", because the one capture taken at
-      the right moment showed the task claimed by exactly the CPU running it. A
-      deliberately reproduced collision prints that same consistent line, because it is
-      true. The task really is running on one CPU. The other one is merely still
-      leaving, and no amount of that instrument would ever have said so.
-    </p>
-    <p>
-      The claim is now held until the CPU has physically left the stack, released from
-      the interrupt epilogue's first instruction on the new one. The property is checked
-      on every interrupt rather than argued for, and it is
-      <a href="https://github.com/pharanyx-labs/Horus/blob/main/SECURITY.md">S20</a> in
-      the property table. Two gates settle it in seconds instead of at one boot in 150; 
-      a widened-window build with the fix, which must complete a session, and the same
-      widened window with the old release site, which must reproduce the collision. The
-      soak job gates a merge again.
-    </p>
-    <p>
-      <strong>The second path, closed the same day.</strong> When a task died and nothing
-      else was runnable, the fault path resumed that CPU on <em>task 0's</em> kernel stack
-     , and every CPU taking that path landed on the same one. This was first written up
-      here as a lead with no witness. It has one now, and the interesting part is how it
-      was nearly missed: on a healthy session the path is <strong>never entered</strong>,
-      0 parks in 3 boots, which reads as "unreachable". On a workload that kills tasks on
-      purpose it is entered 5–8 times per boot, and two CPUs were parked on that one stack
-      2–3 times per boot. A path a test never enters is not a path that cannot be entered.
-      Each CPU now parks on its own stack.
-    </p>
-    <p>
-      Closing it turned up something else. The per-CPU idle stacks the kernel parks on had
-      <strong>no guard page</strong>, so the claim that every kernel stack sits above an
-      unmapped guard was false, and had been false independently of this finding, because
-      the scheduler has always parked idle CPUs there. They are guarded now, using each
-      slot's first page so the stack top does not move and the boot trampoline needs no
-      change. The guard check was confirmed by switching the arming off and watching the
-      self-test fail.
-    </p>
-  </li>
-  <li>
-    <h3><span class="id">G-9</span>A scheduler claim that leaked, closed, and the last component was the checker</h3>
-    <p class="note"><a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/investigations/G-09-scheduler-claim-leak.md">Read the full investigation &rarr;</a></p>
-    <p>
-      <strong>The last component was not a scheduler bug at all.</strong> The checker that
-      watches for a leaked claim exempts one while the CPU holding it is mid-handover, and
-      it tracked that exemption in a variable the release path cleared <em>before</em> it
-      took the lock that actually drops the claim. For the width of a lock acquisition the
-      claim was held, unexempt, and already being released. A core auditing in that window
-      saw exactly what a leak looks like. It was reading a torn intermediate state of its
-      own bookkeeping. Second time this checker has done that: in August it read a
-      deliberate impersonation the same way.
-    </p>
-    <p>
-      The natural event appeared on about one boot in twenty-two, with enough variance that
-      two hundred boots could not tell four percent from six. So the window was widened
-      deliberately and set in <em>both</em> arms: with the fix, ten boots of ten are silent;
-      without it, eight of ten accuse. That pair is the evidence; the clean two hundred
-      boots that followed only bound the rate, they do not prove a zero.
-    </p>
-    <p>
-      <strong>Closed 21 August 2026.</strong> Closing G-8 stopped a defect that
-      killed every boot of a task-killing workload, and what it uncovered underneath was
-      a second one that had been hidden behind it: at four CPUs, that workload violated
-      the scheduler's claim invariant on roughly 40% of boots. It had never been run at
-      more than one CPU before, so nothing had ever asked.
-    </p>
-    <p>
-      <strong>Wider than first recorded, 21 August 2026.</strong> That 40% was measured
-      against a spawn-and-reap stress workload, and the finding was written as though
-      that workload were the whole of it. It is not: the same leak, a claim left behind
-      by a core that then went idle, turned up in the <em>ordinary boot</em>, with no
-      test workload at all, at about one boot in 120. The mechanism is unchanged and the
-      rate is far lower, but the blast radius is the normal path rather than a stress
-      driver. Its gate stays merge-blocking: a red run there is a reproduction worth
-      keeping, not a flake worth re-running.
-    </p>
-    <p>
-      The cause of one component was a single shared variable. When a task replaces its
-      own image, the kernel hands the interrupt path a note saying "re-enter this task
-      through the fresh context just built for it". That note was <em>one global</em>,
-      and it was read on the way out of <em>every system call on every CPU</em>, with
-      nothing checking that the exec belonged to the CPU reading it. A core that had
-      nothing to do with the exec would take the note, claim that task, install its
-      address space and resume the trap frame the exec had just fabricated, while the
-      core that actually ran the exec was still executing on that very frame. One race,
-      and it accounts for all three recorded symptoms: a leaked claim, a task running
-      with no claim, and two CPUs on one kernel stack.
-    </p>
-    <p>
-      The storage is per-CPU now, so the sharing is removed rather than guarded, and a
-      one-comparison assertion keeps it that way. Restoring the shared variable on demand
-      reproduces the theft in <strong>5 boots of 20</strong>; the fix shows
-      <strong>0 in 30</strong>.
-    </p>
-    <p>
-      <strong>This is a narrowing, not a close, and the difference is the point.</strong>
-      The workload still fails 2 boots in 30, a claim leaked before any exec runs, and a
-      bogus stack pointer handed back by the dispatcher, so this was a narrowing and the
-      gate whose red flag started all this stayed advisory rather than being promoted back
-      on a partial fix. Both of those have since moved: that gate was promoted on 22
-      August 2026 once G-9 closed, and the 2-in-30 residue described here is now filed
-      separately as <strong>G-12</strong> above, since attributed and fixed. Three earlier explanations for this defect were
-      published-in-progress and were all wrong; each looked right when read and was killed
-      by an instrument. One measurement of the fix even came back clean, because the
-      diagnostic scaffolding still in the build had perturbed the timing enough to hide
-      the remainder. The arm you measure has to be the arm you ship.
-    </p>
-  </li>
-  <li>
-    <h3><span class="id">G-12</span>Two cores on one task, through the door marked &ldquo;first entry&rdquo;</h3>
-    <p class="note"><a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/investigations/G-12-claim-invariant-residue.md">Read the full investigation &rarr;</a></p>
-    <p>
-      <strong>Filed 2 September 2026, attributed and fixed 3 September 2026.</strong> The
-      residue G-9's own record predicted was real, and it took two weeks of exclusions to
-      find because it was hiding behind three false positives in the checkers that were
-      looking for it. Measured across <strong>2250 boots</strong> it appeared on
-      <strong>0.31% of boots</strong>, a few hundred milliseconds after the kernel hands
-      control to its first task. Three of its four signatures were not audit reports but
-      memory corruption: a resume stack pointer that is the number one rather than an
-      address, the kernel's own stack canary tripping, and an instruction fetch into a
-      stack address, which is what executing a clobbered return address looks like.
-    </p>
-    <p>
-      <strong>The mechanism is one line of ordering.</strong> The function that enters a
-      brand-new task claimed it unconditionally: it wrote &ldquo;this core owns
-      this task&rdquo; without asking whether another core already did. And the one place
-      in the running system that calls it published the task as runnable a call earlier.
-      Between those two statements the task is visible to every other core, satisfies
-      every condition the scheduler's selection loop tests, and is owned by nobody. A
-      second core's timer tick landing in that window picks it up, claims it, and starts
-      running it; the first core then arrives and claims it as well. Two cores, one task,
-      one kernel stack, and every symptom above follows from that.
-    </p>
-    <p>
-      <strong>Fixed in two rules, because it was two failures.</strong> The entry path now
-      re-checks under the scheduler lock and refuses: a core will not enter a task another
-      core holds, nor one that has stopped being runnable, and parks itself with a report
-      instead. That second clause is not theoretical, with the window held open for
-      sixty milliseconds, the other core ran the task all the way to a blocking wait and
-      gave it back, and the old code entered a blocked task because it had checked before
-      queueing for the lock and never looked again. Separately, the launch site now
-      publishes the task, claims it and makes it current inside a <em>single</em> lock
-      acquisition, so the window does not exist at all.
-    </p>
-    <p>
-      <strong>The obvious alternative was written and thrown away.</strong> Claiming first
-      and publishing second leaves a core holding a claim it is not yet running, a
-      gap the claim auditor deliberately does not excuse. Fixing a launch path by widening
-      an exemption in the checker that catches this entire class is the wrong direction,
-      however tidy the diff.
-    </p>
-    <p>
-      <strong>It reproduces on demand now, which it never did before.</strong> An
-      instrument holds the entry open until another core takes the task; it is set in
-      every arm, so the runs differ only in the defect. Restore the old ordering and the
-      theft happens on <strong>3 boots out of 3</strong>. Take the guard out as well and
-      the two-core collision reproduces on <strong>6 out of 6</strong>, printing the exact
-      signature this investigation had been chasing since it was filed. The instrument
-      polls rather than sleeping a fixed time, and that detail was earned: the first
-      version slept, and reproduced the <em>other</em> defect on the same path. An arm
-      that reproduces the wrong one of two defects is an arm reporting the wrong thing.
-    </p>
-    <p>
-      <strong>What is deliberately not claimed.</strong> That this accounts for the 0.31%.
-      The campaign that measured that figure was also counting three checker false
-      positives, which is why the rate had already fallen to zero in 3500 boots
-      before this fix landed, on checker repairs alone. The arms establish that the
-      mechanism was real, reachable from an ordinary boot, and is now impossible. The
-      share of the historical rate it owned is not recoverable, and no number here
-      pretends otherwise.
-    </p>
-    <p>
-      <strong>The gate stays exactly as it is.</strong> It permits zero failures over
-      thirty boots, which made it red on about 9% of runs while the defect was open,
-      a fact about the defect, not about the gate. Relaxing it at any point in
-      those two weeks would have converted a detector of real memory corruption into a
-      silence, and there would have been nothing left to attribute.
-    </p>
-  </li>
-  <li>
-    <h3><span class="id">G-13</span>The measurement that was never a measurement</h3>
-    <p>
-      <strong>Filed 2 September 2026, closed 3 September 2026.</strong> The installer's
-      integration test went red twice on the main branch, both times a five-minute
-      timeout waiting for the install to report success, with the guest having said
-      &ldquo;formatting&rdquo; and then nothing at all. No crash, no error, no output.
-      The same step takes six seconds on a workstation.
-    </p>
-    <p>
-      It was written off as a slow test runner, and then that was rejected on what looked
-      like solid ground: a runner slow enough to turn six seconds into five minutes would
-      have to be fifty times slower, and the <em>boot</em> step in both captures was
-      perfectly normal. Two explanations (a contended runner, or a genuine hang in
-      the format) and nothing to choose between them. The budget was deliberately
-      not raised, which was the right call and left the finding stuck.
-    </p>
-    <p>
-      <strong>The boot step cannot answer that question, and that is the whole finding.</strong>
-      Slowing the machine's processors slows the boot and the format together, in lockstep,
-      leaving their ratio unchanged, so that lever would indeed have shown up in the
-      boot step. Contending the <em>disk</em> does something else entirely: the boot stays
-      at full speed while the format triples. Dial the guest's disk down with the
-      emulator's own limiter and the format's cost is a clean straight line in one over
-      the operation rate, while the boot step sits flat at 1.7 seconds at every single
-      point. It is not a poor probe for a slow disk. It is completely blind to one.
-    </p>
-    <p>
-      The format turns out to be about 4,700 synchronous device operations and only about
-      2.3 megabytes of data, which is why throughput is the wrong knob and operation rate
-      is the right one. Solve the line for the five-minute budget and it gives roughly
-      sixteen operations per second, and a guest throttled to twelve reproduces the
-      continuous-integration failure exactly, first try, including the normal boot step
-      that had been the reason for disbelieving it.
-    </p>
-    <p>
-      <strong>The repair is not a bigger budget.</strong> No total budget can separate the
-      two candidates at any value: raise it and a real hang takes longer to report, lower
-      it and a slow disk fails. They differ in one thing only, whether the machine
-      is still making progress, so that is what the bound measures now. Thirty
-      seconds with no disk operation at all is a wedge; anything still moving is a slow
-      disk and is not a failure. A genuine hang is now caught in thirty seconds instead of
-      five minutes, and the failure says which of the two it saw.
-    </p>
-    <p>
-      <strong>Three ways to measure progress, two of them wrong, in opposite directions.</strong>
-      Watching the disk image change declares a hang the moment the format stops writing
-      and starts reading its own metadata back: a two-hundred-second read phase on a
-      throttled disk, and the first implementation failed exactly there. Counting the
-      emulator's read calls instead keeps climbing even when the guest is wedged, because
-      the emulator is polling its serial port; a detector that cannot go quiet cannot fire.
-      What works is asking the emulator for the guest's own device statistics, which move
-      in both phases and stop dead when the guest does. When that channel is unavailable
-      the gate fails closed rather than quietly falling back to the budget it just
-      replaced.
-    </p>
-    <p>
-      <strong>What is deliberately not claimed.</strong> That the runner really was that
-      slow on those two days. It is not recoverable: the gate kept no serial log, and both
-      captures survive only as the six hundred characters the timeout message happened to
-      quote. It keeps one now. What the measurement establishes is narrower and enough:
-      a slow disk produces every symptom that was observed, including the one that had
-      been treated as ruling it out.
-    </p>
-  </li>
-  <li>
-    <h3><span class="id">G-10</span>The spawn path was written for one core</h3>
-    <p class="note"><a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/investigations/G-10-spawn-path-uaf.md">Read the full investigation &rarr;</a></p>
-    <p>
-      <strong>Found 2026-08-17, closed 2026-08-18</strong>, while narrowing the finding
-      above.
-      Everything spawning or exec'ing a program needs while it is in flight; the buffer
-      the executable is staged in, the argument vector, the standard-I/O wiring, the
-      identity of the spawning task, was a single process-wide variable, and nothing
-      serialised two CPUs through any of it. The exec note above was one instance of that
-      pattern; the rest are dealt with below.
-    </p>
-    <p>
-      The correctness consequence was visible already: an address space could become
-      reachable before its kernel half had been built, which is what a supervisor
-      write-fault in the interrupt-acknowledge path looks like. The consequence that
-      mattered more was about authority; the spawning task's identity was written at the
-      start of a spawn and read much later, so a child's standard I/O could be wired from
-      <em>the wrong parent's</em> capability space. That is authority inherited from a
-      task that never spawned it, which is precisely what this kernel exists to make
-      impossible.
-    </p>
-    <p>
-      <strong>The sharpest of those singletons is now fixed, and it was a memory-safety
-      hole rather than a tidiness problem.</strong> When a task slot was reused, the
-      kernel reclaimed the previous occupant's page tables, justified by a comment
-      reasoning that the caller was on the kernel's own address space, so nobody could
-      be walking the tree. That is true of the core doing the reclaim and false of the
-      others: a CPU parked in the idle loop never reloads its address-space register, and
-      a task killed from another core keeps running in ring 3 until its next timer tick,
-      while the slot allocator asks only whether the task is marked dead. So a spawn
-      could recycle the page tables of a task that was <em>still running on them</em>.
-    </p>
-    <p>
-      The freed frames went straight back to the pool and were handed out as ordinary
-      pages to other tasks, while the first core carried on reading and writing through
-      tables that had come to describe somebody else's memory. That is a
-      cross-address-space read/write primitive reachable from an unprivileged program; 
-      no capability required, only the ability to get itself killed at the right moment.
-      It surfaced as a supervisor write fault on the interrupt-acknowledge register,
-      which lives in each task's own low mapping and vanished when its entry was
-      recycled.
-    </p>
-    <p>
-      Each core now publishes which address space it has loaded, and the reclaim refuses
-      to free one that anybody else still holds, parking it for a later attempt instead
-      of leaking it. Removing the guard on demand reproduces the free-in-use on
-      <strong>20 boots out of 20</strong>; with it, the fault goes from
-      <strong>6 boots in 30 to 0 in 30</strong>. Together with the exec fix above, the
-      self-test workload that started this went from failing roughly 45% of boots to
-      2 in 30.
-    </p>
-    <p>
-      <strong>The rest of it closed the next day, in two different ways.</strong> The
-      authority half was <em>deleted</em>: the spawning task's identity and the
-      standard-I/O request are arguments passed down the call chain now, not globals read
-      back later, so a child inheriting standard I/O from the wrong parent's capability
-      space stops being unlikely and becomes unsayable. The staging buffer and argument
-      vector keep one copy, a copy per core is real memory for state that belongs to a
-      spawn, not to a core, and every window from arming an image to consuming it is held
-      under one lock instead.
-    </p>
-    <p>
-      <strong>And the honest part: the race this closes cannot be reached by anything
-      this system can currently boot.</strong> Rather than quote a rate that does not
-      exist, the window was instrumented, every entry, and every arrival that finds
-      another core already inside, and then deliberately held open for millions of
-      cycles. Across 16 boots at four cores, the window was entered 214 times and
-      <strong>never once</strong> by two cores at the same time. The reason is structural:
-      every task that spawns anything today is the init process or one of its children,
-      so the busiest spawner cannot be running while init is mid-spawn. Two concurrent
-      spawners is a property of the operating system this is becoming, not of the one it
-      is. So no test claims a rate here, and the arm that removes the lock is kept for the
-      day a workload has two live spawners, a control arm that cannot fail is not
-      evidence.
-    </p>
-    <p>
-      Still unchanged: a task can be marked dead and still be executing. The guard makes
-      that memory-safe without making it sensible.
-    </p>
-  </li>
-  <li>
-    <h3><span class="id">G-11</span>The armed program image belonged to nobody</h3>
-    <p class="note"><a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/investigations/G-11-armed-image-ownership.md">Read the full investigation &rarr;</a></p>
-    <p>
-      <strong>Found and closed 2026-08-18</strong>, while serialising the window above; 
-      and it is the more serious of the two. A program image is staged in one shared
-      buffer, and nothing recorded which task had staged it. One system call turns that
-      from an oddity into a privilege boundary: <code>sudo</code> re-authenticates the
-      caller and then spawns whatever image is armed <em>as root</em>, in a different
-      system call from the arming.
-    </p>
-    <p>
-      So one task arms its own program; a second task types its own correct password; and
-      the second task's successful <code>sudo</code> launches the <em>first</em> task's
-      program with root's identity and capabilities. Neither party fails a permission
-      check. The authority comes from the pairing; the classic confused deputy, and the
-      same shape as this kernel's oldest defect: authority a caller is trusted for
-      <em>having</em> rather than for holding a capability to.
-    </p>
-    <p>
-      Arming an image now records the task that armed it, and consuming one refuses any
-      other, fail closed, including for an image with no recorded owner, so forgetting to
-      record one breaks the spawn instead of quietly restoring the old behaviour. The
-      refusal is audited rather than logged as a failure: a correct password about to
-      elevate somebody else's program is the event worth keeping. The witness asserts both
-      directions in a single boot, a forged foreign owner must be refused, and the task's
-      own image must still spawn, because a check that refuses everything is not a check.
-      Removing the check on demand spawns the foreign image on every boot, 3 in 3.
-    </p>
-  </li>
-  <li>
-    <h3><span class="id">coverage</span>Ten system calls still have no test that runs them, and covering four of them found a fault</h3>
-    <p>
-      <strong>Measured 2026-08-20</strong>, and checked on every merge since.
       <strong>91 of 102</strong> system calls have their handler actually executed by the
-      three workloads this project tracks, a scripted end-to-end session, the
-      permission conformance suite, and the boot-modules session. The other 11 are each
-      listed with a written reason.
-    </p>
-    <p>
-      The technique has now found a defect three times out of three. The most recent, on
-      2026-09-06, was the raw block pair (<code>SYS_BLOCK_READ</code> and
-      <code>SYS_BLOCK_WRITE</code>, the medium beneath the filesystem) which no
-      build in this tree had ever entered. Both returned the storage layer's bare
-      <code>-1</code> for a block the device refuses, and <code>-1</code> is the value of
-      &ldquo;you hold no capability for this&rdquo;. A caller could not tell a bad block
-      from a refusal, and neither could a test: the defect and the thing that hid it were
-      the same value.
-    </p>
-    <p>
-      That was 65 until 2026-08-30, and the thirteen that moved cost no new machinery,
-      only a question nobody had asked of the whole list. Twelve of them are dispatched
-      with <em>no</em> central permission check at all, because the authority they need
-      depends on which object the caller names and so has to be tested inside the call
-      itself. That makes their implementation reachable by a program holding nothing, so
-      a test proving the call says no is a test that ran it. The same argument had
-      already promoted three separate groups of calls; it had simply never been applied
-      to the rest. Two more were left alone on purpose, one blocks waiting for a
-      keystroke, and one would return at its first line because the feature it reports on
-      is not built into these images, which would raise the number without testing
-      anything.
-    </p>
-    <p>
-      The conformance suite is a <em>refusal</em> suite by design: it checks that a
-      program without permission is turned away, and a refusal is decided before the
-      call's body ever runs. So a call can be named by the suite, counted as tested, and
-      have its implementation never once execute, which is precisely what happened,
-      and why a fault reproducible for every fixed variable in the system survived a
-      hundred passing checks.
-    </p>
-    <p>
-      This page used to say that nothing on the uncovered list was known to be broken.
-      That has now been wrong twice. In August, three of the calls on it turned out to
-      share a helper that spun forever holding a lock with interrupts off, reachable by
-      any unprivileged program in a single call. On 1 September, writing the program that
-      would finally run the audit calls, a task holding exactly one permission and
-      nothing else, found a fault on its first boot: the record the kernel sends
-      back was described in two places, 256 bytes in the kernel and 72 in the header
-      programs compile against, under the same name. Every field was read from the wrong
-      place, and the kernel wrote 184 bytes past the end of the array it was handed, for
-      every record. It is confined to the program that asked, and it is the same class of
-      fault as the one that started all of this. There is now one description of that
-      record, which both sides compile and both sides check the size of.
-    </p>
-    <p>
-      The pattern is worth stating plainly, because it is the argument for the whole
-      exercise: <em>both</em> faults were found by the act of running the code, not by
-      reading it, and neither could have been found by widening the conformance suite:
-      both calls are gated on a permission that suite deliberately does not hold.
-    </p>
-    <p>
-      The build can record the first time each call's body is entered and say so on the
-      wire, and a checked-in file classifies all 102 implemented syscalls, covered or not
-      covered with a reason. The check fails if a call is in neither list, if a covered
-      one stops being exercised, if an uncovered one starts being exercised and its
-      reason has gone stale, or if the recording produced nothing at all. That last case
-      is the one that would otherwise let the whole check pass while measuring nothing.
-    </p>
-    <p>
-      It deliberately does not demand all 96. That would be a large amount of
-      test-writing wearing the costume of a guarantee. What it demands is that the number
-      be decided rather than drifting, and that every gap be written down; the same
-      bargain this project already makes with which tests are allowed to block a merge.
-      The pipe family used to be the cheap example here, untested only because no
-      scripted session ran a command pipeline, a gap in the script rather than in the
-      kernel. It is covered now. What is left is eight calls, in five groups: three answer
-      to a capability the conformance suite deliberately does not hold, and one of those
-      three formats the attached disk, so no tracked workload can enter it without
-      destroying the volume the run is using; one is reached only on a start-up failure
-      path, which a tracked workload would have to break itself to take; two would
-      SUCCEED, and either duplicate the caller or replace its image; one blocks on a
-      keystroke; and one enters a body that returns at its first line, because the feature
-      it reports on is compiled out of every tracked image.
+      scripted session, the permission conformance suite, or the boot-modules session.
+      The other 11 are each listed with a written reason, and a checked-in file
+      classifies all 102 implemented syscalls, covered or not, so the number cannot quietly
+      fall. The gap
+      matters: four times, a probe written to run an uncovered handler found a real defect on
+      its first boot.
     </p>
   </li>
   <li>
-    <h3><span class="id">#176</span>The kernel was handed an address nobody asked for</h3>
+    <h3><span class="id">1.14</span>A child's inherited pipe end escapes revocation</h3>
     <p>
-      <strong>Found and closed 2026-08-20</strong>, while writing the witness for the
-      finding below. Two system calls, reading the kernel log, and fetching the audit
-      digest, took the address of the caller's buffer and threw away its upper half
-      before handing it to the kernel. The registers that carry it are twice that wide,
-      so nothing required the loss; it was a stray cast. The kernel then did exactly what
-      it was told, with an address the program had never named.
-    </p>
-    <p>
-      It survived because of <em>where</em> things live. Programs are loaded at a random
-      address far above the four-gigabyte line, so every fixed variable in every program
-      was affected, always, while a temporary on the call stack sits low enough to be
-      untouched, and every caller in the system happened to use one. The two conformance
-      checks that name these calls both test that a program <em>without</em> permission
-      is refused, and a refusal is decided before the address is ever looked at. So a
-      fault that was perfectly reproducible for an entire class of buffer was invisible
-      to a hundred-check suite.
-    </p>
-    <p>
-      It was also not safe-by-default, which is the part worth being plain about. The
-      symptom that exposed it (a refusal) is what happens when nothing occupies the
-      truncated address. When something does, and the low addresses are occupied by the
-      stack and the heap, the kernel writes its data into a page of the program's memory
-      that the program never nominated. It stays inside that one program and reaches no
-      other, so this is corruption rather than a broken permission boundary. But it
-      undoes any claim of the form "we checked the address we were given", because the
-      address checked was not the address given.
-    </p>
-    <p>
-      The repair is one cast in each call. The part that matters is the check that now
-      refuses to build the system if any such call narrows an address again, decided by
-      reading the source, so it covers every one of them, including calls nothing uses
-      yet, rather than only those some test happens to exercise. The obvious way to
-      defeat a per-call check is to weaken the shared helper they all use, so that is
-      checked separately. And the test that first hit this now deliberately uses a fixed
-      variable rather than a temporary, with an explicit assertion that it really does
-      sit above the line, so the day it stops testing this, it fails instead of quietly
-      passing.
-    </p>
-    <p>
-      The first diagnosis was wrong, and the correction is on the public issue. The
-      kernel appeared to disagree with the processor about the program's memory map;
-      measurement showed the two agreed exactly, and the kernel was faithfully consulting
-      a different address. The observations were right and the conclusion was not; it
-      pointed at the memory-management code for a defect that lived in a header.
+      Every capability a forked child receives is derived from its parent's, so revoking the
+      parent's reaches it. The one capability a spawn wires in for standard input or output
+      is not: the child's pipe end is a root of its own, and revoking the parent's end does
+      not reach it. Nothing revokes a pipe end today, so this contradicts a stated property
+      rather than exposing a live hole. The fix needs the pipe's end counts reconciled at the
+      same time, and its design is written down.
     </p>
   </li>
   <li>
-    <h3><span class="id">H-2</span>Anyone could write the kernel's log</h3>
+    <h3><span class="id">1.6</span>The console is the one ambient authority</h3>
     <p>
-      <strong>Closed 2026-08-20.</strong> Reading the kernel message log has required an
-      unforgeable token since July, when identity-based authority was retired: a program
-      runs <code>dmesg</code> only if it holds the capability for it. Writing to that same
-      log required nothing whatsoever. Every ordinary write to standard output was appended
-      to the log on its way to the terminal, so any program at all could put lines into
-      <code>dmesg</code> that a reader cannot tell apart from the kernel's own, and could
-      push 16 KiB of noise through to evict every real line, since the log is a fixed ring
-      that overwrites its oldest entries.
-    </p>
-    <p>
-      That is an anti-forensics tool aimed at exactly the record someone reads
-      <em>after</em> an incident, and it is worth being precise about why it existed:
-      converting "who may read this" into a capability says nothing about who may write it.
-      The sweep that fixed the read side was organised by system call rather than by
-      object, so the write side was never a question anyone asked.
-    </p>
-    <p>
-      The two destinations are now gated differently, which is the distinction the old code
-      never drew. The bytes still reach the terminal with no permission asked, writing to
-      your own screen is not an authority this system rations. They reach the kernel's log
-      only if the program holds the log capability <em>with the write right</em>. The gate
-      asks the capability graph and nothing else; asking the user id here would have
-      recreated the very defect this project spent July removing.
-    </p>
-    <p>
-      It closes the finding rather than narrowing it, for a reason that lies outside the
-      check itself: the log capability is minted read-only at the root of the system, and
-      delegation can only ever hand out less than you hold, so no program can obtain the
-      write right at all. The authority remains <em>expressible</em> for the day something
-      legitimately needs it, without being granted to anything today. Removing the append
-      outright would have been fewer lines and would have closed that door permanently.
-    </p>
-    <p>
-      The witness is a program that is <em>given</em> the log capability and still refused.
-      It holds the read right (so it can read the ring back and check its own work) and
-      is denied the direction it was not given, which is a stronger claim than a program
-      holding nothing being denied everything. It pushes 28800 bytes through standard
-      output, more than the ring holds, and requires both that none of it appears in the
-      log and that a marker placed there beforehand survives. Both are checked before
-      either is reported, so removing the gate on demand reproduces both failures at once,
-      3 boots in 3, a fix that only rate-limited would keep the marker and still forge.
+      Writing to standard output and reading a console line need no capability, by decision:
+      every task has a standard output. The read side refuses once the console server owns
+      the hardware, and the write side cannot reach the kernel log. Every other system call
+      in the shipping kernel is authorised by a capability.
     </p>
   </li>
   <li>
-    <h3><span class="id">1.3</span>Priority inheritance is inexpressible</h3>
+    <h3><span class="id">2.6c</span>Most gates still read kernel reports off a shared console</h3>
     <p>
-      Endpoints are bounded FIFO queues, reply capabilities are one-shot, and
-      <code>SYS_IPC_RECV_BLOCK</code> sleeps on an empty queue, a server with no work is
-      off the run queue rather than spinning. What is still missing is priority
-      inheritance: the kernel records that a task is waiting on an endpoint, which is the
-      prerequisite, but nothing propagates priority along that edge, and there are no task
-      priorities to propagate yet.
+      The kernel writes a report one byte at a time to a serial line that a user-mode
+      program also writes, so an unrelated program's output can land in the middle of it and
+      a gate matching that report misses it. It has happened in CI. The kernel now has a
+      diagnostic port that no capability names, so only the kernel can write it; four gates
+      read it, and about twenty still read the shared console.
+    </p>
+  </li>
+  <li>
+    <h3><span class="id">2.9</span>Measured boot is opt-in</h3>
+    <p>
+      On a machine with no TPM the default build boots without measuring anything, and the
+      boot log says so. A build with <code>MEASURED_BOOT_REQUIRED=1</code> halts instead, and
+      refuses a disk that was never sealed. Rollback protection is anchored in a TPM counter,
+      so a volume formatted on a machine without one has the Merkle tree and nothing more.
+    </p>
+  </li>
+  <li>
+    <h3><span class="id">4</span>An installed disk does not boot on its own</h3>
+    <p>
+      The installer writes an encrypted volume over the whole disk, with no partition table
+      and no bootloader, and the shipped programs live in the measured boot image rather than
+      on the disk. An installed machine is started from Horus boot media, which finds and
+      opens the volume. A GPT disk with an EFI system partition and programs pinned by hash
+      in <code>/bin</code> is designed and not built.
+    </p>
+  </li>
+  <li>
+    <h3><span class="id">4</span>Hardware support is narrow</h3>
+    <p>
+      Horus installs onto legacy IDE disks and SD or eMMC storage, and it has installed onto
+      a laptop's soldered eMMC. It identifies a SATA drive and cannot read or write one, has
+      no NVMe or USB support, and so has no keyboard on a machine that offers no PS/2
+      emulation. One user-mode network driver completes an ARP exchange; there is no IP
+      stack above it. A DMA-capable device is confined by the IOMMU where the machine has
+      one; where it does not, the boot says so.
     </p>
   </li>
   <li>
     <h3><span class="id">iso</span>The ISO does not rebuild to the same bytes</h3>
     <p>
-      <strong>Found 2026-08-19</strong>, by fixing the step that had been hiding it. The
-      kernel image is byte-for-byte reproducible and gated on every merge. The ISO; the
-      thing anyone would actually download, is not, and the cause is not this project's
-      code: <code>grub-mkrescue</code> stamps a marker named for the wall-clock second
-      into every image it builds, and embeds that identifier in the three EFI loaders it
-      generates. Extract two ISOs of one build and diff them and every file this project
-      authors is identical; only those four grub-generated objects differ.
-    </p>
-    <p>
-      It went unseen because the step that recorded the build's hashes could not fail.
-      It hashed two artifacts over a build that made only one, discarded the error naming
-      the missing file, discarded the exit status, and announced success, so the record
-      had always held a single line and the ISO had never been compared to anything. That
-      step now refuses an incomplete build and writes nothing when it refuses, with the
-      old behaviour kept as a switch that must reproduce the failure on demand.
-    </p>
-    <p>
-      <strong>The first measurement of this was wrong, in the reassuring direction.</strong>
-      Two ISOs built back to back came out identical, which read as proof of
-      reproducibility. They matched because both builds landed inside the same wall-clock
-      second. Repeat the pair across a second boundary and they differ. A measurement fast
-      enough to be convenient was fast enough to be wrong.
+      The kernel image is byte-for-byte reproducible and gated on every merge. The ISO is not:
+      <code>grub-mkrescue</code> writes a file named for the wall-clock second and embeds an
+      identifier in the EFI loaders it generates. There are also no tagged releases, no signed
+      artifacts and no provenance, so nobody can check that an ISO came from this
+      repository's CI.
     </p>
   </li>
   <li>
     <h3><span class="id">crypto</span>Every primitive is unaudited</h3>
     <p>
-      ChaCha20, SHA-256, BLAKE2b, Argon2 and the AEAD are all from-scratch
-      <code>no_std</code> Rust implementations checked against published test vectors.
-      None has been independently audited and none is verified constant-time. Treat them
-      as research code. Tracked as HORUS-20260920-03: no timing property is claimed, and
-      none has been measured.
+      ChaCha20, SHA-256, BLAKE2b, Argon2id and the AEAD are from-scratch <code>no_std</code>
+      Rust checked against published test vectors. None has been independently audited and
+      none is verified constant-time. They protect the measured-boot chain, every block of
+      the encrypted store and every password at rest. Treat them as research code.
     </p>
   </li>
   <li>
-    <h3><span class="id">misc</span>Smaller sharp edges, all tracked</h3>
+    <h3><span class="id">5.5</span>Formal verification is narrow</h3>
     <p>
-      User copies clamp and return success rather than refusing (C-4). The heap syscalls
-      do 32-bit arithmetic on 64-bit bounds, latent until the user address space widens
-      past 4 GiB (I-2). The revocation closure was bounded at 256 entries and
-      over-approximated on overflow, which an unprivileged task could force as a
-      denial-of-service against a peer's independent capability to the same object; it
-      marks in place and iterates to a fixpoint since 2026-08-16, so it is exact at any
-      subtree size (I-3).
-      There are no tagged releases, no signed artifacts and no SLSA provenance, so a third
-      party cannot verify that a <code>horus.iso</code> came from this repository's CI
-      (I-9). A frame spans at most 64 pages, which is the untyped arena's bound rather
-      than the design's; that arena is 4 MiB in total and shared with every other kernel
-      object, so a frame able to span it would be a denial-of-service against every other
-      object class dressed up as a feature. Formal verification is
-      narrow: Kani covers revocation and the ELF validator, and there is no TLA+
-      specification: the two committed in June were removed in September as
-      unsound rather than merely unchecked.
+      Bounded Kani proofs cover capability revocation, the ELF validator and the page-pool
+      reference counts, and most of them gate a merge. That is all of it: the kernel as a
+      whole is not verified, and there is no TLA+ specification.
+    </p>
+  </li>
+  <li>
+    <h3><span class="id">misc</span>Smaller edges, all tracked</h3>
+    <p>
+      A destroyed kernel object's memory is not reused until its budget is reset, which is not
+      written. A program linked to the shared libc cannot fork. There is a monotonic clock at
+      10 ms resolution, deliberately, and no wall clock or timers. Any program a person runs
+      can read the command lines they type, though not their passwords. Scheduling is a
+      single shared pool with global locks, fine at eight CPUs and not beyond.
     </p>
   </li>
 </ul>
@@ -859,15 +139,14 @@
 <div class="callout">
   <h3>Where the line sits</h3>
   <p>
-    Horus boots, runs an unprivileged <code>init</code> that supervises an unprivileged
-    shell, and enforces capability-based access control end to end, including across the
-    IPC namespace. The infrastructure around it, reproducible builds, measured boot,
-    adversarial CI, formal proofs, is substantially more mature than the kernel it
-    verifies.
+    Horus boots, installs onto a disk, runs an unprivileged <code>init</code> that supervises
+    unprivileged servers and a shell, and enforces capability-based access control end to end,
+    including across IPC and device access. The machinery that checks it (measured boot,
+    adversarial CI, bounded proofs) is more mature than the operating system it checks.
   </p>
   <p>
-    <strong>This is a research and learning kernel, not a shipping operating
-    system.</strong> Nothing here should be trusted with anything real.
+    <strong>This is a research kernel, not a shipping operating system.</strong> Nothing here
+    should be trusted with anything real.
   </p>
 </div>
 </section>

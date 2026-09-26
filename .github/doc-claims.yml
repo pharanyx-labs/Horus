@@ -48,8 +48,6 @@ counts:
         pattern: "the bulk of CI's (\\d+) jobs"
       - file: TESTS.md
         pattern: '`\.github/workflows/ci\.yml` defines \*\*(\d+)\*\* jobs'
-      - file: docs/LIMITATIONS.md
-        pattern: '`\.github/workflows/ci\.yml` defines \*\*(\d+)\*\* jobs'
 
   - id: all_jobs
     describe: jobs across ci.yml, codeql.yml and ruleset-audit.yml
@@ -57,8 +55,6 @@ counts:
     occurrences:
       - file: TESTS.md
         pattern: 'below: \*\*(\d+)\*\* jobs'
-      - file: docs/LIMITATIONS.md
-        pattern: 'one more: \*\*(\d+)\*\* across the three'
       - file: docs/ROADMAP.md
         pattern: '\((\d+) jobs, \d+ contexts'
 
@@ -70,8 +66,6 @@ counts:
         pattern: 'The gating set is \d+ of its (\d+) contexts'
       - file: TESTS.md
         pattern: '\*\*\d+\*\* jobs, \*\*(\d+)\*\* contexts'
-      - file: docs/LIMITATIONS.md
-        pattern: 'producing \*\*(\d+)\*\* status-check contexts'
       - file: docs/ROADMAP.md
         pattern: '\(\d+ jobs, (\d+) contexts'
 
@@ -83,13 +77,6 @@ counts:
         pattern: 'The gating set is (\d+) of its \d+ contexts'
       - file: TESTS.md
         pattern: 'The set is \*\*(\d+) gating contexts'
-      - file: docs/LIMITATIONS.md
-        pattern: 'That set is \*\*(\d+) gating contexts'
-      # A second sentence stating the same gated number, three lines from a
-      # declared one -- which is what the manifest means by opt-in per sentence:
-      # deleting or never adding an occurrence deletes the check for it.
-      - file: docs/LIMITATIONS.md
-        pattern: '\*\*(\d+)\*\* of them gate a merge'
       - file: docs/ROADMAP.md
         pattern: 'The gating set is \*\*(\d+) required, \d+ exempted\*\*'
       # site/index.html said 73 here for as long as the count had been 89. It was
@@ -103,8 +90,6 @@ counts:
     derive: advisory
     occurrences:
       - file: TESTS.md
-        pattern: '\*\*\d+ gating contexts and (\d+) reasoned exemptions\*\*'
-      - file: docs/LIMITATIONS.md
         pattern: '\*\*\d+ gating contexts and (\d+) reasoned exemptions\*\*'
       - file: docs/ROADMAP.md
         pattern: '\*\*\d+ required, (\d+) exempted\*\*'
@@ -313,21 +298,6 @@ counts:
         pattern: '\*\*(\d+)\*\* excused harnesses are named'
       - file: SECURITY.md
         pattern: '\*\*(\d+)\*\* excused harnesses, the serial-keyed lineage pair'
-
-  - id: tracked_files
-    describe: files tracked by git in the whole repository
-    derive: tracked_files
-    # LIMITATIONS 5.6 offers this as evidence of repository hygiene and says in
-    # the same sentence that it is "re-derived rather than carried forward". It
-    # had been carried forward since 2026-08-15: the sentence read 254 against a
-    # tree of 421 on 2026-09-20, five weeks and 167 files stale. A number that
-    # advertises its own freshness and is not fresh is worse than an undeclared
-    # one, because it tells the reader there is nothing to check. Found while
-    # reconciling the 2026-09-20 external review, in the same sweep that found
-    # the [G-9] status row, and declared here so it cannot recur.
-    occurrences:
-      - file: docs/LIMITATIONS.md
-        pattern: '`git ls-files` reports \*\*(\d+)\*\* tracked files'
 
 forbidden:
   - pattern: 'What keeps \*\*\[C-6\]\*\* open|What keeps \[C-6\] open|reconciled to it by hand and lags|\*\*\[C-6\]\*\*, ruleset'

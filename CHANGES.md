@@ -643,6 +643,13 @@ in this file.
 
 ### Changed
 
+- **`docs/LIMITATIONS.md` lists only what is open.** Each closed entry is one line naming the
+  pull request that closed it, and the website's limitations page follows it. The rewrite
+  corrected four stale statuses: reinstalling over an existing Horus volume has worked since
+  #381, [G-9] closed on 2026-08-21 (#188), a monotonic clock exists (roadmap 2.2), and four
+  gates already read the kernel's COM3 channel. It also added the missing entry 1.21 that two
+  source files cited, and states that an installed disk does not boot on its own.
+
 - **The boot log and the console are left-aligned again; only the installer is centred.** #433
   centred the whole character grid, which moved the kernel's log and every console line to the
   middle of a wide screen. Now the log starts at the left edge and only a full-screen program's

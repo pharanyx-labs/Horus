@@ -2193,6 +2193,26 @@ int storage_init(void) {
     const int usable = storage_usable_count();
     if (usable == 0) goto no_disk;
 
+    /* A LIVE BOOT NEVER OPENS AN INSTALLED SYSTEM (SECURITY.md S110). The boot
+     * menu's live entry promises to change nothing on the disk, and until
+     * 2026-09-26 it kept that promise only as far as init went: the kernel still
+     * mounted the installed volume as this boot's store, and the first login
+     * whose password opened a key slot unlocked it, advanced its rollback
+     * counter, and could write its account table (S109 is what that last one
+     * cost). The maintainer's rule is that there is no way to live-boot an
+     * installed system, so the persistent devices are sized above, which is what
+     * the survey of disks to install onto reads, and never mounted: the boot
+     * runs on the ephemeral store a diskless machine uses. storage_unlock refuses
+     * a persistent device on a live boot as well, so a path that reaches one some
+     * other way fails closed. */
+#ifndef LIVE_OPENS_VOLUME
+    if (boot_flags() & BOOT_FLAG_LIVE) {
+        println("STORAGE: live boot: no disk is opened; this boot runs on the "
+                "ephemeral store");
+        goto no_disk;
+    }
+#endif
+
     /* MOUNT THE FIRST DEVICE THAT CARRIES A VOLUME, not simply the first device
      * (SECURITY.md S82). With one disk these are the same sentence, which is why
      * it was written the second way; with two they are not, and the second way
@@ -3640,6 +3660,21 @@ int storage_unlock(const char *password, size_t plen)
      * in a relaunch loop, which is how the guard got written.
      * See make smoke-replace-oneshot-control. */
     (void)0;
+#endif
+
+    /* The second layer of S110 (the first is in storage_init): on a live boot no
+     * persistent device is formatted or unlocked, whichever path asked. It comes
+     * after the tokens above are consumed, so a refused request cannot leave a
+     * format authorisation standing for a later call. */
+#ifndef LIVE_OPENS_VOLUME
+    if (boot_flags() & BOOT_FLAG_LIVE) {
+        const struct block_device *target =
+            (g_needs_format || authorized) ? g_needs_format_bd : g_mounted_fs.bd;
+        if (target && storage_bd_is_ata(target)) {
+            print("STORAGE: a live boot does not open an installed volume\n");
+            return -13;
+        }
+    }
 #endif
 
     if (g_needs_format || authorized) {

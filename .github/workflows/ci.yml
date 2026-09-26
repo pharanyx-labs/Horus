@@ -3106,6 +3106,12 @@ jobs:
         run: make smoke-live-no-seed
       - name: Control arm — the compiled-in accounts written to the volume
         run: make smoke-live-no-seed-control
+      # There is no way to live-boot an installed system: the live entry opens no
+      # disk, refuses the install password, and leaves the image byte-identical.
+      - name: A live boot on an installed machine opens nothing and changes nothing
+        run: make smoke-live-locked
+      - name: Control arm — a live boot that opens the installed volume
+        run: make smoke-live-locked-control
       # An install without encryption, and both directions the choice can be lost:
       # dropped (the unsealed gate's arm) and imposed on an operator who chose
       # encryption (the ordinary install gate's arm, the dangerous one).

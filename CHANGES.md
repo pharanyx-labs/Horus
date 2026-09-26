@@ -384,6 +384,12 @@ in this file.
 
 ### Security
 
+- **A live boot no longer opens an installed system.** The live entry mounted the installed
+  volume as its store, and a login with the install password unlocked it, so the installed root
+  logged in on a live boot and the volume could be written. A live boot now opens no disk and
+  runs on the ephemeral store; the kernel also refuses to unlock or format a persistent device
+  on one (S110, `make smoke-live-locked`, which also checks the disk image is unchanged).
+
 - **A live boot no longer writes the built-in accounts to an installed disk.** A live boot whose
   login opened a volume with no account table yet (an install stopped after the format) seeded
   the table with `root`/`toor` and `user`/`password`, and the next installed boot accepted

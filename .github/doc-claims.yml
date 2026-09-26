@@ -139,7 +139,7 @@ counts:
     derive: framepeer_checks
     occurrences:
       - file: SECURITY.md
-        pattern: '55 parent checks \+ (\d+) peer checks'
+        pattern: 'parent checks \+ (\d+) peer checks'
       - file: TESTS.md
         pattern: '\+ (\d+) peer checks'
   - id: security_properties
@@ -244,7 +244,7 @@ counts:
       - file: TESTS.md
         pattern: '\*\*(\d+) parent checks\*\*'
       - file: SECURITY.md
-        pattern: '`make smoke-frame` \((\d+) parent checks\)'
+        pattern: '`make smoke-frame` \((\d+) parent checks'
 
   - id: captest_checks
     describe: check() assertions in userspace/captest.c

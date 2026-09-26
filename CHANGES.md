@@ -643,6 +643,12 @@ in this file.
 
 ### Changed
 
+- **`SECURITY.md` states each property in one row a person can read.** The mechanism column says
+  in a sentence what enforces the property and the witness column lists its tests and control
+  arms; the posture section says where Horus stands today instead of recounting closed findings.
+  It had said there are no releases, listed 22 required checks, and called a broad forced
+  revocation possible, all of which stopped being true in August or September.
+
 - **`docs/ROADMAP.md` says what is done and what is next, in order.** Finished items are one line
   naming the pull requests that delivered them. The filesystem redesign (2.10) and the installed
   system (2.11), which are the next work, were not in it at all and now are, with their order.

@@ -609,7 +609,7 @@ in this file.
   `continue-on-error`, and `check_kani_harnesses.py` fails the build on a proof classified as
   neither. What does not work is the vestigial job beside them.
 - **The first external review of this tree is reconciled, not filed away**
-  (`docs/AUDIT-EXTERNAL-2026-09-20.md`). An unsolicited third-party review arrived on 2026-09-20
+  (`docs/history/AUDIT-EXTERNAL-2026-09-20.md`). An unsolicited third-party review arrived on 2026-09-20
   against `91a388b`. The new file records which of its claims the tree confirms, which it
   contradicts and why, and what it added that the tree did not have. It sets **no** statuses:
   `docs/LIMITATIONS.md` stays authoritative, and the review is deliberately not quoted in full,
@@ -649,6 +649,24 @@ in this file.
   #381, [G-9] closed on 2026-08-21 (#188), a monotonic clock exists (roadmap 2.2), and four
   gates already read the kernel's COM3 channel. It also added the missing entry 1.21 that two
   source files cited, and states that an installed disk does not boot on its own.
+
+- **`TESTS.md` is a catalogue again: one row per gate.** Each of the 204 gates has a line saying
+  what it proves, the `SECURITY.md` properties it witnesses and its control arms, grouped by
+  area, with the CI jobs listed from `ci.yml`. It was 471 KB of per-gate history; the measurements
+  stay in the pull requests and in the file's git history.
+
+- **The contributor and reference documents describe the project as it is.** `CONTRIBUTING.md`
+  no longer calls [C-1] the most serious open defect (it closed in July) and says who reviews
+  and merges; `rust/KANI.md` lists all 23 proofs, including the three for endpoint tokens;
+  `docs/README.md` is a plain map with each design's build status; and the 2026-09-20 external
+  review record moves to `docs/history/`.
+
+- **The README is rewritten from scratch.** It now says who writes and merges the code, lists
+  what exists and what does not in plain terms, and explains how to start an installed system.
+  The old one gave `root`/`horus` as the login (it is `root`/`toor` on a boot with no installed
+  disk), described `newlib/` as vendored (it is fetched and hash-pinned), and still said the PCI
+  scan does not walk bridges. The website's home page no longer says an installed machine starts
+  from its own disk.
 
 - **The boot log and the console are left-aligned again; only the installer is centred.** #433
   centred the whole character grid, which moved the kernel's log and every console line to the

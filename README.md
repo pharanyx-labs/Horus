@@ -1,370 +1,205 @@
 # Horus
 
-**A capability-based secure microkernel for x86-64, and the foundation for a complete
-operating system built from the ground up.**
+**An x86-64 microkernel in which no code acts on anything it was not explicitly handed a
+capability for.**
 
 [![CI](https://github.com/pharanyx-labs/Horus/actions/workflows/ci.yml/badge.svg)](https://github.com/pharanyx-labs/Horus/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/pharanyx-labs/Horus/actions/workflows/codeql.yml/badge.svg)](https://github.com/pharanyx-labs/Horus/actions/workflows/codeql.yml)
 [![Pages](https://github.com/pharanyx-labs/Horus/actions/workflows/pages.yml/badge.svg)](https://horus.pharanyx.co.uk/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-[![Target: x86-64](https://img.shields.io/badge/target-x86__64-informational)](docs/ARCHITECTURE.md)
+Horus is a small C kernel with a `no_std` Rust core for the code that must not go wrong:
+capability checks, ELF parsing, cryptography and the random number generator. Drivers, the
+filesystem server and the console run as ordinary unprivileged tasks. It boots under QEMU and on
+real machines, installs itself onto a disk, and gives you a login and a shell in which GNU
+coreutils and the Tiny C Compiler run against a shared C library.
 
-Horus boots on x86-64 hardware and under QEMU, drops to a ring-3 shell, and runs ordinary C
-programs (including GNU coreutils and the Tiny C Compiler) on a microkernel whose device drivers
-and filesystem live in userspace. The security-critical parsing and validation code is written
-in memory-safe `no_std` Rust. The kernel image is byte-for-byte reproducible, the boot chain is
-measured into a TPM, and the volume encryption key is sealed against those measurements.
+The aim is a complete operating system. The kernel is the part everything else has to trust, so
+it is built first and kept small.
 
-> ### Assurance status
->
-> Horus is **research-grade**, not production-ready, and has not been independently audited.
-> It is the work of a single maintainer, and no security-critical change has had independent
-> review (**[C-5]**).
->
-> What that means concretely, finding by finding, is in
-> [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) (the authoritative status of every one) and
-> the analysis is in [`docs/AUDIT.md`](docs/AUDIT.md). The harder investigations are written
-> up in [`docs/investigations/`](docs/investigations/), including the ones this project got
-> wrong for days before getting right.
->
-> Notable open finding: **[C-5]** (no independent review). **[C-6]** closed on 2026-09-21: the
-> branch ruleset requires one aggregated check that is proved, in each PR, to cover every job the
-> checked-in gating decision marks required, so a new gate no longer waits on a hand sync.
-> **[G-13]** closed on
-> 2026-09-03: the installer's format was bounded by a total timeout, which cannot separate a slow
-> disk from a wedge at any value; it is bounded by a stall now, and a 12-IOPS disk reproduces the
-> whole CI signature including the normal boot step that was used to rule slowness out.
-> **[G-12]** closed on 2026-09-03: `sched_enter_user()` claimed its
-> task unconditionally while the launch site had published it as schedulable a call earlier, so
-> an AP's timer tick landing in that window took the task and the entering CPU took it too,
-> two CPUs on one kernel stack. **[G-9]** closed
-> on 2026-08-21: its last component was the claim auditor clearing its own exemption before the
-> release it exempts, so the checker accused a release that was in flight rather than a leak.
+## Before you rely on it
 
----
+Horus is a research system. Nobody independent has reviewed it. Most of its code is written by
+Claude, an AI model, which also merges its own pull requests once every automated check passes;
+the maintainer sets direction and decides anything that touches the security model. No human
+reads a change before it lands. The checks are extensive and every one of them is built to fail
+when the defect it guards against is put back, but that is not the same as review.
 
-## Contents
+What does not work, or is not enforced, is listed in
+[`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), which is the single authoritative status for every
+known finding. Read it before drawing conclusions.
 
-- [Why Horus](#why-horus)
-- [The long-term goal](#the-long-term-goal)
-- [What exists today](#what-exists-today)
-- [Architecture in one page](#architecture-in-one-page)
-- [The security model](#the-security-model)
-- [Quick start](#quick-start)
-- [Repository layout](#repository-layout)
-- [Testing](#testing)
-- [Documentation](#documentation)
-- [Contributing](#contributing)
-- [Security](#security)
-- [Licence](#licence)
+## The rule it is built around
 
----
+There is one source of authority in Horus: a **capability**, an unforgeable reference to one
+kernel object with a set of rights. A task holds capabilities in its own table and names them by
+slot number; it never sees the capability itself.
 
-## Why Horus
+- **Nothing is granted for who you are.** Being user 0, being the first task, or being spawned by
+  the kernel confers nothing. `init` and the shell work because they were handed capabilities.
+- **Rights only shrink.** A capability can be copied with fewer rights, never more.
+- **Revocation reaches everything derived.** Revoking a capability removes every copy made from
+  it, in every task, and leaves unrelated capabilities to the same object alone. A generation
+  counter backs this up, so a stale copy that the sweep somehow missed still fails.
+- **Even memory is paid for.** Creating an endpoint, a shared page or a whole task spends an
+  untyped memory budget the creator holds a capability to. A task with no budget cannot create a
+  task.
+- **Refusal is the default.** Every system call passes a dispatch table that states the
+  capability it needs; an unknown number returns an error rather than reaching a handler.
 
-Most operating systems place millions of lines of code (filesystems, network stacks, graphics,
-every device driver) inside the kernel, where a single bug compromises the whole machine. A
-microkernel puts almost none of that in privileged mode. Horus goes further and asks that
-*nothing* hold authority it was not explicitly given.
+The one deliberate exception is the console: any task may write to standard output
+(`docs/LIMITATIONS.md` 1.6).
 
-Three principles drive every design decision.
+## What it can do
 
-**Least privilege by construction.** Authority is a capability: an unforgeable token naming one
-object and one set of rights. There is no `root` bit that opens every door, and since **[H-1]**
-landed no kernel path grants authority for *who the caller claims to be*. A task can only do
-what it holds a capability for, and can only delegate a *subset* of what it holds. Two
-console-adjacent syscalls are still ungated by any capability: `SYS_WRITE` fd 1 and `SYS_READ`
-fd 0; they are enumerated in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) §1.6 and marked
-*ambient* at each entry in [`docs/SYSCALLS.md`](docs/SYSCALLS.md), because a claim stated
-absolutely and enforced partially is worse than no claim. Those two are ungated
-*deliberately*: a terminal write and a terminal read are not authorities this
-system rations. Writing to fd 1 no longer carries anything else with it: it once also appended
-to the kernel message ring, whose *read* side requires `CAP_KERNEL_LOG`, and that half is gated
-now (**[H-2]**, S23).
+**Kernel.** Preemptive scheduling on up to eight CPUs, with hyperthread siblings parked and caches
+flushed between tasks that do not trust each other. Per-task four-level page tables, demand
+paging, copy-on-write, `fork` and `exec`, signals. IPC over bounded queues with one-shot reply
+capabilities, notifications and pipes. SMEP, SMAP, kernel W^X, guard pages and reseeded stack
+canaries. User programs load at a randomised address.
 
-**Fail closed.** Every syscall passes through a dispatch table with a declared capability
-requirement. An unknown, reserved, or unimplemented syscall number does not fall through to a
-handler; it returns `SYS_ERR_NOSYS`. A compile-time assertion makes it impossible to add a
-syscall number without adding its table entry.
+**Servers in ring 3.** `init` starts and supervises everything else. `console_server` owns the
+serial port, the screen (VGA text or a framebuffer, under BIOS or UEFI) and the PS/2 keyboard.
+`fs_server` serves files from an encrypted volume. `netd` drives an Intel network card and
+exchanges ARP with its gateway. Each holds only the capabilities it was given; a driver's
+capability names one device, and the IOMMU confines that device's DMA to the memory its driver
+mapped.
 
-**Verify, don't assert.** Claims are backed by artifacts. `kernel.elf` is verified reproducible
-by building twice and diffing; `horus.iso` is not, and `docs/LIMITATIONS.md` §5.3a says why.
-Boot-module integrity is tested by *corrupting a module* and asserting rejection. Measured boot
-is tested by tampering and asserting the PCRs diverge. Capability revocation carries Kani
-proofs. `.github/workflows/ci.yml` runs 135 jobs, most of them QEMU integration self-tests.
-Which of them may block a merge is a decision recorded in `.github/ci-gating.yml` and enforced
-by the `ci-gating` job: every job must be listed as gating, or exempted with a written reason
-(**[C-6]**). The gating set is 136 of its 140 contexts, including every security test. The
-branch ruleset requires just two: an aggregated check that needs every gating `ci.yml` job and
-passes only if all of them succeeded, and CodeQL. The `ci-gating` job proves the aggregate covers
-exactly the gating set, so a new gate blocks merges from the PR that adds it.
+**Storage.** Every block of the volume is encrypted and authenticated with a per-block key, a
+Merkle tree catches a block rolled back to an older version, and a TPM counter catches the whole
+volume being swapped for an older copy. The key never leaves the kernel. A journal keeps the
+filesystem consistent across a power cut.
 
----
+**Installing.** Booted from install media, Horus offers a live session or an installer. The
+installer is the only task that can format a disk, asks for a typed word before it does, sets up
+an administrator and an everyday account, and can replace an earlier Horus volume. It installs
+onto IDE disks and onto SD and eMMC storage, including the soldered eMMC of a budget laptop. A
+live session never opens an installed disk.
 
-## The long-term goal
+**Boot integrity.** The kernel's hash is pinned inside the boot image, which the firmware measures
+into the TPM. The kernel checks every boot module against a manifest before it will read it, and
+measures itself and the modules into further TPM registers. The volume key is sealed to those
+measurements, so a substituted kernel cannot unlock the disk.
 
-Horus is the high-assurance foundation for a complete operating system. The kernel is not the
-destination; it is the smallest thing that must be trusted so that everything above it need not
-be.
+**Userspace.** A shell with pipelines and built-in commands. A `make run` build adds eleven GNU
+coreutils, `man` pages and TCC, a C compiler that runs on Horus; the install media does not carry
+them yet, because shipping them is part of the installed-system work (roadmap 2.11). Those
+programs share one copy of newlib: the kernel hands the library only to programs that ask for
+it, and each program's references to it are resolved and sealed read-only before `main` runs.
 
-The path from here is ordered by assurance rather than by demo value:
+## What it cannot do yet
 
-1. ~~**Make the object model true.**~~ **Done (2026-07-27):** capabilities now mediate
-   *which* object, not merely which kind: see **[C-1]**.
-2. ~~**Retire ambient `uid == 0` authority**~~ **Done (2026-07-27):** each root-gated syscall
-   now demands a distinct capability, so the capability graph is a complete description of
-   who can do what, see **[I-1]**.
-3. ~~**Kernel objects from untyped memory.**~~ **Done (2026-07-27):** `CAP_UNTYPED` +
-   `SYS_RETYPE` replaced the fixed `.bss` tables for cspaces, endpoints and notifications, so
-   creating a kernel object is an exercise of authority the graph describes and kernel memory
-   is accounted per task, see **[I-7]** (closed 2026-08-30). Since then that includes creating a
-   **task**: a spawn carves the child's cspace from the caller's own untyped, so a task holding
-   none cannot spawn (**S57**), and `SYS_UNTYPED_SPLIT` hands a delegate a bounded share rather
-   than the whole budget (**S58**). The TCB table is carved from untyped too, and how many tasks
-   exist is derived at boot from the memory that is there.
-4. **Real virtual-memory objects.** Frame capabilities, shared memory, `mmap`.
-5. **Userspace services on top:** a VFS with multiple filesystems, a network stack as a
-   ring-3 server, a process and session model, dynamic linking.
-6. **Assurance scaffolding throughout:** extend the proofs, publish the threat model, attest
-   the artifacts.
+No networking above Ethernet. No NVMe, no USB, and so no keyboard on a machine without PS/2
+emulation; a SATA drive is recognised but not read. An installed disk does not boot by itself:
+you start it from Horus boot media. There are no threads, no job control, no wall clock and no
+kernel address randomisation. The full list, with the reasons, is in
+[`docs/LIMITATIONS.md`](docs/LIMITATIONS.md), and what is being built next, in order, is in
+[`docs/ROADMAP.md`](docs/ROADMAP.md).
 
-[`docs/ROADMAP.md`](docs/ROADMAP.md) has the full plan, with rationale and security impact
-per item.
-
----
-
-## What exists today
-
-| Subsystem | State |
-|---|---|
-| **Boot** | Multiboot2 via GRUB, higher-half 64-bit kernel at `KERNEL_VMA`, physical pool sized from the E820 map |
-| **Memory** | Per-task 4-level page tables, demand paging, copy-on-write, NX stacks, kernel W^X, unmapped stack guard pages, 30-bit userspace ASLR, frame capabilities with capability-mediated shared memory, `fork` cloning an address space copy-on-write |
-| **Capabilities** | 18 object types, rights masking on delegation, system-wide subtree revocation with a serial-keyed generation backstop; kernel objects (cspaces, endpoints, notifications and memory frames) retyped out of untyped memory a task must hold authority over |
-| **Processes** | `spawn` from an embedded or caller-supplied image, exec-in-place, `fork` with a copy-on-write address space and a capability space inherited as *derived* copies, `exec` that replaces the image and touches no capability, `wait` reporting how a task died, signals with handlers and an alternate stack. **No** process groups, job control or `/proc` |
-| **Scheduling** | Preemptive (100 Hz PIT / per-CPU LAPIC), full trap-frame context switches, microarchitectural flush on task switch |
-| **SMP** | Default on, up to 8 CPUs (and fewer run fine); ACPI MADT enumeration with CPU indices independent of LAPIC ids, INIT-SIPI-SIPI bringup, shared runnable pool, acknowledged TLB-shootdown IPIs, SMT siblings parked in software |
-| **IPC** | Capability-addressed synchronous send/recv/call/reply over bounded-FIFO endpoints, a blocking receive that sleeps on an empty queue, one-shot reply capabilities, async notifications, per-task private reply endpoints, bounded byte-stream pipes |
-| **Filesystem** | `fs_server` in ring 3 over an AEAD-encrypted kernel object store (unencrypted only if the installer's operator chooses it, and then every boot says so); POSIX rwx against kernel-attested uid/gid; write-ahead journal and mount-time fsck; double-indirect large files; a per-task VFS mount table routing paths to per-mount capabilities |
-| **Console** | `console_server` in ring 3 owning the UART, the VGA framebuffer **and the PS/2 keyboard**; raw terminal mode (termios + winsize). The keyboard is read through the port grant the server already held (the platform device declares `0x60`/`0x64` beside COM1), so it cost no new capability; the kernel stops draining the controller at the same moment it stops driving the screen (**S89**, `smoke-keyboard`). A machine with **no serial port** is covered too, since 2026-09-12: the serial branch ahead of the keyboard poll asked the COM1 line-status register for a byte without first asking whether a UART is there to answer, and a floating `0xFF` says yes forever (`smoke-keyboard-noserial`) |
-| **Devices** | A `CAP_IO_DEVICE` names **one device** in a boot-time table (PCI bus-0 scan plus the non-enumerable legacy platform hardware) and confers only that device's frames, port ranges and interrupt lines. Two ring-3 drivers: `console_server` and `netd`, an Intel e1000 driver proved by a full DMA round trip. It drives e1000 rather than virtio deliberately: a paravirtual device accesses guest memory directly and is not on the far side of the IOMMU at all, so it could not witness DMA confinement. **VT-d DMA remapping**: each device gets an address space that starts **empty**, so it reaches only the frames its driver mapped. An interrupt reaches its ring-3 driver either as an **MSI on a vector the kernel chose** (the driver cannot name one) or through the I/O APIC and masked until acknowledged, so an unserviced device cannot livelock the machine. A device's **MSI-X vector table is unmappable by its driver**, it lives in a BAR, so the vector-choice question had to be answered again there. MSI-X is protected but not yet enabled; no interrupt remapping, no bridge walk |
-| **Network** | `netd` drives an e1000 from ring 3 holding one device capability and one untyped region, and its DMA reaches only what it mapped. It is woken by its device's own interrupt and acknowledges it. It transmits, and it receives on the 82574L reliably enough that `make smoke-net` gates on it (5 boots in 5); on the 82540EM reception has been seen exactly once, so receiving is a property of the device model here rather than of the driver (§2.14). There is no ARP table, IP, TCP or socket capability |
-| **Storage crypto** | Per-`(inode, block)` AEAD subkeys, Merkle rollback tree, and a TPM NV monotonic counter anchoring the volume against whole-volume rollback; key material never leaves the kernel |
-| **Installing** | A ring-3 `installer`, launched by `init` when the machine has a disk carrying no volume. Its whole authority is `CAP_STORAGE_FORMAT` (a capability type of its own, deliberately **not** a rights bit on the storage capability `fs_server` and the shell already hold, since those are granted with every right there is and defining the bit would confer it on both with nothing in the diff to show for it), `CAP_USER` to set the first root password, and a console endpoint. It cannot read the volume it replaces and cannot create a task. **Consent is a typed word, not a menu choice**: a menu whose default is Cancel still becomes a format with two keystrokes. A login still refuses to format a volume it does not recognise. **No partitioning and no bootloader step.** Install media **may replace an existing volume** (**S90**): the kernel refuses a target whose volume has been *unlocked*, a machine somebody proved they own and is using, rather than one merely recognised, which is the state install media is always in because it never logs in. Replacing asks for a different typed word (`REPLACE`, not `FORMAT`) and the disk menu marks a disk that already holds one. Installs onto legacy IDE and onto **SD/eMMC**: the latter is what a budget laptop's soldered internal storage actually is, and is reached by neither the IDE nor the SATA driver; a SATA disk is identified but not yet mountable |
-| **Boot integrity** | Kernel SHA-256 pinned inside the firmware-measured boot image; SHA-256 module manifest embedded in the kernel image; TPM 2.0 measurement into PCR 4, 8 and 9; vdisk KEK sealed under `PolicyPCR` |
-| **Userspace** | newlib libc, a shell with pipelines, GNU coreutils, TCC |
-| **Shared libraries** | The shipped programs link against one shared libc by name. The kernel loads it once and hands its code, read+exec and never write, only to programs that ask; each gets a private copy of its data; crt0 resolves the program's references, refuses a library it was not built for, and seals them read-only before `main` |
-| **Assurance** | Every property in `SECURITY.md` is bound by CI to a witness that exists and runs (`tools/check_invariants.py`); every declared count in the docs is derived and compared; every control arm is paired with a base gate |
-| **Security core** | `no_std` Rust: ELF parsing and relocation, capability algebra, ChaCha20 CSPRNG, BLAKE2b/SHA-256, AEAD, Argon2 |
-
-**Memory is shared by capability.** A page of shared memory is a `KOBJ_FRAME` retyped out of an
-untyped region the creator holds authority over, named by a `CAP_FRAME`, and mapped with
-`SYS_MAP_FRAME` into the caller's own address space. Two mutually distrusting tasks reach the
-same physical page at two virtual addresses of their own choosing, and the PTE each one gets is
-bounded by the rights on the capability it holds, so "you may read this page but not write it"
-is expressible, and is what `smoke-frame` asserts on every boot.
-
-**IPC is capability-addressed.** Every IPC syscall takes a cspace slot; the kernel derives the
-endpoint or notification from the capability there, checking its type, the right for the
-direction, and its lineage generation. A task is born holding exactly one endpoint capability
-(its own private reply endpoint) and reaches a service only through a capability something
-delegated to it. Clients get WRITE-only capabilities, so a client can send to a server but can
-never receive its traffic or forge its replies.
-
----
-
-## Architecture in one page
+## How the pieces fit
 
 ```
-            ring 3                                        ring 0
- ┌──────────────────────────────────┐        ┌───────────────────────────────┐
- │  shell   coreutils   tcc   init  │        │  Horus microkernel            │
- │                                  │        │                               │
- │  ┌────────────┐  ┌────────────┐  │  IPC   │  capability space per task    │
- │  │ fs_server  │  │  console_  │  │◄──────►│  scheduler + preemption       │
- │  │            │  │  server    │  │        │  paging / demand / COW        │
- │  └─────┬──────┘  └─────┬──────┘  │        │  encrypted object store       │
- └────────┼───────────────┼─────────┘        │  TPM / measured boot          │
-          │               │                  │                               │
-          │ object-store  │ CAP_IO_DEVICE    │  ┌─────────────────────────┐  │
-          │ syscalls      │ MAP_PHYS/IOPORT  │  │ Rust no_std security    │  │
-          └───────────────┴─────────────────►│  │ core: ELF, caps, crypto │  │
-                                             │  └─────────────────────────┘  │
-                                             └───────────────────────────────┘
+ unprivileged (ring 3)
+ ┌──────────────────────────────────────────────────────────────────────┐
+ │  shell   coreutils   tcc          programs share libc.so (read-only)  │
+ │     │  console client capability       │  file server capability      │
+ │  ┌──▼─────────────┐  ┌─────────────────▼┐  ┌──────┐  ┌───────────┐   │
+ │  │ console_server │  │    fs_server     │  │ netd │  │ installer │   │
+ │  └──┬─────────────┘  └───────┬──────────┘  └──┬───┘  └─────┬─────┘   │
+ │     │ one device capability  │ storage         │ one NIC    │ format  │
+ │     │ (UART, screen, PS/2)   │ capability      │ capability │ cap     │
+ │  init: starts every task above and hands each its capabilities        │
+ └─────┼────────────────────────┼─────────────────┼────────────┼─────────┘
+ ┌─────▼────────────────────────▼─────────────────▼────────────▼─────────┐
+ │ kernel (ring 0): capability tables, IPC, scheduling, paging,           │
+ │ untyped memory, the encrypted block store, TPM, IOMMU, disk drivers    │
+ │   Rust core: capability algebra, ELF loader, crypto, CSPRNG, audit log │
+ └────────────────────────────────────────────────────────────────────────┘
 ```
 
-The kernel provides address spaces, threads, capabilities, IPC, and an encrypted block store
-whose keys it never releases. Everything else (naming, directories, permissions, terminal
-handling, program-loading policy) is userspace.
+Directories, file permissions, terminal handling and which program to run are decided in ring 3.
+The kernel keeps what cannot be delegated safely: address spaces, capabilities, the volume key and
+the disk drivers. Moving the storage and account code out of ring 0 is on the roadmap (2.7a).
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) explains each subsystem and why it is shaped the
+way it is.
 
-Full detail in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+## Try it
 
----
-
-## The security model
-
-**Capabilities.** A capability is `{type, rights, object, badge, serial, generation}`. It lives
-in a per-task capability space (cspace) and is named by slot index. Userspace never sees the
-struct (only the slot number) so it cannot be forged.
-
-- **Mint** derives a child with `rights & new_rights`: delegation can only ever *reduce*
-  authority.
-- **Grant** pushes a capability into a child the caller supervises (holds `CAP_TCB` for).
-  Never upward.
-- **Revoke** is system-wide and *subtree-scoped*: it nulls the target and everything
-  transitively derived from it, across every task's cspace, while leaving ancestors,
-  siblings, and independent capabilities to the same object intact.
-- **Generations** back revocation up. Each capability's serial keys a generation cell that
-  is bumped on revoke, so a detached snapshot of a revoked capability fails validation even
-  if the structural sweep somehow missed it. Two independent mechanisms; both must hold.
-
-**Zero-trust identity.** A server never trusts what a client says about itself.
-`SYS_IPC_SENDER` returns the uid the *kernel* recorded for a message's sender, established
-only by a successful login. `fs_server` authorises every file operation against that value.
-
-**Defence in depth in the kernel.** SMEP and SMAP (verified present in CR4 by a self-test),
-CR0.WP, EFER.NXE, kernel W^X swept for violations at boot, unmapped kernel-stack guard
-pages, stack canaries reseeded from the CSPRNG, `CR4.TSD` denying ring-3 `RDTSC`,
-microarchitectural flush on task switch, SMT siblings parked.
-
-**Trusted boot.** The kernel's SHA-256 is pinned inside the El Torito boot image, which the
-firmware measures into TPM `PCR[4]`; GRUB refuses a kernel that does not match. The kernel in turn
-verifies each module against a manifest embedded in its own image and refuses unverified payloads
-outright, and extends a kernel-identity token into `PCR[8]` and each module's digest into `PCR[9]`.
-The vdisk key-encryption key is sealed to **PCR 4, 8 and 9**, so neither a substituted kernel nor a
-boot image rebuilt without the check can unlock the volume. `PCR[4]` is the one of the three the
-kernel does not extend itself, which is what stops the measurement being a claim the kernel makes
-about itself: see `SECURITY.md` **S92**, and `docs/LIMITATIONS.md` 2.9a for what it costs.
-
-Full detail, including the threat model and what is explicitly out of scope, in
-[`SECURITY.md`](SECURITY.md).
-
----
-
-## Quick start
-
-**Requirements:** `gcc` (x86-64 host), `binutils`, `make`, `rustup` with the
-`x86_64-unknown-none` target, `xorriso`, `grub-pc-bin`, `grub-common`, `mtools`, and
-`qemu-system-x86`. Optionally `swtpm` for measured-boot testing.
+You need an x86-64 Linux host with `gcc`, `binutils`, `make`, `rustup` (with the
+`x86_64-unknown-none` target), `xorriso`, `grub-pc-bin`, `grub-common`, `mtools` and
+`qemu-system-x86`. `swtpm` is optional and adds an emulated TPM.
 
 ```bash
 rustup target add x86_64-unknown-none
-sudo apt-get install -y build-essential binutils make \
-    xorriso grub-pc-bin grub-common mtools qemu-system-x86
-
-make            # build kernel.elf
-make run        # build the ISO and boot it under QEMU with a serial console
+make            # builds kernel.elf
+make run        # builds horus.iso and boots it in QEMU on this terminal (Ctrl-A X quits)
 ```
 
-Log in as `root` / `horus`. Try `ls /bin`, `dmesg`, `ps`, `cat /etc/motd | wc -l`.
+Log in as `root` with password `toor`, then try `ls /bin`, `ps`, `capview`, `dmesg` or
+`cat /etc/motd | wc -l`. Those two accounts exist only on a boot with no installed disk; an
+installed machine has only the accounts its installer created.
 
-Other useful targets:
-
-```bash
-make smoke              # headless boot; asserts the ring-3 shell banner appears
-make test               # cargo test, then a clean rebuild, see the caveat below
-make SMP=0              # build without SMP
-make DEBUG_SHELL=1      # build with the in-kernel debug shell
-make reproducible-build # one SOURCE_DATE_EPOCH build; records both artifacts' hashes
-make run-tpm            # boot under an emulated TPM (requires swtpm)
-```
-
-Two of those are weaker than their names suggest, and it is better to say so here than to let
-someone rely on them.
-
-`make reproducible-build` builds **once** and records `sha256sum` for `kernel.elf` and
-`horus.iso` in `.build.sha`. The double-build-and-diff that actually establishes the property
-lives only in the `reproducible` CI job, which is a required check and builds once serially and
-once in parallel, the way every other CI job builds; locally, run the target twice and compare
-the `kernel.elf` line. Compare that line and not the file: **`horus.iso` is not
-byte-reproducible**, because grub-mkrescue stamps a wall-clock UUID into every image it builds.
-The ISO's *payload*; the kernel, every boot module, `grub.cfg`, is identical across builds; four
-grub-generated objects are not. See `docs/LIMITATIONS.md` §5.3a.
-
-`make test` is the Rust unit tests plus a clean rebuild. It does **not** boot QEMU, so it is not
-the full self-test sweep: use the `smoke-*` targets for that.
-
-Complete build documentation, including every configuration flag, in
+To install onto real hardware, `make install.iso` builds install media with a boot menu (live
+session or install); write it to a USB stick with `dd`. The installed disk has no bootloader of
+its own yet, and the install media's live session deliberately never opens it, so start the
+installed system from a stick holding `horus.iso` (`make horus.iso`), whose single boot entry
+finds and opens the volume. The details, every build flag and the troubleshooting notes are in
 [`docs/BUILDING.md`](docs/BUILDING.md).
 
----
+## How it is checked
 
-## Repository layout
+Every security property Horus claims is a numbered row in [`SECURITY.md`](SECURITY.md), and each
+row names the test that would fail if the property broke. A checker in CI refuses a row whose
+test does not exist or does not run.
+
+Most tests boot a purpose-built kernel in QEMU and read its serial output. Many are adversarial:
+they corrupt a boot module, tamper with the measured boot, or try the refused operation, and
+require the refusal. Each such test has a **control arm**, a build that puts the defect back on
+purpose, and CI requires the test to go red against it, so a test that cannot fail cannot pass
+unnoticed. `.github/workflows/ci.yml` defines 135 jobs; 136 of the 140 status checks they
+produce gate a merge, and the four that do not each carry a written reason. Bounded Kani proofs
+cover the capability algebra, Miri runs over the Rust core, and `kernel.elf` builds byte for byte
+the same twice. [`TESTS.md`](TESTS.md) lists every test and what it proves.
+
+## Where things are
 
 ```
-src/boot/          multiboot2 entry, long-mode bringup, AP trampoline
-src/kernel/        the kernel: caps, paging, sched, IPC, syscalls, storage, TPM, drivers
-src/include/       kernel-internal headers
-rust/src/          no_std security core (ELF, capabilities, crypto, CSPRNG, audit)
-rust/fuzz/         cargo-fuzz targets for the FFI boundary
-include/           the userspace ABI: syscall numbers, wrappers, IPC protocols
-userspace/         init, fs_server, console_server, shell, self-test programs
-userspace/ports/   ported third-party programs (coreutils, tcc)
-newlib/            vendored libc
-tools/             build helpers, QEMU session drivers, manifest generation
-docs/              architecture, syscalls, roadmap, limitations, audit, investigations
-site/              the project website published to GitHub Pages
+src/boot/        entry from GRUB, long mode, the secondary-CPU trampoline
+src/kernel/      the kernel: capabilities, IPC, scheduling, paging, storage, TPM, drivers
+src/include/     kernel headers
+rust/            the no_std security core, its Kani proofs, and fuzz targets
+include/         the user-facing ABI: syscall numbers and wrappers, IPC protocols
+userspace/       init, the servers, the shell, the installer, libc glue, self-test programs
+userspace/ports/ GNU coreutils and TCC, with the changes Horus needs
+tools/           build helpers, QEMU drivers for the tests, and the CI checkers
+docs/            architecture, syscalls, building, roadmap, limitations, designs, history
+site-src/, site/ the website's source and its built pages
 ```
 
----
+newlib is not in the tree: `tools/build_newlib.sh` fetches it and refuses it unless its SHA-256
+matches the pinned value (`THIRD_PARTY.md`).
 
-## Testing
+## Documents
 
-Horus's assurance rests on its tests, so they are treated as first-class. Three layers:
-
-1. **Rust unit tests and Kani proofs**, `cargo test`, plus formal proofs that revocation
-   hits exactly the target's derivation subtree.
-2. **QEMU integration self-tests**, the bulk of CI's 135 jobs; each boots a purpose-built
-   kernel configuration and asserts a marker on the serial console. These cover W^X,
-   capability refusals, COW, TLB shootdown, preemption, signals, SMEP/SMAP, measured boot,
-   untyped retyping, blocking receive, and more.
-3. **Scripted sessions**. Python drivers that type into the real ring-3 shell over serial
-   and assert on the output.
-
-Several are *adversarial*: `smoke-modules-tamper` corrupts a boot module and asserts it is
-refused; `smoke-tpm-tamper` asserts the PCRs diverge. Testing that a control *fires* matters
-more than testing that the happy path works.
-
-[`TESTS.md`](TESTS.md) has the complete catalogue and what each test proves.
-
----
-
-## Documentation
-
-| Document | Contents |
+| Read | For |
 |---|---|
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Subsystem design, invariants, and why each decision was made |
-| [`SECURITY.md`](SECURITY.md) | Threat model, security properties, reporting policy |
-| [`docs/SYSCALLS.md`](docs/SYSCALLS.md) | The complete syscall ABI with authorisation requirements |
-| [`docs/BUILDING.md`](docs/BUILDING.md) | Build, configure, run, reproduce |
-| [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) | Honest accounting of what does not work or is not enforced |
-| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Prioritised plan toward a complete OS |
-| [`docs/AUDIT.md`](docs/AUDIT.md) | The current security and efficiency audit (2026-09-19); predecessors in [`docs/history/`](docs/history/) |
-| [`docs/investigations/`](docs/investigations/) | How the harder findings were narrowed, and which hypotheses were wrong |
-| [`TESTS.md`](TESTS.md) | Test catalogue |
-| [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to contribute, and the invariant-preservation rules |
-| [`CHANGES.md`](CHANGES.md) | Changelog |
-| [`docs/history/DEVLOG-2026.md`](docs/history/DEVLOG-2026.md) | Development log; the reasoning behind each changelog line |
+| [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) | What is wrong or missing today, and every finding's status |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | What is done, and what comes next in what order |
+| [`SECURITY.md`](SECURITY.md) | The threat model, every security property with its test, and how to report a vulnerability |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | How each subsystem works and why |
+| [`docs/SYSCALLS.md`](docs/SYSCALLS.md) | Every system call and the capability it requires |
+| [`docs/BUILDING.md`](docs/BUILDING.md) | Building, running, installing, and every build flag |
+| [`TESTS.md`](TESTS.md) | Every test target and what it proves |
+| [`docs/README.md`](docs/README.md) | Everything else: designs, audits, investigations, history |
+| [`CHANGES.md`](CHANGES.md) | What changed, by pull request |
 
----
+## Contributing and reporting
 
-## Contributing
-
-Contributions are welcome, especially to the capability model, formal verification, and
-userspace services. Changes to security-critical paths carry an extra obligation: state
-which invariant your change preserves, and add the test that witnesses it. See
-[`CONTRIBUTING.md`](CONTRIBUTING.md).
-
----
-
-## Security
-
-Please report vulnerabilities privately, [`SECURITY.md`](SECURITY.md) has the process and scope.
-Known unfixed issues are documented openly in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) and
-the current audit; Horus does not hide its weaknesses.
-
----
+Contributions are welcome. A change to a security-critical path must say which property it keeps
+and add the test that shows it; [`CONTRIBUTING.md`](CONTRIBUTING.md) has the rules. Report
+vulnerabilities privately as described in [`SECURITY.md`](SECURITY.md).
 
 ## Licence
 
-MIT, see [`LICENSE`](LICENSE).
+MIT; see [`LICENSE`](LICENSE). Third-party code and fonts are listed in
+[`THIRD_PARTY.md`](THIRD_PARTY.md).

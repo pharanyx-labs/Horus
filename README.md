@@ -60,10 +60,10 @@ canaries. User programs load at a randomised address.
 
 **Servers in ring 3.** `init` starts and supervises everything else. `console_server` owns the
 serial port, the screen (VGA text or a framebuffer, under BIOS or UEFI) and the PS/2 keyboard.
-`fs_server` serves files from an encrypted volume. `netd` drives an Intel network card and
-exchanges ARP with its gateway. Each holds only the capabilities it was given; a driver's
-capability names one device, and the IOMMU confines that device's DMA to the memory its driver
-mapped.
+`fs_server` serves files from an encrypted volume. Each holds only the capabilities it was given;
+a driver's capability names one device, and the IOMMU confines that device's DMA to the memory its
+driver mapped. `netd`, an Intel network driver built the same way, runs in a test build and
+exchanges ARP with its gateway; the shipped system does not start it yet.
 
 **Storage.** Every block of the volume is encrypted and authenticated with a per-block key, a
 Merkle tree catches a block rolled back to an older version, and a TPM counter catches the whole

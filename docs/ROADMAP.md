@@ -130,8 +130,9 @@ the `VFS_SELFTEST` build. How files themselves are authorised is being replaced 
 ### 2.6 ◧ Remainder
 
 Everything above Ethernet: an ARP table, IP, TCP and per-application socket capabilities. `netd`
-speaks enough Ethernet to prove the device is driven, and receives on the 82574L only
-(`LIMITATIONS.md` 2.14).
+speaks enough Ethernet to prove the device is driven, receives on the 82574L only
+(`LIMITATIONS.md` 2.14), and runs only in the `NET_SELFTEST` build: the shipped system does not
+start it.
 
 ### 2.7a ⬜ Evict the in-kernel services [F-2.7a]
 
@@ -282,7 +283,7 @@ same bytes cannot be verified by rebuilding.
 | ✅ | Capabilities with rights that only narrow, derivation lineage and system-wide subtree revocation |
 | ✅ | Kernel objects, tasks included, allocated from untyped memory a task holds a capability to |
 | ✅ | Preemptive SMP scheduling on up to eight CPUs, with flush-on-switch barriers |
-| ✅ | Ring-3 servers: `init`, `console_server`, `fs_server`, `netd`; one path walker in a library |
+| ✅ | Ring-3 servers: `init`, `console_server`, `fs_server`, the installer; one path walker in a library. `netd`, a ring-3 network driver, runs in a test build |
 | ✅ | An encrypted, Merkle-verified volume with a journal and TPM-anchored rollback protection |
 | ✅ | An installer, on IDE disks and SD or eMMC storage, including a laptop's soldered eMMC |
 | ✅ | A shell with pipelines, a shared libc, GNU coreutils and TCC |

@@ -1038,7 +1038,7 @@ forbidden:
       sweep because the sweep read the prose and not the index. What makes it
       worth a ratchet rather than a silent correction is that it was READ. The
       external review of 2026-09-20
-      (docs/AUDIT-EXTERNAL-2026-09-20.md) filed its SMP finding against [G-9] as
+      (docs/history/AUDIT-EXTERNAL-2026-09-20.md) filed its SMP finding against [G-9] as
       an open ID, which is the first recorded instance of a stale in-tree status
       reaching somebody else's conclusions. Anchored on the table row rather
       than on the words, which appear legitimately in the two rows beneath it.

@@ -643,6 +643,12 @@ in this file.
 
 ### Changed
 
+- **`docs/BUILDING.md` describes the build and the machines Horus runs on today.** It said UEFI is
+  not supported, that nothing links the shared libc, that a real machine has only a VGA text
+  console and ATA storage, and that `horus.iso` detects no disk; each of those stopped being true
+  in September. It also explains how to start an installed system. The defect-flag table keeps
+  all 254 flags, one line each, with the targets that build them.
+
 - **`SECURITY.md` states each property in one row a person can read.** The mechanism column says
   in a sentence what enforces the property and the witness column lists its tests and control
   arms; the posture section says where Horus stands today instead of recounting closed findings.

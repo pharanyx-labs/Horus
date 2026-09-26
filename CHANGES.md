@@ -677,6 +677,12 @@ in this file.
 
 ### Fixed
 
+- **`smoke-kdiag-split-control` went red about one CI run in 24 on changes that do not touch the
+  console.** Its bound of eight boots was set from one workstation's reproduction rate (13 of 20);
+  read back from the arm's own lines in 36 CI runs, CI reproduces in 34 of 104 boots. The bound
+  is now 30 conclusive boots, sized from that rate's 95% lower bound for a chance miss of about
+  one run in 4,600. The arm still stops at the first reproduction.
+
 - **A merge-conflict marker sat in `docs/LIMITATIONS.md` §5.6 for a day, with every job green.**
   A merge in #465 kept both sides of a line that differed only in a derived count, and Markdown
   renders the markers as text. It is removed, and the required job `conflict-markers`

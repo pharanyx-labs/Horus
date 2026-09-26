@@ -43,9 +43,7 @@ counts:
     derive: ci_jobs
     occurrences:
       - file: README.md
-        pattern: '`\.github/workflows/ci\.yml` runs (\d+) jobs'
-      - file: README.md
-        pattern: "the bulk of CI's (\\d+) jobs"
+        pattern: '`\.github/workflows/ci\.yml` defines (\d+) jobs; \d+ of the'
       - file: TESTS.md
         pattern: '`\.github/workflows/ci\.yml` defines \*\*(\d+)\*\* jobs'
       - file: docs/LIMITATIONS.md
@@ -67,7 +65,7 @@ counts:
     derive: contexts
     occurrences:
       - file: README.md
-        pattern: 'The gating set is \d+ of its (\d+) contexts'
+        pattern: 'jobs; \d+ of the (\d+) status checks'
       - file: TESTS.md
         pattern: '\*\*\d+\*\* jobs, \*\*(\d+)\*\* contexts'
       - file: docs/LIMITATIONS.md
@@ -80,7 +78,7 @@ counts:
     derive: required
     occurrences:
       - file: README.md
-        pattern: 'The gating set is (\d+) of its \d+ contexts'
+        pattern: 'jobs; (\d+) of the \d+ status checks'
       - file: TESTS.md
         pattern: 'The set is \*\*(\d+) gating contexts'
       - file: docs/LIMITATIONS.md

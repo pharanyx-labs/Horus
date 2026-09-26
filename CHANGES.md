@@ -643,6 +643,11 @@ in this file.
 
 ### Changed
 
+- **`docs/SYSCALLS.md` lists every syscall.** One table, ordered by number, gives each call's
+  arguments, what it does and the capability it needs, built from `include/syscall.h` and the
+  dispatch table. Sixteen numbers were missing from the old reference, among them the live
+  `SYS_CAP_TRANSFER`, `SYS_CAP_MOVE`, `SYS_IRQ_ACK`, `SYS_TASK_RESUME` and `SYS_TASK_EXIT_INFO`.
+
 - **The README is rewritten from scratch.** It now says who writes and merges the code, lists
   what exists and what does not in plain terms, and explains how to start an installed system.
   The old one gave `root`/`horus` as the login (it is `root`/`toor` on a boot with no installed

@@ -217,9 +217,9 @@
     <p>
       The kernel image is byte-for-byte reproducible and gated on every merge. The ISO is not:
       <code>grub-mkrescue</code> writes a file named for the wall-clock second and embeds an
-      identifier in the EFI loaders it generates. There are also no tagged releases, no signed
-      artifacts and no provenance, so nobody can check that an ISO came from this
-      repository's CI.
+      identifier in the EFI loaders it generates. The one release so far, an alpha for
+      developers, is an ISO and its checksum with no signature and no provenance, so nobody can
+      check that it came from this repository's CI.
     </p>
   </li>
   <li>

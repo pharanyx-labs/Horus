@@ -394,8 +394,10 @@ until a reformat. Nothing wrong is ever accepted. `smoke-installer-emmc` fell fr
 
 ### 5.3 No release provenance **[I-9]**
 
-There are no tags, no releases, no signed artifacts and no SLSA provenance, so nobody can check that
-a `horus.iso` they were given came from this repository's CI. The one network input to the build,
+There is one release, `v0.2.0-alpha` (2026-09-14): an install ISO and its SHA-256 on GitHub,
+from an unsigned lightweight tag. There are no signed artifacts and no SLSA provenance, so nobody
+can check that an ISO they were given came from this repository's CI, and because the ISO does not
+rebuild to the same bytes (5.3a) nobody can confirm it by rebuilding. The one network input to the build,
 the newlib tarball, is pinned by SHA-256 and checked before unpacking (`make smoke-newlib-tamper`),
 so inbound verification is in place; outbound is not.
 

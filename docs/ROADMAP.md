@@ -240,7 +240,7 @@ guest's capabilities can host another operating system.
 | 4.2 ✅ Gate the security tests [C-6] | Every job is classified as gating or exempt with a written reason in `.github/ci-gating.yml`; the ruleset requires the `gates` aggregator and CodeQL, and `gates` needs every gating job. 2026-08-16 to 2026-09-21, #159, #165, #415 |
 | 4.3 ✅ `gitleaks` and `cargo-audit` fail the build | 2026-08-30 |
 | 4.4 ⬜ Build provenance and signed artifacts [I-9] | Not started |
-| 4.5 ⬜ Tagged releases | Not started |
+| 4.5 ◧ Tagged releases | One so far, `v0.2.0-alpha` (2026-09-14): an install ISO and its SHA-256, for developers. Not yet carrying an SBOM, provenance or the expected PCR values |
 | 4.6 ✅ `horus.py` under `tools/` [M-2] | 2026-09-09 |
 | 4.7 ✅ Governance files [M-3] | 2026-07-27, #107 |
 | 4.8 ⬜ Secret scanning for non-provider patterns [M-4] | Not started |
@@ -263,8 +263,9 @@ every merge or needs a bypass actor, which would undo 4.2. `SECURITY.md` therefo
 `smoke-smp-kvm` (a second run of required gates under KVM, until its pass rate is measured).
 
 **4.4, 4.5 and 4.11** belong together: SLSA provenance and signatures on `kernel.elf` and the ISO,
-releases that carry them with the SBOM and the expected PCR values, and a script a third party
-runs to rebuild from a tag and compare. They wait on 3.1, since an ISO that does not rebuild to the
+releases that carry them with the SBOM and the expected PCR values (the one release so far carries
+only the ISO and its checksum, from an unsigned tag), and a script a third party runs to rebuild
+from a tag and compare. They wait on 3.1, since an ISO that does not rebuild to the
 same bytes cannot be verified by rebuilding.
 
 **4.12.** The exemption list in `.github/invariants.yml` is currently

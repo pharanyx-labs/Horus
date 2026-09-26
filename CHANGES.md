@@ -643,6 +643,13 @@ in this file.
 
 ### Changed
 
+- **The README is rewritten from scratch.** It now says who writes and merges the code, lists
+  what exists and what does not in plain terms, and explains how to start an installed system.
+  The old one gave `root`/`horus` as the login (it is `root`/`toor` on a boot with no installed
+  disk), described `newlib/` as vendored (it is fetched and hash-pinned), and still said the PCI
+  scan does not walk bridges. The website's home page no longer says an installed machine starts
+  from its own disk.
+
 - **The boot log and the console are left-aligned again; only the installer is centred.** #433
   centred the whole character grid, which moved the kernel's log and every console line to the
   middle of a wide screen. Now the log starts at the left edge and only a full-screen program's

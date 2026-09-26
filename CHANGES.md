@@ -643,6 +643,11 @@ in this file.
 
 ### Changed
 
+- **`TESTS.md` is a catalogue again: one row per gate.** Each of the 204 gates has a line saying
+  what it proves, the `SECURITY.md` properties it witnesses and its control arms, grouped by
+  area, with the CI jobs listed from `ci.yml`. It was 471 KB of per-gate history; the measurements
+  stay in the pull requests and in the file's git history.
+
 - **The boot log and the console are left-aligned again; only the installer is centred.** #433
   centred the whole character grid, which moved the kernel's log and every console line to the
   middle of a wide screen. Now the log starts at the left edge and only a full-screen program's

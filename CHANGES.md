@@ -643,6 +643,12 @@ in this file.
 
 ### Changed
 
+- **`THIRD_PARTY.md` lists the vendored GNU coreutils (GPLv3) and TinyCC (LGPL 2.1).** It said
+  everything not listed was MIT, and listed neither. The website no longer says the modules
+  carry `init` and the servers (they are in the kernel image) or that an installed disk boots by
+  itself; the security-report template no longer calls [I-7] open, and the TinyCC README no
+  longer says `tcc` links newlib statically.
+
 - **`docs/BUILDING.md` describes the build and the machines Horus runs on today.** It said UEFI is
   not supported, that nothing links the shared libc, that a real machine has only a VGA text
   console and ATA storage, and that `horus.iso` detects no disk; each of those stopped being true

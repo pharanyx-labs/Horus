@@ -29,7 +29,7 @@ omitted.
 
 ## How it builds
 
-TCC needs no `configure` and no gnulib (unlike the coreutils port). The units compile directly against Horus's newlib and link with the same `crt0` + `newlib_glue` + `malloc` as every other newlib program, into a Horus static-PIE (`ET_DYN`, `R_X86_64_RELATIVE` only) that the kernel's loader accepts. See the `TCC_*` rules in the top-level `Makefile`.
+TCC needs no `configure` and no gnulib (unlike the coreutils port). The units compile against Horus's newlib headers and link against the shared libc by name, like every shipped program: `crt0_dyn` and the ring-3 linker (`userspace/dynlink.c`) resolve its library references before `main` and seal them read-only (`SECURITY.md` S108). See the `TCC_*` rules in the top-level `Makefile`.
 
 Two non-obvious flags:
 - **`-DCONFIG_TCC_STATIC`** drops TCC's `<dlfcn.h>` include (no dynamic loading on Horus).

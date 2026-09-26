@@ -168,7 +168,7 @@
 <p class="note">
   Horus takes a third position too, on how the kernel is written. The C kernel is about
   23,000 lines; the code that parses untrusted bytes or enforces an algebraic security
-  property is 6,200 lines of memory-safe <code>no_std</code> Rust linked into it; ELF
+  property is about 7,000 lines of memory-safe <code>no_std</code> Rust linked into it; ELF
   parsing and relocation, the capability algebra, the cryptographic primitives, the
   CSPRNG, the pointer and range validators. That split is argued empirically rather than
   aesthetically: <strong>moving the ELF loader into Rust uncovered two real

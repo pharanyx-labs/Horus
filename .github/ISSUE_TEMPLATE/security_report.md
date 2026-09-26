@@ -22,12 +22,8 @@ assignees: pharanyx-labs
 > [docs/AUDIT.md](../../docs/AUDIT.md) for the current audit. Several weaknesses are documented
 > and tracked; reports of anything already listed there are duplicates.
 >
-> The open one worth knowing about is **process** rather than a defect: **[C-5]**, no
-> security-critical change has been reviewed by a second person. **[I-7]**, the fixed `tasks[]` table, is the open technical one.
->
-> *This block named **[C-1]** as an open weakness until 2026-08-30. It was fixed on 2026-07-27,
-> which is to say the issue template invited duplicate reports of a defect that had not existed
-> for a month.*
+> The open weakness most worth knowing is a **process** one: **[C-5]**, no human reviews a
+> change before it merges. The open technical ones are listed in `docs/LIMITATIONS.md` §1.
 
 ## Summary
 

@@ -643,6 +643,12 @@ in this file.
 
 ### Changed
 
+- **`THIRD_PARTY.md` lists the vendored GNU coreutils (GPLv3) and TinyCC (LGPL 2.1).** It said
+  everything not listed was MIT, and listed neither. The website no longer says the modules
+  carry `init` and the servers (they are in the kernel image) or that an installed disk boots by
+  itself; the security-report template no longer calls [I-7] open, and the TinyCC README no
+  longer says `tcc` links newlib statically.
+
 - **The README is rewritten from scratch.** It now says who writes and merges the code, lists
   what exists and what does not in plain terms, and explains how to start an installed system.
   The old one gave `root`/`horus` as the login (it is `root`/`toor` on a boot with no installed

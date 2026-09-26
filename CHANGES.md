@@ -643,6 +643,12 @@ in this file.
 
 ### Changed
 
+- **`docs/BUILDING.md` describes the build and the machines Horus runs on today.** It said UEFI is
+  not supported, that nothing links the shared libc, that a real machine has only a VGA text
+  console and ATA storage, and that `horus.iso` detects no disk; each of those stopped being true
+  in September. It also explains how to start an installed system. The defect-flag table keeps
+  all 254 flags, one line each, with the targets that build them.
+
 - **The boot log and the console are left-aligned again; only the installer is centred.** #433
   centred the whole character grid, which moved the kernel's log and every console line to the
   middle of a wide screen. Now the log starts at the left edge and only a full-screen program's

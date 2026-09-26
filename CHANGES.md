@@ -609,7 +609,7 @@ in this file.
   `continue-on-error`, and `check_kani_harnesses.py` fails the build on a proof classified as
   neither. What does not work is the vestigial job beside them.
 - **The first external review of this tree is reconciled, not filed away**
-  (`docs/AUDIT-EXTERNAL-2026-09-20.md`). An unsolicited third-party review arrived on 2026-09-20
+  (`docs/history/AUDIT-EXTERNAL-2026-09-20.md`). An unsolicited third-party review arrived on 2026-09-20
   against `91a388b`. The new file records which of its claims the tree confirms, which it
   contradicts and why, and what it added that the tree did not have. It sets **no** statuses:
   `docs/LIMITATIONS.md` stays authoritative, and the review is deliberately not quoted in full,
@@ -642,6 +642,12 @@ in this file.
   and on Void's. Falsified by `tools/test_check_image_budget.sh` (11 arms).
 
 ### Changed
+
+- **The contributor and reference documents describe the project as it is.** `CONTRIBUTING.md`
+  no longer calls [C-1] the most serious open defect (it closed in July) and says who reviews
+  and merges; `rust/KANI.md` lists all 23 proofs, including the three for endpoint tokens;
+  `docs/README.md` is a plain map with each design's build status; and the 2026-09-20 external
+  review record moves to `docs/history/`.
 
 - **The boot log and the console are left-aligned again; only the installer is centred.** #433
   centred the whole character grid, which moved the kernel's log and every console line to the

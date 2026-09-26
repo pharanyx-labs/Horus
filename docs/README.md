@@ -1,107 +1,58 @@
 # Horus documentation
 
-Technical documentation for the Horus microkernel. Start with the
-[project README](../README.md) for an overview.
+Start with the [project README](../README.md). Where a document and the code disagree, the code
+is right; please open an issue so the document is fixed.
 
----
+## The living documents
 
-## Read in this order
+These describe the system as it is today, and each change updates them in the same pull request.
 
-**Understanding the system**
-
-1. **[ARCHITECTURE.md](ARCHITECTURE.md)**. How Horus is built and why. Boot and memory
-   layout, the C/Rust split, capabilities, paging, scheduling, SMP, IPC, the syscall layer,
-   userspace servers, storage, trusted boot, side-channel posture, and the known
-   architectural gaps.
-
-2. **[SYSCALLS.md](SYSCALLS.md)**. The complete syscall ABI: calling convention, the
-   capability-checked dispatch table, every syscall with its authorisation requirement, and
-   how to add one.
-
-3. **[../SECURITY.md](../SECURITY.md)**. The threat model, the adversaries considered and
-   excluded, the security properties Horus claims with the witness for each, and the
-   vulnerability reporting process.
-
-**Evaluating the system**
-
-4. **[LIMITATIONS.md](LIMITATIONS.md)**. What does not work, what is not enforced, and where
-   the documentation used to overstate the case. This is the authoritative status of every
-   finding. Read it before drawing any conclusion about Horus's readiness.
-
-5. **[AUDIT.md](AUDIT.md)**. The current security and efficiency audit (2026-09-19). Its
-   predecessors are **[history/AUDIT-2026-08-30.md](history/AUDIT-2026-08-30.md)**, the 2026-08-30
-   whole-tree audit, and **[history/AUDIT-2026-07.md](history/AUDIT-2026-07.md)**, the 2026-07-27
-   audit, which itself carries the July 2026 one as its Appendix A.
-
-   **[AUDIT-EXTERNAL-2026-09-20.md](AUDIT-EXTERNAL-2026-09-20.md)** reconciles the first
-   third-party review of this tree against the checkout. It sets no statuses: it records which
-   of the review's claims the tree confirms, which it contradicts, and the one stale status line
-   in this file that the review read and repeated.
-
-**Working on the system**
-
-6. **[BUILDING.md](BUILDING.md)**. Toolchain, build targets, configuration flags, running
-   under QEMU and on hardware, reproducible builds, boot modules, troubleshooting. Its
-   defect-flag table is the index of the control arms, and CI checks that it is complete.
-
-7. **[../TESTS.md](../TESTS.md)**. The test catalogue and what each test proves.
-
-8. **[../CONTRIBUTING.md](../CONTRIBUTING.md)**. Workflow, code style, and the
-   invariant-preservation rule for security-critical paths.
-
-9. **[ROADMAP.md](ROADMAP.md)**. The prioritised plan toward a complete operating system,
-   ordered by assurance value.
-
----
-
-## Investigations
-
-The forensic record of the harder findings, how each was narrowed, which hypotheses were wrong,
-and how the rate was measured. Kept in full because in a security project the reasoning is the
-evidence. Their **current status** is in [LIMITATIONS.md](LIMITATIONS.md), not here.
-
-| Investigation | Status |
+| Document | What it is for |
 |---|---|
-| [`G-08-two-cpus-one-kernel-stack.md`](investigations/G-08-two-cpus-one-kernel-stack.md) | Closed 2026-08-17 |
-| [`G-09-scheduler-claim-leak.md`](investigations/G-09-scheduler-claim-leak.md) | Closed 2026-08-21 |
-| [`G-10-spawn-path-uaf.md`](investigations/G-10-spawn-path-uaf.md) | Closed 2026-08-18 |
-| [`G-11-armed-image-ownership.md`](investigations/G-11-armed-image-ownership.md) | Closed 2026-08-18 |
-| [`G-12-claim-invariant-residue.md`](investigations/G-12-claim-invariant-residue.md) | Closed 2026-09-03 |
-| [`kernel-pointer-disclosure.md`](investigations/kernel-pointer-disclosure.md) | Both findings closed (§1.16, §1.17); two decisions for roadmap 3.8 remain open |
+| [`LIMITATIONS.md`](LIMITATIONS.md) | What does not work or is not enforced. **The single authoritative status of every finding.** Read it before drawing conclusions |
+| [`ROADMAP.md`](ROADMAP.md) | What is done, and what comes next in what order |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | How each subsystem is built and why: boot, the C and Rust split, capabilities, paging, scheduling, SMP, IPC, syscalls, the servers, storage, trusted boot, side channels, and the known architectural gaps |
+| [`SYSCALLS.md`](SYSCALLS.md) | Every system call, the capability it requires, and how to add one |
+| [`../SECURITY.md`](../SECURITY.md) | The threat model, every security property with the test that witnesses it, and how to report a vulnerability |
+| [`BUILDING.md`](BUILDING.md) | Toolchain, targets, running under QEMU and on hardware, installing, reproducible builds, and every build flag. Its defect-flag table is the index of the control arms, and CI holds it complete |
+| [`../TESTS.md`](../TESTS.md) | Every test target and what it proves |
+| [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | The workflow, code style, and the invariant rule |
+| [`../rust/KANI.md`](../rust/KANI.md) | What the Kani proofs establish, and which of them gate a merge |
+| [`../THIRD_PARTY.md`](../THIRD_PARTY.md) | Everything not written for Horus, and its provenance |
+| [`../CHANGES.md`](../CHANGES.md) | What changed, by pull request |
 
----
+## Designs
 
-## Reference material
+Specifications written before the code. Each says at its top what of it is built.
 
-| File | Contents |
+| Design | Status |
 |---|---|
-| [`design/console-server.md`](design/console-server.md) | The design behind the ring-3 console driver, as built |
-| [`design/filesystem.md`](design/filesystem.md) | The capability-addressed filesystem: **specification; phase 1a (the kernel's token and reply-mint primitive) is built**. The layering (the kernel only seals blocks), file capabilities, the policy, the truthful POSIX view, the v12 copy-on-write format and the order of work |
-| [`design/installed-system.md`](design/installed-system.md) | A full install onto the disk (`/bin`, `/sbin`, `/tmp`, `/var`, man pages), how a program on the disk is trusted, the bootloader, and `/etc/shadow`: **design only, nothing built**; its decisions are taken |
-| [`design/shared-libc.md`](design/shared-libc.md) | Roadmap 2.5 in the shipped system: who holds the shared libc, how a program links it by name in a ring-3 linker, the private data, and the seal that makes the resolved table read-only: **built** (S106, S107, S108) |
-| [`history/DEVLOG-2026.md`](history/DEVLOG-2026.md) | The development log: 117 narrative entries, newest first |
-| [`../CHANGES.md`](../CHANGES.md) | The changelog |
+| [`design/filesystem.md`](design/filesystem.md) | The capability-addressed filesystem. Phase 1a (endpoint tokens, S105) is built; phase 1b is next (ROADMAP 2.10) |
+| [`design/installed-system.md`](design/installed-system.md) | Programs on the disk under a pinned manifest, a disk that boots itself, accounts as files. Decided, not yet built (ROADMAP 2.11) |
+| [`design/shared-libc.md`](design/shared-libc.md) | How programs receive, bind and seal the shared libc. Built (S106 to S108) |
+| [`design/meta-cache-merkle.md`](design/meta-cache-merkle.md) | The bounded metadata cache and the Merkle rollback tree. Built (S65, S66) |
+| [`design/console-server.md`](design/console-server.md) | Moving the console driver to ring 3. Built |
 
-**There is no TLA+ specification.** Two were committed on 2026-06-25 and removed on
-2026-09-10: neither would parse, and the capability one's `Revoke` action was
-unsatisfiable, so the property it existed to model could never be reached. The formal
-methods in this project are the Kani harnesses (`rust/KANI.md`). See roadmap item 3.5 and
-`LIMITATIONS.md` §5.5.
+## Audits and investigations
 
----
+| Record | What it holds |
+|---|---|
+| [`AUDIT.md`](AUDIT.md) | The latest self-audit, 2026-09-19: three findings (F1 to F3), all closed |
+| [`history/AUDIT-EXTERNAL-2026-09-20.md`](history/AUDIT-EXTERNAL-2026-09-20.md) | The first outside review of the tree, reconciled against the checkout. It sets no statuses |
+| [`history/AUDIT-2026-08-30.md`](history/AUDIT-2026-08-30.md) | The 2026-08-30 whole-tree audit |
+| [`history/AUDIT-2026-07.md`](history/AUDIT-2026-07.md) | The 2026-07 audit that defined the [C-n], [I-n], [M-n] and [F-n] findings, with its predecessor as an appendix |
+| [`investigations/`](investigations/) | How the hardest findings were narrowed and measured, including the hypotheses that were wrong: [G-8], [G-9], [G-10], [G-11] and [G-12] (all closed), and the kernel-pointer disclosure survey behind roadmap 3.8 |
+| [`history/DEVLOG-2026.md`](history/DEVLOG-2026.md) | The development log to early September 2026: why each change was made, what was tried first, and how each rate was measured |
 
-## A note on accuracy
+The records under `history/` and `investigations/` are kept as written, because the reasoning in
+them is the evidence. They describe the tree as it was; the current status of anything they name
+is in [`LIMITATIONS.md`](LIMITATIONS.md).
 
-These documents are rewritten rather than patched when they drift from the code. The previous
-set claimed IPC was "capability-gated" when the kernel did not in fact bind endpoints to
-capabilities, precisely the kind of overstatement that makes documentation dangerous in a
-security project.
+## Checked, not promised
 
-Three classes of claim are now checked rather than promised, because each had already gone
-stale silently: `tools/check_doc_claims.py` derives every documented count and the phrasings
-that must not reappear, `tools/check_gate_pairs.py` refuses an orphan control arm, and
-`tools/check_defect_flags.py` holds BUILDING.md's defect-flag table to being the complete list
-it claims to be. Each is a required CI job.
-
-**Where a document and the code disagree, the code is authoritative.** Please open an issue
-so the document gets fixed rather than the reader misled.
+Several kinds of claim in these documents are checked by CI rather than trusted:
+`tools/check_doc_claims.py` derives every declared count and refuses phrasings that were retired
+because they became false; `tools/check_invariants.py` requires every `SECURITY.md` property to
+name a test that exists and runs; `tools/check_defect_flags.py` holds `BUILDING.md`'s control-arm
+table complete; `tools/check_named_targets.py` refuses a `make` target that does not exist; and
+`tools/check_prose_style.py` enforces British English and bans em dashes.

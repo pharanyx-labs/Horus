@@ -1,6 +1,6 @@
 # An installed system: what lives on the disk, and how it is trusted
 
-**Design only, nothing built; its decisions are taken (§8).** The maintainer asked on 2026-09-24 for an install that works the
+**Decided (§8); one piece built.** Only the "a live boot writes nothing" guarantee of §9 exists (S110, #472); the three steps of §9 are not started. The maintainer asked on 2026-09-24 for an install that works the
 way other major operating systems do: every file the system needs copied onto the volume,
 binaries in `/bin` and `/sbin` placed sensibly, `/tmp` and `/var` created, man pages copied, and
 a machine that boots from its own disk. This document says what that changes, and puts the
@@ -17,7 +17,7 @@ authority (decision 1), and the capability change lands before any format change
 | Where programs come from | `init`, `shell`, `fs_server`, `console_server`, `dev_server`, `installer` and `netd` are **compiled into the kernel image** and spawned by name. Nothing is loaded from the volume |
 | What `/bin` is | On a `make run` build, a view of GRUB boot modules (GNU coreutils, TCC). **The shipping `horus.iso` and `install.iso` carry none**, deliberately: the Makefile keeps them "module-free (GPLv3-clean)", and Horus is MIT |
 | How a program is trusted | The kernel image and every boot module are checked against SHA-256 pins inside the measured boot image (**S92**), measured into `PCR[4]`/`PCR[8]` |
-| How the machine boots | Only from the install media. The installer writes the volume over the whole disk, with no partition table and no bootloader, so a laptop's own disk does not boot |
+| How the machine boots | From Horus boot media: the single-entry `horus.iso` finds and opens the volume. The installer writes the volume over the whole disk, with no partition table and no bootloader, so the disk does not boot by itself. The install media's menu offers live boot and install only, and since #472 a live boot opens no disk, so it cannot start an installed system |
 | Man pages | Boot modules under `/usr/share/man`, again only on `make run` builds |
 
 So "copy the binaries onto the disk" is not a copy of something that is there. The shipping

@@ -643,6 +643,11 @@ in this file.
 
 ### Changed
 
+- **`TESTS.md` is a catalogue again: one row per gate.** Each of the 204 gates has a line saying
+  what it proves, the `SECURITY.md` properties it witnesses and its control arms, grouped by
+  area, with the CI jobs listed from `ci.yml`. It was 471 KB of per-gate history; the measurements
+  stay in the pull requests and in the file's git history.
+
 - **The contributor and reference documents describe the project as it is.** `CONTRIBUTING.md`
   no longer calls [C-1] the most serious open defect (it closed in July) and says who reviews
   and merges; `rust/KANI.md` lists all 23 proofs, including the three for endpoint tokens;

@@ -2,6 +2,7 @@
 
 *Design written 2026-08-31, before any code. Stages 2 and 3 of the work that lets
 a volume be large enough to install onto; stage 1 (4 KiB blocks) landed in #270.*
+**Built:** stage 2 in #273 (S65) and stage 3 in #274 (S66); ROADMAP 2.8 is done.
 
 The two falsifying arms are designed **first**, deliberately. These stages rewrite
 the rollback-protection chain, the mechanism standing between a physical

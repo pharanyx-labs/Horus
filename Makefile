@@ -190,7 +190,7 @@ DEFECT_FLAGS = \
 	MEM_SEAL_KEEPS_WRITE MEM_SEAL_ANY_ADDRESS \
 	DYNLINK_ABI_UNCHECKED DYNLINK_UNKNOWN_ZERO DYNLINK_NO_SEAL \
 	COREUTILS_STATIC_LIBC \
-	INSTALLER_STOP_AFTER_FORMAT USERS_PERSIST_COMPILED_IN
+	INSTALLER_STOP_AFTER_FORMAT USERS_PERSIST_COMPILED_IN LIVE_OPENS_VOLUME
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -3442,6 +3442,14 @@ endif
 USERS_PERSIST_COMPILED_IN ?= 0
 ifeq ($(USERS_PERSIST_COMPILED_IN),1)
 CFLAGS += -DUSERS_PERSIST_COMPILED_IN
+endif
+# LIVE_OPENS_VOLUME=1 restores the kernel before 2026-09-26, in which a live boot
+# mounted the installed volume as its store and a login whose password opened a
+# key slot unlocked it (S110). The arm for make smoke-live-locked, and also how
+# make smoke-live-no-seed reaches the path S109 guards, since S110 closes it.
+LIVE_OPENS_VOLUME ?= 0
+ifeq ($(LIVE_OPENS_VOLUME),1)
+CFLAGS += -DLIVE_OPENS_VOLUME
 endif
 
 # ---- FB_REQUEST: ask GRUB for a linear framebuffer -------------------------
@@ -13346,6 +13354,12 @@ smoke-installer-slowdisk:
 .PHONY: smoke-installer-wedge-control
 # A LIVE BOOT NEVER WRITES A COMPILED-IN PASSWORD TO A DISK (S109).
 #
+# DEFENCE IN DEPTH, AND BUILT TO REACH IT. Since 2026-09-26 a live boot does not
+# open an installed volume at all (S110, make smoke-live-locked), so the path
+# below cannot be reached by the ship kernel. The gate builds LIVE_OPENS_VOLUME=1
+# to remove that outer layer and test the inner one on its own; the boot says so
+# in its DEFECT FLAGS line.
+#
 # Three boots on one image, and the ISO is rebuilt between them rather than
 # copied, so the only images ever in the tree are horus.iso. Boot 1 installs
 # with INSTALLER_STOP_AFTER_FORMAT, which stops where a power cut would: the
@@ -13360,13 +13374,13 @@ LIVE_NO_SEED_IMG = live-no-seed.img
 .PHONY: smoke-live-no-seed smoke-live-no-seed-control
 smoke-live-no-seed:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 INSTALLER_STOP_AFTER_FORMAT=1 $(LIVESEEDARM)
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 INSTALLER_STOP_AFTER_FORMAT=1 LIVE_OPENS_VOLUME=1 $(LIVESEEDARM)
 	@rm -f $(LIVE_NO_SEED_IMG) live-no-seed-serial.log
 	@truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) $(LIVE_NO_SEED_IMG)
 	@for phase in stopped live installed; do \
 	    rm -f horus.iso; \
 	    if [ $$phase = live ]; then cfg=grub-menu.cfg; else cfg=grub.cfg; fi; \
-	    $(MAKE) --no-print-directory STORAGE_ATA=1 INSTALLER_STOP_AFTER_FORMAT=1 $(LIVESEEDARM) \
+	    $(MAKE) --no-print-directory STORAGE_ATA=1 INSTALLER_STOP_AFTER_FORMAT=1 LIVE_OPENS_VOLUME=1 $(LIVESEEDARM) \
 	        GRUB_CFG=$$cfg horus.iso >/dev/null || exit 1; \
 	    SESSION_DISK=$(LIVE_NO_SEED_IMG) INSTALLER_MODE=live-no-seed LIVE_NO_SEED_PHASE=$$phase \
 	        SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) \
@@ -13391,6 +13405,62 @@ smoke-live-no-seed-control:
 	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
 	fi; \
 	echo "LIVE SEED CONTROL: PASS - a live boot seeding an installed volume is caught"
+
+# THERE IS NO WAY TO LIVE-BOOT AN INSTALLED SYSTEM (S110).
+#
+# Three boots on one image, horus.iso rebuilt between them. Boot 1 is a complete
+# install. Boot 2 is the boot menu's live entry: the kernel must say it opened no
+# disk, root with the INSTALL password must be refused (a live boot that opened
+# the volume would load its table and log the installed root in), and the
+# compiled-in root must still log in, so the live boot itself works; and the disk
+# image must hash the same after boot 2 as before it, which is the whole promise
+# of the live entry (docs/design/installed-system.md section 9). Boot 3 is
+# the installed boot, which must still take the install password: the live boot
+# left the machine as it found it. Under LIVE_OPENS_VOLUME=1 boot 2's login
+# succeeds, and the arm requires the gate to fail on exactly that.
+LIVE_LOCKED_IMG = live-locked.img
+.PHONY: smoke-live-locked smoke-live-locked-control
+smoke-live-locked:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 $(LIVELOCKEDARM)
+	@rm -f $(LIVE_LOCKED_IMG) live-locked-serial.log
+	@truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) $(LIVE_LOCKED_IMG)
+	@for phase in install live installed; do \
+	    rm -f horus.iso; \
+	    if [ $$phase = live ]; then cfg=grub-menu.cfg; else cfg=grub.cfg; fi; \
+	    $(MAKE) --no-print-directory STORAGE_ATA=1 $(LIVELOCKEDARM) \
+	        GRUB_CFG=$$cfg horus.iso >/dev/null || exit 1; \
+	    before=$$(sha256sum $(LIVE_LOCKED_IMG) | cut -d' ' -f1); \
+	    SESSION_DISK=$(LIVE_LOCKED_IMG) INSTALLER_MODE=live-locked LIVE_LOCKED_PHASE=$$phase \
+	        SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) \
+	        INSTALLER_FORMAT_STALL=$(INSTALLER_FORMAT_STALL) INSTALLER_FORMAT_CAP=$(INSTALLER_FORMAT_CAP) \
+	        SESSION_SERIAL_LOG=live-locked-serial.log BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
+	        python3 tools/installer_session.py horus.iso \
+	      || { echo "[live-locked] ----- guest serial ($$phase) -----"; \
+	           tail -40 live-locked-serial.log 2>/dev/null | sed 's/^/  /'; exit 1; }; \
+	    if [ $$phase = live ]; then \
+	        after=$$(sha256sum $(LIVE_LOCKED_IMG) | cut -d' ' -f1); \
+	        if [ "$$before" != "$$after" ]; then \
+	            echo "[live-locked] FAIL - the live boot changed the disk: sha256 $$before before, $$after after"; exit 1; \
+	        fi; \
+	        echo "[live-locked] the disk image is byte-for-byte what it was before the live boot ($$after)"; \
+	    fi; \
+	done
+	@rm -f $(LIVE_LOCKED_IMG)
+	@echo "[live-locked] PASS - a live boot on an installed machine opened nothing, and the install still boots"
+
+smoke-live-locked-control:
+	@out=$$($(MAKE) --no-print-directory smoke-live-locked LIVELOCKEDARM=LIVE_OPENS_VOLUME=1 2>&1); rc=$$?; \
+	rm -f $(LIVE_LOCKED_IMG); \
+	if [ $$rc -eq 0 ]; then \
+	    echo "LIVE LOCKED CONTROL: FAIL - a kernel whose live boot opens the volume passed the gate"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "the install password logged in on a live boot"; then \
+	    echo "LIVE LOCKED CONTROL: FAIL - it failed, but not on the live login."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "LIVE LOCKED CONTROL: PASS - a live boot that opens the installed system is caught"
 
 # The compiled-in accounts kept on a machine with a disk: smoke-installer must go
 # red, and on the refusal of the compiled-in root password rather than on anything else.

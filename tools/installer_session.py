@@ -1440,6 +1440,52 @@ def live_no_seed(disk):  # noqa: ARG001 - uniform scenario signature
         s.close()
 
 
+LIVE_NO_DISK = "STORAGE: live boot: no disk is opened"
+
+
+def live_locked(disk):
+    """There is no way to live-boot an installed system (SECURITY.md S110).
+
+    One phase per invocation; the Makefile rebuilds horus.iso between them, the
+    live phase from the boot menu's media. LIVE_LOCKED_PHASE names it:
+
+      install    a complete install (boot1).
+      live       the menu's live entry. Root with the INSTALL password must be
+                 refused: a live boot that opened the volume would load its
+                 account table and log the installed root in, which is the
+                 defect. Then the kernel must have said it opened no disk, and
+                 the compiled-in root must log in, so the live boot itself works.
+      installed  the installed boot (boot2), which must still take the install
+                 password: the live boot left the machine as it found it.
+    """
+    phase = os.environ.get("LIVE_LOCKED_PHASE", "")
+    if phase == "install":
+        boot1(disk)
+        return
+    if phase == "installed":
+        boot2(disk)
+        return
+    if phase != "live":
+        raise SessionFail("LIVE_LOCKED_PHASE must be install, live or installed, not %r" % phase)
+    s = Serial(ISO)
+    try:
+        s.expect("init: boot mode LIVE", BOOT)
+        step("the menu's default entry booted live on an installed machine")
+        if login(s, "root", PASSWORD, BOOT):
+            raise SessionFail("the install password logged in on a live boot: the live boot "
+                              "opened the installed system")
+        step("the install password was refused on the live boot")
+        if LIVE_NO_DISK not in s.buf:
+            raise SessionFail("the kernel never said `%s`" % LIVE_NO_DISK)
+        step("the kernel opened no disk on the live boot")
+        if not login(s, "root", LIVE_ROOT_PASSWORD):
+            raise SessionFail("the compiled-in root did not log in on the live boot")
+        step("the live boot itself works: the compiled-in root logged in")
+    finally:
+        keep_serial(s.buf)
+        s.close()
+
+
 def run():
     disk = os.environ.get("SESSION_DISK", "")
     if not disk:
@@ -1483,6 +1529,10 @@ def run():
         return 0
     if mode == "live-no-seed":
         live_no_seed(disk)
+        print("INSTALLER_SESSION: PASS")
+        return 0
+    if mode == "live-locked":
+        live_locked(disk)
         print("INSTALLER_SESSION: PASS")
         return 0
     boot1(disk)

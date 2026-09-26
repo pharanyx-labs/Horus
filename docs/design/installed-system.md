@@ -131,10 +131,10 @@ needed.
 - The **unlock** stays in the kernel: a password still opens a key slot before anything on the
   volume can be read, so the order "unlock, then identify" is unchanged.
 
-**A defect this closes.** A live-boot login that unlocks an installed volume carrying no account
-table yet writes the compiled-in table onto it (`users_unlock_and_restore` calling
-`users_persist`), which breaks the live entry's promise that it changes nothing on the disk.
-Under this design a live boot mounts nothing read-write.
+**The live boot keeps its promise already.** A live-boot login once unlocked an installed volume
+and, when it carried no account table yet, wrote the compiled-in one onto it. Two properties
+close that ahead of this design: a table holding a compiled-in password is never written
+(`SECURITY.md` S109), and a live boot opens no disk at all (S110).
 
 ## 8. The decisions, as taken
 
@@ -177,5 +177,5 @@ Each step names the gate that would go red if it were false before it is built:
   filesystem and requires the loader to refuse it; the arm skips the manifest check and must run it.
 - **The disk boots on its own.** A gate that installs onto a blank disk image and boots QEMU with
   OVMF from that image alone, with no install media attached.
-- **A live boot writes nothing.** A gate that hashes the whole disk image before and after a live
-  boot that logs in, and requires them to be equal.
+- **A live boot writes nothing.** Built: `make smoke-live-locked` hashes the whole disk image
+  before and after a live boot that logs in, and requires them to be equal (S110).

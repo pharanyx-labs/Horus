@@ -643,6 +643,12 @@ in this file.
 
 ### Changed
 
+- **`docs/ROADMAP.md` says what is done and what is next, in order.** Finished items are one line
+  naming the pull requests that delivered them. The filesystem redesign (2.10) and the installed
+  system (2.11), which are the next work, were not in it at all and now are, with their order.
+  The website's status page was months stale (it called Track 1 the current work and said there
+  was no dynamic linker) and is rewritten to match.
+
 - **The boot log and the console are left-aligned again; only the installer is centred.** #433
   centred the whole character grid, which moved the kernel's log and every console line to the
   middle of a wide screen. Now the log starts at the left edge and only a full-screen program's

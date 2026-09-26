@@ -10,12 +10,12 @@ entry closes it moves to [Closed entries](#closed-entries) as one line: what it 
 closed, and the pull request that closed it. The full account of any closed entry is in that pull
 request and in the git history of this file.
 
-**Finding IDs.** **[C-n]**, **[I-n]**, **[M-n]** and **[F-n]** come from the 2026-07 audit
-(summarised in [`AUDIT.md`](AUDIT.md), kept in full in
-[`history/AUDIT-2026-07.md`](history/AUDIT-2026-07.md)). **[G-n]** are architectural gaps
+**Finding IDs.** **[C-n]**, **[I-n]**, **[M-n]** and **[F-n]** come from the 2026-07 audit,
+[`history/AUDIT-2026-07.md`](history/AUDIT-2026-07.md). **[G-n]** are architectural gaps
 ([`ARCHITECTURE.md`](ARCHITECTURE.md) §14). **[H-n]** came from an external audit on
-2026-08-15 that is not in the tree. **[HORUS-YYYYMMDD-nn]** are findings filed since, by date.
-A finding has one status, and it is the one given here.
+2026-08-15 that is not in the tree. **[HORUS-YYYYMMDD-nn]** are findings filed since, by date,
+and "audit F*n*" refers to the 2026-09-19 audit, [`AUDIT.md`](AUDIT.md). A finding has one
+status, and it is the one given here.
 
 ---
 

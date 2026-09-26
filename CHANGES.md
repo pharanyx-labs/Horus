@@ -643,6 +643,13 @@ in this file.
 
 ### Changed
 
+- **`docs/ARCHITECTURE.md` describes the system as built.** It said `netd` drives virtio-net,
+  the device table is a bus-0 scan, `tasks[]` is not yet carved from untyped memory, the shared
+  library is not yet dynamically linked, `MAX_ENDPOINTS` is 128, `fs_server` holds
+  `CAP_BLOCK_DEV` and `console_server` polls the keyboard; none of those is true now. The gap
+  register (§14) is a table with G-14 the one gap open. The README no longer lists `netd` among
+  the servers the shipped system starts.
+
 - **The README is rewritten from scratch.** It now says who writes and merges the code, lists
   what exists and what does not in plain terms, and explains how to start an installed system.
   The old one gave `root`/`horus` as the login (it is `root`/`toor` on a boot with no installed

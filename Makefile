@@ -10389,15 +10389,28 @@ smoke-kdiag:
 # and only the second is evidence about the race. The first is the workload
 # dying, which is what the kstack-park arm was scored wrongly on for months, so
 # it is named and retried against a separate attempt bound rather than counted.
-KDIAG_SPLIT_CONTROL_BOOTS ?= 8
-KDIAG_SPLIT_CONTROL_ATTEMPTS ?= 16
+#
+# THE BOUND IS SET FROM CI'S RATE, NOT THIS HOST'S (2026-09-26). Eight boots was
+# derived from 13/20 on one workstation, and CI does not reproduce at that rate.
+# Read back from the arm's own lines in 36 CI runs between 2026-09-24 and
+# 2026-09-26: the split reproduced in 34 of 104 conclusive boots, about 33% (95%
+# lower bound about 24.5%), so a sweep of eight came up clean about one run in
+# 24. It did, twice in a day: on main after #465 and on #472, neither of which
+# touches the console. At the lower bound, 30 conclusive boots miss by chance
+# about one run in 4,600, which is what eight was meant to buy. The expected cost
+# is still about three boots, since the loop stops at the first hit; only a
+# decayed widener pays for all thirty. Nothing is weakened: the assertion is
+# still that the defect MUST reproduce, and the bound now matches the rate the
+# gate actually runs at.
+KDIAG_SPLIT_CONTROL_BOOTS ?= 30
+KDIAG_SPLIT_CONTROL_ATTEMPTS ?= 60
 
 smoke-kdiag-split-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory KDIAG_PROBE=1 KDIAG_NOISE=1 KDIAG_SPLIT_WIDEN=1
 	@$(MAKE) --no-print-directory KDIAG_PROBE=1 KDIAG_NOISE=1 KDIAG_SPLIT_WIDEN=1 horus.iso
 	@echo "[kdiag] widened window + ring-3 noise: the split must reproduce"
-	@out=.kdiag-split-control.out; hit=0; conc=0; att=0; incon=0; 	while [ $$conc -lt $(KDIAG_SPLIT_CONTROL_BOOTS) ] && [ $$att -lt $(KDIAG_SPLIT_CONTROL_ATTEMPTS) ]; do 	    att=$$((att+1)); 	    if KDIAG_MIN=$(KDIAG_MIN) MODE=split tools/kdiag_test.sh horus.iso >"$$out" 2>&1; then 	        hit=$$att; break; 	    fi; 	    if grep -q 'Inconclusive' "$$out"; then 	        incon=$$((incon+1)); 	        echo "  attempt $$att: INCONCLUSIVE -- the run ended before there was anything to split, not counted"; 	        continue; 	    fi; 	    conc=$$((conc+1)); 	    echo "  boot $$conc/$(KDIAG_SPLIT_CONTROL_BOOTS): the markers arrived intact, no split yet"; 	done; 	if [ $$hit -eq 0 ]; then 	    echo "KDIAG SPLIT CONTROL: FAIL - the widened build did NOT reproduce the split"; 	    echo "  in $$conc conclusive boot(s) ($$att attempt(s), $$incon inconclusive)."; 	    echo "  It reproduced 13 of 20 when this bound was set, so a clean sweep of"; 	    echo "  $(KDIAG_SPLIT_CONTROL_BOOTS) is about one run in four thousand by chance. This arm is what"; 	    echo "  makes smoke-kdiag a measurement; if it stops reproducing, the widener"; 	    echo "  or the detector has decayed rather than the property having improved."; 	    echo "  ----- the last run's own verdict -----"; 	    cat "$$out" | sed 's/^/  /'; 	    exit 1; 	fi; 	if [ $$incon -gt 0 ]; then 	    echo "  ($$incon inconclusive attempt(s) along the way, not scored either way)"; 	fi; 	rm -f "$$out"; 	echo "KDIAG SPLIT CONTROL: PASS -- the split reproduced on attempt $$hit of at most $(KDIAG_SPLIT_CONTROL_ATTEMPTS)"
+	@out=.kdiag-split-control.out; hit=0; conc=0; att=0; incon=0; 	while [ $$conc -lt $(KDIAG_SPLIT_CONTROL_BOOTS) ] && [ $$att -lt $(KDIAG_SPLIT_CONTROL_ATTEMPTS) ]; do 	    att=$$((att+1)); 	    if KDIAG_MIN=$(KDIAG_MIN) MODE=split tools/kdiag_test.sh horus.iso >"$$out" 2>&1; then 	        hit=$$att; break; 	    fi; 	    if grep -q 'Inconclusive' "$$out"; then 	        incon=$$((incon+1)); 	        echo "  attempt $$att: INCONCLUSIVE -- the run ended before there was anything to split, not counted"; 	        continue; 	    fi; 	    conc=$$((conc+1)); 	    echo "  boot $$conc/$(KDIAG_SPLIT_CONTROL_BOOTS): the markers arrived intact, no split yet"; 	done; 	if [ $$hit -eq 0 ]; then 	    echo "KDIAG SPLIT CONTROL: FAIL - the widened build did NOT reproduce the split"; 	    echo "  in $$conc conclusive boot(s) ($$att attempt(s), $$incon inconclusive)."; 	    echo "  CI reproduced it in 34 of 104 boots when this bound was set (lower bound"; 	    echo "  about 24.5%), so a clean sweep of $(KDIAG_SPLIT_CONTROL_BOOTS) is about one run in 4,600 by chance. This arm is what"; 	    echo "  makes smoke-kdiag a measurement; if it stops reproducing, the widener"; 	    echo "  or the detector has decayed rather than the property having improved."; 	    echo "  ----- the last run's own verdict -----"; 	    cat "$$out" | sed 's/^/  /'; 	    exit 1; 	fi; 	if [ $$incon -gt 0 ]; then 	    echo "  ($$incon inconclusive attempt(s) along the way, not scored either way)"; 	fi; 	rm -f "$$out"; 	echo "KDIAG SPLIT CONTROL: PASS -- the split reproduced on attempt $$hit of at most $(KDIAG_SPLIT_CONTROL_ATTEMPTS)"
 
 .PHONY: smoke-kdiag-legacy-control
 smoke-kdiag-legacy-control:

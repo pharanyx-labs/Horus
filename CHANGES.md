@@ -643,6 +643,13 @@ in this file.
 
 ### Changed
 
+- **`docs/LIMITATIONS.md` lists only what is open.** Each closed entry is one line naming the
+  pull request that closed it, and the website's limitations page follows it. The rewrite
+  corrected four stale statuses: reinstalling over an existing Horus volume has worked since
+  #381, [G-9] closed on 2026-08-21 (#188), a monotonic clock exists (roadmap 2.2), and four
+  gates already read the kernel's COM3 channel. It also added the missing entry 1.21 that two
+  source files cited, and states that an installed disk does not boot on its own.
+
 - **`TESTS.md` is a catalogue again: one row per gate.** Each of the 204 gates has a line saying
   what it proves, the `SECURITY.md` properties it witnesses and its control arms, grouped by
   area, with the CI jobs listed from `ci.yml`. It was 471 KB of per-gate history; the measurements

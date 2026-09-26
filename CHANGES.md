@@ -643,6 +643,12 @@ in this file.
 
 ### Changed
 
+- **`SECURITY.md` states each property in one row a person can read.** The mechanism column says
+  in a sentence what enforces the property and the witness column lists its tests and control
+  arms; the posture section says where Horus stands today instead of recounting closed findings.
+  It had said there are no releases, listed 22 required checks, and called a broad forced
+  revocation possible, all of which stopped being true in August or September.
+
 - **The boot log and the console are left-aligned again; only the installer is centred.** #433
   centred the whole character grid, which moved the kernel's log and every console line to the
   middle of a wide screen. Now the log starts at the left edge and only a full-screen program's

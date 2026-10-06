@@ -541,4 +541,4 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 5.3c | | Horus could not be reinstalled over an existing Horus volume (S90) | 2026-09-11, #381 |
 | 5.3d | | Six checkers examined nothing and passed when their parser went silent | 2026-09-10, #368, #369, #375 |
 | 5.6 | [M-3] | Governance files were in the wrong place | 2026-07-27, #107 |
-| 5.8 | | Two Kani proofs ran only in a manual job that could not fail and had never run | 2026-10-06, #PRNUM |
+| 5.8 | | Two Kani proofs ran only in a manual job that could not fail and had never run | 2026-10-06, #485 |

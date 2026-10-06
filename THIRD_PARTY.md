@@ -1,15 +1,32 @@
 # Third-party material
 
 Everything in this repository is MIT-licensed work of Pharanyx Labs unless it is
-listed here. This file exists because a shipped asset with no stated origin is a
-licence question nobody can answer later, and one was found in the tree on
-2026-09-08 -- see the console fonts below.
+listed here. A shipped asset with no stated origin is a licence question nobody can
+answer later, which is why this file exists.
 
-The build also *fetches* third-party source that is not vendored here; those are
-listed separately at the end, because "what we ship" and "what we build against"
-are different questions and only the first is a redistribution.
+The build also *fetches* third-party source that is not vendored here; that is
+listed separately at the end, because what the tree contains and what the build
+downloads are different questions.
 
 ---
+
+## Vendored source
+
+### `userspace/ports/coreutils/`: GNU coreutils 9.5
+
+Eleven programs (`echo`, `true`, `false`, `basename`, `dirname`, `cat`, `head`, `seq`, `wc`,
+`printf`, `tail`) and `wc.h`, **byte-identical** to coreutils 9.5, under the **GNU GPL version 3
+or later**, with the licence text in `COPYING` beside them. The glue in `port/` is written for
+Horus and is MIT. Details in [`userspace/ports/coreutils/README.md`](userspace/ports/coreutils/README.md).
+
+### `userspace/ports/tcc/`: TinyCC 0.9.27
+
+The x86-64 subset of the Tiny C Compiler, **byte-identical** to 0.9.27, under the **GNU LGPL
+version 2.1**, with the licence text in `COPYING` beside it. The glue in `port/` is written for
+Horus and is MIT. Details in [`userspace/ports/tcc/README.md`](userspace/ports/tcc/README.md).
+
+Both are separate programs aggregated with the MIT kernel, not linked into it. They are built
+as boot modules only in development builds (`make run`); the install media carries neither.
 
 ## Vendored assets
 
@@ -19,8 +36,8 @@ are different questions and only the first is a redistribution.
 existing font.
 
 It was written rather than adopted, deliberately. The obvious alternative was to
-take a permissively licensed console font -- there are several, and one would
-have been less work -- but reproducing another font's glyphs from memory and
+take a permissively licensed console font, there are several, and one would
+have been less work, but reproducing another font's glyphs from memory and
 attributing them to it would be a provenance claim that could not be checked,
 which is the exact defect the entry below records. A font whose origin is "we
 drew it" is one whose licence needs no research.

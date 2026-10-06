@@ -428,7 +428,7 @@ in this file.
   defect each proof forbids as an exact edit, and the nightly `kani-arms.yml` workflow applies
   each one to a copy of the crate and requires the proof to report `VERIFICATION:- FAILED`. On
   every pull request, `tools/check_kani_arms.py` checks that every arm still applies and that
-  every proof has one. All 24 proofs have at least one arm (25 in all).
+  every proof has one. All 32 proofs have at least one arm (36 in all).
 
 - **The coreutils and `tcc` share one libc instead of carrying their own.** Measured, stripped as
   shipped: the eleven coreutils went from **1,218,628 to 281,084 bytes**, `tcc` from **394,668 to 238,716**, and the library ships once at **208,448** (stripped): 1,613,296 bytes of programs became 728,248 including the library (`make smoke-coreutils-shared`). `time()` now returns -1 rather than

@@ -226,6 +226,86 @@ arms:
         }
   replace: '    Some(cur.wrapping_sub(1))'
 
+# The ELF readers and relocation resolvers (S111, #486).
+- id: elf-reader-unchecked-add
+  harness: elf_readers_never_wrap_an_offset
+  file: rust/src/lib.rs
+  defect: the u64 field reader computes `off + 8` unchecked, so an offset near the top wraps
+  find: '    let b = s.get(off..off.checked_add(8)?)?;'
+  replace: '    let b = s.get(off..off + 8)?;'
+- id: x86-64-reloc-reader-unchecked-add
+  harness: x86_64_reloc_target_is_inside_a_segment
+  file: rust/src/lib.rs
+  defect: the u64 field reader the resolver uses computes `off + 8` unchecked
+  find: '    let b = s.get(off..off.checked_add(8)?)?;'
+  replace: '    let b = s.get(off..off + 8)?;'
+- id: x86-64-reloc-first-byte-only
+  harness: x86_64_reloc_target_is_inside_a_segment
+  file: rust/src/lib.rs
+  defect: the segment check tests only the first of the 8 bytes written
+  find: '            if target >= seg_va[s] && t8 <= end {'
+  replace: '            if target >= seg_va[s] && target < end {'
+- id: i386-reloc-first-byte-only
+  harness: i386_reloc_target_is_inside_a_segment
+  file: rust/src/lib.rs
+  defect: the segment check tests only the first of the 4 bytes written
+  find: '            if target >= seg_va[s] && t4 <= end {'
+  replace: '            if target >= seg_va[s] && target < end {'
+
+# The user-address validators (S112, #487).
+- id: page-fault-no-ceiling
+  harness: page_fault_never_accepts_a_kernel_half_address
+  file: rust/src/lib.rs
+  defect: the page-fault validator trusts C's bounds, so kernel-half bounds admit a kernel address
+  find: |2
+        if fault_addr >= USER_MAX_VADDR {
+            return false;
+        }
+  replace: |2
+        // (ceiling removed)
+- id: page-fault-refuses-everything
+  harness: page_fault_never_accepts_a_kernel_half_address
+  file: rust/src/lib.rs
+  defect: a validator that refuses every address, which the proof's equivalence must reject
+  find: '    if fault_addr >= USER_MAX_VADDR {'
+  replace: '    if fault_addr >= USER_MAX_VADDR || fault_addr == fault_addr {'
+- id: signal-handler-no-ceiling
+  harness: signal_handler_is_never_a_kernel_half_address
+  file: rust/src/lib.rs
+  defect: the signal-handler check trusts C's bounds, so kernel-half bounds admit a kernel address
+  find: '    vaddr < USER_MAX_VADDR && vaddr >= image_base && vaddr < image_end'
+  replace: '    vaddr >= image_base && vaddr < image_end'
+
+# Cross-cspace revocation, the RNG seed gate and the login throttle (#488).
+- id: revoke-expands-first-cspace-only
+  harness: revoke_reaches_every_cspace_and_spares_a_peer
+  file: rust/src/capability.rs
+  defect: the fixpoint expansion visits only the first cspace, so a grandchild granted back is missed
+  find: |2
+                let mut progress = false;
+                for s in 0..space_count {
+  replace: |2
+                let mut progress = false;
+                for s in 0..space_count.min(1) {
+- id: revoke-sweeps-whole-object
+  harness: revoke_reaches_every_cspace_and_spares_a_peer
+  file: rust/src/capability.rs
+  defect: the sweep nulls every capability on the root's object, the [I-3] shape, so an independent peer dies
+  find: '                || (by_object && root_object != 0 && c.object == root_object);'
+  replace: '                || (root_object != 0 && c.object == root_object);'
+- id: rng-unseeded-emits
+  harness: an_unseeded_pool_emits_nothing
+  file: rust/src/rng.rs
+  defect: the seed gate is gone, so an unseeded pool emits keystream (what `rng_unseeded_legacy` builds)
+  find: '        if !self.seeded {'
+  replace: '        if false {'
+- id: throttle-off-by-one
+  harness: the_throttle_locks_within_the_limit
+  file: rust/src/auth.rs
+  defect: the account locks only after MAX_AUTH_FAILS + 1 failures
+  find: '    if count >= MAX_AUTH_FAILS {'
+  replace: '    if count > MAX_AUTH_FAILS {'
+
 # Proofs with no arm yet, each with the reason. This list only shrinks: the
 # checker refuses an entry whose proof has gained an arm.
 unarmed: {}

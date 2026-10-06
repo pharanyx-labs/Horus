@@ -130,6 +130,39 @@ arm A4 "an unsafe block whose enclosing item loses its clause is caught" \
   "awk 'BEGIN{d=0} {if(!d && \$0 ~ /\\/\\/\\/ # Safety/){sub(/# Safety/,"NOTE"); d=1} print}' rust/src/rng.rs > .m && mv .m rust/src/rng.rs" \
   caught "rust/src/rng.rs"
 
+# A5. The hole this checker had until 2026-10-06. It stopped at the FIRST
+# `#[cfg(test)]` line, and lib.rs opens with `#[cfg(test)] extern crate alloc;`,
+# so nothing below that line in lib.rs was ever read. An undocumented FFI
+# export placed straight after it must be caught.
+arm A5 "an unsafe after a cfg(test) item that is not a module is still checked" \
+  "python3 - <<'P'
+p='rust/src/lib.rs'
+s=open(p).read()
+a='extern crate alloc;\n'
+assert s.count(a)==1
+s=s.replace(a, a+'\npub unsafe extern \"C\" fn planted_after_alloc(q: *const u32) -> u32 { *q }\n', 1)
+open(p,'w').write(s)
+P" \
+  caught "planted_after_alloc"
+
+# A6. A Kani proof module is proof code, like a test module, wherever it sits.
+arm A6 "an undocumented unsafe inside a cfg(kani) module is ignored" \
+  "python3 - <<'P'
+p='rust/src/memory.rs'
+s=open(p).read()
+a='#[cfg(test)]'
+assert s.count(a)==1
+s=s.replace(a, '#[cfg(kani)]\nmod planted_proofs {\n    fn p() { unsafe { core::ptr::read(core::ptr::null::<u8>()) }; }\n}\n\n'+a, 1)
+open(p,'w').write(s)
+P" \
+  ignored
+
+# A7. Production code AFTER a test module is still production code. The old
+# rule truncated at the first test module and would have missed it.
+arm A7 "an undocumented unsafe after a test module is caught" \
+  "printf '\npub unsafe extern \"C\" fn planted_after_tests(q: *const u32) -> u32 { *q }\n' >> rust/src/memory.rs" \
+  caught "planted_after_tests"
+
 echo
 if [ "$FAILS" -ne 0 ]; then
   echo "FAIL: $FAILS arm(s) did not behave as required ($PASSES passed)"

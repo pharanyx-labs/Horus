@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
-"""Fail the build if a Kani proof is not classified as gating or excused.
+"""Fail the build if a Kani proof would not run on a pull request.
 
 Thirteen `#[kani::proof]` harnesses existed and NONE of them ran on a pull
 request: the `kani` job was `workflow_dispatch`-only and carried
 `continue-on-error: true` on both steps, so it could not have failed one even
 if it had. A proof nobody runs is a comment with a solver attached.
 
-Four rules:
+From 2026-08-23 the manifest let a proof be excused to that job with a written
+reason, and two were. On 2026-10-06 both were made to finish, the job was
+deleted, and with it any place an excused proof could run, so excusing one is
+now refused outright.
 
-  1. every harness in the crate is in `gating` or `manual`, never neither
-  2. never both
+Three rules:
+
+  1. every harness in the crate is in `gating`
+  2. nothing is excused: the manifest has no list but `gating`
   3. every name listed exists in the crate (no rotted entries)
-  4. a `manual` entry gives a substantive reason
 
 Exit 0 if sound, 1 otherwise.
 """
@@ -43,43 +47,40 @@ def main():
     found = harnesses()
     man = yaml.safe_load(MANIFEST.read_text()) or {}
     gating = list(man.get("gating") or [])
-    manual = dict(man.get("manual") or {})
 
     problems = []
 
-    for name in sorted(set(gating) & set(manual)):
-        problems.append(f"{name}: listed as both gating and manual")
+    for key in sorted(k for k in man if k != "gating"):
+        problems.append(
+            f"`{key}`: the manifest may hold only `gating` -- no job runs a "
+            f"proof listed anywhere else, so it would never be checked"
+        )
 
     for name, src in sorted(found.items()):
-        if name not in gating and name not in manual:
+        if name not in gating:
             problems.append(
-                f"{name} ({src}): a proof in neither list -- put it in `gating`, "
-                f"or in `manual` with the reason it cannot run on every PR"
+                f"{name} ({src}): a proof not in `gating` -- add it, so the "
+                f"`kani-bounded` job runs it on every pull request"
             )
 
-    for name in sorted(set(gating) | set(manual)):
+    for name in sorted(set(gating)):
         if name not in found:
             problems.append(
                 f"{name}: listed but no #[kani::proof] by that name exists -- "
                 f"the entry has rotted, or the harness was renamed"
             )
 
-    for name, reason in sorted(manual.items()):
-        if not reason or len(str(reason).split()) < 6:
-            problems.append(f"{name}: excused from gating with no substantive reason")
-
     print(f"kani proofs in rust/src : {len(found)}")
     print(f"  gating                : {len(gating)}")
-    print(f"  manual (with a reason): {len(manual)}")
 
     if problems:
-        print("\nFAIL: the Kani proofs and their classification disagree\n")
+        print("\nFAIL: the Kani proofs and the list the CI job runs disagree\n")
         for p in problems:
             print(f"  - {p}")
         print(f"\n{len(problems)} problem(s). The crate is the truth; fix "
               f".github/kani-harnesses.yml, or the harness.")
         return 1
-    print("\nPASS: every Kani proof either gates a merge or is excused with a reason")
+    print("\nPASS: every Kani proof gates a merge")
     return 0
 
 

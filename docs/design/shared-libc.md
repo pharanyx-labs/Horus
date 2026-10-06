@@ -1,8 +1,8 @@
 # A shared libc: who holds it, how a program binds it, and what seals it
 
-**Built: all four steps, 2026-09-25 (S106, S107, S108).** Roadmap 2.5 has had a shared
-libc object since 2026-08-29 (S49, S50, S51), but only self-test builds load it and only two
-test programs bind it. This document says how the shipped system uses it: how the library
+**Built: all four steps, 2026-09-25 to 2026-09-26 (S106, S107, S108; #465, #467, #468, #470).**
+The shared libc object itself dates from 2026-08-29 (S49, S50, S51). This document says how the
+shipped system uses it: how the library
 reaches a task, how a program links against it by name, and how the table a program resolved is
 made unwritable afterwards. The maintainer's decisions are recorded in §2, with the date each
 was taken; the rest of the document is how they are built.

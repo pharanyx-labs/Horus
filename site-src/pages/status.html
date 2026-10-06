@@ -15,122 +15,81 @@
       <tr><th scope="col" class="t-state">State</th><th scope="col">Subsystem</th><th scope="col">Witness</th></tr>
     </thead>
     <tbody>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Capability engine</strong>, mint, grant, transitive revoke, lineage generations</th><td class="t-note">safe Rust · Kani</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Capability-addressed IPC</strong>, every syscall names a capability slot</th><td class="t-note">smoke-captest</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">One-shot reply capabilities (<code>CAP_REPLY</code>)</th><td class="t-note">smoke-captest</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Endpoints as bounded FIFO queues (4 slots, fixed at compile time)</th><td class="t-note">smoke-fs-conc</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Untyped memory and retyping</strong>, cspaces, endpoints, notifications, memory frames</th><td class="t-note">smoke-captest · smoke-frame</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Preemptive scheduling, timer-driven, in ring 3</th><td class="t-note">smoke-preempt</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>SMP on by default</strong>. MADT enumeration, AP bringup, TLB-shootdown IPIs</th><td class="t-note">smoke-smp</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">SMT siblings parked; microarchitectural flush between distrusting tasks</th><td class="t-note">smoke-smt · smoke-flush</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Ring-3 <code>init</code> (PID 1) supervising the shell</th><td class="t-note">smoke-session</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Ring-3 <code>console_server</code>, single writer, owns UART and framebuffer</th><td class="t-note">smoke-console-smp</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">The machine's own PS/2 keyboard, read in ring 3 under the port grant <code>console_server</code> already held, including on a machine with no serial port, where the console once believed a floating bus and never polled the keyboard at all.
-        <details class="row-more"><summary aria-label="More about this row"></summary><div>And an idle prompt sleeps until a key or the tick rather than keeping a core busy</div></details></th><td class="t-note">smoke-keyboard, smoke-keyboard-noserial, smoke-console-idle</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Every boot-console line timestamped, by the writer, across the console handover</th><td class="t-note">smoke-console-timestamps</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Raw terminal mode, termios and winsize</th><td class="t-note">smoke-term</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>A shared libc, linked by name</strong>, the shipped programs carry no libc of their own; the kernel hands the library only to programs that ask, and each program's references to it are resolved and sealed read-only before it starts. Shared library text, private library data, a shared object is loaded once into frames and mapped read+exec by many tasks through capabilities that never carry write, so no task can modify code another executes.
-        <details class="row-more"><summary aria-label="More about this row"></summary><div>Its <em>writable</em> segment is not shared at all: each task gets a private copy, carved from the library&rsquo;s initial image and endowed read+write and never exec. The library&rsquo;s load address is drawn afresh on every boot rather than compiled in, and a task learns it only by presenting a capability over the library&rsquo;s own text, so the address of shared code is not something an attacker reads off the binary, nor something any task can simply ask for. The security argument matters more than the size one, sharing a libc&rsquo;s text is an optimisation, but sharing its data means one task reading and writing another&rsquo;s <code>errno</code>, stdio buffers and malloc arena, which is worse than the per-program static copies it replaces. The shared libc now builds, is gated, and a ring-3 task calls newlib out of it, 36 pages, 34 of shared text and 2 of per-task data, with the library&rsquo;s own reentrancy state resolving inside each task&rsquo;s private copy, and a program now links against it, ordinary C calling <code>printf</code> by name, carrying no libc of its own, 106,392 bytes static against 13,088 shared, and it is not a dynamic linker: there is no symbol resolution, and a program&rsquo;s direct reference to a libc <em>data</em> symbol cannot be redirected without a GOT</div></details></th><td class="t-note">smoke-shlib</td></tr>
-      <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Device capabilities</strong>, a <code>CAP_IO_DEVICE</code> names one device in a boot-time table (a PCI bus-0 scan plus the non-enumerable legacy platform hardware) and confers only that device&rsquo;s frames, port ranges and interrupt lines.
-        <details class="row-more"><summary aria-label="More about this row"></summary><div>Until 2026-08-28 the capability&rsquo;s object was never read, so holding the type was holding the console. DMA is confined by VT-d since 2026-08-28; each device gets an address space that starts empty. An interrupt reaches its ring-3 driver either as an <strong>MSI on a vector the kernel chose</strong>, an MSI&rsquo;s data word <em>is</em> the vector, so the driver is given nowhere to name one, or through the I/O APIC, masked until acknowledged so an unserviced device cannot livelock the machine. A device&rsquo;s <strong>MSI-X vector table is unmappable by its driver</strong>, it lives in a BAR rather than in configuration space, so the vector-choice question had to be answered a second time and in a different way. MSI-X is protected but not yet enabled; no interrupt remapping, no bridge walk</div></details></th><td class="t-note">smoke-devcap</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>DMA confinement (VT-d)</strong>, every device has an address space of its own and <em>every one starts empty</em>, so a device reaches exactly the frames its driver mapped and faults on everything else.
-        <details class="row-more"><summary aria-label="More about this row"></summary><div>Not an identity map: that would have been easier and would have made the mechanism decorative. Each device gets its own domain, so a mapping made for one is unreachable by another</div></details></th><td class="t-note">smoke-net</td></tr>
-      <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>A network driver in ring 3</strong>, <code>netd</code> brings up an Intel e1000 holding one device capability and one untyped region, and completes a full DMA round trip: the device reads its descriptor ring, reads the packet buffer, and writes completion status back, every address of which its driver had to map.
-        <details class="row-more"><summary aria-label="More about this row"></summary><div>It drives e1000 rather than virtio deliberately, because a paravirtual device accesses guest memory directly and is not on the far side of the IOMMU at all. It receives on the 82574L (5 boots in 5, which is what <code>smoke-net</code> gates on) and has been seen to receive exactly once on the 82540EM, so reception is a property of the device model here rather than of the driver. Nothing above Ethernet exists: no ARP table, no IP, no TCP, no socket capabilities</div></details></th><td class="t-note">smoke-net</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Ring-3 <code>fs_server</code> over an AEAD-encrypted object store (unencrypted only by the installer's explicit choice)</th><td class="t-note">smoke-fs</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">POSIX rwx against a kernel-attested uid, never a client-supplied one</th><td class="t-note">smoke-fs-perms</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Measured boot</strong>. Kernel pinned in the firmware-measured boot image; TPM 2.0 PCR 4/8/9, disk KEK sealed under <code>PolicyPCR</code></th><td class="t-note">smoke-boot-pin · smoke-tpm-bootimg · smoke-tpm-seal</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Boot-module SHA-256 manifest embedded in the kernel image</th><td class="t-note">smoke-modules-tamper</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">ELF parsing and relocation in memory-safe Rust, under W^X, randomised base</th><td class="t-note">smoke-elf · smoke-elf64</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">SMEP/SMAP in CR4, kernel W^X swept, CSPRNG-reseeded stack canary, <code>CR4.TSD</code></th><td class="t-note">smoke-cpu · smoke-wx · smoke-stackguard</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">The CSPRNG refuses to emit keystream before it is seeded, a draw from an unseeded pool halts the kernel rather than returning a stream derived from a published constant</th><td class="t-note">smoke-rng-seed</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Per-task VFS namespace; the shell and the libc resolve every path through one walker, over the capabilities each task already holds</th><td class="t-note">smoke-vfs · smoke-newlib</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Six syscalls with no caller anywhere in the tree retired, including one that created a task on the capability every task already holds</th><td class="t-note">smoke-passwd-probe</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Kani proofs of the capability algebra that <em>gate</em>, mint, grant, lookup and revocation, over the whole input space, on every pull request</th><td class="t-note">kani-bounded</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">The capability graph is observable; <code>capview</code> prints every task's slots, under a capability that observes and cannot be widened to write</th><td class="t-note">smoke-session · smoke-captest</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">The security core is interpreted for undefined behaviour on every pull request, aliasing and pointer provenance across the whole C&nbsp;FFI boundary</th><td class="t-note">miri</td></tr>
-      <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">Monotonic clock, deliberately coarse (one timer tick), so a syscall does not hand back the cycle-accurate timer <code>CR4.TSD</code> denies; no per-task timers yet</th><td class="t-note">smoke-captest</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">newlib libc, shell pipelines over in-kernel pipes, eleven coreutils, TCC</th><td class="t-note">smoke-pipe · smoke-tcc</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Programs and man pages loaded from the filesystem as boot modules</th><td class="t-note">smoke-modules</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Forward-secure audit log, history before a compromise cannot be rewritten</th><td class="t-note">cargo test</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Reproducible builds</strong>, <code>kernel.elf</code> byte-for-byte deterministic; the ISO is not, and the reason is grub's, not ours</th><td class="t-note">required CI check</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Boot interrupt policy recorded and gated at five named milestones</th><td class="t-note">smoke-irq-policy</td></tr>
-
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">IPC receive, bounded queues, one-shot reply capabilities, and a receive that sleeps on an empty queue rather than polling it</th><td class="t-note">smoke-recvblock</td></tr>
-      <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">Kernel object lifecycle, retyped objects are destroyed; well-known service objects and <code>tasks[]</code> are still static</th><td class="t-note">roadmap 0.3</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Crash-atomic filesystem, write-ahead journal, mount-time fsck, and ATA <code>FLUSH CACHE</code> barriers bracketing the commit record</th><td class="t-note">smoke-fs-wal-flush · smoke-fs-wal-order</td></tr>
-      <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">Copy-on-write, zero-page and generic breaks both tested; the only producer is the demand pager, and nothing breaks COW over a shared frame yet</th><td class="t-note">smoke-cow · smoke-nzcow</td></tr>
-      <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">SMP scheduling, a shared runnable pool with a linear scan; no affinity, no priorities</th><td class="t-note">roadmap</td></tr>
-
-      <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Virtual-memory objects</strong>, frame capabilities, capability-mediated shared memory, multi-page mapping and sized frames landed.
-        <details class="row-more"><summary aria-label="More about this row"></summary><div>Copy-on-write over a kernel object is refused by design</div></details></th><td class="t-note">smoke-frame</td></tr>
-      <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>Process model</strong>, <code>fork</code> gives a child a copy-on-write clone of its parent's address space, and refuses outright while a frame capability is mapped.
-        <details class="row-more"><summary aria-label="More about this row"></summary><div>The child inherits its parent's capabilities as <em>derived</em> copies, so revoking one still sweeps the child's; <code>exec</code> then replaces the image and touches no capability, so <code>fork(); exec();</code> cannot turn delegated authority into a root of its own; there are no process groups, job control or <code>/proc</code></div></details></th><td class="t-note">smoke-fork · smoke-forkexec</td></tr>
-      <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row"><strong>A VFS and mount points</strong>, a per-task mount table routes each path to the capability for that mount, and a second filesystem server proves it.
-        <details class="row-more"><summary aria-label="More about this row"></summary><div>The existing clients still carry their own path walkers</div></details></th><td class="t-note">smoke-vfs</td></tr>
-      <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">KASLR, USB, sound, windowing or graphics beyond a text grid, interrupt remapping</th><td class="t-note">roadmap 3.8 (KASLR); the rest are out of scope for now</td></tr>
+      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Capability engine</strong>: mint, grant, subtree revocation, lineage generations, in safe Rust</th><td class="t-note">Kani · smoke-captest</td></tr>
+      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Capability-addressed IPC</strong>: bounded endpoint queues, one-shot reply capabilities, a receive that sleeps</th><td class="t-note">smoke-captest · smoke-recvblock</td></tr>
+      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Servers tell clients apart by the capability they were called through (endpoint tokens)</th><td class="t-note">smoke-captoken</td></tr>
+      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Untyped memory</strong>: cspaces, endpoints, notifications, frames and tasks are all paid for from a budget a task holds</th><td class="t-note">smoke-captest · smoke-frame · smoke-task-ceiling</td></tr>
+      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Shared memory through frame capabilities, mapped all-or-nothing</th><td class="t-note">smoke-frame</td></tr>
+      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Preemptive scheduling on up to eight CPUs; SMT siblings parked; a cache flush between distrusting tasks</th><td class="t-note">smoke-smp · smoke-smp-topology · smoke-flush</td></tr>
+      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Ring-3 <code>init</code> supervising every server and the shell</th><td class="t-note">smoke-session</td></tr>
+      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Ring-3 <code>console_server</code> owning the UART, VGA text or framebuffer, and the PS/2 keyboard, including on a machine with no serial port</th><td class="t-note">smoke-console-smp · smoke-keyboard-noserial · smoke-fb-console-server</td></tr>
+      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Ring-3 <code>fs_server</code> over an encrypted, Merkle-verified volume with a journal (unencrypted only when the installer is told so)</th><td class="t-note">smoke-fs · smoke-fs-wal</td></tr>
+      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Whole-volume rollback refused, anchored in a TPM counter</th><td class="t-note">smoke-rollback</td></tr>
+      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>An installer</strong> onto IDE disks and SD or eMMC storage, with a typed-word consent and two accounts that each open the disk</th><td class="t-note">smoke-installer · smoke-installer-sd · smoke-installer-replace</td></tr>
+      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">A live boot never opens an installed disk</th><td class="t-note">smoke-live-locked</td></tr>
+      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Measured boot</strong>: the kernel pinned in the firmware-measured boot image; TPM PCR 4, 8 and 9; the volume key sealed to them</th><td class="t-note">smoke-boot-pin · smoke-tpm-seal</td></tr>
+      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Boot under BIOS or UEFI, from CD or disk</th><td class="t-note">smoke-boot-media</td></tr>
+      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Boot-module SHA-256 manifest; a module that fails it cannot be read</th><td class="t-note">smoke-modules-tamper</td></tr>
+      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">ELF loading and relocation in safe Rust, under W^X, at a randomised base</th><td class="t-note">smoke-elf64 · smoke-execprobe</td></tr>
+      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">SMEP, SMAP, kernel W^X, reseeded stack canaries, CR4.TSD, a CSPRNG that refuses to run unseeded</th><td class="t-note">smoke-cpu · smoke-wx · smoke-rng-seed</td></tr>
+      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Device capabilities</strong>: one device each, through a PCI bus walk that follows bridges; DMA confined by VT-d; interrupts and MSI on vectors the kernel chooses</th><td class="t-note">smoke-devcap · smoke-sdhci-bridge · smoke-net</td></tr>
+      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>A shared libc</strong>, handed only to programs that ask, linked by name, and sealed read-only before <code>main</code></th><td class="t-note">smoke-shlib-inherit · smoke-shlib-link</td></tr>
+      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">A shell with pipelines, eleven GNU coreutils and TCC</th><td class="t-note">smoke-pipe · smoke-tcc</td></tr>
+      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><code>fork</code> with copy-on-write, and a child whose capabilities stay under its parent's through <code>exec</code></th><td class="t-note">smoke-fork · smoke-forkexec</td></tr>
+      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">A per-task mount table and one path walker for every client</th><td class="t-note">smoke-vfs · smoke-newlib</td></tr>
+      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">A forward-secure audit log</th><td class="t-note">cargo test</td></tr>
+      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Observing the capability graph under a read-only capability (<code>capview</code>)</th><td class="t-note">smoke-session</td></tr>
+      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Bounded Kani proofs of the capability algebra, and Miri over the Rust core, on every pull request</th><td class="t-note">kani-bounded · miri</td></tr>
+      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">A reproducible <code>kernel.elf</code></th><td class="t-note">required CI check</td></tr>
+      <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">A network driver in ring 3: <code>netd</code> completes an ARP exchange; nothing above Ethernet</th><td class="t-note">smoke-net</td></tr>
+      <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">A monotonic clock at 10 ms, deliberately; no timers, timeouts or wall clock</th><td class="t-note">smoke-captest</td></tr>
+      <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">A capability-addressed filesystem: the kernel half is done; <code>fs_server</code> still authorises by uid and mode</th><td class="t-note">smoke-captoken</td></tr>
+      <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">SATA: the controller and drive are identified, but not read or written</th><td class="t-note">smoke-ahci-detect</td></tr>
+      <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">Kernel object lifecycle: retyped objects are destroyed, but their memory is not reused, and the well-known endpoints live for the whole boot</th><td class="t-note">smoke-cspace-release</td></tr>
+      <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">An installed disk that boots on its own, and programs loaded from the disk</th><td class="t-note">ROADMAP 2.11</td></tr>
+      <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">NVMe, USB, sound, windowing, graphics beyond a text grid</th><td class="t-note">ROADMAP 2.7</td></tr>
+      <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Kernel ASLR, interrupt remapping, process groups and job control</th><td class="t-note">ROADMAP 3.8, 2.3</td></tr>
     </tbody>
   </table>
 </div>
 
 <p class="note">
-  Compile-time ceilings still apply to most of the system: 256 capability slots per
-  task, a 256-byte message, a 16 GiB volume. The <em>volume</em> is no longer among them
-  either, that number is a ceiling, and the actual size is read from the disk at
-  boot. The number of <em>tasks</em> is no longer
-  among them: it is worked out at boot from the memory the machine actually has.
-  <br><br>
-  Getting there is a small lesson in taking a codebase's own account of itself on trust.
-  The ceiling was 64, and every document here blamed the table of task records: 72 KiB.
-  Beside it sat the per-task kernel stacks, a 4 MiB static array, fifty-six times
-  larger, and the actual constraint. Moving those lifted the ceiling fourfold and made the
-  image <em>smaller</em>. Then the table itself moved, into the same memory every other
-  kernel object is allocated from, so creating a task costs something a program has to
-  hold permission for. And the thing that would genuinely have capped the count next was
-  neither: a scratch buffer in the revocation code, sized by the task count and placed on
-  a 32 KiB kernel stack, a fifth of it at 256 tasks, and past the end of it at 2048.
-  Nobody had measured it. Three obstacles, and the first two guesses were both wrong.
+  Compile-time ceilings still apply to most of the system: 256 capability slots per task, a
+  256-byte message, eight CPUs and a 16 GiB volume ceiling (the real size is read from the disk).
+  The number of tasks is worked out at boot from the memory reserved for them.
 </p>
 </section>
 
 <section class="part" aria-labelledby="next">
-<h2 id="next" data-toc="What comes next">A feature built on an unenforced foundation adds surface without adding capability.</h2>
+<h2 id="next" data-toc="What comes next">What comes next.</h2>
 <div class="prose">
   <p>
-    <strong>Track 0: making the object model true, is complete.</strong> IPC is
-    capability-addressed, ambient <code>uid == 0</code> authority is retired, and creating
-    a kernel object is now an exercise of authority the capability graph describes.
+    <strong>The foundations are done.</strong> IPC is capability-addressed, <code>uid 0</code>
+    confers no kernel authority, every kernel object is paid for from a budget a task holds a
+    capability to, and the interrupt, locking, journal and spawn-path work that made the kernel
+    correct under several CPUs is finished.
   </p>
   <p>
-    <strong>Track 1 is the current work:</strong> making boot-time interrupt enablement
-    explicit and then landing the per-CPU, interrupt-preserving lock; a blocking receive
-    to finish the IPC primitive; fail-closed user copies; 64-bit-clean heap arithmetic; a
-    durable journal; and an unbounded revocation closure.
+    <strong>Next, in order:</strong> the file server authorises by capability rather than by
+    user id and mode; the installer copies the system onto the disk, where the loader runs only
+    programs whose hashes are pinned in the measured boot image; the disk gets a partition table
+    and a bootloader so it starts on its own; and accounts move into files owned by a
+    user-mode authentication server. After that, the filesystem itself moves out of the kernel,
+    onto a copy-on-write format.
   </p>
   <p>
-    <strong>Track 2 grows the operating system on top of that:</strong> frame capabilities
-    and shared memory, a monotonic clock and timers, a real process and session model; 
-    <code>fork</code> and the capability space a child inherits are in, a VFS with
-    several filesystems, dynamic linking, and a network stack as an unprivileged server
-    holding one network card&rsquo;s capability, a sentence that only became sayable
-    on 2026-08-28, when a device capability started naming a device instead of conferring
-    the console.
-  </p>
-  <p>
-    The single highest-leverage change is not technical. It is finding a second reviewer
-    for the capability paths, automated verification has already been pushed about as far
-    as it goes without one.
+    The single highest-leverage change is not technical: a second person reviewing the
+    capability paths. No human reads a change before it merges today.
   </p>
 </div>
 
 <div class="docs">
   <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/ARCHITECTURE.md"><b>ARCHITECTURE.md</b><span>Subsystem design, the invariants, and why each decision was made</span></a>
-  <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/ROADMAP.md"><b>ROADMAP.md</b><span>The full plan, with rationale and security impact per item</span></a>
+  <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/ROADMAP.md"><b>ROADMAP.md</b><span>What is done, what is next, and in what order</span></a>
   <a href="https://github.com/pharanyx-labs/Horus/blob/main/SECURITY.md"><b>SECURITY.md</b><span>Threat model, security properties, and what is out of scope</span></a>
   <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/SYSCALLS.md"><b>SYSCALLS.md</b><span>The complete ABI, with the authorisation each call requires</span></a>
-  <a href="https://github.com/pharanyx-labs/Horus/blob/main/TESTS.md"><b>TESTS.md</b><span>Every test target, what it proves, and where the suite has been wrong</span></a>
-  <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/LIMITATIONS.md"><b>LIMITATIONS.md</b><span>Honest accounting of what does not work or is not enforced</span></a>
-  <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/AUDIT.md"><b>AUDIT.md</b><span>The full security and engineering audit, predecessor included</span></a>
+  <a href="https://github.com/pharanyx-labs/Horus/blob/main/TESTS.md"><b>TESTS.md</b><span>Every test target and what it proves</span></a>
+  <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/LIMITATIONS.md"><b>LIMITATIONS.md</b><span>What does not work or is not enforced, today</span></a>
   <a href="https://github.com/pharanyx-labs/Horus/tree/main/docs/investigations"><b>investigations/</b><span>How the harder findings were narrowed, and which hypotheses were wrong</span></a>
   <a href="https://github.com/pharanyx-labs/Horus/blob/main/CONTRIBUTING.md"><b>CONTRIBUTING.md</b><span>How to contribute, and the invariant-preservation rule</span></a>
 </div>

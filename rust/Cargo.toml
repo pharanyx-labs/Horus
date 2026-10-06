@@ -43,6 +43,15 @@ revoke_legacy_bounded = []
 # feature down; no ordinary build passes it.
 rng_unseeded_legacy = []
 
+# Kani's function stubbing (`#[kani::stub]`) is still behind -Z stubbing. The
+# two lineage-generation proofs in capability.rs stub the serial-to-cell hash so
+# they finish in minutes rather than not at all (`lineage_idx_model` says why the
+# proofs lose nothing by it). Enabled here rather than on each command line so a
+# plain `cargo kani`, a `cargo kani --harness X` and the `kani-bounded` CI job all
+# build the same harnesses.
+[package.metadata.kani.unstable]
+stubbing = true
+
 [lints.rust]
 # `#[cfg(kani)]` gates the formal-verification harnesses in capability.rs. Kani
 # sets this cfg; every other build (kernel, cargo test, clippy -D warnings) does

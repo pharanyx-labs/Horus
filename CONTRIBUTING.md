@@ -17,7 +17,6 @@ property it keeps and ships the test that would fail if it broke.**
 ```bash
 git clone https://github.com/pharanyx-labs/Horus.git
 cd Horus
-rustup target add x86_64-unknown-none
 sudo apt-get install -y build-essential binutils make \
     xorriso grub-pc-bin grub-common mtools qemu-system-x86
 

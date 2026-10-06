@@ -4269,8 +4269,13 @@ ifeq ($(RUST_ENABLED),1)
 # plain `make` would leave the defective staticlib linked into a build whose
 # every .c was recompiled without the flag. The flag is stamped into CFLAGS
 # precisely so that this file changes and cargo re-runs.
+#
+# `--locked` and nothing else. Until 2026-10-06 a failed locked build fell back
+# to an UNLOCKED one, so a Cargo.lock that disagreed with Cargo.toml was quietly
+# re-resolved and the build carried on with whatever cargo chose: the lockfile
+# check failed open. It fails closed now: fix Cargo.lock in a commit.
 $(RUST_LIB): rust/Cargo.toml .build-flags $(wildcard rust/src/*.rs)
-	@cargo build --locked --release --manifest-path rust/Cargo.toml --target $(RUST_TARGET) $(RUST_FEATURE_ARGS) || cargo build --release --manifest-path rust/Cargo.toml --target $(RUST_TARGET) $(RUST_FEATURE_ARGS)
+	@cargo build --locked --release --manifest-path rust/Cargo.toml --target $(RUST_TARGET) $(RUST_FEATURE_ARGS)
 	@test -f $(RUST_LIB) || (echo "ERROR: $(RUST_LIB) missing"; exit 1)
 endif
 

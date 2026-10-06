@@ -384,6 +384,13 @@ in this file.
 
 ### Security
 
+- **The tools that build and check Horus are pinned.** The Rust compiler that built the security
+  core was whatever stable the CI runner shipped that week; it is now `rust-toolchain.toml`
+  (1.98.1), on developer machines and CI alike. Kani is pinned to 0.68.0, the version every
+  recorded proof time was measured with, and PyYAML and semgrep to fixed versions. The build no
+  longer falls back to an unlocked `cargo build` when `Cargo.lock` disagrees with `Cargo.toml`:
+  it stops.
+
 - **A task record with kernel-half bounds would have made a kernel address the task's own.** The
   page-fault validator and the signal-handler check took a task's image and heap bounds from C
   and trusted them, so bounds reaching into the kernel half would have let the pager demand-map a

@@ -643,6 +643,11 @@ in this file.
 
 ### Changed
 
+- **The SMP race gates under KVM now gate every merge.** `smoke-smp-kvm` runs the SMP base gates
+  a second time with the vCPUs truly in parallel, and found HORUS-20260921-03 on its first run.
+  It was exempt until its pass rate was measured: 62 of 62 completed runs green from 2026-09-25
+  to 2026-10-06.
+
 - **`THIRD_PARTY.md` lists the vendored GNU coreutils (GPLv3) and TinyCC (LGPL 2.1).** It said
   everything not listed was MIT, and listed neither. The website no longer says the modules
   carry `init` and the servers (they are in the kernel image) or that an installed disk boots by

@@ -91,7 +91,7 @@ jobs:
           repositories: Horus
 
       - name: Install PyYAML
-        run: pip install --disable-pip-version-check pyyaml
+        run: pip install --disable-pip-version-check pyyaml==6.0.3
 
       # The same tool the maintainer runs by hand, in the same form. Not a
       # reimplementation: a second copy of this comparison would be one more thing

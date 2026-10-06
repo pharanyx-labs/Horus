@@ -125,12 +125,11 @@ way it is.
 
 ## Try it
 
-You need an x86-64 Linux host with `gcc`, `binutils`, `make`, `rustup` (with the
-`x86_64-unknown-none` target), `xorriso`, `grub-pc-bin`, `grub-common`, `mtools` and
-`qemu-system-x86`. `swtpm` is optional and adds an emulated TPM.
+You need an x86-64 Linux host with `gcc`, `binutils`, `make`, `rustup`, `xorriso`,
+`grub-pc-bin`, `grub-common`, `mtools` and `qemu-system-x86`. `swtpm` is optional and adds an
+emulated TPM. `rustup` installs the pinned Rust (`rust-toolchain.toml`) on the first build.
 
 ```bash
-rustup target add x86_64-unknown-none
 make            # builds kernel.elf
 make run        # builds horus.iso and boots it in QEMU on this terminal (Ctrl-A X quits)
 ```

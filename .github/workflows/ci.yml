@@ -5003,14 +5003,20 @@ jobs:
           # shellcheck disable=SC2086
           cargo +nightly-2025-11-21 miri test -- $skips
 
+  # Every Kani proof in the crate, on every pull request. Until 2026-10-06 two
+  # of them (the lineage-generation pair) were excused to a separate `kani` job
+  # that ran only on manual dispatch, had never been dispatched, and could not
+  # have failed if it had. Stubbing the serial-to-cell hash in those two made
+  # them finish (capability.rs `lineage_idx_model`), and that job was deleted.
   kani-bounded:
-    name: "Formal verification of the capability algebra (the proofs that finish)"
+    name: "Formal verification of the capability algebra (every Kani proof)"
     runs-on: ubuntu-latest
     # Measured twice on 2026-08-23: 319 s for eleven harnesses cold, 196 s for
     # thirteen warm. More proofs in less time, because what dominates is the
     # rebuild each `cargo kani --harness` invocation may need rather than the
-    # solving -- so neither figure alone is a budget. Solver time itself is about
-    # three minutes, nearly all of it the two revocation proofs. The 45-minute
+    # solving -- so neither figure alone is a budget. On 2026-10-06 the two
+    # lineage proofs joined at about four minutes of solver each (234 s and
+    # 243 s locally, Kani 0.68.0), which roughly doubles the job. The 45-minute
     # bound is a backstop against a harness that has become pathological.
     timeout-minutes: 45
     steps:
@@ -5019,7 +5025,7 @@ jobs:
         run: pip install --user pyyaml
       # Cheap, no toolchain needed, and it is the half that catches a NEW proof
       # nobody wired up -- so it runs before the expensive install.
-      - name: Every Kani proof is classified as gating or excused
+      - name: Every Kani proof is listed to run here
         run: python3 tools/check_kani_harnesses.py
       - name: Falsify that checker in every direction
         run: tools/test_check_kani_harnesses.sh
@@ -5131,9 +5137,9 @@ jobs:
           cargo install --locked kani-verifier
           cargo kani setup
       # No continue-on-error, and that is the entire point of this job. The
-      # `kani` job below has carried it on every step since it was written, so
-      # thirteen proofs of the capability algebra could not have failed a build.
-      - name: Verify the gating harnesses
+      # manual `kani` job it replaced carried it on every step, so for as long
+      # as that job existed the proofs it ran could not have failed a build.
+      - name: Verify every harness
         working-directory: rust
         run: |
           set -euo pipefail
@@ -5149,34 +5155,3 @@ jobs:
             echo "== $h =="
             cargo kani --harness "$h"
           done < /tmp/gating.txt
-
-  # Advisory job: Kani bounded model checking of the capability engine's
-  # authority invariants (rust/src/capability.rs #[cfg(kani)] harnesses; see
-  # rust/KANI.md). Non-gating by design — Kani is a heavy separate toolchain
-  # (its own nightly + a ~140 MB CBMC bundle), so a slow or flaky setup must not
-  # redden the pipeline. The hard gates stay rust, kernel, smoke, reproducible.
-  #
-  # MANUAL-ONLY for now: a full `cargo kani` (all harnesses, incl. the serial-keyed
-  # lineage proofs that build a large SAT instance) now exceeds GitHub's 6-hour job
-  # ceiling and stalls every pipeline. Gate it to `workflow_dispatch` so it no
-  # longer runs on push/PR; run it on demand via "Run workflow". A `timeout-minutes`
-  # bound stops even a manual run from hanging. Re-enable automatic runs once
-  # trimmed to a bounded harness subset / per-harness time limit (see rust/KANI.md).
-  kani:
-    name: Formal verification (Kani, advisory)
-    if: ${{ github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
-
-      - name: Install Kani
-        continue-on-error: true
-        run: |
-          cargo install --locked kani-verifier
-          cargo kani setup
-
-      - name: Verify capability-engine proofs
-        continue-on-error: true
-        working-directory: rust
-        run: cargo kani

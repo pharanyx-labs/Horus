@@ -2,7 +2,7 @@
 
 **What this is.** An unsolicited third-party review of the public tree, received 2026-09-20 and
 reconciled against the checkout the same day. It is not an in-tree audit and does not replace
-[`AUDIT.md`](AUDIT.md), the 2026-09-19 self-audit: that one was run against the source with the
+[`AUDIT.md`](../AUDIT.md), the 2026-09-19 self-audit: that one was run against the source with the
 tools that derive its numbers, this one was run against the published repository, the GitHub API
 and a sampled read of the sources.
 
@@ -15,7 +15,7 @@ fault. One of them was.
 arrived, one commit ahead, which is why it does not mention `[HORUS-20260920-01]` or
 `[HORUS-20260920-02]`.
 
-**Status rule, unchanged.** [`LIMITATIONS.md`](LIMITATIONS.md) is the authoritative status of
+**Status rule, unchanged.** [`LIMITATIONS.md`](../LIMITATIONS.md) is the authoritative status of
 every finding. Nothing in this file sets a status. Where the review named an ID, the ID keeps the
 meaning and the status `LIMITATIONS.md` gives it, and where the review contradicted that status
 the contradiction is recorded below rather than imported.
@@ -30,7 +30,7 @@ catch, and would have done it in the same commit that fixes an instance of that 
 
 The review's highest-rated kernel finding, **C-K2**, is filed against **[G-9]** as an open
 finding. [G-9] closed on 2026-08-21. Its successor [G-12] closed on 2026-09-03. The item the
-review is describing is [`LIMITATIONS.md`](LIMITATIONS.md) section 5.3e, which is deliberately
+review is describing is [`LIMITATIONS.md`](../LIMITATIONS.md) section 5.3e, which is deliberately
 **not** a G-numbered finding, for reasons recorded on 2026-09-11 so they would not be
 re-litigated: the only rate it has is conditioned on a widener (four guest CPUs pinned onto two
 host cores, plus `KSP_GUARD_INJECT`, which injects a bogus kernel stack pointer and is not a
@@ -48,7 +48,7 @@ section headed *"Open finding G-9 ... Status: open"* against *"[G-9] closed"* la
 file, corrected 2026-08-21. That sweep read the prose and missed the index.
 
 **Corrected 2026-09-20**, and ratcheted: the stale row is now a `forbidden:` pattern in
-[`.github/doc-claims.yml`](../.github/doc-claims.yml), so restoring it fails the `doc-claims`
+[`.github/doc-claims.yml`](../../.github/doc-claims.yml), so restoring it fails the `doc-claims`
 job. The rule was falsified before it was committed, by restoring the row and confirming the
 base checker goes red on it.
 

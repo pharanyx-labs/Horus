@@ -1,32 +1,33 @@
-# Which Kani proofs gate a merge, which do not, and why.
+# Every Kani proof in the crate, each of which gates a merge.
 #
-# EVERY `#[kani::proof]` harness in rust/src must appear in exactly one of the
-# two lists below. `tools/check_kani_harnesses.py` fails the build if any is in
-# neither, or in both, or names a harness that no longer exists — so adding a
-# proof forces the "does this run?" question at review time instead of silently
-# answering it.
+# EVERY `#[kani::proof]` harness in rust/src must appear in the `gating` list
+# below. `tools/check_kani_harnesses.py` fails the build if one is missing, if a
+# listed name no longer exists, or if anything tries to excuse a proof from
+# running: there is no `manual` list any more, because no job would run it.
 #
-# This exists because the answer had been "no" for every harness. The `kani` job
-# was `workflow_dispatch`-only AND carried `continue-on-error: true` on both of
-# its steps: it never ran on a pull request, and could not have failed one if it
-# had. Thirteen proofs of the capability algebra, none of them load-bearing —
-# the same shape as [C-6] (a required list nothing checked) and as
-# `smoke-kstack-park` (a gate that could not fail), applied to formal
-# verification.
+# This exists because the answer to "does this proof run?" had been "no" for
+# every harness. The `kani` job was `workflow_dispatch`-only AND carried
+# `continue-on-error: true` on both of its steps: it never ran on a pull request,
+# and could not have failed one if it had. Thirteen proofs of the capability
+# algebra, none of them load-bearing: the same shape as [C-6] (a required list
+# nothing checked) and as `smoke-kstack-park` (a gate that could not fail),
+# applied to formal verification.
 #
-# The full run really is too slow to gate: a whole `cargo kani` exceeded
-# GitHub's 6-hour job ceiling and stalled the pipeline, which is why it was
-# demoted in the first place. The answer is not "run everything" but "run the
-# ones that finish, and say out loud which ones do not".
+# From 2026-08-23 to 2026-10-06 this file had a second list, `manual`, for the
+# two lineage-generation proofs: with the real serial-to-cell hash they did not
+# finish in 1500 s each, and they ran only in that manual job. Stubbing the hash
+# (capability.rs `lineage_idx_model`, which says why the proofs lose nothing by
+# it) brought them to about four minutes each, so they gate like the rest, the
+# manual job was deleted, and the list with it.
 #
 # Times below are per-harness SOLVER time, measured on 2026-08-23 on the
-# maintainer's machine with Kani 0.67.0. They sum to about three minutes, and
-# nearly all of it is the two revocation proofs.
+# maintainer's machine with Kani 0.67.0, except where a later entry says
+# otherwise.
 #
 # END-TO-END WALL TIME IS NOT THAT SUM, AND IS NOT ONE NUMBER EITHER. The list
 # was measured twice the same day: **319 s** for eleven harnesses against a cold
 # target directory, and **196 s** for THIRTEEN against a warm one. More proofs,
-# less time — because what dominates is the rebuild each `cargo kani --harness`
+# less time: what dominates is the rebuild each `cargo kani --harness`
 # invocation may or may not need, not the solving. Quoting either figure alone
 # would mislead whoever budgets this job next, so both are here. The 45-minute
 # job bound is set against the cold case with room to spare.
@@ -37,10 +38,14 @@
 # 0.67.0: the version is part of the measurement and is recorded rather than
 # elided. Five more harnesses for 49 s more than the 319 s cold run, because the
 # five added that day are pure integer arithmetic and cost about a second each.
-# The 45-minute bound still has room; revisit it if a harness is added whose
-# cost is not a rounding error.
+#
+# 2026-10-06: the two lineage proofs joined at 234 s and 243 s of solver time
+# (Kani 0.68.0 / CBMC 6.11.0). All TWENTY-FOUR, run one by one as the CI step
+# runs them, took **645 s** end to end on the maintainer's machine, warm. The 45-minute bound
+# still has room; revisit it if a harness is added whose cost is not a rounding
+# error.
 
-# Merge-gating: run on every pull request by the `kani-bounded` job.
+# Run on every pull request by the `kani-bounded` job.
 gating:
   - serial_never_reserved_or_zero                            # 0s
   - mint_never_escalates_rights                              # 1s
@@ -77,25 +82,18 @@ gating:
   - every_page_in_the_pool_has_an_index                      # 1s
   - an_increment_never_wraps_a_refcount                      # 0s
   - a_decrement_never_underflows_a_refcount                  # 1s
-
-# Not gating, with a reason. These run in the manual `kani` job.
-#
-# The list was longer when it was written. The two ELF validators were excused on
-# 2026-08-23 with a plausible-sounding reason -- "corroboration, not the only
-# witness", and one of them "the more expensive of the two" -- and then MEASURED
-# the same day at 2 seconds each. Both gate now. The excuse was not a lie, it was
-# unmeasured, which is the failure mode this file exists to prevent one directory
-# over; a reason that cannot be checked is worth what an unenforced note is worth.
-#
-# The two below were measured properly: both TIME OUT at 1500 s.
-manual:
-  revoke_invalidates_recorded_generation: >-
-    Serial-keyed lineage proof: it ranges over the whole serial space against the
-    LINEAGE_GEN table, which builds a large SAT instance. MEASURED 2026-08-23: it
-    does not finish in 1500 s. Together with the one below, this pair is what
-    pushed a full `cargo kani` past GitHub's 6-hour job ceiling. Still verified on
-    demand, and a bounded version of it is worth writing.
-  revoke_does_not_touch_a_distinct_lineage_cell: >-
-    The precision half of the same lineage pair, and the same cost for the same
-    reason: two independent symbolic serials indexing the same table. MEASURED
-    2026-08-23: also does not finish in 1500 s.
+  # The lineage-generation pair (rust/src/capability.rs, finding 3.3), and the
+  # range proof over the real hash that their stub depends on. EACH WAS
+  # FALSIFIED on 2026-10-06 by reintroducing the defect it forbids and requiring
+  # `VERIFICATION:- FAILED`, with the stub in place:
+  #   lineage_idx_is_always_inside_the_table: masking with LINEAGE_SLOTS rather
+  #     than LINEAGE_SLOTS - 1 (red in under a second);
+  #   revoke_invalidates_recorded_generation: a gen-0 escape hatch in
+  #     lineage_check (red in 219 s), and the wrap-around fix dropped from
+  #     bump_lineage (red in 68 s);
+  #   revoke_does_not_touch_a_distinct_lineage_cell: bump_lineage also bumping
+  #     the neighbouring cell (red in 774 s).
+  # Four arms, four reds, source restored clean.
+  - lineage_idx_is_always_inside_the_table                   # 0s
+  - revoke_invalidates_recorded_generation                   # 234s
+  - revoke_does_not_touch_a_distinct_lineage_cell            # 243s

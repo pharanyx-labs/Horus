@@ -284,12 +284,11 @@ required:
   # WITH a TPM still boots under it, which is the half a refusal-only gate
   # cannot distinguish from a kernel that halts always.
   - measured-boot-required
-  # Gating, and the first Kani job that can fail anything. The `kani` job below
-  # stays advisory and manual: it is workflow_dispatch-only AND carries
-  # continue-on-error on both steps, so for as long as it has existed none of
-  # the capability-algebra proofs could have reddened a build. This one runs the
-  # subset that finishes -- eleven harnesses, about three minutes of solver --
-  # with no continue-on-error, and refuses a proof that is in neither list.
+  # Gating, and since 2026-10-06 the only Kani job. It runs every proof in the
+  # crate with no continue-on-error, and refuses a proof it is not told to run.
+  # The manual `kani` job it replaced was workflow_dispatch-only AND carried
+  # continue-on-error on both steps, so none of the proofs it held could ever
+  # have reddened a build.
   - kani-bounded
   # Gating. The only check in this tree that looks for undefined behaviour, and
   # the unsafe it exists for is the C FFI boundary in the security core -- 80
@@ -399,8 +398,3 @@ advisory:
     how a change made in the GitHub UI is caught, and a control that can be
     removed silently is the defect [C-6] described. It fails loudly if its GitHub App
     credential is unconfigured rather than skipping.
-
-  kani: >-
-    Manual-only and skipped on ordinary runs (see its `if:` guard), so it has no
-    conclusion to gate on. The proofs it runs are real assurance but too slow
-    for every push; they are exercised deliberately rather than continuously.

@@ -390,6 +390,14 @@ advisory:
     unknown would teach red-means-rerun. Promote it to required once a
     measured run of green on main says it is stable, with the rate quoted.
 
+  kani-arms: >-
+    Schedule-only (kani-arms.yml: nightly cron plus workflow_dispatch), so it
+    never runs on a pull request and has no conclusion to gate one with. It
+    re-runs every Kani proof's control arm and requires each to make its proof
+    fail; the arms cost minutes each, more than the proofs. Its per-PR half,
+    tools/check_kani_arms.py, runs in the required kani-bounded job. Listed
+    here so that deleting it trips ci-gating rather than passing quietly.
+
   ruleset-audit: >-
     Schedule-only (daily cron plus workflow_dispatch), so it never runs on a
     pull request and has no conclusion to gate one with. It is listed here

@@ -48,7 +48,7 @@ counts:
         pattern: '`\.github/workflows/ci\.yml` defines \*\*(\d+)\*\* jobs'
 
   - id: all_jobs
-    describe: jobs across ci.yml, codeql.yml and ruleset-audit.yml
+    describe: jobs across every workflow tools/check_ci_gating.py classifies
     derive: all_jobs
     occurrences:
       - file: TESTS.md

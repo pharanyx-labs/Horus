@@ -1,0 +1,231 @@
+# Control arms for the Kani proofs: one or more per proof, each the defect the
+# proof exists to forbid, written as an exact text substitution in rust/src.
+#
+# `tools/kani_arms.py` applies each arm to a scratch copy of rust/ (never the
+# tree), runs `cargo kani --harness <harness>`, and requires
+# `VERIFICATION:- FAILED`. It runs nightly in .github/workflows/kani-arms.yml.
+# `tools/check_kani_arms.py` runs on every pull request in the `kani-bounded`
+# job and checks, with no solver, that each arm's find text still occurs
+# exactly once and that every gating proof has an arm or a reason here why not.
+#
+# Until 2026-10-06 each proof was falsified once, by hand, and the result went
+# into a comment in .github/kani-harnesses.yml; nothing ever re-ran it. A change
+# that made a proof vacuous would have left it green. This is the same rule
+# every boot gate has (CLAUDE.md §2): a gate is proven by making it fail, again.
+#
+# `find` must match exactly once in `file`. If the code moves, the checker says
+# which arm; rewrite the arm against the new code, run it with
+#   tools/kani_arms.py --only <id>
+# and see it go red before committing.
+
+arms:
+- id: serial-wraps-to-zero
+  harness: serial_never_reserved_or_zero
+  file: rust/src/capability.rs
+  defect: the serial counter may wrap to 0 or below the derived floor
+  find: |2
+        let fresh = if fresh < MIN_DERIVED_SERIAL || fresh == 0 { MIN_DERIVED_SERIAL } else { fresh };
+  replace: |2
+        let fresh = if fresh == 0 { 0 } else { fresh };
+- id: mint-keeps-requested-rights
+  harness: mint_never_escalates_rights
+  file: rust/src/capability.rs
+  defect: mint grants what was requested, not what the source holds
+  find: |2
+        let effective_rights = new_rights & src.rights;
+  replace: |2
+        let effective_rights = new_rights;
+- id: revoke-marks-non-children
+  harness: revoke_descendant_never_nulls_ancestors
+  file: rust/src/capability.rs
+  defect: the closure marks capabilities that are not children, so an ancestor is swept
+  find: |2-
+                if c.badge == parent_serial {
+                    c.typ = CAP_MARK_NEW;
+  replace: |2-
+                if c.badge != parent_serial {
+                    c.typ = CAP_MARK_NEW;
+- id: lookup-any-overlap
+  harness: lookup_grants_exactly_the_rights_held
+  file: rust/src/capability.rs
+  defect: lookup accepts a capability holding any one of the requested rights
+  find: '    if (cap.rights & required_rights) != required_rights {'
+  replace: '    if required_rights != 0 && (cap.rights & required_rights) == 0 {'
+- id: lookup-admits-null
+  harness: lookup_never_returns_an_empty_slot
+  file: rust/src/capability.rs
+  defect: lookup returns an empty slot
+  find: |2
+        let cap = &mut *cspace.add(slot as usize);
+  replace: |2
+        let cap = &mut *cspace.add(slot as usize);
+        if cap.typ == CAP_NULL {
+            return cap;
+        }
+- id: lookup-ignores-cspace-size
+  harness: lookup_refuses_every_out_of_range_slot
+  file: rust/src/capability.rs
+  defect: lookup bounds the slot by the largest cspace, not this one
+  find: |2-
+        if slot >= cspace_size || slot >= CNODE_SIZE {
+            return ptr::null_mut();
+  replace: |2-
+        if slot >= CNODE_SIZE {
+            return ptr::null_mut();
+- id: grant-keeps-requested-rights
+  harness: grant_never_escalates_rights
+  file: rust/src/capability.rs
+  defect: grant gives what was requested, not what the source holds
+  find: |2
+        let effective_rights = new_rights & s.rights;
+  replace: |2
+        let effective_rights = new_rights;
+- id: grant-forgets-parent
+  harness: grant_records_its_parent_and_takes_a_fresh_serial
+  file: rust/src/capability.rs
+  defect: the grantee records the grantor's parent instead of the grantor
+  find: |2
+        let parent_serial = s.serial;
+  replace: |2
+        let parent_serial = s.badge;
+- id: grant-from-serial-zero
+  harness: grant_from_an_invalid_source_refuses_and_writes_nothing
+  file: rust/src/capability.rs
+  defect: grant accepts a source with the lookup-invalid serial 0
+  find: '    if s.typ == CAP_NULL || s.serial == 0 {'
+  replace: '    if s.typ == CAP_NULL {'
+- id: grant-ignores-cspace-size
+  harness: grant_refuses_every_out_of_range_slot
+  file: rust/src/capability.rs
+  defect: grant bounds the slot by the largest cspace, not the destination
+  find: |2-
+        if dest_slot >= dest_cspace_size || dest_slot >= CNODE_SIZE {
+            return false;
+        }
+        let s = &*src;
+  replace: |2-
+        if dest_slot >= CNODE_SIZE {
+            return false;
+        }
+        let s = &*src;
+- id: revoke-not-transitive
+  harness: revoke_root_nulls_every_descendant
+  file: rust/src/capability.rs
+  defect: revocation marks children but never their children
+  find: |2-
+                        if serial != 0 {
+                            mark_children_of(spaces, space_count, serial);
+                        }
+  replace: '                    let _ = serial;'
+- id: lineage-mask-off-by-one
+  harness: lineage_idx_is_always_inside_the_table
+  file: rust/src/capability.rs
+  defect: the hash can name a cell one past the table
+  find: |2
+        (x as usize) & (LINEAGE_SLOTS - 1)
+  replace: |2
+        (x as usize) & LINEAGE_SLOTS
+- id: lineage-gen-zero-hatch
+  harness: revoke_invalidates_recorded_generation
+  file: rust/src/capability.rs
+  defect: 'the pre-3.3 escape hatch: generation 0 is always valid'
+  find: |2-
+        LINEAGE_GEN[lineage_idx(serial)].load(Ordering::SeqCst) == gen
+    }
+  replace: |2-
+        gen == 0 || LINEAGE_GEN[lineage_idx(serial)].load(Ordering::SeqCst) == gen
+    }
+- id: lineage-wrap-to-pristine
+  harness: revoke_invalidates_recorded_generation
+  file: rust/src/capability.rs
+  defect: a bump that wraps leaves the generation at the pristine 0
+  find: '    if g == 0 {'
+  replace: '    if false {'
+- id: lineage-bumps-neighbour
+  harness: revoke_does_not_touch_a_distinct_lineage_cell
+  file: rust/src/capability.rs
+  defect: a revoke also bumps an unrelated serial's cell
+  find: '    let prev = LINEAGE_GEN[idx].fetch_add(1, Ordering::SeqCst);'
+  replace: |2-
+        LINEAGE_GEN[(idx + 1) & (LINEAGE_SLOTS - 1)].fetch_add(1, Ordering::SeqCst);
+        let prev = LINEAGE_GEN[idx].fetch_add(1, Ordering::SeqCst);
+- id: reply-mint-widens
+  harness: reply_mint_never_escalates_and_never_receives
+  file: rust/src/capability.rs
+  defect: a reply-mint grants what the server asks, not what the client invoked with
+  find: '        rights: new_rights & s.rights & !TOKEN_STRIPPED_RIGHTS,'
+  replace: '        rights: new_rights & !TOKEN_STRIPPED_RIGHTS,'
+- id: token-from-tokened
+  harness: mint_token_only_from_an_untokened_minter
+  file: rust/src/capability.rs
+  defect: a client re-tokens a capability that already carries a token
+  find: '    if src.rights & CAP_RIGHT_MINT == 0 || src.token != 0 {'
+  replace: '    if src.rights & CAP_RIGHT_MINT == 0 {'
+- id: mint-drops-token
+  harness: mint_keeps_the_token
+  file: rust/src/capability.rs
+  defect: a minted copy loses the token a server tells clients apart by
+  find: |2
+            token: src.token,
+  replace: |2
+            token: 0,
+- id: elf-phoff-unbounded
+  harness: elf_header_validation_is_sound
+  file: rust/src/lib.rs
+  defect: the program-header offset is not bounded by the image
+  find: '    if e_phoff == 0 || e_phoff as u64 > max_phoff { return Err(-8); }'
+  replace: '    if e_phoff == 0 { return Err(-8); }'
+- id: elf-segment-past-image
+  harness: elf_load_plan_is_sound
+  file: rust/src/lib.rs
+  defect: a segment's file bytes may run past the end of the image
+  find: '        if p_offset as u64 + p_filesz as u64 > buf.len() as u64 {'
+  replace: '        if p_offset as u64 > buf.len() as u64 {'
+- id: refc-no-upper-bound
+  harness: refc_index_is_always_inside_the_table
+  file: rust/src/memory.rs
+  defect: the page index is not bounded by the table
+  find: |2
+        if idx32 >= n_pages {
+            return None;
+        }
+  replace: ''
+- id: refc-half-divisor
+  harness: refc_index_names_the_page_that_contains_the_address
+  file: rust/src/memory.rs
+  defect: the index names the wrong page
+  find: '    let idx32 = (phys - USER_PHYS_BASE) / PAGE_SIZE;'
+  replace: '    let idx32 = (phys - USER_PHYS_BASE) / (PAGE_SIZE / 2);'
+- id: refc-refuses-all
+  harness: every_page_in_the_pool_has_an_index
+  file: rust/src/memory.rs
+  defect: every address is refused, so no page is refcounted
+  find: |2-
+        if phys < USER_PHYS_BASE {
+            return None;
+        }
+  replace: |2-
+        if phys >= phys {
+            return None;
+        }
+- id: refc-inc-wraps
+  harness: an_increment_never_wraps_a_refcount
+  file: rust/src/memory.rs
+  defect: an increment wraps 65535 to 0
+  find: '    cur.saturating_add(1)'
+  replace: '    cur.wrapping_add(1)'
+- id: refc-dec-wraps
+  harness: a_decrement_never_underflows_a_refcount
+  file: rust/src/memory.rs
+  defect: a decrement wraps 0 to 65535
+  find: |2-
+        if cur == 0 {
+            None
+        } else {
+            Some(cur - 1)
+        }
+  replace: '    Some(cur.wrapping_sub(1))'
+
+# Proofs with no arm yet, each with the reason. This list only shrinks: the
+# checker refuses an entry whose proof has gained an arm.
+unarmed: {}

@@ -57,8 +57,11 @@ except ImportError:
 # that no longer exists is an error, so removing the audit trips `ci-gating` on
 # the next push. A security control that can be dropped without anything
 # noticing is the shape of [C-6] itself.
+#
+# kani-arms.yml (2026-10-06) is included for the same reason: it is
+# schedule-only, but it is what shows each Kani proof can still fail.
 WORKFLOWS = [".github/workflows/ci.yml", ".github/workflows/codeql.yml",
-             ".github/workflows/ruleset-audit.yml"]
+             ".github/workflows/ruleset-audit.yml", ".github/workflows/kani-arms.yml"]
 CI_YML = ".github/workflows/ci.yml"
 GATING_YML = ".github/ci-gating.yml"
 RULESET = "repos/pharanyx-labs/Horus/rulesets/21815299"

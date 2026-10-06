@@ -1,0 +1,62 @@
+# Nightly: every Kani proof's control arm, each of which must make its proof
+# FAIL.
+#
+# The `kani-bounded` job proves every harness on every pull request; that shows
+# the code has each property. This shows each proof still CAN fail: for every
+# arm in .github/kani-arms.yml, tools/kani_arms.py puts that defect back in a
+# scratch copy of rust/ and requires `VERIFICATION:- FAILED`. A proof whose arm
+# comes back SUCCESSFUL has become vacuous (an assumption now excludes the
+# interesting inputs, or the harness no longer reaches the code), and this run
+# goes red. CLAUDE.md §2: a gate is proven by making it fail.
+#
+# Nightly rather than per pull request because the arms cost more than the
+# proofs: the slowest, on the lineage pair, take minutes each. The cheap half,
+# that every arm still applies and every proof has one, runs on every pull
+# request as tools/check_kani_arms.py in the `kani-bounded` job.
+#
+# Every arm's Kani output is uploaded whatever the result: a red run is when it
+# is needed. Not a merge gate (it never runs on a pull request); classified in
+# .github/ci-gating.yml so that deleting it trips `ci-gating`.
+
+name: Kani control arms
+
+on:
+  schedule:
+    - cron: '10 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kani-arms
+  cancel-in-progress: false
+
+jobs:
+  kani-arms:
+    name: Every Kani proof still fails when its defect is put back
+    runs-on: ubuntu-latest
+    # All 25 arms took 19.5 minutes locally on 2026-10-06 (Kani 0.68.0), most of
+    # it the three lineage arms. The bound is a backstop, not a budget.
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - name: Install PyYAML
+        run: pip install --disable-pip-version-check pyyaml==6.0.3
+
+      - name: Install Kani
+        run: |
+          cargo install --locked kani-verifier --version 0.68.0
+          cargo kani setup
+
+      - name: Every arm makes its proof fail
+        run: python3 tools/kani_arms.py --log-dir kani-arm-logs
+
+      - name: Keep every arm's Kani output
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: kani-arm-logs
+          path: kani-arm-logs/
+          if-no-files-found: error

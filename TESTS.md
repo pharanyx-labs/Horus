@@ -324,10 +324,10 @@ Currently **91 of 102** implemented syscalls are covered (`SECURITY.md` S25; `do
 ## CI
 
 
-`.github/workflows/ci.yml` defines **134** jobs, run on every push and pull request; most are sharded runs of the gates above. With CodeQL and the scheduled ruleset audit the total is below: **136** jobs, **139** contexts, counted by `tools/check_ci_gating.py`.
+`.github/workflows/ci.yml` defines **134** jobs, run on every push and pull request; most are sharded runs of the gates above. With CodeQL and the scheduled ruleset audit and Kani control arms the total is below: **137** jobs, **140** contexts, counted by `tools/check_ci_gating.py`.
 
 `.github/ci-gating.yml` classifies every job as gating or exempt with a written reason, and the `ci-gating` job fails on a job in neither list. The branch ruleset requires two checks: `gates`, which needs every gating job and passes only if each succeeded (skipped or cancelled counts as failed), and CodeQL.
-The set is **136 gating contexts and 3 reasoned exemptions**: `fuzz` (a short time-boxed search is evidence of effort, not absence), `ruleset-audit` (runs on a schedule, never on a pull request) and `smoke-smp-kvm` (a second run of required gates under KVM, until its pass rate is measured).
+The set is **136 gating contexts and 4 reasoned exemptions**: `fuzz` (a short time-boxed search is evidence of effort, not absence), `kani-arms` and `ruleset-audit` (both run on a schedule, never on a pull request) and `smoke-smp-kvm` (a second run of required gates under KVM, until its pass rate is measured).
 
 The jobs that are not boot tests:
 

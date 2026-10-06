@@ -43,7 +43,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install PyYAML
-        run: pip install --disable-pip-version-check pyyaml
+        run: pip install --disable-pip-version-check pyyaml==6.0.3
       # Finding [C-6]: the live required list lives in a branch ruleset no commit
       # touches, so a job added here landed advisory BY DEFAULT and nothing asked
       # whether it should have. This fails the build when ci.yml and
@@ -414,7 +414,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install PyYAML
-        run: pip install --disable-pip-version-check pyyaml
+        run: pip install --disable-pip-version-check pyyaml==6.0.3
       # Every number written into a document here has gone stale within days.
       # The 2026-08-19 audit found nine wrong across five files -- CI job and
       # context counts, the required set, the capability suite's check count --
@@ -4794,7 +4794,7 @@ jobs:
           done
           retry sudo apt-get update
           retry sudo apt-get install -y cppcheck flawfinder
-          retry sh -c 'pipx install semgrep || pip install semgrep'
+          retry sh -c 'pipx install semgrep==1.179.0 || pip install semgrep==1.179.0'
           # Trivy — pinned release + checksum verification (avoids curl|sh)
           TRIVY_VERSION=0.72.0
           retry curl -sfL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" -o trivy.tar.gz
@@ -4967,7 +4967,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install PyYAML
-        run: pip install --user pyyaml
+        run: pip install --user pyyaml==6.0.3
       # Source-only and instant, and it is the half that catches a NEW module
       # nobody classified -- so it runs before the toolchain install.
       - name: Every test module is run under Miri or excused with a reason
@@ -5022,7 +5022,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install PyYAML
-        run: pip install --user pyyaml
+        run: pip install --user pyyaml==6.0.3
       # Cheap, no toolchain needed, and it is the half that catches a NEW proof
       # nobody wired up -- so it runs before the expensive install.
       - name: Every Kani proof is listed to run here
@@ -5134,7 +5134,10 @@ jobs:
         run: tools/test_stress_boot.sh
       - name: Install Kani
         run: |
-          cargo install --locked kani-verifier
+          # Pinned: the version is part of every measurement recorded in
+          # .github/kani-harnesses.yml, and an unpinned install changed the
+          # verifier under the proofs without a commit. Raise it deliberately.
+          cargo install --locked kani-verifier --version 0.68.0
           cargo kani setup
       # No continue-on-error, and that is the entire point of this job. The
       # manual `kani` job it replaced carried it on every step, so for as long

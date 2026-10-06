@@ -89,11 +89,22 @@ cargo kani --harness mint_never_escalates_rights     # one harness
 A successful run ends with `VERIFICATION:- SUCCESSFUL` and a summary line counting the
 harnesses verified.
 
+## Control arms
+
+Every proof has at least one **control arm** in `.github/kani-arms.yml`: the defect the proof
+forbids, written as an exact text substitution in `rust/src`. `tools/kani_arms.py` applies each
+arm to a scratch copy of `rust/` (never the tree), runs the proof and requires
+`VERIFICATION:- FAILED`; the nightly `kani-arms.yml` workflow runs all of them and keeps every
+arm's output. On every pull request, `tools/check_kani_arms.py` (in `kani-bounded`) checks
+without a solver that each arm's anchor text still occurs exactly once and that every gating
+proof has an arm. Run one arm locally with `tools/kani_arms.py --only <id>`.
+
 ## Adding a proof
 
 Falsify it before trusting it: mutate the property it claims (weaken a rights test, drop a
 bound, zero a recorded parent) and confirm the harness reports `VERIFICATION:- FAILED`. State
 properties as equivalences where you can, so a function that refuses everything cannot satisfy
-them vacuously. Then add the harness to the `gating` list in `.github/kani-harnesses.yml`. A
-proof too slow for every pull request has to be made to finish (bound it, or stub what it does
-not depend on, as the lineage pair does) before it lands, because no other job runs it.
+them vacuously. Then add the harness to the `gating` list in `.github/kani-harnesses.yml` and
+its arm to `.github/kani-arms.yml`. A proof too slow for every pull request has to be made to
+finish (bound it, or stub what it does not depend on, as the lineage pair does) before it lands,
+because no other job runs it.

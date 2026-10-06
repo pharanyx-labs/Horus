@@ -60,8 +60,11 @@ except ImportError:
 #
 # fuzz.yml (2026-10-06) is included for the same reason: it is schedule-only,
 # but it is the only fuzzing the project does, and dropping it must be loud.
+# kani-arms.yml (2026-10-06) likewise: it is schedule-only, but it is what shows
+# each Kani proof can still fail.
 WORKFLOWS = [".github/workflows/ci.yml", ".github/workflows/codeql.yml",
-             ".github/workflows/ruleset-audit.yml", ".github/workflows/fuzz.yml"]
+             ".github/workflows/ruleset-audit.yml", ".github/workflows/fuzz.yml",
+             ".github/workflows/kani-arms.yml"]
 CI_YML = ".github/workflows/ci.yml"
 GATING_YML = ".github/ci-gating.yml"
 RULESET = "repos/pharanyx-labs/Horus/rulesets/21815299"

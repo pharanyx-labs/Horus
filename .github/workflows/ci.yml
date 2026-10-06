@@ -4991,6 +4991,14 @@ jobs:
         run: python3 tools/check_kani_harnesses.py
       - name: Falsify that checker in every direction
         run: tools/test_check_kani_harnesses.sh
+      # The per-PR half of the Kani control arms: every arm in
+      # .github/kani-arms.yml still applies (its anchor text occurs exactly
+      # once) and every proof has one. The arms themselves run nightly in
+      # kani-arms.yml; this makes a moved anchor fail today, not tonight.
+      - name: Every Kani proof has a control arm that still applies
+        run: python3 tools/check_kani_arms.py
+      - name: Falsify that checker in every direction
+        run: tools/test_check_kani_arms.sh
       # Cheap and source-only, so it rides along here rather than paying for its
       # own runner. The cspace slot map is written down twice -- kernel.h and
       # syscall.h -- and nothing compared them until a new CAPSLOT_DEBUG was

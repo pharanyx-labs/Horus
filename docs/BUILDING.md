@@ -525,7 +525,7 @@ regenerates.
 ```bash
 cargo test   --manifest-path rust/Cargo.toml --release
 cargo clippy --manifest-path rust/Cargo.toml --release --all-targets -- -D warnings
-cargo +nightly fuzz run <target>    # from rust/, targets in rust/fuzz/
+cargo +nightly-2026-08-21 fuzz run <target>    # from rust/; see rust/fuzz/README.md
 cd rust && cargo kani               # see rust/KANI.md
 ```
 

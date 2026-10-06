@@ -449,7 +449,7 @@ a specification to the code, and no TLA+ specification exists (two unsound ones 
 
 ### 5.7 CI workflows GitHub injects are outside the tree
 
-`tools/check_ci_gating.py` sees the three workflows in `.github/workflows/`. GitHub can also inject
+`tools/check_ci_gating.py` sees the workflows in `.github/workflows/`. GitHub can also inject
 **dynamic** workflows that no commit contains. One did: a GitHub Advanced Security reviewer backed
 by Copilot, which failed on every run from 2026-09-19 because the account has no Copilot licence,
 could not read any C, header or Rust file, and made network requests to a third party from an

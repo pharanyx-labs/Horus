@@ -643,6 +643,12 @@ in this file.
 
 ### Changed
 
+- **Fuzzing runs nightly, for ten minutes per target, and a crash fails it.** It ran on every pull
+  request for 30 seconds per target, with every step set to carry on after an error, so it could
+  not report a crash. It now runs each night from `fuzz.yml`, one job per target, with a pinned
+  nightly, `cargo-fuzz` and `libfuzzer-sys` (`rust/fuzz/Cargo.lock` is committed), each target's
+  corpus carried over from the night before, and the crashing input kept as an artifact.
+
 - **`THIRD_PARTY.md` lists the vendored GNU coreutils (GPLv3) and TinyCC (LGPL 2.1).** It said
   everything not listed was MIT, and listed neither. The website no longer says the modules
   carry `init` and the servers (they are in the kernel image) or that an installed disk boots by

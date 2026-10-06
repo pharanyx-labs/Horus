@@ -15,15 +15,17 @@ deterministic, and a panic or UB on any input is a real bug.
 
 ## Running
 
-Requires a nightly toolchain and `cargo-fuzz`:
+Requires the pinned nightly and `cargo-fuzz` (the versions `.github/workflows/fuzz.yml` uses):
 
 ```sh
-rustup toolchain install nightly
-cargo install cargo-fuzz
+rustup toolchain install nightly-2026-08-21 --profile minimal --component rust-src
+cargo install cargo-fuzz --version 0.13.2 --locked
 # from the rust/ directory:
-cargo +nightly fuzz run ct_eq
-cargo +nightly fuzz run validate_page_fault -- -max_total_time=60
+cargo +nightly-2026-08-21 fuzz run ct_eq
+cargo +nightly-2026-08-21 fuzz run validate_page_fault -- -max_total_time=60
 ```
+
+`Cargo.lock` here is committed, so `libfuzzer-sys` is pinned too.
 
 ## How it links
 
@@ -33,7 +35,9 @@ it into a std libFuzzer harness would collide on the panic handler, so the crate
 provides it). This crate is its own Cargo workspace so it never enters the parent build graph;
 the gating `rust` CI job and the kernel build stay on stable and are unaffected.
 
-CI runs these as a **non-gating advisory** job (`fuzz` in `.github/workflows/ci.yml`)
-with a short per-target time budget; run longer locally to dig deeper.
+CI fuzzes every target for ten minutes each night (`.github/workflows/fuzz.yml`), carrying each
+target's corpus over from the night before. A crash fails the run and uploads the crashing input
+as an artifact; reproduce it with `cargo +nightly-2026-08-21 fuzz run <target> <file>`. It never
+runs on a pull request, so it does not gate a merge.
 
 [cargo-fuzz]: https://github.com/rust-fuzz/cargo-fuzz

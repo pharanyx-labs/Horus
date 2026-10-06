@@ -1,12 +1,8 @@
-# Horus Architecture
+# Horus architecture
 
-How Horus is built, why it is built that way, and which invariants each subsystem is
-responsible for. Written for contributors who need to understand the system before changing
-it, and for reviewers evaluating the design.
-
-**Where this document and the code disagree, the code is authoritative: please open an issue.**
-
----
+How Horus is built, why, and which invariants each subsystem is responsible for. Written for
+contributors who need to understand the system before changing it, and for reviewers judging the
+design. Where this document and the code disagree, the code is right; please open an issue.
 
 ## Contents
 
@@ -31,28 +27,30 @@ it, and for reviewers evaluating the design.
 
 Horus is a microkernel in the seL4 tradition, with three commitments.
 
-**The kernel does the minimum.** It owns address spaces, threads, capabilities, IPC, and an
-encrypted block store whose keys it never releases. It does not own filenames, directories,
-permissions, terminal semantics, or program-loading policy. Those live in ring-3 servers
-that hold only the capabilities they need.
+**The kernel does the minimum.** It owns address spaces, tasks, capabilities, IPC, and an
+encrypted block store whose keys it never releases. Filenames, directories, permissions, terminal
+behaviour and program-loading policy live in ring-3 servers that hold only the capabilities they
+need. Some policy is still in ring 0 (the on-disk filesystem, accounts, ELF loading), and moving
+it out is tracked as gap G-14.
 
-**Authority is explicit and reducible.** Everything a task can do traces to a capability it
-holds. Capabilities are delegated downward, never acquired upward, and delegation can only
-narrow rights. Revocation is transitive over the derivation tree.
+**Authority is explicit and only narrows.** Everything a task can do traces to a capability it
+holds. Capabilities are delegated downwards, never acquired upwards, delegation can only reduce
+rights, and revocation reaches everything derived.
 
-**Every claim has a witness.** A security property that is not tested is a hope. Horus
-therefore ships an unusually large integration self-test suite, formal proofs over the
-capability algebra, and a reproducible build verified by double-building in CI.
+**Every claim has a witness.** Each security property in `SECURITY.md` names the test or proof
+that would fail if it broke, and each such test has a control arm that puts the defect back and
+must turn it red.
 
 ### What is in the trusted computing base
 
-- The kernel (`src/kernel/`, `src/boot/`, `rust/src/`), approximately 20 kLOC.
-- `init` (`userspace/init.c`); the delegation root for every userspace server.
-- `fs_server`; the reference monitor for filesystem permissions.
-- `console_server`, owns the console hardware and therefore sees all terminal traffic.
-- GRUB and the platform firmware, up to the point where measured boot takes over.
+- The kernel: `src/kernel/`, `src/boot/` and the Rust core in `rust/src/`.
+  `.github/ring0-classification.yml` classifies every object linked into it (S87).
+- `init` (`userspace/init.c`), the delegation root for every server.
+- `fs_server`, the reference monitor for files.
+- `console_server`, which owns the console hardware and so sees all terminal traffic.
+- GRUB and the platform firmware, up to where measured boot takes over.
 
-Everything else (the shell, coreutils, tcc, user programs) is outside the TCB by design.
+The shell, the coreutils, `tcc` and user programs are outside it by design.
 
 ---
 
@@ -60,123 +58,76 @@ Everything else (the shell, coreutils, tcc, user programs) is outside the TCB by
 
 ### The boot sequence
 
-1. **GRUB** loads `kernel.elf` (Multiboot2) at physical 1 MiB and any `module2` payloads
-   into RAM above it.
-2. **`src/boot/multiboot.S`** runs in 32-bit protected mode: sets `CR4.PAE`, builds the
-   initial page tables, enables `EFER.LME` and `EFER.NXE`, enters long mode, and jumps to
-   the higher-half kernel.
-3. **`kernel_main`** (`src/kernel/main.c`) scans the multiboot2 tags for the E820 memory map
-   and boot modules, sizes the physical pool, places the pool's base reserves clear of the
-   modules and halts if any module lies in the kernel image or that window (S96), verifies
-   module hashes against the embedded manifest, measures kernel and modules into the TPM,
-   initialises paging, capabilities, the scheduler, storage, hashes every verified module
-   again (S96), and launches `init` in ring 3.
+1. **GRUB**, under BIOS or UEFI, checks `kernel.elf` against the SHA-256 pinned in the boot image
+   (S92), loads it with Multiboot2 at physical 1 MiB, and loads the `module2` payloads above it.
+   The command line carries the boot mode chosen at the menu (`horus.live` or `horus.install`).
+2. **`src/boot/multiboot.S`** runs in 32-bit protected mode: enables PAE, builds the initial page
+   tables, sets `EFER.LME` and `EFER.NXE`, enters long mode and jumps to the higher half.
+3. **`kernel_main`** (`src/kernel/main.c`) reads the multiboot2 tags (memory map, modules,
+   framebuffer, command line), sizes the physical pool and places its reserves clear of every
+   module (S96), verifies each module against the embedded manifest, measures the command line,
+   manifest and modules into the TPM, initialises paging, capabilities, the scheduler, the IOMMU,
+   devices and storage, hashes the verified modules again (S96), and starts `init` in ring 3.
 
 ### Virtual memory layout
 
 ```
 0xFFFFFFFF_80100000   kernel image (.text r-x, .rodata r--, .data/.bss rw-)  = KERNEL_VMA + 1 MiB
+high_pdpt[511]        per-task kernel stacks, each above an unmapped guard page
+high_pdpt[509]        the framebuffer window, when there is one
 0xFFFFFF80_80000000   PHYS_KVA window: higher-half alias of physical [0, 1 GiB)
-0x00000000_xxxxxxxx   userspace: image, heap, stack (per-task, ASLR-randomised)
+0x00000000_xxxxxxxx   userspace: image, heap, stack (per task, randomised)
 ```
 
 `KERNEL_VMA` is fixed by `linker64.ld` and shared with the boot assembly through
-`src/include/kernel_vma.h`. Two translations exist and must not be confused:
-
-- `virt_to_phys` / `phys_to_virt`, for **kernel image symbols only**, where the fixed
-  `± KERNEL_VMA` relation holds.
-- `PHYS_KVA(p)`, for **arbitrary physical addresses** (freshly allocated frames, page
-  tables). This window is copied into every task's PML4 (`pml4[256..511]`), so it resolves
-  on a user CR3 too. The demand pager must use it: the low identity map does not cover the
-  user page pool, and faulting inside the fault handler while holding `page_lock` with
-  interrupts off wedges the machine.
+`src/include/kernel_vma.h`. Two translations exist and must not be confused: `virt_to_phys` and
+`phys_to_virt` are for kernel image symbols only, and `PHYS_KVA(p)` is for arbitrary physical
+addresses such as fresh frames and page tables. The kernel half, including the `PHYS_KVA`
+window, is copied into every task's PML4 (`pml4[256..511]`), so it resolves on any CR3; the
+demand pager must use it, because faulting inside the fault handler while holding `page_lock`
+with interrupts off wedges the machine.
 
 ### Physical memory
 
-The pool starts at `USER_PHYS_BASE` (16 MiB, above the kernel image) and is sized at boot
-from the E820 map, falling back to 64 MiB. Three regions are reserved as one window and held
-back from the free list: the 8 MiB loader staging buffer, the RAM vdisk backing store, and the
-untyped arena (§4). All three used to be `.bss` arrays, which capped them against the
-`__bss_end <= USER_PHYS_BASE` linker assertion; moving them into the pool decoupled their
-size from that ceiling entirely. The window starts at `USER_PHYS_BASE` unless a boot module is
-there: GRUB places modules upward from the end of the kernel image, so a large module set runs
-past 16 MiB, and `pool_reserve_base` then places the window at the lowest address that touches no
-module (S96). Every other frame a module touches is held back too, so no frame a module occupies
-is ever written by the kernel or handed out.
+The page pool starts at `USER_PHYS_BASE` (16 MiB, above the kernel image) and is sized from the
+firmware memory map. Three regions are held back from it as one reserved window: the 8 MiB loader
+staging buffer, the RAM volume's backing store and the untyped arena (§4). The window moves clear
+of any boot module GRUB placed there, and every frame a module occupies is held back too (S96).
+The kernel stacks are mapped from ordinary pool frames on first use. The kernel image itself must
+end below `USER_PHYS_BASE`, and `.bss` has an exact budget (`.github/image-budget.yml`).
 
-**The per-task kernel stacks joined them on 2026-08-30**, by a different route: rather than the
-pool's reserve they took a region of kernel-half virtual address space under `high_pdpt[511]`,
-mapped from ordinary pool frames on first use. They were 4 MiB of `.bss`, a static array of one
-64 KiB slot per task, and were what actually pinned `MAX_TASKS` at 64, not the 72 KiB table of
-task records that `docs/LIMITATIONS.md` §3.1 had been naming. The ceiling is 256 now and the
-image is smaller than it was at 64.
-
-The arena's size is no longer a single constant. It is a **kernel reserve** derived from
-`MAX_TASKS` (the per-task cspaces, which no capability names and ring 3 cannot reach) plus a
-**fixed 3.5 MiB user half** (`UNTYPED_ROOT`, what `init` delegates). It used to be a fixed 4 MiB
-total with the reserve carved out of it, so raising the task ceiling silently shrank what
-userspace could allocate, and the user half is the number `MAX_FRAME_PAGES`' denial-of-service
-reasoning rests on.
-
-Boot-module frames are also held back from the free list; GRUB places modules wherever it likes,
-typically inside the pool, and handing one out as an anonymous user page would corrupt the image
-before `init` reads it.
+The untyped arena has two halves: a **kernel reserve** sized from `MAX_TASKS` (one cspace and
+task control block per task, never nameable by a capability) and a fixed **3.5 MiB user half**
+(`UNTYPED_ROOT`), which `init` delegates onwards.
 
 ---
 
 ## 3. The C / Rust split
 
-The kernel is C; the security core is `no_std` Rust compiled to a static library and linked
-with `--whole-archive`. The split is drawn by **attack surface**, not by convenience: code
-that parses attacker- or firmware-controlled bytes, or that enforces an algebraic security
-property, belongs in Rust.
-
-**In Rust today** (`rust/src/`):
+The kernel is C; the security core is `no_std` Rust compiled to a static library and linked with
+`--whole-archive`. The split is drawn by attack surface: code that parses bytes an attacker or
+firmware controls, or that enforces an algebraic security property, belongs in Rust.
 
 | Module | Responsibility |
 |---|---|
-| `capability.rs` | The capability algebra: lookup, mint, grant, transfer, subtree revocation, lineage generations |
-| `lib.rs` | ELF header/phdr validation, load planning, i386 and x86-64 relocation |
-| `crypto.rs`, `aead.rs`, `sha256.rs`, `blake2b.rs`, `argon2.rs` | Cryptographic primitives |
-| `rng.rs` | ChaCha20 fast-key-erasure CSPRNG with RDRAND health checking. `fill` refuses (returning false, zeroing the caller's buffer) while the pool is unseeded, so the property is the RNG's rather than the boot order's (S30) |
-| `memory.rs` | Pointer and range validation predicates |
-| `audit.rs` | Forward-secure audit log |
+| `capability.rs` | The capability algebra: lookup, mint, grant, transfer, reply-mint, subtree revocation, lineage generations |
+| `lib.rs` | ELF header and program-header validation, load planning, i386 and x86-64 relocation |
+| `crypto.rs`, `aead.rs`, `sha256.rs`, `blake2b.rs`, `argon2.rs` | Cryptographic primitives, including HKDF |
+| `rng.rs` | The ChaCha20 CSPRNG, which refuses output until seeded (S30) |
+| `memory.rs` | Pointer and range predicates, and the page-pool reference counts |
+| `audit.rs` | The forward-secure audit log |
 | `auth.rs`, `ps.rs` | Authentication and process-listing helpers |
 
-Moving the ELF loader to Rust found two real out-of-bounds bugs in the C original. That is
-the argument for the split, stated empirically.
+Moving the ELF loader to Rust found two out-of-bounds bugs in the C original.
 
 ### The FFI contract
 
-`capability_t` (C) and `Capability` (Rust) are the same memory passed across the boundary.
-Layout drift is a **compile error on both sides**:
-
-```c
-/* src/kernel/capability.c */
-_Static_assert(__builtin_offsetof(capability_t, object) == 8, "cap.object offset");
-```
-```rust
-// rust/src/capability.rs
-const _: () = { assert!(core::mem::offset_of!(Capability, object) == 8); };
-```
-
-Field offsets are asserted rather than `size_of`, because only trailing padding differs
-between the 32- and 64-bit targets.
-
-`rust/fuzz/` runs cargo-fuzz over the pointer and scalar predicates at this boundary.
-
-**The boundary is kept minimal, and that is checked** (**S86**). The Rust core is linked
-`--whole-archive` with no `--gc-sections`, so every `#[no_mangle] pub extern "C"` symbol is in
-the shipping binary whether or not the kernel calls it. `tools/check_ffi_deadsurface.py`
-(required job `ffi-deadsurface`) refuses an export with no live caller, and the mirror defect:
-a `rust_*` fallback defined in `src/kernel/rust_shims.c` with neither a Rust export nor a
-caller. Twelve exports of sixty were dead when the checker was written, each one an `unsafe`
-entry point whose `# Safety` clause named a caller that did not exist, and each with passing
-unit tests, which is why they had survived. Deliberate exceptions are declared in
-`.github/ffi-exports.yml`; there is one, `rust_eh_personality`, which the Rust ABI requires.
-
-A `# Safety` clause is a statement about the *caller*, so an export without one is not a
-contract but a hope. **S54** requires the clause to exist; **S86** requires the caller to.
+`capability_t` in C and `Capability` in Rust are the same memory, and layout drift is a compile
+error on both sides: each asserts every field offset. **Every Rust FFI function checks its own
+inputs**; none assumes the C side did. Every `unsafe` carries a `# Safety` section stating what
+the caller must uphold (S54, checked by `unsafe-safety`), and every exported symbol must have a
+live caller (S86, checked by `ffi-deadsurface`), because the core is linked whole and an unused
+export would ship anyway. `rust/fuzz/` fuzzes the pure predicates at this boundary.
 
 ---
 
@@ -188,571 +139,265 @@ contract but a hope. **S54** requires the clause to exist; **S86** requires the 
 typedef struct capability {
     uint32_t type;        /* CAP_TCB, CAP_ENDPOINT, CAP_FRAME, ... */
     uint32_t rights;      /* READ | WRITE | EXEC | GRANT | MINT | REVOKE | ... */
-    uint64_t object;      /* which instance: task (slot + generation), endpoint index, address, ... */
+    uint64_t object;      /* which instance: task (slot + generation), endpoint index, frame index, ... */
     uint32_t badge;       /* the parent's serial: the derivation-tree link */
     uint32_t serial;      /* globally unique, monotonic */
     uint32_t generation;  /* lineage generation at creation */
-    uint32_t reserved;    /* always 0; pins token at offset 32 on every target */
+    uint32_t reserved;    /* always 0 */
     uint64_t token;       /* an endpoint's server-defined identity; 0 = none (S105) */
 } capability_t;
 ```
 
-**The token** turns an endpoint capability into a handle on one thing a server serves, such as
-a file. The kernel never interprets it: it records the token and rights of the capability every
-message is sent through, and the receiver reads them with `SYS_IPC_INVOKER`, so a server
-authorises on what a client *holds* rather than on who it *is*. Only two operations set a token:
-`SYS_CAP_MINT_TOKEN`, from an untokened endpoint capability holding MINT (the task that made the
-endpoint), and the reply-mint, `SYS_IPC_REPLY_CAP`, in which a server hands its caller a child of
-the capability the request came through, with rights at most that capability's. Everything else
-copies the token, and the receive right is stripped wherever one is set. The design this serves
-is `docs/design/filesystem.md` §5; the rules are proved in Kani and witnessed by
-`make smoke-captoken` (**S105**).
+Each task has a 256-slot cspace. Userspace names a capability by slot and never sees the
+structure, so a capability cannot be forged or guessed.
 
-Eighteen object types, besides the empty `CAP_NULL`: `CAP_TCB`, `CAP_NOTIFICATION`,
-`CAP_ENDPOINT`, `CAP_FRAME`, `CAP_USER`, `CAP_AUDIT`, `CAP_CONSOLE`,
-`CAP_ENCRYPTED_STORAGE`, `CAP_REVOCATION`, `CAP_BLOCK_DEV`, `CAP_IO_DEVICE`, `CAP_PIPE`,
-`CAP_KERNEL_LOG`, `CAP_BOOT_MODULE`, `CAP_UNTYPED`, `CAP_REPLY`, `CAP_DEBUG`,
-`CAP_STORAGE_FORMAT`.
+The types are `CAP_TCB`, `CAP_NOTIFICATION`, `CAP_ENDPOINT`, `CAP_FRAME`, `CAP_USER`, `CAP_AUDIT`,
+`CAP_CONSOLE`, `CAP_ENCRYPTED_STORAGE`, `CAP_REVOCATION`, `CAP_BLOCK_DEV`, `CAP_IO_DEVICE`,
+`CAP_PIPE`, `CAP_KERNEL_LOG`, `CAP_BOOT_MODULE`, `CAP_UNTYPED`, `CAP_REPLY`, `CAP_DEBUG` and
+`CAP_STORAGE_FORMAT`. Two are splits rather than additions: `CAP_DEBUG` exists so that `ps`
+does not need the capability that rotates the audit keys, and `CAP_STORAGE_FORMAT` exists because
+a format right on `CAP_ENCRYPTED_STORAGE` would have been conferred at once on every holder of
+that capability's full rights. A new type fails closed where a new rights bit fails open.
 
-Two of those are splits rather than additions, and the reason is the same both times.
-`CAP_DEBUG` (roadmap 3.6) exists because `ps` used to run on a `CAP_AUDIT` that also rotated
-the audit chain's keys; `CAP_STORAGE_FORMAT` (roadmap 2.9, **S72**) exists because destroying a
-volume would otherwise have been a rights bit on the `CAP_ENCRYPTED_STORAGE` `fs_server` and the
-shell already hold, and `root_cnode[9]` carries `CAP_RIGHT_ALL`, so defining the bit would
-have conferred it on both with no diff at the grant. A new type fails closed where a new bit
-inside `CAP_RIGHT_ALL` fails open.
-
-Each task has a 256-slot cspace. Userspace names a capability by slot index and never sees
-the struct, so capabilities cannot be forged or guessed.
-
-### Device capabilities
-
-`CAP_IO_DEVICE` names one entry in the kernel's I/O-device table (`src/kernel/pci.c`), built
-once at boot and read-only afterwards: a PCI bus-0 scan, plus one non-enumerable **platform**
-entry standing for the legacy console hardware (the PIT, the PS/2 controller, the two UARTs, the
-VGA register file and its framebuffer). Each entry declares exactly three kinds of resource,
-because those are exactly the three things the device syscalls hand out, physical frames, I/O
-port ranges, and interrupt lines.
-
-The four device syscalls take a cspace slot as their first argument and check the resource
-requested against what *that* device declares. Ring 3 never names a bus address, only a
-capability; configuration space is never exposed, since a driver that could write it could
-move any device's BARs and make every check decorative.
-
-**This was finding [C-1]'s shape one layer down until 2026-08-28.** The capability's `object`
-was permanently 0 and never read, and the resources came from constants compiled into
-`syscall_hw.c`, so hardware authority was one indivisible grant meaning *the console*: and a
-second ring-3 driver could not be given the hardware it needs without the hardware it does not.
-`SECURITY.md` **S43**; witness `make smoke-devcap`. It is the mechanism roadmap 2.6 (a network
-stack as a ring-3 server) and 2.7 (real device drivers) both stand on.
-
-**What that table does NOT declare is load-bearing too.** COM3 (`0x3E8`) appears in no entry, and
-that omission is the kernel's diagnostic channel (`SECURITY.md` **S81**). The kernel reports a
-trap by writing the UART directly, because `print()` reaches only the klog once `console_server`
-owns the console, and `console_server` writes that same UART from ring 3, one byte at a time,
-so a report could be cut in half between two characters by an unrelated task's output. A channel
-no capability names has one writer by construction: `SYS_IOPORT_GRANT` walks the device's
-declared ranges, so a port that is in none of them cannot be granted to anyone. `panic_ch` writes
-COM3 first and the shared console second; the second copy is best-effort and nothing asserts on
-it. The falsifying arm declares `0x3E8` in the platform entry and watches ring 3 write into the
-kernel's channel, `make smoke-kdiag-grant-control`, against `make smoke-kdiag-ioport`, where
-the identical instruction takes a #GP.
-
-Index 0 is reserved and names nothing, so the two fields that default to zero (a task's
-`io_device` and a capability's `object`) fail closed instead of resolving to the console. The
-bus scan walks the tree, breadth-first from bus 0 through each PCI-to-PCI bridge's secondary bus
-(since 2026-09-12). A bus is scanned at most once and a bridge is followed only downward, so
-hardware reporting a cyclic topology costs nothing. The table holds `IODEV_MAX` = 64 entries
-(16 until 2026-09-22, which a laptop's chipset overflows before reaching its eMMC controller),
-and a full table is reported on the console with a count of what was not recorded. A device the
-walk does not reach, or that arrives after the table is full, is still *absent*, so no
-capability can name it and no authority over it can be granted: missing a device is safe;
-inventing one would cost the property.
-
-### `netd`: a network driver in ring 3
-
-`userspace/netd.c` drives virtio-net over the legacy I/O BAR holding exactly two capabilities: a
-`CAP_IO_DEVICE` naming the NIC, and one delegated untyped region it builds its descriptor rings
-from. No console capability, no filesystem, no boot modules. It is the demonstration roadmap 2.6
-exists for, and `make smoke-net` proves it on the wire, an ARP exchange with QEMU's user-mode
-gateway, the reply arriving through netd's own receive ring.
-
-It drives **e1000** rather than virtio, and that is a security decision rather than a taste one:
-a paravirtual virtio device accesses guest memory directly and is not on the far side of the
-IOMMU, so a virtio driver cannot witness a DMA-confinement property at all. The virtio version
-of this driver kept working with an empty device address space, see the header of
-`userspace/netd.c` for the measurement.
-
-It is woken by its device's own interrupt, by **MSI** where the device has one (an 82574L), and
-by a legacy line it acknowledges (**S46**) where it does not (an 82540EM). Both are gated: `make
-smoke-net` and `make smoke-net-intx`, one driver against two device models. Its receive path
-works on the former and not the latter (`docs/LIMITATIONS.md` §2.14).
-
-### Interrupt routing
-
-`src/kernel/ioapic.c` routes interrupts through the I/O APIC when the MADT describes one, and
-the 8259 is then fully masked: two controllers driving the same vectors would deliver every
-interrupt twice. A machine with no I/O APIC entry stays on the PIC and says so, and that path is
-kept buildable (`IRQ_FORCE_PIC=1`) so it is exercised rather than merely present.
-
-**Every delegatable pin starts masked**, the same decision as the IOMMU's empty address spaces:
-the machine cannot deliver anything nobody asked for, and a line goes live only when
-`SYS_IRQ_REGISTER` accepts a capability for it (**S46**). The two exceptions are the kernel's
-own (the preemption tick and the in-kernel console reader) because the kernel is their driver
-and they are not anybody's to be granted. Masking them is not a stricter policy but a broken
-scheduler, which `smoke-preempt` caught while `smoke` still passed.
-
-**GSIs are not ISA IRQ numbers.** Firmware may route any legacy IRQ to any global system
-interrupt, and on QEMU's q35 the PIT sits on GSI 2; the MADT's Interrupt Source Overrides say
-where each one went, and they also carry polarity and trigger mode. Where firmware is silent the
-kernel falls back on what the line is (ISA sources edge/high, everything else PCI INTx
-level/low) because the ACPI `_PRT` that would say properly needs an AML interpreter this kernel
-does not have.
-
-This is also the prerequisite for VT-d **interrupt** remapping, which applies to
-messages from an I/O APIC or MSI and never to the 8259's direct delivery. On its
-own it closes nothing: a device today can only assert the INTx line firmware gave
-it. That changes the moment MSI exists, because an MSI is a memory write and a
-device that can DMA anywhere can write any vector.
-
-### Message-signalled interrupts
-
-An MSI is a memory **write** the device performs, carrying a data word whose low byte is the
-interrupt **vector**. So with MSI, *which interrupt does this device raise* stops being a fact
-about the board and becomes a value in a register, a much sharper question than INTx posed,
-where a device can only assert the line firmware gave it.
-
-`src/kernel/msi.c` allocates the vector (48–63, disjoint from the legacy 32–47 block and below
-the LAPIC timer at 64) and `src/kernel/pci.c` programs the capability. **`SYS_MSI_REGISTER` takes
-no vector argument**: a driver names a device and a notification, and the ABI gives it nowhere to
-express a preference. `SECURITY.md` **S47**; witness `make smoke-net`.
-
-That is only enforceable because configuration space is unreachable from ring 3 (**S43**) and
-`SYS_DEVICE_ENABLE` reaches exactly three decode bits (**S44**). MSI is what makes that
-strictness load-bearing rather than tidy, and every write to the capability lives in `pci.c`,
-the one file that touches configuration space at all, because exporting a general config-space
-write would hand any future caller both a vector and a BAR.
-
-Unlike **S46**'s INTx path there is no masking and no acknowledgement: an MSI is edge by
-construction, so no line stays asserted and there is no livelock to prevent.
-
-**MSI-X is the harder case, and it is why S47 needed a second property.** Its vector table does
-not live in configuration space at all: it lives in a **BAR**, in ordinary device memory a
-driver maps page by page. The kernel resolves the table's physical extent at boot and refuses
-any page overlapping it (**S48**), keeping its own supervisor-only mapping of the same physical
-page: that asymmetry is the property. The kernel does not yet *enable* MSI-X, see
-`docs/LIMITATIONS.md` §2.15 for why the protection ships ahead of the mechanism.
-
-### DMA remapping (VT-d)
-
-`src/kernel/iommu.c` brings up an Intel VT-d unit found through the DMAR table, before any
-ring-3 task exists. **Every device gets an address space of its own, and every one starts
-empty**, a device whose driver has mapped nothing reaches nothing, and every address it emits
-faults. `SYS_DMA_ADDR` installs a mapping, carrying the frame capability's own write right, so a
-driver's DMA reach is exactly the frames it holds a `CAP_FRAME` for.
-
-An identity map would have been much easier and would have made the whole mechanism decorative:
-the device would reach all of memory again, through a translation that always says yes. Each
-device also gets its **own domain**, because sharing one would make a mapping installed for one
-device reachable by another: **S43**'s defect one layer down, and invisible because both devices
-would still work.
-
-The second-level tables look like x86-64 page tables and are walked the same way, but the bits
-mean different things (bit 0 is READ, bit 1 is WRITE, and there is no present or NX bit), so
-reusing `paging.c`'s helpers would be a type confusion that happens to compile. `SECURITY.md`
-**S45**; witness `make smoke-net`, falsified by `make smoke-net-iommu-control`.
-
-On a machine with no DMAR the kernel says so on the wire and `iommu_active()` stays 0; every
-caller then behaves as it did before, which is the honest degradation rather than a property
-quietly claimed and not held.
-
-### Shared library text, and per-task library data
-
-`src/kernel/shlib.c` loads a shared object **once** into frames at boot, relocates
-it against a fixed base, and hands every task a `CAP_FRAME` over those frames
-carrying READ and EXEC and never WRITE. Two tasks then execute the same physical
-pages and neither can write them (**S49**).
-
-**Its writable segment is not shared** (**S50**). `userspace/shlib.ld` puts the object into two
-page-aligned `PT_LOAD`s (text, rodata and the export table in one, `.data` and `.bss` in the
-other) and the loader treats them differently. The writable pages' frames are a **template**,
-holding the library's initial image, which no task ever maps; `shlib_instantiate_data` carves a
-fresh frame per task and copies the template into it. Those are endowed from a *separate*
-primordial carrying READ and WRITE and never EXEC, so a page a task may write is one it may not
-jump into.
-
-**The isolation is not in the rights.** Every task holds identical rights over its library data.
-It is in the *object* each capability names being a different frame, rights say what may be
-done, the object says to what. A libc needs this before it can be shared at all: of the 59
-newlib symbols the shipped coreutils reference, three are writable (`_impure_ptr`, `optarg`,
-`optind`), and sharing those means one task reading and writing another's errno, stdio buffers
-and malloc arena.
-
-Which pages are writable is read off the program headers (`PF_W`, sized by `memsz` so `.bss`
-counts), and rounded **outward**: a page shared between a read-only and a writable segment is
-counted writable, so the imprecision falls on the side of *this task gets its own copy*. The
-linker script page-aligns the boundary so that case does not arise, but a linker script is not
-an enforcement mechanism and the loader does not depend on it.
-
-**The enforcement is S27's rights floor, not the loader's intent.** The primordial capability
-never held WRITE, and rights only ever narrow on delegation, so no descendant of it can carry
-WRITE; there is no delegation path to a writable mapping of code another task is running.
-
-That matters because sharing a library *writably* would be a code-injection primitive between
-every task that maps it, which is strictly worse than the per-program static copies it replaces.
-The text is at the *same* address in every address space because that is what makes it shared:
-but not a *fixed* one: the base is drawn at boot from the ASLR source (**S51**), and a task
-learns it only by presenting a capability over the library's own text (`SYS_SHLIB_INFO`). The
-residual cost is that one leak reveals it for every task rather than one, recorded in
-`docs/LIMITATIONS.md` §2.16. It is not yet a dynamic linker, §2.16 lists what it does not do.
-
-**Who holds it in the shipped system** (**S106**, `docs/design/shared-libc.md`). The kernel loads
-the library from the verified `lib/libc.so` boot module before init exists, and endows init with
-the text capabilities at `CAPSLOT_LIBC_FIRST` (128) onward. init grants them to the shell. A
-spawned child inherits derived copies only when its own image carries `DT_NEEDED "libc.so"` and
-its spawner holds the whole set; anything else is given nothing. The library's data is **not** a
-capability in this path: the kernel copies the template into fresh pages of the task's own
-address space at spawn and exec, so no capability names a task's copy, and the copy dies with the
-address space. The library's frames are roots of the object collector, because the template is
-named by no capability and would otherwise be freed when the first program exits.
-
-**A program links against it by name** (**S108**). The library's export table carries a name for
-every entry and a hash of the names, kinds and order. A program is linked against a stub with the
-same names and soname, so its library references are GOT slots, which the kernel's loader leaves
-unresolved for an image that asked (and only those). Before `main`, crt0's linker maps the text,
-refuses a library whose hash differs, resolves each slot by name or refuses the program, and seals
-the slots with `SYS_MEM_SEAL` (**S107**). No relocation parsing was added to ring 0: the loader
-only declines entries it would otherwise have refused.
+**The token** makes an endpoint capability a handle on one thing a server serves, such as a file.
+The kernel never interprets it: every message records the token and rights of the capability it
+was sent through, and the receiver reads them with `SYS_IPC_INVOKER`, so a server authorises on
+what a client holds rather than on who it is. Only `SYS_CAP_MINT_TOKEN` (from an untokened
+endpoint capability holding MINT) and the reply-mint `SYS_IPC_REPLY_CAP` (a child of the invoking
+capability, never with more rights) set a token; every other derivation copies it, and the
+receive right is stripped wherever one is set. Proved in Kani and witnessed by
+`make smoke-captoken` (S105). It is the kernel half of the capability filesystem
+(`docs/design/filesystem.md`).
 
 ### Untyped memory
 
-Kernel objects are not entries in fixed arrays. A `CAP_UNTYPED` names a region of physical
-memory, and `SYS_RETYPE(untyped_slot, kobj_type, count, dest_slot)` carves typed objects out of
-it, installing a capability for each into the caller's cspace. A task holding no `CAP_UNTYPED`
-cannot create a kernel object at all, and the region a task does hold is a hard bound on the
-kernel memory it can ever consume, which is what makes kernel-memory consumption attributable
-and exhaustion preventable.
-
-The arena is split once at boot:
-
-| Region | Backs | Reachable from ring 3 |
-|---|---|---|
-| `UNTYPED_KERNEL` | per-task cspaces (`KOBJ_CNODE`) | never: no capability is ever minted for it |
-| `UNTYPED_ROOT` | everything userspace allocates | `init` holds the primordial capability and delegates onward |
-
-The split is deliberate. With one shared region, "userspace exhausted kernel memory" and "the
-system can no longer create a task" would be the same event.
+Kernel objects are carved from memory a task holds a capability to. A `CAP_UNTYPED` names a region,
+and `SYS_RETYPE(untyped_slot, kobj_type, count, dest_slot[, pages])` carves endpoints,
+notifications and frames out of it, installing a capability for each. Creating a task spends the
+creator's untyped too (S57), and `SYS_UNTYPED_SPLIT` hands a delegate a bounded share of a budget
+rather than the whole of it (S58). So "this task may consume at most this much kernel memory" is
+expressible, and a task holding no untyped cannot create anything.
 
 Allocation within a region is a **monotonic bump pointer**, following seL4. Destroying an object
-does not return its bytes; reclaiming a region means revoking the untyped capability itself.
-This is a safety property, not a simplification: with a free list, an object's bytes can be
-handed straight back out and retyped as a different class while a stale capability still names
-the old address. A watermark that never moves backwards makes bytes reusable only after every
-capability into the region has been revoked; the same event that invalidates the stale
-reference.
+returns its name, not its bytes: a free list would let an object's bytes be retyped as a different
+class while a stale capability still names the old address. The cost is in `docs/LIMITATIONS.md`
+2.5.
 
-Retyped endpoints and notifications live in an index range above the static tables, which
-remain as a compatibility shim for the well-known service objects the boot protocol names by
-index; `endpoint_by_index` / `notification_by_index` are the single resolvers, and both return
-`NULL` for a destroyed object so IPC fails closed on a stale capability.
+**Object lifetime is capability-governed**: an object exists as long as some capability names it,
+computed by a mark-and-sweep over the capability graph (`kobj_gc`, run from revocation and
+teardown) rather than by reference counts spread across every mint, grant and revoke site. A frame
+is also kept while any page table maps it. The well-known service endpoints and the per-task reply
+endpoints below `DYN_EP_BASE` are named by the boot protocol, not by a capability, and live for the
+whole boot (gap G-5). `endpoint_by_index` and `notification_by_index` are the single resolvers,
+and both return `NULL` for a destroyed object.
 
-`KOBJ_FRAME` (roadmap 2.1) joined them on 2026-08-22 and has **no static shim at all**: frames
-were never a `.bss` array, so every valid frame index is one this allocator handed out and both
-ends of the range are a refusal. It is also the only class whose alignment is a correctness
-requirement rather than a cache-line preference: a frame is installed in a PTE, whose address
-field *is* the page number, so `kobj_align` returns `PAGE_SIZE` for it and `untyped_bump` pads
-the **absolute** arena address rather than the region-relative watermark. Rounding the offset
-alone was correct only while every region base happened to be a multiple of 64.
+**Frames** are indices into a table `SYS_RETYPE` fills, never physical addresses, so the legacy
+`CAP_FRAME` every task is born holding in slot 3 maps nothing (S26). A frame carries its length
+(up to `MAX_FRAME_PAGES` contiguous pages) and is mapped and withdrawn whole (S36);
+`SYS_MAP_FRAME` builds the PTE from the capability's rights (S27); `SYS_MAP_REGION` maps a run of
+frames all or nothing (S35); a frame's size is readable only through a capability that names it
+(S37); and a kernel object's page is never copied on write (S38) nor cloned by `fork` (S40).
 
-`tasks[]` is not yet migrated: a TCB is reachable from the scheduler's hot path and from every
-trap frame. `KOBJ_CNODE` is allocatable by the kernel but refused to ring 3: no capability type
-names a CNode and no syscall installs one as a task's cspace, so minting one would be authority
-with no defined meaning. (The per-task kernel STACKS did move, on 2026-08-30, to a region under
-`high_pdpt[511]`: they were the 4 MiB that actually bound the task ceiling, against this
-table's 72 KiB. See §14 G-3.)
+### Serials, badges and the derivation tree
 
-**Object lifetime is capability-governed.** An object exists exactly as long as some capability
-names it. This is computed by a mark-and-sweep over the capability graph (`kobj_gc`, run from
-`cap_revoke` and `task_teardown`), not by a refcount, a refcount would have to be maintained at
-every mint, transfer, move, grant, revoke, null and teardown site across both the C and
-safe-Rust halves of the implementation, where one missed site is a leak and one double-decrement
-is a use-after-free reachable from ring 3. Reachability is computed from the same graph the
-security argument is already stated over, so the two cannot disagree.
-
-### Serials, badges, and the derivation tree
-
-Every capability gets a fresh, monotonically increasing `serial` at creation. A derived
-capability records its parent's serial in `badge`. The set of all `(serial, badge)` pairs is
-therefore a forest, and the descendants of a capability are exactly the transitive closure
-under "badge points at an already-reached serial".
-
-Primordial root capabilities carry the reserved `0xC0DE****` serial tag, live in the
-kernel-reserved slots `0..3`, and are non-revocable.
+Every capability gets a fresh, increasing `serial`; a derived capability records its parent's
+serial in `badge`. The `(serial, badge)` pairs form a forest, and a capability's descendants are
+the transitive closure of "badge points at a reached serial". Primordial capabilities carry the
+reserved `0xC0DE****` serial tag and are not revocable.
 
 ### Delegation
 
-- **`cap_mint(dest, src, rights)`**, derive into the caller's own cspace with
-  `rights & src->rights`. Rights can only narrow.
-- **`cap_transfer(dest, src)`**, mint preserving full source rights.
-- **`cap_grant_into(target_pid, dest, src, rights)`**, push a derived capability into a
-  child's cspace. Authorised by holding `CAP_TCB` for the target, or `CAP_USER` admin.
-  Deliberately has no kernel-reserved-slot floor: endowing a child's low slots is exactly
-  what grant is for.
+- **`cap_mint(dest, src, rights)`** derives into the caller's own cspace with `rights &
+  src->rights`.
+- **`cap_transfer(dest, src)`** does the same, keeping the source's rights.
+- **`cap_grant_into(target, dest, src, rights)`** derives into another task's cspace, authorised
+  by a `CAP_TCB` naming that task.
+- **`cap_clone_cspace`** gives a forked child a derived copy of every capability its parent holds
+  (S41).
 
-All four hold `cap_lock` across the read-modify-write, count newly-occupied slots against
-`MAX_CAPS_PER_TASK`, and refuse a cspace-less caller (the no-ambient-authority guard).
-
-Three more primitives exist for the cases those four do not fit, and they keep the same
-discipline (`SECURITY.md` **S94**):
-
-- **`cap_install_object_first_free(min_slot, …, out_slot)`**, install into the first free slot
-  at or above `min_slot` of the caller's own cspace, with the **scan inside the same lock
-  acquisition as the store**. `SYS_PIPE` and the `CAP_TCB` a spawn hands its spawner used to
-  scan and then store separately, which lets two CPUs choose one slot, and the loser's
-  `pipe_end_ref` has already counted an end that no capability names.
-- **`cap_consume_slot_of(pid, slot, out_prev)`**, null one slot of a task's cspace and return
-  what it held, so only the CPU that actually emptied it releases what the capability owned.
-  It takes a pid where the installs do not, because removing a capability can never widen
-  anything.
-- **`cap_install_child_pipe_end(child, slot, spawner, src, rights)`**, the second bounded
-  cross-cspace install after `cap_install_reply_for`: type fixed to `CAP_PIPE`, destination
-  restricted to the two stdio slots, rights refused unless already a subset of the source's,
-  and the source looked up under the lock with `cap_lookup`'s validity rules so a revoked end
-  is refused instead of copied.
-
-**Why the lock matters for more than the slot being written.** Revocation (below) reads *every*
-cspace and decides object reachability from what it finds; a capability is six fields and a C
-store writes them one at a time, so an unlocked writer can show the sweep a slot whose `type` is
-already set while `object` and `serial` still describe the slot's previous occupant. Which
-functions write a capability slot, and what makes each write safe, is declared in
-`.github/cap-write-sites.yml` and gated by `tools/check_cap_writes.py`. One site does not take the
-lock (`create_task`, building a cspace for a task that is already published) and is exempt by a
-*stated argument* rather than by construction: the sweep can read those slots but cannot act on
-them, because every capability there has `badge = 0` (which `revoke_subtree` skips) and names an
-object outside every range `kobj_gc` reclaims. The guards that argument rests on are pinned in that
-manifest and checked, since they live in three other files. It was briefly published as an open
-defect, **[HORUS-20260911-03b]**, and withdrawn on 2026-09-12 (`docs/LIMITATIONS.md` 1.13).
+Every write to a capability slot takes `cap_lock` and goes through the accounted cap-write path
+(S94): `tools/check_cap_writes.py` holds the list of writers, declared in
+`.github/cap-write-sites.yml`. This matters beyond the slot being written: revocation reads every
+cspace, and a capability is several fields a C store writes one at a time, so an unlocked writer
+could show the sweep a half-written slot. One declared exemption, `create_task` building a cspace
+for a task already published, is safe by a stated argument that the manifest pins. One known gap:
+`cap_install_child_pipe_end` gives a spawned child's stdio pipe end no parent link
+(`docs/LIMITATIONS.md` 1.14).
 
 ### Revocation
 
-`cap_revoke(slot)` is **system-wide** and **subtree-scoped**. It collects every live task's
-cspace plus the kernel root cnode into a `cspace_desc_t` array and hands the whole set to
-`rust_cap_revoke_global`, which:
-
-1. Nulls the target and decrements its owner's `caps_in_use`.
-2. Bumps the target serial's lineage generation.
-3. Computes the transitive descendant closure by BFS over `badge → serial` links across all
-   supplied cspaces.
-4. Nulls each descendant and bumps its serial's generation.
-
-**Invariant.** After this returns true, no live cspace retains the target or any capability
-derived from it: and capabilities that are *not* descendants (the grantor, unrelated siblings,
-independent capabilities to the same object) are left intact. Revocation is therefore both
-*complete* and *least-privilege-correct*.
-
-Kani proofs in the Rust crate verify the subtree property.
-
-**Exact at any subtree size.** The closure marks in place and iterates to a fixpoint. The mark
-lives in the capability's own `typ` field in two states (`CAP_MARK_NEW` (in the subtree,
-children not yet expanded) and `CAP_MARK_DONE` (expanded)) while `serial` and `badge` stay
-readable, so no side array and no allocation are needed. Each capability is marked at most once
-and promoted at most once, which is what makes the loop terminate without a depth bound or a
-cycle check.
-
-Until 2026-08-16 the worklist was bounded at 256 entries, and on overflow the sweep nulled every
-capability sharing the root's `object`, a superset of the descendant set, since
-mint/grant/transfer all preserve `object`, so no descendant ever survived. But ring 3 could
-force it by deriving past the bound, destroying an unrelated peer's capability to the same
-object (**[I-3]**, roadmap 1.6).
-
-Revoke-*by-object* still sweeps by object, and there it is exact rather than a fallback: that
-path has no lineage seed by definition.
+`cap_revoke(slot)` is **system-wide** and **subtree-scoped**. It hands every live cspace plus the
+root cnode to `rust_cap_revoke_global`, which nulls the target, bumps its serial's generation, and
+computes and nulls the whole descendant closure across all cspaces. Afterwards no cspace holds the
+target or anything derived from it, and ancestors, siblings and independent capabilities to the
+same object are untouched (S3, S4, proved in Kani). The closure marks in place and iterates to a
+fixpoint, so it is exact at any subtree size and needs no allocation.
 
 ### The generation backstop
 
-Revocation nulls slots structurally. Generations are the independent second mechanism.
-
-Each capability's `serial` hashes to a cell in a 4096-entry atomic table (`LINEAGE_GEN`).
-A capability is valid iff its recorded `generation` **exactly equals** its serial's current
-cell value. Revocation bumps the cell, so any detached snapshot or copy carrying the old
-value fails validation even if the structural sweep never reached it.
-
-Creation sites stamp `generation = rust_lineage_current(serial)` so a fresh serial that
-happens to hash onto a previously-bumped cell is born *valid*, not stale. Empty (`0`) and
-primordial (`0xC0DE****`) serials are exempt.
-
-The table is keyed by **serial**, not by object. Object-keying was the historical design and was
-effectively dormant: two independent capabilities to the same object shared a cell, so the only
-way to keep them independent was to treat generation 0 as always-valid, and every capability in
-the running kernel was created with generation 0. Serial-keying plus strict equality made the
-backstop active and precise.
+Revocation nulls slots structurally; generations are the independent second mechanism. Each
+serial hashes to a cell in a 4096-entry atomic table (`LINEAGE_GEN`), and a capability is valid
+only if its recorded `generation` equals its cell's current value. Revocation bumps the cell, so a
+detached copy fails validation even if the sweep never reached it (S5). Creation stamps the
+current value, so a new serial that hashes onto a bumped cell is born valid.
 
 ### Snapshot and revalidate
 
-A looked-up `struct capability *` can go stale if anything between lookup and use yields or
-drops `cap_lock`. The pattern for such paths is:
+A looked-up capability can go stale if anything between lookup and use yields or drops
+`cap_lock`. Such paths take a `cap_snapshot` and call `cap_revalidate` afterwards, which confirms
+the slot still holds the same serial, generation and object with the required rights. IPC send
+and receive use it.
 
-```c
-cap_snapshot_t auth = cap_snapshot(cap_lookup(slot, rights));
-/* ... something that may yield ... */
-if (auth.valid && !cap_revalidate(slot, rights, &auth)) return -1;
-```
+### Devices
 
-`cap_revalidate` re-looks-up and confirms the slot still holds the *same identity* (serial,
-generation, object) with the required rights. This is wired into the IPC send and receive
-paths.
+`CAP_IO_DEVICE` names one entry in the I/O-device table (`src/kernel/pci.c`), built once at boot:
+a breadth-first walk of the PCI bus tree through every bridge (each bus scanned once, bridges
+followed only downwards, so a cyclic topology costs nothing), plus one non-enumerable
+**platform** entry for the legacy console hardware (PIT, PS/2 controller, COM1, the VGA registers
+and framebuffer). Each entry declares its frames, port ranges and interrupt lines, and the device
+syscalls check every request against the entry the caller's capability names (S43). Ring 3 never
+names a bus address and never reaches configuration space. The table holds `IODEV_MAX` (64)
+entries; a device the walk misses or that does not fit is absent, so nothing can grant it. Index 0
+names nothing, so a zeroed field fails closed.
+
+**What the table does not declare is load-bearing too.** COM3 (`0x3E8`) is in no entry, so no
+capability or port grant can reach it, and that is the kernel's own diagnostic channel (S81): the
+kernel writes every report there first, where no ring-3 output can interleave with it.
+
+**Interrupts.** Interrupts route through the I/O APIC when the MADT describes one; the 8259 is the
+fallback, kept buildable with `IRQ_FORCE_PIC=1`. Every delegatable line starts masked and goes live
+only when `SYS_IRQ_REGISTER` accepts a capability for it; a level-triggered line is masked when it
+fires and stays masked until the driver's `SYS_IRQ_ACK` (S46). With MSI the kernel allocates the
+vector (48 to 63) and programs the device; the ABI has no field for a driver to name one (S47).
+MSI-X tables live in a BAR, so the page holding one is refused to the driver (S48); MSI-X itself
+is not enabled yet (`docs/LIMITATIONS.md` 2.15).
+
+**DMA.** `src/kernel/iommu.c` brings up Intel VT-d before any ring-3 task exists. Every device has
+its own address space, starting empty, and `SYS_DMA_ADDR` maps only frames the driver holds a
+capability for, carrying that capability's write right (S45). A device's mapping goes when the
+frame or the driver does (S53). `SYS_DEVICE_ENABLE` sets only a device's three PCI decode bits
+(S44). Without a DMAR table `iommu_active()` is 0, the boot says so, and devices reach all memory.
+
+**`netd`** (`userspace/netd.c`) is the demonstration driver: an Intel NIC driven from ring 3 with
+one device capability and one untyped region, woken by MSI or by its masked legacy line, and
+confined by the IOMMU. It drives e1000 rather than virtio on purpose, because a paravirtual device
+reads guest memory directly and could not witness DMA confinement. It runs in the `NET_SELFTEST`
+build, not in the shipped system, and speaks only enough Ethernet to exchange ARP.
+
+### The shared library
+
+`src/kernel/shlib.c` loads the shared libc (`lib/libc.so`, a verified boot module) once, relocates
+it at a base drawn from the CSPRNG at boot (S51), and keeps its frames as roots of the object
+collector. Its text is mapped through `CAP_FRAME`s carrying READ and EXEC and never WRITE, so many
+tasks execute it and none can modify it (S49). Its writable segment is a template no task maps:
+each task gets its own copy (S50).
+
+The kernel endows `init` with the text capabilities; `init` grants them to the shell; a spawned
+child inherits derived copies only if its own image asks for the library (`DT_NEEDED "libc.so"`)
+and its spawner holds all of them (S106). At spawn and exec the kernel copies the data template
+into fresh pages of the task's own address space. Before `main`, crt0's linker maps the text,
+refuses a library whose export-table hash differs from the one the program was built against,
+resolves each import by name or refuses the program, and seals the resolved table read-only with
+`SYS_MEM_SEAL` (S107, S108). No relocation parsing was added to ring 0.
 
 ---
 
 ## 5. Address spaces and paging
 
-Each task has its own PML4. `create_user_pagedir` builds it, copies `pml4[256..511]` (the
-kernel half and the `PHYS_KVA` window) so kernel mappings resolve on every CR3, premaps the
-image window, and binds the task's kernel stack above an unmapped guard page.
+Each task has its own PML4. `create_user_pagedir` builds it, copies the kernel half, premaps the
+image window and binds the task's kernel stack above its guard page.
 
-**Demand paging.** Heap and stack pages are allocated on fault. The pager runs on the
-faulting task's CR3 and reaches page tables and fresh frames through `PHYS_KVA`.
+**Demand paging.** Heap and stack pages are allocated on fault, on the faulting task's CR3,
+through `PHYS_KVA`.
 
-**Copy-on-write.** Fresh anonymous pages alias a shared read-only zero frame. The first
-write faults, allocates a private frame, copies, and remaps writable. Refcounts are
-maintained per frame. `user_copy` drives the same COW break when the kernel writes into a
-present-but-read-only COW page, so a `copy_to_user` cannot corrupt the shared zero frame.
+**Copy-on-write.** Fresh anonymous pages alias a shared read-only zero frame; the first write
+allocates a private frame. Frame reference counts are checked in Rust and proved not to wrap. A
+kernel `copy_to_user` into a copy-on-write page breaks it the same way.
 
-**Cloning an address space: `fork`.** `clone_user_aspace` (roadmap 2.3) walks the parent's user
-half and points the child's fresh PML4 at the same physical frames, clearing `PAGE_WRITE` and
-setting `PAGE_COW` **on both sides** and raising each frame's refcount. The break above is then
-what actually gives each side a private page: fork adds no copying path of its own. Three kinds
-of leaf are not cloned: a **supervisor** leaf, because the LAPIC and TPM windows are
-identity-mapped at low addresses and so live in the *user half* of the PML4 while being
-kernel-only (the child re-establishes its own through the same `ensure_*` calls); a **huge**
-page, which is refused rather than split because nothing builds one and an untestable splitting
-path is worse than a refusal; and a page belonging to a **kernel object**, which refuses the
-whole fork (S40). The MMIO and self-map installs must come *after* the user half is populated:
-`ensure_identity_mmio_page` creates its intermediate entries without `PAGE_USER`, and since the
-CPU ANDs U across all four levels, running it first would leave every cloned user page under
-`pml4[0]` unreachable from ring 3. `create_user_pagedir` has the same ordering for the same
-reason.
+**`fork`.** `clone_user_aspace` points the child's tables at the parent's frames and marks
+**both** sides copy-on-write (S39); a task with a kernel object's page mapped cannot fork (S40),
+and neither can a task that has bound the shared libc. Supervisor leaves (the LAPIC and TPM
+windows) are re-established by the child rather than cloned.
 
-**Protection.** User stacks are NX. The kernel image is W^X: `.text` r-x, `.rodata` r--,
-`.data`/`.bss` rw-, enforced by `CR0.WP` and swept at boot by a self-test that walks every
-leaf PTE looking for a writable-and-executable page. SMEP and SMAP are enabled when the CPU
-advertises them, and a gated self-test asserts they are actually set in CR4.
+**Protection.** User stacks are NX. The kernel image is W^X, enforced by `CR0.WP` and swept at boot
+(S8). SMEP and SMAP are enabled where the CPU has them and checked by a test. A program can make
+pages of its own image read-only for good with `SYS_MEM_SEAL` (S107).
 
-**Crossing the ring boundary.** `copy_to_user` / `copy_from_user` do a **software page-table
-walk** of the target address space and require `PAGE_PRESENT | PAGE_USER` (plus `PAGE_WRITE`
-for writes) on every page touched. This is stronger than relying on SMAP: it works on CPUs
-without SMAP, and it makes a user pointer aimed at kernel memory structurally impossible to
-satisfy rather than merely trapped.
+**Crossing the ring boundary.** `copy_to_user` and `copy_from_user` walk the target address space
+in software and require `PAGE_PRESENT | PAGE_USER` (and `PAGE_WRITE` for writes) on every page, so
+a user pointer at kernel memory cannot be satisfied even without SMAP (S7). A failed copy refuses
+rather than shortening (S24). The physical free path accepts only frames it lent out (S102).
 
-**ASLR.** Image base, heap base, and stack top are randomised with 30 bits of entropy from
-the kernel CSPRNG, rejection-sampled rather than reduced modulo. Every draw goes through
-`secure_random_bytes` / `secure_random_u64`, which halt if the pool refuses: an unseeded pool
-would hand back a stream derived from a published constant, and predictable ASLR presented as
-real ASLR is worse than a kernel that does not boot (S30).
+**ASLR.** Image, heap and stack bases are randomised with 30 bits from the CSPRNG,
+rejection-sampled; a draw from an unseeded pool halts rather than returning predictable bits.
 
 ---
 
 ## 6. Tasks and scheduling
 
-A `tcb_t` holds register state, CR3, cspace pointer, kernel stack, heap bounds, uid/gid,
-signal state, FPU state, and IPC blocking state.
+A `tcb_t` holds register state, CR3, the cspace pointer, the kernel stack, heap bounds, uid and
+gid, signal and FPU state, and IPC blocking state. The table of them is carved from the kernel's
+untyped reserve, and `g_max_tasks` is derived at boot from the reserve that exists.
 
-**Preemption.** The timer ISR calls `preempt_on_tick` with the interrupted task's full trap
-frame. A switch happens **only when the tick interrupted ring 3**. At that instant the task
-holds no kernel spinlock (spinlocks mask interrupts) and its entire state is in the trap
-frame. A tick that lands in ring 0 just advances the clock. This keeps the kernel
-effectively non-preemptible and removes an entire class of reentrancy hazard.
+**Preemption.** The timer ISR calls `preempt_on_tick` with the interrupted task's trap frame. A
+switch happens **only when the tick interrupted ring 3**, where the task holds no spinlock and its
+whole state is in the frame; a tick in ring 0 only advances the clock. The kernel is therefore not
+preemptible, which removes a whole class of reentrancy hazard.
+
+**One switch mechanism, four entry points.** Timer preemption, blocking IPC, voluntary yield and
+first entry (`sched_enter_user`) all resume a saved trap frame; first entry fabricates the frame a
+preemption would have left, with `rsp` biased by 8 to satisfy the System V ABI's alignment at
+function entry.
+
+**Spawn is suspended.** A spawned child is not schedulable until its supervisor has endowed it and
+called `SYS_TASK_RESUME`, so no child can observe a half-populated cspace.
+
+**A dead task stays dead.** `task_teardown` empties the cspace before the object sweep (S56),
+sends the kill IPI to any CPU still running the task, and a torn-down task is never resumed or
+dispatched again. A reused slot starts with no death record (S98), and a `CAP_TCB` records the
+slot's generation, so a capability for a dead task never names its successor (S100).
+
+**FPU.** `fxsave` and `fxrstor` bracket every ring transition (S16). New tasks start from a
+template with `MXCSR = 0x1F80`.
+
+**Signals.** `SYS_SIGACTION` registers a handler that must lie inside the task's own image
+(checked in Rust), `SYS_SIGMASK` blocks and unblocks, and `SYS_SIGALTSTACK` sets an alternate
+stack. `SIG_KILL` cannot be caught or blocked.
 
 ### Interrupt policy
 
-Stated, rather than emergent. Until roadmap 1.1 this section could not be written: interrupt
-enablement was a *consequence* of a locking defect (**[C-3.1]**), not of any rule. Every
-statement below is asserted by `make smoke-irq-policy`, which records `RFLAGS.IF` at each
-named point and fails on a mismatch.
+Every row is asserted by `make smoke-irq-policy`, which records `RFLAGS.IF` at five named points.
 
 | Context | `IF` | Established by |
 |---|---|---|
-| Boot, `_start` → `kernel-ready` | **0** | the CPU enters long mode masked and nothing enables |
-| Ring 0: syscall or ISR body | **0** | `int 0x80` and every IDT gate are *interrupt* gates |
+| Boot, up to `kernel-ready` | **0** | long mode is entered masked and nothing enables |
+| Ring 0: syscall or ISR body | **0** | `int 0x80` and every IDT gate are interrupt gates |
 | Ring 3 | **1** | `sched_prepare_user_context` builds the frame with `RFLAGS = 0x202` |
 | A parked CPU's idle loop | **1** | `enter_cpu_idle` builds its frame with `RFLAGS = 0x202` |
 | Inside a spinlock | **0** | `spin_lock` issues `cli` |
-| After the outermost `spin_unlock` | **the caller's own** | `spin_unlock` *restores*, never imposes |
+| After the outermost `spin_unlock` | **the caller's own** | `spin_unlock` restores, never imposes |
 
-Two consequences are worth stating explicitly, because both have been got wrong here.
-
-**The kernel is not preemptible, and interrupts staying masked through a syscall is what makes
-that true rather than merely intended.** A syscall handler runs from entry to return with `IF =
-0`. It was not always so: the old `spin_unlock` ended in an unconditional `sti` once its global
-nesting depth hit zero, so the first lock any syscall took and released turned interrupts on for
-the remainder. `preempt_on_tick`'s ring-0 guard exists because of that; it was widened from "CPU
-0" to every CPU after a ring-0 tick mid-syscall abandoned a task and produced an intermittent
-SMP deadlock.
-
-**A critical section returns the interrupt state it was given.** `spin_lock` saves the caller's
-`IF` at the outermost acquire and `spin_unlock` restores exactly that; the nesting depth is
-per-CPU, so one CPU's release cannot unmask another's critical section (**[C-3]**). A window
-that genuinely *needs* interrupts on must therefore ask for them, and exactly one does: the
-TLB-shootdown wait (`smp_maybe_shootdown`) spins for acknowledgements that arrive as IPIs, so it
-enables interrupts deliberately, restores the previous state afterwards, and **panics if the
-caller holds a spinlock**, the precondition its comment had always stated but nothing had ever
-checked.
-
-Switching is a kernel-`%rsp` swap: save the outgoing frame pointer, install the incoming
-task's CR3 and TSS RSP0, and hand its saved frame to the ISR epilogue, which pops and
-`iretq`s into it.
-
-**Spawn is suspended.** `do_spawn` returns a child that is *not* schedulable; the supervisor
-endows it (`SYS_CAP_GRANT`) and then calls `SYS_TASK_RESUME`. This is structural, not
-advisory: a child cannot observe a partially-populated cspace because it cannot run at all
-until its supervisor says so. Three separate SMP races were traced to the old
-publish-immediately behaviour before the pattern was recognised (finding **[I-13]**).
-
-**One mechanism, four entry points.** Timer preemption, blocking IPC (`ipc_block_switch`),
-voluntary yield (`sched_yield_switch`), and first entry (`sched_enter_user`) all go through
-the same saved-trap-frame path. First entry works by *fabricating* the frame a preemption
-would have left (`sched_prepare_user_context`), so entry and resume are identical.
-
-**Stack alignment.** The fabricated frame biases `rsp` by 8, because the System V AMD64 ABI
-guarantees `rsp % 16 == 8` at a function's first instruction (a `call` just pushed a return
-address). `iretq` pushes nothing, so handing over a 16-byte-aligned `rsp` puts every
-compiler-computed stack slot 8 bytes out and the first `movaps` faults. Flat test binaries
-never noticed; newlib faulted inside the first `puts()`.
-
-**FPU.** `fxsave`/`fxrstor` bracket ring transitions, so one task's XMM register file cannot
-leak into another's. New tasks start from a template with `MXCSR = 0x1F80`, a zeroed FXSAVE
-image would unmask every SIMD exception.
-
-**Signals.** POSIX-style: `SYS_SIGACTION` registers a handler (validated to lie inside the
-task's own image, in safe Rust), `SYS_SIGMASK` blocks and unblocks, `SYS_SIGALTSTACK`
-registers an alternate stack. Delivery rewrites the trap frame to enter the handler and
-saves the pre-signal frame for `SYS_SIGRETURN`. `SIG_KILL` is uncatchable and unblockable.
+The nesting depth and saved flag are per CPU, so one CPU's release cannot unmask another's
+critical section. The one window that needs interrupts on, the TLB-shootdown wait, enables them
+deliberately, restores the previous state, and panics if the caller holds a spinlock. Code inside
+an interrupt gate uses raw test-and-set helpers (`sched_raw_lock`, `ipc_lock`) that never touch
+`IF`.
 
 ---
 
 ## 7. SMP
 
-SMP is **on by default**. `SMP=0` compiles it out.
+SMP is on by default; `SMP=0` compiles it out.
 
-- Up to **eight** CPUs (`MAX_CPUS`, `src/include/cpu_limits.h`, the one definition the C side,
-  the trampoline and the GDT's reserved TSS slots all read), and whatever fewer the machine has.
-  The CPU list comes from the ACPI MADT; APs are started with INIT-SIPI-SIPI via a real-mode
-  trampoline (`src/boot/ap_trampoline.S`). It is linked flat at 0x8000 by its own script
-  (`src/boot/ap_trampoline.ld`) and shares that page with four cells the BSP fills (three from
-  0x8FD8 up, and the CPU map's address at 0x8FF0), so its size is bounded three times: by the
-  script, by the embed in `multiboot.S`, and by `smp_start_aps` before it copies. `make
-  smoke-ap-trampoline` is the witness.
-- **A CPU's index is not its LAPIC id.** Before waking any AP the BSP builds `apic_to_cpu[]`
-  from the MADT: itself as 0, then primary threads, then SMT siblings, up to `MAX_CPUS`, each id
-  once however often firmware lists it. The trampoline picks an AP's idle stack by that index and
-  parks any core without one, bounding the index itself rather than trusting the map. Firmware
-  often numbers LAPICs with gaps, and with index equal to id a core whose id reached the ceiling
-  simply parked. SMT siblings are identified by their LAPIC id, never their index, and parked in
-  `ap_entry64`. `make smoke-smp-topology` boots contiguous, sparse, SMT and oversubscribed
-  topologies and requires every schedulable AP to run a task and none to be a sibling.
-- Each CPU takes its own LAPIC timer tick and pulls from a **shared runnable pool**.
-- `task_running_cpu[]` is the mutual-exclusion guard: a CPU only claims a task whose entry is
-  `-1`, so a task's single kernel stack and saved trap frame are never touched by two CPUs.
+- **Up to eight CPUs** (`MAX_CPUS`, `src/include/cpu_limits.h`), from the ACPI MADT, started with
+  INIT-SIPI-SIPI through a real-mode trampoline linked at 0x8000 by its own script and bounded
+  three times against the cells above it (`make smoke-ap-trampoline`).
+- **A CPU's index is not its LAPIC id.** The BSP builds `apic_to_cpu[]` from the MADT (itself,
+  then primary threads, then SMT siblings) so sparse ids work, and a core past the ceiling parks.
+- **SMT siblings are parked** in `ap_entry64`, identified by LAPIC id (S101), so no task shares a
+  core's L1 and L2 with another.
+- **Each CPU takes its own LAPIC timer tick** and pulls from a shared run pool.
+- **TLB shootdown** is an acknowledged IPI.
 
 ### The claim invariant
 
@@ -760,114 +405,46 @@ SMP is **on by default**. `SMP=0` compiles it out.
 task_running_cpu[t] == c   <=>   percpu_current_task[c] == t     (t > 0)
 ```
 
-Both directions carry weight, and they fail differently:
+A CPU claims only a task whose entry is `-1`, so one task's kernel stack and trap frame are never
+touched by two CPUs. A claim held by a CPU not running the task makes that task unschedulable by
+every CPU; a task run without a claim can be taken by a second CPU. A stale claim is therefore a
+symptom to diagnose and never a value to clear, and `SCHED_INVARIANTS=1` checks the invariant and
+panics naming the task, the CPU and the observer.
 
-- **A claim held by a CPU not running the task** makes that task unschedulable by *every* CPU,
-  including the holder, every selection loop skips a claimed candidate. The task stays
-  `RUNNABLE` with a valid context and simply never runs again: a silent livelock, not a crash.
-- **A task run without a claim** can be selected by a second CPU, so two cores execute one
-  task's kernel stack and trap frame concurrently.
+**The claim is held until the CPU has left the stack** (S20). Every switch runs on the outgoing
+task's kernel stack, so the claim is released by `sched_release_deferred()`, which
+`isr_common_stub64` calls just after it has moved `%rsp` onto the incoming frame. Until then a
+second CPU could have resumed the task and re-entered the ISR on the same stack (gap G-8). The
+property is checked, not argued: `g_kstack_inflight` marks each task whose stack a CPU is still
+leaving and halts the machine on a collision. A CPU whose last task dies parks on its own ring-0
+stack, not a shared one, and those idle stacks have guard pages. A spawn never reuses a slot whose
+kernel stack a CPU is still on, and the first entry to ring 3 re-checks its claim under the
+scheduler lock.
 
-The asymmetry to watch for is a path that **claims unconditionally but releases
-conditionally**; that is exactly the shape of the deadlock fixed on 2026-07-28, where a ring-0
-timer tick leaked a claim because the release was gated on `ring3`.
+### Lock order
 
-**A CPU is only ever switched away from a ring-3 context or an idle loop.** The tick path can
-save a ring-3 trap frame and nothing else (it cannot preserve an in-flight kernel context or a
-lock that context holds) so a ring-0 tick on a CPU with a live task returns without switching
-(`percpu_idle` distinguishes a genuinely parked CPU, which has nothing to save).
+Ten locks, with their order declared once in `.github/lock-order.yml` and enforced by
+`tools/check_lock_order.py` (S88), which fails on any nesting not declared and on the reverse of
+one that is.
 
-Consequently **a stale claim must never simply be cleared.** A claim is stale precisely when
-its task was abandoned mid-kernel, so freeing it lets the task resume from a stale trap frame,
-discarding kernel work that may include a held lock. Treat a stale claim as a symptom to
-diagnose, never a value to correct; `SCHED_INVARIANTS=1` machine-checks the invariant and
-panics with the offending task, CPU and observer.
+| Lock | Owns |
+|---|---|
+| `spawn_stage_lock` | The spawn and exec staging state. The outermost lock: taken by syscall entry points holding nothing |
+| `storage_lock` | The encrypted object store and on-disk filesystem |
+| `ata_lock` | The ATA driver; always inside `storage_lock` |
+| `sdhci_lock` | The SD/eMMC controller, for a whole block operation. Innermost |
+| `endpoint_lock` | Endpoints and notifications, through `ipc_lock()` |
+| `cap_lock` | Every cspace |
+| `page_lock` | The pager's structures |
+| `untyped_lock` | The untyped regions; `cap_lock -> untyped_lock` |
+| `pipe_lock` | Pipe objects |
+| `scheduler_lock` | The run pool and the claim invariant |
 
-### The claim ends later than the switch does: **[G-8]**
-
-**The invariant above buys exactly one property ("one task's kernel stack and trap frame are
-never touched by two CPUs at once") and until 2026-08-17 it did not deliver it.**
-
-Every switch path is called from `interrupt_handler64`, which is running *on the outgoing task's
-kernel stack*: the C frames sit immediately below the trap frame the CPU pushed on entry.
-Releasing `task_running_cpu[cur]` and dropping the scheduler lock there published the task while
-this CPU still had roughly thirty instructions to execute on that stack: two epilogues' worth of
-callee-saved pops, two `ret`s through return addresses on it, the resume `%rsp` floor guard,
-`fpu_restore`, and a stack-protector canary read, before `isr_common_stub64` reached `movq
-%rax,%rsp`.
-
-A CPU that claimed the task inside that window resumed it to ring 3 and its next trap
-re-entered the ISR **on the same stack, at the same depth, running the same functions**,
-rewriting the words the first CPU had not finished reading.
-
-**The invariant cannot see this, and that is a property of the invariant rather than a bug in
-it.** It relates "which CPU is running task *t*" to "which task CPU *c* is running". A CPU that
-has stopped running a task but has not stopped *reading its stack* satisfies both sides. A
-reproduced collision prints `claim: task 4 running_cpu=3 percpu_current=[0,0,0,4]`, perfectly
-consistent, and consistent because it is true.
-
-So the claim is held until the CPU has physically left the stack. `isr_common_stub64` calls
-`sched_release_deferred()` immediately after `movq %rax,%rsp`, and the hand-over completes
-there. The hold costs a few tens of instructions; a CPU that wanted the task takes it on the
-next tick.
-
-The property is checked rather than argued: `g_kstack_inflight` carries bit *t* for the duration
-of that window on task *t*'s stack, and `interrupt_handler64` tests it on entry: one load and a
-bit test. Two CPUs on one kernel stack halts the machine with both CPU ids and the task named.
-That is `SECURITY.md` **S20**, gated by `make smoke-kstack-race` and its control arm.
-
-That sentence used to end *"`MAX_TASKS` being 64 so one word covers every task"*, and it was an
-array of one `uint64_t` on that reasoning. The witness is sized from `MAX_TASKS` now, because the
-old form failed in the worst available direction: at `MAX_TASKS` 256 the `1ULL << t` selecting
-the bit is undefined for *t* ≥ 64, x86 masks the shift count to 6 bits, and the detector begins
-answering about task *t*−64 instead of refusing. No fault, no warning, and a detector that has
-gone blind is indistinguishable from a system with no defects. `make smoke-task-ceiling` asserts
-that an alias pair (255, 191) has independent bits; `KSTACK_INFLIGHT_LEGACY_WORD=1` restores the
-single word and the witness aliases.
-
-**S20 has a second path, and the bitmask cannot see it.** When a task dies and nothing else is
-runnable, the CPU parks in the ring-0 idle loop. All three fallbacks in `idt.c` used to park it
-on `tasks[0].kernel_stack_top`: one stack for every CPU that took the path. `g_kstack_inflight`
-is keyed on task ids and skips task 0, which is legitimately the current task on several CPUs at
-once as the idle sentinel, so the mask is blind there by construction. Each CPU now parks on its
-own ring-0 stack, the one `enter_cpu_idle()` already uses, and `sched_note_park()` halts if two
-ever pick the same one. Gated by `make smoke-kstack-park` and its control arm.
-
-Those per-CPU idle stacks are also, since 2026-08-17, **guarded**: the guard is the first page
-of each slot, which leaves the stack top where `ap_trampoline.S` computes it. They had none
-before, which made S9 false for every CPU in the idle loop.
-- TLB shootdown is an acknowledged IPI.
-- **SMT siblings are parked in software**, a disable-SMT-in-software measure that closes
-  same-core co-residency, the strongest available mitigation against cross-thread
-  microarchitectural attacks without hardware support.
-
-**Locking.** `spin_lock` masks interrupts and takes a test-and-set lock. Its nesting depth and
-the caller's saved `RFLAGS.IF` are **per-CPU**, and the outermost `spin_unlock` restores that
-saved value rather than asserting one, see §6, "Interrupt policy", which is the authoritative
-statement.
-
-> **Resolved: [C-3] / [C-3.1], fixed 2026-08-11.** *This callout said "Known defect … open"
-> for four days after the fix landed, while §6 of this same document described the corrected
-> behaviour. It is left here, rewritten, because the shape of the defect explains three
-> subsystems that still route around it.*
->
-> The nesting depth used to be a single **global** counter shared by all CPUs with non-atomic
-> increments, and `spin_unlock` did an **unconditional** `sti` when it reached zero. Under SMP
-> one CPU's release could unmask another's critical section; and any lock taken where `IF` was
-> already clear enabled interrupts as a side effect, including inside `user_copy`'s
-> hand-rolled `cli`/CR3 window.
->
-> The second behaviour was **load-bearing**, which is why the obvious fix failed once. A
-> correct per-CPU lock written on 2026-07-27 passed every local gate and stalled the `init` →
-> `fs_server` → `console_server` → shell handshake in CI, and was reverted; the handshake
-> depended on preemption the defect produced. What made the second attempt safe was
-> `preempt_on_tick`'s ring-0 guard, widened from "CPU 0" to every CPU in the interim, so a
-> ring-0 tick is no longer a switch point and the `sti` creates nothing anything depends on.
-> `IRQ_LEGACY_GLOBAL_LOCK=1` rebuilds the defect exactly and `make smoke-irq-policy` gates the
-> policy at five named boot milestones. See [`ROADMAP.md`](ROADMAP.md) item 1.1.
-
-Code that runs inside an interrupt gate (where `IF` is already clear by hardware) uses raw
-test-and-set helpers instead (`sched_raw_lock`, `ipc_lock`) which must not touch `IF` at all.
+Two nestings exist on purpose: `endpoint_lock -> cap_lock` (the reply capability is minted before
+the receiver wakes, which a receiver already running on another CPU would otherwise race) and
+`endpoint_lock -> page_lock` (delivering a reply body can fault the destination in). Neither is a
+cycle while no `cap_lock` or `page_lock` holder enters IPC, and the checker keeps it so. There is
+no runtime lock-order check: `spin_lock` records no lock identity.
 
 ---
 
@@ -875,158 +452,74 @@ test-and-set helpers instead (`sched_raw_lock`, `ipc_lock`) which must not touch
 
 ### Endpoints
 
-`MAX_ENDPOINTS = 128` static endpoints, plus `MAX_DYN_ENDPOINTS = 256` retyped ones above
-`DYN_EP_BASE` (see §4). Each endpoint is a **bounded FIFO**, not a single mailbox slot: a ring
-of `EP_QUEUE_SLOTS` (default 4, overridable at compile time) messages of up to
-`IPC_MSG_MAX = 256` bytes, a head/count pair, one `last_sender`, and one blocked-waiter field.
-Each queued slot carries its *own* sender id, because the reply path authorises by
-kernel-recorded sender identity and a shared field would be overwritten by the next sender;
-`last_sender` is the sender of the most recently **dequeued** message. The depth is fixed at
-compile time, so a sender cannot make the kernel allocate and a server that stops receiving
-cannot be used to grow kernel memory without bound. `EP_QUEUE_SLOTS=1` degenerates the ring
-back to the old single-slot mailbox, which is how the queue's benefit was measured rather than
-asserted (roadmap 1.3, finding **[I-5]**).
+Each endpoint is a **bounded FIFO** of `EP_QUEUE_SLOTS` (default 4) messages of up to
+`IPC_MSG_MAX` (256) bytes. The depth is fixed, so a sender cannot make the kernel allocate. Each
+queued message carries its own kernel-recorded sender and invoking capability. The static table
+holds the well-known endpoints and one private reply endpoint per task (`MAX_ENDPOINTS` is
+`REPLY_EP_BASE + MAX_TASKS`, so the table always covers every task, S95); retyped endpoints live
+above `DYN_EP_BASE`.
 
-- **`SYS_IPC_SEND` / `SYS_IPC_RECV`** are non-blocking: they return `-2` when the queue is
-  genuinely full (`count == EP_QUEUE_SLOTS`) or empty (`count == 0`) and the caller polls from
-  ring 3, where timer preemption guarantees progress. Spinning in-kernel would not, because
-  the kernel is not preemptible. With a queue, concurrent clients enqueue instead of
-  colliding, so the retry path is reached only under real back-pressure.
-- **`SYS_IPC_RECV_BLOCK`** is the same receive under the same capability gate, but **sleeps**
-  on an empty queue instead of returning `-2`. It never returns `IPC_AGAIN`, so a negative
-  return is permanent and a server that loops on it is wedging rather than applying
-  back-pressure. Its subtlety is authority, not sleep: the receive is completed by the
-  *sender's* syscall running in the sender's cspace, so `cap_install_reply_for` mints the
-  one-shot `CAP_REPLY` into the **receiver's** cspace, under `ipc_lock` and before the wake; 
-  a receiver holds its reply right before it is schedulable. The first version minted after the
-  wake and lost the race on 8 of 25 loaded SMP boots while every single-CPU gate passed.
-- **`SYS_IPC_CALL`** is the blocking send-then-await-reply. It deposits the message and
-  records a *pending* block; the actual publish happens later.
-- **`SYS_IPC_REPLY_TO`** delivers a reply directly into the recorded sender's blocked reply
-  buffer. The target comes from a **one-shot `CAP_REPLY`** minted by `SYS_IPC_RECV` into
-  `CAPSLOT_REPLY` and consumed by the reply, *not* from the endpoint's mutable `last_sender`.
-  Replying twice, or to a client this task never received from, is therefore unrepresentable
-  rather than merely refused, which is what makes one server safe for concurrent clients.
+- **`SYS_IPC_SEND` and `SYS_IPC_RECV`** do not block: they return `IPC_AGAIN` on a full or empty
+  queue and the caller retries from ring 3, where preemption guarantees progress.
+  `ipc_call_retry` in `libhorus` retries only a transient result, and boundedly.
+- **`SYS_IPC_RECV_BLOCK`** sleeps on an empty queue instead. The sender's syscall completes the
+  receive, so the one-shot `CAP_REPLY` is minted into the receiver's cspace under `ipc_lock`,
+  before the wake.
+- **`SYS_IPC_CALL`** sends and waits for the reply on the caller's private reply endpoint.
+- **`SYS_IPC_REPLY_TO`** delivers the reply through the one-shot `CAP_REPLY` the receive minted,
+  so replying twice, or to a client never received from, is unrepresentable.
 
-**The publish-after-save protocol.** A cross-CPU reply must never patch a stale or null
-saved frame. The ordering is therefore:
-
-1. The syscall handler sets `pending_block` only, not yet wake-visible.
-2. `ipc_block_switch` writes `saved_ksp` (the live trap frame).
-3. A full barrier.
-4. `ipc_publish_pending_block` publishes the waiter under `ipc_lock`, or completes
-   immediately if the event already arrived.
-5. Only then does the CPU switch away.
-
-Wakers therefore always patch a valid frame.
-
-**Cross-address-space reply delivery.** `copy_to_user` translates through
-`tasks[get_current_task()].cr3`, so delivering into a waiter's buffer requires the waiter to
-*be* the current task across the copy, merely switching CR3 is not enough. The sender briefly
-sets current-task to the waiter with interrupts masked, copies, and restores.
+**Publish after save.** A caller's block is made visible to wakers only after its trap frame is
+saved, with a full barrier between, so a cross-CPU reply never patches a stale frame. Delivering a
+reply into another address space makes the waiter the current task for the duration of the copy,
+with interrupts masked, because the user-copy path translates through the current task's CR3.
 
 ### Notifications
 
-`MAX_NOTIFICATIONS = 64` badge accumulators. `SYS_NOTIFY` ORs a badge in and wakes any
-blocked waiter by patching its saved frame directly (no cross-address-space pointer copy
-needed). `SYS_IRQ_REGISTER` routes a hardware IRQ to a notification slot, which is how a
-ring-3 driver receives interrupts.
+Badge accumulators: `SYS_NOTIFY` ORs a badge in and wakes a blocked waiter; `SYS_POLL_NOTIFY`
+reads without blocking. `SYS_IRQ_REGISTER` routes an interrupt to a notification, which is how a
+ring-3 driver sleeps until its device needs it.
 
 ### Pipes
 
-Bounded in-kernel byte streams with `CAP_PIPE` capabilities for each end, `EAGAIN`
-back-pressure, and EOF/EPIPE on peer close. `task_teardown` releases a dying task's ends so a
-pipeline stage cannot wedge its peer.
+Bounded in-kernel byte streams with a `CAP_PIPE` for each end, back-pressure, and EOF or EPIPE when
+the peer closes. `task_teardown` releases a dying task's ends so a pipeline cannot wedge.
 
 ### Capability addressing
 
-Every IPC syscall names its object by a **cspace slot**, never by an object index. The
-kernel resolves it through `ipc_ep_from_slot` / `ipc_notif_from_slot`
-(`src/kernel/syscall_ipc.c`), which are the single choke point and enforce, in one place:
-
-- the slot holds a live capability (non-null, serial != 0);
-- of the right **type**, `CAP_ENDPOINT` or `CAP_NOTIFICATION`, so a `CAP_FRAME` cannot
-  authorise IPC;
-- carrying the **right for the direction**, `READ` to receive, `WRITE` to send;
-- that passes the serial-keyed **lineage** check, so a revoked capability fails here exactly
-  as everywhere else.
-
-Only then is `object` trusted, and it is re-bounds-checked.
-
-**The read/write split is the isolation boundary.** `READ` is the receive right. A *listen*
-capability (`READ|WRITE`) belongs to the server: it may dequeue requests and answer them with
-`SYS_IPC_REPLY_TO`, which also requires `READ` because it writes straight into the recorded
-sender's blocked reply buffer. A *client* capability is `WRITE` only; it may send and nothing
-else. `SYS_CONNECT_FS_SERVER` mints WRITE-only, and `do_spawn` propagates the console capability
-to children masked to WRITE, so the receive right cannot escape the one task meant to hold it.
-
-**A task is born with exactly one endpoint capability:** its own private reply endpoint
-(`reply_ep_for_task`, slot `CAPSLOT_REPLY_EP`). It is what `SYS_IPC_CALL` parks on, no other
-task holds a capability for it, and the caller cannot name a different one: so replies cannot be
-intercepted and a blocked caller cannot be woken spuriously. This also retires the shared
-`FS_EP_REP` on which concurrent clients used to collide.
-
-Until 2026-07-27 none of this held: indices came straight from a register and the dispatch
-table gated IPC on slot 3, which holds a `CAP_FRAME` in every task. See finding **[C-1]**.
-
-**And "no other task holds a capability for it" depends on the endpoint table being big enough to
-hold the region**, which until 2026-09-12 it was not (`SECURITY.md` **S95**,
-**[HORUS-20260912-01]**). The index-space map gives the per-task reply region as
-`[REPLY_EP_BASE, REPLY_EP_BASE + MAX_TASKS)` = `[64, 320)`, `MAX_ENDPOINTS` was the literal `128`,
-and `DYN_EP_BASE` **is** `MAX_ENDPOINTS`, so for every task id ≥ 64, `endpoint_by_index` resolved
-that task's reply endpoint into the *dynamic* range, naming an endpoint retyped out of some task's
-untyped region. With `g_max_tasks` at 256 on the shipping configuration, half the task id space
-was provisioned into that collision. `MAX_ENDPOINTS` is now **derived** as
-`(REPLY_EP_BASE + MAX_TASKS)`, so the table follows the task ceiling instead of trailing it; a
-`_Static_assert`, a bound inside `reply_ep_for_task`, and a boot clamp on the machine-derived
-`g_max_tasks` each guard a different way of reintroducing it.
+Every IPC syscall names its object by a cspace slot. `ipc_ep_from_slot` and `ipc_notif_from_slot`
+(`src/kernel/syscall_ipc.c`) are the single choke point: the slot must hold a live capability of
+the right type, with `READ` to receive or `WRITE` to send, passing the lineage check. A server's
+listen capability is `READ|WRITE`; a client's is `WRITE` only, so it can send but never receive
+the server's traffic or forge its replies (S13a, S13b). A task is born with exactly one endpoint
+capability, its private reply endpoint, which no other task can hold a capability for.
 
 ---
 
 ## 9. The syscall layer
 
-Entry is `int 0x80` → `interrupt_handler64` → `syscall_handler`, dispatching through a
-descriptor table:
+Entry is `int 0x80`, through `interrupt_handler64` to `syscall_handler`, dispatching on a table:
 
 ```c
 typedef struct {
     void   (*fn)(struct interrupt_frame64 *r);
-    uint16_t slot;     /* authorizing cspace slot, or SC_NONE */
+    uint16_t slot;     /* authorising cspace slot, or SC_NONE */
     uint32_t rights;   /* rights required at `slot` */
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 ```
 
-Where a syscall's authority is a single fixed capability, the check happens **once, centrally**,
-before the handler runs, so a syscall physically cannot execute without it. `SC_NONE` means the
-authority is argument-dependent (e.g. `SYS_KILL` needs a `CAP_TCB` for a *dynamic* target) and
-the handler performs it, with the reason noted per entry.
+Where a syscall's authority is one fixed capability, the check happens once, centrally, before the
+handler runs. `SC_NONE` means the authority depends on the arguments (a `CAP_TCB` for the target
+task, a capability the caller names) and the handler resolves it through `cap_lookup`, which
+resolves only in the caller's own cspace and refuses a mistyped capability (S55, S60). No ship row
+is gated on slot 3, whose capability every task holds (S79, checked by
+`tools/check_dispatch_gates.py`).
 
-**A `CAP_TCB` names one task, not a slot** (**S100**). Its `object` is `tcb_object(id)`: the slot
-number in the low 16 bits and that slot's generation above them. `create_task` increments the
-generation every time a slot is reused, before the slot goes live, so a capability for a dead
-task can never name the task that took its place. A bare slot number has generation 0, which no
-live task has, so a writer that forgot to encode fails closed. The five syscalls a `CAP_TCB`
-authorises (`SYS_KILL`, `SYS_SIGNAL`, `SYS_TASK_RESUME`, `SYS_CAP_GRANT`, `SYS_WAIT`) check and
-act under the spawn lock, which every task-creating path holds, so a slot cannot be reused
-between the check and the act; and a pending `SYS_WAIT` records the generation it was authorised
-against and is re-checked under the same lock when it registers.
-
-**Fail-closed properties:**
-
-- A number with no table entry, or a `NULL` handler, returns `SYS_ERR_NOSYS`.
-- Numbers 38–45 (the removed legacy capfs) are deliberately left reserved and unreused, so
-  no future syscall silently inherits an old ring-3 caller.
-- A compile-time assertion ties the table size to the highest syscall number:
-
-```c
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_UNTYPED_INFO + 1,
-               "syscall_table size must equal (highest syscall number + 1)");
-```
-
-Adding a syscall without a table entry is a build failure, not a runtime surprise.
-
-The complete ABI is in [`SYSCALLS.md`](SYSCALLS.md).
+**It fails closed.** A number with no entry returns `SYS_ERR_NOSYS`; retired numbers stay reserved
+so no new syscall inherits an old caller; and a compile-time assertion ties the table's size to
+the highest syscall number, so a syscall cannot be added without its entry. The complete ABI is in
+[`SYSCALLS.md`](SYSCALLS.md).
 
 ---
 
@@ -1034,856 +527,165 @@ The complete ABI is in [`SYSCALLS.md`](SYSCALLS.md).
 
 ### `init`
 
-PID 1, uid 0, and the **delegation root**. `kshell` endows it from the primordial root cnode
-with exactly what it must wield or delegate: `CAP_AUDIT`, `CAP_CONSOLE`,
-`CAP_ENCRYPTED_STORAGE`, `CAP_USER` (admin), the service `CAP_ENDPOINT`s, `CAP_IO_DEVICE`,
-`CAP_KERNEL_LOG`, `CAP_BOOT_MODULE`, `CAP_STORAGE_FORMAT`, and `CAP_UNTYPED` over
-`UNTYPED_ROOT`. It launches
-`fs_server` and `console_server` and hands each only its own subset via `SYS_CAP_GRANT`,
-including, in principle, a bounded share of kernel-object memory, which is what makes "this
-server may consume at most this much of the kernel" expressible.
+The first task and the **delegation root**. The kernel endows it from the root cnode with what it
+must use or delegate: the console, storage and user capabilities, the service endpoints, the
+platform device, the kernel log, the boot modules, `CAP_STORAGE_FORMAT`, the shared libc's text,
+and `CAP_UNTYPED` over `UNTYPED_ROOT`. It surveys the machine's storage, then starts `fs_server`,
+`console_server`, and either the installer (on a blank disk, or when the boot menu asked) or the
+shell, each suspended, granting each exactly its subset and resuming it last. The installer is the
+only task given `CAP_STORAGE_FORMAT`; nothing a login reaches holds one.
 
-`CAP_STORAGE_FORMAT` is the one it holds in order to ASK rather than to wield: `init` calls
-`SYS_STORAGE_INFO` at boot and says on the wire what volume the machine has, which is the
-question that decides whether a machine needs installing (roadmap 2.9). Nothing a login reaches
-is given a copy, not the shell, not `fs_server`.
+**Adding a program** is one line in the Makefile, `$(eval $(call USERPROG,name))`, and a
+deliberate hand-written launch in `init.c`. There is no macro for delegation: which authority a
+program receives is the decision this system exists to make explicit. Grant the narrowest rights
+that work.
 
 ### `fs_server`
 
-The system's only filesystem and its **reference monitor**. It holds `CAP_BLOCK_DEV` for the
-encrypted object store and implements all filesystem semantics (names, directories, permissions)
-on top of `(inode, logical block)` addressing.
-
-Every request is authorised against `SYS_IPC_SENDER`: the uid the *kernel* recorded for the
-sender, established only by a successful login. A client cannot claim to be another user
-because it never supplies its own identity.
-
-Features: POSIX rwx, a write-ahead journal with mount-time fsck for crash atomicity,
-double-indirect blocks for large files, and concurrent multi-client service via
-`SYS_IPC_REPLY_TO`.
-
-At provisioning it also gives every account a home directory the **account** owns (**S78**),
-reading the account list with `SYS_USERLIST`: the `CAP_USER` it already holds as the
-registration gate. This is the only component that can: it has the list, it has the sole ring-3
-`CAP_ENCRYPTED_STORAGE` that `sys_fs_set_meta` answers to, and its provisioning already waits for
-the volume to unlock, which an installed machine does not do until a login. A directory that
-already exists is left alone rather than re-stamped.
-
-Metadata carries **two different rules**, and the difference is deliberate (**S77**): a file's
-mode may be set by its owner or by root, while its owner may be set by root alone. Changing a
-mode is something an owner does to their own file; giving one away is not. Both are decided
-against the attested `cuid`, like every other request. They were reachable only in principle
-until 2026-09-02: the shell had no `chmod` or `chown`, so neither rule had ever been exercised
-from a login.
-
-The journal's crash atomicity is an ordering property over what is on *stable media*, not over
-the order writes were issued, so `journal_commit()` places three `FLUSH CACHE` barriers: after
-the staged data and **before** the commit record (the write-ahead rule, without it recovery can
-redo a validly-committed transaction from data sectors that never landed), after the commit
-record, and after the home apply. `journal_recover()` carries the same barrier before clearing a
-replayed header. Until 2026-08-16 there were none, and the ATA driver had no `FLUSH CACHE`
-opcode at all (**[I-10]**), so the guarantee held only under an emulator that persisted every
-write regardless.
+The filesystem and its **reference monitor**. It holds `CAP_ENCRYPTED_STORAGE` and implements
+names, directories and permissions over the kernel's `(inode, logical block)` object store. Every
+request is authorised against the uid the kernel recorded for the sender at login
+(`SYS_IPC_SENDER`), never a claim from the client (S13, S14). A file's mode may be set by its owner
+or root, its owner by root alone (S77), and every account gets a home directory it owns (S78). It
+provisions `/bin` and `/usr/share/man` from verified boot modules once the volume is unlocked.
+The capability filesystem of `docs/design/filesystem.md` will replace uid authorisation with
+capabilities (roadmap 2.10).
 
 ### `console_server`
 
-Owns the serial UART, the VGA framebuffer **and the PS/2 keyboard** in ring 3. It receives from
-`init` a `CAP_IO_DEVICE` **naming the platform device**, which gates `SYS_MAP_PHYS` (map the
-framebuffer), `SYS_IOPORT_GRANT` (native ring-3 `in`/`out` on that device's ports via the TSS
-I/O bitmap), and `SYS_IRQ_REGISTER` (a device's IRQ → notification). Each of those checks the
-frame, port range or line against what the platform device declares in the I/O-device table (see
-"Device capabilities" below) so the same capability reaches none of the machine's other
-hardware.
+Owns the UART, the screen (VGA text or a linear framebuffer) and the PS/2 keyboard, through one
+`CAP_IO_DEVICE` naming the platform device: `SYS_MAP_PHYS` for the framebuffer, `SYS_IOPORT_GRANT`
+for native port I/O, and `SYS_IRQ_REGISTER` for the keyboard and the tick. It sleeps on a
+notification until a key or the tick arrives. The kernel stops reading the keyboard and stops
+drawing at the same moment the server takes the hardware (`console_hw_owned()`, S89), and both
+share one scancode table, `include/ps2_scancode.h`.
 
-The keyboard is read through the **port grant**, not the IRQ bridge, and it is worth saying why
-because the bridge exists and was the obvious choice. Ports `0x60` and `0x64` are in the
-platform device's declaration beside COM1 and the VGA registers, so `SYS_IOPORT_GRANT` already
-covered them: reading the controller costs two `inb`s against a grant the server holds, and
-adds nothing to what it may touch. `SYS_IRQ_REGISTER` on IRQ 1 would instead have required a
-`CAP_NOTIFICATION` that `init` does not delegate to this server and that the server would never
-wait on, since it polls, a new delegation whose only effect would have been a side effect in
-the kernel's interrupt handler. What tells ring 0 to stop reading the controller is
-`console_hw_owned()`, the same predicate that already stops `print()` driving the screen, so the
-console's input and output change hands together (**S89**). Both readers share one scancode
-table, `include/ps2_scancode.h`. The IRQ bridge remains the right mechanism for a driver that
-must sleep rather than poll, and `userspace/irqtest.c` proves it end to end.
+It is the single writer to the console. It implements raw terminal mode (termios and window
+size), scrollback of the last 512 lines (Shift+PgUp and PgDn), cells for full-screen programs
+alongside their escape sequences on the serial line, and the input-owner rule that only the
+registered owner may read a password (S93). Every boot-log line is timestamped by whichever writer
+emits it, the kernel from the TSC and the server from the 10 ms clock, on one epoch, until the
+session starts. `task_teardown` hands the hardware back to the kernel if the server dies.
 
-It is the **single writer** to the console. The kernel keeps a minimal serial writer for
-panics and early boot, and fails closed on the in-kernel read path while a server owns the
-hardware (`console_hw_owned()`) so the kernel never becomes a second reader stealing bytes
-from a typed line.
+### `libhorus`
 
-Raw terminal mode (termios, winsize) is implemented here; the foundation for curses
-applications.
-
-**Scrollback** is kept here too: the last 512 lines to scroll off the top of the machine's own
-screen, as cells, so Shift+PgUp/PgDn can page back through them. The view is drawn over the
-display and never written into the console's own screen buffer, so returning to the live screen
-is one repaint, and any key that types something or any output returns there first. It holds
-only what the screen already showed, so it needs no capability and is in every build. A
-full-screen program's surface is drawn in place and never scrolls, so it does not fill the ring.
-
-`task_teardown` calls `console_clear_owner`, so a crashed console server releases the
-hardware back to the kernel fallback.
-
-#### The boot log has two writers and one format
-
-Every line the console accepts between the kernel's first message and the start of the session
-carries `[    S.uuuuuu] `. **The writer stamps it, not the caller**: `print_core`
-(`src/kernel/terminal.c`) emits the prefix in front of the first printable byte of each line, and
-`con_putc` (`userspace/console_server.c`) does the same after the handover. Before 2026-09-06 a
-line was stamped only if its author called `kmsg()`, and roughly half the boot console did not,
-the `  [ OK ]` status lines, and every ring-3 line arriving through `SYS_WRITE`, which could not
-call it at all. `kmsg()`/`kmsg_begin()` no longer exist; there is nothing to remember.
-
-The prefix goes out **inside the same critical section as the text**. `kmsg_begin(); print(msg);`
-was two `console_lock` acquisitions, so a ring-3 `SYS_WRITE` on another CPU could land between a
-kernel line's timestamp and its text, the 2.6a hazard, on every timestamped line the system
-printed. In the server the same guarantee comes from it being the only writer of the UART after
-the handover, serving one request at a time. (Neither serialises against `kfault_str`/`panic_ch`,
-which bypass every lock by design: `docs/LIMITATIONS.md` 2.6c, unchanged.)
-
-**Two clocks, one format.** The kernel stamps from the calibrated TSC in microseconds;
-`console_server` has only `SYS_CLOCK_GETTIME`, quantised to a 10 ms PIT tick because `CR4.TSD`
-denies ring 3 anything finer and a syscall must not hand it back, so its microsecond field is
-always a multiple of 10,000. They share an epoch: `clock_epoch_ticks` (`src/kernel/scheduler.c`)
-adds the time the tick counter could not see, which is everything before the first timer interrupt:
-1.07 s on a measured SMP boot, and the reason the log used to run *backwards* by a second at
-the handover.
-
-**The window closes at the session.** `init` sends `CON_OP_BOOT_DONE` immediately before it
-launches the shell, and the server passes bytes through verbatim from then on: after that the
-console is a terminal, and a timestamp in front of a prompt, an echoed keystroke or a column of
-`ls -l` is wrong rather than merely noisy. Serving any input request has the same effect, as a
-backstop, which is also what makes the installer's raw-mode session unstamped, correctly, on a
-machine that has one. A server that is never told keeps stamping, which is right for the
-self-test images whose output is nothing but a boot log.
-
-`make smoke-console-timestamps` asserts the whole window rather than one marker, because the
-failure being gated is the line nobody remembered.
+The shared freestanding runtime every server links (`include/libhorus.h`, `userspace/libhorus.a`):
+memory and string helpers, console output, a bounded busy-wait, the TUI library the installer is
+built from, the per-task mount table and path walker (`hvfs`), and `ipc_call_retry`, which makes
+the IPC retry contract a library guarantee. It declares nothing that needs authority: anything that
+would belongs behind a capability, not a function call.
 
 ---
 
-### `libhorus`: the shared freestanding runtime
-
-There are two ways to link a userspace binary. The **newlib** path (`crt0.c` + `posix.c` +
-`-lc`) gives a real libc and costs about 450 KiB statically per binary; coreutils and TCC use
-it. The **freestanding** path links the program's object, `malloc.o`, and `libhorus.a`, and it
-is what every server above uses.
-
-Until 2026-08-21 the freestanding path had no shared runtime at all, and the result was 22
-hand-copied definitions across 7 files: `umemset` and `umemcpy` written out four times each, the
-same string-equality function twice under two names. Every copy was correct, which is what made
-it a problem; nothing was wrong, so nothing pushed back.
-
-`libhorus` (`include/libhorus.h`, `userspace/libhorus.c`) holds only what more than one
-freestanding program needed: byte-wise memory operations, the string helpers, console output
-via fd 1, a bounded busy-wait, and `ipc_call_retry`.
-
-**It is a library, not an authority.** It declares nothing that needs a capability to implement:
-no file I/O, no allocator beyond the `malloc.o` already linked into every binary. Anything that
-would need authority belongs behind a capability, not behind a function call, and adding an
-entry point here that took authority from ambient state rather than from a slot the caller names
-would be a defect rather than a feature.
-
-**`ipc_call_retry` is the part that is not a convenience.** §7 states the IPC retry contract:
-retry on `ipc_transient()` only, and bound even that. The earlier form, `while (r < 0)
-spin_delay();`, retried `SYS_ERR_PERM` forever, turning a clean capability refusal into an
-unkillable silent hang, which is finding **[G-8]** signature C. Two programs had independently
-re-derived the correct loop, comment and all; a third would have been written from memory by
-whoever wrote the next server. Encoding the contract once is the difference between a rule and a
-habit, and `smoke-libhorus` is the first executable witness that the property holds, falsified
-by `LIBHORUS_RETRY_ANY=1`, under which a denied call never returns.
-
-### Adding a userspace program
-
-Two steps, and the split between them is deliberate.
-
-**1. The build: one line.**
-
-```make
-$(eval $(call USERPROG,myserver))
-```
-
-That declares `userspace/myserver.c` → `userspace/myserver.pie.elf`, links `libhorus` and
-`malloc`, and adds it to `USERPROGS`. Before this each program carried a hand-written stanza,
-which is why several had drifted into being subtly different from one another.
-
-**2. The authority: by hand, in `init.c`, on purpose.**
-
-There is no macro for capability delegation and there should not be. Which authority a program
-receives is *the* security decision this system exists to make explicit; a macro that guessed
-would be a macro that granted. Follow `launch_fs_server()`: spawn suspended, `SYS_CAP_GRANT`
-each capability the child needs from `init`'s own holdings (never a direct kernel install) and
-resume **last**, so the child cannot run before it holds what it needs.
-
-Grant the narrowest rights that work. A client of a service gets a WRITE-only endpoint
-capability, so it can send to the server but can never receive its traffic or forge its
-replies; that asymmetry is what **[C-1]** established and it is load-bearing.
-
-Then add a `smoke-<name>` gate that asserts a marker from ring 3, and (if the program is a
-witness for a security property) a control arm that reproduces the defect it witnesses, so the
-gate can be shown to fail (§2 of `CONTRIBUTING.md`).
-
 ## 11. Storage and the encrypted object store
 
-The kernel exposes an **object store**, not a filesystem: allocate/free inodes, read/write
-`(inode, logical block)`, stat, set size, set metadata. The AEAD stays entirely in the kernel;
-the ring-3 FS server never sees a key.
+The kernel exposes an **object store**, not a filesystem: allocate and free inodes, read and write
+`(inode, logical block)`, stat, set size and metadata. The AEAD stays in the kernel; `fs_server`
+never sees a key. Authority is one capability, `CAP_ENCRYPTED_STORAGE` with `READ|WRITE`, checked
+by the dispatch table, and the store answers only an **unlocked** volume, not merely a mounted one
+(S74).
 
-- Per-`(inode, block)` AEAD subkeys derived from the volume key, with a fresh nonce per
-  write.
-- **The volume key is sealed, unless the operator chose otherwise.** `disk_key` is normally held
-  only in key slots, each an AEAD wrap under a KEK derived with Argon2id from a password (and the
-  TPM, when there is one). An installer may instead lay the volume down **unsealed**
-  (`STORAGE_FORMAT_UNSEALED`, **S104**): `disk_key` in the clear in slot 0 and `sb.unsealed` set.
-  Everything else on this list is identical for both, so the two share one read and write path;
-  what the unsealed one gives up is confidentiality and tamper evidence against anyone holding the
-  disk (`docs/LIMITATIONS.md` 2.21), and every mount says which kind it found.
-- A **Merkle rollback tree** over block metadata, fanout `BLOCK_SIZE/32` = 128. Level 0's
-  hashes are the metadata blocks' MACs; level k+1's are the hashes of level k's node blocks;
-  the top block's hash is `sb.meta_root`. A metadata write costs one hash and one staged
-  block write per level, four of each at a 16 GiB volume, and unlock verifies **one node**
-  against the root rather than reading the whole region. Everything below the root is
-  verified lazily, on the path from the root, when a metadata block is first loaded.
-- Every node hash covers (tag, level, index, bytes) **and** is checked against the value its
-  parent records, up to the root (**S66**). Position binding alone stops two nodes being
-  swapped; the parent chain is what stops a node that was genuinely valid at an *earlier*
-  time from verifying now, which is the attack, a physical attacker rewinding part of the
-  region writes bytes this volume really did produce.
-- **The tree alone does not make the volume monotonic**, because its root lives in the superblock
-  it protects, an attacker replacing superblock, metadata and tree together with a consistent
-  earlier snapshot defeats every check inside the disk. The anchor is outside it: `sb.rollback_gen`
-  is a **TPM NV monotonic counter** value, bound into the root's preimage so it cannot be edited,
-  and unlock refuses a volume whose generation is behind the counter (**S70**). The generation is
-  written before the counter is raised to meet it, so a crash between them is recoverable rather
-  than bricking. Only volumes formatted on a machine with a TPM are anchored, and
-  `sb.rollback_anchored` says which kind a volume is; the granularity is one boot. See
-  `docs/LIMITATIONS.md` 1.12 for what that still leaves.
-- The volume is sized **from the disk** (ATA IDENTIFY words 60–61), clamped to `BLOCKS_PER_DISK`,
-  a 16 GiB ceiling, not every volume's size (**S68**). Both bitmaps span blocks; the inode
-  table is zeroed a block at a time, the first time an inode in it is allocated, rather than
-  wholly at format.
-- A file's mapping is 12 direct, then single-, double- and triple-indirect trees of
-  `BLOCK_SIZE/8` = 512 fan-out: 512 GiB, so a file is bounded by the volume rather than by the
-  mapping. It stopped at double-indirect (1.00 GiB) until 2026-08-31.
-- `storage_free_inode_blocks` runs as **several** transactions, one atomic free of a large file
-  would touch more bitmap blocks than the journal can hold and abort. It kills the inode first,
-  in a transaction of its own, so a crash anywhere after that leaves the dangling inode fsck is
-  written to repair; the other order leaves freed blocks a live inode still points at.
-- The fsck sweep runs when the journal replayed or `sb.needs_fsck` is set, not at every mount:
-  the walk is the inode table, and at 16 GiB that was megabytes of reads before the login
-  prompt on a boot where nothing was wrong.
-- The per-block crypto metadata (nonce, tag, present) is a **bounded write-back cache** of
-  `META_CACHE_LINES` on-disk metadata blocks, not an in-RAM mirror of the volume. A dirty line
-  is written back into the journal transaction that dirtied it, before that transaction commits
-  (**S65**); `journal_commit` flushes and `journal_abort` discards. The mirror it replaced was
-  *self-healing* against a lost metadata write (it held every entry, so the next flush
-  regenerated the lost one) and a bounded cache removes that, which is why the journal is now
-  load-bearing for metadata durability rather than merely convenient.
-- The metadata region is sized from the **device** (`sb.meta_blocks`), not from
-  `BLOCKS_PER_DISK`. Only fixed-size arrays may be sized from the latter.
-- Backing store is either an ATA disk or a RAM vdisk reserved in the physical pool. A block
-  device accepts only blocks it has memory for (**S64**).
-- `storage_fsck_pass` reclaims blocks the bitmap marks allocated but no live inode references,
-  and its reference walk descends **every** level of the mapping (**S67**). Until 2026-08-31 it
-  stopped at single-indirect, so a live file's double-indirect blocks were freed at every
-  unlock, and read back correctly until the allocator collided with them, which is why nothing
-  caught it.
-
-- **The store answers only an UNLOCKED volume** (**S74**). `mounted` and `unlocked` are
-  different states and a sealed ATA volume sits in the gap between them from power-on until a
-  login opens a key slot, the normal state of an installed machine, not an edge case. All
-  eight object-store handlers test both, in one place (`store_open`). They tested `mounted`
-  alone until 2026-09-01: the AEAD enforced the rule for file data as a side effect of needing
-  the key, and the **inode table is plaintext on disk**, so the six metadata calls enforced
-  nothing and a sealed volume served real inode records and accepted edits to its own inode
-  table. `h_block_read`/`h_block_write` are outside the rule on purpose: they move ciphertext
-  below the volume abstraction, which is what the journal and crash gates need.
-
-Authority is one capability, checked in one place: the dispatch table requires a
-`CAP_ENCRYPTED_STORAGE` carrying `READ|WRITE` at `CAPSLOT_AUDIT` (slot 7) before the handler
-runs. The ambient `uid == 0` check that used to sit alongside it in each handler is gone
-(finding **[I-1]**) (authority is the capability, not the identity) so the store API is
-reachable only by the task `init` endows with that capability.
+- **Encryption.** Every block is sealed with an AEAD under a per-`(inode, block)` subkey derived
+  with HKDF from the volume key, with a fresh nonce per write.
+- **Key slots.** The volume key is wrapped in up to eight key slots, each under a KEK derived with
+  Argon2id from one password, and sealed to the TPM's PCRs where there is one (S61, S12). An
+  installer may instead write the volume **unsealed**, the key in the clear, when its operator
+  chooses (S104).
+- **Integrity.** A Merkle tree over the block metadata (fanout 128) whose root is in the
+  superblock. Unlock verifies one node; everything else is verified on the path from the root
+  when first loaded, and each node is checked against its parent, so a block rewound to an older
+  valid version fails (S66).
+- **Rollback.** The tree's root lives in the superblock it protects, so a whole volume swapped for
+  an older copy would pass. `sb.rollback_gen` is a TPM NV monotonic counter value bound into the
+  root, and unlock refuses a volume behind the counter (S70).
+- **Size.** A volume is sized from its disk, up to a 16 GiB ceiling (S68); files use direct,
+  single-, double- and triple-indirect blocks.
+- **Crash safety.** A write-ahead journal with three `FLUSH CACHE` barriers around the commit
+  record, so atomicity is an ordering on the medium rather than on issue order; the metadata cache
+  writes dirty lines back inside the committing transaction (S65); `fsck` runs after a replay or
+  when flagged, and never frees a live file's blocks (S67).
+- **Devices.** Backing store is a RAM volume reserved in the pool, a legacy IDE disk, or an SD or
+  eMMC card; every disk is a block device of its own, and a format names the disk it erases (S82,
+  S83). A block device accepts only blocks it has memory for (S64).
+- **Accounts.** The account table lives on the volume, sealed under a key derived from the volume
+  key and written through the journal (S62). The compiled-in accounts exist only on a boot with no
+  installed disk (S103), no compiled-in password is ever written to a disk (S109), and a live boot
+  mounts no persistent disk at all (S110).
 
 ---
 
 ## 12. Trusted boot and the TPM
 
-Three layers, each independently tested:
+Three layers, each tested adversarially.
 
-**1. Module integrity.** `tools/gen_module_manifest.sh` computes a SHA-256 for every boot
-module at build time and generates `src/kernel/boot_module_manifest.h`, which is compiled
-*into the kernel image*. At boot, each module is hashed and compared. A module that does not
-match is flagged unverified: `SYS_BOOT_MODULE_INFO` reports it as an empty slot and
-`SYS_BOOT_MODULE_READ` refuses its payload outright. Since provisioning into `/bin` goes
-through that read path, an unverified module can never become a root-owned executable.
+**1. The kernel is pinned.** `tools/mkbootimg.sh` puts the kernel's expected SHA-256 inside the
+El Torito boot image; GRUB refuses a kernel that does not match, and the firmware measures that
+image into `PCR[4]` (S92). This is the layer the kernel does not vouch for itself.
 
-**2. Measured boot.** A kernel-identity token (the tag, the command line and the module
-manifest) is extended into **PCR[8]** and each verified module's digest into **PCR[9]**, over the
-TIS interface. `tools/tpm_expected_pcr.py` recomputes both on the host, and CI asserts they match.
+**2. Modules are verified and measured.** `tools/gen_module_manifest.sh` hashes every boot module
+at build time into a manifest compiled into the kernel. At boot each module is hashed and compared;
+an unverified module reads as an empty slot and its payload cannot be read, so it can never be
+provisioned (S10). The kernel extends a token over its command line and manifest into `PCR[8]`
+(S91) and each module's digest into `PCR[9]`; `tools/tpm_expected_pcr.py` recomputes them on the
+host and CI compares.
 
-**This section said "the kernel image ... extended into PCR 8 and 9" until 2026-09-11, and that was
-false.** Both PCRs are extended *by the kernel*, from values compiled into it; nothing hashed the
-kernel's own bytes, and measured on that day, two kernels with different SHA-256 produced
-byte-identical PCR 0..9. The kernel is now covered a layer down instead: `tools/mkbootimg.sh`
-packs `grub.cfg` and the kernel's expected SHA-256 into a memdisk **inside the El Torito boot
-image**, GRUB refuses a kernel that does not match, and the firmware measures that image into
-**`PCR[4]`**, which the seal policy includes, so the pin cannot be removed without changing what
-the volume is sealed to. See `SECURITY.md` **S92**.
+**3. The volume key is sealed** to PCRs 4, 8 and 9 under a `PolicyPCR` session, so a changed
+kernel, boot image, command line or module leaves the volume locked (S12). The in-RAM volume's key
+is random and derived with HKDF rather than Argon2id, because there is no password to harden.
 
-**3. Sealed volume key.** The vdisk key-encryption key is sealed to **PCR 4, 8 and 9** under a
-`PolicyPCR` session. A measured-good boot unseals it; a change to the modules changes PCR[9], and
-a change to the kernel or to the boot image changes PCR[4], which is the one of the three the
-kernel does not extend itself, and therefore the only one that can bind the seal to something
-other than the kernel's own word (**S92**). The KEK derivation uses HKDF rather than Argon2,
-which cut `ramfs_init` from 1.5 s to 0.25 s without weakening the seal; the security comes from
-the TPM policy, not from KDF hardness.
-
-**Adversarial tests.** `smoke-modules-tamper` corrupts a module payload in the ISO and
-asserts the kernel refuses it. `smoke-tpm-tamper` asserts the PCRs additionally *diverge*.
-`smoke-tpm-seal` asserts a changed PCR leaves the volume locked. `smoke-boot-pin` substitutes the
-kernel behind a genuine boot image and asserts GRUB refuses it; `smoke-tpm-bootimg` seals under
-one boot image and asserts a second cannot unseal. Each of the last two has a control arm that
-restores the pre-2026-09-11 behaviour and requires the attack to succeed: note that the first
-three tamper with a *module*, which is why none of them ever witnessed the kernel. These test that the control
-fires, not merely that the happy path works.
+A build with `MEASURED_BOOT_REQUIRED=1` halts when measured boot is unavailable and refuses a
+persistent volume that was never sealed (S85); by default a machine without a TPM boots and says
+so. The tests: `smoke-modules-tamper`, `smoke-tpm-tamper`, `smoke-tpm-seal`, `smoke-boot-pin`,
+`smoke-tpm-bootimg` and `smoke-tpm-cmdline`, each against an arm that restores the attack.
 
 ---
 
 ## 13. Side-channel posture
 
-**Flush on switch.** `set_current_task(v)` is the single chokepoint at which a CPU is about to
-resume task `v`. Hooking there covers every switch path (timer preemption, IPC block, yield,
-first entry) with none able to bypass it. When the incoming ring-3 task differs from the
-outgoing one, the CPU evicts indirect-branch predictor state, L1D, and store/fill/load buffers.
-The policy predicate is factored out as a pure function (`sched_domain_switch_would_flush`) so
-it can be tested independently of the barriers, and the barriers themselves are gated on CPUID
-feature detection.
+**Flush on switch.** `set_current_task` is the single point at which a CPU is about to resume a
+task, so every switch path passes it. When the incoming ring-3 task differs from the outgoing one,
+the CPU evicts indirect-branch predictor state, L1D and the store, fill and load buffers, gated on
+CPUID. The policy is a pure function (`sched_domain_switch_would_flush`) tested on its own.
 
-**SMT parking.** Sibling threads are parked in software, closing same-core co-residency.
+**SMT parking.** Secondary threads never run tasks (S101).
 
-**`CR4.TSD`.** Ring-3 `RDTSC` faults, removing the cheapest high-resolution timer an attacker
-would use to build a cache side channel.
+**`CR4.TSD`.** Ring-3 `RDTSC` faults, and the clock ring 3 can read ticks at 10 ms (S34), so no
+syscall gives the fine timer back.
 
-**What is not covered.** A concurrent sibling on the same physical core when SMT parking is
-disabled; any channel through the shared L2/L3; and DMA-capable devices **on a machine with no
-DMAR**. Since 2026-08-28 a machine that has one confines every device to the frames its driver
-mapped (**S45**, `src/kernel/iommu.c`), and `iommu_active()` reports 0 where there is none. See
-`docs/LIMITATIONS.md` §2.12.
-
----
-
-### Lock order
-
-Ten locks. Until 2026-09-10 the order between them was stated only in five
-comments across four files, and **two of them, in the same file, disagreed about
-the same pair**: see **S88**. It is declared once now, in
-`.github/lock-order.yml`, and `tools/check_lock_order.py` (required job
-`lock-order`) refuses anything that contradicts it.
-
-| Lock | Owns |
-|---|---|
-| `spawn_stage_lock` | The spawn/exec staging singletons. **The outermost lock in the kernel**: taken by syscall entry points holding nothing |
-| `storage_lock` | The encrypted object store and on-disk filesystem |
-| `ata_lock` | The ATA driver. Always `storage_lock -> ata_lock`, never the reverse |
-| `sdhci_lock` | The SD/eMMC host controller: one command and its data transfer at a time across CPUs, held for a whole block operation including its recovery. Innermost; nests with nothing |
-| `endpoint_lock` | Endpoints and notifications. Taken via `ipc_lock()` / `ipc_unlock()`, never by name |
-| `cap_lock` | Every cspace |
-| `page_lock` | The pager's structures |
-| `untyped_lock` | The untyped regions. `cap_lock -> untyped_lock`; `untyped_retype` releases the untyped lock before taking `cap_lock` |
-| `pipe_lock` | Pipe objects |
-| `scheduler_lock` | The run queue and the claim invariant |
-
-**Two nestings exist, and both are deliberate:**
-
-- **`endpoint_lock -> cap_lock`**, `ipc_publish_pending_block` mints the
-  one-shot `CAP_REPLY` under the IPC lock, *before* waking the receiver. Minting
-  after the wake loses the race against a receiver already running on another
-  CPU: ~33% of sessions with a second CPU loaded, 0% for the control, and
-  invisible on one CPU because there is no second CPU to run the server inside
-  the window.
-- **`endpoint_lock -> page_lock`**, the same function calls `copy_to_user` to
-  deliver the body, and the user-copy path faults the destination in.
-
-**Neither is a defect, because a nesting is not a cycle.** They are safe exactly
-while the reverse edges stay absent, no `cap_lock` holder and no `page_lock`
-holder enters IPC. That was the 2026-08-30 audit's reasoning for rejecting the
-second as a finding (`docs/AUDIT.md` §5), and it was checked by hand, once. The
-checker's second rule, **the reverse of a declared nesting fails the build**,
-is what keeps it checked.
-
-**There is no runtime lock order check, and adding one is not cheap.**
-`spin_lock` tracks per-CPU nesting depth and saved `RFLAGS.IF` but **no lock
-identity**, so ordering cannot be observed at run time without giving every lock
-an id and every CPU a held-stack: a new subsystem on the hottest path in a kernel
-whose last four SMP defects were found by hanging. The static declaration is the
-half that can be gated today.
+**Not covered.** Channels through the shared L2 and L3, and DMA on a machine without an IOMMU
+(`docs/LIMITATIONS.md` 2.12).
 
 ---
 
 ## 14. Known architectural gaps
 
-These are design-level, not bugs to be patched in place. Each is tracked in
-[`ROADMAP.md`](ROADMAP.md) and analysed in [`AUDIT.md`](AUDIT.md).
+Design-level gaps, numbered G-*n*. Their authoritative status is in
+[`LIMITATIONS.md`](LIMITATIONS.md); the ones that led to long investigations are written up in
+[`investigations/`](investigations/).
 
-**G-2: Ambient `uid == 0` authority runs parallel to the capability system.** *Closed* (roadmap
-0.2, finding **[I-1]**). Nine syscall handlers used to gate on the caller's uid rather than on a
-capability, so the capability graph was not a complete description of who could do what. Each of
-those gates is now a distinct capability type, `CAP_KERNEL_LOG` (dmesg), `CAP_BOOT_MODULE` (the
-module read surface), `CAP_ENCRYPTED_STORAGE` (the object store, §11): minted once in the
-primordial root cnode and delegated by `init` to exactly the task that needs it.
-`SYS_GET_TASK_INFO`'s root promotion is gone with them: cross-task introspection now needs a
-`CAP_USER` (slot 6) or `CAP_AUDIT` (slot 7), and `info.eip` is zeroed for any task but the
-caller (finding **[I-4]**).
+| Gap | What it was | Status |
+|---|---|---|
+| G-2 | `uid == 0` was a kernel authority beside the capabilities | Closed 2026-08-15: every gate is a typed capability (S18) |
+| G-3 | Kernel objects were fixed `.bss` tables, and the task count a compile-time ceiling | Closed 2026-08-30: everything, task control blocks included, comes from untyped memory (S57, S58) |
+| G-4 | Endpoints were single-slot mailboxes | Closed 2026-08-11: bounded queues, reply capabilities, a blocking receive |
+| G-5 | No kernel object lifecycle | Closed for retyped objects; the well-known service endpoints and the per-task reply endpoints still live for the whole boot (`LIMITATIONS.md` 2.3) |
+| G-6 | `this_cpu()` read LAPIC MMIO on every call | Closed differently: the id comes from the TSS selector; a `%gs` per-CPU block remains roadmap 1.2 |
+| G-7 | A blocked task could be left holding a scheduler claim | Closed 2026-08-09 |
+| G-8 | A task's kernel stack could be run by two CPUs | Closed 2026-08-17 (S20) |
+| G-9 | Claims leaked and kernel stacks collided on the spawn and reap path | Closed 2026-08-21 |
+| G-10 | The spawn and exec path was unserialised process-wide state | Closed 2026-08-18 |
+| G-11 | The armed program image was ambient state | Closed 2026-08-18 (S21) |
+| G-12 | Two CPUs current on one task through the user-entry path | Closed 2026-09-03 |
+| G-13 | The installer's format was bounded by a total time, not a stall | Closed 2026-09-03 |
+| G-14 | Ring 0 carries more evictable policy than verifiable machinery | **Open** |
 
-*The `CAP_KERNEL_LOG` conversion covered only one direction until 2026-08-20* (finding
-**[H-2]**). `SYS_DMESG` (the **read** side of the kernel message ring) was gated by that sweep;
-the **write** side was not, because nobody had noticed there was one. `SYS_WRITE` fd 1 called
-`print()`, and `print()` appended every byte to `klog` before it tested console ownership, so an
-unprivileged task could write lines a `dmesg` reader cannot distinguish from kernel diagnostics
-and could flood the 16 KiB ring to evict genuine ones. `print()` is now split: kernel-origin
-output always records, ring-3 output records only against a proved `CAP_KERNEL_LOG` + WRITE: and
-since `root_cnode[15]` mints that capability READ-only and delegation may only narrow, no task
-can hold the right at all. The lesson generalises past this line: **converting "who may read X"
-to a capability says nothing about who may write X**, and a sweep organised by syscall rather
-than by object will keep finding this shape.
-
-*Closed properly only on 2026-08-15* (finding **[H-1]**). Roadmap 0.2's sweep covered
-`syscall.c` and `syscall_fs.c` and missed `kusers.c`, whose `current_user_is_admin()` kept a
-`uid == 0` fallback: the sole gate on `SYS_USERADD` / `SYS_USERDEL` / `SYS_PASSWD`, which are
-`SC_NONE` in the dispatch table. This paragraph claimed "*Closed*" for nineteen days while it
-was not. Administrative authority over the user database is now possession of `CAP_USER` and
-nothing else. See `LIMITATIONS.md` §1.2 for why the conformance suite could not have caught it.
-
-**`CAP_FRAME` named a fixed window and authorised nothing.** *Closed 2026-08-22* (roadmap 2.1,
-finding **[F-2.1]**, no new G-number: this is that finding's kernel half, not a separate gap).
-`CAP_FRAME` existed from the beginning as a decoy: every task was born holding one in slot 3,
-`READ|WRITE|EXEC`, object `USER_AREA_BASE`, identical in every task and consulted by no syscall.
-It is the capability that made **[C-1]** reachable; the pre-C-1 dispatch table gated IPC on slot
-3, so a capability everyone happened to hold became universal IPC authority.
-
-Giving it a meaning is roadmap 2.1, and the decoy is why the shape of the fix matters more than
-the feature. A `CAP_FRAME` names a frame **index** into a table `SYS_RETYPE` populates, not a
-physical address, so the slot-3 capability is refused by a bound. Had `object` been an address
-(the shorter design, one field and no resolver) `SYS_MAP_FRAME(3, ...)` would have mapped
-physical `0x400000` into ring 3 on the first boot, from a capability the kernel hands out
-itself, and the only thing between that and a kernel-memory disclosure would have been an
-allowlist somebody remembered to write. `FRAME_INDEX_UNCHECKED=1` is that kernel, and
-`smoke-frame` fails under it on every boot.
-
-The decoy is deliberately **kept**, not deleted: `captest` uses it in six C-1 regression checks
-as "a live capability that is not an endpoint", and `smoke-frame` now uses it as the negative
-test vector for the map path. A trap that is asserted against on every boot is worth more than
-one that was quietly removed.
-
-**One layout, written down once** (2026-09-03, **S80**). The `.bin` container the build writes
-and the loader reads was declared four times and parsed in eleven places, each parse spelling the
-magic and the offsets 4, 8 and 44 by hand. Two of the declarations shared the name
-`struct program_header` and described different things, 104 bytes in the kernel, 44 in ring 3,
-and neither was used by anything; the copy that defined the format was a private struct inside
-`tools/mkheadered.c`. It is one declaration now (`struct horus_image_header`,
-`include/program_abi.h`, included by the kernel, ring 3 **and** the host tool) and one parse
-(`image_container_parse`). The header is deliberately freestanding so the host tool can compile
-it: a dependency on `kernel.h` would push the writer back to a private copy. This is
-`include/block_size.h`'s lesson and `audit_abi.h`'s repair applied a third time; the count of
-copies came from `tools/check_image_abi.py`, not from a person, because §2.18's own title said
-four and the number was eleven. `docs/LIMITATIONS.md` 2.18.
-
-**And keeping it means something has to watch the gates, not just the capability** (2026-09-03,
-**S79**). A dispatch row reading `{ handler, 3, WRITE|EXEC, SC_ANYTYPE }` is authorised by the
-decoy, so it authorises everyone. That shape has been swept three times and each sweep left rows
-behind: [H-3] removed three and its comment called them "the last three"; #201 found a fourth,
-invisible because the entry was the bare index `[14]`; audit 4.1 moved the five task-creating
-syscalls to `CAP_UNTYPED` (**S57**) and called the old gate "vacuous". None of the three
-enumerated `SYS_EXEC` (19) or `SYS_RECEIVE_PROGRAM` (27), which carried the identical row in the
-**ship** table until they were retired.
-
-The fact was not even unknown. `.github/syscall-coverage.yml` had recorded it against both since
-2026-08-20, in a group header that asserted the same shape for three syscalls which had been
-fixed on 2026-08-30 without it being touched, one accurate sentence beside three stale ones,
-gating nothing. So the lesson is not "sweep again": it is that **a property this cheap to state
-should be enforced by something that reads the table**, which `tools/check_dispatch_gates.py`
-does on every build. `docs/LIMITATIONS.md` §1.6c has the finding, 2.18 has the repair this
-reordered, and the checker is falsified in four directions because the three interesting rules
-are all vacuous against a regex that has silently stopped matching.
-
-**Multi-page runs, and the policy a run needs.** `SYS_MAP_REGION` (2026-08-27) maps `count`
-frames from consecutive cspace slots at consecutive pages: the dual of `SYS_RETYPE(untyped,
-KOBJ_FRAME, count, dest)`, which fills the run it maps. The question that had to be answered
-before any of it was written is what happens when the run fails part-way, and the answer is
-**all-or-nothing**: every page the call installed is withdrawn, so a caller holding an error
-holds the address space it started with (`SECURITY.md` **S35**).
-
-That is the **opposite** of the policy `untyped_retype` uses one file away, on purpose. Retype
-stops at the first failure, keeps what it made, and returns the count, and the asymmetry is in
-the primitives rather than in taste. Retype's partial result is complete information: n objects,
-each named by a capability at a slot the caller computed, all of them enumerable and
-destroyable. A partial *map* is a hole in a range whose entire purpose is to be addressed as a
-range, discovered later as a fault with nothing left to say which call left it, and a PTE is
-authority, so a partial map after a reported error is authority the caller was told it did not
-get. Rollback is also exactly bounded here and is not in retype: this call knows which PTEs it
-installed, whereas unwinding a retype would mean destroying objects whose bytes the watermark
-above cannot reclaim.
-
-The per-page decision is **one function** shared with `SYS_MAP_FRAME`. A region map that
-validated one step less than a single map would be a sixth door of the **[H-3]** shape, and two
-hand-maintained copies of a nine-step check is how a door like that opens.
-
-**And then the frame itself grew a length** (2026-08-27, **S36**), which is the region *object*
-2.1 asked for. A `KOBJ_FRAME` is a run of contiguous pages: one capability, one extent, mapped
-and withdrawn whole. It is a **sized frame** rather than a new `KOBJ_REGION` class (seL4 sizes
-frames for the same reason) and the choice was made on maintenance grounds as much as
-vocabulary: a new class would have meant a second capability type, a second index table, a
-second destroy path and a second GC mark, four things that would then have to be kept in step
-with the four that already exist. **[H-3]** is what happens when parallel copies of one idea
-drift.
-
-Three things the length made newly possible to get wrong, each now checked. The pages must be
-**distinct**, not `pages` aliases of the first: an aliased run maps, is writable, carries the
-correct bits and silently stores one page's worth, so nothing reports it. The **span** must be
-bounded including its last byte, because an address legal for a one-page frame can put a
-four-page run past the user half. And every page must be **pinned and scrubbed**: a run pinned
-only at its head puts page 1 on the free page stack when the task dies, and a run scrubbed only
-at its head leaves the rest of a buffer readable by whoever the arena hands those bytes to next.
-
-The unwind is shared with `SYS_MAP_REGION`, so a failure part-way *inside* one sized frame and a
-failure part-way *across* a run of slots are the same code and the same control arm, which is
-how `FRAME_REGION_NO_ROLLBACK=1` reddens checks at both levels from one flag.
-
-**A capability that does not describe its own object needs a side channel**, which is the gap
-the length opened and `SYS_FRAME_PAGES` closed the same day (**S37**). A delegate received a
-`CAP_FRAME` and could not learn how many pages it named except by being told out of band, or by
-trial-mapping forward one page at a time.
-
-The interesting part is where the answer was *not* put. `SYS_CAP_ENUMERATE` already reports a
-capability's type, rights, serial and generation, and adding a length there would have been one
-field: but that call is gated on `CAP_DEBUG`, a cross-task **observability** capability. A task
-would then have needed a debug capability to learn about its **own** object, and `CAP_DEBUG`
-would have begun revealing other tasks' object extents in the same change. The capability
-discipline settles it: the entitlement to know how large the object is comes from holding a
-capability that names it, so the authority is that capability and the syscall resolves a cspace
-slot.
-
-It takes a slot and never an index, and that is the security property rather than a calling
-convention. An index would be **[C-1]**'s shape, and it would make the call an
-**object-existence oracle**, a task holding nothing could walk indices and learn which frames
-are live, and how large, across every task in the system.
-
-**And a kernel object's page is never copied out from under it** (**S38**). The arena sits
-inside `[USER_PHYS_BASE, pool ceiling)` and therefore shares `page_refcounts[]` with the
-anonymous allocator, so the generic page machinery will operate on an arena page perfectly
-happily. `cow_break_pte` refuses one. The reason is not tidiness: its shared branch allocates
-from the *anonymous* pool, so a frame holder would end up with a private writable page no
-untyped region paid for, ambient resource, in a kernel whose object model exists to say that
-memory is created by exercising authority, and the PTE would be repointed at a page no
-capability names, detaching the mapping from the object while the frame's pin arithmetic went on
-claiming otherwise.
-
-The guard was written before anything could reach it, because what prevented it was two
-*circumstances*, `user_map_frame_page` never sets `PAGE_COW`, and the page-fault validator
-admits only image, heap and stack, and neither is a statement about frames. That is the shape
-**S28** and **S30** turned out to have: a property held by the behaviour of some other function
-until someone changed it. The entry named `fork` as the function that would change it, and
-`fork` landed the next day.
-
-**`fork` duplicates an address space, which is what made that reachable** (2026-08-28, roadmap
-2.3, **S39** and **S40**). `SYS_FORK` clones the caller's user half copy-on-write:
-`clone_user_aspace` points both trees at the same frames, clears `PAGE_WRITE` and sets
-`PAGE_COW` on both, and leaves the break itself to `cow_break_pte`, so fork adds no copying path
-of its own, and every frame PTE it marks is now a COW PTE of exactly the kind the guard above
-was written for.
-
-Two decisions carry the security of it. The first is that the **parent's** leaf is downgraded as
-well as the child's. Downgrading only the child's is what this looks like from the outside ("the
-child gets copy-on-write") and it yields a parent still writing through a writable mapping of a
-page the child reads: not a copy, but one process with two schedulable contexts sharing one
-stack. `FORK_SHARE_WRITABLE=1` is that kernel, and the witness catches it from both sides.
-
-The second is that a mapped frame **refuses the fork outright**, rather than being left to the
-`cow_break_pte` guard. Relying on that guard would be relying on a fault-time refusal: the fork
-would succeed, two tasks would exist, and whichever wrote first would be killed at an
-unpredictable later instruction on a page it was entitled to write a moment earlier. Refusing
-the clone reports the same policy while the caller can still act on it. The alternative that
-looks most reasonable (clone the frame *writable-shared*, since a frame **is** shared memory) is
-the one to argue with hardest: the child would hold a live mapping of a kernel object that **no
-capability of its own names**, so revoking the parent's `CAP_FRAME` would sweep the parent's PTE
-and leave the child's behind. A fork that copies mappings but not the capability graph must not
-manufacture one without the other.
-
-**And then the cspace was cloned too** (2026-08-28, **S41**), which is the half with the
-authority question in it. `cap_clone_cspace` gives the child a copy of every capability the
-parent holds, in the same slot; each one **derived**: its own fresh serial, and `badge` naming
-the parent capability's serial, which is the edge `revoke_subtree` walks. The child's authority
-is therefore a *subtree* of the parent's, and fork adds no new **root** to the capability graph.
-
-A cspace is an array of `capability_t`, so this looks like a `memcpy`, and that is wrong in two
-independent directions, which is why each is a control arm rather than a sentence. **Identical
-serials** (`FORK_CSPACE_FLAT_COPY=1`): the revocation sweep nulls by serial across every cspace,
-because a serial is supposed to name exactly one capability, so the child revoking its *own*
-slot would destroy the parent's: revocation flowing sideways instead of down, available to any
-task that can fork. **No parent edge** (`FORK_CSPACE_ORPHAN_COPY=1`): a fresh serial with
-`badge` left alone is a second *root* holding the parent's authority, which `mark_children_of`
-never marks and no revocation root matches, so revoking the parent's leaves the child's working.
-That second one is finding **3.3**'s shape, a capability keyed to a serial no sweep reaches,
-applied to a whole cspace at once.
-
-Neither is avoided by getting the copy right; both are avoided by **not writing the copy here at
-all**. The loop calls `rust_cap_grant_into`, which is what `SYS_CAP_GRANT` uses, so a forked
-capability and a delegated one are the same object by construction rather than by two
-implementations agreeing; **[H-3]** being what happens when they stop agreeing. What is not
-copied is chosen on the same principle: slots 0–3 and slot 4 are the child's own identity (the
-parent's slot 0 names the *parent*, so copying it would mint a `CAP_TCB` over the parent that
-the parent never held in a delegatable form; slot 4 is the private reply endpoint whose whole
-value is that nobody else has it), and `CAP_REPLY` is skipped by type because a one-shot reply
-held by two tasks is reply forgery.
-
-**And then `exec` had to be asked what it does to all of that** (2026-08-28, **S42**). The
-answer is **nothing**, and that is the property: `exec_into_armed_image` rebuilds the address
-space and leaves the cspace exactly as it found it, so the task that comes back holds the same
-capabilities with the same serials and the same badges; the same *position in the derivation
-graph*, not merely the same authority. Combined with **S41**, `fork(); exec();`; the only
-sequence a shell ever performs; yields a task whose authority is still a subtree of its
-parent's, and no task can launder delegated authority into a root of its own by execing.
-
-This is the hardest kind of invariant to hold, because it is written as the absence of a step:
-there is no line to point at, so nothing goes stale visibly and no reviewer is prompted to ask.
-Both control arms therefore *add* a step. `EXEC_RESET_CSPACE=1` discards everything above the
-birth endowment: the "clean slate for a new image" instinct, which breaks the pairing a shell
-needs. `EXEC_ROOT_CSPACE=1` keeps every capability and re-mints it as a **root**, which is the
-one the property exists for: the authority is byte-for-byte unchanged, every functional check
-still passes, and only the derivation graph can see that the parent's revoke no longer reaches
-it. That is finding **3.3**'s shape again, one syscall over from `FORK_CSPACE_ORPHAN_COPY`.
-
-`make smoke-forkexec` gates it, revoking three generations deep; the driver's capability, the
-child's forked copy, and what the child minted from that before execing. It also carries the one
-memory claim `smoke-fork` cannot: `task_teardown` does not free an address space (a dead task's
-tree is reclaimed later, when its slot is reused), so a forked child that merely exits never
-drops the reference `clone_user_aspace` took on each shared page. An **exec** does, through
-`create_user_pagedir`'s reclaim, making it the only path in the tree that frees a copy-on-write
-clone while its parent is still running, and a reference dropped once too often there would put
-a live page of the parent's on the free page stack.
-
-**G-3: Kernel objects are fixed-size `.bss` tables.** *Closed 2026-08-30* (roadmap 0.3, finding
-**[I-7]**). `CAP_UNTYPED` + `SYS_RETYPE` are in: cspaces, endpoints and notifications are carved
-from untyped memory (§4), which removed 504 KiB of `.bss` and made object creation an exercise
-of authority the capability graph describes. The per-task kernel stacks followed on 2026-08-30:
-4 MiB, and the thing that had actually been pinning `MAX_TASKS` at 64, which this entry (and
-§3.1 of `LIMITATIONS.md`) had been attributing to the 72 KiB `tasks[]` table. The ceiling is 256
-now.
-
-**The authority half closed on 2026-08-30** (**S57**). Creating a task is now an exercise of
-untyped authority like every other kernel object: `SYS_SPAWN`, `SYS_SPAWN_IMAGE` and `SYS_FORK`
-carve the child's cspace out of the region the caller's `CAP_UNTYPED` names, so a task endowed
-with none cannot create one, and the five task-creating syscalls no longer authorise on the
-`[C-1]` decoy in cspace slot 3. `SYS_EXEC_NAMED`/`SYS_EXEC_IMAGE` are not untyped-gated: they
-replace the caller's own image, create no task and touch no capability (**S42**).
-
-**The storage half closed on the same day**, and with it the finding. `tasks[]` is carved from
-the kernel's untyped reserve rather than declared in `.bss`, the last object class outside the
-retyping discipline, and `g_max_tasks` is derived at boot from the reserve that exists, so the
-task count is a property of the machine rather than of the image. What would actually have capped
-that count was not this table at all but the revocation sweep's `cspace_desc_t
-spaces[MAX_TASKS + 1]` **on the kernel stack**: 19% of one at 256 tasks and an overflow at 2048,
-unmeasured until it was looked for. It is allocated now. Reclaiming a dead task's cspace needed `cap_lookup`'s NULL-cspace → root-cnode
-fallback removed first; that closed on 2026-08-30, and it was two defects rather than one, the
-documented cspace-less case, and a slot past the end of the caller's own cspace resolving as
-`root_cnode[slot]`, the same escalation reached by arithmetic. Both were unreachable by
-circumstance (what `create_task` happens to do) rather than by any property of `cap_lookup`.
-`KOBJ_TASK`'s ordering constraint, a task object whose cspace slot can be NULL is one the
-fallback turns into a root cnode, is discharged.
-
-**Reclaiming a dead task's cspace landed the same day, and not as the phrase suggests.** Its
-BYTES are not returned and must not be: the arena is a monotonic bump allocator, which is what
-makes type-confusion-through-reuse structurally impossible, and the kernel reserve holds exactly
-`MAX_TASKS` cspaces. Its CONTENTS are, `task_teardown` empties it (**S56**), where it previously
-left a dead task's capabilities in memory until the slot was next used, the property resting on
-three separate readers each testing `state == 0` rather than on the data. That is the same
-meaning of "reclaim" `destroy_dyn_endpoint` has always had: the bytes stay consumed, only the
-name is reclaimed.
-
-**G-4: Endpoints are single-slot with no queue.** *Closed 2026-08-11* (roadmap 1.3, finding
-**[I-5]**). Endpoints are bounded FIFOs of `EP_QUEUE_SLOTS` (§8), so concurrent senders enqueue
-instead of colliding, and the one-shot `CAP_REPLY` landed with them, reply forgery is
-structurally impossible rather than right-gated. The shared global reply endpoint that used to
-compound this is also gone; every task has a private one.
-
-*This paragraph continued "**What remains is a blocking receive:** an empty queue still returns
-`-2` and the server polls" for four days after that stopped being true.* `SYS_IPC_RECV_BLOCK`
-(syscall 94, `h_ipc_recv_block` in `syscall_ipc.c`) sleeps on an empty queue, and both ring-3
-servers use it: `console_server.c:229` unconditionally, `fs_server.c:644` once the volume is
-provisioned, since before that it must keep polling the root inode for a login to unlock it.
-Session time on one core fell 15.18 s → 6.25 s with non-overlapping ranges. `smoke-recvblock`
-and `smoke-recvblock-smp` gate it, and `EP_QUEUE_SLOTS=1` rebuilds the single-slot endpoint as
-the control arm. What is still inexpressible is **priority inheritance**, which needs priorities
-the scheduler stores but does not use (§7), and IPC **timeouts**, which need the clock roadmap
-2.2 adds, a blocked task blocks until woken or killed.
-
-**G-5: No kernel object lifecycle.** *Closed for retyped objects* (roadmap 0.3). A retyped
-endpoint or notification is destroyed when no capability names it any more, computed by
-mark-and-sweep over the capability graph (§4). The statically-allocated well-known service
-objects are still immortal by construction; they are named by the boot protocol rather than by
-any single capability, and will stop being so as they migrate to retyped objects.
-
-**G-6, `this_cpu()` reads LAPIC MMIO on every call.** *Closed, differently* (roadmap 1.2,
-finding **[I-6]**). The MMIO read is off the hot path: `this_cpu()` derives the CPU id from the
-TSS selector in `TR` rather than reading the LAPIC, verified per-core against the LAPIC at
-bringup (`percpu_id_verify_self`, `make smoke-percpu`). `%gs`-based per-CPU data was *not*
-adopted: the ring-3 return paths load `0x33` into `%gs`, which zeroes the GS base in long mode,
-so doing it properly needs a CS-conditional `swapgs` on every ISR entry and exit plus the
-NMI/IST re-entrancy hazard. **[C-3]** did not wait for it: the per-CPU lock landed on 2026-08-11
-with its nesting depth and saved `RFLAGS.IF` in `MAX_CPUS`-indexed arrays that `this_cpu()`
-indexes directly (§6). A per-CPU *block* is still wanted, for a current-TCB pointer, and to stop
-paying a `MAX_CPUS`-wide array per datum, but nothing is blocked on it.
-
-**G-7 (a blocked task can be left holding a scheduler claim.** *Closed 2026-08-09) the checker
-was wrong, not the scheduler.* The `SCHED_INVARIANTS=1` reports were not `init` blocked in
-`sys_wait()`; they were `init` mid-`do_spawn`, where `load_staged_image_into` deliberately
-installs the *child* as the CPU's current task for the whole ELF load so the loader's
-`copy_to_user` resolves through the child's address space. The claim was live, not stale, and
-the auditor was reading an undeclared impersonation as a leak. `sched_impersonate_enter/exit`
-now record the task the CPU is *really* running (`percpu_real_task[]`) and the audit is stated
-over that, with the bracket depth itself checked. 20 pinned boots before: 10 failures; 30 after:
-0. See `TESTS.md`, `make smoke-sched-invariants`.
-
-**G-8: a task's kernel stack could be executed by two CPUs.** *Closed 2026-08-17*, in two parts.
-The claim now ends later than the switch does (§7 above, and the long note at
-`percpu_deferred_release[]` in `scheduler.c`), and a dying task's CPU parks on its own ring-0
-stack rather than on a shared one. `make smoke-kstack-race`, `smoke-kstack-park` and their
-control arms.
-
-**G-9: claims leak and kernel stacks collide on the spawn/reap path under SMP.** *Closed
-2026-08-21; narrowed 2026-08-17 and again 2026-08-20 on the way there.* This entry read "Open,
-narrowed 2026-08-17" until 2026-09-02, eleven days after the closure it contradicted, a fixed
-defect still advertised as open, in the section that is supposed to be the list of what is not
-fixed. It was a cluster rather than one defect. The component that is closed was
-architectural in the same way G-10 is: `g_exec_reenter_task`, the hand-off telling
-`interrupt_handler64` to re-enter a task through the context `SYS_EXEC_NAMED` had just built for
-it, was **one global consumed on the exit of every syscall on every CPU**, so an exec armed on
-one core could be taken by another, which then resumed that task's fresh trap frame while the
-core that ran the exec was still on it. The storage is per-CPU now, with a standing assertion in
-`exec_reenter_switch`; falsified with `EXEC_REENTER_GLOBAL=1` at 0 thefts in 30 boots against 5
-in 20. Two residues remained and were not the exec race: a claim leaked in the boot/spawn
-phase, and a CPL-0 write-fault at `lapic_eoi`. The first of those was filed as **G-12** below,
-measured at 0.31% per boot, and is closed as of 2026-09-03. *Narrowed again 2026-08-20*: the surviving fault is a
-supervisor write to `ap_idle_stacks + 0x90a0` from `interrupt_handler64 + 0x4a8`, `0xa0`
-**above** slot 0's stack top, inside slot 1's guard page, and the four `saved_ksp` producers are
-ruled out by a page-table-based guard that did not fire in 57 boots containing a reproduction.
-The claim invariant is intact in those captures, so the "unclaimed running task" description
-belongs to the other signature filed under this number. See `LIMITATIONS.md` §5.2d.
-
-**G-10: the spawn/exec path is process-wide singleton state.** *Closed 2026-08-18; its
-page-table half fixed 2026-08-17.* The half that closed first was a **use-after-free of page
-tables reachable from ring 3**: `create_user_pagedir()` reclaimed a slot's previous address
-space on the argument that "the caller is on the kernel CR3, so the tree is not the one any CPU
-is walking": true of the caller, false of a CPU parked in `kernel_idle()` (which never reloads
-CR3) and false of a task `SYS_KILL` marked dead while it was still running in ring 3 elsewhere.
-The freed frames were handed back out as ordinary pages under a live core. `switch_cr3()` now
-publishes each CPU's loaded CR3 and the reclaim refuses to free a tree anyone else holds,
-parking it for retry. Falsified with `CR3_RECLAIM_UNGUARDED=1` at 20 free-in-use boots in 20.
-
-*The rest closed the following day.* The remaining singletons: one ELF staging buffer
-(`loader_staging`), one armed header, one staged argv (`g_args_*`), one `g_spawn_stdio_spec`,
-one `g_spawn_caller`, are addressed in the two different ways they needed:
-
-- **The authority half is gone rather than guarded.** `g_spawn_caller` and
-  `g_spawn_stdio_spec` were file-scope globals written at `do_spawn` entry and read hundreds of
-  KiB of ELF copying later by `wire_child_stdio`, so a second CPU entering `do_spawn` in that
-  window redirected the read to *its* cspace and the child inherited a pipe capability from a
-  task that never spawned it. They are parameters now (`do_spawn_stdio` → `do_spawn_inner` →
-  `wire_child_stdio`), which makes the wrong parent unexpressible rather than unlikely.
-- **The buffer half is serialised.** `spawn_stage_acquire()` / `spawn_stage_release()` bracket
-  every arm → consume window in the kernel; the four syscall entry points, the boot launchers,
-  `SYS_SUDO`'s consume, and every gated self-test that stages an image by hand. Per-CPU was the
-  right answer for the exec hand-off and is the wrong one here: a staging buffer per core is
-  `LOADER_STAGING_BYTES` of real memory for state that is logically per-*spawn*. Interrupt
-  latency is not a new cost, `int 0x80` is an interrupt gate, so the whole spawn already ran
-  with `IF=0`, and the lock is outermost, taken by entry points holding nothing.
-- **And the window is now owned.** See G-11: the staged image records the task that armed it,
-  so a theft is refused rather than executed.
-
-See `LIMITATIONS.md` §5.2e.
-
-**G-11: the armed image was ambient state.** *Closed 2026-08-18.* The staged image is one
-process-wide buffer, and nothing recorded the connection between the task that armed it and the
-task that spawned it. `SYS_SUDO` turns that into a privilege boundary: it re-authenticates the
-caller and then spawns whatever is armed **as uid 0**, in a separate syscall from the arm, so a
-correct password could elevate a program the authenticating task never staged, a confused deputy
-reachable from ring 3 by any task holding the spawn capability. Nothing in userspace calls
-`sudo` today, which is the only reason this is a G-number and not a C-number.
-`loader_arm_commit()` is now the sole way to publish an armed image and records the arming task
-with it; `do_spawn` and `h_sudo` refuse any image whose owner is not the current task, fail
-closed on an unowned one, and audit the refusal. The same check is what lets the spawner's
-identity be handed to `wire_child_stdio` as a *proved* parentage rather than a remembered one.
-Witness `make smoke-spawn-owner`, falsified by `SPAWN_OWNER_UNCHECKED=1`
-(`smoke-spawn-owner-control`, which spawns the foreign image on every boot).
-
-**G-12: two CPUs current on one task, through the user-entry path.** *Filed 2026-09-02;
-attributed and closed 2026-09-03.* `sched_enter_user()` claimed its task **unconditionally**, and
-`spawn_initial_userspace_init()` published that task as schedulable one call earlier. Between the
-publish and the claim the task satisfies every condition of `preempt_on_tick()`'s selection loop
-and is claimed by nobody, so an AP's timer tick landing there takes it, and the entering CPU
-then takes it as well. Two CPUs current on one task, neither impersonating, both `iretq`ing onto
-its single kernel stack: `percpu_current=[1,1,0,0]` with `imp=[0,0,0,0]`, which is the `<-` claim
-direction breaking and the consequence this file's own claim-invariant note gives for it. All
-three surviving symptoms follow, a resume `%rsp` of `0x1`, the stack canary, and an instruction
-fetch into `KSTACK_REGION_VMA`.
-
-Fixed in two rules. `enter_user_impl()` re-validates under the scheduler lock and fails closed: a
-CPU does not enter a task another CPU holds, nor one that has stopped being schedulable: it
-parks and reports, because a refusal means some launch site still has the window.
-`sched_publish_and_enter_user()` removes the window at the launch site, doing the publish, the
-claim and `set_current_task()` in one acquisition of the lock. Witness `make smoke-enter-user-claim`,
-falsified by `ENTER_USER_PUBLISH_EARLY=1` (the steal, 3 boots in 3) and by
-`+ ENTER_USER_CLAIM_UNCHECKED=1` (the collision, 6 boots in 6), with `ENTER_USER_STEAL_WIDEN=1`
-set in all three arms. **It was not [G-9] reopened**: [G-9]'s mechanisms are fixed and falsified,
-and the deferred-release hand-over machinery was positively **excluded** here: `CLAIM_TRACE=1`
-was silent across 1000 boots including all four reproductions. See
-`docs/investigations/G-12-claim-invariant-residue.md`.
-
-**G-13: the installer's format on a slow disk.** *Filed 2026-09-02 as "cause unestablished";
-measured and the gate repaired 2026-09-03.* `smoke-installer` timed out twice on `main` after
-300 s waiting for `INSTALLER: PASS installed`, having seen `INSTALLER: formatting` and nothing
-after it, no fault, no panic. The argument that ruled out a slow runner appealed to the boot
-step, which was normal in both captures, and **the boot step cannot answer that question**:
-throttling the guest's disk gives `format ≈ 5.2 s + 4700/IOPS`, the format is ~4,700
-synchronous PIO operations, with the boot step **flat at 1.7 s at every point**. Twelve CPU
-burners, by contrast, slow both by ~2.1x and leave the format:boot ratio at 2.6. At ≤16 IOPS the
-format crosses 300 s, and `SESSION_DISK_IOPS=12` reproduces the CI signature exactly.
-
-The repair is a **stall** bound rather than a bigger budget, because no total budget separates a
-slow disk from a wedge at any value: raise it and a wedge takes longer to report, lower it and a
-slow disk fails. `INSTALLER_FORMAT_STALL` (30 s) measures seconds with no guest disk operation,
-read from QEMU's block statistics over QMP, the image's mtime and the QEMU process's
-`write_bytes` both freeze for ~200 s during the format's `merkle_build` read phase, and
-`/proc/PID/io` `syscr` keeps advancing even when the guest is wedged, so all three cheaper
-signals are wrong in one direction or the other. Witnessed by `make smoke-installer-slowdisk`
-(12 IOPS, format ~420 s, the install must still succeed) and falsified by
-`STORAGE_FORMAT_WEDGE=1` (`smoke-installer-wedge-control`, which requires the failure to NAME a
-wedge rather than merely to fail, before this both cases printed the same timeout, which is
-what left the finding unattributable). Which case the two CI runs were is not recoverable: the
-gate kept no serial log then, and does now. The budget was never raised; see `LIMITATIONS.md`
-§5.2h.
-
-**G-14: ring 0 carries more evictable policy than verifiable machinery.** *Measured and
-classified 2026-09-10.* The kernel is 37 linked objects, 40,316 physical and 20,532 code
-lines. Until this was classified, nothing in the tree said which of those constitute the
-security core, so "shrink ring 0" had no subject: the seven files a reviewer named come to
-13,977 physical lines but 6,318 code lines, and the same target is met or missed depending on
-which you count. `.github/ring0-classification.yml` (**S87**) now assigns each object to
-`core` (9,676 code lines), `driver` (2,482), `service` (5,684) or `selftest` (2,690).
-
-**The gap the numbers expose** is not the core's size but the company it keeps: `service`,
-the encrypted object store and on-disk filesystem, accounts and Argon2id, ELF loading, the
-CSPRNG, is 5,684 code lines of policy sitting at the same privilege as the capability
-engine, and a defect in any of it is a defect in ring 0. `driver` adds 2,482 more. Roadmap
-2.6 and 2.7 track the network stack and the drivers; **2.7a, added with this entry, tracks
-the services, which were tracked nowhere** and are the larger half.
-
-**What is gated and what is not.** The classification is gated: an object linked into
-`kernel.elf` and not listed fails the build, so ring 0 cannot grow by accident. The core's
-size is ratcheted at exactly its measured value. **Neither of those evicts anything**:
-`storage.c` holds the volume key and `kusers.c` is reached from a capability-minting
-`SYS_SUDO`, so both moves are blocked on a design decision rather than a mechanism. This
-entry stays open until 2.7a closes.
+**G-14.** `.github/ring0-classification.yml` classifies every object linked into the kernel as
+`core`, `driver`, `service` or `selftest` (S87), and `tools/check_ring0_budget.py` holds `core` to
+its measured size, so ring 0 cannot grow by accident. What the classification exposes is the
+company the core keeps: the `service` class (the on-disk filesystem and object store, accounts and
+Argon2id, ELF loading and spawn staging, the CSPRNG's seeding) is about 6,000 code lines of policy
+at the same privilege as the capability engine, and a defect in any of it is a defect in ring 0.
+Evicting it is roadmap 2.7a, and the two large moves are design decisions rather than mechanisms:
+`storage.c` holds the volume key, and `kusers.c` is reached from the capability-minting
+`SYS_SUDO`. The capability filesystem's phase 2 (roadmap 2.10) and the installed system's
+`auth_server` (roadmap 2.11) are those decisions.

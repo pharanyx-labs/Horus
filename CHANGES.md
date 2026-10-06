@@ -643,6 +643,24 @@ in this file.
 
 ### Changed
 
+- **`THIRD_PARTY.md` lists the vendored GNU coreutils (GPLv3) and TinyCC (LGPL 2.1).** It said
+  everything not listed was MIT, and listed neither. The website no longer says the modules
+  carry `init` and the servers (they are in the kernel image) or that an installed disk boots by
+  itself; the security-report template no longer calls [I-7] open, and the TinyCC README no
+  longer says `tcc` links newlib statically.
+
+- **`docs/SYSCALLS.md` lists every syscall.** One table, ordered by number, gives each call's
+  arguments, what it does and the capability it needs, built from `include/syscall.h` and the
+  dispatch table. Sixteen numbers were missing from the old reference, among them the live
+  `SYS_CAP_TRANSFER`, `SYS_CAP_MOVE`, `SYS_IRQ_ACK`, `SYS_TASK_RESUME` and `SYS_TASK_EXIT_INFO`.
+
+- **`docs/ARCHITECTURE.md` describes the system as built.** It said `netd` drives virtio-net,
+  the device table is a bus-0 scan, `tasks[]` is not yet carved from untyped memory, the shared
+  library is not yet dynamically linked, `MAX_ENDPOINTS` is 128, `fs_server` holds
+  `CAP_BLOCK_DEV` and `console_server` polls the keyboard; none of those is true now. The gap
+  register (§14) is a table with G-14 the one gap open. The README no longer lists `netd` among
+  the servers the shipped system starts.
+
 - **Every Kani proof runs on every pull request.** Two of the proofs that a revoked capability's
   stale copy is refused (the lineage-generation pair) took longer than 1500 s each, so they ran
   only in a manual `kani` job that had never run and could not have failed. They now stub the

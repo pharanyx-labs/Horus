@@ -122,8 +122,9 @@
     <div>
       <h3 id="grub-loads-the-kernel-and-the-boot-modules">GRUB loads the kernel and the boot modules</h3>
       <p>
-        A Multiboot2 handoff brings up a higher-half 64-bit kernel. The modules are the
-        userland: <code>init</code>, the two servers, the shell, coreutils, man pages.
+        A Multiboot2 handoff brings up a higher-half 64-bit kernel. <code>init</code>, the
+        servers and the shell are built into the kernel image; the modules carry the shared
+        C library and, on a development build, the coreutils, <code>tcc</code> and man pages.
       </p>
     </div>
   </li>

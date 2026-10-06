@@ -25,9 +25,10 @@ upheld by any caller. A `# Safety` clause reading "none" would satisfy it. It is
 a floor -- the author had to think about the contract and say so -- and Miri and
 the Kani proofs are what actually test the code beneath.
 
-Scope is `rust/src/*.rs`, production code only: everything from the first
-`#[cfg(test)]` or `mod tests` onward is skipped, because a test that constructs a
-deliberately malformed cspace is exercising the boundary rather than crossing it.
+Scope is `rust/src/*.rs`, production code only: every top-level module gated by
+`#[cfg(test)]` or `#[cfg(kani)]` is skipped, because a test or proof that
+constructs a deliberately malformed cspace is exercising the boundary rather
+than crossing it.
 
 Exit 0 if every production `unsafe` is documented, 1 otherwise.
 """
@@ -65,13 +66,42 @@ ITEM_START = re.compile(r"^\s*(pub\s+)?(unsafe\s+)?(extern\s+\"C\"\s+)?fn\b")
 DOC_OR_ATTR = re.compile(r"^\s*(///|//|#\[)")
 
 
+# A module compiled only for tests or for Kani: `#[cfg(test)]` or `#[cfg(kani)]`,
+# then (after any further attributes) a top-level `mod name {`.
+GATED_CFG = re.compile(r"^#\[cfg\((test|kani)\)\]\s*$")
+TOP_MOD = re.compile(r"^(pub\s+)?mod\s+\w+\s*\{")
+
+
 def production_lines(path):
-    """Lines before the test module, and the index they start at."""
+    """The file's lines with every test-only and proof-only module blanked.
+
+    Until 2026-10-06 this returned everything BEFORE the first `#[cfg(test)]`
+    line. lib.rs has `#[cfg(test)] extern crate alloc;` at its top, so the scan
+    stopped there and almost the whole file, every ELF and page-fault FFI
+    export in it, was never checked; and a `#[cfg(kani)]` module placed above a
+    file's tests was checked as if it were production code. Now exactly the
+    gated modules are skipped, from their attribute to the column-0 `}` that
+    closes them (rustfmt layout, which every file here follows), and every
+    other line keeps its index so reported line numbers stay true.
+    """
     lines = path.read_text(encoding="utf-8").split("\n")
-    for i, line in enumerate(lines):
-        if re.match(r"\s*#\[cfg\(test\)\]", line) or re.match(r"\s*mod tests\b", line):
-            return lines[:i]
-    return lines
+    out = list(lines)
+    i = 0
+    while i < len(lines):
+        if GATED_CFG.match(lines[i]):
+            j = i + 1
+            while j < len(lines) and lines[j].startswith("#["):
+                j += 1
+            if j < len(lines) and TOP_MOD.match(lines[j]):
+                k = j + 1
+                while k < len(lines) and lines[k] != "}":
+                    k += 1
+                for n in range(i, min(k + 1, len(lines))):
+                    out[n] = ""
+                i = k + 1
+                continue
+        i += 1
+    return out
 
 
 def main():

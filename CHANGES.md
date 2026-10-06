@@ -643,6 +643,14 @@ in this file.
 
 ### Changed
 
+- **Three more Kani proofs gate every pull request.** Revocation is proved across two cspaces:
+  a child granted into another cspace and a grandchild granted back are revoked with their root,
+  and an independent capability on the same object survives (S3, S4). An unseeded random pool is
+  proved to refuse and zero every request (S30), and the login throttle to lock an account within
+  `MAX_AUTH_FAILS` failures from any stored count. The root-revocation proof now stubs the lineage
+  hash and takes 37 s instead of 157 s. `SECURITY.md` S2, S5 and S30 now name the Kani proofs
+  that witness them.
+
 - **`THIRD_PARTY.md` lists the vendored GNU coreutils (GPLv3) and TinyCC (LGPL 2.1).** It said
   everything not listed was MIT, and listed neither. The website no longer says the modules
   carry `init` and the servers (they are in the kernel image) or that an installed disk boots by

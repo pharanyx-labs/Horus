@@ -2392,8 +2392,15 @@ mod kani_proofs {
     /// for every distinct serial triple, so no derived authority can outlive its
     /// ancestor. Together with the proof above this pins revocation to exactly
     /// the target's subtree: no more (no ancestors) and no less (all descendants).
+    ///
+    /// The serial-to-cell hash is stubbed (see `lineage_idx_model`): revocation
+    /// bumps the lineage generation of every serial it revokes, and nothing
+    /// asserted here depends on which cell that is. That took this proof from
+    /// 157 s to 37 s (measured 2026-10-06). The proof above revokes one serial
+    /// and was no faster stubbed (25 s either way), so it keeps the real hash.
     #[kani::proof]
     #[kani::unwind(6)]
+    #[kani::stub(lineage_idx, lineage_idx_model)]
     fn revoke_root_nulls_every_descendant() {
         let p: u32 = kani::any();
         let c: u32 = kani::any();
@@ -2412,6 +2419,39 @@ mod kani_proofs {
         assert!(cs[0].typ == CAP_NULL, "the revoked root must be nulled");
         assert!(cs[1].typ == CAP_NULL, "a direct child must be revoked with its parent");
         assert!(cs[2].typ == CAP_NULL, "a grandchild must be revoked transitively");
+    }
+
+    /// Revocation is SYSTEM-WIDE, not per-cspace (S3, S4): rust/KANI.md named a
+    /// model across several cspaces as the next step, and this is it. A root in
+    /// cspace A is granted into cspace B, and that child is granted back into A.
+    /// Revoking the root nulls the child in B and the grandchild back in A, and
+    /// spares an independent capability in B on the SAME object, for every
+    /// distinct serial quadruple. The peer is what separates "revoke the subtree"
+    /// from "revoke everything naming the object", the [I-3] defect. Hash
+    /// stubbed as above.
+    #[kani::proof]
+    #[kani::unwind(8)]
+    #[kani::stub(lineage_idx, lineage_idx_model)]
+    fn revoke_reaches_every_cspace_and_spares_a_peer() {
+        let (p, c, g, q): (u32, u32, u32, u32) = (kani::any(), kani::any(), kani::any(), kani::any());
+        kani::assume(p != 0 && c != 0 && g != 0 && q != 0);
+        kani::assume(p != c && p != g && p != q && c != g && c != q && g != q);
+        let obj: u64 = 7;
+        let cap = |badge: u32, serial: u32| Capability {
+            typ: 1, rights: 0x3f, object: obj, badge, serial, generation: 0, reserved: 0, token: 0,
+        };
+        let mut a = [cap(0, p), cap(c, g)];
+        let mut b = [cap(p, c), cap(0, q)];
+        let d = [
+            CSpaceDesc { caps: a.as_mut_ptr(), size: 2, caps_in_use: core::ptr::null_mut() },
+            CSpaceDesc { caps: b.as_mut_ptr(), size: 2, caps_in_use: core::ptr::null_mut() },
+        ];
+        unsafe { revoke_subtree(d.as_ptr(), 2, p, obj) };
+
+        assert!(a[0].typ == CAP_NULL, "the revoked root must be nulled");
+        assert!(b[0].typ == CAP_NULL, "a child granted into another cspace must be revoked");
+        assert!(a[1].typ == CAP_NULL, "a grandchild granted back must be revoked");
+        assert!(b[1].typ != CAP_NULL && b[1].serial == q, "an independent peer on the same object must survive");
     }
 
     /// The one property of the real `lineage_idx` hash the two lineage proofs

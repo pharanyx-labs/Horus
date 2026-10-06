@@ -781,7 +781,7 @@ in this file.
   at the first `#[cfg(test)]` line in each file, and `lib.rs` opens with
   `#[cfg(test)] extern crate alloc;`, so the ELF and page-fault FFI exports below it were never
   checked for a `# Safety` clause. It now skips exactly the modules compiled only for tests or for
-  Kani. The scan covers 53 `unsafe` sites instead of 44, and all 53 were already documented.
+  Kani. The scan covers 53 `unsafe` sites instead of 43, and all 53 were already documented.
 
 - **`smoke-kdiag-split-control` went red about one CI run in 24 on changes that do not touch the
   console.** Its bound of eight boots was set from one workstation's reproduction rate (13 of 20);

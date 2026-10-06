@@ -643,6 +643,12 @@ in this file.
 
 ### Changed
 
+- **`THIRD_PARTY.md` lists the vendored GNU coreutils (GPLv3) and TinyCC (LGPL 2.1).** It said
+  everything not listed was MIT, and listed neither. The website no longer says the modules
+  carry `init` and the servers (they are in the kernel image) or that an installed disk boots by
+  itself; the security-report template no longer calls [I-7] open, and the TinyCC README no
+  longer says `tcc` links newlib statically.
+
 - **`docs/SYSCALLS.md` lists every syscall.** One table, ordered by number, gives each call's
   arguments, what it does and the capability it needs, built from `include/syscall.h` and the
   dispatch table. Sixteen numbers were missing from the old reference, among them the live

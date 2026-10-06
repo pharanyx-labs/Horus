@@ -190,7 +190,7 @@ horus login: <span class="term__caret"></span></pre>
 <h2 id="install" data-toc="Installing">Install it onto a machine's own storage.</h2>
 <div class="prose">
   <p class="lead">
-    The installer writes Horus onto a disk the machine can then boot from by itself. It
+    The installer writes an encrypted Horus volume onto the machine's own disk. It
     installs onto <strong>eMMC</strong>, the flash soldered into many small laptops (proved on
     a Lenovo IdeaPad), and onto <strong>IDE and ATA disks</strong>. NVMe and SATA SSDs are not
     supported yet.
@@ -210,6 +210,12 @@ horus login: <span class="term__caret"></span></pre>
     on a review screen, and erases nothing until you type the confirmation word. The volume is
     encrypted unless you deliberately choose otherwise, and every later boot says which kind it
     found.
+  </p>
+  <p>
+    The disk does not yet carry a bootloader of its own, and the stick's live entry never opens
+    an installed disk. To start the installed system, boot a stick holding
+    <code>horus.iso</code> (<code>make iso</code>), which finds and opens the volume. A disk
+    that boots by itself is the next piece of work.
   </p>
   <p class="note">
     Supporting another kind of disk means writing one driver that reads and writes blocks.

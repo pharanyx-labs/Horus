@@ -97,3 +97,10 @@ gating:
   - lineage_idx_is_always_inside_the_table                   # 0s
   - revoke_invalidates_recorded_generation                   # 234s
   - revoke_does_not_touch_a_distinct_lineage_cell            # 243s
+  # The user-address validators (rust/src/lib.rs, S112), added 2026-10-06 with
+  # the fix the first of them found: both trusted the bounds C passes and would
+  # accept a kernel-half address given kernel-half bounds. Both are equivalences.
+  # FALSIFIED by removing each ceiling check (each red in 1 s) and by a
+  # validator that refuses everything (red in 1 s).
+  - page_fault_never_accepts_a_kernel_half_address           # 3s
+  - signal_handler_is_never_a_kernel_half_address            # 1s

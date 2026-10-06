@@ -384,6 +384,13 @@ in this file.
 
 ### Security
 
+- **A task record with kernel-half bounds would have made a kernel address the task's own.** The
+  page-fault validator and the signal-handler check took a task's image and heap bounds from C
+  and trusted them, so bounds reaching into the kernel half would have let the pager demand-map a
+  kernel address for the task, or a signal return to one. Nothing in the kernel sets such bounds
+  today; the Rust now refuses any address above the user ceiling before it consults them, and
+  two Kani proofs gate it (S112).
+
 - **A live boot no longer opens an installed system.** The live entry mounted the installed
   volume as its store, and a login with the install password unlocked it, so the installed root
   logged in on a live boot and the volume could be written. A live boot now opens no disk and

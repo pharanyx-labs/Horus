@@ -32,6 +32,8 @@ them.
 | `mint_keeps_the_token` | A minted copy always carries its source's token, so narrowing never loses the identity a server tells clients apart by. |
 | `elf_header_validation_is_sound` | The ELF header validator in `lib.rs` rejects every malformed header without an out-of-bounds read, over the whole input space. |
 | `elf_load_plan_is_sound` | The load-plan validator does the same for program headers: every accepted segment lies inside the image it came from. |
+| `page_fault_never_accepts_a_kernel_half_address` | **S112.** For every fault address and every image and heap bounds C could pass, the page-fault validator accepts exactly the user-half addresses inside the image, the heap or the low stack. A kernel address is never the task's own, however wrong the bounds. |
+| `signal_handler_is_never_a_kernel_half_address` | **S112.** The same for a signal handler: accepted exactly inside the task's image and below the user ceiling. |
 | `refc_index_is_always_inside_the_table` | **The bound between a `u32` C chose and a raw write.** For every address and every pool size up to the table's capacity, an accepted index is inside both the caller's table and the fixed-size one `refc_table_ok` insists on. This is what `rust_page_ref_inc` and `rust_page_ref_dec` rely on before `refcounts.add(idx)`. |
 | `refc_index_names_the_page_that_contains_the_address` | The index is not merely in range: it names the page that actually contains the address. Stated as containment rather than by recomputing the division, so the proof characterises the result instead of restating the implementation. A harness that recomputed it would pass against a wrong derivation copied into both call sites. |
 | `every_page_in_the_pool_has_an_index` | The completeness half: every page the table can track is reachable, so the derivation has no gap that would silently stop refcounting a page. Without it, a derivation that refused everything would satisfy the two above. |
@@ -58,7 +60,7 @@ serials (how often two collide) is not proved; it is the fail-safe A3 residual.
 
 All of them. `.github/kani-harnesses.yml` lists every harness, the required `kani-bounded` job
 runs each one on every pull request, and `tools/check_kani_harnesses.py` fails the build if a
-proof is missing from the list. All **24** gate. There is no way to excuse a proof from running:
+proof is missing from the list. All **26** gate. There is no way to excuse a proof from running:
 the checker refuses any list but `gating`. The count is declared in `.github/doc-claims.yml` and
 re-derived on every run.
 

@@ -382,12 +382,13 @@ required:
 # Exempt, each with the reason it cannot or should not gate a merge.
 advisory:
   fuzz: >-
-    Advisory by design. cargo-fuzz runs each target for a fixed 30-second
-    budget, so a green result means "no crash found in 30 seconds", not "no
-    crash exists". Time-boxed search is evidence of effort, not of absence, and
-    gating on it would convert a scheduling hiccup into a merge block while
-    adding no assurance. A crash it does find is a finding to triage, not a
-    check to re-run.
+    Schedule-only since 2026-10-06 (fuzz.yml: nightly cron plus
+    workflow_dispatch), so it never runs on a pull request and has no
+    conclusion to gate one with. Unlike the ci.yml job it replaced, which could
+    not fail, it fuzzes each target for ten minutes and goes red on a crash. A
+    crash is a finding to triage, not a run to retry. Listed here, like
+    ruleset-audit, so that deleting it trips ci-gating rather than passing
+    quietly.
 
   ruleset-audit: >-
     Schedule-only (daily cron plus workflow_dispatch), so it never runs on a

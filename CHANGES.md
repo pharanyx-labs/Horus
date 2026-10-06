@@ -667,6 +667,12 @@ in this file.
 
 ### Changed
 
+- **Fuzzing runs nightly, for ten minutes per target, and a crash fails it.** It ran on every pull
+  request for 30 seconds per target, with every step set to carry on after an error, so it could
+  not report a crash. It now runs each night from `fuzz.yml`, one job per target, with a pinned
+  nightly, `cargo-fuzz` and `libfuzzer-sys` (`rust/fuzz/Cargo.lock` is committed), each target's
+  corpus carried over from the night before, and the crashing input kept as an artifact.
+
 - **The SMP race gates under KVM now gate every merge.** `smoke-smp-kvm` runs the SMP base gates
   a second time with the vCPUs truly in parallel, and found HORUS-20260921-03 on its first run.
   It was exempt until its pass rate was measured: 83 of 83 readable runs green from 2026-09-25

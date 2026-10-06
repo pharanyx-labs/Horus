@@ -1,0 +1,98 @@
+# Nightly fuzzing of the Rust FFI boundary, one job per target, and a crash
+# fails the run.
+#
+# Until 2026-10-06 fuzzing ran inside ci.yml on every push and pull request, for
+# 30 seconds per target, with `continue-on-error: true` on all three steps and
+# `|| true` after every run: it could not fail, so its green said nothing, and an
+# unpinned nightly and cargo-fuzz meant it did not even run the same tools twice.
+# The maintainer chose to move it here (2026-10-06 CI and Kani survey): a search
+# long enough to mean something, run where its time does not hold up a merge,
+# and able to report what it finds.
+#
+# What a red run means: libFuzzer found an input that panics a target or fails
+# one of its assertions. The input is uploaded as an artifact; reproduce it with
+#   cargo +nightly-2026-08-21 fuzz run <target> <artifact>   (from rust/)
+# and fix the code, not the target. A crash is a finding to triage, never a run
+# to retry.
+#
+# Each target's corpus is cached between nights so the search continues instead
+# of restarting. The cache is written only by this workflow, which runs only on
+# main (schedule and manual dispatch); a pull request cannot write to it. A
+# corpus only chooses inputs: a poisoned one could waste a night's search or
+# surface a false crash, never change what the targets check.
+#
+# Not a merge gate (it never runs on a pull request, so it has no conclusion to
+# gate one with); classified in .github/ci-gating.yml so that deleting it trips
+# `ci-gating` rather than passing quietly.
+
+name: Fuzz
+
+on:
+  schedule:
+    - cron: '40 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    name: Fuzz ${{ matrix.target }} for 10 minutes (a crash fails it)
+    runs-on: ubuntu-latest
+    # Ten minutes of fuzzing, plus the toolchain, cargo-fuzz and the build.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - ct_eq
+          - validate_page_fault
+          - signal_handler_addr
+          - elf_validate_header
+          - elf_load_plan
+          - elf_i386_reloc
+          - elf_x86_64_reloc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      # Pinned, all of it. The nightly is the one Kani 0.68.0 uses, so the
+      # project carries one fuzzing-and-proving nightly rather than two;
+      # cargo-fuzz by version and lockfile; libfuzzer-sys by rust/fuzz/Cargo.lock,
+      # which `fetch --locked` refuses to re-resolve.
+      - name: Install the pinned nightly and cargo-fuzz
+        run: |
+          set -euo pipefail
+          rustup toolchain install nightly-2026-08-21 --profile minimal --component rust-src
+          cargo install cargo-fuzz --version 0.13.2 --locked
+
+      - name: The fuzz crate's lockfile is current
+        run: cargo +nightly-2026-08-21 fetch --locked --manifest-path rust/fuzz/Cargo.toml
+
+      - name: Restore this target's corpus
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: rust/fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+
+      # No continue-on-error and no `|| true`: libFuzzer exits non-zero on a
+      # crash, and that is the whole point of the job. Checked 2026-10-06 by
+      # weakening one target's assertion locally: the run exited 1 within
+      # seconds.
+      - name: Fuzz for 10 minutes
+        working-directory: rust
+        run: |
+          cargo +nightly-2026-08-21 fuzz run "${{ matrix.target }}" -- \
+            -max_total_time=600 -rss_limit_mb=4096
+
+      - name: Keep the crashing input
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: rust/fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: ignore

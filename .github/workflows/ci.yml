@@ -4918,47 +4918,8 @@ jobs:
           path: sbom.cyclonedx.json
           if-no-files-found: error
 
-  # Advisory job: coverage-guided fuzzing of the pointer/scalar FFI predicates in
-  # the Rust security core (rust/fuzz). Non-gating by design — it hunts panics/UB
-  # on adversarial inputs, but a finding (or a flaky nightly/libFuzzer setup) must
-  # not redden the pipeline. The hard gates stay the other four jobs (rust,
-  # kernel, smoke, reproducible). Short per-target budget for CI; run longer
-  # locally with `cargo +nightly fuzz run <target>`.
-  fuzz:
-    name: FFI fuzzing (cargo-fuzz, advisory)
-    runs-on: ubuntu-latest
-    # Backstop, not a performance budget: this job normally finishes in
-    # minutes. Without it the default is 360, so a runner wedged on its
-    # package install idles for six hours and the run never concludes --
-    # which cost three runs on 2026-08-19. See CHANGES.md.
-    timeout-minutes: 105
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
-
-      - name: Install nightly toolchain + cargo-fuzz
-        continue-on-error: true
-        run: |
-          rustup toolchain install nightly --profile minimal
-          rustup component add --toolchain nightly rust-src
-          # --locked for the same reason as cargo-audit above. This job is
-          # advisory and swallows the status, so a resolution break here would
-          # be SILENT rather than loud -- which is the worse of the two.
-          cargo install cargo-fuzz --locked || true
-
-      - name: Build fuzz targets
-        continue-on-error: true
-        working-directory: rust
-        run: cargo +nightly fuzz build
-
-      - name: Run fuzz targets (short budget)
-        continue-on-error: true
-        working-directory: rust
-        run: |
-          for t in ct_eq validate_page_fault signal_handler_addr elf_validate_header elf_load_plan elf_i386_reloc elf_x86_64_reloc; do
-            echo "== fuzzing $t =="
-            cargo +nightly fuzz run "$t" -- -max_total_time=30 -rss_limit_mb=4096 || true
-          done
-
+  # Fuzzing is not here: since 2026-10-06 it runs nightly in fuzz.yml, ten
+  # minutes per target, and a crash fails it.
   miri:
     name: "Undefined-behaviour check of the security core (Miri)"
     runs-on: ubuntu-latest

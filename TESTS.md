@@ -18,7 +18,7 @@ Two rules shape all of them:
 | Rust unit tests | The capability algebra, the ELF loader, crypto and the CSPRNG, beside the code in `rust/src/` | `cargo test --manifest-path rust/Cargo.toml` |
 | Kani proofs | Bounded proofs over the capability algebra, the ELF validators and page reference counts ([`rust/KANI.md`](rust/KANI.md)) | `cd rust && cargo kani` |
 | Miri | The security core's tests, interpreted for undefined behaviour | the `miri` CI job |
-| Fuzzing | The pure FFI predicates, under cargo-fuzz ([`rust/fuzz/README.md`](rust/fuzz/README.md)) | `cargo +nightly fuzz run <target>` |
+| Fuzzing | The pure FFI predicates, under cargo-fuzz, ten minutes per target nightly ([`rust/fuzz/README.md`](rust/fuzz/README.md)) | `cargo +nightly-2026-08-21 fuzz run <target>` |
 | QEMU integration tests | A purpose-built kernel boots headless and the test reads its serial output | `make smoke-<name>` |
 | Scripted sessions | Python drivers under `tools/` type into the real shell, over serial or the emulated keyboard | `make smoke-session` and others below |
 | Repository checkers | `tools/check_*.py`, each with a harness `tools/test_check_*.sh` that has one failing case per rule | the CI jobs below |
@@ -324,10 +324,10 @@ Currently **91 of 102** implemented syscalls are covered (`SECURITY.md` S25; `do
 ## CI
 
 
-`.github/workflows/ci.yml` defines **134** jobs, run on every push and pull request; most are sharded runs of the gates above. With CodeQL and the scheduled ruleset audit the total is below: **136** jobs, **139** contexts, counted by `tools/check_ci_gating.py`.
+`.github/workflows/ci.yml` defines **133** jobs, run on every push and pull request; most are sharded runs of the gates above. With CodeQL, the scheduled ruleset audit and the nightly fuzzing (`fuzz.yml`, one context per target) the total is below: **136** jobs, **145** contexts, counted by `tools/check_ci_gating.py`.
 
 `.github/ci-gating.yml` classifies every job as gating or exempt with a written reason, and the `ci-gating` job fails on a job in neither list. The branch ruleset requires two checks: `gates`, which needs every gating job and passes only if each succeeded (skipped or cancelled counts as failed), and CodeQL.
-The set is **137 gating contexts and 2 reasoned exemptions**: `fuzz` (a short time-boxed search is evidence of effort, not absence) and `ruleset-audit` (runs on a schedule, never on a pull request).
+The set is **137 gating contexts and 8 reasoned exemptions**: `fuzz` (seven targets, ten minutes each, nightly; a crash fails it, but it never runs on a pull request) and `ruleset-audit` (runs on a schedule, never on a pull request).
 
 The jobs that are not boot tests:
 
@@ -379,7 +379,7 @@ The jobs that are not boot tests:
 | `syscall-abi` | Every user pointer reaches the kernel full-width (issue #176) |
 | `reproducible` | Verify reproducible kernel build |
 | `security` | Security scans + SBOM generation (Semgrep, Trivy, gitleaks, etc.) |
-| `fuzz` | FFI fuzzing (cargo-fuzz, advisory) |
+| `fuzz` | Nightly fuzzing of each FFI target for ten minutes, in `fuzz.yml` (a crash fails it) |
 | `miri` | Undefined-behaviour check of the security core (Miri) |
 | `kani-bounded` | Formal verification of the capability algebra (every Kani proof) |
 

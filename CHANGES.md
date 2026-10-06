@@ -643,6 +643,11 @@ in this file.
 
 ### Changed
 
+- **`docs/SYSCALLS.md` lists every syscall.** One table, ordered by number, gives each call's
+  arguments, what it does and the capability it needs, built from `include/syscall.h` and the
+  dispatch table. Sixteen numbers were missing from the old reference, among them the live
+  `SYS_CAP_TRANSFER`, `SYS_CAP_MOVE`, `SYS_IRQ_ACK`, `SYS_TASK_RESUME` and `SYS_TASK_EXIT_INFO`.
+
 - **`docs/ARCHITECTURE.md` describes the system as built.** It said `netd` drives virtio-net,
   the device table is a bus-0 scan, `tasks[]` is not yet carved from untyped memory, the shared
   library is not yet dynamically linked, `MAX_ENDPOINTS` is 128, `fs_server` holds

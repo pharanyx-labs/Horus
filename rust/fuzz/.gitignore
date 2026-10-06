@@ -2,4 +2,5 @@ target/
 corpus/
 artifacts/
 coverage/
-Cargo.lock
+# Cargo.lock is committed (since 2026-10-06): the nightly fuzz job runs
+# `cargo fetch --locked`, so libfuzzer-sys is pinned like every other tool.

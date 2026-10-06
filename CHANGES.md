@@ -384,6 +384,13 @@ in this file.
 
 ### Security
 
+- **The tools that build and check Horus are pinned.** The Rust compiler that built the security
+  core was whatever stable the CI runner shipped that week; it is now `rust-toolchain.toml`
+  (1.98.1), on developer machines and CI alike. Kani is pinned to 0.68.0, the version every
+  recorded proof time was measured with, and PyYAML and semgrep to fixed versions. The build no
+  longer falls back to an unlocked `cargo build` when `Cargo.lock` disagrees with `Cargo.toml`:
+  it stops.
+
 - **A task record with kernel-half bounds would have made a kernel address the task's own.** The
   page-fault validator and the signal-handler check took a task's image and heap bounds from C
   and trusted them, so bounds reaching into the kernel half would have let the pager demand-map a
@@ -667,6 +674,17 @@ in this file.
 
 ### Changed
 
+- **Fuzzing runs nightly, for ten minutes per target, and a crash fails it.** It ran on every pull
+  request for 30 seconds per target, with every step set to carry on after an error, so it could
+  not report a crash. It now runs each night from `fuzz.yml`, one job per target, with a pinned
+  nightly, `cargo-fuzz` and `libfuzzer-sys` (`rust/fuzz/Cargo.lock` is committed), each target's
+  corpus carried over from the night before, and the crashing input kept as an artifact.
+
+- **The SMP race gates under KVM now gate every merge.** `smoke-smp-kvm` runs the SMP base gates
+  a second time with the vCPUs truly in parallel, and found HORUS-20260921-03 on its first run.
+  It was exempt until its pass rate was measured: 83 of 83 readable runs green from 2026-09-25
+  to 2026-10-06.
+
 - **Three more Kani proofs gate every pull request.** Revocation is proved across two cspaces:
   a child granted into another cspace and a grandchild granted back are revoked with their root,
   and an independent capability on the same object survives (S3, S4). An unseeded random pool is
@@ -783,6 +801,12 @@ in this file.
   steps run, and `check_gate_pairs` still finds every one.
 
 ### Fixed
+
+- **The `unsafe` check never read most of `lib.rs`.** `tools/check_unsafe_safety.py` (S54) stopped
+  at the first `#[cfg(test)]` line in each file, and `lib.rs` opens with
+  `#[cfg(test)] extern crate alloc;`, so the ELF and page-fault FFI exports below it were never
+  checked for a `# Safety` clause. It now skips exactly the modules compiled only for tests or for
+  Kani. The scan covers 53 `unsafe` sites instead of 43, and all 53 were already documented.
 
 - **`smoke-kdiag-split-control` went red about one CI run in 24 on changes that do not touch the
   console.** Its bound of eight boots was set from one workstation's reproduction rate (13 of 20);

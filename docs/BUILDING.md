@@ -14,14 +14,16 @@ sudo apt-get install -y --no-install-recommends \
     build-essential binutils make \
     xorriso grub-pc-bin grub-common mtools \
     qemu-system-x86
-
-rustup target add x86_64-unknown-none
 ```
+
+The Rust version is pinned in `rust-toolchain.toml` (1.98.1, with the `x86_64-unknown-none`
+target and clippy). With `rustup` installed, the first `make` fetches exactly that toolchain; no
+`rustup` command is needed. Kani, Miri and the fuzz targets bring their own pinned nightlies.
 
 | Tool | For |
 |---|---|
 | `gcc`, `binutils`, `make` | The kernel and userspace |
-| `rustup` with `x86_64-unknown-none` | The `no_std` security core |
+| `rustup` (it installs the toolchain `rust-toolchain.toml` names) | The `no_std` security core |
 | `xorriso`, `grub-pc-bin`, `grub-common`, `mtools` | The bootable ISO |
 | `qemu-system-x86` | Running and testing |
 | `swtpm`, `swtpm-tools` *(optional)* | Measured boot and the sealed volume key |
@@ -525,7 +527,7 @@ regenerates.
 ```bash
 cargo test   --manifest-path rust/Cargo.toml --release
 cargo clippy --manifest-path rust/Cargo.toml --release --all-targets -- -D warnings
-cargo +nightly fuzz run <target>    # from rust/, targets in rust/fuzz/
+cargo +nightly-2026-08-21 fuzz run <target>    # from rust/; see rust/fuzz/README.md
 cd rust && cargo kani               # see rust/KANI.md
 ```
 
@@ -538,7 +540,12 @@ watches Cargo anyway.
 
 - **`cannot find -lhorus_shell`**: the Rust library did not build. Run `cargo build --manifest-path
   rust/Cargo.toml --release --target x86_64-unknown-none` and read its error.
-- **`can't find target x86_64-unknown-none`**: `rustup target add x86_64-unknown-none`.
+- **`can't find target x86_64-unknown-none`**: the build is not using the pinned toolchain,
+  usually because `cargo` is not rustup's proxy (a distribution's own `cargo` package). Install
+  Rust through `rustup`, which reads `rust-toolchain.toml`.
+- **`the lock file ... needs to be updated but --locked was passed`**: `rust/Cargo.lock` disagrees
+  with `rust/Cargo.toml`. The build refuses rather than re-resolving the dependencies; update the
+  lockfile with `cargo update --manifest-path rust/Cargo.toml` in a commit of its own.
 - **`xorriso: command not found`**: install `xorriso grub-pc-bin grub-common mtools`.
 - **QEMU shows nothing**: `make run` puts the console on your terminal; use it rather than calling
   QEMU by hand.

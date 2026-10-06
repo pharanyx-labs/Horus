@@ -60,7 +60,7 @@ gating:
   - grant_from_an_invalid_source_refuses_and_writes_nothing  # 1s
   - grant_refuses_every_out_of_range_slot                    # 1s
   - revoke_descendant_never_nulls_ancestors                  # 66s
-  - revoke_root_nulls_every_descendant                       # 120s
+  - revoke_root_nulls_every_descendant                       # 37s, hash stubbed since 2026-10-06 (was 157s)
   - elf_header_validation_is_sound                           # 2s
   - elf_load_plan_is_sound                                   # 2s
   # The page-refcount arithmetic (rust/src/memory.rs), added 2026-09-20. Pure
@@ -109,3 +109,22 @@ gating:
   - elf_readers_never_wrap_an_offset                         # 4s
   - x86_64_reloc_target_is_inside_a_segment                  # 18s
   - i386_reloc_target_is_inside_a_segment                    # 3s
+  # The user-address validators (rust/src/lib.rs, S112), added 2026-10-06 with
+  # the fix the first of them found: both trusted the bounds C passes and would
+  # accept a kernel-half address given kernel-half bounds. Both are equivalences.
+  # FALSIFIED by removing each ceiling check (each red in 1 s) and by a
+  # validator that refuses everything (red in 1 s).
+  - page_fault_never_accepts_a_kernel_half_address           # 3s
+  - signal_handler_is_never_a_kernel_half_address            # 1s
+  # Added 2026-10-06 from the CI and Kani survey. EACH WAS FALSIFIED by
+  # reintroducing a defect and requiring `VERIFICATION:- FAILED`:
+  #   revoke_reaches_every_cspace_and_spares_a_peer: the fixpoint expansion
+  #     visiting only the first cspace (red in 66 s), and the sweep nulling
+  #     every capability on the root's object, the [I-3] shape (red in 96 s);
+  #   an_unseeded_pool_emits_nothing: the existing `rng_unseeded_legacy` arm,
+  #     `cargo kani --features rng_unseeded_legacy` (red in 162 s);
+  #   the_throttle_locks_within_the_limit: `>` for `>=` at MAX_AUTH_FAILS (red
+  #     in 1 s).
+  - revoke_reaches_every_cspace_and_spares_a_peer            # 98s, hash stubbed
+  - an_unseeded_pool_emits_nothing                           # 4s
+  - the_throttle_locks_within_the_limit                      # 1s

@@ -17,6 +17,7 @@ them.
 | `mint_never_escalates_rights` | For every (source rights, requested rights) pair, the minted rights are exactly `requested & source`, mint can only ever *reduce* authority. |
 | `revoke_descendant_never_nulls_ancestors` | **Audit A1.** Over a parent → child → grandchild chain, for every distinct serial triple, revoking the grandchild's subtree leaves parent and child intact and nulls exactly the grandchild; the property the old equivalence-set matcher violated. |
 | `revoke_root_nulls_every_descendant` | The completeness half: revoking the root nulls both the child and the grandchild, for every distinct serial triple. Together the two pin revocation to exactly the target's subtree: no ancestors, all descendants. |
+| `revoke_reaches_every_cspace_and_spares_a_peer` | **S3, S4 across cspaces.** A root in one cspace, its child granted into a second and a grandchild granted back: revoking the root nulls all three, and an independent capability on the same object in the second cspace survives, for every distinct serial quadruple. |
 | `revoke_invalidates_recorded_generation` | **Finding 3.3.** For every serial, a capability that recorded the current lineage generation fails `lineage_check` after that serial is revoked (its generation bumped); the use-after-revoke backstop actually rejects a stale snapshot. |
 | `revoke_does_not_touch_a_distinct_lineage_cell` | The precision half: bumping one serial's generation leaves a *distinct* (non-colliding) serial's recorded generation still valid, so revocation does not spuriously invalidate an unrelated lineage. |
 | `lineage_idx_is_always_inside_the_table` | For every serial, the real serial-to-cell hash names a cell inside the generation table. The two proofs above stub that hash (see below), and this is the one property of it they rely on. |
@@ -35,33 +36,41 @@ them.
 | `elf_readers_never_wrap_an_offset` | **S111.** An ELF field read succeeds exactly when the whole field lies inside the image, for every offset up to `usize::MAX`, and a read at `base + delta` is a read at the checked sum. Before 2026-10-06 the sum was unchecked and the release kernel wrapped it. |
 | `x86_64_reloc_target_is_inside_a_segment` | **S111.** For every 48-byte image, table offset, entry index and slide, an accepted x86-64 relocation writes all 8 bytes inside one loaded segment, and deciding to defer an entry never overflows. |
 | `i386_reloc_target_is_inside_a_segment` | **S111.** The same for i386, whose relocations write 4 bytes. |
+| `page_fault_never_accepts_a_kernel_half_address` | **S112.** For every fault address and every image and heap bounds C could pass, the page-fault validator accepts exactly the user-half addresses inside the image, the heap or the low stack. A kernel address is never the task's own, however wrong the bounds. |
+| `signal_handler_is_never_a_kernel_half_address` | **S112.** The same for a signal handler: accepted exactly inside the task's image and below the user ceiling. |
 | `refc_index_is_always_inside_the_table` | **The bound between a `u32` C chose and a raw write.** For every address and every pool size up to the table's capacity, an accepted index is inside both the caller's table and the fixed-size one `refc_table_ok` insists on. This is what `rust_page_ref_inc` and `rust_page_ref_dec` rely on before `refcounts.add(idx)`. |
 | `refc_index_names_the_page_that_contains_the_address` | The index is not merely in range: it names the page that actually contains the address. Stated as containment rather than by recomputing the division, so the proof characterises the result instead of restating the implementation. A harness that recomputed it would pass against a wrong derivation copied into both call sites. |
 | `every_page_in_the_pool_has_an_index` | The completeness half: every page the table can track is reachable, so the derivation has no gap that would silently stop refcounting a page. Without it, a derivation that refused everything would satisfy the two above. |
 | `an_increment_never_wraps_a_refcount` | For every `u16`, an increment saturates and never wraps to 0. A count that wrapped to 0 would let a page somebody still holds reach the free stack, the shortest path to one frame in two address spaces. |
+| `an_unseeded_pool_emits_nothing` | **S30.** An unseeded random pool refuses every request and zeroes the caller's buffer, whatever it held, for every length up to 16. The existing `rng_unseeded_legacy` control arm turns it red. |
+| `the_throttle_locks_within_the_limit` | From any stored failure count, at most `MAX_AUTH_FAILS` consecutive failed logins pass before the account locks, and the lockout lasts the full period from the tick it is set. |
 | `a_decrement_never_underflows_a_refcount` | For every `u16`, a decrement is refused **exactly** when the count is already 0, and otherwise strictly decreases. Stated as an equivalence so a refusal that is too eager cannot satisfy it vacuously. A wrap to 65535 would pin the page for the rest of the boot. |
 
 Kani also discharges the implicit checks on these paths (no overflow, no invalid or
 out-of-bounds dereference) and the loop-unwinding assertions of the revocation closure.
 
 **Scope.** The revocation proofs use a three-deep chain in one cspace, which is enough for the
-ancestor and descendant distinction and for transitivity. A model across several cspaces is the
-natural next step. None of this verifies the kernel as a whole (`docs/LIMITATIONS.md` 5.5).
+ancestor and descendant distinction and for transitivity, and a fourth proof spreads the chain
+across two cspaces with an independent peer on the same object. None of this verifies the kernel
+as a whole (`docs/LIMITATIONS.md` 5.5).
 
-**The lineage pair stubs the hash.** With the real `lineage_idx`, whose two 64-bit multiplications
+**Some proofs stub the hash.** With the real `lineage_idx`, whose two 64-bit multiplications
 the solver must expand bit by bit, neither proof finished in 1500 s. They replace it with
 `lineage_idx_model` (`#[kani::stub]`, enabled for the crate in `rust/Cargo.toml`) and finish in
 about four minutes each. Neither property depends on which cell a serial maps to: the first needs
 the same cell every time, which any pure function gives, and the second assumes two serials in
 different cells. What the real hash must still get right is staying inside the table, and
 `lineage_idx_is_always_inside_the_table` proves that for every serial. How evenly the hash spreads
-serials (how often two collide) is not proved; it is the fail-safe A3 residual.
+serials (how often two collide) is not proved; it is the fail-safe A3 residual. The root
+revocation proof and the two-cspace proof stub the hash for the same reason: revoking bumps the
+generation of every serial it removes, and what they assert (which slots are nulled) does not
+depend on which cell each bump lands in.
 
 ## Which proofs gate a merge
 
 All of them. `.github/kani-harnesses.yml` lists every harness, the required `kani-bounded` job
 runs each one on every pull request, and `tools/check_kani_harnesses.py` fails the build if a
-proof is missing from the list. All **27** gate. There is no way to excuse a proof from running:
+proof is missing from the list. All **32** gate. There is no way to excuse a proof from running:
 the checker refuses any list but `gating`. The count is declared in `.github/doc-claims.yml` and
 re-derived on every run.
 

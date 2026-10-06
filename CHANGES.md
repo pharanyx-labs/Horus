@@ -384,6 +384,13 @@ in this file.
 
 ### Security
 
+- **A task record with kernel-half bounds would have made a kernel address the task's own.** The
+  page-fault validator and the signal-handler check took a task's image and heap bounds from C
+  and trusted them, so bounds reaching into the kernel half would have let the pager demand-map a
+  kernel address for the task, or a signal return to one. Nothing in the kernel sets such bounds
+  today; the Rust now refuses any address above the user ceiling before it consults them, and
+  two Kani proofs gate it (S112).
+
 - **An ELF offset from the image or from the C side could wrap instead of being refused.** The
   ELF field readers computed `offset + size` unchecked, and their callers added field offsets the
   same way. In the loader's own flow the table offsets are bounded by the image, but the Rust
@@ -652,6 +659,14 @@ in this file.
   and on Void's. Falsified by `tools/test_check_image_budget.sh` (11 arms).
 
 ### Changed
+
+- **Three more Kani proofs gate every pull request.** Revocation is proved across two cspaces:
+  a child granted into another cspace and a grandchild granted back are revoked with their root,
+  and an independent capability on the same object survives (S3, S4). An unseeded random pool is
+  proved to refuse and zero every request (S30), and the login throttle to lock an account within
+  `MAX_AUTH_FAILS` failures from any stored count. The root-revocation proof now stubs the lineage
+  hash and takes 37 s instead of 157 s. `SECURITY.md` S2, S5 and S30 now name the Kani proofs
+  that witness them.
 
 - **`THIRD_PARTY.md` lists the vendored GNU coreutils (GPLv3) and TinyCC (LGPL 2.1).** It said
   everything not listed was MIT, and listed neither. The website no longer says the modules

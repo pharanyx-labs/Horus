@@ -667,6 +667,11 @@ in this file.
 
 ### Changed
 
+- **The SMP race gates under KVM now gate every merge.** `smoke-smp-kvm` runs the SMP base gates
+  a second time with the vCPUs truly in parallel, and found HORUS-20260921-03 on its first run.
+  It was exempt until its pass rate was measured: 83 of 83 readable runs green from 2026-09-25
+  to 2026-10-06.
+
 - **Three more Kani proofs gate every pull request.** Revocation is proved across two cspaces:
   a child granted into another cspace and a grandchild granted back are revoked with their root,
   and an independent capability on the same object survives (S3, S4). An unseeded random pool is

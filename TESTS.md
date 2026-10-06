@@ -124,7 +124,7 @@ There are 430 `smoke-*` targets: 204 gates and 226 control arms. Each row is a g
 | `smoke-enter-user-claim` | The first entry to ring 3 never claims a task another CPU already holds | S20 | `smoke-enter-user-claim-control`, `smoke-enter-user-collide-control` |
 | `smoke-smp` | Every CPU in the MADT comes online and runs a task, no task runs on an SMT sibling, and TLB shootdown completes | S80 |  |
 | `smoke-smp-topology` | Eight CPUs on four topologies, including sparse LAPIC ids and hyperthreads, where primary threads get the CPU slots first | S101 | `smoke-smp-topology-sibling-control`, `smoke-smp-topology-sparse-control` |
-| `smoke-smp-kvm` | The SMP race gates again under KVM, as a second detector |  |  |
+| `smoke-smp-kvm` | The SMP race base gates again under KVM, where vCPUs truly run in parallel; required since its measured 83 of 83 green runs |  |  |
 | `smoke-smt` | SMT siblings are parked | S101 |  |
 | `smoke-switch-commit` | A refused switch leaves no stale scheduler claim behind |  | `smoke-switch-commit-control` |
 
@@ -327,7 +327,7 @@ Currently **91 of 102** implemented syscalls are covered (`SECURITY.md` S25; `do
 `.github/workflows/ci.yml` defines **134** jobs, run on every push and pull request; most are sharded runs of the gates above. With CodeQL and the scheduled ruleset audit the total is below: **136** jobs, **139** contexts, counted by `tools/check_ci_gating.py`.
 
 `.github/ci-gating.yml` classifies every job as gating or exempt with a written reason, and the `ci-gating` job fails on a job in neither list. The branch ruleset requires two checks: `gates`, which needs every gating job and passes only if each succeeded (skipped or cancelled counts as failed), and CodeQL.
-The set is **136 gating contexts and 3 reasoned exemptions**: `fuzz` (a short time-boxed search is evidence of effort, not absence), `ruleset-audit` (runs on a schedule, never on a pull request) and `smoke-smp-kvm` (a second run of required gates under KVM, until its pass rate is measured).
+The set is **137 gating contexts and 2 reasoned exemptions**: `fuzz` (a short time-boxed search is evidence of effort, not absence) and `ruleset-audit` (runs on a schedule, never on a pull request).
 
 The jobs that are not boot tests:
 

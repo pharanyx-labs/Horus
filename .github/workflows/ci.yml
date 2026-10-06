@@ -180,6 +180,7 @@ jobs:
       - smoke-session-smp-soak
       - smoke-signal
       - smoke-smp
+      - smoke-smp-kvm
       - smoke-smt
       - smoke-spawn-owner
       - smoke-stackguard

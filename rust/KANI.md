@@ -19,6 +19,7 @@ them.
 | `revoke_root_nulls_every_descendant` | The completeness half: revoking the root nulls both the child and the grandchild, for every distinct serial triple. Together the two pin revocation to exactly the target's subtree: no ancestors, all descendants. |
 | `revoke_invalidates_recorded_generation` | **Finding 3.3.** For every serial, a capability that recorded the current lineage generation fails `lineage_check` after that serial is revoked (its generation bumped); the use-after-revoke backstop actually rejects a stale snapshot. |
 | `revoke_does_not_touch_a_distinct_lineage_cell` | The precision half: bumping one serial's generation leaves a *distinct* (non-colliding) serial's recorded generation still valid, so revocation does not spuriously invalidate an unrelated lineage. |
+| `lineage_idx_is_always_inside_the_table` | For every serial, the real serial-to-cell hash names a cell inside the generation table. The two proofs above stub that hash (see below), and this is the one property of it they rely on. |
 | `lookup_grants_exactly_the_rights_held` | **Roadmap 3.5.** For every (held, requested) rights pair, `rust_cap_lookup` succeeds **exactly when** the capability holds every requested right. Stated as an equivalence, not an implication, so a lookup that refused too much fails it too, "never grants what it should not" is satisfied by a predicate that always returns null. |
 | `lookup_never_returns_an_empty_slot` | For every rights value, including the degenerate `required_rights == 0` that a "does it hold these" check answers vacuously, an empty slot never satisfies a lookup. |
 | `lookup_refuses_every_out_of_range_slot` | For every slot index past the cspace, lookup refuses rather than reading whatever follows the cspace in memory. |
@@ -44,15 +45,22 @@ out-of-bounds dereference) and the loop-unwinding assertions of the revocation c
 ancestor and descendant distinction and for transitivity. A model across several cspaces is the
 natural next step. None of this verifies the kernel as a whole (`docs/LIMITATIONS.md` 5.5).
 
+**The lineage pair stubs the hash.** With the real `lineage_idx`, whose two 64-bit multiplications
+the solver must expand bit by bit, neither proof finished in 1500 s. They replace it with
+`lineage_idx_model` (`#[kani::stub]`, enabled for the crate in `rust/Cargo.toml`) and finish in
+about four minutes each. Neither property depends on which cell a serial maps to: the first needs
+the same cell every time, which any pure function gives, and the second assumes two serials in
+different cells. What the real hash must still get right is staying inside the table, and
+`lineage_idx_is_always_inside_the_table` proves that for every serial. How evenly the hash spreads
+serials (how often two collide) is not proved; it is the fail-safe A3 residual.
+
 ## Which proofs gate a merge
 
-`.github/kani-harnesses.yml` puts every harness in one of two lists, and
-`tools/check_kani_harnesses.py`, run by the required `kani-bounded` job, fails the build if a
-proof is in neither list. **21** gate; **2** are excused with a
-reason: the two lineage-generation proofs, measured on 2026-08-23 not to finish in 1500 s each.
-Those two run only in the manual `kani` job, which cannot fail as written
-(`docs/LIMITATIONS.md` 5.8). The counts are declared in `.github/doc-claims.yml` and re-derived
-on every run.
+All of them. `.github/kani-harnesses.yml` lists every harness, the required `kani-bounded` job
+runs each one on every pull request, and `tools/check_kani_harnesses.py` fails the build if a
+proof is missing from the list. All **24** gate. There is no way to excuse a proof from running:
+the checker refuses any list but `gating`. The count is declared in `.github/doc-claims.yml` and
+re-derived on every run.
 
 ## Running it
 
@@ -62,7 +70,7 @@ the default build.
 ```sh
 cargo install --locked kani-verifier
 cargo kani setup                                     # one time: downloads CBMC and Kani
-cd rust && cargo kani                                # every harness, including the slow pair
+cd rust && cargo kani                                # every harness
 cargo kani --harness mint_never_escalates_rights     # one harness
 ```
 
@@ -74,5 +82,6 @@ harnesses verified.
 Falsify it before trusting it: mutate the property it claims (weaken a rights test, drop a
 bound, zero a recorded parent) and confirm the harness reports `VERIFICATION:- FAILED`. State
 properties as equivalences where you can, so a function that refuses everything cannot satisfy
-them vacuously. Then add the harness to `.github/kani-harnesses.yml`, gating unless it has a
-measured reason not to.
+them vacuously. Then add the harness to the `gating` list in `.github/kani-harnesses.yml`. A
+proof too slow for every pull request has to be made to finish (bound it, or stub what it does
+not depend on, as the lineage pair does) before it lands, because no other job runs it.

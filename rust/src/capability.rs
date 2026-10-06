@@ -2114,6 +2114,8 @@ mod tests {
 // the shared LINEAGE_GEN static are avoided here (global mutable state needs a
 // heavier model); the harnesses keep object==0 so the lineage floor update in
 // mint is not exercised — the rights logic under proof is identical either way.
+// The exception is the lineage-generation pair further down, which drives
+// LINEAGE_GEN directly with the serial-to-cell hash stubbed out.
 // ---------------------------------------------------------------------------
 #[cfg(kani)]
 mod kani_proofs {
@@ -2412,6 +2414,39 @@ mod kani_proofs {
         assert!(cs[2].typ == CAP_NULL, "a grandchild must be revoked transitively");
     }
 
+    /// The one property of the real `lineage_idx` hash the two lineage proofs
+    /// below depend on: for EVERY serial it names a cell inside `LINEAGE_GEN`.
+    /// Those proofs replace the hash with `lineage_idx_model` (see there), so
+    /// without this harness nothing would check the real one at all.
+    ///
+    /// Falsified 2026-10-06 by masking with `LINEAGE_SLOTS` instead of
+    /// `LINEAGE_SLOTS - 1`: `VERIFICATION:- FAILED` on `a < LINEAGE_SLOTS`.
+    #[kani::proof]
+    fn lineage_idx_is_always_inside_the_table() {
+        let serial: u32 = kani::any();
+        assert!(lineage_idx(serial) < LINEAGE_SLOTS, "a serial hashed outside the table");
+    }
+
+    /// A cheap stand-in for `lineage_idx` in the two proofs below, which with the
+    /// real hash did not finish in 1500 s each (measured 2026-08-23); most of that
+    /// is the hash's two 64-bit multiplications, which the solver must expand bit
+    /// by bit. With this stand-in they take
+    /// about four minutes each (measured 2026-10-06, Kani 0.68.0), which is what
+    /// lets them gate every pull request instead of sitting in a manual job that
+    /// never ran.
+    ///
+    /// Why that proves the same thing: neither property depends on WHICH cell a
+    /// serial maps to. The first needs the cell to be the same one every time it
+    /// is asked for, which any pure function gives (`lineage_idx` reads no state);
+    /// the second assumes two serials in distinct cells and is about those cells,
+    /// whatever chose them. What the real hash must still get right is that the
+    /// cell is inside the table, and `lineage_idx_is_always_inside_the_table`
+    /// proves that over every serial. The hash's spread (how often two serials
+    /// collide) was never part of either proof; it is the A3 residual.
+    fn lineage_idx_model(serial: u32) -> usize {
+        (serial as usize) & (LINEAGE_SLOTS - 1)
+    }
+
     /// FINDING 3.3, use-after-revoke, proved over the whole serial/generation
     /// space: for any tracked serial and any generation a live capability
     /// recorded (the serial's current cell value), bumping that serial's lineage
@@ -2419,8 +2454,10 @@ mod kani_proofs {
     /// a bump never yields the pristine 0. This is exactly the guarantee the old
     /// object-keyed, gen-0-immune check could not provide — a gen-0 snapshot then
     /// passed unconditionally. Unlike the pure harnesses above, this one exercises
-    /// the shared `LINEAGE_GEN` static on one (symbolic) cell.
+    /// the shared `LINEAGE_GEN` static on one (symbolic) cell. The serial-to-cell
+    /// hash is stubbed; `lineage_idx_model` says why that loses nothing.
     #[kani::proof]
+    #[kani::stub(lineage_idx, lineage_idx_model)]
     fn revoke_invalidates_recorded_generation() {
         let serial: u32 = kani::any();
         kani::assume(serial_is_tracked(serial));
@@ -2443,7 +2480,9 @@ mod kani_proofs {
     /// independent same-object peer survives a revoke that is not theirs. The
     /// proof is conditioned on distinct cells: two serials that hash to the same
     /// 4096-slot cell can collide, which is the documented, fail-safe A3 residual.
+    /// The hash is stubbed as in the proof above.
     #[kani::proof]
+    #[kani::stub(lineage_idx, lineage_idx_model)]
     fn revoke_does_not_touch_a_distinct_lineage_cell() {
         let a: u32 = kani::any();
         let b: u32 = kani::any();

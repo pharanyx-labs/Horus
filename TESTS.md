@@ -324,10 +324,10 @@ Currently **91 of 102** implemented syscalls are covered (`SECURITY.md` S25; `do
 ## CI
 
 
-`.github/workflows/ci.yml` defines **135** jobs, run on every push and pull request; most are sharded runs of the gates above. With CodeQL and the scheduled ruleset audit the total is below: **137** jobs, **140** contexts, counted by `tools/check_ci_gating.py`.
+`.github/workflows/ci.yml` defines **134** jobs, run on every push and pull request; most are sharded runs of the gates above. With CodeQL and the scheduled ruleset audit the total is below: **136** jobs, **139** contexts, counted by `tools/check_ci_gating.py`.
 
 `.github/ci-gating.yml` classifies every job as gating or exempt with a written reason, and the `ci-gating` job fails on a job in neither list. The branch ruleset requires two checks: `gates`, which needs every gating job and passes only if each succeeded (skipped or cancelled counts as failed), and CodeQL.
-The set is **136 gating contexts and 4 reasoned exemptions**: `fuzz` (a short time-boxed search is evidence of effort, not absence), `kani` (manual only, and unable to fail as written; `docs/LIMITATIONS.md` 5.8), `ruleset-audit` (runs on a schedule, never on a pull request) and `smoke-smp-kvm` (a second run of required gates under KVM, until its pass rate is measured).
+The set is **136 gating contexts and 3 reasoned exemptions**: `fuzz` (a short time-boxed search is evidence of effort, not absence), `ruleset-audit` (runs on a schedule, never on a pull request) and `smoke-smp-kvm` (a second run of required gates under KVM, until its pass rate is measured).
 
 The jobs that are not boot tests:
 
@@ -381,14 +381,12 @@ The jobs that are not boot tests:
 | `security` | Security scans + SBOM generation (Semgrep, Trivy, gitleaks, etc.) |
 | `fuzz` | FFI fuzzing (cargo-fuzz, advisory) |
 | `miri` | Undefined-behaviour check of the security core (Miri) |
-| `kani-bounded` | Formal verification of the capability algebra (the proofs that finish) |
-| `kani` | Formal verification (Kani, advisory) |
+| `kani-bounded` | Formal verification of the capability algebra (every Kani proof) |
 
 Two of those deserve a sentence each.
-**`kani-bounded` is the Kani job that can fail anything.** **21** harnesses run
-there with no `continue-on-error`; the
-**2** excused harnesses are named, with their measured cost, in
-`.github/kani-harnesses.yml`. And **`invariants`** requires every property in `SECURITY.md` to
+**`kani-bounded` is the only Kani job, and it can fail anything.** All **24** harnesses run
+there with no `continue-on-error`, each named with its measured cost in
+`.github/kani-harnesses.yml`, and the job refuses a proof that is not listed. And **`invariants`** requires every property in `SECURITY.md` to
 name a witness that exists and runs; its exemption list, `.github/invariants.yml`, is
 currently **empty**: all 112 properties name a witness that resolves.
 

@@ -442,7 +442,7 @@ the fix.
 ### 5.5 Formal verification is narrow
 
 Kani proves properties of capability revocation, the ELF validator and the page-pool refcount
-arithmetic: **23** harnesses, **21** of them gating in the required `kani-bounded` job. That is the
+arithmetic: **24** harnesses, every one of them gating in the required `kani-bounded` job. That is the
 whole of the formal methods here. The kernel as a whole is not verified, no refinement proof links
 a specification to the code, and no TLA+ specification exists (two unsound ones were removed on
 2026-09-10).
@@ -456,15 +456,6 @@ could not read any C, header or Rust file, and made network requests to a third 
 unpinned runtime. The project decided on 2026-09-20 not to use it. It has not run since
 2026-09-20 11:34Z; which setting stopped it was not isolated. Nothing in the tree would notice if
 another appeared.
-
-### 5.8 The full `kani` job cannot fail, and has never run
-
-The `kani` job in `ci.yml` runs only on manual dispatch, has never been dispatched, and carries
-`continue-on-error: true` on both steps, so it could not fail if it ran. Run as written it would
-also time out: the two harnesses excused from gating (`.github/kani-harnesses.yml`) were measured
-not to finish in 1500 s. The proofs that matter gate through `kani-bounded`. The fix is to point
-the job at the two excused harnesses by name, drop `continue-on-error` and give it a matching
-timeout, or delete it. Either is a CI classification change for the maintainer.
 
 ---
 
@@ -550,3 +541,4 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 5.3c | | Horus could not be reinstalled over an existing Horus volume (S90) | 2026-09-11, #381 |
 | 5.3d | | Six checkers examined nothing and passed when their parser went silent | 2026-09-10, #368, #369, #375 |
 | 5.6 | [M-3] | Governance files were in the wrong place | 2026-07-27, #107 |
+| 5.8 | | Two Kani proofs ran only in a manual job that could not fail and had never run | 2026-10-06, #PRNUM |

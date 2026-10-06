@@ -225,3 +225,39 @@ mod tests {
         assert!(!rust_auth_global_locked(10_000));
     }
 }
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// The per-account throttle locks within `MAX_AUTH_FAILS` failures from ANY
+    /// starting count (C stores the count, so it is not trusted to be in range),
+    /// and the lockout it sets holds at the tick it was set. Consecutive
+    /// failures, each feeding back the count the previous one wrote.
+    ///
+    /// Bounded to `now <= u64::MAX - LOCKOUT_TICKS`. Above that the deadline
+    /// saturates at `u64::MAX` and a failure at exactly `now == u64::MAX` sets a
+    /// lockout that has already expired. The tick counter would need several
+    /// thousand million years to get there, so it is recorded here rather than
+    /// guarded.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn the_throttle_locks_within_the_limit() {
+        let mut count: u32 = kani::any();
+        let now: u64 = kani::any();
+        kani::assume(now <= u64::MAX - LOCKOUT_TICKS);
+        let mut locked = false;
+        for _ in 0..MAX_AUTH_FAILS {
+            let (mut c, mut l) = (0u32, 0u64);
+            unsafe { rust_auth_on_failure(count, now, &mut c, &mut l) };
+            if l != 0 {
+                assert!(rust_auth_is_locked(l, now), "a lockout must hold when it is set");
+                assert!(l - now == LOCKOUT_TICKS, "a lockout lasts the full period");
+                locked = true;
+                break;
+            }
+            count = c;
+        }
+        assert!(locked, "MAX_AUTH_FAILS consecutive failures must lock the account");
+    }
+}

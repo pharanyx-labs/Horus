@@ -53,6 +53,21 @@ impl SafeCap {
 const LOW_STACK_BASE: u64 = 0x7df000;
 const LOW_STACK_TOP: u64 = 0x7ff000;
 
+/// S112. The first address above the canonical user half. Mirrors
+/// `USER_MAX_VADDR` in `src/include/kernel.h`. Nothing at or above it is ever
+/// user memory, whatever bounds the caller passes.
+///
+/// The two validators below take a task's image and heap bounds from C. Until
+/// 2026-10-06 they trusted those bounds outright, so a task record whose
+/// `image_end` or `heap_end` reached into the kernel half (a corrupted record,
+/// or a future C path that set one wrongly) would have had a kernel address
+/// classed as the task's own: demand-mapped by the pager, or accepted as a
+/// signal handler the kernel `iretq`s to. A Kani proof found it. Rust FFI
+/// functions check their own inputs and do not assume the C side did
+/// (CLAUDE.md §1), so the ceiling is applied here, before the bounds are
+/// consulted.
+const USER_MAX_VADDR: u64 = 0x0000_8000_0000_0000;
+
 /// Is `fault_addr` a legitimate part of THIS task's user address space?
 ///
 /// Region-aware: the caller passes the task's actual image and heap bounds
@@ -75,6 +90,10 @@ pub extern "C" fn rust_validate_page_fault(
     heap_start: u64,
     heap_end: u64,
 ) -> bool {
+    // Never a kernel-half or non-canonical address, whatever the bounds say.
+    if fault_addr >= USER_MAX_VADDR {
+        return false;
+    }
     // Image: code, rodata, data, bss. image_base is 0 only for an unbuilt task.
     if image_base != 0 && fault_addr >= image_base && fault_addr < image_end {
         return true;
@@ -196,7 +215,9 @@ pub extern "C" fn rust_signal_handler_addr_ok(vaddr: u64, image_base: u64, image
     if image_base == 0 || image_end <= image_base {
         return false;
     }
-    vaddr >= image_base && vaddr < image_end
+    // A handler is user code: never at or above the user ceiling, whatever
+    // `image_end` says (S112).
+    vaddr < USER_MAX_VADDR && vaddr >= image_base && vaddr < image_end
 }
 
 #[repr(C)]
@@ -269,20 +290,49 @@ pub struct ElfHeaderInfo {
     pub ei_class: u8,   // 1 = ELFCLASS32, 2 = ELFCLASS64
 }
 
+// S111. Every offset these readers take is checked: `None` on overflow, never
+// a wrapped offset. Until 2026-10-06 the readers computed `off + N` unchecked and
+// callers passed `base + N`. The offsets reach them from the image and through
+// the FFI (`rust_elf_x86_64_reloc_resolve` takes the table offsets from C). In
+// the loader's own flow `x86_64_reloc_locate` keeps both table offsets within
+// the image, so nothing near `usize::MAX` arrives, but these functions must not
+// depend on the C side passing back what Rust handed it (CLAUDE.md §1). Given
+// such an offset, the release kernel wrapped it: `x86_64_reloc_is_deferred`
+// read `r + 8` and `base + 6` with no earlier read of `r` or bounds check of
+// `base`, so a wrapped read there could take real header bytes for a
+// relocation or a symbol. A debug build panicked instead. Kani found it, and
+// `elf_readers_never_wrap_an_offset` and
+// `x86_64_reloc_target_is_inside_a_segment` now witness it; the `_at` forms
+// make the caller's `base + N` checked too.
 #[inline]
 fn elf_rd_u16(s: &[u8], off: usize) -> Option<u16> {
-    let b = s.get(off..off + 2)?;
+    let b = s.get(off..off.checked_add(2)?)?;
     Some(u16::from_le_bytes([b[0], b[1]]))
 }
 #[inline]
 fn elf_rd_u32(s: &[u8], off: usize) -> Option<u32> {
-    let b = s.get(off..off + 4)?;
+    let b = s.get(off..off.checked_add(4)?)?;
     Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
 }
 #[inline]
 fn elf_rd_u64(s: &[u8], off: usize) -> Option<u64> {
-    let b = s.get(off..off + 8)?;
+    let b = s.get(off..off.checked_add(8)?)?;
     Some(u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+}
+/// `elf_rd_u16` at `base + delta`, `None` if that sum overflows.
+#[inline]
+fn elf_rd_u16_at(s: &[u8], base: usize, delta: usize) -> Option<u16> {
+    elf_rd_u16(s, base.checked_add(delta)?)
+}
+/// `elf_rd_u32` at `base + delta`, `None` if that sum overflows.
+#[inline]
+fn elf_rd_u32_at(s: &[u8], base: usize, delta: usize) -> Option<u32> {
+    elf_rd_u32(s, base.checked_add(delta)?)
+}
+/// `elf_rd_u64` at `base + delta`, `None` if that sum overflows.
+#[inline]
+fn elf_rd_u64_at(s: &[u8], base: usize, delta: usize) -> Option<u64> {
+    elf_rd_u64(s, base.checked_add(delta)?)
 }
 /// Read an ELF64 8-byte field into the loader's 32-bit plumbing, refusing any
 /// value that does not fit (the -17 case). Mirrors elf64_narrow in loader.c:
@@ -447,9 +497,9 @@ fn build_load_plan(
     // fit the 32-bit plumbing is -17.
     let read_vaddr = |p: usize| -> Result<u32, i32> {
         if ei_class == 1 {
-            elf_rd_u32(buf, p + 8).ok_or(-9)
+            elf_rd_u32_at(buf, p, 8).ok_or(-9)
         } else {
-            match elf_rd_u64(buf, p + 16) {
+            match elf_rd_u64_at(buf, p, 16) {
                 None => Err(-9),
                 Some(v) if v > u32::MAX as u64 => Err(-17),
                 Some(v) => Ok(v as u32),
@@ -493,20 +543,20 @@ fn build_load_plan(
 
         let (p_offset, p_vaddr, p_filesz, p_memsz, p_flags) = if ei_class == 1 {
             (
-                elf_rd_u32(buf, p + 4).ok_or(-9)?,
-                elf_rd_u32(buf, p + 8).ok_or(-9)?,
-                elf_rd_u32(buf, p + 16).ok_or(-9)?,
-                elf_rd_u32(buf, p + 20).ok_or(-9)?,
-                elf_rd_u32(buf, p + 24).ok_or(-9)?,
+                elf_rd_u32_at(buf, p, 4).ok_or(-9)?,
+                elf_rd_u32_at(buf, p, 8).ok_or(-9)?,
+                elf_rd_u32_at(buf, p, 16).ok_or(-9)?,
+                elf_rd_u32_at(buf, p, 20).ok_or(-9)?,
+                elf_rd_u32_at(buf, p, 24).ok_or(-9)?,
             )
         } else {
             (
-                elf_narrow(buf, p + 8)?,
-                elf_narrow(buf, p + 16)?,
-                elf_narrow(buf, p + 32)?,
-                elf_narrow(buf, p + 40)?,
+                elf_narrow(buf, p.checked_add(8).ok_or(-2)?)?,
+                elf_narrow(buf, p.checked_add(16).ok_or(-2)?)?,
+                elf_narrow(buf, p.checked_add(32).ok_or(-2)?)?,
+                elf_narrow(buf, p.checked_add(40).ok_or(-2)?)?,
                 // p_flags is a genuine 4-byte field at offset 4 in ELF64.
-                elf_rd_u32(buf, p + 4).ok_or(-9)?,
+                elf_rd_u32_at(buf, p, 4).ok_or(-9)?,
             )
         };
 
@@ -624,9 +674,9 @@ fn i386_map_vaddr_to_file_off(buf: &[u8], e_phoff: u32, e_phnum: u16, vaddr: u32
         if elf_rd_u32(buf, p)? != PT_LOAD {
             continue;
         }
-        let p_offset = elf_rd_u32(buf, p + 4)?;
-        let p_vaddr = elf_rd_u32(buf, p + 8)?;
-        let p_filesz = elf_rd_u32(buf, p + 16)?;
+        let p_offset = elf_rd_u32_at(buf, p, 4)?;
+        let p_vaddr = elf_rd_u32_at(buf, p, 8)?;
+        let p_filesz = elf_rd_u32_at(buf, p, 16)?;
         if vaddr >= p_vaddr && (vaddr as u64) < p_vaddr as u64 + p_filesz as u64 {
             let off = p_offset as u64 + (vaddr - p_vaddr) as u64;
             return u32::try_from(off).ok();
@@ -646,8 +696,8 @@ fn i386_reloc_locate(buf: &[u8], e_phoff: u32, e_phnum: u16) -> Result<ElfI386Re
     for i in 0..e_phnum as usize {
         let p = ph + i * I386_PHENTSIZE;
         if elf_rd_u32(buf, p).ok_or(-16)? == 2 {
-            dyn_off = elf_rd_u32(buf, p + 4).ok_or(-16)?;
-            dyn_sz = elf_rd_u32(buf, p + 16).ok_or(-16)?;
+            dyn_off = elf_rd_u32_at(buf, p, 4).ok_or(-16)?;
+            dyn_sz = elf_rd_u32_at(buf, p, 16).ok_or(-16)?;
             break;
         }
     }
@@ -665,7 +715,7 @@ fn i386_reloc_locate(buf: &[u8], e_phoff: u32, e_phnum: u16) -> Result<ElfI386Re
     while o as u64 + 8 <= dyn_sz as u64 {
         let base = (dyn_off + o) as usize;
         let tag = elf_rd_u32(buf, base).ok_or(-16)? as i32;
-        let val = elf_rd_u32(buf, base + 4).ok_or(-16)?;
+        let val = elf_rd_u32_at(buf, base, 4).ok_or(-16)?;
         match tag {
             0 => break,             // DT_NULL
             17 => rel_vaddr = val,  // DT_REL
@@ -707,9 +757,11 @@ fn i386_reloc_target(
     seg_va: &[u64],
     seg_memsz: &[u64],
 ) -> Result<Option<u64>, i32> {
-    let r = rel_file_off as usize + k as usize * 8;
+    let r = (rel_file_off as usize)
+        .checked_add((k as usize).checked_mul(8).ok_or(-16)?)
+        .ok_or(-16)?;
     let r_offset = elf_rd_u32(buf, r).ok_or(-16)?;
-    let r_info = elf_rd_u32(buf, r + 4).ok_or(-16)?;
+    let r_info = elf_rd_u32_at(buf, r, 4).ok_or(-16)?;
     let r_type = r_info & 0xFF;
     if r_type == 0 {
         return Ok(None); // R_386_NONE
@@ -837,9 +889,9 @@ fn x86_64_map_vaddr_to_file_off(buf: &[u8], e_phoff: u32, e_phnum: u16, vaddr: u
         if elf_rd_u32(buf, p)? != PT_LOAD {
             continue;
         }
-        let p_offset = elf_rd_u64(buf, p + 8)?;
-        let p_vaddr = elf_rd_u64(buf, p + 16)?;
-        let p_filesz = elf_rd_u64(buf, p + 32)?;
+        let p_offset = elf_rd_u64_at(buf, p, 8)?;
+        let p_vaddr = elf_rd_u64_at(buf, p, 16)?;
+        let p_filesz = elf_rd_u64_at(buf, p, 32)?;
         if vaddr >= p_vaddr && vaddr < p_vaddr.checked_add(p_filesz)? {
             return p_offset.checked_add(vaddr - p_vaddr);
         }
@@ -859,8 +911,8 @@ fn x86_64_reloc_locate(buf: &[u8], e_phoff: u32, e_phnum: u16) -> Result<ElfX866
     for i in 0..e_phnum as usize {
         let p = ph + i * X86_64_PHENTSIZE;
         if elf_rd_u32(buf, p).ok_or(-16)? == 2 {
-            dyn_off = elf_rd_u64(buf, p + 8).ok_or(-16)?;
-            dyn_sz = elf_rd_u64(buf, p + 32).ok_or(-16)?;
+            dyn_off = elf_rd_u64_at(buf, p, 8).ok_or(-16)?;
+            dyn_sz = elf_rd_u64_at(buf, p, 32).ok_or(-16)?;
             break;
         }
     }
@@ -878,7 +930,7 @@ fn x86_64_reloc_locate(buf: &[u8], e_phoff: u32, e_phnum: u16) -> Result<ElfX866
     while o + 16 <= dyn_sz {
         let base = (dyn_off + o) as usize;
         let tag = elf_rd_u64(buf, base).ok_or(-16)? as i64;
-        let val = elf_rd_u64(buf, base + 8).ok_or(-16)?;
+        let val = elf_rd_u64_at(buf, base, 8).ok_or(-16)?;
         match tag {
             0 => break,             // DT_NULL
             7 => rela_vaddr = val,  // DT_RELA
@@ -951,8 +1003,8 @@ fn x86_64_needs_libc(buf: &[u8], e_phoff: u32, e_phnum: u16) -> Result<bool, i32
     for i in 0..e_phnum as usize {
         let p = ph + i * X86_64_PHENTSIZE;
         if elf_rd_u32(buf, p).ok_or(-16)? == 2 {
-            dyn_off = elf_rd_u64(buf, p + 8).ok_or(-16)?;
-            dyn_sz = elf_rd_u64(buf, p + 32).ok_or(-16)?;
+            dyn_off = elf_rd_u64_at(buf, p, 8).ok_or(-16)?;
+            dyn_sz = elf_rd_u64_at(buf, p, 32).ok_or(-16)?;
             break;
         }
     }
@@ -969,7 +1021,7 @@ fn x86_64_needs_libc(buf: &[u8], e_phoff: u32, e_phnum: u16) -> Result<bool, i32
     while o + 16 <= dyn_sz {
         let base = (dyn_off + o) as usize;
         let tag = elf_rd_u64(buf, base).ok_or(-16)? as i64;
-        let val = elf_rd_u64(buf, base + 8).ok_or(-16)?;
+        let val = elf_rd_u64_at(buf, base, 8).ok_or(-16)?;
         match tag {
             0 => break, // DT_NULL
             1 => {
@@ -1023,7 +1075,7 @@ fn x86_64_reloc_is_deferred(buf: &[u8], rela_file_off: u64, sym_file_off: u64, k
     let r = (rela_file_off as usize)
         .checked_add((k as usize).checked_mul(24).ok_or(-16)?)
         .ok_or(-16)?;
-    let r_info = elf_rd_u64(buf, r + 8).ok_or(-16)?;
+    let r_info = elf_rd_u64_at(buf, r, 8).ok_or(-16)?;
     let r_type = (r_info & 0xFFFF_FFFF) as u32;
     if r_type != 1 && r_type != 6 && r_type != 7 {
         return Ok(false);
@@ -1036,11 +1088,12 @@ fn x86_64_reloc_is_deferred(buf: &[u8], rela_file_off: u64, sym_file_off: u64, k
         .checked_mul(24)
         .and_then(|m| sym_file_off.checked_add(m))
         .ok_or(-16)? as usize;
-    let st_shndx = elf_rd_u16(buf, base + 6).ok_or(-16)?;
+    let st_shndx = elf_rd_u16_at(buf, base, 6).ok_or(-16)?;
     Ok(st_shndx == 0)
 }
 
-/// Validate RELA entry `k` and compute the (target, value) to write.
+/// Validate RELA entry `k` and compute the (target, value) to write. S111: an
+/// accepted entry's 8 written bytes lie wholly inside one loaded segment.
 /// `Ok(Some((target, value)))` = write `value` at `target`, `Ok(None)` = skip
 /// (R_X86_64_NONE), `Err(-16)` = reject.
 #[allow(clippy::too_many_arguments)]
@@ -1058,8 +1111,8 @@ fn x86_64_reloc_resolve(
         .checked_add((k as usize).checked_mul(24).ok_or(-16)?)
         .ok_or(-16)?;
     let r_offset = elf_rd_u64(buf, r).ok_or(-16)?;
-    let r_info = elf_rd_u64(buf, r + 8).ok_or(-16)?;
-    let r_addend = elf_rd_u64(buf, r + 16).ok_or(-16)? as i64;
+    let r_info = elf_rd_u64_at(buf, r, 8).ok_or(-16)?;
+    let r_addend = elf_rd_u64_at(buf, r, 16).ok_or(-16)? as i64;
     let r_type = (r_info & 0xFFFF_FFFF) as u32;
     if r_type == 0 {
         return Ok(None); // R_X86_64_NONE
@@ -1107,9 +1160,9 @@ fn x86_64_reloc_resolve(
         }
         let base = sym_off as usize;
         // Elf64_Sym: st_name@0 st_info@4 st_other@5 st_shndx@6(u16) st_value@8(u64).
-        let st_info = *buf.get(base + 4).ok_or(-16)?;
-        let st_shndx = elf_rd_u16(buf, base + 6).ok_or(-16)?;
-        let st_value = elf_rd_u64(buf, base + 8).ok_or(-16)?;
+        let st_info = *buf.get(base.checked_add(4).ok_or(-16)?).ok_or(-16)?;
+        let st_shndx = elf_rd_u16_at(buf, base, 6).ok_or(-16)?;
+        let st_value = elf_rd_u64_at(buf, base, 8).ok_or(-16)?;
 
         if st_shndx == 0 {
             // SHN_UNDEF: only an undefined *weak* symbol (STB_WEAK == 2) resolves
@@ -1249,8 +1302,105 @@ pub unsafe extern "C" fn rust_elf_x86_64_reloc_resolve(
 }
 
 #[cfg(kani)]
+mod user_address_kani_proofs {
+    use super::*;
+
+    /// S112. For EVERY fault address and EVERY image and heap bounds the C side
+    /// could pass, the page-fault validator accepts exactly the addresses below
+    /// the user ceiling that lie in the image, the heap or the low stack. So a
+    /// kernel-half address is never accepted however wrong the bounds are, and
+    /// stated as an equivalence so that refusing everything cannot satisfy it.
+    #[kani::proof]
+    fn page_fault_never_accepts_a_kernel_half_address() {
+        let (a, ib, ie, hs, he): (u64, u64, u64, u64, u64) =
+            (kani::any(), kani::any(), kani::any(), kani::any(), kani::any());
+        let in_region = (ib != 0 && a >= ib && a < ie)
+            || (hs != 0 && a >= hs && a < he)
+            || (LOW_STACK_BASE..LOW_STACK_TOP).contains(&a);
+        assert!(
+            rust_validate_page_fault(a, kani::any(), ib, ie, hs, he) == (a < USER_MAX_VADDR && in_region),
+            "the validator accepts exactly the user-half addresses inside a region"
+        );
+    }
+
+    /// S112. The same for a signal handler: accepted exactly when it lies in the
+    /// task's image and below the user ceiling, for every bound C could pass.
+    #[kani::proof]
+    fn signal_handler_is_never_a_kernel_half_address() {
+        let (v, ib, ie): (u64, u64, u64) = (kani::any(), kani::any(), kani::any());
+        assert!(
+            rust_signal_handler_addr_ok(v, ib, ie) == (ib != 0 && v >= ib && v < ie && v < USER_MAX_VADDR),
+            "a handler is accepted exactly inside the image and the user half"
+        );
+    }
+}
+
+#[cfg(kani)]
 mod elf_kani_proofs {
     use super::*;
+
+    /// The ELF field readers return a value EXACTLY when the whole field lies
+    /// inside the slice, for every offset, including those within a few bytes
+    /// of `usize::MAX`, and the `_at` forms read exactly where a checked
+    /// `base + delta` points. Stated as an equivalence so a reader that refused
+    /// everything could not satisfy it. Before 2026-10-06 `off + 8` was
+    /// computed unchecked: Kani reports that as an overflow here, and the
+    /// release kernel wrapped it.
+    #[kani::proof]
+    fn elf_readers_never_wrap_an_offset() {
+        let buf: [u8; 16] = kani::any();
+        let off: usize = kani::any();
+        let delta: usize = kani::any();
+        let fits = off.checked_add(8).is_some_and(|e| e <= buf.len());
+        assert!(elf_rd_u64(&buf, off).is_some() == fits, "a read succeeds exactly when the field is inside");
+        assert!(
+            elf_rd_u64_at(&buf, off, delta) == off.checked_add(delta).and_then(|o| elf_rd_u64(&buf, o)),
+            "an _at read is a read at the checked sum, and nothing when it overflows"
+        );
+    }
+
+    /// An accepted x86-64 relocation writes its 8 bytes wholly inside ONE loaded
+    /// segment (S84), whatever the image says: every byte of a 48-byte image,
+    /// every table offset, symbol-table offset and entry index (offsets near
+    /// `usize::MAX` included), every slide, and two arbitrary segments. This is
+    /// what the C loader relies on before it writes to `target`.
+    #[kani::proof]
+    #[kani::unwind(3)]
+    fn x86_64_reloc_target_is_inside_a_segment() {
+        let buf: [u8; 48] = kani::any();
+        let (rela_off, sym_off, k): (u64, u64, u64) = (kani::any(), kani::any(), kani::any());
+        let (slide, maxv): (u64, u64) = (kani::any(), kani::any());
+        let va: [u64; 2] = kani::any();
+        let mz: [u64; 2] = kani::any();
+        if let Ok(Some((t, _))) = x86_64_reloc_resolve(&buf, rela_off, sym_off, k, slide, maxv, &va, &mz) {
+            let inside = |s: usize| {
+                t >= va[s]
+                    && t.checked_add(8).is_some_and(|e| va[s].checked_add(mz[s]).is_some_and(|end| e <= end))
+            };
+            assert!(inside(0) || inside(1), "an accepted relocation writes outside every segment");
+        }
+        // Deciding to defer an entry reads the image too, from the same hostile
+        // offsets; it must refuse or answer, never overflow.
+        let _ = x86_64_reloc_is_deferred(&buf, rela_off, sym_off, k);
+    }
+
+    /// The same containment for i386, whose relocations write 4 bytes.
+    #[kani::proof]
+    #[kani::unwind(3)]
+    fn i386_reloc_target_is_inside_a_segment() {
+        let buf: [u8; 32] = kani::any();
+        let (rel_off, k): (u32, u32) = (kani::any(), kani::any());
+        let slide: u64 = kani::any();
+        let va: [u64; 2] = kani::any();
+        let mz: [u64; 2] = kani::any();
+        if let Ok(Some(t)) = i386_reloc_target(&buf, rel_off, k, slide, &va, &mz) {
+            let inside = |s: usize| {
+                t >= va[s]
+                    && t.checked_add(4).is_some_and(|e| va[s].checked_add(mz[s]).is_some_and(|end| e <= end))
+            };
+            assert!(inside(0) || inside(1), "an accepted relocation writes outside every segment");
+        }
+    }
 
     /// Soundness of the ELF header validator, over EVERY possible 128-byte input
     /// (buffer size chosen so acceptance is reachable: e_phoff can fall within
@@ -1940,6 +2090,21 @@ mod tests {
         assert!(!rust_signal_handler_addr_ok(0x401234, 0, 0x800000));
         assert!(!rust_signal_handler_addr_ok(0x401234, 0x400000, 0x400000));
         assert!(!rust_signal_handler_addr_ok(0x401234, 0x480000, 0x400000));
+    }
+
+    #[test]
+    fn kernel_half_bounds_never_admit_a_kernel_address() {
+        // S112. Bounds that reach into the kernel half (a corrupted task record)
+        // must not make a kernel address the task's own, while a user address
+        // inside the same bounds is still admitted: the ceiling, not a refusal
+        // of the whole region.
+        const KTEXT: u64 = 0xFFFF_FFFF_8010_0000;
+        assert!(!rust_validate_page_fault(KTEXT, 0, 0x400000, u64::MAX, 0, 0));
+        assert!(!rust_validate_page_fault(KTEXT, 0, 0, 0, 0x1000000, u64::MAX));
+        assert!(!rust_validate_page_fault(USER_MAX_VADDR, 0, 0x400000, u64::MAX, 0, 0));
+        assert!(rust_validate_page_fault(USER_MAX_VADDR - 1, 0, 0x400000, u64::MAX, 0, 0));
+        assert!(!rust_signal_handler_addr_ok(KTEXT, 0x400000, u64::MAX));
+        assert!(rust_signal_handler_addr_ok(0x401234, 0x400000, u64::MAX));
     }
 
     #[test]

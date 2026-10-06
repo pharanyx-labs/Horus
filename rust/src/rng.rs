@@ -367,6 +367,27 @@ pub extern "C" fn rust_rng_is_seeded() -> bool {
     with_rng(|r| r.seeded)
 }
 
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// S30, as a proof rather than a test: an unseeded pool refuses EVERY
+    /// request and leaves the caller's buffer all zero, whatever it held and for
+    /// every length up to 16. `rng_refuses_before_seeding` checks one buffer;
+    /// this checks them all. Run with `--features rng_unseeded_legacy`, the
+    /// existing control arm, it reports `VERIFICATION:- FAILED`.
+    #[kani::proof]
+    #[kani::unwind(17)]
+    fn an_unseeded_pool_emits_nothing() {
+        let mut st = RngState::new();
+        let mut buf: [u8; 16] = kani::any();
+        let len: usize = kani::any();
+        kani::assume(len <= 16);
+        assert!(!st.fill(&mut buf[..len]), "an unseeded pool must refuse");
+        assert!(buf[..len].iter().all(|&b| b == 0), "a refused request must be zeroed");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

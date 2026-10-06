@@ -151,7 +151,7 @@ KANI_HARNESSES_YML = ".github/kani-harnesses.yml"
 
 
 def _kani(key):
-    """The gating / manual harness lists, from the classification manifest."""
+    """A harness list from the classification manifest (only `gating` exists)."""
     d = yaml.safe_load(Path(KANI_HARNESSES_YML).read_text()) or {}
     return d.get(key) or []
 
@@ -305,9 +305,11 @@ def derive():
         # gating", rust/KANI.md said eight in a pasted transcript and eleven in
         # its prose, and the tree held thirteen gating and two excused. Nothing
         # in CI could see any of them.
-        "kani_harnesses": len(_kani("gating")) + len(_kani("manual")),
-        "kani_gating": len(_kani("gating")),
-        "kani_manual": len(_kani("manual")),
+        #
+        # One count since 2026-10-06, when the `manual` list was removed and
+        # every harness became gating: separate gating and excused counts would
+        # now be the same number declared twice.
+        "kani_harnesses": len(_kani("gating")),
         # Tracked files, straight from git. LIMITATIONS 5.6 offers this number as
         # evidence of repository hygiene and says in the same breath that it is
         # "re-derived rather than carried forward" -- and it had been carried

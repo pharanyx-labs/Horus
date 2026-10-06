@@ -643,6 +643,14 @@ in this file.
 
 ### Changed
 
+- **Every Kani proof runs on every pull request.** Two of the proofs that a revoked capability's
+  stale copy is refused (the lineage-generation pair) took longer than 1500 s each, so they ran
+  only in a manual `kani` job that had never run and could not have failed. They now stub the
+  serial-to-cell hash, which neither property depends on, and finish in about four minutes; a new
+  proof covers the one thing the stub leaves out (the real hash always names a cell inside the
+  table). All 24 proofs gate in `kani-bounded`, the manual job is gone, and
+  `tools/check_kani_harnesses.py` refuses any list that would excuse a proof from running.
+
 - **`docs/BUILDING.md` describes the build and the machines Horus runs on today.** It said UEFI is
   not supported, that nothing links the shared libc, that a real machine has only a VGA text
   console and ATA storage, and that `horus.iso` detects no disk; each of those stopped being true

@@ -17,7 +17,7 @@ These describe the system as it is today, and each change updates them in the sa
 | [`BUILDING.md`](BUILDING.md) | Toolchain, targets, running under QEMU and on hardware, installing, reproducible builds, and every build flag. Its defect-flag table is the index of the control arms, and CI holds it complete |
 | [`../TESTS.md`](../TESTS.md) | Every test target and what it proves |
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | The workflow, code style, and the invariant rule |
-| [`../rust/KANI.md`](../rust/KANI.md) | What the Kani proofs establish, and which of them gate a merge |
+| [`../rust/KANI.md`](../rust/KANI.md) | What the Kani proofs establish, and how every one of them gates a merge |
 | [`../THIRD_PARTY.md`](../THIRD_PARTY.md) | Everything not written for Horus, and its provenance |
 | [`../CHANGES.md`](../CHANGES.md) | What changed, by pull request |
 

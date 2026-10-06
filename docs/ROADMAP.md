@@ -257,11 +257,10 @@ is a second person to review them. Turning on required approval with one maintai
 every merge or needs a bypass actor, which would undo 4.2. `SECURITY.md` therefore claims
 "thoroughly automatically verified", not "independently reviewed".
 
-**4.2.** The gating set is **136 required, 9 exempted** (136 jobs, 145 contexts; re-derive with
-`tools/check_ci_gating.py`). The exemptions come from three jobs and are properties of the test,
-not open defects: `fuzz` (seven targets fuzzed nightly, never on a pull request), `ruleset-audit`
-(runs on a schedule, never on a pull request) and
-`smoke-smp-kvm` (a second run of required gates under KVM, until its pass rate is measured).
+**4.2.** The gating set is **137 required, 8 exempted** (136 jobs, 145 contexts; re-derive with
+`tools/check_ci_gating.py`). The exemptions come from two jobs and are properties of the test,
+not open defects: `fuzz` (seven targets fuzzed nightly, never on a pull request) and
+`ruleset-audit` (runs on a schedule, never on a pull request).
 
 **4.4, 4.5 and 4.11** belong together: SLSA provenance and signatures on `kernel.elf` and the ISO,
 releases that carry them with the SBOM and the expected PCR values (the one release so far carries

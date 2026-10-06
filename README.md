@@ -155,8 +155,8 @@ Most tests boot a purpose-built kernel in QEMU and read its serial output. Many 
 they corrupt a boot module, tamper with the measured boot, or try the refused operation, and
 require the refusal. Each such test has a **control arm**, a build that puts the defect back on
 purpose, and CI requires the test to go red against it, so a test that cannot fail cannot pass
-unnoticed. `.github/workflows/ci.yml` defines 133 jobs; 136 of the 145 status checks the workflows
-produce gate a merge, and the 9 that do not (seven of them nightly fuzzing) carry a written
+unnoticed. `.github/workflows/ci.yml` defines 133 jobs; 137 of the 145 status checks the workflows
+produce gate a merge, and the 8 that do not (seven of them nightly fuzzing) carry a written
 reason. Bounded Kani proofs
 cover the capability algebra, Miri runs over the Rust core, and `kernel.elf` builds byte for byte
 the same twice. [`TESTS.md`](TESTS.md) lists every test and what it proves.

@@ -124,7 +124,7 @@ There are 430 `smoke-*` targets: 204 gates and 226 control arms. Each row is a g
 | `smoke-enter-user-claim` | The first entry to ring 3 never claims a task another CPU already holds | S20 | `smoke-enter-user-claim-control`, `smoke-enter-user-collide-control` |
 | `smoke-smp` | Every CPU in the MADT comes online and runs a task, no task runs on an SMT sibling, and TLB shootdown completes | S80 |  |
 | `smoke-smp-topology` | Eight CPUs on four topologies, including sparse LAPIC ids and hyperthreads, where primary threads get the CPU slots first | S101 | `smoke-smp-topology-sibling-control`, `smoke-smp-topology-sparse-control` |
-| `smoke-smp-kvm` | The SMP race base gates again under KVM, where vCPUs truly run in parallel; required since its measured 62 of 62 green runs |  |  |
+| `smoke-smp-kvm` | The SMP race base gates again under KVM, where vCPUs truly run in parallel; required since its measured 83 of 83 green runs |  |  |
 | `smoke-smt` | SMT siblings are parked | S101 |  |
 | `smoke-switch-commit` | A refused switch leaves no stale scheduler claim behind |  | `smoke-switch-commit-control` |
 
@@ -384,11 +384,11 @@ The jobs that are not boot tests:
 | `kani-bounded` | Formal verification of the capability algebra (every Kani proof) |
 
 Two of those deserve a sentence each.
-**`kani-bounded` is the only Kani job, and it can fail anything.** All **24** harnesses run
+**`kani-bounded` is the only Kani job, and it can fail anything.** All **32** harnesses run
 there with no `continue-on-error`, each named with its measured cost in
 `.github/kani-harnesses.yml`, and the job refuses a proof that is not listed. And **`invariants`** requires every property in `SECURITY.md` to
 name a witness that exists and runs; its exemption list, `.github/invariants.yml`, is
-currently **empty**: all 112 properties name a witness that resolves.
+currently **empty**: all 114 properties name a witness that resolves.
 
 Every `tools/check_*.py` has a falsification harness, `tools/test_check_*.sh`, with one case per
 rule showing the rule can fail, and each checker asserts a floor on what it parsed, so a parser

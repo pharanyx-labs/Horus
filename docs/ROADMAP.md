@@ -269,7 +269,7 @@ from a tag and compare. They wait on 3.1, since an ISO that does not rebuild to 
 same bytes cannot be verified by rebuilding.
 
 **4.12.** The exemption list in `.github/invariants.yml` is currently
-**empty**: all 112 properties name a witness that resolves.
+**empty**: all 114 properties name a witness that resolves.
 
 ---
 

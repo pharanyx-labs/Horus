@@ -361,10 +361,10 @@ required:
   - smoke-signal
   - smoke-smp
   # Gating since 2026-10-06. Exempt from 2026-09-21 until its pass rate under
-  # KVM was measured, as its exemption required: 62 of 62 completed runs green
-  # from 2026-09-25 to 2026-10-06 (the last 80 ci.yml runs; 13 more could not be
-  # read, the GitHub API answering "Server Error", and are not counted either
-  # way). A second environment for the SMP race gates, where the vCPUs run truly
+  # KVM was measured, as its exemption required: 83 of 83 readable runs green
+  # from 2026-09-25 to 2026-10-06 (the last 98 completed ci.yml runs; 15 more
+  # could not be read, the GitHub API answering "Server Error", and are not
+  # counted either way). A second environment for the SMP race gates, where the vCPUs run truly
   # in parallel; it found HORUS-20260921-03 on its first run.
   - smoke-smp-kvm
   - smoke-smt

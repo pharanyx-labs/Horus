@@ -384,6 +384,23 @@ in this file.
 
 ### Security
 
+- **A task record with kernel-half bounds would have made a kernel address the task's own.** The
+  page-fault validator and the signal-handler check took a task's image and heap bounds from C
+  and trusted them, so bounds reaching into the kernel half would have let the pager demand-map a
+  kernel address for the task, or a signal return to one. Nothing in the kernel sets such bounds
+  today; the Rust now refuses any address above the user ceiling before it consults them, and
+  two Kani proofs gate it (S112).
+
+- **An ELF offset from the image or from the C side could wrap instead of being refused.** The
+  ELF field readers computed `offset + size` unchecked, and their callers added field offsets the
+  same way. In the loader's own flow the table offsets are bounded by the image, but the Rust
+  relocation functions take those offsets back from C, and given one near the top of the address
+  range the release kernel wrapped it to the start of the image, where
+  `x86_64_reloc_is_deferred` could read header bytes as a relocation. Every read offset is now
+  checked, and three new Kani proofs gate it: the readers succeed exactly when the field is inside
+  the image, and an accepted relocation writes only inside one loaded segment on x86-64 and on
+  i386 (S111).
+
 - **A live boot no longer opens an installed system.** The live entry mounted the installed
   volume as its store, and a login with the install password unlocked it, so the installed root
   logged in on a live boot and the volume could be written. A live boot now opens no disk and
@@ -645,8 +662,16 @@ in this file.
 
 - **The SMP race gates under KVM now gate every merge.** `smoke-smp-kvm` runs the SMP base gates
   a second time with the vCPUs truly in parallel, and found HORUS-20260921-03 on its first run.
-  It was exempt until its pass rate was measured: 62 of 62 completed runs green from 2026-09-25
+  It was exempt until its pass rate was measured: 83 of 83 readable runs green from 2026-09-25
   to 2026-10-06.
+
+- **Three more Kani proofs gate every pull request.** Revocation is proved across two cspaces:
+  a child granted into another cspace and a grandchild granted back are revoked with their root,
+  and an independent capability on the same object survives (S3, S4). An unseeded random pool is
+  proved to refuse and zero every request (S30), and the login throttle to lock an account within
+  `MAX_AUTH_FAILS` failures from any stored count. The root-revocation proof now stubs the lineage
+  hash and takes 37 s instead of 157 s. `SECURITY.md` S2, S5 and S30 now name the Kani proofs
+  that witness them.
 
 - **`THIRD_PARTY.md` lists the vendored GNU coreutils (GPLv3) and TinyCC (LGPL 2.1).** It said
   everything not listed was MIT, and listed neither. The website no longer says the modules

@@ -35,6 +35,7 @@ bool rust_validate_page_fault(uint64_t fault_addr, uint32_t error_code,
                               uint64_t image_base, uint64_t image_end,
                               uint64_t heap_start, uint64_t heap_end) {
     (void)error_code;
+    if (fault_addr >= USER_MAX_VADDR) return false;   /* S112: never kernel half */
     if (image_base != 0 && fault_addr >= image_base && fault_addr < image_end) return true;
     if (heap_start != 0 && fault_addr >= heap_start && fault_addr < heap_end) return true;
     if (fault_addr >= 0x7df000 && fault_addr < 0x7ff000) return true;   /* low stack */

@@ -97,6 +97,18 @@ gating:
   - lineage_idx_is_always_inside_the_table                   # 0s
   - revoke_invalidates_recorded_generation                   # 234s
   - revoke_does_not_touch_a_distinct_lineage_cell            # 243s
+  # The ELF field readers and the relocation resolvers (rust/src/lib.rs, S111),
+  # added 2026-10-06 with the fix the first of them found: the readers computed
+  # `off + N` unchecked. EACH WAS FALSIFIED by reintroducing a defect and
+  # requiring `VERIFICATION:- FAILED`:
+  #   elf_readers_never_wrap_an_offset: the unchecked u64 reader (red in 3 s);
+  #   x86_64_reloc_target_is_inside_a_segment: the same reader (red in 16 s),
+  #     and a segment check that tests only the first byte (red in 12 s);
+  #   i386_reloc_target_is_inside_a_segment: the first-byte-only check (red in
+  #     3 s).
+  - elf_readers_never_wrap_an_offset                         # 4s
+  - x86_64_reloc_target_is_inside_a_segment                  # 18s
+  - i386_reloc_target_is_inside_a_segment                    # 3s
   # The user-address validators (rust/src/lib.rs, S112), added 2026-10-06 with
   # the fix the first of them found: both trusted the bounds C passes and would
   # accept a kernel-half address given kernel-half bounds. Both are equivalences.

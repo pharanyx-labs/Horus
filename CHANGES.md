@@ -391,6 +391,16 @@ in this file.
   today; the Rust now refuses any address above the user ceiling before it consults them, and
   two Kani proofs gate it (S112).
 
+- **An ELF offset from the image or from the C side could wrap instead of being refused.** The
+  ELF field readers computed `offset + size` unchecked, and their callers added field offsets the
+  same way. In the loader's own flow the table offsets are bounded by the image, but the Rust
+  relocation functions take those offsets back from C, and given one near the top of the address
+  range the release kernel wrapped it to the start of the image, where
+  `x86_64_reloc_is_deferred` could read header bytes as a relocation. Every read offset is now
+  checked, and three new Kani proofs gate it: the readers succeed exactly when the field is inside
+  the image, and an accepted relocation writes only inside one loaded segment on x86-64 and on
+  i386 (S111).
+
 - **A live boot no longer opens an installed system.** The live entry mounted the installed
   volume as its store, and a login with the install password unlocked it, so the installed root
   logged in on a live boot and the volume could be written. A live boot now opens no disk and

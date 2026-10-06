@@ -53,6 +53,21 @@ impl SafeCap {
 const LOW_STACK_BASE: u64 = 0x7df000;
 const LOW_STACK_TOP: u64 = 0x7ff000;
 
+/// S112. The first address above the canonical user half. Mirrors
+/// `USER_MAX_VADDR` in `src/include/kernel.h`. Nothing at or above it is ever
+/// user memory, whatever bounds the caller passes.
+///
+/// The two validators below take a task's image and heap bounds from C. Until
+/// 2026-10-06 they trusted those bounds outright, so a task record whose
+/// `image_end` or `heap_end` reached into the kernel half (a corrupted record,
+/// or a future C path that set one wrongly) would have had a kernel address
+/// classed as the task's own: demand-mapped by the pager, or accepted as a
+/// signal handler the kernel `iretq`s to. A Kani proof found it. Rust FFI
+/// functions check their own inputs and do not assume the C side did
+/// (CLAUDE.md §1), so the ceiling is applied here, before the bounds are
+/// consulted.
+const USER_MAX_VADDR: u64 = 0x0000_8000_0000_0000;
+
 /// Is `fault_addr` a legitimate part of THIS task's user address space?
 ///
 /// Region-aware: the caller passes the task's actual image and heap bounds
@@ -75,6 +90,10 @@ pub extern "C" fn rust_validate_page_fault(
     heap_start: u64,
     heap_end: u64,
 ) -> bool {
+    // Never a kernel-half or non-canonical address, whatever the bounds say.
+    if fault_addr >= USER_MAX_VADDR {
+        return false;
+    }
     // Image: code, rodata, data, bss. image_base is 0 only for an unbuilt task.
     if image_base != 0 && fault_addr >= image_base && fault_addr < image_end {
         return true;
@@ -196,7 +215,9 @@ pub extern "C" fn rust_signal_handler_addr_ok(vaddr: u64, image_base: u64, image
     if image_base == 0 || image_end <= image_base {
         return false;
     }
-    vaddr >= image_base && vaddr < image_end
+    // A handler is user code: never at or above the user ceiling, whatever
+    // `image_end` says (S112).
+    vaddr < USER_MAX_VADDR && vaddr >= image_base && vaddr < image_end
 }
 
 #[repr(C)]
@@ -1281,6 +1302,40 @@ pub unsafe extern "C" fn rust_elf_x86_64_reloc_resolve(
 }
 
 #[cfg(kani)]
+mod user_address_kani_proofs {
+    use super::*;
+
+    /// S112. For EVERY fault address and EVERY image and heap bounds the C side
+    /// could pass, the page-fault validator accepts exactly the addresses below
+    /// the user ceiling that lie in the image, the heap or the low stack. So a
+    /// kernel-half address is never accepted however wrong the bounds are, and
+    /// stated as an equivalence so that refusing everything cannot satisfy it.
+    #[kani::proof]
+    fn page_fault_never_accepts_a_kernel_half_address() {
+        let (a, ib, ie, hs, he): (u64, u64, u64, u64, u64) =
+            (kani::any(), kani::any(), kani::any(), kani::any(), kani::any());
+        let in_region = (ib != 0 && a >= ib && a < ie)
+            || (hs != 0 && a >= hs && a < he)
+            || (LOW_STACK_BASE..LOW_STACK_TOP).contains(&a);
+        assert!(
+            rust_validate_page_fault(a, kani::any(), ib, ie, hs, he) == (a < USER_MAX_VADDR && in_region),
+            "the validator accepts exactly the user-half addresses inside a region"
+        );
+    }
+
+    /// S112. The same for a signal handler: accepted exactly when it lies in the
+    /// task's image and below the user ceiling, for every bound C could pass.
+    #[kani::proof]
+    fn signal_handler_is_never_a_kernel_half_address() {
+        let (v, ib, ie): (u64, u64, u64) = (kani::any(), kani::any(), kani::any());
+        assert!(
+            rust_signal_handler_addr_ok(v, ib, ie) == (ib != 0 && v >= ib && v < ie && v < USER_MAX_VADDR),
+            "a handler is accepted exactly inside the image and the user half"
+        );
+    }
+}
+
+#[cfg(kani)]
 mod elf_kani_proofs {
     use super::*;
 
@@ -2035,6 +2090,21 @@ mod tests {
         assert!(!rust_signal_handler_addr_ok(0x401234, 0, 0x800000));
         assert!(!rust_signal_handler_addr_ok(0x401234, 0x400000, 0x400000));
         assert!(!rust_signal_handler_addr_ok(0x401234, 0x480000, 0x400000));
+    }
+
+    #[test]
+    fn kernel_half_bounds_never_admit_a_kernel_address() {
+        // S112. Bounds that reach into the kernel half (a corrupted task record)
+        // must not make a kernel address the task's own, while a user address
+        // inside the same bounds is still admitted: the ceiling, not a refusal
+        // of the whole region.
+        const KTEXT: u64 = 0xFFFF_FFFF_8010_0000;
+        assert!(!rust_validate_page_fault(KTEXT, 0, 0x400000, u64::MAX, 0, 0));
+        assert!(!rust_validate_page_fault(KTEXT, 0, 0, 0, 0x1000000, u64::MAX));
+        assert!(!rust_validate_page_fault(USER_MAX_VADDR, 0, 0x400000, u64::MAX, 0, 0));
+        assert!(rust_validate_page_fault(USER_MAX_VADDR - 1, 0, 0x400000, u64::MAX, 0, 0));
+        assert!(!rust_signal_handler_addr_ok(KTEXT, 0x400000, u64::MAX));
+        assert!(rust_signal_handler_addr_ok(0x401234, 0x400000, u64::MAX));
     }
 
     #[test]

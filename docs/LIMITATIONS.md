@@ -442,7 +442,7 @@ the fix.
 ### 5.5 Formal verification is narrow
 
 Kani proves properties of capability revocation, the ELF validator and the page-pool refcount
-arithmetic: **27** harnesses, every one of them gating in the required `kani-bounded` job. That is the
+arithmetic: **29** harnesses, every one of them gating in the required `kani-bounded` job. That is the
 whole of the formal methods here. The kernel as a whole is not verified, no refinement proof links
 a specification to the code, and no TLA+ specification exists (two unsound ones were removed on
 2026-09-10).

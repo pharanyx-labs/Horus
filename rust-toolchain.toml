@@ -1,0 +1,19 @@
+# The Rust that builds the security core, pinned. rustup reads this file and
+# installs exactly this toolchain, with the kernel's target and clippy, on the
+# first cargo command run anywhere in the tree, on a developer machine and on
+# every CI runner alike. Before 2026-10-06 nothing pinned it: CI built with
+# whatever stable the runner image happened to ship that week, so the compiler
+# that produced kernel.elf changed without a commit and the reproducible-build
+# claim held only between two builds on the same image.
+#
+# Kani, Miri and cargo-fuzz each name their own toolchain (`cargo kani` brings
+# its pinned nightly; Miri runs `cargo +nightly-...`; fuzzing `cargo +nightly`),
+# and an explicit `+toolchain` overrides this file, so they are unaffected.
+#
+# Raising it is a deliberate change: bump the version, run the local sweep and
+# `make reproducible-build`, and say why in the PR.
+[toolchain]
+channel = "1.98.1"
+profile = "minimal"
+components = ["clippy"]
+targets = ["x86_64-unknown-none"]

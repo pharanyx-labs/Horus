@@ -85,12 +85,21 @@ fi
 # S4 and S5 test the Makefile PLUMBING, which is where the defect was. The
 # scanner's own detection is upstream's business; what broke here was that its
 # exit status never reached make.
+#
+# Both copy rust-toolchain.toml beside the Makefile. The Makefile's parse-time
+# check asks rustup whether the bare-metal target is installed, and rustup
+# answers for the toolchain the DIRECTORY selects. Without the file, a temp
+# copy selects the machine's default toolchain, which need not have the target
+# (CI adds it to the pinned one, from the repository root), so both arms
+# aborted at parse time on 2026-10-06 and tested nothing. With it, the copy
+# selects exactly what the real tree does.
 
 # S4. A failing `cargo audit` must fail the target. Mutated to a command that
 #     always fails, so the arm does not need a vulnerable dependency (which
 #     would rot the moment the advisory was withdrawn).
 d="$(mktemp -d)"; mkdir -p "$d/rust"
 sed 's|^\tcd rust && cargo audit$|\tcd rust \&\& false|' "$ROOT/Makefile" > "$d/Makefile"
+cp "$ROOT/rust-toolchain.toml" "$d/"
 if grep -q "cd rust && false" "$d/Makefile"; then
   out="$( cd "$d" && make cargo-audit 2>&1 )"; rc=$?
   # The failure must come from the MUTATION, not from make giving up earlier.
@@ -125,6 +134,7 @@ REAL_CARGO="$(command -v cargo || echo /nonexistent)"
 { printf '#!/bin/sh\n[ "$1" = "audit" ] && exit 1\nexec %s "$@"\n' "$REAL_CARGO"; } > "$d/stubbin/cargo"
 chmod +x "$d/stubbin/cargo"
 cp "$ROOT/Makefile" "$d/Makefile"
+cp "$ROOT/rust-toolchain.toml" "$d/"
 out="$( cd "$d" && PATH="$d/stubbin:$PATH" make cargo-audit 2>&1 )"; rc=$?
 if [ $rc -eq 0 ]; then
   fail S5 "NOT CAUGHT -- a missing cargo-audit was reported as a clean scan"

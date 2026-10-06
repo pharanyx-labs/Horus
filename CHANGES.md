@@ -643,6 +643,13 @@ in this file.
 
 ### Changed
 
+- **`docs/ARCHITECTURE.md` describes the system as built.** It said `netd` drives virtio-net,
+  the device table is a bus-0 scan, `tasks[]` is not yet carved from untyped memory, the shared
+  library is not yet dynamically linked, `MAX_ENDPOINTS` is 128, `fs_server` holds
+  `CAP_BLOCK_DEV` and `console_server` polls the keyboard; none of those is true now. The gap
+  register (§14) is a table with G-14 the one gap open. The README no longer lists `netd` among
+  the servers the shipped system starts.
+
 - **Every Kani proof runs on every pull request.** Two of the proofs that a revoked capability's
   stale copy is refused (the lineage-generation pair) took longer than 1500 s each, so they ran
   only in a manual `kani` job that had never run and could not have failed. They now stub the

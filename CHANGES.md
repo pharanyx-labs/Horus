@@ -76,6 +76,7 @@ here.
 
 ### Fixed
 
+- The roadmap called nightly fuzzing and full Kani not started after both had landed. (#497)
 - The `unsafe` check never read most of `lib.rs`. (#489)
 - `smoke-kdiag-split-control` went red about one CI run in 24 on changes that do not touch the console. (#473)
 - A merge-conflict marker sat in `docs/LIMITATIONS.md` §5.6 for a day, with every job green. (#471)

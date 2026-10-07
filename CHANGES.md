@@ -674,6 +674,8 @@ in this file.
 
 ### Changed
 
+- The README is rewritten to match the tree as it is. (#496)
+
 - **The website is plain HTML in `site/`, edited directly.** It was generated from `site-src/` by
   `tools/build_site.py`, so every page existed twice and an edit to the published copy was
   overwritten by the next build. The generator and its sources are gone. What the generator kept

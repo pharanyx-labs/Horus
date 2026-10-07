@@ -64,7 +64,7 @@ arm "2" "a separator alone in YAML" \
 arm "3" "a closing marker in C" \
     'add src/kernel/kusers.c "$(mark ">") origin/main"' caught "rule 3"
 arm "4" "a diff3 base marker in HTML" \
-    'add site-src/layout.html "$(mark "|") merged common ancestors"' caught "rule 4"
+    'add site/index.html "$(mark "|") merged common ancestors"' caught "rule 4"
 arm "1" "a CRLF line ending does not hide a marker" \
     'printf "\n%s HEAD\r\n" "$(mark "<")" >> README.md && git add README.md' caught "rule 1"
 arm "1" "a new file, once staged, is scanned (line 2: add starts a line)" \

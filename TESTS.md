@@ -340,7 +340,7 @@ The jobs that are not boot tests:
 | `unsafe-safety` | Every unsafe in the security core states the caller's obligations |
 | `apt-hardening` | No build depends on a repository this project does not use |
 | `doc-claims` | Every documented count matches the tool that derives it |
-| `site` | The website is its sources, its links resolve, and it loads nothing from elsewhere |
+| `site` | The website is consistent, its links resolve, and it loads nothing from elsewhere |
 | `conflict-markers` | No tracked file carries a merge-conflict marker |
 | `prose-style` | The docs and the website use no em dash and British spelling |
 | `rust` | Rust unit tests + clippy (deny-warnings gate) |

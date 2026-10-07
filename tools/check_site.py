@@ -1,33 +1,42 @@
 #!/usr/bin/env python3
-"""The website is what its sources say, its links go somewhere, and it fetches
+"""The website is consistent with itself, its links go somewhere, and it fetches
 nothing from anywhere else.
 
-The site is built from site-src/ into site/ by tools/build_site.py, and the built
-pages are committed so the site reads offline from a checkout. That arrangement has
-four ways to go wrong quietly, and this checker has a rule for each:
+The site is plain HTML in site/, edited directly and committed, so it reads offline
+from a checkout with no build step. What a generator used to guarantee (one header,
+one menu, one footer, contents rails and a search index that match the headings) is
+checked here instead, on the pages as they are:
 
-  R1  site/ is exactly what a fresh build of site-src/ produces. Otherwise an edit
-      made to a built page, or a source edit nobody rebuilt, ships as the site.
+  R1  every page carries the same shared chrome: the <head> apart from its title and
+      description, the site header and menus, and the footer and search dialog. A
+      copy edited in one page and not the others is the drift this rule exists for.
   R2  every internal link resolves: the page exists, and so does the #anchor on it.
-      A multi-page site's commonest defect is a link to a section that moved.
   R3  nothing loads from another origin. No remote script, stylesheet, image, font,
-      frame or CSS url(): the site argues about supply-chain provenance, and a page
-      that pulls bytes from a CDN, or phones an analytics host, contradicts it. Plain
-      <a href="https://..."> links are fine; following one is the reader's choice.
+      frame or CSS url(): a page arguing about supply-chain provenance that pulls
+      bytes from a CDN contradicts itself. Ordinary <a href="https://..."> links are
+      fine; following one is the reader's choice.
   R4  every page has exactly one h1, a <title> and a meta description, and every
-      page except the home page is reachable from the primary navigation.
+      page except the home page is in the primary navigation, which lists the same
+      pages in the same order everywhere and marks the current one, and only it.
+  R5  every h2 and h3 has an id, and a page's "On this page" rail lists exactly its
+      headings, in order, with their labels (data-toc where given).
+  R6  the previous and next links follow the reading order: the home page, then the
+      primary navigation's order.
+  R7  assets/search-index.js is exactly what the pages' titles and headings produce.
+      `tools/check_site.py --write-index` regenerates it after an edit.
 
 Falsified by tools/test_check_site.sh, one arm per rule.
 Exit 0 if sound, 1 otherwise.
 """
 import html
+import json
 import pathlib
 import re
-import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SITE = ROOT / "site"
+INDEX_JS = SITE / "assets" / "search-index.js"
 
 SUBRESOURCE = re.compile(
     r"<(script|img|iframe|source|video|audio|embed|object|link)\b[^>]*?"
@@ -36,27 +45,92 @@ CSS_URL = re.compile(r"url\(\s*['\"]?([^'\")]+)", re.I)
 CSS_IMPORT = re.compile(r"@import\s+(?:url\()?\s*['\"]?([^'\");]+)", re.I)
 HREF = re.compile(r"<a\b[^>]*?\shref=\"([^\"]*)\"", re.I | re.S)
 IDS = re.compile(r"\sid=\"([^\"]+)\"")
+HEADING = re.compile(r"<(h[23])((?:\s+[^>]*)?)>(.*?)</\1>", re.S)
+TOP_END = '</header>\n'
+FOOT = '<footer class="foot">'
 
 
 def remote(url):
-    u = url.strip().lower()
-    return u.startswith(("http:", "https:", "//", "ftp:"))
+    return url.strip().lower().startswith(("http:", "https:", "//", "ftp:"))
+
+
+def text_of(fragment):
+    return " ".join(html.unescape(re.sub(r"<[^>]+>", "", fragment)).split())
+
+
+def split(page):
+    """(head, top header, content, tail) of a page, or None if the landmarks are missing."""
+    b = page.find("<body")
+    h = page.find('<header class="top">')
+    e = page.find(TOP_END, h)
+    f = page.find(FOOT)
+    if min(b, h, e, f) < 0 or not b < h < e < f:
+        return None
+    return page[:b], page[b:e + len(TOP_END)], page[e + len(TOP_END):f], page[f:]
+
+
+def outline(content):
+    out = []
+    for tag, attrs, inner in HEADING.findall(content):
+        idm = re.search(r'\sid="([^"]+)"', attrs)
+        if "data-toc-skip" in attrs:
+            continue
+        short = re.search(r'\sdata-toc="([^"]+)"', attrs)
+        out.append((tag, idm.group(1) if idm else None,
+                    html.unescape(short.group(1)) if short else text_of(inner)))
+    return out
+
+
+def page_title(page):
+    m = re.search(r"<title>([^<]*)</title>", page)
+    t = html.unescape(m.group(1)) if m else ""
+    return t[len("Horus: "):] if t.startswith("Horus: ") else t
+
+
+def nav_order(top):
+    m = re.search(r'<nav class="primary"[^>]*>(.*?)</nav>', top, re.S)
+    return HREF.findall(m.group(1)) if m else []
+
+
+def build_index(texts, reading):
+    index = []
+    for name in reading:
+        parts = split(texts[name])
+        title = page_title(texts[name])
+        index.append({"t": title, "p": title, "u": name, "k": 1})
+        for tag, hid, label in outline(parts[2] if parts else ""):
+            index.append({"t": label, "p": title, "u": f"{name}#{hid}", "k": 2 if tag == "h2" else 3})
+    return ("/* Generated by tools/check_site.py --write-index from every page's headings. Do not edit. */\n"
+            "window.HORUS_SEARCH = " + json.dumps(index, ensure_ascii=False, indent=0) + ";\n")
 
 
 def main():
     problems = []
-
-    # R1: built output matches the sources.
-    r = subprocess.run([sys.executable, str(ROOT / "tools" / "build_site.py"), "--check"],
-                       capture_output=True, text=True)
-    if r.returncode != 0:
-        for line in (r.stdout + r.stderr).strip().splitlines():
-            problems.append(f"R1 site/ is not what site-src/ builds to: {line}")
-        problems.append("R1 run tools/build_site.py and commit site/ with the sources")
-
     pages = sorted(SITE.glob("*.html"))
     texts = {p.name: p.read_text() for p in pages}
     ids = {name: set(IDS.findall(t)) for name, t in texts.items()}
+    parts = {name: split(t) for name, t in texts.items()}
+    for name, p in parts.items():
+        if p is None:
+            problems.append(f"R1 {name}: lacks the shared landmarks (<header class=\"top\"> and <footer class=\"foot\">)")
+
+    # R1: the shared chrome is identical on every page.
+    def norm_head(h):
+        h = re.sub(r"<title>[^<]*</title>", "<title/>", h)
+        h = re.sub(r'(<meta (?:name="description"|property="og:(?:title|description)") content=")[^"]*"', r'\1"', h)
+        return h
+    def norm_top(t):
+        t = re.sub(r'<body class="page-[a-z0-9-]*">', "<body>", t)
+        return t.replace(' aria-current="page"', "")
+    whole = [n for n in texts if parts[n]]
+    if whole:
+        ref = whole[0] if "index.html" not in whole else "index.html"
+        for kind, fn in (("<head>", lambda p: norm_head(p[0])), ("site header and menus", lambda p: norm_top(p[1])),
+                         ("footer and search dialog", lambda p: p[3].replace(' aria-current="page"', ""))):
+            want = fn(parts[ref])
+            for n in whole:
+                if fn(parts[n]) != want:
+                    problems.append(f"R1 {n}: its {kind} differs from {ref}'s; the shared chrome is edited in every page or none")
 
     for name, t in texts.items():
         # R2: internal links resolve.
@@ -94,19 +168,62 @@ def main():
         if not re.search(r'<meta name="description" content="[^"]+"', t):
             problems.append(f"R4 {name}: has no meta description")
 
+        if not parts[name]:
+            continue
+        content = parts[name][2]
+        # R5: headings have ids, and the contents rail lists them.
+        out = outline(content)
+        for tag, hid, label in out:
+            if not hid:
+                problems.append(f"R5 {name}: an <{tag}> has no id, so no rail or search can link to it: {label[:50]}")
+        rail = re.search(r'<aside class="toc"[^>]*>(.*?)</aside>', content, re.S)
+        if rail:
+            listed = [(h.lstrip("#"), text_of(l)) for h, l in re.findall(r'<a href="([^"]*)">(.*?)</a>', rail.group(1), re.S)]
+            want = [(hid, label) for _, hid, label in out]
+            if listed != want:
+                problems.append(f"R5 {name}: the 'On this page' rail does not match the page's headings")
+
     for css in sorted((SITE / "assets").glob("*.css")):
         c = css.read_text()
         for url in CSS_URL.findall(c) + CSS_IMPORT.findall(c):
             if remote(url):
                 problems.append(f"R3 assets/{css.name}: loads from another origin: {url}")
 
-    # R4: every page but the home page is in the primary navigation.
-    home = texts.get("index.html", "")
-    nav = re.search(r'<nav class="primary"[^>]*>(.*?)</nav>', home, re.S)
-    listed = set(HREF.findall(nav.group(1))) if nav else set()
+    # R4: navigation. R6: reading order.
+    navs = {n: nav_order(parts[n][1]) for n in whole}
+    home_nav = navs.get("index.html", [])
     for name in texts:
-        if name != "index.html" and name not in listed:
+        if name != "index.html" and name not in home_nav:
             problems.append(f"R4 {name}: is not in the primary navigation, so no menu reaches it")
+    for n in whole:
+        # The bar, the menu panel and the footer each list the pages; every mark a
+        # page carries must name that page, and a page other than home needs one
+        # in each of the three.
+        cur = re.findall(r'<a href="([^"]*)" aria-current="page"', parts[n][1] + parts[n][3])
+        want = [] if n == "index.html" else [n, n, n]
+        if sorted(cur) != sorted(want):
+            problems.append(f"R4 {n}: the menus mark {cur or 'nothing'} as the current page; want {want or 'nothing'}")
+    reading = ["index.html"] + [h for h in home_nav if h in texts]
+    for i, n in enumerate(reading):
+        if n not in whole:
+            continue
+        pager = re.search(r'<nav class="pager"[^>]*>(.*?)</nav>', parts[n][2], re.S)
+        if not pager:
+            continue
+        prev = re.search(r'class="pager__prev" href="([^"]*)"', pager.group(1))
+        nxt = re.search(r'class="pager__next" href="([^"]*)"', pager.group(1))
+        want_prev = reading[i - 1] if i > 0 else None
+        want_next = reading[i + 1] if i + 1 < len(reading) else None
+        if (prev.group(1) if prev else None) != want_prev or (nxt.group(1) if nxt else None) != want_next:
+            problems.append(f"R6 {n}: previous/next links do not follow the reading order ({want_prev} / {want_next})")
+
+    # R7: the search index matches the pages.
+    fresh = build_index(texts, reading)
+    if "--write-index" in sys.argv:
+        INDEX_JS.write_text(fresh)
+        print(f"wrote {INDEX_JS.relative_to(ROOT)}")
+    elif not INDEX_JS.exists() or INDEX_JS.read_text() != fresh:
+        problems.append("R7 assets/search-index.js does not match the pages' headings; run tools/check_site.py --write-index")
 
     print(f"pages checked: {len(texts)}")
     if problems:
@@ -114,7 +231,8 @@ def main():
         for p in problems:
             print(f"  - {p}")
         return 1
-    print("PASS: site/ matches its sources, every internal link resolves, and nothing loads from another origin")
+    print("PASS: the pages share one chrome, their rails, pagers and search index match, "
+          "every internal link resolves, and nothing loads from another origin")
     return 0
 
 

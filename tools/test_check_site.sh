@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Falsify tools/check_site.py: one arm per rule, plus the directions that must stay
-# SILENT. Each arm copies the site's sources, output and tools into a temporary
-# tree, plants one defect, and requires the checker to fail NAMING that rule. A
-# checker that failed for some other reason would pass a lax harness, so the rule
-# is part of what is asserted.
+# SILENT. Each arm copies site/ and the checker into a temporary tree, plants one
+# defect, and requires the checker to fail NAMING that rule. A checker that failed
+# for some other reason would pass a lax harness, so the rule is part of what is
+# asserted.
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PASSES=0; FAILS=0
@@ -16,8 +16,7 @@ _rmtree () {
 }
 
 mktree () {
-  mkdir -p "$1/tools" && cp -r "$ROOT/site" "$ROOT/site-src" "$1/" &&
-    cp "$ROOT/tools/build_site.py" "$ROOT/tools/check_site.py" "$1/tools/"
+  mkdir -p "$1/tools" && cp -r "$ROOT/site" "$1/" && cp "$ROOT/tools/check_site.py" "$1/tools/"
 }
 
 arm () {  # $1 name, $2 desc, $3 mutation, $4 expect (caught|clean), $5 must-say
@@ -38,46 +37,67 @@ arm () {  # $1 name, $2 desc, $3 mutation, $4 expect (caught|clean), $5 must-say
   _rmtree "$d"
 }
 
-REBUILD='python3 tools/build_site.py'
+# A mutation that changes a heading has to keep the search index current, or R7
+# fires too and an arm meant for another rule would pass on the wrong finding.
+REINDEX='{ python3 tools/check_site.py --write-index || true; }'
 
 echo "Falsifying tools/check_site.py:"
 
 arm "clean" "the site as it stands" "true" clean
 
-# R1: the committed output and the sources disagree, in both directions.
-arm "R1a" "a built page edited by hand" \
-  'printf "<p>edited in the output</p>\n" >> site/status.html' caught "R1"
-arm "R1b" "a source edited and not rebuilt" \
-  'sed -i "s/Research-grade/Research grade/" site-src/layout.html' caught "R1"
-arm "R1c" "a stray file in site/ that no source produces" \
-  'printf "x" > site/stray.html' caught "R1"
+# R1: the shared chrome, edited in one page only.
+arm "R1a" "the site header's tagline edited in one page" \
+  "sed -i 's|<span>Horus</span>|<span>Horus OS</span>|' site/status.html" caught "R1"
+arm "R1b" "the footer edited in one page" \
+  "sed -i '0,/<div class=\"foot__in\">/s//<div class=\"foot__in\"><p>extra<\/p>/' site/boot.html" caught "R1"
+arm "R1c" "a stylesheet link added to one page's head" \
+  "sed -i 's|</head>|<link rel=\"stylesheet\" href=\"assets/site.css\"></head>|' site/run.html" caught "R1"
+arm "R1d" "a page without the shared landmarks" \
+  "sed -i 's|<footer class=\"foot\">|<footer class=\"foot2\">|' site/why.html" caught "R1"
 
-# R2: a link that goes nowhere, to a missing anchor and to a missing page.
+# R2: a link that goes nowhere.
 arm "R2a" "a link to an anchor no page has" \
-  "sed -i 's|href=\"why.html\">How capabilities work|href=\"why.html#no-such-section\">How capabilities work|' site-src/pages/index.html && $REBUILD" caught "R2"
+  "sed -i 's|href=\"why.html\">How capabilities work|href=\"why.html#no-such-section\">How capabilities work|' site/index.html" caught "R2"
 arm "R2b" "a link to a page that does not exist" \
-  "sed -i 's|href=\"status.html\"|href=\"state.html\"|' site-src/pages/index.html && $REBUILD" caught "R2"
+  "sed -i 's|<section class=\"part\" aria-labelledby=\"status\">|<section class=\"part\" aria-labelledby=\"status\"><a href=\"state.html\">x</a>|' site/status.html" caught "R2"
 
-# R3: bytes from another origin, from markup and from the stylesheet.
-arm "R3a" "a script loaded from a CDN" \
-  "sed -i 's|<script src=\"assets/site.js\"></script>|<script src=\"https://cdn.example.net/site.js\"></script>|' site-src/layout.html && $REBUILD" caught "R3"
+# R3: bytes from another origin.
+arm "R3a" "a script loaded from a CDN, in every page" \
+  "sed -i 's|<script src=\"assets/site.js\"></script>|<script src=\"https://cdn.example.net/site.js\"></script>|' site/*.html" caught "R3"
 arm "R3b" "a webfont imported by the stylesheet" \
-  "sed -i '1i @import url(\"https://fonts.example.net/css?family=X\");' site-src/assets/site.css && $REBUILD" caught "R3"
+  "sed -i '1i @import url(\"https://fonts.example.net/css?family=X\");' site/assets/site.css" caught "R3"
 arm "R3c" "an image hotlinked from another site" \
-  "sed -i 's|<section class=\"honest\"|<img src=\"https://tracker.example.net/p.gif\" alt=\"\"><section class=\"honest\"|' site-src/pages/index.html && $REBUILD" caught "R3"
+  "sed -i 's|<section class=\"honest\"|<img src=\"https://tracker.example.net/p.gif\" alt=\"\"><section class=\"honest\"|' site/index.html" caught "R3"
 
-# R4: page structure and reachability.
+# R4: structure, reachability and the current-page mark.
 arm "R4a" "a page with a second h1" \
-  "sed -i '0,/<section class=\"part\"/s//<h1>Another title<\/h1><section class=\"part\"/' site-src/pages/boot.html && $REBUILD" caught "R4"
+  "sed -i '0,/<section class=\"part\"/s//<h1>Another title<\/h1><section class=\"part\"/' site/boot.html" caught "R4"
 arm "R4b" "a page no menu reaches" \
-  "sed -i '1s/\"layout\": \"doc\"/\"layout\": \"doc\", \"nav_hidden\": true/' site-src/pages/testing.html && $REBUILD" caught "not in the primary navigation"
+  "sed -i 's|<a href=\"testing.html\"[^>]*>[^<]*</a>||' site/*.html" caught "not in the primary navigation"
+arm "R4c" "a page whose menus mark another page as current" \
+  "sed -i 's| aria-current=\"page\"||g; s|<a href=\"why.html\">|<a href=\"why.html\" aria-current=\"page\">|g' site/run.html" caught "R4"
 
-# THE SILENT DIRECTIONS: an ordinary outbound link, and a data: URI favicon, are
-# not subresources from another origin; a checker that flagged them would be
-# switched off rather than obeyed.
+# R5: the contents rail and heading ids.
+arm "R5a" "a heading renamed without its rail entry" \
+  "sed -i 's|data-toc=\"Capabilities\"|data-toc=\"Capability tokens\"|' site/why.html && $REINDEX" caught "R5"
+arm "R5b" "a new heading with no id" \
+  "sed -i '0,/<h2 id=\"capability\"/s//<h3>Unlinked<\/h3><h2 id=\"capability\"/' site/why.html && $REINDEX" caught "R5"
+
+# R6: the reading order.
+arm "R6" "a next link that skips a page" \
+  "sed -i 's|class=\"pager__next\" href=\"architecture.html\"|class=\"pager__next\" href=\"status.html\"|' site/why.html" caught "R6"
+
+# R7: the search index.
+arm "R7" "a search index left stale by a heading edit" \
+  "sed -i 's|data-toc=\"Capabilities\"|data-toc=\"Capability tokens\"|' site/why.html && sed -i 's|>Capabilities</a>|>Capability tokens</a>|' site/why.html" caught "R7"
+
+# THE SILENT DIRECTIONS: an ordinary outbound link, and a heading edit made the
+# right way (rail and index updated with it), are not defects; a checker that
+# flagged them would be switched off rather than obeyed.
 arm "S1" "an ordinary link out to another site" \
-  "sed -i 's|<section class=\"honest\"|<p><a href=\"https://example.org/\">elsewhere</a></p><section class=\"honest\"|' site-src/pages/index.html && $REBUILD" clean
-arm "S2" "the inline data: URI favicon the layout already carries" "true" clean
+  "sed -i 's|<section class=\"honest\"|<p><a href=\"https://example.org/\">elsewhere</a></p><section class=\"honest\"|' site/index.html" clean
+arm "S2" "a heading renamed with its rail entry and the index regenerated" \
+  "sed -i 's|data-toc=\"Capabilities\"|data-toc=\"Capability tokens\"|; s|>Capabilities</a>|>Capability tokens</a>|' site/why.html && $REINDEX" clean
 
 echo
 echo "arms passed: $PASSES   failed: $FAILS"

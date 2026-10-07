@@ -674,6 +674,14 @@ in this file.
 
 ### Changed
 
+- **The website is plain HTML in `site/`, edited directly.** It was generated from `site-src/` by
+  `tools/build_site.py`, so every page existed twice and an edit to the published copy was
+  overwritten by the next build. The generator and its sources are gone. What the generator kept
+  true is now checked on the pages themselves by the required job `site`: one shared header,
+  menu, footer and `<head>` on every page, each contents rail and previous/next link matching the
+  page, the current-page marks, and a search index that matches the headings
+  (`tools/check_site.py --write-index` regenerates it). `prose-style` now reads `site/`.
+
 - **Fuzzing runs nightly, for ten minutes per target, and a crash fails it.** It ran on every pull
   request for 30 seconds per target, with every step set to carry on after an error, so it could
   not report a crash. It now runs each night from `fuzz.yml`, one job per target, with a pinned

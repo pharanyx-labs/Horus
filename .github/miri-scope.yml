@@ -11,7 +11,7 @@
 # array a second way (another `as_mut_ptr()`, or a direct `table[6] = ...`),
 # which retags and invalidates the first pointer. The C kernel holds ONE pointer
 # and passes it twice, so the harness was modelling its own caller wrongly. Fixed
-# by hoisting one pointer per array; see CHANGES.md.
+# by hoisting one pointer per array; see docs/history/CHANGES-2026.md.
 #
 # EVERY module under rust/src that defines tests must be run by Miri or listed
 # below with a reason. `tools/check_miri_scope.py` (the required `miri` job)

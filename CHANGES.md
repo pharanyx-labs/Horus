@@ -76,6 +76,7 @@ here.
 
 ### Fixed
 
+- `smoke-kdiag-ioport` could report a refusal missing because ring-3 output cut the kernel's kill report in half. (#PR)
 - The roadmap called nightly fuzzing and full Kani not started after both had landed. (#497)
 - The `unsafe` check never read most of `lib.rs`. (#489)
 - `smoke-kdiag-split-control` went red about one CI run in 24 on changes that do not touch the console. (#473)

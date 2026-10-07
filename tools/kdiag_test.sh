@@ -81,6 +81,12 @@ MARKER="KDIAGPROBE: a kernel marker that must not be split"
 PREFIX="KDIAGPROBE"
 RING3="KDIAGRING3"      # the sentinel console_server writes under the ioport arms
 GPFAULT="'console_server' killed: ring-3 trap vector 13"
+# Read off the DIAGNOSTIC channel, not the console. The kernel prints the kill
+# report on COM1 for a person and again on COM3 (kdiag_task_killed) for this
+# gate. Until 2026-10-07 the gate read the COM1 copy, and on 1 CI run in 74
+# init's output landed inside it ("[task 3 'console_serverinit: boot mode...");
+# the refusal was reported missing beside a dump that showed it. The hazard S81
+# is about, inside S81's own gate, and the same lesson as the ready line below.
 # Informative only. It was the precondition until 2026-09-03, and the hazard
 # under test ate it: on 1 boot in 5 a kernel marker landed inside
 # "[console_server] ready" on the shared console, and a run whose markers prove
@@ -154,7 +160,7 @@ while [ "$SECONDS" -lt "$deadline" ]; do
         # These two do not wait on markers: the refused build emits none by
         # design (see MODE=ioport above), and the granted build's evidence is
         # the sentinel, written once at startup.
-        [ "$(count "$LOG" "$GPFAULT")" -ge 1 ] && break
+        [ "$(count "$DIAG" "$GPFAULT")" -ge 1 ] && break
         [ "$(count "$DIAG" "$RING3")" -ge 1 ] && break
     else
         dia_p=$(count "$DIAG" "$PREFIX")
@@ -202,10 +208,10 @@ print(' '.join(str(body.count(a.encode())) for a in sys.argv[2:]))
 PYCOUNTS
 }
 
-read -r con_whole con_prefix con_ring3 gp        <<EOF
+read -r con_whole con_prefix con_ring3 con_gp    <<EOF
 $(counts_for "$LOG")
 EOF
-read -r dia_whole dia_prefix dia_ring3 _dia_gp   <<EOF
+read -r dia_whole dia_prefix dia_ring3 gp        <<EOF
 $(counts_for "$DIAG")
 EOF
 
@@ -225,7 +231,7 @@ echo "mode: $MODE   console ready line intact on the shared console: $ready_seen
 echo "  (informative -- the handover is proven by any marker on the diag channel)"
 echo "console : whole=$con_whole prefix=$con_prefix ring3=$con_ring3"
 echo "diag    : whole=$dia_whole prefix=$dia_prefix ring3=$dia_ring3"
-echo "ring-3 #GP on the diagnostic port: $gp"
+echo "ring-3 #GP on the diagnostic port: $gp on the diag channel ($con_gp whole on the console, informative)"
 
 if [ "$MODE" != ioport ] && [ "$MODE" != grant ] && [ "$dia_prefix" -lt 1 ]; then
     if [ "$con_prefix" -ge 1 ]; then

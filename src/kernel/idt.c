@@ -781,6 +781,7 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
                 print(" at rip="); print_hex64(frame->rip);
                 print(" rsp="); print_hex64(frame->rsp);
                 print("]\n");
+                kdiag_task_killed(killed, vector, frame->rip, frame->rsp);
                 /* That print() only reaches the klog once console_server owns the
                  * console, so it is invisible to a serial capture of a live
                  * session. The record below is what a supervisor can actually

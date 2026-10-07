@@ -173,7 +173,7 @@ userspace/       init, the servers, the shell, the installer, libc glue, self-te
 userspace/ports/ GNU coreutils and TCC, with the changes Horus needs
 tools/           build helpers, QEMU drivers for the tests, and the CI checkers
 docs/            architecture, syscalls, building, roadmap, limitations, designs, history
-site-src/, site/ the website's source and its built pages
+site/            the website: plain HTML pages, edited directly
 ```
 
 newlib is not in the tree: `tools/build_newlib.sh` fetches it and refuses it unless its SHA-256

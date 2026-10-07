@@ -292,7 +292,7 @@ matches the pinned value ([`THIRD_PARTY.md`](THIRD_PARTY.md)).
 | [`docs/SYSCALLS.md`](docs/SYSCALLS.md) | Every system call and the capability it requires |
 | [`docs/BUILDING.md`](docs/BUILDING.md) | Building, running, installing, and every build flag |
 | [`TESTS.md`](TESTS.md) | Every test target and what it proves |
-| [`CHANGES.md`](CHANGES.md) | What changed, by pull request |
+| [`CHANGES.md`](CHANGES.md) | What changed, one line per entry with its pull request; the full entries to 2026-10-07 are in [`docs/history/CHANGES-2026.md`](docs/history/CHANGES-2026.md) |
 | [`docs/README.md`](docs/README.md) | Everything else: designs, audits, investigations and history |
 
 ## Contributing and reporting

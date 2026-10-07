@@ -42,6 +42,7 @@ Specifications written before the code. Each says at its top what of it is built
 | [`history/AUDIT-2026-08-30.md`](history/AUDIT-2026-08-30.md) | The 2026-08-30 whole-tree audit |
 | [`history/AUDIT-2026-07.md`](history/AUDIT-2026-07.md) | The 2026-07 audit that defined the [C-n], [I-n], [M-n] and [F-n] findings, with its predecessor as an appendix |
 | [`investigations/`](investigations/) | How the hardest findings were narrowed and measured, including the hypotheses that were wrong: [G-8], [G-9], [G-10], [G-11] and [G-12] (all closed), and the kernel-pointer disclosure survey behind roadmap 3.8 |
+| [`history/CHANGES-2026.md`](history/CHANGES-2026.md) | The changelog in full to 2026-10-07, every entry with its reasoning and measurements, before `CHANGES.md` became one line per entry |
 | [`history/DEVLOG-2026.md`](history/DEVLOG-2026.md) | The development log to early September 2026: why each change was made, what was tried first, and how each rate was measured |
 
 The records under `history/` and `investigations/` are kept as written, because the reasoning in

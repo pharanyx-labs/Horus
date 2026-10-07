@@ -136,8 +136,6 @@ counts:
     occurrences:
       - file: TESTS.md
         pattern: '\| `smoke-auditprobe` \| \*\*(\d+) checks\*\*'
-      - file: CHANGES.md
-        pattern: 'holding one `CAP_AUDIT` and nothing else, (\d+) checks'
   - id: framepeer_checks
     describe: check() calls in userspace/framepeer.c (the delegate's side)
     derive: framepeer_checks

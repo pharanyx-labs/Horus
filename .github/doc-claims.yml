@@ -87,6 +87,8 @@ counts:
     describe: contexts exempted with a written reason
     derive: advisory
     occurrences:
+      - file: README.md
+        pattern: 'gate a merge\. The (\d+) that do not are'
       - file: TESTS.md
         pattern: '\*\*\d+ gating contexts and (\d+) reasoned exemptions\*\*'
       - file: docs/ROADMAP.md
@@ -115,6 +117,8 @@ counts:
     describe: "smoke-* targets in the Makefile"
     derive: smoke_targets
     occurrences:
+      - file: README.md
+        pattern: '\| (\d+) `smoke-\*` targets: \d+ base gates'
       - file: docs/ROADMAP.md
         pattern: '\| (\d+) `smoke-\*` targets'
 
@@ -146,6 +150,8 @@ counts:
     describe: S-numbered rows in SECURITY.md's property table
     derive: security_properties
     occurrences:
+      - file: README.md
+        pattern: '\| (\d+) numbered properties, each bound'
       - file: .github/invariants.yml
         pattern: 'All (\d+) properties in SECURITY\.md'
       - file: TESTS.md
@@ -164,12 +170,16 @@ counts:
     describe: base gates — smoke-* targets that are not control arms
     derive: gates
     occurrences:
+      - file: README.md
+        pattern: '`smoke-\*` targets: (\d+) base gates'
       - file: site/testing.html
         pattern: '(\d+) QEMU integration targets'
   - id: control_arms
     describe: control-arm smoke targets that must reproduce a defect
     derive: control_arms
     occurrences:
+      - file: README.md
+        pattern: 'base gates and (\d+) control arms \|'
       - file: docs/ROADMAP.md
         pattern: 'and (\d+) of them control arms'
 
@@ -271,6 +281,8 @@ counts:
     # audit_rejected_candidates above. Until 2026-10-06 there were also separate
     # gating and excused counts; nothing is excused now, so they are this one.
     occurrences:
+      - file: README.md
+        pattern: '\| Kani \| (\d+) bounded proofs'
       - file: SECURITY.md
         pattern: '\*\*(\d+)\*\* `#\[kani::proof\]` harnesses'
       - file: docs/LIMITATIONS.md

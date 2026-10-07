@@ -562,8 +562,8 @@ static int name_eq(const char *a, const char *b) {
  * v2 SINCE 2026-09-11, and the bump is the point: the serialization now covers
  * the kernel COMMAND LINE. A volume sealed under a v1 measurement will not
  * unseal on a v2 kernel -- that is a breaking change for existing sealed
- * volumes and is recorded as one in CHANGES.md, not smuggled in under the same
- * tag. A measurement whose definition changes silently is worse than one that
+ * volumes and is recorded as one in the changelog (docs/history/CHANGES-2026.md),
+ * not smuggled in under the same tag. A measurement whose definition changes silently is worse than one that
  * refuses.
  *
  * v3 THE SAME DAY, and for a reason that is NOT a change to these bytes: the

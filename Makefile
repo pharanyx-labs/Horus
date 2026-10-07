@@ -10128,7 +10128,7 @@ smoke-session-smp:
 	@$(MAKE) --no-print-directory horus.iso
 	@QEMU_SMP=4 SESSION_TIMEOUT=120 python3 tools/session_test.py horus.iso
 
-# Soak of the above. The IPC lost-reply race this gates against (see CHANGES.md:
+# Soak of the above. The IPC lost-reply race this gates against (see docs/history/CHANGES-2026.md:
 # a reply delivered while the client was committed to blocking but not yet
 # visibly blocked was dropped AND reported to the server as delivered) wedged the
 # shell mid-print on roughly 1 boot in 5. A single run therefore MISSES it four

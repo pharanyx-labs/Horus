@@ -250,7 +250,7 @@ guest's capabilities can host another operating system.
 | 4.11 ⬜ `verify-release.sh` | Not started |
 | 4.12 ✅ A security-invariant registry [F-4.1] | `tools/check_invariants.py` binds every `SECURITY.md` property to a witness that runs. 2026-08-28 |
 | 4.13 ⬜ Publish the threat model [F-4.3] | The threat model is a section of `SECURITY.md`, not a versioned document |
-| 4.14 ⬜ Nightly fuzzing and full Kani | Not started |
+| 4.14 ✅ Nightly fuzzing and full Kani | Every Kani proof gates every pull request (#485); each proof's recorded mutation is replayed nightly to show it still fails (#493); every fuzz target runs nightly for ten minutes and a crash fails the run (#492). 2026-10-06 |
 
 **4.1.** The `CODEOWNERS` paths are correct and cover the capability and IPC files. What is left
 is a second person to review them. Turning on required approval with one maintainer either blocks

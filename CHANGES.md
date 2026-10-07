@@ -51,6 +51,7 @@ here.
 
 ### Changed
 
+- `CHANGES.md` is one line per entry; the full entries are in `docs/history/CHANGES-2026.md`. (#495)
 - The website is plain HTML in `site/`, edited directly. (#494)
 - Fuzzing runs nightly, for ten minutes per target, and a crash fails it. (#492)
 - The SMP race gates under KVM now gate every merge. (#491)

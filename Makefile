@@ -127,7 +127,7 @@ DEFECT_FLAGS = \
 	CAP_LOOKUP_ROOT_FALLBACK CAP_LOOKUP_RANGE_FALLBACK CAP_LOOKUP_TYPE_UNCHECKED \
 	KEYSLOT_REMOVE_NOOP USERS_PEPPER_PER_BOOT USERS_TAMPER_INJECT STORAGE_AUTOFORMAT \
 	STORAGE_REPLACE_UNLOCKED STORAGE_FORMAT_AUTH_STICKY BOOT_CMDLINE_UNMEASURED \
-	STORAGE_FORMAT_UNGATED INSTALLER_NO_CONFIRM BLOCK_ERRNO_LEGACY \
+	STORAGE_FORMAT_UNGATED INSTALLER_NO_CONFIRM INSTALLER_REVIEW_FLAT BLOCK_ERRNO_LEGACY \
 	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED \
 	FS_LINK_UNCOUNTED FS_DIR_OPERAND_UNCHECKED GPT_ENTRIES_CRC_UNCHECKED STORAGE_REPLACE_VIEW_UNRESOLVED \
 	ESP_PIN_UNCHECKED ESP_NOT_WRITTEN DEBUG_BUILD \
@@ -806,6 +806,10 @@ endif
 # Only the comparison goes: removing the screen would also remove the keystrokes
 # the harness sends, and the two arms would then be driving different
 # conversations instead of differing in one decision.
+# INSTALLER_REVIEW_FLAT=1 puts back the review's seven-item menu, which ran into
+# the footer on every install until 2026-10-08. Control arm for smoke-installer
+# (smoke-installer-layout-control): the installer's menu_row says so on the wire.
+INSTALLER_REVIEW_FLAT ?= 0
 INSTALLER_NO_CONFIRM ?= 0
 ifeq ($(INSTALLER_NO_CONFIRM),1)
 CFLAGS  += -DINSTALLER_NO_CONFIRM
@@ -4878,6 +4882,9 @@ USERSPACE_CFLAGS += -DTUI_CLAMP_OFF
 endif
 ifeq ($(TUI_NO_CELLS),1)
 USERSPACE_CFLAGS += -DTUI_NO_CELLS
+endif
+ifeq ($(INSTALLER_REVIEW_FLAT),1)
+USERSPACE_CFLAGS += -DINSTALLER_REVIEW_FLAT
 endif
 ifeq ($(INSTALLER_NO_CONFIRM),1)
 USERSPACE_CFLAGS += -DINSTALLER_NO_CONFIRM
@@ -13523,13 +13530,21 @@ smoke-installer:
 	@rm -f installer-serial.log
 	@SESSION_DISK=installer.img SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) \
 		INSTALLER_FORMAT_STALL=$(INSTALLER_FORMAT_STALL) INSTALLER_FORMAT_CAP=$(INSTALLER_FORMAT_CAP) \
-		SESSION_SERIAL_LOG=installer-serial.log \
+		SESSION_SERIAL_LOG=installer-serial.log INSTALLER_LAYOUT_EXPECT=$(INSTALLER_LAYOUT_EXPECT) \
 		BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
 		python3 tools/installer_session.py horus.iso \
 	  || { echo "[installer] ----- guest serial (installer-serial.log) -----"; \
 	       tail -60 installer-serial.log 2>/dev/null | sed 's/^/  /'; exit 1; }
 	@rm -f installer.img
-	@echo "[installer] PASS - installed onto a bare disk, then booted and logged into it"
+	@echo "[installer] $(if $(INSTALLER_LAYOUT_EXPECT),control arm PASS - the menu that runs into the footer was caught,PASS - installed onto a bare disk$(comma) then booted and logged into it)"
+
+# EVERY MENU FITS ABOVE THE FOOTER. Checked by every install scenario
+# (expect_installed refuses `INSTALLER: LAYOUT`); this arm puts back the review's
+# seven-item menu, which ran into the footer until 2026-10-08, and requires the
+# installer to say so.
+.PHONY: smoke-installer-layout-control
+smoke-installer-layout-control:
+	@$(MAKE) --no-print-directory smoke-installer INSTALLERARM=INSTALLER_REVIEW_FLAT=1 INSTALLER_LAYOUT_EXPECT=overflow
 
 # THE CLEAR LEAVES THE SCREEN CLEAR (tools/installer_session.py,
 # check_clear_on_screen). The same install as smoke-installer, and after the

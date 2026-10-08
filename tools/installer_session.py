@@ -319,6 +319,16 @@ def expect_installed(s, typist=None):
     every other step in this file does. Returns the format's duration.
     """
     took = expect_while_doing_io(s, "INSTALLER: PASS installed", FORMAT_STALL, FORMAT_CAP)
+    # EVERY MENU FIT ABOVE THE FOOTER: the installer's menu_row says on the wire
+    # when one would not (until 2026-10-08 the review's ran into it on every
+    # install). INSTALLER_LAYOUT_EXPECT=overflow is the arm, which requires it.
+    overflowed = "INSTALLER: LAYOUT a menu runs into the footer" in s.buf
+    if os.environ.get("INSTALLER_LAYOUT_EXPECT") == "overflow":
+        if not overflowed:
+            raise SessionFail("the arm's seven-item review menu fitted; the layout check never fired")
+        step("a menu ran into the footer, and the installer said so, as the arm requires")
+    elif overflowed:
+        raise SessionFail("a menu ran into the footer: `INSTALLER: LAYOUT` is on the wire")
     s.expect("INSTALLER: waiting on a key to finish", STEP)
     (typist or SerialTypist(s)).key("enter")
     # AND THE SCREEN WAS CLEARED for the login prompt: CON_OP_CLEAR sends this to

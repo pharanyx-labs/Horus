@@ -214,7 +214,7 @@ There are 430 `smoke-*` targets: 204 gates and 226 control arms. Each row is a g
 |---|---|---|---|
 | `smoke-installer-emmc` | A whole install onto a 64 GiB eMMC shaped like the test laptop's (local only) |  |  |
 | `smoke-installer-replace` | Install media replaces an earlier volume, and only the new password opens it | S90 |  |
-| `smoke-installer` | Install onto a bare disk, power off, and log into what was installed; the compiled-in root password is refused | S73, S103, S104 | `smoke-installer-defaults-control`, `smoke-installer-sealed-control` |
+| `smoke-installer` | Install onto a bare disk, power off, and log into what was installed; the compiled-in root password is refused; no installer menu runs into the footer (every install scenario checks it) | S73, S103, S104 | `smoke-installer-defaults-control`, `smoke-installer-sealed-control`, `smoke-installer-layout-control` |
 | `smoke-installer-panel` | The format progress panel is whole on the screen under UEFI in every frame that shows it, and a later login leaves none behind |  | `smoke-installer-panel-control`, `smoke-installer-panel-login-control` |
 | `smoke-installer-clear` | The installer's final clear leaves the screen clear, the band right of the grid on a wide framebuffer included |  | `smoke-installer-clear-control`, `smoke-installer-clear-surface-control` |
 | `smoke-installer-refuse` | Any word but the required one at the last question writes nothing | S73 | `smoke-installer-refuse-control` |

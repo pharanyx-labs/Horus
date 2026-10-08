@@ -3203,6 +3203,9 @@ jobs:
       # take all of it, not only the grid.
       - name: Control arm — a clear that leaves the installer beside the grid is caught
         run: make smoke-installer-clear-surface-control
+      # Every installer menu ends above the footer; the review's seven items did not.
+      - name: Control arm — the review's seven-item menu runs into the footer
+        run: make smoke-installer-layout-control
       # The compiled-in root password on an installed machine: refused, and the arm
       # that keeps it must turn the install gate red on exactly that.
       - name: Control arm — the compiled-in accounts kept on a machine with a disk

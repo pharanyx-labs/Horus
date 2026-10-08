@@ -567,3 +567,28 @@ void spawn_initial_userspace_shell(void) {
     }
 }
 
+#ifdef DEBUG_BUILD
+/* One entry of the firmware's memory map, on a diagnostic build only: what the
+ * machine has, before Horus decides what it uses. Called from the tag walk in
+ * main.c; here rather than there because it is a report, not the kernel's
+ * memory model, and so is not counted as core. One write. */
+void mem_map_entry_report(uint64_t base, uint64_t len, uint32_t type) {
+    char ml[96];
+    unsigned k = 0;
+    const char *p = "mem: map 0x";
+    while (*p) ml[k++] = *p++;
+    for (int sh = 60; sh >= 0; sh -= 4) ml[k++] = "0123456789ABCDEF"[(base >> sh) & 0xF];
+    ml[k++] = ' '; ml[k++] = '+';
+    char d[20]; int n = 0; uint64_t v = len >> 20;
+    do { d[n++] = (char)('0' + v % 10); v /= 10; } while (v);
+    while (n) ml[k++] = d[--n];
+    p = " MiB type ";
+    while (*p) ml[k++] = *p++;
+    v = type;
+    do { d[n++] = (char)('0' + v % 10); v /= 10; } while (v);
+    while (n) ml[k++] = d[--n];
+    ml[k++] = '\n';
+    ml[k] = 0;
+    print(ml);
+}
+#endif

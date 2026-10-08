@@ -58,6 +58,7 @@ here.
 
 ### Changed
 
+- The boot's memory line says how much RAM lies above 4 GiB, out of Horus's reach, and a diagnostic build lists the firmware's whole memory map: the IdeaPad showed 1,842 MiB of its 4 GB with nothing saying where the rest was. (#511)
 - The installed-system design records that a user's own programs may run from `/home`, outside the manifest. (#500)
 - The filesystem design sets out phase 1b in six steps and records the four decisions taken for it. (#499)
 - The README is rewritten to match the tree as it is. (#496)

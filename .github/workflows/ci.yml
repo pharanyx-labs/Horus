@@ -1623,6 +1623,8 @@ jobs:
         run: make smoke-pool-span-ceiling-control
       - name: Control arm, the allocator takes a hole in the memory map as RAM
         run: make smoke-pool-span-hole-control
+      - name: Control arm, the boot does not say how much RAM lies above 4 GiB
+        run: make smoke-pool-span-report-control
 
   smoke-tpm:
     name: Measured boot (TPM PCRs match the reproducible manifest)

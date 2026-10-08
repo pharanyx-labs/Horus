@@ -87,6 +87,12 @@ exempt:
     miss. A boot with neither is named INCONCLUSIVE and not counted, and a run
     with no conclusive boot fails as "never ran the experiment" rather than as
     "did not reproduce".
+  smoke-pool-span: >
+    Two boots, each with a PRESENCE requirement through tools/smoke_test.sh, so a
+    boot that died fails the gate. The 3 GiB boot must print the self-test's OK
+    line; the pool line and the absence of an above-4-GiB count are then read
+    off that boot's own kept log. The 6 GiB boot must print the count of RAM
+    above 4 GiB itself.
   smoke-boot-module-reserve: >
     Three boots, each with a PRESENCE requirement, so a boot that died cannot
     pass any of them. The padded boot must reach the shell banner and print the

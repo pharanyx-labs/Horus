@@ -16,6 +16,7 @@ here.
 
 ### Security
 
+- A user could free any inode, `/bin` included, by forging a directory entry in a file they own; `fs_server` now refuses any file as a directory operand (`[HORUS-20261008-01]`, S113). (#PR)
 - The tools that build and check Horus are pinned. (#490)
 - A task record with kernel-half bounds would have made a kernel address the task's own. (#487)
 - An ELF offset from the image or from the C side could wrap instead of being refused. (#486)

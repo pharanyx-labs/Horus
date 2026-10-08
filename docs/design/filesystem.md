@@ -39,7 +39,7 @@ and the parts worth keeping are the parts most systems get wrong.
 | Crash atomicity | A write-ahead redo log: stage, commit with an HMAC-authenticated header, then apply |
 | Privilege separation | `fs_server` runs in ring 3 and **never sees key material**; the kernel does the crypto behind `SYS_FBLOCK_READ`/`WRITE` |
 | Layout | Superblock, inode bitmap, block bitmap, data bitmap, inode table, data region |
-| Directories | An array of `fs_dirent` records in ordinary inode data; root is inode 0 |
+| Directories | An array of `fs_dirent` records in ordinary inode data; root is inode 0. Only an inode typed as a directory is ever read as one, whatever the authority model (S113) |
 | Authority | Kernel-attested uid/gid (`SYS_IPC_SENDER`) and Unix mode bits |
 
 The first six rows are better than most filesystems in use. A redesign that lost any of them

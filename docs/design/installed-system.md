@@ -159,6 +159,15 @@ depends on them.
 The signing-key question this design first left open was answered the same day by removing the
 key: a hash pinned in the measured image needs none (decision 1).
 
+**2026-10-07:**
+
+5. **A user's own programs may run from `/home`: §4's option C.** The manifest still decides
+   everything under `/bin`, `/sbin` and `/lib`. Outside them, a program a user built (with TCC, for
+   instance) runs on the `EXEC` right of its file capability, which the filesystem policy grants
+   (`docs/design/filesystem.md` decision 8). Until the loader starts programs only from file
+   capabilities, that right is advisory against any task that can read the file and hand its bytes
+   to `SYS_SPAWN_IMAGE`; `docs/LIMITATIONS.md` records it when programs first run from the disk.
+
 ## 9. Order of work
 
 1. The layout and the installer copying files, with **(A)**'s manifest check in the loader, as

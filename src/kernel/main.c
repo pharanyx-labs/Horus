@@ -718,6 +718,8 @@ static void mb_record_framebuffer(const uint8_t *info, uint32_t off, uint32_t si
  * memory map (return value, in frames) and fills the boot-module table as a side
  * effect. Returns 0 if the map cannot be trusted, so the caller keeps the
  * conservative default rather than assuming RAM. */
+static uint64_t g_ram_above_ceiling;   /* bytes of available RAM at or past PHYS_POOL_CEIL */
+
 static uint32_t mb_scan_boot_info(void) {
     if (saved_mb_magic != MB2_BOOT_MAGIC || saved_mb_info == 0) return 0;
 
@@ -743,7 +745,17 @@ static uint32_t mb_scan_boot_info(void) {
                 for (uint32_t e = off + 16; (uint64_t)e + entry_size <= (uint64_t)off + tag->size;
                      e += entry_size) {
                     const struct mb2_mmap_entry *m = (const struct mb2_mmap_entry *)(info + e);
+#ifdef DEBUG_BUILD
+                    { extern void mem_map_entry_report(uint64_t, uint64_t, uint32_t);
+                      mem_map_entry_report(m->base, m->len, m->type); }
+#endif
                     if (m->type != MB2_MEM_AVAILABLE) continue;
+                    /* RAM the 32-bit frame address cannot reach, counted so the
+                     * boot can say how much of the machine goes unused. */
+                    if (m->base + m->len > PHYS_POOL_CEIL) {
+                        uint64_t lo = m->base > PHYS_POOL_CEIL ? m->base : PHYS_POOL_CEIL;
+                        g_ram_above_ceiling += m->base + m->len - lo;
+                    }
 #ifdef E820_HOLE_PROBE
                     /* SELFTEST, never ship: firmware that fragments the map, as
                      * the IdeaPad's does. [512, 520) MiB is reported reserved,
@@ -831,7 +843,7 @@ void kernel_main(uint32_t mb_info) {
         /* RAM the pool may use, then the span it lies in: they differ by the
          * holes the firmware's map leaves, which are never handed out. */
         /* ONE WRITE: smoke-pool-span reads the numbers off this line. */
-        char line[160];
+        char line[256];
         const unsigned cap = sizeof(line) - 1;
         unsigned k = 0;
         k = line_append(line, k, cap, "mem: physical pool ");
@@ -842,6 +854,13 @@ void kernel_main(uint32_t mb_info) {
                                                  : " region, default: no E820, spanning ");
         k = line_append_dec(line, k, cap, (e820_pages ? e820_pages : USER_PHYS_DEFAULT_PAGES) / 256);
         k = line_append(line, k, cap, " MiB");
+#ifndef MEM_HIGH_UNREPORTED
+        if (g_ram_above_ceiling) {
+            k = line_append(line, k, cap, "; ");
+            k = line_append_dec(line, k, cap, g_ram_above_ceiling >> 20);
+            k = line_append(line, k, cap, " MiB more lies above 4 GiB, out of a 32-bit frame address's reach");
+        }
+#endif
         if (phys_ram_regions_dropped()) {
             k = line_append(line, k, cap, "; ");
             k = line_append_dec(line, k, cap, phys_ram_regions_dropped());

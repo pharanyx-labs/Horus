@@ -461,7 +461,12 @@
 # derived by unsigned subtraction, and the pool line in one write. Core because
 # it is the frame allocator and the kernel's own mapping of memory. The boot
 # self-test went to selftest.c, which kept this from +196.
-core_budget_loc: 11092
+# 2026-10-08: 11092 -> 11108, +16, in main.c: the tag walk counts available
+# RAM at or above 4 GiB and the pool line says how much of the machine that
+# leaves unused (with its MEM_HIGH_UNREPORTED arm). The laptop showed 1,842 MiB
+# of its 4 GB and nothing said where the rest was. The diagnostic build's full
+# map print went to kshell.c (service), which kept this from +27.
+core_budget_loc: 11108
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

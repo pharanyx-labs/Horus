@@ -148,7 +148,7 @@ There are 430 `smoke-*` targets: 204 gates and 226 control arms. Each row is a g
 | Gate | What it proves | Properties | Control arms |
 |---|---|---|---|
 | `smoke-boot-module-reserve` | A boot module the kernel verified is the one it serves, even when modules land above 16 MiB; one on the kernel image or the AP trampoline page halts the boot | S96 | `smoke-boot-module-image-control`, `smoke-boot-module-reserve-control`, `smoke-boot-module-reverify-control`, `smoke-boot-module-tramp-control` |
-| `smoke-pool-span` | In a 3 GiB guest whose memory map has a hole, the page pool spans every RAM region, and every frame it will hand out is RAM, outside the hole, the reserves, its tables and the modules, and writable through the kernel's window, one of them above 1 GiB | S117 | `smoke-pool-span-window-control`, `smoke-pool-span-ceiling-control`, `smoke-pool-span-hole-control` |
+| `smoke-pool-span` | In a 3 GiB guest whose memory map has a hole, the page pool spans every RAM region, and every frame it will hand out is RAM, outside the hole, the reserves, its tables and the modules, and writable through the kernel's window, one of them above 1 GiB; a 6 GiB guest is told how much RAM lies above 4 GiB | S117 | `smoke-pool-span-window-control`, `smoke-pool-span-ceiling-control`, `smoke-pool-span-hole-control`, `smoke-pool-span-report-control` |
 | `smoke-boot-media` | The image boots under BIOS and UEFI, from optical media and from a raw disk |  | `smoke-boot-media-control` |
 | `smoke-tpm-cmdline` | The kernel command line is part of the PCR 8 measurement | S91 | `smoke-tpm-cmdline-control` |
 | `smoke-boot-menu` | The install media's default entry is the live boot, and it changes nothing, even on a blank disk | S91 | `smoke-boot-menu-control` |

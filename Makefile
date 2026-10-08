@@ -131,7 +131,7 @@ DEFECT_FLAGS = \
 	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED \
 	FS_LINK_UNCOUNTED FS_DIR_OPERAND_UNCHECKED GPT_ENTRIES_CRC_UNCHECKED STORAGE_REPLACE_VIEW_UNRESOLVED \
 	ESP_PIN_UNCHECKED ESP_NOT_WRITTEN DEBUG_BUILD \
-	POOL_SPAN_SELFTEST E820_HOLE_PROBE PHYS_WINDOW_FLAT_ONLY POOL_FLAT_CEILING POOL_RAM_UNCHECKED \
+	POOL_SPAN_SELFTEST E820_HOLE_PROBE PHYS_WINDOW_FLAT_ONLY POOL_FLAT_CEILING POOL_RAM_UNCHECKED MEM_HIGH_UNREPORTED \
 	SWAP_SELFTEST SWAP_SEAL_OFF SWAP_TAG_UNCHECKED \
 	CONSOLE_PROGRESS_BELOW_SURFACE CONSOLE_PROGRESS_AT_LOGIN \
 	SYSTEM_TREES_WRITABLE SYSTEM_TREES_NO_PRUNE SYSTEM_TREES_SIZE_ONLY \
@@ -1934,6 +1934,13 @@ E820_HOLE_PROBE       ?= 0
 PHYS_WINDOW_FLAT_ONLY ?= 0
 POOL_FLAT_CEILING     ?= 0
 POOL_RAM_UNCHECKED    ?= 0
+# MEM_HIGH_UNREPORTED=1 drops the count of RAM above 4 GiB from the pool line,
+# as before 2026-10-08, when the IdeaPad showed 1842 MiB of its 4 GB and nothing
+# said where the rest was. Control arm for smoke-pool-span.
+MEM_HIGH_UNREPORTED   ?= 0
+ifeq ($(MEM_HIGH_UNREPORTED),1)
+CFLAGS += -DMEM_HIGH_UNREPORTED
+endif
 ifeq ($(POOL_SPAN_SELFTEST),1)
 CFLAGS += -DPOOL_SPAN_SELFTEST
 endif
@@ -13276,11 +13283,30 @@ smoke-pool-span:
 		tools/smoke_test.sh horus.iso
 	@grep -aq 'mem: physical pool [0-9]* MiB of RAM in 3 region(s) from E820' pool-span-serial.log \
 	  || { echo "[pool-span] FAIL - the pool line does not name three RAM regions"; exit 1; }
-	@echo "[pool-span] PASS - the pool spans every RAM region to the top of a 3 GiB guest, holes excluded"
+	@! grep -aq 'more lies above 4 GiB' pool-span-serial.log \
+	  || { echo "[pool-span] FAIL - a 3 GiB guest was said to have RAM above 4 GiB"; exit 1; }
+	@# A 6 GiB guest: QEMU puts 3 GiB below the PCI hole and 3 GiB above 4 GiB, which
+	@# a 32-bit frame address cannot reach. The boot must say how much it leaves.
+	@rm -f pool-span-6g.log
+	@SMOKE_MEM=6G SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMOKE_LOG=pool-span-6g.log \
+		REQUIRE_MARKER='3072 MiB more lies above 4 GiB, out of a 32-bit frame address' \
+		FAIL_MARKER='POOL_SELFTEST: FAIL' \
+		tools/smoke_test.sh horus.iso
+	@echo "[pool-span] PASS - the pool spans every RAM region to the top of a 3 GiB guest, holes excluded, and a 6 GiB guest is told what lies above 4 GiB"
 
 # The falsifying arms, one per thing the ceiling replaced. Each requires its own
 # positive failure, so a boot that died for another reason does not pass it.
-.PHONY: smoke-pool-span-window-control smoke-pool-span-ceiling-control smoke-pool-span-hole-control
+.PHONY: smoke-pool-span-window-control smoke-pool-span-ceiling-control smoke-pool-span-hole-control smoke-pool-span-report-control
+# The report arm: the 6 GiB boot must reach the shell WITHOUT the line saying
+# what lies above 4 GiB, which the base gate then cannot find.
+smoke-pool-span-report-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory POOL_SPAN_SELFTEST=1 E820_HOLE_PROBE=1 MEM_HIGH_UNREPORTED=1
+	@$(MAKE) --no-print-directory POOL_SPAN_SELFTEST=1 E820_HOLE_PROBE=1 MEM_HIGH_UNREPORTED=1 horus.iso
+	@SMOKE_MEM=6G SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
+		REQUIRE_MARKER='POOL_SELFTEST: OK every frame handed out is RAM' \
+		ABSENT_MARKER='more lies above 4 GiB' \
+		tools/smoke_test.sh horus.iso
 smoke-pool-span-window-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory POOL_SPAN_SELFTEST=1 E820_HOLE_PROBE=1 PHYS_WINDOW_FLAT_ONLY=1

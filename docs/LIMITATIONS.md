@@ -318,7 +318,7 @@ It does not make installing faster; the metadata region is laid down the same wa
 | Inodes | one per 32 blocks | `storage_format_sealed` |
 | ATA disk | 128 GiB (LBA28) | `_Static_assert` in `storage.c` |
 | Program image | 8 MiB | `LOADER_STAGING_BYTES` |
-| Physical memory | 4 GiB: RAM above it is not used, and above 1 GiB a region's ragged edges (under 2 MiB each) are not either | `PHYS_POOL_CEIL`, a 32-bit frame address |
+| Physical memory | 4 GiB of address, not of RAM: firmware moves the RAM behind the device hole below 4 GiB to above it, and none of that is used (the IdeaPad's pool holds 1,842 MiB of its 4 GB; the boot's pool line now says how much RAM lies above 4 GiB). Above 1 GiB a region's ragged edges (under 2 MiB each) are not used either | `PHYS_POOL_CEIL`, a 32-bit frame address |
 | Memory map regions | 32; RAM in any past them is not used, and the boot says so | `RAM_REGIONS_MAX` |
 | Device table | 64 entries | `IODEV_MAX` |
 

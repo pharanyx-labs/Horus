@@ -255,6 +255,7 @@ control_arms:
   smoke-pool-span-window-control: smoke-pool-span
   smoke-pool-span-ceiling-control: smoke-pool-span
   smoke-pool-span-hole-control: smoke-pool-span
+  smoke-pool-span-report-control: smoke-pool-span
   smoke-resume-guard-ist-control: smoke-resume-guard-ist
   smoke-resume-guard-legacy: smoke-resume-guard
   smoke-resume-guard-negative-control: smoke-resume-guard-negative

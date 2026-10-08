@@ -419,7 +419,14 @@
 # PTE (copy-on-write break, fork's clone, a device mapping), the pager's report
 # that a sealed write is the program's fault, and the handler with its window
 # check and control arms.
-core_budget_loc: 10843
+#
+# 2026-10-07: 10843 -> 10863, +20, S81's gate. The ring-3 kill report is written
+# a second time to COM3 (kdiag_task_killed in scheduler.c, one call in idt.c's
+# fault path), because the COM1 copy is the one ring 3 can cut and
+# smoke-kdiag-ioport read it there: 1 CI run in 74 reported a refusal missing
+# beside a dump that showed it. Core because it is the fault path and the
+# kernel's own channel; a reporter cannot be moved out of the code it reports on.
+core_budget_loc: 10863
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

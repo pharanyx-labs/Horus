@@ -138,7 +138,7 @@ start it.
 ### 2.7a ⬜ Evict the in-kernel services [F-2.7a]
 
 `.github/ring0-classification.yml` (S87) measures the ring-0 `service` class at about 6,000 code
-lines beside a 10,843-line core: `storage.c` (the encrypted store and the on-disk filesystem),
+lines beside a 10,863-line core: `storage.c` (the encrypted store and the on-disk filesystem),
 `kusers.c` (accounts and password hashing), the loader and spawn path, `crypto.c` and
 `syscall_fs.c`. Neither big move is mechanical. `storage.c` holds the volume key, so moving it
 means deciding what a ring-3 storage server may hold; 2.10's phase 2 is that decision for the
@@ -163,7 +163,7 @@ is already true.
 | Phase | What lands |
 |---|---|
 | 1a ✅ | Endpoint tokens, reply-mint and carry-one in the kernel, with Kani proofs (S105) |
-| 1b | Capability authorisation in `fs_server`, `hvfs` and `init`, on the existing format |
+| 1b 🚧 | Capability authorisation in `fs_server`, `hvfs` and `init`, on the existing format. In progress, in six steps ([`design/filesystem.md`](design/filesystem.md) §11.1) |
 | 2 | The kernel's sealed-block service; the copy-on-write v12 format in `fs_server` |
 | 3 | Symbolic links, timestamps and a time service, cross-directory rename, sparse files |
 | 4 | Snapshots, reflinks, extended attributes, quotas, locks, open-unlinked files |

@@ -557,7 +557,7 @@ ambient authority is gone even if the format work stalls.
 | Phase | What lands | Removes |
 |---|---|---|
 | **1a** ✅ | Kernel: tokens on endpoint capabilities, reply-mint, carry-one (§5.1), with Kani proofs that a reply-minted capability never exceeds its invoking parent. **Landed 2026-09-25, S105** | Nothing yet |
-| **1b** | `fs_server` authorises by capability; `hvfs` walks with capabilities; `init` mints the root and evaluates `/etc/fs.policy`; the truthful `stat`/`chmod`/`chown` (§7); the rename rule (§5.5) | `perm_ok`, `FS_OP_CHOWN`'s root check, `SYS_FS_SET_META`, the uid path of `SYS_IPC_SENDER` in the filesystem, `SYS_CONNECT_FS_SERVER` |
+| **1b** | `fs_server` authorises by capability; `hvfs` walks with capabilities; `init` mints the root and evaluates `/etc/fs.policy`; the truthful `stat`/`chmod`/`chown` (§7); cross-directory `rename` and `link` refused with `EXDEV` until phase 3 brings §5.5 (decision 11). Steps in §11.1 | `perm_ok`, `FS_OP_CHOWN`'s root check, `SYS_FS_SET_META`, the uid path of `SYS_IPC_SENDER` in the filesystem, `SYS_CONNECT_FS_SERVER` |
 | **2** | Kernel sealed-block service (§4.1, §4.2); the v12 tree, extents, space, transactions and snapshots-ready birth times in `fs_server` | The inode table, WAL, Merkle builder and fsck from `storage.c`; the side table; `SYS_FBLOCK_*` and `SYS_FS_INODE_*` |
 | **3** | Symbolic links, timestamps and the RTC time service, cross-directory rename, sparse files, `fallocate`, `fs_scrub` | The v11 directory array |
 | **4** | Snapshots, reflinks, `user.*` xattrs, quotas; the no-senders notification, and with it locks, open-unlinked files and `O_TMPFILE` | |
@@ -565,6 +565,26 @@ ambient authority is gone even if the format work stalls.
 Phase 1b and the accounts work of `installed-system.md` §9 step 3 meet at `/etc/passwd`: the
 policy names principals from it. Whichever lands second adapts to the first; neither blocks the
 other, because phase 1b can name the compiled-in accounts until `auth_server` exists.
+
+### 11.1 Phase 1b, in steps
+
+Each step is one pull request that leaves the system working, with its own gate and a control
+arm that reddens it. The old identity path stays alive beside the new one until step 6 removes
+it, so no step has to land the whole change at once.
+
+| Step | What lands | Gate, and the defect its arm puts back |
+|---|---|---|
+| 1 | `fs_server` answers capability-addressed requests: the object comes from the token the kernel attests, rights from the invoking capability, `LOOKUP` reply-mints a child capability narrowed to the directory's rights (§5.3), and a name that is `.`, `..` or holds `/` is refused (§5.4). `init` mints the root directory capability (§6.1). Old ino-addressed requests still work | A read-only capability cannot write, `LOOKUP` refuses `..`, and revoking a directory capability revokes what was opened through it; the arm skips the rights check |
+| 2 | Clients walk with capabilities: `hvfs`, the POSIX layer, the shell and `fsclient`. The shell keeps a root and a current-directory capability, and before a child runs its spawner grants it derived copies of both, never wider than its own (decision 10). Open files are not inherited | A child given a read-only root cannot write anywhere; the arm grants the child the spawner's capability unnarrowed |
+| 3 | `init` evaluates the policy (§6.2) at login: the shell authenticates as today, asks `init` for its session, and `init` grants the derived capabilities and revokes them at logout. The installer writes `/etc/fs.policy`. A live boot uses a compiled-in default; an installed volume without a policy file grants the root capability to the administrator only (decision 9) | A session reaches only what its grants name; the arm grants every session the root |
+| 4 | The truthful view (§7): `stat` from the caller's rights and a bound on everyone else's, `chmod` and `chown` succeed only when they ask for what is true | `chmod 600` on a file another grant reaches fails; the arm reports success |
+| 5 | Cross-directory `rename` and `link` return `EXDEV` (decision 11); same-directory rename needs `CREATE` and `DELETE` on that directory | A cross-directory move is refused; the arm lets it through |
+| 6 | The identity path is removed: `perm_ok`, `FS_OP_CHOWN`'s root check, the uid half of `SYS_IPC_SENDER` in the filesystem, `SYS_FS_SET_META` and `SYS_CONNECT_FS_SERVER` | No filesystem operation succeeds on the strength of a uid; the arm restores `perm_ok` (the Falsification list below) |
+
+**Authentication stays where it is.** Until `auth_server` exists, the shell's login (`SYS_AUTH`,
+the compiled-in accounts) is what authenticates, and `init` reads the result as the kernel attests
+it. That is not authority by identity: `init` uses it once, to choose which policy grants to
+derive, and every filesystem operation after that is authorised by the capability alone.
 
 ## 12. What this design does not claim
 
@@ -606,6 +626,23 @@ still asks a settled question is stale.
    notification are out (§8.10). Symbolic links, timestamps, sparse files, `fallocate`,
    `O_TMPFILE`, cross-directory rename, locks and B-tree directories were never in question.
 7. **The TPM anchor (S70) carries into v12**, bound into every superblock slot.
+
+**2026-10-07, for phase 1b:**
+
+8. **Programs a user builds may run from `/home`** (installed-system option C): the manifest guards
+   `/bin`, `/sbin` and `/lib`; anything else runs on the `EXEC` right of its file capability, which
+   is advisory against a task that can read the file until programs start only from file
+   capabilities (§7.3).
+9. **With no `/etc/fs.policy`,** a live boot uses a compiled-in default (the administrator gets the
+   root; an ordinary account gets read and lookup on `/bin`, `/lib` and `/usr`, and a private home
+   and `/tmp`). An installed volume without a policy file fails closed: only the administrator
+   gets the root capability, so they can log in and write one. The installer writes it.
+10. **A child gets its spawner's root and current-directory capabilities**, as derived copies that
+    are never wider than the spawner's own, so revoking the spawner's sweeps the child's. Open
+    files are not inherited.
+11. **Cross-directory `rename` and `link` return `EXDEV` in phase 1**, and `mv` copies. The full
+    rule of §5.5 needs each object's back-references, which arrive with the v12 format; phase 3
+    lifts the refusal.
 
 **Still open, none of them blocking phase 1:**
 

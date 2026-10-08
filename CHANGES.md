@@ -52,6 +52,7 @@ here.
 ### Changed
 
 - The installed-system design records that a user's own programs may run from `/home`, outside the manifest. (#500)
+- The filesystem design sets out phase 1b in six steps and records the four decisions taken for it. (#499)
 - The README is rewritten to match the tree as it is. (#496)
 - `CHANGES.md` is one line per entry; the full entries are in `docs/history/CHANGES-2026.md`. (#495)
 - The website is plain HTML in `site/`, edited directly. (#494)
@@ -77,6 +78,7 @@ here.
 
 ### Fixed
 
+- `smoke-kdiag-ioport` could report a refusal missing because ring-3 output cut the kernel's kill report in half. (#498)
 - The roadmap called nightly fuzzing and full Kani not started after both had landed. (#497)
 - The `unsafe` check never read most of `lib.rs`. (#489)
 - `smoke-kdiag-split-control` went red about one CI run in 24 on changes that do not touch the console. (#473)

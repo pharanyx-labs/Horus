@@ -2854,6 +2854,14 @@ static void do_login(void) {
         }
         password[plen] = 0;
 
+        /* SAID HERE, NOT BY THE KERNEL. The first login of a boot unlocks an
+         * encrypted disk, and deriving its key is slow on purpose (seconds on a
+         * laptop). The kernel's progress panel used to say so, and nothing ever
+         * cleared it from a login screen; the kernel now draws it only for the
+         * installer (g_prog_permitted in terminal.c), so the wait is explained
+         * here, as ordinary output that scrolls away. */
+        println("Checking the password. Opening an encrypted disk takes a few seconds.");
+
         uint32_t got_uid = 0;
         int auth_ok = sys_auth(username, password, &got_uid);
 

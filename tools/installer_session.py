@@ -1687,8 +1687,19 @@ def bootdisk(disk):
         # install completes and the disk has nothing for the firmware to start.
         # Asserted POSITIVELY, on the firmware saying so, because the absence of
         # GRUB's line is equally true of a boot that never got going.
+        # Firmware says it in its own words: edk2 as Void and Arch build it
+        # prints "No bootable option"; Ubuntu's OVMF (CI) falls through to its
+        # EFI shell, whose first act is the startup.nsh countdown. Either is the
+        # firmware stating it found nothing else to start.
         if os.environ.get("BOOTDISK_EXPECT") == "noboot":
-            s.expect(os.environ.get("BOOTDISK_NOBOOT_MARKER", "No bootable option"), BOOT)
+            markers = os.environ.get("BOOTDISK_NOBOOT_MARKER",
+                                     "No bootable option|startup.nsh").split("|")
+            deadline = time.time() + BOOT
+            while not any(m in s.buf for m in markers):
+                if time.time() > deadline:
+                    raise SessionFail(f"the firmware never said it had nothing to boot ({markers!r}); "
+                                      f"recent serial: {s.buf[-400:]!r}")
+                s._pump(0.5)
             if "kernel.elf: OK" in s.buf:
                 raise SessionFail("the disk booted with its ESP left empty")
             step("the firmware found nothing to boot on a disk whose ESP was never written")

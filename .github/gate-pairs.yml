@@ -33,6 +33,7 @@
 control_arms:
   smoke-sdhci-fast-control: smoke-sdhci-fast
   smoke-installer-clear-control: smoke-installer-clear
+  smoke-installer-clear-surface-control: smoke-installer-clear
   smoke-smp-topology-sparse-control: smoke-smp-topology
   smoke-smp-topology-sibling-control: smoke-smp-topology
   smoke-cap-accounting-control: smoke-captest

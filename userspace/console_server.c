@@ -1368,7 +1368,19 @@ static void con_clear(void) {
     surf_on = 0;           /* the cleared screen is the console again */
     const uint16_t blank = (uint16_t)((VGA_ATTR << 8) | ' ');
     if (fbp) {
-        for (unsigned i = 0; i < 80u * fb_rows; i++) { fb_cells[i] = blank; fb_blit(i); }
+        /* EVERY PIXEL, not every cell. The surface this clear usually follows
+         * (the installer's) is drawn centred, at fb_cx; with surf_on now off,
+         * blank cells repaint at the left edge, and a display wider than the
+         * grid kept the surface's right-hand columns: the installer's border
+         * stood beside the login banner on the IdeaPad and under OVMF until
+         * 2026-10-08. A layout change is what fb_repaint_all is for. */
+        for (unsigned i = 0; i < 80u * fb_rows; i++) fb_cells[i] = blank;
+#ifndef CONSOLE_CLEAR_KEEPS_SURFACE
+        fb_repaint_all();
+#else
+        /* CONTROL ARM -- never ship. The clear as it was: cells only. */
+        for (unsigned i = 0; i < 80u * fb_rows; i++) fb_blit(i);
+#endif
         fb_pos = 0;
     } else {
         for (unsigned i = 0; i < VGA_CELLS; i++) vga[i] = blank;

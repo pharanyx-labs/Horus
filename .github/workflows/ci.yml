@@ -3183,7 +3183,7 @@ jobs:
       - name: Install build toolchain + QEMU
         uses: ./.github/actions/apt
         with:
-          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86 grub-efi-amd64-bin ovmf
       - name: Add bare-metal Rust target
         run: rustup target add x86_64-unknown-none
       # Two boots on one image. The second is the claim: a format that returns 0
@@ -3199,6 +3199,10 @@ jobs:
         run: make smoke-installer-clear
       - name: Control arm — a clear that draws its escape sequence is caught
         run: make smoke-installer-clear-control
+      # Under UEFI the installer is centred on a wider screen; the clear must
+      # take all of it, not only the grid.
+      - name: Control arm — a clear that leaves the installer beside the grid is caught
+        run: make smoke-installer-clear-surface-control
       # The compiled-in root password on an installed machine: refused, and the arm
       # that keeps it must turn the install gate red on exactly that.
       - name: Control arm — the compiled-in accounts kept on a machine with a disk

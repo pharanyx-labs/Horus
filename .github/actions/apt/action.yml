@@ -86,5 +86,26 @@ runs:
           return 1
         }
 
-        retry sudo apt-get update
-        retry sudo apt-get install -y --no-install-recommends ${{ inputs.packages }}
+        # BOUND EVERY ATTEMPT. A retry runs only after a command exits, and a
+        # stalled download never exits. On 2026-10-07 archive.ubuntu.com stopped
+        # answering partway through `noble-security InRelease`; `apt-get update`
+        # waited on it with no error, and every job of two pull requests' runs sat
+        # there until its own timeout-minutes (up to 105) cancelled it. The retry
+        # above never got a turn.
+        #
+        # Two bounds, so a stall becomes a failed attempt the retry can see:
+        #
+        #   - Acquire::http::Timeout / Acquire::https::Timeout make apt itself give
+        #     up on a connection that sends nothing for 30 seconds, instead of
+        #     waiting forever.
+        #   - `timeout` caps each whole attempt in wall-clock time, whatever apt
+        #     is stuck on (a slow trickle resets apt's own timer). The install's
+        #     bound is wide because QEMU and GRUB with their dependencies are a
+        #     few hundred megabytes; a normal install is about a minute.
+        #
+        # A bound that trips is a failure, not a pass: the retry tries again, and
+        # after three attempts the job fails, in minutes rather than hours.
+        # `timeout` runs under sudo so it can signal the root apt it started.
+        APT_NET=(-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+        retry sudo timeout --kill-after=10 180 apt-get "${APT_NET[@]}" update
+        retry sudo timeout --kill-after=10 600 apt-get "${APT_NET[@]}" install -y --no-install-recommends ${{ inputs.packages }}

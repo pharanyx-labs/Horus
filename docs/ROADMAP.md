@@ -29,8 +29,8 @@ In order. Each step is its own set of pull requests with its own gates and contr
 1. **Encrypted swap** in the reserved partition, next (the maintainer, 2026-10-08), specified in
    [`design/swap.md`](design/swap.md). A key made fresh at every boot from the CSPRNG, held only
    in kernel memory and never written or paged out. Every page sealed with the kernel's AEAD
-   under a fresh nonce, with the nonce, the tag and the slot map kept in RAM, so nothing on the partition is ever
-   plaintext, not even a header, and a page modified, replayed or unreadable kills the task
+   under a fresh nonce, with the nonce, the tag and the slot map kept in RAM, so nothing on the
+   partition is ever plaintext, not even a header, and a page modified, replayed or unreadable kills the task
    that owns it rather than handing it wrong bytes. Only a task's private pages are swapped,
    never kernel memory, page tables, shared frames or the boot servers. The pager is in the
    kernel, with a simple clock policy. Compressed memory (zram or zswap) is not planned: if it

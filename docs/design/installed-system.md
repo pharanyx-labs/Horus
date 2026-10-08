@@ -100,14 +100,27 @@ MIT-licensed replacements (the shell's builtins already cover `ls`, `cat` and ot
 
 ## 6. The bootloader, so the disk boots on its own
 
-The installer writes a **GPT partition table** with two partitions:
+The installer writes a **GPT partition table** with three partitions, each sized by the operator
+within what the disk holds:
 
-1. An **EFI system partition** (FAT32, a few tens of MiB) holding GRUB, the kernel, and the same
-   memdisk that carries the pinned kernel hash on the install media today. UEFI firmware measures
-   what it loads into `PCR[4]`, as SeaBIOS does for the ISO, so the measured-boot argument (S11,
-   S92) carries over unchanged.
-2. The **Horus volume**, taking the rest of the disk, or the size the operator chose. The
-   volume-size option (#434) becomes the partition size, which is what it always approximated.
+1. An **EFI system partition** (FAT32, 64 MiB) holding GRUB as `\EFI\BOOT\BOOTX64.EFI`, the
+   kernel, and the same memdisk that carries the pinned kernel hash on the install media today.
+   The build makes the whole partition as an image (mtools), and the installer writes it as raw
+   blocks, so Horus carries no FAT writer. The fallback path is used because Horus cannot write
+   the firmware's boot entries (it has no UEFI runtime services). UEFI firmware measures what it
+   loads into `PCR[4]`, as SeaBIOS does for the ISO, so the measured-boot argument (S11, S92)
+   carries over unchanged.
+2. A **swap partition**, of Horus's own type (not Linux's, which a Linux system booted on the
+   machine would activate and write to unencrypted). Reserved and unused until encrypted swap is
+   built.
+3. The **Horus volume**, of Horus's own type. The volume-size option (#434) becomes the partition
+   size, which is what it always approximated. The kernel finds it by reading the GPT
+   (`rust/src/gpt.rs`, S114): both CRCs must verify, exactly one entry may carry the volume type,
+   and the partition must be block-aligned and inside the device. A table that is refused is
+   never read as a whole-device volume.
+
+A disk with no partition table is still mounted as a whole-device volume, which is what every
+volume was before, and what the persistence gates' raw images are.
 
 Secure Boot is not proposed here: the laptop's firmware would need Horus's own key enrolled, and
 measured boot already gives the property that matters for the sealed key, that a modified boot
@@ -168,11 +181,18 @@ key: a hash pinned in the measured image needs none (decision 1).
    capabilities, that right is advisory against any task that can read the file and hand its bytes
    to `SYS_SPAWN_IMAGE`; `docs/LIMITATIONS.md` records it when programs first run from the disk.
 
+**2026-10-08:**
+
+6. **The disk boots itself before the manifest work**, with the layout of section 6: an EFI
+   system partition, a swap partition reserved for encrypted swap, and the volume, each sized by
+   the operator. Separate system and home volumes wait for filesystem phase 2, since the kernel
+   mounts one volume today and phase 2 rebuilds the store anyway.
+
 ## 9. Order of work
 
-1. The layout and the installer copying files, with **(A)**'s manifest check in the loader, as
+1. The bootloader and partition table (decision 6).
+2. The layout and the installer copying files, with **(A)**'s manifest check in the loader, as
    one change: executing from the disk must never exist without the check.
-2. The bootloader and partition table.
 3. `/etc/passwd` and `/etc/shadow` with the ring-3 `auth_server`.
 
 Each is its own PR with its own gates and control arms. The copy on write and extents work from

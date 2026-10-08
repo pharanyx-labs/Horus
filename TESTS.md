@@ -172,7 +172,7 @@ There are 430 `smoke-*` targets: 204 gates and 226 control arms. Each row is a g
 | Gate | What it proves | Properties | Control arms |
 |---|---|---|---|
 | `smoke-readdir-end` | The end of a directory is distinguished from a directory that cannot be read |  | `smoke-readdir-end-control` |
-| `smoke-replace-live` | An unlocked volume cannot be reformatted; a recognised but locked one can | S90 | `smoke-replace-live-control` |
+| `smoke-replace-live` | An unlocked volume cannot be reformatted, whole or in a GPT partition; a recognised but locked one can | S90 | `smoke-replace-live-control`, `smoke-replace-partition-control` |
 | `smoke-replace-oneshot` | The permission to format is spent by the format that uses it | S90 | `smoke-replace-oneshot-control` |
 | `smoke-keyslots` | Several passwords open one volume, and revoking one revokes exactly that one | S61 | `smoke-keyslots-control` |
 | `smoke-meta-crash` | A committed metadata update survives a crash whether or not its cache line was evicted | S65 | `smoke-meta-crash-control`, `smoke-meta-crash-txn-control`, `smoke-meta-crash-vacuity-control` |
@@ -193,6 +193,7 @@ There are 430 `smoke-*` targets: 204 gates and 226 control arms. Each row is a g
 | `smoke-fs-perms` | File permissions are checked against the kernel-attested user, not a client's claim | S13, S14 |  |
 | `smoke-fs-dir-operand` | A file is never read as a directory, so a forged entry frees nothing | S113 | `smoke-fs-dir-operand-control` |
 | `smoke-fs-persist` | Data survives a reboot |  |  |
+| `smoke-gpt-volume` | The volume is found in its GPT partition, and an entry forged on the disk is refused | S114 | `smoke-gpt-volume-control` |
 | `smoke-fs-wal` | The journal replays a write interrupted by a crash |  |  |
 | `smoke-fs-wal-flush` | A failed cache flush stops the journal committing |  | `smoke-fs-wal-flush-control` |
 | `smoke-fs-wal-order` | The journal's writes and flushes reach the disk in the required order |  | `smoke-fs-wal-order-control` |
@@ -385,11 +386,11 @@ The jobs that are not boot tests:
 | `kani-bounded` | Formal verification of the capability algebra (every Kani proof) |
 
 Two of those deserve a sentence each.
-**`kani-bounded` is the only Kani job, and it can fail anything.** All **32** harnesses run
+**`kani-bounded` is the only Kani job, and it can fail anything.** All **33** harnesses run
 there with no `continue-on-error`, each named with its measured cost in
 `.github/kani-harnesses.yml`, and the job refuses a proof that is not listed. And **`invariants`** requires every property in `SECURITY.md` to
 name a witness that exists and runs; its exemption list, `.github/invariants.yml`, is
-currently **empty**: all 115 properties name a witness that resolves.
+currently **empty**: all 116 properties name a witness that resolves.
 
 Every `tools/check_*.py` has a falsification harness, `tools/test_check_*.sh`, with one case per
 rule showing the rule can fail, and each checker asserts a floor on what it parsed, so a parser

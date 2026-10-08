@@ -26,26 +26,33 @@ requests. What is still wrong, as opposed to still unbuilt, is in
 
 In order. Each step is its own set of pull requests with its own gates and control arms.
 
-1. **Filesystem phase 1b** (2.10): `fs_server` authorises by capability instead of by uid and
+1. **A disk that boots itself** (2.11 step 2), in progress: a GPT disk with an EFI system
+   partition holding GRUB, the kernel and its pinned hash; a swap partition, reserved; and the
+   volume, each sized by the operator. The kernel finds the volume in its partition (S114); the
+   installer writing the layout and the ESP is next.
+2. **Use all the memory** (3.1): the page pool walks every usable region up to 4 GiB instead of
+   stopping at 512 MiB.
+3. **Filesystem phase 1b** (2.10): `fs_server` authorises by capability instead of by uid and
    mode, `hvfs` walks with capabilities, and `init` mints the root capability from a policy file.
    It removes `perm_ok`, the root check on `chown`, `SYS_FS_SET_META`, the uid path of
    `SYS_IPC_SENDER` in the filesystem, and `SYS_CONNECT_FS_SERVER`. Phase 1a, the kernel half,
    is done.
-2. **Programs on the disk** (2.11 step 1): the installer copies the system onto the volume
+4. **Programs on the disk** (2.11 step 1): the installer copies the system onto the volume
    (`/bin`, `/sbin`, `/lib`, `/tmp`, `/var`, man pages), and the loader refuses any file whose
    hash is not in a manifest pinned inside the measured boot image. The two land together:
    running from the disk must never exist without the check. The manifest covers `/bin`, `/sbin`
    and `/lib` only: a program a user builds with `tcc` runs from `/home` on the `EXEC` right of
    its file capability (installed-system decision 5).
-3. **A disk that boots itself** (2.11 step 2): a GPT disk with an EFI system partition holding
-   GRUB, the kernel and its pinned hash, and the volume as partition 2.
-4. **Accounts as files** (2.11 step 3): `/etc/passwd` and `/etc/shadow` on the volume, owned by a
+5. **Accounts as files** (2.11 step 3): `/etc/passwd` and `/etc/shadow` on the volume, owned by a
    ring-3 `auth_server`; the kernel keeps only the key-slot unlock.
-5. **Filesystem phases 2 to 4** (2.10): the kernel shrinks to a sealed-block service and the
+6. **Encrypted swap** in the reserved partition: a key made fresh at every boot, every page
+   authenticated, and no key material ever paged out.
+7. **Filesystem phases 2 to 4** (2.10): the kernel shrinks to a sealed-block service and the
    filesystem moves to ring 3 with a copy-on-write format, then symbolic links, timestamps and
-   sparse files, then snapshots, reflinks and extended attributes.
+   sparse files, then snapshots, reflinks and extended attributes. Phase 2 also splits the
+   system and home into separate volumes.
 
-Steps 1 and 4 meet at `/etc/passwd`; whichever lands second adapts to the first.
+Steps 3 and 5 meet at `/etc/passwd`; whichever lands second adapts to the first.
 
 ---
 
@@ -272,7 +279,7 @@ from a tag and compare. They wait on 3.1, since an ISO that does not rebuild to 
 same bytes cannot be verified by rebuilding.
 
 **4.12.** The exemption list in `.github/invariants.yml` is currently
-**empty**: all 115 properties name a witness that resolves.
+**empty**: all 116 properties name a witness that resolves.
 
 ---
 
@@ -292,5 +299,5 @@ same bytes cannot be verified by rebuilding.
 | ✅ | Measured boot, the kernel pinned in the boot image, and a PCR-sealed volume key |
 | ✅ | An IOMMU confining device DMA, and device capabilities that name one device each |
 | ◧ | Reproducible `kernel.elf` (not yet the ISO), an SBOM, CodeQL, Dependabot, signed commits, a protected `main` |
-| ✅ | 432 `smoke-*` targets, nearly all QEMU integration tests, and 227 of them control arms that must reproduce a defect |
+| ✅ | 435 `smoke-*` targets, nearly all QEMU integration tests, and 229 of them control arms that must reproduce a defect |
 | ✅ | Bounded Kani proofs, Miri over the Rust core, and fuzzing at the FFI boundary |

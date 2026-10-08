@@ -43,6 +43,11 @@ revoke_legacy_bounded = []
 # feature down; no ordinary build passes it.
 rng_unseeded_legacy = []
 
+# CONTROL ARM for S114 (make smoke-gpt-volume-control). Skips the GPT entry
+# array's CRC32 check in gpt.rs, so an entry edited on the disk without
+# resealing the array is believed, and the kernel mounts wherever it now points.
+gpt_entries_crc_unchecked = []
+
 # Kani's function stubbing (`#[kani::stub]`) is still behind -Z stubbing. The
 # two lineage-generation proofs in capability.rs stub the serial-to-cell hash so
 # they finish in minutes rather than not at all (`lineage_idx_model` says why the

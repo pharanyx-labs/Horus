@@ -153,15 +153,19 @@ The full list, with the reasons, is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.
 
 In order, from [`docs/ROADMAP.md`](docs/ROADMAP.md):
 
-1. **Filesystem phase 1b** (2.10): `fs_server`, the path walker and `init` authorise files by
+1. **A disk that boots itself** (2.11), in progress: a GPT disk with an EFI system partition, a
+   reserved swap partition and the volume, sized by the operator.
+2. **Use all the memory** (3.1): the page pool reaches up to 4 GiB instead of 512 MiB.
+3. **Filesystem phase 1b** (2.10): `fs_server`, the path walker and `init` authorise files by
    capability instead of by user id and mode.
-2. **Programs on the disk** (2.11): the installer copies the system onto the volume, and the
+4. **Programs on the disk** (2.11): the installer copies the system onto the volume, and the
    loader refuses any file whose hash is not in a manifest pinned in the measured boot image.
-3. **A disk that boots itself** (2.11): a GPT disk with an EFI system partition.
-4. **Accounts as files** (2.11): `/etc/passwd` and `/etc/shadow` on the volume, owned by a ring-3
+5. **Accounts as files** (2.11): `/etc/passwd` and `/etc/shadow` on the volume, owned by a ring-3
    `auth_server`.
-5. **Filesystem phases 2 to 4** (2.10): the filesystem moves to ring 3 on a copy-on-write format,
-   and gains links, timestamps, snapshots and extended attributes.
+6. **Encrypted swap** in the reserved partition, under a key made fresh at every boot.
+7. **Filesystem phases 2 to 4** (2.10): the filesystem moves to ring 3 on a copy-on-write format,
+   with separate system and home volumes, and gains links, timestamps, snapshots and extended
+   attributes.
 
 ## Architecture
 
@@ -248,10 +252,10 @@ test does not exist or does not run.
 
 | Layer | What it covers |
 |---|---|
-| Security properties | 115 numbered properties, each bound to a witness by `tools/check_invariants.py` |
-| QEMU integration tests | 432 `smoke-*` targets: 205 base gates and 227 control arms |
+| Security properties | 116 numbered properties, each bound to a witness by `tools/check_invariants.py` |
+| QEMU integration tests | 435 `smoke-*` targets: 206 base gates and 229 control arms |
 | Control arms | A build that puts a defect back on purpose; CI requires its gate to go red against it |
-| Kani | 32 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
+| Kani | 33 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
 | Miri | The security core's tests, interpreted for undefined behaviour on every pull request |
 | Fuzzing | The FFI predicates under cargo-fuzz, ten minutes per target, nightly |
 | Reproducibility | `kernel.elf` builds byte for byte the same twice; the ISO does not yet |

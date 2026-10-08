@@ -1826,6 +1826,111 @@ static int g_sd_usable;
 static int g_ata_usable[ATA_MAX_DRIVES];
 static int g_ata_usable_count;
 
+/* A VOLUME IN A PARTITION IS A WINDOW ONTO ITS DEVICE (SECURITY.md S114).
+ *
+ * A disk that boots on its own carries an EFI system partition in front of the
+ * volume, so the volume no longer starts at block 0. Rather than teach every
+ * block address in this file an offset, the volume is mounted on a view: a
+ * block_device whose block 0 is the partition's first block and whose
+ * total_blocks is the partition's length. Everything above it (the superblock,
+ * the journal, the Merkle tree, raw_block_read) addresses the view exactly as it
+ * addressed a whole disk, and cannot tell the difference, which is the point.
+ *
+ * THE BOUND IS HERE, NOT IN THE CALLERS. Every operation refuses a block at or
+ * past the view's end before adding the base, so nothing mounted on a view can
+ * reach the ESP in front of it or the swap and free space after it, whatever
+ * block number it computes. The range itself comes from rust_gpt_find_volume,
+ * which Kani proves returns only a non-empty run of whole blocks inside the
+ * device. One view, because one volume is mounted at a time (g_mounted_fs). */
+struct part_view {
+    struct block_device *dev;      /* the whole device the partition is on */
+    uint64_t             base;     /* the partition's first block on `dev` */
+};
+static struct part_view g_part;
+
+static int part_in(const struct block_device *bd, uint64_t start, uint64_t count) {
+    return start < bd->total_blocks && count <= bd->total_blocks - start;
+}
+static int part_read(struct block_device *bd, uint64_t block, void *buf) {
+    struct part_view *p = (struct part_view *)bd->private;
+    if (!part_in(bd, block, 1)) return -1;
+    return p->dev->read_block(p->dev, p->base + block, buf);
+}
+static int part_write(struct block_device *bd, uint64_t block, const void *buf) {
+    struct part_view *p = (struct part_view *)bd->private;
+    if (!part_in(bd, block, 1)) return -1;
+    return p->dev->write_block(p->dev, p->base + block, buf);
+}
+static int part_flush(struct block_device *bd) {
+    struct part_view *p = (struct part_view *)bd->private;
+    return p->dev->flush ? p->dev->flush(p->dev) : -1;   /* NULL is a failure, as everywhere */
+}
+static int part_fill(struct block_device *bd, uint64_t start, const void *buf, uint64_t count) {
+    struct part_view *p = (struct part_view *)bd->private;
+    if (!part_in(bd, start, count) || !p->dev->fill_uniform) return -1;  /* bd_fill then loops */
+    return p->dev->fill_uniform(p->dev, p->base + start, buf, count);
+}
+static struct block_device g_part_bd = {
+    .name = "volume partition",
+    .read_block = part_read, .write_block = part_write,
+    .flush = part_flush, .fill_uniform = part_fill,
+    .private = &g_part,
+};
+
+/* The device a block device lives on: the view's disk for the partition view,
+ * the device itself otherwise. Every question about WHICH disk, or whether it is
+ * persistent, is asked of this, so mounting from a partition changes no answer
+ * the survey, the installer or the live-boot refusal (S110) depend on. */
+static const struct block_device *storage_bd_device(const struct block_device *bd)
+{
+    return (bd == &g_part_bd) ? g_part.dev : bd;
+}
+
+/* How much of a device rust_gpt_find_volume reads: the protective MBR, the
+ * header, and 128 entries of 128 bytes from LBA 2, which end at byte 17,408 and
+ * so inside the first five blocks. A table whose entries lie further out is
+ * refused (GPT_BAD_ENTRIES), not read further: every partitioning tool writes
+ * them at LBA 2, and the installer does. Static, at 20 KiB of .bss (budgeted in
+ * .github/image-budget.yml), because the kernel has no allocator and 20 KiB is
+ * five times what a kernel stack frame may hold. */
+#define GPT_SCAN_BLOCKS 5u
+
+/* The block device to mount for the volume on `dev`: the partition view if
+ * `dev` carries a GPT with exactly one valid Horus volume, `dev` itself if it
+ * carries no GPT at all (a whole-device volume, as every volume was before),
+ * and NULL if it carries a GPT that is refused. A refused table is NOT a reason
+ * to try the whole device: that would turn "the table is corrupt" into "read
+ * the disk from block 0 as a volume", and fail open. */
+static struct block_device *storage_volume_on(struct block_device *dev)
+{
+    static uint8_t scan[GPT_SCAN_BLOCKS * BLOCK_SIZE];
+    if (dev->total_blocks < GPT_SCAN_BLOCKS) return dev;
+    for (uint32_t b = 0; b < GPT_SCAN_BLOCKS; b++)
+        if (dev->read_block(dev, b, scan + (uint64_t)b * BLOCK_SIZE) != 0) return NULL;
+    uint64_t base = 0, count = 0;
+    int rc = rust_gpt_find_volume(scan, sizeof(scan), dev->total_blocks, &base, &count);
+    if (rc == GPT_NONE) return dev;
+    if (rc != 0) {
+        print("storage: ");
+        print(dev->name);
+        print(": its partition table was refused (");
+        print_decimal((uint64_t)(-rc));
+        print("); not mounting it\n");
+        return NULL;
+    }
+    g_part.dev = dev;
+    g_part.base = base;
+    g_part_bd.total_blocks = count;
+    print("storage: ");
+    print(dev->name);
+    print(": the volume is partition blocks ");
+    print_decimal(base);
+    print("+");
+    print_decimal(count);
+    print("\n");
+    return &g_part_bd;
+}
+
 /* Is this block device one of the persistent ATA disks?
  *
  * It used to be a pointer comparison against the single device, which is the
@@ -1835,6 +1940,7 @@ static int g_ata_usable_count;
  * onto would be a lie an installer would then draw on a screen. */
 static int storage_bd_is_ata(const struct block_device *bd)
 {
+    bd = storage_bd_device(bd);    /* a volume partition is on a persistent disk */
     for (int d = 0; d < ATA_MAX_DRIVES; d++)
         if (bd == &g_ata_bd[d]) return 1;
     /* The SD/eMMC card counts as persistent, and that is the whole point of it:
@@ -2224,7 +2330,11 @@ int storage_init(void) {
      * so a device that does not carry a volume leaves nothing behind for the
      * next one to trip over. */
     for (int i = 0; i < usable; i++) {
-        struct block_device *bd = storage_device_at(i);
+        struct block_device *dev = storage_device_at(i);
+        if (!dev) continue;
+        /* The volume on this device: a GPT partition, the whole device if it has
+         * no table, or nothing if its table is refused (S114). */
+        struct block_device *bd = storage_volume_on(dev);
         if (!bd) continue;
         if (storage_mount(bd) == 0) {
             current_bd = bd;
@@ -3501,8 +3611,22 @@ int storage_authorize_format(int index, uint64_t volume_blocks, uint32_t flags)
          * This function's job is to make the dangerous case unreachable even if
          * that capability ever went somewhere it should not. */
 #ifndef STORAGE_REPLACE_UNLOCKED
+        /* storage_bd_device: the mounted volume may be a partition of `bd`
+         * (S114). Comparing the view with the disk, as the partition change
+         * first did (caught before it merged), never matches, and would let a
+         * disk be reformatted from under the running system that had its
+         * partition open. */
+#ifndef STORAGE_REPLACE_VIEW_UNRESOLVED
+        if (bd == storage_bd_device(g_mounted_fs.bd) && g_mounted_fs.mounted && g_mounted_fs.unlocked)
+            return -1;
+#else
+        /* CONTROL ARM -- never ship. The comparison as it stood before the
+         * fix: the partition view against the disk, which never matches, so a
+         * volume mounted from a partition can be reformatted while unlocked.
+         * See make smoke-replace-partition-control. */
         if (bd == g_mounted_fs.bd && g_mounted_fs.mounted && g_mounted_fs.unlocked)
             return -1;
+#endif
 #else
         /* CONTROL ARM -- never ship. Drop the unlocked check, and a disk can be
          * reformatted out from under the running system that has it open. See
@@ -3549,7 +3673,7 @@ void storage_query(struct storage_info *out)
 
     out->block_size = BLOCK_SIZE;
     out->present    = storage_bd_is_ata(current_bd) ? 1u : 0u;
-    if (out->present) out->total_blocks = current_bd->total_blocks;
+    if (out->present) out->total_blocks = storage_bd_device(current_bd)->total_blocks;
 
     /* How many persistent devices this machine has, and which one the fields
      * above describe. A survey that could only ever say "the disk" is what made
@@ -3558,7 +3682,7 @@ void storage_query(struct storage_info *out)
     out->device_index = 0;
     for (int d = 0, seen = 0; d < ATA_MAX_DRIVES; d++) {
         if (!g_ata_usable[d]) continue;
-        if (&g_ata_bd[d] == current_bd) { out->device_index = (uint32_t)seen; break; }
+        if (&g_ata_bd[d] == storage_bd_device(current_bd)) { out->device_index = (uint32_t)seen; break; }
         seen++;
     }
 
@@ -3608,7 +3732,7 @@ int storage_device_query(int index, struct storage_info *out)
     out->device_count = (uint32_t)storage_usable_count();
     out->device_index = (uint32_t)index;
 
-    int is_mounted    = (bd == g_mounted_fs.bd) && g_mounted_fs.mounted;
+    int is_mounted    = (bd == storage_bd_device(g_mounted_fs.bd)) && g_mounted_fs.mounted;
     out->recognised   = is_mounted ? 1u : 0u;
     out->unlocked     = (is_mounted && g_mounted_fs.unlocked) ? 1u : 0u;
     if (is_mounted) out->volume_blocks = g_mounted_fs.sb.total_blocks;
@@ -4576,6 +4700,14 @@ int storage_keyslot_remove(uint32_t idx)
 int storage_volume_has_keyslots(void)
 {
     return storage_volume_is_persistent() && !g_mounted_fs.sb.unsealed;
+}
+
+/* Is the mounted volume a GPT partition rather than a whole device (S114)?
+ * Observability for the S90 selftest, which must exercise the partition case
+ * that its first version could not reach. */
+int storage_volume_is_partition(void)
+{
+    return g_mounted_fs.mounted && g_mounted_fs.bd == &g_part_bd;
 }
 
 int storage_volume_is_persistent(void)

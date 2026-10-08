@@ -312,7 +312,7 @@ It does not make installing faster; the metadata region is laid down the same wa
 **The kernel image is itself a ceiling.** It must end below `USER_PHYS_BASE` (16 MiB), which the
 `linker64.ld` ASSERT enforces. That 16 MiB is the window in which the kernel maps itself with
 4 KiB pages, the only place a guard page can exist. GRUB stages boot modules in the same room.
-`.bss` is budgeted at **7,532 KiB** (`.github/image-budget.yml`), held exactly by
+`.bss` is budgeted at **7,552 KiB** (`.github/image-budget.yml`), held exactly by
 `tools/check_image_budget.py`, and `argon2_scratch` is 4,096 KiB of it: the Argon2 memory cost,
 which must not be cut to buy room. Raising `MAX_CPUS`, `BLOCKS_PER_DISK` or the Argon2 cost spends
 that budget; raising `MAX_TASKS` spends pool memory instead.
@@ -339,9 +339,10 @@ waits until it is woken or killed. The PIT runs at a fixed 100 Hz.
 - **A disk that boots itself.** The installer writes the volume over the whole disk, with no
   partition table and no bootloader. An installed machine is started from Horus boot media
   (`horus.iso`), which finds and opens the volume. The install media's menu offers only live boot
-  and install, and a live boot opens no disk (S110), so it cannot start an installed system. A GPT
-  disk with an EFI system partition is designed in
-  [`design/installed-system.md`](design/installed-system.md) and not built.
+  and install, and a live boot opens no disk (S110), so it cannot start an installed system. The
+  kernel can already mount a volume from a GPT partition (S114); the installer writing a GPT
+  disk with an EFI system partition, as designed in
+  [`design/installed-system.md`](design/installed-system.md), is not built.
 - **Programs on the disk.** The shipped programs are compiled into the kernel image or loaded as
   measured boot modules; nothing runs from the volume. The manifest-pinned `/bin`, `/sbin` and
   `/lib` of the installed-system design are not built.
@@ -363,7 +364,8 @@ waits until it is woken or killed. The PIT runs at a fixed 100 Hz.
 - **More than one filesystem.** One volume and one `fs_server`, plus `dev_server` in self-test
   builds. The capability filesystem of [`design/filesystem.md`](design/filesystem.md) has its
   kernel half (phase 1a, IPC tokens, S105); the server half is not built.
-- **Swap.** Running out of the page pool is a hard failure.
+- **Swap.** Running out of the page pool is a hard failure. The installed layout will reserve a
+  partition for swap, encrypted under a key made fresh at every boot once it is built.
 - **Kernel ASLR.** User programs get 30 bits of address randomisation; the kernel loads at a fixed
   address.
 - **Other architectures.** x86-64 only, booted by GRUB under BIOS or UEFI.
@@ -443,7 +445,7 @@ the fix.
 
 Kani proves properties of capability revocation, the ELF validator, the user-address validators,
 the random pool's seed gate, the login throttle and the page-pool refcount
-arithmetic: **32** harnesses, every one of them gating in the required `kani-bounded` job. That is
+arithmetic: **33** harnesses, every one of them gating in the required `kani-bounded` job. That is
 the whole of the formal methods here. The kernel as a whole is not verified, no refinement proof
 links a specification to the code, and no TLA+ specification exists (two unsound ones were removed on
 2026-09-10).

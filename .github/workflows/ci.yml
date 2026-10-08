@@ -1147,6 +1147,10 @@ jobs:
       # taken from under it. Asserted on the ALLOWED branch, positively.
       - name: Control arm — the unlocked check is gone
         run: make smoke-replace-live-control
+      # The same check on a volume in a GPT partition (S114): the arm compares
+      # the mounted partition view with the disk, which never matches.
+      - name: Control arm — a partition's disk is not recognised as in use
+        run: make smoke-replace-partition-control
       # The other half, end to end: install media replaces a volume it wrote
       # earlier, and only the NEW password opens the result. Two passwords,
       # because a format returning 0 is reached by an installer that did nothing.
@@ -4295,6 +4299,15 @@ jobs:
         run: rustup target add x86_64-unknown-none
       - name: Boot twice against one ATA image and assert an encrypted file survives a reboot
         run: make smoke-fs-persist
+      # S114. A disk that boots itself has an EFI system partition in front of
+      # the volume, so the kernel reads the GPT to find it. The volume must be
+      # found in partition 3 of the installer's layout, and a volume entry moved
+      # on the disk without resealing the entry array must be refused.
+      - name: A volume is found in its GPT partition, and a forged entry is refused
+        run: make smoke-gpt-volume
+      # The marker is the exact range the forged entry names.
+      - name: Control arm — the entry array's CRC is not checked
+        run: make smoke-gpt-volume-control
       # Arm A of docs/design/meta-cache-merkle.md, built before the bounded
       # metadata cache it will guard: a committed metadata update is durable
       # across a crash. Gating now, so the harness is known-good before stage 2

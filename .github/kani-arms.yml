@@ -305,6 +305,12 @@ arms:
   defect: the account locks only after MAX_AUTH_FAILS + 1 failures
   find: '    if count >= MAX_AUTH_FAILS {'
   replace: '    if count > MAX_AUTH_FAILS {'
+- id: gpt-volume-unbounded
+  harness: gpt_volume_is_inside_the_device
+  file: rust/src/gpt.rs
+  defect: a partition is accepted however far past the device it runs
+  find: '    if count == 0 || base.checked_add(count)? > device_blocks {'
+  replace: '    if count == 0 {'
 
 # Proofs with no arm yet, each with the reason. This list only shrinks: the
 # checker refuses an entry whose proof has gained an arm.

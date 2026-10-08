@@ -129,7 +129,7 @@ DEFECT_FLAGS = \
 	STORAGE_REPLACE_UNLOCKED STORAGE_FORMAT_AUTH_STICKY BOOT_CMDLINE_UNMEASURED \
 	STORAGE_FORMAT_UNGATED INSTALLER_NO_CONFIRM BLOCK_ERRNO_LEGACY \
 	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED \
-	FS_LINK_UNCOUNTED FS_DIR_OPERAND_UNCHECKED \
+	FS_LINK_UNCOUNTED FS_DIR_OPERAND_UNCHECKED GPT_ENTRIES_CRC_UNCHECKED STORAGE_REPLACE_VIEW_UNRESOLVED \
 	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY BOOT_MENU_NO_LIVE_TOKEN \
 	BOOT_PIN_UNCHECKED BOOT_IMAGE_UNBOUND CONSOLE_PASS_UNGATED \
 	PIPE_CAP_UNACCOUNTED TOKEN_REPLY_MINT_UNMASKED \
@@ -1783,6 +1783,29 @@ RNG_UNSEEDED_LEGACY ?= 0
 ifeq ($(RNG_UNSEEDED_LEGACY),1)
 CFLAGS += -DRNG_UNSEEDED_LEGACY
 RUST_FEATURES := rng_unseeded_legacy
+endif
+
+# GPT_ENTRIES_CRC_UNCHECKED=1 is the S114 defect, and like RNG_UNSEEDED_LEGACY
+# it lives in Rust, so it is a cargo feature: gpt.rs stops checking the entry
+# array's CRC32, and an entry somebody edited on the disk (without resealing the
+# array) is believed, so the kernel mounts a volume wherever the edit points.
+# `make smoke-gpt-volume` must go red under it. The two Rust arms are never
+# combined, so each sets RUST_FEATURES outright.
+GPT_ENTRIES_CRC_UNCHECKED ?= 0
+
+# STORAGE_REPLACE_VIEW_UNRESOLVED=1 compares the mounted volume's device with the
+# disk a format names WITHOUT resolving a partition view to its disk, which is
+# how the partition change first wrote S90's check (caught before it merged): an
+# unlocked volume in a GPT partition could be reformatted from under the running
+# system. Control arm
+# for make smoke-replace-live (smoke-replace-partition-control).
+STORAGE_REPLACE_VIEW_UNRESOLVED ?= 0
+ifeq ($(STORAGE_REPLACE_VIEW_UNRESOLVED),1)
+CFLAGS += -DSTORAGE_REPLACE_VIEW_UNRESOLVED
+endif
+ifeq ($(GPT_ENTRIES_CRC_UNCHECKED),1)
+CFLAGS += -DGPT_ENTRIES_CRC_UNCHECKED
+RUST_FEATURES := gpt_entries_crc_unchecked
 endif
 RUST_FEATURE_ARGS = $(if $(RUST_FEATURES),--features $(RUST_FEATURES))
 
@@ -6117,6 +6140,59 @@ smoke-fs-persist:
 		tools/smoke_test.sh horus.iso
 	@echo "[persist] PASS — encrypted file survived a reboot"
 
+# A volume in a GPT partition, and a partition table that is refused (S114).
+#
+# A disk that boots on its own carries an EFI system partition in front of the
+# volume, so the kernel reads the GPT to find it (rust/src/gpt.rs). Three boots:
+#   1. the persist workload writes a sentinel to a fresh whole-device volume;
+#   2. tools/gpt_image.py puts that volume in partition 3 of the installer's
+#      layout (ESP, swap, volume), and the sentinel must be read back from it --
+#      which can only happen if the kernel mounted the partition, since block 0
+#      of the disk is now a protective MBR;
+#   3. a copy whose volume entry was moved onto the swap partition WITHOUT
+#      resealing the entry array, as somebody with the disk would, must be
+#      refused, and nothing mounted from it.
+GPT_VOLUME_FLAGS = PERSIST_SELFTEST=1 STORAGE_ATA=1 HANG_WATCHDOG=1 HANG_WATCHDOG_TICKS=6000 STORAGE_AUTOFORMAT=1
+.PHONY: smoke-gpt-volume
+smoke-gpt-volume:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(GPT_VOLUME_FLAGS)
+	@$(MAKE) --no-print-directory $(GPT_VOLUME_FLAGS) horus.iso
+	@rm -f gpt-vol.img gpt-disk.img gpt-tampered.img
+	@truncate -s $$(( $(PERSIST_BLOCKS) * $(FS_BLOCK_SIZE) )) gpt-vol.img
+	@echo "[gpt] boot 1/3 — write a sentinel to a whole-device volume"
+	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=gpt-vol.img \
+		REQUIRE_MARKER='PERSIST_SELFTEST: WROTE' FAIL_MARKER='PERSIST_SELFTEST: FAIL' \
+		tools/smoke_test.sh horus.iso
+	@python3 tools/gpt_image.py build gpt-disk.img gpt-vol.img
+	@echo "[gpt] boot 2/3 — the same volume, now partition 3 of a GPT disk"
+	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_BOOT_ORDER=d SMOKE_DISK=gpt-disk.img \
+		REQUIRE_MARKER='PERSIST_SELFTEST: PASS' FAIL_MARKER='PERSIST_SELFTEST: FAIL' \
+		tools/smoke_test.sh horus.iso
+	@cp gpt-disk.img gpt-tampered.img && python3 tools/gpt_image.py tamper gpt-tampered.img
+	@echo "[gpt] boot 3/3 — the volume entry moved without resealing: refused"
+	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_BOOT_ORDER=d SMOKE_DISK=gpt-tampered.img \
+		REQUIRE_MARKER='its partition table was refused (4)' \
+		FAIL_MARKER='the volume is partition blocks' \
+		tools/smoke_test.sh horus.iso
+	@echo "[gpt] PASS — mounted from the partition, and the forged entry was refused"
+
+# The falsifying arm. GPT_ENTRIES_CRC_UNCHECKED=1 stops checking the entry
+# array's CRC, so the moved entry is believed. The marker is the exact range the
+# forgery names: the swap partition's first block (16640) to the volume's end.
+.PHONY: smoke-gpt-volume-control
+smoke-gpt-volume-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(GPT_VOLUME_FLAGS) GPT_ENTRIES_CRC_UNCHECKED=1
+	@$(MAKE) --no-print-directory $(GPT_VOLUME_FLAGS) GPT_ENTRIES_CRC_UNCHECKED=1 horus.iso
+	@rm -f gpt-vol.img gpt-tampered.img
+	@truncate -s $$(( $(PERSIST_BLOCKS) * $(FS_BLOCK_SIZE) )) gpt-vol.img
+	@python3 tools/gpt_image.py build gpt-tampered.img gpt-vol.img
+	@python3 tools/gpt_image.py tamper gpt-tampered.img
+	@SMOKE_TIMEOUT=$(PERSIST_TIMEOUT) MARKER_ONLY=1 SMOKE_BOOT_ORDER=d SMOKE_DISK=gpt-tampered.img \
+		REQUIRE_MARKER='the volume is partition blocks 16640+49152' \
+		tools/smoke_test.sh horus.iso
+
 # Zero-trust ownership & permissions: root builds a scenario, the client then
 # re-authenticates as a non-root user and the fs_server enforces owner/group/other
 # rwx against the caller's kernel-attested uid (denied reads/writes/creates/chmod
@@ -9598,8 +9674,33 @@ smoke-replace-live:
 		REQUIRE_MARKER='REPLACE_SELFTEST: unlocked target REFUSED' \
 		FAIL_MARKER='REPLACE_SELFTEST: unlocked target ALLOWED' \
 		tools/smoke_test.sh horus.iso
-	@rm -f replace-live.img
-	@echo "[replace] PASS - an unlocked volume cannot be reformatted"
+	@# The same volume as partition 3 of a GPT disk (S114): the mounted device
+	@# is then the partition view and the disk is what a format names.
+	@python3 tools/gpt_image.py build replace-part.img replace-live.img
+	@SMOKE_TIMEOUT=$(SMOKE_REPLACE_TIMEOUT) MARKER_ONLY=1 SMOKE_BOOT_ORDER=d \
+		SMOKE_DISK=replace-part.img \
+		REQUIRE_MARKER='REPLACE_SELFTEST: unlocked partition target REFUSED' \
+		FAIL_MARKER='REPLACE_SELFTEST: unlocked partition target ALLOWED' \
+		tools/smoke_test.sh horus.iso
+	@rm -f replace-live.img replace-part.img
+	@echo "[replace] PASS - an unlocked volume cannot be reformatted, whole or in a partition"
+
+# The partition arm. STORAGE_REPLACE_VIEW_UNRESOLVED=1 puts back the comparison
+# of the mounted partition VIEW with the disk a format names, which never
+# matches, so an unlocked volume in a partition can be reformatted (S90, S114).
+.PHONY: smoke-replace-partition-control
+smoke-replace-partition-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_REPLACE_SELFTEST=1 STORAGE_REPLACE_VIEW_UNRESOLVED=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_REPLACE_SELFTEST=1 STORAGE_REPLACE_VIEW_UNRESOLVED=1 horus.iso
+	@rm -f replace-live.img replace-part.img && truncate -s 64M replace-live.img
+	@SMOKE_TIMEOUT=$(SMOKE_REPLACE_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=replace-live.img \
+		REQUIRE_MARKER='REPLACE_SELFTEST: unlocked target REFUSED' tools/smoke_test.sh horus.iso
+	@python3 tools/gpt_image.py build replace-part.img replace-live.img
+	@SMOKE_TIMEOUT=$(SMOKE_REPLACE_TIMEOUT) MARKER_ONLY=1 SMOKE_BOOT_ORDER=d SMOKE_DISK=replace-part.img \
+		REQUIRE_MARKER='REPLACE_SELFTEST: unlocked partition target ALLOWED' \
+		tools/smoke_test.sh horus.iso
+	@rm -f replace-live.img replace-part.img
 
 # The falsifying arm. STORAGE_REPLACE_UNLOCKED=1 drops the unlocked check, so a
 # disk can be reformatted out from under the running system that has it open.

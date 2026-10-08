@@ -101,6 +101,7 @@ control_arms:
   smoke-proc-overreach-control: smoke-proc
   smoke-readdir-end-control: smoke-readdir-end
   smoke-fs-dir-operand-control: smoke-fs-dir-operand
+  smoke-gpt-volume-control: smoke-gpt-volume
   smoke-ls-path-control: smoke-ls-path
   smoke-boot-media-control: smoke-boot-media
   smoke-ahci-detect-control: smoke-ahci-detect
@@ -128,6 +129,7 @@ control_arms:
   smoke-keyboard-installer-control: smoke-keyboard-installer
   smoke-keyboard-installer-noserial-control: smoke-keyboard-installer-noserial
   smoke-replace-live-control: smoke-replace-live
+  smoke-replace-partition-control: smoke-replace-live
   smoke-replace-oneshot-control: smoke-replace-oneshot
   smoke-tpm-cmdline-control: smoke-tpm-cmdline
   smoke-boot-menu-control: smoke-boot-menu
@@ -389,6 +391,7 @@ gates:
   - smoke-fs-large
   - smoke-fs-perms
   - smoke-fs-dir-operand
+  - smoke-gpt-volume
   - smoke-fs-persist
   - smoke-fs-wal
   - smoke-fs-wal-flush

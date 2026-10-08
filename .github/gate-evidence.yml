@@ -253,6 +253,19 @@ exempt:
   smoke-fs-wal: >
     Same shape as smoke-fs-persist: two written-out boots, each one's exit
     status asserted directly.
+  smoke-gpt-volume: >
+    Same shape as smoke-fs-persist: three written-out boots, each one's exit
+    status asserted directly, each with its own REQUIRE_MARKER. The third boot's
+    marker is the refusal itself, and a boot that dies before storage_init says
+    it fails the target.
+  smoke-replace-live: >
+    Same shape as smoke-fs-persist: two written-out boots, each asserting its
+    exit status and a REQUIRE_MARKER naming the branch taken (REFUSED), with the
+    other branch (ALLOWED) as the FAIL_MARKER, so a boot that never reached the
+    check fails rather than passes.
+  smoke-replace-partition-control: >
+    The arm of smoke-replace-live, the same two written-out boots; each requires
+    a positive marker (the second, the ALLOWED branch), so a dead boot fails it.
   smoke-syscall-coverage: >
     Boots the workloads in sequence and asserts each one's exit status; the
     coverage transcript is then diffed against .github/syscall-coverage.yml, so

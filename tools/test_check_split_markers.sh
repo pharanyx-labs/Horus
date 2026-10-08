@@ -32,8 +32,8 @@ try "DEFECT FLAGS reverted to 3 writes" 1 \
 import pathlib
 p=pathlib.Path('src/kernel/main.c');s=p.read_text()
 i=s.index('    {\n        char line[128];')
-j=s.index('    }\n}',i)+len('    }\n}')
-s=s[:i]+'    kmsg_begin();\n    print(\"DEFECT FLAGS: \");\n    print(DEFECT_FLAGS_STR);\n    print(\"\\\\n\");\n}'+s[j:]
+j=s.index('        print(line);\n    }\n',i)+len('        print(line);\n    }\n')
+s=s[:i]+'    kmsg_begin();\n    print(\"DEFECT FLAGS: \");\n    print(DEFECT_FLAGS_STR);\n    print(\"\\\\n\");\n'+s[j:]
 p.write_text(s)
 PY" \
  "cp /tmp/main.orig src/kernel/main.c"

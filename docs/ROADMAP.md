@@ -28,21 +28,30 @@ In order. Each step is its own set of pull requests with its own gates and contr
 
 1. **Use all the memory** (3.1): the page pool walks every usable region up to 4 GiB instead of
    stopping at 512 MiB.
-2. **Filesystem phase 1b** (2.10): `fs_server` authorises by capability instead of by uid and
+2. **Encrypted swap** in the reserved partition, straight after the ceiling (the maintainer,
+   2026-10-08). A key made fresh at every boot from the CSPRNG, held only in kernel memory and
+   never written or paged out. Every page sealed with the kernel's AEAD under a fresh nonce,
+   with the nonce, the tag and the slot map kept in RAM, so nothing on the partition is ever
+   plaintext, not even a header, and a page modified, replayed or unreadable kills the task
+   that owns it rather than handing it wrong bytes. Only a task's private pages are swapped,
+   never kernel memory, page tables, shared frames or the boot servers. The pager is in the
+   kernel, with a simple clock policy. Compressed memory (zram or zswap) is not planned: if it
+   comes, it is a cache in front of this swap that compresses one task's pages only (memory
+   compression is a timing side channel), never compresses a page marked secret, and charges
+   each task for its own compressed pages.
+3. **Filesystem phase 1b** (2.10): `fs_server` authorises by capability instead of by uid and
    mode, `hvfs` walks with capabilities, and `init` mints the root capability from a policy file.
    It removes `perm_ok`, the root check on `chown`, `SYS_FS_SET_META`, the uid path of
    `SYS_IPC_SENDER` in the filesystem, and `SYS_CONNECT_FS_SERVER`. Phase 1a, the kernel half,
    is done.
-3. **Accounts as files** (2.11 step 3): `/etc/passwd` and `/etc/shadow` on the volume, owned by a
+4. **Accounts as files** (2.11 step 3): `/etc/passwd` and `/etc/shadow` on the volume, owned by a
    ring-3 `auth_server`; the kernel keeps only the key-slot unlock.
-4. **Encrypted swap** in the reserved partition: a key made fresh at every boot, every page
-   authenticated, and no key material ever paged out.
 5. **Filesystem phases 2 to 4** (2.10): the kernel shrinks to a sealed-block service and the
    filesystem moves to ring 3 with a copy-on-write format, then symbolic links, timestamps and
    sparse files, then snapshots, reflinks and extended attributes. Phase 2 also splits the
    system and home into separate volumes.
 
-Steps 2 and 3 meet at `/etc/passwd`; whichever lands second adapts to the first.
+Steps 3 and 4 meet at `/etc/passwd`; whichever lands second adapts to the first.
 
 ---
 

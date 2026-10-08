@@ -2336,6 +2336,10 @@ void kfault_task(int t);                 /* "N 'name'", name bounded */
 void kfault_pf_err(uint64_t err);        /* #PF error bits, spelled out */
 void kfault_frame(const struct interrupt_frame64 *f);   /* rip/cs/rflags/rsp/rbp/cpu */
 void kfault_claims(int task);            /* who else claims this task (SMP only) */
+/* The ring-3 kill report again, on COM3 only, where ring 3 cannot cut it in half.
+ * idt.c's print() of the same line stays the copy a person reads; this is the one
+ * a gate can match (smoke-kdiag-ioport, S81). */
+void kdiag_task_killed(int t, uint64_t vector, uint64_t rip, uint64_t rsp);
 
 #ifdef RESUME_RSP_INJECT_PRECLAIM
 /* Test-only: leave the UART in the state another CPU's FATAL exception leaves

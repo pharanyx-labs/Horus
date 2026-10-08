@@ -36,15 +36,20 @@ ESP_SECTORS=69632
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT INT TERM
 
+# The FAT serial is the first 32 bits of the kernel's SHA-256, and the config
+# carries it as the fallback root (grub-installed.cfg): an ESP laid out from
+# another build has another serial, so GRUB cannot settle on one.
+SERIAL=$(sha256sum "$KERNEL" | cut -c1-8)
+ESP_UUID="${SERIAL:0:4}-${SERIAL:4:4}"
 awk -v mods="$MODS" '/@HORUS_MODULES@/{while((getline l < mods)>0) print l; next} {print}' \
-    "$HERE/grub-installed.cfg" > "$WORK/grub.cfg"
+    "$HERE/grub-installed.cfg" | sed "s/@HORUS_ESP_UUID@/$ESP_UUID/" > "$WORK/grub.cfg"
 GRUB_DIR="$GRUB_DIR" EFI_GRUB_DIR="$EFI_GRUB_DIR" EFI_BIN_OUT="$WORK/BOOTX64.EFI" \
     "$HERE/tools/mkbootimg.sh" "$KERNEL" "$WORK/grub.cfg" "$WORK/unused-eltorito.img" >/dev/null
 
 rm -f "$OUT"
-# -F FAT32, -c 1 one sector per cluster, fixed serial (-N) so the image is a
+# -F FAT32, -c 1 one sector per cluster, a serial (-N) fixed by the kernel, so the image is a
 # function of its contents.
-mformat -i "$OUT" -C -F -c 1 -T "$ESP_SECTORS" -h 64 -s 32 -N 48525345 -v HORUSESP ::
+mformat -i "$OUT" -C -F -c 1 -T "$ESP_SECTORS" -h 64 -s 32 -N "$SERIAL" -v HORUSESP ::
 mmd -i "$OUT" ::/EFI ::/EFI/BOOT ::/boot
 mcopy -i "$OUT" "$WORK/BOOTX64.EFI" ::/EFI/BOOT/BOOTX64.EFI
 mcopy -i "$OUT" "$KERNEL" ::/boot/kernel.elf

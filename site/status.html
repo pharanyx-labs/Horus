@@ -137,6 +137,7 @@
       <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Device capabilities</strong>: one device each, through a PCI bus walk that follows bridges; DMA confined by VT-d; interrupts and MSI on vectors the kernel chooses</th><td class="t-note">smoke-devcap · smoke-sdhci-bridge · smoke-net</td></tr>
       <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>A shared libc</strong>, handed only to programs that ask, linked by name, and sealed read-only before <code>main</code></th><td class="t-note">smoke-shlib-inherit · smoke-shlib-link</td></tr>
       <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">A shell with pipelines, eleven GNU coreutils and TCC</th><td class="t-note">smoke-pipe · smoke-tcc</td></tr>
+      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">An installed disk that starts on its own under UEFI, a laptop's eMMC included</th><td class="t-note">smoke-install-boot-disk</td></tr>
       <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><code>fork</code> with copy-on-write, and a child whose capabilities stay under its parent's through <code>exec</code></th><td class="t-note">smoke-fork · smoke-forkexec</td></tr>
       <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">A per-task mount table and one path walker for every client</th><td class="t-note">smoke-vfs · smoke-newlib</td></tr>
       <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">A forward-secure audit log</th><td class="t-note">cargo test</td></tr>
@@ -148,7 +149,7 @@
       <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">A capability-addressed filesystem: the kernel half is done; <code>fs_server</code> still authorises by uid and mode</th><td class="t-note">smoke-captoken</td></tr>
       <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">SATA: the controller and drive are identified, but not read or written</th><td class="t-note">smoke-ahci-detect</td></tr>
       <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">Kernel object lifecycle: retyped objects are destroyed, but their memory is not reused, and the well-known endpoints live for the whole boot</th><td class="t-note">smoke-cspace-release</td></tr>
-      <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">An installed disk that boots on its own, and programs loaded from the disk</th><td class="t-note">ROADMAP 2.11</td></tr>
+      <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Programs loaded from the disk</th><td class="t-note">ROADMAP 2.11</td></tr>
       <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">NVMe, USB, sound, windowing, graphics beyond a text grid</th><td class="t-note">ROADMAP 2.7</td></tr>
       <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Kernel ASLR, interrupt remapping, process groups and job control</th><td class="t-note">ROADMAP 3.8, 2.3</td></tr>
     </tbody>

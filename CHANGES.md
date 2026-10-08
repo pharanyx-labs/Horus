@@ -51,6 +51,7 @@ here.
 
 ### Changed
 
+- The installed-system design records that a user's own programs may run from `/home`, outside the manifest. (#PR)
 - The README is rewritten to match the tree as it is. (#496)
 - `CHANGES.md` is one line per entry; the full entries are in `docs/history/CHANGES-2026.md`. (#495)
 - The website is plain HTML in `site/`, edited directly. (#494)

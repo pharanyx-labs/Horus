@@ -139,8 +139,6 @@ line need no capability, and the read side is refused once `console_server` owns
 
 ## What it cannot do yet
 
-- **A disk that boots by itself has not yet run on real firmware.** It is verified under UEFI in
-  QEMU; the laptop is next. A machine installed before it is started from Horus boot media.
 - **No programs on the disk.** Every shipped program is compiled into the boot image or loaded as
   a measured boot module.
 - **No networking above Ethernet.** No IP, TCP, sockets or ARP table.
@@ -156,17 +154,15 @@ The full list, with the reasons, is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.
 
 In order, from [`docs/ROADMAP.md`](docs/ROADMAP.md):
 
-1. **A disk that boots itself** (2.11): built and verified under UEFI in QEMU, to be confirmed on
-   the laptop.
-2. **Use all the memory** (3.1): the page pool reaches up to 4 GiB instead of 512 MiB.
-3. **Filesystem phase 1b** (2.10): `fs_server`, the path walker and `init` authorise files by
+1. **Use all the memory** (3.1): the page pool reaches up to 4 GiB instead of 512 MiB.
+2. **Filesystem phase 1b** (2.10): `fs_server`, the path walker and `init` authorise files by
    capability instead of by user id and mode.
-4. **Programs on the disk** (2.11): the installer copies the system onto the volume, and the
+3. **Programs on the disk** (2.11): the installer copies the system onto the volume, and the
    loader refuses any file whose hash is not in a manifest pinned in the measured boot image.
-5. **Accounts as files** (2.11): `/etc/passwd` and `/etc/shadow` on the volume, owned by a ring-3
+4. **Accounts as files** (2.11): `/etc/passwd` and `/etc/shadow` on the volume, owned by a ring-3
    `auth_server`.
-6. **Encrypted swap** in the reserved partition, under a key made fresh at every boot.
-7. **Filesystem phases 2 to 4** (2.10): the filesystem moves to ring 3 on a copy-on-write format,
+5. **Encrypted swap** in the reserved partition, under a key made fresh at every boot.
+6. **Filesystem phases 2 to 4** (2.10): the filesystem moves to ring 3 on a copy-on-write format,
    with separate system and home volumes, and gains links, timestamps, snapshots and extended
    attributes.
 

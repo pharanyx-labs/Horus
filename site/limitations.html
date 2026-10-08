@@ -98,7 +98,7 @@
 <li><a href="#1-6the-console-is-the-one-ambient-authority">1.6The console is the one ambient authority</a></li>
 <li><a href="#2-6cmost-gates-still-read-kernel-reports-off-a-shared-consol">2.6cMost gates still read kernel reports off a shared console</a></li>
 <li><a href="#2-9measured-boot-is-opt-in">2.9Measured boot is opt-in</a></li>
-<li><a href="#4an-installed-disk-does-not-boot-on-its-own">4An installed disk does not boot on its own</a></li>
+<li><a href="#4the-shipped-programs-are-not-on-the-disk">4The shipped programs are not on the disk</a></li>
 <li><a href="#4hardware-support-is-narrow">4Hardware support is narrow</a></li>
 <li><a href="#isothe-iso-does-not-rebuild-to-the-same-bytes">isoThe ISO does not rebuild to the same bytes</a></li>
 <li><a href="#cryptoevery-primitive-is-unaudited">cryptoEvery primitive is unaudited</a></li>
@@ -192,12 +192,11 @@
     </p>
   </li>
   <li>
-    <h3 id="4an-installed-disk-does-not-boot-on-its-own"><span class="id">4</span>An installed disk does not boot on its own</h3>
+    <h3 id="4the-shipped-programs-are-not-on-the-disk"><span class="id">4</span>The shipped programs are not on the disk</h3>
     <p>
-      The installer lays out a disk that starts on its own under UEFI (a GPT, an EFI system
-      partition and the volume), and it is verified under emulated firmware but has not yet
-      run on real firmware. The shipped programs still live in the measured boot image rather
-      than on the disk: programs pinned by hash in <code>/bin</code> are designed and not built.
+      An installed disk starts on its own under UEFI, a laptop's soldered eMMC included, but
+      the programs it runs still live in the measured boot image rather than on the disk:
+      programs pinned by hash in <code>/bin</code> are designed and not built.
     </p>
   </li>
   <li>

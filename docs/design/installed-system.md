@@ -17,7 +17,7 @@ authority (decision 1), and the capability change lands before any format change
 | Where programs come from | `init`, `shell`, `fs_server`, `console_server`, `dev_server`, `installer` and `netd` are **compiled into the kernel image** and spawned by name. Nothing is loaded from the volume |
 | What `/bin` is | On a `make run` build, a view of GRUB boot modules (GNU coreutils, TCC). **The shipping `horus.iso` and `install.iso` carry none**, deliberately: the Makefile keeps them "module-free (GPLv3-clean)", and Horus is MIT |
 | How a program is trusted | The kernel image and every boot module are checked against SHA-256 pins inside the measured boot image (**S92**), measured into `PCR[4]`/`PCR[8]` |
-| How the machine boots | From its own disk under UEFI, when installed from `install.iso`: the installer lays out the GPT and EFI system partition of section 6 (S114, S115). Verified under QEMU's OVMF; not yet on real firmware. The install media's menu offers live boot and install only, and since #472 a live boot opens no disk, so it cannot start an installed system |
+| How the machine boots | From its own disk under UEFI, when installed from `install.iso`: the installer lays out the GPT and EFI system partition of section 6 (S114, S115). Verified under QEMU's OVMF and on the IdeaPad 1 14IGL05's own firmware. The install media's menu offers live boot and install only, and since #472 a live boot opens no disk, so it cannot start an installed system |
 | Man pages | Boot modules under `/usr/share/man`, again only on `make run` builds |
 
 So "copy the binaries onto the disk" is not a copy of something that is there. The shipping

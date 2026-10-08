@@ -247,9 +247,9 @@ window.HORUS_SEARCH = [
 "k": 3
 },
 {
-"t": "4An installed disk does not boot on its own",
+"t": "4The shipped programs are not on the disk",
 "p": "Limitations",
-"u": "limitations.html#4an-installed-disk-does-not-boot-on-its-own",
+"u": "limitations.html#4the-shipped-programs-are-not-on-the-disk",
 "k": 3
 },
 {

@@ -40,8 +40,9 @@ In order. Each step is its own set of pull requests with its own gates and contr
 4. **Programs on the disk** (2.11 step 1): the installer copies the system onto the volume
    (`/bin`, `/sbin`, `/lib`, `/tmp`, `/var`, man pages), and the loader refuses any file whose
    hash is not in a manifest pinned inside the measured boot image. The two land together:
-   running from the disk must never exist without the check. One question is still open: how
-   programs compiled on the machine by `tcc` relate to a manifest-only rule.
+   running from the disk must never exist without the check. The manifest covers `/bin`, `/sbin`
+   and `/lib` only: a program a user builds with `tcc` runs from `/home` on the `EXEC` right of
+   its file capability (installed-system decision 5).
 5. **Accounts as files** (2.11 step 3): `/etc/passwd` and `/etc/shadow` on the volume, owned by a
    ring-3 `auth_server`; the kernel keeps only the key-slot unlock.
 6. **Encrypted swap** in the reserved partition: a key made fresh at every boot, every page
@@ -180,7 +181,9 @@ The specification is [`design/installed-system.md`](design/installed-system.md).
 2026-09-24: programs on the disk are trusted by a manifest of hashes pinned in the measured boot
 image, with no signing key; GNU coreutils and TCC ship with their licences; accounts move to
 `/etc/passwd` and `/etc/shadow` under a ring-3 `auth_server`; the disk is GPT with an EFI system
-partition and no Secure Boot. `init`, `fs_server` and `console_server` stay in the boot image,
+partition and no Secure Boot. Decided on 2026-10-07: the manifest covers `/bin`, `/sbin` and
+`/lib` only, and a user's own programs run from `/home` on the `EXEC` right of their file
+capability. `init`, `fs_server` and `console_server` stay in the boot image,
 because they run before the volume can be read. The three steps are items 2 to 4 of
 [What happens next](#what-happens-next).
 

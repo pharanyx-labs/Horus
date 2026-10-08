@@ -1186,6 +1186,12 @@ static uint8_t acs_to_cp437(uint8_t c) {
         case 'v': return 0xC1u;   /* bottom tee   */
         case 'n': return 0xC5u;   /* cross        */
         case 'a': return 0xB1u;   /* chequerboard */
+        /* Two include/tui.h names this table did not cover until 2026-10-08:
+         * they drew as the letters themselves, so a row of bullets came out as
+         * tildes on a framebuffer. The diamond ('`') stays unmapped: the 8x16
+         * font has no glyph at 0x04, and a backquote is better than a blank. */
+        case '~': return 0x07u;   /* bullet       */
+        case '0': return 0xDBu;   /* solid block  */
         default:  return c;
     }
 }

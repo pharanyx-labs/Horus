@@ -59,6 +59,7 @@ here.
 
 ### Changed
 
+- The installer reads better: a bright, closed frame; the step shown as a row of dots; sizes on one line ("512 MiB (131,072 blocks)", or GiB); the review reduced to install, change an answer or cancel, so it no longer runs into the footer; the word to type set apart; and on a disk that starts on its own, advice to remove the install media. (#514)
 - The boot's memory line says how much RAM lies above 4 GiB, out of Horus's reach, and a diagnostic build lists the firmware's whole memory map: the IdeaPad showed 1,842 MiB of its 4 GB with nothing saying where the rest was. (#511)
 - The installed-system design records that a user's own programs may run from `/home`, outside the manifest. (#500)
 - The filesystem design sets out phase 1b in six steps and records the four decisions taken for it. (#499)

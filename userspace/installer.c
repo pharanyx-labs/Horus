@@ -176,7 +176,10 @@ static void utoa10(uint64_t v, char *out, unsigned cap)
  *
  * These are attributes, not a theme system. There is no runtime switch, no
  * configuration and no table -- eight names, used directly. */
-#define C_FRAME   ((uint16_t)TUI_FG(TUI_C_BLUE))
+/* Bright blue: plain blue on black is the darkest colour the palette has, and
+ * the frame's horizontal lines, one pixel high on a framebuffer, all but
+ * vanished in it (2026-10-08). */
+#define C_FRAME   ((uint16_t)(TUI_FG(TUI_C_BLUE) | TUI_A_BOLD))
 #define C_TITLE   ((uint16_t)(TUI_FG(TUI_C_CYAN) | TUI_A_BOLD))
 #define C_SUBTITLE ((uint16_t)TUI_A_BOLD)
 #define C_TEXT    ((uint16_t)TUI_A_NORMAL)
@@ -262,6 +265,14 @@ static void frame_step(const char *title, int step)
     buf[i] = 0;
 
     tui_text(ROW_TITLE, tui_cols() - MARGIN - (int)i, buf, C_HINT);
+
+    /* AND WHERE THAT IS, AT A GLANCE: a bullet for each step, bright for the
+     * ones reached and dim for the ones to come, under the count. */
+    int col = tui_cols() - MARGIN - (2 * INSTALL_STEPS - 1);
+    for (int k = 1; k <= INSTALL_STEPS; k++) {
+        tui_putc(ROW_SUB, col + 2 * (k - 1), TUI_ACS_BULLET,
+                 (uint16_t)((k <= step ? C_TITLE : C_HINT) | TUI_A_ACS));
+    }
 }
 
 /* The status line: one sentence about what just happened, or what is wrong. */
@@ -288,6 +299,20 @@ static int para(int row, const char *s, uint16_t attr)
 /* A label and its field, on one row. The label is the accent colour and the
  * value is bold: a form where every word looks the same is a form people fill
  * in without reading. */
+/* A MENU MUST END ABOVE THE FOOTER. tui_menu draws where it is told, and until
+ * 2026-10-08 the review's seven choices ran through the footer rule on every
+ * install and two rows past it on a bootable one. Every menu now asks first; one
+ * that would not fit says so on the wire (smoke-installer and every other
+ * install scenario refuse to pass with this line in the log) and is drawn from
+ * the highest row that fits instead, overlapping the prose above it rather than
+ * the keys below it. */
+static int menu_row(int want, int n)
+{
+    if (want + n <= ROW_RULE_B) return want;
+    mark("INSTALLER: LAYOUT a menu runs into the footer", "");
+    return ROW_RULE_B - n;
+}
+
 #define LABEL_COL   (MARGIN + 2)
 #define FIELD_COL   (MARGIN + 20)
 #define FIELD_W     STORAGE_FORMAT_PASSWORD_MAX
@@ -397,10 +422,46 @@ static void wipe_passwords(void)
  * is the machine they are standing at, and a block count alone is not a number
  * anybody recognises.
  */
-static void disk_size(char *blocks, unsigned bcap, char *mib, unsigned mcap)
+/* `v` with a comma every three digits: 131,072 reads at a glance, 131072 does
+ * not. */
+static void with_commas(uint64_t v, char *out, unsigned cap)
 {
-    utoa10(g_si.total_blocks, blocks, bcap);
-    utoa10((g_si.total_blocks * (uint64_t)g_si.block_size) / (1024u * 1024u), mib, mcap);
+    char d[24];
+    utoa10(v, d, sizeof(d));
+    unsigned n = 0, len = 0;
+    while (d[len]) len++;
+    for (unsigned i = 0; i < len && n + 1 < cap; i++) {
+        if (i && (len - i) % 3 == 0 && n + 2 < cap) out[n++] = ',';
+        out[n++] = d[i];
+    }
+    out[n] = 0;
+}
+
+/* A size the way a person says it: "512 MiB", or "14.6 GiB" from 1 GiB up,
+ * with the exact count of blocks after it in brackets, all on one line. Until
+ * 2026-10-08 the blocks and the MiB sat on two rows with their units in a
+ * column of their own. */
+static void size_line(uint64_t blocks, char *out, unsigned cap)
+{
+    uint64_t mib = (blocks * (uint64_t)g_si.block_size) / (1024u * 1024u);
+    char num[24], blk[32];
+    unsigned n = 0;
+    if (mib >= 1024) {
+        uint64_t tenths = (mib * 10 + 512) / 1024;
+        utoa10(tenths / 10, num, sizeof(num));
+        for (unsigned k = 0; num[k] && n + 1 < cap; k++) out[n++] = num[k];
+        if (n + 3 < cap) { out[n++] = '.'; out[n++] = (char)('0' + tenths % 10); }
+        for (const char *u = " GiB"; *u && n + 1 < cap; u++) out[n++] = *u;
+    } else {
+        utoa10(mib, num, sizeof(num));
+        for (unsigned k = 0; num[k] && n + 1 < cap; k++) out[n++] = num[k];
+        for (const char *u = " MiB"; *u && n + 1 < cap; u++) out[n++] = *u;
+    }
+    with_commas(blocks, blk, sizeof(blk));
+    for (const char *u = " ("; *u && n + 1 < cap; u++) out[n++] = *u;
+    for (unsigned k = 0; blk[k] && n + 1 < cap; k++) out[n++] = blk[k];
+    for (const char *u = " blocks)"; *u && n + 1 < cap; u++) out[n++] = *u;
+    out[n] = 0;
 }
 
 /* ---- the size of the volume ---------------------------------------------
@@ -705,7 +766,7 @@ static int screen_target(void)
     hint("arrows to choose  -  enter to accept  -  esc to cancel");
     tui_flush();
     mark("INSTALLER: waiting on the disk choice", "");
-    if (tui_menu(r, MARGIN + 2, 40, g_target_items, (int)g_target_count, &sel) != 0) return 0;
+    if (tui_menu(menu_row(r, (int)g_target_count), MARGIN + 2, 40, g_target_items, (int)g_target_count, &sel) != 0) return 0;
 
     /* tui_menu clamps to 0..n-1, and this is the caller that clamp exists for:
      * the returned index is about to be handed to the call that erases a disk.
@@ -718,9 +779,6 @@ static int screen_target(void)
 
 static int screen_survey(void)
 {
-    char blocks[24], mib[24];
-    disk_size(blocks, sizeof(blocks), mib, sizeof(mib));
-
     frame_step("Install onto the attached disk", 1);
 
     int r = para(ROW_BODY, g_si.recognised
@@ -744,11 +802,11 @@ static int screen_survey(void)
     tui_text(r, FIELD_COL, "the attached disk", C_VALUE);
     r++;
     label(r, "size");
-    tui_text(r, FIELD_COL, blocks, C_VALUE);
-    tui_text(r, FIELD_COL + 12, "blocks", C_TEXT);
-    r++;
-    tui_text(r, FIELD_COL, mib, C_VALUE);
-    tui_text(r, FIELD_COL + 12, "MiB", C_TEXT);
+    {
+        char line[48];
+        size_line(g_si.total_blocks, line, sizeof(line));
+        tui_text(r, FIELD_COL, line, C_VALUE);
+    }
     r += 2;
     r = para(r, "A new volume will be created on it, encrypted unless you choose "
                 "otherwise. Nothing on the disk survives this.", C_TEXT);
@@ -759,7 +817,7 @@ static int screen_survey(void)
     hint("arrows to choose  -  enter to accept  -  esc to cancel");
     tui_flush();
     mark("INSTALLER: waiting on the destroy-this-disk choice", "");
-    if (tui_menu(r + 1, MARGIN + 2, 32, choices, 2, &sel) != 0) return 0;
+    if (tui_menu(menu_row(r + 1, 2), MARGIN + 2, 32, choices, 2, &sel) != 0) return 0;
     return sel == 1;
 }
 
@@ -803,7 +861,7 @@ static int ask_encryption(void)
     hint("arrows to choose  -  enter to accept  -  esc goes back one step");
     tui_flush();
     mark("INSTALLER: waiting on the encryption choice", "");
-    if (tui_menu(r, MARGIN + 2, 40, choices, 2, &sel) != 0) return 0;
+    if (tui_menu(menu_row(r, 2), MARGIN + 2, 40, choices, 2, &sel) != 0) return 0;
     g_unsealed = (sel == 1);
     return 1;
 }
@@ -968,20 +1026,47 @@ static int ask_user_password(void)
  * of a password is worth something to somebody watching the screen, which is the
  * same reason tui_input pads with spaces rather than with its mask.
  */
+/* WHICH ANSWER TO CHANGE: the review's corrections, on a screen of their own.
+ * Returns 1 to 5 in the order the review used to list them (account name, root
+ * password, everyday password, sizes, encryption), or 0 for "back to the
+ * review", which is also what esc means here: backing out of a correction is not
+ * cancelling the install. */
+static int change_which(void)
+{
+    frame("Change an answer");
+    int r = para(ROW_BODY, "Pick the answer to change. You come back to the review afterwards; "
+                           "nothing has been written yet.", C_TEXT);
+    r++;
+    static const char *const items[] = {
+        "Back to the review",
+        "The everyday account's name",
+        "The root password",
+        "The everyday account's password",
+        "The disk sizes",
+        "Whether the volume is encrypted",
+    };
+    int sel = 0;
+    hint("arrows to choose  -  enter to accept  -  esc goes back");
+    tui_flush();
+    mark("INSTALLER: waiting on the answer to change", "");
+    if (tui_menu(menu_row(r, 6), MARGIN + 2, 44, items, 6, &sel) != 0) return 0;
+    return sel;
+}
+
 static int review_returns_install(void)
 {
-    char blocks[24], mib[24];
-
     for (;;) {
-        disk_size(blocks, sizeof(blocks), mib, sizeof(mib));
         frame_step("Review before installing", 7);
 
         int r = para(ROW_BODY, "Check this, then choose. Nothing has been written yet.", C_TEXT);
         r++;
 
         label(r, "disk");
-        tui_text(r, FIELD_COL, mib, C_VALUE);
-        tui_text(r, FIELD_COL + 12, "MiB", C_TEXT);
+        {
+            char line[48];
+            size_line(g_si.total_blocks, line, sizeof(line));
+            tui_text(r, FIELD_COL, line, C_VALUE);
+        }
         r++;
         if (g_bootable) {
             char sm[24];
@@ -1019,6 +1104,21 @@ static int review_returns_install(void)
         tui_text(r, FIELD_COL, "password set", C_VALUE);
         r += 2;
 
+#ifndef INSTALLER_REVIEW_FLAT
+        /* THREE CHOICES, AND THE CORRECTIONS ONE STEP AWAY. The five "change
+         * the ..." items lived in this menu until 2026-10-08, which made it seven
+         * rows long and pushed it through the footer under a summary that is two
+         * rows longer on a bootable install. They are on a screen of their own
+         * now (change_which), which also has room to say what each one changes. */
+        static const char *const choices[] = {
+            "Install now - this erases the disk",
+            "Change an answer ...",
+            "Cancel, change nothing",
+        };
+        const int n_choices = 3;
+#else
+        /* CONTROL ARM, never ship: the seven-item menu as it was, which runs into
+         * the footer (smoke-installer-layout-control). */
         static const char *const choices[] = {
             "Install now - this erases the disk",
             "Change the account name",
@@ -1028,16 +1128,22 @@ static int review_returns_install(void)
             "Change whether it is encrypted",
             "Cancel, change nothing",
         };
+        const int n_choices = 7;
+#endif
         /* Defaults to Install. See the header: the gate is the typed word, not
          * where this highlight starts. */
         int sel = 0;
         hint("arrows to choose  -  enter to accept  -  esc to cancel");
         tui_flush();
         mark("INSTALLER: waiting on the review choice", "");
-        if (tui_menu(r, MARGIN + 2, 40, choices, 7, &sel) != 0) return 0;
+        if (tui_menu(menu_row(r, n_choices), MARGIN + 2, 44, choices, n_choices, &sel) != 0) return 0;
 
         if (sel == 0) return 1;
-        if (sel == 6) return 0;
+        if (sel == n_choices - 1) return 0;
+#ifndef INSTALLER_REVIEW_FLAT
+        sel = change_which();
+        if (sel == 0) continue;               /* back to the review */
+#endif
 
         /* AN ABANDONED EDIT RETURNS TO THIS MENU, and does not cancel the
          * install. Until 2026-09-10 esc out of a correction here threw away
@@ -1092,16 +1198,30 @@ static int screen_confirm_word(const char *word)
     r++;
     r = para(r, "Type the word below to go ahead. Anything else, or esc, stops and "
                 "changes nothing.", C_TEXT);
-    r = para(r, word, C_DANGER);
+    r++;
+    /* The word on a line of its own, in reverse red, so it reads as the thing to
+     * type and not as the end of the sentence above (it ran straight on from it
+     * until 2026-10-08). */
+    label(r, "the word");
+    {
+        char shown[24];
+        unsigned n = 0;
+        shown[n++] = ' ';
+        for (unsigned k = 0; word[k] && n + 2 < sizeof(shown); k++) shown[n++] = word[k];
+        shown[n++] = ' ';
+        shown[n] = 0;
+        tui_text(r, FIELD_COL, shown, (uint16_t)(C_DANGER | TUI_A_REVERSE));
+    }
+    r += 2;
 
-    label(r + 2, "confirm");
+    label(r, "type it");
     status("", C_TEXT);
     hint("type the word  -  enter to accept  -  esc to stop");
     tui_flush();
 
     char typed[16];
     mark("INSTALLER: waiting on the typed confirmation", "");
-    if (tui_input(r + 2, FIELD_COL, 12, typed, sizeof(typed), 0) != 0) return 0;
+    if (tui_input(r, FIELD_COL, 12, typed, sizeof(typed), 0) != 0) return 0;
 
 #ifdef INSTALLER_NO_CONFIRM
     /* CONTROL ARM -- never ship. The typed word is read and then not compared,
@@ -1713,7 +1833,15 @@ void _start(void)
     label(r, g_user);
     tui_text(r, FIELD_COL, "everything else", C_TEXT);
     r += 2;
-    (void)para(r, "Log in with the passwords you chose.", C_TEXT);
+    r = para(r, "Log in with the passwords you chose.", C_TEXT);
+    /* WHAT TO DO WITH THE STICK, on a disk that now starts on its own. Advice,
+     * not a choice: whether the finish screen should offer to restart or to load
+     * the live system is the maintainer's question still open (S110). */
+    if (g_bootable) {
+        r++;
+        (void)para(r, "This disk now starts on its own. Remove the install media before you "
+                      "next restart, so the machine starts from the disk.", C_TEXT);
+    }
     status("", C_TEXT);
     hint("press any key for the login prompt");
     tui_flush();

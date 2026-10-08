@@ -378,8 +378,9 @@ waits until it is woken or killed. The PIT runs at a fixed 100 Hz.
 - **More than one filesystem.** One volume and one `fs_server`, plus `dev_server` in self-test
   builds. The capability filesystem of [`design/filesystem.md`](design/filesystem.md) has its
   kernel half (phase 1a, IPC tokens, S105); the server half is not built.
-- **Swap.** Running out of the page pool is a hard failure. The installed layout will reserve a
-  partition for swap, encrypted under a key made fresh at every boot once it is built.
+- **Swap.** Running out of the page pool is a hard failure. The installed layout reserves a
+  partition for swap; using it, encrypted under a key made fresh at every boot, is roadmap item 2
+  of "What happens next".
 - **Kernel ASLR.** User programs get 30 bits of address randomisation; the kernel loads at a fixed
   address.
 - **Other architectures.** x86-64 only, booted by GRUB under BIOS or UEFI.

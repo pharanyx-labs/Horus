@@ -1717,15 +1717,28 @@ def bootdisk(disk):
         # from the ESP's verified modules into /bin, and the licences and source
         # offer into /usr/share/doc. seq is not a shell builtin, so its output
         # can only come from /bin.
-        seq = _sh(s, "seq 3")
+        # EVERY MODULE THE ESP CARRIES WAS RECORDED. Probing one program by name
+        # was tried first and is not the property: which modules land below
+        # 1 MiB depends on the firmware's memory map, and in CI only one of 30
+        # did, and it was not seq. BOOTDISK_MODULES is the build's own count
+        # (make print-boot-module-count) and the kernel prints what it recorded.
+        import re
+        want = int(os.environ.get("BOOTDISK_MODULES", "0"))
+        got = [int(n) for n in re.findall(r"boot: (\d+) boot modules loaded", s.buf)]
+        if want <= 0 or not got:
+            raise SessionFail(f"cannot compare module counts (built {want}, recorded {got})")
         # BOOTDISK_EXPECT=noprograms is the arm for the kernel dropping modules
-        # below 1 MiB (BOOT_MODULE_LOW_DROPPED=1), where UEFI GRUB puts small
-        # ones: seq must be missing, and the shell must SAY so.
+        # below 1 MiB (BOOT_MODULE_LOW_DROPPED=1): fewer must be recorded.
         if os.environ.get("BOOTDISK_EXPECT") == "noprograms":
-            if "Unknown command" not in seq:
-                raise SessionFail(f"the arm's seq did not report a missing program: {seq!r}")
-            step("seq was missing from /bin, as the arm requires")
+            if got[-1] >= want:
+                raise SessionFail(f"the arm's disk boot recorded {got[-1]} of {want} modules; "
+                                  "none was dropped, so the arm reproduced nothing")
+            step(f"the disk's boot recorded {got[-1]} of its {want} modules, as the arm requires")
             return
+        if got[-1] != want:
+            raise SessionFail(f"the disk's own boot recorded {got[-1]} of the {want} modules its ESP carries")
+        step(f"the disk's own boot recorded all {want} modules its ESP carries")
+        seq = _sh(s, "seq 3")
         if not all(n in seq.split() for n in ("1", "2", "3")):
             raise SessionFail(f"seq from /bin did not run on the installed machine: {seq!r}")
         doc = _sh(s, "ls /usr/share/doc")

@@ -193,7 +193,7 @@ There are 430 `smoke-*` targets: 204 gates and 226 control arms. Each row is a g
 | `smoke-fs-perms` | File permissions are checked against the kernel-attested user, not a client's claim | S13, S14 |  |
 | `smoke-fs-dir-operand` | A file is never read as a directory, so a forged entry frees nothing | S113 | `smoke-fs-dir-operand-control` |
 | `smoke-fs-persist` | Data survives a reboot |  |  |
-| `smoke-install-boot-disk` | An install under UEFI lays out GPT, ESP, swap and volume, and the machine then starts from the disk alone, logs in, runs `seq` from `/bin` and finds the licences and source offer in `/usr/share/doc` | S114, S115, S116 | `smoke-install-boot-disk-control`, `smoke-install-boot-disk-lowmod-control` |
+| `smoke-install-boot-disk` | An install under UEFI lays out GPT, ESP, swap and volume, and the machine then starts from the disk alone, records every module its ESP carries, logs in, runs `seq` from `/bin` and finds the licences and source offer in `/usr/share/doc` | S114, S115, S116 | `smoke-install-boot-disk-control`, `smoke-install-boot-disk-lowmod-control` |
 | `smoke-system-trees` | After an install and a reboot onto newer media, the system trees hold the new programs, a stray file in `/bin` is gone, and root cannot delete, create, rename, copy into, make a directory in or chmod anything in `/bin` | S116 | `smoke-system-trees-control`, `smoke-system-trees-prune-control`, `smoke-system-trees-rebuild-control` |
 | `smoke-install-esp-pin` | Install media whose EFI image was changed after it was built installs nothing | S115 | `smoke-install-esp-pin-control` |
 | `smoke-gpt-volume` | The volume is found in its GPT partition, and an entry forged on the disk is refused | S114 | `smoke-gpt-volume-control` |

@@ -221,6 +221,12 @@ CFLAGS += -DDEFECT_FLAGS_STR='"$(DEFECT_ACTIVE_STR)"'
 print-defect-flags:
 	@echo "$(DEFECT_ACTIVE_STR)"
 
+# How many boot modules would this build ship? The same kind of answer, for a
+# gate that must check a boot recorded ALL of them rather than probing one name.
+.PHONY: print-boot-module-count
+print-boot-module-count:
+	@echo "$(words $(BOOT_MODULES))"
+
 # A -D flag is not a prerequisite of an object file, so `make FLAG=1` followed by
 # `make` leaves stale objects compiled with the flag and says nothing. Stamping
 # the flag strings into a file that every object depends on makes any change to
@@ -13154,6 +13160,7 @@ smoke-install-boot-disk:
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 $(INSTALL_PROGRAMS) $(BOOTDISKARM) GRUB_CFG=grub-menu.cfg INSTALL_ESP=1 horus.iso
 	@rm -f bootdisk.img bootdisk-serial.log && truncate -s $(BOOTDISK_MIB)M bootdisk.img
 	@INSTALLER_MODE=bootdisk BOOTDISK_EXPECT=$(BOOTDISK_EXPECT) SESSION_DISK=bootdisk.img \
+		BOOTDISK_MODULES=$$($(MAKE) -s --no-print-directory STORAGE_ATA=1 $(INSTALL_PROGRAMS) $(BOOTDISKARM) print-boot-module-count) \
 		SESSION_UEFI_CODE=$(OVMF_CODE) SESSION_UEFI_VARS=$(OVMF_VARS) \
 		SESSION_SERIAL_LOG=bootdisk-serial.log SESSION_TIMEOUT=$(BOOTDISK_TIMEOUT) \
 		BOOT_TIMEOUT=$(BOOTDISK_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) \
@@ -13186,7 +13193,10 @@ smoke-install-boot-disk-control:
 
 # The falsifying arm for the programs. BOOT_MODULE_LOW_DROPPED=1 drops every
 # module below 1 MiB again, where UEFI GRUB puts the small ones, so the disk's
-# own boot comes up without seq. The scenario requires the shell to say so.
+# own boot records fewer modules than its ESP carries. Which ones depends on the
+# firmware's memory map (15 of 30 under QEMU 11 and Void's edk2, 29 of 30 under
+# CI's QEMU 8.2 and Ubuntu's OVMF), so the scenario counts them all rather than
+# probing one program by name.
 .PHONY: smoke-install-boot-disk-lowmod-control
 smoke-install-boot-disk-lowmod-control:
 	@$(MAKE) --no-print-directory smoke-install-boot-disk \

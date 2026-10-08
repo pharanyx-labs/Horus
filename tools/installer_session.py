@@ -1538,7 +1538,11 @@ def panel(disk):  # noqa: ARG001 - uniform scenario signature
         m = re.search(r"fb: console on the framebuffer, 80x(\d+) cells, (\d+)x(\d+) font at (\d+)x, origin \((\d+),(\d+)\)", s.buf)
         f = re.search(r"CONSOLE_FB: linear framebuffer (\d+)x(\d+)x", s.buf)
         if not m or not f:
-            raise SessionFail("no framebuffer geometry on the wire: this scenario needs a UEFI framebuffer")
+            # Quote what the boot did say about its console, so a red run shows
+            # whether it came up in text mode or printed the line differently.
+            seen = [ln.strip() for ln in s.buf.splitlines() if "fb:" in ln or "CONSOLE_FB" in ln]
+            raise SessionFail("no framebuffer geometry on the wire: this scenario needs a UEFI "
+                              f"framebuffer; the console lines seen were {seen[:6]!r}")
         rows, fw, fh, sc, ox, oy = (int(x) for x in m.groups())
         fbw = int(f.group(1))
         cw, ch = fw * sc, fh * sc

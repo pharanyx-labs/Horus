@@ -395,7 +395,7 @@ Two of those deserve a sentence each.
 there with no `continue-on-error`, each named with its measured cost in
 `.github/kani-harnesses.yml`, and the job refuses a proof that is not listed. And **`invariants`** requires every property in `SECURITY.md` to
 name a witness that exists and runs; its exemption list, `.github/invariants.yml`, is
-currently **empty**: all 118 properties name a witness that resolves.
+currently **empty**: all 119 properties name a witness that resolves.
 
 Every `tools/check_*.py` has a falsification harness, `tools/test_check_*.sh`, with one case per
 rule showing the rule can fail, and each checker asserts a floor on what it parsed, so a parser

@@ -137,6 +137,7 @@
       <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Device capabilities</strong>: one device each, through a PCI bus walk that follows bridges; DMA confined by VT-d; interrupts and MSI on vectors the kernel chooses</th><td class="t-note">smoke-devcap · smoke-sdhci-bridge · smoke-net</td></tr>
       <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>A shared libc</strong>, handed only to programs that ask, linked by name, and sealed read-only before <code>main</code></th><td class="t-note">smoke-shlib-inherit · smoke-shlib-link</td></tr>
       <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">A shell with pipelines, eleven GNU coreutils and TCC</th><td class="t-note">smoke-pipe · smoke-tcc</td></tr>
+      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">All of a machine's RAM up to 4 GiB, every region the firmware's memory map names</th><td class="t-note">smoke-pool-span</td></tr>
       <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">An installed disk that starts on its own under UEFI, with its programs in system trees rebuilt from the verified modules at every boot, which nobody, root included, can change</th><td class="t-note">smoke-install-boot-disk · smoke-system-trees</td></tr>
       <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><code>fork</code> with copy-on-write, and a child whose capabilities stay under its parent's through <code>exec</code></th><td class="t-note">smoke-fork · smoke-forkexec</td></tr>
       <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">A per-task mount table and one path walker for every client</th><td class="t-note">smoke-vfs · smoke-newlib</td></tr>
@@ -157,7 +158,8 @@
 
 <p class="note">
   Compile-time ceilings still apply to most of the system: 256 capability slots per task, a
-  256-byte message, eight CPUs and a 16 GiB volume ceiling (the real size is read from the disk).
+  256-byte message, eight CPUs, 4 GiB of RAM and a 16 GiB volume ceiling (the real size is read
+  from the disk).
   The number of tasks is worked out at boot from the memory reserved for them.
 </p>
 </section>
@@ -172,9 +174,8 @@
     correct under several CPUs is finished.
   </p>
   <p>
-    <strong>Next, in order:</strong> the kernel uses all of a machine's memory up to 4 GiB; then
-    swap, encrypted and authenticated under a key made fresh at every boot and never written
-    down; then the file server authorises by capability rather than by user id and mode, and
+    <strong>Next, in order:</strong> swap, encrypted and authenticated under a key made fresh at
+    every boot and never written down; then the file server authorises by capability rather than by user id and mode, and
     accounts move into files owned by a user-mode authentication server. After that, the
     filesystem itself moves out of the kernel, onto a copy-on-write format with separate system
     and home volumes.

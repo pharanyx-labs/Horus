@@ -1,6 +1,6 @@
 # An installed system: what lives on the disk, and how it is trusted
 
-**Decided (§8); one piece built.** Only the "a live boot writes nothing" guarantee of §9 exists (S110, #472); the three steps of §9 are not started. The maintainer asked on 2026-09-24 for an install that works the
+**Decided (§8); two of three steps built.** The disk boots itself (#503, #505) and its programs are on it (#506); accounts as files (§9 step 3) are not started. A live boot writes nothing (S110, #472). The maintainer asked on 2026-09-24 for an install that works the
 way other major operating systems do: every file the system needs copied onto the volume,
 binaries in `/bin` and `/sbin` placed sensibly, `/tmp` and `/var` created, man pages copied, and
 a machine that boots from its own disk. This document says what that changes, and puts the

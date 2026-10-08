@@ -433,7 +433,12 @@
 # format, where a centred panel left debris beside the log). The rule for the
 # surface itself moved into console_proto.h and is not counted here (headers
 # are not), which is the measurement artefact the 2026-09-11 entry describes.
-core_budget_loc: 10878
+# 2026-10-08: 10878 -> 10883, +5, the same day and the same panel: it is now
+# drawn while ring 3 owns the screen only after a format was authorised
+# (console_progress_permit), because nothing but the installer repaints the
+# screen after it, and a login left "Turning your password into a key" there
+# for good on the laptop.
+core_budget_loc: 10883
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

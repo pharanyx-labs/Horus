@@ -81,6 +81,7 @@ here.
 ### Fixed
 
 - On a framebuffer, the installer's progress panel lost six of its eight rows to a black box while the password was hashed; it is now drawn inside the installer's frame. (#504)
+- A login that unlocked the disk left "Turning your password into a key" on the screen for good; the panel is now the installer's alone, and a login says it is checking the password instead. (#504)
 - A stalled Ubuntu package mirror held every CI job until its timeout, because a retry runs only after a command exits; each apt attempt is now bounded. (#501)
 - `smoke-kdiag-ioport` could report a refusal missing because ring-3 output cut the kernel's kill report in half. (#498)
 - The roadmap called nightly fuzzing and full Kani not started after both had landed. (#497)

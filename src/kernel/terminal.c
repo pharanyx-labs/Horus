@@ -684,6 +684,18 @@ static int g_prog_l = 0, g_prog_r = VGA_COLS - 1;
 
 static int g_prog_top = -1;      /* first row of the panel, -1 when not shown */
 
+/* MAY THE PANEL BE DRAWN WHILE RING 3 OWNS THE SCREEN? Only on a boot whose
+ * installer runs (console_progress_permit, from storage_init), because only the
+ * installer repaints its screen when the work returns, which is what removes
+ * the panel: "THE PANEL IS NOT RESTORED WHEN IT FINISHES", below. Anywhere else
+ * nothing would ever clear it. Found 2026-10-08 on the laptop, the first time an
+ * installed disk was started on its own and logged into: unlocking the volume
+ * derives its key, the key derivation draws "Turning your password into a key",
+ * and the box stayed on the screen over the shell for good. A login says what
+ * it is doing itself, in ring 3, where its own output scrolls past. */
+static int g_prog_permitted;
+void console_progress_permit(int on) { g_prog_permitted = on; }
+
 static void prog_text(int y, int x, const char *s, uint8_t attr) {
     for (int i = 0; s[i] && x + i < VGA_COLS; i++)
         cell_put(y, x + i, (uint16_t)(((uint16_t)attr << 8) | (uint8_t)s[i]));
@@ -726,6 +738,9 @@ void console_progress_note(const char *note) { g_prog_note = note; }
 
 void console_progress(const char *title, const char *why1, const char *why2,
                       uint64_t done, uint64_t total) {
+#ifndef CONSOLE_PROGRESS_AT_LOGIN
+    if (console_owner_task != 0 && !g_prog_permitted) return;   /* see g_prog_permitted */
+#endif
     /* INSIDE THE INSTALLER'S SURFACE, in the rows it leaves empty for this
      * (CON_PROGRESS_ROW, console_proto.h), placed by the SAME rule
      * console_server centres the surface by. Until 2026-10-08 this was the

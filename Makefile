@@ -130,7 +130,7 @@ DEFECT_FLAGS = \
 	STORAGE_FORMAT_UNGATED INSTALLER_NO_CONFIRM BLOCK_ERRNO_LEGACY \
 	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED \
 	FS_LINK_UNCOUNTED FS_DIR_OPERAND_UNCHECKED GPT_ENTRIES_CRC_UNCHECKED STORAGE_REPLACE_VIEW_UNRESOLVED \
-	CONSOLE_PROGRESS_BELOW_SURFACE \
+	CONSOLE_PROGRESS_BELOW_SURFACE CONSOLE_PROGRESS_AT_LOGIN \
 	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY BOOT_MENU_NO_LIVE_TOKEN \
 	BOOT_PIN_UNCHECKED BOOT_IMAGE_UNBOUND CONSOLE_PASS_UNGATED \
 	PIPE_CAP_UNACCOUNTED TOKEN_REPLY_MINT_UNMASKED \
@@ -1809,6 +1809,14 @@ STORAGE_REPLACE_VIEW_UNRESOLVED ?= 0
 CONSOLE_PROGRESS_BELOW_SURFACE ?= 0
 ifeq ($(CONSOLE_PROGRESS_BELOW_SURFACE),1)
 CFLAGS += -DCONSOLE_PROGRESS_BELOW_SURFACE
+endif
+# CONSOLE_PROGRESS_AT_LOGIN=1 lets the panel draw whenever it is asked, as before
+# 2026-10-08, so a login that unlocks the disk leaves "Turning your password
+# into a key" on the screen for good. Control arm for make smoke-installer-panel
+# (smoke-installer-panel-login-control).
+CONSOLE_PROGRESS_AT_LOGIN ?= 0
+ifeq ($(CONSOLE_PROGRESS_AT_LOGIN),1)
+CFLAGS += -DCONSOLE_PROGRESS_AT_LOGIN
 endif
 ifeq ($(STORAGE_REPLACE_VIEW_UNRESOLVED),1)
 CFLAGS += -DSTORAGE_REPLACE_VIEW_UNRESOLVED
@@ -12963,7 +12971,7 @@ INSTALLER_SLOWDISK_IOPS ?= 12
 # outside the surface, where console_server blanks rows. The wire never showed
 # it; only the screen can.
 PANEL_SHOTS ?= $(CURDIR)
-.PHONY: smoke-installer-panel smoke-installer-panel-control
+.PHONY: smoke-installer-panel smoke-installer-panel-control smoke-installer-panel-login-control
 smoke-installer-panel:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 $(PANELARM)
@@ -12993,6 +13001,21 @@ smoke-installer-panel-control:
 	  if [ $$rc -ne 0 ] && grep -q "progress panel" panel-control.log; then \
 	    echo "[panel] control arm PASS - the panel below the surface was caught"; \
 	  else echo "[panel] control arm FAIL - the defect was not caught (rc=$$rc)"; exit 1; fi
+
+# The second arm: the panel drawn at a login too, where nothing clears it. The
+# scenario's login half must find it left on the screen.
+smoke-installer-panel-login-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 CONSOLE_PROGRESS_AT_LOGIN=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 CONSOLE_PROGRESS_AT_LOGIN=1 horus.iso
+	@rm -f panel.img panel-serial.log && truncate -s 256M panel.img
+	@INSTALLER_MODE=panel PANEL_LOGIN_EXPECT=left SESSION_DISK=panel.img INSTALLER_SHOTS=$(PANEL_SHOTS) \
+		SESSION_UEFI_CODE=$(OVMF_CODE) SESSION_UEFI_VARS=$(OVMF_VARS) \
+		SESSION_SERIAL_LOG=panel-serial.log SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_CAP=$(INSTALLER_FORMAT_CAP) \
+		python3 tools/installer_session.py horus.iso
+	@rm -f panel.img
+	@echo "[panel] login control arm PASS - the panel left after a login was caught"
 
 .PHONY: smoke-installer
 smoke-installer:

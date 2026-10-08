@@ -101,6 +101,7 @@ control_arms:
   smoke-proc-overreach-control: smoke-proc
   smoke-readdir-end-control: smoke-readdir-end
   smoke-installer-panel-control: smoke-installer-panel
+  smoke-installer-panel-login-control: smoke-installer-panel
   smoke-fs-dir-operand-control: smoke-fs-dir-operand
   smoke-gpt-volume-control: smoke-gpt-volume
   smoke-ls-path-control: smoke-ls-path

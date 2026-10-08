@@ -1583,6 +1583,52 @@ def panel(disk):  # noqa: ARG001 - uniform scenario signature
         keep_serial(s.buf)
         s.close()
 
+    # AND NOTHING IS LEFT BEHIND BY A LOGIN (2026-10-08, the laptop's first
+    # login on a disk that started on its own: the key derivation drew "Turning
+    # your password into a key" and the box never went away, because nothing
+    # repaints a login screen). Boot the installed machine, log in, and read
+    # the screen once the login has finished: no pixel row may hold an unbroken
+    # lit run 60 cells long, which a panel's border is and nothing a shell login
+    # draws comes near (the banner's rule is 38). PANEL_LOGIN_EXPECT=left is the
+    # arm (CONSOLE_PROGRESS_AT_LOGIN=1), which requires the run.
+    expect_left = os.environ.get("PANEL_LOGIN_EXPECT") == "left"
+    s = Serial(ISO)
+    try:
+        if not login(s, "root", PASSWORD, BOOT):
+            raise SessionFail("the installed password did not log in")
+        s._pump(3.0)
+        path = os.path.join(shots, "panel-login.ppm")
+        s.qmp("screendump", filename=path)
+        for _ in range(40):
+            if os.path.exists(path) and os.path.getsize(path) > 0:
+                break
+            time.sleep(0.05)
+        time.sleep(0.2)
+        w, h, px = _ppm(path)
+        longest = 0
+        for y in range(h):
+            run = 0
+            row = px[y * w * 3:(y + 1) * w * 3]
+            for x in range(w):
+                if row[3 * x] | row[3 * x + 1] | row[3 * x + 2]:
+                    run += 1
+                    longest = max(longest, run)
+                else:
+                    run = 0
+        left = longest >= 60 * cw
+        if left and not expect_left:
+            raise SessionFail(f"a progress panel was left on the screen after a login "
+                              f"({path} kept; a lit run of {longest} px)")
+        if expect_left and not left:
+            raise SessionFail(f"the arm left no panel after the login (longest lit run {longest} px)")
+        step("after the login, no progress panel was left on the screen" if not left
+             else "the arm left the panel on the screen after the login, as required")
+        if not left:
+            os.unlink(path)
+    finally:
+        keep_serial(s.buf)
+        s.close()
+
 
 def run():
     disk = os.environ.get("SESSION_DISK", "")

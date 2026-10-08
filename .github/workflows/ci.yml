@@ -675,6 +675,16 @@ jobs:
       # that happens to exist in one configuration still leaves the others dead.
       - name: Control arm — the root device is named instead of searched for
         run: make smoke-boot-media-control
+      # The format progress panel, read off the SCREEN under UEFI: whole in
+      # every frame that shows it. On 2026-10-08 six of its eight rows were a
+      # black box on a laptop for the whole password-hashing phase, because the
+      # panel sat outside the installer's centred surface, where console_server
+      # blanks rows. Nothing on the serial wire could show it.
+      - name: The format progress panel is whole on the screen
+        run: make smoke-installer-panel
+      # The panel back below the surface: the scenario must fail on the panel.
+      - name: Control arm — the progress panel below the installer's surface
+        run: make smoke-installer-panel-control
       # What storage the machine has. Only legacy ATA PIO exists, which is what
       # QEMU's default i440fx gives and is not what a laptop has -- so the image
       # boots on real hardware and the installer then finds no disk. This boots

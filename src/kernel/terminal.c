@@ -102,6 +102,7 @@ int console_hw_owned(void) { return console_owner_task != 0; }
 int console_owner_is(int tid) { return console_owner_task != 0 && console_owner_task == tid; }
 
 #include "console_font.h"   /* font_8x8: one table, kernel and console_server */
+#include "console_proto.h"  /* the surface geometry: one rule, kernel and console_server */
 
 static void load_8x8_font(void) {
     
@@ -673,6 +674,13 @@ static inline void cell_put(int y, int x, uint16_t v) {
  * after the format for exactly this reason). Clearing the cells here as well
  * would be a second, racing opinion about what the screen should say. */
 #define PROG_ROWS 8
+/* THE PANEL'S COLUMNS. While a ring-3 console owns the screen (the installer),
+ * inset two from each edge, so it sits INSIDE the installer's frame (whose sides
+ * are columns 0 and 79) rather than over it; while the kernel still owns it (the
+ * ephemeral store formatted at boot), the whole width, as before 2026-10-08.
+ * Chosen once, with the panel's row, on its first draw. */
+#define PROG_INSET 2
+static int g_prog_l = 0, g_prog_r = VGA_COLS - 1;
 
 static int g_prog_top = -1;      /* first row of the panel, -1 when not shown */
 
@@ -688,7 +696,7 @@ static unsigned prog_len(const char *s) {
 }
 
 static void prog_clear_row(int y, uint8_t attr) {
-    for (int x = 0; x < VGA_COLS; x++)
+    for (int x = g_prog_l; x <= g_prog_r; x++)
         cell_put(y, x, (uint16_t)(((uint16_t)attr << 8) | (uint8_t)' '));
 }
 
@@ -718,14 +726,49 @@ void console_progress_note(const char *note) { g_prog_note = note; }
 
 void console_progress(const char *title, const char *why1, const char *why2,
                       uint64_t done, uint64_t total) {
+    /* INSIDE THE INSTALLER'S SURFACE, in the rows it leaves empty for this
+     * (CON_PROGRESS_ROW, console_proto.h), placed by the SAME rule
+     * console_server centres the surface by. Until 2026-10-08 this was the
+     * bottom of the grid, which on a framebuffer is mostly OUTSIDE the
+     * surface: console_server blanks those rows whenever it tidies around the
+     * surface, and the panel lost six of its eight rows to a black box for the
+     * whole of the password-hashing phase, which draws once and then works
+     * for a minute. Inside the surface nothing else paints these rows while
+     * the installer is blocked in the format. */
     if (g_rows < PROG_ROWS + 2) return;          /* no room; say nothing */
     if (g_prog_top < 0) {
-        g_prog_top = g_rows - PROG_ROWS - 1;
-        /* The panel's rows move to the centred column, so clear them across the
-         * whole display first: cells drawn there at the left edge would
-         * otherwise stay beside it. */
-        g_cx_top = g_prog_top; g_cx_end = g_prog_top + PROG_ROWS;
-        fb_fill_px((uint32_t)g_cx_top * g_font.h * g_scale, (uint32_t)g_cx_end * g_font.h * g_scale, 0);
+        /* WHO OWNS THE SCREEN DECIDES WHERE. A ring-3 console means the
+         * installer is blocked in the format with its surface on display: the
+         * panel goes inside that surface. The kernel still owning it means the
+         * boot-time format of the ephemeral store, with the boot log on screen
+         * and no surface at all: the panel goes where it always went, the
+         * bottom of the grid across the whole width, because centring it in the
+         * middle of a left-aligned log left its right-hand half on the screen
+         * after the log had moved on (smoke-fb-console-server caught it). */
+        int in_surface = (console_owner_task != 0) &&
+                         con_surface_rows((unsigned)g_rows) >= CON_PROGRESS_ROW + PROG_ROWS;
+#ifdef CONSOLE_PROGRESS_BELOW_SURFACE
+        /* CONTROL ARM -- never ship. The placement before 2026-10-08, for the
+         * installer too: the bottom of the grid, mostly outside the surface.
+         * See make smoke-installer-panel-control. */
+        in_surface = 0;
+#endif
+        if (in_surface) {
+            g_prog_top = (int)(con_surface_top((unsigned)g_rows) + CON_PROGRESS_ROW);
+            g_prog_l = PROG_INSET; g_prog_r = VGA_COLS - 1 - PROG_INSET;
+            /* Drawn at the centred column, where the surface is, and NOT
+             * cleared across the display: the rows hold the installer's frame,
+             * and the panel clears only its own columns (prog_clear_row). */
+            g_cx_top = g_prog_top; g_cx_end = g_prog_top + PROG_ROWS;
+        } else {
+            g_prog_top = g_rows - PROG_ROWS - 1;
+            g_prog_l = 0; g_prog_r = VGA_COLS - 1;
+            /* The panel's rows move to the centred column, so clear them across
+             * the whole display first: cells drawn there at the left edge would
+             * otherwise stay beside it. */
+            g_cx_top = g_prog_top; g_cx_end = g_prog_top + PROG_ROWS;
+            fb_fill_px((uint32_t)g_cx_top * g_font.h * g_scale, (uint32_t)g_cx_end * g_font.h * g_scale, 0);
+        }
     }
     const int top = g_prog_top;
     /* CHECKED, NOT REASONED ABOUT. The guard above already implies top >= 1,
@@ -744,7 +787,7 @@ void console_progress(const char *title, const char *why1, const char *why2,
      * without a word of explanation. It is also the only surface that CAN use
      * these glyphs: the TUI has to look the same on a serial terminal, and a
      * VT100 has no double-line characters to send. */
-    const int L = 0, R = VGA_COLS - 1;
+    const int L = g_prog_l, R = g_prog_r;
     for (int x = L + 1; x < R; x++) {
         cell_put(top, x, (uint16_t)((0x07u << 8) | 0xCDu));
         cell_put(top + PROG_ROWS - 1, x, (uint16_t)((0x07u << 8) | 0xCDu));
@@ -758,14 +801,14 @@ void console_progress(const char *title, const char *why1, const char *why2,
     cell_put(top + PROG_ROWS - 1, L, (uint16_t)((0x07u << 8) | 0xC8u));
     cell_put(top + PROG_ROWS - 1, R, (uint16_t)((0x07u << 8) | 0xBCu));
 
-    prog_text(top + 1, 3, title ? title : "", 0x0F);
-    if (why1) prog_text(top + 2, 3, why1, 0x07);
-    if (why2) prog_text(top + 3, 3, why2, 0x07);
+    prog_text(top + 1, L + 3, title ? title : "", 0x0F);
+    if (why1) prog_text(top + 2, L + 3, why1, 0x07);
+    if (why2) prog_text(top + 3, L + 3, why2, 0x07);
 
     /* THE BAR IS DRAWN FROM THE FRACTION AND NOT FROM A COUNTER OF ITS OWN, so
      * a caller that reports the same `done` twice cannot advance it, and one
      * that reports a `done` past `total` cannot run it off the end. */
-    const int bar_x = 3, bar_w = VGA_COLS - 6 - 7;
+    const int bar_x = L + 3, bar_w = (R - L) - 13;
     uint64_t filled = 0;
     /* TOTAL == 0 MEANS "no fraction to report", not "nothing done". Some phases
      * are one indivisible operation -- deriving the key is the long one -- and
@@ -801,16 +844,16 @@ void console_progress(const char *title, const char *why1, const char *why2,
         char a[24], b[24];
         prog_utoa(done, a, sizeof(a));
         prog_utoa(total, b, sizeof(b));
-        int x = 3;
+        int x = L + 3;
         prog_text(top + 5, x, "block ", 0x07);           x += 6;
         prog_text(top + 5, x, a, 0x0F);                  x += (int)prog_len(a);
         prog_text(top + 5, x, " of ", 0x07);             x += 4;
         prog_text(top + 5, x, b, 0x0F);
     } else {
-        prog_text(top + 5, 3, "working", 0x07);
+        prog_text(top + 5, L + 3, "working", 0x07);
     }
 
-    prog_text(top + 6, 3, g_prog_note ? g_prog_note : "Do not power the machine off.",
+    prog_text(top + 6, L + 3, g_prog_note ? g_prog_note : "Do not power the machine off.",
               g_prog_note ? 0x0Eu : 0x07u);
 }
 

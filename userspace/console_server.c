@@ -1288,11 +1288,10 @@ static void sb_page(int up) {
  * the grid: row 0 of the surface is grid row surf_top(), and nothing a client
  * sends can address a grid row outside the surface, because the bound below is
  * surf_rows() and the offset is added only after the check. */
-static unsigned surf_rows(void) {
-    unsigned rows = cell_rows();
-    return rows < CON_ROWS ? rows : CON_ROWS;
-}
-static unsigned surf_top(void) { return (cell_rows() - surf_rows()) / 2u; }
+/* The rule is con_surface_rows/con_surface_top in console_proto.h, which the
+ * kernel's format progress panel reads too: it draws inside this surface. */
+static unsigned surf_rows(void) { return con_surface_rows(cell_rows()); }
+static unsigned surf_top(void) { return con_surface_top(cell_rows()); }
 
 /* Blank the grid outside the surface and park the stream below it.
  *

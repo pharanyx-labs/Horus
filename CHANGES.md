@@ -80,6 +80,7 @@ here.
 
 ### Fixed
 
+- On a framebuffer, the installer's progress panel lost six of its eight rows to a black box while the password was hashed; it is now drawn inside the installer's frame. (#PR)
 - A stalled Ubuntu package mirror held every CI job until its timeout, because a retry runs only after a command exits; each apt attempt is now bounded. (#501)
 - `smoke-kdiag-ioport` could report a refusal missing because ring-3 output cut the kernel's kill report in half. (#498)
 - The roadmap called nightly fuzzing and full Kani not started after both had landed. (#497)

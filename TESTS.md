@@ -172,7 +172,7 @@ There are 430 `smoke-*` targets: 204 gates and 226 control arms. Each row is a g
 | Gate | What it proves | Properties | Control arms |
 |---|---|---|---|
 | `smoke-readdir-end` | The end of a directory is distinguished from a directory that cannot be read |  | `smoke-readdir-end-control` |
-| `smoke-replace-live` | An unlocked volume cannot be reformatted; a recognised but locked one can | S90 | `smoke-replace-live-control` |
+| `smoke-replace-live` | An unlocked volume cannot be reformatted, whole or in a GPT partition; a recognised but locked one can | S90 | `smoke-replace-live-control`, `smoke-replace-partition-control` |
 | `smoke-replace-oneshot` | The permission to format is spent by the format that uses it | S90 | `smoke-replace-oneshot-control` |
 | `smoke-keyslots` | Several passwords open one volume, and revoking one revokes exactly that one | S61 | `smoke-keyslots-control` |
 | `smoke-meta-crash` | A committed metadata update survives a crash whether or not its cache line was evicted | S65 | `smoke-meta-crash-control`, `smoke-meta-crash-txn-control`, `smoke-meta-crash-vacuity-control` |

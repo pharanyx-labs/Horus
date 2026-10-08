@@ -129,7 +129,7 @@ DEFECT_FLAGS = \
 	STORAGE_REPLACE_UNLOCKED STORAGE_FORMAT_AUTH_STICKY BOOT_CMDLINE_UNMEASURED \
 	STORAGE_FORMAT_UNGATED INSTALLER_NO_CONFIRM BLOCK_ERRNO_LEGACY \
 	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED \
-	FS_LINK_UNCOUNTED FS_DIR_OPERAND_UNCHECKED GPT_ENTRIES_CRC_UNCHECKED \
+	FS_LINK_UNCOUNTED FS_DIR_OPERAND_UNCHECKED GPT_ENTRIES_CRC_UNCHECKED STORAGE_REPLACE_VIEW_UNRESOLVED \
 	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY BOOT_MENU_NO_LIVE_TOKEN \
 	BOOT_PIN_UNCHECKED BOOT_IMAGE_UNBOUND CONSOLE_PASS_UNGATED \
 	PIPE_CAP_UNACCOUNTED TOKEN_REPLY_MINT_UNMASKED \
@@ -1792,6 +1792,17 @@ endif
 # `make smoke-gpt-volume` must go red under it. The two Rust arms are never
 # combined, so each sets RUST_FEATURES outright.
 GPT_ENTRIES_CRC_UNCHECKED ?= 0
+
+# STORAGE_REPLACE_VIEW_UNRESOLVED=1 compares the mounted volume's device with the
+# disk a format names WITHOUT resolving a partition view to its disk, which is
+# how the partition change first wrote S90's check (caught before it merged): an
+# unlocked volume in a GPT partition could be reformatted from under the running
+# system. Control arm
+# for make smoke-replace-live (smoke-replace-partition-control).
+STORAGE_REPLACE_VIEW_UNRESOLVED ?= 0
+ifeq ($(STORAGE_REPLACE_VIEW_UNRESOLVED),1)
+CFLAGS += -DSTORAGE_REPLACE_VIEW_UNRESOLVED
+endif
 ifeq ($(GPT_ENTRIES_CRC_UNCHECKED),1)
 CFLAGS += -DGPT_ENTRIES_CRC_UNCHECKED
 RUST_FEATURES := gpt_entries_crc_unchecked
@@ -9663,8 +9674,33 @@ smoke-replace-live:
 		REQUIRE_MARKER='REPLACE_SELFTEST: unlocked target REFUSED' \
 		FAIL_MARKER='REPLACE_SELFTEST: unlocked target ALLOWED' \
 		tools/smoke_test.sh horus.iso
-	@rm -f replace-live.img
-	@echo "[replace] PASS - an unlocked volume cannot be reformatted"
+	@# The same volume as partition 3 of a GPT disk (S114): the mounted device
+	@# is then the partition view and the disk is what a format names.
+	@python3 tools/gpt_image.py build replace-part.img replace-live.img
+	@SMOKE_TIMEOUT=$(SMOKE_REPLACE_TIMEOUT) MARKER_ONLY=1 SMOKE_BOOT_ORDER=d \
+		SMOKE_DISK=replace-part.img \
+		REQUIRE_MARKER='REPLACE_SELFTEST: unlocked partition target REFUSED' \
+		FAIL_MARKER='REPLACE_SELFTEST: unlocked partition target ALLOWED' \
+		tools/smoke_test.sh horus.iso
+	@rm -f replace-live.img replace-part.img
+	@echo "[replace] PASS - an unlocked volume cannot be reformatted, whole or in a partition"
+
+# The partition arm. STORAGE_REPLACE_VIEW_UNRESOLVED=1 puts back the comparison
+# of the mounted partition VIEW with the disk a format names, which never
+# matches, so an unlocked volume in a partition can be reformatted (S90, S114).
+.PHONY: smoke-replace-partition-control
+smoke-replace-partition-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_REPLACE_SELFTEST=1 STORAGE_REPLACE_VIEW_UNRESOLVED=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_REPLACE_SELFTEST=1 STORAGE_REPLACE_VIEW_UNRESOLVED=1 horus.iso
+	@rm -f replace-live.img replace-part.img && truncate -s 64M replace-live.img
+	@SMOKE_TIMEOUT=$(SMOKE_REPLACE_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=replace-live.img \
+		REQUIRE_MARKER='REPLACE_SELFTEST: unlocked target REFUSED' tools/smoke_test.sh horus.iso
+	@python3 tools/gpt_image.py build replace-part.img replace-live.img
+	@SMOKE_TIMEOUT=$(SMOKE_REPLACE_TIMEOUT) MARKER_ONLY=1 SMOKE_BOOT_ORDER=d SMOKE_DISK=replace-part.img \
+		REQUIRE_MARKER='REPLACE_SELFTEST: unlocked partition target ALLOWED' \
+		tools/smoke_test.sh horus.iso
+	@rm -f replace-live.img replace-part.img
 
 # The falsifying arm. STORAGE_REPLACE_UNLOCKED=1 drops the unlocked check, so a
 # disk can be reformatted out from under the running system that has it open.

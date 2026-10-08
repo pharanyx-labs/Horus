@@ -3800,6 +3800,29 @@ void storage_replace_selftest(void)
 {
     const char *pw = "replace-selftest-pw";
 
+    /* THE SAME PROPERTY, ON A VOLUME IN A PARTITION (S90 with S114). The second
+     * boot of make smoke-replace-live hands this the first boot's volume as
+     * partition 3 of a GPT disk. There the mounted device is the partition view
+     * and the device an installer names is the disk, and the check as the
+     * partition change first wrote it compared the two directly: they never
+     * match, so the refusal never fired, and nothing here could see it because
+     * every boot started from a blank disk. Caught in review before it merged. So this branch starts from the existing volume, unlocks it,
+     * and asks to format the disk it lives on. No authorisation first: that
+     * would make the unlock FORMAT the disk whole, and the case would vanish. */
+    if (storage_volume_is_partition()) {
+        int rc = storage_unlock(pw, kstrlen(pw));
+        if (rc != 0) {
+            print("REPLACE_SELFTEST: FAIL partition unlock rc=");
+            print_decimal(rc);
+            print("\n");
+            return;
+        }
+        int r = storage_authorize_format(0, 0, 0);
+        print(r == 0 ? "REPLACE_SELFTEST: unlocked partition target ALLOWED\n"
+                     : "REPLACE_SELFTEST: unlocked partition target REFUSED\n");
+        return;
+    }
+
     int first = storage_authorize_format(0, 0, 0);
     print(first == 0 ? "REPLACE_SELFTEST: locked target ALLOWED\n"
                      : "REPLACE_SELFTEST: locked target REFUSED\n");

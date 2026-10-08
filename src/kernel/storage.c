@@ -3611,8 +3611,22 @@ int storage_authorize_format(int index, uint64_t volume_blocks, uint32_t flags)
          * This function's job is to make the dangerous case unreachable even if
          * that capability ever went somewhere it should not. */
 #ifndef STORAGE_REPLACE_UNLOCKED
+        /* storage_bd_device: the mounted volume may be a partition of `bd`
+         * (S114). Comparing the view with the disk, as the partition change
+         * first did (caught before it merged), never matches, and would let a
+         * disk be reformatted from under the running system that had its
+         * partition open. */
+#ifndef STORAGE_REPLACE_VIEW_UNRESOLVED
+        if (bd == storage_bd_device(g_mounted_fs.bd) && g_mounted_fs.mounted && g_mounted_fs.unlocked)
+            return -1;
+#else
+        /* CONTROL ARM -- never ship. The comparison as it stood before the
+         * fix: the partition view against the disk, which never matches, so a
+         * volume mounted from a partition can be reformatted while unlocked.
+         * See make smoke-replace-partition-control. */
         if (bd == g_mounted_fs.bd && g_mounted_fs.mounted && g_mounted_fs.unlocked)
             return -1;
+#endif
 #else
         /* CONTROL ARM -- never ship. Drop the unlocked check, and a disk can be
          * reformatted out from under the running system that has it open. See
@@ -3718,7 +3732,7 @@ int storage_device_query(int index, struct storage_info *out)
     out->device_count = (uint32_t)storage_usable_count();
     out->device_index = (uint32_t)index;
 
-    int is_mounted    = (bd == g_mounted_fs.bd) && g_mounted_fs.mounted;
+    int is_mounted    = (bd == storage_bd_device(g_mounted_fs.bd)) && g_mounted_fs.mounted;
     out->recognised   = is_mounted ? 1u : 0u;
     out->unlocked     = (is_mounted && g_mounted_fs.unlocked) ? 1u : 0u;
     if (is_mounted) out->volume_blocks = g_mounted_fs.sb.total_blocks;
@@ -4686,6 +4700,14 @@ int storage_keyslot_remove(uint32_t idx)
 int storage_volume_has_keyslots(void)
 {
     return storage_volume_is_persistent() && !g_mounted_fs.sb.unsealed;
+}
+
+/* Is the mounted volume a GPT partition rather than a whole device (S114)?
+ * Observability for the S90 selftest, which must exercise the partition case
+ * that its first version could not reach. */
+int storage_volume_is_partition(void)
+{
+    return g_mounted_fs.mounted && g_mounted_fs.bd == &g_part_bd;
 }
 
 int storage_volume_is_persistent(void)

@@ -1147,6 +1147,10 @@ jobs:
       # taken from under it. Asserted on the ALLOWED branch, positively.
       - name: Control arm — the unlocked check is gone
         run: make smoke-replace-live-control
+      # The same check on a volume in a GPT partition (S114): the arm compares
+      # the mounted partition view with the disk, which never matches.
+      - name: Control arm — a partition's disk is not recognised as in use
+        run: make smoke-replace-partition-control
       # The other half, end to end: install media replaces a volume it wrote
       # earlier, and only the NEW password opens the result. Two passwords,
       # because a format returning 0 is reached by an installer that did nothing.

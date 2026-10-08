@@ -55,7 +55,7 @@ for pair in "$@"; do
     printf '    module2 /boot/%s %s\n' "$base" "$name" >> "$WORK/mods.txt"
 done
 awk -v mods="$WORK/mods.txt" \
-    '/@HORUS_MODULES@/{while((getline l < mods)>0) print l; next} {print}' \
+    '/^@HORUS_MODULES@$/{while((getline l < mods)>0) print l; close(mods); next} {print}' \
     "$CFG" > "$WORK/grub.cfg"
 
 # The control arm, applied here as well as in the horus.iso rule, because this

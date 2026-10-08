@@ -25,8 +25,11 @@ The x86-64 subset of the Tiny C Compiler, **byte-identical** to 0.9.27, under th
 version 2.1**, with the licence text in `COPYING` beside it. The glue in `port/` is written for
 Horus and is MIT. Details in [`userspace/ports/tcc/README.md`](userspace/ports/tcc/README.md).
 
-Both are separate programs aggregated with the MIT kernel, not linked into it. They are built
-as boot modules only in development builds (`make run`); the install media carries neither.
+Both are separate programs aggregated with the MIT kernel, not linked into it. They are built as
+boot modules for development builds (`make run`) and for the install media, which puts them in
+`/bin` with their man pages. The install media also carries both licence texts and Horus's own
+under `/usr/share/doc`, with `/usr/share/doc/SOURCE`, a written offer naming the commit whose
+`userspace/ports` tree is the exact source of every binary shipped.
 
 ## Vendored assets
 

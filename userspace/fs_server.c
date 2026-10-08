@@ -212,6 +212,83 @@ static int perm_ok(const struct fs_stat *st, uint32_t cuid, uint32_t cgid, unsig
     return (bits & want) == want;
 }
 
+/* ---- the system trees (S116) ---------------------------------------------
+ *
+ * /bin, /sbin, /lib, /usr, /usr/share, /usr/share/man and /usr/share/doc hold
+ * EXACTLY the boot modules the kernel verified against the manifest pinned in
+ * its measured image (S96): provision_boot_modules rebuilds them from those
+ * modules at every boot, replacing any file whose bytes differ and removing
+ * anything that is not a module, and from then until the next boot no client
+ * may change them -- root included, because authority by identity is what the
+ * system exists not to grant (the maintainer's answer, 2026-10-08). An update
+ * is new install media, not a write.
+ *
+ * WHY HERE AND NOT IN THE LOADER. The roadmap's rule is that running programs
+ * from the disk must never exist without a manifest check. The kernel cannot
+ * make that check yet: it is handed a program's bytes, not its path, and a
+ * user's own programs under /home may run (filesystem decision 8). So the
+ * guarantee is placed where it can be kept today: what the system trees HOLD.
+ * A task can still spawn bytes it has from anywhere; docs/LIMITATIONS.md says
+ * so, and exec by file capability (filesystem phase 1b) is what closes it.
+ *
+ * BY INODE, NOT BY PATH. Requests name inodes, so the trees' inodes are what is
+ * recorded, at provisioning, and every request that would change one of them,
+ * or a directory entry inside one, is refused before its permission check
+ * (system_tree_refuses). A hard link out of a tree is refused too: the inode
+ * behind it is rebuilt at the next boot, and a second name would dangle. */
+#define SYS_INODES_MAX 512
+static uint32_t g_sys_ino[SYS_INODES_MAX];
+static unsigned g_sys_n;
+
+static void sys_mark(uint32_t ino) {
+    for (unsigned i = 0; i < g_sys_n; i++) if (g_sys_ino[i] == ino) return;
+    if (g_sys_n < SYS_INODES_MAX) g_sys_ino[g_sys_n++] = ino;
+}
+static int is_sys(uint32_t ino) {
+    for (unsigned i = 0; i < g_sys_n; i++) if (g_sys_ino[i] == ino) return 1;
+    return 0;
+}
+/* The entry `name` in `dir`, if it is a system inode. */
+static int entry_is_sys(uint32_t dir, const char *name) {
+    uint32_t ino, type;
+    return dir_find(dir, name, &ino, &type) && is_sys(ino);
+}
+
+/* Would this request change a system tree? Checked before every permission
+ * check, so the answer is the same for every caller. */
+static int system_tree_refuses(const struct fs_request *rq) {
+#ifdef SYSTEM_TREES_WRITABLE
+    /* CONTROL ARM -- never ship. The trees are as writable as their modes say,
+     * which for root is entirely. See make smoke-system-trees-control. */
+    (void)rq;
+    return 0;
+#else
+    switch (rq->op) {
+    case FS_OP_CREATE:
+    case FS_OP_MKDIR:
+        return is_sys(rq->dir_ino);
+    case FS_OP_DELETE:
+        return is_sys(rq->dir_ino) || entry_is_sys(rq->dir_ino, rq->name);
+    case FS_OP_LINK:
+        return is_sys(rq->dir_ino) || is_sys(rq->ino);
+    case FS_OP_RENAME: {
+        char newname[FS_DIRENT_NAME];
+        ustrncpy(newname, (const char *)rq->data, FS_DIRENT_NAME);
+        return is_sys(rq->dir_ino) || is_sys(rq->ino) ||
+               entry_is_sys(rq->dir_ino, rq->name) || entry_is_sys(rq->ino, newname);
+    }
+    case FS_OP_WRITE:
+    case FS_OP_APPEND:
+    case FS_OP_TRUNCATE:
+    case FS_OP_CHMOD:
+    case FS_OP_CHOWN:
+        return is_sys(rq->ino);
+    default:
+        return 0;            /* lookup, read, stat, readdir: reading is not changing */
+    }
+#endif
+}
+
 /* Enforce access to an already-existing object, then dispatch. cuid/cgid are the
  * caller's kernel-attested identity; the request body carries none. */
 static void handle(const struct fs_request *rq, struct fs_response *rp,
@@ -220,6 +297,7 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
     rp->magic = FS_PROTO_MAGIC;
 
     if (rq->magic != FS_PROTO_MAGIC) { rp->rc = SYS_ERR_INVAL; return; }
+    if (system_tree_refuses(rq))     { rp->rc = SYS_ERR_PERM;  return; }   /* S116 */
 
     struct fs_stat st;
 
@@ -549,7 +627,11 @@ static int module_dest_ok(const char *path) {
         if (*p == '/') p++;
     }
     if (ncomp == 1) return 1;                                     /* bare name -> /bin */
-    return has_prefix(path, "bin/") || has_prefix(path, "usr/share/man/");
+    /* The system trees (S116) and nothing else: /sbin for programs only init or
+     * an administrator runs, /usr/share/doc for the licence texts and source
+     * offer that come with the GPL and LGPL programs. */
+    return has_prefix(path, "bin/") || has_prefix(path, "sbin/") ||
+           has_prefix(path, "usr/share/man/") || has_prefix(path, "usr/share/doc/");
 }
 
 /* Copy boot module `mod_index` (size bytes) to the '/'-relative destination `path`
@@ -561,6 +643,46 @@ static int module_dest_ok(const char *path) {
  * -1 on failure (including the volume filling up, or a disallowed destination path).
  * Runs entirely inside the server, so the store primitives are called directly
  * rather than over IPC. */
+/* Does file `ino` hold exactly the bytes of boot module `mod_index`? */
+static int file_matches_module(uint32_t ino, uint32_t mod_index, uint32_t size) {
+    struct fs_stat st;
+    if (sys_fs_stat(ino, &st) != 0 || (uint32_t)st.size != size) return 0;
+#ifdef SYSTEM_TREES_SIZE_ONLY
+    /* CONTROL ARM -- never ship. The comparison before 2026-10-08: the same
+     * size is taken as the same file. See make smoke-system-trees-rebuild-control. */
+    return 1;
+#endif
+    static uint8_t fb[BLK], mb[BLK];
+    uint32_t off = 0, blk = 0;
+    while (off < size) {
+        uint32_t chunk = size - off; if (chunk > BLK) chunk = BLK;
+        if (sys_fblock_read(ino, blk, fb) != (int)BLK) return 0;
+        if (sys_boot_module_read(mod_index, off, mb, chunk) != (int)chunk) return 0;
+        for (uint32_t i = 0; i < chunk; i++) if (fb[i] != mb[i]) return 0;
+        off += chunk; blk++;
+    }
+    return 1;
+}
+
+/* Remove entry `name` (inode `ino`, type `type`) from directory `parent`, and
+ * everything under it if it is a directory. Bounded: a tree deeper than this is
+ * not something provisioning ever made, and is left rather than chased. */
+#define REMOVE_TREE_DEPTH 8
+static void remove_tree(uint32_t parent, const char *name, uint32_t ino, uint32_t type, int depth) {
+    if (type == FS_TYPE_DIR) {
+        if (depth >= REMOVE_TREE_DEPTH) return;
+        uint32_t cino, ctype, idx = 0; char cname[FS_NAME_MAX];
+        /* An entry that cannot be removed is stepped past, never fetched again,
+         * so a stubborn child cannot turn this into an endless loop. */
+        while (dir_get(ino, idx, &cino, &ctype, cname)) {
+            remove_tree(ino, cname, cino, ctype, depth + 1);
+            if (dir_find(ino, cname, 0, 0)) idx++;
+        }
+        if (dir_get(ino, 0, &cino, &ctype, cname)) return;   /* not empty: leave it */
+    }
+    if (dir_remove(parent, name)) sys_fs_inode_free(ino);
+}
+
 static int install_module_at(const char *path, uint32_t mod_index, uint32_t size) {
     if (!module_dest_ok(path)) {
         kputln("[fs_server] refusing boot module with a disallowed destination path");
@@ -587,12 +709,20 @@ static int install_module_at(const char *path, uint32_t mod_index, uint32_t size
     }
     if (parent_ino < 0 || leaf[0] == 0) return -1;
 
+    sys_mark((uint32_t)parent_ino);          /* every directory a module lands in */
     uint32_t eino, etype;
     if (dir_find((uint32_t)parent_ino, leaf, &eino, &etype)) {
-        struct fs_stat es;
-        if (sys_fs_stat(eino, &es) == 0 && (uint32_t)es.size == size) return 0;  /* up to date */
-        dir_remove((uint32_t)parent_ino, leaf);             /* stale/partial: replace */
-        sys_fs_inode_free(eino);
+        /* UP TO DATE MEANS THE SAME BYTES, not the same size (S116). Until
+         * 2026-10-08 a file of the module's size was taken as current, so one
+         * changed in place, byte for byte the same length, survived every boot.
+         * Compared by reading, so an unchanged file costs reads and no writes;
+         * its owner and mode are put back either way. */
+        if (etype == FS_TYPE_FILE && file_matches_module(eino, mod_index, size)) {
+            sys_fs_set_meta(eino, is_exec ? 0755u : 0644u, 0, 0);
+            sys_mark(eino);
+            return 0;
+        }
+        remove_tree((uint32_t)parent_ino, leaf, eino, etype, 0);   /* changed, or not a file: replace */
     }
 
     int ino = sys_fs_inode_alloc(FS_TYPE_FILE);
@@ -617,6 +747,7 @@ static int install_module_at(const char *path, uint32_t mod_index, uint32_t size
     if (dir_add((uint32_t)parent_ino, leaf, (uint32_t)ino, FS_TYPE_FILE) != 0) {
         sys_fs_inode_free((uint32_t)ino); return -1;
     }
+    sys_mark((uint32_t)ino);
     return 1;
 }
 
@@ -700,10 +831,73 @@ static void provision_home_dirs(void) {
     }
 }
 
+/* A system directory (S116), made if missing, and remade if something that is
+ * not a directory sits where it belongs: a file named "bin" in the root would
+ * otherwise stop /bin from existing at all. Root-owned and 0755 every boot. */
+static int system_dir(const char *path) {
+    int d = ensure_dir_path(path);
+    if (d < 0) {
+        const char *slash = 0;
+        for (const char *q = path; *q; q++) if (*q == '/') slash = q;
+        int parent = 0;
+        const char *leaf = path;
+        if (slash) {
+            char pp[FS_NAME_MAX * 4]; int n = 0;
+            for (const char *q = path; q < slash && n < (int)sizeof(pp) - 1; q++) pp[n++] = *q;
+            pp[n] = 0;
+            parent = ensure_dir_path(pp);
+            leaf = slash + 1;
+        }
+        uint32_t ino, type;
+        if (parent >= 0 && dir_find((uint32_t)parent, leaf, &ino, &type))
+            remove_tree((uint32_t)parent, leaf, ino, type, 0);
+        d = ensure_dir_path(path);
+    }
+    if (d >= 0) {
+        sys_fs_set_meta((uint32_t)d, 0755u, 0, 0);
+        sys_mark((uint32_t)d);
+    }
+    return d;
+}
+
+/* Remove from system directory `dir` everything that is not a system inode,
+ * descending into the system directories inside it. Returns how many entries
+ * were removed. */
+static unsigned prune_tree(uint32_t dir, int depth) {
+    unsigned removed = 0;
+    uint32_t cino, ctype, idx = 0; char cname[FS_NAME_MAX];
+    while (dir_get(dir, idx, &cino, &ctype, cname)) {
+        if (is_sys(cino)) {
+            if (ctype == FS_TYPE_DIR && depth < REMOVE_TREE_DEPTH) removed += prune_tree(cino, depth + 1);
+            idx++;
+            continue;
+        }
+#ifdef SYSTEM_TREES_NO_PRUNE
+        /* CONTROL ARM -- never ship. Strays are left where they are, the
+         * provisioning before 2026-10-08. See make smoke-system-trees-prune-control. */
+        idx++;
+        continue;
+#endif
+        remove_tree(dir, cname, cino, ctype, 0);
+        if (dir_find(dir, cname, 0, 0)) idx++;   /* could not be removed: step past */
+        else removed++;
+    }
+    return removed;
+}
+
 static void provision_boot_modules(void) {
-    static const char *const skel[] = {
-        "bin", "etc", "home", "lib", "usr", "usr/share", "usr/share/man", 0
+    /* THE SYSTEM TREES FIRST (S116): made, marked, owned by root. Then the rest
+     * of the layout in docs/design/installed-system.md section 2, which is the
+     * operator's and is left as it is. /tmp is not made yet: a directory every
+     * user can write needs the sticky rule (only an entry's owner removes it),
+     * which this server does not enforce, and without it any user could delete
+     * any other's files there. docs/LIMITATIONS.md says so. */
+    static const char *const sys_dirs[] = {
+        "bin", "sbin", "lib", "usr", "usr/share", "usr/share/man", "usr/share/doc", 0
     };
+    static const char *const skel[] = { "etc", "home", "var", "var/log", 0 };
+    g_sys_n = 0;
+    for (int i = 0; sys_dirs[i]; i++) system_dir(sys_dirs[i]);
     for (int i = 0; skel[i]; i++) ensure_dir_path(skel[i]);
 
     /* After the skeleton, because it needs /home to exist; before the modules,
@@ -730,9 +924,22 @@ static void provision_boot_modules(void) {
         else if (rc < 0) skipped++;
     }
     if (skipped  > 0) kputln("[fs_server] some boot modules did not fit the store volume");
+
+    /* AND NOTHING ELSE: whatever in the system trees is not a module is
+     * removed, so they hold exactly what the kernel verified. */
+    unsigned strays = 0;
+    for (int i = 0; sys_dirs[i]; i++) {
+        int d = ensure_dir_path(sys_dirs[i]);
+        if (d >= 0) strays += prune_tree((uint32_t)d, 0);
+    }
+    (void)installed;
+    kput("[fs_server] system trees rebuilt from the verified modules: ");
+    kput_int((int)g_sys_n);
+    kput(" inodes, ");
+    kput_int((int)strays);
+    kputln(" strays removed");
     /* One marker whether or not modules were shipped: the skeleton is always
      * created, so a default (module-free) boot still reports a real filesystem. */
-    (void)installed;
     kputln("[fs_server] filesystem provisioned");
 }
 

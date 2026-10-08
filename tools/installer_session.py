@@ -1713,6 +1713,38 @@ def bootdisk(disk):
         if not login(s, "root", PASSWORD, BOOT):
             raise SessionFail("the installed password did not log in on the disk's own boot")
         step("logged in on a machine started from its own disk, with no install media")
+        # AND ITS PROGRAMS ARE ON IT (S116): the media's coreutils, provisioned
+        # from the ESP's verified modules into /bin, and the licences and source
+        # offer into /usr/share/doc. seq is not a shell builtin, so its output
+        # can only come from /bin.
+        # EVERY MODULE THE ESP CARRIES WAS RECORDED. Probing one program by name
+        # was tried first and is not the property: which modules land below
+        # 1 MiB depends on the firmware's memory map, and in CI only one of 30
+        # did, and it was not seq. BOOTDISK_MODULES is the build's own count
+        # (make print-boot-module-count) and the kernel prints what it recorded.
+        import re
+        want = int(os.environ.get("BOOTDISK_MODULES", "0"))
+        got = [int(n) for n in re.findall(r"boot: (\d+) boot modules loaded", s.buf)]
+        if want <= 0 or not got:
+            raise SessionFail(f"cannot compare module counts (built {want}, recorded {got})")
+        # BOOTDISK_EXPECT=noprograms is the arm for the kernel dropping modules
+        # below 1 MiB (BOOT_MODULE_LOW_DROPPED=1): fewer must be recorded.
+        if os.environ.get("BOOTDISK_EXPECT") == "noprograms":
+            if got[-1] >= want:
+                raise SessionFail(f"the arm's disk boot recorded {got[-1]} of {want} modules; "
+                                  "none was dropped, so the arm reproduced nothing")
+            step(f"the disk's boot recorded {got[-1]} of its {want} modules, as the arm requires")
+            return
+        if got[-1] != want:
+            raise SessionFail(f"the disk's own boot recorded {got[-1]} of the {want} modules its ESP carries")
+        step(f"the disk's own boot recorded all {want} modules its ESP carries")
+        seq = _sh(s, "seq 3")
+        if not all(n in seq.split() for n in ("1", "2", "3")):
+            raise SessionFail(f"seq from /bin did not run on the installed machine: {seq!r}")
+        doc = _sh(s, "ls /usr/share/doc")
+        if "SOURCE" not in doc:
+            raise SessionFail(f"the source offer is not in /usr/share/doc: {doc!r}")
+        step("its programs run from /bin, and the licences and source offer are in /usr/share/doc")
     finally:
         keep_serial(s.buf)
         s.close()
@@ -1762,6 +1794,113 @@ def esppin(disk):  # noqa: ARG001 - uniform scenario signature
         s.close()
 
 
+def _sh(s, cmd, timeout=None):
+    """Run one shell command as root; return what it printed before the next prompt."""
+    start = len(s.buf)
+    s.send(cmd)
+    s.expect("root@horus#", timeout if timeout is not None else STEP)
+    out = s.buf[start:]
+    return out[:out.rfind("root@horus#")]
+
+
+def systree(disk):  # noqa: ARG001 - uniform scenario signature
+    """The system trees hold exactly the verified programs, and nobody changes them (S116).
+
+    Two boots of one disk. Boot 1 installs from media (SYSTREE_ISO_A) whose
+    modules include a stray program, bin/systree-stray, and a test page with OLD
+    content, and checks they were provisioned (else the rest proves nothing).
+    Boot 2 starts the installed machine from media (ISO) without the stray and
+    with the page's NEW content, the same length as the old. As root it then
+    requires: the stray gone, the page NEW, a /bin program running (`seq 3`,
+    not a shell builtin), and every change to the trees refused -- rm, touch,
+    mv, cp, mkdir and chmod, all as root, the user the rules exist not to
+    exempt -- with /bin unchanged afterwards.
+
+    SYSTREE_EXPECT names an arm: `writable` (SYSTEM_TREES_WRITABLE=1) requires a
+    change to land, `stray-kept` (SYSTEM_TREES_NO_PRUNE=1) the stray to stay,
+    `stale-kept` (SYSTEM_TREES_SIZE_ONLY=1) the OLD page to stay. Each arm asserts
+    its defect positively, so a boot that went wrong some other way fails it.
+    """
+    expect = os.environ.get("SYSTREE_EXPECT", "whole")
+    iso_a = os.environ.get("SYSTREE_ISO_A", "")
+    if not iso_a:
+        raise SessionFail("SYSTREE_ISO_A must name the first boot's media")
+    s = Serial(iso_a)
+    try:
+        s.expect("init: this machine has a disk and no volume; running the installer", BOOT)
+        answer_survey(s)
+        answer_accounts(s)
+        answer_review_and_confirm(s)
+        s.expect("INSTALLER: formatting", STEP)
+        expect_installed(s)
+        if not login(s, "root", PASSWORD, BOOT):
+            raise SessionFail("the installed password did not log in on the install boot")
+        # login() has consumed the prompt already (it matches "@horus").
+        if "systree-stray" not in _sh(s, "ls /bin"):
+            raise SessionFail("boot 1 did not provision its stray program, so boot 2 can prove nothing")
+        step("boot 1 installed, with a stray program in /bin and the OLD test page")
+    finally:
+        keep_serial(s.buf)
+        s.close()
+
+    s = Serial(ISO)
+    try:
+        if not login(s, "root", PASSWORD, BOOT):
+            raise SessionFail("the installed password did not log in on boot 2")
+        bin1 = _sh(s, "ls /bin")
+        page = _sh(s, "cat /usr/share/man/systree-probe")
+        seq = _sh(s, "seq 3")
+        # FROM INSIDE /bin, by relative name: the shell's file builtins do not all
+        # take absolute paths, and an attempt that answers "not found" never
+        # reached fs_server at all -- a refusal nobody made would pass this test.
+        # So every attempt must say something other than "not found".
+        _sh(s, "cd /bin")
+        replies = {}
+        for cmd in ("rm seq", "touch zz-touched", "mv seq qq-moved",
+                    "cp seq cc-copied", "mkdir dd-made", "chmod 777 seq"):
+            replies[cmd] = _sh(s, cmd)
+        _sh(s, "cd /")
+        unreached = [c for c, r in replies.items() if "not found" in r]
+        if unreached and expect == "whole":
+            raise SessionFail(f"these attempts never reached the file server: {unreached} {replies!r}")
+        bin2 = _sh(s, "ls /bin")
+        mode = _sh(s, "ls -l /bin")
+    finally:
+        keep_serial(s.buf)
+        s.close()
+
+    stray = "systree-stray" in bin1
+    new, old = "SYSTREE PROBE NEW" in page, "SYSTREE PROBE OLD" in page
+    ran = all(f"{n}" in seq.split() for n in ("1", "2", "3"))
+    changed = (any(x in bin2 for x in ("zz-touched", "qq-moved", "cc-copied", "dd-made"))
+               or "seq*" not in bin2.split() or "rwxrwxrwx" in mode)   # ls marks programs with *
+
+    if expect == "writable":
+        if not changed:
+            raise SessionFail("the arm made the trees writable and no change landed")
+        step("the arm let a change into /bin, as required")
+        return
+    if expect == "stray-kept":
+        if not stray:
+            raise SessionFail("the arm keeps strays and the stray was removed")
+        step("the arm left the stray in /bin, as required")
+        return
+    if expect == "stale-kept":
+        if not old or new:
+            raise SessionFail("the arm compares sizes only and the OLD page was replaced")
+        step("the arm kept the same-size OLD page, as required")
+        return
+    if stray:
+        raise SessionFail("a program no module carries survived the boot in /bin")
+    if not new or old:
+        raise SessionFail("the test page is not the NEW module's bytes: a same-size file survived")
+    if not ran:
+        raise SessionFail(f"seq from /bin did not run: {seq!r}")
+    if changed:
+        raise SessionFail(f"a change to the system trees landed as root: {bin2!r} {mode!r}")
+    step("the stray was removed, the page rebuilt from its module, /bin ran, and every change was refused")
+
+
 def run():
     disk = os.environ.get("SESSION_DISK", "")
     if not disk:
@@ -1789,6 +1928,10 @@ def run():
         return 0
     if mode == "panel":
         panel(disk)
+        print("INSTALLER_SESSION: PASS")
+        return 0
+    if mode == "systree":
+        systree(disk)
         print("INSTALLER_SESSION: PASS")
         return 0
     if mode == "bootdisk":

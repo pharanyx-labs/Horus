@@ -97,6 +97,17 @@ see EOF, with a control arm restoring `badge = 0`. S3 keeps its wording until th
 This is an authorisation change across `capability.c`, the Rust sweep and `pipe.c`, so it gets its
 own pull request.
 
+### 1.23 A program's execute right is advisory against a task that can read it
+
+What runs from `/bin`, `/sbin`, `/lib` and `/usr` is held by what those trees contain: `fs_server`
+rebuilds them from the verified boot modules at every boot and refuses every change to them, root
+included (S116). The loader does not check a manifest itself, because it is handed a program's
+bytes, not its path: `SYS_SPAWN_IMAGE` runs whatever image its caller supplies, so a task that can
+read a file can run it whether or not its mode or its capability carries `EXEC`. That is the rule
+filesystem decision 8 accepts for a user's own programs under `/home`, and with TCC on the install
+media it now applies on an installed machine. Exec by file capability (filesystem phase 1b) is what
+closes it.
+
 ---
 
 ## 2. Correctness
@@ -343,9 +354,12 @@ waits until it is woken or killed. The PIT runs at a fixed 100 Hz.
   by construction: the firmware finds GRUB at the removable-media path because Horus cannot
   write UEFI boot entries; every partition lies inside the 16 GiB the kernel addresses, so a
   larger disk's remainder is unused; and the swap partition is reserved but unused (below).
-- **Programs on the disk.** The shipped programs are compiled into the kernel image or loaded as
-  measured boot modules; nothing runs from the volume. The manifest-pinned `/bin`, `/sbin` and
-  `/lib` of the installed-system design are not built.
+- **Parts of the installed layout.** The install media puts GNU coreutils, TCC, their man pages,
+  licences and source offer in the system trees (S116), but `/lib` stays empty (programs link the
+  shared libc the kernel loads, not a file), there is no `/tmp`, and the shell's file commands
+  (`rm`, `touch`, `mv`, `cp`, `mkdir`, `chmod`, `stat`) take a name in the current directory, not
+  a path. The servers `init` starts are compiled into the kernel image, by design
+  ([`design/installed-system.md`](design/installed-system.md) section 3).
 - **Networking above Ethernet.** No IP, TCP, sockets or ARP table. `netd` completes one ARP
   exchange (2.14).
 - **Storage beyond ATA and SD/eMMC.** Legacy IDE and SD/eMMC are readable, writable and

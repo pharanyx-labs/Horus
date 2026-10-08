@@ -33,22 +33,16 @@ In order. Each step is its own set of pull requests with its own gates and contr
    It removes `perm_ok`, the root check on `chown`, `SYS_FS_SET_META`, the uid path of
    `SYS_IPC_SENDER` in the filesystem, and `SYS_CONNECT_FS_SERVER`. Phase 1a, the kernel half,
    is done.
-3. **Programs on the disk** (2.11 step 1): the installer copies the system onto the volume
-   (`/bin`, `/sbin`, `/lib`, `/tmp`, `/var`, man pages), and the loader refuses any file whose
-   hash is not in a manifest pinned inside the measured boot image. The two land together:
-   running from the disk must never exist without the check. The manifest covers `/bin`, `/sbin`
-   and `/lib` only: a program a user builds with `tcc` runs from `/home` on the `EXEC` right of
-   its file capability (installed-system decision 5).
-4. **Accounts as files** (2.11 step 3): `/etc/passwd` and `/etc/shadow` on the volume, owned by a
+3. **Accounts as files** (2.11 step 3): `/etc/passwd` and `/etc/shadow` on the volume, owned by a
    ring-3 `auth_server`; the kernel keeps only the key-slot unlock.
-5. **Encrypted swap** in the reserved partition: a key made fresh at every boot, every page
+4. **Encrypted swap** in the reserved partition: a key made fresh at every boot, every page
    authenticated, and no key material ever paged out.
-6. **Filesystem phases 2 to 4** (2.10): the kernel shrinks to a sealed-block service and the
+5. **Filesystem phases 2 to 4** (2.10): the kernel shrinks to a sealed-block service and the
    filesystem moves to ring 3 with a copy-on-write format, then symbolic links, timestamps and
    sparse files, then snapshots, reflinks and extended attributes. Phase 2 also splits the
    system and home into separate volumes.
 
-Steps 2 and 4 meet at `/etc/passwd`; whichever lands second adapts to the first.
+Steps 2 and 3 meet at `/etc/passwd`; whichever lands second adapts to the first.
 
 ---
 
@@ -102,7 +96,7 @@ a large change to the most safety-critical assembly in the tree, and nothing is 
 | 2.8 ✅ A volume large enough to install onto | 4 KiB blocks, no in-RAM metadata mirror, a Merkle rollback tree, a 16 GiB ceiling sized from the disk (S65, S66, S68), and a TPM anchor for whole-volume rollback (S70). 2026-08-31 to 2026-09-01, #270, #273, #274, #276, #279 |
 | 2.9 ✅ An installer | A format capability only the installer holds (S72), consent by a typed word after every answer is shown back (S73), a choice of target disk (S82, S83), replacing an existing volume from install media (S90), two accounts that each open the disk (S76), and an optional unencrypted volume (S104). 2026-09-01 to 2026-09-24 |
 | 2.10 🚧 A capability-addressed filesystem | Phase 1a, the kernel's endpoint tokens and reply-mint (S105). 2026-09-25, #455 |
-| 2.11 🚧 An installed system | Designed ([`design/installed-system.md`](design/installed-system.md)); a live boot never opens an installed disk (S110, #472); the disk boots itself under UEFI, on the laptop too (S114, S115). 2026-10-08, #503, #505 |
+| 2.11 🚧 An installed system | Designed ([`design/installed-system.md`](design/installed-system.md)); a live boot never opens an installed disk (S110, #472); the disk boots itself under UEFI, on the laptop too (S114, S115); its programs are on it, in system trees rebuilt from the verified modules at every boot and read-only to everyone (S116). 2026-10-08, #503, #505, #506 |
 
 ### 2.1 ◧ Remainder
 
@@ -141,7 +135,7 @@ start it.
 ### 2.7a ⬜ Evict the in-kernel services [F-2.7a]
 
 `.github/ring0-classification.yml` (S87) measures the ring-0 `service` class at about 6,000 code
-lines beside a 10,927-line core: `storage.c` (the encrypted store and the on-disk filesystem),
+lines beside a 10,933-line core: `storage.c` (the encrypted store and the on-disk filesystem),
 `kusers.c` (accounts and password hashing), the loader and spawn path, `crypto.c` and
 `syscall_fs.c`. Neither big move is mechanical. `storage.c` holds the volume key, so moving it
 means deciding what a ring-3 storage server may hold; 2.10's phase 2 is that decision for the
@@ -182,8 +176,13 @@ partition and no Secure Boot. Decided on 2026-10-07: the manifest covers `/bin`,
 capability. `init`, `fs_server` and `console_server` stay in the boot image,
 because they run before the volume can be read. Step 2, a disk that boots itself, is done: the
 installer lays out GPT with an EFI system partition, a reserved swap partition and the volume,
-and the IdeaPad 1 14IGL05 starts from its eMMC with no install media (#503, #505). Steps 1 and 3
-are items 3 and 4 of [What happens next](#what-happens-next).
+and the IdeaPad 1 14IGL05 starts from its eMMC with no install media (#503, #505). Step 1,
+programs on the disk, is done too: the install media carries GNU coreutils, TCC, their man pages,
+licences and source offer, and `fs_server` rebuilds `/bin`, `/sbin`, `/lib` and `/usr` from the
+boot modules the kernel verified at every boot and refuses every change to them, root included
+(S116, #506). That holds decision 1's rule by construction, since nothing in those trees can
+differ from a module the kernel's pinned manifest approved. Step 3 is item 3 of
+[What happens next](#what-happens-next).
 
 ---
 
@@ -265,7 +264,7 @@ is a second person to review them. Turning on required approval with one maintai
 every merge or needs a bypass actor, which would undo 4.2. `SECURITY.md` therefore claims
 "thoroughly automatically verified", not "independently reviewed".
 
-**4.2.** The gating set is **138 required, 9 exempted** (138 jobs, 147 contexts; re-derive with
+**4.2.** The gating set is **139 required, 9 exempted** (139 jobs, 148 contexts; re-derive with
 `tools/check_ci_gating.py`). The exemptions come from three jobs and are properties of the test,
 not open defects: `fuzz` (seven targets fuzzed nightly, never on a pull request), `kani-arms` and
 `ruleset-audit` (both run on a schedule, never on a pull request).
@@ -277,7 +276,7 @@ from a tag and compare. They wait on 3.1, since an ISO that does not rebuild to 
 same bytes cannot be verified by rebuilding.
 
 **4.12.** The exemption list in `.github/invariants.yml` is currently
-**empty**: all 117 properties name a witness that resolves.
+**empty**: all 118 properties name a witness that resolves.
 
 ---
 
@@ -298,5 +297,5 @@ same bytes cannot be verified by rebuilding.
 | ✅ | Measured boot, the kernel pinned in the boot image, and a PCR-sealed volume key |
 | ✅ | An IOMMU confining device DMA, and device capabilities that name one device each |
 | ◧ | Reproducible `kernel.elf` (not yet the ISO), an SBOM, CodeQL, Dependabot, signed commits, a protected `main` |
-| ✅ | 442 `smoke-*` targets, nearly all QEMU integration tests, and 233 of them control arms that must reproduce a defect |
+| ✅ | 448 `smoke-*` targets, nearly all QEMU integration tests, and 238 of them control arms that must reproduce a defect |
 | ✅ | Bounded Kani proofs, Miri over the Rust core, and fuzzing at the FFI boundary |

@@ -112,6 +112,7 @@ jobs:
       - site
       - smoke
       - smoke-bootdisk
+      - smoke-systree
       - smoke-aslr
       - smoke-aspace
       - smoke-boot-pin
@@ -666,11 +667,43 @@ jobs:
       # The ESP is left empty; the firmware must say there is nothing to boot.
       - name: Control arm — the ESP is never written
         run: make smoke-install-boot-disk-control
+      # Modules below 1 MiB, where UEFI GRUB puts the small ones, are dropped
+      # again; the disk's own boot must come up without seq.
+      - name: Control arm — modules below 1 MiB are dropped
+        run: make smoke-install-boot-disk-lowmod-control
       - name: Install media whose EFI image was changed installs nothing
         run: make smoke-install-esp-pin
       # The pin is not compared, so the changed image is believed.
       - name: Control arm — the ESP image's pin is not checked
         run: make smoke-install-esp-pin-control
+
+  # THE SYSTEM TREES HOLD THE VERIFIED PROGRAMS AND NOTHING ELSE (S116). Its own
+  # job because each target builds two install media and installs, then boots
+  # the disk again: in an installer shard it would set that shard's wall time.
+  smoke-systree:
+    name: "System trees: rebuilt from the verified programs each boot, read-only to everyone"
+    runs-on: ubuntu-latest
+    # Backstop, not a performance budget.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Programs land in /bin and the system trees, and root cannot change them
+        run: make smoke-system-trees
+      # fs_server lets writes into the trees through.
+      - name: Control arm — the system trees are writable
+        run: make smoke-system-trees-control
+      # A file nobody verified is left in /bin.
+      - name: Control arm — a stray in a system tree is kept
+        run: make smoke-system-trees-prune-control
+      # A file whose size matches its module is trusted without its bytes.
+      - name: Control arm — a stale program of the right size is kept
+        run: make smoke-system-trees-rebuild-control
 
   # SHARD of what was one 59-step job, split 2026-09-21 because it ran for 54
   # minutes and set the wall time of every CI run. Steps are unchanged and in
@@ -1544,7 +1577,7 @@ jobs:
         run: make smoke-modules-tamper
       # S96. Same subsystem, so the same job: no new required context and no
       # ruleset change. The witness and its three falsifying arms all run here.
-      - name: Modules past 16 MiB boot intact and run from /bin; a module in the kernel image halts
+      - name: Modules past 16 MiB boot intact and run from /bin; a module in the kernel image or the AP trampoline page halts
         run: make smoke-boot-module-reserve
       - name: Control arm, the reserves back at USER_PHYS_BASE land on the modules and halt the boot
         run: make smoke-boot-module-reserve-control
@@ -1552,6 +1585,8 @@ jobs:
         run: make smoke-boot-module-reverify-control
       - name: Control arm, without the placement check a module in the kernel image boots on
         run: make smoke-boot-module-image-control
+      - name: Control arm, without the placement check a module on the AP trampoline page boots on
+        run: make smoke-boot-module-tramp-control
 
   smoke-tpm:
     name: Measured boot (TPM PCRs match the reproducible manifest)

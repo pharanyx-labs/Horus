@@ -132,6 +132,7 @@ DEFECT_FLAGS = \
 	FS_LINK_UNCOUNTED FS_DIR_OPERAND_UNCHECKED GPT_ENTRIES_CRC_UNCHECKED STORAGE_REPLACE_VIEW_UNRESOLVED \
 	ESP_PIN_UNCHECKED ESP_NOT_WRITTEN DEBUG_BUILD \
 	CONSOLE_PROGRESS_BELOW_SURFACE CONSOLE_PROGRESS_AT_LOGIN \
+	SYSTEM_TREES_WRITABLE SYSTEM_TREES_NO_PRUNE SYSTEM_TREES_SIZE_ONLY \
 	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY BOOT_MENU_NO_LIVE_TOKEN \
 	BOOT_PIN_UNCHECKED BOOT_IMAGE_UNBOUND CONSOLE_PASS_UNGATED \
 	PIPE_CAP_UNACCOUNTED TOKEN_REPLY_MINT_UNMASKED \
@@ -140,7 +141,7 @@ DEFECT_FLAGS = \
 	SDHCI_CSD_SPEC_BITS SDHCI_ADDR_MODE_INVERTED \
 	SDHCI_WRITE_SELFTEST SDHCI_WRITE_NO_FLUSH SDHCI_NO_LOCK SDHCI_STAY_SLOW \
 	CONSOLE_VGA_CHECK_FAIL BOOT_MODULE_RESERVE_UNCHECKED POOL_RESERVE_FIXED_BASE \
-	BOOT_MODULE_IMAGE_PROBE \
+	BOOT_MODULE_IMAGE_PROBE BOOT_MODULE_TRAMP_PROBE BOOT_MODULE_LOW_DROPPED \
 	AHCI_PROBE_ABSENT AHCI_CAPACITY_CONSTANT SERIAL_TX_NEVER_DRAINS \
 	META_CACHE_NO_WRITEBACK META_CACHE_WB_OUTSIDE_TXN META_CACHE_EVICT_NOWB \
 	META_CACHE_TINY MERKLE_NODE_TRUST_CACHED MERKLE_SKIP_PARENT_BIND \
@@ -219,6 +220,12 @@ CFLAGS += -DDEFECT_FLAGS_STR='"$(DEFECT_ACTIVE_STR)"'
 .PHONY: print-defect-flags
 print-defect-flags:
 	@echo "$(DEFECT_ACTIVE_STR)"
+
+# How many boot modules would this build ship? The same kind of answer, for a
+# gate that must check a boot recorded ALL of them rather than probing one name.
+.PHONY: print-boot-module-count
+print-boot-module-count:
+	@echo "$(words $(BOOT_MODULES))"
 
 # A -D flag is not a prerequisite of an object file, so `make FLAG=1` followed by
 # `make` leaves stale objects compiled with the flag and says nothing. Stamping
@@ -1453,6 +1460,26 @@ CFLAGS  += -DBOOT_MODULE_IMAGE_PROBE
 ASFLAGS += -DBOOT_MODULE_IMAGE_PROBE
 endif
 
+# BOOT_MODULE_TRAMP_PROBE=1 does the same over the AP trampoline page at
+# AP_TRAMP_PHYS, which smp_start_aps writes after the modules were re-verified.
+# Reachable by a real loader since modules below 1 MiB are kept; QEMU's GRUB has
+# not been seen to use the page, so the gate fabricates one. A selftest for
+# smoke-boot-module-reserve, never a build option, listed in DEFECT_FLAGS for
+# the reason above.
+BOOT_MODULE_TRAMP_PROBE ?= 0
+ifeq ($(BOOT_MODULE_TRAMP_PROBE),1)
+CFLAGS  += -DBOOT_MODULE_TRAMP_PROBE
+endif
+
+# BOOT_MODULE_LOW_DROPPED=1 puts back the rule that dropped every module below
+# 1 MiB, before 2026-10-08. UEFI GRUB places small modules there, so a disk
+# started by its own GRUB came up with about half its programs and /bin empty of
+# the rest. Control arm for make smoke-install-boot-disk.
+BOOT_MODULE_LOW_DROPPED ?= 0
+ifeq ($(BOOT_MODULE_LOW_DROPPED),1)
+CFLAGS  += -DBOOT_MODULE_LOW_DROPPED
+endif
+
 COREUTILS_MODULE_SET ?= $(COREUTILS_PROGS)
 COREUTILS_MODULES    ?= 0
 ifeq ($(COREUTILS_MODULES),1)
@@ -1532,6 +1559,61 @@ endif
 
 # TERM_MODULE=1 ships termtest into /bin — the raw-terminal-layer proof driven by
 # smoke-term. Not part of a normal boot.
+# DOC_MODULES=1 ships the licences and the written source offer that come with
+# the GPL and LGPL programs, into /usr/share/doc (S116's trees): the coreutils'
+# GPLv3, TCC's LGPL 2.1, Horus's own MIT licence, and SOURCE, which names the
+# exact commit whose userspace/ports/ is the Corresponding Source. Staged under
+# distinct names first, because the ISO rule copies each module to boot/ by its
+# base name and two files called COPYING would overwrite each other.
+DOC_MODULES ?= 0
+DOC_STAGE    = userspace/doc
+ifeq ($(DOC_MODULES),1)
+BOOT_MODULES    += $(DOC_STAGE)/horus.LICENSE:usr/share/doc/horus/LICENSE \
+                   $(DOC_STAGE)/coreutils.COPYING:usr/share/doc/coreutils/COPYING \
+                   $(DOC_STAGE)/tcc.COPYING:usr/share/doc/tcc/COPYING \
+                   $(DOC_STAGE)/SOURCE:usr/share/doc/SOURCE
+BOOT_MODULE_DEP += $(DOC_STAGE)/horus.LICENSE $(DOC_STAGE)/coreutils.COPYING \
+                   $(DOC_STAGE)/tcc.COPYING $(DOC_STAGE)/SOURCE
+endif
+$(DOC_STAGE)/horus.LICENSE: LICENSE
+	@mkdir -p $(DOC_STAGE) && cp $< $@
+$(DOC_STAGE)/coreutils.COPYING: userspace/ports/coreutils/COPYING
+	@mkdir -p $(DOC_STAGE) && cp $< $@
+$(DOC_STAGE)/tcc.COPYING: userspace/ports/tcc/COPYING
+	@mkdir -p $(DOC_STAGE) && cp $< $@
+# The commit is read at build time; a tree that is not a git checkout says so
+# rather than inventing one.
+$(DOC_STAGE)/SOURCE: .build-flags
+	@mkdir -p $(DOC_STAGE)
+	@c=$$(git rev-parse HEAD 2>/dev/null || echo "unknown: built outside a git checkout"); \
+	 { echo "Source for the programs on this system"; echo; \
+	   echo "GNU coreutils 9.5 (echo true false basename dirname cat head seq wc printf tail)"; \
+	   echo "is distributed under the GNU General Public License, version 3 or later, and"; \
+	   echo "TinyCC 0.9.27 (tcc) under the GNU Lesser General Public License, version 2.1."; \
+	   echo "Their licence texts are in coreutils/COPYING and tcc/COPYING beside this file."; \
+	   echo; \
+	   echo "Their Corresponding Source, the unmodified upstream files together with the"; \
+	   echo "build glue written for Horus, is userspace/ports/ in the Horus source tree at"; \
+	   echo "commit $$c:"; echo; \
+	   echo "    https://github.com/pharanyx-labs/Horus/tree/$$c/userspace/ports"; echo; \
+	   echo "It is offered from the same place as this system's install media, at no charge."; \
+	   echo "Horus itself is under the MIT licence, in horus/LICENSE."; } > $@
+
+# SYSTREE_PROBE=A|B: the two boots of make smoke-system-trees. A carries a stray
+# program (bin/systree-stray) and a test page with OLD content; B carries no
+# stray and the page with NEW content OF THE SAME LENGTH, so a rebuild that
+# compared sizes only would keep the old one. Test media only.
+SYSTREE_PROBE ?=
+ifeq ($(SYSTREE_PROBE),A)
+BOOT_MODULES    += userspace/systree/stray:bin/systree-stray \
+                   userspace/systree/probe-old:usr/share/man/systree-probe
+BOOT_MODULE_DEP += userspace/systree/stray userspace/systree/probe-old
+endif
+ifeq ($(SYSTREE_PROBE),B)
+BOOT_MODULES    += userspace/systree/probe-new:usr/share/man/systree-probe
+BOOT_MODULE_DEP += userspace/systree/probe-new
+endif
+
 TERM_MODULE ?= 0
 ifeq ($(TERM_MODULE),1)
 BOOT_MODULES    += userspace/termtest.bin:bin/termtest
@@ -4361,8 +4443,8 @@ endif
 # `run` is the interactive/dev target: it ships the ported coreutils and their man
 # pages as boot modules (RUN_MODULES=1 by default), so an interactive session comes
 # up with /bin populated and `man` reading /usr/share/man. Set RUN_MODULES=0 for a
-# module-free (GPLv3-clean) boot; the plain `horus.iso` / release target stays
-# module-free regardless.
+# module-free (GPLv3-clean) boot. The plain `horus.iso` target stays module-free
+# regardless; the install media carries the programs (INSTALL_PROGRAMS, S116).
 RUN_MODULES ?= 1
 # `make run` boots WITH an emulated TPM when swtpm is installed, and without one
 # otherwise. The measured-boot path (PCR 8/9, and the sealed volume KEK) is the
@@ -4479,6 +4561,13 @@ run-ata-wipe:
 # BOOT_MODULES entry (empty when none), so GRUB loads each utility image into RAM
 # alongside the kernel. Modules live outside kernel.elf — the kernel records them
 # from the multiboot2 tags and the fs_server installs them into /bin.
+# The marker must be the whole line, and the list is closed after each use: the
+# install menu carries it twice (the live entry and the install entry), and a
+# getline loop that does not close its file reads nothing the second time. Until
+# 2026-10-08 the pattern also matched grub.cfg's comment naming the marker, so
+# the comment took the list and the real marker took nothing. On the install
+# media that left the install entry with no programs, and the disk it laid out
+# booted with an empty /bin.
 # `make boot.iso` was the name until 2026-09-10. Left as a target that FAILS and
 # says where the artefact went, rather than removed outright: bare `make boot.iso`
 # answers "No rule to make target", which is correct and tells a reader with the
@@ -4502,10 +4591,17 @@ boot.iso:
 # It is a full rebuild into a differently-named artefact, not a rename of the
 # same bytes: USERSPACE_CFLAGS differs, so the objects differ.
 .PHONY: install.iso
+# THE PROGRAMS THE INSTALL MEDIA CARRIES (S116): GNU coreutils and TinyCC with
+# their man pages, the shared libc they link against, and the licences and
+# source offer that come with them (installed-system decision 2, 2026-09-24).
+# Each is a boot module the kernel verifies against its embedded manifest; the
+# ESP carries the same set, and fs_server makes the system trees exactly these
+# at every boot of the installed machine.
+INSTALL_PROGRAMS = COREUTILS_MODULES=1 TCC_MODULE=1 DOC_MODULES=1
 install.iso:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 KEYMAP=$(KEYMAP_SHIPPED)
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 KEYMAP=$(KEYMAP_SHIPPED) GRUB_CFG=grub-menu.cfg INSTALL_ESP=1 horus.iso
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 KEYMAP=$(KEYMAP_SHIPPED) $(INSTALL_PROGRAMS)
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 KEYMAP=$(KEYMAP_SHIPPED) $(INSTALL_PROGRAMS) GRUB_CFG=grub-menu.cfg INSTALL_ESP=1 horus.iso
 	@mv horus.iso install.iso
 # SAY WHICH FILE TO WRITE, AND SAY THAT THE OTHER ONE IS NOT IT.
 #
@@ -4568,7 +4664,7 @@ horus.iso: kernel.elf $(GRUB_CFG) $(BOOT_MODULE_DEP) tools/mkbootimg.sh tools/mk
 	    cp $$f isofiles/boot/$$base; \
 	    printf '    module2 /boot/%s %s\n' "$$base" "$$name" >> isofiles/mods.txt; \
 	 done
-	@awk '/@HORUS_MODULES@/{while((getline l < "isofiles/mods.txt")>0) print l; next} {print}' \
+	@awk '/^@HORUS_MODULES@$$/{while((getline l < "isofiles/mods.txt")>0) print l; close("isofiles/mods.txt"); next} {print}' \
 	    $(GRUB_CFG) > .bootcfg.staged
 # THE ESP IMAGE, ON INSTALL MEDIA THAT LAYS OUT A DISK THAT BOOTS ITSELF (S115).
 # INSTALL_ESP=1 builds it from THIS kernel and THESE modules (tools/mkesp.sh),
@@ -4809,6 +4905,22 @@ USERSPACE_CFLAGS += -DPS2_LAYOUT_IGNORED
 endif
 ifeq ($(READDIR_END_IS_NOENT),1)
 USERSPACE_CFLAGS += -DREADDIR_END_IS_NOENT
+endif
+# The three S116 arms, all fs_server (ring 3): the system trees as writable as
+# their modes say (root may change them); strays never removed; a file of the
+# module's size taken as current, whatever its bytes. Control arms for make
+# smoke-system-trees: -control, -prune-control, -rebuild-control.
+SYSTEM_TREES_WRITABLE  ?= 0
+SYSTEM_TREES_NO_PRUNE  ?= 0
+SYSTEM_TREES_SIZE_ONLY ?= 0
+ifeq ($(SYSTEM_TREES_WRITABLE),1)
+USERSPACE_CFLAGS += -DSYSTEM_TREES_WRITABLE
+endif
+ifeq ($(SYSTEM_TREES_NO_PRUNE),1)
+USERSPACE_CFLAGS += -DSYSTEM_TREES_NO_PRUNE
+endif
+ifeq ($(SYSTEM_TREES_SIZE_ONLY),1)
+USERSPACE_CFLAGS += -DSYSTEM_TREES_SIZE_ONLY
 endif
 ifneq ($(strip $(DEBUG_LABEL)),)
 USERSPACE_CFLAGS += -DDEBUG_BUILD -DHORUS_DEBUG_LABEL='"$(DEBUG_LABEL)"'
@@ -5692,6 +5804,7 @@ userspace/%.bin: userspace/%.raw tools/mkheadered
 userspace: $(SHIPPED_PIE_BINS)
 
 userspace-clean:
+	rm -rf userspace/doc
 	rm -f userspace/*.o userspace/*.a userspace/*.so userspace/*.elf userspace/*.pie.elf userspace/*.stripped.elf userspace/*.raw userspace/*.bin userspace/*_image.h userspace/shlib_offsets.h userspace/libc_exports.c userspace/libc_exports.h userspace/libc_exports_link.c userspace/libc_stubs.S tools/mkheadered
 
 # Build with the gated CPU-protection self-test and require the kernel to report
@@ -7503,7 +7616,14 @@ smoke-boot-module-reserve:
 		EXPECT_STALL="boot: HALT boot module image-probe" \
 		ABSENT_MARKER='boot module refused (no manifest match)' \
 		tools/smoke_test.sh horus.iso
-	@echo "[module-reserve] PASS - modules past 16 MiB boot intact and run; a module in the kernel image halts"
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory BOOT_MODULE_TRAMP_PROBE=1
+	@$(MAKE) --no-print-directory BOOT_MODULE_TRAMP_PROBE=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
+		EXPECT_STALL="boot: HALT boot module tramp-probe at 0x0000000000008000..0x0000000000009000 overlaps the AP trampoline page" \
+		ABSENT_MARKER='boot module refused (no manifest match)' \
+		tools/smoke_test.sh horus.iso
+	@echo "[module-reserve] PASS - modules past 16 MiB boot intact and run; a module in the kernel image or the AP trampoline page halts"
 
 # The falsifying arm for the MOVE: the reserves back at USER_PHYS_BASE, under the
 # same padded ISO. The placement check must catch the overlap and name it.
@@ -7537,6 +7657,18 @@ smoke-boot-module-image-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory BOOT_MODULE_IMAGE_PROBE=1 BOOT_MODULE_RESERVE_UNCHECKED=1
 	@$(MAKE) --no-print-directory BOOT_MODULE_IMAGE_PROBE=1 BOOT_MODULE_RESERVE_UNCHECKED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='boot module refused (no manifest match)' \
+		FAIL_MARKER='boot: HALT' \
+		tools/smoke_test.sh horus.iso
+
+# The falsifying arm for the TRAMPOLINE: the placement check gone, under the
+# trampoline probe. As for the image, the boot carries on to the manifest.
+.PHONY: smoke-boot-module-tramp-control
+smoke-boot-module-tramp-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory BOOT_MODULE_TRAMP_PROBE=1 BOOT_MODULE_RESERVE_UNCHECKED=1
+	@$(MAKE) --no-print-directory BOOT_MODULE_TRAMP_PROBE=1 BOOT_MODULE_RESERVE_UNCHECKED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='boot module refused (no manifest match)' \
 		FAIL_MARKER='boot: HALT' \
@@ -13020,13 +13152,15 @@ INSTALLER_SLOWDISK_IOPS ?= 12
 # default to the Debian paths CI has; override them elsewhere.
 BOOTDISK_MIB     ?= 512
 BOOTDISK_TIMEOUT ?= 300
+BOOTDISK_EXPECT  ?=
 .PHONY: smoke-install-boot-disk
 smoke-install-boot-disk:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 $(BOOTDISKARM)
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 $(BOOTDISKARM) GRUB_CFG=grub-menu.cfg INSTALL_ESP=1 horus.iso
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 $(INSTALL_PROGRAMS) $(BOOTDISKARM)
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 $(INSTALL_PROGRAMS) $(BOOTDISKARM) GRUB_CFG=grub-menu.cfg INSTALL_ESP=1 horus.iso
 	@rm -f bootdisk.img bootdisk-serial.log && truncate -s $(BOOTDISK_MIB)M bootdisk.img
-	@INSTALLER_MODE=bootdisk SESSION_DISK=bootdisk.img \
+	@INSTALLER_MODE=bootdisk BOOTDISK_EXPECT=$(BOOTDISK_EXPECT) SESSION_DISK=bootdisk.img \
+		BOOTDISK_MODULES=$$($(MAKE) -s --no-print-directory STORAGE_ATA=1 $(INSTALL_PROGRAMS) $(BOOTDISKARM) print-boot-module-count) \
 		SESSION_UEFI_CODE=$(OVMF_CODE) SESSION_UEFI_VARS=$(OVMF_VARS) \
 		SESSION_SERIAL_LOG=bootdisk-serial.log SESSION_TIMEOUT=$(BOOTDISK_TIMEOUT) \
 		BOOT_TIMEOUT=$(BOOTDISK_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) \
@@ -13056,6 +13190,17 @@ smoke-install-boot-disk-control:
 		python3 tools/installer_session.py horus.iso \
 	  || { tail -60 bootdisk-serial.log 2>/dev/null | sed 's/^/  /'; exit 1; }
 	@rm -f bootdisk.img
+
+# The falsifying arm for the programs. BOOT_MODULE_LOW_DROPPED=1 drops every
+# module below 1 MiB again, where UEFI GRUB puts the small ones, so the disk's
+# own boot records fewer modules than its ESP carries. Which ones depends on the
+# firmware's memory map (15 of 30 under QEMU 11 and Void's edk2, 29 of 30 under
+# CI's QEMU 8.2 and Ubuntu's OVMF), so the scenario counts them all rather than
+# probing one program by name.
+.PHONY: smoke-install-boot-disk-lowmod-control
+smoke-install-boot-disk-lowmod-control:
+	@$(MAKE) --no-print-directory smoke-install-boot-disk \
+		BOOTDISKARM=BOOT_MODULE_LOW_DROPPED=1 BOOTDISK_EXPECT=noprograms
 
 # MEDIA WHOSE ESP IMAGE WAS CHANGED IS REFUSED (S115). The install media is
 # built, then one byte of /boot/esp.img inside the ISO is inverted, leaving the
@@ -13138,6 +13283,42 @@ smoke-installer-panel-login-control:
 		python3 tools/installer_session.py horus.iso
 	@rm -f panel.img
 	@echo "[panel] login control arm PASS - the panel left after a login was caught"
+
+# THE SYSTEM TREES HOLD EXACTLY THE VERIFIED PROGRAMS (S116). Two boots of one
+# disk (tools/installer_session.py, systree): boot 1 installs from media whose
+# modules include a stray program and an OLD test page; boot 2 starts the
+# installed machine from media without the stray and with the page's NEW
+# content of the same length. Boot 2 must show the stray gone, the page rebuilt,
+# a /bin program running, and every change to the trees refused, as root.
+SYSTREE_FLAGS = STORAGE_ATA=1 COREUTILS_MODULES=1
+SYSTREE_MIB  ?= 512
+.PHONY: smoke-system-trees smoke-system-trees-control smoke-system-trees-prune-control smoke-system-trees-rebuild-control
+smoke-system-trees:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(SYSTREE_FLAGS) SYSTREE_PROBE=A $(SYSTREEARM)
+	@$(MAKE) --no-print-directory $(SYSTREE_FLAGS) SYSTREE_PROBE=A $(SYSTREEARM) horus.iso
+	@mv horus.iso systree-a.iso
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(SYSTREE_FLAGS) SYSTREE_PROBE=B $(SYSTREEARM)
+	@$(MAKE) --no-print-directory $(SYSTREE_FLAGS) SYSTREE_PROBE=B $(SYSTREEARM) horus.iso
+	@rm -f systree.img systree-serial.log && truncate -s $(SYSTREE_MIB)M systree.img
+	@INSTALLER_MODE=systree SYSTREE_ISO_A=systree-a.iso SYSTREE_EXPECT=$(or $(SYSTREEEXPECT),whole) \
+		SESSION_DISK=systree.img SESSION_SERIAL_LOG=systree-serial.log \
+		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) INSTALLER_FORMAT_CAP=$(INSTALLER_FORMAT_CAP) \
+		python3 tools/installer_session.py horus.iso \
+	  || { echo "[systree] ----- guest serial (systree-serial.log) -----"; \
+	       tail -60 systree-serial.log 2>/dev/null | sed 's/^/  /'; exit 1; }
+	@rm -f systree.img systree-a.iso
+	@echo "[systree] PASS"
+
+# The arms, one per property, each asserting its defect positively.
+smoke-system-trees-control:
+	@$(MAKE) --no-print-directory smoke-system-trees SYSTREEARM=SYSTEM_TREES_WRITABLE=1 SYSTREEEXPECT=writable
+smoke-system-trees-prune-control:
+	@$(MAKE) --no-print-directory smoke-system-trees SYSTREEARM=SYSTEM_TREES_NO_PRUNE=1 SYSTREEEXPECT=stray-kept
+smoke-system-trees-rebuild-control:
+	@$(MAKE) --no-print-directory smoke-system-trees SYSTREEARM=SYSTEM_TREES_SIZE_ONLY=1 SYSTREEEXPECT=stale-kept
 
 .PHONY: smoke-installer
 smoke-installer:

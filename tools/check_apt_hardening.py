@@ -23,6 +23,13 @@ WHAT THIS CHECKS. Every package install in every workflow goes through
 a workflow is refused, so an eighty-eighth job cannot reintroduce the fragility by
 copying an older one, which is exactly how the first 86 came to look alike.
 
+AND THAT EVERY ATTEMPT IS BOUNDED. A retry runs only after a command exits, and a
+stalled download never exits. On 2026-10-07 archive.ubuntu.com stopped answering
+partway through a fetch, and every job of two pull requests' runs waited in
+`apt-get update` until its own timeout-minutes (up to 105) cancelled it; the retry
+never got a turn. So each `apt-get` in the action, and in the exempt job, must run
+under `timeout`, which turns a stall into a failed attempt.
+
 WHAT IT DOES NOT CHECK: that the action itself is correct. It checks that nothing
 bypasses it. The action carries no `|| true` and is the only thing that installs.
 
@@ -42,6 +49,23 @@ ACTION = ROOT / ".github" / "actions" / "apt" / "action.yml"
 INLINE_ALLOWED = {"security"}
 
 
+def unbounded_apt(text):
+    """Return each command line in `text` that runs apt-get outside `timeout`.
+
+    Comments are skipped: they name apt-get while explaining it. A line counts as
+    bounded only if `timeout` comes BEFORE `apt-get` on it, because only then is
+    apt-get the command being timed rather than something run beside it.
+    """
+    out = []
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if "apt-get" not in stripped or stripped.startswith("#"):
+            continue
+        if not re.search(r"\btimeout\b[^\n]*\bapt-get\b", stripped):
+            out.append(stripped)
+    return out
+
+
 def main():
     problems = []
 
@@ -54,6 +78,10 @@ def main():
                         f"repository lists, which is the whole point")
     if "retry" not in action:
         problems.append(f"{ACTION.relative_to(ROOT)}: does not retry")
+    for line in unbounded_apt(action):
+        problems.append(f"{ACTION.relative_to(ROOT)}: `{line}` is unbounded; run it "
+                        f"under `timeout`, or a stalled download holds the job "
+                        f"until its timeout-minutes and the retry never runs")
     if re.search(r"apt-get[^\n]*\|\|\s*true", action):
         problems.append(f"{ACTION.relative_to(ROOT)}: tolerates an apt failure with "
                         f"`|| true`; an install that reports success having "
@@ -88,6 +116,10 @@ def main():
                 problems.append(f"{wf.relative_to(ROOT)}: job `{jobname}` is exempt "
                                 f"from the shared action but does not strip the "
                                 f"vendor lists either")
+            for line in unbounded_apt(m.group(1)):
+                problems.append(f"{wf.relative_to(ROOT)}: job `{jobname}` is exempt "
+                                f"from the shared action, but `{line}` is unbounded; "
+                                f"run it under `timeout` as the action does")
 
     uses = sum(t.count("uses: ./.github/actions/apt")
                for t in (w.read_text(encoding="utf-8") for w in WORKFLOWS))

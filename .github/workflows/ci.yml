@@ -398,8 +398,8 @@ jobs:
       # apt-get, so any one of them could redden the run.
       - name: Every package install goes through the hardened action
         run: python3 tools/check_apt_hardening.py
-      # Five arms, including one for the exemption and one for the unmutated
-      # tree: four "is it caught" arms are satisfied by a checker that rejects
+      # Seven arms, including two for the exemption and one for the unmutated
+      # tree: six "is it caught" arms are satisfied by a checker that rejects
       # everything.
       - name: Falsify the checker in every direction
         run: ./tools/test_check_apt_hardening.sh
@@ -4817,8 +4817,12 @@ jobs:
             [ -e "$f" ] || continue
             grep -qi 'ubuntu\.com' "$f" || sudo rm -f "$f"
           done
-          retry sudo apt-get update
-          retry sudo apt-get install -y cppcheck flawfinder
+          # Each attempt is bounded for the reason given in .github/actions/apt:
+          # a stalled download never exits, so without a bound the retry above
+          # never gets a turn (2026-10-07, every job held to its timeout).
+          APT_NET=(-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+          retry sudo timeout --kill-after=10 180 apt-get "${APT_NET[@]}" update
+          retry sudo timeout --kill-after=10 600 apt-get "${APT_NET[@]}" install -y cppcheck flawfinder
           retry sh -c 'pipx install semgrep==1.179.0 || pip install semgrep==1.179.0'
           # Trivy — pinned release + checksum verification (avoids curl|sh)
           TRIVY_VERSION=0.72.0

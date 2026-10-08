@@ -384,6 +384,18 @@ def check_clear_on_screen(s):
         raise SessionFail("the clear drew characters onto the screen: row 0 does not "
                           "begin with the same `init: ` as row 1 (screendump "
                           f"{path})")
+    # AND NOTHING OF THE INSTALLER IS LEFT BESIDE THE GRID. On a framebuffer wider
+    # than 80 cells the installer's surface is centred, so its right-hand columns
+    # lie past the console's own grid, which starts at the left edge. After the
+    # clear nothing draws there, so every pixel must be dark. Until 2026-10-08 the
+    # installer's right border stood there beside the login banner.
+    right = ox + 80 * cw
+    if m and right < w:
+        lit = sum(1 for y in range(h) for x in range(right, w) if any(px[(y * w + x) * 3:(y * w + x) * 3 + 3]))
+        if lit:
+            raise SessionFail(f"the clear left {lit} lit pixels to the right of the console's "
+                              f"grid, where the installer's surface was (screendump {path})")
+        step(f"nothing is left to the right of the grid ({w - right} pixel columns, all dark)")
     step("the screen shows no stray characters after the clear")
 
 

@@ -173,7 +173,7 @@ DEFECT_FLAGS = \
 	KLOG_NARROW CONSOLE_NO_SCROLLBACK \
 	SERIAL_PRESENCE_UNCHECKED \
 	CONSOLE_BACKSPACE_NO_ERASE SHELL_BARE_UNKNOWN \
-	CONSOLE_NO_SCROLL CONSOLE_CLEAR_DRAWN \
+	CONSOLE_NO_SCROLL CONSOLE_CLEAR_DRAWN CONSOLE_CLEAR_KEEPS_SURFACE \
 	CONSOLE_NO_CURSOR \
 	CONSOLE_NO_RESUME \
 	CONSOLE_ESC_LITERAL \
@@ -3806,6 +3806,11 @@ CONSOLE_INPUT_SPIN ?= 0
 # well as sending to serial, so seven glyphs appeared before `init: the installer
 # finished`. Userspace-only. The arm for `make smoke-installer-clear`.
 CONSOLE_CLEAR_DRAWN ?= 0
+# CONSOLE_CLEAR_KEEPS_SURFACE=1 is CON_OP_CLEAR before 2026-10-08: it blanked the
+# cells and repainted them at the console's own origin, so on a framebuffer wider
+# than the grid the centred installer's right-hand columns stayed on screen.
+# Userspace-only. The arm for `make smoke-installer-clear-surface-control`.
+CONSOLE_CLEAR_KEEPS_SURFACE ?= 0
 
 # SHELL_BARE_UNKNOWN=1 is the shell before 2026-09-24: a builtin typed without its
 # operand (`touch`, `cat`, `cp`, ...) is reported as "Unknown command", because
@@ -5019,6 +5024,9 @@ USERSPACE_CFLAGS += -DCONSOLE_NO_KBD
 endif
 ifeq ($(CONSOLE_INPUT_SPIN),1)
 USERSPACE_CFLAGS += -DCONSOLE_INPUT_SPIN
+endif
+ifeq ($(CONSOLE_CLEAR_KEEPS_SURFACE),1)
+USERSPACE_CFLAGS += -DCONSOLE_CLEAR_KEEPS_SURFACE
 endif
 ifeq ($(CONSOLE_CLEAR_DRAWN),1)
 USERSPACE_CFLAGS += -DCONSOLE_CLEAR_DRAWN
@@ -13528,8 +13536,12 @@ smoke-installer:
 # installer's final clear it compares the screen's first two rows, which both
 # begin `init: `: until 2026-09-24 the clear drew its own escape sequence on the
 # screen in front of the first. The wire was always right, so only a screendump
-# can see it. The arm is CONSOLE_CLEAR_DRAWN=1.
-.PHONY: smoke-installer-clear smoke-installer-clear-control
+# can see it. The arm is CONSOLE_CLEAR_DRAWN=1. Under UEFI since 2026-10-08, so
+# the screen is a framebuffer wider than the grid and the installer's surface is
+# centred: the check also requires the band right of the grid to be dark, which
+# a clear of cells alone left holding the installer's border
+# (CONSOLE_CLEAR_KEEPS_SURFACE=1, smoke-installer-clear-surface-control).
+.PHONY: smoke-installer-clear smoke-installer-clear-control smoke-installer-clear-surface-control
 smoke-installer-clear:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 $(CLEARARM)
@@ -13537,6 +13549,7 @@ smoke-installer-clear:
 	@rm -f installer-clear.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-clear.img
 	@rm -f installer-clear-serial.log
 	@INSTALLER_CHECK_CLEAR=1 SESSION_DISK=installer-clear.img SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		SESSION_UEFI_CODE=$(OVMF_CODE) SESSION_UEFI_VARS=$(OVMF_VARS) \
 		INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) \
 		INSTALLER_FORMAT_STALL=$(INSTALLER_FORMAT_STALL) INSTALLER_FORMAT_CAP=$(INSTALLER_FORMAT_CAP) \
 		SESSION_SERIAL_LOG=installer-clear-serial.log BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
@@ -13556,6 +13569,18 @@ smoke-installer-clear-control:
 	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
 	fi; \
 	echo "CLEAR CONTROL: PASS - a clear that draws its escape sequence is caught"
+
+smoke-installer-clear-surface-control:
+	@out=$$($(MAKE) --no-print-directory smoke-installer-clear CLEARARM=CONSOLE_CLEAR_KEEPS_SURFACE=1 2>&1); rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "CLEAR CONTROL: FAIL - a clear that keeps the surface's pixels passed the gate"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "lit pixels to the right of the console's"; then \
+	    echo "CLEAR CONTROL: FAIL - it failed, but not on the band beside the grid."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "CLEAR CONTROL: PASS - a clear that leaves the installer beside the grid is caught"
 
 # ---- [G-13]: a slow disk is not a wedge, and the gate now says which ---------
 #

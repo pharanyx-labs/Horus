@@ -87,6 +87,7 @@ here.
 
 ### Fixed
 
+- After an install on a framebuffer wider than 80 columns, the installer's right border stayed on the screen beside the login banner: the console's clear repainted cells, not the screen. (#513)
 - On a framebuffer, the installer's progress panel lost six of its eight rows to a black box while the password was hashed; it is now drawn inside the installer's frame. (#504)
 - A login that unlocked the disk left "Turning your password into a key" on the screen for good; the panel is now the installer's alone, and a login says it is checking the password instead. (#504)
 - A disk started by UEFI GRUB came up with an empty `/bin`: the kernel dropped every boot module below 1 MiB, where that GRUB puts small ones, and the install entry got no modules at all because the media build read the module list only once. (#506)

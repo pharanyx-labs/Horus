@@ -3681,6 +3681,12 @@ int storage_authorize_format(int index, uint64_t volume_blocks, uint32_t flags, 
     g_format_flags      = flags;
     g_format_swap       = swap_blocks;
     g_format_authorized = 1;
+    /* THE INSTALLER MAY NOW SHOW THE FORMAT PROGRESS PANEL, and from here on in
+     * this boot: it is the one program that repaints its screen when the work
+     * returns, which is what removes the panel (g_prog_permitted, terminal.c).
+     * Keyed on the authorised format rather than on how the machine booted,
+     * because every install path comes through here and nothing else does. */
+    console_progress_permit(1);
     return 0;
 }
 

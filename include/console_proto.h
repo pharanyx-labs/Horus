@@ -154,6 +154,26 @@
 #define CON_ROWS  24
 #define CON_COLS  80
 
+/* WHERE A FULL-SCREEN PROGRAM'S SURFACE SITS on a grid of `rows` rows: CON_ROWS
+ * high (or the whole grid, if that is shorter) and centred. ONE DEFINITION FOR
+ * BOTH OF ITS READERS: console_server, which draws the surface there and blanks
+ * the rows around it, and the kernel's format progress panel, which draws inside
+ * it. Until 2026-10-08 the panel was placed by its own rule (the bottom of the
+ * grid), which on a framebuffer put six of its eight rows OUTSIDE the surface,
+ * where console_server's tidying blanked them: a black box over the panel for
+ * the whole of the password-hashing phase, the one phase that draws it once and
+ * then works for a minute. Two rules for one rectangle is how they came apart. */
+static inline unsigned con_surface_rows(unsigned rows) { return rows < CON_ROWS ? rows : CON_ROWS; }
+static inline unsigned con_surface_top(unsigned rows) { return (rows - con_surface_rows(rows)) / 2u; }
+
+/* The surface rows the kernel's format progress panel draws in, while the
+ * installer is blocked inside SYS_STORAGE_FORMAT: rows 11-18, which the
+ * installer's "Installing" screen (screen_working) leaves empty for it. Inside
+ * the surface, nothing else paints them until the installer returns and redraws
+ * its own screen; outside it, console_server's tidying would. */
+#define CON_PROGRESS_ROW  11u
+#define CON_PROGRESS_ROWS 8u
+
 struct con_request {
     uint32_t magic;                 /* CON_PROTO_MAGIC */
     uint32_t op;

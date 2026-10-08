@@ -1497,6 +1497,150 @@ def live_locked(disk):
         s.close()
 
 
+PANEL_ROW, PANEL_ROWS, PANEL_L, PANEL_R = 11, 8, 2, 77   # include/console_proto.h, terminal.c
+
+
+def _ppm(path):
+    d = open(path, "rb").read()
+    head = d.split(b"\n", 3)
+    w, h = map(int, head[1].split())
+    return w, h, head[3]
+
+
+def panel(disk):  # noqa: ARG001 - uniform scenario signature
+    """The format progress panel is WHOLE on the screen in every frame it is shown.
+
+    The kernel paints the panel while the installer is blocked in the format.
+    Until 2026-10-08 it sat at the bottom of the grid, which on a framebuffer is
+    mostly outside the installer's centred surface, where console_server blanks
+    rows whenever it tidies around that surface: six of the panel's eight rows
+    went black, and stayed black through the password-hashing phase, which
+    draws the panel once and then works for a minute. A laptop showed it as "an
+    empty black box hiding half of the progress panel", and nothing on the wire
+    could: only the screen can.
+
+    So this reads the screen, at the place the shared rule puts the panel
+    (surface top + CON_PROGRESS_ROW, inset to columns 2-77), from geometry the
+    kernel and console_server print rather than from numbers assumed here. In
+    every frame that shows the panel, EVERY cell of the panel's bottom border
+    and of its left border must have lit pixels: the box is whole or the
+    frame is a failure. A frame SHOWS the panel when its top border runs unbroken
+    across columns 2-77, which nothing the installer draws does (a title-row test
+    was tried first and fired on the "Installed" screen's text). At least three
+    such frames must be seen, so a panel that never appears there cannot pass.
+    CONSOLE_PROGRESS_BELOW_SURFACE=1 is the arm.
+    """
+    import re
+    s = Serial(ISO)
+    shots = os.environ.get("INSTALLER_SHOTS", "/tmp")
+    try:
+        s.expect("init: this machine has a disk and no volume; running the installer", BOOT)
+        m = re.search(r"fb: console on the framebuffer, 80x(\d+) cells, (\d+)x(\d+) font at (\d+)x, origin \((\d+),(\d+)\)", s.buf)
+        f = re.search(r"CONSOLE_FB: linear framebuffer (\d+)x(\d+)x", s.buf)
+        if not m or not f:
+            raise SessionFail("no framebuffer geometry on the wire: this scenario needs a UEFI framebuffer")
+        rows, fw, fh, sc, ox, oy = (int(x) for x in m.groups())
+        fbw = int(f.group(1))
+        cw, ch = fw * sc, fh * sc
+        cx = (fbw - 80 * cw) // 2 if fbw > 80 * cw else 0
+        top = (rows - min(rows, 24)) // 2 + PANEL_ROW
+        step(f"panel expected at grid rows {top}-{top + PANEL_ROWS - 1}, columns {PANEL_L}-{PANEL_R}")
+
+        answer_survey(s)
+        answer_accounts(s)
+        answer_review_and_confirm(s)
+        s.expect("INSTALLER: formatting", STEP)
+
+        def cell_lit(px, w, row, col):
+            x0, y0 = cx + col * cw, oy + row * ch
+            for y in range(y0, y0 + ch):
+                base = (y * w + x0) * 3
+                if any(px[base:base + cw * 3]):
+                    return True
+            return False
+
+        seen, n, t0 = 0, 0, time.time()
+        while time.time() - t0 < FORMAT_CAP:
+            s._pump(0.25)
+            path = os.path.join(shots, "panel-%04d.ppm" % n)
+            n += 1
+            s.qmp("screendump", filename=path)
+            for _ in range(40):
+                if os.path.exists(path) and os.path.getsize(path) > 0:
+                    break
+                time.sleep(0.05)
+            time.sleep(0.2)
+            w, h, px = _ppm(path)
+            shown = all(cell_lit(px, w, top, c) for c in range(PANEL_L, PANEL_R + 1))
+            if shown:
+                missing = [c for c in range(PANEL_L, PANEL_R + 1)
+                           if not cell_lit(px, w, top + PANEL_ROWS - 1, c)]
+                missing += [-r for r in range(1, PANEL_ROWS - 1) if not cell_lit(px, w, top + r, PANEL_L)]
+                if missing:
+                    raise SessionFail(f"the progress panel is not whole on the screen ({path} kept): "
+                                      f"{len(missing)} border cells dark, first {missing[:6]}")
+                seen += 1
+                if seen == 1:     # the first whole panel is kept as the evidence of a pass
+                    os.replace(path, os.path.join(shots, "panel-sample.ppm"))
+                    continue
+            os.unlink(path)       # a failing frame raised above, and is kept
+            if "INSTALLER: PASS installed" in s.buf or "INSTALLER: FAIL" in s.buf:
+                break
+        if seen < 3:
+            raise SessionFail(f"the progress panel was whole in only {seen} frame(s) where it belongs")
+        step(f"the progress panel was whole in all {seen} frames it was shown in")
+        expect_installed(s)
+    finally:
+        keep_serial(s.buf)
+        s.close()
+
+    # AND NOTHING IS LEFT BEHIND BY A LOGIN (2026-10-08, the laptop's first
+    # login on a disk that started on its own: the key derivation drew "Turning
+    # your password into a key" and the box never went away, because nothing
+    # repaints a login screen). Boot the installed machine, log in, and read
+    # the screen once the login has finished: no pixel row may hold an unbroken
+    # lit run 60 cells long, which a panel's border is and nothing a shell login
+    # draws comes near (the banner's rule is 38). PANEL_LOGIN_EXPECT=left is the
+    # arm (CONSOLE_PROGRESS_AT_LOGIN=1), which requires the run.
+    expect_left = os.environ.get("PANEL_LOGIN_EXPECT") == "left"
+    s = Serial(ISO)
+    try:
+        if not login(s, "root", PASSWORD, BOOT):
+            raise SessionFail("the installed password did not log in")
+        s._pump(3.0)
+        path = os.path.join(shots, "panel-login.ppm")
+        s.qmp("screendump", filename=path)
+        for _ in range(40):
+            if os.path.exists(path) and os.path.getsize(path) > 0:
+                break
+            time.sleep(0.05)
+        time.sleep(0.2)
+        w, h, px = _ppm(path)
+        longest = 0
+        for y in range(h):
+            run = 0
+            row = px[y * w * 3:(y + 1) * w * 3]
+            for x in range(w):
+                if row[3 * x] | row[3 * x + 1] | row[3 * x + 2]:
+                    run += 1
+                    longest = max(longest, run)
+                else:
+                    run = 0
+        left = longest >= 60 * cw
+        if left and not expect_left:
+            raise SessionFail(f"a progress panel was left on the screen after a login "
+                              f"({path} kept; a lit run of {longest} px)")
+        if expect_left and not left:
+            raise SessionFail(f"the arm left no panel after the login (longest lit run {longest} px)")
+        step("after the login, no progress panel was left on the screen" if not left
+             else "the arm left the panel on the screen after the login, as required")
+        if not left:
+            os.unlink(path)
+    finally:
+        keep_serial(s.buf)
+        s.close()
+
+
 def bootdisk(disk):
     """Install a disk that boots itself, then start the machine from it ALONE.
 
@@ -1626,6 +1770,10 @@ def run():
         return 0
     if mode == "esppin":
         esppin(disk)
+        print("INSTALLER_SESSION: PASS")
+        return 0
+    if mode == "panel":
+        panel(disk)
         print("INSTALLER_SESSION: PASS")
         return 0
     if mode == "bootdisk":

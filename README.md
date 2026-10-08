@@ -251,7 +251,7 @@ test does not exist or does not run.
 | Layer | What it covers |
 |---|---|
 | Security properties | 117 numbered properties, each bound to a witness by `tools/check_invariants.py` |
-| QEMU integration tests | 439 `smoke-*` targets: 208 base gates and 231 control arms |
+| QEMU integration tests | 442 `smoke-*` targets: 209 base gates and 233 control arms |
 | Control arms | A build that puts a defect back on purpose; CI requires its gate to go red against it |
 | Kani | 34 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
 | Miri | The security core's tests, interpreted for undefined behaviour on every pull request |

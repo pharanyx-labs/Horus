@@ -426,14 +426,26 @@
 # smoke-kdiag-ioport read it there: 1 CI run in 74 reported a refusal missing
 # beside a dump that showed it. Core because it is the fault path and the
 # kernel's own channel; a reporter cannot be moved out of the code it reports on.
-# 2026-10-08: 10863 -> 10907, +44, the disk that boots itself (S115), in
+# 2026-10-08: 10863 -> 10878, +15, terminal.c's format progress panel. It is
+# placed by who owns the screen: inside the installer's surface when a ring-3
+# console does (outside it, console_server's tidying blanked six of its eight
+# rows), at the bottom as before when the kernel still does (the boot-time
+# format, where a centred panel left debris beside the log). The rule for the
+# surface itself moved into console_proto.h and is not counted here (headers
+# are not), which is the measurement artefact the 2026-09-11 entry describes.
+# 2026-10-08: 10878 -> 10883, +5, the same day and the same panel: it is now
+# drawn while ring 3 owns the screen only after a format was authorised
+# (console_progress_permit), because nothing but the installer repaints the
+# screen after it, and a login left "Turning your password into a key" there
+# for good on the laptop.
+# 2026-10-08: 10883 -> 10927, +44, the disk that boots itself (S115), in
 # main.c: parsing `horus.esp=<sha256>` off the measured command line (the pin
 # the ESP image is checked against, and so the trust anchor for what an install
 # writes to the disk's EFI system partition), the accessor that hands it out,
 # leaving the image out of the module manifest check, and the BUILD LABEL line
 # of a DEBUG_BUILD. The check itself, the evidence and its formatting were moved
 # into storage.c (service), their only user, which took this from +96 to +44.
-core_budget_loc: 10907
+core_budget_loc: 10927
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

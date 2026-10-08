@@ -2471,6 +2471,9 @@ void kmsg_clock_init(void);         /* calibrate the TSC boot clock; call once, 
 void console_progress(const char *title, const char *why1, const char *why2,
                       uint64_t done, uint64_t total);
 void console_progress_note(const char *note);
+/* Whether the format progress panel may be drawn while a ring-3 console owns the
+ * screen: only on a boot whose installer runs (set by storage_init). */
+void console_progress_permit(int on);
 
 uint64_t kmsg_uptime_ticks(void);   /* whole PIT ticks since boot -- quantised, see terminal.c */
 #ifdef CLOCK_TSC_RESOLUTION

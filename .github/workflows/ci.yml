@@ -4243,6 +4243,16 @@ jobs:
         run: rustup target add x86_64-unknown-none
       - name: Boot PERM_SELFTEST kernel and assert POSIX owner/group/other rwx is enforced against the kernel-attested uid
         run: make smoke-fs-perms
+      # S113, [HORUS-20261008-01]. A directory is fs_dirent records in ordinary
+      # inode data, and a file's bytes are its owner's; until 2026-10-08 no
+      # directory request checked its operand's TYPE, so a user could forge an
+      # entry naming root's /bin in a file they own and DELETE through it.
+      - name: A file is never read as a directory, so a forged entry frees nothing
+        run: make smoke-fs-dir-operand
+      # The arm's marker is the report's own attack, the first stage: DELETE
+      # through a forged entry accepted, root's file freed.
+      - name: Control arm — fs_server reads any inode as a directory
+        run: make smoke-fs-dir-operand-control
 
   smoke-fs-conc:
     name: QEMU filesystem multi-client concurrency self-test (headless)

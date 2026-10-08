@@ -16,6 +16,7 @@ here.
 
 ### Security
 
+- The system trees (`/bin`, `/sbin`, `/lib`, `/usr`) are rebuilt from the verified boot modules at every boot, and `fs_server` refuses every change to them, root included (S116). (#506)
 - A user could free any inode, `/bin` included, by forging a directory entry in a file they own; `fs_server` now refuses any file as a directory operand (`[HORUS-20261008-01]`, S113). (#502)
 - The tools that build and check Horus are pinned. (#490)
 - A task record with kernel-half bounds would have made a kernel address the task's own. (#487)
@@ -26,6 +27,7 @@ here.
 
 ### Added
 
+- An installed machine has its programs on it: the install media carries GNU coreutils, TCC and their man pages, with the licence texts and a written source offer in `/usr/share/doc`. (#506)
 - An installed disk starts on its own under UEFI: the installer lays out GPT, an EFI system partition, swap and the volume, with the swap and volume sizes asked for (S115). (#505)
 - The kernel mounts a volume from a GPT partition, and refuses a partition table that does not verify (S114). (#503)
 - Every Kani proof's control arm runs nightly. (#493)
@@ -83,6 +85,7 @@ here.
 
 - On a framebuffer, the installer's progress panel lost six of its eight rows to a black box while the password was hashed; it is now drawn inside the installer's frame. (#504)
 - A login that unlocked the disk left "Turning your password into a key" on the screen for good; the panel is now the installer's alone, and a login says it is checking the password instead. (#504)
+- A disk started by UEFI GRUB came up with an empty `/bin`: the kernel dropped every boot module below 1 MiB, where that GRUB puts small ones, and the install entry got no modules at all because the media build read the module list only once. (#506)
 - A stalled Ubuntu package mirror held every CI job until its timeout, because a retry runs only after a command exits; each apt attempt is now bounded. (#501)
 - `smoke-kdiag-ioport` could report a refusal missing because ring-3 output cut the kernel's kill report in half. (#498)
 - The roadmap called nightly fuzzing and full Kani not started after both had landed. (#497)

@@ -247,9 +247,9 @@ window.HORUS_SEARCH = [
 "k": 3
 },
 {
-"t": "4The shipped programs are not on the disk",
+"t": "4A program's execute right is advisory",
 "p": "Limitations",
-"u": "limitations.html#4the-shipped-programs-are-not-on-the-disk",
+"u": "limitations.html#4a-programs-execute-right-is-advisory",
 "k": 3
 },
 {

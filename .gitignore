@@ -233,3 +233,4 @@ horus-audit-*.pdf
 # future images/ directory elsewhere in the tree (under site/assets/, or
 # docs/) is not silently ignored along with it.
 /images/
+userspace/doc/

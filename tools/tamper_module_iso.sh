@@ -40,7 +40,7 @@ for pair in "$@"; do
     printf '    module2 /boot/%s %s\n' "$base" "$dest" >> "$stage/mods.txt"
 done
 
-awk '/@HORUS_MODULES@/{while((getline l < "'"$stage"'/mods.txt")>0) print l; next} {print}' \
+awk '/^@HORUS_MODULES@$/{while((getline l < "'"$stage"'/mods.txt")>0) print l; close("'"$stage"'/mods.txt"); next} {print}' \
     "$cfg" > "$stage/grub.cfg"
 
 # THE SAME MEASURED BOOT IMAGE THE REAL ISO GETS, since 2026-09-11 (S92). This

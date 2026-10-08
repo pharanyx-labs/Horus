@@ -13,15 +13,12 @@ authority (decision 1), and the capability change lands before any format change
 
 | Question | Today |
 |---|---|
-| What is on an installed volume | An encrypted, Merkle-verified filesystem holding `/etc`, `/home`, `/lib` and `/usr`, and the sealed account table. **No program is on it** |
-| Where programs come from | `init`, `shell`, `fs_server`, `console_server`, `dev_server`, `installer` and `netd` are **compiled into the kernel image** and spawned by name. Nothing is loaded from the volume |
-| What `/bin` is | On a `make run` build, a view of GRUB boot modules (GNU coreutils, TCC). **The shipping `horus.iso` and `install.iso` carry none**, deliberately: the Makefile keeps them "module-free (GPLv3-clean)", and Horus is MIT |
+| What is on an installed volume | An encrypted, Merkle-verified filesystem holding the system trees (`/bin`, `/sbin`, `/lib`, `/usr`), `/etc`, `/home` and `/var`, and the sealed account table |
+| Where programs come from | `init`, `shell`, `fs_server`, `console_server`, `dev_server`, `installer` and `netd` are **compiled into the kernel image** and spawned by name (section 3). User commands that are programs (GNU coreutils, TCC) run from `/bin` on the volume |
+| What `/bin` is | A system tree `fs_server` rebuilds at every boot from the boot modules the kernel verified: a file whose bytes match its module is kept, any other is rewritten, anything no module names is removed, and every change to it is refused, root included (**S116**, decision 7). The install media carries GNU coreutils and TCC as modules, and so does `make run`; the plain `horus.iso` carries none |
 | How a program is trusted | The kernel image and every boot module are checked against SHA-256 pins inside the measured boot image (**S92**), measured into `PCR[4]`/`PCR[8]` |
 | How the machine boots | From its own disk under UEFI, when installed from `install.iso`: the installer lays out the GPT and EFI system partition of section 6 (S114, S115). Verified under QEMU's OVMF and on the IdeaPad 1 14IGL05's own firmware. The install media's menu offers live boot and install only, and since #472 a live boot opens no disk, so it cannot start an installed system |
-| Man pages | Boot modules under `/usr/share/man`, again only on `make run` builds |
-
-So "copy the binaries onto the disk" is not a copy of something that is there. The shipping
-system's programs live inside the kernel, and its user commands are shell builtins.
+| Man pages | Boot modules under `/usr/share/man`, a system tree like `/bin`. The licence texts and the source offer are in `/usr/share/doc` |
 
 ## 2. The layout proposed
 
@@ -76,9 +73,9 @@ the loader has to decide whether a file there may execute.
   (A) leads anyway once users compile their own programs with TCC, and it can be added later
   without changing (A).
 
-Independently of the choice, `/bin`, `/sbin` and `/lib` should be **read-only at run time**: the
-boot policy derives only read capabilities for them, so an update is an explicit act with its own
-authority, not an ordinary file write.
+Independently of the choice, `/bin`, `/sbin` and `/lib` are **read-only at run time** (decision 7):
+`fs_server` refuses every change to them, for every client, so an update is new install media, not
+an ordinary file write.
 
 ## 5. The smaller decisions
 
@@ -87,16 +84,14 @@ at boot, rather than a RAM-backed filesystem, because the volume is already encr
 `/tmp` reaches the disk in plaintext) and a RAM filesystem would be a second implementation to
 secure. `/var/tmp` is the place for scratch that must survive.
 
-**What goes in `/bin` at all.** The only user programs that are files today are GNU coreutils
-(GPLv3) and TCC (LGPL). Shipping them in the install image puts GPL code in an MIT project's
-release for the first time. As separate programs this is aggregation, not a combined work, but it
-carries obligations: the licence texts and an offer of the exact source for every binary shipped.
-**This is a licensing decision for the maintainer, not a technical one.** The alternatives are
-MIT-licensed replacements (the shell's builtins already cover `ls`, `cat` and others) or shipping
-`/bin` with only the shell until those exist.
+**What goes in `/bin` at all.** The only user programs that are files are GNU coreutils (GPLv3)
+and TCC (LGPL). As separate programs beside the MIT system this is aggregation, not a combined
+work, and it carries the obligations decision 2 meets: `/usr/share/doc` holds the licence texts
+(`horus/LICENSE`, `coreutils/COPYING`, `tcc/COPYING`) and `SOURCE`, a written offer naming the
+commit whose `userspace/ports` tree is the exact source of every binary shipped.
 
-**Man pages** are copied from the same source the `make run` build uses, `userspace/man`, into
-`/usr/share/man`. The same licence question applies to the pages for GNU programs.
+**Man pages** come from the same source the `make run` build uses, `userspace/man`, and land in
+`/usr/share/man`.
 
 ## 6. The bootloader, so the disk boots on its own
 
@@ -196,12 +191,18 @@ key: a hash pinned in the measured image needs none (decision 1).
    system partition, a swap partition reserved for encrypted swap, and the volume, each sized by
    the operator. Separate system and home volumes wait for filesystem phase 2, since the kernel
    mounts one volume today and phase 2 rebuilds the store anyway.
+7. **The system trees are rebuilt at every boot from the verified modules, and nobody can change
+   them, root included.** `/bin`, `/sbin`, `/lib`, `/usr`, `/usr/share`, `/usr/share/man` and
+   `/usr/share/doc` hold exactly the boot modules that passed the kernel's manifest (S96), whose
+   own hash is pinned in the measured image (S92), so decision 1's rule holds by what the trees
+   contain rather than by a check in the loader, which is handed bytes, not paths. An update is
+   new install media. A task can still spawn bytes it read from anywhere (`docs/LIMITATIONS.md`
+   1.23) until programs start from file capabilities. **S116**.
 
 ## 9. Order of work
 
-1. The bootloader and partition table (decision 6).
-2. The layout and the installer copying files, with **(A)**'s manifest check in the loader, as
-   one change: executing from the disk must never exist without the check.
+1. The bootloader and partition table (decision 6). Done (#503, #505).
+2. The layout and the programs on the disk, held to the manifest by decision 7. Done (#506).
 3. `/etc/passwd` and `/etc/shadow` with the ring-3 `auth_server`.
 
 Each is its own PR with its own gates and control arms. The copy on write and extents work from
@@ -211,9 +212,12 @@ Each is its own PR with its own gates and control arms. The copy on write and ex
 
 Each step names the gate that would go red if it were false before it is built:
 
-- **A file not in the manifest does not run.** A gate that writes a program to `/bin` through the
-  filesystem and requires the loader to refuse it; the arm skips the manifest check and must run it.
-- **The disk boots on its own.** A gate that installs onto a blank disk image and boots QEMU with
-  OVMF from that image alone, with no install media attached.
+- **Nothing but a verified module is in the system trees.** Built: `make smoke-system-trees`
+  installs from one media, boots newer media, and requires the new programs, a stray file gone,
+  and every change root attempts in `/bin` refused (S116); three arms make each half writable,
+  unpruned or trusting of size alone.
+- **The disk boots on its own.** Built: `make smoke-install-boot-disk` installs onto a blank disk
+  image under OVMF, then boots that image alone with no install media attached, logs in and runs
+  `seq` from `/bin` (S114, S115, S116).
 - **A live boot writes nothing.** Built: `make smoke-live-locked` hashes the whole disk image
   before and after a live boot that logs in, and requires them to be equal (S110).

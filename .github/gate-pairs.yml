@@ -105,6 +105,10 @@ control_arms:
   smoke-fs-dir-operand-control: smoke-fs-dir-operand
   smoke-gpt-volume-control: smoke-gpt-volume
   smoke-install-boot-disk-control: smoke-install-boot-disk
+  smoke-install-boot-disk-lowmod-control: smoke-install-boot-disk
+  smoke-system-trees-control: smoke-system-trees
+  smoke-system-trees-prune-control: smoke-system-trees
+  smoke-system-trees-rebuild-control: smoke-system-trees
   smoke-install-esp-pin-control: smoke-install-esp-pin
   smoke-ls-path-control: smoke-ls-path
   smoke-boot-media-control: smoke-boot-media
@@ -245,6 +249,7 @@ control_arms:
   smoke-boot-module-reserve-control: smoke-boot-module-reserve
   smoke-boot-module-reverify-control: smoke-boot-module-reserve
   smoke-boot-module-image-control: smoke-boot-module-reserve
+  smoke-boot-module-tramp-control: smoke-boot-module-reserve
   smoke-resume-guard-ist-control: smoke-resume-guard-ist
   smoke-resume-guard-legacy: smoke-resume-guard
   smoke-resume-guard-negative-control: smoke-resume-guard-negative
@@ -398,6 +403,7 @@ gates:
   - smoke-fs-dir-operand
   - smoke-gpt-volume
   - smoke-install-boot-disk
+  - smoke-system-trees
   - smoke-install-esp-pin
   - smoke-fs-persist
   - smoke-fs-wal

@@ -445,7 +445,14 @@
 # leaving the image out of the module manifest check, and the BUILD LABEL line
 # of a DEBUG_BUILD. The check itself, the evidence and its formatting were moved
 # into storage.c (service), their only user, which took this from +96 to +44.
-core_budget_loc: 10927
+# 2026-10-08: 10927 -> 10933, +6, programs on the disk (S96, S116), in main.c:
+# mb_record_module keeps modules below 1 MiB (UEFI GRUB puts small ones there;
+# dropping them left an installed disk with half its programs) except in the
+# legacy hole, with the BOOT_MODULE_LOW_DROPPED arm, and the placement check
+# halts on a module over the AP trampoline page, which those modules can now
+# reach. The image probe and the new trampoline probe were folded into one
+# helper, which kept this from +22. Core because it is the boot module table.
+core_budget_loc: 10933
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

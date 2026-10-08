@@ -93,6 +93,9 @@ The page pool starts at `USER_PHYS_BASE` (16 MiB, above the kernel image) and is
 firmware memory map. Three regions are held back from it as one reserved window: the 8 MiB loader
 staging buffer, the RAM volume's backing store and the untyped arena (§4). The window moves clear
 of any boot module GRUB placed there, and every frame a module occupies is held back too (S96).
+Modules below 1 MiB are kept, since UEFI GRUB puts small ones in conventional memory there, and a
+module over the AP trampoline page, which the kernel writes when it starts the other CPUs, halts
+the boot as one over the kernel image does.
 The kernel stacks are mapped from ordinary pool frames on first use. The kernel image itself must
 end below `USER_PHYS_BASE`, and `.bss` has an exact budget (`.github/image-budget.yml`).
 
@@ -547,7 +550,11 @@ names, directories and permissions over the kernel's `(inode, logical block)` ob
 request is authorised against the uid the kernel recorded for the sender at login
 (`SYS_IPC_SENDER`), never a claim from the client (S13, S14). A file's mode may be set by its owner
 or root, its owner by root alone (S77), and every account gets a home directory it owns (S78). It
-provisions `/bin` and `/usr/share/man` from verified boot modules once the volume is unlocked.
+rebuilds the system trees (`/bin`, `/sbin`, `/lib`, `/usr` and below) from the verified boot
+modules once the volume is open: a file that matches its module byte for byte stays, any other is
+rewritten, and anything no module names is removed. Every request that would change a file or an
+entry in those trees is refused before its permission check, for every client, root included
+(S116), so an update is new install media.
 The capability filesystem of `docs/design/filesystem.md` will replace uid authorisation with
 capabilities (roadmap 2.10).
 

@@ -438,10 +438,12 @@ static void boot_module_halt(const struct boot_module *m, const char *what) {
  *
  * boot_module_verify_all hashes each payload ONCE and the read syscalls then
  * consult only the flag, so "verified" means "these bytes, for the rest of the
- * boot" only while nothing else writes them. Two regions below PHYS_POOL_CEIL
+ * boot" only while nothing else writes them. Three regions below PHYS_POOL_CEIL
  * are written by the kernel without consulting the module table:
  *
  *   - the kernel image, [_boot_lma_start, __bss_end);
+ *   - the AP trampoline page, [AP_TRAMP_PHYS, + PAGE_SIZE), which UEFI GRUB can
+ *     reach since modules below 1 MiB are accepted (mb_record_module);
  *   - the page pool's base reserves, [pool_reserve_base(), + POOL_RESERVE_PAGES):
  *     loader staging, the RAM vdisk and the untyped arena. Every kernel object
  *     retyped at boot lives in the last of these.
@@ -493,6 +495,10 @@ static void boot_module_placement_check(void) {
             boot_module_halt(m, "overlaps the kernel image");
         if (m->start < reserve_hi && m->end > reserve_lo)
             boot_module_halt(m, "overlaps the page pool's base reserves");
+        /* smp_start_aps copies the trampoline and its cells into this page
+         * after boot_module_reverify_all has run, so only this test covers it. */
+        if (m->start < AP_TRAMP_PHYS + PAGE_SIZE && m->end > AP_TRAMP_PHYS)
+            boot_module_halt(m, "overlaps the AP trampoline page");
     }
 #endif
 }
@@ -549,20 +555,21 @@ void boot_module_reverify_all(void) {
     print(line);
 }
 
-#ifdef BOOT_MODULE_IMAGE_PROBE
-/* SELFTEST, never ship. GRUB never places a module inside the kernel image, so
- * the image half of boot_module_placement_check cannot be reached by staging a
- * real one. This records a synthetic module over the first page of .text, as a
- * broken or hostile loader would describe it, so smoke-boot-module-reserve can
- * require the halt. It names bytes the kernel owns and is never in the manifest,
- * so even a kernel that failed to halt would refuse to serve it. */
-static void boot_module_image_probe(void) {
-    extern uint8_t __text_start[];
+#if defined(BOOT_MODULE_IMAGE_PROBE) || defined(BOOT_MODULE_TRAMP_PROBE)
+/* SELFTEST, never ship. GRUB never places a module inside the kernel image, and
+ * QEMU's GRUB has not been seen to use the AP trampoline page, so neither half of
+ * boot_module_placement_check can be reached by staging a real module. This
+ * records a synthetic one-page module where the kernel writes, as a broken or
+ * hostile loader would describe it (BOOT_MODULE_IMAGE_PROBE: the first page of
+ * .text; BOOT_MODULE_TRAMP_PROBE: AP_TRAMP_PHYS, reachable by a real loader now
+ * that modules below 1 MiB are kept), so smoke-boot-module-reserve can require
+ * the halt. It names bytes the kernel owns and is never in the manifest, so even
+ * a kernel that failed to halt would refuse to serve it. */
+static void boot_module_probe(uint64_t start, const char *name) {
     if (g_boot_module_count >= MAX_BOOT_MODULES) return;
     struct boot_module *m = &g_boot_modules[g_boot_module_count];
-    m->start = virt_to_phys(__text_start);
-    m->end   = m->start + PAGE_SIZE;
-    const char *name = "image-probe";
+    m->start = start;
+    m->end   = start + PAGE_SIZE;
     uint32_t i = 0;
     while (name[i] && i < BOOT_MODULE_NAME_MAX - 1) { m->name[i] = name[i]; i++; }
     m->name[i] = 0;
@@ -581,14 +588,25 @@ static void mb_record_module(const uint8_t *info, uint32_t off, uint32_t tag_siz
     uint64_t start = *(const uint32_t *)(info + off + 8);
     uint64_t end   = *(const uint32_t *)(info + off + 12);
     if (end <= start) return;
-    /* GRUB places modules upward from the end of the kernel image. Accept anything
-     * in low RAM above 1 MiB (the BIOS/real-mode area) and within the PHYS_KVA
-     * window, so the pager can reach it. WHERE it is gets handled separately, once
-     * all are recorded: the pool's base reserves are placed clear of every module
-     * (pool_reserve_base), a module's frames in the pool are held back from the
-     * free list (phys_in_boot_module), and one in the kernel image halts the boot
+    /* Accept anything within the PHYS_KVA window, so the pager can reach it,
+     * except the legacy hole [0xA0000, 1 MiB): video memory and ROM, not RAM, and
+     * the kernel writes VGA text there. Under BIOS, GRUB places modules upward
+     * from the end of the kernel image; under UEFI it puts small ones in
+     * conventional memory below 640 KiB. Until 2026-10-08 everything below 1 MiB
+     * was dropped here, so a disk booted by UEFI GRUB came up with half its
+     * programs and an empty /bin.
+     *
+     * WHERE it is gets handled separately, once all are recorded: the pool's base
+     * reserves are placed clear of every module (pool_reserve_base), a module's
+     * frames in the pool are held back from the free list (phys_in_boot_module),
+     * and one in the kernel image or the AP trampoline page halts the boot
      * (boot_module_placement_check). One below the pool base needs no reservation. */
-    if (start < 0x100000ULL) return;                 /* below usable RAM */
+#ifdef BOOT_MODULE_LOW_DROPPED
+    /* CONTROL ARM, never ship. The pre-2026-10-08 rule: nothing below 1 MiB, so
+     * the small programs UEFI GRUB puts in conventional memory are lost. */
+    if (start < 0x100000ULL) return;
+#endif
+    if (start < 0x100000ULL && end > 0xA0000ULL) return;   /* the legacy hole */
     if (end > PHYS_POOL_CEIL) return;                /* unreachable through PHYS_KVA */
 
     struct boot_module *m = &g_boot_modules[g_boot_module_count];
@@ -862,7 +880,10 @@ void kernel_main(uint32_t mb_info) {
     /* Before the hash, and before paging_init: a module lying where the kernel is
      * about to write cannot stay the bytes the hash approved. Halts if so. */
 #ifdef BOOT_MODULE_IMAGE_PROBE
-    boot_module_image_probe();
+    { extern uint8_t __text_start[]; boot_module_probe(virt_to_phys(__text_start), "image-probe"); }
+#endif
+#ifdef BOOT_MODULE_TRAMP_PROBE
+    boot_module_probe(AP_TRAMP_PHYS, "tramp-probe");
 #endif
     boot_module_placement_check();
     /* Integrity-check the modules before anything can read one. Runs here, right

@@ -41,7 +41,7 @@ trap 'rm -rf "$WORK"' EXIT INT TERM
 # another build has another serial, so GRUB cannot settle on one.
 SERIAL=$(sha256sum "$KERNEL" | cut -c1-8)
 ESP_UUID="${SERIAL:0:4}-${SERIAL:4:4}"
-awk -v mods="$MODS" '/@HORUS_MODULES@/{while((getline l < mods)>0) print l; next} {print}' \
+awk -v mods="$MODS" '/^@HORUS_MODULES@$/{while((getline l < mods)>0) print l; close(mods); next} {print}' \
     "$HERE/grub-installed.cfg" | sed "s/@HORUS_ESP_UUID@/$ESP_UUID/" > "$WORK/grub.cfg"
 GRUB_DIR="$GRUB_DIR" EFI_GRUB_DIR="$EFI_GRUB_DIR" EFI_BIN_OUT="$WORK/BOOTX64.EFI" \
     "$HERE/tools/mkbootimg.sh" "$KERNEL" "$WORK/grub.cfg" "$WORK/unused-eltorito.img" >/dev/null

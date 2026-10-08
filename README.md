@@ -132,15 +132,15 @@ line need no capability, and the read side is refused once `console_server` owns
 
 - A shell with pipelines and built-in commands, including `capview`, which draws the capability
   graph.
-- Eleven GNU coreutils, `man` pages and TCC, a C compiler that runs on Horus, in a `make run`
-  build. The install media does not carry them yet (roadmap 2.11).
+- Eleven GNU coreutils, `man` pages and TCC, a C compiler that runs on Horus. The install media
+  puts them in `/bin` and `/usr/share`, with their licences and an offer of their source, and an
+  installed machine rebuilds those trees from the programs the kernel verified at every boot.
+  Nobody, root included, can change them (S116).
 - One shared copy of newlib. The kernel hands the library only to programs that ask for it, and
   each program's references to it are resolved and sealed read-only before `main` runs.
 
 ## What it cannot do yet
 
-- **No programs on the disk.** Every shipped program is compiled into the boot image or loaded as
-  a measured boot module.
 - **No networking above Ethernet.** No IP, TCP, sockets or ARP table.
 - **No storage beyond IDE, SD and eMMC.** A SATA drive is identified but not read, and there is no
   NVMe.
@@ -157,12 +157,10 @@ In order, from [`docs/ROADMAP.md`](docs/ROADMAP.md):
 1. **Use all the memory** (3.1): the page pool reaches up to 4 GiB instead of 512 MiB.
 2. **Filesystem phase 1b** (2.10): `fs_server`, the path walker and `init` authorise files by
    capability instead of by user id and mode.
-3. **Programs on the disk** (2.11): the installer copies the system onto the volume, and the
-   loader refuses any file whose hash is not in a manifest pinned in the measured boot image.
-4. **Accounts as files** (2.11): `/etc/passwd` and `/etc/shadow` on the volume, owned by a ring-3
+3. **Accounts as files** (2.11): `/etc/passwd` and `/etc/shadow` on the volume, owned by a ring-3
    `auth_server`.
-5. **Encrypted swap** in the reserved partition, under a key made fresh at every boot.
-6. **Filesystem phases 2 to 4** (2.10): the filesystem moves to ring 3 on a copy-on-write format,
+4. **Encrypted swap** in the reserved partition, under a key made fresh at every boot.
+5. **Filesystem phases 2 to 4** (2.10): the filesystem moves to ring 3 on a copy-on-write format,
    with separate system and home volumes, and gains links, timestamps, snapshots and extended
    attributes.
 
@@ -250,8 +248,8 @@ test does not exist or does not run.
 
 | Layer | What it covers |
 |---|---|
-| Security properties | 117 numbered properties, each bound to a witness by `tools/check_invariants.py` |
-| QEMU integration tests | 442 `smoke-*` targets: 209 base gates and 233 control arms |
+| Security properties | 118 numbered properties, each bound to a witness by `tools/check_invariants.py` |
+| QEMU integration tests | 448 `smoke-*` targets: 210 base gates and 238 control arms |
 | Control arms | A build that puts a defect back on purpose; CI requires its gate to go red against it |
 | Kani | 34 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
 | Miri | The security core's tests, interpreted for undefined behaviour on every pull request |
@@ -259,7 +257,7 @@ test does not exist or does not run.
 | Reproducibility | `kernel.elf` builds byte for byte the same twice; the ISO does not yet |
 | Toolchain | The Rust compiler, Kani, the fuzzing toolchain, PyYAML and semgrep are pinned to exact versions |
 
-`.github/workflows/ci.yml` defines 134 jobs; 138 of the 147 status checks the workflows produce
+`.github/workflows/ci.yml` defines 135 jobs; 139 of the 148 status checks the workflows produce
 gate a merge. The 9 that do not are the nightly fuzzing, the nightly Kani control arms and the
 scheduled ruleset audit, each with its reason in `.github/ci-gating.yml`.
 [`TESTS.md`](TESTS.md) lists every test and what it proves.

@@ -26,6 +26,7 @@ here.
 
 ### Added
 
+- The kernel mounts a volume from a GPT partition, and refuses a partition table that does not verify (S114). (#PR)
 - Every Kani proof's control arm runs nightly. (#493)
 - The coreutils and `tcc` share one libc instead of carrying their own. (#470)
 - A program can be linked against the shared libc like any other library. (#468)

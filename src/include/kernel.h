@@ -3623,6 +3623,13 @@ int  rust_hmac_sha256(const uint8_t *key, size_t key_len,
                       const uint8_t *data, size_t data_len, uint8_t *out32);
 /* Plain SHA-256 digest (boot-module manifest verification). */
 int  rust_sha256(const uint8_t *data, size_t data_len, uint8_t *out32);
+/* rust/src/gpt.rs (S114): find the one Horus volume partition in a device's
+ * first buf_len bytes. 0 and the volume's first block and block count, or a
+ * negative GPT_* code; GPT_NONE alone means "no table", every other code a
+ * table that is present and refused. */
+#define GPT_NONE (-1)
+int  rust_gpt_find_volume(const uint8_t *buf, size_t buf_len, uint64_t device_blocks,
+                          uint64_t *out_base, uint64_t *out_count);
 /* Tamper-evident audit log (rust/src/audit.rs). */
 int  rust_audit_mac_eq(const uint8_t *a32, const uint8_t *b32);
 /* Forward-secure (forward-integrity) audit log: the per-entry key is ratcheted

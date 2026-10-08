@@ -22,6 +22,7 @@ mod audit;
 mod auth;
 mod capability;
 mod crypto;
+mod gpt;
 mod memory;
 mod ps;
 mod rng;

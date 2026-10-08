@@ -4295,6 +4295,15 @@ jobs:
         run: rustup target add x86_64-unknown-none
       - name: Boot twice against one ATA image and assert an encrypted file survives a reboot
         run: make smoke-fs-persist
+      # S114. A disk that boots itself has an EFI system partition in front of
+      # the volume, so the kernel reads the GPT to find it. The volume must be
+      # found in partition 3 of the installer's layout, and a volume entry moved
+      # on the disk without resealing the entry array must be refused.
+      - name: A volume is found in its GPT partition, and a forged entry is refused
+        run: make smoke-gpt-volume
+      # The marker is the exact range the forged entry names.
+      - name: Control arm — the entry array's CRC is not checked
+        run: make smoke-gpt-volume-control
       # Arm A of docs/design/meta-cache-merkle.md, built before the bounded
       # metadata cache it will guard: a committed metadata update is durable
       # across a crash. Gating now, so the harness is known-good before stage 2

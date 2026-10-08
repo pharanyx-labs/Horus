@@ -56,4 +56,9 @@
 #   token and rights a server authorises on have to travel with the message they
 #   describe. root_cnode 8,192 -> 10,240 (+2,048), 256 slots of 32 -> 40 bytes.
 #   Measured with nm against the build without the change.
-bss_bytes: 7712768
+# 2026-10-08: 7,733,248 bytes (+20,480), for S114: the GPT scan buffer in
+#   src/kernel/storage.c (storage_volume_on), five 4 KiB blocks, which is the
+#   least that holds a standard table (128 entries from LBA 2 end at byte
+#   17,408). Static because the kernel has no allocator and 20 KiB is too much
+#   for a kernel stack frame; it is read once per boot per disk.
+bss_bytes: 7733248

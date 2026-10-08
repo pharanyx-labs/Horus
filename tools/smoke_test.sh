@@ -57,6 +57,9 @@
 #                        Mutually exclusive with ABSENT_MARKER.)
 #        SMOKE_DISK_CACHE   (optional: QEMU cache mode for SMOKE_DISK; default
 #                        writethrough — see the DRIVE_ARG comment)
+#        SMOKE_BOOT_ORDER   (optional: QEMU -boot order, e.g. d for the CD first;
+#                        unset leaves QEMU's default, which tries a disk first
+#                        — see the BOOT_ARG comment)
 #        SMOKE_DISK_BLKDEBUG (optional: path to a blkdebug config, layered over
 #                        SMOKE_DISK. Used to inject FLUSH CACHE failures so the
 #                        journal's durability barriers can be witnessed.)
@@ -338,12 +341,21 @@ if [ "${TPM:-0}" = 1 ]; then
     fi
 fi
 
+# Optional boot order (SMOKE_BOOT_ORDER=d boots the CD first). Unset, QEMU's own
+# default applies, which tries a hard disk BEFORE the CD: harmless while every
+# test disk was blank or a bare volume, but a GPT disk carries a protective MBR
+# with the 55AA signature, so the BIOS boots its empty boot code and nothing
+# reaches the serial log (make smoke-gpt-volume, 2026-10-08). Opt-in, so no
+# existing gate's boot changes.
+BOOT_ARG=""
+[ -n "${SMOKE_BOOT_ORDER:-}" ] && BOOT_ARG="-boot order=$SMOKE_BOOT_ORDER"
+
 qemu-system-x86_64 \
     -m 512M -cpu "${QEMU_CPU:-qemu64,+aes,+rdrand,+smep,+smap,+umip}" -accel "$QEMU_ACCEL" \
     -display none -no-reboot -no-shutdown \
     -device isa-debug-exit,iobase=0x604,iosize=0x04 \
     -serial file:"$LOG" -serial none -serial file:"$KDIAG" $NET_ARG \
-    $MACHINE_ARG $DRIVE_ARG $SMP_ARG $TRACE_ARG $QMP_ARG $TPM_ARG \
+    $MACHINE_ARG $DRIVE_ARG $SMP_ARG $TRACE_ARG $QMP_ARG $TPM_ARG $BOOT_ARG \
     -cdrom "$ISO" &
 QEMU_PID=$!
 

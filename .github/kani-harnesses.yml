@@ -128,3 +128,8 @@ gating:
   - revoke_reaches_every_cspace_and_spares_a_peer            # 98s, hash stubbed
   - an_unseeded_pool_emits_nothing                           # 4s
   - the_throttle_locks_within_the_limit                      # 1s
+  # The GPT reader (rust/src/gpt.rs, S114), added 2026-10-08 with the code: the
+  # kernel addresses the volume through the range it returns, and the table it
+  # reads is bytes off a disk. FALSIFIED by removing the device bound (red in
+  # under 1 s, "the volume runs past the device").
+  - gpt_volume_is_inside_the_device                          # 1s

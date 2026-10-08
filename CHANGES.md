@@ -78,6 +78,7 @@ here.
 
 ### Fixed
 
+- A stalled Ubuntu package mirror held every CI job until its timeout, because a retry runs only after a command exits; each apt attempt is now bounded. (#501)
 - `smoke-kdiag-ioport` could report a refusal missing because ring-3 output cut the kernel's kill report in half. (#498)
 - The roadmap called nightly fuzzing and full Kani not started after both had landed. (#497)
 - The `unsafe` check never read most of `lib.rs`. (#489)

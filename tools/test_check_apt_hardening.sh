@@ -73,14 +73,31 @@ P" \
 # A3. The action losing its strip is the defect returning by the back door: every
 #     job would still 'use the hardened path' and the path would no longer harden.
 arm A3 "the action is caught if it stops stripping" \
-  "sed -i '/sources.list.d/d' .github/actions/apt/action.yml" \
+  "sed -i '/sources.list.d/d' .github/actions/apt/action.yml && ! grep -q sources.list.d .github/actions/apt/action.yml" \
   caught "does not strip"
 
 # A4. `|| true` on the install, which is how a job comes to report success having
 #     installed nothing -- the shape this workflow's security job was rescued from.
+#     Each sed arm greps for its own edit afterwards: a sed whose pattern no longer
+#     matches changes nothing, and the arm would then be "caught" or "not caught"
+#     on an unmutated tree. A4 did exactly that once its target line gained a
+#     `timeout`, which is why every sed arm now proves the mutation happened.
 arm A4 "the action is caught if it tolerates an apt failure" \
-  "sed -i 's#retry sudo apt-get update#sudo apt-get update || true#' .github/actions/apt/action.yml" \
+  "sed -i 's#^\\( *retry .*apt-get.* update\\)\$#\\1 || true#' .github/actions/apt/action.yml && grep -q 'update || true' .github/actions/apt/action.yml" \
   caught "|| true"
+
+# A6. The 2026-10-07 defect: an apt-get with no wall-clock bound. A stalled
+#     download never exits, so the retry never runs and the job waits out its
+#     timeout-minutes. Dropping `timeout` from the action's update must be caught.
+arm A6 "the action is caught if an apt attempt is unbounded" \
+  "sed -i 's#sudo timeout --kill-after=10 180 apt-get#sudo apt-get#' .github/actions/apt/action.yml && grep -q 'retry sudo apt-get' .github/actions/apt/action.yml" \
+  caught "is unbounded"
+
+# A7. The same defect in the exempt job: the lesson has to reach every copy of
+#     the template, and the inline copy is the one most likely to be missed.
+arm A7 "the exempt job is caught if an apt attempt is unbounded" \
+  "sed -i 's#sudo timeout --kill-after=10 600 apt-get \\(.*\\) cppcheck#sudo apt-get \\1 cppcheck#' .github/workflows/ci.yml && grep -q 'retry sudo apt-get .* cppcheck' .github/workflows/ci.yml" \
+  caught "as the action does"
 
 # A5. The other direction. An unmutated tree must pass, or the four arms above
 #     are satisfied by a checker that rejects everything.

@@ -113,6 +113,7 @@ jobs:
       - smoke
       - smoke-bootdisk
       - smoke-systree
+      - smoke-swap
       - smoke-aslr
       - smoke-aspace
       - smoke-boot-pin
@@ -704,6 +705,31 @@ jobs:
       # A file whose size matches its module is trusted without its bytes.
       - name: Control arm — a stale program of the right size is kept
         run: make smoke-system-trees-rebuild-control
+
+  # THE SEALED SWAP STORE (S118), under UEFI: each target installs a bootable
+  # disk, boots it alone and logs in, which is what turns swap on. Its own job
+  # for the same reason as smoke-bootdisk, whose packages it needs.
+  smoke-swap:
+    name: "Swap: pages sealed under a per-boot key, nothing plaintext on the partition"
+    runs-on: ubuntu-latest
+    # Backstop, not a performance budget.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU + OVMF
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86 grub-efi-amd64-bin ovmf fdisk
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Sealed pages read back, a changed and a replayed block refused, no plaintext on the partition
+        run: make smoke-swap-store
+      # Pages go to the partition as they are; the host finds the marker.
+      - name: Control arm — sealing off
+        run: make smoke-swap-store-seal-control
+      # A block that fails its tag is taken anyway.
+      - name: Control arm — the tag check gone
+        run: make smoke-swap-store-tag-control
 
   # SHARD of what was one 59-step job, split 2026-09-21 because it ran for 54
   # minutes and set the wall time of every CI run. Steps are unchanged and in

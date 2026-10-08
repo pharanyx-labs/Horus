@@ -132,6 +132,7 @@ DEFECT_FLAGS = \
 	FS_LINK_UNCOUNTED FS_DIR_OPERAND_UNCHECKED GPT_ENTRIES_CRC_UNCHECKED STORAGE_REPLACE_VIEW_UNRESOLVED \
 	ESP_PIN_UNCHECKED ESP_NOT_WRITTEN DEBUG_BUILD \
 	POOL_SPAN_SELFTEST E820_HOLE_PROBE PHYS_WINDOW_FLAT_ONLY POOL_FLAT_CEILING POOL_RAM_UNCHECKED \
+	SWAP_SELFTEST SWAP_SEAL_OFF SWAP_TAG_UNCHECKED \
 	CONSOLE_PROGRESS_BELOW_SURFACE CONSOLE_PROGRESS_AT_LOGIN \
 	SYSTEM_TREES_WRITABLE SYSTEM_TREES_NO_PRUNE SYSTEM_TREES_SIZE_ONLY \
 	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY BOOT_MENU_NO_LIVE_TOKEN \
@@ -267,6 +268,7 @@ OBJS = src/boot/multiboot.o \
        src/kernel/syscall_hw.o \
        src/kernel/syscall_vm.o \
        src/kernel/storage.o \
+       src/kernel/swap.o \
        src/kernel/crypto.o \
        src/kernel/tpm.o \
        src/kernel/pipe.o \
@@ -1908,6 +1910,25 @@ endif
 # never shipped. The three arms put back what the ceiling replaced:
 # PHYS_WINDOW_FLAT_ONLY=1 leaves the PHYS_KVA window at 1 GiB, POOL_FLAT_CEILING=1
 # stops the pool there, POOL_RAM_UNCHECKED=1 takes every frame of the span as RAM.
+# THE SEALED SWAP STORE (docs/design/swap.md step 1, smoke-swap-store).
+# SWAP_SELFTEST=1 runs the store's self-test when swap comes on at unlock: 32
+# marked pages sealed and read back, a changed block and a replayed block
+# refused. An instrument, never shipped. The arms: SWAP_SEAL_OFF=1 writes pages
+# to the partition in the clear; SWAP_TAG_UNCHECKED=1 takes a block that fails
+# its tag.
+SWAP_SELFTEST      ?= 0
+SWAP_SEAL_OFF      ?= 0
+SWAP_TAG_UNCHECKED ?= 0
+ifeq ($(SWAP_SELFTEST),1)
+CFLAGS += -DSWAP_SELFTEST
+endif
+ifeq ($(SWAP_SEAL_OFF),1)
+CFLAGS += -DSWAP_SEAL_OFF
+endif
+ifeq ($(SWAP_TAG_UNCHECKED),1)
+CFLAGS += -DSWAP_TAG_UNCHECKED
+endif
+
 POOL_SPAN_SELFTEST    ?= 0
 E820_HOLE_PROBE       ?= 0
 PHYS_WINDOW_FLAT_ONLY ?= 0
@@ -13183,13 +13204,15 @@ INSTALLER_SLOWDISK_IOPS ?= 12
 BOOTDISK_MIB     ?= 512
 BOOTDISK_TIMEOUT ?= 300
 BOOTDISK_EXPECT  ?=
+SWAP_EXPECT      ?=
+BOOTDISK_AFTER   ?=
 .PHONY: smoke-install-boot-disk
 smoke-install-boot-disk:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 $(INSTALL_PROGRAMS) $(BOOTDISKARM)
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 $(INSTALL_PROGRAMS) $(BOOTDISKARM) GRUB_CFG=grub-menu.cfg INSTALL_ESP=1 horus.iso
 	@rm -f bootdisk.img bootdisk-serial.log && truncate -s $(BOOTDISK_MIB)M bootdisk.img
-	@INSTALLER_MODE=bootdisk BOOTDISK_EXPECT=$(BOOTDISK_EXPECT) SESSION_DISK=bootdisk.img \
+	@INSTALLER_MODE=bootdisk BOOTDISK_EXPECT=$(BOOTDISK_EXPECT) SWAP_EXPECT="$(SWAP_EXPECT)" SESSION_DISK=bootdisk.img \
 		BOOTDISK_MODULES=$$($(MAKE) -s --no-print-directory STORAGE_ATA=1 $(INSTALL_PROGRAMS) $(BOOTDISKARM) print-boot-module-count) \
 		SESSION_UEFI_CODE=$(OVMF_CODE) SESSION_UEFI_VARS=$(OVMF_VARS) \
 		SESSION_SERIAL_LOG=bootdisk-serial.log SESSION_TIMEOUT=$(BOOTDISK_TIMEOUT) \
@@ -13199,6 +13222,7 @@ smoke-install-boot-disk:
 	  || { echo "[bootdisk] ----- guest serial (bootdisk-serial.log) -----"; \
 	       tail -80 bootdisk-serial.log 2>/dev/null | sed 's/^/  /'; exit 1; }
 	@sfdisk --verify bootdisk.img && sfdisk -l bootdisk.img | tail -4
+	@$(if $(BOOTDISK_AFTER),$(BOOTDISK_AFTER))
 	@rm -f bootdisk.img
 	@echo "[bootdisk] PASS - installed under UEFI, then started from the disk alone and logged in"
 
@@ -13278,6 +13302,31 @@ smoke-pool-span-hole-control:
 	@SMOKE_MEM=$(POOLSPAN_MEM) SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='POOL_SELFTEST: FAIL handed out a frame the memory map does not call RAM' \
 		tools/smoke_test.sh horus.iso
+
+# THE SWAP PARTITION HOLDS NOTHING IN THE CLEAR, AND A PAGE READ BACK IS THE ONE
+# WRITTEN (S118). The bootable-disk gate with the swap store's self-test built
+# in: the login on the disk's own boot unlocks the volume, which turns swap on
+# beside it, and the self-test must report OK in the kernel log. Then the host
+# scans the image's swap partition, found by its GPT type, for the self-test's
+# plaintext marker and must find none. The marked pages are left in their slots,
+# so a store that wrote them in the clear would put the marker there 32 times.
+comma := ,
+.PHONY: smoke-swap-store smoke-swap-store-seal-control smoke-swap-store-tag-control
+smoke-swap-store:
+	@$(MAKE) --no-print-directory smoke-install-boot-disk \
+		BOOTDISKARM="SWAP_SELFTEST=1 $(SWAPARM)" SWAP_EXPECT="$(or $(SWAPEXPECT),ok)" \
+		BOOTDISK_AFTER="python3 tools/swap_scan.py bootdisk.img --expect $(or $(SWAPSCAN),absent)"
+	@echo "[swap-store] $(if $(SWAPARM),control arm PASS - the defect $(SWAPARM) puts back was caught,PASS - sealed pages read back$(comma) a changed and a replayed block refused$(comma) no plaintext on the partition)"
+
+# The falsifying arms. Sealing off: the host finds the marker on the partition
+# (and the self-test fails, since nothing refuses a changed block either). The
+# tag check gone: a changed block is accepted, and the self-test says so.
+smoke-swap-store-seal-control:
+	@$(MAKE) --no-print-directory smoke-swap-store SWAPARM=SWAP_SEAL_OFF=1 \
+		SWAPEXPECT="a changed block was accepted" SWAPSCAN=present
+smoke-swap-store-tag-control:
+	@$(MAKE) --no-print-directory smoke-swap-store SWAPARM=SWAP_TAG_UNCHECKED=1 \
+		SWAPEXPECT="a changed block was accepted"
 
 # MEDIA WHOSE ESP IMAGE WAS CHANGED IS REFUSED (S115). The install media is
 # built, then one byte of /boot/esp.img inside the ISO is inverted, leaving the

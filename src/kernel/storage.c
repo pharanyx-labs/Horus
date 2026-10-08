@@ -3975,6 +3975,38 @@ int storage_device_query(int index, struct storage_info *out)
     return 0;
 }
 
+/* SWAP, BESIDE THE VOLUME JUST UNLOCKED (docs/design/swap.md 3.1). Only on an
+ * installed boot: a live boot opens no disk (S110) and an install boot is about
+ * to rewrite this one. Only from the table the volume itself came from, and only
+ * a swap partition that table verifies and that shares no block with the volume
+ * (rust_gpt_find_swap). A whole-device volume has no table and so no swap.
+ * Every refusal leaves swap off and says why; none of them stops the unlock. */
+static void storage_swap_start(struct mounted_fs *mfs)
+{
+    if (boot_flags() & (BOOT_FLAG_LIVE | BOOT_FLAG_INSTALL)) return;
+    if (mfs->bd != &g_part_bd || swap_enabled()) return;
+    struct block_device *dev = g_part.dev;
+    for (uint32_t b = 0; b < GPT_SCAN_BLOCKS; b++) {
+        if (dev->read_block(dev, b, g_gpt_buf + (uint64_t)b * BLOCK_SIZE) != 0) {
+            print("swap: the partition table could not be read; swap is off\n");
+            return;
+        }
+    }
+    uint64_t base = 0, count = 0;
+    int rc = rust_gpt_find_swap(g_gpt_buf, sizeof(g_gpt_buf), dev->total_blocks, &base, &count);
+    if (rc == GPT_NO_SWAP) {
+        print("swap: this disk has no swap partition; swap is off\n");
+        return;
+    }
+    if (rc != 0) {
+        print("swap: the table's swap partition was refused (");
+        print_decimal((uint64_t)(-rc));
+        print("); swap is off\n");
+        return;
+    }
+    swap_enable(dev, base, count);
+}
+
 int storage_unlock(const char *password, size_t plen)
 {
     /* CONSUMED HERE, WHATEVER HAPPENS NEXT, and this is the edit the rest of the
@@ -4437,6 +4469,7 @@ int storage_unlock(const char *password, size_t plen)
             journal_commit();
         }
     }
+    storage_swap_start(mfs);
     return 0;
 }
 

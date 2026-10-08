@@ -3674,6 +3674,19 @@ int  rust_sha256(const uint8_t *data, size_t data_len, uint8_t *out32);
 #define GPT_NONE (-1)
 int  rust_gpt_find_volume(const uint8_t *buf, size_t buf_len, uint64_t device_blocks,
                           uint64_t *out_base, uint64_t *out_count);
+/* The swap partition beside the volume on the same verified table, and never
+ * over it (rust/src/gpt.rs find_swap). GPT_NO_SWAP: the table has none. */
+#define GPT_NO_SWAP (-8)
+int  rust_gpt_find_swap(const uint8_t *buf, size_t buf_len, uint64_t device_blocks,
+                        uint64_t *out_base, uint64_t *out_count);
+
+/* The sealed swap slot store (src/kernel/swap.c, docs/design/swap.md). */
+struct block_device;
+void swap_enable(struct block_device *dev, uint64_t base, uint64_t count);
+int  swap_enabled(void);
+int  swap_put(const void *page, uint64_t *slot_out);
+int  swap_get(uint64_t slot, void *page);
+void swap_free(uint64_t slot);
 /* rust/src/gpt.rs: the installer's layout (S114). rust_gpt_plan sizes it and
  * writes nothing; rust_gpt_build_side writes one end of its table (GPT_SIDE_*)
  * into a GPT_TABLE_BYTES buffer, re-planning from the same sizes rather than

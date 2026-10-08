@@ -72,6 +72,11 @@ pub const GPT_BAD_ENTRIES_CRC: i32 = -4;
 pub const GPT_NO_VOLUME: i32 = -5;
 pub const GPT_TWO_VOLUMES: i32 = -6;
 pub const GPT_BAD_RANGE: i32 = -7;
+/// The swap partition's own refusals (find_swap). A table that is refused for
+/// the volume is refused for swap with the same code first.
+pub const GPT_NO_SWAP: i32 = -8;
+pub const GPT_TWO_SWAPS: i32 = -9;
+pub const GPT_SWAP_OVERLAPS: i32 = -10;
 
 /// CRC-32 (IEEE 802.3, reflected, as GPT uses), continued from `crc`. Start a
 /// fresh one with `!0` and finish with `!`. Bitwise rather than table-driven:
@@ -144,6 +149,34 @@ pub fn volume_blocks(
 /// `device_blocks` 4 KiB blocks. Returns `(first block, block count)` or one
 /// of the `GPT_*` codes.
 pub fn find_volume(buf: &[u8], device_blocks: u64) -> Result<(u64, u64), i32> {
+    find_part(buf, device_blocks, &HORUS_VOLUME_TYPE, GPT_TWO_VOLUMES)?.ok_or(GPT_NO_VOLUME)
+}
+
+/// Find the Horus swap partition on the same table, which must also carry the
+/// volume (swap is only ever used beside an unlocked volume, on its disk), and
+/// must not share a block with it: a table edited to lay swap over the volume
+/// would otherwise have the kernel write sealed pages over the filesystem.
+pub fn find_swap(buf: &[u8], device_blocks: u64) -> Result<(u64, u64), i32> {
+    let vol = find_volume(buf, device_blocks)?;
+    let swap = find_part(buf, device_blocks, &HORUS_SWAP_TYPE, GPT_TWO_SWAPS)?.ok_or(GPT_NO_SWAP)?;
+    if !ranges_disjoint(vol.0, vol.1, swap.0, swap.1) {
+        return Err(GPT_SWAP_OVERLAPS);
+    }
+    Ok(swap)
+}
+
+/// Do `[a, a + na)` and `[b, b + nb)` share no block? An end that overflows is
+/// taken as overlapping everything, so a range that wraps can never pass.
+pub fn ranges_disjoint(a: u64, na: u64, b: u64, nb: u64) -> bool {
+    match (a.checked_add(na), b.checked_add(nb)) {
+        (Some(ea), Some(eb)) => ea <= b || eb <= a,
+        _ => false,
+    }
+}
+
+/// The one partition of type `ty` in a verified table, `None` if there is none,
+/// and `two` if there are more than one.
+fn find_part(buf: &[u8], device_blocks: u64, ty: &[u8; 16], two: i32) -> Result<Option<(u64, u64)>, i32> {
     let hdr = buf.get(SECTOR as usize..2 * SECTOR as usize).ok_or(GPT_NONE)?;
     if &hdr[0..8] != b"EFI PART" {
         return Err(GPT_NONE);
@@ -194,11 +227,11 @@ pub fn find_volume(buf: &[u8], device_blocks: u64) -> Result<(u64, u64), i32> {
     let mut found: Option<(u64, u64)> = None;
     let (rows, _) = entries.as_chunks::<ENTRY_SIZE>(); // span is a multiple of the size
     for e in rows {
-        if e[0..16] != HORUS_VOLUME_TYPE {
+        if e[0..16] != ty[..] {
             continue;
         }
         if found.is_some() {
-            return Err(GPT_TWO_VOLUMES);
+            return Err(two);
         }
         let first = rd_u64(e, 32).ok_or(GPT_BAD_RANGE)?;
         let last = rd_u64(e, 40).ok_or(GPT_BAD_RANGE)?;
@@ -207,7 +240,7 @@ pub fn find_volume(buf: &[u8], device_blocks: u64) -> Result<(u64, u64), i32> {
                 .ok_or(GPT_BAD_RANGE)?,
         );
     }
-    found.ok_or(GPT_NO_VOLUME)
+    Ok(found)
 }
 
 // ---------------------------------------------------------------------------
@@ -467,6 +500,37 @@ pub unsafe extern "C" fn rust_gpt_find_volume(
     }
 }
 
+/// Find the swap partition beside the volume: `rust_gpt_find_volume`'s contract,
+/// with `find_swap`'s codes. Returns 0 and writes the range, or a `GPT_*` code
+/// and writes nothing.
+///
+/// # Safety
+/// `buf` must point to `buf_len` readable bytes, and `out_base` and
+/// `out_count` must each be a writable, aligned `u64`. Null pointers are
+/// checked here and refused with `GPT_BAD_HEADER`; the buffer's contents are
+/// read off the disk and assumed nothing about.
+#[no_mangle]
+pub unsafe extern "C" fn rust_gpt_find_swap(
+    buf: *const u8,
+    buf_len: usize,
+    device_blocks: u64,
+    out_base: *mut u64,
+    out_count: *mut u64,
+) -> i32 {
+    if buf.is_null() || out_base.is_null() || out_count.is_null() {
+        return GPT_BAD_HEADER;
+    }
+    let s = core::slice::from_raw_parts(buf, buf_len);
+    match find_swap(s, device_blocks) {
+        Ok((base, count)) => {
+            *out_base = base;
+            *out_count = count;
+            0
+        }
+        Err(code) => code,
+    }
+}
+
 #[cfg(kani)]
 mod gpt_kani_proofs {
     use super::*;
@@ -507,6 +571,21 @@ mod gpt_kani_proofs {
             assert!(base * SECTORS_PER_BLOCK >= te, "the volume overlaps the partition table");
             assert!(first >= fu && last <= lu, "the volume is outside the usable range");
             assert!((base + count) * SECTORS_PER_BLOCK == last + 1, "the block count is not the sector range");
+        }
+    }
+
+    /// Whatever the table says, swap that is accepted shares no block with the
+    /// volume: for every pair of ranges a u64 can describe, overflow included,
+    /// no block lies in both. Stated per block, so a check that compared the
+    /// wrong ends could not satisfy it.
+    #[kani::proof]
+    fn gpt_swap_never_overlaps_the_volume() {
+        let (a, na, b, nb, x): (u64, u64, u64, u64, u64) =
+            (kani::any(), kani::any(), kani::any(), kani::any(), kani::any());
+        if ranges_disjoint(a, na, b, nb) {
+            let in_a = x >= a && x - a < na;
+            let in_b = x >= b && x - b < nb;
+            assert!(!(in_a && in_b), "a block lies in both the volume and swap");
         }
     }
 }
@@ -566,6 +645,35 @@ mod tests {
         // ESP 1 MiB..65 MiB, swap, then the volume.
         let d = disk(&[(ESP, 2048, 133119), (HORUS_SWAP_TYPE, 133120, 1181695), (HORUS_VOLUME_TYPE, 1181696, 2097151)]);
         assert_eq!(find_volume(&d, DEV_BLOCKS), Ok((1181696 / 8, (2097152 - 1181696) / 8)));
+    }
+
+    #[test]
+    fn swap_is_found_beside_the_volume() {
+        let d = disk(&[(ESP, 2048, 133119), (HORUS_SWAP_TYPE, 133120, 1181695), (HORUS_VOLUME_TYPE, 1181696, 2097151)]);
+        assert_eq!(find_swap(&d, DEV_BLOCKS), Ok((133120 / 8, (1181696 - 133120) / 8)));
+    }
+
+    #[test]
+    fn swap_is_refused_when_it_is_missing_doubled_alone_or_over_the_volume() {
+        let none = disk(&[(HORUS_VOLUME_TYPE, 2048, 4095)]);
+        assert_eq!(find_swap(&none, DEV_BLOCKS), Err(GPT_NO_SWAP));
+        let two = disk(&[(HORUS_SWAP_TYPE, 2048, 4095), (HORUS_SWAP_TYPE, 4096, 8191), (HORUS_VOLUME_TYPE, 8192, 16383)]);
+        assert_eq!(find_swap(&two, DEV_BLOCKS), Err(GPT_TWO_SWAPS));
+        let alone = disk(&[(HORUS_SWAP_TYPE, 2048, 4095)]);
+        assert_eq!(find_swap(&alone, DEV_BLOCKS), Err(GPT_NO_VOLUME));
+        let over = disk(&[(HORUS_SWAP_TYPE, 2048, 8191), (HORUS_VOLUME_TYPE, 4096, 16383)]);
+        assert_eq!(find_swap(&over, DEV_BLOCKS), Err(GPT_SWAP_OVERLAPS));
+        // The volume itself is still found on a table whose swap overlaps it:
+        // the refusal is swap's alone.
+        assert!(find_volume(&over, DEV_BLOCKS).is_ok());
+    }
+
+    #[test]
+    fn disjoint_means_no_shared_block_and_a_wrapping_range_never_is() {
+        assert!(ranges_disjoint(0, 10, 10, 5));
+        assert!(ranges_disjoint(10, 5, 0, 10));
+        assert!(!ranges_disjoint(0, 11, 10, 5));
+        assert!(!ranges_disjoint(u64::MAX - 1, 5, 0, 1));
     }
 
     #[test]
@@ -675,6 +783,8 @@ mod tests {
     fn the_ffi_refuses_null_pointers() {
         let mut o = 0u64;
         let r = unsafe { rust_gpt_find_volume(core::ptr::null(), 0, 1, &mut o, &mut o) };
+        assert_eq!(r, GPT_BAD_HEADER);
+        let r = unsafe { rust_gpt_find_swap(core::ptr::null(), 0, 1, &mut o, &mut o) };
         assert_eq!(r, GPT_BAD_HEADER);
     }
 }

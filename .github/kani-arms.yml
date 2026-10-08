@@ -317,6 +317,12 @@ arms:
   defect: a volume is planned however far past the backup table it runs
   find: '    if volume_count < min_volume || volume_count == 0 || volume_count > room {'
   replace: '    if volume_count < min_volume || volume_count == 0 {'
+- id: gpt-swap-compares-starts
+  harness: gpt_swap_never_overlaps_the_volume
+  file: rust/src/gpt.rs
+  defect: swap and the volume are compared by where they start, not where the first ends
+  find: '        (Some(ea), Some(eb)) => ea <= b || eb <= a,'
+  replace: '        (Some(_ea), Some(eb)) => a <= b || eb <= a,'
 
 # Proofs with no arm yet, each with the reason. This list only shrinks: the
 # checker refuses an entry whose proof has gained an arm.

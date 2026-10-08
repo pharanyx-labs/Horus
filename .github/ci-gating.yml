@@ -89,6 +89,7 @@ required:
   - smoke
   - smoke-bootdisk
   - smoke-systree
+  - smoke-swap
   - smoke-aslr
   - smoke-aspace
   - smoke-captest

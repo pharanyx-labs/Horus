@@ -1,6 +1,6 @@
 # Encrypted swap
 
-**Decided, not built.** The maintainer asked on 2026-10-08 for the swap limitation to be sorted
+**Decided; step 1 of §5 built (#510).** The maintainer asked on 2026-10-08 for the swap limitation to be sorted
 out now, and for the swap partition to be properly encrypted. The four decisions below were taken
 the same day, each as recommended. The memory ceiling went first (#508), so swap starts from a
 pool that already holds all of the RAM below 4 GiB.
@@ -9,7 +9,7 @@ pool that already holds all of the RAM below 4 GiB.
 
 | Piece | State |
 |---|---|
-| The partition | The installer lays one out on a bootable disk, between the EFI system partition and the volume, sized by the operator, with its own type GUID (`rust/src/gpt.rs`). Nothing reads or writes it |
+| The partition | The installer lays one out on a bootable disk, between the EFI system partition and the volume, sized by the operator, with its own type GUID (`rust/src/gpt.rs`). Opened at unlock as the sealed slot store (`src/kernel/swap.c`, S118); nothing is evicted into it yet |
 | Finding it | The kernel parses a GPT in Rust and mounts a volume only from a table that verifies (S114); the swap partition is found by the same parse |
 | Cryptography | `rust_aead_seal` and `rust_aead_open` (ChaCha20 with HMAC-SHA256, encrypt-then-MAC) and the kernel CSPRNG |
 | Running out of memory | A hard failure: an allocation that finds the pool empty fails (`docs/LIMITATIONS.md` section 4) |
@@ -100,14 +100,16 @@ names that slot. One thread per address space keeps the re-check simple.
 
 ## 4. Properties and witnesses
 
-- **Nothing on the swap partition is plaintext, and a page read back is the page written, or its
-  task dies.** The gate installs, boots with little RAM, and runs a program that writes a known
-  marker across more memory than the pool holds and then reads it all back. It requires the
-  marker intact, swap traffic in the kernel's count, and zero copies of the marker anywhere in the
-  partition, scanned on the host from the disk image. Arms: sealing switched off (the host finds
-  the marker); the tag check removed, under a probe that flips a byte of a written slot (the
-  program reads a wrong page instead of being killed); the generation check removed, under a probe
-  that writes an older copy back (the same).
+- **Nothing on the swap partition is plaintext, and a page read back is the page written, or it
+  is refused (S118).** Built for the store as `make smoke-swap-store`: on an installed disk's own
+  boot the login turns swap on, a self-test seals 32 marked pages and reads them back, and a
+  block changed on the disk and an older copy of a slot written back must both be refused; the
+  host then scans the partition in the disk image for the marker and must find none. Arms:
+  sealing off (the host finds the marker) and the tag check removed (the changed block is taken).
+  A replay needs no arm of its own: the generation is in the nonce, but what refuses an older
+  copy is the tag held in RAM, the same check the tag arm removes, and the self-test requires
+  both refusals. Step 2 adds the end-to-end form: a program that writes a marker across more
+  memory than the pool holds and reads it all back, with swap traffic in the kernel's count.
 - **Swap is never used on a live boot.** `smoke-live-locked` already hashes the whole disk before
   and after a live boot; it gains a low-memory run so the pager is under pressure when it does.
 - **Only eligible pages leave RAM.** A self-test build checks every page the clock takes against
@@ -116,7 +118,7 @@ names that slot. One thread per address space keeps the re-check simple.
 ## 5. Order of work
 
 1. **The sealed slot store**: finding the partition, the key, the slot table, sealing and opening a
-   page, with a boot self-test and the three arms above. No page ever leaves a task yet.
+   page, with a boot self-test and the arms above. No page ever leaves a task yet. Done (#510).
 2. **Eviction and fault-in**: the swapped PTE, the walker audit, the clock, the I/O with the lock
    dropped, and the memory-pressure gate.
 3. **A no-swap request for secrets**, asked first as a §4 question.

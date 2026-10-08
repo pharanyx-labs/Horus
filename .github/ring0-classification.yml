@@ -504,6 +504,7 @@ classify:
   # holding authority the capability graph could describe instead.
   service:
     - src/kernel/storage.c         # encrypted object store + on-disk fs, WAL, Merkle, fsck
+    - src/kernel/swap.c            # the sealed swap slot store (docs/design/swap.md)
     - src/kernel/syscall_fs.c      # its ring-3 surface
     - src/kernel/kusers.c          # accounts, Argon2id; the authority is already CAP_USER
     - src/kernel/crypto.c          # CSPRNG seeding and key handling

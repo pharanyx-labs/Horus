@@ -106,6 +106,8 @@ control_arms:
   smoke-gpt-volume-control: smoke-gpt-volume
   smoke-install-boot-disk-control: smoke-install-boot-disk
   smoke-install-boot-disk-lowmod-control: smoke-install-boot-disk
+  smoke-swap-store-seal-control: smoke-swap-store
+  smoke-swap-store-tag-control: smoke-swap-store
   smoke-system-trees-control: smoke-system-trees
   smoke-system-trees-prune-control: smoke-system-trees
   smoke-system-trees-rebuild-control: smoke-system-trees
@@ -407,6 +409,7 @@ gates:
   - smoke-fs-dir-operand
   - smoke-gpt-volume
   - smoke-install-boot-disk
+  - smoke-swap-store
   - smoke-system-trees
   - smoke-install-esp-pin
   - smoke-fs-persist

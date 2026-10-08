@@ -623,6 +623,13 @@ by the dispatch table, and the store answers only an **unlocked** volume, not me
   key and written through the journal (S62). The compiled-in accounts exist only on a boot with no
   installed disk (S103), no compiled-in password is ever written to a disk (S109), and a live boot
   mounts no persistent disk at all (S110).
+- **Swap.** An unlock on an installed boot turns on the swap partition the verified table places
+  beside the volume, never over it (`src/kernel/swap.c`, S118). It is an array of 4 KiB slots,
+  each page sealed with the AEAD under a key drawn at that boot and never written anywhere, with
+  the slot and a per-slot generation in the nonce. The generation and the tag stay in RAM (24
+  bytes a slot, from the pool), so the partition holds ciphertext and nothing else, and a changed,
+  moved or replayed block fails. Nothing evicts a task's page into it yet
+  ([`design/swap.md`](design/swap.md) step 2).
 
 ---
 

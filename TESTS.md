@@ -195,6 +195,7 @@ There are 430 `smoke-*` targets: 204 gates and 226 control arms. Each row is a g
 | `smoke-fs-dir-operand` | A file is never read as a directory, so a forged entry frees nothing | S113 | `smoke-fs-dir-operand-control` |
 | `smoke-fs-persist` | Data survives a reboot |  |  |
 | `smoke-install-boot-disk` | An install under UEFI lays out GPT, ESP, swap and volume, and the machine then starts from the disk alone, records every module its ESP carries, logs in, runs `seq` from `/bin` and finds the licences and source offer in `/usr/share/doc` | S114, S115, S116 | `smoke-install-boot-disk-control`, `smoke-install-boot-disk-lowmod-control` |
+| `smoke-swap-store` | On an installed disk's own boot, the login turns swap on beside the volume; pages sealed into the swap partition read back intact, a changed block and a replayed block are refused, and the host finds none of the self-test's plaintext marker on the partition | S118 | `smoke-swap-store-seal-control`, `smoke-swap-store-tag-control` |
 | `smoke-system-trees` | After an install and a reboot onto newer media, the system trees hold the new programs, a stray file in `/bin` is gone, and root cannot delete, create, rename, copy into, make a directory in or chmod anything in `/bin` | S116 | `smoke-system-trees-control`, `smoke-system-trees-prune-control`, `smoke-system-trees-rebuild-control` |
 | `smoke-install-esp-pin` | Install media whose EFI image was changed after it was built installs nothing | S115 | `smoke-install-esp-pin-control` |
 | `smoke-gpt-volume` | The volume is found in its GPT partition, and an entry forged on the disk is refused | S114 | `smoke-gpt-volume-control` |
@@ -331,10 +332,10 @@ Currently **91 of 102** implemented syscalls are covered (`SECURITY.md` S25; `do
 ## CI
 
 
-`.github/workflows/ci.yml` defines **135** jobs, run on every push and pull request; most are sharded runs of the gates above. With CodeQL, the scheduled ruleset audit, the nightly fuzzing (`fuzz.yml`, one context per target) and the nightly Kani control arms (`kani-arms.yml`) the total is below: **139** jobs, **148** contexts, counted by `tools/check_ci_gating.py`.
+`.github/workflows/ci.yml` defines **136** jobs, run on every push and pull request; most are sharded runs of the gates above. With CodeQL, the scheduled ruleset audit, the nightly fuzzing (`fuzz.yml`, one context per target) and the nightly Kani control arms (`kani-arms.yml`) the total is below: **140** jobs, **149** contexts, counted by `tools/check_ci_gating.py`.
 
 `.github/ci-gating.yml` classifies every job as gating or exempt with a written reason, and the `ci-gating` job fails on a job in neither list. The branch ruleset requires two checks: `gates`, which needs every gating job and passes only if each succeeded (skipped or cancelled counts as failed), and CodeQL.
-The set is **139 gating contexts and 9 reasoned exemptions**: `fuzz` (seven targets, ten minutes each, nightly; a crash fails it, but it never runs on a pull request), `kani-arms` and `ruleset-audit` (both run on a schedule, never on a pull request).
+The set is **140 gating contexts and 9 reasoned exemptions**: `fuzz` (seven targets, ten minutes each, nightly; a crash fails it, but it never runs on a pull request), `kani-arms` and `ruleset-audit` (both run on a schedule, never on a pull request).
 
 The jobs that are not boot tests:
 
@@ -391,11 +392,11 @@ The jobs that are not boot tests:
 | `kani-bounded` | Formal verification of the capability algebra (every Kani proof) |
 
 Two of those deserve a sentence each.
-**`kani-bounded` is the only Kani job, and it can fail anything.** All **34** harnesses run
+**`kani-bounded` is the only Kani job, and it can fail anything.** All **35** harnesses run
 there with no `continue-on-error`, each named with its measured cost in
 `.github/kani-harnesses.yml`, and the job refuses a proof that is not listed. And **`invariants`** requires every property in `SECURITY.md` to
 name a witness that exists and runs; its exemption list, `.github/invariants.yml`, is
-currently **empty**: all 119 properties name a witness that resolves.
+currently **empty**: all 120 properties name a witness that resolves.
 
 Every `tools/check_*.py` has a falsification harness, `tools/test_check_*.sh`, with one case per
 rule showing the rule can fail, and each checker asserts a floor on what it parsed, so a parser

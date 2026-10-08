@@ -29,7 +29,7 @@ Specifications written before the code. Each says at its top what of it is built
 |---|---|
 | [`design/filesystem.md`](design/filesystem.md) | The capability-addressed filesystem. Phase 1a (endpoint tokens, S105) is built; phase 1b is next (ROADMAP 2.10) |
 | [`design/installed-system.md`](design/installed-system.md) | Programs on the disk under a pinned manifest, a disk that boots itself, accounts as files. The first two are built; accounts as files are not (ROADMAP 2.11) |
-| [`design/swap.md`](design/swap.md) | Encrypted swap: a per-boot key, every page authenticated with its tag kept in RAM, only private pages, an in-kernel pager. Decided, not yet built (ROADMAP "What happens next" 1) |
+| [`design/swap.md`](design/swap.md) | Encrypted swap: a per-boot key, every page authenticated with its tag kept in RAM, only private pages, an in-kernel pager. Step 1, the sealed slot store, is built (S118) |
 | [`design/shared-libc.md`](design/shared-libc.md) | How programs receive, bind and seal the shared libc. Built (S106 to S108) |
 | [`design/meta-cache-merkle.md`](design/meta-cache-merkle.md) | The bounded metadata cache and the Merkle rollback tree. Built (S65, S66) |
 | [`design/console-server.md`](design/console-server.md) | Moving the console driver to ring 3. Built |

@@ -355,7 +355,8 @@ waits until it is woken or killed. The PIT runs at a fixed 100 Hz.
   limits are
   by construction: the firmware finds GRUB at the removable-media path because Horus cannot
   write UEFI boot entries; every partition lies inside the 16 GiB the kernel addresses, so a
-  larger disk's remainder is unused; and the swap partition is reserved but unused (below).
+  larger disk's remainder is unused; and the swap partition is opened but nothing is paged out to
+  it yet (below).
 - **Parts of the installed layout.** The install media puts GNU coreutils, TCC, their man pages,
   licences and source offer in the system trees (S116), but `/lib` stays empty (programs link the
   shared libc the kernel loads, not a file), there is no `/tmp`, and the shell's file commands
@@ -380,9 +381,9 @@ waits until it is woken or killed. The PIT runs at a fixed 100 Hz.
 - **More than one filesystem.** One volume and one `fs_server`, plus `dev_server` in self-test
   builds. The capability filesystem of [`design/filesystem.md`](design/filesystem.md) has its
   kernel half (phase 1a, IPC tokens, S105); the server half is not built.
-- **Swap.** Running out of the page pool is a hard failure. The installed layout reserves a
-  partition for swap; using it, encrypted under a key made fresh at every boot, is roadmap item 2
-  of "What happens next".
+- **Swap.** Running out of the page pool is a hard failure. The swap partition is opened at an
+  installed boot's unlock as a sealed store (S118), but no page is evicted into it yet: that is
+  step 2 of [`design/swap.md`](design/swap.md).
 - **Kernel ASLR.** User programs get 30 bits of address randomisation; the kernel loads at a fixed
   address.
 - **Other architectures.** x86-64 only, booted by GRUB under BIOS or UEFI.
@@ -462,7 +463,7 @@ the fix.
 
 Kani proves properties of capability revocation, the ELF validator, the user-address validators,
 the random pool's seed gate, the login throttle and the page-pool refcount
-arithmetic: **34** harnesses, every one of them gating in the required `kani-bounded` job. That is
+arithmetic: **35** harnesses, every one of them gating in the required `kani-bounded` job. That is
 the whole of the formal methods here. The kernel as a whole is not verified, no refinement proof
 links a specification to the code, and no TLA+ specification exists (two unsound ones were removed on
 2026-09-10).

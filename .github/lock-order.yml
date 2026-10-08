@@ -20,6 +20,10 @@ locks:
   - untyped_lock       # src/kernel/untyped.c
   - ata_lock           # src/kernel/ata.c
   - sdhci_lock         # src/kernel/sdhci.c -- one command on the SD controller at a time
+  - swap_lock          # src/kernel/swap.c -- the swap slot table; held across the block I/O,
+                       # so it sits outside ata_lock and sdhci_lock (reached through
+                       # the block device's function pointers, which this checker does
+                       # not follow) and never inside page_lock (docs/design/swap.md 3.5)
   - spawn_stage_lock   # src/kernel/kspawn.c -- the outermost lock in the kernel
 
 nesting:

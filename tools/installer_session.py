@@ -1713,6 +1713,21 @@ def bootdisk(disk):
         if not login(s, "root", PASSWORD, BOOT):
             raise SessionFail("the installed password did not log in on the disk's own boot")
         step("logged in on a machine started from its own disk, with no install media")
+        # SWAP, WHEN THE BUILD CARRIES ITS SELF-TEST (SWAP_SELFTEST=1): the login
+        # unlocked the volume, which turned swap on beside it, and the store's
+        # self-test printed one line to the kernel log. SWAP_EXPECT is "ok", or
+        # the start of the FAIL line an arm must produce.
+        swap_expect = os.environ.get("SWAP_EXPECT", "")
+        if swap_expect:
+            log = _sh(s, "dmesg")
+            line = next((ln.strip() for ln in log.splitlines() if "SWAP_SELFTEST:" in ln), "")
+            if not line:
+                raise SessionFail("the swap store's self-test never ran: swap was not enabled at unlock "
+                                  f"({[ln.strip() for ln in log.splitlines() if 'swap:' in ln]!r})")
+            want = "SWAP_SELFTEST: OK" if swap_expect == "ok" else "SWAP_SELFTEST: FAIL " + swap_expect
+            if want not in line:
+                raise SessionFail(f"the swap self-test said {line!r}, not {want!r}")
+            step(f"the swap store said what it had to: {line[line.find('SWAP_SELFTEST'):][:90]}")
         # AND ITS PROGRAMS ARE ON IT (S116): the media's coreutils, provisioned
         # from the ESP's verified modules into /bin, and the licences and source
         # offer into /usr/share/doc. seq is not a shell builtin, so its output

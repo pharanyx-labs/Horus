@@ -137,3 +137,7 @@ gating:
   # the kernel writes a table and an ESP where it says. FALSIFIED by removing
   # the "fits before the backup table" bound (red in under 1 s).
   - gpt_plan_is_inside_the_device                            # 1s
+  # Swap beside the volume (rust/src/gpt.rs find_swap, S118), added 2026-10-08:
+  # the kernel writes sealed pages wherever the swap partition says, so it must
+  # never share a block with the volume. FALSIFIED by its kani-arms.yml arm.
+  - gpt_swap_never_overlaps_the_volume                       # 1s

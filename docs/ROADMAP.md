@@ -27,16 +27,17 @@ requests. What is still wrong, as opposed to still unbuilt, is in
 In order. Each step is its own set of pull requests with its own gates and control arms.
 
 1. **Encrypted swap** in the reserved partition, next (the maintainer, 2026-10-08), specified in
-   [`design/swap.md`](design/swap.md). A key made fresh at every boot from the CSPRNG, held only
-   in kernel memory and never written or paged out. Every page sealed with the kernel's AEAD
-   under a fresh nonce, with the nonce, the tag and the slot map kept in RAM, so nothing on the
-   partition is ever plaintext, not even a header, and a page modified, replayed or unreadable kills the task
-   that owns it rather than handing it wrong bytes. Only a task's private pages are swapped,
-   never kernel memory, page tables, shared frames or the boot servers. The pager is in the
-   kernel, with a simple clock policy. Compressed memory (zram or zswap) is not planned: if it
-   comes, it is a cache in front of this swap that compresses one task's pages only (memory
-   compression is a timing side channel), never compresses a page marked secret, and charges
-   each task for its own compressed pages.
+   [`design/swap.md`](design/swap.md). Its first step, the sealed slot store, is built (S118,
+   #510); eviction and fault-in are next. A key made fresh at every boot from the CSPRNG, held only
+   in kernel memory and never written or paged out. Every page sealed with the kernel's AEAD under
+   a fresh nonce, with the nonce, the tag and the slot map kept in RAM, so nothing on the partition
+   is ever plaintext, not even a header, and a page modified, replayed or unreadable kills the task
+   that owns it rather than handing it wrong bytes. Only a task's private pages are swapped, never
+   kernel memory, page tables, shared frames or the boot servers. The pager is in the kernel, with
+   a simple clock policy. Compressed memory (zram or zswap) is not planned: if it comes, it is a
+   cache in front of this swap that compresses one task's pages only (memory compression is a
+   timing side channel), never compresses a page marked secret, and charges each task for its own
+   compressed pages.
 2. **Filesystem phase 1b** (2.10): `fs_server` authorises by capability instead of by uid and
    mode, `hvfs` walks with capabilities, and `init` mints the root capability from a policy file.
    It removes `perm_ok`, the root check on `chown`, `SYS_FS_SET_META`, the uid path of
@@ -271,7 +272,7 @@ is a second person to review them. Turning on required approval with one maintai
 every merge or needs a bypass actor, which would undo 4.2. `SECURITY.md` therefore claims
 "thoroughly automatically verified", not "independently reviewed".
 
-**4.2.** The gating set is **139 required, 9 exempted** (139 jobs, 148 contexts; re-derive with
+**4.2.** The gating set is **140 required, 9 exempted** (140 jobs, 149 contexts; re-derive with
 `tools/check_ci_gating.py`). The exemptions come from three jobs and are properties of the test,
 not open defects: `fuzz` (seven targets fuzzed nightly, never on a pull request), `kani-arms` and
 `ruleset-audit` (both run on a schedule, never on a pull request).
@@ -283,7 +284,7 @@ from a tag and compare. They wait on 3.1, since an ISO that does not rebuild to 
 same bytes cannot be verified by rebuilding.
 
 **4.12.** The exemption list in `.github/invariants.yml` is currently
-**empty**: all 119 properties name a witness that resolves.
+**empty**: all 120 properties name a witness that resolves.
 
 ---
 
@@ -305,5 +306,5 @@ same bytes cannot be verified by rebuilding.
 | ✅ | Measured boot, the kernel pinned in the boot image, and a PCR-sealed volume key |
 | ✅ | An IOMMU confining device DMA, and device capabilities that name one device each |
 | ◧ | Reproducible `kernel.elf` (not yet the ISO), an SBOM, CodeQL, Dependabot, signed commits, a protected `main` |
-| ✅ | 452 `smoke-*` targets, nearly all QEMU integration tests, and 241 of them control arms that must reproduce a defect |
+| ✅ | 455 `smoke-*` targets, nearly all QEMU integration tests, and 243 of them control arms that must reproduce a defect |
 | ✅ | Bounded Kani proofs, Miri over the Rust core, and fuzzing at the FFI boundary |

@@ -172,10 +172,12 @@
     correct under several CPUs is finished.
   </p>
   <p>
-    <strong>Next, in order:</strong> the kernel uses all of a machine's memory up to 4 GiB; the file server
-    authorises by capability rather than by user id and mode; and accounts move into files owned
-    by a user-mode authentication server. After that, swap is encrypted under a key made fresh at every boot, and the filesystem itself moves
-    out of the kernel, onto a copy-on-write format with separate system and home volumes.
+    <strong>Next, in order:</strong> the kernel uses all of a machine's memory up to 4 GiB; then
+    swap, encrypted and authenticated under a key made fresh at every boot and never written
+    down; then the file server authorises by capability rather than by user id and mode, and
+    accounts move into files owned by a user-mode authentication server. After that, the
+    filesystem itself moves out of the kernel, onto a copy-on-write format with separate system
+    and home volumes.
   </p>
   <p>
     The single highest-leverage change is not technical: a second person reviewing the

@@ -155,11 +155,12 @@ The full list, with the reasons, is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.
 In order, from [`docs/ROADMAP.md`](docs/ROADMAP.md):
 
 1. **Use all the memory** (3.1): the page pool reaches up to 4 GiB instead of 512 MiB.
-2. **Filesystem phase 1b** (2.10): `fs_server`, the path walker and `init` authorise files by
+2. **Encrypted swap** in the reserved partition, under a key made fresh at every boot and kept
+   only in memory: every page sealed and authenticated, nothing on the partition in plaintext.
+3. **Filesystem phase 1b** (2.10): `fs_server`, the path walker and `init` authorise files by
    capability instead of by user id and mode.
-3. **Accounts as files** (2.11): `/etc/passwd` and `/etc/shadow` on the volume, owned by a ring-3
+4. **Accounts as files** (2.11): `/etc/passwd` and `/etc/shadow` on the volume, owned by a ring-3
    `auth_server`.
-4. **Encrypted swap** in the reserved partition, under a key made fresh at every boot.
 5. **Filesystem phases 2 to 4** (2.10): the filesystem moves to ring 3 on a copy-on-write format,
    with separate system and home volumes, and gains links, timestamps, snapshots and extended
    attributes.

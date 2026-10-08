@@ -339,7 +339,7 @@ The jobs that are not boot tests:
 | `installer-accounts` | An installed machine has two accounts and either one boots it (S76) |
 | `invariants` | Every security property is bound to a witness that exists |
 | `unsafe-safety` | Every unsafe in the security core states the caller's obligations |
-| `apt-hardening` | No build depends on a repository this project does not use |
+| `apt-hardening` | No build depends on a repository this project does not use, and no stalled download can hold a job |
 | `doc-claims` | Every documented count matches the tool that derives it |
 | `site` | The website is consistent, its links resolve, and it loads nothing from elsewhere |
 | `conflict-markers` | No tracked file carries a merge-conflict marker |

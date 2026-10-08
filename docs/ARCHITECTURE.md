@@ -75,7 +75,7 @@ The shell, the coreutils, `tcc` and user programs are outside it by design.
 0xFFFFFFFF_80100000   kernel image (.text r-x, .rodata r--, .data/.bss rw-)  = KERNEL_VMA + 1 MiB
 high_pdpt[511]        per-task kernel stacks, each above an unmapped guard page
 high_pdpt[509]        the framebuffer window, when there is one
-0xFFFFFF80_80000000   PHYS_KVA window: higher-half alias of physical [0, 1 GiB)
+0xFFFFFF80_80000000   PHYS_KVA window: physical [0, 1 GiB), then the RAM in [1, 4 GiB)
 0x00000000_xxxxxxxx   userspace: image, heap, stack (per task, randomised)
 ```
 
@@ -89,10 +89,15 @@ with interrupts off wedges the machine.
 
 ### Physical memory
 
-The page pool starts at `USER_PHYS_BASE` (16 MiB, above the kernel image) and is sized from the
-firmware memory map. Three regions are held back from it as one reserved window: the 8 MiB loader
+The page pool starts at `USER_PHYS_BASE` (16 MiB, above the kernel image) and spans every region
+the firmware memory map calls available, up to 4 GiB (a frame address is 32 bits). What lies
+between regions is never handed out, and above 1 GiB only whole 2 MiB chunks of RAM count, because
+the `PHYS_KVA` window maps that range with 2 MiB pages over RAM and nothing else (S117). The pool's
+per-frame tables (free stack, refcounts, loan bits) are sized for the span at boot and placed at
+the top of RAM, clear of modules and the reserves. Three regions are held back from it as one reserved window: the 8 MiB loader
 staging buffer, the RAM volume's backing store and the untyped arena (§4). The window moves clear
-of any boot module GRUB placed there, and every frame a module occupies is held back too (S96).
+of any boot module GRUB placed there and of holes in the map, and every frame a module occupies
+is held back too (S96).
 Modules below 1 MiB are kept, since UEFI GRUB puts small ones in conventional memory there, and a
 module over the AP trampoline page, which the kernel writes when it starts the other CPUs, halts
 the boot as one over the kernel image does.

@@ -148,6 +148,7 @@ There are 430 `smoke-*` targets: 204 gates and 226 control arms. Each row is a g
 | Gate | What it proves | Properties | Control arms |
 |---|---|---|---|
 | `smoke-boot-module-reserve` | A boot module the kernel verified is the one it serves, even when modules land above 16 MiB; one on the kernel image or the AP trampoline page halts the boot | S96 | `smoke-boot-module-image-control`, `smoke-boot-module-reserve-control`, `smoke-boot-module-reverify-control`, `smoke-boot-module-tramp-control` |
+| `smoke-pool-span` | In a 3 GiB guest whose memory map has a hole, the page pool spans every RAM region, and every frame it will hand out is RAM, outside the hole, the reserves, its tables and the modules, and writable through the kernel's window, one of them above 1 GiB | S117 | `smoke-pool-span-window-control`, `smoke-pool-span-ceiling-control`, `smoke-pool-span-hole-control` |
 | `smoke-boot-media` | The image boots under BIOS and UEFI, from optical media and from a raw disk |  | `smoke-boot-media-control` |
 | `smoke-tpm-cmdline` | The kernel command line is part of the PCR 8 measurement | S91 | `smoke-tpm-cmdline-control` |
 | `smoke-boot-menu` | The install media's default entry is the live boot, and it changes nothing, even on a blank disk | S91 | `smoke-boot-menu-control` |
@@ -394,7 +395,7 @@ Two of those deserve a sentence each.
 there with no `continue-on-error`, each named with its measured cost in
 `.github/kani-harnesses.yml`, and the job refuses a proof that is not listed. And **`invariants`** requires every property in `SECURITY.md` to
 name a witness that exists and runs; its exemption list, `.github/invariants.yml`, is
-currently **empty**: all 118 properties name a witness that resolves.
+currently **empty**: all 119 properties name a witness that resolves.
 
 Every `tools/check_*.py` has a falsification harness, `tools/test_check_*.sh`, with one case per
 rule showing the rule can fail, and each checker asserts a floor on what it parsed, so a parser

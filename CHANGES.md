@@ -27,6 +27,7 @@ here.
 
 ### Added
 
+- The page pool uses all of a machine's RAM up to 4 GiB, every region the memory map names, instead of the one region holding 16 MiB capped at 1 GiB; a 3 GiB guest's pool went from 495 MiB to 3054 MiB (S117). (#508)
 - An installed machine has its programs on it: the install media carries GNU coreutils, TCC and their man pages, with the licence texts and a written source offer in `/usr/share/doc`. (#506)
 - An installed disk starts on its own under UEFI: the installer lays out GPT, an EFI system partition, swap and the volume, with the swap and volume sizes asked for (S115). (#505)
 - The kernel mounts a volume from a GPT partition, and refuses a partition table that does not verify (S114). (#503)

@@ -103,25 +103,24 @@ typedef uint64_t vaddr_t;
  * already held with interrupts disabled and wedged the machine. Always use this
  * macro for physical access from the pager.
  *
- * Only covers [0, 1 GiB) — the extent of the boot `pd`. The user pool is capped
- * so its top stays inside this window (see PHYS_POOL_CEIL); every frame is
- * therefore reachable. A pool grown past 1 GiB would need this window extended
- * first. */
+ * Covers [0, 1 GiB) from boot (the boot `pd`, PHYS_KVA_FLAT_CEIL) and, from
+ * paging_init, the RAM in [1, 4 GiB) at 2 MiB granularity (phys_window_extend),
+ * so every pool frame is reachable up to PHYS_POOL_CEIL. */
 #define PHYS_KVA_BASE           0xFFFFFF8080000000ULL
 #define PHYS_KVA(p)             ((void *)(PHYS_KVA_BASE + (uint64_t)(p)))
 
 /* Physical page pool. It runs from USER_PHYS_BASE (16 MiB, above the kernel
- * image) upward. USER_PHYS_PAGES is the *array capacity* — the compile-time
- * ceiling on how many frames the pool metadata (free_page_stack, page_refcounts)
- * can track, and it fixes the .bss cost. The *actual* pool size is chosen at
- * boot from the multiboot2 E820 memory map (mb_detect_pool_pages ->
- * phys_set_pool_pages); on a diskless/unparsed boot it falls back to
- * USER_PHYS_DEFAULT_PAGES, the historical 64 MiB. The cap keeps the top below
- * PHYS_POOL_CEIL (1 GiB, the PHYS_KVA window) so every frame stays reachable. At
- * 131072 pages the metadata is ~768 KiB of .bss, comfortably under the ceiling
- * the linker ASSERT enforces (__bss_end <= USER_PHYS_BASE). */
+ * image) upward, over every RAM region the multiboot2 memory map names (the
+ * tag walk calls phys_note_ram for each, then phys_set_pool_pages with the span
+ * to the top of the highest); on a diskless/unparsed boot it falls back to
+ * USER_PHYS_DEFAULT_PAGES, the historical 64 MiB. The top stays below
+ * PHYS_POOL_CEIL (4 GiB). The per-frame tables are sized for the span at boot
+ * and live at the top of RAM, not in .bss (paging.c, pool_meta_place). */
 #define USER_PHYS_BASE          0x01000000
-#define USER_PHYS_PAGES         131072              /* array cap: 512 MiB pool */
+/* The most frames the pool can span: [USER_PHYS_BASE, 4 GiB). A frame address
+ * is 32 bits (free_page_stack, alloc_user_physical_page), so 4 GiB is the
+ * design's ceiling, not a tuning choice. */
+#define USER_PHYS_PAGES_MAX     ((uint32_t)((0x100000000ULL - USER_PHYS_BASE) / 4096))
 #define USER_PHYS_DEFAULT_PAGES 16384               /* fallback: 64 MiB (pre-E820) */
 
 /* Staged-program-image buffer. The loader stages a whole program file here
@@ -407,7 +406,11 @@ void storage_tpm_kek_selftest(void);
  * headroom. Boot modules past USER_PHYS_BASE push the reserves up and eat into
  * that; init_user_page_allocator halts if the reserves no longer fit. */
 #define PHYS_POOL_MIN_PAGES     (4096 + POOL_RESERVE_PAGES)   /* floor: 16 MiB usable + reserves */
-#define PHYS_POOL_CEIL          0x40000000ULL       /* pool top must stay < 1 GiB (PHYS_KVA) */
+#define PHYS_POOL_CEIL          0x100000000ULL      /* pool top: 4 GiB, the 32-bit frame address */
+/* What PHYS_KVA maps from boot, whatever is there: [0, 1 GiB). Above it the
+ * window covers RAM only (phys_window_extend), so anything read through PHYS_KVA
+ * that is not pool RAM -- a boot module, an ACPI table -- must lie below this. */
+#define PHYS_KVA_FLAT_CEIL      0x40000000ULL
 /* CNODE_SIZE and MAX_TASKS moved ABOVE the untyped arena (see there): the
  * arena's kernel reserve is derived from them now rather than competing with
  * them for a fixed total. */
@@ -3549,9 +3552,14 @@ uint32_t frame_map_refcount(uint64_t phys_addr);   /* 1 + mappings; >1 == mapped
 
 uint32_t get_free_user_pages(void);   /* paging.c — free frames in the user pool */
 /* Set the runtime physical-pool size (frames), clamped to
- * [PHYS_POOL_MIN_PAGES, USER_PHYS_PAGES]. Must be called before paging_init,
+ * [PHYS_POOL_MIN_PAGES, USER_PHYS_PAGES_MAX]. Must be called before paging_init,
  * which builds the free list. Driven by the E820 memory map at boot. */
 void phys_set_pool_pages(uint32_t pages);
+void phys_note_ram(uint64_t base, uint64_t len);
+uint32_t phys_pool_span_pages(void);
+uint64_t phys_ram_frames(void);
+uint32_t phys_ram_regions(void);
+uint32_t phys_ram_regions_dropped(void);
 /* Boot registers saved by _start (multiboot.S): the multiboot2 magic and a
  * pointer to the boot-information structure. */
 extern volatile uint32_t saved_mb_magic;

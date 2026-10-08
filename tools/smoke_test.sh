@@ -351,7 +351,7 @@ BOOT_ARG=""
 [ -n "${SMOKE_BOOT_ORDER:-}" ] && BOOT_ARG="-boot order=$SMOKE_BOOT_ORDER"
 
 qemu-system-x86_64 \
-    -m 512M -cpu "${QEMU_CPU:-qemu64,+aes,+rdrand,+smep,+smap,+umip}" -accel "$QEMU_ACCEL" \
+    -m "${SMOKE_MEM:-512M}" -cpu "${QEMU_CPU:-qemu64,+aes,+rdrand,+smep,+smap,+umip}" -accel "$QEMU_ACCEL" \
     -display none -no-reboot -no-shutdown \
     -device isa-debug-exit,iobase=0x604,iosize=0x04 \
     -serial file:"$LOG" -serial none -serial file:"$KDIAG" $NET_ARG \

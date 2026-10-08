@@ -84,6 +84,8 @@ line need no capability, and the read side is refused once `console_server` owns
 - Preemptive scheduling on up to eight CPUs, with SMT siblings parked and a microarchitectural
   flush on every switch between tasks.
 - Per-task four-level page tables, demand paging, copy-on-write, `fork`, `exec` and signals.
+- All of a machine's RAM up to 4 GiB in the page pool, every region the firmware's memory map
+  names, with nothing else mapped above 1 GiB (S117).
 - IPC over bounded queues with one-shot reply capabilities, notifications and pipes; a server can
   tell its clients apart by the capability they call it through.
 - SMEP, SMAP, kernel W^X, guard pages and stack canaries; user programs load at a randomised
@@ -154,14 +156,13 @@ The full list, with the reasons, is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.
 
 In order, from [`docs/ROADMAP.md`](docs/ROADMAP.md):
 
-1. **Use all the memory** (3.1): the page pool reaches up to 4 GiB instead of 512 MiB.
-2. **Encrypted swap** in the reserved partition, under a key made fresh at every boot and kept
+1. **Encrypted swap** in the reserved partition, under a key made fresh at every boot and kept
    only in memory: every page sealed and authenticated, nothing on the partition in plaintext.
-3. **Filesystem phase 1b** (2.10): `fs_server`, the path walker and `init` authorise files by
+2. **Filesystem phase 1b** (2.10): `fs_server`, the path walker and `init` authorise files by
    capability instead of by user id and mode.
-4. **Accounts as files** (2.11): `/etc/passwd` and `/etc/shadow` on the volume, owned by a ring-3
+3. **Accounts as files** (2.11): `/etc/passwd` and `/etc/shadow` on the volume, owned by a ring-3
    `auth_server`.
-5. **Filesystem phases 2 to 4** (2.10): the filesystem moves to ring 3 on a copy-on-write format,
+4. **Filesystem phases 2 to 4** (2.10): the filesystem moves to ring 3 on a copy-on-write format,
    with separate system and home volumes, and gains links, timestamps, snapshots and extended
    attributes.
 
@@ -249,8 +250,8 @@ test does not exist or does not run.
 
 | Layer | What it covers |
 |---|---|
-| Security properties | 118 numbered properties, each bound to a witness by `tools/check_invariants.py` |
-| QEMU integration tests | 448 `smoke-*` targets: 210 base gates and 238 control arms |
+| Security properties | 119 numbered properties, each bound to a witness by `tools/check_invariants.py` |
+| QEMU integration tests | 452 `smoke-*` targets: 211 base gates and 241 control arms |
 | Control arms | A build that puts a defect back on purpose; CI requires its gate to go red against it |
 | Kani | 34 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
 | Miri | The security core's tests, interpreted for undefined behaviour on every pull request |

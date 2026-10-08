@@ -26,11 +26,9 @@ requests. What is still wrong, as opposed to still unbuilt, is in
 
 In order. Each step is its own set of pull requests with its own gates and control arms.
 
-1. **Use all the memory** (3.1): the page pool walks every usable region up to 4 GiB instead of
-   stopping at 512 MiB.
-2. **Encrypted swap** in the reserved partition, straight after the ceiling (the maintainer,
-   2026-10-08). A key made fresh at every boot from the CSPRNG, held only in kernel memory and
-   never written or paged out. Every page sealed with the kernel's AEAD under a fresh nonce,
+1. **Encrypted swap** in the reserved partition, next (the maintainer, 2026-10-08). A key made
+   fresh at every boot from the CSPRNG, held only in kernel memory and never written or paged
+   out. Every page sealed with the kernel's AEAD under a fresh nonce,
    with the nonce, the tag and the slot map kept in RAM, so nothing on the partition is ever
    plaintext, not even a header, and a page modified, replayed or unreadable kills the task
    that owns it rather than handing it wrong bytes. Only a task's private pages are swapped,
@@ -39,19 +37,19 @@ In order. Each step is its own set of pull requests with its own gates and contr
    comes, it is a cache in front of this swap that compresses one task's pages only (memory
    compression is a timing side channel), never compresses a page marked secret, and charges
    each task for its own compressed pages.
-3. **Filesystem phase 1b** (2.10): `fs_server` authorises by capability instead of by uid and
+2. **Filesystem phase 1b** (2.10): `fs_server` authorises by capability instead of by uid and
    mode, `hvfs` walks with capabilities, and `init` mints the root capability from a policy file.
    It removes `perm_ok`, the root check on `chown`, `SYS_FS_SET_META`, the uid path of
    `SYS_IPC_SENDER` in the filesystem, and `SYS_CONNECT_FS_SERVER`. Phase 1a, the kernel half,
    is done.
-4. **Accounts as files** (2.11 step 3): `/etc/passwd` and `/etc/shadow` on the volume, owned by a
+3. **Accounts as files** (2.11 step 3): `/etc/passwd` and `/etc/shadow` on the volume, owned by a
    ring-3 `auth_server`; the kernel keeps only the key-slot unlock.
-5. **Filesystem phases 2 to 4** (2.10): the kernel shrinks to a sealed-block service and the
+4. **Filesystem phases 2 to 4** (2.10): the kernel shrinks to a sealed-block service and the
    filesystem moves to ring 3 with a copy-on-write format, then symbolic links, timestamps and
    sparse files, then snapshots, reflinks and extended attributes. Phase 2 also splits the
    system and home into separate volumes.
 
-Steps 3 and 4 meet at `/etc/passwd`; whichever lands second adapts to the first.
+Steps 2 and 3 meet at `/etc/passwd`; whichever lands second adapts to the first.
 
 ---
 
@@ -144,7 +142,7 @@ start it.
 ### 2.7a ⬜ Evict the in-kernel services [F-2.7a]
 
 `.github/ring0-classification.yml` (S87) measures the ring-0 `service` class at about 6,000 code
-lines beside a 10,933-line core: `storage.c` (the encrypted store and the on-disk filesystem),
+lines beside a 11,092-line core: `storage.c` (the encrypted store and the on-disk filesystem),
 `kusers.c` (accounts and password hashing), the loader and spawn path, `crypto.c` and
 `syscall_fs.c`. Neither big move is mechanical. `storage.c` holds the volume key, so moving it
 means deciding what a ring-3 storage server may hold; 2.10's phase 2 is that decision for the
@@ -285,7 +283,7 @@ from a tag and compare. They wait on 3.1, since an ISO that does not rebuild to 
 same bytes cannot be verified by rebuilding.
 
 **4.12.** The exemption list in `.github/invariants.yml` is currently
-**empty**: all 118 properties name a witness that resolves.
+**empty**: all 119 properties name a witness that resolves.
 
 ---
 
@@ -302,9 +300,10 @@ same bytes cannot be verified by rebuilding.
 | ✅ | An encrypted, Merkle-verified volume with a journal and TPM-anchored rollback protection |
 | ✅ | An installer, on IDE disks and SD or eMMC storage, including a laptop's soldered eMMC |
 | ✅ | An installed disk that starts on its own under UEFI, the laptop's eMMC included |
+| ✅ | All of a machine's RAM up to 4 GiB in the page pool, every region the memory map names (S117) |
 | ✅ | A shell with pipelines, a shared libc, GNU coreutils and TCC |
 | ✅ | Measured boot, the kernel pinned in the boot image, and a PCR-sealed volume key |
 | ✅ | An IOMMU confining device DMA, and device capabilities that name one device each |
 | ◧ | Reproducible `kernel.elf` (not yet the ISO), an SBOM, CodeQL, Dependabot, signed commits, a protected `main` |
-| ✅ | 448 `smoke-*` targets, nearly all QEMU integration tests, and 238 of them control arms that must reproduce a defect |
+| ✅ | 452 `smoke-*` targets, nearly all QEMU integration tests, and 241 of them control arms that must reproduce a defect |
 | ✅ | Bounded Kani proofs, Miri over the Rust core, and fuzzing at the FFI boundary |

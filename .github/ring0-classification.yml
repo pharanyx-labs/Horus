@@ -452,7 +452,16 @@
 # halts on a module over the AP trampoline page, which those modules can now
 # reach. The image probe and the new trampoline probe were folded into one
 # helper, which kept this from +22. Core because it is the boot module table.
-core_budget_loc: 10933
+# 2026-10-08: 10933 -> 11092, +159, the 4 GiB pool (S117), in paging.c and
+# main.c: the table of RAM regions from the memory map and the test of a frame
+# against it, the PHYS_KVA window over RAM in [1, 4) GiB with 2 MiB pages over
+# whole chunks only, the placement of the per-frame tables at the top of RAM
+# clear of modules and reserves, reserves that also step over holes, the
+# allocator built over all of it, explicit lower bounds where an index was
+# derived by unsigned subtraction, and the pool line in one write. Core because
+# it is the frame allocator and the kernel's own mapping of memory. The boot
+# self-test went to selftest.c, which kept this from +196.
+core_budget_loc: 11092
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

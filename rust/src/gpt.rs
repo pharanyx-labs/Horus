@@ -44,14 +44,17 @@ pub const HORUS_VOLUME_TYPE: [u8; 16] = [
 ];
 
 /// The Horus swap partition's type, 7b1c4a3e-5f2d-4e8a-9c61-0d2f3a4b5c6e, on
-/// disk. Reserved by the installer and used by nothing yet, so the kernel has no
-/// use for it; it is here, beside the volume's, so the two are seen to differ.
-/// NOT the Linux swap type: a Linux system booted on this machine activates any
-/// partition of that type on its own, and would write its memory, unencrypted,
-/// over ours.
-#[cfg(test)]
+/// disk. Reserved by the installer and used by nothing yet. NOT the Linux swap
+/// type: a Linux system booted on this machine activates any partition of that
+/// type on its own, and would write its memory, unencrypted, over ours.
 pub const HORUS_SWAP_TYPE: [u8; 16] = [
     0x3e, 0x4a, 0x1c, 0x7b, 0x2d, 0x5f, 0x8a, 0x4e, 0x9c, 0x61, 0x0d, 0x2f, 0x3a, 0x4b, 0x5c, 0x6e,
+];
+
+/// The EFI system partition's type, c12a7328-f81f-11d2-ba4b-00a0c93ec93b, on
+/// disk: the one type every UEFI firmware looks for.
+pub const ESP_TYPE: [u8; 16] = [
+    0x28, 0x73, 0x2a, 0xc1, 0x1f, 0xf8, 0xd2, 0x11, 0xba, 0x4b, 0x00, 0xa0, 0xc9, 0x3e, 0xc9, 0x3b,
 ];
 
 /// GPT addresses 512-byte sectors; the volume is addressed in 4 KiB blocks.
@@ -207,6 +210,229 @@ pub fn find_volume(buf: &[u8], device_blocks: u64) -> Result<(u64, u64), i32> {
     found.ok_or(GPT_NO_VOLUME)
 }
 
+// ---------------------------------------------------------------------------
+// Writing a table: the installer's layout (docs/design/installed-system.md
+// section 6). The kernel writes it, from the operator's sizes, when the
+// installer asks for a disk that boots itself.
+
+/// Where the layout starts: 1 MiB in, past the protective MBR and the primary
+/// table, and aligned for any flash erase block.
+pub const LEAD_BLOCKS: u64 = 256;
+/// The 1 MiB kept free at the end for the backup table (the last 33 sectors).
+pub const TAIL_BLOCKS: u64 = 256;
+/// The EFI system partition: 64 MiB, room for GRUB, the kernel and its modules
+/// in a FAT32 filesystem (whose own minimum is about 33 MiB).
+pub const ESP_BLOCKS: u64 = 16384;
+/// The table's bytes at each end of the disk: five blocks, the least that holds
+/// the MBR, a header and 128 entries (primary) or 128 entries and a header
+/// (backup, in the last 33 sectors).
+pub const TABLE_BLOCKS: usize = 5;
+pub const TABLE_BYTES: usize = TABLE_BLOCKS * 4096;
+
+/// A planned layout, in 4 KiB blocks: (first block, block count) for each
+/// partition. `swap.1` is 0 when no swap partition is laid out.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GptLayout {
+    pub esp_base: u64,
+    pub esp_count: u64,
+    pub swap_base: u64,
+    pub swap_count: u64,
+    pub volume_base: u64,
+    pub volume_count: u64,
+}
+
+/// Lay out ESP, swap and volume on a device of `device_blocks` blocks, from the
+/// operator's sizes: `swap_blocks` (0 for none) and `volume_blocks` (0 for the
+/// rest of the device). `None` if they do not fit with a volume of at least
+/// `min_volume` blocks.
+///
+/// Proved by Kani (`gpt_plan_is_inside_the_device`): any layout it returns has
+/// the three partitions in order, without overlap, after the primary table and
+/// before the backup, and a volume no smaller than asked for.
+pub fn plan(device_blocks: u64, swap_blocks: u64, volume_blocks: u64, min_volume: u64) -> Option<GptLayout> {
+    let esp_base = LEAD_BLOCKS;
+    let swap_base = esp_base.checked_add(ESP_BLOCKS)?;
+    let volume_base = swap_base.checked_add(swap_blocks)?;
+    let limit = device_blocks.checked_sub(TAIL_BLOCKS)?; // first block of the tail
+    let room = limit.checked_sub(volume_base)?;
+    let volume_count = if volume_blocks == 0 { room } else { volume_blocks };
+    if volume_count < min_volume || volume_count == 0 || volume_count > room {
+        return None;
+    }
+    Some(GptLayout {
+        esp_base,
+        esp_count: ESP_BLOCKS,
+        swap_base,
+        swap_count: swap_blocks,
+        volume_base,
+        volume_count,
+    })
+}
+
+fn put(b: &mut [u8], off: usize, v: &[u8]) {
+    b[off..off + v.len()].copy_from_slice(v);
+}
+
+fn entry_bytes(e: &mut [u8], ty: &[u8; 16], unique: &[u8; 16], base: u64, count: u64, name: &str) {
+    put(e, 0, ty);
+    put(e, 16, unique);
+    put(e, 32, &(base * SECTORS_PER_BLOCK).to_le_bytes());
+    put(e, 40, &((base + count) * SECTORS_PER_BLOCK - 1).to_le_bytes());
+    for (i, c) in name.encode_utf16().take(36).enumerate() {
+        put(e, 56 + 2 * i, &c.to_le_bytes());
+    }
+}
+
+/// What the primary and backup headers share.
+struct HeaderCommon<'a> {
+    first_usable: u64,
+    last_usable: u64,
+    disk: &'a [u8; 16],
+    entries_crc: u32,
+}
+
+fn header_bytes(h: &mut [u8], my: u64, alt: u64, entries_lba: u64, c: &HeaderCommon) {
+    let (fu, lu, disk, ecrc) = (c.first_usable, c.last_usable, c.disk, c.entries_crc);
+    put(h, 0, b"EFI PART");
+    put(h, 8, &0x0001_0000u32.to_le_bytes());
+    put(h, 12, &92u32.to_le_bytes());
+    put(h, 24, &my.to_le_bytes());
+    put(h, 32, &alt.to_le_bytes());
+    put(h, 40, &fu.to_le_bytes());
+    put(h, 48, &lu.to_le_bytes());
+    put(h, 56, disk);
+    put(h, 72, &entries_lba.to_le_bytes());
+    put(h, 80, &128u32.to_le_bytes());
+    put(h, 84, &(ENTRY_SIZE as u32).to_le_bytes());
+    put(h, 88, &ecrc.to_le_bytes());
+    let c = crc32(&h[0..92]);
+    put(h, 16, &c.to_le_bytes());
+}
+
+/// Which end of the disk a table write is for.
+pub const SIDE_HEAD: u32 = 0;
+pub const SIDE_TAIL: u32 = 1;
+
+/// Write one end of the table for `l` on a device of `device_blocks` blocks
+/// into `buf`: SIDE_HEAD is the device's first TABLE_BYTES (protective MBR,
+/// primary header, entries), SIDE_TAIL its last TABLE_BYTES (backup entries,
+/// backup header in the last sector). `guids` are the disk's and the three
+/// partitions' unique GUIDs. `buf` is written whole, zeros included.
+///
+/// ONE END AT A TIME, IN PLACE: the entries are written straight into `buf`
+/// and their CRC taken from there, so nothing large lives on the stack. This
+/// runs in the kernel, whose stacks have no room for two 20 KiB tables. Both
+/// ends write the same entries, so they carry the same CRC.
+pub fn build_side(l: &GptLayout, device_blocks: u64, guids: &[[u8; 16]; 4], side: u32, buf: &mut [u8; TABLE_BYTES]) {
+    buf.fill(0);
+    let sectors = device_blocks * SECTORS_PER_BLOCK;
+    let last = sectors - 1;
+    let table_sectors = (128 * ENTRY_SIZE) as u64 / SECTOR; // 32
+    let tail_first = sectors - (TABLE_BYTES as u64 / SECTOR);
+    let backup_entries_lba = last - table_sectors;
+    let (eoff, hoff, entries_lba, my, alt) = if side == SIDE_HEAD {
+        (1024usize, 512usize, 2u64, 1u64, last)
+    } else {
+        (((backup_entries_lba - tail_first) * SECTOR) as usize, ((last - tail_first) * SECTOR) as usize, backup_entries_lba, last, 1u64)
+    };
+
+    {
+        let entries = &mut buf[eoff..eoff + 128 * ENTRY_SIZE];
+        let mut n = 0;
+        entry_bytes(&mut entries[0..ENTRY_SIZE], &ESP_TYPE, &guids[1], l.esp_base, l.esp_count, "EFI system");
+        n += 1;
+        if l.swap_count > 0 {
+            entry_bytes(&mut entries[n * ENTRY_SIZE..(n + 1) * ENTRY_SIZE], &HORUS_SWAP_TYPE, &guids[2], l.swap_base, l.swap_count, "Horus swap");
+            n += 1;
+        }
+        entry_bytes(&mut entries[n * ENTRY_SIZE..(n + 1) * ENTRY_SIZE], &HORUS_VOLUME_TYPE, &guids[3], l.volume_base, l.volume_count, "Horus volume");
+    }
+    let ecrc = crc32(&buf[eoff..eoff + 128 * ENTRY_SIZE]);
+    let common = HeaderCommon {
+        first_usable: 2 + table_sectors,
+        last_usable: last - 1 - table_sectors,
+        disk: &guids[0],
+        entries_crc: ecrc,
+    };
+    header_bytes(&mut buf[hoff..hoff + 512], my, alt, entries_lba, &common);
+
+    if side == SIDE_HEAD {
+        // Protective MBR: one partition of type 0xEE covering the disk, so a
+        // tool that knows only MBR sees the disk as in use rather than empty.
+        let mbr_len = core::cmp::min(last, 0xFFFF_FFFF) as u32;
+        put(buf, 446, &[0, 0, 2, 0, 0xEE, 0xFF, 0xFF, 0xFF]);
+        put(buf, 454, &1u32.to_le_bytes());
+        put(buf, 458, &mbr_len.to_le_bytes());
+        put(buf, 510, &[0x55, 0xAA]);
+    }
+}
+
+/// FFI entry: plan the installer's layout without writing anything. 0 and
+/// `*out`, or -1 if the sizes do not fit, or `GPT_BAD_HEADER` for a null `out`.
+///
+/// # Safety
+/// `out` must be a writable, aligned `GptLayout`; it is checked for null and
+/// written only on success. The sizes are numbers from ring 3 and are bounded
+/// by `plan`, not assumed.
+#[no_mangle]
+pub unsafe extern "C" fn rust_gpt_plan(
+    device_blocks: u64,
+    swap_blocks: u64,
+    volume_blocks: u64,
+    min_volume: u64,
+    out: *mut GptLayout,
+) -> i32 {
+    if out.is_null() {
+        return GPT_BAD_HEADER;
+    }
+    match plan(device_blocks, swap_blocks, volume_blocks, min_volume) {
+        Some(l) => {
+            *out = l;
+            0
+        }
+        None => -1,
+    }
+}
+
+/// FFI entry: write one end (`side`, SIDE_HEAD or SIDE_TAIL) of the table for
+/// the layout `rust_gpt_plan` returns for the same sizes. Re-plans rather than
+/// trusting a layout handed back from C, so the table written can only ever be
+/// one `plan` accepted. 0, or -1 if the sizes do not fit, or `GPT_BAD_HEADER`
+/// for a null, short or unknown argument; `buf` is untouched on any error.
+///
+/// # Safety
+/// `guids` must point to 64 readable bytes, `buf` to `buf_len` writable bytes
+/// (checked: anything under TABLE_BYTES is refused), and the two must not
+/// overlap. The sizes are bounded by `plan`, not assumed.
+#[no_mangle]
+pub unsafe extern "C" fn rust_gpt_build_side(
+    device_blocks: u64,
+    swap_blocks: u64,
+    volume_blocks: u64,
+    min_volume: u64,
+    guids: *const u8,
+    side: u32,
+    buf: *mut u8,
+    buf_len: usize,
+) -> i32 {
+    if guids.is_null() || buf.is_null() || buf_len < TABLE_BYTES || side > SIDE_TAIL {
+        return GPT_BAD_HEADER;
+    }
+    let Some(l) = plan(device_blocks, swap_blocks, volume_blocks, min_volume) else {
+        return -1;
+    };
+    let g = core::slice::from_raw_parts(guids, 64);
+    let mut gs = [[0u8; 16]; 4];
+    let (rows, _) = g.as_chunks::<16>();
+    for (i, c) in rows.iter().enumerate() {
+        gs[i] = *c;
+    }
+    let b = &mut *(buf as *mut [u8; TABLE_BYTES]);
+    build_side(&l, device_blocks, &gs, side, b);
+    0
+}
+
 /// FFI entry: find the Horus volume on a device. `buf` holds the device's
 /// first `buf_len` bytes (block 0 onwards); `device_blocks` is how many 4 KiB
 /// blocks the kernel can address on it. On success writes the volume's first
@@ -244,6 +470,26 @@ pub unsafe extern "C" fn rust_gpt_find_volume(
 #[cfg(kani)]
 mod gpt_kani_proofs {
     use super::*;
+
+    /// Whatever sizes the operator types, a planned layout keeps the ESP, swap
+    /// and volume in that order without overlap, after the primary table and
+    /// before the backup, and gives the volume at least `min_volume` blocks
+    /// and exactly what was asked for when a size was given.
+    #[kani::proof]
+    fn gpt_plan_is_inside_the_device() {
+        let (dev, swap, vol, min): (u64, u64, u64, u64) = (kani::any(), kani::any(), kani::any(), kani::any());
+        if let Some(l) = plan(dev, swap, vol, min) {
+            assert!(l.esp_base >= LEAD_BLOCKS, "the ESP overlaps the primary table");
+            assert!(l.esp_base + l.esp_count <= l.swap_base, "the ESP overlaps swap");
+            assert!(l.swap_base + l.swap_count <= l.volume_base, "swap overlaps the volume");
+            assert!(l.volume_count > 0 && l.volume_count >= min, "the volume is smaller than asked");
+            assert!(vol == 0 || l.volume_count == vol, "the volume is not the size asked for");
+            assert!(
+                l.volume_base.checked_add(l.volume_count).is_some_and(|e| e <= dev - TAIL_BLOCKS),
+                "the volume overlaps the backup table or runs past the device"
+            );
+        }
+    }
 
     /// Whatever the disk says, an accepted volume is a non-empty run of whole
     /// blocks inside the device, starting after the partition table and inside
@@ -382,6 +628,47 @@ mod tests {
         d[512 + 80..512 + 84].copy_from_slice(&1024u32.to_le_bytes()); // 128 KiB of entries
         reseal(&mut d);
         assert_eq!(find_volume(&d, DEV_BLOCKS), Err(GPT_BAD_ENTRIES));
+    }
+
+    fn written(dev: u64, swap: u64, vol: u64) -> (GptLayout, [u8; TABLE_BYTES], [u8; TABLE_BYTES]) {
+        let l = plan(dev, swap, vol, 512).expect("fits");
+        let g = [[1u8; 16], [2u8; 16], [3u8; 16], [4u8; 16]];
+        let (mut h, mut t) = ([0u8; TABLE_BYTES], [0u8; TABLE_BYTES]);
+        build_side(&l, dev, &g, SIDE_HEAD, &mut h);
+        build_side(&l, dev, &g, SIDE_TAIL, &mut t);
+        (l, h, t)
+    }
+
+    #[test]
+    fn a_written_table_is_read_back_by_the_parser() {
+        for (swap, vol) in [(0, 0), (262144, 0), (262144, 1 << 19), (0, 4096)] {
+            let (l, h, _) = written(DEV_BLOCKS, swap, vol);
+            assert_eq!(find_volume(&h, DEV_BLOCKS), Ok((l.volume_base, l.volume_count)), "swap {swap} vol {vol}");
+        }
+    }
+
+    #[test]
+    fn the_written_table_is_what_fdisk_expects() {
+        let (_, h, t) = written(DEV_BLOCKS, 262144, 0);
+        assert_eq!(&h[510..512], &[0x55, 0xAA]);
+        assert_eq!(h[446 + 4], 0xEE);
+        // The backup header is in the device's last sector, names itself, and
+        // points back at the primary.
+        let bh = &t[TABLE_BYTES - 512..];
+        assert_eq!(&bh[0..8], b"EFI PART");
+        assert_eq!(rd_u64(bh, 24), Some(DEV_BLOCKS * 8 - 1));
+        assert_eq!(rd_u64(bh, 32), Some(1));
+        // Both entry arrays are the same bytes.
+        assert_eq!(&h[1024..1024 + 16384], &t[TABLE_BYTES - 512 - 16384..TABLE_BYTES - 512]);
+    }
+
+    #[test]
+    fn sizes_that_do_not_fit_are_refused() {
+        assert_eq!(plan(DEV_BLOCKS, DEV_BLOCKS, 0, 512), None);           // swap the size of the disk
+        assert_eq!(plan(DEV_BLOCKS, 0, DEV_BLOCKS, 512), None);           // volume the size of the disk
+        assert_eq!(plan(LEAD_BLOCKS + ESP_BLOCKS + TAIL_BLOCKS + 100, 0, 0, 512), None); // too small
+        assert_eq!(plan(100, 0, 0, 512), None);                           // smaller than the tail
+        assert_eq!(plan(DEV_BLOCKS, u64::MAX, 0, 512), None);             // overflow
     }
 
     #[test]

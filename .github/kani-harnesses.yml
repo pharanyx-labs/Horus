@@ -133,3 +133,7 @@ gating:
   # reads is bytes off a disk. FALSIFIED by removing the device bound (red in
   # under 1 s, "the volume runs past the device").
   - gpt_volume_is_inside_the_device                          # 1s
+  # The installer's layout planner (rust/src/gpt.rs, S114), added 2026-10-08:
+  # the kernel writes a table and an ESP where it says. FALSIFIED by removing
+  # the "fits before the backup table" bound (red in under 1 s).
+  - gpt_plan_is_inside_the_device                            # 1s

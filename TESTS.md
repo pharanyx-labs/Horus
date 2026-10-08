@@ -193,6 +193,8 @@ There are 430 `smoke-*` targets: 204 gates and 226 control arms. Each row is a g
 | `smoke-fs-perms` | File permissions are checked against the kernel-attested user, not a client's claim | S13, S14 |  |
 | `smoke-fs-dir-operand` | A file is never read as a directory, so a forged entry frees nothing | S113 | `smoke-fs-dir-operand-control` |
 | `smoke-fs-persist` | Data survives a reboot |  |  |
+| `smoke-install-boot-disk` | An install under UEFI lays out GPT, ESP, swap and volume, and the machine then starts from the disk alone and logs in | S114, S115 | `smoke-install-boot-disk-control` |
+| `smoke-install-esp-pin` | Install media whose EFI image was changed after it was built installs nothing | S115 | `smoke-install-esp-pin-control` |
 | `smoke-gpt-volume` | The volume is found in its GPT partition, and an entry forged on the disk is refused | S114 | `smoke-gpt-volume-control` |
 | `smoke-fs-wal` | The journal replays a write interrupted by a crash |  |  |
 | `smoke-fs-wal-flush` | A failed cache flush stops the journal committing |  | `smoke-fs-wal-flush-control` |
@@ -326,10 +328,10 @@ Currently **91 of 102** implemented syscalls are covered (`SECURITY.md` S25; `do
 ## CI
 
 
-`.github/workflows/ci.yml` defines **133** jobs, run on every push and pull request; most are sharded runs of the gates above. With CodeQL, the scheduled ruleset audit, the nightly fuzzing (`fuzz.yml`, one context per target) and the nightly Kani control arms (`kani-arms.yml`) the total is below: **137** jobs, **146** contexts, counted by `tools/check_ci_gating.py`.
+`.github/workflows/ci.yml` defines **134** jobs, run on every push and pull request; most are sharded runs of the gates above. With CodeQL, the scheduled ruleset audit, the nightly fuzzing (`fuzz.yml`, one context per target) and the nightly Kani control arms (`kani-arms.yml`) the total is below: **138** jobs, **147** contexts, counted by `tools/check_ci_gating.py`.
 
 `.github/ci-gating.yml` classifies every job as gating or exempt with a written reason, and the `ci-gating` job fails on a job in neither list. The branch ruleset requires two checks: `gates`, which needs every gating job and passes only if each succeeded (skipped or cancelled counts as failed), and CodeQL.
-The set is **137 gating contexts and 9 reasoned exemptions**: `fuzz` (seven targets, ten minutes each, nightly; a crash fails it, but it never runs on a pull request), `kani-arms` and `ruleset-audit` (both run on a schedule, never on a pull request).
+The set is **138 gating contexts and 9 reasoned exemptions**: `fuzz` (seven targets, ten minutes each, nightly; a crash fails it, but it never runs on a pull request), `kani-arms` and `ruleset-audit` (both run on a schedule, never on a pull request).
 
 The jobs that are not boot tests:
 
@@ -386,11 +388,11 @@ The jobs that are not boot tests:
 | `kani-bounded` | Formal verification of the capability algebra (every Kani proof) |
 
 Two of those deserve a sentence each.
-**`kani-bounded` is the only Kani job, and it can fail anything.** All **33** harnesses run
+**`kani-bounded` is the only Kani job, and it can fail anything.** All **34** harnesses run
 there with no `continue-on-error`, each named with its measured cost in
 `.github/kani-harnesses.yml`, and the job refuses a proof that is not listed. And **`invariants`** requires every property in `SECURITY.md` to
 name a witness that exists and runs; its exemption list, `.github/invariants.yml`, is
-currently **empty**: all 116 properties name a witness that resolves.
+currently **empty**: all 117 properties name a witness that resolves.
 
 Every `tools/check_*.py` has a falsification harness, `tools/test_check_*.sh`, with one case per
 rule showing the rule can fail, and each checker asserts a floor on what it parsed, so a parser

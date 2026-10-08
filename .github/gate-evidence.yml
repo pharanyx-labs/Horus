@@ -258,6 +258,14 @@ exempt:
     status asserted directly, each with its own REQUIRE_MARKER. The third boot's
     marker is the refusal itself, and a boot that dies before storage_init says
     it fails the target.
+  smoke-install-boot-disk: >
+    Two boots inside one tools/installer_session.py scenario, each driven off
+    positive markers (the installer's completion, then the disk's own GRUB
+    verifying the kernel, the kernel naming its partition, and a login), and the
+    scenario's exit status is asserted. A boot that dies fails a marker.
+  smoke-install-boot-disk-control: >
+    The same two boots; the second requires the firmware's own statement that
+    nothing is bootable, a positive marker, so a dead boot fails it.
   smoke-replace-live: >
     Same shape as smoke-fs-persist: two written-out boots, each asserting its
     exit status and a REQUIRE_MARKER naming the branch taken (REFUSED), with the

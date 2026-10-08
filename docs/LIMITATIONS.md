@@ -336,13 +336,12 @@ waits until it is woken or killed. The PIT runs at a fixed 100 Hz.
 
 ## 4. What does not exist yet
 
-- **A disk that boots itself.** The installer writes the volume over the whole disk, with no
-  partition table and no bootloader. An installed machine is started from Horus boot media
-  (`horus.iso`), which finds and opens the volume. The install media's menu offers only live boot
-  and install, and a live boot opens no disk (S110), so it cannot start an installed system. The
-  kernel can already mount a volume from a GPT partition (S114); the installer writing a GPT
-  disk with an EFI system partition, as designed in
-  [`design/installed-system.md`](design/installed-system.md), is not built.
+- **A disk that boots itself, on real firmware.** The installer lays out a GPT disk with an EFI
+  system partition (S114, S115), and `make smoke-install-boot-disk` installs under QEMU's OVMF and
+  starts the machine from the disk alone. It has not yet run on real firmware. Three limits are
+  by construction: the firmware finds GRUB at the removable-media path because Horus cannot
+  write UEFI boot entries; every partition lies inside the 16 GiB the kernel addresses, so a
+  larger disk's remainder is unused; and the swap partition is reserved but unused (below).
 - **Programs on the disk.** The shipped programs are compiled into the kernel image or loaded as
   measured boot modules; nothing runs from the volume. The manifest-pinned `/bin`, `/sbin` and
   `/lib` of the installed-system design are not built.
@@ -445,7 +444,7 @@ the fix.
 
 Kani proves properties of capability revocation, the ELF validator, the user-address validators,
 the random pool's seed gate, the login throttle and the page-pool refcount
-arithmetic: **33** harnesses, every one of them gating in the required `kani-bounded` job. That is
+arithmetic: **34** harnesses, every one of them gating in the required `kani-bounded` job. That is
 the whole of the formal methods here. The kernel as a whole is not verified, no refinement proof
 links a specification to the code, and no TLA+ specification exists (two unsound ones were removed on
 2026-09-10).

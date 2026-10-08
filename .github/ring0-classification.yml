@@ -426,7 +426,14 @@
 # smoke-kdiag-ioport read it there: 1 CI run in 74 reported a refusal missing
 # beside a dump that showed it. Core because it is the fault path and the
 # kernel's own channel; a reporter cannot be moved out of the code it reports on.
-core_budget_loc: 10863
+# 2026-10-08: 10863 -> 10907, +44, the disk that boots itself (S115), in
+# main.c: parsing `horus.esp=<sha256>` off the measured command line (the pin
+# the ESP image is checked against, and so the trust anchor for what an install
+# writes to the disk's EFI system partition), the accessor that hands it out,
+# leaving the image out of the module manifest check, and the BUILD LABEL line
+# of a DEBUG_BUILD. The check itself, the evidence and its formatting were moved
+# into storage.c (service), their only user, which took this from +96 to +44.
+core_budget_loc: 10907
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

@@ -178,7 +178,7 @@ horus login: <span class="term__caret"></span></pre>
 </div>
 
 <p class="note">
-  Every configuration flag, every one of the 435 test targets, and the troubleshooting
+  Every configuration flag, every one of the 439 test targets, and the troubleshooting
   notes are in
   <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/BUILDING.md">BUILDING.md</a>
   and
@@ -212,10 +212,10 @@ horus login: <span class="term__caret"></span></pre>
     found.
   </p>
   <p>
-    The disk does not yet carry a bootloader of its own, and the stick's live entry never opens
-    an installed disk. To start the installed system, boot a stick holding
-    <code>horus.iso</code> (<code>make iso</code>), which finds and opens the volume. A disk
-    that boots by itself is the next piece of work.
+    The installed disk starts on its own under UEFI: the installer writes a partition table,
+    an EFI system partition holding GRUB and the pinned kernel, a swap partition and the
+    volume, and asks for the swap and volume sizes. The stick's live entry never opens an
+    installed disk.
   </p>
   <p class="note">
     Supporting another kind of disk means writing one driver that reads and writes blocks.

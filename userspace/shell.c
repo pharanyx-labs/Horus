@@ -3006,7 +3006,12 @@ static void print_banner(void) {
 
     n = b_str(info[rows], 0, BANNER_INFO_MAX, "Horus Secure Microkernel");
     info[rows][n] = 0; rows++;
+#ifdef DEBUG_BUILD
+    /* A diagnostic build names itself here (see the Makefile's DEBUG_LABEL). */
+    n = b_str(info[rows], 0, BANNER_INFO_MAX, "DEBUG BUILD: " HORUS_DEBUG_LABEL);
+#else
     n = b_str(info[rows], 0, BANNER_INFO_MAX, "capability-based - privilege-separated");
+#endif
     info[rows][n] = 0; rows++;
     n = b_str(info[rows], 0, BANNER_INFO_MAX, "--------------------------------------");
     info[rows][n] = 0; rows++;

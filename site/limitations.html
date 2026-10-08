@@ -133,7 +133,7 @@
       Claude writes most of the code and merges its own pull requests once every gate is
       green; the maintainer sets direction and decides the questions that touch the security
       model. No human reads a change before it merges. The automated side is extensive: the
-      gating set is 137 checks with 9 exempted, each security property has a named witness,
+      gating set is 138 checks with 9 exempted, each security property has a named witness,
       and each gate has a control arm that puts the defect back and must turn it red. But the
       2026-07 critical finding passed every gate of its day, because the tests checked the
       property the author had in mind rather than the one the documentation claimed. The
@@ -194,11 +194,10 @@
   <li>
     <h3 id="4an-installed-disk-does-not-boot-on-its-own"><span class="id">4</span>An installed disk does not boot on its own</h3>
     <p>
-      The installer writes an encrypted volume over the whole disk, with no partition table
-      and no bootloader, and the shipped programs live in the measured boot image rather than
-      on the disk. An installed machine is started from Horus boot media, which finds and
-      opens the volume. A GPT disk with an EFI system partition and programs pinned by hash
-      in <code>/bin</code> is designed and not built.
+      The installer lays out a disk that starts on its own under UEFI (a GPT, an EFI system
+      partition and the volume), and it is verified under emulated firmware but has not yet
+      run on real firmware. The shipped programs still live in the measured boot image rather
+      than on the disk: programs pinned by hash in <code>/bin</code> are designed and not built.
     </p>
   </li>
   <li>

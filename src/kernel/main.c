@@ -126,6 +126,12 @@ static void assert_higher_half(void) {
         line[n]   = 0;
         print(line);
     }
+#ifdef DEBUG_BUILD
+    /* A DIAGNOSTIC BUILD SAYS WHICH ONE IT IS, in one write for the reason
+     * above. Two differently built images looked the same on the laptop's
+     * screen, and hours went on diagnosing the wrong one (2026-09-24). */
+    print("BUILD LABEL: " HORUS_DEBUG_LABEL "\n");
+#endif
 }
 
 /* ---- Multiboot2 memory map -> physical pool size --------------------------
@@ -186,12 +192,52 @@ struct mb2_mmap_entry { uint64_t base; uint64_t len; uint32_t type; uint32_t res
 static char     g_boot_cmdline[BOOT_CMDLINE_MAX];
 static uint64_t g_boot_flags;
 
+/* The ESP image's pin (horus.esp=<sha256>), from the install entry's command
+ * line. See boot_esp_image(). */
+static uint8_t  g_esp_pin[32];
+static int      g_esp_pinned;
+
 /* Whether `needle` appears in the command line as a WHOLE word.
  *
  * Word-exact on purpose: a substring match would let `horus.installer-notes` or
  * `nohorus.install` turn on a mode nobody asked for, and the mode in question
  * decides whether a program that erases disks is launched. Words are separated
  * by spaces and tabs, which is all GRUB produces. */
+/* Parse `horus.esp=` followed by exactly 64 lowercase hex digits, as one whole
+ * word, into `out`. 1 if found and well-formed, 0 otherwise (absent, short,
+ * long, upper case, or any other character). */
+static int hexval(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return -1;
+}
+static int cmdline_esp_pin(uint8_t out[32])
+{
+    static const char key[] = "horus.esp=";
+    const unsigned klen = sizeof(key) - 1;
+    for (unsigned i = 0; i < BOOT_CMDLINE_MAX && g_boot_cmdline[i]; ) {
+        while (i < BOOT_CMDLINE_MAX && (g_boot_cmdline[i] == ' ' || g_boot_cmdline[i] == '\t'))
+            i++;
+        unsigned start = i;
+        while (i < BOOT_CMDLINE_MAX && g_boot_cmdline[i] &&
+               g_boot_cmdline[i] != ' ' && g_boot_cmdline[i] != '\t')
+            i++;
+        if (i - start != klen + 64) continue;
+        unsigned k = 0;
+        while (k < klen && g_boot_cmdline[start + k] == key[k]) k++;
+        if (k != klen) continue;
+        for (unsigned b = 0; b < 32; b++) {
+            int hi = hexval(g_boot_cmdline[start + klen + 2 * b]);
+            int lo = hexval(g_boot_cmdline[start + klen + 2 * b + 1]);
+            if (hi < 0 || lo < 0) return 0;
+            out[b] = (uint8_t)((hi << 4) | lo);
+        }
+        return 1;
+    }
+    return 0;
+}
+
 static int cmdline_has_word(const char *needle)
 {
     unsigned nlen = 0;
@@ -310,12 +356,28 @@ static int boot_module_matches_manifest(const struct boot_module *m) {
     return 0;
 }
 
+/* The ESP image's pin, for the storage service that checks the image when it
+ * writes it (boot_esp_image in storage.c, S115). 1 and the pin if the install
+ * entry's command line carried a well-formed one, 0 otherwise. The pin is parsed
+ * here because the command line is parsed here; the check lives with its only
+ * user, outside the verified core. */
+int boot_esp_pin(uint8_t out[32])
+{
+    for (int k = 0; k < 32; k++) out[k] = g_esp_pin[k];
+    return g_esp_pinned;
+}
+
 /* Carries S10: a boot module that fails its hash check cannot be executed. */
 uint32_t boot_module_verify_all(void) {
     uint32_t failed = 0;
 
     for (uint32_t i = 0; i < g_boot_module_count; i++) {
         struct boot_module *m = &g_boot_modules[i];
+        /* The ESP image is not in the manifest and never can be (it contains
+         * this kernel's ELF), so it is never "verified" in this sense: no
+         * syscall can read it and fs_server never copies it. It is checked
+         * against the command line's pin, when it is used. See boot_esp_image. */
+        if (module_name_eq(m->name, ESP_MODULE_NAME)) { m->verified = 0; continue; }
         m->verified = (uint8_t)boot_module_matches_manifest(m);
 
         if (!m->verified) {
@@ -695,6 +757,13 @@ static uint32_t mb_scan_boot_info(void) {
      * here resolves to. */
     if ((g_boot_flags & BOOT_FLAG_INSTALL) && (g_boot_flags & BOOT_FLAG_LIVE))
         g_boot_flags &= ~(uint64_t)BOOT_FLAG_INSTALL;
+
+    /* The ESP image's pin, on an install boot only: nothing else lays out a
+     * bootable disk. A malformed pin is the same as none, and none means the
+     * installer cannot ask for one, so every way of getting this wrong ends in
+     * the old whole-disk install rather than in an ESP nobody verified. */
+    g_esp_pinned = 0;
+    if (g_boot_flags & BOOT_FLAG_INSTALL) g_esp_pinned = cmdline_esp_pin(g_esp_pin);
 
     if (region_top <= (uint64_t)USER_PHYS_BASE) return 0;
     if (region_top > PHYS_POOL_CEIL) region_top = PHYS_POOL_CEIL;   /* PHYS_KVA window */

@@ -102,6 +102,8 @@ control_arms:
   smoke-readdir-end-control: smoke-readdir-end
   smoke-fs-dir-operand-control: smoke-fs-dir-operand
   smoke-gpt-volume-control: smoke-gpt-volume
+  smoke-install-boot-disk-control: smoke-install-boot-disk
+  smoke-install-esp-pin-control: smoke-install-esp-pin
   smoke-ls-path-control: smoke-ls-path
   smoke-boot-media-control: smoke-boot-media
   smoke-ahci-detect-control: smoke-ahci-detect
@@ -392,6 +394,8 @@ gates:
   - smoke-fs-perms
   - smoke-fs-dir-operand
   - smoke-gpt-volume
+  - smoke-install-boot-disk
+  - smoke-install-esp-pin
   - smoke-fs-persist
   - smoke-fs-wal
   - smoke-fs-wal-flush

@@ -145,7 +145,9 @@ class Serial:
         if not qemu:
             print("SESSION SKIP: qemu-system-x86_64 not found", file=sys.stderr)
             sys.exit(2)
-        if not os.path.isfile(iso):
+        # iso "" boots NO install media: the machine starts from its disk alone,
+        # which is how a disk that boots itself is tested (S114, S115).
+        if iso and not os.path.isfile(iso):
             raise SessionFail(f"ISO '{iso}' not found (run 'make horus.iso' first)")
 
         # -serial pty: QEMU allocates a pty for COM1 and prints its path on
@@ -258,6 +260,20 @@ class Serial:
                           "file=%s,format=raw,if=ide,index=1,media=disk,"
                           "cache=writethrough" % disk2]
 
+        # SESSION_UEFI_CODE / SESSION_UEFI_VARS boot under OVMF instead of
+        # SeaBIOS. The variable store is COPIED for each boot, so no boot entry
+        # survives from one boot to the next: a disk that boots itself must be
+        # found by the firmware's removable-media path, which is the only one
+        # Horus can rely on (it cannot write NVRAM boot entries).
+        uefi = []
+        code = os.environ.get("SESSION_UEFI_CODE", "")
+        if code:
+            vars_src = os.environ.get("SESSION_UEFI_VARS", "")
+            self.vars_copy = "/tmp/horus-session-vars-%d-%d.fd" % (os.getpid(), int(time.time() * 1000))
+            shutil.copyfile(vars_src, self.vars_copy)
+            uefi = ["-drive", "if=pflash,format=raw,unit=0,readonly=on,file=%s" % code,
+                    "-drive", "if=pflash,format=raw,unit=1,file=%s" % self.vars_copy]
+
         # A QMP monitor, so a scenario can ask QEMU what the GUEST's disk is
         # doing. Inert unless something connects. See blockstats_ops().
         self.qmp_path = "/tmp/horus-session-qmp-%d.sock" % os.getpid()
@@ -269,7 +285,11 @@ class Serial:
 
         self.proc = subprocess.Popen(
             [qemu,
-             "-m", "512M", "-cpu", "qemu64,+aes,+rdrand,+smep,+smap", "-accel", qemu_accel(),
+             # SESSION_MEM: how much RAM the guest has. 512M is every scenario's
+             # default; a laptop has far more, and where firmware and GRUB put
+             # things depends on it (the ESP image's placement, 2026-10-08).
+             "-m", os.environ.get("SESSION_MEM", "512M"),
+             "-cpu", "qemu64,+aes,+rdrand,+smep,+smap", "-accel", qemu_accel(),
              "-smp", SMP]
             # q35 for the SD path: the default i440fx has no PCIe root the SDHCI
             # controller can sit on, and attaching one there gives a machine the
@@ -281,7 +301,7 @@ class Serial:
              "-display", "none", "-no-reboot", "-no-shutdown",
              "-device", "isa-debug-exit,iobase=0x604,iosize=0x04",
              "-qmp", "unix:%s,server,nowait" % self.qmp_path,
-             "-serial", "pty", "-net", "none"] + drive + ["-cdrom", iso],
+             "-serial", "pty", "-net", "none"] + uefi + drive + (["-cdrom", iso] if iso else []),
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
         self.fd = self._await_pty()
@@ -560,6 +580,11 @@ class Serial:
             os.unlink(self.qmp_path)
         except OSError:
             pass
+        if getattr(self, "vars_copy", None):
+            try:
+                os.unlink(self.vars_copy)
+            except OSError:
+                pass
         try:
             if self.proc.poll() is None:
                 self.proc.terminate()

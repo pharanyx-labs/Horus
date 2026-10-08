@@ -130,6 +130,7 @@ DEFECT_FLAGS = \
 	STORAGE_FORMAT_UNGATED INSTALLER_NO_CONFIRM BLOCK_ERRNO_LEGACY \
 	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED \
 	FS_LINK_UNCOUNTED FS_DIR_OPERAND_UNCHECKED GPT_ENTRIES_CRC_UNCHECKED STORAGE_REPLACE_VIEW_UNRESOLVED \
+	ESP_PIN_UNCHECKED ESP_NOT_WRITTEN DEBUG_BUILD \
 	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY BOOT_MENU_NO_LIVE_TOKEN \
 	BOOT_PIN_UNCHECKED BOOT_IMAGE_UNBOUND CONSOLE_PASS_UNGATED \
 	PIPE_CAP_UNACCOUNTED TOKEN_REPLY_MINT_UNMASKED \
@@ -1800,6 +1801,35 @@ GPT_ENTRIES_CRC_UNCHECKED ?= 0
 # system. Control arm
 # for make smoke-replace-live (smoke-replace-partition-control).
 STORAGE_REPLACE_VIEW_UNRESOLVED ?= 0
+
+# ESP_PIN_UNCHECKED=1 hashes the ESP image and never compares it with the pin on
+# the install entry's command line, so install media whose image was changed is
+# believed (S115). Control arm for make smoke-install-esp-pin.
+ESP_PIN_UNCHECKED ?= 0
+ifeq ($(ESP_PIN_UNCHECKED),1)
+CFLAGS += -DESP_PIN_UNCHECKED
+endif
+# ESP_NOT_WRITTEN=1 lays out a bootable disk's tables and leaves its ESP empty, so
+# nothing starts it. Control arm for make smoke-install-boot-disk.
+ESP_NOT_WRITTEN ?= 0
+ifeq ($(ESP_NOT_WRITTEN),1)
+CFLAGS += -DESP_NOT_WRITTEN
+endif
+
+# DEBUG_LABEL=<text> marks a DIAGNOSTIC build, the kind that becomes
+# horus-debug.iso: the kernel prints `BUILD LABEL: <text>` after DEFECT FLAGS,
+# the installer shows it on every screen's title row, and the login banner shows
+# it in place of its second line, so the person at the machine can always tell
+# which image they booted. It also turns on DEBUG_BUILD, an INSTRUMENT, so the
+# boot announces itself as one (CLAUDE.md section 6: an instrumented build never
+# says `none`), and adds what only a diagnostic build may say: the ESP image's
+# physical address in the kernel log. Never shipped; the text is the operator's,
+# typically "debug <commit>". No space-free requirement: it is quoted.
+DEBUG_LABEL ?=
+DEBUG_BUILD = $(if $(strip $(DEBUG_LABEL)),1,0)
+ifneq ($(strip $(DEBUG_LABEL)),)
+CFLAGS += -DDEBUG_BUILD -DHORUS_DEBUG_LABEL='"$(DEBUG_LABEL)"'
+endif
 ifeq ($(STORAGE_REPLACE_VIEW_UNRESOLVED),1)
 CFLAGS += -DSTORAGE_REPLACE_VIEW_UNRESOLVED
 endif
@@ -4458,7 +4488,7 @@ boot.iso:
 install.iso:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 KEYMAP=$(KEYMAP_SHIPPED)
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 KEYMAP=$(KEYMAP_SHIPPED) GRUB_CFG=grub-menu.cfg horus.iso
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 KEYMAP=$(KEYMAP_SHIPPED) GRUB_CFG=grub-menu.cfg INSTALL_ESP=1 horus.iso
 	@mv horus.iso install.iso
 # SAY WHICH FILE TO WRITE, AND SAY THAT THE OTHER ONE IS NOT IT.
 #
@@ -4510,7 +4540,7 @@ UEFI_STD_ARGS_C = -vga std \
 # mkbootimg.sh and re-running `make horus.iso` reports nothing to be done and
 # leaves the OLD image in place -- a stale artifact that makes the next boot
 # test a measurement of the previous build.
-horus.iso: kernel.elf $(GRUB_CFG) $(BOOT_MODULE_DEP) tools/mkbootimg.sh
+horus.iso: kernel.elf $(GRUB_CFG) $(BOOT_MODULE_DEP) tools/mkbootimg.sh tools/mkesp.sh grub-installed.cfg
 	@rm -rf isofiles
 	@mkdir -p isofiles/boot/grub
 	@cp kernel.elf isofiles/boot/kernel.elf
@@ -4523,6 +4553,22 @@ horus.iso: kernel.elf $(GRUB_CFG) $(BOOT_MODULE_DEP) tools/mkbootimg.sh
 	 done
 	@awk '/@HORUS_MODULES@/{while((getline l < "isofiles/mods.txt")>0) print l; next} {print}' \
 	    $(GRUB_CFG) > .bootcfg.staged
+# THE ESP IMAGE, ON INSTALL MEDIA THAT LAYS OUT A DISK THAT BOOTS ITSELF (S115).
+# INSTALL_ESP=1 builds it from THIS kernel and THESE modules (tools/mkesp.sh),
+# puts it beside them, and pins its SHA-256 on the install entry's command line,
+# inside the measured memdisk. Without it both placeholders are removed and the
+# menu is byte for byte what it was, which is every gate but the ones that test
+# this. The pin cannot live in the kernel's manifest: the image contains the
+# kernel.
+	@if [ "$(INSTALL_ESP)" = 1 ]; then \
+	    GRUB_DIR=$(GRUB_I386_DIR) EFI_GRUB_DIR=$(GRUB_EFI_DIR) \
+	        tools/mkesp.sh kernel.elf isofiles/mods.txt isofiles/boot isofiles/boot/esp.img || exit 1; \
+	    pin=$$(sha256sum isofiles/boot/esp.img | cut -d' ' -f1); \
+	    sed -i "s| @HORUS_ESP_PIN@\$$| horus.esp=$$pin|; s|^@HORUS_ESP_MODULE@\$$|    module2 /boot/esp.img /esp.img|" .bootcfg.staged; \
+	    echo "[install] esp.img pinned on the install entry: $$pin"; \
+	 else \
+	    sed -i 's| @HORUS_ESP_PIN@$$||; /^@HORUS_ESP_MODULE@$$/d' .bootcfg.staged; \
+	 fi
 	@rm -f isofiles/mods.txt
 	@if [ "$(BOOT_MENU_NO_LIVE_TOKEN)" = 1 ]; then \
 	    sed -i 's|^    multiboot2 /boot/kernel.elf horus.live$$|    multiboot2 /boot/kernel.elf|' \
@@ -4746,6 +4792,9 @@ USERSPACE_CFLAGS += -DPS2_LAYOUT_IGNORED
 endif
 ifeq ($(READDIR_END_IS_NOENT),1)
 USERSPACE_CFLAGS += -DREADDIR_END_IS_NOENT
+endif
+ifneq ($(strip $(DEBUG_LABEL)),)
+USERSPACE_CFLAGS += -DDEBUG_BUILD -DHORUS_DEBUG_LABEL='"$(DEBUG_LABEL)"'
 endif
 ifeq ($(FS_DIR_OPERAND_UNCHECKED),1)
 USERSPACE_CFLAGS += -DFS_DIR_OPERAND_UNCHECKED
@@ -12943,6 +12992,80 @@ INSTALLER_BLOCKS_IMG ?= $(KEYSLOT_BLOCKS_IMG)
 # comfortably past the 300s that used to fail it, so the arm is a real test of the
 # stall bound rather than a slightly slower pass.
 INSTALLER_SLOWDISK_IOPS ?= 12
+
+# A DISK THAT BOOTS ITSELF (S114, S115), end to end, under UEFI firmware.
+# Boot 1 chooses the install media's install entry (the one that pins the ESP
+# image) and installs with a swap partition; boot 2 attaches NO media and a
+# fresh copy of the firmware variables, so only the disk's own ESP, on the
+# removable-media path, can start it, and the scenario requires the installed
+# GRUB's kernel check, the kernel finding its partition, and a login. Then the
+# host's sfdisk must accept the table the kernel wrote. OVMF_CODE/OVMF_VARS
+# default to the Debian paths CI has; override them elsewhere.
+BOOTDISK_MIB     ?= 512
+BOOTDISK_TIMEOUT ?= 300
+.PHONY: smoke-install-boot-disk
+smoke-install-boot-disk:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 $(BOOTDISKARM)
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 $(BOOTDISKARM) GRUB_CFG=grub-menu.cfg INSTALL_ESP=1 horus.iso
+	@rm -f bootdisk.img bootdisk-serial.log && truncate -s $(BOOTDISK_MIB)M bootdisk.img
+	@INSTALLER_MODE=bootdisk SESSION_DISK=bootdisk.img \
+		SESSION_UEFI_CODE=$(OVMF_CODE) SESSION_UEFI_VARS=$(OVMF_VARS) \
+		SESSION_SERIAL_LOG=bootdisk-serial.log SESSION_TIMEOUT=$(BOOTDISK_TIMEOUT) \
+		BOOT_TIMEOUT=$(BOOTDISK_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) \
+		INSTALLER_FORMAT_STALL=$(INSTALLER_FORMAT_STALL) INSTALLER_FORMAT_CAP=$(INSTALLER_FORMAT_CAP) \
+		python3 tools/installer_session.py horus.iso \
+	  || { echo "[bootdisk] ----- guest serial (bootdisk-serial.log) -----"; \
+	       tail -80 bootdisk-serial.log 2>/dev/null | sed 's/^/  /'; exit 1; }
+	@sfdisk --verify bootdisk.img && sfdisk -l bootdisk.img | tail -4
+	@rm -f bootdisk.img
+	@echo "[bootdisk] PASS - installed under UEFI, then started from the disk alone and logged in"
+
+# The falsifying arm. ESP_NOT_WRITTEN=1 lays out every table and size as it
+# should and leaves the ESP empty, so the disk has nothing to start. The
+# scenario then requires the firmware to SAY it found nothing, a positive
+# marker, rather than the absence of GRUB's.
+.PHONY: smoke-install-boot-disk-control
+smoke-install-boot-disk-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 ESP_NOT_WRITTEN=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 ESP_NOT_WRITTEN=1 GRUB_CFG=grub-menu.cfg INSTALL_ESP=1 horus.iso
+	@rm -f bootdisk.img bootdisk-serial.log && truncate -s $(BOOTDISK_MIB)M bootdisk.img
+	@INSTALLER_MODE=bootdisk BOOTDISK_EXPECT=noboot SESSION_DISK=bootdisk.img \
+		SESSION_UEFI_CODE=$(OVMF_CODE) SESSION_UEFI_VARS=$(OVMF_VARS) \
+		SESSION_SERIAL_LOG=bootdisk-serial.log SESSION_TIMEOUT=$(BOOTDISK_TIMEOUT) \
+		BOOT_TIMEOUT=$(BOOTDISK_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) \
+		INSTALLER_FORMAT_STALL=$(INSTALLER_FORMAT_STALL) INSTALLER_FORMAT_CAP=$(INSTALLER_FORMAT_CAP) \
+		python3 tools/installer_session.py horus.iso \
+	  || { tail -60 bootdisk-serial.log 2>/dev/null | sed 's/^/  /'; exit 1; }
+	@rm -f bootdisk.img
+
+# MEDIA WHOSE ESP IMAGE WAS CHANGED IS REFUSED (S115). The install media is
+# built, then one byte of /boot/esp.img inside the ISO is inverted, leaving the
+# measured boot config and the pin in it as they were: the edit somebody with
+# the stick could make. The kernel hashes the image and refuses it, and the
+# installer must refuse the media before asking anything. No disk is needed;
+# nothing is written.
+.PHONY: smoke-install-esp-pin
+smoke-install-esp-pin:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 $(ESPPINARM)
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 $(ESPPINARM) GRUB_CFG=grub-menu.cfg INSTALL_ESP=1 horus.iso
+	@python3 tools/tamper_iso_file.py horus.iso /boot/esp.img 1048576
+	@rm -f esppin.img esppin-serial.log && truncate -s 256M esppin.img
+	@INSTALLER_MODE=esppin ESPPIN_EXPECT=$(if $(ESPPINARM),accepted,refused) SESSION_DISK=esppin.img \
+		SESSION_SERIAL_LOG=esppin-serial.log SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) python3 tools/installer_session.py horus.iso \
+	  || { tail -40 esppin-serial.log 2>/dev/null | sed 's/^/  /'; exit 1; }
+	@rm -f esppin.img
+	@echo "[esppin] PASS"
+
+# The falsifying arm. ESP_PIN_UNCHECKED=1 hashes the image and does not compare
+# the hash with the pin, so the changed image is believed and the installer
+# goes on to ask the swap size, which it asks only of a verified image.
+.PHONY: smoke-install-esp-pin-control
+smoke-install-esp-pin-control:
+	@$(MAKE) --no-print-directory smoke-install-esp-pin ESPPINARM=ESP_PIN_UNCHECKED=1
 
 .PHONY: smoke-installer
 smoke-installer:

@@ -132,6 +132,9 @@ static uint64_t             g_format_blocks = 0;
 /* SYS_STORAGE_FORMAT's flags for the authorised format (STORAGE_FORMAT_UNSEALED
  * or 0), consumed with the token exactly as the size is. */
 static uint32_t             g_format_flags = 0;
+/* The swap partition's size for a STORAGE_FORMAT_BOOTABLE format, in blocks (0
+ * for none), bounded by rust_gpt_plan and consumed with the token. */
+static uint64_t             g_format_swap = 0;
 
 /* Set for the lifetime of a boot that runs on the ephemeral in-RAM vdisk (see
  * storage_init). That volume's "password" is a 256-bit CSPRNG value discarded
@@ -1901,14 +1904,20 @@ static const struct block_device *storage_bd_device(const struct block_device *b
  * and NULL if it carries a GPT that is refused. A refused table is NOT a reason
  * to try the whole device: that would turn "the table is corrupt" into "read
  * the disk from block 0 as a volume", and fail open. */
+/* The one buffer a partition table passes through, in both directions: read
+ * at boot by storage_volume_on, written at install by storage_lay_out_bootable.
+ * The two never run at once (one at boot, one inside a format), so sharing it
+ * costs nothing and saves 20 KiB of .bss. */
+static uint8_t g_gpt_buf[GPT_SCAN_BLOCKS * BLOCK_SIZE];
+
 static struct block_device *storage_volume_on(struct block_device *dev)
 {
-    static uint8_t scan[GPT_SCAN_BLOCKS * BLOCK_SIZE];
+    uint8_t *scan = g_gpt_buf;
     if (dev->total_blocks < GPT_SCAN_BLOCKS) return dev;
     for (uint32_t b = 0; b < GPT_SCAN_BLOCKS; b++)
         if (dev->read_block(dev, b, scan + (uint64_t)b * BLOCK_SIZE) != 0) return NULL;
     uint64_t base = 0, count = 0;
-    int rc = rust_gpt_find_volume(scan, sizeof(scan), dev->total_blocks, &base, &count);
+    int rc = rust_gpt_find_volume(scan, sizeof(g_gpt_buf), dev->total_blocks, &base, &count);
     if (rc == GPT_NONE) return dev;
     if (rc != 0) {
         print("storage: ");
@@ -3556,7 +3565,7 @@ struct mounted_fs *storage_get_mounted_fs(void) {
  * deliberate, which was the right way round to ship it but is not a policy --
  * "no path exists" and "one gated path exists" are different claims, and only
  * the second is what S63 says. */
-int storage_authorize_format(int index, uint64_t volume_blocks, uint32_t flags)
+int storage_authorize_format(int index, uint64_t volume_blocks, uint32_t flags, uint64_t swap_blocks)
 {
     /* THE TARGET IS AN ARGUMENT, NOT AMBIENT STATE, and that is the whole shape
      * of this function since 2026-09-06 (SECURITY.md S83). The alternative was a
@@ -3574,7 +3583,9 @@ int storage_authorize_format(int index, uint64_t volume_blocks, uint32_t flags)
     /* Unknown flags are refused, not ignored: a caller asking for something this
      * kernel does not know how to do must not get a volume that silently lacks
      * it. */
-    if (flags & ~(uint32_t)STORAGE_FORMAT_UNSEALED) return -1;
+    if (flags & ~(uint32_t)(STORAGE_FORMAT_UNSEALED | STORAGE_FORMAT_BOOTABLE)) return -1;
+    /* A swap size means nothing without the layout that has a place for it. */
+    if (swap_blocks != 0 && !(flags & STORAGE_FORMAT_BOOTABLE)) return -1;
 
     if (storage_usable_count() > 0) {
         struct block_device *bd = storage_device_at(index);
@@ -3587,6 +3598,20 @@ int storage_authorize_format(int index, uint64_t volume_blocks, uint32_t flags)
         if (volume_blocks != 0 &&
             (volume_blocks < STORAGE_MIN_BLOCKS || volume_blocks > bd->total_blocks))
             return -1;
+        /* A DISK THAT BOOTS ITSELF IS REFUSED HERE, BEFORE ANY PASSWORD IS
+         * USED, unless both halves of it are possible: the sizes fit this disk
+         * beside the ESP and the tables (rust_gpt_plan), and this boot carries
+         * an ESP image that matches its pin and fits its partition (S115). The
+         * format checks both again as it writes; this is so a refusal reaches
+         * the operator as a refusal, not as a disk half laid out. */
+        if (flags & STORAGE_FORMAT_BOOTABLE) {
+            struct gpt_layout l;
+            const uint8_t *img; uint64_t ilen;
+            if (rust_gpt_plan(bd->total_blocks, swap_blocks, volume_blocks,
+                              STORAGE_MIN_BLOCKS, &l) != 0) return -1;
+            if (boot_esp_image(&img, &ilen) != 0) return -1;
+            if (ilen > l.esp_count * (uint64_t)BLOCK_SIZE) return -1;
+        }
         /* WHAT IS REFUSED IS AN UNLOCKED VOLUME, NOT A MOUNTED ONE, and the
          * distinction is the whole of how install media may replace a volume
          * while a running system may not (S90).
@@ -3644,7 +3669,7 @@ int storage_authorize_format(int index, uint64_t volume_blocks, uint32_t flags)
          * make smoke-installer-target-control. */
         (void)bd;
 #endif
-    } else if (index != 0 || volume_blocks != 0 || flags != 0) {
+    } else if (index != 0 || volume_blocks != 0 || flags != 0 || swap_blocks != 0) {
         /* No persistent devices: the machine has an ephemeral store and exactly
          * one thing that could be meant. Index 0 means it; anything else names a
          * device that does not exist and is refused rather than rounded down.
@@ -3654,8 +3679,192 @@ int storage_authorize_format(int index, uint64_t volume_blocks, uint32_t flags)
 
     g_format_blocks     = volume_blocks;
     g_format_flags      = flags;
+    g_format_swap       = swap_blocks;
     g_format_authorized = 1;
     return 0;
+}
+
+/* Is this boot module the ESP image? Its name is exactly ESP_MODULE_NAME. */
+static int esp_name_is(const char *name)
+{
+    const char *want = ESP_MODULE_NAME;
+    int i = 0;
+    for (; want[i]; i++) if (name[i] != want[i]) return 0;
+    return name[i] == 0;
+}
+
+/* THE ESP IMAGE, CHECKED WHEN IT IS USED (S115).
+ *
+ * The installer's disk needs an EFI system partition holding GRUB, this
+ * kernel's ELF and its modules, and the image of it arrives as a boot module.
+ * It cannot be pinned the way every other module is, by a hash compiled into
+ * this kernel, because it CONTAINS this kernel: the hash would have to be part
+ * of the thing it hashes. So it is pinned one level up, by the install media's
+ * GRUB config, which sits in the measured memdisk beside the kernel's own pin
+ * (S92) and passes the image's SHA-256 on this boot's command line.
+ *
+ * Hashed HERE, at the moment of use, rather than at boot and remembered: the
+ * bytes are hashed where they lie, immediately before the kernel copies them
+ * onto a disk, so nothing that ran in between can have changed them unseen.
+ * Returns 0 and the image if it is present, the boot carries a pin, and the two
+ * agree; -2 if an image is present and does NOT match (or carries no pin to
+ * match): media somebody changed, which the installer refuses to use at all;
+ * -1 if there is no image. Either refusal stops a bootable install rather than
+ * writing an ESP nobody verified. */
+/* WHAT THE LAST CHECK SAW, so a refusal can say why rather than only that it
+ * refused: whether a pin was parsed, how many bytes the image has, and the
+ * leading bytes of the hash taken and of the pin. All of it is public (the pin
+ * is on the command line, the image on the media), and it is exactly what tells
+ * a truncated image from a changed one from a missing pin. Found necessary on
+ * 2026-10-08, when the laptop refused an image QEMU accepted. */
+static struct esp_evidence g_esp_evidence;
+void boot_esp_evidence(struct esp_evidence *out) { *out = g_esp_evidence; }
+
+static void hex8(char *o, const uint8_t *b)
+{
+    static const char d[] = "0123456789abcdef";
+    for (int i = 0; i < 8; i++) { o[2 * i] = d[b[i] >> 4]; o[2 * i + 1] = d[b[i] & 15]; }
+    o[16] = 0;
+}
+
+int boot_esp_image(const uint8_t **data, uint64_t *len)
+{
+    uint8_t pin[32];
+    const int pinned = boot_esp_pin(pin);
+    for (uint32_t i = 0; i < boot_module_count(); i++) {
+        const struct boot_module *m = boot_module_get(i);
+        if (!m || !esp_name_is(m->name)) continue;
+        uint64_t span = m->end - m->start;
+        g_esp_evidence = (struct esp_evidence){0};
+        g_esp_evidence.present = 1;
+        g_esp_evidence.pinned  = (uint32_t)pinned;
+        g_esp_evidence.bytes   = span;
+        for (int k = 0; k < 8; k++) g_esp_evidence.pin8[k] = pin[k];
+        if (!pinned) {
+            println("boot: an ESP image is present and the command line pins none; refusing it");
+            return -2;                      /* an image with no pin is not verifiable */
+        }
+        if (span == 0 || span > 0xFFFFFFFFULL) return -2;
+        uint8_t got[32];
+        if (rust_sha256((const uint8_t *)PHYS_KVA(m->start), (size_t)span, got) != 0) return -2;
+        for (int k = 0; k < 8; k++) g_esp_evidence.hash8[k] = got[k];
+        {
+            char h[17], p[17];
+            hex8(h, got); hex8(p, pin);
+            print("boot: ESP image ");
+            print_decimal(span);
+            print(" bytes, sha256 ");
+            print(h);
+            print("... pin ");
+            print(p);
+            print("...");
+#ifdef DEBUG_BUILD
+            /* WHERE, on a diagnostic build only: a physical address is not for
+             * a shipped log, and it is what separates "GRUB put it somewhere the
+             * kernel then wrote" from "it arrived different". */
+            print(" at phys ");
+            print_hex(m->start);
+            print("-");
+            print_hex(m->end);
+#endif
+            print("\n");
+        }
+#ifndef ESP_PIN_UNCHECKED
+        if (!rust_ct_eq(got, pin, sizeof(got))) {
+            println("boot: the ESP image does not match the hash its boot entry pins; refusing it");
+            return -2;
+        }
+#endif
+        *data = (const uint8_t *)PHYS_KVA(m->start);
+        *len  = span;
+        return 0;
+    }
+    return -1;
+}
+
+/* LAY OUT A DISK THAT BOOTS ITSELF (S114, S115), and return the partition the
+ * volume goes in. docs/design/installed-system.md section 6: a GPT with the EFI
+ * system partition at 1 MiB, then swap (if asked for), then the volume, and the
+ * backup table in the last MiB.
+ *
+ * THE ESP IMAGE IS CHECKED AGAIN HERE, at the moment of use, by boot_esp_image:
+ * it hashes the module where it lies and compares the boot entry's pin, so the
+ * bytes written are the bytes that were pinned, whatever ran since the
+ * authorisation checked them.
+ *
+ * THE PRIMARY TABLE IS WRITTEN LAST. Until it is, the disk has no valid primary
+ * table and storage_volume_on mounts nothing from it, so a power cut part way
+ * through leaves a disk that is plainly unfinished rather than one that points
+ * at a volume nobody wrote. The volume itself is laid down by the caller, after
+ * this returns, through the view this sets up.
+ *
+ * Returns the view, or NULL with nothing further written if any step fails. */
+static struct block_device *storage_lay_out_bootable(struct block_device *dev,
+                                                     uint64_t swap_blocks,
+                                                     uint64_t volume_blocks)
+{
+    struct gpt_layout l;
+    const uint8_t *img;
+    uint64_t ilen;
+    if (rust_gpt_plan(dev->total_blocks, swap_blocks, volume_blocks, STORAGE_MIN_BLOCKS, &l) != 0)
+        return NULL;
+    if (boot_esp_image(&img, &ilen) != 0) return NULL;
+    if (ilen == 0 || ilen > l.esp_count * (uint64_t)BLOCK_SIZE) return NULL;
+
+    /* The ESP: the image, block by block, its last block padded with zeros,
+     * then zeros to the end of the partition so nothing a previous system left
+     * there is read as part of a FAT. */
+    uint8_t blk[BLOCK_SIZE];
+    uint64_t nblk = (ilen + BLOCK_SIZE - 1) / BLOCK_SIZE;
+#ifdef ESP_NOT_WRITTEN
+    /* CONTROL ARM -- never ship. The ESP is zeroed and the image never
+     * written: every table, size and refusal is as it should be, and the disk
+     * has nothing for the firmware to start. See make
+     * smoke-install-boot-disk-control. */
+    nblk = 0;
+#endif
+    for (uint64_t b = 0; b < nblk; b++) {
+        uint64_t off = b * BLOCK_SIZE;
+        uint64_t n = (ilen - off < BLOCK_SIZE) ? ilen - off : BLOCK_SIZE;
+        my_memset(blk, 0, sizeof(blk));
+        my_memcpy(blk, img + off, (size_t)n);
+        if (dev->write_block(dev, l.esp_base + b, blk) != 0) return NULL;
+    }
+    my_memset(blk, 0, sizeof(blk));
+    if (nblk < l.esp_count && bd_fill(dev, l.esp_base + nblk, blk, l.esp_count - nblk) != 0)
+        return NULL;
+
+    /* The table: random GUIDs for the disk and each partition, the backup at
+     * the end, then the primary at the start. */
+    uint8_t guids[64];
+    secure_random_bytes(guids, sizeof(guids));
+    if (rust_gpt_build_side(dev->total_blocks, swap_blocks, volume_blocks, STORAGE_MIN_BLOCKS,
+                            guids, GPT_SIDE_TAIL, g_gpt_buf, sizeof(g_gpt_buf)) != 0) return NULL;
+    for (uint32_t b = 0; b < GPT_SCAN_BLOCKS; b++)
+        if (dev->write_block(dev, dev->total_blocks - GPT_SCAN_BLOCKS + b,
+                             g_gpt_buf + (uint64_t)b * BLOCK_SIZE) != 0) return NULL;
+    if (dev->flush(dev) != 0) return NULL;
+    if (rust_gpt_build_side(dev->total_blocks, swap_blocks, volume_blocks, STORAGE_MIN_BLOCKS,
+                            guids, GPT_SIDE_HEAD, g_gpt_buf, sizeof(g_gpt_buf)) != 0) return NULL;
+    for (uint32_t b = 0; b < GPT_SCAN_BLOCKS; b++)
+        if (dev->write_block(dev, b, g_gpt_buf + (uint64_t)b * BLOCK_SIZE) != 0) return NULL;
+    if (dev->flush(dev) != 0) return NULL;
+    secure_zero(guids, sizeof(guids));
+
+    print("storage: laid out a bootable disk on ");
+    print(dev->name);
+    print(": ESP ");
+    print_decimal(l.esp_count);
+    print(", swap ");
+    print_decimal(l.swap_count);
+    print(", volume ");
+    print_decimal(l.volume_count);
+    print(" blocks\n");
+
+    g_part.dev = dev;
+    g_part.base = l.volume_base;
+    g_part_bd.total_blocks = l.volume_count;
+    return &g_part_bd;
 }
 
 /* What SYS_STORAGE_INFO reports. See struct storage_info in kernel.h for why
@@ -3690,6 +3899,21 @@ void storage_query(struct storage_info *out)
      * storage_mount refused what is on it. It is the whole of "this machine has
      * a disk and no volume", and it is cleared the moment one is laid down. */
     out->needs_format = g_needs_format ? 1u : 0u;
+    /* Whether a bootable layout can be asked for: the ESP image is here and
+     * matches its pin (S115). Hashing it costs a fraction of a second, once,
+     * on the installer's survey; nothing else asks. */
+    {
+        const uint8_t *img; uint64_t ilen;
+        int e = boot_esp_image(&img, &ilen);
+        out->esp_ready = (e == 0) ? 1u : (e == -2) ? 2u : 0u;
+        if (e != -1) {
+            struct esp_evidence ev;
+            boot_esp_evidence(&ev);
+            out->esp_pinned = ev.pinned;
+            out->esp_bytes  = ev.bytes;
+            for (int k = 0; k < 8; k++) { out->esp_hash8[k] = ev.hash8[k]; out->esp_pin8[k] = ev.pin8[k]; }
+        }
+    }
 #ifdef STORAGE_AUTOFORMAT
     /* The S63 control arm is on: a login WILL format an unrecognised volume, so
      * this machine has nothing for an installer to do. Said out loud rather than
@@ -3769,8 +3993,10 @@ int storage_unlock(const char *password, size_t plen)
      * format can never inherit a size somebody chose for an earlier one. */
     const uint64_t format_blocks = g_format_blocks;
     const uint32_t format_flags  = g_format_flags;
+    const uint64_t format_swap   = g_format_swap;
     g_format_blocks = 0;
     g_format_flags  = 0;
+    g_format_swap   = 0;
 #ifndef STORAGE_FORMAT_AUTH_STICKY
     g_format_authorized = 0;
 #else
@@ -3874,7 +4100,21 @@ int storage_unlock(const char *password, size_t plen)
              * lets a caller tell "no target" from "wrong password". */
             return -8;
         }
-        current_bd = g_needs_format_bd;
+        /* A DISK THAT BOOTS ITSELF: the table and the ESP first, and the volume
+         * into the partition they leave for it, which then becomes the device
+         * every later step writes through. A failure here is refused (-14)
+         * before the volume is touched. */
+        struct block_device *vol_bd = g_needs_format_bd;
+        uint64_t vol_blocks = format_blocks;
+        if (format_flags & STORAGE_FORMAT_BOOTABLE) {
+            vol_bd = storage_lay_out_bootable(g_needs_format_bd, format_swap, format_blocks);
+            if (!vol_bd) {
+                print("STORAGE: the bootable layout could not be written; nothing was formatted\n");
+                return -14;
+            }
+            vol_blocks = 0;          /* the volume is the whole of its partition */
+        }
+        current_bd = vol_bd;
         /* FORGET WHATEVER VOLUME THIS STRUCT STILL DESCRIBES, and be precise
          * about which hazard that is for, because it is not the obvious one.
          *
@@ -3894,10 +4134,10 @@ int storage_unlock(const char *password, size_t plen)
          * it is worth zeroing rather than reasoning about: the zero costs
          * nothing, and being wrong about reachability costs key material. */
         storage_forget_mounted();
-        if (storage_format_sealed(g_needs_format_bd, password, plen, format_blocks,
+        if (storage_format_sealed(vol_bd, password, plen, vol_blocks,
                                   (format_flags & STORAGE_FORMAT_UNSEALED) != 0) != 0)
             return -1;
-        if (storage_mount(g_needs_format_bd) != 0) return -1;
+        if (storage_mount(vol_bd) != 0) return -1;
         g_needs_format    = 0;
         g_needs_format_bd = NULL;
 #ifdef WAL_CRASHTEST

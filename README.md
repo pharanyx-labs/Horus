@@ -117,6 +117,9 @@ line need no capability, and the read side is refused once `console_server` owns
 - It sets up an administrator and an everyday account, can replace an earlier Horus volume, and
   can leave the volume unencrypted if the operator chooses.
 - It installs onto IDE disks and onto SD and eMMC storage, including a laptop's soldered eMMC.
+- From install media that carries one, it lays out a disk that starts on its own under UEFI: a
+  GPT, an EFI system partition holding GRUB and the pinned kernel, a swap partition and the
+  volume, sized by the operator. Media whose EFI image was changed is refused (S115).
 
 ### Boot integrity
 
@@ -136,8 +139,8 @@ line need no capability, and the read side is refused once `console_server` owns
 
 ## What it cannot do yet
 
-- **No disk that boots by itself.** An installed machine is started from Horus boot media
-  (`horus.iso`), which finds and opens the volume.
+- **A disk that boots by itself has not yet run on real firmware.** It is verified under UEFI in
+  QEMU; the laptop is next. A machine installed before it is started from Horus boot media.
 - **No programs on the disk.** Every shipped program is compiled into the boot image or loaded as
   a measured boot module.
 - **No networking above Ethernet.** No IP, TCP, sockets or ARP table.
@@ -153,8 +156,8 @@ The full list, with the reasons, is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.
 
 In order, from [`docs/ROADMAP.md`](docs/ROADMAP.md):
 
-1. **A disk that boots itself** (2.11), in progress: a GPT disk with an EFI system partition, a
-   reserved swap partition and the volume, sized by the operator.
+1. **A disk that boots itself** (2.11): built and verified under UEFI in QEMU, to be confirmed on
+   the laptop.
 2. **Use all the memory** (3.1): the page pool reaches up to 4 GiB instead of 512 MiB.
 3. **Filesystem phase 1b** (2.10): `fs_server`, the path walker and `init` authorise files by
    capability instead of by user id and mode.
@@ -240,8 +243,7 @@ make install.iso
 sudo dd if=install.iso of=/dev/sdX bs=4M status=progress conv=fsync   # the device, not a partition
 ```
 
-The installed disk has no bootloader of its own yet, so start the installed system from a stick
-holding `horus.iso`. Every build flag, the persistent-disk targets and the troubleshooting
+`install.iso` lays out a disk that starts on its own under UEFI. Every build flag, the persistent-disk targets and the troubleshooting
 instruments are in [`docs/BUILDING.md`](docs/BUILDING.md).
 
 ## How it is verified
@@ -252,16 +254,16 @@ test does not exist or does not run.
 
 | Layer | What it covers |
 |---|---|
-| Security properties | 116 numbered properties, each bound to a witness by `tools/check_invariants.py` |
-| QEMU integration tests | 435 `smoke-*` targets: 206 base gates and 229 control arms |
+| Security properties | 117 numbered properties, each bound to a witness by `tools/check_invariants.py` |
+| QEMU integration tests | 439 `smoke-*` targets: 208 base gates and 231 control arms |
 | Control arms | A build that puts a defect back on purpose; CI requires its gate to go red against it |
-| Kani | 33 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
+| Kani | 34 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
 | Miri | The security core's tests, interpreted for undefined behaviour on every pull request |
 | Fuzzing | The FFI predicates under cargo-fuzz, ten minutes per target, nightly |
 | Reproducibility | `kernel.elf` builds byte for byte the same twice; the ISO does not yet |
 | Toolchain | The Rust compiler, Kani, the fuzzing toolchain, PyYAML and semgrep are pinned to exact versions |
 
-`.github/workflows/ci.yml` defines 133 jobs; 137 of the 146 status checks the workflows produce
+`.github/workflows/ci.yml` defines 134 jobs; 138 of the 147 status checks the workflows produce
 gate a merge. The 9 that do not are the nightly fuzzing, the nightly Kani control arms and the
 scheduled ruleset audit, each with its reason in `.github/ci-gating.yml`.
 [`TESTS.md`](TESTS.md) lists every test and what it proves.

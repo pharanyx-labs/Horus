@@ -26,6 +26,7 @@ here.
 
 ### Added
 
+- An installed disk starts on its own under UEFI: the installer lays out GPT, an EFI system partition, swap and the volume, with the swap and volume sizes asked for (S115). (#PR)
 - The kernel mounts a volume from a GPT partition, and refuses a partition table that does not verify (S114). (#503)
 - Every Kani proof's control arm runs nightly. (#493)
 - The coreutils and `tcc` share one libc instead of carrying their own. (#470)

@@ -172,9 +172,9 @@
     correct under several CPUs is finished.
   </p>
   <p>
-    <strong>Next, in order:</strong> the installed disk gets a partition table, a bootloader and a
-    reserved swap partition, so it starts on its own (under way: the kernel already finds its
-    volume in a partition); the kernel uses all of a machine's memory up to 4 GiB; the file server
+    <strong>Next, in order:</strong> a disk that starts on its own, with its own partition table,
+    bootloader and reserved swap, confirmed on the laptop (it is built and verified under UEFI in
+    QEMU); the kernel uses all of a machine's memory up to 4 GiB; the file server
     authorises by capability rather than by user id and mode; the installer copies the system
     onto the disk, where the loader runs only programs whose hashes are pinned in the measured
     boot image; and accounts move into files owned by a user-mode authentication server. After

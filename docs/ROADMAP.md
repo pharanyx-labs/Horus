@@ -26,10 +26,11 @@ requests. What is still wrong, as opposed to still unbuilt, is in
 
 In order. Each step is its own set of pull requests with its own gates and control arms.
 
-1. **A disk that boots itself** (2.11 step 2), in progress: a GPT disk with an EFI system
-   partition holding GRUB, the kernel and its pinned hash; a swap partition, reserved; and the
-   volume, each sized by the operator. The kernel finds the volume in its partition (S114); the
-   installer writing the layout and the ESP is next.
+1. **A disk that boots itself** (2.11 step 2), built and verified under UEFI in QEMU; to be
+   confirmed on the laptop. The installer writes a GPT disk: an EFI system partition holding
+   GRUB, the kernel and its pinned hash, from an image the install media pins (S115); a swap
+   partition, reserved; and the volume, which the kernel finds in its partition (S114). The swap
+   and volume sizes are the operator's.
 2. **Use all the memory** (3.1): the page pool walks every usable region up to 4 GiB instead of
    stopping at 512 MiB.
 3. **Filesystem phase 1b** (2.10): `fs_server` authorises by capability instead of by uid and
@@ -145,7 +146,7 @@ start it.
 ### 2.7a ⬜ Evict the in-kernel services [F-2.7a]
 
 `.github/ring0-classification.yml` (S87) measures the ring-0 `service` class at about 6,000 code
-lines beside a 10,863-line core: `storage.c` (the encrypted store and the on-disk filesystem),
+lines beside a 10,907-line core: `storage.c` (the encrypted store and the on-disk filesystem),
 `kusers.c` (accounts and password hashing), the loader and spawn path, `crypto.c` and
 `syscall_fs.c`. Neither big move is mechanical. `storage.c` holds the volume key, so moving it
 means deciding what a ring-3 storage server may hold; 2.10's phase 2 is that decision for the
@@ -267,7 +268,7 @@ is a second person to review them. Turning on required approval with one maintai
 every merge or needs a bypass actor, which would undo 4.2. `SECURITY.md` therefore claims
 "thoroughly automatically verified", not "independently reviewed".
 
-**4.2.** The gating set is **137 required, 9 exempted** (137 jobs, 146 contexts; re-derive with
+**4.2.** The gating set is **138 required, 9 exempted** (138 jobs, 147 contexts; re-derive with
 `tools/check_ci_gating.py`). The exemptions come from three jobs and are properties of the test,
 not open defects: `fuzz` (seven targets fuzzed nightly, never on a pull request), `kani-arms` and
 `ruleset-audit` (both run on a schedule, never on a pull request).
@@ -279,7 +280,7 @@ from a tag and compare. They wait on 3.1, since an ISO that does not rebuild to 
 same bytes cannot be verified by rebuilding.
 
 **4.12.** The exemption list in `.github/invariants.yml` is currently
-**empty**: all 116 properties name a witness that resolves.
+**empty**: all 117 properties name a witness that resolves.
 
 ---
 
@@ -299,5 +300,5 @@ same bytes cannot be verified by rebuilding.
 | ✅ | Measured boot, the kernel pinned in the boot image, and a PCR-sealed volume key |
 | ✅ | An IOMMU confining device DMA, and device capabilities that name one device each |
 | ◧ | Reproducible `kernel.elf` (not yet the ISO), an SBOM, CodeQL, Dependabot, signed commits, a protected `main` |
-| ✅ | 435 `smoke-*` targets, nearly all QEMU integration tests, and 229 of them control arms that must reproduce a defect |
+| ✅ | 439 `smoke-*` targets, nearly all QEMU integration tests, and 231 of them control arms that must reproduce a defect |
 | ✅ | Bounded Kani proofs, Miri over the Rust core, and fuzzing at the FFI boundary |

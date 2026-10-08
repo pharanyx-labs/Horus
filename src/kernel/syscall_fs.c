@@ -109,6 +109,10 @@ void h_storage_format(struct interrupt_frame64 *r) {
     /* STORAGE_FORMAT_UNSEALED or 0. Anything else is refused by
      * storage_authorize_format rather than ignored. */
     uint32_t flags = (uint32_t)r->rdi;
+    /* The swap partition's size in blocks, for STORAGE_FORMAT_BOOTABLE; 0 for
+     * none. Bounded against the device with everything else by the layout
+     * plan in storage_authorize_format, which refuses rather than clamps. */
+    uint64_t swap_blocks = r->r8;
 
     /* Refuse before copying anything: an empty password seals a volume to
      * nothing, and an over-long one cannot be typed back at a login prompt. */
@@ -135,7 +139,7 @@ void h_storage_format(struct interrupt_frame64 *r) {
      * the way out, the same discipline every other exit here follows: an
      * operator who named a disk that is not there has still typed a password,
      * and it does not stay in kernel memory because their index was wrong. */
-    if (storage_authorize_format((int)device, volume_blocks, flags) != 0) {
+    if (storage_authorize_format((int)device, volume_blocks, flags, swap_blocks) != 0) {
         secure_zero(pw, sizeof(pw));
         r->rax = (uint32_t)SYS_ERR_INVAL;
         return;

@@ -111,6 +111,7 @@ jobs:
       - shlib
       - site
       - smoke
+      - smoke-bootdisk
       - smoke-aslr
       - smoke-aspace
       - smoke-boot-pin
@@ -640,6 +641,36 @@ jobs:
         run: rustup target add x86_64-unknown-none
       - name: Build kernel.elf (${{ matrix.config }})
         run: make ${{ matrix.config }}
+
+  # A DISK THAT BOOTS ITSELF (S114, S115), under UEFI. Its own job because each
+  # target installs onto a disk and boots twice: in the smoke shard it would
+  # set that shard's wall time. OVMF is the firmware; grub-efi-amd64-bin builds
+  # the ESP's BOOTX64.EFI; fdisk provides the sfdisk that checks the table the
+  # kernel wrote.
+  smoke-bootdisk:
+    name: "A disk that boots itself: install under UEFI, start from the disk alone"
+    runs-on: ubuntu-latest
+    # Backstop, not a performance budget: the four targets normally finish in
+    # well under half an hour.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU + OVMF
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86 grub-efi-amd64-bin ovmf fdisk
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Install under UEFI, then start from the disk alone and log in
+        run: make smoke-install-boot-disk
+      # The ESP is left empty; the firmware must say there is nothing to boot.
+      - name: Control arm — the ESP is never written
+        run: make smoke-install-boot-disk-control
+      - name: Install media whose EFI image was changed installs nothing
+        run: make smoke-install-esp-pin
+      # The pin is not compared, so the changed image is believed.
+      - name: Control arm — the ESP image's pin is not checked
+        run: make smoke-install-esp-pin-control
 
   # SHARD of what was one 59-step job, split 2026-09-21 because it ran for 54
   # minutes and set the wall time of every CI run. Steps are unchanged and in

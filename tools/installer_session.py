@@ -556,7 +556,7 @@ def login(s, user, pw, timeout=None):
 
 
 def answer_accounts(s, root_pw=None, user=None, user_pw=None, typist=None,
-                    volume_mib=None, encrypt=True):
+                    volume_mib=None, encrypt=True, swap_mib=None):
     """Answer the volume-size screen and then every account screen, in order.
 
     The size screen (2026-09-24) sits between the disk and the accounts, and it
@@ -582,7 +582,18 @@ def answer_accounts(s, root_pw=None, user=None, user_pw=None, typist=None,
     user_pw = USER_PASSWORD if user_pw is None else user_pw
     t = typist or SerialTypist(s)
 
-    s.expect("INSTALLER: waiting on the volume size", STEP)
+    # THE SWAP SCREEN COMES FIRST, AND ONLY ON MEDIA THAT LAYS OUT A DISK THAT
+    # BOOTS ITSELF (an ESP image matching its pin, S115). Whichever marker comes
+    # first decides: every other scenario's media has no ESP and never sees it.
+    if expect_any(s, ["INSTALLER: waiting on the swap size",
+                      "INSTALLER: waiting on the volume size"], STEP) == 0:
+        if swap_mib is not None:
+            t.text(str(swap_mib))
+        t.key("enter")
+        s.expect("INSTALLER: waiting on the volume size", STEP)
+    elif swap_mib is not None:
+        raise SessionFail("a swap size was to be answered and the installer never "
+                          "asked for one: this media lays out no bootable disk")
     if volume_mib is not None:
         t.text(str(volume_mib))
     t.key("enter")
@@ -1527,7 +1538,11 @@ def panel(disk):  # noqa: ARG001 - uniform scenario signature
         m = re.search(r"fb: console on the framebuffer, 80x(\d+) cells, (\d+)x(\d+) font at (\d+)x, origin \((\d+),(\d+)\)", s.buf)
         f = re.search(r"CONSOLE_FB: linear framebuffer (\d+)x(\d+)x", s.buf)
         if not m or not f:
-            raise SessionFail("no framebuffer geometry on the wire: this scenario needs a UEFI framebuffer")
+            # Quote what the boot did say about its console, so a red run shows
+            # whether it came up in text mode or printed the line differently.
+            seen = [ln.strip() for ln in s.buf.splitlines() if "fb:" in ln or "CONSOLE_FB" in ln]
+            raise SessionFail("no framebuffer geometry on the wire: this scenario needs a UEFI "
+                              f"framebuffer; the console lines seen were {seen[:6]!r}")
         rows, fw, fh, sc, ox, oy = (int(x) for x in m.groups())
         fbw = int(f.group(1))
         cw, ch = fw * sc, fh * sc
@@ -1630,6 +1645,123 @@ def panel(disk):  # noqa: ARG001 - uniform scenario signature
         s.close()
 
 
+def bootdisk(disk):
+    """Install a disk that boots itself, then start the machine from it ALONE.
+
+    The maintainer's request of 2026-10-08, end to end: the laptop could not
+    start its installed system without the USB stick. Boot 1 runs the install
+    media under UEFI firmware, chooses the install entry from the GRUB menu (the
+    one that carries the ESP image's pin), and installs with a swap partition.
+    Boot 2 has NO install media attached, and a fresh copy of the firmware's
+    variables, so nothing but the disk's own ESP, found by the removable-media
+    path, can start it. Every step of that boot is asserted on what it prints:
+    the installed GRUB verifying the kernel against its pin, the kernel finding
+    the volume in its partition, and a login with the installed password.
+    """
+    media = os.environ.get("INSTALLER_ISO", ISO)
+    # BOOTDISK_SWAP_MIB empty presses Enter, which takes the installer's default
+    # (1024 MiB on a disk with room for it): the answer an operator most often gives.
+    swap_env = os.environ.get("BOOTDISK_SWAP_MIB", "64")
+    swap = int(swap_env) if swap_env else None
+    s = Serial(media)
+    try:
+        s.expect("Install Horus", BOOT)
+        os.write(s.fd, DOWN)
+        os.write(s.fd, ENTER)
+        step("chose the install entry from the boot menu")
+        answer_survey(s, first_timeout=BOOT)
+        answer_accounts(s, swap_mib=swap)
+        step(f"answered the swap screen ({'the default' if swap is None else f'{swap} MiB'}) "
+             "and every account screen")
+        answer_review_and_confirm(s)
+        s.expect("INSTALLER: formatting", STEP)
+        took = expect_installed(s)
+        step(f"the bootable install completed [{took:.0f}s of writing]")
+    finally:
+        keep_serial(s.buf)
+        s.close()
+
+    s = Serial("")
+    try:
+        # BOOTDISK_EXPECT=noboot is the control arm (ESP_NOT_WRITTEN=1): the
+        # install completes and the disk has nothing for the firmware to start.
+        # Asserted POSITIVELY, on the firmware saying so, because the absence of
+        # GRUB's line is equally true of a boot that never got going.
+        # Firmware says it in its own words: edk2 as Void and Arch build it
+        # prints "No bootable option"; Ubuntu's OVMF (CI) falls through to its
+        # EFI shell, whose first act is the startup.nsh countdown. Either is the
+        # firmware stating it found nothing else to start.
+        if os.environ.get("BOOTDISK_EXPECT") == "noboot":
+            markers = os.environ.get("BOOTDISK_NOBOOT_MARKER",
+                                     "No bootable option|startup.nsh").split("|")
+            deadline = time.time() + BOOT
+            while not any(m in s.buf for m in markers):
+                if time.time() > deadline:
+                    raise SessionFail(f"the firmware never said it had nothing to boot ({markers!r}); "
+                                      f"recent serial: {s.buf[-400:]!r}")
+                s._pump(0.5)
+            if "kernel.elf: OK" in s.buf:
+                raise SessionFail("the disk booted with its ESP left empty")
+            step("the firmware found nothing to boot on a disk whose ESP was never written")
+            return
+        s.expect("kernel.elf: OK", BOOT)
+        step("the disk's own GRUB verified the kernel against its pinned hash")
+        s.expect("the volume is partition blocks", BOOT)
+        step("the kernel found the volume in its GPT partition")
+        # login() waits for the prompt itself; waiting for it here as well would
+        # consume the only one and leave login() waiting for a second.
+        if not login(s, "root", PASSWORD, BOOT):
+            raise SessionFail("the installed password did not log in on the disk's own boot")
+        step("logged in on a machine started from its own disk, with no install media")
+    finally:
+        keep_serial(s.buf)
+        s.close()
+
+
+def esppin(disk):  # noqa: ARG001 - uniform scenario signature
+    """Install media whose ESP image was changed after it was built (S115).
+
+    tools/tamper_iso_file.py inverts one byte of /boot/esp.img inside the ISO,
+    leaving the measured boot config and the pin in it untouched: what somebody
+    with the stick in their hands could do. The kernel hashes the image when
+    asked about it and refuses it, and the installer must then refuse the
+    media OUTRIGHT, before asking anything, rather than fall back to a
+    whole-disk install that would not boot. ESPPIN_EXPECT=accepted is the arm
+    (ESP_PIN_UNCHECKED=1): the changed image is believed, and the installer
+    goes on to ask the swap size it asks only of a verified image.
+    """
+    expect = os.environ.get("ESPPIN_EXPECT", "refused")
+    s = Serial(os.environ.get("INSTALLER_ISO", ISO))
+    try:
+        s.expect("Install Horus", BOOT)
+        os.write(s.fd, DOWN)
+        os.write(s.fd, ENTER)
+        if expect == "refused":
+            s.expect("INSTALLER: REFUSED the media's EFI image does not match its pin", BOOT)
+            step("the installer refused media whose ESP image was changed")
+            # AND SAID WHY, which is what tells a changed image from a truncated
+            # one from a missing pin (2026-10-08: the laptop refused an image QEMU
+            # accepted, and the old screen could not say which). A changed byte
+            # keeps the size and the pin and changes the hash.
+            for need in ("INSTALLER: ESP evidence pinned=yes", "INSTALLER: ESP evidence bytes=",
+                         "INSTALLER: ESP evidence sha256=", "INSTALLER: ESP evidence pin="):
+                if need not in s.buf:
+                    raise SessionFail(f"the refusal did not give its evidence: no `{need}`")
+            import re
+            h = re.search(r"ESP evidence sha256=([0-9a-f]{16})", s.buf)
+            p = re.search(r"ESP evidence pin=([0-9a-f]{16})", s.buf)
+            if not h or not p or h.group(1) == p.group(1):
+                raise SessionFail("the evidence does not show the changed image's hash differing from its pin")
+            step("the refusal gave its evidence: a pin, the image's size, and a hash that differs")
+        else:
+            answer_survey(s, first_timeout=BOOT)
+            s.expect("INSTALLER: waiting on the swap size", STEP)
+            step("the changed ESP image was accepted, as the arm requires")
+    finally:
+        keep_serial(s.buf)
+        s.close()
+
+
 def run():
     disk = os.environ.get("SESSION_DISK", "")
     if not disk:
@@ -1651,8 +1783,16 @@ def run():
         walkback(disk)
         print("INSTALLER_SESSION: PASS")
         return 0
+    if mode == "esppin":
+        esppin(disk)
+        print("INSTALLER_SESSION: PASS")
+        return 0
     if mode == "panel":
         panel(disk)
+        print("INSTALLER_SESSION: PASS")
+        return 0
+    if mode == "bootdisk":
+        bootdisk(disk)
         print("INSTALLER_SESSION: PASS")
         return 0
     if mode == "replace":

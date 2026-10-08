@@ -94,7 +94,7 @@ MODULES="memdisk tar hashsum gcry_sha256 \
          part_msdos part_gpt part_acorn part_amiga part_apple part_bsd \
          part_dfly part_dvh part_plan part_sun part_sunpc \
          multiboot2 all_video video video_fb vbe vga gfxterm \
-         search search_fs_file search_fs_uuid search_label \
+         search search_fs_file search_fs_uuid search_label regexp \
          serial terminal"
 
 WORK=$(mktemp -d)
@@ -146,7 +146,10 @@ grub-mkimage -O i386-pc-eltorito -d "$GRUB_DIR" -m "$WORK/memdisk.tar" \
 # rather than unfortunate: a different boot chain IS a different boot chain.
 # docs/LIMITATIONS.md 2.9a records it.
 # ---------------------------------------------------------------------------
-if [ -n "${EFI_OUT:-}" ]; then
+# EFI_BIN_OUT=<file> also writes the bare BOOTX64.EFI, for an EFI system
+# partition the build lays out itself (the installer's ESP, S115) rather than the
+# small FAT image the ISO boots from.
+if [ -n "${EFI_OUT:-}" ] || [ -n "${EFI_BIN_OUT:-}" ]; then
     EFI_GRUB_DIR=${EFI_GRUB_DIR:-/usr/lib/grub/x86_64-efi}
     if [ ! -d "$EFI_GRUB_DIR" ]; then
         echo "mkbootimg: no x86_64-efi GRUB modules at '$EFI_GRUB_DIR' (install grub-efi-amd64-bin)" >&2
@@ -161,6 +164,8 @@ if [ -n "${EFI_OUT:-}" ]; then
     # floppy fits today's image and would fail the day a module is added, and
     # the failure would be an ISO that boots on BIOS and not on UEFI -- which
     # is the asymmetry this whole block exists to prevent.
+    if [ -n "${EFI_BIN_OUT:-}" ]; then cp "$WORK/BOOTX64.EFI" "$EFI_BIN_OUT"; fi
+    if [ -n "${EFI_OUT:-}" ]; then
     esz=$(( ( $(wc -c < "$WORK/BOOTX64.EFI") / 1024 ) + 512 ))
     rm -f "$EFI_OUT"
     mformat -i "$EFI_OUT" -C -f "$(( esz > 2880 ? esz : 2880 ))" -v HORUSEFI :: 2>/dev/null || {
@@ -171,6 +176,7 @@ if [ -n "${EFI_OUT:-}" ]; then
     }
     mmd -i "$EFI_OUT" ::/EFI ::/EFI/BOOT
     mcopy -i "$EFI_OUT" "$WORK/BOOTX64.EFI" ::/EFI/BOOT/BOOTX64.EFI
+    fi
 fi
 
 echo "mkbootimg: boot image $OUT pins kernel sha256 $KHASH"

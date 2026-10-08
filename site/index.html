@@ -189,9 +189,9 @@
       <div>
         <p class="install__lead">
           Horus is no longer only something you boot in an emulator. Its installer writes a
-          working system onto a machine's own storage, encrypted by default. For now the
-          machine is started from Horus boot media, which opens the installed disk; a disk
-          that boots by itself is the next step.
+          working system onto a machine's own storage, encrypted by default, and the disk
+          starts on its own under UEFI: a partition table, GRUB with the kernel's pinned hash,
+          and the volume. A laptop starts from its own soldered eMMC that way.
         </p>
         <ul class="install__media">
           <li><strong>eMMC</strong>, the flash chip soldered into many small laptops,

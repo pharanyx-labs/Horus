@@ -438,7 +438,14 @@
 # (console_progress_permit), because nothing but the installer repaints the
 # screen after it, and a login left "Turning your password into a key" there
 # for good on the laptop.
-core_budget_loc: 10883
+# 2026-10-08: 10883 -> 10927, +44, the disk that boots itself (S115), in
+# main.c: parsing `horus.esp=<sha256>` off the measured command line (the pin
+# the ESP image is checked against, and so the trust anchor for what an install
+# writes to the disk's EFI system partition), the accessor that hands it out,
+# leaving the image out of the module manifest check, and the BUILD LABEL line
+# of a DEBUG_BUILD. The check itself, the evidence and its formatting were moved
+# into storage.c (service), their only user, which took this from +96 to +44.
+core_budget_loc: 10927
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

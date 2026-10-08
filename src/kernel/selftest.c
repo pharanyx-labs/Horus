@@ -3817,13 +3817,13 @@ void storage_replace_selftest(void)
             print("\n");
             return;
         }
-        int r = storage_authorize_format(0, 0, 0);
+        int r = storage_authorize_format(0, 0, 0, 0);
         print(r == 0 ? "REPLACE_SELFTEST: unlocked partition target ALLOWED\n"
                      : "REPLACE_SELFTEST: unlocked partition target REFUSED\n");
         return;
     }
 
-    int first = storage_authorize_format(0, 0, 0);
+    int first = storage_authorize_format(0, 0, 0, 0);
     print(first == 0 ? "REPLACE_SELFTEST: locked target ALLOWED\n"
                      : "REPLACE_SELFTEST: locked target REFUSED\n");
 
@@ -3837,7 +3837,7 @@ void storage_replace_selftest(void)
 
     /* The volume is now unlocked: somebody has proved they own this machine and
      * it is in use. This is the call that must fail. */
-    int second = storage_authorize_format(0, 0, 0);
+    int second = storage_authorize_format(0, 0, 0, 0);
     print(second == 0 ? "REPLACE_SELFTEST: unlocked target ALLOWED\n"
                       : "REPLACE_SELFTEST: unlocked target REFUSED\n");
 

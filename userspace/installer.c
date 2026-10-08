@@ -226,6 +226,11 @@ static void frame(const char *title)
     tui_clear();
     tui_box(0, 0, BOX_H, tui_cols(), C_FRAME);
     tui_text(ROW_TITLE, MARGIN, "Horus installer", C_TITLE);
+#ifdef DEBUG_BUILD
+    /* A diagnostic build says which one it is on every screen (see the
+     * Makefile's DEBUG_LABEL). */
+    tui_text(ROW_TITLE, MARGIN + 17, "[" HORUS_DEBUG_LABEL "]", C_DANGER);
+#endif
     tui_text(ROW_SUB,   MARGIN, title, C_SUBTITLE);
     rule(ROW_RULE_T);
     rule(ROW_RULE_B);
@@ -413,11 +418,39 @@ static void disk_size(char *blocks, unsigned bcap, char *mib, unsigned mcap)
  * disk, and the kernel checks it again, refusing rather than clamping.
  */
 #define VOLUME_MIN_MIB 64u
-static uint64_t g_volume_mib;             /* 0 = the whole disk */
+static uint64_t g_volume_mib;             /* 0 = the whole disk, or the rest of it */
+
+/* A DISK THAT BOOTS ITSELF (S114, S115). When the install media carries an ESP
+ * image that matches its pin (storage_info.esp_ready), the disk is laid out as
+ * GPT: an EFI system partition, a swap partition of the operator's size, then
+ * the volume. Without one, the install is the whole-disk volume it always was,
+ * and the conversation is unchanged. The ESP and the tables take a fixed 66 MiB
+ * (64 for the ESP, 1 at each end for the tables). */
+#define LAYOUT_FIXED_MIB 66u
+#define SWAP_DEFAULT_MIB 1024u
+static uint64_t g_swap_mib;               /* 0 = no swap partition */
+static int      g_bootable;               /* this install lays out GPT + ESP */
 
 static uint64_t disk_mib(void)
 {
     return (g_si.total_blocks * (uint64_t)g_si.block_size) / (1024u * 1024u);
+}
+
+/* The swap size to hand SYS_STORAGE_FORMAT, in blocks: 0 for none. */
+static uint64_t swap_blocks(void)
+{
+    if (!g_bootable || g_swap_mib == 0 || g_si.block_size == 0) return 0;
+    return (g_swap_mib * 1024u * 1024u) / g_si.block_size;
+}
+
+/* The most the volume can be, in MiB: the disk, less the ESP, the tables and
+ * swap on a bootable layout. */
+static uint64_t volume_max_mib(void)
+{
+    uint64_t dm = disk_mib();
+    if (!g_bootable) return dm;
+    uint64_t fixed = LAYOUT_FIXED_MIB + g_swap_mib;
+    return dm > fixed ? dm - fixed : 0;
 }
 
 /* The size to hand SYS_STORAGE_FORMAT, in blocks: 0 for the whole disk. */
@@ -441,12 +474,77 @@ static int parse_mib(const char *s, uint64_t *out)
     return 1;
 }
 
+static int ask_swap_size(void)
+{
+    char buf[12];
+    char dmib[24], def[12];
+    for (;;) {
+        const uint64_t dm = disk_mib();
+        const uint64_t room = dm > LAYOUT_FIXED_MIB + VOLUME_MIN_MIB
+                                  ? dm - LAYOUT_FIXED_MIB - VOLUME_MIN_MIB : 0;
+        const uint64_t dflt = SWAP_DEFAULT_MIB <= room / 4 ? SWAP_DEFAULT_MIB : 0;
+        utoa10(dm, dmib, sizeof(dmib));
+        utoa10(dflt, def, sizeof(def));
+
+        frame_step("Choose the size of the swap partition", 2);
+        int r = para(ROW_BODY,
+                     "The disk will start on its own: it gets an EFI system partition of "
+                     "64 MiB, a swap partition, and the Horus volume.", C_TEXT);
+        r++;
+        r = para(r, "Swap is reserved now and used once encrypted swap is built. "
+                    "0 leaves it out.", C_TEXT);
+        r++;
+        label(r, "disk");
+        tui_text(r, FIELD_COL, dmib, C_VALUE);
+        tui_text(r, FIELD_COL + 12, "MiB", C_TEXT);
+        label(r + 2, "swap, MiB");
+        tui_text(r + 3, FIELD_COL, "empty for", C_TEXT);
+        tui_text(r + 3, FIELD_COL + 10, def, C_VALUE);
+        hint("enter to accept  -  esc goes back");
+        tui_flush();
+
+        mark("INSTALLER: waiting on the swap size", "");
+        if (tui_input(r + 2, FIELD_COL, 10, buf, sizeof(buf), 0) != 0) return 0;
+        if (!buf[0]) { g_swap_mib = dflt; return 1; }
+        uint64_t v = 0;
+        if (!parse_mib(buf, &v) || v > room) {
+            char msg[80], rm[24];
+            unsigned n = 0;
+            utoa10(room, rm, sizeof(rm));
+            const char *parts[] = { "Swap is a number of MiB from 0 to ", rm, "." };
+            for (unsigned k = 0; k < 3; k++)
+                for (const char *c = parts[k]; *c && n < sizeof(msg) - 1; c++) msg[n++] = *c;
+            msg[n] = 0;
+            status(msg, C_DANGER);
+            tui_flush();
+            continue;
+        }
+        g_swap_mib = v;
+        return 1;
+    }
+}
+
+static int ask_volume_size(void);
+
+/* The size step: swap then volume on a bootable layout, the volume alone
+ * otherwise. Going back from the volume asks swap again; going back from swap
+ * leaves the step. */
+static int ask_sizes(void)
+{
+    g_bootable = (g_si.esp_ready == 1) ? 1 : 0;
+    if (!g_bootable) { g_swap_mib = 0; return ask_volume_size(); }
+    for (;;) {
+        if (!ask_swap_size()) return 0;
+        if (ask_volume_size()) return 1;
+    }
+}
+
 static int ask_volume_size(void)
 {
     char buf[12];
     char dmib[24], lo[12];
     for (;;) {
-        const uint64_t dm = disk_mib();
+        const uint64_t dm = volume_max_mib();
         utoa10(dm, dmib, sizeof(dmib));
         utoa10(VOLUME_MIN_MIB, lo, sizeof(lo));
 
@@ -458,11 +556,12 @@ static int ask_volume_size(void)
         r = para(r, "Space past the end of a smaller volume is left as it is: not used "
                     "by Horus, and not erased.", C_TEXT);
         r++;
-        label(r, "disk");
+        label(r, g_bootable ? "room for it" : "disk");
         tui_text(r, FIELD_COL, dmib, C_VALUE);
         tui_text(r, FIELD_COL + 12, "MiB", C_TEXT);
         label(r + 2, "volume, MiB");
-        hint("leave empty for the whole disk  -  enter to accept  -  esc goes back");
+        hint(g_bootable ? "leave empty for all the room left  -  enter to accept  -  esc goes back"
+                        : "leave empty for the whole disk  -  enter to accept  -  esc goes back");
         tui_flush();
 
         mark("INSTALLER: waiting on the volume size", "");
@@ -484,7 +583,7 @@ static int ask_volume_size(void)
         }
         /* The whole disk typed out is the whole disk: stored as 0 so the review and
          * the format say "all of it" rather than a number that happens to match. */
-        g_volume_mib = (v == dm) ? 0 : v;
+        g_volume_mib = (v == dm) ? 0 : v;   /* dm is volume_max_mib() */
         return 1;
     }
 }
@@ -884,9 +983,22 @@ static int review_returns_install(void)
         tui_text(r, FIELD_COL, mib, C_VALUE);
         tui_text(r, FIELD_COL + 12, "MiB", C_TEXT);
         r++;
+        if (g_bootable) {
+            char sm[24];
+            label(r, "layout");
+            tui_text(r, FIELD_COL, "GPT, boots on its own - everything on the disk is lost", C_DANGER);
+            r++;
+            label(r, "swap");
+            utoa10(g_swap_mib, sm, sizeof(sm));
+            tui_text(r, FIELD_COL, g_swap_mib ? sm : "none", C_VALUE);
+            if (g_swap_mib) tui_text(r, FIELD_COL + 12, "MiB", C_TEXT);
+            r++;
+        }
         label(r, "volume");
         if (g_volume_mib == 0) {
-            tui_text(r, FIELD_COL, "the whole disk - everything on it is lost", C_DANGER);
+            tui_text(r, FIELD_COL, g_bootable ? "all the room left"
+                                              : "the whole disk - everything on it is lost",
+                     g_bootable ? C_VALUE : C_DANGER);
         } else {
             char vm[24];
             utoa10(g_volume_mib, vm, sizeof(vm));
@@ -960,7 +1072,7 @@ static int review_returns_install(void)
         } else if (sel == 3) {
             if (!ask_user_password()) continue;
         } else if (sel == 4) {
-            if (!ask_volume_size()) continue;
+            if (!ask_sizes()) continue;
         } else if (sel == 5) {
             if (!ask_encryption()) continue;
         }
@@ -1151,7 +1263,9 @@ static int do_install(void)
 
     unsigned plen = uslen(g_pw);
     int rc = sys_storage_format(g_target, g_pw, plen, volume_blocks(),
-                                g_unsealed ? STORAGE_FORMAT_UNSEALED : 0u);
+                                (g_unsealed ? STORAGE_FORMAT_UNSEALED : 0u) |
+                                (g_bootable ? STORAGE_FORMAT_BOOTABLE : 0u),
+                                swap_blocks());
     /* THE KERNEL WROTE TO THIS SCREEN WHILE WE WERE BLOCKED. The damage diff
      * cannot see a write the library did not make, so without this the progress
      * panel's cells stay on the screen under every later flush -- the same
@@ -1245,7 +1359,16 @@ static int do_install(void)
      * belief this block exists not to hold. The marker carries both numbers so a
      * gate can check the volume against the disk rather than against itself. */
     {
-        const uint64_t want = volume_blocks() ? volume_blocks() : after.total_blocks;
+        /* "All of it" means the disk on a whole-disk install, and on a bootable
+         * one the disk less the ESP, the two tables and swap: LAYOUT_FIXED_MIB
+         * is exactly the 1 MiB lead, the 64 MiB ESP and the 1 MiB tail the
+         * kernel's plan uses (rust/src/gpt.rs), so this is a prediction the
+         * kernel's answer must match, not a copy of it. */
+        const uint64_t fixed_blocks =
+            (LAYOUT_FIXED_MIB * 1024u * 1024u) / (g_si.block_size ? g_si.block_size : 4096u);
+        const uint64_t rest = g_bootable ? after.total_blocks - fixed_blocks - swap_blocks()
+                                         : after.total_blocks;
+        const uint64_t want = volume_blocks() ? volume_blocks() : rest;
         char vb[24], db[24], line[64];
         unsigned n = 0;
         utoa10(after.volume_blocks, vb, sizeof(vb));
@@ -1363,6 +1486,55 @@ void _start(void)
         sys_exit();
     }
 
+    /* MEDIA WHOSE ESP IMAGE DOES NOT MATCH ITS PIN IS NOT INSTALLED FROM AT ALL
+     * (S115). The image is what a disk that boots itself will start from, and
+     * its pin is in the measured boot config; a mismatch means somebody changed
+     * the stick after it was built. Falling back to a whole-disk install would
+     * be quieter and wrong: the operator would get a disk that does not boot,
+     * from media that has been tampered with, and no word of either. Said
+     * before anything is asked, and nothing is written. */
+    if (g_si.esp_ready == 2) {
+        frame("This install media has been changed");
+        int r = para(ROW_BODY, "The EFI image on this media does not match the hash its "
+                               "boot menu pins.", C_DANGER);
+        r++;
+        r = para(r, "Nothing has been written. Write the install media again from a "
+                    "build you trust.", C_TEXT);
+        r++;
+        /* THE EVIDENCE, so the refusal can be told apart from its look-alikes:
+         * no pin parsed (the boot entry is wrong), a different size (the image
+         * arrived truncated), or the right size and a different hash (it was
+         * changed, or changed in memory). Public facts: the pin is on the boot
+         * menu's command line and the image is on the media. */
+        {
+            static const char d[] = "0123456789abcdef";
+            char h[20], p[20], b[24];
+            for (int k = 0; k < 8; k++) {
+                h[2 * k] = d[g_si.esp_hash8[k] >> 4]; h[2 * k + 1] = d[g_si.esp_hash8[k] & 15];
+                p[2 * k] = d[g_si.esp_pin8[k] >> 4];  p[2 * k + 1] = d[g_si.esp_pin8[k] & 15];
+            }
+            h[16] = p[16] = 0;
+            utoa10(g_si.esp_bytes, b, sizeof(b));
+            label(r, "pin on the menu");
+            tui_text(r, FIELD_COL, g_si.esp_pinned ? p : "none parsed", C_VALUE);
+            label(r + 1, "image hash");
+            tui_text(r + 1, FIELD_COL, g_si.esp_pinned ? h : "not taken", C_VALUE);
+            label(r + 2, "image bytes");
+            tui_text(r + 2, FIELD_COL, b, C_VALUE);
+            say("INSTALLER: ESP evidence pinned=", g_si.esp_pinned ? "yes" : "no");
+            say("INSTALLER: ESP evidence bytes=", b);
+            say("INSTALLER: ESP evidence sha256=", h);
+            say("INSTALLER: ESP evidence pin=", p);
+        }
+        status("", C_TEXT);
+        hint("press any key");
+        tui_flush();
+        say("INSTALLER: REFUSED the media's EFI image does not match its pin", "");
+        (void)tui_getkey();
+        tui_end();
+        sys_exit();
+    }
+
     /* A DISK THAT ALREADY HOLDS A VOLUME IS NOW A TARGET, NOT A REFUSAL (S90),
      * and what replaced the refusal is a different confirmation rather than a
      * weaker one.
@@ -1442,7 +1614,7 @@ void _start(void)
          * scenario times out waiting for a screen the pipeline never shows a
          * second time. */
         case ST_SIZE:
-            if (!ask_volume_size()) leave_untouched("The install was cancelled.");
+            if (!ask_sizes()) leave_untouched("The install was cancelled.");
             st = ST_ENC;
             break;
         case ST_ENC:
@@ -1463,7 +1635,7 @@ void _start(void)
             break;
 #else
         case ST_SIZE:
-            st = ask_volume_size() ? ST_ENC : ST_DISK;
+            st = ask_sizes() ? ST_ENC : ST_DISK;
             break;
         case ST_ENC:
             st = ask_encryption() ? ST_ROOTPW : ST_SIZE;

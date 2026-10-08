@@ -279,6 +279,23 @@ struct boot_module_digest {
 
 uint32_t boot_module_count(void);
 const struct boot_module *boot_module_get(uint32_t index);
+/* The ESP image a bootable install writes (S115): a module by this name, never
+ * in the manifest and never readable from ring 3, checked against the
+ * command line's horus.esp=<sha256> when it is used. Absolute, so fs_server's
+ * destination check would refuse it even if it were ever offered. */
+#define ESP_MODULE_NAME "/esp.img"
+int boot_esp_image(const uint8_t **data, uint64_t *len);
+int boot_esp_pin(uint8_t out[32]);   /* main.c: the install entry's pin, if any */
+/* What boot_esp_image's last check saw (see it in main.c), for the installer's
+ * refusal screen: public facts only. */
+struct esp_evidence {
+    uint32_t present;     /* an ESP image module was found                  */
+    uint32_t pinned;      /* the command line carried a well-formed pin     */
+    uint64_t bytes;       /* the module's size as GRUB reported it          */
+    uint8_t  hash8[8];    /* the first 8 bytes of the SHA-256 taken         */
+    uint8_t  pin8[8];     /* the first 8 bytes of the pin                   */
+};
+void boot_esp_evidence(struct esp_evidence *out);
 /* Hash every recorded module and mark it verified iff it matches the embedded
  * manifest. Call once at boot, after the multiboot tags are parsed and before
  * anything can read a module. Returns the number that failed (0 == all good). */
@@ -1037,6 +1054,15 @@ struct storage_info {
      * (2026-09-24), which the installer now allows; the rest of the device is
      * then outside every volume. */
     uint64_t volume_blocks;
+    /* The ESP image (S115): 1 if this boot carries one that matches its boot
+     * entry's pin, so STORAGE_FORMAT_BOOTABLE can be asked for; 2 if it carries
+     * one that does NOT (media somebody changed: the installer refuses to run);
+     * 0 if it carries none (a whole-disk install, as before). */
+    uint32_t esp_ready;
+    uint32_t esp_pinned;     /* the evidence behind esp_ready 2: a pin was parsed  */
+    uint64_t esp_bytes;      /* the image's size as the boot loader reported it    */
+    uint8_t  esp_hash8[8];   /* the first 8 bytes of the SHA-256 the kernel took   */
+    uint8_t  esp_pin8[8];    /* the first 8 bytes of the pin it was compared with  */
 };
 
 /* Carve up the arena and publish the two boot regions. Called from kernel_main
@@ -1273,13 +1299,19 @@ void users_init(void);
 #define STORAGE_FORMAT_PASSWORD_MAX 31
 
 #define SYS_STORAGE_INFO      110   /* (struct storage_info*) -> 0; what volume this machine has: whether a block device is attached, its size, whether a Horus volume was recognised on it, and whether it is unlocked. CAP_STORAGE_FORMAT + READ at CAPSLOT_STORAGE_FORMAT. It is the "what will be destroyed" readout, so it answers to the capability that can destroy it rather than to the object-store capability every filesystem client holds. */
-#define SYS_STORAGE_FORMAT    111   /* (const char *password, plen, device, volume_blocks) -> 0; volume_blocks 0 is the whole device, anything else is bounded against it and refused outside [STORAGE_MIN_BLOCKS, device size]; DESTROY the volume on the attached device and lay a new encrypted one down, sealed to `password`. CAP_STORAGE_FORMAT + WRITE at CAPSLOT_STORAGE_FORMAT. This is the ONE caller of storage_authorize_format(), the function S63 introduced and left with none: "a deliberate act -- which an installer calls and a login never does". A login (SYS_AUTH -> storage_unlock) still reaches an unformatted volume and still refuses it. */
+#define SYS_STORAGE_FORMAT    111   /* (const char *password, plen, device, volume_blocks, flags, swap_blocks) -> 0; with STORAGE_FORMAT_BOOTABLE the disk is first laid out as GPT, the pinned EFI system partition and swap_blocks of swap, and the volume takes volume_blocks or the rest (S114, S115); without it, volume_blocks 0 is the whole device, anything else is bounded against it and refused outside [STORAGE_MIN_BLOCKS, device size]; DESTROY the volume on the attached device and lay a new encrypted one down, sealed to `password`. CAP_STORAGE_FORMAT + WRITE at CAPSLOT_STORAGE_FORMAT. This is the ONE caller of storage_authorize_format(), the function S63 introduced and left with none: "a deliberate act -- which an installer calls and a login never does". A login (SYS_AUTH -> storage_unlock) still reaches an unformatted volume and still refuses it. */
 /* SYS_STORAGE_FORMAT flags (its fifth argument). UNSEALED lays the volume down with
  * disk_key in the clear: no password opens it because none is needed, and anyone
  * holding the disk can read and change it. The operator's explicit choice, never a
  * default; every mount says which kind of volume it found. Mirrored in
  * include/syscall.h. */
 #define STORAGE_FORMAT_UNSEALED 0x1u
+/* BOOTABLE lays out a disk that starts on its own (S114, S115): a GPT with an EFI
+ * system partition holding this boot's verified ESP image, a swap partition of
+ * the sixth argument's size in blocks (0 for none), and the volume, of
+ * volume_blocks or the rest of the disk. Refused unless the ESP image is present
+ * and matches its pin, and unless the sizes fit. Mirrored in include/syscall.h. */
+#define STORAGE_FORMAT_BOOTABLE 0x2u
 #define SYS_USERLIST          112   /* (index, struct user_entry*) -> 1 filled, 0 past the last account, SYS_ERR_PERM without CAP_USER at CAPSLOT_USER. Account METADATA only: name, uid, gid, home. No hash, no salt, no key slot, no lockout state. The index is dense over VALID accounts, so a deleted slot in the middle of the table does not read as the end of it and MAX_USERS never crosses the boundary. */
 #define SYS_CONSOLE_RELEASE  114   /* (dev_slot) -> 0; give the console hardware back to the kernel. CAP_IO_DEVICE + WRITE in dev_slot, and the caller must BE the current owner. Exists so a console driver that fails AFTER taking the console can still be heard: while it owns the wire its own diagnostic reaches the klog ring and nothing else. */
 #define SYS_FB_INFO          115   /* (dev_slot, struct fb_geometry*) -> 0; the SHAPE of the linear framebuffer (width/height/pitch/bpp), or SYS_ERR_NOENT if this display is not one. CAP_IO_DEVICE + READ in dev_slot, and it must name the PLATFORM device. Where the framebuffer is comes from SYS_DEVICE_INFO's mmio[] ranges, not from here. */
@@ -3270,7 +3302,7 @@ uint32_t storage_unlocked_slot(void);
  * rest under the volume key that is already sealed to the TPM policy -- which is
  * what lets the password hashes inside it stop depending on a per-boot pepper.
  * Both require the volume unlocked. */
-int  storage_authorize_format(int index, uint64_t volume_blocks, uint32_t flags);
+int  storage_authorize_format(int index, uint64_t volume_blocks, uint32_t flags, uint64_t swap_blocks);
 int  storage_volume_has_keyslots(void);  /* persistent AND sealed: slots mean something */  /* 0 authorised, -1 refused: the target is an ARGUMENT (S83) */
 /* Fill `*out` with what SYS_STORAGE_INFO reports. Reads state only; a machine
  * with no persistent device answers `present = 0` rather than failing, because
@@ -3634,6 +3666,21 @@ int  rust_sha256(const uint8_t *data, size_t data_len, uint8_t *out32);
 #define GPT_NONE (-1)
 int  rust_gpt_find_volume(const uint8_t *buf, size_t buf_len, uint64_t device_blocks,
                           uint64_t *out_base, uint64_t *out_count);
+/* rust/src/gpt.rs: the installer's layout (S114). rust_gpt_plan sizes it and
+ * writes nothing; rust_gpt_build_side writes one end of its table (GPT_SIDE_*)
+ * into a GPT_TABLE_BYTES buffer, re-planning from the same sizes rather than
+ * trusting a layout handed back. Both return 0, or -1 if the sizes do not fit. */
+struct gpt_layout {
+    uint64_t esp_base, esp_count, swap_base, swap_count, volume_base, volume_count;
+};
+#define GPT_TABLE_BYTES (5u * 4096u)
+#define GPT_SIDE_HEAD 0u
+#define GPT_SIDE_TAIL 1u
+int  rust_gpt_plan(uint64_t device_blocks, uint64_t swap_blocks, uint64_t volume_blocks,
+                   uint64_t min_volume, struct gpt_layout *out);
+int  rust_gpt_build_side(uint64_t device_blocks, uint64_t swap_blocks, uint64_t volume_blocks,
+                         uint64_t min_volume, const uint8_t *guids, uint32_t side,
+                         uint8_t *buf, size_t buf_len);
 /* Tamper-evident audit log (rust/src/audit.rs). */
 int  rust_audit_mac_eq(const uint8_t *a32, const uint8_t *b32);
 /* Forward-secure (forward-integrity) audit log: the per-entry key is ratcheted

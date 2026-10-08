@@ -87,6 +87,7 @@ required:
   - rust
   - security
   - smoke
+  - smoke-bootdisk
   - smoke-aslr
   - smoke-aspace
   - smoke-captest

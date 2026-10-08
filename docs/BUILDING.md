@@ -122,9 +122,15 @@ with its own configuration, so a `horus.iso` left in the tree is whichever gate 
 images are hybrid and boot from a USB stick or optical media under BIOS or UEFI
 (`make smoke-boot-media` covers all four combinations).
 
-**After installing,** the disk holds the volume but no bootloader, and the install media's live
-entry never opens an installed disk. Start the installed system from a stick holding `horus.iso`
-(`make iso`). A disk that boots by itself is roadmap 2.11.
+**After installing,** the disk starts on its own under UEFI. `install.iso` carries an image of
+the EFI system partition (GRUB with the kernel's pinned hash, the kernel and its modules), pinned
+on its install entry (S115), and the installer lays out a GPT: that partition (64 MiB), a swap
+partition of the size asked for (reserved; nothing uses it yet), and the volume, which the kernel
+finds in its partition (S114). The firmware finds GRUB at `\EFI\BOOT\BOOTX64.EFI` with no boot
+entry of its own; Horus cannot write those. Every partition lies inside the 16 GiB the kernel
+addresses on a disk. The install media's live entry never opens an installed disk.
+`make smoke-install-boot-disk` installs under OVMF and boots the disk alone; set `OVMF_CODE` and
+`OVMF_VARS` if your firmware is not at the Debian paths.
 
 What a real machine needs:
 
@@ -376,6 +382,8 @@ column names the targets that build with the flag; an arm must turn its gate red
 | `FS_LINK_UNCOUNTED=1` | Makes `SYS_FS_INODE_LINK` (`h_fs_inode_link`) report success without incrementing the inode's on-disk link count. | `smoke-session-hardlink-control` (arm of `smoke-session`) |
 | `FS_DIR_OPERAND_UNCHECKED=1` | Restores the `fs_server` that read any inode as a directory: a request's directory operand was checked for the caller's permission and never for its type, so a user could forge an `fs_dirent` in a file they own and delete or rename through it, freeing any inode ([HORUS-20261008-01]). | `smoke-fs-dir-operand-control` (arm of `smoke-fs-dir-operand`); `make smoke-fs-dir-operand` must go red under it |
 | `GPT_ENTRIES_CRC_UNCHECKED=1` | Passes the `gpt_entries_crc_unchecked` cargo feature, so `rust/src/gpt.rs` stops checking the GPT entry array's CRC32: an entry edited on the disk without resealing the array is believed, and the kernel mounts a volume wherever the edit points (S114). | `smoke-gpt-volume-control` (arm of `smoke-gpt-volume`); `make smoke-gpt-volume` must go red under it |
+| `ESP_PIN_UNCHECKED=1` | Hashes the ESP image and never compares it with the `horus.esp=` pin on the install entry's command line, so install media whose image was changed is believed (S115). | `smoke-install-esp-pin-control` (arm of `smoke-install-esp-pin`); `make smoke-install-esp-pin` must go red under it |
+| `ESP_NOT_WRITTEN=1` | Lays out a bootable disk's tables and sizes and leaves its EFI system partition empty, so nothing starts it. | `smoke-install-boot-disk-control` (arm of `smoke-install-boot-disk`); `make smoke-install-boot-disk` must go red under it |
 | `PIPE_CAP_UNACCOUNTED=1` | Restores the pre-2026-09-12 `SYS_PIPE`: the two pipe-end capabilities are written into the caller's cspace by a raw, field-by-field store that takes no `cap_lock` and never touches `caps_in_use`. | `smoke-cap-accounting-control` (arm of `smoke-captest`); `make smoke-captest` must go red under it |
 | `TOKEN_REPLY_MINT_UNMASKED=1` | Removes the reply-mint's rights bound, so a server is given whatever rights it asks for rather than at most those of the capability the client invoked it with (S105). | `smoke-captoken-unmasked-control` (arm of `smoke-captoken`); `make smoke-captoken` must go red under it |
 | `REPLY_EP_SPACE_OVERLAP=1` | Restores the pre-2026-09-12 endpoint index space, in which the static table was the literal `128` while the map above it declared the per-task reply region as `[REPLY_EP_BASE, REPLY_EP_BASE + MAX_TASKS)` = `[64, 320)`. | `smoke-reply-ep-control` (arm of `smoke-reply-ep`); `make smoke-reply-ep` must go red under it |
@@ -409,6 +417,7 @@ column names the targets that build with the flag; an arm must turn its gate red
 | `KLOG_NARROW=1` | The Alt+F2 view before 2026-09-25: it is laid out on the console's 80-column grid and clears the display only when a surface is centred, so on a framebuffer wider than 80 cells the log covers the left of the screen and the rest keeps what the installer drew. | `smoke-klog-console-fb-control` (arm of `smoke-klog-console-fb`) |
 | `CONSOLE_NO_SCROLLBACK=1` | `console_server` before 2026-09-24: a line that scrolls off the top of the machine's own screen is gone, and Shift+PgUp does nothing. | `smoke-console-scrollback-control` (arm of `smoke-console-scrollback`) |
 | `KLOG_CONSOLE=1` | Instrument, never shipped: Alt+F2 shows the kernel log across the whole of the machine's own screen with nobody logged in; Shift+PgUp/PgDn page it and Up/Down move it a row, every other key is ignored, and Alt+F1 puts the console back exactly as it was (`klog_view` in `userspace/console_server.c`). | `smoke-klog-console`, `smoke-klog-console-absent-control` (arm of `smoke-klog-console-absent`) |
+| `DEBUG_BUILD=1` | Instrument, never shipped, and set by `DEBUG_LABEL=<text>` rather than directly: marks a diagnostic build (the kind that becomes `horus-debug.iso`). The kernel prints `BUILD LABEL: <text>`, the installer shows the label on every screen's title row and the login banner shows `DEBUG BUILD: <text>`, so the person at the machine can tell which image they booted; the kernel log also gives the ESP image's physical address. | No gate: an instrument. `DEFECT FLAGS` names it, so a transcript taken under it says so |
 | `SERIAL_PRESENCE_UNCHECKED=1` | The console input path as it stood before 2026-09-12: `inb(COM1_LSR) & 1` believed without first asking whether there is a UART at `0x3F8` to answer. | `smoke-keyboard-noserial-control` (arm of `smoke-keyboard-noserial`); `make smoke-keyboard-noserial` must go red under it |
 | `CONSOLE_BACKSPACE_NO_ERASE=1` | `console_server`'s screen output as it stood before 2026-09-12: neither `fb_putc` nor `vga_putc` had a case for `0x08`, so a backspace fell through to the glyph branch and was drawn. | `smoke-console-backspace-control` (arm of `smoke-console-backspace`); `make smoke-console-backspace` must go red under it |
 | `CONSOLE_NO_SCROLL=1` | Restores `console_server`'s screen as it stood before 2026-09-12: both putc paths ended a full screen with `pos = 0`, so the newest line overwrote the oldest and the display became a ring buffer with nothing marking the seam, its bottom half older than its top half, and no way to tell by looking. | `smoke-console-scroll-control` (arm of `smoke-console-scroll`); `make smoke-console-scroll` must go red under it |

@@ -46,6 +46,7 @@ them.
 | `the_throttle_locks_within_the_limit` | From any stored failure count, at most `MAX_AUTH_FAILS` consecutive failed logins pass before the account locks, and the lockout lasts the full period from the tick it is set. |
 | `a_decrement_never_underflows_a_refcount` | For every `u16`, a decrement is refused **exactly** when the count is already 0, and otherwise strictly decreases. Stated as an equivalence so a refusal that is too eager cannot satisfy it vacuously. A wrap to 65535 would pin the page for the rest of the boot. |
 | `gpt_volume_is_inside_the_device` | **S114.** Whatever a partition table says, the volume the kernel accepts from it is a non-empty run of whole 4 KiB blocks inside the device, after the table and inside the usable range, for every `u64` the table can hold. |
+| `gpt_plan_is_inside_the_device` | **S114.** Whatever sizes the operator types, the layout the kernel writes keeps the ESP, swap and volume in order without overlap, after the primary table and before the backup, with the volume the size asked for. |
 
 Kani also discharges the implicit checks on these paths (no overflow, no invalid or
 out-of-bounds dereference) and the loop-unwinding assertions of the revocation closure.
@@ -71,7 +72,7 @@ depend on which cell each bump lands in.
 
 All of them. `.github/kani-harnesses.yml` lists every harness, the required `kani-bounded` job
 runs each one on every pull request, and `tools/check_kani_harnesses.py` fails the build if a
-proof is missing from the list. All **33** gate. There is no way to excuse a proof from running:
+proof is missing from the list. All **34** gate. There is no way to excuse a proof from running:
 the checker refuses any list but `gating`. The count is declared in `.github/doc-claims.yml` and
 re-derived on every run.
 

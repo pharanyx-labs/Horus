@@ -26,33 +26,29 @@ requests. What is still wrong, as opposed to still unbuilt, is in
 
 In order. Each step is its own set of pull requests with its own gates and control arms.
 
-1. **A disk that boots itself** (2.11 step 2), in progress: a GPT disk with an EFI system
-   partition holding GRUB, the kernel and its pinned hash; a swap partition, reserved; and the
-   volume, each sized by the operator. The kernel finds the volume in its partition (S114); the
-   installer writing the layout and the ESP is next.
-2. **Use all the memory** (3.1): the page pool walks every usable region up to 4 GiB instead of
+1. **Use all the memory** (3.1): the page pool walks every usable region up to 4 GiB instead of
    stopping at 512 MiB.
-3. **Filesystem phase 1b** (2.10): `fs_server` authorises by capability instead of by uid and
+2. **Filesystem phase 1b** (2.10): `fs_server` authorises by capability instead of by uid and
    mode, `hvfs` walks with capabilities, and `init` mints the root capability from a policy file.
    It removes `perm_ok`, the root check on `chown`, `SYS_FS_SET_META`, the uid path of
    `SYS_IPC_SENDER` in the filesystem, and `SYS_CONNECT_FS_SERVER`. Phase 1a, the kernel half,
    is done.
-4. **Programs on the disk** (2.11 step 1): the installer copies the system onto the volume
+3. **Programs on the disk** (2.11 step 1): the installer copies the system onto the volume
    (`/bin`, `/sbin`, `/lib`, `/tmp`, `/var`, man pages), and the loader refuses any file whose
    hash is not in a manifest pinned inside the measured boot image. The two land together:
    running from the disk must never exist without the check. The manifest covers `/bin`, `/sbin`
    and `/lib` only: a program a user builds with `tcc` runs from `/home` on the `EXEC` right of
    its file capability (installed-system decision 5).
-5. **Accounts as files** (2.11 step 3): `/etc/passwd` and `/etc/shadow` on the volume, owned by a
+4. **Accounts as files** (2.11 step 3): `/etc/passwd` and `/etc/shadow` on the volume, owned by a
    ring-3 `auth_server`; the kernel keeps only the key-slot unlock.
-6. **Encrypted swap** in the reserved partition: a key made fresh at every boot, every page
+5. **Encrypted swap** in the reserved partition: a key made fresh at every boot, every page
    authenticated, and no key material ever paged out.
-7. **Filesystem phases 2 to 4** (2.10): the kernel shrinks to a sealed-block service and the
+6. **Filesystem phases 2 to 4** (2.10): the kernel shrinks to a sealed-block service and the
    filesystem moves to ring 3 with a copy-on-write format, then symbolic links, timestamps and
    sparse files, then snapshots, reflinks and extended attributes. Phase 2 also splits the
    system and home into separate volumes.
 
-Steps 3 and 5 meet at `/etc/passwd`; whichever lands second adapts to the first.
+Steps 2 and 4 meet at `/etc/passwd`; whichever lands second adapts to the first.
 
 ---
 
@@ -106,7 +102,7 @@ a large change to the most safety-critical assembly in the tree, and nothing is 
 | 2.8 ✅ A volume large enough to install onto | 4 KiB blocks, no in-RAM metadata mirror, a Merkle rollback tree, a 16 GiB ceiling sized from the disk (S65, S66, S68), and a TPM anchor for whole-volume rollback (S70). 2026-08-31 to 2026-09-01, #270, #273, #274, #276, #279 |
 | 2.9 ✅ An installer | A format capability only the installer holds (S72), consent by a typed word after every answer is shown back (S73), a choice of target disk (S82, S83), replacing an existing volume from install media (S90), two accounts that each open the disk (S76), and an optional unencrypted volume (S104). 2026-09-01 to 2026-09-24 |
 | 2.10 🚧 A capability-addressed filesystem | Phase 1a, the kernel's endpoint tokens and reply-mint (S105). 2026-09-25, #455 |
-| 2.11 ⬜ An installed system | Designed ([`design/installed-system.md`](design/installed-system.md)); a live boot never opens an installed disk (S110, #472) |
+| 2.11 🚧 An installed system | Designed ([`design/installed-system.md`](design/installed-system.md)); a live boot never opens an installed disk (S110, #472); the disk boots itself under UEFI, on the laptop too (S114, S115). 2026-10-08, #503, #505 |
 
 ### 2.1 ◧ Remainder
 
@@ -145,7 +141,7 @@ start it.
 ### 2.7a ⬜ Evict the in-kernel services [F-2.7a]
 
 `.github/ring0-classification.yml` (S87) measures the ring-0 `service` class at about 6,000 code
-lines beside a 10,883-line core: `storage.c` (the encrypted store and the on-disk filesystem),
+lines beside a 10,927-line core: `storage.c` (the encrypted store and the on-disk filesystem),
 `kusers.c` (accounts and password hashing), the loader and spawn path, `crypto.c` and
 `syscall_fs.c`. Neither big move is mechanical. `storage.c` holds the volume key, so moving it
 means deciding what a ring-3 storage server may hold; 2.10's phase 2 is that decision for the
@@ -175,7 +171,7 @@ is already true.
 | 3 | Symbolic links, timestamps and a time service, cross-directory rename, sparse files |
 | 4 | Snapshots, reflinks, extended attributes, quotas, locks, open-unlinked files |
 
-### 2.11 ⬜ An installed system
+### 2.11 🚧 An installed system
 
 The specification is [`design/installed-system.md`](design/installed-system.md). Decided on
 2026-09-24: programs on the disk are trusted by a manifest of hashes pinned in the measured boot
@@ -184,8 +180,10 @@ image, with no signing key; GNU coreutils and TCC ship with their licences; acco
 partition and no Secure Boot. Decided on 2026-10-07: the manifest covers `/bin`, `/sbin` and
 `/lib` only, and a user's own programs run from `/home` on the `EXEC` right of their file
 capability. `init`, `fs_server` and `console_server` stay in the boot image,
-because they run before the volume can be read. The three steps are items 2 to 4 of
-[What happens next](#what-happens-next).
+because they run before the volume can be read. Step 2, a disk that boots itself, is done: the
+installer lays out GPT with an EFI system partition, a reserved swap partition and the volume,
+and the IdeaPad 1 14IGL05 starts from its eMMC with no install media (#503, #505). Steps 1 and 3
+are items 3 and 4 of [What happens next](#what-happens-next).
 
 ---
 
@@ -267,7 +265,7 @@ is a second person to review them. Turning on required approval with one maintai
 every merge or needs a bypass actor, which would undo 4.2. `SECURITY.md` therefore claims
 "thoroughly automatically verified", not "independently reviewed".
 
-**4.2.** The gating set is **137 required, 9 exempted** (137 jobs, 146 contexts; re-derive with
+**4.2.** The gating set is **138 required, 9 exempted** (138 jobs, 147 contexts; re-derive with
 `tools/check_ci_gating.py`). The exemptions come from three jobs and are properties of the test,
 not open defects: `fuzz` (seven targets fuzzed nightly, never on a pull request), `kani-arms` and
 `ruleset-audit` (both run on a schedule, never on a pull request).
@@ -279,7 +277,7 @@ from a tag and compare. They wait on 3.1, since an ISO that does not rebuild to 
 same bytes cannot be verified by rebuilding.
 
 **4.12.** The exemption list in `.github/invariants.yml` is currently
-**empty**: all 116 properties name a witness that resolves.
+**empty**: all 117 properties name a witness that resolves.
 
 ---
 
@@ -295,9 +293,10 @@ same bytes cannot be verified by rebuilding.
 | ✅ | Ring-3 servers: `init`, `console_server`, `fs_server`, the installer; one path walker in a library. `netd`, a ring-3 network driver, runs in a test build |
 | ✅ | An encrypted, Merkle-verified volume with a journal and TPM-anchored rollback protection |
 | ✅ | An installer, on IDE disks and SD or eMMC storage, including a laptop's soldered eMMC |
+| ✅ | An installed disk that starts on its own under UEFI, the laptop's eMMC included |
 | ✅ | A shell with pipelines, a shared libc, GNU coreutils and TCC |
 | ✅ | Measured boot, the kernel pinned in the boot image, and a PCR-sealed volume key |
 | ✅ | An IOMMU confining device DMA, and device capabilities that name one device each |
 | ◧ | Reproducible `kernel.elf` (not yet the ISO), an SBOM, CodeQL, Dependabot, signed commits, a protected `main` |
-| ✅ | 438 `smoke-*` targets, nearly all QEMU integration tests, and 231 of them control arms that must reproduce a defect |
+| ✅ | 442 `smoke-*` targets, nearly all QEMU integration tests, and 233 of them control arms that must reproduce a defect |
 | ✅ | Bounded Kani proofs, Miri over the Rust core, and fuzzing at the FFI boundary |

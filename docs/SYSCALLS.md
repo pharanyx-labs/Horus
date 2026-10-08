@@ -102,7 +102,10 @@ registered legacy line stays masked until `SYS_IRQ_ACK` (S46); `SYS_MSI_REGISTER
 **Installing.** `SYS_STORAGE_INFO` and `SYS_STORAGE_DEVICE` survey the disks, and
 `SYS_STORAGE_FORMAT` erases the disk it names (S83). All three need `CAP_STORAGE_FORMAT`, which
 only the installer holds (S72). A volume that has been unlocked cannot be reformatted (S90), and
-on a live boot the kernel refuses to open or format a persistent disk at all (S110).
+on a live boot the kernel refuses to open or format a persistent disk at all (S110). With
+`STORAGE_FORMAT_BOOTABLE` the format lays out a disk that boots itself: a GPT, an EFI system
+partition holding the image the install entry pins (S115), a swap partition, then the volume,
+which the kernel finds in its partition at every later boot (S114).
 
 ## Every syscall
 
@@ -212,8 +215,8 @@ shipped kernel.
 | 107 | `SYS_MSI_REGISTER` | `(dev_slot, notif_slot, badge)` | Route the named device's MSI to a notification | `CAP_IO_DEVICE` at `dev_slot` and a `CAP_NOTIFICATION` |
 | 108 | `SYS_SHLIB_INFO` | `(frame_slot, struct shlib_info*)` | Where the shared library is loaded | `CAP_FRAME` over the library's text |
 | 109 | `SYS_UNTYPED_SPLIT` | `(src_slot, dest_slot, bytes)` | Carve `bytes` off the CAP_UNTYPED at `src_slot` and mint a CAP_UNTYPED naming the sub-region into `dest_slot` (roadmap 0.3) | `CAP_UNTYPED` + WRITE at `src_slot`. Carves `bytes` off that region and mints a derived `CAP_UNTYPED` over the sub-region into `dest_slot` |
-| 110 | `SYS_STORAGE_INFO` | `(struct storage_info*)` | What volume this machine has (CAP_STORAGE_FORMAT + READ) | `CAP_STORAGE_FORMAT` at `CAPSLOT_STORAGE_FORMAT`: READ |
-| 111 | `SYS_STORAGE_FORMAT` | `(const char *password, plen, device, volume_blocks)` | Volume_blocks 0 = the whole device; DESTROY the attached volume and lay a new sealed one down (CAP_STORAGE_FORMAT + WRITE) | `CAP_STORAGE_FORMAT` at `CAPSLOT_STORAGE_FORMAT`: WRITE |
+| 110 | `SYS_STORAGE_INFO` | `(struct storage_info*)` | What volume this machine has, and whether this boot carries a pinned EFI image for a disk that boots itself (`esp_ready`), with the evidence behind a refusal: whether a pin was parsed, the image's size, and the first bytes of its hash and of the pin (CAP_STORAGE_FORMAT + READ) | `CAP_STORAGE_FORMAT` at `CAPSLOT_STORAGE_FORMAT`: READ |
+| 111 | `SYS_STORAGE_FORMAT` | `(const char *password, plen, device, volume_blocks, flags, swap_blocks)` | Volume_blocks 0 = the whole device, or with `STORAGE_FORMAT_BOOTABLE` the rest of it; DESTROY the attached volume and lay a new sealed one down; `STORAGE_FORMAT_BOOTABLE` first writes a GPT, the pinned EFI system partition and a swap partition of `swap_blocks` (S114, S115) (CAP_STORAGE_FORMAT + WRITE) | `CAP_STORAGE_FORMAT` at `CAPSLOT_STORAGE_FORMAT`: WRITE |
 | 112 | `SYS_USERLIST` | `(index, struct user_entry*)` |  | `CAP_USER` at `CAPSLOT_USER` |
 | 113 | `SYS_STORAGE_DEVICE` | `(index, struct storage_info*)` | The survey for ONE enumerated persistent device (CAP_STORAGE_FORMAT + READ) | `CAP_STORAGE_FORMAT` at `CAPSLOT_STORAGE_FORMAT`: READ |
 | 114 | `SYS_CONSOLE_RELEASE` | `(dev_slot)` | Give the console hardware back to the kernel | `CAP_IO_DEVICE` naming the console hardware |

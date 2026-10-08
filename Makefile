@@ -132,7 +132,7 @@ DEFECT_FLAGS = \
 	FS_LINK_UNCOUNTED FS_DIR_OPERAND_UNCHECKED GPT_ENTRIES_CRC_UNCHECKED STORAGE_REPLACE_VIEW_UNRESOLVED \
 	ESP_PIN_UNCHECKED ESP_NOT_WRITTEN DEBUG_BUILD \
 	POOL_SPAN_SELFTEST E820_HOLE_PROBE PHYS_WINDOW_FLAT_ONLY POOL_FLAT_CEILING POOL_RAM_UNCHECKED MEM_HIGH_UNREPORTED \
-	SWAP_SELFTEST SWAP_SEAL_OFF SWAP_TAG_UNCHECKED \
+	SWAP_SELFTEST SWAP_SEAL_OFF SWAP_TAG_UNCHECKED SWAP_HOG SWAP_OUT_ZEROED \
 	CONSOLE_PROGRESS_BELOW_SURFACE CONSOLE_PROGRESS_AT_LOGIN \
 	SYSTEM_TREES_WRITABLE SYSTEM_TREES_NO_PRUNE SYSTEM_TREES_SIZE_ONLY \
 	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY BOOT_MENU_NO_LIVE_TOKEN \
@@ -1538,10 +1538,10 @@ endif
 # workload that stopped exercising pipes and image spawns.
 SHLIBC_MODULE ?= 0
 # Every build that ships a program linked against the library ships the library.
-# TCC_MODULE is named here rather than setting SHLIBC_MODULE in its own block,
-# because that block comes later in this file and an assignment there would be
-# too late for this test.
-ifneq ($(filter 1,$(SHLIBC_MODULE) $(TCC_MODULE)),)
+# TCC_MODULE and SWAP_HOG are named here rather than setting SHLIBC_MODULE in
+# their own blocks, because those come later in this file and an assignment
+# there would be too late for this test.
+ifneq ($(filter 1,$(SHLIBC_MODULE) $(TCC_MODULE) $(SWAP_HOG)),)
 BOOT_MODULES    += userspace/libc.stripped.so:lib/libc.so
 BOOT_MODULE_DEP += userspace/libc.stripped.so
 endif
@@ -1919,6 +1919,22 @@ endif
 SWAP_SELFTEST      ?= 0
 SWAP_SEAL_OFF      ?= 0
 SWAP_TAG_UNCHECKED ?= 0
+# SWAP PAGING (docs/design/swap.md step 2, smoke-swap). SWAP_HOG=1 ships the
+# test program /bin/swaphog, which writes 48 MiB and reads it back, and caps the
+# page pool's span at POOL_CAP_MIB so a 48 MiB program cannot fit without swap.
+# Both instruments, never shipped. SWAP_OUT_ZEROED=1 is the arm: a page taken
+# for swap is written to its slot as zeros.
+SWAP_HOG        ?= 0
+POOL_CAP_MIB    ?= 64
+SWAP_OUT_ZEROED ?= 0
+ifeq ($(SWAP_HOG),1)
+CFLAGS          += -DSWAP_HOG -DPOOL_CAP_MIB=$(POOL_CAP_MIB)
+BOOT_MODULES    += userspace/swaphog.bin:bin/swaphog
+BOOT_MODULE_DEP += userspace/swaphog.bin
+endif
+ifeq ($(SWAP_OUT_ZEROED),1)
+CFLAGS += -DSWAP_OUT_ZEROED
+endif
 ifeq ($(SWAP_SELFTEST),1)
 CFLAGS += -DSWAP_SELFTEST
 endif
@@ -5546,10 +5562,10 @@ DYNLINK_CFLAGS = $(NEWLIB_CFLAGS) -mno-direct-extern-access
 DYNLINK_LDFLAGS = -m elf_x86_64 -pie --no-dynamic-linker -z now -z nocopyreloc \
                   --gc-sections -T userspace/pie_shared.ld
 
-userspace/hello_dyn.o userspace/dyncanary.o userspace/dynstale.o: userspace/%.o: userspace/%.c $(NEWLIB_LIB)/libc.a
+userspace/hello_dyn.o userspace/dyncanary.o userspace/dynstale.o userspace/swaphog.o: userspace/%.o: userspace/%.c $(NEWLIB_LIB)/libc.a
 	$(CC) $(DYNLINK_CFLAGS) -c $< -o $@
 
-userspace/hello_dyn.pie.elf userspace/dyncanary.pie.elf: userspace/%.pie.elf: userspace/%.o \
+userspace/hello_dyn.pie.elf userspace/dyncanary.pie.elf userspace/swaphog.pie.elf: userspace/%.pie.elf: userspace/%.o \
         userspace/crt0_dyn.o userspace/dynlink.o userspace/libc_link.so userspace/pie_shared.ld
 	$(LD) $(DYNLINK_LDFLAGS) -o $@ userspace/crt0_dyn.o userspace/dynlink.o $< userspace/libc_link.so
 
@@ -5780,7 +5796,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.stripped.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin userspace/sealprobe.bin userspace/dynstale.bin userspace/dyncanary.bin userspace/hello_dyn.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin userspace/sealprobe.bin userspace/dynstale.bin userspace/dyncanary.bin userspace/hello_dyn.bin userspace/swaphog.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -13212,6 +13228,7 @@ BOOTDISK_MIB     ?= 512
 BOOTDISK_TIMEOUT ?= 300
 BOOTDISK_EXPECT  ?=
 SWAP_EXPECT      ?=
+SWAP_HOG_EXPECT  ?=
 BOOTDISK_AFTER   ?=
 .PHONY: smoke-install-boot-disk
 smoke-install-boot-disk:
@@ -13219,7 +13236,7 @@ smoke-install-boot-disk:
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 $(INSTALL_PROGRAMS) $(BOOTDISKARM)
 	@$(MAKE) --no-print-directory STORAGE_ATA=1 $(INSTALL_PROGRAMS) $(BOOTDISKARM) GRUB_CFG=grub-menu.cfg INSTALL_ESP=1 horus.iso
 	@rm -f bootdisk.img bootdisk-serial.log && truncate -s $(BOOTDISK_MIB)M bootdisk.img
-	@INSTALLER_MODE=bootdisk BOOTDISK_EXPECT=$(BOOTDISK_EXPECT) SWAP_EXPECT="$(SWAP_EXPECT)" SESSION_DISK=bootdisk.img \
+	@INSTALLER_MODE=bootdisk BOOTDISK_EXPECT=$(BOOTDISK_EXPECT) SWAP_EXPECT="$(SWAP_EXPECT)" SWAP_HOG_EXPECT="$(SWAP_HOG_EXPECT)" SESSION_DISK=bootdisk.img \
 		BOOTDISK_MODULES=$$($(MAKE) -s --no-print-directory STORAGE_ATA=1 $(INSTALL_PROGRAMS) $(BOOTDISKARM) print-boot-module-count) \
 		SESSION_UEFI_CODE=$(OVMF_CODE) SESSION_UEFI_VARS=$(OVMF_VARS) \
 		SESSION_SERIAL_LOG=bootdisk-serial.log SESSION_TIMEOUT=$(BOOTDISK_TIMEOUT) \
@@ -13353,6 +13370,23 @@ smoke-swap-store-seal-control:
 smoke-swap-store-tag-control:
 	@$(MAKE) --no-print-directory smoke-swap-store SWAPARM=SWAP_TAG_UNCHECKED=1 \
 		SWAPEXPECT="a changed block was accepted"
+
+# PAGES GO OUT TO SWAP AND COME BACK EXACTLY (S119). The bootable-disk gate
+# with /bin/swaphog shipped and the pool capped at POOL_CAP_MIB: after the login
+# turns swap on, swaphog writes 48 MiB, more than the pool holds, and reads every
+# byte back; the kernel must say it paged out, and the host must find none of
+# swaphog's marker on the partition, so the pages that went there went sealed.
+.PHONY: smoke-swap smoke-swap-zeroed-control
+smoke-swap:
+	@$(MAKE) --no-print-directory smoke-install-boot-disk \
+		BOOTDISKARM="SWAP_HOG=1 $(SWAPPAGEARM)" SWAP_HOG_EXPECT="$(or $(SWAPHOGEXPECT),ok)" \
+		BOOTDISK_AFTER="python3 tools/swap_scan.py bootdisk.img --marker swaphog --expect absent"
+	@echo "[swap] $(if $(SWAPPAGEARM),control arm PASS - the defect $(SWAPPAGEARM) puts back was caught,PASS - 48 MiB went through swap on a smaller pool and came back intact$(comma) sealed)"
+
+# The falsifying arm: a page taken for swap is written as zeros, so swaphog
+# reads back what it did not write and must say so.
+smoke-swap-zeroed-control:
+	@$(MAKE) --no-print-directory smoke-swap SWAPPAGEARM=SWAP_OUT_ZEROED=1 SWAPHOGEXPECT=fail
 
 # MEDIA WHOSE ESP IMAGE WAS CHANGED IS REFUSED (S115). The install media is
 # built, then one byte of /boot/esp.img inside the ISO is inverted, leaving the

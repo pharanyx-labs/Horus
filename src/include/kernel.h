@@ -3687,6 +3687,15 @@ int  swap_enabled(void);
 int  swap_put(const void *page, uint64_t *slot_out);
 int  swap_get(uint64_t slot, void *page);
 void swap_free(uint64_t slot);
+void swap_ref(uint64_t slot);
+/* The pager's side (paging.c, docs/design/swap.md step 2). Below SWAP_LOW_WATER
+ * free frames, a faulting task gives up to SWAP_EVICT_BATCH of its own idle
+ * pages to swap before it takes another frame. */
+#define SWAP_LOW_WATER    512u
+#define SWAP_EVICT_BATCH  32
+int  swap_evict_self(int want);
+int  swap_fault_in(uint64_t *ptv, uint64_t pt_i, uint64_t fault_addr);
+int  handle_demand_page_fault(uint64_t fault_addr, uint32_t err_code);
 /* rust/src/gpt.rs: the installer's layout (S114). rust_gpt_plan sizes it and
  * writes nothing; rust_gpt_build_side writes one end of its table (GPT_SIDE_*)
  * into a GPT_TABLE_BYTES buffer, re-planning from the same sizes rather than

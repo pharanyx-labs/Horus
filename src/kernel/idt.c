@@ -1466,6 +1466,22 @@ uint64_t page_fault_handler(struct interrupt_frame64 *f64) {
      *
      * Only a fault with no task to blame (cur == 0, the kernel's own context)
      * still halts — there is nothing to kill and continuing would be worse. */
+    if (killed > 0 && allowed && prc != -6) {
+        /* AN APPROVED FAULT THE PAGER COULD NOT RESOLVE is the kernel's failure,
+         * not the program's (out of frames, or a page swap could not give back),
+         * and the record below is all it left. One write, to the log. */
+        char kl[96];
+        unsigned k = 0;
+        const char *a = "fault: task killed, the pager could not resolve an approved fault (code -";
+        while (*a) kl[k++] = *a++;
+        int c = prc < 0 ? -prc : prc;
+        if (c >= 10) kl[k++] = (char)('0' + (c / 10) % 10);
+        kl[k++] = (char)('0' + c % 10);
+        kl[k++] = ')';
+        kl[k++] = '\n';
+        kl[k] = 0;
+        print(kl);
+    }
     if (killed > 0) {
         /* The banner above is printed only for a ring-0 / task-0 fault, so a
          * ring-3 task killed here dies in total silence — the case that made

@@ -108,6 +108,18 @@ static int content_is(const char *s, unsigned n) {
     for (unsigned i = 0; i < n; i++) if (pp.data[i] != (uint8_t)s[i]) return 0;
     return 1;
 }
+/* The requests that name a DIRECTORY operand, for the forged-dirent probe below.
+ * Each returns the server's rc; LOOKUP's and READDIR's payloads land in `pp`. */
+static int p_dirop(uint32_t op, uint32_t dir, const char *name) {
+    umemset(&pq, 0, sizeof(pq)); pq.op = op; pq.dir_ino = dir; ustrncpy(pq.name, name, FS_NAME_MAX);
+    return rpc(&pq, &pp);
+}
+static int p_rename(uint32_t from_dir, const char *from, uint32_t to_dir, const char *to) {
+    umemset(&pq, 0, sizeof(pq)); pq.op = FS_OP_RENAME;
+    pq.dir_ino = from_dir; ustrncpy(pq.name, from, FS_NAME_MAX);
+    pq.ino = to_dir;       ustrncpy((char *)pq.data, to, FS_DIRENT_NAME);
+    return rpc(&pq, &pp);
+}
 #endif
 
 void _start(void) {
@@ -262,6 +274,13 @@ void _start(void) {
     int d_ino = p_make(0, "udir", 1);                if (d_ino < 0) pfail("mk-udir");
     if (p_chown((uint32_t)d_ino, 1000, 100) != 0)    pfail("chown-udir");  /* give it to user */
 
+    /* The forged-dirent probe's victims, both root's: a file standing in for a
+     * /bin program, and a non-empty directory standing in for /bin itself. */
+    int v_ino = p_make(0, "victim", 0);              if (v_ino < 0) pfail("mk-victim");
+    if (p_write((uint32_t)v_ino, "intact") != 6)     pfail("wr-victim");
+    int vd_ino = p_make(0, "vdir", 1);               if (vd_ino < 0) pfail("mk-vdir");
+    int vk_ino = p_make((uint32_t)vd_ino, "kid", 0); if (vk_ino < 0) pfail("mk-vdir-kid");
+
     /* --- become uid 1000 (gid 100): the kernel now attests this identity --- */
     if (sys_auth("user", "password", 0) != 0)        pfail("auth-user");
 
@@ -284,6 +303,68 @@ void _start(void) {
     if (p_chmod((uint32_t)m_ino, 0600) != 0)         pfail("user-chmod-owned");
     /* but chown is root-only, even of its own file */
     if (p_chown((uint32_t)m_ino, 0, 0) != SYS_ERR_PERM) pfail("user-chown-not-denied");
+
+    /* --- a FILE is never a directory operand -------------------------------
+     *
+     * fs_server reads a directory as an array of fs_dirent records in ordinary
+     * inode data, and the bytes of a regular file are written by its owner. Until
+     * 2026-10-08 the requests that take a directory operand checked the caller's
+     * permission on it and never its TYPE, so a user who owns a file could write
+     * a forged entry {ino = anything, type = FILE} into it and pass the file as
+     * the "directory". DELETE through it then had fs_server free the named inode
+     * (the kernel honours SYS_FS_INODE_FREE from the store's holder for any inode
+     * but root): root's /bin programs, or /bin itself, since a forged FILE type
+     * also skipped the not-empty check. The lowest-free inode allocator then
+     * handed the number to the user's next create, which a root-owned dirent
+     * still named. RENAME did the same from either side.
+     *
+     * The claim is that NO directory operation interprets a file as a directory:
+     * each such request is refused with SYS_ERR_INVAL, and both victims are
+     * untouched afterwards. FS_DIR_OPERAND_UNCHECKED=1 restores the unchecked
+     * server; make smoke-fs-dir-operand-control requires the first stage below. */
+    {
+        int f_ino = p_make((uint32_t)d_ino, "forge", 0); if (f_ino < 0) pfail("dir-operand-mk-forge");
+        /* rwx for its owner, as an attacker would set it on their own file, so
+         * every request below passes its PERMISSION check (lookup needs x,
+         * readdir r, the rest w) and the only thing left to refuse it is the
+         * type. At the default 0644, lookup was refused for want of x, which
+         * would let this probe pass with no type check at all. */
+        if (p_chmod((uint32_t)f_ino, 0700) != 0)     pfail("dir-operand-chmod-forge");
+        struct fs_dirent forged[2];
+        umemset(forged, 0, sizeof(forged));
+        forged[0].ino = (uint32_t)v_ino;  forged[0].type = FS_TYPE_FILE; ustrncpy(forged[0].name, "x", FS_DIRENT_NAME);
+        forged[1].ino = (uint32_t)vd_ino; forged[1].type = FS_TYPE_FILE; ustrncpy(forged[1].name, "y", FS_DIRENT_NAME);
+        umemset(&pq, 0, sizeof(pq)); pq.op = FS_OP_WRITE; pq.ino = (uint32_t)f_ino;
+        pq.offset = 0; pq.len = sizeof(forged); umemcpy(pq.data, forged, sizeof(forged));
+        if (rpc(&pq, &pp) != (int)sizeof(forged))    pfail("dir-operand-wr-forge");
+        uint32_t f = (uint32_t)f_ino, ud = (uint32_t)d_ino;
+
+        /* The report's attack, first, so the control arm's marker is the headline:
+         * free root's file through a forged entry. */
+        if (p_dirop(FS_OP_DELETE, f, "x") != SYS_ERR_INVAL)  pfail("dir-operand-delete-file");
+        /* The same against root's non-empty directory: the forged FILE type is
+         * what skipped the not-empty check. */
+        if (p_dirop(FS_OP_DELETE, f, "y") != SYS_ERR_INVAL)  pfail("dir-operand-delete-nonempty");
+        /* RENAME out of the forgery: a real name, in the user's own directory,
+         * for root's inode, with no link counted for it. */
+        if (p_rename(f, "x", ud, "stolen") != SYS_ERR_INVAL) pfail("dir-operand-rename-from");
+        /* RENAME into the forgery: the target name "x" exists there, so the
+         * server "replaces" it, freeing the inode the forged entry names. */
+        if (p_rename(ud, "mine", f, "x") != SYS_ERR_INVAL)   pfail("dir-operand-rename-into");
+        if (p_dirop(FS_OP_LOOKUP, f, "x") != SYS_ERR_INVAL)  pfail("dir-operand-lookup");
+        umemset(&pq, 0, sizeof(pq)); pq.op = FS_OP_READDIR; pq.dir_ino = f; pq.offset = 0;
+        if (rpc(&pq, &pp) != SYS_ERR_INVAL)                  pfail("dir-operand-readdir");
+        if (p_dirop(FS_OP_CREATE, f, "z") != SYS_ERR_INVAL)  pfail("dir-operand-create");
+        if (p_dirop(FS_OP_MKDIR, f, "w") != SYS_ERR_INVAL)   pfail("dir-operand-mkdir");
+
+        /* THE PROPERTY, not only the codes: both victims are as root left them.
+         * A refusal code over a destroyed victim would be a worse lie than either. */
+        if (p_read((uint32_t)v_ino, 8) != 6 || !content_is("intact", 6)) pfail("dir-operand-victim-lost");
+        if (p_dirop(FS_OP_LOOKUP, (uint32_t)vd_ino, "kid") != 0 || pp.ino != (uint32_t)vk_ino)
+            pfail("dir-operand-vdir-lost");
+        if (p_dirop(FS_OP_LOOKUP, ud, "stolen") != SYS_ERR_NOENT) pfail("dir-operand-stolen-name");
+        if (p_dirop(FS_OP_LOOKUP, ud, "mine") != 0)          pfail("dir-operand-mine-moved");
+    }
 
     /* --- back to root: superuser bypasses the 0600 owner-only file --- */
     if (sys_auth("root", "toor", 0) != 0)        pfail("reauth-root");

@@ -25,7 +25,7 @@ static const void *acpi_phys(uint64_t p, uint64_t span) {
     if (p == 0) return NULL;
     if (span == 0) return NULL;
     if (p + span < p) return NULL;                 /* wrap */
-    if (p + span > (uint64_t)PHYS_POOL_CEIL) return NULL;
+    if (p + span > (uint64_t)PHYS_KVA_FLAT_CEIL) return NULL;
     return (const void *)PHYS_KVA(p);
 }
 

@@ -131,6 +131,7 @@ DEFECT_FLAGS = \
 	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED \
 	FS_LINK_UNCOUNTED FS_DIR_OPERAND_UNCHECKED GPT_ENTRIES_CRC_UNCHECKED STORAGE_REPLACE_VIEW_UNRESOLVED \
 	ESP_PIN_UNCHECKED ESP_NOT_WRITTEN DEBUG_BUILD \
+	POOL_SPAN_SELFTEST E820_HOLE_PROBE PHYS_WINDOW_FLAT_ONLY POOL_FLAT_CEILING POOL_RAM_UNCHECKED \
 	CONSOLE_PROGRESS_BELOW_SURFACE CONSOLE_PROGRESS_AT_LOGIN \
 	SYSTEM_TREES_WRITABLE SYSTEM_TREES_NO_PRUNE SYSTEM_TREES_SIZE_ONLY \
 	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY BOOT_MENU_NO_LIVE_TOKEN \
@@ -1897,6 +1898,35 @@ endif
 ESP_NOT_WRITTEN ?= 0
 ifeq ($(ESP_NOT_WRITTEN),1)
 CFLAGS += -DESP_NOT_WRITTEN
+endif
+
+# THE POOL SPANS ALL THE RAM UP TO 4 GiB (smoke-pool-span).
+# POOL_SPAN_SELFTEST=1 checks every frame on the free stack at boot (RAM, clear
+# of the reserves, tables and modules, writable through PHYS_KVA, one above
+# 1 GiB) and prints POOL_SELFTEST: OK or FAIL. E820_HOLE_PROBE=1 reports
+# [512, 520) MiB as reserved, as fragmented firmware does. Both are instruments,
+# never shipped. The three arms put back what the ceiling replaced:
+# PHYS_WINDOW_FLAT_ONLY=1 leaves the PHYS_KVA window at 1 GiB, POOL_FLAT_CEILING=1
+# stops the pool there, POOL_RAM_UNCHECKED=1 takes every frame of the span as RAM.
+POOL_SPAN_SELFTEST    ?= 0
+E820_HOLE_PROBE       ?= 0
+PHYS_WINDOW_FLAT_ONLY ?= 0
+POOL_FLAT_CEILING     ?= 0
+POOL_RAM_UNCHECKED    ?= 0
+ifeq ($(POOL_SPAN_SELFTEST),1)
+CFLAGS += -DPOOL_SPAN_SELFTEST
+endif
+ifeq ($(E820_HOLE_PROBE),1)
+CFLAGS += -DE820_HOLE_PROBE
+endif
+ifeq ($(PHYS_WINDOW_FLAT_ONLY),1)
+CFLAGS += -DPHYS_WINDOW_FLAT_ONLY
+endif
+ifeq ($(POOL_FLAT_CEILING),1)
+CFLAGS += -DPOOL_FLAT_CEILING
+endif
+ifeq ($(POOL_RAM_UNCHECKED),1)
+CFLAGS += -DPOOL_RAM_UNCHECKED
 endif
 
 # DEBUG_LABEL=<text> marks a DIAGNOSTIC build, the kind that becomes
@@ -13201,6 +13231,53 @@ smoke-install-boot-disk-control:
 smoke-install-boot-disk-lowmod-control:
 	@$(MAKE) --no-print-directory smoke-install-boot-disk \
 		BOOTDISKARM=BOOT_MODULE_LOW_DROPPED=1 BOOTDISK_EXPECT=noprograms
+
+# ALL THE RAM, UP TO 4 GiB (S117). One boot of a 3 GiB guest whose
+# memory map has a hole at [512, 520) MiB (E820_HOLE_PROBE). The pool line must
+# name the RAM in three regions, and the boot self-test must find every frame the
+# pool will hand out to be RAM, outside the hole, the reserves, its own tables and
+# the modules, and writable through PHYS_KVA, with one above 1 GiB. Until
+# 2026-10-08 the pool was the one region holding 16 MiB, capped at 1 GiB: 420 MB
+# of the IdeaPad's 4 GiB.
+POOLSPAN_MEM ?= 3G
+.PHONY: smoke-pool-span
+smoke-pool-span:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory POOL_SPAN_SELFTEST=1 E820_HOLE_PROBE=1 $(POOLSPANARM)
+	@$(MAKE) --no-print-directory POOL_SPAN_SELFTEST=1 E820_HOLE_PROBE=1 $(POOLSPANARM) horus.iso
+	@rm -f pool-span-serial.log
+	@SMOKE_MEM=$(POOLSPAN_MEM) SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMOKE_LOG=pool-span-serial.log \
+		REQUIRE_MARKER='POOL_SELFTEST: OK every frame handed out is RAM' \
+		FAIL_MARKER='POOL_SELFTEST: FAIL' \
+		tools/smoke_test.sh horus.iso
+	@grep -aq 'mem: physical pool [0-9]* MiB of RAM in 3 region(s) from E820' pool-span-serial.log \
+	  || { echo "[pool-span] FAIL - the pool line does not name three RAM regions"; exit 1; }
+	@echo "[pool-span] PASS - the pool spans every RAM region to the top of a 3 GiB guest, holes excluded"
+
+# The falsifying arms, one per thing the ceiling replaced. Each requires its own
+# positive failure, so a boot that died for another reason does not pass it.
+.PHONY: smoke-pool-span-window-control smoke-pool-span-ceiling-control smoke-pool-span-hole-control
+smoke-pool-span-window-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory POOL_SPAN_SELFTEST=1 E820_HOLE_PROBE=1 PHYS_WINDOW_FLAT_ONLY=1
+	@$(MAKE) --no-print-directory POOL_SPAN_SELFTEST=1 E820_HOLE_PROBE=1 PHYS_WINDOW_FLAT_ONLY=1 horus.iso
+	@SMOKE_MEM=$(POOLSPAN_MEM) SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
+		EXPECT_FAULT='PAGE FAULT at 0xffffff8' \
+		tools/smoke_test.sh horus.iso
+smoke-pool-span-ceiling-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory POOL_SPAN_SELFTEST=1 E820_HOLE_PROBE=1 POOL_FLAT_CEILING=1
+	@$(MAKE) --no-print-directory POOL_SPAN_SELFTEST=1 E820_HOLE_PROBE=1 POOL_FLAT_CEILING=1 horus.iso
+	@SMOKE_MEM=$(POOLSPAN_MEM) SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='POOL_SELFTEST: FAIL handed out no frame above 1 GiB' \
+		tools/smoke_test.sh horus.iso
+smoke-pool-span-hole-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory POOL_SPAN_SELFTEST=1 E820_HOLE_PROBE=1 POOL_RAM_UNCHECKED=1
+	@$(MAKE) --no-print-directory POOL_SPAN_SELFTEST=1 E820_HOLE_PROBE=1 POOL_RAM_UNCHECKED=1 horus.iso
+	@SMOKE_MEM=$(POOLSPAN_MEM) SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='POOL_SELFTEST: FAIL handed out a frame the memory map does not call RAM' \
+		tools/smoke_test.sh horus.iso
 
 # MEDIA WHOSE ESP IMAGE WAS CHANGED IS REFUSED (S115). The install media is
 # built, then one byte of /boot/esp.img inside the ISO is inverted, leaving the

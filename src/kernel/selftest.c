@@ -5054,3 +5054,72 @@ void meta_crash_selftest(void)
     print("METACACHE: PASS all blocks verified after crash\n");
 }
 #endif /* META_CRASH_SELFTEST */
+
+#ifdef POOL_SPAN_SELFTEST
+int pool_selftest_view(const uint32_t **stack, uint64_t *meta_lo, uint64_t *meta_hi);
+int pool_selftest_is_ram(uint64_t frame);
+
+/* Does any boot module touch the page at `f`? Rounded outward to whole pages, as
+ * the allocator rounds. */
+static int boot_module_touches(uint64_t f) {
+    for (uint32_t i = 0; i < boot_module_count(); i++) {
+        const struct boot_module *m = boot_module_get(i);
+        uint64_t ms = m->start & ~((uint64_t)PAGE_SIZE - 1);
+        uint64_t me = (m->end + PAGE_SIZE - 1) & ~((uint64_t)PAGE_SIZE - 1);
+        if (f >= ms && f < me) return 1;
+    }
+    return 0;
+}
+
+/* SELFTEST, never ship (smoke-pool-span). Read every frame on the free stack,
+ * which is every frame the pool will ever hand out, and require of each: RAM by the memory map (ram_covers, not phys_is_ram,
+ * so an allocator that stopped asking is caught), outside the reserves, the
+ * per-frame tables and every boot module, and writable and readable through
+ * PHYS_KVA at both ends (each word put back as it was). One line, one write,
+ * says which it was; OK also needs a frame above 1 GiB, or the window above it
+ * was never exercised. Runs at boot before any task, so the pool is whole. */
+void pool_span_selftest(void) {
+    const uint64_t res_lo = pool_reserve_base();
+    const uint64_t res_hi = res_lo + (uint64_t)POOL_RESERVE_PAGES * PAGE_SIZE;
+    const uint32_t *free_page_stack;
+    uint64_t meta_lo, meta_hi;
+    const int total = pool_selftest_view(&free_page_stack, &meta_lo, &meta_hi);
+    uint64_t highest = 0;
+    const char *why = 0;
+    uint64_t bad = 0;
+    for (int k = total - 1; k >= 0 && !why; k--) {
+        uint64_t f = free_page_stack[k];
+        if (!pool_selftest_is_ram(f))                   { why = "a frame the memory map does not call RAM"; bad = f; }
+        else if (f >= res_lo && f < res_hi)                  { why = "a frame of the base reserves"; bad = f; }
+        else if (f >= meta_lo && f < meta_hi)                { why = "a frame of the pool's own tables"; bad = f; }
+        else if (boot_module_touches(f))                     { why = "a boot module's frame"; bad = f; }
+        else {
+            volatile uint64_t *w = (volatile uint64_t *)PHYS_KVA(f);
+            const uint64_t a = w[0], b = w[PAGE_SIZE / 8 - 1];
+            w[0] = f ^ 0x5A5A5A5A5A5A5A5AULL;
+            w[PAGE_SIZE / 8 - 1] = ~f;
+            if (w[0] != (f ^ 0x5A5A5A5A5A5A5A5AULL) || w[PAGE_SIZE / 8 - 1] != ~f) { why = "a frame that did not read back"; bad = f; }
+            w[0] = a;
+            w[PAGE_SIZE / 8 - 1] = b;
+            if (f > highest) highest = f;
+        }
+    }
+    if (!why && highest < PHYS_KVA_FLAT_CEIL) why = "no frame above 1 GiB";
+    char line[200];
+    unsigned n = 0;
+    const char *pfx = why ? "POOL_SELFTEST: FAIL handed out " : "POOL_SELFTEST: OK ";
+    while (*pfx && n < sizeof(line) - 40) line[n++] = *pfx++;
+    if (why) {
+        while (*why && n < sizeof(line) - 24) line[n++] = *why++;
+        line[n++] = ' ';
+        for (int sh = 28; sh >= 0; sh -= 4) line[n++] = "0123456789ABCDEF"[(bad >> sh) & 0xF];
+    } else {
+        const char *t = "every frame handed out is RAM, clear of the reserves, tables and modules, and read back; highest 0x";
+        while (*t && n < sizeof(line) - 12) line[n++] = *t++;
+        for (int sh = 28; sh >= 0; sh -= 4) line[n++] = "0123456789ABCDEF"[(highest >> sh) & 0xF];
+    }
+    line[n++] = '\n';
+    line[n] = 0;
+    print(line);
+}
+#endif

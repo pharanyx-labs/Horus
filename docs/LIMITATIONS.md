@@ -318,12 +318,14 @@ It does not make installing faster; the metadata region is laid down the same wa
 | Inodes | one per 32 blocks | `storage_format_sealed` |
 | ATA disk | 128 GiB (LBA28) | `_Static_assert` in `storage.c` |
 | Program image | 8 MiB | `LOADER_STAGING_BYTES` |
+| Physical memory | 4 GiB: RAM above it is not used, and above 1 GiB a region's ragged edges (under 2 MiB each) are not either | `PHYS_POOL_CEIL`, a 32-bit frame address |
+| Memory map regions | 32; RAM in any past them is not used, and the boot says so | `RAM_REGIONS_MAX` |
 | Device table | 64 entries | `IODEV_MAX` |
 
 **The kernel image is itself a ceiling.** It must end below `USER_PHYS_BASE` (16 MiB), which the
 `linker64.ld` ASSERT enforces. That 16 MiB is the window in which the kernel maps itself with
 4 KiB pages, the only place a guard page can exist. GRUB stages boot modules in the same room.
-`.bss` is budgeted at **7,552 KiB** (`.github/image-budget.yml`), held exactly by
+`.bss` is budgeted at **6,788 KiB** (`.github/image-budget.yml`), held exactly by
 `tools/check_image_budget.py`, and `argon2_scratch` is 4,096 KiB of it: the Argon2 memory cost,
 which must not be cut to buy room. Raising `MAX_CPUS`, `BLOCKS_PER_DISK` or the Argon2 cost spends
 that budget; raising `MAX_TASKS` spends pool memory instead.

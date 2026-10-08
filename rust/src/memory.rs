@@ -1,11 +1,11 @@
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
-// Mirrors USER_PHYS_PAGES in src/include/kernel.h: the *capacity* of the C
-// refcount table (page_refcounts) and free_page_stack, i.e. the largest pool the
-// metadata can track. The runtime pool is sized from the E820 map and may be
-// smaller; this must equal the C constant or rust_page_refcounts_register refuses
-// the table and the kernel halts. Keep the two in step.
-pub const USER_PHYS_PAGES: u32 = 131072;
+// Mirrors USER_PHYS_PAGES_MAX in src/include/kernel.h: the most frames the pool
+// can span, [USER_PHYS_BASE, 4 GiB), since a frame address is 32 bits. The C
+// tables are sized at boot for the span the memory map gives (2026-10-08; until
+// then a fixed 131072-frame .bss array), and registered with that length, which
+// must be non-zero and at most this.
+pub const USER_PHYS_PAGES_MAX: u32 = ((1u64 << 32) - USER_PHYS_BASE as u64) as u32 / PAGE_SIZE;
 pub const USER_PHYS_BASE: u32 = 0x01000000;
 pub const PAGE_SIZE: u32 = 4096;
 
@@ -18,8 +18,8 @@ pub const PAGE_SIZE: u32 = 4096;
 // in the combined binary). To close that, C must register the one true table
 // once via `rust_page_refcounts_register`; every subsequent inc/dec then
 // requires the supplied (pointer, length) to match the registered table
-// exactly, and the length to equal the compile-time `USER_PHYS_PAGES`. A
-// mismatch is refused rather than trusted.
+// exactly; the length was checked against `USER_PHYS_PAGES_MAX` when it was
+// registered. A mismatch is refused rather than trusted.
 // ---------------------------------------------------------------------------
 static REFC_PTR: AtomicUsize = AtomicUsize::new(0);
 static REFC_LEN: AtomicU32 = AtomicU32::new(0);
@@ -79,20 +79,21 @@ fn refc_dec_value(cur: u16) -> Option<u16> {
 }
 
 /// Register the authoritative refcount table. Must be called once at paging
-/// init before any inc/dec. Rejects anything but the expected fixed-size table.
+/// init before any inc/dec. Rejects a null table, and a length of 0 or past
+/// `USER_PHYS_PAGES_MAX`.
 ///
 /// # Safety
 /// `refcounts` must be null, or point to an array of at least `n_pages` `u16`s
 /// that lives for the rest of the boot: it is stored and every later
-/// `rust_page_ref_inc`/`_dec` is checked against it. A null pointer, or any
-/// `n_pages` other than `USER_PHYS_PAGES`, is refused rather than trusted, so
+/// `rust_page_ref_inc`/`_dec` is checked against it. A null pointer, or an
+/// `n_pages` of 0 or past `USER_PHYS_PAGES_MAX`, is refused rather than trusted, so
 /// the only obligation the caller cannot be relieved of is that a NON-null
 /// pointer really does address that many `u16`s. Call once, from paging init,
 /// before any other function in this module; a second call silently re-points
 /// the table every later check validates against.
 #[no_mangle]
 pub unsafe extern "C" fn rust_page_refcounts_register(refcounts: *const u16, n_pages: u32) -> bool {
-    if refcounts.is_null() || n_pages != USER_PHYS_PAGES {
+    if refcounts.is_null() || n_pages == 0 || n_pages > USER_PHYS_PAGES_MAX {
         return false;
     }
     REFC_PTR.store(refcounts as usize, Ordering::SeqCst);
@@ -105,7 +106,7 @@ pub unsafe extern "C" fn rust_page_refcounts_register(refcounts: *const u16, n_p
 fn refc_table_ok(refcounts: *const u16, n_pages: u32) -> bool {
     let p = REFC_PTR.load(Ordering::SeqCst);
     let l = REFC_LEN.load(Ordering::SeqCst);
-    p != 0 && p == refcounts as usize && l == n_pages && n_pages == USER_PHYS_PAGES
+    p != 0 && p == refcounts as usize && l != 0 && l == n_pages && n_pages <= USER_PHYS_PAGES_MAX
 }
 
 /// Increment the refcount of the page containing `phys`. Returns the new count,
@@ -193,10 +194,10 @@ mod memory_kani_proofs {
     fn refc_index_is_always_inside_the_table() {
         let phys: u32 = kani::any();
         let n_pages: u32 = kani::any();
-        kani::assume(n_pages <= USER_PHYS_PAGES);
+        kani::assume(n_pages <= USER_PHYS_PAGES_MAX);
         if let Some(i) = refc_index(phys, n_pages) {
             assert!(i < n_pages as usize);
-            assert!(i < USER_PHYS_PAGES as usize);
+            assert!(i < USER_PHYS_PAGES_MAX as usize);
         }
     }
 
@@ -209,7 +210,7 @@ mod memory_kani_proofs {
     fn refc_index_names_the_page_that_contains_the_address() {
         let phys: u32 = kani::any();
         let n_pages: u32 = kani::any();
-        kani::assume(n_pages <= USER_PHYS_PAGES);
+        kani::assume(n_pages <= USER_PHYS_PAGES_MAX);
         if let Some(i) = refc_index(phys, n_pages) {
             let page_base = USER_PHYS_BASE + (i as u32) * PAGE_SIZE;
             assert!(phys >= page_base);
@@ -225,7 +226,7 @@ mod memory_kani_proofs {
     fn every_page_in_the_pool_has_an_index() {
         let page: u32 = kani::any();
         let n_pages: u32 = kani::any();
-        kani::assume(n_pages <= USER_PHYS_PAGES);
+        kani::assume(n_pages <= USER_PHYS_PAGES_MAX);
         kani::assume(page < n_pages);
         let phys = USER_PHYS_BASE + page * PAGE_SIZE;
         assert_eq!(refc_index(phys, n_pages), Some(page as usize));
@@ -269,7 +270,9 @@ mod memory_kani_proofs {
 mod tests {
     use super::*;
 
-    const N: u32 = USER_PHYS_PAGES;
+    // A small table: registration takes any length up to USER_PHYS_PAGES_MAX,
+    // and the checks below are about the registered length, not the maximum.
+    const N: u32 = 4096;
     fn phys_of(page: u32) -> u32 {
         USER_PHYS_BASE + page * PAGE_SIZE
     }
@@ -280,15 +283,16 @@ mod tests {
     // is the only test in the crate that calls rust_page_refcounts_register.
     #[test]
     fn refcount_trust_boundary() {
-        let mut table = [0u16; USER_PHYS_PAGES as usize];
+        let mut table = [0u16; N as usize];
         let ptr = table.as_mut_ptr();
         let other = [0u16; 4];
 
         unsafe {
-            // Registration accepts only the one true fixed-size table.
+            // Registration refuses a null table and a length of 0 or past the
+            // most frames a 32-bit frame address can name.
             assert!(!rust_page_refcounts_register(core::ptr::null(), N));
-            assert!(!rust_page_refcounts_register(ptr, N - 1));
-            assert!(!rust_page_refcounts_register(ptr, N + 1));
+            assert!(!rust_page_refcounts_register(ptr, 0));
+            assert!(!rust_page_refcounts_register(ptr, USER_PHYS_PAGES_MAX + 1));
             assert!(rust_page_refcounts_register(ptr, N));
 
             // Zero-trust: inc/dec touch memory only when (ptr, len) is the exact

@@ -61,4 +61,10 @@
 #   least that holds a standard table (128 entries from LBA 2 end at byte
 #   17,408). Static because the kernel has no allocator and 20 KiB is too much
 #   for a kernel stack frame; it is read once per boot per disk.
-bss_bytes: 7733248
+# 2026-10-08: 6,950,912 bytes (-782,336), the 4 GiB pool: the page pool's three
+#   per-frame tables (free_page_stack 512 KiB, page_refcounts 256 KiB,
+#   page_on_loan 16 KiB, sized for a 512 MiB pool) left .bss for the top of RAM,
+#   sized at boot for the pool's span up to 4 GiB; three page directories for
+#   the PHYS_KVA window over [1, 4) GiB (12 KiB) came in, because they must exist
+#   before the allocator whose tables they map.
+bss_bytes: 6950912

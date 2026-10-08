@@ -41,14 +41,20 @@ extern uint8_t stack_top[];
  * self-test and SMP bringup paths need them too. */
 
 
-static uint32_t free_page_stack[USER_PHYS_PAGES];
+/* The pool's three per-frame tables, sized at boot for the frames the pool spans
+ * and placed at the top of RAM by pool_meta_place (the 4 GiB pool, 2026-10-08).
+ * They were .bss arrays sized for a 512 MiB pool; sized for 4 GiB they would be
+ * 6 MiB of image, in the 16 MiB the kernel and GRUB's modules share, so they
+ * moved to RAM the pool would otherwise hand out. Reached through PHYS_KVA. */
+static uint32_t *free_page_stack;
 static int free_page_count = 0;
-static uint16_t page_refcounts[USER_PHYS_PAGES];
+static uint16_t *page_refcounts;
 
-/* Runtime pool size in frames — how many of the USER_PHYS_PAGES-capacity arrays
- * are actually backed by RAM and handed out. Chosen from the E820 memory map at
- * boot (phys_set_pool_pages, before paging_init); defaults to the pre-E820
- * 64 MiB so a boot that cannot parse a map still runs exactly as before. */
+/* Frames the pool spans, from USER_PHYS_BASE to the top of RAM, and so the
+ * length of each per-frame table. Not every frame in it is RAM (phys_is_ram
+ * decides). Chosen from the E820 memory map at boot (phys_set_pool_pages, before
+ * paging_init); defaults to the pre-E820 64 MiB so a boot that cannot parse a
+ * map still runs exactly as before. */
 static uint32_t g_phys_pool_pages = USER_PHYS_DEFAULT_PAGES;
 
 uint32_t get_free_user_pages(void) { return (uint32_t)free_page_count; }
@@ -68,11 +74,11 @@ uint32_t get_free_user_pages(void) { return (uint32_t)free_page_count; }
  * pool never lends at all (the reserve window, a boot module's frames) and any
  * address outside the pool.
  *
- * 16 KiB of .bss, charged against the __bss_end budget on purpose, rather than
+ * One bit a frame, in the per-frame tables at the top of RAM, rather than
  * overloading page_refcounts with a sentinel: the Kani proofs in
  * rust/src/memory.rs reason about that table's values. Guarded by page_lock, as
  * the free stack is. */
-static uint32_t page_on_loan[USER_PHYS_PAGES / 32];
+static uint32_t *page_on_loan;
 
 /* The pool frame `phys` names, or -1 if it names none: below the pool, not
  * page-aligned, or past the frames this boot's pool covers. */
@@ -91,8 +97,139 @@ static uint32_t g_page_free_refusals;
 
 void phys_set_pool_pages(uint32_t pages) {
     if (pages < PHYS_POOL_MIN_PAGES) pages = PHYS_POOL_MIN_PAGES;
-    if (pages > USER_PHYS_PAGES)     pages = USER_PHYS_PAGES;
+    if (pages > USER_PHYS_PAGES_MAX) pages = USER_PHYS_PAGES_MAX;
     g_phys_pool_pages = pages;
+}
+
+/* ---- The RAM the pool may use (2026-10-08) --------------------------------
+ *
+ * Every region the firmware's memory map calls available, clipped to
+ * [USER_PHYS_BASE, PHYS_POOL_CEIL). Until 2026-10-08 the pool was the ONE region
+ * containing USER_PHYS_BASE, capped at 1 GiB, which on the IdeaPad (whose low
+ * map is fragmented) left about 420 MB of 4 GiB in use.
+ *
+ * The pool is still one index space, [USER_PHYS_BASE, top), so the per-frame
+ * tables stay arrays; what is not RAM inside it is simply never pushed onto the
+ * free stack, so it can never be handed out, and the on-loan check refuses a
+ * free of it (S102). Fail closed by construction: a frame is usable only if this
+ * table says so.
+ *
+ * ABOVE THE FLAT WINDOW (1 GiB), only whole 2 MiB chunks. phys_window_extend maps
+ * that range with 2 MiB pages and maps ONLY these chunks: a large page over a
+ * region's ragged edge would also map whatever the firmware put beside it, and
+ * mapping device memory (a framebuffer, the PCI hole) write-back through this
+ * window, beside the kernel's own write-combining mapping of it, is a memory-type
+ * alias the CPU does not define the result of. A region edge costs under 2 MiB. */
+#define RAM_REGIONS_MAX 32
+#define CHUNK_2M        0x200000ULL
+struct ram_region { uint64_t base, end; };
+static struct ram_region g_ram[RAM_REGIONS_MAX];
+static uint32_t g_ram_n;
+static uint32_t g_ram_dropped;   /* regions past the table: RAM not used, said at boot */
+
+static void ram_add(uint64_t base, uint64_t end) {
+    if (base >= end) return;
+    if (g_ram_n >= RAM_REGIONS_MAX) { g_ram_dropped++; return; }
+    g_ram[g_ram_n].base = base;
+    g_ram[g_ram_n].end  = end;
+    g_ram_n++;
+}
+
+void phys_note_ram(uint64_t base, uint64_t len) {
+    uint64_t end = base + len;
+    if (end < base) end = ~0ULL;                          /* a length that wraps */
+    if (base < (uint64_t)USER_PHYS_BASE) base = USER_PHYS_BASE;
+    if (end > PHYS_POOL_CEIL) end = PHYS_POOL_CEIL;
+    base = (base + PAGE_SIZE - 1) & ~((uint64_t)PAGE_SIZE - 1);
+    end &= ~((uint64_t)PAGE_SIZE - 1);
+    if (base >= end) return;
+    if (base < PHYS_KVA_FLAT_CEIL) {
+        ram_add(base, end < PHYS_KVA_FLAT_CEIL ? end : PHYS_KVA_FLAT_CEIL);
+        base = PHYS_KVA_FLAT_CEIL;
+    }
+    if (end > PHYS_KVA_FLAT_CEIL) {
+        base = (base + CHUNK_2M - 1) & ~(CHUNK_2M - 1);
+        end &= ~(CHUNK_2M - 1);
+        ram_add(base, end);
+    }
+}
+
+/* Is [lo, hi) all inside one RAM region? */
+static int ram_covers(uint64_t lo, uint64_t hi) {
+    for (uint32_t r = 0; r < g_ram_n; r++)
+        if (lo >= g_ram[r].base && hi <= g_ram[r].end) return 1;
+    return 0;
+}
+
+static int phys_is_ram(uint64_t phys) {
+#ifdef POOL_RAM_UNCHECKED
+    /* CONTROL ARM, never ship: every frame of the span is believed to be RAM,
+     * holes included, as the single-region pool never had to ask. */
+    (void)phys;
+    return 1;
+#else
+    return ram_covers(phys, phys + PAGE_SIZE);
+#endif
+}
+
+/* How many frames the pool spans: from USER_PHYS_BASE to the top of the highest
+ * RAM region. 0 when the map named none, and the caller keeps its default. */
+uint32_t phys_pool_span_pages(void) {
+    uint64_t top = 0;
+    for (uint32_t r = 0; r < g_ram_n; r++) if (g_ram[r].end > top) top = g_ram[r].end;
+#ifdef POOL_FLAT_CEILING
+    /* CONTROL ARM, never ship: the pool stops at 1 GiB, as before 2026-10-08. */
+    if (top > PHYS_KVA_FLAT_CEIL) top = PHYS_KVA_FLAT_CEIL;
+#endif
+    if (top <= (uint64_t)USER_PHYS_BASE) return 0;
+    return (uint32_t)((top - (uint64_t)USER_PHYS_BASE) / PAGE_SIZE);
+}
+
+/* RAM in the pool's span, in frames, and the regions the table had no room for:
+ * for the boot line that says what the machine has and what Horus uses. */
+uint64_t phys_ram_frames(void) {
+    uint64_t f = 0;
+    for (uint32_t r = 0; r < g_ram_n; r++) f += (g_ram[r].end - g_ram[r].base) / PAGE_SIZE;
+    return f;
+}
+uint32_t phys_ram_regions(void) { return g_ram_n; }
+uint32_t phys_ram_regions_dropped(void) { return g_ram_dropped; }
+
+/* The lowest address at or above `base` where [addr, addr + len) is all RAM, or
+ * `base` itself when no region has room (the caller's own check then halts). */
+static uint64_t ram_next_fit(uint64_t base, uint64_t len) {
+    uint64_t best = ~0ULL;
+    for (uint32_t r = 0; r < g_ram_n; r++) {
+        uint64_t lo = g_ram[r].base > base ? g_ram[r].base : base;
+        if (lo + len <= g_ram[r].end && lo < best) best = lo;
+    }
+    return best == ~0ULL ? base : best;
+}
+
+/* THE WINDOW OVER RAM ABOVE 1 GiB. PHYS_KVA covers [0, 1 GiB) from boot, through
+ * high_pdpt[2]; these three directories cover [1, 4) GiB at high_pdpt[3..5], with
+ * a 2 MiB page for each chunk of RAM and nothing else (see phys_note_ram). They
+ * are .bss rather than pool frames because they must exist before the allocator
+ * does: its own tables live at the top of RAM, above 1 GiB on any machine with
+ * more than that, and are written as soon as it starts. The PML4 entry they hang
+ * from is shared by every address space, so there is nothing to copy per task. */
+static uint64_t g_phys_hi_pd[3][512] __attribute__((aligned(4096)));
+
+static void phys_window_extend(void) {
+    extern uint64_t high_pdpt[512];
+    for (int k = 0; k < 3; k++) {
+        for (int i = 0; i < 512; i++) {
+            uint64_t chunk = PHYS_KVA_FLAT_CEIL + ((uint64_t)k << 30) + ((uint64_t)i << 21);
+            int ram = ram_covers(chunk, chunk + CHUNK_2M);
+#ifdef PHYS_WINDOW_FLAT_ONLY
+            /* CONTROL ARM, never ship: the window stays at 1 GiB, so the first
+             * frame the pool hands out above it is not mapped. */
+            ram = 0;
+#endif
+            g_phys_hi_pd[k][i] = ram ? (chunk | PAGE_PRESENT | PAGE_WRITE | PAGE_PS | PAGE_NX) : 0;
+        }
+        high_pdpt[3 + k] = virt_to_phys(&g_phys_hi_pd[k][0]) | PAGE_PRESENT | PAGE_WRITE;
+    }
 }
 
 /* Shared zero page. One immortal, pre-zeroed frame that every demand-zero READ
@@ -155,7 +292,11 @@ uint64_t pool_reserve_base(void) {
     const uint64_t len = (uint64_t)POOL_RESERVE_PAGES * PAGE_SIZE;
     const uint32_t n   = boot_module_count();
     uint64_t base      = (uint64_t)USER_PHYS_BASE;
-    for (uint32_t pass = 0; pass <= n; pass++) {
+    /* AND WHERE THERE IS RAM: the reserves are one contiguous window, so with the
+     * pool spanning every region it must also lie inside one (2026-10-08). A
+     * hole moves `base` up to the next region with room, as a module does, and
+     * `base` still only rises, so the bound grows by one pass per region. */
+    for (uint32_t pass = 0; pass <= n + g_ram_n + 1; pass++) {
         int moved = 0;
         for (uint32_t i = 0; i < n; i++) {
             const struct boot_module *m = boot_module_get(i);
@@ -164,26 +305,56 @@ uint64_t pool_reserve_base(void) {
             uint64_t mend   = (m->end + PAGE_SIZE - 1) & ~((uint64_t)PAGE_SIZE - 1);
             if (mstart < base + len && mend > base) { base = mend; moved = 1; }
         }
+        uint64_t fit = ram_next_fit(base, len);
+        if (fit != base) { base = fit; moved = 1; }
         if (!moved) break;
     }
     return base;
 #endif
 }
 
+/* WHERE THE PER-FRAME TABLES GO: the highest stretch of RAM that holds them and
+ * touches no boot module and not the base reserves. A module or the reserves
+ * inside a region move the top down past them; a region too small is passed
+ * over for the next. 0 when nothing fits, and the caller halts. */
+static uint64_t g_meta_base;
+static uint64_t g_meta_bytes;
+
+static uint64_t pool_meta_place(uint64_t bytes, uint64_t res_lo, uint64_t res_hi) {
+    uint64_t best = 0;
+    const uint32_t n = boot_module_count();
+    for (uint32_t r = 0; r < g_ram_n; r++) {
+        uint64_t top = g_ram[r].end;
+        while (top >= g_ram[r].base + bytes) {
+            uint64_t lo = top - bytes, clash = 0;
+            if (lo < res_hi && top > res_lo) clash = res_lo;
+            for (uint32_t i = 0; i < n && !clash; i++) {
+                const struct boot_module *m = boot_module_get(i);
+                uint64_t ms = m->start & ~((uint64_t)PAGE_SIZE - 1);
+                uint64_t me = (m->end + PAGE_SIZE - 1) & ~((uint64_t)PAGE_SIZE - 1);
+                if (lo < me && top > ms) clash = ms;
+            }
+            if (!clash) { if (lo > best) best = lo; break; }
+            top = clash;                      /* below what it hit, and try again */
+        }
+    }
+    return best;
+}
+
 static void init_user_page_allocator(void) {
 
     free_page_count = 0;
-    /* Zero the whole refcount array: the Rust trust boundary is registered over
-     * all USER_PHYS_PAGES slots, so every slot must be initialised even though
-     * only the first g_phys_pool_pages are ever handed out. */
-    for (int i = 0; i < USER_PHYS_PAGES; i++) {
-        page_refcounts[i] = 0;
-    }
+    /* A boot with no memory map still has the default pool, as RAM: without a
+     * region nothing would be pushed at all. */
+    if (g_ram_n == 0)
+        phys_note_ram(USER_PHYS_BASE, (uint64_t)g_phys_pool_pages * PAGE_SIZE);
+    const uint32_t N = g_phys_pool_pages;
+
     /* The three base reserves, contiguous, starting where pool_reserve_base says:
-     * USER_PHYS_BASE when no module reaches past it, otherwise above the modules
-     * that do. Each is held back from the free list and never handed out, and is
-     * reached through the PHYS_KVA window (mapped rw+NX for the whole pool, from
-     * boot). They are pool RAM rather than .bss so that none of them costs image
+     * USER_PHYS_BASE when no module reaches past it and it is RAM, otherwise
+     * above the modules and holes in the way. Each is held back from the free
+     * list and never handed out, and is reached through the PHYS_KVA window.
+     * They are pool RAM rather than .bss so that none of them costs image
      * budget:
      *   - loader_staging, the staged program image (LOADER_STAGING_BYTES);
      *   - g_vdisk_backing, the RAM vdisk (VDISK_BYTES), which a diskless boot
@@ -193,13 +364,13 @@ static void init_user_page_allocator(void) {
     const uint64_t reserve_base = pool_reserve_base();
     const uint64_t reserve_idx  = (reserve_base - (uint64_t)USER_PHYS_BASE) / PAGE_SIZE;
     const uint64_t reserve_end  = reserve_idx + (uint64_t)POOL_RESERVE_PAGES;
-    /* The reserves must end inside the pool, which also keeps them inside the
-     * refcount table and below PHYS_POOL_CEIL (phys_set_pool_pages clamps the
-     * pool to both), and must leave at least one frame to hand out. With the
-     * reserves at USER_PHYS_BASE the PHYS_POOL_MIN_PAGES floor guaranteed this;
-     * with them above the modules it depends on how much GRUB loaded, so it is
-     * checked here, and a machine where they do not fit does not run. */
-    if (reserve_end >= (uint64_t)g_phys_pool_pages) {
+    const uint64_t reserve_top  = reserve_base + (uint64_t)POOL_RESERVE_PAGES * PAGE_SIZE;
+    /* The reserves must end inside the pool and lie in RAM, and must leave at
+     * least one frame to hand out. With the reserves at USER_PHYS_BASE the
+     * PHYS_POOL_MIN_PAGES floor guaranteed this; with them above the modules or
+     * past a hole it depends on the machine, so it is checked here, and a
+     * machine where they do not fit does not run. */
+    if (reserve_end >= (uint64_t)N || !ram_covers(reserve_base, reserve_top)) {
         print("mem: HALT the page pool's base reserves do not fit above the boot modules; refusing to boot\n");
         for (;;) { __asm__ volatile("cli; hlt"); }
     }
@@ -207,27 +378,58 @@ static void init_user_page_allocator(void) {
     g_vdisk_backing = (uint8_t *)PHYS_KVA(reserve_base + LOADER_STAGING_BYTES);
     g_untyped_arena = (uint8_t *)PHYS_KVA(reserve_base + LOADER_STAGING_BYTES + VDISK_BYTES);
 
-    /* Push every frame the pool covers (E820-sized) except the reserve window
-     * and the frames a boot module occupies. Frame i maps to USER_PHYS_BASE +
-     * i*PAGE_SIZE; the cap keeps the top below PHYS_POOL_CEIL. A module frame is
-     * skipped because GRUB dropped a program image there, and handing it out as
-     * an anonymous page would corrupt the image before init copies it into the
-     * store. Module frames stay reserved for the life of the boot (a few MiB of a
-     * ~495 MiB pool); not reclaiming them post-provision keeps the allocator
-     * branch-free. Frames below the reserve window that no module touches are
-     * ordinary pool now, which is where the room the reserves vacated goes. */
-    for (int i = (int)g_phys_pool_pages - 1; i >= 0; i--) {
+    /* The per-frame tables: the free stack (4 bytes a frame), the refcounts (2)
+     * and the on-loan bits, in one page-rounded block. */
+    const uint64_t loan_words = ((uint64_t)N + 31) / 32;
+    g_meta_bytes = ((uint64_t)N * 4 + (uint64_t)N * 2 + loan_words * 4 + PAGE_SIZE - 1)
+                   & ~((uint64_t)PAGE_SIZE - 1);
+    g_meta_base = pool_meta_place(g_meta_bytes, reserve_base, reserve_top);
+    if (g_meta_base == 0) {
+        print("mem: HALT no RAM holds the page pool's tables clear of the modules and reserves; refusing to boot\n");
+        for (;;) { __asm__ volatile("cli; hlt"); }
+    }
+    uint8_t *meta   = (uint8_t *)PHYS_KVA(g_meta_base);
+    free_page_stack = (uint32_t *)meta;
+    page_refcounts  = (uint16_t *)(meta + (uint64_t)N * 4);
+    page_on_loan    = (uint32_t *)(meta + (uint64_t)N * 6);
+    /* Every refcount and loan bit starts clear: the Rust trust boundary is
+     * registered over all N slots, so every slot must be initialised even
+     * where the frame is a hole and is never handed out. */
+    for (uint32_t i = 0; i < N; i++) page_refcounts[i] = 0;
+    for (uint64_t i = 0; i < loan_words; i++) page_on_loan[i] = 0;
+
+    /* Push every frame of the span that is RAM, except the reserve window, the
+     * tables themselves and the frames a boot module occupies. Frame i maps to
+     * USER_PHYS_BASE + i*PAGE_SIZE. A module frame is skipped because GRUB
+     * dropped a program image there, and handing it out as an anonymous page
+     * would corrupt the image before init copies it into the store. Module
+     * frames stay reserved for the life of the boot. Pushed from the top, so the
+     * lowest frames are handed out first. */
+    for (int i = (int)N - 1; i >= 0; i--) {
         if ((uint64_t)i >= reserve_idx && (uint64_t)i < reserve_end) continue;
-        uint32_t phys = USER_PHYS_BASE + ((uint32_t)i * PAGE_SIZE);
-        if (phys_in_boot_module(phys)) continue;
-        free_page_stack[free_page_count++] = phys;
+        uint64_t phys = (uint64_t)USER_PHYS_BASE + (uint64_t)i * PAGE_SIZE;
+        if (phys >= g_meta_base && phys < g_meta_base + g_meta_bytes) continue;
+        if (!phys_is_ram(phys)) continue;
+        if (phys_in_boot_module((uint32_t)phys)) continue;
+        free_page_stack[free_page_count++] = (uint32_t)phys;
     }
     /* Register the one true refcount table with the Rust trust boundary so any
      * later inc/dec passing a wrong pointer/size is refused rather than trusted. */
-    if (!rust_page_refcounts_register(page_refcounts, (uint32_t)USER_PHYS_PAGES)) {
+    if (!rust_page_refcounts_register(page_refcounts, N)) {
         for (;;) { __asm__ volatile("cli; hlt"); }  /* misconfiguration: refuse to run */
     }
 }
+
+#ifdef POOL_SPAN_SELFTEST
+/* For pool_span_selftest (selftest.c), which checks what this file decides:
+ * the free stack as it stands, the RAM test without the allocator's own
+ * predicate, and where the per-frame tables went. Instrument builds only. */
+int pool_selftest_view(const uint32_t **stack, uint64_t *meta_lo, uint64_t *meta_hi) {
+    *stack = free_page_stack; *meta_lo = g_meta_base; *meta_hi = g_meta_base + g_meta_bytes;
+    return free_page_count;
+}
+int pool_selftest_is_ram(uint64_t frame) { return ram_covers(frame, frame + PAGE_SIZE); }
+#endif
 
 uint32_t alloc_user_physical_page(void) {
     
@@ -272,21 +474,24 @@ void free_user_physical_page(uint64_t phys_addr) {
     if (idx >= 0) {
         page_refcounts[idx] = 0;
     }
-    if (free_page_count < USER_PHYS_PAGES) {
+    if (free_page_count < (int)g_phys_pool_pages) {
         free_page_stack[free_page_count++] = phys_addr;
     }
 }
 
 void page_ref_inc(uint32_t phys_addr) {
+    /* Below the pool, (phys - base) would wrap: refused before the division. */
+    if (phys_addr < USER_PHYS_BASE) return;
     int idx = (phys_addr - USER_PHYS_BASE) / PAGE_SIZE;
-    if (idx >= 0 && idx < USER_PHYS_PAGES) {
+    if (idx >= 0 && idx < (int)g_phys_pool_pages) {
         page_refcounts[idx]++;
     }
 }
 
 int page_ref_dec(uint32_t phys_addr) {
+    if (phys_addr < USER_PHYS_BASE) return 0;
     int idx = (phys_addr - USER_PHYS_BASE) / PAGE_SIZE;
-    if (idx >= 0 && idx < USER_PHYS_PAGES && page_refcounts[idx] > 0) {
+    if (idx >= 0 && idx < (int)g_phys_pool_pages && page_refcounts[idx] > 0) {
         page_refcounts[idx]--;
         return page_refcounts[idx];
     }
@@ -319,7 +524,7 @@ int page_ref_dec(uint32_t phys_addr) {
  * user_map_frame_page / user_unmap_frame_page where the PTE is written. */
 void frame_pin_refcount(uint64_t phys_addr) {
     int idx = (int)((phys_addr - USER_PHYS_BASE) / PAGE_SIZE);
-    if (idx >= 0 && idx < USER_PHYS_PAGES && page_refcounts[idx] == 0)
+    if (idx >= 0 && idx < (int)g_phys_pool_pages && page_refcounts[idx] == 0)
         page_refcounts[idx] = 1;
 }
 
@@ -328,7 +533,7 @@ void frame_pin_refcount(uint64_t phys_addr) {
  * at the pin. Unused today; the reset it exists for is not written yet. */
 void frame_unpin_refcount(uint64_t phys_addr) {
     int idx = (int)((phys_addr - USER_PHYS_BASE) / PAGE_SIZE);
-    if (idx >= 0 && idx < USER_PHYS_PAGES && page_refcounts[idx] == 1)
+    if (idx >= 0 && idx < (int)g_phys_pool_pages && page_refcounts[idx] == 1)
         page_refcounts[idx] = 0;
 }
 
@@ -338,8 +543,9 @@ void frame_unpin_refcount(uint64_t phys_addr) {
  * an out-of-range address, so an unknown page reads as unmapped, and the GC's
  * refusal is driven by a positive answer rather than by the absence of one. */
 uint32_t frame_map_refcount(uint64_t phys_addr) {
-    int idx = (int)((phys_addr - USER_PHYS_BASE) / PAGE_SIZE);
-    if (idx < 0 || idx >= USER_PHYS_PAGES) return 0;
+    if (phys_addr < USER_PHYS_BASE) return 0;
+    uint64_t idx = (phys_addr - USER_PHYS_BASE) / PAGE_SIZE;
+    if (idx >= g_phys_pool_pages) return 0;
     return page_refcounts[idx];
 }
 
@@ -767,6 +973,7 @@ static void kernel_remap_init(void) {
 }
 
 void paging_init(void) {
+    phys_window_extend();       /* before the allocator: its tables are above 1 GiB */
     init_user_page_allocator();
     /* Reserve and zero the shared zero page up front, so the very first
      * demand-zero read fault can alias it. */
@@ -1346,7 +1553,7 @@ uint64_t kern_fixed_stack_guard_vaddr(int i) { return fixed_stack_guard_addr(i);
  * reference this address space held was the last one. */
 static void user_leaf_release(uint64_t phys) {
     int32_t refs = rust_page_ref_dec((uint32_t)phys, page_refcounts,
-                                     (uint32_t)USER_PHYS_PAGES);
+                                     g_phys_pool_pages);
     if (refs == 0) free_user_physical_page(phys);
 }
 
@@ -2163,7 +2370,7 @@ int clone_user_aspace(uint32_t child, uint64_t parent_cr3) {
                     if (user_map_page(cp4, va, phys, nf) != 0) { failed = 1; break; }
                     pt[i1] = phys | nf;
                     (void)rust_page_ref_inc((uint32_t)phys, page_refcounts,
-                                            (uint32_t)USER_PHYS_PAGES);
+                                            g_phys_pool_pages);
                 }
             }
         }
@@ -2326,7 +2533,7 @@ static int cow_break_pte(uint64_t *pte_slot, uint64_t fault_addr) {
 #endif
 
     int refs = rust_page_ref_dec((uint32_t)old_phys, page_refcounts,
-                                 (uint32_t)USER_PHYS_PAGES);
+                                 g_phys_pool_pages);
 
     /* Upgraded PTE flags: present + writable, COW cleared. `pte & 0xFFF` keeps the
      * low flags but drops NX (bit 63), so re-derive NX from the faulting address. */
@@ -2339,7 +2546,7 @@ static int cow_break_pte(uint64_t *pte_slot, uint64_t fault_addr) {
          * at 1) and upgrade the PTE in place — same frame, now writable. */
         if (refs >= 0) {
             (void)rust_page_ref_inc((uint32_t)old_phys, page_refcounts,
-                                    (uint32_t)USER_PHYS_PAGES);
+                                    g_phys_pool_pages);
         }
         *pte_slot = old_phys | nf;
         return 0;
@@ -2349,7 +2556,7 @@ static int cow_break_pte(uint64_t *pte_slot, uint64_t fault_addr) {
     if (new_phys == 0) {
         if (refs >= 0) {
             (void)rust_page_ref_inc((uint32_t)old_phys, page_refcounts,
-                                    (uint32_t)USER_PHYS_PAGES);
+                                    g_phys_pool_pages);
         }
         return -3;
     }
@@ -2605,7 +2812,7 @@ void nzcow_selftest(void) {
 
     /* Two aliases -> refcount 2, read-only + COW (exactly what the pager installs
      * for a shared COW page). */
-    (void)rust_page_ref_inc((uint32_t)shared, page_refcounts, (uint32_t)USER_PHYS_PAGES);
+    (void)rust_page_ref_inc((uint32_t)shared, page_refcounts, g_phys_pool_pages);
     uint64_t cowf = PAGE_PRESENT | PAGE_USER | PAGE_COW | PAGE_NX;
     uint64_t pte1 = shared | cowf;
     uint64_t pte2 = shared | cowf;
@@ -2663,7 +2870,7 @@ void nzcow_selftest(void) {
         return;
     }
     uint64_t fphys = (uint64_t)fmem - PHYS_KVA_BASE;
-    (void)rust_page_ref_inc((uint32_t)fphys, page_refcounts, (uint32_t)USER_PHYS_PAGES);
+    (void)rust_page_ref_inc((uint32_t)fphys, page_refcounts, g_phys_pool_pages);
 
     uint64_t fpte   = fphys | cowf;
     uint64_t before = fpte;

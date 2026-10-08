@@ -137,12 +137,12 @@ static void assert_higher_half(void) {
 /* ---- Multiboot2 memory map -> physical pool size --------------------------
  * GRUB passes the multiboot2 magic in eax and a pointer to the boot-information
  * structure in ebx; _start saves both (saved_mb_magic / saved_mb_info). Walk the
- * structure's tags for the memory-map tag (type 6), find the largest available
- * (type 1) region that covers USER_PHYS_BASE, and return how many PAGE_SIZE
- * frames the pool can take from [USER_PHYS_BASE, region_top), clamped to the
- * PHYS_KVA window. Returns 0 if the map cannot be trusted (not multiboot2, no
- * pointer, no usable region), so the caller keeps the conservative default
- * rather than assuming RAM that may not exist. The info block is low physical
+ * structure's tags for the memory-map tag (type 6), hand every available
+ * (type 1) region to phys_note_ram, and return how many PAGE_SIZE frames the
+ * pool spans from USER_PHYS_BASE to the top of the highest, below 4 GiB.
+ * Returns 0 if the map cannot be trusted (not multiboot2, no pointer, no usable
+ * region), so the caller keeps the conservative default rather than assuming
+ * RAM that may not exist. The info block is low physical
  * RAM, read through PHYS_KVA — valid from boot, before paging_init runs. */
 #define MB2_BOOT_MAGIC     0x36d76289u
 #define MB2_TAG_END        0u
@@ -401,6 +401,13 @@ static unsigned line_append(char *line, unsigned n, unsigned cap, const char *s)
     return n;
 }
 
+static unsigned line_append_dec(char *line, unsigned n, unsigned cap, uint64_t v) {
+    char d[20]; int k = 0;
+    do { d[k++] = (char)('0' + v % 10); v /= 10; } while (v && k < 20);
+    while (k > 0 && n < cap - 1) line[n++] = d[--k];
+    return n;
+}
+
 static unsigned line_append_hex64(char *line, unsigned n, unsigned cap, uint64_t v) {
     n = line_append(line, n, cap, "0x");
     for (int shift = 60; shift >= 0 && n < cap - 1; shift -= 4)
@@ -607,7 +614,7 @@ static void mb_record_module(const uint8_t *info, uint32_t off, uint32_t tag_siz
     if (start < 0x100000ULL) return;
 #endif
     if (start < 0x100000ULL && end > 0xA0000ULL) return;   /* the legacy hole */
-    if (end > PHYS_POOL_CEIL) return;                /* unreachable through PHYS_KVA */
+    if (end > PHYS_KVA_FLAT_CEIL) return;            /* outside the window mapped whatever is there */
 
     struct boot_module *m = &g_boot_modules[g_boot_module_count];
     m->start = start;
@@ -718,7 +725,6 @@ static uint32_t mb_scan_boot_info(void) {
     uint32_t total = *(const uint32_t *)info;
     if (total < 8 || total > (1u << 20)) return 0;   /* sanity: <= 1 MiB of tags */
 
-    uint64_t region_top = 0;
     uint32_t off = 8;   /* skip total_size + reserved */
     while ((uint64_t)off + sizeof(struct mb2_tag) <= total) {
         const struct mb2_tag *tag = (const struct mb2_tag *)(info + off);
@@ -738,11 +744,20 @@ static uint32_t mb_scan_boot_info(void) {
                      e += entry_size) {
                     const struct mb2_mmap_entry *m = (const struct mb2_mmap_entry *)(info + e);
                     if (m->type != MB2_MEM_AVAILABLE) continue;
-                    uint64_t end = m->base + m->len;
-                    /* The region spanning USER_PHYS_BASE (16 MiB) is where the pool lives. */
-                    if (m->base <= (uint64_t)USER_PHYS_BASE && end > (uint64_t)USER_PHYS_BASE
-                        && end > region_top)
-                        region_top = end;
+#ifdef E820_HOLE_PROBE
+                    /* SELFTEST, never ship: firmware that fragments the map, as
+                     * the IdeaPad's does. [512, 520) MiB is reported reserved,
+                     * so the pool spans a hole smoke-pool-span can check. */
+                    if (m->base < 0x20000000ULL && m->base + m->len > 0x20800000ULL) {
+                        phys_note_ram(m->base, 0x20000000ULL - m->base);
+                        phys_note_ram(0x20800000ULL, m->base + m->len - 0x20800000ULL);
+                        continue;
+                    }
+#endif
+                    /* Every available region (2026-10-08). Until then only the
+                     * one spanning USER_PHYS_BASE, which on fragmented firmware
+                     * was a fraction of the machine. */
+                    phys_note_ram(m->base, m->len);
                 }
             }
         }
@@ -783,9 +798,7 @@ static uint32_t mb_scan_boot_info(void) {
     g_esp_pinned = 0;
     if (g_boot_flags & BOOT_FLAG_INSTALL) g_esp_pinned = cmdline_esp_pin(g_esp_pin);
 
-    if (region_top <= (uint64_t)USER_PHYS_BASE) return 0;
-    if (region_top > PHYS_POOL_CEIL) region_top = PHYS_POOL_CEIL;   /* PHYS_KVA window */
-    return (uint32_t)((region_top - (uint64_t)USER_PHYS_BASE) / PAGE_SIZE);
+    return phys_pool_span_pages();
 }
 
 void kernel_main(uint32_t mb_info) {
@@ -813,13 +826,30 @@ void kernel_main(uint32_t mb_info) {
      * 64 MiB default (unchanged behaviour) rather than assume RAM. */
     uint32_t e820_pages = mb_scan_boot_info();
     if (e820_pages) phys_set_pool_pages(e820_pages);
+    else phys_note_ram(USER_PHYS_BASE, (uint64_t)USER_PHYS_DEFAULT_PAGES * PAGE_SIZE);
     {
-        uint32_t used = e820_pages ? e820_pages : USER_PHYS_DEFAULT_PAGES;
-        print("mem: physical pool ");
-        print_decimal(used / 256);        /* frames * 4 KiB / 1 MiB */
-        print(" MiB (");
-        print_decimal(used);
-        print(e820_pages ? " frames, from E820)\n" : " frames, default: no E820)\n");
+        /* RAM the pool may use, then the span it lies in: they differ by the
+         * holes the firmware's map leaves, which are never handed out. */
+        /* ONE WRITE: smoke-pool-span reads the numbers off this line. */
+        char line[160];
+        const unsigned cap = sizeof(line) - 1;
+        unsigned k = 0;
+        k = line_append(line, k, cap, "mem: physical pool ");
+        k = line_append_dec(line, k, cap, phys_ram_frames() / 256);   /* frames * 4 KiB / 1 MiB */
+        k = line_append(line, k, cap, " MiB of RAM in ");
+        k = line_append_dec(line, k, cap, phys_ram_regions());
+        k = line_append(line, k, cap, e820_pages ? " region(s) from E820, spanning "
+                                                 : " region, default: no E820, spanning ");
+        k = line_append_dec(line, k, cap, (e820_pages ? e820_pages : USER_PHYS_DEFAULT_PAGES) / 256);
+        k = line_append(line, k, cap, " MiB");
+        if (phys_ram_regions_dropped()) {
+            k = line_append(line, k, cap, "; ");
+            k = line_append_dec(line, k, cap, phys_ram_regions_dropped());
+            k = line_append(line, k, cap, " more region(s) past the table are not used");
+        }
+        line[k++] = '\n';
+        line[k]   = 0;
+        print(line);
     }
     if (g_boot_module_count) {
         print("boot: ");
@@ -892,6 +922,9 @@ void kernel_main(uint32_t mb_info) {
     boot_module_verify_all();
 
     paging_init();
+#ifdef POOL_SPAN_SELFTEST
+    { extern void pool_span_selftest(void); pool_span_selftest(); }
+#endif
     /* The framebuffer console, once paging_init has built the window it draws
      * through. As early as possible after that: everything printed from here on
      * is visible on a machine whose only display is a pixel framebuffer, and

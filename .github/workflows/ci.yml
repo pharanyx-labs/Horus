@@ -1587,6 +1587,16 @@ jobs:
         run: make smoke-boot-module-image-control
       - name: Control arm, without the placement check a module on the AP trampoline page boots on
         run: make smoke-boot-module-tramp-control
+      # S117. The page pool spans every RAM region up to 4 GiB; same job, as the
+      # pool's base reserves are the subject of the steps above.
+      - name: The page pool spans all the RAM of a 3 GiB guest, holes excluded
+        run: make smoke-pool-span
+      - name: Control arm, the kernel's window stops at 1 GiB
+        run: make smoke-pool-span-window-control
+      - name: Control arm, the pool stops at 1 GiB
+        run: make smoke-pool-span-ceiling-control
+      - name: Control arm, the allocator takes a hole in the memory map as RAM
+        run: make smoke-pool-span-hole-control
 
   smoke-tpm:
     name: Measured boot (TPM PCRs match the reproducible manifest)

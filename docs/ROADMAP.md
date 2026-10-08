@@ -27,12 +27,13 @@ requests. What is still wrong, as opposed to still unbuilt, is in
 In order. Each step is its own set of pull requests with its own gates and control arms.
 
 1. **Encrypted swap** in the reserved partition, next (the maintainer, 2026-10-08), specified in
-   [`design/swap.md`](design/swap.md). Its first step, the sealed slot store, is built (S118,
-   #510); eviction and fault-in are next. A key made fresh at every boot from the CSPRNG, held only
-   in kernel memory and never written or paged out. Every page sealed with the kernel's AEAD under
-   a fresh nonce, with the nonce, the tag and the slot map kept in RAM, so nothing on the partition
-   is ever plaintext, not even a header, and a page modified, replayed or unreadable kills the task
-   that owns it rather than handing it wrong bytes. Only a task's private pages are swapped, never
+   [`design/swap.md`](design/swap.md). The sealed slot store (S118, #510) and paging out the
+   faulting task's own pages (S119, #512) are built; taking an idle task's pages, with a TLB
+   shootdown, is next. A key made fresh at every boot from the CSPRNG, held only in kernel memory
+   and never written or paged out. Every page sealed with the kernel's AEAD under a fresh nonce,
+   with the nonce, the tag and the slot map kept in RAM, so nothing on the partition is ever
+   plaintext, not even a header, and a page modified, replayed or unreadable kills the task that
+   owns it rather than handing it wrong bytes. Only a task's private pages are swapped, never
    kernel memory, page tables, shared frames or the boot servers. The pager is in the kernel, with
    a simple clock policy. Compressed memory (zram or zswap) is not planned: if it comes, it is a
    cache in front of this swap that compresses one task's pages only (memory compression is a
@@ -143,7 +144,7 @@ start it.
 ### 2.7a ⬜ Evict the in-kernel services [F-2.7a]
 
 `.github/ring0-classification.yml` (S87) measures the ring-0 `service` class at about 6,000 code
-lines beside a 11,108-line core: `storage.c` (the encrypted store and the on-disk filesystem),
+lines beside a 11,274-line core: `storage.c` (the encrypted store and the on-disk filesystem),
 `kusers.c` (accounts and password hashing), the loader and spawn path, `crypto.c` and
 `syscall_fs.c`. Neither big move is mechanical. `storage.c` holds the volume key, so moving it
 means deciding what a ring-3 storage server may hold; 2.10's phase 2 is that decision for the
@@ -284,7 +285,7 @@ from a tag and compare. They wait on 3.1, since an ISO that does not rebuild to 
 same bytes cannot be verified by rebuilding.
 
 **4.12.** The exemption list in `.github/invariants.yml` is currently
-**empty**: all 120 properties name a witness that resolves.
+**empty**: all 121 properties name a witness that resolves.
 
 ---
 
@@ -306,5 +307,5 @@ same bytes cannot be verified by rebuilding.
 | ✅ | Measured boot, the kernel pinned in the boot image, and a PCR-sealed volume key |
 | ✅ | An IOMMU confining device DMA, and device capabilities that name one device each |
 | ◧ | Reproducible `kernel.elf` (not yet the ISO), an SBOM, CodeQL, Dependabot, signed commits, a protected `main` |
-| ✅ | 456 `smoke-*` targets, nearly all QEMU integration tests, and 244 of them control arms that must reproduce a defect |
+| ✅ | 458 `smoke-*` targets, nearly all QEMU integration tests, and 245 of them control arms that must reproduce a defect |
 | ✅ | Bounded Kani proofs, Miri over the Rust core, and fuzzing at the FFI boundary |

@@ -730,6 +730,13 @@ jobs:
       # A block that fails its tag is taken anyway.
       - name: Control arm — the tag check gone
         run: make smoke-swap-store-tag-control
+      # S119: pages go out and come back exactly, on a pool too small to hold
+      # the program without swap.
+      - name: 48 MiB goes through swap on a 64 MiB pool and comes back intact
+        run: make smoke-swap
+      # Pages go to their slots as zeros.
+      - name: Control arm — a swapped-out page is written as zeros
+        run: make smoke-swap-zeroed-control
 
   # SHARD of what was one 59-step job, split 2026-09-21 because it ran for 54
   # minutes and set the wall time of every CI run. Steps are unchanged and in

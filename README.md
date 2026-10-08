@@ -86,6 +86,9 @@ line need no capability, and the read side is refused once `console_server` owns
 - Per-task four-level page tables, demand paging, copy-on-write, `fork`, `exec` and signals.
 - All of a machine's RAM up to 4 GiB in the page pool, every region the firmware's memory map
   names, with nothing else mapped above 1 GiB (S117).
+- Encrypted swap on an installed machine: a task short of memory pages its own idle pages out to
+  the swap partition, sealed under a key made at that boot and kept only in memory, and gets them
+  back exactly on touch (S118, S119).
 - IPC over bounded queues with one-shot reply capabilities, notifications and pipes; a server can
   tell its clients apart by the capability they call it through.
 - SMEP, SMAP, kernel W^X, guard pages and stack canaries; user programs load at a randomised
@@ -147,7 +150,7 @@ line need no capability, and the read side is refused once `console_server` owns
 - **No storage beyond IDE, SD and eMMC.** A SATA drive is identified but not read, and there is no
   NVMe.
 - **No USB**, and so no keyboard on a machine without PS/2 emulation.
-- **No threads, job control, `/proc`, swap, wall clock or kernel address randomisation.**
+- **No threads, job control, `/proc`, wall clock or kernel address randomisation.**
 - **No architecture but x86-64.**
 
 The full list, with the reasons, is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md).
@@ -156,8 +159,8 @@ The full list, with the reasons, is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.
 
 In order, from [`docs/ROADMAP.md`](docs/ROADMAP.md):
 
-1. **Encrypted swap** in the reserved partition, under a key made fresh at every boot and kept
-   only in memory: every page sealed and authenticated, nothing on the partition in plaintext.
+1. **Swap for idle tasks**: a task short of memory already pages out its own idle pages to the
+   encrypted partition; next, an idle task's pages can go too, with a TLB shootdown.
 2. **Filesystem phase 1b** (2.10): `fs_server`, the path walker and `init` authorise files by
    capability instead of by user id and mode.
 3. **Accounts as files** (2.11): `/etc/passwd` and `/etc/shadow` on the volume, owned by a ring-3
@@ -250,8 +253,8 @@ test does not exist or does not run.
 
 | Layer | What it covers |
 |---|---|
-| Security properties | 120 numbered properties, each bound to a witness by `tools/check_invariants.py` |
-| QEMU integration tests | 456 `smoke-*` targets: 212 base gates and 244 control arms |
+| Security properties | 121 numbered properties, each bound to a witness by `tools/check_invariants.py` |
+| QEMU integration tests | 458 `smoke-*` targets: 213 base gates and 245 control arms |
 | Control arms | A build that puts a defect back on purpose; CI requires its gate to go red against it |
 | Kani | 35 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
 | Miri | The security core's tests, interpreted for undefined behaviour on every pull request |

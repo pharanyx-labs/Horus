@@ -27,6 +27,21 @@ locks:
   - spawn_stage_lock   # src/kernel/kspawn.c -- the outermost lock in the kernel
 
 nesting:
+  - outer: page_lock
+    inner: swap_lock
+    reason: >-
+      Task teardown and mapping over a swapped PTE free the page's swap slot
+      (swap_free) while the page tables are held. Swap code never takes
+      page_lock while it holds swap_lock: eviction drops page_lock before it
+      writes, and fault-in drops it before it reads (docs/design/swap.md 3.5),
+      so the reverse edge cannot exist.
+  - outer: endpoint_lock
+    inner: swap_lock
+    reason: >-
+      The same path as endpoint_lock -> page_lock: delivering a message body
+      copies into the receiver's memory, and a page of it that is in swap is
+      brought back, which reads its slot under swap_lock. swap_lock is a leaf
+      apart from the block driver locks, and nothing under it enters IPC.
   - outer: endpoint_lock
     inner: cap_lock
     reason: >-

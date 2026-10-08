@@ -466,7 +466,16 @@
 # leaves unused (with its MEM_HIGH_UNREPORTED arm). The laptop showed 1,842 MiB
 # of its 4 GB and nothing said where the rest was. The diagnostic build's full
 # map print went to kshell.c (service), which kept this from +27.
-core_budget_loc: 11108
+# 2026-10-08: 11108 -> 11274, +166, swap paging (S119, docs/design/swap.md step
+# 2), in paging.c: the swapped-PTE encoding, swap_evict_self (the clock over the
+# faulting task's own pages, the eligibility test, and the out/unmap with
+# page_lock dropped for the write), swap_fault_in, and the walkers that read a
+# non-present PTE taught it (teardown, fork, user copy, seal, protect, the map
+# paths); and in idt.c, one log line for an approved fault the pager could not
+# resolve, which until now killed the task without a word. Core because it is
+# the page tables and the fault path; the slot store itself is in swap.c
+# (service).
+core_budget_loc: 11274
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

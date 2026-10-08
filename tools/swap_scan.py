@@ -7,7 +7,7 @@ cannot appear; written in the clear (the SWAP_SEAL_OFF arm), it appears in
 every one of them. The partition is found from the image's own GPT by the Horus
 swap type, so the search covers exactly the blocks the kernel may write.
 
-    swap_scan.py IMAGE --expect absent|present
+    swap_scan.py IMAGE --expect absent|present [--marker selftest|swaphog]
 
 Exit 0 when the marker's presence is as expected, 1 when it is not, 2 when the
 image has no Horus swap partition (which proves nothing either way).
@@ -18,7 +18,10 @@ import sys
 
 SWAP_TYPE = bytes([0x3e, 0x4a, 0x1c, 0x7b, 0x2d, 0x5f, 0x8a, 0x4e,
                    0x9c, 0x61, 0x0d, 0x2f, 0x3a, 0x4b, 0x5c, 0x6e])
-MARKER = b"HORUS-SWAP-PLAINTEXT-MARKER-"
+MARKERS = {
+    "selftest": b"HORUS-SWAP-PLAINTEXT-MARKER-",   # the store's self-test (SWAP_SELFTEST)
+    "swaphog": b"HORUS-SWAPHOG-MARKER-",           # the paging gate's program (SWAP_HOG)
+}
 
 
 def swap_range(f):
@@ -41,7 +44,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("image")
     ap.add_argument("--expect", choices=("absent", "present"), required=True)
+    ap.add_argument("--marker", choices=sorted(MARKERS), default="selftest")
     a = ap.parse_args()
+    MARKER = MARKERS[a.marker]
     with open(a.image, "rb") as f:
         r = swap_range(f)
         if r is None:

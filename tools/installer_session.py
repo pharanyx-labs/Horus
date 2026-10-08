@@ -1718,6 +1718,25 @@ def bootdisk(disk):
         # self-test printed one line to the kernel log. SWAP_EXPECT is "ok", or
         # the start of the FAIL line an arm must produce.
         swap_expect = os.environ.get("SWAP_EXPECT", "")
+        # SWAP PAGING, WHEN THE BUILD SHIPS /bin/swaphog (SWAP_HOG=1): it writes
+        # 48 MiB on a pool capped below that and reads it all back, so it passes
+        # only if its pages went out to swap and came back exactly. SWAP_HOG_EXPECT
+        # is "ok", or "fail" for the arm, whose zeroed pages it must catch.
+        hog_expect = os.environ.get("SWAP_HOG_EXPECT", "")
+        if hog_expect:
+            out = _sh(s, "swaphog", timeout=int(os.environ.get("SWAP_HOG_TIMEOUT", "900")))
+            line = next((ln.strip() for ln in out.splitlines() if ln.strip().startswith("SWAPHOG: OK")
+                         or ln.strip().startswith("SWAPHOG: FAIL")), "")
+            want = "SWAPHOG: OK" if hog_expect == "ok" else "SWAPHOG: FAIL"
+            if not line.startswith(want):
+                tail = _sh(s, "dmesg").splitlines()[-12:]
+                raise SessionFail(f"swaphog said {line or out[-300:]!r}, not {want!r}; "
+                                  f"the kernel log ends {tail!r}")
+            log = _sh(s, "dmesg")
+            if "pages out and" not in log:
+                raise SessionFail("swaphog finished but the kernel never said it put a page out: "
+                                  "the pool was not under pressure, so nothing was tested")
+            step(f"swaphog: {line[:70]}, and the kernel paged out to do it")
         if swap_expect:
             log = _sh(s, "dmesg")
             line = next((ln.strip() for ln in log.splitlines() if "SWAP_SELFTEST:" in ln), "")

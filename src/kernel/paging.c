@@ -28,6 +28,14 @@ extern uint8_t stack_top[];
  * the stack. The image/heap region stays executable because the flat-binary
  * loader cannot tell code from data within it. */
 #define PAGE_NX        (1ULL << 63)
+/* A SWAPPED-OUT PAGE (docs/design/swap.md 3.3): a PTE with PAGE_PRESENT clear,
+ * this software bit set, and the swap slot in the address bits. The MMU never
+ * reads a non-present PTE, so the encoding is the kernel's alone; the flags a
+ * page had (write, user, copy-on-write, no-execute) stay where they were, so
+ * bringing it back restores exactly them. Every walker below that reads a
+ * non-present PTE either brings the page back first or knows what this means. */
+#define PAGE_SWAPPED   (1ULL << 11)
+#define SWAP_KEEP_FLAGS (PAGE_WRITE | PAGE_USER | PAGE_COW | PAGE_NX)
 /* Physical frame bits of a PTE (52-bit phys, 4 KiB aligned). Masks off BOTH the
  * low 12 flag bits AND the high bits (notably NX, bit 63) — `& ~0xFFF` leaves NX
  * set, so a noexec page's frame address would carry bit 63 and land nowhere. */
@@ -177,6 +185,14 @@ static int phys_is_ram(uint64_t phys) {
 uint32_t phys_pool_span_pages(void) {
     uint64_t top = 0;
     for (uint32_t r = 0; r < g_ram_n; r++) if (g_ram[r].end > top) top = g_ram[r].end;
+#ifdef SWAP_HOG
+    /* INSTRUMENT, never ship (smoke-swap): a small pool, so swaphog's 48 MiB
+     * cannot fit and has to go through swap. Not on an install boot, whose ESP
+     * image module alone is 34 MiB; only the installed disk's boot swaps. */
+    if (!(boot_flags() & BOOT_FLAG_INSTALL) &&
+        top > (uint64_t)USER_PHYS_BASE + (uint64_t)POOL_CAP_MIB * 1024 * 1024)
+        top = (uint64_t)USER_PHYS_BASE + (uint64_t)POOL_CAP_MIB * 1024 * 1024;
+#endif
 #ifdef POOL_FLAT_CEILING
     /* CONTROL ARM, never ship: the pool stops at 1 GiB, as before 2026-10-08. */
     if (top > PHYS_KVA_FLAT_CEIL) top = PHYS_KVA_FLAT_CEIL;
@@ -1569,6 +1585,10 @@ static void free_user_table(uint64_t table_phys, int level) {
     uint64_t *t = (uint64_t *)PHYS_KVA(table_phys);
     for (int i = 0; i < 512; i++) {
         uint64_t e = t[i];
+        if (level == 1 && !(e & PAGE_PRESENT) && (e & PAGE_SWAPPED)) {
+            swap_free((e & PTE_ADDR_MASK) >> 12);   /* a page in swap: its slot goes too */
+            continue;
+        }
         if (!(e & PAGE_PRESENT)) continue;
         uint64_t child = e & PTE_ADDR_MASK;
         if (level == 1 || (e & PAGE_PS)) {
@@ -1683,6 +1703,9 @@ static int user_map_page(uint64_t *pml4_tab, uint64_t vaddr, uint64_t phys,
                          uint64_t flags) {
     uint64_t *slot = user_pte_slot(pml4_tab, vaddr);
     if (!slot) return -1;
+    /* Mapping over a page that is in swap lets go of its slot, so the slot is
+     * never stranded with nothing naming it. */
+    if (!(*slot & PAGE_PRESENT) && (*slot & PAGE_SWAPPED)) swap_free((*slot & PTE_ADDR_MASK) >> 12);
     *slot = phys | flags;
     return 0;
 }
@@ -1783,7 +1806,7 @@ int user_map_frame_page(uint32_t task_id, uint64_t vaddr, uint64_t phys,
      * count and the page tables in agreement by construction. */
     uint64_t *slot = user_pte_slot((uint64_t *)PHYS_KVA(pml4_phys), vaddr);
     if (!slot) { spin_unlock(&page_lock); return -1; }
-    if (*slot & PAGE_PRESENT) { spin_unlock(&page_lock); return -2; }
+    if (*slot & (PAGE_PRESENT | PAGE_SWAPPED)) { spin_unlock(&page_lock); return -2; }   /* in use, here or in swap */
 
     page_ref_inc((uint32_t)phys);
     *slot = phys | flags;
@@ -1819,7 +1842,7 @@ int user_map_private_copy(uint32_t task_id, uint64_t vaddr, const uint8_t *src) 
 
     spin_lock(&page_lock);
     uint64_t *slot = user_pte_slot((uint64_t *)PHYS_KVA(pml4_phys), vaddr);
-    if (!slot || (*slot & PAGE_PRESENT)) {
+    if (!slot || (*slot & (PAGE_PRESENT | PAGE_SWAPPED))) {
         spin_unlock(&page_lock);
         free_user_physical_page(phys);
         return -1;
@@ -1869,6 +1892,15 @@ int user_seal_range(uint32_t task_id, uint64_t addr, uint64_t len) {
     if (pml4_phys == 0 || len == 0 || (addr & 0xFFF) || (len & 0xFFF)) return -1;
     if (addr + len < addr) return -1;
     uint64_t *pml4_tab = (uint64_t *)PHYS_KVA(pml4_phys);
+
+    /* A page in swap comes back first: sealing is a statement about a present
+     * page, and the checks below refuse anything else. Done before page_lock,
+     * because bringing it back reads the disk. The task is the current one. */
+    for (uint64_t va = addr; va < addr + len; va += PAGE_SIZE) {
+        uint64_t *slot = user_pte_existing(pml4_tab, va);
+        if (slot && !(*slot & PAGE_PRESENT) && (*slot & PAGE_SWAPPED)
+            && handle_demand_page_fault(va, 0) != 0) return -1;
+    }
 
     spin_lock(&page_lock);
     for (uint64_t va = addr; va < addr + len; va += PAGE_SIZE) {
@@ -2337,6 +2369,21 @@ int clone_user_aspace(uint32_t child, uint64_t parent_cr3) {
 
                 for (int i1 = 0; i1 < 512; i1++) {
                     uint64_t pte = pt[i1];
+                    if (!(pte & PAGE_PRESENT) && (pte & PAGE_SWAPPED)) {
+                        /* A PAGE IN SWAP IS SHARED, NOT READ BACK: both
+                         * entries name the slot (its count goes up), both lose
+                         * PAGE_WRITE for PAGE_COW as a present page would, and
+                         * each gets a frame of its own when it next touches the
+                         * page. No disk I/O here, under page_lock. */
+                        uint64_t sva = ((uint64_t)i4 << 39) | ((uint64_t)i3 << 30) |
+                                       ((uint64_t)i2 << 21) | ((uint64_t)i1 << 12);
+                        uint64_t snf = (pte & ~PTE_ADDR_MASK);
+                        if (snf & PAGE_WRITE) snf = (snf & ~(uint64_t)PAGE_WRITE) | PAGE_COW;
+                        if (user_map_page(cp4, sva, pte & PTE_ADDR_MASK, snf) != 0) { failed = 1; break; }
+                        swap_ref((pte & PTE_ADDR_MASK) >> 12);
+                        pt[i1] = (pte & PTE_ADDR_MASK) | snf;
+                        continue;
+                    }
                     if (!(pte & PAGE_PRESENT)) continue;
                     /* Supervisor leaf in the user half: an MMIO window, not part
                      * of the process image. Skip it; the child gets its own. */
@@ -2573,8 +2620,167 @@ static int cow_break_pte(uint64_t *pte_slot, uint64_t fault_addr) {
     return 0;
 }
 
+/* ---- Swap: eviction and fault-in (docs/design/swap.md step 2) -------------
+ *
+ * Neither holds page_lock across the disk: the page goes out or comes back with
+ * the lock dropped, and the PTE is checked again before it changes. Only the
+ * current task's pages are involved, so only this task could change that PTE
+ * meanwhile, and it is in the kernel here. */
+static uint64_t g_evict_cursor[MAX_TASKS];   /* where each task's clock hand stopped */
+
+/* Tasks swap never takes from: the servers bringing a page back would itself
+ * depend on (the console that asked for the password, the file server) and the
+ * root of the task tree. Named by the image the kernel spawned them from. */
+static int swap_task_pinned(int t) {
+    const char *n = tasks[t].name;
+    static const char *pinned[] = { "init", "fs_server", "console_server" };
+    for (unsigned k = 0; k < sizeof(pinned) / sizeof(pinned[0]); k++) {
+        const char *a = pinned[k], *b = n;
+        while (*a && *a == *b) { a++; b++; }
+        if (*a == 0 && *b == 0) return 1;
+    }
+    return 0;
+}
+
+/* May this leaf leave RAM? A private anonymous page: present, the task's own,
+ * not copy-on-write, not sealed, a pool frame that alloc lent out and nobody
+ * else maps. That excludes the shared zero page, the shared libc's text, frame
+ * capabilities (lent to devices for DMA, never on loan) and device memory. */
+static int swap_evictable(uint64_t pte) {
+    if ((pte & (PAGE_PRESENT | PAGE_USER)) != (PAGE_PRESENT | PAGE_USER)) return 0;
+    if (pte & (PAGE_COW | PAGE_SEALED | PAGE_PS)) return 0;
+    uint64_t phys = pte & PTE_ADDR_MASK;
+    if (phys == g_zero_page_phys) return 0;
+    int idx = pool_frame_index(phys);
+    if (idx < 0 || !on_loan(idx) || page_refcounts[idx] != 1) return 0;
+    return 1;
+}
+
+int swap_evict_self(int want) {
+    int t = get_current_task();
+    if (t <= 0 || t >= g_max_tasks || tasks[t].cr3 == 0 || swap_task_pinned(t)) return 0;
+    uint64_t *p4 = (uint64_t *)PHYS_KVA(tasks[t].cr3);
+    uint64_t victim_va[SWAP_EVICT_BATCH], victim_pte[SWAP_EVICT_BATCH];
+    int nv = 0;
+    if (want > SWAP_EVICT_BATCH) want = SWAP_EVICT_BATCH;
+
+    /* THE CLOCK: from where this task's hand stopped, over its user half once
+     * round. A page touched since the hand last passed has its accessed bit
+     * cleared and is left for the next pass; one untouched is taken. */
+    spin_lock(&page_lock);
+    uint64_t start = g_evict_cursor[t] & 0x00007FFFFFFFF000ULL;
+    uint64_t va = start;
+    int wrapped = 0;
+    while (nv < want) {
+        if (va >= 0x0000800000000000ULL) { va = 0; wrapped = 1; }
+        if (wrapped && va >= start) break;
+        uint64_t e4 = p4[(va >> 39) & 511];
+        if (!(e4 & PAGE_PRESENT)) { va = (va | ((1ULL << 39) - 1)) + 1; continue; }
+        uint64_t *p3 = (uint64_t *)PHYS_KVA(e4 & PTE_ADDR_MASK);
+        uint64_t e3 = p3[(va >> 30) & 511];
+        if (!(e3 & PAGE_PRESENT) || (e3 & PAGE_PS)) { va = (va | ((1ULL << 30) - 1)) + 1; continue; }
+        uint64_t *p2 = (uint64_t *)PHYS_KVA(e3 & PTE_ADDR_MASK);
+        uint64_t e2 = p2[(va >> 21) & 511];
+        if (!(e2 & PAGE_PRESENT) || (e2 & PAGE_PS)) { va = (va | ((1ULL << 21) - 1)) + 1; continue; }
+        uint64_t *p1 = (uint64_t *)PHYS_KVA(e2 & PTE_ADDR_MASK);
+        uint64_t *slot = &p1[(va >> 12) & 511];
+        uint64_t pte = *slot;
+        /* ONLY WHERE A FAULT IS APPROVED: the image, the heap, the low stack
+         * (rust_validate_page_fault, which the fault path asks before the pager
+         * runs). A private page anywhere else -- the shared libc's per-task data,
+         * say -- would come back as a rejected fault, and the task would die for
+         * touching its own memory. Measured: swaphog was killed that way. */
+        if (swap_evictable(pte) &&
+            rust_validate_page_fault(va, 0, tasks[t].image_base, tasks[t].image_end,
+                                     tasks[t].heap_start, tasks[t].heap_end)) {
+            if (pte & PAGE_ACCESSED) {
+                *slot = pte & ~(uint64_t)PAGE_ACCESSED;
+                __asm__ volatile ("invlpg (%0)" :: "r"(va) : "memory");
+            } else {
+                victim_va[nv] = va;
+                victim_pte[nv] = pte;
+                nv++;
+            }
+        }
+        va += PAGE_SIZE;
+    }
+    g_evict_cursor[t] = va;
+    spin_unlock(&page_lock);
+
+    int done = 0;
+    for (int k = 0; k < nv; k++) {
+        uint64_t phys = victim_pte[k] & PTE_ADDR_MASK;
+        uint64_t sslot;
+#ifndef SWAP_OUT_ZEROED
+        if (swap_put(PHYS_KVA(phys), &sslot) != 0) break;   /* partition full, or a write failed */
+#else
+        /* CONTROL ARM, never ship: the page is unmapped and its frame freed, but
+         * what goes to the slot is the zero page, so what comes back is zeros. */
+        if (swap_put(g_zero_page_phys ? PHYS_KVA(g_zero_page_phys) : PHYS_KVA(phys), &sslot) != 0) break;
+#endif
+        spin_lock(&page_lock);
+        uint64_t *slot = user_pte_existing(p4, victim_va[k]);
+        const uint64_t ad = PAGE_ACCESSED | PAGE_DIRTY;
+        if (slot && (*slot & ~ad) == (victim_pte[k] & ~ad)) {
+            *slot = (sslot << 12) | (victim_pte[k] & SWAP_KEEP_FLAGS) | PAGE_SWAPPED;
+            __asm__ volatile ("invlpg (%0)" :: "r"(victim_va[k]) : "memory");
+            user_leaf_release(phys);
+            done++;
+        } else {
+            swap_free(sslot);           /* the page changed under us: keep it */
+        }
+        spin_unlock(&page_lock);
+    }
+    return done;
+}
+
+/* Bring the page `ptv[pt_i]` names back from its slot into a fresh frame. Called
+ * with page_lock NOT held. 0 when the page is back; -3 when no frame could be
+ * had; -7 when the slot failed authentication or could not be read, which the
+ * fault path turns into killing the task: it is never handed other bytes. */
+int swap_fault_in(uint64_t *ptv, uint64_t pt_i, uint64_t fault_addr) {
+    spin_lock(&page_lock);
+    uint64_t pte = ptv[pt_i];
+    if ((pte & PAGE_PRESENT) || !(pte & PAGE_SWAPPED)) { spin_unlock(&page_lock); return 0; }
+    uint64_t phys = alloc_user_physical_page();
+    spin_unlock(&page_lock);
+    if (phys == 0) return -3;
+
+    uint64_t sslot = (pte & PTE_ADDR_MASK) >> 12;
+    int rc = swap_get(sslot, PHYS_KVA(phys));
+
+    spin_lock(&page_lock);
+    if (ptv[pt_i] != pte) {
+        /* Not ours any more (it cannot be, for the current task, but the check
+         * is what makes it so rather than an argument). */
+        free_user_physical_page(phys);
+        spin_unlock(&page_lock);
+        return 0;
+    }
+    if (rc != 0) {
+        free_user_physical_page(phys);
+        spin_unlock(&page_lock);
+        print(rc == -1 ? "swap: a page failed authentication; killing the task that owns it\n"
+                       : "swap: a page could not be read back; killing the task that owns it\n");
+        return -7;
+    }
+    ptv[pt_i] = phys | (pte & SWAP_KEEP_FLAGS) | PAGE_PRESENT;
+    swap_free(sslot);
+    __asm__ volatile ("invlpg (%0)" :: "r"(fault_addr) : "memory");
+    spin_unlock(&page_lock);
+    return 0;
+}
+
 int handle_demand_page_fault(uint64_t fault_addr, uint32_t err_code) {
-    
+    /* LOW ON FRAMES, AND SWAP IS ON: the faulting task gives up some of its own
+     * idle pages before it takes another. Its own, because they are the only
+     * pages no other CPU can be translating at this moment (the reasoning
+     * clone_user_aspace gives for the same question): this CPU runs the task,
+     * and any CPU that starts running it reloads CR3 first. Done before
+     * page_lock is taken, because the eviction writes to the disk. */
+    if (swap_enabled() && get_free_user_pages() < SWAP_LOW_WATER)
+        (void)swap_evict_self(SWAP_EVICT_BATCH);
+
     uint64_t cr3_phys = tasks[get_current_task()].cr3;
     if (cr3_phys == 0) {
         /* page_lock is NOT held yet (we lock below), so must not unlock here:
@@ -2642,6 +2848,14 @@ int handle_demand_page_fault(uint64_t fault_addr, uint32_t err_code) {
     uint64_t pte = ptv[pt_i];
 
     int is_write = (err_code & 2) != 0;
+
+    /* A SWAPPED-OUT PAGE COMES BACK before anything else looks at the PTE: its
+     * flags may include PAGE_COW, and the copy-on-write branch below assumes a
+     * frame. */
+    if (!(pte & PAGE_PRESENT) && (pte & PAGE_SWAPPED)) {
+        spin_unlock(&page_lock);
+        return swap_fault_in(ptv, pt_i, fault_addr);
+    }
 
     if (is_write && (pte & PAGE_COW) != 0) {
         /* Mask with PTE_ADDR_MASK, not ~0xFFF: a noexec page has NX (bit 63) set,
@@ -2954,7 +3168,9 @@ int user_protect_page(uint64_t vaddr, int writable, int executable) {
     t = (uint64_t *)PHYS_KVA(e & PT_PHYS_MASK);
     int i = (int)((vaddr >> 12) & 0x1FF);
     uint64_t pte = t[i];
-    if (!(pte & PAGE_PRESENT)) return -1;
+    /* A page in swap keeps its flags in the swapped PTE, at the same bits, so
+     * a protection change applies there and comes back with the page. */
+    if (!(pte & PAGE_PRESENT) && !(pte & PAGE_SWAPPED)) return -1;
 
     if (writable)   pte |= PAGE_WRITE;
     else            pte &= ~(uint64_t)PAGE_WRITE;
@@ -2994,6 +3210,18 @@ static int user_copy(uint64_t uaddr, uint8_t *kbuf, size_t n, int to_user, int n
     while (done < n) {
         uint64_t v = uaddr + done;
         uint64_t e = pt_walk(ucr3, v);
+        /* A PAGE IN SWAP IS BROUGHT BACK, as the task's own touch would bring it.
+         * This is not the absent-page case refused below: a swapped PTE says the
+         * task already has this page, so the rule there (a copy targets memory
+         * the task already has) is kept, not bent. Only PAGE_SWAPPED qualifies;
+         * an address with nothing behind it is still refused. */
+        if (!(e & PAGE_PRESENT)) {
+            uint64_t *raw = user_pte_existing((uint64_t *)PHYS_KVA(ucr3), v);
+            if (raw && !(*raw & PAGE_PRESENT) && (*raw & PAGE_SWAPPED)) {
+                if (handle_demand_page_fault(v, need_write ? (uint32_t)PAGE_WRITE : 0) != 0) { rc = -1; break; }
+                e = pt_walk(ucr3, v);
+            }
+        }
         /* A kernel write into a present COW page must break COW first, exactly as
          * a ring-3 write would. Without this, a copy_to_user into a page the task
          * has only read — now aliasing the shared zero page, read-only — would

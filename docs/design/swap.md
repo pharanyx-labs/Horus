@@ -1,6 +1,6 @@
 # Encrypted swap
 
-**Decided; step 1 of §5 built (#510).** The maintainer asked on 2026-10-08 for the swap limitation to be sorted
+**Decided; steps 1 and 2 of §5 built (#510, #512).** The maintainer asked on 2026-10-08 for the swap limitation to be sorted
 out now, and for the swap partition to be properly encrypted. The four decisions below were taken
 the same day, each as recommended. The memory ceiling went first (#508), so swap starts from a
 pool that already holds all of the RAM below 4 GiB.
@@ -63,37 +63,53 @@ enabled and sized to the partition.
 
 A PTE that is not present, with a software bit (`PAGE_SWAPPED`, bit 11) set and the slot index in
 the address bits. The MMU never reads a non-present PTE, so the encoding is the kernel's alone.
-Every walker that reads non-present PTEs has to know it. The list is part of the implementation PR
-and the main review burden:
+Every walker that reads non-present PTEs knows it (`src/kernel/paging.c`):
 
-- the fault path (bring the page back);
-- `fork` (bring the parent's swapped pages back before sharing them copy-on-write, so a slot never
-  has two owners);
-- unmapping, task teardown and region release (free the slot);
-- `SYS_MEM_SEAL`, the user-copy paths and the Rust validators (treat a swapped page as present for
-  their checks, by bringing it back first).
+- the fault path brings the page back, before the copy-on-write branch, whose flags it may carry;
+- `fork` shares the slot rather than reading the page back: both entries name it, its count goes
+  up, both lose `PAGE_WRITE` for `PAGE_COW` as a present page would, and each gets its own frame
+  when it next touches the page. This was chosen over the read-back first planned, because fork
+  holds `page_lock` and the read is disk I/O. It is not exercised by a gate yet: a fork is refused
+  for a task holding sealed pages, which every shared-libc program in `/bin` does;
+- task teardown, and mapping over a swapped entry, free the slot;
+- the user-copy path and `SYS_MEM_SEAL` bring a swapped page back first (a swapped PTE is memory
+  the task already has, unlike the absent page the copy path refuses); a protection change applies
+  to the swapped PTE's flags; the frame, device and private-copy map paths treat a swapped entry
+  as occupied.
 
 ### 3.4 Choosing a page
 
-When an allocation would find the pool below a low-water mark, a clock hand walks the user page
-tables, giving each eligible page one pass with its accessed bit cleared before taking it. A page
-is eligible only under §2.3, and only if its task is not running on another CPU at that moment, so
-the unmap needs no shootdown: the switch to that task already flushes. A page whose seal or write
-fails stays where it is.
+When a fault finds fewer than `SWAP_LOW_WATER` frames free, the faulting task gives up to
+`SWAP_EVICT_BATCH` of **its own** idle pages before it takes another. A clock hand walks its user
+page tables from where it last stopped, giving each eligible page one pass with its accessed bit
+cleared before taking it.
+
+**Its own, not any task's.** The plan was any task not running on another CPU, but checking that
+and changing the PTE cannot be made atomic against the scheduler starting the task elsewhere, which
+would leave a stale translation to a freed frame on that CPU. A shootdown would close it, and the
+fault path cannot wait for one with interrupts off. The current task's pages have no such window:
+this CPU runs it, and any CPU that starts running it reloads CR3 first, the argument
+`clone_user_aspace` already makes. Taking an idle task's pages is the next step, with a shootdown.
+
+A page is eligible under §2.3 and, measured the hard way, **only where the fault path approves a
+fault** (the image, the heap, the low stack, per `rust_validate_page_fault`): the first version
+also took the shared libc's per-task data, and the task died for touching its own memory. A page
+whose write fails stays where it is.
 
 ### 3.5 I/O and the fault path
 
-Disk I/O cannot sit under `page_lock`. A page going out is sealed into a kernel bounce page under
-the lock, its PTE becomes a swapped PTE marked in transit, and the lock is dropped for the write.
-Its frame is freed only once the write has completed; a fault on it meanwhile waits. A page coming
-back is read and opened with the lock dropped, then installed after re-checking that the PTE still
-names that slot. One thread per address space keeps the re-check simple.
+Disk I/O never sits under `page_lock`. A page going out is chosen under the lock, written from its
+own frame with the lock dropped (the task is in the kernel, so nothing writes the frame meanwhile),
+and only then, under the lock again and only if the PTE is unchanged, does the PTE become a swapped
+PTE and the frame go back to the pool. A page coming back is read and opened into a fresh frame
+with the lock dropped, then installed after re-checking that the PTE still names that slot.
+`swap_lock` nests inside `page_lock` (teardown frees slots under it) and never the other way.
 
 ### 3.6 Failures
 
 | Event | Result |
 |---|---|
-| The partition is full | Eviction finds no slot; the allocation fails as it does today |
+| The partition is full | Eviction finds no slot; the allocation fails as it does today, and the fault path now says so in the log (`fault: task killed, the pager could not resolve an approved fault`) |
 | A write fails | The page stays in RAM; the slot is not marked used |
 | A read fails, or the tag does not match | The owning task is killed with `swap: page failed authentication` or `swap: page could not be read`; the slot is freed |
 | A task exits | Its slots are freed; nothing is written |
@@ -108,19 +124,25 @@ names that slot. One thread per address space keeps the re-check simple.
   sealing off (the host finds the marker) and the tag check removed (the changed block is taken).
   A replay needs no arm of its own: the generation is in the nonce, but what refuses an older
   copy is the tag held in RAM, the same check the tag arm removes, and the self-test requires
-  both refusals. Step 2 adds the end-to-end form: a program that writes a marker across more
-  memory than the pool holds and reads it all back, with swap traffic in the kernel's count.
+  both refusals.
+- **A page that went to swap comes back exactly as it was (S119).** Built as `make smoke-swap`: on
+  the installed disk's boot with the pool capped at 64 MiB, `swaphog` writes 48 MiB, more than the
+  pool holds, and reads every byte back; the kernel must report pages out, and the host must find
+  none of `swaphog`'s marker on the partition. Arm: a page taken for swap is written as zeros,
+  which `swaphog` catches at its first page.
 - **Swap is never used on a live boot.** `smoke-live-locked` already hashes the whole disk before
   and after a live boot; it gains a low-memory run so the pager is under pressure when it does.
-- **Only eligible pages leave RAM.** A self-test build checks every page the clock takes against
-  §2.3 and halts on one that is not.
+- **Only eligible pages leave RAM.** Held by `swap_evictable` and the fault-path region check
+  (§3.4); a self-test that checks every page the clock takes is not built yet.
 
 ## 5. Order of work
 
 1. **The sealed slot store**: finding the partition, the key, the slot table, sealing and opening a
    page, with a boot self-test and the arms above. No page ever leaves a task yet. Done (#510).
 2. **Eviction and fault-in**: the swapped PTE, the walker audit, the clock, the I/O with the lock
-   dropped, and the memory-pressure gate.
+   dropped, and the memory-pressure gate. Done (#512), taking the faulting task's own pages.
+2a. **Taking an idle task's pages**, with a TLB shootdown, so a large idle task gives memory back
+   to a small busy one.
 3. **A no-swap request for secrets**, asked first as a §4 question.
 
 Each is its own pull request with its own gates.

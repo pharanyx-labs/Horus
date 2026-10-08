@@ -355,8 +355,8 @@ waits until it is woken or killed. The PIT runs at a fixed 100 Hz.
   limits are
   by construction: the firmware finds GRUB at the removable-media path because Horus cannot
   write UEFI boot entries; every partition lies inside the 16 GiB the kernel addresses, so a
-  larger disk's remainder is unused; and the swap partition is opened but nothing is paged out to
-  it yet (below).
+  larger disk's remainder is unused; and swap takes only from the task that needs memory
+  (below).
 - **Parts of the installed layout.** The install media puts GNU coreutils, TCC, their man pages,
   licences and source offer in the system trees (S116), but `/lib` stays empty (programs link the
   shared libc the kernel loads, not a file), there is no `/tmp`, and the shell's file commands
@@ -381,9 +381,12 @@ waits until it is woken or killed. The PIT runs at a fixed 100 Hz.
 - **More than one filesystem.** One volume and one `fs_server`, plus `dev_server` in self-test
   builds. The capability filesystem of [`design/filesystem.md`](design/filesystem.md) has its
   kernel half (phase 1a, IPC tokens, S105); the server half is not built.
-- **Swap.** Running out of the page pool is a hard failure. The swap partition is opened at an
-  installed boot's unlock as a sealed store (S118), but no page is evicted into it yet: that is
-  step 2 of [`design/swap.md`](design/swap.md).
+- **Swap takes only from the task that needs memory.** On an installed boot, a task low on frames
+  pages its own idle pages out to the sealed partition and brings them back on touch (S118, S119).
+  A large idle task never gives memory to a small busy one: taking another task's pages needs a
+  TLB shootdown the fault path cannot wait for ([`design/swap.md`](design/swap.md) step 2a), so
+  that task can still run out. Fork sharing a swapped page is built but no gate exercises it,
+  since every program in `/bin` seals pages and a fork refuses a sealed task.
 - **Kernel ASLR.** User programs get 30 bits of address randomisation; the kernel loads at a fixed
   address.
 - **Other architectures.** x86-64 only, booted by GRUB under BIOS or UEFI.

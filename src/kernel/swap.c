@@ -38,16 +38,22 @@ int rust_aead_open(const uint8_t *enc_key, const uint8_t *mac_key, const uint8_t
 
 _Static_assert(BLOCK_SIZE == PAGE_SIZE, "a swap slot is one block holding one page");
 
-/* What RAM holds for one slot. gen 0 is a free slot: generations start at 1. */
+/* What RAM holds for one slot. gen 0 is a free slot: generations start at 1.
+ * `refs` counts the page-table entries naming it: a fork shares a swapped-out
+ * page between parent and child without reading it back (each gets its own
+ * frame when it next touches the page), and the slot is free when the last
+ * entry lets go. */
 struct swap_slot {
     uint64_t gen;
     uint8_t  tag[16];
+    uint32_t refs;
+    uint32_t pad;
 };
-#define SLOTS_PER_FRAME  (PAGE_SIZE / sizeof(struct swap_slot))      /* 170 */
+#define SLOTS_PER_FRAME  (PAGE_SIZE / sizeof(struct swap_slot))      /* 128 */
 #define DIR_ENTRIES      (PAGE_SIZE / sizeof(uint32_t))              /* 1024 table frames a directory */
 #define SWAP_DIRS        4u
-/* The most slots used: 4 directories of 1024 table frames of 170 slots, a little
- * under 2.7 GiB of swap. A bigger partition works; the rest of it is unused. */
+/* The most slots used: 4 directories of 1024 table frames of 128 slots, 2 GiB
+ * of swap. A bigger partition works; the rest of it is unused. */
 #define SWAP_SLOTS_MAX   ((uint64_t)SWAP_DIRS * DIR_ENTRIES * SLOTS_PER_FRAME)
 
 static spinlock_t swap_lock;
@@ -97,8 +103,11 @@ static int seal_and_write(uint64_t slot, const void *page) {
     struct swap_slot *s = slot_at(slot);
     s->gen = gen;
     for (int b = 0; b < 16; b++) s->tag[b] = tag[b];
+    if (s->refs == 0) s->refs = 1;
     return 0;
 }
+
+static uint64_t g_swap_outs, g_swap_ins;
 
 int swap_enabled(void) { return g_swap_on; }
 
@@ -118,9 +127,27 @@ int swap_put(const void *page, uint64_t *slot_out) {
     }
     g_swap_used++;
     g_swap_hint = slot + 1;
+    uint64_t outs = ++g_swap_outs, ins = g_swap_ins;
     spin_unlock(&swap_lock);
     *slot_out = slot;
+    /* Said at the first page out and every 4096th: enough for a reader of the
+     * log (and smoke-swap) to know swap is working, without a line per page. */
+    if (outs == 1 || (outs & 4095) == 0) {
+        print("swap: ");
+        print_decimal(outs);
+        print(" pages out and ");
+        print_decimal(ins);
+        print(" back in so far\n");
+    }
     return 0;
+}
+
+/* One more page-table entry names this slot (a fork). */
+void swap_ref(uint64_t slot) {
+    if (!g_swap_on) return;
+    spin_lock(&swap_lock);
+    if (slot < g_swap_slots && slot_at(slot)->gen != 0) slot_at(slot)->refs++;
+    spin_unlock(&swap_lock);
 }
 
 /* Read a slot back into `page`. 0 when it is the page last put there; -1 when it
@@ -150,20 +177,27 @@ int swap_get(uint64_t slot, void *page) {
     if (rc != 0) { spin_unlock(&swap_lock); return -1; }
     uint8_t *dst = (uint8_t *)page;
     for (int i = 0; i < PAGE_SIZE; i++) dst[i] = g_swap_bounce[i];
+    g_swap_ins++;
     spin_unlock(&swap_lock);
     return 0;
 }
 
-/* Give a slot back. Nothing is written: what is on the disk is ciphertext under
- * a generation that RAM no longer accepts. */
+/* One page-table entry lets go of a slot; the last one frees it. Nothing is
+ * written: what is on the disk is ciphertext under a generation that RAM no
+ * longer accepts. */
 void swap_free(uint64_t slot) {
     if (!g_swap_on) return;
     spin_lock(&swap_lock);
     if (slot < g_swap_slots) {
         struct swap_slot *s = slot_at(slot);
-        if (s->gen != 0) g_swap_used--;
-        s->gen = 0;
-        for (int b = 0; b < 16; b++) s->tag[b] = 0;
+        if (s->gen != 0 && s->refs > 1) {
+            s->refs--;
+        } else {
+            if (s->gen != 0) g_swap_used--;
+            s->gen = 0;
+            s->refs = 0;
+            for (int b = 0; b < 16; b++) s->tag[b] = 0;
+        }
     }
     spin_unlock(&swap_lock);
 }

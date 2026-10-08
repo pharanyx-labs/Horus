@@ -39,19 +39,55 @@
  * us and run the peer (the cooperative yield() cannot switch two ring-3 tasks). */
 
 
-/* Number of data blocks a directory inode currently spans. */
-static unsigned dir_nblocks(uint32_t dir_ino) {
+/* A DIRECTORY OPERAND MUST BE A DIRECTORY (S113, [HORUS-20261008-01]).
+ *
+ * A directory here is an array of fs_dirent records in ordinary inode data, and
+ * a regular file's bytes are written by its owner. So the only thing that makes
+ * a block of bytes a set of directory entries is the inode's TYPE, and until
+ * 2026-10-08 nothing checked it: LOOKUP, CREATE, MKDIR, DELETE, READDIR and
+ * RENAME each checked the caller's permission on the operand and then read it
+ * as dirents. A user who owns a file (any user, in their home) could write a
+ * forged entry {ino = root's /bin/ls, type = FILE} into it, pass the file as the
+ * directory, and DELETE the entry: this server then freed root's inode, since
+ * the kernel honours SYS_FS_INODE_FREE from the store's holder for any inode but
+ * the root. The forged FILE type also skipped the not-empty check, so /bin
+ * itself could be freed; the lowest-free allocator then gave its number to the
+ * user's next mkdir, which root's dirent "bin" still named.
+ *
+ * Checked twice, on purpose. Each request refuses a non-directory operand with
+ * SYS_ERR_INVAL, after its permission check so the refusal tells no one the type
+ * of an inode they may not look at. And the dirent helpers below refuse one
+ * themselves, so a caller added later cannot read a file as a directory by
+ * forgetting: by construction, not by remembering.
+ *
+ * FS_DIR_OPERAND_UNCHECKED=1 restores the unchecked server, both places; it is
+ * the control arm for make smoke-fs-dir-operand. FS_OP_LINK's own type check
+ * predates this and is not part of the arm. */
+static int is_dir(const struct fs_stat *st) {
+#ifdef FS_DIR_OPERAND_UNCHECKED
+    (void)st;
+    return 1;
+#else
+    return st->type == FS_TYPE_DIR;
+#endif
+}
+
+/* Number of data blocks a directory inode currently spans, or -1 if `dir_ino`
+ * cannot be read or is not a directory (see is_dir). */
+static int dir_nblocks(uint32_t dir_ino) {
     struct fs_stat st;
-    if (sys_fs_stat(dir_ino, &st) != 0) return 0;
-    return (unsigned)((st.size + BLK - 1) / BLK);
+    if (sys_fs_stat(dir_ino, &st) != 0) return -1;
+    if (!is_dir(&st)) return -1;
+    return (int)((st.size + BLK - 1) / BLK);
 }
 
 /* Find `name` in directory `dir_ino`. On hit, fill out_ino and out_type and
  * return 1; on miss return 0. */
 static int dir_find(uint32_t dir_ino, const char *name, uint32_t *out_ino, uint32_t *out_type) {
-    unsigned nb = dir_nblocks(dir_ino);
+    int nb = dir_nblocks(dir_ino);
+    if (nb < 0) return 0;                              /* not a directory: no entries */
     static uint8_t blk[BLK];
-    for (unsigned b = 0; b < nb; b++) {
+    for (unsigned b = 0; b < (unsigned)nb; b++) {
         if (sys_fblock_read(dir_ino, b, blk) != (int)BLK) continue;
         struct fs_dirent *de = (struct fs_dirent *)blk;
         for (unsigned i = 0; i < DIRENTS_PER_BLK; i++) {
@@ -68,9 +104,10 @@ static int dir_find(uint32_t dir_ino, const char *name, uint32_t *out_ino, uint3
 /* Insert (name, ino, type) into directory `dir_ino`, reusing a free slot or
  * appending a new block. Returns 0 on success, negative on failure. */
 static int dir_add(uint32_t dir_ino, const char *name, uint32_t ino, uint32_t type) {
-    unsigned nb = dir_nblocks(dir_ino);
+    int nb = dir_nblocks(dir_ino);
+    if (nb < 0) return SYS_ERR_INVAL;                  /* never write a dirent into a file */
     static uint8_t blk[BLK];
-    for (unsigned b = 0; b < nb; b++) {
+    for (unsigned b = 0; b < (unsigned)nb; b++) {
         if (sys_fblock_read(dir_ino, b, blk) != (int)BLK) continue;
         struct fs_dirent *de = (struct fs_dirent *)blk;
         for (unsigned i = 0; i < DIRENTS_PER_BLK; i++) {
@@ -87,17 +124,18 @@ static int dir_add(uint32_t dir_ino, const char *name, uint32_t ino, uint32_t ty
     struct fs_dirent *de = (struct fs_dirent *)blk;
     de[0].ino = ino; de[0].type = type;
     ustrncpy(de[0].name, name, FS_DIRENT_NAME);
-    if (sys_fblock_write(dir_ino, nb, blk, BLK) != (int)BLK) return SYS_ERR_IO;
-    sys_fs_set_size(dir_ino, (nb + 1) * BLK);
+    if (sys_fblock_write(dir_ino, (unsigned)nb, blk, BLK) != (int)BLK) return SYS_ERR_IO;
+    sys_fs_set_size(dir_ino, ((unsigned)nb + 1) * BLK);
     return 0;
 }
 
 /* Clear the entry named `name` from directory `dir_ino`. Returns the removed
  * inode number (>0) or 0 if not found. */
 static uint32_t dir_remove(uint32_t dir_ino, const char *name) {
-    unsigned nb = dir_nblocks(dir_ino);
+    int nb = dir_nblocks(dir_ino);
+    if (nb < 0) return 0;                              /* not a directory: nothing removed */
     static uint8_t blk[BLK];
-    for (unsigned b = 0; b < nb; b++) {
+    for (unsigned b = 0; b < (unsigned)nb; b++) {
         if (sys_fblock_read(dir_ino, b, blk) != (int)BLK) continue;
         struct fs_dirent *de = (struct fs_dirent *)blk;
         for (unsigned i = 0; i < DIRENTS_PER_BLK; i++) {
@@ -115,10 +153,11 @@ static uint32_t dir_remove(uint32_t dir_ino, const char *name) {
 /* Return the `index`-th non-empty entry of `dir_ino` (fills ino, type, name);
  * return 1 if present, 0 past the end. */
 static int dir_get(uint32_t dir_ino, uint32_t index, uint32_t *ino, uint32_t *type, char *name) {
-    unsigned nb = dir_nblocks(dir_ino);
+    int nb = dir_nblocks(dir_ino);
+    if (nb < 0) return 0;                              /* not a directory: no entries */
     static uint8_t blk[BLK];
     uint32_t seen = 0;
-    for (unsigned b = 0; b < nb; b++) {
+    for (unsigned b = 0; b < (unsigned)nb; b++) {
         if (sys_fblock_read(dir_ino, b, blk) != (int)BLK) continue;
         struct fs_dirent *de = (struct fs_dirent *)blk;
         for (unsigned i = 0; i < DIRENTS_PER_BLK; i++) {
@@ -188,6 +227,7 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
     case FS_OP_LOOKUP: {
         if (sys_fs_stat(rq->dir_ino, &st) != 0)      { rp->rc = SYS_ERR_NOENT; break; }
         if (!perm_ok(&st, cuid, cgid, P_X))          { rp->rc = SYS_ERR_PERM;  break; }  /* search the dir */
+        if (!is_dir(&st))                            { rp->rc = SYS_ERR_INVAL; break; }  /* see is_dir */
         uint32_t ino, type;
         if (dir_find(rq->dir_ino, rq->name, &ino, &type)) { rp->rc = 0; rp->ino = ino; rp->type = type; }
         else rp->rc = SYS_ERR_NOENT;
@@ -197,6 +237,7 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
     case FS_OP_MKDIR: {
         if (sys_fs_stat(rq->dir_ino, &st) != 0)      { rp->rc = SYS_ERR_NOENT; break; }
         if (!perm_ok(&st, cuid, cgid, P_W))          { rp->rc = SYS_ERR_PERM;  break; }  /* modify the dir */
+        if (!is_dir(&st))                            { rp->rc = SYS_ERR_INVAL; break; }  /* see is_dir */
         if (rq->name[0] == 0 || uslen(rq->name) >= FS_DIRENT_NAME) { rp->rc = SYS_ERR_INVAL; break; }
         /* EXIST, not INVAL. The code is the only thing a client can report a
          * reason from, and a name that is taken is not a name that is malformed:
@@ -218,6 +259,7 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
     case FS_OP_DELETE: {
         if (sys_fs_stat(rq->dir_ino, &st) != 0)      { rp->rc = SYS_ERR_NOENT; break; }
         if (!perm_ok(&st, cuid, cgid, P_W))          { rp->rc = SYS_ERR_PERM;  break; }  /* modify the dir */
+        if (!is_dir(&st))                            { rp->rc = SYS_ERR_INVAL; break; }  /* see is_dir */
         uint32_t ino, type;
         if (!dir_find(rq->dir_ino, rq->name, &ino, &type)) { rp->rc = SYS_ERR_NOENT; break; }
         /* Refuse to delete a non-empty directory. */
@@ -278,6 +320,7 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
         if (strc != 0) { rp->rc = strc; break; }
 #endif
         if (!perm_ok(&st, cuid, cgid, P_R))          { rp->rc = SYS_ERR_PERM;  break; }  /* read the dir */
+        if (!is_dir(&st))                            { rp->rc = SYS_ERR_INVAL; break; }  /* see is_dir */
         uint32_t ino, type; char name[FS_NAME_MAX];
         if (dir_get(rq->dir_ino, rq->offset, &ino, &type, name)) {
             rp->rc = 0; rp->ino = ino; rp->type = type;
@@ -397,6 +440,7 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
         if (sys_fs_stat(new_parent, &sq) != 0)       { rp->rc = SYS_ERR_NOENT; break; }
         if (!perm_ok(&sp, cuid, cgid, P_W) ||
             !perm_ok(&sq, cuid, cgid, P_W))          { rp->rc = SYS_ERR_PERM;  break; }  /* modify both dirs */
+        if (!is_dir(&sp) || !is_dir(&sq))            { rp->rc = SYS_ERR_INVAL; break; }  /* see is_dir */
 
         /* Copy and validate the new name out of data[] (NUL-bounded). */
         char newname[FS_DIRENT_NAME];

@@ -129,7 +129,7 @@ DEFECT_FLAGS = \
 	STORAGE_REPLACE_UNLOCKED STORAGE_FORMAT_AUTH_STICKY BOOT_CMDLINE_UNMEASURED \
 	STORAGE_FORMAT_UNGATED INSTALLER_NO_CONFIRM BLOCK_ERRNO_LEGACY \
 	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED \
-	FS_LINK_UNCOUNTED \
+	FS_LINK_UNCOUNTED FS_DIR_OPERAND_UNCHECKED \
 	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY BOOT_MENU_NO_LIVE_TOKEN \
 	BOOT_PIN_UNCHECKED BOOT_IMAGE_UNBOUND CONSOLE_PASS_UNGATED \
 	PIPE_CAP_UNACCOUNTED TOKEN_REPLY_MINT_UNMASKED \
@@ -1817,6 +1817,15 @@ SYSCALL_PTR_TRUNC32 ?= 0
 # SYSCALL_PTR_TRUNC32, which is the arm that established the rule.
 # Control arm for make smoke-readdir-end.
 READDIR_END_IS_NOENT ?= 0
+
+# FS_DIR_OPERAND_UNCHECKED=1 restores the fs_server that read any inode as a
+# directory ([HORUS-20261008-01]): a request's directory operand was checked for
+# the caller's permission and never for its TYPE, so a user could write a forged
+# fs_dirent into a file they own, pass the file as the directory, and DELETE or
+# RENAME through it -- fs_server then freed whatever inode the forged entry named,
+# root's /bin programs or /bin itself included. USERSPACE ONLY, like
+# READDIR_END_IS_NOENT above. Control arm for make smoke-fs-dir-operand.
+FS_DIR_OPERAND_UNCHECKED ?= 0
 
 # SHELL_LS_NO_PATH_ARG=1 restores the pre-2026-09-06 `ls` dispatch: the builtin
 # matched the literal strings "ls" and "ls -l" and nothing else, so `ls /bin`
@@ -4715,6 +4724,9 @@ endif
 ifeq ($(READDIR_END_IS_NOENT),1)
 USERSPACE_CFLAGS += -DREADDIR_END_IS_NOENT
 endif
+ifeq ($(FS_DIR_OPERAND_UNCHECKED),1)
+USERSPACE_CFLAGS += -DFS_DIR_OPERAND_UNCHECKED
+endif
 ifeq ($(SHELL_LS_NO_PATH_ARG),1)
 USERSPACE_CFLAGS += -DSHELL_LS_NO_PATH_ARG
 endif
@@ -6117,6 +6129,34 @@ smoke-fs-perms:
 	@$(MAKE) --no-print-directory PERM_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PERM_SELFTEST: PASS' \
 		FAIL_MARKER='PERM_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
+
+# A file is never a directory operand ([HORUS-20261008-01]). fs_server reads a
+# directory as fs_dirent records in ordinary inode data, and a file's bytes are
+# its owner's to write; until 2026-10-08 no directory request checked the
+# operand's TYPE, so a user could forge {ino = root's /bin, type = FILE} in a file
+# they own and DELETE or RENAME through it, freeing any inode. The probe rides in
+# PERM_SELFTEST (it needs a non-root identity, which that build already has); this
+# target exists so the property has a gate that names it, and so the control arm
+# below has a base to extend.
+.PHONY: smoke-fs-dir-operand
+smoke-fs-dir-operand:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PERM_SELFTEST=1
+	@$(MAKE) --no-print-directory PERM_SELFTEST=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PERM_SELFTEST: PASS' \
+		FAIL_MARKER='PERM_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
+
+# The falsifying arm. FS_DIR_OPERAND_UNCHECKED=1 restores the server that read
+# any inode as a directory. The marker is the FIRST stage, the report's own
+# attack: DELETE through a forged entry is accepted, and root's file is freed.
+.PHONY: smoke-fs-dir-operand-control
+smoke-fs-dir-operand-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PERM_SELFTEST=1 FS_DIR_OPERAND_UNCHECKED=1
+	@$(MAKE) --no-print-directory PERM_SELFTEST=1 FS_DIR_OPERAND_UNCHECKED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='PERM_SELFTEST: FAIL dir-operand-delete-file' \
+		tools/smoke_test.sh horus.iso
 
 # Multi-client concurrency: one fs_server, several clients hammering it at once,
 # each verifying it receives its own replies (no cross-talk, no lost replies).

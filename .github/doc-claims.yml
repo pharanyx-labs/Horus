@@ -105,6 +105,8 @@ counts:
         pattern: '`core` \((\d[\d,]*) code lines, \d+ files\)'
       - file: SECURITY.md
         pattern: '(\d[\d,]*) code lines is a lot'
+      - file: docs/ROADMAP.md
+        pattern: 'lines beside a (\d[\d,]*)-line core'
 
   - id: bss_budget_kib
     describe: "the kernel's .bss budget in KiB, from the budget check_image_budget.py holds kernel.elf to"

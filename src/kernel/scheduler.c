@@ -1139,6 +1139,46 @@ void kfault_task(int t) {
     panic_str("'");
 }
 
+/* The ring-3 kill report, on the kernel's own channel ONLY.
+ *
+ * idt.c prints "[task N 'name' killed: ring-3 trap vector V ...]" through
+ * print(), which is right for a person: it reaches the klog, and the console
+ * once nobody owns it. But that is COM1, which ring 3 also writes, and the line
+ * is a character loop like every other: on 2026-10-07 (CI run 37607124523, a
+ * docs-only PR) init's output on another CPU landed inside it,
+ *
+ *     [task 3 'console_serverinit: boot mode default ...
+ *     ' killed: ring-3 trap vector init: starting, launching shell
+ *     13 at rip=0x000003F21EDCC250 ...
+ *
+ * and smoke-kdiag-ioport, which reads that line as its proof that console_server
+ * was refused, reported the refusal missing while its own dump showed it. The
+ * S81 hazard, inside S81's own gate: 1 run in 74 measured.
+ *
+ * So the same line also goes to COM3, which only the kernel writes, under the
+ * survivable claim so two CPUs reporting at once cannot interleave there
+ * either. No COM1 copy: print() already made one, and a second on a live
+ * session would put kernel text in the middle of the shell (finding #126). */
+static void kdiag_str(const char *s) { while (*s) kdiag_ch(*s++); }
+static void kdiag_num(uint64_t v, unsigned base) {
+    char buf[20];
+    int i = 0;
+    do { buf[i++] = "0123456789ABCDEF"[v % base]; v /= base; } while (v);
+    while (i) kdiag_ch(buf[--i]);
+}
+void kdiag_task_killed(int t, uint64_t vector, uint64_t rip, uint64_t rsp) {
+    kfault_begin(0);
+    kdiag_str("[task "); kdiag_num((unsigned)t, 10); kdiag_str(" '");
+    if (t >= 0 && t < g_max_tasks)  /* bounded as kfault_task is: no terminator promised */
+        for (unsigned i = 0; i < sizeof(tasks[t].name) && tasks[t].name[i]; i++)
+            kdiag_ch(tasks[t].name[i]);
+    kdiag_str("' killed: ring-3 trap vector "); kdiag_num(vector, 10);
+    kdiag_str(" at rip=0x"); kdiag_num(rip, 16);
+    kdiag_str(" rsp=0x");    kdiag_num(rsp, 16);
+    kdiag_str("]\n");
+    kfault_end(0);
+}
+
 /* #PF error bits, spelled out. "err=0x11" has cost this project a
  * symbolisation cycle more than once: it is present + instruction fetch at
  * CPL 0 -- the kernel executed a page marked NX -- which is an entirely

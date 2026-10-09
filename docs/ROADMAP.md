@@ -134,7 +134,7 @@ start it.
 ### 2.7a ⬜ Evict the in-kernel services [F-2.7a]
 
 `.github/ring0-classification.yml` (S87) measures the ring-0 `service` class at about 6,000 code
-lines beside a 11,403-line core: `storage.c` (the encrypted store and the on-disk filesystem),
+lines beside a 11,415-line core: `storage.c` (the encrypted store and the on-disk filesystem),
 `kusers.c` (accounts and password hashing), the loader and spawn path, `crypto.c` and
 `syscall_fs.c`. Neither big move is mechanical. `storage.c` holds the volume key, so moving it
 means deciding what a ring-3 storage server may hold; 2.10's phase 2 is that decision for the
@@ -263,7 +263,7 @@ is a second person to review them. Turning on required approval with one maintai
 every merge or needs a bypass actor, which would undo 4.2. `SECURITY.md` therefore claims
 "thoroughly automatically verified", not "independently reviewed".
 
-**4.2.** The gating set is **140 required, 9 exempted** (140 jobs, 149 contexts; re-derive with
+**4.2.** The gating set is **141 required, 9 exempted** (141 jobs, 150 contexts; re-derive with
 `tools/check_ci_gating.py`). The exemptions come from three jobs and are properties of the test,
 not open defects: `fuzz` (seven targets fuzzed nightly, never on a pull request), `kani-arms` and
 `ruleset-audit` (both run on a schedule, never on a pull request).
@@ -275,7 +275,7 @@ from a tag and compare. They wait on 3.1, since an ISO that does not rebuild to 
 same bytes cannot be verified by rebuilding.
 
 **4.12.** The exemption list in `.github/invariants.yml` is currently
-**empty**: all 125 properties name a witness that resolves.
+**empty**: all 126 properties name a witness that resolves.
 
 ---
 
@@ -297,5 +297,5 @@ same bytes cannot be verified by rebuilding.
 | ✅ | Measured boot, the kernel pinned in the boot image, and a PCR-sealed volume key |
 | ✅ | An IOMMU confining device DMA, and device capabilities that name one device each |
 | ◧ | Reproducible `kernel.elf` (not yet the ISO), an SBOM, CodeQL, Dependabot, signed commits, a protected `main` |
-| ✅ | 466 `smoke-*` targets, nearly all QEMU integration tests, and 252 of them control arms that must reproduce a defect |
+| ✅ | 468 `smoke-*` targets, nearly all QEMU integration tests, and 253 of them control arms that must reproduce a defect |
 | ✅ | Bounded Kani proofs, Miri over the Rust core, and fuzzing at the FFI boundary |

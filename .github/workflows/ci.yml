@@ -198,6 +198,7 @@ jobs:
       - smoke-tsd
       - smoke-wx
       - smoke-wx-smp
+      - shootdown-unacked
       - store-locked
       - switch-commit
       - syscall-abi
@@ -3083,6 +3084,26 @@ jobs:
         run: make smoke-switch-commit
       - name: Control arm — commit first and the claim is orphaned
         run: make smoke-switch-commit-control
+
+  shootdown-unacked:
+    name: "A TLB shootdown a CPU never acknowledges halts instead of returning (control arm proves it)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # One CPU flushes without acknowledging. The wait's bound runs out, and the
+      # kernel must halt with a named panic rather than tell its caller the flush
+      # happened: a caller freeing the page would leave it writable from that CPU.
+      - name: An unacknowledged shootdown halts
+        run: make smoke-shootdown-unacked
+      - name: Control arm — the old wait returns with an acknowledgement outstanding
+        run: make smoke-shootdown-unacked-control
 
   claim-release:
     name: "A CPU in ring 3 owes no deferred release (G-9 class; control arm proves it)"

@@ -345,7 +345,8 @@ real-time guarantees. Under TCG emulation more cores are slower than one; the be
 hardware. Each supported CPU costs about 104 KiB of `.bss` whether present or not, so beyond about
 16 the per-CPU blocks would have to be allocated at boot. The scheduler, capability, IPC, spawn,
 page and storage locks are each global, so beyond eight to sixteen cores extra CPUs mostly wait.
-The SMP race gates run at four CPUs; `smoke-smp-topology` covers bring-up at eight.
+The SMP race gates run at four CPUs; `smoke-smp-topology` covers bring-up at eight. The design that
+replaces this is [`design/scheduler.md`](design/scheduler.md) (ROADMAP 1.8).
 
 ### 3.4 One clock, and no timers
 

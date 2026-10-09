@@ -188,7 +188,7 @@ shipped kernel.
 | 80 | `SYS_IOPORT_GRANT` | `(dev_slot)` | Grant native ring-3 in/out on the named device's ports via the TSS I/O bitmap (CAP_IO_DEVICE + WRITE in dev_slot) | `CAP_IO_DEVICE` at `dev_slot` |
 | 81 | `SYS_IRQ_REGISTER` | `(dev_slot, irq, notif_slot, badge)` | Route an IRQ the named device declares to an async notification (CAP_IO_DEVICE + WRITE in dev_slot) | `CAP_IO_DEVICE` at `dev_slot` declaring the line, and a `CAP_NOTIFICATION` at `notif_slot` |
 | 82 | `SYS_CONSOLE_OWNED` | `()` | Whether a ring-3 console server owns the console hardware | none (read-only status) |
-| 83 | `SYS_PIPE` | `()` | Create a bounded pipe, install a read/write CAP_PIPE in the caller's cspace | none (own cspace), but the two ends count against `MAX_CAPS_PER_TASK` and the call is refused with `SYS_ERR_NOMEM` at the ceiling (S94) |
+| 83 | `SYS_PIPE` | `()` | Create a bounded pipe, install a read/write CAP_PIPE in the caller's cspace, at the first free slots at or above `CAPSLOT_DYNAMIC_FIRST` (64) (S122) | none (own cspace), but the two ends count against `MAX_CAPS_PER_TASK` and the call is refused with `SYS_ERR_NOMEM` at the ceiling (S94) |
 | 84 | `SYS_PIPE_READ` | `(slot, buf, len)` | 0 = EOF, SYS_ERR_AGAIN = empty-but-writers-open | `CAP_PIPE` READ at `slot` |
 | 85 | `SYS_PIPE_WRITE` | `(slot, buf, len)` | SYS_ERR_AGAIN = full-but-reader-open, SYS_ERR_PIPE = no reader | `CAP_PIPE` WRITE at `slot` |
 | 86 | `SYS_PIPE_CLOSE` | `(slot)` | Drop a pipe-end cap and unref that end | `CAP_PIPE` at `slot` |

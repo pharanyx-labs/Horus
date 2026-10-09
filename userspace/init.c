@@ -328,10 +328,28 @@ static void report_storage(void) {
  * can narrow a client's capability but never fabricate one; and the root
  * directory's tokened capability, minted here because init holds the endpoint's
  * mint right. Kept for the session grants of step 3; nothing uses it before. */
-#define INIT_FS_SRV         42
+#define INIT_FS_SRV         44
 #define INIT_FS_ROOT        43
 #define INIT_DEV_CLIENT     41   /* the same endpoint, WRITE only (init as client) */
 #define INIT_CON_NOTIFY     42   /* CAP_NOTIFICATION, retyped: console_server's input wait */
+
+/* EVERY SLOT INIT FILLS, AS CASE LABELS, so two of them sharing a number is a
+ * compile error rather than a capability put where another already is. Phase 1b
+ * step 1 (#515) gave INIT_FS_SRV the 42 that INIT_CON_NOTIFY already had: the
+ * filesystem endpoint was minted there and granted to fs_server, and then the
+ * console's notification was retyped into the same slot. INIT_CON_CLIENT_SLOT
+ * is INIT_CON_CLIENT under its old name, so it is not listed twice. */
+static void __attribute__((unused)) init_slots_distinct(int slot)
+{
+    switch (slot) {
+    case INIT_FS_LISTEN: case INIT_CON_LISTEN: case INIT_CON_CLIENT: case INIT_NOTIFY:
+    case INIT_KERNEL_LOG: case INIT_BOOT_MODULE: case INIT_DEV_LISTEN: case INIT_DEV_CLIENT:
+    case INIT_CON_NOTIFY: case INIT_FS_SRV: case INIT_FS_ROOT:
+        break;
+    default:
+        break;
+    }
+}
 
 /* Launch the userspace fs_server and provision it entirely by delegation: init
  * grants the server all four capabilities it needs — the coarse IPC gate (slot

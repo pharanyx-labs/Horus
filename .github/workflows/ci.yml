@@ -1481,6 +1481,11 @@ jobs:
       # flag because captest reports the failure as `CAPTEST: FAIL`.
       - name: Control arm — a pipe end that costs no capability budget
         run: make smoke-cap-accounting-control
+      # S122. A capability the kernel allocates must not land in a well-known
+      # slot. The arm puts the floor back at 16, and captest's SYS_PIPE hands
+      # back ends below CAPSLOT_DYNAMIC_FIRST.
+      - name: Control arm — a pipe end in a well-known slot
+        run: make smoke-captest-pipe-slot-control
       # S72. The one call that DESTROYS a volume answers to a capability of its
       # own. The arm removes the whole dispatch row -- slot, rights and type --
       # so captest reaches the handler and SUCCEEDS, which is the condition a

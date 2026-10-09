@@ -1735,6 +1735,15 @@ def bootdisk(disk):
         if not login(s, "root", PASSWORD, BOOT):
             raise SessionFail("the installed password did not log in on the disk's own boot")
         step("logged in on a machine started from its own disk, with no install media")
+        # A PIPELINE AS THE FIRST COMMAND. The shell connects to the filesystem
+        # lazily, so here, before anything else touches a file, its slot 20 is
+        # still empty. SYS_PIPE used to put a pipe end there, reading /bin/seq then
+        # installed the filesystem endpoint on top of it, and the pipeline hung
+        # for good. It must print 3 and come back to the prompt.
+        out = _sh(s, "seq 3 | wc -l", timeout=STEP)
+        if not any(ln.strip() == "3" for ln in out.splitlines()):
+            raise SessionFail(f"`seq 3 | wc -l` as the first command printed {out[-200:]!r}, not 3")
+        step("a pipeline as the first command after login ran and printed 3")
         # SWAP, WHEN THE BUILD CARRIES ITS SELF-TEST (SWAP_SELFTEST=1): the login
         # unlocked the volume, which turned swap on beside it, and the store's
         # self-test printed one line to the kernel log. SWAP_EXPECT is "ok", or

@@ -285,7 +285,7 @@ from a tag and compare. They wait on 3.1, since an ISO that does not rebuild to 
 same bytes cannot be verified by rebuilding.
 
 **4.12.** The exemption list in `.github/invariants.yml` is currently
-**empty**: all 123 properties name a witness that resolves.
+**empty**: all 124 properties name a witness that resolves.
 
 ---
 
@@ -307,5 +307,5 @@ same bytes cannot be verified by rebuilding.
 | ✅ | Measured boot, the kernel pinned in the boot image, and a PCR-sealed volume key |
 | ✅ | An IOMMU confining device DMA, and device capabilities that name one device each |
 | ◧ | Reproducible `kernel.elf` (not yet the ISO), an SBOM, CodeQL, Dependabot, signed commits, a protected `main` |
-| ✅ | 463 `smoke-*` targets, nearly all QEMU integration tests, and 249 of them control arms that must reproduce a defect |
+| ✅ | 464 `smoke-*` targets, nearly all QEMU integration tests, and 250 of them control arms that must reproduce a defect |
 | ✅ | Bounded Kani proofs, Miri over the Rust core, and fuzzing at the FFI boundary |

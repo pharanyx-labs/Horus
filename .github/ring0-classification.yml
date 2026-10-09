@@ -489,7 +489,19 @@
 # pinned by identity (g_init_task) and named; the hold has an SMP and a
 # uniprocessor form. Core because it is the
 # scheduler's selection and the page tables; nothing of it can live in a server.
-core_budget_loc: 11403
+# 2026-10-09: 11403 -> 11415, +12, S124: smp_maybe_shootdown halts with a named
+# panic when its bounded wait runs out with an acknowledgement outstanding,
+# instead of returning as though the flush had happened (+7), and the
+# SHOOTDOWN_DEAF_CPU instrument that witnesses it, never in the ship build (+5).
+# Core because it is the TLB coherence protocol itself.
+# 2026-10-09: 11415 -> 11375, -40: the rule for which task a CPU may run next,
+# written out at six selection sites, is one function (sched_selectable) and one
+# walk (sched_pick_after). Lowered to the measured size so the lines cannot
+# quietly come back.
+# 2026-10-09: 11375 -> 11381, +6, S101 by construction: preempt_on_tick refuses
+# to schedule on an SMT sibling whatever interrupts it (the guard and its
+# SIBLING_SCHED_UNGUARDED arm). Core because it is the scheduler's own decision.
+core_budget_loc: 11381
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

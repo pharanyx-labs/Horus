@@ -87,8 +87,8 @@ stopped, giving each eligible page one pass with its accessed bit cleared before
 
 **No CPU can be translating a page while it changes.** For the faulting task that is because this
 CPU runs it. For any other task it is the **pager's hold** (`sched_pager_hold`): taken under the
-scheduler lock only when no CPU has the task claimed or current, and while it is set every
-selection loop skips the task and `enter_user_impl` waits, so the task cannot start anywhere until
+scheduler lock only when no CPU has the task claimed or current, and while it is set the one
+selection rule (`sched_selectable`) skips the task and `enter_user_impl` waits, so the task cannot start anywhere until
 its batch is done. A CPU that is not running a task touches none of its user addresses, and any CPU
 that starts running it writes CR3 first, which drops every non-global entry (Horus uses no PCIDs):
 the argument `clone_user_aspace` already rests on. So no shootdown is needed, which matters because

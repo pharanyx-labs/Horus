@@ -1368,6 +1368,16 @@ void smp_selftest(void) {
     unsigned long t0 = ap_timer_ticks;
     for (int spins = 0; spins < 4000; spins++) {
         for (volatile int d = 0; d < 200000; d++) __asm__ volatile ("pause");
+#ifdef SIBLING_KICK_TEST
+        /* INSTRUMENT, never shipped: interrupt every parked SMT sibling with the
+         * 0xFC vector on every poll, while a worker is always runnable. The
+         * sibling check below must still find no task on a sibling (S101). */
+        {
+            extern int cpu_is_smt_sibling(int cpu);
+            for (int c = 1; c < MAX_CPUS; c++)
+                if (cpu_is_smt_sibling(c)) smp_kick_cpu(c);
+        }
+#endif
         unsigned mask = smp_cpus_ran_tasks;
         int distinct = 0;
         for (int c = 0; c < 32; c++) if (mask & (1u << c)) distinct++;

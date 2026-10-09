@@ -196,7 +196,9 @@ DEFECT_FLAGS = \
 	MEM_SEAL_KEEPS_WRITE MEM_SEAL_ANY_ADDRESS \
 	DYNLINK_ABI_UNCHECKED DYNLINK_UNKNOWN_ZERO DYNLINK_NO_SEAL \
 	COREUTILS_STATIC_LIBC \
-	INSTALLER_STOP_AFTER_FORMAT USERS_PERSIST_COMPILED_IN LIVE_OPENS_VOLUME
+	INSTALLER_STOP_AFTER_FORMAT USERS_PERSIST_COMPILED_IN LIVE_OPENS_VOLUME \
+	SIBLING_KICK_TEST SIBLING_SCHED_UNGUARDED \
+	SHOOTDOWN_DEAF_CPU SHOOTDOWN_FAIL_OPEN
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -1820,6 +1822,30 @@ endif
 DEAD_TASK_RUNS ?= 0
 ifeq ($(DEAD_TASK_RUNS),1)
 CFLAGS += -DDEAD_TASK_RUNS
+endif
+
+# SIBLING_KICK_TEST=1 (instrument) interrupts every parked SMT sibling during the
+# SMP selftest; SIBLING_SCHED_UNGUARDED=1 (defect) lets preempt_on_tick schedule
+# on a sibling, as before 2026-10-09. See smoke-sibling-kick.
+SIBLING_KICK_TEST ?= 0
+ifeq ($(SIBLING_KICK_TEST),1)
+CFLAGS += -DSIBLING_KICK_TEST
+endif
+SIBLING_SCHED_UNGUARDED ?= 0
+ifeq ($(SIBLING_SCHED_UNGUARDED),1)
+CFLAGS += -DSIBLING_SCHED_UNGUARDED
+endif
+
+# SHOOTDOWN_DEAF_CPU=1 (instrument) makes one CPU flush without acknowledging a
+# TLB shootdown; SHOOTDOWN_FAIL_OPEN=1 (defect) restores the wait that returned
+# anyway. See smoke-shootdown-unacked.
+SHOOTDOWN_DEAF_CPU ?= 0
+ifeq ($(SHOOTDOWN_DEAF_CPU),1)
+CFLAGS += -DSHOOTDOWN_DEAF_CPU
+endif
+SHOOTDOWN_FAIL_OPEN ?= 0
+ifeq ($(SHOOTDOWN_FAIL_OPEN),1)
+CFLAGS += -DSHOOTDOWN_FAIL_OPEN
 endif
 
 CLOCK_TSC_RESOLUTION ?= 0
@@ -8317,6 +8343,60 @@ smoke-smp:
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=$(SMP_CPUS) REQUIRE_MARKER='SMP_SELFTEST: PASS' \
 		FAIL_MARKER='SMP_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
+# No task runs on an SMT sibling even when one is interrupted (S101). Two cores
+# of two threads: one sibling per core, two schedulable CPUs, and the selftest's
+# two workers, so one is always runnable and waiting while the BSP sends 0xFC to
+# both siblings on every poll. preempt_on_tick must refuse to schedule there.
+SIBLING_KICK_TOPOLOGY ?= 4,cores=2,threads=2
+.PHONY: smoke-sibling-kick
+smoke-sibling-kick:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SIBLING_KICK_TEST=1
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SIBLING_KICK_TEST=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS='$(SIBLING_KICK_TOPOLOGY)' \
+		REQUIRE_MARKER='SMP_SELFTEST: PASS online=2 ' \
+		FAIL_MARKER='SMP_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
+
+# Control arm: the same kicks without the refusal. A sibling takes the waiting
+# worker, and the selftest's per-poll sibling check reports it.
+.PHONY: smoke-sibling-kick-control
+smoke-sibling-kick-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SIBLING_KICK_TEST=1 SIBLING_SCHED_UNGUARDED=1
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SIBLING_KICK_TEST=1 SIBLING_SCHED_UNGUARDED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS='$(SIBLING_KICK_TOPOLOGY)' \
+		REQUIRE_MARKER='SMP_SELFTEST: FAIL task-ran-on-smt-sibling' \
+		tools/smoke_test.sh horus.iso
+
+# A TLB shootdown that is not acknowledged halts the kernel instead of returning
+# (design/scheduler.md 3.8). SHOOTDOWN_DEAF_CPU=1 makes the highest online CPU
+# flush without acknowledging, so the selftest's shootdown can never complete;
+# the gate requires the kernel's named panic. Before 2026-10-09 the wait fell
+# through its bound and the call returned as though every CPU had flushed.
+# The bound is 100M `pause`s, which took 24 s to run out under TCG on the
+# development machine; the boot must outlast it, so the timeout is not the default.
+SHOOTDOWN_UNACKED_TIMEOUT ?= 120
+.PHONY: smoke-shootdown-unacked
+smoke-shootdown-unacked:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SHOOTDOWN_DEAF_CPU=1
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SHOOTDOWN_DEAF_CPU=1 horus.iso
+	@SMOKE_TIMEOUT=$(SHOOTDOWN_UNACKED_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=$(SMP_CPUS) \
+		EXPECT_FAULT='PANIC: tlb shootdown unacknowledged' \
+		tools/smoke_test.sh horus.iso
+
+# Control arm: the same deaf CPU with the old fall-through. The shootdown returns
+# with an acknowledgement outstanding, which the selftest's own check then reports;
+# the base gate, which wants the kernel's panic, goes red on the same build.
+.PHONY: smoke-shootdown-unacked-control
+smoke-shootdown-unacked-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SHOOTDOWN_DEAF_CPU=1 SHOOTDOWN_FAIL_OPEN=1
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SHOOTDOWN_DEAF_CPU=1 SHOOTDOWN_FAIL_OPEN=1 horus.iso
+	@SMOKE_TIMEOUT=$(SHOOTDOWN_UNACKED_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=$(SMP_CPUS) \
+		REQUIRE_MARKER='SMP_SELFTEST: FAIL shootdown pending=' \
+		tools/smoke_test.sh horus.iso
+
 # The SMP race BASE gates again, under KVM: a second environment for gates whose
 # evidence and control arms live under TCG (TESTS.md, "CI"). Needs a usable
 # /dev/kvm; QEMU_ACCEL=kvm makes the harness refuse to run without one rather
@@ -8372,10 +8452,16 @@ smoke-smp-topology-sparse-control:
 # threads the counts still read 4 online and 4 parked, so the self-test's own
 # per-CPU sibling check is what must catch it.
 .PHONY: smoke-smp-topology-sibling-control
+# TWO LOCKS, ONE ARM EACH. Since 2026-10-09 preempt_on_tick also refuses to
+# schedule on a sibling (smoke-sibling-kick), and it decides sibling-ness from the
+# LAPIC id whatever ap_entry64 got wrong, so it catches this defect by itself and
+# the arm went green-blind. SIBLING_SCHED_UNGUARDED=1 takes that second lock out,
+# so this arm still proves the parking decision on its own; smoke-sibling-kick-
+# control proves the refusal on its own. The base gate goes red only with both out.
 smoke-smp-topology-sibling-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SMT_SIBLING_BY_INDEX=1
-	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SMT_SIBLING_BY_INDEX=1 horus.iso
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SMT_SIBLING_BY_INDEX=1 SIBLING_SCHED_UNGUARDED=1
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SMT_SIBLING_BY_INDEX=1 SIBLING_SCHED_UNGUARDED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=8,sockets=1,cores=4,threads=2 \
 		REQUIRE_MARKER='SMP_SELFTEST: FAIL task-ran-on-smt-sibling' tools/smoke_test.sh horus.iso
 
@@ -12029,24 +12115,70 @@ smoke-defer-exemption-control:
 # ends at the workload's last line, and the injection is then required to have
 # fired at all, so a boot that never refused a switch cannot pass as one that
 # refused them all cleanly. The count is printed so a run says how much it saw.
+#
+# A WORKLOAD THAT STOPPED SHORT IS INCONCLUSIVE, NOT A MISS (2026-10-09). The
+# injection forges every exit switch, so each one refuses its task and parks the
+# CPU, and the workload then advances only when a tick happens to pick that task
+# up. Under KVM it sometimes does not finish inside the timeout: on main it ran
+# out the slot-reuse phase's three rounds (a refusal parks a CPU on the dying
+# task's kernel stack, whose slot the kernel rightly will not reuse, S20) and
+# printed `FAIL tcb-reuse-not-reached`; on #525 it stalled after `suspend OK`
+# with 43 refusals and no failure line. Three of the first seven KVM runs went
+# red that way. Neither boot says anything about stale claims, so such a boot is
+# retried, up to SWITCH_COMMIT_BOOTS, and never scored as a pass.
+#
+# A pass still needs the finished workload. Counting refusals instead was
+# considered and rejected: these lines are written past the console lock and
+# arrive shredded, so a shredded stale-claim panic in a stalled boot would read
+# as a clean stall. Requiring completion fails closed there, since a kernel
+# that panicked never finishes. Red at once, never retried: a stale claim, any
+# PANIC, any self-test failure other than the unreached slot reuse. Red at the
+# end: every boot inconclusive. Every attempt's log is kept, as
+# .switch-commit.<n>.log.
 SWITCH_COMMIT_LOG := .switch-commit.log
+SWITCH_COMMIT_BOOTS ?= 10
 .PHONY: smoke-switch-commit
 smoke-switch-commit:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 KSP_GUARD_INJECT=1
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 KSP_GUARD_INJECT=1 horus.iso
-	@rm -f $(SWITCH_COMMIT_LOG)
-	@SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMOKE_LOG=$(SWITCH_COMMIT_LOG) \
-		REQUIRE_MARKER='PROC_SELFTEST: killed-task OK' \
-		FAIL_MARKER='stale scheduler claim' \
-		tools/smoke_test.sh horus.iso
-	@n=$$(grep -cF 'SCHED BOGUS KSP from task_exit_switch' $(SWITCH_COMMIT_LOG)); \
+	@rm -f $(SWITCH_COMMIT_LOG) .switch-commit.*.log
+	@a=0; incon=0; \
+	while [ $$a -lt $(SWITCH_COMMIT_BOOTS) ]; do \
+	    a=$$((a+1)); log=.switch-commit.$$a.log; \
+	    SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMOKE_LOG=$$log \
+	        REQUIRE_MARKER='PROC_SELFTEST: killed-task OK' \
+	        FAIL_MARKER='stale scheduler claim' \
+	        tools/smoke_test.sh horus.iso; rc=$$?; \
+	    if [ $$rc -eq 0 ]; then cp $$log $(SWITCH_COMMIT_LOG); break; fi; \
+	    if grep -qF 'stale scheduler claim' $$log; then \
+	        echo "SWITCH COMMIT: FAIL - stale scheduler claim on boot $$a (log kept: $$log)"; \
+	        exit 1; \
+	    fi; \
+	    if grep -qF 'PANIC' $$log; then \
+	        echo "SWITCH COMMIT: FAIL - the kernel panicked on boot $$a (log kept: $$log)"; \
+	        exit 1; \
+	    fi; \
+	    if [ $$(grep -F 'PROC_SELFTEST: FAIL' $$log | grep -vcF 'tcb-reuse-not-reached') -gt 0 ]; then \
+	        echo "SWITCH COMMIT: FAIL - boot $$a failed a self-test check other than the unreached slot reuse (log kept: $$log)"; \
+	        exit 1; \
+	    fi; \
+	    incon=$$((incon+1)); \
+	    if grep -qF 'PROC_SELFTEST: FAIL tcb-reuse-not-reached' $$log; then why="the slot-reuse phase was never reached"; \
+	    else why="it stalled after: $$(grep -aoE 'PROC_SELFTEST: [^[:cntrl:]]*' $$log | tail -1)"; fi; \
+	    echo "  attempt $$a/$(SWITCH_COMMIT_BOOTS): INCONCLUSIVE - the workload stopped short, $$why; retrying (log kept: $$log)"; \
+	done; \
+	if [ ! -f $(SWITCH_COMMIT_LOG) ]; then \
+	    echo "SWITCH COMMIT: FAIL - all $(SWITCH_COMMIT_BOOTS) boots were inconclusive. Exhausting the bound is a FAILURE, not a pass."; \
+	    exit 1; \
+	fi; \
+	n=$$(grep -cF 'SCHED BOGUS KSP from task_exit_switch' $(SWITCH_COMMIT_LOG)); \
 	if [ "$$n" -lt 1 ]; then \
 	    echo "SWITCH COMMIT: FAIL - the workload finished but no switch was refused,"; \
 	    echo "  so this boot tested nothing (log kept: $(SWITCH_COMMIT_LOG))"; \
 	    exit 1; \
 	fi; \
-	echo "SWITCH COMMIT: PASS - $$n refused switches over the whole workload, no stale claim"
+	echo "SWITCH COMMIT: PASS - $$n refused switches over the whole workload, no stale claim (boot $$a of $(SWITCH_COMMIT_BOOTS), $$incon inconclusive before it)"
 
 # Control arm: same injection, pre-fix ordering. The claim is taken before the
 # value is validated, the refusal parks the CPU, and the claim is orphaned --

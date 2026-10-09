@@ -196,6 +196,7 @@ static const char *fs_reason(int rc) {
     case SYS_ERR_NOENT:  return "not found";
     case SYS_ERR_INVAL:  return "invalid name";
     case SYS_ERR_BUSY:   return "directory not empty";
+    case SYS_ERR_XDEV:   return "cannot move between directories (copy instead)";
     case SYS_ERR_NOMEM:  return "no space left on the volume";
     case SYS_ERR_IO:     return "I/O error";
     case SYS_ERR_NOSYS:  return "unsupported operation";

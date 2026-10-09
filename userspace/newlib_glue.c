@@ -368,6 +368,7 @@ int link(const char *old, const char *new) {
         case SYS_ERR_PERM:  errno = EACCES; break;   /* no write on parent dir / not owner */
         case SYS_ERR_NOENT: errno = ENOENT; break;   /* source missing / bad path */
         case SYS_ERR_INVAL: errno = EEXIST; break;   /* new name exists, or source is a directory */
+        case SYS_ERR_XDEV:  errno = EXDEV;  break;   /* new name in another directory (decision 11) */
         default:            errno = EIO;    break;   /* transport / other */
     }
     return -1;
@@ -421,6 +422,7 @@ int rename(const char *oldpath, const char *newpath) {
         case SYS_ERR_PERM:  errno = EACCES; break;   /* no write on a parent dir */
         case SYS_ERR_NOENT: errno = ENOENT; break;   /* source missing / bad path */
         case SYS_ERR_INVAL: errno = EINVAL; break;   /* bad name / illegal dir move */
+        case SYS_ERR_XDEV:  errno = EXDEV;  break;   /* across directories: the caller copies */
         default:            errno = EIO;    break;   /* transport / other */
     }
     return -1;

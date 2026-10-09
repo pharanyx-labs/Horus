@@ -293,6 +293,14 @@ S104). Encryption is the default. On an unsealed volume:
 
 It does not make installing faster; the metadata region is laid down the same way.
 
+### 2.22 A file cannot be moved to another directory
+
+`rename` and `link` across directories are refused with `EXDEV` (`SECURITY.md` S121), because in
+the capability-addressed filesystem a file's rights come from its path, and a move would change
+who may reach it. The rule that would allow a safe move (`docs/design/filesystem.md` §5.5) needs
+each object's back-references, which arrive with the v12 format in phase 3. Until then a mover
+copies the file and removes the original, and a directory cannot be moved at all.
+
 ---
 
 ## 3. Scale and performance
@@ -380,7 +388,9 @@ waits until it is woken or killed. The PIT runs at a fixed 100 Hz.
   it first. One thread per address space.
 - **More than one filesystem.** One volume and one `fs_server`, plus `dev_server` in self-test
   builds. The capability filesystem of [`design/filesystem.md`](design/filesystem.md) has its
-  kernel half (phase 1a, IPC tokens, S105); the server half is not built.
+  kernel half (phase 1a, IPC tokens, S105), and `fs_server` answers through capabilities (S120)
+  and refuses moves across directories (S121); no client walks with capabilities yet, so programs
+  still reach files by the uid path (phase 1b steps 2 to 6).
 - **Swap takes only from the task that needs memory.** On an installed boot, a task low on frames
   pages its own idle pages out to the sealed partition and brings them back on touch (S118, S119).
   A large idle task never gives memory to a small busy one: taking another task's pages needs a

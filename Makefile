@@ -8410,10 +8410,16 @@ smoke-smp-topology-sparse-control:
 # threads the counts still read 4 online and 4 parked, so the self-test's own
 # per-CPU sibling check is what must catch it.
 .PHONY: smoke-smp-topology-sibling-control
+# TWO LOCKS, ONE ARM EACH. Since 2026-10-09 preempt_on_tick also refuses to
+# schedule on a sibling (smoke-sibling-kick), and it decides sibling-ness from the
+# LAPIC id whatever ap_entry64 got wrong, so it catches this defect by itself and
+# the arm went green-blind. SIBLING_SCHED_UNGUARDED=1 takes that second lock out,
+# so this arm still proves the parking decision on its own; smoke-sibling-kick-
+# control proves the refusal on its own. The base gate goes red only with both out.
 smoke-smp-topology-sibling-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SMT_SIBLING_BY_INDEX=1
-	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SMT_SIBLING_BY_INDEX=1 horus.iso
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SMT_SIBLING_BY_INDEX=1 SIBLING_SCHED_UNGUARDED=1
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SMT_SIBLING_BY_INDEX=1 SIBLING_SCHED_UNGUARDED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=8,sockets=1,cores=4,threads=2 \
 		REQUIRE_MARKER='SMP_SELFTEST: FAIL task-ran-on-smt-sibling' tools/smoke_test.sh horus.iso
 

@@ -250,10 +250,10 @@ exempt:
   smoke-switch-commit: >
     Asserts each boot's exit status. A boot passes only by reaching the
     workload's last line, and the passing boot must also show at least one
-    refused switch. It retries only a boot whose single failure is
-    `tcb-reuse-not-reached` (the workload stopped before it could finish), is red
-    at once on a stale claim or any other failure, is red when every boot was
-    inconclusive, and keeps every attempt's log.
+    refused switch. It retries only a boot whose workload stopped short with no
+    failure of its own: no stale claim, no PANIC, and no self-test FAIL line but
+    `tcb-reuse-not-reached`. It is red at once on any of those, red when every
+    boot was inconclusive, and keeps every attempt's log.
   smoke-switch-commit-control: >
     Same mechanism as smoke-claim-release-control: retry on inconclusive only,
     a completed run without the stale claim is a real miss, and every attempt's

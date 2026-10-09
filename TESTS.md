@@ -128,7 +128,7 @@ There are 430 `smoke-*` targets: 204 gates and 226 control arms. Each row is a g
 | `smoke-smp-topology` | Eight CPUs on four topologies, including sparse LAPIC ids and hyperthreads, where primary threads get the CPU slots first | S101 | `smoke-smp-topology-sibling-control`, `smoke-smp-topology-sparse-control` |
 | `smoke-smp-kvm` | The SMP race base gates again under KVM, where vCPUs truly run in parallel; required since its measured 83 of 83 green runs |  |  |
 | `smoke-smt` | SMT siblings are parked | S101 |  |
-| `smoke-switch-commit` | No refused switch, over the whole process workload, leaves a stale scheduler claim behind; a boot that stops early because the slot-reuse phase was never reached is retried up to eight times, never passed |  | `smoke-switch-commit-control` |
+| `smoke-switch-commit` | No refused switch, over the whole process workload, leaves a stale scheduler claim behind; a boot whose workload stops short with no failure of its own is retried up to ten times, never passed |  | `smoke-switch-commit-control` |
 
 ### IPC, processes and signals
 

@@ -12072,20 +12072,27 @@ smoke-defer-exemption-control:
 # fired at all, so a boot that never refused a switch cannot pass as one that
 # refused them all cleanly. The count is printed so a run says how much it saw.
 #
-# AN UNREACHED SLOT REUSE IS INCONCLUSIVE, NOT A MISS (2026-10-09). Running the
-# whole workload takes the gate through PROC_SELFTEST's slot-reuse phase, which
-# needs a fresh task to land in a slot just vacated. Each refusal parks a CPU on
-# the dying task's kernel stack, and the kernel rightly will not hand that slot
-# out while a CPU is on it (S20), so under KVM the phase sometimes runs out its
-# three rounds, prints `FAIL tcb-reuse-not-reached` and stops the workload before
-# `killed-task OK`. That boot says nothing about stale claims either way: it was
-# red on main and on 2 of the 5 KVM runs that carried this gate first. So a boot
-# whose only failure is that line is retried, up to SWITCH_COMMIT_BOOTS, and
-# never scored as a pass. Anything else is red at once and not retried: a stale
-# claim, any other self-test failure, a boot that times out without a reason.
-# Every attempt's log is kept, as .switch-commit.<n>.log.
+# A WORKLOAD THAT STOPPED SHORT IS INCONCLUSIVE, NOT A MISS (2026-10-09). The
+# injection forges every exit switch, so each one refuses its task and parks the
+# CPU, and the workload then advances only when a tick happens to pick that task
+# up. Under KVM it sometimes does not finish inside the timeout: on main it ran
+# out the slot-reuse phase's three rounds (a refusal parks a CPU on the dying
+# task's kernel stack, whose slot the kernel rightly will not reuse, S20) and
+# printed `FAIL tcb-reuse-not-reached`; on #525 it stalled after `suspend OK`
+# with 43 refusals and no failure line. Three of the first seven KVM runs went
+# red that way. Neither boot says anything about stale claims, so such a boot is
+# retried, up to SWITCH_COMMIT_BOOTS, and never scored as a pass.
+#
+# A pass still needs the finished workload. Counting refusals instead was
+# considered and rejected: these lines are written past the console lock and
+# arrive shredded, so a shredded stale-claim panic in a stalled boot would read
+# as a clean stall. Requiring completion fails closed there, since a kernel
+# that panicked never finishes. Red at once, never retried: a stale claim, any
+# PANIC, any self-test failure other than the unreached slot reuse. Red at the
+# end: every boot inconclusive. Every attempt's log is kept, as
+# .switch-commit.<n>.log.
 SWITCH_COMMIT_LOG := .switch-commit.log
-SWITCH_COMMIT_BOOTS ?= 8
+SWITCH_COMMIT_BOOTS ?= 10
 .PHONY: smoke-switch-commit
 smoke-switch-commit:
 	@$(MAKE) --no-print-directory clean
@@ -12104,14 +12111,18 @@ smoke-switch-commit:
 	        echo "SWITCH COMMIT: FAIL - stale scheduler claim on boot $$a (log kept: $$log)"; \
 	        exit 1; \
 	    fi; \
-	    if grep -qF 'PROC_SELFTEST: FAIL tcb-reuse-not-reached' $$log && \
-	       [ $$(grep -cF 'PROC_SELFTEST: FAIL' $$log) -eq 1 ]; then \
-	        incon=$$((incon+1)); \
-	        echo "  attempt $$a/$(SWITCH_COMMIT_BOOTS): INCONCLUSIVE - the slot-reuse phase was never reached, so the workload stopped early; retrying (log kept: $$log)"; \
-	        continue; \
+	    if grep -qF 'PANIC' $$log; then \
+	        echo "SWITCH COMMIT: FAIL - the kernel panicked on boot $$a (log kept: $$log)"; \
+	        exit 1; \
 	    fi; \
-	    echo "SWITCH COMMIT: FAIL - boot $$a failed for a reason other than an unreached slot reuse (log kept: $$log)"; \
-	    exit 1; \
+	    if [ $$(grep -F 'PROC_SELFTEST: FAIL' $$log | grep -vcF 'tcb-reuse-not-reached') -gt 0 ]; then \
+	        echo "SWITCH COMMIT: FAIL - boot $$a failed a self-test check other than the unreached slot reuse (log kept: $$log)"; \
+	        exit 1; \
+	    fi; \
+	    incon=$$((incon+1)); \
+	    if grep -qF 'PROC_SELFTEST: FAIL tcb-reuse-not-reached' $$log; then why="the slot-reuse phase was never reached"; \
+	    else why="it stalled after: $$(grep -aoE 'PROC_SELFTEST: [^[:cntrl:]]*' $$log | tail -1)"; fi; \
+	    echo "  attempt $$a/$(SWITCH_COMMIT_BOOTS): INCONCLUSIVE - the workload stopped short, $$why; retrying (log kept: $$log)"; \
 	done; \
 	if [ ! -f $(SWITCH_COMMIT_LOG) ]; then \
 	    echo "SWITCH COMMIT: FAIL - all $(SWITCH_COMMIT_BOOTS) boots were inconclusive. Exhausting the bound is a FAILURE, not a pass."; \

@@ -2535,6 +2535,12 @@ jobs:
       # granted in full and the client must name it.
       - name: Control arm — a reply-mint not bounded by the capability the request came through
         run: make smoke-captoken-unmasked-control
+      # S120, phase 1b step 1: the real fs_server answering through tokened
+      # capabilities. Same job: it is the client of the machinery above.
+      - name: Boot FSCAP_SELFTEST and assert fs_server answers only what a capability's rights allow
+        run: make smoke-fs-cap
+      - name: Control arm — fs_server does not consult the capability's rights
+        run: make smoke-fs-cap-control
 
   smoke-mapphys:
     name: QEMU map-phys device-frame self-test (headless)

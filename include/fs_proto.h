@@ -167,4 +167,45 @@ struct fs_response {
     uint8_t  data[FS_IO_MAX];       /* read payload */
 };                                  /* 36 + 32 + 176 = 244 <= 256 */
 
+/* ---- Capability-addressed requests (docs/design/filesystem.md §5, phase 1b) --
+ *
+ * A request that arrives through a TOKENED capability to this endpoint names its
+ * object by that token, not by the inode fields below: the kernel attests the
+ * token and the capability's rights (SYS_IPC_INVOKER), so a client can neither
+ * choose the object nor claim a right it was not given. The old ino-addressed
+ * path, authorised by the caller's uid, stays beside this one until phase 1b
+ * step 6 removes it.
+ *
+ * THE RIGHTS (§5.3) are bits of the endpoint capability's rights word, above the
+ * kernel's own (bits 0-6). The kernel intersects them on every mint, so a right
+ * only ever shrinks on the way down. CAP_RIGHT_WRITE (bit 1) is the kernel's
+ * permission to send at all, and every file capability carries it. */
+#define FS_R_LOOKUP   (1u << 10)   /* directory: derive a capability to a named child */
+#define FS_R_CREATE   (1u << 11)   /* directory: add an entry (create, mkdir)        */
+#define FS_R_DELETE   (1u << 12)   /* directory: remove an entry                      */
+#define FS_R_READ     (1u << 13)   /* file: read, stat; directory: list, stat         */
+#define FS_R_WRITE    (1u << 14)   /* file: overwrite, truncate                       */
+#define FS_R_APPEND   (1u << 15)   /* file: write at the end only                     */
+#define FS_R_SETATTR  (1u << 16)   /* file or directory: metadata (phase 1b step 4)    */
+#define FS_R_EXEC     (1u << 17)   /* file: execute (advisory, §7.3)                   */
+#define FS_R_ALL      (FS_R_LOOKUP | FS_R_CREATE | FS_R_DELETE | FS_R_READ | FS_R_WRITE | \
+                       FS_R_APPEND | FS_R_SETATTR | FS_R_EXEC)
+/* What makes sense on each kind of object: a child capability carries at most its
+ * directory's rights, masked to these (§5.3, "only shrink"). */
+#define FS_R_FILE_MASK (FS_R_READ | FS_R_WRITE | FS_R_APPEND | FS_R_SETATTR | FS_R_EXEC)
+#define FS_R_DIR_MASK  (FS_R_READ | FS_R_LOOKUP | FS_R_CREATE | FS_R_DELETE | FS_R_SETATTR)
+
+/* THE TOKEN (§5.2): bit 63 set (so a token is never 0, which means "untokened",
+ * even for the root directory, inode 0), a 24-bit generation that fs_server keeps
+ * per inode and raises when a name to it is removed (so a token never names a
+ * different object than it was minted for: a stale one is refused NOENT), and the
+ * inode. Bits 56-62 are reserved for the policy grant (§6, phase 1b step 3). */
+#define FS_TOKEN_VALID      (1ULL << 63)
+#define FS_TOKEN_GEN_MASK   0xFFFFFFu
+static inline uint64_t fs_token(uint32_t ino, uint32_t gen) {
+    return FS_TOKEN_VALID | ((uint64_t)(gen & FS_TOKEN_GEN_MASK) << 32) | ino;
+}
+static inline uint32_t fs_token_ino(uint64_t t) { return (uint32_t)t; }
+static inline uint32_t fs_token_gen(uint64_t t) { return (uint32_t)(t >> 32) & FS_TOKEN_GEN_MASK; }
+
 #endif /* HORUS_FS_PROTO_H */

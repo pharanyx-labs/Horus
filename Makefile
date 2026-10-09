@@ -128,6 +128,7 @@ DEFECT_FLAGS = \
 	KEYSLOT_REMOVE_NOOP USERS_PEPPER_PER_BOOT USERS_TAMPER_INJECT STORAGE_AUTOFORMAT \
 	STORAGE_REPLACE_UNLOCKED STORAGE_FORMAT_AUTH_STICKY BOOT_CMDLINE_UNMEASURED \
 	STORAGE_FORMAT_UNGATED INSTALLER_NO_CONFIRM INSTALLER_REVIEW_FLAT BLOCK_ERRNO_LEGACY \
+	FSCAP_SELFTEST FS_CAP_RIGHTS_UNCHECKED \
 	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED \
 	FS_LINK_UNCOUNTED FS_DIR_OPERAND_UNCHECKED GPT_ENTRIES_CRC_UNCHECKED STORAGE_REPLACE_VIEW_UNRESOLVED \
 	ESP_PIN_UNCHECKED ESP_NOT_WRITTEN DEBUG_BUILD \
@@ -3154,6 +3155,17 @@ LIBHORUS_STRNCPY_UNTERMINATED ?= 0
 # and rights attested on receive, the reply-mint bounded by the invoking
 # capability, the carried capability, and revocation through reply-minted
 # children. tokencli prints TOKENTEST: PASS <n> checks from ring 3.
+# FSCAP_SELFTEST=1 runs phase 1b step 1's witness: the real fs_server and
+# fscaptest, which mints the root directory's tokened capability and drives the
+# capability path through it (make smoke-fs-cap). FS_CAP_RIGHTS_UNCHECKED=1 is
+# its arm: fs_server answers a tokened request without consulting its rights.
+FSCAP_SELFTEST ?= 0
+ifeq ($(FSCAP_SELFTEST),1)
+CFLAGS  += -DFSCAP_SELFTEST
+ASFLAGS += -DFSCAP_SELFTEST
+FSCAP_SELFTEST_DEP = userspace/fscaptest.bin
+endif
+FS_CAP_RIGHTS_UNCHECKED ?= 0
 TOKEN_SELFTEST ?= 0
 ifeq ($(TOKEN_SELFTEST),1)
 CFLAGS  += -DTOKEN_SELFTEST
@@ -4433,7 +4445,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin userspace/installer.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(TOKEN_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(BLOCKPROBE_DEP) $(EXECPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin userspace/installer.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(TOKEN_SELFTEST_DEP) $(FSCAP_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(BLOCKPROBE_DEP) $(EXECPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -4885,6 +4897,9 @@ USERSPACE_CFLAGS += -DTUI_NO_CELLS
 endif
 ifeq ($(INSTALLER_REVIEW_FLAT),1)
 USERSPACE_CFLAGS += -DINSTALLER_REVIEW_FLAT
+endif
+ifeq ($(FS_CAP_RIGHTS_UNCHECKED),1)
+USERSPACE_CFLAGS += -DFS_CAP_RIGHTS_UNCHECKED
 endif
 ifeq ($(INSTALLER_NO_CONFIRM),1)
 USERSPACE_CFLAGS += -DINSTALLER_NO_CONFIRM
@@ -5811,7 +5826,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.stripped.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin userspace/sealprobe.bin userspace/dynstale.bin userspace/dyncanary.bin userspace/hello_dyn.bin userspace/swaphog.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin userspace/sealprobe.bin userspace/dynstale.bin userspace/dyncanary.bin userspace/hello_dyn.bin userspace/swaphog.bin userspace/fscaptest.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -12089,6 +12104,26 @@ smoke-claim-release-control:
 # the adversarial half asserts a mount needs a capability and that longest
 # prefix wins.
 .PHONY: smoke-vfs
+# THE FILESYSTEM ANSWERS THROUGH CAPABILITIES (phase 1b step 1, S120). The real
+# fs_server and fscaptest, which mints the root directory's tokened capability
+# and drives the capability path through it: a child capability comes back from
+# mkdir, create and lookup; a capability narrowed to READ cannot write; a file's
+# cannot create entries; "..", "." and "/" are refused; a removed object's
+# capability is refused NOENT; revoking the root revokes what was opened through
+# it. FS_CAP_RIGHTS_UNCHECKED=1 is the arm: the read-only capability writes.
+.PHONY: smoke-fs-cap smoke-fs-cap-control
+smoke-fs-cap:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FSCAP_SELFTEST=1 $(FSCAPARM)
+	@$(MAKE) --no-print-directory FSCAP_SELFTEST=1 $(FSCAPARM) horus.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='$(or $(FSCAPEXPECT),FSCAPTEST: PASS)' \
+		FAIL_MARKER='$(if $(FSCAPEXPECT),FSCAPTEST: PASS,FSCAPTEST: FAIL)' \
+		tools/smoke_test.sh horus.iso
+smoke-fs-cap-control:
+	@$(MAKE) --no-print-directory smoke-fs-cap FSCAPARM=FS_CAP_RIGHTS_UNCHECKED=1 \
+		FSCAPEXPECT='FSCAPTEST: FAIL readonly-wrote'
+
 smoke-vfs:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory VFS_SELFTEST=1

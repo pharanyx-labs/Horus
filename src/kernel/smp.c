@@ -772,6 +772,10 @@ void smp_bringup(void) {
      * FRAMETEST: PASS <n> checks from ring 3. Falsified by
      * FRAME_INDEX_UNCHECKED=1 and FRAME_RIGHTS_UNCHECKED=1. */
     { extern void frame_selftest(void); frame_selftest(); }
+#elif defined(FSCAP_SELFTEST)
+    /* Gated: phase 1b step 1, the real fs_server answering requests through
+     * tokened capabilities (FSCAPTEST: PASS). docs/design/filesystem.md §5. */
+    { extern void fscap_selftest(void); fscap_selftest(); }
 #elif defined(TOKEN_SELFTEST)
     /* Gated: tokens on endpoint capabilities, the reply-mint and the carried
      * capability, between a ring-3 server with no mint authority and a client

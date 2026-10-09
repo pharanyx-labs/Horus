@@ -189,9 +189,18 @@ void cap_init(void) {
 
     /* Filesystem service listen (fs_server): receive + reply. Clients do NOT get
      * a copy of this — they acquire a WRITE-only capability at runtime through
-     * SYS_CONNECT_FS_SERVER. */
+     * SYS_CONNECT_FS_SERVER.
+     *
+     * MINT AND THE FILE RIGHTS (phase 1b, docs/design/filesystem.md §5.1, §6.1):
+     * init, which receives this, mints the root directory's tokened capability
+     * from it, and a mint can only keep rights its source holds, so the source
+     * must hold the file rights (bits 10-17, include/fs_proto.h) and MINT. init
+     * hands fs_server a copy WITHOUT MINT (launch_fs_server), so the server can
+     * narrow what a client invoked (SYS_IPC_REPLY_CAP) but never fabricate. */
     root_cnode[13].type   = CAP_ENDPOINT;
-    root_cnode[13].rights = CAP_RIGHT_READ | CAP_RIGHT_WRITE;
+    root_cnode[13].rights = CAP_RIGHT_READ | CAP_RIGHT_WRITE | CAP_RIGHT_MINT | CAP_RIGHT_GRANT
+                          | CAP_RIGHT_REVOKE      /* init ends a session's grants (step 3) */
+                          | (0xFFu << 10);   /* FS_R_LOOKUP .. FS_R_EXEC */
     root_cnode[13].object = FS_EP_REQ;
     root_cnode[13].badge  = 0;
     root_cnode[13].serial = 0xC0DE000DU;

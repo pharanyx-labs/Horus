@@ -33,11 +33,11 @@ that needs `CAP_KERNEL_LOG` with `WRITE` (**[H-2]**, closed; `SECURITY.md` S23).
 This is recorded as a limitation because it is ambient authority, however small, in a system that
 otherwise has none. Every other syscall path in the ship kernel is authorised by a capability.
 
-### 1.8 Eleven syscalls have no test that runs their handler
+### 1.8 Nine syscalls have no test that runs their handler
 
-As of the last merge and gated since: **91 of 102** implemented syscalls have their handler body
+As of the last merge and gated since: **93 of 102** implemented syscalls have their handler body
 entered by a tracked workload (the scripted ring-3 session, the conformance suite, and the
-boot-modules session). The other 11 are listed in `.github/syscall-coverage.yml`, each with a
+boot-modules session). The other 9 are listed in `.github/syscall-coverage.yml`, each with a
 written reason. `tools/check_syscall_coverage.py` (required job `syscall-coverage`) fails on drift
 in either direction, so the number cannot quietly fall (`SECURITY.md` S25).
 
@@ -45,7 +45,7 @@ The risk is not hypothetical. Four times a probe written to enter an uncovered h
 defect on its first run: a kernel hang on a NULL lookup under `cap_lock` (S52), an audit record
 declared at two sizes that overran a ring-3 array (S71), block syscalls whose "no such block" and
 "permission denied" were the same value, and an ELF loader bounded by the wrong buffer (S84).
-So a defect in any of those 11 handlers is invisible in the same way. `captest` cannot find these: it
+So a defect in any of those 9 handlers is invisible in the same way. `captest` cannot find these: it
 is a refusal suite, and the capability gate returns before a refused handler runs.
 
 What is left falls into three groups, and the grouping says what each would cost:

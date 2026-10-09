@@ -1015,6 +1015,16 @@ embedded_framepeer_bin_start:
 embedded_framepeer_bin_end:
 #endif
 
+#ifdef FSCAP_SELFTEST
+/* The capability-addressed filesystem client (smoke-fs-cap). */
+.balign 16
+.global embedded_fscaptest_bin_start
+embedded_fscaptest_bin_start:
+.incbin "userspace/fscaptest.bin"
+.global embedded_fscaptest_bin_end
+embedded_fscaptest_bin_end:
+#endif
+
 #ifdef TOKEN_SELFTEST
 /* The capability-token self-test pair (smoke-captoken). */
 .balign 16

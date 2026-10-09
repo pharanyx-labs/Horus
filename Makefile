@@ -196,7 +196,8 @@ DEFECT_FLAGS = \
 	MEM_SEAL_KEEPS_WRITE MEM_SEAL_ANY_ADDRESS \
 	DYNLINK_ABI_UNCHECKED DYNLINK_UNKNOWN_ZERO DYNLINK_NO_SEAL \
 	COREUTILS_STATIC_LIBC \
-	INSTALLER_STOP_AFTER_FORMAT USERS_PERSIST_COMPILED_IN LIVE_OPENS_VOLUME
+	INSTALLER_STOP_AFTER_FORMAT USERS_PERSIST_COMPILED_IN LIVE_OPENS_VOLUME \
+	SHOOTDOWN_DEAF_CPU SHOOTDOWN_FAIL_OPEN
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -1820,6 +1821,18 @@ endif
 DEAD_TASK_RUNS ?= 0
 ifeq ($(DEAD_TASK_RUNS),1)
 CFLAGS += -DDEAD_TASK_RUNS
+endif
+
+# SHOOTDOWN_DEAF_CPU=1 (instrument) makes one CPU flush without acknowledging a
+# TLB shootdown; SHOOTDOWN_FAIL_OPEN=1 (defect) restores the wait that returned
+# anyway. See smoke-shootdown-unacked.
+SHOOTDOWN_DEAF_CPU ?= 0
+ifeq ($(SHOOTDOWN_DEAF_CPU),1)
+CFLAGS += -DSHOOTDOWN_DEAF_CPU
+endif
+SHOOTDOWN_FAIL_OPEN ?= 0
+ifeq ($(SHOOTDOWN_FAIL_OPEN),1)
+CFLAGS += -DSHOOTDOWN_FAIL_OPEN
 endif
 
 CLOCK_TSC_RESOLUTION ?= 0
@@ -8317,6 +8330,35 @@ smoke-smp:
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=$(SMP_CPUS) REQUIRE_MARKER='SMP_SELFTEST: PASS' \
 		FAIL_MARKER='SMP_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
+# A TLB shootdown that is not acknowledged halts the kernel instead of returning
+# (design/scheduler.md 3.8). SHOOTDOWN_DEAF_CPU=1 makes the highest online CPU
+# flush without acknowledging, so the selftest's shootdown can never complete;
+# the gate requires the kernel's named panic. Before 2026-10-09 the wait fell
+# through its bound and the call returned as though every CPU had flushed.
+# The bound is 100M `pause`s, which took 24 s to run out under TCG on the
+# development machine; the boot must outlast it, so the timeout is not the default.
+SHOOTDOWN_UNACKED_TIMEOUT ?= 120
+.PHONY: smoke-shootdown-unacked
+smoke-shootdown-unacked:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SHOOTDOWN_DEAF_CPU=1
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SHOOTDOWN_DEAF_CPU=1 horus.iso
+	@SMOKE_TIMEOUT=$(SHOOTDOWN_UNACKED_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=$(SMP_CPUS) \
+		EXPECT_FAULT='PANIC: tlb shootdown unacknowledged' \
+		tools/smoke_test.sh horus.iso
+
+# Control arm: the same deaf CPU with the old fall-through. The shootdown returns
+# with an acknowledgement outstanding, which the selftest's own check then reports;
+# the base gate, which wants the kernel's panic, goes red on the same build.
+.PHONY: smoke-shootdown-unacked-control
+smoke-shootdown-unacked-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SHOOTDOWN_DEAF_CPU=1 SHOOTDOWN_FAIL_OPEN=1
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SHOOTDOWN_DEAF_CPU=1 SHOOTDOWN_FAIL_OPEN=1 horus.iso
+	@SMOKE_TIMEOUT=$(SHOOTDOWN_UNACKED_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=$(SMP_CPUS) \
+		REQUIRE_MARKER='SMP_SELFTEST: FAIL shootdown pending=' \
+		tools/smoke_test.sh horus.iso
+
 # The SMP race BASE gates again, under KVM: a second environment for gates whose
 # evidence and control arms live under TCG (TESTS.md, "CI"). Needs a usable
 # /dev/kvm; QEMU_ACCEL=kvm makes the harness refuse to run without one rather
@@ -12020,15 +12062,33 @@ smoke-defer-exemption-control:
 	fi; \
 	echo "DEFER CONTROL: PASS - the pre-fix order left a stale claim on boot $$n of $(DEFER_EXEMPTION_BOOTS) ($$live clean, $$incon inconclusive before it)"
 
+# THE WHOLE WORKLOAD, NOT ITS FIRST REFUSAL. Until 2026-10-09 this gate's required
+# marker was the injection's own line, so the run ended at the FIRST refused switch,
+# about a second in -- while PROC_SELFTEST drives task_exit_switch, and so the
+# injection, about a dozen times before it finishes with `killed-task OK`. A claim
+# orphaned by any later refusal was never given the chance to be seen, and the
+# 1-in-200 of LIMITATIONS 5.3e was measured through that same keyhole. Now the run
+# ends at the workload's last line, and the injection is then required to have
+# fired at all, so a boot that never refused a switch cannot pass as one that
+# refused them all cleanly. The count is printed so a run says how much it saw.
+SWITCH_COMMIT_LOG := .switch-commit.log
 .PHONY: smoke-switch-commit
 smoke-switch-commit:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 KSP_GUARD_INJECT=1
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 KSP_GUARD_INJECT=1 horus.iso
-	@SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
-		REQUIRE_MARKER='SCHED BOGUS KSP from task_exit_switch' \
+	@rm -f $(SWITCH_COMMIT_LOG)
+	@SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMOKE_LOG=$(SWITCH_COMMIT_LOG) \
+		REQUIRE_MARKER='PROC_SELFTEST: killed-task OK' \
 		FAIL_MARKER='stale scheduler claim' \
 		tools/smoke_test.sh horus.iso
+	@n=$$(grep -cF 'SCHED BOGUS KSP from task_exit_switch' $(SWITCH_COMMIT_LOG)); \
+	if [ "$$n" -lt 1 ]; then \
+	    echo "SWITCH COMMIT: FAIL - the workload finished but no switch was refused,"; \
+	    echo "  so this boot tested nothing (log kept: $(SWITCH_COMMIT_LOG))"; \
+	    exit 1; \
+	fi; \
+	echo "SWITCH COMMIT: PASS - $$n refused switches over the whole workload, no stale claim"
 
 # Control arm: same injection, pre-fix ordering. The claim is taken before the
 # value is validated, the refusal parks the CPU, and the claim is orphaned --

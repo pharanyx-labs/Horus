@@ -14,9 +14,18 @@ here.
 
 ## [Unreleased]
 
+## [0.3.0-alpha]: 2026-10-09
+
+**An installed disk that starts on its own, with its programs on it**, and the work since
+v0.2.0-alpha behind it: GPT and an EFI system partition, system trees rebuilt from the verified
+modules at every boot, all RAM up to 4 GiB, encrypted swap that an idle task gives memory back to,
+the first half of the capability filesystem in `fs_server`, a shared libc, and the laptop's eMMC
+working end to end. Install media for x86-64, built for a UK/ISO keyboard, published as an alpha
+for developers.
+
 ### Security
 
-- A rename or link that would give a file a name in a second directory is refused with `EXDEV`, so a move can never change who may reach a file; a rename within one directory works, and through a capability needs `CREATE` and `DELETE` there (S121, phase 1b step 5).
+- A rename or link that would give a file a name in a second directory is refused with `EXDEV`, so a move can never change who may reach a file; a rename within one directory works, and through a capability needs `CREATE` and `DELETE` there (S121, phase 1b step 5). (#516)
 - `fs_server` answers requests through tokened capabilities: the object comes from the token, the rights from the capability, and children come back narrowed and revoked with it (S120, phase 1b step 1); the uid path stays beside it until step 6. (#515)
 - The system trees (`/bin`, `/sbin`, `/lib`, `/usr`) are rebuilt from the verified boot modules at every boot, and `fs_server` refuses every change to them, root included (S116). (#506)
 - A user could free any inode, `/bin` included, by forging a directory entry in a file they own; `fs_server` now refuses any file as a directory operand (`[HORUS-20261008-01]`, S113). (#502)
@@ -91,8 +100,8 @@ here.
 
 ### Fixed
 
-- An install gate on two CPUs failed in three of five CI runs: while `console_server` was starting, `init` wrote through the kernel and the server wrote straight to the serial port, so `init`'s line came out split. `init` now waits for the server to own the console and writes through it.
-- A pipeline typed as the first command after logging in on an installed system hung: a pipe end went into the slot the filesystem endpoint is installed into, and was overwritten by it. Capabilities the kernel allocates now start above every well-known slot (S122). `init` also put the filesystem's endpoint and the console's notification in the same slot; that is now a build error.
+- An install gate on two CPUs failed in three of five CI runs: while `console_server` was starting, `init` wrote through the kernel and the server wrote straight to the serial port, so `init`'s line came out split. `init` now waits for the server to own the console and writes through it. (#519)
+- A pipeline typed as the first command after logging in on an installed system hung: a pipe end went into the slot the filesystem endpoint is installed into, and was overwritten by it. Capabilities the kernel allocates now start above every well-known slot (S122). `init` also put the filesystem's endpoint and the console's notification in the same slot; that is now a build error. (#517)
 - After an install on a framebuffer wider than 80 columns, the installer's right border stayed on the screen beside the login banner: the console's clear repainted cells, not the screen. (#513)
 - On a framebuffer, the installer's progress panel lost six of its eight rows to a black box while the password was hashed; it is now drawn inside the installer's frame. (#504)
 - A login that unlocked the disk left "Turning your password into a key" on the screen for good; the panel is now the installer's alone, and a login says it is checking the password instead. (#504)

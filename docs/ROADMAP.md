@@ -30,7 +30,9 @@ In order. Each step is its own set of pull requests with its own gates and contr
    mode, `hvfs` walks with capabilities, and `init` mints the root capability from a policy file.
    It removes `perm_ok`, the root check on `chown`, `SYS_FS_SET_META`, the uid path of
    `SYS_IPC_SENDER` in the filesystem, and `SYS_CONNECT_FS_SERVER`. Phase 1a, the kernel half,
-   is done.
+   is done, and so are steps 1 and 5: `fs_server` answers through capabilities (S120) and refuses
+   moves across directories (S121). Step 2, clients walking with capabilities, waits on a design
+   question ([`design/filesystem.md`](design/filesystem.md) §13).
 2. **Accounts as files** (2.11 step 3): `/etc/passwd` and `/etc/shadow` on the volume, owned by a
    ring-3 `auth_server`; the kernel keeps only the key-slot unlock.
 3. **Filesystem phases 2 to 4** (2.10): the kernel shrinks to a sealed-block service and the

@@ -166,7 +166,8 @@ The full list, with the reasons, is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.
 In order, from [`docs/ROADMAP.md`](docs/ROADMAP.md):
 
 1. **Filesystem phase 1b** (2.10): `fs_server`, the path walker and `init` authorise files by
-   capability instead of by user id and mode.
+   capability instead of by user id and mode. The server side has begun (S120, S121); clients
+   walking with capabilities is next, once a design question is answered.
 2. **Accounts as files** (2.11): `/etc/passwd` and `/etc/shadow` on the volume, owned by a ring-3
    `auth_server`.
 3. **Filesystem phases 2 to 4** (2.10): the filesystem moves to ring 3 on a copy-on-write format,

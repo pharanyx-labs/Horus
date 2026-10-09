@@ -359,12 +359,10 @@ waits until it is woken or killed. The PIT runs at a fixed 100 Hz.
 
 - **A disk that boots itself, on real firmware.** The installer lays out a GPT disk with an EFI
   system partition (S114, S115), and `make smoke-install-boot-disk` installs under QEMU's OVMF and
-  starts the machine from the disk alone; the IdeaPad 1 14IGL05 does the same from its eMMC. Three
-  limits are
-  by construction: the firmware finds GRUB at the removable-media path because Horus cannot
-  write UEFI boot entries; every partition lies inside the 16 GiB the kernel addresses, so a
-  larger disk's remainder is unused; and swap takes only from the task that needs memory
-  (below).
+  starts the machine from the disk alone; the IdeaPad 1 14IGL05 does the same from its eMMC. Two
+  limits are by construction: the firmware finds GRUB at the removable-media path because Horus
+  cannot write UEFI boot entries, and every partition lies inside the 16 GiB the kernel
+  addresses, so a larger disk's remainder is unused. What swap does not yet do is below.
 - **Parts of the installed layout.** The install media puts GNU coreutils, TCC, their man pages,
   licences and source offer in the system trees (S116), but `/lib` stays empty (programs link the
   shared libc the kernel loads, not a file), there is no `/tmp`, and the shell's file commands

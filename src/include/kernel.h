@@ -671,6 +671,31 @@ static inline int reply_ep_for_task(int tid) {
                                    * CAPSLOT_STORAGE: a task that reads and
                                    * writes the object store must not thereby
                                    * be able to erase it. See CAP_STORAGE_FORMAT. */
+/* CAP_ENDPOINT to the filesystem service, installed by SYS_CONNECT_FS_SERVER
+ * at the slot the caller names; every client names this one (include/syscall.h). */
+#define CAPSLOT_FS_EP      20
+
+/* THE FIRST SLOT THE KERNEL ALLOCATES ON A TASK'S BEHALF (S122): a pipe's two
+ * ends (SYS_PIPE) and the CAP_TCB a spawner gets for each child. Never below it.
+ *
+ * It used to be 16, which is inside the well-known slots above, and the kernel
+ * installs into a well-known slot over whatever is there. On an installed boot
+ * the shell had not yet connected to the filesystem when the first command was
+ * a pipeline, so SYS_PIPE put the write end in the empty slot 20; reading the
+ * program from /bin then connected, which installed the filesystem endpoint over
+ * it. The first stage got no stdout pipe, the end's refcount was never released,
+ * and the reader waited for an EOF that could not come: the pipeline hung. A
+ * dynamic capability now cannot land in a slot something else is entitled to
+ * fill, by construction. 24 to 63 are the slots programs choose for themselves,
+ * and the shared libc starts at CAPSLOT_LIBC_FIRST. */
+#define CAPSLOT_DYNAMIC_FIRST 64
+/* What the allocations use: CAPSLOT_DYNAMIC_FIRST, except under the arm. */
+#ifndef CAP_DYNAMIC_FLOOR_LOW
+#define CAP_DYNAMIC_FLOOR CAPSLOT_DYNAMIC_FIRST
+#else
+/* CONTROL ARM, never ship (smoke-captest-pipe-slot-control): the old floor. */
+#define CAP_DYNAMIC_FLOOR 16
+#endif
 
 /* Task states. */
 #define TASK_DEAD          0
@@ -2856,6 +2881,23 @@ int      shlib_owns_frame(uint32_t idx);
  * in the tree uses 128..191. */
 #define CAPSLOT_LIBC_FIRST 128
 #define LIBC_SLOT_FIRST    CAPSLOT_LIBC_FIRST
+
+/* A dynamic capability must land above every well-known slot and below the
+ * shared libc's (see CAPSLOT_DYNAMIC_FIRST). A slot added to either list that
+ * breaks this fails the build rather than a pipeline. */
+_Static_assert(CAPSLOT_DYNAMIC_FIRST > CAPSLOT_STORAGE_FORMAT &&
+               CAPSLOT_DYNAMIC_FIRST > CAPSLOT_REPLY &&
+               CAPSLOT_DYNAMIC_FIRST > CAPSLOT_FS_EP &&
+               CAPSLOT_DYNAMIC_FIRST > CAPSLOT_IO_DEVICE_ALT &&
+               CAPSLOT_DYNAMIC_FIRST > CAPSLOT_DEBUG &&
+               CAPSLOT_DYNAMIC_FIRST > CAPSLOT_UNTYPED &&
+               CAPSLOT_DYNAMIC_FIRST > CAPSLOT_BOOT_MODULE &&
+               CAPSLOT_DYNAMIC_FIRST > CAPSLOT_KERNEL_LOG &&
+               CAPSLOT_DYNAMIC_FIRST > STDOUT_PIPE_SLOT &&
+               CAPSLOT_DYNAMIC_FIRST > STDIN_PIPE_SLOT,
+               "a dynamic capability could land in a well-known slot");
+_Static_assert(CAPSLOT_DYNAMIC_FIRST < CAPSLOT_LIBC_FIRST,
+               "dynamic capabilities would start inside the shared libc's slots");
 
 /* The shipped endowment (docs/design/shared-libc.md §3 to §5). */
 int  user_map_private_copy(uint32_t task_id, uint64_t vaddr, const uint8_t *src);

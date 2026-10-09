@@ -509,7 +509,7 @@ static void grant_child_tcb_cap(int spawner, int pid) {
      * made void in both directions. */
     /* tcb_object, not the bare pid: the capability names this child, and stops
      * naming anything once the child's slot is reused (HORUS-20260921-02). */
-    (void)cap_install_object_first_free(16, CAP_TCB, tcb_object(pid),
+    (void)cap_install_object_first_free(CAP_DYNAMIC_FLOOR, CAP_TCB, tcb_object(pid),
                                         CAP_RIGHT_READ | CAP_RIGHT_WRITE, 0, NULL);
 }
 

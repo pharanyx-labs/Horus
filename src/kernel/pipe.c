@@ -226,7 +226,7 @@ void h_pipe(struct interrupt_frame64 *r) {
         rslot = (uint32_t)rs; wslot = (uint32_t)ws;
     }
 #else
-    if (!cap_install_object_first_free(16, CAP_PIPE, (uint64_t)(uint32_t)idx,
+    if (!cap_install_object_first_free(CAP_DYNAMIC_FLOOR, CAP_PIPE, (uint64_t)(uint32_t)idx,
                                        CAP_RIGHT_READ, 0, &rslot)) {
         /* Nothing has been installed and no end has been ref'd, so the pipe has
          * no holders: unref'ing either direction at zero is what frees and
@@ -235,7 +235,7 @@ void h_pipe(struct interrupt_frame64 *r) {
         r->rax = (uint64_t)(uint32_t)SYS_ERR_NOMEM;
         return;
     }
-    if (!cap_install_object_first_free(16, CAP_PIPE, (uint64_t)(uint32_t)idx,
+    if (!cap_install_object_first_free(CAP_DYNAMIC_FLOOR, CAP_PIPE, (uint64_t)(uint32_t)idx,
                                        CAP_RIGHT_WRITE, 0, &wslot)) {
         capability_t prev;
         cap_consume_slot_of(cur, rslot, &prev);   /* give the read end back */

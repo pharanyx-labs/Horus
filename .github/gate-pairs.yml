@@ -38,6 +38,7 @@ control_arms:
   smoke-smp-topology-sparse-control: smoke-smp-topology
   smoke-smp-topology-sibling-control: smoke-smp-topology
   smoke-cap-accounting-control: smoke-captest
+  smoke-captest-pipe-slot-control: smoke-captest
   smoke-reply-ep-control: smoke-reply-ep
   smoke-captest-capenum-control: smoke-captest
   smoke-captest-clock-control: smoke-captest

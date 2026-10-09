@@ -411,6 +411,7 @@ column names the targets that build with the flag; an arm must turn its gate red
 | `SYSTEM_TREES_NO_PRUNE=1` | Keeps whatever else is in the system trees when `fs_server` rebuilds them at boot, so a file no module verified stays in `/bin` (S116). | `smoke-system-trees-prune-control` (arm of `smoke-system-trees`); `make smoke-system-trees` must go red under it |
 | `SYSTEM_TREES_SIZE_ONLY=1` | Makes the boot rebuild keep a file in a system tree when its size matches its module, without comparing the bytes, so a stale program of the right size survives (S116). | `smoke-system-trees-rebuild-control` (arm of `smoke-system-trees`); `make smoke-system-trees` must go red under it |
 | `PIPE_CAP_UNACCOUNTED=1` | Restores the pre-2026-09-12 `SYS_PIPE`: the two pipe-end capabilities are written into the caller's cspace by a raw, field-by-field store that takes no `cap_lock` and never touches `caps_in_use`. | `smoke-cap-accounting-control` (arm of `smoke-captest`); `make smoke-captest` must go red under it |
+| `CAP_DYNAMIC_FLOOR_LOW=1` | Puts the kernel's dynamic capability allocations (pipe ends, a spawner's `CAP_TCB` for a child) back at slot 16, inside the well-known slots. Kernel only, so userspace keeps the true floor. | `smoke-captest-pipe-slot-control` (arm of `smoke-captest`); `make smoke-captest` must go red under it |
 | `TOKEN_REPLY_MINT_UNMASKED=1` | Removes the reply-mint's rights bound, so a server is given whatever rights it asks for rather than at most those of the capability the client invoked it with (S105). | `smoke-captoken-unmasked-control` (arm of `smoke-captoken`); `make smoke-captoken` must go red under it |
 | `REPLY_EP_SPACE_OVERLAP=1` | Restores the pre-2026-09-12 endpoint index space, in which the static table was the literal `128` while the map above it declared the per-task reply region as `[REPLY_EP_BASE, REPLY_EP_BASE + MAX_TASKS)` = `[64, 320)`. | `smoke-reply-ep-control` (arm of `smoke-reply-ep`); `make smoke-reply-ep` must go red under it |
 | `READDIR_END_IS_NOENT=1` | Restores the overloaded readdir reply: `SYS_ERR_NOENT` for both "the offset is past the last entry" and "I could not stat that directory", together with `fs_server` flattening `h_fs_stat`'s reason instead of passing it through. | `smoke-readdir-end-control` (arm of `smoke-readdir-end`); `make smoke-fs` must go red under it |
@@ -522,7 +523,7 @@ of the most important:
 
 | Target | Asserts |
 |---|---|
-| `smoke-captest` | Unheld capabilities, post-revoke use, and bad input are all refused (198 checks, printed by the suite as `CAPTEST: PASS <n> checks`) |
+| `smoke-captest` | Unheld capabilities, post-revoke use, and bad input are all refused (199 checks, printed by the suite as `CAPTEST: PASS <n> checks`) |
 | `smoke-wx` | No kernel page is both writable and executable |
 | `smoke-modules-tamper` | A corrupted boot module is refused |
 | `smoke-tpm-seal` | A changed PCR leaves the volume locked |

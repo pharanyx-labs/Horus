@@ -555,6 +555,11 @@ static inline int sys_console_owned(void) {
                                  * request just received (minted by RECV,
                                  * consumed by REPLY_TO). Server-side only. */
 #define CAPSLOT_FS_EP      20    /* CAP_ENDPOINT: fs service (sys_connect_fs_server) */
+/* The kernel puts the capabilities it allocates for a task (pipe ends, a child's
+ * CAP_TCB) at or above this slot, never in one of the well-known slots above, so
+ * nothing the kernel later installs there can land on top of them. 24 to 63 are
+ * free for a program's own fixed slots. Mirrors src/include/kernel.h. */
+#define CAPSLOT_DYNAMIC_FIRST 64
 #define CAPSLOT_STORAGE_FORMAT 23 /* CAP_STORAGE_FORMAT: destroy and re-lay a
                                    * volume (installer only). Deliberately NOT
                                    * CAPSLOT_STORAGE -- reading and writing the

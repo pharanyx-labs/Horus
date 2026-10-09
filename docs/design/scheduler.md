@@ -10,9 +10,9 @@ scheduler of high quality, chosen with security first. The decisions below were 
 | Run pool | One table of `MAX_TASKS` slots. `preempt_on_tick` scans it linearly for a runnable task, under the one global `scheduler_lock` |
 | Policy | Round robin. `tasks[].priority` is written (1 at init, copied on spawn) and never read |
 | CPUs | `MAX_CPUS` is 8 (`src/include/cpu_limits.h`). Each costs about 104 KiB of `.bss` whether present or not: a 68 KiB idle stack (`ap_idle_stacks`), 24 KiB of IST stacks (`ap_ist`) and 8 KiB of TSS (`ap_tss`) |
-| SMT | Every secondary thread is parked before its timer starts (S101) |
+| SMT | Every secondary thread is parked before its timer starts (S101). A parked sibling keeps interrupts on to answer shootdowns and is marked idle, and `preempt_on_tick` does not itself refuse to schedule on one, so S101 rests on no 0xFC interrupt ever reaching a sibling |
 | Time | The PIT at 100 Hz drives `system_ticks`; every CPU's LAPIC timer runs periodically at the same rate. No one-shot timer, no per-task timer, no IPC timeout. Ring 3 sees 10 ms time and nothing finer (S34) |
-| Wake | A wake sets a task runnable and nothing else. It runs at the next tick of whichever CPU finds it, so every IPC round trip pays up to a tick per hop |
+| Wake | A wake sets a task runnable and nothing else. When the waker blocks straight after (a call, a reply followed by a receive), its own CPU takes the woken task at once: 59 of 64 wakes in a two-CPU boot ran within 100 µs (2026-10-09, an instrumented build). When the waker keeps running, the woken task waits for the next tick of an idle CPU, up to 10 ms |
 | Isolation on switch | The microarchitectural state is flushed on every switch between tasks; FPU state is saved and restored eagerly (S16) |
 | Stack ownership | One CPU at a time on a task's kernel stack, held by the claim protocol and `sched_release_deferred` (S20) |
 | TLB coherence | An address space is live on at most one CPU, there are no threads and no global pages, and `switch_cr3` flushes. So the ship kernel never needs a cross-CPU shootdown, and `smp_maybe_shootdown` is called only by the selftest. Its wait gives up after 100M spins without checking the acknowledgements, which would fail open if anything else called it |
@@ -126,7 +126,8 @@ the next task is constant time, and its own lock. The global `scheduler_lock` st
 claim protocol until that is rebuilt over the queues.
 
 - **A wake goes to a queue and sends a reschedule interrupt** to that CPU if the woken task
-  outranks what it is running. That removes the tick of latency per IPC hop.
+  outranks what it is running. That removes the wait for a tick when the waker keeps running.
+  It is built when a workload shows that wait mattering; the two-CPU boot above does not.
 - **An idle CPU steals only slack work**, from the busiest queue whose slack tasks' masks include
   it. Budgeted work never moves on its own: its context belongs to one CPU, and moving it is a
   ring-3 decision made by rebinding it to a context on another CPU.
@@ -190,7 +191,9 @@ Budget exhaustion is no finer a clock than the 10 ms tick a task can already cou
 |---|---|---|
 | 0 | LIMITATIONS 5.3e settled | |
 | 1 | The shootdown wait fails closed | |
-| 2 | Per-CPU run queues, the reschedule interrupt, stealing; no policy change | 0 |
+| 1b | `preempt_on_tick` refuses to schedule on an SMT sibling, whoever interrupts it | |
+| 2a | One selection rule for every switch path | |
+| 2 | Per-CPU run queues, the reschedule interrupt, stealing; no policy change | 0, 1b, 2a |
 | 3 | Per-CPU one-shot timers, tickless idle | 2 |
 | 4 | Scheduling contexts, budgets, priorities and their maximum | 3 |
 | 5 | Passive servers | 4 |

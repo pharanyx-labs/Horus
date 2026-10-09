@@ -21,7 +21,7 @@ here.
 ### Changed
 
 - `smoke-switch-commit` watches every switch the process workload refuses, about twelve, where it stopped at the first; it now also fails a boot in which no switch was refused, and says how many it saw. (#522)
-- `smoke-switch-commit` failed under KVM on 2 of the first 5 runs, main among them, when the process workload stopped early because its slot-reuse phase was never reached. Such a boot is now retried up to eight times and never counted as a pass; a stale claim or any other failure is still red at once.
+- `smoke-switch-commit` failed under KVM on 2 of the first 5 runs, main among them, when the process workload stopped early because its slot-reuse phase was never reached. Such a boot is now retried up to eight times and never counted as a pass; a stale claim or any other failure is still red at once. (#527)
 
 ## [0.3.0-alpha]: 2026-10-09
 

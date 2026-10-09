@@ -134,7 +134,7 @@ start it.
 ### 2.7a ⬜ Evict the in-kernel services [F-2.7a]
 
 `.github/ring0-classification.yml` (S87) measures the ring-0 `service` class at about 6,000 code
-lines beside a 11,421-line core: `storage.c` (the encrypted store and the on-disk filesystem),
+lines beside a 11,427-line core: `storage.c` (the encrypted store and the on-disk filesystem),
 `kusers.c` (accounts and password hashing), the loader and spawn path, `crypto.c` and
 `syscall_fs.c`. Neither big move is mechanical. `storage.c` holds the volume key, so moving it
 means deciding what a ring-3 storage server may hold; 2.10's phase 2 is that decision for the
@@ -263,7 +263,7 @@ is a second person to review them. Turning on required approval with one maintai
 every merge or needs a bypass actor, which would undo 4.2. `SECURITY.md` therefore claims
 "thoroughly automatically verified", not "independently reviewed".
 
-**4.2.** The gating set is **142 required, 9 exempted** (142 jobs, 151 contexts; re-derive with
+**4.2.** The gating set is **143 required, 9 exempted** (143 jobs, 152 contexts; re-derive with
 `tools/check_ci_gating.py`). The exemptions come from three jobs and are properties of the test,
 not open defects: `fuzz` (seven targets fuzzed nightly, never on a pull request), `kani-arms` and
 `ruleset-audit` (both run on a schedule, never on a pull request).
@@ -297,5 +297,5 @@ same bytes cannot be verified by rebuilding.
 | ✅ | Measured boot, the kernel pinned in the boot image, and a PCR-sealed volume key |
 | ✅ | An IOMMU confining device DMA, and device capabilities that name one device each |
 | ◧ | Reproducible `kernel.elf` (not yet the ISO), an SBOM, CodeQL, Dependabot, signed commits, a protected `main` |
-| ✅ | 470 `smoke-*` targets, nearly all QEMU integration tests, and 254 of them control arms that must reproduce a defect |
+| ✅ | 472 `smoke-*` targets, nearly all QEMU integration tests, and 255 of them control arms that must reproduce a defect |
 | ✅ | Bounded Kani proofs, Miri over the Rust core, and fuzzing at the FFI boundary |

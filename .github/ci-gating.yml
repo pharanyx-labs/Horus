@@ -308,6 +308,10 @@ required:
   # before its resume value was validated, so a refusal parked the CPU and left
   # the task it had claimed unschedulable forever.
   - switch-commit
+  # Gating. S101 by construction: preempt_on_tick refuses to schedule on an SMT
+  # sibling whoever interrupts it, where it used to rely on no 0xFC interrupt
+  # ever being sent to one.
+  - sibling-kick
   # Gating. A TLB shootdown that runs out its bound with an acknowledgement
   # outstanding halts the kernel instead of returning as though every CPU had
   # flushed (design/scheduler.md 3.8). The selftest is the only caller today;

@@ -277,6 +277,7 @@ control_arms:
   smoke-shlib-info-object-control: smoke-shlib
   smoke-shlib-writable-control: smoke-shlib
   smoke-spawn-owner-control: smoke-spawn-owner
+  smoke-sibling-kick-control: smoke-sibling-kick
   smoke-shootdown-unacked-control: smoke-shootdown-unacked
   smoke-switch-commit-control: smoke-switch-commit
   smoke-wait-after-death-control: smoke-wait-after-death
@@ -489,6 +490,7 @@ gates:
   - smoke-smp
   - smoke-smp-topology
   - smoke-smp-kvm
+  - smoke-sibling-kick
   - smoke-shootdown-unacked
   - smoke-wait-after-death
   - smoke-smt

@@ -203,10 +203,12 @@
     So a server never trusts what a client says about itself.
     <code>SYS_IPC_SENDER</code> returns the user ID the <em>kernel</em> recorded for the
     sender of a message, established only by a successful login and unforgeable by the
-    sender. <code>fs_server</code> authorises every file operation against that value
-    rather than against anything in the request, which is why the filesystem can enforce
-    rwx correctly while being an ordinary unprivileged program with no way to check
-    identity itself.
+    sender. <code>fs_server</code> authorises a file operation against that value rather
+    than against anything in the request, which is why the filesystem can enforce rwx
+    correctly while being an ordinary unprivileged program with no way to check identity
+    itself. A request through a filesystem capability is authorised by the capability
+    instead: the kernel attests which object its token names and which rights it carries.
+    That is the path that replaces the user ID once programs walk with capabilities.
   </p>
 </div>
 </section>

@@ -551,8 +551,12 @@ that work.
 ### `fs_server`
 
 The filesystem and its **reference monitor**. It holds `CAP_ENCRYPTED_STORAGE` and implements
-names, directories and permissions over the kernel's `(inode, logical block)` object store. Every
-request is authorised against the uid the kernel recorded for the sender at login
+names, directories and permissions over the kernel's `(inode, logical block)` object store. A
+request through a tokened capability is authorised by that capability: its object is the inode the
+token names and its rights are the capability's, both attested by the kernel (`SYS_IPC_INVOKER`),
+and lookup, create and mkdir hand back the child's capability, narrowed and revocable with its
+parent (S120). A rename or link that would cross directories is refused on every path (S121).
+Every other request is authorised against the uid the kernel recorded for the sender at login
 (`SYS_IPC_SENDER`), never a claim from the client (S13, S14). A file's mode may be set by its owner
 or root, its owner by root alone (S77), and every account gets a home directory it owns (S78). It
 rebuilds the system trees (`/bin`, `/sbin`, `/lib`, `/usr` and below) from the verified boot
@@ -560,8 +564,8 @@ modules once the volume is open: a file that matches its module byte for byte st
 rewritten, and anything no module names is removed. Every request that would change a file or an
 entry in those trees is refused before its permission check, for every client, root included
 (S116), so an update is new install media.
-The capability filesystem of `docs/design/filesystem.md` will replace uid authorisation with
-capabilities (roadmap 2.10).
+No client walks with capabilities yet; when they do, the uid path is removed (phase 1b of
+`docs/design/filesystem.md`, roadmap 2.10).
 
 ### `console_server`
 

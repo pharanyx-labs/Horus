@@ -449,13 +449,10 @@ int sys_ipc_send(uint32_t ep, const void *msg, size_t len, const struct ipc_invo
              * (sched_impersonate_enter, scheduler.c). */
             uint64_t fl;
             __asm__ volatile ("pushfq; pop %0; cli" : "=r"(fl) :: "memory");
-            int sender = get_current_task();
-            sched_impersonate_enter();
-            set_current_task(waiter);
+            int sender = sched_impersonate_begin(waiter);
             copy_to_user((void *)(addr_t)tasks[waiter].ipc_reply_buf, kbuf,
                          (size_t)copy_len);
-            set_current_task(sender);
-            sched_impersonate_exit();
+            sched_impersonate_end(sender);
             __asm__ volatile ("push %0; popfq" :: "r"(fl) : "memory", "cc");
         }
 
@@ -1222,12 +1219,9 @@ static void ipc_reply_common(struct interrupt_frame64 *r, int mint,
          * bracket tells an auditor on another core what we are really running. */
         uint64_t fl;
         __asm__ volatile ("pushfq; pop %0; cli" : "=r"(fl) :: "memory");
-        int sender = get_current_task();
-        sched_impersonate_enter();
-        set_current_task(t);
+        int sender = sched_impersonate_begin(t);
         copy_to_user((void *)(addr_t)tasks[t].ipc_reply_buf, kbuf, (size_t)copy_len);
-        set_current_task(sender);
-        sched_impersonate_exit();
+        sched_impersonate_end(sender);
         __asm__ volatile ("push %0; popfq" :: "r"(fl) : "memory", "cc");
     }
 

@@ -1749,25 +1749,73 @@ def bootdisk(disk):
         # self-test printed one line to the kernel log. SWAP_EXPECT is "ok", or
         # the start of the FAIL line an arm must produce.
         swap_expect = os.environ.get("SWAP_EXPECT", "")
-        # SWAP PAGING, WHEN THE BUILD SHIPS /bin/swaphog (SWAP_HOG=1): it writes
-        # 48 MiB on a pool capped below that and reads it all back, so it passes
-        # only if its pages went out to swap and came back exactly. SWAP_HOG_EXPECT
-        # is "ok", or "fail" for the arm, whose zeroed pages it must catch.
+        # SWAP PAGING, WHEN THE BUILD SHIPS /bin/swaphog (SWAP_HOG=1). The
+        # pipeline `swaphog hold | swaphog after`: the holder writes 16 MiB and
+        # goes idle, the busy half writes 48 MiB on a pool capped below what the
+        # two need and reads it all back, and then the holder checks its own. So
+        # it passes only if pages went out to swap and came back exactly, the
+        # holder's among them (steps 2 and 2a). SWAP_HOG_EXPECT is "ok"; "fail"
+        # for the zeroed arm, whose pages one of them must catch; or "noidle" for
+        # the arm that stops the kernel taking an idle task's pages, which this
+        # session must then find it never did.
         hog_expect = os.environ.get("SWAP_HOG_EXPECT", "")
         if hog_expect:
-            out = _sh(s, "swaphog", timeout=int(os.environ.get("SWAP_HOG_TIMEOUT", "900")))
-            line = next((ln.strip() for ln in out.splitlines() if ln.strip().startswith("SWAPHOG: OK")
-                         or ln.strip().startswith("SWAPHOG: FAIL")), "")
-            want = "SWAPHOG: OK" if hog_expect == "ok" else "SWAPHOG: FAIL"
-            if not line.startswith(want):
-                tail = _sh(s, "dmesg").splitlines()[-12:]
-                raise SessionFail(f"swaphog said {line or out[-300:]!r}, not {want!r}; "
-                                  f"the kernel log ends {tail!r}")
-            log = _sh(s, "dmesg")
-            if "pages out and" not in log:
-                raise SessionFail("swaphog finished but the kernel never said it put a page out: "
-                                  "the pool was not under pressure, so nothing was tested")
-            step(f"swaphog: {line[:70]}, and the kernel paged out to do it")
+            out = _sh(s, "swaphog hold | swaphog after",
+                      timeout=int(os.environ.get("SWAP_HOG_TIMEOUT", "900")))
+            lines = [ln.strip() for ln in out.splitlines()
+                     if ln.strip().startswith(("SWAPHOG: OK", "SWAPHOG: FAIL"))]
+            failed = next((ln for ln in lines if ln.startswith("SWAPHOG: FAIL")), "")
+            if hog_expect == "fail":
+                if not failed:
+                    tail = _sh(s, "dmesg").splitlines()[-12:]
+                    raise SessionFail(f"swaphog said {lines or out[-300:]!r}, not a FAIL; "
+                                      f"the kernel log ends {tail!r}")
+                step(f"swaphog: {failed[:70]}, as the arm requires")
+            else:
+                busy = next((ln for ln in lines if ln.startswith("SWAPHOG: OK 48")), "")
+                held = next((ln for ln in lines if ln.startswith("SWAPHOG: OK the idle holder")), "")
+                if failed or not busy or not held:
+                    tail = _sh(s, "dmesg").splitlines()[-12:]
+                    raise SessionFail(f"swaphog said {lines or out[-300:]!r}, not both OK lines; "
+                                      f"the kernel log ends {tail!r}")
+                log = _sh(s, "dmesg")
+                if "pages out and" not in log:
+                    raise SessionFail("swaphog finished but the kernel never said it put a page out: "
+                                      "the pool was not under pressure, so nothing was tested")
+                # THE HOLDER'S OWN PAGES, not only some idle task's: the holder
+                # says which task it is, and the instrumented kernel names each
+                # idle task the first time it gives pages back.
+                who = next((ln.split("task", 1)[1].strip() for ln in out.splitlines()
+                            if "SWAPHOG: holder is task" in ln), "")
+                idle = "pages taken from idle tasks" in log
+                # NEVER A BOOT SERVER'S (S119): init, fs_server and console_server
+                # are pinned, since bringing a page back may depend on them.
+                pinned = [ln.strip() for ln in log.splitlines()
+                          if "swap: idle task" in ln and
+                          any(f"'{n}' gave" in ln for n in ("init", "fs_server", "console_server"))]
+                if hog_expect == "unpinned":
+                    if not pinned:
+                        raise SessionFail("the arm unpins the boot servers, and none of them gave a page")
+                    step(f"a boot server gave pages back ({pinned[0][-60:]}), which the base gate refuses")
+                    pinned = []
+                    hog_expect = "ok"
+                if pinned:
+                    raise SessionFail(f"a pinned boot server gave pages to swap: {pinned!r}")
+                if hog_expect != "noidle" and idle and f"swap: idle task {who} 'swaphog' gave pages back" not in log:
+                    raise SessionFail(f"idle tasks gave pages back, but the holder (task {who or '?'}) "
+                                      "never did, so its check proves nothing about a page that left it")
+                if hog_expect == "noidle":
+                    if idle:
+                        raise SessionFail("the arm stops the kernel taking an idle task's pages, "
+                                          "and the kernel said it took some")
+                    step("swaphog passed and no idle task gave pages back, which is the defect "
+                         "the base gate refuses")
+                elif not idle:
+                    raise SessionFail("swaphog passed, but the kernel never took a page from an idle "
+                                      "task: the idle holder did not give its memory back")
+                else:
+                    step(f"swaphog: {busy[:40]} and {held[:45]}; the kernel paged out, "
+                         "idle tasks' pages included")
         if swap_expect:
             log = _sh(s, "dmesg")
             line = next((ln.strip() for ln in log.splitlines() if "SWAP_SELFTEST:" in ln), "")

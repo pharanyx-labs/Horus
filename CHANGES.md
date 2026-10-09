@@ -29,6 +29,7 @@ here.
 
 ### Added
 
+- A large idle task gives memory back: under pressure the pager takes idle pages from tasks no CPU is running, holding each off every CPU while its page tables change, before the short task's own (S123). `init` was never actually pinned against swap, because its task was named `prog1`; it is now pinned by identity and named `init`. (#518)
 - Swap pages out: a task short of memory sends its own idle pages to the encrypted swap partition and gets them back on touch; 48 MiB runs on a 64 MiB pool (S119). (#512)
 - The swap partition is opened at an installed boot's unlock as a sealed store: every page under a key made at that boot, its tag kept in RAM, nothing on the partition in plaintext (S118). Nothing is paged out to it yet. (#510)
 - The page pool uses all of a machine's RAM up to 4 GiB, every region the memory map names, instead of the one region holding 16 MiB capped at 1 GiB; a 3 GiB guest's pool went from 495 MiB to 3054 MiB (S117). (#508)

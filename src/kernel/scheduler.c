@@ -1610,6 +1610,59 @@ static void sched_raw_lock(void) {
 }
 static void sched_raw_unlock(void) { __sync_lock_release(&scheduler_lock.locked); }
 
+/* ---- The pager's hold (docs/design/swap.md step 2a) -----------------------
+ *
+ * The pager may take a page from a task that is not running: its PTE becomes a
+ * swapped PTE and the frame goes back to the pool. What makes that safe without
+ * a TLB shootdown is that no CPU can then be translating through a stale entry
+ * for it. A CPU that is not running the task touches none of its user addresses,
+ * and any CPU that starts running it writes CR3 first (switch_cr3 always does,
+ * equal value or not), which drops every non-global entry -- the argument
+ * clone_user_aspace already rests on. So the whole requirement is that the task
+ * does not START anywhere while its tables change, and that is what the hold is.
+ *
+ * Taken only when no CPU has the task claimed or current, both checked under the
+ * scheduler lock that every claim is made under; while it is set every
+ * selection loop skips the task and enter_user_impl waits. A task woken in the
+ * meantime stays runnable and is picked after the release. */
+int sched_pager_hold(int t) {
+    if (t <= 0 || t >= g_max_tasks) return 0;
+    sched_raw_lock();
+    int st = tasks[t].state;
+    /* A saved context, so a task still being built (its image loading with it
+     * current on the spawner's CPU) is never taken from. */
+    int ok = !tasks[t].pager_hold && tasks[t].cr3 != 0 && tasks[t].saved_ksp != 0 &&
+             (st == TASK_RUNNABLE || st == TASK_BLOCKED_IPC ||
+              st == TASK_BLOCKED_NOTIF || st == TASK_BLOCKED_WAIT);
+    if (ok) {
+        /* PUBLISH, THEN LOOK. An IPC delivery becomes the task on another CPU
+         * to copy into its memory (sched_impersonate_begin), without this lock:
+         * it publishes itself as current and then looks for the hold, and this
+         * publishes the hold and then looks for a current CPU. With a full
+         * fence between each store and its load, at least one of the two sees
+         * the other, so the pager never changes a page a delivery is writing. */
+        tasks[t].pager_hold = 1;
+        __sync_synchronize();
+#ifdef SMP
+        if (task_running_cpu[t] >= 0) ok = 0;
+        for (int c = 0; ok && c < MAX_CPUS; c++)
+            if (percpu_current_task[c] == t) ok = 0;
+#else
+        if (t == get_current_task()) ok = 0;
+#endif
+        if (!ok) tasks[t].pager_hold = 0;
+    }
+    sched_raw_unlock();
+    return ok;
+}
+
+void sched_pager_release(int t) {
+    if (t <= 0 || t >= g_max_tasks) return;
+    sched_raw_lock();
+    tasks[t].pager_hold = 0;
+    sched_raw_unlock();
+}
+
 #ifdef CLAIM_TRACE
 /* Provenance: which site last CLAIMED each task, and from which CPU. Additive --
  * it records beside the existing assignment rather than replacing it, so it
@@ -2735,7 +2788,7 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
         int cand = (cur + i) % g_max_tasks;
         if (cand == 0 || cand == cur) continue;
         if (tasks[cand].state == 1 && tasks[cand].cr3 != 0 && tasks[cand].runnable_ctx
-            && tasks[cand].saved_ksp) {
+            && tasks[cand].saved_ksp && !tasks[cand].pager_hold) {
             next = cand;
             break;
         }
@@ -2907,7 +2960,7 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
         int cand = (cur + i) % g_max_tasks;
         if (cand == 0) continue;
         if (tasks[cand].state == 1 && tasks[cand].cr3 != 0 &&
-            tasks[cand].runnable_ctx && tasks[cand].saved_ksp && task_running_cpu[cand] < 0) {
+            tasks[cand].runnable_ctx && tasks[cand].saved_ksp && !tasks[cand].pager_hold && task_running_cpu[cand] < 0) {
             next = cand;
             break;
         }
@@ -3069,7 +3122,7 @@ uint64_t ipc_block_switch(int blocked_task, uint64_t frame_rsp) {
         int cand = (blocked_task + i) % g_max_tasks;
         if (cand == 0) continue;
         if (tasks[cand].state == TASK_RUNNABLE && tasks[cand].cr3 != 0 &&
-                tasks[cand].runnable_ctx && tasks[cand].saved_ksp && task_running_cpu[cand] < 0) {
+                tasks[cand].runnable_ctx && tasks[cand].saved_ksp && !tasks[cand].pager_hold && task_running_cpu[cand] < 0) {
             next = cand;
             break;
         }
@@ -3141,7 +3194,7 @@ uint64_t ipc_block_switch(int blocked_task, uint64_t frame_rsp) {
         int cand = (blocked_task + i) % g_max_tasks;
         if (cand == 0) continue;
         if (tasks[cand].state == TASK_RUNNABLE && tasks[cand].cr3 != 0 &&
-                tasks[cand].runnable_ctx && tasks[cand].saved_ksp) {
+                tasks[cand].runnable_ctx && tasks[cand].saved_ksp && !tasks[cand].pager_hold) {
             next = cand;
             break;
         }
@@ -3436,6 +3489,15 @@ static void __attribute__((noreturn)) enter_user_impl(int tid, int publish) {
 #ifdef SMP
     ENTER_USER_WIDEN(tid);
     sched_raw_lock();
+    /* THE PAGER'S HOLD (docs/design/swap.md step 2a): while another CPU's fault
+     * takes this task's pages it must not start anywhere, and this is the one
+     * entry that does not pass through a selection loop. Wait it out with the
+     * lock dropped, since the release takes the lock; the hold lasts one batch. */
+    while (tasks[tid].pager_hold) {
+        sched_raw_unlock();
+        while (tasks[tid].pager_hold) __asm__ volatile ("pause");
+        sched_raw_lock();
+    }
     int cpu = this_cpu();
 #ifdef CLAIM_TRACE
     /* Is this path EVER reached with a release still owed? sched_enter_user
@@ -3629,7 +3691,7 @@ uint64_t sched_yield_switch(int cur, uint64_t frame_rsp) {
         int cand = (cur + i) % g_max_tasks;
         if (cand == 0 || cand == cur) continue;
         if (tasks[cand].state == 1 && tasks[cand].cr3 != 0 &&
-            tasks[cand].runnable_ctx && tasks[cand].saved_ksp
+            tasks[cand].runnable_ctx && tasks[cand].saved_ksp && !tasks[cand].pager_hold
 #ifdef SMP
             && task_running_cpu[cand] < 0
 #endif
@@ -3961,7 +4023,7 @@ uint64_t task_exit_switch(int dead) {
         int cand = (dead + i) % g_max_tasks;
         if (cand == 0) continue;
         if (tasks[cand].state == 1 && tasks[cand].cr3 != 0 && tasks[cand].runnable_ctx
-            && tasks[cand].saved_ksp
+            && tasks[cand].saved_ksp && !tasks[cand].pager_hold
 #ifdef SMP
             && task_running_cpu[cand] < 0
 #endif
@@ -4382,6 +4444,50 @@ void sched_impersonate_enter(void) {
     __sync_synchronize();
 #endif
 }
+
+/* Become task `w` on this CPU to copy into its memory (an IPC delivery into a
+ * waiter's reply buffer), on terms the pager's hold respects: never while the
+ * pager is changing w's pages, which it may be doing on another CPU because w
+ * is not running. Publishes w as current, then looks for the hold, backing off
+ * while it is set; sched_pager_hold makes the mirror-image check. Returns the
+ * task to hand back to sched_impersonate_end. Interrupts must be off. */
+int sched_impersonate_begin(int w) {
+    int real = get_current_task();
+    sched_impersonate_enter();
+    for (;;) {
+        set_current_task(w);
+        __sync_synchronize();
+        if (!tasks[w].pager_hold) return real;
+        set_current_task(real);
+        __sync_synchronize();
+        while (tasks[w].pager_hold) __asm__ volatile ("pause");
+    }
+}
+
+void sched_impersonate_end(int real) {
+    set_current_task(real);
+    sched_impersonate_exit();
+}
+
+#ifndef SMP
+/* The uniprocessor build's pager hold (the SMP one is beside the scheduler
+ * lock, which this build does not have). One CPU, and the pager runs on it with
+ * interrupts off, so the only task that could be running is the current one. */
+int sched_pager_hold(int t) {
+    if (t <= 0 || t >= g_max_tasks || t == get_current_task()) return 0;
+    int st = tasks[t].state;
+    if (tasks[t].pager_hold || tasks[t].cr3 == 0 || tasks[t].saved_ksp == 0 ||
+        !(st == TASK_RUNNABLE || st == TASK_BLOCKED_IPC ||
+          st == TASK_BLOCKED_NOTIF || st == TASK_BLOCKED_WAIT))
+        return 0;
+    tasks[t].pager_hold = 1;
+    return 1;
+}
+
+void sched_pager_release(int t) {
+    if (t > 0 && t < g_max_tasks) tasks[t].pager_hold = 0;
+}
+#endif
 
 void sched_impersonate_exit(void) {
 #ifdef SMP

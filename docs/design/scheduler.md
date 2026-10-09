@@ -15,7 +15,7 @@ scheduler of high quality, chosen with security first. The decisions below were 
 | Wake | A wake sets a task runnable and nothing else. When the waker blocks straight after (a call, a reply followed by a receive), its own CPU takes the woken task at once: 59 of 64 wakes in a two-CPU boot ran within 100 µs (2026-10-09, an instrumented build). When the waker keeps running, the woken task waits for the next tick of an idle CPU, up to 10 ms |
 | Isolation on switch | The microarchitectural state is flushed on every switch between tasks; FPU state is saved and restored eagerly (S16) |
 | Stack ownership | One CPU at a time on a task's kernel stack, held by the claim protocol and `sched_release_deferred` (S20) |
-| TLB coherence | An address space is live on at most one CPU, there are no threads and no global pages, and `switch_cr3` flushes. So the ship kernel never needs a cross-CPU shootdown, and `smp_maybe_shootdown` is called only by the selftest. Its wait gives up after 100M spins without checking the acknowledgements, which would fail open if anything else called it |
+| TLB coherence | An address space is live on at most one CPU, there are no threads and no global pages, and `switch_cr3` flushes. So the ship kernel never needs a cross-CPU shootdown, and `smp_maybe_shootdown` is called only by the selftest. When its bounded wait runs out with an acknowledgement outstanding, it halts with a named panic (S124, #523) |
 | Locks | `scheduler_lock`, `cap_lock`, `endpoint_lock`, `page_lock` and `storage_lock` are each global |
 | IPC | An endpoint holds a bounded queue of messages and at most one blocked caller (`struct endpoint`). A server takes a message when it chooses, by `SYS_IPC_RECV` or `SYS_IPC_RECV_BLOCK` |
 
@@ -190,7 +190,7 @@ Budget exhaustion is no finer a clock than the 10 ms tick a task can already cou
 | Step | What | Depends on |
 |---|---|---|
 | 0 | LIMITATIONS 5.3e settled | |
-| 1 | The shootdown wait fails closed | |
+| 1 ✅ | The shootdown wait fails closed (#523) | |
 | 1b | `preempt_on_tick` refuses to schedule on an SMT sibling, whoever interrupts it | |
 | 2a | One selection rule for every switch path | |
 | 2 | Per-CPU run queues, the reschedule interrupt, stealing; no policy change | 0, 1b, 2a |

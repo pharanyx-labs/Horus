@@ -127,8 +127,8 @@ volatile int percpu_real_task[MAX_CPUS];
  * A claim is a two-way binding, and BOTH directions carry weight:
  *
  *   ->  If a task is claimed by CPU c, that CPU must actually be running it.
- *       Every selection loop in this file (preempt_on_tick, sched_yield_switch,
- *       ipc_block_switch) skips any candidate whose entry is not -1. So a claim
+ *       Every switch path chooses through sched_selectable, which skips any
+ *       candidate whose entry is not -1. So a claim
  *       held by a CPU that is NOT running the task makes that task unschedulable
  *       *by every CPU in the system, including the one holding the claim*. The
  *       task stays RUNNABLE with a valid resumable context and simply never runs
@@ -673,7 +673,7 @@ void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base,
      * task_running_cpu[id] should be -1. If it is not, some CPU claimed this slot
      * AFTER its occupant died -- which is possible because task_teardown mutates
      * state/runnable_ctx/saved_ksp/task_running_cpu with NO scheduler lock, while
-     * every selection loop reads those four fields under it. A CPU can therefore
+     * sched_selectable reads those four fields under it. A CPU can therefore
      * pass the checks, have the task die under it, and write its claim onto a
      * corpse. The audit exempts dead tasks, so that claim is invisible until this
      * moment -- when state goes back to 1 and the slot is live again, claimed by a
@@ -1622,8 +1622,8 @@ static void sched_raw_unlock(void) { __sync_lock_release(&scheduler_lock.locked)
  * does not START anywhere while its tables change, and that is what the hold is.
  *
  * Taken only when no CPU has the task claimed or current, both checked under the
- * scheduler lock that every claim is made under; while it is set every
- * selection loop skips the task and enter_user_impl waits. A task woken in the
+ * scheduler lock that every claim is made under; while it is set
+ * sched_selectable skips the task and enter_user_impl waits. A task woken in the
  * meantime stays runnable and is picked after the release. */
 int sched_pager_hold(int t) {
     if (t <= 0 || t >= g_max_tasks) return 0;
@@ -1855,7 +1855,7 @@ void sched_release_deferred(void)
              * where it is provably off t's stack -- but the claim names a
              * DIFFERENT cpu, so the `== cpu` test declines and the release is
              * silently dropped. Nothing else will ever pay it: no other CPU has a
-             * deferred slot naming t, and every selection loop skips a claimed
+             * deferred slot naming t, and sched_selectable skips a claimed
              * task, so t is unschedulable by every CPU including its holder.
              *
              * The audit finds the corpse ~10ms later at preempt_on_tick and names
@@ -2770,6 +2770,49 @@ static uint64_t ksp_refuse(const char *who, int t, uint64_t ksp)
 static uint64_t enter_cpu_idle(int cpu);   /* defined below; parks a CPU */
 #endif
 
+/* ---- THE ONE RULE FOR WHAT A CPU MAY RUN NEXT ------------------------------
+ *
+ * Every switch path -- the tick, a block in IPC, a yield, an exit -- chooses its
+ * next task here. Until 2026-10-09 each wrote the rule out for itself, six copies
+ * in all (four SMP, two uniprocessor), and the copies were kept in step by hand:
+ * the swap pager's hold (S123) had to be added to every one of them, and a copy
+ * that missed it would have run a task whose pages were going to disk. One
+ * definition makes the next such condition a one-line change that cannot miss a
+ * path. It is also the seam the per-CPU run queues of design/scheduler.md 3.5
+ * replace: the callers keep asking this, and only what is behind it changes.
+ *
+ * A task is selectable when it is runnable, has an address space, has a saved
+ * context to resume and a kernel stack pointer to resume it on, is not held off
+ * every CPU by the pager, and (SMP) is claimed by no CPU. Called with the
+ * scheduler lock held on SMP, which is what makes the claim test and the claim
+ * that follows it one step. */
+static inline int sched_selectable(int t)
+{
+    return tasks[t].state == TASK_RUNNABLE && tasks[t].cr3 != 0 &&
+           tasks[t].runnable_ctx && tasks[t].saved_ksp && !tasks[t].pager_hold
+#ifdef SMP
+           && task_running_cpu[t] < 0
+#endif
+           ;
+}
+
+/* The first selectable task after `start`, round robin over the table, or -1.
+ * `start` itself is a candidate only when `include_start` is set, and then last:
+ * the tick asks that way, because on SMP its own task is claimed by this CPU and
+ * so fails sched_selectable anyway, while a ring-0 caller's `start` is 0, which
+ * is never a task. Every other path is switching away from `start` and excludes
+ * it. These are exactly the ranges the six loops used. */
+static int sched_pick_after(int start, int include_start)
+{
+    int last = include_start ? g_max_tasks : g_max_tasks - 1;
+    for (int i = 1; i <= last; i++) {
+        int cand = (start + i) % g_max_tasks;
+        if (cand == 0) continue;
+        if (sched_selectable(cand)) return cand;
+    }
+    return -1;
+}
+
 uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
     if (!preempt_enabled) return frame_rsp;
 #ifndef SMP
@@ -2783,16 +2826,7 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
 
     /* Round-robin: the next runnable user task (id != 0) with a resumable
      * context. */
-    int next = -1;
-    for (int i = 1; i < g_max_tasks; i++) {
-        int cand = (cur + i) % g_max_tasks;
-        if (cand == 0 || cand == cur) continue;
-        if (tasks[cand].state == 1 && tasks[cand].cr3 != 0 && tasks[cand].runnable_ctx
-            && tasks[cand].saved_ksp && !tasks[cand].pager_hold) {
-            next = cand;
-            break;
-        }
-    }
+    int next = sched_pick_after(cur, 0);
     if (next < 0) return frame_rsp;   /* nobody else runnable -> keep running */
 
     /* Save the outgoing task's frame, install the incoming task's address
@@ -2885,7 +2919,7 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
      * What followed was the smoke-console-smp hang. The tick would select another
      * task and switch to it, but the save-and-release block below is gated on
      * `ring3`, so the abandoned task was never released: task_running_cpu[cur]
-     * stayed pointing at this CPU forever. Every selection loop skips a claimed
+     * stayed pointing at this CPU forever. sched_selectable skips a claimed
      * candidate, so that task — still RUNNABLE, still holding a valid frame —
      * became unschedulable by every CPU in the system, including this one. The
      * observed end state was a livelock: timer ticking, tasks spin-yielding, one
@@ -2955,16 +2989,7 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
     if (!cur_dead && ring3 && cur > 0 && cur < g_max_tasks)
         deliver_pending_signal(frame_rsp, cur);
 
-    int next = -1;
-    for (int i = 1; i <= g_max_tasks; i++) {
-        int cand = (cur + i) % g_max_tasks;
-        if (cand == 0) continue;
-        if (tasks[cand].state == 1 && tasks[cand].cr3 != 0 &&
-            tasks[cand].runnable_ctx && tasks[cand].saved_ksp && !tasks[cand].pager_hold && task_running_cpu[cand] < 0) {
-            next = cand;
-            break;
-        }
-    }
+    int next = sched_pick_after(cur, 1);
     if (cur_dead) {
         /* This CPU is still on the dead task's kernel stack (its trap frame is
          * the one being handled), so the stack is marked in flight until the
@@ -3117,16 +3142,7 @@ uint64_t ipc_block_switch(int blocked_task, uint64_t frame_rsp) {
     int cpu = this_cpu();
     sched_release_outgoing(cpu, blocked_task);   /* blocking: release it, once off its stack */
 
-    int next = -1;
-    for (int i = 1; i < g_max_tasks; i++) {
-        int cand = (blocked_task + i) % g_max_tasks;
-        if (cand == 0) continue;
-        if (tasks[cand].state == TASK_RUNNABLE && tasks[cand].cr3 != 0 &&
-                tasks[cand].runnable_ctx && tasks[cand].saved_ksp && !tasks[cand].pager_hold && task_running_cpu[cand] < 0) {
-            next = cand;
-            break;
-        }
-    }
+    int next = sched_pick_after(blocked_task, 0);
     if (next < 0) {
         /* No task to switch to on this CPU. blocked_task stays genuinely blocked
          * and becomes schedulable by any CPU as soon as this CPU is off its kernel
@@ -3189,16 +3205,7 @@ uint64_t ipc_block_switch(int blocked_task, uint64_t frame_rsp) {
     KSTACK_WIDEN(cpu);
     return ksp;
 #else
-    int next = -1;
-    for (int i = 1; i < g_max_tasks; i++) {
-        int cand = (blocked_task + i) % g_max_tasks;
-        if (cand == 0) continue;
-        if (tasks[cand].state == TASK_RUNNABLE && tasks[cand].cr3 != 0 &&
-                tasks[cand].runnable_ctx && tasks[cand].saved_ksp && !tasks[cand].pager_hold) {
-            next = cand;
-            break;
-        }
-    }
+    int next = sched_pick_after(blocked_task, 0);
     if (next < 0) {
         ipc_unpublish_block(blocked_task);
         return frame_rsp;
@@ -3686,20 +3693,7 @@ uint64_t sched_yield_switch(int cur, uint64_t frame_rsp) {
     sched_raw_lock();
     int cpu = this_cpu();
 #endif
-    int next = -1;
-    for (int i = 1; i < g_max_tasks; i++) {
-        int cand = (cur + i) % g_max_tasks;
-        if (cand == 0 || cand == cur) continue;
-        if (tasks[cand].state == 1 && tasks[cand].cr3 != 0 &&
-            tasks[cand].runnable_ctx && tasks[cand].saved_ksp && !tasks[cand].pager_hold
-#ifdef SMP
-            && task_running_cpu[cand] < 0
-#endif
-           ) {
-            next = cand;
-            break;
-        }
-    }
+    int next = sched_pick_after(cur, 0);
     if (next < 0) {
 #ifdef SMP
         sched_raw_unlock();
@@ -3961,7 +3955,7 @@ static void task_teardown_body(int id, const struct task_exit_cause *cause,
     tasks[id].sig_on_stack      = 0;
     /* ---- DEATH MUST SERIALISE WITH SELECTION -- finding [G-9] ---------------
      *
-     * These four fields are exactly what every selection loop tests, under
+     * These four fields are exactly what sched_selectable tests, under
      * sched_raw_lock, to decide a task is runnable:
      *
      *     state == 1 && runnable_ctx && saved_ksp && task_running_cpu[c] < 0
@@ -4106,17 +4100,7 @@ uint64_t task_exit_switch(int dead) {
     sched_raw_lock();
     int cpu = this_cpu();
 #endif
-    int next = -1;
-    for (int i = 1; i < g_max_tasks; i++) {
-        int cand = (dead + i) % g_max_tasks;
-        if (cand == 0) continue;
-        if (tasks[cand].state == 1 && tasks[cand].cr3 != 0 && tasks[cand].runnable_ctx
-            && tasks[cand].saved_ksp && !tasks[cand].pager_hold
-#ifdef SMP
-            && task_running_cpu[cand] < 0
-#endif
-           ) { next = cand; break; }
-    }
+    int next = sched_pick_after(dead, 0);
     if (next < 0) {
 #ifdef SMP
         /* Deliberately does NOT mark this CPU idle here, though an earlier draft

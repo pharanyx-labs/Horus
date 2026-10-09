@@ -1216,7 +1216,7 @@ void iommu_task_teardown_selftest(void) {
 
     /* The dying driver: a real task slot, taken from the top so nothing the boot
      * goes on to spawn lands in it. It never runs -- create_task leaves
-     * runnable_ctx and saved_ksp at 0, which every selection loop tests -- so the
+     * runnable_ctx and saved_ksp at 0, which sched_selectable tests -- so the
      * scheduler cannot pick it up between here and its death. */
     int drv = g_max_tasks - 1;
     create_task(drv, 0, 0, 0, 0, UNTYPED_KERNEL);

@@ -591,6 +591,9 @@ revoking a directory's capability revokes it and what was opened through it, and
 it came from stays. Read, write, append, truncate, stat, readdir, lookup, create, mkdir and delete
 are served; chmod and chown wait for step 4.
 
+**Step 2 is waiting** on the question at the head of the open list in §13: how a client walks without
+leaking a capability slot per path component. Steps 3, 4 and 6 follow it.
+
 **Step 5 as built.** The refusal is on both paths, since a move through the uid path changes who
 may reach a file just as much. A rename across directories is `EXDEV`. A link is too unless the
 new parent already holds a name for the file, because v11 keeps no back-references and that is
@@ -664,6 +667,24 @@ still asks a settled question is stale.
 11. **Cross-directory `rename` and `link` return `EXDEV` in phase 1**, and `mv` copies. The full
     rule of §5.5 needs each object's back-references, which arrive with the v12 format; phase 3
     lifts the refusal.
+
+**Open, and blocking phase 1b step 2: how a client walks without leaking a slot per component.**
+A walk by `LOOKUP` reply-mint leaves one capability per path component, each derived from the one
+before. Revoking an intermediate revokes the leaf, and ring 3 has no way to forget one slot alone
+(the kernel's `cap_consume_slot` has no syscall). That is by design, since revocation walks the
+derivation tree by parent serial and a plain drop would orphan the leaf from a later revoke of the
+root. A task holds at most 128 capabilities, so keeping every chain is not an answer. Two ways out,
+put to the maintainer on 2026-10-09:
+
+- **A kernel drop that splices the slot out**, reparenting its children to its parent so revocation
+  still reaches them. It is a change to the capability core, with Kani proofs.
+- **A multi-name walk on the server** (recommended), in the shape of 9P's `Twalk`. The request
+  carries an array of names, each refused if it is `.`, `..` or holds `/`. The server walks
+  beneath the capability invoked and reply-mints one capability for the end, derived from that
+  one. No kernel change, one round trip per path rather than per component, and a shallow
+  derivation tree. It changes §5.4's "`LOOKUP(dir, "name")` is the whole of path resolution" while
+  keeping what that sentence protects: the server still never sees a path, never interprets `..`
+  and never follows a link.
 
 **Still open, none of them blocking phase 1:**
 

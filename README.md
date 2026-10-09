@@ -86,9 +86,9 @@ line need no capability, and the read side is refused once `console_server` owns
 - Per-task four-level page tables, demand paging, copy-on-write, `fork`, `exec` and signals.
 - All of a machine's RAM up to 4 GiB in the page pool, every region the firmware's memory map
   names, with nothing else mapped above 1 GiB (S117).
-- Encrypted swap on an installed machine: a task short of memory pages its own idle pages out to
-  the swap partition, sealed under a key made at that boot and kept only in memory, and gets them
-  back exactly on touch (S118, S119).
+- Encrypted swap on an installed machine: under memory pressure idle pages go out to the swap
+  partition, first those of tasks no CPU is running and then the short task's own, sealed under a
+  key made at that boot and kept only in memory, and come back exactly on touch (S118, S119, S123).
 - IPC over bounded queues with one-shot reply capabilities, notifications and pipes; a server can
   tell its clients apart by the capability they call it through.
 - SMEP, SMAP, kernel W^X, guard pages and stack canaries; user programs load at a randomised
@@ -165,13 +165,11 @@ The full list, with the reasons, is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.
 
 In order, from [`docs/ROADMAP.md`](docs/ROADMAP.md):
 
-1. **Swap for idle tasks**: a task short of memory already pages out its own idle pages to the
-   encrypted partition; next, an idle task's pages can go too, with a TLB shootdown.
-2. **Filesystem phase 1b** (2.10): `fs_server`, the path walker and `init` authorise files by
+1. **Filesystem phase 1b** (2.10): `fs_server`, the path walker and `init` authorise files by
    capability instead of by user id and mode.
-3. **Accounts as files** (2.11): `/etc/passwd` and `/etc/shadow` on the volume, owned by a ring-3
+2. **Accounts as files** (2.11): `/etc/passwd` and `/etc/shadow` on the volume, owned by a ring-3
    `auth_server`.
-4. **Filesystem phases 2 to 4** (2.10): the filesystem moves to ring 3 on a copy-on-write format,
+3. **Filesystem phases 2 to 4** (2.10): the filesystem moves to ring 3 on a copy-on-write format,
    with separate system and home volumes, and gains links, timestamps, snapshots and extended
    attributes.
 
@@ -259,8 +257,8 @@ test does not exist or does not run.
 
 | Layer | What it covers |
 |---|---|
-| Security properties | 124 numbered properties, each bound to a witness by `tools/check_invariants.py` |
-| QEMU integration tests | 464 `smoke-*` targets: 214 base gates and 250 control arms |
+| Security properties | 125 numbered properties, each bound to a witness by `tools/check_invariants.py` |
+| QEMU integration tests | 466 `smoke-*` targets: 214 base gates and 252 control arms |
 | Control arms | A build that puts a defect back on purpose; CI requires its gate to go red against it |
 | Kani | 35 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
 | Miri | The security core's tests, interpreted for undefined behaviour on every pull request |

@@ -26,32 +26,19 @@ requests. What is still wrong, as opposed to still unbuilt, is in
 
 In order. Each step is its own set of pull requests with its own gates and control arms.
 
-1. **Encrypted swap** in the reserved partition, next (the maintainer, 2026-10-08), specified in
-   [`design/swap.md`](design/swap.md). The sealed slot store (S118, #510) and paging out the
-   faulting task's own pages (S119, #512) are built; taking an idle task's pages, with a TLB
-   shootdown, is next. A key made fresh at every boot from the CSPRNG, held only in kernel memory
-   and never written or paged out. Every page sealed with the kernel's AEAD under a fresh nonce,
-   with the nonce, the tag and the slot map kept in RAM, so nothing on the partition is ever
-   plaintext, not even a header, and a page modified, replayed or unreadable kills the task that
-   owns it rather than handing it wrong bytes. Only a task's private pages are swapped, never
-   kernel memory, page tables, shared frames or the boot servers. The pager is in the kernel, with
-   a simple clock policy. Compressed memory (zram or zswap) is not planned: if it comes, it is a
-   cache in front of this swap that compresses one task's pages only (memory compression is a
-   timing side channel), never compresses a page marked secret, and charges each task for its own
-   compressed pages.
-2. **Filesystem phase 1b** (2.10): `fs_server` authorises by capability instead of by uid and
+1. **Filesystem phase 1b** (2.10): `fs_server` authorises by capability instead of by uid and
    mode, `hvfs` walks with capabilities, and `init` mints the root capability from a policy file.
    It removes `perm_ok`, the root check on `chown`, `SYS_FS_SET_META`, the uid path of
    `SYS_IPC_SENDER` in the filesystem, and `SYS_CONNECT_FS_SERVER`. Phase 1a, the kernel half,
    is done.
-3. **Accounts as files** (2.11 step 3): `/etc/passwd` and `/etc/shadow` on the volume, owned by a
+2. **Accounts as files** (2.11 step 3): `/etc/passwd` and `/etc/shadow` on the volume, owned by a
    ring-3 `auth_server`; the kernel keeps only the key-slot unlock.
-4. **Filesystem phases 2 to 4** (2.10): the kernel shrinks to a sealed-block service and the
+3. **Filesystem phases 2 to 4** (2.10): the kernel shrinks to a sealed-block service and the
    filesystem moves to ring 3 with a copy-on-write format, then symbolic links, timestamps and
    sparse files, then snapshots, reflinks and extended attributes. Phase 2 also splits the
    system and home into separate volumes.
 
-Steps 2 and 3 meet at `/etc/passwd`; whichever lands second adapts to the first.
+Steps 1 and 2 meet at `/etc/passwd`; whichever lands second adapts to the first.
 
 ---
 
@@ -106,6 +93,7 @@ a large change to the most safety-critical assembly in the tree, and nothing is 
 | 2.9 ✅ An installer | A format capability only the installer holds (S72), consent by a typed word after every answer is shown back (S73), a choice of target disk (S82, S83), replacing an existing volume from install media (S90), two accounts that each open the disk (S76), and an optional unencrypted volume (S104). 2026-09-01 to 2026-09-24 |
 | 2.10 🚧 A capability-addressed filesystem | Phase 1a, the kernel's endpoint tokens and reply-mint (S105). 2026-09-25, #455. Phase 1b step 1: `fs_server` answers through tokened capabilities, beside the uid path (S120). 2026-10-09, #515. Step 5: a cross-directory `rename` or `link` is refused `EXDEV` (S121). 2026-10-09 |
 | 2.11 🚧 An installed system | Designed ([`design/installed-system.md`](design/installed-system.md)); a live boot never opens an installed disk (S110, #472); the disk boots itself under UEFI, on the laptop too (S114, S115); its programs are on it, in system trees rebuilt from the verified modules at every boot and read-only to everyone (S116). 2026-10-08, #503, #505, #506 |
+| 2.12 ✅ Encrypted swap | Specified in [`design/swap.md`](design/swap.md): a sealed slot store under a per-boot key with the tags in RAM (S118, #510), paging out under pressure (S119, #512), and idle tasks giving memory back under the pager's hold (S123, #518). Compressed memory is deferred (2026-10-08): if it comes, it is a cache in front of this swap that compresses one task's pages only, never a page marked secret, and charges each task for its own. A request that keeps a task's secrets out of swap waits on a §4 question |
 
 ### 2.1 ◧ Remainder
 
@@ -144,7 +132,7 @@ start it.
 ### 2.7a ⬜ Evict the in-kernel services [F-2.7a]
 
 `.github/ring0-classification.yml` (S87) measures the ring-0 `service` class at about 6,000 code
-lines beside a 11,284-line core: `storage.c` (the encrypted store and the on-disk filesystem),
+lines beside a 11,403-line core: `storage.c` (the encrypted store and the on-disk filesystem),
 `kusers.c` (accounts and password hashing), the loader and spawn path, `crypto.c` and
 `syscall_fs.c`. Neither big move is mechanical. `storage.c` holds the volume key, so moving it
 means deciding what a ring-3 storage server may hold; 2.10's phase 2 is that decision for the
@@ -285,7 +273,7 @@ from a tag and compare. They wait on 3.1, since an ISO that does not rebuild to 
 same bytes cannot be verified by rebuilding.
 
 **4.12.** The exemption list in `.github/invariants.yml` is currently
-**empty**: all 124 properties name a witness that resolves.
+**empty**: all 125 properties name a witness that resolves.
 
 ---
 
@@ -307,5 +295,5 @@ same bytes cannot be verified by rebuilding.
 | ✅ | Measured boot, the kernel pinned in the boot image, and a PCR-sealed volume key |
 | ✅ | An IOMMU confining device DMA, and device capabilities that name one device each |
 | ◧ | Reproducible `kernel.elf` (not yet the ISO), an SBOM, CodeQL, Dependabot, signed commits, a protected `main` |
-| ✅ | 464 `smoke-*` targets, nearly all QEMU integration tests, and 250 of them control arms that must reproduce a defect |
+| ✅ | 466 `smoke-*` targets, nearly all QEMU integration tests, and 252 of them control arms that must reproduce a defect |
 | ✅ | Bounded Kani proofs, Miri over the Rust core, and fuzzing at the FFI boundary |

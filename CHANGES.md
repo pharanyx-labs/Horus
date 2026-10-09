@@ -29,6 +29,7 @@ here.
 
 ### Added
 
+- A large idle task gives memory back: under pressure the pager takes idle pages from tasks no CPU is running, holding each off every CPU while its page tables change, before the short task's own (S123). `init` was never actually pinned against swap, because its task was named `prog1`; it is now pinned by identity and named `init`. (#518)
 - Swap pages out: a task short of memory sends its own idle pages to the encrypted swap partition and gets them back on touch; 48 MiB runs on a 64 MiB pool (S119). (#512)
 - The swap partition is opened at an installed boot's unlock as a sealed store: every page under a key made at that boot, its tag kept in RAM, nothing on the partition in plaintext (S118). Nothing is paged out to it yet. (#510)
 - The page pool uses all of a machine's RAM up to 4 GiB, every region the memory map names, instead of the one region holding 16 MiB capped at 1 GiB; a 3 GiB guest's pool went from 495 MiB to 3054 MiB (S117). (#508)
@@ -90,6 +91,7 @@ here.
 
 ### Fixed
 
+- An install gate on two CPUs failed in three of five CI runs: while `console_server` was starting, `init` wrote through the kernel and the server wrote straight to the serial port, so `init`'s line came out split. `init` now waits for the server to own the console and writes through it.
 - A pipeline typed as the first command after logging in on an installed system hung: a pipe end went into the slot the filesystem endpoint is installed into, and was overwritten by it. Capabilities the kernel allocates now start above every well-known slot (S122). `init` also put the filesystem's endpoint and the console's notification in the same slot; that is now a build error.
 - After an install on a framebuffer wider than 80 columns, the installer's right border stayed on the screen beside the login banner: the console's clear repainted cells, not the screen. (#513)
 - On a framebuffer, the installer's progress panel lost six of its eight rows to a black box while the password was hashed; it is now drawn inside the installer's frame. (#504)

@@ -197,7 +197,7 @@ There are 430 `smoke-*` targets: 204 gates and 226 control arms. Each row is a g
 | `smoke-fs-persist` | Data survives a reboot |  |  |
 | `smoke-install-boot-disk` | An install under UEFI lays out GPT, ESP, swap and volume, and the machine then starts from the disk alone, records every module its ESP carries, logs in, runs `seq` from `/bin` and finds the licences and source offer in `/usr/share/doc` | S114, S115, S116 | `smoke-install-boot-disk-control`, `smoke-install-boot-disk-lowmod-control` |
 | `smoke-swap-store` | On an installed disk's own boot, the login turns swap on beside the volume; pages sealed into the swap partition read back intact, a changed block and a replayed block are refused, and the host finds none of the self-test's plaintext marker on the partition | S118 | `smoke-swap-store-seal-control`, `smoke-swap-store-tag-control` |
-| `smoke-swap` | On an installed disk's boot with the pool capped at 64 MiB, `swaphog` writes 48 MiB and reads every byte back through swap, the kernel reports pages out, and the host finds none of its marker on the swap partition | S119 | `smoke-swap-zeroed-control` |
+| `smoke-swap` | On an installed disk's boot with the pool capped at 64 MiB, `swaphog hold \| swaphog after` runs: the holder writes 16 MiB and goes idle, the busy half writes 48 MiB and reads every byte back through swap, and the holder then checks its own 16 MiB; the kernel reports pages out and pages taken from idle tasks, the holder's among them and never a boot server's, and the host finds none of the marker on the swap partition | S119, S123 | `smoke-swap-zeroed-control`, `smoke-swap-idle-control`, `smoke-swap-unpinned-control` |
 | `smoke-system-trees` | After an install and a reboot onto newer media, the system trees hold the new programs, a stray file in `/bin` is gone, and root cannot delete, create, rename, copy into, make a directory in or chmod anything in `/bin` | S116 | `smoke-system-trees-control`, `smoke-system-trees-prune-control`, `smoke-system-trees-rebuild-control` |
 | `smoke-install-esp-pin` | Install media whose EFI image was changed after it was built installs nothing | S115 | `smoke-install-esp-pin-control` |
 | `smoke-gpt-volume` | The volume is found in its GPT partition, and an entry forged on the disk is refused | S114 | `smoke-gpt-volume-control` |
@@ -398,7 +398,7 @@ Two of those deserve a sentence each.
 there with no `continue-on-error`, each named with its measured cost in
 `.github/kani-harnesses.yml`, and the job refuses a proof that is not listed. And **`invariants`** requires every property in `SECURITY.md` to
 name a witness that exists and runs; its exemption list, `.github/invariants.yml`, is
-currently **empty**: all 124 properties name a witness that resolves.
+currently **empty**: all 125 properties name a witness that resolves.
 
 Every `tools/check_*.py` has a falsification harness, `tools/test_check_*.sh`, with one case per
 rule showing the rule can fail, and each checker asserts a floor on what it parsed, so a parser

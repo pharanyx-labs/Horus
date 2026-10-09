@@ -114,6 +114,8 @@ control_arms:
   smoke-swap-store-seal-control: smoke-swap-store
   smoke-swap-store-tag-control: smoke-swap-store
   smoke-swap-zeroed-control: smoke-swap
+  smoke-swap-idle-control: smoke-swap
+  smoke-swap-unpinned-control: smoke-swap
   smoke-system-trees-control: smoke-system-trees
   smoke-system-trees-prune-control: smoke-system-trees
   smoke-system-trees-rebuild-control: smoke-system-trees

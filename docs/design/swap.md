@@ -1,6 +1,6 @@
 # Encrypted swap
 
-**Decided; steps 1 and 2 of §5 built (#510, #512).** The maintainer asked on 2026-10-08 for the swap limitation to be sorted
+**Decided; steps 1, 2 and 2a of §5 built (#510, #512, #518).** The maintainer asked on 2026-10-08 for the swap limitation to be sorted
 out now, and for the swap partition to be properly encrypted. The four decisions below were taken
 the same day, each as recommended. The memory ceiling went first (#508), so swap starts from a
 pool that already holds all of the RAM below 4 GiB.
@@ -9,10 +9,10 @@ pool that already holds all of the RAM below 4 GiB.
 
 | Piece | State |
 |---|---|
-| The partition | The installer lays one out on a bootable disk, between the EFI system partition and the volume, sized by the operator, with its own type GUID (`rust/src/gpt.rs`). Opened at unlock as the sealed slot store (`src/kernel/swap.c`, S118); nothing is evicted into it yet |
+| The partition | The installer lays one out on a bootable disk, between the EFI system partition and the volume, sized by the operator, with its own type GUID (`rust/src/gpt.rs`). Opened at unlock as the sealed slot store (`src/kernel/swap.c`, S118), and the pager evicts into it (S119, S123) |
 | Finding it | The kernel parses a GPT in Rust and mounts a volume only from a table that verifies (S114); the swap partition is found by the same parse |
 | Cryptography | `rust_aead_seal` and `rust_aead_open` (ChaCha20 with HMAC-SHA256, encrypt-then-MAC) and the kernel CSPRNG |
-| Running out of memory | A hard failure: an allocation that finds the pool empty fails (`docs/LIMITATIONS.md` section 4) |
+| Running out of memory | With swap on, idle pages go to the partition first; once it is full, an allocation that finds the pool empty fails as before |
 | The fault path | `handle_demand_page_fault` runs under `page_lock`, a spinlock taken with interrupts off |
 | Disk I/O | Synchronous, through the IDE and SD/eMMC drivers, each under its own lock (`ata_lock`, `sdhci_lock`) |
 
@@ -79,17 +79,38 @@ Every walker that reads non-present PTEs knows it (`src/kernel/paging.c`):
 
 ### 3.4 Choosing a page
 
-When a fault finds fewer than `SWAP_LOW_WATER` frames free, the faulting task gives up to
-`SWAP_EVICT_BATCH` of **its own** idle pages before it takes another. A clock hand walks its user
-page tables from where it last stopped, giving each eligible page one pass with its accessed bit
-cleared before taking it.
+When a fault finds fewer than `SWAP_LOW_WATER` frames free, up to `SWAP_EVICT_BATCH` idle pages go
+to swap before it takes another frame: first from tasks no CPU is running, trying at most eight of
+them round the task table, then from the faulting task itself. So a large idle task gives memory
+back to a small busy one. For each task a clock hand walks its user page tables from where it last
+stopped, giving each eligible page one pass with its accessed bit cleared before taking it.
 
-**Its own, not any task's.** The plan was any task not running on another CPU, but checking that
-and changing the PTE cannot be made atomic against the scheduler starting the task elsewhere, which
-would leave a stale translation to a freed frame on that CPU. A shootdown would close it, and the
-fault path cannot wait for one with interrupts off. The current task's pages have no such window:
-this CPU runs it, and any CPU that starts running it reloads CR3 first, the argument
-`clone_user_aspace` already makes. Taking an idle task's pages is the next step, with a shootdown.
+**No CPU can be translating a page while it changes.** For the faulting task that is because this
+CPU runs it. For any other task it is the **pager's hold** (`sched_pager_hold`): taken under the
+scheduler lock only when no CPU has the task claimed or current, and while it is set every
+selection loop skips the task and `enter_user_impl` waits, so the task cannot start anywhere until
+its batch is done. A CPU that is not running a task touches none of its user addresses, and any CPU
+that starts running it writes CR3 first, which drops every non-global entry (Horus uses no PCIDs):
+the argument `clone_user_aspace` already rests on. So no shootdown is needed, which matters because
+the fault path cannot wait for one with interrupts off; the shootdown this step was first planned
+with is not built. A held task can still be woken (it is picked after the release) or killed: the
+page is written with the lock dropped, and the PTE changes only if the task still has the same
+address space and incarnation (`slot_gen`) and the PTE is unchanged.
+
+**One path writes a task's memory without running it**: an IPC delivery, where the kernel becomes
+the blocked waiter for long enough to copy the reply into its buffer, and `user_copy` walks the PTE
+and writes through the kernel's alias with no lock. Against a page being taken on another CPU that
+could write into a freed frame. So the delivery (`sched_impersonate_begin`) publishes itself as
+the waiter and then looks for the hold, backing off while it is set, and `sched_pager_hold`
+publishes the hold and then looks for a CPU current on the task; with a full fence between each
+store and its load, at least one sees the other. Found by reading the paths that call
+`set_current_task` before the step was gated, not by a failure: one CPU in QEMU cannot show it.
+
+**The boot servers are pinned** (decision 3): `fs_server` and `console_server` by name, and `init`
+by identity, as the task the kernel spawned as init. The name was tried first and missed: init is
+staged with no image name, so it ran as `prog1` and its pages were never pinned, which nobody saw
+until step 2a's gate named the idle tasks that gave pages. The gate now refuses if any of the three
+does, and an arm unpins them.
 
 A page is eligible under §2.3 and, measured the hard way, **only where the fault path approves a
 fault** (the image, the heap, the low stack, per `rust_validate_page_fault`): the first version
@@ -130,6 +151,12 @@ with the lock dropped, then installed after re-checking that the PTE still names
   pool holds, and reads every byte back; the kernel must report pages out, and the host must find
   none of `swaphog`'s marker on the partition. Arm: a page taken for swap is written as zeros,
   which `swaphog` catches at its first page.
+- **An idle task gives its memory back, and gets every byte of it back (S123).** Built as part of
+  `make smoke-swap`: the session runs `swaphog hold | swaphog after`, so a holder writes 16 MiB and
+  goes idle while the busy half writes 48 MiB on the capped pool; the kernel must say it took pages
+  from idle tasks, and the holder then checks all of its own. Arm: only the faulting task gives
+  pages (`SWAP_IDLE_OFF=1`), so the kernel never says it took an idle task's. The zeroed arm above
+  covers the holder's pages too.
 - **Swap is never used on a live boot.** `smoke-live-locked` already hashes the whole disk before
   and after a live boot; it gains a low-memory run so the pager is under pressure when it does.
 - **Only eligible pages leave RAM.** Held by `swap_evictable` and the fault-path region check
@@ -141,8 +168,8 @@ with the lock dropped, then installed after re-checking that the PTE still names
    page, with a boot self-test and the arms above. No page ever leaves a task yet. Done (#510).
 2. **Eviction and fault-in**: the swapped PTE, the walker audit, the clock, the I/O with the lock
    dropped, and the memory-pressure gate. Done (#512), taking the faulting task's own pages.
-2a. **Taking an idle task's pages**, with a TLB shootdown, so a large idle task gives memory back
-   to a small busy one.
+2a. **Taking an idle task's pages**, so a large idle task gives memory back to a small busy one.
+   Done, with the pager's hold in place of the shootdown first planned (§3.4).
 3. **A no-swap request for secrets**, asked first as a §4 question.
 
 Each is its own pull request with its own gates.

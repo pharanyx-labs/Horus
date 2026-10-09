@@ -16,7 +16,7 @@ here.
 
 ### Changed
 
-- LIMITATIONS 5.3e, a stale scheduler claim seen once in 200 boots under the switch-commit injection, is closed: none in 800 boots that each watch all twelve refused switches, pinned and unpinned. (#526)
+- LIMITATIONS 5.3e, a stale scheduler claim seen once in 200 boots under the switch-commit injection, is closed: none in 199 boots that finished the whole workload, 2,344 refused switches between them, pinned and unpinned. (#526)
 - `smoke-switch-commit` watches every switch the process workload refuses, about twelve, where it stopped at the first; it now also fails a boot in which no switch was refused, and says how many it saw. (#522)
 
 ## [0.3.0-alpha]: 2026-10-09

@@ -566,6 +566,6 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 5.2h | [G-13] | The installer gate's format bound was a total, not a stall | 2026-09-03, #306 |
 | 5.3c | | Horus could not be reinstalled over an existing Horus volume (S90) | 2026-09-11, #381 |
 | 5.3d | | Six checkers examined nothing and passed when their parser went silent | 2026-09-10, #368, #369, #375 |
-| 5.3e | | A stale scheduler claim under the switch-commit injection, once in 200 boots: not seen again over the whole workload in 800 boots, 9,600 refused switches | 2026-10-09, #522, #526 |
+| 5.3e | | A stale scheduler claim under the switch-commit injection, once in 200 boots: not seen again in 199 boots that finished the whole workload, 2,344 refused switches between them, pinned and unpinned | 2026-10-09, #522, #526 |
 | 5.6 | [M-3] | Governance files were in the wrong place | 2026-07-27, #107 |
 | 5.8 | | Two Kani proofs ran only in a manual job that could not fail and had never run | 2026-10-06, #485 |

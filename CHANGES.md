@@ -14,6 +14,10 @@ here.
 
 ## [Unreleased]
 
+### Changed
+
+- The scheduler chooses the next task by one rule, `sched_selectable`, where every switch path wrote the rule out for itself: six copies, kept in step by hand. Behaviour is unchanged. (#PR)
+
 ## [0.3.0-alpha]: 2026-10-09
 
 **An installed disk that starts on its own, with its programs on it**, and the work since

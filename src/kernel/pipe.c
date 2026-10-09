@@ -389,7 +389,7 @@ void pipe_task_teardown_selftest(void) {
 
     /* The doomed stage: a real task slot, taken from the top so nothing the boot
      * goes on to spawn lands in it. It never runs -- create_task leaves
-     * runnable_ctx and saved_ksp at 0, which every selection loop tests. */
+     * runnable_ctx and saved_ksp at 0, which sched_selectable tests. */
     int dying = g_max_tasks - 1;
     create_task(dying, 0, 0, 0, 0, UNTYPED_KERNEL);
     if (tasks[dying].state != 1 || !tasks[dying].cspace) {

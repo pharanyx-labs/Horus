@@ -454,10 +454,12 @@ all is undecided; `SECURITY.md` S86's checker refuses a new shim with no subject
 
 `smoke-switch-commit`'s configuration (`PROC_SELFTEST=1 SCHED_INVARIANTS=1 KSP_GUARD_INJECT=1`)
 reported `stale scheduler claim` once in 200 boots under `tools/stress_boot.sh`'s deliberate
-contention (four guest CPUs pinned to two host cores). That is an upper bound under a widener, not
-the gate's own rate. It is filed as a limitation rather than a finding because it is neither
-attributed nor witnessed by a gate that can fail. A campaign without the pinning, or a captured
-reproduction (the stress harness now keeps every failure), would settle it.
+contention (four guest CPUs pinned to two host cores), on 2026-09-10. That campaign, like the gate
+then, ended each boot at the first of the twelve or so switches the workload refuses, so it watched
+a fraction of the window. The gate now watches every refusal. It is filed as a limitation rather
+than a finding because it is neither attributed nor witnessed by a gate that can fail. A campaign
+over the whole workload, pinned and unpinned, or a captured reproduction (the stress harness keeps
+every failure), would settle it.
 
 ### 5.4 Cryptography is unaudited and not verified constant-time **[HORUS-20260920-03]**
 

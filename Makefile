@@ -12062,15 +12062,33 @@ smoke-defer-exemption-control:
 	fi; \
 	echo "DEFER CONTROL: PASS - the pre-fix order left a stale claim on boot $$n of $(DEFER_EXEMPTION_BOOTS) ($$live clean, $$incon inconclusive before it)"
 
+# THE WHOLE WORKLOAD, NOT ITS FIRST REFUSAL. Until 2026-10-09 this gate's required
+# marker was the injection's own line, so the run ended at the FIRST refused switch,
+# about a second in -- while PROC_SELFTEST drives task_exit_switch, and so the
+# injection, about a dozen times before it finishes with `killed-task OK`. A claim
+# orphaned by any later refusal was never given the chance to be seen, and the
+# 1-in-200 of LIMITATIONS 5.3e was measured through that same keyhole. Now the run
+# ends at the workload's last line, and the injection is then required to have
+# fired at all, so a boot that never refused a switch cannot pass as one that
+# refused them all cleanly. The count is printed so a run says how much it saw.
+SWITCH_COMMIT_LOG := .switch-commit.log
 .PHONY: smoke-switch-commit
 smoke-switch-commit:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 KSP_GUARD_INJECT=1
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 SCHED_INVARIANTS=1 KSP_GUARD_INJECT=1 horus.iso
-	@SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
-		REQUIRE_MARKER='SCHED BOGUS KSP from task_exit_switch' \
+	@rm -f $(SWITCH_COMMIT_LOG)
+	@SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMOKE_LOG=$(SWITCH_COMMIT_LOG) \
+		REQUIRE_MARKER='PROC_SELFTEST: killed-task OK' \
 		FAIL_MARKER='stale scheduler claim' \
 		tools/smoke_test.sh horus.iso
+	@n=$$(grep -cF 'SCHED BOGUS KSP from task_exit_switch' $(SWITCH_COMMIT_LOG)); \
+	if [ "$$n" -lt 1 ]; then \
+	    echo "SWITCH COMMIT: FAIL - the workload finished but no switch was refused,"; \
+	    echo "  so this boot tested nothing (log kept: $(SWITCH_COMMIT_LOG))"; \
+	    exit 1; \
+	fi; \
+	echo "SWITCH COMMIT: PASS - $$n refused switches over the whole workload, no stale claim"
 
 # Control arm: same injection, pre-fix ordering. The claim is taken before the
 # value is validated, the refusal parks the CPU, and the claim is orphaned --

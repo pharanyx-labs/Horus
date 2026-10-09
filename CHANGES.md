@@ -18,6 +18,10 @@ here.
 
 - A TLB shootdown whose bounded wait runs out with a CPU still unacknowledged halts the kernel instead of returning as though the flush had happened; only the SMP selftest calls it today, so this is in place before the first real caller (S124). (#523)
 
+### Changed
+
+- `smoke-switch-commit` watches every switch the process workload refuses, about twelve, where it stopped at the first; it now also fails a boot in which no switch was refused, and says how many it saw. (#522)
+
 ## [0.3.0-alpha]: 2026-10-09
 
 **An installed disk that starts on its own, with its programs on it**, and the work since

@@ -129,6 +129,7 @@ int  do_spawn_stdio(uint32_t stdio_spec);                                  /* ks
  * until the staged state has been consumed; see the long note in kspawn.c. */
 void spawn_stage_acquire(void);                                            /* kspawn.c */
 void spawn_stage_release(void);                                            /* kspawn.c */
+int  spawn_stage_held_here(void);                                          /* kspawn.c */
 
 /* ---- Syscall handlers defined outside syscall.c but wired into the ------- *
  * dispatch table there. Every one has the uniform handler signature. */

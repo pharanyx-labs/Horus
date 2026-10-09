@@ -540,6 +540,7 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 1.20 | [HORUS-20260921-03] | A spawn could reuse a slot whose kernel stack a CPU was still on (S20) | 2026-09-21, #421 |
 | 1.21 | [HORUS-20260921-04] | A task killed while running on another CPU kept running (S56) | 2026-09-22, #423 |
 | 1.22 | [HORUS-20261008-01] | Any user could free any inode, `/bin` included, through a directory entry forged in a file they own (S113) | 2026-10-08, #502 |
+| 1.23 | [HORUS-20261009-01] | A wait could return while its child still read alive, and a waiter could miss its child's death (S125) | 2026-10-09, #528 |
 | 2.0 | [C-3] | Spinlock interrupt state was global | 2026-08-13, #135 |
 | 2.1 | [I-2] | Heap syscalls truncated 64-bit arithmetic | 2026-08-13, #145 |
 | 2.2 | [I-5] | Endpoints were single-slot mailboxes | 2026-08-10, #120 |

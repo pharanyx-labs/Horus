@@ -501,7 +501,13 @@
 # 2026-10-09: 11375 -> 11381, +6, S101 by construction: preempt_on_tick refuses
 # to schedule on an SMT sibling whatever interrupts it (the guard and its
 # SIBLING_SCHED_UNGUARDED arm). Core because it is the scheduler's own decision.
-core_budget_loc: 11381
+# 2026-10-09: 11381 -> 11427, +46, S125: task_teardown runs inside
+# spawn_stage_lock (with an owner so a CPU that already holds it does not
+# re-take it) and wakes a SYS_WAIT waiter only after the death, checked against
+# the waiter's blocked_on generation; plus the WAIT_WAKE_EARLY arm and the
+# WAIT_WAKE_WIDEN instrument, never in the ship build. Core because it is task
+# death and the scheduler's wake.
+core_budget_loc: 11427
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

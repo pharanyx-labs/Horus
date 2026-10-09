@@ -280,6 +280,7 @@ control_arms:
   smoke-sibling-kick-control: smoke-sibling-kick
   smoke-shootdown-unacked-control: smoke-shootdown-unacked
   smoke-switch-commit-control: smoke-switch-commit
+  smoke-wait-after-death-control: smoke-wait-after-death
   smoke-syscall-coverage-control: smoke-syscall-coverage
   smoke-task-ceiling-control: smoke-task-ceiling
   smoke-task-ceiling-stack-control: smoke-task-ceiling
@@ -491,6 +492,7 @@ gates:
   - smoke-smp-kvm
   - smoke-sibling-kick
   - smoke-shootdown-unacked
+  - smoke-wait-after-death
   - smoke-smt
   - smoke-spawn-owner
   - smoke-stackguard

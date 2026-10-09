@@ -126,6 +126,7 @@ There are 430 `smoke-*` targets: 204 gates and 226 control arms. Each row is a g
 | `smoke-smp` | Every CPU in the MADT comes online and runs a task, no task runs on an SMT sibling, and TLB shootdown completes | S80 |  |
 | `smoke-sibling-kick` | No task runs on an SMT sibling even when every sibling is interrupted while work is waiting | S101 | `smoke-sibling-kick-control` |
 | `smoke-shootdown-unacked` | A TLB shootdown that one CPU never acknowledges halts the kernel instead of returning | S124 | `smoke-shootdown-unacked-control` |
+| `smoke-wait-after-death` | A `SYS_WAIT` returns only once its child is dead, with the dying CPU held in the old window on every wait | S125 | `smoke-wait-after-death-control` |
 | `smoke-smp-topology` | Eight CPUs on four topologies, including sparse LAPIC ids and hyperthreads, where primary threads get the CPU slots first | S101 | `smoke-smp-topology-sibling-control`, `smoke-smp-topology-sparse-control` |
 | `smoke-smp-kvm` | The SMP race base gates again under KVM, where vCPUs truly run in parallel; required since its measured 83 of 83 green runs |  |  |
 | `smoke-smt` | SMT siblings are parked | S101 |  |
@@ -336,10 +337,10 @@ Currently **93 of 102** implemented syscalls are covered (`SECURITY.md` S25; `do
 ## CI
 
 
-`.github/workflows/ci.yml` defines **138** jobs, run on every push and pull request; most are sharded runs of the gates above. With CodeQL, the scheduled ruleset audit, the nightly fuzzing (`fuzz.yml`, one context per target) and the nightly Kani control arms (`kani-arms.yml`) the total is below: **142** jobs, **151** contexts, counted by `tools/check_ci_gating.py`.
+`.github/workflows/ci.yml` defines **139** jobs, run on every push and pull request; most are sharded runs of the gates above. With CodeQL, the scheduled ruleset audit, the nightly fuzzing (`fuzz.yml`, one context per target) and the nightly Kani control arms (`kani-arms.yml`) the total is below: **143** jobs, **152** contexts, counted by `tools/check_ci_gating.py`.
 
 `.github/ci-gating.yml` classifies every job as gating or exempt with a written reason, and the `ci-gating` job fails on a job in neither list. The branch ruleset requires two checks: `gates`, which needs every gating job and passes only if each succeeded (skipped or cancelled counts as failed), and CodeQL.
-The set is **142 gating contexts and 9 reasoned exemptions**: `fuzz` (seven targets, ten minutes each, nightly; a crash fails it, but it never runs on a pull request), `kani-arms` and `ruleset-audit` (both run on a schedule, never on a pull request).
+The set is **143 gating contexts and 9 reasoned exemptions**: `fuzz` (seven targets, ten minutes each, nightly; a crash fails it, but it never runs on a pull request), `kani-arms` and `ruleset-audit` (both run on a schedule, never on a pull request).
 
 The jobs that are not boot tests:
 
@@ -400,7 +401,7 @@ Two of those deserve a sentence each.
 there with no `continue-on-error`, each named with its measured cost in
 `.github/kani-harnesses.yml`, and the job refuses a proof that is not listed. And **`invariants`** requires every property in `SECURITY.md` to
 name a witness that exists and runs; its exemption list, `.github/invariants.yml`, is
-currently **empty**: all 126 properties name a witness that resolves.
+currently **empty**: all 127 properties name a witness that resolves.
 
 Every `tools/check_*.py` has a falsification harness, `tools/test_check_*.sh`, with one case per
 rule showing the rule can fail, and each checker asserts a floor on what it parsed, so a parser

@@ -1979,6 +1979,12 @@ typedef struct tcb {
      * Starts at 0 in a zeroed table and is at least 1 once a task exists, which
      * is what makes a bare slot number (generation 0) name nothing. */
     uint64_t slot_gen;
+    /* Set while the pager takes this task's pages from another task's fault
+     * (docs/design/swap.md step 2a): no CPU may start the task until it clears.
+     * Written only under the scheduler lock, by sched_pager_hold and
+     * sched_pager_release; every selection loop and enter_user_impl skip a
+     * held task. */
+    volatile uint32_t pager_hold;
     /* The slot_gen SYS_WAIT was authorised against, for the pending wait that
      * ipc_publish_pending_block registers later. Re-checked there, so a wait
      * authorised for one task can never be registered on its successor. */
@@ -3688,12 +3694,18 @@ int  swap_put(const void *page, uint64_t *slot_out);
 int  swap_get(uint64_t slot, void *page);
 void swap_free(uint64_t slot);
 void swap_ref(uint64_t slot);
-/* The pager's side (paging.c, docs/design/swap.md step 2). Below SWAP_LOW_WATER
- * free frames, a faulting task gives up to SWAP_EVICT_BATCH of its own idle
- * pages to swap before it takes another frame. */
+/* The pager's side (paging.c, docs/design/swap.md steps 2 and 2a). Below
+ * SWAP_LOW_WATER free frames, a fault first takes up to SWAP_EVICT_BATCH idle
+ * pages from tasks no CPU is running, then from the faulting task itself. */
 #define SWAP_LOW_WATER    512u
 #define SWAP_EVICT_BATCH  32
 int  swap_evict_self(int want);
+int  swap_evict_idle(int want);
+/* scheduler.c: keep task `t` off every CPU while the pager changes its page
+ * tables. sched_pager_hold returns 1 and holds it only if no CPU is running it
+ * or current on it; the hold lasts until sched_pager_release. */
+int  sched_pager_hold(int t);
+void sched_pager_release(int t);
 int  swap_fault_in(uint64_t *ptv, uint64_t pt_i, uint64_t fault_addr);
 int  handle_demand_page_fault(uint64_t fault_addr, uint32_t err_code);
 /* rust/src/gpt.rs: the installer's layout (S114). rust_gpt_plan sizes it and

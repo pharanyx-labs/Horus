@@ -2620,12 +2620,13 @@ static int cow_break_pte(uint64_t *pte_slot, uint64_t fault_addr) {
     return 0;
 }
 
-/* ---- Swap: eviction and fault-in (docs/design/swap.md step 2) -------------
+/* ---- Swap: eviction and fault-in (docs/design/swap.md steps 2 and 2a) ------
  *
  * Neither holds page_lock across the disk: the page goes out or comes back with
- * the lock dropped, and the PTE is checked again before it changes. Only the
- * current task's pages are involved, so only this task could change that PTE
- * meanwhile, and it is in the kernel here. */
+ * the lock dropped, and the PTE is checked again before it changes. The pages
+ * taken are the faulting task's own, or those of a task the scheduler is
+ * holding off every CPU (sched_pager_hold), so nothing runs either task while
+ * its PTEs change: the first is in the kernel here, the second cannot start. */
 static uint64_t g_evict_cursor[MAX_TASKS];   /* where each task's clock hand stopped */
 
 /* Tasks swap never takes from: the servers bringing a page back would itself
@@ -2656,10 +2657,11 @@ static int swap_evictable(uint64_t pte) {
     return 1;
 }
 
-int swap_evict_self(int want) {
-    int t = get_current_task();
+/* Take up to `want` idle pages of task `t` to swap. `t` is the current task, or
+ * one sched_pager_hold is keeping off every CPU. */
+static int swap_evict_from(int t, int want) {
     if (t <= 0 || t >= g_max_tasks || tasks[t].cr3 == 0 || swap_task_pinned(t)) return 0;
-    uint64_t *p4 = (uint64_t *)PHYS_KVA(tasks[t].cr3);
+    int self = (t == get_current_task());
     uint64_t victim_va[SWAP_EVICT_BATCH], victim_pte[SWAP_EVICT_BATCH];
     int nv = 0;
     if (want > SWAP_EVICT_BATCH) want = SWAP_EVICT_BATCH;
@@ -2668,6 +2670,11 @@ int swap_evict_self(int want) {
      * round. A page touched since the hand last passed has its accessed bit
      * cleared and is left for the next pass; one untouched is taken. */
     spin_lock(&page_lock);
+    /* Read under the lock: an address space is freed under it, so the tree
+     * walked below is the one these two name for as long as it is held. */
+    uint64_t cr3 = tasks[t].cr3, gen = tasks[t].slot_gen;
+    if (cr3 == 0) { spin_unlock(&page_lock); return 0; }
+    uint64_t *p4 = (uint64_t *)PHYS_KVA(cr3);
     uint64_t start = g_evict_cursor[t] & 0x00007FFFFFFFF000ULL;
     uint64_t va = start;
     int wrapped = 0;
@@ -2695,7 +2702,9 @@ int swap_evict_self(int want) {
                                      tasks[t].heap_start, tasks[t].heap_end)) {
             if (pte & PAGE_ACCESSED) {
                 *slot = pte & ~(uint64_t)PAGE_ACCESSED;
-                __asm__ volatile ("invlpg (%0)" :: "r"(va) : "memory");
+                /* Only this CPU can hold the entry, and only for the current
+                 * task; a held task's next CPU reloads CR3 before it runs. */
+                if (self) __asm__ volatile ("invlpg (%0)" :: "r"(va) : "memory");
             } else {
                 victim_va[nv] = va;
                 victim_pte[nv] = pte;
@@ -2719,11 +2728,16 @@ int swap_evict_self(int want) {
         if (swap_put(g_zero_page_phys ? PHYS_KVA(g_zero_page_phys) : PHYS_KVA(phys), &sslot) != 0) break;
 #endif
         spin_lock(&page_lock);
-        uint64_t *slot = user_pte_existing(p4, victim_va[k]);
+        /* THE SAME TASK, THE SAME TREE. A held task can still be killed while
+         * its page is on the disk, and its slot handed to a new task whose tree
+         * is freed and rebuilt under this lock; the walk below must be of the
+         * tree the page was chosen from, or it writes into someone else's. */
+        uint64_t *slot = (tasks[t].cr3 == cr3 && tasks[t].slot_gen == gen)
+                         ? user_pte_existing(p4, victim_va[k]) : 0;
         const uint64_t ad = PAGE_ACCESSED | PAGE_DIRTY;
         if (slot && (*slot & ~ad) == (victim_pte[k] & ~ad)) {
             *slot = (sslot << 12) | (victim_pte[k] & SWAP_KEEP_FLAGS) | PAGE_SWAPPED;
-            __asm__ volatile ("invlpg (%0)" :: "r"(victim_va[k]) : "memory");
+            if (self) __asm__ volatile ("invlpg (%0)" :: "r"(victim_va[k]) : "memory");
             user_leaf_release(phys);
             done++;
         } else {
@@ -2732,6 +2746,51 @@ int swap_evict_self(int want) {
         spin_unlock(&page_lock);
     }
     return done;
+}
+
+int swap_evict_self(int want) {
+    return swap_evict_from(get_current_task(), want);
+}
+
+/* A LARGE IDLE TASK GIVES MEMORY BACK TO A SMALL BUSY ONE (step 2a). Up to
+ * `want` pages from tasks no CPU is running, round the task table from where
+ * the last call stopped, trying at most SWAP_IDLE_TRIES tasks so one fault's
+ * cost stays bounded. Each is held off every CPU for its batch and released
+ * straight after. Returns the pages taken. */
+#define SWAP_IDLE_TRIES 8
+static int g_idle_cursor;
+static uint64_t g_idle_taken;
+
+int swap_evict_idle(int want) {
+#ifdef SWAP_IDLE_OFF
+    /* CONTROL ARM, never ship (smoke-swap-idle-control): only the faulting
+     * task gives pages, as before step 2a, so an idle task never does. */
+    (void)want; (void)g_idle_cursor; (void)g_idle_taken;
+    return 0;
+#else
+    int cur = get_current_task(), got = 0, tried = 0;
+    for (int i = 1; i < g_max_tasks && got < want && tried < SWAP_IDLE_TRIES; i++) {
+        int t = (g_idle_cursor + i) % g_max_tasks;
+        if (t <= 0 || t == cur || tasks[t].cr3 == 0 || swap_task_pinned(t)) continue;
+        if (!sched_pager_hold(t)) continue;
+        tried++;
+        int n = swap_evict_from(t, want - got);
+        sched_pager_release(t);
+        got += n;
+        g_idle_cursor = t;
+    }
+    if (got > 0) {
+        uint64_t before = g_idle_taken;
+        g_idle_taken += (uint64_t)got;
+        /* Said at the first and every 4096th, as swap_put says its own count. */
+        if (before == 0 || (before >> 12) != (g_idle_taken >> 12)) {
+            print("swap: ");
+            print_decimal(g_idle_taken);
+            print(" pages taken from idle tasks so far\n");
+        }
+    }
+    return got;
+#endif
 }
 
 /* Bring the page `ptv[pt_i]` names back from its slot into a fresh frame. Called
@@ -2772,14 +2831,16 @@ int swap_fault_in(uint64_t *ptv, uint64_t pt_i, uint64_t fault_addr) {
 }
 
 int handle_demand_page_fault(uint64_t fault_addr, uint32_t err_code) {
-    /* LOW ON FRAMES, AND SWAP IS ON: the faulting task gives up some of its own
-     * idle pages before it takes another. Its own, because they are the only
-     * pages no other CPU can be translating at this moment (the reasoning
-     * clone_user_aspace gives for the same question): this CPU runs the task,
-     * and any CPU that starts running it reloads CR3 first. Done before
-     * page_lock is taken, because the eviction writes to the disk. */
-    if (swap_enabled() && get_free_user_pages() < SWAP_LOW_WATER)
-        (void)swap_evict_self(SWAP_EVICT_BATCH);
+    /* LOW ON FRAMES, AND SWAP IS ON: idle pages go to swap before this fault
+     * takes another frame. First from tasks no CPU is running, so a large idle
+     * task gives memory back to a small busy one, then from the faulting task's
+     * own. Both are pages no CPU can be translating while they change (see
+     * sched_pager_hold). Done before page_lock is taken, because the eviction
+     * writes to the disk. */
+    if (swap_enabled() && get_free_user_pages() < SWAP_LOW_WATER) {
+        int n = swap_evict_idle(SWAP_EVICT_BATCH);
+        if (n < SWAP_EVICT_BATCH) (void)swap_evict_self(SWAP_EVICT_BATCH - n);
+    }
 
     uint64_t cr3_phys = tasks[get_current_task()].cr3;
     if (cr3_phys == 0) {

@@ -150,6 +150,40 @@ static uint32_t dir_remove(uint32_t dir_ino, const char *name) {
     return 0;
 }
 
+/* Does directory `dir_ino` hold an entry naming inode `ino`? */
+static int dir_holds(uint32_t dir_ino, uint32_t ino) {
+    int nb = dir_nblocks(dir_ino);
+    if (nb < 0) return 0;
+    static uint8_t blk[BLK];
+    for (unsigned b = 0; b < (unsigned)nb; b++) {
+        if (sys_fblock_read(dir_ino, b, blk) != (int)BLK) continue;
+        struct fs_dirent *de = (struct fs_dirent *)blk;
+        for (unsigned i = 0; i < DIRENTS_PER_BLK; i++)
+            if (de[i].ino == ino) return 1;
+    }
+    return 0;
+}
+
+/* ---- cross-directory moves (S121; docs/design/filesystem.md §5.5, decision 11) ----
+ *
+ * Rights come from the path, so moving an object changes who may do what to it:
+ * a task holding DELETE on /etc and write on its own home could move a file out
+ * of /etc and write to it. §5.5's rule needs every object's back-references,
+ * which arrive with the v12 format in phase 3. Until then a rename or link that
+ * would give an object a name in a second directory is refused with EXDEV, on
+ * every path, and a mover copies instead: a copy is a new object made with
+ * rights the mover already held. True when the request crosses directories. */
+static int fs_xdev(int crosses) {
+#ifdef FS_XDEV_UNCHECKED
+    /* CONTROL ARM, never ship (smoke-fs-cap-xdev-control): a move across
+     * directories goes through. */
+    (void)crosses;
+    return 0;
+#else
+    return crosses;
+#endif
+}
+
 /* Return the `index`-th non-empty entry of `dir_ino` (fills ino, type, name);
  * return 1 if present, 0 past the end. */
 static int dir_get(uint32_t dir_ino, uint32_t index, uint32_t *ino, uint32_t *type, char *name) {
@@ -404,6 +438,10 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
         if (sys_fs_stat(rq->ino, &sst) != 0)             { rp->rc = SYS_ERR_NOENT; break; }  /* source inode */
         if (sst.type != FS_TYPE_FILE)                    { rp->rc = SYS_ERR_INVAL; break; }  /* no dir/other links */
         if (!(cuid == 0 || cuid == sst.uid))             { rp->rc = SYS_ERR_PERM;  break; }  /* owner or root */
+        /* The second name goes beside a name the file already has, never into
+         * another directory (decision 11). v11 keeps no back-references, so
+         * "the directory it is in" can only be answered this way. */
+        if (fs_xdev(!dir_holds(rq->dir_ino, rq->ino)))   { rp->rc = SYS_ERR_XDEV;  break; }
         if (sys_fs_inode_link(rq->ino) != 0)             { rp->rc = SYS_ERR_IO;    break; }  /* ++links */
         int rc = dir_add(rq->dir_ino, rq->name, rq->ino, FS_TYPE_FILE);
         if (rc != 0) { fs_ino_free(rq->ino); rp->rc = rc; break; }   /* undo the ++links */
@@ -553,6 +591,7 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
         if (!perm_ok(&sp, cuid, cgid, P_W) ||
             !perm_ok(&sq, cuid, cgid, P_W))          { rp->rc = SYS_ERR_PERM;  break; }  /* modify both dirs */
         if (!is_dir(&sp) || !is_dir(&sq))            { rp->rc = SYS_ERR_INVAL; break; }  /* see is_dir */
+        if (fs_xdev(old_parent != new_parent))       { rp->rc = SYS_ERR_XDEV;  break; }  /* decision 11 */
 
         /* Copy and validate the new name out of data[] (NUL-bounded). */
         char newname[FS_DIRENT_NAME];
@@ -650,8 +689,17 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
     case FS_OP_WRITE:
     case FS_OP_TRUNCATE: need = FS_R_WRITE;  break;
     case FS_OP_APPEND:   need = (inv->rights & FS_R_APPEND) ? FS_R_APPEND : FS_R_WRITE; break;
+    case FS_OP_RENAME:
+        /* Within the capability's directory only: a rename there needs CREATE
+         * for the new name and DELETE for the old (§5.5). Naming a second
+         * directory would need a second capability, and phase 3 brings that
+         * with the full rule; until then a request that names one is EXDEV. */
+        if (fs_xdev(rq->ino != 0)) { rp->rc = SYS_ERR_XDEV; return; }
+        need = FS_R_CREATE | FS_R_DELETE; is_dir_op = 1; names = 1;
+        break;
     default:
-        /* chmod/chown (step 4), rename and link (step 5) are not on this path yet. */
+        /* chmod/chown (step 4) and link are not on this path. A link names its
+         * source by inode, which a capability never does. */
         rp->rc = SYS_ERR_NOSYS;
         return;
     }
@@ -663,9 +711,15 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
     (void)need;
 #endif
     if (names && !fs_name_ok(rq->name)) { rp->rc = SYS_ERR_INVAL; return; }
+    if (rq->op == FS_OP_RENAME) {
+        char nn[FS_DIRENT_NAME];
+        ustrncpy(nn, (const char *)rq->data, FS_DIRENT_NAME);
+        if (!fs_name_ok(nn)) { rp->rc = SYS_ERR_INVAL; return; }
+    }
 
     struct fs_request r2 = *rq;
     if (is_dir_op) r2.dir_ino = obj; else r2.ino = obj;
+    if (rq->op == FS_OP_RENAME) r2.ino = obj;      /* new parent: the same directory */
 
     /* A DELETE's generation bump happens in fs_ino_free, on the free itself. */
     g_by_cap = 1;

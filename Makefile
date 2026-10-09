@@ -128,7 +128,7 @@ DEFECT_FLAGS = \
 	KEYSLOT_REMOVE_NOOP USERS_PEPPER_PER_BOOT USERS_TAMPER_INJECT STORAGE_AUTOFORMAT \
 	STORAGE_REPLACE_UNLOCKED STORAGE_FORMAT_AUTH_STICKY BOOT_CMDLINE_UNMEASURED \
 	STORAGE_FORMAT_UNGATED INSTALLER_NO_CONFIRM INSTALLER_REVIEW_FLAT BLOCK_ERRNO_LEGACY \
-	FSCAP_SELFTEST FS_CAP_RIGHTS_UNCHECKED \
+	FSCAP_SELFTEST FS_CAP_RIGHTS_UNCHECKED FS_XDEV_UNCHECKED \
 	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED \
 	FS_LINK_UNCOUNTED FS_DIR_OPERAND_UNCHECKED GPT_ENTRIES_CRC_UNCHECKED STORAGE_REPLACE_VIEW_UNRESOLVED \
 	ESP_PIN_UNCHECKED ESP_NOT_WRITTEN DEBUG_BUILD \
@@ -3170,6 +3170,8 @@ LIBHORUS_STRNCPY_UNTERMINATED ?= 0
 # fscaptest, which mints the root directory's tokened capability and drives the
 # capability path through it (make smoke-fs-cap). FS_CAP_RIGHTS_UNCHECKED=1 is
 # its arm: fs_server answers a tokened request without consulting its rights.
+# FS_XDEV_UNCHECKED=1 is its second: a rename or link across directories goes
+# through (phase 1b step 5, decision 11).
 FSCAP_SELFTEST ?= 0
 ifeq ($(FSCAP_SELFTEST),1)
 CFLAGS  += -DFSCAP_SELFTEST
@@ -3177,6 +3179,7 @@ ASFLAGS += -DFSCAP_SELFTEST
 FSCAP_SELFTEST_DEP = userspace/fscaptest.bin
 endif
 FS_CAP_RIGHTS_UNCHECKED ?= 0
+FS_XDEV_UNCHECKED ?= 0
 TOKEN_SELFTEST ?= 0
 ifeq ($(TOKEN_SELFTEST),1)
 CFLAGS  += -DTOKEN_SELFTEST
@@ -4919,6 +4922,9 @@ USERSPACE_CFLAGS += -DINSTALLER_REVIEW_FLAT
 endif
 ifeq ($(FS_CAP_RIGHTS_UNCHECKED),1)
 USERSPACE_CFLAGS += -DFS_CAP_RIGHTS_UNCHECKED
+endif
+ifeq ($(FS_XDEV_UNCHECKED),1)
+USERSPACE_CFLAGS += -DFS_XDEV_UNCHECKED
 endif
 ifeq ($(INSTALLER_NO_CONFIRM),1)
 USERSPACE_CFLAGS += -DINSTALLER_NO_CONFIRM
@@ -12142,8 +12148,11 @@ smoke-claim-release-control:
 # mkdir, create and lookup; a capability narrowed to READ cannot write; a file's
 # cannot create entries; "..", "." and "/" are refused; a removed object's
 # capability is refused NOENT; revoking the root revokes what was opened through
-# it. FS_CAP_RIGHTS_UNCHECKED=1 is the arm: the read-only capability writes.
-.PHONY: smoke-fs-cap smoke-fs-cap-control
+# it; a rename or link across directories is refused EXDEV on both paths, and a
+# rename within one directory needs CREATE and DELETE (step 5).
+# FS_CAP_RIGHTS_UNCHECKED=1 is the arm: the read-only capability writes.
+# FS_XDEV_UNCHECKED=1 is the second: a file moves to another directory.
+.PHONY: smoke-fs-cap smoke-fs-cap-control smoke-fs-cap-xdev-control
 smoke-fs-cap:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FSCAP_SELFTEST=1 $(FSCAPARM)
@@ -12155,6 +12164,9 @@ smoke-fs-cap:
 smoke-fs-cap-control:
 	@$(MAKE) --no-print-directory smoke-fs-cap FSCAPARM=FS_CAP_RIGHTS_UNCHECKED=1 \
 		FSCAPEXPECT='FSCAPTEST: FAIL readonly-wrote'
+smoke-fs-cap-xdev-control:
+	@$(MAKE) --no-print-directory smoke-fs-cap FSCAPARM=FS_XDEV_UNCHECKED=1 \
+		FSCAPEXPECT='FSCAPTEST: FAIL cross-dir-rename'
 
 smoke-vfs:
 	@$(MAKE) --no-print-directory clean

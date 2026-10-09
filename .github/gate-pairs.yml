@@ -96,6 +96,7 @@ control_arms:
   smoke-captest-lookup-type-control: smoke-captest
   smoke-captoken-unmasked-control: smoke-captoken
   smoke-fs-cap-control: smoke-fs-cap
+  smoke-fs-cap-xdev-control: smoke-fs-cap
   smoke-auditprobe-control: smoke-auditprobe
   smoke-auditprobe-abi-control: smoke-auditprobe
   smoke-blockprobe-control: smoke-blockprobe

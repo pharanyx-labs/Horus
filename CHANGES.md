@@ -14,6 +14,10 @@ here.
 
 ## [Unreleased]
 
+### Security
+
+- A TLB shootdown whose bounded wait runs out with a CPU still unacknowledged halts the kernel instead of returning as though the flush had happened; only the SMP selftest calls it today, so this is in place before the first real caller (S124). (#523)
+
 ### Changed
 
 - The scheduler chooses the next task by one rule, `sched_selectable`, where every switch path wrote the rule out for itself: six copies, kept in step by hand. Behaviour is unchanged. (#524)

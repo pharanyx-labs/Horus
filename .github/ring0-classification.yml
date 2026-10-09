@@ -494,7 +494,13 @@
 # instead of returning as though the flush had happened (+7), and the
 # SHOOTDOWN_DEAF_CPU instrument that witnesses it, never in the ship build (+5).
 # Core because it is the TLB coherence protocol itself.
-core_budget_loc: 11415
+# 2026-10-09: 11415 -> 11461, +46, S125: task_teardown runs inside
+# spawn_stage_lock (with an owner so a CPU that already holds it does not
+# re-take it) and wakes a SYS_WAIT waiter only after the death, checked against
+# the waiter's blocked_on generation; plus the WAIT_WAKE_EARLY arm and the
+# WAIT_WAKE_WIDEN instrument, never in the ship build. Core because it is task
+# death and the scheduler's wake.
+core_budget_loc: 11461
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

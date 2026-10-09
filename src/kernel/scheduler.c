@@ -4469,6 +4469,26 @@ void sched_impersonate_end(int real) {
     sched_impersonate_exit();
 }
 
+#ifndef SMP
+/* The uniprocessor build's pager hold (the SMP one is beside the scheduler
+ * lock, which this build does not have). One CPU, and the pager runs on it with
+ * interrupts off, so the only task that could be running is the current one. */
+int sched_pager_hold(int t) {
+    if (t <= 0 || t >= g_max_tasks || t == get_current_task()) return 0;
+    int st = tasks[t].state;
+    if (tasks[t].pager_hold || tasks[t].cr3 == 0 || tasks[t].saved_ksp == 0 ||
+        !(st == TASK_RUNNABLE || st == TASK_BLOCKED_IPC ||
+          st == TASK_BLOCKED_NOTIF || st == TASK_BLOCKED_WAIT))
+        return 0;
+    tasks[t].pager_hold = 1;
+    return 1;
+}
+
+void sched_pager_release(int t) {
+    if (t > 0 && t < g_max_tasks) tasks[t].pager_hold = 0;
+}
+#endif
+
 void sched_impersonate_exit(void) {
 #ifdef SMP
     __sync_synchronize();

@@ -1,6 +1,6 @@
 # Encrypted swap
 
-**Decided; steps 1, 2 and 2a of §5 built (#510, #512 and this step).** The maintainer asked on 2026-10-08 for the swap limitation to be sorted
+**Decided; steps 1, 2 and 2a of §5 built (#510, #512, #518).** The maintainer asked on 2026-10-08 for the swap limitation to be sorted
 out now, and for the swap partition to be properly encrypted. The four decisions below were taken
 the same day, each as recommended. The memory ceiling went first (#508), so swap starts from a
 pool that already holds all of the RAM below 4 GiB.

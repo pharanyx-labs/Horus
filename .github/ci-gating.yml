@@ -308,6 +308,11 @@ required:
   # before its resume value was validated, so a refusal parked the CPU and left
   # the task it had claimed unschedulable forever.
   - switch-commit
+  # Gating. A TLB shootdown that runs out its bound with an acknowledgement
+  # outstanding halts the kernel instead of returning as though every CPU had
+  # flushed (design/scheduler.md 3.8). The selftest is the only caller today;
+  # this keeps the guarantee in place for the first real one.
+  - shootdown-unacked
   # Gating. It witnesses the last component of [G-9]: the claim auditor's own
   # exemption was dropped before the release it exempts, so the checker accused a
   # release that was in flight. The natural event is ~4.5% with variance too wide

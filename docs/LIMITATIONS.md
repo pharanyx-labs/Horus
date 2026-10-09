@@ -451,17 +451,6 @@ and the kernel calls forty-nine, so 43 stay unresolved, among them the capabilit
 refcounts and the hashes. CI never builds this configuration. Whether a no-Rust build is a goal at
 all is undecided; `SECURITY.md` S86's checker refuses a new shim with no subject.
 
-### 5.3e A stale scheduler claim still reproduces under injection
-
-`smoke-switch-commit`'s configuration (`PROC_SELFTEST=1 SCHED_INVARIANTS=1 KSP_GUARD_INJECT=1`)
-reported `stale scheduler claim` once in 200 boots under `tools/stress_boot.sh`'s deliberate
-contention (four guest CPUs pinned to two host cores), on 2026-09-10. That campaign, like the gate
-then, ended each boot at the first of the twelve or so switches the workload refuses, so it watched
-a fraction of the window. The gate now watches every refusal. It is filed as a limitation rather
-than a finding because it is neither attributed nor witnessed by a gate that can fail. A campaign
-over the whole workload, pinned and unpinned, or a captured reproduction (the stress harness keeps
-every failure), would settle it.
-
 ### 5.4 Cryptography is unaudited and not verified constant-time **[HORUS-20260920-03]**
 
 ChaCha20, SHA-256, BLAKE2b, Argon2id and the AEAD are from-scratch `no_std` Rust with no external
@@ -579,5 +568,6 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 5.2h | [G-13] | The installer gate's format bound was a total, not a stall | 2026-09-03, #306 |
 | 5.3c | | Horus could not be reinstalled over an existing Horus volume (S90) | 2026-09-11, #381 |
 | 5.3d | | Six checkers examined nothing and passed when their parser went silent | 2026-09-10, #368, #369, #375 |
+| 5.3e | | A stale scheduler claim under the switch-commit injection, once in 200 boots: not seen again in 199 boots that finished the whole workload, 2,344 refused switches between them, pinned and unpinned | 2026-10-09, #522, #526 |
 | 5.6 | [M-3] | Governance files were in the wrong place | 2026-07-27, #107 |
 | 5.8 | | Two Kani proofs ran only in a manual job that could not fail and had never run | 2026-10-06, #485 |

@@ -69,7 +69,7 @@ capabilities in it". Complete.
 | 1.55 ✅ A durable write-ahead journal [I-10], [I-11] | 2026-08-16, #158, #161 |
 | 1.6 ✅ Unbounded revocation closure [I-3] | 2026-08-16, #160 |
 | 1.7 ✅ Serialise the spawn and exec path [G-10], [G-9] | 2026-08-17 to 2026-08-21, #164, #168, #170, #188 |
-| 1.8 🚧 Per-CPU scheduling, with CPU time as a capability | Designed ([`design/scheduler.md`](design/scheduler.md)). Steps 1, 1b and 2a done: the shootdown wait fails closed (#523), siblings refuse work (#525), one selection rule (#524). Per-CPU run queues next |
+| 1.8 🚧 Per-CPU scheduling, with CPU time as a capability | Designed ([`design/scheduler.md`](design/scheduler.md)). Steps 0, 1, 1b and 2a done: 5.3e closed (#526), the shootdown wait fails closed (#523), siblings refuse work (#525), one selection rule (#524). Per-CPU run queues next |
 
 ### 1.2 ◧ Remainder: a per-CPU block
 

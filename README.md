@@ -18,7 +18,7 @@ it is built first and kept small.
 
 | | |
 |---|---|
-| **Status** | Research system. One tagged release, `v0.2.0-alpha` (2026-09-14), for developers; all work lands on `main` |
+| **Status** | Research system. Two tagged releases for developers, the latest `v0.3.0-alpha` (2026-10-09); all work lands on `main` |
 | **Platform** | x86-64, booted by GRUB under BIOS or UEFI, in QEMU or on real hardware |
 | **Languages** | C for the kernel and the ring-3 servers, `no_std` Rust for the security core |
 | **Website** | [horus.pharanyx.co.uk](https://horus.pharanyx.co.uk/) |
@@ -99,7 +99,9 @@ line need no capability, and the read side is refused once `console_server` owns
 - `init` starts and supervises every other task and hands each one its capabilities.
 - `console_server` owns the serial port, the screen (VGA text or a framebuffer, under BIOS or
   UEFI) and the PS/2 keyboard.
-- `fs_server` serves files from the encrypted volume.
+- `fs_server` serves files from the encrypted volume. It answers through tokened capabilities,
+  the object from the token and the rights from the capability (S120), and refuses a move across
+  directories (S121).
 - A driver's capability names one device, and the IOMMU confines that device's DMA to the memory
   its driver mapped.
 - `netd`, an Intel network driver built the same way, exchanges ARP with its gateway in a test
@@ -150,6 +152,10 @@ line need no capability, and the read side is refused once `console_server` owns
 - **No storage beyond IDE, SD and eMMC.** A SATA drive is identified but not read, and there is no
   NVMe.
 - **No USB**, and so no keyboard on a machine without PS/2 emulation.
+- **Programs still reach files by user id and mode.** The capability path is built in `fs_server`,
+  but no client walks with capabilities yet (filesystem phase 1b, step 2).
+- **No RAM above 4 GiB.** A machine's memory up to 4 GiB is used; what lies above is reported
+  and left alone.
 - **No threads, job control, `/proc`, wall clock or kernel address randomisation.**
 - **No architecture but x86-64.**
 
@@ -160,7 +166,8 @@ The full list, with the reasons, is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.
 In order, from [`docs/ROADMAP.md`](docs/ROADMAP.md):
 
 1. **Filesystem phase 1b** (2.10): `fs_server`, the path walker and `init` authorise files by
-   capability instead of by user id and mode.
+   capability instead of by user id and mode. The server side has begun (S120, S121); clients
+   walking with capabilities is next, once a design question is answered.
 2. **Accounts as files** (2.11): `/etc/passwd` and `/etc/shadow` on the volume, owned by a ring-3
    `auth_server`.
 3. **Filesystem phases 2 to 4** (2.10): the filesystem moves to ring 3 on a copy-on-write format,

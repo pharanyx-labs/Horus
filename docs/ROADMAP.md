@@ -30,7 +30,9 @@ In order. Each step is its own set of pull requests with its own gates and contr
    mode, `hvfs` walks with capabilities, and `init` mints the root capability from a policy file.
    It removes `perm_ok`, the root check on `chown`, `SYS_FS_SET_META`, the uid path of
    `SYS_IPC_SENDER` in the filesystem, and `SYS_CONNECT_FS_SERVER`. Phase 1a, the kernel half,
-   is done.
+   is done, and so are steps 1 and 5: `fs_server` answers through capabilities (S120) and refuses
+   moves across directories (S121). Step 2, clients walking with capabilities, waits on a design
+   question ([`design/filesystem.md`](design/filesystem.md) §13).
 2. **Accounts as files** (2.11 step 3): `/etc/passwd` and `/etc/shadow` on the volume, owned by a
    ring-3 `auth_server`; the kernel keeps only the key-slot unlock.
 3. **Filesystem phases 2 to 4** (2.10): the kernel shrinks to a sealed-block service and the
@@ -157,7 +159,7 @@ is already true.
 | Phase | What lands |
 |---|---|
 | 1a ✅ | Endpoint tokens, reply-mint and carry-one in the kernel, with Kani proofs (S105) |
-| 1b 🚧 | Capability authorisation in `fs_server`, `hvfs` and `init`, on the existing format. In progress, in six steps ([`design/filesystem.md`](design/filesystem.md) §11.1) |
+| 1b 🚧 | Capability authorisation in `fs_server`, `hvfs` and `init`, on the existing format, in six steps ([`design/filesystem.md`](design/filesystem.md) §11.1). Steps 1 and 5 are done (S120, #515; S121, #516); step 2, clients walking with capabilities, waits on a design question (§13), and steps 3, 4 and 6 follow it |
 | 2 | The kernel's sealed-block service; the copy-on-write v12 format in `fs_server` |
 | 3 | Symbolic links, timestamps and a time service, cross-directory rename, sparse files |
 | 4 | Snapshots, reflinks, extended attributes, quotas, locks, open-unlinked files |
@@ -245,7 +247,7 @@ guest's capabilities can host another operating system.
 | 4.2 ✅ Gate the security tests [C-6] | Every job is classified as gating or exempt with a written reason in `.github/ci-gating.yml`; the ruleset requires the `gates` aggregator and CodeQL, and `gates` needs every gating job. 2026-08-16 to 2026-09-21, #159, #165, #415 |
 | 4.3 ✅ `gitleaks` and `cargo-audit` fail the build | 2026-08-30 |
 | 4.4 ⬜ Build provenance and signed artifacts [I-9] | Not started |
-| 4.5 ◧ Tagged releases | One so far, `v0.2.0-alpha` (2026-09-14): an install ISO and its SHA-256, for developers. Not yet carrying an SBOM, provenance or the expected PCR values |
+| 4.5 ◧ Tagged releases | Two so far, `v0.2.0-alpha` (2026-09-14) and `v0.3.0-alpha` (2026-10-09): each an install ISO and its SHA-256, for developers. Not yet carrying an SBOM, provenance or the expected PCR values |
 | 4.6 ✅ `horus.py` under `tools/` [M-2] | 2026-09-09 |
 | 4.7 ✅ Governance files [M-3] | 2026-07-27, #107 |
 | 4.8 ⬜ Secret scanning for non-provider patterns [M-4] | Not started |
@@ -267,7 +269,7 @@ not open defects: `fuzz` (seven targets fuzzed nightly, never on a pull request)
 `ruleset-audit` (both run on a schedule, never on a pull request).
 
 **4.4, 4.5 and 4.11** belong together: SLSA provenance and signatures on `kernel.elf` and the ISO,
-releases that carry them with the SBOM and the expected PCR values (the one release so far carries
+releases that carry them with the SBOM and the expected PCR values (the releases so far carry
 only the ISO and its checksum, from an unsigned tag), and a script a third party runs to rebuild
 from a tag and compare. They wait on 3.1, since an ISO that does not rebuild to the
 same bytes cannot be verified by rebuilding.

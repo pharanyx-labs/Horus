@@ -308,9 +308,12 @@
       stacks, kernel W^X swept for violations at boot, unmapped stack guard pages, and
       30-bit address-space randomisation for user programs. <code>fork</code> clones an
       address space by marking it copy-on-write on <em>both</em> sides, mark only the
-      child's and the two tasks are one process sharing one stack.
+      child's and the two tasks are one process sharing one stack. The page pool holds all of
+      a machine's RAM up to 4 GiB, and on an installed system idle pages go to an encrypted
+      swap partition under pressure, sealed under a key made at that boot and never written
+      anywhere, and come back exactly or not at all.
     </p>
-    <span class="witness">smoke-wx · smoke-cow · smoke-fork · smoke-forkexec · smoke-fpu · smoke-aslr</span>
+    <span class="witness">smoke-wx · smoke-cow · smoke-fork · smoke-forkexec · smoke-fpu · smoke-aslr · smoke-pool-span · smoke-swap</span>
   </article>
   <article>
     <h3 id="message-passing">Message passing</h3>

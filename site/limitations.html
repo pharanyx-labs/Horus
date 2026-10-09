@@ -93,7 +93,7 @@
 <li><a href="#limits">Findings</a>
 <ol class="toc__sub">
 <li><a href="#c-5nobody-reviews-a-change-before-it-lands">C-5Nobody reviews a change before it lands</a></li>
-<li><a href="#1-8eleven-system-calls-have-no-test-that-runs-them">1.8Eleven system calls have no test that runs them</a></li>
+<li><a href="#1-8nine-system-calls-have-no-test-that-runs-them">1.8Nine system calls have no test that runs them</a></li>
 <li><a href="#1-14a-child-s-inherited-pipe-end-escapes-revocation">1.14A child&#x27;s inherited pipe end escapes revocation</a></li>
 <li><a href="#1-6the-console-is-the-one-ambient-authority">1.6The console is the one ambient authority</a></li>
 <li><a href="#2-6cmost-gates-still-read-kernel-reports-off-a-shared-consol">2.6cMost gates still read kernel reports off a shared console</a></li>
@@ -141,11 +141,11 @@
     </p>
   </li>
   <li>
-    <h3 id="1-8eleven-system-calls-have-no-test-that-runs-them"><span class="id">1.8</span>Eleven system calls have no test that runs them</h3>
+    <h3 id="1-8nine-system-calls-have-no-test-that-runs-them"><span class="id">1.8</span>Nine system calls have no test that runs them</h3>
     <p>
-      <strong>91 of 102</strong> system calls have their handler actually executed by the
+      <strong>93 of 102</strong> system calls have their handler actually executed by the
       scripted session, the permission conformance suite, or the boot-modules session.
-      The other 11 are each listed with a written reason, and a checked-in file
+      The other 9 are each listed with a written reason, and a checked-in file
       classifies all 102 implemented syscalls, covered or not, so the number cannot quietly
       fall. The gap
       matters: four times, a probe written to run an uncovered handler found a real defect on

@@ -1,6 +1,7 @@
 #include "syscall.h"
 #include "console_proto.h"
 #include "exit_reason.h"   /* format_exit_reason(): shared with proctest, which asserts its text */
+#include "fs_proto.h"      /* FS_R_* and fs_token(): the root directory capability (launch_fs_server) */
 
 /*
  * Ring-3 init process (PID-1 role).
@@ -322,6 +323,13 @@ static void report_storage(void) {
  * where the retype below fails leaves them empty and every use of them is
  * refused, rather than silently resolving something the kernel put there. */
 #define INIT_DEV_LISTEN     40   /* CAP_ENDPOINT, retyped: READ|WRITE (listen) */
+/* Phase 1b (docs/design/filesystem.md §6.1): the filesystem's listen capability
+ * as fs_server receives it, minted from INIT_FS_LISTEN WITHOUT MINT, so the server
+ * can narrow a client's capability but never fabricate one; and the root
+ * directory's tokened capability, minted here because init holds the endpoint's
+ * mint right. Kept for the session grants of step 3; nothing uses it before. */
+#define INIT_FS_SRV         42
+#define INIT_FS_ROOT        43
 #define INIT_DEV_CLIENT     41   /* the same endpoint, WRITE only (init as client) */
 #define INIT_CON_NOTIFY     42   /* CAP_NOTIFICATION, retyped: console_server's input wait */
 
@@ -338,8 +346,19 @@ static int launch_fs_server(void) {
     /* The fs LISTEN capability (carries READ, the receive right) goes to the
      * server and to nobody else — that is what makes it, and only it, able to
      * dequeue requests and answer them with SYS_IPC_REPLY_TO. Clients get a
-     * WRITE-only capability from SYS_CONNECT_FS_SERVER instead. */
-    if (sys_cap_grant(srv, INIT_FS_LISTEN, CAPSLOT_FS_LISTEN) != 0) return -2;
+     * WRITE-only capability from SYS_CONNECT_FS_SERVER instead.
+     *
+     * A COPY WITHOUT MINT (phase 1b): init's own carries MINT, to make the root
+     * directory's capability below; the server's must not, so it can only
+     * narrow what a client invoked (SYS_IPC_REPLY_CAP), never mint a token. */
+    if (sys_cap_mint(INIT_FS_SRV, INIT_FS_LISTEN, CAP_RIGHT_READ | CAP_RIGHT_WRITE) != 0) return -2;
+    if (sys_cap_grant(srv, INIT_FS_SRV, CAPSLOT_FS_LISTEN) != 0) return -2;
+    /* The root directory, inode 0 at generation 0: every right a file or a
+     * directory can have, and the right to pass it on. */
+    (void)sys_cap_mint_token(INIT_FS_ROOT, INIT_FS_LISTEN,
+                             CAP_RIGHT_WRITE | CAP_RIGHT_GRANT | CAP_RIGHT_REVOKE | CAP_RIGHT_MINT |
+                             FS_R_ALL,
+                             fs_token(0, 0));
     if (sys_cap_grant(srv, CAP_SLOT_USER,  CAPSLOT_USER)      != 0) return -3;  /* registration gate */
     if (sys_cap_grant(srv, CAP_SLOT_STORAGE, CAPSLOT_AUDIT)   != 0) return -4;  /* object store      */
     if (sys_cap_grant(srv, INIT_NOTIFY,    CAPSLOT_NOTIFY)    != 0) return -5;  /* ready rendezvous  */

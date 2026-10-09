@@ -16,6 +16,7 @@ here.
 
 ### Security
 
+- `fs_server` answers requests through tokened capabilities: the object comes from the token, the rights from the capability, and children come back narrowed and revoked with it (S120, phase 1b step 1); the uid path stays beside it until step 6. (#515)
 - The system trees (`/bin`, `/sbin`, `/lib`, `/usr`) are rebuilt from the verified boot modules at every boot, and `fs_server` refuses every change to them, root included (S116). (#506)
 - A user could free any inode, `/bin` included, by forging a directory entry in a file they own; `fs_server` now refuses any file as a directory operand (`[HORUS-20261008-01]`, S113). (#502)
 - The tools that build and check Horus are pinned. (#490)

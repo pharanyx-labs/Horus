@@ -203,13 +203,47 @@ static int file_truncate(uint32_t ino, uint32_t newlen, uint32_t oldlen) {
  * KERNEL-ATTESTED (cuid, cgid) — never an identity from the request. Root
  * (uid 0) always passes; this is the only ambient authority, matching the rest
  * of the kernel's uid==0 admin model. */
+/* Set while a CAPABILITY-ADDRESSED request is being served (cap_request): its
+ * rights were already checked against the invoking capability, which the kernel
+ * attests, so the uid check below has nothing to add (docs/design/filesystem.md
+ * §5, phase 1b step 1). The uid path is untouched for every other request. */
+static int g_by_cap;
+
 static int perm_ok(const struct fs_stat *st, uint32_t cuid, uint32_t cgid, unsigned want) {
+    if (g_by_cap) return 1;                        /* the capability already said */
     if (cuid == 0) return 1;                       /* superuser */
     unsigned bits;
     if      (cuid == st->uid) bits = (unsigned)(st->mode >> 6) & 7u;   /* owner */
     else if (cgid == st->gid) bits = (unsigned)(st->mode >> 3) & 7u;   /* group */
     else                      bits = (unsigned)(st->mode) & 7u;        /* other */
     return (bits & want) == want;
+}
+
+/* ---- token generations (docs/design/filesystem.md §5.2) --------------------
+ *
+ * A capability names an inode by number and generation. Inode numbers are reused
+ * on this format, so every time a name to an inode is removed its generation goes
+ * up, and a capability minted before that no longer matches: it is refused NOENT
+ * and never falls through to whatever now occupies the number. Kept in memory,
+ * since capabilities do not outlive a boot. An inode whose generation would wrap
+ * is retired (FS_GEN_RETIRED) and refused on this path until the next boot. */
+#define FS_GEN_INODES   (1u << 17)          /* a 16 GiB volume has 131072 inodes */
+#define FS_GEN_RETIRED  0x80000000u
+static uint32_t g_gen[FS_GEN_INODES];
+
+static void fs_retire(uint32_t ino)
+{
+    if (ino >= FS_GEN_INODES || (g_gen[ino] & FS_GEN_RETIRED)) return;
+    if (g_gen[ino] >= FS_TOKEN_GEN_MASK) g_gen[ino] = FS_GEN_RETIRED;
+    else g_gen[ino]++;
+}
+
+/* Every free goes through here, so no path can drop a name without staling the
+ * capabilities that named it. */
+static void fs_ino_free(uint32_t ino)
+{
+    sys_fs_inode_free(ino);
+    fs_retire(ino);
 }
 
 /* ---- the system trees (S116) ---------------------------------------------
@@ -330,7 +364,7 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
          * so this brief window is invisible to other clients. */
         sys_fs_set_meta((uint32_t)ino, (type == FS_TYPE_DIR) ? 0755u : 0644u, cuid, cgid);
         int rc = dir_add(rq->dir_ino, rq->name, (uint32_t)ino, type);
-        if (rc != 0) { sys_fs_inode_free((uint32_t)ino); rp->rc = rc; break; }
+        if (rc != 0) { fs_ino_free((uint32_t)ino); rp->rc = rc; break; }
         rp->rc = 0; rp->ino = (uint32_t)ino; rp->type = type;
         break;
     }
@@ -350,7 +384,7 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
             if (dir_get(ino, 0, &cino, &ctype, cname)) { rp->rc = SYS_ERR_BUSY; break; }
         }
         if (dir_remove(rq->dir_ino, rq->name) == 0) { rp->rc = SYS_ERR_NOENT; break; }
-        sys_fs_inode_free(ino);     /* drops one link; frees only when the last name is gone */
+        fs_ino_free(ino);     /* drops one link; frees only when the last name is gone */
         rp->rc = 0;
         break;
     }
@@ -372,7 +406,7 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
         if (!(cuid == 0 || cuid == sst.uid))             { rp->rc = SYS_ERR_PERM;  break; }  /* owner or root */
         if (sys_fs_inode_link(rq->ino) != 0)             { rp->rc = SYS_ERR_IO;    break; }  /* ++links */
         int rc = dir_add(rq->dir_ino, rq->name, rq->ino, FS_TYPE_FILE);
-        if (rc != 0) { sys_fs_inode_free(rq->ino); rp->rc = rc; break; }   /* undo the ++links */
+        if (rc != 0) { fs_ino_free(rq->ino); rp->rc = rc; break; }   /* undo the ++links */
         rp->rc = 0; rp->ino = rq->ino; rp->type = FS_TYPE_FILE;
         break;
     }
@@ -546,7 +580,7 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
                     if (dir_get(dst_ino, 0, &cino, &ctype, cname)) { rp->rc = SYS_ERR_BUSY; break; }
                 }
                 if (dir_remove(new_parent, newname) == 0) { rp->rc = SYS_ERR_IO; break; }
-                sys_fs_inode_free(dst_ino);
+                fs_ino_free(dst_ino);
             }
         }
 
@@ -567,6 +601,94 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
     }
 }
 
+/* ---- capability-addressed requests (docs/design/filesystem.md §5, step 1) ----
+ *
+ * A request through a TOKENED capability. Its object is the token's inode, never
+ * an inode the request names; what it may do is the invoking capability's rights,
+ * which the kernel attests; and a name in it may not be ".", ".." or hold "/"
+ * (§5.4: paths belong to the client, so a capability to a directory reaches that
+ * directory and what is below it, and nothing else). LOOKUP, CREATE and MKDIR
+ * hand back a capability to the child, which the kernel derives from the one
+ * invoked (SYS_IPC_REPLY_CAP), so revoking a directory's capability revokes
+ * everything opened through it.
+ *
+ * Sets *mint_rights and *mint_token when the reply should carry a capability. */
+static int fs_name_ok(const char *n)
+{
+    if (n[0] == 0) return 0;
+    if (n[0] == '.' && (n[1] == 0 || (n[1] == '.' && n[2] == 0))) return 0;
+    for (unsigned i = 0; n[i]; i++) if (n[i] == '/') return 0;
+    return 1;
+}
+
+static void cap_request(const struct fs_request *rq, struct fs_response *rp,
+                        const struct ipc_invoker *inv, uint32_t cuid, uint32_t cgid,
+                        uint32_t *mint_rights, uint64_t *mint_token)
+{
+    umemset(rp, 0, sizeof(*rp));
+    rp->magic = FS_PROTO_MAGIC;
+    *mint_rights = 0;
+    *mint_token = 0;
+    if (rq->magic != FS_PROTO_MAGIC) { rp->rc = SYS_ERR_INVAL; return; }
+
+    uint32_t obj = fs_token_ino(inv->token);
+    if (obj >= FS_GEN_INODES || (g_gen[obj] & FS_GEN_RETIRED) ||
+        fs_token_gen(inv->token) != g_gen[obj]) {
+        rp->rc = SYS_ERR_NOENT;             /* stale: the object it named is gone */
+        return;
+    }
+
+    uint32_t need, is_dir_op = 0, names = 0;
+    switch (rq->op) {
+    case FS_OP_LOOKUP:   need = FS_R_LOOKUP; is_dir_op = 1; names = 1; break;
+    case FS_OP_CREATE:
+    case FS_OP_MKDIR:    need = FS_R_CREATE; is_dir_op = 1; names = 1; break;
+    case FS_OP_DELETE:   need = FS_R_DELETE; is_dir_op = 1; names = 1; break;
+    case FS_OP_READDIR:  need = FS_R_READ;   is_dir_op = 1; break;
+    case FS_OP_STAT:
+    case FS_OP_READ:     need = FS_R_READ;   break;
+    case FS_OP_WRITE:
+    case FS_OP_TRUNCATE: need = FS_R_WRITE;  break;
+    case FS_OP_APPEND:   need = (inv->rights & FS_R_APPEND) ? FS_R_APPEND : FS_R_WRITE; break;
+    default:
+        /* chmod/chown (step 4), rename and link (step 5) are not on this path yet. */
+        rp->rc = SYS_ERR_NOSYS;
+        return;
+    }
+#ifndef FS_CAP_RIGHTS_UNCHECKED
+    if ((inv->rights & need) != need) { rp->rc = SYS_ERR_PERM; return; }
+#else
+    /* CONTROL ARM, never ship (smoke-fs-cap-control): the capability's rights are
+     * not consulted, so a read-only one can write. */
+    (void)need;
+#endif
+    if (names && !fs_name_ok(rq->name)) { rp->rc = SYS_ERR_INVAL; return; }
+
+    struct fs_request r2 = *rq;
+    if (is_dir_op) r2.dir_ino = obj; else r2.ino = obj;
+
+    /* A DELETE's generation bump happens in fs_ino_free, on the free itself. */
+    g_by_cap = 1;
+    handle(&r2, rp, cuid, cgid);
+    g_by_cap = 0;
+
+    if (rp->rc == 0 && (rq->op == FS_OP_LOOKUP || rq->op == FS_OP_CREATE || rq->op == FS_OP_MKDIR)
+        && rp->ino < FS_GEN_INODES && !(g_gen[rp->ino] & FS_GEN_RETIRED)) {
+        /* A CHILD CARRIES AT MOST ITS DIRECTORY'S RIGHTS (§5.3): a directory
+         * keeps every file right so files below it can still have them, a file
+         * keeps only the rights that mean something on a file. The kernel
+         * intersects with the invoking capability again on the way out. */
+        uint32_t keep = (rp->type == FS_TYPE_DIR) ? FS_R_ALL : FS_R_FILE_MASK;
+        /* And the kernel's own rights it already had: send (WRITE), pass on
+         * (GRANT), make narrowed copies of it (MINT; a token is never minted from
+         * a tokened capability, so this cannot make a new one, §5.1) and revoke
+         * those copies (REVOKE). */
+        *mint_rights = (inv->rights & keep) |
+                       (inv->rights & (CAP_RIGHT_WRITE | CAP_RIGHT_GRANT | CAP_RIGHT_MINT | CAP_RIGHT_REVOKE));
+        *mint_token = fs_token(rp->ino, g_gen[rp->ino]);
+    }
+}
+
 /* Find `name` in `parent_ino`; if it is a directory return it, else create it as a
  * root-owned 0755 directory. Idempotent — reuses the directory if present. Returns
  * the directory inode, or -1 (including when `name` exists as a non-directory). */
@@ -576,7 +698,7 @@ static int resolve_or_make_dir(uint32_t parent_ino, const char *name) {
     int nino = sys_fs_inode_alloc(FS_TYPE_DIR);
     if (nino < 0) return -1;
     sys_fs_set_meta((uint32_t)nino, 0755u, 0, 0);            /* root-owned */
-    if (dir_add(parent_ino, name, (uint32_t)nino, FS_TYPE_DIR) != 0) { sys_fs_inode_free((uint32_t)nino); return -1; }
+    if (dir_add(parent_ino, name, (uint32_t)nino, FS_TYPE_DIR) != 0) { fs_ino_free((uint32_t)nino); return -1; }
     return nino;
 }
 
@@ -680,7 +802,7 @@ static void remove_tree(uint32_t parent, const char *name, uint32_t ino, uint32_
         }
         if (dir_get(ino, 0, &cino, &ctype, cname)) return;   /* not empty: leave it */
     }
-    if (dir_remove(parent, name)) sys_fs_inode_free(ino);
+    if (dir_remove(parent, name)) fs_ino_free(ino);
 }
 
 static int install_module_at(const char *path, uint32_t mod_index, uint32_t size) {
@@ -733,19 +855,19 @@ static int install_module_at(const char *path, uint32_t mod_index, uint32_t size
     while (off < size) {
         uint32_t chunk = size - off; if (chunk > BLK) chunk = BLK;
         int got = sys_boot_module_read(mod_index, off, buf, chunk);
-        if (got <= 0) { sys_fs_inode_free((uint32_t)ino); return -1; }
+        if (got <= 0) { fs_ino_free((uint32_t)ino); return -1; }
         /* sys_fblock_write returns the byte count it stored (== got); it zero-pads
          * a short final block internally, so compare against got, not BLK. A write
          * failure here means the store volume filled up — free the partial inode
          * and let the caller skip this one. */
         if (sys_fblock_write((uint32_t)ino, blk, buf, (uint32_t)got) != got) {
-            sys_fs_inode_free((uint32_t)ino); return -1;
+            fs_ino_free((uint32_t)ino); return -1;
         }
         off += (uint32_t)got; blk++;
     }
     sys_fs_set_size((uint32_t)ino, size);
     if (dir_add((uint32_t)parent_ino, leaf, (uint32_t)ino, FS_TYPE_FILE) != 0) {
-        sys_fs_inode_free((uint32_t)ino); return -1;
+        fs_ino_free((uint32_t)ino); return -1;
     }
     sys_mark((uint32_t)ino);
     return 1;
@@ -826,7 +948,7 @@ static void provision_home_dirs(void) {
         sys_fs_set_meta((uint32_t)nino, 0700u, e.uid, e.gid);
 #endif
         if (dir_add((uint32_t)home_ino, leaf, (uint32_t)nino, FS_TYPE_DIR) != 0) {
-            sys_fs_inode_free((uint32_t)nino);
+            fs_ino_free((uint32_t)nino);
         }
     }
 }
@@ -1063,13 +1185,29 @@ void _start(void) {
          * reports no valid sender. */
         uint32_t cgid = 0;
         uint32_t cuid = sys_ipc_sender(CAPSLOT_FS_LISTEN, &cgid);
+        /* WHICH CAPABILITY THE REQUEST CAME THROUGH, as the kernel attests it. A
+         * tokened one addresses its object by the token (cap_request); an
+         * untokened one is the old uid path, until phase 1b step 6. */
+        struct ipc_invoker inv;
+        umemset(&inv, 0, sizeof(inv));
+        if (sys_ipc_invoker(CAPSLOT_FS_LISTEN, &inv) != 0) inv.token = 0;
+        uint32_t mint_rights = 0;
+        uint64_t mint_token = 0;
         if (cuid == (uint32_t)-1) {
             umemset(&rp, 0, sizeof(rp));
             rp.magic = FS_PROTO_MAGIC;
             rp.rc = SYS_ERR_PERM;
+        } else if (inv.token != 0) {
+            cap_request(&rq, &rp, &inv, cuid, cgid, &mint_rights, &mint_token);
         } else {
             handle(&rq, &rp, cuid, cgid);
         }
+        /* A reply that carries a capability to the child. Refused (the client
+         * named no slot for it) delivers nothing and keeps the reply right, so
+         * the plain reply below still answers. */
+        if (mint_token != 0 &&
+            sys_ipc_reply_cap(CAPSLOT_FS_LISTEN, &rp, sizeof(rp), mint_rights, mint_token) == 0)
+            continue;
         /* Reply to THIS request's sender by kernel-recorded identity, not to a
          * shared reply endpoint — so concurrent clients never receive each other's
          * replies. A negative return is a transient "client still blocking" race

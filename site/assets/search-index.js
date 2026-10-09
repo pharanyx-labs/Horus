@@ -217,9 +217,9 @@ window.HORUS_SEARCH = [
 "k": 3
 },
 {
-"t": "1.8Eleven system calls have no test that runs them",
+"t": "1.8Nine system calls have no test that runs them",
 "p": "Limitations",
-"u": "limitations.html#1-8eleven-system-calls-have-no-test-that-runs-them",
+"u": "limitations.html#1-8nine-system-calls-have-no-test-that-runs-them",
 "k": 3
 },
 {

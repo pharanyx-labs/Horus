@@ -475,7 +475,12 @@
 # resolve, which until now killed the task without a word. Core because it is
 # the page tables and the fault path; the slot store itself is in swap.c
 # (service).
-core_budget_loc: 11274
+# 2026-10-09: 11274 -> 11284, +10, phase 1b step 1 (S120): root_cnode[13], the
+# filesystem endpoint init receives, gains MINT, REVOKE and the file rights so
+# init can mint the root directory's tokened capability (and revoke session
+# grants in step 3), and smp.c dispatches the FSCAP_SELFTEST harness. The
+# capability path itself is ring 3 (fs_server).
+core_budget_loc: 11284
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

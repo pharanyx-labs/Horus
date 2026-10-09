@@ -15,7 +15,7 @@ __attribute__((unused)) static void selftest_resume_all(void) {
     for (int t = 1; t < g_max_tasks; t++)
         if (tasks[t].state && tasks[t].saved_ksp) tasks[t].runnable_ctx = 1;
 }
-#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST)
+#if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(FSCAP_SELFTEST)
 #include "fs_proto.h"   /* FS_EP_REQ for the FS self-test harnesses */
 #endif
 
@@ -2260,6 +2260,41 @@ void vfs_selftest(void) {
 }
 #endif /* VFS_SELFTEST */
 
+#ifdef FSCAP_SELFTEST
+static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
+/* ---- Capability-addressed filesystem self-test (smoke-fs-cap) --------------
+ *
+ * The real fs_server, endowed as init endows it, and fscaptest holding one
+ * untokened capability to its endpoint with MINT, the kernel standing in for
+ * init, which mints the root directory's capability from one of these in a real
+ * boot. fscaptest mints the root itself and drives phase 1b step 1 through it
+ * (docs/design/filesystem.md §5). Entry into ring 3 does not return. */
+void fscap_selftest(void) {
+    extern int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);
+    extern uint8_t embedded_fsserver_bin_start[], embedded_fsserver_bin_end[];
+    extern uint8_t embedded_fscaptest_bin_start[], embedded_fscaptest_bin_end[];
+    print("FSCAPTEST: kernel harness\n");
+
+    int fss = fs_spawn_embedded(embedded_fsserver_bin_start, embedded_fsserver_bin_end, "fs_server");
+    if (fss <= 0) { print("FSCAPTEST: FAIL spawn-fs-server\n"); for (;;) asm volatile("hlt"); }
+    tasks[fss].uid = 0;
+    cap_install_from_root(fss, CAPSLOT_FS_LISTEN,   13, FS_EP_REQ);
+    cap_install_from_root(fss, 6, 6, 0);                      /* CAP_USER, registration */
+    cap_install_from_root(fss, CAPSLOT_AUDIT,        9, 0);   /* CAP_ENCRYPTED_STORAGE  */
+    cap_install_from_root(fss, CAPSLOT_BOOT_MODULE, 16, 0);   /* CAP_BOOT_MODULE        */
+
+    int cli = fs_spawn_embedded(embedded_fscaptest_bin_start, embedded_fscaptest_bin_end, "fscaptest");
+    if (cli <= 0) { print("FSCAPTEST: FAIL spawn-client\n"); for (;;) asm volatile("hlt"); }
+    if (cap_install_from_root(cli, 30, 13, FS_EP_REQ) != 0) {
+        print("FSCAPTEST: FAIL endow-client\n"); for (;;) asm volatile("hlt");
+    }
+
+    selftest_resume_all();
+    sched_enable_preemption();
+    sched_enter_user(fss);
+}
+#endif /* FSCAP_SELFTEST */
+
 #ifdef PASSWD_PROBE
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
 /* Spawn one ring-3 task endowed with NOTHING and let it try to read the user
@@ -2557,7 +2592,8 @@ void e820_selftest(void) {
 #endif /* E820_SELFTEST */
 
 #if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(RECVBLOCK_SELFTEST) || defined(TOKEN_SELFTEST) || defined(KLOG_FORGE_SELFTEST) \
-    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE) || defined(VFS_SELFTEST) || defined(FORK_SELFTEST) || defined(FPU_SELFTEST) || defined(FORKEXEC_SELFTEST) || defined(DEVCAP_SELFTEST) || defined(NET_SELFTEST) || defined(SHLIB_SELFTEST) || defined(SHLIBC_SELFTEST) || defined(TUI_SELFTEST)
+    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE) || defined(VFS_SELFTEST) || defined(FORK_SELFTEST) || defined(FPU_SELFTEST) || defined(FORKEXEC_SELFTEST) || defined(DEVCAP_SELFTEST) || defined(NET_SELFTEST) || defined(SHLIB_SELFTEST) || defined(SHLIBC_SELFTEST) || defined(TUI_SELFTEST) \
+    || defined(FSCAP_SELFTEST)
 /* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT/IRQ/CONSOLE/RECVBLOCK/TOKEN/KLOG_FORGE/FORK only) ----
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
 

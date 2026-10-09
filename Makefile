@@ -133,7 +133,7 @@ DEFECT_FLAGS = \
 	FS_LINK_UNCOUNTED FS_DIR_OPERAND_UNCHECKED GPT_ENTRIES_CRC_UNCHECKED STORAGE_REPLACE_VIEW_UNRESOLVED \
 	ESP_PIN_UNCHECKED ESP_NOT_WRITTEN DEBUG_BUILD \
 	POOL_SPAN_SELFTEST E820_HOLE_PROBE PHYS_WINDOW_FLAT_ONLY POOL_FLAT_CEILING POOL_RAM_UNCHECKED MEM_HIGH_UNREPORTED \
-	SWAP_SELFTEST SWAP_SEAL_OFF SWAP_TAG_UNCHECKED SWAP_HOG SWAP_OUT_ZEROED SWAP_IDLE_OFF \
+	SWAP_SELFTEST SWAP_SEAL_OFF SWAP_TAG_UNCHECKED SWAP_HOG SWAP_OUT_ZEROED SWAP_IDLE_OFF SWAP_UNPINNED \
 	CONSOLE_PROGRESS_BELOW_SURFACE CONSOLE_PROGRESS_AT_LOGIN \
 	SYSTEM_TREES_WRITABLE SYSTEM_TREES_NO_PRUNE SYSTEM_TREES_SIZE_ONLY \
 	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY BOOT_MENU_NO_LIVE_TOKEN \
@@ -1930,10 +1930,13 @@ SWAP_TAG_UNCHECKED ?= 0
 # Both instruments, never shipped. SWAP_OUT_ZEROED=1 is the arm: a page taken
 # for swap is written to its slot as zeros. SWAP_IDLE_OFF=1 is step 2a's arm:
 # only the faulting task gives pages, so an idle task never does.
+# SWAP_UNPINNED=1 pins no task, so init, fs_server and console_server give
+# pages like any other.
 SWAP_HOG        ?= 0
 POOL_CAP_MIB    ?= 64
 SWAP_OUT_ZEROED ?= 0
 SWAP_IDLE_OFF   ?= 0
+SWAP_UNPINNED   ?= 0
 ifeq ($(SWAP_HOG),1)
 CFLAGS          += -DSWAP_HOG -DPOOL_CAP_MIB=$(POOL_CAP_MIB)
 BOOT_MODULES    += userspace/swaphog.bin:bin/swaphog
@@ -1944,6 +1947,9 @@ CFLAGS += -DSWAP_OUT_ZEROED
 endif
 ifeq ($(SWAP_IDLE_OFF),1)
 CFLAGS += -DSWAP_IDLE_OFF
+endif
+ifeq ($(SWAP_UNPINNED),1)
+CFLAGS += -DSWAP_UNPINNED
 endif
 ifeq ($(SWAP_SELFTEST),1)
 CFLAGS += -DSWAP_SELFTEST
@@ -13455,7 +13461,7 @@ smoke-swap-store-tag-control:
 # then the holder checks its own 16 MiB. The kernel must say it paged out and
 # that it took pages from idle tasks, and the host must find none of swaphog's
 # marker on the partition, so the pages that went there went sealed.
-.PHONY: smoke-swap smoke-swap-zeroed-control smoke-swap-idle-control
+.PHONY: smoke-swap smoke-swap-zeroed-control smoke-swap-idle-control smoke-swap-unpinned-control
 smoke-swap:
 	@$(MAKE) --no-print-directory smoke-install-boot-disk \
 		BOOTDISKARM="SWAP_HOG=1 $(SWAPPAGEARM)" SWAP_HOG_EXPECT="$(or $(SWAPHOGEXPECT),ok)" \
@@ -13471,6 +13477,11 @@ smoke-swap-zeroed-control:
 # took one from an idle task, and the session must find that missing.
 smoke-swap-idle-control:
 	@$(MAKE) --no-print-directory smoke-swap SWAPPAGEARM=SWAP_IDLE_OFF=1 SWAPHOGEXPECT=noidle
+
+# The pin's arm: no task is pinned, so a boot server gives pages and the session
+# must see one named.
+smoke-swap-unpinned-control:
+	@$(MAKE) --no-print-directory smoke-swap SWAPPAGEARM=SWAP_UNPINNED=1 SWAPHOGEXPECT=unpinned
 
 # MEDIA WHOSE ESP IMAGE WAS CHANGED IS REFUSED (S115). The install media is
 # built, then one byte of /boot/esp.img inside the ISO is inverted, leaving the

@@ -97,6 +97,21 @@ with is not built. A held task can still be woken (it is picked after the releas
 page is written with the lock dropped, and the PTE changes only if the task still has the same
 address space and incarnation (`slot_gen`) and the PTE is unchanged.
 
+**One path writes a task's memory without running it**: an IPC delivery, where the kernel becomes
+the blocked waiter for long enough to copy the reply into its buffer, and `user_copy` walks the PTE
+and writes through the kernel's alias with no lock. Against a page being taken on another CPU that
+could write into a freed frame. So the delivery (`sched_impersonate_begin`) publishes itself as
+the waiter and then looks for the hold, backing off while it is set, and `sched_pager_hold`
+publishes the hold and then looks for a CPU current on the task; with a full fence between each
+store and its load, at least one sees the other. Found by reading the paths that call
+`set_current_task` before the step was gated, not by a failure: one CPU in QEMU cannot show it.
+
+**The boot servers are pinned** (decision 3): `fs_server` and `console_server` by name, and `init`
+by identity, as the task the kernel spawned as init. The name was tried first and missed: init is
+staged with no image name, so it ran as `prog1` and its pages were never pinned, which nobody saw
+until step 2a's gate named the idle tasks that gave pages. The gate now refuses if any of the three
+does, and an arm unpins them.
+
 A page is eligible under §2.3 and, measured the hard way, **only where the fault path approves a
 fault** (the image, the heap, the low stack, per `rust_validate_page_fault`): the first version
 also took the shared libc's per-task data, and the task died for touching its own memory. A page

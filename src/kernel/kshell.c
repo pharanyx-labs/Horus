@@ -418,6 +418,13 @@ void spawn_initial_userspace_init(void) {
     int pid = do_spawn();
     spawn_stage_release();
     if (pid > 0) {
+        /* Which task init is, for the pager's pin (swap_task_pinned), which used
+         * to look for the name "init": staged by hand with no image name, init
+         * was called "prog1", so its pages were never pinned. Named properly
+         * too, for every log line that reports a task by name. */
+        g_init_task = pid;
+        tasks[pid].name[0] = 'i'; tasks[pid].name[1] = 'n';
+        tasks[pid].name[2] = 'i'; tasks[pid].name[3] = 't'; tasks[pid].name[4] = 0;
         tasks[pid].uid = 0;   /* init is the privileged supervisor */
         /* Least privilege: only what init must wield (audit) or delegate onward.
          * Copied from the primordial root cnode with fresh serials so init's —

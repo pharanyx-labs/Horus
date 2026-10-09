@@ -2632,7 +2632,16 @@ static uint64_t g_evict_cursor[MAX_TASKS];   /* where each task's clock hand sto
 /* Tasks swap never takes from: the servers bringing a page back would itself
  * depend on (the console that asked for the password, the file server) and the
  * root of the task tree. Named by the image the kernel spawned them from. */
+int g_init_task = -1;
+
 static int swap_task_pinned(int t) {
+#ifdef SWAP_UNPINNED
+    /* CONTROL ARM, never ship (smoke-swap-unpinned-control): no task is
+     * pinned, so an idle boot server gives its pages like any other. */
+    (void)t;
+    return 0;
+#endif
+    if (t == g_init_task) return 1;      /* by identity: see kshell.c */
     const char *n = tasks[t].name;
     static const char *pinned[] = { "init", "fs_server", "console_server" };
     for (unsigned k = 0; k < sizeof(pinned) / sizeof(pinned[0]); k++) {
@@ -2724,8 +2733,16 @@ static int swap_evict_from(int t, int want) {
         if (swap_put(PHYS_KVA(phys), &sslot) != 0) break;   /* partition full, or a write failed */
 #else
         /* CONTROL ARM, never ship: the page is unmapped and its frame freed, but
-         * what goes to the slot is the zero page, so what comes back is zeros. */
-        if (swap_put(g_zero_page_phys ? PHYS_KVA(g_zero_page_phys) : PHYS_KVA(phys), &sslot) != 0) break;
+         * what goes to the slot is the zero page, so what comes back is zeros.
+         * Only swaphog's heap, so the program that checks every byte is the one
+         * that finds it: zeroing an idle shell's pages, or swaphog's own code
+         * or stack, kills or wedges a task before swaphog can say anything. */
+        const char *nm = tasks[t].name;
+        int hog = nm[0] == 's' && nm[1] == 'w' && nm[2] == 'a' && nm[3] == 'p' &&
+                  nm[4] == 'h' && nm[5] == 'o' && nm[6] == 'g' && nm[7] == 0 &&
+                  victim_va[k] >= tasks[t].heap_start && victim_va[k] < tasks[t].heap_end;
+        if (swap_put((hog && g_zero_page_phys) ? PHYS_KVA(g_zero_page_phys) : PHYS_KVA(phys),
+                     &sslot) != 0) break;
 #endif
         spin_lock(&page_lock);
         /* THE SAME TASK, THE SAME TREE. A held task can still be killed while
@@ -2778,6 +2795,20 @@ int swap_evict_idle(int want) {
         sched_pager_release(t);
         got += n;
         g_idle_cursor = t;
+#ifdef SWAP_HOG
+        /* INSTRUMENT, never shipped (smoke-swap): name each idle task the first
+         * time it gives pages, so the gate can tell that its idle holder's pages
+         * went, and not only some other task's. */
+        static uint64_t said_gen[MAX_TASKS];
+        if (n > 0 && said_gen[t] != tasks[t].slot_gen) {
+            said_gen[t] = tasks[t].slot_gen;
+            print("swap: idle task ");
+            print_decimal((uint64_t)t);
+            print(" '");
+            print(tasks[t].name);
+            print("' gave pages back\n");
+        }
+#endif
     }
     if (got > 0) {
         uint64_t before = g_idle_taken;

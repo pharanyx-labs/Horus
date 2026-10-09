@@ -1782,7 +1782,28 @@ def bootdisk(disk):
                 if "pages out and" not in log:
                     raise SessionFail("swaphog finished but the kernel never said it put a page out: "
                                       "the pool was not under pressure, so nothing was tested")
+                # THE HOLDER'S OWN PAGES, not only some idle task's: the holder
+                # says which task it is, and the instrumented kernel names each
+                # idle task the first time it gives pages back.
+                who = next((ln.split("task", 1)[1].strip() for ln in out.splitlines()
+                            if "SWAPHOG: holder is task" in ln), "")
                 idle = "pages taken from idle tasks" in log
+                # NEVER A BOOT SERVER'S (S119): init, fs_server and console_server
+                # are pinned, since bringing a page back may depend on them.
+                pinned = [ln.strip() for ln in log.splitlines()
+                          if "swap: idle task" in ln and
+                          any(f"'{n}' gave" in ln for n in ("init", "fs_server", "console_server"))]
+                if hog_expect == "unpinned":
+                    if not pinned:
+                        raise SessionFail("the arm unpins the boot servers, and none of them gave a page")
+                    step(f"a boot server gave pages back ({pinned[0][-60:]}), which the base gate refuses")
+                    pinned = []
+                    hog_expect = "ok"
+                if pinned:
+                    raise SessionFail(f"a pinned boot server gave pages to swap: {pinned!r}")
+                if hog_expect != "noidle" and idle and f"swap: idle task {who} 'swaphog' gave pages back" not in log:
+                    raise SessionFail(f"idle tasks gave pages back, but the holder (task {who or '?'}) "
+                                      "never did, so its check proves nothing about a page that left it")
                 if hog_expect == "noidle":
                     if idle:
                         raise SessionFail("the arm stops the kernel taking an idle task's pages, "

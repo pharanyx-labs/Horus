@@ -48,6 +48,14 @@ static unsigned char expect(unsigned page, unsigned off) { return expect_s(page,
 
 static int g_fd = 1;
 
+/* This task's id, straight from the kernel (SYS_GETPID, 20): the shared libc
+ * exports no getpid, and a test program is not a reason to add one. */
+static unsigned my_tid(void) {
+    unsigned long r;
+    __asm__ volatile ("int $0x80" : "=a"(r) : "a"(20UL), "b"(0UL), "c"(0UL), "d"(0UL) : "memory");
+    return (unsigned)r;
+}
+
 static void out(const char *t) {
     (void)write(g_fd, t, strlen(t));
 }
@@ -67,6 +75,9 @@ static int hold(void) {
     /* Only as the first stage of a pipeline: on a terminal the writes below
      * would never fail, and the holder would never stop. */
     if (isatty(1)) { out("SWAPHOG: FAIL the holder's stdout is not a pipe\n"); return 1; }
+    /* Which task this is, so the session can find the kernel saying that this
+     * task, and not some other idle one, gave its pages back. */
+    say("SWAPHOG: holder is task ", my_tid(), "\n");
     unsigned char *heap = malloc((size_t)HOLD_PAGES * PAGE);
     if (!heap) { out("SWAPHOG: FAIL the holder's heap would not grow\n"); return 1; }
     for (unsigned p = 0; p < HOLD_PAGES; p++)

@@ -3742,6 +3742,8 @@ void swap_ref(uint64_t slot);
 #define SWAP_LOW_WATER    512u
 #define SWAP_EVICT_BATCH  32
 int  swap_evict_self(int want);
+/* The task the kernel spawned as init (kshell.c), or -1 before it exists. */
+extern int g_init_task;
 int  swap_evict_idle(int want);
 /* scheduler.c: keep task `t` off every CPU while the pager changes its page
  * tables. sched_pager_hold returns 1 and holds it only if no CPU is running it

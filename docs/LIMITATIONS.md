@@ -386,7 +386,9 @@ waits until it is woken or killed. The PIT runs at a fixed 100 Hz.
   S123). A page goes out sealed under a key that dies with the boot, but a task cannot yet ask for
   its secrets never to be written at all ([`design/swap.md`](design/swap.md) step 3, a question
   for the maintainer). Fork sharing a swapped page is built but no gate exercises it, since every
-  program in `/bin` seals pages and a fork refuses a sealed task.
+  program in `/bin` seals pages and a fork refuses a sealed task. The handshake that keeps an IPC
+  delivery from writing into a page the pager is taking on another CPU (S123) has no witness that
+  can fail: the swap gate boots one CPU, and the race needs two.
 - **Kernel ASLR.** User programs get 30 bits of address randomisation; the kernel loads at a fixed
   address.
 - **Other architectures.** x86-64 only, booted by GRUB under BIOS or UEFI.

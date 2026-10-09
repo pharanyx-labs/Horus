@@ -740,6 +740,9 @@ jobs:
       # Only the faulting task gives pages; no idle task ever does.
       - name: Control arm — an idle task's pages are never taken
         run: make smoke-swap-idle-control
+      # No task is pinned; a boot server gives pages.
+      - name: Control arm — init, fs_server and console_server are not pinned
+        run: make smoke-swap-unpinned-control
 
   # SHARD of what was one 59-step job, split 2026-09-21 because it ran for 54
   # minutes and set the wall time of every CI run. Steps are unchanged and in

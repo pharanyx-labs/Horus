@@ -17,6 +17,7 @@ here.
 ### Changed
 
 - The scheduler chooses the next task by one rule, `sched_selectable`, where every switch path wrote the rule out for itself: six copies, kept in step by hand. Behaviour is unchanged. (#524)
+- `smoke-switch-commit` watches every switch the process workload refuses, about twelve, where it stopped at the first; it now also fails a boot in which no switch was refused, and says how many it saw. (#522)
 
 ## [0.3.0-alpha]: 2026-10-09
 

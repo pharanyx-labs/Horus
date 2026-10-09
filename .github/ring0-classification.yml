@@ -489,7 +489,10 @@
 # pinned by identity (g_init_task) and named; the hold has an SMP and a
 # uniprocessor form. Core because it is the
 # scheduler's selection and the page tables; nothing of it can live in a server.
-core_budget_loc: 11403
+# 2026-10-09: 11403 -> 11409, +6, S101 by construction: preempt_on_tick refuses
+# to schedule on an SMT sibling whatever interrupts it (the guard and its
+# SIBLING_SCHED_UNGUARDED arm). Core because it is the scheduler's own decision.
+core_budget_loc: 11409
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

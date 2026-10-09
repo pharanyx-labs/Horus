@@ -403,7 +403,8 @@ SMP is on by default; `SMP=0` compiles it out.
 - **A CPU's index is not its LAPIC id.** The BSP builds `apic_to_cpu[]` from the MADT (itself,
   then primary threads, then SMT siblings) so sparse ids work, and a core past the ceiling parks.
 - **SMT siblings are parked** in `ap_entry64`, identified by LAPIC id (S101), so no task shares a
-  core's L1 and L2 with another.
+  core's L1 and L2 with another. A parked sibling keeps interrupts on to answer shootdowns, so
+  `preempt_on_tick` also refuses to schedule on one, whatever interrupts it.
 - **Each CPU takes its own LAPIC timer tick** and pulls from a shared run pool.
 - **TLB shootdown** is an acknowledged IPI.
 

@@ -308,6 +308,10 @@ required:
   # before its resume value was validated, so a refusal parked the CPU and left
   # the task it had claimed unschedulable forever.
   - switch-commit
+  # Gating. S101 by construction: preempt_on_tick refuses to schedule on an SMT
+  # sibling whoever interrupts it, where it used to rely on no 0xFC interrupt
+  # ever being sent to one.
+  - sibling-kick
   # Gating. It witnesses the last component of [G-9]: the claim auditor's own
   # exemption was dropped before the release it exempts, so the checker accused a
   # release that was in flight. The natural event is ~4.5% with variance too wide

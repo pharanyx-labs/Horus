@@ -2819,6 +2819,21 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
      * single-CPU boot flow; the APs do the multi-core work. */
     int cpu = this_cpu();
     if (!smp_sched_enabled) return frame_rsp;
+#ifndef SIBLING_SCHED_UNGUARDED
+    /* S101, BY CONSTRUCTION. A parked SMT sibling never starts its timer, but it
+     * keeps interrupts on to answer shootdowns and is marked idle, so a 0xFC
+     * interrupt that reached one would land here and the idle branch below would
+     * pull a task onto it. Until 2026-10-09 nothing here said no: S101 rested on
+     * every sender of 0xFC happening never to name a sibling (the kill IPI names
+     * only a CPU running the dying task, which a sibling never is). Now nothing is
+     * scheduled on a sibling whoever interrupts it, so a future sender, a
+     * reschedule kick among them, cannot get this wrong.
+     * SIBLING_SCHED_UNGUARDED=1 drops this, for the control arm. */
+    {
+        extern int cpu_is_smt_sibling(int c);
+        if (cpu_is_smt_sibling(cpu)) return frame_rsp;
+    }
+#endif
     int ring3 = ((interrupted_cs & 3) == 3);
 #ifdef SCHED_INVARIANTS
     /* Balance check for the impersonation bracket, and the reason the bracket can

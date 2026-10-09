@@ -259,7 +259,7 @@ test does not exist or does not run.
 | Layer | What it covers |
 |---|---|
 | Security properties | 125 numbered properties, each bound to a witness by `tools/check_invariants.py` |
-| QEMU integration tests | 466 `smoke-*` targets: 214 base gates and 252 control arms |
+| QEMU integration tests | 468 `smoke-*` targets: 215 base gates and 253 control arms |
 | Control arms | A build that puts a defect back on purpose; CI requires its gate to go red against it |
 | Kani | 35 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
 | Miri | The security core's tests, interpreted for undefined behaviour on every pull request |
@@ -267,7 +267,7 @@ test does not exist or does not run.
 | Reproducibility | `kernel.elf` builds byte for byte the same twice; the ISO does not yet |
 | Toolchain | The Rust compiler, Kani, the fuzzing toolchain, PyYAML and semgrep are pinned to exact versions |
 
-`.github/workflows/ci.yml` defines 136 jobs; 140 of the 149 status checks the workflows produce
+`.github/workflows/ci.yml` defines 137 jobs; 141 of the 150 status checks the workflows produce
 gate a merge. The 9 that do not are the nightly fuzzing, the nightly Kani control arms and the
 scheduled ruleset audit, each with its reason in `.github/ci-gating.yml`.
 [`TESTS.md`](TESTS.md) lists every test and what it proves.

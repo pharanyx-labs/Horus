@@ -14,6 +14,10 @@ here.
 
 ## [Unreleased]
 
+### Security
+
+- The scheduler refuses to run a task on an SMT sibling whatever interrupts it; a parked sibling keeps interrupts on, and the rule used to rest on no interrupt ever reaching one (S101). (#PR)
+
 ## [0.3.0-alpha]: 2026-10-09
 
 **An installed disk that starts on its own, with its programs on it**, and the work since

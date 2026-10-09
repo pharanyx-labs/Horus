@@ -440,7 +440,7 @@ one that is.
 
 | Lock | Owns |
 |---|---|
-| `spawn_stage_lock` | The spawn and exec staging state. The outermost lock: taken by syscall entry points holding nothing |
+| `spawn_stage_lock` | The spawn and exec staging state, and every task teardown, so that a `SYS_WAIT` waiter and the death it waits for are ordered (S125). The outermost lock: taken by syscall entry points and the fault paths holding nothing, and by `task_teardown` unless its caller already holds it |
 | `storage_lock` | The encrypted object store and on-disk filesystem |
 | `ata_lock` | The ATA driver; always inside `storage_lock` |
 | `sdhci_lock` | The SD/eMMC controller, for a whole block operation. Innermost |

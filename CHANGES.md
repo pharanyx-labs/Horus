@@ -16,7 +16,7 @@ here.
 
 ### Changed
 
-- The scheduler chooses the next task by one rule, `sched_selectable`, where every switch path wrote the rule out for itself: six copies, kept in step by hand. Behaviour is unchanged. (#PR)
+- The scheduler chooses the next task by one rule, `sched_selectable`, where every switch path wrote the rule out for itself: six copies, kept in step by hand. Behaviour is unchanged. (#524)
 
 ## [0.3.0-alpha]: 2026-10-09
 

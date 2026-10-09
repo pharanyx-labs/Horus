@@ -398,6 +398,11 @@ covered:
   # as by its four refusals, which is the stronger form of covered.
   - SYS_UNTYPED_SPLIT
   - SYS_IPC_RECV_BLOCK
+  # Promoted 2026-10-09 by phase 1b step 1 (docs/design/filesystem.md §11.1):
+  # init mints the root directory's capability with SYS_CAP_MINT_TOKEN on every
+  # boot, and fs_server reads SYS_IPC_INVOKER for every request it receives.
+  - SYS_CAP_MINT_TOKEN
+  - SYS_IPC_INVOKER
 
 uncovered:
   # Twelve left, in four groups: three from the 2026-08-30 sweep, and a fourth of
@@ -475,16 +480,12 @@ uncovered:
   # promote anything.
   SYS_GET_PASS: >-
     SC_NONE, so the body IS reachable by any caller -- and it BLOCKS. Its only early return is console_hw_owned(), and no ring-3 server owns the UART in the captest image, so the call reaches console_getc() and waits for a keystroke. MEASURED 2026-08-30, by writing the probe: it hung smoke-captest for the full 40s timeout with no marker. This is the difference from SYS_GET_LINE, which looks identical from the dispatch table and is `covered`: h_get_line tests CAP_CONSOLE inside the handler and refuses captest outright, where h_read's fd 0 branch and this one test no authority at all. Covering it needs a workload where a console server owns the UART, or a non-blocking branch this syscall does not have
-  # (4) NEW ON 2026-09-25 AND NOT YET USED BY ANY SHIPPED PROGRAM. The four
-  # capability-token syscalls (docs/design/filesystem.md §5.1) have one client so
-  # far, their own witness, so no tracked workload enters them. They move to
-  # `covered` when fs_server and hvfs use them (phase 1b of that design), which is
-  # when a tracked session will enter all four on every boot.
-  SYS_CAP_MINT_TOKEN: >-
-    Entered by TOKEN_SELFTEST, whose gate is make smoke-captoken (S105), by tokencli minting a token from its untokened capability and being refused from a tokened one. No tracked image runs tokencli; init will call it to mint the root directory capability in phase 1b
+  # (4) NEW ON 2026-09-25 AND NOT YET USED BY A TRACKED CLIENT. Two of the four
+  # capability-token syscalls (docs/design/filesystem.md §5.1) are covered since
+  # phase 1b step 1, when init and fs_server began using them. These two move to
+  # `covered` with step 2, when hvfs walks by capability and a tracked session
+  # calls through one on every boot.
   SYS_IPC_CALL_CAP: >-
-    Entered by TOKEN_SELFTEST (make smoke-captoken, S105) on every call tokencli makes. No tracked workload has a capability-addressed server to call until phase 1b
-  SYS_IPC_INVOKER: >-
-    Entered by TOKEN_SELFTEST (make smoke-captoken, S105) on every request tokensrv receives. No tracked server reads an invoker record until fs_server does in phase 1b
+    Entered by TOKEN_SELFTEST (make smoke-captoken, S105) on every call tokencli makes. fs_server answers one from phase 1b step 1, but no tracked client calls through a capability until hvfs does in step 2
   SYS_IPC_REPLY_CAP: >-
-    Entered by TOKEN_SELFTEST (make smoke-captoken, S105), successfully and refused, by tokensrv. No tracked server reply-mints until fs_server does in phase 1b
+    Entered by TOKEN_SELFTEST (make smoke-captoken, S105), successfully and refused, by tokensrv. fs_server reply-mints from phase 1b step 1, but only for a request naming a receive slot, and no tracked client sends one until hvfs does in step 2

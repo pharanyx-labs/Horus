@@ -69,6 +69,7 @@ capabilities in it". Complete.
 | 1.55 ✅ A durable write-ahead journal [I-10], [I-11] | 2026-08-16, #158, #161 |
 | 1.6 ✅ Unbounded revocation closure [I-3] | 2026-08-16, #160 |
 | 1.7 ✅ Serialise the spawn and exec path [G-10], [G-9] | 2026-08-17 to 2026-08-21, #164, #168, #170, #188 |
+| 1.8 ⬜ Per-CPU scheduling, with CPU time as a capability | Designed ([`design/scheduler.md`](design/scheduler.md)); not started |
 
 ### 1.2 ◧ Remainder: a per-CPU block
 
@@ -108,8 +109,9 @@ a large change to the most safety-critical assembly in the tree, and nothing is 
 ### 2.2 ◧ Remainder
 
 - **Per-task timers delivered as notifications**, and with them `SYS_IPC_CALL` with a timeout.
-  That is a scheduler change.
-- **Tickless operation.** The PIT runs at 100 Hz whether or not anything needs it.
+  They follow the per-CPU one-shot timers of item 1.8 ([`design/scheduler.md`](design/scheduler.md) §3.4).
+- **Tickless operation.** The PIT runs at 100 Hz whether or not anything needs it; item 1.8
+  replaces it with per-CPU one-shot timers.
 - **A libc `clock_gettime`**, and a wall clock, which needs an RTC and a way to trust it.
 
 ### 2.3 ◧ Remainder

@@ -124,11 +124,12 @@ There are 430 `smoke-*` targets: 204 gates and 226 control arms. Each row is a g
 | `smoke-claim-reread` | The claim auditor re-reads a suspect state before accusing it |  | `smoke-claim-reread-control` |
 | `smoke-enter-user-claim` | The first entry to ring 3 never claims a task another CPU already holds | S20 | `smoke-enter-user-claim-control`, `smoke-enter-user-collide-control` |
 | `smoke-smp` | Every CPU in the MADT comes online and runs a task, no task runs on an SMT sibling, and TLB shootdown completes | S80 |  |
+| `smoke-sibling-kick` | No task runs on an SMT sibling even when every sibling is interrupted while work is waiting | S101 | `smoke-sibling-kick-control` |
 | `smoke-shootdown-unacked` | A TLB shootdown that one CPU never acknowledges halts the kernel instead of returning | S124 | `smoke-shootdown-unacked-control` |
 | `smoke-smp-topology` | Eight CPUs on four topologies, including sparse LAPIC ids and hyperthreads, where primary threads get the CPU slots first | S101 | `smoke-smp-topology-sibling-control`, `smoke-smp-topology-sparse-control` |
 | `smoke-smp-kvm` | The SMP race base gates again under KVM, where vCPUs truly run in parallel; required since its measured 83 of 83 green runs |  |  |
 | `smoke-smt` | SMT siblings are parked | S101 |  |
-| `smoke-switch-commit` | No refused switch, over the whole process workload, leaves a stale scheduler claim behind |  | `smoke-switch-commit-control` |
+| `smoke-switch-commit` | No refused switch, over the whole process workload, leaves a stale scheduler claim behind; a boot whose workload stops short with no failure of its own is retried up to ten times, never passed |  | `smoke-switch-commit-control` |
 
 ### IPC, processes and signals
 
@@ -335,10 +336,10 @@ Currently **93 of 102** implemented syscalls are covered (`SECURITY.md` S25; `do
 ## CI
 
 
-`.github/workflows/ci.yml` defines **137** jobs, run on every push and pull request; most are sharded runs of the gates above. With CodeQL, the scheduled ruleset audit, the nightly fuzzing (`fuzz.yml`, one context per target) and the nightly Kani control arms (`kani-arms.yml`) the total is below: **141** jobs, **150** contexts, counted by `tools/check_ci_gating.py`.
+`.github/workflows/ci.yml` defines **138** jobs, run on every push and pull request; most are sharded runs of the gates above. With CodeQL, the scheduled ruleset audit, the nightly fuzzing (`fuzz.yml`, one context per target) and the nightly Kani control arms (`kani-arms.yml`) the total is below: **142** jobs, **151** contexts, counted by `tools/check_ci_gating.py`.
 
 `.github/ci-gating.yml` classifies every job as gating or exempt with a written reason, and the `ci-gating` job fails on a job in neither list. The branch ruleset requires two checks: `gates`, which needs every gating job and passes only if each succeeded (skipped or cancelled counts as failed), and CodeQL.
-The set is **141 gating contexts and 9 reasoned exemptions**: `fuzz` (seven targets, ten minutes each, nightly; a crash fails it, but it never runs on a pull request), `kani-arms` and `ruleset-audit` (both run on a schedule, never on a pull request).
+The set is **142 gating contexts and 9 reasoned exemptions**: `fuzz` (seven targets, ten minutes each, nightly; a crash fails it, but it never runs on a pull request), `kani-arms` and `ruleset-audit` (both run on a schedule, never on a pull request).
 
 The jobs that are not boot tests:
 

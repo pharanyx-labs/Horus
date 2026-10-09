@@ -16,11 +16,14 @@ here.
 
 ### Security
 
+- The scheduler refuses to run a task on an SMT sibling whatever interrupts it; a parked sibling keeps interrupts on, and the rule used to rest on no interrupt ever reaching one (S101). (#525)
 - A TLB shootdown whose bounded wait runs out with a CPU still unacknowledged halts the kernel instead of returning as though the flush had happened; only the SMP selftest calls it today, so this is in place before the first real caller (S124). (#523)
 
 ### Changed
 
+- The scheduler chooses the next task by one rule, `sched_selectable`, where every switch path wrote the rule out for itself: six copies, kept in step by hand. Behaviour is unchanged. (#524)
 - `smoke-switch-commit` watches every switch the process workload refuses, about twelve, where it stopped at the first; it now also fails a boot in which no switch was refused, and says how many it saw. (#522)
+- `smoke-switch-commit` failed under KVM on 3 of its first 7 runs, main among them, when the process workload, which the injection slows by parking a CPU at every exit, stopped short of its last line. Such a boot is now retried up to ten times and never counted as a pass; a stale claim, a panic or any other self-test failure is still red at once. (#527)
 - The scheduling and SMP design records the decisions taken for it: CPU time as a capability accounted per CPU, slack time behind a right, priorities capped by authority, passive servers, per-CPU run queues and one-shot timers, affinity that only narrows, more than eight CPUs; roadmap item 1.8. (#521)
 
 ## [0.3.0-alpha]: 2026-10-09

@@ -69,7 +69,7 @@ capabilities in it". Complete.
 | 1.55 ✅ A durable write-ahead journal [I-10], [I-11] | 2026-08-16, #158, #161 |
 | 1.6 ✅ Unbounded revocation closure [I-3] | 2026-08-16, #160 |
 | 1.7 ✅ Serialise the spawn and exec path [G-10], [G-9] | 2026-08-17 to 2026-08-21, #164, #168, #170, #188 |
-| 1.8 ⬜ Per-CPU scheduling, with CPU time as a capability | Designed ([`design/scheduler.md`](design/scheduler.md)); not started |
+| 1.8 🚧 Per-CPU scheduling, with CPU time as a capability | Designed ([`design/scheduler.md`](design/scheduler.md)). Steps 1, 1b and 2a done: the shootdown wait fails closed (#523), siblings refuse work (#525), one selection rule (#524). Per-CPU run queues next |
 
 ### 1.2 ◧ Remainder: a per-CPU block
 
@@ -136,7 +136,7 @@ start it.
 ### 2.7a ⬜ Evict the in-kernel services [F-2.7a]
 
 `.github/ring0-classification.yml` (S87) measures the ring-0 `service` class at about 6,000 code
-lines beside a 11,415-line core: `storage.c` (the encrypted store and the on-disk filesystem),
+lines beside a 11,381-line core: `storage.c` (the encrypted store and the on-disk filesystem),
 `kusers.c` (accounts and password hashing), the loader and spawn path, `crypto.c` and
 `syscall_fs.c`. Neither big move is mechanical. `storage.c` holds the volume key, so moving it
 means deciding what a ring-3 storage server may hold; 2.10's phase 2 is that decision for the
@@ -265,7 +265,7 @@ is a second person to review them. Turning on required approval with one maintai
 every merge or needs a bypass actor, which would undo 4.2. `SECURITY.md` therefore claims
 "thoroughly automatically verified", not "independently reviewed".
 
-**4.2.** The gating set is **141 required, 9 exempted** (141 jobs, 150 contexts; re-derive with
+**4.2.** The gating set is **142 required, 9 exempted** (142 jobs, 151 contexts; re-derive with
 `tools/check_ci_gating.py`). The exemptions come from three jobs and are properties of the test,
 not open defects: `fuzz` (seven targets fuzzed nightly, never on a pull request), `kani-arms` and
 `ruleset-audit` (both run on a schedule, never on a pull request).
@@ -299,5 +299,5 @@ same bytes cannot be verified by rebuilding.
 | ✅ | Measured boot, the kernel pinned in the boot image, and a PCR-sealed volume key |
 | ✅ | An IOMMU confining device DMA, and device capabilities that name one device each |
 | ◧ | Reproducible `kernel.elf` (not yet the ISO), an SBOM, CodeQL, Dependabot, signed commits, a protected `main` |
-| ✅ | 468 `smoke-*` targets, nearly all QEMU integration tests, and 253 of them control arms that must reproduce a defect |
+| ✅ | 470 `smoke-*` targets, nearly all QEMU integration tests, and 254 of them control arms that must reproduce a defect |
 | ✅ | Bounded Kani proofs, Miri over the Rust core, and fuzzing at the FFI boundary |

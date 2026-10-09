@@ -586,7 +586,7 @@ extern volatile int percpu_current_task[MAX_CPUS];
  * The answer can only become MORE true between the check and the free if some
  * CPU can newly adopt `cr3` -- and none can. The only task naming this tree is
  * the dead occupant of the slot being rebuilt (state == 0, and this function
- * holds page_lock while it rebuilds), and every selection loop in scheduler.c
+ * holds page_lock while it rebuilds), and the selection rule in scheduler.c (sched_selectable)
  * requires state == 1. So the set of CPUs holding it is closed and can only
  * shrink: a holder may leave, none may arrive. A "no" is therefore durable, and
  * a "yes" is conservative -- which is the safe direction, because the cost of a

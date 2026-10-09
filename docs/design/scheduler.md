@@ -7,10 +7,10 @@ scheduler of high quality, chosen with security first. The decisions below were 
 
 | Piece | State |
 |---|---|
-| Run pool | One table of `MAX_TASKS` slots. `preempt_on_tick` scans it linearly for a runnable task, under the one global `scheduler_lock` |
+| Run pool | One table of `MAX_TASKS` slots. Every switch path scans it linearly through one rule, `sched_selectable` and `sched_pick_after` (#524), under the one global `scheduler_lock` |
 | Policy | Round robin. `tasks[].priority` is written (1 at init, copied on spawn) and never read |
 | CPUs | `MAX_CPUS` is 8 (`src/include/cpu_limits.h`). Each costs about 104 KiB of `.bss` whether present or not: a 68 KiB idle stack (`ap_idle_stacks`), 24 KiB of IST stacks (`ap_ist`) and 8 KiB of TSS (`ap_tss`) |
-| SMT | Every secondary thread is parked before its timer starts (S101). A parked sibling keeps interrupts on to answer shootdowns and is marked idle, and `preempt_on_tick` does not itself refuse to schedule on one, so S101 rests on no 0xFC interrupt ever reaching a sibling |
+| SMT | Every secondary thread is parked before its timer starts (S101). A parked sibling keeps interrupts on to answer shootdowns and is marked idle, and `preempt_on_tick` refuses to schedule on one whatever interrupts it (#525) |
 | Time | The PIT at 100 Hz drives `system_ticks`; every CPU's LAPIC timer runs periodically at the same rate. No one-shot timer, no per-task timer, no IPC timeout. Ring 3 sees 10 ms time and nothing finer (S34) |
 | Wake | A wake sets a task runnable and nothing else. When the waker blocks straight after (a call, a reply followed by a receive), its own CPU takes the woken task at once: 59 of 64 wakes in a two-CPU boot ran within 100 µs (2026-10-09, an instrumented build). When the waker keeps running, the woken task waits for the next tick of an idle CPU, up to 10 ms |
 | Isolation on switch | The microarchitectural state is flushed on every switch between tasks; FPU state is saved and restored eagerly (S16) |
@@ -191,8 +191,8 @@ Budget exhaustion is no finer a clock than the 10 ms tick a task can already cou
 |---|---|---|
 | 0 | LIMITATIONS 5.3e settled | |
 | 1 ✅ | The shootdown wait fails closed (#523) | |
-| 1b | `preempt_on_tick` refuses to schedule on an SMT sibling, whoever interrupts it | |
-| 2a | One selection rule for every switch path | |
+| 1b ✅ | `preempt_on_tick` refuses to schedule on an SMT sibling, whoever interrupts it (#525) | |
+| 2a ✅ | One selection rule for every switch path (#524) | |
 | 2 | Per-CPU run queues, the reschedule interrupt, stealing; no policy change | 0, 1b, 2a |
 | 3 | Per-CPU one-shot timers, tickless idle | 2 |
 | 4 | Scheduling contexts, budgets, priorities and their maximum | 3 |

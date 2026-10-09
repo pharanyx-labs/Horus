@@ -79,8 +79,30 @@ static int report_via_server(const char *s, unsigned len) {
  *
  * The kernel path remains the fallback for before the handover and for a dead
  * server (task teardown releases ownership, so the kernel path re-opens). */
+static int g_console_launched;   /* set once console_server has been started */
+
 static void report(const char *s) {
     int n = 0; while (s[n]) n++;
+    /* THE HANDOVER WINDOW. Once console_server is started it writes its own
+     * lines straight to the UART, before the kernel has handed it the console,
+     * so a line init sent through the kernel in that window shared the wire
+     * with a second writer: "init: this machine has a disk and no volume;
+     * running the install[ 1.49] [console_server] input: ...", three times in
+     * five CI runs on 2026-10-09, each a gate that never saw its marker. So
+     * after the launch init waits for the server to own the console and writes
+     * through it, the single writer. Bounded at two seconds, after which the
+     * kernel path is still the fallback (a server that never takes the console,
+     * or a dead one). */
+    if (g_console_launched && !sys_console_owned()) {
+        struct horus_timespec t0, t;
+        if (sys_clock_gettime(HORUS_CLOCK_MONOTONIC, &t0) == 0) {
+            for (;;) {
+                if (sys_console_owned()) break;
+                if (sys_clock_gettime(HORUS_CLOCK_MONOTONIC, &t) != 0 || t.sec > t0.sec + 2) break;
+                sys_yield();
+            }
+        }
+    }
     if (sys_console_owned() && report_via_server(s, (unsigned)n) == 0) return;
     sys_write(1, s, (unsigned)n);
 }
@@ -938,10 +960,12 @@ void _start(void) {
      * goes through it (the shell falls back to the in-kernel console if the server
      * is somehow unreachable, so a console_server failure can never silence login).
      * It owns the console hardware via the delegated CAP_IO_DEVICE. */
-    if (launch_console_server() < 0)
+    if (launch_console_server() < 0) {
         report("init: WARNING console_server launch failed (shell output falls back to kernel console)\n");
-    else
+    } else {
+        g_console_launched = 1;
         report("init: console_server launched\n");
+    }
 
     /* Asked and answered before anything consults it, and unconditionally --
      * including on a machine with no disk, where no install question is ever

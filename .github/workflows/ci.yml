@@ -200,6 +200,7 @@ jobs:
       - smoke-wx-smp
       - sibling-kick
       - shootdown-unacked
+      - wait-after-death
       - store-locked
       - switch-commit
       - syscall-abi
@@ -3125,6 +3126,25 @@ jobs:
         run: make smoke-shootdown-unacked
       - name: Control arm — the old wait returns with an acknowledgement outstanding
         run: make smoke-shootdown-unacked-control
+
+  wait-after-death:
+    name: "A wait returns only once its child is dead (S125; control arm proves it)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # The dying CPU is held, on every death with a waiter, where the old order
+      # had already woken the waiter. The waiter must still find its child dead.
+      - name: A waiter never sees its child alive
+        run: make smoke-wait-after-death
+      - name: Control arm — wake first and the waiter sees the child alive
+        run: make smoke-wait-after-death-control
 
   claim-release:
     name: "A CPU in ring 3 owes no deferred release (G-9 class; control arm proves it)"

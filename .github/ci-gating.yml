@@ -317,6 +317,10 @@ required:
   # flushed (design/scheduler.md 3.8). The selftest is the only caller today;
   # this keeps the guarantee in place for the first real one.
   - shootdown-unacked
+  # Gating. S125: a SYS_WAIT returns only once its child is dead. The waiter
+  # used to be woken before the child was marked dead, and under no lock the
+  # waiter's own publish shared (HORUS-20261009-01).
+  - wait-after-death
   # Gating. It witnesses the last component of [G-9]: the claim auditor's own
   # exemption was dropped before the release it exempts, so the checker accused a
   # release that was in flight. The natural event is ~4.5% with variance too wide

@@ -73,6 +73,18 @@ static __attribute__((unused)) spinlock_t spawn_stage_lock;
 static volatile int spawn_window_cpu = -1;
 #endif
 
+/* Which CPU holds spawn_stage_lock, or -1. Unlike spawn_window_cpu this is not an
+ * instrument: task_teardown takes the lock itself unless its caller already holds
+ * it (SYS_KILL and SYS_SIGNAL do; SYS_EXIT and the fault paths do not, and a
+ * supervisor page fault mid-syscall can arrive with it held), and the lock is not
+ * recursive. Written only by the holder, after it acquires and before it releases,
+ * so a CPU reading its own id here is reading a fact about itself. */
+static volatile int spawn_stage_owner = -1;
+
+int spawn_stage_held_here(void) {
+    return spawn_stage_owner == this_cpu();
+}
+
 void spawn_stage_acquire(void) {
 #ifdef SPAWN_STAGE_TRACE
     int occupant = spawn_window_cpu;
@@ -96,6 +108,7 @@ void spawn_stage_acquire(void) {
 #ifndef SPAWN_STAGE_UNSERIALISED
     spin_lock(&spawn_stage_lock);
 #endif
+    spawn_stage_owner = this_cpu();
 #ifdef SPAWN_STAGE_TRACE
     spawn_window_cpu = this_cpu();
 #endif
@@ -105,6 +118,7 @@ void spawn_stage_release(void) {
 #ifdef SPAWN_STAGE_TRACE
     spawn_window_cpu = -1;
 #endif
+    spawn_stage_owner = -1;
 #ifndef SPAWN_STAGE_UNSERIALISED
     spin_unlock(&spawn_stage_lock);
 #endif

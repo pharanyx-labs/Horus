@@ -3776,12 +3776,86 @@ uint64_t sched_yield_switch(int cur, uint64_t frame_rsp) {
     return ksp;
 }
 
-/* Terminate task `id`: wake a SYS_WAIT waiter blocked on it, drop its signal
- * handler, mark it dead, and (SMP) release its running-CPU guard so no core will
- * reselect it. The caller (SYS_EXIT / SYS_KILL) is responsible for switching the
- * CPU away from the task if it happens to be the one currently running. */
+/* The SYS_WAIT waiter a teardown owes a wake, captured while the dying task's
+ * slot still names it, and delivered by task_teardown only once the death is
+ * complete. w < 0: nobody to wake. */
+struct teardown_wake {
+    int                   w;
+    uint64_t              gen;    /* the dying incarnation's slot_gen */
+    struct task_exit_info rec;    /* its death record, for the waiter */
+};
+
+static void task_teardown_body(int id, const struct task_exit_cause *cause,
+                               struct teardown_wake *wake);
+
+/* Terminate task `id`: drop its signal handler, mark it dead, (SMP) release its
+ * running-CPU guard so no core will reselect it, sweep its capabilities, and only
+ * then wake a SYS_WAIT waiter blocked on it. The caller (SYS_EXIT / SYS_KILL) is
+ * responsible for switching the CPU away from the task if it happens to be the
+ * one currently running.
+ *
+ * ---- A WAIT RETURNS ONLY ONCE THE CHILD IS DEAD (S125, 2026-10-09) ---------
+ *
+ * The wake used to come first, unlocked, before the task's state went to 0 and
+ * before its capabilities were swept. Another CPU could resume the waiter
+ * straight away, and its SYS_WAIT returned while the child still read alive:
+ * PROC_SELFTEST's `fault-wait-early`, seen once in 200 boots under the
+ * switch-commit injection. The wake now comes last.
+ *
+ * Moving it alone would have opened a lost wakeup, because a waiter publishes
+ * itself (ipc_publish_pending_block) under spawn_stage_lock and SYS_EXIT and
+ * the fault paths tore down under no common lock: a teardown could read
+ * `waiter` as -1, the waiter then register because the child was not dead yet,
+ * and the death land with nobody left to wake it. That window existed before
+ * this change too. So every teardown now runs inside spawn_stage_lock, as
+ * SYS_KILL and SYS_SIGNAL already did, and a waiter either registered before the
+ * teardown began (and is captured) or arrives after it ended (and finds the
+ * child dead, satisfied at once). The same lock serialises two teardowns of one
+ * task, so the dead-cannot-die-twice check below is no longer a race.
+ *
+ * The lock is not recursive, and a supervisor page fault can reach here from a
+ * syscall that already holds it, so it is taken only if this CPU does not.
+ * WAIT_WAKE_EARLY=1 restores the old order for the control arm. */
 void task_teardown(int id, const struct task_exit_cause *cause) {
+    extern int  spawn_stage_held_here(void);
+    extern void spawn_stage_acquire(void);
+    extern void spawn_stage_release(void);
     if (id <= 0 || id >= g_max_tasks) return;
+    int took = !spawn_stage_held_here();
+    if (took) spawn_stage_acquire();
+    struct teardown_wake wake;
+    wake.w = -1;
+    task_teardown_body(id, cause, &wake);
+    if (wake.w >= 0) {
+        int w = wake.w;
+#ifdef SMP
+        sched_raw_lock();
+#endif
+        /* Still the same waiter, still waiting on THIS incarnation: a waiter a
+         * signal interrupted is no longer TASK_BLOCKED_WAIT, and blocked_on_gen
+         * is the generation h_wait_locked authorised. */
+        if (tasks[w].state == TASK_BLOCKED_WAIT && tasks[w].blocked_on == id &&
+            tasks[w].blocked_on_gen == wake.gen) {
+            /* Hand the cause to the supervisor along with the wake. The waiter
+             * resumes straight through iretq with no kernel code running on its
+             * behalf, so there is no later point at which it could be
+             * delivered. */
+            tasks[w].wait_exit_info = wake.rec;
+            tasks[w].state        = TASK_RUNNABLE;
+            tasks[w].runnable_ctx = 1;
+        }
+#ifdef SMP
+        sched_raw_unlock();
+#endif
+    }
+    if (took) spawn_stage_release();
+}
+
+static void task_teardown_body(int id, const struct task_exit_cause *cause,
+                               struct teardown_wake *wake) {
+#ifdef WAIT_WAKE_EARLY
+    (void)wake;
+#endif
     /* A dead task cannot die again (HORUS-20260921-04). A task killed while it
      * ran on another CPU used to go on running, and its SYS_EXIT or its next
      * fault tore it down a second time: rewriting the death record its
@@ -3859,20 +3933,34 @@ void task_teardown(int id, const struct task_exit_cause *cause) {
 
     int w = tasks[id].waiter;
     if (w >= 0 && w < g_max_tasks) {
-        /* Unblock a SYS_WAIT waiter: make it runnable and resumable so the
-         * scheduler resumes it via the trap frame ipc_block_switch saved when it
-         * blocked (it returns from SYS_WAIT with eax already 0). */
+#ifdef WAIT_WAKE_EARLY
+        /* CONTROL ARM -- never ship. The pre-2026-10-09 order: wake the waiter
+         * here, unlocked, before this task is marked dead or its capabilities
+         * are swept, so the waiter can return from SYS_WAIT on another CPU while
+         * the child still reads alive. WAIT_WAKE_WIDEN holds the window open. */
         if (tasks[w].state == TASK_BLOCKED_WAIT) {
-            /* Hand the cause to the supervisor along with the wake. The waiter
-             * resumes straight through iretq with no kernel code running on its
-             * behalf, so there is no later point at which it could be delivered
-             * — and by the time the waiter runs, this slot may already belong to
-             * its replacement. */
             tasks[w].wait_exit_info = tasks[id].exit_info;
             tasks[w].state        = TASK_RUNNABLE;
             tasks[w].runnable_ctx = 1;
         }
+#else
+        /* Captured now, delivered by task_teardown once the death is complete
+         * (see the note there). The record is copied rather than read later so
+         * the wake does not depend on this slot staying unreused. */
+        wake->w   = w;
+        wake->gen = tasks[id].slot_gen;
+        wake->rec = tasks[id].exit_info;
+#endif
         tasks[id].waiter = -1;
+#ifdef WAIT_WAKE_WIDEN
+        /* INSTRUMENT, never shipped: hold the dying CPU here, between where the
+         * old order woke the waiter and where the task is marked dead, so a
+         * waiter resumed on another CPU meets the window on essentially every
+         * wait. Only a death with a waiter is held: the workload also polls
+         * for deaths it does not wait on, against a budget a held CPU on every
+         * death would exhaust. */
+        for (volatile uint32_t spin = 0; spin < 2000000u; spin++) __asm__ volatile ("pause");
+#endif
     }
 
     tasks[id].sig_handler = 0;

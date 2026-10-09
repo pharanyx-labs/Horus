@@ -198,7 +198,8 @@ DEFECT_FLAGS = \
 	COREUTILS_STATIC_LIBC \
 	INSTALLER_STOP_AFTER_FORMAT USERS_PERSIST_COMPILED_IN LIVE_OPENS_VOLUME \
 	SIBLING_KICK_TEST SIBLING_SCHED_UNGUARDED \
-	SHOOTDOWN_DEAF_CPU SHOOTDOWN_FAIL_OPEN
+	SHOOTDOWN_DEAF_CPU SHOOTDOWN_FAIL_OPEN \
+	WAIT_WAKE_EARLY WAIT_WAKE_WIDEN
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -1846,6 +1847,18 @@ endif
 SHOOTDOWN_FAIL_OPEN ?= 0
 ifeq ($(SHOOTDOWN_FAIL_OPEN),1)
 CFLAGS += -DSHOOTDOWN_FAIL_OPEN
+endif
+
+# WAIT_WAKE_EARLY=1 (defect) wakes a SYS_WAIT waiter before its child is marked
+# dead, as before 2026-10-09; WAIT_WAKE_WIDEN=1 (instrument) holds the dying CPU
+# in that window. See smoke-wait-after-death.
+WAIT_WAKE_EARLY ?= 0
+ifeq ($(WAIT_WAKE_EARLY),1)
+CFLAGS += -DWAIT_WAKE_EARLY
+endif
+WAIT_WAKE_WIDEN ?= 0
+ifeq ($(WAIT_WAKE_WIDEN),1)
+CFLAGS += -DWAIT_WAKE_WIDEN
 endif
 
 CLOCK_TSC_RESOLUTION ?= 0
@@ -8576,6 +8589,34 @@ smoke-killed-task:
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=4 \
 		REQUIRE_MARKER='PROC_SELFTEST: killed-task OK' FAIL_MARKER='PROC_SELFTEST: FAIL' \
+		tools/smoke_test.sh horus.iso
+
+# A SYS_WAIT returns only once the child is dead (2026-10-09). task_teardown
+# used to wake the waiter before it marked the child dead, so on another CPU the
+# wait could return while the child still read alive: PROC_SELFTEST's
+# `fault-wait-early`, once in 200 boots under the switch-commit injection.
+# WAIT_WAKE_WIDEN=1 holds the dying CPU between the old wake and the death on
+# every teardown, so the window is met on essentially every wait. The gate runs
+# the whole process workload with it, which waits on a child that exits and one
+# that faults, and requires every check to pass.
+.PHONY: smoke-wait-after-death
+smoke-wait-after-death:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 WAIT_WAKE_WIDEN=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 WAIT_WAKE_WIDEN=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=4 \
+		REQUIRE_MARKER='PROC_SELFTEST: killed-task OK' FAIL_MARKER='PROC_SELFTEST: FAIL' \
+		tools/smoke_test.sh horus.iso
+
+# Control arm: the old order with the same widened window. The waiter returns
+# while its child still reads alive, and the workload says so by name.
+.PHONY: smoke-wait-after-death-control
+smoke-wait-after-death-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 WAIT_WAKE_WIDEN=1 WAIT_WAKE_EARLY=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 WAIT_WAKE_WIDEN=1 WAIT_WAKE_EARLY=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=4 \
+		REQUIRE_MARKER='wait-early' \
 		tools/smoke_test.sh horus.iso
 
 # Control arm for HORUS-20260921-04: the pre-fix handling of a task torn down

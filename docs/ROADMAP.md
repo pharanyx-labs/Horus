@@ -104,7 +104,7 @@ a large change to the most safety-critical assembly in the tree, and nothing is 
 | 2.7 ◧ Device drivers in ring 3 | A device capability names one device and reaches only its frames, ports and interrupt lines (S43); interrupts and MSI reach ring 3 with the kernel choosing the vector (S46 to S48). 2026-08-28 to 2026-08-29, #226, #232 |
 | 2.8 ✅ A volume large enough to install onto | 4 KiB blocks, no in-RAM metadata mirror, a Merkle rollback tree, a 16 GiB ceiling sized from the disk (S65, S66, S68), and a TPM anchor for whole-volume rollback (S70). 2026-08-31 to 2026-09-01, #270, #273, #274, #276, #279 |
 | 2.9 ✅ An installer | A format capability only the installer holds (S72), consent by a typed word after every answer is shown back (S73), a choice of target disk (S82, S83), replacing an existing volume from install media (S90), two accounts that each open the disk (S76), and an optional unencrypted volume (S104). 2026-09-01 to 2026-09-24 |
-| 2.10 🚧 A capability-addressed filesystem | Phase 1a, the kernel's endpoint tokens and reply-mint (S105). 2026-09-25, #455. Phase 1b step 1: `fs_server` answers through tokened capabilities, beside the uid path (S120). 2026-10-09, #515 |
+| 2.10 🚧 A capability-addressed filesystem | Phase 1a, the kernel's endpoint tokens and reply-mint (S105). 2026-09-25, #455. Phase 1b step 1: `fs_server` answers through tokened capabilities, beside the uid path (S120). 2026-10-09, #515. Step 5: a cross-directory `rename` or `link` is refused `EXDEV` (S121). 2026-10-09 |
 | 2.11 🚧 An installed system | Designed ([`design/installed-system.md`](design/installed-system.md)); a live boot never opens an installed disk (S110, #472); the disk boots itself under UEFI, on the laptop too (S114, S115); its programs are on it, in system trees rebuilt from the verified modules at every boot and read-only to everyone (S116). 2026-10-08, #503, #505, #506 |
 
 ### 2.1 ◧ Remainder
@@ -285,7 +285,7 @@ from a tag and compare. They wait on 3.1, since an ISO that does not rebuild to 
 same bytes cannot be verified by rebuilding.
 
 **4.12.** The exemption list in `.github/invariants.yml` is currently
-**empty**: all 122 properties name a witness that resolves.
+**empty**: all 123 properties name a witness that resolves.
 
 ---
 
@@ -307,5 +307,5 @@ same bytes cannot be verified by rebuilding.
 | ✅ | Measured boot, the kernel pinned in the boot image, and a PCR-sealed volume key |
 | ✅ | An IOMMU confining device DMA, and device capabilities that name one device each |
 | ◧ | Reproducible `kernel.elf` (not yet the ISO), an SBOM, CodeQL, Dependabot, signed commits, a protected `main` |
-| ✅ | 462 `smoke-*` targets, nearly all QEMU integration tests, and 248 of them control arms that must reproduce a defect |
+| ✅ | 463 `smoke-*` targets, nearly all QEMU integration tests, and 249 of them control arms that must reproduce a defect |
 | ✅ | Bounded Kani proofs, Miri over the Rust core, and fuzzing at the FFI boundary |

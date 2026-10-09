@@ -17,7 +17,12 @@
  *   - a capability to an object whose name was removed is refused NOENT, and
  *     never reaches whatever reuses its inode;
  *   - revoking a directory's capability revokes it and everything opened
- *     through it, and leaves the capability it came from working.
+ *     through it, and leaves the capability it came from working;
+ *   - a rename or link that would give an object a name in a second directory
+ *     is refused EXDEV, through a capability and through the identity path
+ *     alike (step 5, decision 11; `cross-dir-rename` is the check the control
+ *     arm FS_XDEV_UNCHECKED=1 must turn red), while a rename within one
+ *     directory works and needs both CREATE and DELETE there.
  *
  * Slot map, set up by the kernel harness (selftest.c fscap_selftest):
  *   SLOT_PLAIN  an UNTOKENED capability to fs_server's endpoint with MINT, the
@@ -36,6 +41,10 @@
 #define SLOT_LOOK   35
 #define SLOT_SCRAP  36
 #define SLOT_NEW    37
+#define SLOT_MVA    38
+#define SLOT_MVB    39
+#define SLOT_CRONLY 40
+#define SLOT_MVLOOK 41
 
 static int checks;
 
@@ -166,6 +175,60 @@ void _start(void)
     if (call(SLOT_DIR, IPC_NO_CAP, &rq) > -1000) fail("revoked-dir-still-answers");
     fill(&rq, FS_OP_STAT, 0);
     if (call(SLOT_ROOT, IPC_NO_CAP, &rq) != 0) fail("root-gone-after-revoke");
+    ok();
+
+    /* MOVES (step 5). Two directories, a file in the first. */
+    fill(&rq, FS_OP_MKDIR, "mva");
+    if (call(SLOT_ROOT, SLOT_MVA, &rq) != 0) fail("mkdir-mva");
+    uint32_t a_ino = ((struct fs_response *)rbuf)->ino;
+    fill(&rq, FS_OP_MKDIR, "mvb");
+    if (call(SLOT_ROOT, SLOT_MVB, &rq) != 0) fail("mkdir-mvb");
+    uint32_t b_ino = ((struct fs_response *)rbuf)->ino;
+    fill(&rq, FS_OP_CREATE, "m");
+    if (call(SLOT_MVA, IPC_NO_CAP, &rq) != 0) fail("create-m");
+    uint32_t m_ino = ((struct fs_response *)rbuf)->ino;
+
+    /* Across directories, through the identity path: refused, and the file
+     * stays where it was. */
+    fill(&rq, FS_OP_RENAME, "m");
+    rq.dir_ino = a_ino;
+    rq.ino = b_ino;
+    rq.data[0] = 'n';
+    if (call(SLOT_PLAIN, IPC_NO_CAP, &rq) != SYS_ERR_XDEV) fail("cross-dir-rename");
+    fill(&rq, FS_OP_LOOKUP, "m");
+    if (call(SLOT_MVA, IPC_NO_CAP, &rq) != 0) fail("cross-dir-rename-moved-it");
+    fill(&rq, FS_OP_LINK, "l");
+    rq.dir_ino = b_ino;
+    rq.ino = m_ino;
+    if (call(SLOT_PLAIN, IPC_NO_CAP, &rq) != SYS_ERR_XDEV) fail("cross-dir-link");
+    /* A second name beside the first is not a move. */
+    fill(&rq, FS_OP_LINK, "l");
+    rq.dir_ino = a_ino;
+    rq.ino = m_ino;
+    if (call(SLOT_PLAIN, IPC_NO_CAP, &rq) != 0) fail("same-dir-link");
+    ok();
+
+    /* Through a capability: a request naming a second directory is EXDEV, a
+     * rename within the capability's directory works, and it needs DELETE as
+     * well as CREATE. */
+    fill(&rq, FS_OP_RENAME, "m");
+    rq.ino = b_ino;
+    rq.data[0] = 'n';
+    if (call(SLOT_MVA, IPC_NO_CAP, &rq) != SYS_ERR_XDEV) fail("cap-cross-dir-rename");
+    if (sys_cap_mint(SLOT_CRONLY, SLOT_MVA, CAP_RIGHT_WRITE | FS_R_CREATE | FS_R_LOOKUP) != 0)
+        fail("mint-create-only");
+    fill(&rq, FS_OP_RENAME, "m");
+    rq.data[0] = 'n';
+    if (call(SLOT_CRONLY, IPC_NO_CAP, &rq) != SYS_ERR_PERM) fail("rename-without-delete");
+    fill(&rq, FS_OP_RENAME, "m");
+    rq.data[0] = '.';
+    rq.data[1] = '.';
+    if (call(SLOT_MVA, IPC_NO_CAP, &rq) != SYS_ERR_INVAL) fail("rename-to-dotdot");
+    fill(&rq, FS_OP_RENAME, "m");
+    rq.data[0] = 'n';
+    if (call(SLOT_MVA, IPC_NO_CAP, &rq) != 0) fail("same-dir-rename");
+    fill(&rq, FS_OP_LOOKUP, "n");
+    if (call(SLOT_MVA, SLOT_MVLOOK, &rq) != 0) fail("renamed-not-found");
     ok();
 
     char n[12];

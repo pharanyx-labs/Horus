@@ -578,7 +578,7 @@ it, so no step has to land the whole change at once.
 | 2 | Clients walk with capabilities: `hvfs`, the POSIX layer, the shell and `fsclient`. The shell keeps a root and a current-directory capability, and before a child runs its spawner grants it derived copies of both, never wider than its own (decision 10). Open files are not inherited | A child given a read-only root cannot write anywhere; the arm grants the child the spawner's capability unnarrowed |
 | 3 | `init` evaluates the policy (§6.2) at login: the shell authenticates as today, asks `init` for its session, and `init` grants the derived capabilities and revokes them at logout. The installer writes `/etc/fs.policy`. A live boot uses a compiled-in default; an installed volume without a policy file grants the root capability to the administrator only (decision 9) | A session reaches only what its grants name; the arm grants every session the root |
 | 4 | The truthful view (§7): `stat` from the caller's rights and a bound on everyone else's, `chmod` and `chown` succeed only when they ask for what is true | `chmod 600` on a file another grant reaches fails; the arm reports success |
-| 5 | Cross-directory `rename` and `link` return `EXDEV` (decision 11); same-directory rename needs `CREATE` and `DELETE` on that directory | A cross-directory move is refused; the arm lets it through |
+| 5 ✅ | Cross-directory `rename` and `link` return `EXDEV` (decision 11); same-directory rename needs `CREATE` and `DELETE` on that directory | A cross-directory move is refused; the arm lets it through |
 | 6 | The identity path is removed: `perm_ok`, `FS_OP_CHOWN`'s root check, the uid half of `SYS_IPC_SENDER` in the filesystem, `SYS_FS_SET_META` and `SYS_CONNECT_FS_SERVER` | No filesystem operation succeeds on the strength of a uid; the arm restores `perm_ok` (the Falsification list below) |
 
 **Step 1 as built (#515).** Create and mkdir reply-mint the new object's capability too, as
@@ -589,7 +589,18 @@ every free of the inode; one that would wrap retires the inode from this path un
 boot. The kernel's revoke removes the capability named as well as everything derived from it, so
 revoking a directory's capability revokes it and what was opened through it, and the capability
 it came from stays. Read, write, append, truncate, stat, readdir, lookup, create, mkdir and delete
-are served; chmod and chown wait for step 4, rename and link for step 5.
+are served; chmod and chown wait for step 4.
+
+**Step 5 as built.** The refusal is on both paths, since a move through the uid path changes who
+may reach a file just as much. A rename across directories is `EXDEV`. A link is too unless the
+new parent already holds a name for the file, because v11 keeps no back-references and that is
+the only way to ask which directory a file is in. Through a capability, rename works within that
+capability's directory, needs `CREATE` and `DELETE` there, and refuses a new name that is `.`,
+`..` or holds `/`; a request naming a second directory is `EXDEV`, since reaching one would need a
+second capability. Link is not on the capability path: it names its source by inode, which a
+capability never does. Nothing in the tree moves a file across directories today (the shell's
+`mv` and `ln` work within the current directory), so no copy fallback was needed yet; a mover
+that meets `EXDEV` copies.
 
 **Authentication stays where it is.** Until `auth_server` exists, the shell's login (`SYS_AUTH`,
 the compiled-in accounts) is what authenticates, and `init` reads the result as the kernel attests

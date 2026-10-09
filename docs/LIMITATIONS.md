@@ -293,6 +293,14 @@ S104). Encryption is the default. On an unsealed volume:
 
 It does not make installing faster; the metadata region is laid down the same way.
 
+### 2.22 A file cannot be moved to another directory
+
+`rename` and `link` across directories are refused with `EXDEV` (`SECURITY.md` S121), because in
+the capability-addressed filesystem a file's rights come from its path, and a move would change
+who may reach it. The rule that would allow a safe move (`docs/design/filesystem.md` §5.5) needs
+each object's back-references, which arrive with the v12 format in phase 3. Until then a mover
+copies the file and removes the original, and a directory cannot be moved at all.
+
 ---
 
 ## 3. Scale and performance

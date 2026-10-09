@@ -2541,6 +2541,9 @@ jobs:
         run: make smoke-fs-cap
       - name: Control arm — fs_server does not consult the capability's rights
         run: make smoke-fs-cap-control
+      # S121, step 5: the same image refuses a move across directories.
+      - name: Control arm — fs_server lets a rename across directories through
+        run: make smoke-fs-cap-xdev-control
 
   smoke-mapphys:
     name: QEMU map-phys device-frame self-test (headless)

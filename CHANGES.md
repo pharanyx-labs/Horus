@@ -16,7 +16,7 @@ here.
 
 ### Security
 
-- A `SYS_WAIT` could return while its child still read alive, because the waiter was woken before the child was marked dead; seen once in 200 boots. Every teardown now runs under the lock a waiter publishes itself under and wakes the waiter last, which also closes a window, found by reading the code and never observed, in which a waiter could miss its child's death (S125).
+- A `SYS_WAIT` could return while its child still read alive, because the waiter was woken before the child was marked dead; seen once in 200 boots. Every teardown now runs under the lock a waiter publishes itself under and wakes the waiter last, which also closes a window, found by reading the code and never observed, in which a waiter could miss its child's death (S125). (#528)
 - A TLB shootdown whose bounded wait runs out with a CPU still unacknowledged halts the kernel instead of returning as though the flush had happened; only the SMP selftest calls it today, so this is in place before the first real caller (S124). (#523)
 
 ### Changed

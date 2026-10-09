@@ -56,7 +56,7 @@ There are 430 `smoke-*` targets: 204 gates and 226 control arms. Each row is a g
 |---|---|---|---|
 | `smoke-cap-lookup` | `cap_lookup` resolves only against the caller's own cspace: no cspace, or a slot past its end, is refused rather than served from the root | S55 | `smoke-cap-lookup-control`, `smoke-cap-lookup-range-control` |
 | `smoke-cspace-release` | A dead task holds no capability: teardown empties its cspace and leaves the slot reusable | S56 | `smoke-cspace-release-control` |
-| `smoke-captest` | **198 checks** in the conformance suite: unheld, revoked, stale and mistyped capabilities are refused across the syscall table, including capability-addressed IPC, untyped memory and "identity is not authority" | S1, S5, S6, S7, S13, S13a, S13b, S18, S28, S32, S34, S46, S52, S58, S60, S72, S78, S80, S93, S94, S95 | `smoke-cap-accounting-control`, `smoke-captest-capenum-control`, `smoke-captest-clock-control`, `smoke-captest-devcap-control`, `smoke-captest-getline-control`, `smoke-captest-irq-ack-control`, `smoke-captest-lookup-type-control`, `smoke-captest-mint-hang-control`, `smoke-captest-poll-notify-control`, `smoke-captest-split-control`, `smoke-captest-storage-format-control`, `smoke-captest-userlist-control` |
+| `smoke-captest` | **199 checks** in the conformance suite: unheld, revoked, stale and mistyped capabilities are refused across the syscall table, including capability-addressed IPC, untyped memory and "identity is not authority" | S1, S5, S6, S7, S13, S13a, S13b, S18, S28, S32, S34, S46, S52, S58, S60, S72, S78, S80, S93, S94, S95, S122 | `smoke-cap-accounting-control`, `smoke-captest-capenum-control`, `smoke-captest-clock-control`, `smoke-captest-devcap-control`, `smoke-captest-getline-control`, `smoke-captest-irq-ack-control`, `smoke-captest-lookup-type-control`, `smoke-captest-mint-hang-control`, `smoke-captest-pipe-slot-control`, `smoke-captest-poll-notify-control`, `smoke-captest-split-control`, `smoke-captest-storage-format-control`, `smoke-captest-userlist-control` |
 | `smoke-captoken` | Endpoint tokens: a server with no mint authority hands out capabilities only by reply-mint, which can only narrow what the caller invoked it with | S105 | `smoke-captoken-unmasked-control` |
 | `smoke-captoken-smp` | The same under four CPUs, where the reply-mint has a cross-CPU racer to lose to | S105 |  |
 | `smoke-fs-cap` | The real `fs_server` answers through tokened capabilities: children come back narrowed from mkdir, create and lookup, a read-only capability cannot write, a file's cannot create entries, `..` `.` and `/` are refused, a removed object's capability is refused, and revoking a directory's capability revokes what was opened through it | S120 | `smoke-fs-cap-control` |
@@ -327,7 +327,7 @@ which handler bodies three tracked workloads actually enter (the scripted sessio
 conformance suite and the boot-modules session) and compares that with
 `.github/syscall-coverage.yml`, which gives a reason for every syscall not covered.
 
-Capability conformance (198 checks in `userspace/captest.c`, which prints its own count) is the widest single suite, and it is still only a refusal suite.
+Capability conformance (199 checks in `userspace/captest.c`, which prints its own count) is the widest single suite, and it is still only a refusal suite.
 
 Currently **93 of 102** implemented syscalls are covered (`SECURITY.md` S25; `docs/LIMITATIONS.md` 1.8 lists what the rest would cost).
 
@@ -398,7 +398,7 @@ Two of those deserve a sentence each.
 there with no `continue-on-error`, each named with its measured cost in
 `.github/kani-harnesses.yml`, and the job refuses a proof that is not listed. And **`invariants`** requires every property in `SECURITY.md` to
 name a witness that exists and runs; its exemption list, `.github/invariants.yml`, is
-currently **empty**: all 123 properties name a witness that resolves.
+currently **empty**: all 124 properties name a witness that resolves.
 
 Every `tools/check_*.py` has a falsification harness, `tools/test_check_*.sh`, with one case per
 rule showing the rule can fail, and each checker asserts a floor on what it parsed, so a parser

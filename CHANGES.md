@@ -90,6 +90,7 @@ here.
 
 ### Fixed
 
+- A pipeline typed as the first command after logging in on an installed system hung: a pipe end went into the slot the filesystem endpoint is installed into, and was overwritten by it. Capabilities the kernel allocates now start above every well-known slot (S122). `init` also put the filesystem's endpoint and the console's notification in the same slot; that is now a build error.
 - After an install on a framebuffer wider than 80 columns, the installer's right border stayed on the screen beside the login banner: the console's clear repainted cells, not the screen. (#513)
 - On a framebuffer, the installer's progress panel lost six of its eight rows to a black box while the password was hashed; it is now drawn inside the installer's frame. (#504)
 - A login that unlocked the disk left "Turning your password into a key" on the screen for good; the panel is now the installer's alone, and a login says it is checking the password instead. (#504)

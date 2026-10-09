@@ -124,7 +124,7 @@ DEFECT_FLAGS = \
 	SHLIB_TEXT_WRITABLE SHLIB_DATA_SHARED SHLIB_DATA_UNINITIALISED \
 	SHLIB_BASE_FIXED SHLIB_INFO_UNGATED SHLIB_INFO_TYPE_ONLY \
 	SYSCOV_PROBES_ABSENT KSTACK_INFLIGHT_LEGACY_WORD KSTACK_SLOT_INDEX_TRUNC \
-	CAP_LOOKUP_ROOT_FALLBACK CAP_LOOKUP_RANGE_FALLBACK CAP_LOOKUP_TYPE_UNCHECKED \
+	CAP_LOOKUP_ROOT_FALLBACK CAP_LOOKUP_RANGE_FALLBACK CAP_LOOKUP_TYPE_UNCHECKED CAP_DYNAMIC_FLOOR_LOW \
 	KEYSLOT_REMOVE_NOOP USERS_PEPPER_PER_BOOT USERS_TAMPER_INJECT STORAGE_AUTOFORMAT \
 	STORAGE_REPLACE_UNLOCKED STORAGE_FORMAT_AUTH_STICKY BOOT_CMDLINE_UNMEASURED \
 	STORAGE_FORMAT_UNGATED INSTALLER_NO_CONFIRM INSTALLER_REVIEW_FLAT BLOCK_ERRNO_LEGACY \
@@ -4199,6 +4199,14 @@ endif
 # refusals -- which have passed since long before this work -- start failing.
 # That is the point: it shows the enforcement really did move, rather than
 # being duplicated and the old copy left doing the work.
+# CAP_DYNAMIC_FLOOR_LOW=1 puts the kernel's dynamic capability allocations (pipe
+# ends, a spawner's CAP_TCB for a child) back at slot 16, inside the well-known
+# slots, where an install into slot 20 or 21 lands on top of them. Kernel only:
+# userspace keeps the true floor, so captest sees the difference.
+CAP_DYNAMIC_FLOOR_LOW ?= 0
+ifeq ($(CAP_DYNAMIC_FLOOR_LOW),1)
+CFLAGS  += -DCAP_DYNAMIC_FLOOR_LOW
+endif
 CAP_LOOKUP_TYPE_UNCHECKED ?= 0
 ifeq ($(CAP_LOOKUP_TYPE_UNCHECKED),1)
 CFLAGS  += -DCAP_LOOKUP_TYPE_UNCHECKED
@@ -7337,6 +7345,19 @@ smoke-captest:
 # The named check is the FIRST of the section's assertions to fail, which is what
 # makes it the one to require -- captest's `fail` stops at the first, so requiring
 # a later one would be requiring a line the arm never reaches.
+# CONTROL ARM: a pipe end in a well-known slot (CAPSLOT_DYNAMIC_FIRST). With the
+# kernel's floor back at 16, captest's SYS_PIPE hands back ends below 64 and its
+# check names it.
+.PHONY: smoke-captest-pipe-slot-control
+smoke-captest-pipe-slot-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 CAP_DYNAMIC_FLOOR_LOW=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 CAP_DYNAMIC_FLOOR_LOW=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CAPTEST: FAIL pipe-end-in-a-well-known-slot' \
+		FAIL_MARKER='CAPTEST: PASS' tools/smoke_test.sh horus.iso
+	@echo "[captest] CONTROL PASS - a pipe end landed in a well-known slot"
+
 .PHONY: smoke-cap-accounting-control
 smoke-cap-accounting-control:
 	@$(MAKE) --no-print-directory clean

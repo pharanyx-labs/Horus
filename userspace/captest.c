@@ -1441,6 +1441,14 @@ void _start(void) {
         freed = ti.caps_in_use;
         check(freed == before, "closing-a-pipe-did-not-return-its-budget");
 
+        /* Neither end was in a well-known slot (S122): the kernel installs into
+         * those (the filesystem endpoint at 20, a reply capability at 21) over
+         * whatever is there, and an end overwritten that way is never released,
+         * so its reader waits for EOF forever. After the accounting checks, so
+         * that each arm's first failure is its own. */
+        check(rslot >= CAPSLOT_DYNAMIC_FIRST && wslot >= CAPSLOT_DYNAMIC_FIRST,
+              "pipe-end-in-a-well-known-slot");
+
         /* THE CEILING HALF. Mint from a capability this task holds until the
          * kernel refuses. The loop does NOT name MAX_CAPS_PER_TASK, deliberately:
          * that constant is kernel-private (src/include/kernel.h), and copying it

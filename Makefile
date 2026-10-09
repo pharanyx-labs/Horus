@@ -197,6 +197,7 @@ DEFECT_FLAGS = \
 	DYNLINK_ABI_UNCHECKED DYNLINK_UNKNOWN_ZERO DYNLINK_NO_SEAL \
 	COREUTILS_STATIC_LIBC \
 	INSTALLER_STOP_AFTER_FORMAT USERS_PERSIST_COMPILED_IN LIVE_OPENS_VOLUME \
+	SIBLING_KICK_TEST SIBLING_SCHED_UNGUARDED \
 	SHOOTDOWN_DEAF_CPU SHOOTDOWN_FAIL_OPEN
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
@@ -1821,6 +1822,18 @@ endif
 DEAD_TASK_RUNS ?= 0
 ifeq ($(DEAD_TASK_RUNS),1)
 CFLAGS += -DDEAD_TASK_RUNS
+endif
+
+# SIBLING_KICK_TEST=1 (instrument) interrupts every parked SMT sibling during the
+# SMP selftest; SIBLING_SCHED_UNGUARDED=1 (defect) lets preempt_on_tick schedule
+# on a sibling, as before 2026-10-09. See smoke-sibling-kick.
+SIBLING_KICK_TEST ?= 0
+ifeq ($(SIBLING_KICK_TEST),1)
+CFLAGS += -DSIBLING_KICK_TEST
+endif
+SIBLING_SCHED_UNGUARDED ?= 0
+ifeq ($(SIBLING_SCHED_UNGUARDED),1)
+CFLAGS += -DSIBLING_SCHED_UNGUARDED
 endif
 
 # SHOOTDOWN_DEAF_CPU=1 (instrument) makes one CPU flush without acknowledging a
@@ -8330,6 +8343,31 @@ smoke-smp:
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=$(SMP_CPUS) REQUIRE_MARKER='SMP_SELFTEST: PASS' \
 		FAIL_MARKER='SMP_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
+# No task runs on an SMT sibling even when one is interrupted (S101). Two cores
+# of two threads: one sibling per core, two schedulable CPUs, and the selftest's
+# two workers, so one is always runnable and waiting while the BSP sends 0xFC to
+# both siblings on every poll. preempt_on_tick must refuse to schedule there.
+SIBLING_KICK_TOPOLOGY ?= 4,cores=2,threads=2
+.PHONY: smoke-sibling-kick
+smoke-sibling-kick:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SIBLING_KICK_TEST=1
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SIBLING_KICK_TEST=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS='$(SIBLING_KICK_TOPOLOGY)' \
+		REQUIRE_MARKER='SMP_SELFTEST: PASS online=2 ' \
+		FAIL_MARKER='SMP_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
+
+# Control arm: the same kicks without the refusal. A sibling takes the waiting
+# worker, and the selftest's per-poll sibling check reports it.
+.PHONY: smoke-sibling-kick-control
+smoke-sibling-kick-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SIBLING_KICK_TEST=1 SIBLING_SCHED_UNGUARDED=1
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SIBLING_KICK_TEST=1 SIBLING_SCHED_UNGUARDED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS='$(SIBLING_KICK_TOPOLOGY)' \
+		REQUIRE_MARKER='SMP_SELFTEST: FAIL task-ran-on-smt-sibling' \
+		tools/smoke_test.sh horus.iso
+
 # A TLB shootdown that is not acknowledged halts the kernel instead of returning
 # (design/scheduler.md 3.8). SHOOTDOWN_DEAF_CPU=1 makes the highest online CPU
 # flush without acknowledging, so the selftest's shootdown can never complete;
@@ -8414,10 +8452,16 @@ smoke-smp-topology-sparse-control:
 # threads the counts still read 4 online and 4 parked, so the self-test's own
 # per-CPU sibling check is what must catch it.
 .PHONY: smoke-smp-topology-sibling-control
+# TWO LOCKS, ONE ARM EACH. Since 2026-10-09 preempt_on_tick also refuses to
+# schedule on a sibling (smoke-sibling-kick), and it decides sibling-ness from the
+# LAPIC id whatever ap_entry64 got wrong, so it catches this defect by itself and
+# the arm went green-blind. SIBLING_SCHED_UNGUARDED=1 takes that second lock out,
+# so this arm still proves the parking decision on its own; smoke-sibling-kick-
+# control proves the refusal on its own. The base gate goes red only with both out.
 smoke-smp-topology-sibling-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SMT_SIBLING_BY_INDEX=1
-	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SMT_SIBLING_BY_INDEX=1 horus.iso
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SMT_SIBLING_BY_INDEX=1 SIBLING_SCHED_UNGUARDED=1
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SMT_SIBLING_BY_INDEX=1 SIBLING_SCHED_UNGUARDED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=8,sockets=1,cores=4,threads=2 \
 		REQUIRE_MARKER='SMP_SELFTEST: FAIL task-ran-on-smt-sibling' tools/smoke_test.sh horus.iso
 

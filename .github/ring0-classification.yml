@@ -498,7 +498,10 @@
 # written out at six selection sites, is one function (sched_selectable) and one
 # walk (sched_pick_after). Lowered to the measured size so the lines cannot
 # quietly come back.
-core_budget_loc: 11375
+# 2026-10-09: 11375 -> 11381, +6, S101 by construction: preempt_on_tick refuses
+# to schedule on an SMT sibling whatever interrupts it (the guard and its
+# SIBLING_SCHED_UNGUARDED arm). Core because it is the scheduler's own decision.
+core_budget_loc: 11381
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

@@ -198,6 +198,7 @@ jobs:
       - smoke-tsd
       - smoke-wx
       - smoke-wx-smp
+      - sibling-kick
       - shootdown-unacked
       - store-locked
       - switch-commit
@@ -3084,6 +3085,26 @@ jobs:
         run: make smoke-switch-commit
       - name: Control arm — commit first and the claim is orphaned
         run: make smoke-switch-commit-control
+
+  sibling-kick:
+    name: "No task runs on an SMT sibling even when one is interrupted (S101; control arm proves it)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # A parked sibling keeps interrupts on and is marked idle, so a 0xFC that
+      # reached one would let the scheduler pull a task onto it. The selftest
+      # interrupts both siblings on every poll while a worker is waiting.
+      - name: Interrupted siblings stay empty
+        run: make smoke-sibling-kick
+      - name: Control arm — without the refusal a sibling takes the worker
+        run: make smoke-sibling-kick-control
 
   shootdown-unacked:
     name: "A TLB shootdown a CPU never acknowledges halts instead of returning (control arm proves it)"

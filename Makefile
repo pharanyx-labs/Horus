@@ -133,7 +133,7 @@ DEFECT_FLAGS = \
 	FS_LINK_UNCOUNTED FS_DIR_OPERAND_UNCHECKED GPT_ENTRIES_CRC_UNCHECKED STORAGE_REPLACE_VIEW_UNRESOLVED \
 	ESP_PIN_UNCHECKED ESP_NOT_WRITTEN DEBUG_BUILD \
 	POOL_SPAN_SELFTEST E820_HOLE_PROBE PHYS_WINDOW_FLAT_ONLY POOL_FLAT_CEILING POOL_RAM_UNCHECKED MEM_HIGH_UNREPORTED \
-	SWAP_SELFTEST SWAP_SEAL_OFF SWAP_TAG_UNCHECKED SWAP_HOG SWAP_OUT_ZEROED \
+	SWAP_SELFTEST SWAP_SEAL_OFF SWAP_TAG_UNCHECKED SWAP_HOG SWAP_OUT_ZEROED SWAP_IDLE_OFF \
 	CONSOLE_PROGRESS_BELOW_SURFACE CONSOLE_PROGRESS_AT_LOGIN \
 	SYSTEM_TREES_WRITABLE SYSTEM_TREES_NO_PRUNE SYSTEM_TREES_SIZE_ONLY \
 	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY BOOT_MENU_NO_LIVE_TOKEN \
@@ -1928,10 +1928,12 @@ SWAP_TAG_UNCHECKED ?= 0
 # test program /bin/swaphog, which writes 48 MiB and reads it back, and caps the
 # page pool's span at POOL_CAP_MIB so a 48 MiB program cannot fit without swap.
 # Both instruments, never shipped. SWAP_OUT_ZEROED=1 is the arm: a page taken
-# for swap is written to its slot as zeros.
+# for swap is written to its slot as zeros. SWAP_IDLE_OFF=1 is step 2a's arm:
+# only the faulting task gives pages, so an idle task never does.
 SWAP_HOG        ?= 0
 POOL_CAP_MIB    ?= 64
 SWAP_OUT_ZEROED ?= 0
+SWAP_IDLE_OFF   ?= 0
 ifeq ($(SWAP_HOG),1)
 CFLAGS          += -DSWAP_HOG -DPOOL_CAP_MIB=$(POOL_CAP_MIB)
 BOOT_MODULES    += userspace/swaphog.bin:bin/swaphog
@@ -1939,6 +1941,9 @@ BOOT_MODULE_DEP += userspace/swaphog.bin
 endif
 ifeq ($(SWAP_OUT_ZEROED),1)
 CFLAGS += -DSWAP_OUT_ZEROED
+endif
+ifeq ($(SWAP_IDLE_OFF),1)
+CFLAGS += -DSWAP_IDLE_OFF
 endif
 ifeq ($(SWAP_SELFTEST),1)
 CFLAGS += -DSWAP_SELFTEST
@@ -13421,22 +13426,30 @@ smoke-swap-store-tag-control:
 	@$(MAKE) --no-print-directory smoke-swap-store SWAPARM=SWAP_TAG_UNCHECKED=1 \
 		SWAPEXPECT="a changed block was accepted"
 
-# PAGES GO OUT TO SWAP AND COME BACK EXACTLY (S119). The bootable-disk gate
-# with /bin/swaphog shipped and the pool capped at POOL_CAP_MIB: after the login
-# turns swap on, swaphog writes 48 MiB, more than the pool holds, and reads every
-# byte back; the kernel must say it paged out, and the host must find none of
-# swaphog's marker on the partition, so the pages that went there went sealed.
-.PHONY: smoke-swap smoke-swap-zeroed-control
+# PAGES GO OUT TO SWAP AND COME BACK EXACTLY (S119), AND AN IDLE TASK GIVES
+# MEMORY BACK (S123). The bootable-disk gate with /bin/swaphog shipped and the
+# pool capped at POOL_CAP_MIB: after the login turns swap on, the session runs
+# `swaphog hold | swaphog after`. The holder writes 16 MiB and goes idle; the
+# busy half writes 48 MiB, more than the pool holds, and reads every byte back;
+# then the holder checks its own 16 MiB. The kernel must say it paged out and
+# that it took pages from idle tasks, and the host must find none of swaphog's
+# marker on the partition, so the pages that went there went sealed.
+.PHONY: smoke-swap smoke-swap-zeroed-control smoke-swap-idle-control
 smoke-swap:
 	@$(MAKE) --no-print-directory smoke-install-boot-disk \
 		BOOTDISKARM="SWAP_HOG=1 $(SWAPPAGEARM)" SWAP_HOG_EXPECT="$(or $(SWAPHOGEXPECT),ok)" \
 		BOOTDISK_AFTER="python3 tools/swap_scan.py bootdisk.img --marker swaphog --expect absent"
-	@echo "[swap] $(if $(SWAPPAGEARM),control arm PASS - the defect $(SWAPPAGEARM) puts back was caught,PASS - 48 MiB went through swap on a smaller pool and came back intact$(comma) sealed)"
+	@echo "[swap] $(if $(SWAPPAGEARM),control arm PASS - the defect $(SWAPPAGEARM) puts back was caught,PASS - 48 MiB went through swap on a smaller pool and came back intact$(comma) sealed$(comma) and an idle task gave its pages back)"
 
 # The falsifying arm: a page taken for swap is written as zeros, so swaphog
 # reads back what it did not write and must say so.
 smoke-swap-zeroed-control:
 	@$(MAKE) --no-print-directory smoke-swap SWAPPAGEARM=SWAP_OUT_ZEROED=1 SWAPHOGEXPECT=fail
+
+# Step 2a's arm: only the faulting task gives pages, so the kernel never says it
+# took one from an idle task, and the session must find that missing.
+smoke-swap-idle-control:
+	@$(MAKE) --no-print-directory smoke-swap SWAPPAGEARM=SWAP_IDLE_OFF=1 SWAPHOGEXPECT=noidle
 
 # MEDIA WHOSE ESP IMAGE WAS CHANGED IS REFUSED (S115). The install media is
 # built, then one byte of /boot/esp.img inside the ISO is inverted, leaving the

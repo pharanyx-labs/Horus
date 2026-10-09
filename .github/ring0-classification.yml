@@ -480,7 +480,13 @@
 # init can mint the root directory's tokened capability (and revoke session
 # grants in step 3), and smp.c dispatches the FSCAP_SELFTEST harness. The
 # capability path itself is ring 3 (fs_server).
-core_budget_loc: 11284
+# 2026-10-09: 11284 -> 11352, +68, swap step 2a (S123): the pager takes idle
+# pages from tasks no CPU is running (swap_evict_idle, with swap_evict_self
+# generalised to any held task and revalidated after its I/O), and the scheduler
+# holds such a task off every CPU while it does (sched_pager_hold/release, the
+# check in each selection loop and in enter_user_impl). Core because it is the
+# scheduler's selection and the page tables; nothing of it can live in a server.
+core_budget_loc: 11352
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

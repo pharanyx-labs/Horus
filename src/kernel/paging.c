@@ -2752,7 +2752,7 @@ int swap_evict_self(int want) {
     return swap_evict_from(get_current_task(), want);
 }
 
-/* A LARGE IDLE TASK GIVES MEMORY BACK TO A SMALL BUSY ONE (step 2a). Up to
+/* A LARGE IDLE TASK GIVES MEMORY BACK TO A SMALL BUSY ONE (S123, step 2a). Up to
  * `want` pages from tasks no CPU is running, round the task table from where
  * the last call stopped, trying at most SWAP_IDLE_TRIES tasks so one fault's
  * cost stays bounded. Each is held off every CPU for its batch and released

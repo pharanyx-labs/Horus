@@ -628,9 +628,10 @@ by the dispatch table, and the store answers only an **unlocked** volume, not me
   each page sealed with the AEAD under a key drawn at that boot and never written anywhere, with
   the slot and a per-slot generation in the nonce. The generation and the tag stay in RAM (24
   bytes a slot, from the pool), so the partition holds ciphertext and nothing else, and a changed,
-  moved or replayed block fails. Under memory pressure a faulting task pages out its own idle,
-  private pages there, chosen by a clock over its accessed bits, and they come back on touch
-  (S119); a swapped page is a non-present PTE with `PAGE_SWAPPED` and its slot, and every walker
+  moved or replayed block fails. Under memory pressure idle private pages go there, chosen by a
+  clock over each task's accessed bits: first those of tasks no CPU is running, each held off
+  every CPU while its page tables change (S123), then the faulting task's own; they come back on
+  touch (S119); a swapped page is a non-present PTE with `PAGE_SWAPPED` and its slot, and every walker
   knows it ([`design/swap.md`](design/swap.md)).
 
 ---

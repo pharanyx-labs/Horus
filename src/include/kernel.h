@@ -3706,6 +3706,10 @@ int  swap_evict_idle(int want);
  * or current on it; the hold lasts until sched_pager_release. */
 int  sched_pager_hold(int t);
 void sched_pager_release(int t);
+/* Become task `w` to copy into its memory, never while the pager holds it
+ * (scheduler.c). */
+int  sched_impersonate_begin(int w);
+void sched_impersonate_end(int real);
 int  swap_fault_in(uint64_t *ptv, uint64_t pt_i, uint64_t fault_addr);
 int  handle_demand_page_fault(uint64_t fault_addr, uint32_t err_code);
 /* rust/src/gpt.rs: the installer's layout (S114). rust_gpt_plan sizes it and

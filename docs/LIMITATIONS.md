@@ -381,12 +381,12 @@ waits until it is woken or killed. The PIT runs at a fixed 100 Hz.
 - **More than one filesystem.** One volume and one `fs_server`, plus `dev_server` in self-test
   builds. The capability filesystem of [`design/filesystem.md`](design/filesystem.md) has its
   kernel half (phase 1a, IPC tokens, S105); the server half is not built.
-- **Swap takes only from the task that needs memory.** On an installed boot, a task low on frames
-  pages its own idle pages out to the sealed partition and brings them back on touch (S118, S119).
-  A large idle task never gives memory to a small busy one: taking another task's pages needs a
-  TLB shootdown the fault path cannot wait for ([`design/swap.md`](design/swap.md) step 2a), so
-  that task can still run out. Fork sharing a swapped page is built but no gate exercises it,
-  since every program in `/bin` seals pages and a fork refuses a sealed task.
+- **Swap has no way to keep a secret out of it.** On an installed boot idle pages go to the
+  sealed partition under pressure, an idle task's included, and come back on touch (S118, S119,
+  S123). A page goes out sealed under a key that dies with the boot, but a task cannot yet ask for
+  its secrets never to be written at all ([`design/swap.md`](design/swap.md) step 3, a question
+  for the maintainer). Fork sharing a swapped page is built but no gate exercises it, since every
+  program in `/bin` seals pages and a fork refuses a sealed task.
 - **Kernel ASLR.** User programs get 30 bits of address randomisation; the kernel loads at a fixed
   address.
 - **Other architectures.** x86-64 only, booted by GRUB under BIOS or UEFI.

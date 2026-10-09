@@ -1629,17 +1629,29 @@ int sched_pager_hold(int t) {
     if (t <= 0 || t >= g_max_tasks) return 0;
     sched_raw_lock();
     int st = tasks[t].state;
-    int ok = !tasks[t].pager_hold && tasks[t].cr3 != 0 &&
+    /* A saved context, so a task still being built (its image loading with it
+     * current on the spawner's CPU) is never taken from. */
+    int ok = !tasks[t].pager_hold && tasks[t].cr3 != 0 && tasks[t].saved_ksp != 0 &&
              (st == TASK_RUNNABLE || st == TASK_BLOCKED_IPC ||
               st == TASK_BLOCKED_NOTIF || st == TASK_BLOCKED_WAIT);
+    if (ok) {
+        /* PUBLISH, THEN LOOK. An IPC delivery becomes the task on another CPU
+         * to copy into its memory (sched_impersonate_begin), without this lock:
+         * it publishes itself as current and then looks for the hold, and this
+         * publishes the hold and then looks for a current CPU. With a full
+         * fence between each store and its load, at least one of the two sees
+         * the other, so the pager never changes a page a delivery is writing. */
+        tasks[t].pager_hold = 1;
+        __sync_synchronize();
 #ifdef SMP
-    if (ok && task_running_cpu[t] >= 0) ok = 0;
-    for (int c = 0; ok && c < MAX_CPUS; c++)
-        if (percpu_current_task[c] == t) ok = 0;
+        if (task_running_cpu[t] >= 0) ok = 0;
+        for (int c = 0; ok && c < MAX_CPUS; c++)
+            if (percpu_current_task[c] == t) ok = 0;
 #else
-    if (ok && t == get_current_task()) ok = 0;
+        if (t == get_current_task()) ok = 0;
 #endif
-    if (ok) tasks[t].pager_hold = 1;
+        if (!ok) tasks[t].pager_hold = 0;
+    }
     sched_raw_unlock();
     return ok;
 }
@@ -4431,6 +4443,30 @@ void sched_impersonate_enter(void) {
     percpu_impersonating[c]++;
     __sync_synchronize();
 #endif
+}
+
+/* Become task `w` on this CPU to copy into its memory (an IPC delivery into a
+ * waiter's reply buffer), on terms the pager's hold respects: never while the
+ * pager is changing w's pages, which it may be doing on another CPU because w
+ * is not running. Publishes w as current, then looks for the hold, backing off
+ * while it is set; sched_pager_hold makes the mirror-image check. Returns the
+ * task to hand back to sched_impersonate_end. Interrupts must be off. */
+int sched_impersonate_begin(int w) {
+    int real = get_current_task();
+    sched_impersonate_enter();
+    for (;;) {
+        set_current_task(w);
+        __sync_synchronize();
+        if (!tasks[w].pager_hold) return real;
+        set_current_task(real);
+        __sync_synchronize();
+        while (tasks[w].pager_hold) __asm__ volatile ("pause");
+    }
+}
+
+void sched_impersonate_end(int real) {
+    set_current_task(real);
+    sched_impersonate_exit();
 }
 
 void sched_impersonate_exit(void) {

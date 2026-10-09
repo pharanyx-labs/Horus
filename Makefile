@@ -197,7 +197,8 @@ DEFECT_FLAGS = \
 	DYNLINK_ABI_UNCHECKED DYNLINK_UNKNOWN_ZERO DYNLINK_NO_SEAL \
 	COREUTILS_STATIC_LIBC \
 	INSTALLER_STOP_AFTER_FORMAT USERS_PERSIST_COMPILED_IN LIVE_OPENS_VOLUME \
-	SIBLING_KICK_TEST SIBLING_SCHED_UNGUARDED
+	SIBLING_KICK_TEST SIBLING_SCHED_UNGUARDED \
+	SHOOTDOWN_DEAF_CPU SHOOTDOWN_FAIL_OPEN
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -1833,6 +1834,18 @@ endif
 SIBLING_SCHED_UNGUARDED ?= 0
 ifeq ($(SIBLING_SCHED_UNGUARDED),1)
 CFLAGS += -DSIBLING_SCHED_UNGUARDED
+endif
+
+# SHOOTDOWN_DEAF_CPU=1 (instrument) makes one CPU flush without acknowledging a
+# TLB shootdown; SHOOTDOWN_FAIL_OPEN=1 (defect) restores the wait that returned
+# anyway. See smoke-shootdown-unacked.
+SHOOTDOWN_DEAF_CPU ?= 0
+ifeq ($(SHOOTDOWN_DEAF_CPU),1)
+CFLAGS += -DSHOOTDOWN_DEAF_CPU
+endif
+SHOOTDOWN_FAIL_OPEN ?= 0
+ifeq ($(SHOOTDOWN_FAIL_OPEN),1)
+CFLAGS += -DSHOOTDOWN_FAIL_OPEN
 endif
 
 CLOCK_TSC_RESOLUTION ?= 0
@@ -8353,6 +8366,35 @@ smoke-sibling-kick-control:
 	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SIBLING_KICK_TEST=1 SIBLING_SCHED_UNGUARDED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS='$(SIBLING_KICK_TOPOLOGY)' \
 		REQUIRE_MARKER='SMP_SELFTEST: FAIL task-ran-on-smt-sibling' \
+		tools/smoke_test.sh horus.iso
+
+# A TLB shootdown that is not acknowledged halts the kernel instead of returning
+# (design/scheduler.md 3.8). SHOOTDOWN_DEAF_CPU=1 makes the highest online CPU
+# flush without acknowledging, so the selftest's shootdown can never complete;
+# the gate requires the kernel's named panic. Before 2026-10-09 the wait fell
+# through its bound and the call returned as though every CPU had flushed.
+# The bound is 100M `pause`s, which took 24 s to run out under TCG on the
+# development machine; the boot must outlast it, so the timeout is not the default.
+SHOOTDOWN_UNACKED_TIMEOUT ?= 120
+.PHONY: smoke-shootdown-unacked
+smoke-shootdown-unacked:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SHOOTDOWN_DEAF_CPU=1
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SHOOTDOWN_DEAF_CPU=1 horus.iso
+	@SMOKE_TIMEOUT=$(SHOOTDOWN_UNACKED_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=$(SMP_CPUS) \
+		EXPECT_FAULT='PANIC: tlb shootdown unacknowledged' \
+		tools/smoke_test.sh horus.iso
+
+# Control arm: the same deaf CPU with the old fall-through. The shootdown returns
+# with an acknowledgement outstanding, which the selftest's own check then reports;
+# the base gate, which wants the kernel's panic, goes red on the same build.
+.PHONY: smoke-shootdown-unacked-control
+smoke-shootdown-unacked-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SHOOTDOWN_DEAF_CPU=1 SHOOTDOWN_FAIL_OPEN=1
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SHOOTDOWN_DEAF_CPU=1 SHOOTDOWN_FAIL_OPEN=1 horus.iso
+	@SMOKE_TIMEOUT=$(SHOOTDOWN_UNACKED_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=$(SMP_CPUS) \
+		REQUIRE_MARKER='SMP_SELFTEST: FAIL shootdown pending=' \
 		tools/smoke_test.sh horus.iso
 
 # The SMP race BASE gates again, under KVM: a second environment for gates whose

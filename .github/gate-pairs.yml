@@ -278,6 +278,7 @@ control_arms:
   smoke-shlib-writable-control: smoke-shlib
   smoke-spawn-owner-control: smoke-spawn-owner
   smoke-sibling-kick-control: smoke-sibling-kick
+  smoke-shootdown-unacked-control: smoke-shootdown-unacked
   smoke-switch-commit-control: smoke-switch-commit
   smoke-syscall-coverage-control: smoke-syscall-coverage
   smoke-task-ceiling-control: smoke-task-ceiling
@@ -489,6 +490,7 @@ gates:
   - smoke-smp-topology
   - smoke-smp-kvm
   - smoke-sibling-kick
+  - smoke-shootdown-unacked
   - smoke-smt
   - smoke-spawn-owner
   - smoke-stackguard

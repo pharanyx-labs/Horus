@@ -873,6 +873,12 @@ volatile int smp_shootdown_pending = 0;
 
 /* Receiver side (idt.c, vector 0xFB), after flushing its TLB. */
 void smp_ack_shootdown(void) {
+#ifdef SHOOTDOWN_DEAF_CPU
+    /* INSTRUMENT, never ship: the highest-numbered online CPU flushes but never
+     * acknowledges, which is what a CPU wedged with interrupts off looks like to
+     * the initiator. It exists so the fail-closed wait below has a witness. */
+    if (this_cpu() == smp_cpus_online - 1) return;
+#endif
     __sync_fetch_and_sub(&smp_shootdown_pending, 1);
 }
 #endif
@@ -933,6 +939,29 @@ void smp_maybe_shootdown(uint64_t vaddr) {
         lapic_write(0x300, 0x000C0000 | 0xFB);       /* all-excluding-self, vec 0xFB */
         for (int i = 0; i < 100000000 && smp_shootdown_pending > 0; i++)
             __asm__ volatile ("pause");
+#ifndef SHOOTDOWN_FAIL_OPEN
+        /* ---- THE BACKSTOP FAILS CLOSED (S124) ---------------------------------
+         *
+         * Running out of the bound with acknowledgements outstanding means some
+         * CPU may still hold a translation for `vaddr`. Returning would tell the
+         * caller the flush happened, and a caller unmapping a page would then free
+         * a frame another CPU can still write through: a use-after-free reachable
+         * from whatever that CPU runs. So this halts instead, holding
+         * shootdown_lock, which keeps every later initiator from returning either.
+         *
+         * Until 2026-10-09 the loop simply fell through, and only the selftest,
+         * the one caller, checked the count afterwards. A check every caller has
+         * to remember is the shape CLAUDE.md section 1 rules out; the next caller
+         * (threads, or PCID; design/scheduler.md section 3.8) gets it for free.
+         * SHOOTDOWN_FAIL_OPEN=1 restores the fall-through, for the control arm. */
+        int left = smp_shootdown_pending;
+        if (left > 0) {
+            print("PANIC: tlb shootdown unacknowledged by ");
+            print_decimal((uint64_t)left);
+            println(" cpu(s); refusing to return as though it were flushed");
+            for (;;) __asm__ volatile ("cli; hlt");
+        }
+#endif
         __sync_lock_release(&shootdown_lock);
 
         if (!(fl & 0x200)) __asm__ volatile ("cli" ::: "memory");   /* restore */

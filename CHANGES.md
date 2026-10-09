@@ -14,6 +14,10 @@ here.
 
 ## [Unreleased]
 
+### Changed
+
+- The scheduling and SMP design records the decisions taken for it: CPU time as a capability accounted per CPU, slack time behind a right, priorities capped by authority, passive servers, per-CPU run queues and one-shot timers, affinity that only narrows, more than eight CPUs; roadmap item 1.8. (#521)
+
 ## [0.3.0-alpha]: 2026-10-09
 
 **An installed disk that starts on its own, with its programs on it**, and the work since

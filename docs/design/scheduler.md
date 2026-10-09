@@ -189,7 +189,7 @@ Budget exhaustion is no finer a clock than the 10 ms tick a task can already cou
 
 | Step | What | Depends on |
 |---|---|---|
-| 0 | LIMITATIONS 5.3e settled | |
+| 0 ✅ | LIMITATIONS 5.3e settled (#526) | |
 | 1 ✅ | The shootdown wait fails closed (#523) | |
 | 1b ✅ | `preempt_on_tick` refuses to schedule on an SMT sibling, whoever interrupts it (#525) | |
 | 2a ✅ | One selection rule for every switch path (#524) | |

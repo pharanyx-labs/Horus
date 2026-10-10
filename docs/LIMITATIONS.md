@@ -388,8 +388,9 @@ waits until it is woken or killed. The PIT runs at a fixed 100 Hz.
 - **More than one filesystem.** One volume and one `fs_server`, plus `dev_server` in self-test
   builds. The capability filesystem of [`design/filesystem.md`](design/filesystem.md) has its
   kernel half (phase 1a, IPC tokens, S105), and `fs_server` answers through capabilities (S120)
-  and refuses moves across directories (S121); no client walks with capabilities yet, so programs
-  still reach files by the uid path (phase 1b steps 2 to 6).
+  and refuses moves across directories (S121), and the POSIX layer walks with capabilities in a
+  program that holds a root (S126); nothing grants a root yet, so programs still reach files by the
+  uid path (phase 1b steps 2 to 6).
 - **Swap has no way to keep a secret out of it.** On an installed boot idle pages go to the
   sealed partition under pressure, an idle task's included, and come back on touch (S118, S119,
   S123). A page goes out sealed under a key that dies with the boot, but a task cannot yet ask for

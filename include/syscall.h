@@ -560,6 +560,18 @@ static inline int sys_console_owned(void) {
  * nothing the kernel later installs there can land on top of them. 24 to 63 are
  * free for a program's own fixed slots. Mirrors src/include/kernel.h. */
 #define CAPSLOT_DYNAMIC_FIRST 64
+/* FILESYSTEM CAPABILITIES (docs/design/filesystem.md §5, phase 1b step 2). A
+ * spawner that walks by capability grants its child derived copies of its root
+ * and current directories here (decision 10), and a task that holds a root
+ * directory capability walks by capability alone: hvfs mints each file's and
+ * directory's capability into the pool 32..63, which the kernel never allocates
+ * in. A program that fills those slots itself must not also hold a root here.
+ * A task with nothing in CAPSLOT_FS_ROOT reaches files by the uid path, as
+ * before, until step 6 removes it. */
+#define CAPSLOT_FS_ROOT       24
+#define CAPSLOT_FS_CWD        25
+#define CAPSLOT_FS_POOL_FIRST 32
+#define CAPSLOT_FS_POOL_LAST  63
 #define CAPSLOT_STORAGE_FORMAT 23 /* CAP_STORAGE_FORMAT: destroy and re-lay a
                                    * volume (installer only). Deliberately NOT
                                    * CAPSLOT_STORAGE -- reading and writing the

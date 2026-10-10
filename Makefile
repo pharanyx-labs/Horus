@@ -129,6 +129,7 @@ DEFECT_FLAGS = \
 	STORAGE_REPLACE_UNLOCKED STORAGE_FORMAT_AUTH_STICKY BOOT_CMDLINE_UNMEASURED \
 	STORAGE_FORMAT_UNGATED INSTALLER_NO_CONFIRM INSTALLER_REVIEW_FLAT BLOCK_ERRNO_LEGACY \
 	FSCAP_SELFTEST FS_CAP_RIGHTS_UNCHECKED FS_XDEV_UNCHECKED FS_WALK_NAMES_UNCHECKED \
+	FSCAPPOSIX_SELFTEST POSIX_CLOSE_KEEPS_CAP \
 	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED \
 	FS_LINK_UNCOUNTED FS_DIR_OPERAND_UNCHECKED GPT_ENTRIES_CRC_UNCHECKED STORAGE_REPLACE_VIEW_UNRESOLVED \
 	ESP_PIN_UNCHECKED ESP_NOT_WRITTEN DEBUG_BUILD \
@@ -3221,6 +3222,17 @@ endif
 FS_CAP_RIGHTS_UNCHECKED ?= 0
 FS_XDEV_UNCHECKED ?= 0
 FS_WALK_NAMES_UNCHECKED ?= 0
+# FSCAPPOSIX_SELFTEST=1, with FSCAP_SELFTEST=1, runs step 2's client half in the
+# same harness: fscapposix, a newlib program, in place of fscaptest, walking by
+# capability through ordinary POSIX calls (make smoke-fs-cap-posix).
+# POSIX_CLOSE_KEEPS_CAP=1 is its arm: close keeps the file's capability.
+FSCAPPOSIX_SELFTEST ?= 0
+ifeq ($(FSCAPPOSIX_SELFTEST),1)
+CFLAGS  += -DFSCAPPOSIX_SELFTEST
+ASFLAGS += -DFSCAPPOSIX_SELFTEST
+FSCAPPOSIX_SELFTEST_DEP = userspace/fscapposix.bin
+endif
+POSIX_CLOSE_KEEPS_CAP ?= 0
 TOKEN_SELFTEST ?= 0
 ifeq ($(TOKEN_SELFTEST),1)
 CFLAGS  += -DTOKEN_SELFTEST
@@ -4508,7 +4520,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin userspace/installer.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(TOKEN_SELFTEST_DEP) $(FSCAP_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(BLOCKPROBE_DEP) $(EXECPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin userspace/installer.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(TOKEN_SELFTEST_DEP) $(FSCAP_SELFTEST_DEP) $(FSCAPPOSIX_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(BLOCKPROBE_DEP) $(EXECPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -4969,6 +4981,9 @@ USERSPACE_CFLAGS += -DFS_XDEV_UNCHECKED
 endif
 ifeq ($(FS_WALK_NAMES_UNCHECKED),1)
 USERSPACE_CFLAGS += -DFS_WALK_NAMES_UNCHECKED
+endif
+ifeq ($(POSIX_CLOSE_KEEPS_CAP),1)
+USERSPACE_CFLAGS += -DPOSIX_CLOSE_KEEPS_CAP
 endif
 ifeq ($(INSTALLER_NO_CONFIRM),1)
 USERSPACE_CFLAGS += -DINSTALLER_NO_CONFIRM
@@ -5449,6 +5464,20 @@ userspace/hello_newlib.pie.elf: userspace/hello_newlib.o $(NEWLIB_GLUE_OBJS) \
 
 userspace/hello_newlib.bin: userspace/hello_newlib.stripped.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "hello_newlib"
+
+# fscapposix -- phase 1b step 2's POSIX client, for smoke-fs-cap-posix.
+userspace/fscapposix.o: userspace/fscapposix.c $(NEWLIB_LIB)/libc.a
+	$(CC) $(NEWLIB_CFLAGS) -c $< -o $@
+
+userspace/fscapposix.pie.elf: userspace/fscapposix.o $(NEWLIB_GLUE_OBJS) \
+                              userspace/malloc.o $(LIBHORUS_LIB) userspace/pie.ld
+	$(LD) -m elf_x86_64 -pie -T userspace/pie.ld -o $@ \
+	    userspace/fscapposix.o userspace/newlib_glue.o \
+	    userspace/newlib_glue64.o userspace/posix.o userspace/malloc.o \
+	    $(LIBHORUS_LIB) -L$(NEWLIB_LIB) -lc
+
+userspace/fscapposix.bin: userspace/fscapposix.stripped.elf tools/mkheadered
+	@./tools/mkheadered $< $@ "fscapposix"
 
 # termtest — exercises the console raw-terminal layer (termios + winsize + raw
 # read/write) end to end; shipped as a /bin module by TERM_MODULE=1 (smoke-term).
@@ -12369,6 +12398,26 @@ smoke-fs-cap-xdev-control:
 smoke-fs-cap-walk-control:
 	@$(MAKE) --no-print-directory smoke-fs-cap FSCAPARM=FS_WALK_NAMES_UNCHECKED=1 \
 		FSCAPEXPECT='FSCAPTEST: FAIL walk-dotdot'
+
+# PROGRAMS WALK BY CAPABILITY (phase 1b step 2, client half, S126). fscapposix,
+# a newlib program holding a read-only root at CAPSLOT_FS_ROOT and a writable one
+# mounted at /rw, drives open, read, write, stat, mkdir, readdir, chdir, rename
+# and unlink through them: nothing changes through the read-only root, a rename
+# across directories is EXDEV, ".." stops at the root, and closing a file gives
+# its capability back (40 opens through a 32-slot pool).
+# POSIX_CLOSE_KEEPS_CAP=1 is the arm: a closed file keeps its capability.
+.PHONY: smoke-fs-cap-posix smoke-fs-cap-posix-close-control
+smoke-fs-cap-posix:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FSCAP_SELFTEST=1 FSCAPPOSIX_SELFTEST=1 $(FSCAPPOSIXARM)
+	@$(MAKE) --no-print-directory FSCAP_SELFTEST=1 FSCAPPOSIX_SELFTEST=1 $(FSCAPPOSIXARM) horus.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='$(or $(FSCAPPOSIXEXPECT),FSCAPPOSIX: PASS)' \
+		FAIL_MARKER='$(if $(FSCAPPOSIXEXPECT),FSCAPPOSIX: PASS,FSCAPPOSIX: FAIL)' \
+		tools/smoke_test.sh horus.iso
+smoke-fs-cap-posix-close-control:
+	@$(MAKE) --no-print-directory smoke-fs-cap-posix FSCAPPOSIXARM=POSIX_CLOSE_KEEPS_CAP=1 \
+		FSCAPPOSIXEXPECT='FSCAPPOSIX: FAIL close-kept-capability'
 
 smoke-vfs:
 	@$(MAKE) --no-print-directory clean

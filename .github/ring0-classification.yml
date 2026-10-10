@@ -507,7 +507,11 @@
 # the waiter's blocked_on generation; plus the WAIT_WAKE_EARLY arm and the
 # WAIT_WAKE_WIDEN instrument, never in the ship build. Core because it is task
 # death and the scheduler's wake.
-core_budget_loc: 11427
+# 2026-10-10: 11427 -> 11433, +6, phase 1b step 2 (S126): multiboot.S embeds the
+# fscapposix image for the FSCAPPOSIX_SELFTEST harness, never in the ship build
+# (six assembler lines, as fscaptest's took). The client half itself is ring 3
+# (hvfs and the POSIX layer).
+core_budget_loc: 11433
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

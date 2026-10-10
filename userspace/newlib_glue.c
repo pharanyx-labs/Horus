@@ -170,7 +170,7 @@ int stat(const char *path, struct stat *st) {
 
 struct __horus_dir {
     int           inuse;
-    uint32_t      ino;      /* directory inode */
+    uint32_t      h;        /* posix_diropen's handle, held until closedir */
     uint32_t      index;    /* next entry to read */
     struct dirent ent;      /* storage returned by readdir() */
 };
@@ -181,19 +181,20 @@ DIR *opendir(const char *path) {
     posix_init();
     if (!path) { errno = EFAULT; return (DIR *)0; }
 
-    uint32_t ino;
-    int r = posix_diropen(path, &ino);
+    uint32_t h;
+    int r = posix_diropen(path, &h);
     if (r == -2) { errno = ENOTDIR; return (DIR *)0; }
     if (r < 0)   { errno = ENOENT;  return (DIR *)0; }
 
     for (int i = 0; i < HORUS_NDIRS; i++) {
         if (!g_dirs[i].inuse) {
             g_dirs[i].inuse = 1;
-            g_dirs[i].ino   = ino;
+            g_dirs[i].h     = h;
             g_dirs[i].index = 0;
             return (DIR *)&g_dirs[i];
         }
     }
+    (void)posix_dirclose(h);
     errno = EMFILE;             /* directory-stream pool exhausted */
     return (DIR *)0;
 }
@@ -205,7 +206,7 @@ struct dirent *readdir(DIR *dirp) {
 
     char     name[32];
     uint32_t eino, etype;
-    int rc = posix_readdir(d->ino, d->index, name, &eino, &etype);
+    int rc = posix_readdir(d->h, d->index, name, &eino, &etype);
     if (rc == 0)
         return (struct dirent *)0;   /* end of directory: NULL, errno unchanged */
     if (rc < 0) {
@@ -240,6 +241,7 @@ void rewinddir(DIR *dirp) {
 int closedir(DIR *dirp) {
     struct __horus_dir *d = (struct __horus_dir *)dirp;
     if (!d || !d->inuse) { errno = EBADF; return -1; }
+    (void)posix_dirclose(d->h);
     d->inuse = 0;
     return 0;
 }

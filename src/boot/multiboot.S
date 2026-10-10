@@ -1023,6 +1023,15 @@ embedded_fscaptest_bin_start:
 .incbin "userspace/fscaptest.bin"
 .global embedded_fscaptest_bin_end
 embedded_fscaptest_bin_end:
+#ifdef FSCAPPOSIX_SELFTEST
+/* Its POSIX half (smoke-fs-cap-posix): newlib calls walking by capability. */
+.balign 16
+.global embedded_fscapposix_bin_start
+embedded_fscapposix_bin_start:
+.incbin "userspace/fscapposix.bin"
+.global embedded_fscapposix_bin_end
+embedded_fscapposix_bin_end:
+#endif
 #endif
 
 #ifdef TOKEN_SELFTEST

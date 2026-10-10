@@ -54,18 +54,26 @@ static uint32_t _ustrlen(const char *s) {
 #define FD_CONSOLE_OUT  2u   /* fd 1/2: console write */
 #define FD_FS           3u   /* regular fs_server file */
 #define FD_PIPE         4u   /* a pipe end (ino = the CAP_PIPE cspace slot) */
+#define FD_DIR          5u   /* an open directory stream (posix_diropen) */
 
 typedef struct {
     uint8_t  type;     /* FD_FREE / FD_CONSOLE_IN / FD_CONSOLE_OUT / FD_FS / FD_PIPE */
     uint8_t  _pad[3];
     int      flags;    /* O_RDONLY / O_WRONLY / O_RDWR | O_APPEND etc. */
-    uint32_t ino;      /* fs inode, or (FD_PIPE) the pipe-end cspace slot */
+    uint32_t ino;      /* (FD_PIPE) the pipe-end cspace slot */
     uint32_t offset;
+    struct hvfs_obj obj;   /* (FD_FS, FD_DIR) what requests are sent through */
 } fd_entry_t;
 
 static fd_entry_t  g_fdt[POSIX_MAX_FDS];
 static int         g_inited       = 0;
 static int         g_fs_connected = 0;
+/* THE MODE, CHOSEN ONCE (filesystem phase 1b step 2). A task that holds a root
+ * directory capability in CAPSLOT_FS_ROOT walks by capability and never touches
+ * the uid path: it does not even connect to it, so no request of its can fall
+ * back there when a capability refuses. A task that holds none uses the uid
+ * path, as before, until step 6 removes it. Never decided per request. */
+static int         g_capmode      = 0;
 
 /* ----- fd allocation -------------------------------------------------- */
 
@@ -85,6 +93,14 @@ static int fd_alloc(void) {
 }
 
 static void fd_free(int fd) {
+    /* A file's or directory's own capability goes with it (hvfs_release
+     * revokes it; a uid-path object owns nothing). */
+#ifndef POSIX_CLOSE_KEEPS_CAP
+    if (g_fdt[fd].type == FD_FS || g_fdt[fd].type == FD_DIR) hvfs_release(&g_fdt[fd].obj);
+#endif
+    /* POSIX_CLOSE_KEEPS_CAP=1 is the control arm for make
+     * smoke-fs-cap-posix-close-control: a closed file's capability stays, so
+     * the authority outlives the descriptor and the pool runs dry. Never ship. */
     _umemset(&g_fdt[fd], 0, sizeof(g_fdt[fd]));
 }
 
@@ -94,7 +110,7 @@ static void fd_free(int fd) {
 #define FSS_CAP_SLOT CAPSLOT_FS_EP
 
 static void fs_connect(void) {
-    if (g_fs_connected) return;
+    if (g_fs_connected || g_capmode) return;
     /* Acquire a (WRITE-only) capability to the fs service.
      *
      * Retry until it succeeds. Since IPC became capability-addressed (finding
@@ -119,14 +135,16 @@ static void fs_connect(void) {
     g_fs_connected = 1;
 }
 
-/* Single round-trip to the fs_server.  Returns rp->rc on success, -1 on
- * transport failure (bad magic or sys_ipc_call error). */
-static int fss_rpc(struct fs_request *rq, struct fs_response *rp) {
+/* Single round-trip to the fs_server about object `o`: through its capability
+ * on the capability path, through the endpoint on the uid path. Returns rp->rc
+ * on success, -1 on transport failure (bad magic or sys_ipc_call error). */
+static int fss_rpc(const struct hvfs_obj *o, struct fs_request *rq, struct fs_response *rp) {
     fs_connect();
     rq->magic = FS_PROTO_MAGIC;
     _umemset(rp, 0, sizeof(*rp));
+    if (o->slot < 0) return -1;
 
-    int r = sys_ipc_call(CAPSLOT_FS_EP, 0,
+    int r = sys_ipc_call((uint32_t)o->slot, 0,
                          (const void *)rq, (uint32_t)sizeof(*rq),
                          (void *)rp);
     if (r < 0)                        return -1;
@@ -142,6 +160,14 @@ static int fss_rpc(struct fs_request *rq, struct fs_response *rp) {
  * absolute path string (for getcwd). Initialised to the root, "/". */
 static uint32_t g_cwd_ino  = 0;
 static char     g_cwd_path[POSIX_PATH_MAX] = "/";
+/* The working directory as an object, and what g_cwd_path is relative to: the
+ * root, or (capability path) the directory capability the spawner granted at
+ * CAPSLOT_FS_CWD, whose name this task is never told. Then g_cwd_path is the
+ * path below it, ".." stops there, and getcwd cannot answer. */
+static struct hvfs_obj g_root;
+static struct hvfs_obj g_cwd;
+static struct hvfs_obj g_cwd_base;
+static int             g_cwd_named = 1;
 
 /* ----- path resolution ------------------------------------------------- */
 
@@ -201,12 +227,12 @@ static int legacy_walk(const char *path, uint32_t *out_ino, char *out_name,
         rq.dir_ino = dir_ino;
         _umemcpy(rq.name, comp, clen + 1u);
         if (*p != '\0') {
-            if (fss_rpc(&rq, &rp) != 0) return -1;
+            if (fss_rpc(&g_root, &rq, &rp) != 0) return -1;
             dir_ino = rp.ino;
         } else {
             _umemcpy(out_name, comp, clen + 1u);
             if (want_parent) { *out_ino = dir_ino; return 0; }
-            if (fss_rpc(&rq, &rp) == 0) { *out_ino = rp.ino; return 0; }
+            if (fss_rpc(&g_root, &rq, &rp) == 0) { *out_ino = rp.ino; return 0; }
             *out_ino = dir_ino;
             return 1;
         }
@@ -217,23 +243,26 @@ static int legacy_walk(const char *path, uint32_t *out_ino, char *out_name,
 }
 #endif
 
-static int path_walk(const char *path, uint32_t *out_ino, char *out_name) {
+/* Resolve `path` to an object (want_parent: the directory holding its last
+ * component). The contract is hvfs_walk's, 0, 1 or -1. An object that comes
+ * back owned holds a capability minted for it, which the caller gives back with
+ * hvfs_release, on every path out. */
+static int path_obj_at(const char *path, const struct hvfs_obj *cwd, int want_parent,
+                       struct hvfs_obj *out, char *out_name) {
 #ifdef POSIX_LEGACY_WALK
-    return legacy_walk(path, out_ino, out_name, 0);
+    uint32_t ino;
+    (void)cwd;
+    int r = legacy_walk(path, &ino, out_name, want_parent);
+    *out = g_root;
+    out->ino = ino;
+    return r;
 #else
-    int slot;
-    return hvfs_walk(path, g_cwd_ino, CAPSLOT_FS_EP, &slot, out_ino, out_name);
+    return hvfs_lookup(path, cwd, want_parent, out, out_name);
 #endif
 }
 
-static int path_parent(const char *path, uint32_t *out_ino, char *out_name) {
-#ifdef POSIX_LEGACY_WALK
-    return legacy_walk(path, out_ino, out_name, 1);
-#else
-    int slot;
-    return hvfs_walk_parent(path, g_cwd_ino, CAPSLOT_FS_EP, &slot, out_ino,
-                            out_name);
-#endif
+static int path_obj(const char *path, int want_parent, struct hvfs_obj *out, char *out_name) {
+    return path_obj_at(path, &g_cwd, want_parent, out, out_name);
 }
 
 /* ----- public API ------------------------------------------------------- */
@@ -262,8 +291,32 @@ void posix_init(void) {
      * wrong time. A refusal here is not fatal and is not silently ignored
      * either: every path operation then fails at hvfs_resolve with nothing
      * mounted, which is the same fail-closed answer as a missing endpoint. */
-    fs_connect();
-    (void)hvfs_mount("/", CAPSLOT_FS_EP, 0u);
+    /* A root directory capability, if the spawner granted one, decides it: the
+     * mount probe is a stat through it, so an empty slot is refused and the
+     * task stays on the uid path. With a root, the working directory is the one
+     * granted at CAPSLOT_FS_CWD if that answers, else the root. */
+    if (hvfs_mount_cap("/", CAPSLOT_FS_ROOT) == 0) {
+        g_capmode = 1;
+        g_root.slot = CAPSLOT_FS_ROOT; g_root.ino = 0; g_root.cap = 1; g_root.owned = 0;
+        g_cwd_base = g_root;
+        {
+            struct fs_request rq;
+            struct fs_response rp;
+            struct hvfs_obj cwd = { CAPSLOT_FS_CWD, 0, 1, 0 };
+            _umemset(&rq, 0, sizeof(rq));
+            rq.op = FS_OP_STAT;
+            if (fss_rpc(&cwd, &rq, &rp) == 0 && rp.type == FS_TYPE_DIR) {
+                g_cwd_base = cwd;
+                g_cwd_named = 0;
+            }
+        }
+    } else {
+        fs_connect();
+        (void)hvfs_mount("/", CAPSLOT_FS_EP, 0u);
+        g_root.slot = CAPSLOT_FS_EP; g_root.ino = 0; g_root.cap = 0; g_root.owned = 0;
+        g_cwd_base = g_root;
+    }
+    g_cwd = g_cwd_base;
 
     g_inited = 1;
 }
@@ -274,27 +327,35 @@ int posix_open(const char *path, int flags, int mode) {
     ENSURE_INIT();
     (void)mode;
 
-    uint32_t ino;
+    struct hvfs_obj o;
     char     last[FS_NAME_MAX];
-    int      walk = path_walk(path, &ino, last);
+    int      walk = path_obj(path, 0, &o, last);
 
     if (walk < 0) return -1;   /* bad path / intermediate missing */
 
     if (walk == 1) {
-        /* Last component not found. */
-        if (!(flags & O_CREAT)) return -1;    /* ENOENT */
+        /* Last component not found; `o` is the parent. */
+        if (!(flags & O_CREAT)) { hvfs_release(&o); return -1; }    /* ENOENT */
 
-        /* Create the file in parent directory (ino is the parent). */
         struct fs_request rq;
         struct fs_response rp;
         _umemset(&rq, 0, sizeof(rq));
         rq.op      = FS_OP_CREATE;
-        rq.dir_ino = ino;
+        rq.dir_ino = o.ino;
         uint32_t nlen = _ustrlen(last);
-        if (nlen == 0 || nlen >= FS_NAME_MAX) return -1;
+        if (nlen == 0 || nlen >= FS_NAME_MAX) { hvfs_release(&o); return -1; }
         _umemcpy(rq.name, last, nlen + 1u);
-        if (fss_rpc(&rq, &rp) != 0) return -1;
-        ino = rp.ino;
+        int rc = fss_rpc(&o, &rq, &rp);
+        hvfs_release(&o);
+        if (rc != 0) return -1;
+        if (o.cap) {
+            /* ONE CAPABILITY PER OPEN FILE, DERIVED FROM WHERE THE WALK STARTED.
+             * One minted by the create would be the parent's child and go when
+             * the parent's is given back, so the file is walked to afresh. */
+            if (path_obj(path, 0, &o, last) != 0) { hvfs_release(&o); return -1; }
+        } else {
+            o.ino = rp.ino;
+        }
     } else {
         /* File already exists. */
         if ((flags & O_CREAT) && (flags & O_EXCL)) return -1;  /* EEXIST */
@@ -306,18 +367,18 @@ int posix_open(const char *path, int flags, int mode) {
             struct fs_response rp;
             _umemset(&rq, 0, sizeof(rq));
             rq.op     = FS_OP_TRUNCATE;
-            rq.ino    = ino;
+            rq.ino    = o.ino;
             rq.offset = 0;
-            if (fss_rpc(&rq, &rp) != 0) return -1;
+            if (fss_rpc(&o, &rq, &rp) != 0) { hvfs_release(&o); return -1; }
         }
     }
 
     int fd = fd_alloc();
-    if (fd < 0) return -1;   /* EMFILE */
+    if (fd < 0) { hvfs_release(&o); return -1; }   /* EMFILE */
 
     g_fdt[fd].type   = FD_FS;
     g_fdt[fd].flags  = flags;
-    g_fdt[fd].ino    = ino;
+    g_fdt[fd].obj    = o;
     g_fdt[fd].offset = 0;
     return fd;
 }
@@ -379,11 +440,11 @@ int posix_read(int fd, void *buf, size_t len) {
         struct fs_response rp;
         _umemset(&rq, 0, sizeof(rq));
         rq.op     = FS_OP_READ;
-        rq.ino    = e->ino;
+        rq.ino    = e->obj.ino;
         rq.offset = e->offset;
         rq.len    = chunk;
 
-        int got = fss_rpc(&rq, &rp);
+        int got = fss_rpc(&e->obj, &rq, &rp);
         if (got < 0) return (int)total > 0 ? (int)total : -1;
         if (got == 0) break;   /* EOF */
         if ((uint32_t)got > FS_IO_MAX) got = FS_IO_MAX;  /* clamp: trust but verify */
@@ -542,12 +603,12 @@ int posix_write(int fd, const void *buf, size_t len) {
         struct fs_response rp;
         _umemset(&rq, 0, sizeof(rq));
         rq.op     = append ? FS_OP_APPEND : FS_OP_WRITE;
-        rq.ino    = e->ino;
+        rq.ino    = e->obj.ino;
         rq.offset = e->offset;      /* ignored by the server when appending */
         rq.len    = chunk;
         _umemcpy(rq.data, src + total, chunk);
 
-        int written = fss_rpc(&rq, &rp);
+        int written = fss_rpc(&e->obj, &rq, &rp);
         if (written <= 0) return (int)total > 0 ? (int)total : -1;
         if ((uint32_t)written > chunk) written = (int)chunk;  /* clamp */
 
@@ -617,8 +678,8 @@ int posix_lseek(int fd, int32_t offset, int whence) {
         struct fs_response rp;
         _umemset(&rq, 0, sizeof(rq));
         rq.op  = FS_OP_STAT;
-        rq.ino = e->ino;
-        if (fss_rpc(&rq, &rp) != 0) return -1;
+        rq.ino = e->obj.ino;
+        if (fss_rpc(&e->obj, &rq, &rp) != 0) return -1;
         uint32_t fsz = rp.size;
 
         if (offset < 0) {
@@ -664,11 +725,14 @@ int posix_fstat(int fd, posix_stat_t *st) {
     struct fs_response rp;
     _umemset(&rq, 0, sizeof(rq));
     rq.op  = FS_OP_STAT;
-    rq.ino = e->ino;
-    if (fss_rpc(&rq, &rp) != 0) return -1;
+    rq.ino = e->obj.ino;
+    if (fss_rpc(&e->obj, &rq, &rp) != 0) return -1;
 
     _umemset(st, 0, sizeof(*st));
-    st->ino  = e->ino;
+    /* Through a capability the client never named the inode, so the server's
+     * report is the only one; on the uid path the walked inode is, since not
+     * every server reports it (dev_server does not). */
+    st->ino  = e->obj.cap ? rp.ino : e->obj.ino;
     st->size = rp.size;
     /* Real metadata from the server: the type bit from rp.type
      * (1 = FS_TYPE_FILE, 2 = FS_TYPE_DIR) OR'd with the actual permission bits
@@ -686,19 +750,21 @@ int posix_stat(const char *path, posix_stat_t *st) {
     ENSURE_INIT();
     if (!st || !path) return -1;
 
-    uint32_t ino;
+    struct hvfs_obj o;
     char     last[FS_NAME_MAX];
-    if (path_walk(path, &ino, last) != 0) return -1;   /* not found */
+    if (path_obj(path, 0, &o, last) != 0) { hvfs_release(&o); return -1; }   /* not found */
 
     struct fs_request rq;
     struct fs_response rp;
     _umemset(&rq, 0, sizeof(rq));
     rq.op  = FS_OP_STAT;
-    rq.ino = ino;
-    if (fss_rpc(&rq, &rp) != 0) return -1;
+    rq.ino = o.ino;
+    int rc = fss_rpc(&o, &rq, &rp);
+    hvfs_release(&o);
+    if (rc != 0) return -1;
 
     _umemset(st, 0, sizeof(*st));
-    st->ino     = ino;
+    st->ino     = o.cap ? rp.ino : o.ino;     /* as in posix_fstat */
     st->size    = rp.size;
     st->mode    = ((rp.type == 2) ? S_IFDIR : S_IFREG) | (rp.mode & 07777u);
     st->uid     = rp.uid;
@@ -712,29 +778,54 @@ int posix_stat(const char *path, posix_stat_t *st) {
 /* Resolve `path` to a directory inode for enumeration.
  * Returns 0 and sets *out_ino on success, -1 if the path does not resolve,
  * -2 if it resolves to something that is not a directory (ENOTDIR). */
-int posix_diropen(const char *path, uint32_t *out_ino) {
-    ENSURE_INIT();
-    if (!path || !out_ino) return -1;
+/* Resolve `path` to a directory, as an object the caller releases. 0, -1 when
+ * it is missing, -2 when it is not a directory. Confirmed before a caller
+ * readdirs it: a READDIR on a regular file would just error per entry. */
+static int dir_obj_at(const char *path, const struct hvfs_obj *cwd, struct hvfs_obj *o) {
+    char last[FS_NAME_MAX];
+    if (path_obj_at(path, cwd, 0, o, last) != 0) { hvfs_release(o); return -1; }   /* not found */
 
-    uint32_t ino;
-    char     last[FS_NAME_MAX];
-    if (path_walk(path, &ino, last) != 0) return -1;   /* not found */
-
-    /* Confirm it is a directory before handing back an inode the caller will
-     * readdir — a READDIR on a regular file would just error per entry. */
     struct fs_request rq;
     struct fs_response rp;
     _umemset(&rq, 0, sizeof(rq));
     rq.op  = FS_OP_STAT;
-    rq.ino = ino;
-    if (fss_rpc(&rq, &rp) != 0) return -1;
-    if (rp.type != 2 /* FS_TYPE_DIR */) return -2;
-
-    *out_ino = ino;
+    rq.ino = o->ino;
+    if (fss_rpc(o, &rq, &rp) != 0) { hvfs_release(o); return -1; }
+    if (rp.type != FS_TYPE_DIR)    { hvfs_release(o); return -2; }
     return 0;
 }
 
-/* Read the directory entry at `index` (0-based) of directory inode `dir_ino`.
+static int dir_obj(const char *path, struct hvfs_obj *o) {
+    return dir_obj_at(path, &g_cwd, o);
+}
+
+/* A directory stream is a descriptor of its own (FD_DIR), because through a
+ * capability the directory IS a capability, held until posix_dirclose gives it
+ * back. *out_h is the handle posix_readdir and posix_dirclose take. */
+int posix_diropen(const char *path, uint32_t *out_h) {
+    ENSURE_INIT();
+    if (!path || !out_h) return -1;
+
+    struct hvfs_obj o;
+    int r = dir_obj(path, &o);
+    if (r < 0) return r;
+    int fd = fd_alloc();
+    if (fd < 0) { hvfs_release(&o); return -1; }
+    g_fdt[fd].type  = FD_DIR;
+    g_fdt[fd].flags = O_RDONLY;
+    g_fdt[fd].obj   = o;
+    *out_h = (uint32_t)fd;
+    return 0;
+}
+
+int posix_dirclose(uint32_t h) {
+    ENSURE_INIT();
+    if (!fd_valid((int)h) || g_fdt[h].type != FD_DIR) return -1;
+    fd_free((int)h);
+    return 0;
+}
+
+/* Read the directory entry at `index` (0-based) of directory stream `h`.
  * Returns 1 and fills the non-NULL out params on success, 0 at/after the end of
  * the directory, and the server's negative SYS_ERR_* on a failure.
  *
@@ -747,15 +838,17 @@ int posix_diropen(const char *path, uint32_t *out_ino) {
  * newlib_glue.c maps the negative case to errno and is where the POSIX shape is
  * actually produced. The name is copied NUL-terminated into name_out, which must
  * be at least FS_NAME_MAX bytes. */
-int posix_readdir(uint32_t dir_ino, uint32_t index,
+int posix_readdir(uint32_t h, uint32_t index,
                   char *name_out, uint32_t *ino_out, uint32_t *type_out) {
     ENSURE_INIT();
+    if (!fd_valid((int)h) || g_fdt[h].type != FD_DIR) return SYS_ERR_INVAL;
+    const struct hvfs_obj *o = &g_fdt[h].obj;
 
     struct fs_request rq;
     struct fs_response rp;
     _umemset(&rq, 0, sizeof(rq));
     rq.op      = FS_OP_READDIR;
-    rq.dir_ino = dir_ino;
+    rq.dir_ino = o->ino;
     rq.offset  = index;                 /* entry index, per fs_proto.h */
 
     /* END OF DIRECTORY IS ONE OUTCOME; A FAILURE IS ANOTHER.
@@ -771,7 +864,7 @@ int posix_readdir(uint32_t dir_ino, uint32_t index,
      * FS_RC_ENDDIR is the ordinary end and clears errno; anything else negative
      * is a failure, reported through errno with the walk stopped. See
      * include/fs_proto.h. */
-    int rc = fss_rpc(&rq, &rp);
+    int rc = fss_rpc(o, &rq, &rp);
     if (rc == FS_RC_ENDDIR) return 0;      /* the ordinary end of the walk */
     if (rc != 0)            return rc;     /* a reason, for the caller to report */
 
@@ -846,13 +939,28 @@ int posix_chdir(const char *path) {
     ENSURE_INIT();
     if (!path || path[0] == '\0') return -1;
 
+    /* g_cwd_path is relative to g_cwd_base. An absolute path starts again from
+     * the root, which also makes the working directory one this task can name;
+     * a relative one stays below the base, ".." stopping there. */
     char norm[POSIX_PATH_MAX];
     if (cwd_normalize(path, norm) != 0) return -1;
+    struct hvfs_obj base = (path[0] == '/') ? g_root : g_cwd_base;
 
-    uint32_t ino;
-    if (posix_diropen(norm, &ino) < 0) return -1;   /* missing or not a dir */
+    /* The new directory is walked from the base, never from the current
+     * working directory, so the old one's capability can be given back without
+     * taking the new one with it. */
+    struct hvfs_obj nd;
+    if (base.slot == g_root.slot) {
+        if (dir_obj_at(norm, &g_root, &nd) < 0) return -1;            /* missing or not a dir */
+    } else {
+        if (dir_obj_at(norm[1] ? norm + 1 : ".", &base, &nd) < 0) return -1;
+    }
 
-    g_cwd_ino = ino;
+    hvfs_release(&g_cwd);
+    g_cwd      = nd;
+    g_cwd_base = base;
+    if (base.slot == g_root.slot) g_cwd_named = 1;
+    g_cwd_ino  = nd.ino;
     uint32_t i = 0;
     for (; norm[i] && i < POSIX_PATH_MAX - 1u; i++) g_cwd_path[i] = norm[i];
     g_cwd_path[i] = '\0';
@@ -864,6 +972,7 @@ int posix_chdir(const char *path) {
 int posix_getcwd(char *buf, uint32_t size) {
     ENSURE_INIT();
     if (!buf || size == 0) return -1;
+    if (!g_cwd_named) return -1;     /* below a granted directory whose name we were never told */
     uint32_t n = _ustrlen(g_cwd_path);
     if (n + 1u > size) return -1;                   /* ERANGE */
     _umemcpy(buf, g_cwd_path, n + 1u);
@@ -877,51 +986,53 @@ int posix_mkdir(const char *path, int mode) {
     (void)mode;
     if (!path) return SYS_ERR_INVAL;
 
-    uint32_t parent;
+    struct hvfs_obj parent;
     char     name[FS_NAME_MAX];
-    if (path_parent(path, &parent, name) != 0) return SYS_ERR_NOENT;
-    if (name[0] == '\0') return SYS_ERR_INVAL;      /* refuse "/" */
+    if (path_obj(path, 1, &parent, name) != 0) { hvfs_release(&parent); return SYS_ERR_NOENT; }
 
     uint32_t nlen = _ustrlen(name);
-    if (nlen == 0 || nlen >= FS_NAME_MAX) return SYS_ERR_INVAL;
+    if (nlen == 0 || nlen >= FS_NAME_MAX) { hvfs_release(&parent); return SYS_ERR_INVAL; }   /* refuse "/" */
 
     struct fs_request rq;
     struct fs_response rp;
     _umemset(&rq, 0, sizeof(rq));
     rq.op      = FS_OP_MKDIR;
-    rq.dir_ino = parent;
+    rq.dir_ino = parent.ino;
     _umemcpy(rq.name, name, nlen + 1u);
-    return fss_rpc(&rq, &rp);
+    int rc = fss_rpc(&parent, &rq, &rp);
+    hvfs_release(&parent);
+    return rc;
 }
 
 int posix_unlink(const char *path) {
     ENSURE_INIT();
     if (!path) return -1;
 
-    uint32_t parent;
+    struct hvfs_obj parent;
     char     name[FS_NAME_MAX];
     /* A path we can't resolve (bad path, missing intermediate directory, or "/"
      * itself) is a missing target — report it as SYS_ERR_NOENT so the libc
      * wrapper maps it to ENOENT rather than a transport error. */
-    if (path_parent(path, &parent, name) != 0) return SYS_ERR_NOENT;
-    if (name[0] == '\0') return SYS_ERR_NOENT;    /* refuse to unlink "/" */
+    if (path_obj(path, 1, &parent, name) != 0) { hvfs_release(&parent); return SYS_ERR_NOENT; }
 
     uint32_t nlen = _ustrlen(name);
-    if (nlen == 0 || nlen >= FS_NAME_MAX) return SYS_ERR_NOENT;
+    if (nlen == 0 || nlen >= FS_NAME_MAX) { hvfs_release(&parent); return SYS_ERR_NOENT; }  /* refuse "/" */
 
     struct fs_request rq;
     struct fs_response rp;
     _umemset(&rq, 0, sizeof(rq));
     rq.op      = FS_OP_DELETE;
-    rq.dir_ino = parent;
+    rq.dir_ino = parent.ino;
     _umemcpy(rq.name, name, nlen + 1u);
 
     /* Propagate the server's rc: 0 on success, a negative SYS_ERR_* on a
      * permission / not-found / non-empty-directory refusal, or -1 on a
-     * transport failure. The server is the reference monitor — it enforces
-     * write permission on the parent directory against our kernel-attested
-     * uid, so no client-side permission check is needed (or trusted). */
-    return fss_rpc(&rq, &rp);
+     * transport failure. The server is the reference monitor: it checks the
+     * request against the parent's capability, or on the uid path against our
+     * kernel-attested uid, so no client-side check is needed (or trusted). */
+    int rc = fss_rpc(&parent, &rq, &rp);
+    hvfs_release(&parent);
+    return rc;
 }
 
 int posix_ftruncate(int fd, uint32_t length) {
@@ -935,62 +1046,86 @@ int posix_ftruncate(int fd, uint32_t length) {
     struct fs_response rp;
     _umemset(&rq, 0, sizeof(rq));
     rq.op     = FS_OP_TRUNCATE;
-    rq.ino    = e->ino;
+    rq.ino    = e->obj.ino;
     rq.offset = length;
-    return fss_rpc(&rq, &rp) == 0 ? 0 : -1;
+    return fss_rpc(&e->obj, &rq, &rp) == 0 ? 0 : -1;
+}
+
+/* The inode `o` names, as the server reports it, or 0xFFFFFFFF when it will not
+ * say. Only for comparing; a request never carries it through a capability. */
+static uint32_t obj_id(const struct hvfs_obj *o) {
+    struct fs_request rq;
+    struct fs_response rp;
+    _umemset(&rq, 0, sizeof(rq));
+    rq.op  = FS_OP_STAT;
+    rq.ino = o->ino;
+    return fss_rpc(o, &rq, &rp) == 0 ? rp.ino : 0xFFFFFFFFu;
 }
 
 int posix_rename(const char *oldpath, const char *newpath) {
     ENSURE_INIT();
     if (!oldpath || !newpath) return SYS_ERR_INVAL;
 
-    uint32_t old_parent, new_parent;
+    struct hvfs_obj op, np;
     char     oldname[FS_NAME_MAX], newname[FS_NAME_MAX];
-    if (path_parent(oldpath, &old_parent, oldname) != 0) return SYS_ERR_NOENT;
-    if (path_parent(newpath, &new_parent, newname) != 0) return SYS_ERR_NOENT;
-    if (oldname[0] == '\0' || newname[0] == '\0') return SYS_ERR_INVAL;   /* refuse "/" */
+    if (path_obj(oldpath, 1, &op, oldname) != 0) { hvfs_release(&op); return SYS_ERR_NOENT; }
+    if (path_obj(newpath, 1, &np, newname) != 0) { hvfs_release(&op); hvfs_release(&np); return SYS_ERR_NOENT; }
 
     uint32_t olen = _ustrlen(oldname), nlen = _ustrlen(newname);
-    if (olen == 0 || olen >= FS_NAME_MAX || nlen == 0 || nlen >= FS_NAME_MAX)
-        return SYS_ERR_INVAL;
-
-    struct fs_request rq;
-    struct fs_response rp;
-    _umemset(&rq, 0, sizeof(rq));
-    rq.op      = FS_OP_RENAME;
-    rq.dir_ino = old_parent;                 /* old parent */
-    rq.ino     = new_parent;                 /* new parent */
-    _umemcpy(rq.name, oldname, olen + 1u);   /* old name */
-    _umemcpy(rq.data, newname, nlen + 1u);   /* new name */
-    return fss_rpc(&rq, &rp);
+    int rc;
+    if (olen == 0 || olen >= FS_NAME_MAX || nlen == 0 || nlen >= FS_NAME_MAX) {
+        rc = SYS_ERR_INVAL;                                   /* refuse "/" */
+    } else if (op.cap && obj_id(&op) != obj_id(&np)) {
+        /* THROUGH CAPABILITIES A RENAME STAYS IN ONE DIRECTORY (S121): the
+         * request goes through the old parent's capability and names no second
+         * one, so two parents that are different directories are the server's
+         * EXDEV, said without asking it, and the mover copies. Two walks to one
+         * directory hold two capabilities, so the directories are compared by
+         * the inode each reports, never by slot. */
+        rc = SYS_ERR_XDEV;
+    } else {
+        struct fs_request rq;
+        struct fs_response rp;
+        _umemset(&rq, 0, sizeof(rq));
+        rq.op      = FS_OP_RENAME;
+        rq.dir_ino = op.ino;                     /* old parent */
+        rq.ino     = np.ino;                     /* new parent (0, the same, through a capability) */
+        _umemcpy(rq.name, oldname, olen + 1u);   /* old name */
+        _umemcpy(rq.data, newname, nlen + 1u);   /* new name */
+        rc = fss_rpc(&op, &rq, &rp);
+    }
+    hvfs_release(&op);
+    hvfs_release(&np);
+    return rc;
 }
 
 int posix_link(const char *oldpath, const char *newpath) {
     ENSURE_INIT();
     if (!oldpath || !newpath) return SYS_ERR_INVAL;
+    /* A link names its source by inode, which a capability never does, so the
+     * capability path has none (design §11.1, step 5 as built). */
+    if (g_capmode) return SYS_ERR_XDEV;
 
-    /* Resolve the source to an existing inode (path_walk returns 0 only when the
+    /* Resolve the source to an existing inode (path_obj returns 0 only when the
      * final component is found). The server re-checks it is a regular file. */
-    uint32_t src_ino;
+    struct hvfs_obj src, np;
     char     src_leaf[FS_NAME_MAX];
-    if (path_walk(oldpath, &src_ino, src_leaf) != 0) return SYS_ERR_NOENT;
+    if (path_obj(oldpath, 0, &src, src_leaf) != 0) return SYS_ERR_NOENT;
 
     /* Resolve the new name's parent directory + leaf. */
-    uint32_t new_parent;
     char     newname[FS_NAME_MAX];
-    if (path_parent(newpath, &new_parent, newname) != 0) return SYS_ERR_NOENT;
-    if (newname[0] == '\0') return SYS_ERR_INVAL;        /* refuse "/" as a target */
+    if (path_obj(newpath, 1, &np, newname) != 0) return SYS_ERR_NOENT;
     uint32_t nlen = _ustrlen(newname);
-    if (nlen == 0 || nlen >= FS_NAME_MAX) return SYS_ERR_INVAL;
+    if (nlen == 0 || nlen >= FS_NAME_MAX) return SYS_ERR_INVAL;   /* refuse "/" as a target */
 
     struct fs_request rq;
     struct fs_response rp;
     _umemset(&rq, 0, sizeof(rq));
     rq.op      = FS_OP_LINK;
-    rq.ino     = src_ino;                    /* source file inode */
-    rq.dir_ino = new_parent;                 /* new parent dir */
+    rq.ino     = src.ino;                    /* source file inode */
+    rq.dir_ino = np.ino;                     /* new parent dir */
     _umemcpy(rq.name, newname, nlen + 1u);   /* new name */
-    return fss_rpc(&rq, &rp);
+    return fss_rpc(&np, &rq, &rp);
 }
 
 int posix_isatty(int fd) {

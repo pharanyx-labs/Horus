@@ -179,6 +179,7 @@ struct hvfs_mount {
     unsigned    plen;
     int         ep_slot;   /* cspace slot holding this mount's CAP_ENDPOINT */
     uint32_t    root_ino;  /* the inode a path under `prefix` starts from   */
+    int         cap;       /* 1: ep_slot is a directory capability (hvfs_mount_cap) */
     int         in_use;
 };
 
@@ -219,5 +220,44 @@ int hvfs_walk(const char *path, uint32_t cwd_ino, int cwd_slot,
  * caller must reject. */
 int hvfs_walk_parent(const char *path, uint32_t cwd_ino, int cwd_slot,
                      int *out_slot, uint32_t *out_ino, char *out_name);
+
+/* ---- walking by capability (filesystem phase 1b step 2) --------------------
+ *
+ * An object a path resolved to: the slot a request about it is sent through,
+ * and the inode to put in the request. Through the uid path that is the mount's
+ * endpoint slot and a real inode. Through a capability mount it is a directory
+ * or file CAPABILITY and the inode is 0, because the server takes the object
+ * from the capability's token and never from the request (S120).
+ *
+ * `owned` means the slot was minted for this object and is the caller's to give
+ * back with hvfs_release, which revokes it; a mount's or the working directory's
+ * own capability is lent, never owned, so releasing it does nothing. */
+struct hvfs_obj {
+    int      slot;
+    uint32_t ino;
+    uint8_t  cap;      /* 1: slot is a filesystem capability; ino is unused */
+    uint8_t  owned;    /* 1: hvfs_release must revoke slot                  */
+};
+
+/* Install a mount backed by a DIRECTORY CAPABILITY rather than an endpoint and
+ * an inode. Probed as hvfs_mount probes, with a stat through it. */
+int hvfs_mount_cap(const char *prefix, int dir_slot);
+
+/* Resolve `path` (absolute, or relative to `cwd`) to an object. Same contract as
+ * hvfs_walk (0 resolved, 1 all but the leaf, which is in out_name, -1 refused),
+ * and with want_parent as hvfs_walk_parent. Through a capability mount the whole
+ * path goes in ONE FS_OP_WALK, so the object is one capability derived from the
+ * mount's or the working directory's, never from anything along the way: a
+ * client holds one capability per object it has open, not one per component.
+ * ".." and "." are resolved here, pinned where the walk starts, and never sent.
+ * -1 also when the pool is empty or the names do not fit in one request. */
+int hvfs_lookup(const char *path, const struct hvfs_obj *cwd, int want_parent,
+                struct hvfs_obj *out, char *out_name);
+
+/* A slot from the pool, minted into by the caller (create, mkdir), or -1. */
+int  hvfs_slot_alloc(void);
+/* Give an object back: revoke its capability if it is owned; a lent object is
+ * left as it was. Idempotent. */
+void hvfs_release(struct hvfs_obj *o);
 
 #endif /* LIBHORUS_H */

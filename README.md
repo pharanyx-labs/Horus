@@ -167,7 +167,8 @@ In order, from [`docs/ROADMAP.md`](docs/ROADMAP.md):
 
 1. **Filesystem phase 1b** (2.10): `fs_server`, the path walker and `init` authorise files by
    capability instead of by user id and mode. The server side has begun (S120, S121), including a
-   walk of a whole path answered with one capability; clients walking with capabilities is next.
+   walk of a whole path answered with one capability, and the POSIX layer walks with capabilities
+   when a program holds a root (S126); the shell and the grants to its children are next.
 2. **Accounts as files** (2.11): `/etc/passwd` and `/etc/shadow` on the volume, owned by a ring-3
    `auth_server`.
 3. **Filesystem phases 2 to 4** (2.10): the filesystem moves to ring 3 on a copy-on-write format,
@@ -258,8 +259,8 @@ test does not exist or does not run.
 
 | Layer | What it covers |
 |---|---|
-| Security properties | 127 numbered properties, each bound to a witness by `tools/check_invariants.py` |
-| QEMU integration tests | 473 `smoke-*` targets: 217 base gates and 256 control arms |
+| Security properties | 128 numbered properties, each bound to a witness by `tools/check_invariants.py` |
+| QEMU integration tests | 475 `smoke-*` targets: 218 base gates and 257 control arms |
 | Control arms | A build that puts a defect back on purpose; CI requires its gate to go red against it |
 | Kani | 35 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
 | Miri | The security core's tests, interpreted for undefined behaviour on every pull request |

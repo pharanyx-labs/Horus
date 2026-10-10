@@ -322,11 +322,11 @@ alice         /home/alice     read,write,lookup,create,delete,setattr,exec,grant
 - Writing the policy is a privilege change, so it takes a write capability to `/etc/fs.policy`,
   which the example gives only to `@admin`.
 
-**Evaluation.** `auth_server` (from `docs/design/installed-system.md` §7) authenticates a login
-and asks `init` for the session. `init` walks each granted path from the root capability, derives
-a capability with exactly the granted rights, and grants those capabilities, and nothing else, to
-the session's first task. The compiled policy is also handed to `fs_server` read-only, because
-§5.5 and §7 need it.
+**Evaluation.** A login is authenticated (by the shell's `SYS_AUTH` today, by `auth_server` from
+`docs/design/installed-system.md` §7 later) and the session asked of `init`. `fs_server` compiles
+the principal's grants and `init` hands the session one root capability naming them, with the
+policy applied by `fs_server` to everything reached through it (§6.4, decision 13). `fs_server`
+holds the compiled policy anyway, because §5.5 and §7 need it.
 
 ### 6.3 What this removes, and is glad to
 
@@ -340,6 +340,57 @@ the session's first task. The compiled policy is also handed to `fs_server` read
 - **No named pipes or Unix sockets in the filesystem**, for now: each would be a rendezvous that a
   directory capability grants implicitly. They can come later as objects that hand out a pipe or
   endpoint capability on open, and until then they are refused, not faked.
+
+### 6.4 A session's grants, as one capability (decision 13)
+
+The policy grants a principal several subtrees, each with its own rights, while clients and
+decision 10 work with one root and one working directory. **A session is handed one root
+capability whose token names the session's grant set, and `fs_server` applies the compiled policy
+to everything reached through it.** The clients of phase 1b step 2 and the inheritance of
+decision 10 are unchanged.
+
+**Opening a session.** After a login, the shell asks `init` for its session. `init` reads the uid
+the kernel attests for that request (`SYS_IPC_SENDER`, fixed by `SYS_AUTH`) once, names the
+principal from the kernel's account list, and sends `fs_server` an `FS_OP_SESSION` request for
+that principal. `fs_server` answers it only through the untokened endpoint capability that holds
+`MINT`, which `init` alone has (§5.1), so opening a session is authorised by a capability, never by
+who asks. `fs_server` compiles the principal's grants (its own lines, `@all`, and `@admin` for the
+administrator) into a free grant set G, and replies with G and the union of the rights in it.
+`init` mints the session's root from inode 0 with G in the token and exactly that union, mints the
+working directory (the home, if the policy grants one) the same way, and grants both to the shell's
+slots 24 and 25. At logout `init` revokes both, which sweeps everything derived from them, and only
+then sends `FS_OP_SESSION_END`, so a grant set is never reused while a capability naming it lives.
+The token gives G bits 56 to 61 (63 concurrent sessions; 0 is a capability with no grant set) and
+bit 62 marks a *tracked* capability, below.
+
+**Tracked and untracked capabilities.** v11 keeps no parent links, so `fs_server` cannot recover
+a path from an inode. Instead it tracks the capabilities where the policy still has something to
+say:
+
+- A capability is **tracked** if it names a directory on the way to a grant (`/`, `/home`, `/etc`
+  for a grant of `/etc/passwd`), or a granted directory with a deeper grant below it (`/usr` read
+  for everyone, `/usr/local` writable for one account). `fs_server` keeps `(G, inode)` to its
+  node in the compiled policy, recorded when it mints the capability. An operation on the object
+  is allowed the capability's rights **intersected with the node's**: the rights of the nearest
+  granted node at or above it, and for a node that is only on the way to a grant, `LOOKUP` and a
+  listing filtered to the names that lead to grants. A name under such a node that leads to no
+  grant is absent: `NOENT`, never `PERM`, so the policy does not disclose what it withholds.
+- Below a granted node with nothing deeper, a child capability is **untracked**: minted with
+  exactly the granted rights, intersected with the invoking capability's, masked to its type, and
+  from there the kernel's intersection bounds everything (S120), as in step 1.
+
+**Without a policy file, or with a bad one, it fails closed.** `fs_server` decides from the store
+it serves, never from what the requester says: the ephemeral store of a live boot uses the
+compiled-in default (decision 9); a persistent volume without `/etc/fs.policy` grants `/` to the
+administrator and nothing to anyone else, so an ordinary session has no filesystem until a policy
+is written. A policy file that does not parse is treated as absent and reported; it never grants
+the lines that did parse.
+
+**What this trades.** Rights below a session's root are enforced by `fs_server` for tracked
+capabilities, not by the kernel's intersection, because the root must carry the union of the
+session's rights for a wider grant below a narrower one to be reachable at all. The kernel still
+bounds every capability by that union, and `fs_server` is already the reference monitor for the
+contents of every file (§12). It is witnessed by a gate whose arm grants every session the root.
 
 ## 7. The POSIX view: truthful, never reassuring
 
@@ -579,7 +630,7 @@ it, so no step has to land the whole change at once.
 |---|---|---|
 | 1 ✅ | `fs_server` answers capability-addressed requests: the object comes from the token the kernel attests, rights from the invoking capability, `LOOKUP` reply-mints a child capability narrowed to the directory's rights (§5.3), and a name that is `.`, `..` or holds `/` is refused (§5.4). `init` mints the root directory capability (§6.1). Old ino-addressed requests still work | A read-only capability cannot write, `LOOKUP` refuses `..`, and revoking a directory capability revokes what was opened through it; the arm skips the rights check |
 | 2 ✅ | Clients walk with capabilities: `hvfs`, the POSIX layer and the shell (`fsclient`, a self-test client, stays on the uid path until step 6 removes it). The shell keeps a root and a current-directory capability, and before a child runs its spawner grants it derived copies of both, never wider than its own (decision 10). Open files are not inherited | A child given a read-only root cannot write anywhere; the arm grants the child the spawner's capability unnarrowed |
-| 3 | `init` evaluates the policy (§6.2) at login: the shell authenticates as today, asks `init` for its session, and `init` grants the derived capabilities and revokes them at logout. The installer writes `/etc/fs.policy`. A live boot uses a compiled-in default; an installed volume without a policy file grants the root capability to the administrator only (decision 9) | A session reaches only what its grants name; the arm grants every session the root |
+| 3 | Sessions from the policy (§6.2, §6.4): the shell authenticates as today and asks `init` for its session; `fs_server` compiles the principal's grants, and `init` grants the session one root naming them, and its home as the working directory, and revokes both at logout. The installer writes `/etc/fs.policy`. A live boot uses a compiled-in default; an installed volume without a policy file grants the root capability to the administrator only (decision 9) | A session reaches only what its grants name; the arm grants every session the root |
 | 4 | The truthful view (§7): `stat` from the caller's rights and a bound on everyone else's, `chmod` and `chown` succeed only when they ask for what is true | `chmod 600` on a file another grant reaches fails; the arm reports success |
 | 5 ✅ | Cross-directory `rename` and `link` return `EXDEV` (decision 11); same-directory rename needs `CREATE` and `DELETE` on that directory | A cross-directory move is refused; the arm lets it through |
 | 6 | The identity path is removed: `perm_ok`, `FS_OP_CHOWN`'s root check, the uid half of `SYS_IPC_SENDER` in the filesystem, `SYS_FS_SET_META` and `SYS_CONNECT_FS_SERVER` | No filesystem operation succeeds on the strength of a uid; the arm restores `perm_ok` (the Falsification list below) |
@@ -656,6 +707,13 @@ Nothing grants the shell a root before step 3; the witness, `make smoke-fs-cap-s
 instrument build in which `init` hands it one read-only, and a root session's `mkdir`, `touch` and
 `rm` are refused. `fsclient` is a self-test client and stays on the uid path until step 6 removes
 it. Steps 3, 4 and 6 follow.
+
+**Step 3, in order.** (a) `fs_server`: the policy parser and compiler, the decision 9 defaults,
+`FS_OP_SESSION` and `FS_OP_SESSION_END`, and tracked capabilities (§6.4), witnessed by a
+self-test harness that opens sessions directly. (b) `init` and the shell: the session request
+after login, the grants into slots 24 and 25, and the revocation at logout, witnessed through a
+real login. (c) The installer writes `/etc/fs.policy`. Each is its own pull request with its own
+gate and arm.
 
 **Step 5 as built.** The refusal is on both paths, since a move through the uid path changes who
 may reach a file just as much. A rename across directories is `EXDEV`. A link is too unless the
@@ -743,6 +801,15 @@ still asks a settled question is stale.
     and closing it (revoking it) takes nothing else with it. Chosen over a kernel operation that
     splices a capability out of the derivation tree, which would have changed the capability
     core; the walk needs no kernel change at all.
+
+**2026-10-10, for phase 1b step 3:**
+
+13. **A session is one root capability whose token names its grant set, and `fs_server` applies
+    the compiled policy to what is reached through it** (§6.4). Chosen over one capability per
+    policy line, which would have had the kernel enforce every subtree's rights but needed decision
+    10 changed and a way to hand a child a table of mount paths at spawn. The cost, stated in
+    §6.4: rights below the session's root are enforced by the server for the capabilities it
+    tracks.
 
 **Still open, none of them blocking phase 1:**
 

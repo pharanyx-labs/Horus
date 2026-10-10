@@ -163,7 +163,7 @@ is already true.
 | Phase | What lands |
 |---|---|
 | 1a ✅ | Endpoint tokens, reply-mint and carry-one in the kernel, with Kani proofs (S105) |
-| 1b 🚧 | Capability authorisation in `fs_server`, `hvfs` and `init`, on the existing format, in six steps ([`design/filesystem.md`](design/filesystem.md) §11.1). Steps 1, 2 and 5 are done (S120, #515; S126 and S127, #529 to #531 and the shell's PR; S121, #516); step 3 is next, and steps 4 and 6 follow |
+| 1b 🚧 | Capability authorisation in `fs_server`, `hvfs` and `init`, on the existing format, in six steps ([`design/filesystem.md`](design/filesystem.md) §11.1). Steps 1, 2 and 5 are done (S120, #515; S126 and S127, #529 to #532; S121, #516); step 3 is next, and steps 4 and 6 follow |
 | 2 | The kernel's sealed-block service; the copy-on-write v12 format in `fs_server` |
 | 3 | Symbolic links, timestamps and a time service, cross-directory rename, sparse files |
 | 4 | Snapshots, reflinks, extended attributes, quotas, locks, open-unlinked files |

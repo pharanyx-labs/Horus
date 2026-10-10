@@ -559,7 +559,8 @@ names, directories and permissions over the kernel's `(inode, logical block)` ob
 request through a tokened capability is authorised by that capability: its object is the inode the
 token names and its rights are the capability's, both attested by the kernel (`SYS_IPC_INVOKER`),
 and lookup, create and mkdir hand back the child's capability, narrowed and revocable with its
-parent (S120). A rename or link that would cross directories is refused on every path (S121).
+parent (S120). A walk of several names below a directory hands back one capability, to the last,
+derived from the one invoked, so a client holds one per path and not one per component. A rename or link that would cross directories is refused on every path (S121).
 Every other request is authorised against the uid the kernel recorded for the sender at login
 (`SYS_IPC_SENDER`), never a claim from the client (S13, S14). A file's mode may be set by its owner
 or root, its owner by root alone (S77), and every account gets a home directory it owns (S78). It

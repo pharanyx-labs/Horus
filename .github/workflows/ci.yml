@@ -2558,6 +2558,9 @@ jobs:
       # S121, step 5: the same image refuses a move across directories.
       - name: Control arm — fs_server lets a rename across directories through
         run: make smoke-fs-cap-xdev-control
+      # S120, step 2: the same image refuses a bad name anywhere in a walk.
+      - name: Control arm — fs_server checks only the first name of a walk
+        run: make smoke-fs-cap-walk-control
 
   smoke-mapphys:
     name: QEMU map-phys device-frame self-test (headless)

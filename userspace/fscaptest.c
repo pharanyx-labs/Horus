@@ -45,6 +45,13 @@
 #define SLOT_MVB    39
 #define SLOT_CRONLY 40
 #define SLOT_MVLOOK 41
+#define SLOT_WA     42
+#define SLOT_WALK   43
+#define SLOT_WFILE  44
+#define SLOT_DIRRO  45
+#define SLOT_WRO    46
+#define SLOT_NOLOOK 47
+#define SLOT_WSCRAP 48
 
 static int checks;
 
@@ -66,6 +73,15 @@ static void fill(struct fs_request *rq, uint32_t op, const char *name)
     rq->op = op;
     if (name)
         for (unsigned i = 0; name[i] && i < FS_NAME_MAX - 1; i++) rq->name[i] = name[i];
+}
+
+/* An FS_OP_WALK request for `n` names. A name may be anything, including the
+ * ones the server must refuse: the packing is the client's, the checking the
+ * server's. */
+static void fill_walk(struct fs_request *rq, const char *const *names, unsigned n)
+{
+    fill(rq, FS_OP_WALK, 0);
+    if (fs_walk_pack(rq->data, &rq->len, names, n) != 0) rq->len = 0;
 }
 
 static uint8_t rbuf[256];
@@ -155,6 +171,116 @@ void _start(void)
     if (call(SLOT_LOOK, IPC_NO_CAP, &rq) != 5) fail("read-through-looked-up");
     ok();
 
+    /* WALK (step 2, decision 12): capdir/wa/wb/wf, reached in one request. */
+    fill(&rq, FS_OP_MKDIR, "wa");
+    if (call(SLOT_DIR, SLOT_WA, &rq) != 0) fail("mkdir-wa");
+    uint32_t wa_ino = ((struct fs_response *)rbuf)->ino;
+    fill(&rq, FS_OP_MKDIR, "wb");
+    if (call(SLOT_WA, IPC_NO_CAP, &rq) != 0) fail("mkdir-wb");
+    {
+        const char *p[] = { "wa", "wb" };
+        fill_walk(&rq, p, 2);
+        if (call(SLOT_DIR, SLOT_WALK, &rq) != 0 ||
+            ((struct fs_response *)rbuf)->type != FS_TYPE_DIR) fail("walk-to-dir");
+    }
+    fill(&rq, FS_OP_CREATE, "wf");
+    if (call(SLOT_WALK, IPC_NO_CAP, &rq) != 0) fail("create-through-walked-dir");
+    {
+        const char *p[] = { "wa", "wb", "wf" };
+        fill_walk(&rq, p, 3);
+        if (call(SLOT_DIR, SLOT_WFILE, &rq) != 0 ||
+            ((struct fs_response *)rbuf)->type != FS_TYPE_FILE) fail("walk-to-file");
+    }
+    fill(&rq, FS_OP_WRITE, 0);
+    rq.len = 4;
+    for (int i = 0; i < 4; i++) rq.data[i] = (uint8_t)"walk"[i];
+    if (call(SLOT_WFILE, IPC_NO_CAP, &rq) < 0) fail("write-through-walked");
+    ok();
+
+    /* ONE CAPABILITY, DERIVED FROM THE ONE INVOKED: nothing along the path holds
+     * it up, so revoking a capability to a directory it passed through (wa's,
+     * from the mkdir) leaves it working. This is what a LOOKUP chain cannot do. */
+    if (sys_cap_revoke(SLOT_WA) != 0) fail("revoke-wa");
+    fill(&rq, FS_OP_READ, 0);
+    rq.len = 4;
+    if (call(SLOT_WFILE, IPC_NO_CAP, &rq) != 4 ||
+        ((struct fs_response *)rbuf)->data[0] != 'w') fail("walked-held-up-by-path");
+    ok();
+
+    /* NARROWED: a walk through a read-only directory capability gives a
+     * read-only file; and with no LOOKUP there is no walk. */
+    if (sys_cap_mint(SLOT_DIRRO, SLOT_DIR, CAP_RIGHT_WRITE | FS_R_READ | FS_R_LOOKUP) != 0)
+        fail("mint-dir-readonly");
+    {
+        const char *p[] = { "wa", "wb", "wf" };
+        fill_walk(&rq, p, 3);
+        if (call(SLOT_DIRRO, SLOT_WRO, &rq) != 0) fail("walk-readonly");
+    }
+    fill(&rq, FS_OP_WRITE, 0);
+    rq.len = 1;
+    rq.data[0] = 'X';
+    if (call(SLOT_WRO, IPC_NO_CAP, &rq) != SYS_ERR_PERM) fail("walk-widened");
+    if (sys_cap_mint(SLOT_NOLOOK, SLOT_DIR, CAP_RIGHT_WRITE | FS_R_READ) != 0) fail("mint-nolookup");
+    {
+        const char *p[] = { "wa" };
+        fill_walk(&rq, p, 1);
+        if (call(SLOT_NOLOOK, SLOT_WSCRAP, &rq) != SYS_ERR_PERM) fail("walk-without-lookup");
+    }
+    ok();
+
+    /* EVERY NAME IS CHECKED, not only the first. The uid path (until step 6)
+     * will make an entry called ".." inside wa, so a server that checked only the
+     * first name would find it and hand back a capability to it, which is the
+     * defect FS_WALK_NAMES_UNCHECKED=1 puts back. Its result is not asserted:
+     * the refusals below must hold whether or not it was made. */
+    fill(&rq, FS_OP_MKDIR, "..");
+    rq.dir_ino = wa_ino;
+    (void)call(SLOT_PLAIN, IPC_NO_CAP, &rq);
+    {
+        const char *dd[]  = { "wa", ".." };
+        const char *dot[] = { "wa", "." };
+        const char *sl[]  = { "wa", "wb/wf" };
+        const char *emp[] = { "wa", "" };
+        fill_walk(&rq, dd, 2);
+        if (call(SLOT_DIR, SLOT_WSCRAP, &rq) != SYS_ERR_INVAL) fail("walk-dotdot");
+        fill_walk(&rq, dot, 2);
+        if (call(SLOT_DIR, SLOT_WSCRAP, &rq) != SYS_ERR_INVAL) fail("walk-dot");
+        fill_walk(&rq, sl, 2);
+        if (call(SLOT_DIR, SLOT_WSCRAP, &rq) != SYS_ERR_INVAL) fail("walk-slash");
+        fill_walk(&rq, emp, 2);
+        if (call(SLOT_DIR, SLOT_WSCRAP, &rq) != SYS_ERR_INVAL) fail("walk-empty-name");
+    }
+    /* A request whose last name runs to the end of data[] unterminated, and one
+     * with no names at all. */
+    fill(&rq, FS_OP_WALK, 0);
+    for (unsigned i = 0; i < FS_WALK_BYTES; i++) rq.data[i] = 'a';
+    rq.len = FS_WALK_BYTES;
+    if (call(SLOT_DIR, SLOT_WSCRAP, &rq) != SYS_ERR_INVAL) fail("walk-unterminated");
+    fill(&rq, FS_OP_WALK, 0);
+    if (call(SLOT_DIR, SLOT_WSCRAP, &rq) != SYS_ERR_INVAL) fail("walk-no-names");
+    ok();
+
+    /* Each step is a LOOKUP: through a file is refused, a missing name is
+     * NOENT, and the uid path has no walk at all. */
+    {
+        const char *thru[] = { "wa", "wb", "wf", "x" };
+        const char *miss[] = { "wa", "nope" };
+        fill_walk(&rq, thru, 4);
+        if (call(SLOT_DIR, SLOT_WSCRAP, &rq) != SYS_ERR_INVAL) fail("walk-through-file");
+        fill_walk(&rq, miss, 2);
+        if (call(SLOT_DIR, SLOT_WSCRAP, &rq) != SYS_ERR_NOENT) fail("walk-missing");
+        fill_walk(&rq, thru, 1);
+        if (call(SLOT_PLAIN, IPC_NO_CAP, &rq) != SYS_ERR_NOSYS) fail("walk-on-uid-path");
+    }
+    /* More names than one request holds: the client is told, not truncated. */
+    {
+        const char *l = "abcdefghijklmnopqrstuvw";      /* 23, the longest name */
+        const char *p[8] = { l, l, l, l, l, l, l, l };  /* 8 x 24 > FS_WALK_BYTES */
+        uint32_t len;
+        if (fs_walk_pack(rq.data, &len, p, 8) != SYS_ERR_RANGE) fail("walk-pack-overflow");
+    }
+    ok();
+
     /* STALE: the name goes, and every capability to that object stops. */
     fill(&rq, FS_OP_DELETE, "f");
     if (call(SLOT_DIR, IPC_NO_CAP, &rq) != 0) fail("delete-f");
@@ -171,6 +297,8 @@ void _start(void)
     if (sys_cap_revoke(SLOT_DIR) != 0) fail("revoke-dir");
     fill(&rq, FS_OP_STAT, 0);
     if (call(SLOT_NEW, IPC_NO_CAP, &rq) > -1000) fail("child-survived-revoke");
+    fill(&rq, FS_OP_STAT, 0);
+    if (call(SLOT_WFILE, IPC_NO_CAP, &rq) > -1000) fail("walked-survived-revoke");
     fill(&rq, FS_OP_STAT, 0);
     if (call(SLOT_DIR, IPC_NO_CAP, &rq) > -1000) fail("revoked-dir-still-answers");
     fill(&rq, FS_OP_STAT, 0);

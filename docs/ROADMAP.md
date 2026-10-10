@@ -31,8 +31,10 @@ In order. Each step is its own set of pull requests with its own gates and contr
    It removes `perm_ok`, the root check on `chown`, `SYS_FS_SET_META`, the uid path of
    `SYS_IPC_SENDER` in the filesystem, and `SYS_CONNECT_FS_SERVER`. Phase 1a, the kernel half,
    is done, and so are steps 1 and 5: `fs_server` answers through capabilities (S120) and refuses
-   moves across directories (S121). Step 2, clients walking with capabilities, waits on a design
-   question ([`design/filesystem.md`](design/filesystem.md) §13).
+   moves across directories (S121). Step 2 has its server half: a client can walk a whole path in
+   one request and hold one capability for it (decision 12 of
+   [`design/filesystem.md`](design/filesystem.md)). Its client half, `hvfs`, the shell and the POSIX
+   layer walking with capabilities, is next.
 2. **Accounts as files** (2.11 step 3): `/etc/passwd` and `/etc/shadow` on the volume, owned by a
    ring-3 `auth_server`; the kernel keeps only the key-slot unlock.
 3. **Filesystem phases 2 to 4** (2.10): the kernel shrinks to a sealed-block service and the
@@ -161,7 +163,7 @@ is already true.
 | Phase | What lands |
 |---|---|
 | 1a ✅ | Endpoint tokens, reply-mint and carry-one in the kernel, with Kani proofs (S105) |
-| 1b 🚧 | Capability authorisation in `fs_server`, `hvfs` and `init`, on the existing format, in six steps ([`design/filesystem.md`](design/filesystem.md) §11.1). Steps 1 and 5 are done (S120, #515; S121, #516); step 2, clients walking with capabilities, waits on a design question (§13), and steps 3, 4 and 6 follow it |
+| 1b 🚧 | Capability authorisation in `fs_server`, `hvfs` and `init`, on the existing format, in six steps ([`design/filesystem.md`](design/filesystem.md) §11.1). Steps 1 and 5 are done (S120, #515; S121, #516); step 2's server half, a walk of a whole path answered with one capability, is done (decision 12); its client half is next, and steps 3, 4 and 6 follow it |
 | 2 | The kernel's sealed-block service; the copy-on-write v12 format in `fs_server` |
 | 3 | Symbolic links, timestamps and a time service, cross-directory rename, sparse files |
 | 4 | Snapshots, reflinks, extended attributes, quotas, locks, open-unlinked files |
@@ -299,5 +301,5 @@ same bytes cannot be verified by rebuilding.
 | ✅ | Measured boot, the kernel pinned in the boot image, and a PCR-sealed volume key |
 | ✅ | An IOMMU confining device DMA, and device capabilities that name one device each |
 | ◧ | Reproducible `kernel.elf` (not yet the ISO), an SBOM, CodeQL, Dependabot, signed commits, a protected `main` |
-| ✅ | 472 `smoke-*` targets, nearly all QEMU integration tests, and 255 of them control arms that must reproduce a defect |
+| ✅ | 473 `smoke-*` targets, nearly all QEMU integration tests, and 256 of them control arms that must reproduce a defect |
 | ✅ | Bounded Kani proofs, Miri over the Rust core, and fuzzing at the FFI boundary |

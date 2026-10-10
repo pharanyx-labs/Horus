@@ -20,6 +20,10 @@ here.
 - The scheduler refuses to run a task on an SMT sibling whatever interrupts it; a parked sibling keeps interrupts on, and the rule used to rest on no interrupt ever reaching one (S101). (#525)
 - A TLB shootdown whose bounded wait runs out with a CPU still unacknowledged halts the kernel instead of returning as though the flush had happened; only the SMP selftest calls it today, so this is in place before the first real caller (S124). (#523)
 
+### Added
+
+- `fs_server` walks a whole path below a directory capability in one request and answers with one capability, derived from the one invoked, so a client will hold one capability per open path rather than one per component (filesystem decision 12). Every name is checked before any is looked up, and one that is `.`, `..` or holds `/` in any position refuses the walk (S120).
+
 ### Changed
 
 - The scheduler chooses the next task by one rule, `sched_selectable`, where every switch path wrote the rule out for itself: six copies, kept in step by hand. Behaviour is unchanged. (#524)

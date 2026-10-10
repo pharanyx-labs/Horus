@@ -97,6 +97,7 @@ control_arms:
   smoke-captoken-unmasked-control: smoke-captoken
   smoke-fs-cap-control: smoke-fs-cap
   smoke-fs-cap-xdev-control: smoke-fs-cap
+  smoke-fs-cap-walk-control: smoke-fs-cap
   smoke-auditprobe-control: smoke-auditprobe
   smoke-auditprobe-abi-control: smoke-auditprobe
   smoke-blockprobe-control: smoke-blockprobe

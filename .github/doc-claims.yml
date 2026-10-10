@@ -123,6 +123,8 @@ counts:
         pattern: '\| (\d+) `smoke-\*` targets: \d+ base gates'
       - file: docs/ROADMAP.md
         pattern: '\| (\d+) `smoke-\*` targets'
+      - file: TESTS.md
+        pattern: 'There are (\d+) `smoke-\*` targets'
 
       - file: site/run.html
         pattern: 'every one of the (\d+) test targets'
@@ -174,6 +176,8 @@ counts:
         pattern: '`smoke-\*` targets: (\d+) base gates'
       - file: site/testing.html
         pattern: '(\d+) QEMU integration targets'
+      - file: TESTS.md
+        pattern: '`smoke-\*` targets: (\d+) gates and'
   - id: control_arms
     describe: control-arm smoke targets that must reproduce a defect
     derive: control_arms
@@ -182,6 +186,8 @@ counts:
         pattern: 'base gates and (\d+) control arms \|'
       - file: docs/ROADMAP.md
         pattern: 'and (\d+) of them control arms'
+      - file: TESTS.md
+        pattern: '\d+ gates and (\d+) control arms\. Each row'
 
   - id: syscalls_covered
     describe: "syscalls whose handler a tracked workload enters (.github/syscall-coverage.yml `covered`)"

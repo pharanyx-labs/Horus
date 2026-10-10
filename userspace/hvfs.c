@@ -172,21 +172,22 @@ int hvfs_rpc(int ep_slot, struct fs_request *rq, struct fs_response *rp) {
  * copy here would have re-created the problem inside the fix. */
 static int walk_body(const char *path, uint32_t cwd_ino, int cwd_slot,
                      int want_parent,
-                     int *out_slot, uint32_t *out_ino, char *out_name);
+                     int *out_slot, uint32_t *out_ino, char *out_name, uint32_t *out_type);
 
 int hvfs_walk_parent(const char *path, uint32_t cwd_ino, int cwd_slot,
                      int *out_slot, uint32_t *out_ino, char *out_name) {
-    return walk_body(path, cwd_ino, cwd_slot, 1, out_slot, out_ino, out_name);
+    return walk_body(path, cwd_ino, cwd_slot, 1, out_slot, out_ino, out_name, 0);
 }
 
 int hvfs_walk(const char *path, uint32_t cwd_ino, int cwd_slot,
               int *out_slot, uint32_t *out_ino, char *out_name) {
-    return walk_body(path, cwd_ino, cwd_slot, 0, out_slot, out_ino, out_name);
+    return walk_body(path, cwd_ino, cwd_slot, 0, out_slot, out_ino, out_name, 0);
 }
 
 static int walk_body(const char *path, uint32_t cwd_ino, int cwd_slot,
                      int want_parent,
-                     int *out_slot, uint32_t *out_ino, char *out_name) {
+                     int *out_slot, uint32_t *out_ino, char *out_name, uint32_t *out_type) {
+    if (out_type) *out_type = 0;
     if (!path || path[0] == '\0' || !out_slot || !out_ino || !out_name) return -1;
 
     uint32_t dir_ino;
@@ -297,7 +298,11 @@ static int walk_body(const char *path, uint32_t cwd_ino, int cwd_slot,
              * Same contract as the three private walkers this replaces. */
             umemcpy(out_name, comp, clen + 1u);
             if (want_parent) { *out_ino = dir_ino; return 0; }   /* parent, leaf unlooked */
-            if (hvfs_rpc(slot, &rq, &rp) == 0) { *out_ino = rp.ino; return 0; }
+            if (hvfs_rpc(slot, &rq, &rp) == 0) {
+                *out_ino = rp.ino;
+                if (out_type) *out_type = rp.type;   /* the entry's, as the server keeps it */
+                return 0;
+            }
             *out_ino = dir_ino;
             return 1;
         }
@@ -399,7 +404,7 @@ static int split(const char *p, char comps[][FS_NAME_MAX]) {
 int hvfs_lookup(const char *path, const struct hvfs_obj *cwd, int want_parent,
                 struct hvfs_obj *out, char *out_name) {
     if (!path || path[0] == '\0' || !cwd || !out || !out_name) return -1;
-    out->slot = -1; out->ino = 0; out->cap = 0; out->owned = 0;
+    out->slot = -1; out->ino = 0; out->cap = 0; out->owned = 0; out->type = 0;
     out_name[0] = '\0';
 
     struct hvfs_obj start;
@@ -418,22 +423,24 @@ int hvfs_lookup(const char *path, const struct hvfs_obj *cwd, int want_parent,
     if (!start.cap) {
         /* The uid path: the inode walker, as before. */
         int slot;
-        uint32_t ino;
-        int r = want_parent ? hvfs_walk_parent(path, cwd->ino, cwd->slot, &slot, &ino, out_name)
-                            : hvfs_walk(path, cwd->ino, cwd->slot, &slot, &ino, out_name);
+        uint32_t ino, type = 0;
+        int r = walk_body(path, cwd->ino, cwd->slot, want_parent, &slot, &ino, out_name, &type);
         if (r < 0) return r;
         out->slot = slot; out->ino = ino;
+        if (r == 0) out->type = (uint8_t)type;
         return r;
     }
 
     char comps[HVFS_MAX_DEPTH][FS_NAME_MAX];
     int n = split(p, comps);
     if (n < 0) return -1;
-    if (n == 0) { *out = start; return 0; }         /* the start itself, lent */
+    if (n == 0) { *out = start; out->type = 0; return 0; }   /* the start itself, lent */
 
     if (!want_parent) {
-        int rc = cap_walk(start.slot, comps, n, out, 0);
+        uint32_t t = 0;
+        int rc = cap_walk(start.slot, comps, n, out, &t);
         if (rc == 0) {
+            out->type = (uint8_t)t;
             umemcpy(out_name, comps[n - 1], FS_NAME_MAX);
             return 0;
         }
@@ -463,7 +470,7 @@ int hvfs_lookup(const char *path, const struct hvfs_obj *cwd, int want_parent,
  * smoke-fs-cap-posix-grant-control: the source itself is granted, every right
  * this task holds included. Never ship. */
 static int grant_one(int child, int src, uint32_t dest, uint32_t fs_rights, struct hvfs_obj *kept) {
-    kept->slot = -1; kept->ino = 0; kept->cap = 1; kept->owned = 0;
+    kept->slot = -1; kept->ino = 0; kept->cap = 1; kept->owned = 0; kept->type = 0;
 #ifdef HVFS_GRANT_UNNARROWED
     (void)fs_rights;
     return sys_cap_grant(child, (uint32_t)src, dest) == 0 ? 0 : -1;

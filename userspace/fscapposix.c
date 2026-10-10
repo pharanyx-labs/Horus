@@ -193,7 +193,7 @@ static int test_main(void)
     CHECK(fd >= 0 && write(fd, "kid", 3) == 3, "write-kid");
     close(fd);
     {
-        struct hvfs_obj rw = { SLOT_RW, 0, 1, 0 };
+        struct hvfs_obj rw = { SLOT_RW, 0, 1, 0, 0 };
         struct hvfs_obj kid;
         char last[FS_NAME_MAX];
         CHECK(hvfs_lookup("/rw/kid", &rw, 0, &kid, last) == 0 && kid.cap, "walk-kid");

@@ -140,8 +140,8 @@ static uint32_t fss_ep_slot = 0;
  * capability and its inode field is 0, on the uid path it is the endpoint and
  * an inode. Before the first connect both are the uid path's root. */
 static int             sh_capmode = 0;
-static struct hvfs_obj sh_root = { CAPSLOT_FS_EP, 0, 0, 0 };
-static struct hvfs_obj sh_cwd  = { CAPSLOT_FS_EP, 0, 0, 0 };
+static struct hvfs_obj sh_root = { CAPSLOT_FS_EP, 0, 0, 0, 0 };
+static struct hvfs_obj sh_cwd  = { CAPSLOT_FS_EP, 0, 0, 0, 0 };
 
 static int fss_strlen(const char *s) { int l=0; while(s[l]) l++; return l; }
 static void fss_strcpy(char *d, const char *s) { while((*d++ = *s++)); }
@@ -204,6 +204,15 @@ static int sh_open(const char *path, struct hvfs_obj *o, uint32_t *type, uint32_
     char leaf[FS_NAME_MAX];
     if (fss_connect() != 0) return -1;
     if (hvfs_lookup(path, &sh_cwd, 0, o, leaf) != 0) { hvfs_release(o); return -1; }
+    /* FOUND IS NOT READABLE. The walk's reply already says what the name is, so
+     * a caller that needs only the type gets it without a STAT: the object's own
+     * rights may refuse a STAT while the name is plainly there, and reporting
+     * that as "not found" would be the guess fs_reason exists to prevent (the
+     * session's root-owned-home arm caught exactly that). */
+    if (!size && o->type != 0) {
+        if (type) *type = o->type;
+        return 0;
+    }
     struct fs_request  rq = {0};
     struct fs_response rp;
     rq.op = FS_OP_STAT; rq.ino = o->ino;

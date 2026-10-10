@@ -62,7 +62,7 @@ static int under_prefix(const char *path, const char *prefix, unsigned plen) {
 
 /* ---- mounting ---------------------------------------------------------- */
 
-int hvfs_mount(const char *prefix, int ep_slot, uint32_t root_ino) {
+static int mount_install(const char *prefix, int ep_slot, uint32_t root_ino, int cap) {
     if (!prefix || prefix[0] != '/')  return HVFS_ERR_INVAL;
     unsigned plen = pfx_len(prefix);
     if (plen == 0 || plen > HVFS_PREFIX_MAX) return HVFS_ERR_INVAL;
@@ -109,8 +109,19 @@ int hvfs_mount(const char *prefix, int ep_slot, uint32_t root_ino) {
     g_mounts[free_slot].plen     = plen;
     g_mounts[free_slot].ep_slot  = ep_slot;
     g_mounts[free_slot].root_ino = root_ino;
+    g_mounts[free_slot].cap      = cap;
     g_mounts[free_slot].in_use   = 1;
     return 0;
+}
+
+int hvfs_mount(const char *prefix, int ep_slot, uint32_t root_ino) {
+    return mount_install(prefix, ep_slot, root_ino, 0);
+}
+
+/* The probe is the same stat: through a directory capability the server takes
+ * the object from the token and ignores the inode field. */
+int hvfs_mount_cap(const char *prefix, int dir_slot) {
+    return mount_install(prefix, dir_slot, 0u, 1);
 }
 
 /* Longest-prefix match.
@@ -296,4 +307,145 @@ static int walk_body(const char *path, uint32_t cwd_ino, int cwd_slot,
     *out_ino = dir_ino;
     out_name[0] = '\0';
     return 0;
+}
+
+/* ---- walking by capability (filesystem phase 1b step 2) -------------------
+ *
+ * THE POOL. A reply-minted capability lands in a slot the CLIENT names, and the
+ * kernel refuses to mint into one that is not empty. The server cannot tell a
+ * refused mint from a caller that asked for none, so it still answers rc 0, and
+ * a client that named a slot still holding an old capability would then use the
+ * OLD object believing it the new one: a write to the wrong file. So the pool
+ * keeps one rule by construction: a slot goes back only when its revoke
+ * succeeded, which leaves it empty. A revoke that fails (the capability already
+ * went with an ancestor, at logout say) leaks the slot instead of reusing it,
+ * which fails closed. The pool is CAPSLOT_FS_POOL_FIRST..LAST, which the kernel
+ * never allocates in (CAPSLOT_DYNAMIC_FIRST is above it). */
+#define POOL_N (CAPSLOT_FS_POOL_LAST - CAPSLOT_FS_POOL_FIRST + 1)
+static uint8_t g_pool_used[POOL_N];
+
+int hvfs_slot_alloc(void) {
+    for (int i = 0; i < POOL_N; i++)
+        if (!g_pool_used[i]) { g_pool_used[i] = 1; return CAPSLOT_FS_POOL_FIRST + i; }
+    return -1;
+}
+
+static void pool_put(int slot) {
+    if (slot < CAPSLOT_FS_POOL_FIRST || slot > CAPSLOT_FS_POOL_LAST) return;
+    if (sys_cap_revoke((uint32_t)slot) == 0) g_pool_used[slot - CAPSLOT_FS_POOL_FIRST] = 0;
+}
+
+/* Only an owned object changes: one that is lent (a mount's, the working
+ * directory's, anything on the uid path) is still the lender's and stays usable,
+ * so a caller may release on every path out without asking which it has. */
+void hvfs_release(struct hvfs_obj *o) {
+    if (!o || !o->owned) return;
+    pool_put(o->slot);
+    o->owned = 0;
+    o->slot = -1;
+}
+
+/* One WALK from directory capability `from`, minting into a fresh pool slot.
+ * Returns the server's rc (0, or negative), with *out set on 0. */
+static int cap_walk(int from, const char comps[][FS_NAME_MAX], int n,
+                    struct hvfs_obj *out, uint32_t *out_type) {
+    struct fs_request rq;
+    struct fs_response rp;
+    const char *names[HVFS_MAX_DEPTH];
+    umemset(&rq, 0, sizeof(rq));
+    rq.magic = FS_PROTO_MAGIC;
+    rq.op = FS_OP_WALK;
+    for (int i = 0; i < n; i++) names[i] = comps[i];
+    if (fs_walk_pack(rq.data, &rq.len, names, (unsigned)n) != 0) return HVFS_ERR_INVAL;
+    int slot = hvfs_slot_alloc();
+    if (slot < 0) return HVFS_ERR_NOMEM;
+    umemset(&rp, 0, sizeof(rp));
+    int r = sys_ipc_call_cap((unsigned)from, (unsigned)slot, &rq, sizeof(rq), &rp, IPC_NO_CAP);
+    int rc = (r < 0) ? HVFS_ERR_NOCAP : (rp.magic != FS_PROTO_MAGIC) ? HVFS_ERR_INVAL : rp.rc;
+    if (rc != 0) {
+        /* Nothing was minted, so the slot is still empty: straight back. */
+        g_pool_used[slot - CAPSLOT_FS_POOL_FIRST] = 0;
+        return rc;
+    }
+    out->slot = slot;
+    out->ino = 0;
+    out->cap = 1;
+    out->owned = 1;
+    if (out_type) *out_type = rp.type;
+    return 0;
+}
+
+/* Split `p` into components, resolving "." and ".." against the components
+ * already taken, so ".." pops what this walk descended through and never
+ * rises above where it started: the same pin walk_body keeps, and the server
+ * never sees either name. Returns the count, or -1. */
+static int split(const char *p, char comps[][FS_NAME_MAX]) {
+    int n = 0, depth = 0;
+    while (*p) {
+        unsigned clen = 0;
+        while (p[clen] && p[clen] != '/') clen++;
+        if (clen == 0) { p++; continue; }
+        if (clen >= FS_NAME_MAX) return -1;
+        if (++depth > HVFS_MAX_DEPTH) return -1;
+        if (clen == 1 && p[0] == '.') { }
+        else if (clen == 2 && p[0] == '.' && p[1] == '.') { if (n > 0) n--; }
+        else { umemcpy(comps[n], p, clen); comps[n][clen] = '\0'; n++; }
+        p += clen;
+        if (*p == '/') p++;
+    }
+    return n;
+}
+
+int hvfs_lookup(const char *path, const struct hvfs_obj *cwd, int want_parent,
+                struct hvfs_obj *out, char *out_name) {
+    if (!path || path[0] == '\0' || !cwd || !out || !out_name) return -1;
+    out->slot = -1; out->ino = 0; out->cap = 0; out->owned = 0;
+    out_name[0] = '\0';
+
+    struct hvfs_obj start;
+    const char *p = path;
+    if (path[0] == '/') {
+        const struct hvfs_mount *m = hvfs_resolve(path);
+        if (!m) return -1;
+        start.slot = m->ep_slot; start.ino = m->root_ino; start.cap = (uint8_t)m->cap; start.owned = 0;
+        p = path + (m->plen == 1 ? 1 : m->plen);
+        if (*p == '/') p++;
+    } else {
+        start = *cwd;
+        start.owned = 0;
+    }
+
+    if (!start.cap) {
+        /* The uid path: the inode walker, as before. */
+        int slot;
+        uint32_t ino;
+        int r = want_parent ? hvfs_walk_parent(path, cwd->ino, cwd->slot, &slot, &ino, out_name)
+                            : hvfs_walk(path, cwd->ino, cwd->slot, &slot, &ino, out_name);
+        if (r < 0) return r;
+        out->slot = slot; out->ino = ino;
+        return r;
+    }
+
+    char comps[HVFS_MAX_DEPTH][FS_NAME_MAX];
+    int n = split(p, comps);
+    if (n < 0) return -1;
+    if (n == 0) { *out = start; return 0; }         /* the start itself, lent */
+
+    if (!want_parent) {
+        int rc = cap_walk(start.slot, comps, n, out, 0);
+        if (rc == 0) {
+            umemcpy(out_name, comps[n - 1], FS_NAME_MAX);
+            return 0;
+        }
+        /* Only a missing name can be "all but the leaf", which the caller may
+         * create; a refusal (no LOOKUP, a step through a file, an empty pool)
+         * is a refusal. */
+        if (rc != SYS_ERR_NOENT) return -1;
+    }
+    umemcpy(out_name, comps[n - 1], FS_NAME_MAX);
+    if (n == 1) { *out = start; return want_parent ? 0 : 1; }
+    uint32_t type = 0;
+    if (cap_walk(start.slot, comps, n - 1, out, &type) != 0) return -1;
+    if (type != FS_TYPE_DIR) { hvfs_release(out); return -1; }
+    return want_parent ? 0 : 1;
 }

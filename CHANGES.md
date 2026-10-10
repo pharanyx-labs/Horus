@@ -22,7 +22,8 @@ here.
 
 ### Added
 
-- `fs_server` walks a whole path below a directory capability in one request and answers with one capability, derived from the one invoked, so a client will hold one capability per open path rather than one per component (filesystem decision 12). Every name is checked before any is looked up, and one that is `.`, `..` or holds `/` in any position refuses the walk (S120).
+- `fs_server` walks a whole path below a directory capability in one request and answers with one capability, derived from the one invoked, so a client will hold one capability per open path rather than one per component (filesystem decision 12). Every name is checked before any is looked up, and one that is `.`, `..` or holds `/` in any position refuses the walk (S120). (#529)
+- The POSIX layer walks by capability in a program that holds a root directory capability: every open file, directory stream and working directory holds one capability, minted by one walk from the root or the working directory, and close gives it back. The path is chosen once at start, and such a program never touches the uid path, so a refusal cannot fall back to it. Nothing grants a root until phase 1b step 3, so programs still reach files by the uid path today (S126).
 
 ### Changed
 

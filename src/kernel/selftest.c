@@ -2282,7 +2282,9 @@ static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const cha
 void fscap_selftest(void) {
     extern int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);
     extern uint8_t embedded_fsserver_bin_start[], embedded_fsserver_bin_end[];
+#ifndef FSCAPPOSIX_SELFTEST
     extern uint8_t embedded_fscaptest_bin_start[], embedded_fscaptest_bin_end[];
+#endif
     print("FSCAPTEST: kernel harness\n");
 
     int fss = fs_spawn_embedded(embedded_fsserver_bin_start, embedded_fsserver_bin_end, "fs_server");
@@ -2293,7 +2295,15 @@ void fscap_selftest(void) {
     cap_install_from_root(fss, CAPSLOT_AUDIT,        9, 0);   /* CAP_ENCRYPTED_STORAGE  */
     cap_install_from_root(fss, CAPSLOT_BOOT_MODULE, 16, 0);   /* CAP_BOOT_MODULE        */
 
+#ifdef FSCAPPOSIX_SELFTEST
+    /* Phase 1b step 2's client half: a newlib program in place of fscaptest,
+     * endowed the same way, which mints itself a read-only root at
+     * CAPSLOT_FS_ROOT and a writable one at /rw (smoke-fs-cap-posix). */
+    extern uint8_t embedded_fscapposix_bin_start[], embedded_fscapposix_bin_end[];
+    int cli = fs_spawn_embedded(embedded_fscapposix_bin_start, embedded_fscapposix_bin_end, "fscapposix");
+#else
     int cli = fs_spawn_embedded(embedded_fscaptest_bin_start, embedded_fscaptest_bin_end, "fscaptest");
+#endif
     if (cli <= 0) { print("FSCAPTEST: FAIL spawn-client\n"); for (;;) asm volatile("hlt"); }
     if (cap_install_from_root(cli, 30, 13, FS_EP_REQ) != 0) {
         print("FSCAPTEST: FAIL endow-client\n"); for (;;) asm volatile("hlt");

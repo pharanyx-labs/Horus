@@ -592,7 +592,9 @@ session starts. `task_teardown` hands the hardware back to the kernel if the ser
 
 The shared freestanding runtime every server links (`include/libhorus.h`, `userspace/libhorus.a`):
 memory and string helpers, console output, a bounded busy-wait, the TUI library the installer is
-built from, the per-task mount table and path walker (`hvfs`), and `ipc_call_retry`, which makes
+built from, the per-task mount table and path walker (`hvfs`, which walks by capability through a
+mount backed by a directory capability, one capability per object from a pool of slots it alone
+fills, S126), and `ipc_call_retry`, which makes
 the IPC retry contract a library guarantee. It declares nothing that needs authority: anything that
 would belongs behind a capability, not a function call.
 

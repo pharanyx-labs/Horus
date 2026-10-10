@@ -2561,6 +2561,11 @@ jobs:
       # S120, step 2: the same image refuses a bad name anywhere in a walk.
       - name: Control arm — fs_server checks only the first name of a walk
         run: make smoke-fs-cap-walk-control
+      # S126, step 2's client half: a newlib program walking by capability.
+      - name: Boot FSCAPPOSIX_SELFTEST and assert POSIX calls walk by capability and close gives it back
+        run: make smoke-fs-cap-posix
+      - name: Control arm — close keeps the file's capability
+        run: make smoke-fs-cap-posix-close-control
 
   smoke-mapphys:
     name: QEMU map-phys device-frame self-test (headless)

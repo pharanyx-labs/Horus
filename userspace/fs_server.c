@@ -500,6 +500,9 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
         rp->rc = 0; rp->type = st.type; rp->size = (uint32_t)st.size;
         rp->mode = st.mode & 07777u; rp->uid = st.uid; rp->gid = st.gid;
         rp->links = st.links;
+        /* The object's own inode, for st_ino: through a capability the client
+         * never named it (a walk's reply already tells the holder as much). */
+        rp->ino = rq->ino;
         break;
     }
     case FS_OP_READ: {

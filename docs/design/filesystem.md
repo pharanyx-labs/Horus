@@ -600,8 +600,39 @@ bad name in any position refuses the whole walk. Each step is then an ordinary `
 from a file is refused and the system-tree rule (S116) runs, as for a single name. The reply mints
 one capability, derived from the one invoked, with the rights a `LOOKUP` would give. Up to 176
 bytes of names fit in one request; a longer path walks again from the capability the first walk
-gave. The uid path has no walk. The client half follows: `hvfs`, the POSIX layer, the shell and
-`fsclient` walking with these, and the spawner's grants. Steps 3, 4 and 6 follow that.
+gave. The uid path has no walk.
+
+**Step 2, the client half, as built so far: `hvfs` and the POSIX layer.** A task that holds a
+directory capability in `CAPSLOT_FS_ROOT` (slot 24) walks by capability and nothing else: the mode
+is chosen once, in `posix_init`, by a stat through that slot, and such a task never connects to the
+uid path, so no request of its can fall back there when a capability refuses. A task holding
+nothing there uses the uid path as before. Until step 3 nothing grants a root, so ordinary sessions
+stay on the uid path (decided 2026-10-10: a task walks by capability only if it already holds a
+root). As built:
+
+- **One capability per open object.** A path, `.` and `..` resolved by the client and pinned where
+  the walk starts, goes in one `WALK` from the root (absolute) or the working directory
+  (relative). Every open file, directory stream and working directory holds exactly that one
+  capability, derived from the root or the granted working directory, and close, `closedir` and
+  `chdir` revoke it. A created file is walked to afresh after the create, so its capability is not
+  the parent's child and survives the parent's being given back.
+- **The pool.** Capabilities are minted into slots 32 to 63, which the kernel never allocates in.
+  A refused reply-mint still answers success, so a slot that still held an old capability would
+  make the client use the old object: a slot therefore goes back to the pool only when its revoke
+  succeeded, and leaks (failing closed) otherwise. 32 slots bound a task's open files and
+  directories.
+- **The working directory.** `chdir` walks the new directory from the root, or from the granted
+  working directory (slot 25) for a relative path while the task has never named one, never from
+  the old working directory, so the old capability can be revoked without taking the new one with
+  it. A task started in a granted working directory is never told its name, so `getcwd` fails
+  until it changes to an absolute path.
+- **Rename** compares the two parents by the inode each reports and answers `EXDEV` for two
+  directories without asking the server; **link** is `EXDEV` on this path (§5.5, step 5).
+- `FS_OP_STAT` now reports the object's own inode, since through a capability the client never
+  named it.
+
+Witness: `make smoke-fs-cap-posix` (S126). The shell, `fsclient` and the spawner's grants
+(decision 10) follow. Steps 3, 4 and 6 follow that.
 
 **Step 5 as built.** The refusal is on both paths, since a move through the uid path changes who
 may reach a file just as much. A rename across directories is `EXDEV`. A link is too unless the

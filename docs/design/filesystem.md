@@ -236,9 +236,12 @@ to go.
 
 ### 5.4 Paths belong to the client
 
-**The server answers single-component requests only.** `LOOKUP(dir, "name")` is the whole of
-path resolution on the server side. It never sees a `/`, never interprets `..`, and never follows
-a symbolic link. A name containing `/` or equal to `.` or `..` is refused.
+**The server never sees a path.** It answers `LOOKUP(dir, "name")` for one name and
+`WALK(dir, names)` for several, and checks each name on its own: one that holds `/` or is `.` or
+`..` refuses the request. It never interprets `..` and never follows a symbolic link. A walk
+answers with one capability, to the last name, derived from the directory capability invoked
+(decision 12), so a client holds one capability for each path it has open rather than one for each
+component of it.
 
 The walk is the client's, in `hvfs` (roadmap 2.4), against capabilities the client already
 holds:
@@ -591,8 +594,14 @@ revoking a directory's capability revokes it and what was opened through it, and
 it came from stays. Read, write, append, truncate, stat, readdir, lookup, create, mkdir and delete
 are served; chmod and chown wait for step 4.
 
-**Step 2 is waiting** on the question at the head of the open list in §13: how a client walks without
-leaking a capability slot per path component. Steps 3, 4 and 6 follow it.
+**Step 2, the server half, as built.** `fs_server` answers `WALK` (decision 12): the names travel
+in the request's data, each ending in NUL, and every one is checked before any is looked up, so a
+bad name in any position refuses the whole walk. Each step is then an ordinary `LOOKUP`, so a step
+from a file is refused and the system-tree rule (S116) runs, as for a single name. The reply mints
+one capability, derived from the one invoked, with the rights a `LOOKUP` would give. Up to 176
+bytes of names fit in one request; a longer path walks again from the capability the first walk
+gave. The uid path has no walk. The client half follows: `hvfs`, the POSIX layer, the shell and
+`fsclient` walking with these, and the spawner's grants. Steps 3, 4 and 6 follow that.
 
 **Step 5 as built.** The refusal is on both paths, since a move through the uid path changes who
 may reach a file just as much. A rename across directories is `EXDEV`. A link is too unless the
@@ -668,23 +677,18 @@ still asks a settled question is stale.
     rule of §5.5 needs each object's back-references, which arrive with the v12 format; phase 3
     lifts the refusal.
 
-**Open, and blocking phase 1b step 2: how a client walks without leaking a slot per component.**
-A walk by `LOOKUP` reply-mint leaves one capability per path component, each derived from the one
-before. Revoking an intermediate revokes the leaf, and ring 3 has no way to forget one slot alone
-(the kernel's `cap_consume_slot` has no syscall). That is by design, since revocation walks the
-derivation tree by parent serial and a plain drop would orphan the leaf from a later revoke of the
-root. A task holds at most 128 capabilities, so keeping every chain is not an answer. Two ways out,
-put to the maintainer on 2026-10-09:
+**2026-10-10, for phase 1b step 2:**
 
-- **A kernel drop that splices the slot out**, reparenting its children to its parent so revocation
-  still reaches them. It is a change to the capability core, with Kani proofs.
-- **A multi-name walk on the server** (recommended), in the shape of 9P's `Twalk`. The request
-  carries an array of names, each refused if it is `.`, `..` or holds `/`. The server walks
-  beneath the capability invoked and reply-mints one capability for the end, derived from that
-  one. No kernel change, one round trip per path rather than per component, and a shallow
-  derivation tree. It changes §5.4's "`LOOKUP(dir, "name")` is the whole of path resolution" while
-  keeping what that sentence protects: the server still never sees a path, never interprets `..`
-  and never follows a link.
+12. **A client walks a path with one `WALK` request, answered with one capability**, in the shape
+    of 9P's `Twalk`. The problem it answers: a walk by `LOOKUP` leaves one capability per
+    component, each derived from the one before, and none can be let go alone, because revoking
+    one revokes everything below it and a plain drop would orphan the rest from a later revoke of
+    the root. A task holds at most 128 capabilities. A `WALK` carries the names, each checked as
+    a `LOOKUP` checks one, and its capability is derived from the one invoked, never from
+    anything along the way: one slot per open path, revoked with the capability it started from,
+    and closing it (revoking it) takes nothing else with it. Chosen over a kernel operation that
+    splices a capability out of the derivation tree, which would have changed the capability
+    core; the walk needs no kernel change at all.
 
 **Still open, none of them blocking phase 1:**
 
@@ -714,7 +718,8 @@ control arm that reddens the base gate, per §2:
 - Revoking a directory capability revokes every file capability derived through it.
 - No filesystem operation succeeds on the strength of the caller's uid, and the arm restores
   `perm_ok` so the gate can be shown to catch it.
-- `LOOKUP` of `..`, of `.` and of a name containing `/` is refused, and a symbolic link to
+- `LOOKUP` of `..`, of `.` and of a name containing `/` is refused, and so is a `WALK` holding
+  one in any position (`smoke-fs-cap`, arm `FS_WALK_NAMES_UNCHECKED=1`); a symbolic link to
   `../../etc` from a capability rooted at a home directory does not escape it.
 - A cross-directory rename that would widen a grant's reach is refused, and the arm drops
   condition 2 of §5.5.

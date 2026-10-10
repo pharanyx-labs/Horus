@@ -88,6 +88,9 @@
                             * the source; directories are refused). unlink of
                             * either name then only frees the file once the last
                             * name is gone (FS_OP_DELETE drops one reference). */
+#define FS_OP_WALK    15   /* data[len] = names, each NUL-terminated  -> ino, type,
+                            * and ONE capability to the last (capability path only;
+                            * needs LOOKUP). See FS_WALK below. */
 
 /* READDIR's end-of-directory signal, and it is a SEPARATE VALUE from
  * SYS_ERR_NOENT on purpose.
@@ -207,5 +210,42 @@ static inline uint64_t fs_token(uint32_t ino, uint32_t gen) {
 }
 static inline uint32_t fs_token_ino(uint64_t t) { return (uint32_t)t; }
 static inline uint32_t fs_token_gen(uint64_t t) { return (uint32_t)(t >> 32) & FS_TOKEN_GEN_MASK; }
+
+/* FS_WALK (docs/design/filesystem.md §5.4, decision 12): several names below the
+ * directory capability invoked, answered with ONE capability to the last.
+ *
+ * Why it exists: a walk by FS_OP_LOOKUP leaves a capability per component, each
+ * derived from the one before, and none can be let go alone, since revoking one
+ * revokes everything below it. A task holds at most 128 capabilities, so a client
+ * walking that way runs out. A walk's capability is derived straight from the
+ * one invoked, so it is one slot, it is revoked with that one, and revoking it
+ * (closing the file) takes nothing else with it.
+ *
+ * The request: `len` bytes of `data`, a run of names each ending in NUL, at
+ * least one. Every name is checked before any is looked up (none empty, none
+ * "." or "..", none holding "/", each shorter than FS_DIRENT_NAME), so a bad
+ * name anywhere refuses the whole walk with INVAL. Each step is then an ordinary
+ * LOOKUP, so a step from something that is not a directory is INVAL, and a
+ * missing name NOENT, exactly as a LOOKUP answers. The server still never sees a
+ * path, never interprets "..", and never follows a link: the client splits the
+ * path and resolves those itself (§5.4). A path longer than one request walks
+ * again from the capability the first walk gave. */
+#define FS_WALK_BYTES  FS_IO_MAX
+
+/* Pack `n` names into rq->data and rq->len for FS_OP_WALK. Returns 0, or
+ * SYS_ERR_RANGE when they do not fit in one request (walk them in two). */
+static inline int fs_walk_pack(uint8_t *data, uint32_t *len, const char *const *names, unsigned n)
+{
+    uint32_t at = 0;
+    for (unsigned i = 0; i < n; i++) {
+        const char *s = names[i];
+        do {
+            if (at >= FS_WALK_BYTES) return SYS_ERR_RANGE;
+            data[at++] = (uint8_t)*s;
+        } while (*s++);
+    }
+    *len = at;
+    return 0;
+}
 
 #endif /* HORUS_FS_PROTO_H */

@@ -660,6 +660,58 @@ static int fs_name_ok(const char *n)
     return 1;
 }
 
+/* FS_OP_WALK (fs_proto.h FS_WALK; design §5.4, decision 12): the names in
+ * rq->data, walked down from directory `from` as a run of LOOKUPs, answering
+ * with the last one's inode and type. The caller mints the one capability.
+ *
+ * EVERY NAME IS CHECKED BEFORE ANY IS LOOKED UP. The hazard is checking only
+ * the first, as a single-name LOOKUP needs to: then "a" followed by ".." reaches
+ * the directory search with a name the protocol forbids. v11 directories hold no
+ * ".." entry, but the uid path, until step 6 removes it, will create one under
+ * that name, and a format that stores one would turn the walk into a way up.
+ * So a bad name anywhere refuses the whole walk, before any step is taken.
+ *
+ * EACH STEP IS AN ORDINARY LOOKUP, through handle(), so it gets everything a
+ * LOOKUP gets by construction: a step from something that is not a directory is
+ * refused (is_dir), and the system-tree rule (S116) runs. Nothing about a walk
+ * is checked twice in two places that could drift.
+ *
+ * FS_WALK_NAMES_UNCHECKED=1 is the control arm for make smoke-fs-cap-walk-control:
+ * only the first name is checked. Never ship. */
+static void walk(const struct fs_request *rq, struct fs_response *rp, uint32_t from,
+                 uint32_t cuid, uint32_t cgid)
+{
+    const char *d = (const char *)rq->data;
+    uint32_t len = rq->len;
+
+    umemset(rp, 0, sizeof(*rp));
+    rp->magic = FS_PROTO_MAGIC;
+    /* At least one name, and the last one terminated inside the request, so no
+     * name below can run past the end of data[]. */
+    if (len == 0 || len > FS_WALK_BYTES || d[len - 1] != 0) { rp->rc = SYS_ERR_INVAL; return; }
+    for (uint32_t at = 0; at < len; ) {
+        uint32_t l = uslen(d + at);
+        if (l >= FS_DIRENT_NAME || !fs_name_ok(d + at)) { rp->rc = SYS_ERR_INVAL; return; }
+#ifdef FS_WALK_NAMES_UNCHECKED
+        break;                              /* CONTROL ARM: the first name only */
+#endif
+        at += l + 1;
+    }
+
+    uint32_t cur = from;
+    for (uint32_t at = 0; at < len; at += uslen(d + at) + 1) {
+        struct fs_request step;
+        umemset(&step, 0, sizeof(step));
+        step.magic = FS_PROTO_MAGIC;
+        step.op = FS_OP_LOOKUP;
+        step.dir_ino = cur;
+        ustrncpy(step.name, d + at, FS_NAME_MAX);
+        handle(&step, rp, cuid, cgid);
+        if (rp->rc != 0) return;
+        cur = rp->ino;
+    }
+}
+
 static void cap_request(const struct fs_request *rq, struct fs_response *rp,
                         const struct ipc_invoker *inv, uint32_t cuid, uint32_t cgid,
                         uint32_t *mint_rights, uint64_t *mint_token)
@@ -680,6 +732,7 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
     uint32_t need, is_dir_op = 0, names = 0;
     switch (rq->op) {
     case FS_OP_LOOKUP:   need = FS_R_LOOKUP; is_dir_op = 1; names = 1; break;
+    case FS_OP_WALK:     need = FS_R_LOOKUP; is_dir_op = 1; break;   /* names: walk() */
     case FS_OP_CREATE:
     case FS_OP_MKDIR:    need = FS_R_CREATE; is_dir_op = 1; names = 1; break;
     case FS_OP_DELETE:   need = FS_R_DELETE; is_dir_op = 1; names = 1; break;
@@ -723,10 +776,12 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
 
     /* A DELETE's generation bump happens in fs_ino_free, on the free itself. */
     g_by_cap = 1;
-    handle(&r2, rp, cuid, cgid);
+    if (rq->op == FS_OP_WALK) walk(rq, rp, obj, cuid, cgid);
+    else handle(&r2, rp, cuid, cgid);
     g_by_cap = 0;
 
-    if (rp->rc == 0 && (rq->op == FS_OP_LOOKUP || rq->op == FS_OP_CREATE || rq->op == FS_OP_MKDIR)
+    if (rp->rc == 0 && (rq->op == FS_OP_LOOKUP || rq->op == FS_OP_WALK ||
+                        rq->op == FS_OP_CREATE || rq->op == FS_OP_MKDIR)
         && rp->ino < FS_GEN_INODES && !(g_gen[rp->ino] & FS_GEN_RETIRED)) {
         /* A CHILD CARRIES AT MOST ITS DIRECTORY'S RIGHTS (§5.3): a directory
          * keeps every file right so files below it can still have them, a file

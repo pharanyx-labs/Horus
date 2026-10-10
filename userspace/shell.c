@@ -131,11 +131,30 @@ static const char* strstr(const char *haystack, const char *needle) {
 static int fss_connected = 0;
 static uint32_t fss_ep_slot = 0;
 
+/* THE TWO OBJECTS EVERY PATH STARTS FROM, and the mode (filesystem phase 1b
+ * step 2). A shell given a root directory capability at CAPSLOT_FS_ROOT walks
+ * by capability and never connects to the uid path, so a refused request has
+ * nowhere to fall back to; one given none uses the uid path as before. Chosen
+ * once, at the first connect, never per request. Every request below names the
+ * object it is about (fss_call_on): through a capability that object IS the
+ * capability and its inode field is 0, on the uid path it is the endpoint and
+ * an inode. Before the first connect both are the uid path's root. */
+static int             sh_capmode = 0;
+static struct hvfs_obj sh_root = { CAPSLOT_FS_EP, 0, 0, 0, 0 };
+static struct hvfs_obj sh_cwd  = { CAPSLOT_FS_EP, 0, 0, 0, 0 };
+
 static int fss_strlen(const char *s) { int l=0; while(s[l]) l++; return l; }
 static void fss_strcpy(char *d, const char *s) { while((*d++ = *s++)); }
 
 static int fss_connect(void) {
     if (fss_connected) return 0;
+    if (hvfs_mount_cap("/", CAPSLOT_FS_ROOT) == 0) {
+        sh_capmode = 1;
+        sh_root.slot = CAPSLOT_FS_ROOT; sh_root.ino = 0; sh_root.cap = 1; sh_root.owned = 0;
+        sh_cwd = sh_root;
+        fss_connected = 1;
+        return 0;
+    }
     fss_ep_slot = CAPSLOT_FS_EP;
     /* sys_connect_fs_server mints a cap in slot fss_ep_slot so the kernel's
      * slot-3 check passes for SYS_IPC_CALL.  The actual send/receive uses the
@@ -153,22 +172,59 @@ static int fss_connect(void) {
     return -1;
 }
 
-static int fss_call(struct fs_request *req, struct fs_response *rep) {
+/* One request about object `o`, sent through its slot: the endpoint on the uid
+ * path, the object's own capability on the capability path. The caller puts
+ * o->ino in the request's address field. There is deliberately no form that
+ * picks the slot itself, so a request cannot reach the server through something
+ * other than the object it names. Blocks until the reply arrives on this task's
+ * private reply endpoint. */
+static int fss_call_on(const struct hvfs_obj *o, struct fs_request *req, struct fs_response *rep) {
     if (!fss_connected) {
         if (fss_connect() != 0) return -1;
     }
+    if (o->slot < 0) return -1;
     req->magic = FS_PROTO_MAGIC;
-    /* Blocking IPC: send on FS_EP_REQ (4), block until reply arrives on
-     * its own private reply endpoint. The kernel unblocks us and fills *rep
-     * atomically. */
-    int r = sys_ipc_call(CAPSLOT_FS_EP, 0,
+    int r = sys_ipc_call((uint32_t)o->slot, 0,
                          (const char *)req, sizeof(*req), (char *)rep);
+#ifdef SHELL_CAP_FALLBACK
+    /* CONTROL ARM for make smoke-fs-cap-shell-fallback-control, never ship: a
+     * request the capability refused is sent again down the uid path, as the
+     * logged-in user. The "helpful" fail-open CLAUDE.md §1 forbids. */
+    if (r >= 0 && sh_capmode && rep->rc == SYS_ERR_PERM &&
+        sys_connect_fs_server(CAPSLOT_FS_EP, CAP_R_W) == 0)
+        r = sys_ipc_call(CAPSLOT_FS_EP, 0, (const char *)req, sizeof(*req), (char *)rep);
+#endif
     return (r < 0) ? r : 0;
+}
+
+/* Resolve `path` (absolute, or relative to the working directory) to an object
+ * the caller gives back with hvfs_release, with its type and size (either may
+ * be NULL). Returns 0, or -1 if it is missing or cannot be stat'ed. */
+static int sh_open(const char *path, struct hvfs_obj *o, uint32_t *type, uint32_t *size) {
+    char leaf[FS_NAME_MAX];
+    if (fss_connect() != 0) return -1;
+    if (hvfs_lookup(path, &sh_cwd, 0, o, leaf) != 0) { hvfs_release(o); return -1; }
+    /* FOUND IS NOT READABLE. The walk's reply already says what the name is, so
+     * a caller that needs only the type gets it without a STAT: the object's own
+     * rights may refuse a STAT while the name is plainly there, and reporting
+     * that as "not found" would be the guess fs_reason exists to prevent (the
+     * session's root-owned-home arm caught exactly that). */
+    if (!size && o->type != 0) {
+        if (type) *type = o->type;
+        return 0;
+    }
+    struct fs_request  rq = {0};
+    struct fs_response rp;
+    rq.op = FS_OP_STAT; rq.ino = o->ino;
+    if (fss_call_on(o, &rq, &rp) < 0 || rp.rc < 0) { hvfs_release(o); return -1; }
+    if (type) *type = rp.type;
+    if (size) *size = rp.size;
+    return 0;
 }
 
 /* ----- reporting what the fs_server actually said ----------------------
  *
- * WHY THIS EXISTS. Every fs command used to collapse `fss_call() < 0 ||
+ * WHY THIS EXISTS. Every fs command used to collapse `fss_call_on() < 0 ||
  * rp.rc < 0` into one sentence that GUESSED at the cause -- "mkdir: failed
  * (name exists or server not running)" -- and the guess did not contain the
  * answer the server gives most often. A standard user's `mkdir` in a
@@ -186,7 +242,7 @@ static int fss_call(struct fs_request *req, struct fs_response *rep) {
  * trust in the next refusal they read.
  *
  * TRANSPORT IS SEPARATE FROM THE VERDICT, and that is the point of taking two
- * arguments. Below zero, `fss_call` never got a reply: `rep` holds nothing, so
+ * arguments. Below zero, `fss_call_on` never got a reply: `rep` holds nothing, so
  * saying anything about names or permissions would be inventing it. Only at or
  * above zero is rp->rc a statement the server made. */
 static const char *fs_reason(int rc) {
@@ -248,9 +304,9 @@ static void print_decimal(uint32_t n) {
 /* ----- working directory (shell-side) ---------------------------------
  * The shell does its own path handling (it does not link posix.c). It tracks a
  * cwd inode for relative fs ops and a canonical absolute path string for `pwd`.
- * Directory ops below (ls/cat/mkdir/rm/touch) resolve names within sh_cwd_ino. */
+ * Directory ops below (ls/cat/mkdir/rm/touch) resolve names within sh_cwd, the
+ * working directory as an object (see fss_call_on). */
 #define SH_PATH_MAX 256
-static uint32_t sh_cwd_ino = 0;
 static char     sh_cwd_path[SH_PATH_MAX] = "/";
 
 /* Normalize `arg` against sh_cwd_path into `out` (absolute). Resolves ".", "..",
@@ -301,10 +357,10 @@ static int sh_normalize(const char *arg, char *out) {
     return 0;
 }
 
-/* Walk an absolute path from the root; every component must resolve to a
- * directory. Returns the final inode, or (uint32_t)-1 on any failure.
+/* Resolve a path to a DIRECTORY, as an object the caller releases. 0, or -1 on
+ * any failure.
  *
- * `hvfs_walk` does the walking since 2026-08-23 -- this was one of the three
+ * `hvfs_lookup` does the walking (`hvfs_walk` from 2026-08-23) -- this was one of the three
  * private walkers the namespace library was written to replace, and the one
  * whose divergence was visible: it resolved "." and ".." only because sh_norm
  * had already rewritten them out of the STRING, so every caller that reached it
@@ -314,24 +370,12 @@ static int sh_normalize(const char *arg, char *out) {
  *
  * The type check stays here rather than moving into the library: "must be a
  * directory" is this caller's requirement, not a property of path resolution,
- * and hvfs_walk deliberately resolves a path to whatever object it names. */
-static uint32_t sh_walk_abs_dir(const char *abspath) {
-    if (fss_connect() != 0) return (uint32_t)-1;
-
-    int      slot;
-    uint32_t ino;
-    char     leaf[FS_NAME_MAX];
-    if (hvfs_walk(abspath, 0u, CAPSLOT_FS_EP, &slot, &ino, leaf) != 0)
-        return (uint32_t)-1;
-
-    /* Confirm the object is a directory. The walker reports what the path
-     * names; a file named /bin would otherwise be handed back as one. */
-    struct fs_request  rq = {0};
-    struct fs_response rp;
-    rq.op = FS_OP_STAT; rq.ino = ino;
-    if (hvfs_rpc(slot, &rq, &rp) != 0)  return (uint32_t)-1;
-    if (rp.type != FS_TYPE_DIR)         return (uint32_t)-1;
-    return ino;
+ * and the walker deliberately resolves a path to whatever object it names. */
+static int sh_walk_dir(const char *abspath, struct hvfs_obj *o) {
+    uint32_t type;
+    if (sh_open(abspath, o, &type, 0) != 0) return -1;
+    if (type != FS_TYPE_DIR) { hvfs_release(o); return -1; }
+    return 0;
 }
 
 /* ---- output typography -------------------------------------------------
@@ -370,21 +414,21 @@ static void print_pad(const char *s, int width) {
  * newlib-linked coreutils binaries are ~400–600 KiB, well under it. */
 #define SH_MAX_IMAGE (8u * 1024u * 1024u)
 
-/* Read the whole file `ino` (`size` bytes) into `buf` via the fs_server, one
+/* Read the whole file `o` (`size` bytes) into `buf` via the fs_server, one
  * FS_IO_MAX chunk at a time. Returns 0 on success, -1 on a short read or error. */
-static int sh_read_file(uint32_t ino, unsigned char *buf, uint32_t size) {
+static int sh_read_file(const struct hvfs_obj *o, unsigned char *buf, uint32_t size) {
     uint32_t off = 0;
     struct fs_response rp;
     while (off < size) {
         uint32_t chunk = size - off;
         if (chunk > FS_IO_MAX) chunk = FS_IO_MAX;
         struct fs_request dq = {0};
-        dq.op = FS_OP_READ; dq.ino = ino; dq.offset = off; dq.len = chunk;
+        dq.op = FS_OP_READ; dq.ino = o->ino; dq.offset = off; dq.len = chunk;
         /* rc <= 0 is a real error or premature EOF (no progress); a rc SHORTER
          * than chunk is normal — FS_OP_READ never crosses a 512-byte block, so a
          * request that straddles one comes back partial. Keep reading from the new
          * offset rather than treating it as truncation. */
-        if (fss_call(&dq, &rp) < 0 || rp.rc <= 0) return -1;
+        if (fss_call_on(o, &dq, &rp) < 0 || rp.rc <= 0) return -1;
         uint32_t got = (uint32_t)rp.rc;
         if (got > chunk) got = chunk;
         memcpy(buf + off, rp.data, got);
@@ -411,6 +455,28 @@ static int tokenize(const char *cmd, char *store, int store_sz, char *argv[]) {
     return argc;
 }
 
+/* Hand a SUSPENDED child its filesystem as this shell holds it (design
+ * decision 10). Through capabilities: copies of the root and the working
+ * directory, never wider than the shell's (hvfs_grant_fs), kept in *g until the
+ * child is gone, when sh_unendow gives them back and the child's access ends
+ * with them. On the uid path nothing is granted: the child connects itself, as
+ * it always has. Returns 0, or -1 having killed the child, which must then not
+ * be waited for: a child that cannot be given its filesystem does not run. */
+static int sh_endow(int pid, struct hvfs_grant *g) {
+    g->root.owned = 0;
+    g->cwd.owned  = 0;
+    if (!sh_capmode) return 0;
+    if (hvfs_grant_fs(pid, &sh_root, &sh_cwd, FS_R_ALL, g) == 0) return 0;
+    hvfs_grant_release(g);
+    (void)sys_kill(pid);
+    println("spawn: could not hand the program its filesystem; not run");
+    return -1;
+}
+
+static void sh_unendow(struct hvfs_grant *g) {
+    hvfs_grant_release(g);
+}
+
 /* If `cmd`'s first bare word names an executable file in /bin, load it and run it
  * as a child with the full argv, blocking until it exits; return 1. Returns 0
  * when the word is not a /bin file (or /bin does not exist yet, or the word
@@ -426,33 +492,39 @@ static int try_run_from_bin(const char *cmd) {
      * `run`, and a builtin like `cd` must not be shadowed by a stray /bin file. */
     for (const char *q = argv[0]; *q; q++) if (*q == '/') return 0;
 
-    uint32_t bin = sh_walk_abs_dir("/bin");
-    if (bin == (uint32_t)-1) return 0;                    /* no /bin yet: use builtins */
+    struct hvfs_obj d;
+    if (sh_walk_dir("/bin", &d) != 0) return 0;          /* no /bin yet: use builtins */
+    hvfs_release(&d);
 
-    struct fs_request  rq = {0};
-    struct fs_response rp;
-    rq.op = FS_OP_LOOKUP; rq.dir_ino = bin; fss_strcpy(rq.name, argv[0]);
-    if (fss_call(&rq, &rp) < 0 || rp.rc < 0 || rp.type != FS_TYPE_FILE) return 0;  /* not in /bin */
-    uint32_t ino = rp.ino;
+    char path[FS_NAME_MAX + 8];
+    int pn = 0;
+    for (const char *q = "/bin/"; *q; q++) path[pn++] = *q;
+    for (const char *q = argv[0]; *q && pn < (int)sizeof(path) - 1; q++) path[pn++] = *q;
+    path[pn] = '\0';
 
-    struct fs_request sq = {0};
-    sq.op = FS_OP_STAT; sq.ino = ino;
-    if (fss_call(&sq, &rp) < 0 || rp.rc < 0) { print(argv[0]); println(": stat failed"); return 1; }
-    uint32_t size = rp.size;
-    if (size == 0 || size > SH_MAX_IMAGE) { print(argv[0]); println(": bad image size"); return 1; }
+    struct hvfs_obj f;
+    uint32_t type, size;
+    if (sh_open(path, &f, &type, &size) != 0) return 0;  /* not in /bin */
+    if (type != FS_TYPE_FILE) { hvfs_release(&f); return 0; }
+    if (size == 0 || size > SH_MAX_IMAGE) { hvfs_release(&f); print(argv[0]); println(": bad image size"); return 1; }
 
     unsigned char *buf = malloc(size);
-    if (!buf) { print(argv[0]); println(": out of memory"); return 1; }
-    if (sh_read_file(ino, buf, size) != 0) { print(argv[0]); println(": read failed"); free(buf); return 1; }
+    if (!buf) { hvfs_release(&f); print(argv[0]); println(": out of memory"); return 1; }
+    int rr = sh_read_file(&f, buf, size);
+    hvfs_release(&f);
+    if (rr != 0) { print(argv[0]); println(": read failed"); free(buf); return 1; }
 
     int pid = sys_spawn_image(buf, size, argc, argv);
-    if (pid > 0) sys_task_resume(pid);   /* spawn leaves the child suspended */
     free(buf);                                            /* kernel already staged the image */
     if (pid < 0) { print(argv[0]); println(": failed to spawn"); return 1; }
+    struct hvfs_grant g;
+    if (sh_endow(pid, &g) != 0) return 1;
+    sys_task_resume(pid);                /* spawn leaves the child suspended */
     /* Block until the child finishes so its output lands before the next prompt.
      * SYS_ERR_INTR (a signal interrupted the wait) is retried; any other return
      * means the child is already gone. */
     while (sys_wait(pid) == SYS_ERR_INTR) { }
+    sh_unendow(&g);
     return 1;
 }
 
@@ -460,23 +532,21 @@ static int try_run_from_bin(const char *cmd) {
  * Returns 0 and sets out_buf + out_size, or -1 (message already printed) if the
  * name is not a /bin file or cannot be read. Shared by the pipeline runner. */
 static int sh_load_bin(const char *name, unsigned char **out_buf, uint32_t *out_size) {
-    uint32_t bin = sh_walk_abs_dir("/bin");
-    if (bin == (uint32_t)-1) return -1;
-    struct fs_request rq = {0};
-    struct fs_response rp;
-    rq.op = FS_OP_LOOKUP; rq.dir_ino = bin; fss_strcpy(rq.name, name);
-    if (fss_call(&rq, &rp) < 0 || rp.rc < 0 || rp.type != FS_TYPE_FILE) {
-        print(name); println(": not found in /bin"); return -1;
-    }
-    uint32_t ino = rp.ino;
-    struct fs_request sq = {0};
-    sq.op = FS_OP_STAT; sq.ino = ino;
-    if (fss_call(&sq, &rp) < 0 || rp.rc < 0) { print(name); println(": stat failed"); return -1; }
-    uint32_t size = rp.size;
-    if (size == 0 || size > SH_MAX_IMAGE) { print(name); println(": bad image size"); return -1; }
+    char path[FS_NAME_MAX + 8];
+    int pn = 0;
+    for (const char *q = "/bin/"; *q; q++) path[pn++] = *q;
+    for (const char *q = name; *q && pn < (int)sizeof(path) - 1; q++) path[pn++] = *q;
+    path[pn] = '\0';
+    struct hvfs_obj f;
+    uint32_t type, size;
+    if (sh_open(path, &f, &type, &size) != 0) { print(name); println(": not found in /bin"); return -1; }
+    if (type != FS_TYPE_FILE) { hvfs_release(&f); print(name); println(": not found in /bin"); return -1; }
+    if (size == 0 || size > SH_MAX_IMAGE) { hvfs_release(&f); print(name); println(": bad image size"); return -1; }
     unsigned char *buf = malloc(size);
-    if (!buf) { print(name); println(": out of memory"); return -1; }
-    if (sh_read_file(ino, buf, size) != 0) { print(name); println(": read failed"); free(buf); return -1; }
+    if (!buf) { hvfs_release(&f); print(name); println(": out of memory"); return -1; }
+    int rr = sh_read_file(&f, buf, size);
+    hvfs_release(&f);
+    if (rr != 0) { print(name); println(": read failed"); free(buf); return -1; }
     *out_buf = buf; *out_size = size;
     return 0;
 }
@@ -536,7 +606,8 @@ static int try_run_pipeline(const char *cmd) {
      * next (console at the ends). Load one image at a time (the kernel copies it at
      * spawn, so it can be freed immediately). */
     int pid[PL_MAX_STAGES];
-    for (int i = 0; i < nstage; i++) pid[i] = -1;
+    struct hvfs_grant grant[PL_MAX_STAGES];
+    for (int i = 0; i < nstage; i++) { pid[i] = -1; grant[i].root.owned = 0; grant[i].cwd.owned = 0; }
 
     for (int i = 0; i < nstage; i++) {
         char store[128];
@@ -550,6 +621,7 @@ static int try_run_pipeline(const char *cmd) {
         uint32_t in_slot  = (i > 0)          ? rslot[i - 1] : 0;   /* 0 = console */
         uint32_t out_slot = (i < nstage - 1) ? wslot[i]     : 0;
         pid[i] = sys_spawn_image_stdio(buf, size, argc, argv, in_slot, out_slot);
+        if (pid[i] > 0 && sh_endow(pid[i], &grant[i]) != 0) pid[i] = -1;
         if (pid[i] > 0) sys_task_resume(pid[i]);   /* spawn leaves the child suspended */
         free(buf);
         if (pid[i] < 0) { print(argv[0]); println(": failed to spawn"); }
@@ -562,6 +634,7 @@ static int try_run_pipeline(const char *cmd) {
     /* Wait for all spawned stages so their output lands before the next prompt. */
     for (int i = 0; i < nstage; i++)
         if (pid[i] > 0) while (sys_wait(pid[i]) == SYS_ERR_INTR) { }
+    for (int i = 0; i < nstage; i++) sh_unendow(&grant[i]);
 
     return 1;
 }
@@ -572,24 +645,21 @@ static int try_run_pipeline(const char *cmd) {
  * works once /usr/share/man is populated, and still works (from the built-in
  * table) on a bare kernel that ships none. */
 static int try_man_from_fs(const char *name) {
-    uint32_t dir = sh_walk_abs_dir("/usr/share/man");
-    if (dir == (uint32_t)-1) return 0;                    /* no /usr/share/man yet */
-
-    struct fs_request  rq = {0};
-    struct fs_response rp;
-    rq.op = FS_OP_LOOKUP; rq.dir_ino = dir; fss_strcpy(rq.name, name);
-    if (fss_call(&rq, &rp) < 0 || rp.rc < 0 || rp.type != FS_TYPE_FILE) return 0;
-    uint32_t ino = rp.ino;
-
-    struct fs_request sq = {0};
-    sq.op = FS_OP_STAT; sq.ino = ino;
-    if (fss_call(&sq, &rp) < 0 || rp.rc < 0) return 0;
-    uint32_t size = rp.size;
-    if (size == 0 || size > SH_MAX_IMAGE) return 0;
+    char path[FS_NAME_MAX + 20];
+    int pn = 0;
+    for (const char *q = "/usr/share/man/"; *q; q++) path[pn++] = *q;
+    for (const char *q = name; *q && pn < (int)sizeof(path) - 1; q++) path[pn++] = *q;
+    path[pn] = '\0';
+    struct hvfs_obj f;
+    uint32_t type, size;
+    if (sh_open(path, &f, &type, &size) != 0) return 0;  /* no page (or no /usr/share/man yet) */
+    if (type != FS_TYPE_FILE || size == 0 || size > SH_MAX_IMAGE) { hvfs_release(&f); return 0; }
 
     unsigned char *buf = malloc(size);
-    if (!buf) return 0;
-    if (sh_read_file(ino, buf, size) != 0) { free(buf); return 0; }
+    if (!buf) { hvfs_release(&f); return 0; }
+    int rr = sh_read_file(&f, buf, size);
+    hvfs_release(&f);
+    if (rr != 0) { free(buf); return 0; }
     /* The page is already formatted; emit it through the console server (with the
      * in-kernel fallback) like all other shell output — a raw sys_write(1) would be
      * swallowed while the ring-3 console_server owns the hardware. */
@@ -703,15 +773,11 @@ static int split2(const char *s, char *a, int amax, char *b, int bmax) {
     return n;
 }
 
-/* Look up `name` in the current directory. Returns its inode and (if type is
- * non-NULL) its FS_TYPE_*; returns (uint32_t)-1 if it does not exist. */
-static uint32_t sh_lookup(const char *name, uint32_t *type) {
-    struct fs_request  rq = {0};
-    struct fs_response rp;
-    rq.op = FS_OP_LOOKUP; rq.dir_ino = sh_cwd_ino; fss_strcpy(rq.name, name);
-    if (fss_call(&rq, &rp) < 0 || rp.rc < 0) return (uint32_t)-1;
-    if (type) *type = rp.type;
-    return rp.ino;
+/* Look up `name` (in the working directory, or a path) as an object the caller
+ * releases, with its FS_TYPE_* if `type` is non-NULL. 0, or -1 if it does not
+ * exist. */
+static int sh_lookup(const char *name, struct hvfs_obj *o, uint32_t *type) {
+    return sh_open(name, o, type, 0);
 }
 
 /* One command row in the general list: 3-space indent, name padded to a fixed
@@ -1468,19 +1534,6 @@ static void show_topic_help_us(const char *topic) {
     }
 }
 
-/* Send one filesystem request to a NAMED mount.
- *
- * fss_call() always talks to CAPSLOT_FS_EP and lazily connects; hvfs_rpc() takes
- * the slot but assumes the connection exists. Directory listing needs both
- * behaviours now that a path can name a mount other than the root one, so this
- * keeps the existing path byte-for-byte identical and routes anything else
- * through the walker's slot. Any hvfs failure is folded to -1, which is
- * fss_call's own "the transport failed" convention. */
-static int sh_dir_call(int slot, struct fs_request *rq, struct fs_response *rp) {
-    if (slot == CAPSLOT_FS_EP) return fss_call(rq, rp);
-    return (hvfs_rpc(slot, rq, rp) == 0) ? 0 : -1;
-}
-
 /* One mount's directory, listed. Split out of the `ls` builtin on 2026-09-06 so
  * that a PATH ARGUMENT could name a directory other than the cwd -- `ls /bin`
  * answered "Unknown command" until then, because the builtin matched the literal
@@ -1492,7 +1545,7 @@ static int sh_dir_call(int slot, struct fs_request *rq, struct fs_response *rp) 
  * point is listed by the server that owns it rather than by whichever server the
  * shell last spoke to. The cwd case passes CAPSLOT_FS_EP, which is what it has
  * always used. */
-static void sh_list_dir(int dir_slot, uint32_t dir_ino, int long_fmt) {
+static void sh_list_dir(const struct hvfs_obj *d, int long_fmt) {
 
     /* Entries are collected before anything is printed. Column widths are a
      * property of the whole listing -- the widest name decides the layout --
@@ -1509,14 +1562,14 @@ static void sh_list_dir(int dir_slot, uint32_t dir_ino, int long_fmt) {
     struct fs_request  rq = {0};
     struct fs_response rp;
     for (uint32_t idx = 0; idx < 4096; idx++) {
-        rq.op = FS_OP_READDIR; rq.dir_ino = dir_ino; rq.offset = idx;
+        rq.op = FS_OP_READDIR; rq.dir_ino = d->ino; rq.offset = idx;
         /* Distinguish the ways this loop can stop: a broken IPC path, a
          * directory you cannot read, and a genuine end-of-directory once read
          * to the same silence, so a failure was indistinguishable from an
          * empty directory. Each failure now reports itself (below); only
          * running off the end is a normal stop, after which an empty directory
          * prints nothing at all. */
-        int rc = sh_dir_call(dir_slot, &rq, &rp);
+        int rc = fss_call_on(d, &rq, &rp);
         if (rc < 0) {
             if (!fss_connected) println("ls: spawn fs_server first");
             else { print("ls: fs_server call failed ("); print(sys_strerror(rc)); println(")"); }
@@ -1524,9 +1577,9 @@ static void sh_list_dir(int dir_slot, uint32_t dir_ino, int long_fmt) {
         }
         /* END OF DIRECTORY, and it now has a code of its own.
          *
-         * This used to test SYS_ERR_NOENT and reason that "sh_cwd_ino is a
+         * This used to test SYS_ERR_NOENT and reason that "sh_cwd is a
          * directory `cd` already verified exists, so for this caller it can
-         * only be end-of-directory". That is untrue of sh_cwd_ino's INITIAL
+         * only be end-of-directory". That is untrue of the working directory's INITIAL
          * value, 0, which no `cd` ever verified -- and untrue again if the
          * directory is removed underneath us. The server answered NOENT both
          * for "past the last entry" and for "I could not stat that
@@ -1541,7 +1594,7 @@ static void sh_list_dir(int dir_slot, uint32_t dir_ino, int long_fmt) {
         if (rp.rc == FS_RC_ENDDIR) break;
         if (rp.rc < 0) {
             /* NOENT here is about the DIRECTORY, not about an entry: the
-             * server could not stat sh_cwd_ino. Saying "no such object"
+             * server could not stat the working directory. Saying "no such object"
              * would be true and useless, since the object the user is
              * standing in is the one that is gone. */
             if (rp.rc == SYS_ERR_INVAL)
@@ -1569,12 +1622,30 @@ static void sh_list_dir(int dir_slot, uint32_t dir_ino, int long_fmt) {
          * you cannot stat. */
         struct fs_request  sq = {0};
         struct fs_response sp;
-        sq.op = FS_OP_STAT; sq.ino = rp.ino;
-        if (sh_dir_call(dir_slot, &sq, &sp) == 0 && sp.rc == 0) {
-            ent[n].mode    = sp.mode;
-            ent[n].uid     = sp.uid;
-            ent[n].size    = sp.size;
-            ent[n].stat_ok = 1;
+        if (d->cap) {
+            /* Through a capability an entry is reached by name, not inode: a
+             * one-name walk from the directory's capability, given back at
+             * once. */
+            struct hvfs_obj e;
+            char leaf[FS_NAME_MAX];
+            if (hvfs_lookup(rp.name, d, 0, &e, leaf) == 0) {
+                sq.op = FS_OP_STAT;
+                if (fss_call_on(&e, &sq, &sp) == 0 && sp.rc == 0) {
+                    ent[n].mode    = sp.mode;
+                    ent[n].uid     = sp.uid;
+                    ent[n].size    = sp.size;
+                    ent[n].stat_ok = 1;
+                }
+            }
+            hvfs_release(&e);
+        } else {
+            sq.op = FS_OP_STAT; sq.ino = rp.ino;
+            if (fss_call_on(d, &sq, &sp) == 0 && sp.rc == 0) {
+                ent[n].mode    = sp.mode;
+                ent[n].uid     = sp.uid;
+                ent[n].size    = sp.size;
+                ent[n].stat_ok = 1;
+            }
         }
         n++;
     }
@@ -1888,11 +1959,15 @@ static void handle_command(char *cmd) {
         if (sh_normalize(arg, norm) != 0) {
             println("cd: path too long");
         } else {
-            uint32_t ino = sh_walk_abs_dir(norm);
-            if (ino == (uint32_t)-1) {
+            /* Walked from the root by its absolute path, never from the old
+             * working directory, so the old one's capability can be given back
+             * without taking the new one with it. */
+            struct hvfs_obj nd;
+            if (sh_walk_dir(norm, &nd) != 0) {
                 print("cd: not a directory: "); println(arg);
             } else {
-                sh_cwd_ino = ino;
+                hvfs_release(&sh_cwd);
+                sh_cwd = nd;
                 fss_strcpy(sh_cwd_path, norm);
             }
         }
@@ -1919,8 +1994,7 @@ static void handle_command(char *cmd) {
             while (*arg == ' ') arg++;
         }
 
-        int      dir_slot = CAPSLOT_FS_EP;
-        uint32_t dir_ino  = sh_cwd_ino;
+        struct hvfs_obj dir = sh_cwd;   /* lent unless a path is named */
         int      ok       = 1;
 
         if (*arg != '\0') {
@@ -1932,10 +2006,10 @@ static void handle_command(char *cmd) {
                 println("ls: no connection to the filesystem server");
                 ok = 0;
             } else {
-                int      slot;
-                uint32_t ino;
+                struct hvfs_obj o;
                 char     leaf[FS_NAME_MAX];
-                if (hvfs_walk(norm, 0u, CAPSLOT_FS_EP, &slot, &ino, leaf) != 0) {
+                if (hvfs_lookup(norm, &sh_cwd, 0, &o, leaf) != 0) {
+                    hvfs_release(&o);
                     print("ls: no such directory: "); println(arg);
                     ok = 0;
                 } else {
@@ -1945,35 +2019,38 @@ static void handle_command(char *cmd) {
                      * separate facts -- the same reason FS_RC_ENDDIR exists. */
                     struct fs_request  rq = {0};
                     struct fs_response rp;
-                    rq.op = FS_OP_STAT; rq.ino = ino;
-                    if (sh_dir_call(slot, &rq, &rp) < 0 || rp.rc < 0) {
+                    rq.op = FS_OP_STAT; rq.ino = o.ino;
+                    if (fss_call_on(&o, &rq, &rp) < 0 || rp.rc < 0) {
                         print("ls: cannot stat "); println(arg);
+                        hvfs_release(&o);
                         ok = 0;
                     } else if (rp.type != FS_TYPE_DIR) {
                         print("ls: not a directory: "); println(arg);
+                        hvfs_release(&o);
                         ok = 0;
                     } else {
-                        dir_slot = slot;
-                        dir_ino  = ino;
+                        dir = o;
                     }
                 }
             }
         }
 
-        if (ok) sh_list_dir(dir_slot, dir_ino, long_fmt);
+        if (ok) sh_list_dir(&dir, long_fmt);
+        if (ok) hvfs_release(&dir);       /* a no-op for the lent working directory */
 
     } else if (strncmp(cmd, "cat ", 4) == 0) {
         const char *name = cmd + 4;
         struct fs_request  rq = {0};
         struct fs_response rp;
-        rq.op = FS_OP_LOOKUP; rq.dir_ino = sh_cwd_ino;
-        fss_strcpy(rq.name, name);
-        if (fss_call(&rq, &rp) < 0 || rp.rc < 0) {
+        struct hvfs_obj f;
+        if (sh_lookup(name, &f, 0) != 0) {
             println("cat: file not found");
         } else {
-            rq.op = FS_OP_READ; rq.ino = rp.ino;
+            rq.op = FS_OP_READ; rq.ino = f.ino;
             rq.offset = 0; rq.len = FS_IO_MAX;
-            if (fss_call(&rq, &rp) < 0 || rp.rc < 0) {
+            int rt = fss_call_on(&f, &rq, &rp);
+            hvfs_release(&f);
+            if (rt < 0 || rp.rc < 0) {
                 println("cat: read failed");
             } else {
                 int l = rp.rc < FS_IO_MAX ? rp.rc : FS_IO_MAX - 1;
@@ -1986,27 +2063,27 @@ static void handle_command(char *cmd) {
         const char *name = cmd + 6;
         struct fs_request  rq = {0};
         struct fs_response rp;
-        rq.op = FS_OP_MKDIR; rq.dir_ino = sh_cwd_ino;
+        rq.op = FS_OP_MKDIR; rq.dir_ino = sh_cwd.ino;
         fss_strcpy(rq.name, name);
-        int t = fss_call(&rq, &rp);
+        int t = fss_call_on(&sh_cwd, &rq, &rp);
         if (t < 0 || rp.rc < 0) fs_fail("mkdir", t, &rp);
         else { print("mkdir: created "); println(name); }
     } else if (strncmp(cmd, "rm ", 3) == 0) {
         const char *name = cmd + 3;
         struct fs_request  rq = {0};
         struct fs_response rp;
-        rq.op = FS_OP_DELETE; rq.dir_ino = sh_cwd_ino;
+        rq.op = FS_OP_DELETE; rq.dir_ino = sh_cwd.ino;
         fss_strcpy(rq.name, name);
-        int t = fss_call(&rq, &rp);
+        int t = fss_call_on(&sh_cwd, &rq, &rp);
         if (t < 0 || rp.rc < 0) fs_fail("rm", t, &rp);
         else { print("rm: removed "); println(name); }
     } else if (strncmp(cmd, "touch ", 6) == 0) {
         const char *name = cmd + 6;
         struct fs_request  rq = {0};
         struct fs_response rp;
-        rq.op = FS_OP_CREATE; rq.dir_ino = sh_cwd_ino;
+        rq.op = FS_OP_CREATE; rq.dir_ino = sh_cwd.ino;
         fss_strcpy(rq.name, name);
-        int t = fss_call(&rq, &rp);
+        int t = fss_call_on(&sh_cwd, &rq, &rp);
         if (t < 0 || rp.rc < 0) fs_fail("touch", t, &rp);
         else { print("touch: created "); println(name); }
     } else if (strncmp(cmd, "ln ", 3) == 0) {
@@ -2028,19 +2105,23 @@ static void handle_command(char *cmd) {
             println("ln: usage: ln <existing file> <new name>");
         } else {
             uint32_t type;
-            uint32_t ino = sh_lookup(oldn, &type);
-            if (ino == (uint32_t)-1) {
+            struct hvfs_obj src;
+            if (sh_lookup(oldn, &src, &type) != 0) {
                 print("ln: "); print(oldn); println(": not found");
             } else if (type != FS_TYPE_FILE) {
+                hvfs_release(&src);
                 /* fs_server refuses this too; saying so here is the clearer
                  * message, since a directory has no second name by design. */
                 print("ln: "); print(oldn); println(": not a regular file");
             } else {
                 struct fs_request  rq = {0};
                 struct fs_response rp;
-                rq.op = FS_OP_LINK; rq.ino = ino; rq.dir_ino = sh_cwd_ino;
+                /* A link names its source by inode, which a capability never
+                 * does, so through capabilities the server refuses it. */
+                rq.op = FS_OP_LINK; rq.ino = src.ino; rq.dir_ino = sh_cwd.ino;
                 fss_strcpy(rq.name, newn);
-                int t = fss_call(&rq, &rp);
+                int t = fss_call_on(&sh_cwd, &rq, &rp);
+                hvfs_release(&src);
                 if (t < 0 || rp.rc < 0) fs_fail("ln", t, &rp);
                 else { print("ln: "); print(newn); print(" -> "); println(oldn); }
             }
@@ -2071,13 +2152,15 @@ static void handle_command(char *cmd) {
              * the digits it could read would apply a mode nobody typed. */
             println("chmod: usage: chmod <octal mode> <name>");
         } else {
-            uint32_t type, ino = sh_lookup(p, &type);
-            if (ino == (uint32_t)-1) { println("chmod: not found"); }
+            uint32_t type;
+            struct hvfs_obj f;
+            if (sh_lookup(p, &f, &type) != 0) { println("chmod: not found"); }
             else {
                 struct fs_request  rq = {0};
                 struct fs_response rp;
-                rq.op = FS_OP_CHMOD; rq.ino = ino; rq.mode = mode & 07777u;
-                int t = fss_call(&rq, &rp);
+                rq.op = FS_OP_CHMOD; rq.ino = f.ino; rq.mode = mode & 07777u;
+                int t = fss_call_on(&f, &rq, &rp);
+                hvfs_release(&f);
                 if (t < 0 || rp.rc < 0) fs_fail("chmod", t, &rp);
                 else {
                     print("chmod: "); print(p); print(" is now 0");
@@ -2107,8 +2190,9 @@ static void handle_command(char *cmd) {
              * are uid-only (SECURITY.md S75). */
             println("chown: usage: chown <uid>[:<gid>] <name>");
         } else {
-            uint32_t type, ino = sh_lookup(p, &type);
-            if (ino == (uint32_t)-1) { println("chown: not found"); }
+            uint32_t type;
+            struct hvfs_obj f;
+            if (sh_lookup(p, &f, &type) != 0) { println("chown: not found"); }
             else {
                 /* The gid is READ BACK rather than defaulted when it was not
                  * typed. FS_OP_CHOWN writes both fields, so passing 0 for an
@@ -2117,16 +2201,17 @@ static void handle_command(char *cmd) {
                  * is the opposite of what the operator asked for. */
                 struct fs_request  sq = {0};
                 struct fs_response sp;
-                sq.op = FS_OP_STAT; sq.ino = ino;
-                int st_rc = fss_call(&sq, &sp);
-                if (st_rc < 0 || sp.rc < 0) { fs_fail("chown", st_rc, &sp); }
+                sq.op = FS_OP_STAT; sq.ino = f.ino;
+                int st_rc = fss_call_on(&f, &sq, &sp);
+                if (st_rc < 0 || sp.rc < 0) { hvfs_release(&f); fs_fail("chown", st_rc, &sp); }
                 else {
                     struct fs_request  rq = {0};
                     struct fs_response rp;
-                    rq.op = FS_OP_CHOWN; rq.ino = ino;
+                    rq.op = FS_OP_CHOWN; rq.ino = f.ino;
                     rq.arg_uid = nuid;
                     rq.arg_gid = have_gid ? ngid : sp.gid;
-                    int t = fss_call(&rq, &rp);
+                    int t = fss_call_on(&f, &rq, &rp);
+                    hvfs_release(&f);
                     if (t < 0 || rp.rc < 0) fs_fail("chown", t, &rp);
                     else {
                         print("chown: "); print(p); print(" is now uid=");
@@ -2138,13 +2223,15 @@ static void handle_command(char *cmd) {
         }
     } else if (strncmp(cmd, "stat ", 5) == 0) {
         const char *name = cmd + 5; while (*name == ' ') name++;
-        uint32_t type, ino = sh_lookup(name, &type);
-        if (ino == (uint32_t)-1) { println("stat: not found"); }
+        uint32_t type;
+        struct hvfs_obj f;
+        if (sh_lookup(name, &f, &type) != 0) { println("stat: not found"); }
         else {
             struct fs_request  sq = {0};
             struct fs_response sp;
-            sq.op = FS_OP_STAT; sq.ino = ino;
-            int t = fss_call(&sq, &sp);
+            sq.op = FS_OP_STAT; sq.ino = f.ino;
+            int t = fss_call_on(&f, &sq, &sp);
+            hvfs_release(&f);
             if (t < 0 || sp.rc < 0) fs_fail("stat", t, &sp);
             else {
                 /* Labels padded to a common width so the values form a
@@ -2173,21 +2260,23 @@ static void handle_command(char *cmd) {
                 println("");
                 print("  "); print_pad("Links:", 8); print_decimal(sp.links ? sp.links : 1);
                 println("");
-                print("  "); print_pad("Inode:", 8); print_decimal(ino); println("");
+                print("  "); print_pad("Inode:", 8); print_decimal(sp.ino); println("");
             }
         }
     } else if (strncmp(cmd, "wc ", 3) == 0) {
         const char *name = cmd + 3; while (*name == ' ') name++;
-        uint32_t type, ino = sh_lookup(name, &type);
-        if (ino == (uint32_t)-1 || type != FS_TYPE_FILE) { println("wc: not a file"); }
+        uint32_t type;
+        struct hvfs_obj f;
+        int found = (sh_lookup(name, &f, &type) == 0);
+        if (!found || type != FS_TYPE_FILE) { if (found) hvfs_release(&f); println("wc: not a file"); }
         else {
             uint32_t off = 0, lines = 0, words = 0, bytes = 0;
             int inword = 0, ok = 1;
             for (;;) {
                 struct fs_request  rq = {0};
                 struct fs_response rp;
-                rq.op = FS_OP_READ; rq.ino = ino; rq.offset = off; rq.len = FS_IO_MAX;
-                if (fss_call(&rq, &rp) < 0 || rp.rc < 0) { ok = 0; break; }
+                rq.op = FS_OP_READ; rq.ino = f.ino; rq.offset = off; rq.len = FS_IO_MAX;
+                if (fss_call_on(&f, &rq, &rp) < 0 || rp.rc < 0) { ok = 0; break; }
                 uint32_t got = (uint32_t)rp.rc;
                 if (got > FS_IO_MAX) got = FS_IO_MAX;
                 if (got == 0) break;
@@ -2200,6 +2289,7 @@ static void handle_command(char *cmd) {
                 }
                 off += got;
             }
+            hvfs_release(&f);
             if (!ok) println("wc: read failed");
             else {
                 print("  "); print_decimal(lines);
@@ -2213,16 +2303,22 @@ static void handle_command(char *cmd) {
         if (split2(cmd + 3, src, sizeof src, dst, sizeof dst) != 2) {
             println("cp: usage: cp <src> <dst>");
         } else {
-            uint32_t stype, sino = sh_lookup(src, &stype);
-            if (sino == (uint32_t)-1 || stype != FS_TYPE_FILE) { println("cp: source not a file"); }
+            uint32_t stype;
+            struct hvfs_obj so, dobj;
+            int sfound = (sh_lookup(src, &so, &stype) == 0);
+            if (!sfound || stype != FS_TYPE_FILE) { if (sfound) hvfs_release(&so); println("cp: source not a file"); }
             else {
                 struct fs_request  cq = {0};
                 struct fs_response cprp;
-                cq.op = FS_OP_CREATE; cq.dir_ino = sh_cwd_ino; fss_strcpy(cq.name, dst);
-                int ct = fss_call(&cq, &cprp);
-                if (ct < 0 || cprp.rc < 0) { fs_fail("cp", ct, &cprp); }
+                cq.op = FS_OP_CREATE; cq.dir_ino = sh_cwd.ino; fss_strcpy(cq.name, dst);
+                int ct = fss_call_on(&sh_cwd, &cq, &cprp);
+                /* The new file is looked up afresh rather than taken from the
+                 * create's reply: through capabilities the reply's inode names
+                 * nothing this shell can send to. */
+                if (ct >= 0 && cprp.rc >= 0 && sh_lookup(dst, &dobj, 0) != 0) { ct = -1; }
+                if (ct < 0 || cprp.rc < 0) { hvfs_release(&so); fs_fail("cp", ct, &cprp); }
                 else {
-                    uint32_t dino = cprp.ino, off = 0;
+                    uint32_t off = 0;
                     int ok = 1, ft = 0;
                     /* Hoisted out of the loop so the reply that FAILED is still
                      * in scope at the report below. A copy that dies half way
@@ -2232,22 +2328,24 @@ static void handle_command(char *cmd) {
                     const struct fs_response *fail = 0;
                     for (;;) {
                         struct fs_request  rq = {0};
-                        rq.op = FS_OP_READ; rq.ino = sino; rq.offset = off; rq.len = FS_IO_MAX;
-                        ft = fss_call(&rq, &rp);
+                        rq.op = FS_OP_READ; rq.ino = so.ino; rq.offset = off; rq.len = FS_IO_MAX;
+                        ft = fss_call_on(&so, &rq, &rp);
                         if (ft < 0 || rp.rc < 0) { fail = &rp; ok = 0; break; }
                         uint32_t got = (uint32_t)rp.rc;
                         if (got > FS_IO_MAX) got = FS_IO_MAX;
                         if (got == 0) break;
                         struct fs_request  wq = {0};
-                        wq.op = FS_OP_WRITE; wq.ino = dino; wq.offset = off; wq.len = got;
+                        wq.op = FS_OP_WRITE; wq.ino = dobj.ino; wq.offset = off; wq.len = got;
                         memcpy(wq.data, rp.data, got);
-                        ft = fss_call(&wq, &wp);
+                        ft = fss_call_on(&dobj, &wq, &wp);
                         if (ft < 0 || wp.rc < 0) { fail = &wp; ok = 0; break; }
                         /* WRITE writes at most one block per call, so it may store
                          * fewer bytes than offered; advance by what it took and
                          * re-read the tail on the next pass. */
                         off += (uint32_t)wp.rc;
                     }
+                    hvfs_release(&so);
+                    hvfs_release(&dobj);
                     if (ok) { print("cp: copied to "); println(dst); }
                     else    { fs_fail("cp", ft, fail); }
                 }
@@ -2261,11 +2359,11 @@ static void handle_command(char *cmd) {
             struct fs_request  rq = {0};
             struct fs_response rp;
             rq.op = FS_OP_RENAME;
-            rq.dir_ino = sh_cwd_ino;   /* old parent */
-            rq.ino     = sh_cwd_ino;   /* new parent (same directory) */
+            rq.dir_ino = sh_cwd.ino;   /* old parent */
+            rq.ino     = sh_cwd.ino;   /* new parent (the same: 0 through a capability) */
             fss_strcpy(rq.name, src);
             fss_strcpy((char *)rq.data, dst);
-            int t = fss_call(&rq, &rp);
+            int t = fss_call_on(&sh_cwd, &rq, &rp);
             if (t < 0 || rp.rc < 0) fs_fail("mv", t, &rp);
             else { print("mv: "); print(src); print(" -> "); println(dst); }
         }
@@ -2287,22 +2385,24 @@ static void handle_command(char *cmd) {
 
             struct fs_request  rq = {0};
             struct fs_response rp;
-            rq.op = FS_OP_LOOKUP; rq.dir_ino = sh_cwd_ino;
-            fss_strcpy(rq.name, fname);
-            if (fss_call(&rq, &rp) < 0 || rp.rc < 0) {
-                /* file doesn't exist yet — create it */
-                rq.op = FS_OP_CREATE; rq.dir_ino = sh_cwd_ino;
+            struct hvfs_obj f;
+            if (sh_lookup(fname, &f, 0) != 0) {
+                /* file doesn't exist yet — create it, then look it up: through
+                 * capabilities the create's reply names nothing to write to */
+                rq.op = FS_OP_CREATE; rq.dir_ino = sh_cwd.ino;
                 fss_strcpy(rq.name, fname);
-                int ct = fss_call(&rq, &rp);
+                int ct = fss_call_on(&sh_cwd, &rq, &rp);
                 if (ct < 0 || rp.rc < 0) { fs_fail("echo", ct, &rp); goto echo_done; }
+                if (sh_lookup(fname, &f, 0) != 0) { println("echo: created, but cannot open it"); goto echo_done; }
             }
             { /* write the text */
                 uint32_t wlen = (uint32_t)tlen;
                 if (wlen > FS_IO_MAX) wlen = FS_IO_MAX;
-                rq.op = FS_OP_WRITE; rq.ino = rp.ino;
+                rq.op = FS_OP_WRITE; rq.ino = f.ino;
                 rq.offset = 0; rq.len = wlen;
                 memcpy(rq.data, text, wlen);
-                int wt = fss_call(&rq, &rp);
+                int wt = fss_call_on(&f, &rq, &rp);
+                hvfs_release(&f);
                 if (wt < 0 || rp.rc < 0) fs_fail("echo", wt, &rp);
             }
             echo_done:;
@@ -2503,31 +2603,48 @@ static void handle_command(char *cmd) {
              * REPORTED BUT NOT FATAL. The account exists either way and saying
              * so twice would be a lie in one direction or the other: `useradd`
              * succeeded, the home did not, and an operator needs both facts. */
-            uint32_t htype, hino = sh_lookup("/home", &htype);
-            if (hino == (uint32_t)-1 || htype != FS_TYPE_DIR) {
+            uint32_t htype;
+            struct hvfs_obj home;
+            int hfound = (sh_lookup("/home", &home, &htype) == 0);
+            if (!hfound || htype != FS_TYPE_DIR) {
+                if (hfound) hvfs_release(&home);
                 println("useradd: no /home; the account has no home directory");
             } else {
                 struct fs_request  mq = {0};
                 struct fs_response mp;
-                mq.op = FS_OP_MKDIR; mq.dir_ino = hino;
+                mq.op = FS_OP_MKDIR; mq.dir_ino = home.ino;
                 fss_strcpy(mq.name, newname);
-                int mt = fss_call(&mq, &mp);
+                int mt = fss_call_on(&home, &mq, &mp);
+                hvfs_release(&home);
+                /* The new directory is looked up afresh: through capabilities
+                 * the mkdir's reply names nothing this shell can send to. (Owner
+                 * and mode are the uid path's; through capabilities chown and
+                 * chmod wait for phase 1b step 4, and say so.) */
+                char hpath[FS_NAME_MAX + 8];
+                int hn = 0;
+                for (const char *q = "/home/"; *q; q++) hpath[hn++] = *q;
+                for (const char *q = newname; *q && hn < (int)sizeof(hpath) - 1; q++) hpath[hn++] = *q;
+                hpath[hn] = '\0';
+                struct hvfs_obj hd;
                 if (mt < 0 || mp.rc < 0) {
                     fs_fail("useradd: home", mt, &mp);
+                } else if (sh_lookup(hpath, &hd, 0) != 0) {
+                    println("useradd: home created, but cannot open it");
                 } else {
                     struct fs_request  cq = {0};
                     struct fs_response cp;
-                    cq.op = FS_OP_CHOWN; cq.ino = mp.ino;
+                    cq.op = FS_OP_CHOWN; cq.ino = hd.ino;
                     cq.arg_uid = newuid; cq.arg_gid = 100;
-                    int ct = fss_call(&cq, &cp);
+                    int ct = fss_call_on(&hd, &cq, &cp);
                     if (ct < 0 || cp.rc < 0) fs_fail("useradd: home", ct, &cp);
                     else {
                         struct fs_request  pq = {0};
                         struct fs_response pp;
-                        pq.op = FS_OP_CHMOD; pq.ino = mp.ino; pq.mode = 0700u;
-                        (void)fss_call(&pq, &pp);
+                        pq.op = FS_OP_CHMOD; pq.ino = hd.ino; pq.mode = 0700u;
+                        (void)fss_call_on(&hd, &pq, &pp);
                         print("useradd: created /home/"); println(newname);
                     }
+                    hvfs_release(&hd);
                 }
             }
         }
@@ -2649,6 +2766,9 @@ static void handle_command(char *cmd) {
      * into a task now: it reads the file over fs_server and hands the bytes
      * to SYS_SPAWN_IMAGE, which validates them with the same loader. */
     } else if (strcmp(cmd, "spawn") == 0 || strncmp(cmd, "spawn ", 6) == 0) {
+        /* Not waited for, so nothing could ever give a grant back: a task this
+         * starts gets no filesystem from the shell (sh_endow is not called),
+         * and through capabilities it has none. Fail closed. */
         int pid;
         if (cmd[5] == ' ') {
             const char *name = cmd + 6;
@@ -2680,51 +2800,33 @@ static void handle_command(char *cmd) {
          * the file's contents. */
         const char *name = cmd + 4;
         while (*name == ' ') name++;
-        struct fs_request  rq = {0};
-        struct fs_response rp;
 
-        /* Resolve the file's parent directory and final component. A name with a
-         * '/' is a path: the parent is everything up to the last '/', walked from
-         * the root for an absolute path (so `run /bin/hello` works), and the
-         * component is the tail. A bare name resolves in the cwd. */
-        const char *slash = 0;
-        for (const char *q = name; *q; q++) if (*q == '/') slash = q;
-        uint32_t dir_ino = sh_cwd_ino;
-        const char *leaf = name;
-        if (slash) {
-            char parent[FS_NAME_MAX * 4];
-            int  n = 0;
-            if (slash == name) { parent[n++] = '/'; }          /* "/hello" -> parent "/" */
-            else for (const char *q = name; q < slash && n < (int)sizeof(parent) - 1; q++) parent[n++] = *q;
-            parent[n] = '\0';
-            dir_ino = sh_walk_abs_dir(parent);
-            if (dir_ino == (uint32_t)-1) { println("run: directory not found"); return; }
-            leaf = slash + 1;
-        }
-        rq.op = FS_OP_LOOKUP; rq.dir_ino = dir_ino;
-        fss_strcpy(rq.name, leaf);
-        if (fss_call(&rq, &rp) < 0 || rp.rc < 0 || rp.type != FS_TYPE_FILE) {
+        /* A bare name resolves in the working directory, a path (absolute or
+         * relative) as it is written. */
+        struct hvfs_obj f;
+        uint32_t type, size;
+        if (sh_open(name, &f, &type, &size) != 0) {
             println("run: file not found (is fs_server running? try: spawn fs_server)");
             return;
         }
-        uint32_t ino = rp.ino;
-
-        struct fs_request sq = {0};
-        sq.op = FS_OP_STAT; sq.ino = ino;
-        if (fss_call(&sq, &rp) < 0 || rp.rc < 0) { println("run: stat failed"); return; }
-        uint32_t size = rp.size;
-        if (size == 0 || size > SH_MAX_IMAGE) { println("run: bad image size"); return; }
+        if (type != FS_TYPE_FILE) { hvfs_release(&f); println("run: not a regular file"); return; }
+        if (size == 0 || size > SH_MAX_IMAGE) { hvfs_release(&f); println("run: bad image size"); return; }
 
         unsigned char *buf = malloc(size);
-        if (!buf) { println("run: out of memory"); return; }
-        if (sh_read_file(ino, buf, size) != 0) { println("run: read failed"); free(buf); return; }
+        if (!buf) { hvfs_release(&f); println("run: out of memory"); return; }
+        int rr = sh_read_file(&f, buf, size);
+        hvfs_release(&f);
+        if (rr != 0) { println("run: read failed"); free(buf); return; }
 
         int pid = sys_spawn_image(buf, size, 0, 0);
-        if (pid > 0) sys_task_resume(pid);   /* spawn leaves the child suspended */
         free(buf);                                 /* kernel already staged the image */
         if (pid <= 0) { println("run: exec failed (not a valid program image?)"); return; }
+        struct hvfs_grant g;
+        if (sh_endow(pid, &g) != 0) return;
+        sys_task_resume(pid);                      /* spawn leaves the child suspended */
         print("run: pid="); print_decimal(pid); println("");
-        sys_wait(pid);
+        while (sys_wait(pid) == SYS_ERR_INTR) { }
+        sh_unendow(&g);
         println("run: done");
     } else if (strncmp(cmd, "fss", 3) == 0) {
         if (strcmp(cmd, "fss_connect") == 0 || strcmp(cmd, "fss") == 0) {
@@ -2747,7 +2849,7 @@ static void handle_command(char *cmd) {
                  * transport failing, the server refusing and the directory
                  * ending are separate facts and each is now reported as itself.
                  * See FS_RC_ENDDIR in include/fs_proto.h. */
-                if (fss_call(&req, &rep) < 0) { err = -1; break; }
+                if (fss_call_on(&sh_root, &req, &rep) < 0) { err = -1; break; }
                 if (rep.rc == FS_RC_ENDDIR) break;
                 if (rep.rc < 0) { err = rep.rc; break; }
                 print("  "); print(rep.name);
@@ -2761,16 +2863,18 @@ static void handle_command(char *cmd) {
             const char *name = cmd + 8;
             struct fs_request  req = {0};
             struct fs_response rep;
-            req.op      = FS_OP_LOOKUP;
-            req.dir_ino = 0;
-            fss_strcpy(req.name, name);
-            if (fss_call(&req, &rep) == 0 && rep.rc == 0) {
-                uint32_t ino = rep.ino;
+            char path[FS_NAME_MAX + 2];
+            path[0] = '/';
+            fss_strcpy(path + 1, name);
+            struct hvfs_obj f;
+            if (fss_strlen(name) < FS_NAME_MAX && sh_open(path, &f, 0, 0) == 0) {
                 req.op     = FS_OP_READ;
-                req.ino    = ino;
+                req.ino    = f.ino;
                 req.offset = 0;
                 req.len    = FS_IO_MAX;
-                if (fss_call(&req, &rep) == 0 && rep.rc > 0) {
+                int rt = fss_call_on(&f, &req, &rep);
+                hvfs_release(&f);
+                if (rt == 0 && rep.rc > 0) {
                     int l = rep.rc < FS_IO_MAX ? rep.rc : FS_IO_MAX - 1;
                     rep.data[l] = 0;
                     print((char *)rep.data);
@@ -2789,18 +2893,21 @@ static void handle_command(char *cmd) {
                 const char *content = space + 1;
                 struct fs_request  req = {0};
                 struct fs_response rep;
-                req.op      = FS_OP_LOOKUP;
-                req.dir_ino = 0;
-                fss_strcpy(req.name, fname);
-                if (fss_call(&req, &rep) == 0 && rep.rc == 0) {
+                char path[FS_NAME_MAX + 2];
+                path[0] = '/';
+                struct hvfs_obj f;
+                int ok = fss_strlen(fname) < FS_NAME_MAX;
+                if (ok) fss_strcpy(path + 1, fname);
+                if (ok && sh_open(path, &f, 0, 0) == 0) {
                     req.op     = FS_OP_WRITE;
-                    req.ino    = rep.ino;
+                    req.ino    = f.ino;
                     req.offset = 0;
                     int wlen = fss_strlen(content);
                     if (wlen > FS_IO_MAX) wlen = FS_IO_MAX;
                     req.len = (uint32_t)wlen;
                     fss_strcpy((char *)req.data, content);
-                    fss_call(&req, &rep);
+                    fss_call_on(&f, &req, &rep);
+                    hvfs_release(&f);
                     print("wrote ");
                     print_decimal(rep.rc > 0 ? rep.rc : 0);
                     println(" bytes to userspace FS");
@@ -2815,9 +2922,9 @@ static void handle_command(char *cmd) {
             struct fs_request  req = {0};
             struct fs_response rep;
             req.op      = FS_OP_CREATE;
-            req.dir_ino = 0;
+            req.dir_ino = sh_root.ino;
             fss_strcpy(req.name, name);
-            if (fss_call(&req, &rep) == 0 && rep.rc == 0) {
+            if (fss_call_on(&sh_root, &req, &rep) == 0 && rep.rc == 0) {
                 print("created: "); println(name);
             } else {
                 println("create failed");

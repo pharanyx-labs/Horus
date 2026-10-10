@@ -152,8 +152,9 @@ line need no capability, and the read side is refused once `console_server` owns
 - **No storage beyond IDE, SD and eMMC.** A SATA drive is identified but not read, and there is no
   NVMe.
 - **No USB**, and so no keyboard on a machine without PS/2 emulation.
-- **Programs still reach files by user id and mode.** The capability path is built in `fs_server`,
-  but no client walks with capabilities yet (filesystem phase 1b, step 2).
+- **Programs still reach files by user id and mode.** The capability path is built, in `fs_server`
+  and in the shell and the POSIX layer, but nothing hands a session a root capability until
+  filesystem phase 1b step 3.
 - **No RAM above 4 GiB.** A machine's memory up to 4 GiB is used; what lies above is reported
   and left alone.
 - **No threads, job control, `/proc`, wall clock or kernel address randomisation.**
@@ -168,8 +169,8 @@ In order, from [`docs/ROADMAP.md`](docs/ROADMAP.md):
 1. **Filesystem phase 1b** (2.10): `fs_server`, the path walker and `init` authorise files by
    capability instead of by user id and mode. The server side has begun (S120, S121), including a
    walk of a whole path answered with one capability, and the POSIX layer walks with capabilities
-   when a program holds a root (S126) and can hand a child a narrowed copy (S127); the shell
-   walking by capability is next.
+   when a program holds a root (S126), and the shell hands what it runs a copy (S127); step 3,
+   the session's grants from a policy file, is next.
 2. **Accounts as files** (2.11): `/etc/passwd` and `/etc/shadow` on the volume, owned by a ring-3
    `auth_server`.
 3. **Filesystem phases 2 to 4** (2.10): the filesystem moves to ring 3 on a copy-on-write format,
@@ -261,7 +262,7 @@ test does not exist or does not run.
 | Layer | What it covers |
 |---|---|
 | Security properties | 129 numbered properties, each bound to a witness by `tools/check_invariants.py` |
-| QEMU integration tests | 476 `smoke-*` targets: 218 base gates and 258 control arms |
+| QEMU integration tests | 478 `smoke-*` targets: 219 base gates and 259 control arms |
 | Control arms | A build that puts a defect back on purpose; CI requires its gate to go red against it |
 | Kani | 35 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
 | Miri | The security core's tests, interpreted for undefined behaviour on every pull request |

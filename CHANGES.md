@@ -24,7 +24,8 @@ here.
 
 - `fs_server` walks a whole path below a directory capability in one request and answers with one capability, derived from the one invoked, so a client will hold one capability per open path rather than one per component (filesystem decision 12). Every name is checked before any is looked up, and one that is `.`, `..` or holds `/` in any position refuses the walk (S120). (#529)
 - The POSIX layer walks by capability in a program that holds a root directory capability: every open file, directory stream and working directory holds one capability, minted by one walk from the root or the working directory, and close gives it back. The path is chosen once at start, and such a program never touches the uid path, so a refusal cannot fall back to it. Nothing grants a root until phase 1b step 3, so programs still reach files by the uid path today (S126). (#530)
-- A spawner can hand a child its filesystem as narrowed copies of its own root and working directory (`hvfs_grant_fs`), which the child keeps only while the spawner does; nothing calls it in a shipped boot until the shell walks by capability (S127).
+- A spawner can hand a child its filesystem as narrowed copies of its own root and working directory (`hvfs_grant_fs`), which the child keeps only while the spawner does; nothing calls it in a shipped boot until the shell walks by capability (S127). (#531)
+- The shell walks by capability when it holds a root directory capability, and hands each program it runs its root and working directory, taking them back when the program ends. Every filesystem request it makes names the object it is about. Nothing gives the shell a root before phase 1b step 3, so sessions still use the uid path (S126, S127).
 
 ### Changed
 

@@ -208,7 +208,8 @@
     correctly while being an ordinary unprivileged program with no way to check identity
     itself. A request through a filesystem capability is authorised by the capability
     instead: the kernel attests which object its token names and which rights it carries.
-    That is the path that replaces the user ID once programs walk with capabilities.
+    That is the path that replaces the user ID once a session is handed its grants: the
+    shell and the C library already walk with capabilities when they hold a root.
   </p>
 </div>
 </section>

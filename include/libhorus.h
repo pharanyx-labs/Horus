@@ -237,6 +237,10 @@ struct hvfs_obj {
     uint32_t ino;
     uint8_t  cap;      /* 1: slot is a filesystem capability; ino is unused */
     uint8_t  owned;    /* 1: hvfs_release must revoke slot                  */
+    uint8_t  type;     /* FS_TYPE_* as the walk's last reply gave it; 0 = not known.
+                        * Lets a caller learn what a name is without a STAT, which
+                        * the object's own rights may refuse while the name is
+                        * still there to be found (a home its user cannot read). */
 };
 
 /* Install a mount backed by a DIRECTORY CAPABILITY rather than an endpoint and

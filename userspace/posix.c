@@ -302,7 +302,7 @@ void posix_init(void) {
         {
             struct fs_request rq;
             struct fs_response rp;
-            struct hvfs_obj cwd = { CAPSLOT_FS_CWD, 0, 1, 0 };
+            struct hvfs_obj cwd = { CAPSLOT_FS_CWD, 0, 1, 0, 0 };
             _umemset(&rq, 0, sizeof(rq));
             rq.op = FS_OP_STAT;
             if (fss_rpc(&cwd, &rq, &rp) == 0 && rp.type == FS_TYPE_DIR) {

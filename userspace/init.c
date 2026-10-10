@@ -354,6 +354,9 @@ static void report_storage(void) {
 #define INIT_FS_ROOT        43
 #define INIT_DEV_CLIENT     41   /* the same endpoint, WRITE only (init as client) */
 #define INIT_CON_NOTIFY     42   /* CAP_NOTIFICATION, retyped: console_server's input wait */
+/* INIT_SHELL_ROOT_READONLY instrument only: the read-only copy of the root
+ * directory handed to the shell (smoke-fs-cap-shell). */
+#define INIT_FS_SHELL_RO    45
 
 /* EVERY SLOT INIT FILLS, AS CASE LABELS, so two of them sharing a number is a
  * compile error rather than a capability put where another already is. Phase 1b
@@ -366,7 +369,7 @@ static void __attribute__((unused)) init_slots_distinct(int slot)
     switch (slot) {
     case INIT_FS_LISTEN: case INIT_CON_LISTEN: case INIT_CON_CLIENT: case INIT_NOTIFY:
     case INIT_KERNEL_LOG: case INIT_BOOT_MODULE: case INIT_DEV_LISTEN: case INIT_DEV_CLIENT:
-    case INIT_CON_NOTIFY: case INIT_FS_SRV: case INIT_FS_ROOT:
+    case INIT_CON_NOTIFY: case INIT_FS_SRV: case INIT_FS_ROOT: case INIT_FS_SHELL_RO:
         break;
     default:
         break;
@@ -687,6 +690,21 @@ static int launch_shell(void) {
             }
         }
     }
+
+#ifdef INIT_SHELL_ROOT_READONLY
+    /* INSTRUMENT, never shipped (smoke-fs-cap-shell): the shell is handed the
+     * root directory narrowed to read, lookup and exec, so it walks by
+     * capability (phase 1b step 2) and so does everything it runs. Ordinary
+     * sessions get their grants from the policy in step 3 and nothing before;
+     * this exists so step 2's shell can be witnessed through a real session.
+     * Read-only on purpose: the session is root, so on the uid path every write
+     * would succeed, and a refused one shows the capability decided. */
+    if (sys_cap_mint(INIT_FS_SHELL_RO, INIT_FS_ROOT,
+                     CAP_RIGHT_WRITE | CAP_RIGHT_GRANT | CAP_RIGHT_REVOKE | CAP_RIGHT_MINT |
+                     FS_R_READ | FS_R_LOOKUP | FS_R_EXEC) != 0 ||
+        sys_cap_grant(sh, INIT_FS_SHELL_RO, CAPSLOT_FS_ROOT) != 0)
+        report("init: FAIL could not hand the shell its read-only root\n");
+#endif
 
     /* The shell's console capability is granted above; resuming only now is what
      * guarantees it can never start writing before it holds one. That race is

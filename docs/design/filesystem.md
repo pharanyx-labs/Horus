@@ -578,7 +578,7 @@ it, so no step has to land the whole change at once.
 | Step | What lands | Gate, and the defect its arm puts back |
 |---|---|---|
 | 1 ✅ | `fs_server` answers capability-addressed requests: the object comes from the token the kernel attests, rights from the invoking capability, `LOOKUP` reply-mints a child capability narrowed to the directory's rights (§5.3), and a name that is `.`, `..` or holds `/` is refused (§5.4). `init` mints the root directory capability (§6.1). Old ino-addressed requests still work | A read-only capability cannot write, `LOOKUP` refuses `..`, and revoking a directory capability revokes what was opened through it; the arm skips the rights check |
-| 2 | Clients walk with capabilities: `hvfs`, the POSIX layer, the shell and `fsclient`. The shell keeps a root and a current-directory capability, and before a child runs its spawner grants it derived copies of both, never wider than its own (decision 10). Open files are not inherited | A child given a read-only root cannot write anywhere; the arm grants the child the spawner's capability unnarrowed |
+| 2 ✅ | Clients walk with capabilities: `hvfs`, the POSIX layer and the shell (`fsclient`, a self-test client, stays on the uid path until step 6 removes it). The shell keeps a root and a current-directory capability, and before a child runs its spawner grants it derived copies of both, never wider than its own (decision 10). Open files are not inherited | A child given a read-only root cannot write anywhere; the arm grants the child the spawner's capability unnarrowed |
 | 3 | `init` evaluates the policy (§6.2) at login: the shell authenticates as today, asks `init` for its session, and `init` grants the derived capabilities and revokes them at logout. The installer writes `/etc/fs.policy`. A live boot uses a compiled-in default; an installed volume without a policy file grants the root capability to the administrator only (decision 9) | A session reaches only what its grants name; the arm grants every session the root |
 | 4 | The truthful view (§7): `stat` from the caller's rights and a bound on everyone else's, `chmod` and `chown` succeed only when they ask for what is true | `chmod 600` on a file another grant reaches fails; the arm reports success |
 | 5 ✅ | Cross-directory `rename` and `link` return `EXDEV` (decision 11); same-directory rename needs `CREATE` and `DELETE` on that directory | A cross-directory move is refused; the arm lets it through |
@@ -641,9 +641,21 @@ derived from the spawner's minted one**: revoking the minted copy before the chi
 and left both of the child's slots empty. So the spawner keeps them while the child lives and gives
 them back after `wait` (`hvfs_grant_release`), which also ends the child's access: a child reaches
 files only while its spawner vouches for it, and revoking the spawner's root sweeps every copy
-below it. Each live child costs its spawner two pool slots. Witness: the same gate (S127). The
-shell and `fsclient` walking by capability, and the shell granting to what it runs, follow. Steps
-3, 4 and 6 follow that.
+below it. Each live child costs its spawner two pool slots. Witness: the same gate (S127).
+
+**Step 2, the shell, as built.** The shell walks by capability when it holds a root in slot 24,
+chosen at its first connection to the filesystem, and never connects to the uid path then. Every
+filesystem request it makes names the object it is about (`fss_call_on`), and the form that let a
+request pick its own slot is gone, so none can reach the server through anything else. The working
+directory is an object, walked afresh from the root on `cd`. Each program it runs, alone or in a
+pipeline, is handed its root and working directory (`hvfs_grant_fs`) before it resumes and gives
+them back when it is waited for; one that cannot be handed them is killed, not run. The `spawn`
+builtin, which waits for nothing, hands nothing. Through capabilities `ln`, `chmod` and `chown` are
+refused by the server (step 4 and §5.5), and so is `useradd`'s setting of a new home's owner.
+Nothing grants the shell a root before step 3; the witness, `make smoke-fs-cap-shell`, is an
+instrument build in which `init` hands it one read-only, and a root session's `mkdir`, `touch` and
+`rm` are refused. `fsclient` is a self-test client and stays on the uid path until step 6 removes
+it. Steps 3, 4 and 6 follow.
 
 **Step 5 as built.** The refusal is on both paths, since a move through the uid path changes who
 may reach a file just as much. A rename across directories is `EXDEV`. A link is too unless the

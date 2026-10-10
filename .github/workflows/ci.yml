@@ -1926,6 +1926,13 @@ jobs:
         run: rustup target add x86_64-unknown-none
       - name: Drive head/wc/seq through the real ring-3 shell over serial
         run: make smoke-coreutils-shell
+      # S126, S127, phase 1b step 2: the same shell walking by capability, and
+      # handing what it runs its root. Same job: same image recipe, plus the
+      # INIT_SHELL_ROOT_READONLY instrument.
+      - name: Drive the shell holding a read-only root, and refuse every write though the session is root
+        run: make smoke-fs-cap-shell
+      - name: Control arm — the shell sends a refused request again down the uid path
+        run: make smoke-fs-cap-shell-fallback-control
 
   smoke-tcc:
     name: QEMU TCC (Tiny C Compiler) runs from /bin over the shell

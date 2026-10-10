@@ -100,6 +100,7 @@ control_arms:
   smoke-fs-cap-walk-control: smoke-fs-cap
   smoke-fs-cap-posix-close-control: smoke-fs-cap-posix
   smoke-fs-cap-posix-grant-control: smoke-fs-cap-posix
+  smoke-fs-cap-shell-fallback-control: smoke-fs-cap-shell
   smoke-auditprobe-control: smoke-auditprobe
   smoke-auditprobe-abi-control: smoke-auditprobe
   smoke-blockprobe-control: smoke-blockprobe
@@ -306,6 +307,7 @@ gates:
   - smoke-captoken
   - smoke-fs-cap
   - smoke-fs-cap-posix
+  - smoke-fs-cap-shell
   - smoke-captoken-smp
   - smoke-auditprobe
   - smoke-blockprobe

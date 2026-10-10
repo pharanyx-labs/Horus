@@ -130,6 +130,7 @@ DEFECT_FLAGS = \
 	STORAGE_FORMAT_UNGATED INSTALLER_NO_CONFIRM INSTALLER_REVIEW_FLAT BLOCK_ERRNO_LEGACY \
 	FSCAP_SELFTEST FS_CAP_RIGHTS_UNCHECKED FS_XDEV_UNCHECKED FS_WALK_NAMES_UNCHECKED \
 	FSCAPPOSIX_SELFTEST POSIX_CLOSE_KEEPS_CAP HVFS_GRANT_UNNARROWED \
+	INIT_SHELL_ROOT_READONLY SHELL_CAP_FALLBACK \
 	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED \
 	FS_LINK_UNCOUNTED FS_DIR_OPERAND_UNCHECKED GPT_ENTRIES_CRC_UNCHECKED STORAGE_REPLACE_VIEW_UNRESOLVED \
 	ESP_PIN_UNCHECKED ESP_NOT_WRITTEN DEBUG_BUILD \
@@ -833,6 +834,22 @@ SHELL_FS_ERR_FLAT ?= 0
 ifeq ($(SHELL_FS_ERR_FLAT),1)
 CFLAGS  += -DSHELL_FS_ERR_FLAT
 ASFLAGS += -DSHELL_FS_ERR_FLAT
+endif
+
+# INIT_SHELL_ROOT_READONLY=1 is an instrument, never shipped: init hands the shell
+# the root directory read-only, so the shell and what it runs walk by capability
+# (filesystem phase 1b step 2; make smoke-fs-cap-shell). SHELL_CAP_FALLBACK=1 is
+# its arm: a request the capability refused is sent again down the uid path.
+# Userspace-only, applied to USERSPACE_CFLAGS below, as SHELL_FS_ERR_FLAT is.
+INIT_SHELL_ROOT_READONLY ?= 0
+ifeq ($(INIT_SHELL_ROOT_READONLY),1)
+CFLAGS  += -DINIT_SHELL_ROOT_READONLY
+ASFLAGS += -DINIT_SHELL_ROOT_READONLY
+endif
+SHELL_CAP_FALLBACK ?= 0
+ifeq ($(SHELL_CAP_FALLBACK),1)
+CFLAGS  += -DSHELL_CAP_FALLBACK
+ASFLAGS += -DSHELL_CAP_FALLBACK
 endif
 
 # The two fs_server metadata arms. SEPARATE FLAGS, not one: chmod is owner-or-root
@@ -5209,6 +5226,12 @@ endif
 ifeq ($(SHELL_FS_ERR_FLAT),1)
 USERSPACE_CFLAGS += -DSHELL_FS_ERR_FLAT
 endif
+ifeq ($(INIT_SHELL_ROOT_READONLY),1)
+USERSPACE_CFLAGS += -DINIT_SHELL_ROOT_READONLY
+endif
+ifeq ($(SHELL_CAP_FALLBACK),1)
+USERSPACE_CFLAGS += -DSHELL_CAP_FALLBACK
+endif
 
 ifeq ($(FS_CHMOD_ANY_OWNER),1)
 USERSPACE_CFLAGS += -DFS_CHMOD_ANY_OWNER
@@ -8328,6 +8351,30 @@ smoke-modules:
 # argv, the utility opening a file through its own fs_server connection, and
 # waiting for it to finish -- all from a filesystem, not the kernel image.
 .PHONY: smoke-coreutils-shell smoke-tcc
+# THE SHELL WALKS BY CAPABILITY (phase 1b step 2, S126, S127). init hands the
+# shell a read-only root (INIT_SHELL_ROOT_READONLY=1); the session, logged in as
+# root, lists, changes directory, reads man pages and runs /bin/wc (handed the
+# shell's root) through capabilities, and mkdir, touch and rm are refused, which
+# on the uid path root would never be. SHELL_CAP_FALLBACK=1 is the arm: a refused
+# request goes again down the uid path, and mkdir succeeds.
+FSCAPSHELL_FLAGS = COREUTILS_MODULES=1 COREUTILS_MODULE_SET="wc" INIT_SHELL_ROOT_READONLY=1
+.PHONY: smoke-fs-cap-shell smoke-fs-cap-shell-fallback-control
+smoke-fs-cap-shell:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(FSCAPSHELL_FLAGS) $(FSCAPSHELLARM)
+	@$(MAKE) --no-print-directory $(FSCAPSHELL_FLAGS) $(FSCAPSHELLARM) horus.iso
+	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) tools/fscap_shell_session.py horus.iso
+smoke-fs-cap-shell-fallback-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(FSCAPSHELL_FLAGS) SHELL_CAP_FALLBACK=1
+	@$(MAKE) --no-print-directory $(FSCAPSHELL_FLAGS) SHELL_CAP_FALLBACK=1 horus.iso
+	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) tools/fscap_shell_session.py horus.iso \
+		> fscap-shell-arm.log 2>&1; rc=$$?; cat fscap-shell-arm.log; \
+	 if [ $$rc -eq 0 ]; then echo "ARM FAIL: the session passed with the uid fallback in"; exit 1; fi; \
+	 grep -q 'FSCAP_SHELL_SESSION: FAIL mkdir-refused' fscap-shell-arm.log || \
+	   { echo "ARM FAIL: the session failed, but not at mkdir-refused"; exit 1; }; \
+	 echo "ARM PASS: the uid fallback let mkdir through and the session caught it"
+
 smoke-coreutils-shell:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 COREUTILS_MODULE_SET="head seq wc"

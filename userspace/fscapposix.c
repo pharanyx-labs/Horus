@@ -25,7 +25,11 @@
  *     slots of the pool, all succeed (`close-kept-capability` is the check the
  *     control arm POSIX_CLOSE_KEEPS_CAP=1 must turn red). A file closed but
  *     still held is authority kept past its use, and the pool running dry is
- *     how it shows. */
+ *     how it shows;
+ *   - A CHILD IS HANDED A NARROWED COPY (decision 10): given this task's
+ *     writable root narrowed to read and lookup, fscapchild can read but not
+ *     create, write or remove anything (`child-wrote` is the check the control
+ *     arm HVFS_GRANT_UNNARROWED=1 must turn red). */
 
 #include <stdio.h>
 #include <string.h>
@@ -176,6 +180,34 @@ static int test_main(void)
         struct stat st;
         CHECK(stat("/d/f2", &st) != 0, "unlinked-still-there");
     }
+    checks++;
+
+    /* A CHILD GETS A NARROWED COPY (decision 10). fscapchild is spawned
+     * suspended and handed this task's WRITABLE root narrowed to read and
+     * lookup, with /kid as its working directory; it reports its own checks
+     * (FSCAPPOSIX: FAIL child-*). Its copies descend from the narrowed copies
+     * hvfs_grant_fs minted, and those from `rw` and `kid`, so all of them are
+     * kept until the child is gone. */
+    CHECK(mkdir("/rw/kid", 0755) == 0, "mkdir-kid");
+    fd = open("/rw/kid/k", O_CREAT | O_WRONLY, 0644);
+    CHECK(fd >= 0 && write(fd, "kid", 3) == 3, "write-kid");
+    close(fd);
+    {
+        struct hvfs_obj rw = { SLOT_RW, 0, 1, 0 };
+        struct hvfs_obj kid;
+        char last[FS_NAME_MAX];
+        CHECK(hvfs_lookup("/rw/kid", &rw, 0, &kid, last) == 0 && kid.cap, "walk-kid");
+        int pid = sys_spawn_named("fscapchild");
+        CHECK(pid > 0, "spawn-child");
+        struct hvfs_grant g;
+        CHECK(hvfs_grant_fs(pid, &rw, &kid, FS_R_READ | FS_R_LOOKUP, &g) == 0, "grant-child");
+        CHECK(sys_task_resume(pid) == 0, "resume-child");
+        while (sys_wait(pid) == SYS_ERR_INTR) { }
+        hvfs_grant_release(&g);
+        hvfs_release(&kid);
+    }
+    memset(buf, 0, sizeof(buf));
+    CHECK(read_all("/rw/kid/k", buf, 3) == 3 && memcmp(buf, "kid", 3) == 0, "child-changed-it");
     checks++;
 
     char n[12];

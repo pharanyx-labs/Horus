@@ -260,4 +260,23 @@ int  hvfs_slot_alloc(void);
  * left as it was. Idempotent. */
 void hvfs_release(struct hvfs_obj *o);
 
+/* Hand a SUSPENDED child its filesystem (design decision 10): copies of `root`
+ * and `cwd`, narrowed to `fs_rights` (FS_R_* bits; the kernel intersects them
+ * with each source's, so a copy is never wider than what this task holds), at
+ * the child's CAPSLOT_FS_ROOT and CAPSLOT_FS_CWD. The child keeps the kernel
+ * rights to send, pass on, narrow and revoke, so it can do the same for its
+ * own children. Both must be capabilities; `cwd` may be the root itself.
+ *
+ * The narrowed copies this task minted to grant from are returned in *g, and
+ * the child's copies are DERIVED FROM THEM (measured 2026-10-10: revoking them
+ * before the child ran left both its slots empty). So the spawner keeps *g while
+ * the child lives and gives it back with hvfs_grant_release once it is gone,
+ * which also ends the child's access: it reaches files only while its spawner
+ * vouches for it. Returns 0, or negative: then the child may hold one of the
+ * two, and the caller must release *g and not resume it (kill it instead). */
+struct hvfs_grant { struct hvfs_obj root, cwd; };
+int  hvfs_grant_fs(int child_tid, const struct hvfs_obj *root, const struct hvfs_obj *cwd,
+                   uint32_t fs_rights, struct hvfs_grant *g);
+void hvfs_grant_release(struct hvfs_grant *g);
+
 #endif /* LIBHORUS_H */

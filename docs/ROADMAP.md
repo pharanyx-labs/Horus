@@ -34,7 +34,8 @@ In order. Each step is its own set of pull requests with its own gates and contr
    moves across directories (S121). Step 2 has its server half: a client can walk a whole path in
    one request and hold one capability for it (decision 12 of
    [`design/filesystem.md`](design/filesystem.md)), and `hvfs` and the POSIX layer walk that way in
-   a program that holds a root (S126). The shell and the spawner's grants are next.
+   a program that holds a root (S126), and a spawner can hand a child a narrowed copy (S127).
+   The shell walking by capability and granting to what it runs is next.
 2. **Accounts as files** (2.11 step 3): `/etc/passwd` and `/etc/shadow` on the volume, owned by a
    ring-3 `auth_server`; the kernel keeps only the key-slot unlock.
 3. **Filesystem phases 2 to 4** (2.10): the kernel shrinks to a sealed-block service and the
@@ -138,7 +139,7 @@ start it.
 ### 2.7a ⬜ Evict the in-kernel services [F-2.7a]
 
 `.github/ring0-classification.yml` (S87) measures the ring-0 `service` class at about 6,000 code
-lines beside a 11,433-line core: `storage.c` (the encrypted store and the on-disk filesystem),
+lines beside a 11,439-line core: `storage.c` (the encrypted store and the on-disk filesystem),
 `kusers.c` (accounts and password hashing), the loader and spawn path, `crypto.c` and
 `syscall_fs.c`. Neither big move is mechanical. `storage.c` holds the volume key, so moving it
 means deciding what a ring-3 storage server may hold; 2.10's phase 2 is that decision for the
@@ -163,7 +164,7 @@ is already true.
 | Phase | What lands |
 |---|---|
 | 1a ✅ | Endpoint tokens, reply-mint and carry-one in the kernel, with Kani proofs (S105) |
-| 1b 🚧 | Capability authorisation in `fs_server`, `hvfs` and `init`, on the existing format, in six steps ([`design/filesystem.md`](design/filesystem.md) §11.1). Steps 1 and 5 are done (S120, #515; S121, #516); step 2's server half, a walk of a whole path answered with one capability, is done (decision 12), and so is the POSIX layer walking that way (S126); the shell and the spawner's grants are next, and steps 3, 4 and 6 follow |
+| 1b 🚧 | Capability authorisation in `fs_server`, `hvfs` and `init`, on the existing format, in six steps ([`design/filesystem.md`](design/filesystem.md) §11.1). Steps 1 and 5 are done (S120, #515; S121, #516); step 2's server half, a walk of a whole path answered with one capability, is done (decision 12), and so are the POSIX layer walking that way (S126) and a spawner's narrowed grants to a child (S127); the shell walking by capability is next, and steps 3, 4 and 6 follow |
 | 2 | The kernel's sealed-block service; the copy-on-write v12 format in `fs_server` |
 | 3 | Symbolic links, timestamps and a time service, cross-directory rename, sparse files |
 | 4 | Snapshots, reflinks, extended attributes, quotas, locks, open-unlinked files |
@@ -279,7 +280,7 @@ from a tag and compare. They wait on 3.1, since an ISO that does not rebuild to 
 same bytes cannot be verified by rebuilding.
 
 **4.12.** The exemption list in `.github/invariants.yml` is currently
-**empty**: all 128 properties name a witness that resolves.
+**empty**: all 129 properties name a witness that resolves.
 
 ---
 
@@ -301,5 +302,5 @@ same bytes cannot be verified by rebuilding.
 | ✅ | Measured boot, the kernel pinned in the boot image, and a PCR-sealed volume key |
 | ✅ | An IOMMU confining device DMA, and device capabilities that name one device each |
 | ◧ | Reproducible `kernel.elf` (not yet the ISO), an SBOM, CodeQL, Dependabot, signed commits, a protected `main` |
-| ✅ | 475 `smoke-*` targets, nearly all QEMU integration tests, and 257 of them control arms that must reproduce a defect |
+| ✅ | 476 `smoke-*` targets, nearly all QEMU integration tests, and 258 of them control arms that must reproduce a defect |
 | ✅ | Bounded Kani proofs, Miri over the Rust core, and fuzzing at the FFI boundary |

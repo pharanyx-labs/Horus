@@ -129,7 +129,7 @@ DEFECT_FLAGS = \
 	STORAGE_REPLACE_UNLOCKED STORAGE_FORMAT_AUTH_STICKY BOOT_CMDLINE_UNMEASURED \
 	STORAGE_FORMAT_UNGATED INSTALLER_NO_CONFIRM INSTALLER_REVIEW_FLAT BLOCK_ERRNO_LEGACY \
 	FSCAP_SELFTEST FS_CAP_RIGHTS_UNCHECKED FS_XDEV_UNCHECKED FS_WALK_NAMES_UNCHECKED \
-	FSCAPPOSIX_SELFTEST POSIX_CLOSE_KEEPS_CAP \
+	FSCAPPOSIX_SELFTEST POSIX_CLOSE_KEEPS_CAP HVFS_GRANT_UNNARROWED \
 	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED \
 	FS_LINK_UNCOUNTED FS_DIR_OPERAND_UNCHECKED GPT_ENTRIES_CRC_UNCHECKED STORAGE_REPLACE_VIEW_UNRESOLVED \
 	ESP_PIN_UNCHECKED ESP_NOT_WRITTEN DEBUG_BUILD \
@@ -3230,9 +3230,10 @@ FSCAPPOSIX_SELFTEST ?= 0
 ifeq ($(FSCAPPOSIX_SELFTEST),1)
 CFLAGS  += -DFSCAPPOSIX_SELFTEST
 ASFLAGS += -DFSCAPPOSIX_SELFTEST
-FSCAPPOSIX_SELFTEST_DEP = userspace/fscapposix.bin
+FSCAPPOSIX_SELFTEST_DEP = userspace/fscapposix.bin userspace/fscapchild.bin
 endif
 POSIX_CLOSE_KEEPS_CAP ?= 0
+HVFS_GRANT_UNNARROWED ?= 0
 TOKEN_SELFTEST ?= 0
 ifeq ($(TOKEN_SELFTEST),1)
 CFLAGS  += -DTOKEN_SELFTEST
@@ -4985,6 +4986,9 @@ endif
 ifeq ($(POSIX_CLOSE_KEEPS_CAP),1)
 USERSPACE_CFLAGS += -DPOSIX_CLOSE_KEEPS_CAP
 endif
+ifeq ($(HVFS_GRANT_UNNARROWED),1)
+USERSPACE_CFLAGS += -DHVFS_GRANT_UNNARROWED
+endif
 ifeq ($(INSTALLER_NO_CONFIRM),1)
 USERSPACE_CFLAGS += -DINSTALLER_NO_CONFIRM
 endif
@@ -5478,6 +5482,20 @@ userspace/fscapposix.pie.elf: userspace/fscapposix.o $(NEWLIB_GLUE_OBJS) \
 
 userspace/fscapposix.bin: userspace/fscapposix.stripped.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "fscapposix"
+
+# fscapchild -- spawned by fscapposix with a narrowed filesystem; ordinary crt0.
+userspace/fscapchild.o: userspace/fscapchild.c $(NEWLIB_LIB)/libc.a
+	$(CC) $(NEWLIB_CFLAGS) -c $< -o $@
+
+userspace/fscapchild.pie.elf: userspace/fscapchild.o $(NEWLIB_GLUE_OBJS) \
+                              userspace/malloc.o $(LIBHORUS_LIB) userspace/pie.ld
+	$(LD) -m elf_x86_64 -pie -T userspace/pie.ld -o $@ \
+	    userspace/crt0.o userspace/fscapchild.o userspace/newlib_glue.o \
+	    userspace/newlib_glue64.o userspace/posix.o userspace/malloc.o \
+	    $(LIBHORUS_LIB) -L$(NEWLIB_LIB) -lc
+
+userspace/fscapchild.bin: userspace/fscapchild.stripped.elf tools/mkheadered
+	@./tools/mkheadered $< $@ "fscapchild"
 
 # termtest — exercises the console raw-terminal layer (termios + winsize + raw
 # read/write) end to end; shipped as a /bin module by TERM_MODULE=1 (smoke-term).
@@ -12405,8 +12423,12 @@ smoke-fs-cap-walk-control:
 # and unlink through them: nothing changes through the read-only root, a rename
 # across directories is EXDEV, ".." stops at the root, and closing a file gives
 # its capability back (40 opens through a 32-slot pool).
+# A child it spawns is handed its writable root narrowed to read and lookup
+# (decision 10) and can change nothing.
 # POSIX_CLOSE_KEEPS_CAP=1 is the arm: a closed file keeps its capability.
-.PHONY: smoke-fs-cap-posix smoke-fs-cap-posix-close-control
+# HVFS_GRANT_UNNARROWED=1 is the second: the child is handed the writable root
+# as it stands.
+.PHONY: smoke-fs-cap-posix smoke-fs-cap-posix-close-control smoke-fs-cap-posix-grant-control
 smoke-fs-cap-posix:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FSCAP_SELFTEST=1 FSCAPPOSIX_SELFTEST=1 $(FSCAPPOSIXARM)
@@ -12418,6 +12440,9 @@ smoke-fs-cap-posix:
 smoke-fs-cap-posix-close-control:
 	@$(MAKE) --no-print-directory smoke-fs-cap-posix FSCAPPOSIXARM=POSIX_CLOSE_KEEPS_CAP=1 \
 		FSCAPPOSIXEXPECT='FSCAPPOSIX: FAIL close-kept-capability'
+smoke-fs-cap-posix-grant-control:
+	@$(MAKE) --no-print-directory smoke-fs-cap-posix FSCAPPOSIXARM=HVFS_GRANT_UNNARROWED=1 \
+		FSCAPPOSIXEXPECT='FSCAPPOSIX: FAIL child-wrote'
 
 smoke-vfs:
 	@$(MAKE) --no-print-directory clean

@@ -2301,6 +2301,8 @@ void fscap_selftest(void) {
      * CAPSLOT_FS_ROOT and a writable one at /rw (smoke-fs-cap-posix). */
     extern uint8_t embedded_fscapposix_bin_start[], embedded_fscapposix_bin_end[];
     int cli = fs_spawn_embedded(embedded_fscapposix_bin_start, embedded_fscapposix_bin_end, "fscapposix");
+    /* It spawns fscapchild, and creating a task is paid for (S57). */
+    if (cli > 0) (void)cap_install_from_root(cli, CAPSLOT_UNTYPED, 17, UNTYPED_ROOT);
 #else
     int cli = fs_spawn_embedded(embedded_fscaptest_bin_start, embedded_fscaptest_bin_end, "fscaptest");
 #endif

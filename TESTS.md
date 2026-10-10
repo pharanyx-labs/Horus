@@ -47,7 +47,7 @@ gates that match kernel strings are moving to COM3, which only the kernel can wr
 ## The integration gates
 
 
-There are 475 `smoke-*` targets: 218 gates and 257 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Four gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
+There are 476 `smoke-*` targets: 218 gates and 258 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Four gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
 
 
 ### Capabilities and authorisation
@@ -60,7 +60,7 @@ There are 475 `smoke-*` targets: 218 gates and 257 control arms. Each row is a g
 | `smoke-captoken` | Endpoint tokens: a server with no mint authority hands out capabilities only by reply-mint, which can only narrow what the caller invoked it with | S105 | `smoke-captoken-unmasked-control` |
 | `smoke-captoken-smp` | The same under four CPUs, where the reply-mint has a cross-CPU racer to lose to | S105 |  |
 | `smoke-fs-cap` | The real `fs_server` answers through tokened capabilities: children come back narrowed from mkdir, create and lookup, a read-only capability cannot write, a file's cannot create entries, `..` `.` and `/` are refused, a removed object's capability is refused, and revoking a directory's capability revokes what was opened through it; a rename or link across directories is refused `EXDEV` on both paths, and a rename within one directory needs `CREATE` and `DELETE`; a walk of several names gives one capability derived from the one invoked, never wider and not held up by anything along the path, and a bad name in any position refuses it | S120, S121 | `smoke-fs-cap-control`, `smoke-fs-cap-walk-control`, `smoke-fs-cap-xdev-control` |
-| `smoke-fs-cap-posix` | A newlib program holding a read-only root and a writable one walks by capability through ordinary POSIX calls: nothing is created, written, removed or renamed through the read-only root, a rename across directories is `EXDEV`, `..` stops at the root, and closing a file gives its capability back (40 opens through a 32-slot pool) | S126 | `smoke-fs-cap-posix-close-control` |
+| `smoke-fs-cap-posix` | A newlib program holding a read-only root and a writable one walks by capability through ordinary POSIX calls: nothing is created, written, removed or renamed through the read-only root, a rename across directories is `EXDEV`, `..` stops at the root, and closing a file gives its capability back (40 opens through a 32-slot pool); a child it spawns, handed its writable root narrowed to read and lookup, can read and change nothing | S126, S127 | `smoke-fs-cap-posix-close-control`, `smoke-fs-cap-posix-grant-control` |
 | `smoke-auditprobe` | **13 checks** from a task holding one `CAP_AUDIT`, which enters the audit syscalls' handlers that `captest` only sees refused | S24, S71 | `smoke-auditprobe-abi-control`, `smoke-auditprobe-control` |
 | `smoke-blockprobe` | A task holding one storage capability enters the raw block syscalls; each reports a refused block as an I/O error, not as a permission error |  | `smoke-blockprobe-control` |
 | `smoke-execprobe` | `SYS_EXEC_IMAGE` keeps the caller's capabilities and lineage, checked from inside the image it entered, and a program image cannot read past its own bytes | S42, S84 | `smoke-execprobe-reset-control`, `smoke-execprobe-root-control` |
@@ -402,7 +402,7 @@ Two of those deserve a sentence each.
 there with no `continue-on-error`, each named with its measured cost in
 `.github/kani-harnesses.yml`, and the job refuses a proof that is not listed. And **`invariants`** requires every property in `SECURITY.md` to
 name a witness that exists and runs; its exemption list, `.github/invariants.yml`, is
-currently **empty**: all 128 properties name a witness that resolves.
+currently **empty**: all 129 properties name a witness that resolves.
 
 Every `tools/check_*.py` has a falsification harness, `tools/test_check_*.sh`, with one case per
 rule showing the rule can fail, and each checker asserts a floor on what it parsed, so a parser

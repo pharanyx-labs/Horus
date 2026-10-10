@@ -511,7 +511,11 @@
 # fscapposix image for the FSCAPPOSIX_SELFTEST harness, never in the ship build
 # (six assembler lines, as fscaptest's took). The client half itself is ring 3
 # (hvfs and the POSIX layer).
-core_budget_loc: 11433
+# 2026-10-10: 11433 -> 11439, +6, phase 1b step 2 (S127): multiboot.S embeds
+# fscapchild, the child fscapposix hands a narrowed filesystem, and loader.c
+# names it for SYS_SPAWN; FSCAPPOSIX_SELFTEST only, never in the ship build. The
+# grant itself is ring 3 (hvfs_grant_fs).
+core_budget_loc: 11439
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

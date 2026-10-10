@@ -631,8 +631,19 @@ root). As built:
 - `FS_OP_STAT` now reports the object's own inode, since through a capability the client never
   named it.
 
-Witness: `make smoke-fs-cap-posix` (S126). The shell, `fsclient` and the spawner's grants
-(decision 10) follow. Steps 3, 4 and 6 follow that.
+Witness: `make smoke-fs-cap-posix` (S126).
+
+**Step 2, the spawner's grants, as built.** `hvfs_grant_fs` hands a suspended child copies of the
+spawner's root and working directory capabilities, narrowed to the rights asked for, at the
+child's slots 24 and 25 (decision 10). `SYS_CAP_GRANT` copies a capability as it stands, so each
+copy is minted narrowed into the spawner's pool first and that is granted. **The child's copy is
+derived from the spawner's minted one**: revoking the minted copy before the child ran was tried
+and left both of the child's slots empty. So the spawner keeps them while the child lives and gives
+them back after `wait` (`hvfs_grant_release`), which also ends the child's access: a child reaches
+files only while its spawner vouches for it, and revoking the spawner's root sweeps every copy
+below it. Each live child costs its spawner two pool slots. Witness: the same gate (S127). The
+shell and `fsclient` walking by capability, and the shell granting to what it runs, follow. Steps
+3, 4 and 6 follow that.
 
 **Step 5 as built.** The refusal is on both paths, since a move through the uid path changes who
 may reach a file just as much. A rename across directories is `EXDEV`. A link is too unless the

@@ -2566,6 +2566,9 @@ jobs:
         run: make smoke-fs-cap-posix
       - name: Control arm — close keeps the file's capability
         run: make smoke-fs-cap-posix-close-control
+      # S127: the same image hands a child a narrowed filesystem.
+      - name: Control arm — a child is handed the spawner's capability unnarrowed
+        run: make smoke-fs-cap-posix-grant-control
 
   smoke-mapphys:
     name: QEMU map-phys device-frame self-test (headless)

@@ -1031,6 +1031,12 @@ embedded_fscapposix_bin_start:
 .incbin "userspace/fscapposix.bin"
 .global embedded_fscapposix_bin_end
 embedded_fscapposix_bin_end:
+.balign 16
+.global embedded_fscapchild_bin_start
+embedded_fscapchild_bin_start:
+.incbin "userspace/fscapchild.bin"
+.global embedded_fscapchild_bin_end
+embedded_fscapchild_bin_end:
 #endif
 #endif
 

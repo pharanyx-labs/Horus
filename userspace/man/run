@@ -1,0 +1,23 @@
+RUN(1)                         User Commands                          RUN(1)
+
+NAME
+    run - run a program image from a file
+
+SYNOPSIS
+    run PATH
+
+DESCRIPTION
+    Read the program image at PATH through the fs_server and hand it to
+    the kernel to run. The kernel validates it with the same loader every
+    program goes through: segments are never writable and executable at
+    once, every bound is checked, and a relocation that does not resolve
+    fails the load.
+
+    The program receives the shell's filesystem, narrowed: its root and
+    working directory, never wider than the shell's own, taken back when
+    it ends. It inherits nothing else unless the shell grants it.
+
+    A bare name such as `wc` is looked up in /bin without `run` (sh(1)).
+
+SEE ALSO
+    spawn(1), sh(1), capabilities(7)

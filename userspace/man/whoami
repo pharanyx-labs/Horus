@@ -1,0 +1,17 @@
+WHOAMI(1)                      User Commands                       WHOAMI(1)
+
+NAME
+    whoami, id - show your login identity
+
+SYNOPSIS
+    whoami
+    id
+
+DESCRIPTION
+    Print the uid the kernel attests for this login; id prints the group
+    as well. The identity is fixed when you log in. The shell cannot change
+    it and a program cannot claim another: every check the fs_server makes
+    is against what the kernel says, not what a client asserts.
+
+SEE ALSO
+    sudo(1), passwd(1)

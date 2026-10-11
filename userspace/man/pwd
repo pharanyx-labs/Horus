@@ -1,0 +1,14 @@
+PWD(1)                         User Commands                          PWD(1)
+
+NAME
+    pwd - print the working directory
+
+SYNOPSIS
+    pwd
+
+DESCRIPTION
+    Print the absolute path of the shell's working directory, as cd(1)
+    last set it.
+
+SEE ALSO
+    cd(1), sh(1)

@@ -1,0 +1,26 @@
+CAPVIEW(1)                     User Commands                      CAPVIEW(1)
+
+NAME
+    capview - print the capability graph
+
+SYNOPSIS
+    capview [PID]
+
+DESCRIPTION
+    For every live task, or only for PID, print each occupied capability
+    slot: its type, its rights (r w x g m v for read, write, exec, grant,
+    mint, revoke), its serial and its parent's serial.
+
+    SERIAL is a capability's identity: 64 bits, issued once and never
+    again, so a serial names one capability in one slot. PARENT is the
+    serial it was derived from, or "root" for one minted by the kernel.
+    The two columns are the nodes and edges of the derivation tree that
+    revocation follows (capabilities(7)).
+
+SECURITY
+    Needs CAP_DEBUG, which init gives the shell read-only. It observes and
+    changes nothing, and the object each capability names is deliberately
+    not reported.
+
+SEE ALSO
+    ps(1), capabilities(7)

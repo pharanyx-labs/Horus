@@ -1,0 +1,17 @@
+USERDEL(8)                 System Administration                  USERDEL(8)
+
+NAME
+    userdel - delete an account
+
+SYNOPSIS
+    userdel UID
+
+DESCRIPTION
+    Delete the account with user id UID. Its home directory and files are
+    left where they are, still owned by the number UID.
+
+SECURITY
+    The administrator only.
+
+SEE ALSO
+    useradd(8)

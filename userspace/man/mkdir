@@ -1,0 +1,17 @@
+MKDIR(1)                       User Commands                        MKDIR(1)
+
+NAME
+    mkdir - create a directory
+
+SYNOPSIS
+    mkdir NAME
+
+DESCRIPTION
+    Create a directory called NAME in the working directory. NAME is one
+    name, not a path: change to the parent with cd(1) first.
+
+    The new directory is owned by your login. Creating it needs the right
+    to create entries in the working directory.
+
+SEE ALSO
+    rm(1), cd(1), ls(1)

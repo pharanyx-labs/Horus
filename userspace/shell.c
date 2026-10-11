@@ -950,8 +950,8 @@ static const char *const d_run[] = {
     "The image is read through the fs_server and handed to the kernel, which",
     "validates it with the same ELF loader a named binary goes through: W^X",
     "is enforced per segment, bounds are checked, and relocations fail closed.",
-    "Gated on the slot-3 WRITE|EXEC capability -- being able to read a file is",
-    "not authority to execute it.",
+    "The program gets the shell's root and working directory, narrowed, and",
+    "nothing else; run waits for it to finish.",
     0 };
 
 static const char *const d_spawn[] = {
@@ -973,7 +973,8 @@ static const char *const d_capview[] = {
     "",
     "SERIAL is a capability's identity; PARENT is the serial it was derived",
     "from, so the two columns are the nodes and edges of the derivation tree.",
-    "A PARENT of 0 is a primordial capability, minted in the root cnode.",
+    "A PARENT of \"root\" is a capability the kernel minted, with no parent.",
+    "Serials are 64-bit, issued once and never again.",
     "",
     "Needs CAP_DEBUG, which init delegates to the shell. It is observation only:",
     "the object each capability names is deliberately NOT reported, and the",
@@ -1000,8 +1001,8 @@ static const char *const d_whoami[] = {
 static const char *const d_sudo[] = {
     "Re-authenticate at a secure prompt and spawn an elevated image.",
     "",
-    "The password is read by the kernel, never echoed, and never passes",
-    "through the shell's input buffer.",
+    "Takes no argument. The password is read at a masked prompt, never echoed,",
+    "and wiped from the shell's memory once the kernel has checked it.",
     0 };
 static const char *const d_passwd[] = {
     "Change a password at a secure prompt. With no argument, your own.",

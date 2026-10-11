@@ -1,0 +1,23 @@
+CD(1)                          User Commands                           CD(1)
+
+NAME
+    cd - change the working directory
+
+SYNOPSIS
+    cd [DIR]
+
+DESCRIPTION
+    Make DIR the shell's working directory. With no argument, go to the
+    root, /. DIR may be absolute or relative; "." and ".." are resolved by
+    the shell before anything is asked of the filesystem.
+
+    The new directory is walked from the root by its absolute path, never
+    from the old working directory. A shell that walks by capability holds
+    one capability for its working directory; walking from the root is what
+    lets it give the old one back without losing the new one.
+
+    A path that does not name a directory leaves the working directory
+    where it was and reports "not a directory".
+
+SEE ALSO
+    pwd(1), ls(1), sh(1)

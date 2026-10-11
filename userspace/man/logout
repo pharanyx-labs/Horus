@@ -1,0 +1,13 @@
+LOGOUT(1)                      User Commands                       LOGOUT(1)
+
+NAME
+    logout - end the session
+
+SYNOPSIS
+    logout
+
+DESCRIPTION
+    The same as exit(1).
+
+SEE ALSO
+    exit(1)

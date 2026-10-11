@@ -1,0 +1,76 @@
+FS.POLICY(5)                    File Formats                    FS.POLICY(5)
+
+NAME
+    fs.policy - who may reach which part of the filesystem
+
+SYNOPSIS
+    /etc/fs.policy
+
+DESCRIPTION
+    The filesystem policy says, for each login, which subtrees its session
+    may reach and with which rights. fs_server reads it when it starts and
+    compiles each login's grants into the one root capability that login's
+    session is given; everything the session opens is reached through
+    that capability, and the policy is applied to all of it.
+
+    Logins do not open sessions yet: until the login handshake lands
+    (roadmap 2.10, step 3(b)), the shell still authorises file access by
+    the uid the kernel attests, and this file decides nothing at login.
+
+FORMAT
+    One grant per line, three fields separated by spaces or tabs:
+
+        principal   path          rights
+
+    principal  an account name; @all, every authenticated session;
+               @admin, the administrator (uid 0); or @self, each account
+               for its own home and its own /tmp.
+    path       absolute, at most 8 components, each a valid file name.
+               "~" means the account's home and is allowed only with
+               @self, for a home of the form /home/NAME. "/tmp" with
+               @self is the session's private /tmp (hier(7)).
+    rights     comma-separated: read, write, append, exec, lookup,
+               create, delete, setattr, or all.
+
+    "#" starts a comment, and blank lines are ignored.
+
+    A path named nowhere is reachable only through a grant on one of its
+    ancestors. A directory on the way to a grant may be walked through and
+    shows only the names that lead to grants; any other name in it is
+    absent, not refused. Rights only add up: a line deeper in the tree
+    never narrows what a line above it gave.
+
+STRICT BY DESIGN
+    Any line that does not parse makes the WHOLE file invalid; the lines
+    that did parse are not used on their own. So are a file over 4096
+    bytes or 64 grants, an unknown right, an unknown @group, a relative
+    path, and the rights grant and snapshot, which are refused because a
+    policy naming them would not do what its author meant.
+
+    An invalid or missing file on an installed volume gives the
+    administrator "/ all" and nobody anything else, so the administrator
+    can log in and write one. A live boot uses the default below.
+
+DEFAULT
+    The live boot's policy, compiled into fs_server:
+
+        @admin  /     all
+        @all    /bin  read,lookup,exec
+        @all    /lib  read,lookup
+        @all    /usr  read,lookup,exec
+        @self   ~     all
+        @self   /tmp  read,write,lookup,create,delete,setattr
+
+    /tmp is given without exec.
+
+SECURITY
+    Changing this file changes who may reach what, so only a login that
+    holds write on /etc/fs.policy can do it; the default gives that to the
+    administrator alone. Under "/ all" the administrator still cannot
+    reach another session's private /tmp.
+
+FILES
+    /etc/fs.policy
+
+SEE ALSO
+    hier(7), capabilities(7), stat(1), chmod(1)

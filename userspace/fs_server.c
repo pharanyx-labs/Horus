@@ -1587,8 +1587,10 @@ static int module_dest_ok(const char *path) {
  * -1 on failure (including the volume filling up, or a disallowed destination path).
  * Runs entirely inside the server, so the store primitives are called directly
  * rather than over IPC. */
-/* Does file `ino` hold exactly the bytes of boot module `mod_index`? */
-static int file_matches_module(uint32_t ino, uint32_t mod_index, uint32_t size) {
+/* Does file `ino` hold exactly the `size` bytes of boot module `mod_index` that
+ * start at `mod_off`? (`mod_off` is 0 for a module that is one file, and a
+ * member's offset for a module that is an archive; see unpack_archive_module.) */
+static int file_matches_module(uint32_t ino, uint32_t mod_index, uint32_t mod_off, uint32_t size) {
     struct fs_stat st;
     if (sys_fs_stat(ino, &st) != 0 || (uint32_t)st.size != size) return 0;
 #ifdef SYSTEM_TREES_SIZE_ONLY
@@ -1601,7 +1603,7 @@ static int file_matches_module(uint32_t ino, uint32_t mod_index, uint32_t size) 
     while (off < size) {
         uint32_t chunk = size - off; if (chunk > BLK) chunk = BLK;
         if (sys_fblock_read(ino, blk, fb) != (int)BLK) return 0;
-        if (sys_boot_module_read(mod_index, off, mb, chunk) != (int)chunk) return 0;
+        if (sys_boot_module_read(mod_index, mod_off + off, mb, chunk) != (int)chunk) return 0;
         for (uint32_t i = 0; i < chunk; i++) if (fb[i] != mb[i]) return 0;
         off += chunk; blk++;
     }
@@ -1627,7 +1629,7 @@ static void remove_tree(uint32_t parent, const char *name, uint32_t ino, uint32_
     if (dir_remove(parent, name)) fs_ino_free(ino);
 }
 
-static int install_module_at(const char *path, uint32_t mod_index, uint32_t size) {
+static int install_module_at(const char *path, uint32_t mod_index, uint32_t mod_off, uint32_t size) {
     if (!module_dest_ok(path)) {
         kputln("[fs_server] refusing boot module with a disallowed destination path");
         return -1;
@@ -1661,7 +1663,7 @@ static int install_module_at(const char *path, uint32_t mod_index, uint32_t size
          * changed in place, byte for byte the same length, survived every boot.
          * Compared by reading, so an unchanged file costs reads and no writes;
          * its owner and mode are put back either way. */
-        if (etype == FS_TYPE_FILE && file_matches_module(eino, mod_index, size)) {
+        if (etype == FS_TYPE_FILE && file_matches_module(eino, mod_index, mod_off, size)) {
             sys_fs_set_meta(eino, is_exec ? 0755u : 0644u, 0, 0);
             sys_mark(eino);
             return 0;
@@ -1676,7 +1678,7 @@ static int install_module_at(const char *path, uint32_t mod_index, uint32_t size
     uint32_t off = 0, blk = 0;
     while (off < size) {
         uint32_t chunk = size - off; if (chunk > BLK) chunk = BLK;
-        int got = sys_boot_module_read(mod_index, off, buf, chunk);
+        int got = sys_boot_module_read(mod_index, mod_off + off, buf, chunk);
         if (got <= 0) { fs_ino_free((uint32_t)ino); return -1; }
         /* sys_fblock_write returns the byte count it stored (== got); it zero-pads
          * a short final block internally, so compare against got, not BLK. A write
@@ -1693,6 +1695,132 @@ static int install_module_at(const char *path, uint32_t mod_index, uint32_t size
     }
     sys_mark((uint32_t)ino);
     return 1;
+}
+
+/* ---- archive modules (docs/design/configuration.md §4) ---------------------
+ *
+ * WHY A MODULE CAN BE AN ARCHIVE. MAX_BOOT_MODULES is 48 and an install image
+ * already uses about 30, so forty-odd manual pages cannot each be a module. They
+ * ship as ONE module, a ustar archive the build makes reproducibly, verified by
+ * its hash like every other module (S96), and unpacked here into one system
+ * directory. A module is an archive when its destination is `pack/<dir>`: the
+ * members land in <dir>, which must itself be a destination module_dest_ok
+ * accepts, and they are then ordinary system-tree files, compared, re-marked and
+ * pruned like any module (S116).
+ *
+ * WHAT A MEMBER MAY BE, and the archive is refused WHOLE on the first that is
+ * not: a regular file (typeflag '0' or NUL), with a ustar magic, no prefix
+ * field, and a name that is one leaf of 1 to FS_NAME_MAX-1 characters drawn
+ * from [A-Za-z0-9._-], not "." or "..". No directory, no link, no device, no
+ * path. The archive is checked END TO END before anything is installed, so a
+ * malformed one installs nothing rather than a prefix. The bytes are verified
+ * by the boot chain already; these checks are so that a mistake in the build,
+ * or a future archive with a laxer maker, cannot place a file outside its one
+ * directory or make this server walk off the end of a module. */
+#define TAR_BLOCK 512u
+
+static uint32_t tar_octal(const uint8_t *f, int n, int *ok) {
+    uint32_t v = 0; int i = 0, digits = 0;
+    while (i < n && f[i] == ' ') i++;
+    for (; i < n && f[i] >= '0' && f[i] <= '7'; i++) {
+        if (v > (0xFFFFFFFFu >> 3)) { *ok = 0; return 0; }
+        v = (v << 3) | (uint32_t)(f[i] - '0');
+        digits++;
+    }
+    for (; i < n; i++) if (f[i] != 0 && f[i] != ' ') { *ok = 0; return 0; }
+    if (!digits) *ok = 0;
+    return v;
+}
+
+static int tar_block_zero(const uint8_t *h) {
+    for (uint32_t i = 0; i < TAR_BLOCK; i++) if (h[i]) return 0;
+    return 1;
+}
+
+/* Check one header; on success copy the member's leaf name into `leaf` and its
+ * size into *size. */
+static int tar_member_ok(const uint8_t *h, char *leaf, uint32_t *size) {
+    if (!(h[257] == 'u' && h[258] == 's' && h[259] == 't' && h[260] == 'a' && h[261] == 'r'))
+        return 0;
+    if (h[156] != '0' && h[156] != 0) return 0;            /* regular files only */
+    if (h[345] != 0) return 0;                              /* no prefix: one leaf */
+    /* The header checksum: the 512 bytes summed with the checksum field read
+     * as spaces. A build that wrote the archive wrongly is caught here. */
+    int ok = 1;
+    uint32_t want = tar_octal(h + 148, 8, &ok);
+    uint32_t sum = 0;
+    for (uint32_t i = 0; i < TAR_BLOCK; i++) sum += (i >= 148 && i < 156) ? ' ' : h[i];
+    if (!ok || sum != want) return 0;
+    int n = 0;
+    while (n < 100 && h[n]) {
+        char c = (char)h[n];
+        int good = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                   (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+        if (!good || n >= FS_NAME_MAX - 1) return 0;
+        leaf[n] = c; n++;
+    }
+    if (n == 0 || n == 100) return 0;
+    leaf[n] = 0;
+    if ((n == 1 && leaf[0] == '.') || (n == 2 && leaf[0] == '.' && leaf[1] == '.')) return 0;
+    ok = 1;
+    *size = tar_octal(h + 124, 12, &ok);
+    return ok;
+}
+
+/* Walk archive module `mod_index` (`msize` bytes). With `install` 0, only check
+ * it; with 1, install every member under `dir`. Returns the member count, or -1
+ * if the archive is malformed anywhere. */
+static int walk_archive(uint32_t mod_index, uint32_t msize, const char *dir, int install) {
+    static uint8_t h[TAR_BLOCK];
+    uint32_t off = 0;
+    int members = 0;
+    for (;;) {
+        if (off > msize || msize - off < TAR_BLOCK) return -1;   /* no end marker */
+        if (sys_boot_module_read(mod_index, off, h, TAR_BLOCK) != (int)TAR_BLOCK) return -1;
+        if (tar_block_zero(h)) return members;                 /* end of archive */
+        char leaf[FS_NAME_MAX];
+        uint32_t size;
+        if (!tar_member_ok(h, leaf, &size)) return -1;
+        uint32_t data = off + TAR_BLOCK;
+        uint32_t padded = (size + TAR_BLOCK - 1) & ~(TAR_BLOCK - 1);
+        if (size > msize || data > msize - size || padded < size ||
+            data + padded > msize) return -1;
+        if (install) {
+            char path[FS_NAME_MAX * 6];
+            int n = 0;
+            for (const char *q = dir; *q && n < (int)sizeof(path) - 2; q++) path[n++] = *q;
+            path[n++] = '/';
+            for (const char *q = leaf; *q && n < (int)sizeof(path) - 1; q++) path[n++] = *q;
+            path[n] = 0;
+            if (size > 0 && install_module_at(path, mod_index, data, size) < 0) return -1;
+        }
+        members++;
+        off = data + padded;
+    }
+}
+
+/* Unpack archive module `mod_index` into `dir`. Returns members installed, or -1
+ * (nothing installed) if the archive or its directory is refused. */
+static int unpack_archive_module(uint32_t mod_index, uint32_t msize, const char *dir) {
+    char probe[FS_NAME_MAX * 6];
+    int n = 0;
+    for (const char *q = dir; *q && n < (int)sizeof(probe) - 3; q++) probe[n++] = *q;
+    probe[n++] = '/'; probe[n++] = 'x'; probe[n] = 0;
+    if (!module_dest_ok(probe) || n < 3) {
+        kputln("[fs_server] refusing an archive module with a disallowed directory");
+        return -1;
+    }
+#ifndef ARCHIVE_NO_PRECHECK
+    if (walk_archive(mod_index, msize, dir, 0) < 0) {
+        kputln("[fs_server] refusing a malformed archive module: nothing from it installed");
+        return -1;
+    }
+#else
+    /* CONTROL ARM -- never ship. Install as the walk goes, checking each member
+     * only when it is reached, so the members before a bad one land. See make
+     * smoke-archive-refused-control. */
+#endif
+    return walk_archive(mod_index, msize, dir, 1);
 }
 
 /* Provision the filesystem at boot, once, after the store is readable (unlocked):
@@ -1863,7 +1991,19 @@ static void provision_boot_modules(void) {
          * a disallowed path, and was counted as a module that "did not fit",
          * which is a different failure reported as this one. */
         if (uslen(info.name) == 11 && has_prefix(info.name, "lib/libc.so")) continue;
-        int rc = install_module_at(info.name, (uint32_t)i, info.size);
+        if (has_prefix(info.name, "pack/")) {
+            int m = unpack_archive_module((uint32_t)i, info.size, info.name + 5);
+            if (m < 0) skipped++;
+            else {
+                kput("[fs_server] archive module unpacked into /");
+                kput(info.name + 5);
+                kput(": ");
+                kput_int(m);
+                kputln(" files");
+            }
+            continue;
+        }
+        int rc = install_module_at(info.name, (uint32_t)i, 0, info.size);
         if (rc == 1) installed++;
         else if (rc < 0) skipped++;
     }
@@ -1882,6 +2022,19 @@ static void provision_boot_modules(void) {
     kput(" inodes, ");
     kput_int((int)strays);
     kputln(" strays removed");
+#ifdef ARCHIVE_PROBE
+    /* make smoke-archive-refused: the build shipped a second archive whose first
+     * member is a good file and whose second is a symbolic link, which no archive
+     * may carry. The whole archive must be refused, so the good member must not
+     * be here. Said both ways, so a red run names what it saw. */
+    {
+        int d = ensure_dir_path("usr/share/doc");
+        if (d >= 0 && dir_find((uint32_t)d, "archive-probe-good", 0, 0))
+            kputln("ARCHIVE PROBE: FAIL a refused archive left a member installed");
+        else
+            kputln("ARCHIVE PROBE: nothing from the refused archive installed");
+    }
+#endif
     /* One marker whether or not modules were shipped: the skeleton is always
      * created, so a default (module-free) boot still reports a real filesystem. */
     kputln("[fs_server] filesystem provisioned");

@@ -438,7 +438,7 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
         struct fs_stat sst;
         if (sys_fs_stat(rq->ino, &sst) != 0)             { rp->rc = SYS_ERR_NOENT; break; }  /* source inode */
         if (sst.type != FS_TYPE_FILE)                    { rp->rc = SYS_ERR_INVAL; break; }  /* no dir/other links */
-        if (!(cuid == 0 || cuid == sst.uid))             { rp->rc = SYS_ERR_PERM;  break; }  /* owner or root */
+        if (!(g_by_cap || cuid == 0 || cuid == sst.uid)) { rp->rc = SYS_ERR_PERM;  break; }  /* owner or root; through a capability, the carried one decided */
         /* The second name goes beside a name the file already has, never into
          * another directory (decision 11). v11 keeps no back-references, so
          * "the directory it is in" can only be answered this way. */
@@ -958,9 +958,15 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
         if (fs_xdev(rq->ino != 0)) { rp->rc = SYS_ERR_XDEV; return; }
         need = FS_R_CREATE | FS_R_DELETE; is_dir_op = 1; names = 1;
         break;
+    case FS_OP_LINK:
+        /* Step 4(c): a second name, in the capability's directory, for the file
+         * the request CARRIES (SYS_IPC_CALL_CAP). A capability never names an
+         * inode, so the source is the carried capability's object, attested
+         * by the kernel as the directory's is; rq->ino is ignored. The new
+         * name needs CREATE on the directory. */
+        need = FS_R_CREATE; is_dir_op = 1; names = 1;
+        break;
     default:
-        /* Link is not on this path until step 4(c): it names its source by
-         * inode, which a capability never does. */
         rp->rc = SYS_ERR_NOSYS;
         return;
     }
@@ -1013,6 +1019,52 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
         }
     }
 
+    /* LINK WITHIN ONE DIRECTORY (step 4(c), §5.5 as it applies there).
+     *
+     * THE SOURCE IS A CAPABILITY THE CALLER HOLDS, carried with the request:
+     * its own object and generation are checked as the directory's were, and
+     * it must belong to the same session (or both to none), so a session cannot
+     * name a file through a capability from another.
+     *
+     * NO NEW AUTHORITY THROUGH THE NEW NAME. A capability reached later through
+     * the new name gets what the directory gives a file: its rights here,
+     * narrowed to a file's, and to what the policy carries below this node. The
+     * caller must already hold at least that on the file, or a read-only file
+     * plus CREATE on a writable directory would make a writable name.
+     *
+     * NOT A NAME THE POLICY NAMES. A grant naming the new name would reach the
+     * file through it, which is the cross-grant move §5.5 refuses; and a session
+     * that does not know every grant cannot tell, so it is refused, as rename
+     * is. Both EXDEV: a mover copies.
+     *
+     * The step 5 rule stands in handle(): the directory must already hold a
+     * name for the file, so this never moves a file into a directory. */
+    uint32_t link_src = 0;
+    if (rq->op == FS_OP_LINK) {
+        if (!inv->carried) { rp->rc = SYS_ERR_INVAL; return; }
+        link_src = fs_token_ino(inv->carry_token);
+        if (link_src >= FS_GEN_INODES || (g_gen[link_src] & FS_GEN_RETIRED) ||
+            fs_token_gen(inv->carry_token) != g_gen[link_src] ||
+            fs_token_g(inv->carry_token) != g) {
+            rp->rc = SYS_ERR_NOENT;
+            return;
+        }
+        uint32_t would = have & FS_R_FILE_MASK & pol.carry;
+#ifndef FS_CAP_LINK_WIDENS
+        if ((inv->carry_rights & would) != would) { rp->rc = SYS_ERR_PERM; return; }
+#else
+        /* CONTROL ARM, never ship (smoke-fs-cap-link-control): the carried
+         * capability's rights are not compared, so a read-only file gains a
+         * writable name in a writable directory. */
+        (void)would;
+#endif
+        if (pol.s && (!fs_pol_complete(&pol) ||
+                      (pol.node >= 0 && fsp_names(&pol.s->tree, pol.node, rq->name)))) {
+            rp->rc = SYS_ERR_XDEV;
+            return;
+        }
+    }
+
     /* CHMOD AND CHOWN THROUGH A CAPABILITY STORE NOTHING (§7.2, decision 18).
      * The mode bits on the disk decide nothing on this path, so writing them
      * would change no one's access while reporting that it had. Instead each
@@ -1038,6 +1090,7 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
 
     struct fs_request r2 = *rq;
     if (is_dir_op) r2.dir_ino = obj; else r2.ino = obj;
+    if (rq->op == FS_OP_LINK) r2.ino = link_src;   /* the carried file, never rq->ino */
     if (rq->op == FS_OP_RENAME) r2.ino = obj;      /* new parent: the same directory */
     /* A session's single-name LOOKUP is a one-name WALK, so the private /tmp and
      * the hidden store are answered in one place (walk), not two that could

@@ -2123,11 +2123,17 @@ static void handle_command(char *cmd) {
             } else {
                 struct fs_request  rq = {0};
                 struct fs_response rp;
-                /* A link names its source by inode, which a capability never
-                 * does, so through capabilities the server refuses it. */
-                rq.op = FS_OP_LINK; rq.ino = src.ino; rq.dir_ino = sh_cwd.ino;
-                fss_strcpy(rq.name, newn);
-                int t = fss_call_on(&sh_cwd, &rq, &rp);
+                int t;
+                if (sh_cwd.cap && src.cap) {
+                    /* Through capabilities the source travels as a carried
+                     * capability, not an inode (design §11.1, step 4(c)). */
+                    rp.rc = hvfs_link_cap(&sh_cwd, &src, newn);
+                    t = 0;
+                } else {
+                    rq.op = FS_OP_LINK; rq.ino = src.ino; rq.dir_ino = sh_cwd.ino;
+                    fss_strcpy(rq.name, newn);
+                    t = fss_call_on(&sh_cwd, &rq, &rp);
+                }
                 hvfs_release(&src);
                 if (t < 0 || rp.rc < 0) fs_fail("ln", t, &rp);
                 else { print("ln: "); print(newn); print(" -> "); println(oldn); }

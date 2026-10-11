@@ -549,19 +549,23 @@ void spawn_initial_userspace_shell(void) {
     int pid = do_spawn();
     spawn_stage_release();
     if (pid > 0) {
-        uint32_t s8 = 0;
-        uint32_t s9 = 0;
+        uint64_t s8 = 0;
+        uint64_t s9 = 0;
         if (tasks[0].cspace[8].type != CAP_NULL) s8 = cap_alloc_fresh_serial();
         if (tasks[0].cspace[9].type != CAP_NULL) s9 = cap_alloc_fresh_serial();
         spin_lock(&cap_lock);
+        /* Field by field, never a whole-struct copy, which is how a second slot
+         * would come to hold task 0's serial (one serial, one slot;
+         * tools/check_cap_writes.py, rule 4). */
         if (tasks[0].cspace && tasks[pid].cspace) {
-            if (tasks[0].cspace[8].type != CAP_NULL) {
-                tasks[pid].cspace[8] = tasks[0].cspace[8];
-                tasks[pid].cspace[8].serial = s8;
-            }
-            if (tasks[0].cspace[9].type != CAP_NULL) {
-                tasks[pid].cspace[9] = tasks[0].cspace[9];
-                tasks[pid].cspace[9].serial = s9;
+            for (int k = 8; k <= 9; k++) {
+                if (tasks[0].cspace[k].type == CAP_NULL) continue;
+                tasks[pid].cspace[k].type   = tasks[0].cspace[k].type;
+                tasks[pid].cspace[k].rights = tasks[0].cspace[k].rights;
+                tasks[pid].cspace[k].object = tasks[0].cspace[k].object;
+                tasks[pid].cspace[k].badge  = 0;
+                tasks[pid].cspace[k].serial = (k == 8) ? s8 : s9;
+                tasks[pid].cspace[k].token  = 0;
             }
         }
         spin_unlock(&cap_lock);

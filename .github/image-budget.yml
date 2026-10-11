@@ -67,4 +67,6 @@
 #   sized at boot for the pool's span up to 4 GiB; three page directories for
 #   the PHYS_KVA window over [1, 4) GiB (12 KiB) came in, because they must exist
 #   before the allocator whose tables they map.
-bss_bytes: 6950912
+# 2026-10-11: 6,934,528 bytes (-16,384), the hashed generation table
+#   (LINEAGE_GEN, 4096 four-byte cells) removed with LIMITATIONS 2.23.
+bss_bytes: 6934528

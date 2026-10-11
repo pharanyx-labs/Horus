@@ -1,5 +1,4 @@
 use core::ptr;
-use core::sync::atomic::{AtomicU32, Ordering};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -7,14 +6,18 @@ pub struct Capability {
     pub typ: u32,
     pub rights: u32,
     pub object: u64,
-    pub badge: u32,
-    pub serial: u32,
-    pub generation: u32,
-    /// Always zero. Present so `token` sits at offset 32 on every target: a u64
-    /// is 4-aligned on i686 and 8-aligned on x86_64, and an implicit gap would
-    /// put the field at 28 on one and 32 on the other, which the offset
-    /// assertions below exist to make impossible.
-    pub reserved: u32,
+    /// The serial of the capability this one was derived from (an edge of the
+    /// derivation graph), or 0 for a root. 64 bits wide for the same reason
+    /// `serial` is: an edge has to name its parent as exactly as the parent
+    /// names itself.
+    pub badge: u64,
+    /// This capability's identity: a node of the derivation graph, issued once
+    /// by `assign_fresh_serial` and never again. 64 bits because the property
+    /// is "never reused", and a 32-bit counter wrapped after about 4.3 billion
+    /// mints, which ring 3 can reach by minting and revoking in a loop (see
+    /// `assign_fresh_serial`). Revocation and the snapshot check both rest on
+    /// it: a serial names one capability in one slot, for the life of the boot.
+    pub serial: u64,
     /// A server-defined identity carried by an endpoint capability (design
     /// `docs/design/filesystem.md` §5.1). Zero means "no token". The kernel
     /// never interprets it: it delivers it, with the capability's rights, to the
@@ -56,18 +59,16 @@ pub const TOKEN_STRIPPED_RIGHTS: u32 = CAP_RIGHT_READ;
 // both sides index the same memory. These compile-time assertions pin the field
 // offsets so reordering or retyping a field in either language fails to build.
 // The mirror image of these checks lives in src/kernel/capability.c as
-// `_Static_assert`s. Field offsets are identical on the 32- and 64-bit targets;
-// only the trailing padding (and thus size_of) differs, so we assert offsets,
-// not size.
+// `_Static_assert`s. Every field after `rights` is a u64 at an 8-byte offset,
+// so the layout is the same on the 32- and 64-bit targets with no implicit
+// padding anywhere, and the size is pinned as well as the offsets.
 // ---------------------------------------------------------------------------
 const _: () = {
     assert!(core::mem::offset_of!(Capability, typ) == 0);
     assert!(core::mem::offset_of!(Capability, rights) == 4);
     assert!(core::mem::offset_of!(Capability, object) == 8);
     assert!(core::mem::offset_of!(Capability, badge) == 16);
-    assert!(core::mem::offset_of!(Capability, serial) == 20);
-    assert!(core::mem::offset_of!(Capability, generation) == 24);
-    assert!(core::mem::offset_of!(Capability, reserved) == 28);
+    assert!(core::mem::offset_of!(Capability, serial) == 24);
     assert!(core::mem::offset_of!(Capability, token) == 32);
     assert!(core::mem::size_of::<Capability>() == 40);
     assert!(CAP_NULL == 0);
@@ -77,131 +78,109 @@ const CNODE_SIZE: u32 = 256;
 const KERNEL_RESERVED_CAPS: u32 = 4;
 
 
-const MIN_DERIVED_SERIAL: u32 = 0x00010000;
+/// The first serial `assign_fresh_serial` hands out. Every derived serial is at
+/// least 2^32, so no derived serial can ever fall in the primordial range below
+/// (`0xC0DE_0000..=0xC0DE_FFFF`, all under 2^32). With 32-bit serials the counter
+/// walked through that range on its way to wrapping, and a derived capability
+/// that landed there read as a non-revocable kernel root.
+const MIN_DERIVED_SERIAL: u64 = 1 << 32;
 
-
-
-
-
-// Single source of truth for per-capability lineage generations.
+// ---------------------------------------------------------------------------
+// Why a capability in its slot is valid, and a snapshot is checked by serial.
 //
-// The table is keyed by a capability's globally-unique, monotonic `serial`
-// (finding 3.3 / audit A3 follow-up). Every capability gets a fresh serial at
-// creation, so serial-keying gives each capability its OWN generation cell.
+// ONE SERIAL, ONE SLOT. A serial is issued once (`assign_fresh_serial` never
+// repeats one: it is 64 bits wide and refuses rather than wrap), and every way
+// a capability comes into a slot gives it a fresh serial. So a serial names one
+// capability in one slot. A revoke empties, under `cap_lock`, every slot holding
+// the revoked serial and every slot whose capability descends from it
+// (`revoke_subtree`). Two consequences carry S5:
 //
-// The previous table was keyed by `object`. Two independent capabilities to the
-// same object then shared a cell, so the only way they could stay independent
-// under an object-wide revoke bump was to carry the "untracked" generation 0 —
-// and 0 was treated as *always valid*. Because every capability in the running
-// kernel is created with generation 0 (all primordial roots, every
-// `cap_install_*`, and mint/grant which inherit the source's generation), the
-// generation backstop was in practice DORMANT: a stale/snapshotted capability
-// with generation 0 passed the check unconditionally, so the use-after-revoke /
-// TOCTOU-revalidate guard it was meant to provide did nothing (finding 3.3).
+//   * a capability still in a slot has not been revoked, because the revoke
+//     that would have reached it emptied that slot. Lookup needs no second
+//     record of revocation;
+//   * a copy taken OUT of a slot (`cap_snapshot` in capability.c) is still the
+//     capability it was iff the slot still holds the same serial. A revoke
+//     empties the slot, and a later install there takes a new serial, so a
+//     revoked capability can never be confused with what replaced it.
 //
-// Serial-keying + strict-equality checking (below) makes the backstop ACTIVE and
-// precise: on revoke the authority bumps the generation of EXACTLY the serials
-// the structural sweep (`revoke_subtree`) enumerates — the revoked capability
-// and its derivation subtree — so a live sibling, ancestor, or independent
-// same-object peer (a *different* serial) is never invalidated, while a detached
-// snapshot/copy of a revoked capability (its own, now-bumped serial) fails the
-// check even if the structural nulling never reached it. Two independent
-// mechanisms (null the slot AND bump its serial-generation) now each invalidate
-// a revoked capability.
-//
-// Each slot is an independent atomic so accesses are sound under preemption/SMP;
-// the cspace arrays themselves are mutated only under the C `cap_lock`.
-const LINEAGE_SLOTS: usize = 4096;
-#[allow(clippy::declare_interior_mutable_const)]
-const LINEAGE_ZERO: AtomicU32 = AtomicU32::new(0);
-static LINEAGE_GEN: [AtomicU32; LINEAGE_SLOTS] = [LINEAGE_ZERO; LINEAGE_SLOTS];
+// Until 2026-10-11 a second record backed this up: a generation per serial,
+// kept in a 4096-cell table indexed by a hash of the serial, bumped on revoke
+// and compared on every lookup. Different serials share a cell, so revoking one
+// capability made every live capability in the same cell unusable. It failed
+// closed, but an ordinary shell session revokes a capability for every file it
+// closes, and it lost the shell its root directory in CI (LIMITATIONS 2.23,
+// #538). It also was not needed: everything it caught, the structural revoke
+// above already caught, except a stale snapshot after a 32-bit serial wrap,
+// which 64-bit serials remove. It is gone, and `captest` 16b is the witness that
+// a live capability survives any number of unrelated revokes.
+// ---------------------------------------------------------------------------
 
 // Primordial root capabilities (kernel-only, in the reserved slots) carry the
 // `0xC0DE****` serial tag and are deliberately non-revocable (see
-// `is_primordial_root`). They are exempt from generation tracking: never bumped,
-// always valid — so a hash collision with a revoked user serial can never
-// invalidate a kernel root capability. This mirrors the tag `is_primordial_root`
-// matches, but keyed on the serial alone (no slot index needed).
-const PRIMORDIAL_SERIAL_MASK: u32 = 0xFFFF_0000;
-const PRIMORDIAL_SERIAL_TAG: u32 = 0xC0DE_0000;
+// `is_primordial_root`).
+const PRIMORDIAL_SERIAL_MASK: u64 = 0xFFFF_FFFF_FFFF_0000;
+const PRIMORDIAL_SERIAL_TAG: u64 = 0xC0DE_0000;
 
 #[inline]
-fn serial_is_primordial(serial: u32) -> bool {
+fn serial_is_primordial(serial: u64) -> bool {
     (serial & PRIMORDIAL_SERIAL_MASK) == PRIMORDIAL_SERIAL_TAG
 }
 
-/// A serial participates in generation tracking iff it is a real, non-primordial
-/// serial. Empty (0) and primordial (`0xC0DE****`) serials are exempt.
-#[inline]
-fn serial_is_tracked(serial: u32) -> bool {
-    serial != 0 && !serial_is_primordial(serial)
-}
+/// CONTROL ARM for LIMITATIONS 2.23 (`--features revoke_hashed_backstop`, the
+/// `REVOKE_HASHED_BACKSTOP=1` defect flag). Never shipped.
+///
+/// Puts back the defect's shape: revocation recorded in a fixed table of 4096
+/// cells chosen by a hash of the serial, consulted on every lookup. Each cell
+/// keeps the highest serial revoked into it, and a capability reads as revoked
+/// when its cell holds a serial at least as new as its own, which is to say a
+/// revoke into its cell happened after it was born. That is what the removed
+/// generation table did (a capability was stamped with its cell's generation at
+/// birth and failed once anything bumped the cell), without needing a field in
+/// the capability to stamp. `captest` 16b must go red under it.
+#[cfg(feature = "revoke_hashed_backstop")]
+mod hashed_backstop {
+    use core::sync::atomic::{AtomicU64, Ordering};
 
-#[inline]
-fn lineage_idx(serial: u32) -> usize {
-    let mut x = serial as u64;
-    x ^= x >> 30;
-    x = x.wrapping_mul(0xbf58476d1ce4e5b9);
-    x ^= x >> 27;
-    x = x.wrapping_mul(0x94d049bb133111eb);
-    x ^= x >> 31;
-    (x as usize) & (LINEAGE_SLOTS - 1)
-}
+    const CELLS: usize = 4096;
+    #[allow(clippy::declare_interior_mutable_const)]
+    const ZERO: AtomicU64 = AtomicU64::new(0);
+    static CELL: [AtomicU64; CELLS] = [ZERO; CELLS];
 
-/// The generation a capability with this `serial` must currently carry to be
-/// valid. Read at CREATION time and stored in the capability's `generation`
-/// field so that a fresh serial which happens to hash onto a slot a prior,
-/// unrelated revoke already bumped is born VALID (matching the slot) rather than
-/// born stale. Untracked (empty / primordial) serials always carry 0.
-#[inline]
-fn lineage_current(serial: u32) -> u32 {
-    if !serial_is_tracked(serial) {
-        return 0;
+    fn idx(serial: u64) -> usize {
+        let mut x = serial;
+        x ^= x >> 30;
+        x = x.wrapping_mul(0xbf58476d1ce4e5b9);
+        x ^= x >> 27;
+        x = x.wrapping_mul(0x94d049bb133111eb);
+        x ^= x >> 31;
+        (x as usize) & (CELLS - 1)
     }
-    LINEAGE_GEN[lineage_idx(serial)].load(Ordering::SeqCst)
-}
 
-/// Bump the generation for `serial`, invalidating every capability (and every
-/// detached snapshot) that recorded the previous generation for it. Returns the
-/// new generation. Generation 0 means "pristine / never revoked", so we skip it
-/// on wrap-around. Exempt serials are never bumped.
-#[inline]
-fn bump_lineage(serial: u32) -> u32 {
-    if !serial_is_tracked(serial) {
-        return 0;
+    pub fn record(serial: u64) {
+        if serial != 0 && !super::serial_is_primordial(serial) {
+            CELL[idx(serial)].fetch_max(serial, Ordering::SeqCst);
+        }
     }
-    let idx = lineage_idx(serial);
-    let prev = LINEAGE_GEN[idx].fetch_add(1, Ordering::SeqCst);
-    let g = prev.wrapping_add(1);
-    if g == 0 {
-        // Wrapped back onto the pristine sentinel; force to 1 so a revoked
-        // serial never reads as pristine.
-        LINEAGE_GEN[idx].store(1, Ordering::SeqCst);
-        1
-    } else {
-        g
+
+    pub fn reads_revoked(serial: u64) -> bool {
+        serial != 0
+            && !super::serial_is_primordial(serial)
+            && CELL[idx(serial)].load(Ordering::SeqCst) >= serial
     }
 }
 
-/// Authoritative validity check: is a capability that recorded `gen` for its
-/// `serial` still live? A tracked capability is valid iff its recorded
-/// generation is EXACTLY the serial's current generation — strict equality, so
-/// there is no "generation 0 is always valid" escape hatch (finding 3.3). A
-/// pristine capability carries gen 0 and matches the pristine slot 0; once its
-/// serial is bumped by a revoke, the recorded 0 no longer matches and the
-/// capability (or its snapshot) is stale. Empty and primordial serials are
-/// exempt (always valid).
+/// Note that `serial` is being revoked. Nothing to record in a shipping build:
+/// emptying its slot is the record. The control arm keeps its lossy table here.
 #[inline]
-fn lineage_check(serial: u32, gen: u32) -> bool {
-    if !serial_is_tracked(serial) {
-        return true;
-    }
-    LINEAGE_GEN[lineage_idx(serial)].load(Ordering::SeqCst) == gen
+fn note_revoked(_serial: u64) {
+    #[cfg(feature = "revoke_hashed_backstop")]
+    hashed_backstop::record(_serial);
 }
 
 /// Resolve a slot to a live capability carrying at least `required_rights`, or
-/// null. The single authority on what "live" means: type, rights and lineage
-/// generation are all checked here.
+/// null. The single authority on what "live" means: type, rights and a real
+/// serial are all checked here. A revoked capability is not in any slot (see
+/// "One serial, one slot" above), so there is no revocation record to consult.
 ///
 /// # Safety
 /// `cspace` must be null, or point to at least `cspace_size` valid
@@ -242,51 +221,59 @@ pub unsafe extern "C" fn rust_cap_lookup(
     if cap.serial == 0 {
         return ptr::null_mut();
     }
-    // Serial-keyed generation backstop (finding 3.3): a capability whose serial
-    // has been bumped by a revoke fails strict-equality here even though its slot
-    // is (defensively) also nulled by the structural sweep. `cap.serial != 0` is
-    // guaranteed above; primordial serials are exempt inside `lineage_check`.
-    if !lineage_check(cap.serial, cap.generation) {
+    #[cfg(feature = "revoke_hashed_backstop")]
+    if hashed_backstop::reads_revoked(cap.serial) {
         return ptr::null_mut();
     }
     cap
 }
 
-/// Allocate a fresh derived serial, advancing `*next_serial`. This is the SINGLE
-/// implementation of the serial wrap logic: serials never collide with the
-/// reserved primordial range and never wrap to 0. Both `rust_cap_mint` and the C
-/// `cap_alloc_fresh_serial` go through it so the two cannot drift.
+/// Allocate a fresh derived serial, advancing `*next_serial`, or return 0 when
+/// none can be issued. This is the SINGLE implementation of serial allocation:
+/// both the Rust derivations and the C `cap_alloc_fresh_serial` go through it,
+/// so the two cannot drift.
+///
+/// THE PROPERTY IS "NEVER THE SAME SERIAL TWICE", and every derived serial is at
+/// least `MIN_DERIVED_SERIAL`, so none is 0 or primordial. It does not wrap: at
+/// the top of the range it returns 0, and every caller refuses on 0. That end is
+/// not reachable (2^64 - 2^32 mints, centuries at a mint a nanosecond); what
+/// matters is that if it were, the failure would be a refusal and never a
+/// repeated serial. With 32 bits the counter did wrap, after about 4.3 billion
+/// mints, and a repeated serial is two capabilities fused into one node of the
+/// derivation graph, which is what "one serial, one slot" above rules out.
+///
+/// A null counter also returns 0. It returned the constant `0xC0DEFFFF` until
+/// 2026-10-11, which handed every such caller the same serial.
 ///
 /// # Safety
-/// `next_serial` must be null, or point to a valid, writable `u32` -- the
-/// kernel's monotonic serial counter, which this reads and advances. Null is
-/// handled by returning a serial without advancing anything. Call under
+/// `next_serial` must be null, or point to a valid, writable `u64` -- the
+/// kernel's monotonic serial counter, which this reads and advances. Call under
 /// `cap_lock`: the read-modify-write is not atomic, and two callers racing here
-/// would hand out one serial twice, which would fuse two unrelated capabilities
-/// into one node of the derivation graph.
+/// would hand out one serial twice.
 #[inline]
-unsafe fn assign_fresh_serial(next_serial: *mut u32) -> u32 {
+unsafe fn assign_fresh_serial(next_serial: *mut u64) -> u64 {
     if next_serial.is_null() {
-
-        return 0xC0DEFFFFu32;
+        return 0;
     }
     let cur = *next_serial;
-
-
     let base = if cur < MIN_DERIVED_SERIAL { MIN_DERIVED_SERIAL } else { cur };
-    let fresh = base.wrapping_add(1);
-    let fresh = if fresh < MIN_DERIVED_SERIAL || fresh == 0 { MIN_DERIVED_SERIAL } else { fresh };
-    *next_serial = fresh;
-    fresh
+    match base.checked_add(1) {
+        Some(fresh) => {
+            *next_serial = fresh;
+            fresh
+        }
+        None => 0,
+    }
 }
 
 /// FFI: centralized fresh-serial allocation for the C kernel.
 ///
 /// # Safety
 /// As `assign_fresh_serial`, which this is a thin wrapper over: `next_serial`
-/// must be null or a valid writable `u32`, and the caller must hold `cap_lock`.
+/// must be null or a valid writable `u64`, and the caller must hold `cap_lock`.
+/// A return of 0 means no serial was issued, and the caller must refuse.
 #[no_mangle]
-pub unsafe extern "C" fn rust_cap_alloc_serial(next_serial: *mut u32) -> u32 {
+pub unsafe extern "C" fn rust_cap_alloc_serial(next_serial: *mut u64) -> u64 {
     assign_fresh_serial(next_serial)
 }
 
@@ -311,7 +298,7 @@ pub unsafe extern "C" fn rust_cap_mint(
     dest_slot: u32,
     src_slot: u32,
     new_rights: u32,
-    next_serial: *mut u32,
+    next_serial: *mut u64,
     _current_task_caps_in_use: u32,
 ) -> bool {
     if cspace.is_null() {
@@ -344,23 +331,21 @@ pub unsafe extern "C" fn rust_cap_mint(
     let parent_serial = src.serial;
 
     let fresh = assign_fresh_serial(next_serial);
+    if fresh == 0 {
+        return false;
+    }
 
     
     let effective_rights = new_rights & src.rights;
 
-    // The child is keyed by its OWN fresh serial (finding 3.3): stamp it with
-    // that serial's current generation, so it is born valid even if the serial
-    // hashes onto a slot a prior revoke already bumped, and so a later revoke of
-    // the child — or of any ancestor, which sweeps the child's serial — makes it
-    // fail the strict-equality lineage check.
+    // The child is a new node with its OWN fresh serial, and names its parent in
+    // `badge`, so a revoke of the parent (or of any ancestor) reaches it.
     *dest = Capability {
         typ: src.typ,
         rights: effective_rights,
         object: src.object,
         badge: parent_serial,
         serial: fresh,
-        generation: lineage_current(fresh),
-        reserved: 0,
         // Attenuation keeps identity: a narrowed copy of a tokened capability
         // names the same thing, with fewer rights. See `Capability::token`.
         token: src.token,
@@ -388,7 +373,7 @@ pub unsafe extern "C" fn rust_cap_transfer(
     cspace_size: u32,
     dest_slot: u32,
     src_slot: u32,
-    next_serial: *mut u32,
+    next_serial: *mut u64,
 ) -> bool {
     rust_cap_mint(cspace, cspace_size, dest_slot, src_slot, !0u32, next_serial, 0)
 }
@@ -406,8 +391,7 @@ pub unsafe extern "C" fn rust_cap_transfer(
 ///   - the grantee records the grantor's cap as its parent (`badge = src.serial`)
 ///     so a later revoke of the grantor's cap sweeps the grantee too, and the
 ///     derivation tree stays well-formed;
-///   - the grantee gets a fresh serial and inherits the source generation, and
-///     the object's lineage floor is raised to the source generation.
+///   - the grantee gets a fresh serial of its own.
 ///
 /// Unlike mint there is intentionally NO `dest_slot < KERNEL_RESERVED_CAPS`
 /// floor: grant writes into a *child* the caller already dominates (it holds the
@@ -426,7 +410,7 @@ pub unsafe extern "C" fn rust_cap_grant_into(
     dest_cspace_size: u32,
     dest_slot: u32,
     new_rights: u32,
-    next_serial: *mut u32,
+    next_serial: *mut u64,
 ) -> bool {
     if src.is_null() || dest_cspace.is_null() {
         return false;
@@ -443,19 +427,19 @@ pub unsafe extern "C" fn rust_cap_grant_into(
 
     let parent_serial = s.serial;
     let fresh = assign_fresh_serial(next_serial);
+    if fresh == 0 {
+        return false;
+    }
     let effective_rights = new_rights & s.rights;
 
     let dest = &mut *dest_cspace.add(dest_slot as usize);
-    // Grantee is keyed by its own fresh serial (finding 3.3), stamped with that
-    // serial's current generation — same discipline as mint.
+    // The grantee is a new node with its own fresh serial, as with mint.
     *dest = Capability {
         typ: s.typ,
         rights: effective_rights,
         object: s.object,
         badge: parent_serial,
         serial: fresh,
-        generation: lineage_current(fresh),
-        reserved: 0,
         // Delegation keeps identity, exactly as mint does.
         token: s.token,
     };
@@ -497,7 +481,7 @@ pub unsafe extern "C" fn rust_cap_mint_token(
     src_slot: u32,
     new_rights: u32,
     token: u64,
-    next_serial: *mut u32,
+    next_serial: *mut u64,
 ) -> bool {
     if cspace.is_null() || token == 0 {
         return false;
@@ -516,14 +500,15 @@ pub unsafe extern "C" fn rust_cap_mint_token(
         return false;
     }
     let fresh = assign_fresh_serial(next_serial);
+    if fresh == 0 {
+        return false;
+    }
     *cspace.add(dest_slot as usize) = Capability {
         typ: CAP_ENDPOINT,
         rights: new_rights & src.rights & !TOKEN_STRIPPED_RIGHTS,
         object: src.object,
         badge: src.serial,
         serial: fresh,
-        generation: lineage_current(fresh),
-        reserved: 0,
         token,
     };
     true
@@ -562,7 +547,7 @@ pub unsafe extern "C" fn rust_cap_reply_mint(
     dest_slot: u32,
     new_rights: u32,
     token: u64,
-    next_serial: *mut u32,
+    next_serial: *mut u64,
 ) -> bool {
     if src.is_null() || dest_cspace.is_null() || token == 0 {
         return false;
@@ -578,14 +563,15 @@ pub unsafe extern "C" fn rust_cap_reply_mint(
         return false;
     }
     let fresh = assign_fresh_serial(next_serial);
+    if fresh == 0 {
+        return false;
+    }
     *dest_cspace.add(dest_slot as usize) = Capability {
         typ: CAP_ENDPOINT,
         rights: new_rights & s.rights & !TOKEN_STRIPPED_RIGHTS,
         object: s.object,
         badge: s.serial,
         serial: fresh,
-        generation: lineage_current(fresh),
-        reserved: 0,
         token,
     };
     true
@@ -605,8 +591,6 @@ unsafe fn nullify(c: &mut Capability) {
     c.object = 0;
     c.badge = 0;
     c.serial = 0;
-    c.generation = 0;
-    c.reserved = 0;
     // A slot that is later reused must not inherit an identity: the token is
     // what a server authorises on, so a stale one is a forged one.
     c.token = 0;
@@ -642,7 +626,7 @@ const _: () = {
 // Unused when the [I-3] control arm is compiled in, which selects the legacy
 // bounded closure instead. Not dead code in any shipping configuration.
 #[cfg_attr(feature = "revoke_legacy_bounded", allow(dead_code))]
-unsafe fn mark_children_of(spaces: *const CSpaceDesc, space_count: u32, parent_serial: u32) {
+unsafe fn mark_children_of(spaces: *const CSpaceDesc, space_count: u32, parent_serial: u64) {
     if parent_serial == 0 {
         return;
     }
@@ -730,7 +714,7 @@ unsafe fn mark_children_of(spaces: *const CSpaceDesc, space_count: u32, parent_s
 unsafe fn revoke_subtree(
     spaces: *const CSpaceDesc,
     space_count: u32,
-    root_serial: u32,
+    root_serial: u64,
     root_object: u64,
 ) {
     if spaces.is_null() {
@@ -798,14 +782,10 @@ unsafe fn revoke_subtree(
                 || (root_serial != 0 && c.serial == root_serial)
                 || (by_object && root_object != 0 && c.object == root_object);
             if hit {
-                // Bump this capability's serial generation BEFORE nulling it
-                // (nullify clears the serial). This is the active backstop
-                // (finding 3.3): a detached snapshot/copy carrying this serial
-                // now fails `lineage_check`, independently of the structural
-                // null below. Exactly this subtree's serials are bumped, so a
-                // sibling/ancestor/independent peer (a different serial) is
-                // untouched (audit A1).
-                let _ = bump_lineage(c.serial);
+                // Emptying the slot is the whole record of the revoke: no
+                // other slot holds this serial (one serial, one slot), and
+                // none will again.
+                note_revoked(c.serial);
                 nullify(c);
                 if !d.caps_in_use.is_null() && *d.caps_in_use > 0 {
                     *d.caps_in_use -= 1;
@@ -831,12 +811,12 @@ unsafe fn revoke_subtree(
 unsafe fn revoke_subtree(
     spaces: *const CSpaceDesc,
     space_count: u32,
-    root_serial: u32,
+    root_serial: u64,
     root_object: u64,
 ) {
     const MAX_REVOKE_LINEAGE: usize = 256;
 
-    fn set_contains(set: &[u32], v: u32) -> bool {
+    fn set_contains(set: &[u64], v: u64) -> bool {
         let mut i = 0;
         while i < set.len() {
             if set[i] == v {
@@ -850,7 +830,7 @@ unsafe fn revoke_subtree(
     if spaces.is_null() {
         return;
     }
-    let mut revoked = [0u32; MAX_REVOKE_LINEAGE];
+    let mut revoked = [0u64; MAX_REVOKE_LINEAGE];
     let mut n = 0usize;
     let mut overflow = false;
 
@@ -905,7 +885,7 @@ unsafe fn revoke_subtree(
             let hit = set_contains(&revoked[..n], c.serial)
                 || (overflow && root_object != 0 && c.object == root_object);
             if hit {
-                let _ = bump_lineage(c.serial);
+                note_revoked(c.serial);
                 nullify(c);
                 if !d.caps_in_use.is_null() && *d.caps_in_use > 0 {
                     *d.caps_in_use -= 1;
@@ -926,7 +906,7 @@ unsafe fn revoke_subtree(
 #[inline]
 unsafe fn is_primordial_root(cspace: *mut Capability, slot: u32) -> bool {
     let s = (*cspace.add(slot as usize)).serial;
-    slot < KERNEL_RESERVED_CAPS && s != 0 && (s & 0xFFFF0000) == 0xC0DE0000
+    slot < KERNEL_RESERVED_CAPS && serial_is_primordial(s)
 }
 
 /// Single-cspace revoke. Used for moves and for revoking a CAP_REVOCATION
@@ -946,7 +926,7 @@ pub unsafe extern "C" fn rust_cap_revoke(
     cspace: *mut Capability,
     cspace_size: u32,
     slot: u32,
-    _next_serial: *mut u32,
+    _next_serial: *mut u64,
 ) -> bool {
     if cspace.is_null() {
         return false;
@@ -967,12 +947,7 @@ pub unsafe extern "C" fn rust_cap_revoke(
     let to = target.object;
 
     nullify(target);
-
-    // Bump the target's own serial generation so a detached snapshot/copy of the
-    // revoked capability is invalidated (finding 3.3). The structural sweep below
-    // bumps each descendant serial; `to` (the object) is still passed to it only
-    // for the overflow object-match fallback, never for generation keying.
-    let _ = bump_lineage(ts);
+    note_revoked(ts);
 
     // Descendant-only sweep of this one cspace (audit A1). The target slot is
     // already nulled, so the closure only reaches capabilities derived from it.
@@ -1002,9 +977,8 @@ pub struct CSpaceDesc {
 /// EVERY cspace in `spaces` (which the caller populates with all live tasks'
 /// cspaces plus the kernel root cnode) for the target's derivation *subtree* —
 /// the capabilities transitively derived from it (mint/transfer/grant) — nulling
-/// them. The lineage generation is bumped exactly once, so any stale copy that
-/// somehow escapes the structural sweep still fails the generation check in
-/// `rust_cap_lookup`.
+/// them. Every slot holding one of those serials is emptied, and no other slot
+/// holds one (one serial, one slot), so nothing that was revoked stays usable.
 ///
 /// INVARIANT (see ARCHITECTURE.md): after this returns true, no live cspace
 /// retains the target capability or any capability derived from it — and, per
@@ -1033,7 +1007,7 @@ pub unsafe extern "C" fn rust_cap_revoke_global(
     target_caps_in_use: *mut u32,
     spaces: *const CSpaceDesc,
     space_count: u32,
-    _next_serial: *mut u32,
+    _next_serial: *mut u64,
 ) -> bool {
     if target_cspace.is_null() {
         return false;
@@ -1058,11 +1032,7 @@ pub unsafe extern "C" fn rust_cap_revoke_global(
         *target_caps_in_use -= 1;
     }
 
-    // Bump the target's own serial generation so a detached snapshot/copy of the
-    // revoked capability is invalidated (finding 3.3). The structural sweep below
-    // bumps each descendant serial; `to` (the object) is still passed to it only
-    // for the overflow object-match fallback, never for generation keying.
-    let _ = bump_lineage(ts);
+    note_revoked(ts);
 
     // Sweep every supplied cspace for the target's derivation subtree only — the
     // target's descendants, not its ancestors, siblings, or same-object peers
@@ -1071,76 +1041,36 @@ pub unsafe extern "C" fn rust_cap_revoke_global(
     true
 }
 
-/// FFI: check whether a capability recording `gen` for `serial` is still valid.
-/// C's `capability_validate_generation` delegates here so both sides agree.
-#[no_mangle]
-pub extern "C" fn rust_lineage_check(serial: u32, gen: u32) -> bool { lineage_check(serial, gen) }
-
-/// FFI: the generation a freshly-created capability with `serial` must carry to
-/// be valid. Every C capability-creation site stamps
-/// `cap.generation = rust_lineage_current(cap.serial)` so the serial-keyed
-/// backstop (finding 3.3) is active for kernel-created capabilities too, and a
-/// serial that collides with a previously-bumped slot is born valid, not stale.
-#[no_mangle]
-pub extern "C" fn rust_lineage_current(serial: u32) -> u32 { lineage_current(serial) }
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use core::ptr::addr_of_mut;
 
-    fn cap(typ: u32, rights: u32, object: u64, badge: u32, serial: u32, generation: u32) -> Capability {
-        Capability { typ, rights, object, badge, serial, generation, reserved: 0, token: 0 }
+    fn cap(typ: u32, rights: u32, object: u64, badge: u64, serial: u64) -> Capability {
+        Capability { typ, rights, object, badge, serial, token: 0 }
     }
 
-    // Test isolation for the serial-keyed generation authority (finding 3.3).
-    //
-    // `LINEAGE_GEN` is a shared `static`, and the strict-equality check now makes
-    // a capability's validity depend on that shared state (a pristine gen-0 cap
-    // is valid only while its serial's slot is 0). Under `cargo test`'s parallel
-    // harness two tests could otherwise hash-collide — one bumping a serial the
-    // other asserts survives. This guard serializes every table-touching test and
-    // resets the table to pristine on entry, so each runs against a clean, private
-    // authority. `core`-only (the crate is `no_std` under test); `cargo test`
-    // builds with `panic=unwind`, so `Drop` releases the lock even on a failing
-    // assertion.
-    static LINEAGE_TEST_LOCK: AtomicU32 = AtomicU32::new(0);
-    struct LineageTestGuard;
-    impl LineageTestGuard {
-        fn new() -> Self {
-            while LINEAGE_TEST_LOCK
-                .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
-                .is_err()
-            {
-                core::hint::spin_loop();
-            }
-            for slot in LINEAGE_GEN.iter() {
-                slot.store(0, Ordering::SeqCst);
-            }
-            LineageTestGuard
-        }
-    }
-    impl Drop for LineageTestGuard {
-        fn drop(&mut self) {
-            LINEAGE_TEST_LOCK.store(0, Ordering::Release);
-        }
+    /// What `cap_revalidate` in capability.c asks of a snapshot at the point of
+    /// use: the slot still resolves, and still holds the same serial and object.
+    /// One serial, one slot, so a revoke (which empties the slot) or a
+    /// replacement (which brings a new serial) both fail it.
+    unsafe fn still_holds(cs: *mut Capability, size: u32, slot: u32, snap: &Capability) -> bool {
+        let p = rust_cap_lookup(cs, size, slot, 0);
+        !p.is_null() && (*p).serial == snap.serial && (*p).object == snap.object
     }
 
     /// Regression: a derived capability minted into a *second* task's cspace
-    /// must be revoked (and its lineage invalidated) when the parent is revoked
-    /// in the first task — the system-wide revocation invariant.
+    /// must be revoked when the parent is revoked in the first task — the system-wide revocation invariant.
     #[test]
     fn test_global_revoke_reaches_other_task_cspace() {
-        let _lin = LineageTestGuard::new();
-        let mut a = [cap(0, 0, 0, 0, 0, 0); 16];
-        let mut b = [cap(0, 0, 0, 0, 0, 0); 16];
+        let mut a = [cap(0, 0, 0, 0, 0); 16];
+        let mut b = [cap(0, 0, 0, 0, 0); 16];
 
         // Task A holds the parent CAP_FRAME (object 0x5000, serial 0x4000).
-        // Pristine generation 0 matches its pristine serial slot — valid now.
-        a[4] = cap(1, 0x3f, 0x5000, 0, 0x4000, 0);
+        a[4] = cap(1, 0x3f, 0x5000, 0, 0x4000);
         // Task B holds a derived copy: badge == parent serial, same object,
         // reduced rights, its own fresh serial — exactly what cap_mint produces.
-        b[7] = cap(1, 0x03, 0x5000, 0x4000, 0x9001, 0);
+        b[7] = cap(1, 0x03, 0x5000, 0x4000, 0x9001);
 
         let mut ciu_a = 1u32;
         let mut ciu_b = 1u32;
@@ -1176,11 +1106,10 @@ mod tests {
                 "derived capability in another task must be revoked system-wide");
             assert!(rust_cap_lookup(b_ptr, 16, 7, 0x1).is_null());
 
-            // Serial generations bumped: a detached copy carrying the parent's
-            // OR the derived child's pre-revoke generation now fails the check,
-            // even if it had escaped the structural sweep (finding 3.3).
-            assert!(!lineage_check(0x4000, 0), "revoked parent serial is now stale");
-            assert!(!lineage_check(0x9001, 0), "revoked derived serial is now stale");
+            // No slot in either cspace still holds either serial: one serial,
+            // one slot, and the revoke emptied it.
+            assert!(a.iter().chain(b.iter()).all(|c| c.serial != 0x4000 && c.serial != 0x9001),
+                "a revoked serial must not survive in any slot");
 
             // Accounting: both tasks' caps_in_use were decremented exactly once.
             assert_eq!(ciu_a, 0);
@@ -1192,11 +1121,10 @@ mod tests {
     /// survive an unrelated revocation (no over-broad nulling).
     #[test]
     fn test_global_revoke_does_not_touch_unrelated() {
-        let _lin = LineageTestGuard::new();
-        let mut a = [cap(0, 0, 0, 0, 0, 0); 16];
-        let mut b = [cap(0, 0, 0, 0, 0, 0); 16];
-        a[4] = cap(1, 0x3f, 0x7000, 0, 0x7700, 0);
-        b[7] = cap(1, 0x3f, 0x8000, 0, 0x8800, 0); // unrelated lineage (distinct serial)
+        let mut a = [cap(0, 0, 0, 0, 0); 16];
+        let mut b = [cap(0, 0, 0, 0, 0); 16];
+        a[4] = cap(1, 0x3f, 0x7000, 0, 0x7700);
+        b[7] = cap(1, 0x3f, 0x8000, 0, 0x8800); // unrelated lineage (distinct serial)
 
         let mut ciu_a = 1u32;
         let mut ciu_b = 1u32;
@@ -1218,11 +1146,10 @@ mod tests {
 
     #[test]
     fn test_lookup_and_mint_basic() {
-        let _lin = LineageTestGuard::new();
-        let mut cspace = [Capability { typ: 0, rights: 0, object: 0, badge: 0, serial: 0, generation: 0, reserved: 0, token: 0 }; 16];
-        cspace[0] = Capability { typ: 1, rights: 0x3f, object: 42, badge: 0, serial: 0x1000, generation: 0, reserved: 0, token: 0 };
+        let mut cspace = [Capability { typ: 0, rights: 0, object: 0, badge: 0, serial: 0, token: 0 }; 16];
+        cspace[0] = Capability { typ: 1, rights: 0x3f, object: 42, badge: 0, serial: 0x1000, token: 0 };
 
-        let mut next = 0x1001u32;
+        let mut next = 0x1001u64;
 
         unsafe {
             let ok = rust_cap_mint(
@@ -1231,7 +1158,7 @@ mod tests {
                 5,
                 0,
                 0x3,
-                &mut next as *mut u32,
+                &mut next as *mut u64,
                 0,
             );
             assert!(ok);
@@ -1243,25 +1170,21 @@ mod tests {
             assert_eq!(c5.rights, 0x3);
             assert_eq!(c5.badge, 0x1000);
             assert!(c5.serial > 0x1000);
-            assert_eq!(c5.generation, 0);
         }
     }
 
     #[test]
     fn test_revoke_clears_and_serial_is_fresh() {
-        let _lin = LineageTestGuard::new();
-        let mut cspace = [Capability { typ: 0, rights: 0, object: 0, badge: 0, serial: 0, generation: 0, reserved: 0, token: 0 }; 16];
-        cspace[0] = Capability { typ: 1, rights: 0x3f, object: 99, badge: 0, serial: 0x2000, generation: 0, reserved: 0, token: 0 };
+        let mut cspace = [Capability { typ: 0, rights: 0, object: 0, badge: 0, serial: 0, token: 0 }; 16];
+        cspace[0] = Capability { typ: 1, rights: 0x3f, object: 99, badge: 0, serial: 0x2000, token: 0 };
 
-        let mut next = 0x2001u32;
+        let mut next = 0x2001u64;
         unsafe {
             let mint_ok = rust_cap_mint(cspace.as_mut_ptr(), 16, 6, 0, 0x7, &mut next, 0);
             assert!(mint_ok);
             let child_before = *cspace.as_ptr().add(6);
             assert_eq!(child_before.badge, 0x2000);
-            // The child is keyed by its OWN fresh serial and stamped with that
-            // serial's current (pristine) generation — 0 — not the parent's.
-            assert_eq!(child_before.generation, 0);
+            assert!(child_before.serial >= MIN_DERIVED_SERIAL, "the child has a serial of its own");
 
             
             let rev_ok = rust_cap_revoke(cspace.as_mut_ptr(), 16, 0, core::ptr::null_mut());
@@ -1274,38 +1197,36 @@ mod tests {
         }
     }
 
+    /// LIMITATIONS 2.23, at unit scale. One live capability, then many sibling
+    /// copies minted from it and revoked one after another. Every revoke is of a
+    /// capability unrelated to the live one except as its child, and none may
+    /// make it unusable. Under the removed hashed generation table the live
+    /// capability's cell was bumped by some revoke well inside 40,000 rounds; the
+    /// `revoke_hashed_backstop` control arm puts that table's shape back, and this
+    /// test fails under it.
     #[test]
-    fn test_lineage_no_collision_on_low_bits() {
-        let _lin = LineageTestGuard::new();
-        // Two capabilities with DISTINCT serials must occupy independent lineage
-        // cells: bumping one serial's generation must not invalidate the other.
-        // Serial-keying (finding 3.3) is what makes two same-object capabilities
-        // independently revocable without the old gen-0 immunity crutch.
-        let sa: u32 = 0x0001_0100;
-        let sb: u32 = 0x0001_0200;
-        let mut cs = [Capability { typ: 0, rights: 0, object: 0, badge: 0, serial: 0, generation: 0, reserved: 0, token: 0 }; 16];
+    fn test_unrelated_revokes_never_invalidate_a_live_capability() {
+        let mut cs = [cap(0, 0, 0, 0, 0); 16];
+        cs[4] = cap(3 /*CAP_ENDPOINT*/, 0x3f, 0xD000, 0, MIN_DERIVED_SERIAL + 7);
+        let mut next = MIN_DERIVED_SERIAL + 100;
         unsafe {
-            // Each stamped with its own serial's current (pristine) generation.
-            cs[4] = Capability { typ: 1, rights: 0x3f, object: 0x1001, badge: 0, serial: sa, generation: lineage_current(sa), reserved: 0, token: 0 };
-            cs[5] = Capability { typ: 1, rights: 0x3f, object: 0x1101, badge: 0, serial: sb, generation: lineage_current(sb), reserved: 0, token: 0 };
-
-            // Revoke (bump) only serial `sa`.
-            let _ = bump_lineage(sa);
-
-            assert!(rust_cap_lookup(cs.as_mut_ptr(), 16, 4, 0x1).is_null(),
-                "serial sa must be stale after its own lineage bump");
-            assert!(!rust_cap_lookup(cs.as_mut_ptr(), 16, 5, 0x1).is_null(),
-                "serial sb must NOT be invalidated by a bump targeting sa");
+            let p = cs.as_mut_ptr();
+            for round in 0..40_000u32 {
+                assert!(rust_cap_mint(p, 16, 6, 4, 0x1, &mut next, 0),
+                    "round {round}: minting from the live capability was refused");
+                assert!(rust_cap_revoke(p, 16, 6, core::ptr::null_mut()));
+            }
+            assert!(!rust_cap_lookup(p, 16, 4, 0x3f).is_null(),
+                "40,000 unrelated revokes must leave the live capability usable");
         }
     }
 
     #[test]
     fn test_strict_rights_and_no_escalation() {
-        let _lin = LineageTestGuard::new();
-        let mut cspace = [Capability { typ: 0, rights: 0, object: 0, badge: 0, serial: 0, generation: 0, reserved: 0, token: 0 }; 16];
-        cspace[0] = Capability { typ: 5, rights: 0b0011, object: 7, badge: 0, serial: 0x3000, generation: 0, reserved: 0, token: 0 };
+        let mut cspace = [Capability { typ: 0, rights: 0, object: 0, badge: 0, serial: 0, token: 0 }; 16];
+        cspace[0] = Capability { typ: 5, rights: 0b0011, object: 7, badge: 0, serial: 0x3000, token: 0 };
 
-        let mut next = 0x3001u32;
+        let mut next = 0x3001u64;
         unsafe {
             
             let ok = rust_cap_mint(cspace.as_mut_ptr(), 16, 4, 0, 0xFFFF, &mut next, 0);
@@ -1320,13 +1241,14 @@ mod tests {
 
     /// Serial allocation (the C kernel routes cap_alloc_fresh_serial through this
     /// FFI) must advance monotonically and never hand back a serial in the
-    /// reserved primordial range or 0 — including at the u32 wrap boundary. Uses
-    /// only a local counter, so it is fully deterministic under parallel tests.
+    /// reserved primordial range or 0, never wrap, and refuse at the top of the
+    /// range rather than repeat a serial. Uses only a local counter, so it is
+    /// fully deterministic under parallel tests.
     #[test]
     fn test_alloc_serial_stays_above_reserved_and_nonzero() {
         unsafe {
             // Starting below the floor snaps up to the first derived serial.
-            let mut s: u32 = 0;
+            let mut s: u64 = 0;
             let a = rust_cap_alloc_serial(&mut s);
             assert!(a >= MIN_DERIVED_SERIAL);
             assert_eq!(s, a, "counter is advanced in place");
@@ -1334,12 +1256,22 @@ mod tests {
             assert!(b > a && b >= MIN_DERIVED_SERIAL);
 
             // At the wrap boundary it must not yield 0 or dip below the floor.
-            let mut w: u32 = u32::MAX;
+            // 2^32 serials on, where a 32-bit counter would have wrapped, a
+            // 64-bit one just carries on.
+            let mut w: u64 = MIN_DERIVED_SERIAL + u32::MAX as u64;
             let f = rust_cap_alloc_serial(&mut w);
-            assert!(f >= MIN_DERIVED_SERIAL && f != 0);
+            assert_eq!(f, MIN_DERIVED_SERIAL + u32::MAX as u64 + 1,
+                "2^32 mints in is an ordinary step");
 
-            // A null counter returns the sentinel rather than dereferencing null.
-            assert_eq!(rust_cap_alloc_serial(core::ptr::null_mut()), 0xC0DEFFFF);
+            // At the very top it refuses (0) and leaves the counter where it
+            // was, so every later call refuses too: never a repeated serial.
+            let mut top: u64 = u64::MAX;
+            assert_eq!(rust_cap_alloc_serial(&mut top), 0);
+            assert_eq!(top, u64::MAX);
+            assert_eq!(rust_cap_alloc_serial(&mut top), 0);
+
+            // A null counter refuses rather than dereferencing null.
+            assert_eq!(rust_cap_alloc_serial(core::ptr::null_mut()), 0);
         }
     }
 
@@ -1350,12 +1282,10 @@ mod tests {
     /// system-critical root capability.
     #[test]
     fn test_primordial_root_cannot_be_revoked() {
-        let _lin = LineageTestGuard::new();
-        let mut cs = [cap(0, 0, 0, 0, 0, 0); 16];
+        let mut cs = [cap(0, 0, 0, 0, 0); 16];
         // slot 2 is within KERNEL_RESERVED_CAPS (4); the serial carries the
-        // primordial 0xC0DE prefix. generation 0 == untracked, so lookups do
-        // not depend on the shared lineage table (parallel-test safe).
-        cs[2] = cap(9 /*CAP_ENCRYPTED_STORAGE*/, 0x3f, 0xA011, 0, 0xC0DE0002, 0);
+        // primordial 0xC0DE prefix.
+        cs[2] = cap(9 /*CAP_ENCRYPTED_STORAGE*/, 0x3f, 0xA011, 0, 0xC0DE0002);
         unsafe {
             assert!(!rust_cap_lookup(cs.as_mut_ptr(), 16, 2, 0x1).is_null(),
                 "primordial cap is usable to begin with");
@@ -1382,10 +1312,9 @@ mod tests {
     /// parent's lineage: revoking the source clears the transferred copy too.
     #[test]
     fn test_transfer_copies_rights_and_shares_lineage() {
-        let _lin = LineageTestGuard::new();
-        let mut cs = [cap(0, 0, 0, 0, 0, 0); 16];
-        cs[4] = cap(4 /*CAP_FRAME*/, 0x3f, 0xA200, 0, 0xA201, 0);
-        let mut next = 0x20000u32;
+        let mut cs = [cap(0, 0, 0, 0, 0); 16];
+        cs[4] = cap(4 /*CAP_FRAME*/, 0x3f, 0xA200, 0, 0xA201);
+        let mut next = 0x20000u64;
         unsafe {
             assert!(rust_cap_transfer(cs.as_mut_ptr(), 16, 8, 4, &mut next));
             let d = cs[8];
@@ -1405,40 +1334,10 @@ mod tests {
         }
     }
 
-    /// The lineage generation counter reserves 0 to mean "untracked". A bump that
-    /// wraps `u32::MAX` back to 0 must skip the reserved value and land on 1, and
-    /// a capability that recorded the pre-wrap generation must read as stale — so
-    /// use-after-revoke is prevented even across the counter wrap.
-    #[test]
-    fn test_lineage_generation_wraparound() {
-        let _lin = LineageTestGuard::new();
-        let serial: u32 = 0xA5A5_0001; // tracked serial -> its own lineage slot
-        let idx = lineage_idx(serial);
-        // Drive the slot to the wrap boundary directly (a 4-billion-bump loop
-        // would be absurd); the store mirrors a counter about to overflow.
-        LINEAGE_GEN[idx].store(u32::MAX, core::sync::atomic::Ordering::SeqCst);
-
-        // A capability stamped at the pre-wrap generation is valid right now.
-        assert!(lineage_check(serial, u32::MAX));
-
-        // Bump: u32::MAX --(wrap)--> 0 --(skip pristine)--> 1.
-        let g = bump_lineage(serial);
-        assert_ne!(g, 0, "a wrapped generation must never be the pristine 0");
-        assert_eq!(g, 1, "the wrap must land on 1");
-
-        // The pre-wrap capability is now stale (strict equality: MAX != 1).
-        assert!(!lineage_check(serial, u32::MAX),
-            "a capability recording the pre-wrap generation must be invalid");
-        // The current generation (1) is valid; a stale 0 is NOT (strict equality,
-        // finding 3.3 — gen 0 is no longer an always-valid escape hatch).
-        assert!(lineage_check(serial, 1));
-        assert!(!lineage_check(serial, 0),
-            "generation 0 is stale once the serial has been bumped away from pristine");
-    }
-
-    /// A revoke nulls every matching capability AND bumps the object's lineage,
-    /// so a snapshot a caller took before the revoke fails a generation re-check
-    /// at point of use (the TOCTOU close, finding 3.3).
+    /// A snapshot a caller took before a revoke fails the re-check at the point
+    /// of use (`cap_revalidate`: same slot, same serial), both straight after the
+    /// revoke and after something new is installed in the slot (the TOCTOU
+    /// close, finding 3.3).
     ///
     /// This exercised `rust_cap_revoke_by_values` until 2026-09-10. That export
     /// described itself as "retained for compatibility" and had no caller in the
@@ -1448,37 +1347,36 @@ mod tests {
     /// coverage was never about which entry point was called.
     #[test]
     fn test_revoke_invalidates_pre_revoke_snapshot() {
-        let _lin = LineageTestGuard::new();
         let obj = 0xA300u64;
-        let serial: u32 = 0xA301;
-        let mut cs = [cap(0, 0, 0, 0, 0, 0); 16];
+        let serial: u64 = 0xA301;
+        let mut cs = [cap(0, 0, 0, 0, 0); 16];
+        let mut next = MIN_DERIVED_SERIAL;
         unsafe {
-            // A pristine (generation 0) capability — exactly the gen-0 case that
-            // finding 3.3 was about: under the old object-keyed, gen-0-immune
-            // check its snapshot passed revalidation forever. Serial-keyed strict
-            // equality now invalidates it once the serial is bumped.
-            cs[5] = cap(3 /*CAP_ENDPOINT*/, 0x3f, obj, 0, serial, lineage_current(serial));
+            cs[5] = cap(3 /*CAP_ENDPOINT*/, 0x3f, obj, 0, serial);
+            cs[6] = cap(3, 0x3f, obj, 0, 0xA302);
             // What a caller snapshotted for a later revalidate-at-use.
             let snapshot = cs[5];
-            assert!(lineage_check(snapshot.serial, snapshot.generation),
-                "snapshot is valid before the revoke");
             // ONE `as_mut_ptr()`, reused -- taking it twice retags `cs` and
             // invalidates the pointer already stored in `spaces`. The C kernel
             // passes one `struct capability *`, which is one provenance.
             let cs_ptr = cs.as_mut_ptr();
-            assert!(!rust_cap_lookup(cs_ptr, 16, 5, 0x1).is_null());
+            assert!(still_holds(cs_ptr, 16, 5, &snapshot), "snapshot is valid before the revoke");
 
             let mut ciu = 1u32;
             let spaces = [CSpaceDesc { caps: cs_ptr, size: 16, caps_in_use: addr_of_mut!(ciu) }];
             assert!(rust_cap_revoke_global(
                 cs_ptr, 16, 5, addr_of_mut!(ciu), spaces.as_ptr(), 1, core::ptr::null_mut()));
 
-            // The live slot is nulled structurally...
-            assert_eq!(cs[5].typ, CAP_NULL);
-            // ...and the pre-revoke snapshot (a gen-0 cap!) now fails the
-            // generation re-check — the TOCTOU close that 3.3 restored.
-            assert!(!lineage_check(snapshot.serial, snapshot.generation),
-                "a pre-revoke snapshot must fail the generation re-check (finding 3.3)");
+            // The live slot is emptied, so the snapshot fails its re-check...
+            assert_eq!((*cs_ptr.add(5)).typ, CAP_NULL);
+            assert!(!still_holds(cs_ptr, 16, 5, &snapshot),
+                "a pre-revoke snapshot must fail the re-check (finding 3.3)");
+            // ...and still fails once the slot is reused for the same object:
+            // the new capability has a new serial, never the revoked one.
+            assert!(rust_cap_mint(cs_ptr, 16, 5, 6, 0x3f, &mut next, 0));
+            assert_eq!((*cs_ptr.add(5)).object, obj);
+            assert!(!still_holds(cs_ptr, 16, 5, &snapshot),
+                "a capability installed in the revoked slot is not the snapshot's");
         }
     }
 
@@ -1487,12 +1385,10 @@ mod tests {
     /// from overwriting a primordial root capability by naming its slot.
     #[test]
     fn test_mint_into_reserved_slot_refused() {
-        let _lin = LineageTestGuard::new();
-        let mut cs = [cap(0, 0, 0, 0, 0, 0); 16];
-        // A valid, mint-worthy source in a normal slot. generation 0 => the
-        // lookup/mint paths never touch the shared lineage table (parallel-safe).
-        cs[5] = cap(1, 0x3f, 0xB100, 0, 0x5100, 0);
-        let mut next = 0x10000u32;
+        let mut cs = [cap(0, 0, 0, 0, 0); 16];
+        // A valid, mint-worthy source in a normal slot.
+        cs[5] = cap(1, 0x3f, 0xB100, 0, 0x5100);
+        let mut next = 0x10000u64;
         unsafe {
             for dest in 0..KERNEL_RESERVED_CAPS {
                 assert!(!rust_cap_mint(cs.as_mut_ptr(), 16, dest, 5, 0x3f, &mut next, 0),
@@ -1512,11 +1408,10 @@ mod tests {
     /// destination left untouched.
     #[test]
     fn test_mint_from_invalid_source_refused() {
-        let _lin = LineageTestGuard::new();
-        let mut cs = [cap(0, 0, 0, 0, 0, 0); 16];
+        let mut cs = [cap(0, 0, 0, 0, 0); 16];
         // slot 6 is empty (CAP_NULL); slot 7 is non-null but carries serial 0.
-        cs[7] = cap(1, 0x3f, 0xB101, 0, 0 /* serial */, 0);
-        let mut next = 0x10000u32;
+        cs[7] = cap(1, 0x3f, 0xB101, 0, 0 /* serial */);
+        let mut next = 0x10000u64;
         unsafe {
             assert!(!rust_cap_mint(cs.as_mut_ptr(), 16, 8, 6, 0x3f, &mut next, 0),
                 "mint from an empty source slot must be refused");
@@ -1533,10 +1428,9 @@ mod tests {
     /// Complements the J5 fuzz targets with a fast, explicit regression check.
     #[test]
     fn test_out_of_range_slots_fail_closed() {
-        let _lin = LineageTestGuard::new();
-        let mut cs = [cap(0, 0, 0, 0, 0, 0); 16];
-        cs[5] = cap(1, 0x3f, 0xB102, 0, 0x5102, 0); // a valid in-range cap
-        let mut next = 0x10000u32;
+        let mut cs = [cap(0, 0, 0, 0, 0); 16];
+        cs[5] = cap(1, 0x3f, 0xB102, 0, 0x5102); // a valid in-range cap
+        let mut next = 0x10000u64;
         unsafe {
             // slot >= cspace_size
             assert!(rust_cap_lookup(cs.as_mut_ptr(), 16, 16, 0x1).is_null());
@@ -1563,12 +1457,10 @@ mod tests {
     /// derived copy shares the parent's `object` and the sweep matches on it.
     #[test]
     fn test_transitive_revoke_across_derivation_chain() {
-        let _lin = LineageTestGuard::new();
-        let mut cs = [cap(0, 0, 0, 0, 0, 0); 16];
-        // Parent in slot 4, generation 0 (lineage-exempt => the pre-revoke
-        // lookups never depend on the shared generation table).
-        cs[4] = cap(1, 0x3f, 0xB600, 0, 0x5600, 0);
-        let mut next = 0x30000u32;
+        let mut cs = [cap(0, 0, 0, 0, 0); 16];
+        // Parent in slot 4.
+        cs[4] = cap(1, 0x3f, 0xB600, 0, 0x5600);
+        let mut next = 0x30000u64;
         unsafe {
             assert!(rust_cap_mint(cs.as_mut_ptr(), 16, 5, 4, 0x3f, &mut next, 0)); // child  <- parent
             assert!(rust_cap_mint(cs.as_mut_ptr(), 16, 6, 5, 0x3f, &mut next, 0)); // grandchild <- child
@@ -1591,12 +1483,10 @@ mod tests {
     /// underflow would permanently defeat the `MAX_CAPS_PER_TASK` ceiling.
     #[test]
     fn test_caps_in_use_never_underflows() {
-        let _lin = LineageTestGuard::new();
-        let mut cs = [cap(0, 0, 0, 0, 0, 0); 16];
-        // A parent and a same-object derived copy (badge == parent serial), both
-        // generation 0 for parallel safety.
-        cs[4] = cap(1, 0x3f, 0xB700, 0, 0x5700, 0);
-        cs[5] = cap(1, 0x03, 0xB700, 0x5700, 0x9700, 0);
+        let mut cs = [cap(0, 0, 0, 0, 0); 16];
+        // A parent and a same-object derived copy (badge == parent serial).
+        cs[4] = cap(1, 0x3f, 0xB700, 0, 0x5700);
+        cs[5] = cap(1, 0x03, 0xB700, 0x5700, 0x9700);
         let mut ciu = 0u32; // deliberately understated relative to the two caps present
         unsafe {
             // ONE `as_mut_ptr()`, reused. Two calls is how this test read until
@@ -1623,12 +1513,11 @@ mod tests {
     /// derivation tree is well-formed and a later revoke of the grantor sweeps it.
     #[test]
     fn test_grant_into_reduces_rights_and_records_parent() {
-        let _lin = LineageTestGuard::new();
-        let mut grantor = [cap(0, 0, 0, 0, 0, 0); 16];
-        let mut grantee = [cap(0, 0, 0, 0, 0, 0); 16];
+        let mut grantor = [cap(0, 0, 0, 0, 0); 16];
+        let mut grantee = [cap(0, 0, 0, 0, 0); 16];
         // Grantor holds a full-rights CAP_ENDPOINT (rights 0x3f) at slot 5.
-        grantor[5] = cap(3, 0x3f, 0xC100, 0, 0x5100, 0);
-        let mut next = 0x40000u32;
+        grantor[5] = cap(3, 0x3f, 0xC100, 0, 0x5100);
+        let mut next = 0x40000u64;
         unsafe {
             // Grant with rights reduced to READ|WRITE (0x03), into a low slot 3
             // (allowed: grant endows a dominated child's slots).
@@ -1642,7 +1531,7 @@ mod tests {
             assert!(d.serial >= MIN_DERIVED_SERIAL && d.serial != 0x5100,
                 "grantee gets a fresh serial distinct from the grantor");
             // A right the source lacks can never be granted, even if requested.
-            let mut grantee2 = [cap(0, 0, 0, 0, 0, 0); 16];
+            let mut grantee2 = [cap(0, 0, 0, 0, 0); 16];
             assert!(rust_cap_grant_into(
                 &grantor[5] as *const Capability, grantee2.as_mut_ptr(), 16, 4, 0xFFFF, &mut next));
             assert_eq!(grantee2[4].rights, 0x3f, "requested rights are masked by the source's");
@@ -1653,11 +1542,10 @@ mod tests {
     /// leaving the destination untouched — authority cannot be fabricated.
     #[test]
     fn test_grant_into_fails_closed() {
-        let _lin = LineageTestGuard::new();
-        let mut grantor = [cap(0, 0, 0, 0, 0, 0); 16];
-        grantor[7] = cap(3, 0x3f, 0xC200, 0, 0 /* serial 0 => invalid */, 0);
-        let mut grantee = [cap(0, 0, 0, 0, 0, 0); 16];
-        let mut next = 0x40000u32;
+        let mut grantor = [cap(0, 0, 0, 0, 0); 16];
+        grantor[7] = cap(3, 0x3f, 0xC200, 0, 0 /* serial 0 => invalid */);
+        let mut grantee = [cap(0, 0, 0, 0, 0); 16];
+        let mut next = 0x40000u64;
         unsafe {
             // serial-0 source refused.
             assert!(!rust_cap_grant_into(
@@ -1665,7 +1553,7 @@ mod tests {
             // null source / null dest refused.
             assert!(!rust_cap_grant_into(
                 core::ptr::null(), grantee.as_mut_ptr(), 16, 5, 0x3f, &mut next));
-            let valid = cap(3, 0x3f, 0xC201, 0, 0x5201, 0);
+            let valid = cap(3, 0x3f, 0xC201, 0, 0x5201);
             assert!(!rust_cap_grant_into(
                 &valid as *const Capability, core::ptr::null_mut(), 16, 5, 0x3f, &mut next));
             // out-of-range dest refused (>= size and >= CNODE_SIZE).
@@ -1682,11 +1570,10 @@ mod tests {
     /// share the object and the grantee's badge is the grantor's serial.
     #[test]
     fn test_grant_into_then_revoke_source_sweeps_grantee() {
-        let _lin = LineageTestGuard::new();
-        let mut grantor = [cap(0, 0, 0, 0, 0, 0); 16];
-        let mut grantee = [cap(0, 0, 0, 0, 0, 0); 16];
-        grantor[5] = cap(4 /*CAP_FRAME*/, 0x3f, 0xC300, 0, 0x5300, 0);
-        let mut next = 0x50000u32;
+        let mut grantor = [cap(0, 0, 0, 0, 0); 16];
+        let mut grantee = [cap(0, 0, 0, 0, 0); 16];
+        grantor[5] = cap(4 /*CAP_FRAME*/, 0x3f, 0xC300, 0, 0x5300);
+        let mut next = 0x50000u64;
         let mut ciu_g = 1u32;
         let mut ciu_e = 0u32; // grantee accounting starts at 0; the C caller bumps it
         unsafe {
@@ -1716,15 +1603,14 @@ mod tests {
     /// capability, not its ancestors or siblings.
     #[test]
     fn test_revoke_child_leaves_parent_and_siblings_intact() {
-        let _lin = LineageTestGuard::new();
-        let mut grantor = [cap(0, 0, 0, 0, 0, 0); 16];
-        let mut child_space = [cap(0, 0, 0, 0, 0, 0); 16];
-        // The parent/root of the lineage (generation 0, as every real cap is).
-        grantor[4] = cap(3, 0x3f, 0xD100, 0, 0x6100, 0);
+        let mut grantor = [cap(0, 0, 0, 0, 0); 16];
+        let mut child_space = [cap(0, 0, 0, 0, 0); 16];
+        // The parent/root of the lineage.
+        grantor[4] = cap(3, 0x3f, 0xD100, 0, 0x6100);
         // Two children derived from it (badge == parent serial): a sibling in the
         // grantor's own cspace, and one delegated into another task.
-        grantor[5] = cap(3, 0x3f, 0xD100, 0x6100, 0x6101, 0);
-        child_space[6] = cap(3, 0x3f, 0xD100, 0x6100, 0x6102, 0);
+        grantor[5] = cap(3, 0x3f, 0xD100, 0x6100, 0x6101);
+        child_space[6] = cap(3, 0x3f, 0xD100, 0x6100, 0x6102);
         let mut ciu_g = 2u32;
         let mut ciu_c = 1u32;
         unsafe {
@@ -1761,12 +1647,11 @@ mod tests {
     /// not, because neither is derived from the other.
     #[test]
     fn test_revoke_does_not_touch_independent_same_object_cap() {
-        let _lin = LineageTestGuard::new();
-        let mut a = [cap(0, 0, 0, 0, 0, 0); 16];
-        let mut b = [cap(0, 0, 0, 0, 0, 0); 16];
+        let mut a = [cap(0, 0, 0, 0, 0); 16];
+        let mut b = [cap(0, 0, 0, 0, 0); 16];
         // Same object 0xE000, independent lineages (badge 0, distinct serials).
-        a[5] = cap(3, 0x3f, 0xE000, 0, 0x7000, 0);
-        b[5] = cap(3, 0x3f, 0xE000, 0, 0x7001, 0);
+        a[5] = cap(3, 0x3f, 0xE000, 0, 0x7000);
+        b[5] = cap(3, 0x3f, 0xE000, 0, 0x7001);
         let mut ciu_a = 1u32;
         let mut ciu_b = 1u32;
         unsafe {
@@ -1802,25 +1687,24 @@ mod tests {
     /// fixed number of them, fails.
     #[test]
     fn test_revoke_large_subtree_is_exact_and_spares_independent_peers() {
-        let _lin = LineageTestGuard::new();
-        const ROOT_SERIAL: u32 = 0x8000_0001;
+        const ROOT_SERIAL: u64 = 0x8000_0001;
         const OBJ: u64 = 0xF000;
 
-        let mut a = [cap(0, 0, 0, 0, 0, 0); 256];
-        let mut b = [cap(0, 0, 0, 0, 0, 0); 256];
+        let mut a = [cap(0, 0, 0, 0, 0); 256];
+        let mut b = [cap(0, 0, 0, 0, 0); 256];
 
         // Root in a[0]; the *_global caller nulls it before the sweep and its
         // serial remains the closure seed.
-        a[0] = cap(4, 0x3f, OBJ, 0, ROOT_SERIAL, 0);
+        a[0] = cap(4, 0x3f, OBJ, 0, ROOT_SERIAL);
 
-        let mut serial = 0x9000_0000u32;
+        let mut serial = 0x9000_0000u64;
         let mut descendants = 0usize;
 
         // Level 1: fill the rest of cspace A with direct children of the root.
-        let mut level1 = [0u32; 255];
+        let mut level1 = [0u64; 255];
         for (k, c) in a.iter_mut().skip(1).enumerate() {
             serial += 1;
-            *c = cap(4, 0x3f, OBJ, ROOT_SERIAL, serial, 0);
+            *c = cap(4, 0x3f, OBJ, ROOT_SERIAL, serial);
             level1[k] = serial;
             descendants += 1;
         }
@@ -1828,11 +1712,11 @@ mod tests {
         // Levels 2 and 3 in cspace B: grandchildren of the root, then one
         // great-grandchild, so depth is exercised as well as breadth. Two slots
         // at the end of B are reserved for the peers that must survive.
-        let mut deepest = 0u32;
+        let mut deepest = 0u64;
         for (k, c) in b.iter_mut().enumerate().take(256 - 2) {
             serial += 1;
             let parent = if k == 0 { level1[0] } else { deepest };
-            *c = cap(4, 0x3f, OBJ, parent, serial, 0);
+            *c = cap(4, 0x3f, OBJ, parent, serial);
             deepest = serial;
             descendants += 1;
         }
@@ -1842,9 +1726,9 @@ mod tests {
         // The two capabilities that must SURVIVE: same object, no lineage to the
         // root. b[254] is a completely independent root; b[255] is derived from
         // it. Under the old overflow fallback both were destroyed.
-        const PEER_SERIAL: u32 = 0x7000_0001;
-        b[254] = cap(3, 0x1, OBJ, 0, PEER_SERIAL, 0);
-        b[255] = cap(3, 0x1, OBJ, PEER_SERIAL, 0x7000_0002, 0);
+        const PEER_SERIAL: u64 = 0x7000_0001;
+        b[254] = cap(3, 0x1, OBJ, 0, PEER_SERIAL);
+        b[255] = cap(3, 0x1, OBJ, PEER_SERIAL, 0x7000_0002);
 
         let mut ciu_a = 256u32;
         let mut ciu_b = 256u32;
@@ -1891,33 +1775,32 @@ mod tests {
     /// sibling chain hanging off an unrelated root is not.
     #[test]
     fn test_revoke_deep_chain_is_fully_closed() {
-        let _lin = LineageTestGuard::new();
-        const ROOT_SERIAL: u32 = 0x8100_0001;
+        const ROOT_SERIAL: u64 = 0x8100_0001;
         const OBJ: u64 = 0xE000;
 
-        let mut a = [cap(0, 0, 0, 0, 0, 0); 256];
-        a[0] = cap(4, 0x3f, OBJ, 0, ROOT_SERIAL, 0);
+        let mut a = [cap(0, 0, 0, 0, 0); 256];
+        a[0] = cap(4, 0x3f, OBJ, 0, ROOT_SERIAL);
 
         // A single 300-link chain spread across two cspaces, so the closure has
         // to iterate far past the old bound one level at a time.
-        let mut b = [cap(0, 0, 0, 0, 0, 0); 256];
-        let mut serial = 0xA000_0000u32;
+        let mut b = [cap(0, 0, 0, 0, 0); 256];
+        let mut serial = 0xA000_0000u64;
         let mut parent = ROOT_SERIAL;
         for c in a.iter_mut().skip(1) {
             serial += 1;
-            *c = cap(4, 0x3f, OBJ, parent, serial, 0);
+            *c = cap(4, 0x3f, OBJ, parent, serial);
             parent = serial;
         }
         for c in b.iter_mut().take(45) {
             serial += 1;
-            *c = cap(4, 0x3f, OBJ, parent, serial, 0);
+            *c = cap(4, 0x3f, OBJ, parent, serial);
             parent = serial;
         }
 
         // An unrelated chain sharing the object; none of it may be revoked.
-        const OTHER: u32 = 0x7100_0001;
-        b[100] = cap(3, 0x1, OBJ, 0, OTHER, 0);
-        b[101] = cap(3, 0x1, OBJ, OTHER, 0x7100_0002, 0);
+        const OTHER: u64 = 0x7100_0001;
+        b[100] = cap(3, 0x1, OBJ, 0, OTHER);
+        b[101] = cap(3, 0x1, OBJ, OTHER, 0x7100_0002);
 
         let mut ciu_a = 256u32;
         let mut ciu_b = 47u32;
@@ -1943,40 +1826,35 @@ mod tests {
         }
     }
 
-    /// FINDING 3.3 regression. Reproduces the exact production scenario: a parent
-    /// and a derived child both carry generation 0 (every capability in the
-    /// running kernel is created gen 0, and mint stamps the child from its own
-    /// fresh serial, still 0 while pristine). Under the old object-keyed,
-    /// gen-0-immune check a detached SNAPSHOT of the child survived the parent's
-    /// revocation forever, defeating the use-after-revoke / IPC revalidate guard.
-    /// Serial-keyed strict equality must now (a) invalidate the child's snapshot
-    /// when the parent is revoked, while (b) leaving an INDEPENDENT same-object
-    /// capability (a different serial) valid — so the fix does not regress A1.
+    /// FINDING 3.3 regression. Reproduces the production scenario: a parent and
+    /// a child minted from it. Under the old object-keyed, gen-0-immune check a
+    /// detached SNAPSHOT of the child survived the parent's revocation forever,
+    /// defeating the use-after-revoke / IPC revalidate guard. Revoking the parent
+    /// must now (a) leave the child's snapshot failing its re-check (the child's
+    /// slot is emptied, and its serial is never reissued), while (b) leaving an
+    /// INDEPENDENT same-object capability (a different serial) valid, so the fix
+    /// does not regress A1.
     #[test]
     fn test_gen0_snapshot_invalidated_after_revoke_finding_3_3() {
-        let _lin = LineageTestGuard::new();
-        let mut owner = [cap(0, 0, 0, 0, 0, 0); 16];
-        let mut other = [cap(0, 0, 0, 0, 0, 0); 16];
-        // Parent, gen 0, real object. An independent capability to the SAME
+        let mut owner = [cap(0, 0, 0, 0, 0); 16];
+        let mut other = [cap(0, 0, 0, 0, 0); 16];
+        // Parent, real object. An independent capability to the SAME
         // object in another task (badge 0, distinct serial) — e.g. two tasks each
         // independently connected to the fs_server endpoint.
-        owner[4] = cap(3 /*CAP_ENDPOINT*/, 0x3f, 0xEE00, 0, 0x4400, 0);
-        other[9] = cap(3, 0x3f, 0xEE00, 0, 0x8800, 0);
+        owner[4] = cap(3 /*CAP_ENDPOINT*/, 0x3f, 0xEE00, 0, 0x4400);
+        other[9] = cap(3, 0x3f, 0xEE00, 0, 0x8800);
         let mut ciu_o = 1u32;
         let mut ciu_x = 1u32;
-        let mut next = 0x7_0000u32;
+        let mut next = 0x7_0000u64;
         unsafe {
             let other_ptr = other.as_mut_ptr();
             let owner_ptr = owner.as_mut_ptr();
-            // Derive a child from the parent (production mint): fresh serial,
-            // stamped generation (0 while the serial's slot is pristine).
+            // Derive a child from the parent (production mint): fresh serial.
             assert!(rust_cap_mint(owner_ptr, 16, 5, 4, 0x3, &mut next, 0));
-            let child = owner[5];
-            assert_eq!(child.generation, 0, "a pristine child is gen 0, as in production");
             // A caller snapshots the child for a later revalidate-at-use.
-            let snapshot = child;
-            assert!(lineage_check(snapshot.serial, snapshot.generation),
-                "the gen-0 child snapshot is valid before the revoke");
+            let snapshot = *owner_ptr.add(5);
+            assert!(still_holds(owner_ptr, 16, 5, &snapshot),
+                "the child snapshot is valid before the revoke");
 
             // System-wide revoke of the PARENT (the reachable SYS_CAP_REVOKE path).
             let spaces = [
@@ -1986,11 +1864,11 @@ mod tests {
             assert!(rust_cap_revoke_global(
                 owner_ptr, 16, 4, addr_of_mut!(ciu_o), spaces.as_ptr(), 2, &mut next));
 
-            // (a) The gen-0 child's detached snapshot now fails revalidation —
-            // the hole finding 3.3 identified is closed, even for a gen-0 cap.
-            assert!(!lineage_check(snapshot.serial, snapshot.generation),
-                "gen-0 child snapshot must be stale after its parent is revoked (finding 3.3)");
-            assert_eq!(owner[5].typ, CAP_NULL, "the live child slot is also swept");
+            // (a) The child's detached snapshot now fails revalidation: its slot
+            // was swept, the hole finding 3.3 identified.
+            assert!(!still_holds(owner_ptr, 16, 5, &snapshot),
+                "the child snapshot must be stale after its parent is revoked (finding 3.3)");
+            assert_eq!((*owner_ptr.add(5)).typ, CAP_NULL, "the live child slot is also swept");
 
             // (b) The independent same-object capability (different serial) is
             // untouched and still usable — the fix does not over-revoke (A1).
@@ -2003,23 +1881,21 @@ mod tests {
 
     // ---- Tokens (docs/design/filesystem.md §5.1) -------------------------------
 
-    fn ep(rights: u32, serial: u32, token: u64) -> Capability {
+    fn ep(rights: u32, serial: u64, token: u64) -> Capability {
         Capability {
-            typ: CAP_ENDPOINT, rights, object: 77, badge: 0, serial,
-            generation: 0, reserved: 0, token,
+            typ: CAP_ENDPOINT, rights, object: 77, badge: 0, serial, token,
         }
     }
 
     const NULLCAP: Capability = Capability {
-        typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0,
-        generation: 0, reserved: 0, token: 0,
+        typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, token: 0,
     };
 
     #[test]
     fn mint_token_from_an_untokened_minter_strips_receive() {
         let mut cs = [NULLCAP; 8];
         cs[4] = ep(!0u32, 0x2_0000, 0);
-        let mut next = 0x2_0000u32;
+        let mut next = 0x2_0000u64;
         let ok = unsafe { rust_cap_mint_token(cs.as_mut_ptr(), 8, 5, 4, !0u32, 0xABCD, &mut next) };
         assert!(ok);
         assert_eq!(cs[5].token, 0xABCD);
@@ -2031,7 +1907,7 @@ mod tests {
 
     #[test]
     fn mint_token_refuses_a_tokened_source_a_source_without_mint_and_a_zero_token() {
-        let mut next = 0x3_0000u32;
+        let mut next = 0x3_0000u64;
         // Tokened source, even one holding every right.
         let mut cs = [NULLCAP; 8];
         cs[4] = ep(!0u32, 0x3_0000, 9);
@@ -2055,7 +1931,7 @@ mod tests {
     fn narrowing_and_granting_keep_the_token() {
         let mut cs = [NULLCAP; 8];
         cs[4] = ep(0xFF02, 0x4_0000, 0x55);
-        let mut next = 0x4_0000u32;
+        let mut next = 0x4_0000u64;
         assert!(unsafe { rust_cap_mint(cs.as_mut_ptr(), 8, 5, 4, 0x0F02, &mut next, 0) });
         assert_eq!(cs[5].token, 0x55, "attenuation must keep identity");
         assert_eq!(cs[5].rights, 0x0F02);
@@ -2068,7 +1944,7 @@ mod tests {
     fn reply_mint_is_bounded_by_the_invoking_capability() {
         let mut cs = [NULLCAP; 8];
         cs[4] = ep(0x0F02, 0x5_0000, 0x10);
-        let mut next = 0x5_0000u32;
+        let mut next = 0x5_0000u64;
         let src = cs[4];
         let ok = unsafe { rust_cap_reply_mint(&src, cs.as_mut_ptr(), 8, 6, !0u32, 0x11, &mut next) };
         assert!(ok);
@@ -2083,7 +1959,7 @@ mod tests {
         cs[4] = ep(0x0F02, 0x6_0000, 0x10);
         cs[6] = ep(0x2, 0x6_0001, 0x99);
         let before = cs[6];
-        let mut next = 0x6_0001u32;
+        let mut next = 0x6_0001u64;
         let src = cs[4];
         assert!(!unsafe { rust_cap_reply_mint(&src, cs.as_mut_ptr(), 8, 6, !0u32, 0x11, &mut next) });
         assert_eq!(cs[6].token, before.token);
@@ -2107,15 +1983,13 @@ mod tests {
 // These #[kani::proof] harnesses are compiled ONLY under `cargo kani` (the
 // `kani` cfg); they are invisible to the normal build, `cargo test`, clippy,
 // and the kernel link. Where a unit test in the module above samples a handful
-// of inputs, Kani proves the property over the ENTIRE input space (every u32),
-// so it catches a boundary the samples miss. Run with:  cargo kani  (from rust/)
+// of inputs, Kani proves the property over the ENTIRE input space (every value
+// of each symbolic field), so it catches a boundary the samples miss. Run with:
+// cargo kani  (from rust/)
 //
-// Scope: the pure / self-contained authority invariants. Functions that mutate
-// the shared LINEAGE_GEN static are avoided here (global mutable state needs a
-// heavier model); the harnesses keep object==0 so the lineage floor update in
-// mint is not exercised — the rights logic under proof is identical either way.
-// The exception is the lineage-generation pair further down, which drives
-// LINEAGE_GEN directly with the serial-to-cell hash stubbed out.
+// Scope: the pure / self-contained authority invariants. The capability core
+// keeps no global state since the hashed generation table went (2026-10-11), so
+// every harness here is a function of its own inputs.
 // ---------------------------------------------------------------------------
 #[cfg(kani)]
 mod kani_proofs {
@@ -2125,14 +1999,43 @@ mod kani_proofs {
     /// range and NEVER 0 — for every possible value of the kernel's monotonic
     /// serial counter, not just the boundary values the unit test samples. This
     /// is what guarantees a derived capability's serial can never be mistaken for
-    /// a primordial (0xC0DE-prefixed) one or for an empty (serial-0) slot.
+    /// a primordial (0xC0DE-prefixed) one or for an empty (serial-0) slot. A
+    /// refusal (0) leaves the counter where it was.
     #[kani::proof]
     fn serial_never_reserved_or_zero() {
-        let mut counter: u32 = kani::any();
-        let s = unsafe { assign_fresh_serial(&mut counter as *mut u32) };
-        assert!(s >= MIN_DERIVED_SERIAL, "serial dipped below the derived floor");
-        assert!(s != 0, "serial wrapped to the reserved 0");
-        assert!(counter == s, "counter must advance to exactly the returned serial");
+        let mut counter: u64 = kani::any();
+        let before = counter;
+        let s = unsafe { assign_fresh_serial(&mut counter as *mut u64) };
+        if s == 0 {
+            assert!(counter == before, "a refusal must not move the counter");
+        } else {
+            assert!(s >= MIN_DERIVED_SERIAL, "serial dipped below the derived floor");
+            assert!(!serial_is_primordial(s), "a derived serial landed in the primordial range");
+            assert!(counter == s, "counter must advance to exactly the returned serial");
+        }
+    }
+
+    /// ONE SERIAL, ONE SLOT, the allocation half: no serial is ever issued
+    /// twice. For every counter value, a serial the allocator issues is strictly
+    /// greater than the counter was, and every serial issued before is at most
+    /// that, so by induction over calls no two calls return the same serial. Two
+    /// calls in a row are checked directly as well: the second refuses or is
+    /// strictly greater. This is what a 32-bit counter that wrapped violated.
+    #[kani::proof]
+    fn fresh_serials_never_repeat() {
+        let mut counter: u64 = kani::any();
+        let before = counter;
+        let s1 = unsafe { assign_fresh_serial(&mut counter as *mut u64) };
+        let s2 = unsafe { assign_fresh_serial(&mut counter as *mut u64) };
+        if s1 != 0 {
+            assert!(s1 > before, "an issued serial must be above every serial issued before it");
+        }
+        if s1 != 0 && s2 != 0 {
+            assert!(s2 > s1, "two issues must never return the same serial");
+        }
+        if s1 == 0 {
+            assert!(s2 == 0, "once the allocator refuses, it keeps refusing");
+        }
     }
 
     /// Minting can only ever REDUCE authority: the minted capability's rights are
@@ -2145,14 +2048,13 @@ mod kani_proofs {
         let req_rights: u32 = kani::any();
 
         // 8-slot cspace: source at slot 0, mint into slot 4 (>= KERNEL_RESERVED_CAPS
-        // so the mint is not refused). object==0 keeps the proof free of the
-        // shared lineage table.
-        let mut cs = [Capability { typ: 0, rights: 0, object: 0, badge: 0, serial: 0, generation: 0, reserved: 0, token: 0 }; 8];
-        cs[0] = Capability { typ: 1, rights: src_rights, object: 0, badge: 0, serial: 0x10000, generation: 0, reserved: 0, token: 0 };
-        let mut next: u32 = 0x10000;
+        // so the mint is not refused).
+        let mut cs = [Capability { typ: 0, rights: 0, object: 0, badge: 0, serial: 0, token: 0 }; 8];
+        cs[0] = Capability { typ: 1, rights: src_rights, object: 0, badge: 0, serial: MIN_DERIVED_SERIAL, token: 0 };
+        let mut next: u64 = MIN_DERIVED_SERIAL;
 
         let ok = unsafe {
-            rust_cap_mint(cs.as_mut_ptr(), 8, 4, 0, req_rights, &mut next as *mut u32, 0)
+            rust_cap_mint(cs.as_mut_ptr(), 8, 4, 0, req_rights, &mut next as *mut u64, 0)
         };
         assert!(ok, "mint of a valid source into a non-reserved slot must succeed");
 
@@ -2162,13 +2064,12 @@ mod kani_proofs {
     }
 
     /// Build a 3-capability derivation chain (parent -> child -> grandchild) in
-    /// one cspace, with caller-chosen serials. `object` is 0 throughout so the
-    /// proofs never touch the shared LINEAGE_GEN static.
-    fn chain(p: u32, c: u32, g: u32) -> [Capability; 3] {
+    /// one cspace, with caller-chosen serials.
+    fn chain(p: u64, c: u64, g: u64) -> [Capability; 3] {
         [
-            Capability { typ: 1, rights: 0x3f, object: 0, badge: 0, serial: p, generation: 0, reserved: 0, token: 0 },
-            Capability { typ: 1, rights: 0x3f, object: 0, badge: p, serial: c, generation: 0, reserved: 0, token: 0 },
-            Capability { typ: 1, rights: 0x3f, object: 0, badge: c, serial: g, generation: 0, reserved: 0, token: 0 },
+            Capability { typ: 1, rights: 0x3f, object: 0, badge: 0, serial: p, token: 0 },
+            Capability { typ: 1, rights: 0x3f, object: 0, badge: p, serial: c, token: 0 },
+            Capability { typ: 1, rights: 0x3f, object: 0, badge: c, serial: g, token: 0 },
         ]
     }
 
@@ -2185,9 +2086,9 @@ mod kani_proofs {
     #[kani::proof]
     #[kani::unwind(6)]
     fn revoke_descendant_never_nulls_ancestors() {
-        let p: u32 = kani::any();
-        let c: u32 = kani::any();
-        let g: u32 = kani::any();
+        let p: u64 = kani::any();
+        let c: u64 = kani::any();
+        let g: u64 = kani::any();
         // Serials are unique and non-zero by construction (assign_fresh_serial).
         kani::assume(p != 0 && c != 0 && g != 0);
         kani::assume(p != c && c != g && p != g);
@@ -2226,7 +2127,7 @@ mod kani_proofs {
 
         let mut cs = [Capability {
             typ: 1, rights: held, object: 0, badge: 0,
-            serial: MIN_DERIVED_SERIAL, generation: 0, reserved: 0, token: 0,
+            serial: MIN_DERIVED_SERIAL, token: 0,
         }; 1];
 
         let got = unsafe { rust_cap_lookup(cs.as_mut_ptr(), 1, 0, want) };
@@ -2248,7 +2149,7 @@ mod kani_proofs {
         let rights: u32 = kani::any();
         let mut cs = [Capability {
             typ: CAP_NULL, rights, object: 0, badge: 0,
-            serial: MIN_DERIVED_SERIAL, generation: 0, reserved: 0, token: 0,
+            serial: MIN_DERIVED_SERIAL, token: 0,
         }; 1];
         assert!(
             unsafe { rust_cap_lookup(cs.as_mut_ptr(), 1, 0, want) }.is_null(),
@@ -2267,7 +2168,7 @@ mod kani_proofs {
 
         let mut cs = [Capability {
             typ: 1, rights: !0u32, object: 0, badge: 0,
-            serial: MIN_DERIVED_SERIAL, generation: 0, reserved: 0, token: 0,
+            serial: MIN_DERIVED_SERIAL, token: 0,
         }; 4];
         assert!(
             unsafe { rust_cap_lookup(cs.as_mut_ptr(), 4, slot, 0) }.is_null(),
@@ -2287,16 +2188,16 @@ mod kani_proofs {
 
         let src = Capability {
             typ: 1, rights: src_rights, object: 7, badge: 0,
-            serial: MIN_DERIVED_SERIAL, generation: 0, reserved: 0, token: 0,
+            serial: MIN_DERIVED_SERIAL, token: 0,
         };
         let mut dest = [Capability {
-            typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, generation: 0, reserved: 0, token: 0,
+            typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, token: 0,
         }; 8];
-        let mut next: u32 = MIN_DERIVED_SERIAL;
+        let mut next: u64 = MIN_DERIVED_SERIAL;
 
         let ok = unsafe {
             rust_cap_grant_into(&src as *const Capability, dest.as_mut_ptr(), 8, 5,
-                                req_rights, &mut next as *mut u32)
+                                req_rights, &mut next as *mut u64)
         };
         assert!(ok, "granting a live capability into an in-range slot must succeed");
         assert!(dest[5].rights & !src_rights == 0, "granted rights must be a subset of the source's");
@@ -2311,21 +2212,24 @@ mod kani_proofs {
     /// equal a parent that already exists.
     #[kani::proof]
     fn grant_records_its_parent_and_takes_a_fresh_serial() {
-        let parent_serial: u32 = kani::any();
+        let parent_serial: u64 = kani::any();
         kani::assume(parent_serial != 0);
 
         let src = Capability {
             typ: 3, rights: 0x3f, object: 9, badge: 0,
-            serial: parent_serial, generation: 0, reserved: 0, token: 0,
+            serial: parent_serial, token: 0,
         };
         let mut dest = [Capability {
-            typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, generation: 0, reserved: 0, token: 0,
+            typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, token: 0,
         }; 4];
-        let mut next: u32 = kani::any();
+        let mut next: u64 = kani::any();
+        // The one counter value with no serial left to issue refuses, which
+        // `serial_never_reserved_or_zero` covers; every other value grants.
+        kani::assume(next != u64::MAX);
 
         let ok = unsafe {
             rust_cap_grant_into(&src as *const Capability, dest.as_mut_ptr(), 4, 2,
-                                !0u32, &mut next as *mut u32)
+                                !0u32, &mut next as *mut u64)
         };
         assert!(ok);
         assert!(dest[2].badge == parent_serial, "the grantee must record its grantor as parent");
@@ -2343,19 +2247,19 @@ mod kani_proofs {
     fn grant_from_an_invalid_source_refuses_and_writes_nothing() {
         let req_rights: u32 = kani::any();
         let typ: u32 = kani::any();
-        let serial: u32 = kani::any();
+        let serial: u64 = kani::any();
         // Either the source is empty, or its serial is the invalid 0.
         kani::assume(typ == CAP_NULL || serial == 0);
 
-        let src = Capability { typ, rights: !0u32, object: 1, badge: 0, serial, generation: 0, reserved: 0, token: 0 };
+        let src = Capability { typ, rights: !0u32, object: 1, badge: 0, serial, token: 0 };
         let mut dest = [Capability {
-            typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, generation: 0, reserved: 0, token: 0,
+            typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, token: 0,
         }; 2];
-        let mut next: u32 = MIN_DERIVED_SERIAL;
+        let mut next: u64 = MIN_DERIVED_SERIAL;
 
         let ok = unsafe {
             rust_cap_grant_into(&src as *const Capability, dest.as_mut_ptr(), 2, 1,
-                                req_rights, &mut next as *mut u32)
+                                req_rights, &mut next as *mut u64)
         };
         assert!(!ok, "grant from an invalid source must refuse");
         assert!(dest[1].typ == CAP_NULL, "a refused grant must write nothing");
@@ -2372,16 +2276,16 @@ mod kani_proofs {
 
         let src = Capability {
             typ: 1, rights: !0u32, object: 0, badge: 0,
-            serial: MIN_DERIVED_SERIAL, generation: 0, reserved: 0, token: 0,
+            serial: MIN_DERIVED_SERIAL, token: 0,
         };
         let mut dest = [Capability {
-            typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, generation: 0, reserved: 0, token: 0,
+            typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, token: 0,
         }; 4];
-        let mut next: u32 = MIN_DERIVED_SERIAL;
+        let mut next: u64 = MIN_DERIVED_SERIAL;
         assert!(
             !unsafe {
                 rust_cap_grant_into(&src as *const Capability, dest.as_mut_ptr(), 4, slot,
-                                    !0u32, &mut next as *mut u32)
+                                    !0u32, &mut next as *mut u64)
             },
             "a grant outside the destination cspace must refuse"
         );
@@ -2392,19 +2296,12 @@ mod kani_proofs {
     /// for every distinct serial triple, so no derived authority can outlive its
     /// ancestor. Together with the proof above this pins revocation to exactly
     /// the target's subtree: no more (no ancestors) and no less (all descendants).
-    ///
-    /// The serial-to-cell hash is stubbed (see `lineage_idx_model`): revocation
-    /// bumps the lineage generation of every serial it revokes, and nothing
-    /// asserted here depends on which cell that is. That took this proof from
-    /// 157 s to 37 s (measured 2026-10-06). The proof above revokes one serial
-    /// and was no faster stubbed (25 s either way), so it keeps the real hash.
     #[kani::proof]
     #[kani::unwind(6)]
-    #[kani::stub(lineage_idx, lineage_idx_model)]
     fn revoke_root_nulls_every_descendant() {
-        let p: u32 = kani::any();
-        let c: u32 = kani::any();
-        let g: u32 = kani::any();
+        let p: u64 = kani::any();
+        let c: u64 = kani::any();
+        let g: u64 = kani::any();
         kani::assume(p != 0 && c != 0 && g != 0);
         kani::assume(p != c && c != g && p != g);
 
@@ -2427,18 +2324,16 @@ mod kani_proofs {
     /// Revoking the root nulls the child in B and the grandchild back in A, and
     /// spares an independent capability in B on the SAME object, for every
     /// distinct serial quadruple. The peer is what separates "revoke the subtree"
-    /// from "revoke everything naming the object", the [I-3] defect. Hash
-    /// stubbed as above.
+    /// from "revoke everything naming the object", the [I-3] defect.
     #[kani::proof]
     #[kani::unwind(8)]
-    #[kani::stub(lineage_idx, lineage_idx_model)]
     fn revoke_reaches_every_cspace_and_spares_a_peer() {
-        let (p, c, g, q): (u32, u32, u32, u32) = (kani::any(), kani::any(), kani::any(), kani::any());
+        let (p, c, g, q): (u64, u64, u64, u64) = (kani::any(), kani::any(), kani::any(), kani::any());
         kani::assume(p != 0 && c != 0 && g != 0 && q != 0);
         kani::assume(p != c && p != g && p != q && c != g && c != q && g != q);
         let obj: u64 = 7;
-        let cap = |badge: u32, serial: u32| Capability {
-            typ: 1, rights: 0x3f, object: obj, badge, serial, generation: 0, reserved: 0, token: 0,
+        let cap = |badge: u64, serial: u64| Capability {
+            typ: 1, rights: 0x3f, object: obj, badge, serial, token: 0,
         };
         let mut a = [cap(0, p), cap(c, g)];
         let mut b = [cap(p, c), cap(0, q)];
@@ -2454,91 +2349,53 @@ mod kani_proofs {
         assert!(b[1].typ != CAP_NULL && b[1].serial == q, "an independent peer on the same object must survive");
     }
 
-    /// The one property of the real `lineage_idx` hash the two lineage proofs
-    /// below depend on: for EVERY serial it names a cell inside `LINEAGE_GEN`.
-    /// Those proofs replace the hash with `lineage_idx_model` (see there), so
-    /// without this harness nothing would check the real one at all.
-    ///
-    /// Falsified 2026-10-06 by masking with `LINEAGE_SLOTS` instead of
-    /// `LINEAGE_SLOTS - 1`: `VERIFICATION:- FAILED` on `a < LINEAGE_SLOTS`.
+    /// ONE SERIAL, ONE SLOT, the revocation half: after a system-wide revoke,
+    /// NO slot anywhere still holds the revoked serial, whatever the cspaces held
+    /// before, including a second slot carrying the same serial, which the
+    /// allocator never produces but which this does not assume away. This is
+    /// what lets lookup trust a capability for being in its slot, and lets a
+    /// snapshot be re-checked by its slot and serial, with no generation record:
+    /// the revoke empties every place the serial was.
     #[kani::proof]
-    fn lineage_idx_is_always_inside_the_table() {
-        let serial: u32 = kani::any();
-        assert!(lineage_idx(serial) < LINEAGE_SLOTS, "a serial hashed outside the table");
+    #[kani::unwind(6)]
+    fn revoke_leaves_no_slot_holding_the_serial() {
+        let mut a = [Capability { typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, token: 0 }; 2];
+        let mut b = [Capability { typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, token: 0 }; 2];
+        for c in a.iter_mut().chain(b.iter_mut()) {
+            *c = Capability {
+                typ: kani::any(), rights: kani::any(), object: kani::any(),
+                badge: kani::any(), serial: kani::any(), token: kani::any(),
+            };
+            // A slot never carries the revoke's in-flight marks.
+            kani::assume(c.typ != CAP_MARK_NEW && c.typ != CAP_MARK_DONE);
+        }
+        // The target is a live, non-primordial capability in slot 1 of `a`
+        // (slot 1 is reserved, so the primordial exemption is the one to rule
+        // out; any other target is the same sweep).
+        kani::assume(a[1].typ != CAP_NULL && a[1].serial != 0);
+        kani::assume(!serial_is_primordial(a[1].serial));
+        let target = a[1].serial;
+
+        let pa = a.as_mut_ptr();
+        let pb = b.as_mut_ptr();
+        let spaces = [
+            CSpaceDesc { caps: pa, size: 2, caps_in_use: core::ptr::null_mut() },
+            CSpaceDesc { caps: pb, size: 2, caps_in_use: core::ptr::null_mut() },
+        ];
+        let ok = unsafe {
+            rust_cap_revoke_global(pa, 2, 1, core::ptr::null_mut(), spaces.as_ptr(), 2,
+                                   core::ptr::null_mut())
+        };
+        assert!(ok, "revoking a live, non-primordial capability must succeed");
+        for i in 0..2 {
+            unsafe {
+                let ca = &*pa.add(i);
+                let cb = &*pb.add(i);
+                assert!(ca.typ == CAP_NULL || ca.serial != target, "a slot in `a` still holds the revoked serial");
+                assert!(cb.typ == CAP_NULL || cb.serial != target, "a slot in `b` still holds the revoked serial");
+            }
+        }
     }
-
-    /// A cheap stand-in for `lineage_idx` in the two proofs below, which with the
-    /// real hash did not finish in 1500 s each (measured 2026-08-23); most of that
-    /// is the hash's two 64-bit multiplications, which the solver must expand bit
-    /// by bit. With this stand-in they take
-    /// about four minutes each (measured 2026-10-06, Kani 0.68.0), which is what
-    /// lets them gate every pull request instead of sitting in a manual job that
-    /// never ran.
-    ///
-    /// Why that proves the same thing: neither property depends on WHICH cell a
-    /// serial maps to. The first needs the cell to be the same one every time it
-    /// is asked for, which any pure function gives (`lineage_idx` reads no state);
-    /// the second assumes two serials in distinct cells and is about those cells,
-    /// whatever chose them. What the real hash must still get right is that the
-    /// cell is inside the table, and `lineage_idx_is_always_inside_the_table`
-    /// proves that over every serial. The hash's spread (how often two serials
-    /// collide) was never part of either proof; it is the A3 residual.
-    fn lineage_idx_model(serial: u32) -> usize {
-        (serial as usize) & (LINEAGE_SLOTS - 1)
-    }
-
-    /// FINDING 3.3, use-after-revoke, proved over the whole serial/generation
-    /// space: for any tracked serial and any generation a live capability
-    /// recorded (the serial's current cell value), bumping that serial's lineage
-    /// makes the recorded generation fail the strict-equality `lineage_check`, and
-    /// a bump never yields the pristine 0. This is exactly the guarantee the old
-    /// object-keyed, gen-0-immune check could not provide — a gen-0 snapshot then
-    /// passed unconditionally. Unlike the pure harnesses above, this one exercises
-    /// the shared `LINEAGE_GEN` static on one (symbolic) cell. The serial-to-cell
-    /// hash is stubbed; `lineage_idx_model` says why that loses nothing.
-    #[kani::proof]
-    #[kani::stub(lineage_idx, lineage_idx_model)]
-    fn revoke_invalidates_recorded_generation() {
-        let serial: u32 = kani::any();
-        kani::assume(serial_is_tracked(serial));
-        let pre: u32 = kani::any();
-        let idx = lineage_idx(serial);
-        // Establish an arbitrary current generation and a live cap recording it.
-        LINEAGE_GEN[idx].store(pre, core::sync::atomic::Ordering::SeqCst);
-        assert!(lineage_check(serial, pre), "a cap recording the current generation is valid");
-
-        // Revoke: bump this serial's lineage generation.
-        let new = bump_lineage(serial);
-        assert!(new != 0, "a bumped generation is never the pristine 0");
-        assert!(!lineage_check(serial, pre),
-            "a capability/snapshot recording the pre-revoke generation must be invalid");
-    }
-
-    /// FINDING 3.3, precision / no over-revocation (audit A1 at the generation
-    /// layer): bumping one serial's lineage cell never invalidates a capability
-    /// whose serial maps to a DIFFERENT cell — so a live sibling, ancestor, or
-    /// independent same-object peer survives a revoke that is not theirs. The
-    /// proof is conditioned on distinct cells: two serials that hash to the same
-    /// 4096-slot cell can collide, which is the documented, fail-safe A3 residual.
-    /// The hash is stubbed as in the proof above.
-    #[kani::proof]
-    #[kani::stub(lineage_idx, lineage_idx_model)]
-    fn revoke_does_not_touch_a_distinct_lineage_cell() {
-        let a: u32 = kani::any();
-        let b: u32 = kani::any();
-        kani::assume(serial_is_tracked(a));
-        kani::assume(serial_is_tracked(b));
-        kani::assume(lineage_idx(a) != lineage_idx(b));
-        let gb: u32 = kani::any();
-        LINEAGE_GEN[lineage_idx(b)].store(gb, core::sync::atomic::Ordering::SeqCst);
-        assert!(lineage_check(b, gb), "b is valid before the unrelated revoke");
-
-        let _ = bump_lineage(a);
-        assert!(lineage_check(b, gb),
-            "bumping a serial in a different cell must not invalidate b");
-    }
-
-    // ---- Tokens (docs/design/filesystem.md §5.1) -------------------------------
 
     /// A reply-mint never widens: for EVERY (invoker rights, requested rights,
     /// token) triple, the child's rights are a subset of the capability the
@@ -2556,16 +2413,16 @@ mod kani_proofs {
 
         let src = Capability {
             typ: CAP_ENDPOINT, rights: src_rights, object: 7, badge: 0,
-            serial: MIN_DERIVED_SERIAL, generation: 0, reserved: 0, token: src_token,
+            serial: MIN_DERIVED_SERIAL, token: src_token,
         };
         let mut dest = [Capability {
-            typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, generation: 0, reserved: 0, token: 0,
+            typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, token: 0,
         }; 8];
-        let mut next: u32 = MIN_DERIVED_SERIAL;
+        let mut next: u64 = MIN_DERIVED_SERIAL;
 
         let ok = unsafe {
             rust_cap_reply_mint(&src as *const Capability, dest.as_mut_ptr(), 8, 5,
-                                req_rights, token, &mut next as *mut u32)
+                                req_rights, token, &mut next as *mut u64)
         };
         assert!(ok, "a reply-mint from a live endpoint into an empty slot must succeed");
         assert!(dest[5].rights & !src_rights == 0, "reply-mint must not exceed the invoker's rights");
@@ -2589,16 +2446,16 @@ mod kani_proofs {
         let token: u64 = kani::any();
 
         let mut cs = [Capability {
-            typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, generation: 0, reserved: 0, token: 0,
+            typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, token: 0,
         }; 8];
         cs[4] = Capability {
             typ, rights: src_rights, object: 3, badge: 0,
-            serial: MIN_DERIVED_SERIAL, generation: 0, reserved: 0, token: src_token,
+            serial: MIN_DERIVED_SERIAL, token: src_token,
         };
-        let mut next: u32 = MIN_DERIVED_SERIAL;
+        let mut next: u64 = MIN_DERIVED_SERIAL;
 
         let ok = unsafe {
-            rust_cap_mint_token(cs.as_mut_ptr(), 8, 5, 4, req_rights, token, &mut next as *mut u32)
+            rust_cap_mint_token(cs.as_mut_ptr(), 8, 5, 4, req_rights, token, &mut next as *mut u64)
         };
         if ok {
             assert!(typ == CAP_ENDPOINT, "only an endpoint can mint a token");
@@ -2625,14 +2482,14 @@ mod kani_proofs {
         let req_rights: u32 = kani::any();
 
         let mut cs = [Capability {
-            typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, generation: 0, reserved: 0, token: 0,
+            typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, token: 0,
         }; 8];
         cs[0] = Capability {
             typ: CAP_ENDPOINT, rights: src_rights, object: 0, badge: 0,
-            serial: 0x10000, generation: 0, reserved: 0, token,
+            serial: MIN_DERIVED_SERIAL, token,
         };
-        let mut next: u32 = 0x10000;
-        let ok = unsafe { rust_cap_mint(cs.as_mut_ptr(), 8, 4, 0, req_rights, &mut next as *mut u32, 0) };
+        let mut next: u64 = MIN_DERIVED_SERIAL;
+        let ok = unsafe { rust_cap_mint(cs.as_mut_ptr(), 8, 4, 0, req_rights, &mut next as *mut u64, 0) };
         assert!(ok);
         assert!(cs[4].token == token, "a narrowed copy names the same thing");
     }

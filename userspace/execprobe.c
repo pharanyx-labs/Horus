@@ -87,8 +87,8 @@ static void check(int ok, const char *what) {
 /* Render an unsigned decimal into `buf` (>= 12 bytes) and return it. The
  * pre-exec sample crosses into the successor as argv strings, so it needs a
  * formatter; there is no printf here and this is the whole of one. */
-static char *utoa(unsigned v, char *buf) {
-    char tmp[12];
+static char *utoa(uint64_t v, char *buf) {
+    char tmp[21];
     int n = 0;
     if (v == 0) tmp[n++] = '0';
     while (v) { tmp[n++] = (char)('0' + (v % 10u)); v /= 10u; }
@@ -129,8 +129,11 @@ void _start(void) {
         for (;;) sys_yield();
     }
     kput("EXECPROBE: before the exec: pid "); kput_int(pid);
-    kput(", serial "); kput_int((int)pre.serial);
-    kput(", badge "); kput_int((int)pre.badge); kputln("");
+    {
+        char b[21];
+        kput(", serial "); kput(utoa(pre.serial, b));
+        kput(", badge "); kput(utoa(pre.badge, b)); kputln("");
+    }
 
 #ifndef SYSCOV_PROBES_ABSENT
     /* ---- 1. a null image pointer is refused -------------------------------
@@ -195,7 +198,7 @@ void _start(void) {
      *
      * Carries the pre-exec sample as argv. Anything reached after this line is a
      * failure by construction: SYS_EXEC_IMAGE does not return on success. */
-    char b_pid[12], b_ser[12], b_bdg[12], b_typ[12], b_rgt[12], b_chk[12], b_fai[12];
+    char b_pid[21], b_ser[21], b_bdg[21], b_typ[21], b_rgt[21], b_chk[21], b_fai[21];
     char *av[8];
     av[0] = "execimgee";
     av[1] = utoa((unsigned)pid,        b_pid);

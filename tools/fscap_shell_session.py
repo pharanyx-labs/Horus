@@ -94,6 +94,14 @@ def run():
         return 0
     except SessionFail as e:
         print(f"FSCAP_SHELL_SESSION: FAIL {e}")
+        # THE EVIDENCE GOES WHERE CI CAN SEE IT (CLAUDE.md §2). The full serial
+        # goes to SESSION_SERIAL_LOG, which a CI job does not keep, so a red run
+        # there said only which step failed and nothing of what the machine
+        # printed. The tail of the transcript is printed with the failure.
+        tail = getattr(s, "buf", "")[-6000:]
+        print("---- serial transcript, last 6000 characters ----")
+        print(tail)
+        print("---- end of transcript ----")
         return 1
     finally:
         # The whole serial, on a pass as on a failure: the evidence is kept.

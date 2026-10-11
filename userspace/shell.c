@@ -572,8 +572,17 @@ static void shell_conf_read(void) {
     conf_load("/etc/shell.conf", "shell.conf", shell_conf_apply);
 }
 
+/* NOTHING BEFORE THE BOOT'S FIRST LOGIN. On an installed system the volume is
+ * sealed until that login unlocks it (S74), so the file cannot be read then, and
+ * asking would be the shell's first filesystem request: fss_connect would probe
+ * the mount against a sealed store, and the shell would carry a failed mount
+ * into the session. So login.conf applies from the second login of a boot, on
+ * every system, and the first prompt makes no request at all. */
+static int g_logged_in_once;
+
 static void login_conf_read(void) {
     g_failure_delay = 0;
+    if (!g_logged_in_once) return;
     conf_load("/etc/login.conf", "login.conf", login_conf_apply);
 }
 
@@ -3189,6 +3198,7 @@ static void do_login(void) {
             print("! You are ");
             println(got_uid == 0 ? "the administrator (root)." : "a standard user.");
             println("Type 'help' for available commands, 'logout' to end the session.");
+            g_logged_in_once = 1;
             shell_conf_read();
             show_motd();
             attempts = 0;

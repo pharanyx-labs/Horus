@@ -210,6 +210,13 @@ The token is `fs_server`'s own business, but it must meet two requirements:
 - **It carries the policy grant it descends from** (§6), which the truthful view (§7) and the
   rename rule (§5.5) need.
 
+In phase 1 that is the session's grant set G (§6.4) and, from step 4, the node of the session's
+compiled policy at or above the object (decision 17), so that `fs_server` can bound who else
+reaches an object it cannot find a path to. The layout as decided: bit 63 always set (a token is
+never 0), bit 62 the *tracked* mark, bits 56 to 61 G, bits 51 to 55 the node, bits 32 to 50 the
+generation, bits 0 to 31 the inode. Step 4(a) lands the node; until then the generation has all
+of bits 32 to 55.
+
 A stale token (the object was deleted) is refused with `NOENT`. It never falls through to
 whatever now occupies the slot.
 
@@ -383,7 +390,8 @@ G in the token and exactly that union, mints the working directory (the home, if
 one) the same way, and grants both to the shell's slots 24 and 25. At logout `init` revokes both,
 which sweeps everything derived from them, and only then sends `FS_OP_SESSION_END`, so a grant set
 is never reused while a capability naming it lives. The token gives G bits 56 to 61 (63 concurrent
-sessions; 0 is a capability with no grant set) and bit 62 marks a *tracked* capability, below.
+sessions; 0 is a capability with no grant set) and bit 62 marks a *tracked* capability, below
+(the whole layout is in §5.2).
 
 **Tracked and untracked capabilities.** v11 keeps no parent links, so `fs_server` cannot recover
 a path from an inode. Instead it tracks the capabilities where the policy still has something to
@@ -426,25 +434,62 @@ GNU coreutils will ship (installed-system decision 2), and `ls -l`, `chmod`, `cp
 
 ### 7.1 `stat`
 
-- **Owner bits** are the rights of the capability the caller used: `r` for `READ`, `w` for
-  `WRITE`, `x` for `EXEC` on a file or `LOOKUP` on a directory.
+- **Owner bits** are the rights of the capability the caller used: `r` for `READ`; `w` for
+  `WRITE` on a file, or `CREATE` or `DELETE` on a directory (the only rights that change one);
+  `x` for `EXEC` on a file or `LOOKUP` on a directory.
 - **Group bits** are always zero. Groups are a policy notion, not a file one.
 - **Other bits** are the union of the rights every *other* policy grant has over the object,
   through any path that reaches it. That is a sound upper bound, because a capability anyone
   holds at run time descends from some grant and cannot exceed it. It can overstate who may read
   a file; it can never understate it.
 - **`st_uid`** is the caller's own uid, and **`st_gid`** its primary group. They say "you", which
-  is the only identity a capability tells the server anything about.
+  is the only identity a capability tells the server anything about, so the client fills them in.
 - Timestamps, size, link count and inode number (the object id, truncated to 64 bits) are real.
+
+**Which grants are "other"** (decision 16). Every grant whose principal is not the session's own
+account: `@all` lines, lines naming other accounts, and every other account's `@self` home, which
+is `/home/<name>` for each name but the session's own. Not a private `/tmp`, which nobody else
+reaches (§6.3). **Not the administrator's**: `@admin` lines, and lines naming the account with
+uid 0, are left out, because mode bits have never bounded the administrator and nobody reads them
+as if they did. Without that, every ordinary account's file would show the administrator's `rwx`
+and no `chmod 600` could ever succeed. An account granted `/` by name is an ordinary principal
+and counts. `docs/LIMITATIONS.md` states the omission.
+
+**How the bound is found** (decision 17). v11 keeps no parent links, so `fs_server` cannot find
+a path from an object. Instead the session's compiled policy also holds every other principal's
+grant that lies inside the session's own reach, each as a node of its own, and every capability's
+token names the deepest node at or above its object (§5.2). An object's other bits are the union
+of the other grants at that node and above it. So a directory another account is granted below a
+home is a node, and what lies under it is bounded by that grant, not by the home's. It fails
+towards overstating, never the other way:
+
+- A session whose nodes, its own and the others', do not fit reports every bit as other for
+  everything it reaches.
+- If `/etc/fs.policy` changes while a session is open, that session's bound was computed from
+  the policy it opened under, so its other bits are every bit until it logs in again.
+- A capability with no grant set (0 in the token, held by system tasks, never by a session)
+  reports every bit as other.
 
 ### 7.2 `chmod` and `chown`
 
 **They succeed only when they ask for what is already true, and otherwise fail with `EPERM`.**
-`chmod 600` on a file in a private home, where no other grant reaches it, is true and succeeds.
-The same command on a file in a shared directory is false, fails loudly, and the user learns that
-the file is shared: which is what `chmod` was being asked to prevent. `chown` to the caller's own
-uid succeeds; to anyone else it fails. Changing who can reach a file is done by changing the
-policy or by where the file lives, never by a bit that looks like protection.
+Nothing is stored; `stat` goes on reporting the truth. `chmod 600` on a file in a private home,
+where no other grant reaches it, is true and succeeds. The same command on a file in a shared
+directory is false, fails loudly, and the user learns that the file is shared: which is what
+`chmod` was being asked to prevent. Changing who can reach a file is done by changing the policy
+or by where the file lives, never by a bit that looks like protection.
+
+**What "true" means for `chmod`** (decision 18): the group bits asked for are zero, the other
+bits asked for are exactly the true other bits, and the owner bits asked for are among the
+caller's true rights. A looser mode is refused, since `chmod 644` in a private home asks for an
+exposure that is not real. Owner bits may ask for less than the caller holds, since showing fewer
+of one's own rights claims no protection that is false; that is what lets `chmod 600` succeed on
+a home's files, which the default policy grants `EXEC`. The set-user-id, set-group-id and sticky
+bits are always refused (§6.3). It needs the right `stat` needs, `READ`.
+
+`chown` to the caller's own uid and primary group (or to `-1`, which leaves either unchanged)
+succeeds; to anyone else it fails. The client answers that half, because a capability tells the
+server nothing about who holds it, and asks the server only that the object is reachable.
 
 ### 7.3 `EXEC`, honestly
 
@@ -657,7 +702,7 @@ it, so no step has to land the whole change at once.
 | 1 ✅ | `fs_server` answers capability-addressed requests: the object comes from the token the kernel attests, rights from the invoking capability, `LOOKUP` reply-mints a child capability narrowed to the directory's rights (§5.3), and a name that is `.`, `..` or holds `/` is refused (§5.4). `init` mints the root directory capability (§6.1). Old ino-addressed requests still work | A read-only capability cannot write, `LOOKUP` refuses `..`, and revoking a directory capability revokes what was opened through it; the arm skips the rights check |
 | 2 ✅ | Clients walk with capabilities: `hvfs`, the POSIX layer and the shell (`fsclient`, a self-test client, stays on the uid path until step 6 removes it). The shell keeps a root and a current-directory capability, and before a child runs its spawner grants it derived copies of both, never wider than its own (decision 10). Open files are not inherited | A child given a read-only root cannot write anywhere; the arm grants the child the spawner's capability unnarrowed |
 | 3 | Sessions from the policy (§6.2, §6.4): the shell authenticates as today and asks `init` for its session; `fs_server` compiles the principal's grants, and `init` grants the session one root naming them, and its home as the working directory, and revokes both at logout. The installer writes `/etc/fs.policy`. A live boot uses a compiled-in default; an installed volume without a policy file grants the root capability to the administrator only (decision 9) | A session reaches only what its grants name; the arm grants every session the root |
-| 4 | The truthful view (§7): `stat` from the caller's rights and a bound on everyone else's, `chmod` and `chown` succeed only when they ask for what is true | `chmod 600` on a file another grant reaches fails; the arm reports success |
+| 4 | The truthful view (§7): `stat` from the caller's rights and a bound on everyone else's, `chmod` and `chown` succeed only when they ask for what is true, and `link` within one directory through a capability. Lands before step 3(b) | `chmod 600` on a file another grant reaches fails; the arm reports success |
 | 5 ✅ | Cross-directory `rename` and `link` return `EXDEV` (decision 11); same-directory rename needs `CREATE` and `DELETE` on that directory | A cross-directory move is refused; the arm lets it through |
 | 6 | The identity path is removed: `perm_ok`, `FS_OP_CHOWN`'s root check, the uid half of `SYS_IPC_SENDER` in the filesystem, `SYS_FS_SET_META` and `SYS_CONNECT_FS_SERVER` | No filesystem operation succeeds on the strength of a uid; the arm restores `perm_ok` (the Falsification list below) |
 
@@ -740,6 +785,29 @@ self-test harness that opens sessions directly. (b) `init` and the shell: the se
 after login, the grants into slots 24 and 25, and the revocation at logout, witnessed through a
 real login. (c) The installer writes `/etc/fs.policy`. Each is its own pull request with its own
 gate and arm.
+
+**Step 4 comes before step 3(b)** (decided 2026-10-11). Once every login is handed a root, the
+shell walks by capability in every session, and on that path `chmod`, `chown` and `ln` are
+refused until step 4 gives them their meaning. Landing 3(b) first would take them from every
+session for a while; landing step 4 first takes nothing. Step 4 is three pull requests, witnessed
+through sessions the self-test harness opens, since no login has a session yet: (a) the node in
+the token, other principals' grants compiled into each session, and `stat` synthesised (§7.1);
+(b) `chmod` and `chown` answered by decision 18 (§7.2); (c) `link` within one directory, the
+source presented as a carried capability (`SYS_IPC_CALL_CAP`) and the directory as the
+capability invoked. (c) keeps the step 5 rule that the directory already holds a name for the
+file, and adds both conditions of §5.5 as they apply within one directory: the source's rights
+include every right the directory would give it, and the new name is not a node of the session's
+policy, since a grant naming it would reach the file through it.
+
+**Step 3(b) needs `init` to listen and wait at once** (decision 19). `init` blocks in `SYS_WAIT`
+on the shell and has nothing that would also wake it for a request. It spawns a small watcher
+instead, holding a copy of `init`'s capability to the shell narrowed to `READ`, which lets it
+wait and nothing else (granting into the shell, killing or signalling it all need `WRITE`), and a
+send capability to a session endpoint `init` makes. The watcher waits for the shell, sends `init`
+its exit record and exits. `init` blocks receiving on that endpoint, and tells the shell's
+requests from the watcher's by the token of the capability each came through, never by who
+sent it. When the shell dies with a session open, `init` revokes the session and ends it before
+it relaunches the shell.
 
 **Step 3(a) as built.** The policy is parsed and compiled by `userspace/fs_policy.h`, pure
 functions with no system calls, which `fs_server` includes and a host test compiles unchanged
@@ -870,6 +938,31 @@ still asks a settled question is stale.
     rendezvous §6.3 removes, and over a per-account `/tmp/<name>`, which programs that name
     `/tmp` would not find and two sessions of one account would share.
 
+**2026-10-11, for phase 1b steps 3 and 4:**
+
+16. **The administrator's grants are not counted in the other bits** (§7.1). Mode bits have
+    never bounded the administrator, and counting `@admin / all` would show `rwx` to everyone on
+    every ordinary account's file, so that no `chmod 600` could succeed. Chosen over counting it
+    literally; the omission is stated in `docs/LIMITATIONS.md` rather than left for a reader to
+    discover.
+17. **A token names the node of the session's policy at or above its object** (§5.2, §7.1), in
+    five bits taken from the generation, and each session's compiled policy also holds the other
+    principals' grants that lie inside its reach. Chosen over a table in `fs_server` recording
+    where each capability was minted, which would be state every mint must remember to keep, and
+    over reporting every bit as other below a granted directory, which is sound but would refuse
+    `chmod 600` everywhere in a home. The cost: an inode's generation wraps after 524,288 frees in
+    one boot rather than 16.7 million, and one that would wrap is retired until the next boot, as
+    before.
+18. **A `chmod` is true when its group bits are zero, its other bits are exactly the true ones,
+    and its owner bits are among the caller's rights** (§7.2). This settles the question of a
+    looser `chmod` the way decision 5 had it: refused. Chosen over all nine bits being exact,
+    which would refuse `chmod 600` on every file the default policy grants `EXEC`.
+19. **`init` hears of the shell's death from a watcher it spawns** (§11.1), which holds a
+    capability to the shell that lets it wait and nothing else. Chosen over a new system call that
+    would bind a task's death to a notification, which would put new code in ring 0 for what ring 3
+    can already do, and over `init` polling, which would keep it on the run queue for the life of
+    the machine.
+
 **Still open, none of them blocking phase 1:**
 
 1. **Clean break from v11?** Recommendation: yes, refuse to mount v11 rather than ship a converter
@@ -879,10 +972,6 @@ still asks a settled question is stale.
    shell scripts and can rewrite a terminal (`ls` of a hostile directory). Refusing bytes `0x01`
    to `0x1f` and `0x7f` closes that at the cost of strict POSIX conformance. Recommendation: refuse
    them. Needed before phase 2.
-3. **Should a looser `chmod` succeed?** A `chmod 644` in a private home asks for *more* exposure
-   than is true; granting that request would claim nothing false about protection, but it would
-   still report a state that is not real. Decision 5 as given refuses it. Recommendation: keep the
-   strict rule and revisit only if a real tool breaks on it.
 
 ---
 

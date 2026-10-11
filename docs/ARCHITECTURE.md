@@ -569,8 +569,13 @@ modules once the volume is open: a file that matches its module byte for byte st
 rewritten, and anything no module names is removed. Every request that would change a file or an
 entry in those trees is refused before its permission check, for every client, root included
 (S116), so an update is new install media.
-No client walks with capabilities yet; when they do, the uid path is removed (phase 1b of
-`docs/design/filesystem.md`, roadmap 2.10).
+The POSIX layer and the shell walk with capabilities when they hold a root (S126, S127). A login's
+session is one root capability whose token names a grant set: `fs_server` compiles the account's
+grants from the policy (`userspace/fs_policy.h`; the compiled-in default on a live boot, the
+volume's `/etc/fs.policy` otherwise, chosen by the store's kind as `SYS_FS_STORE_KIND` reports
+it), answers `FS_OP_SESSION` only through init's untokened capability, and at every directory on
+the way to a grant allows only what the policy gives there (S128). Once logins are handed
+sessions the uid path is removed (phase 1b of `docs/design/filesystem.md`, roadmap 2.10).
 
 ### `console_server`
 

@@ -559,6 +559,18 @@ void h_fs_stat(struct interrupt_frame64 *r) {
     r->rax = 0;
 }
 
+/* SYS_FS_STORE_KIND (122): which kind of store this is (docs/design/filesystem.md
+ * §6.4; part of S128). fs_server chooses a session's policy by it: a live boot's RAM store gets
+ * the compiled-in default, a persistent volume its own /etc/fs.policy or, without
+ * one, the administrator alone. So the answer must come from the store being
+ * served and from nothing a requester says, and it answers about the mounted
+ * volume whether or not it is unlocked: a sealed persistent volume is still
+ * persistent. No store mounted is INVAL, never a guess. */
+void h_fs_store_kind(struct interrupt_frame64 *r) {
+    int kind = storage_store_kind();
+    r->rax = kind ? (uint32_t)kind : (uint32_t)SYS_ERR_INVAL;
+}
+
 /* ---- Handlers for the remaining syscalls -------------------------------- *
  * Fixed (slot, rights[, type]) capability requirements are declared in
  * syscall_table[] below and enforced centrally before the handler runs, so

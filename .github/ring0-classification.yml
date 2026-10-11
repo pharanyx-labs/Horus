@@ -515,7 +515,11 @@
 # fscapchild, the child fscapposix hands a narrowed filesystem, and loader.c
 # names it for SYS_SPAWN; FSCAPPOSIX_SELFTEST only, never in the ship build. The
 # grant itself is ring 3 (hvfs_grant_fs).
-core_budget_loc: 11439
+# 2026-10-11: 11439 -> 11440, +1, phase 1b step 3(a) (S128): the dispatch-table
+# entry for SYS_FS_STORE_KIND in syscall.c. The answer itself is two lines in
+# storage.c and the handler in syscall_fs.c, both service; the policy and the
+# sessions are ring 3 (fs_server, fs_policy.h).
+core_budget_loc: 11440
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

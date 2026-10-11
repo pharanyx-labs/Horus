@@ -205,6 +205,7 @@ struct task_info {
 #define SYS_IPC_CALL_CAP      118   /* (ep_slot, recv_slot, msg, len, reply_buf, carry_slot) -> reply length; SYS_IPC_CALL, naming an EMPTY slot for a reply-minted capability and optionally presenting one more capability to the same endpoint. IPC_NO_CAP for either means none. */
 #define SYS_IPC_INVOKER       119   /* (ep_slot, struct ipc_invoker *) -> 0; the token and rights of the capability the last received message came through, and of a carried one. Needs READ (the receive right) on ep_slot. */
 #define SYS_IPC_REPLY_CAP     120   /* (req_slot, msg, len, rights, token) -> 0; SYS_IPC_REPLY_TO that also mints ONE capability into the caller's named slot, derived from the capability its request came through, rights intersected with that capability's. Refused = nothing delivered, reply right kept. */
+#define SYS_FS_STORE_KIND     122   /* (void) -> FS_STORE_EPHEMERAL or FS_STORE_PERSISTENT; which kind of store the object store serves. CAP_ENCRYPTED_STORAGE + READ (fs_server only). SYS_ERR_INVAL when none is mounted. */
 #define SYS_MEM_SEAL          121   /* (addr, len) -> 0; make pages of the caller's own image read-only for good (RELRO). Only drops rights; bounded to the caller's image window, page-aligned, all or nothing. */
 #define SYS_STORAGE_DEVICE   113  /* (index, struct storage_info*) -> 0; the survey for ONE enumerated persistent device (CAP_STORAGE_FORMAT + READ). Refuses an index past the end rather than clamping. */
 #define SYS_IRQ_POLICY_INFO    92   /* (struct irq_policy_info*) -> 0; roadmap 1.1 audit counters. IRQ_POLICY_AUDIT builds only; NOSYS otherwise. CAP_KERNEL_LOG (READ). */
@@ -389,6 +390,16 @@ static inline int sys_signal(uintptr_t handler) {
  * or SYS_ERR_INVAL (a page outside the image, not mapped, or not the image's own). */
 static inline int sys_mem_seal(const void *addr, uint64_t len) {
     return (int)syscall(SYS_MEM_SEAL, (uint64_t)(uintptr_t)addr, len, 0);
+}
+
+/* Which kind of store fs_server is serving: the RAM store of a live or diskless
+ * boot, which no boot outlives, or a persistent volume. Values mirror the
+ * kernel's; neither is 0, so a zero from anywhere is never mistaken for an
+ * answer. Needs CAP_ENCRYPTED_STORAGE (READ) at CAPSLOT_AUDIT. */
+#define FS_STORE_EPHEMERAL  1
+#define FS_STORE_PERSISTENT 2
+static inline int sys_fs_store_kind(void) {
+    return (int)syscall(SYS_FS_STORE_KIND, 0, 0, 0);
 }
 
 static inline void sys_sigreturn(void) {

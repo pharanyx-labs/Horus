@@ -22,12 +22,24 @@
  *     is refused EXDEV, through a capability and through the identity path
  *     alike (step 5, decision 11; `cross-dir-rename` is the check the control
  *     arm FS_XDEV_UNCHECKED=1 must turn red), while a rename within one
- *     directory works and needs both CREATE and DELETE there.
+ *     directory works and needs both CREATE and DELETE there;
+ *   - a session (step 3(a), §6.4, decision 13) reaches only what its grants
+ *     name: an ordinary account's root lists only the paths that lead to its
+ *     grants and refuses every other name NOENT (`session-reached-ungranted` is
+ *     the check FS_SESSION_GRANTS_ROOT=1 must turn red), cannot create in the
+ *     root although its root capability carries the union of its rights
+ *     (`session-created-in-root`, for FS_SESSION_RIGHTS_UNCHECKED=1), is given
+ *     exactly read, lookup and exec on /bin, and everything in its own home;
+ *     a session opens only through the untokened capability holding MINT
+ *     (`session-opened-without-mint`, for FS_SESSION_ANY_CALLER=1), and a
+ *     capability that outlives its session's end reaches nothing.
  *
  * Slot map, set up by the kernel harness (selftest.c fscap_selftest):
  *   SLOT_PLAIN  an UNTOKENED capability to fs_server's endpoint with MINT, the
  *               kernel standing in for init, which in a real boot mints the root
- *               directory's capability from one of these. */
+ *               directory's capability from one of these.
+ *   CAPSLOT_DEBUG CAP_DEBUG, so the session checks can read the rights of a
+ *               capability the server minted (SYS_CAP_ENUMERATE). */
 
 #include "syscall.h"
 #include "fs_proto.h"
@@ -52,6 +64,16 @@
 #define SLOT_WRO    46
 #define SLOT_NOLOOK 47
 #define SLOT_WSCRAP 48
+#define SLOT_SROOT  50    /* an ordinary session's root */
+#define SLOT_SCWD   51    /* and its working directory */
+#define SLOT_SX     52
+#define SLOT_SBIN   53
+#define SLOT_SHOME  54
+#define SLOT_SF     55
+#define SLOT_SNOW   56    /* untokened, WRITE only: no MINT */
+#define SLOT_SRO    57    /* a read-only copy of the session's root */
+#define SLOT_AROOT  58    /* the administrator's session root */
+#define SLOT_AX     59
 
 static int checks;
 
@@ -99,6 +121,212 @@ static int call(unsigned slot, unsigned recv, struct fs_request *rq)
         sys_yield();
     }
     return -3000;
+}
+
+/* ---- sessions (phase 1b step 3(a); docs/design/filesystem.md §6.4) ---------
+ *
+ * The harness boots on the RAM store, which is ephemeral, so the policy is the
+ * compiled-in default (decision 9): the administrator gets the root; every
+ * account gets read, lookup and exec on /bin and /usr, read and lookup on /lib,
+ * and its own /home/<name>. The kernel's accounts are root (uid 0) and user
+ * (1000, home /home/user, which fs_server made at provisioning). The file
+ * language and the persistent-volume rules are tested on the host
+ * (make smoke-fs-policy), since this store never consults a file. */
+static int session_open(uint32_t uid, struct fs_session_grant *sg)
+{
+    struct fs_request rq;
+    fill(&rq, FS_OP_SESSION, 0);
+    rq.arg_uid = uid;
+    int rc = call(SLOT_PLAIN, IPC_NO_CAP, &rq);
+    if (rc == 0) umemcpy(sg, ((struct fs_response *)rbuf)->data, sizeof(*sg));
+    return rc;
+}
+
+static int session_end(uint32_t g)
+{
+    struct fs_request rq;
+    fill(&rq, FS_OP_SESSION_END, 0);
+    rq.offset = g;
+    return call(SLOT_PLAIN, IPC_NO_CAP, &rq);
+}
+
+static int walk1(unsigned from, unsigned into, const char *a, const char *b)
+{
+    struct fs_request rq;
+    const char *p[2] = { a, b };
+    fill_walk(&rq, p, b ? 2 : 1);
+    return call(from, into, &rq);
+}
+
+/* The rights of this task's capability in `slot`, as the kernel records them. */
+static uint32_t rights_of(unsigned slot)
+{
+    struct cap_info ci;
+    if (sys_cap_enumerate(sys_getpid(), slot, &ci) != 0 || !ci.occupied) return 0;
+    return ci.rights;
+}
+
+/* Does a listing of `slot` hold only names in `allowed` (NUL-separated, ending
+ * in an empty one), and every name in `needed`? */
+static int lists_only(unsigned slot, const char *allowed, const char *needed)
+{
+    struct fs_request rq;
+    char seen[16][FS_NAME_MAX];
+    unsigned ns = 0;
+    for (uint32_t off = 0; off < 64; off++) {
+        fill(&rq, FS_OP_READDIR, 0);
+        rq.offset = off;
+        int rc = call(slot, IPC_NO_CAP, &rq);
+        if (rc == FS_RC_ENDDIR) break;
+        if (rc != 0) return 0;
+        const char *nm = ((struct fs_response *)rbuf)->name;
+        int ok = 0;
+        for (const char *a = allowed; *a; a += uslen(a) + 1) if (ustreq(a, nm)) ok = 1;
+        if (!ok) return 0;
+        if (ns < 16) ustrncpy(seen[ns++], nm, FS_NAME_MAX);
+    }
+    for (const char *n = needed; *n; n += uslen(n) + 1) {
+        int found = 0;
+        for (unsigned i = 0; i < ns; i++) if (ustreq(seen[i], n)) found = 1;
+        if (!found) return 0;
+    }
+    return 1;
+}
+
+static void sessions(void)
+{
+    struct fs_request rq;
+    struct fs_session_grant sg, ag;
+
+    /* A home that is not the user's, made through step 1's root, which carries
+     * no grant set: the user's session must not see it. */
+    if (walk1(SLOT_ROOT, SLOT_SX, "home", 0) != 0) fail("session-setup-walk-home");
+    fill(&rq, FS_OP_MKDIR, "other");
+    if (call(SLOT_SX, IPC_NO_CAP, &rq) != 0) fail("session-setup-mkdir-other");
+    if (sys_cap_revoke(SLOT_SX) != 0) fail("session-setup-revoke");
+    ok();
+
+    /* AN ORDINARY ACCOUNT'S SESSION. */
+    if (session_open(1000, &sg) != 0) fail("session-user-open");
+    if (sg.g == 0 || sg.g > FS_SESSIONS_MAX || fs_token_g(sg.root_token) != sg.g ||
+        !fs_token_tracked(sg.root_token) || sg.cwd_token == 0) fail("session-user-grant");
+    if (sg.source != FS_SESSION_SRC_DEFAULT) fail("session-not-default-policy");
+    if (sys_cap_mint_token(SLOT_SROOT, SLOT_PLAIN, sg.root_rights, sg.root_token) != 0 ||
+        sys_cap_mint_token(SLOT_SCWD, SLOT_PLAIN, sg.cwd_rights, sg.cwd_token) != 0)
+        fail("session-user-mint");
+    ok();
+
+    /* IT REACHES ONLY WHAT ITS GRANTS NAME, and what they withhold is absent:
+     * NOENT, never PERM. */
+    if (walk1(SLOT_SROOT, SLOT_SX, "etc", 0) != SYS_ERR_NOENT) fail("session-reached-ungranted");
+    fill(&rq, FS_OP_LOOKUP, "etc");
+    if (call(SLOT_SROOT, SLOT_SX, &rq) != SYS_ERR_NOENT) fail("session-looked-up-ungranted");
+    if (walk1(SLOT_SROOT, SLOT_SX, "home", "other") != SYS_ERR_NOENT) fail("session-reached-other-home");
+    if (walk1(SLOT_SROOT, SLOT_SX, "sbin", 0) != SYS_ERR_NOENT) fail("session-reached-sbin");
+    ok();
+
+    /* THE ROOT CARRIES THE UNION OF THE SESSION'S RIGHTS, so that a writable
+     * home below a read-only root is reachable at all; the server, not the
+     * kernel, keeps the root itself to LOOKUP and a filtered listing. This is
+     * decision 13's trade, and the check that witnesses the server keeps it. */
+    if (!(rights_of(SLOT_SROOT) & FS_R_CREATE)) fail("session-root-not-union");
+    fill(&rq, FS_OP_MKDIR, "intruder");
+    if (call(SLOT_SROOT, SLOT_SX, &rq) != SYS_ERR_PERM) fail("session-created-in-root");
+    fill(&rq, FS_OP_DELETE, "bin");
+    if (call(SLOT_SROOT, IPC_NO_CAP, &rq) != SYS_ERR_PERM) fail("session-deleted-in-root");
+    ok();
+
+    /* ITS LISTINGS SHOW ONLY THE WAY TO ITS GRANTS. */
+    if (!lists_only(SLOT_SROOT, "bin\0lib\0usr\0home\0", "bin\0home\0")) fail("session-listed-ungranted");
+    if (walk1(SLOT_SROOT, SLOT_SHOME, "home", 0) != 0) fail("session-walk-home");
+    if (!lists_only(SLOT_SHOME, "user\0", "user\0")) fail("session-listed-other-home");
+    ok();
+
+    /* /bin IS EXACTLY READ, LOOKUP AND EXEC. Asserted on the minted rights, not
+     * by trying to write: the system-tree rule (S116) refuses a write to /bin
+     * whatever the policy says, so a refusal would prove nothing about it. */
+    if (walk1(SLOT_SROOT, SLOT_SBIN, "bin", 0) != 0) fail("session-walk-bin");
+    if ((rights_of(SLOT_SBIN) & FS_R_ALL) != (FS_R_READ | FS_R_LOOKUP | FS_R_EXEC))
+        fail("session-bin-rights");
+    ok();
+
+    /* ITS OWN HOME IS ITS OWN, from the working directory init would grant and
+     * by a walk from the root alike. */
+    fill(&rq, FS_OP_CREATE, "notes");
+    if (call(SLOT_SCWD, SLOT_SF, &rq) != 0) fail("session-home-not-writable");
+    fill(&rq, FS_OP_WRITE, 0);
+    rq.len = 3;
+    rq.data[0] = 'm'; rq.data[1] = 'i'; rq.data[2] = 'n';
+    if (call(SLOT_SF, IPC_NO_CAP, &rq) != 3) fail("session-home-write");
+    if (walk1(SLOT_SROOT, SLOT_SX, "home", "user") != 0) fail("session-walk-own-home");
+    if ((rights_of(SLOT_SX) & FS_R_ALL) != FS_R_ALL) fail("session-own-home-rights");
+    if (sys_cap_revoke(SLOT_SX) != 0) fail("session-revoke-x");
+    ok();
+
+    /* THE KERNEL STILL BOUNDS IT: a read-only copy of the root walks to the home
+     * and gets a read-only directory, never the union. */
+    if (sys_cap_mint(SLOT_SRO, SLOT_SROOT, CAP_RIGHT_WRITE | CAP_RIGHT_REVOKE | FS_R_READ | FS_R_LOOKUP) != 0)
+        fail("session-mint-readonly");
+    if (walk1(SLOT_SRO, SLOT_SX, "home", "user") != 0) fail("session-readonly-walk");
+    fill(&rq, FS_OP_CREATE, "x");
+    if (call(SLOT_SX, SLOT_AX, &rq) != SYS_ERR_PERM) fail("session-narrowed-copy-widened");
+    if (sys_cap_revoke(SLOT_SX) != 0) fail("session-revoke-x2");
+    ok();
+
+    /* THE ADMINISTRATOR'S SESSION reaches everything, and a narrower line below
+     * ("@all /usr read") does not narrow it there. */
+    if (session_open(0, &ag) != 0 || ag.g == 0 || ag.g == sg.g) fail("session-admin-open");
+    if (sys_cap_mint_token(SLOT_AROOT, SLOT_PLAIN, ag.root_rights, ag.root_token) != 0)
+        fail("session-admin-mint");
+    if (walk1(SLOT_AROOT, SLOT_AX, "etc", 0) != 0) fail("session-admin-no-etc");
+    if (sys_cap_revoke(SLOT_AX) != 0) fail("session-admin-revoke");
+    if (walk1(SLOT_AROOT, SLOT_AX, "usr", 0) != 0 || (rights_of(SLOT_AX) & FS_R_ALL) != FS_R_ALL)
+        fail("session-admin-usr-narrowed");
+    if (sys_cap_revoke(SLOT_AX) != 0) fail("session-admin-revoke2");
+    fill(&rq, FS_OP_MKDIR, "admdir");
+    if (call(SLOT_AROOT, IPC_NO_CAP, &rq) != 0) fail("session-admin-mkdir");
+    fill(&rq, FS_OP_DELETE, "admdir");
+    if (call(SLOT_AROOT, IPC_NO_CAP, &rq) != 0) fail("session-admin-rmdir");
+    ok();
+
+    /* ONLY THROUGH THE UNTOKENED CAPABILITY HOLDING MINT. A WRITE-only copy of
+     * it (what SYS_CONNECT_FS_SERVER hands a client) is refused, and so is any
+     * tokened capability, however wide. */
+    if (sys_cap_mint(SLOT_SNOW, SLOT_PLAIN, CAP_RIGHT_WRITE) != 0) fail("session-mint-nomint");
+    fill(&rq, FS_OP_SESSION, 0);
+    rq.arg_uid = 1000;
+    if (call(SLOT_SNOW, IPC_NO_CAP, &rq) != SYS_ERR_PERM) fail("session-opened-without-mint");
+    fill(&rq, FS_OP_SESSION, 0);
+    rq.arg_uid = 0;
+    if (call(SLOT_ROOT, IPC_NO_CAP, &rq) != SYS_ERR_PERM) fail("session-opened-through-token");
+    fill(&rq, FS_OP_SESSION_END, 0);
+    rq.offset = sg.g;
+    if (call(SLOT_SNOW, IPC_NO_CAP, &rq) != SYS_ERR_PERM) fail("session-ended-without-mint");
+    fill(&rq, FS_OP_SESSION, 0);
+    rq.arg_uid = 4242;
+    if (call(SLOT_PLAIN, IPC_NO_CAP, &rq) != SYS_ERR_NOENT) fail("session-for-no-account");
+    ok();
+
+    /* ENDED, IT REACHES NOTHING: fs_server fails closed even before init's
+     * revoke (which in a real logout comes first) has swept the capabilities. */
+    if (session_end(sg.g) != 0) fail("session-end");
+    fill(&rq, FS_OP_STAT, 0);
+    if (call(SLOT_SROOT, IPC_NO_CAP, &rq) != SYS_ERR_NOENT) fail("session-outlived-its-end");
+    fill(&rq, FS_OP_READ, 0);
+    rq.len = 3;
+    if (call(SLOT_SF, IPC_NO_CAP, &rq) != SYS_ERR_NOENT) fail("session-file-outlived-its-end");
+    if (session_end(sg.g) != SYS_ERR_NOENT) fail("session-ended-twice");
+    if (sys_cap_revoke(SLOT_SROOT) != 0 || sys_cap_revoke(SLOT_SCWD) != 0) fail("session-revoke");
+    if (session_end(ag.g) != 0 || sys_cap_revoke(SLOT_AROOT) != 0) fail("session-admin-end");
+    ok();
+
+    /* GRANT SETS COME BACK: more sessions than there are sets, one at a time. */
+    for (int i = 0; i < 2 * FS_SESSIONS_MAX; i++) {
+        struct fs_session_grant t;
+        if (session_open(1000, &t) != 0 || t.g == 0 || session_end(t.g) != 0)
+            fail("session-grant-set-leaked");
+    }
+    ok();
 }
 
 void _start(void)
@@ -358,6 +586,8 @@ void _start(void)
     fill(&rq, FS_OP_LOOKUP, "n");
     if (call(SLOT_MVA, SLOT_MVLOOK, &rq) != 0) fail("renamed-not-found");
     ok();
+
+    sessions();
 
     char n[12];
     int v = checks, k = 0;

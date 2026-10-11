@@ -98,6 +98,10 @@ control_arms:
   smoke-fs-cap-control: smoke-fs-cap
   smoke-fs-cap-xdev-control: smoke-fs-cap
   smoke-fs-cap-walk-control: smoke-fs-cap
+  smoke-fs-cap-session-control: smoke-fs-cap
+  smoke-fs-cap-session-rights-control: smoke-fs-cap
+  smoke-fs-cap-session-caller-control: smoke-fs-cap
+  smoke-fs-policy-control: smoke-fs-policy
   smoke-fs-cap-posix-close-control: smoke-fs-cap-posix
   smoke-fs-cap-posix-grant-control: smoke-fs-cap-posix
   smoke-fs-cap-shell-fallback-control: smoke-fs-cap-shell
@@ -308,6 +312,7 @@ gates:
   - smoke-fs-cap
   - smoke-fs-cap-posix
   - smoke-fs-cap-shell
+  - smoke-fs-policy
   - smoke-captoken-smp
   - smoke-auditprobe
   - smoke-blockprobe

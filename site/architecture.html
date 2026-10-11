@@ -124,8 +124,8 @@
     exists as far as the caller is concerned.
   </p>
   <p>
-    The ABI defines <strong>122 syscall numbers</strong>. The dispatch table is sized to
-    the highest of them plus one, and a default build installs <strong>102
+    The ABI defines <strong>123 syscall numbers</strong>. The dispatch table is sized to
+    the highest of them plus one, and a default build installs <strong>103
     handlers</strong>, the remainder are reserved, or are test-only calls compiled out
     entirely. Every one of those gaps answers <code>SYS_ERR_NOSYS</code>. That difference
     is the fail-closed property, not an oversight: a shipping kernel denies the debug
@@ -209,7 +209,9 @@
     itself. A request through a filesystem capability is authorised by the capability
     instead: the kernel attests which object its token names and which rights it carries.
     That is the path that replaces the user ID once a session is handed its grants: the
-    shell and the C library already walk with capabilities when they hold a root.
+    shell and the C library already walk with capabilities when they hold a root, and
+    <code>fs_server</code> already compiles a session's grants from the policy into the one
+    root capability a login will be handed.
   </p>
 </div>
 </section>

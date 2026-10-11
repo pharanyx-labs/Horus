@@ -25,6 +25,7 @@
 #include "syscall.h"
 #include "fs_proto.h"
 #include "libhorus.h"
+#include "fs_policy.h"
 
 #include "block_size.h"
 /* NOT a private constant: the kernel hands back HORUS_BLOCK_SIZE bytes from
@@ -681,8 +682,81 @@ static int fs_name_ok(const char *n)
  *
  * FS_WALK_NAMES_UNCHECKED=1 is the control arm for make smoke-fs-cap-walk-control:
  * only the first name is checked. Never ship. */
+/* ---- sessions (docs/design/filesystem.md §6.4, decision 13) ----------------
+ *
+ * Carries S128: a session reaches only what the policy grants its account, and
+ * only init can open one (session_request).
+ *
+ * A login's session is ONE root capability whose token names a grant set G, and
+ * this server applies the compiled policy (fs_policy.h) to what is reached
+ * through it. g_sess[G] holds the compiled tree. A capability is TRACKED (token
+ * bit 62) where the policy still has something to say below it: a directory on
+ * the way to a grant, or a granted one with a deeper grant under it. Its node
+ * records the inode it was minted for, so a request through it finds its node by
+ * that inode and generation, and is allowed its capability's rights intersected
+ * with the node's. Below a granted path with nothing deeper the capability is
+ * untracked, minted with exactly the granted rights, and from there the kernel's
+ * intersection bounds everything (S120).
+ *
+ * THE TRADE, as decision 13 states it: below a session's root, rights are
+ * enforced here for tracked capabilities, not by the kernel, because the root
+ * must carry the union of the session's rights for a wider grant below a
+ * narrower one to be reachable at all. The kernel still bounds every capability
+ * by that union. */
+struct fs_session {
+    int             live;
+    struct fsp_tree tree;
+};
+static struct fs_session g_sess[FS_SESSIONS_MAX + 1];   /* [0] is never used */
+
+/* The rights of the kernel's own that a session's capabilities keep: send, pass
+ * on (decision 10's spawner grants), make narrowed copies, revoke them. */
+#define FS_KERNEL_RIGHTS (CAP_RIGHT_WRITE | CAP_RIGHT_GRANT | CAP_RIGHT_REVOKE | CAP_RIGHT_MINT)
+
+/* Where a capability-addressed request stands in its session's policy. */
+struct fs_pol {
+    struct fs_session *s;   /* 0: a capability with no grant set (step 1's) */
+    int      node;          /* the tracked node, or -1 */
+    uint32_t carry;         /* the most a capability minted from here may carry */
+};
+
+/* The node a tracked capability was minted for, or -1. */
+static int fs_session_node(const struct fs_session *s, uint32_t ino, uint32_t gen)
+{
+    for (unsigned i = 0; i < s->tree.n; i++) {
+        const struct fsp_node *n = &s->tree.node[i];
+        if (n->bound && n->ino == ino && n->gen == gen) return (int)i;
+    }
+    return -1;
+}
+
+/* One step down, to entry `name` of type `type`. SYS_ERR_NOENT when the session
+ * does not see that name: absent, never PERM, so the policy does not disclose
+ * what it withholds. An untracked position has no policy left to apply. */
+static int fs_pol_step(struct fs_pol *p, const char *name, uint32_t type)
+{
+    if (!p->s || p->node < 0) return 0;
+    int child;
+    uint32_t carry;
+    int r = fsp_step(&p->s->tree, p->node, name, type == FS_TYPE_DIR, &child, &carry);
+    if (r < 0) return SYS_ERR_NOENT;
+    p->node = (r == 1) ? child : -1;
+    p->carry = carry;
+    return 0;
+}
+
+/* Record that a capability to `ino` is being minted at tracked node `node`. A
+ * later binding of the same node (the directory was removed and made again)
+ * replaces this one; capabilities to the old inode are stale by generation. */
+static void fs_session_bind(struct fs_session *s, int node, uint32_t ino)
+{
+    s->tree.node[node].ino = ino;
+    s->tree.node[node].gen = g_gen[ino];
+    s->tree.node[node].bound = 1;
+}
+
 static void walk(const struct fs_request *rq, struct fs_response *rp, uint32_t from,
-                 uint32_t cuid, uint32_t cgid)
+                 uint32_t cuid, uint32_t cgid, struct fs_pol *pol)
 {
     const char *d = (const char *)rq->data;
     uint32_t len = rq->len;
@@ -711,6 +785,15 @@ static void walk(const struct fs_request *rq, struct fs_response *rp, uint32_t f
         ustrncpy(step.name, d + at, FS_NAME_MAX);
         handle(&step, rp, cuid, cgid);
         if (rp->rc != 0) return;
+        /* The name exists; does this session see it? Answered after the lookup
+         * because the answer depends on the entry's type (fs_policy.h fsp_step),
+         * and answered as the lookup of a missing name would be. */
+        if (fs_pol_step(pol, step.name, rp->type) != 0) {
+            umemset(rp, 0, sizeof(*rp));
+            rp->magic = FS_PROTO_MAGIC;
+            rp->rc = SYS_ERR_NOENT;
+            return;
+        }
         cur = rp->ino;
     }
 }
@@ -732,6 +815,28 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
         return;
     }
 
+    /* A capability from a session: its grant set must still be open, and a
+     * tracked one must name the node it was minted at. Either failing is NOENT,
+     * fail closed: init revokes a session's capabilities before ending it, so
+     * one that outlives its session is a defect, and it reaches nothing. */
+    uint32_t g = fs_token_g(inv->token);
+    struct fs_pol pol = { 0, -1, FS_R_ALL };
+    if (g != 0 || fs_token_tracked(inv->token)) {
+        if (g == 0 || !g_sess[g].live) { rp->rc = SYS_ERR_NOENT; return; }
+        pol.s = &g_sess[g];
+        if (fs_token_tracked(inv->token)) {
+            pol.node = fs_session_node(pol.s, obj, fs_token_gen(inv->token));
+            if (pol.node < 0) { rp->rc = SYS_ERR_NOENT; return; }
+            pol.carry = pol.s->tree.node[pol.node].below;
+        }
+    }
+    /* What this request may use: the capability's rights, and at a tracked node
+     * only those its node allows (fsp_op_rights). The kernel's own bits pass. */
+    uint32_t have = inv->rights;
+#ifndef FS_SESSION_RIGHTS_UNCHECKED
+    if (pol.node >= 0) have &= fsp_op_rights(&pol.s->tree, pol.node) | ~(uint32_t)FS_R_ALL;
+#endif
+
     uint32_t need, is_dir_op = 0, names = 0;
     switch (rq->op) {
     case FS_OP_LOOKUP:   need = FS_R_LOOKUP; is_dir_op = 1; names = 1; break;
@@ -744,7 +849,7 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
     case FS_OP_READ:     need = FS_R_READ;   break;
     case FS_OP_WRITE:
     case FS_OP_TRUNCATE: need = FS_R_WRITE;  break;
-    case FS_OP_APPEND:   need = (inv->rights & FS_R_APPEND) ? FS_R_APPEND : FS_R_WRITE; break;
+    case FS_OP_APPEND:   need = (have & FS_R_APPEND) ? FS_R_APPEND : FS_R_WRITE; break;
     case FS_OP_RENAME:
         /* Within the capability's directory only: a rename there needs CREATE
          * for the new name and DELETE for the old (§5.5). Naming a second
@@ -760,7 +865,7 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
         return;
     }
 #ifndef FS_CAP_RIGHTS_UNCHECKED
-    if ((inv->rights & need) != need) { rp->rc = SYS_ERR_PERM; return; }
+    if ((have & need) != need) { rp->rc = SYS_ERR_PERM; return; }
 #else
     /* CONTROL ARM, never ship (smoke-fs-cap-control): the capability's rights are
      * not consulted, so a read-only one can write. */
@@ -779,8 +884,34 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
 
     /* A DELETE's generation bump happens in fs_ino_free, on the free itself. */
     g_by_cap = 1;
-    if (rq->op == FS_OP_WALK) walk(rq, rp, obj, cuid, cgid);
-    else handle(&r2, rp, cuid, cgid);
+    if (rq->op == FS_OP_WALK) {
+        walk(rq, rp, obj, cuid, cgid, &pol);
+    } else if (rq->op == FS_OP_READDIR && pol.node >= 0) {
+        /* A TRACKED DIRECTORY LISTS WHAT THE SESSION SEES and no more: the
+         * entry at `offset` counts only visible names, so the listing is dense
+         * and a withheld name leaves no gap to count. Ends as an unfiltered
+         * listing ends, with FS_RC_ENDDIR, or passes an error through. */
+        uint32_t seen = 0;
+        for (uint32_t idx = 0; ; idx++) {
+            r2.offset = idx;
+            handle(&r2, rp, cuid, cgid);
+            if (rp->rc != 0) break;
+            if (fsp_visible(&pol.s->tree, pol.node, rp->name, rp->type == FS_TYPE_DIR)) {
+                if (seen == rq->offset) break;
+                seen++;
+            }
+        }
+    } else {
+        handle(&r2, rp, cuid, cgid);
+        /* The child a lookup, create or mkdir names: is it in this session? */
+        if (rp->rc == 0 && (rq->op == FS_OP_LOOKUP || rq->op == FS_OP_CREATE ||
+                            rq->op == FS_OP_MKDIR) &&
+            fs_pol_step(&pol, rq->name, rp->type) != 0) {
+            umemset(rp, 0, sizeof(*rp));
+            rp->magic = FS_PROTO_MAGIC;
+            rp->rc = SYS_ERR_NOENT;
+        }
+    }
     g_by_cap = 0;
 
     if (rp->rc == 0 && (rq->op == FS_OP_LOOKUP || rq->op == FS_OP_WALK ||
@@ -791,14 +922,173 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
          * keeps only the rights that mean something on a file. The kernel
          * intersects with the invoking capability again on the way out. */
         uint32_t keep = (rp->type == FS_TYPE_DIR) ? FS_R_ALL : FS_R_FILE_MASK;
+        /* In a session, at most what the policy gives the child: the union of
+         * its subtree if it is tracked, exactly its granted rights if not
+         * (pol.carry, set by the step). Outside one, carry is every right. */
+        keep &= pol.carry;
         /* And the kernel's own rights it already had: send (WRITE), pass on
          * (GRANT), make narrowed copies of it (MINT; a token is never minted from
          * a tokened capability, so this cannot make a new one, §5.1) and revoke
          * those copies (REVOKE). */
-        *mint_rights = (inv->rights & keep) |
-                       (inv->rights & (CAP_RIGHT_WRITE | CAP_RIGHT_GRANT | CAP_RIGHT_MINT | CAP_RIGHT_REVOKE));
-        *mint_token = fs_token(rp->ino, g_gen[rp->ino]);
+        *mint_rights = (inv->rights & keep) | (inv->rights & FS_KERNEL_RIGHTS);
+        /* The child keeps the session's grant set, tracked or not, so §5.5 and
+         * §7 can later say which grant it descends from. */
+        int tracked = pol.node >= 0;
+        *mint_token = fs_token_in(rp->ino, g_gen[rp->ino], pol.s ? g : 0, tracked);
+        if (tracked) fs_session_bind(pol.s, pol.node, rp->ino);
     }
+}
+
+/* ---- opening and ending sessions (§6.4) ------------------------------------ */
+
+static struct fsp_policy g_policy;          /* scratch: parsed afresh at each open */
+static char g_policy_text[FSP_MAX_BYTES];
+
+/* Read /etc/fs.policy from the store into g_policy_text. 1 when present (*len
+ * set; a file over the bound, or one that is not a regular file, reports a
+ * length the parser refuses, so it is malformed rather than absent), 0 when
+ * absent, -1 when the store could not be read: a policy that might exist is
+ * never taken for one that does not. */
+static int read_policy_file(uint32_t *len)
+{
+    struct fs_stat st;
+    uint32_t etc, ino, type;
+    *len = 0;
+    if (sys_fs_stat(0, &st) != 0) return -1;
+    if (!dir_find(0, "etc", &etc, &type) || type != FS_TYPE_DIR) return 0;
+    if (!dir_find(etc, "fs.policy", &ino, &type)) return 0;
+    if (sys_fs_stat(ino, &st) != 0) return -1;
+    if (st.type != FS_TYPE_FILE || st.size > FSP_MAX_BYTES) { *len = FSP_MAX_BYTES + 1; return 1; }
+    static uint8_t blk[BLK];
+    for (uint32_t off = 0; off < (uint32_t)st.size; off += BLK) {
+        if (sys_fblock_read(ino, off / BLK, blk) != (int)BLK) return -1;
+        uint32_t n = (uint32_t)st.size - off;
+        if (n > BLK) n = BLK;
+        umemcpy(g_policy_text + off, blk, n);
+    }
+    *len = (uint32_t)st.size;
+    return 1;
+}
+
+/* The session's working directory: its home, walked from the root through the
+ * policy as a client's walk would be, so it carries exactly what a walk there
+ * would have given. None if the home is missing, not a directory, or not in
+ * this session. A home of "/" is the root itself. */
+static void session_cwd(struct fs_session *s, uint32_t g, const char *home,
+                        struct fs_session_grant *sg)
+{
+    char comp[FSP_MAX_DEPTH][FSP_NAME];
+    int d = fsp_split(home, uslen(home), comp);
+    if (d < 0) return;
+    if (d == 0) { sg->cwd_token = sg->root_token; sg->cwd_rights = sg->root_rights; return; }
+    struct fs_pol pol = { s, s->tree.node[0].nchild > 0 ? 0 : -1, s->tree.node[0].below };
+    uint32_t cur = 0, type = FS_TYPE_DIR;
+    for (int k = 0; k < d; k++) {
+        uint32_t ino;
+        if (!dir_find(cur, comp[k], &ino, &type)) return;
+        if (fs_pol_step(&pol, comp[k], type) != 0) return;
+        cur = ino;
+    }
+    if (type != FS_TYPE_DIR || cur >= FS_GEN_INODES || (g_gen[cur] & FS_GEN_RETIRED)) return;
+    int tracked = pol.node >= 0;
+    if (tracked) fs_session_bind(s, pol.node, cur);
+    sg->cwd_token = fs_token_in(cur, g_gen[cur], g, tracked);
+    sg->cwd_rights = (pol.carry & FS_R_ALL) | FS_KERNEL_RIGHTS;
+}
+
+/* FS_OP_SESSION: compile the account's grants into a free grant set and say
+ * what init is to mint. The account comes from the kernel's list, by the uid
+ * init read from the kernel's attestation of the login; the policy from the
+ * store, by the store's kind as the kernel reports it (SYS_FS_STORE_KIND), never
+ * from anything in the request. */
+static void session_open(const struct fs_request *rq, struct fs_response *rp)
+{
+    struct user_entry e;
+    int found = 0;
+    for (uint32_t i = 0; sys_userlist(i, &e) == 1; i++)
+        if (e.uid == rq->arg_uid) { found = 1; break; }
+    if (!found) { rp->rc = SYS_ERR_NOENT; return; }
+    e.name[sizeof(e.name) - 1] = 0;
+    e.home[sizeof(e.home) - 1] = 0;
+
+    /* Only an answer of EPHEMERAL gives the default: anything else, a refusal
+     * included, is treated as a persistent volume, which is the narrower rule. */
+    int ephemeral = sys_fs_store_kind() == FS_STORE_EPHEMERAL;
+    uint32_t len = 0;
+    int have = 0;
+    if (!ephemeral) {
+        have = read_policy_file(&len);
+        if (have < 0) { rp->rc = SYS_ERR_IO; return; }
+    }
+    unsigned bad = 0;
+    int src = fsp_load(ephemeral, have, g_policy_text, len, &g_policy, &bad);
+    if (src == FS_SESSION_SRC_MALFORMED) {
+        kput("[fs_server] /etc/fs.policy does not parse (line ");
+        kput_int((int)bad);
+        kputln("); treated as absent: the administrator alone");
+    }
+
+    /* NEXT FIT, not lowest free. Reusing a grant set while a capability naming
+     * it lives would hand that capability the new session's policy, and the
+     * protocol rules it out (init revokes a session's capabilities before it
+     * ends it). Taking the next free set after the last one handed out keeps a
+     * just-ended set unused for as long as 62 others are free, so a mistake in
+     * that order is far less likely to land on a live session. */
+    static uint32_t last_g;
+    uint32_t g = 0;
+    for (uint32_t i = 0; i < FS_SESSIONS_MAX; i++) {
+        uint32_t c = (last_g + i) % FS_SESSIONS_MAX + 1;
+        if (!g_sess[c].live) { g = c; break; }
+    }
+    if (g == 0) { rp->rc = SYS_ERR_BUSY; return; }
+    struct fs_session *s = &g_sess[g];
+    struct fsp_who who = { e.name, e.home, e.uid == 0 };
+    if (fsp_compile(&g_policy, &who, &s->tree) != 0) {
+        kputln("[fs_server] a session's grants do not fit; session refused");
+        rp->rc = SYS_ERR_NOMEM;
+        return;
+    }
+
+    struct fs_session_grant sg;
+    umemset(&sg, 0, sizeof(sg));
+    sg.source = (uint32_t)src;
+    struct fsp_node *root = &s->tree.node[0];
+    if (root->below != 0) {
+        int tracked = root->nchild > 0;
+        if (tracked) fs_session_bind(s, 0, 0);
+        sg.g = g;
+        sg.root_token = fs_token_in(0, g_gen[0], g, tracked);
+        sg.root_rights = root->below | FS_KERNEL_RIGHTS;
+        session_cwd(s, g, e.home, &sg);
+        s->live = 1;
+        last_g = g;
+    }
+    umemcpy(rp->data, &sg, sizeof(sg));
+    rp->rc = 0;
+}
+
+/* FS_OP_SESSION and FS_OP_SESSION_END are answered ONLY through the untokened
+ * capability that holds MINT (§6.4). init created the endpoint and alone holds
+ * one; every client capability is tokened, or WRITE-only from
+ * SYS_CONNECT_FS_SERVER. So opening a session is authorised by a capability,
+ * never by who asks. FS_SESSION_ANY_CALLER=1 is the control arm
+ * (make smoke-fs-cap-session-caller-control). */
+static void session_request(const struct fs_request *rq, struct fs_response *rp,
+                            const struct ipc_invoker *inv)
+{
+    umemset(rp, 0, sizeof(*rp));
+    rp->magic = FS_PROTO_MAGIC;
+    if (rq->magic != FS_PROTO_MAGIC) { rp->rc = SYS_ERR_INVAL; return; }
+#ifndef FS_SESSION_ANY_CALLER
+    if (inv->token != 0 || !(inv->rights & CAP_RIGHT_MINT)) { rp->rc = SYS_ERR_PERM; return; }
+#else
+    (void)inv;
+#endif
+    if (rq->op == FS_OP_SESSION) { session_open(rq, rp); return; }
+    uint32_t g = rq->offset;
+    if (g == 0 || g > FS_SESSIONS_MAX || !g_sess[g].live) { rp->rc = SYS_ERR_NOENT; return; }
+    umemset(&g_sess[g], 0, sizeof(g_sess[g]));
+    rp->rc = 0;
 }
 
 /* Find `name` in `parent_ino`; if it is a directory return it, else create it as a
@@ -1221,6 +1511,16 @@ void _start(void) {
         else          kputln("[fs_server] warning: registration failed; serving anyway.");
     }
 
+    /* Which store this is decides every session's policy (§6.4), so say it once
+     * where the log shows which rule this boot will apply. Asked again at each
+     * session rather than cached: the kernel answers about the store it serves. */
+    {
+        int kind = sys_fs_store_kind();
+        kputln(kind == FS_STORE_EPHEMERAL  ? "FS_STORE: ephemeral; sessions get the compiled-in policy" :
+               kind == FS_STORE_PERSISTENT ? "FS_STORE: persistent; sessions get /etc/fs.policy, or the administrator alone" :
+                                             "FS_STORE: kind unknown; treated as persistent");
+    }
+
     /* Provision /bin from the boot modules with the CPU to ourselves, BEFORE the
      * shell exists. The shell reads the console with an unpreemptible ring-0 spin
      * (console_getc), which would otherwise starve this block-by-block copy on a
@@ -1309,6 +1609,8 @@ void _start(void) {
             umemset(&rp, 0, sizeof(rp));
             rp.magic = FS_PROTO_MAGIC;
             rp.rc = SYS_ERR_PERM;
+        } else if (rq.op == FS_OP_SESSION || rq.op == FS_OP_SESSION_END) {
+            session_request(&rq, &rp, &inv);
         } else if (inv.token != 0) {
             cap_request(&rq, &rp, &inv, cuid, cgid, &mint_rights, &mint_token);
         } else {

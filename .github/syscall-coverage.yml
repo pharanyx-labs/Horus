@@ -367,6 +367,7 @@ covered:
   - SYS_FBLOCK_READ
   - SYS_FBLOCK_WRITE
   - SYS_FS_STAT
+  - SYS_FS_STORE_KIND        # fs_server asks once at startup, every boot of every workload
   - SYS_FS_SET_SIZE
   - SYS_KILL
   - SYS_CAP_GRANT

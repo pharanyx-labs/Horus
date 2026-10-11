@@ -369,6 +369,9 @@ column names the targets that build with the flag; an arm must turn its gate red
 | `INIT_SHELL_ROOT_READONLY=1` | Instrument, never shipped: `init` hands the shell the root directory capability narrowed to read, lookup and exec, so the shell and what it runs walk by capability, which nothing does in a shipped boot before phase 1b step 3. | `smoke-fs-cap-shell` and its arm |
 | `SHELL_CAP_FALLBACK=1` | Makes the shell send a request its capability refused again down the uid path, as the logged-in user, so a root session's `mkdir` succeeds through a read-only root. | `smoke-fs-cap-shell-fallback-control` (arm of `smoke-fs-cap-shell`); `make smoke-fs-cap-shell` must go red under it |
 | `FS_WALK_NAMES_UNCHECKED=1` | Makes `fs_server` check only the first name of a walk, so a walk reaches an entry named `..` that the uid path made. | `smoke-fs-cap-walk-control` (arm of `smoke-fs-cap`); `make smoke-fs-cap` must go red under it |
+| `FS_SESSION_GRANTS_ROOT=1` | Makes the policy compiler give every session the root with every right, whatever the policy says, so an ordinary account's session reaches `/etc`. | `smoke-fs-cap-session-control` (arm of `smoke-fs-cap`) and `smoke-fs-policy-control` (arm of `smoke-fs-policy`); `make smoke-fs-cap` must go red under it, and `make smoke-fs-policy` must go red under it |
+| `FS_SESSION_RIGHTS_UNCHECKED=1` | Makes `fs_server` let a request through a tracked capability use every right the capability carries instead of only its policy node's, so an ordinary session creates in the root its root capability reaches with the union of its rights. | `smoke-fs-cap-session-rights-control` (arm of `smoke-fs-cap`); `make smoke-fs-cap` must go red under it |
+| `FS_SESSION_ANY_CALLER=1` | Makes `fs_server` open or end a session for any caller instead of only through the untokened capability holding `MINT`, so a client's WRITE-only capability opens one. | `smoke-fs-cap-session-caller-control` (arm of `smoke-fs-cap`); `make smoke-fs-cap` must go red under it |
 | `CONSOLE_TIMESTAMPS_LEGACY=1` | The pre-2026-09-06 console: a line carries a `[ S.uuuuuu] ` prefix only if its author remembered to ask for one, which roughly half the boot log did not, ` [ OK ] ...`, and every ring-3 line arriving through `SYS_WRITE`, which had no way to ask at all. | `smoke-console-timestamps-control` (arm of `smoke-console-timestamps`); `make smoke-console-timestamps` must go red under it |
 | `CLOCK_EPOCH_FROM_FIRST_TICK=1` | Restores the pre-2026-09-06 `SYS_CLOCK_GETTIME` epoch: time counted from the first timer interrupt rather than from boot, which is whatever the machine spent getting there: 1.07 s on the boot measured on 2026-09-06, nearly all of it SMP bring-up. | `smoke-console-timestamps-epoch-control` (arm of `smoke-console-timestamps`); `make smoke-console-timestamps` must go red under it |
 | `STORE_LOCKED_UNCHECKED=1` | The pre-2026-09-01 object-store handlers, which tested `mfs->mounted` and not `mfs->unlocked` (S74). | `smoke-installer-provision-control` (arm of `smoke-installer-provision`); `make smoke-installer-provision` must go red under it |
@@ -537,7 +540,7 @@ of the most important:
 
 | Target | Asserts |
 |---|---|
-| `smoke-captest` | Unheld capabilities, post-revoke use, and bad input are all refused (199 checks, printed by the suite as `CAPTEST: PASS <n> checks`) |
+| `smoke-captest` | Unheld capabilities, post-revoke use, and bad input are all refused (200 checks, printed by the suite as `CAPTEST: PASS <n> checks`) |
 | `smoke-wx` | No kernel page is both writable and executable |
 | `smoke-modules-tamper` | A corrupted boot module is refused |
 | `smoke-tpm-seal` | A changed PCR leaves the volume locked |

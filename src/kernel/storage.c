@@ -3553,6 +3553,17 @@ struct mounted_fs *storage_get_mounted_fs(void) {
     return &g_mounted_fs;
 }
 
+/* SYS_FS_STORE_KIND's answer. Decided by WHICH DEVICE the mounted volume is on,
+ * at the moment of asking: the in-RAM vdisk is the ephemeral store of a live or
+ * diskless boot, and every other block device outlives the boot. Not
+ * g_vdisk_high_entropy_kek, which a self-test sets on purpose, and not
+ * BOOT_FLAG_LIVE, which a diskless boot with no menu never carries: either would
+ * be a second fact standing in for this one. */
+int storage_store_kind(void) {
+    if (!g_mounted_fs.mounted || !g_mounted_fs.bd) return 0;
+    return g_mounted_fs.bd == &g_vdisk_bd ? FS_STORE_EPHEMERAL : FS_STORE_PERSISTENT;
+}
+
 /* Called at first successful login.  If no valid v4 disk exists (g_needs_format)
  * formats and seals one with the user's password first; then unwraps disk_key,
  * derives volume_key + meta_mac_key, and verifies the metadata HMAC. */

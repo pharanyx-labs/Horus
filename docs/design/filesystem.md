@@ -310,13 +310,24 @@ principal one subtree with a set of rights:
 @all          /lib            read,lookup
 @all          /usr            read,lookup,exec
 @all          /etc/passwd     read
-alice         /home/alice     read,write,lookup,create,delete,setattr,exec,grant
+alice         /home/alice     read,write,lookup,create,delete,setattr,exec
+@self         ~               all
 @admin        /               all
 ```
 
-- A principal is an account name from `/etc/passwd` or a group (`@name`). `@all` is every
-  authenticated session.
-- Rights are the §5.3 names. `all` is every right.
+- A principal is an account name, `@all` (every authenticated session), `@admin` (the
+  administrator: the account with uid 0, as the login has always defined it) or `@self` (each
+  account, for its own home). No other group exists yet, so any other `@name` is malformed.
+- A path is absolute, each component a name `fs_server` would accept (§5.4), at most 8 deep.
+  `~` is the account's home, only with `@self`, and only for a home of the form `/home/<name>`:
+  an account whose home is `/` gets nothing from it.
+- Rights are the §5.3 names `read`, `write`, `append`, `exec`, `lookup`, `create`, `delete` and
+  `setattr`; `all` is every one of them. `grant` and `snapshot` are refused, so that no policy is
+  written in the belief that it does something it does not: a session's root carries `GRANT`
+  because decision 10's spawner grants depend on it, so the policy bounds what a capability
+  reaches, not whether it may be passed on; and there are no snapshots before v12.
+- `#` starts a comment and blank lines are ignored. A file over 4096 bytes or 64 grants, or any
+  line that is not exactly three valid fields, makes the whole file malformed (§6.4).
 - **Nothing is granted that is not written down.** A path absent from the policy is reachable only
   through a capability to an ancestor that is in it.
 - Writing the policy is a privilege change, so it takes a write capability to `/etc/fs.policy`,
@@ -350,18 +361,19 @@ to everything reached through it.** The clients of phase 1b step 2 and the inher
 decision 10 are unchanged.
 
 **Opening a session.** After a login, the shell asks `init` for its session. `init` reads the uid
-the kernel attests for that request (`SYS_IPC_SENDER`, fixed by `SYS_AUTH`) once, names the
-principal from the kernel's account list, and sends `fs_server` an `FS_OP_SESSION` request for
-that principal. `fs_server` answers it only through the untokened endpoint capability that holds
-`MINT`, which `init` alone has (§5.1), so opening a session is authorised by a capability, never by
-who asks. `fs_server` compiles the principal's grants (its own lines, `@all`, and `@admin` for the
-administrator) into a free grant set G, and replies with G and the union of the rights in it.
-`init` mints the session's root from inode 0 with G in the token and exactly that union, mints the
-working directory (the home, if the policy grants one) the same way, and grants both to the shell's
-slots 24 and 25. At logout `init` revokes both, which sweeps everything derived from them, and only
-then sends `FS_OP_SESSION_END`, so a grant set is never reused while a capability naming it lives.
-The token gives G bits 56 to 61 (63 concurrent sessions; 0 is a capability with no grant set) and
-bit 62 marks a *tracked* capability, below.
+the kernel attests for that request (`SYS_IPC_SENDER`, fixed by `SYS_AUTH`) once and sends
+`fs_server` an `FS_OP_SESSION` request for that uid; `fs_server` names the principal from the
+kernel's account list (`SYS_USERLIST`). `fs_server` answers it only through the untokened endpoint
+capability that holds `MINT`, which `init` alone has (§5.1), so opening a session is authorised by
+a capability, never by who asks. `fs_server` compiles the principal's grants (its own lines,
+`@all`, `@self` for its home, and `@admin` for the administrator) into a free grant set G, and
+replies with what `init` is to mint: the root's token, naming G, with the union of the rights in
+it, and the working directory's token and rights. `init` mints the session's root from inode 0 with
+G in the token and exactly that union, mints the working directory (the home, if the policy grants
+one) the same way, and grants both to the shell's slots 24 and 25. At logout `init` revokes both,
+which sweeps everything derived from them, and only then sends `FS_OP_SESSION_END`, so a grant set
+is never reused while a capability naming it lives. The token gives G bits 56 to 61 (63 concurrent
+sessions; 0 is a capability with no grant set) and bit 62 marks a *tracked* capability, below.
 
 **Tracked and untracked capabilities.** v11 keeps no parent links, so `fs_server` cannot recover
 a path from an inode. Instead it tracks the capabilities where the policy still has something to
@@ -371,16 +383,20 @@ say:
   for a grant of `/etc/passwd`), or a granted directory with a deeper grant below it (`/usr` read
   for everyone, `/usr/local` writable for one account). `fs_server` keeps `(G, inode)` to its
   node in the compiled policy, recorded when it mints the capability. An operation on the object
-  is allowed the capability's rights **intersected with the node's**: the rights of the nearest
-  granted node at or above it, and for a node that is only on the way to a grant, `LOOKUP` and a
-  listing filtered to the names that lead to grants. A name under such a node that leads to no
+  is allowed the capability's rights **intersected with the node's**: the union of every grant
+  at or above it, so a narrower line below never narrows a wider one above (the administrator's
+  `/ all` holds inside an `@all /usr read`), and for a node that is only on the way to a grant,
+  `LOOKUP` and a listing filtered to the names that lead to grants. A tracked capability carries
+  the union of its node's whole subtree, so that the deeper grants stay reachable through it. A name under such a node that leads to no
   grant is absent: `NOENT`, never `PERM`, so the policy does not disclose what it withholds.
 - Below a granted node with nothing deeper, a child capability is **untracked**: minted with
   exactly the granted rights, intersected with the invoking capability's, masked to its type, and
   from there the kernel's intersection bounds everything (S120), as in step 1.
 
 **Without a policy file, or with a bad one, it fails closed.** `fs_server` decides from the store
-it serves, never from what the requester says: the ephemeral store of a live boot uses the
+it serves, never from what the requester says, and asks the kernel which store that is
+(`SYS_FS_STORE_KIND`, gated on the storage capability only `fs_server` holds, answered from the
+mounted volume's device): the ephemeral store of a live boot uses the
 compiled-in default (decision 9); a persistent volume without `/etc/fs.policy` grants `/` to the
 administrator and nothing to anyone else, so an ordinary session has no filesystem until a policy
 is written. A policy file that does not parse is treated as absent and reported; it never grants
@@ -715,6 +731,26 @@ after login, the grants into slots 24 and 25, and the revocation at logout, witn
 real login. (c) The installer writes `/etc/fs.policy`. Each is its own pull request with its own
 gate and arm.
 
+**Step 3(a) as built.** The policy is parsed and compiled by `userspace/fs_policy.h`, pure
+functions with no system calls, which `fs_server` includes and a host test compiles unchanged
+(`make smoke-fs-policy`), so every malformed file and both persistent-volume rules are tested
+where any input can be chosen; a boot only ever shows the default, because a self-test boot's RAM
+store is ephemeral. The policy is read afresh at each `FS_OP_SESSION`, so an edit applies from
+the next login. A store that cannot be read refuses the session (`IO`) rather than treating the
+file as absent, and a malformed file is reported on the console with its line number. A
+session's grants are at most 32 path nodes; more refuses the session. The reply
+(`struct fs_session_grant`) carries the root's and the working directory's tokens and rights for
+`init` to mint, the grant set, and which policy applied; an account the policy gives nothing gets
+no grant set and a root token of 0. Grant sets are handed out next free after the last, not
+lowest free, so a set just ended stays unused while others are free: reusing one while a
+capability naming it lived would hand that capability the new session's policy, which `init`'s
+revoke-then-end order rules out and this makes far less likely to bite if it slipped. A
+capability whose grant set has ended is refused `NOENT` even before `init`'s revoke sweeps it.
+Witness: `make smoke-fs-cap` (S128), arms `smoke-fs-cap-session-control` (every session is given
+the root), `smoke-fs-cap-session-rights-control` (a tracked capability uses every right it
+carries) and `smoke-fs-cap-session-caller-control` (a session opens through a capability without
+`MINT`).
+
 **Step 5 as built.** The refusal is on both paths, since a move through the uid path changes who
 may reach a file just as much. A rename across directories is `EXDEV`. A link is too unless the
 new parent already holds a name for the file, because v11 keeps no back-references and that is
@@ -842,6 +878,8 @@ control arm that reddens the base gate, per §2:
 - `LOOKUP` of `..`, of `.` and of a name containing `/` is refused, and so is a `WALK` holding
   one in any position (`smoke-fs-cap`, arm `FS_WALK_NAMES_UNCHECKED=1`); a symbolic link to
   `../../etc` from a capability rooted at a home directory does not escape it.
+- A session reaches only what its grants name, and what they withhold is absent (`smoke-fs-cap`,
+  S128, arm `FS_SESSION_GRANTS_ROOT=1`, which reddens `smoke-fs-policy` too).
 - A cross-directory rename that would widen a grant's reach is refused, and the arm drops
   condition 2 of §5.5.
 - `chmod 600` on a file another grant can read fails, and the arm makes it report success.

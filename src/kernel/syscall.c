@@ -1437,7 +1437,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 122
+#define SYSCALL_TABLE_SIZE 123
 
 /* ------------------------------------------------------------------------- *
  *  Capability-checked dispatch table.
@@ -1694,6 +1694,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_FBLOCK_READ]              = { h_fblock_read,             CAPSLOT_AUDIT, CAP_RIGHT_READ | CAP_RIGHT_WRITE, CAP_ENCRYPTED_STORAGE },
     [SYS_FBLOCK_WRITE]             = { h_fblock_write,            CAPSLOT_AUDIT, CAP_RIGHT_READ | CAP_RIGHT_WRITE, CAP_ENCRYPTED_STORAGE },
     [SYS_FS_STAT]                  = { h_fs_stat,                 CAPSLOT_AUDIT, CAP_RIGHT_READ | CAP_RIGHT_WRITE, CAP_ENCRYPTED_STORAGE },
+    [SYS_FS_STORE_KIND]            = { h_fs_store_kind,           CAPSLOT_AUDIT, CAP_RIGHT_READ, CAP_ENCRYPTED_STORAGE }, /* a fact about the store its holder already reads */
     [SYS_FS_SET_SIZE]              = { h_fs_set_size,            CAPSLOT_AUDIT, CAP_RIGHT_READ | CAP_RIGHT_WRITE, CAP_ENCRYPTED_STORAGE },
     [SYS_BRK]                     = { h_brk,                    SC_NONE, 0, SC_ANYTYPE }, /* own heap, demand-paged */
     /* Boot-module read surface. NOT the object store's gate, despite what this
@@ -1817,9 +1818,9 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
 /* Compile-time guard: the table must have a slot for every syscall number, so
  * no defined syscall can index past it and fall through the
  * `num < SYSCALL_TABLE_SIZE` bound into the deny path by accident.
- * SYS_SHLIB_INFO is currently the highest syscall number, which is what the
- * assertion below pins; this comment named SYS_UNMAP_FRAME until 2026-08-29,
- * thirteen numbers out of date. Adding a higher one
+ * SYS_FS_STORE_KIND is currently the highest syscall number, which is what the
+ * assertion below pins (this comment named SYS_SHLIB_INFO, and before that
+ * SYS_UNMAP_FRAME, long after either stopped being true). Adding a higher one
  * (or shrinking the table) breaks the build here and forces you to grow
  * SYSCALL_TABLE_SIZE -- which lands you right next to the entries you must
  * fill in. (C cannot check the function pointer itself in a static assert; a
@@ -1828,7 +1829,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
 /* Carries S6: an unknown or reserved syscall number cannot reach a handler.
  * The bound check in syscall_handler fails closed at runtime; this assertion is
  * what stops a new number being added without its table entry. */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_MEM_SEAL + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_FS_STORE_KIND + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

@@ -1,0 +1,22 @@
+RM(1)                          User Commands                           RM(1)
+
+NAME
+    rm - remove a file or an empty directory
+
+SYNOPSIS
+    rm NAME
+
+DESCRIPTION
+    Remove the entry NAME from the working directory. A file's data is
+    freed when its last name goes (see ln(1) and the link count in
+    stat(1)). A directory must be empty; one that is not is refused.
+
+    NAME is one name in the working directory, not a path. Removing it
+    needs the right to delete entries in that directory.
+
+    The system trees (/bin, /sbin, /lib, /usr) refuse every change, by
+    every login including the administrator's: they are rebuilt at each
+    boot from the kernel-verified boot modules (hier(7)).
+
+SEE ALSO
+    mkdir(1), ln(1), stat(1)

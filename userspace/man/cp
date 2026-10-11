@@ -1,0 +1,16 @@
+CP(1)                          User Commands                           CP(1)
+
+NAME
+    cp - copy a file
+
+SYNOPSIS
+    cp SOURCE NAME
+
+DESCRIPTION
+    Copy the regular file SOURCE to a new file called NAME in the working
+    directory. SOURCE may be a path; NAME is one name. The copy is a new
+    file owned by you, whoever owned the original, and NAME must not exist
+    already.
+
+SEE ALSO
+    mv(1), cat(1)

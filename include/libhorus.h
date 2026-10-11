@@ -263,6 +263,9 @@ int  hvfs_slot_alloc(void);
 /* Give an object back: revoke its capability if it is owned; a lent object is
  * left as it was. Idempotent. */
 void hvfs_release(struct hvfs_obj *o);
+/* A second name for a file within one directory, the file carried as a
+ * capability (design §11.1 step 4(c)). Both objects must be capabilities. */
+int hvfs_link_cap(const struct hvfs_obj *dir, const struct hvfs_obj *file, const char *name);
 
 /* Hand a SUSPENDED child its filesystem (design decision 10): copies of `root`
  * and `cwd`, narrowed to `fs_rights` (FS_R_* bits; the kernel intersects them
@@ -282,5 +285,14 @@ struct hvfs_grant { struct hvfs_obj root, cwd; };
 int  hvfs_grant_fs(int child_tid, const struct hvfs_obj *root, const struct hvfs_obj *cwd,
                    uint32_t fs_rights, struct hvfs_grant *g);
 void hvfs_grant_release(struct hvfs_grant *g);
+/* Why the last hvfs_grant_fs failed: *stage is one HVFS_GRANT_WHY_* (plus
+ * HVFS_GRANT_WHY_CWD when it was the working directory's copy, not the root's)
+ * and *krc the kernel's answer to the call that failed, or 0. */
+#define HVFS_GRANT_WHY_ARGS  1   /* the root or working directory is no capability */
+#define HVFS_GRANT_WHY_POOL  2   /* no free slot in the pool to mint the copy into */
+#define HVFS_GRANT_WHY_MINT  3   /* SYS_CAP_MINT of the narrowed copy refused */
+#define HVFS_GRANT_WHY_GRANT 4   /* SYS_CAP_GRANT into the child refused */
+#define HVFS_GRANT_WHY_CWD   10
+void hvfs_grant_why(int *stage, int *krc);
 
 #endif /* LIBHORUS_H */

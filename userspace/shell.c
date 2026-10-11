@@ -467,9 +467,15 @@ static int sh_endow(int pid, struct hvfs_grant *g) {
     g->cwd.owned  = 0;
     if (!sh_capmode) return 0;
     if (hvfs_grant_fs(pid, &sh_root, &sh_cwd, FS_R_ALL, g) == 0) return 0;
+    int why, krc;
+    hvfs_grant_why(&why, &krc);
     hvfs_grant_release(g);
     (void)sys_kill(pid);
-    println("spawn: could not hand the program its filesystem; not run");
+    print("spawn: could not hand the program its filesystem (step ");
+    print_decimal((uint32_t)why);
+    print(", kernel ");
+    if (krc < 0) { print("-"); print_decimal((uint32_t)-krc); } else print_decimal((uint32_t)krc);
+    println("); not run");
     return -1;
 }
 
@@ -944,8 +950,8 @@ static const char *const d_run[] = {
     "The image is read through the fs_server and handed to the kernel, which",
     "validates it with the same ELF loader a named binary goes through: W^X",
     "is enforced per segment, bounds are checked, and relocations fail closed.",
-    "Gated on the slot-3 WRITE|EXEC capability -- being able to read a file is",
-    "not authority to execute it.",
+    "The program gets the shell's root and working directory, narrowed, and",
+    "nothing else; run waits for it to finish.",
     0 };
 
 static const char *const d_spawn[] = {
@@ -967,7 +973,8 @@ static const char *const d_capview[] = {
     "",
     "SERIAL is a capability's identity; PARENT is the serial it was derived",
     "from, so the two columns are the nodes and edges of the derivation tree.",
-    "A PARENT of 0 is a primordial capability, minted in the root cnode.",
+    "A PARENT of \"root\" is a capability the kernel minted, with no parent.",
+    "Serials are 64-bit, issued once and never again.",
     "",
     "Needs CAP_DEBUG, which init delegates to the shell. It is observation only:",
     "the object each capability names is deliberately NOT reported, and the",
@@ -994,8 +1001,8 @@ static const char *const d_whoami[] = {
 static const char *const d_sudo[] = {
     "Re-authenticate at a secure prompt and spawn an elevated image.",
     "",
-    "The password is read by the kernel, never echoed, and never passes",
-    "through the shell's input buffer.",
+    "Takes no argument. The password is read at a masked prompt, never echoed,",
+    "and wiped from the shell's memory once the kernel has checked it.",
     0 };
 static const char *const d_passwd[] = {
     "Change a password at a secure prompt. With no argument, your own.",
@@ -2116,11 +2123,17 @@ static void handle_command(char *cmd) {
             } else {
                 struct fs_request  rq = {0};
                 struct fs_response rp;
-                /* A link names its source by inode, which a capability never
-                 * does, so through capabilities the server refuses it. */
-                rq.op = FS_OP_LINK; rq.ino = src.ino; rq.dir_ino = sh_cwd.ino;
-                fss_strcpy(rq.name, newn);
-                int t = fss_call_on(&sh_cwd, &rq, &rp);
+                int t;
+                if (sh_cwd.cap && src.cap) {
+                    /* Through capabilities the source travels as a carried
+                     * capability, not an inode (design §11.1, step 4(c)). */
+                    rp.rc = hvfs_link_cap(&sh_cwd, &src, newn);
+                    t = 0;
+                } else {
+                    rq.op = FS_OP_LINK; rq.ino = src.ino; rq.dir_ino = sh_cwd.ino;
+                    fss_strcpy(rq.name, newn);
+                    t = fss_call_on(&sh_cwd, &rq, &rp);
+                }
                 hvfs_release(&src);
                 if (t < 0 || rp.rc < 0) fs_fail("ln", t, &rp);
                 else { print("ln: "); print(newn); print(" -> "); println(oldn); }
@@ -2138,9 +2151,13 @@ static void handle_command(char *cmd) {
          * SYS_IPC_SENDER, the uid the KERNEL attests for the calling task, and
          * SYS_AUTH rewrites that uid at every login -- so the attested identity
          * IS who is at the terminal, and a second check here would be a copy of
-         * the reference monitor's rule kept in a place nothing verifies. The
-         * rule is "owner or root" (fs_server.c, FS_OP_CHMOD) and a standard user
-         * changing the mode of their own file is correct, not an escalation. */
+         * the reference monitor's rule kept in a place nothing verifies. On the
+         * uid path the rule is "owner or root" (fs_server.c, FS_OP_CHMOD) and a
+         * standard user changing the mode of their own file is correct, not an
+         * escalation. Through a capability nothing is changed at all: the
+         * server answers whether the mode asked for is already true
+         * (fs_policy.h fsp_chmod_true, S131), so "is now" below is a truth the
+         * server confirmed, not a change it made. */
         const char *p = cmd + 6; while (*p == ' ') p++;
         uint32_t mode = 0; int digits = 0;
         while (*p >= '0' && *p <= '7') { mode = (mode << 3) | (uint32_t)(*p - '0'); p++; digits++; }
@@ -2169,8 +2186,10 @@ static void handle_command(char *cmd) {
             }
         }
     } else if (strncmp(cmd, "chown ", 6) == 0) {
-        /* Root only, enforced by fs_server against the attested uid -- see the
-         * note on chmod above for why the shell does not repeat the test.
+        /* Root only on the uid path, enforced by fs_server against the attested
+         * uid -- see the note on chmod above for why the shell does not repeat
+         * the test. Through a capability only a chown to the caller itself is
+         * true, and nothing is changed (fsp_chown_true, S131).
          *
          * Giving a file away is not the same act as changing its mode, which is
          * why the two rules differ: an owner who could hand a file to another

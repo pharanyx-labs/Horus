@@ -58,6 +58,7 @@ userspace/*.elf
 userspace/*.o
 userspace/*.raw
 userspace/*.a
+userspace/man.tar
 # shlibdemo.so was TRACKED from #234 until 2026-08-29 -- the only build output in
 # userspace/ that was. A generated file under version control is a file that can
 # disagree with the source it is generated from: on a fresh clone both get the

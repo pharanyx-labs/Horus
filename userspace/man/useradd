@@ -1,0 +1,22 @@
+USERADD(8)                 System Administration                  USERADD(8)
+
+NAME
+    useradd - create an account
+
+SYNOPSIS
+    useradd UID NAME
+
+DESCRIPTION
+    Create the account NAME with user id UID (group 100), and give it a
+    home directory, /home/NAME, owned by the account with mode 0700.
+
+    The account is created LOCKED: it has no password that can match, so
+    nobody can log in to it until the administrator gives it one with
+    passwd UID. Accounts are kept in the sealed account table and last
+    across reboots.
+
+SECURITY
+    The administrator only.
+
+SEE ALSO
+    userdel(8), passwd(1)

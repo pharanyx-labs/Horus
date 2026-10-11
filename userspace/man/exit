@@ -1,0 +1,16 @@
+EXIT(1)                        User Commands                         EXIT(1)
+
+NAME
+    exit, logout - end the session
+
+SYNOPSIS
+    exit
+    logout
+
+DESCRIPTION
+    End your login and return to the login prompt. The shell is one task
+    that serves successive logins, so your identity is cleared and the
+    next user must authenticate.
+
+SEE ALSO
+    sh(1), login.conf(5)

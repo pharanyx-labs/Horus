@@ -10,7 +10,10 @@
  * compiles. The boot half is make smoke-fs-cap (FSCAPTEST's session checks).
  *
  * Prints FS_POLICY_TEST: PASS <n> checks, or FS_POLICY_TEST: FAIL <name> for
- * the first check that did not hold, and exits non-zero then.
+ * the first check that did not hold, and exits non-zero then. The bounds on who
+ * else reaches an object (§7.1, decisions 16 and 17) are tested here too, every
+ * kind of principal against every kind of path, since a boot shows only the
+ * default.
  * FS_SESSION_GRANTS_ROOT=1 (make smoke-fs-policy-control) must turn it red with
  * FAIL user-root-not-granted: an ordinary account's root is granted. */
 #include <stdio.h>
@@ -45,7 +48,7 @@ static int compile(const char *text, const char *name, const char *home, int adm
 {
     unsigned bad;
     if (fsp_parse(text, (uint32_t)strlen(text), &pol, &bad) != 0) return -2;
-    struct fsp_who who = { name, home, admin };
+    struct fsp_who who = { name, home, admin, "root" };
     return fsp_compile(&pol, &who, &tree);
 }
 
@@ -71,6 +74,28 @@ static int walk(const char *path, int last_file, uint32_t *carry, int *node)
     *node = n;
     return n >= 0;
 }
+
+/* The bound on everyone else's rights over `path`: the `other` of the node at
+ * or above it, as fs_server reads it from a token. -2 if the name is absent. */
+static int64_t bound(const char *path, int last_file)
+{
+    char comp[FSP_MAX_DEPTH][FSP_NAME];
+    int d = fsp_split(path, (unsigned)strlen(path), comp);
+    if (d < 0) return -9;
+    int n = tree.node[0].nchild > 0 ? 0 : -1, at = 0;
+    for (int k = 0; k < d; k++) {
+        if (n < 0) continue;
+        int child;
+        uint32_t c;
+        int r = fsp_step(&tree, n, comp[k], !(last_file && k == d - 1), &child, &c);
+        if (r < 0) return -2;
+        at = child;
+        n = r == 1 ? child : -1;
+    }
+    return tree.node[at].other;
+}
+
+#define RX (FS_R_READ | FS_R_LOOKUP | FS_R_EXEC)
 
 int main(void)
 {
@@ -174,7 +199,7 @@ int main(void)
               pol.n == 1, "persistent-file");
 
         /* Admin-only means it: an ordinary account compiles to nothing at all. */
-        struct fsp_who user = { "user", "/home/user", 0 }, root = { "root", "/", 1 };
+        struct fsp_who user = { "user", "/home/user", 0, "root" }, root = { "root", "/", 1, "root" };
         (void)fsp_load(0, 0, 0, 0, &pol, &bad);
         check(fsp_compile(&pol, &user, &tree) == 0 && tree.node[0].below == 0, "admin-only-gives-user-nothing");
         check(fsp_compile(&pol, &root, &tree) == 0 && tree.node[0].eff == FS_R_ALL &&
@@ -200,9 +225,12 @@ int main(void)
         check(walk("/usr/local", 0, &carry, &node) == 0 && carry == FS_R_ALL, "deeper-grant-reachable");
         check(walk("/usr/bin", 0, &carry, &node) == 0 && carry == (FS_R_READ | FS_R_LOOKUP),
               "deeper-sibling-narrow");
+        /* For bob, alice's /usr/local is a bound (§7.1), a node of his tree,
+         * and gives him nothing: read and lookup there as everywhere in /usr. */
         check(compile(t, "bob", "/home/bob", 0) == 0 &&
-              walk("/usr", 0, &carry, &node) == 0 && carry == (FS_R_READ | FS_R_LOOKUP),
-              "deeper-not-for-others");
+              walk("/usr", 0, &carry, &node) >= 0 && carry == (FS_R_READ | FS_R_LOOKUP) &&
+              walk("/usr/local", 0, &carry, &node) == 0 && carry == (FS_R_READ | FS_R_LOOKUP) &&
+              bound("/usr/local/f", 1) == FS_R_ALL, "deeper-not-for-others");
     }
 
     /* ---- @self, only as /home/<name> ---- */
@@ -234,6 +262,108 @@ int main(void)
             strcat(wide, l);
         }
         check(compile(wide, "u", "/home/u", 0) == -1, "nodes-overflow-refused");
+    }
+
+    /* ---- who else reaches it (§7.1) ---- */
+    check(compile(fsp_default_text, "user", "/home/user", 0) == 0, "compile-user-bounds");
+    check(bound("/home/user/f", 1) == 0, "user-own-home-private");
+    check(bound("/tmp/f", 1) == 0, "user-tmp-private-bound");
+    check(bound("/bin/ls", 1) == RX, "user-bin-shared-with-all");
+    check(compile(fsp_default_text, "root", "/", 1) == 0, "compile-admin-bounds");
+    check(bound("/home/user/f", 1) == FS_R_ALL, "admin-sees-every-home-shared");
+    check(bound("/etc/passwd", 1) == 0, "admin-etc-private");
+    check(bound("/bin/ls", 1) == RX, "admin-bin-shared-with-all");
+    check(bound("/tmp/f", 1) == 0, "admin-tmp-private-bound");
+    /* An object reachable through another grant is bounded by it, and adding
+     * that grant as a node changes nothing the session may do or see. */
+    {
+        const char *t = "@self ~ all\nbob /home/alice/shared read,lookup\n";
+        check(compile(t, "alice", "/home/alice", 0) == 0, "compile-shared");
+        check(bound("/home/alice/f", 1) == 0, "home-outside-shared-private");
+        check(bound("/home/alice/shared/f", 1) == (FS_R_READ | FS_R_LOOKUP), "shared-subdir-bounded");
+        check(bound("/home/alice/shared/deep/f", 1) == (FS_R_READ | FS_R_LOOKUP), "shared-deeper-bounded");
+        check(walk("/home/alice/shared", 0, &carry, &node) == 0 && carry == FS_R_ALL,
+              "other-node-changes-no-rights");
+        check(walk("/home/alice", 0, &carry, &node) == 1 &&
+              fsp_names(&tree, node, "shared") && !fsp_names(&tree, node, "notes"),
+              "names-policy-paths");
+        check(walk("/home/alice", 0, &carry, &node) == 1 && fsp_visible(&tree, node, "notes", 0),
+              "other-node-hides-nothing");
+    }
+    /* Another's grant the session cannot reach any part of adds nothing. */
+    {
+        check(compile("@self ~ all\n", "alice", "/home/alice", 0) == 0, "compile-plain");
+        unsigned plain = tree.n;
+        check(compile("@self ~ all\nbob /srv/data read\n", "alice", "/home/alice", 0) == 0 &&
+              tree.n == plain && !fsp_visible(&tree, 0, "srv", 1), "other-outside-reach-ignored");
+    }
+    /* DECISION 16: the administrator's lines, by group or by name, are never
+     * "other"; an ordinary account granted "/" by name is. */
+    check(compile("@admin / all\nroot /home/carol read\n@self ~ all\n", "carol", "/home/carol", 0) == 0 &&
+          bound("/home/carol/f", 1) == 0, "admin-lines-not-other");
+    check(compile("ops / all\n@self ~ all\n", "user", "/home/user", 0) == 0 &&
+          bound("/home/user/f", 1) == FS_R_ALL, "ordinary-root-grant-counts");
+    /* The wildcard: every other account's home, never the session's own. */
+    check(compile("ops / all\n@self ~ all\n", "ops", "/home/ops", 0) == 0, "compile-wildcard");
+    check(bound("/home/ops/f", 1) == 0, "wildcard-skips-own-home");
+    check(bound("/home/bob/f", 1) == FS_R_ALL, "wildcard-covers-others");
+    /* Another account's home grant lies ABOVE a grant of the session's own,
+     * reached through a pass-through, and still bounds what is under it; the
+     * wildcard there makes no other home visible. */
+    check(compile("alice /home/bob/shared read,lookup\n@self ~ all\n", "alice", "/home/alice", 0) == 0 &&
+          bound("/home/bob/shared/f", 1) == FS_R_ALL, "other-home-above-own-grant");
+    check(walk("/home", 0, &carry, &node) == 1 && !fsp_visible(&tree, node, "carol", 1) &&
+          walk("/home/carol", 0, &carry, &node) == -1, "wildcard-under-pass-through-hides");
+    check(walk("/home", 0, &carry, &node) == 1 && fsp_names(&tree, node, "anyone"), "wildcard-names-every-home");
+    /* A PRIVATE /tmp IS NOBODY ELSE'S: no grant above it reaches into it, and a
+     * grant through the volume's /tmp is not about it. */
+    check(compile("bob / read\n@self /tmp all\n", "alice", "/home/alice", 0) == 0 &&
+          bound("/tmp/f", 1) == 0, "private-tmp-not-inherited");
+    check(compile("@self /tmp all\nbob /tmp/x read\n", "alice", "/home/alice", 0) == 0 &&
+          tree.n == 2, "other-through-private-tmp-skipped");
+    /* OTHERS THAT DO NOT FIT leave the session's own tree exactly as it was and
+     * say every bound is every right. */
+    {
+        static char wide[FSP_MAX_LINES * 24];
+        strcpy(wide, "ops / all\n");
+        for (int i = 0; i < FSP_NODES; i++) {
+            char l[24];
+            snprintf(l, sizeof(l), "bob /d%d read\n", i);
+            strcat(wide, l);
+        }
+        check(compile(wide, "ops", "/home/ops", 0) == 0 && tree.other_full && tree.n == 1 &&
+              tree.node[0].nchild == 0 && tree.node[0].ogrant == 0, "others-overflow-falls-back");
+        /* The same tree, the next session: nothing of the last one is kept. */
+        check(compile("ops / all\n@self ~ all\n", "ops", "/home/ops", 0) == 0 && !tree.other_full &&
+              bound("/home/bob/f", 1) == FS_R_ALL, "tree-reuse-clears-overflow");
+    }
+
+    /* ---- the mode bits (§7.1) ---- */
+    check(fsp_mode(FS_R_ALL & FS_R_FILE_MASK, 0, 0) == 0700, "mode-private-file");
+    check(fsp_mode(FS_R_READ | FS_R_EXEC, RX, 0) == 0505, "mode-shared-program");
+    check(fsp_mode(FS_R_READ | FS_R_LOOKUP | FS_R_CREATE, FS_R_READ | FS_R_LOOKUP, 1) == 0705, "mode-dir");
+    check(fsp_mode(FS_R_APPEND, FS_R_APPEND, 0) == 0202, "mode-append-is-w");
+    check(fsp_mode(FS_R_DELETE, 0, 1) == 0200, "mode-dir-delete-is-w");
+
+    /* ---- chmod and chown answer the truth (§7.2, decision 18) ---- */
+    {
+        const uint32_t file_all = FS_R_ALL & FS_R_FILE_MASK;
+        check(fsp_chmod_true(0600, file_all, 0, 0), "chmod-600-private-true");
+        check(fsp_chmod_true(0700, file_all, 0, 0), "chmod-700-private-true");
+        check(!fsp_chmod_true(0644, file_all, 0, 0), "chmod-looser-refused");
+        check(!fsp_chmod_true(0600, file_all, RX, 0), "chmod-600-shared-refused");
+        check(fsp_chmod_true(0605, file_all, RX, 0), "chmod-exact-other-true");
+        check(!fsp_chmod_true(0640, file_all, 0, 0), "chmod-group-refused");
+        check(!fsp_chmod_true(04600, file_all, 0, 0) && !fsp_chmod_true(02600, file_all, 0, 0) &&
+              !fsp_chmod_true(01600, file_all, 0, 0), "chmod-setid-sticky-refused");
+        check(!fsp_chmod_true(0600, FS_R_READ, 0, 0), "chmod-owner-more-than-held-refused");
+        check(fsp_chmod_true(0400, FS_R_READ, 0, 0) && fsp_chmod_true(0000, FS_R_READ, 0, 0),
+              "chmod-owner-fewer-true");
+        check(fsp_chmod_true(0705, FS_R_ALL, FS_R_READ | FS_R_LOOKUP, 1), "chmod-dir-exact-true");
+        check(fsp_chown_true(0xFFFFFFFFu, 0xFFFFFFFFu, 5, 7) && fsp_chown_true(5, 7, 5, 7) &&
+              fsp_chown_true(5, 0xFFFFFFFFu, 5, 7), "chown-self-true");
+        check(!fsp_chown_true(6, 0xFFFFFFFFu, 5, 7) && !fsp_chown_true(5, 8, 5, 7) &&
+              !fsp_chown_true(0, 0, 5, 7), "chown-other-refused");
     }
 
     printf("FS_POLICY_TEST: PASS %d checks\n", checks);

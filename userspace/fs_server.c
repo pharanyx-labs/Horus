@@ -438,7 +438,7 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
         struct fs_stat sst;
         if (sys_fs_stat(rq->ino, &sst) != 0)             { rp->rc = SYS_ERR_NOENT; break; }  /* source inode */
         if (sst.type != FS_TYPE_FILE)                    { rp->rc = SYS_ERR_INVAL; break; }  /* no dir/other links */
-        if (!(cuid == 0 || cuid == sst.uid))             { rp->rc = SYS_ERR_PERM;  break; }  /* owner or root */
+        if (!(g_by_cap || cuid == 0 || cuid == sst.uid)) { rp->rc = SYS_ERR_PERM;  break; }  /* owner or root; through a capability, the carried one decided */
         /* The second name goes beside a name the file already has, never into
          * another directory (decision 11). v11 keeps no back-references, so
          * "the directory it is in" can only be answered this way. */
@@ -707,7 +707,21 @@ struct fs_session {
     int             live;
     struct fsp_tree tree;
     uint32_t        tmp_ino;    /* its private /tmp (§6.3), or 0: none */
+    uint32_t        epoch;      /* the policy it was compiled from (g_policy_epoch) */
 };
+
+/* WHICH POLICY A SESSION'S BOUNDS CAME FROM (§7.1). The policy is read afresh
+ * at every FS_OP_SESSION, so a session opened after an edit compiles the new
+ * one while those already open keep the old. Their bounds on who else reaches
+ * an object were computed from grants that may no longer be all of them, and a
+ * bound that might be low is the one thing §7.1 forbids, so a session whose
+ * epoch is not the current one reports every right as other, and refuses the
+ * renames that depend on knowing every grant, until it is opened again. */
+static uint32_t g_policy_epoch;
+static int      g_policy_seen;
+static int      g_policy_seen_src;
+static uint32_t g_policy_seen_len;
+static char     g_policy_seen_text[FSP_MAX_BYTES];
 
 /* ---- a session's private /tmp (design §6.3; S129) ---------------------------
  *
@@ -734,17 +748,35 @@ static struct fs_session g_sess[FS_SESSIONS_MAX + 1];   /* [0] is never used */
 struct fs_pol {
     struct fs_session *s;   /* 0: a capability with no grant set (step 1's) */
     int      node;          /* the tracked node, or -1 */
+    int      at;            /* the node at or above the object (decision 17), or -1 */
     uint32_t carry;         /* the most a capability minted from here may carry */
 };
 
-/* The node a tracked capability was minted for, or -1. */
-static int fs_session_node(const struct fs_session *s, uint32_t ino, uint32_t gen)
+/* Does the session know every grant there is to know about where `p` stands?
+ * Not if the others did not fit its tree, and not if the policy has changed
+ * since it was compiled. */
+static int fs_pol_complete(const struct fs_pol *p)
 {
-    for (unsigned i = 0; i < s->tree.n; i++) {
-        const struct fsp_node *n = &s->tree.node[i];
-        if (n->bound && n->ino == ino && n->gen == gen) return (int)i;
-    }
-    return -1;
+    return p->s && !p->s->tree.other_full && p->s->epoch == g_policy_epoch;
+}
+
+/* WHO ELSE MAY REACH THE OBJECT (§7.1): the union of the other principals'
+ * grants at or above the node its token names. Every right whenever that
+ * cannot be known for certain, because a bound may overstate and must never
+ * understate: a capability with no grant set; a session that does not know every
+ * grant (fs_pol_complete); and a file with more than one name, since another
+ * name may lie under another grant (v11 keeps no back-references to say). */
+static uint32_t fs_pol_other(const struct fs_pol *p, uint32_t links)
+{
+    if (!fs_pol_complete(p) || p->at < 0 || links > 1) return FS_R_ALL;
+#ifdef FS_TOKEN_NODE_IGNORED
+    /* CONTROL ARM, never ship (smoke-fs-cap-stat-control): the bound is taken at
+     * the session's root, whatever the token says, so a file below another
+     * principal's grant is reported as reached by nobody. */
+    return p->s->tree.node[0].other;
+#else
+    return p->s->tree.node[p->at].other;
+#endif
 }
 
 /* One step down, to entry `name` of type `type`. SYS_ERR_NOENT when the session
@@ -752,12 +784,13 @@ static int fs_session_node(const struct fs_session *s, uint32_t ino, uint32_t ge
  * what it withholds. An untracked position has no policy left to apply. */
 static int fs_pol_step(struct fs_pol *p, const char *name, uint32_t type)
 {
-    if (!p->s || p->node < 0) return 0;
+    if (!p->s || p->node < 0) return 0;     /* untracked: `at` stays where it is */
     int child;
     uint32_t carry;
     int r = fsp_step(&p->s->tree, p->node, name, type == FS_TYPE_DIR, &child, &carry);
     if (r < 0) return SYS_ERR_NOENT;
     p->node = (r == 1) ? child : -1;
+    p->at = child;
     p->carry = carry;
     return 0;
 }
@@ -875,14 +908,24 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
      * fail closed: init revokes a session's capabilities before ending it, so
      * one that outlives its session is a defect, and it reaches nothing. */
     uint32_t g = fs_token_g(inv->token);
-    struct fs_pol pol = { 0, -1, FS_R_ALL };
+    struct fs_pol pol = { 0, -1, -1, FS_R_ALL };
     if (g != 0 || fs_token_tracked(inv->token)) {
         if (g == 0 || !g_sess[g].live) { rp->rc = SYS_ERR_NOENT; return; }
         pol.s = &g_sess[g];
+        /* The node comes from the token, which the kernel attests: a client
+         * cannot choose where it stands. One past the tree is a defect. A
+         * tracked capability must be the one its node was last bound to. */
+        uint32_t at = fs_token_node(inv->token);
+        if (at >= pol.s->tree.n) { rp->rc = SYS_ERR_NOENT; return; }
+        pol.at = (int)at;
         if (fs_token_tracked(inv->token)) {
-            pol.node = fs_session_node(pol.s, obj, fs_token_gen(inv->token));
-            if (pol.node < 0) { rp->rc = SYS_ERR_NOENT; return; }
-            pol.carry = pol.s->tree.node[pol.node].below;
+            const struct fsp_node *nn = &pol.s->tree.node[at];
+            if (!nn->bound || nn->ino != obj || nn->gen != fs_token_gen(inv->token)) {
+                rp->rc = SYS_ERR_NOENT;
+                return;
+            }
+            pol.node = (int)at;
+            pol.carry = nn->below;
         }
     }
     /* What this request may use: the capability's rights, and at a tracked node
@@ -905,6 +948,8 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
     case FS_OP_WRITE:
     case FS_OP_TRUNCATE: need = FS_R_WRITE;  break;
     case FS_OP_APPEND:   need = (have & FS_R_APPEND) ? FS_R_APPEND : FS_R_WRITE; break;
+    case FS_OP_CHMOD:
+    case FS_OP_CHOWN:    need = FS_R_READ;   break;   /* what stat needs: they answer as it does */
     case FS_OP_RENAME:
         /* Within the capability's directory only: a rename there needs CREATE
          * for the new name and DELETE for the old (§5.5). Naming a second
@@ -913,9 +958,15 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
         if (fs_xdev(rq->ino != 0)) { rp->rc = SYS_ERR_XDEV; return; }
         need = FS_R_CREATE | FS_R_DELETE; is_dir_op = 1; names = 1;
         break;
+    case FS_OP_LINK:
+        /* Step 4(c): a second name, in the capability's directory, for the file
+         * the request CARRIES (SYS_IPC_CALL_CAP). A capability never names an
+         * inode, so the source is the carried capability's object, attested
+         * by the kernel as the directory's is; rq->ino is ignored. The new
+         * name needs CREATE on the directory. */
+        need = FS_R_CREATE; is_dir_op = 1; names = 1;
+        break;
     default:
-        /* chmod/chown (step 4) and link are not on this path. A link names its
-         * source by inode, which a capability never does. */
         rp->rc = SYS_ERR_NOSYS;
         return;
     }
@@ -949,10 +1000,97 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
             rp->rc = (rq->op == FS_OP_CREATE || rq->op == FS_OP_MKDIR) ? SYS_ERR_EXIST : SYS_ERR_PERM;
             return;
         }
+        /* A RENAME MAY NOT MOVE AN OBJECT ONTO A NAME THE POLICY NAMES, OR OFF
+         * ONE (§5.5 condition 2, within one directory). Such a name decides
+         * which grants reach what is under it: moving onto it would hand the
+         * object to a grant that did not reach it when the capabilities to it
+         * were minted, and their bound on who else reaches it (§7.1) would then
+         * be low; moving off it would leave the grant's holders their
+         * capabilities while new ones were bounded as if they had none. Both
+         * are EXDEV, as a move across directories is, and a mover copies. A
+         * session that does not know every grant (fs_pol_complete) cannot tell,
+         * so it is refused every rename until it is opened again. */
+        if (rq->op == FS_OP_RENAME &&
+            (!fs_pol_complete(&pol) ||
+             (pol.node >= 0 && (fsp_names(&pol.s->tree, pol.node, rq->name) ||
+                                fsp_names(&pol.s->tree, pol.node, nn))))) {
+            rp->rc = SYS_ERR_XDEV;
+            return;
+        }
+    }
+
+    /* LINK WITHIN ONE DIRECTORY (step 4(c), §5.5 as it applies there).
+     *
+     * THE SOURCE IS A CAPABILITY THE CALLER HOLDS, carried with the request:
+     * its own object and generation are checked as the directory's were, and
+     * it must belong to the same session (or both to none), so a session cannot
+     * name a file through a capability from another.
+     *
+     * NO NEW AUTHORITY THROUGH THE NEW NAME. A capability reached later through
+     * the new name gets what the directory gives a file: its rights here,
+     * narrowed to a file's, and to what the policy carries below this node. The
+     * caller must already hold at least that on the file, or a read-only file
+     * plus CREATE on a writable directory would make a writable name.
+     *
+     * NOT A NAME THE POLICY NAMES. A grant naming the new name would reach the
+     * file through it, which is the cross-grant move §5.5 refuses; and a session
+     * that does not know every grant cannot tell, so it is refused, as rename
+     * is. Both EXDEV: a mover copies.
+     *
+     * The step 5 rule stands in handle(): the directory must already hold a
+     * name for the file, so this never moves a file into a directory. */
+    uint32_t link_src = 0;
+    if (rq->op == FS_OP_LINK) {
+        if (!inv->carried) { rp->rc = SYS_ERR_INVAL; return; }
+        link_src = fs_token_ino(inv->carry_token);
+        if (link_src >= FS_GEN_INODES || (g_gen[link_src] & FS_GEN_RETIRED) ||
+            fs_token_gen(inv->carry_token) != g_gen[link_src] ||
+            fs_token_g(inv->carry_token) != g) {
+            rp->rc = SYS_ERR_NOENT;
+            return;
+        }
+        uint32_t would = have & FS_R_FILE_MASK & pol.carry;
+#ifndef FS_CAP_LINK_WIDENS
+        if ((inv->carry_rights & would) != would) { rp->rc = SYS_ERR_PERM; return; }
+#else
+        /* CONTROL ARM, never ship (smoke-fs-cap-link-control): the carried
+         * capability's rights are not compared, so a read-only file gains a
+         * writable name in a writable directory. */
+        (void)would;
+#endif
+        if (pol.s && (!fs_pol_complete(&pol) ||
+                      (pol.node >= 0 && fsp_names(&pol.s->tree, pol.node, rq->name)))) {
+            rp->rc = SYS_ERR_XDEV;
+            return;
+        }
+    }
+
+    /* CHMOD AND CHOWN THROUGH A CAPABILITY STORE NOTHING (§7.2, decision 18).
+     * The mode bits on the disk decide nothing on this path, so writing them
+     * would change no one's access while reporting that it had. Instead each
+     * is answered against the truth stat reports: success when it asks for what
+     * is already true, PERM when it does not, so `chmod 600` on a file another
+     * grant reaches fails loudly and says the file is shared. */
+    if (rq->op == FS_OP_CHMOD || rq->op == FS_OP_CHOWN) {
+        struct fs_stat st;
+        if (sys_fs_stat(obj, &st) != 0) { rp->rc = SYS_ERR_NOENT; return; }
+        int is_true = (rq->op == FS_OP_CHMOD)
+            ? fsp_chmod_true(rq->mode & 07777u, have & FS_R_ALL, fs_pol_other(&pol, st.links),
+                             st.type == FS_TYPE_DIR)
+            : fsp_chown_true(rq->arg_uid, rq->arg_gid, cuid, cgid);
+#ifdef FS_CAP_CHMOD_UNTRUE
+        /* CONTROL ARM, never ship (smoke-fs-cap-chmod-control): every chmod
+         * and chown through a capability reports success, the reassuring
+         * answer §7 exists to refuse. */
+        is_true = 1;
+#endif
+        rp->rc = is_true ? 0 : SYS_ERR_PERM;
+        return;
     }
 
     struct fs_request r2 = *rq;
     if (is_dir_op) r2.dir_ino = obj; else r2.ino = obj;
+    if (rq->op == FS_OP_LINK) r2.ino = link_src;   /* the carried file, never rq->ino */
     if (rq->op == FS_OP_RENAME) r2.ino = obj;      /* new parent: the same directory */
     /* A session's single-name LOOKUP is a one-name WALK, so the private /tmp and
      * the hidden store are answered in one place (walk), not two that could
@@ -1002,6 +1140,19 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
         }
     } else {
         handle(&r2, rp, cuid, cgid);
+        if (rq->op == FS_OP_STAT && rp->rc == 0) {
+            /* THE TRUTHFUL VIEW (§7.1). Owner bits are this capability's
+             * rights, as far as its node lets it use them; group bits are zero;
+             * other bits are the bound on everyone else's. Nothing on the disk
+             * is consulted for them: decision 1, the disk holds no authority.
+             * uid and gid say "you": the caller's own, as the kernel attests
+             * them for this request. They describe the caller and authorise
+             * nothing; the capability already decided. */
+            rp->mode = fsp_mode(have & FS_R_ALL, fs_pol_other(&pol, rp->links),
+                                rp->type == FS_TYPE_DIR);
+            rp->uid = cuid;
+            rp->gid = cgid;
+        }
         /* The child a lookup, create or mkdir names: is it in this session? */
         if (rp->rc == 0 && (rq->op == FS_OP_LOOKUP || rq->op == FS_OP_CREATE ||
                             rq->op == FS_OP_MKDIR) &&
@@ -1033,7 +1184,8 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
         /* The child keeps the session's grant set, tracked or not, so §5.5 and
          * §7 can later say which grant it descends from. */
         int tracked = pol.node >= 0;
-        *mint_token = fs_token_in(rp->ino, g_gen[rp->ino], pol.s ? g : 0, tracked);
+        *mint_token = fs_token_in(rp->ino, g_gen[rp->ino], pol.s ? g : 0,
+                                  pol.at >= 0 ? (uint32_t)pol.at : 0, tracked);
         if (tracked) fs_session_bind(pol.s, pol.node, rp->ino);
     }
 }
@@ -1080,7 +1232,7 @@ static void session_cwd(struct fs_session *s, uint32_t g, const char *home,
     int d = fsp_split(home, uslen(home), comp);
     if (d < 0) return;
     if (d == 0) { sg->cwd_token = sg->root_token; sg->cwd_rights = sg->root_rights; return; }
-    struct fs_pol pol = { s, s->tree.node[0].nchild > 0 ? 0 : -1, s->tree.node[0].below };
+    struct fs_pol pol = { s, s->tree.node[0].nchild > 0 ? 0 : -1, 0, s->tree.node[0].below };
     uint32_t cur = 0, type = FS_TYPE_DIR;
     for (int k = 0; k < d; k++) {
         uint32_t ino;
@@ -1091,7 +1243,7 @@ static void session_cwd(struct fs_session *s, uint32_t g, const char *home,
     if (type != FS_TYPE_DIR || cur >= FS_GEN_INODES || (g_gen[cur] & FS_GEN_RETIRED)) return;
     int tracked = pol.node >= 0;
     if (tracked) fs_session_bind(s, pol.node, cur);
-    sg->cwd_token = fs_token_in(cur, g_gen[cur], g, tracked);
+    sg->cwd_token = fs_token_in(cur, g_gen[cur], g, (uint32_t)pol.at, tracked);
     sg->cwd_rights = (pol.carry & FS_R_ALL) | FS_KERNEL_RIGHTS;
 }
 
@@ -1225,10 +1377,17 @@ static void session_tmp_remove(uint32_t g, uint32_t ino)
  * from anything in the request. */
 static void session_open(const struct fs_request *rq, struct fs_response *rp)
 {
-    struct user_entry e;
+    struct user_entry e, x;
     int found = 0;
-    for (uint32_t i = 0; sys_userlist(i, &e) == 1; i++)
-        if (e.uid == rq->arg_uid) { found = 1; break; }
+    /* The administrator's name too: lines naming it are the administrator's,
+     * and never counted as someone else's reach (decision 16). */
+    static char admin_name[sizeof(x.name)];
+    admin_name[0] = 0;
+    for (uint32_t i = 0; sys_userlist(i, &x) == 1; i++) {
+        x.name[sizeof(x.name) - 1] = 0;
+        if (x.uid == 0) ustrncpy(admin_name, x.name, sizeof(admin_name));
+        if (x.uid == rq->arg_uid && !found) { e = x; found = 1; }
+    }
     if (!found) { rp->rc = SYS_ERR_NOENT; return; }
     e.name[sizeof(e.name) - 1] = 0;
     e.home[sizeof(e.home) - 1] = 0;
@@ -1249,6 +1408,23 @@ static void session_open(const struct fs_request *rq, struct fs_response *rp)
         kput_int((int)bad);
         kputln("); treated as absent: the administrator alone");
     }
+    /* A different policy from the last one compiled starts a new epoch, and
+     * every session already open is now behind it (g_policy_epoch). Compared as
+     * text, so an edit that changes nothing still counts: that only overstates
+     * until the next login. */
+    {
+        uint32_t tl = (src == FS_SESSION_SRC_FILE) ? len : 0;
+        int same = g_policy_seen && g_policy_seen_src == src && g_policy_seen_len == tl;
+        for (uint32_t i = 0; same && i < tl; i++)
+            if (g_policy_seen_text[i] != g_policy_text[i]) same = 0;
+        if (!same) {
+            if (g_policy_seen) g_policy_epoch++;
+            g_policy_seen = 1;
+            g_policy_seen_src = src;
+            g_policy_seen_len = tl;
+            umemcpy(g_policy_seen_text, g_policy_text, tl);
+        }
+    }
 
     /* NEXT FIT, not lowest free. Reusing a grant set while a capability naming
      * it lives would hand that capability the new session's policy, and the
@@ -1264,7 +1440,7 @@ static void session_open(const struct fs_request *rq, struct fs_response *rp)
     }
     if (g == 0) { rp->rc = SYS_ERR_BUSY; return; }
     struct fs_session *s = &g_sess[g];
-    struct fsp_who who = { e.name, e.home, e.uid == 0 };
+    struct fsp_who who = { e.name, e.home, e.uid == 0, admin_name[0] ? admin_name : 0 };
     if (fsp_compile(&g_policy, &who, &s->tree) != 0) {
         kputln("[fs_server] a session's grants cannot be compiled; session refused");
         rp->rc = SYS_ERR_NOMEM;
@@ -1279,7 +1455,7 @@ static void session_open(const struct fs_request *rq, struct fs_response *rp)
         int tracked = root->nchild > 0;
         if (tracked) fs_session_bind(s, 0, 0);
         sg.g = g;
-        sg.root_token = fs_token_in(0, g_gen[0], g, tracked);
+        sg.root_token = fs_token_in(0, g_gen[0], g, 0, tracked);
         sg.root_rights = root->below | FS_KERNEL_RIGHTS;
         session_cwd(s, g, e.home, &sg);
         /* Its private /tmp, if the policy gives one. A /tmp that cannot be made
@@ -1300,6 +1476,7 @@ static void session_open(const struct fs_request *rq, struct fs_response *rp)
             if (s->tmp_ino == 0) kputln("[fs_server] a session's /tmp could not be made; it has none");
             break;
         }
+        s->epoch = g_policy_epoch;
         s->live = 1;
         last_g = g;
     }
@@ -1410,8 +1587,10 @@ static int module_dest_ok(const char *path) {
  * -1 on failure (including the volume filling up, or a disallowed destination path).
  * Runs entirely inside the server, so the store primitives are called directly
  * rather than over IPC. */
-/* Does file `ino` hold exactly the bytes of boot module `mod_index`? */
-static int file_matches_module(uint32_t ino, uint32_t mod_index, uint32_t size) {
+/* Does file `ino` hold exactly the `size` bytes of boot module `mod_index` that
+ * start at `mod_off`? (`mod_off` is 0 for a module that is one file, and a
+ * member's offset for a module that is an archive; see unpack_archive_module.) */
+static int file_matches_module(uint32_t ino, uint32_t mod_index, uint32_t mod_off, uint32_t size) {
     struct fs_stat st;
     if (sys_fs_stat(ino, &st) != 0 || (uint32_t)st.size != size) return 0;
 #ifdef SYSTEM_TREES_SIZE_ONLY
@@ -1424,7 +1603,7 @@ static int file_matches_module(uint32_t ino, uint32_t mod_index, uint32_t size) 
     while (off < size) {
         uint32_t chunk = size - off; if (chunk > BLK) chunk = BLK;
         if (sys_fblock_read(ino, blk, fb) != (int)BLK) return 0;
-        if (sys_boot_module_read(mod_index, off, mb, chunk) != (int)chunk) return 0;
+        if (sys_boot_module_read(mod_index, mod_off + off, mb, chunk) != (int)chunk) return 0;
         for (uint32_t i = 0; i < chunk; i++) if (fb[i] != mb[i]) return 0;
         off += chunk; blk++;
     }
@@ -1450,7 +1629,7 @@ static void remove_tree(uint32_t parent, const char *name, uint32_t ino, uint32_
     if (dir_remove(parent, name)) fs_ino_free(ino);
 }
 
-static int install_module_at(const char *path, uint32_t mod_index, uint32_t size) {
+static int install_module_at(const char *path, uint32_t mod_index, uint32_t mod_off, uint32_t size) {
     if (!module_dest_ok(path)) {
         kputln("[fs_server] refusing boot module with a disallowed destination path");
         return -1;
@@ -1484,7 +1663,7 @@ static int install_module_at(const char *path, uint32_t mod_index, uint32_t size
          * changed in place, byte for byte the same length, survived every boot.
          * Compared by reading, so an unchanged file costs reads and no writes;
          * its owner and mode are put back either way. */
-        if (etype == FS_TYPE_FILE && file_matches_module(eino, mod_index, size)) {
+        if (etype == FS_TYPE_FILE && file_matches_module(eino, mod_index, mod_off, size)) {
             sys_fs_set_meta(eino, is_exec ? 0755u : 0644u, 0, 0);
             sys_mark(eino);
             return 0;
@@ -1499,7 +1678,7 @@ static int install_module_at(const char *path, uint32_t mod_index, uint32_t size
     uint32_t off = 0, blk = 0;
     while (off < size) {
         uint32_t chunk = size - off; if (chunk > BLK) chunk = BLK;
-        int got = sys_boot_module_read(mod_index, off, buf, chunk);
+        int got = sys_boot_module_read(mod_index, mod_off + off, buf, chunk);
         if (got <= 0) { fs_ino_free((uint32_t)ino); return -1; }
         /* sys_fblock_write returns the byte count it stored (== got); it zero-pads
          * a short final block internally, so compare against got, not BLK. A write
@@ -1516,6 +1695,132 @@ static int install_module_at(const char *path, uint32_t mod_index, uint32_t size
     }
     sys_mark((uint32_t)ino);
     return 1;
+}
+
+/* ---- archive modules (docs/design/configuration.md §4) ---------------------
+ *
+ * WHY A MODULE CAN BE AN ARCHIVE. MAX_BOOT_MODULES is 48 and an install image
+ * already uses about 30, so forty-odd manual pages cannot each be a module. They
+ * ship as ONE module, a ustar archive the build makes reproducibly, verified by
+ * its hash like every other module (S96), and unpacked here into one system
+ * directory. A module is an archive when its destination is `pack/<dir>`: the
+ * members land in <dir>, which must itself be a destination module_dest_ok
+ * accepts, and they are then ordinary system-tree files, compared, re-marked and
+ * pruned like any module (S116).
+ *
+ * WHAT A MEMBER MAY BE, and the archive is refused WHOLE on the first that is
+ * not: a regular file (typeflag '0' or NUL), with a ustar magic, no prefix
+ * field, and a name that is one leaf of 1 to FS_NAME_MAX-1 characters drawn
+ * from [A-Za-z0-9._-], not "." or "..". No directory, no link, no device, no
+ * path. The archive is checked END TO END before anything is installed, so a
+ * malformed one installs nothing rather than a prefix. The bytes are verified
+ * by the boot chain already; these checks are so that a mistake in the build,
+ * or a future archive with a laxer maker, cannot place a file outside its one
+ * directory or make this server walk off the end of a module. */
+#define TAR_BLOCK 512u
+
+static uint32_t tar_octal(const uint8_t *f, int n, int *ok) {
+    uint32_t v = 0; int i = 0, digits = 0;
+    while (i < n && f[i] == ' ') i++;
+    for (; i < n && f[i] >= '0' && f[i] <= '7'; i++) {
+        if (v > (0xFFFFFFFFu >> 3)) { *ok = 0; return 0; }
+        v = (v << 3) | (uint32_t)(f[i] - '0');
+        digits++;
+    }
+    for (; i < n; i++) if (f[i] != 0 && f[i] != ' ') { *ok = 0; return 0; }
+    if (!digits) *ok = 0;
+    return v;
+}
+
+static int tar_block_zero(const uint8_t *h) {
+    for (uint32_t i = 0; i < TAR_BLOCK; i++) if (h[i]) return 0;
+    return 1;
+}
+
+/* Check one header; on success copy the member's leaf name into `leaf` and its
+ * size into *size. */
+static int tar_member_ok(const uint8_t *h, char *leaf, uint32_t *size) {
+    if (!(h[257] == 'u' && h[258] == 's' && h[259] == 't' && h[260] == 'a' && h[261] == 'r'))
+        return 0;
+    if (h[156] != '0' && h[156] != 0) return 0;            /* regular files only */
+    if (h[345] != 0) return 0;                              /* no prefix: one leaf */
+    /* The header checksum: the 512 bytes summed with the checksum field read
+     * as spaces. A build that wrote the archive wrongly is caught here. */
+    int ok = 1;
+    uint32_t want = tar_octal(h + 148, 8, &ok);
+    uint32_t sum = 0;
+    for (uint32_t i = 0; i < TAR_BLOCK; i++) sum += (i >= 148 && i < 156) ? ' ' : h[i];
+    if (!ok || sum != want) return 0;
+    int n = 0;
+    while (n < 100 && h[n]) {
+        char c = (char)h[n];
+        int good = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                   (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+        if (!good || n >= FS_NAME_MAX - 1) return 0;
+        leaf[n] = c; n++;
+    }
+    if (n == 0 || n == 100) return 0;
+    leaf[n] = 0;
+    if ((n == 1 && leaf[0] == '.') || (n == 2 && leaf[0] == '.' && leaf[1] == '.')) return 0;
+    ok = 1;
+    *size = tar_octal(h + 124, 12, &ok);
+    return ok;
+}
+
+/* Walk archive module `mod_index` (`msize` bytes). With `install` 0, only check
+ * it; with 1, install every member under `dir`. Returns the member count, or -1
+ * if the archive is malformed anywhere. */
+static int walk_archive(uint32_t mod_index, uint32_t msize, const char *dir, int install) {
+    static uint8_t h[TAR_BLOCK];
+    uint32_t off = 0;
+    int members = 0;
+    for (;;) {
+        if (off > msize || msize - off < TAR_BLOCK) return -1;   /* no end marker */
+        if (sys_boot_module_read(mod_index, off, h, TAR_BLOCK) != (int)TAR_BLOCK) return -1;
+        if (tar_block_zero(h)) return members;                 /* end of archive */
+        char leaf[FS_NAME_MAX];
+        uint32_t size;
+        if (!tar_member_ok(h, leaf, &size)) return -1;
+        uint32_t data = off + TAR_BLOCK;
+        uint32_t padded = (size + TAR_BLOCK - 1) & ~(TAR_BLOCK - 1);
+        if (size > msize || data > msize - size || padded < size ||
+            data + padded > msize) return -1;
+        if (install) {
+            char path[FS_NAME_MAX * 6];
+            int n = 0;
+            for (const char *q = dir; *q && n < (int)sizeof(path) - 2; q++) path[n++] = *q;
+            path[n++] = '/';
+            for (const char *q = leaf; *q && n < (int)sizeof(path) - 1; q++) path[n++] = *q;
+            path[n] = 0;
+            if (size > 0 && install_module_at(path, mod_index, data, size) < 0) return -1;
+        }
+        members++;
+        off = data + padded;
+    }
+}
+
+/* Unpack archive module `mod_index` into `dir`. Returns members installed, or -1
+ * (nothing installed) if the archive or its directory is refused. */
+static int unpack_archive_module(uint32_t mod_index, uint32_t msize, const char *dir) {
+    char probe[FS_NAME_MAX * 6];
+    int n = 0;
+    for (const char *q = dir; *q && n < (int)sizeof(probe) - 3; q++) probe[n++] = *q;
+    probe[n++] = '/'; probe[n++] = 'x'; probe[n] = 0;
+    if (!module_dest_ok(probe) || n < 3) {
+        kputln("[fs_server] refusing an archive module with a disallowed directory");
+        return -1;
+    }
+#ifndef ARCHIVE_NO_PRECHECK
+    if (walk_archive(mod_index, msize, dir, 0) < 0) {
+        kputln("[fs_server] refusing a malformed archive module: nothing from it installed");
+        return -1;
+    }
+#else
+    /* CONTROL ARM -- never ship. Install as the walk goes, checking each member
+     * only when it is reached, so the members before a bad one land. See make
+     * smoke-archive-refused-control. */
+#endif
+    return walk_archive(mod_index, msize, dir, 1);
 }
 
 /* Provision the filesystem at boot, once, after the store is readable (unlocked):
@@ -1686,7 +1991,19 @@ static void provision_boot_modules(void) {
          * a disallowed path, and was counted as a module that "did not fit",
          * which is a different failure reported as this one. */
         if (uslen(info.name) == 11 && has_prefix(info.name, "lib/libc.so")) continue;
-        int rc = install_module_at(info.name, (uint32_t)i, info.size);
+        if (has_prefix(info.name, "pack/")) {
+            int m = unpack_archive_module((uint32_t)i, info.size, info.name + 5);
+            if (m < 0) skipped++;
+            else {
+                kput("[fs_server] archive module unpacked into /");
+                kput(info.name + 5);
+                kput(": ");
+                kput_int(m);
+                kputln(" files");
+            }
+            continue;
+        }
+        int rc = install_module_at(info.name, (uint32_t)i, 0, info.size);
         if (rc == 1) installed++;
         else if (rc < 0) skipped++;
     }
@@ -1705,6 +2022,19 @@ static void provision_boot_modules(void) {
     kput(" inodes, ");
     kput_int((int)strays);
     kputln(" strays removed");
+#ifdef ARCHIVE_PROBE
+    /* make smoke-archive-refused: the build shipped a second archive whose first
+     * member is a good file and whose second is a symbolic link, which no archive
+     * may carry. The whole archive must be refused, so the good member must not
+     * be here. Said both ways, so a red run names what it saw. */
+    {
+        int d = ensure_dir_path("usr/share/doc");
+        if (d >= 0 && dir_find((uint32_t)d, "archive-probe-good", 0, 0))
+            kputln("ARCHIVE PROBE: FAIL a refused archive left a member installed");
+        else
+            kputln("ARCHIVE PROBE: nothing from the refused archive installed");
+    }
+#endif
     /* One marker whether or not modules were shipped: the skeleton is always
      * created, so a default (module-free) boot still reports a real filesystem. */
     kputln("[fs_server] filesystem provisioned");

@@ -79,13 +79,15 @@ int main(void)
     int node;
 
     /* ---- the language ---- */
-    check(parses(fsp_default_text, 0) && pol.n == 5, "default-parses");
+    check(parses(fsp_default_text, 0) && pol.n == 6, "default-parses");
     check(parses(fsp_admin_only_text, 0) && pol.n == 1, "admin-only-parses");
     check(parses("# a comment\n\n   \n@all /bin read # trailing\r\n", 0) && pol.n == 1 &&
           pol.line[0].rights == FS_R_READ, "comments-blank-crlf");
     check(parses("alice\t/home/alice\tread,write,lookup", 0) && pol.n == 1 &&
           pol.line[0].depth == 2 && strcmp(pol.line[0].comp[1], "alice") == 0, "tabs-no-final-newline");
     check(parses("@all / all\n", 0) && pol.line[0].depth == 0 && pol.line[0].rights == FS_R_ALL, "root-path");
+    check(parses("@self /tmp read\n", 0) && pol.line[0].tmp && !pol.line[0].home, "self-tmp-parses");
+    check(parses("@all /tmp read\n", 0) && !pol.line[0].tmp, "all-tmp-is-a-path");
 
     static const struct { const char *text; const char *name; unsigned line; } bad_cases[] = {
         { "@staff /x read\n", "unknown-group", 1 },
@@ -103,6 +105,9 @@ int main(void)
         { "@all /x\n", "two-fields", 1 },
         { "alice ~ read\n", "home-without-self", 1 },
         { "@self /home/x read\n", "self-without-home", 1 },
+        { "@self /tmp/x read\n", "self-below-tmp", 1 },
+        { "@self /var read\n", "self-other-path", 1 },
+        { "@self /tmpx read\n", "self-tmp-prefix", 1 },
         { "@all /x read,,write\n", "empty-right", 1 },
         { "@all /x read,\n", "trailing-comma", 1 },
         { "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa /x read\n", "principal-too-long", 1 },
@@ -126,7 +131,7 @@ int main(void)
 
     /* ---- the default, for an ordinary account ---- */
     check(compile(fsp_default_text, "user", "/home/user", 0) == 0, "compile-user");
-    check(tree.node[0].eff == 0 && tree.node[0].nchild == 4, "user-root-not-granted");
+    check(tree.node[0].eff == 0 && tree.node[0].nchild == 5, "user-root-not-granted");
     check(fsp_op_rights(&tree, 0) == FSP_PASS_RIGHTS, "user-root-lookup-and-list-only");
     check(walk("/etc", 0, &carry, &node) == -1, "user-reached-ungranted");
     check(walk("/etc/passwd", 1, &carry, &node) == -1, "user-reached-under-ungranted");
@@ -145,6 +150,12 @@ int main(void)
     check(fsp_visible(&tree, 0, "bin", 1) && fsp_visible(&tree, 0, "usr", 1) &&
           !fsp_visible(&tree, 0, "etc", 1) && !fsp_visible(&tree, 0, "sbin", 1),
           "user-root-listing-filtered");
+    /* ITS OWN /tmp: private, read-write, never exec, and listed. */
+    check(fsp_is_private(&tree, 0, "tmp") && !fsp_is_private(&tree, 0, "bin"), "user-tmp-private");
+    check(walk("/tmp", 0, &carry, &node) == 0 &&
+          carry == (FS_R_READ | FS_R_WRITE | FS_R_LOOKUP | FS_R_CREATE | FS_R_DELETE | FS_R_SETATTR),
+          "user-tmp-rights-no-exec");
+    check(fsp_visible(&tree, 0, "tmp", 1), "user-tmp-listed");
     /* A file standing where the policy names a directory on the way to a grant
      * is absent, never readable as a pass-through. */
     check(walk("/home", 1, &carry, &node) == -1, "pass-through-file-absent");
@@ -154,7 +165,7 @@ int main(void)
         const char *junk = "this is not a policy\n";
         const char *good = "@all /bin read\n";
         check(fsp_load(1, 1, junk, (uint32_t)strlen(junk), &pol, &bad) == FS_SESSION_SRC_DEFAULT &&
-              pol.n == 5, "ephemeral-ignores-file");
+              pol.n == 6, "ephemeral-ignores-file");
         check(fsp_load(0, 0, 0, 0, &pol, &bad) == FS_SESSION_SRC_ADMIN_ONLY && pol.n == 1,
               "persistent-absent-admin-only");
         check(fsp_load(0, 1, junk, (uint32_t)strlen(junk), &pol, &bad) == FS_SESSION_SRC_MALFORMED &&
@@ -178,6 +189,7 @@ int main(void)
      * must not take admin's "/ all" away inside /usr. */
     check(walk("/usr", 0, &carry, &node) == 0 && carry == FS_R_ALL, "admin-usr-not-narrowed");
     check(walk("/home/anyone", 0, &carry, &node) == 0 && carry == FS_R_ALL, "admin-reaches-every-home");
+    check(fsp_is_private(&tree, 0, "tmp"), "admin-tmp-private-too");
 
     /* ---- a deeper grant adds ---- */
     {
@@ -205,6 +217,12 @@ int main(void)
     check(compile("@admin /srv all\n", "bob", "/home/bob", 0) == 0 && tree.node[0].below == 0, "admin-line-not-for-user");
     check(compile("@admin / all\n", "@admin", "/home/x", 0) == 0 && tree.node[0].below == 0,
           "account-named-like-a-group");
+
+    /* ---- a grant below a private /tmp can mean nothing, so it is refused ---- */
+    check(compile("@self /tmp all\nalice /tmp/x read\n", "alice", "/home/alice", 0) == -1,
+          "grant-below-private-tmp-refused");
+    check(compile("@self /tmp all\nalice /tmp/x read\n", "bob", "/home/bob", 0) == 0,
+          "grant-below-private-tmp-only-for-its-account");
 
     /* ---- bounds ---- */
     {

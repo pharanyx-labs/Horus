@@ -31,7 +31,7 @@ A Filesystem Hierarchy Standard shape, trimmed to what exists:
 | `/lib` | Shared libraries (`libhorus`, and newlib's where a program links it) | Read-only at run time |
 | `/etc` | Configuration, as today | |
 | `/home` | Users' files, as today | |
-| `/tmp` | Scratch, **emptied at every boot** | Recommendation in §5 |
+| `/tmp` | Scratch, **private to each session** and removed when it ends | [`filesystem.md`](filesystem.md) §6.3 (S129) |
 | `/var` | State that survives a reboot: `/var/log` for the audit chain's persisted copy, `/var/tmp` for scratch that must survive | |
 | `/usr/share/man` | Man pages, one directory as today | Copied by the installer |
 
@@ -79,10 +79,12 @@ an ordinary file write.
 
 ## 5. The smaller decisions
 
-**`/tmp`: emptied at every boot.** Recommendation: a directory on the volume that `init` empties
-at boot, rather than a RAM-backed filesystem, because the volume is already encrypted (nothing in
-`/tmp` reaches the disk in plaintext) and a RAM filesystem would be a second implementation to
-secure. `/var/tmp` is the place for scratch that must survive.
+**`/tmp`: private to each session.** Each session's `/tmp` is a directory on the volume that
+`fs_server` makes for it alone and removes when the session ends (`filesystem.md` §6.3, S129),
+and the first session of each boot clears what a crash left. It is on the volume rather than in
+RAM because the volume is already encrypted (nothing in `/tmp` reaches the disk in plaintext) and
+a RAM filesystem would be a second implementation to secure. `/var/tmp` is the place for scratch
+that must survive.
 
 **What goes in `/bin` at all.** The only user programs that are files are GNU coreutils (GPLv3)
 and TCC (LGPL). As separate programs beside the MIT system this is aggregation, not a combined

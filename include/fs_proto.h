@@ -239,6 +239,9 @@ static inline int fs_token_tracked(uint64_t t) { return (t & FS_TOKEN_TRACKED) !
  * administrator), and no grant set was taken. cwd_token 0 means the policy
  * grants no home; the session starts at its root. `source` is the FS_SESSION_SRC_*
  * the policy came from, so a caller can say which applied. */
+/* Where fs_server keeps the sessions' private /tmps (§6.3): /.session-tmp/<G>.
+ * Absent to every session; see fs_server.c. */
+#define FS_SESSION_TMP_STORE_NAME ".session-tmp"
 #define FS_SESSION_SRC_DEFAULT    1   /* a live boot's RAM store: the compiled-in default */
 #define FS_SESSION_SRC_FILE       2   /* /etc/fs.policy on a persistent volume */
 #define FS_SESSION_SRC_ADMIN_ONLY 3   /* a persistent volume without one: the administrator alone */

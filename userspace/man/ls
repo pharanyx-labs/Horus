@@ -1,0 +1,32 @@
+LS(1)                          User Commands                           LS(1)
+
+NAME
+    ls - list a directory
+
+SYNOPSIS
+    ls [-l] [DIR]
+
+DESCRIPTION
+    List the entries of DIR, or of the working directory when none is
+    given. Directories are shown with a trailing '/'.
+
+    DIR may be absolute or relative to the working directory. A path that
+    names a regular file is refused with "not a directory", and one that
+    names nothing with "no such directory": the two are different facts and
+    are reported as such.
+
+OPTIONS
+    -l      long format: the mode (drwxr-xr-x), the owner and the size of
+            each entry.
+
+SECURITY
+    The listing is read through the fs_server, which shows only what your
+    login may see. When you hold a directory capability, entries the
+    filesystem policy withholds from you are absent, not refused (see
+    fs.policy(5)).
+
+EXIT STATUS
+    ls is a shell builtin and sets no exit status.
+
+SEE ALSO
+    cd(1), stat(1), mkdir(1), hier(7)

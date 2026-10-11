@@ -1,0 +1,35 @@
+HORUS(7)                         Overviews                          HORUS(7)
+
+NAME
+    horus - overview of the system
+
+DESCRIPTION
+    Horus is a capability-based microkernel for x86-64. The kernel is
+    written in C, with its security core (capabilities, cryptography,
+    parsers) in no_std Rust. Everything else runs in ring 3: init, which
+    starts the system; fs_server, the filesystem; console_server, the
+    screen and keyboard; and the shell.
+
+    Authority comes from capabilities, never from identity or position
+    (capabilities(7)). A login has an identity, which the kernel attests
+    and nothing else can claim, but what a program may do is what its
+    capabilities say.
+
+    The boot is measured: the firmware measures the boot image, which pins
+    the kernel's hash, and the kernel measures its command line, its
+    module manifest and each module into the TPM. The volume key is sealed
+    to those measurements, so a changed boot cannot unlock the volume.
+
+    The volume is encrypted and authenticated block by block, with a
+    rollback tree over it. Swap, where configured, is sealed under a key
+    that lives only in memory for one boot.
+
+    FINDING YOUR WAY
+      help              the commands, grouped
+      man NAME          a page from this manual
+      hier(7)           where things are
+      capabilities(7)   how authority works
+      capview(1)        what every program holds, now
+
+SEE ALSO
+    sh(1), hier(7), capabilities(7), fs.policy(5)

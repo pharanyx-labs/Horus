@@ -1,0 +1,25 @@
+MAN(1)                         User Commands                          MAN(1)
+
+NAME
+    man - read a manual page
+
+SYNOPSIS
+    man [NAME]
+
+DESCRIPTION
+    Print the manual page NAME. man reads /usr/share/man/NAME first; if
+    there is none it falls back to a short page compiled into the shell,
+    which covers the builtins and works before any filesystem is
+    reachable. With no NAME it lists the built-in pages.
+
+    Pages are plain text, already formatted, and are printed as they are.
+    The section follows the name in references, as in ls(1): 1 for
+    commands, 5 for configuration files, 7 for overviews and 8 for the
+    administrator's commands.
+
+FILES
+    /usr/share/man/   the pages, rebuilt from the verified boot modules at
+                      every boot (hier(7))
+
+SEE ALSO
+    apropos(1), whatis(1), help(1), horus(7)

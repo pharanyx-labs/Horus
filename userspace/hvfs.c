@@ -380,6 +380,30 @@ static int cap_walk(int from, const char comps[][FS_NAME_MAX], int n,
     return 0;
 }
 
+/* Give the file `file` a second name `name` in directory `dir`, both held as
+ * filesystem capabilities (design §11.1 step 4(c)). A capability never names an
+ * inode, so the file goes WITH the request as a carried capability
+ * (SYS_IPC_CALL_CAP) and fs_server takes its object from what the kernel
+ * attests. The server keeps the decision 11 rule (the directory must already
+ * hold a name for the file) and refuses a name that would carry more authority
+ * than `file` does. Returns the server's rc (0, or negative). */
+int hvfs_link_cap(const struct hvfs_obj *dir, const struct hvfs_obj *file, const char *name) {
+    if (!dir || !file || !dir->cap || !file->cap || !name) return HVFS_ERR_INVAL;
+    unsigned n = 0;
+    while (name[n]) n++;
+    if (n == 0 || n >= FS_NAME_MAX) return HVFS_ERR_INVAL;
+    struct fs_request rq;
+    struct fs_response rp;
+    umemset(&rq, 0, sizeof(rq));
+    rq.magic = FS_PROTO_MAGIC;
+    rq.op = FS_OP_LINK;
+    umemcpy(rq.name, name, n + 1u);
+    umemset(&rp, 0, sizeof(rp));
+    int r = sys_ipc_call_cap((unsigned)dir->slot, IPC_NO_CAP, &rq, sizeof(rq), &rp,
+                             (unsigned)file->slot);
+    return (r < 0) ? HVFS_ERR_NOCAP : (rp.magic != FS_PROTO_MAGIC) ? HVFS_ERR_INVAL : rp.rc;
+}
+
 /* Split `p` into components, resolving "." and ".." against the components
  * already taken, so ".." pops what this walk descended through and never
  * rises above where it started: the same pin walk_body keeps, and the server
@@ -469,23 +493,42 @@ int hvfs_lookup(const char *path, const struct hvfs_obj *cwd, int want_parent,
  * HVFS_GRANT_UNNARROWED=1 is the control arm for make
  * smoke-fs-cap-posix-grant-control: the source itself is granted, every right
  * this task holds included. Never ship. */
+/* Why the last hvfs_grant_fs failed (hvfs_grant_why), so a spawner can say
+ * more than that it did: a refusal that names no cause cannot be diagnosed from
+ * a CI log, where the machine is gone by the time anyone reads it. */
+static int g_grant_stage, g_grant_krc;
+
+static int grant_fail(int stage, int krc) {
+    g_grant_stage = stage;
+    g_grant_krc = krc;
+    return -1;
+}
+
+void hvfs_grant_why(int *stage, int *krc) {
+    if (stage) *stage = g_grant_stage;
+    if (krc) *krc = g_grant_krc;
+}
+
 static int grant_one(int child, int src, uint32_t dest, uint32_t fs_rights, struct hvfs_obj *kept) {
     kept->slot = -1; kept->ino = 0; kept->cap = 1; kept->owned = 0; kept->type = 0;
 #ifdef HVFS_GRANT_UNNARROWED
     (void)fs_rights;
-    return sys_cap_grant(child, (uint32_t)src, dest) == 0 ? 0 : -1;
+    int r0 = sys_cap_grant(child, (uint32_t)src, dest);
+    return r0 == 0 ? 0 : grant_fail(HVFS_GRANT_WHY_GRANT, r0);
 #else
     int t = hvfs_slot_alloc();
-    if (t < 0) return -1;
+    if (t < 0) return grant_fail(HVFS_GRANT_WHY_POOL, 0);
     uint32_t rights = CAP_RIGHT_WRITE | CAP_RIGHT_GRANT | CAP_RIGHT_MINT | CAP_RIGHT_REVOKE |
                       (fs_rights & FS_R_ALL);
-    if (sys_cap_mint(t, src, rights) != 0) {
+    int r = sys_cap_mint(t, src, rights);
+    if (r != 0) {
         g_pool_used[t - CAPSLOT_FS_POOL_FIRST] = 0;   /* nothing was minted */
-        return -1;
+        return grant_fail(HVFS_GRANT_WHY_MINT, r);
     }
     kept->slot = t;
     kept->owned = 1;
-    return sys_cap_grant(child, (uint32_t)t, dest) == 0 ? 0 : -1;
+    r = sys_cap_grant(child, (uint32_t)t, dest);
+    return r == 0 ? 0 : grant_fail(HVFS_GRANT_WHY_GRANT, r);
 #endif
 }
 
@@ -499,8 +542,13 @@ int hvfs_grant_fs(int child_tid, const struct hvfs_obj *root, const struct hvfs_
                   uint32_t fs_rights, struct hvfs_grant *g) {
     if (!g) return -1;
     g->root.owned = 0; g->cwd.owned = 0;
-    if (!root || !cwd || !root->cap || !cwd->cap || root->slot < 0 || cwd->slot < 0) return -1;
+    g_grant_stage = 0; g_grant_krc = 0;
+    if (!root || !cwd || !root->cap || !cwd->cap || root->slot < 0 || cwd->slot < 0)
+        return grant_fail(HVFS_GRANT_WHY_ARGS, 0);
     if (grant_one(child_tid, root->slot, CAPSLOT_FS_ROOT, fs_rights, &g->root) != 0) return -1;
-    if (grant_one(child_tid, cwd->slot, CAPSLOT_FS_CWD, fs_rights, &g->cwd) != 0) return -1;
+    if (grant_one(child_tid, cwd->slot, CAPSLOT_FS_CWD, fs_rights, &g->cwd) != 0) {
+        g_grant_stage += HVFS_GRANT_WHY_CWD;
+        return -1;
+    }
     return 0;
 }

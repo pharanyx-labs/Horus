@@ -1,0 +1,16 @@
+TOUCH(1)                       User Commands                        TOUCH(1)
+
+NAME
+    touch - create an empty file
+
+SYNOPSIS
+    touch NAME
+
+DESCRIPTION
+    Create an empty regular file called NAME in the working directory,
+    owned by your login with mode 0644. A name that already exists is
+    refused; touch does not change times, because the filesystem keeps
+    none.
+
+SEE ALSO
+    echo(1), rm(1), chmod(1)

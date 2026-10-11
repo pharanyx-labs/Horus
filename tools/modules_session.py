@@ -79,6 +79,11 @@ def run():
         step("man tail reads the page from /usr/share/man")
         cmd("man hier", "Horus Filesystem Hierarchy")
         step("man hier documents the layout")
+        # The manual ships as one archive module that fs_server unpacks
+        # (docs/design/configuration.md section 4): a page that exists only
+        # in the archive, not as a module of its own.
+        cmd("man capabilities", "CAPABILITIES(7)", "NOTHING IS GRANTED FOR WHO YOU ARE")
+        step("man capabilities reads a page unpacked from the manual archive")
 
         # printf and tail actually run from /bin.
         cmd("printf %s=%d\\n foo 7", "foo=7")

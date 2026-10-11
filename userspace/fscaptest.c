@@ -71,6 +71,7 @@
 #define SLOT_WRO    46
 #define SLOT_NOLOOK 47
 #define SLOT_WSCRAP 48
+#define SLOT_LRO    49    /* a read-only copy of a session file, for link */
 #define SLOT_SROOT  50    /* an ordinary session's root */
 #define SLOT_SCWD   51    /* and its working directory */
 #define SLOT_SX     52
@@ -175,6 +176,61 @@ static uint32_t rights_of(unsigned slot)
     struct cap_info ci;
     if (sys_cap_enumerate(sys_getpid(), slot, &ci) != 0 || !ci.occupied) return 0;
     return ci.rights;
+}
+
+/* The permission bits a stat through `slot` reports, or 0xFFFFFFFF if it
+ * failed or did not name the caller as the owner (§7.1: uid and gid say "you"). */
+static uint32_t mode_of(unsigned slot)
+{
+    struct fs_request rq;
+    fill(&rq, FS_OP_STAT, 0);
+    if (call(slot, IPC_NO_CAP, &rq) != 0) return 0xFFFFFFFFu;
+    const struct fs_response *rp = (const struct fs_response *)rbuf;
+    if (rp->uid != sys_getuid()) return 0xFFFFFFFFu;
+    return rp->mode & 07777u;
+}
+
+/* A link through directory `dir` naming `name`, carrying `file` (or nothing,
+ * with IPC_NO_CAP), answered with the server's rc. */
+static int link_rc(unsigned dir, unsigned file, const char *name)
+{
+    struct fs_request rq;
+    fill(&rq, FS_OP_LINK, name);
+    for (int tries = 0; tries < 200000; tries++) {
+        int r = sys_ipc_call_cap(dir, IPC_NO_CAP, &rq, sizeof(rq), rbuf, file);
+        if (r >= (int)sizeof(struct fs_response)) return ((struct fs_response *)rbuf)->rc;
+        if (r >= 0) return -1000;
+        if (r != IPC_AGAIN) return -2000 + r;
+        sys_yield();
+    }
+    return -3000;
+}
+
+/* The inode a stat through `slot` reports, or 0xFFFFFFFF. */
+static uint32_t ino_of(unsigned slot)
+{
+    struct fs_request rq;
+    fill(&rq, FS_OP_STAT, 0);
+    if (call(slot, IPC_NO_CAP, &rq) != 0) return 0xFFFFFFFFu;
+    return ((const struct fs_response *)rbuf)->ino;
+}
+
+/* A chmod and a chown through `slot`, answered with the server's rc. */
+static int chmod_rc(unsigned slot, uint32_t mode)
+{
+    struct fs_request rq;
+    fill(&rq, FS_OP_CHMOD, 0);
+    rq.mode = mode;
+    return call(slot, IPC_NO_CAP, &rq);
+}
+
+static int chown_rc(unsigned slot, uint32_t uid, uint32_t gid)
+{
+    struct fs_request rq;
+    fill(&rq, FS_OP_CHOWN, 0);
+    rq.arg_uid = uid;
+    rq.arg_gid = gid;
+    return call(slot, IPC_NO_CAP, &rq);
 }
 
 /* Does a listing of `slot` hold only names in `allowed` (NUL-separated, ending
@@ -287,6 +343,39 @@ static void sessions(void)
     if (sys_cap_revoke(SLOT_SX) != 0) fail("session-revoke-x");
     ok();
 
+    /* THE TRUTHFUL VIEW (§7.1, S130): owner bits are the capability's rights,
+     * other bits the bound on everyone else's. A file in its own home is its
+     * alone; /bin is read and run by every account. */
+    if (mode_of(SLOT_SF) != 0700u) fail("session-stat-home-not-private");
+    if (mode_of(SLOT_SBIN) != 0505u) fail("session-stat-bin-not-shared");
+    ok();
+
+    /* CHMOD AND CHOWN SUCCEED WHEN THEY ASK FOR WHAT IS TRUE (§7.2, S131), and
+     * change nothing: the file is the user's alone, so 600 and 700 are true,
+     * and so is a chown to the caller itself. */
+    if (chmod_rc(SLOT_SF, 0600u) != 0) fail("session-chmod-600-private-refused");
+    if (chmod_rc(SLOT_SF, 0700u) != 0) fail("session-chmod-700-private-refused");
+    if (chown_rc(SLOT_SF, sys_getuid(), 0xFFFFFFFFu) != 0) fail("session-chown-self-refused");
+    if (mode_of(SLOT_SF) != 0700u) fail("session-chmod-stored-something");
+    ok();
+
+    /* LINK WITHIN ONE DIRECTORY (step 4(c), S132). The file goes with the
+     * request as a carried capability, never as an inode number; the new
+     * name is in the directory invoked, beside the name the file has. */
+    if (link_rc(SLOT_SCWD, SLOT_SF, "notes2") != 0) fail("session-link-refused");
+    if (walk1(SLOT_SCWD, SLOT_SX, "notes2", 0) != 0) fail("session-link-name-missing");
+    if (ino_of(SLOT_SX) != ino_of(SLOT_SF)) fail("session-link-not-the-same-file");
+    if (sys_cap_revoke(SLOT_SX) != 0) fail("session-link-revoke");
+    /* NO NEW AUTHORITY THROUGH THE NEW NAME: the home would give a name in it
+     * write, so a read-only capability to the file may not make one. */
+    if (sys_cap_mint(SLOT_LRO, SLOT_SF, CAP_RIGHT_WRITE | CAP_RIGHT_REVOKE | FS_R_READ) != 0)
+        fail("session-link-mint-readonly");
+    if (link_rc(SLOT_SCWD, SLOT_LRO, "notes3") != SYS_ERR_PERM) fail("session-link-widened");
+    if (sys_cap_revoke(SLOT_LRO) != 0) fail("session-link-revoke-ro");
+    /* Nothing carried is no source at all. */
+    if (link_rc(SLOT_SCWD, IPC_NO_CAP, "notes4") != SYS_ERR_INVAL) fail("session-link-without-source");
+    ok();
+
     /* ITS OWN /tmp (S129): read, write, lookup, create, delete and setattr, and
      * not exec. A file, and a tree deeper than any fixed bound a sweep might
      * have, so that its end is shown to remove all of it. */
@@ -297,6 +386,10 @@ static void sessions(void)
     fill(&rq, FS_OP_CREATE, "mine");
     if (call(SLOT_STMP, SLOT_TX, &rq) != 0) fail("session-tmp-not-writable");
     if (sys_cap_revoke(SLOT_TX) != 0) fail("session-tmp-revoke");
+    /* A link into another directory is a move across directories, refused
+     * EXDEV as a rename across them is (decision 11): the home's file, a name
+     * in /tmp. */
+    if (link_rc(SLOT_STMP, SLOT_SF, "fromhome") != SYS_ERR_XDEV) fail("session-link-across-directories");
     {
         const char *dd[12] = { "d", "d", "d", "d", "d", "d", "d", "d", "d", "d", "d", "d" };
         for (unsigned k = 0; k < 12; k++) {
@@ -313,6 +406,7 @@ static void sessions(void)
     }
     if (walk1(SLOT_SROOT, SLOT_SX, FS_SESSION_TMP_STORE_NAME, 0) != SYS_ERR_NOENT)
         fail("session-tmp-store-visible-to-user");
+    if (mode_of(SLOT_STMP) != 0700u) fail("session-stat-tmp-not-private");
     ok();
 
     /* THE KERNEL STILL BOUNDS IT: a read-only copy of the root walks to the home
@@ -349,6 +443,40 @@ static void sessions(void)
     fill(&rq, FS_OP_DELETE, "tmp");
     if (call(SLOT_AROOT, IPC_NO_CAP, &rq) != SYS_ERR_PERM) fail("session-tmp-deleted");
     if (sys_cap_revoke(SLOT_ATMP) != 0) fail("session-admin-tmp-revoke");
+    ok();
+
+    /* THE BOUND COMES FROM WHERE THE OBJECT IS (decision 17). The user's file,
+     * reached by the administrator, is reached by its owner too: other bits are
+     * every right, though no grant at the administrator's root names anyone
+     * else. The administrator's own grants never count as "other" (decision
+     * 16), so a file the user cannot reach shows none. */
+    if (walk1(SLOT_AROOT, SLOT_AX, "home", "user") != 0) fail("session-admin-walk-home");
+    fill(&rq, FS_OP_LOOKUP, "notes");
+    if (call(SLOT_AX, SLOT_TX, &rq) != 0) fail("session-admin-lookup-notes");
+    if (mode_of(SLOT_TX) != 0707u) fail("session-stat-admin-bound-low");
+    /* ... AND ARE REFUSED WHEN THEY DO NOT. The user reaches this file too, so
+     * a chmod 600 that would claim otherwise fails (the design's step 4 gate),
+     * and so does every mode that is not exactly true, and a chown to anyone
+     * but the caller. */
+    if (chmod_rc(SLOT_TX, 0600u) != SYS_ERR_PERM) fail("session-chmod-shared-succeeded");
+    if (chmod_rc(SLOT_TX, 0707u) != 0) fail("session-chmod-true-shared-refused");
+    if (chmod_rc(SLOT_TX, 0777u) != SYS_ERR_PERM) fail("session-chmod-group-succeeded");
+    if (chmod_rc(SLOT_TX, 04707u) != SYS_ERR_PERM) fail("session-chmod-setuid-succeeded");
+    if (chown_rc(SLOT_TX, 1000u, 0xFFFFFFFFu) != SYS_ERR_PERM) fail("session-chown-away-succeeded");
+    if (sys_cap_revoke(SLOT_TX) != 0 || sys_cap_revoke(SLOT_AX) != 0) fail("session-admin-revoke3");
+    if (walk1(SLOT_AROOT, SLOT_AX, "etc", 0) != 0) fail("session-admin-walk-etc");
+    if (mode_of(SLOT_AX) != 0700u) fail("session-stat-admin-etc-not-private");
+    if (chmod_rc(SLOT_AX, 0705u) != SYS_ERR_PERM) fail("session-chmod-looser-succeeded");
+    if (sys_cap_revoke(SLOT_AX) != 0) fail("session-admin-revoke4");
+    ok();
+
+    /* A RENAME ONTO OR OFF A NAME THE POLICY NAMES IS EXDEV (§5.5 within one
+     * directory): under /home every name is some account's home. */
+    if (walk1(SLOT_AROOT, SLOT_AX, "home", 0) != 0) fail("session-admin-walk-home2");
+    fill(&rq, FS_OP_RENAME, "other");
+    ustrncpy((char *)rq.data, "other2", FS_DIRENT_NAME);
+    if (call(SLOT_AX, IPC_NO_CAP, &rq) != SYS_ERR_XDEV) fail("session-renamed-policy-name");
+    if (sys_cap_revoke(SLOT_AX) != 0) fail("session-admin-revoke5");
     ok();
 
     fill(&rq, FS_OP_MKDIR, "admdir");

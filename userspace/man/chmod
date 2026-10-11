@@ -11,10 +11,20 @@ DESCRIPTION
     digits (for example 644 or 0755). There is no symbolic form, and a
     mode that does not parse is refused rather than partly applied.
 
+THROUGH A CAPABILITY
+    In a session, who may reach a file is the filesystem policy's to say,
+    not the mode bits', so chmod stores nothing. It succeeds when it asks
+    for what is already true: no set-id or sticky bit, group bits zero,
+    other bits exactly what stat(1) reports for everyone else, and owner
+    bits among your own rights. Otherwise it is refused. So chmod 600 on
+    a file another account can also reach fails, and that is how you
+    learn the file is shared.
+
 SECURITY
-    The owner of a file may change its mode, and so may the administrator.
-    The fs_server decides, against the identity the kernel attests for
-    your login, never against anything the shell says.
+    Without a session, the owner of a file may change its mode, and so
+    may the administrator. The fs_server decides, against the identity
+    the kernel attests for your login, never against anything the shell
+    says.
 
 SEE ALSO
     stat(1), chown(8)

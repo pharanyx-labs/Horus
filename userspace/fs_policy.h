@@ -615,4 +615,30 @@ static int fsp_visible(const struct fsp_tree *t, int n, const char *name, int is
     return fsp_step(t, n, name, is_dir, &c, &r) >= 0;
 }
 
+/* THE TRUTHFUL CHMOD (§7.2, decision 18). Nothing is stored: a chmod succeeds
+ * when the mode it asks for is already true, and is refused when it is not, so
+ * that a user who asks for privacy on a file that is shared learns it is shared.
+ * True means: no set-user-id, set-group-id or sticky bit, which this system has
+ * no meaning for (§6.3); group bits zero, as stat reports them; other bits
+ * EXACTLY the bound on everyone else's rights, so a looser mode is refused as
+ * firmly as a tighter one (it would report an exposure that is not real); and
+ * owner bits among the caller's own, since showing fewer of one's own rights
+ * claims no protection that is false. That last is what lets `chmod 600`
+ * succeed on a home's files, which the default policy grants EXEC. */
+static int fsp_chmod_true(uint32_t mode, uint32_t own, uint32_t other, int is_dir)
+{
+    if (mode & 07000u) return 0;
+    if (mode & 00070u) return 0;
+    if ((mode & 00007u) != fsp_bits(other, is_dir)) return 0;
+    return (((mode >> 6) & 07u) & ~fsp_bits(own, is_dir)) == 0;
+}
+
+/* THE TRUTHFUL CHOWN (§7.2): the owner stat reports is the caller, so a chown
+ * to the caller's own uid and primary group, or to -1 (leave it), is true and
+ * every other is not. */
+static int fsp_chown_true(uint32_t uid, uint32_t gid, uint32_t cuid, uint32_t cgid)
+{
+    return (uid == 0xFFFFFFFFu || uid == cuid) && (gid == 0xFFFFFFFFu || gid == cgid);
+}
+
 #endif /* HORUS_FS_POLICY_H */

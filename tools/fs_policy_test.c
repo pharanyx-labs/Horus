@@ -345,6 +345,27 @@ int main(void)
     check(fsp_mode(FS_R_APPEND, FS_R_APPEND, 0) == 0202, "mode-append-is-w");
     check(fsp_mode(FS_R_DELETE, 0, 1) == 0200, "mode-dir-delete-is-w");
 
+    /* ---- chmod and chown answer the truth (§7.2, decision 18) ---- */
+    {
+        const uint32_t file_all = FS_R_ALL & FS_R_FILE_MASK;
+        check(fsp_chmod_true(0600, file_all, 0, 0), "chmod-600-private-true");
+        check(fsp_chmod_true(0700, file_all, 0, 0), "chmod-700-private-true");
+        check(!fsp_chmod_true(0644, file_all, 0, 0), "chmod-looser-refused");
+        check(!fsp_chmod_true(0600, file_all, RX, 0), "chmod-600-shared-refused");
+        check(fsp_chmod_true(0605, file_all, RX, 0), "chmod-exact-other-true");
+        check(!fsp_chmod_true(0640, file_all, 0, 0), "chmod-group-refused");
+        check(!fsp_chmod_true(04600, file_all, 0, 0) && !fsp_chmod_true(02600, file_all, 0, 0) &&
+              !fsp_chmod_true(01600, file_all, 0, 0), "chmod-setid-sticky-refused");
+        check(!fsp_chmod_true(0600, FS_R_READ, 0, 0), "chmod-owner-more-than-held-refused");
+        check(fsp_chmod_true(0400, FS_R_READ, 0, 0) && fsp_chmod_true(0000, FS_R_READ, 0, 0),
+              "chmod-owner-fewer-true");
+        check(fsp_chmod_true(0705, FS_R_ALL, FS_R_READ | FS_R_LOOKUP, 1), "chmod-dir-exact-true");
+        check(fsp_chown_true(0xFFFFFFFFu, 0xFFFFFFFFu, 5, 7) && fsp_chown_true(5, 7, 5, 7) &&
+              fsp_chown_true(5, 0xFFFFFFFFu, 5, 7), "chown-self-true");
+        check(!fsp_chown_true(6, 0xFFFFFFFFu, 5, 7) && !fsp_chown_true(5, 8, 5, 7) &&
+              !fsp_chown_true(0, 0, 5, 7), "chown-other-refused");
+    }
+
     printf("FS_POLICY_TEST: PASS %d checks\n", checks);
     return 0;
 }

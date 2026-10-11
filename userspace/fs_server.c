@@ -948,6 +948,8 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
     case FS_OP_WRITE:
     case FS_OP_TRUNCATE: need = FS_R_WRITE;  break;
     case FS_OP_APPEND:   need = (have & FS_R_APPEND) ? FS_R_APPEND : FS_R_WRITE; break;
+    case FS_OP_CHMOD:
+    case FS_OP_CHOWN:    need = FS_R_READ;   break;   /* what stat needs: they answer as it does */
     case FS_OP_RENAME:
         /* Within the capability's directory only: a rename there needs CREATE
          * for the new name and DELETE for the old (§5.5). Naming a second
@@ -957,8 +959,8 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
         need = FS_R_CREATE | FS_R_DELETE; is_dir_op = 1; names = 1;
         break;
     default:
-        /* chmod/chown (step 4) and link are not on this path. A link names its
-         * source by inode, which a capability never does. */
+        /* Link is not on this path until step 4(c): it names its source by
+         * inode, which a capability never does. */
         rp->rc = SYS_ERR_NOSYS;
         return;
     }
@@ -1009,6 +1011,29 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
             rp->rc = SYS_ERR_XDEV;
             return;
         }
+    }
+
+    /* CHMOD AND CHOWN THROUGH A CAPABILITY STORE NOTHING (§7.2, decision 18).
+     * The mode bits on the disk decide nothing on this path, so writing them
+     * would change no one's access while reporting that it had. Instead each
+     * is answered against the truth stat reports: success when it asks for what
+     * is already true, PERM when it does not, so `chmod 600` on a file another
+     * grant reaches fails loudly and says the file is shared. */
+    if (rq->op == FS_OP_CHMOD || rq->op == FS_OP_CHOWN) {
+        struct fs_stat st;
+        if (sys_fs_stat(obj, &st) != 0) { rp->rc = SYS_ERR_NOENT; return; }
+        int is_true = (rq->op == FS_OP_CHMOD)
+            ? fsp_chmod_true(rq->mode & 07777u, have & FS_R_ALL, fs_pol_other(&pol, st.links),
+                             st.type == FS_TYPE_DIR)
+            : fsp_chown_true(rq->arg_uid, rq->arg_gid, cuid, cgid);
+#ifdef FS_CAP_CHMOD_UNTRUE
+        /* CONTROL ARM, never ship (smoke-fs-cap-chmod-control): every chmod
+         * and chown through a capability reports success, the reassuring
+         * answer §7 exists to refuse. */
+        is_true = 1;
+#endif
+        rp->rc = is_true ? 0 : SYS_ERR_PERM;
+        return;
     }
 
     struct fs_request r2 = *rq;

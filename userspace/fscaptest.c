@@ -189,6 +189,24 @@ static uint32_t mode_of(unsigned slot)
     return rp->mode & 07777u;
 }
 
+/* A chmod and a chown through `slot`, answered with the server's rc. */
+static int chmod_rc(unsigned slot, uint32_t mode)
+{
+    struct fs_request rq;
+    fill(&rq, FS_OP_CHMOD, 0);
+    rq.mode = mode;
+    return call(slot, IPC_NO_CAP, &rq);
+}
+
+static int chown_rc(unsigned slot, uint32_t uid, uint32_t gid)
+{
+    struct fs_request rq;
+    fill(&rq, FS_OP_CHOWN, 0);
+    rq.arg_uid = uid;
+    rq.arg_gid = gid;
+    return call(slot, IPC_NO_CAP, &rq);
+}
+
 /* Does a listing of `slot` hold only names in `allowed` (NUL-separated, ending
  * in an empty one), and every name in `needed`? */
 static int lists_only(unsigned slot, const char *allowed, const char *needed)
@@ -306,6 +324,15 @@ static void sessions(void)
     if (mode_of(SLOT_SBIN) != 0505u) fail("session-stat-bin-not-shared");
     ok();
 
+    /* CHMOD AND CHOWN SUCCEED WHEN THEY ASK FOR WHAT IS TRUE (§7.2, S131), and
+     * change nothing: the file is the user's alone, so 600 and 700 are true,
+     * and so is a chown to the caller itself. */
+    if (chmod_rc(SLOT_SF, 0600u) != 0) fail("session-chmod-600-private-refused");
+    if (chmod_rc(SLOT_SF, 0700u) != 0) fail("session-chmod-700-private-refused");
+    if (chown_rc(SLOT_SF, sys_getuid(), 0xFFFFFFFFu) != 0) fail("session-chown-self-refused");
+    if (mode_of(SLOT_SF) != 0700u) fail("session-chmod-stored-something");
+    ok();
+
     /* ITS OWN /tmp (S129): read, write, lookup, create, delete and setattr, and
      * not exec. A file, and a tree deeper than any fixed bound a sweep might
      * have, so that its end is shown to remove all of it. */
@@ -380,9 +407,19 @@ static void sessions(void)
     fill(&rq, FS_OP_LOOKUP, "notes");
     if (call(SLOT_AX, SLOT_TX, &rq) != 0) fail("session-admin-lookup-notes");
     if (mode_of(SLOT_TX) != 0707u) fail("session-stat-admin-bound-low");
+    /* ... AND ARE REFUSED WHEN THEY DO NOT. The user reaches this file too, so
+     * a chmod 600 that would claim otherwise fails (the design's step 4 gate),
+     * and so does every mode that is not exactly true, and a chown to anyone
+     * but the caller. */
+    if (chmod_rc(SLOT_TX, 0600u) != SYS_ERR_PERM) fail("session-chmod-shared-succeeded");
+    if (chmod_rc(SLOT_TX, 0707u) != 0) fail("session-chmod-true-shared-refused");
+    if (chmod_rc(SLOT_TX, 0777u) != SYS_ERR_PERM) fail("session-chmod-group-succeeded");
+    if (chmod_rc(SLOT_TX, 04707u) != SYS_ERR_PERM) fail("session-chmod-setuid-succeeded");
+    if (chown_rc(SLOT_TX, 1000u, 0xFFFFFFFFu) != SYS_ERR_PERM) fail("session-chown-away-succeeded");
     if (sys_cap_revoke(SLOT_TX) != 0 || sys_cap_revoke(SLOT_AX) != 0) fail("session-admin-revoke3");
     if (walk1(SLOT_AROOT, SLOT_AX, "etc", 0) != 0) fail("session-admin-walk-etc");
     if (mode_of(SLOT_AX) != 0700u) fail("session-stat-admin-etc-not-private");
+    if (chmod_rc(SLOT_AX, 0705u) != SYS_ERR_PERM) fail("session-chmod-looser-succeeded");
     if (sys_cap_revoke(SLOT_AX) != 0) fail("session-admin-revoke4");
     ok();
 

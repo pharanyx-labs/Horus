@@ -47,7 +47,7 @@ gates that match kernel strings are moving to COM3, which only the kernel can wr
 ## The integration gates
 
 
-There are 492 `smoke-*` targets: 221 gates and 271 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Four gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
+There are 494 `smoke-*` targets: 222 gates and 272 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Four gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
 
 
 ### Capabilities and authorisation

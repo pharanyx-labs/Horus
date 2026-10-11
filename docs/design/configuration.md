@@ -1,6 +1,6 @@
 # Configuration files and manual pages
 
-**Proposed 2026-10-11; nothing built yet.** The maintainer asked, on the night of 2026-10-11, for
+**Proposed 2026-10-11; step 2, the manual, built (#545); step 3, the files, follows.** The maintainer asked, on the night of 2026-10-11, for
 "a few .conf files in /etc so the user can finetune how horus works", with the instruction to be
 careful: "ensure you don't make it too easy to make the kernel more insecure. be minimal but still
 give a small bit of config across the whole system. comment each conf file thoroughly". The same

@@ -576,7 +576,9 @@ volume's `/etc/fs.policy` otherwise, chosen by the store's kind as `SYS_FS_STORE
 it), answers `FS_OP_SESSION` only through init's untokened capability, and at every directory on
 the way to a grant allows only what the policy gives there (S128). Each session's `/tmp` is a
 directory of its own, kept in a store no session can see and removed when the session ends
-(S129). Once logins are handed
+(S129). A stat through a session's capability is synthesised, never read from the disk: owner bits
+are the capability's rights, other bits a bound on every other account's grants at or above the
+policy node the token names, which the session's compiled tree also holds (S130). Once logins are handed
 sessions the uid path is removed (phase 1b of `docs/design/filesystem.md`, roadmap 2.10).
 
 ### `console_server`

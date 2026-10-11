@@ -2584,6 +2584,9 @@ jobs:
         run: make smoke-fs-cap-session-tmp-store-control
       - name: Control arm — a session's /tmp outlives the session
         run: make smoke-fs-cap-session-tmp-kept-control
+      # S130: a stat through a session's capability bounds who else reaches it.
+      - name: Control arm — the bound is taken at the root, not the token's node
+        run: make smoke-fs-cap-stat-control
       # The policy language and the persistent-volume rules, on the host: the
       # code fs_server compiles, tested where every input can be chosen.
       - name: Host test — the policy parser, the choice of policy by store kind, and the compiled rule

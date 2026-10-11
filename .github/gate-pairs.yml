@@ -106,6 +106,8 @@ control_arms:
   smoke-fs-cap-session-tmp-shared-control: smoke-fs-cap
   smoke-fs-cap-session-tmp-store-control: smoke-fs-cap
   smoke-fs-cap-session-tmp-kept-control: smoke-fs-cap
+  smoke-fs-cap-stat-control: smoke-fs-cap
+  smoke-fs-cap-chmod-control: smoke-fs-cap
   smoke-fs-policy-control: smoke-fs-policy
   smoke-fs-cap-posix-close-control: smoke-fs-cap-posix
   smoke-fs-cap-posix-grant-control: smoke-fs-cap-posix

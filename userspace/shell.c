@@ -467,9 +467,15 @@ static int sh_endow(int pid, struct hvfs_grant *g) {
     g->cwd.owned  = 0;
     if (!sh_capmode) return 0;
     if (hvfs_grant_fs(pid, &sh_root, &sh_cwd, FS_R_ALL, g) == 0) return 0;
+    int why, krc;
+    hvfs_grant_why(&why, &krc);
     hvfs_grant_release(g);
     (void)sys_kill(pid);
-    println("spawn: could not hand the program its filesystem; not run");
+    print("spawn: could not hand the program its filesystem (step ");
+    print_decimal((uint32_t)why);
+    print(", kernel ");
+    if (krc < 0) { print("-"); print_decimal((uint32_t)-krc); } else print_decimal((uint32_t)krc);
+    println("); not run");
     return -1;
 }
 
@@ -2139,9 +2145,13 @@ static void handle_command(char *cmd) {
          * SYS_IPC_SENDER, the uid the KERNEL attests for the calling task, and
          * SYS_AUTH rewrites that uid at every login -- so the attested identity
          * IS who is at the terminal, and a second check here would be a copy of
-         * the reference monitor's rule kept in a place nothing verifies. The
-         * rule is "owner or root" (fs_server.c, FS_OP_CHMOD) and a standard user
-         * changing the mode of their own file is correct, not an escalation. */
+         * the reference monitor's rule kept in a place nothing verifies. On the
+         * uid path the rule is "owner or root" (fs_server.c, FS_OP_CHMOD) and a
+         * standard user changing the mode of their own file is correct, not an
+         * escalation. Through a capability nothing is changed at all: the
+         * server answers whether the mode asked for is already true
+         * (fs_policy.h fsp_chmod_true, S131), so "is now" below is a truth the
+         * server confirmed, not a change it made. */
         const char *p = cmd + 6; while (*p == ' ') p++;
         uint32_t mode = 0; int digits = 0;
         while (*p >= '0' && *p <= '7') { mode = (mode << 3) | (uint32_t)(*p - '0'); p++; digits++; }
@@ -2170,8 +2180,10 @@ static void handle_command(char *cmd) {
             }
         }
     } else if (strncmp(cmd, "chown ", 6) == 0) {
-        /* Root only, enforced by fs_server against the attested uid -- see the
-         * note on chmod above for why the shell does not repeat the test.
+        /* Root only on the uid path, enforced by fs_server against the attested
+         * uid -- see the note on chmod above for why the shell does not repeat
+         * the test. Through a capability only a chown to the caller itself is
+         * true, and nothing is changed (fsp_chown_true, S131).
          *
          * Giving a file away is not the same act as changing its mode, which is
          * why the two rules differ: an owner who could hand a file to another

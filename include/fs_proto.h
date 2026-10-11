@@ -202,29 +202,43 @@ struct fs_response {
 #define FS_R_FILE_MASK (FS_R_READ | FS_R_WRITE | FS_R_APPEND | FS_R_SETATTR | FS_R_EXEC)
 #define FS_R_DIR_MASK  (FS_R_READ | FS_R_LOOKUP | FS_R_CREATE | FS_R_DELETE | FS_R_SETATTR)
 
-/* THE TOKEN (§5.2): bit 63 set (so a token is never 0, which means "untokened",
- * even for the root directory, inode 0), a 24-bit generation that fs_server keeps
- * per inode and raises when a name to it is removed (so a token never names a
- * different object than it was minted for: a stale one is refused NOENT), and the
- * inode. Bits 56-61 name the session's grant set G (§6.4; 0 is a capability with
- * no grant set) and bit 62 marks a TRACKED capability, one at a path where the
- * policy still has something to say below it (fs_policy.h, fs_server.c). */
+/* THE TOKEN (§5.2), from the top bit down:
+ *
+ *   63      always set, so a token is never 0 (0 means "untokened"), even for
+ *           the root directory, inode 0
+ *   62      TRACKED: the capability stands at a node of its session's policy
+ *           where the policy still has something to say below it
+ *   56-61   G, the session's grant set (§6.4); 0 is a capability with no grant
+ *           set (init's, step 1's)
+ *   51-55   the node of the session's compiled policy at or above the object
+ *           (decision 17): what bounds who else reaches it (§7.1), since v11
+ *           keeps no parent links from which to find a path. 0 without a G
+ *   32-50   the generation, 19 bits, which fs_server keeps per inode and raises
+ *           when a name to it is removed, so a token never names a different
+ *           object than it was minted for: a stale one is refused NOENT
+ *   0-31    the inode
+ */
 #define FS_TOKEN_VALID      (1ULL << 63)
-#define FS_TOKEN_GEN_MASK   0xFFFFFFu
+#define FS_TOKEN_GEN_MASK   0x7FFFFu
 static inline uint64_t fs_token(uint32_t ino, uint32_t gen) {
     return FS_TOKEN_VALID | ((uint64_t)(gen & FS_TOKEN_GEN_MASK) << 32) | ino;
 }
 static inline uint32_t fs_token_ino(uint64_t t) { return (uint32_t)t; }
 static inline uint32_t fs_token_gen(uint64_t t) { return (uint32_t)(t >> 32) & FS_TOKEN_GEN_MASK; }
+#define FS_TOKEN_NODE_SHIFT 51
+#define FS_TOKEN_NODE_MASK  0x1Fu       /* fs_policy.h's FSP_NODES must fit */
 #define FS_TOKEN_G_SHIFT    56
 #define FS_TOKEN_G_MASK     0x3Fu
 #define FS_TOKEN_TRACKED    (1ULL << 62)
 #define FS_SESSIONS_MAX     63          /* G is 1..63 */
-static inline uint64_t fs_token_in(uint32_t ino, uint32_t gen, uint32_t g, int tracked) {
+static inline uint64_t fs_token_in(uint32_t ino, uint32_t gen, uint32_t g, uint32_t node,
+                                   int tracked) {
     return fs_token(ino, gen) | ((uint64_t)(g & FS_TOKEN_G_MASK) << FS_TOKEN_G_SHIFT) |
+           ((uint64_t)(node & FS_TOKEN_NODE_MASK) << FS_TOKEN_NODE_SHIFT) |
            (tracked ? FS_TOKEN_TRACKED : 0);
 }
 static inline uint32_t fs_token_g(uint64_t t) { return (uint32_t)(t >> FS_TOKEN_G_SHIFT) & FS_TOKEN_G_MASK; }
+static inline uint32_t fs_token_node(uint64_t t) { return (uint32_t)(t >> FS_TOKEN_NODE_SHIFT) & FS_TOKEN_NODE_MASK; }
 static inline int fs_token_tracked(uint64_t t) { return (t & FS_TOKEN_TRACKED) != 0; }
 
 /* FS_SESSION (docs/design/filesystem.md §6.4, decision 13): what fs_server

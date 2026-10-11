@@ -177,6 +177,36 @@ static uint32_t rights_of(unsigned slot)
     return ci.rights;
 }
 
+/* The permission bits a stat through `slot` reports, or 0xFFFFFFFF if it
+ * failed or did not name the caller as the owner (§7.1: uid and gid say "you"). */
+static uint32_t mode_of(unsigned slot)
+{
+    struct fs_request rq;
+    fill(&rq, FS_OP_STAT, 0);
+    if (call(slot, IPC_NO_CAP, &rq) != 0) return 0xFFFFFFFFu;
+    const struct fs_response *rp = (const struct fs_response *)rbuf;
+    if (rp->uid != sys_getuid()) return 0xFFFFFFFFu;
+    return rp->mode & 07777u;
+}
+
+/* A chmod and a chown through `slot`, answered with the server's rc. */
+static int chmod_rc(unsigned slot, uint32_t mode)
+{
+    struct fs_request rq;
+    fill(&rq, FS_OP_CHMOD, 0);
+    rq.mode = mode;
+    return call(slot, IPC_NO_CAP, &rq);
+}
+
+static int chown_rc(unsigned slot, uint32_t uid, uint32_t gid)
+{
+    struct fs_request rq;
+    fill(&rq, FS_OP_CHOWN, 0);
+    rq.arg_uid = uid;
+    rq.arg_gid = gid;
+    return call(slot, IPC_NO_CAP, &rq);
+}
+
 /* Does a listing of `slot` hold only names in `allowed` (NUL-separated, ending
  * in an empty one), and every name in `needed`? */
 static int lists_only(unsigned slot, const char *allowed, const char *needed)
@@ -287,6 +317,22 @@ static void sessions(void)
     if (sys_cap_revoke(SLOT_SX) != 0) fail("session-revoke-x");
     ok();
 
+    /* THE TRUTHFUL VIEW (§7.1, S130): owner bits are the capability's rights,
+     * other bits the bound on everyone else's. A file in its own home is its
+     * alone; /bin is read and run by every account. */
+    if (mode_of(SLOT_SF) != 0700u) fail("session-stat-home-not-private");
+    if (mode_of(SLOT_SBIN) != 0505u) fail("session-stat-bin-not-shared");
+    ok();
+
+    /* CHMOD AND CHOWN SUCCEED WHEN THEY ASK FOR WHAT IS TRUE (§7.2, S131), and
+     * change nothing: the file is the user's alone, so 600 and 700 are true,
+     * and so is a chown to the caller itself. */
+    if (chmod_rc(SLOT_SF, 0600u) != 0) fail("session-chmod-600-private-refused");
+    if (chmod_rc(SLOT_SF, 0700u) != 0) fail("session-chmod-700-private-refused");
+    if (chown_rc(SLOT_SF, sys_getuid(), 0xFFFFFFFFu) != 0) fail("session-chown-self-refused");
+    if (mode_of(SLOT_SF) != 0700u) fail("session-chmod-stored-something");
+    ok();
+
     /* ITS OWN /tmp (S129): read, write, lookup, create, delete and setattr, and
      * not exec. A file, and a tree deeper than any fixed bound a sweep might
      * have, so that its end is shown to remove all of it. */
@@ -313,6 +359,7 @@ static void sessions(void)
     }
     if (walk1(SLOT_SROOT, SLOT_SX, FS_SESSION_TMP_STORE_NAME, 0) != SYS_ERR_NOENT)
         fail("session-tmp-store-visible-to-user");
+    if (mode_of(SLOT_STMP) != 0700u) fail("session-stat-tmp-not-private");
     ok();
 
     /* THE KERNEL STILL BOUNDS IT: a read-only copy of the root walks to the home
@@ -349,6 +396,40 @@ static void sessions(void)
     fill(&rq, FS_OP_DELETE, "tmp");
     if (call(SLOT_AROOT, IPC_NO_CAP, &rq) != SYS_ERR_PERM) fail("session-tmp-deleted");
     if (sys_cap_revoke(SLOT_ATMP) != 0) fail("session-admin-tmp-revoke");
+    ok();
+
+    /* THE BOUND COMES FROM WHERE THE OBJECT IS (decision 17). The user's file,
+     * reached by the administrator, is reached by its owner too: other bits are
+     * every right, though no grant at the administrator's root names anyone
+     * else. The administrator's own grants never count as "other" (decision
+     * 16), so a file the user cannot reach shows none. */
+    if (walk1(SLOT_AROOT, SLOT_AX, "home", "user") != 0) fail("session-admin-walk-home");
+    fill(&rq, FS_OP_LOOKUP, "notes");
+    if (call(SLOT_AX, SLOT_TX, &rq) != 0) fail("session-admin-lookup-notes");
+    if (mode_of(SLOT_TX) != 0707u) fail("session-stat-admin-bound-low");
+    /* ... AND ARE REFUSED WHEN THEY DO NOT. The user reaches this file too, so
+     * a chmod 600 that would claim otherwise fails (the design's step 4 gate),
+     * and so does every mode that is not exactly true, and a chown to anyone
+     * but the caller. */
+    if (chmod_rc(SLOT_TX, 0600u) != SYS_ERR_PERM) fail("session-chmod-shared-succeeded");
+    if (chmod_rc(SLOT_TX, 0707u) != 0) fail("session-chmod-true-shared-refused");
+    if (chmod_rc(SLOT_TX, 0777u) != SYS_ERR_PERM) fail("session-chmod-group-succeeded");
+    if (chmod_rc(SLOT_TX, 04707u) != SYS_ERR_PERM) fail("session-chmod-setuid-succeeded");
+    if (chown_rc(SLOT_TX, 1000u, 0xFFFFFFFFu) != SYS_ERR_PERM) fail("session-chown-away-succeeded");
+    if (sys_cap_revoke(SLOT_TX) != 0 || sys_cap_revoke(SLOT_AX) != 0) fail("session-admin-revoke3");
+    if (walk1(SLOT_AROOT, SLOT_AX, "etc", 0) != 0) fail("session-admin-walk-etc");
+    if (mode_of(SLOT_AX) != 0700u) fail("session-stat-admin-etc-not-private");
+    if (chmod_rc(SLOT_AX, 0705u) != SYS_ERR_PERM) fail("session-chmod-looser-succeeded");
+    if (sys_cap_revoke(SLOT_AX) != 0) fail("session-admin-revoke4");
+    ok();
+
+    /* A RENAME ONTO OR OFF A NAME THE POLICY NAMES IS EXDEV (§5.5 within one
+     * directory): under /home every name is some account's home. */
+    if (walk1(SLOT_AROOT, SLOT_AX, "home", 0) != 0) fail("session-admin-walk-home2");
+    fill(&rq, FS_OP_RENAME, "other");
+    ustrncpy((char *)rq.data, "other2", FS_DIRENT_NAME);
+    if (call(SLOT_AX, IPC_NO_CAP, &rq) != SYS_ERR_XDEV) fail("session-renamed-policy-name");
+    if (sys_cap_revoke(SLOT_AX) != 0) fail("session-admin-revoke5");
     ok();
 
     fill(&rq, FS_OP_MKDIR, "admdir");

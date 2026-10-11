@@ -45,7 +45,18 @@
  * deeper grant can only add (admin's "/ all" is not narrowed by an "@all /usr
  * read" line). A node with nothing granted at or above it is only on the way
  * to a grant: it gives LOOKUP and a listing filtered to the names that lead to
- * grants, and a name under it that leads to none is absent. */
+ * grants, and a name under it that leads to none is absent.
+ *
+ * WHO ELSE REACHES AN OBJECT (§7.1, decisions 16 and 17). The tree also holds
+ * the grants of every OTHER principal that lie inside the session's own reach,
+ * as nodes of their own where they need one, so that a stat can bound who else
+ * may read or write what it names: `other` at a node is the union of those
+ * grants at or above it. They change nothing the session may do or see. "Other"
+ * is every grant whose principal is not the session's account: @all, lines
+ * naming other accounts, and every other account's home (a wildcard under
+ * /home, since accounts are added at run time). Never the administrator's
+ * (@admin, or lines naming the uid-0 account): mode bits have never bounded
+ * the administrator. Never a private /tmp, which nobody else reaches. */
 #ifndef HORUS_FS_POLICY_H
 #define HORUS_FS_POLICY_H
 
@@ -58,6 +69,8 @@
 #define FSP_NAME        FS_DIRENT_NAME
 #define FSP_PRINCIPAL   32     /* struct user_entry's name field */
 #define FSP_NODES       32     /* nodes in one compiled session, root included */
+/* A token names a node in five bits (fs_proto.h, decision 17). */
+typedef char fsp_nodes_fit_token[(FSP_NODES - 1 <= FS_TOKEN_NODE_MASK) ? 1 : -1];
 
 /* What a pass-through node lets through: walk past it, and list it filtered. */
 #define FSP_PASS_RIGHTS (FS_R_LOOKUP | FS_R_READ)
@@ -90,18 +103,33 @@ struct fsp_node {
     /* The session's private /tmp (@self /tmp): fs_server answers this name with
      * the directory it made for the session, never with the volume's entry. */
     uint8_t  private_tmp;
+    /* Other principals (§7.1): `ogrant` is written for exactly this path, and
+     * `other` is the union at or above it, what bounds who else reaches it. */
+    uint32_t ogrant;
+    uint32_t other;
+    /* The wildcard under /home: every other account's home. It answers any
+     * name its parent has no node for (fsp_match), and its ogrant applies to
+     * every sibling but the session's own home (self_home). It has no name. */
+    uint8_t  wild;
+    uint8_t  self_home;
 };
 
 struct fsp_tree {
     unsigned        n;
     struct fsp_node node[FSP_NODES];
+    /* The other principals' grants did not fit, so none were kept and every
+     * bound in this session is every right (fsp_other). */
+    uint8_t         other_full;
 };
 
-/* Who the session is for, as the kernel's account list says. */
+/* Who the session is for, as the kernel's account list says. `admin_name` is
+ * the uid-0 account's name, whose lines are the administrator's and so never
+ * "other" (decision 16); 0 if there is none. */
 struct fsp_who {
     const char *name;
     const char *home;
     int         admin;       /* uid 0 */
+    const char *admin_name;
 };
 
 /* Decision 9's default for the ephemeral store of a live boot. */
@@ -316,6 +344,121 @@ static int fsp_grant(struct fsp_tree *t, char comp[][FSP_NAME], unsigned depth, 
     return cur;
 }
 
+/* ---- other principals (§7.1) --------------------------------------------- */
+
+/* A new node under `parent`, inside the session's reach: it inherits what the
+ * session may do there and changes none of it. -1 when the tree is full. */
+static int fsp_add_other(struct fsp_tree *t, int parent, const char *name, int wild)
+{
+    if (t->n >= FSP_NODES) return -1;
+    int c = (int)t->n++;
+    struct fsp_node *nn = &t->node[c];
+    for (unsigned k = 0; k < sizeof(*nn); k++) ((char *)nn)[k] = 0;
+    if (!wild) fsp_copy(nn->name, FSP_NAME, name, fsp_len(name));
+    nn->wild = (uint8_t)wild;
+    nn->parent = (int16_t)parent;
+    nn->eff = nn->below = t->node[parent].eff;
+    t->node[parent].nchild++;
+    return c;
+}
+
+/* Record another principal's grant of `rights` at the path. A grant the session
+ * cannot reach any part of is left out: it bounds nothing the session can stat.
+ * So is one through a private /tmp, which is not the volume's /tmp at all. A
+ * named node is made only where the session's own rights already reach (eff),
+ * so no name becomes visible that was not; the wildcard is the exception, and
+ * says why. -1 when the tree is full. */
+static int fsp_other_grant(struct fsp_tree *t, char comp[][FSP_NAME], unsigned depth,
+                           int wild_last, uint32_t rights)
+{
+    int cur = 0;
+    for (unsigned d = 0; d < depth; d++) {
+        if (t->node[cur].private_tmp) return 0;
+        int last_wild = wild_last && d == depth - 1;
+        int c = -1;
+        for (unsigned i = 1; i < t->n; i++) {
+            const struct fsp_node *nn = &t->node[i];
+            if (nn->parent != cur) continue;
+            if (last_wild ? nn->wild : (!nn->wild && fsp_streq(nn->name, comp[d]))) { c = (int)i; break; }
+        }
+        if (c < 0) {
+            /* The wildcard is made under any node, a pass-through included,
+             * because it covers the names that ARE nodes there too: a session
+             * granted /home/bob/shared walks through /home/bob, which bob's own
+             * home grant reaches. It cannot make a name visible: it has no
+             * children and, under a pass-through, no rights (fsp_step). */
+            if (t->node[cur].eff == 0 && !last_wild) return 0;
+            c = fsp_add_other(t, cur, comp[d], last_wild);
+            if (c < 0) return -1;
+        }
+        cur = c;
+    }
+    if (t->node[cur].private_tmp) return 0;
+    t->node[cur].ogrant |= rights;
+    return 0;
+}
+
+/* Add every other principal's grants to a compiled tree and set each node's
+ * `other`. If they do not fit, the tree is put back exactly as the session's
+ * own grants left it and other_full says every bound is every right: what the
+ * session may do never depends on whether the others fitted. */
+static void fsp_compile_others(const struct fsp_policy *p, const struct fsp_who *who,
+                               struct fsp_tree *t)
+{
+    const unsigned own_n = t->n;
+    int full = 0;
+    for (unsigned i = 0; i < p->n && !full; i++) {
+        const struct fsp_line *l = &p->line[i];
+        if (l->tmp) continue;                       /* a private /tmp: nobody else's */
+        if (fsp_streq(l->principal, "@admin")) continue;
+        if (l->home) {
+            /* Every other account's home, /home/<name>. The session's own is
+             * excluded where the wildcard is applied (self_home). */
+            char comp[2][FSP_NAME];
+            fsp_copy(comp[0], FSP_NAME, "home", 4);
+            comp[1][0] = 0;
+            if (fsp_other_grant(t, comp, 2, 1, l->rights) < 0) full = 1;
+            continue;
+        }
+        if (l->principal[0] != '@') {
+            if (fsp_streq(l->principal, who->name)) continue;                    /* the session's own */
+            if (who->admin_name && fsp_streq(l->principal, who->admin_name)) continue;  /* the administrator's */
+        }
+        if (fsp_other_grant(t, (char (*)[FSP_NAME])l->comp, l->depth, 0, l->rights) < 0) full = 1;
+    }
+    if (full) {
+        for (unsigned i = own_n; i < t->n; i++) t->node[t->node[i].parent].nchild--;
+        t->n = own_n;
+        for (unsigned i = 0; i < t->n; i++) t->node[i].ogrant = 0;
+        t->other_full = 1;
+    }
+
+    /* The session's own home, which the wildcard never covers. */
+    {
+        char comp[FSP_MAX_DEPTH][FSP_NAME];
+        int d = fsp_split(who->home, fsp_len(who->home), comp);
+        if (d == 2 && fsp_streq(comp[0], "home")) {
+            int h = fsp_child_of(t, 0, "home");
+            int c = h >= 0 ? fsp_child_of(t, h, comp[1]) : -1;
+            if (c >= 0) t->node[c].self_home = 1;
+        }
+    }
+
+    /* Parents before children, as fsp_grant and fsp_add_other append. */
+    for (unsigned i = 0; i < t->n; i++) {
+        struct fsp_node *nn = &t->node[i];
+        if (nn->private_tmp) { nn->other = 0; continue; }
+        uint32_t up = 0;
+        if (nn->parent >= 0) {
+            up = t->node[nn->parent].other;
+            if (!nn->wild && !nn->self_home)
+                for (unsigned k = 1; k < t->n; k++)
+                    if (t->node[k].wild && t->node[k].parent == nn->parent) up |= t->node[k].ogrant;
+        }
+        nn->other = nn->ogrant | up;
+    }
+}
+
 /* Compile the lines that apply to `who` into *t. Returns 0, or -1 when they do
  * not fit FSP_NODES (the session is refused; nothing partial is used). */
 static int fsp_compile(const struct fsp_policy *p, const struct fsp_who *who, struct fsp_tree *t)
@@ -323,6 +466,7 @@ static int fsp_compile(const struct fsp_policy *p, const struct fsp_who *who, st
     for (unsigned k = 0; k < sizeof(t->node[0]); k++) ((char *)&t->node[0])[k] = 0;
     t->node[0].parent = -1;
     t->n = 1;
+    t->other_full = 0;          /* a grant set's tree is reused by its next session */
 
     for (unsigned i = 0; i < p->n; i++) {
         const struct fsp_line *l = &p->line[i];
@@ -374,6 +518,8 @@ static int fsp_compile(const struct fsp_policy *p, const struct fsp_who *who, st
      * as for any line that cannot do what it says. */
     for (unsigned i = 1; i < t->n; i++)
         if (t->node[i].private_tmp && t->node[i].nchild > 0) return -1;
+
+    fsp_compile_others(p, who, t);
     return 0;
 }
 
@@ -386,18 +532,30 @@ static uint32_t fsp_op_rights(const struct fsp_tree *t, int n)
     return t->node[n].eff ? t->node[n].eff : FSP_PASS_RIGHTS;
 }
 
+/* The node for `name` under node `n`: one of that name, or else the wildcard
+ * (every other account's home), or -1. */
+static int fsp_match(const struct fsp_tree *t, int n, const char *name)
+{
+    int c = fsp_child_of(t, n, name);
+    if (c >= 0) return c;
+    for (unsigned i = 1; i < t->n; i++)
+        if (t->node[i].wild && t->node[i].parent == n) return (int)i;
+    return -1;
+}
+
 /* The step from tracked node `n` to its entry `name`, whose type is
  * `is_dir` (1) or not (0). Returns:
- *    1  the child is tracked at *child, and its capability carries *carry;
- *    0  the child is untracked, and its capability carries *carry;
+ *    1  the child is tracked at node *child, and its capability carries *carry;
+ *    0  the child is untracked, *child is the node at or above it (what its
+ *       token names, decision 17), and its capability carries *carry;
  *   -1  the name is absent from this session (NOENT, never PERM).
- * A tracked child is a directory on the way to a deeper grant; a granted path
+ * A tracked child is a directory on the way to a deeper node; a granted path
  * with nothing deeper, or anything below a granted path that the policy does
  * not name, is untracked and from there the kernel's intersection bounds it. */
 static int fsp_step(const struct fsp_tree *t, int n, const char *name, int is_dir,
                     int *child, uint32_t *carry)
 {
-    int c = fsp_child_of(t, n, name);
+    int c = fsp_match(t, n, name);
     if (c >= 0) {
         const struct fsp_node *cn = &t->node[c];
         if (cn->nchild > 0 && is_dir) { *child = c; *carry = cn->below; return 1; }
@@ -405,12 +563,42 @@ static int fsp_step(const struct fsp_tree *t, int n, const char *name, int is_di
          * what is granted at or above it applies, and without that it is
          * absent rather than readable as a pass-through. */
         if (cn->eff == 0) return -1;
-        *child = -1; *carry = cn->eff;
+        *child = c; *carry = cn->eff;
         return 0;
     }
     if (t->node[n].eff == 0) return -1;
-    *child = -1; *carry = t->node[n].eff;
+    *child = n; *carry = t->node[n].eff;
     return 0;
+}
+
+/* Is a name under node `n` one the policy names, for anyone? Such a name
+ * decides which grants reach what is under it, so moving an object onto it or
+ * off it would change who reaches the object without changing the bound in
+ * the capabilities already minted to it (§5.5, condition 2, within one
+ * directory). Under the wildcard every name is one. */
+static int fsp_names(const struct fsp_tree *t, int n, const char *name)
+{
+    return fsp_match(t, n, name) >= 0;
+}
+
+/* THE MODE BITS (§7.1): `r` for READ; `w` for WRITE or APPEND on a file, CREATE
+ * or DELETE on a directory, the rights that change one; `x` for EXEC on a file,
+ * LOOKUP on a directory. One mapping for the caller's rights and for everyone
+ * else's, so an append-only grant shows as `w`: a bound must never understate. */
+static uint32_t fsp_bits(uint32_t r, int is_dir)
+{
+    uint32_t b = 0;
+    if (r & FS_R_READ) b |= 4u;
+    if (r & (is_dir ? (FS_R_CREATE | FS_R_DELETE) : (FS_R_WRITE | FS_R_APPEND))) b |= 2u;
+    if (r & (is_dir ? FS_R_LOOKUP : FS_R_EXEC)) b |= 1u;
+    return b;
+}
+
+/* Owner bits from the caller's rights, group bits always zero, other bits from
+ * the bound on everyone else's. */
+static uint32_t fsp_mode(uint32_t own, uint32_t other, int is_dir)
+{
+    return (fsp_bits(own, is_dir) << 6) | fsp_bits(other, is_dir);
 }
 
 /* Is `name` under tracked node `n` the session's private /tmp? */

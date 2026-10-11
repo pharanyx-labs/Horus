@@ -707,7 +707,21 @@ struct fs_session {
     int             live;
     struct fsp_tree tree;
     uint32_t        tmp_ino;    /* its private /tmp (§6.3), or 0: none */
+    uint32_t        epoch;      /* the policy it was compiled from (g_policy_epoch) */
 };
+
+/* WHICH POLICY A SESSION'S BOUNDS CAME FROM (§7.1). The policy is read afresh
+ * at every FS_OP_SESSION, so a session opened after an edit compiles the new
+ * one while those already open keep the old. Their bounds on who else reaches
+ * an object were computed from grants that may no longer be all of them, and a
+ * bound that might be low is the one thing §7.1 forbids, so a session whose
+ * epoch is not the current one reports every right as other, and refuses the
+ * renames that depend on knowing every grant, until it is opened again. */
+static uint32_t g_policy_epoch;
+static int      g_policy_seen;
+static int      g_policy_seen_src;
+static uint32_t g_policy_seen_len;
+static char     g_policy_seen_text[FSP_MAX_BYTES];
 
 /* ---- a session's private /tmp (design §6.3; S129) ---------------------------
  *
@@ -734,17 +748,35 @@ static struct fs_session g_sess[FS_SESSIONS_MAX + 1];   /* [0] is never used */
 struct fs_pol {
     struct fs_session *s;   /* 0: a capability with no grant set (step 1's) */
     int      node;          /* the tracked node, or -1 */
+    int      at;            /* the node at or above the object (decision 17), or -1 */
     uint32_t carry;         /* the most a capability minted from here may carry */
 };
 
-/* The node a tracked capability was minted for, or -1. */
-static int fs_session_node(const struct fs_session *s, uint32_t ino, uint32_t gen)
+/* Does the session know every grant there is to know about where `p` stands?
+ * Not if the others did not fit its tree, and not if the policy has changed
+ * since it was compiled. */
+static int fs_pol_complete(const struct fs_pol *p)
 {
-    for (unsigned i = 0; i < s->tree.n; i++) {
-        const struct fsp_node *n = &s->tree.node[i];
-        if (n->bound && n->ino == ino && n->gen == gen) return (int)i;
-    }
-    return -1;
+    return p->s && !p->s->tree.other_full && p->s->epoch == g_policy_epoch;
+}
+
+/* WHO ELSE MAY REACH THE OBJECT (§7.1): the union of the other principals'
+ * grants at or above the node its token names. Every right whenever that
+ * cannot be known for certain, because a bound may overstate and must never
+ * understate: a capability with no grant set; a session that does not know every
+ * grant (fs_pol_complete); and a file with more than one name, since another
+ * name may lie under another grant (v11 keeps no back-references to say). */
+static uint32_t fs_pol_other(const struct fs_pol *p, uint32_t links)
+{
+    if (!fs_pol_complete(p) || p->at < 0 || links > 1) return FS_R_ALL;
+#ifdef FS_TOKEN_NODE_IGNORED
+    /* CONTROL ARM, never ship (smoke-fs-cap-stat-control): the bound is taken at
+     * the session's root, whatever the token says, so a file below another
+     * principal's grant is reported as reached by nobody. */
+    return p->s->tree.node[0].other;
+#else
+    return p->s->tree.node[p->at].other;
+#endif
 }
 
 /* One step down, to entry `name` of type `type`. SYS_ERR_NOENT when the session
@@ -752,12 +784,13 @@ static int fs_session_node(const struct fs_session *s, uint32_t ino, uint32_t ge
  * what it withholds. An untracked position has no policy left to apply. */
 static int fs_pol_step(struct fs_pol *p, const char *name, uint32_t type)
 {
-    if (!p->s || p->node < 0) return 0;
+    if (!p->s || p->node < 0) return 0;     /* untracked: `at` stays where it is */
     int child;
     uint32_t carry;
     int r = fsp_step(&p->s->tree, p->node, name, type == FS_TYPE_DIR, &child, &carry);
     if (r < 0) return SYS_ERR_NOENT;
     p->node = (r == 1) ? child : -1;
+    p->at = child;
     p->carry = carry;
     return 0;
 }
@@ -875,14 +908,24 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
      * fail closed: init revokes a session's capabilities before ending it, so
      * one that outlives its session is a defect, and it reaches nothing. */
     uint32_t g = fs_token_g(inv->token);
-    struct fs_pol pol = { 0, -1, FS_R_ALL };
+    struct fs_pol pol = { 0, -1, -1, FS_R_ALL };
     if (g != 0 || fs_token_tracked(inv->token)) {
         if (g == 0 || !g_sess[g].live) { rp->rc = SYS_ERR_NOENT; return; }
         pol.s = &g_sess[g];
+        /* The node comes from the token, which the kernel attests: a client
+         * cannot choose where it stands. One past the tree is a defect. A
+         * tracked capability must be the one its node was last bound to. */
+        uint32_t at = fs_token_node(inv->token);
+        if (at >= pol.s->tree.n) { rp->rc = SYS_ERR_NOENT; return; }
+        pol.at = (int)at;
         if (fs_token_tracked(inv->token)) {
-            pol.node = fs_session_node(pol.s, obj, fs_token_gen(inv->token));
-            if (pol.node < 0) { rp->rc = SYS_ERR_NOENT; return; }
-            pol.carry = pol.s->tree.node[pol.node].below;
+            const struct fsp_node *nn = &pol.s->tree.node[at];
+            if (!nn->bound || nn->ino != obj || nn->gen != fs_token_gen(inv->token)) {
+                rp->rc = SYS_ERR_NOENT;
+                return;
+            }
+            pol.node = (int)at;
+            pol.carry = nn->below;
         }
     }
     /* What this request may use: the capability's rights, and at a tracked node
@@ -949,6 +992,23 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
             rp->rc = (rq->op == FS_OP_CREATE || rq->op == FS_OP_MKDIR) ? SYS_ERR_EXIST : SYS_ERR_PERM;
             return;
         }
+        /* A RENAME MAY NOT MOVE AN OBJECT ONTO A NAME THE POLICY NAMES, OR OFF
+         * ONE (§5.5 condition 2, within one directory). Such a name decides
+         * which grants reach what is under it: moving onto it would hand the
+         * object to a grant that did not reach it when the capabilities to it
+         * were minted, and their bound on who else reaches it (§7.1) would then
+         * be low; moving off it would leave the grant's holders their
+         * capabilities while new ones were bounded as if they had none. Both
+         * are EXDEV, as a move across directories is, and a mover copies. A
+         * session that does not know every grant (fs_pol_complete) cannot tell,
+         * so it is refused every rename until it is opened again. */
+        if (rq->op == FS_OP_RENAME &&
+            (!fs_pol_complete(&pol) ||
+             (pol.node >= 0 && (fsp_names(&pol.s->tree, pol.node, rq->name) ||
+                                fsp_names(&pol.s->tree, pol.node, nn))))) {
+            rp->rc = SYS_ERR_XDEV;
+            return;
+        }
     }
 
     struct fs_request r2 = *rq;
@@ -1002,6 +1062,19 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
         }
     } else {
         handle(&r2, rp, cuid, cgid);
+        if (rq->op == FS_OP_STAT && rp->rc == 0) {
+            /* THE TRUTHFUL VIEW (§7.1). Owner bits are this capability's
+             * rights, as far as its node lets it use them; group bits are zero;
+             * other bits are the bound on everyone else's. Nothing on the disk
+             * is consulted for them: decision 1, the disk holds no authority.
+             * uid and gid say "you": the caller's own, as the kernel attests
+             * them for this request. They describe the caller and authorise
+             * nothing; the capability already decided. */
+            rp->mode = fsp_mode(have & FS_R_ALL, fs_pol_other(&pol, rp->links),
+                                rp->type == FS_TYPE_DIR);
+            rp->uid = cuid;
+            rp->gid = cgid;
+        }
         /* The child a lookup, create or mkdir names: is it in this session? */
         if (rp->rc == 0 && (rq->op == FS_OP_LOOKUP || rq->op == FS_OP_CREATE ||
                             rq->op == FS_OP_MKDIR) &&
@@ -1033,7 +1106,8 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
         /* The child keeps the session's grant set, tracked or not, so §5.5 and
          * §7 can later say which grant it descends from. */
         int tracked = pol.node >= 0;
-        *mint_token = fs_token_in(rp->ino, g_gen[rp->ino], pol.s ? g : 0, tracked);
+        *mint_token = fs_token_in(rp->ino, g_gen[rp->ino], pol.s ? g : 0,
+                                  pol.at >= 0 ? (uint32_t)pol.at : 0, tracked);
         if (tracked) fs_session_bind(pol.s, pol.node, rp->ino);
     }
 }
@@ -1080,7 +1154,7 @@ static void session_cwd(struct fs_session *s, uint32_t g, const char *home,
     int d = fsp_split(home, uslen(home), comp);
     if (d < 0) return;
     if (d == 0) { sg->cwd_token = sg->root_token; sg->cwd_rights = sg->root_rights; return; }
-    struct fs_pol pol = { s, s->tree.node[0].nchild > 0 ? 0 : -1, s->tree.node[0].below };
+    struct fs_pol pol = { s, s->tree.node[0].nchild > 0 ? 0 : -1, 0, s->tree.node[0].below };
     uint32_t cur = 0, type = FS_TYPE_DIR;
     for (int k = 0; k < d; k++) {
         uint32_t ino;
@@ -1091,7 +1165,7 @@ static void session_cwd(struct fs_session *s, uint32_t g, const char *home,
     if (type != FS_TYPE_DIR || cur >= FS_GEN_INODES || (g_gen[cur] & FS_GEN_RETIRED)) return;
     int tracked = pol.node >= 0;
     if (tracked) fs_session_bind(s, pol.node, cur);
-    sg->cwd_token = fs_token_in(cur, g_gen[cur], g, tracked);
+    sg->cwd_token = fs_token_in(cur, g_gen[cur], g, (uint32_t)pol.at, tracked);
     sg->cwd_rights = (pol.carry & FS_R_ALL) | FS_KERNEL_RIGHTS;
 }
 
@@ -1225,10 +1299,17 @@ static void session_tmp_remove(uint32_t g, uint32_t ino)
  * from anything in the request. */
 static void session_open(const struct fs_request *rq, struct fs_response *rp)
 {
-    struct user_entry e;
+    struct user_entry e, x;
     int found = 0;
-    for (uint32_t i = 0; sys_userlist(i, &e) == 1; i++)
-        if (e.uid == rq->arg_uid) { found = 1; break; }
+    /* The administrator's name too: lines naming it are the administrator's,
+     * and never counted as someone else's reach (decision 16). */
+    static char admin_name[sizeof(x.name)];
+    admin_name[0] = 0;
+    for (uint32_t i = 0; sys_userlist(i, &x) == 1; i++) {
+        x.name[sizeof(x.name) - 1] = 0;
+        if (x.uid == 0) ustrncpy(admin_name, x.name, sizeof(admin_name));
+        if (x.uid == rq->arg_uid && !found) { e = x; found = 1; }
+    }
     if (!found) { rp->rc = SYS_ERR_NOENT; return; }
     e.name[sizeof(e.name) - 1] = 0;
     e.home[sizeof(e.home) - 1] = 0;
@@ -1249,6 +1330,23 @@ static void session_open(const struct fs_request *rq, struct fs_response *rp)
         kput_int((int)bad);
         kputln("); treated as absent: the administrator alone");
     }
+    /* A different policy from the last one compiled starts a new epoch, and
+     * every session already open is now behind it (g_policy_epoch). Compared as
+     * text, so an edit that changes nothing still counts: that only overstates
+     * until the next login. */
+    {
+        uint32_t tl = (src == FS_SESSION_SRC_FILE) ? len : 0;
+        int same = g_policy_seen && g_policy_seen_src == src && g_policy_seen_len == tl;
+        for (uint32_t i = 0; same && i < tl; i++)
+            if (g_policy_seen_text[i] != g_policy_text[i]) same = 0;
+        if (!same) {
+            if (g_policy_seen) g_policy_epoch++;
+            g_policy_seen = 1;
+            g_policy_seen_src = src;
+            g_policy_seen_len = tl;
+            umemcpy(g_policy_seen_text, g_policy_text, tl);
+        }
+    }
 
     /* NEXT FIT, not lowest free. Reusing a grant set while a capability naming
      * it lives would hand that capability the new session's policy, and the
@@ -1264,7 +1362,7 @@ static void session_open(const struct fs_request *rq, struct fs_response *rp)
     }
     if (g == 0) { rp->rc = SYS_ERR_BUSY; return; }
     struct fs_session *s = &g_sess[g];
-    struct fsp_who who = { e.name, e.home, e.uid == 0 };
+    struct fsp_who who = { e.name, e.home, e.uid == 0, admin_name[0] ? admin_name : 0 };
     if (fsp_compile(&g_policy, &who, &s->tree) != 0) {
         kputln("[fs_server] a session's grants cannot be compiled; session refused");
         rp->rc = SYS_ERR_NOMEM;
@@ -1279,7 +1377,7 @@ static void session_open(const struct fs_request *rq, struct fs_response *rp)
         int tracked = root->nchild > 0;
         if (tracked) fs_session_bind(s, 0, 0);
         sg.g = g;
-        sg.root_token = fs_token_in(0, g_gen[0], g, tracked);
+        sg.root_token = fs_token_in(0, g_gen[0], g, 0, tracked);
         sg.root_rights = root->below | FS_KERNEL_RIGHTS;
         session_cwd(s, g, e.home, &sg);
         /* Its private /tmp, if the policy gives one. A /tmp that cannot be made
@@ -1300,6 +1398,7 @@ static void session_open(const struct fs_request *rq, struct fs_response *rp)
             if (s->tmp_ino == 0) kputln("[fs_server] a session's /tmp could not be made; it has none");
             break;
         }
+        s->epoch = g_policy_epoch;
         s->live = 1;
         last_g = g;
     }

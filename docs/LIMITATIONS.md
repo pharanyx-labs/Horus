@@ -128,6 +128,20 @@ Sessions' private `/tmp`s (S129) live in `/.session-tmp`, which every session fi
 uid path, until phase 1b step 6 removes it, still reaches it as it reaches any file: the store
 and each `/tmp` are mode 0700, so only root's uid gets in that way.
 
+### 1.26 Mode bits leave out the administrator, and the uid path can move a file under a grant
+
+A stat through a session's capability (S130) reports as other bits every grant of every other
+principal at or above the object, except the administrator's (filesystem decision 16): mode bits
+have never bounded the administrator, and counting `@admin / all` would show every ordinary
+account's files as `rwx` to everyone. So `0700` means that no account but the administrator may
+reach the file. An account the policy grants `/` by name is counted like any other.
+
+The bound holds because a rename through a session's capability may not move an object onto or
+off a name the policy names. The uid path, until phase 1b step 6 removes it, and a capability with
+no grant set (held by system tasks, never by a session) rename without that rule, so a file moved
+that way under another principal's grant can show a bound that is low through a capability
+minted before the move, until it is opened again.
+
 ---
 
 ## 2. Correctness

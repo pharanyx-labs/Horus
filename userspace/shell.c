@@ -467,9 +467,15 @@ static int sh_endow(int pid, struct hvfs_grant *g) {
     g->cwd.owned  = 0;
     if (!sh_capmode) return 0;
     if (hvfs_grant_fs(pid, &sh_root, &sh_cwd, FS_R_ALL, g) == 0) return 0;
+    int why, krc;
+    hvfs_grant_why(&why, &krc);
     hvfs_grant_release(g);
     (void)sys_kill(pid);
-    println("spawn: could not hand the program its filesystem; not run");
+    print("spawn: could not hand the program its filesystem (step ");
+    print_decimal((uint32_t)why);
+    print(", kernel ");
+    if (krc < 0) { print("-"); print_decimal((uint32_t)-krc); } else print_decimal((uint32_t)krc);
+    println("); not run");
     return -1;
 }
 

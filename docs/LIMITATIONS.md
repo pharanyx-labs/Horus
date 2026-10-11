@@ -321,6 +321,25 @@ who may reach it. The rule that would allow a safe move (`docs/design/filesystem
 each object's back-references, which arrive with the v12 format in phase 3. Until then a mover
 copies the file and removes the original, and a directory cannot be moved at all.
 
+### 2.23 Revoking one capability can make an unrelated live one unusable
+
+The backstop behind S5 keeps each capability's revocation generation in a table of 4096 cells
+chosen by a hash of its serial, and a revoke bumps the cell of every serial it removes. A live
+capability whose serial hashes to the same cell then reads as revoked: every use of it is refused,
+though nothing revoked it. It fails closed, so it costs availability, never authority. The audit
+of July 2026 recorded the table as a lossy hash (A3, `docs/history/AUDIT-2026-07.md`) and judged
+the risk small; it is not. A probe that mints and revokes copies of one capability lost the
+capability they were minted from after 1,666 revokes, and an ordinary shell session revokes a
+capability for every file it closes. Found on 2026-10-11, when the shell's root directory
+capability went stale this way in CI and the shell could no longer hand a program its filesystem
+(pull request #538).
+
+The fix, decided the same day, removes the table: a serial will live in exactly one slot, so a
+capability in its slot is valid because a revoke empties every slot it reaches under the
+capability lock, and a copy taken out of a slot is checked again by its slot and serial, which are
+never reused. Its gate is a `captest` check that a live capability survives 40,000 unrelated
+revokes.
+
 ---
 
 ## 3. Scale and performance

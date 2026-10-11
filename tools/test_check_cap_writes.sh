@@ -80,7 +80,7 @@ arm "3" "another cap-write inside an already-declared function" \
     'python3 - <<PY
 import pathlib
 p = pathlib.Path("src/kernel/capability.c"); t = p.read_text()
-old = "    cspace[dest_slot].generation = rust_lineage_current(serial);"
+old = "    cspace[dest_slot].serial     = serial;"
 assert t.count(old) >= 1
 t = t.replace(old, old + "\n    cspace[dest_slot].badge      = badge;", 1)
 p.write_text(t)
@@ -251,22 +251,52 @@ p.write_text(txt[:at] + txt[at + len(needle):])
 PY' \
     caught "STALE-TOKEN install"
 
-# ---- AND ITS SILENT DIRECTION: copying a whole slot and then re-stamping its
-#      serial is not an install that forgets the token; the struct copy carried
-#      it. kshell.c does exactly this, and the tree at HEAD (arm 1) passes with it,
-#      but that is an accident of the tree. This arm makes it a stated property.
-#      The copy is through `cspace`, one of the names PAT_STRUCT recognises as a
-#      capability array; a copy through any other name is not seen as a whole-slot
-#      write at all, which is the checker's stated limit, not this rule's.
-arm "13" "a whole-slot copy followed by a fresh serial" \
+# ---- RULE 7, ONE SERIAL, ONE SLOT. Three ways a second slot comes to hold a
+#      serial, and the one place that is allowed to. A whole-slot copy is the shape
+#      kshell.c and cap_install_from_root had until 2026-10-11 (each then gave the
+#      copy a fresh serial, which is why they were safe, and why a later edit that
+#      dropped the re-stamp would not have been).
+arm "13" "a whole-slot copy into a capability slot" \
     'python3 - <<PY
 import pathlib
-p = pathlib.Path("src/kernel/pipe.c"); txt = p.read_text()
-txt += "\nvoid rule6_silent_probe(struct capability *cspace, int a, int b) {\n    spin_lock(&cap_lock);\n    cspace[a] = cspace[b];\n    cspace[a].serial = 7;\n    spin_unlock(&cap_lock);\n}\n"
-p.write_text(txt)
-y = pathlib.Path(".github/cap-write-sites.yml"); t = y.read_text()
-t += "  - file: src/kernel/pipe.c\n    function: rule6_silent_probe\n    status: locked\n    reason: a fixture for arm 13\n"
-y.write_text(t)
+p = pathlib.Path("src/kernel/capability.c"); txt = p.read_text()
+old = "    tasks[pid].cspace[slot].type   = root_cnode[root_slot].type;"
+assert txt.count(old) == 1
+p.write_text(txt.replace(old, "    tasks[pid].cspace[slot] = root_cnode[root_slot];\n" + old))
+PY' \
+    caught "WHOLE-SLOT copy"
+
+arm "14" "a slot given another capability's serial" \
+    'python3 - <<PY
+import pathlib
+p = pathlib.Path("src/kernel/capability.c"); txt = p.read_text()
+old = "    tasks[pid].cspace[slot].serial = serial;"
+assert txt.count(old) == 1
+p.write_text(txt.replace(old, "    tasks[pid].cspace[slot].serial = root_cnode[root_slot].serial;"))
+PY' \
+    caught "REUSED serial"
+
+arm "15" "a slot given a made-up serial (the structured 0xB0... birth serials)" \
+    'python3 - <<PY
+import pathlib
+p = pathlib.Path("src/kernel/scheduler.c"); txt = p.read_text()
+old = "    tasks[id].cspace[0].serial = birth0;"
+assert txt.count(old) == 1
+p.write_text(txt.replace(old, "    tasks[id].cspace[0].serial = (0xB0000000U | ((uint32_t)id << 16) | 0U);"))
+PY' \
+    caught "REUSED serial"
+
+# ---- AND ITS SILENT DIRECTION: the same duplicated serial inside a defect
+#      flag's branch is a control arm, which exists to BE the defect. Without this
+#      the rule would fail on FORK_CSPACE_FLAT_COPY, and the fix for that would
+#      be deleting the arm.
+arm "16" "a duplicated serial inside a defect flag's #ifdef" \
+    'python3 - <<PY
+import pathlib
+p = pathlib.Path("src/kernel/capability.c"); txt = p.read_text()
+old = "    tasks[pid].cspace[slot].serial = serial;"
+assert txt.count(old) == 1
+p.write_text(txt.replace(old, old + "\n#ifdef FORK_CSPACE_FLAT_COPY\n    tasks[pid].cspace[slot].serial = root_cnode[root_slot].serial;\n#endif"))
 PY' \
     clean
 

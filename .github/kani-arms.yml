@@ -19,14 +19,24 @@
 # and see it go red before committing.
 
 arms:
-- id: serial-wraps-to-zero
+- id: serial-floor-below-primordial
   harness: serial_never_reserved_or_zero
   file: rust/src/capability.rs
-  defect: the serial counter may wrap to 0 or below the derived floor
-  find: |2
-        let fresh = if fresh < MIN_DERIVED_SERIAL || fresh == 0 { MIN_DERIVED_SERIAL } else { fresh };
-  replace: |2
-        let fresh = if fresh == 0 { 0 } else { fresh };
+  defect: the 32-bit derived floor, so the counter walks through the primordial 0xC0DE range
+  find: 'const MIN_DERIVED_SERIAL: u64 = 1 << 32;'
+  replace: 'const MIN_DERIVED_SERIAL: u64 = 0x0001_0000;'
+- id: serial-wraps
+  harness: fresh_serials_never_repeat
+  file: rust/src/capability.rs
+  defect: the counter wraps at the top instead of refusing, so serials are issued again
+  find: '    match base.checked_add(1) {'
+  replace: '    match Some(base.wrapping_add(1)) {'
+- id: revoke-spares-a-duplicate-serial
+  harness: revoke_leaves_no_slot_holding_the_serial
+  file: rust/src/capability.rs
+  defect: the sweep nulls only the target slot and descendants, so another slot holding the revoked serial keeps it
+  find: '                || (root_serial != 0 && c.serial == root_serial)'
+  replace: '                || false'
 - id: mint-keeps-requested-rights
   harness: mint_never_escalates_rights
   file: rust/src/capability.rs
@@ -117,38 +127,6 @@ arms:
                             mark_children_of(spaces, space_count, serial);
                         }
   replace: '                    let _ = serial;'
-- id: lineage-mask-off-by-one
-  harness: lineage_idx_is_always_inside_the_table
-  file: rust/src/capability.rs
-  defect: the hash can name a cell one past the table
-  find: |2
-        (x as usize) & (LINEAGE_SLOTS - 1)
-  replace: |2
-        (x as usize) & LINEAGE_SLOTS
-- id: lineage-gen-zero-hatch
-  harness: revoke_invalidates_recorded_generation
-  file: rust/src/capability.rs
-  defect: 'the pre-3.3 escape hatch: generation 0 is always valid'
-  find: |2-
-        LINEAGE_GEN[lineage_idx(serial)].load(Ordering::SeqCst) == gen
-    }
-  replace: |2-
-        gen == 0 || LINEAGE_GEN[lineage_idx(serial)].load(Ordering::SeqCst) == gen
-    }
-- id: lineage-wrap-to-pristine
-  harness: revoke_invalidates_recorded_generation
-  file: rust/src/capability.rs
-  defect: a bump that wraps leaves the generation at the pristine 0
-  find: '    if g == 0 {'
-  replace: '    if false {'
-- id: lineage-bumps-neighbour
-  harness: revoke_does_not_touch_a_distinct_lineage_cell
-  file: rust/src/capability.rs
-  defect: a revoke also bumps an unrelated serial's cell
-  find: '    let prev = LINEAGE_GEN[idx].fetch_add(1, Ordering::SeqCst);'
-  replace: |2-
-        LINEAGE_GEN[(idx + 1) & (LINEAGE_SLOTS - 1)].fetch_add(1, Ordering::SeqCst);
-        let prev = LINEAGE_GEN[idx].fetch_add(1, Ordering::SeqCst);
 - id: reply-mint-widens
   harness: reply_mint_never_escalates_and_never_receives
   file: rust/src/capability.rs

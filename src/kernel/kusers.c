@@ -981,9 +981,9 @@ void h_sudo(struct interrupt_frame64 *r) {
          * is not recursive, so calling it inside the locked region
          * (as this path previously did) deadlocks the kernel on the
          * first sudo. Same ordering do_spawn uses. */
-        uint32_t s3 = cap_alloc_fresh_serial();
-        uint32_t s6 = cap_alloc_fresh_serial();
-        uint32_t s7 = cap_alloc_fresh_serial();
+        uint64_t s3 = cap_alloc_fresh_serial();
+        uint64_t s6 = cap_alloc_fresh_serial();
+        uint64_t s7 = cap_alloc_fresh_serial();
 
         spin_lock(&cap_lock);
         tasks[pid].cspace[3].type   = CAP_FRAME;
@@ -995,7 +995,6 @@ void h_sudo(struct interrupt_frame64 *r) {
         tasks[pid].cspace[3].badge  = 0;
         tasks[pid].cspace[3].serial = s3;
         tasks[pid].cspace[3].token = 0;
-        tasks[pid].cspace[3].generation = rust_lineage_current(s3); /* finding 3.3 */
 
         tasks[pid].cspace[6].type   = CAP_USER;
         tasks[pid].cspace[6].rights = CAP_RIGHT_ALL;
@@ -1003,7 +1002,6 @@ void h_sudo(struct interrupt_frame64 *r) {
         tasks[pid].cspace[6].badge  = 0xC0DE0006U;
         tasks[pid].cspace[6].serial = s6;
         tasks[pid].cspace[6].token = 0;
-        tasks[pid].cspace[6].generation = rust_lineage_current(s6); /* finding 3.3 */
 
         tasks[pid].cspace[7].type   = CAP_TCB;
         tasks[pid].cspace[7].rights = CAP_RIGHT_ALL;
@@ -1011,7 +1009,6 @@ void h_sudo(struct interrupt_frame64 *r) {
         tasks[pid].cspace[7].badge  = 0;
         tasks[pid].cspace[7].serial = s7;
         tasks[pid].cspace[7].token = 0;
-        tasks[pid].cspace[7].generation = rust_lineage_current(s7); /* finding 3.3 */
         spin_unlock(&cap_lock);
         audit_log(AUDIT_SUDO, 0, (uint32_t)pid, "sudo success: spawned uid 0");
     } else {

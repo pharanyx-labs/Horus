@@ -42,6 +42,7 @@ control_arms:
   smoke-captest-pipe-slot-control: smoke-captest
   smoke-reply-ep-control: smoke-reply-ep
   smoke-captest-capenum-control: smoke-captest
+  smoke-captest-hashed-revoke-control: smoke-captest
   smoke-captest-clock-control: smoke-captest
   smoke-captest-devcap-control: smoke-captest
   smoke-captest-getline-control: smoke-captest

@@ -26,7 +26,7 @@ design takes; each is open to revision, and §6 lists what is deliberately left 
    or exposure has a compiled default and a compiled bound, and the file can choose a value only on
    the strict side of the default. A value past the default is refused, not clamped, so a file
    cannot be mistaken for having done something it did not.
-3. **Everything else is cosmetic, and bounded.** A name in the prompt, whether the banner is shown.
+3. **Everything else is cosmetic, and bounded.** A name in the prompt, whether a message of the day is shown.
    Every value has a type, a length or range, and a character set, checked before use.
 4. **A file is hostile input.** It is read by a program that trusts nothing in it: lines are
    bounded, unknown keys and malformed values are ignored with one message naming the line, and the
@@ -47,20 +47,30 @@ design takes; each is open to revision, and §6 lists what is deliberately left 
 
 Three files, three programs, nothing in the kernel.
 
-### `/etc/shell.conf`, read by the shell at start
+**When a file can be read.** On an installed system the volume is sealed from power-on until the
+first login of the boot unlocks it (S74), so nothing in `/etc` can be read before that login, and
+the compiled defaults apply until then. Each file is therefore read at a point where it can be, and
+each manual page says plainly when a setting cannot apply. Nothing that must hold before the first
+login is offered as a setting.
+
+### `/etc/shell.conf`, read by the shell after each login
 
 | Key | Default | Range | Kind |
 |---|---|---|---|
 | `hostname` | `horus` | 1 to 32 of `a-z 0-9 -`, not starting with `-` | Cosmetic: the name in the prompt (`root@horus#`) |
-| `banner` | `full` | `full`, `brief`, `off` | Cosmetic: the login banner. `brief` keeps the first line, which carries the boot marker the harness reads |
 | `motd` | `yes` | `yes`, `no` | Cosmetic: print `/etc/motd` after a login, if it exists and is readable |
 
-### `/etc/login.conf`, read by the shell before each login
+### `/etc/login.conf`, read by the shell before each login after the first
 
 | Key | Default | Range | Kind |
 |---|---|---|---|
-| `failure_delay` | `0` | `0` to `30` seconds | Tighten-only: a pause after each failed login, on top of the kernel's account lockout (`rust/src/auth.rs`, proved by `the_throttle_locks_within_the_limit`), which no file can change |
-| `max_attempts` | `0` | `0` (unlimited) to `10` | Tighten-only: after this many consecutive failures at one console, the prompt waits `failure_delay` × 10 seconds before asking again |
+| `failure_delay` | `0` | `0` to `30` seconds | Tighten-only: a pause after each failed login, on top of the kernel's account lockout (`rust/src/auth.rs`, proved by `the_throttle_locks_within_the_limit`), which no file can change. Before the boot's first login on an installed system the default applies |
+
+Both files are readable by every account and secret to none. Once logins open sessions through
+the filesystem policy (roadmap 2.10, step 3(b)), the default policy gains `@all /etc/shell.conf
+read` and `@all /etc/login.conf read`, two read grants on two files that hold no secret, so that
+the shell can read them with the login's own capability; that change is made, and stated, with
+step 3(b).
 
 ### `/etc/fs.policy`, read by `fs_server`
 

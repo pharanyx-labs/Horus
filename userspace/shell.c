@@ -1018,7 +1018,10 @@ static const char *const d_userdel[] = {
     "Delete a user account. Requires uid 0.",
     0 };
 static const char *const d_rotate[] = {
-    "Re-encrypt the storage volume under a freshly derived key. Requires uid 0.",
+    "Despite the name, changes no key: rewrites the first four blocks of each",
+    "file you own, at most 64 blocks in all, under the same keys with fresh",
+    "nonces (LIMITATIONS 2.26). Needs the console and storage capabilities and",
+    "a volume unlocked by a login.",
     0 };
 
 static const char *const d_mem[] = {
@@ -1092,7 +1095,7 @@ static const struct man_page man_pages[] = {
  { "passwd","1","change a password","passwd [UID]",d_passwd,0,0,"useradd(8), sudo(1)" },
  { "useradd","8","create a user account","useradd UID NAME",d_useradd,0,0,"userdel(8), passwd(1)" },
  { "userdel","8","delete a user account","userdel UID",d_userdel,0,0,"useradd(8)" },
- { "rotate_keys","8","re-encrypt storage under a fresh key","rotate_keys",d_rotate,0,0,"passwd(1)" },
+ { "rotate_keys","8","rewrite some of your blocks (changes no key)","rotate_keys",d_rotate,0,0,"passwd(1)" },
  { "help","1","print the command index","help [TOPIC]",d_help,0,0,"man(1), apropos(1)" },
  { "man","1","display a command's reference page","man COMMAND",d_man,0,0,"help(1), apropos(1), whatis(1)" },
  { "apropos","1","search the manual by keyword","apropos KEYWORD",d_apropos,0,0,"man(1), whatis(1)" },
@@ -1262,7 +1265,7 @@ static void show_general_help_us(void) {
     print_cmd("whoami, id",        "show your login uid / gid");
     print_cmd("passwd [<uid>]",    "change a password, yours or an account's (root)");
     print_cmd("sudo",              "re-authenticate (secure prompt), spawn elevated");
-    print_cmd("rotate_keys",       "re-encrypt storage under a fresh key    (root)");
+    print_cmd("rotate_keys",       "rewrite some of your blocks; no new key");
     print_cmd("dmesg",             "print the kernel message log            (root)");
     print_cmd("irqpolicy",         "interrupt-policy audit counters         (root)");
     print_cmd("useradd <uid> <n>", "create a user account                   (root)");
@@ -1337,7 +1340,7 @@ static void show_topic_help_us(const char *topic) {
         print_cmd("whoami, id",     "show your uid / gid");
         print_cmd("passwd",         "change a password (passwd <uid> for another, root)");
         print_cmd("sudo <pw>",      "re-authenticate, spawn an elevated image");
-        print_cmd("rotate_keys",    "re-encrypt storage under a fresh key    (root)");
+        print_cmd("rotate_keys",    "rewrite some of your blocks; no new key");
         print_cmd("useradd/userdel","manage user accounts                    (root)");
         println("");
         println("  Detail:  help <command>    e.g.  help sudo");
@@ -1484,10 +1487,11 @@ static void show_topic_help_us(const char *topic) {
         help_line("",         "to elevate and will say so.");
         help_line("See also:","spawn, receive, rotate_keys");
     } else if (strcmp(t,"rotate_keys")==0) {
-        help_line("Purpose:", "Re-encrypt the mounted volume's blocks under a fresh key.");
+        help_line("Purpose:", "Rewrite some of your blocks. Despite the name, NO key changes.");
         help_line("Usage:",   "rotate_keys");
-        help_line("Notes:",   "Root only; needs an unlocked volume (post-login). Reports the");
-        help_line("",         "number of blocks re-encrypted.");
+        help_line("Notes:",   "Rewrites the first four blocks of each file you own, at most");
+        help_line("",         "64 in all, under the same keys with fresh nonces, and reports");
+        help_line("",         "how many. Needs an unlocked volume. LIMITATIONS 2.26.");
     } else if (strcmp(t,"useradd")==0 || strcmp(t,"userdel")==0) {
         help_line("Purpose:", "Create or delete a user account (admin).");
         help_line("Usage:",   "useradd <uid> <name>    |    userdel <uid>");
@@ -2751,7 +2755,7 @@ static void handle_command(char *cmd) {
         }
     } else if (strcmp(cmd, "rotate_keys") == 0) {
         int r = sys_rotate_keys();
-        if (r >= 0) { print("rotate_keys: re-encrypted "); print_decimal((uint32_t)r); println(" blocks"); }
+        if (r >= 0) { print("rotate_keys: rewrote "); print_decimal((uint32_t)r); println(" blocks (no key was changed)"); }
         else { println("rotate_keys: failed (no master key or no mounted FS)"); }
     } else if (strcmp(cmd, "fsroot") == 0 || strncmp(cmd, "fsroot ", 7) == 0 ||
                strncmp(cmd, "cap_", 4) == 0) {

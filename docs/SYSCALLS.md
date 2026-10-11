@@ -149,7 +149,7 @@ shipped kernel.
 | 33 | `SYS_USERADD` | `user`, `pass` | Create an account | `CAP_USER` at `CAPSLOT_USER` |
 | 34 | `SYS_USERDEL` | `user` | Delete an account | `CAP_USER` at `CAPSLOT_USER` |
 | 35 | `SYS_PASSWD` | `user`, `pass` | Set an account's password | `CAP_USER`, or the target is the caller's own uid |
-| 36 | `SYS_ROTATE_KEYS` |  | Rotate the audit chain's keys | slot 8: `CAP_CONSOLE` READ |
+| 36 | `SYS_ROTATE_KEYS` |  | Rewrites the first four blocks of each of the caller's files, at most 64 blocks, under the same keys with fresh nonces; changes no key, whatever its name says (LIMITATIONS 2.26) | slot 8: `CAP_CONSOLE` READ |
 | 37 | `SYS_READ_AUDIT` | `buf`, `max` | Read audit records | slot 7: `CAP_AUDIT` READ |
 | 46 | `SYS_REGISTER_STORAGE_BACKEND` |  | A stub: always returns `SYS_ERR_NOSYS` | none |
 | 47 | `SYS_BLOCK_READ` |  | Read a raw block beneath the filesystem | slot `CAPSLOT_AUDIT` `CAP_ENCRYPTED_STORAGE`, READ \| WRITE |

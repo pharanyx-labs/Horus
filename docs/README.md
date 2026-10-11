@@ -34,6 +34,7 @@ Specifications written before the code. Each says at its top what of it is built
 | [`design/shared-libc.md`](design/shared-libc.md) | How programs receive, bind and seal the shared libc. Built (S106 to S108) |
 | [`design/meta-cache-merkle.md`](design/meta-cache-merkle.md) | The bounded metadata cache and the Merkle rollback tree. Built (S65, S66) |
 | [`design/console-server.md`](design/console-server.md) | Moving the console driver to ring 3. Built |
+| [`design/configuration.md`](design/configuration.md) | Configuration files in `/etc` that can only tighten security or change cosmetics, read by ring-3 programs and never the kernel; manual pages shipped as one verified archive. The manual is built (#545); the files follow |
 
 ## Audits and investigations
 

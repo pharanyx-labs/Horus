@@ -35,7 +35,7 @@ otherwise has none. Every other syscall path in the ship kernel is authorised by
 
 ### 1.8 Nine syscalls have no test that runs their handler
 
-As of the last merge and gated since: **93 of 102** implemented syscalls have their handler body
+As of the last merge and gated since: **94 of 103** implemented syscalls have their handler body
 entered by a tracked workload (the scripted ring-3 session, the conformance suite, and the
 boot-modules session). The other 9 are listed in `.github/syscall-coverage.yml`, each with a
 written reason. `tools/check_syscall_coverage.py` (required job `syscall-coverage`) fails on drift
@@ -107,6 +107,22 @@ read a file can run it whether or not its mode or its capability carries `EXEC`.
 filesystem decision 8 accepts for a user's own programs under `/home`, and with TCC on the install
 media it now applies on an installed machine. Exec by file capability (filesystem phase 1b) is what
 closes it.
+
+### 1.24 Below a session's root, the policy is enforced by `fs_server`, not the kernel
+
+A session is one root capability whose token names its grant set (filesystem decision 13,
+`SECURITY.md` S128). The root must carry the union of the session's rights, or a writable home
+below a read-only root could not be reached at all, so the kernel bounds the session only by that
+union. Within it, `fs_server` keeps the root and every directory on the way to a grant to what the
+policy gives there; a bug in that code, the reference monitor for every file's contents already,
+would let a session use the union where the policy gives less. Below a granted path with nothing
+deeper the kernel's intersection takes over again, as before (S120).
+
+A grant names a path, not an object: whoever may create or remove a name decides what object a
+grant of that name reaches. A policy that grants one account a path inside a directory another
+account may write (`@all /srv all` beside `alice /srv/alice all`) lets the second account choose
+what `alice` is given. The default policy and the one the installer will write grant nothing of
+the kind; v12's back-references (phase 3) are what would let the server tell the objects apart.
 
 ---
 
@@ -387,10 +403,11 @@ waits until it is woken or killed. The PIT runs at a fixed 100 Hz.
   it first. One thread per address space.
 - **More than one filesystem.** One volume and one `fs_server`, plus `dev_server` in self-test
   builds. The capability filesystem of [`design/filesystem.md`](design/filesystem.md) has its
-  kernel half (phase 1a, IPC tokens, S105), and `fs_server` answers through capabilities (S120)
-  and refuses moves across directories (S121), and the POSIX layer and the shell walk with
-  capabilities when they hold a root (S126, S127); nothing grants a session a root yet, so programs
-  still reach files by the uid path (phase 1b steps 3 to 6).
+  kernel half (phase 1a, IPC tokens, S105), and `fs_server` answers through capabilities (S120),
+  refuses moves across directories (S121) and opens sessions from the policy (S128), and the POSIX
+  layer and the shell walk with capabilities when they hold a root (S126, S127); nothing asks for
+  a session at login yet, so programs still reach files by the uid path (phase 1b step 3(b) and
+  (c), steps 4 and 6).
 - **Swap has no way to keep a secret out of it.** On an installed boot idle pages go to the
   sealed partition under pressure, an idle task's included, and come back on touch (S118, S119,
   S123). A page goes out sealed under a key that dies with the boot, but a task cannot yet ask for

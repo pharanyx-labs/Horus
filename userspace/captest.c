@@ -308,6 +308,12 @@ void _start(void) {
           "fs-stat-allowed-without-CAP_ENCRYPTED_STORAGE");
     check(sys_fs_inode_alloc(1) == SYS_ERR_PERM,
           "inode-alloc-allowed-without-CAP_ENCRYPTED_STORAGE");
+    /* SYS_FS_STORE_KIND (filesystem §6.4) tells fs_server whether it serves a
+     * live boot's RAM store or a persistent volume, which decides every
+     * session's policy. A fact about the store, answered only to the holder of
+     * the store: a task without it learns nothing, not even the kind. */
+    check(sys_fs_store_kind() == SYS_ERR_PERM,
+          "store-kind-answered-without-CAP_ENCRYPTED_STORAGE");
 
     /* The user database (audit finding H-1). SYS_USERADD / SYS_USERDEL /
      * SYS_PASSWD are SC_NONE in the dispatch table, so their only gate is

@@ -50,6 +50,7 @@ newlib/
 
 # Build tools
 tools/mkheadered
+tools/fs_policy_test
 
 # Userspace build artifacts
 userspace/*.bin

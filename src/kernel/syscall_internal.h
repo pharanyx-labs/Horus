@@ -177,6 +177,7 @@ void h_fblock_write(struct interrupt_frame64 *r);
 void h_fs_set_size(struct interrupt_frame64 *r);
 void h_fs_set_meta(struct interrupt_frame64 *r);
 void h_fs_stat(struct interrupt_frame64 *r);
+void h_fs_store_kind(struct interrupt_frame64 *r);
 /* h_fs_mint_file / lookup / create / delete / readdir / get_root / read / write
  * (legacy capfs) removed — those syscall numbers fail closed. */
 void h_register_storage_backend(struct interrupt_frame64 *r);

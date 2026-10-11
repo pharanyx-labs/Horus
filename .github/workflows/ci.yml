@@ -2568,6 +2568,21 @@ jobs:
       # S120, step 2: the same image refuses a bad name anywhere in a walk.
       - name: Control arm — fs_server checks only the first name of a walk
         run: make smoke-fs-cap-walk-control
+      # S128, step 3(a): the same image opens sessions from the compiled-in
+      # policy. Three arms: every session is given the root; a tracked
+      # capability uses every right it carries; any caller opens a session.
+      - name: Control arm — every session is given the root
+        run: make smoke-fs-cap-session-control
+      - name: Control arm — a session's root uses every right it carries
+        run: make smoke-fs-cap-session-rights-control
+      - name: Control arm — a session opens through a capability without MINT
+        run: make smoke-fs-cap-session-caller-control
+      # The policy language and the persistent-volume rules, on the host: the
+      # code fs_server compiles, tested where every input can be chosen.
+      - name: Host test — the policy parser, the choice of policy by store kind, and the compiled rule
+        run: make smoke-fs-policy
+      - name: Control arm — the compiled policy gives every session the root
+        run: make smoke-fs-policy-control
       # S126, step 2's client half: a newlib program walking by capability.
       - name: Boot FSCAPPOSIX_SELFTEST and assert POSIX calls walk by capability and close gives it back
         run: make smoke-fs-cap-posix

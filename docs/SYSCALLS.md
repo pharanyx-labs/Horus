@@ -227,6 +227,7 @@ shipped kernel.
 | 119 | `SYS_IPC_INVOKER` | `(ep_slot, struct ipc_invoker *)` | The token and rights of the capability the last received message came through, and of a carried one | `CAP_ENDPOINT` at `ep_slot`: READ |
 | 120 | `SYS_IPC_REPLY_CAP` | `(req_slot, msg, len, rights, token)` | SYS_IPC_REPLY_TO that also mints ONE capability into the caller's named slot, derived from the capability its request came through, rights intersected with ... | as `SYS_IPC_REPLY_TO`, and the caller must have named an empty `recv_slot` |
 | 121 | `SYS_MEM_SEAL` | `(addr, len)` | Make pages of the caller's own image read-only for good (RELRO) | none: the caller's own image, and it only removes rights |
+| 122 | `SYS_FS_STORE_KIND` | `()` | Which kind of store the object store serves, `FS_STORE_EPHEMERAL` (a live or diskless boot's RAM store) or `FS_STORE_PERSISTENT`, from the mounted volume's device; `SYS_ERR_INVAL` when none is mounted. `fs_server` chooses each session's policy by it (design [`filesystem.md`](design/filesystem.md) §6.4) | slot `CAPSLOT_AUDIT` `CAP_ENCRYPTED_STORAGE`, READ |
 
 Numbers 38 to 45 (`SYS_FS_MINT_FILE` to `SYS_FS_WRITE`) are the removed in-memory capfs, reserved
 and never to be reused; 1 (`SYS_PRINT`) was never dispatched.

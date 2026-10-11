@@ -91,6 +91,10 @@
 #define FS_OP_WALK    15   /* data[len] = names, each NUL-terminated  -> ino, type,
                             * and ONE capability to the last (capability path only;
                             * needs LOOKUP). See FS_WALK below. */
+#define FS_OP_SESSION 16   /* arg_uid = the account  -> data = struct fs_session_grant.
+                            * Only through the UNTOKENED capability holding MINT,
+                            * which init alone has. See FS_SESSION below. */
+#define FS_OP_SESSION_END 17 /* offset = the grant set G -> 0. The same gate. */
 
 /* READDIR's end-of-directory signal, and it is a SEPARATE VALUE from
  * SYS_ERR_NOENT on purpose.
@@ -202,7 +206,9 @@ struct fs_response {
  * even for the root directory, inode 0), a 24-bit generation that fs_server keeps
  * per inode and raises when a name to it is removed (so a token never names a
  * different object than it was minted for: a stale one is refused NOENT), and the
- * inode. Bits 56-62 are reserved for the policy grant (§6, phase 1b step 3). */
+ * inode. Bits 56-61 name the session's grant set G (§6.4; 0 is a capability with
+ * no grant set) and bit 62 marks a TRACKED capability, one at a path where the
+ * policy still has something to say below it (fs_policy.h, fs_server.c). */
 #define FS_TOKEN_VALID      (1ULL << 63)
 #define FS_TOKEN_GEN_MASK   0xFFFFFFu
 static inline uint64_t fs_token(uint32_t ino, uint32_t gen) {
@@ -210,6 +216,41 @@ static inline uint64_t fs_token(uint32_t ino, uint32_t gen) {
 }
 static inline uint32_t fs_token_ino(uint64_t t) { return (uint32_t)t; }
 static inline uint32_t fs_token_gen(uint64_t t) { return (uint32_t)(t >> 32) & FS_TOKEN_GEN_MASK; }
+#define FS_TOKEN_G_SHIFT    56
+#define FS_TOKEN_G_MASK     0x3Fu
+#define FS_TOKEN_TRACKED    (1ULL << 62)
+#define FS_SESSIONS_MAX     63          /* G is 1..63 */
+static inline uint64_t fs_token_in(uint32_t ino, uint32_t gen, uint32_t g, int tracked) {
+    return fs_token(ino, gen) | ((uint64_t)(g & FS_TOKEN_G_MASK) << FS_TOKEN_G_SHIFT) |
+           (tracked ? FS_TOKEN_TRACKED : 0);
+}
+static inline uint32_t fs_token_g(uint64_t t) { return (uint32_t)(t >> FS_TOKEN_G_SHIFT) & FS_TOKEN_G_MASK; }
+static inline int fs_token_tracked(uint64_t t) { return (t & FS_TOKEN_TRACKED) != 0; }
+
+/* FS_SESSION (docs/design/filesystem.md §6.4, decision 13): what fs_server
+ * answers init when a login asks for its session. init mints the root, and the
+ * working directory if there is one, from its own untokened capability with
+ * exactly these tokens and rights, grants them to the session's slots 24 and 25,
+ * and at logout revokes both BEFORE sending FS_OP_SESSION_END, so a grant set is
+ * never reused while a capability naming it lives.
+ *
+ * root_token 0 is an answer, not a failure: the policy gives this account
+ * nothing (a persistent volume with no policy file, for anyone but the
+ * administrator), and no grant set was taken. cwd_token 0 means the policy
+ * grants no home; the session starts at its root. `source` is the FS_SESSION_SRC_*
+ * the policy came from, so a caller can say which applied. */
+#define FS_SESSION_SRC_DEFAULT    1   /* a live boot's RAM store: the compiled-in default */
+#define FS_SESSION_SRC_FILE       2   /* /etc/fs.policy on a persistent volume */
+#define FS_SESSION_SRC_ADMIN_ONLY 3   /* a persistent volume without one: the administrator alone */
+#define FS_SESSION_SRC_MALFORMED  4   /* one that does not parse: treated as absent */
+struct fs_session_grant {
+    uint64_t root_token;
+    uint64_t cwd_token;
+    uint32_t root_rights;
+    uint32_t cwd_rights;
+    uint32_t g;
+    uint32_t source;
+};
 
 /* FS_WALK (docs/design/filesystem.md §5.4, decision 12): several names below the
  * directory capability invoked, answered with ONE capability to the last.

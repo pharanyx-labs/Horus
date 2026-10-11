@@ -2305,6 +2305,11 @@ void fscap_selftest(void) {
     if (cli > 0) (void)cap_install_from_root(cli, CAPSLOT_UNTYPED, 17, UNTYPED_ROOT);
 #else
     int cli = fs_spawn_embedded(embedded_fscaptest_bin_start, embedded_fscaptest_bin_end, "fscaptest");
+    /* CAP_DEBUG, observation only: the session checks read the rights of the
+     * capabilities fs_server mints them (SYS_CAP_ENUMERATE), since the
+     * system-tree rule would answer a write to /bin the same whatever the
+     * policy gave. */
+    if (cli > 0) (void)cap_install_from_root(cli, CAPSLOT_DEBUG, 18, 0);
 #endif
     if (cli <= 0) { print("FSCAPTEST: FAIL spawn-client\n"); for (;;) asm volatile("hlt"); }
     if (cap_install_from_root(cli, 30, 13, FS_EP_REQ) != 0) {

@@ -1347,6 +1347,7 @@ void users_init(void);
 #define SYS_CAP_MINT_TOKEN   117   /* (dest_slot, src_slot, rights, token) -> 0; a TOKENED endpoint capability, from an UNTOKENED one the caller holds with MINT. Rights are masked to the source's and lose the receive right. docs/design/filesystem.md §5.1. */
 #define SYS_IPC_CALL_CAP     118   /* (ep_slot, recv_slot, msg, len, reply_buf, carry_slot) -> reply length; SYS_IPC_CALL, naming an EMPTY slot for a reply-minted capability and optionally presenting one more capability to the same endpoint. IPC_NO_CAP for either means none. */
 #define SYS_IPC_INVOKER      119   /* (ep_slot, struct ipc_invoker *) -> 0; the token and rights of the capability the last received message came through, and of a carried one. Needs READ (the receive right) on ep_slot. */
+#define SYS_FS_STORE_KIND    122   /* (void) -> FS_STORE_EPHEMERAL or FS_STORE_PERSISTENT; which kind of store the object store is serving, so fs_server can choose its policy from the store it serves (docs/design/filesystem.md §6.4). CAP_ENCRYPTED_STORAGE + READ at CAPSLOT_AUDIT: the holder already reads every block of that store. SYS_ERR_INVAL when no store is mounted. */
 #define SYS_MEM_SEAL         121   /* (addr, len) -> 0; make pages of the caller's own image read-only for good: WRITE and copy-on-write cleared, the page marked sealed so no break, fork or device mapping can make it writable again. Only drops rights, so no capability gates it; bounded to [image_base, image_end), page-aligned, all or nothing. For the ring-3 linker's RELRO (docs/design/shared-libc.md §9). */
 #define SYS_IPC_REPLY_CAP    120   /* (req_slot, msg, len, rights, token) -> 0; SYS_IPC_REPLY_TO that also mints ONE capability into the caller's named slot, derived from the capability its request came through, rights intersected with that capability's. Refused = nothing delivered, reply right kept. */
 #define SYS_STORAGE_DEVICE   113   /* (index, struct storage_info*) -> 0; the survey for ONE enumerated persistent device (CAP_STORAGE_FORMAT + READ at CAPSLOT_STORAGE_FORMAT). An index past the end is REFUSED rather than clamped: a survey that answered about a different disk would be read as a description of the disk about to be erased. */
@@ -3402,6 +3403,12 @@ void keyslot_selftest(void);
 #endif
 int  storage_read_file_block(mounted_fs_t *mfs, uint64_t ino, uint64_t block, void *buf);
 int  storage_write_file_block(mounted_fs_t *mfs, uint64_t ino, uint64_t block, const void *buf);
+/* Which kind of store the object store is serving (SYS_FS_STORE_KIND), or 0 when
+ * none is mounted. Answered from the mounted volume's device, not from a flag
+ * set at boot, so it can never describe a different store than the one served. */
+#define FS_STORE_EPHEMERAL  1
+#define FS_STORE_PERSISTENT 2
+int storage_store_kind(void);
 mounted_fs_t *storage_get_mounted_fs(void);
 block_device_t *storage_get_default_device(void);
 void storage_set_default_device(block_device_t *bd);

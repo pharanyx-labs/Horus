@@ -129,6 +129,7 @@ DEFECT_FLAGS = \
 	STORAGE_REPLACE_UNLOCKED STORAGE_FORMAT_AUTH_STICKY BOOT_CMDLINE_UNMEASURED \
 	STORAGE_FORMAT_UNGATED INSTALLER_NO_CONFIRM INSTALLER_REVIEW_FLAT BLOCK_ERRNO_LEGACY \
 	FSCAP_SELFTEST FS_CAP_RIGHTS_UNCHECKED FS_XDEV_UNCHECKED FS_WALK_NAMES_UNCHECKED \
+	FS_SESSION_GRANTS_ROOT FS_SESSION_RIGHTS_UNCHECKED FS_SESSION_ANY_CALLER \
 	FSCAPPOSIX_SELFTEST POSIX_CLOSE_KEEPS_CAP HVFS_GRANT_UNNARROWED \
 	INIT_SHELL_ROOT_READONLY SHELL_CAP_FALLBACK \
 	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED \
@@ -3230,6 +3231,11 @@ LIBHORUS_STRNCPY_UNTERMINATED ?= 0
 # FS_XDEV_UNCHECKED=1 is its second: a rename or link across directories goes
 # through (phase 1b step 5, decision 11). FS_WALK_NAMES_UNCHECKED=1 is its
 # third: a walk checks only its first name (step 2, decision 12).
+# The session arms (step 3(a), decision 13): FS_SESSION_GRANTS_ROOT=1 gives every
+# session the root whatever the policy says (it reddens make smoke-fs-policy too),
+# FS_SESSION_RIGHTS_UNCHECKED=1 lets a tracked capability use every right it
+# carries rather than its policy node's, and FS_SESSION_ANY_CALLER=1 opens a
+# session for any caller, not only the untokened capability holding MINT.
 FSCAP_SELFTEST ?= 0
 ifeq ($(FSCAP_SELFTEST),1)
 CFLAGS  += -DFSCAP_SELFTEST
@@ -3239,6 +3245,9 @@ endif
 FS_CAP_RIGHTS_UNCHECKED ?= 0
 FS_XDEV_UNCHECKED ?= 0
 FS_WALK_NAMES_UNCHECKED ?= 0
+FS_SESSION_GRANTS_ROOT ?= 0
+FS_SESSION_RIGHTS_UNCHECKED ?= 0
+FS_SESSION_ANY_CALLER ?= 0
 # FSCAPPOSIX_SELFTEST=1, with FSCAP_SELFTEST=1, runs step 2's client half in the
 # same harness: fscapposix, a newlib program, in place of fscaptest, walking by
 # capability through ordinary POSIX calls (make smoke-fs-cap-posix).
@@ -4999,6 +5008,15 @@ USERSPACE_CFLAGS += -DFS_XDEV_UNCHECKED
 endif
 ifeq ($(FS_WALK_NAMES_UNCHECKED),1)
 USERSPACE_CFLAGS += -DFS_WALK_NAMES_UNCHECKED
+endif
+ifeq ($(FS_SESSION_GRANTS_ROOT),1)
+USERSPACE_CFLAGS += -DFS_SESSION_GRANTS_ROOT
+endif
+ifeq ($(FS_SESSION_RIGHTS_UNCHECKED),1)
+USERSPACE_CFLAGS += -DFS_SESSION_RIGHTS_UNCHECKED
+endif
+ifeq ($(FS_SESSION_ANY_CALLER),1)
+USERSPACE_CFLAGS += -DFS_SESSION_ANY_CALLER
 endif
 ifeq ($(POSIX_CLOSE_KEEPS_CAP),1)
 USERSPACE_CFLAGS += -DPOSIX_CLOSE_KEEPS_CAP
@@ -12441,11 +12459,18 @@ smoke-claim-release-control:
 # it; a rename or link across directories is refused EXDEV on both paths, and a
 # rename within one directory needs CREATE and DELETE (step 5); a walk of several
 # names gives one capability derived from the one invoked, never wider, and
-# refuses a bad name at any position (step 2).
+# refuses a bad name at any position (step 2); and a session reaches only what
+# the compiled-in policy grants it, through a root that carries the union of its
+# rights while the server keeps the root itself to lookup and a filtered listing,
+# and only init's untokened MINT capability may open one (step 3(a)).
 # FS_CAP_RIGHTS_UNCHECKED=1 is the arm: the read-only capability writes.
 # FS_XDEV_UNCHECKED=1 is the second: a file moves to another directory.
 # FS_WALK_NAMES_UNCHECKED=1 is the third: a walk reaches an entry named "..".
-.PHONY: smoke-fs-cap smoke-fs-cap-control smoke-fs-cap-xdev-control smoke-fs-cap-walk-control
+# FS_SESSION_GRANTS_ROOT=1, FS_SESSION_RIGHTS_UNCHECKED=1 and FS_SESSION_ANY_CALLER=1
+# are the session arms: an ordinary session reaches /etc, creates in the root,
+# and a session opens through a capability without MINT.
+.PHONY: smoke-fs-cap smoke-fs-cap-control smoke-fs-cap-xdev-control smoke-fs-cap-walk-control \
+	smoke-fs-cap-session-control smoke-fs-cap-session-rights-control smoke-fs-cap-session-caller-control
 smoke-fs-cap:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FSCAP_SELFTEST=1 $(FSCAPARM)
@@ -12463,6 +12488,37 @@ smoke-fs-cap-xdev-control:
 smoke-fs-cap-walk-control:
 	@$(MAKE) --no-print-directory smoke-fs-cap FSCAPARM=FS_WALK_NAMES_UNCHECKED=1 \
 		FSCAPEXPECT='FSCAPTEST: FAIL walk-dotdot'
+smoke-fs-cap-session-control:
+	@$(MAKE) --no-print-directory smoke-fs-cap FSCAPARM=FS_SESSION_GRANTS_ROOT=1 \
+		FSCAPEXPECT='FSCAPTEST: FAIL session-reached-ungranted'
+smoke-fs-cap-session-rights-control:
+	@$(MAKE) --no-print-directory smoke-fs-cap FSCAPARM=FS_SESSION_RIGHTS_UNCHECKED=1 \
+		FSCAPEXPECT='FSCAPTEST: FAIL session-created-in-root'
+smoke-fs-cap-session-caller-control:
+	@$(MAKE) --no-print-directory smoke-fs-cap FSCAPARM=FS_SESSION_ANY_CALLER=1 \
+		FSCAPEXPECT='FSCAPTEST: FAIL session-opened-without-mint'
+
+# THE POLICY LANGUAGE AND RULE, ON THE HOST (step 3(a), docs/design/filesystem.md
+# §6.2 and §6.4). Named smoke-* although it boots nothing, so that gate-pairs.yml,
+# the CI-run check and the redden sweep, which classify smoke-* targets, cover it. tools/fs_policy_test.c compiles userspace/fs_policy.h, the code
+# fs_server parses and compiles /etc/fs.policy with, and tests what no boot can
+# show: every way a policy file is malformed, that a persistent volume without
+# one gives the administrator alone, and that a live boot ignores it. No QEMU,
+# no cross toolchain. FS_SESSION_GRANTS_ROOT=1 is the arm, the same defect flag
+# as smoke-fs-cap-session-control: every session is given the root.
+FSPOLICY_TEST_BIN = tools/fs_policy_test
+.PHONY: smoke-fs-policy smoke-fs-policy-control
+smoke-fs-policy:
+	@$(CC) -std=gnu99 -Wall -Wextra -Werror -I include $(if $(filter 1,$(FS_SESSION_GRANTS_ROOT)),-DFS_SESSION_GRANTS_ROOT) \
+		-o $(FSPOLICY_TEST_BIN) tools/fs_policy_test.c
+	@./$(FSPOLICY_TEST_BIN) > fs-policy-test.log 2>&1; rc=$$?; cat fs-policy-test.log; \
+	 if [ -n "$(FSPOLICYEXPECT)" ]; then \
+	   grep -q '$(FSPOLICYEXPECT)' fs-policy-test.log || { echo "smoke-fs-policy: arm did not redden with $(FSPOLICYEXPECT)"; exit 1; }; \
+	   echo "smoke-fs-policy: arm reddened as expected"; \
+	 else exit $$rc; fi
+smoke-fs-policy-control:
+	@$(MAKE) --no-print-directory smoke-fs-policy FS_SESSION_GRANTS_ROOT=1 \
+		FSPOLICYEXPECT='FS_POLICY_TEST: FAIL user-root-not-granted'
 
 # PROGRAMS WALK BY CAPABILITY (phase 1b step 2, client half, S126). fscapposix,
 # a newlib program holding a read-only root at CAPSLOT_FS_ROOT and a writable one

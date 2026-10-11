@@ -1,0 +1,43 @@
+SH(1)                          User Commands                           SH(1)
+
+NAME
+    sh - the Horus shell
+
+SYNOPSIS
+    COMMAND [ARGUMENT]...
+    COMMAND [ARGUMENT]... | COMMAND [ARGUMENT]... [| ...]
+
+DESCRIPTION
+    The shell asks for a login, then reads one line at a time and runs it.
+    It is one ring-3 task that serves every login in turn: exit(1) clears
+    the identity and returns to the login prompt.
+
+    A line is split on spaces into words. There is no quoting, no
+    variables and no globbing; a word is the characters between spaces.
+
+    The first word names the command, found in this order:
+
+      1. A line holding '|' is a pipeline of up to six programs from /bin,
+         each one's output joined to the next one's input by a pipe.
+      2. A bare name, with no '/', that is a file in /bin runs that
+         program, with the other words as its arguments. A program in
+         /bin takes precedence over a builtin of the same name, so the
+         ported GNU cat, wc and echo replace the shell's own.
+      3. Otherwise it is a builtin. `help` lists them and man(1) has a
+         page for each.
+
+    To run a program by path, use run(1).
+
+    Every program the shell starts receives its filesystem from the shell,
+    narrowed: a root and a working directory, never more than the shell
+    holds, taken back when the program ends. It is given nothing else.
+
+    The prompt is NAME@horus, then '#' for the administrator and '$' for
+    anyone else.
+
+FILES
+    /bin            programs run by name
+    /usr/share/man  the manual
+
+SEE ALSO
+    help(1), run(1), exit(1), hier(7), horus(7)

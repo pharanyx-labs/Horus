@@ -1,0 +1,22 @@
+CHOWN(8)                   System Administration                    CHOWN(8)
+
+NAME
+    chown - give a file to another account
+
+SYNOPSIS
+    chown UID[:GID] PATH
+
+DESCRIPTION
+    Make account UID the owner of PATH, and GID its group if one is given.
+    Both are numbers; there is no lookup by name. With no GID the file
+    keeps its group: the shell reads it back and writes it again, because
+    the operation sets both and an unspecified group would become 0.
+
+SECURITY
+    The administrator only. Changing a mode and giving a file away are
+    different acts with different rules: an owner may do the first, and
+    only the administrator the second. The fs_server decides, against the
+    identity the kernel attests.
+
+SEE ALSO
+    chmod(1), stat(1)

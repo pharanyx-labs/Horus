@@ -1,0 +1,21 @@
+LN(1)                          User Commands                           LN(1)
+
+NAME
+    ln - give a file a second name
+
+SYNOPSIS
+    ln OLD NEW
+
+DESCRIPTION
+    Make NEW a hard link to the regular file OLD. Both names refer to one
+    file: a write through either is seen through the other, and the data
+    lasts until the last name is removed. NEW is created in the working
+    directory.
+
+    Only a regular file can be linked, and you must own it. A link names
+    its source by inode, which a directory capability never does, so a
+    shell that walks by capability is refused; there is no cross-directory
+    link yet.
+
+SEE ALSO
+    rm(1), stat(1)

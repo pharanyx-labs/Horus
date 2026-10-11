@@ -167,7 +167,8 @@ There are 486 `smoke-*` targets: 220 gates and 266 control arms. Each row is a g
 | `smoke-measured-boot-required` | A `MEASURED_BOOT_REQUIRED` kernel halts when measured boot is unavailable | S12, S85 | `smoke-measured-boot-required-control`, `smoke-measured-boot-required-volume-control` |
 | `smoke-measured-persist` | Under that policy, a persistent disk that was never sealed is refused | S85 | `smoke-measured-persist-control` |
 | `smoke-measured-persist-sealed` | Under that policy, a disk sealed to the same measurements still opens | S85 |  |
-| `smoke-modules` | Boot modules are provisioned into `/bin` and run from the filesystem |  |  |
+| `smoke-modules` | Boot modules are provisioned into `/bin` and run from the filesystem, and the manual is unpacked from its archive module |  |  |
+| `smoke-archive-refused` | An archive module with one bad member (a symbolic link) installs nothing, beside a manual archive that installs | S116 | `smoke-archive-refused-control` |
 | `smoke-modules-tamper` | A corrupted module is refused against the manifest | S10 |  |
 | `smoke-rng-seed` | The CSPRNG refuses to produce output before it is seeded | S30 | `smoke-rng-seed-control` |
 | `smoke-tpm` | The kernel and modules are measured into PCR 8 and 9, matching an independent host computation | S11 |  |

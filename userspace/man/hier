@@ -1,39 +1,44 @@
-HIER(7)                    Horus Filesystem Hierarchy                   HIER(7)
+HIER(7)                  Horus Filesystem Hierarchy                  HIER(7)
 
 NAME
     hier - the layout of the Horus filesystem
 
 DESCRIPTION
-    Horus keeps its files in a single encrypted object store served by the
-    ring-3 fs_server. The fs_server creates this directory skeleton at boot,
-    so a fresh system always shows a real layout rather than an empty root:
+    All files live in one encrypted object store, served by the ring-3
+    fs_server. On a live boot the store is in memory and is gone at power
+    off; on an installed system it is the volume, unlocked by the first
+    login.
 
-    /           The root directory.
+    THE SYSTEM TREES are rebuilt at every boot from the boot modules the
+    kernel verified against the measured manifest. Anything else found in
+    them is removed, and every change is refused to every login, the
+    administrator's included. A system is updated by new install media,
+    never in place.
 
-    /bin        Executable programs, run by typing their name. The ported GNU
-                coreutils (cat, echo, head, wc, seq, printf, tail, ...) live
-                here, provisioned from GRUB boot modules. A /bin/<name>
-                shadows the shell's lighter builtin of the same name.
+    /bin            programs, run by name (sh(1))
+    /sbin           programs for init or the administrator
+    /lib            reserved for shared libraries (the shared C library
+                    is held by the kernel and handed out by capability, so
+                    it is not a file here)
+    /usr            read-only data
+    /usr/share/man  this manual, one plain-text file per page (man(1))
+    /usr/share/doc  licence texts and the source offer for the GNU and
+                    TCC programs shipped here
 
-    /etc        System configuration. Empty for now.
+    THE REST belongs to the administrator and the accounts, and persists
+    on an installed system:
 
-    /home       Per-user home directories. Empty for now.
+    /etc            configuration: fs.policy(5)
+    /home           one directory per account, owned by it, mode 0700,
+                    made at the first boot that sees the account
+    /var, /var/log  variable data
 
-    /lib        Shared libraries. Empty for now (programs are static-linked).
+    There is no shared /tmp. A session opened through the filesystem
+    policy gets a private /tmp that no other session can reach and that
+    is removed when the session ends (fs.policy(5)).
 
-    /usr        Read-only user data and programs.
-
-    /usr/share  Architecture-independent data:
-
-    /usr/share/man
-                Manual pages, one plain-text file per command (this page is
-                /usr/share/man/hier). The man(1) command reads them from here.
-
-NOTES
-    Every file is owned by a uid the kernel attests at login, and the
-    fs_server enforces POSIX owner/group/other permissions against it. Root
-    (uid 0) is the only ambient authority. Files persist across reboot when
-    an ATA disk is present; otherwise the store is an ephemeral RAM volume.
+    There are no device files. A device is a capability, never a file, so
+    creating a file can never create access to hardware.
 
 SEE ALSO
-    ls(1), cat(1), man(1)
+    fs.policy(5), capabilities(7), horus(7), ls(1)

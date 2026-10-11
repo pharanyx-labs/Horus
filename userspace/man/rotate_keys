@@ -1,0 +1,25 @@
+ROTATE_KEYS(8)             System Administration              ROTATE_KEYS(8)
+
+NAME
+    rotate_keys - rewrite some of your files' blocks
+
+SYNOPSIS
+    rotate_keys
+
+DESCRIPTION
+    Despite its name, rotate_keys changes no key. It reads and writes
+    back the first four blocks of each file you own, stopping after 64
+    blocks in all, and reports how many it rewrote. Each block is sealed
+    again under the same per-block key with a fresh random nonce, so the
+    ciphertext changes and the key does not. It needs a volume unlocked
+    by a login.
+
+    This is recorded as a limitation (LIMITATIONS 2.26); until it is
+    rebuilt or withdrawn, do not rely on it for anything.
+
+SECURITY
+    The kernel requires the console capability, a file key for your login
+    and the storage capability.
+
+SEE ALSO
+    passwd(1)

@@ -1603,6 +1603,13 @@ jobs:
         run: rustup target add x86_64-unknown-none
       - name: Ship printf/tail as GRUB modules, provision into /bin, run from the FS
         run: make smoke-modules
+      # The manual ships as one archive module (docs/design/configuration.md
+      # section 4), and an archive is refused whole: a second archive whose
+      # second member is a symbolic link must leave nothing behind.
+      - name: An archive module with a bad member installs nothing
+        run: make smoke-archive-refused
+      - name: "Control arm: members checked only as installed, so a good one lands"
+        run: make smoke-archive-refused-control
 
   smoke-modules-tamper:
     name: QEMU boot-module integrity gate (a tampered module payload is refused)

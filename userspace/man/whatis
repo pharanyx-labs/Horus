@@ -1,0 +1,13 @@
+WHATIS(1)                      User Commands                       WHATIS(1)
+
+NAME
+    whatis - one-line summary of a command
+
+SYNOPSIS
+    whatis NAME
+
+DESCRIPTION
+    Print the one-line summary of the built-in page NAME.
+
+SEE ALSO
+    man(1), apropos(1)

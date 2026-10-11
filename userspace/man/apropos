@@ -1,0 +1,14 @@
+APROPOS(1)                     User Commands                      APROPOS(1)
+
+NAME
+    apropos - search the manual by keyword
+
+SYNOPSIS
+    apropos KEYWORD
+
+DESCRIPTION
+    List every built-in page whose name or one-line summary contains
+    KEYWORD, with that summary.
+
+SEE ALSO
+    man(1), whatis(1)

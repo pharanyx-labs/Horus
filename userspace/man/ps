@@ -1,0 +1,21 @@
+PS(1)                          User Commands                           PS(1)
+
+NAME
+    ps - list tasks
+
+SYNOPSIS
+    ps
+
+DESCRIPTION
+    List tasks with their pid, owner, name, state, heap use and capability
+    count. Your own task is marked '*'. The flags column says, in words,
+    whether a task is in the kernel, waiting on another task ("wait:N") or
+    waiting for a notification.
+
+SECURITY
+    Which tasks you see is decided by your authority, not by asking: a
+    login that is not the administrator sees only its own task. A task
+    list is an information leak like any other.
+
+SEE ALSO
+    capview(1), whoami(1)

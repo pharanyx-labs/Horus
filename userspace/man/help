@@ -1,0 +1,15 @@
+HELP(1)                        User Commands                         HELP(1)
+
+NAME
+    help - the command index
+
+SYNOPSIS
+    help [TOPIC]
+
+DESCRIPTION
+    With no TOPIC, print the commands grouped by what they do. With one,
+    print a short note on a command or a group (files, security, process,
+    ipc, loader). For a full page use man(1).
+
+SEE ALSO
+    man(1), apropos(1)

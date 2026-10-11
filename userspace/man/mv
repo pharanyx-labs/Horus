@@ -1,0 +1,19 @@
+MV(1)                          User Commands                           MV(1)
+
+NAME
+    mv - rename an entry
+
+SYNOPSIS
+    mv OLD NEW
+
+DESCRIPTION
+    Rename OLD to NEW within the working directory. Both are names, not
+    paths.
+
+    Moving an entry to another directory is refused (EXDEV) until the
+    filesystem can do it safely (LIMITATIONS 2.22): to move a file, copy
+    it with cp(1) and remove the original with rm(1). A directory cannot
+    be moved to another directory at all yet.
+
+SEE ALSO
+    cp(1), rm(1)

@@ -1,0 +1,38 @@
+CAPABILITIES(7)                  Overviews                   CAPABILITIES(7)
+
+NAME
+    capabilities - how authority works on Horus
+
+DESCRIPTION
+    Every operation a program performs is authorised by a capability it
+    holds: an unforgeable reference to one object, with a set of rights.
+    A program names a capability by a slot number in its own capability
+    space and never sees the capability itself, so it cannot forge one,
+    guess one or read another program's.
+
+    NOTHING IS GRANTED FOR WHO YOU ARE. There is no ambient authority: no
+    privilege for being a particular user, for having been started by the
+    kernel, or for asking first. A program can do exactly what its
+    capabilities name, and a new program starts with only what its parent
+    chose to give it.
+
+    AUTHORITY ONLY SHRINKS. A capability can be copied (mint), or given to
+    a program its holder supervises (grant), and each copy has at most the
+    rights of its source. No operation adds a right.
+
+    REVOCATION FOLLOWS THE TREE. Each capability records the one it was
+    derived from, so the capabilities form a tree. Revoking one removes it
+    and everything derived from it, in every program's capability space,
+    and nothing else: not its source, not its siblings, not another
+    capability to the same object. Each capability has a 64-bit serial,
+    issued once and never again; capview(1) prints the tree.
+
+    THE KERNEL IS SMALL ON PURPOSE. It enforces capabilities and little
+    else. The filesystem, the console and init are ordinary ring-3
+    programs holding the capabilities their job needs.
+
+    These claims, each with the test or proof that checks it, are the
+    table in SECURITY.md in the source tree.
+
+SEE ALSO
+    capview(1), ps(1), fs.policy(5), horus(7)

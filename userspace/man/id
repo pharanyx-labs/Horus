@@ -1,0 +1,13 @@
+ID(1)                          User Commands                           ID(1)
+
+NAME
+    id - show your login identity
+
+SYNOPSIS
+    id
+
+DESCRIPTION
+    Print the uid and gid of this login. See whoami(1).
+
+SEE ALSO
+    whoami(1)

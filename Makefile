@@ -139,7 +139,7 @@ DEFECT_FLAGS = \
 	POOL_SPAN_SELFTEST E820_HOLE_PROBE PHYS_WINDOW_FLAT_ONLY POOL_FLAT_CEILING POOL_RAM_UNCHECKED MEM_HIGH_UNREPORTED \
 	SWAP_SELFTEST SWAP_SEAL_OFF SWAP_TAG_UNCHECKED SWAP_HOG SWAP_OUT_ZEROED SWAP_IDLE_OFF SWAP_UNPINNED \
 	CONSOLE_PROGRESS_BELOW_SURFACE CONSOLE_PROGRESS_AT_LOGIN \
-	SYSTEM_TREES_WRITABLE SYSTEM_TREES_NO_PRUNE SYSTEM_TREES_SIZE_ONLY \
+	SYSTEM_TREES_WRITABLE SYSTEM_TREES_NO_PRUNE SYSTEM_TREES_SIZE_ONLY ARCHIVE_NO_PRECHECK \
 	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY BOOT_MENU_NO_LIVE_TOKEN \
 	BOOT_PIN_UNCHECKED BOOT_IMAGE_UNBOUND CONSOLE_PASS_UNGATED \
 	PIPE_CAP_UNACCOUNTED TOKEN_REPLY_MINT_UNMASKED \
@@ -1437,9 +1437,9 @@ COREUTILS_BINS  = $(addprefix userspace/coreutils_,$(addsuffix .bin,$(COREUTILS_
 # COREUTILS_MODULE_SET picks which utilities to ship as modules (default: all of
 # them). The 16 MiB store volume holds every ported coreutils binary at once, so
 # smoke-modules ships the full set; smoke-coreutils-shell overrides it with a
-# smaller set only to keep that focused test fast. Each shipped utility also ships
-# its plain-text man page (userspace/man/<name>) to usr/share/man, and hier(7) —
-# the filesystem-layout page — always ships.
+# smaller set only to keep that focused test fast. The manual (every page in
+# userspace/man except tcc's, which ships with TCC) goes with them as ONE module,
+# userspace/man.tar, unpacked by fs_server into usr/share/man (MAN_PACK below).
 # BOOT_MODULE_RESERVE_PAD=1 ships a 16 MiB padding module AHEAD of every other
 # module, for smoke-boot-module-reserve and its control arms only. GRUB places
 # modules upward from the end of the kernel image, so a 16 MiB module starting
@@ -1519,11 +1519,37 @@ ifeq ($(COREUTILS_MODULES),1)
 SHLIBC_MODULE        := 1
 BOOT_MODULES        += $(foreach p,$(COREUTILS_MODULE_SET),userspace/coreutils_$(p).bin:bin/$(p))
 BOOT_MODULE_DEP     += $(foreach p,$(COREUTILS_MODULE_SET),userspace/coreutils_$(p).bin)
-BOOT_MODULES        += userspace/man/hier:usr/share/man/hier \
-                       $(foreach p,$(COREUTILS_MODULE_SET),userspace/man/$(p):usr/share/man/$(p))
-BOOT_MODULE_DEP     += userspace/man/hier \
-                       $(foreach p,$(COREUTILS_MODULE_SET),userspace/man/$(p))
+BOOT_MODULES        += userspace/man.tar:pack/usr/share/man
+BOOT_MODULE_DEP     += userspace/man.tar
 endif
+
+# THE MANUAL AS ONE MODULE (docs/design/configuration.md section 4). Forty-odd
+# pages cannot each be a module: MAX_BOOT_MODULES is 48. So they ship as one
+# ustar archive whose destination `pack/usr/share/man` tells fs_server to unpack
+# it there (unpack_archive_module), verified by its hash like any module (S96).
+# Reproducible: members sorted by name, every mtime, owner and group zero, one
+# mode, so the same pages make the same bytes and the same manifest hash.
+# Regular files with plain leaf names only: fs_server refuses anything else.
+# ARCHIVE_PROBE=1 (make smoke-archive-refused) ships a second archive module,
+# into usr/share/doc, whose first member is a good file and whose second is a
+# symbolic link. fs_server must refuse it whole; it says what it found.
+# ARCHIVE_NO_PRECHECK=1 is the control arm: members are checked only as they
+# are installed, so the good first one lands before the link is refused.
+ARCHIVE_PROBE ?= 0
+ARCHIVE_NO_PRECHECK ?= 0
+ifeq ($(ARCHIVE_PROBE),1)
+BOOT_MODULES    += userspace/archive-probe.tar:pack/usr/share/doc
+BOOT_MODULE_DEP += userspace/archive-probe.tar
+endif
+userspace/archive-probe.tar:
+	@d=$$(mktemp -d) && echo good > $$d/archive-probe-good && ln -s /etc/fs.policy $$d/archive-probe-link && \
+	    tar --format=ustar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+	        -cf $@ -C $$d archive-probe-good archive-probe-link && rm -rf $$d
+
+MAN_PACK_PAGES := $(sort $(filter-out userspace/man/tcc,$(wildcard userspace/man/*)))
+userspace/man.tar: $(MAN_PACK_PAGES)
+	@tar --format=ustar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+	    --mode=0644 -cf $@ -C userspace/man $(notdir $(MAN_PACK_PAGES))
 
 # TCC (Tiny C Compiler) — a native C compiler ported to run as a ring-3 program
 # on Horus. Like the coreutils it is NOT baked into the kernel image: TCC_MODULE=1
@@ -5162,6 +5188,13 @@ endif
 ifeq ($(SYSTEM_TREES_SIZE_ONLY),1)
 USERSPACE_CFLAGS += -DSYSTEM_TREES_SIZE_ONLY
 endif
+# The archive-module probe and its control arm (see MAN_PACK_PAGES above).
+ifeq ($(ARCHIVE_PROBE),1)
+USERSPACE_CFLAGS += -DARCHIVE_PROBE
+endif
+ifeq ($(ARCHIVE_NO_PRECHECK),1)
+USERSPACE_CFLAGS += -DARCHIVE_NO_PRECHECK
+endif
 ifneq ($(strip $(DEBUG_LABEL)),)
 USERSPACE_CFLAGS += -DDEBUG_BUILD -DHORUS_DEBUG_LABEL='"$(DEBUG_LABEL)"'
 endif
@@ -6082,6 +6115,7 @@ userspace: $(SHIPPED_PIE_BINS)
 
 userspace-clean:
 	rm -rf userspace/doc
+	rm -f userspace/man.tar
 	rm -f userspace/*.o userspace/*.a userspace/*.so userspace/*.elf userspace/*.pie.elf userspace/*.stripped.elf userspace/*.raw userspace/*.bin userspace/*_image.h userspace/shlib_offsets.h userspace/libc_exports.c userspace/libc_exports.h userspace/libc_exports_link.c userspace/libc_stubs.S tools/mkheadered
 
 # Build with the gated CPU-protection self-test and require the kernel to report
@@ -8377,6 +8411,29 @@ smoke-modules:
 	@$(MAKE) --no-print-directory COREUTILS_MODULES=1
 	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 horus.iso
 	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) tools/modules_session.py horus.iso
+
+# An archive module is refused WHOLE (docs/design/configuration.md section 4).
+# Beside the manual, the build ships a second archive whose first member is a
+# good file and whose second is a symbolic link, which no archive may carry.
+# fs_server must install nothing from it, and must still install the manual.
+.PHONY: smoke-archive-refused smoke-archive-refused-control
+smoke-archive-refused:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 COREUTILS_MODULE_SET="wc" ARCHIVE_PROBE=1
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 COREUTILS_MODULE_SET="wc" ARCHIVE_PROBE=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='ARCHIVE PROBE: nothing from the refused archive installed' \
+		FAIL_MARKER='ARCHIVE PROBE: FAIL' tools/smoke_test.sh horus.iso
+
+# Control arm: members checked only as they are installed, so the good one lands
+# before the link is refused.
+smoke-archive-refused-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 COREUTILS_MODULE_SET="wc" ARCHIVE_PROBE=1 ARCHIVE_NO_PRECHECK=1
+	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 COREUTILS_MODULE_SET="wc" ARCHIVE_PROBE=1 ARCHIVE_NO_PRECHECK=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='ARCHIVE PROBE: FAIL a refused archive left a member installed' \
+		tools/smoke_test.sh horus.iso
 
 # Ship head/seq/wc as GRUB modules and drive them through the REAL ring-3 shell
 # over serial: create a file, run head/wc/seq on it and assert the counts and

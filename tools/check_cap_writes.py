@@ -3,7 +3,7 @@
 what makes it safe.
 
 WHY THIS EXISTS. A capability in this kernel is six fields -- type, rights,
-object, badge, serial, generation -- and a C assignment writes them one at a
+object, badge, serial, token -- and a C assignment writes them one at a
 time. rust_cap_revoke_global's sweep reads every live cspace and decides, from
 what it finds, which capabilities belong to a revoked lineage and which kernel
 objects no capability names any more. It is documented to depend on cap_lock
@@ -37,6 +37,18 @@ lock" is checkable; "cannot be reached by another CPU" is a claim about the
 program somebody has to make and sign. So the manifest records the claim and this
 script checks the half that is mechanical, the same bargain .github/gate-pairs.yml
 makes for control arms.
+
+RULE 7, ONE SERIAL, ONE SLOT (2026-10-11). Revocation empties every slot holding
+a revoked serial, and nothing else records a revoke: lookup trusts a capability
+for being in its slot, and a snapshot is re-checked by slot and serial. That is
+sound only while a serial lives in one slot and is never issued again, so a C
+store may give a slot a serial from exactly three places: the allocator
+(cap_alloc_fresh_serial / rust_cap_alloc_serial, directly or through a variable
+assigned from it in the same function), 0 (an empty slot), or a primordial
+0xC0DE.... constant (never revoked). And no whole-struct assignment into a slot,
+which is how a second slot comes to hold a serial. Lines inside a defect flag's
+#if branch are skipped: those arms exist to be the defect (FORK_CSPACE_FLAT_COPY
+duplicates a serial on purpose).
 """
 import re
 import sys
@@ -52,7 +64,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / ".github" / "cap-write-sites.yml"
 SRC = ROOT / "src" / "kernel"
 
-FIELD = r"(?P<field>type|rights|object|badge|serial|generation|reserved|token)"
+FIELD = r"(?P<field>type|rights|object|badge|serial|token)"
 # A write to ONE capability field through an indexed cspace-like lvalue. The
 # lvalue names are the ones this tree actually uses for a capability array; a new
 # name is caught by rule 1 the first time it is written to, because the function
@@ -83,6 +95,73 @@ VALID_STATUS = {"locked", "boot-single-cpu", "unreachable-until-published",
 # true. Those guards are what rots. So such a site must name them, and rule 5
 # checks they are still there.
 NEEDS_DEPENDS_ON = {"invisible-to-the-sweep"}
+
+
+# RULE 7's allowed sources for a serial.
+SERIAL_ALLOC = re.compile(r"\b(?:cap_alloc_fresh_serial|rust_cap_alloc_serial)\s*\(")
+SERIAL_PRIMORDIAL = re.compile(r"^0[xX][cC]0[dD][eE][0-9A-Fa-f]{4}[uUlL]*$")
+PAT_SERIAL = re.compile(r"(?:" + CSPACE + r")\s*\[[^;]*\]\s*\.\s*serial\s*=(?!=)\s*(?P<rhs>[^;]*);")
+
+
+def defect_flags():
+    """The Makefile's DEFECT_FLAGS: the macros whose #if branches are control arms."""
+    mk = (ROOT / "Makefile").read_text()
+    m = re.search(r"^DEFECT_FLAGS\s*=\s*((?:.*\\\n)*.*)$", mk, re.M)
+    if not m:
+        return set()
+    return set(re.findall(r"[A-Z][A-Z0-9_]+", m.group(1)))
+
+
+def control_arm_lines(path, flags):
+    """Line numbers inside an #if branch that is ON only when a defect flag is."""
+    # Each entry is [defect_now, defect_in_else]: whether the branch being read
+    # is defect-only, and whether its #else would be. `#ifdef FLAG` puts the
+    # defect in the first branch; `#ifndef FLAG` (and `#if !...`) in the #else.
+    stack, out = [], set()
+    for n, line in enumerate(path.read_text().split("\n"), 1):
+        d = line.strip()
+        if d.startswith("#"):
+            word = d[1:].strip().split(None, 1)
+            kw = word[0] if word else ""
+            rest = word[1] if len(word) > 1 else ""
+            names = bool(set(re.findall(r"[A-Z][A-Z0-9_]+", rest)) & flags)
+            negated = kw == "ifndef" or rest.lstrip().startswith("!")
+            if kw in ("if", "ifdef", "ifndef"):
+                stack.append([names and not negated, names and negated])
+                continue
+            if kw == "elif" and stack:
+                stack[-1] = [names and not negated, False]
+                continue
+            if kw == "else" and stack:
+                stack[-1] = [stack[-1][1], False]
+                continue
+            if kw == "endif" and stack:
+                stack.pop()
+                continue
+        if any(entry[0] for entry in stack):
+            out.add(n)
+    return out
+
+
+def serial_source_ok(rhs, body):
+    """Is `rhs` a fresh serial, 0, or a primordial constant (rule 7)?"""
+    rhs = rhs.strip()
+    if SERIAL_ALLOC.search(rhs):
+        return True
+    # A conditional picks one of several values; each must be allowed.
+    parts = [rhs]
+    if "?" in rhs and ":" in rhs:
+        cond, _, alts = rhs.partition("?")
+        parts = [a for a in alts.split(":")]
+    for part in parts:
+        v = part.strip().strip("()").strip()
+        if v == "0" or SERIAL_PRIMORDIAL.match(v):
+            continue
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", v) and re.search(
+                r"\b" + re.escape(v) + r"\s*=\s*(?:cap_alloc_fresh_serial|rust_cap_alloc_serial)\s*\(", body):
+            continue
+        return False
+    return True
 
 
 def enclosing_functions(path):
@@ -164,11 +243,41 @@ def main():
     sites = find_sites(written)
     errors = []
 
+    # RULE 7: one serial, one slot (see the module docstring).
+    flags = defect_flags()
+    if not flags:
+        errors.append("NO DEFECT_FLAGS found in the Makefile: rule 7 cannot tell a "
+                      "control arm from the ship kernel, so it refuses to guess.")
+    for path in sorted(SRC.glob("*.c")):
+        arms = control_arm_lines(path, flags)
+        funcs = enclosing_functions(path)
+        bodies = function_bodies(path)
+        for n, line in enumerate(path.read_text().split("\n"), 1):
+            if n in arms:
+                continue
+            code = line.split("/*")[0].split("//")[0]
+            rel = path.relative_to(ROOT).as_posix()
+            if PAT_STRUCT.search(code):
+                errors.append(
+                    f"WHOLE-SLOT copy: {rel}:{n} in {funcs[n]}() assigns a whole "
+                    f"capability into a slot. That is how a second slot comes to hold "
+                    f"a serial (one serial, one slot); write the fields, with a fresh "
+                    f"serial.")
+            for m in PAT_SERIAL.finditer(code):
+                if not serial_source_ok(m.group("rhs"), bodies.get(funcs[n], "")):
+                    errors.append(
+                        f"REUSED serial: {rel}:{n} in {funcs[n]}() gives a slot the "
+                        f"serial `{m.group('rhs').strip()}`, which is not fresh from "
+                        f"cap_alloc_fresh_serial/rust_cap_alloc_serial, 0, or a "
+                        f"primordial 0xC0DE.... constant.\n"
+                        f"      A serial lives in one slot and is never issued twice; "
+                        f"revocation and the snapshot check rest on it.")
+
     # RULE 6: a site that INSTALLS a capability field by field writes its token.
     #
     # WHY. Since 2026-09-25 a capability has a `token`, the identity a server
     # authorises on (docs/design/filesystem.md §5.1). A field-wise install writes
-    # type, rights, object, badge, serial and generation into a slot, and if the
+    # type, rights, object, badge and serial into a slot, and if the
     # slot last held a tokened capability, every one of those is overwritten
     # except the token. The new capability then carries the old one's identity:
     # a forged token, made by nothing more than reusing a slot. Writing `serial`

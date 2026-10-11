@@ -859,7 +859,6 @@ static void h_cap_enumerate(struct interrupt_frame64 *r) {
             info.rights     = cap->rights;
             info.serial     = cap->serial;
             info.badge      = cap->badge;
-            info.generation = cap->generation;
             /* `object` is deliberately not reported -- see struct cap_info. */
         }
     }
@@ -1039,9 +1038,9 @@ static void h_cap_revoke(struct interrupt_frame64 *r) {
 
 /* SYS_CAP_GRANT (65): delegate a capability into a supervised child's cspace.
  * Copy the caller's capability at `src_slot` into tasks[target]'s cspace at
- * `dest_slot` with a fresh serial (so the grantee's cap_lookup accepts it),
- * preserving type/rights/object/badge/generation so the delegated copy tracks the
- * same lineage — a later revoke of the object invalidates it too. Authorised by a
+ * `dest_slot` with a fresh serial (so the grantee's cap_lookup accepts it) and the
+ * caller's capability as its parent (badge), with type/object kept and rights
+ * narrowed, so a later revoke of the caller's capability sweeps it too. Authorised by a
  * CAP_TCB (WRITE) to the target (the spawner's per-child cap) or CAP_USER admin,
  * exactly like SYS_KILL: a task may only push capabilities down into children it
  * supervises (no ambient authority upward). The target must be a live task other
@@ -1557,7 +1556,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
 #endif
     /* IPC is capability-ADDRESSED (audit finding C-1): the first argument is a
      * cspace slot, and the handler resolves it through cap_lookup to the endpoint
-     * or notification it names — checking type, right, and lineage in one place
+     * or notification it names — checking type, right and liveness in one place
      * (ipc_ep_from_slot / ipc_notif_from_slot in syscall_ipc.c).
      *
      * These entries MUST stay SC_NONE. A fixed slot-3 gate here would be worse

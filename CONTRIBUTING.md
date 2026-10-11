@@ -51,19 +51,18 @@ true. The body explains **why**: what was tried, what failed, and why the final 
 right. On a security-critical path, end with the property kept and its witness:
 
 ```
-fix(capability): a stale snapshot of a revoked capability still validated
+fix(capability): revoking one capability could make an unrelated live one unusable
 
-The generation table was keyed by object, so two independent capabilities to
-one object shared a cell, and generation 0 had to be treated as always valid.
-Every capability in the kernel had generation 0, so the backstop never fired.
-
-Key it by serial and check strict equality, so each capability has its own
-cell and 0 is no longer an escape hatch.
+Revocations were also recorded in a 4096-cell table indexed by a hash of the
+serial, so a revoke made every live capability in the same cell read as
+revoked. The structural revoke already empties every slot it reaches, and with
+64-bit serials that are never reissued a slot and serial name one capability,
+so the table is removed rather than enlarged.
 
 Invariant preserved: a revoked capability, or any detached snapshot of one,
-fails validation (SECURITY.md S5).
-Witness: rust/src/capability.rs test_revoke_invalidates_pre_revoke_snapshot,
-         make smoke-captest.
+fails validation, and nothing else does (SECURITY.md S5).
+Witness: userspace/captest.c check 16b, make smoke-captest;
+         arm make smoke-captest-hashed-revoke-control.
 ```
 
 ## The invariant rule

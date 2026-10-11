@@ -827,28 +827,32 @@ create_user_pagedir(id);
         tasks[id].cspace[s].badge      = 0;
         tasks[id].cspace[s].serial     = 0;
         tasks[id].cspace[s].token      = 0;
-        tasks[id].cspace[s].generation = 0;
     }
+
+    /* Fresh serials for the birth capabilities, like every other capability: a
+     * serial is issued once and lives in one slot (rust/src/capability.rs). They
+     * were structured, 0xB0000000 | id << 16 | slot, until 2026-10-11, so a
+     * reused task slot handed the same three serials out again. Taken before
+     * the writes below because cap_alloc_fresh_serial takes cap_lock. A 0 (no
+     * serial left, which 2^64 serials make unreachable) leaves that capability
+     * resolving as nothing: fail closed. */
+    uint64_t birth0 = cap_alloc_fresh_serial();
+    uint64_t birth3 = cap_alloc_fresh_serial();
+    uint64_t birth4 = cap_alloc_fresh_serial();
 
     tasks[id].cspace[0].type   = CAP_TCB;
     tasks[id].cspace[0].rights = CAP_RIGHT_ALL;
     tasks[id].cspace[0].object = tcb_object(id);   /* this incarnation only */
     tasks[id].cspace[0].badge  = 0;
-    tasks[id].cspace[0].serial = (0xB0000000U | ((uint32_t)id << 16) | 0U);
+    tasks[id].cspace[0].serial = birth0;
     tasks[id].cspace[0].token = 0;
-    /* Serial-keyed generation stamp (finding 3.3). These structured serials are
-     * reused when a task slot is reused, so stamping the current cell value keeps
-     * a reincarnated slot's capability valid even if the prior incarnation's
-     * serial was revoked (bumped), rather than born stale. */
-    tasks[id].cspace[0].generation = rust_lineage_current(tasks[id].cspace[0].serial);
 
     tasks[id].cspace[3].type   = CAP_FRAME;
     tasks[id].cspace[3].rights = CAP_RIGHT_READ | CAP_RIGHT_WRITE | CAP_RIGHT_EXEC;
     tasks[id].cspace[3].object = USER_AREA_BASE;
     tasks[id].cspace[3].badge  = 0;
-    tasks[id].cspace[3].serial = (0xB0000000U | ((uint32_t)id << 16) | 3U);
+    tasks[id].cspace[3].serial = birth3;
     tasks[id].cspace[3].token = 0;
-    tasks[id].cspace[3].generation = rust_lineage_current(tasks[id].cspace[3].serial);
 
     /* Slot 4: this task's PRIVATE reply endpoint, and the ONLY endpoint
      * capability a task is born with (audit finding C-1).
@@ -873,9 +877,8 @@ create_user_pagedir(id);
             tasks[id].cspace[4].rights = CAP_RIGHT_READ | CAP_RIGHT_WRITE;
             tasks[id].cspace[4].object = (uint64_t)rep;
             tasks[id].cspace[4].badge  = 0;
-            tasks[id].cspace[4].serial = (0xB0000000U | ((uint32_t)id << 16) | 4U);
+            tasks[id].cspace[4].serial = birth4;
             tasks[id].cspace[4].token = 0;
-            tasks[id].cspace[4].generation = rust_lineage_current(tasks[id].cspace[4].serial);
         }
     }
 
@@ -887,7 +890,6 @@ create_user_pagedir(id);
         tasks[id].cspace[8].badge  = 0;
         tasks[id].cspace[8].serial = 0xC0DE0008U;
         tasks[id].cspace[8].token = 0;
-        tasks[id].cspace[8].generation = 0;
 
         tasks[id].cspace[9].type   = CAP_ENCRYPTED_STORAGE;
         tasks[id].cspace[9].rights = CAP_RIGHT_ALL;
@@ -895,7 +897,6 @@ create_user_pagedir(id);
         tasks[id].cspace[9].badge  = 0;
         tasks[id].cspace[9].serial = 0xC0DE0009U;
         tasks[id].cspace[9].token = 0;
-        tasks[id].cspace[9].generation = 0;
     }
 }
 

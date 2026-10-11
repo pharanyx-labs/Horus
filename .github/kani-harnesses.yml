@@ -16,9 +16,9 @@
 # From 2026-08-23 to 2026-10-06 this file had a second list, `manual`, for the
 # two lineage-generation proofs: with the real serial-to-cell hash they did not
 # finish in 1500 s each, and they ran only in that manual job. Stubbing the hash
-# (capability.rs `lineage_idx_model`, which says why the proofs lose nothing by
-# it) brought them to about four minutes each, so they gate like the rest, the
-# manual job was deleted, and the list with it.
+# brought them to about four minutes each, so they gate like the rest, the
+# manual job was deleted, and the list with it. Both went on 2026-10-11 with the
+# hashed table they were about (LIMITATIONS 2.23), and with them the last stub.
 #
 # Times below are per-harness SOLVER time, measured on 2026-08-23 on the
 # maintainer's machine with Kani 0.67.0, except where a later entry says
@@ -48,6 +48,12 @@
 # Run on every pull request by the `kani-bounded` job.
 gating:
   - serial_never_reserved_or_zero                            # 0s
+  # One serial, one slot (rust/src/capability.rs), added 2026-10-11 when the
+  # hashed generation table went and serials became 64-bit. FALSIFIED by the
+  # arms in .github/kani-arms.yml: a counter that wraps instead of refusing,
+  # and a sweep that spares a second slot holding the revoked serial.
+  - fresh_serials_never_repeat                               # 0s
+  - revoke_leaves_no_slot_holding_the_serial                 # 9s
   - mint_never_escalates_rights                              # 1s
   - lookup_grants_exactly_the_rights_held                    # 0s
   - lookup_never_returns_an_empty_slot                       # 1s
@@ -60,7 +66,7 @@ gating:
   - grant_from_an_invalid_source_refuses_and_writes_nothing  # 1s
   - grant_refuses_every_out_of_range_slot                    # 1s
   - revoke_descendant_never_nulls_ancestors                  # 66s
-  - revoke_root_nulls_every_descendant                       # 37s, hash stubbed since 2026-10-06 (was 157s)
+  - revoke_root_nulls_every_descendant                       # 37s with the hash stubbed (2026-10-06); no hash since 2026-10-11
   - elf_header_validation_is_sound                           # 2s
   - elf_load_plan_is_sound                                   # 2s
   # The page-refcount arithmetic (rust/src/memory.rs), added 2026-09-20. Pure
@@ -82,21 +88,6 @@ gating:
   - every_page_in_the_pool_has_an_index                      # 1s
   - an_increment_never_wraps_a_refcount                      # 0s
   - a_decrement_never_underflows_a_refcount                  # 1s
-  # The lineage-generation pair (rust/src/capability.rs, finding 3.3), and the
-  # range proof over the real hash that their stub depends on. EACH WAS
-  # FALSIFIED on 2026-10-06 by reintroducing the defect it forbids and requiring
-  # `VERIFICATION:- FAILED`, with the stub in place:
-  #   lineage_idx_is_always_inside_the_table: masking with LINEAGE_SLOTS rather
-  #     than LINEAGE_SLOTS - 1 (red in under a second);
-  #   revoke_invalidates_recorded_generation: a gen-0 escape hatch in
-  #     lineage_check (red in 219 s), and the wrap-around fix dropped from
-  #     bump_lineage (red in 68 s);
-  #   revoke_does_not_touch_a_distinct_lineage_cell: bump_lineage also bumping
-  #     the neighbouring cell (red in 774 s).
-  # Four arms, four reds, source restored clean.
-  - lineage_idx_is_always_inside_the_table                   # 0s
-  - revoke_invalidates_recorded_generation                   # 234s
-  - revoke_does_not_touch_a_distinct_lineage_cell            # 243s
   # The ELF field readers and the relocation resolvers (rust/src/lib.rs, S111),
   # added 2026-10-06 with the fix the first of them found: the readers computed
   # `off + N` unchecked. EACH WAS FALSIFIED by reintroducing a defect and
@@ -125,7 +116,7 @@ gating:
   #     `cargo kani --features rng_unseeded_legacy` (red in 162 s);
   #   the_throttle_locks_within_the_limit: `>` for `>=` at MAX_AUTH_FAILS (red
   #     in 1 s).
-  - revoke_reaches_every_cspace_and_spares_a_peer            # 98s, hash stubbed
+  - revoke_reaches_every_cspace_and_spares_a_peer            # 98s with the hash stubbed (2026-10-06)
   - an_unseeded_pool_emits_nothing                           # 4s
   - the_throttle_locks_within_the_limit                      # 1s
   # The GPT reader (rust/src/gpt.rs, S114), added 2026-10-08 with the code: the

@@ -1392,6 +1392,65 @@ void _start(void) {
               "userlist-wrote-through-on-refusal");
     }
 
+    /* ---- 16b. REVOKING ONE CAPABILITY NEVER REVOKES ANOTHER ------------
+     *
+     * Revocation is precise: it removes the capability named and what was
+     * derived from it, and nothing else (S3). A live capability with no
+     * relation to the one revoked must stay usable however many unrelated
+     * revokes happen beside it.
+     *
+     * The defect this witnesses (LIMITATIONS 2.23, found 2026-10-11 on #538):
+     * the generation backstop kept each serial's generation in a cell of a
+     * fixed table chosen by a hash of the serial, and a revoke bumped the cell.
+     * Any LIVE capability whose serial hashed to the same cell then read as
+     * revoked. In CI the shell's root directory capability went stale that way,
+     * after a pool capability that collided with it was let go, and the shell
+     * could no longer hand a program its filesystem. The table is gone;
+     * REVOKE_HASHED_BACKSTOP=1 puts its shape back, and
+     * `make smoke-captest-hashed-revoke-control` requires this check to fail.
+     *
+     * A black-box test on purpose: it computes no hash and reads no serial, so
+     * it holds for whatever scheme the core uses. One live capability, then
+     * REVOKE_ROUNDS sibling copies minted and revoked one after another. Each
+     * new mint takes a fresh serial, so the rounds walk the serial space past
+     * the live one; with a table of 4096 cells, the chance that 40000 of them
+     * all miss the live one's cell is about 5 in 100000, and a given build's
+     * serial sequence is fixed, so the result repeats. Both failure names start
+     * `unrelated-revoke-invalidated-`, which is what the arm requires. */
+    {
+        enum { SLOT_LIVE = 210, SLOT_SCRATCH = 211, SLOT_PROBE = 212, REVOKE_ROUNDS = 40000 };
+        check(sys_cap_mint(SLOT_LIVE, SLOT_RETYPED_EP, CAP_RIGHT_READ | CAP_RIGHT_MINT) == 0,
+              "lineage-live-mint-refused");
+        uint32_t rounds = 0;
+        const char *what = 0;
+        for (; rounds < REVOKE_ROUNDS; rounds++) {
+            if (sys_cap_mint(SLOT_SCRATCH, SLOT_RETYPED_EP, CAP_RIGHT_READ | CAP_RIGHT_REVOKE) != 0) {
+                /* The source is a live capability too, and the scratch copies
+                 * are its siblings' children: refusing it here is the same
+                 * defect, found on the source first. */
+                what = "unrelated-revoke-invalidated-the-source-after-round-";
+                break;
+            }
+            if (sys_cap_revoke(SLOT_SCRATCH) != 0) { what = "lineage-scratch-revoke-refused-at-round-"; break; }
+        }
+        /* Always one check, so the count the suite prints is the count in the
+         * source (doc-claims derives it statically). */
+        static char why[96];
+        why[0] = 0;
+        if (what) {
+            unsigned n = 0;
+            while (*what) why[n++] = *what++;
+            n += dec_into(&why[n], rounds);
+            why[n] = 0;
+        }
+        check(why[0] == 0, why);
+        /* The live capability still resolves: a mint from it needs it to pass
+         * the same lookup every use does, generation check included. */
+        check(sys_cap_mint(SLOT_PROBE, SLOT_LIVE, CAP_RIGHT_READ) == 0,
+              "unrelated-revoke-invalidated-a-live-capability");
+        (void)sys_cap_revoke(SLOT_PROBE);
+    }
+
     /* ---- 17. A CAPABILITY A TASK HOLDS COSTS IT BUDGET ----------------
      *
      * MAX_CAPS_PER_TASK is a stated bound: docs/SYSCALLS.md gives it as the

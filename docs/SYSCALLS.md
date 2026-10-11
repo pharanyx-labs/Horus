@@ -202,7 +202,7 @@ shipped kernel.
 | 94 | `SYS_IPC_RECV_BLOCK` | `(ep_slot, buf, max)` | Like SYS_IPC_RECV but SLEEPS on an empty queue instead of returning IPC_AGAIN | `CAP_ENDPOINT` at `ep_slot`: READ |
 | 95 | `SYS_MAP_FRAME` | `(frame_slot, vaddr, rights)` | Map the KOBJ_FRAME named by a CAP_FRAME into the caller's own address space | `CAP_FRAME` at `frame_slot`, holding at least `rights`; maps the whole run the frame names |
 | 96 | `SYS_UNMAP_FRAME` | `(frame_slot, vaddr)` | Remove that mapping | `CAP_FRAME` at `frame_slot`, any rights; withdraws the whole run |
-| 97 | `SYS_CAP_ENUMERATE` | `(tid, slot, struct cap_info*)` | Read one capability slot of task `tid` (roadmap 3.6) | `CAP_DEBUG` at `CAPSLOT_DEBUG` (19), READ |
+| 97 | `SYS_CAP_ENUMERATE` | `(tid, slot, struct cap_info*)` | Read one capability slot of task `tid` (roadmap 3.6): its type, rights, 64-bit serial and parent's serial (badge), never its object | `CAP_DEBUG` at `CAPSLOT_DEBUG` (19), READ |
 | 98 | `SYS_CLOCK_GETTIME` | `(clock_id, struct horus_timespec*)` | Monotonic time since boot (roadmap 2.2) | none (ambient) |
 | 99 | `SYS_MAP_REGION` | `(first_slot, count, vaddr, rights)` | Map `count` CAP_FRAMEs from consecutive cspace slots at consecutive pages from vaddr | a `CAP_FRAME` at each of `first_slot .. first_slot+count-1`, each holding at least `rights` |
 | 100 | `SYS_FRAME_PAGES` | `(frame_slot)` | How many contiguous pages the CAP_FRAME at `frame_slot` names | `CAP_FRAME` at `frame_slot`, any rights |

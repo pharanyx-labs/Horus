@@ -54,10 +54,23 @@ static long parse_uint(const char *s) {
     long v = 0;
     for (unsigned i = 0; s[i]; i++) {
         if (s[i] < '0' || s[i] > '9') return -1;
+        /* Serials are 64-bit and start at 2^32, so the bound is long's range,
+         * not u32's; the guard keeps v * 10 + 9 from overflowing. */
+        if (v > 922337203685477579L) return -1;
         v = v * 10 + (s[i] - '0');
-        if (v > 4294967295L) return -1;
     }
     return v;
+}
+
+/* A 64-bit decimal, for the serial and badge: kput_int is 32-bit and signed. */
+static void kput_u64(uint64_t v) {
+    char t[21]; int n = 0;
+    char out[21]; int i = 0;
+    if (!v) t[n++] = '0';
+    while (v) { t[n++] = (char)('0' + v % 10u); v /= 10u; }
+    while (n) out[i++] = t[--n];
+    out[i] = 0;
+    kput(out);
 }
 
 void _start(void) {
@@ -121,12 +134,12 @@ void _start(void) {
          * serial that no longer exists, so a revocation aimed at this would stop
          * reaching them. Identical authority, no lineage: invisible to every
          * functional check, which is why it gets one of its own. */
-        kput("EXECPROBE: serial "); kput_int((int)post.serial);
-        kput(", badge "); kput_int((int)post.badge); kputln("");
-        check(post.serial == (unsigned)want_serial, "exec-recreated-our-capability");
+        kput("EXECPROBE: serial "); kput_u64(post.serial);
+        kput(", badge "); kput_u64(post.badge); kputln("");
+        check(post.serial == (uint64_t)want_serial, "exec-recreated-our-capability");
 
         /* ---- 6. and it still names its parent ------------------------------ */
-        check(post.badge == (unsigned)want_badge, "exec-orphaned-our-capability");
+        check(post.badge == (uint64_t)want_badge, "exec-orphaned-our-capability");
     }
 
     /* ---- 7. the kernel loaded the bytes we supplied ------------------------

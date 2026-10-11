@@ -440,7 +440,7 @@ static int do_spawn_inner(int caller, uint32_t stdio_spec, uint32_t untyped_inde
      * context is fabricated (this lowers new_id's esp below the argv block). */
     build_child_argv(new_id);
 
-    uint32_t cap6_serial = 0;
+    uint64_t cap6_serial = 0;
     struct capability *creator_admin = cap_lookup(CAPSLOT_USER, CAP_USER,
                                                   CAP_RIGHT_ALL);
     if (creator_admin) {
@@ -454,10 +454,6 @@ static int do_spawn_inner(int caller, uint32_t stdio_spec, uint32_t untyped_inde
         tasks[new_id].cspace[6].badge  = creator_admin->serial ? creator_admin->serial : 0xC0DE0006U;
         tasks[new_id].cspace[6].serial = cap6_serial;
         tasks[new_id].cspace[6].token = 0;
-        /* Stamp the child admin cap from its OWN fresh serial, not the creator's
-         * generation (finding 3.3): the cap is keyed by cap6_serial, so its
-         * generation must track that serial's cell for revoke to invalidate it. */
-        tasks[new_id].cspace[6].generation = rust_lineage_current(cap6_serial);
     }
     spin_unlock(&cap_lock);
 
@@ -687,7 +683,7 @@ int do_spawn_charged(uint32_t stdio_spec, uint32_t untyped_index) {
  *  - The parent's CSPACE. This is the one people expect and it is the next
  *    commit, not this one. Duplicating a cspace copies every delegated
  *    capability the parent holds, and each copy has to be a DERIVED capability
- *    with its own serial stamped from the parent's lineage cell, or revoking the
+ *    with its own serial and the parent's as its badge, or revoking the
  *    parent's would not sweep the child's -- a revocation hole, reachable from
  *    ring 3, dressed up as a convenience. That is an authority change and it
  *    gets its own commit, its own invariant and its own arm. Until then a forked

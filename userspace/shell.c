@@ -683,11 +683,11 @@ static void print_rpad(const char *s, int width) {
     print(s);
 }
 
-/* Decimal render of a u32 into `out` (needs 12 bytes). The shell had no such
+/* Decimal render of a u64 into `out` (needs 21 bytes). The shell had no such
  * helper -- `ps` builds its numbers inline with a reversal loop -- and capview
- * needs four columns of them. */
-static void cv_u32(char *out, uint32_t v) {
-    char t[12]; int ti = 0, oi = 0;
+ * needs four columns of them, two of which (serial and parent) are 64-bit. */
+static void cv_u64(char *out, uint64_t v) {
+    char t[21]; int ti = 0, oi = 0;
     if (!v) t[ti++] = '0';
     while (v) { t[ti++] = (char)('0' + v % 10); v /= 10; }
     while (ti) out[oi++] = t[--ti];
@@ -1841,8 +1841,8 @@ static void handle_command(char *cmd) {
         }
 
         print("  "); print_pad("PID", 5); print_pad("SLOT", 6); print_pad("TYPE", 10);
-        print_pad("RIGHTS", 8); print_rpad("SERIAL", 10);
-        print("  "); print_rpad("PARENT", 10); println("");
+        print_pad("RIGHTS", 8); print_rpad("SERIAL", 12);
+        print("  "); print_rpad("PARENT", 12); println("");
 
         int shown = 0;
         for (int t = 0; t < 16; t++) {
@@ -1861,10 +1861,10 @@ static void handle_command(char *cmd) {
                 }
                 if (!ci.occupied) continue;
 
-                char b[12];
+                char b[21];
                 print("  ");
-                cv_u32(b, (uint32_t)t);   print_pad(b, 5);
-                cv_u32(b, sl);            print_pad(b, 6);
+                cv_u64(b, (uint32_t)t);   print_pad(b, 5);
+                cv_u64(b, sl);            print_pad(b, 6);
                 print_pad((ci.type < sizeof(type_name)/sizeof(type_name[0]))
                           ? type_name[ci.type] : "?", 10);
                 /* Rights as letters, not a hex bitmask: a column of them is
@@ -1881,10 +1881,10 @@ static void handle_command(char *cmd) {
                     rts[6] = 0;
                     print_pad(rts, 8);
                 }
-                cv_u32(b, ci.serial);     print_rpad(b, 10);
+                cv_u64(b, ci.serial);     print_rpad(b, 12);
                 print("  ");
-                if (ci.badge) { cv_u32(b, ci.badge); print_rpad(b, 10); }
-                else          { print_rpad("root", 10); }
+                if (ci.badge) { cv_u64(b, ci.badge); print_rpad(b, 12); }
+                else          { print_rpad("root", 12); }
                 println("");
                 shown++;
             }
@@ -3096,7 +3096,7 @@ static int b_str(char *d, int n, int max, const char *s) {
 
 static int b_u32(char *d, int n, int max, uint32_t v) {
     char t[12];
-    cv_u32(t, v);
+    cv_u64(t, v);
     return b_str(d, n, max, t);
 }
 

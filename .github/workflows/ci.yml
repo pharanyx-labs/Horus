@@ -1420,6 +1420,12 @@ jobs:
       # including captest, which holds no CAP_DEBUG.
       - name: Control arm — an ungated cspace readout is readable by anyone
         run: make smoke-captest-capenum-control
+      # LIMITATIONS 2.23 / S5. Revocation recorded again in a lossy 4096-cell table
+      # indexed by a hash of the serial: captest 16b keeps one capability live
+      # through 40,000 unrelated revokes, and must report that one of them made
+      # it unusable.
+      - name: "Control arm: a hashed revocation record makes an unrelated live capability unusable"
+        run: make smoke-captest-hashed-revoke-control
       # Roadmap 2.7 / S43. The four device syscalls have NO dispatch-table slot:
       # the lookup moved into the handler when a device capability started naming
       # a device, so this file is the whole gate. An arm that only bypasses the
@@ -5254,7 +5260,8 @@ jobs:
   # of them (the lineage-generation pair) were excused to a separate `kani` job
   # that ran only on manual dispatch, had never been dispatched, and could not
   # have failed if it had. Stubbing the serial-to-cell hash in those two made
-  # them finish (capability.rs `lineage_idx_model`), and that job was deleted.
+  # them finish, and that job was deleted. The pair went on 2026-10-11 with the
+  # hashed table it was about (LIMITATIONS 2.23).
   kani-bounded:
     name: "Formal verification of the capability algebra (every Kani proof)"
     runs-on: ubuntu-latest

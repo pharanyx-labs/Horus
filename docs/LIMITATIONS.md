@@ -367,7 +367,7 @@ copies the file and removes the original, and a directory cannot be moved at all
 **The kernel image is itself a ceiling.** It must end below `USER_PHYS_BASE` (16 MiB), which the
 `linker64.ld` ASSERT enforces. That 16 MiB is the window in which the kernel maps itself with
 4 KiB pages, the only place a guard page can exist. GRUB stages boot modules in the same room.
-`.bss` is budgeted at **6,788 KiB** (`.github/image-budget.yml`), held exactly by
+`.bss` is budgeted at **6,772 KiB** (`.github/image-budget.yml`), held exactly by
 `tools/check_image_budget.py`, and `argon2_scratch` is 4,096 KiB of it: the Argon2 memory cost,
 which must not be cut to buy room. Raising `MAX_CPUS`, `BLOCKS_PER_DISK` or the Argon2 cost spends
 that budget; raising `MAX_TASKS` spends pool memory instead.
@@ -506,7 +506,7 @@ the fix.
 
 Kani proves properties of capability revocation, the ELF validator, the user-address validators,
 the random pool's seed gate, the login throttle and the page-pool refcount
-arithmetic: **35** harnesses, every one of them gating in the required `kani-bounded` job. That is
+arithmetic: **34** harnesses, every one of them gating in the required `kani-bounded` job. That is
 the whole of the formal methods here. The kernel as a whole is not verified, no refinement proof
 links a specification to the code, and no TLA+ specification exists (two unsound ones were removed on
 2026-09-10).
@@ -594,6 +594,8 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 2.13 | | A PCI interrupt line could not be delivered to ring 3 (S46) | 2026-08-28, #232 |
 | 2.18 | | The `.bin` container was declared four times and parsed in eleven places (S80) | 2026-09-03, #308 |
 | 2.19 | | The end of a directory and its absence were the same answer | 2026-09-06, #318 |
+| 2.23 | [A3] | Revoking one capability could make an unrelated live one unusable: revocations were also recorded in a 4096-cell hashed table (S5) | 2026-10-11, #540 |
+| 2.24 | | Capability serials repeated: the 32-bit counter wrapped after about 4.3 billion mints, passing through the primordial range, and a reused task slot reissued its birth serials (S5) | 2026-10-11, #540 |
 | 3.2 | [I-6] | `this_cpu()` read LAPIC MMIO on every call | 2026-07-31, #116 |
 | 3.5 | | The block allocator rescanned the bitmap from the start | 2026-09-01, #277 |
 | 5.2 | [C-6] | Which checks gate a merge was reconciled by hand | 2026-09-21, #415 |

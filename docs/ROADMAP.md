@@ -35,8 +35,9 @@ In order. Each step is its own set of pull requests with its own gates and contr
    refuses moves across directories (S121), and the POSIX layer and the shell walk by capability
    when they hold a root (S126), handing each program they run a narrowed copy (S127). Step 3 has
    begun: `fs_server` compiles a session's grants from the policy and answers through them
-   (S128, step 3(a)); next, `init` asks for the session at login and grants it (3(b)), and the
-   installer writes `/etc/fs.policy` (3(c)).
+   (S128, step 3(a)). Next is step 4, the truthful view (`stat`, `chmod`, `chown` and `link`
+   through capabilities), so that the shell loses none of them when `init` then asks for the
+   session at login and grants it (3(b)); then the installer writes `/etc/fs.policy` (3(c)).
 2. **Accounts as files** (2.11 step 3): `/etc/passwd` and `/etc/shadow` on the volume, owned by a
    ring-3 `auth_server`; the kernel keeps only the key-slot unlock.
 3. **Filesystem phases 2 to 4** (2.10): the kernel shrinks to a sealed-block service and the
@@ -303,5 +304,5 @@ same bytes cannot be verified by rebuilding.
 | ✅ | Measured boot, the kernel pinned in the boot image, and a PCR-sealed volume key |
 | ✅ | An IOMMU confining device DMA, and device capabilities that name one device each |
 | ◧ | Reproducible `kernel.elf` (not yet the ISO), an SBOM, CodeQL, Dependabot, signed commits, a protected `main` |
-| ✅ | 487 `smoke-*` targets, nearly all QEMU integration tests, and 267 of them control arms that must reproduce a defect |
+| ✅ | 488 `smoke-*` targets, nearly all QEMU integration tests, and 268 of them control arms that must reproduce a defect |
 | ✅ | Bounded Kani proofs, Miri over the Rust core, and fuzzing at the FFI boundary |

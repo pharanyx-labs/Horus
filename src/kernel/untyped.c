@@ -516,13 +516,12 @@ void *kobj_alloc(uint32_t untyped_index, uint32_t kobj_type, uint32_t pages,
 /* Mark one capability, if it names a retyped object.
  *
  * The liveness test is `serial != 0` — the same "this slot holds something"
- * predicate revocation nulls. It does NOT additionally run the serial-keyed
- * generation check, so a capability that is unusable because its lineage was
- * bumped still marks its object. That direction of imprecision is the safe one:
- * it can only delay a destruction (a leak until the next sweep finds the slot
- * actually nulled), never destroy an object something can still name. The
- * opposite bias — treating a slot as empty when a holder could still resolve
- * it — would be a use-after-free reachable from ring 3. */
+ * predicate revocation nulls, and the same one lookup applies (a revoked
+ * capability is not in any slot). Any imprecision here must stay in the safe
+ * direction: it can only delay a destruction (a leak until the next sweep finds
+ * the slot actually nulled), never destroy an object something can still name.
+ * The opposite bias — treating a slot as empty when a holder could still
+ * resolve it — would be a use-after-free reachable from ring 3. */
 static void mark_cap(const capability_t *c, uint8_t *ep_marks, uint8_t *nt_marks,
                      uint8_t *fr_marks) {
     if (c->serial == 0) return;   /* empty slot */

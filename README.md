@@ -170,8 +170,9 @@ In order, from [`docs/ROADMAP.md`](docs/ROADMAP.md):
    capability instead of by user id and mode. The server side has begun (S120, S121), including a
    walk of a whole path answered with one capability, and the POSIX layer walks with capabilities
    when a program holds a root (S126), and the shell hands what it runs a copy (S127). Step 3 has
-   begun: `fs_server` compiles a session's grants from the policy (S128), and `init` asking for
-   them at login is next.
+   begun: `fs_server` compiles a session's grants from the policy (S128). Next is the truthful
+   view (`stat`, `chmod`, `chown` and `link` through capabilities), and then `init` asking for a
+   session at login.
 2. **Accounts as files** (2.11): `/etc/passwd` and `/etc/shadow` on the volume, owned by a ring-3
    `auth_server`.
 3. **Filesystem phases 2 to 4** (2.10): the filesystem moves to ring 3 on a copy-on-write format,
@@ -263,9 +264,9 @@ test does not exist or does not run.
 | Layer | What it covers |
 |---|---|
 | Security properties | 132 numbered properties, each bound to a witness by `tools/check_invariants.py` |
-| QEMU integration tests | 487 `smoke-*` targets: 220 base gates and 267 control arms |
+| QEMU integration tests | 488 `smoke-*` targets: 220 base gates and 268 control arms |
 | Control arms | A build that puts a defect back on purpose; CI requires its gate to go red against it |
-| Kani | 35 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
+| Kani | 34 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
 | Miri | The security core's tests, interpreted for undefined behaviour on every pull request |
 | Fuzzing | The FFI predicates under cargo-fuzz, ten minutes per target, nightly |
 | Reproducibility | `kernel.elf` builds byte for byte the same twice; the ISO does not yet |

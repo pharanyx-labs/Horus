@@ -118,7 +118,7 @@ firmware controls, or that enforces an algebraic security property, belongs in R
 
 | Module | Responsibility |
 |---|---|
-| `capability.rs` | The capability algebra: lookup, mint, grant, transfer, reply-mint, subtree revocation, lineage generations |
+| `capability.rs` | The capability algebra: lookup, mint, grant, transfer, reply-mint, subtree revocation, serial allocation |
 | `lib.rs` | ELF header and program-header validation, load planning, i386 and x86-64 relocation |
 | `crypto.rs`, `aead.rs`, `sha256.rs`, `blake2b.rs`, `argon2.rs` | Cryptographic primitives, including HKDF |
 | `rng.rs` | The ChaCha20 CSPRNG, which refuses output until seeded (S30) |
@@ -148,10 +148,8 @@ typedef struct capability {
     uint32_t type;        /* CAP_TCB, CAP_ENDPOINT, CAP_FRAME, ... */
     uint32_t rights;      /* READ | WRITE | EXEC | GRANT | MINT | REVOKE | ... */
     uint64_t object;      /* which instance: task (slot + generation), endpoint index, frame index, ... */
-    uint32_t badge;       /* the parent's serial: the derivation-tree link */
-    uint32_t serial;      /* globally unique, monotonic */
-    uint32_t generation;  /* lineage generation at creation */
-    uint32_t reserved;    /* always 0 */
+    uint64_t badge;       /* the parent's serial: the derivation-tree link */
+    uint64_t serial;      /* issued once, never reissued; 64 bits so it cannot wrap */
     uint64_t token;       /* an endpoint's server-defined identity; 0 = none (S105) */
 } capability_t;
 ```
@@ -241,20 +239,28 @@ target or anything derived from it, and ancestors, siblings and independent capa
 same object are untouched (S3, S4, proved in Kani). The closure marks in place and iterates to a
 fixpoint, so it is exact at any subtree size and needs no allocation.
 
-### The generation backstop
+### One serial, one slot
 
-Revocation nulls slots structurally; generations are the independent second mechanism. Each
-serial hashes to a cell in a 4096-entry atomic table (`LINEAGE_GEN`), and a capability is valid
-only if its recorded `generation` equals its cell's current value. Revocation bumps the cell, so a
-detached copy fails validation even if the sweep never reached it (S5). Creation stamps the
-current value, so a new serial that hashes onto a bumped cell is born valid.
+A serial is issued once, by `assign_fresh_serial` in `rust/src/capability.rs`, and never again:
+it is 64 bits wide, derived serials start at 2^32 (above the primordial `0xC0DE....` range), and
+the allocator refuses rather than wrap. Every way a capability comes into a slot gives it a fresh
+serial, and `tools/check_cap_writes.py` (rule 7) refuses a C store that gives a slot any other
+serial, or copies a whole capability into one. So a serial names one capability in one slot.
+
+That is what revocation rests on. The revoke empties, under `cap_lock`, every slot holding the
+revoked serial or a descendant, so a capability still in its slot has not been revoked and lookup
+consults no other record (S5). Until 2026-10-11 a second record did exist: a generation per serial
+in a 4096-cell table indexed by a hash of the serial. Different serials share a cell, so revoking
+one capability made unrelated live ones unusable (LIMITATIONS 2.23), and with 32-bit serials that
+wrapped it was also the only thing telling a reissued serial from the old one (2.24). Both are gone.
 
 ### Snapshot and revalidate
 
 A looked-up capability can go stale if anything between lookup and use yields or drops
 `cap_lock`. Such paths take a `cap_snapshot` and call `cap_revalidate` afterwards, which confirms
-the slot still holds the same serial, generation and object with the required rights. IPC send
-and receive use it.
+the slot still holds the same serial and object with the required rights. A revoke empties the
+slot, and whatever is installed there afterwards has a serial of its own. IPC send and receive
+use it.
 
 ### Devices
 

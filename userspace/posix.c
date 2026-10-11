@@ -1102,9 +1102,19 @@ int posix_rename(const char *oldpath, const char *newpath) {
 int posix_link(const char *oldpath, const char *newpath) {
     ENSURE_INIT();
     if (!oldpath || !newpath) return SYS_ERR_INVAL;
-    /* A link names its source by inode, which a capability never does, so the
-     * capability path has none (design §11.1, step 5 as built). */
-    if (g_capmode) return SYS_ERR_XDEV;
+    /* Through capabilities the source is not an inode but a capability to it,
+     * carried with the request (design §11.1, step 4(c)); fs_server refuses a
+     * second directory (EXDEV) and a name that would widen the file. */
+    if (g_capmode) {
+        struct hvfs_obj src, np;
+        char leaf[FS_NAME_MAX], newname[FS_NAME_MAX];
+        if (path_obj(oldpath, 0, &src, leaf) != 0) return SYS_ERR_NOENT;
+        if (path_obj(newpath, 1, &np, newname) != 0) { hvfs_release(&src); return SYS_ERR_NOENT; }
+        int rc = hvfs_link_cap(&np, &src, newname);
+        hvfs_release(&src);
+        hvfs_release(&np);
+        return rc;
+    }
 
     /* Resolve the source to an existing inode (path_obj returns 0 only when the
      * final component is found). The server re-checks it is a regular file. */

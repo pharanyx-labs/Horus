@@ -131,7 +131,7 @@ DEFECT_FLAGS = \
 	FSCAP_SELFTEST FS_CAP_RIGHTS_UNCHECKED FS_XDEV_UNCHECKED FS_WALK_NAMES_UNCHECKED \
 	FS_SESSION_GRANTS_ROOT FS_SESSION_RIGHTS_UNCHECKED FS_SESSION_ANY_CALLER \
 	FS_SESSION_TMP_SHARED FS_SESSION_TMP_STORE_VISIBLE FS_SESSION_TMP_KEPT \
-	FS_TOKEN_NODE_IGNORED FS_CAP_CHMOD_UNTRUE \
+	FS_TOKEN_NODE_IGNORED FS_CAP_CHMOD_UNTRUE FS_CAP_LINK_WIDENS \
 	FSCAPPOSIX_SELFTEST POSIX_CLOSE_KEEPS_CAP HVFS_GRANT_UNNARROWED \
 	INIT_SHELL_ROOT_READONLY SHELL_CAP_FALLBACK \
 	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED \
@@ -3274,6 +3274,9 @@ FS_TOKEN_NODE_IGNORED ?= 0
 # And FS_CAP_CHMOD_UNTRUE=1 (S131) lets every chmod and chown through a capability
 # report success, whether or not it asks for what is true.
 FS_CAP_CHMOD_UNTRUE ?= 0
+# And FS_CAP_LINK_WIDENS=1 (S132) lets a link through a capability make a name
+# that gives more than the carried capability to the file holds.
+FS_CAP_LINK_WIDENS ?= 0
 # FSCAPPOSIX_SELFTEST=1, with FSCAP_SELFTEST=1, runs step 2's client half in the
 # same harness: fscapposix, a newlib program, in place of fscaptest, walking by
 # capability through ordinary POSIX calls (make smoke-fs-cap-posix).
@@ -5055,6 +5058,9 @@ USERSPACE_CFLAGS += -DFS_SESSION_TMP_KEPT
 endif
 ifeq ($(FS_TOKEN_NODE_IGNORED),1)
 USERSPACE_CFLAGS += -DFS_TOKEN_NODE_IGNORED
+endif
+ifeq ($(FS_CAP_LINK_WIDENS),1)
+USERSPACE_CFLAGS += -DFS_CAP_LINK_WIDENS
 endif
 ifeq ($(FS_CAP_CHMOD_UNTRUE),1)
 USERSPACE_CFLAGS += -DFS_CAP_CHMOD_UNTRUE
@@ -12530,11 +12536,14 @@ smoke-claim-release-control:
 # capability, other bits bounded by the grants at or above the node its token
 # names; FS_TOKEN_NODE_IGNORED=1 takes the bound at the root instead. A chmod or
 # chown through one succeeds only when it asks for what is true (S131);
-# FS_CAP_CHMOD_UNTRUE=1 lets every one succeed.
+# FS_CAP_CHMOD_UNTRUE=1 lets every one succeed. A link through one names the
+# file by a carried capability and gives no more than that capability holds
+# (S132); FS_CAP_LINK_WIDENS=1 skips the comparison.
 .PHONY: smoke-fs-cap smoke-fs-cap-control smoke-fs-cap-xdev-control smoke-fs-cap-walk-control \
 	smoke-fs-cap-session-control smoke-fs-cap-session-rights-control smoke-fs-cap-session-caller-control \
 	smoke-fs-cap-session-tmp-shared-control smoke-fs-cap-session-tmp-store-control \
-	smoke-fs-cap-session-tmp-kept-control smoke-fs-cap-stat-control smoke-fs-cap-chmod-control
+	smoke-fs-cap-session-tmp-kept-control smoke-fs-cap-stat-control smoke-fs-cap-chmod-control \
+	smoke-fs-cap-link-control
 smoke-fs-cap:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory FSCAP_SELFTEST=1 $(FSCAPARM)
@@ -12576,6 +12585,9 @@ smoke-fs-cap-stat-control:
 smoke-fs-cap-chmod-control:
 	@$(MAKE) --no-print-directory smoke-fs-cap FSCAPARM=FS_CAP_CHMOD_UNTRUE=1 \
 		FSCAPEXPECT='FSCAPTEST: FAIL session-chmod-shared-succeeded'
+smoke-fs-cap-link-control:
+	@$(MAKE) --no-print-directory smoke-fs-cap FSCAPARM=FS_CAP_LINK_WIDENS=1 \
+		FSCAPEXPECT='FSCAPTEST: FAIL session-link-widened'
 
 # THE POLICY LANGUAGE AND RULE, ON THE HOST (step 3(a), docs/design/filesystem.md
 # §6.2 and §6.4). Named smoke-* although it boots nothing, so that gate-pairs.yml,

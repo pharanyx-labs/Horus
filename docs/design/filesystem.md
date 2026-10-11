@@ -800,6 +800,17 @@ file, and adds both conditions of §5.5 as they apply within one directory: the 
 include every right the directory would give it, and the new name is not a node of the session's
 policy, since a grant naming it would reach the file through it.
 
+**Step 4(c) as built (S132).** `FS_OP_LINK` through a capability takes the directory from the
+capability invoked and the file from one the request carries (`SYS_IPC_CALL_CAP`); `rq->ino` is
+ignored. The carried capability's object and generation are checked as the directory's are, and
+its grant set must be the directory's. Its rights must include every file right a name in this
+directory would give (the directory's, narrowed to a file's and to what the policy carries
+there), or the link is `PERM`; a name the policy names, or any name in a session that does not
+know every grant, is `XDEV`, as for rename. The decision 11 rule stands: the directory must
+already hold a name for the file. `hvfs_link_cap` makes the call; the shell's `ln` and the POSIX
+layer's `link()` use it when they walk by capability. Witness: `make smoke-fs-cap`, arm
+`smoke-fs-cap-link-control` (`FS_CAP_LINK_WIDENS=1`: a read-only file gets a writable name).
+
 **Step 3(b) needs `init` to listen and wait at once** (decision 19). `init` blocks in `SYS_WAIT`
 on the shell and has nothing that would also wake it for a request. It spawns a small watcher
 instead, holding a copy of `init`'s capability to the shell narrowed to `READ`, which lets it

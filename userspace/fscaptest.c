@@ -71,6 +71,7 @@
 #define SLOT_WRO    46
 #define SLOT_NOLOOK 47
 #define SLOT_WSCRAP 48
+#define SLOT_LRO    49    /* a read-only copy of a session file, for link */
 #define SLOT_SROOT  50    /* an ordinary session's root */
 #define SLOT_SCWD   51    /* and its working directory */
 #define SLOT_SX     52
@@ -187,6 +188,31 @@ static uint32_t mode_of(unsigned slot)
     const struct fs_response *rp = (const struct fs_response *)rbuf;
     if (rp->uid != sys_getuid()) return 0xFFFFFFFFu;
     return rp->mode & 07777u;
+}
+
+/* A link through directory `dir` naming `name`, carrying `file` (or nothing,
+ * with IPC_NO_CAP), answered with the server's rc. */
+static int link_rc(unsigned dir, unsigned file, const char *name)
+{
+    struct fs_request rq;
+    fill(&rq, FS_OP_LINK, name);
+    for (int tries = 0; tries < 200000; tries++) {
+        int r = sys_ipc_call_cap(dir, IPC_NO_CAP, &rq, sizeof(rq), rbuf, file);
+        if (r >= (int)sizeof(struct fs_response)) return ((struct fs_response *)rbuf)->rc;
+        if (r >= 0) return -1000;
+        if (r != IPC_AGAIN) return -2000 + r;
+        sys_yield();
+    }
+    return -3000;
+}
+
+/* The inode a stat through `slot` reports, or 0xFFFFFFFF. */
+static uint32_t ino_of(unsigned slot)
+{
+    struct fs_request rq;
+    fill(&rq, FS_OP_STAT, 0);
+    if (call(slot, IPC_NO_CAP, &rq) != 0) return 0xFFFFFFFFu;
+    return ((const struct fs_response *)rbuf)->ino;
 }
 
 /* A chmod and a chown through `slot`, answered with the server's rc. */
@@ -333,6 +359,23 @@ static void sessions(void)
     if (mode_of(SLOT_SF) != 0700u) fail("session-chmod-stored-something");
     ok();
 
+    /* LINK WITHIN ONE DIRECTORY (step 4(c), S132). The file goes with the
+     * request as a carried capability, never as an inode number; the new
+     * name is in the directory invoked, beside the name the file has. */
+    if (link_rc(SLOT_SCWD, SLOT_SF, "notes2") != 0) fail("session-link-refused");
+    if (walk1(SLOT_SCWD, SLOT_SX, "notes2", 0) != 0) fail("session-link-name-missing");
+    if (ino_of(SLOT_SX) != ino_of(SLOT_SF)) fail("session-link-not-the-same-file");
+    if (sys_cap_revoke(SLOT_SX) != 0) fail("session-link-revoke");
+    /* NO NEW AUTHORITY THROUGH THE NEW NAME: the home would give a name in it
+     * write, so a read-only capability to the file may not make one. */
+    if (sys_cap_mint(SLOT_LRO, SLOT_SF, CAP_RIGHT_WRITE | CAP_RIGHT_REVOKE | FS_R_READ) != 0)
+        fail("session-link-mint-readonly");
+    if (link_rc(SLOT_SCWD, SLOT_LRO, "notes3") != SYS_ERR_PERM) fail("session-link-widened");
+    if (sys_cap_revoke(SLOT_LRO) != 0) fail("session-link-revoke-ro");
+    /* Nothing carried is no source at all. */
+    if (link_rc(SLOT_SCWD, IPC_NO_CAP, "notes4") != SYS_ERR_INVAL) fail("session-link-without-source");
+    ok();
+
     /* ITS OWN /tmp (S129): read, write, lookup, create, delete and setattr, and
      * not exec. A file, and a tree deeper than any fixed bound a sweep might
      * have, so that its end is shown to remove all of it. */
@@ -343,6 +386,10 @@ static void sessions(void)
     fill(&rq, FS_OP_CREATE, "mine");
     if (call(SLOT_STMP, SLOT_TX, &rq) != 0) fail("session-tmp-not-writable");
     if (sys_cap_revoke(SLOT_TX) != 0) fail("session-tmp-revoke");
+    /* A link into another directory is a move across directories, refused
+     * EXDEV as a rename across them is (decision 11): the home's file, a name
+     * in /tmp. */
+    if (link_rc(SLOT_STMP, SLOT_SF, "fromhome") != SYS_ERR_XDEV) fail("session-link-across-directories");
     {
         const char *dd[12] = { "d", "d", "d", "d", "d", "d", "d", "d", "d", "d", "d", "d" };
         for (unsigned k = 0; k < 12; k++) {

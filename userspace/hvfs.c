@@ -380,6 +380,30 @@ static int cap_walk(int from, const char comps[][FS_NAME_MAX], int n,
     return 0;
 }
 
+/* Give the file `file` a second name `name` in directory `dir`, both held as
+ * filesystem capabilities (design §11.1 step 4(c)). A capability never names an
+ * inode, so the file goes WITH the request as a carried capability
+ * (SYS_IPC_CALL_CAP) and fs_server takes its object from what the kernel
+ * attests. The server keeps the decision 11 rule (the directory must already
+ * hold a name for the file) and refuses a name that would carry more authority
+ * than `file` does. Returns the server's rc (0, or negative). */
+int hvfs_link_cap(const struct hvfs_obj *dir, const struct hvfs_obj *file, const char *name) {
+    if (!dir || !file || !dir->cap || !file->cap || !name) return HVFS_ERR_INVAL;
+    unsigned n = 0;
+    while (name[n]) n++;
+    if (n == 0 || n >= FS_NAME_MAX) return HVFS_ERR_INVAL;
+    struct fs_request rq;
+    struct fs_response rp;
+    umemset(&rq, 0, sizeof(rq));
+    rq.magic = FS_PROTO_MAGIC;
+    rq.op = FS_OP_LINK;
+    umemcpy(rq.name, name, n + 1u);
+    umemset(&rp, 0, sizeof(rp));
+    int r = sys_ipc_call_cap((unsigned)dir->slot, IPC_NO_CAP, &rq, sizeof(rq), &rp,
+                             (unsigned)file->slot);
+    return (r < 0) ? HVFS_ERR_NOCAP : (rp.magic != FS_PROTO_MAGIC) ? HVFS_ERR_INVAL : rp.rc;
+}
+
 /* Split `p` into components, resolving "." and ".." against the components
  * already taken, so ".." pops what this walk descended through and never
  * rises above where it started: the same pin walk_body keeps, and the server

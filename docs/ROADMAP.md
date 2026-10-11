@@ -166,7 +166,7 @@ is already true.
 | Phase | What lands |
 |---|---|
 | 1a ✅ | Endpoint tokens, reply-mint and carry-one in the kernel, with Kani proofs (S105) |
-| 1b 🚧 | Capability authorisation in `fs_server`, `hvfs` and `init`, on the existing format, in six steps ([`design/filesystem.md`](design/filesystem.md) §11.1). Steps 1, 2 and 5 are done (S120, #515; S126 and S127, #529 to #532; S121, #516); step 3 is under way (3(a), S128: `fs_server`'s sessions from the policy), and steps 4 and 6 follow |
+| 1b 🚧 | Capability authorisation in `fs_server`, `hvfs` and `init`, on the existing format, in six steps ([`design/filesystem.md`](design/filesystem.md) §11.1). Steps 1, 2, 4 and 5 are done (S120, #515; S126 and S127, #529 to #532; S130 to S132, the truthful `stat`, `chmod`, `chown` and same-directory `link` through a capability, #538 and after; S121, #516); step 3 is under way (3(a), S128: `fs_server`'s sessions from the policy), and step 6 follows |
 | 2 | The kernel's sealed-block service; the copy-on-write v12 format in `fs_server` |
 | 3 | Symbolic links, timestamps and a time service, cross-directory rename, sparse files |
 | 4 | Snapshots, reflinks, extended attributes, quotas, locks, open-unlinked files |
@@ -282,7 +282,7 @@ from a tag and compare. They wait on 3.1, since an ISO that does not rebuild to 
 same bytes cannot be verified by rebuilding.
 
 **4.12.** The exemption list in `.github/invariants.yml` is currently
-**empty**: all 133 properties name a witness that resolves.
+**empty**: all 134 properties name a witness that resolves.
 
 ---
 
@@ -304,5 +304,5 @@ same bytes cannot be verified by rebuilding.
 | ✅ | Measured boot, the kernel pinned in the boot image, and a PCR-sealed volume key |
 | ✅ | An IOMMU confining device DMA, and device capabilities that name one device each |
 | ◧ | Reproducible `kernel.elf` (not yet the ISO), an SBOM, CodeQL, Dependabot, signed commits, a protected `main` |
-| ✅ | 489 `smoke-*` targets, nearly all QEMU integration tests, and 269 of them control arms that must reproduce a defect |
+| ✅ | 490 `smoke-*` targets, nearly all QEMU integration tests, and 270 of them control arms that must reproduce a defect |
 | ✅ | Bounded Kani proofs, Miri over the Rust core, and fuzzing at the FFI boundary |

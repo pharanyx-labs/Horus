@@ -263,6 +263,9 @@ int  hvfs_slot_alloc(void);
 /* Give an object back: revoke its capability if it is owned; a lent object is
  * left as it was. Idempotent. */
 void hvfs_release(struct hvfs_obj *o);
+/* A second name for a file within one directory, the file carried as a
+ * capability (design §11.1 step 4(c)). Both objects must be capabilities. */
+int hvfs_link_cap(const struct hvfs_obj *dir, const struct hvfs_obj *file, const char *name);
 
 /* Hand a SUSPENDED child its filesystem (design decision 10): copies of `root`
  * and `cwd`, narrowed to `fs_rights` (FS_R_* bits; the kernel intersects them

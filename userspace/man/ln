@@ -12,10 +12,15 @@ DESCRIPTION
     lasts until the last name is removed. NEW is created in the working
     directory.
 
-    Only a regular file can be linked, and you must own it. A link names
-    its source by inode, which a directory capability never does, so a
-    shell that walks by capability is refused; there is no cross-directory
-    link yet.
+    Only a regular file can be linked, and only within one directory:
+    NEW goes beside a name the file already has. A link into another
+    directory is refused (EXDEV), as a move is.
+
+    Through a session's capability the file travels with the request as
+    a capability, never as an inode number, and the new name may give no
+    more than you already hold on the file: a file you may only read gets
+    no writable second name in a writable directory. Without a session,
+    you must own the file.
 
 SEE ALSO
     rm(1), stat(1)

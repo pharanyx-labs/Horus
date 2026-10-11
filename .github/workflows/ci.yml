@@ -1616,6 +1616,13 @@ jobs:
         run: make smoke-archive-refused
       - name: "Control arm: members checked only as installed, so a good one lands"
         run: make smoke-archive-refused-control
+      # /etc/shell.conf and /etc/login.conf (docs/design/configuration.md):
+      # seeded, applied at the next login, and a value their manual pages say
+      # is refused is refused with the line named.
+      - name: The /etc configuration files are seeded, applied, and refuse what they say
+        run: make smoke-etc-config
+      - name: "Control arm: a hostname with any byte reaches the prompt"
+        run: make smoke-etc-config-control
 
   smoke-modules-tamper:
     name: QEMU boot-module integrity gate (a tampered module payload is refused)

@@ -437,6 +437,179 @@ static int sh_read_file(const struct hvfs_obj *o, unsigned char *buf, uint32_t s
     return 0;
 }
 
+/* ---- /etc/shell.conf and /etc/login.conf (docs/design/configuration.md) ----
+ *
+ * THE RULES THIS CODE KEEPS, from the design. A file is hostile input: it is
+ * bounded, a line that does not parse is ignored with one message naming it,
+ * and anything not taken stays at its compiled default. A missing file means
+ * the defaults, silently. A file never stops the shell from starting or a
+ * login from happening. And a security setting can only tighten: the one
+ * here, failure_delay, adds a pause the kernel's lockout already exceeds in
+ * strictness, and nothing a file says can shorten or skip that lockout.
+ *
+ * WHEN EACH IS READ. On an installed system the volume is sealed until the
+ * boot's first login unlocks it, so a read before then finds nothing and the
+ * defaults hold (login.conf(5) says so). login.conf is read before every
+ * login prompt, shell.conf after every successful login, and the defaults are
+ * put back before each read, so deleting a line undoes it. */
+#define CONF_MAX_BYTES  4096
+#define CONF_LINE_MAX   128
+#define CONF_HOST_MAX   32
+#define CONF_DELAY_MAX  30
+
+static char     g_hostname[CONF_HOST_MAX + 1] = "horus";
+static int      g_motd = 1;
+static uint32_t g_failure_delay = 0;       /* seconds */
+
+static int conf_streq(const char *a, const char *b) { return strcmp(a, b) == 0; }
+
+/* hostname: 1 to 32 of [a-z0-9-], not starting with '-'. The prompt is printed
+ * on every line a user types after, so a name carrying control or escape bytes
+ * would let whoever wrote the file draw over the console. */
+static int conf_set_hostname(const char *v) {
+    int n = 0;
+    for (; v[n]; n++) {
+        if (n >= CONF_HOST_MAX) return 0;
+#ifndef CONF_VALUE_UNCHECKED
+        char c = v[n];
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) return 0;
+#else
+        /* CONTROL ARM -- never ship. Any bytes are taken, as long as they fit.
+         * See make smoke-etc-config-control. */
+#endif
+    }
+    if (n == 0 || v[0] == '-') return 0;
+    for (int i = 0; i <= n; i++) g_hostname[i] = v[i];
+    return 1;
+}
+
+static int conf_set_yesno(const char *v, int *out) {
+    if (conf_streq(v, "yes")) { *out = 1; return 1; }
+    if (conf_streq(v, "no"))  { *out = 0; return 1; }
+    return 0;
+}
+
+/* failure_delay: whole seconds, 0 to 30, digits only. Out of range is REFUSED,
+ * not clamped, so the file cannot be read as having done what it did not. */
+static int conf_set_delay(const char *v) {
+    uint32_t d = 0; int n = 0;
+    for (; v[n]; n++) {
+        if (v[n] < '0' || v[n] > '9' || n >= 2) return 0;
+        d = d * 10 + (uint32_t)(v[n] - '0');
+    }
+    if (n == 0 || d > CONF_DELAY_MAX) return 0;
+    g_failure_delay = d;
+    return 1;
+}
+
+/* 1 taken, 0 bad value, -1 unknown key. */
+typedef int (*conf_apply_fn)(const char *key, const char *val);
+
+static int shell_conf_apply(const char *k, const char *v) {
+    if (conf_streq(k, "hostname")) return conf_set_hostname(v);
+    if (conf_streq(k, "motd"))     return conf_set_yesno(v, &g_motd);
+    return -1;
+}
+
+static int login_conf_apply(const char *k, const char *v) {
+    if (conf_streq(k, "failure_delay")) return conf_set_delay(v);
+    return -1;
+}
+
+static void conf_note(const char *file, int line, const char *what) {
+    print(file); print(": line "); print_decimal((uint32_t)line);
+    print(": "); print(what); println("; ignored, the default stands");
+}
+
+/* Read `path` and hand each `key = value` line to `apply`. */
+static void conf_load(const char *path, const char *label, conf_apply_fn apply) {
+    static char buf[CONF_MAX_BYTES + 1];
+    struct hvfs_obj f;
+    uint32_t type, size;
+    if (sh_open(path, &f, &type, &size) != 0) return;        /* absent: defaults */
+    if (type != FS_TYPE_FILE || size > CONF_MAX_BYTES) {
+        hvfs_release(&f);
+        print(label); println(": not a regular file of at most 4096 bytes; ignored");
+        return;
+    }
+    int rr = size ? sh_read_file(&f, (unsigned char *)buf, size) : 0;
+    hvfs_release(&f);
+    if (rr != 0) { print(label); println(": could not be read; ignored"); return; }
+    buf[size] = 0;
+
+    int lineno = 0;
+    char *p = buf;
+    while (*p) {
+        char *start = p;
+        while (*p && *p != '\n') p++;
+        int len = (int)(p - start);
+        if (*p == '\n') *p++ = 0;
+        lineno++;
+        if (len > CONF_LINE_MAX) { conf_note(label, lineno, "line too long"); continue; }
+        start[len] = 0;
+        for (char *c = start; *c; c++) if (*c == '#') { *c = 0; break; }
+        while (*start == ' ' || *start == '\t') start++;
+        char *end = start; while (*end) end++;
+        while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r')) *--end = 0;
+        if (*start == 0) continue;                           /* blank or comment */
+        char *eq = start; while (*eq && *eq != '=') eq++;
+        if (*eq != '=') { conf_note(label, lineno, "not key = value"); continue; }
+        char *ke = eq; *eq = 0;
+        while (ke > start && (ke[-1] == ' ' || ke[-1] == '\t')) *--ke = 0;
+        char *val = eq + 1; while (*val == ' ' || *val == '\t') val++;
+        if (*start == 0 || *val == 0) { conf_note(label, lineno, "not key = value"); continue; }
+        int r = apply(start, val);
+        if (r < 0) conf_note(label, lineno, "unknown key");
+        else if (r == 0) { print(label); print(": line "); print_decimal((uint32_t)lineno);
+                           print(": bad value for "); print(start); println("; ignored, the default stands"); }
+    }
+}
+
+static void shell_conf_read(void) {
+    g_hostname[0] = 'h'; g_hostname[1] = 'o'; g_hostname[2] = 'r'; g_hostname[3] = 'u';
+    g_hostname[4] = 's'; g_hostname[5] = 0;
+    g_motd = 1;
+    conf_load("/etc/shell.conf", "shell.conf", shell_conf_apply);
+}
+
+static void login_conf_read(void) {
+    g_failure_delay = 0;
+    conf_load("/etc/login.conf", "login.conf", login_conf_apply);
+}
+
+/* /etc/motd after a login, if shell.conf allows it: printable ASCII, tabs and
+ * newlines only, so the file cannot drive the console with escape bytes. */
+static void show_motd(void) {
+    if (!g_motd) return;
+    static unsigned char m[CONF_MAX_BYTES + 1];
+    struct hvfs_obj f;
+    uint32_t type, size;
+    if (sh_open("/etc/motd", &f, &type, &size) != 0) return;
+    if (type != FS_TYPE_FILE || size == 0 || size > CONF_MAX_BYTES ||
+        sh_read_file(&f, m, size) != 0) { hvfs_release(&f); return; }
+    hvfs_release(&f);
+    for (uint32_t i = 0; i < size; i++)
+        if (!((m[i] >= 0x20 && m[i] < 0x7F) || m[i] == '\n' || m[i] == '\t')) m[i] = '?';
+    m[size] = 0;
+    print((const char *)m);
+    if (m[size - 1] != '\n') println("");
+}
+
+/* Wait `secs` seconds by the monotonic clock, yielding meanwhile. */
+static void conf_pause(uint32_t secs) {
+    struct horus_timespec t0, t;
+    if (sys_clock_gettime(HORUS_CLOCK_MONOTONIC, &t0) != 0) return;
+    for (;;) {
+        sys_yield();
+        if (sys_clock_gettime(HORUS_CLOCK_MONOTONIC, &t) != 0) return;
+        /* Whole seconds alone would end a 2 s wait just past one second when
+         * it starts late in a second; compare elapsed milliseconds. */
+        uint64_t ms = (t.sec - t0.sec) * 1000u;
+        ms = ms + t.nsec / 1000000u - t0.nsec / 1000000u;
+        if (ms >= (uint64_t)secs * 1000u) return;
+    }
+}
+
 /* Tokenise `cmd` on spaces into argv (pointers into the caller-owned `store`,
  * which is overwritten with NUL-separated tokens). Returns argc (capped). */
 #define CU_MAXARGS 16
@@ -2968,7 +3141,18 @@ static void do_login(void) {
     const int max_attempts = 5;
 
     while (1) {
-        print("\nhorus login: ");
+        login_conf_read();
+        {
+            /* One write, so the prompt every harness waits for cannot be split
+             * by other console output landing between its pieces. */
+            char lp[CONF_HOST_MAX + 12];
+            int n = 0;
+            lp[n++] = '\n';
+            for (const char *q = g_hostname; *q; q++) lp[n++] = *q;
+            for (const char *q = " login: "; *q; q++) lp[n++] = *q;
+            lp[n] = 0;
+            print(lp);
+        }
         int ulen = sh_get_line(username, sizeof(username) - 1);
         if (ulen <= 0) continue;
         username[ulen] = 0;
@@ -3005,11 +3189,18 @@ static void do_login(void) {
             print("! You are ");
             println(got_uid == 0 ? "the administrator (root)." : "a standard user.");
             println("Type 'help' for available commands, 'logout' to end the session.");
+            shell_conf_read();
+            show_motd();
             attempts = 0;
             return;
         }
 
         attempts++;
+        if (g_failure_delay) {
+            print("Waiting "); print_decimal(g_failure_delay);
+            println(" seconds (login.conf failure_delay).");
+            conf_pause(g_failure_delay);
+        }
         print("Login incorrect (");
         print_decimal(max_attempts - attempts);
         println(" attempt(s) left).");
@@ -3282,7 +3473,8 @@ void _start(void) {
     while (1) {
         uint32_t uid = sys_getuid();
         print(current_login_name);
-        print("@horus");
+        print("@");
+        print(g_hostname);
         if (uid == 0) print("# ");
         else print("$ ");
         int len = sh_get_line(cmd, sizeof(cmd));

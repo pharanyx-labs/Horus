@@ -168,6 +168,7 @@ There are 492 `smoke-*` targets: 221 gates and 271 control arms. Each row is a g
 | `smoke-measured-persist` | Under that policy, a persistent disk that was never sealed is refused | S85 | `smoke-measured-persist-control` |
 | `smoke-measured-persist-sealed` | Under that policy, a disk sealed to the same measurements still opens | S85 |  |
 | `smoke-modules` | Boot modules are provisioned into `/bin` and run from the filesystem, and the manual is unpacked from its archive module |  |  |
+| `smoke-etc-config` | `/etc/shell.conf` and `/etc/login.conf` are seeded from their module, applied at the next login, and a hostname outside `a-z 0-9 -` or a `failure_delay` over 30 is refused with the line named; `failure_delay` makes a wrong password wait |  | `smoke-etc-config-control` |
 | `smoke-archive-refused` | An archive module with one bad member (a symbolic link) installs nothing, beside a manual archive that installs | S116 | `smoke-archive-refused-control` |
 | `smoke-modules-tamper` | A corrupted module is refused against the manifest | S10 |  |
 | `smoke-rng-seed` | The CSPRNG refuses to produce output before it is seeded | S30 | `smoke-rng-seed-control` |

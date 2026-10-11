@@ -28,7 +28,9 @@ DESCRIPTION
     THE REST belongs to the administrator and the accounts, and persists
     on an installed system:
 
-    /etc            configuration: fs.policy(5)
+    /etc            configuration: fs.policy(5), shell.conf(5),
+                    login.conf(5). Defaults are written once, where no
+                    file exists, and never overwritten
     /home           one directory per account, owned by it, mode 0700,
                     made at the first boot that sees the account
     /var, /var/log  variable data

@@ -140,7 +140,7 @@ DEFECT_FLAGS = \
 	POOL_SPAN_SELFTEST E820_HOLE_PROBE PHYS_WINDOW_FLAT_ONLY POOL_FLAT_CEILING POOL_RAM_UNCHECKED MEM_HIGH_UNREPORTED \
 	SWAP_SELFTEST SWAP_SEAL_OFF SWAP_TAG_UNCHECKED SWAP_HOG SWAP_OUT_ZEROED SWAP_IDLE_OFF SWAP_UNPINNED \
 	CONSOLE_PROGRESS_BELOW_SURFACE CONSOLE_PROGRESS_AT_LOGIN \
-	SYSTEM_TREES_WRITABLE SYSTEM_TREES_NO_PRUNE SYSTEM_TREES_SIZE_ONLY ARCHIVE_NO_PRECHECK \
+	SYSTEM_TREES_WRITABLE SYSTEM_TREES_NO_PRUNE SYSTEM_TREES_SIZE_ONLY ARCHIVE_NO_PRECHECK CONF_VALUE_UNCHECKED \
 	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY BOOT_MENU_NO_LIVE_TOKEN \
 	BOOT_PIN_UNCHECKED BOOT_IMAGE_UNBOUND CONSOLE_PASS_UNGATED \
 	PIPE_CAP_UNACCOUNTED TOKEN_REPLY_MINT_UNMASKED \
@@ -1522,6 +1522,8 @@ BOOT_MODULES        += $(foreach p,$(COREUTILS_MODULE_SET),userspace/coreutils_$
 BOOT_MODULE_DEP     += $(foreach p,$(COREUTILS_MODULE_SET),userspace/coreutils_$(p).bin)
 BOOT_MODULES        += userspace/man.tar:pack/usr/share/man
 BOOT_MODULE_DEP     += userspace/man.tar
+BOOT_MODULES        += userspace/etc.tar:seed/etc
+BOOT_MODULE_DEP     += userspace/etc.tar
 endif
 
 # THE MANUAL AS ONE MODULE (docs/design/configuration.md section 4). Forty-odd
@@ -1531,6 +1533,15 @@ endif
 # Reproducible: members sorted by name, every mtime, owner and group zero, one
 # mode, so the same pages make the same bytes and the same manifest hash.
 # Regular files with plain leaf names only: fs_server refuses anything else.
+# THE /etc DEFAULTS AS ONE MODULE (docs/design/configuration.md, rule 7): the
+# commented shell.conf and login.conf, which fs_server writes into /etc only
+# where no file of that name exists, so an administrator's edits survive every
+# boot. Built the same reproducible way as the manual.
+ETC_SEED_FILES := $(sort $(wildcard userspace/etc/*))
+userspace/etc.tar: $(ETC_SEED_FILES)
+	@tar --format=ustar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+	    --mode=0644 -cf $@ -C userspace/etc $(notdir $(ETC_SEED_FILES))
+
 # ARCHIVE_PROBE=1 (make smoke-archive-refused) ships a second archive module,
 # into usr/share/doc, whose first member is a good file and whose second is a
 # symbolic link. fs_server must refuse it whole; it says what it found.
@@ -5219,6 +5230,10 @@ endif
 ifeq ($(SYSTEM_TREES_SIZE_ONLY),1)
 USERSPACE_CFLAGS += -DSYSTEM_TREES_SIZE_ONLY
 endif
+CONF_VALUE_UNCHECKED ?= 0
+ifeq ($(CONF_VALUE_UNCHECKED),1)
+USERSPACE_CFLAGS += -DCONF_VALUE_UNCHECKED
+endif
 # The archive-module probe and its control arm (see MAN_PACK_PAGES above).
 ifeq ($(ARCHIVE_PROBE),1)
 USERSPACE_CFLAGS += -DARCHIVE_PROBE
@@ -6146,7 +6161,7 @@ userspace: $(SHIPPED_PIE_BINS)
 
 userspace-clean:
 	rm -rf userspace/doc
-	rm -f userspace/man.tar
+	rm -f userspace/man.tar userspace/etc.tar userspace/archive-probe.tar
 	rm -f userspace/*.o userspace/*.a userspace/*.so userspace/*.elf userspace/*.pie.elf userspace/*.stripped.elf userspace/*.raw userspace/*.bin userspace/*_image.h userspace/shlib_offsets.h userspace/libc_exports.c userspace/libc_exports.h userspace/libc_exports_link.c userspace/libc_stubs.S tools/mkheadered
 
 # Build with the gated CPU-protection self-test and require the kernel to report
@@ -8456,6 +8471,25 @@ smoke-modules:
 	@$(MAKE) --no-print-directory COREUTILS_MODULES=1
 	@$(MAKE) --no-print-directory COREUTILS_MODULES=1 horus.iso
 	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) tools/modules_session.py horus.iso
+
+# The /etc configuration files (docs/design/configuration.md): seeded from their
+# module, applied at the next login, and a value the manual page says is refused
+# is refused, with the line named, rather than taken or rounded.
+ETC_CONFIG_FLAGS = COREUTILS_MODULES=1 COREUTILS_MODULE_SET="wc"
+.PHONY: smoke-etc-config smoke-etc-config-control
+smoke-etc-config:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(ETC_CONFIG_FLAGS)
+	@$(MAKE) --no-print-directory $(ETC_CONFIG_FLAGS) horus.iso
+	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) python3 tools/etc_config_session.py horus.iso
+
+# Control arm: the hostname's character check gone, so a name with a byte
+# outside a-z 0-9 - reaches the prompt in front of everything a user types.
+smoke-etc-config-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(ETC_CONFIG_FLAGS) CONF_VALUE_UNCHECKED=1
+	@$(MAKE) --no-print-directory $(ETC_CONFIG_FLAGS) CONF_VALUE_UNCHECKED=1 horus.iso
+	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) ETC_CONFIG_EXPECT_UNCHECKED=1 python3 tools/etc_config_session.py horus.iso
 
 # An archive module is refused WHOLE (docs/design/configuration.md section 4).
 # Beside the manual, the build ships a second archive whose first member is a

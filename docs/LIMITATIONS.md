@@ -335,6 +335,15 @@ who may reach it. The rule that would allow a safe move (`docs/design/filesystem
 each object's back-references, which arrive with the v12 format in phase 3. Until then a mover
 copies the file and removes the original, and a directory cannot be moved at all.
 
+### 2.27 The monotonic clock ran at twice wall-clock speed under emulation
+
+`SYS_CLOCK_GETTIME` counts the 100 Hz PIT tick. Under QEMU's TCG emulator, on one CPU, a
+`failure_delay` of 10 seconds by that clock took 5.0 seconds of the host's (2026-10-11,
+`tools/etc_config_session.py`). The local APIC timers use vector 0x40, not the tick's 32, and the
+8259 is masked once the I/O APIC routes interrupts, so neither double count is the obvious cause.
+Not yet measured under KVM or on hardware. Until it is, every wait measured by this clock, such as
+`login.conf`'s `failure_delay`, may be half as long in real time.
+
 ---
 
 ## 3. Scale and performance

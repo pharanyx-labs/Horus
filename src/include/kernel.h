@@ -418,9 +418,6 @@ void storage_tpm_kek_selftest(void);
 #define KERNEL_RESERVED_CAPS    4
 #define MAX_REV_SETS            8
 
-/* Number of lineage slots. Mirrors LINEAGE_SLOTS in rust/src/capability.rs,
- * which is the authoritative table; keep these two in sync. */
-#define MAX_LINEAGES            4096
 #define USER_VIRT_BASE          0x0000000000400000ULL
 /* Loader ceiling: the exclusive top of the user half. A user segment must map
  * below this — the first address at or above it is the kernel half. This used
@@ -1444,10 +1441,8 @@ struct cap_info {
     uint32_t occupied;    /* 0 = empty slot; 1 = a live capability            */
     uint32_t type;        /* CAP_* type, 0 when empty                         */
     uint32_t rights;      /* CAP_RIGHT_* bitmask                              */
-    uint32_t serial;      /* this capability's identity (a graph node)        */
-    uint32_t badge;       /* its parent's serial (a graph edge), 0 at a root  */
-    uint32_t generation;  /* lineage generation recorded at mint              */
-    uint32_t reserved;    /* pad to a 32-byte multiple                        */
+    uint64_t serial;      /* this capability's identity (a graph node)        */
+    uint64_t badge;       /* its parent's serial (a graph edge), 0 at a root  */
 };
 
 /* ---- roadmap 1.1: reading the interrupt-policy audit out, in band ----------
@@ -1764,10 +1759,13 @@ typedef struct capability {
     uint32_t type;
     uint32_t rights;
     uint64_t object;
-    uint32_t badge;
-    uint32_t serial;
-    uint32_t generation;
-    uint32_t reserved;     /* always 0; pins `token` at offset 32 on every target */
+    /* The serial of the capability this was derived from (a graph edge); 0 at a
+     * root. 64 bits, like `serial`, so an edge names its parent exactly. */
+    uint64_t badge;
+    /* This capability's identity, issued once by rust_cap_alloc_serial and never
+     * again: 64 bits so the counter cannot wrap (a 32-bit one did, after about
+     * 4.3 billion mints). One serial, one slot -- see rust/src/capability.rs. */
+    uint64_t serial;
     /* A server-defined identity on an endpoint capability; 0 = none. The kernel
      * delivers it, with `rights`, to the receiver of every message sent through
      * the capability (SYS_IPC_INVOKER). Set ONLY by rust_cap_mint_token and
@@ -1783,10 +1781,10 @@ _Static_assert(sizeof(capability_t) == CAP_BYTES,
 
 /* Immutable identity snapshot of a capability, taken at lookup time and
  * reconfirmed at use time via cap_revalidate() to defend against lookup/use
- * TOCTOU. `object` is uint64_t to match capability_t.object exactly. */
+ * TOCTOU. The serial is the identity: it is never reused, so a slot that still
+ * holds it still holds this capability. */
 typedef struct cap_snapshot {
-    uint32_t serial;
-    uint32_t generation;
+    uint64_t serial;
     uint64_t object;
     int      valid;
 } cap_snapshot_t;
@@ -1958,7 +1956,7 @@ typedef struct tcb {
      *                      revoked or replaced since. */
     uint32_t ipc_cap_recv_slot;
     uint32_t ipc_inv_slot;
-    uint32_t ipc_inv_serial;
+    uint64_t ipc_inv_serial;
 
     /* Async signals. `pending_sigs` is a bitmask of queued signals (bit N =
      * signal N pending, 1..31), set by SYS_SIGNAL (gated on a CAP_TCB to this
@@ -2083,13 +2081,12 @@ int  kstack_region_fits(int n);
 void cap_tables_init(void);
 
 
-/* Lineage/generation tracking is owned by the safe-Rust authority
- * (rust/src/capability.rs). The legacy C `lineages[]` table and its helpers
- * (lineage_register/lineage_revoke/next_lineage_id) have been removed to avoid a
- * C/Rust desync that allowed use-after-revoke; use rust_lineage_check. Bumping
- * is not a C-side operation at all: it happens inside the revoke sweeps, which
- * is why there is no bump entry point here. `rust_lineage_bump` was one until
- * 2026-09-10 and had no caller in its life. */
+/* There is no revocation record to consult. A serial lives in exactly one slot
+ * and is never issued twice, and a revoke empties every slot it reaches, so a
+ * capability in its slot is live ("One serial, one slot" in
+ * rust/src/capability.rs). The serial-keyed generation table that backed this
+ * up was removed on 2026-10-11: it was a hash, and revoking one capability made
+ * unrelated live ones unusable (LIMITATIONS 2.23). */
 
 
 typedef struct block_device {
@@ -2734,7 +2731,7 @@ bool     rust_cow_copy_required(bool is_cow, bool is_write, uint16_t ref_count);
 bool     rust_signal_handler_addr_ok(uint64_t vaddr, uint64_t image_base, uint64_t image_end);
 
 /* Centralized capability serial allocation (wrap logic lives in Rust). */
-uint32_t rust_cap_alloc_serial(uint32_t *next_serial);
+uint64_t rust_cap_alloc_serial(uint64_t *next_serial);
 
 void terminal_init(void);
 void clear_screen(void);
@@ -3057,9 +3054,9 @@ bool cap_mint(uint32_t dest_slot, uint32_t src_slot, uint32_t new_rights);
 bool cap_mint_token(uint32_t dest_slot, uint32_t src_slot, uint32_t new_rights, uint64_t token);
 /* The reply-mint into task `pid`, derived from the capability its call came
  * through. Called with endpoint_lock held. See capability.c. */
-bool cap_reply_mint_into(int pid, uint32_t inv_slot, uint32_t inv_serial, uint32_t ep_index,
+bool cap_reply_mint_into(int pid, uint32_t inv_slot, uint64_t inv_serial, uint32_t ep_index,
                          uint32_t dest_slot, uint32_t new_rights, uint64_t token);
-bool cap_install_endpoint(uint32_t dest_slot, uint32_t object, uint32_t rights, uint32_t badge);
+bool cap_install_endpoint(uint32_t dest_slot, uint32_t object, uint32_t rights, uint64_t badge);
 /* Install a fresh capability into the first free slot at or above `min_slot` of
  * the CURRENT task's own cspace, scan and write under one cap_lock, reporting the
  * slot in `*out_slot` (may be NULL). The replacement for a scan-then-raw-store,
@@ -3067,14 +3064,14 @@ bool cap_install_endpoint(uint32_t dest_slot, uint32_t object, uint32_t rights, 
  * sweep's documented requirement that every cspace be quiescent under cap_lock,
  * and which never counted against MAX_CAPS_PER_TASK. */
 bool cap_install_object_first_free(uint32_t min_slot, uint32_t type, uint64_t object,
-                                   uint32_t rights, uint32_t badge, uint32_t *out_slot);
+                                   uint32_t rights, uint64_t badge, uint32_t *out_slot);
 /* Install a freshly-minted capability of `type` naming `object` into the CURRENT
  * task's own cspace, under cap_lock and with the same authority guard,
  * reserved-slot rule and MAX_CAPS_PER_TASK accounting as cap_mint. The general
  * form of cap_install_endpoint, used by SYS_RETYPE to name a newly created
  * kernel object. */
 bool cap_install_object(uint32_t dest_slot, uint32_t type, uint64_t object,
-                        uint32_t rights, uint32_t badge);
+                        uint32_t rights, uint64_t badge);
 
 /* Drop a capability the current task holds and return its budget. The
  * counterpart to cap_install_object: caps_in_use is incremented on NULL ->
@@ -3145,11 +3142,15 @@ bool cap_create_revocation_set(uint32_t target_slot, uint32_t rev_slot);
 bool has_encrypted_storage_cap(void);
 
 
-uint32_t cap_alloc_fresh_serial(void);
+/* A serial no capability has had or will have, or 0 when none can be issued
+ * (rust/src/capability.rs, assign_fresh_serial; 2^64 serials, so not reachable).
+ * The installers in capability.c refuse on 0; anywhere else, a capability
+ * written with serial 0 resolves as nothing, so it fails closed. */
+uint64_t cap_alloc_fresh_serial(void);
 
 /* Lookup/use TOCTOU defense: snapshot a capability's identity, then
  * revalidate the slot still holds that exact identity (with the required
- * rights) at the point of use. Returns NULL on revoke/re-mint/generation bump. */
+ * rights) at the point of use. Returns NULL on revoke or re-mint. */
 cap_snapshot_t cap_snapshot(const capability_t *c);
 capability_t *cap_revalidate(uint32_t slot, uint32_t required_rights,
                              const cap_snapshot_t *snap);
@@ -3157,27 +3158,27 @@ capability_t *cap_revalidate(uint32_t slot, uint32_t required_rights,
 
 capability_t *rust_cap_lookup(capability_t *cspace, uint32_t sz, uint32_t slot, uint32_t rights);
 bool rust_cap_mint(capability_t *dest_array, uint32_t sz, uint32_t dest_slot,
-                   uint32_t src_slot, uint32_t new_rights, uint32_t *next_serial, uint32_t caps_in_use);
+                   uint32_t src_slot, uint32_t new_rights, uint64_t *next_serial, uint32_t caps_in_use);
 bool rust_cap_transfer(capability_t *dest_array, uint32_t sz, uint32_t dest_slot,
-                       uint32_t src_slot, uint32_t *next_serial);
+                       uint32_t src_slot, uint64_t *next_serial);
 /* Cross-cspace mint: delegate a cap derived from *src into dest_cspace[dest_slot]
  * with rights reduced to (new_rights & src->rights) and badge = src->serial.
  * No reserved-slot floor (grant endows a dominated child). Called under cap_lock. */
 bool rust_cap_grant_into(const capability_t *src, capability_t *dest_cspace,
                          uint32_t dest_cspace_size, uint32_t dest_slot,
-                         uint32_t new_rights, uint32_t *next_serial);
+                         uint32_t new_rights, uint64_t *next_serial);
 /* Mint a TOKENED endpoint capability from an untokened one holding MINT, in the
  * caller's own cspace. Strips READ (receive) from the child. SYS_CAP_MINT_TOKEN. */
 bool rust_cap_mint_token(capability_t *cspace, uint32_t sz, uint32_t dest_slot,
                          uint32_t src_slot, uint32_t new_rights, uint64_t token,
-                         uint32_t *next_serial);
+                         uint64_t *next_serial);
 /* The reply-mint: derive a tokened child of *src (the capability a caller's
  * request came through) into an EMPTY dest_cspace[dest_slot], rights
  * new_rights & src->rights minus READ. SYS_IPC_REPLY_CAP. */
 bool rust_cap_reply_mint(const capability_t *src, capability_t *dest_cspace,
                          uint32_t dest_cspace_size, uint32_t dest_slot,
-                         uint32_t new_rights, uint64_t token, uint32_t *next_serial);
-bool rust_cap_revoke(capability_t *cspace, uint32_t sz, uint32_t slot, uint32_t *next_serial);
+                         uint32_t new_rights, uint64_t token, uint64_t *next_serial);
+bool rust_cap_revoke(capability_t *cspace, uint32_t sz, uint32_t slot, uint64_t *next_serial);
 
 /* One capability space, for the system-wide revocation sweep. Layout MUST match
  * `struct CSpaceDesc` in rust/src/capability.rs. */
@@ -3188,12 +3189,12 @@ typedef struct cspace_desc {
 } cspace_desc_t;
 
 /* Authoritative, system-wide revocation: revokes target_slot in target_cspace
- * and sweeps every cspace in `spaces` for derived copies of the same lineage.
+ * and sweeps every cspace in `spaces` for its derivation subtree.
  * Must be called under cap_lock so the snapshot is stable. */
 bool rust_cap_revoke_global(capability_t *target_cspace, uint32_t target_cspace_size,
                             uint32_t target_slot, uint32_t *target_caps_in_use,
                             const cspace_desc_t *spaces, uint32_t space_count,
-                            uint32_t *next_serial);
+                            uint64_t *next_serial);
 
 /* Is fault address `a` a legitimate part of the faulting task's user address
  * space? Region-aware: the caller passes the task's image and heap bounds; the
@@ -3686,8 +3687,7 @@ int  cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t 
 
 /* Capability-addressed IPC object resolution (audit finding C-1). Resolve a
  * CSPACE SLOT to the endpoint / notification index the capability there names,
- * enforcing type, the required right, and the lineage-generation check in one
- * place. Return 0 and write *out on success, negative on any failure. Defined in
+ * enforcing type and the required right in one place. Return 0 and write *out on success, negative on any failure. Defined in
  * syscall_ipc.c; the sole path from a userspace-supplied slot to a kernel IPC
  * object. */
 int  ipc_ep_from_slot(uint32_t slot, uint32_t need_rights, uint32_t *out_ep);
@@ -3699,14 +3699,6 @@ int  sys_ipc_send(uint32_t ep, const void *msg, size_t len, const struct ipc_inv
 int  sys_ipc_recv(uint32_t ep_slot, void *msg, size_t max_len);
 
 
-bool     capability_validate_generation(const capability_t *cap);
-/* Lineage generations are keyed by a capability's unique `serial` (finding 3.3),
- * not by `object`: each capability has its own generation cell, so an active,
- * precise use-after-revoke backstop no longer needs the old gen-0 immunity that
- * left every capability's snapshot un-invalidatable. Every C capability-creation
- * site stamps `cap.generation = rust_lineage_current(cap.serial)`. */
-bool     rust_lineage_check(uint32_t serial, uint32_t gen);
-uint32_t rust_lineage_current(uint32_t serial);
 
 /* ---- Cryptography & entropy (audited primitives implemented in Rust) ---- */
 /* SHA-256 suite */

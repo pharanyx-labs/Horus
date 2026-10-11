@@ -104,7 +104,7 @@ static int ep_dequeue(struct endpoint *e, uint8_t *dst, int max, int *sender,
  *  is created holding a CAP_FRAME there), and the endpoint index came straight
  *  out of a userspace register, bounds-checked only against MAX_ENDPOINTS. The
  *  `object` field of CAP_ENDPOINT — the field that names WHICH endpoint — was
- *  written, delegated, revoked and lineage-tracked, and then never consulted at
+ *  written, delegated, revoked and derivation-tracked, and then never consulted at
  *  the point of use. Any ring-3 task could therefore receive on, send to, and
  *  forge replies on any endpoint in the system, including the filesystem
  *  server's, which defeated the whole ring-3 server isolation story.
@@ -116,8 +116,8 @@ static int ep_dequeue(struct endpoint *e, uint8_t *dst, int max, int *sender,
  *      no longer authorise IPC;
  *    - carrying the required RIGHT for the direction (READ to receive, WRITE to
  *      send), so a send-only client capability cannot be used to intercept;
- *    - that passes the serial-keyed lineage generation check, so a revoked or
- *      stale capability fails here exactly as it does everywhere else.
+ *    - that is still in its slot, so a revoked capability fails here exactly
+ *      as it does everywhere else (a revoke empties every slot it reaches).
  *  Only then is `object` trusted, and it is re-bounds-checked before use.
  * ------------------------------------------------------------------------- */
 
@@ -166,10 +166,9 @@ int ipc_notif_from_slot(uint32_t slot, uint32_t need_rights, uint32_t *out_slot)
  * so reading all three fields under it sees one capability, whole.
  *
  * The same checks as ipc_ep_from_slot, in the same order: a live CAP_ENDPOINT
- * with the required right and a current generation, then the object bound and
- * the dead-object test. */
+ * with the required right, then the object bound and the dead-object test. */
 static int ipc_ep_and_invoker(uint32_t slot, uint32_t need_rights, uint32_t *out_ep,
-                              struct ipc_invoker *inv, uint32_t *out_serial) {
+                              struct ipc_invoker *inv, uint64_t *out_serial) {
     *inv = ipc_no_invoker;
     spin_lock(&cap_lock);
     struct capability *c = cap_lookup(slot, CAP_ENDPOINT, need_rights);
@@ -793,7 +792,8 @@ void h_ipc_send(struct interrupt_frame64 *r) {
 static void ipc_call_common(struct interrupt_frame64 *r, uint32_t send_slot,
                             const void *msg, size_t send_len, uint64_t reply_buf,
                             uint32_t recv_slot, uint32_t carry_slot) {
-    uint32_t send_ep, send_serial = 0;
+    uint32_t send_ep;
+    uint64_t send_serial = 0;
     struct ipc_invoker inv;
     if (ipc_ep_and_invoker(send_slot, CAP_RIGHT_WRITE, &send_ep, &inv, &send_serial) != 0) {
         r->rax = (uint32_t)SYS_ERR_PERM; return;

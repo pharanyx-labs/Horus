@@ -412,6 +412,7 @@ column names the targets that build with the flag; an arm must turn its gate red
 | `FS_LINK_UNCOUNTED=1` | Makes `SYS_FS_INODE_LINK` (`h_fs_inode_link`) report success without incrementing the inode's on-disk link count. | `smoke-session-hardlink-control` (arm of `smoke-session`) |
 | `FS_DIR_OPERAND_UNCHECKED=1` | Restores the `fs_server` that read any inode as a directory: a request's directory operand was checked for the caller's permission and never for its type, so a user could forge an `fs_dirent` in a file they own and delete or rename through it, freeing any inode ([HORUS-20261008-01]). | `smoke-fs-dir-operand-control` (arm of `smoke-fs-dir-operand`); `make smoke-fs-dir-operand` must go red under it |
 | `GPT_ENTRIES_CRC_UNCHECKED=1` | Passes the `gpt_entries_crc_unchecked` cargo feature, so `rust/src/gpt.rs` stops checking the GPT entry array's CRC32: an entry edited on the disk without resealing the array is believed, and the kernel mounts a volume wherever the edit points (S114). | `smoke-gpt-volume-control` (arm of `smoke-gpt-volume`); `make smoke-gpt-volume` must go red under it |
+| `REVOKE_HASHED_BACKSTOP=1` | Passes the `revoke_hashed_backstop` cargo feature, which records revocations again in a 4096-cell table indexed by a hash of the serial and consults it on every lookup, so revoking one capability makes a live one whose serial shares the cell unusable (LIMITATIONS 2.23, S5). | `smoke-captest-hashed-revoke-control` (arm of `smoke-captest`); `make smoke-captest` must go red under it |
 | `ESP_PIN_UNCHECKED=1` | Hashes the ESP image and never compares it with the `horus.esp=` pin on the install entry's command line, so install media whose image was changed is believed (S115). | `smoke-install-esp-pin-control` (arm of `smoke-install-esp-pin`); `make smoke-install-esp-pin` must go red under it |
 | `ESP_NOT_WRITTEN=1` | Lays out a bootable disk's tables and sizes and leaves its EFI system partition empty, so nothing starts it. | `smoke-install-boot-disk-control` (arm of `smoke-install-boot-disk`); `make smoke-install-boot-disk` must go red under it |
 | `POOL_SPAN_SELFTEST=1` | Instrument, never shipped: at boot, checks every frame on the page pool's free stack against the memory map (not the allocator's own test), against the base reserves, the pool's tables and every boot module, and writes and reads it through `PHYS_KVA`, then prints `POOL_SELFTEST: OK` (with one frame above 1 GiB) or `FAIL` naming the frame. | `smoke-pool-span` and its arms |
@@ -543,7 +544,7 @@ of the most important:
 
 | Target | Asserts |
 |---|---|
-| `smoke-captest` | Unheld capabilities, post-revoke use, and bad input are all refused (200 checks, printed by the suite as `CAPTEST: PASS <n> checks`) |
+| `smoke-captest` | Unheld capabilities, post-revoke use, and bad input are all refused (203 checks, printed by the suite as `CAPTEST: PASS <n> checks`) |
 | `smoke-wx` | No kernel page is both writable and executable |
 | `smoke-modules-tamper` | A corrupted boot module is refused |
 | `smoke-tpm-seal` | A changed PCR leaves the volume locked |

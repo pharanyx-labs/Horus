@@ -1099,10 +1099,8 @@ struct cap_info {
     uint32_t occupied;    /* 0 = empty slot, 1 = a live capability */
     uint32_t type;
     uint32_t rights;
-    uint32_t serial;      /* this capability's identity */
-    uint32_t badge;       /* its parent's serial; 0 at a root */
-    uint32_t generation;
-    uint32_t reserved;
+    uint64_t serial;      /* this capability's identity (64 bits, never reused) */
+    uint64_t badge;       /* its parent's serial; 0 at a root */
 };
 
 /* The kernel's CNODE_SIZE. A caller walking a cspace needs the bound, and

@@ -4,16 +4,15 @@
  * FFI layout contract — mirror of the compile-time assertions in
  * rust/src/capability.rs. capability_t and the Rust `Capability` struct are the
  * same memory passed across the FFI; if a field is reordered/retyped in either
- * language, one of these assertions fails to compile. Offsets are identical on
- * 32- and 64-bit; only trailing padding differs, so we assert offsets.
+ * language, one of these assertions fails to compile. Every field after
+ * `rights` is a uint64_t at an 8-byte offset, so there is no padding on any
+ * target and the size is pinned with the offsets.
  */
 _Static_assert(__builtin_offsetof(capability_t, type)       == 0,  "cap.type offset");
 _Static_assert(__builtin_offsetof(capability_t, rights)     == 4,  "cap.rights offset");
 _Static_assert(__builtin_offsetof(capability_t, object)     == 8,  "cap.object offset");
 _Static_assert(__builtin_offsetof(capability_t, badge)      == 16, "cap.badge offset");
-_Static_assert(__builtin_offsetof(capability_t, serial)     == 20, "cap.serial offset");
-_Static_assert(__builtin_offsetof(capability_t, generation) == 24, "cap.generation offset");
-_Static_assert(__builtin_offsetof(capability_t, reserved)   == 28, "cap.reserved offset");
+_Static_assert(__builtin_offsetof(capability_t, serial)     == 24, "cap.serial offset");
 _Static_assert(__builtin_offsetof(capability_t, token)      == 32, "cap.token offset");
 _Static_assert(sizeof(capability_t) == 40, "capability_t size (matches Rust)");
 _Static_assert(CAP_ENDPOINT == 3, "CAP_ENDPOINT must match rust/src/capability.rs");
@@ -26,49 +25,27 @@ _Static_assert(CAP_NULL == 0, "CAP_NULL must be 0 (matches Rust)");
 
 static struct capability root_cnode[CNODE_SIZE];
 
-static uint32_t cap_next_serial = 0x00010000U;
+/* The last serial issued. Starts below the derived floor, which
+ * assign_fresh_serial snaps up to 2^32, so the first derived serial is 2^32 + 1.
+ * Never reset: a reset would issue serials again (one serial, one slot). */
+static uint64_t cap_next_serial = 0;
 
 #define MAX_REV_SETS 8
 
 
-uint32_t cap_alloc_fresh_serial(void) {
-    /* Wrap logic lives once, in Rust (assign_fresh_serial); we only own the lock
-     * and the counter here. Keeps C and Rust serial generation from drifting. */
+uint64_t cap_alloc_fresh_serial(void) {
+    /* Allocation lives once, in Rust (assign_fresh_serial); we only own the lock
+     * and the counter here, so C and Rust cannot issue serials differently. 0
+     * means none could be issued, and the caller refuses. */
     spin_lock(&cap_lock);
-    uint32_t s = rust_cap_alloc_serial(&cap_next_serial);
+    uint64_t s = rust_cap_alloc_serial(&cap_next_serial);
     spin_unlock(&cap_lock);
     return s;
 }
 
-/*
- * Lineage / generation tracking is owned entirely by the safe-Rust authority
- * (rust/src/capability.rs, LINEAGE_GEN). The kernel previously kept a second,
- * independently-hashed `lineages[]` table here; the two could desync, letting a
- * stale derived capability pass one generation check while the other lineage had
- * already been bumped (use-after-revoke). The C table has been removed: every
- * bump happens inside the Rust revoke sweeps themselves (rust_cap_revoke and
- * rust_cap_revoke_global call the crate-internal `bump_lineage`), and every
- * check goes through rust_lineage_check via the thin wrapper below.
- *
- * THIS SENTENCE NAMED `rust_lineage_bump` UNTIL 2026-09-10, and that was a call
- * graph that did not exist: the exported `rust_lineage_bump` was a one-line
- * wrapper nothing ever called, from C, from Rust or from a test, while the
- * sweeps used the internal helper directly. It read as a description of the
- * live path and it was a description of a dead one -- which is also how it was
- * recorded as "called once by capability.c" when the only reference here was
- * this comment. The export is gone; the sweeps are unchanged.
- */
-bool capability_validate_generation(const capability_t *cap){
-    if(!cap||cap->type==CAP_NULL) return false;
-    /* Serial-keyed generation check (finding 3.3): strict equality against the
-     * capability's own serial cell, so a revoked capability (or a detached
-     * snapshot of one) fails even when it carries the old always-valid gen 0. */
-    return rust_lineage_check(cap->serial, cap->generation);
-}
-
 static struct {
     uint32_t target_slot;
-    uint32_t badge;
+    uint64_t badge;
     int      valid;
 } rev_sets[MAX_REV_SETS];
 
@@ -86,42 +63,36 @@ void cap_init(void) {
     root_cnode[0].object = 0;
     root_cnode[0].badge = 0;
     root_cnode[0].serial = 0xC0DE0001U;
-    root_cnode[0].generation = 0;
 
     root_cnode[1].type = CAP_NOTIFICATION;
     root_cnode[1].rights = CAP_RIGHT_READ | CAP_RIGHT_WRITE;
     root_cnode[1].object = 0;
     root_cnode[1].badge = 0;
     root_cnode[1].serial = 0xC0DE0002U;
-    root_cnode[1].generation = 0;
 
     root_cnode[2].type = CAP_ENDPOINT;
     root_cnode[2].rights = CAP_RIGHT_READ | CAP_RIGHT_WRITE | CAP_RIGHT_GRANT;
     root_cnode[2].object = 0;
     root_cnode[2].badge = 0;
     root_cnode[2].serial = 0xC0DE0003U;
-    root_cnode[2].generation = 0;
 
     root_cnode[3].type = CAP_FRAME;
     root_cnode[3].rights = CAP_RIGHT_READ | CAP_RIGHT_WRITE | CAP_RIGHT_EXEC;
     root_cnode[3].object = USER_VIRT_BASE;
     root_cnode[3].badge = 0;
     root_cnode[3].serial = 0xC0DE0004U;
-    root_cnode[3].generation = 0;
 
     root_cnode[6].type   = CAP_USER;
     root_cnode[6].rights = CAP_RIGHT_ALL;
     root_cnode[6].object = 0;
     root_cnode[6].badge  = 0;
     root_cnode[6].serial = 0xC0DE0006U;
-    root_cnode[6].generation = 0;
 
     root_cnode[7].type   = CAP_AUDIT;
     root_cnode[7].rights = CAP_RIGHT_READ | CAP_RIGHT_AUDIT_WRITE;
     root_cnode[7].object = 0;
     root_cnode[7].badge  = 0;
     root_cnode[7].serial = 0xC0DE0007U;
-    root_cnode[7].generation = 0;
 
     
     root_cnode[8].type   = CAP_CONSOLE;
@@ -129,7 +100,6 @@ void cap_init(void) {
     root_cnode[8].object = 0;
     root_cnode[8].badge  = 0;
     root_cnode[8].serial = 0xC0DE0008U;
-    root_cnode[8].generation = 0;
 
     
     root_cnode[9].type   = CAP_ENCRYPTED_STORAGE;
@@ -137,7 +107,6 @@ void cap_init(void) {
     root_cnode[9].object = 0;
     root_cnode[9].badge  = 0;
     root_cnode[9].serial = 0xC0DE0009U;
-    root_cnode[9].generation = 0;
 
     /* Hardware device authority (CAP_IO_DEVICE): the primordial cap the console
      * server is endowed with (via cap_install_from_root) to reach the
@@ -154,7 +123,6 @@ void cap_init(void) {
     root_cnode[10].object = IODEV_PLATFORM;
     root_cnode[10].badge  = 0;
     root_cnode[10].serial = 0xC0DE000AU;
-    root_cnode[10].generation = 0;
 
     /* ---- Service endpoint roots (audit finding C-1) -----------------------
      *
@@ -177,7 +145,6 @@ void cap_init(void) {
     root_cnode[11].object = CON_EP_REQ;
     root_cnode[11].badge  = 0;
     root_cnode[11].serial = 0xC0DE000BU;
-    root_cnode[11].generation = 0;
 
     /* Console service client (shell and its descendants): send only. */
     root_cnode[12].type   = CAP_ENDPOINT;
@@ -185,7 +152,6 @@ void cap_init(void) {
     root_cnode[12].object = CON_EP_REQ;
     root_cnode[12].badge  = 0;
     root_cnode[12].serial = 0xC0DE000CU;
-    root_cnode[12].generation = 0;
 
     /* Filesystem service listen (fs_server): receive + reply. Clients do NOT get
      * a copy of this — they acquire a WRITE-only capability at runtime through
@@ -204,7 +170,6 @@ void cap_init(void) {
     root_cnode[13].object = FS_EP_REQ;
     root_cnode[13].badge  = 0;
     root_cnode[13].serial = 0xC0DE000DU;
-    root_cnode[13].generation = 0;
 
     /* Authority formerly carried by ambient `uid == 0` (finding I-1). Minted
      * here so it can be delegated explicitly and, crucially, REVOKED — an
@@ -215,14 +180,12 @@ void cap_init(void) {
     root_cnode[15].object = 0;
     root_cnode[15].badge  = 0;
     root_cnode[15].serial = 0xC0DE000FU;
-    root_cnode[15].generation = 0;
 
     root_cnode[16].type   = CAP_BOOT_MODULE;
     root_cnode[16].rights = CAP_RIGHT_READ;
     root_cnode[16].object = 0;
     root_cnode[16].badge  = 0;
     root_cnode[16].serial = 0xC0DE0010U;
-    root_cnode[16].generation = 0;
 
     /* The init <-> fs_server "provisioning finished" rendezvous notification.
      * Notifications are capability-addressed too (finding C-2): without this,
@@ -233,7 +196,6 @@ void cap_init(void) {
     root_cnode[14].object = NOTIF_FS_READY;
     root_cnode[14].badge  = 0;
     root_cnode[14].serial = 0xC0DE000EU;
-    root_cnode[14].generation = 0;
 
     /* Untyped memory (roadmap 0.3, finding I-7): authority to CREATE kernel
      * objects, which until now was not authority anyone held — object storage
@@ -252,7 +214,6 @@ void cap_init(void) {
     root_cnode[17].object = UNTYPED_ROOT;
     root_cnode[17].badge  = 0;
     root_cnode[17].serial = 0xC0DE0011U;
-    root_cnode[17].generation = 0;
 
     /* CAP_DEBUG (roadmap 3.6): observation, and nothing else. READ-only at the
      * root, so no delegation can widen it -- rights only ever narrow, so a
@@ -264,7 +225,6 @@ void cap_init(void) {
     root_cnode[18].object = 0;
     root_cnode[18].badge  = 0;
     root_cnode[18].serial = 0xC0DE0012U;
-    root_cnode[18].generation = 0;
 
     /* The network device, if this machine has one (root[19]).
      *
@@ -285,7 +245,6 @@ void cap_init(void) {
         root_cnode[19].object = nic;
         root_cnode[19].badge  = 0;
         root_cnode[19].serial = 0xC0DE0013U;
-        root_cnode[19].generation = 0;
     }
 
     /* Shared library text (root[20]), roadmap 2.5 / S49.
@@ -313,7 +272,6 @@ void cap_init(void) {
     root_cnode[20].object = 0;
     root_cnode[20].badge  = 0;
     root_cnode[20].serial = 0xC0DE0014U;
-    root_cnode[20].generation = 0;
 
     /* Shared library DATA (root[21]), roadmap 2.5 / S50.
      *
@@ -335,7 +293,6 @@ void cap_init(void) {
     root_cnode[21].object = 0;
     root_cnode[21].badge  = 0;
     root_cnode[21].serial = 0xC0DE0015U;
-    root_cnode[21].generation = 0;
 
     /* CAP_STORAGE_FORMAT (root[22]), roadmap 2.9 / S72.
      *
@@ -360,13 +317,8 @@ void cap_init(void) {
     root_cnode[22].object = 0;
     root_cnode[22].badge  = 0;
     root_cnode[22].serial = 0xC0DE0016U;
-    root_cnode[22].generation = 0;
-
-    cap_next_serial = 0x00010000U;
 
     for (int i = 0; i < MAX_REV_SETS; i++) rev_sets[i].valid = 0;
-    /* Lineage generations live in the Rust authority (LINEAGE_GEN); nothing to
-     * initialize here — it is zeroed in the static and bumped lazily. */
 }
 
 /* Install a copy of a primordial root capability into a task's cspace slot with
@@ -385,16 +337,18 @@ int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t o
         if ((int)object <= 0 || (int)object >= g_max_tasks) return -1;
         obj = tcb_object((int)object);
     }
-    uint32_t serial = cap_alloc_fresh_serial();
+    uint64_t serial = cap_alloc_fresh_serial();
+    if (!serial) return -1;
     spin_lock(&cap_lock);
-    tasks[pid].cspace[slot]            = root_cnode[root_slot];
-    tasks[pid].cspace[slot].object     = obj;
-    tasks[pid].cspace[slot].serial     = serial;
-    tasks[pid].cspace[slot].token      = 0;
-    /* Stamp the fresh serial's current generation so the serial-keyed backstop
-     * is active for this copied-from-root capability (finding 3.3), and it is
-     * born valid even if the serial's hash cell was bumped by a prior revoke. */
-    tasks[pid].cspace[slot].generation = rust_lineage_current(serial);
+    /* Field by field, never `= root_cnode[root_slot]`: a whole-struct copy is
+     * how a second slot comes to hold a serial, and one serial lives in one slot
+     * (tools/check_cap_writes.py, rule 4). */
+    tasks[pid].cspace[slot].type   = root_cnode[root_slot].type;
+    tasks[pid].cspace[slot].rights = root_cnode[root_slot].rights;
+    tasks[pid].cspace[slot].object = obj;
+    tasks[pid].cspace[slot].badge  = 0;
+    tasks[pid].cspace[slot].serial = serial;
+    tasks[pid].cspace[slot].token  = 0;
     spin_unlock(&cap_lock);
     return 0;
 }
@@ -412,11 +366,12 @@ static bool caller_has_authority(void); /* defined below; the no-ambient guard *
  * against MAX_CAPS_PER_TASK. Returns false on authority failure, a reserved or
  * out-of-range slot, or when the task is at its capability ceiling. */
 bool cap_install_object(uint32_t dest_slot, uint32_t type, uint64_t object,
-                        uint32_t rights, uint32_t badge) {
+                        uint32_t rights, uint64_t badge) {
     /* Allocate the serial before taking cap_lock: cap_alloc_fresh_serial()
      * takes the same (non-recursive) lock, so ordering it inside would deadlock
      * (mirrors cap_create_revocation_set). */
-    uint32_t serial = cap_alloc_fresh_serial();
+    uint64_t serial = cap_alloc_fresh_serial();
+    if (!serial) return false;
     spin_lock(&cap_lock);
     if (!caller_has_authority()) { spin_unlock(&cap_lock); return false; }
     int cur = get_current_task();
@@ -437,14 +392,13 @@ bool cap_install_object(uint32_t dest_slot, uint32_t type, uint64_t object,
     cspace[dest_slot].badge      = badge;
     cspace[dest_slot].serial     = serial;
     cspace[dest_slot].token      = 0;
-    cspace[dest_slot].generation = rust_lineage_current(serial); /* finding 3.3 */
     if (was_null) tasks[cur].caps_in_use++;
     spin_unlock(&cap_lock);
     return true;
 }
 
 bool cap_install_endpoint(uint32_t dest_slot, uint32_t object,
-                          uint32_t rights, uint32_t badge) {
+                          uint32_t rights, uint64_t badge) {
     return cap_install_object(dest_slot, CAP_ENDPOINT, (uint64_t)object, rights, badge);
 }
 
@@ -497,12 +451,13 @@ bool cap_install_endpoint(uint32_t dest_slot, uint32_t object,
  * or when the task is at its capability ceiling -- the same refusals
  * cap_install_object makes, for the same reasons. `out_slot` may be NULL. */
 bool cap_install_object_first_free(uint32_t min_slot, uint32_t type, uint64_t object,
-                                   uint32_t rights, uint32_t badge, uint32_t *out_slot) {
+                                   uint32_t rights, uint64_t badge, uint32_t *out_slot) {
     /* Allocate the serial before taking cap_lock: cap_alloc_fresh_serial() takes
      * the same (non-recursive) lock. Mirrors cap_install_object. A serial burnt
-     * on a refused install costs nothing -- serials are a 32-bit monotonic
+     * on a refused install costs nothing -- serials are a 64-bit monotonic
      * counter whose only requirement is freshness. */
-    uint32_t serial = cap_alloc_fresh_serial();
+    uint64_t serial = cap_alloc_fresh_serial();
+    if (!serial) return false;
     spin_lock(&cap_lock);
     if (!caller_has_authority()) { spin_unlock(&cap_lock); return false; }
     int cur = get_current_task();
@@ -541,7 +496,6 @@ bool cap_install_object_first_free(uint32_t min_slot, uint32_t type, uint64_t ob
     cspace[slot].badge      = badge;
     cspace[slot].serial     = serial;
     cspace[slot].token      = 0;
-    cspace[slot].generation = rust_lineage_current(serial); /* finding 3.3 */
     tasks[cur].caps_in_use++;
     spin_unlock(&cap_lock);
     if (out_slot) *out_slot = slot;
@@ -563,7 +517,8 @@ bool cap_install_object_first_free(uint32_t min_slot, uint32_t type, uint64_t ob
 bool cap_install_reply_for(int pid, int sender) {
     if (pid <= 0 || pid >= g_max_tasks) return false;
     if (sender <= 0 || sender >= g_max_tasks) return false;
-    uint32_t serial = cap_alloc_fresh_serial();   /* takes cap_lock: before it */
+    uint64_t serial = cap_alloc_fresh_serial();   /* takes cap_lock: before it */
+    if (!serial) return false;
     spin_lock(&cap_lock);
     struct capability *cspace = tasks[pid].cspace;
     uint32_t cspace_sz = tasks[pid].cspace_size ? tasks[pid].cspace_size : CNODE_SIZE;
@@ -579,7 +534,6 @@ bool cap_install_reply_for(int pid, int sender) {
     cspace[CAPSLOT_REPLY].badge      = 0;
     cspace[CAPSLOT_REPLY].serial     = serial;
     cspace[CAPSLOT_REPLY].token      = 0;
-    cspace[CAPSLOT_REPLY].generation = rust_lineage_current(serial);
     if (was_null) tasks[pid].caps_in_use++;
     spin_unlock(&cap_lock);
     return true;
@@ -618,11 +572,10 @@ bool cap_consume_slot(uint32_t dest_slot) {
         cspace[dest_slot].object     = 0;
         cspace[dest_slot].badge      = 0;
         /* serial 0 is what cap_lookup reads as "empty"; leaving a live serial on
-         * a CAP_NULL slot would make the slot look occupied to the lineage check
-         * while carrying no type. */
+         * a CAP_NULL slot would leave the serial in a slot after the capability
+         * left it, and a revoke sweep matching that serial would see it. */
         cspace[dest_slot].serial     = 0;
         cspace[dest_slot].token      = 0;
-        cspace[dest_slot].generation = 0;
         if (tasks[cur].caps_in_use > 0) tasks[cur].caps_in_use--;
     }
     spin_unlock(&cap_lock);
@@ -659,7 +612,7 @@ bool cap_consume_slot(uint32_t dest_slot) {
 bool cap_consume_slot_of(int pid, uint32_t slot, struct capability *out_prev) {
     if (out_prev) {
         out_prev->type = CAP_NULL; out_prev->rights = 0; out_prev->object = 0;
-        out_prev->badge = 0; out_prev->serial = 0; out_prev->generation = 0;
+        out_prev->badge = 0; out_prev->serial = 0;
     }
     if (pid <= 0 || pid >= g_max_tasks) return false;
     spin_lock(&cap_lock);
@@ -675,11 +628,9 @@ bool cap_consume_slot_of(int pid, uint32_t slot, struct capability *out_prev) {
         /* serial 0 is what cap_lookup reads as "empty". The pipe close paths used
          * to write `type = CAP_NULL` alone and leave serial, rights and object
          * behind, which is the residue cap_consume_slot's comment warns about: a
-         * slot that looks empty to a type check and occupied to the lineage
-         * check. */
+         * slot that looks empty to a type check and still carries a serial. */
         cspace[slot].serial     = 0;
         cspace[slot].token      = 0;
-        cspace[slot].generation = 0;
         if (tasks[pid].caps_in_use > 0) tasks[pid].caps_in_use--;
     }
     spin_unlock(&cap_lock);
@@ -720,7 +671,8 @@ bool cap_install_child_pipe_end(int child, uint32_t dest_slot, int spawner,
     if (dest_slot != STDIN_PIPE_SLOT && dest_slot != STDOUT_PIPE_SLOT) return false;
     if (src_slot >= CNODE_SIZE) return false;
 
-    uint32_t serial = cap_alloc_fresh_serial();   /* takes cap_lock: before it */
+    uint64_t serial = cap_alloc_fresh_serial();   /* takes cap_lock: before it */
+    if (!serial) return false;
     spin_lock(&cap_lock);
     struct capability *pcs = tasks[spawner].cspace;
     struct capability *ccs = tasks[child].cspace;
@@ -729,12 +681,11 @@ bool cap_install_child_pipe_end(int child, uint32_t dest_slot, int spawner,
     if (!pcs || !ccs || dest_slot >= csz) { spin_unlock(&cap_lock); return false; }
 
     /* Authoritative source lookup under the lock, as cap_grant_into does it:
-     * rights(0) means possession is enough, but type/serial/lineage validity is
+     * rights(0) means possession is enough, but type and serial validity are
      * enforced. The old code tested `pcs[src_slot].type == CAP_PIPE` outside any
      * lock and then copied the struct -- a revoke landing between the test and
      * the copy handed the child a capability that had just been destroyed. */
     struct capability *src = rust_cap_lookup(pcs, psz, src_slot, 0);
-    if (src && !rust_lineage_check(src->serial, src->generation)) src = NULL;
     if (!src || src->type != CAP_PIPE) { spin_unlock(&cap_lock); return false; }
     if ((src->rights & rights) != rights) { spin_unlock(&cap_lock); return false; }
 
@@ -750,7 +701,6 @@ bool cap_install_child_pipe_end(int child, uint32_t dest_slot, int spawner,
     ccs[dest_slot].badge      = 0;               /* HORUS-20260911-04, above */
     ccs[dest_slot].serial     = serial;
     ccs[dest_slot].token      = 0;
-    ccs[dest_slot].generation = rust_lineage_current(serial); /* finding 3.3 */
     if (was_null) tasks[child].caps_in_use++;
     spin_unlock(&cap_lock);
     /* The caller must take a pipe-end refcount for this install, and it needs the
@@ -848,11 +798,10 @@ void cap_release_cspace(int id)
             cs[s].object     = 0;
             cs[s].badge      = 0;
             /* serial 0 is what cap_lookup reads as "empty"; a live serial on a
-             * CAP_NULL slot would look occupied to the lineage check while
-             * carrying no type. Same reason cap_consume_slot clears it. */
+             * CAP_NULL slot would outlive the capability. Same reason
+             * cap_consume_slot clears it. */
             cs[s].serial     = 0;
             cs[s].token      = 0;
-            cs[s].generation = 0;
         }
     }
     /* The count follows the contents. Left alone it would describe a cspace that
@@ -913,9 +862,10 @@ const capability_t *cap_root_cnode_ref(void) { return root_cnode; }
  * "cspace == root_cnode" rights exemption in `cap_mint`/`cap_transfer` provably
  * means "kernel only". The reader had it and the resolver did not; now both do.
  *
- * The generation check stays where it was: a capability that resolves but whose
- * generation is stale is refused, so a revoked slot cannot be used through a
- * pointer obtained before the revoke.
+ * A revoked capability is not in any slot (one serial, one slot; see
+ * rust/src/capability.rs), so resolving the slot is the whole check. Until
+ * 2026-10-11 a serial-keyed generation was also compared here, from a hashed
+ * table that made unrelated live capabilities unusable (LIMITATIONS 2.23).
  *
  * `SECURITY.md` **S55**. */
 struct capability *cap_lookup(uint32_t slot, uint32_t expected_type,
@@ -966,7 +916,6 @@ struct capability *cap_lookup(uint32_t slot, uint32_t expected_type,
 #endif
 
     struct capability *p = rust_cap_lookup(cspace, cspace_sz, slot, required_rights);
-    if (p && !capability_validate_generation(p)) return NULL;
 #ifndef CAP_LOOKUP_TYPE_UNCHECKED
     /* The type test the callers used to carry. It is here rather than there so
      * that forgetting it is not possible; see CAP_ANYTYPE in kernel.h for the
@@ -1029,22 +978,27 @@ struct capability *kcap_lookup(uint32_t slot,uint32_t r){return cap_lookup(slot,
  * is interrupted by another task that revokes or re-mints the slot. The pattern
  * is: snapshot at lookup, then `cap_revalidate(slot, rights, &snap)` at the
  * point of use — it re-looks-up the slot and confirms it STILL holds the same
- * capability identity (serial, generation, object) with the required rights.
- * A mismatch (revoked, replaced, or generation-bumped) returns NULL.
+ * capability identity (serial and object) with the required rights. A
+ * mismatch (revoked or replaced) returns NULL.
+ *
+ * The serial is enough to say "the same capability" because no serial is ever
+ * issued twice and a serial lives in one slot: a revoke empties the slot, and
+ * whatever is installed there afterwards has a serial of its own. With 32-bit
+ * serials that was not so (the counter wrapped), and a generation from a hashed
+ * table stood in; both went on 2026-10-11.
  *
  * "Validate at use" beats "look up once": the returned pointer is only trusted
  * for the instant it is reconfirmed under the same invariants cap_lookup
- * enforces (rights mask + Rust lineage/generation check).
+ * enforces.
  */
 cap_snapshot_t cap_snapshot(const struct capability *c) {
     cap_snapshot_t s;
     if (c) {
         s.serial = c->serial;
-        s.generation = c->generation;
         s.object = c->object;
         s.valid = (c->type != CAP_NULL);
     } else {
-        s.serial = 0; s.generation = 0; s.object = 0; s.valid = 0;
+        s.serial = 0; s.object = 0; s.valid = 0;
     }
     return s;
 }
@@ -1058,10 +1012,9 @@ struct capability *cap_revalidate(uint32_t slot, uint32_t required_rights,
      * would be a second check of something already established, not a gate. */
     struct capability *p = cap_lookup(slot, CAP_ANYTYPE, required_rights);
     if (!p) return NULL;
-    /* Identity must be unchanged: a revoke nulls these, a re-mint changes the
-     * serial, and a lineage revocation bumps the generation. */
+    /* Identity must be unchanged: a revoke empties the slot, and anything
+     * installed in it since carries a different serial. */
     if (p->serial != snap->serial ||
-        p->generation != snap->generation ||
         p->object != snap->object) {
         return NULL;
     }
@@ -1121,10 +1074,6 @@ bool cap_mint(uint32_t dest_slot, uint32_t src_slot, uint32_t new_rights) {
         tasks[get_current_task()].caps_in_use++;
     }
 
-    /* No separate C lineage registration: rust_cap_mint already records the
-     * minted capability's generation as the floor in the Rust LINEAGE_GEN
-     * authority, so the C side has nothing to track. */
-
     spin_unlock(&cap_lock);
     return ok;
 }
@@ -1136,7 +1085,7 @@ bool cap_mint(uint32_t dest_slot, uint32_t src_slot, uint32_t new_rights) {
  * what every cspace write adds -- the lock, the authority guard, the reserved-slot
  * floor and the per-task capability ceiling -- exactly as cap_mint does.
  *
- * kcap_lookup demands MINT and a valid lineage generation, so a revoked or stale
+ * kcap_lookup demands MINT and a live capability in the slot, so a revoked
  * minter fails here before Rust sees it; Rust then re-checks the type, the MINT
  * right and the absence of a token itself, because an FFI function never
  * assumes the C side did (CLAUDE.md §1). */
@@ -1175,15 +1124,15 @@ bool cap_mint_token(uint32_t dest_slot, uint32_t src_slot, uint32_t new_rights, 
  * for, and rust_cap_reply_mint intersects those rights with the invoker's.
  *
  * REFUSES, writing nothing, unless the capability at inv_slot is still the one
- * the request came through: a live CAP_ENDPOINT, the same serial, a current
- * lineage generation, and naming THIS endpoint. So a client that revokes or
+ * the request came through: a live CAP_ENDPOINT, the same serial (never
+ * reissued, so the same capability), and naming THIS endpoint. So a client that revokes or
  * replaces its directory capability while the server is busy gets no child of
  * it, and a server cannot mint a child of a capability to some other service.
  *
  * Called with endpoint_lock held (the mint must land before the caller is woken;
  * see the ordering note in sys_ipc_send). cap_lock nests inside endpoint_lock,
  * the one declared order (.github/lock-order.yml). */
-bool cap_reply_mint_into(int pid, uint32_t inv_slot, uint32_t inv_serial, uint32_t ep_index,
+bool cap_reply_mint_into(int pid, uint32_t inv_slot, uint64_t inv_serial, uint32_t ep_index,
                          uint32_t dest_slot, uint32_t new_rights, uint64_t token) {
     if (pid <= 0 || pid >= g_max_tasks) return false;
     spin_lock(&cap_lock);
@@ -1195,7 +1144,6 @@ bool cap_reply_mint_into(int pid, uint32_t inv_slot, uint32_t inv_serial, uint32
     }
     const struct capability *inv = &cs[inv_slot];
     if (inv->type != CAP_ENDPOINT || inv->serial == 0 || inv->serial != inv_serial ||
-        !rust_lineage_check(inv->serial, inv->generation) ||
         inv->object != (uint64_t)ep_index) {
         spin_unlock(&cap_lock);
         return false;
@@ -1256,7 +1204,8 @@ int cap_mint_untyped_child(uint32_t src_slot, uint32_t dest_slot, uint32_t child
      *
      * A serial allocated and then not used costs nothing: the counter is
      * monotonic and gaps in it carry no meaning. */
-    uint32_t serial = cap_alloc_fresh_serial();
+    uint64_t serial = cap_alloc_fresh_serial();
+    if (!serial) return -1;
 
     spin_lock(&cap_lock);
     if (!caller_has_authority()) { spin_unlock(&cap_lock); return -1; }
@@ -1283,7 +1232,6 @@ int cap_mint_untyped_child(uint32_t src_slot, uint32_t dest_slot, uint32_t child
     cs[dest_slot].badge      = src->serial;          /* the derivation edge */
     cs[dest_slot].serial     = serial;
     cs[dest_slot].token      = 0;
-    cs[dest_slot].generation = rust_lineage_current(serial);
     if (was_null) tasks[cur].caps_in_use++;
 
     spin_unlock(&cap_lock);
@@ -1371,10 +1319,9 @@ bool cap_grant_into(int target_pid, uint32_t dest_slot, uint32_t src_slot, uint3
     if (!src_cspace || !dst_cspace) { spin_unlock(&cap_lock); return false; }
 
     /* Authoritative source lookup under the lock: rights(0) => possession is
-     * enough, but the type/serial/lineage-generation validity is enforced (the
-     * same checks cap_lookup applies), so a revoked or stale source is refused. */
+     * enough, but type and serial validity are enforced (the same checks
+     * cap_lookup applies), so a revoked source is refused. */
     struct capability *src = rust_cap_lookup(src_cspace, src_sz, src_slot, 0);
-    if (src && !rust_lineage_check(src->serial, src->generation)) src = NULL;
     if (!src) { spin_unlock(&cap_lock); return false; }
 
     bool was_null = (dest_slot < dst_sz) && (dst_cspace[dest_slot].type == CAP_NULL);
@@ -1452,11 +1399,9 @@ bool cap_grant_into(int target_pid, uint32_t dest_slot, uint32_t src_slot, uint3
  * it is a reply-forgery primitive with no revocation involved. The same
  * reasoning already excludes the parent's blocked-IPC state from the fork.
  *
- * A source that is revoked or lookup-invalid (serial 0, or a stale generation)
- * is skipped rather than copied. Copying it would resurrect nothing -- the copy
- * would fail `lineage_check` too -- but it would occupy a slot and count against
- * the child's ceiling, and a cspace full of dead capabilities is a worse report
- * of what a task holds than an empty slot.
+ * A source that is lookup-invalid (empty, or serial 0) is skipped rather than
+ * copied: rust_cap_grant_into refuses it. A revoked source is not in its slot
+ * at all.
  *
  * ---- RIGHTS ARE NOT NARROWED, AND THAT IS DELIBERATE ----------------------
  *
@@ -1509,7 +1454,6 @@ int cap_clone_cspace(int parent, int child) {
         if (src->type == CAP_NULL)  continue;
         if (src->type == CAP_REPLY) continue;     /* one-shot; see above */
         if (src->serial == 0)       continue;     /* lookup-invalid */
-        if (!rust_lineage_check(src->serial, src->generation)) continue;   /* revoked */
 
         /* The child's ceiling is the same MAX_CAPS_PER_TASK every other task
          * answers to. Reaching it is not a partial success to be reported as one:
@@ -1538,13 +1482,11 @@ int cap_clone_cspace(int parent, int child) {
             cc[s].badge      = src->badge;
             cc[s].serial     = src->serial;
             cc[s].token      = src->token;
-            cc[s].generation = src->generation;
 #else
             /* Fresh identity, but no edge back to the parent's capability. */
             cc[s].badge      = src->badge;
             cc[s].serial     = rust_cap_alloc_serial(&cap_next_serial);
             cc[s].token      = src->token;
-            cc[s].generation = rust_lineage_current(cc[s].serial);
 #endif
             if (was_null) tasks[child].caps_in_use++;
             copied++;
@@ -1612,7 +1554,6 @@ void cap_exec_mutate_cspace(int t) {
         cs[s].badge      = 0;
         cs[s].serial     = 0;
         cs[s].token      = 0;
-        cs[s].generation = 0;
         if (tasks[t].caps_in_use > 0) tasks[t].caps_in_use--;
 #else
         /* Same type, same rights, same object: the authority is untouched and
@@ -1620,7 +1561,6 @@ void cap_exec_mutate_cspace(int t) {
         cs[s].badge      = 0;
         cs[s].serial     = rust_cap_alloc_serial(&cap_next_serial);
         cs[s].token      = 0;
-        cs[s].generation = rust_lineage_current(cs[s].serial);
 #endif
     }
 
@@ -1665,14 +1605,14 @@ bool cap_revoke(uint32_t slot) {
 
     /* Snapshot serial/badge for the rev_sets cleanup below, before the slot is
      * nulled by the revocation. */
-    uint32_t target_serial = cspace[slot].serial;
-    uint32_t target_badge = cspace[slot].badge;
+    uint64_t target_serial = cspace[slot].serial;
+    uint64_t target_badge = cspace[slot].badge;
 
     /*
      * INVARIANT (ARCHITECTURE.md): revocation is system-wide. We hand the Rust
      * authority every live task's cspace plus the kernel root cnode, and it
-     * nulls the target plus every derived copy of the same lineage in ANY of
-     * them, bumping the lineage generation exactly once. This closes the
+     * nulls the target plus every capability derived from it in ANY of them.
+     * This closes the
      * use-after-revoke / privilege-retention hole where a derived capability in
      * another task's CNode could outlive its parent. The whole sweep runs under
      * cap_lock so the snapshot of tasks[] is stable.
@@ -1756,7 +1696,8 @@ bool cap_create_revocation_set(uint32_t target_slot, uint32_t rev_slot) {
      * grabs cap_lock itself and the lock is not recursive (same ordering
      * do_spawn uses). A serial burned on a later validation failure is
      * harmless -- the counter is monotonic. */
-    uint32_t fresh_serial = cap_alloc_fresh_serial();
+    uint64_t fresh_serial = cap_alloc_fresh_serial();
+    if (!fresh_serial) return false;
 
     spin_lock(&cap_lock);
     if (!caller_has_authority()) { spin_unlock(&cap_lock); return false; }
@@ -1780,7 +1721,6 @@ bool cap_create_revocation_set(uint32_t target_slot, uint32_t rev_slot) {
     cspace[rev_slot].badge  = 0xDEAD0000U;
     cspace[rev_slot].serial = fresh_serial;
     cspace[rev_slot].token = 0;
-    cspace[rev_slot].generation = rust_lineage_current(fresh_serial); /* finding 3.3 */
 
     spin_unlock(&cap_lock);
     return true;

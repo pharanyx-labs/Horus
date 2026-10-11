@@ -272,7 +272,7 @@ void h_connect_fs_server(struct interrupt_frame64 *r) {
      * so the endpoint alone grants no file access — but the cap must be written
      * with the same discipline as every other one: SMP-safe against a concurrent
      * global revoke, reserved-slot-checked, and counted against MAX_CAPS_PER_TASK.
-     * A fresh serial + generation is required or cap_lookup treats the slot as
+     * A fresh serial is required or cap_lookup treats the slot as
      * empty and the client cannot pass the IPC capability gate. Rights are masked
      * to R/W/GRANT here so the connect policy lives at the policy site. */
     /* WRITE ONLY — never READ (audit finding C-1).

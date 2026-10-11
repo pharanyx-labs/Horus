@@ -321,25 +321,6 @@ who may reach it. The rule that would allow a safe move (`docs/design/filesystem
 each object's back-references, which arrive with the v12 format in phase 3. Until then a mover
 copies the file and removes the original, and a directory cannot be moved at all.
 
-### 2.23 Revoking one capability can make an unrelated live one unusable
-
-The backstop behind S5 keeps each capability's revocation generation in a table of 4096 cells
-chosen by a hash of its serial, and a revoke bumps the cell of every serial it removes. A live
-capability whose serial hashes to the same cell then reads as revoked: every use of it is refused,
-though nothing revoked it. It fails closed, so it costs availability, never authority. The audit
-of July 2026 recorded the table as a lossy hash (A3, `docs/history/AUDIT-2026-07.md`) and judged
-the risk small; it is not. A probe that mints and revokes copies of one capability lost the
-capability they were minted from after 1,666 revokes, and an ordinary shell session revokes a
-capability for every file it closes. Found on 2026-10-11, when the shell's root directory
-capability went stale this way in CI and the shell could no longer hand a program its filesystem
-(pull request #538).
-
-The fix, decided the same day, removes the table: a serial will live in exactly one slot, so a
-capability in its slot is valid because a revoke empties every slot it reaches under the
-capability lock, and a copy taken out of a slot is checked again by its slot and serial, which are
-never reused. Its gate is a `captest` check that a live capability survives 40,000 unrelated
-revokes.
-
 ### 2.26 `rotate_keys` changes no key
 
 `SYS_ROTATE_KEYS`, and the shell's `rotate_keys`, rewrite the first four blocks of each file the
@@ -383,7 +364,7 @@ maintainer.
 **The kernel image is itself a ceiling.** It must end below `USER_PHYS_BASE` (16 MiB), which the
 `linker64.ld` ASSERT enforces. That 16 MiB is the window in which the kernel maps itself with
 4 KiB pages, the only place a guard page can exist. GRUB stages boot modules in the same room.
-`.bss` is budgeted at **6,788 KiB** (`.github/image-budget.yml`), held exactly by
+`.bss` is budgeted at **6,772 KiB** (`.github/image-budget.yml`), held exactly by
 `tools/check_image_budget.py`, and `argon2_scratch` is 4,096 KiB of it: the Argon2 memory cost,
 which must not be cut to buy room. Raising `MAX_CPUS`, `BLOCKS_PER_DISK` or the Argon2 cost spends
 that budget; raising `MAX_TASKS` spends pool memory instead.
@@ -522,7 +503,7 @@ the fix.
 
 Kani proves properties of capability revocation, the ELF validator, the user-address validators,
 the random pool's seed gate, the login throttle and the page-pool refcount
-arithmetic: **35** harnesses, every one of them gating in the required `kani-bounded` job. That is
+arithmetic: **34** harnesses, every one of them gating in the required `kani-bounded` job. That is
 the whole of the formal methods here. The kernel as a whole is not verified, no refinement proof
 links a specification to the code, and no TLA+ specification exists (two unsound ones were removed on
 2026-09-10).
@@ -610,6 +591,8 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 2.13 | | A PCI interrupt line could not be delivered to ring 3 (S46) | 2026-08-28, #232 |
 | 2.18 | | The `.bin` container was declared four times and parsed in eleven places (S80) | 2026-09-03, #308 |
 | 2.19 | | The end of a directory and its absence were the same answer | 2026-09-06, #318 |
+| 2.23 | [A3] | Revoking one capability could make an unrelated live one unusable: revocations were also recorded in a 4096-cell hashed table (S5) | 2026-10-11, #540 |
+| 2.24 | | Capability serials repeated: the 32-bit counter wrapped after about 4.3 billion mints, passing through the primordial range, and a reused task slot reissued its birth serials (S5) | 2026-10-11, #540 |
 | 3.2 | [I-6] | `this_cpu()` read LAPIC MMIO on every call | 2026-07-31, #116 |
 | 3.5 | | The block allocator rescanned the bitmap from the start | 2026-09-01, #277 |
 | 5.2 | [C-6] | Which checks gate a merge was reconciled by hand | 2026-09-21, #415 |

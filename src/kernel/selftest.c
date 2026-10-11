@@ -2504,7 +2504,7 @@ static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const cha
  * budget. Same discipline as every install: fresh serial allocated before the lock, written under it, accounted. */
 static int cap_selftest_install_endpoint(int pid, uint32_t slot, uint32_t ep, uint32_t rights) {
     if (pid <= 0 || pid >= g_max_tasks || slot < KERNEL_RESERVED_CAPS || slot >= CNODE_SIZE) return -1;
-    uint32_t serial = cap_alloc_fresh_serial();
+    uint64_t serial = cap_alloc_fresh_serial();
     spin_lock(&cap_lock);
     struct capability *cs = tasks[pid].cspace;
     if (!cs || cs[slot].type != CAP_NULL || tasks[pid].caps_in_use >= MAX_CAPS_PER_TASK) {
@@ -2517,7 +2517,6 @@ static int cap_selftest_install_endpoint(int pid, uint32_t slot, uint32_t ep, ui
     cs[slot].badge      = 0;
     cs[slot].serial     = serial;
     cs[slot].token      = 0;
-    cs[slot].generation = rust_lineage_current(serial);
     tasks[pid].caps_in_use++;
     spin_unlock(&cap_lock);
     return 0;
@@ -3571,7 +3570,7 @@ void caplookup_selftest(void)
     static struct capability tiny[CNODE_SIZE];
     for (int i = 0; i < CNODE_SIZE; i++) {
         tiny[i].type = CAP_NULL; tiny[i].rights = 0; tiny[i].object = 0;
-        tiny[i].badge = 0; tiny[i].serial = 0; tiny[i].generation = 0;
+        tiny[i].badge = 0; tiny[i].serial = 0;
     }
     tasks[scratch].cspace      = tiny;
     tasks[scratch].cspace_size = PRIMORDIAL_SLOT;   /* the probe slot is PAST the end */
@@ -3676,7 +3675,7 @@ void cspace_release_selftest(void)
     for (uint32_t s = 0; s < CNODE_SIZE; s++) {
         struct capability *c = &tasks[scratch].cspace[s];
         if (c->type != CAP_NULL || c->serial != 0 || c->rights != 0 ||
-            c->object != 0 || c->badge != 0 || c->generation != 0) {
+            c->object != 0 || c->badge != 0) {
             print("CSPACE_RELEASE_SELFTEST: FAIL a dead task still holds capability slot ");
             print_decimal((uint64_t)s);
             print(" (type ");

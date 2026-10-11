@@ -442,8 +442,9 @@ GNU coreutils will ship (installed-system decision 2), and `ls -l`, `chmod`, `cp
   through any path that reaches it. That is a sound upper bound, because a capability anyone
   holds at run time descends from some grant and cannot exceed it. It can overstate who may read
   a file; it can never understate it.
-- **`st_uid`** is the caller's own uid, and **`st_gid`** its primary group. They say "you", which
-  is the only identity a capability tells the server anything about, so the client fills them in.
+- **`st_uid`** is the caller's own uid, and **`st_gid`** its primary group, as the kernel attests
+  them for the request. They say "you", and they authorise nothing: the capability already
+  decided.
 - Timestamps, size, link count and inode number (the object id, truncated to 64 bits) are real.
 
 **Which grants are "other"** (decision 16). Every grant whose principal is not the session's own
@@ -488,8 +489,8 @@ a home's files, which the default policy grants `EXEC`. The set-user-id, set-gro
 bits are always refused (§6.3). It needs the right `stat` needs, `READ`.
 
 `chown` to the caller's own uid and primary group (or to `-1`, which leaves either unchanged)
-succeeds; to anyone else it fails. The client answers that half, because a capability tells the
-server nothing about who holds it, and asks the server only that the object is reachable.
+succeeds; to anyone else it fails. "Own" is what `stat` reports, the identity the kernel attests
+for the request, so `chown` agrees with `stat` and is decided by nothing else.
 
 ### 7.3 `EXEC`, honestly
 

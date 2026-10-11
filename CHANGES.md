@@ -16,6 +16,7 @@ here.
 
 ### Security
 
+- Revoking a capability no longer makes unrelated live capabilities unusable. Revocations were also recorded in a 4096-cell table indexed by a hash of the serial, so a revoke made every live capability in the same cell read as revoked; in CI it cost the shell its root directory. The table is gone: serials are 64-bit and never reissued (they used to wrap after about 4.3 billion mints, and a reused task slot reissued its birth serials), a slot only ever gets a fresh serial, and a revoke empties every slot it reaches, so a capability in its slot is live (S5; LIMITATIONS 2.23, 2.24). `SYS_CAP_ENUMERATE` reports 64-bit serials. (#540)
 - A `SYS_WAIT` could return while its child still read alive, because the waiter was woken before the child was marked dead; seen once in 200 boots. Every teardown now runs under the lock a waiter publishes itself under and wakes the waiter last, which also closes a window, found by reading the code and never observed, in which a waiter could miss its child's death (S125). (#528)
 - The scheduler refuses to run a task on an SMT sibling whatever interrupts it; a parked sibling keeps interrupts on, and the rule used to rest on no interrupt ever reaching one (S101). (#525)
 - A TLB shootdown whose bounded wait runs out with a CPU still unacknowledged halts the kernel instead of returning as though the flush had happened; only the SMP selftest calls it today, so this is in place before the first real caller (S124). (#523)

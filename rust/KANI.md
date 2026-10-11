@@ -13,14 +13,13 @@ them.
 
 | Harness | Property proved (∀ inputs) |
 |---|---|
-| `serial_never_reserved_or_zero` | For every serial-counter value, `assign_fresh_serial` returns a serial `>= MIN_DERIVED_SERIAL` and `!= 0` and advances the counter to exactly that value, a derived serial can never collide with a primordial (`0xC0DE…`) or empty (serial-0) slot. |
+| `serial_never_reserved_or_zero` | For every 64-bit serial-counter value, `assign_fresh_serial` either refuses (returns 0 and leaves the counter alone) or returns a serial `>= MIN_DERIVED_SERIAL` (2^32) outside the primordial `0xC0DE…` range and advances the counter to exactly that value, so a derived serial can never collide with a primordial or empty (serial-0) slot. |
+| `fresh_serials_never_repeat` | **One serial, one slot.** For every counter value, an issued serial is strictly greater than the counter was (so than every serial issued before it), two issues in a row never return the same serial, and once the allocator refuses it keeps refusing: serials are never reissued, which a 32-bit counter that wrapped violated (LIMITATIONS 2.24). |
 | `mint_never_escalates_rights` | For every (source rights, requested rights) pair, the minted rights are exactly `requested & source`, mint can only ever *reduce* authority. |
 | `revoke_descendant_never_nulls_ancestors` | **Audit A1.** Over a parent → child → grandchild chain, for every distinct serial triple, revoking the grandchild's subtree leaves parent and child intact and nulls exactly the grandchild; the property the old equivalence-set matcher violated. |
 | `revoke_root_nulls_every_descendant` | The completeness half: revoking the root nulls both the child and the grandchild, for every distinct serial triple. Together the two pin revocation to exactly the target's subtree: no ancestors, all descendants. |
 | `revoke_reaches_every_cspace_and_spares_a_peer` | **S3, S4 across cspaces.** A root in one cspace, its child granted into a second and a grandchild granted back: revoking the root nulls all three, and an independent capability on the same object in the second cspace survives, for every distinct serial quadruple. |
-| `revoke_invalidates_recorded_generation` | **Finding 3.3.** For every serial, a capability that recorded the current lineage generation fails `lineage_check` after that serial is revoked (its generation bumped); the use-after-revoke backstop actually rejects a stale snapshot. |
-| `revoke_does_not_touch_a_distinct_lineage_cell` | The precision half: bumping one serial's generation leaves a *distinct* (non-colliding) serial's recorded generation still valid, so revocation does not spuriously invalidate an unrelated lineage. |
-| `lineage_idx_is_always_inside_the_table` | For every serial, the real serial-to-cell hash names a cell inside the generation table. The two proofs above stub that hash (see below), and this is the one property of it they rely on. |
+| `revoke_leaves_no_slot_holding_the_serial` | **S5.** For every content of two two-slot cspaces, after a system-wide revoke of a live, non-primordial capability no slot anywhere still holds its serial, a second slot carrying the same serial included. This is why lookup needs no record of revocation beyond the emptied slot. |
 | `lookup_grants_exactly_the_rights_held` | **Roadmap 3.5.** For every (held, requested) rights pair, `rust_cap_lookup` succeeds **exactly when** the capability holds every requested right. Stated as an equivalence, not an implication, so a lookup that refused too much fails it too, "never grants what it should not" is satisfied by a predicate that always returns null. |
 | `lookup_never_returns_an_empty_slot` | For every rights value, including the degenerate `required_rights == 0` that a "does it hold these" check answers vacuously, an empty slot never satisfies a lookup. |
 | `lookup_refuses_every_out_of_range_slot` | For every slot index past the cspace, lookup refuses rather than reading whatever follows the cspace in memory. |
@@ -56,23 +55,11 @@ ancestor and descendant distinction and for transitivity, and a fourth proof spr
 across two cspaces with an independent peer on the same object. None of this verifies the kernel
 as a whole (`docs/LIMITATIONS.md` 5.5).
 
-**Some proofs stub the hash.** With the real `lineage_idx`, whose two 64-bit multiplications
-the solver must expand bit by bit, neither proof finished in 1500 s. They replace it with
-`lineage_idx_model` (`#[kani::stub]`, enabled for the crate in `rust/Cargo.toml`) and finish in
-about four minutes each. Neither property depends on which cell a serial maps to: the first needs
-the same cell every time, which any pure function gives, and the second assumes two serials in
-different cells. What the real hash must still get right is staying inside the table, and
-`lineage_idx_is_always_inside_the_table` proves that for every serial. How evenly the hash spreads
-serials (how often two collide) is not proved; it is the fail-safe A3 residual. The root
-revocation proof and the two-cspace proof stub the hash for the same reason: revoking bumps the
-generation of every serial it removes, and what they assert (which slots are nulled) does not
-depend on which cell each bump lands in.
-
 ## Which proofs gate a merge
 
 All of them. `.github/kani-harnesses.yml` lists every harness, the required `kani-bounded` job
 runs each one on every pull request, and `tools/check_kani_harnesses.py` fails the build if a
-proof is missing from the list. All **35** gate. There is no way to excuse a proof from running:
+proof is missing from the list. All **34** gate. There is no way to excuse a proof from running:
 the checker refuses any list but `gating`. The count is declared in `.github/doc-claims.yml` and
 re-derived on every run.
 
@@ -108,5 +95,5 @@ bound, zero a recorded parent) and confirm the harness reports `VERIFICATION:- F
 properties as equivalences where you can, so a function that refuses everything cannot satisfy
 them vacuously. Then add the harness to the `gating` list in `.github/kani-harnesses.yml` and
 its arm to `.github/kani-arms.yml`. A proof too slow for every pull request has to be made to
-finish (bound it, or stub what it does not depend on, as the lineage pair does) before it lands,
+finish (bound it, or stub what it does not depend on) before it lands,
 because no other job runs it.

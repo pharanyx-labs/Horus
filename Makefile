@@ -134,7 +134,7 @@ DEFECT_FLAGS = \
 	FSCAPPOSIX_SELFTEST POSIX_CLOSE_KEEPS_CAP HVFS_GRANT_UNNARROWED \
 	INIT_SHELL_ROOT_READONLY SHELL_CAP_FALLBACK \
 	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED \
-	FS_LINK_UNCOUNTED FS_DIR_OPERAND_UNCHECKED GPT_ENTRIES_CRC_UNCHECKED STORAGE_REPLACE_VIEW_UNRESOLVED \
+	FS_LINK_UNCOUNTED FS_DIR_OPERAND_UNCHECKED GPT_ENTRIES_CRC_UNCHECKED REVOKE_HASHED_BACKSTOP STORAGE_REPLACE_VIEW_UNRESOLVED \
 	ESP_PIN_UNCHECKED ESP_NOT_WRITTEN DEBUG_BUILD \
 	POOL_SPAN_SELFTEST E820_HOLE_PROBE PHYS_WINDOW_FLAT_ONLY POOL_FLAT_CEILING POOL_RAM_UNCHECKED MEM_HIGH_UNREPORTED \
 	SWAP_SELFTEST SWAP_SEAL_OFF SWAP_TAG_UNCHECKED SWAP_HOG SWAP_OUT_ZEROED SWAP_IDLE_OFF SWAP_UNPINNED \
@@ -1944,6 +1944,14 @@ endif
 # combined, so each sets RUST_FEATURES outright.
 GPT_ENTRIES_CRC_UNCHECKED ?= 0
 
+# REVOKE_HASHED_BACKSTOP=1 is LIMITATIONS 2.23's defect, and lives in Rust like
+# the two above, so it is a cargo feature: revocation is recorded again in a
+# 4096-cell table indexed by a hash of the serial and consulted on every lookup,
+# so revoking one capability makes a live one whose serial shares the cell
+# unusable. captest's check 16b must go red under it
+# (smoke-captest-hashed-revoke-control). Never combined with the other Rust arms.
+REVOKE_HASHED_BACKSTOP ?= 0
+
 # STORAGE_REPLACE_VIEW_UNRESOLVED=1 compares the mounted volume's device with the
 # disk a format names WITHOUT resolving a partition view to its disk, which is
 # how the partition change first wrote S90's check (caught before it merged): an
@@ -2084,6 +2092,10 @@ endif
 ifeq ($(GPT_ENTRIES_CRC_UNCHECKED),1)
 CFLAGS += -DGPT_ENTRIES_CRC_UNCHECKED
 RUST_FEATURES := gpt_entries_crc_unchecked
+endif
+ifeq ($(REVOKE_HASHED_BACKSTOP),1)
+CFLAGS += -DREVOKE_HASHED_BACKSTOP
+RUST_FEATURES := revoke_hashed_backstop
 endif
 RUST_FEATURE_ARGS = $(if $(RUST_FEATURES),--features $(RUST_FEATURES))
 
@@ -7016,6 +7028,20 @@ smoke-captest-clock-control:
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 CLOCK_TSC_RESOLUTION=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='CAPTEST: FAIL clock-resolution-finer-than-a-pit-tick' \
+		tools/smoke_test.sh horus.iso
+
+# CONTROL ARM for LIMITATIONS 2.23 (S5's precision half): revocation recorded in
+# a lossy hashed table again. captest 16b keeps one capability live while it
+# mints and revokes 40,000 unrelated ones, and must report that a revoke made the
+# live one (or the source it mints from) unusable. Both of its failure names
+# start with the prefix required here.
+.PHONY: smoke-captest-hashed-revoke-control
+smoke-captest-hashed-revoke-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 REVOKE_HASHED_BACKSTOP=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 REVOKE_HASHED_BACKSTOP=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CAPTEST: FAIL unrelated-revoke-invalidated-' \
 		tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-captest-capenum-control

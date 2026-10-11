@@ -217,12 +217,10 @@ void h_pipe(struct interrupt_frame64 *r) {
         cs[rs].object = (uint64_t)(uint32_t)idx; cs[rs].badge = 0;
         cs[rs].serial = cap_alloc_fresh_serial();
         cs[rs].token = 0;
-        cs[rs].generation = rust_lineage_current(cs[rs].serial);
         cs[ws].type = CAP_PIPE; cs[ws].rights = CAP_RIGHT_WRITE;
         cs[ws].object = (uint64_t)(uint32_t)idx; cs[ws].badge = 0;
         cs[ws].serial = cap_alloc_fresh_serial();
         cs[ws].token = 0;
-        cs[ws].generation = rust_lineage_current(cs[ws].serial);
         rslot = (uint32_t)rs; wslot = (uint32_t)ws;
     }
 #else

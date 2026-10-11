@@ -94,6 +94,15 @@ def run():
         return 0
     except SessionFail as e:
         print(f"FSCAP_SHELL_SESSION: FAIL {e}")
+        # The shell's own capabilities as the failure left them (`capview`
+        # needs only the CAP_DEBUG init gives it): which slots hold what, with
+        # which rights, is what a refused grant or walk turns on. Best effort;
+        # it never changes the verdict.
+        try:
+            s.send("capview")
+            s.expect(PROMPT, STEP)
+        except Exception:
+            pass
         # THE EVIDENCE GOES WHERE CI CAN SEE IT (CLAUDE.md §2). The full serial
         # goes to SESSION_SERIAL_LOG, which a CI job does not keep, so a red run
         # there said only which step failed and nothing of what the machine

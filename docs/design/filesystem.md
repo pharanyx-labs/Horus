@@ -312,6 +312,7 @@ principal one subtree with a set of rights:
 @all          /etc/passwd     read
 alice         /home/alice     read,write,lookup,create,delete,setattr,exec
 @self         ~               all
+@self         /tmp            read,write,lookup,create,delete,setattr
 @admin        /               all
 ```
 
@@ -320,7 +321,8 @@ alice         /home/alice     read,write,lookup,create,delete,setattr,exec
   account, for its own home). No other group exists yet, so any other `@name` is malformed.
 - A path is absolute, each component a name `fs_server` would accept (§5.4), at most 8 deep.
   `~` is the account's home, only with `@self`, and only for a home of the form `/home/<name>`:
-  an account whose home is `/` gets nothing from it.
+  an account whose home is `/` gets nothing from it. `/tmp` with `@self` is the session's private
+  `/tmp` (§6.3), and `@self` takes no other path. No grant may lie below a private `/tmp`.
 - Rights are the §5.3 names `read`, `write`, `append`, `exec`, `lookup`, `create`, `delete` and
   `setattr`; `all` is every one of them. `grant` and `snapshot` are refused, so that no policy is
   written in the belief that it does something it does not: a session's root carries `GRANT`
@@ -345,7 +347,15 @@ holds the compiled policy anyway, because §5.5 and §7 need it.
   authority is started by something that holds it and grants it.
 - **No sticky bit, and no shared `/tmp`.** Each session gets a private `/tmp`, a directory created
   for it at login and removed at logout, and nobody else holds a capability to it. The problem the
-  sticky bit exists to solve never arises.
+  sticky bit exists to solve never arises. As built (S129, decided 2026-10-11): a policy line
+  `@self /tmp <rights>` gives it; `fs_server` makes the directory at `FS_OP_SESSION` as
+  `/.session-tmp/<G>` and, in that session alone, answers the name `tmp` at the root with it;
+  `FS_OP_SESSION_END` removes it and everything in it, however deep, and the first session of
+  each boot clears what a crash left. Every session, the administrator's included, finds
+  `/.session-tmp` absent, so `/ all` does not reach another session's `/tmp` through it. The
+  default policy gives `/tmp` without `EXEC`, the usual `noexec` hardening, which becomes binding
+  when programs start only from file capabilities (§7.3). A `/tmp` that cannot be made (a full
+  volume) leaves the session without one rather than refusing the login.
 - **No device nodes.** A device is a capability (`CAP_IO_DEVICE`, S43), never a file, so creating
   a file can never create access to hardware. `mknod` is refused.
 - **No named pipes or Unix sockets in the filesystem**, for now: each would be a rendezvous that a
@@ -847,6 +857,19 @@ still asks a settled question is stale.
     §6.4: rights below the session's root are enforced by the server for the capabilities it
     tracks.
 
+**2026-10-11, for phase 1b step 3:**
+
+14. **`fs_server` learns which store it serves from the kernel** (`SYS_FS_STORE_KIND`, gated on
+    the storage capability only it holds, answered from the mounted volume's device), so the
+    choice between the live default and a persistent volume's policy (§6.4) rests on nothing a
+    requester says. Chosen over `init` passing the kind in `FS_OP_SESSION`, which would have made
+    `fs_server` take `init`'s word, and over a bit in `SYS_BOOT_FLAGS`, which any task could read.
+15. **A session's `/tmp` is a directory of its own, hidden from every other session**, made at
+    `FS_OP_SESSION` and removed at its end, seen by that session alone as `/tmp`, and given
+    without `EXEC` by default (§6.3). Chosen over one shared `/tmp` under a sticky rule, the
+    rendezvous §6.3 removes, and over a per-account `/tmp/<name>`, which programs that name
+    `/tmp` would not find and two sessions of one account would share.
+
 **Still open, none of them blocking phase 1:**
 
 1. **Clean break from v11?** Recommendation: yes, refuse to mount v11 rather than ship a converter
@@ -878,6 +901,9 @@ control arm that reddens the base gate, per §2:
 - `LOOKUP` of `..`, of `.` and of a name containing `/` is refused, and so is a `WALK` holding
   one in any position (`smoke-fs-cap`, arm `FS_WALK_NAMES_UNCHECKED=1`); a symbolic link to
   `../../etc` from a capability rooted at a home directory does not escape it.
+- A session's `/tmp` is its own, hidden from every other session, and gone when it ends
+  (`smoke-fs-cap`, S129, arms `FS_SESSION_TMP_SHARED=1`, `FS_SESSION_TMP_STORE_VISIBLE=1` and
+  `FS_SESSION_TMP_KEPT=1`).
 - A session reaches only what its grants name, and what they withhold is absent (`smoke-fs-cap`,
   S128, arm `FS_SESSION_GRANTS_ROOT=1`, which reddens `smoke-fs-policy` too).
 - A cross-directory rename that would widen a grant's reach is refused, and the arm drops

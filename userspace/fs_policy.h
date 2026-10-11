@@ -15,6 +15,7 @@
  *     @all        /bin            read,lookup,exec
  *     alice       /home/alice     all
  *     @self       ~               all
+ *     @self       /tmp            read,write,lookup,create,delete,setattr
  *
  *   principal  an account name, @all (every authenticated session), @admin (the
  *              administrator, the account with uid 0, as the shell's login has
@@ -24,6 +25,10 @@
  *              directory entry's name). "~" is the account's home, and only
  *              with @self; it applies only to a home of the form /home/<name>,
  *              so an account whose home is "/" (root's) gets nothing from it.
+ *              "/tmp" with @self is the session's PRIVATE /tmp (§6.3): a
+ *              directory fs_server makes for that session alone and removes at
+ *              its end, which the session sees as /tmp. @self takes "~" or
+ *              "/tmp" and nothing else.
  *   rights     comma-separated: read, write, append, exec, lookup, create,
  *              delete, setattr, or all.
  *
@@ -62,6 +67,7 @@ struct fsp_line {
     char     comp[FSP_MAX_DEPTH][FSP_NAME];
     uint8_t  depth;          /* 0 is "/" */
     uint8_t  home;           /* the path was "~" */
+    uint8_t  tmp;            /* @self /tmp: the session's private /tmp */
     uint32_t rights;
 };
 
@@ -81,6 +87,9 @@ struct fsp_node {
      * when it mints one (a tracked capability names its node by inode). */
     uint32_t ino, gen;
     uint8_t  bound;
+    /* The session's private /tmp (@self /tmp): fs_server answers this name with
+     * the directory it made for the session, never with the volume's entry. */
+    uint8_t  private_tmp;
 };
 
 struct fsp_tree {
@@ -101,7 +110,8 @@ static const char fsp_default_text[] =
     "@all    /bin  read,lookup,exec\n"
     "@all    /lib  read,lookup\n"
     "@all    /usr  read,lookup,exec\n"
-    "@self   ~     all\n";
+    "@self   ~     all\n"
+    "@self   /tmp  read,write,lookup,create,delete,setattr\n";
 
 /* A persistent volume with no usable policy (decision 9, §6.4): the
  * administrator gets the root, so they can log in and write one, and nobody
@@ -224,12 +234,18 @@ static int fsp_parse(const char *text, uint32_t len, struct fsp_policy *out, uns
             *bad_line = lineno; out->n = 0; return -1;
         }
 
-        /* Path: "~" with @self and only there, else absolute. */
+        /* Path: "~" or "/tmp" with @self and only there, else absolute. */
         if (fl[1] == 1 && f[1][0] == '~') {
             if (!self) { *bad_line = lineno; out->n = 0; return -1; }
             l->home = 1;
+        } else if (self) {
+            if (fl[1] != 4 || f[1][0] != '/' || f[1][1] != 't' || f[1][2] != 'm' || f[1][3] != 'p') {
+                *bad_line = lineno; out->n = 0; return -1;
+            }
+            l->tmp = 1;
+            l->depth = 1;
+            fsp_copy(l->comp[0], FSP_NAME, "tmp", 3);
         } else {
-            if (self) { *bad_line = lineno; out->n = 0; return -1; }
             int d = fsp_split(f[1], fl[1], l->comp);
             if (d < 0) { *bad_line = lineno; out->n = 0; return -1; }
             l->depth = (uint8_t)d;
@@ -278,7 +294,8 @@ static int fsp_child_of(const struct fsp_tree *t, int parent, const char *name)
     return -1;
 }
 
-/* Add `rights` at the path, making nodes along it. -1 when the tree is full. */
+/* Add `rights` at the path, making nodes along it. -1 when the tree is full.
+ * Returns the node otherwise. */
 static int fsp_grant(struct fsp_tree *t, char comp[][FSP_NAME], unsigned depth, uint32_t rights)
 {
     int cur = 0;
@@ -296,7 +313,7 @@ static int fsp_grant(struct fsp_tree *t, char comp[][FSP_NAME], unsigned depth, 
         cur = c;
     }
     t->node[cur].granted |= rights;
-    return 0;
+    return cur;
 }
 
 /* Compile the lines that apply to `who` into *t. Returns 0, or -1 when they do
@@ -314,7 +331,14 @@ static int fsp_compile(const struct fsp_policy *p, const struct fsp_who *who, st
             char comp[FSP_MAX_DEPTH][FSP_NAME];
             int d = fsp_split(who->home, fsp_len(who->home), comp);
             if (d != 2 || !fsp_streq(comp[0], "home")) continue;
-            if (fsp_grant(t, comp, 2, l->rights) != 0) return -1;
+            if (fsp_grant(t, comp, 2, l->rights) < 0) return -1;
+            continue;
+        }
+        if (l->tmp) {
+            /* @self /tmp: every session has its own, whoever the account. */
+            int n = fsp_grant(t, (char (*)[FSP_NAME])l->comp, 1, l->rights);
+            if (n < 0) return -1;
+            t->node[n].private_tmp = 1;
             continue;
         }
         /* A group is matched by what the account is, never by its name: an
@@ -325,7 +349,7 @@ static int fsp_compile(const struct fsp_policy *p, const struct fsp_who *who, st
                     (fsp_streq(l->principal, "@admin") && who->admin) ||
                     (l->principal[0] != '@' && fsp_streq(l->principal, who->name));
         if (!match) continue;
-        if (fsp_grant(t, (char (*)[FSP_NAME])l->comp, l->depth, l->rights) != 0) return -1;
+        if (fsp_grant(t, (char (*)[FSP_NAME])l->comp, l->depth, l->rights) < 0) return -1;
     }
 
 #ifdef FS_SESSION_GRANTS_ROOT
@@ -344,6 +368,12 @@ static int fsp_compile(const struct fsp_policy *p, const struct fsp_who *who, st
     }
     for (unsigned i = t->n; i-- > 1; )
         t->node[t->node[i].parent].below |= t->node[i].below;
+
+    /* A grant below a private /tmp names a path inside a directory made fresh
+     * for the session, which can mean nothing; refusing it is the honest answer,
+     * as for any line that cannot do what it says. */
+    for (unsigned i = 1; i < t->n; i++)
+        if (t->node[i].private_tmp && t->node[i].nchild > 0) return -1;
     return 0;
 }
 
@@ -381,6 +411,13 @@ static int fsp_step(const struct fsp_tree *t, int n, const char *name, int is_di
     if (t->node[n].eff == 0) return -1;
     *child = -1; *carry = t->node[n].eff;
     return 0;
+}
+
+/* Is `name` under tracked node `n` the session's private /tmp? */
+static int fsp_is_private(const struct fsp_tree *t, int n, const char *name)
+{
+    int c = fsp_child_of(t, n, name);
+    return c >= 0 && t->node[c].private_tmp;
 }
 
 /* Is `name` (of the given type) listed under tracked node `n`? */

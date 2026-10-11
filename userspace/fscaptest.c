@@ -32,7 +32,14 @@
  *     exactly read, lookup and exec on /bin, and everything in its own home;
  *     a session opens only through the untokened capability holding MINT
  *     (`session-opened-without-mint`, for FS_SESSION_ANY_CALLER=1), and a
- *     capability that outlives its session's end reaches nothing.
+ *     capability that outlives its session's end reaches nothing;
+ *   - each session's /tmp is its own (S129): the administrator's session does
+ *     not see what the user's put there (`session-tmp-shared`, for
+ *     FS_SESSION_TMP_SHARED=1), no session sees the store they live in, the
+ *     administrator's included (`session-tmp-store-visible`, for
+ *     FS_SESSION_TMP_STORE_VISIBLE=1), and a session's /tmp, however deep,
+ *     is gone when the session ends (`session-tmp-outlived-its-end`, for
+ *     FS_SESSION_TMP_KEPT=1).
  *
  * Slot map, set up by the kernel harness (selftest.c fscap_selftest):
  *   SLOT_PLAIN  an UNTOKENED capability to fs_server's endpoint with MINT, the
@@ -74,6 +81,10 @@
 #define SLOT_SRO    57    /* a read-only copy of the session's root */
 #define SLOT_AROOT  58    /* the administrator's session root */
 #define SLOT_AX     59
+#define SLOT_STMP   60    /* the ordinary session's /tmp */
+#define SLOT_ATMP   61    /* the administrator's */
+#define SLOT_TX     62
+#define SLOT_STORE  63
 
 static int checks;
 
@@ -193,6 +204,19 @@ static int lists_only(unsigned slot, const char *allowed, const char *needed)
     return 1;
 }
 
+/* Does a listing of `slot` hold `name`? */
+static int lists_name(unsigned slot, const char *name)
+{
+    struct fs_request rq;
+    for (uint32_t off = 0; off < 64; off++) {
+        fill(&rq, FS_OP_READDIR, 0);
+        rq.offset = off;
+        if (call(slot, IPC_NO_CAP, &rq) != 0) return 0;
+        if (ustreq(((struct fs_response *)rbuf)->name, name)) return 1;
+    }
+    return 0;
+}
+
 static void sessions(void)
 {
     struct fs_request rq;
@@ -237,7 +261,7 @@ static void sessions(void)
     ok();
 
     /* ITS LISTINGS SHOW ONLY THE WAY TO ITS GRANTS. */
-    if (!lists_only(SLOT_SROOT, "bin\0lib\0usr\0home\0", "bin\0home\0")) fail("session-listed-ungranted");
+    if (!lists_only(SLOT_SROOT, "bin\0lib\0usr\0home\0tmp\0", "bin\0home\0tmp\0")) fail("session-listed-ungranted");
     if (walk1(SLOT_SROOT, SLOT_SHOME, "home", 0) != 0) fail("session-walk-home");
     if (!lists_only(SLOT_SHOME, "user\0", "user\0")) fail("session-listed-other-home");
     ok();
@@ -263,6 +287,34 @@ static void sessions(void)
     if (sys_cap_revoke(SLOT_SX) != 0) fail("session-revoke-x");
     ok();
 
+    /* ITS OWN /tmp (S129): read, write, lookup, create, delete and setattr, and
+     * not exec. A file, and a tree deeper than any fixed bound a sweep might
+     * have, so that its end is shown to remove all of it. */
+    if (walk1(SLOT_SROOT, SLOT_STMP, "tmp", 0) != 0) fail("session-tmp-missing");
+    if ((rights_of(SLOT_STMP) & FS_R_ALL) !=
+        (FS_R_READ | FS_R_WRITE | FS_R_LOOKUP | FS_R_CREATE | FS_R_DELETE | FS_R_SETATTR))
+        fail("session-tmp-rights");
+    fill(&rq, FS_OP_CREATE, "mine");
+    if (call(SLOT_STMP, SLOT_TX, &rq) != 0) fail("session-tmp-not-writable");
+    if (sys_cap_revoke(SLOT_TX) != 0) fail("session-tmp-revoke");
+    {
+        const char *dd[12] = { "d", "d", "d", "d", "d", "d", "d", "d", "d", "d", "d", "d" };
+        for (unsigned k = 0; k < 12; k++) {
+            unsigned at = SLOT_STMP;
+            if (k > 0) {
+                fill_walk(&rq, dd, k);
+                if (call(SLOT_STMP, SLOT_TX, &rq) != 0) fail("session-tmp-deep-walk");
+                at = SLOT_TX;
+            }
+            fill(&rq, FS_OP_MKDIR, "d");
+            if (call(at, IPC_NO_CAP, &rq) != 0) fail("session-tmp-deep-mkdir");
+            if (k > 0 && sys_cap_revoke(SLOT_TX) != 0) fail("session-tmp-deep-revoke");
+        }
+    }
+    if (walk1(SLOT_SROOT, SLOT_SX, FS_SESSION_TMP_STORE_NAME, 0) != SYS_ERR_NOENT)
+        fail("session-tmp-store-visible-to-user");
+    ok();
+
     /* THE KERNEL STILL BOUNDS IT: a read-only copy of the root walks to the home
      * and gets a read-only directory, never the union. */
     if (sys_cap_mint(SLOT_SRO, SLOT_SROOT, CAP_RIGHT_WRITE | CAP_RIGHT_REVOKE | FS_R_READ | FS_R_LOOKUP) != 0)
@@ -283,6 +335,22 @@ static void sessions(void)
     if (walk1(SLOT_AROOT, SLOT_AX, "usr", 0) != 0 || (rights_of(SLOT_AX) & FS_R_ALL) != FS_R_ALL)
         fail("session-admin-usr-narrowed");
     if (sys_cap_revoke(SLOT_AX) != 0) fail("session-admin-revoke2");
+    /* NOT EVEN THE ADMINISTRATOR'S "/ all" reaches the store of /tmps, or
+     * through it the user's /tmp; its own /tmp is another directory; and the
+     * name cannot be made over. */
+    if (walk1(SLOT_AROOT, SLOT_AX, FS_SESSION_TMP_STORE_NAME, 0) != SYS_ERR_NOENT ||
+        lists_name(SLOT_AROOT, FS_SESSION_TMP_STORE_NAME)) fail("session-tmp-store-visible");
+    if (walk1(SLOT_AROOT, SLOT_ATMP, "tmp", 0) != 0 || !lists_name(SLOT_AROOT, "tmp"))
+        fail("session-admin-tmp-missing");
+    fill(&rq, FS_OP_LOOKUP, "mine");
+    if (call(SLOT_ATMP, SLOT_AX, &rq) != SYS_ERR_NOENT) fail("session-tmp-shared");
+    fill(&rq, FS_OP_MKDIR, "tmp");
+    if (call(SLOT_AROOT, IPC_NO_CAP, &rq) != SYS_ERR_EXIST) fail("session-tmp-remade");
+    fill(&rq, FS_OP_DELETE, "tmp");
+    if (call(SLOT_AROOT, IPC_NO_CAP, &rq) != SYS_ERR_PERM) fail("session-tmp-deleted");
+    if (sys_cap_revoke(SLOT_ATMP) != 0) fail("session-admin-tmp-revoke");
+    ok();
+
     fill(&rq, FS_OP_MKDIR, "admdir");
     if (call(SLOT_AROOT, IPC_NO_CAP, &rq) != 0) fail("session-admin-mkdir");
     fill(&rq, FS_OP_DELETE, "admdir");
@@ -310,6 +378,16 @@ static void sessions(void)
     /* ENDED, IT REACHES NOTHING: fs_server fails closed even before init's
      * revoke (which in a real logout comes first) has swept the capabilities. */
     if (session_end(sg.g) != 0) fail("session-end");
+    /* ITS /tmp WENT WITH IT, all twelve levels: asked through step 1's root,
+     * which carries no grant set and so sees the store, as init would. */
+    {
+        char gn[3] = { (char)('0' + sg.g / 10), (char)('0' + sg.g % 10), 0 };
+        if (walk1(SLOT_ROOT, SLOT_STORE, FS_SESSION_TMP_STORE_NAME, 0) != 0)
+            fail("session-tmp-store-missing");
+        fill(&rq, FS_OP_LOOKUP, gn);
+        if (call(SLOT_STORE, SLOT_TX, &rq) != SYS_ERR_NOENT) fail("session-tmp-outlived-its-end");
+        if (sys_cap_revoke(SLOT_STORE) != 0) fail("session-tmp-store-revoke");
+    }
     fill(&rq, FS_OP_STAT, 0);
     if (call(SLOT_SROOT, IPC_NO_CAP, &rq) != SYS_ERR_NOENT) fail("session-outlived-its-end");
     fill(&rq, FS_OP_READ, 0);

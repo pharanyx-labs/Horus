@@ -124,6 +124,10 @@ account may write (`@all /srv all` beside `alice /srv/alice all`) lets the secon
 what `alice` is given. The default policy and the one the installer will write grant nothing of
 the kind; v12's back-references (phase 3) are what would let the server tell the objects apart.
 
+Sessions' private `/tmp`s (S129) live in `/.session-tmp`, which every session finds absent. The
+uid path, until phase 1b step 6 removes it, still reaches it as it reaches any file: the store
+and each `/tmp` are mode 0700, so only root's uid gets in that way.
+
 ---
 
 ## 2. Correctness
@@ -382,7 +386,9 @@ waits until it is woken or killed. The PIT runs at a fixed 100 Hz.
   addresses, so a larger disk's remainder is unused. What swap does not yet do is below.
 - **Parts of the installed layout.** The install media puts GNU coreutils, TCC, their man pages,
   licences and source offer in the system trees (S116), but `/lib` stays empty (programs link the
-  shared libc the kernel loads, not a file), there is no `/tmp`, and the shell's file commands
+  shared libc the kernel loads, not a file), there is no `/tmp` until logins are handed sessions
+  (filesystem phase 1b step 3(b); `fs_server` gives each session a private one, S129), and the
+  shell's file commands
   (`rm`, `touch`, `mv`, `cp`, `mkdir`, `chmod`, `stat`) take a name in the current directory, not
   a path. The servers `init` starts are compiled into the kernel image, by design
   ([`design/installed-system.md`](design/installed-system.md) section 3).

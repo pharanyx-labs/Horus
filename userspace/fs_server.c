@@ -706,7 +706,24 @@ static int fs_name_ok(const char *n)
 struct fs_session {
     int             live;
     struct fsp_tree tree;
+    uint32_t        tmp_ino;    /* its private /tmp (§6.3), or 0: none */
 };
+
+/* ---- a session's private /tmp (design §6.3; S129) ---------------------------
+ *
+ * A session whose policy says `@self /tmp` gets a directory of its own, made at
+ * FS_OP_SESSION as /.session-tmp/<G> and removed, with everything in it, at
+ * FS_OP_SESSION_END. In that session, and only there, the name "tmp" at its
+ * root answers with that directory, so a program that writes to /tmp writes to
+ * a directory nobody else holds a capability to. There is no shared /tmp, so
+ * there is no sticky rule to get wrong and nothing to squat.
+ *
+ * THE STORE IS HIDDEN FROM EVERY SESSION, the administrator's included: a
+ * request through a session's capability that names it in the root is answered
+ * as absent, and a listing of the root leaves it out. Without that, "/ all"
+ * would reach every other session's /tmp through it. Capabilities with no grant
+ * set (init's, step 1's) still see it, and so does the uid path until step 6
+ * removes it; docs/LIMITATIONS.md 1.24 says so. */
 static struct fs_session g_sess[FS_SESSIONS_MAX + 1];   /* [0] is never used */
 
 /* The rights of the kernel's own that a session's capabilities keep: send, pass
@@ -743,6 +760,27 @@ static int fs_pol_step(struct fs_pol *p, const char *name, uint32_t type)
     p->node = (r == 1) ? child : -1;
     p->carry = carry;
     return 0;
+}
+
+/* Is `name`, in directory `dir`, the hidden store of private /tmps, asked
+ * through a session's capability? */
+static int fs_pol_hidden(const struct fs_pol *p, uint32_t dir, const char *name)
+{
+#ifdef FS_SESSION_TMP_STORE_VISIBLE
+    /* CONTROL ARM, never ship (smoke-fs-cap-session-tmp-store-control): the
+     * store is an ordinary entry, so the administrator's "/ all" reaches every
+     * other session's /tmp through it. */
+    (void)p; (void)dir; (void)name;
+    return 0;
+#else
+    return p->s && dir == 0 && ustreq(name, FS_SESSION_TMP_STORE_NAME);
+#endif
+}
+
+/* Is `name`, at the tracked node `p` stands at, the session's private /tmp? */
+static int fs_pol_private(const struct fs_pol *p, const char *name)
+{
+    return p->s && p->node >= 0 && fsp_is_private(&p->s->tree, p->node, name);
 }
 
 /* Record that a capability to `ino` is being minted at tracked node `node`. A
@@ -783,8 +821,25 @@ static void walk(const struct fs_request *rq, struct fs_response *rp, uint32_t f
         step.op = FS_OP_LOOKUP;
         step.dir_ino = cur;
         ustrncpy(step.name, d + at, FS_NAME_MAX);
-        handle(&step, rp, cuid, cgid);
-        if (rp->rc != 0) return;
+        if (fs_pol_hidden(pol, cur, step.name)) {
+            umemset(rp, 0, sizeof(*rp));
+            rp->magic = FS_PROTO_MAGIC;
+            rp->rc = SYS_ERR_NOENT;
+            return;
+        }
+        if (fs_pol_private(pol, step.name)) {
+            /* The session's own /tmp, never the volume's entry of that name.
+             * No directory (it could not be made) is absent, as a missing name
+             * is. */
+            umemset(rp, 0, sizeof(*rp));
+            rp->magic = FS_PROTO_MAGIC;
+            if (pol->s->tmp_ino == 0) { rp->rc = SYS_ERR_NOENT; return; }
+            rp->ino = pol->s->tmp_ino;
+            rp->type = FS_TYPE_DIR;
+        } else {
+            handle(&step, rp, cuid, cgid);
+            if (rp->rc != 0) return;
+        }
         /* The name exists; does this session see it? Answered after the lookup
          * because the answer depends on the entry's type (fs_policy.h fsp_step),
          * and answered as the lookup of a missing name would be. */
@@ -878,28 +933,72 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
         if (!fs_name_ok(nn)) { rp->rc = SYS_ERR_INVAL; return; }
     }
 
+    /* In a session, the names the session does not see as the volume has them:
+     * the hidden store of private /tmps is absent, and its own /tmp is not an
+     * entry it can make, remove or rename. */
+    if (pol.s && names) {
+        char nn[FS_DIRENT_NAME];
+        nn[0] = 0;
+        if (rq->op == FS_OP_RENAME) ustrncpy(nn, (const char *)rq->data, FS_DIRENT_NAME);
+        if (fs_pol_hidden(&pol, obj, rq->name) || (nn[0] && fs_pol_hidden(&pol, obj, nn))) {
+            rp->rc = SYS_ERR_NOENT;
+            return;
+        }
+        if (rq->op != FS_OP_LOOKUP &&
+            (fs_pol_private(&pol, rq->name) || (nn[0] && fs_pol_private(&pol, nn)))) {
+            rp->rc = (rq->op == FS_OP_CREATE || rq->op == FS_OP_MKDIR) ? SYS_ERR_EXIST : SYS_ERR_PERM;
+            return;
+        }
+    }
+
     struct fs_request r2 = *rq;
     if (is_dir_op) r2.dir_ino = obj; else r2.ino = obj;
     if (rq->op == FS_OP_RENAME) r2.ino = obj;      /* new parent: the same directory */
+    /* A session's single-name LOOKUP is a one-name WALK, so the private /tmp and
+     * the hidden store are answered in one place (walk), not two that could
+     * drift. The name was checked above as a WALK checks each of its names. */
+    struct fs_request wl;
+    const struct fs_request *wrq = rq;
+    if (pol.s && rq->op == FS_OP_LOOKUP) {
+        const char *one[1] = { rq->name };
+        wl = *rq;
+        wl.op = FS_OP_WALK;
+        if (fs_walk_pack(wl.data, &wl.len, one, 1) != 0) { rp->rc = SYS_ERR_INVAL; return; }
+        wrq = &wl;
+    }
 
     /* A DELETE's generation bump happens in fs_ino_free, on the free itself. */
     g_by_cap = 1;
-    if (rq->op == FS_OP_WALK) {
-        walk(rq, rp, obj, cuid, cgid, &pol);
-    } else if (rq->op == FS_OP_READDIR && pol.node >= 0) {
-        /* A TRACKED DIRECTORY LISTS WHAT THE SESSION SEES and no more: the
+    if (wrq->op == FS_OP_WALK) {
+        walk(wrq, rp, obj, cuid, cgid, &pol);
+    } else if (rq->op == FS_OP_READDIR && pol.s && (pol.node >= 0 || obj == 0)) {
+        /* A SESSION'S DIRECTORY LISTS WHAT THE SESSION SEES and no more: the
          * entry at `offset` counts only visible names, so the listing is dense
-         * and a withheld name leaves no gap to count. Ends as an unfiltered
-         * listing ends, with FS_RC_ENDDIR, or passes an error through. */
+         * and a withheld name leaves no gap to count. The hidden store is left
+         * out of the root, and the session's own /tmp is listed once, after the
+         * volume's entries, whether or not the volume has one of that name.
+         * Ends as an unfiltered listing ends, with FS_RC_ENDDIR, or passes an
+         * error through. */
         uint32_t seen = 0;
         for (uint32_t idx = 0; ; idx++) {
             r2.offset = idx;
             handle(&r2, rp, cuid, cgid);
             if (rp->rc != 0) break;
-            if (fsp_visible(&pol.s->tree, pol.node, rp->name, rp->type == FS_TYPE_DIR)) {
+            int vis = !fs_pol_hidden(&pol, obj, rp->name) && !fs_pol_private(&pol, rp->name) &&
+                      (pol.node < 0 ||
+                       fsp_visible(&pol.s->tree, pol.node, rp->name, rp->type == FS_TYPE_DIR));
+            if (vis) {
                 if (seen == rq->offset) break;
                 seen++;
             }
+        }
+        if (rp->rc == FS_RC_ENDDIR && rq->offset == seen && pol.s->tmp_ino != 0 &&
+            fs_pol_private(&pol, "tmp")) {
+            umemset(rp, 0, sizeof(*rp));
+            rp->magic = FS_PROTO_MAGIC;
+            rp->ino = pol.s->tmp_ino;
+            rp->type = FS_TYPE_DIR;
+            ustrncpy(rp->name, "tmp", FS_NAME_MAX);
         }
     } else {
         handle(&r2, rp, cuid, cgid);
@@ -996,6 +1095,129 @@ static void session_cwd(struct fs_session *s, uint32_t g, const char *home,
     sg->cwd_rights = (pol.carry & FS_R_ALL) | FS_KERNEL_RIGHTS;
 }
 
+/* Remove everything below directory `top`, however deep, and leave `top`.
+ *
+ * NO DEPTH BOUND, unlike remove_tree, and that is the point: a session decides
+ * what its /tmp holds, so a bound would let it nest a tree one level deeper than
+ * the bound and keep it past its end. Memory stays bounded instead: each round
+ * walks down from `top` along the first subdirectory to one that has none,
+ * removing the files it passes in the bottom one, and removes that directory
+ * from its parent. Rounds are bounded too, so a directory that cannot be
+ * removed stops the sweep rather than spinning it. Returns 0 when `top` is
+ * empty, -1 when something could not be removed. */
+static int empty_tree(uint32_t top)
+{
+    for (uint32_t round = 0; round < FS_GEN_INODES; round++) {
+        uint32_t parent = top, cur = top;
+        char name[FS_NAME_MAX];
+        int depth = 0;
+        for (;;) {
+            uint32_t idx = 0, cino, ctype;
+            char cname[FS_NAME_MAX];
+            int sub = 0;
+            while (dir_get(cur, idx, &cino, &ctype, cname)) {
+                if (ctype == FS_TYPE_DIR) { sub = 1; break; }
+                if (dir_remove(cur, cname)) fs_ino_free(cino);
+                else idx++;                     /* stubborn: step past, never refetch */
+            }
+            if (!sub) break;
+            parent = cur;
+            ustrncpy(name, cname, FS_NAME_MAX);
+            cur = cino;
+            depth++;
+        }
+        uint32_t ci, ct;
+        char cn[FS_NAME_MAX];
+        if (dir_get(cur, 0, &ci, &ct, cn)) return -1;   /* a file would not go */
+        if (depth == 0) return 0;                       /* top itself is empty */
+        if (!dir_remove(parent, name)) return -1;
+        fs_ino_free(cur);
+    }
+    return -1;
+}
+
+/* The store of private /tmps, made if missing: root-owned 0700, so that the
+ * uid path, until step 6 removes it, refuses it to everyone but root. */
+static int session_tmp_store(uint32_t *out)
+{
+    uint32_t ino, type;
+    if (dir_find(0, FS_SESSION_TMP_STORE_NAME, &ino, &type)) {
+        if (type != FS_TYPE_DIR) return -1;
+        *out = ino;
+        return 0;
+    }
+    int n = sys_fs_inode_alloc(FS_TYPE_DIR);
+    if (n < 0) return -1;
+    sys_fs_set_meta((uint32_t)n, 0700u, 0, 0);
+    if (dir_add(0, FS_SESSION_TMP_STORE_NAME, (uint32_t)n, FS_TYPE_DIR) != 0) {
+        fs_ino_free((uint32_t)n);
+        return -1;
+    }
+    *out = (uint32_t)n;
+    return 0;
+}
+
+static void session_tmp_name(uint32_t g, char out[4])
+{
+    out[0] = (char)('0' + g / 10);
+    out[1] = (char)('0' + g % 10);
+    out[2] = 0;
+}
+
+/* Make session g's private /tmp, owned by its account and 0700 for the uid
+ * path's sake. The first session of a boot first clears whatever a session of
+ * an earlier boot left (a crash, a power cut): no session of this boot exists
+ * yet, so everything there is a leftover. Returns the directory, or 0. */
+static uint32_t session_tmp_make(uint32_t g, uint32_t uid, uint32_t gid)
+{
+    static int swept;
+    uint32_t store;
+    if (session_tmp_store(&store) != 0) return 0;
+    if (!swept) {
+        if (empty_tree(store) != 0)
+            kputln("[fs_server] an earlier boot's session /tmp could not all be removed");
+        swept = 1;
+    }
+    char nm[4];
+    session_tmp_name(g, nm);
+    uint32_t old, type;
+    if (dir_find(store, nm, &old, &type)) {
+        /* G is free, so this is one a failed sweep left: it must not be handed
+         * to a new session with its contents. */
+        if (type != FS_TYPE_DIR || empty_tree(old) != 0) return 0;
+        if (!dir_remove(store, nm)) return 0;
+        fs_ino_free(old);
+    }
+    int n = sys_fs_inode_alloc(FS_TYPE_DIR);
+    if (n < 0) return 0;
+    sys_fs_set_meta((uint32_t)n, 0700u, uid, gid);
+    if (dir_add(store, nm, (uint32_t)n, FS_TYPE_DIR) != 0) {
+        fs_ino_free((uint32_t)n);
+        return 0;
+    }
+    return (uint32_t)n;
+}
+
+/* Remove session g's private /tmp and all it holds. */
+static void session_tmp_remove(uint32_t g, uint32_t ino)
+{
+    uint32_t store, found, type;
+    char nm[4];
+#ifdef FS_SESSION_TMP_KEPT
+    /* CONTROL ARM, never ship (smoke-fs-cap-session-tmp-kept-control): nothing
+     * is removed, so a session's /tmp outlives its end. */
+    (void)store; (void)found; (void)type; (void)nm; (void)g; (void)ino;
+    return;
+#endif
+    session_tmp_name(g, nm);
+    if (session_tmp_store(&store) != 0 || !dir_find(store, nm, &found, &type) || found != ino) return;
+    if (empty_tree(ino) != 0 || !dir_remove(store, nm)) {
+        kputln("[fs_server] a session's /tmp could not all be removed; the next boot's first session clears it");
+        return;
+    }
+    fs_ino_free(ino);
+}
+
 /* FS_OP_SESSION: compile the account's grants into a free grant set and say
  * what init is to mint. The account comes from the kernel's list, by the uid
  * init read from the kernel's attestation of the login; the policy from the
@@ -1044,7 +1266,7 @@ static void session_open(const struct fs_request *rq, struct fs_response *rp)
     struct fs_session *s = &g_sess[g];
     struct fsp_who who = { e.name, e.home, e.uid == 0 };
     if (fsp_compile(&g_policy, &who, &s->tree) != 0) {
-        kputln("[fs_server] a session's grants do not fit; session refused");
+        kputln("[fs_server] a session's grants cannot be compiled; session refused");
         rp->rc = SYS_ERR_NOMEM;
         return;
     }
@@ -1060,6 +1282,24 @@ static void session_open(const struct fs_request *rq, struct fs_response *rp)
         sg.root_token = fs_token_in(0, g_gen[0], g, tracked);
         sg.root_rights = root->below | FS_KERNEL_RIGHTS;
         session_cwd(s, g, e.home, &sg);
+        /* Its private /tmp, if the policy gives one. A /tmp that cannot be made
+         * (a full volume) leaves the session without one, answered as absent,
+         * rather than refusing the login that might be the one to free space. */
+        s->tmp_ino = 0;
+        for (unsigned i = 1; i < s->tree.n; i++) {
+            if (!s->tree.node[i].private_tmp) continue;
+#ifdef FS_SESSION_TMP_SHARED
+            /* CONTROL ARM, never ship (smoke-fs-cap-session-tmp-shared-control):
+             * every session is given the same directory, one shared /tmp. */
+            static uint32_t shared;
+            if (!shared) shared = session_tmp_make(FS_SESSIONS_MAX + 1, 0, 0);
+            s->tmp_ino = shared;
+#else
+            s->tmp_ino = session_tmp_make(g, e.uid, e.gid);
+#endif
+            if (s->tmp_ino == 0) kputln("[fs_server] a session's /tmp could not be made; it has none");
+            break;
+        }
         s->live = 1;
         last_g = g;
     }
@@ -1087,6 +1327,9 @@ static void session_request(const struct fs_request *rq, struct fs_response *rp,
     if (rq->op == FS_OP_SESSION) { session_open(rq, rp); return; }
     uint32_t g = rq->offset;
     if (g == 0 || g > FS_SESSIONS_MAX || !g_sess[g].live) { rp->rc = SYS_ERR_NOENT; return; }
+    /* Its /tmp goes with it. init has already revoked every capability the
+     * session held, so nothing can be writing there. */
+    if (g_sess[g].tmp_ino) session_tmp_remove(g, g_sess[g].tmp_ino);
     umemset(&g_sess[g], 0, sizeof(g_sess[g]));
     rp->rc = 0;
 }
@@ -1412,10 +1655,10 @@ static unsigned prune_tree(uint32_t dir, int depth) {
 static void provision_boot_modules(void) {
     /* THE SYSTEM TREES FIRST (S116): made, marked, owned by root. Then the rest
      * of the layout in docs/design/installed-system.md section 2, which is the
-     * operator's and is left as it is. /tmp is not made yet: a directory every
-     * user can write needs the sticky rule (only an entry's owner removes it),
-     * which this server does not enforce, and without it any user could delete
-     * any other's files there. docs/LIMITATIONS.md says so. */
+     * operator's and is left as it is. /tmp is not made: there is no shared
+     * /tmp, by design (§6.3). Each session gets a private one when it opens
+     * (session_tmp_make, S129), which needs no sticky rule because nobody else
+     * holds a capability to it. */
     static const char *const sys_dirs[] = {
         "bin", "sbin", "lib", "usr", "usr/share", "usr/share/man", "usr/share/doc", 0
     };

@@ -150,6 +150,18 @@ PY' \
 
 arm "8" "a comma'd figure that matches the tree stays silent" "true" clean
 
+# ---- RULE 5: one LIMITATIONS number, one entry. Planted as it happened on
+#      2026-10-11: a closed-table row taking a number an open entry still has.
+arm "9" "a closed LIMITATIONS row reusing an open entry's number" \
+    'python3 - <<PY
+import re, pathlib
+p = pathlib.Path("docs/LIMITATIONS.md"); t = p.read_text()
+num = re.search(r"^### (\d+\.\d+[a-z]?)\b", t, re.M).group(1)
+row = re.search(r"^\| \d+\.\d+[a-z]? \|", t, re.M)
+p.write_text(t[:row.start()] + "| " + num + " | [X] | planted | 2026-10-11, #0 |\n" + t[row.start():])
+PY' \
+    caught "entry number"
+
 echo
 echo "arms passed: $PASSES   failed: $FAILS"
 [ "$FAILS" -eq 0 ]

@@ -14,7 +14,7 @@ rule only a reader enforces fails silently, and silence is what it failed with.
 So the derivable claims are derived here and compared against every place that
 states them (.github/doc-claims.yml), and the `doc-claims` CI job gates it.
 
-Two checks, and the second is the one that catches prose:
+Three checks, and the second is the one that catches prose:
 
   counts     -- a value computed from the source of truth, against every
                 declared occurrence. A declared occurrence that MATCHES NOTHING
@@ -33,6 +33,13 @@ Two checks, and the second is the one that catches prose:
                 correction auditable. Quoted text is being reported, not
                 asserted. Assert it and the ratchet bites; quote it and you are
                 already doing the right thing.
+
+  numbers    -- every docs/LIMITATIONS.md entry number names one entry. Open
+                entries are headings and closed ones are rows of the closed
+                table, and code and other documents cite them by number, so a
+                number used twice gives one citation two statuses. 1.23 was:
+                an open entry filed by #506 and a closed one by #528 a day
+                later, found 2026-10-11.
 
 Everything is derived statically. No network, no QEMU, no ruleset read -- the
 ruleset comparison needs Administration:read and belongs to `ruleset-audit`.
@@ -398,6 +405,19 @@ def main():
                         f"{path}:{n}: forbidden phrasing "
                         f"/{rule['pattern']}/ -- {' '.join(rule['reason'].split())}")
                     break
+
+    # ONE NUMBER, ONE ENTRY (the `numbers` check in the docstring). The number
+    # is the citation, so it is the thing that must be unique: an entry keeps its
+    # number from the day it is filed to the day it closes, and moving to the
+    # closed table must not let a later entry take it.
+    lim = Path("docs/LIMITATIONS.md").read_text()
+    entries = (re.findall(r"^### (\d+\.\d+[a-z]?)\b", lim, re.M) +
+               re.findall(r"^\| (\d+\.\d+[a-z]?) \|", lim, re.M))
+    for num in sorted({n for n in entries if entries.count(n) > 1}):
+        problems.append(
+            f"docs/LIMITATIONS.md: entry number {num} names {entries.count(num)} "
+            f"entries; a number is a citation and must name one (give the later "
+            f"entry the next free number)")
 
     print(f"derived values : " + ", ".join(f"{k}={v}" for k, v in sorted(live.items())))
     print(f"claims checked : {checked} numeric occurrences, "

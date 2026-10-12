@@ -126,6 +126,8 @@ extern uint8_t embedded_slotheir_bin_start[];
 extern uint8_t embedded_slotheir_bin_end[];
 extern uint8_t embedded_killspin_bin_start[];
 extern uint8_t embedded_killspin_bin_end[];
+extern uint8_t embedded_replyprobe_bin_start[];
+extern uint8_t embedded_replyprobe_bin_end[];
 extern uint8_t embedded_sigwaiter_bin_start[];
 extern uint8_t embedded_sigwaiter_bin_end[];
 extern uint8_t embedded_argtest_bin_start[];
@@ -196,6 +198,9 @@ static const struct embedded_binary embedded_binaries[] = {
     /* killspin: writes a shared frame with no syscall; killed mid-write, it must
      * stop (HORUS-20260921-04). PROC_SELFTEST only. */
     { "killspin",  embedded_killspin_bin_start, embedded_killspin_bin_end },
+    /* replyprobe: blocks in a call; killed mid-call, its slot's successor must
+     * not get the answer (LIMITATIONS 1.32). PROC_SELFTEST only. */
+    { "replyprobe", embedded_replyprobe_bin_start, embedded_replyprobe_bin_end },
     /* sigwaiter: blocks in SYS_WAIT on an immortal target so the driver can
      * verify a signal interrupts the blocked wait. PROC_SELFTEST only. */
     { "sigwaiter", embedded_sigwaiter_bin_start, embedded_sigwaiter_bin_end},

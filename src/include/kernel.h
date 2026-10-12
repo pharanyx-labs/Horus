@@ -798,6 +798,7 @@ struct ipc_invoker {
 struct ep_msg {
     int32_t  len;                  /* payload length in bytes */
     int32_t  sender;               /* task that deposited it (kernel-recorded) */
+    uint64_t sender_gen;           /* and which incarnation of that slot (slot_gen) */
     struct ipc_invoker inv;        /* what it was sent through (kernel-recorded) */
     uint8_t  data[IPC_MSG_MAX];
 };
@@ -807,6 +808,10 @@ struct endpoint {
     uint32_t head;             /* index of the next message to dequeue */
     uint32_t count;            /* messages currently queued (0..EP_QUEUE_SLOTS) */
     int      last_sender;      /* sender of the most recently dequeued message */
+    /* That sender's slot_gen when it SENT, so a reused slot is not taken for it
+     * (LIMITATIONS 1.32): SYS_IPC_SENDER answers only while the slot still holds
+     * that incarnation. */
+    uint64_t last_sender_gen;
     int      blocked_waiter;   /* task id blocked in SYS_IPC_CALL on this endpoint, -1=none */
     /* The invoker record of the most recently dequeued message, published at the
      * same moment as last_sender and for the same reason: only a message that
@@ -2062,6 +2067,13 @@ _Static_assert(MAX_TASKS <= (1 << TCB_OBJ_TID_BITS), "CAP_TCB object cannot hold
 static inline uint64_t tcb_object(int id) {
     return (tasks[id].slot_gen << TCB_OBJ_TID_BITS) | ((uint64_t)id & TCB_OBJ_TID_MASK);
 }
+/* The object a CAP_REPLY carries: the client's slot and the generation it had
+ * when it SENT, in tcb_object's layout (LIMITATIONS 1.32). Not tcb_object(id),
+ * because the request may be dequeued after the client has died and its slot
+ * been reused: the generation is the one recorded with the message. */
+static inline uint64_t reply_object(int id, uint64_t gen) {
+    return (gen << TCB_OBJ_TID_BITS) | ((uint64_t)id & TCB_OBJ_TID_MASK);
+}
 
 /* Tasks provisioned this boot. Every runtime bound reads this; MAX_TASKS is the
  * compile-time provisioning input alone and nothing branches on it. */
@@ -3110,7 +3122,7 @@ void cap_release_cspace(int id);
  * authority into an arbitrary cspace. The authority argument is the receiver's,
  * established when it proved READ on the endpoint to block on it; this only
  * completes the receive it was already entitled to. */
-bool cap_install_reply_for(int pid, int sender);
+bool cap_install_reply_for(int pid, int sender, uint64_t sender_gen);
 /* Install the child's end of a spawner's pipe into the child's STDIN/STDOUT pipe
  * slot (do_spawn's stdio wiring). The second bounded exception to "no general
  * cross-cspace install": type fixed to CAP_PIPE, destination restricted to the

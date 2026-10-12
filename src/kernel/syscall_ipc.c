@@ -63,6 +63,10 @@ static void ep_enqueue(struct endpoint *e, const uint8_t *src, int len, int send
     for (int i = 0; i < len; i++) m->data[i] = src[i];
     m->len    = len;
     m->sender = sender;
+    /* The sender is the task running this send, so its slot holds the
+     * incarnation that sent. Recorded now, not looked up at dequeue: by then the
+     * slot may hold a successor (LIMITATIONS 1.32). */
+    m->sender_gen = (sender > 0 && sender < g_max_tasks) ? tasks[sender].slot_gen : 0;
     m->inv    = inv ? *inv : ipc_no_invoker;
     __asm__ volatile ("" ::: "memory");
     e->count++;
@@ -72,13 +76,14 @@ static void ep_enqueue(struct endpoint *e, const uint8_t *src, int len, int send
  * through `sender` so the caller can publish it as last_sender AFTER the copy to
  * userspace has succeeded — a failed copy must not advance the reply identity. */
 static int ep_dequeue(struct endpoint *e, uint8_t *dst, int max, int *sender,
-                      struct ipc_invoker *inv) {
+                      uint64_t *sender_gen, struct ipc_invoker *inv) {
     struct ep_msg *m = &e->q[e->head];
     int len = m->len;
     if (len < 0) len = 0;
     if (len > max) len = max;
     for (int i = 0; i < len; i++) dst[i] = m->data[i];
     if (sender) *sender = m->sender;
+    if (sender_gen) *sender_gen = m->sender_gen;
     if (inv) *inv = m->inv;
     /* Scrub the slot before releasing it. An endpoint slot outlives the message
      * in it, and the next sender may be a different, mutually distrusting task;
@@ -86,6 +91,7 @@ static int ep_dequeue(struct endpoint *e, uint8_t *dst, int max, int *sender,
     for (int i = 0; i < IPC_MSG_MAX; i++) m->data[i] = 0;
     m->len    = 0;
     m->sender = -1;
+    m->sender_gen = 0;
     m->inv    = ipc_no_invoker;   /* a token is an identity: never residue */
     e->head = (e->head + 1) % EP_QUEUE_SLOTS;
     e->count--;
@@ -248,13 +254,15 @@ int ipc_publish_pending_block(int cur) {
             int cap_len = recv_wait ? (int)tasks[cur].ipc_recv_max : IPC_MSG_MAX;
             uint8_t kbuf[IPC_MSG_MAX];
             int sender = -1;
+            uint64_t sender_gen = 0;
             struct ipc_invoker inv;
-            int len = ep_dequeue(e, kbuf, cap_len, &sender, &inv);
+            int len = ep_dequeue(e, kbuf, cap_len, &sender, &sender_gen, &inv);
             if (len > 0 && tasks[cur].ipc_reply_buf != 0) {
                 copy_to_user((void *)(addr_t)tasks[cur].ipc_reply_buf, kbuf,
                              (size_t)len);
             }
             e->last_sender  = sender;
+            e->last_sender_gen = sender_gen;
             e->last_invoker = inv;   /* published with last_sender, as everywhere */
             f->rax = (uint64_t)(uint32_t)len;
             /* Mint BEFORE the task is marked runnable — the same rule the wake
@@ -268,7 +276,7 @@ int ipc_publish_pending_block(int cur) {
              * schedulable". An invariant with one documented exception is one a
              * later change quietly widens. */
             if (recv_wait && sender > 0 && sender < g_max_tasks)
-                cap_install_reply_for(cur, sender);
+                cap_install_reply_for(cur, sender, sender_gen);
             tasks[cur].state        = TASK_RUNNABLE;
             tasks[cur].runnable_ctx = 1;
             tasks[cur].blocked_on   = -1;
@@ -502,9 +510,10 @@ int sys_ipc_send(uint32_t ep, const void *msg, size_t len, const struct ipc_invo
         if (recv_wait) {
             int sender_tid = get_current_task();
             e->last_sender = sender_tid;
+            e->last_sender_gen = tasks[sender_tid].slot_gen;
             e->last_invoker = inv ? *inv : ipc_no_invoker;
             tasks[waiter].ipc_recv_block = 0;
-            if (!cap_install_reply_for(waiter, sender_tid)) {
+            if (!cap_install_reply_for(waiter, sender_tid, tasks[sender_tid].slot_gen)) {
                 /* Refuse rather than wake a server into a request it has no
                  * right to answer — that is the failure this ordering exists to
                  * prevent, and doing it deliberately would be no better. The
@@ -570,14 +579,16 @@ int sys_ipc_recv(uint32_t ep, void *msg, size_t max_len) {
      * a request that the sender is blocked waiting for a reply to. */
     uint8_t kbuf[IPC_MSG_MAX];
     int sender = -1;
+    uint64_t sender_gen = 0;
     struct ipc_invoker inv;
-    int len = ep_dequeue(e, kbuf, (int)max_len, &sender, &inv);
+    int len = ep_dequeue(e, kbuf, (int)max_len, &sender, &sender_gen, &inv);
     if (len > 0 && copy_to_user(msg, kbuf, (size_t)len) != 0) { ipc_unlock(); return -1; }
 
     /* Only now is this the message being serviced, so only now does its sender
      * become the identity SYS_IPC_SENDER answers about, and its invoker the one
      * SYS_IPC_INVOKER answers about. */
     e->last_sender  = sender;
+    e->last_sender_gen = sender_gen;
     e->last_invoker = inv;
     __asm__ volatile ("" ::: "memory");
     ipc_unlock();
@@ -608,7 +619,7 @@ int sys_ipc_recv(uint32_t ep, void *msg, size_t max_len) {
      * older caller is woken by its own timeout/teardown path rather than left
      * nameable forever. */
     if (sender > 0 && sender < g_max_tasks)
-        cap_install_object(CAPSLOT_REPLY, CAP_REPLY, (uint64_t)sender,
+        cap_install_object(CAPSLOT_REPLY, CAP_REPLY, reply_object(sender, sender_gen),
                            CAP_RIGHT_WRITE, 0);
     return len;
 }
@@ -1011,6 +1022,15 @@ void h_ipc_sender(struct interrupt_frame64 *r) {
     if (!e) { r->rax = (uint32_t)-1; return; }
     int t = e->last_sender;
     if (t <= 0 || t >= g_max_tasks || tasks[t].state == 0) { r->rax = (uint32_t)-1; return; }
+    /* THE SAME INCARNATION THAT SENT, or no answer (LIMITATIONS 1.32). The slot
+     * is only a slot: once the sender has died and the slot been reused, its
+     * successor's uid is not the sender's, and fs_server would authorise the
+     * request it is serving as whoever now holds the slot. */
+#ifndef IPC_SENDER_SLOT_ONLY
+    /* IPC_SENDER_SLOT_ONLY=1 skips this: the control arm
+     * smoke-proc-stale-sender-control. */
+    if (tasks[t].slot_gen != e->last_sender_gen) { r->rax = (uint32_t)-1; return; }
+#endif
     if (r->rcx) {
         uint32_t g = tasks[t].gid;
         if (copy_to_user((void *)(addr_t)r->rcx, &g, sizeof(g)) != 0) { r->rax = (uint32_t)-1; return; }
@@ -1126,8 +1146,21 @@ static void ipc_reply_common(struct interrupt_frame64 *r, int mint,
          * right to answer anybody, which is a caller error worth reporting. */
         r->rax = (uint32_t)SYS_ERR_PERM; return;
     }
-    int t = (int)rc_cap->object;
-    if (t <= 0 || t >= g_max_tasks || tasks[t].state == TASK_DEAD || tasks[t].state == 0) {
+    /* The capability names (slot, slot_gen) (LIMITATIONS 1.32). A client
+     * killed with its call in flight leaves its slot to be reused, and a
+     * successor that then makes a call of its own is blocked for a reply too:
+     * without the generation the answer meant for the dead client was
+     * delivered into the successor's call. A different incarnation is "client
+     * gone", exactly as a dead one is. */
+    int t = (int)(rc_cap->object & TCB_OBJ_TID_MASK);
+    uint64_t t_gen = rc_cap->object >> TCB_OBJ_TID_BITS;
+#ifdef IPC_REPLY_SLOT_ONLY
+    /* CONTROL ARM, never ship (smoke-proc-stale-reply-control): whatever holds
+     * the slot is taken for the client, as before 2026-10-12. */
+    t_gen = (t > 0 && t < g_max_tasks) ? tasks[t].slot_gen : 0;
+#endif
+    if (t <= 0 || t >= g_max_tasks || tasks[t].state == TASK_DEAD || tasks[t].state == 0 ||
+        tasks[t].slot_gen != t_gen) {
         /* Client gone: nothing to deliver, and the right dies with it — leaving
          * it installed would let a later, unrelated task id reuse land on a
          * capability minted for a task that no longer exists. */

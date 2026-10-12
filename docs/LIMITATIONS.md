@@ -177,16 +177,6 @@ mode 0644 file inside another account's mode 0700 directory is readable by anyon
 inode, and inode numbers are small and handed out lowest first. The capability path does not have
 this gap: a capability names one object reached by a walk. Phase 1b step 6 removes the uid path.
 
-### 1.32 A reply capability and a sender's identity name a task slot, not a task **[HORUS-20261012-06]**
-
-A `CAP_REPLY` stores its client as a bare task id, and an endpoint's `last_sender`, which
-`SYS_IPC_SENDER` reads to tell a server the caller's uid, is a bare task id too. Neither carries
-the slot generation that `CAP_TCB` was given for the same hazard (S100). If a client dies with a
-request in flight and its slot is reused by a new task, a late reply can be delivered to the new
-task's own call, and a server asking who sent a request can be told the new task's uid. It needs
-a kill and a slot reuse inside that window. Confirmed by reading the code on 2026-10-12, not yet
-reproduced.
-
 ---
 
 ## 2. Correctness
@@ -423,7 +413,7 @@ maintainer.
 **The kernel image is itself a ceiling.** It must end below `USER_PHYS_BASE` (16 MiB), which the
 `linker64.ld` ASSERT enforces. That 16 MiB is the window in which the kernel maps itself with
 4 KiB pages, the only place a guard page can exist. GRUB stages boot modules in the same room.
-`.bss` is budgeted at **6,772 KiB** (`.github/image-budget.yml`), held exactly by
+`.bss` is budgeted at **6,784 KiB** (`.github/image-budget.yml`), held exactly by
 `tools/check_image_budget.py`, and `argon2_scratch` is 4,096 KiB of it: the Argon2 memory cost,
 which must not be cut to buy room. Raising `MAX_CPUS`, `BLOCKS_PER_DISK` or the Argon2 cost spends
 that budget; raising `MAX_TASKS` spends pool memory instead.
@@ -647,6 +637,7 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 1.25 | [HORUS-20261009-01] | A wait could return while its child still read alive, and a waiter could miss its child's death (S125) | 2026-10-09, #528 |
 | 1.27 | [HORUS-20261012-01] | Changing your own password re-sealed the key slot of the boot's first login (S75) | 2026-10-12, #552 |
 | 1.28 | [HORUS-20261012-02] | A crafted program header offset wrapped the spawn path's premap bound (S84) | 2026-10-12, #551 |
+| 1.32 | [HORUS-20261012-06] | A reply, and the sender identity a server authorises on, named a task slot, so a dead client's successor could receive both (S13, S13b) | 2026-10-12, #554 |
 | 2.0 | [C-3] | Spinlock interrupt state was global | 2026-08-13, #135 |
 | 2.1 | [I-2] | Heap syscalls truncated 64-bit arithmetic | 2026-08-13, #145 |
 | 2.2 | [I-5] | Endpoints were single-slot mailboxes | 2026-08-10, #120 |

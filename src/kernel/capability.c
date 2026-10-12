@@ -514,7 +514,7 @@ bool cap_install_object_first_free(uint32_t min_slot, uint32_t type, uint64_t ob
  * authority of whichever client happened to wake it, which is exactly the kind of
  * ambient-authority coupling roadmap 0.2 removed. The accounting (caps_in_use on
  * a NULL -> occupied transition, the ceiling) is the receiver's and is kept. */
-bool cap_install_reply_for(int pid, int sender) {
+bool cap_install_reply_for(int pid, int sender, uint64_t sender_gen) {
     if (pid <= 0 || pid >= g_max_tasks) return false;
     if (sender <= 0 || sender >= g_max_tasks) return false;
     uint64_t serial = cap_alloc_fresh_serial();   /* takes cap_lock: before it */
@@ -530,7 +530,9 @@ bool cap_install_reply_for(int pid, int sender) {
     }
     cspace[CAPSLOT_REPLY].type       = CAP_REPLY;
     cspace[CAPSLOT_REPLY].rights     = CAP_RIGHT_WRITE;
-    cspace[CAPSLOT_REPLY].object     = (uint64_t)sender;
+    /* (slot, slot_gen), the CAP_TCB encoding (LIMITATIONS 1.32): the reply
+     * names one incarnation of the client, never whatever reuses its slot. */
+    cspace[CAPSLOT_REPLY].object     = reply_object(sender, sender_gen);
     cspace[CAPSLOT_REPLY].badge      = 0;
     cspace[CAPSLOT_REPLY].serial     = serial;
     cspace[CAPSLOT_REPLY].token      = 0;

@@ -486,7 +486,10 @@ above `DYN_EP_BASE`.
   before the wake.
 - **`SYS_IPC_CALL`** sends and waits for the reply on the caller's private reply endpoint.
 - **`SYS_IPC_REPLY_TO`** delivers the reply through the one-shot `CAP_REPLY` the receive minted,
-  so replying twice, or to a client never received from, is unrepresentable.
+  so replying twice, or to a client never received from, is unrepresentable. The capability names
+  the client by slot and slot generation, recorded with the message when it was sent, so a reply
+  to a client that died never reaches the task that reused its slot; `SYS_IPC_SENDER` answers
+  only while the slot holds the sender that sent (S13, S13b).
 
 **Publish after save.** A caller's block is made visible to wakers only after its trap frame is
 saved, with a full barrier between, so a cross-CPU reply never patches a stale frame. Delivering a

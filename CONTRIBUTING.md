@@ -9,8 +9,8 @@ property it keeps and ships the test that would fail if it broke.**
 1. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): how the system is built and why.
 2. [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md): what does not work. Many good ideas are known
    gaps with a design already written down.
-3. [`docs/ROADMAP.md`](docs/ROADMAP.md): what comes next, in order. "What happens next" at the
-   top is where effort counts most.
+3. [`docs/ROADMAP.md`](docs/ROADMAP.md): the open work and the route through it. Its first wave
+   is where effort counts most.
 
 ## Setting up
 

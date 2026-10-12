@@ -154,19 +154,19 @@ also records that slot as B's own `keyslot`, so an administrator later changing 
 removes A's slot. Found by a static source review dated 2026-09-26; confirmed by reading the code
 on 2026-10-12, not yet reproduced.
 
-### 1.29 A granted, minted or transferred pipe end is not counted **[HORUS-20261012-03]**
+### 1.29 A granted pipe end is not counted **[HORUS-20261012-03]**
 
 A pipe is freed and scrubbed when its count of reader and writer ends reaches zero, so every copy
 of a `CAP_PIPE` must be counted. `fork` counts the ends it copies into the child
 (`pipe_count_forked_ends`, #553), and the spawn path's stdio wiring counts the one end it hands a
-child. `SYS_CAP_GRANT`, `SYS_CAP_MINT` and `SYS_CAP_TRANSFER` accept a capability of any type and
-still copy a `CAP_PIPE` without counting it, so a task that holds a pipe end and hands a copy to
-another task leaves the pipe counting one holder where there are two. When the original holder
-closes its end the pipe is freed while the recipient still names its index, and the next
-`pipe_alloc` to reuse that index joins the recipient to an unrelated pair of tasks. A transfer is
-a grant followed by a revoke, and a revoke releases no end (1.14). No program in the tree passes a
-pipe end this way. Confirmed by reading the code on 2026-10-12; the `fork` half was reproduced and
-fixed in #553, the rest is not yet reproduced.
+child. `SYS_CAP_GRANT` needs only possession of its source, accepts a capability of any type, and
+still copies a `CAP_PIPE` into a supervised child without counting it, so the pipe counts one
+holder where there are two. When the granting task closes its end the pipe is freed while the
+child still names its index, and the next `pipe_alloc` to reuse that index joins the child to an
+unrelated pair of tasks. `SYS_CAP_MINT` and `SYS_CAP_TRANSFER` (and so `SYS_CAP_MOVE`) need the
+source to carry `CAP_RIGHT_MINT`, which no pipe end in the shipped kernel is given, so they refuse
+one. No program in the tree grants a pipe end. Confirmed by reading the code on 2026-10-12; the
+`fork` half was reproduced and fixed in #553, the grant half is not yet reproduced.
 
 ### 1.30 The inode table and allocation bitmaps are not authenticated at rest **[HORUS-20261012-04]**
 

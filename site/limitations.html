@@ -189,7 +189,8 @@
       program also writes, so an unrelated program's output can land in the middle of it and
       a gate matching that report misses it. It has happened in CI. The kernel now has a
       diagnostic port that no capability names, so only the kernel can write it; four gates
-      read it, and about twenty still read the shared console.
+      read it, and 55 others still wait for a report only the kernel prints on the shared
+      console. How many of those are exposed is being measured first.
     </p>
   </li>
   <li>

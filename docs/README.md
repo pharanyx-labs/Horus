@@ -10,7 +10,7 @@ These describe the system as it is today, and each change updates them in the sa
 | Document | What it is for |
 |---|---|
 | [`LIMITATIONS.md`](LIMITATIONS.md) | What does not work or is not enforced. **The single authoritative status of every finding.** Read it before drawing conclusions |
-| [`ROADMAP.md`](ROADMAP.md) | What is done, and what comes next in what order |
+| [`ROADMAP.md`](ROADMAP.md) | The open work only, the decisions it waits on, and the route through it in waves |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | How each subsystem is built and why: boot, the C and Rust split, capabilities, paging, scheduling, SMP, IPC, syscalls, the servers, storage, trusted boot, side channels, and the known architectural gaps |
 | [`SYSCALLS.md`](SYSCALLS.md) | Every system call, the capability it requires, and how to add one |
 | [`../SECURITY.md`](../SECURITY.md) | The threat model, every security property with the test that witnesses it, and how to report a vulnerability |
@@ -27,9 +27,9 @@ Specifications written before the code. Each says at its top what of it is built
 
 | Design | Status |
 |---|---|
-| [`design/filesystem.md`](design/filesystem.md) | The capability-addressed filesystem. Phase 1a (endpoint tokens, S105) is built; phase 1b is next (ROADMAP 2.10) |
+| [`design/filesystem.md`](design/filesystem.md) | The capability-addressed filesystem. Phase 1a (endpoint tokens, S105) and phase 1b steps 1, 2, 3(a), 4 and 5 are built; steps 3(b), 3(c) and 6 remain (ROADMAP 2.10) |
 | [`design/installed-system.md`](design/installed-system.md) | Programs on the disk under a pinned manifest, a disk that boots itself, accounts as files. The first two are built; accounts as files are not (ROADMAP 2.11) |
-| [`design/scheduler.md`](design/scheduler.md) | Scheduling and SMP: CPU time as a capability accounted per CPU, priorities capped by authority, passive servers, per-CPU run queues, one-shot timers, affinity that only narrows, more than eight CPUs. Decided; nothing built |
+| [`design/scheduler.md`](design/scheduler.md) | Scheduling and SMP: CPU time as a capability accounted per CPU, priorities capped by authority, passive servers, per-CPU run queues, one-shot timers, affinity that only narrows, more than eight CPUs. Steps 0, 1, 1b and 2a are built (#523 to #526); per-CPU run queues are next (ROADMAP 1.8) |
 | [`design/swap.md`](design/swap.md) | Encrypted swap: a per-boot key, every page authenticated with its tag kept in RAM, only private pages, an in-kernel pager. Steps 1, 2 and 2a are built: the sealed slot store, eviction and fault-in, and the pager hold (S118, S119, S123) |
 | [`design/shared-libc.md`](design/shared-libc.md) | How programs receive, bind and seal the shared libc. Built (S106 to S108) |
 | [`design/meta-cache-merkle.md`](design/meta-cache-merkle.md) | The bounded metadata cache and the Merkle rollback tree. Built (S65, S66) |
@@ -46,6 +46,7 @@ Specifications written before the code. Each says at its top what of it is built
 | [`history/AUDIT-2026-07.md`](history/AUDIT-2026-07.md) | The 2026-07 audit that defined the [C-n], [I-n], [M-n] and [F-n] findings, with its predecessor as an appendix |
 | [`investigations/`](investigations/) | How the hardest findings were narrowed and measured, including the hypotheses that were wrong: [G-8], [G-9], [G-10], [G-11] and [G-12] (all closed), and the kernel-pointer disclosure survey behind roadmap 3.8 |
 | [`history/CHANGES-2026.md`](history/CHANGES-2026.md) | The changelog in full to 2026-10-07, every entry with its reasoning and measurements, before `CHANGES.md` became one line per entry |
+| [`history/ROADMAP-DONE-2026.md`](history/ROADMAP-DONE-2026.md) | Every roadmap item finished in 2026, one line each with its pull requests; a citation of a finished item resolves here |
 | [`history/DEVLOG-2026.md`](history/DEVLOG-2026.md) | The development log to early September 2026: why each change was made, what was tried first, and how each rate was measured |
 
 The records under `history/` and `investigations/` are kept as written, because the reasoning in

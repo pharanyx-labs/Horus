@@ -18,7 +18,7 @@ it is built first and kept small.
 
 | | |
 |---|---|
-| **Status** | Research system. Two tagged releases for developers, the latest `v0.3.0-alpha` (2026-10-09); all work lands on `main` |
+| **Status** | Research system. Three tagged releases for developers, the latest `v0.4.0-alpha` (2026-10-12); all work lands on `main` |
 | **Platform** | x86-64, booted by GRUB under BIOS or UEFI, in QEMU or on real hardware |
 | **Languages** | C for the kernel and the ring-3 servers, `no_std` Rust for the security core |
 | **Website** | [horus.pharanyx.co.uk](https://horus.pharanyx.co.uk/) |
@@ -166,20 +166,23 @@ The full list, with the reasons, is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.
 
 ## What comes next
 
-In order, from [`docs/ROADMAP.md`](docs/ROADMAP.md):
+[`docs/ROADMAP.md`](docs/ROADMAP.md) holds the open work and the route through it, in four waves,
+with the decisions it waits on listed first. The first wave closes the remaining holes and builds
+what later work needs:
 
-1. **Filesystem phase 1b** (2.10): `fs_server`, the path walker and `init` authorise files by
-   capability instead of by user id and mode. The server side has begun (S120, S121), including a
-   walk of a whole path answered with one capability, and the POSIX layer walks with capabilities
-   when a program holds a root (S126), and the shell hands what it runs a copy (S127). Step 3 has
-   begun: `fs_server` compiles a session's grants from the policy (S128). Next is the truthful
-   view (`stat`, `chmod`, `chown` and `link` through capabilities), and then `init` asking for a
-   session at login.
-2. **Accounts as files** (2.11): `/etc/passwd` and `/etc/shadow` on the volume, owned by a ring-3
-   `auth_server`.
-3. **Filesystem phases 2 to 4** (2.10): the filesystem moves to ring 3 on a copy-on-write format,
-   with separate system and home volumes, and gains links, timestamps, snapshots and extended
-   attributes.
+1. **Revocable pipe ends** (LIMITATIONS 1.14): revoking a pipe end reaches the copy a spawned child
+   holds.
+2. **Sessions at login, then the uid path removed** (2.10): `init` grants each login a session from
+   the policy, and the filesystem stops authorising anything by user id (closing 1.31).
+3. **Kernel reports on their own channel** (2.6c): the gates stop reading kernel output off the
+   console that user programs also write.
+4. **A reproducible ISO** (5.3a), which signed, verifiable releases and kernel updates without a
+   reseal both need.
+5. **Authenticated filesystem metadata** (1.30), if the maintainer takes it before the new format.
+
+The later waves finish moving authority to capabilities (accounts as files, exec by capability,
+console input as a capability), tighten the boot chain, move the kernel's remaining services to
+ring 3, and then grow the drivers and networking on top.
 
 ## Architecture
 
@@ -303,7 +306,7 @@ matches the pinned value ([`THIRD_PARTY.md`](THIRD_PARTY.md)).
 | Document | Read it for |
 |---|---|
 | [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) | What is wrong or missing today, and every finding's status |
-| [`docs/ROADMAP.md`](docs/ROADMAP.md) | What is done, and what comes next in what order |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | The open work, the decisions it waits on, and the route through it |
 | [`SECURITY.md`](SECURITY.md) | The threat model, every security property with its test, and how to report a vulnerability |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | How each subsystem works and why |
 | [`docs/SYSCALLS.md`](docs/SYSCALLS.md) | Every system call and the capability it requires |

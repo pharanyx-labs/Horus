@@ -73,11 +73,13 @@ else's program (S21).
 was given. A compromised `fs_server` controls all filesystem policy and a compromised
 `console_server` sees all terminal traffic: both are trusted by construction.
 
-**A3: an offline attacker with the disk.** *Defended* on an encrypted volume: AEAD with a key
-sealed to the TPM or wrapped under the account passwords, a Merkle tree against rolled-back
-blocks, and a TPM counter against a whole volume replaced by an older copy. An unencrypted volume,
-which the installer offers only as a deliberate choice, has none of this (`docs/LIMITATIONS.md`
-2.21).
+**A3: an offline attacker with the disk.** *Partly defended* on an encrypted volume: file
+contents are sealed with an AEAD under a key sealed to the TPM or wrapped under the account
+passwords, a Merkle tree guards them against rolled-back blocks, and a TPM counter guards against a
+whole volume replaced by an older copy. *Not defended*: the inode table and allocation bitmaps are
+not authenticated, so an owner, mode, type, size or link count can be changed undetected
+(`docs/LIMITATIONS.md` 1.30). An unencrypted volume, which the installer offers only as a
+deliberate choice, has none of this (`docs/LIMITATIONS.md` 2.21).
 
 **A4: a boot-chain tamperer** who modifies the kernel or a module, or boots media of their own.
 *Defended*: modules are checked against a manifest inside the kernel; the kernel's hash is pinned

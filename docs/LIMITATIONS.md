@@ -126,7 +126,8 @@ the kind; v12's back-references (phase 3) are what would let the server tell the
 
 Sessions' private `/tmp`s (S129) live in `/.session-tmp`, which every session finds absent. The
 uid path, until phase 1b step 6 removes it, still reaches it as it reaches any file: the store
-and each `/tmp` are mode 0700, so only root's uid gets in that way.
+and each `/tmp` are mode 0700, so only root's uid can look them up or list them that way, but a
+file inside answers to its own mode bits to anyone who names its inode (1.31).
 
 ### 1.26 Mode bits leave out the administrator, and the uid path can move a file under a grant
 
@@ -141,6 +142,66 @@ off a name the policy names. The uid path, until phase 1b step 6 removes it, and
 no grant set (held by system tasks, never by a session) rename without that rule, so a file moved
 that way under another principal's grant can show a bound that is low through a capability
 minted before the move, until it is opened again.
+
+### 1.27 Changing your own password re-seals the key slot of the boot's first login **[HORUS-20261012-01]**
+
+`storage_rekey` re-seals the slot recorded at the boot's first successful unlock
+(`g_unlocked_slot`, with that slot's uid), not the caller's: a later login finds the volume open
+and never touches it. The shell's `logout` returns to the login prompt, so after account A logs
+in and out, account B's `passwd` re-seals A's slot under B's new password and stamps it with A's
+uid; at the next boot A's password no longer opens the volume and B's opens A's slot. `do_passwd`
+also records that slot as B's own `keyslot`, so an administrator later changing B's password
+removes A's slot. Found by a static source review dated 2026-09-26; confirmed by reading the code
+on 2026-10-12, not yet reproduced.
+
+### 1.28 A crafted program header offset wraps the premap bound **[HORUS-20261012-02]**
+
+`staged_image_span_pages` runs on the spawn path before the Rust validator sees the image, and
+bounds the program headers with `e_phoff + 64 > staged_bytes()` in 32 bits. An `e_phoff` within
+64 of 2³² wraps the sum and passes, and the headers are then read about 4 GiB past the staging
+buffer in kernel context. The bound also covers 64 bytes where up to eight headers of 56 are read.
+Any task holding `CAP_UNTYPED` can stage an image, the shell's `run` included. The review that
+found it expects a kernel page fault that ends the caller while it holds the spawn lock, so that
+no task can be created again; that consequence is not yet measured.
+
+### 1.29 `fork` copies a pipe end without counting it **[HORUS-20261012-03]**
+
+`cap_clone_cspace` derives the child's copy of every capability, `CAP_PIPE` included, but takes
+no `pipe_end_ref` for the pipe ends it copies; the spawn path's stdio wiring does. After a fork
+the pipe counts one holder where there are two, so when the parent closes its end the pipe is
+freed and scrubbed while the child still holds a capability naming its index, and the next
+`pipe_alloc` to reuse that index joins the child to an unrelated pair of tasks. Confirmed by
+reading the code on 2026-10-12, not yet reproduced.
+
+### 1.30 The inode table and allocation bitmaps are not authenticated at rest **[HORUS-20261012-04]**
+
+On an encrypted volume every data block is sealed with an AEAD bound to its inode and block
+number, and the Merkle tree covers the nonce and tag blocks. The inode table and the allocation
+bitmaps are written in the clear with no MAC and are not leaves of the tree. An attacker with the
+disk can therefore change an inode's owner, group, mode, type, size or link count, or the
+bitmaps, without detection, and can read every file's size and the volume's layout. File contents
+stay confidential and cannot be moved between files. The system trees are rebuilt from the
+verified boot modules at every boot (S116), so this does not reach `/bin`. `SECURITY.md` A3 is
+*partly defended* until the metadata is authenticated.
+
+### 1.31 The uid path reaches a file by inode number, whatever its directories allow **[HORUS-20261012-05]**
+
+On the uid path, which every login uses until phase 1b step 3(b) opens a session at login, read,
+write, append, stat and truncate name an inode number and check that inode's own mode bits only.
+Nothing checks that the caller could have reached it through directories it may search, so a
+mode 0644 file inside another account's mode 0700 directory is readable by anyone who names its
+inode, and inode numbers are small and handed out lowest first. The capability path does not have
+this gap: a capability names one object reached by a walk. Phase 1b step 6 removes the uid path.
+
+### 1.32 A reply capability and a sender's identity name a task slot, not a task **[HORUS-20261012-06]**
+
+A `CAP_REPLY` stores its client as a bare task id, and an endpoint's `last_sender`, which
+`SYS_IPC_SENDER` reads to tell a server the caller's uid, is a bare task id too. Neither carries
+the slot generation that `CAP_TCB` was given for the same hazard (S100). If a client dies with a
+request in flight and its slot is reused by a new task, a late reply can be delivered to the new
+task's own call, and a server asking who sent a request can be told the new task's uid. It needs
+a kill and a slot reuse inside that window. Confirmed by reading the code on 2026-10-12, not yet
+reproduced.
 
 ---
 

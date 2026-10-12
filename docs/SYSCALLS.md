@@ -117,12 +117,12 @@ shipped kernel.
 | 0 | `SYS_YIELD` |  | Give up the CPU | none (self) |
 | 2 | `SYS_EXIT` |  | End the calling task | none (self) |
 | 3 | `SYS_GET_LINE` | `buf` | Read a line from the console | `CAP_CONSOLE` at `CAPSLOT_CONSOLE` + READ, type-tested in the handler; no fallback |
-| 4 | `SYS_CAP_MINT` | `(dest_slot, src_slot, rights)` | Copy within the CALLER's own cspace with rights masked to (rights & the source's) | holding the source; `cap_mint` masks to `rights & src->rights` |
+| 4 | `SYS_CAP_MINT` | `(dest_slot, src_slot, rights)` | Copy within the CALLER's own cspace with rights masked to (rights & the source's); refuses a pipe end (S133) | holding the source; `cap_mint` masks to `rights & src->rights` |
 | 5 | `SYS_CLEAR` |  | Retired: cleared the kernel's VGA text buffer (only with `LEGACY_SYSCALLS_PRESENT`) | absent from the shipped kernel |
 | 6 | `SYS_SYSINFO` |  | Retired: returned a version string (only with `LEGACY_SYSCALLS_PRESENT`) | absent from the shipped kernel |
 | 7 | `SYS_DEBUG_EXEC` | `cmd` | Run a command in the in-kernel debug shell (only with `DEBUG_SHELL` or `LEGACY_SYSCALLS_PRESENT`) | none; `DEBUG_SHELL` builds only |
-| 8 | `SYS_CAP_TRANSFER` | `(dest_slot, src_slot)` | Copy a capability within the caller's own cspace, keeping its rights | holding the source capability |
-| 9 | `SYS_CAP_MOVE` | `(dest_slot, src_slot)` | Move a capability to another slot of the caller's own cspace | holding the source capability |
+| 8 | `SYS_CAP_TRANSFER` | `(dest_slot, src_slot)` | Copy a capability within the caller's own cspace, keeping its rights; refuses a pipe end (S133) | holding the source capability |
+| 9 | `SYS_CAP_MOVE` | `(dest_slot, src_slot)` | Move a capability to another slot of the caller's own cspace; refuses a pipe end (S133) | holding the source capability |
 | 10 | `SYS_SBRK` | `increment` | Grow or shrink the caller's heap by an increment | none (own heap, bounds-checked) |
 | 11 | `SYS_WRITE` | `fd`, `buf`, `len` | Write to the console (fd 1) | console: none (fd 1 = ambient). `klog`: `CAP_KERNEL_LOG` + WRITE |
 | 12 | `SYS_READ` | `fd`, `buf`, `len` | Read a console line (fd 0) | none for fd 0, which refuses once `console_server` owns the console |
@@ -170,7 +170,7 @@ shipped kernel.
 | 62 | `SYS_BRK` | `(addr)` | Addr=0 queries current break | none (own heap) |
 | 63 | `SYS_KILL` | `(tid)` | Needs a CAP_TCB cap to it | `CAP_TCB` for target, or `CAP_USER` |
 | 64 | `SYS_EXEC_NAMED` | `(name)` | Does not return on success | none (self): replaces the caller's own image, creates no task |
-| 65 | `SYS_CAP_GRANT` | `(target_tid, src_slot, dest_slot)` |  | `CAP_TCB` for target, or `CAP_USER` |
+| 65 | `SYS_CAP_GRANT` | `(target_tid, src_slot, dest_slot)` | Copy the caller's capability into a supervised child, rights unchanged; refuses a pipe end, whose copies only the kernel counts (S133) | `CAP_TCB` for target, or `CAP_USER` |
 | 66 | `SYS_SIGNAL` | `(target_tid, signum)` |  | `CAP_TCB` for target, or `CAP_USER` |
 | 67 | `SYS_SIGMASK` | `(how, mask)` | Block/unblock this task's own signals | self only |
 | 68 | `SYS_SPAWN_ARG` | `()` |  | none (self) |

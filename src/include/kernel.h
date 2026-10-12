@@ -3141,9 +3141,12 @@ const capability_t *cap_root_cnode_ref(void);
 bool cap_transfer(uint32_t dest_slot, uint32_t src_slot);
 bool cap_move(uint32_t dest_slot, uint32_t src_slot);
 /* Delegate the caller's src_slot into a supervised target's dest_slot through the
- * locked, accounted, rights-reducing cap-write path (SYS_CAP_GRANT). Authority
- * (CAP_TCB on target / admin) is checked by the caller. */
+ * locked, accounted, rights-reducing cap-write path. Authority (CAP_TCB on target
+ * / admin) is checked by the caller. cap_grant_into is the KERNEL's delegation and
+ * copies any type; cap_grant_from_user is SYS_CAP_GRANT's and refuses a pipe end,
+ * whose copies only the kernel can count (LIMITATIONS 1.29). */
 bool cap_grant_into(int target_pid, uint32_t dest_slot, uint32_t src_slot, uint32_t new_rights);
+bool cap_grant_from_user(int target_pid, uint32_t dest_slot, uint32_t src_slot, uint32_t new_rights);
 
 /* Duplicate `parent`'s cspace into `child` as DERIVED capabilities (SYS_FORK,
  * roadmap 2.3). Returns the number of slots copied, or negative. Every copy is a
@@ -3182,6 +3185,11 @@ bool rust_cap_transfer(capability_t *dest_array, uint32_t sz, uint32_t dest_slot
 bool rust_cap_grant_into(const capability_t *src, capability_t *dest_cspace,
                          uint32_t dest_cspace_size, uint32_t dest_slot,
                          uint32_t new_rights, uint64_t *next_serial);
+/* rust_cap_grant_into for a grant ring 3 asked for: refuses a CAP_PIPE source and
+ * writes nothing. Called under cap_lock. */
+bool rust_cap_grant_from_user(const capability_t *src, capability_t *dest_cspace,
+                              uint32_t dest_cspace_size, uint32_t dest_slot,
+                              uint32_t new_rights, uint64_t *next_serial);
 /* Mint a TOKENED endpoint capability from an untokened one holding MINT, in the
  * caller's own cspace. Strips READ (receive) from the child. SYS_CAP_MINT_TOKEN. */
 bool rust_cap_mint_token(capability_t *cspace, uint32_t sz, uint32_t dest_slot,

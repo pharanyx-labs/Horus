@@ -316,6 +316,7 @@ column names the targets that build with the flag; an arm must turn its gate red
 | `FORK_ARENA_UNCHECKED=1` | Removes `clone_user_aspace`'s refusal to clone a PTE whose frame belongs to the untyped arena, so forking with a `CAP_FRAME` mapped succeeds. | `smoke-fork-arena-control` (arm of `smoke-fork`); `make smoke-fork` must go red under it |
 | `FORK_CSPACE_FLAT_COPY=1` | Copies the parent's capabilities into the forked child verbatim (same serial, badge and generation) instead of deriving them. | `smoke-fork-cspace-flat-control` (arm of `smoke-fork`); `make smoke-fork` must go red under it |
 | `FORK_PIPE_UNCOUNTED=1` | Restores the pre-2026-10-12 fork, which copied the parent's pipe ends into the child without counting them, so the parent closing its ends freed the pipe under the child ([HORUS-20261012-03]). | `smoke-fork-pipe-control` (arm of `smoke-fork`); `make smoke-fork` must go red under it |
+| `PIPE_GRANT_UNREFUSED=1` | Restores the pre-2026-10-12 `SYS_CAP_GRANT`, which copied a pipe end into a supervised child without counting it, so the granter closing its end freed the pipe under the child ([HORUS-20261012-03]). | `smoke-captest-pipe-grant-control` (arm of `smoke-captest`); `make smoke-captest` must go red under it |
 | `FORK_CSPACE_ORPHAN_COPY=1` | Gives each copy a fresh serial (so the flat-copy defect above is absent) but leaves `badge` as the source's, so the copy is not a child of the parent's capability in the derivation tree. | `smoke-fork-cspace-orphan-control` (arm of `smoke-fork`); `make smoke-fork` must go red under it |
 | `EXEC_RESET_CSPACE=1` | Makes `SYS_EXEC_NAMED` / `SYS_EXEC_IMAGE` discard every capability at or above `KERNEL_RESERVED_CAPS`, so the execed image keeps only the birth endowment `create_task` installs. | `smoke-execprobe-reset-control` (arm of `smoke-execprobe`), `smoke-forkexec-reset-control` (arm of `smoke-forkexec`); `make smoke-forkexec` must go red under it |
 | `EXEC_ROOT_CSPACE=1` | Keeps every capability across the exec but re-mints each as a root: fresh serial, no badge. | `smoke-execprobe-root-control` (arm of `smoke-execprobe`), `smoke-forkexec-root-control` (arm of `smoke-forkexec`); `make smoke-forkexec` must go red under it |
@@ -556,7 +557,7 @@ of the most important:
 
 | Target | Asserts |
 |---|---|
-| `smoke-captest` | Unheld capabilities, post-revoke use, and bad input are all refused (203 checks, printed by the suite as `CAPTEST: PASS <n> checks`) |
+| `smoke-captest` | Unheld capabilities, post-revoke use, and bad input are all refused (212 checks, printed by the suite as `CAPTEST: PASS <n> checks`) |
 | `smoke-wx` | No kernel page is both writable and executable |
 | `smoke-modules-tamper` | A corrupted boot module is refused |
 | `smoke-tpm-seal` | A changed PCR leaves the volume locked |

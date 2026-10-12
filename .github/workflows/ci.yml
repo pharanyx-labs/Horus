@@ -1431,6 +1431,11 @@ jobs:
       # it unusable.
       - name: "Control arm: a hashed revocation record makes an unrelated live capability unusable"
         run: make smoke-captest-hashed-revoke-control
+      # LIMITATIONS 1.29 / S133. SYS_CAP_GRANT copied a pipe end into a child
+      # without counting it, so the granter's close freed the pipe under the
+      # child. captest 16c grants one to a forked child and must see it accepted.
+      - name: "Control arm: a pipe end granted to a child is accepted, uncounted"
+        run: make smoke-captest-pipe-grant-control
       # Roadmap 2.7 / S43. The four device syscalls have NO dispatch-table slot:
       # the lookup moved into the handler when a device capability started naming
       # a device, so this file is the whole gate. An arm that only bypasses the

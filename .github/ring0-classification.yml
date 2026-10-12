@@ -524,7 +524,12 @@
 # task now in the slot, and capability.c encodes the reply's client as (slot,
 # generation). Identity checks on the IPC path cannot leave the core. Measured
 # after #551 and #553 merged, which is when the sum crossed the old figure.
-core_budget_loc: 11444
+# 2026-10-12: 11444 -> 11456, +12, LIMITATIONS 1.29 (S133): capability.c splits
+# cap_grant_into into the kernel's grant and SYS_CAP_GRANT's cap_grant_from_user
+# over one locked body, and pins CAP_PIPE against the Rust core. The refusal
+# itself is in rust/src/capability.rs; the split has to sit where cap_lock is
+# taken, so that the type is read under the lock that covers the copy.
+core_budget_loc: 11456
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

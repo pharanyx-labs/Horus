@@ -217,10 +217,15 @@ reserved `0xC0DE****` serial tag and are not revocable.
   src->rights`.
 - **`cap_transfer(dest, src)`** does the same, keeping the source's rights.
 - **`cap_grant_into(target, dest, src, rights)`** derives into another task's cspace, authorised
-  by a `CAP_TCB` naming that task.
+  by a `CAP_TCB` naming that task. `SYS_CAP_GRANT` reaches it as `cap_grant_from_user`.
 - **`cap_clone_cspace`** gives a forked child a derived copy of every capability its parent holds
   (S41), and `pipe_count_forked_ends` then counts each pipe end the child holds, since a pipe is
   freed when no counted end is left.
+
+A pipe end's holders are counted in the pipe table, not in the capability, so only the kernel's
+own copies (creating the pipe, a fork, the stdio wiring at spawn) may make one, and each counts
+the end it makes. Ring 3 cannot copy a pipe end: `cap_grant_from_user` and `cap_mint` (and so
+`cap_transfer`) refuse one by type in the Rust core (S133).
 
 Every write to a capability slot takes `cap_lock` and goes through the accounted cap-write path
 (S94): `tools/check_cap_writes.py` holds the list of writers, declared in

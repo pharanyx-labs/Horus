@@ -623,7 +623,7 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 1.25 | [HORUS-20261009-01] | A wait could return while its child still read alive, and a waiter could miss its child's death (S125) | 2026-10-09, #528 |
 | 1.27 | [HORUS-20261012-01] | Changing your own password re-sealed the key slot of the boot's first login (S75) | 2026-10-12, #552 |
 | 1.28 | [HORUS-20261012-02] | A crafted program header offset wrapped the spawn path's premap bound (S84) | 2026-10-12, #551 |
-| 1.29 | [HORUS-20261012-03] | A forked or granted pipe end was not counted, so the pipe could be freed under its holder (S41, S133) | 2026-10-12, #553, #PRNUM |
+| 1.29 | [HORUS-20261012-03] | A forked or granted pipe end was not counted, so the pipe could be freed under its holder (S41, S133) | 2026-10-12, #553, #555 |
 | 1.32 | [HORUS-20261012-06] | A reply, and the sender identity a server authorises on, named a task slot, so a dead client's successor could receive both (S13, S13b) | 2026-10-12, #554 |
 | 2.0 | [C-3] | Spinlock interrupt state was global | 2026-08-13, #135 |
 | 2.1 | [I-2] | Heap syscalls truncated 64-bit arithmetic | 2026-08-13, #145 |

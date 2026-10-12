@@ -2402,6 +2402,12 @@ jobs:
         run: make smoke-proc-stale-sender-control
       - name: Control arm, a reply to a dead client completes its slot successor's call
         run: make smoke-proc-stale-reply-control
+      # LIMITATIONS 1.28. The premap span was sized by a C parse of the program
+      # headers, before any validator, with a 32-bit bound that an e_phoff of
+      # 2^32 - 16 wraps; the arm puts it back and must see the supervisor fault
+      # at the staging buffer plus that offset.
+      - name: Control arm, a wrapped program header offset is read 4 GiB past the staging buffer
+        run: make smoke-proc-phoff-wrap-control
       # HORUS-20260920-02 (S98). create_task leaves a reused slot's wait record
       # in place, and the probe spawned into a waiter's old slot must find it.
       - name: Control arm, a reused task slot must not inherit the previous wait record

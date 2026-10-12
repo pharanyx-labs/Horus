@@ -47,7 +47,7 @@ gates that match kernel strings are moving to COM3, which only the kernel can wr
 ## The integration gates
 
 
-There are 498 `smoke-*` targets: 222 gates and 276 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Four gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
+There are 499 `smoke-*` targets: 222 gates and 277 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Four gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
 
 
 ### Capabilities and authorisation
@@ -145,7 +145,7 @@ There are 498 `smoke-*` targets: 222 gates and 276 control arms. Each row is a g
 | `smoke-kfault-record` | A task's exit record carries no kernel address | S97 | `smoke-kfault-record-control` |
 | `smoke-notify` | A notification wakes a blocked waiter with the accumulated badge |  |  |
 | `smoke-pipe` | Bounded pipes with back-pressure, EOF and EPIPE |  | `smoke-pipe-cspace-order-control` |
-| `smoke-proc` | Spawn, wait, kill and signals, and the `CAP_TCB` authority behind each: a wait or kill needs a capability naming that task | S13, S13b, S32, S57, S80, S84, S98, S99, S100 | `smoke-proc-exit-record-control`, `smoke-proc-overreach-control`, `smoke-proc-spawn-decoy-control`, `smoke-proc-stale-reply-control`, `smoke-proc-stale-sender-control`, `smoke-proc-taskinfo-control`, `smoke-proc-tcb-reuse-control`, `smoke-proc-truncated-image-control`, `smoke-proc-wait-control` |
+| `smoke-proc` | Spawn, wait, kill and signals, and the `CAP_TCB` authority behind each: a wait or kill needs a capability naming that task | S13, S13b, S32, S57, S80, S84, S98, S99, S100 | `smoke-proc-exit-record-control`, `smoke-proc-overreach-control`, `smoke-proc-phoff-wrap-control`, `smoke-proc-spawn-decoy-control`, `smoke-proc-stale-reply-control`, `smoke-proc-stale-sender-control`, `smoke-proc-taskinfo-control`, `smoke-proc-tcb-reuse-control`, `smoke-proc-truncated-image-control`, `smoke-proc-wait-control` |
 | `smoke-recvblock` | A server waiting in a blocking receive makes one receive per message, so it slept rather than polled |  |  |
 | `smoke-recvblock-smp` | The same across CPUs |  |  |
 | `smoke-signal` | A ring-3 fault reaches a registered handler | S80 |  |

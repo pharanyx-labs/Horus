@@ -229,6 +229,12 @@ window.HORUS_SEARCH = [
 "k": 3
 },
 {
+"t": "1.27Findings from a source review",
+"p": "Limitations",
+"u": "limitations.html#source-review-findings",
+"k": 3
+},
+{
 "t": "1.6The console is the one ambient authority",
 "p": "Limitations",
 "u": "limitations.html#1-6the-console-is-the-one-ambient-authority",

@@ -742,6 +742,9 @@ static int elf_apply_relocations_x86_64(const uint8_t *st, const uint8_t *ph,
     return 0;
 }
 
+#ifdef ELF_SPAN_C_PARSE
+/* CONTROL ARM, never ship (smoke-proc-phoff-wrap-control): the C parse this
+ * function used until 2026-10-12, unchanged, with its 32-bit bound. */
 /* Read a little-endian 8-byte ELF64 field. */
 static inline uint64_t elf64_rd(const uint8_t *p) {
     uint64_t v = 0;
@@ -766,26 +769,7 @@ static inline int elf64_narrow(const uint8_t *p, uint32_t *out) {
     return 0;
 }
 
-/* Pages the currently-armed staged image will occupy once loaded.
- *
- * create_user_pagedir premaps the image window before the loader runs, and
- * try_elf_load writes every PT_LOAD segment with copy_to_user, which requires
- * the target pages already present (it walks the tables, it does not fault a
- * page in). So the premap must cover the image's whole loaded span, or a load
- * larger than the premap fails on the first unmapped page. This returns that
- * span in pages: max(p_vaddr + p_memsz) - page_floor(min_vaddr), rounded up.
- *
- * It mirrors the PT_LOAD extent walk in try_elf_load below, but only to *size*
- * the premap. try_elf_load re-parses and is the authoritative, fail-closed
- * validator; an over-estimate here just premaps a few unused pages, and an
- * under-estimate makes that one load fail closed rather than run under-mapped —
- * neither is a safety problem. The result is independent of the ASLR load base
- * (the slide cancels: dest_va - load_base == p_vaddr - page_floor(min_vaddr)).
- * Clamped to USER_IMAGE_MAX_PAGES so a crafted header claiming a huge p_memsz
- * cannot ask the premap to allocate the whole physical pool. On anything this
- * cannot parse it returns a safe value (the default, or the clamp) and lets
- * try_elf_load do the real rejection. */
-uint32_t staged_image_span_pages(void) {
+static uint32_t staged_image_span_pages_c_parse(void) {
     const uint8_t *st = loader_staging;
     uint32_t size = armed_hdr.size;
 
@@ -843,6 +827,78 @@ uint32_t staged_image_span_pages(void) {
     if (pages < 1) pages = 1;
     if (pages > USER_IMAGE_MAX_PAGES) pages = USER_IMAGE_MAX_PAGES;
     return (uint32_t)pages;
+}
+#endif
+
+/* Pages the currently-armed staged image will occupy once loaded at `load_base`.
+ *
+ * create_user_pagedir premaps the image window before the loader runs, and
+ * try_elf_load writes every PT_LOAD segment with copy_to_user, which requires
+ * the target pages already present (it walks the tables, it does not fault a
+ * page in). So the premap must cover the image's whole loaded span, or a load
+ * larger than the premap fails on the first unmapped page. This returns that
+ * span in pages: max(dest_va + mem_sz) - page_floor(min dest_va), rounded up,
+ * clamped to USER_IMAGE_MAX_PAGES so a crafted header claiming a huge p_memsz
+ * cannot ask the premap to allocate the whole physical pool.
+ *
+ * THE SPAN COMES FROM THE VALIDATED LOAD PLAN, NOT FROM A PARSE OF ITS OWN
+ * (LIMITATIONS 1.28, 2026-10-12). This runs on the spawn path before
+ * try_elf_load, under the spawn lock and inside an impersonation, on an image
+ * any task holding CAP_UNTYPED supplies. It used to read the program headers
+ * itself, in C, bounded by `e_phoff + 64 > staged_bytes()` in 32 bits: an
+ * e_phoff of 2^32 - 16 wrapped the sum to 48, passed, and the headers were read
+ * 4 GiB past the staging buffer, a supervisor page fault that killed the caller
+ * with the spawn lock held (measured: PAGE FAULT at 0xffffff8180fffff0). The
+ * bound also covered 64 bytes where eight headers of 56 are read. Every other
+ * parse of the image is the Rust validators', bounded by staged_bytes() with
+ * checked arithmetic (S84, S111); this was the one left in C. Now it asks the
+ * same two validators try_elf_load asks, with the same load_base, so there is
+ * no C parse of the headers to get wrong, and the span is the one the load
+ * will use.
+ *
+ * An image the validators refuse gets the default premap: try_elf_load refuses
+ * it again, authoritatively, and the spawn fails closed. Neither an over- nor
+ * an under-estimate here is a safety problem, only a parse that reads where it
+ * should not.
+ *
+ * ELF_SPAN_C_PARSE=1 restores the C parse with its 32-bit bound: the control
+ * arm for make smoke-proc (smoke-proc-phoff-wrap-control). */
+uint32_t staged_image_span_pages(uint64_t load_base) {
+#ifdef ELF_SPAN_C_PARSE
+    (void)load_base;
+    return staged_image_span_pages_c_parse();
+#else
+    const uint8_t *st = loader_staging;
+    uint32_t n = staged_bytes();
+
+    /* Flat (non-ELF) self-test payload: the whole staged blob is the image. */
+    int is_elf = (n >= 5 && st[0] == 0x7f && st[1] == 'E' &&
+                  st[2] == 'L' && st[3] == 'F');
+    if (!is_elf) {
+        uint32_t pages = (n + 0xFFFu) / 0x1000u;
+        if (pages == 0) pages = 1;
+        if (pages > USER_IMAGE_MAX_PAGES) pages = USER_IMAGE_MAX_PAGES;
+        return pages;
+    }
+
+    struct elf_header_info hdr;
+    if (rust_elf_validate_header(st, n, &hdr) != 0) return USER_ASPACE_PREMAP_PAGES;
+    struct elf_load_plan plan;
+    if (rust_elf_build_load_plan(st, n, hdr.ei_class, hdr.e_phoff, hdr.e_phnum,
+                                 load_base, USER_AREA_BASE, USER_MAX_VADDR, &plan) != 0)
+        return USER_ASPACE_PREMAP_PAGES;
+    if (plan.nseg == 0 || plan.nseg > 8) return USER_ASPACE_PREMAP_PAGES;
+
+    uint64_t min_va = plan.segs[0].dest_va;
+    for (uint32_t i = 1; i < plan.nseg; i++)
+        if (plan.segs[i].dest_va < min_va) min_va = plan.segs[i].dest_va;
+    min_va &= ~(uint64_t)0xFFFu;
+    if (plan.max_va_end <= min_va) return 1;
+
+    uint64_t pages = (plan.max_va_end - min_va + 0xFFFu) / 0x1000u;
+    if (pages > USER_IMAGE_MAX_PAGES) pages = USER_IMAGE_MAX_PAGES;
+    return (uint32_t)pages;
+#endif
 }
 
 /* FFI layout contract for struct elf_header_info (mirror of Rust ElfHeaderInfo

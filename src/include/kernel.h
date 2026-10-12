@@ -854,6 +854,9 @@ int  pipe_read(int idx, uint8_t *dst, uint32_t len);
 int  pipe_write(int idx, const uint8_t *src, uint32_t len);
 /* Close every CAP_PIPE end in a dying task's cspace (task_teardown). */
 void pipe_close_task_ends(int task_id);
+/* Count every pipe end in a just-forked child's cspace, which cap_clone_cspace
+ * copied without counting. Fork only: called twice it counts twice. */
+void pipe_count_forked_ends(int child);
 #ifdef PIPE_SELFTEST
 void pipe_selftest(void);                 /* in-kernel pipe mechanics exercise (smoke-pipe) */
 void pipe_task_teardown_selftest(void);   /* its phase 2: a stage that dies holding an end */

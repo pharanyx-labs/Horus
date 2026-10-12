@@ -3997,6 +3997,10 @@ jobs:
       # working. Finding 3.3's shape applied to a whole cspace at once.
       - name: Control arm — a forked capability must be derived from its parent's
         run: make smoke-fork-cspace-orphan-control
+      # LIMITATIONS 1.29. The child's copies of its parent's pipe ends were not
+      # counted, so the parent's close freed the pipe under the child.
+      - name: Control arm, a forked child's pipe ends are not counted
+        run: make smoke-fork-pipe-control
 
   forkexec:
     name: "An exec replaces the image, not the authority"

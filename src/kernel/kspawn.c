@@ -865,6 +865,13 @@ void h_fork(struct interrupt_frame64 *r) {
      * kept here so the two halves of "who may reach whom" read together. */
     grant_child_tcb_cap(parent, child);
 
+    /* The pipe ends the clone copied are holders like any other, and a pipe is
+     * freed when its count of holders reaches zero (LIMITATIONS 1.29). Before
+     * the child can run, so it can close nothing first. */
+#ifndef FORK_PIPE_UNCOUNTED
+    pipe_count_forked_ends(child);
+#endif
+
     /* The child resumes from the same instruction as the parent, on its own copy
      * of the same user stack, with rax = 0. `r` IS the parent's live trap frame
      * at the top of the parent's kernel stack; the child's copy goes to the top

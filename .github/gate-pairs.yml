@@ -121,6 +121,7 @@ control_arms:
   smoke-execprobe-root-control: smoke-execprobe
   smoke-proc-truncated-image-control: smoke-proc
   smoke-proc-overreach-control: smoke-proc
+  smoke-proc-phoff-wrap-control: smoke-proc
   smoke-readdir-end-control: smoke-readdir-end
   smoke-installer-panel-control: smoke-installer-panel
   smoke-installer-panel-login-control: smoke-installer-panel

@@ -1193,8 +1193,19 @@ static void serial_init(void) {
 
 /* Program PIT channel 0 for a fixed periodic tick so the preemptive scheduler
  * has a deterministic quantum instead of the undefined power-on reload value.
- * 1193182 Hz / 11932 ~= 100 Hz => a 10 ms time slice. Mode 3 (square wave),
+ * 1193182 Hz / 11931 ~= 100 Hz => a 10 ms time slice. Mode 2 (rate generator),
  * lobyte/hibyte access.
+ *
+ * MODE 2, NOT MODE 3. Both give one rising edge per period on real hardware, and
+ * mode 3 (square wave) is what this used until 2026-10-12. Under QEMU's TCG
+ * emulator, mode 3 on the edge-triggered I/O APIC pin delivered vector 32 twice
+ * per period: QEMU raises the line twice for each transition and its I/O APIC
+ * does no edge detection, so both arrive. The tick ran at 200 Hz, every clock
+ * reading through SYS_CLOCK_GETTIME was double, and login.conf's failure_delay
+ * waited half as long as it said (docs/LIMITATIONS.md 2.27, closed). Measured on
+ * a probe build against the host's clock: mode 3, 2.00x on pc, on pc with no
+ * HPET and on q35; mode 2, 1.00x. Mode 2 is what Linux uses for a periodic PIT.
+ * PIT_SQUARE_WAVE=1 puts mode 3 back for smoke-etc-config-clock-control.
  *
  * PIT_TICK_HZ moved to src/include/kernel.h on 2026-08-24: SYS_CLOCK_GETTIME
  * converts the tick count to seconds with it, so a local #define here would be
@@ -1203,7 +1214,11 @@ static void serial_init(void) {
 void pit_init(void) {
     uint32_t divisor = 1193182u / PIT_TICK_HZ;
     if (divisor > 0xFFFF) divisor = 0xFFFF;
-    outb(0x43, 0x36);                         /* ch0, lo/hi, mode 3, binary */
+#ifdef PIT_SQUARE_WAVE
+    outb(0x43, 0x36);                         /* DEFECT: ch0, lo/hi, mode 3, binary */
+#else
+    outb(0x43, 0x34);                         /* ch0, lo/hi, mode 2, binary */
+#endif
     outb(0x40, (uint8_t)(divisor & 0xFF));
     outb(0x40, (uint8_t)((divisor >> 8) & 0xFF));
 }

@@ -406,14 +406,6 @@ overall are not touched at all. Until 2026-10-11 the shell described it as re-en
 under a fresh key and `docs/SYSCALLS.md` as rotating the audit chain's keys; both now say what it
 does. Rebuilding it as a real rotation of the volume key, or withdrawing it, is a decision for the
 maintainer.
-### 2.27 The monotonic clock ran at twice wall-clock speed under emulation
-
-`SYS_CLOCK_GETTIME` counts the 100 Hz PIT tick. Under QEMU's TCG emulator, on one CPU, a
-`failure_delay` of 10 seconds by that clock took 5.0 seconds of the host's (2026-10-11,
-`tools/etc_config_session.py`). The local APIC timers use vector 0x40, not the tick's 32, and the
-8259 is masked once the I/O APIC routes interrupts, so neither double count is the obvious cause.
-Not yet measured under KVM or on hardware. Until it is, every wait measured by this clock, such as
-`login.conf`'s `failure_delay`, may be half as long in real time.
 
 ---
 
@@ -467,6 +459,16 @@ replaces this is [`design/scheduler.md`](design/scheduler.md) (ROADMAP 1.8).
 `SYS_CLOCK_GETTIME` gives monotonic time since boot at 10 ms resolution, deliberately (S34). There
 is no wall clock, no per-task timer, no timeout on IPC, and no libc `clock_gettime`. A blocked task
 waits until it is woken or killed. The PIT runs at a fixed 100 Hz.
+
+### 3.6 `fs_server` polls while the volume is sealed
+
+Until a volume unlocks (the whole of an install, and an installed machine's login prompt until the
+first login), `fs_server` cannot block for requests: it would not notice the unlock until the next
+request arrived. It polls instead, yielding the CPU on every pass, so it gives way at once to any
+task that has work but stays runnable itself and keeps an otherwise idle CPU busy. Until 2026-10-12
+it waited by spinning, which held each time slice to its end and, on one CPU at a true 100 Hz
+tick, made the installer drop keystrokes. Waking it on the unlock instead of polling would end
+this.
 
 ---
 
@@ -676,6 +678,7 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 2.19 | | The end of a directory and its absence were the same answer | 2026-09-06, #318 |
 | 2.23 | [A3] | Revoking one capability could make an unrelated live one unusable: revocations were also recorded in a 4096-cell hashed table (S5) | 2026-10-11, #540 |
 | 2.24 | | Capability serials repeated: the 32-bit counter wrapped after about 4.3 billion mints, passing through the primordial range, and a reused task slot reissued its birth serials (S5) | 2026-10-11, #540 |
+| 2.27 | | The monotonic clock ran at twice wall-clock speed under QEMU's TCG, so `failure_delay` waited half as long: the timer tick, in mode 3, was delivered twice per period | 2026-10-12, #549 |
 | 3.2 | [I-6] | `this_cpu()` read LAPIC MMIO on every call | 2026-07-31, #116 |
 | 3.5 | | The block allocator rescanned the bitmap from the start | 2026-09-01, #277 |
 | 5.2 | [C-6] | Which checks gate a merge was reconciled by hand | 2026-09-21, #415 |

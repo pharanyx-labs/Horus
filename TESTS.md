@@ -337,7 +337,7 @@ conformance suite and the boot-modules session) and compares that with
 
 Capability conformance (212 checks in `userspace/captest.c`, which prints its own count) is the widest single suite, and it is still only a refusal suite.
 
-Currently **94 of 103** implemented syscalls are covered (`SECURITY.md` S25; `docs/LIMITATIONS.md` 1.8 lists what the rest would cost).
+Currently **95 of 103** implemented syscalls are covered (`SECURITY.md` S25; `docs/LIMITATIONS.md` 1.8 lists what the rest would cost).
 
 ## CI
 

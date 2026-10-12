@@ -405,6 +405,10 @@ covered:
   - SYS_CAP_MINT_TOKEN
   - SYS_IPC_INVOKER
 
+  # captest 16c (2026-10-12, LIMITATIONS 1.29) forks a child it supervises, to
+  # have a live target for SYS_CAP_GRANT; the parent carries on with its checks.
+  - SYS_FORK                 # captest 16c forks a grant target
+
 uncovered:
   # Twelve left, in four groups: three from the 2026-08-30 sweep, and a fourth of
   # syscalls added on 2026-09-25 that only their own witness calls yet. The
@@ -460,7 +464,9 @@ uncovered:
   # in their handlers -- fork on CAP_UNTYPED (S57), exec_named self-only,
   # replacing the caller's own image and creating no task. SYS_EXEC_IMAGE was the
   # third here until 2026-09-09, when execprobe covered it -- see the covered
-  # list. What made that possible where "a suite that execs itself away has no
+  # list. SYS_FORK left on 2026-10-12: captest 16c forks a child so that it has
+  # a supervised task to grant a pipe end into, so the fork is the probe's
+  # setup rather than its subject, and captest survives it. What made that possible where "a suite that execs itself away has no
   # section 14" said it was not: the SUCCESSOR image is the second half of the
   # probe, so the checks run AFTER the exec, in the image it entered.
   #
@@ -470,8 +476,6 @@ uncovered:
   # it correctly described as ungated sat under the same sentence and were read
   # as covered by the same claim. A fact recorded here gates nothing --
   # tools/check_dispatch_gates.py is what fails the build now.
-  SYS_FORK: >-
-    MEASURED 2026-08-28: not entered by the tracked workloads -- nothing in a tracked image forks, because fork's only client so far is its own witness. Entered by FORK_SELFTEST, which is its gate (make smoke-fork, plus four control arms). A captest probe would pass the slot-3 check and then actually fork captest
   SYS_EXEC_NAMED: >-
     MEASURED 2026-08-20: entered by a PROC_SELFTEST=1 boot, which is not a tracked arm. Also gated by make smoke-forkexec since 2026-08-28 (S42). A probe would replace captest's image
   # (3) SC_NONE, AND STILL NOT PROBEABLE. The sweep of 2026-08-30 promoted twelve

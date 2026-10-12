@@ -16,6 +16,7 @@ _Static_assert(__builtin_offsetof(capability_t, serial)     == 24, "cap.serial o
 _Static_assert(__builtin_offsetof(capability_t, token)      == 32, "cap.token offset");
 _Static_assert(sizeof(capability_t) == 40, "capability_t size (matches Rust)");
 _Static_assert(CAP_ENDPOINT == 3, "CAP_ENDPOINT must match rust/src/capability.rs");
+_Static_assert(CAP_PIPE == 13, "CAP_PIPE must match rust/src/capability.rs");
 _Static_assert(CAP_RIGHT_READ == (1u << 0), "the token-stripped right must match rust/src/capability.rs");
 _Static_assert(CAP_NULL == 0, "CAP_NULL must be 0 (matches Rust)");
 
@@ -1304,7 +1305,8 @@ bool cap_move(uint32_t dest_slot, uint32_t src_slot) {
  *
  * Returns false on a missing/invalid source, an out-of-range slot, a missing
  * cspace, or when the target is at its capability ceiling. */
-bool cap_grant_into(int target_pid, uint32_t dest_slot, uint32_t src_slot, uint32_t new_rights) {
+static bool cap_grant_common(int target_pid, uint32_t dest_slot, uint32_t src_slot,
+                             uint32_t new_rights, bool from_user) {
     if (target_pid <= 0 || target_pid >= g_max_tasks) return false;
     if (src_slot >= CNODE_SIZE || dest_slot >= CNODE_SIZE) return false;
 
@@ -1330,11 +1332,41 @@ bool cap_grant_into(int target_pid, uint32_t dest_slot, uint32_t src_slot, uint3
         return false;
     }
 
+    /* The type of the source is read here, under the same cap_lock as the copy,
+     * so a supervisor replacing the caller's slot on another CPU cannot slip a
+     * pipe end in between a check and the write. */
+#ifdef PIPE_GRANT_UNREFUSED
+    (void)from_user;
     bool ok = rust_cap_grant_into(src, dst_cspace, dst_sz, dest_slot, new_rights,
                                   &cap_next_serial);
+#else
+    bool ok = from_user
+        ? rust_cap_grant_from_user(src, dst_cspace, dst_sz, dest_slot, new_rights,
+                                   &cap_next_serial)
+        : rust_cap_grant_into(src, dst_cspace, dst_sz, dest_slot, new_rights,
+                              &cap_next_serial);
+#endif
     if (ok && was_null) tasks[target_pid].caps_in_use++;
     spin_unlock(&cap_lock);
     return ok;
+}
+
+/* The kernel's own delegations: the libc pages and console endpoint at spawn, a
+ * driver's peer endpoint, the pipe teardown self-test. Any type, pipe ends
+ * included; a caller that copies a pipe end counts it. */
+bool cap_grant_into(int target_pid, uint32_t dest_slot, uint32_t src_slot, uint32_t new_rights) {
+    return cap_grant_common(target_pid, dest_slot, src_slot, new_rights, false);
+}
+
+/* SYS_CAP_GRANT. Refuses a pipe end (LIMITATIONS 1.29): the pipe's end counts
+ * live in the pipe table, a ring-3 copy would be an end they never saw, and the
+ * pipe would be freed under it when the granting task closed its own. Refused by
+ * type in the Rust core rather than counted here, by the maintainer's choice of
+ * 2026-10-12, since nothing in the tree grants a pipe end.
+ * PIPE_GRANT_UNREFUSED=1 puts the old copy back for the control arm
+ * (smoke-captest-pipe-grant-control). */
+bool cap_grant_from_user(int target_pid, uint32_t dest_slot, uint32_t src_slot, uint32_t new_rights) {
+    return cap_grant_common(target_pid, dest_slot, src_slot, new_rights, true);
 }
 
 /* ---- FORK: DUPLICATE A CSPACE AS DERIVED CAPABILITIES (roadmap 2.3) -------

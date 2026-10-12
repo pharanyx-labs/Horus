@@ -154,20 +154,6 @@ also records that slot as B's own `keyslot`, so an administrator later changing 
 removes A's slot. Found by a static source review dated 2026-09-26; confirmed by reading the code
 on 2026-10-12, not yet reproduced.
 
-### 1.29 A granted pipe end is not counted **[HORUS-20261012-03]**
-
-A pipe is freed and scrubbed when its count of reader and writer ends reaches zero, so every copy
-of a `CAP_PIPE` must be counted. `fork` counts the ends it copies into the child
-(`pipe_count_forked_ends`, #553), and the spawn path's stdio wiring counts the one end it hands a
-child. `SYS_CAP_GRANT` needs only possession of its source, accepts a capability of any type, and
-still copies a `CAP_PIPE` into a supervised child without counting it, so the pipe counts one
-holder where there are two. When the granting task closes its end the pipe is freed while the
-child still names its index, and the next `pipe_alloc` to reuse that index joins the child to an
-unrelated pair of tasks. `SYS_CAP_MINT` and `SYS_CAP_TRANSFER` (and so `SYS_CAP_MOVE`) need the
-source to carry `CAP_RIGHT_MINT`, which no pipe end in the shipped kernel is given, so they refuse
-one. No program in the tree grants a pipe end. Confirmed by reading the code on 2026-10-12; the
-`fork` half was reproduced and fixed in #553, the grant half is not yet reproduced.
-
 ### 1.30 The inode table and allocation bitmaps are not authenticated at rest **[HORUS-20261012-04]**
 
 On an encrypted volume every data block is sealed with an AEAD bound to its inode and block
@@ -657,6 +643,7 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 1.22 | [HORUS-20261008-01] | Any user could free any inode, `/bin` included, through a directory entry forged in a file they own (S113) | 2026-10-08, #502 |
 | 1.25 | [HORUS-20261009-01] | A wait could return while its child still read alive, and a waiter could miss its child's death (S125) | 2026-10-09, #528 |
 | 1.28 | [HORUS-20261012-02] | A crafted program header offset wrapped the spawn path's premap bound (S84) | 2026-10-12, #551 |
+| 1.29 | [HORUS-20261012-03] | A forked or granted pipe end was not counted, so the pipe could be freed under its holder (S41, S133) | 2026-10-12, #553, #PRNUM |
 | 2.0 | [C-3] | Spinlock interrupt state was global | 2026-08-13, #135 |
 | 2.1 | [I-2] | Heap syscalls truncated 64-bit arithmetic | 2026-08-13, #145 |
 | 2.2 | [I-5] | Endpoints were single-slot mailboxes | 2026-08-10, #120 |

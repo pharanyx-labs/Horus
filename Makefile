@@ -106,7 +106,7 @@ DEFECT_FLAGS = \
 	FRAME_INDEX_UNCHECKED FRAME_RIGHTS_UNCHECKED FRAME_REGION_NO_ROLLBACK FRAME_REGION_ROLLBACK_WIDE \
 	FRAME_PAGES_SAME_PHYS FRAME_INFO_BY_INDEX COW_ARENA_UNGUARDED RAMFS_SLOT3_GATE \
 	FORK_SHARE_WRITABLE FORK_ARENA_UNCHECKED \
-	FORK_CSPACE_FLAT_COPY FORK_CSPACE_ORPHAN_COPY FORK_PIPE_UNCOUNTED \
+	FORK_CSPACE_FLAT_COPY FORK_CSPACE_ORPHAN_COPY FORK_PIPE_UNCOUNTED PIPE_GRANT_UNREFUSED \
 	EXEC_RESET_CSPACE EXEC_ROOT_CSPACE \
 	FPU_NO_SAVE FPU_NO_RESTORE \
 	VFS_FIRST_MATCH VFS_MOUNT_UNGATED \
@@ -3227,6 +3227,17 @@ FORK_PIPE_UNCOUNTED ?= 0
 ifeq ($(FORK_PIPE_UNCOUNTED),1)
 CFLAGS  += -DFORK_PIPE_UNCOUNTED
 ASFLAGS += -DFORK_PIPE_UNCOUNTED
+endif
+
+# PIPE_GRANT_UNREFUSED=1 restores the pre-2026-10-12 SYS_CAP_GRANT, which copied a
+# pipe end into a supervised child like any other capability and counted none of
+# them, so the granter's close freed the pipe under the child (LIMITATIONS 1.29).
+# captest 16c must then see its grant of a pipe end succeed. Arm for make
+# smoke-captest (smoke-captest-pipe-grant-control).
+PIPE_GRANT_UNREFUSED ?= 0
+ifeq ($(PIPE_GRANT_UNREFUSED),1)
+CFLAGS  += -DPIPE_GRANT_UNREFUSED
+ASFLAGS += -DPIPE_GRANT_UNREFUSED
 endif
 
 # EXEC_RESET_CSPACE=1 makes SYS_EXEC_NAMED / SYS_EXEC_IMAGE discard every
@@ -7161,6 +7172,18 @@ smoke-captest-hashed-revoke-control:
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 REVOKE_HASHED_BACKSTOP=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='CAPTEST: FAIL unrelated-revoke-invalidated-' \
+		tools/smoke_test.sh horus.iso
+
+# CONTROL ARM for LIMITATIONS 1.29: SYS_CAP_GRANT copies a pipe end again.
+# captest 16c forks a child it supervises and grants it a pipe end, and must
+# report that the grant was accepted.
+.PHONY: smoke-captest-pipe-grant-control
+smoke-captest-pipe-grant-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 PIPE_GRANT_UNREFUSED=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 PIPE_GRANT_UNREFUSED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CAPTEST: FAIL pipe-end-granted-to-a-child' \
 		tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-captest-capenum-control

@@ -1068,8 +1068,9 @@ static void h_cap_grant_locked(struct interrupt_frame64 *r) {
     /* The source must be a live capability the caller actually holds (checked
      * again authoritatively under cap_lock inside cap_grant_into; this gives the
      * caller a specific NOENT for a missing source). */
-    /* CAP_ANYTYPE: a grant may delegate a capability of ANY type, so the source
-     * slot's type is not a gate here -- only that it is occupied. */
+    /* CAP_ANYTYPE: the source slot's type is not a gate HERE, only that it is
+     * occupied. The one type a grant refuses, a pipe end (LIMITATIONS 1.29), is
+     * refused inside cap_grant_from_user, under the lock that covers the copy. */
     struct capability *src = cap_lookup(src_slot, CAP_ANYTYPE, 0);
     if (!src || src->type == CAP_NULL) {
         r->rax = (uint32_t)SYS_ERR_NOENT; return;
@@ -1083,7 +1084,7 @@ static void h_cap_grant_locked(struct interrupt_frame64 *r) {
      * CAP_RIGHT_ALL to preserve the 3-argument SYS_CAP_GRANT ABI; cap_grant_into
      * masks them to the source's own rights, so this can still only ever reduce
      * authority, never widen it. */
-    if (!cap_grant_into(target, dest_slot, src_slot, CAP_RIGHT_ALL)) {
+    if (!cap_grant_from_user(target, dest_slot, src_slot, CAP_RIGHT_ALL)) {
         audit_log(AUDIT_CAP_TRANSFER, (uint32_t)target, -1, "cap grant failed");
         r->rax = (uint32_t)SYS_ERR_PERM; return;
     }

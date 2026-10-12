@@ -37,6 +37,28 @@ pub const CAP_NULL: u32 = 0;
 /// The capability type the token primitives operate on (`CAP_ENDPOINT` in
 /// `src/include/kernel.h`). Pinned against the C value by the layout check below.
 pub const CAP_ENDPOINT: u32 = 3;
+/// A pipe end (`CAP_PIPE` in `src/include/kernel.h`). Pinned against the C value
+/// by a `_Static_assert` in `src/kernel/capability.c`.
+pub const CAP_PIPE: u32 = 13;
+
+/// May a ring-3 task copy a capability of this type into another slot?
+///
+/// Everything but a pipe end. A pipe is freed and scrubbed when its count of
+/// reader and writer ends falls to zero, and that count lives in the C kernel's
+/// pipe table, not in the capability, so a copy this module made would be an
+/// end the count never saw: when the original holder closed its end the pipe
+/// would be freed under the copy, and the next pipe to reuse the index would be
+/// joined to it (LIMITATIONS 1.29). The kernel's own copies (a fork's, the spawn
+/// path's stdio wiring) count each end they make and do not come through here.
+///
+/// Refusing by type, rather than counting copies made from ring 3 as well, was
+/// the maintainer's choice on 2026-10-12: no program in the tree passes a pipe
+/// end on that way, and an end that can only be had by being created, forked or
+/// wired in at spawn is one whose every holder the pipe table already accounts.
+#[inline]
+const fn copyable_from_ring3(typ: u32) -> bool {
+    typ != CAP_PIPE
+}
 /// The endpoint receive right (`CAP_RIGHT_READ`). A tokened capability never
 /// carries it: a token is a client identity, and a client that could receive
 /// could dequeue its peers' requests (finding C-1).
@@ -323,6 +345,14 @@ pub unsafe extern "C" fn rust_cap_mint(
     if src.serial == 0 {
         return false;
     }
+    // Mint and transfer are only ever asked for from ring 3 (SYS_CAP_MINT,
+    // SYS_CAP_TRANSFER, SYS_CAP_MOVE). The C side already demands
+    // CAP_RIGHT_MINT on the source, which no pipe end is given; this refuses
+    // a pipe end whatever rights it carries, so the rule does not rest on
+    // every installer remembering to leave MINT off.
+    if !copyable_from_ring3(src.typ) {
+        return false;
+    }
 
     let dest = &mut *cspace.add(dest_slot as usize);
 
@@ -444,6 +474,37 @@ pub unsafe extern "C" fn rust_cap_grant_into(
         token: s.token,
     };
     true
+}
+
+/// FFI: `rust_cap_grant_into` for a grant a ring-3 task asked for
+/// (`SYS_CAP_GRANT`), which refuses a source of a type ring 3 may not copy (see
+/// `copyable_from_ring3`): a pipe end. The kernel's own delegations (the libc
+/// pages, the console endpoint at spawn, a driver's peer, fork) call
+/// `rust_cap_grant_into` directly; fork may copy a pipe end through it because
+/// it counts every end it copies (`pipe_count_forked_ends`).
+///
+/// Refuses, and writes nothing, on a pipe end; otherwise exactly
+/// `rust_cap_grant_into`.
+///
+/// # Safety
+/// As `rust_cap_grant_into`: `src` must be null or a valid pointer to a live
+/// `Capability`; `dest_cspace` must be null or point to at least
+/// `dest_cspace_size` `Capability` entries; `next_serial` must be null or a
+/// valid `*mut u64`. Called under `cap_lock`, so the source's type cannot
+/// change between this check and the copy.
+#[no_mangle]
+pub unsafe extern "C" fn rust_cap_grant_from_user(
+    src: *const Capability,
+    dest_cspace: *mut Capability,
+    dest_cspace_size: u32,
+    dest_slot: u32,
+    new_rights: u32,
+    next_serial: *mut u64,
+) -> bool {
+    if src.is_null() || !copyable_from_ring3((*src).typ) {
+        return false;
+    }
+    rust_cap_grant_into(src, dest_cspace, dest_cspace_size, dest_slot, new_rights, next_serial)
 }
 
 /// FFI: mint a TOKENED endpoint capability from an untokened one, within the
@@ -1972,6 +2033,63 @@ mod tests {
         unsafe { nullify(&mut c) };
         assert_eq!(c.token, 0);
         assert_eq!(c.typ, CAP_NULL);
+    }
+
+    /// LIMITATIONS 1.29: ring 3 cannot copy a pipe end. A grant it asked for,
+    /// a mint and a transfer each refuse one and leave the destination as it
+    /// was, whatever rights the end carries (MINT included, which no installer
+    /// gives today). The kernel's own grant, which fork uses and follows with
+    /// a count of every end it copied, still copies one.
+    #[test]
+    fn ring3_cannot_copy_a_pipe_end() {
+        let all = CAP_RIGHT_READ | CAP_RIGHT_MINT | 0x3f;
+        let pipe = cap(CAP_PIPE, all, 4, 0, MIN_DERIVED_SERIAL);
+        let mut next: u64 = MIN_DERIVED_SERIAL + 1;
+
+        let mut dest = [cap(CAP_NULL, 0, 0, 0, 0); 8];
+        assert!(!unsafe {
+            rust_cap_grant_from_user(&pipe, dest.as_mut_ptr(), 8, 5, !0u32, &mut next)
+        });
+        assert_eq!(dest[5].typ, CAP_NULL, "a refused grant wrote the destination");
+        assert_eq!(next, MIN_DERIVED_SERIAL + 1, "a refused grant spent a serial");
+
+        let mut cs = [cap(CAP_NULL, 0, 0, 0, 0); 8];
+        cs[6] = pipe;
+        assert!(!unsafe { rust_cap_mint(cs.as_mut_ptr(), 8, 5, 6, !0u32, &mut next, 0) });
+        assert!(!unsafe { rust_cap_transfer(cs.as_mut_ptr(), 8, 5, 6, &mut next) });
+        assert_eq!(cs[5].typ, CAP_NULL, "a refused mint or transfer wrote the destination");
+
+        // The kernel's path is unchanged: fork counts what it copies.
+        assert!(unsafe { rust_cap_grant_into(&pipe, dest.as_mut_ptr(), 8, 5, !0u32, &mut next) });
+        assert_eq!(dest[5].typ, CAP_PIPE);
+    }
+
+    /// The refusal is by type and only by type: every other live capability a
+    /// ring-3 grant is asked for is delegated exactly as the kernel's grant
+    /// would, a null source is refused, and the C value is the one pinned here.
+    #[test]
+    fn ring3_grant_is_the_kernel_grant_for_every_other_type() {
+        assert_eq!(CAP_PIPE, 13);
+        assert!(!unsafe {
+            rust_cap_grant_from_user(core::ptr::null(), [cap(0, 0, 0, 0, 0); 1].as_mut_ptr(), 1, 0, !0u32, core::ptr::null_mut())
+        });
+        for typ in 1u32..=32 {
+            if typ == CAP_PIPE {
+                continue;
+            }
+            let src = cap(typ, 0x7, 9, 0, MIN_DERIVED_SERIAL);
+            let mut a = [cap(CAP_NULL, 0, 0, 0, 0); 4];
+            let mut b = [cap(CAP_NULL, 0, 0, 0, 0); 4];
+            let (mut na, mut nb) = (MIN_DERIVED_SERIAL + 1, MIN_DERIVED_SERIAL + 1);
+            let ua = unsafe { rust_cap_grant_from_user(&src, a.as_mut_ptr(), 4, 2, 0x5, &mut na) };
+            let ub = unsafe { rust_cap_grant_into(&src, b.as_mut_ptr(), 4, 2, 0x5, &mut nb) };
+            assert!(ua && ub, "type {typ}: a ring-3 grant was refused");
+            assert!(
+                (a[2].typ, a[2].rights, a[2].object, a[2].badge, a[2].serial, a[2].token)
+                    == (b[2].typ, b[2].rights, b[2].object, b[2].badge, b[2].serial, b[2].token),
+                "type {typ}: the two grants differ"
+            );
+        }
     }
 }
 

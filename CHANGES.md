@@ -14,6 +14,18 @@ here.
 
 ## [Unreleased]
 
+## [0.4.0-alpha]: 2026-10-12
+
+**Capabilities that revoke precisely, a filesystem that walks by them, and every finding of a
+source review closed or planned**, and the work since v0.3.0-alpha behind it: 64-bit capability
+serials with the lossy revocation table gone, programs and the shell walking the filesystem by
+capability with a private `/tmp` per session and a truthful `stat`, `chmod`, `chown` and `link`,
+manual pages and a few `/etc` settings that can only tighten, the first steps of the per-CPU
+scheduler, and fixes for a password change that could lock root out, a crafted program header, a
+reply delivered to the wrong task and pipe ends freed under their holders. The roadmap now holds
+only open work, as a route. Install media for x86-64, built for a UK/ISO keyboard, published as
+an alpha for developers.
+
 ### Security
 
 - A task could hand a child it supervises one of its pipe ends with `SYS_CAP_GRANT`, and the copy was not counted, so closing its own end freed the pipe under the child and the next pipe to take its index was reachable through the child's copy. Ring 3 may no longer copy a pipe end at all: `SYS_CAP_GRANT`, `SYS_CAP_MINT`, `SYS_CAP_TRANSFER` and `SYS_CAP_MOVE` refuse one, and the kernel's own copies (a fork's, the stdio wiring at spawn) count every end they make. No program in the tree passed a pipe end that way (LIMITATIONS 1.29, S133). (#555)
@@ -30,29 +42,34 @@ here.
 
 ### Added
 
+- `docs/design/configuration.md`: the rule for what a configuration file may change (only tighten security, or change presentation, read by ring-3 programs and never the kernel), and the plan for the manual pages. (#541)
+- The roadmap holds only open work now, as a route in four waves with the fifteen decisions it waits on listed first, including a plan for every open limitation (new items 5.1 to 5.11); finished items moved to `docs/history/ROADMAP-DONE-2026.md`, so their citations still resolve. LIMITATIONS 2.6c's count of gates reading kernel reports off the shared console is re-derived (55 by a string search, not about twenty), and the scheduler and filesystem designs and the README no longer describe finished steps as to come. LIMITATIONS 2.28 records that the boot's wait for secondary CPUs is bounded by a count of `pause` instructions rather than by time, which counted a late CPU out under KVM in CI. (#556)
 - Two configuration files, `/etc/shell.conf` (the prompt's hostname, the message of the day) and `/etc/login.conf` (a pause after a wrong password), fully commented, written once where none exists and never overwritten. A setting can only tighten security or change presentation; a bad line is ignored with a message naming it, and nothing in either file reaches the kernel (`shell.conf(5)`, `login.conf(5)`). (#546)
 - `ln` and `link()` work through a session's capability within one directory: the file travels as a carried capability, never an inode, and the new name may give no more than the caller already holds on the file, refusing a read-only file a writable name (S132). (#544)
 - A manual page for every shell command, the administrator's commands, `fs.policy(5)` and three overviews, `horus(7)`, `capabilities(7)` and `sh(1)`; `hier(7)` rewritten for the layout as it is. The manual ships as one archive module that `fs_server` unpacks into `/usr/share/man`, refusing the whole archive if any member is not a plain file with a plain name (S116). (#545)
 - `fs_server` walks a whole path below a directory capability in one request and answers with one capability, derived from the one invoked, so a client will hold one capability per open path rather than one per component (filesystem decision 12). Every name is checked before any is looked up, and one that is `.`, `..` or holds `/` in any position refuses the walk (S120). (#529)
 - The POSIX layer walks by capability in a program that holds a root directory capability: every open file, directory stream and working directory holds one capability, minted by one walk from the root or the working directory, and close gives it back. The path is chosen once at start, and such a program never touches the uid path, so a refusal cannot fall back to it. Nothing grants a root until phase 1b step 3, so programs still reach files by the uid path today (S126). (#530)
 - A spawner can hand a child its filesystem as narrowed copies of its own root and working directory (`hvfs_grant_fs`), which the child keeps only while the spawner does; nothing calls it in a shipped boot until the shell walks by capability (S127). (#531)
-- The shell walks by capability when it holds a root directory capability, and hands each program it runs its root and working directory, taking them back when the program ends. Every filesystem request it makes names the object it is about. Nothing gives the shell a root before phase 1b step 3, so sessions still use the uid path (S126, S127).
+- The shell walks by capability when it holds a root directory capability, and hands each program it runs its root and working directory, taking them back when the program ends. Every filesystem request it makes names the object it is about. Nothing gives the shell a root before phase 1b step 3, so sessions still use the uid path (S126, S127). (#532)
 - `fs_server` opens a login's session from the filesystem policy: it compiles the account's grants into a grant set named in one root capability's token, keeps every directory on the way to a grant to lookup and a listing of the names that lead there, answers a withheld name as absent, and gives a granted path exactly its granted rights. A live boot's RAM store uses the compiled-in default, a persistent volume its `/etc/fs.policy`, and without one, or with one that does not parse, the administrator alone. Only init's untokened capability can open a session, and nothing asks for one at login until step 3(b) (S128). New syscall `SYS_FS_STORE_KIND` (122) tells `fs_server` which kind of store it serves; it answers only the holder of the store capability. (#534)
-- Each session gets a private `/tmp`: a directory `fs_server` makes for that session alone, seen by it as `/tmp`, hidden from every other session, the administrator's included, and removed with everything in it when the session ends. The default policy gives it without exec. A crash's leftovers are cleared by the next boot's first session. Nothing asks for a session at login until step 3(b) (S129).
+- Each session gets a private `/tmp`: a directory `fs_server` makes for that session alone, seen by it as `/tmp`, hidden from every other session, the administrator's included, and removed with everything in it when the session ends. The default policy gives it without exec. A crash's leftovers are cleared by the next boot's first session. Nothing asks for a session at login until step 3(b) (S129). (#536)
 - A stat through a session's capability tells the truth: owner bits are the capability's rights and other bits a bound on every other account's grants that can overstate and never understate, each capability's token naming the node of the policy that bounds it; the administrator's grants are not counted (`docs/LIMITATIONS.md` 1.26). A rename onto or off a name the policy names is refused `EXDEV`. A token's generation is now 19 bits (S130). (#538)
 - A chmod or chown through a session's capability succeeds only when it asks for what is already true and stores nothing: `chmod 600` on a file another account also reaches fails and so says the file is shared, a looser mode or a group bit is refused, and `chown` succeeds only to the caller itself (S131). (#543)
 
 ### Changed
 
+- LIMITATIONS 2.23 recorded that revoking one capability could make an unrelated live one unusable, before the fix in this release removed the cause. (#539)
+- The filesystem design says how a session's several grants meet the one root a client holds (decision 13), and how `stat`, `chmod` and `chown` through a capability treat the administrator, files below a grant and a home's `EXEC` bit (decisions 16 to 19). (#533, #537)
 - The scheduler chooses the next task by one rule, `sched_selectable`, where every switch path wrote the rule out for itself: six copies, kept in step by hand. Behaviour is unchanged. (#524)
 - LIMITATIONS 5.3e, a stale scheduler claim seen once in 200 boots under the switch-commit injection, is closed: none in 199 boots that finished the whole workload, 2,344 refused switches between them, pinned and unpinned. (#526)
 - `smoke-switch-commit` watches every switch the process workload refuses, about twelve, where it stopped at the first; it now also fails a boot in which no switch was refused, and says how many it saw. (#522)
 - `smoke-switch-commit` failed under KVM on 3 of its first 7 runs, main among them, when the process workload, which the injection slows by parking a CPU at every exit, stopped short of its last line. Such a boot is now retried up to ten times and never counted as a pass; a stale claim, a panic or any other self-test failure is still red at once. (#527)
 - The scheduling and SMP design records the decisions taken for it: CPU time as a capability accounted per CPU, slack time behind a right, priorities capped by authority, passive servers, per-CPU run queues and one-shot timers, affinity that only narrows, more than eight CPUs; roadmap item 1.8. (#521)
-- LIMITATIONS numbered two entries 1.23: the open one on a program's execute right (#506) and a closed one on the wait race (#528), so one citation had two statuses. The closed one is 1.25, and `doc-claims` now fails when a LIMITATIONS number names more than one entry.
+- LIMITATIONS numbered two entries 1.23: the open one on a program's execute right (#506) and a closed one on the wait race (#528), so one citation had two statuses. The closed one is 1.25, and `doc-claims` now fails when a LIMITATIONS number names more than one entry. (#535)
 
 ### Fixed
 
+- `smoke-kstack-reuse` deleted the serial log of a boot that went red, so a failure left nothing to read; it keeps the log now. The `SYS_CAP_ENUMERATE` comment no longer says it reports a generation, which capabilities no longer have. (#547, #548)
 - Under QEMU's TCG emulator the monotonic clock ran at twice wall-clock speed, so `login.conf`'s `failure_delay` waited half as long as it said: the timer tick, programmed as a square wave, was delivered twice per period. It is now programmed as a rate generator, one interrupt per period on every machine, and `smoke-etc-config` holds the delay to the host's clock. At the true rate, `fs_server`'s wait for a sealed volume, which spun each time slice away, starved the keyboard during an install until the password lost characters; it now yields the CPU (LIMITATIONS 3.6). (#549)
 
 ## [0.3.0-alpha]: 2026-10-09

@@ -53,8 +53,6 @@ counts:
     occurrences:
       - file: TESTS.md
         pattern: 'below: \*\*(\d+)\*\* jobs'
-      - file: docs/ROADMAP.md
-        pattern: '\((\d+) jobs, \d+ contexts'
 
   - id: contexts
     describe: status-check contexts those jobs produce
@@ -64,8 +62,6 @@ counts:
         pattern: 'jobs; \d+ of the (\d+) status checks'
       - file: TESTS.md
         pattern: '\*\*\d+\*\* jobs, \*\*(\d+)\*\* contexts'
-      - file: docs/ROADMAP.md
-        pattern: '\(\d+ jobs, (\d+) contexts'
 
   - id: required
     describe: contexts classified as merge-gating in .github/ci-gating.yml
@@ -75,8 +71,6 @@ counts:
         pattern: 'jobs; (\d+) of the \d+ status checks'
       - file: TESTS.md
         pattern: 'The set is \*\*(\d+) gating contexts'
-      - file: docs/ROADMAP.md
-        pattern: 'The gating set is \*\*(\d+) required, \d+ exempted\*\*'
       # site/index.html said 73 here for as long as the count had been 89. It was
       # the only statement of this number that nothing derived, which is exactly
       # why it was the one that rotted -- and it is the PUBLIC one.
@@ -91,8 +85,6 @@ counts:
         pattern: 'gate a merge\. The (\d+) that do not are'
       - file: TESTS.md
         pattern: '\*\*\d+ gating contexts and (\d+) reasoned exemptions\*\*'
-      - file: docs/ROADMAP.md
-        pattern: '\*\*\d+ required, (\d+) exempted\*\*'
       - file: site/limitations.html
         pattern: 'gating set is \d+ checks with (\d+) exempted'
 
@@ -121,8 +113,6 @@ counts:
     occurrences:
       - file: README.md
         pattern: '\| (\d+) `smoke-\*` targets: \d+ base gates'
-      - file: docs/ROADMAP.md
-        pattern: '\| (\d+) `smoke-\*` targets'
       - file: TESTS.md
         pattern: 'There are (\d+) `smoke-\*` targets'
 
@@ -158,8 +148,6 @@ counts:
         pattern: 'All (\d+) properties in SECURITY\.md'
       - file: TESTS.md
         pattern: 'currently \*\*empty\*\*: all (\d+) properties'
-      - file: docs/ROADMAP.md
-        pattern: '\*\*empty\*\*[,:] all (\d+) properties name a witness'
   - id: devlog_entries
     describe: dated entries in docs/history/DEVLOG-2026.md
     derive: devlog_entries
@@ -184,8 +172,6 @@ counts:
     occurrences:
       - file: README.md
         pattern: 'base gates and (\d+) control arms \|'
-      - file: docs/ROADMAP.md
-        pattern: 'and (\d+) of them control arms'
       - file: TESTS.md
         pattern: '\d+ gates and (\d+) control arms\. Each row'
 

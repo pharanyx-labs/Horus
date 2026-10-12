@@ -1,6 +1,6 @@
 # Scheduling and SMP
 
-**Decided; nothing built.** The maintainer asked on 2026-10-09 for a more robust SMP kernel and a
+**Decided; steps 0, 1, 1b and 2a are built (section 5).** The maintainer asked on 2026-10-09 for a more robust SMP kernel and a
 scheduler of high quality, chosen with security first. The decisions below were taken the same day.
 
 ## 1. What exists

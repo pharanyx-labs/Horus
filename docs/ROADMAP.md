@@ -3,306 +3,313 @@
 **Objective: a complete operating system on a kernel small enough to verify and a capability
 model strong enough to rely on.**
 
-The roadmap is ordered by assurance value, not by demo value. A feature built on an unenforced
-foundation adds surface without adding capability, so the order has been: make the object model
-true, make kernel objects allocatable, then grow the system on top. Tracks 0 and 1 did the first
-two. Track 2 is the operating system; Tracks 3 and 4 run beside it.
-
-Items keep their numbers, because code and other documents cite them. A finished item is one line
-in its track's table, naming the pull requests that delivered it; the account is in those pull
-requests. What is still wrong, as opposed to still unbuilt, is in
-[`LIMITATIONS.md`](LIMITATIONS.md). Finding IDs are explained there.
+This document holds only open work, in the order that finishes all of it soonest. Rewritten on
+2026-10-12. A finished item leaves it for [`history/ROADMAP-DONE-2026.md`](history/ROADMAP-DONE-2026.md),
+one line with its pull requests; numbers are never reused, so a citation of a finished item
+resolves there. What is wrong, as opposed to unbuilt, is in [`LIMITATIONS.md`](LIMITATIONS.md),
+which is the authoritative status of every finding.
 
 | Mark | Meaning |
 |---|---|
-| ✅ | Done and gated in CI |
-| ◧ | The item's own goal is met; a named remainder is listed |
 | 🚧 | In progress |
 | ⬜ | Not started |
+| ⏸ | Waits on a decision below |
 
 ---
 
-## What happens next
+## 1. Decisions that unblock the route
 
-In order. Each step is its own set of pull requests with its own gates and control arms.
+Each blocks only the work named. Answering them in one sitting removes every wait from the route.
+The recommendation is the one the route is written around; it is not the decision.
 
-1. **Filesystem phase 1b** (2.10): `fs_server` authorises by capability instead of by uid and
-   mode, `hvfs` walks with capabilities, and `init` mints the root capability from a policy file.
-   It removes `perm_ok`, the root check on `chown`, `SYS_FS_SET_META`, the uid path of
-   `SYS_IPC_SENDER` in the filesystem, and `SYS_CONNECT_FS_SERVER`. Phase 1a, the kernel half,
-   is done, and so are steps 1, 2 and 5: `fs_server` answers through capabilities (S120), walks
-   a whole path in one request (decision 12 of [`design/filesystem.md`](design/filesystem.md)) and
-   refuses moves across directories (S121), and the POSIX layer and the shell walk by capability
-   when they hold a root (S126), handing each program they run a narrowed copy (S127). Step 3 has
-   begun: `fs_server` compiles a session's grants from the policy and answers through them
-   (S128, step 3(a)). Next is step 4, the truthful view (`stat`, `chmod`, `chown` and `link`
-   through capabilities), so that the shell loses none of them when `init` then asks for the
-   session at login and grants it (3(b)); then the installer writes `/etc/fs.policy` (3(c)).
-2. **Accounts as files** (2.11 step 3): `/etc/passwd` and `/etc/shadow` on the volume, owned by a
-   ring-3 `auth_server`; the kernel keeps only the key-slot unlock.
-3. **Filesystem phases 2 to 4** (2.10): the kernel shrinks to a sealed-block service and the
-   filesystem moves to ring 3 with a copy-on-write format, then symbolic links, timestamps and
-   sparse files, then snapshots, reflinks and extended attributes. Phase 2 also splits the
-   system and home into separate volumes.
-
-Steps 1 and 2 meet at `/etc/passwd`; whichever lands second adapts to the first.
+| | Question | Recommendation | Blocks |
+|---|---|---|---|
+| D1 | How `init` narrows the spawner's `CAP_TCB` to READ for the login watcher | Give the spawner's `CAP_TCB` the `MINT` right, so a supervisor can hand out narrowed copies (S2 already proves a mint only narrows) | 2.10 step 3(b) |
+| D2 | Authenticate the inode table and bitmaps on the current format, or wait for filesystem phase 2 | Now: a format bump costs a reformat, and phase 2 is far off | 5.2 |
+| D3 | Measured boot mandatory whenever a TPM is present | Yes, failing closed; a machine without a TPM boots with a visible warning | 5.6 |
+| D4 | Refuse an unanchored volume on a TPM machine; advance the rollback counter at a bounded interval; eMMC RPMB as a second anchor | Yes to the first two; RPMB opt-in only, since programming its key is irreversible | 5.7 |
+| D5 | Kernel updates by predicted PCR values and a staged second seal | Yes, over signed kernels, which would make `PCR[4]` the same for every signed kernel | 5.8 |
+| D6 | Console input becomes a capability, ending LIMITATIONS 1.6's ambient read | Yes; console writes stay ambient | 5.5 |
+| D7 | `SYS_SPAWN_IMAGE` needs a capability no session holds; exec goes through a file capability | Yes | 5.4 |
+| D8 | One capability per grant, bounded by the kernel, instead of one root carrying the union | Yes | 5.10 |
+| D9 | TLA+, and its Java toolchain, as a new verification dependency | Yes, nightly first; a full Isabelle model of the kernel is not recommended at this size of team | 5.11 |
+| D10 | How releases are signed: key type and custody | Sigstore keyless signing from the release workflow with SLSA provenance, actions pinned by SHA, and tags signed by the maintainer's key | 4.4 |
+| D11 | A second reviewer for the capability and IPC paths | The maintainer's to find; the ruleset change follows | 4.1 |
+| D12 | Whether to build virtualisation at all | Defer until there is a hosting need | 3.9 |
+| D13 | A syscall operation by which a task marks pages that hold secrets as never swapped | Yes, as an operation on the task's own pages only, refusing shared and lent frames | 2.12 remainder |
+| D14 | `rotate_keys` (LIMITATIONS 2.26): rebuild it as a real rotation of the volume key, or withdraw it | Withdraw it now; key rotation comes naturally with the phase 2 format | 2.26 |
+| D15 | CI throughput: a merge queue, and a fast path that skips the QEMU gates for a change touching only documentation | Yes to both; the fast path decided by a checked allowlist of paths, never by a label | The pace of everything |
 
 ---
 
-## Track 0: make the object model true ✅
+## 2. The route
 
-The difference between "a capability-based microkernel" and "a microkernel that has
-capabilities in it". Complete.
+**How it stays fast.** CI time is the bottleneck, so the route minimises full CI runs:
 
-| Item | Delivered |
-|---|---|
-| 0.1 ✅ Capability-addressed IPC [C-1], [C-2] | Every IPC syscall takes a cspace slot and the kernel derives the endpoint from the capability there. 2026-07-27, #108 |
-| 0.2 ✅ Retire ambient `uid == 0` authority [I-1] | Every uid gate replaced by a held capability. 2026-07-27, #109; the last gate 2026-08-15, #155 |
-| 0.3 ✅ Kernel objects from untyped memory [I-7] | `CAP_UNTYPED` and `SYS_RETYPE` carve cspaces, endpoints, notifications, frames and task control blocks; creating a task is paid for (S57) and the budget can be split (S58). 2026-07-27, #111; completed 2026-08-30, #253, #257 |
+- **One pull request per milestone**, not per step. A milestone is the row of a lane below; its
+  documentation, counts and arms travel in the same pull request.
+- **Local gates first.** Every touched gate and its control arms run locally before the first push,
+  the SMP ones under KVM as well as TCG. A push is never a way to find out.
+- **Lanes in parallel**, each in its own worktree. Lanes in one wave touch different subsystems, so
+  they merge in a train without conflicts beyond the derived counts.
+- **One merge of `main` per pull request**, immediately before it is merged, with the counts synced
+  by the checker rather than by hand.
+- **Decisions answered up front** (section 1), so no lane stops part-way.
 
----
+### Wave 1: close the holes, build the enablers
 
-## Track 1: correctness and performance foundations
+| Lane | Milestone | Items | Closes | Needs |
+|---|---|---|---|---|
+| Capabilities | Revocable pipe ends | 5.1 | LIMITATIONS 1.14 | |
+| Filesystem | Sessions at login, then the uid path removed | 2.10 steps 3(b), 3(c), 6 | 1.31 | D1 |
+| Observability | Kernel reports on their own channel | 5.3 | 2.6c | |
+| Supply chain | A reproducible ISO | 3.1 | 5.3a | |
+| Storage | Metadata authenticated on the current format | 5.2 | 1.30 | D2 |
+| Storage | `rotate_keys` withdrawn or rebuilt | 2.26 | 2.26 | D14 |
+| SMP | Secondary CPUs waited for by the clock, not a loop count | 5.12 | 2.28 | |
 
-| Item | Delivered |
-|---|---|
-| 1.1 ✅ Explicit boot interrupt policy, then a per-CPU spinlock [C-3] | 2026-08-10 to 2026-08-13, #124 to #127, #135 |
-| 1.2 ◧ `%gs`-based per-CPU data [I-6] | The performance goal is met another way: `this_cpu()` reads the TSS selector instead of the LAPIC. 2026-07-31, #116 |
-| 1.3 ✅ Endpoint queues, reply capabilities, a blocking receive [I-5] | 2026-08-10 to 2026-08-11, #120, #121, #133 |
-| 1.4 ✅ Fail-closed user copies [C-4] | 2026-08-13, #141 |
-| 1.5 ✅ 64-bit-clean heap arithmetic [I-2] | 2026-08-13, #145 |
-| 1.55 ✅ A durable write-ahead journal [I-10], [I-11] | 2026-08-16, #158, #161 |
-| 1.6 ✅ Unbounded revocation closure [I-3] | 2026-08-16, #160 |
-| 1.7 ✅ Serialise the spawn and exec path [G-10], [G-9] | 2026-08-17 to 2026-08-21, #164, #168, #170, #188 |
-| 1.8 🚧 Per-CPU scheduling, with CPU time as a capability | Designed ([`design/scheduler.md`](design/scheduler.md)). Steps 0, 1, 1b and 2a done: 5.3e closed (#526), the shootdown wait fails closed (#523), siblings refuse work (#525), one selection rule (#524). Per-CPU run queues next |
+### Wave 2: authority completes, the boot chain tightens
 
-### 1.2 ◧ Remainder: a per-CPU block
+| Lane | Milestone | Items | Closes | Needs |
+|---|---|---|---|---|
+| Filesystem | Accounts as files, then exec by capability | 2.11 step 3, 5.4 | 1.23 | Wave 1 filesystem, D7 |
+| Console | Input as a capability, with job control | 5.5, 2.3 job control | 2.9b | 2.10 step 3(b), D6 |
+| Boot | Measured boot by default, rollback anchoring | 5.6, 5.7 | 2.9, 1.12 | D3, D4 |
+| Supply chain | Verifiable releases, then updates without a lockout | 4.5, 4.4, 4.11, then 5.8 | 5.3, 2.9a | 3.1, D10, D5 |
+| SMP | Per-CPU run queues, one-shot timers, timers as notifications | 1.8 steps 2 and 3, 2.2 | | |
+| Memory | Reclaimable kernel memory | 5.9, 2.1 | 2.5, 2.3 | |
+| Proofs | Typed lookup proved, IPC authority modelled, concurrent protocols modelled | 3.5, 5.11 | narrows 5.5 | D9 |
+| Swap | Secrets kept out of swap | 2.12 | | D13 |
 
-A per-CPU data block reached through `%gs`, holding a current-task pointer and the per-CPU state
-that now lives in `MAX_CPUS`-indexed arrays. It needs `swapgs` on every interrupt entry and exit,
-because the ring-3 return paths load a user selector into `%gs` and that zeroes the base. That is
-a large change to the most safety-critical assembly in the tree, and nothing is blocked on it.
+### Wave 3: shrink ring 0
 
----
+| Lane | Milestone | Items | Closes | Needs |
+|---|---|---|---|---|
+| Filesystem | The kernel a sealed-block service, v12 in `fs_server` | 2.10 phase 2, the storage half of 2.7a | 1.30 for good | Wave 2 filesystem |
+| Filesystem | A session's grants bounded by the kernel | 5.10 | 1.24 | phase 2, D8 |
+| Kernel | The loader and spawn path, and the IDE, SD and eMMC drivers, out of ring 0 | 2.7a | | |
+| SMP | Scheduling contexts, passive servers, affinity, more than eight CPUs, then the `%gs` block | 1.8 steps 4 to 8, 1.2 | | Wave 2 SMP |
+| Hardening | Indirect-branch tracking, then kernel ASLR | 3.8 | | 2.7a |
+| Observability | The audit stream, then deterministic replay | 3.6, 3.7 | | |
 
-## Track 2: toward a complete operating system
+### Wave 4: grow outward
 
-| Item | Status |
-|---|---|
-| 2.1 ◧ Frames, shared memory and sized regions [F-2.1] | Frame capabilities, all-or-nothing region maps, sized frames, and copy-on-write refused over a frame (S26, S27, S35 to S38). 2026-08-22 to 2026-08-27 |
-| 2.2 ◧ Time and timers [F-2.6] | A monotonic clock at 10 ms, deliberately coarse (S34). 2026-08-24, #208 |
-| 2.3 ◧ Process and session model [F-2.4] | `fork` with copy-on-write (S39, S40), derived capabilities for the child (S41), and `fork` then `exec` keeping lineage (S42). 2026-08-28 |
-| 2.4 ◧ A VFS layer [F-2.2] | A per-task mount table and one path walker in a library, not a server (S29); `init` provisions a server's endpoint from its own budget (S59). 2026-08-22 to 2026-08-30 |
-| 2.5 ✅ Dynamic linking and a shared libc [F-2.5] | `libhorus` for the servers (#184); a shared libc handed out by capability, linked by name and sealed, and the shipped programs moved onto it (S106 to S108). 2026-08-21 to 2026-09-26, #465, #467, #468, #470 |
-| 2.6 ◧ A network stack in ring 3 [F-2.3] | `netd`, an Intel NIC driver holding one device capability and one untyped region, confined by the IOMMU (S44, S45). 2026-08-28, #227, #228 |
-| 2.7a ⬜ Evict the in-kernel services [F-2.7a] | Not started |
-| 2.7 ◧ Device drivers in ring 3 | A device capability names one device and reaches only its frames, ports and interrupt lines (S43); interrupts and MSI reach ring 3 with the kernel choosing the vector (S46 to S48). 2026-08-28 to 2026-08-29, #226, #232 |
-| 2.8 ✅ A volume large enough to install onto | 4 KiB blocks, no in-RAM metadata mirror, a Merkle rollback tree, a 16 GiB ceiling sized from the disk (S65, S66, S68), and a TPM anchor for whole-volume rollback (S70). 2026-08-31 to 2026-09-01, #270, #273, #274, #276, #279 |
-| 2.9 ✅ An installer | A format capability only the installer holds (S72), consent by a typed word after every answer is shown back (S73), a choice of target disk (S82, S83), replacing an existing volume from install media (S90), two accounts that each open the disk (S76), and an optional unencrypted volume (S104). 2026-09-01 to 2026-09-24 |
-| 2.10 🚧 A capability-addressed filesystem | Phase 1a, the kernel's endpoint tokens and reply-mint (S105). 2026-09-25, #455. Phase 1b step 1: `fs_server` answers through tokened capabilities, beside the uid path (S120). 2026-10-09, #515. Step 5: a cross-directory `rename` or `link` is refused `EXDEV` (S121). 2026-10-09 |
-| 2.11 🚧 An installed system | Designed ([`design/installed-system.md`](design/installed-system.md)); a live boot never opens an installed disk (S110, #472); the disk boots itself under UEFI, on the laptop too (S114, S115); its programs are on it, in system trees rebuilt from the verified modules at every boot and read-only to everyone (S116). 2026-10-08, #503, #505, #506 |
-| 2.12 ✅ Encrypted swap | Specified in [`design/swap.md`](design/swap.md): a sealed slot store under a per-boot key with the tags in RAM (S118, #510), paging out under pressure (S119, #512), and idle tasks giving memory back under the pager's hold (S123, #518). Compressed memory is deferred (2026-10-08): if it comes, it is a cache in front of this swap that compresses one task's pages only, never a page marked secret, and charges each task for its own. A request that keeps a task's secrets out of swap waits on a §4 question |
+| Lane | Milestone | Items | Needs |
+|---|---|---|---|
+| Filesystem | Links, timestamps, sparse files; then snapshots, reflinks, extended attributes | 2.10 phases 3 and 4 | phase 2 |
+| Drivers | AHCI, then NVMe, then xHCI with USB keyboards | 2.7 | |
+| Network | IP, UDP, TCP and socket capabilities | 2.6 | |
+| Processes | `/proc`, mounts as syscalls, namespace inheritance, narrowing what `exec` carries | 2.3, 2.4 | |
+| Time | A wall clock and `clock_gettime` | 2.2 | Wave 2 SMP |
+| Virtualisation | `CAP_VCPU` and EPT | 3.9 | D12 |
 
-### 2.1 ◧ Remainder
+### Beside every wave
 
-- **Reclaiming a frame's memory.** Kernel objects are bump-allocated, so a destroyed frame's page
-  is not reusable until its untyped region is revoked and reset, and the reset is not written
-  (`LIMITATIONS.md` 2.5).
-- `MAX_DYN_FRAMES` (256) bounds how many frames the kernel can name at once, which a real
-  workload will meet before it meets its untyped budget.
-
-### 2.2 ◧ Remainder
-
-- **Per-task timers delivered as notifications**, and with them `SYS_IPC_CALL` with a timeout.
-  They follow the per-CPU one-shot timers of item 1.8 ([`design/scheduler.md`](design/scheduler.md) §3.4).
-- **Tickless operation.** The PIT runs at 100 Hz whether or not anything needs it; item 1.8
-  replaces it with per-CPU one-shot timers.
-- **A libc `clock_gettime`**, and a wall clock, which needs an RTC and a way to trust it.
-
-### 2.3 ◧ Remainder
-
-- **Process groups, job control and `/proc`.** `/proc` would be a filesystem server behind 2.4.
-- **Narrowing what a child carries into `exec`.** Today it carries everything its parent held;
-  the only subtraction is the child revoking its own slots first.
-- **Namespace inheritance**: a spawned or forked child starts with no mounts.
-
-### 2.4 ◧ Remainder
-
-Mount and unmount as syscalls, `/proc`, and namespace inheritance (2.3). `dev_server` runs only in
-the `VFS_SELFTEST` build. How files themselves are authorised is being replaced by 2.10.
-
-### 2.6 ◧ Remainder
-
-Everything above Ethernet: an ARP table, IP, TCP and per-application socket capabilities. `netd`
-speaks enough Ethernet to prove the device is driven, receives on the 82574L only
-(`LIMITATIONS.md` 2.14), and runs only in the `NET_SELFTEST` build: the shipped system does not
-start it.
-
-### 2.7a ⬜ Evict the in-kernel services [F-2.7a]
-
-`.github/ring0-classification.yml` (S87) measures the ring-0 `service` class at about 6,000 code
-lines beside a 11,456-line core: `storage.c` (the encrypted store and the on-disk filesystem),
-`kusers.c` (accounts and password hashing), the loader and spawn path, `crypto.c` and
-`syscall_fs.c`. Neither big move is mechanical. `storage.c` holds the volume key, so moving it
-means deciding what a ring-3 storage server may hold; 2.10's phase 2 is that decision for the
-filesystem half, and 2.11's `auth_server` for the accounts half. S87 deliberately sets no line
-target for the whole kernel: the classification is the property.
-
-### 2.7 ◧ Remainder
-
-Every driver beyond the ones that exist: AHCI reads and writes (the controller is identified and
-the drive answers IDENTIFY), NVMe, USB (and with it a keyboard on machines with no PS/2
-emulation), and a framebuffer server. Legacy IDE, SD and eMMC are driven in the kernel today.
-
-### 2.10 🚧 A capability-addressed filesystem
-
-The specification is [`design/filesystem.md`](design/filesystem.md), and every load-bearing
-question in it has been answered by the maintainer. The disk holds no authority: capabilities are
-derived fresh each boot from a policy inside the encrypted, Merkle-verified volume. The kernel
-keeps only sealing and opening blocks, and chooses every nonce. The POSIX view is truthful:
-`stat` reports what the caller's capability allows, and `chmod` succeeds only when it asks for what
-is already true.
-
-| Phase | What lands |
-|---|---|
-| 1a ✅ | Endpoint tokens, reply-mint and carry-one in the kernel, with Kani proofs (S105) |
-| 1b 🚧 | Capability authorisation in `fs_server`, `hvfs` and `init`, on the existing format, in six steps ([`design/filesystem.md`](design/filesystem.md) §11.1). Steps 1, 2, 4 and 5 are done (S120, #515; S126 and S127, #529 to #532; S130 to S132, the truthful `stat`, `chmod`, `chown` and same-directory `link` through a capability, #538 and after; S121, #516); step 3 is under way (3(a), S128: `fs_server`'s sessions from the policy), and step 6 follows |
-| 2 | The kernel's sealed-block service; the copy-on-write v12 format in `fs_server` |
-| 3 | Symbolic links, timestamps and a time service, cross-directory rename, sparse files |
-| 4 | Snapshots, reflinks, extended attributes, quotas, locks, open-unlinked files |
-
-### 2.11 🚧 An installed system
-
-The specification is [`design/installed-system.md`](design/installed-system.md). Decided on
-2026-09-24: programs on the disk are trusted by a manifest of hashes pinned in the measured boot
-image, with no signing key; GNU coreutils and TCC ship with their licences; accounts move to
-`/etc/passwd` and `/etc/shadow` under a ring-3 `auth_server`; the disk is GPT with an EFI system
-partition and no Secure Boot. Decided on 2026-10-07: the manifest covers `/bin`, `/sbin` and
-`/lib` only, and a user's own programs run from `/home` on the `EXEC` right of their file
-capability. `init`, `fs_server` and `console_server` stay in the boot image,
-because they run before the volume can be read. Step 2, a disk that boots itself, is done: the
-installer lays out GPT with an EFI system partition, a reserved swap partition and the volume,
-and the IdeaPad 1 14IGL05 starts from its eMMC with no install media (#503, #505). Step 1,
-programs on the disk, is done too: the install media carries GNU coreutils, TCC, their man pages,
-licences and source offer, and `fs_server` rebuilds `/bin`, `/sbin`, `/lib` and `/usr` from the
-boot modules the kernel verified at every boot and refuses every change to them, root included
-(S116, #506). That holds decision 1's rule by construction, since nothing in those trees can
-differ from a module the kernel's pinned manifest approved. Step 3 is item 3 of
-[What happens next](#what-happens-next).
+Independent review (4.1, D11), the published threat model (4.13), secret scanning beyond
+provider patterns (4.8), and the font's provenance (4.10). An external audit at each release, its
+findings recorded in `LIMITATIONS.md` and each closed by a gate, until a second reviewer exists.
 
 ---
 
-## Track 3: assurance and observability
+## 3. The open items
 
-| Item | Status |
+Grouped by track; the numbers are the ones the code cites.
+
+### Track 1: correctness and performance foundations
+
+**1.2 ⬜ The `%gs` per-CPU block.** A per-CPU data block reached through `%gs`, holding a
+current-task pointer and the per-CPU state that now lives in `MAX_CPUS`-indexed arrays. It needs
+`swapgs` on every interrupt entry and exit, with the speculative-`swapgs` barriers, because the
+ring-3 return paths load a user selector into `%gs` and that zeroes the base. A large change to
+the most safety-critical assembly in the tree; nothing is blocked on it, so it comes last in SMP.
+
+**1.8 🚧 Per-CPU scheduling, with CPU time as a capability.** Designed in
+[`design/scheduler.md`](design/scheduler.md); steps 0, 1, 1b and 2a are done. Next, step 2: per-CPU
+run queues, the reschedule interrupt and stealing, with no policy change. Then step 3, per-CPU
+one-shot timers and tickless idle; then scheduling contexts and budgets (4), passive servers (5),
+affinity (6), more than eight CPUs (7) and targeted shootdown (8).
+
+### Track 2: toward a complete operating system
+
+**2.1 ⬜ Reclaiming a frame's memory.** Part of 5.9. `MAX_DYN_FRAMES` (256) bounds how many frames
+the kernel can name at once, which a real workload meets before its untyped budget; it becomes a
+table sized from the budget.
+
+**2.2 ⬜ Timers and a wall clock.** Per-task timers delivered as notifications, and with them
+`SYS_IPC_CALL` with a timeout, following the one-shot timers of 1.8 step 3 (which also end the
+fixed 100 Hz tick). Then a libc `clock_gettime`, and a wall clock, which needs an RTC and a way to
+trust it.
+
+**2.3 ⬜ Processes.** Process groups and job control (with 5.5, since both are about who owns the
+terminal), `/proc` as a filesystem server behind 2.4, narrowing what a child carries into `exec`
+(today it carries everything its parent held), and namespace inheritance.
+
+**2.4 ⬜ Mounts.** Mount and unmount as syscalls, `/proc`, and namespace inheritance: a spawned or
+forked child starts with no mounts. `dev_server` runs only in the `VFS_SELFTEST` build.
+
+**2.6 ⬜ Networking above Ethernet.** An ARP table, IP, UDP and TCP in `netd`, a socket as a tokened
+endpoint capability per connection, and DHCP. `netd` receives on the 82574L only (LIMITATIONS
+2.14) and runs only in the `NET_SELFTEST` build; shipping it is part of this item.
+
+**2.7 ⬜ Drivers in ring 3.** AHCI reads and writes (the controller is identified and the drive
+answers IDENTIFY), NVMe, USB through xHCI (and with it a keyboard on machines with no PS/2
+emulation), and a framebuffer server, each under one device capability and the IOMMU.
+
+**2.7a ⬜ Evict the in-kernel services [F-2.7a].** `.github/ring0-classification.yml` (S87) measures
+the ring-0 `service` class at about 6,000 code lines beside a 11,456-line core: `storage.c` (the
+encrypted store and the on-disk filesystem), `kusers.c` (accounts and password hashing), the loader
+and spawn path, `crypto.c` and `syscall_fs.c`, and the IDE, SD and eMMC drivers sit in ring 0 too.
+Storage leaves with 2.10 phase 2, accounts with 2.11 step 3's `auth_server`, and the loader as a
+ring-3 spawn server that builds a task's address space through frame and untyped capabilities, the
+ELF validator staying in the Rust core. S87 sets no line target for the whole kernel: the
+classification is the property.
+
+**2.10 🚧 A capability-addressed filesystem.** Specified in [`design/filesystem.md`](design/filesystem.md),
+every load-bearing question answered. The disk holds no authority: capabilities are derived fresh
+each boot from a policy inside the encrypted, Merkle-verified volume, and the POSIX view is
+truthful. Phase 1b's steps 1, 2, 4 and 5 and step 3(a) are done. Open:
+
+| Step | What lands |
 |---|---|
-| 3.1 ◧ Reproducible builds | `kernel.elf` is byte-reproducible and gated; `horus.iso` is not (`LIMITATIONS.md` 5.3a) |
-| 3.2 ✅ Measured boot and a sealed volume key | TPM PCR measurement, a key sealed to the measurements (S11, S12), the kernel pinned in the boot image (S92), and a policy build that refuses to run unmeasured (S85) |
-| 3.3 ✅ Boot-module integrity manifest | A module that fails its hash check cannot be read or run (S10) |
-| 3.4 ✅ Kani proofs on revocation | Revocation reaches exactly the target's derivation subtree |
-| 3.5 ◧ Proofs over the capability algebra [F-3.1] | Lookup and grant proved, and the bounded proofs gate a merge (`kani-bounded`). 2026-08-23, #205 |
-| 3.6 ◧ A debug capability [F-3.2] | `CAP_DEBUG`, read-only, gates cross-task introspection and `SYS_CAP_ENUMERATE`; the shell's `capview` draws the capability graph (S32). 2026-08-23 to 2026-08-24, #206, #209 |
-| 3.7 ⬜ Deterministic replay [F-3.3] | Not started |
-| 3.8 ◧ KASLR, CFI and sanitisers [F-3.5] | Miri over the Rust core on every pull request (S33). 2026-08-24, #207 |
-| 3.9 ⬜ Virtualisation (VT-x) [F-3.4] | Not started |
+| 3(b) ⏸ | `init` asks for the session at login and grants it, a watcher task reaping the shell (D1) |
+| 3(c) | The installer writes `/etc/fs.policy` |
+| 6 | The identity path removed: `perm_ok`, the root check on `chown`, the uid half of `SYS_IPC_SENDER` in the filesystem, `SYS_FS_SET_META` and `SYS_CONNECT_FS_SERVER`. Closes LIMITATIONS 1.31 |
+| Phase 2 | The kernel's sealed-block service, and the copy-on-write v12 format in `fs_server`, whose pointer tree is the Merkle tree, so all metadata is authenticated; separate system and home volumes |
+| Phase 3 | Symbolic links, timestamps and a time service, cross-directory rename, sparse files |
+| Phase 4 | Snapshots, reflinks, extended attributes, quotas, locks, open-unlinked files |
 
-### 3.5 ◧ Remainder
+**2.11 🚧 An installed system, step 3: accounts as files.** `/etc/passwd` and `/etc/shadow` on the
+volume under a ring-3 `auth_server`; the kernel keeps only the key-slot unlock
+([`design/installed-system.md`](design/installed-system.md)). Steps 1 and 2 are done.
 
-- **A type check inside `rust_cap_lookup`.** The C `cap_lookup` takes the expected type (S60); the
-  Rust side resolves without one, so "lookup refuses a mistyped capability" cannot yet be proved.
-  The control arm `CAP_LOOKUP_TYPE_UNCHECKED` reaches only the C build, so the work is three
-  parts: pass the type through the FFI, thread the arm into the Rust build so one switch disarms
-  both halves, and re-measure that the base gate goes red under it.
-- **IPC authority implies a held endpoint capability**, which needs a Rust model of
-  `ipc_ep_from_slot`.
-- **A sound TLA+ specification.** None exists; the two removed on 2026-09-10 were unsound.
+**2.12 ⏸ Secrets kept out of swap.** A request by which a task marks pages that hold secrets as
+never swapped ([`design/swap.md`](design/swap.md) step 3); a new syscall operation, so D13 first.
+Compressed memory stays deferred: if it comes, it is a cache in front of swap that compresses one
+task's pages only, never a page marked secret, and charges each task for its own.
 
-### 3.6 ◧ Remainder
+### Track 3: assurance and observability
 
-A queryable stream of capability operations (mint, grant and revoke are audited but not
-readable as a stream), and `capview` as a program rather than a shell builtin.
+**3.1 ⬜ A reproducible ISO.** `kernel.elf` is reproducible and gated; `horus.iso` is not
+(LIMITATIONS 5.3a), because `grub-mkrescue` writes a file named for the wall-clock second and
+embeds a UUID in the EFI loaders. Assemble the image with `xorriso` directly or derive both from
+`SOURCE_DATE_EPOCH`, and have the `reproducible` job build the ISO twice, in two directories as two
+users, and compare. 4.4, 4.5, 4.11 and 5.8 all need it.
 
-### 3.7 ⬜ Deterministic replay [F-3.3]
+**3.5 ⬜ Proofs over the capability algebra.** A type check inside `rust_cap_lookup` and its proof,
+with the `CAP_LOOKUP_TYPE_UNCHECKED` arm reaching the Rust build too, so one switch disarms both
+halves; a Rust model of `ipc_ep_from_slot` and a proof that IPC authority implies a held endpoint
+capability; and a checker that every `rust_cap_*` export has a Kani harness.
 
-Record syscall and IPC traces under QEMU and replay them, so an SMP race becomes an artifact.
+**3.6 ⬜ The audit stream.** Mint, grant and revoke are audited but not readable as a stream; make
+them a stream readable through `CAP_DEBUG`, and `capview` a program rather than a shell builtin.
 
-### 3.8 ◧ Remainder
+**3.7 ⬜ Deterministic replay [F-3.3].** Record syscall and IPC traces under QEMU and replay them,
+so an SMP race becomes an artefact rather than a rate.
 
-- **Kernel ASLR.** User programs get 30 bits. The kernel is built `-mcmodel=kernel`, so a slide
-  would buy about 9 bits at 2 MiB alignment, and even that needs relocation records packed into
-  the image, a relocator that runs before any absolute reference, and early paging aware of the
-  slide, all inside the trusted base. The disclosure paths that had to close first are closed
-  ([`investigations/kernel-pointer-disclosure.md`](investigations/kernel-pointer-disclosure.md));
-  two decisions remain: what to do without UMIP, and whether the kernel log keeps printing raw
-  addresses to a `CAP_KERNEL_LOG` holder. It sits behind 2.7a.
-- **CFI on indirect calls in the C kernel.** gcc's `-fcf-protection` gives CET/IBT;
-  `-fsanitize=cfi` needs clang and LTO.
-- **ASan or UBSan over the C kernel**, which needs a freestanding runtime.
+**3.8 ⬜ Kernel ASLR, CFI and sanitisers [F-3.5].** Indirect-branch tracking first, with gcc's
+`-fcf-protection=branch`, since it needs no new toolchain. Kernel ASLR after 2.7a: the kernel is
+built `-mcmodel=kernel`, so a slide buys about 9 bits at 2 MiB alignment and needs relocation
+records in the image, a relocator before any absolute reference, and early paging aware of the
+slide. The disclosure paths that had to close first are closed
+([`investigations/kernel-pointer-disclosure.md`](investigations/kernel-pointer-disclosure.md)); two
+decisions remain, taken when the work starts: what to do without UMIP, and whether the kernel log
+keeps raw addresses for a `CAP_KERNEL_LOG` holder. ASan or UBSan over the C kernel needs a
+freestanding runtime.
 
-### 3.9 ⬜ Virtualisation (VT-x) [F-3.4]
+**3.9 ⏸ Virtualisation (VT-x) [F-3.4].** A `CAP_VCPU` object and an EPT-backed guest address space,
+so a ring-3 monitor holding only its guest's capabilities can host another operating system. A
+large addition to ring 0, which everything else here shrinks; D12 first.
 
-A `CAP_VCPU` object and an EPT-backed guest address space, so a ring-3 monitor holding only its
-guest's capabilities can host another operating system.
+### Track 4: repository, governance and secure development
 
----
+**4.1 ⏸ Require reviewer approval [C-5].** `CODEOWNERS` covers the capability and IPC paths. What is
+missing is a second person (D11); required approval with one maintainer would block every merge or
+need a bypass actor, which would undo the gating. Until then `SECURITY.md` claims "thoroughly
+automatically verified", not "independently reviewed".
 
-## Track 4: repository, governance and secure development
+**4.4 ⏸ Build provenance and signed artefacts [I-9].** SLSA provenance and signatures on `kernel.elf`
+and the ISO, in the form D10 picks. Needs 3.1.
 
-| Item | Status |
-|---|---|
-| 4.1 ⬜ Require reviewer approval [C-5] | Needs a second person (below) |
-| 4.2 ✅ Gate the security tests [C-6] | Every job is classified as gating or exempt with a written reason in `.github/ci-gating.yml`; the ruleset requires the `gates` aggregator and CodeQL, and `gates` needs every gating job. 2026-08-16 to 2026-09-21, #159, #165, #415 |
-| 4.3 ✅ `gitleaks` and `cargo-audit` fail the build | 2026-08-30 |
-| 4.4 ⬜ Build provenance and signed artifacts [I-9] | Not started |
-| 4.5 ◧ Tagged releases | Two so far, `v0.2.0-alpha` (2026-09-14) and `v0.3.0-alpha` (2026-10-09): each an install ISO and its SHA-256, for developers. Not yet carrying an SBOM, provenance or the expected PCR values |
-| 4.6 ✅ `horus.py` under `tools/` [M-2] | 2026-09-09 |
-| 4.7 ✅ Governance files [M-3] | 2026-07-27, #107 |
-| 4.8 ⬜ Secret scanning for non-provider patterns [M-4] | Not started |
-| 4.9 ✅ One author identity [M-9] | 2026-08-29, #241 |
-| 4.10 ✅ Third-party material declared | `THIRD_PARTY.md`, 2026-09-08; the provenance of the 8x8 font's ASCII half is still open |
-| 4.11 ⬜ `verify-release.sh` | Not started |
-| 4.12 ✅ A security-invariant registry [F-4.1] | `tools/check_invariants.py` binds every `SECURITY.md` property to a witness that runs. 2026-08-28 |
-| 4.13 ⬜ Publish the threat model [F-4.3] | The threat model is a section of `SECURITY.md`, not a versioned document |
-| 4.14 ✅ Nightly fuzzing and full Kani | Every Kani proof gates every pull request (#485); each proof's recorded mutation is replayed nightly to show it still fails (#493); every fuzz target runs nightly for ten minutes and a crash fails the run (#492). 2026-10-06 |
+**4.5 ⬜ Releases that carry their evidence.** The three releases so far carry an ISO and its checksum
+from an unsigned tag. Each release also carries the SBOM, the provenance of 4.4 and the expected PCR
+values.
 
-**4.1.** The `CODEOWNERS` paths are correct and cover the capability and IPC files. What is left
-is a second person to review them. Turning on required approval with one maintainer either blocks
-every merge or needs a bypass actor, which would undo 4.2. `SECURITY.md` therefore claims
-"thoroughly automatically verified", not "independently reviewed".
+**4.8 ⬜ Secret scanning for non-provider patterns [M-4].**
 
-**4.2.** The gating set is **143 required, 9 exempted** (143 jobs, 152 contexts; re-derive with
-`tools/check_ci_gating.py`). The exemptions come from three jobs and are properties of the test,
-not open defects: `fuzz` (seven targets fuzzed nightly, never on a pull request), `kani-arms` and
-`ruleset-audit` (both run on a schedule, never on a pull request).
+**4.10 ⬜ The 8x8 font's provenance.** `THIRD_PARTY.md` declares everything else; the origin of the
+font's ASCII half is still open.
 
-**4.4, 4.5 and 4.11** belong together: SLSA provenance and signatures on `kernel.elf` and the ISO,
-releases that carry them with the SBOM and the expected PCR values (the releases so far carry
-only the ISO and its checksum, from an unsigned tag), and a script a third party runs to rebuild
-from a tag and compare. They wait on 3.1, since an ISO that does not rebuild to the
-same bytes cannot be verified by rebuilding.
+**4.11 ⬜ `verify-release.sh`.** A script a third party runs to rebuild from a tag and compare with
+the release, including the PCR values. Needs 3.1 and 4.5.
 
-**4.12.** The exemption list in `.github/invariants.yml` is currently
-**empty**: all 135 properties name a witness that resolves.
+**4.13 ⬜ Publish the threat model [F-4.3].** It is a section of `SECURITY.md`, not a versioned
+document.
 
----
+### Track 5: closing the known limitations
 
-## What exists
+**5.1 ⬜ Revocable pipe ends** (LIMITATIONS 1.14). Give the child's stdio end the spawner's as its
+parent, and after a revocation sweep has dropped `cap_lock`, recount every pipe's ends from the
+cspaces under `pipe_lock` alone. Since #555 only the kernel makes a pipe end, so the recount has
+three producers. Witness: a new gate (proposed name smoke-pipe-revoke-child) in which a parent
+revokes its end, the child's must be gone and the peer must see EOF; the arm restores `badge = 0`.
 
-| | |
-|---|---|
-| ✅ | 64-bit long mode, a higher-half kernel, booted by GRUB under BIOS or UEFI |
-| ✅ | Per-task four-level page tables, demand paging, copy-on-write, NX stacks, kernel W^X |
-| ✅ | Capabilities with rights that only narrow, derivation lineage and system-wide subtree revocation |
-| ✅ | Kernel objects, tasks included, allocated from untyped memory a task holds a capability to |
-| ✅ | Preemptive SMP scheduling on up to eight CPUs, with flush-on-switch barriers |
-| ✅ | Ring-3 servers: `init`, `console_server`, `fs_server`, the installer; one path walker in a library. `netd`, a ring-3 network driver, runs in a test build |
-| ✅ | An encrypted, Merkle-verified volume with a journal and TPM-anchored rollback protection |
-| ✅ | An installer, on IDE disks and SD or eMMC storage, including a laptop's soldered eMMC |
-| ✅ | An installed disk that starts on its own under UEFI, the laptop's eMMC included |
-| ✅ | All of a machine's RAM up to 4 GiB in the page pool, every region the memory map names (S117) |
-| ✅ | A shell with pipelines, a shared libc, GNU coreutils and TCC |
-| ✅ | Measured boot, the kernel pinned in the boot image, and a PCR-sealed volume key |
-| ✅ | An IOMMU confining device DMA, and device capabilities that name one device each |
-| ◧ | Reproducible `kernel.elf` (not yet the ISO), an SBOM, CodeQL, Dependabot, signed commits, a protected `main` |
-| ✅ | 502 `smoke-*` targets, nearly all QEMU integration tests, and 280 of them control arms that must reproduce a defect |
-| ✅ | Bounded Kani proofs, Miri over the Rust core, and fuzzing at the FFI boundary |
+**5.2 ⏸ Authenticated metadata on the current format** (1.30). The inode-table and bitmap blocks
+become leaves of the existing Merkle tree, so a changed owner, mode, size or bitmap is refused at
+first use. A format version bump: an older volume is refused with a message, never mounted
+unverified. Witness: a gate that edits an inode's mode on the image and must see it refused; the arm
+skips the leaf check. Without D2, 1.30 waits for 2.10 phase 2.
+
+**5.3 ⬜ Kernel reports off the shared console** (2.6c). First a checker that classifies every base
+gate's required marker by who prints it and whether before or after the console handover, with a
+ratchet that only shrinks, so the exposed number is measured. Then the exposed gates move to COM3 in
+batches by subsystem until the ratchet is empty. The COM1 split at the handover that reddened `kdiag`
+and the SD installer gates is part of this.
+
+**5.4 ⏸ Exec only from a file capability** (1.23). A spawn call that takes a file capability carrying
+`EXEC`, with `fs_server` supplying the bytes through it; `SYS_SPAWN_IMAGE` then needs a capability no
+session holds (D7). A compiler's output still runs, from a home the policy grants `EXEC`. Witness: a
+session holding a readable, non-`EXEC` file cannot run it by either route.
+
+**5.5 ⏸ Console input as a capability** (2.9b, and LIMITATIONS 1.6's read half). `console_server`
+serves input only through a foreground capability; the shell grants a derived copy to the child it
+runs in the foreground and revokes it when the child ends or stops, through 2.10 step 3(b)'s
+watcher. Writes stay ambient. Witness: a background program's read is refused while another task
+owns input.
+
+**5.6 ⏸ Measured boot whenever a TPM is present** (2.9). A machine with a TPM fails closed when
+measurement or sealing fails; one without boots, says so at install and at every login, and the
+installer records it. The `MEASURED_BOOT_REQUIRED=1` build stays, for deployments that refuse
+TPM-less machines.
+
+**5.7 ⏸ Rollback anchoring** (1.12). Refuse an unanchored volume on a machine with a TPM unless the
+installer recorded it as deliberate; advance the counter at clean shutdown and at a bounded interval
+of writes, shrinking the window from one boot to that interval; later, opt-in, eMMC RPMB as a second
+anchor; and an export path for a volume moved between machines.
+
+**5.8 ⏸ Kernel updates without a lockout** (2.9a). Compute the PCR values a new boot image will
+produce, seal a second copy of the volume key to them before rebooting, and drop the old seal only
+after the new image has unlocked once. Needs 3.1 and D5.
+
+**5.9 ⬜ Reclaimable kernel memory** (2.5, then 2.3). The untyped reset: revoking an untyped
+capability destroys everything carved from it, and the watermark is reset and the pins cleared only
+when nothing names or maps any of it. Then a ring-3 allocator in `init` recycles regions, and the
+static objects become retyped ones: a task's reply endpoint carved at creation and destroyed at
+teardown, the service endpoints carved by `init`. Witness: a workload that creates and destroys
+frames for longer than its region could hold without reuse.
+
+**5.10 ⏸ A session's grants bounded by the kernel** (1.24). One capability per grant instead of one
+root carrying the union; the walker starts from the capability with the longest matching grant, so
+the kernel's rights intersection bounds each grant and `fs_server` is trusted only for contents.
+After 2.10 phase 2, whose back-references also let the server tell a grant's object from a name
+swapped in under it. D8 first.
+
+**5.11 ⏸ A model of the concurrent protocols** (5.5). The protocols where races have happened,
+specified and model-checked: spawn, wait and teardown (S125), the kernel-stack claim and park (S20),
+the TLB shootdown (S124), and revocation against lookup. Each model ships with a seeded defect it
+must catch, as every gate has an arm. Nightly first. D9 first.
+
+**5.12 ⬜ Secondary CPUs waited for by the clock** (2.28). `smp_start_aps` bounds its wait by
+the calibrated TSC rather than by a count of `pause` instructions, and a CPU that checks in after
+the wait ends is either counted or parked, never left running uncounted. Witness: a build that
+delays one secondary's check-in past the old loop's length must still report every CPU; the arm
+restores the loop count.

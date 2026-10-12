@@ -522,21 +522,17 @@ until a reformat. Nothing wrong is ever accepted. `smoke-installer-emmc` fell fr
 
 ### 5.3 No release provenance **[I-9]**
 
-There are three releases, `v0.2.0-alpha` (2026-09-14), `v0.3.0-alpha` (2026-10-09) and
-`v0.4.0-alpha` (2026-10-12), each an install ISO and its SHA-256 on GitHub, from an unsigned lightweight tag. There are no signed artifacts and no SLSA provenance, so nobody
-can check that an ISO they were given came from this repository's CI, and because the ISO does not
-rebuild to the same bytes (5.3a) nobody can confirm it by rebuilding. The one network input to the build,
-the newlib tarball, is pinned by SHA-256 and checked before unpacking (`make smoke-newlib-tamper`),
-so inbound verification is in place; outbound is not.
-
-### 5.3a `horus.iso` is not byte-reproducible; `kernel.elf` is
-
-Two clean builds of the same source give an identical `kernel.elf` and every identical boot
-module, and two different ISOs: `grub-mkrescue` writes a file named for the wall-clock second and
-embeds a UUID in the EFI loaders it generates. The `reproducible` CI job compares `kernel.elf` and
-requires the build record to name both artifacts; it does not compare the ISO. Closing this means
-assembling the image with `xorriso` directly or deriving that UUID from `SOURCE_DATE_EPOCH`.
-`SECURITY.md` S17 names the kernel image for that reason.
+There are four releases, `v0.2.0-alpha` (2026-09-14), `v0.3.0-alpha` (2026-10-09), `v0.4.0-alpha`
+and `v0.4.1-alpha` (both 2026-10-12), each an install ISO and its SHA-256 on GitHub, from an
+unsigned lightweight tag. There are no signed artifacts and no SLSA provenance, so nobody can check
+that an ISO they were given came from this repository's CI. From `v0.4.1-alpha` the ISO rebuilds to
+the same bytes from a checkout of its tag (S17), so anyone can confirm it by rebuilding it with
+`make install.iso`, given the same versions of the compiler, Rust, GRUB, `xorriso` and `mtools`,
+which each release lists beside the ISO. A different compiler gives a different kernel, so the
+check is as strong as the reader's ability to match those versions; no script or container does
+that for them yet (ROADMAP 4.11). The one network input to the
+build, the newlib tarball, is pinned by SHA-256 and checked before unpacking (`make
+smoke-newlib-tamper`), so inbound verification is in place; outbound is not.
 
 ### 5.3b The `RUST_ENABLED=0` build cannot link
 
@@ -667,6 +663,7 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 5.2f | [G-11] | The armed image was ambient state that `sudo` would elevate | 2026-08-18, #170 |
 | 5.2g | [G-12] | Two CPUs current on one task through the user-entry path | 2026-09-03, #305 |
 | 5.2h | [G-13] | The installer gate's format bound was a total, not a stall | 2026-09-03, #306 |
+| 5.3a | | `horus.iso` was not byte-reproducible: newlib carried its build path, the EFI boot image a clock-made serial, the ISO's directory records the build's time, and a kernel could keep the previous build's module manifest (S17) | 2026-10-12, #557 |
 | 5.3c | | Horus could not be reinstalled over an existing Horus volume (S90) | 2026-09-11, #381 |
 | 5.3d | | Six checkers examined nothing and passed when their parser went silent | 2026-09-10, #368, #369, #375 |
 | 5.3e | | A stale scheduler claim under the switch-commit injection, once in 200 boots: not seen again in 199 boots that finished the whole workload, 2,344 refused switches between them, pinned and unpinned | 2026-10-09, #522, #526 |

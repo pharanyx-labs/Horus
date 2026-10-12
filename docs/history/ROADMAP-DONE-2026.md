@@ -49,7 +49,7 @@ open. The account of each is in its pull requests.
 
 | Item | Delivered |
 |---|---|
-| 3.1 Reproducible builds, the kernel | `kernel.elf` is byte-reproducible and gated |
+| 3.1 Reproducible builds | `kernel.elf` byte-reproducible and gated; then the ISOs, `horus.iso` and the release's `install.iso`, built in two directories at two times and compared on every pull request (S17, `smoke-repro-iso`). 2026-10-12, #557 |
 | 3.2 Measured boot and a sealed volume key | TPM PCR measurement, a key sealed to the measurements (S11, S12), the kernel pinned in the boot image (S92), and a policy build that refuses to run unmeasured (S85) |
 | 3.3 Boot-module integrity manifest | A module that fails its hash check cannot be read or run (S10) |
 | 3.4 Kani proofs on revocation | Revocation reaches exactly the target's derivation subtree |
@@ -63,7 +63,7 @@ open. The account of each is in its pull requests.
 |---|---|
 | 4.2 Gate the security tests [C-6] | Every job is classified as gating or exempt with a written reason in `.github/ci-gating.yml`; the ruleset requires the `gates` aggregator and CodeQL, and `gates` needs every gating job. 2026-08-16 to 2026-09-21, #159, #165, #415 |
 | 4.3 `gitleaks` and `cargo-audit` fail the build | 2026-08-30 |
-| 4.5 Tagged releases, the first three | `v0.2.0-alpha` (2026-09-14), `v0.3.0-alpha` (2026-10-09) and `v0.4.0-alpha` (2026-10-12), each an install ISO and its SHA-256 |
+| 4.5 Tagged releases, the first four | `v0.2.0-alpha` (2026-09-14), `v0.3.0-alpha` (2026-10-09), `v0.4.0-alpha` and `v0.4.1-alpha` (2026-10-12), each an install ISO and its SHA-256; from `v0.4.1-alpha` the ISO rebuilds to the same bytes from its tag |
 | 4.6 `horus.py` under `tools/` [M-2] | 2026-09-09 |
 | 4.7 Governance files [M-3] | 2026-07-27, #107 |
 | 4.9 One author identity [M-9] | 2026-08-29, #241 |

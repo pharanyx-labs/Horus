@@ -103,6 +103,7 @@ jobs:
       - passwd-target
       - prose-style
       - reproducible
+      - reproducible-arms
       - ring0-budget
       - rng-seed
       - rust
@@ -4998,7 +4999,7 @@ jobs:
         run: make smoke-newlib-dotdot-control
 
   reproducible:
-    name: Verify reproducible kernel build
+    name: Verify the kernel and both ISOs are reproducible
     runs-on: ubuntu-latest
     # Backstop, not a performance budget: this job normally finishes in
     # minutes. Without it the default is 360, so a runner wedged on its
@@ -5007,12 +5008,13 @@ jobs:
     timeout-minutes: 105
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
-      # reproducible-build now builds horus.iso as well, because recording a
-      # hash for an artifact the target never built is what this commit fixes.
+      # The release image needs the EFI GRUB modules and newlib's texinfo as well
+      # as what the gates' image needs; osirrox, in xorriso, lists the files
+      # inside an ISO that differs.
       - name: Install build toolchain
         uses: ./.github/actions/apt
         with:
-          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common grub-efi-amd64-bin mtools texinfo
       - name: Add bare-metal Rust target
         run: rustup target add x86_64-unknown-none
       # The recording step used to be `sha256sum kernel.elf horus.iso >
@@ -5036,51 +5038,65 @@ jobs:
         run: make smoke-ap-trampoline
       - name: Restore the flat link and require the embed bound to refuse it
         run: make smoke-ap-trampoline-control
-      # The first build is SERIAL and the second PARALLEL (the workflow's
-      # MAKEFLAGS), so this also proves every other job's -j4 builds are the
-      # same bytes a serial build produces: a Makefile race that changed an
-      # artifact would make the two hashes differ here.
-      - name: Build twice, serially then in parallel, and compare hashes
-        run: |
-          MAKEFLAGS= make reproducible-build
-          cp .build.sha first.sha
-          make reproducible-build
-          cp .build.sha second.sha
-          # Completeness, end to end: smoke-repro-sha proves the step refuses a
-          # short record, this proves a real build produces a full one.
-          for f in first.sha second.sha; do
-            n=$(wc -l < "$f")
-            if [ "$n" -ne 2 ]; then
-              echo "::error::$f records $n artifacts, expected 2 (kernel.elf, horus.iso)"
-              cat "$f"; exit 1
-            fi
-          done
-          # kernel.elf is the reproducible artifact and the one gated here.
-          #
-          # horus.iso is deliberately NOT compared, and the reason is measured
-          # rather than assumed. grub-mkrescue stamps a marker named for the
-          # wall-clock second -- /.disk/YYYY-MM-DD-HH-MM-SS-00.uuid -- into the
-          # tree it hands to xorriso, and embeds that same UUID in the EFI
-          # loaders it generates (efi.img, efi/boot/bootx64.efi,
-          # System/Library/CoreServices/boot.efi). xorriso itself honours
-          # SOURCE_DATE_EPOCH and says so in this log; the marker is not
-          # xorriso's to date. Extract two ISOs of one build and diff them and
-          # every Horus-authored file -- kernel.elf, every boot module,
-          # grub.cfg -- is byte-identical, with only those four grub-generated
-          # objects differing. Two builds inside one wall-clock second are
-          # bit-identical; two seconds apart are not, which is also how a
-          # too-quick first measurement of this called the ISO reproducible.
-          # Gating on it would redden this required job on a clock, so the
-          # limitation is documented (docs/LIMITATIONS.md 5.3a) rather than
-          # gated into a flake. See docs/history/CHANGES-2026.md, 2026-08-19.
-          grep ' kernel\.elf$' first.sha  > first.kernel
-          grep ' kernel\.elf$' second.sha > second.kernel
-          if ! diff -u first.kernel second.kernel; then
-            echo "::error::kernel.elf is not byte-for-byte reproducible"
-            exit 1
-          fi
-          echo "kernel.elf is byte-for-byte reproducible across clean builds"
+      # newlib/ is gitignored and both trees build it; the cache restores tree
+      # A's only, so tree B always builds newlib afresh in another directory,
+      # which is the comparison that found it carrying its build path.
+      - name: Cache built newlib
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: newlib/install
+          key: newlib-${{ runner.os }}-${{ hashFiles('tools/build_newlib.sh') }}
+      # LIMITATIONS 5.3a, S17. kernel.elf, the gates' horus.iso and the
+      # release's install.iso, built in this tree SERIALLY and then in a copy at
+      # another path, later, in PARALLEL (the workflow's MAKEFLAGS), must be the
+      # same bytes. Two directories catch a leaked build path (the libc carried
+      # one until 2026-10-12), two times a clock (the EFI boot image's FAT
+      # serial), serial against parallel a Makefile race. Until 2026-10-12 this
+      # job compared kernel.elf alone, from two builds in one directory, and
+      # left the ISO out on a cause (grub-mkrescue's dated marker) that the
+      # xorriso assembly had already removed. tools/repro_iso_test.sh keeps both
+      # copies of an artifact that differs, under .repro-iso/.
+      - name: Build twice, in two directories at two times, and compare kernel.elf and both ISOs
+        run: make smoke-repro-iso
+      - name: Keep both copies of anything that differed
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: repro-iso-evidence
+          path: .repro-iso/
+          include-hidden-files: true
+          retention-days: 14
 
+
+  # The two control arms of smoke-repro-iso, in a job of their own so they run
+  # beside the gate rather than after it: each is two full builds of the release
+  # image. Each puts back one leak (newlib's build path; the EFI boot image's
+  # clock-made serial) and requires the gate to go red naming the file inside
+  # install.iso that the leak reaches.
+  reproducible-arms:
+    name: Control arms -- a build path and a clock each make the release ISO differ
+    runs-on: ubuntu-latest
+    timeout-minutes: 105
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common grub-efi-amd64-bin mtools texinfo
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Control arm, newlib built with its absolute paths makes the libc differ
+        run: make smoke-repro-iso-path-control
+      - name: Control arm, a clock-made FAT serial makes the EFI boot image differ
+        run: make smoke-repro-iso-serial-control
+      - name: Keep the arms' log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: repro-iso-arms-log
+          path: .repro-iso-control.log
+          include-hidden-files: true
+          retention-days: 14
   # This job IS a required status check in the ruleset. What is advisory is its
   # FINDINGS, not the job: `make security` is advisory by design (four of its six
   # scanners already swallow failures), and it scans the workflow files and host

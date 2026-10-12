@@ -99,7 +99,7 @@ DEFECT_FLAGS = \
 	RESUME_GUARD_LEGACY_FATAL RESUME_RSP_INJECT RESUME_RSP_INJECT_PRECLAIM \
 	CR3_RECLAIM_UNGUARDED EXEC_REENTER_GLOBAL \
 	SPAWN_OWNER_UNCHECKED SPAWN_STAGE_UNSERIALISED SPAWN_STAGE_WIDEN SPAWN_STAGE_TRACE \
-	REPRO_SHA_UNCHECKED WAL_NO_FLUSH WAL_CRASHTEST AP_TRAMPOLINE_FLAT_LINK \
+	REPRO_SHA_UNCHECKED NEWLIB_PATH_UNMAPPED EFI_IMG_SERIAL_UNFIXED WAL_NO_FLUSH WAL_CRASHTEST AP_TRAMPOLINE_FLAT_LINK \
 	KLOG_WRITE_UNGATED SYSCALL_PTR_TRUNC32 KSP_GUARD_INJECT KSP_GUARD_ALWAYS \
 	BUILD_FLAGS_UNSTAMPED SYSCALL_COVERAGE \
 	LIBHORUS_RETRY_ANY LIBHORUS_STRNCPY_UNTERMINATED CLAIM_TRACE CLAIM_RELEASE_SKIP SWITCH_COMMIT_EARLY DEFER_CLEAR_EARLY DEFER_WINDOW_WIDEN \
@@ -4670,7 +4670,15 @@ endif
 # manifest (and the kernel) are regenerated.
 MODULE_MANIFEST := src/kernel/boot_module_manifest.h
 
-$(MODULE_MANIFEST): tools/gen_module_manifest.sh $(BOOT_MODULE_DEP)
+# FORCE, BECAUSE THE MODULE LIST IS AN INPUT THAT IS NOT A FILE. The payloads in
+# BOOT_MODULE_DEP rebuild the manifest when one of them changes, but a build
+# that ships FEWER modules changes no payload, so until 2026-10-12 a plain build
+# after an install build kept the install build's manifest: the kernel pinned
+# coreutils hashes it did not carry, and what it would accept depended on what
+# the tree had built before (found by smoke-repro-iso, LIMITATIONS 5.3a). The
+# generator rewrites the header only when its content changes, so running it
+# every time costs a hash per module and recompiles nothing that is current.
+$(MODULE_MANIFEST): tools/gen_module_manifest.sh $(BOOT_MODULE_DEP) FORCE
 	@tools/gen_module_manifest.sh $@ $(BOOT_MODULES)
 
 src/kernel/main.o: $(MODULE_MANIFEST)
@@ -5054,6 +5062,12 @@ horus.iso: kernel.elf $(GRUB_CFG) $(BOOT_MODULE_DEP) tools/mkbootimg.sh tools/mk
 	    EFI_OUT=isofiles/boot/grub/efi.img \
 	    tools/mkbootimg.sh kernel.elf .bootcfg.staged isofiles/boot/grub/eltorito.img >/dev/null
 	@rm -f .bootcfg.staged
+# EVERY FILE IN THE STAGING TREE CARRIES SOURCE_DATE_EPOCH, NOT THE BUILD'S TIME
+# (LIMITATIONS 5.3a). xorriso dates the volume from SOURCE_DATE_EPOCH but each
+# directory record from the file's own mtime, and the files here were copied a
+# moment ago: two builds of one commit seconds apart differed in 49 such dates
+# (measured 2026-10-12). -h stamps a symlink itself rather than its target.
+	@find isofiles -exec touch -h -d @$(SOURCE_DATE_EPOCH) {} +
 # xorriso directly, with the arguments grub-mkrescue would have used for BOTH
 # halves. --grub2-mbr is the hybrid MBR and is not optional: without it the image
 # boots from CD and NOT from a USB stick written with dd, which is the case
@@ -5076,6 +5090,7 @@ horus.iso: kernel.elf $(GRUB_CFG) $(BOOT_MODULE_DEP) tools/mkbootimg.sh tools/mk
 
 clean: userspace-clean
 	rm -f kernel.elf src/boot/*.o src/boot/*.bin src/kernel/*.o src/kernel/rust_*.o
+	rm -f $(MODULE_MANIFEST)
 	rm -f src/boot/*.d src/kernel/*.d userspace/*.d
 	rm -rf rust/target
 
@@ -5098,6 +5113,7 @@ iso: kernel.elf
 	    EFI_OUT=iso/boot/grub/efi.img \
 	    tools/mkbootimg.sh kernel.elf .bootcfg.staged iso/boot/grub/eltorito.img >/dev/null
 	@rm -f .bootcfg.staged
+	@find iso -exec touch -h -d @$(SOURCE_DATE_EPOCH) {} +
 	@xorriso -as mkisofs -quiet -o horus.iso \
 	    -b boot/grub/eltorito.img -no-emul-boot -boot-load-size 4 -boot-info-table \
 	    --grub2-boot-info --grub2-mbr $(GRUB_I386_DIR)/boot_hybrid.img \
@@ -13714,6 +13730,51 @@ repro-sha-control-arm:
 	@: > .repro-sha-test/kernel.elf
 	@cd .repro-sha-test && if $(REPRO_RECORD); then 	    n=$$(wc -l < .build.sha 2>/dev/null || echo 0); 	    echo "REPRO_SHA_CONTROL: FAIL recorded $$n of $(words $(REPRO_ARTIFACTS)) artifacts and reported success"; 	 else 	    echo "REPRO_SHA_CONTROL: the control arm REFUSED -- it no longer reproduces the defect"; 	    exit 1; 	 fi
 	@rm -rf .repro-sha-test
+
+# ---- The release ISO is reproducible (LIMITATIONS 5.3a, S17) ----------------
+#
+# Two builds of one commit, in two directories, at two times, one serial and one
+# parallel, must give the same kernel.elf, horus.iso and install.iso, byte for
+# byte. tools/repro_iso_test.sh says how and keeps both copies when they differ.
+# Until 2026-10-12 only kernel.elf was compared, and only between two builds in
+# ONE directory, which is how a libc carrying its build path went unseen.
+.PHONY: smoke-repro-iso smoke-repro-iso-path-control smoke-repro-iso-serial-control
+smoke-repro-iso:
+	@tools/repro_iso_test.sh
+
+# The two control arms, one for each leak the gate exists to catch. Each puts
+# its leak back and requires the gate's own failure, naming the file inside the
+# release image that the leak reaches. They compare install.iso alone: it
+# carries both the shared libc and the EFI boot image, so building the gates'
+# image twice more would only repeat what it shows.
+#
+# NEWLIB_PATH_UNMAPPED=1: newlib built with its absolute source paths again, so
+# the shared libc differs between the trees (and the kernel, which pins it).
+smoke-repro-iso-path-control:
+	@if NEWLIB_PATH_UNMAPPED=1 REPRO_ISO_ARTIFACTS=install tools/repro_iso_test.sh \
+	        > .repro-iso-control.log 2>&1; then \
+	    cat .repro-iso-control.log; \
+	    echo "REPRO ISO PATH CONTROL: FAIL - the image was reproducible with newlib's paths unmapped"; \
+	    exit 1; \
+	 fi
+	@grep -q 'differs inside install.iso: ./boot/libc.stripped.so' .repro-iso-control.log || { \
+	    cat .repro-iso-control.log; \
+	    echo "REPRO ISO PATH CONTROL: FAIL - the gate went red, but not on the shared libc"; exit 1; }
+	@echo "REPRO ISO PATH CONTROL: PASS - an unmapped newlib made the release image differ, at the libc"
+
+# EFI_IMG_SERIAL_UNFIXED=1: the EFI boot image's FAT serial made from the clock
+# again, so the two trees, built at least two seconds apart, differ there.
+smoke-repro-iso-serial-control:
+	@if EFI_IMG_SERIAL_UNFIXED=1 REPRO_ISO_ARTIFACTS=install tools/repro_iso_test.sh \
+	        > .repro-iso-control.log 2>&1; then \
+	    cat .repro-iso-control.log; \
+	    echo "REPRO ISO SERIAL CONTROL: FAIL - the image was reproducible with a clock-made serial"; \
+	    exit 1; \
+	 fi
+	@grep -q 'differs inside install.iso: ./boot/grub/efi.img' .repro-iso-control.log || { \
+	    cat .repro-iso-control.log; \
+	    echo "REPRO ISO SERIAL CONTROL: FAIL - the gate went red, but not on the EFI boot image"; exit 1; }
+	@echo "REPRO ISO SERIAL CONTROL: PASS - a clock-made serial made the release image differ, at efi.img"
 
 # ---- The AP trampoline fits its page, whatever the host assembler emits -------
 #

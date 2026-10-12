@@ -148,7 +148,7 @@ has none.
 | S15 | An address-space slot rebuilt after task death leaks nothing | A reused slot's cspace is zeroed and its address space returned to the pool | `make smoke-aspace` |
 | S16 | A task cannot read another's XMM register file | `fpu_save` and `fpu_restore` save and restore the whole FXSAVE image on every ring transition | `make smoke-fpu`; arms: `smoke-fpu-leak-control` (`FPU_NO_RESTORE=1`), `smoke-fpu-save-control` (`FPU_NO_SAVE=1`) |
 | S22 | A number stated in the documentation matches the tree it describes | `.github/doc-claims.yml` declares each derivable count and where it is stated; `tools/check_doc_claims.py` derives and compares them, and refuses retired phrasings | CI job `doc-claims` |
-| S17 | The shipped **kernel image** corresponds to the published source | `kernel.elf` builds byte-for-byte identically from the same source; the ISO does not yet (`docs/LIMITATIONS.md` 5.3a) | `make smoke-repro-sha`; CI job `reproducible`; `make reproducible-build`; arms: `smoke-repro-sha-control` (`REPRO_SHA_UNCHECKED=1`) |
+| S17 | The shipped **kernel image and install media** correspond to the published source | `kernel.elf`, the gates' `horus.iso` and the release's `install.iso` build byte for byte identically from the same source in two directories, at two times, serially and in parallel: newlib maps its build path away and the EFI boot image's FAT serial comes from its contents, not the clock | `make smoke-repro-iso`; `make smoke-repro-sha`; CI jobs `reproducible` and `reproducible-arms`; arms: `smoke-repro-iso-path-control` (`NEWLIB_PATH_UNMAPPED=1`), `smoke-repro-iso-serial-control` (`EFI_IMG_SERIAL_UNFIXED=1`), `smoke-repro-sha-control` (`REPRO_SHA_UNCHECKED=1`) |
 | S19 | Audit-log history committed before a kernel compromise cannot be forged or rewritten | A forward-secure hash chain in `src/kernel/kaudit.c`: the MAC key is ratcheted one way and erased after every entry | CI job `rust` |
 | S20 | A task's kernel stack is executed by at most one CPU at a time | The scheduler holds its claim on a task until the CPU has left that task's stack (`sched_release_deferred`); a CPU whose last task dies parks on its own stack; a spawn never reuses a slot a CPU is still on; `g_kstack_inflight` halts the kernel on a collision | `make smoke-kstack-race`, `make smoke-kstack-park`, `make smoke-enter-user-claim`, `make smoke-sched-invariants`, `make smoke-task-ceiling`, `make smoke-kstack-imp`, `make smoke-kstack-reuse`; arms: `smoke-enter-user-claim-control` (`ENTER_USER_PUBLISH_EARLY=1`, `ENTER_USER_STEAL_WIDEN=1`), `smoke-enter-user-collide-control` (`ENTER_USER_CLAIM_UNCHECKED=1`, `ENTER_USER_PUBLISH_EARLY=1`, `ENTER_USER_STEAL_WIDEN=1`), `smoke-kstack-imp-control` (`KSTACK_COLLIDE_IMPERSONATED=1`), `smoke-kstack-reuse-control` (`SLOT_REUSE_UNCHECKED=1`); falsified by `KSTACK_INFLIGHT_LEGACY_WORD=1`, `KSTACK_SLOT_INDEX_TRUNC=1` |
 | S25 | Which syscalls a test actually exercises is measured, not assumed | `SYSCALL_COVERAGE=1` records the first entry into each handler; `.github/syscall-coverage.yml` classifies all 103 implemented syscalls as covered or uncovered with a reason. Currently **95 of 103**: the property is that the number is decided and checked, not that it is complete | `make smoke-syscall-coverage`; CI job `syscall-coverage`; arms: `smoke-syscall-coverage-control` (`SYSCOV_PROBES_ABSENT=1`) |
@@ -301,16 +301,17 @@ boundary; bounded Kani proofs and Miri on every pull request.
 - **No review before merge** (**[C-5]**): the ruleset requires no approving review, and merges are
   made by Claude once the gates are green. A pull request from outside the project is not merged
   that way; it waits for the maintainer.
-- **No build provenance or signed artifacts** (**[I-9]**), and the ISO is not byte-reproducible
-  (`docs/LIMITATIONS.md` 5.3, 5.3a).
+- **No build provenance or signed artifacts** (**[I-9]**, `docs/LIMITATIONS.md` 5.3). The ISO
+  rebuilds to the same bytes from its tag with the same tool versions (S17), which each release
+  lists, so a release can be checked by rebuilding it.
 - **Workflows GitHub injects are invisible to the tree's checks** (`docs/LIMITATIONS.md` 5.7).
 
 ---
 
 ## Supported versions
 
-There are three releases, `v0.2.0-alpha` (2026-09-14), `v0.3.0-alpha` (2026-10-09) and
-`v0.4.0-alpha` (2026-10-12), each an install ISO for developers; only the latest is supported. Security fixes
+There are four releases, `v0.2.0-alpha` (2026-09-14), `v0.3.0-alpha` (2026-10-09), `v0.4.0-alpha`
+and `v0.4.1-alpha` (both 2026-10-12), each an install ISO for developers; only the latest is supported. Security fixes
 land on `main` only; there are no backports. Anyone using Horus for research should track `main`
 and rebuild.
 

@@ -14,6 +14,26 @@ here.
 
 ## [Unreleased]
 
+## [0.4.1-alpha]: 2026-10-12
+
+**The install ISO rebuilds to the same bytes from its tag.** A release can now be checked by
+building it again: `make install.iso` from a checkout of the tag, with the tool versions the
+release lists, gives the ISO published beside the checksum, byte for byte, whatever directory it
+is built in and whenever. Install media for
+x86-64, built for a UK/ISO keyboard, published as an alpha for developers.
+
+### Security
+
+- A kernel built after an install build in the same tree kept the install build's boot-module manifest, so it pinned, and would accept, the coreutils it did not ship: the manifest was regenerated when a module changed but not when the list of modules did, and `make clean` left it. It is now regenerated on every build and removed by `clean`. Every hash it held was of a binary this project built. (#557)
+
+### Added
+
+- `make smoke-repro-iso` builds `kernel.elf`, the gates' `horus.iso` and the release's `install.iso` in the tree and again in a git worktree at another path, later and in parallel, and requires the same bytes; a difference names the files inside the ISO and keeps both copies. Two control arms, one per leak, run in a new CI job beside it. (#557)
+
+### Fixed
+
+- The install ISO differed with the directory and the time it was built in: newlib carried its build path into the shared libc (and so into the kernel that pins it), the EFI boot image took its FAT serial from the clock, the ISO's directory records took the build's time, and both FAT images ended in a sector of the build host's uninitialised stack, which mtools 4.0.43 writes when it creates an image file (the images are now made zero-filled and formatted in place). All four are fixed, and LIMITATIONS 5.3a, which blamed `grub-mkrescue` (no longer used), is closed. (#557)
+
 ## [0.4.0-alpha]: 2026-10-12
 
 **Capabilities that revoke precisely, a filesystem that walks by them, and every finding of a

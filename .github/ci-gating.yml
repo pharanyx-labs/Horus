@@ -84,6 +84,7 @@ required:
   - prose-style
   - site
   - reproducible
+  - reproducible-arms
   - rust
   - security
   - smoke

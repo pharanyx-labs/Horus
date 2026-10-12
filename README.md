@@ -18,7 +18,7 @@ it is built first and kept small.
 
 | | |
 |---|---|
-| **Status** | Research system. Three tagged releases for developers, the latest `v0.4.0-alpha` (2026-10-12); all work lands on `main` |
+| **Status** | Research system. Four tagged releases for developers, the latest `v0.4.1-alpha` (2026-10-12); all work lands on `main` |
 | **Platform** | x86-64, booted by GRUB under BIOS or UEFI, in QEMU or on real hardware |
 | **Languages** | C for the kernel and the ring-3 servers, `no_std` Rust for the security core |
 | **Website** | [horus.pharanyx.co.uk](https://horus.pharanyx.co.uk/) |
@@ -176,9 +176,8 @@ what later work needs:
    the policy, and the filesystem stops authorising anything by user id (closing 1.31).
 3. **Kernel reports on their own channel** (2.6c): the gates stop reading kernel output off the
    console that user programs also write.
-4. **A reproducible ISO** (5.3a), which signed, verifiable releases and kernel updates without a
-   reseal both need.
-5. **Authenticated filesystem metadata** (1.30), if the maintainer takes it before the new format.
+4. **Authenticated filesystem metadata** (1.30), if the maintainer takes it before the new format.
+5. **The boot's wait for secondary CPUs bounded by time** (2.28), not by a count of instructions.
 
 The later waves finish moving authority to capabilities (accounts as files, exec by capability,
 console input as a capability), tighten the boot chain, move the kernel's remaining services to
@@ -269,7 +268,7 @@ test does not exist or does not run.
 | Layer | What it covers |
 |---|---|
 | Security properties | 135 numbered properties, each bound to a witness by `tools/check_invariants.py` |
-| QEMU integration tests | 502 `smoke-*` targets: 222 base gates and 280 control arms |
+| QEMU integration tests | 505 `smoke-*` targets: 223 base gates and 282 control arms |
 | Control arms | A build that puts a defect back on purpose; CI requires its gate to go red against it |
 | Kani | 34 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
 | Miri | The security core's tests, interpreted for undefined behaviour on every pull request |
@@ -277,7 +276,7 @@ test does not exist or does not run.
 | Reproducibility | `kernel.elf` builds byte for byte the same twice; the ISO does not yet |
 | Toolchain | The Rust compiler, Kani, the fuzzing toolchain, PyYAML and semgrep are pinned to exact versions |
 
-`.github/workflows/ci.yml` defines 139 jobs; 143 of the 152 status checks the workflows produce
+`.github/workflows/ci.yml` defines 140 jobs; 144 of the 153 status checks the workflows produce
 gate a merge. The 9 that do not are the nightly fuzzing, the nightly Kani control arms and the
 scheduled ruleset audit, each with its reason in `.github/ci-gating.yml`.
 [`TESTS.md`](TESTS.md) lists every test and what it proves.

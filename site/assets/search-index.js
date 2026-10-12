@@ -265,9 +265,9 @@ window.HORUS_SEARCH = [
 "k": 3
 },
 {
-"t": "isoThe ISO does not rebuild to the same bytes",
+"t": "isoThe releases carry no signature or provenance",
 "p": "Limitations",
-"u": "limitations.html#isothe-iso-does-not-rebuild-to-the-same-bytes",
+"u": "limitations.html#isothe-releases-carry-no-signature-or-provenance",
 "k": 3
 },
 {

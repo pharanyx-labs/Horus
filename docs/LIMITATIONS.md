@@ -378,7 +378,7 @@ maintainer.
 **The kernel image is itself a ceiling.** It must end below `USER_PHYS_BASE` (16 MiB), which the
 `linker64.ld` ASSERT enforces. That 16 MiB is the window in which the kernel maps itself with
 4 KiB pages, the only place a guard page can exist. GRUB stages boot modules in the same room.
-`.bss` is budgeted at **6,772 KiB** (`.github/image-budget.yml`), held exactly by
+`.bss` is budgeted at **6,784 KiB** (`.github/image-budget.yml`), held exactly by
 `tools/check_image_budget.py`, and `argon2_scratch` is 4,096 KiB of it: the Argon2 memory cost,
 which must not be cut to buy room. Raising `MAX_CPUS`, `BLOCKS_PER_DISK` or the Argon2 cost spends
 that budget; raising `MAX_TASKS` spends pool memory instead.

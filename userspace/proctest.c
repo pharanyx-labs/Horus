@@ -645,6 +645,85 @@ void _start(void) {
         }
         report("PROC_SELFTEST: killed-task OK\n");
     }
+    /* --- LIMITATIONS 1.32: a reply, and SYS_IPC_SENDER's answer, name one
+     * incarnation of a task, never the task that reuses its slot. -----------
+     *
+     * The client is killed with its call in flight, after this task has
+     * received its request (and so holds the one-shot reply right naming it).
+     * A successor is then put in the same slot and makes a call of its own on
+     * the same endpoint, which this task never receives. Two answers that used
+     * to name the slot rather than the task are then asked for:
+     *   - SYS_IPC_SENDER, which servers authorise on: the last request's sender
+     *     is dead, so it must answer nothing, not the successor's identity;
+     *   - the reply to the dead client's request: it must go nowhere, not into
+     *     the successor's blocked call (replyprobe says so by name if it does).
+     * The successor must reach the slot the client had, or nothing here would
+     * be asked of a reused slot; a run where it does not is reported as such,
+     * a failure, never a pass. */
+    {
+        const int slot_ep = 41;
+        const int replyprobe_ep = 20;    /* REPLYPROBE_SLOT_EP */
+        if (sys_retype(CAPSLOT_UNTYPED, KOBJ_ENDPOINT, 1, slot_ep) != 1) {
+            report("PROC_SELFTEST: FAIL stale-reply-endpoint\n"); sys_exit();
+        }
+        int c = sys_spawn_named("replyprobe");
+        if (c <= 0 || sys_cap_grant(c, (uint32_t)slot_ep, (uint32_t)replyprobe_ep) != 0) {
+            report("PROC_SELFTEST: FAIL stale-reply-client\n"); sys_exit();
+        }
+        sys_task_resume(c);
+        char req[256];
+        int got = -1;
+        for (int i = 0; i < 8000 && got <= 0; i++) {
+            got = sys_ipc_recv(slot_ep, req, sizeof(req));
+            if (got <= 0) settle();
+        }
+        if (got <= 0) { report("PROC_SELFTEST: FAIL stale-reply-no-request\n"); sys_exit(); }
+        if (sys_ipc_sender(slot_ep, 0) == (uint32_t)-1) {
+            report("PROC_SELFTEST: FAIL stale-reply-live-sender-unknown\n"); sys_exit();
+        }
+        if (sys_kill(c) != 0 || sys_wait(c) != 0) {
+            report("PROC_SELFTEST: FAIL stale-reply-kill\n"); sys_exit();
+        }
+
+        /* The successor. A spawn takes a free slot, not a chosen one, so spawn
+         * until one lands on c's, holding the misses (suspended) so each next
+         * spawn has to look further. Bounded. */
+        int held[32];
+        int nheld = 0, n = -1;
+        for (int i = 0; i < 32; i++) {
+            int t = sys_spawn_named("replyprobe");
+            if (t <= 0) break;
+            if (t == c) { n = t; break; }
+            held[nheld++] = t;
+        }
+        if (n != c) { report("PROC_SELFTEST: FAIL stale-reply-slot-not-reused\n"); sys_exit(); }
+        if (sys_cap_grant(n, (uint32_t)slot_ep, (uint32_t)replyprobe_ep) != 0) {
+            report("PROC_SELFTEST: FAIL stale-reply-successor-grant\n"); sys_exit();
+        }
+        sys_task_resume(n);
+        struct task_info ni;
+        int blocked = 0;
+        for (int i = 0; i < 8000 && !blocked; i++) {
+            blocked = (sys_get_task_info(n, &ni) == 0 && ni.state == TASK_BLOCKED_IPC);
+            if (!blocked) settle();
+        }
+        if (!blocked) { report("PROC_SELFTEST: FAIL stale-reply-successor-never-called\n"); sys_exit(); }
+
+        if (sys_ipc_sender(slot_ep, 0) != (uint32_t)-1) {
+            report("PROC_SELFTEST: FAIL stale-sender-answered-for-successor\n"); sys_exit();
+        }
+        char stale[8] = "STALE";
+        int rr = sys_ipc_reply_to(slot_ep, stale, sizeof(stale));
+        for (int i = 0; i < 400; i++) settle();
+        if (sys_get_task_info(n, &ni) != 0 || ni.state != TASK_BLOCKED_IPC) {
+            report("PROC_SELFTEST: FAIL stale-reply-woke-successor\n"); sys_exit();
+        }
+        if (rr != 0) { report("PROC_SELFTEST: FAIL stale-reply-rc\n"); sys_exit(); }
+
+        (void)sys_kill(n); (void)sys_wait(n);
+        for (int i = 0; i < nheld; i++) { (void)sys_kill(held[i]); (void)sys_wait(held[i]); }
+        report("PROC_SELFTEST: stale-reply OK\n");
+    }
 #ifdef KFAULT_RECORD_SELFTEST
     /* --- HORUS-20260920-01 (docs/LIMITATIONS.md 1.16): a SUPERVISOR fault's
      * record carries no kernel address. kfaulter makes the kernel read an address

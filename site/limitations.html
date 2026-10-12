@@ -170,7 +170,8 @@
       A static review of the source found six defects. One is fixed; five are open, each
       recorded as LIMITATIONS 1.27 and 1.29 to 1.32 until it is fixed. One account changing
       its own password can re-seal the key slot of whoever logged in first that boot. A
-      forked child's pipe end is not counted, so a freed pipe can be reused under it. The
+      pipe end handed on by a capability grant is not counted, so a freed pipe can be reused
+      under its holder (a fork counts its copies now). The
       inode table is not authenticated at rest. The older by-user-id file path checks a
       file's own mode, not its directories. A reply or a sender's identity can outlive the
       task it named.

@@ -154,14 +154,19 @@ also records that slot as B's own `keyslot`, so an administrator later changing 
 removes A's slot. Found by a static source review dated 2026-09-26; confirmed by reading the code
 on 2026-10-12, not yet reproduced.
 
-### 1.29 `fork` copies a pipe end without counting it **[HORUS-20261012-03]**
+### 1.29 A granted, minted or transferred pipe end is not counted **[HORUS-20261012-03]**
 
-`cap_clone_cspace` derives the child's copy of every capability, `CAP_PIPE` included, but takes
-no `pipe_end_ref` for the pipe ends it copies; the spawn path's stdio wiring does. After a fork
-the pipe counts one holder where there are two, so when the parent closes its end the pipe is
-freed and scrubbed while the child still holds a capability naming its index, and the next
-`pipe_alloc` to reuse that index joins the child to an unrelated pair of tasks. Confirmed by
-reading the code on 2026-10-12, not yet reproduced.
+A pipe is freed and scrubbed when its count of reader and writer ends reaches zero, so every copy
+of a `CAP_PIPE` must be counted. `fork` counts the ends it copies into the child
+(`pipe_count_forked_ends`, #553), and the spawn path's stdio wiring counts the one end it hands a
+child. `SYS_CAP_GRANT`, `SYS_CAP_MINT` and `SYS_CAP_TRANSFER` accept a capability of any type and
+still copy a `CAP_PIPE` without counting it, so a task that holds a pipe end and hands a copy to
+another task leaves the pipe counting one holder where there are two. When the original holder
+closes its end the pipe is freed while the recipient still names its index, and the next
+`pipe_alloc` to reuse that index joins the recipient to an unrelated pair of tasks. A transfer is
+a grant followed by a revoke, and a revoke releases no end (1.14). No program in the tree passes a
+pipe end this way. Confirmed by reading the code on 2026-10-12; the `fork` half was reproduced and
+fixed in #553, the rest is not yet reproduced.
 
 ### 1.30 The inode table and allocation bitmaps are not authenticated at rest **[HORUS-20261012-04]**
 

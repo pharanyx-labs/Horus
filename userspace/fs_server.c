@@ -1768,8 +1768,12 @@ static int tar_member_ok(const uint8_t *h, char *leaf, uint32_t *size) {
 }
 
 /* Walk archive module `mod_index` (`msize` bytes). With `install` 0, only check
- * it; with 1, install every member under `dir`. Returns the member count, or -1
- * if the archive is malformed anywhere. */
+ * it; with 1, install every member under `dir` as a system-tree file; with 2,
+ * seed each member into `dir` only where no file of its name exists
+ * (seed_archive_module). Returns the member count, or -1 if the archive is
+ * malformed anywhere. */
+static int seed_file_at(uint32_t dir_ino, const char *leaf, uint32_t mod_index,
+                        uint32_t mod_off, uint32_t size);
 static int walk_archive(uint32_t mod_index, uint32_t msize, const char *dir, int install) {
     static uint8_t h[TAR_BLOCK];
     uint32_t off = 0;
@@ -1785,7 +1789,10 @@ static int walk_archive(uint32_t mod_index, uint32_t msize, const char *dir, int
         uint32_t padded = (size + TAR_BLOCK - 1) & ~(TAR_BLOCK - 1);
         if (size > msize || data > msize - size || padded < size ||
             data + padded > msize) return -1;
-        if (install) {
+        if (install == 2) {
+            int d = ensure_dir_path(dir);
+            if (d < 0 || (size > 0 && seed_file_at((uint32_t)d, leaf, mod_index, data, size) < 0)) return -1;
+        } else if (install) {
             char path[FS_NAME_MAX * 6];
             int n = 0;
             for (const char *q = dir; *q && n < (int)sizeof(path) - 2; q++) path[n++] = *q;
@@ -1797,6 +1804,48 @@ static int walk_archive(uint32_t mod_index, uint32_t msize, const char *dir, int
         members++;
         off = data + padded;
     }
+}
+
+/* Write `size` bytes of module `mod_index` from `mod_off` as a NEW file `leaf` in
+ * directory `dir_ino`, root-owned 0644, if and only if no entry of that name is
+ * there. The /etc defaults (docs/design/configuration.md, rule 7): seeded, never
+ * imposed, so an administrator's edit survives every boot. Not marked as a
+ * system inode, because /etc is not a system tree. 1 written, 0 left alone, -1
+ * on failure. */
+static int seed_file_at(uint32_t dir_ino, const char *leaf, uint32_t mod_index,
+                        uint32_t mod_off, uint32_t size) {
+    if (dir_find(dir_ino, leaf, 0, 0)) return 0;
+    int ino = sys_fs_inode_alloc(FS_TYPE_FILE);
+    if (ino < 0) return -1;
+    sys_fs_set_meta((uint32_t)ino, 0644u, 0, 0);
+    static uint8_t buf[BLK];
+    uint32_t off = 0, blk = 0;
+    while (off < size) {
+        uint32_t chunk = size - off; if (chunk > BLK) chunk = BLK;
+        int got = sys_boot_module_read(mod_index, mod_off + off, buf, chunk);
+        if (got <= 0 || sys_fblock_write((uint32_t)ino, blk, buf, (uint32_t)got) != got) {
+            fs_ino_free((uint32_t)ino); return -1;
+        }
+        off += (uint32_t)got; blk++;
+    }
+    sys_fs_set_size((uint32_t)ino, size);
+    if (dir_add(dir_ino, leaf, (uint32_t)ino, FS_TYPE_FILE) != 0) { fs_ino_free((uint32_t)ino); return -1; }
+    return 1;
+}
+
+/* Seed /etc from archive module `mod_index`: the archive is checked whole, as
+ * any archive is, and then each member is written only where no file of its
+ * name exists. "etc" is the one directory a seed archive may name. */
+static int seed_archive_module(uint32_t mod_index, uint32_t msize, const char *dir) {
+    if (!(dir[0] == 'e' && dir[1] == 't' && dir[2] == 'c' && dir[3] == 0)) {
+        kputln("[fs_server] refusing a seed archive for anywhere but /etc");
+        return -1;
+    }
+    if (walk_archive(mod_index, msize, dir, 0) < 0) {
+        kputln("[fs_server] refusing a malformed seed archive: nothing from it written");
+        return -1;
+    }
+    return walk_archive(mod_index, msize, dir, 2);
 }
 
 /* Unpack archive module `mod_index` into `dir`. Returns members installed, or -1
@@ -1991,6 +2040,10 @@ static void provision_boot_modules(void) {
          * a disallowed path, and was counted as a module that "did not fit",
          * which is a different failure reported as this one. */
         if (uslen(info.name) == 11 && has_prefix(info.name, "lib/libc.so")) continue;
+        if (has_prefix(info.name, "seed/")) {
+            if (seed_archive_module((uint32_t)i, info.size, info.name + 5) < 0) skipped++;
+            continue;
+        }
         if (has_prefix(info.name, "pack/")) {
             int m = unpack_archive_module((uint32_t)i, info.size, info.name + 5);
             if (m < 0) skipped++;

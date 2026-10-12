@@ -32,12 +32,15 @@ DESCRIPTION
     narrowed: a root and a working directory, never more than the shell
     holds, taken back when the program ends. It is given nothing else.
 
-    The prompt is NAME@horus, then '#' for the administrator and '$' for
-    anyone else.
+    The prompt is NAME@HOST, then '#' for the administrator and '$' for
+    anyone else. HOST is horus unless shell.conf(5) names another.
 
 FILES
     /bin            programs run by name
     /usr/share/man  the manual
+    /etc/shell.conf settings, read after each login (shell.conf(5))
+    /etc/login.conf settings for the login prompt (login.conf(5))
 
 SEE ALSO
-    help(1), run(1), exit(1), hier(7), horus(7)
+    help(1), run(1), exit(1), shell.conf(5), login.conf(5), hier(7),
+    horus(7)

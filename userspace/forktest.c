@@ -212,6 +212,57 @@ void _start(void) {
     if (again == 0) sys_exit();          /* the second child has nothing to do */
     if (sys_wait(again) != 0) { report("FORKTEST: FAIL wait2\n"); sys_exit(); }
 
+    /* ---- A forked child's pipe ends are counted (LIMITATIONS 1.29) --------
+     *
+     * A pipe is freed when no holder of either end is left, so a child given
+     * copies of its parent's ends must be counted as holding them. Until
+     * 2026-10-12 the fork counted none: the parent closing its ends freed the
+     * pipe under the child, whose next write found it gone (or found a newer,
+     * unrelated pipe in the same slot).
+     *
+     * The order matters and is enforced by a second pipe, `s`: the parent
+     * closes both ends of `t` FIRST and only then writes one byte to `s`; the
+     * child waits for that byte before it touches `t`. So the child's use of
+     * its copies always follows the parent's close, at -smp 1 or any other.
+     * The child then writes through its copy of t's write end and must read
+     * the same byte back through its copy of the read end. */
+    {
+        int trw = sys_pipe();
+        int srw = sys_pipe();
+        if (trw < 0 || srw < 0) { report("FORKTEST: FAIL pipe\n"); sys_exit(); }
+        uint32_t tr = (uint32_t)trw >> 16, tw = (uint32_t)trw & 0xFFFFu;
+        uint32_t sr = (uint32_t)srw >> 16, sw = (uint32_t)srw & 0xFFFFu;
+
+        int pc = sys_fork();
+        if (pc < 0) { report("FORKTEST: FAIL fork-pipe\n"); sys_exit(); }
+        if (pc == 0) {
+            char go = 0;
+            int got = SYS_ERR_AGAIN;
+            for (int i = 0; i < WATCH_ITERS && got == SYS_ERR_AGAIN; i++) {
+                got = sys_pipe_read(sr, &go, 1);
+                if (got == SYS_ERR_AGAIN) sys_yield();
+            }
+            if (got != 1 || go != 'g') child_fail("FORKTEST: FAIL fork-pipe-no-go\n");
+            char out = 'x', back = 0;
+            if (sys_pipe_write(tw, &out, 1) != 1)
+                child_fail("FORKTEST: FAIL fork-pipe-freed-under-child\n");
+            if (sys_pipe_read(tr, &back, 1) != 1 || back != 'x')
+                child_fail("FORKTEST: FAIL fork-pipe-freed-under-child\n");
+            sys_exit();
+        }
+        if (sys_pipe_close(tr) != 0 || sys_pipe_close(tw) != 0) {
+            report("FORKTEST: FAIL pipe-close\n"); sys_exit();
+        }
+        char go = 'g';
+        if (sys_pipe_write(sw, &go, 1) != 1) { report("FORKTEST: FAIL pipe-go\n"); sys_exit(); }
+        if (sys_wait(pc) != 0) { report("FORKTEST: FAIL wait-pipe\n"); sys_exit(); }
+        struct task_exit_info pi;
+        if (sys_task_exit_info(&pi) != 0) { report("FORKTEST: FAIL exit-info-pipe\n"); sys_exit(); }
+        if (pi.reason != TASK_EXIT_NORMAL) { report("FORKTEST: FAIL child-died-pipe\n"); sys_exit(); }
+        (void)sys_pipe_close(sr);
+        (void)sys_pipe_close(sw);
+    }
+
     /* ---- S41: the child's capabilities are DERIVED, not duplicated -------
      *
      * Checked STRUCTURALLY, through SYS_CAP_ENUMERATE, rather than by revoking

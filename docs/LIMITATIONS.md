@@ -143,14 +143,19 @@ no grant set (held by system tasks, never by a session) rename without that rule
 that way under another principal's grant can show a bound that is low through a capability
 minted before the move, until it is opened again.
 
-### 1.29 `fork` copies a pipe end without counting it **[HORUS-20261012-03]**
+### 1.29 A granted pipe end is not counted **[HORUS-20261012-03]**
 
-`cap_clone_cspace` derives the child's copy of every capability, `CAP_PIPE` included, but takes
-no `pipe_end_ref` for the pipe ends it copies; the spawn path's stdio wiring does. After a fork
-the pipe counts one holder where there are two, so when the parent closes its end the pipe is
-freed and scrubbed while the child still holds a capability naming its index, and the next
-`pipe_alloc` to reuse that index joins the child to an unrelated pair of tasks. Confirmed by
-reading the code on 2026-10-12, not yet reproduced.
+A pipe is freed and scrubbed when its count of reader and writer ends reaches zero, so every copy
+of a `CAP_PIPE` must be counted. `fork` counts the ends it copies into the child
+(`pipe_count_forked_ends`, #553), and the spawn path's stdio wiring counts the one end it hands a
+child. `SYS_CAP_GRANT` needs only possession of its source, accepts a capability of any type, and
+still copies a `CAP_PIPE` into a supervised child without counting it, so the pipe counts one
+holder where there are two. When the granting task closes its end the pipe is freed while the
+child still names its index, and the next `pipe_alloc` to reuse that index joins the child to an
+unrelated pair of tasks. `SYS_CAP_MINT` and `SYS_CAP_TRANSFER` (and so `SYS_CAP_MOVE`) need the
+source to carry `CAP_RIGHT_MINT`, which no pipe end in the shipped kernel is given, so they refuse
+one. No program in the tree grants a pipe end. Confirmed by reading the code on 2026-10-12; the
+`fork` half was reproduced and fixed in #553, the grant half is not yet reproduced.
 
 ### 1.30 The inode table and allocation bitmaps are not authenticated at rest **[HORUS-20261012-04]**
 

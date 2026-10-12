@@ -220,6 +220,7 @@ control_arms:
   smoke-fork-arena-control: smoke-fork
   smoke-fork-cspace-flat-control: smoke-fork
   smoke-fork-cspace-orphan-control: smoke-fork
+  smoke-fork-pipe-control: smoke-fork
   smoke-fork-share-control: smoke-fork
   smoke-forkexec-reset-control: smoke-forkexec
   smoke-forkexec-root-control: smoke-forkexec

@@ -106,7 +106,7 @@ DEFECT_FLAGS = \
 	FRAME_INDEX_UNCHECKED FRAME_RIGHTS_UNCHECKED FRAME_REGION_NO_ROLLBACK FRAME_REGION_ROLLBACK_WIDE \
 	FRAME_PAGES_SAME_PHYS FRAME_INFO_BY_INDEX COW_ARENA_UNGUARDED RAMFS_SLOT3_GATE \
 	FORK_SHARE_WRITABLE FORK_ARENA_UNCHECKED \
-	FORK_CSPACE_FLAT_COPY FORK_CSPACE_ORPHAN_COPY \
+	FORK_CSPACE_FLAT_COPY FORK_CSPACE_ORPHAN_COPY FORK_PIPE_UNCOUNTED \
 	EXEC_RESET_CSPACE EXEC_ROOT_CSPACE \
 	FPU_NO_SAVE FPU_NO_RESTORE \
 	VFS_FIRST_MATCH VFS_MOUNT_UNGATED \
@@ -3229,6 +3229,17 @@ FORK_CSPACE_ORPHAN_COPY ?= 0
 ifeq ($(FORK_CSPACE_ORPHAN_COPY),1)
 CFLAGS  += -DFORK_CSPACE_ORPHAN_COPY
 ASFLAGS += -DFORK_CSPACE_ORPHAN_COPY
+endif
+
+# FORK_PIPE_UNCOUNTED=1 restores the pre-2026-10-12 fork, which gave the child a
+# derived copy of each of its parent's pipe ends and counted none of them: when
+# the parent closed its ends the pipe was freed under the child, and the next
+# pipe to take its index was reachable through the child's stale capability
+# (LIMITATIONS 1.29). Arm for make smoke-fork (smoke-fork-pipe-control).
+FORK_PIPE_UNCOUNTED ?= 0
+ifeq ($(FORK_PIPE_UNCOUNTED),1)
+CFLAGS  += -DFORK_PIPE_UNCOUNTED
+ASFLAGS += -DFORK_PIPE_UNCOUNTED
 endif
 
 # EXEC_RESET_CSPACE=1 makes SYS_EXEC_NAMED / SYS_EXEC_IMAGE discard every
@@ -13101,6 +13112,20 @@ smoke-fork-cspace-orphan-control:
 		REQUIRE_MARKER='FORKTEST: FAIL child-cap-not-derived' \
 		tools/smoke_test.sh horus.iso
 	@echo "FORK CSPACE ORPHAN CONTROL: PASS - fresh serial, no parent edge, revoke misses it"
+
+# Control arm -- the pipe ends (LIMITATIONS 1.29). FORK_PIPE_UNCOUNTED=1 copies
+# the parent's pipe ends into the child without counting them, so when the
+# parent closes its ends the pipe is freed, and the child's write through its
+# copy finds it gone. forktest's child says so by name before it dies.
+.PHONY: smoke-fork-pipe-control
+smoke-fork-pipe-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FORK_SELFTEST=1 FORK_PIPE_UNCOUNTED=1
+	@$(MAKE) --no-print-directory FORK_SELFTEST=1 FORK_PIPE_UNCOUNTED=1 horus.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='FORKTEST: FAIL fork-pipe-freed-under-child' \
+		tools/smoke_test.sh horus.iso
+	@echo "FORK PIPE CONTROL: PASS - an uncounted pipe end was freed under the child"
 
 # ---- fork + exec, the pairing (roadmap 2.3) -------------------------------
 # The base arm. forkexectest forks itself, lets the child replace its image with

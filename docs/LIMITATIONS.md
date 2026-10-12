@@ -399,6 +399,16 @@ replaces this is [`design/scheduler.md`](design/scheduler.md) (ROADMAP 1.8).
 is no wall clock, no per-task timer, no timeout on IPC, and no libc `clock_gettime`. A blocked task
 waits until it is woken or killed. The PIT runs at a fixed 100 Hz.
 
+### 3.6 `fs_server` polls while the volume is sealed
+
+Until a volume unlocks (the whole of an install, and an installed machine's login prompt until the
+first login), `fs_server` cannot block for requests: it would not notice the unlock until the next
+request arrived. It polls instead, yielding the CPU on every pass, so it gives way at once to any
+task that has work but stays runnable itself and keeps an otherwise idle CPU busy. Until 2026-10-12
+it waited by spinning, which held each time slice to its end and, on one CPU at a true 100 Hz
+tick, made the installer drop keystrokes. Waking it on the unlock instead of polling would end
+this.
+
 ---
 
 ## 4. What does not exist yet

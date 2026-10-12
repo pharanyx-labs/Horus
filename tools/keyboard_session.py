@@ -76,6 +76,22 @@ def run_install(g, args):
     # Verified, unlike the line above: answer_accounts waits for each screen's
     # own marker before typing into it, so reaching the end means every screen
     # was reached -- which also means the survey did advance.
+    if args.expect_dropped_keys:
+        # THE ARM PASSES ONLY ON THE SYMPTOM, not on any failure. The password
+        # screen must be reached (so the keyboard works and the boot is live),
+        # and then the installer must never ask for the password a second time:
+        # characters were lost from the first entry, its Enter with them.
+        try:
+            ins.answer_accounts(g, typist=kbd)
+        except SessionFail as e:
+            if ("INSTALLER: waiting on the password again" in str(e)
+                    and "INSTALLER: waiting on the password" in g.buf):
+                print("KEYBOARD: CONTROL PASS - the password screen was reached "
+                      "and the typed password never completed", flush=True)
+                return 0
+            raise
+        raise SessionFail("every keystroke arrived; the spinning poll did not "
+                          "starve the keyboard path")
     ins.answer_accounts(g, typist=kbd)
     print("KEYBOARD: typed both passwords twice and the account name, each at "
           "its own prompt", flush=True)
@@ -184,6 +200,10 @@ def main():
     ap.add_argument("--expect-cancel", action="store_true",
                     help="the installer arm's direction: assert the arrow "
                          "CANCELS, which is what a split escape sequence does")
+    ap.add_argument("--expect-dropped-keys", action="store_true",
+                    help="with --install, the spin arm's direction: assert the "
+                         "installer is still waiting on the first password, "
+                         "because keystrokes typed into it were lost")
     ap.add_argument("--expect-no-keyboard", action="store_true",
                     help="the control arm's direction: assert the keyboard does "
                          "NOT work, so a passing arm proves the gate can fail")

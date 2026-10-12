@@ -1257,6 +1257,11 @@ jobs:
       # installer quietly asks again rather than failing.
       - name: An entire install, typed on the machine's own keyboard
         run: make smoke-keyboard-install
+      # fs_server waiting for the sealed volume by spinning, as before
+      # 2026-10-12: on one CPU at a true 100 Hz tick it starves the keyboard
+      # path, and the password loses characters (docs/LIMITATIONS.md 3.6).
+      - name: "Control arm: a spinning fs_server starves the keyboard during an install"
+        run: make smoke-keyboard-install-spin-control
       # S90's two halves. This one drives the kernel predicate: a LOCKED volume
       # may be reformatted (install media never logs in, so that is the state it
       # is always in) and an UNLOCKED one may not (somebody proved they own the

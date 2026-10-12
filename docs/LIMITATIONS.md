@@ -383,6 +383,18 @@ under a fresh key and `docs/SYSCALLS.md` as rotating the audit chain's keys; bot
 does. Rebuilding it as a real rotation of the volume key, or withdrawing it, is a decision for the
 maintainer.
 
+
+### 2.28 The wait for secondary CPUs is bounded in instructions, not time
+
+`smp_start_aps` waits for the secondary CPUs to check in for at most 200 calls of
+`smp_busy_delay(20000)`, a loop of `pause` instructions, whose cost varies by more than tenfold
+between processor models. On a fast host under KVM the whole wait can be a few milliseconds, so a
+secondary CPU that the host schedules late is not counted: the boot prints one core fewer than it
+has, and the CPU checks in afterwards and runs tasks anyway. In CI on 2026-10-12
+`smoke-smp-topology` under KVM saw `smp: 3 cores online` at `-smp 4`, with all three secondaries
+then running work (`cpus_ran=0xe`); the KVM job had passed in 31 of the 32 readable runs before it.
+The fix is to bound the wait by the calibrated clock rather than by a loop count. Whether anything
+sized from the printed count goes wrong when a CPU arrives after it is not yet analysed.
 ---
 
 ## 3. Scale and performance

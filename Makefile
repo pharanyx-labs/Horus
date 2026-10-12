@@ -8817,8 +8817,9 @@ smoke-shootdown-unacked-control:
 # evidence and control arms live under TCG (TESTS.md, "CI"). Needs a usable
 # /dev/kvm; QEMU_ACCEL=kvm makes the harness refuse to run without one rather
 # than quietly using TCG. Each gate is run as it is under TCG, in turn, and the
-# first failure stops the target. CI runs this as the advisory smoke-smp-kvm
-# job; locally it needs VT-x or AMD-V enabled and the kvm module loaded.
+# first failure stops the target. CI runs this as the smoke-smp-kvm job, gating
+# since 2026-10-06 (.github/ci-gating.yml); locally it needs VT-x or AMD-V
+# enabled and the kvm module loaded.
 SMP_KVM_GATES = smoke-smp smoke-smp-topology smoke-kstack-reuse smoke-switch-commit \
 	smoke-exec-reenter smoke-cr3-reclaim smoke-kstack-race smoke-session-smp \
 	smoke-killed-task

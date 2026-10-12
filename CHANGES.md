@@ -32,7 +32,7 @@ x86-64, built for a UK/ISO keyboard, published as an alpha for developers.
 
 ### Fixed
 
-- The install ISO differed with the directory and the time it was built in: newlib carried its build path into the shared libc (and so into the kernel that pins it), the EFI boot image took its FAT serial from the clock, and the ISO's directory records took the build's time. All three are fixed, and LIMITATIONS 5.3a, which blamed `grub-mkrescue` (no longer used), is closed. (#557)
+- The install ISO differed with the directory and the time it was built in: newlib carried its build path into the shared libc (and so into the kernel that pins it), the EFI boot image took its FAT serial from the clock, the ISO's directory records took the build's time, and both FAT images ended in a sector of the build host's uninitialised stack, which mtools 4.0.43 writes when it creates an image file (the images are now made zero-filled and formatted in place). All four are fixed, and LIMITATIONS 5.3a, which blamed `grub-mkrescue` (no longer used), is closed. (#557)
 
 ## [0.4.0-alpha]: 2026-10-12
 

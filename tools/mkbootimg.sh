@@ -182,9 +182,16 @@ if [ -n "${EFI_OUT:-}" ] || [ -n "${EFI_BIN_OUT:-}" ]; then
     else
         EFI_SERIAL_ARG="-N $(sha256sum "$WORK/BOOTX64.EFI" | cut -c1-8)"
     fi
-    mformat -i "$EFI_OUT" -C -f "$(( esz > 2880 ? esz : 2880 ))" $EFI_SERIAL_ARG -v HORUSEFI :: 2>/dev/null || {
+    # ZERO-FILLED AT FULL SIZE FIRST, FORMATTED IN PLACE (no -C), on both paths: mtools
+    # 4.0.43 (CI's Ubuntu) extends a file it creates with an uncleared last sector, 140
+    # bytes of the build host's heap that differed on every build (tools/mkesp.sh says
+    # more).
+    efsz=$(( esz > 2880 ? esz : 2880 ))
+    truncate -s $(( efsz * 1024 )) "$EFI_OUT"
+    mformat -i "$EFI_OUT" -f "$efsz" $EFI_SERIAL_ARG -v HORUSEFI :: 2>/dev/null || {
         # mformat's -f takes a known geometry for small sizes; fall back to a
         # plain sized image with -T (sectors) for anything larger.
+        rm -f "$EFI_OUT"
         dd if=/dev/zero of="$EFI_OUT" bs=1024 count="$esz" status=none
         mformat -i "$EFI_OUT" $EFI_SERIAL_ARG -v HORUSEFI ::
     }

@@ -49,7 +49,15 @@ GRUB_DIR="$GRUB_DIR" EFI_GRUB_DIR="$EFI_GRUB_DIR" EFI_BIN_OUT="$WORK/BOOTX64.EFI
 rm -f "$OUT"
 # -F FAT32, -c 1 one sector per cluster, a serial (-N) fixed by the kernel, so the image is a
 # function of its contents.
-mformat -i "$OUT" -C -F -c 1 -T "$ESP_SECTORS" -h 64 -s 32 -N "$SERIAL" -v HORUSESP ::
+#
+# THE IMAGE IS MADE ZERO-FILLED AT ITS FULL SIZE FIRST, AND FORMATTED IN PLACE (no -C).
+# mtools 4.0.43, which CI's Ubuntu ships, extends a file it creates by writing its last
+# sector from a buffer it never cleared: 140 bytes of the build host's heap landed at the
+# end of every image, different on every build (found by smoke-repro-iso on #557,
+# 2026-10-12; 4.0.49 does not do it). An image this script did not fully write is not a
+# function of its contents, and it carries memory the build had no business shipping.
+truncate -s $(( ESP_SECTORS * 512 )) "$OUT"
+mformat -i "$OUT" -F -c 1 -T "$ESP_SECTORS" -h 64 -s 32 -N "$SERIAL" -v HORUSESP ::
 mmd -i "$OUT" ::/EFI ::/EFI/BOOT ::/boot
 mcopy -i "$OUT" "$WORK/BOOTX64.EFI" ::/EFI/BOOT/BOOTX64.EFI
 mcopy -i "$OUT" "$KERNEL" ::/boot/kernel.elf

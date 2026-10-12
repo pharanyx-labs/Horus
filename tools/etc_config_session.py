@@ -17,6 +17,10 @@ ETC_CONFIG_EXPECT_UNCHECKED=1 is for the control arm (CONF_VALUE_UNCHECKED=1):
 there step 3 must show the defect, the prompt `root@Evil!#`, and the run passes
 only if it does.
 
+ETC_CONFIG_EXPECT_FAST_CLOCK=1 is for the other control arm (PIT_SQUARE_WAVE=1):
+there step 4 must show the defect, a delay well short of two host seconds, and
+the run passes only if it does.
+
 Usage:  tools/etc_config_session.py [horus.iso]
 Exit:   0 and "ETC_CONFIG_SESSION: PASS" (or "CONTROL PASS"); 1 and a FAIL line.
 """
@@ -31,6 +35,7 @@ ISO = sys.argv[1] if len(sys.argv) > 1 else "horus.iso"
 STEP = float(os.environ.get("SESSION_TIMEOUT", "60"))
 BOOT = float(os.environ.get("BOOT_TIMEOUT", "300"))
 UNCHECKED = os.environ.get("ETC_CONFIG_EXPECT_UNCHECKED") == "1"
+FAST_CLOCK = os.environ.get("ETC_CONFIG_EXPECT_FAST_CLOCK") == "1"
 
 
 def step(msg):
@@ -112,14 +117,23 @@ def run():
         rewrite("root@horus#", "login.conf", "failure_delay = 2")
         s.send("logout")
         delayed = wrong_password_secs()
-        # THE BOUND IS 0.8 s, NOT 2 s, and on purpose: under QEMU's TCG
-        # emulator the guest's monotonic clock runs at twice wall-clock speed
-        # (10 guest seconds took 5.0 host seconds on 2026-10-11; LIMITATIONS
-        # 2.27), so two guest seconds are about one host second. 0.8 s is
-        # still far above "no pause at all", which is what a defect here
-        # looks like (the baseline difference is a few hundredths).
-        if delayed - base < 0.8:
-            raise SessionFail(f"failure_delay = 2 added only {delayed - base:.2f}s "
+        # At least 1.8 s of the HOST's clock. A delay shorter than the file
+        # says is the direction that matters: it throttles password guessing
+        # less than the administrator chose. The guest's own clock cannot be
+        # the judge of that, because it was the clock that was wrong: until
+        # 2026-10-12 the tick ran at double speed under QEMU's TCG and this
+        # delay took about one host second (LIMITATIONS 2.27, closed). The
+        # 0.2 s margin is for the serial line, not for the clock.
+        added = delayed - base
+        if FAST_CLOCK:
+            if added < 1.8:
+                print(f"ETC_CONFIG_SESSION: CONTROL PASS - failure_delay = 2 added "
+                      f"only {added:.2f}s of host time", flush=True)
+                return 0
+            raise SessionFail(f"the clock arm waited {added:.2f}s, the full delay; "
+                              f"the defect did not reproduce")
+        if added < 1.8:
+            raise SessionFail(f"failure_delay = 2 added only {added:.2f}s "
                               f"({delayed:.2f}s against a baseline of {base:.2f}s)")
         step(f"failure_delay = 2 added {delayed - base:.1f}s to a wrong password "
              f"(baseline {base:.1f}s, host clock)")

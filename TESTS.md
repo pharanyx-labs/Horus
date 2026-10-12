@@ -47,7 +47,7 @@ gates that match kernel strings are moving to COM3, which only the kernel can wr
 ## The integration gates
 
 
-There are 494 `smoke-*` targets: 222 gates and 272 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Four gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
+There are 496 `smoke-*` targets: 222 gates and 274 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Four gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
 
 
 ### Capabilities and authorisation
@@ -168,7 +168,7 @@ There are 494 `smoke-*` targets: 222 gates and 272 control arms. Each row is a g
 | `smoke-measured-persist` | Under that policy, a persistent disk that was never sealed is refused | S85 | `smoke-measured-persist-control` |
 | `smoke-measured-persist-sealed` | Under that policy, a disk sealed to the same measurements still opens | S85 |  |
 | `smoke-modules` | Boot modules are provisioned into `/bin` and run from the filesystem, and the manual is unpacked from its archive module |  |  |
-| `smoke-etc-config` | `/etc/shell.conf` and `/etc/login.conf` are seeded from their module, applied at the next login, and a hostname outside `a-z 0-9 -` or a `failure_delay` over 30 is refused with the line named; `failure_delay` makes a wrong password wait |  | `smoke-etc-config-control` |
+| `smoke-etc-config` | `/etc/shell.conf` and `/etc/login.conf` are seeded from their module, applied at the next login, and a hostname outside `a-z 0-9 -` or a `failure_delay` over 30 is refused with the line named; `failure_delay = 2` makes a wrong password wait at least 1.8 s of the host's clock |  | `smoke-etc-config-control`, `smoke-etc-config-clock-control` |
 | `smoke-archive-refused` | An archive module with one bad member (a symbolic link) installs nothing, beside a manual archive that installs | S116 | `smoke-archive-refused-control` |
 | `smoke-modules-tamper` | A corrupted module is refused against the manifest | S10 |  |
 | `smoke-rng-seed` | The CSPRNG refuses to produce output before it is seeded | S30 | `smoke-rng-seed-control` |
@@ -262,7 +262,7 @@ There are 494 `smoke-*` targets: 222 gates and 272 control arms. Each row is a g
 | `smoke-keymap-us` | The US layout, which is also the fallback for an unknown layout name |  |  |
 | `smoke-keymap-uk` | The UK layout produces the UK characters for the keys that differ |  | `smoke-keymap-uk-control` |
 | `smoke-keyboard-installer` | The arrow keys drive the installer's disk menu | S89 | `smoke-keyboard-installer-control` |
-| `smoke-keyboard-install` | An entire install and login typed on the keyboard, with nothing sent over serial | S89 |  |
+| `smoke-keyboard-install` | An entire install and login typed on the keyboard, with nothing sent over serial | S89 | `smoke-keyboard-install-spin-control` |
 | `smoke-serial-bound` | A stuck serial port cannot stop the machine |  | `smoke-serial-bound-control` |
 | `smoke-console` | The ring-3 console server owns the hardware and serves clients |  |  |
 | `smoke-console-smp` | The console's single-writer rule holds under SMP |  |  |

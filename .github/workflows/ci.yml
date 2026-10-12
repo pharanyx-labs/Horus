@@ -1257,6 +1257,11 @@ jobs:
       # installer quietly asks again rather than failing.
       - name: An entire install, typed on the machine's own keyboard
         run: make smoke-keyboard-install
+      # fs_server waiting for the sealed volume by spinning, as before
+      # 2026-10-12: on one CPU at a true 100 Hz tick it starves the keyboard
+      # path, and the password loses characters (docs/LIMITATIONS.md 3.6).
+      - name: "Control arm: a spinning fs_server starves the keyboard during an install"
+        run: make smoke-keyboard-install-spin-control
       # S90's two halves. This one drives the kernel predicate: a LOCKED volume
       # may be reformatted (install media never logs in, so that is the state it
       # is always in) and an UNLOCKED one may not (somebody proved they own the
@@ -1623,6 +1628,11 @@ jobs:
         run: make smoke-etc-config
       - name: "Control arm: a hostname with any byte reaches the prompt"
         run: make smoke-etc-config-control
+      # The timer tick in mode 3, which QEMU's TCG delivers twice per period:
+      # the clock runs at double speed and failure_delay waits half as long
+      # (docs/LIMITATIONS.md 2.27, closed).
+      - name: "Control arm: a double-speed clock halves failure_delay"
+        run: make smoke-etc-config-clock-control
 
   smoke-modules-tamper:
     name: QEMU boot-module integrity gate (a tampered module payload is refused)

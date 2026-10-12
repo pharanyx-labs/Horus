@@ -29,7 +29,8 @@ Specifications written before the code. Each says at its top what of it is built
 |---|---|
 | [`design/filesystem.md`](design/filesystem.md) | The capability-addressed filesystem. Phase 1a (endpoint tokens, S105) is built; phase 1b is next (ROADMAP 2.10) |
 | [`design/installed-system.md`](design/installed-system.md) | Programs on the disk under a pinned manifest, a disk that boots itself, accounts as files. The first two are built; accounts as files are not (ROADMAP 2.11) |
-| [`design/scheduler.md`](design/scheduler.md) | Scheduling and SMP: CPU time as a capability accounted per CPU, priorities capped by authority, passive servers, per-CPU run queues, one-shot timers, affinity that only narrows, more than eight CPUs. Decided; nothing built |
+| [`design/scheduler.md`](design/scheduler.md) | Scheduling and SMP: CPU time as a capability accounted per CPU, priorities capped by authority, passive servers, per-CPU run queues, one-shot timers, affinity that only narrows, more than eight CPUs. Steps 0, 1, 1b and 2a are built (#523 to #526); per-CPU run queues are next (ROADMAP 1.8) |
+| [`design/long-term-plan.md`](design/long-term-plan.md) | The long-term plan for every open limitation, in three phases, and the twelve decisions it asks the maintainer for. A plan; its new items are ROADMAP Track 5 |
 | [`design/swap.md`](design/swap.md) | Encrypted swap: a per-boot key, every page authenticated with its tag kept in RAM, only private pages, an in-kernel pager. Steps 1, 2 and 2a are built: the sealed slot store, eviction and fault-in, and the pager hold (S118, S119, S123) |
 | [`design/shared-libc.md`](design/shared-libc.md) | How programs receive, bind and seal the shared libc. Built (S106 to S108) |
 | [`design/meta-cache-merkle.md`](design/meta-cache-merkle.md) | The bounded metadata cache and the Merkle rollback tree. Built (S65, S66) |

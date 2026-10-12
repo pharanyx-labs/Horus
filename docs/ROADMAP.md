@@ -47,6 +47,10 @@ In order. Each step is its own set of pull requests with its own gates and contr
 
 Steps 1 and 2 meet at `/etc/passwd`; whichever lands second adapts to the first.
 
+Beside them runs [Track 5](#track-5-closing-the-known-gaps), the long-term plan for every open
+limitation, in three phases ([`design/long-term-plan.md`](design/long-term-plan.md)). Its phase A
+starts now: revocable pipe ends, kernel reports off the shared console, a reproducible ISO.
+
 ---
 
 ## Track 0: make the object model true ✅
@@ -283,6 +287,31 @@ same bytes cannot be verified by rebuilding.
 
 **4.12.** The exemption list in `.github/invariants.yml` is currently
 **empty**: all 134 properties name a witness that resolves.
+
+---
+
+## Track 5: closing the known gaps
+
+The plan in [`design/long-term-plan.md`](design/long-term-plan.md) (2026-10-12) orders every open
+limitation and the roadmap items that close them into three phases: close the holes and build the
+enablers, complete authority and tighten the boot chain, then shrink ring 0 and grow outward. It
+names twelve decisions the maintainer is asked for (D1 to D12). The items below are the new work
+it adds; the existing items it schedules keep their own numbers and status.
+
+| Item | Status |
+|---|---|
+| 5.1 ⬜ Revocable pipe ends (LIMITATIONS 1.14) | Not started; the recount design is recorded |
+| 5.2 ⬜ Authenticated metadata on the current format (1.30) | Waits on decision D2 |
+| 5.3 ⬜ Kernel reports off the shared console (2.6c) | Not started |
+| 5.4 ⬜ Exec only from a file capability (1.23) | Waits on decision D7 |
+| 5.5 ⬜ Console input as a capability (2.9b, 1.6) | Waits on decision D6 and 2.10 step 3(b) |
+| 5.6 ⬜ Measured boot whenever a TPM is present (2.9) | Waits on decision D3 |
+| 5.7 ⬜ Rollback anchoring: policy, a bounded interval, a second anchor (1.12) | Waits on decision D4 |
+| 5.8 ⬜ Kernel updates without a lockout (2.9a) | Waits on decision D5 and 3.1 |
+| 5.9 ⬜ Reclaimable kernel memory (2.5, 2.3) | Not started |
+| 5.10 ⬜ A session's grants bounded by the kernel (1.24) | Waits on decision D8 and 2.10 phase 2 |
+| 5.11 ⬜ A model of the concurrent protocols (5.5) | Waits on decision D9 |
+| 5.12 ⬜ Independent review (5.1) | Waits on decision D11; the same need as 4.1 |
 
 ---
 

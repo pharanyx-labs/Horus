@@ -228,8 +228,10 @@ message *is* one call.
 
 Since 2026-09-03 the kernel has a channel only it can write: COM3, which no capability names
 (`SECURITY.md` S81, `make smoke-kdiag`). **Four gates read it so far**: `smoke-kstack-park`,
-`smoke-kstack-reuse` and their control arms. About twenty other gates still match kernel strings
-on the shared console and are exposed to the same split.
+`smoke-kstack-reuse` and their control arms. A string search of the gate definitions against the
+kernel sources (2026-10-12) finds 55 other base gates whose required marker only the kernel
+prints. Which of those are exposed depends on whether each prints after `console_server` owns the
+UART, which is not yet measured; ROADMAP 5.3 measures it first.
 
 ### 2.6d Only the boot is timestamped, from two clocks
 

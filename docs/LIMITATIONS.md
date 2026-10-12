@@ -527,7 +527,10 @@ and `v0.4.1-alpha` (both 2026-10-12), each an install ISO and its SHA-256 on Git
 unsigned lightweight tag. There are no signed artifacts and no SLSA provenance, so nobody can check
 that an ISO they were given came from this repository's CI. From `v0.4.1-alpha` the ISO rebuilds to
 the same bytes from a checkout of its tag (S17), so anyone can confirm it by rebuilding it with
-`make install.iso`; no script does that for them yet (ROADMAP 4.11). The one network input to the
+`make install.iso`, given the same versions of the compiler, Rust, GRUB, `xorriso` and `mtools`,
+which each release lists beside the ISO. A different compiler gives a different kernel, so the
+check is as strong as the reader's ability to match those versions; no script or container does
+that for them yet (ROADMAP 4.11). The one network input to the
 build, the newlib tarball, is pinned by SHA-256 and checked before unpacking (`make
 smoke-newlib-tamper`), so inbound verification is in place; outbound is not.
 

@@ -17,8 +17,9 @@ here.
 ## [0.4.1-alpha]: 2026-10-12
 
 **The install ISO rebuilds to the same bytes from its tag.** A release can now be checked by
-building it again: `make install.iso` from a checkout of the tag gives the ISO published beside
-the checksum, byte for byte, whatever directory it is built in and whenever. Install media for
+building it again: `make install.iso` from a checkout of the tag, with the tool versions the
+release lists, gives the ISO published beside the checksum, byte for byte, whatever directory it
+is built in and whenever. Install media for
 x86-64, built for a UK/ISO keyboard, published as an alpha for developers.
 
 ### Security

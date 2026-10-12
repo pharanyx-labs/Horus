@@ -302,7 +302,8 @@ boundary; bounded Kani proofs and Miri on every pull request.
   made by Claude once the gates are green. A pull request from outside the project is not merged
   that way; it waits for the maintainer.
 - **No build provenance or signed artifacts** (**[I-9]**, `docs/LIMITATIONS.md` 5.3). The ISO
-  rebuilds to the same bytes from its tag (S17), so a release can be checked by rebuilding it.
+  rebuilds to the same bytes from its tag with the same tool versions (S17), which each release
+  lists, so a release can be checked by rebuilding it.
 - **Workflows GitHub injects are invisible to the tree's checks** (`docs/LIMITATIONS.md` 5.7).
 
 ---

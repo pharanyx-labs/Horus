@@ -583,8 +583,9 @@ The target builds **once** and records `sha256sum` of `kernel.elf` and `horus.is
 `kernel.elf`, `horus.iso` and the release's `install.iso` are byte-for-byte reproducible: `make
 smoke-repro-iso` builds all three in this tree and again in a git worktree at another path, later
 and in parallel, and compares them (the `reproducible` CI job runs it on every pull request). To
-check a release, build `make install.iso` from a checkout of its tag and compare the SHA-256 with
-the one published beside the ISO.
+check a release, build `make install.iso` from a checkout of its tag with the tool versions its
+build-info file lists, and compare the SHA-256 with the one published beside the ISO. A different
+compiler, Rust or GRUB version gives different bytes; the gate compares two builds on one host.
 
 ---
 

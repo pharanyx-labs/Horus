@@ -167,12 +167,11 @@
   <li>
     <h3 id="source-review-findings"><span class="id">1.29</span>Findings from a source review</h3>
     <p>
-      A static review of the source found six defects. Two are fixed; four are open, each
-      recorded as LIMITATIONS 1.29 to 1.32 until it is fixed. A pipe end handed to a child
+      A static review of the source found six defects. Three are fixed; three are open, each
+      recorded as LIMITATIONS 1.29 to 1.31 until it is fixed. A pipe end handed to a child
       by a capability grant is not counted, so a freed pipe can be reused under it (a fork
       counts its copies now). The inode table is not authenticated at rest. The older
-      by-user-id file path checks a file's own mode, not its directories. A reply or a
-      sender's identity can outlive the task it named.
+      by-user-id file path checks a file's own mode, not its directories.
     </p>
   </li>
   <li>

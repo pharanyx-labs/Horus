@@ -95,6 +95,7 @@
 <li><a href="#c-5nobody-reviews-a-change-before-it-lands">C-5Nobody reviews a change before it lands</a></li>
 <li><a href="#1-8nine-system-calls-have-no-test-that-runs-them">1.8Nine system calls have no test that runs them</a></li>
 <li><a href="#1-14a-child-s-inherited-pipe-end-escapes-revocation">1.14A child&#x27;s inherited pipe end escapes revocation</a></li>
+<li><a href="#1-27six-findings-from-a-source-review">1.27Six findings from a source review</a></li>
 <li><a href="#1-6the-console-is-the-one-ambient-authority">1.6The console is the one ambient authority</a></li>
 <li><a href="#2-6cmost-gates-still-read-kernel-reports-off-a-shared-consol">2.6cMost gates still read kernel reports off a shared console</a></li>
 <li><a href="#2-9measured-boot-is-opt-in">2.9Measured boot is opt-in</a></li>
@@ -161,6 +162,18 @@
       not reach it. Nothing revokes a pipe end today, so this contradicts a stated property
       rather than exposing a live hole. The fix needs the pipe's end counts reconciled at the
       same time, and its design is written down.
+    </p>
+  </li>
+  <li>
+    <h3 id="1-27six-findings-from-a-source-review"><span class="id">1.27</span>Six findings from a source review</h3>
+    <p>
+      A static review of the source found six defects that are still open, each recorded
+      as LIMITATIONS 1.27 to 1.32 until it is fixed. One account changing its own password
+      can re-seal the key slot of whoever logged in first that boot. A crafted program
+      header can wrap a bound on the spawn path. A forked child's pipe end is not counted,
+      so a freed pipe can be reused under it. The inode table is not authenticated at rest.
+      The older by-user-id file path checks a file's own mode, not its directories. A reply
+      or a sender's identity can outlive the task it named.
     </p>
   </li>
   <li>

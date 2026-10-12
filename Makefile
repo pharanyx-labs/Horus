@@ -134,7 +134,7 @@ DEFECT_FLAGS = \
 	FS_TOKEN_NODE_IGNORED FS_CAP_CHMOD_UNTRUE FS_CAP_LINK_WIDENS FS_SEALED_POLL_SPIN \
 	FSCAPPOSIX_SELFTEST POSIX_CLOSE_KEEPS_CAP HVFS_GRANT_UNNARROWED \
 	INIT_SHELL_ROOT_READONLY SHELL_CAP_FALLBACK \
-	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED ELF_SPAN_C_PARSE \
+	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED ELF_SPAN_C_PARSE IPC_SENDER_SLOT_ONLY IPC_REPLY_SLOT_ONLY \
 	FS_LINK_UNCOUNTED FS_DIR_OPERAND_UNCHECKED GPT_ENTRIES_CRC_UNCHECKED REVOKE_HASHED_BACKSTOP STORAGE_REPLACE_VIEW_UNRESOLVED \
 	ESP_PIN_UNCHECKED ESP_NOT_WRITTEN DEBUG_BUILD \
 	POOL_SPAN_SELFTEST E820_HOLE_PROBE PHYS_WINDOW_FLAT_ONLY POOL_FLAT_CEILING POOL_RAM_UNCHECKED MEM_HIGH_UNREPORTED \
@@ -164,7 +164,7 @@ DEFECT_FLAGS = \
 	CSPACE_KEEP_ON_TEARDOWN \
 	CSPACE_RELEASE_BEFORE_PIPES SPAWN_SLOT3_DECOY_GATE UNTYPED_SPLIT_FREE_BYTES \
 	INIT_PROVISION_NO_UNTYPED AUDIT_ABI_LEGACY STORE_LOCKED_UNCHECKED \
-	PASSWD_TARGET_IGNORED PASSWD_NO_KEYSLOT \
+	PASSWD_TARGET_IGNORED PASSWD_NO_KEYSLOT PASSWD_REKEY_FIRST_UNLOCK \
 	SHELL_FS_ERR_FLAT FS_CHMOD_ANY_OWNER FS_CHOWN_ANY_UID \
 	USERLIST_UNGATED HOME_DIR_ROOT_OWNED CLAIM_IMP_TRACE \
 	KSTACK_COLLIDE_IMPERSONATED CLAIM_AUDIT_NO_REREAD \
@@ -442,6 +442,19 @@ endif
 # beside SYSCALL_PTR_TRUNC32's, after USERSPACE_CFLAGS is assigned.
 PASSWD_TARGET_IGNORED ?= 0
 
+# PASSWD_REKEY_FIRST_UNLOCK=1 restores the pre-2026-10-12 slot choice in
+# do_passwd: an account changing its own password re-seals the slot of the
+# boot's FIRST unlock, under that unlock's uid, whoever is asking. After root
+# logs in and out, another account's `passwd` then re-seals root's slot under
+# its own password, and root's password no longer opens the volume at the next
+# boot (LIMITATIONS 1.27). Kernel-side. `make smoke-passwd-own-control` is the
+# arm; `make smoke-passwd-target` goes red under it. Never ship it.
+PASSWD_REKEY_FIRST_UNLOCK ?= 0
+ifeq ($(PASSWD_REKEY_FIRST_UNLOCK),1)
+CFLAGS  += -DPASSWD_REKEY_FIRST_UNLOCK
+ASFLAGS += -DPASSWD_REKEY_FIRST_UNLOCK
+endif
+
 # INSTALLER_NO_BACK=1 restores the pre-2026-09-10 installer: the questions are a
 # straight pipeline, so esc ends the run and every answer already given is
 # discarded instead of stepping back one screen.
@@ -689,6 +702,26 @@ ELF_LOAD_BOUND_STAGING ?= 0
 ifeq ($(ELF_LOAD_BOUND_STAGING),1)
 CFLAGS  += -DELF_LOAD_BOUND_STAGING
 ASFLAGS += -DELF_LOAD_BOUND_STAGING
+endif
+
+# IPC_SENDER_SLOT_ONLY=1 and IPC_REPLY_SLOT_ONLY=1 restore, one each, the two
+# halves of the pre-2026-10-12 IPC identity (LIMITATIONS 1.32): SYS_IPC_SENDER,
+# and a reply capability, name the client's slot and not its incarnation. After
+# a client dies mid-call and its slot is reused, SYS_IPC_SENDER then reports the
+# successor, and the server's answer is delivered into the successor's own call.
+# The generation is still recorded; only one check is skipped. Two flags, not
+# one, because proctest asks the sender question first: one flag for both would
+# fail there and never reach the reply. Arms for make smoke-proc
+# (smoke-proc-stale-sender-control, smoke-proc-stale-reply-control).
+IPC_SENDER_SLOT_ONLY ?= 0
+ifeq ($(IPC_SENDER_SLOT_ONLY),1)
+CFLAGS  += -DIPC_SENDER_SLOT_ONLY
+ASFLAGS += -DIPC_SENDER_SLOT_ONLY
+endif
+IPC_REPLY_SLOT_ONLY ?= 0
+ifeq ($(IPC_REPLY_SLOT_ONLY),1)
+CFLAGS  += -DIPC_REPLY_SLOT_ONLY
+ASFLAGS += -DIPC_REPLY_SLOT_ONLY
 endif
 
 # ELF_SPAN_C_PARSE=1 puts back the C parse staged_image_span_pages used until
@@ -4224,7 +4257,7 @@ PROC_SELFTEST ?= 0
 ifeq ($(PROC_SELFTEST),1)
 CFLAGS  += -DPROC_SELFTEST
 ASFLAGS += -DPROC_SELFTEST
-PROC_SELFTEST_DEP = userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/preempttest.bin
+PROC_SELFTEST_DEP = userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/replyprobe.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/preempttest.bin
 endif
 
 # KFAULT_RECORD_SELFTEST=1 (with PROC_SELFTEST=1) is the witness for
@@ -6128,7 +6161,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.stripped.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin userspace/sealprobe.bin userspace/dynstale.bin userspace/dyncanary.bin userspace/hello_dyn.bin userspace/swaphog.bin userspace/fscaptest.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/replyprobe.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin userspace/sealprobe.bin userspace/dynstale.bin userspace/dyncanary.bin userspace/hello_dyn.bin userspace/swaphog.bin userspace/fscaptest.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -7369,6 +7402,29 @@ smoke-proc-overreach-control:
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 ELF_LOAD_BOUND_STAGING=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='PROC_SELFTEST: FAIL overreaching-image-spawned' \
+		tools/smoke_test.sh horus.iso
+
+# The arms for LIMITATIONS 1.32, one for each check. After proctest's client is
+# killed mid-call and a successor takes its slot and calls: under
+# IPC_SENDER_SLOT_ONLY=1, SYS_IPC_SENDER reports the successor as the sender of
+# the dead client's request; under IPC_REPLY_SLOT_ONLY=1, the answer to that
+# request completes the successor's call, and replyprobe says so by name.
+.PHONY: smoke-proc-stale-sender-control
+smoke-proc-stale-sender-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 IPC_SENDER_SLOT_ONLY=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 IPC_SENDER_SLOT_ONLY=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='PROC_SELFTEST: FAIL stale-sender-answered-for-successor' \
+		tools/smoke_test.sh horus.iso
+
+.PHONY: smoke-proc-stale-reply-control
+smoke-proc-stale-reply-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 IPC_REPLY_SLOT_ONLY=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 IPC_REPLY_SLOT_ONLY=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='PROC_SELFTEST: FAIL stale-reply-delivered-to-successor' \
 		tools/smoke_test.sh horus.iso
 
 # The arm for the premap span (LIMITATIONS 1.28). ELF_SPAN_C_PARSE=1 restores
@@ -9028,10 +9084,10 @@ smoke-proc:
 	@# the last marker is the slot-reuse phase's (HORUS-20260920-02), which runs
 	@# after the suspend witness, so it is the one required now: requiring the
 	@# suspend marker would let the harness stop the guest before that phase ran.
-	@# The stale-CAP_TCB phase (HORUS-20260921-02) and then the killed-task phase
-	@# (HORUS-20260921-04) run after it, so the last of them is required now, for
-	@# the same reason.
-	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PROC_SELFTEST: killed-task OK' \
+	@# The stale-CAP_TCB phase (HORUS-20260921-02), the killed-task phase
+	@# (HORUS-20260921-04) and the stale-reply phase (LIMITATIONS 1.32) run after
+	@# it, so the last of them is required now, for the same reason.
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PROC_SELFTEST: stale-reply OK' \
 		FAIL_MARKER='PROC_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # Does a task's exit record keep kernel addresses away from ring 3?
@@ -15333,6 +15389,24 @@ smoke-passwd-target-control:
 	@SESSION_DISK=passwd-tc.img PASSWD_EXPECT_SELF=1 SESSION_TIMEOUT=$(PASSWD_TARGET_TIMEOUT) 		BOOT_TIMEOUT=$(PASSWD_TARGET_TIMEOUT) 		python3 tools/passwd_session.py horus.iso
 	@rm -f passwd-tc.img
 	@echo "[passwd] CONTROL PASS - the dropped argument re-sealed the volume to another account's password"
+
+# Control arm for the slot an account's own `passwd` re-seals (LIMITATIONS
+# 1.27). The same session as smoke-passwd-target, with the kernel choosing the
+# slot of the boot's first unlock again: bob's own `passwd`, after root has
+# logged in and out, re-seals root's slot. Boot 2 then finds root's password
+# opening nothing, which it asserts positively: root still logs in (the
+# compiled-in account table answers while the volume is locked) and `ls` says
+# the volume is not unlocked.
+.PHONY: smoke-passwd-own-control
+smoke-passwd-own-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_AUTOFORMAT=1 PASSWD_REKEY_FIRST_UNLOCK=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_AUTOFORMAT=1 PASSWD_REKEY_FIRST_UNLOCK=1 horus.iso
+	@rm -f passwd-oc.img && truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) passwd-oc.img
+	@SESSION_DISK=passwd-oc.img PASSWD_EXPECT_FIRST_SLOT=1 SESSION_TIMEOUT=$(PASSWD_TARGET_TIMEOUT) \
+		BOOT_TIMEOUT=$(PASSWD_TARGET_TIMEOUT) python3 tools/passwd_session.py horus.iso
+	@rm -f passwd-oc.img
+	@echo "[passwd] CONTROL PASS - an account's own passwd re-sealed the first login's key slot"
 
 # THE POSITIVE HALF OF CAP_STORAGE_FORMAT (roadmap 2.9, S72).
 #

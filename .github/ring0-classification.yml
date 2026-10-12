@@ -519,7 +519,17 @@
 # entry for SYS_FS_STORE_KIND in syscall.c. The answer itself is two lines in
 # storage.c and the handler in syscall_fs.c, both service; the policy and the
 # sessions are ring 3 (fs_server, fs_policy.h).
-core_budget_loc: 11440
+# 2026-10-12: 11440 -> 11444, +4, LIMITATIONS 1.32 (S13, S13b): syscall_ipc.c
+# checks a reply capability's and SYS_IPC_SENDER's slot generation against the
+# task now in the slot, and capability.c encodes the reply's client as (slot,
+# generation). Identity checks on the IPC path cannot leave the core. Measured
+# after #551 and #553 merged, which is when the sum crossed the old figure.
+# 2026-10-12: 11444 -> 11456, +12, LIMITATIONS 1.29 (S133): capability.c splits
+# cap_grant_into into the kernel's grant and SYS_CAP_GRANT's cap_grant_from_user
+# over one locked body, and pins CAP_PIPE against the Rust core. The refusal
+# itself is in rust/src/capability.rs; the split has to sit where cap_lock is
+# taken, so that the type is read under the lock that covers the copy.
+core_budget_loc: 11456
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

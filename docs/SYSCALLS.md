@@ -178,7 +178,7 @@ shipped kernel.
 | 70 | `SYS_SPAWN_IMAGE` | `(image, len, arg, argv, argc)` | Spawn a child from a caller-supplied program image (execve-from-fd) | `CAP_UNTYPED` at `CAPSLOT_UNTYPED`: WRITE (S57) |
 | 71 | `SYS_EXEC_IMAGE` | `(image, len, 0, argv, argc)` | No return on success | none (self), as `SYS_EXEC_NAMED` |
 | 72 | `SYS_SIGALTSTACK` | `(ss_sp, ss_size)` | Register this task's alternate signal stack (ss_size 0 disables) | self only |
-| 73 | `SYS_IPC_SENDER` | `(ep, uint32_t *out_gid)` | Kernel-attested identity of an endpoint's last sender | `CAP_ENDPOINT` at `ep_slot`: READ |
+| 73 | `SYS_IPC_SENDER` | `(ep, uint32_t *out_gid)` | Kernel-attested identity of an endpoint's last sender; `-1` once that sender has died, even if its slot holds another task | `CAP_ENDPOINT` at `ep_slot`: READ |
 | 74 | `SYS_FS_SET_META` | `(ino, mode, uid, gid)` | Persist an inode's owner/mode (fs server only) | slot `CAPSLOT_AUDIT` `CAP_ENCRYPTED_STORAGE`, READ \| WRITE |
 | 75 | `SYS_IPC_REPLY_TO` | `(req_ep, msg, len)` | Reply to the last sender on req_ep (multi-client safe routing) | `CAP_ENDPOINT` at `req_slot`: READ, *plus* the one-shot `CAP_REPLY` at `CAPSLOT_REPLY` (21), which it consumes |
 | 76 | `SYS_FS_INODE_LINK` | `(ino)` | Increment an inode's hard-link count (fs server only) | slot `CAPSLOT_AUDIT` `CAP_ENCRYPTED_STORAGE`, READ \| WRITE |

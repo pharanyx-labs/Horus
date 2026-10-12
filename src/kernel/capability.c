@@ -515,7 +515,7 @@ bool cap_install_object_first_free(uint32_t min_slot, uint32_t type, uint64_t ob
  * authority of whichever client happened to wake it, which is exactly the kind of
  * ambient-authority coupling roadmap 0.2 removed. The accounting (caps_in_use on
  * a NULL -> occupied transition, the ceiling) is the receiver's and is kept. */
-bool cap_install_reply_for(int pid, int sender) {
+bool cap_install_reply_for(int pid, int sender, uint64_t sender_gen) {
     if (pid <= 0 || pid >= g_max_tasks) return false;
     if (sender <= 0 || sender >= g_max_tasks) return false;
     uint64_t serial = cap_alloc_fresh_serial();   /* takes cap_lock: before it */
@@ -531,7 +531,9 @@ bool cap_install_reply_for(int pid, int sender) {
     }
     cspace[CAPSLOT_REPLY].type       = CAP_REPLY;
     cspace[CAPSLOT_REPLY].rights     = CAP_RIGHT_WRITE;
-    cspace[CAPSLOT_REPLY].object     = (uint64_t)sender;
+    /* (slot, slot_gen), the CAP_TCB encoding (LIMITATIONS 1.32): the reply
+     * names one incarnation of the client, never whatever reuses its slot. */
+    cspace[CAPSLOT_REPLY].object     = reply_object(sender, sender_gen);
     cspace[CAPSLOT_REPLY].badge      = 0;
     cspace[CAPSLOT_REPLY].serial     = serial;
     cspace[CAPSLOT_REPLY].token      = 0;
@@ -1336,16 +1338,11 @@ static bool cap_grant_common(int target_pid, uint32_t dest_slot, uint32_t src_sl
      * so a supervisor replacing the caller's slot on another CPU cannot slip a
      * pipe end in between a check and the write. */
 #ifdef PIPE_GRANT_UNREFUSED
-    (void)from_user;
-    bool ok = rust_cap_grant_into(src, dst_cspace, dst_sz, dest_slot, new_rights,
-                                  &cap_next_serial);
-#else
-    bool ok = from_user
-        ? rust_cap_grant_from_user(src, dst_cspace, dst_sz, dest_slot, new_rights,
-                                   &cap_next_serial)
-        : rust_cap_grant_into(src, dst_cspace, dst_sz, dest_slot, new_rights,
-                              &cap_next_serial);
+    from_user = false;   /* the control arm: ring 3's grant copies anything again */
 #endif
+    bool ok = from_user
+        ? rust_cap_grant_from_user(src, dst_cspace, dst_sz, dest_slot, new_rights, &cap_next_serial)
+        : rust_cap_grant_into(src, dst_cspace, dst_sz, dest_slot, new_rights, &cap_next_serial);
     if (ok && was_null) tasks[target_pid].caps_in_use++;
     spin_unlock(&cap_lock);
     return ok;
@@ -1358,7 +1355,7 @@ bool cap_grant_into(int target_pid, uint32_t dest_slot, uint32_t src_slot, uint3
     return cap_grant_common(target_pid, dest_slot, src_slot, new_rights, false);
 }
 
-/* SYS_CAP_GRANT. Refuses a pipe end (LIMITATIONS 1.29): the pipe's end counts
+/* SYS_CAP_GRANT. Refuses a pipe end (S133, LIMITATIONS 1.29): the pipe's end counts
  * live in the pipe table, a ring-3 copy would be an end they never saw, and the
  * pipe would be freed under it when the granting task closed its own. Refused by
  * type in the Rust core rather than counted here, by the maintainer's choice of

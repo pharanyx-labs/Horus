@@ -2399,6 +2399,14 @@ jobs:
         run: make smoke-proc-truncated-image-control
       - name: Control arm — an ELF reaching past its image reads the shared staging region
         run: make smoke-proc-overreach-control
+      # LIMITATIONS 1.32. A client killed mid-call leaves its slot to a
+      # successor; SYS_IPC_SENDER and the reply capability named the slot, so
+      # the server was told the successor sent the request, and its answer
+      # completed the successor's own call. One arm for each check.
+      - name: Control arm, SYS_IPC_SENDER answers for a task that reused a dead sender's slot
+        run: make smoke-proc-stale-sender-control
+      - name: Control arm, a reply to a dead client completes its slot successor's call
+        run: make smoke-proc-stale-reply-control
       # LIMITATIONS 1.28. The premap span was sized by a C parse of the program
       # headers, before any validator, with a 32-bit bound that an e_phoff of
       # 2^32 - 16 wraps; the arm puts it back and must see the supervisor fault
@@ -3498,6 +3506,11 @@ jobs:
       # account the shell writes; every assertion is a login that SUCCEEDS.
       - name: Control arm — the dropped argument re-seals the volume
         run: make smoke-passwd-target-control
+      # LIMITATIONS 1.27. An account's own passwd re-sealed the slot of the
+      # boot's first unlock, whoever asked; the arm puts that back and boot 2
+      # must find root's password opening nothing.
+      - name: Control arm, an account's own passwd re-seals the first login's key slot
+        run: make smoke-passwd-own-control
 
   vfs:
     name: "Two filesystem servers, two mounts, one namespace (2.4)"

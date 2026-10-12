@@ -59,6 +59,7 @@ control_arms:
   smoke-installer-accounts-control: smoke-installer-accounts
   smoke-installer-target-control: smoke-installer-target
   smoke-passwd-target-control: smoke-passwd-target
+  smoke-passwd-own-control: smoke-passwd-target
   smoke-session-fs-err-control: smoke-session
   smoke-session-chmod-control: smoke-session
   smoke-session-chown-control: smoke-session
@@ -123,6 +124,8 @@ control_arms:
   smoke-execprobe-root-control: smoke-execprobe
   smoke-proc-truncated-image-control: smoke-proc
   smoke-proc-overreach-control: smoke-proc
+  smoke-proc-stale-sender-control: smoke-proc
+  smoke-proc-stale-reply-control: smoke-proc
   smoke-proc-phoff-wrap-control: smoke-proc
   smoke-readdir-end-control: smoke-readdir-end
   smoke-installer-panel-control: smoke-installer-panel

@@ -687,6 +687,15 @@ embedded_killspin_bin_start:
 .incbin "userspace/killspin.bin"
 .global embedded_killspin_bin_end
 embedded_killspin_bin_end:
+/* replyprobe: calls an endpoint and blocks for the answer; killed mid-call, its
+ * successor in the same slot must not receive that answer (LIMITATIONS 1.32).
+ * Only in PROC_SELFTEST. */
+.align 16
+.global embedded_replyprobe_bin_start
+embedded_replyprobe_bin_start:
+.incbin "userspace/replyprobe.bin"
+.global embedded_replyprobe_bin_end
+embedded_replyprobe_bin_end:
 
 /* sigwaiter: blocks in SYS_WAIT on an immortal target, to exercise async signal
  * delivery interrupting a blocked wait. Only in PROC_SELFTEST. */

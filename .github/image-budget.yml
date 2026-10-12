@@ -69,4 +69,12 @@
 #   before the allocator whose tables they map.
 # 2026-10-11: 6,934,528 bytes (-16,384), the hashed generation table
 #   (LINEAGE_GEN, 4096 four-byte cells) removed with LIMITATIONS 2.23.
-bss_bytes: 6934528
+# 2026-10-12: 6,946,816 bytes (+12,288), for LIMITATIONS 1.32: every queued
+#   message records its sender's slot_gen, and each endpoint the generation of
+#   the sender it last dequeued, so a reply or SYS_IPC_SENDER cannot name a task
+#   that reused a dead client's slot. endpoints 394,240 -> 409,600 (+15,360):
+#   320 static endpoints, 4 queue slots of +8 and a last_sender_gen of +8 with
+#   its padding, 48 bytes each; the section's page rounding makes it 12 KiB.
+#   Measured with nm against the build without the change. 48 bits of
+#   generation, as CAP_TCB has, rather than 32 that a busy slot could wrap.
+bss_bytes: 6946816

@@ -41,7 +41,7 @@ pub const CAP_ENDPOINT: u32 = 3;
 /// by a `_Static_assert` in `src/kernel/capability.c`.
 pub const CAP_PIPE: u32 = 13;
 
-/// May a ring-3 task copy a capability of this type into another slot?
+/// May a ring-3 task copy a capability of this type into another slot? (S133)
 ///
 /// Everything but a pipe end. A pipe is freed and scrubbed when its count of
 /// reader and writer ends falls to zero, and that count lives in the C kernel's

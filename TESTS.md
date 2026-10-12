@@ -324,6 +324,7 @@ There are 502 `smoke-*` targets: 222 gates and 280 control arms. Each row is a g
 | `smoke-ap-trampoline` | The embedded secondary-CPU trampoline is exactly its code, whatever the host assembler emits |  | `smoke-ap-trampoline-control` |
 | `smoke-defect-flags` | Every boot states which defect flags built it |  | `smoke-defect-flags-control` |
 | `smoke-defect-flags-rebuild` | Changing a defect flag rebuilds what it affects |  | `smoke-defect-flags-rebuild-control` |
+| `smoke-repro-iso` | `kernel.elf`, the gates' `horus.iso` and the release's `install.iso` are the same bytes when built in two directories, at two times, serially and in parallel; a difference names the file inside the ISO and keeps both copies | S17 | `smoke-repro-iso-path-control`, `smoke-repro-iso-serial-control` |
 | `smoke-repro-sha` | The build record refuses an incomplete build and names every artifact of a complete one | S17 | `smoke-repro-sha-control` |
 | `smoke-syscall-coverage` | Which syscall handlers the tracked workloads enter matches `.github/syscall-coverage.yml` | S25 | `smoke-syscall-coverage-control` |
 

@@ -280,6 +280,8 @@ control_arms:
   smoke-image-abi-control: smoke-image-abi
   smoke-proc-taskinfo-control: smoke-proc
   smoke-repro-sha-control: smoke-repro-sha
+  smoke-repro-iso-path-control: smoke-repro-iso
+  smoke-repro-iso-serial-control: smoke-repro-iso
   smoke-ap-trampoline-control: smoke-ap-trampoline
   smoke-boot-module-reserve-control: smoke-boot-module-reserve
   smoke-boot-module-reverify-control: smoke-boot-module-reserve
@@ -498,6 +500,7 @@ gates:
   - smoke-killed-task
   - smoke-recvblock
   - smoke-recvblock-smp
+  - smoke-repro-iso
   - smoke-repro-sha
   - smoke-resume-guard
   - smoke-resume-guard-ist

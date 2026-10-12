@@ -62,14 +62,34 @@ NEWLIB_TARGET_CFLAGS="-m64 -ffreestanding -fno-stack-protector -fno-builtin -mno
 # the thing it certifies or it certifies nothing.
 STAMP=$PREFIX/.newlib-flags
 
+# THE BUILD DIRECTORY MUST NOT REACH THE LIBRARY (LIMITATIONS 5.3a). newlib's
+# assertions expand __FILE__, and configure hands the compiler absolute source
+# paths, so a libc built in /a/newlib and one built in /b/newlib differed in five
+# strings (measured 2026-10-12). The shared libc is a boot module whose hash the
+# kernel pins, so the kernel differed with it, and so did every image that pins
+# the kernel: the ISO was reproducible only by building it in the same directory.
+# -ffile-prefix-map rewrites the path in __FILE__ and in debug information alike.
+#
+# The STAMP names the mapping, never the directory: a stamp holding the path
+# would itself differ between trees and rebuild a perfectly good cached library
+# in every one. NEWLIB_PATH_UNMAPPED=1 is the control arm for make
+# smoke-repro-iso (smoke-repro-iso-path-control): the old, path-carrying build.
+if [ "${NEWLIB_PATH_UNMAPPED:-0}" = 1 ]; then
+	NEWLIB_PATH_MAP=""
+	NEWLIB_STAMP_KEY="$NEWLIB_TARGET_CFLAGS <path unmapped>"
+else
+	NEWLIB_PATH_MAP="-ffile-prefix-map=$NEWLIB_DIR=/newlib"
+	NEWLIB_STAMP_KEY="$NEWLIB_TARGET_CFLAGS -ffile-prefix-map=<newlib>=/newlib"
+fi
+
 if [ -f "$PREFIX/x86_64-elf/lib/libc.a" ]; then
-	if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$NEWLIB_TARGET_CFLAGS" ]; then
+	if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$NEWLIB_STAMP_KEY" ]; then
 		echo "newlib: $PREFIX/x86_64-elf/lib/libc.a already built, nothing to do"
 		exit 0
 	fi
 	echo "newlib: target flags changed since the last build -- rebuilding"
 	echo "newlib:   was: $([ -f "$STAMP" ] && cat "$STAMP" || echo '<unstamped>')"
-	echo "newlib:   now: $NEWLIB_TARGET_CFLAGS"
+	echo "newlib:   now: $NEWLIB_STAMP_KEY"
 	rm -rf "$BUILD" "$PREFIX"
 fi
 
@@ -185,7 +205,7 @@ mkdir -p "$TOOLS"
 for tool in gcc cc; do
 	cat >"$TOOLS/x86_64-elf-$tool" <<EOF
 #!/bin/sh
-exec gcc $NEWLIB_TARGET_CFLAGS "\$@"
+exec gcc $NEWLIB_TARGET_CFLAGS $NEWLIB_PATH_MAP "\$@"
 EOF
 done
 for tool in ar ranlib strip; do
@@ -258,6 +278,6 @@ test -f "$PREFIX/x86_64-elf/lib/libc.a" || {
 # top trusts it, a failed build would then be skipped on the next run and the
 # stale library used as if it were current. It records success, not intent.
 mkdir -p "$(dirname "$STAMP")"
-printf '%s' "$NEWLIB_TARGET_CFLAGS" > "$STAMP"
+printf '%s' "$NEWLIB_STAMP_KEY" > "$STAMP"
 
 echo "newlib: built $PREFIX/x86_64-elf/lib/libc.a"

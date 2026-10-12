@@ -168,11 +168,25 @@ if [ -n "${EFI_OUT:-}" ] || [ -n "${EFI_BIN_OUT:-}" ]; then
     if [ -n "${EFI_OUT:-}" ]; then
     esz=$(( ( $(wc -c < "$WORK/BOOTX64.EFI") / 1024 ) + 512 ))
     rm -f "$EFI_OUT"
-    mformat -i "$EFI_OUT" -C -f "$(( esz > 2880 ? esz : 2880 ))" -v HORUSEFI :: 2>/dev/null || {
+    # A FIXED VOLUME SERIAL (LIMITATIONS 5.3a). Without -N, mformat makes one up
+    # from the clock, and on 2026-10-12 those four bytes were the only thing that
+    # differed between two builds of one commit in one directory a minute apart.
+    # Taken from the loader the image carries, so it changes with the contents
+    # and never with the time; and deliberately not the installed ESP's serial
+    # (tools/mkesp.sh takes that from the kernel), so a search by UUID on a
+    # machine holding both cannot mistake one for the other.
+    # EFI_IMG_SERIAL_UNFIXED=1 is the control arm for make smoke-repro-iso
+    # (smoke-repro-iso-serial-control): mformat's own, time-derived serial.
+    if [ "${EFI_IMG_SERIAL_UNFIXED:-0}" = 1 ]; then
+        EFI_SERIAL_ARG=""
+    else
+        EFI_SERIAL_ARG="-N $(sha256sum "$WORK/BOOTX64.EFI" | cut -c1-8)"
+    fi
+    mformat -i "$EFI_OUT" -C -f "$(( esz > 2880 ? esz : 2880 ))" $EFI_SERIAL_ARG -v HORUSEFI :: 2>/dev/null || {
         # mformat's -f takes a known geometry for small sizes; fall back to a
         # plain sized image with -T (sectors) for anything larger.
         dd if=/dev/zero of="$EFI_OUT" bs=1024 count="$esz" status=none
-        mformat -i "$EFI_OUT" -v HORUSEFI ::
+        mformat -i "$EFI_OUT" $EFI_SERIAL_ARG -v HORUSEFI ::
     }
     mmd -i "$EFI_OUT" ::/EFI ::/EFI/BOOT
     mcopy -i "$EFI_OUT" "$WORK/BOOTX64.EFI" ::/EFI/BOOT/BOOTX64.EFI

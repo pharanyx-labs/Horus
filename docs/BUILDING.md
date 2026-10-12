@@ -580,11 +580,11 @@ make verify-build         # the same
 
 The target builds **once** and records `sha256sum` of `kernel.elf` and `horus.iso` in
 `.build.sha`, refusing (and writing nothing) if either is missing (`tools/record_build_sha.sh`).
-The `reproducible` CI job runs it twice and compares the `kernel.elf` hashes; to check locally, run
-it twice and compare that line, or run `sha256sum -c .build.sha` against artifacts you have.
-`kernel.elf` is byte-for-byte reproducible. **`horus.iso` is not**: `grub-mkrescue` writes a file
-named for the wall-clock second and embeds a UUID in the EFI loaders it generates
-(`docs/LIMITATIONS.md` 5.3a).
+`kernel.elf`, `horus.iso` and the release's `install.iso` are byte-for-byte reproducible: `make
+smoke-repro-iso` builds all three in this tree and again in a git worktree at another path, later
+and in parallel, and compares them (the `reproducible` CI job runs it on every pull request). To
+check a release, build `make install.iso` from a checkout of its tag and compare the SHA-256 with
+the one published beside the ISO.
 
 ---
 

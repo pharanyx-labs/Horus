@@ -301,16 +301,16 @@ boundary; bounded Kani proofs and Miri on every pull request.
 - **No review before merge** (**[C-5]**): the ruleset requires no approving review, and merges are
   made by Claude once the gates are green. A pull request from outside the project is not merged
   that way; it waits for the maintainer.
-- **No build provenance or signed artifacts** (**[I-9]**), and the ISO is not byte-reproducible
-  (`docs/LIMITATIONS.md` 5.3, 5.3a).
+- **No build provenance or signed artifacts** (**[I-9]**, `docs/LIMITATIONS.md` 5.3). The ISO
+  rebuilds to the same bytes from its tag (S17), so a release can be checked by rebuilding it.
 - **Workflows GitHub injects are invisible to the tree's checks** (`docs/LIMITATIONS.md` 5.7).
 
 ---
 
 ## Supported versions
 
-There are three releases, `v0.2.0-alpha` (2026-09-14), `v0.3.0-alpha` (2026-10-09) and
-`v0.4.0-alpha` (2026-10-12), each an install ISO for developers; only the latest is supported. Security fixes
+There are four releases, `v0.2.0-alpha` (2026-09-14), `v0.3.0-alpha` (2026-10-09), `v0.4.0-alpha`
+and `v0.4.1-alpha` (both 2026-10-12), each an install ISO for developers; only the latest is supported. Security fixes
 land on `main` only; there are no backports. Anyone using Horus for research should track `main`
 and rebuild.
 

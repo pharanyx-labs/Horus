@@ -63,7 +63,6 @@ The recommendation is the one the route is written around; it is not the decisio
 | Capabilities | Revocable pipe ends | 5.1 | LIMITATIONS 1.14 | |
 | Filesystem | Sessions at login, then the uid path removed | 2.10 steps 3(b), 3(c), 6 | 1.31 | D1 |
 | Observability | Kernel reports on their own channel | 5.3 | 2.6c | |
-| Supply chain | A reproducible ISO | 3.1 | 5.3a | |
 | Storage | Metadata authenticated on the current format | 5.2 | 1.30 | D2 |
 | Storage | `rotate_keys` withdrawn or rebuilt | 2.26 | 2.26 | D14 |
 | SMP | Secondary CPUs waited for by the clock, not a loop count | 5.12 | 2.28 | |
@@ -75,7 +74,7 @@ The recommendation is the one the route is written around; it is not the decisio
 | Filesystem | Accounts as files, then exec by capability | 2.11 step 3, 5.4 | 1.23 | Wave 1 filesystem, D7 |
 | Console | Input as a capability, with job control | 5.5, 2.3 job control | 2.9b | 2.10 step 3(b), D6 |
 | Boot | Measured boot by default, rollback anchoring | 5.6, 5.7 | 2.9, 1.12 | D3, D4 |
-| Supply chain | Verifiable releases, then updates without a lockout | 4.5, 4.4, 4.11, then 5.8 | 5.3, 2.9a | 3.1, D10, D5 |
+| Supply chain | Verifiable releases, then updates without a lockout | 4.5, 4.4, 4.11, then 5.8 | 5.3, 2.9a | D10, D5 |
 | SMP | Per-CPU run queues, one-shot timers, timers as notifications | 1.8 steps 2 and 3, 2.2 | | |
 | Memory | Reclaimable kernel memory | 5.9, 2.1 | 2.5, 2.3 | |
 | Proofs | Typed lookup proved, IPC authority modelled, concurrent protocols modelled | 3.5, 5.11 | narrows 5.5 | D9 |
@@ -189,12 +188,6 @@ task's pages only, never a page marked secret, and charges each task for its own
 
 ### Track 3: assurance and observability
 
-**3.1 ⬜ A reproducible ISO.** `kernel.elf` is reproducible and gated; `horus.iso` is not
-(LIMITATIONS 5.3a), because `grub-mkrescue` writes a file named for the wall-clock second and
-embeds a UUID in the EFI loaders. Assemble the image with `xorriso` directly or derive both from
-`SOURCE_DATE_EPOCH`, and have the `reproducible` job build the ISO twice, in two directories as two
-users, and compare. 4.4, 4.5, 4.11 and 5.8 all need it.
-
 **3.5 ⬜ Proofs over the capability algebra.** A type check inside `rust_cap_lookup` and its proof,
 with the `CAP_LOOKUP_TYPE_UNCHECKED` arm reaching the Rust build too, so one switch disarms both
 halves; a Rust model of `ipc_ep_from_slot` and a proof that IPC authority implies a held endpoint
@@ -228,9 +221,9 @@ need a bypass actor, which would undo the gating. Until then `SECURITY.md` claim
 automatically verified", not "independently reviewed".
 
 **4.4 ⏸ Build provenance and signed artefacts [I-9].** SLSA provenance and signatures on `kernel.elf`
-and the ISO, in the form D10 picks. Needs 3.1.
+and the ISO, in the form D10 picks.
 
-**4.5 ⬜ Releases that carry their evidence.** The three releases so far carry an ISO and its checksum
+**4.5 ⬜ Releases that carry their evidence.** The four releases so far carry an ISO and its checksum
 from an unsigned tag. Each release also carries the SBOM, the provenance of 4.4 and the expected PCR
 values.
 
@@ -240,7 +233,7 @@ values.
 font's ASCII half is still open.
 
 **4.11 ⬜ `verify-release.sh`.** A script a third party runs to rebuild from a tag and compare with
-the release, including the PCR values. Needs 3.1 and 4.5.
+the release, including the PCR values. Needs 4.5.
 
 **4.13 ⬜ Publish the threat model [F-4.3].** It is a section of `SECURITY.md`, not a versioned
 document.
@@ -288,7 +281,7 @@ anchor; and an export path for a volume moved between machines.
 
 **5.8 ⏸ Kernel updates without a lockout** (2.9a). Compute the PCR values a new boot image will
 produce, seal a second copy of the volume key to them before rebooting, and drop the old seal only
-after the new image has unlocked once. Needs 3.1 and D5.
+after the new image has unlocked once. Needs D5; the reproducible ISO it relied on is done (#557).
 
 **5.9 ⬜ Reclaimable kernel memory** (2.5, then 2.3). The untyped reset: revoking an untyped
 capability destroys everything carved from it, and the watermark is reset and the pins cleared only

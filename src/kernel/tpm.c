@@ -825,8 +825,8 @@ static uint32_t put_pw_auth(uint8_t *b, uint32_t p) {
  *   module set gave different PCR[4]; and
  *
  *   it is STABLE -- two builds of identical input gave the same PCR[4] even
- *   though the ISOs around them had different SHA-256, because grub-mkrescue's
- *   wall-clock UUID (docs/LIMITATIONS.md 5.3a) does not reach the boot image. A
+ *   when the ISOs around them still differed (they no longer do: the whole ISO
+ *   is reproducible since 2026-10-12, S17, make smoke-repro-iso). A
  *   measurement that moved on every rebuild would make every sealed volume
  *   unopenable after a no-op build.
  *

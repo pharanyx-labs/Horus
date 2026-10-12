@@ -37,9 +37,9 @@
 # What IS true, and is the whole of the fix: SeaBIOS measures THIS IMAGE into
 # PCR[4], and the measurement tracks its contents. Measured, both directions:
 # two boot images differing only in their embedded module set gave different
-# PCR[4]; two builds of identical input gave the SAME PCR[4] even though the
-# two ISOs around them had different SHA-256, because grub-mkrescue's wall-clock
-# UUID (docs/LIMITATIONS.md 5.3a) does not reach the boot image.
+# PCR[4]; two builds of identical input gave the SAME PCR[4] even when the two
+# ISOs around them still differed (they no longer do: the whole ISO is
+# reproducible since 2026-10-12, S17, make smoke-repro-iso).
 #
 # So the kernel's expected hash is put INSIDE the measured image, in a memdisk,
 # alongside the config that checks it. That makes the two halves inseparable:

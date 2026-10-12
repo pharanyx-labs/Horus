@@ -204,7 +204,7 @@ DEFECT_FLAGS = \
 	INSTALLER_STOP_AFTER_FORMAT USERS_PERSIST_COMPILED_IN LIVE_OPENS_VOLUME \
 	SIBLING_KICK_TEST SIBLING_SCHED_UNGUARDED \
 	SHOOTDOWN_DEAF_CPU SHOOTDOWN_FAIL_OPEN \
-	WAIT_WAKE_EARLY WAIT_WAKE_WIDEN
+	WAIT_WAKE_EARLY WAIT_WAKE_WIDEN PIT_SQUARE_WAVE
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -1872,6 +1872,15 @@ endif
 KSTACK_REUSE_WIDEN ?= 0
 ifeq ($(KSTACK_REUSE_WIDEN),1)
 CFLAGS += -DKSTACK_REUSE_WIDEN
+endif
+
+# PIT_SQUARE_WAVE=1 programs the timer tick in mode 3, as before 2026-10-12, which
+# under QEMU's TCG delivers it twice per period, so the clock runs at double speed
+# and login.conf's failure_delay waits half as long (LIMITATIONS 2.27, closed).
+# Control arm for smoke-etc-config's delay bound; never shipped.
+PIT_SQUARE_WAVE ?= 0
+ifeq ($(PIT_SQUARE_WAVE),1)
+CFLAGS += -DPIT_SQUARE_WAVE
 endif
 
 # DEAD_TASK_RUNS=1 restores the pre-2026-09-21 handling of a task torn down by
@@ -8476,7 +8485,7 @@ smoke-modules:
 # module, applied at the next login, and a value the manual page says is refused
 # is refused, with the line named, rather than taken or rounded.
 ETC_CONFIG_FLAGS = COREUTILS_MODULES=1 COREUTILS_MODULE_SET="wc"
-.PHONY: smoke-etc-config smoke-etc-config-control
+.PHONY: smoke-etc-config smoke-etc-config-control smoke-etc-config-clock-control
 smoke-etc-config:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(ETC_CONFIG_FLAGS)
@@ -8490,6 +8499,16 @@ smoke-etc-config-control:
 	@$(MAKE) --no-print-directory $(ETC_CONFIG_FLAGS) CONF_VALUE_UNCHECKED=1
 	@$(MAKE) --no-print-directory $(ETC_CONFIG_FLAGS) CONF_VALUE_UNCHECKED=1 horus.iso
 	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) ETC_CONFIG_EXPECT_UNCHECKED=1 python3 tools/etc_config_session.py horus.iso
+
+# Control arm: the timer tick in mode 3, which QEMU's TCG delivers twice per
+# period, so the guest's clock runs at double speed and failure_delay = 2 waits
+# about one host second. The gate's bound (at least 1.8 s on the host's clock)
+# must catch it.
+smoke-etc-config-clock-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(ETC_CONFIG_FLAGS) PIT_SQUARE_WAVE=1
+	@$(MAKE) --no-print-directory $(ETC_CONFIG_FLAGS) PIT_SQUARE_WAVE=1 horus.iso
+	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) ETC_CONFIG_EXPECT_FAST_CLOCK=1 python3 tools/etc_config_session.py horus.iso
 
 # An archive module is refused WHOLE (docs/design/configuration.md section 4).
 # Beside the manual, the build ships a second archive whose first member is a

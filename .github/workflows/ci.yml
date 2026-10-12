@@ -3501,6 +3501,11 @@ jobs:
       # account the shell writes; every assertion is a login that SUCCEEDS.
       - name: Control arm — the dropped argument re-seals the volume
         run: make smoke-passwd-target-control
+      # LIMITATIONS 1.27. An account's own passwd re-sealed the slot of the
+      # boot's first unlock, whoever asked; the arm puts that back and boot 2
+      # must find root's password opening nothing.
+      - name: Control arm, an account's own passwd re-seals the first login's key slot
+        run: make smoke-passwd-own-control
 
   vfs:
     name: "Two filesystem servers, two mounts, one namespace (2.4)"
@@ -4011,6 +4016,10 @@ jobs:
       # working. Finding 3.3's shape applied to a whole cspace at once.
       - name: Control arm — a forked capability must be derived from its parent's
         run: make smoke-fork-cspace-orphan-control
+      # LIMITATIONS 1.29. The child's copies of its parent's pipe ends were not
+      # counted, so the parent's close freed the pipe under the child.
+      - name: Control arm, a forked child's pipe ends are not counted
+        run: make smoke-fork-pipe-control
 
   forkexec:
     name: "An exec replaces the image, not the authority"

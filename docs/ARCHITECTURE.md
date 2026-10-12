@@ -219,7 +219,8 @@ reserved `0xC0DE****` serial tag and are not revocable.
 - **`cap_grant_into(target, dest, src, rights)`** derives into another task's cspace, authorised
   by a `CAP_TCB` naming that task.
 - **`cap_clone_cspace`** gives a forked child a derived copy of every capability its parent holds
-  (S41).
+  (S41), and `pipe_count_forked_ends` then counts each pipe end the child holds, since a pipe is
+  freed when no counted end is left.
 
 Every write to a capability slot takes `cap_lock` and goes through the accounted cap-write path
 (S94): `tools/check_cap_writes.py` holds the list of writers, declared in

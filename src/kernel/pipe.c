@@ -167,6 +167,53 @@ void pipe_close_task_ends(int task_id) {
     }
 }
 
+/* COUNT THE PIPE ENDS A FORKED CHILD WAS GIVEN (LIMITATIONS 1.29).
+ *
+ * A pipe is freed when its reader_ends and writer_ends both reach zero, so
+ * every CAP_PIPE that can be closed must have been counted. cap_clone_cspace
+ * gives a forked child a derived copy of every capability its parent holds,
+ * pipe ends included, and counted none of them: after a fork a pipe had two
+ * holders and a count of one, so when the parent closed its end the pipe was
+ * scrubbed and freed while the child still held a capability naming its
+ * index, and the next pipe_alloc to take that index joined the child to an
+ * unrelated pair of tasks. The spawn path's stdio wiring always counted the
+ * end it passes on (wire_child_stdio); fork was the copy that did not.
+ *
+ * Counted from what the child's cspace HOLDS, not from what the clone meant to
+ * copy: the read is under cap_lock, so an end a revocation sweep removed in
+ * between is not counted, and the count is the child's real holding. The refs
+ * are taken after cap_lock is dropped, because pipe_end_ref takes pipe_lock
+ * and cap_lock -> pipe_lock is not an order this kernel has
+ * (.github/lock-order.yml); pipe_close_task_ends keeps the two apart for the
+ * same reason. Nothing can close the child's ends in between: the child has
+ * not run, and its cspace is reachable by no other task's close.
+ *
+ * The direction is the one pipe_end_unref will use when the end is closed,
+ * the capability's own WRITE right, so the two always agree. */
+void pipe_count_forked_ends(int child) {
+    if (child <= 0 || child >= g_max_tasks) return;
+    /* One byte an end: the index (< MAX_PIPES, so 5 bits) and the direction
+     * in the top bit. 256 bytes of stack, rather than 1 KiB, on the fork path. */
+    _Static_assert(MAX_PIPES <= 0x80, "a pipe index must fit below the direction bit");
+    uint8_t ends[CNODE_SIZE];
+    uint32_t n = 0;
+    spin_lock(&cap_lock);
+    capability_t *cs = tasks[child].cspace;
+    uint32_t sz = tasks[child].cspace_size ? tasks[child].cspace_size : CNODE_SIZE;
+    if (sz > CNODE_SIZE) sz = CNODE_SIZE;
+    if (cs) {
+        for (uint32_t s = 0; s < sz; s++) {
+            if (cs[s].type != CAP_PIPE || cs[s].serial == 0) continue;
+            if (cs[s].object >= MAX_PIPES) continue;
+            ends[n++] = (uint8_t)(cs[s].object |
+                                  ((cs[s].rights & CAP_RIGHT_WRITE) ? 0x80u : 0u));
+        }
+    }
+    spin_unlock(&cap_lock);
+    for (uint32_t i = 0; i < n; i++)
+        pipe_end_ref((int)(ends[i] & 0x7Fu), (ends[i] & 0x80u) != 0);
+}
+
 /* ---- syscall handlers ----------------------------------------------------- */
 
 /* SYS_PIPE: create a pipe and install a READ end and a WRITE end in the caller's

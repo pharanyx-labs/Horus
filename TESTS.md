@@ -47,7 +47,7 @@ gates that match kernel strings are moving to COM3, which only the kernel can wr
 ## The integration gates
 
 
-There are 499 `smoke-*` targets: 222 gates and 277 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Four gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
+There are 501 `smoke-*` targets: 222 gates and 279 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Four gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
 
 
 ### Capabilities and authorisation
@@ -90,7 +90,7 @@ There are 499 `smoke-*` targets: 222 gates and 277 control arms. Each row is a g
 | `smoke-cpu` | SMEP and SMAP are actually set in CR4 | S7 |  |
 | `smoke-mem-seal` | A program can make a page of its own image read-only for good, and cannot seal a page outside it | S107 | `smoke-mem-seal-window-control`, `smoke-mem-seal-write-control` |
 | `smoke-e820` | The physical pool is sized from the firmware's memory map |  |  |
-| `smoke-fork` | A forked child's memory is a copy-on-write copy, and a fork is refused while a kernel object's page is mapped | S39, S40, S41 | `smoke-fork-arena-control`, `smoke-fork-cspace-flat-control`, `smoke-fork-cspace-orphan-control`, `smoke-fork-share-control` |
+| `smoke-fork` | A forked child's memory is a copy-on-write copy, a fork is refused while a kernel object's page is mapped, and a forked child's pipe ends are counted | S39, S40, S41 | `smoke-fork-arena-control`, `smoke-fork-cspace-flat-control`, `smoke-fork-cspace-orphan-control`, `smoke-fork-pipe-control`, `smoke-fork-share-control` |
 | `smoke-fpu` | A task cannot read another task's XMM registers | S16 | `smoke-fpu-leak-control`, `smoke-fpu-save-control` |
 | `smoke-frame` | **58 parent checks** + 9 peer checks. Frame capabilities: a mapping carries no more than the capability's rights, a delegate maps only what it holds, and region maps are all-or-nothing | S26, S27, S35, S36, S37, S44 | `smoke-frame-dma-control`, `smoke-frame-index-control`, `smoke-frame-info-control`, `smoke-frame-pages-control`, `smoke-frame-region-control`, `smoke-frame-region-wide-control`, `smoke-frame-rights-control` |
 | `smoke-heap64` | The heap syscalls and the pager's region check work above 4 GiB |  |  |
@@ -238,7 +238,7 @@ There are 499 `smoke-*` targets: 222 gates and 277 control arms. Each row is a g
 | `smoke-installer-unsealed` | An unencrypted install says so at every boot and still requires the password | S104 | `smoke-installer-unsealed-control` |
 | `smoke-installer-sd` | A whole install onto an SD card, through a power cycle |  | `smoke-installer-sd-devregs-control`, `smoke-installer-sd-stride-control` |
 | `smoke-installer-sd-smp` | The same with two CPUs, which the driver's lock makes safe |  | `smoke-installer-sd-smp-control` |
-| `smoke-passwd-target` | `passwd <uid>` changes that account and only that one | S75 | `smoke-passwd-target-control` |
+| `smoke-passwd-target` | `passwd <uid>` changes that account and only that one, and an account's own `passwd` re-seals its own key slot | S75 | `smoke-passwd-own-control`, `smoke-passwd-target-control` |
 | `smoke-installer-slowdisk` | A slow disk is not mistaken for a wedged install |  | `smoke-installer-wedge-control` |
 
 ### Console, keyboard and display

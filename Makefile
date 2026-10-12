@@ -106,7 +106,7 @@ DEFECT_FLAGS = \
 	FRAME_INDEX_UNCHECKED FRAME_RIGHTS_UNCHECKED FRAME_REGION_NO_ROLLBACK FRAME_REGION_ROLLBACK_WIDE \
 	FRAME_PAGES_SAME_PHYS FRAME_INFO_BY_INDEX COW_ARENA_UNGUARDED RAMFS_SLOT3_GATE \
 	FORK_SHARE_WRITABLE FORK_ARENA_UNCHECKED \
-	FORK_CSPACE_FLAT_COPY FORK_CSPACE_ORPHAN_COPY \
+	FORK_CSPACE_FLAT_COPY FORK_CSPACE_ORPHAN_COPY FORK_PIPE_UNCOUNTED \
 	EXEC_RESET_CSPACE EXEC_ROOT_CSPACE \
 	FPU_NO_SAVE FPU_NO_RESTORE \
 	VFS_FIRST_MATCH VFS_MOUNT_UNGATED \
@@ -164,7 +164,7 @@ DEFECT_FLAGS = \
 	CSPACE_KEEP_ON_TEARDOWN \
 	CSPACE_RELEASE_BEFORE_PIPES SPAWN_SLOT3_DECOY_GATE UNTYPED_SPLIT_FREE_BYTES \
 	INIT_PROVISION_NO_UNTYPED AUDIT_ABI_LEGACY STORE_LOCKED_UNCHECKED \
-	PASSWD_TARGET_IGNORED PASSWD_NO_KEYSLOT \
+	PASSWD_TARGET_IGNORED PASSWD_NO_KEYSLOT PASSWD_REKEY_FIRST_UNLOCK \
 	SHELL_FS_ERR_FLAT FS_CHMOD_ANY_OWNER FS_CHOWN_ANY_UID \
 	USERLIST_UNGATED HOME_DIR_ROOT_OWNED CLAIM_IMP_TRACE \
 	KSTACK_COLLIDE_IMPERSONATED CLAIM_AUDIT_NO_REREAD \
@@ -441,6 +441,19 @@ endif
 # The `?= 0` default lives here with the explanation; the -D is applied down
 # beside SYSCALL_PTR_TRUNC32's, after USERSPACE_CFLAGS is assigned.
 PASSWD_TARGET_IGNORED ?= 0
+
+# PASSWD_REKEY_FIRST_UNLOCK=1 restores the pre-2026-10-12 slot choice in
+# do_passwd: an account changing its own password re-seals the slot of the
+# boot's FIRST unlock, under that unlock's uid, whoever is asking. After root
+# logs in and out, another account's `passwd` then re-seals root's slot under
+# its own password, and root's password no longer opens the volume at the next
+# boot (LIMITATIONS 1.27). Kernel-side. `make smoke-passwd-own-control` is the
+# arm; `make smoke-passwd-target` goes red under it. Never ship it.
+PASSWD_REKEY_FIRST_UNLOCK ?= 0
+ifeq ($(PASSWD_REKEY_FIRST_UNLOCK),1)
+CFLAGS  += -DPASSWD_REKEY_FIRST_UNLOCK
+ASFLAGS += -DPASSWD_REKEY_FIRST_UNLOCK
+endif
 
 # INSTALLER_NO_BACK=1 restores the pre-2026-09-10 installer: the questions are a
 # straight pipeline, so esc ends the run and every answer already given is
@@ -3236,6 +3249,17 @@ FORK_CSPACE_ORPHAN_COPY ?= 0
 ifeq ($(FORK_CSPACE_ORPHAN_COPY),1)
 CFLAGS  += -DFORK_CSPACE_ORPHAN_COPY
 ASFLAGS += -DFORK_CSPACE_ORPHAN_COPY
+endif
+
+# FORK_PIPE_UNCOUNTED=1 restores the pre-2026-10-12 fork, which gave the child a
+# derived copy of each of its parent's pipe ends and counted none of them: when
+# the parent closed its ends the pipe was freed under the child, and the next
+# pipe to take its index was reachable through the child's stale capability
+# (LIMITATIONS 1.29). Arm for make smoke-fork (smoke-fork-pipe-control).
+FORK_PIPE_UNCOUNTED ?= 0
+ifeq ($(FORK_PIPE_UNCOUNTED),1)
+CFLAGS  += -DFORK_PIPE_UNCOUNTED
+ASFLAGS += -DFORK_PIPE_UNCOUNTED
 endif
 
 # EXEC_RESET_CSPACE=1 makes SYS_EXEC_NAMED / SYS_EXEC_IMAGE discard every
@@ -13132,6 +13156,20 @@ smoke-fork-cspace-orphan-control:
 		tools/smoke_test.sh horus.iso
 	@echo "FORK CSPACE ORPHAN CONTROL: PASS - fresh serial, no parent edge, revoke misses it"
 
+# Control arm -- the pipe ends (LIMITATIONS 1.29). FORK_PIPE_UNCOUNTED=1 copies
+# the parent's pipe ends into the child without counting them, so when the
+# parent closes its ends the pipe is freed, and the child's write through its
+# copy finds it gone. forktest's child says so by name before it dies.
+.PHONY: smoke-fork-pipe-control
+smoke-fork-pipe-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FORK_SELFTEST=1 FORK_PIPE_UNCOUNTED=1
+	@$(MAKE) --no-print-directory FORK_SELFTEST=1 FORK_PIPE_UNCOUNTED=1 horus.iso
+	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='FORKTEST: FAIL fork-pipe-freed-under-child' \
+		tools/smoke_test.sh horus.iso
+	@echo "FORK PIPE CONTROL: PASS - an uncounted pipe end was freed under the child"
+
 # ---- fork + exec, the pairing (roadmap 2.3) -------------------------------
 # The base arm. forkexectest forks itself, lets the child replace its image with
 # forkexecee through SYS_EXEC_NAMED, and then asserts that the exec replaced the
@@ -15328,6 +15366,24 @@ smoke-passwd-target-control:
 	@SESSION_DISK=passwd-tc.img PASSWD_EXPECT_SELF=1 SESSION_TIMEOUT=$(PASSWD_TARGET_TIMEOUT) 		BOOT_TIMEOUT=$(PASSWD_TARGET_TIMEOUT) 		python3 tools/passwd_session.py horus.iso
 	@rm -f passwd-tc.img
 	@echo "[passwd] CONTROL PASS - the dropped argument re-sealed the volume to another account's password"
+
+# Control arm for the slot an account's own `passwd` re-seals (LIMITATIONS
+# 1.27). The same session as smoke-passwd-target, with the kernel choosing the
+# slot of the boot's first unlock again: bob's own `passwd`, after root has
+# logged in and out, re-seals root's slot. Boot 2 then finds root's password
+# opening nothing, which it asserts positively: root still logs in (the
+# compiled-in account table answers while the volume is locked) and `ls` says
+# the volume is not unlocked.
+.PHONY: smoke-passwd-own-control
+smoke-passwd-own-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_AUTOFORMAT=1 PASSWD_REKEY_FIRST_UNLOCK=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_AUTOFORMAT=1 PASSWD_REKEY_FIRST_UNLOCK=1 horus.iso
+	@rm -f passwd-oc.img && truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) passwd-oc.img
+	@SESSION_DISK=passwd-oc.img PASSWD_EXPECT_FIRST_SLOT=1 SESSION_TIMEOUT=$(PASSWD_TARGET_TIMEOUT) \
+		BOOT_TIMEOUT=$(PASSWD_TARGET_TIMEOUT) python3 tools/passwd_session.py horus.iso
+	@rm -f passwd-oc.img
+	@echo "[passwd] CONTROL PASS - an account's own passwd re-sealed the first login's key slot"
 
 # THE POSITIVE HALF OF CAP_STORAGE_FORMAT (roadmap 2.9, S72).
 #

@@ -5024,7 +5024,7 @@ int storage_keyslot_count(void)
 uint32_t storage_unlocked_uid(void)  { return g_unlocked_uid;  }
 uint32_t storage_unlocked_slot(void) { return g_unlocked_slot; }
 
-int storage_rekey(const char *new_password, size_t plen)
+int storage_rekey(uint32_t slot, uint32_t uid, const char *new_password, size_t plen)
 {
     struct mounted_fs *mfs = &g_mounted_fs;
     if (!mfs->mounted || !mfs->unlocked) return -1;
@@ -5036,27 +5036,38 @@ int storage_rekey(const char *new_password, size_t plen)
      * the volume never depended on it. */
     if (sb->unsealed) return 0;
 
-    /* v7: rekey the slot THIS boot opened, not "the" wrap -- there is no longer
-     * a single one. Every other slot keeps working, which is the point of slots:
-     * one user changing their password must not lock everybody else out. Before
-     * key slots this function rewrote the volume's only wrap, so it could not
-     * tell the two apart. */
+    /* v7: rekey ONE slot, the one the caller names, sealed to the uid the
+     * caller names -- there is no longer a single wrap. Every other slot keeps
+     * working, which is the point of slots: one user changing their password
+     * must not lock everybody else out.
+     *
+     * WHICH SLOT IS THE CALLER'S DECISION, AND IT IS do_passwd'S TO MAKE
+     * (LIMITATIONS 1.27). This used to rekey g_unlocked_slot under
+     * g_unlocked_uid: the slot the boot's FIRST unlock opened. A later login
+     * finds the volume open and never touches either, so after root logged in
+     * and out, another account's own `passwd` re-sealed root's slot under the
+     * other account's password and stamped it with root's uid. Taking both as
+     * arguments means this function no longer has a notion of "the" slot to
+     * fall back on. KEYSLOT_NONE, or a slot that is not sealed, is -5: there is
+     * no slot to rekey, and inventing one is the defect. */
+    if (slot == KEYSLOT_NONE) return -5;
+    if (slot >= HORUS_KEYSLOTS) return -5;
     fs_keyslot_t slots[HORUS_KEYSLOTS];
     if (keyslots_read(mfs->bd, sb, slots) != 0) return -2;
-    if (g_unlocked_slot >= HORUS_KEYSLOTS || !slots[g_unlocked_slot].active) {
+    if (slots[slot].active != 1) {
         secure_zero(slots, sizeof(slots));
-        return -2;
+        return -5;
     }
 
     fs_keyslot_t fresh;
     secure_zero(&fresh, sizeof(fresh));
     if (keyslot_seal(mfs->bd, sb, &fresh, new_password, plen,
-                     mfs->disk_key, g_unlocked_uid) != 0) {
+                     mfs->disk_key, uid) != 0) {
         secure_zero(slots, sizeof(slots));
         secure_zero(&fresh, sizeof(fresh));
         return -3;
     }
-    slots[g_unlocked_slot] = fresh;
+    slots[slot] = fresh;
     secure_zero(&fresh, sizeof(fresh));
 
     int rc = keyslots_write(mfs->bd, sb, slots);

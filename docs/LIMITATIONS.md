@@ -35,9 +35,9 @@ otherwise has none. Every other syscall path in the ship kernel is authorised by
 
 ### 1.8 Nine syscalls have no test that runs their handler
 
-As of the last merge and gated since: **94 of 103** implemented syscalls have their handler body
+As of the last merge and gated since: **95 of 103** implemented syscalls have their handler body
 entered by a tracked workload (the scripted ring-3 session, the conformance suite, and the
-boot-modules session). The other 9 are listed in `.github/syscall-coverage.yml`, each with a
+boot-modules session). The other 8 are listed in `.github/syscall-coverage.yml`, each with a
 written reason. `tools/check_syscall_coverage.py` (required job `syscall-coverage`) fails on drift
 in either direction, so the number cannot quietly fall (`SECURITY.md` S25).
 
@@ -45,7 +45,7 @@ The risk is not hypothetical. Four times a probe written to enter an uncovered h
 defect on its first run: a kernel hang on a NULL lookup under `cap_lock` (S52), an audit record
 declared at two sizes that overran a ring-3 array (S71), block syscalls whose "no such block" and
 "permission denied" were the same value, and an ELF loader bounded by the wrong buffer (S84).
-So a defect in any of those 9 handlers is invisible in the same way. `captest` cannot find these: it
+So a defect in any of those 8 handlers is invisible in the same way. `captest` cannot find these: it
 is a refusal suite, and the capability gate returns before a refused handler runs.
 
 What is left falls into three groups, and the grouping says what each would cost:
@@ -142,20 +142,6 @@ off a name the policy names. The uid path, until phase 1b step 6 removes it, and
 no grant set (held by system tasks, never by a session) rename without that rule, so a file moved
 that way under another principal's grant can show a bound that is low through a capability
 minted before the move, until it is opened again.
-
-### 1.29 A granted pipe end is not counted **[HORUS-20261012-03]**
-
-A pipe is freed and scrubbed when its count of reader and writer ends reaches zero, so every copy
-of a `CAP_PIPE` must be counted. `fork` counts the ends it copies into the child
-(`pipe_count_forked_ends`, #553), and the spawn path's stdio wiring counts the one end it hands a
-child. `SYS_CAP_GRANT` needs only possession of its source, accepts a capability of any type, and
-still copies a `CAP_PIPE` into a supervised child without counting it, so the pipe counts one
-holder where there are two. When the granting task closes its end the pipe is freed while the
-child still names its index, and the next `pipe_alloc` to reuse that index joins the child to an
-unrelated pair of tasks. `SYS_CAP_MINT` and `SYS_CAP_TRANSFER` (and so `SYS_CAP_MOVE`) need the
-source to carry `CAP_RIGHT_MINT`, which no pipe end in the shipped kernel is given, so they refuse
-one. No program in the tree grants a pipe end. Confirmed by reading the code on 2026-10-12; the
-`fork` half was reproduced and fixed in #553, the grant half is not yet reproduced.
 
 ### 1.30 The inode table and allocation bitmaps are not authenticated at rest **[HORUS-20261012-04]**
 
@@ -651,6 +637,7 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 1.25 | [HORUS-20261009-01] | A wait could return while its child still read alive, and a waiter could miss its child's death (S125) | 2026-10-09, #528 |
 | 1.27 | [HORUS-20261012-01] | Changing your own password re-sealed the key slot of the boot's first login (S75) | 2026-10-12, #552 |
 | 1.28 | [HORUS-20261012-02] | A crafted program header offset wrapped the spawn path's premap bound (S84) | 2026-10-12, #551 |
+| 1.29 | [HORUS-20261012-03] | A forked or granted pipe end was not counted, so the pipe could be freed under its holder (S41, S133) | 2026-10-12, #553, #555 |
 | 1.32 | [HORUS-20261012-06] | A reply, and the sender identity a server authorises on, named a task slot, so a dead client's successor could receive both (S13, S13b) | 2026-10-12, #554 |
 | 2.0 | [C-3] | Spinlock interrupt state was global | 2026-08-13, #135 |
 | 2.1 | [I-2] | Heap syscalls truncated 64-bit arithmetic | 2026-08-13, #145 |

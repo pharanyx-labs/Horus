@@ -1451,6 +1451,70 @@ void _start(void) {
         (void)sys_cap_revoke(SLOT_PROBE);
     }
 
+    /* ---- 16c. A PIPE END CANNOT BE COPIED FROM RING 3 -----------------
+     *
+     * A pipe is freed when its count of reader and writer ends falls to zero,
+     * and that count is kept in the kernel's pipe table, not in the capability.
+     * Every way the kernel itself hands out an end (creating the pipe, a fork,
+     * the stdio wiring at spawn) counts it. SYS_CAP_GRANT did not: it copied a
+     * pipe end into a supervised child like any other capability, so when the
+     * granter closed its end the pipe was freed under the child, and the next
+     * pipe to take the index was reachable through the child's copy
+     * (LIMITATIONS 1.29). Ring 3 may now not copy a pipe end at all; the
+     * maintainer chose refusal over counting on 2026-10-12, since nothing in
+     * the tree passes one on that way.
+     *
+     * The grant needs a task this one supervises, so it forks one. The child
+     * holds its own counted copies of the ends and waits for a byte on the
+     * pipe, which keeps it alive (a grant into a dead task is refused for that
+     * reason instead) until the parent is done. Beside the refused pipe grant,
+     * a grant of an endpoint into the same child must SUCCEED: without it a
+     * refusal could be the target being wrong rather than the type.
+     * PIPE_GRANT_UNREFUSED=1 puts the copy back, and
+     * `make smoke-captest-pipe-grant-control` requires the first check to fail.
+     *
+     * Mint and transfer (and so move) are refused too. They already required a
+     * MINT right that no pipe end is given; the type rule now refuses them
+     * whatever the rights. Those two checks are not what the arm reddens. */
+    out("CAPTEST: pipe-end-copies\n");
+    {
+        enum { SLOT_GRANT_PIPE = 230, SLOT_GRANT_EP = 231, SLOT_COPY = 232,
+               GO_ROUNDS = 200000 };
+        int rw = sys_pipe();
+        check(rw >= 0, "pipe-for-copy-probe-refused");
+        uint32_t pr = ((uint32_t)rw >> 16) & 0xFFFFu, pw = (uint32_t)rw & 0xFFFFu;
+
+        int kid = sys_fork();
+        check(kid >= 0, "fork-for-pipe-grant-refused");
+        if (kid == 0) {
+            char go = 0;
+            int got = SYS_ERR_AGAIN;
+            for (int i = 0; i < GO_ROUNDS && got == SYS_ERR_AGAIN; i++) {
+                got = sys_pipe_read(pr, &go, 1);
+                if (got == SYS_ERR_AGAIN) sys_yield();
+            }
+            sys_exit();
+            for (;;) { }
+        }
+
+        check(sys_cap_grant(kid, pw, SLOT_GRANT_PIPE) != 0,
+              "pipe-end-granted-to-a-child");
+        check(sys_cap_grant(kid, SLOT_RETYPED_EP, SLOT_GRANT_EP) == 0,
+              "endpoint-grant-to-the-same-child-refused");
+        check(sys_cap_mint(SLOT_COPY, (int)pw, CAP_RIGHT_WRITE) != 0,
+              "pipe-end-minted");
+        check(sys_cap_transfer(SLOT_COPY, (int)pr) != 0,
+              "pipe-end-transferred");
+
+        /* The ends are untouched by the refusals: the byte reaches the child,
+         * and the child's death is an ordinary exit. */
+        char go = 'g';
+        check(sys_pipe_write(pw, &go, 1) == 1, "pipe-write-after-refused-copies");
+        check(sys_wait(kid) == 0, "wait-for-pipe-grant-child");
+        check(sys_pipe_close(pr) == 0 && sys_pipe_close(pw) == 0,
+              "pipe-close-after-copy-probe");
+    }
+
     /* ---- 17. A CAPABILITY A TASK HOLDS COSTS IT BUDGET ----------------
      *
      * MAX_CAPS_PER_TASK is a stated bound: docs/SYSCALLS.md gives it as the

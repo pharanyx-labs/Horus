@@ -156,7 +156,7 @@ answers IDENTIFY), NVMe, USB through xHCI (and with it a keyboard on machines wi
 emulation), and a framebuffer server, each under one device capability and the IOMMU.
 
 **2.7a ⬜ Evict the in-kernel services [F-2.7a].** `.github/ring0-classification.yml` (S87) measures
-the ring-0 `service` class at about 6,000 code lines beside a 11,444-line core: `storage.c` (the
+the ring-0 `service` class at about 6,000 code lines beside a 11,456-line core: `storage.c` (the
 encrypted store and the on-disk filesystem), `kusers.c` (accounts and password hashing), the loader
 and spawn path, `crypto.c` and `syscall_fs.c`, and the IDE, SD and eMMC drivers sit in ring 0 too.
 Storage leaves with 2.10 phase 2, accounts with 2.11 step 3's `auth_server`, and the loader as a

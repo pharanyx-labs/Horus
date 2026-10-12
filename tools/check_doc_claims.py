@@ -330,9 +330,40 @@ def derive():
     }
 
 
+def write_counts(claims, live):
+    """`--write`: set every declared occurrence to its live value, then check.
+
+    A merge of `main` into a branch that also moved a count merges the prose
+    cleanly to the wrong number (both sides made the same +1 edit), and finding
+    that out from CI costs a full run. This rewrites only the pattern's capture
+    group, keeps a thousands separator where the document used one, and leaves
+    an occurrence that matches nothing alone, so the check below still reports
+    it. It never touches `forbidden:` or `numbers`: those need a person."""
+    for claim in claims.get("counts") or []:
+        want = live.get(claim["derive"])
+        if want is None:
+            continue
+        for occ in claim["occurrences"]:
+            path = Path(occ["file"])
+            text = path.read_text()
+
+            def put(m, want=want):
+                old = m.group(1)
+                new = f"{want:,}" if "," in old else str(want)
+                a, b = m.start(1) - m.start(0), m.end(1) - m.start(0)
+                return m.group(0)[:a] + new + m.group(0)[b:]
+
+            fixed = re.sub(occ["pattern"], put, text)
+            if fixed != text:
+                path.write_text(fixed)
+                print(f"wrote {occ['file']}: {claim['id']} = {want}")
+
+
 def main():
     claims = yaml.safe_load(Path(CLAIMS_YML).read_text())
     live = derive()
+    if "--write" in sys.argv[1:]:
+        write_counts(claims, live)
     problems = []
     checked = 0
 

@@ -5671,7 +5671,15 @@ NEWLIB_GLUE_OBJS = userspace/newlib_glue.o userspace/newlib_glue64.o \
 # than assuming it: without this, $(NEWLIB_INC) simply does not exist, -I finds
 # nothing, and #include <stdio.h> silently falls through to the host's glibc
 # headers and fails somewhere confusing. The script no-ops when already built.
-$(NEWLIB_LIB)/libc.a:
+#
+# THE SCRIPT IS A PREREQUISITE. Without it the rule ran only when libc.a was
+# missing, so a tree that had built newlib once never ran the script again and
+# its flags stamp, written to force a rebuild when the flags change, was never
+# read: after #557 added the build-path map, every existing tree kept a libc
+# carrying its directory, and its ISO matched no one else's (found building
+# v0.4.1-alpha in an older worktree, 2026-10-12). Now a changed script runs, the
+# stamp decides, and a no-op touches libc.a so the next make does not ask again.
+$(NEWLIB_LIB)/libc.a: tools/build_newlib.sh
 	@tools/build_newlib.sh
 
 # Everything compiled with NEWLIB_CFLAGS needs the headers that rule installs.

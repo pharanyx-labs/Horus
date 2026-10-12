@@ -50,7 +50,9 @@ Horus is a research system, and nobody independent has reviewed it.
   defect it guards against is put back; that is evidence, not a second pair of eyes.
 - **Some security limitations are open.** An inherited pipe end escapes revocation (1.14), any
   program a person runs can read the command lines they type (2.9b), measured boot is opt-in on a
-  machine without a TPM (2.9), and the cryptography is unaudited (5.4).
+  machine without a TPM (2.9), and the cryptography is unaudited (5.4). A source review found
+  five more, open until each is fixed (1.27, 1.29 to 1.32): among them, one user's `passwd` can
+  re-seal another's key slot, and the inode table is not authenticated at rest.
 
 [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) is the single authoritative status of every known
 finding, and the numbers above are its entries. Read it before drawing conclusions.

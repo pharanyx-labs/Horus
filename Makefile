@@ -164,7 +164,7 @@ DEFECT_FLAGS = \
 	CSPACE_KEEP_ON_TEARDOWN \
 	CSPACE_RELEASE_BEFORE_PIPES SPAWN_SLOT3_DECOY_GATE UNTYPED_SPLIT_FREE_BYTES \
 	INIT_PROVISION_NO_UNTYPED AUDIT_ABI_LEGACY STORE_LOCKED_UNCHECKED \
-	PASSWD_TARGET_IGNORED PASSWD_NO_KEYSLOT \
+	PASSWD_TARGET_IGNORED PASSWD_NO_KEYSLOT PASSWD_REKEY_FIRST_UNLOCK \
 	SHELL_FS_ERR_FLAT FS_CHMOD_ANY_OWNER FS_CHOWN_ANY_UID \
 	USERLIST_UNGATED HOME_DIR_ROOT_OWNED CLAIM_IMP_TRACE \
 	KSTACK_COLLIDE_IMPERSONATED CLAIM_AUDIT_NO_REREAD \
@@ -441,6 +441,19 @@ endif
 # The `?= 0` default lives here with the explanation; the -D is applied down
 # beside SYSCALL_PTR_TRUNC32's, after USERSPACE_CFLAGS is assigned.
 PASSWD_TARGET_IGNORED ?= 0
+
+# PASSWD_REKEY_FIRST_UNLOCK=1 restores the pre-2026-10-12 slot choice in
+# do_passwd: an account changing its own password re-seals the slot of the
+# boot's FIRST unlock, under that unlock's uid, whoever is asking. After root
+# logs in and out, another account's `passwd` then re-seals root's slot under
+# its own password, and root's password no longer opens the volume at the next
+# boot (LIMITATIONS 1.27). Kernel-side. `make smoke-passwd-own-control` is the
+# arm; `make smoke-passwd-target` goes red under it. Never ship it.
+PASSWD_REKEY_FIRST_UNLOCK ?= 0
+ifeq ($(PASSWD_REKEY_FIRST_UNLOCK),1)
+CFLAGS  += -DPASSWD_REKEY_FIRST_UNLOCK
+ASFLAGS += -DPASSWD_REKEY_FIRST_UNLOCK
+endif
 
 # INSTALLER_NO_BACK=1 restores the pre-2026-09-10 installer: the questions are a
 # straight pipeline, so esc ends the run and every answer already given is
@@ -15198,6 +15211,24 @@ smoke-passwd-target-control:
 	@SESSION_DISK=passwd-tc.img PASSWD_EXPECT_SELF=1 SESSION_TIMEOUT=$(PASSWD_TARGET_TIMEOUT) 		BOOT_TIMEOUT=$(PASSWD_TARGET_TIMEOUT) 		python3 tools/passwd_session.py horus.iso
 	@rm -f passwd-tc.img
 	@echo "[passwd] CONTROL PASS - the dropped argument re-sealed the volume to another account's password"
+
+# Control arm for the slot an account's own `passwd` re-seals (LIMITATIONS
+# 1.27). The same session as smoke-passwd-target, with the kernel choosing the
+# slot of the boot's first unlock again: bob's own `passwd`, after root has
+# logged in and out, re-seals root's slot. Boot 2 then finds root's password
+# opening nothing, which it asserts positively: root still logs in (the
+# compiled-in account table answers while the volume is locked) and `ls` says
+# the volume is not unlocked.
+.PHONY: smoke-passwd-own-control
+smoke-passwd-own-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_AUTOFORMAT=1 PASSWD_REKEY_FIRST_UNLOCK=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORAGE_AUTOFORMAT=1 PASSWD_REKEY_FIRST_UNLOCK=1 horus.iso
+	@rm -f passwd-oc.img && truncate -s $$(( $(KEYSLOT_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) passwd-oc.img
+	@SESSION_DISK=passwd-oc.img PASSWD_EXPECT_FIRST_SLOT=1 SESSION_TIMEOUT=$(PASSWD_TARGET_TIMEOUT) \
+		BOOT_TIMEOUT=$(PASSWD_TARGET_TIMEOUT) python3 tools/passwd_session.py horus.iso
+	@rm -f passwd-oc.img
+	@echo "[passwd] CONTROL PASS - an account's own passwd re-sealed the first login's key slot"
 
 # THE POSITIVE HALF OF CAP_STORAGE_FORMAT (roadmap 2.9, S72).
 #

@@ -230,7 +230,7 @@ automatically verified", not "independently reviewed".
 **4.4 ⏸ Build provenance and signed artefacts [I-9].** SLSA provenance and signatures on `kernel.elf`
 and the ISO, in the form D10 picks. Needs 3.1.
 
-**4.5 ⬜ Releases that carry their evidence.** The two releases so far carry an ISO and its checksum
+**4.5 ⬜ Releases that carry their evidence.** The three releases so far carry an ISO and its checksum
 from an unsigned tag. Each release also carries the SBOM, the provenance of 4.4 and the expected PCR
 values.
 

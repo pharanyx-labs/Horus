@@ -18,7 +18,7 @@ it is built first and kept small.
 
 | | |
 |---|---|
-| **Status** | Research system. Two tagged releases for developers, the latest `v0.3.0-alpha` (2026-10-09); all work lands on `main` |
+| **Status** | Research system. Three tagged releases for developers, the latest `v0.4.0-alpha` (2026-10-12); all work lands on `main` |
 | **Platform** | x86-64, booted by GRUB under BIOS or UEFI, in QEMU or on real hardware |
 | **Languages** | C for the kernel and the ring-3 servers, `no_std` Rust for the security core |
 | **Website** | [horus.pharanyx.co.uk](https://horus.pharanyx.co.uk/) |

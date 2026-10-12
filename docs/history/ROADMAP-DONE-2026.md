@@ -63,7 +63,7 @@ open. The account of each is in its pull requests.
 |---|---|
 | 4.2 Gate the security tests [C-6] | Every job is classified as gating or exempt with a written reason in `.github/ci-gating.yml`; the ruleset requires the `gates` aggregator and CodeQL, and `gates` needs every gating job. 2026-08-16 to 2026-09-21, #159, #165, #415 |
 | 4.3 `gitleaks` and `cargo-audit` fail the build | 2026-08-30 |
-| 4.5 Tagged releases, the first two | `v0.2.0-alpha` (2026-09-14) and `v0.3.0-alpha` (2026-10-09), each an install ISO and its SHA-256 |
+| 4.5 Tagged releases, the first three | `v0.2.0-alpha` (2026-09-14), `v0.3.0-alpha` (2026-10-09) and `v0.4.0-alpha` (2026-10-12), each an install ISO and its SHA-256 |
 | 4.6 `horus.py` under `tools/` [M-2] | 2026-09-09 |
 | 4.7 Governance files [M-3] | 2026-07-27, #107 |
 | 4.9 One author identity [M-9] | 2026-08-29, #241 |

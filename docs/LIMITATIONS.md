@@ -335,6 +335,16 @@ who may reach it. The rule that would allow a safe move (`docs/design/filesystem
 each object's back-references, which arrive with the v12 format in phase 3. Until then a mover
 copies the file and removes the original, and a directory cannot be moved at all.
 
+### 2.26 `rotate_keys` changes no key
+
+`SYS_ROTATE_KEYS`, and the shell's `rotate_keys`, rewrite the first four blocks of each file the
+caller owns, stopping at 64 blocks, and report how many. Each block is sealed again under the same
+key, derived from the volume key, the inode and the block, with a fresh nonce. No key is derived
+afresh, the volume key is untouched, and files past their fourth block or past the 64th block
+overall are not touched at all. Until 2026-10-11 the shell described it as re-encrypting the volume
+under a fresh key and `docs/SYSCALLS.md` as rotating the audit chain's keys; both now say what it
+does. Rebuilding it as a real rotation of the volume key, or withdrawing it, is a decision for the
+maintainer.
 ### 2.27 The monotonic clock ran at twice wall-clock speed under emulation
 
 `SYS_CLOCK_GETTIME` counts the 100 Hz PIT tick. Under QEMU's TCG emulator, on one CPU, a

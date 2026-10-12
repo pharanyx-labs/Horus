@@ -16,6 +16,7 @@ here.
 
 ### Security
 
+- `rotate_keys` was described as re-encrypting the volume under a fresh key, and `SYS_ROTATE_KEYS` as rotating the audit chain's keys; it does neither. It rewrites at most 64 of the caller's blocks under the same keys with fresh nonces. The help, the manual and `docs/SYSCALLS.md` now say so, and LIMITATIONS 2.26 records it. (#542)
 - Revoking a capability no longer makes unrelated live capabilities unusable. Revocations were also recorded in a 4096-cell table indexed by a hash of the serial, so a revoke made every live capability in the same cell read as revoked; in CI it cost the shell its root directory. The table is gone: serials are 64-bit and never reissued (they used to wrap after about 4.3 billion mints, and a reused task slot reissued its birth serials), a slot only ever gets a fresh serial, and a revoke empties every slot it reaches, so a capability in its slot is live (S5; LIMITATIONS 2.23, 2.24). `SYS_CAP_ENUMERATE` reports 64-bit serials. (#540)
 - A `SYS_WAIT` could return while its child still read alive, because the waiter was woken before the child was marked dead; seen once in 200 boots. Every teardown now runs under the lock a waiter publishes itself under and wakes the waiter last, which also closes a window, found by reading the code and never observed, in which a waiter could miss its child's death (S125). (#528)
 - The scheduler refuses to run a task on an SMT sibling whatever interrupts it; a parked sibling keeps interrupts on, and the rule used to rest on no interrupt ever reaching one (S101). (#525)

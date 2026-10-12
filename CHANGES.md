@@ -24,6 +24,7 @@ here.
 
 ### Added
 
+- Two configuration files, `/etc/shell.conf` (the prompt's hostname, the message of the day) and `/etc/login.conf` (a pause after a wrong password), fully commented, written once where none exists and never overwritten. A setting can only tighten security or change presentation; a bad line is ignored with a message naming it, and nothing in either file reaches the kernel (`shell.conf(5)`, `login.conf(5)`). (#546)
 - `ln` and `link()` work through a session's capability within one directory: the file travels as a carried capability, never an inode, and the new name may give no more than the caller already holds on the file, refusing a read-only file a writable name (S132). (#544)
 - A manual page for every shell command, the administrator's commands, `fs.policy(5)` and three overviews, `horus(7)`, `capabilities(7)` and `sh(1)`; `hier(7)` rewritten for the layout as it is. The manual ships as one archive module that `fs_server` unpacks into `/usr/share/man`, refusing the whole archive if any member is not a plain file with a plain name (S116). (#545)
 - `fs_server` walks a whole path below a directory capability in one request and answers with one capability, derived from the one invoked, so a client will hold one capability per open path rather than one per component (filesystem decision 12). Every name is checked before any is looked up, and one that is `.`, `..` or holds `/` in any position refuses the walk (S120). (#529)

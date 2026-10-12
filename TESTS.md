@@ -47,7 +47,7 @@ gates that match kernel strings are moving to COM3, which only the kernel can wr
 ## The integration gates
 
 
-There are 498 `smoke-*` targets: 222 gates and 276 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Four gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
+There are 499 `smoke-*` targets: 222 gates and 277 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Four gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
 
 
 ### Capabilities and authorisation
@@ -238,7 +238,7 @@ There are 498 `smoke-*` targets: 222 gates and 276 control arms. Each row is a g
 | `smoke-installer-unsealed` | An unencrypted install says so at every boot and still requires the password | S104 | `smoke-installer-unsealed-control` |
 | `smoke-installer-sd` | A whole install onto an SD card, through a power cycle |  | `smoke-installer-sd-devregs-control`, `smoke-installer-sd-stride-control` |
 | `smoke-installer-sd-smp` | The same with two CPUs, which the driver's lock makes safe |  | `smoke-installer-sd-smp-control` |
-| `smoke-passwd-target` | `passwd <uid>` changes that account and only that one | S75 | `smoke-passwd-target-control` |
+| `smoke-passwd-target` | `passwd <uid>` changes that account and only that one, and an account's own `passwd` re-seals its own key slot | S75 | `smoke-passwd-own-control`, `smoke-passwd-target-control` |
 | `smoke-installer-slowdisk` | A slow disk is not mistaken for a wedged install |  | `smoke-installer-wedge-control` |
 
 ### Console, keyboard and display

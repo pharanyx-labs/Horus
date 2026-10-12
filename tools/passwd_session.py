@@ -24,13 +24,27 @@ the control arm requires the machine to open with the OTHER account's password -
 a login that succeeds, not one that fails, because an assertion of refusal is
 satisfied by a boot that never got to a prompt.
 
+AND AN ACCOUNT'S OWN `passwd` RE-SEALS ITS OWN KEY SLOT (LIMITATIONS 1.27).
+After the administration, bob logs in on the same boot, after root has logged
+out, and changes his own password. The volume is unlocked once per boot, by
+root's login, and the kernel used to re-seal the slot of that FIRST unlock
+whoever asked: root's. So boot 2 logs root in first and requires `ls` to list
+the volume (root's password must still open it: root's login alone proves
+nothing, since the compiled-in account table answers it while the volume is
+locked), and boot 3 logs bob in first and requires his old password refused and
+his new one to open the volume. PASSWD_EXPECT_FIRST_SLOT=1 is that defect's arm:
+boot 2's `ls` must say it cannot read the volume.
+
 Usage:  passwd_session.py [horus.iso]
 Env:    SESSION_DISK    the disk image; REQUIRED, and the same one for both boots
         ROOT_PASSWORD   the password the volume is sealed to (default "toor",
                         the compiled-in default from users_init)
         BOB_PASSWORD    the password given to the new account (default "bobpass1")
+        BOB_NEW_PASSWORD     the password bob changes his own to (default "bobpass2")
         PASSWD_EXPECT_SELF   control arm: require root's password to have become
                              BOB_PASSWORD
+        PASSWD_EXPECT_FIRST_SLOT  control arm: require bob's own passwd to have
+                             re-sealed root's slot, so root's password opens nothing
         SESSION_TIMEOUT / BOOT_TIMEOUT   expect budgets
 Exit:   0 and "PASSWD_SESSION: PASS"; 1 and a FAIL line otherwise.
 """
@@ -45,7 +59,9 @@ STEP = float(os.environ.get("SESSION_TIMEOUT", "120"))
 BOOT = float(os.environ.get("BOOT_TIMEOUT", "300"))
 ROOT_PW = os.environ.get("ROOT_PASSWORD", "toor")
 BOB_PW = os.environ.get("BOB_PASSWORD", "bobpass1")
+BOB_PW2 = os.environ.get("BOB_NEW_PASSWORD", "bobpass2")
 CONTROL = os.environ.get("PASSWD_EXPECT_SELF") == "1"
+FIRST_SLOT = os.environ.get("PASSWD_EXPECT_FIRST_SLOT") == "1"
 
 BOB_UID = "1001"
 
@@ -68,6 +84,37 @@ def login(s, user, pw, timeout=STEP):
         return True
     except SessionFail:
         return False
+
+
+def refused(s, user, pw, timeout=STEP):
+    """Require one login to be REFUSED, by the shell's own words for it. The
+    caller then logs in successfully in the same boot, so a boot that never
+    reached a prompt cannot pass as a refusal."""
+    s.expect("horus login:", timeout)
+    s.send(user)
+    s.expect("Password:", timeout)
+    s.send(pw)
+    s.expect("Login incorrect", timeout)
+
+
+def volume_listed(s):
+    """`ls /` after a login: True if the volume answered with its root
+    directory, False if the shell says it cannot read the volume. Each answer
+    is a line the shell printed, so a dead session fails on the expect instead
+    of passing as either."""
+    start = s.pos
+    s.send("ls /")
+    s.expect("@horus", STEP)
+    out = s.buf[start:s.pos]
+    # A locked volume answers in one of two ways, depending on whether the
+    # shell lists by capability or by the uid path: fs_server cannot stat the
+    # root of a volume it cannot read, or the uid path says it is not unlocked.
+    if "the volume is not unlocked" in out or "ls: no such directory: /" in out:
+        return False
+    if "bin/" in out:
+        return True
+    raise SessionFail("`ls /` gave neither a listing nor the locked-volume message: "
+                      + repr(out[-200:]))
 
 
 def boot1():
@@ -115,6 +162,16 @@ def boot1():
             if not login(s, "bob", BOB_PW):
                 raise SessionFail("the account passwd named cannot log in with what it was given")
             step("the new account logs in with the password it was given")
+
+            # THE SECOND COMMAND UNDER TEST (LIMITATIONS 1.27): bob's OWN
+            # passwd, on a boot whose volume root's login unlocked. It must
+            # re-seal bob's slot, and under the defect it re-seals root's.
+            s.send("passwd")
+            s.expect("New password:", STEP)
+            s.send(BOB_PW2)
+            s.expect("password changed for uid " + BOB_UID, STEP)
+            s.expect("@horus", STEP)
+            step("bob changed his own password after root had logged out")
     finally:
         s.close()
 
@@ -132,7 +189,36 @@ def boot2():
             if not login(s, "root", ROOT_PW, BOOT):
                 raise SessionFail(
                     "the volume no longer opens with the password it was sealed to")
-            step("the volume still opens with the password it was sealed to")
+            # root's login answers from the compiled-in table even when the
+            # volume stays locked, so the volume's answer is asked separately.
+            listed = volume_listed(s)
+            if FIRST_SLOT:
+                if listed:
+                    raise SessionFail(
+                        "CONTROL: root's password still opens the volume; bob's own "
+                        "passwd did not re-seal root's slot")
+                step("CONTROL: root's password no longer opens the volume after bob's own passwd")
+            else:
+                if not listed:
+                    raise SessionFail(
+                        "root's password no longer opens the volume: another "
+                        "account's own passwd re-sealed root's key slot")
+                step("the volume still opens with the password it was sealed to")
+    finally:
+        s.close()
+
+
+def boot3():
+    """Bob first: his own passwd must have re-sealed HIS slot."""
+    s = Serial(ISO)
+    try:
+        refused(s, "bob", BOB_PW, BOOT)
+        step("bob's old password is refused")
+        if not login(s, "bob", BOB_PW2):
+            raise SessionFail("bob's new password does not open the machine")
+        if not volume_listed(s):
+            raise SessionFail("bob's new password logs in but opens no key slot")
+        step("bob's new password opens the volume as the first login of a boot")
     finally:
         s.close()
 
@@ -142,6 +228,8 @@ def run():
         raise SessionFail("SESSION_DISK must name the image both boots share")
     boot1()
     boot2()
+    if not CONTROL and not FIRST_SLOT:
+        boot3()
     print("PASSWD_SESSION: PASS", flush=True)
     return 0
 

@@ -3336,11 +3336,14 @@ int  storage_mount(block_device_t *bd);
  * derives KEK from password, unwraps disk_key, derives volume/MAC keys, and
  * verifies the metadata HMAC.  Must be called after verify_password succeeds. */
 int  storage_unlock(const char *password, size_t plen);
-/* Re-wrap disk_key with a new password-derived KEK.  Call after a successful
- * password change so the on-disk wrapped key stays in sync with the login hash.
- * Requires storage to already be unlocked (disk_key in RAM).  Generates fresh
- * kek_salt + nonce for forward security, then writes the updated superblock. */
-int  storage_rekey(const char *new_password, size_t plen);
+/* Re-wrap disk_key in key slot `slot` under a new password-derived KEK, sealed
+ * to `uid`. Called by do_passwd when an account changes its own password, with
+ * that account's own slot (LIMITATIONS 1.27). Requires storage to already be
+ * unlocked (disk_key in RAM). Generates fresh kek_salt + nonce, then writes the
+ * slot table. -1 no volume open, -2 slots unreadable, -3 seal failed, -4 write
+ * failed, -5 `slot` is KEYSLOT_NONE or not a sealed slot; 0 on an unsealed
+ * volume, which has no key to rewrap. */
+int  storage_rekey(uint32_t slot, uint32_t uid, const char *new_password, size_t plen);
 /* v7 key slots -- up to HORUS_KEYSLOTS passwords open one volume. Adding
  * requires the volume already unlocked (equivalent to holding the key);
  * removal is BY INDEX because the uid is sealed inside the slot, and the last

@@ -661,19 +661,55 @@ int do_passwd(uint32_t target_uid, const char *new_password) {
          * or a machine whose volume nobody has unlocked, has no wrap for this
          * password to be part of. The other codes come back as -30 - n so a
          * caller can say which step it was (docs/SYSCALLS.md). */
-        {
-            int rrc = storage_rekey(new_password, plen);
-            if (rrc != 0 && rrc != -1 && storage_volume_is_persistent()) {
-                audit_log(AUDIT_USER_MGMT, target_uid, -1, "passwd: volume rewrap failed");
+        /* WHICH SLOT IS OURS (LIMITATIONS 1.27, 2026-10-12). Two things can say,
+         * and nothing else may:
+         *
+         *   - the slot this boot's first unlock opened, but ONLY if it opened
+         *     for us: storage_unlock learned its uid from inside the AEAD, so
+         *     that pairing is proved by the unwrap itself;
+         *   - otherwise the slot recorded on our account, which only do_passwd
+         *     writes: the admin path records the slot it sealed for the
+         *     account, and this path records the slot it re-sealed.
+         *
+         * This used to take the first unlock's slot whoever asked. The volume
+         * is unlocked once per boot and the shell's `logout` returns to the
+         * login prompt, so after root logged in and out, another account's own
+         * `passwd` re-sealed ROOT'S slot under that account's password (and
+         * stamped it with root's uid), and recorded root's slot as its own: at
+         * the next boot root's password no longer opened the machine.
+         *
+         * Neither known is a refusal, not a guess: the caller's slot cannot be
+         * found without the old password, and every other slot belongs to
+         * somebody else. KEYSLOT_NONE reaches storage_rekey as -5. */
+        uint32_t own_slot = KEYSLOT_NONE;
+        if (storage_volume_has_keyslots()) {
+#ifdef PASSWD_REKEY_FIRST_UNLOCK
+            /* CONTROL ARM -- never ship. The slot of the boot's first unlock,
+             * whoever is asking, as before 2026-10-12. See
+             * make smoke-passwd-own-control. */
+            own_slot = storage_unlocked_slot();
+            uint32_t own_uid = storage_unlocked_uid();
+#else
+            own_slot = (storage_unlocked_uid() == my_uid) ? storage_unlocked_slot()
+                                                          : u->keyslot;
+            uint32_t own_uid = my_uid;
+#endif
+            int rrc = storage_rekey(own_slot, own_uid, new_password, plen);
+            if (rrc != 0 && rrc != -1) {
+                audit_log(AUDIT_USER_MGMT, target_uid, -1,
+                          rrc == -5 ? "passwd: own key slot not known this boot"
+                                    : "passwd: volume rewrap failed");
                 return -30 + rrc;
             }
         }
+        /* No key slots means nothing to rewrap: an unsealed volume opens
+         * without a password, and a live boot's RAM volume does not outlive
+         * the boot. -1 above is the same answer from a volume nobody opened. */
         int rc = set_user_password(target_uid, new_password);
         if (rc != 0) return rc;
-        /* Record which slot is ours, so an admin changing this password later
-         * can revoke exactly it. storage_unlocked_slot() is the slot the login
-         * that started this session opened. */
-        if (storage_volume_has_keyslots()) u->keyslot = storage_unlocked_slot();
+        /* Record the slot we re-sealed, so an admin changing this password
+         * later revokes exactly it, and so our own next change finds it. */
+        if (storage_volume_has_keyslots()) u->keyslot = own_slot;
     } else {
         uint32_t fresh = KEYSLOT_NONE;
 #ifdef PASSWD_NO_KEYSLOT

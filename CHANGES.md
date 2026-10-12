@@ -46,6 +46,10 @@ here.
 - The scheduling and SMP design records the decisions taken for it: CPU time as a capability accounted per CPU, slack time behind a right, priorities capped by authority, passive servers, per-CPU run queues and one-shot timers, affinity that only narrows, more than eight CPUs; roadmap item 1.8. (#521)
 - LIMITATIONS numbered two entries 1.23: the open one on a program's execute right (#506) and a closed one on the wait race (#528), so one citation had two statuses. The closed one is 1.25, and `doc-claims` now fails when a LIMITATIONS number names more than one entry.
 
+### Fixed
+
+- Under QEMU's TCG emulator the monotonic clock ran at twice wall-clock speed, so `login.conf`'s `failure_delay` waited half as long as it said: the timer tick, programmed as a square wave, was delivered twice per period. It is now programmed as a rate generator, one interrupt per period on every machine, and `smoke-etc-config` holds the delay to the host's clock. At the true rate, `fs_server`'s wait for a sealed volume, which spun each time slice away, starved the keyboard during an install until the password lost characters; it now yields the CPU (LIMITATIONS 3.6). (#549)
+
 ## [0.3.0-alpha]: 2026-10-09
 
 **An installed disk that starts on its own, with its programs on it**, and the work since

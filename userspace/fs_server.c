@@ -2214,7 +2214,30 @@ void _start(void) {
             if (r < 0) { kputln("[fs_server] listen capability lost; exiting"); sys_exit(); }
         } else {
             r = sys_ipc_recv(CAPSLOT_FS_LISTEN, (char *)&rq, sizeof(rq));
-            if (r < 0) { spin_delay(); continue; }       /* no request yet */
+            if (r < 0) {                                 /* no request yet */
+                /* GIVE THE CPU BACK, DO NOT SPIN IT AWAY. This poll runs for as
+                 * long as the volume is sealed: the whole of an install, and an
+                 * installed machine's login prompt until the first login. It
+                 * used to wait with spin_delay(), which burns this server's
+                 * whole time slice on every pass, so on one CPU every other
+                 * task -- console_server reading the keyboard, the installer
+                 * drawing what was typed -- advanced about one tick at a time.
+                 * At a true 100 Hz tick that is slower than a person types, the
+                 * keyboard controller's few bytes of queue overflowed, and
+                 * `smoke-keyboard-install` lost two characters of the password
+                 * every time (2026-10-12, measured with HANG_WATCHDOG: this
+                 * server at one rip inside spin_delay 40 s apart). A yield
+                 * lets a woken task run at once. It is still a poll: the server
+                 * stays runnable until the volume unlocks (docs/LIMITATIONS.md
+                 * 3.6). FS_SEALED_POLL_SPIN=1 puts the spin back for
+                 * smoke-keyboard-install-spin-control. */
+#ifdef FS_SEALED_POLL_SPIN
+                spin_delay();
+#else
+                sys_yield();
+#endif
+                continue;
+            }
         }
 
         /* Take the caller's identity from the kernel, not from the request: this

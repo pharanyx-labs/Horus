@@ -131,7 +131,7 @@ DEFECT_FLAGS = \
 	FSCAP_SELFTEST FS_CAP_RIGHTS_UNCHECKED FS_XDEV_UNCHECKED FS_WALK_NAMES_UNCHECKED \
 	FS_SESSION_GRANTS_ROOT FS_SESSION_RIGHTS_UNCHECKED FS_SESSION_ANY_CALLER \
 	FS_SESSION_TMP_SHARED FS_SESSION_TMP_STORE_VISIBLE FS_SESSION_TMP_KEPT \
-	FS_TOKEN_NODE_IGNORED FS_CAP_CHMOD_UNTRUE FS_CAP_LINK_WIDENS \
+	FS_TOKEN_NODE_IGNORED FS_CAP_CHMOD_UNTRUE FS_CAP_LINK_WIDENS FS_SEALED_POLL_SPIN \
 	FSCAPPOSIX_SELFTEST POSIX_CLOSE_KEEPS_CAP HVFS_GRANT_UNNARROWED \
 	INIT_SHELL_ROOT_READONLY SHELL_CAP_FALLBACK \
 	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED ELF_SPAN_C_PARSE \
@@ -204,7 +204,7 @@ DEFECT_FLAGS = \
 	INSTALLER_STOP_AFTER_FORMAT USERS_PERSIST_COMPILED_IN LIVE_OPENS_VOLUME \
 	SIBLING_KICK_TEST SIBLING_SCHED_UNGUARDED \
 	SHOOTDOWN_DEAF_CPU SHOOTDOWN_FAIL_OPEN \
-	WAIT_WAKE_EARLY WAIT_WAKE_WIDEN
+	WAIT_WAKE_EARLY WAIT_WAKE_WIDEN PIT_SQUARE_WAVE
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -1886,6 +1886,15 @@ ifeq ($(KSTACK_REUSE_WIDEN),1)
 CFLAGS += -DKSTACK_REUSE_WIDEN
 endif
 
+# PIT_SQUARE_WAVE=1 programs the timer tick in mode 3, as before 2026-10-12, which
+# under QEMU's TCG delivers it twice per period, so the clock runs at double speed
+# and login.conf's failure_delay waits half as long (LIMITATIONS 2.27, closed).
+# Control arm for smoke-etc-config's delay bound; never shipped.
+PIT_SQUARE_WAVE ?= 0
+ifeq ($(PIT_SQUARE_WAVE),1)
+CFLAGS += -DPIT_SQUARE_WAVE
+endif
+
 # DEAD_TASK_RUNS=1 restores the pre-2026-09-21 handling of a task torn down by
 # another CPU while it runs (HORUS-20260921-04): the tick returns into it, its
 # syscalls are dispatched, it can be torn down twice, and no kill IPI is sent.
@@ -3326,6 +3335,10 @@ FS_CAP_CHMOD_UNTRUE ?= 0
 # And FS_CAP_LINK_WIDENS=1 (S132) lets a link through a capability make a name
 # that gives more than the carried capability to the file holds.
 FS_CAP_LINK_WIDENS ?= 0
+# FS_SEALED_POLL_SPIN=1 makes fs_server wait for a sealed volume with spin_delay,
+# as before 2026-10-12, burning its whole time slice on every pass instead of
+# yielding it. Control arm for smoke-keyboard-install; never shipped.
+FS_SEALED_POLL_SPIN ?= 0
 # FSCAPPOSIX_SELFTEST=1, with FSCAP_SELFTEST=1, runs step 2's client half in the
 # same harness: fscapposix, a newlib program, in place of fscaptest, walking by
 # capability through ordinary POSIX calls (make smoke-fs-cap-posix).
@@ -5110,6 +5123,9 @@ USERSPACE_CFLAGS += -DFS_TOKEN_NODE_IGNORED
 endif
 ifeq ($(FS_CAP_LINK_WIDENS),1)
 USERSPACE_CFLAGS += -DFS_CAP_LINK_WIDENS
+endif
+ifeq ($(FS_SEALED_POLL_SPIN),1)
+USERSPACE_CFLAGS += -DFS_SEALED_POLL_SPIN
 endif
 ifeq ($(FS_CAP_CHMOD_UNTRUE),1)
 USERSPACE_CFLAGS += -DFS_CAP_CHMOD_UNTRUE
@@ -8517,7 +8533,7 @@ smoke-modules:
 # module, applied at the next login, and a value the manual page says is refused
 # is refused, with the line named, rather than taken or rounded.
 ETC_CONFIG_FLAGS = COREUTILS_MODULES=1 COREUTILS_MODULE_SET="wc"
-.PHONY: smoke-etc-config smoke-etc-config-control
+.PHONY: smoke-etc-config smoke-etc-config-control smoke-etc-config-clock-control
 smoke-etc-config:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(ETC_CONFIG_FLAGS)
@@ -8531,6 +8547,16 @@ smoke-etc-config-control:
 	@$(MAKE) --no-print-directory $(ETC_CONFIG_FLAGS) CONF_VALUE_UNCHECKED=1
 	@$(MAKE) --no-print-directory $(ETC_CONFIG_FLAGS) CONF_VALUE_UNCHECKED=1 horus.iso
 	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) ETC_CONFIG_EXPECT_UNCHECKED=1 python3 tools/etc_config_session.py horus.iso
+
+# Control arm: the timer tick in mode 3, which QEMU's TCG delivers twice per
+# period, so the guest's clock runs at double speed and failure_delay = 2 waits
+# about one host second. The gate's bound (at least 1.8 s on the host's clock)
+# must catch it.
+smoke-etc-config-clock-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(ETC_CONFIG_FLAGS) PIT_SQUARE_WAVE=1
+	@$(MAKE) --no-print-directory $(ETC_CONFIG_FLAGS) PIT_SQUARE_WAVE=1 horus.iso
+	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) ETC_CONFIG_EXPECT_FAST_CLOCK=1 python3 tools/etc_config_session.py horus.iso
 
 # An archive module is refused WHOLE (docs/design/configuration.md section 4).
 # Beside the manual, the build ships a second archive whose first member is a
@@ -10411,12 +10437,14 @@ smoke-keyboard-installer-control:
 # the installer grew two screens and one copy was taught about them. Only the
 # typist differs.
 #
-# NO CONTROL ARM OF ITS OWN, and that is stated rather than quietly absent: the
-# two existing keyboard arms already redden it, measured rather than assumed
-# (see docs/BUILDING.md). Inventing a third flag that drops keystrokes on a
-# schedule would reproduce the CONSEQUENCE faithfully but not the cause, and a
-# synthetic arm whose fidelity has to be argued for is worth less than two real
-# ones that already fire.
+# ITS CONTROL ARM IS A REAL CAUSE, not a synthetic one. The two other keyboard
+# arms redden it too (see docs/BUILDING.md), but a flag that dropped keystrokes
+# on a schedule would reproduce the consequence and not the cause.
+# smoke-keyboard-install-spin-control restores the code that actually dropped
+# them: fs_server waiting for the sealed volume by spinning (FS_SEALED_POLL_SPIN),
+# which on one CPU at a true 100 Hz tick starved the keyboard path until two
+# characters of the password were lost (2026-10-12). The arm passes only on that
+# symptom, the installer still waiting for the first password.
 SMOKE_KEYBOARD_INSTALL_TIMEOUT ?= 300
 .PHONY: smoke-keyboard-install
 smoke-keyboard-install:
@@ -10436,6 +10464,24 @@ smoke-keyboard-install:
 	       rm -f keyboard-install.img; exit 1; }
 	@rm -f keyboard-install.img
 	@echo "[keyboard] PASS - installed and logged in without touching the serial line"
+
+.PHONY: smoke-keyboard-install-spin-control
+smoke-keyboard-install-spin-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) STORAGE_ATA=1 FS_SEALED_POLL_SPIN=1
+	@$(MAKE) --no-print-directory KEYMAP=$(KEYMAP_SHIPPED) STORAGE_ATA=1 FS_SEALED_POLL_SPIN=1 horus.iso
+	@rm -f keyboard-install.img && truncate -s 64M keyboard-install.img
+	@rm -f keyboard-install-spin-serial.log
+	@SESSION_DISK=keyboard-install.img \
+		SESSION_SERIAL_LOG=keyboard-install-spin-serial.log \
+		python3 tools/keyboard_session.py --iso horus.iso --install --expect-dropped-keys \
+		--boot-timeout $(SMOKE_KEYBOARD_INSTALL_TIMEOUT) \
+		--timeout 90 \
+		--serial-log keyboard-install-spin-serial.log \
+	  || { echo "[keyboard] ----- guest serial (log kept: keyboard-install-spin-serial.log) -----"; \
+	       tail -60 keyboard-install-spin-serial.log 2>/dev/null | sed 's/^/  /'; \
+	       rm -f keyboard-install.img; exit 1; }
+	@rm -f keyboard-install.img
 
 # S90: INSTALL MEDIA MAY REPLACE A VOLUME; A RUNNING SYSTEM'S DISK MAY NOT BE
 # TAKEN FROM UNDER IT.

@@ -154,16 +154,6 @@ also records that slot as B's own `keyslot`, so an administrator later changing 
 removes A's slot. Found by a static source review dated 2026-09-26; confirmed by reading the code
 on 2026-10-12, not yet reproduced.
 
-### 1.28 A crafted program header offset wraps the premap bound **[HORUS-20261012-02]**
-
-`staged_image_span_pages` runs on the spawn path before the Rust validator sees the image, and
-bounds the program headers with `e_phoff + 64 > staged_bytes()` in 32 bits. An `e_phoff` within
-64 of 2³² wraps the sum and passes, and the headers are then read about 4 GiB past the staging
-buffer in kernel context. The bound also covers 64 bytes where up to eight headers of 56 are read.
-Any task holding `CAP_UNTYPED` can stage an image, the shell's `run` included. The review that
-found it expects a kernel page fault that ends the caller while it holds the spawn lock, so that
-no task can be created again; that consequence is not yet measured.
-
 ### 1.29 `fork` copies a pipe end without counting it **[HORUS-20261012-03]**
 
 `cap_clone_cspace` derives the child's copy of every capability, `CAP_PIPE` included, but takes
@@ -661,6 +651,7 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 1.21 | [HORUS-20260921-04] | A task killed while running on another CPU kept running (S56) | 2026-09-22, #423 |
 | 1.22 | [HORUS-20261008-01] | Any user could free any inode, `/bin` included, through a directory entry forged in a file they own (S113) | 2026-10-08, #502 |
 | 1.25 | [HORUS-20261009-01] | A wait could return while its child still read alive, and a waiter could miss its child's death (S125) | 2026-10-09, #528 |
+| 1.28 | [HORUS-20261012-02] | A crafted program header offset wrapped the spawn path's premap bound (S84) | 2026-10-12, #551 |
 | 2.0 | [C-3] | Spinlock interrupt state was global | 2026-08-13, #135 |
 | 2.1 | [I-2] | Heap syscalls truncated 64-bit arithmetic | 2026-08-13, #145 |
 | 2.2 | [I-5] | Endpoints were single-slot mailboxes | 2026-08-10, #120 |

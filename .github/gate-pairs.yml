@@ -33,6 +33,7 @@
 control_arms:
   smoke-archive-refused-control: smoke-archive-refused
   smoke-etc-config-control: smoke-etc-config
+  smoke-etc-config-clock-control: smoke-etc-config
   smoke-sdhci-fast-control: smoke-sdhci-fast
   smoke-installer-clear-control: smoke-installer-clear
   smoke-installer-clear-surface-control: smoke-installer-clear
@@ -163,6 +164,7 @@ control_arms:
   smoke-console-escape-control: smoke-console-escape
   smoke-keymap-uk-control: smoke-keymap-uk
   smoke-keyboard-installer-control: smoke-keyboard-installer
+  smoke-keyboard-install-spin-control: smoke-keyboard-install
   smoke-keyboard-installer-noserial-control: smoke-keyboard-installer-noserial
   smoke-replace-live-control: smoke-replace-live
   smoke-replace-partition-control: smoke-replace-live

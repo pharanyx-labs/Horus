@@ -8796,20 +8796,29 @@ smoke-proc-tcb-reuse-control:
 # no reuse on the diagnostic channel, and across the boots the picker must have
 # skipped at least one slot for this reason, or the window was never opened and
 # a clean result proves nothing.
+#
+# Each boot's serial capture is kept as .kstack-reuse.<n>.log, and a red boot
+# prints its tail. The gate once sent it to /dev/null, so when a KVM run went
+# red on #539 (one boot in about 21 did not complete) there was nothing to read
+# but the diagnostic channel, which carried no reuse. CI shows only the job's
+# output, hence the tail as well as the file.
 KSTACK_REUSE_BOOTS ?= 5
 .PHONY: smoke-kstack-reuse
 smoke-kstack-reuse:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSTACK_REUSE_WIDEN=1
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSTACK_REUSE_WIDEN=1 horus.iso
+	@rm -f .kstack-reuse.*.log
 	@skips=0; n=0; diag=$$(mktemp); \
-	while [ $$n -lt $(KSTACK_REUSE_BOOTS) ]; do n=$$((n+1)); : > "$$diag"; \
-	    SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMOKE_KDIAG_LOG="$$diag" MARKER_ONLY=1 SMP_CPUS=4 \
+	while [ $$n -lt $(KSTACK_REUSE_BOOTS) ]; do n=$$((n+1)); : > "$$diag"; log=.kstack-reuse.$$n.log; \
+	    SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMOKE_KDIAG_LOG="$$diag" SMOKE_LOG=$$log MARKER_ONLY=1 SMP_CPUS=4 \
 	        REQUIRE_MARKER='PROC_SELFTEST: tcb-reuse OK' FAIL_MARKER='PROC_SELFTEST: FAIL' \
 	        tools/smoke_test.sh horus.iso >/dev/null 2>&1 \
-	        || { echo "KSTACK REUSE: FAIL - boot $$n did not complete the workload"; cat "$$diag"; exit 1; }; \
+	        || { echo "KSTACK REUSE: FAIL - boot $$n did not complete the workload (log kept: $$log)"; \
+	             echo "  diagnostic channel:"; cat "$$diag"; \
+	             echo "  last 60 lines of the serial log:"; tail -n 60 $$log; exit 1; }; \
 	    if grep -q 'chosen while a CPU is still on its kernel stack' "$$diag"; then \
-	        echo "KSTACK REUSE: FAIL - boot $$n chose a slot a CPU was still on"; cat "$$diag"; exit 1; fi; \
+	        echo "KSTACK REUSE: FAIL - boot $$n chose a slot a CPU was still on (log kept: $$log)"; cat "$$diag"; exit 1; fi; \
 	    s=$$(grep -c 'KSTACK REUSE: skipped slot' "$$diag"); skips=$$((skips+s)); \
 	    echo "  boot $$n/$(KSTACK_REUSE_BOOTS): completed, $$s slot(s) skipped while a CPU was on them"; \
 	done; rm -f "$$diag"; \
@@ -8824,24 +8833,28 @@ smoke-kstack-reuse-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSTACK_REUSE_WIDEN=1 SLOT_REUSE_UNCHECKED=1
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KSTACK_REUSE_WIDEN=1 SLOT_REUSE_UNCHECKED=1 horus.iso
-	@n=0; miss=0; incon=0; diag=$$(mktemp); out=$$(mktemp); \
+	@rm -f .kstack-reuse-control.*.log .kstack-reuse-control.*.kdiag
+	@n=0; miss=0; incon=0; \
 	: "Three outcomes per boot, and only two are scored. A reuse on the"; \
 	: "diagnostic channel is a HIT, whether or not the boot survived it. A boot"; \
 	: "that completed the workload without one is a conclusive MISS. A boot"; \
 	: "that died with neither never ran the experiment and is not counted,"; \
 	: "which is the distinction smoke-kstack-park-control was once scored"; \
-	: "wrongly on."; \
-	while [ $$n -lt $(KSTACK_REUSE_BOOTS) ]; do n=$$((n+1)); : > "$$diag"; \
-	    SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMOKE_KDIAG_LOG="$$diag" MARKER_ONLY=1 SMP_CPUS=4 \
-	        REQUIRE_MARKER='PROC_SELFTEST: tcb-reuse OK' tools/smoke_test.sh horus.iso >"$$out" 2>&1 || true; \
-	    if grep -q 'chosen while a CPU is still on its kernel stack' "$$diag"; then \
+	: "wrongly on. Every boot's serial log and diagnostic channel are kept"; \
+	: "as .kstack-reuse-control.<n>.log and .kdiag; a red arm is the run"; \
+	: "someone needs to read."; \
+	while [ $$n -lt $(KSTACK_REUSE_BOOTS) ]; do n=$$((n+1)); \
+	    log=.kstack-reuse-control.$$n.log; diag=.kstack-reuse-control.$$n.kdiag; : > $$diag; \
+	    SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMOKE_KDIAG_LOG=$$diag SMOKE_LOG=$$log MARKER_ONLY=1 SMP_CPUS=4 \
+	        REQUIRE_MARKER='PROC_SELFTEST: tcb-reuse OK' tools/smoke_test.sh horus.iso >/dev/null 2>&1 || true; \
+	    if grep -q 'chosen while a CPU is still on its kernel stack' $$diag; then \
 	        echo "KSTACK REUSE CONTROL: PASS - boot $$n chose a slot a CPU was still on, as the old picker must ($$miss conclusive miss(es), $$incon inconclusive before it)"; \
-	        rm -f "$$diag" "$$out"; exit 0; fi; \
-	    if grep -q 'PROC_SELFTEST: tcb-reuse OK' "$$out"; then miss=$$((miss+1)); \
-	        echo "  boot $$n/$(KSTACK_REUSE_BOOTS): completed with no reuse"; \
+	        exit 0; fi; \
+	    if grep -q 'PROC_SELFTEST: tcb-reuse OK' $$log; then miss=$$((miss+1)); \
+	        echo "  boot $$n/$(KSTACK_REUSE_BOOTS): completed with no reuse (log kept: $$log)"; \
 	    else incon=$$((incon+1)); \
-	        echo "  boot $$n/$(KSTACK_REUSE_BOOTS): INCONCLUSIVE, the workload died before the respawns -- not counted"; fi; \
-	done; rm -f "$$diag" "$$out"; \
+	        echo "  boot $$n/$(KSTACK_REUSE_BOOTS): INCONCLUSIVE, the workload died before the respawns -- not counted (log kept: $$log)"; fi; \
+	done; \
 	if [ $$miss -eq 0 ]; then \
 	    echo "KSTACK REUSE CONTROL: FAIL - the arm never ran the experiment: all $$n boots died first"; exit 1; fi; \
 	echo "KSTACK REUSE CONTROL: FAIL - the old picker never reused a busy slot in $$miss conclusive boot(s) of $$n"; exit 1

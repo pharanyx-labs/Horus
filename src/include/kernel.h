@@ -3999,10 +3999,11 @@ int  do_spawn_charged(uint32_t stdio_spec, uint32_t untyped_index);
  * caller holds none. */
 int  spawn_untyped_region_for(int task, uint32_t *out_index);
 void create_user_pagedir(uint32_t id);
-/* Pages the currently-armed staged image will occupy once loaded (its PT_LOAD
- * span), so the image-window premap can be sized to the whole image. 0 callers
- * with no armed image pass 0 to create_task for the default. */
-uint32_t staged_image_span_pages(void);
+/* Pages the currently-armed staged image will occupy once loaded at `load_base`
+ * (its PT_LOAD span, from the validated load plan), so the image-window premap
+ * can be sized to the whole image. 0 callers with no armed image pass 0 to
+ * create_task for the default. */
+uint32_t staged_image_span_pages(uint64_t load_base);
 void switch_cr3(uint64_t cr3);
 void drop_to_ring3(uint64_t entry, uint64_t stack);
 void aslr_mix_entropy(uint64_t val);

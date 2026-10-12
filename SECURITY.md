@@ -73,11 +73,13 @@ else's program (S21).
 was given. A compromised `fs_server` controls all filesystem policy and a compromised
 `console_server` sees all terminal traffic: both are trusted by construction.
 
-**A3: an offline attacker with the disk.** *Defended* on an encrypted volume: AEAD with a key
-sealed to the TPM or wrapped under the account passwords, a Merkle tree against rolled-back
-blocks, and a TPM counter against a whole volume replaced by an older copy. An unencrypted volume,
-which the installer offers only as a deliberate choice, has none of this (`docs/LIMITATIONS.md`
-2.21).
+**A3: an offline attacker with the disk.** *Partly defended* on an encrypted volume: file
+contents are sealed with an AEAD under a key sealed to the TPM or wrapped under the account
+passwords, a Merkle tree guards them against rolled-back blocks, and a TPM counter guards against a
+whole volume replaced by an older copy. *Not defended*: the inode table and allocation bitmaps are
+not authenticated, so an owner, mode, type, size or link count can be changed undetected
+(`docs/LIMITATIONS.md` 1.30). An unencrypted volume, which the installer offers only as a
+deliberate choice, has none of this (`docs/LIMITATIONS.md` 2.21).
 
 **A4: a boot-chain tamperer** who modifies the kernel or a module, or boots media of their own.
 *Defended*: modules are checked against a manifest inside the kernel; the kernel's hash is pinned
@@ -211,7 +213,7 @@ has none.
 | S81 | **A kernel diagnostic cannot be cut in half by a ring-3 task's output** | Kernel reports go first to COM3, which no device declares, so no capability or port grant can reach it | `make smoke-kdiag`, `make smoke-kdiag-ioport`; arms: `smoke-kdiag-split-control` (`KDIAG_NOISE=1`, `KDIAG_PROBE=1`, `KDIAG_SPLIT_WIDEN=1`), `smoke-kdiag-legacy-control` (`KDIAG_LEGACY_COM1=1`), `smoke-kdiag-grant-control` (`KDIAG_PORTS_GRANTABLE=1`) |
 | S82 | **A machine with more than one disk says so, and a survey answers only about the device it was asked about** | Every disk is a block device of its own, and a survey answers only for the index it was asked about | `make smoke-storage-survey`; arms: `smoke-storage-survey-single-control` (`STORAGE_SINGLE_DEVICE=1`), `smoke-storage-device-clamp-control` (`STORAGE_DEVICE_INDEX_CLAMP=1`) |
 | S83 | **The call that erases a disk names the disk it erases** | `SYS_STORAGE_FORMAT` takes the target disk as an argument and refuses a mounted or unknown one | `make smoke-installer-target`; arms: `smoke-installer-target-control` (`STORAGE_FORMAT_TARGET_IGNORED=1`) |
-| S84 | **A program image cannot read past its own bytes into the shared staging buffer** | Every ELF parse is bounded by the bytes actually staged (`staged_bytes`), and a rejected ELF fails closed before the old address space is torn down | `make smoke-proc`, `make smoke-execprobe`; arms: `smoke-proc-overreach-control` (`ELF_LOAD_BOUND_STAGING=1`), `smoke-proc-truncated-image-control` (`IMAGE_LEN_UNCHECKED=1`) |
+| S84 | **A program image cannot read past its own bytes into the shared staging buffer** | Every ELF parse is bounded by the bytes actually staged (`staged_bytes`), and a rejected ELF fails closed before the old address space is torn down. Every parse is the Rust validators': the premap span the spawn and exec paths take before loading is computed from their load plan, not from a parse of its own | `make smoke-proc`, `make smoke-execprobe`; arms: `smoke-proc-overreach-control` (`ELF_LOAD_BOUND_STAGING=1`), `smoke-proc-truncated-image-control` (`IMAGE_LEN_UNCHECKED=1`), `smoke-proc-phoff-wrap-control` (`ELF_SPAN_C_PARSE=1`) |
 | S85 | **A disk that was never sealed cannot satisfy a machine that requires measured boot** | `MEASURED_BOOT_REQUIRED=1` refuses to unlock a persistent volume that was never sealed to the TPM | `make smoke-measured-persist`, `make smoke-measured-persist-sealed`; arms: `smoke-measured-boot-required-control` (`MEASURED_BOOT_REQUIRED=1`), `smoke-measured-persist-control` (`MEASURED_VOLUME_UNCHECKED=1`) |
 | S86 | **Every symbol the security core exports across the FFI has a live caller** | `tools/check_ffi_deadsurface.py` requires every exported Rust FFI symbol to have a caller | CI job `ffi-deadsurface` |
 | S87 | **Every object linked into `kernel.elf` is classified, and the verified core has a stated size** | `.github/ring0-classification.yml` assigns every linked object to `core` (11,440 code lines, 18 files), `driver`, `service` or `selftest`, and `tools/check_ring0_budget.py` holds `core` to its budget. 11,440 code lines is a lot; the value is that the number is stated and cannot move silently | CI job `ring0-budget` |

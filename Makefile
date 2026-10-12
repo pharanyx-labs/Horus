@@ -134,7 +134,7 @@ DEFECT_FLAGS = \
 	FS_TOKEN_NODE_IGNORED FS_CAP_CHMOD_UNTRUE FS_CAP_LINK_WIDENS FS_SEALED_POLL_SPIN \
 	FSCAPPOSIX_SELFTEST POSIX_CLOSE_KEEPS_CAP HVFS_GRANT_UNNARROWED \
 	INIT_SHELL_ROOT_READONLY SHELL_CAP_FALLBACK \
-	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED \
+	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED ELF_SPAN_C_PARSE \
 	FS_LINK_UNCOUNTED FS_DIR_OPERAND_UNCHECKED GPT_ENTRIES_CRC_UNCHECKED REVOKE_HASHED_BACKSTOP STORAGE_REPLACE_VIEW_UNRESOLVED \
 	ESP_PIN_UNCHECKED ESP_NOT_WRITTEN DEBUG_BUILD \
 	POOL_SPAN_SELFTEST E820_HOLE_PROBE PHYS_WINDOW_FLAT_ONLY POOL_FLAT_CEILING POOL_RAM_UNCHECKED MEM_HIGH_UNREPORTED \
@@ -689,6 +689,18 @@ ELF_LOAD_BOUND_STAGING ?= 0
 ifeq ($(ELF_LOAD_BOUND_STAGING),1)
 CFLAGS  += -DELF_LOAD_BOUND_STAGING
 ASFLAGS += -DELF_LOAD_BOUND_STAGING
+endif
+
+# ELF_SPAN_C_PARSE=1 puts back the C parse staged_image_span_pages used until
+# 2026-10-12 to size the premap: it read the program headers itself, before any
+# validator, bounded by `e_phoff + 64 > staged_bytes()` in 32 bits, so an e_phoff
+# of 2^32 - 16 wrapped the sum, passed, and read 4 GiB past the staging buffer
+# (LIMITATIONS 1.28). Without the flag the span comes from the Rust validators'
+# load plan. Control arm for make smoke-proc (smoke-proc-phoff-wrap-control).
+ELF_SPAN_C_PARSE ?= 0
+ifeq ($(ELF_SPAN_C_PARSE),1)
+CFLAGS  += -DELF_SPAN_C_PARSE
+ASFLAGS += -DELF_SPAN_C_PARSE
 endif
 
 # IMAGE_LEN_UNCHECKED=1 drops the refusal arm_image_from_user makes when a
@@ -6132,7 +6144,19 @@ userspace/overreach_image.h: userspace/overreach.bin
 	@od -An -v -tu1 $< | tr -s ' ' '\n' | grep -v '^$$' | paste -sd, >> $@
 	@printf '};\nstatic const unsigned overreach_image_len = sizeof(overreach_image);\n' >> $@
 
-userspace/proctest.o: userspace/hello_image.h userspace/overreach_image.h
+# A container whose ELF header puts the program headers just short of 4 GiB into
+# the file: e_phoff alone is changed (LIMITATIONS 1.28, SECURITY.md S84). It is
+# aimed at the bound in staged_image_span_pages, which reads the headers on the
+# spawn path before any validator does. See tools/make_phoff_wrap_image.py.
+userspace/phoffwrap.bin: userspace/hello.bin tools/make_phoff_wrap_image.py
+	@python3 tools/make_phoff_wrap_image.py $< $@
+
+userspace/phoffwrap_image.h: userspace/phoffwrap.bin
+	@printf 'static const unsigned char phoffwrap_image[] = {' > $@
+	@od -An -v -tu1 $< | tr -s ' ' '\n' | grep -v '^$$' | paste -sd, >> $@
+	@printf '};\nstatic const unsigned phoffwrap_image_len = sizeof(phoffwrap_image);\n' >> $@
+
+userspace/proctest.o: userspace/hello_image.h userspace/overreach_image.h userspace/phoffwrap_image.h
 
 # The image execprobe hands to SYS_EXEC_IMAGE, embedded in its own binary the
 # same way -- the bytes a client would have read from a file. A purpose-built
@@ -7322,6 +7346,23 @@ smoke-proc-overreach-control:
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 ELF_LOAD_BOUND_STAGING=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='PROC_SELFTEST: FAIL overreaching-image-spawned' \
+		tools/smoke_test.sh horus.iso
+
+# The arm for the premap span (LIMITATIONS 1.28). ELF_SPAN_C_PARSE=1 restores
+# the C parse whose 32-bit bound proctest's phoff-wrap fixture wraps; the
+# headers are then read at the staging buffer plus 2^32 - 16, which is not
+# mapped, and the kernel takes a supervisor page fault in proctest's spawn and
+# kills it inside the spawn lock. The fault is the detection, so it is EXPECTED
+# by its address: the staging buffer's direct-map address (physical 16 MiB,
+# pool_reserve_base under QEMU's default memory) plus e_phoff. A fault anywhere
+# else is the wrong fault and fails the arm, and so does a run with no fault.
+.PHONY: smoke-proc-phoff-wrap-control
+smoke-proc-phoff-wrap-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 ELF_SPAN_C_PARSE=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 ELF_SPAN_C_PARSE=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		EXPECT_FAULT='PAGE FAULT at 0xffffff8180fffff0 err=0x0(not-present,read,supervisor)' \
 		tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-auditprobe-abi-control

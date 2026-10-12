@@ -417,7 +417,7 @@ static int do_spawn_inner(int caller, uint32_t stdio_spec, uint32_t untyped_inde
      * present). Computed from the still-armed staged image, before the address
      * space is built. */
     create_task(new_id, load_base + armed_hdr.entry, stack_top, load_base,
-                staged_image_span_pages(), untyped_index);
+                staged_image_span_pages(load_base), untyped_index);
     /* create_task leaves state 0 when it could not carve the child's cspace out
      * of `untyped_index` -- the caller has spent its region. Unwind rather than
      * proceed: a task with no cspace must never run (S55 refuses its every
@@ -1049,7 +1049,7 @@ static int exec_into_armed_image(void) {
     tasks[cur].image_end   = load_base;
     /* Size the image-window premap to the new image's loaded span (still armed),
      * so create_user_pagedir maps enough for the loader's copy_to_user below. */
-    tasks[cur].image_premap_pages = staged_image_span_pages();
+    tasks[cur].image_premap_pages = staged_image_span_pages(load_base);
     tasks[cur].esp         = stack_top ? (stack_top - 256) : 0;
     tasks[cur].sig_handler  = 0;
     tasks[cur].in_signal    = 0;

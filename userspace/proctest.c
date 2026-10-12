@@ -2,6 +2,7 @@
 #include "exit_reason.h"   /* format_exit_reason(): the exact renderer init prints with */
 #include "hello_image.h"   /* hello_image[]/hello_image_len: a real .bin for SYS_SPAWN_IMAGE */
 #include "overreach_image.h" /* the same .bin with one PT_LOAD inflated past its end */
+#include "phoffwrap_image.h" /* the same .bin with e_phoff just short of 4 GiB */
 
 /*
  * Process-control self-test driver (PROC_SELFTEST builds only).
@@ -402,6 +403,38 @@ void _start(void) {
         sys_exit();
     }
     report("PROC_SELFTEST: overreaching-image refused OK\n");
+
+    /* --- AN IMAGE WHOSE PROGRAM HEADERS SIT 4 GiB INTO IT IS REFUSED, AND
+     * TASKS CAN STILL BE CREATED AFTERWARDS (LIMITATIONS 1.28) -------------
+     *
+     * hello's image with one field changed: e_phoff is 2^32 - 16
+     * (tools/make_phoff_wrap_image.py). The validators refuse it, since no
+     * header is in the file. But the spawn path sizes the premap from the
+     * headers first (staged_image_span_pages), under the spawn lock, and that
+     * bound was `e_phoff + 64 > staged_bytes()` in 32 bits: the sum wraps to 48,
+     * passes, and the headers are read 4 GiB past the staging buffer.
+     *
+     * TWO HALVES. The call must fail, and the next spawn must work: a fault
+     * there ends this task inside the spawn lock, so the second half is what
+     * tells a refusal from a machine that can no longer create a task. A
+     * marker after each, so a log that stops between them says which. --- */
+    int pw = sys_spawn_image(phoffwrap_image, phoffwrap_image_len, 0, 0);
+    if (pw > 0) {
+        report("PROC_SELFTEST: FAIL phoff-wrap-image-spawned\n");
+        sys_exit();
+    }
+    report("PROC_SELFTEST: phoff-wrap-image refused\n");
+    int pa = sys_spawn_image(hello_image, hello_image_len, 0, 0);
+    if (pa > 0) sys_task_resume(pa);
+    if (pa <= 0) { report("PROC_SELFTEST: FAIL spawn-after-phoff-wrap\n"); sys_exit(); }
+    int pa_gone = 0;
+    struct task_info pai;
+    for (int i = 0; i < 8000; i++) {
+        if (sys_get_task_info(pa, &pai) == 0 && pai.state == 0) { pa_gone = 1; break; }
+        settle();
+    }
+    if (!pa_gone) { report("PROC_SELFTEST: FAIL spawn-after-phoff-wrap-stuck\n"); sys_exit(); }
+    report("PROC_SELFTEST: phoff-wrap-image refused OK\n");
 
     /* --- SYS_SIGALTSTACK argument validation (fail-closed): a valid stack is
      * accepted, a too-small one and one below the user address space are refused,

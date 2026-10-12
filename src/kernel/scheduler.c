@@ -653,7 +653,7 @@ void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base,
     tasks[id].image_end  = tasks[id].image_base;   /* refined by the loader once the image size is known */
 
     /* How many image-window pages create_user_pagedir premaps. The spawn path
-     * passes staged_image_span_pages() so the whole image is present for the
+     * passes staged_image_span_pages(load_base) so the whole image is present for the
      * loader's copy_to_user; task 0 and the flat demo paths pass 0, which
      * create_user_pagedir reads as the USER_ASPACE_PREMAP_PAGES default. Set here
      * (not left to slot-reuse staleness) so every rebuild of a slot is explicit. */

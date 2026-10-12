@@ -229,9 +229,9 @@ window.HORUS_SEARCH = [
 "k": 3
 },
 {
-"t": "1.27Six findings from a source review",
+"t": "1.27Findings from a source review",
 "p": "Limitations",
-"u": "limitations.html#1-27six-findings-from-a-source-review",
+"u": "limitations.html#source-review-findings",
 "k": 3
 },
 {

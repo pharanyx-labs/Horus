@@ -274,6 +274,7 @@ control_arms:
   smoke-net-decode-control: smoke-net
   smoke-net-busmaster-control: smoke-net
   smoke-net-iommu-control: smoke-net
+  smoke-net-rx-ring-control: smoke-net
   smoke-net-irq-storm-control: smoke-net
   smoke-net-mask-control: smoke-net
   smoke-net-msi-vector-control: smoke-net

@@ -258,12 +258,15 @@ frames, ports and interrupt lines (`SECURITY.md` S43). It deliberately does not 
 
 ### 2.14 `netd` receives on one network device model only
 
-`netd` drives an Intel NIC from ring 3. Against QEMU's 82574L (`e1000e`) it sends an ARP request
-and receives the reply, and `make smoke-net` gates on that. Against the 82540EM (`e1000`) the reply
-almost never reaches the receive ring, and the cause is not known. The address filter, ring
-addresses, descriptor layout, device reset, bus mastering and the IOMMU have been ruled out.
-`make smoke-net-intx` keeps the 82540EM exercised for its interrupt handling without asserting
-reception.
+`netd` drives an Intel NIC from ring 3. Against QEMU's 82574L (`e1000e`) it exchanges ARP with the
+gateway eighteen times, wrapping its receive ring twice, and `make smoke-net` gates on that.
+Against the 82540EM (`e1000`) CI's QEMU was recorded delivering the reply almost never, with the
+address filter, ring addresses, descriptor layout, device reset, bus mastering and the IOMMU
+ruled out. On 2026-10-13 a defect was found in the receive ring itself (256 descriptors behind 8
+buffers, so from the ninth frame the device was given descriptors with no buffer) and fixed, but
+it does not explain this one: on QEMU 11 the 82540EM delivered the reply in every boot with the
+old ring and the new. Whether CI's QEMU still drops it is not yet measured, so the model is not
+gated on reception. `make smoke-net-intx` keeps the 82540EM exercised for its interrupt handling.
 
 ### 2.15 What message-signalled interrupts do not cover
 

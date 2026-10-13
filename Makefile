@@ -121,7 +121,7 @@ DEFECT_FLAGS = \
 	IO_DEVICE_OBJECT_UNCHECKED IO_DEVICE_PORTS_GLOBAL IO_DEVICE_IRQ_UNCHECKED \
 	IO_DEVICE_CAP_UNCHECKED NET_NO_BUSMASTER NET_NO_DECODE \
 	DMA_ADDR_FRAME_ONLY NET_IOMMU_NO_MAP IRQ_NO_MASK_ON_FIRE IRQ_ACK_UNGATED \
-	NVME_IOMMU_NO_MAP NVME_WRITE_WRONG_LBA \
+	NVME_IOMMU_NO_MAP NVME_WRITE_WRONG_LBA NET_RX_RING_LEGACY \
 	SDHCID_ADDR_INVERTED SDHCID_WRITE_WRONG_LBA SDHCID_CSD_SPEC_BITS DEVPAGE_UNCHECKED \
 	BLK_NO_EXTENT_CHECK BLK_BIND_UNCHECKED BLK_ABSOLUTE_SECTORS BLK_FRAME_REUSE \
 	ATAD_LBA_REGS_SWAPPED ATAD_WRITE_WRONG_LBA ATAD_CAPACITY_CHS ATA_PORTS_IN_SHIP \
@@ -5734,6 +5734,11 @@ USERSPACE_CFLAGS += -DNET_IOMMU_NO_MAP
 endif
 # nvmed's two arms, here for the reason netd's are: USERSPACE_CFLAGS is assigned
 # with `=` above, and anything appended before that assignment is discarded.
+# NET_RX_RING_LEGACY=1: netd's receive ring as it was until 2026-10-13, the arm
+# of smoke-net's ring-wrap check (smoke-net-rx-ring-control). Never shipped.
+ifeq ($(NET_RX_RING_LEGACY),1)
+USERSPACE_CFLAGS += -DNET_RX_RING_LEGACY
+endif
 ifeq ($(NVME_IOMMU_NO_MAP),1)
 USERSPACE_CFLAGS += -DNVME_IOMMU_NO_MAP
 endif
@@ -10088,8 +10093,21 @@ smoke-net:
 	@$(MAKE) --no-print-directory NET_SELFTEST=1
 	@$(MAKE) --no-print-directory NET_SELFTEST=1 horus.iso
 	@SMOKE_NET=e1000e SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
-		REQUIRE_MARKER='NETTEST: RX PASS' \
+		REQUIRE_MARKER='NETTEST: RX RING PASS' \
 		FAIL_MARKER='NETTEST: FAIL' tools/smoke_test.sh horus.iso
+
+# The receive ring's arm. NET_RX_RING_LEGACY=1 puts back the ring as it was until
+# 2026-10-13: 256 descriptors behind 8 buffers, the tail advanced one per frame,
+# so from the ninth frame the device is handed descriptors with no buffer and
+# the driver never reads them. Measured: exactly 8 replies, then none.
+.PHONY: smoke-net-rx-ring-control
+smoke-net-rx-ring-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 NET_RX_RING_LEGACY=1
+	@$(MAKE) --no-print-directory NET_SELFTEST=1 NET_RX_RING_LEGACY=1 horus.iso
+	@SMOKE_NET=e1000e SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='NETTEST: FAIL rx-ring-wrap' tools/smoke_test.sh horus.iso
+	@echo "[net-rx-ring] CONTROL PASS - the old ring lost the reply once the device passed its eight buffers"
 
 # S53. A device translation must not outlive the capability that authorised it.
 # SYS_DMA_ADDR installs an IOMMU entry for a frame; frame_map_refcount counts CPU

@@ -17,8 +17,30 @@
  *  - **Correct EOF/EPIPE via end refcounts.** reader_ends / writer_ends count the
  *    live end caps across all cspaces; a reader sees EOF (0) when writer_ends hits
  *    0, a writer sees SYS_ERR_PIPE when reader_ends hits 0. Ends are unref'd on
- *    SYS_PIPE_CLOSE and by task_teardown (pipe_close_task_ends), so a stage that
- *    exits — cleanly or on a fault — always releases its ends.
+ *    SYS_PIPE_CLOSE, by task_teardown (pipe_close_task_ends), and by a revocation
+ *    that removes them (pipe_release_revoked_ends), so a stage that exits —
+ *    cleanly or on a fault — or loses its end to a revoke always releases it.
+ *
+ * THE INVARIANT THE COUNTS KEEP, AND WHY IT IS ONE-SIDED (LIMITATIONS 1.14, S134). A
+ * pipe's count of ends in each direction is NEVER LOWER than the number of
+ * pipe-end capabilities naming it, at any moment another CPU could look. Higher
+ * is harmless and happens briefly: a close empties its slot under cap_lock and
+ * unrefs after dropping it, so for a moment the count includes an end that is
+ * gone, and the peer sees "would block" a moment longer than it needs to. Lower
+ * is the defect this rule exists for: the count can reach zero while an end
+ * still names the pipe, the pipe is freed and scrubbed, and the next pipe_alloc
+ * to take the index is reachable through that end (the #553 hazard).
+ *
+ * So every PRODUCER of an end counts it no later than the moment anything else
+ * could remove it: SYS_PIPE counts its two ends before it installs them, and a
+ * forked child's copies and a spawned child's stdio end are counted inside the
+ * cap_lock section that installs them (pipe_count_forked_ends,
+ * cap_install_child_pipe_end), which is the lock every revocation sweep holds. And every
+ * revocation subtracts exactly the ends it removed, counted by the Rust sweep
+ * as it removes them, before it releases cap_lock (pipe_release_revoked_ends).
+ * Taking pipe_lock while cap_lock is held is the nesting cap_lock -> pipe_lock in
+ * .github/lock-order.yml, and pipe_lock is a leaf: nothing here takes another
+ * lock while holding it.
  */
 
 #include "kernel.h"
@@ -47,14 +69,28 @@ int pipe_alloc(void) {
     return -1;
 }
 
-void pipe_end_ref(int idx, int is_writer) {
-    if (idx < 0 || idx >= MAX_PIPES) return;
+/* Count one more end of pipe `idx`. False, counting nothing, if there is no
+ * such pipe: an end of a freed pipe is never counted, so a caller that is about
+ * to install one refuses instead (cap_install_child_pipe_end). */
+bool pipe_end_ref(int idx, int is_writer) {
+    if (idx < 0 || idx >= MAX_PIPES) return false;
+    bool counted = false;
     spin_lock(&pipe_lock);
     if (pipes[idx].in_use) {
         if (is_writer) pipes[idx].writer_ends++;
         else           pipes[idx].reader_ends++;
+        counted = true;
     }
     spin_unlock(&pipe_lock);
+    return counted;
+}
+
+/* Free a pipe whose last end has gone. pipe_lock held. */
+static void pipe_free_if_unheld(struct pipe *p) {
+    if (p->reader_ends == 0 && p->writer_ends == 0) {
+        secure_zero(p->buf, sizeof(p->buf));   /* no residue in a reused pipe */
+        p->in_use = 0; p->head = 0; p->count = 0;
+    }
 }
 
 void pipe_end_unref(int idx, int is_writer) {
@@ -64,18 +100,60 @@ void pipe_end_unref(int idx, int is_writer) {
     if (p->in_use) {
         if (is_writer) { if (p->writer_ends) p->writer_ends--; }
         else           { if (p->reader_ends) p->reader_ends--; }
-        if (p->reader_ends == 0 && p->writer_ends == 0) {
-            secure_zero(p->buf, sizeof(p->buf));   /* no residue in a reused pipe */
-            p->in_use = 0; p->head = 0; p->count = 0;
-        }
+        pipe_free_if_unheld(p);
     }
     spin_unlock(&pipe_lock);
 }
 
+/* RELEASE THE ENDS A REVOCATION REMOVED (LIMITATIONS 1.14).
+ *
+ * Called by cap_revoke with cap_lock HELD, after the Rust sweep has emptied the
+ * revoked slots and counted the pipe ends among them in `tally`: cell 2*i holds
+ * the reader ends of pipe i it removed, cell 2*i+1 the writer ends. Each of those
+ * ends was counted here when it was made, so each comes off here exactly once;
+ * a revoked end is no longer in any slot, so no close or teardown can find it
+ * and release it a second time.
+ *
+ * WHY UNDER cap_lock, AND NOT AFTER IT LIKE A CLOSE. Releasing after the lock
+ * would only make a count briefly too high, the harmless side of the invariant
+ * at the top of this file. It is done inside so that, once cap_revoke returns,
+ * the counts describe exactly the ends that exist: a peer whose last opposite
+ * end was revoked sees EOF or EPIPE on its very next call, with nothing in flight.
+ *
+ * The design recorded in LIMITATIONS 1.14 until 2026-10-13 recounted every
+ * pipe's ends from the cspaces under pipe_lock alone instead. That is unsound on
+ * SMP: a close empties its slot under cap_lock and unrefs after, so a recount in
+ * between counts the end as gone and the unref then takes it off again -- one too
+ * few, and a pipe freed while another end names it. Reading the cspaces without
+ * cap_lock also sees capabilities half-written.
+ *
+ * Returns false if the tally asked to release more ends than a pipe had counted,
+ * which the invariant says cannot happen; the count stops at zero rather than
+ * wrapping, and the caller reports it once it has dropped its locks. */
+bool pipe_release_revoked_ends(const uint32_t *tally, uint32_t cells) {
+    if (!tally) return true;
+    uint32_t n = cells / 2;
+    if (n > MAX_PIPES) n = MAX_PIPES;
+    bool exact = true;
+    spin_lock(&pipe_lock);
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t readers = tally[2 * i], writers = tally[2 * i + 1];
+        if (readers == 0 && writers == 0) continue;
+        struct pipe *p = &pipes[i];
+        if (!p->in_use) { exact = false; continue; }
+        if (readers > p->reader_ends || writers > p->writer_ends) exact = false;
+        p->reader_ends = readers > p->reader_ends ? 0 : p->reader_ends - readers;
+        p->writer_ends = writers > p->writer_ends ? 0 : p->writer_ends - writers;
+        pipe_free_if_unheld(p);
+    }
+    spin_unlock(&pipe_lock);
+    return exact;
+}
+
 /* Ring core operating on KERNEL buffers (no copy_to/from_user, no chunk cap): the
- * user wrappers below stage through a bounded on-stack buffer and copy across the
- * user boundary, while the self-test drives these directly. Return semantics match
- * pipe_read/pipe_write. */
+ * syscall handlers below stage through a bounded on-stack buffer and copy across
+ * the user boundary, while the self-test drives these directly. Return semantics
+ * are SYS_PIPE_READ's and SYS_PIPE_WRITE's. */
 static int pipe_read_bytes(int idx, uint8_t *dst, uint32_t len) {
     if (idx < 0 || idx >= MAX_PIPES) return SYS_ERR_INVAL;
     spin_lock(&pipe_lock);
@@ -112,20 +190,44 @@ static int pipe_write_bytes(int idx, const uint8_t *src, uint32_t len) {
     return (int)n;
 }
 
-int pipe_read(int idx, uint8_t *dst, uint32_t len) {
-    if (len > PIPE_IO_CHUNK) len = PIPE_IO_CHUNK;
-    uint8_t stage[PIPE_IO_CHUNK];
-    int n = pipe_read_bytes(idx, stage, len);
-    if (n <= 0) return n;                        /* EOF (0) / EAGAIN / error */
-    if (copy_to_user(dst, stage, (size_t)n) != 0) return SYS_ERR_FAULT;
-    return n;
+/* MOVE BYTES THROUGH THE CALLER'S PIPE END, WITH THE END HELD FOR THE WHOLE
+ * MOVE (LIMITATIONS 1.14).
+ *
+ * The end in `slot` is resolved and the ring is read or written under one
+ * cap_lock acquisition, with pipe_lock nested inside it. Until 2026-10-13 the
+ * handlers resolved the slot with no lock held and used the pipe index after it,
+ * which was safe only because nothing but the holder itself could remove its own
+ * end, and a task does not close an end while it is inside a read of it. Once a
+ * pipe end can be revoked by another task, that gap is reachable: the revoke can
+ * take the last ends of the pipe, the pipe is freed, the next pipe_alloc takes
+ * the index, and the bytes go to (or come from) a pipe this task holds no end
+ * of. Held under the lock every revocation holds, the end either is gone before
+ * the move (SYS_ERR_PERM) or exists until it is over.
+ *
+ * Only kernel memory is touched under the locks: the caller stages the user
+ * buffer before a write and copies out after a read, so no page fault (and no
+ * page_lock) is ever taken inside cap_lock here. */
+static int pipe_io_by_slot(uint32_t slot, int write, uint8_t *stage, uint32_t len) {
+    int rc;
+    spin_lock(&cap_lock);
+    struct capability *c = cap_lookup(slot, CAP_PIPE, write ? CAP_RIGHT_WRITE : CAP_RIGHT_READ);
+    if (!c)                          rc = SYS_ERR_PERM;
+    else if (c->object >= MAX_PIPES) rc = SYS_ERR_INVAL;
+    else if (write)                  rc = pipe_write_bytes((int)c->object, stage, len);
+    else                             rc = pipe_read_bytes((int)c->object, stage, len);
+    spin_unlock(&cap_lock);
+    return rc;
 }
 
-int pipe_write(int idx, const uint8_t *src, uint32_t len) {
-    if (len > PIPE_IO_CHUNK) len = PIPE_IO_CHUNK;
-    uint8_t stage[PIPE_IO_CHUNK];
-    if (copy_from_user(stage, src, len) != 0) return SYS_ERR_FAULT;
-    return pipe_write_bytes(idx, stage, len);
+/* Does the caller hold a pipe end with `right` in `slot`? Asked before a write
+ * touches the caller's buffer, so a refused write fails as refused rather than
+ * as a fault; pipe_io_by_slot asks again under the lock, which is the answer that
+ * counts. */
+static int pipe_end_held(uint32_t slot, uint32_t right) {
+    spin_lock(&cap_lock);
+    int held = cap_lookup(slot, CAP_PIPE, right) != NULL;
+    spin_unlock(&cap_lock);
+    return held;
 }
 
 /* Close every pipe end a dying task still holds (called from task_teardown, in
@@ -139,10 +241,11 @@ void pipe_close_task_ends(int task_id) {
     /* ONE SLOT PER PASS, re-scanning from the start each time, rather than one
      * walk that nulls and unrefs as it goes. The walk has to read the cspace and
      * the null has to be under cap_lock (a teardown races a revocation sweep on
-     * another CPU like any other cap-write), but pipe_end_unref takes pipe_lock --
-     * so doing both inside one locked walk would establish cap_lock -> pipe_lock
-     * while holding it across an unbounded number of ends. Releasing cap_lock
-     * between the null and the unref keeps the two locks strictly sequential.
+     * another CPU like any other cap-write). Unref'ing inside that walk would
+     * hold cap_lock across every end the task holds. cap_lock -> pipe_lock is a
+     * declared nesting since 2026-10-13, but a removal does not need it: an unref
+     * after the lock leaves the count briefly too HIGH, the harmless side of the
+     * invariant at the top of this file, so the locks stay sequential here.
      *
      * The cost is O(slots^2) on a cspace that is all pipe ends: 256 slots, so at
      * most ~32k trivial comparisons, once, on a task that is already dead. The
@@ -167,7 +270,8 @@ void pipe_close_task_ends(int task_id) {
     }
 }
 
-/* COUNT THE PIPE ENDS A FORKED CHILD WAS GIVEN (LIMITATIONS 1.29).
+/* COUNT THE PIPE ENDS A FORKED CHILD WAS GIVEN (LIMITATIONS 1.29), UNDER THE
+ * SAME cap_lock THE COPIES WERE MADE UNDER (LIMITATIONS 1.14).
  *
  * A pipe is freed when its reader_ends and writer_ends both reach zero, so
  * every CAP_PIPE that can be closed must have been counted. cap_clone_cspace
@@ -179,45 +283,64 @@ void pipe_close_task_ends(int task_id) {
  * unrelated pair of tasks. The spawn path's stdio wiring always counted the
  * end it passes on (wire_child_stdio); fork was the copy that did not.
  *
- * Counted from what the child's cspace HOLDS, not from what the clone meant to
- * copy: the read is under cap_lock, so an end a revocation sweep removed in
- * between is not counted, and the count is the child's real holding. The refs
- * are taken after cap_lock is dropped, because pipe_end_ref takes pipe_lock
- * and cap_lock -> pipe_lock is not an order this kernel has
- * (.github/lock-order.yml); pipe_close_task_ends keeps the two apart for the
- * same reason. Nothing can close the child's ends in between: the child has
- * not run, and its cspace is reachable by no other task's close.
+ * Called by cap_clone_cspace with cap_lock HELD, once every copy is made and
+ * before the lock is released. Until 2026-10-13 it ran after the clone had
+ * dropped the lock, with the refs taken after a second locked read, because
+ * cap_lock -> pipe_lock was not an order this kernel had. That was safe while no
+ * pipe end could be revoked. Once SYS_PIPE's ends carry REVOKE, a revoke of the
+ * parent's end (or an ancestor of it) landing in that window removes the child's
+ * copy and subtracts it from a count that never included it: one too few, the
+ * defect the invariant at the top of this file forbids. Counted under the lock
+ * every sweep holds, the copy and its count are seen together or not at all.
  *
- * The direction is the one pipe_end_unref will use when the end is closed,
- * the capability's own WRITE right, so the two always agree. */
-void pipe_count_forked_ends(int child) {
-    if (child <= 0 || child >= g_max_tasks) return;
-    /* One byte an end: the index (< MAX_PIPES, so 5 bits) and the direction
-     * in the top bit. 256 bytes of stack, rather than 1 KiB, on the fork path. */
-    _Static_assert(MAX_PIPES <= 0x80, "a pipe index must fit below the direction bit");
-    uint8_t ends[CNODE_SIZE];
-    uint32_t n = 0;
-    spin_lock(&cap_lock);
+ * Counted from what the child's cspace HOLDS, not from what the clone meant to
+ * copy, so a slot the clone could not fill is not counted. The direction is the
+ * one pipe_end_unref and the revocation tally use, the capability's own WRITE
+ * right, so all three always agree.
+ *
+ * All or nothing, in one pipe_lock section: every end is checked against a pipe
+ * in use before any is counted, and false means nothing was counted, so the
+ * caller fails the fork and the child, which never runs, holds no end the table
+ * would have to release. The parent's ends were live, so their pipes are in use
+ * while the counts keep their invariant; the check is what keeps an end the
+ * table never counted from existing if they ever do not. */
+bool pipe_count_forked_ends(int child) {
+    if (child <= 0 || child >= g_max_tasks) return false;
     capability_t *cs = tasks[child].cspace;
     uint32_t sz = tasks[child].cspace_size ? tasks[child].cspace_size : CNODE_SIZE;
     if (sz > CNODE_SIZE) sz = CNODE_SIZE;
-    if (cs) {
-        for (uint32_t s = 0; s < sz; s++) {
-            if (cs[s].type != CAP_PIPE || cs[s].serial == 0) continue;
-            if (cs[s].object >= MAX_PIPES) continue;
-            ends[n++] = (uint8_t)(cs[s].object |
-                                  ((cs[s].rights & CAP_RIGHT_WRITE) ? 0x80u : 0u));
+    if (!cs) return false;
+    spin_lock(&pipe_lock);
+    for (uint32_t s = 0; s < sz; s++) {
+        if (cs[s].type != CAP_PIPE || cs[s].serial == 0) continue;
+        if (cs[s].object >= MAX_PIPES || !pipes[cs[s].object].in_use) {
+            spin_unlock(&pipe_lock);
+            return false;
         }
     }
-    spin_unlock(&cap_lock);
-    for (uint32_t i = 0; i < n; i++)
-        pipe_end_ref((int)(ends[i] & 0x7Fu), (ends[i] & 0x80u) != 0);
+    for (uint32_t s = 0; s < sz; s++) {
+        if (cs[s].type != CAP_PIPE || cs[s].serial == 0) continue;
+        if (cs[s].rights & CAP_RIGHT_WRITE) pipes[cs[s].object].writer_ends++;
+        else                                pipes[cs[s].object].reader_ends++;
+    }
+    spin_unlock(&pipe_lock);
+    return true;
 }
 
 /* ---- syscall handlers ----------------------------------------------------- */
 
 /* SYS_PIPE: create a pipe and install a READ end and a WRITE end in the caller's
- * cspace at the first two free slots >= 16. Returns (read_slot<<16)|write_slot. */
+ * cspace at the first two free slots >= 16. Returns (read_slot<<16)|write_slot.
+ *
+ * BOTH ENDS CARRY REVOKE (LIMITATIONS 1.14, the maintainer's choice of
+ * 2026-10-13). Without it no pipe end could be revoked at all, so the copies of
+ * an end a fork or a spawn hands on were outside S3 in a way no test could see.
+ * With it the creator can take back every copy of an end it handed on, and only
+ * those (S4): its own end goes with them, as a close would take it. A fork
+ * keeps the right, since a forked child holds what its parent held; the spawn
+ * path hands a child READ or WRITE alone, so a spawned stage cannot revoke.
+ * Neither end carries MINT or GRANT, and ring 3 cannot copy one by any path
+ * (S133), so REVOKE adds no way to pass an end on. */
 void h_pipe(struct interrupt_frame64 *r) {
     int cur = get_current_task();
     if (!tasks[cur].cspace) { r->rax = (uint64_t)(uint32_t)SYS_ERR_PERM; return; }
@@ -236,10 +359,17 @@ void h_pipe(struct interrupt_frame64 *r) {
      * MAX_CAPS_PER_TASK -- so SYS_PIPE was a way to hold capabilities the stated
      * ceiling did not bound, and SYS_PIPE_CLOSE a way to be credited for them.
      *
-     * `pipe_end_ref` is called only after BOTH installs succeed. The old code
-     * could not fail between them so it did not have to think about it; this one
-     * can (the ceiling), and a ref taken for a capability that was never
-     * installed is an end no holder can ever release. */
+     * BOTH ENDS ARE COUNTED BEFORE EITHER IS INSTALLED (LIMITATIONS 1.14, S134).
+     * Until 2026-10-13 the refs came after both installs, so for a moment two
+     * ends existed that the pipe had not counted. Nothing could revoke them in
+     * that moment, but SYS_KILL tears a task down from the killer's CPU, and a
+     * teardown that closed them there would have taken the pipe's counts below
+     * zero, freed it, and left the late refs to land on whatever pipe took the
+     * index next. Counted first, the count is never below the ends that exist.
+     * Every failure below has installed nothing it keeps, so it releases both
+     * refs, which frees and scrubs the pipe (pipe_end_unref at 0/0). */
+    pipe_end_ref(idx, 0);   /* read end  */
+    pipe_end_ref(idx, 1);   /* write end */
     uint32_t rslot = 0, wslot = 0;
 #ifdef PIPE_CAP_UNACCOUNTED
     /* CONTROL ARM: the pre-2026-09-12 raw store. Same two slots, same fields, no
@@ -257,14 +387,15 @@ void h_pipe(struct interrupt_frame64 *r) {
         }
         if (rs < 0 || ws < 0) {
             pipe_end_unref(idx, 0);
+            pipe_end_unref(idx, 1);
             r->rax = (uint64_t)(uint32_t)SYS_ERR_NOMEM;
             return;
         }
-        cs[rs].type = CAP_PIPE; cs[rs].rights = CAP_RIGHT_READ;
+        cs[rs].type = CAP_PIPE; cs[rs].rights = CAP_RIGHT_READ | CAP_RIGHT_REVOKE;
         cs[rs].object = (uint64_t)(uint32_t)idx; cs[rs].badge = 0;
         cs[rs].serial = cap_alloc_fresh_serial();
         cs[rs].token = 0;
-        cs[ws].type = CAP_PIPE; cs[ws].rights = CAP_RIGHT_WRITE;
+        cs[ws].type = CAP_PIPE; cs[ws].rights = CAP_RIGHT_WRITE | CAP_RIGHT_REVOKE;
         cs[ws].object = (uint64_t)(uint32_t)idx; cs[ws].badge = 0;
         cs[ws].serial = cap_alloc_fresh_serial();
         cs[ws].token = 0;
@@ -272,25 +403,24 @@ void h_pipe(struct interrupt_frame64 *r) {
     }
 #else
     if (!cap_install_object_first_free(CAP_DYNAMIC_FLOOR, CAP_PIPE, (uint64_t)(uint32_t)idx,
-                                       CAP_RIGHT_READ, 0, &rslot)) {
-        /* Nothing has been installed and no end has been ref'd, so the pipe has
-         * no holders: unref'ing either direction at zero is what frees and
-         * scrubs it (pipe_end_unref), which is the rollback. */
+                                       CAP_RIGHT_READ | CAP_RIGHT_REVOKE, 0, &rslot)) {
+        /* Nothing has been installed, so the two refs above are the pipe's only
+         * holders: releasing them frees and scrubs it, which is the rollback. */
         pipe_end_unref(idx, 0);
+        pipe_end_unref(idx, 1);
         r->rax = (uint64_t)(uint32_t)SYS_ERR_NOMEM;
         return;
     }
     if (!cap_install_object_first_free(CAP_DYNAMIC_FLOOR, CAP_PIPE, (uint64_t)(uint32_t)idx,
-                                       CAP_RIGHT_WRITE, 0, &wslot)) {
+                                       CAP_RIGHT_WRITE | CAP_RIGHT_REVOKE, 0, &wslot)) {
         capability_t prev;
         cap_consume_slot_of(cur, rslot, &prev);   /* give the read end back */
         pipe_end_unref(idx, 0);                   /* and free the pipe */
+        pipe_end_unref(idx, 1);
         r->rax = (uint64_t)(uint32_t)SYS_ERR_NOMEM;
         return;
     }
 #endif
-    pipe_end_ref(idx, 0);   /* read end  */
-    pipe_end_ref(idx, 1);   /* write end */
 
     r->rax = ((uint64_t)rslot << 16) | wslot;
 }
@@ -299,18 +429,22 @@ void h_pipe_read(struct interrupt_frame64 *r) {
     uint32_t slot = (uint32_t)r->rbx;
     void    *buf  = (void *)(addr_t)r->rcx;
     uint32_t len  = (uint32_t)r->rdx;
-    struct capability *c = cap_lookup(slot, CAP_PIPE, CAP_RIGHT_READ);
-    if (!c) { r->rax = (uint64_t)(uint32_t)SYS_ERR_PERM; return; }
-    r->rax = (uint64_t)(uint32_t)pipe_read((int)c->object, (uint8_t *)buf, len);
+    if (len > PIPE_IO_CHUNK) len = PIPE_IO_CHUNK;
+    uint8_t stage[PIPE_IO_CHUNK];
+    int n = pipe_io_by_slot(slot, 0, stage, len);
+    if (n > 0 && copy_to_user(buf, stage, (size_t)n) != 0) n = SYS_ERR_FAULT;
+    r->rax = (uint64_t)(uint32_t)n;              /* EOF (0) / EAGAIN / error / count */
 }
 
 void h_pipe_write(struct interrupt_frame64 *r) {
     uint32_t slot = (uint32_t)r->rbx;
     const void *buf = (const void *)(addr_t)r->rcx;
     uint32_t len  = (uint32_t)r->rdx;
-    struct capability *c = cap_lookup(slot, CAP_PIPE, CAP_RIGHT_WRITE);
-    if (!c) { r->rax = (uint64_t)(uint32_t)SYS_ERR_PERM; return; }
-    r->rax = (uint64_t)(uint32_t)pipe_write((int)c->object, (const uint8_t *)buf, len);
+    if (!pipe_end_held(slot, CAP_RIGHT_WRITE)) { r->rax = (uint64_t)(uint32_t)SYS_ERR_PERM; return; }
+    if (len > PIPE_IO_CHUNK) len = PIPE_IO_CHUNK;
+    uint8_t stage[PIPE_IO_CHUNK];
+    if (copy_from_user(stage, buf, len) != 0) { r->rax = (uint64_t)(uint32_t)SYS_ERR_FAULT; return; }
+    r->rax = (uint64_t)(uint32_t)pipe_io_by_slot(slot, 1, stage, len);
 }
 
 void h_pipe_close(struct interrupt_frame64 *r) {

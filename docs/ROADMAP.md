@@ -60,7 +60,7 @@ The recommendation is the one the route is written around; it is not the decisio
 
 | Lane | Milestone | Items | Closes | Needs |
 |---|---|---|---|---|
-| Capabilities | Revocable pipe ends | 5.1 | LIMITATIONS 1.14 | |
+| Capabilities | A pipe end that cannot outlive its pipe | 5.13 | | |
 | Filesystem | Sessions at login, then the uid path removed | 2.10 steps 3(b), 3(c), 6 | 1.31 | D1 |
 | Observability | Kernel reports on their own channel | 5.3 | 2.6c | |
 | Storage | Metadata authenticated on the current format | 5.2 | 1.30 | D2 |
@@ -155,7 +155,7 @@ answers IDENTIFY), NVMe, USB through xHCI (and with it a keyboard on machines wi
 emulation), and a framebuffer server, each under one device capability and the IOMMU.
 
 **2.7a ⬜ Evict the in-kernel services [F-2.7a].** `.github/ring0-classification.yml` (S87) measures
-the ring-0 `service` class at about 6,000 code lines beside a 11,456-line core: `storage.c` (the
+the ring-0 `service` class at about 6,000 code lines beside a 11,527-line core: `storage.c` (the
 encrypted store and the on-disk filesystem), `kusers.c` (accounts and password hashing), the loader
 and spawn path, `crypto.c` and `syscall_fs.c`, and the IDE, SD and eMMC drivers sit in ring 0 too.
 Storage leaves with 2.10 phase 2, accounts with 2.11 step 3's `auth_server`, and the loader as a
@@ -240,12 +240,6 @@ document.
 
 ### Track 5: closing the known limitations
 
-**5.1 ⬜ Revocable pipe ends** (LIMITATIONS 1.14). Give the child's stdio end the spawner's as its
-parent, and after a revocation sweep has dropped `cap_lock`, recount every pipe's ends from the
-cspaces under `pipe_lock` alone. Since #555 only the kernel makes a pipe end, so the recount has
-three producers. Witness: a new gate (proposed name smoke-pipe-revoke-child) in which a parent
-revokes its end, the child's must be gone and the peer must see EOF; the arm restores `badge = 0`.
-
 **5.2 ⏸ Authenticated metadata on the current format** (1.30). The inode-table and bitmap blocks
 become leaves of the existing Merkle tree, so a changed owner, mode, size or bitmap is refused at
 first use. A format version bump: an older volume is refused with a message, never mounted
@@ -306,3 +300,11 @@ the calibrated TSC rather than by a count of `pause` instructions, and a CPU tha
 the wait ends is either counted or parked, never left running uncounted. Witness: a build that
 delays one secondary's check-in past the old loop's length must still report every CPU; the arm
 restores the loop count.
+
+**5.13 ⬜ A pipe end that cannot outlive its pipe.** A pipe's generation goes into its ends'
+`object` beside the index, and every pipe operation compares it under `pipe_lock`, so an end left
+over from a freed pipe is refused rather than reaching the next pipe to take the index. Defence in
+depth behind S134, whose counts already keep a pipe from being freed while an end names it: a
+future accounting mistake becomes an error instead of a read of another task's pipe. Witness: a
+build that frees a pipe under a live end must see the stale end refused; the arm drops the
+comparison.

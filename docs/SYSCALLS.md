@@ -175,7 +175,7 @@ shipped kernel.
 | 67 | `SYS_SIGMASK` | `(how, mask)` | Block/unblock this task's own signals | self only |
 | 68 | `SYS_SPAWN_ARG` | `()` |  | none (self) |
 | 69 | `SYS_GET_ARGV` | `(char *out)` | Writes the argv[] base to *out | none (self) |
-| 70 | `SYS_SPAWN_IMAGE` | `(image, len, arg, argv, argc)` | Spawn a child from a caller-supplied program image (execve-from-fd) | `CAP_UNTYPED` at `CAPSLOT_UNTYPED`: WRITE (S57) |
+| 70 | `SYS_SPAWN_IMAGE` | `(image, len, arg, argv, argc, stdio)` | Spawn a child from a caller-supplied program image (execve-from-fd). `stdio` names a read end for the child's stdin (low 16 bits) and a write end for its stdout (high 16 bits) among the caller's pipe ends; each is derived from the caller's end with `READ` or `WRITE` alone, so revoking the caller's end removes it (S3) | `CAP_UNTYPED` at `CAPSLOT_UNTYPED`: WRITE (S57) |
 | 71 | `SYS_EXEC_IMAGE` | `(image, len, 0, argv, argc)` | No return on success | none (self), as `SYS_EXEC_NAMED` |
 | 72 | `SYS_SIGALTSTACK` | `(ss_sp, ss_size)` | Register this task's alternate signal stack (ss_size 0 disables) | self only |
 | 73 | `SYS_IPC_SENDER` | `(ep, uint32_t *out_gid)` | Kernel-attested identity of an endpoint's last sender; `-1` once that sender has died, even if its slot holds another task | `CAP_ENDPOINT` at `ep_slot`: READ |
@@ -188,9 +188,9 @@ shipped kernel.
 | 80 | `SYS_IOPORT_GRANT` | `(dev_slot)` | Grant native ring-3 in/out on the named device's ports via the TSS I/O bitmap (CAP_IO_DEVICE + WRITE in dev_slot) | `CAP_IO_DEVICE` at `dev_slot` |
 | 81 | `SYS_IRQ_REGISTER` | `(dev_slot, irq, notif_slot, badge)` | Route an IRQ the named device declares to an async notification (CAP_IO_DEVICE + WRITE in dev_slot) | `CAP_IO_DEVICE` at `dev_slot` declaring the line, and a `CAP_NOTIFICATION` at `notif_slot` |
 | 82 | `SYS_CONSOLE_OWNED` | `()` | Whether a ring-3 console server owns the console hardware | none (read-only status) |
-| 83 | `SYS_PIPE` | `()` | Create a bounded pipe, install a read/write CAP_PIPE in the caller's cspace, at the first free slots at or above `CAPSLOT_DYNAMIC_FIRST` (64) (S122) | none (own cspace), but the two ends count against `MAX_CAPS_PER_TASK` and the call is refused with `SYS_ERR_NOMEM` at the ceiling (S94) |
-| 84 | `SYS_PIPE_READ` | `(slot, buf, len)` | 0 = EOF, SYS_ERR_AGAIN = empty-but-writers-open | `CAP_PIPE` READ at `slot` |
-| 85 | `SYS_PIPE_WRITE` | `(slot, buf, len)` | SYS_ERR_AGAIN = full-but-reader-open, SYS_ERR_PIPE = no reader | `CAP_PIPE` WRITE at `slot` |
+| 83 | `SYS_PIPE` | `()` | Create a bounded pipe, install a read end (`READ`, `REVOKE`) and a write end (`WRITE`, `REVOKE`) in the caller's cspace, at the first free slots at or above `CAPSLOT_DYNAMIC_FIRST` (64) (S122). `REVOKE` lets the creator take back every copy of an end a fork or a spawn handed on (S3, S134) | none (own cspace), but the two ends count against `MAX_CAPS_PER_TASK` and the call is refused with `SYS_ERR_NOMEM` at the ceiling (S94) |
+| 84 | `SYS_PIPE_READ` | `(slot, buf, len)` | 0 = EOF, SYS_ERR_AGAIN = empty-but-writers-open. The end is resolved and the bytes taken under one `cap_lock`, so a revoke cannot free the pipe in between (S134) | `CAP_PIPE` READ at `slot` |
+| 85 | `SYS_PIPE_WRITE` | `(slot, buf, len)` | SYS_ERR_AGAIN = full-but-reader-open, SYS_ERR_PIPE = no reader. Resolved and written under one `cap_lock`, as for a read | `CAP_PIPE` WRITE at `slot` |
 | 86 | `SYS_PIPE_CLOSE` | `(slot)` | Drop a pipe-end cap and unref that end | `CAP_PIPE` at `slot` |
 | 87 | `SYS_STDIO_INFO` | `()` | Read by posix_init | none (own tcb) |
 | 88 | `SYS_DMESG` | `(buf, offset, max)` | Copy a chunk of the kernel message ring at `offset` to buf | `CAP_KERNEL_LOG` at `CAPSLOT_KERNEL_LOG` |

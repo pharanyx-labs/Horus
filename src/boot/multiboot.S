@@ -1113,6 +1113,19 @@ embedded_forktest_bin_start:
 embedded_forktest_bin_end:
 #endif
 
+#ifdef PIPEREVOKE_SELFTEST
+/* PIE piperevoketest binary: spawns stages wired to its pipe ends, revokes its
+ * own ends, and asserts from ring 3 that the stages' ends went with them and
+ * that the pipe's counts followed (LIMITATIONS 1.14). The stage it spawns is
+ * inside it, as a byte array, because SYS_SPAWN_IMAGE takes caller memory. */
+.align 16
+.global embedded_piperevoketest_bin_start
+embedded_piperevoketest_bin_start:
+.incbin "userspace/piperevoketest.bin"
+.global embedded_piperevoketest_bin_end
+embedded_piperevoketest_bin_end:
+#endif
+
 #ifdef FORKEXEC_SELFTEST
 /* PIE fork+exec pairing binaries: forkexectest forks itself and drives the
  * child through SYS_EXEC_NAMED into forkexecee, then asserts from ring 3 that

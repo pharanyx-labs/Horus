@@ -804,6 +804,11 @@ void smp_bringup(void) {
      * COPY rather than a share, and that a mapped CAP_FRAME refuses the fork
      * (prints FORKTEST: PASS). Roadmap 2.3. */
     { extern void fork_selftest(void); fork_selftest(); }
+#elif defined(PIPEREVOKE_SELFTEST)
+    /* Gated: spawn stages wired to pipe ends, revoke the ends, and prove from
+     * ring 3 that the stages' ends went with them and the pipe's counts followed
+     * (prints PIPEREVOKE: PASS). LIMITATIONS 1.14, SECURITY.md S3/S4. */
+    { extern void piperevoke_selftest(void); piperevoke_selftest(); }
 #elif defined(FORKEXEC_SELFTEST)
     /* Gated: fork this task, let the child replace its image with SYS_EXEC_NAMED,
      * and prove from ring 3 that the exec replaced the image and not the

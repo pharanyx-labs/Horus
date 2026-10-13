@@ -74,29 +74,6 @@ S70, `make smoke-rollback`). What remains:
 - **An anchored volume is bound to its machine.** Moved to another machine it is refused, and
   there is no export path.
 
-### 1.14 An inherited stdio pipe end escapes revocation **[HORUS-20260911-04]**
-
-A forked child's capabilities are all derived from its parent's (S41), so revoking the parent's
-reaches them. `do_spawn`'s stdio wiring does not follow that rule for the one capability it passes
-on: `cap_install_child_pipe_end` gives the child's pipe end a fresh serial and `badge = 0`, and
-`revoke_subtree` skips `badge == 0`. A revoke of the spawner's end therefore does not reach the
-child's. Nothing in the tree revokes a pipe end today, so this contradicts `SECURITY.md` S3 in
-principle rather than being a live hole.
-
-**Why the one-field fix cannot land alone.** Setting the badge makes pipe ends reachable by
-`revoke_subtree`, which nulls slots without releasing what they owned. A pipe end is two pieces of
-state, the capability and a direction count in `pipe.c`, so a revoke that nulls the capability and
-leaves the count would leave the peer waiting for an EOF that never comes.
-
-**The design, recorded so the work starts from it.** Recount rather than track deltas: after the
-revocation sweep has dropped `cap_lock`, recompute every pipe's `reader_ends` and `writer_ends`
-from the cspaces under `pipe_lock` alone. A recount is idempotent and needs no new lock nesting
-in `.github/lock-order.yml`. The witness is a new gate (proposed name smoke-pipe-revoke-child,
-not yet written) in which a parent revokes its end and the child's must be gone and the peer must
-see EOF, with a control arm restoring `badge = 0`. S3 keeps its wording until that arm exists.
-This is an authorisation change across `capability.c`, the Rust sweep and `pipe.c`, so it gets its
-own pull request.
-
 ### 1.23 A program's execute right is advisory against a task that can read it
 
 What runs from `/bin`, `/sbin`, `/lib` and `/usr` is held by what those trees contain: `fs_server`
@@ -558,7 +535,7 @@ the fix.
 
 Kani proves properties of capability revocation, the ELF validator, the user-address validators,
 the random pool's seed gate, the login throttle and the page-pool refcount
-arithmetic: **34** harnesses, every one of them gating in the required `kani-bounded` job. That is
+arithmetic: **35** harnesses, every one of them gating in the required `kani-bounded` job. That is
 the whole of the formal methods here. The kernel as a whole is not verified, no refinement proof
 links a specification to the code, and no TLA+ specification exists (two unsound ones were removed on
 2026-09-10).
@@ -584,7 +561,7 @@ Against "a complete, self-hosting operating system":
 | Boot and low-level x86-64 | 85% |
 | Memory management | 70% |
 | Capability model, design | 80% |
-| Capability model, enforcement | 80% (two console paths stay ambient by decision, 1.6; the pipe-end lineage gap, 1.14) |
+| Capability model, enforcement | 80% (two console paths stay ambient by decision, 1.6) |
 | Scheduling | 55% |
 | SMP | 50% |
 | IPC | 55% |
@@ -622,6 +599,7 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 1.10 | | A gate was classified as a control arm by its name | 2026-08-30, #251 |
 | 1.11 | | The property table's `enforced by` column was parsed and discarded | 2026-08-30, #251 |
 | 1.13 | [HORUS-20260911-03b] | `create_task` building a cspace unlocked: withdrawn, not a defect | 2026-09-12, #390 |
+| 1.14 | [HORUS-20260911-04] | A spawned child's stdio pipe end was a derivation root, so revoking the spawner's end missed it; pipe ends could not be revoked at all (S3, S134) | 2026-10-13, #558 |
 | 1.15 | [HORUS-20260919-02] | A verified boot module could change after its hash was taken (S96) | 2026-09-19, #402 |
 | 1.16 | [HORUS-20260920-01] | A kernel fault wrote a kernel text address into a ring-3 exit record (S97) | 2026-09-21, #412 |
 | 1.17 | [HORUS-20260920-02] | A reused task slot kept its predecessor's wait record (S98) | 2026-09-21, #413 |

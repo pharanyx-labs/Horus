@@ -14,6 +14,18 @@ here.
 
 ## [Unreleased]
 
+### Security
+
+- The pipe end a spawned child is given for its stdin or stdout was a root of the capability graph, so revoking the spawner's end did not reach it, and no pipe end could be revoked at all. `SYS_PIPE`'s two ends now carry `REVOKE`, the child's end is derived from the spawner's (with `READ` or `WRITE` alone), and a revoke takes the ends it removed out of the pipe's counts before it returns, so the peer sees EOF or EPIPE at once. A pipe read or write now finds its end and moves the bytes under one lock, so a revoke cannot free the pipe between the two (S3, S134; LIMITATIONS 1.14). (#558)
+
+### Added
+
+- `make smoke-pipe-revoke-child` spawns stages wired to pipe ends, revokes the ends and checks the stages lost theirs, a forked child's revoke spared the original, and no pipe was left allocated; two control arms (the child's end as a root, the removed ends left counted) run beside it in the `smoke-pipe` CI job. A Kani proof shows a revoke counts exactly the pipe ends it removes, with four arms. (#558)
+
+### Fixed
+
+- A tree that had built newlib once never re-ran its build script, so a changed script never reached the libc: a release build in an older worktree kept the build path #557 maps away. The script is now a prerequisite of the library. (#558)
+
 ## [0.4.1-alpha]: 2026-10-12
 
 **The install ISO rebuilds to the same bytes from its tag.** A release can now be checked by

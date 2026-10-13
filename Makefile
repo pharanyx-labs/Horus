@@ -107,6 +107,7 @@ DEFECT_FLAGS = \
 	FRAME_PAGES_SAME_PHYS FRAME_INFO_BY_INDEX COW_ARENA_UNGUARDED RAMFS_SLOT3_GATE \
 	FORK_SHARE_WRITABLE FORK_ARENA_UNCHECKED \
 	FORK_CSPACE_FLAT_COPY FORK_CSPACE_ORPHAN_COPY FORK_PIPE_UNCOUNTED PIPE_GRANT_UNREFUSED \
+	PIPE_CHILD_END_UNDERIVED PIPE_REVOKE_UNCOUNTED \
 	EXEC_RESET_CSPACE EXEC_ROOT_CSPACE \
 	FPU_NO_SAVE FPU_NO_RESTORE \
 	VFS_FIRST_MATCH VFS_MOUNT_UNGATED \
@@ -3273,6 +3274,29 @@ CFLAGS  += -DPIPE_GRANT_UNREFUSED
 ASFLAGS += -DPIPE_GRANT_UNREFUSED
 endif
 
+# PIPE_CHILD_END_UNDERIVED=1 restores the pre-2026-10-13 spawn stdio wiring, which
+# installed the child's pipe end as a ROOT (badge 0) rather than a child of the
+# spawner's end: revoking the spawner's end then left the child's working
+# (LIMITATIONS 1.14, HORUS-20260911-04). The end is still counted, so only its
+# place in the derivation tree differs. Arm for make smoke-pipe-revoke-child
+# (smoke-pipe-revoke-child-control).
+PIPE_CHILD_END_UNDERIVED ?= 0
+ifeq ($(PIPE_CHILD_END_UNDERIVED),1)
+CFLAGS  += -DPIPE_CHILD_END_UNDERIVED
+ASFLAGS += -DPIPE_CHILD_END_UNDERIVED
+endif
+
+# PIPE_REVOKE_UNCOUNTED=1 makes cap_revoke skip releasing the pipe ends its sweep
+# removed: the capabilities go and their counts stay, so a peer whose last
+# opposite end was revoked waits for an EOF that never comes -- the reason
+# 1.14's fix could not land as the badge alone. Arm for make
+# smoke-pipe-revoke-child (smoke-pipe-revoke-uncounted-control).
+PIPE_REVOKE_UNCOUNTED ?= 0
+ifeq ($(PIPE_REVOKE_UNCOUNTED),1)
+CFLAGS  += -DPIPE_REVOKE_UNCOUNTED
+ASFLAGS += -DPIPE_REVOKE_UNCOUNTED
+endif
+
 # EXEC_RESET_CSPACE=1 makes SYS_EXEC_NAMED / SYS_EXEC_IMAGE discard every
 # capability at or above KERNEL_RESERVED_CAPS, so the execed image keeps only the
 # birth endowment create_task installs. It is the "give the new image a clean
@@ -4229,6 +4253,21 @@ ASFLAGS += -DFORK_SELFTEST
 FORK_SELFTEST_DEP = userspace/forktest.bin
 endif
 
+# PIPEREVOKE_SELFTEST=1 embeds piperevoketest (with piperevokee inside it as the
+# image it spawns) and boots straight into it: it spawns stages wired to pipe
+# ends, revokes its own ends, and asserts from ring 3 that the stages' ends went
+# with them (S3), that a forked child's revoke of its copy spares the original
+# (S4), and that the pipe table's counts follow, so the peer sees EOF or EPIPE at
+# once and no pipe is left allocated. Prints PIPEREVOKE: PASS/FAIL;
+# `make smoke-pipe-revoke-child` asserts on it. Gated off the ship kernel.
+# LIMITATIONS 1.14.
+PIPEREVOKE_SELFTEST ?= 0
+ifeq ($(PIPEREVOKE_SELFTEST),1)
+CFLAGS  += -DPIPEREVOKE_SELFTEST
+ASFLAGS += -DPIPEREVOKE_SELFTEST
+PIPEREVOKE_SELFTEST_DEP = userspace/piperevoketest.bin
+endif
+
 # FORKEXEC_SELFTEST=1 embeds forkexectest + forkexecee and boots straight into
 # them: the driver forks itself, the child replaces its image with
 # SYS_EXEC_NAMED, and the driver then asserts from ring 3 that the exec replaced
@@ -4701,7 +4740,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin userspace/installer.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(TOKEN_SELFTEST_DEP) $(FSCAP_SELFTEST_DEP) $(FSCAPPOSIX_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(BLOCKPROBE_DEP) $(EXECPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin userspace/installer.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(TOKEN_SELFTEST_DEP) $(FSCAP_SELFTEST_DEP) $(FSCAPPOSIX_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(BLOCKPROBE_DEP) $(EXECPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(PIPEREVOKE_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -6185,7 +6224,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.stripped.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/replyprobe.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin userspace/sealprobe.bin userspace/dynstale.bin userspace/dyncanary.bin userspace/hello_dyn.bin userspace/swaphog.bin userspace/fscaptest.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/replyprobe.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/piperevoketest.bin userspace/piperevokee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin userspace/sealprobe.bin userspace/dynstale.bin userspace/dyncanary.bin userspace/hello_dyn.bin userspace/swaphog.bin userspace/fscaptest.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -6225,6 +6264,16 @@ userspace/phoffwrap_image.h: userspace/phoffwrap.bin
 	@printf '};\nstatic const unsigned phoffwrap_image_len = sizeof(phoffwrap_image);\n' >> $@
 
 userspace/proctest.o: userspace/hello_image.h userspace/overreach_image.h userspace/phoffwrap_image.h
+
+# The stage piperevoketest spawns with a pipe end wired to its stdin or stdout,
+# embedded the same way: SYS_SPAWN_IMAGE is the only spawn that wires stdio, and
+# it takes the image from the caller's memory. PIPEREVOKE_SELFTEST only.
+userspace/piperevokee_image.h: userspace/piperevokee.bin
+	@printf 'static const unsigned char piperevokee_image[] = {' > $@
+	@od -An -v -tu1 $< | tr -s ' ' '\n' | grep -v '^$$' | paste -sd, >> $@
+	@printf '};\nstatic const unsigned piperevokee_image_len = sizeof(piperevokee_image);\n' >> $@
+
+userspace/piperevoketest.o: userspace/piperevokee_image.h
 
 # The image execprobe hands to SYS_EXEC_IMAGE, embedded in its own binary the
 # same way -- the bytes a client would have read from a file. A purpose-built
@@ -13217,6 +13266,42 @@ smoke-fork-pipe-control:
 		REQUIRE_MARKER='FORKTEST: FAIL fork-pipe-freed-under-child' \
 		tools/smoke_test.sh horus.iso
 	@echo "FORK PIPE CONTROL: PASS - an uncounted pipe end was freed under the child"
+
+# ---- revocable pipe ends (LIMITATIONS 1.14) -------------------------------
+# The base arm. piperevoketest spawns stages wired to its pipe ends and revokes
+# its own: each stage's end must go with the end it was derived from (S3), a
+# forked child's revoke of its copy must spare the original (S4), and the pipe's
+# counts must follow, so the peer sees EOF or EPIPE at once and no pipe is left
+# allocated. Runs at the default SMP_CPUS: the counts are taken and released
+# under cap_lock precisely so that a second CPU cannot see them disagree.
+.PHONY: smoke-pipe-revoke-child
+smoke-pipe-revoke-child:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PIPEREVOKE_SELFTEST=1 $(PIPEREVOKEARM)
+	@$(MAKE) --no-print-directory PIPEREVOKE_SELFTEST=1 $(PIPEREVOKEARM) horus.iso
+	@SMP_CPUS=$(SMP_CPUS) SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='$(or $(PIPEREVOKEEXPECT),PIPEREVOKE: PASS)' \
+		FAIL_MARKER='$(if $(PIPEREVOKEEXPECT),PIPEREVOKE: PASS,PIPEREVOKE: FAIL)' \
+		tools/smoke_test.sh horus.iso
+
+# Control arm 1 -- the lineage. PIPE_CHILD_END_UNDERIVED=1 installs the child's
+# end as a root (badge 0), the defect 1.14 recorded: the revoke of the spawner's
+# end leaves the child's in its slot. The FAIL marker must be PRESENT.
+.PHONY: smoke-pipe-revoke-child-control
+smoke-pipe-revoke-child-control:
+	@$(MAKE) --no-print-directory smoke-pipe-revoke-child PIPEREVOKEARM=PIPE_CHILD_END_UNDERIVED=1 \
+		PIPEREVOKEEXPECT='PIPEREVOKE: FAIL child-end-survived-revoke'
+	@echo "PIPE REVOKE CHILD CONTROL: PASS - a root end in the child survived the revoke of the spawner's"
+
+# Control arm 2 -- the count. PIPE_REVOKE_UNCOUNTED=1 removes the ends but leaves
+# their counts, which is why the badge could not be fixed alone: the child's end
+# is gone and the reader still waits for an EOF that never comes. The FAIL marker
+# must be PRESENT.
+.PHONY: smoke-pipe-revoke-uncounted-control
+smoke-pipe-revoke-uncounted-control:
+	@$(MAKE) --no-print-directory smoke-pipe-revoke-child PIPEREVOKEARM=PIPE_REVOKE_UNCOUNTED=1 \
+		PIPEREVOKEEXPECT='PIPEREVOKE: FAIL no-eof-after-revoke'
+	@echo "PIPE REVOKE UNCOUNTED CONTROL: PASS - the revoked ends stayed counted and the reader saw no EOF"
 
 # ---- fork + exec, the pairing (roadmap 2.3) -------------------------------
 # The base arm. forkexectest forks itself, lets the child replace its image with

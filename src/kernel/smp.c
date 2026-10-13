@@ -43,6 +43,75 @@ static volatile int smp_cpus_online = 1;
  * broadcast reaches. */
 static volatile int smp_siblings_parked = 0;
 
+/* ---- Check-in, and the end of it (docs/LIMITATIONS.md 2.28) ----------------
+ *
+ * The BSP waits for the APs for a bounded time and then prints, and the rest of
+ * the kernel uses, how many came. An AP the host scheduled late could check in
+ * AFTER that, and it was not harmless: the TLB-shootdown initiator expects one
+ * acknowledgement from each CPU it counted, and a CPU that enabled its LAPIC
+ * before it was counted takes the broadcast IPI and acknowledges it when it
+ * first enables interrupts. One acknowledgement too many lets the initiator
+ * return while a counted CPU has not yet flushed (S124's hazard by another
+ * route), and the late CPU then runs tasks on a system that printed it absent.
+ *
+ * So bring-up ENDS (SECURITY.md S138). When the BSP stops waiting it closes
+ * check-in, and a CPU arriving after that is never counted: it parks with
+ * interrupts off, so it runs no task and acknowledges no IPI. Checking in and
+ * closing are each one step under smp_checkin_lock, so a CPU is either counted
+ * before the close or never: the BSP's count after the close is the count for
+ * the whole boot. */
+static volatile int smp_checkin_lock = 0;
+static volatile int smp_bringup_closed = 0;
+static volatile int smp_late_refused = 0;   /* CPUs that arrived after the close */
+static volatile int smp_expected_cpus = 0;  /* the MADT's count, for the instruments */
+
+/* How long the BSP waits for the APs, in microseconds of the calibrated clock.
+ * The wait ends the moment every expected CPU is in, so on a machine whose MADT
+ * is accurate this is never spent; it is the ceiling for a CPU that never comes. */
+#define AP_CHECKIN_BOUND_US 2000000u
+
+/* Count this AP in, unless bring-up has closed. `*counter` is smp_cpus_online
+ * for a CPU that will schedule, smp_siblings_parked for a parked SMT sibling.
+ * Returns 1 if counted, 0 if refused. */
+static int smp_check_in(volatile int *counter) {
+    while (__sync_lock_test_and_set(&smp_checkin_lock, 1)) __asm__ volatile ("pause");
+    int admitted = 1;
+#ifndef AP_LATE_ADMITTED
+    if (smp_bringup_closed) admitted = 0;
+#endif
+    if (admitted) __sync_fetch_and_add(counter, 1);
+    else __sync_fetch_and_add(&smp_late_refused, 1);
+    __sync_lock_release(&smp_checkin_lock);
+    return admitted;
+}
+
+/* A CPU refused at check-in: interrupts off for good, so no tick schedules on
+ * it and no IPI is taken or acknowledged here. It says so once, because a CPU
+ * the firmware listed and the kernel left idle is a fact about the boot. */
+static void __attribute__((noreturn)) smp_park_refused(int cpu) {
+    print("smp: cpu ");
+    print_decimal((uint64_t)cpu);
+    print(" checked in after bring-up closed; it stays parked and is not used\n");
+    for (;;) __asm__ volatile ("cli; hlt");
+}
+
+/* Instruments, never shipped. AP_CHECKIN_LATE holds every AP for 1 s before it
+ * checks in: well inside the time bound, and far outside what the old loop-count
+ * bound spent on a fast host under KVM (a few milliseconds; under TCG the same
+ * loop runs long enough to hide the defect, which is why its gate boots KVM). AP_CHECKIN_PAST_BOUND holds the highest-numbered
+ * AP for 2.5 s, past the bound, so the close is exercised. Each delay is measured
+ * by the same calibrated clock the BSP waits on. */
+static void smp_checkin_instrument(int cpu) {
+#if defined(AP_CHECKIN_LATE)
+    (void)cpu;
+    kclock_delay_us(1000000);
+#elif defined(AP_CHECKIN_PAST_BOUND)
+    if (cpu == smp_expected_cpus - 1) kclock_delay_us(2500000);
+#else
+    (void)cpu;
+#endif
+}
+
 /* Is `apic_id` a secondary (sibling) SMT thread? True when the low SMT bits of the
  * APIC id are non-zero (platform.smt_shift from CPUID leaf 0x0B). The primary
  * thread of every core has those bits zero, so exactly one thread per core (and
@@ -209,11 +278,14 @@ static void lapic_enable_bsp(void) { lapic_enable(); }
 void lapic_eoi(void) { lapic_write(0xB0, 0); }
 
 #ifdef SMP
-/* Bounded pause-spin. Only the AP-bringup and TLB-shootdown paths use it, both
- * SMP-only, so it lives inside the guard (an SMP=0 build would flag it unused). */
+/* Bounded pause-spin, a bound in INSTRUMENTS rather than time. Kept only for
+ * AP_WAIT_LOOP_COUNT, the arm that restores the check-in wait it used to bound
+ * (docs/LIMITATIONS.md 2.28); every bring-up delay is now kclock_delay_us. */
+#ifdef AP_WAIT_LOOP_COUNT
 static void smp_busy_delay(int iters) {
     for (volatile int d = 0; d < iters; d++) __asm__ volatile ("pause");
 }
+#endif
 
 /* Per-CPU idle stacks. APs index by LAPIC id (see ap_trampoline.S), so MAX_CPUS
  * slots cover ids 0..MAX_CPUS-1; slot 0 (the BSP's) is unused on this path.
@@ -402,8 +474,9 @@ void ap_entry64(void) {
          * starts its timer so preempt_on_tick never runs here, but the flag is
          * the honest description of the state and keeps the claim invariant
          * (scheduler.c) uniform across every parked CPU. */
+        smp_checkin_instrument(cpu);
+        if (!smp_check_in(&smp_siblings_parked)) smp_park_refused(cpu);
         percpu_idle[cpu] = 1;
-        __sync_fetch_and_add(&smp_siblings_parked, 1);
         for (;;) __asm__ volatile ("sti; hlt");
     }
 
@@ -414,24 +487,30 @@ void ap_entry64(void) {
      * starts closes the window where the first tick could arrive and find the
      * CPU describing itself as busy. set_current_task() clears it the moment
      * this CPU picks up a real task. */
+    /* Checked in FIRST, before the idle flag and the timer: a CPU refused here
+     * parks having started nothing, so no tick ever asks it to schedule. */
+    smp_checkin_instrument(cpu);
+    if (!smp_check_in(&smp_cpus_online)) smp_park_refused(cpu);
+
     percpu_idle[cpu] = 1;
 
     lapic_timer_start_periodic();
-
-    __sync_fetch_and_add(&smp_cpus_online, 1);
 
     ap_idle_loop();               /* timer ticks now schedule tasks onto this CPU */
 }
 
 /* Broadcast INIT then two SIPIs to "all excluding self" (ICR destination
  * shorthand 0b11).  Wakes every AP without an APIC-id list. */
+/* The settle times are the MultiProcessor Specification's (10 ms after INIT,
+ * 200 us after each SIPI) in wall time. They were pause loops sized to be about
+ * that on one machine, and on a faster one they were shorter than the spec. */
 static void lapic_broadcast_init_sipi(uint8_t vector) {
     lapic_write(0x300, 0x000C4500);                /* INIT assert, all-excl-self */
-    smp_busy_delay(500000);                        /* ~10 ms settle */
+    kclock_delay_us(10000);                        /* 10 ms settle */
     lapic_write(0x300, 0x000C4600 | vector);       /* SIPI #1 */
-    smp_busy_delay(50000);
+    kclock_delay_us(200);
     lapic_write(0x300, 0x000C4600 | vector);       /* SIPI #2 (spec: send twice) */
-    smp_busy_delay(50000);
+    kclock_delay_us(200);
 }
 
 /* Bring up the APs and wait for exactly `expected_cpus` (BSP + APs) to check in.
@@ -478,15 +557,30 @@ static void smp_start_aps(int expected_cpus) {
     *(volatile uint64_t *)PHYS_KVA(AP_CPUMAP_CELL)     = (uint64_t)(uintptr_t)&apic_to_cpu[0];
     __asm__ volatile ("mfence" ::: "memory");
 
+    smp_expected_cpus = expected_cpus;
+    __asm__ volatile ("mfence" ::: "memory");
     lapic_broadcast_init_sipi((uint8_t)(AP_TRAMP_PHYS >> 12));   /* vector 0x08 */
 
-    /* Wait (bounded) for the APs to check in. The loop exits the instant every
-     * expected CPU is online, so an accurate MADT count means no wasted spinning;
-     * the 200-iteration cap is only a backstop for a core that never appears. */
+    /* Wait for the APs to check in, for at most AP_CHECKIN_BOUND_US of the
+     * calibrated clock. The loop exits the instant every expected CPU is in, so
+     * an accurate MADT count means no wasted time; the bound is only for a core
+     * that never appears. Then close check-in (see smp_check_in): what is
+     * counted at the close is what this boot has. */
+#ifdef AP_WAIT_LOOP_COUNT
+    /* CONTROL ARM: the bound as it was until 2026-10-13, 200 calls of a
+     * 20000-iteration pause loop, a few milliseconds on a fast host under KVM. */
     for (int spins = 0;
          spins < 200 && (smp_cpus_online + smp_siblings_parked) < expected_cpus;
          spins++)
         smp_busy_delay(20000);
+#else
+    const uint64_t deadline = kclock_deadline_us(AP_CHECKIN_BOUND_US);
+    while ((smp_cpus_online + smp_siblings_parked) < expected_cpus && !kclock_passed(deadline))
+        __asm__ volatile ("pause");
+#endif
+    while (__sync_lock_test_and_set(&smp_checkin_lock, 1)) __asm__ volatile ("pause");
+    smp_bringup_closed = 1;
+    __sync_lock_release(&smp_checkin_lock);
 
     print("smp: ");
     print_decimal((uint64_t)smp_cpus_online);
@@ -995,4 +1089,13 @@ void smp_maybe_shootdown(uint64_t vaddr) {
 
 int smp_get_online_count(void) {
     return smp_cpus_online;
+}
+
+/* CPUs refused at check-in because they arrived after bring-up closed. */
+int smp_get_late_refused(void) {
+#ifdef SMP
+    return smp_late_refused;
+#else
+    return 0;
+#endif
 }

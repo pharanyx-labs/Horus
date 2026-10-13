@@ -33,6 +33,7 @@ here.
 
 ### Fixed
 
+- The boot waited for the secondary CPUs for a count of `pause` instructions, a few milliseconds on a fast host under KVM, so a CPU the host scheduled late went uncounted and then ran tasks anyway, and could acknowledge a TLB shootdown it was not counted for (LIMITATIONS 2.28). The wait is now 2 s of the calibrated clock, the INIT and SIPI settle times are the specification's in wall time, and bring-up then closes: a CPU that checks in later is parked, never counted and never run (S138). `make smoke-smp-ap-late` (under KVM) and `make smoke-smp-ap-closed` witness each half, each with a control arm. (#565)
 - A tree that had built newlib once never re-ran its build script, so a changed script never reached the libc: a release build in an older worktree kept the build path #557 maps away. The script is now a prerequisite of the library. (#558)
 
 ## [0.4.1-alpha]: 2026-10-12

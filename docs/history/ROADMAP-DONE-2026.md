@@ -76,4 +76,5 @@ open. The account of each is in its pull requests.
 | Item | Delivered |
 |---|---|
 | 5.1 Revocable pipe ends (LIMITATIONS 1.14) | A spawned child's stdio end is derived from the spawner's, `SYS_PIPE`'s ends carry `REVOKE`, and a revoke releases the ends it removed from the pipe table under `cap_lock` (S134). 2026-10-13, #558 |
+| 5.12 Secondary CPUs waited for by the clock (LIMITATIONS 2.28) | `smp_start_aps` waits 2 s of the calibrated TSC instead of 200 `pause` loops, the INIT and SIPI settle times are the specification's in wall time, and bring-up then closes, so a CPU that checks in later is parked with interrupts off, never counted and never run (S138). 2026-10-13, #565 |
 | 5.5 Console input as a capability (LIMITATIONS 2.9b, and 1.6) | Keyboard input is the console endpoint tokened `CON_TOKEN_INPUT`, minted by `init` alone and lent by the shell to the foreground program until it has been waited for (S93); the kernel's `SYS_WRITE` fd 1, `SYS_READ` fd 0 and `SYS_GET_PASS` ask for the console's capabilities (S135). Decision D6 was answered with both halves, writes included. 2026-10-13, #559 |

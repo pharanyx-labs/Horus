@@ -40,6 +40,8 @@ control_arms:
   smoke-installer-layout-control: smoke-installer
   smoke-smp-topology-sparse-control: smoke-smp-topology
   smoke-smp-topology-sibling-control: smoke-smp-topology
+  smoke-smp-ap-late-control: smoke-smp-ap-late
+  smoke-smp-ap-closed-control: smoke-smp-ap-closed
   smoke-cap-accounting-control: smoke-captest
   smoke-captest-pipe-slot-control: smoke-captest
   smoke-reply-ep-control: smoke-reply-ep
@@ -548,6 +550,8 @@ gates:
   - smoke-signal
   - smoke-smp
   - smoke-smp-topology
+  - smoke-smp-ap-late
+  - smoke-smp-ap-closed
   - smoke-smp-kvm
   - smoke-sibling-kick
   - smoke-shootdown-unacked

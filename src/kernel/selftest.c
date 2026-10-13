@@ -1420,6 +1420,26 @@ void smp_selftest(void) {
          * schedules a worker. */
         int aps_ran = 0;
         for (int c = 1; c < MAX_CPUS; c++) if (mask & (1u << c)) aps_ran++;
+#ifdef AP_CHECKIN_PAST_BOUND
+        /* docs/LIMITATIONS.md 2.28: the highest-numbered AP checks in 2.5 s late,
+         * after bring-up closed. It must be refused, never counted and never run
+         * a task, so the PASS waits for its arrival rather than racing it. The
+         * count read at the top of this function is the boot's for good. */
+        {
+            extern int smp_get_late_refused(void);
+            if (smp_get_online_count() != online) {
+                print("SMP_SELFTEST: FAIL late-cpu-admitted online=");
+                print_decimal((uint64_t)smp_get_online_count()); print("\n");
+                for (;;) asm volatile("hlt");
+            }
+            if (mask & (1u << online)) {
+                print("SMP_SELFTEST: FAIL late-cpu-ran cpu=");
+                print_decimal((uint64_t)online); print("\n");
+                for (;;) asm volatile("hlt");
+            }
+            if (smp_get_late_refused() < 1) continue;
+        }
+#endif
         if (aps_ran >= online - 1 && ap_timer_ticks > t0 + 10) {
             /* Multi-core scheduling proven. Now exercise the TLB-shootdown
              * round-trip: broadcast to the (busy, interrupts-enabled) APs and
@@ -1446,6 +1466,13 @@ void smp_selftest(void) {
             smp_marker_dec(line, &n, sizeof(line), (uint64_t)distinct);
             smp_marker_str(line, &n, sizeof(line), " ap_ticks=");
             smp_marker_dec(line, &n, sizeof(line), (uint64_t)(uint32_t)ap_timer_ticks);
+#ifdef AP_CHECKIN_PAST_BOUND
+            {
+                extern int smp_get_late_refused(void);
+                smp_marker_str(line, &n, sizeof(line), " late_refused=");
+                smp_marker_dec(line, &n, sizeof(line), (uint64_t)smp_get_late_refused());
+            }
+#endif
             smp_marker_str(line, &n, sizeof(line), " shootdown=ok\n");
             line[n] = 0;
             print(line);

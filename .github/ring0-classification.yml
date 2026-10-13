@@ -571,7 +571,13 @@
 # driver itself is ring 3 (userspace/atad.c); selftest.c (selftest) grew by its
 # launcher, and pci.c and ata.c (driver) by the legacy-port declaration and the
 # probe guard that build alone compiles (S137).
-core_budget_loc: 11588
+# 2026-10-13: 11588 -> 11653, +65, docs/LIMITATIONS.md 2.28 (S138): smp.c, the
+# timed wait for the secondary CPUs and the close of bring-up (smp_check_in, the
+# refused CPU's park) with its four instruments and arms, and terminal.c, the
+# deadline primitives on the calibrated TSC that the wait and the INIT/SIPI
+# settle times use. Bring-up has nowhere else to live, and the arms and
+# instruments compile out of the ship build.
+core_budget_loc: 11653
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

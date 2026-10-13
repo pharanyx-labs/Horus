@@ -93,7 +93,7 @@
 <li><a href="#limits">Findings</a>
 <ol class="toc__sub">
 <li><a href="#c-5nobody-reviews-a-change-before-it-lands">C-5Nobody reviews a change before it lands</a></li>
-<li><a href="#1-8seven-system-calls-have-no-test-that-runs-them">1.8Seven system calls have no test that runs them</a></li>
+<li><a href="#1-8four-system-calls-have-no-test-that-runs-them">1.8Four system calls have no test that runs them</a></li>
 <li><a href="#source-review-findings">1.30Findings from a source review</a></li>
 <li><a href="#1-33a-revocation-cannot-reach-through-a-task-that-has-died">1.33A revocation cannot reach through a task that has died</a></li>
 <li><a href="#2-6cmost-gates-still-read-kernel-reports-off-a-shared-consol">2.6cMost gates still read kernel reports off a shared console</a></li>
@@ -141,11 +141,11 @@
     </p>
   </li>
   <li>
-    <h3 id="1-8seven-system-calls-have-no-test-that-runs-them"><span class="id">1.8</span>Seven system calls have no test that runs them</h3>
+    <h3 id="1-8four-system-calls-have-no-test-that-runs-them"><span class="id">1.8</span>Four system calls have no test that runs them</h3>
     <p>
-      <strong>96 of 103</strong> system calls have their handler actually executed by the
+      <strong>99 of 103</strong> system calls have their handler actually executed by the
       scripted session, the permission conformance suite, or the boot-modules session.
-      The other 7 are each listed with a written reason, and a checked-in file
+      The other 4 are each listed with a written reason, and a checked-in file
       classifies all 103 implemented syscalls, covered or not, so the number cannot quietly
       fall. The gap
       matters: four times, a probe written to run an uncovered handler found a real defect on

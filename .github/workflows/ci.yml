@@ -3491,6 +3491,13 @@ jobs:
       # probed one program until 2026-09-25 and missed 6 boots in 15 that way.
       - name: Control arm — a sealed store that answers leaves the base system incomplete
         run: make smoke-installer-provision-control
+      # LIMITATIONS 3.6: the same scenario, with the kernel counting empty polls
+      # of the filesystem endpoint (FS_SEALED_WAIT_REPORT). fs_server must sleep
+      # while the volume is sealed: none, read from root's dmesg after the login.
+      - name: fs_server sleeps while the volume is sealed, and does not poll
+        run: make smoke-fs-sealed-sleep
+      - name: Control arm — the poll put back is counted
+        run: make smoke-fs-sealed-sleep-control
       # Both targets append every boot's serial here. Kept only when the job fails:
       # the one time anyone needs it, and the red run of 2026-09-25 had none.
       - name: Upload the installer boots' serial logs (evidence of a red run)
@@ -3501,6 +3508,8 @@ jobs:
           path: |
             installer-p-serial.log
             installer-pc-serial.log
+            installer-fss-serial.log
+            installer-fssc-serial.log
           if-no-files-found: ignore
           retention-days: 90
 

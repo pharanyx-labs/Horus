@@ -552,6 +552,15 @@ int sys_ipc_send(uint32_t ep, const void *msg, size_t len, const struct ipc_invo
     return 0;
 }
 
+#ifdef FS_SEALED_WAIT_REPORT
+/* INSTRUMENT, never shipped (docs/LIMITATIONS.md 3.6): non-blocking receives on
+ * the filesystem endpoint that found it empty. A server that sleeps until a
+ * request arrives makes none; one that polls makes one per pass. Reported once,
+ * at the volume's unlock (users_unlock_and_restore), so smoke-fs-sealed-sleep can
+ * read from the kernel log how fs_server waited while the volume was sealed. */
+volatile unsigned long fs_ep_empty_polls;
+#endif
+
 int sys_ipc_recv(uint32_t ep, void *msg, size_t max_len) {
     struct endpoint *e = endpoint_by_index(ep);
     if (!e) return -1;
@@ -923,6 +932,12 @@ void h_ipc_recv(struct interrupt_frame64 *r) {
         r->rax = (uint32_t)SYS_ERR_PERM; return;
     }
     r->rax = sys_ipc_recv(ep, (void*)(addr_t)r->rcx, r->rdx);
+#ifdef FS_SEALED_WAIT_REPORT
+    /* Counted here, in the NON-blocking syscall, and only when it found nothing:
+     * that is a poll. The blocking receive reaches sys_ipc_recv only once a
+     * message is there, so it is not counted. */
+    if (ep == FS_EP_REQ && (int32_t)r->rax == -2) fs_ep_empty_polls++;
+#endif
 }
 /* SYS_IPC_RECV_BLOCK (94): rbx = cspace slot of a CAP_ENDPOINT with READ.
  *

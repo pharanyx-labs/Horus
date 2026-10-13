@@ -391,16 +391,6 @@ replaces this is [`design/scheduler.md`](design/scheduler.md) (ROADMAP 1.8).
 is no wall clock, no per-task timer, no timeout on IPC, and no libc `clock_gettime`. A blocked task
 waits until it is woken or killed. The PIT runs at a fixed 100 Hz.
 
-### 3.6 `fs_server` polls while the volume is sealed
-
-Until a volume unlocks (the whole of an install, and an installed machine's login prompt until the
-first login), `fs_server` cannot block for requests: it would not notice the unlock until the next
-request arrived. It polls instead, yielding the CPU on every pass, so it gives way at once to any
-task that has work but stays runnable itself and keeps an otherwise idle CPU busy. Until 2026-10-12
-it waited by spinning, which held each time slice to its end and, on one CPU at a true 100 Hz
-tick, made the installer drop keystrokes. Waking it on the unlock instead of polling would end
-this.
-
 ---
 
 ## 4. What does not exist yet
@@ -627,6 +617,7 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 2.28 | | The wait for secondary CPUs was a loop count, a few milliseconds on a fast host under KVM, so a CPU the host scheduled late went uncounted and then ran anyway, and could take a TLB shootdown it was not counted for; the wait is now 2 s of the calibrated clock and bring-up then closes, so a later CPU is parked and never used (S138) | 2026-10-13, #565 |
 | 3.2 | [I-6] | `this_cpu()` read LAPIC MMIO on every call | 2026-07-31, #116 |
 | 3.5 | | The block allocator rescanned the bitmap from the start | 2026-09-01, #277 |
+| 3.6 | | `fs_server` polled while the volume was sealed, runnable for the whole of an install and an installed machine's login prompt; it now sleeps until a request arrives and provisions on the first one that finds the volume open | 2026-10-13, #566 |
 | 5.2 | [C-6] | Which checks gate a merge was reconciled by hand | 2026-09-21, #415 |
 | 5.2b | [I-11] | A required check was nondeterministic by construction | 2026-08-16, #161 |
 | 5.2c | [G-8] | The SMP session soak: a task was claimable while its old CPU was still on its stack | 2026-08-17, #162 |

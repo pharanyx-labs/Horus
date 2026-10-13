@@ -58,6 +58,7 @@ control_arms:
   smoke-captest-userlist-control: smoke-captest
   smoke-installer-refuse-control: smoke-installer-refuse
   smoke-installer-provision-control: smoke-installer-provision
+  smoke-fs-sealed-sleep-control: smoke-fs-sealed-sleep
   smoke-installer-accounts-control: smoke-installer-accounts
   smoke-installer-target-control: smoke-installer-target
   smoke-passwd-target-control: smoke-passwd-target
@@ -421,6 +422,7 @@ gates:
   - smoke-installer-clear
   - smoke-installer-refuse
   - smoke-installer-provision
+  - smoke-fs-sealed-sleep
   - smoke-installer-accounts
   - smoke-installer-target
   - smoke-installer-back

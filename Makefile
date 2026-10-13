@@ -136,7 +136,7 @@ DEFECT_FLAGS = \
 	FSCAP_SELFTEST FS_CAP_RIGHTS_UNCHECKED FS_XDEV_UNCHECKED FS_WALK_NAMES_UNCHECKED \
 	FS_SESSION_GRANTS_ROOT FS_SESSION_RIGHTS_UNCHECKED FS_SESSION_ANY_CALLER \
 	FS_SESSION_TMP_SHARED FS_SESSION_TMP_STORE_VISIBLE FS_SESSION_TMP_KEPT \
-	FS_TOKEN_NODE_IGNORED FS_CAP_CHMOD_UNTRUE FS_CAP_LINK_WIDENS FS_SEALED_POLL_SPIN \
+	FS_TOKEN_NODE_IGNORED FS_CAP_CHMOD_UNTRUE FS_CAP_LINK_WIDENS FS_SEALED_POLL_SPIN FS_SEALED_POLL_YIELD FS_SEALED_WAIT_REPORT \
 	FSCAPPOSIX_SELFTEST POSIX_CLOSE_KEEPS_CAP HVFS_GRANT_UNNARROWED \
 	INIT_SHELL_ROOT_READONLY SHELL_CAP_FALLBACK \
 	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED ELF_SPAN_C_PARSE IPC_SENDER_SLOT_ONLY IPC_REPLY_SLOT_ONLY \
@@ -3614,6 +3614,18 @@ FS_CAP_LINK_WIDENS ?= 0
 # as before 2026-10-12, burning its whole time slice on every pass instead of
 # yielding it. Control arm for smoke-keyboard-install; never shipped.
 FS_SEALED_POLL_SPIN ?= 0
+# FS_SEALED_POLL_YIELD=1 makes fs_server wait for a sealed volume by polling with
+# a yield, as it did until 2026-10-13: it gives the CPU back but stays runnable for
+# the whole of the wait (docs/LIMITATIONS.md 3.6). The arm for
+# smoke-fs-sealed-sleep, which requires the server to sleep while sealed.
+FS_SEALED_POLL_YIELD ?= 0
+# FS_SEALED_WAIT_REPORT=1 is that gate's instrument, never shipped: the kernel
+# counts the empty non-blocking receives on the filesystem endpoint and writes the
+# count to the kernel log when the volume unlocks, where root's dmesg reads it.
+FS_SEALED_WAIT_REPORT ?= 0
+ifeq ($(FS_SEALED_WAIT_REPORT),1)
+CFLAGS += -DFS_SEALED_WAIT_REPORT
+endif
 # FSCAPPOSIX_SELFTEST=1, with FSCAP_SELFTEST=1, runs step 2's client half in the
 # same harness: fscapposix, a newlib program, in place of fscaptest, walking by
 # capability through ordinary POSIX calls (make smoke-fs-cap-posix).
@@ -5432,6 +5444,9 @@ USERSPACE_CFLAGS += -DFS_CAP_LINK_WIDENS
 endif
 ifeq ($(FS_SEALED_POLL_SPIN),1)
 USERSPACE_CFLAGS += -DFS_SEALED_POLL_SPIN
+endif
+ifeq ($(FS_SEALED_POLL_YIELD),1)
+USERSPACE_CFLAGS += -DFS_SEALED_POLL_YIELD
 endif
 ifeq ($(FS_CAP_CHMOD_UNTRUE),1)
 USERSPACE_CFLAGS += -DFS_CAP_CHMOD_UNTRUE
@@ -16078,6 +16093,39 @@ smoke-installer-provision:
 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) 		python3 tools/installer_session.py horus.iso
 	@rm -f installer-p.img
 	@echo "[installer] PASS - a sealed store defers provisioning, and the next boot completes it"
+
+# LIMITATIONS 3.6: fs_server sleeps while the volume is sealed instead of polling
+# for the unlock. The provision scenario (install, power off at the login prompt,
+# boot the sealed volume, log in), built with FS_SEALED_WAIT_REPORT: after the
+# login, root's dmesg must show no empty poll of the filesystem endpoint for the
+# whole of the sealed wait. The arm puts the poll back and must see many.
+.PHONY: smoke-fs-sealed-sleep
+smoke-fs-sealed-sleep:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 FS_SEALED_WAIT_REPORT=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 FS_SEALED_WAIT_REPORT=1 COREUTILS_MODULES=1 horus.iso
+	@rm -f installer-fss.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-fss.img
+	@rm -f installer-fss-serial.log
+	@SESSION_DISK=installer-fss.img INSTALLER_MODE=provision INSTALLER_SEALED_WAIT=1 INSTALLER_BIN_PROGRAMS="$(COREUTILS_PROGS)" \
+		SESSION_SERIAL_LOG=installer-fss-serial.log \
+		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		python3 tools/installer_session.py horus.iso
+	@rm -f installer-fss.img
+	@echo "[fs-sealed-sleep] PASS - fs_server made no empty poll while the volume was sealed"
+
+.PHONY: smoke-fs-sealed-sleep-control
+smoke-fs-sealed-sleep-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 FS_SEALED_WAIT_REPORT=1 FS_SEALED_POLL_YIELD=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 FS_SEALED_WAIT_REPORT=1 FS_SEALED_POLL_YIELD=1 COREUTILS_MODULES=1 horus.iso
+	@rm -f installer-fssc.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-fssc.img
+	@rm -f installer-fssc-serial.log
+	@SESSION_DISK=installer-fssc.img INSTALLER_MODE=provision INSTALLER_SEALED_WAIT=1 INSTALLER_EXPECT_POLL=1 INSTALLER_BIN_PROGRAMS="$(COREUTILS_PROGS)" \
+		SESSION_SERIAL_LOG=installer-fssc-serial.log \
+		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) \
+		python3 tools/installer_session.py horus.iso
+	@rm -f installer-fssc.img
+	@echo "[fs-sealed-sleep] CONTROL PASS - with the poll put back, the kernel counted fs_server polling while sealed"
 
 # Control arm: STORE_LOCKED_UNCHECKED=1 and nothing else, so both arms drive the
 # same install and differ only in what the store says about a volume nobody has

@@ -32,6 +32,7 @@ Env:    SESSION_DISK      the disk image; REQUIRED, and the same one for both bo
 Exit:   0 and "INSTALLER_SESSION: PASS"; 1 and a FAIL line otherwise.
 """
 import os
+import re
 import sys
 import time
 
@@ -1037,6 +1038,35 @@ def provision(disk):
                                   "missing %s" % " ".join(missing))
             step("the base system is on the volume, all %d programs, provisioned by the "
                  "post-login pass" % len(expected))
+
+            # LIMITATIONS 3.6, in the FS_SEALED_WAIT_REPORT build only
+            # (smoke-fs-sealed-sleep and its arm): how fs_server waited for the
+            # unlock. The kernel counts the empty non-blocking receives on the
+            # filesystem endpoint and logs the count when the volume opens. The
+            # console belongs to console_server by then, so the line is in the
+            # kernel log, and root's dmesg is how it is read. A server that
+            # sleeps until a request arrives makes none; one that polls makes
+            # one per pass.
+            if os.environ.get("INSTALLER_SEALED_WAIT") == "1":
+                mark = len(s.buf)
+                s.send("dmesg")
+                s.expect("root@horus#", STEP)
+                m = re.search(r"FS_SEALED_WAIT: (\d+) empty polls of the filesystem endpoint",
+                              s.buf[mark:])
+                if not m:
+                    raise SessionFail("the kernel log has no FS_SEALED_WAIT line: the instrument "
+                                      "did not report, so how fs_server waited is not known")
+                polls = int(m.group(1))
+                if os.environ.get("INSTALLER_EXPECT_POLL") == "1":
+                    if polls == 0:
+                        raise SessionFail("CONTROL: fs_server made no empty polls while sealed; "
+                                          "the poll did not show")
+                    step("CONTROL: fs_server polled while sealed: %d empty polls" % polls)
+                elif polls != 0:
+                    raise SessionFail("fs_server polled while the volume was sealed: %d empty polls "
+                                      "(LIMITATIONS 3.6)" % polls)
+                else:
+                    step("fs_server slept while the volume was sealed: no empty polls")
     finally:
         keep_serial(s.buf)
         s.close()

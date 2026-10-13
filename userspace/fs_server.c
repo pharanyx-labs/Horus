@@ -1872,6 +1872,17 @@ static int unpack_archive_module(uint32_t mod_index, uint32_t msize, const char 
     return walk_archive(mod_index, msize, dir, 1);
 }
 
+static void provision_boot_modules(void);
+
+/* If the volume has been unlocked, provision now. Returns 1 once provisioned. */
+static int try_provision_after_unlock(void) {
+    struct fs_stat root_st;
+    if (sys_fs_stat(0, &root_st) != 0) return 0;
+    kputln("FS_STORE: unlocked; provisioning now");
+    provision_boot_modules();
+    return 1;
+}
+
 /* Provision the filesystem at boot, once, after the store is readable (unlocked):
  *   1. Create the directory skeleton (/bin /etc /home /lib /usr /usr/share/man),
  *      so `ls` on a fresh root shows a real layout rather than an empty root — this
@@ -2183,54 +2194,24 @@ void _start(void) {
     struct fs_request  rq;
     struct fs_response rp;
     for (;;) {
-        /* Fallback for the sealed-ATA case: the volume was locked at startup, so
-         * provision on the first loop after login unlocks it (a stat of the root
-         * inode fails while locked). On the RAM disk this already ran above. */
-        if (!provisioned) {
-            struct fs_stat root_st;
-            if (sys_fs_stat(0, &root_st) == 0) {
-                kputln("FS_STORE: unlocked; provisioning now");
-                provision_boot_modules();
-                provisioned = 1;
-            }
-        }
-        /* Sleep until a request arrives (roadmap 1.3), but only once the volume
-         * has been provisioned.
-         *
-         * The `if (!provisioned)` fallback above is a POLL: on a sealed ATA
-         * volume it re-stats the root inode every time round this loop, waiting
-         * for a login to unlock it. Blocking unconditionally would park the
-         * server before that ever succeeded and only re-check it one request
-         * later -- so the two are kept apart deliberately, and the server sleeps
-         * exactly when it has nothing left to poll for. That is the whole reason
-         * this is not a one-line substitution.
-         *
-         * As in console_server: a negative return from the blocking receive is
-         * permanent (it never returns IPC_AGAIN), so retrying it in a loop would
-         * be the G-8 wedge rather than back-pressure. */
+        /* Provision once the volume is open: here, before blocking, for an unlock
+         * that a request this server just answered brought about, and again
+         * below, before answering the first request that finds the volume open,
+         * for one the kernel brought about on a login. A stat of the root inode
+         * fails while the volume is sealed (S74). On the RAM disk this already
+         * ran above. */
+        if (!provisioned && try_provision_after_unlock()) provisioned = 1;
         int r;
-        if (provisioned) {
-            r = sys_ipc_recv_block(CAPSLOT_FS_LISTEN, (char *)&rq, sizeof(rq));
-            if (r < 0) { kputln("[fs_server] listen capability lost; exiting"); sys_exit(); }
-        } else {
+#if defined(FS_SEALED_POLL_SPIN) || defined(FS_SEALED_POLL_YIELD)
+        /* CONTROL ARMS: the sealed-volume wait as a POLL. Until 2026-10-12 it spun
+         * (spin_delay burns the whole time slice, and on one CPU the installer
+         * dropped keystrokes: smoke-keyboard-install-spin-control); until
+         * 2026-10-13 it yielded, which gave the CPU back but stayed runnable for
+         * the whole of an install, and on a sealed installed machine until the
+         * first login (smoke-installer-provision-poll-control). */
+        if (!provisioned) {
             r = sys_ipc_recv(CAPSLOT_FS_LISTEN, (char *)&rq, sizeof(rq));
-            if (r < 0) {                                 /* no request yet */
-                /* GIVE THE CPU BACK, DO NOT SPIN IT AWAY. This poll runs for as
-                 * long as the volume is sealed: the whole of an install, and an
-                 * installed machine's login prompt until the first login. It
-                 * used to wait with spin_delay(), which burns this server's
-                 * whole time slice on every pass, so on one CPU every other
-                 * task -- console_server reading the keyboard, the installer
-                 * drawing what was typed -- advanced about one tick at a time.
-                 * At a true 100 Hz tick that is slower than a person types, the
-                 * keyboard controller's few bytes of queue overflowed, and
-                 * `smoke-keyboard-install` lost two characters of the password
-                 * every time (2026-10-12, measured with HANG_WATCHDOG: this
-                 * server at one rip inside spin_delay 40 s apart). A yield
-                 * lets a woken task run at once. It is still a poll: the server
-                 * stays runnable until the volume unlocks (docs/LIMITATIONS.md
-                 * 3.6). FS_SEALED_POLL_SPIN=1 puts the spin back for
-                 * smoke-keyboard-install-spin-control. */
+            if (r < 0) {
 #ifdef FS_SEALED_POLL_SPIN
                 spin_delay();
 #else
@@ -2238,7 +2219,26 @@ void _start(void) {
 #endif
                 continue;
             }
+        } else
+#endif
+        {
+            /* SLEEP UNTIL A REQUEST ARRIVES, sealed or not (roadmap 1.3,
+             * LIMITATIONS 3.6). The server used to poll while the volume was
+             * sealed so that it would notice the unlock, but nothing needs it to
+             * notice before a request does: provisioning exists to make the
+             * system trees there for whoever asks, and the check below runs
+             * before the first request after the unlock is answered. Blocking
+             * keeps an idle machine idle for the whole of an install and at an
+             * installed machine's login prompt. smoke-fs-sealed-sleep counts, in
+             * the kernel, the empty polls this server makes while sealed: none.
+             *
+             * As in console_server: a negative return from the blocking receive
+             * is permanent (it never returns IPC_AGAIN), so retrying it in a loop
+             * would be the G-8 wedge rather than back-pressure. */
+            r = sys_ipc_recv_block(CAPSLOT_FS_LISTEN, (char *)&rq, sizeof(rq));
+            if (r < 0) { kputln("[fs_server] listen capability lost; exiting"); sys_exit(); }
         }
+        if (!provisioned && try_provision_after_unlock()) provisioned = 1;
 
         /* Take the caller's identity from the kernel, not from the request: this
          * is tasks[sender].uid, fixed at that task's login (SYS_AUTH). A client

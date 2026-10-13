@@ -113,6 +113,17 @@ static void users_unlock_and_restore(const char *pw, size_t len)
 {
     if (g_users_restored) return;
     if (storage_unlock(pw, len) != 0) return;      /* no volume, or wrong password */
+#ifdef FS_SEALED_WAIT_REPORT
+    {
+        /* INSTRUMENT (LIMITATIONS 3.6): how fs_server waited while the volume
+         * was sealed. To the kernel log, which root's dmesg reads after the
+         * console has been handed to console_server. */
+        extern volatile unsigned long fs_ep_empty_polls;
+        print("FS_SEALED_WAIT: ");
+        print_decimal((uint64_t)fs_ep_empty_polls);
+        print(" empty polls of the filesystem endpoint while the volume was sealed\n");
+    }
+#endif
 
     int rc = storage_users_load(users, sizeof(users));
     if (rc == -3) {

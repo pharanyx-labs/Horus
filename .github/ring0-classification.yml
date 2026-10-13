@@ -577,7 +577,11 @@
 # deadline primitives on the calibrated TSC that the wait and the INIT/SIPI
 # settle times use. Bring-up has nowhere else to live, and the arms and
 # instruments compile out of the ship build.
-core_budget_loc: 11653
+# 2026-10-13: 11653 -> 11659, +6, docs/LIMITATIONS.md 3.6: syscall_ipc.c and
+# kusers.c, the FS_SEALED_WAIT_REPORT instrument's counter of empty polls on the
+# filesystem endpoint and its report at the unlock. Compiled only into that
+# instrumented build, never the ship kernel.
+core_budget_loc: 11659
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

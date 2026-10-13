@@ -47,7 +47,7 @@ gates that match kernel strings are moving to COM3, which only the kernel can wr
 ## The integration gates
 
 
-There are 535 `smoke-*` targets: 232 gates and 303 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
+There are 537 `smoke-*` targets: 233 gates and 304 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
 
 
 ### Capabilities and authorisation
@@ -232,6 +232,7 @@ There are 535 `smoke-*` targets: 232 gates and 303 control arms. Each row is a g
 | `smoke-installer-clear` | The installer's final clear leaves the screen clear, the band right of the grid on a wide framebuffer included |  | `smoke-installer-clear-control`, `smoke-installer-clear-surface-control` |
 | `smoke-installer-refuse` | Any word but the required one at the last question writes nothing | S73 | `smoke-installer-refuse-control` |
 | `smoke-installer-provision` | A machine powered off before its first login finishes provisioning on the next boot | S74 | `smoke-installer-provision-control` |
+| `smoke-fs-sealed-sleep` | `fs_server` sleeps while the installed volume is sealed: the kernel counts no empty poll of the filesystem endpoint from boot to the login that unlocks it, read from root's `dmesg` |  | `smoke-fs-sealed-sleep-control` |
 | `smoke-installer-accounts` | The everyday account can be the first login after a power cycle | S76 | `smoke-installer-accounts-control` |
 | `smoke-installer-target` | An install onto the second of two disks leaves the first untouched | S83 | `smoke-installer-target-control` |
 | `smoke-installer-back` | The installer's questions can be walked backwards |  |  |

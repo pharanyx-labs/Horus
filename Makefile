@@ -122,7 +122,7 @@ DEFECT_FLAGS = \
 	IO_DEVICE_CAP_UNCHECKED NET_NO_BUSMASTER NET_NO_DECODE \
 	DMA_ADDR_FRAME_ONLY NET_IOMMU_NO_MAP IRQ_NO_MASK_ON_FIRE IRQ_ACK_UNGATED \
 	NVME_IOMMU_NO_MAP NVME_WRITE_WRONG_LBA \
-	SDHCID_ADDR_INVERTED SDHCID_WRITE_WRONG_LBA SDHCID_CSD_SPEC_BITS \
+	SDHCID_ADDR_INVERTED SDHCID_WRITE_WRONG_LBA SDHCID_CSD_SPEC_BITS DEVPAGE_UNCHECKED \
 	IRQ_FORCE_PIC POLL_NOTIFY_UNGATED MSI_VECTOR_FROM_USER MSIX_TABLE_MAPPABLE \
 	SHLIB_TEXT_WRITABLE SHLIB_DATA_SHARED SHLIB_DATA_UNINITIALISED \
 	SHLIB_BASE_FIXED SHLIB_INFO_UNGATED SHLIB_INFO_TYPE_ONLY \
@@ -2892,6 +2892,23 @@ endif
 MSIX_TABLE_MAPPABLE ?= 0
 ifeq ($(MSIX_TABLE_MAPPABLE),1)
 CFLAGS += -DMSIX_TABLE_MAPPABLE
+endif
+
+# DEVPAGE_SELFTEST=1 runs, at the end of iodev_init, SYS_MAP_PHYS's own decision
+# (iodev_allows_mmio_in) against a device table built for it: a small BAR alone in
+# its page, two packed into one page, one in the chipset window, and a platform
+# window inside a display's BAR (DEVPAGE_SELFTEST: PASS). QEMU's firmware never
+# packs BARs, so only a built table can show the rule. LIMITATIONS 1.34.
+DEVPAGE_SELFTEST ?= 0
+ifeq ($(DEVPAGE_SELFTEST),1)
+CFLAGS += -DDEVPAGE_SELFTEST
+endif
+# DEVPAGE_UNCHECKED=1 restores the check as it stood before 2026-10-13: only the
+# bytes a driver asks for are tested, and the whole page is handed over, so a
+# page two small BARs share goes to either driver. The arm of smoke-devpage.
+DEVPAGE_UNCHECKED ?= 0
+ifeq ($(DEVPAGE_UNCHECKED),1)
+CFLAGS += -DDEVPAGE_UNCHECKED
 endif
 
 MSI_VECTOR_FROM_USER ?= 0
@@ -10168,6 +10185,32 @@ smoke-sdhcid-emmc:
 	@$(MAKE) --no-print-directory SDHCID_SELFTEST=1
 	@$(MAKE) --no-print-directory SDHCID_SELFTEST=1 horus.iso
 	@tools/sdhcid_gate.sh horus.iso emmc 65536
+
+# LIMITATIONS 1.34, S43: a device's register page is handed to its driver only if
+# no other device declares any of it. SYS_MAP_PHYS's decision runs at boot against
+# a table holding the neighbours QEMU never makes (two small BARs in one page, one
+# in the chipset window), because QEMU's firmware gives every small BAR its own
+# page. smoke-sdhcid is the real-device half: a 256-byte BAR alone in its page
+# must still map.
+.PHONY: smoke-devpage
+smoke-devpage:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory DEVPAGE_SELFTEST=1
+	@$(MAKE) --no-print-directory DEVPAGE_SELFTEST=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='DEVPAGE_SELFTEST: PASS' \
+		FAIL_MARKER='DEVPAGE_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
+
+# The arm: the old check, which hands a shared page to either driver. It must
+# fail ON THE PACKED PAGE, not merely fail: an arm that broke the self-test some
+# other way would say nothing about the rule.
+.PHONY: smoke-devpage-control
+smoke-devpage-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory DEVPAGE_SELFTEST=1 DEVPAGE_UNCHECKED=1
+	@$(MAKE) --no-print-directory DEVPAGE_SELFTEST=1 DEVPAGE_UNCHECKED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='DEVPAGE_SELFTEST: packed first WRONG' tools/smoke_test.sh horus.iso
+	@echo "[devpage] CONTROL PASS - the old check hands a page two devices share to one of their drivers"
 
 # Control arm 1 of 2: no decode bits at all, so the device stops answering its own
 # I/O BAR. The arm for SYS_DEVICE_ENABLE -- it writes the one configuration-space

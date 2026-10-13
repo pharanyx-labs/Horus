@@ -47,7 +47,7 @@ gates that match kernel strings are moving to COM3, which only the kernel can wr
 ## The integration gates
 
 
-There are 519 `smoke-*` targets: 227 gates and 292 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
+There are 521 `smoke-*` targets: 228 gates and 293 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
 
 
 ### Capabilities and authorisation
@@ -70,6 +70,7 @@ There are 519 `smoke-*` targets: 227 gates and 292 control arms. Each row is a g
 | `smoke-console-pass` | Keyboard input is served only through the input capability, which a holder of stdout cannot make, and a lent copy is gone once its lender takes it back; the kernel refuses its console reads and writes to a task without the console's capabilities | S93, S135 | `smoke-console-pass-control`, `smoke-console-pass-lend-control`, `smoke-console-pass-kread-control`, `smoke-console-pass-kwrite-control` |
 | `smoke-console-isolation` | A task without a device capability cannot reach the device-delegation syscalls |  |  |
 | `smoke-devcap-fb` | `SYS_FB_INFO` reveals the display's geometry only to the holder of the framebuffer's device | S43 | `smoke-devcap-fb-control` |
+| `smoke-devpage` | A register page is mapped only if no other device declares any of it and it is outside the chipset window: `SYS_MAP_PHYS`'s decision against a table with neighbours QEMU never makes | S43 | `smoke-devpage-control` |
 | `smoke-devcap` | A device capability reaches its own device's frame, port and interrupt, and is refused another device's | S43 | `smoke-devcap-irq-control`, `smoke-devcap-object-control`, `smoke-devcap-ports-control` |
 | `smoke-kdiag-ioport` | A ring-3 write to the kernel's diagnostic port faults: no device declares it, so no grant can open it | S81 | `smoke-kdiag-grant-control` |
 | `smoke-init-provision` | `init` provisions a server on an endpoint it retyped from its own untyped budget | S59 | `smoke-init-provision-control` |

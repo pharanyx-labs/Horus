@@ -355,7 +355,7 @@ Currently **99 of 103** implemented syscalls are covered (`SECURITY.md` S25; `do
 `.github/workflows/ci.yml` defines **140** jobs, run on every push and pull request; most are sharded runs of the gates above. With CodeQL, the scheduled ruleset audit, the nightly fuzzing (`fuzz.yml`, one context per target) and the nightly Kani control arms (`kani-arms.yml`) the total is below: **144** jobs, **153** contexts, counted by `tools/check_ci_gating.py`.
 
 `.github/ci-gating.yml` classifies every job as gating or exempt with a written reason, and the `ci-gating` job fails on a job in neither list. The branch ruleset requires two checks: `gates`, which needs every gating job and passes only if each succeeded (skipped or cancelled counts as failed), and CodeQL.
-The set is **144 gating contexts and 9 reasoned exemptions**: `fuzz` (seven targets, ten minutes each, nightly; a crash fails it, but it never runs on a pull request), `kani-arms` and `ruleset-audit` (both run on a schedule, never on a pull request).
+The set is **144 gating contexts and 9 reasoned exemptions**: `fuzz` (seven targets, ten minutes each, nightly; a crash fails it, but it never runs on a pull request), `kani-arms` and `ruleset-audit` (both run on a schedule, never on a pull request). `ruleset-audit` also checks that every workflow GitHub runs on the repository is a file in the tree or recorded, with its reason, in `.github/injected-workflows.yml`, and that one recorded as stopped has not run again (`tools/check_injected_workflows.py`).
 
 The jobs that are not boot tests:
 

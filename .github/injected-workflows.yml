@@ -1,0 +1,37 @@
+# Workflows GitHub runs on this repository that no commit contains.
+#
+# WHY THIS FILE EXISTS (docs/LIMITATIONS.md 5.7, closed 2026-10-13). Everything
+# tools/check_ci_gating.py checks is in .github/workflows/. GitHub can also
+# inject DYNAMIC workflows, with paths under `dynamic/`, that run with this
+# repository's code and no file in the tree. One did: a GitHub Advanced Security
+# reviewer backed by Copilot, which failed on every run from 2026-09-19, could
+# not read the C, header or Rust files, and made network requests to a third
+# party from an unpinned runtime. Nothing in the tree would have noticed another.
+#
+# tools/check_injected_workflows.py reads the live list (the scheduled
+# `ruleset-audit` job, and the local sweep) and fails when:
+#   1. GitHub reports a workflow that is neither a file in .github/workflows/ nor
+#      an entry here: a new injected workflow is a decision, not a default;
+#   2. an entry with `may_run: false` has run after its `last_run`: a workflow
+#      the project stopped has started again;
+#   3. an entry here is one GitHub no longer reports: the record is stale.
+#
+# Adding an entry is the decision to accept that workflow, and its reason says
+# why. CLAUDE.md section 1: the build and CI are part of the trusted computing
+# base.
+injected:
+  dynamic/dependabot/dependabot-updates:
+    may_run: true
+    reason: >-
+      Dependabot's version updates (.github/dependabot.yml). It opens pull requests
+      and does nothing else to the tree; those pull requests are a third party's
+      and get no action from Claude (CLAUDE.md section 5), only the maintainer's.
+  dynamic/agents/github-advanced-security:
+    may_run: false
+    last_run: "2026-09-20T11:34:02Z"
+    reason: >-
+      The GitHub Advanced Security reviewer backed by Copilot. The project decided
+      on 2026-09-20 not to use it: it failed on every run for want of a Copilot
+      licence, could not read any C, header or Rust file, and made network requests
+      to a third party from an unpinned runtime. Its last run is the one above;
+      GitHub still lists it as active, so a run after that date is what to catch.

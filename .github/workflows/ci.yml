@@ -54,6 +54,12 @@ jobs:
       # the GITHUB_TOKEN cannot hold); ruleset-audit.yml does that daily.
       - name: Check CI gating classification
         run: tools/check_ci_gating.py
+      # LIMITATIONS 5.7: the rules that hold GitHub's injected workflows to
+      # .github/injected-workflows.yml, falsified offline against recorded states.
+      # The live list needs `actions: read`, so the live check itself runs daily
+      # in ruleset-audit.yml; this proves on every pull request that it can fail.
+      - name: Falsify the injected-workflow check (one arm per rule)
+        run: tools/test_check_injected_workflows.sh
 
   # THE ONE REQUIRED CHECK FROM THIS WORKFLOW (2026-09-21). The branch ruleset
   # requires this job's context and CodeQL's, and no other. It needs every job

@@ -222,6 +222,7 @@ control_arms:
   smoke-devcap-irq-control: smoke-devcap
   smoke-devcap-object-control: smoke-devcap
   smoke-devcap-ports-control: smoke-devcap
+  smoke-devcap-ata-control: smoke-devcap
   smoke-exec-reenter-control: smoke-exec-reenter
   smoke-fork-arena-control: smoke-fork
   smoke-fork-cspace-flat-control: smoke-fork
@@ -280,6 +281,9 @@ control_arms:
   smoke-sdhcid-addr-control: smoke-sdhcid
   smoke-sdhcid-write-control: smoke-sdhcid
   smoke-sdhcid-csd-control: smoke-sdhcid
+  smoke-atad-lba-control: smoke-atad
+  smoke-atad-write-control: smoke-atad
+  smoke-atad-capacity-control: smoke-atad
   smoke-devpage-control: smoke-devpage
   smoke-blkproto-extent-control: smoke-blkproto
   smoke-blkproto-bind-control: smoke-blkproto
@@ -505,6 +509,7 @@ gates:
   - smoke-nvme
   - smoke-sdhcid
   - smoke-sdhcid-emmc
+  - smoke-atad
   - smoke-devpage
   - smoke-blkproto
   - smoke-newlib

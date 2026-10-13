@@ -7,8 +7,9 @@ check of what the driver wrote to it.
                                                         # driver derives from the nonce
 
 <kind> is `nvme` (userspace/nvmed.c, `make smoke-nvme`), `sd`
-(userspace/sdhcid.c, `make smoke-sdhcid`) or `blk` (userspace/blktest.c, `make
-smoke-blkproto`, through either driver). Each kind's layout must match what
+(userspace/sdhcid.c, `make smoke-sdhcid`), `ata` (userspace/atad.c, `make
+smoke-atad`) or `blk` (userspace/blktest.c, `make smoke-blkproto`, through any
+of the three drivers). Each kind's layout must match what
 writes it: the magics, NONCE_OFF, the run it writes, and the pattern loop.
 
 THE BLK KIND'S RUN IS AT SECTOR 2048, the start of the extent blktest binds to
@@ -38,6 +39,13 @@ plausible number and a wrong one; only a comparison with the size of the image
 QEMU was given can catch that, so `verify sd` takes the guest's serial log and
 requires the driver's `capacity N sectors` line to equal the image.
 
+THE ATA KIND PLANTS ITS BLOCK AT LBA 0x010205, and checks the capacity the same
+way. The address has a different non-zero byte in each of the three LBA
+registers, so a driver that wrote any two to each other's register reads an
+empty block there; block 0 is 0 whatever the order. The capacity is IDENTIFY
+words 60-61, and the image is 128 MiB, which is not a whole number of
+cylinders, so the CHS capacity in words 57-58 differs from it.
+
 The block size is 512: QEMU's default for -device nvme, and the SD sector.
 """
 import os
@@ -56,7 +64,13 @@ KINDS = {
     # multi-block command, which is the transfer the kernel's storage makes.
     "sd": dict(scratch=b"HORUS-SDHC-SCRATCH-V1\0", written=b"HORUS-SDHC-WRITTEN-V1\0",
                read_magic=b"HORUS-SDHC-BLOCK100-V1\0", read_lba=100,
-               write_lba=8, write_count=8, default_mib=64),
+               write_lba=8, write_count=8, default_mib=64,
+               capacity=r"SDHCID: (?:SD card|eMMC), capacity (\d+) sectors"),
+    # atad writes a run of eight sectors in one command, as sdhcid does.
+    "ata": dict(scratch=b"HORUS-ATAD-SCRATCH-V1\0", written=b"HORUS-ATAD-WRITTEN-V1\0",
+                read_magic=b"HORUS-ATAD-PLANTED-V1\0", read_lba=0x010205,
+                write_lba=8, write_count=8, default_mib=128,
+                capacity=r"ATAD: primary master, capacity (\d+) sectors"),
     # blktest's first client writes eight sectors at the start of its extent.
     "blk": dict(scratch=b"HORUS-BLKP-SCRATCH-V1\0", written=b"HORUS-BLKP-WRITTEN-V1\0",
                 read_lba=None, write_lba=2048, write_count=8, default_mib=64),
@@ -114,18 +128,19 @@ def verify(k: dict, kind: str, path: str, log: str | None) -> int:
             return 1
     last = k["write_lba"] + k["write_count"] - 1
     span = f"block {k['write_lba']}" if last == k["write_lba"] else f"blocks {k['write_lba']}-{last}"
-    if kind == "sd":
+    if "capacity" in k:
         if log is None:
-            print("BLOCK SCRATCH: FAIL `verify sd` needs the guest's serial log for the capacity")
+            print(f"BLOCK SCRATCH: FAIL `verify {kind}` needs the guest's serial log for the capacity")
             return 2
         with open(log, "rb") as f:
             text = f.read().decode("latin-1")
-        m = re.search(r"SDHCID: (?:SD card|eMMC), capacity (\d+) sectors", text)
+        m = re.search(k["capacity"], text)
         if not m:
             print("BLOCK SCRATCH: FAIL the driver reported no capacity")
             return 1
         if int(m.group(1)) != size // BLOCK:
-            print(f"BLOCK SCRATCH: FAIL capacity {m.group(1)} sectors is not the card's own {size // BLOCK}")
+            what = "card's" if kind == "sd" else "disk's"
+            print(f"BLOCK SCRATCH: FAIL capacity {m.group(1)} sectors is not the {what} own {size // BLOCK}")
             return 1
     print(f"BLOCK SCRATCH: PASS {span} hold the write derived from nonce {nonce.hex()}")
     return 0
@@ -135,7 +150,7 @@ def main() -> int:
     a = sys.argv[1:]
     if len(a) < 3 or a[0] not in ("make", "verify") or a[1] not in KINDS:
         print(__doc__.splitlines()[0], file=sys.stderr)
-        print("usage: block_scratch.py make|verify nvme|sd|blk <image> [MiB|log]", file=sys.stderr)
+        print("usage: block_scratch.py make|verify nvme|sd|ata|blk <image> [MiB|log]", file=sys.stderr)
         return 2
     k = KINDS[a[1]]
     if a[0] == "make":

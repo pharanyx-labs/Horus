@@ -107,10 +107,11 @@ slot number; it never sees the capability itself.
   its driver mapped.
 - `netd`, an Intel network driver built the same way, exchanges ARP with its gateway in a test
   build; the shipped system does not start it.
-- `nvmed` (NVMe) and `sdhcid` (SD and eMMC) are storage drivers built the same way, proved in
-  test builds by writes checked outside the guest. `sdhcid` holds nothing but its device: it moves
-  data by PIO and never lets the controller master the bus. Both serve a block-driver protocol
-  that holds each client to the part of the disk it was given (S136). The kernel's storage still
+- `nvmed` (NVMe), `sdhcid` (SD and eMMC) and `atad` (IDE) are storage drivers built the same
+  way, proved in test builds by writes checked outside the guest. `sdhcid` and `atad` hold nothing
+  but their device: they move data by PIO and never let the controller master the bus. All three
+  serve a block-driver protocol that holds each client to the part of the disk it was given
+  (S136). The kernel's storage still
   uses its own drivers until it stops doing disk I/O ([`docs/design/ring3-storage.md`](docs/design/ring3-storage.md)).
 
 ### Storage
@@ -272,8 +273,8 @@ test does not exist or does not run.
 
 | Layer | What it covers |
 |---|---|
-| Security properties | 138 numbered properties, each bound to a witness by `tools/check_invariants.py` |
-| QEMU integration tests | 526 `smoke-*` targets: 229 base gates and 297 control arms |
+| Security properties | 139 numbered properties, each bound to a witness by `tools/check_invariants.py` |
+| QEMU integration tests | 531 `smoke-*` targets: 230 base gates and 301 control arms |
 | Control arms | A build that puts a defect back on purpose; CI requires its gate to go red against it |
 | Kani | 35 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
 | Miri | The security core's tests, interpreted for undefined behaviour on every pull request |

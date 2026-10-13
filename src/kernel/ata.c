@@ -403,6 +403,16 @@ int ata_present(int drive) {
  * byte for byte, as it did when this function probed nothing else. */
 int ata_init(void) {
     int found = 0;
+#ifdef ATAD_SELFTEST
+    /* The ring-3 driver's self-test build (docs/design/ring3-storage.md): atad
+     * drives the controller, so the kernel must not. Two drivers issuing
+     * commands to one register file would each see the other's state as a
+     * fault, which is ata_lock's hazard across privilege levels. Storage falls
+     * back to the RAM vdisk, as on a machine with no disk. */
+    print("ata: the ring-0 probe is off in this build; atad drives the controller\n");
+    for (int d = 0; d < ATA_MAX_DRIVES; d++) g_ata_present[d] = 0;
+    return found;
+#endif
 #ifdef STORAGE_SINGLE_DEVICE
     /* CONTROL ARM -- never ship. The pre-2026-09-06 probe: only the master is
      * ever looked at, so a machine with two disks reports one and the second is

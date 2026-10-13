@@ -2124,6 +2124,59 @@ void sdhcid_selftest(void) {
 }
 #endif /* SDHCID_SELFTEST */
 
+#ifdef ATAD_SELFTEST
+static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
+/* ---- Ring-3 IDE driver self-test (ATAD_SELFTEST builds only) ----------------
+ *
+ * docs/design/ring3-storage.md: stand up `atad`, an IDE driver whose ENTIRE
+ * authority is one CAP_IO_DEVICE naming the controller, and require it to
+ * IDENTIFY the primary master, read block 0 and a planted block, and write,
+ * flush and read back a run of eight sectors of a scratch disk
+ * (ATADTEST: PASS). `make smoke-atad` then reads the image on the host.
+ *
+ * NO UNTYPED, as for sdhcid: PIO, so the controller is never handed memory. The
+ * legacy ports the driver needs are declared on the controller's entry only in
+ * this build (pci_add_function, S137), and the ring-0 probe is off in it
+ * (ata_init), so the controller has exactly one driver.
+ *
+ * Class 01:01 is an IDE controller; the driver itself checks its primary
+ * channel is in compatibility mode. FAILS rather than skips with no
+ * controller, for net_selftest's reason: a gate that quietly becomes a no-op
+ * reports PASS. */
+void atad_selftest(void) {
+    extern uint8_t embedded_atad_bin_start[], embedded_atad_bin_end[];
+
+    print("ATAD_SELFTEST: launch\n");
+
+    uint64_t ctrl = IODEV_NONE;
+    for (uint64_t i = IODEV_PLATFORM; i < IODEV_MAX; i++) {
+        const struct io_device *d = iodev_get(i);
+        if (d && d->bdf != IODEV_BDF_NONE && (d->classcode >> 8) == 0x0101u) {
+            ctrl = i; break;
+        }
+    }
+    if (ctrl == IODEV_NONE) {
+        print("ATADTEST: FAIL no-controller-present\n"); for (;;) asm volatile("hlt");
+    }
+
+    int a = fs_spawn_embedded(embedded_atad_bin_start, embedded_atad_bin_end, "atad");
+    if (a <= 0) { print("ATAD_SELFTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
+
+    /* The controller, and nothing else: no untyped (PIO, no DMA), no
+     * notification (it polls), no uid (nothing it does asks who it is). */
+    if (cap_install_from_root(a, CAPSLOT_IO_DEVICE, 10, (uint32_t)ctrl) != 0) {
+        print("ATAD_SELFTEST: FAIL endow-controller\n"); for (;;) asm volatile("hlt");
+    }
+#ifdef BLKPROTO_SELFTEST
+    blkproto_launch(a);
+#endif
+
+    selftest_resume_all();
+    sched_enable_preemption();
+    sched_enter_user(a);
+}
+#endif /* ATAD_SELFTEST */
+
 #ifdef DEVCAP_SELFTEST
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
 /* ---- Device-capability isolation self-test (DEVCAP_SELFTEST builds only) -----
@@ -2166,6 +2219,23 @@ void devcap_selftest(void) {
     }
     if (cap_install_from_root(a, CAPSLOT_IO_DEVICE_ALT, 10, (uint32_t)nic) != 0) {
         print("DEVCAP_SELFTEST: FAIL endow-nic\n"); for (;;) asm volatile("hlt");
+    }
+    /* Slot 41: the IDE controller, for S137. The ring-0 driver drives it in this
+     * build as in a ship kernel, so its capability must declare no ATA port; the
+     * probe reads what it declares. Its absence FAILS rather than skips: the
+     * check would pass vacuously on a machine with nothing to check. */
+    {
+        uint64_t ide = IODEV_NONE;
+        for (uint64_t i = IODEV_PLATFORM; i < IODEV_MAX; i++) {
+            const struct io_device *d = iodev_get(i);
+            if (d && d->bdf != IODEV_BDF_NONE && (d->classcode >> 8) == 0x0101u) { ide = i; break; }
+        }
+        if (ide == IODEV_NONE) {
+            print("DEVCAPTEST: FAIL no-ide-controller-present\n"); for (;;) asm volatile("hlt");
+        }
+        if (cap_install_from_root(a, 41, 10, (uint32_t)ide) != 0) {
+            print("DEVCAP_SELFTEST: FAIL endow-ide\n"); for (;;) asm volatile("hlt");
+        }
     }
     /* A notification (the SYS_IRQ_REGISTER destination) and a CAP_CONSOLE, which
      * is there to be the WRONG type: the probe checks a non-device capability in
@@ -2792,7 +2862,7 @@ void e820_selftest(void) {
 #endif /* E820_SELFTEST */
 
 #if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(RECVBLOCK_SELFTEST) || defined(TOKEN_SELFTEST) || defined(KLOG_FORGE_SELFTEST) \
-    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE) || defined(VFS_SELFTEST) || defined(FORK_SELFTEST) || defined(FPU_SELFTEST) || defined(FORKEXEC_SELFTEST) || defined(PIPEREVOKE_SELFTEST) || defined(DEVCAP_SELFTEST) || defined(NET_SELFTEST) || defined(NVME_SELFTEST) || defined(SDHCID_SELFTEST) || defined(SHLIB_SELFTEST) || defined(SHLIBC_SELFTEST) || defined(TUI_SELFTEST) \
+    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE) || defined(VFS_SELFTEST) || defined(FORK_SELFTEST) || defined(FPU_SELFTEST) || defined(FORKEXEC_SELFTEST) || defined(PIPEREVOKE_SELFTEST) || defined(DEVCAP_SELFTEST) || defined(NET_SELFTEST) || defined(NVME_SELFTEST) || defined(SDHCID_SELFTEST) || defined(ATAD_SELFTEST) || defined(SHLIB_SELFTEST) || defined(SHLIBC_SELFTEST) || defined(TUI_SELFTEST) \
     || defined(FSCAP_SELFTEST)
 /* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT/IRQ/CONSOLE/RECVBLOCK/TOKEN/KLOG_FORGE/FORK only) ----
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */

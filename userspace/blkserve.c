@@ -7,7 +7,7 @@
  *
  * Step 2 of docs/design/ring3-storage.md: a ring-3 storage driver answers
  * clients on one endpoint, and the rules below are what every driver holds every
- * client to. They are here once, linked into sdhcid and nvmed, rather than
+ * client to. They are here once, linked into sdhcid, nvmed and atad, rather than
  * written into each driver, so a rule cannot be right in one driver and missing
  * from another.
  *
@@ -27,7 +27,7 @@
  */
 
 /* Where the bound frames are mapped in the driver: clear of every driver's own
- * register and queue windows (sdhcid and nvmed use 4 and 8 GiB). */
+ * register and queue windows (sdhcid and nvmed use 4 and 8 GiB; atad maps none). */
 #define BLK_VA_FRAMES  0x0000000300000000ULL
 
 struct binding {

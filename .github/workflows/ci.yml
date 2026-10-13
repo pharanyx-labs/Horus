@@ -3704,6 +3704,11 @@ jobs:
       # The interrupt half. An IRQ line belongs to a device, not to a type.
       - name: Control arm — an IRQ registered against the wrong device
         run: make smoke-devcap-irq-control
+      # S137: ring 0 drives the IDE controller in every build but atad's, so its
+      # capability must declare no ATA port. Declare them anyway and the probe
+      # reading the IDE capability's ports goes red.
+      - name: Control arm — the ATA ports declared beside the ring-0 driver
+        run: make smoke-devcap-ata-control
       # LIMITATIONS 1.34: a register page is mapped whole, so it is checked whole.
       # QEMU's firmware gives every small BAR its own page, so the decision runs
       # at boot against a table with the neighbours a real machine may have.
@@ -3713,7 +3718,7 @@ jobs:
         run: make smoke-devpage-control
 
   net:
-    name: "Drivers in ring 3 (network, NVMe, SD/eMMC), each holding one device capability"
+    name: "Drivers in ring 3 (network, NVMe, SD/eMMC, IDE), each holding one device capability"
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -3839,8 +3844,20 @@ jobs:
         run: make smoke-sdhcid-write-control
       - name: Control arm — a CSD decoded at the specification's bit numbers
         run: make smoke-sdhcid-csd-control
+      # docs/design/ring3-storage.md: the IDE driver in ring 3, holding one device
+      # capability: PIO, so no untyped and no bus mastering. The legacy ports it
+      # drives are declared only in its self-test build (S137). Checked in the
+      # guest, on the image, and against the image's size.
+      - name: A ring-3 IDE driver reads and writes a disk, checked on the host
+        run: make smoke-atad
+      - name: Control arm — two LBA registers crossed, caught at the planted block
+        run: make smoke-atad-lba-control
+      - name: Control arm — a write to the wrong sectors that the guest cannot see
+        run: make smoke-atad-write-control
+      - name: Control arm — the CHS capacity taken for the disk's own
+        run: make smoke-atad-capacity-control
       # docs/design/ring3-storage.md step 2: the block-driver protocol, served by
-      # both storage drivers from one file (userspace/blkserve.c). blktest is the
+      # all three storage drivers from one file (userspace/blkserve.c). blktest is the
       # supervisor and the clients; the host checks where the write landed.
       - name: The block-driver protocol holds each client to its extent (S136)
         run: make smoke-blkproto

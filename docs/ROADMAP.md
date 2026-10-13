@@ -151,22 +151,24 @@ forked child starts with no mounts. `dev_server` runs only in the `VFS_SELFTEST`
 endpoint capability per connection, and DHCP. `netd` receives on the 82574L only (LIMITATIONS
 2.14) and runs only in the `NET_SELFTEST` build; shipping it is part of this item.
 
-**2.7 🚧 Drivers in ring 3.** Each under one device capability and the IOMMU. Two storage drivers
-run in ring 3 in self-test builds, each proved by a write checked on the host: `nvmed` drives an
-NVMe controller (`make smoke-nvme`), and `sdhcid` an SD card or eMMC device (`make smoke-sdhcid`)
-with no memory to give its controller, since it moves data by PIO. Both serve the block-driver
-protocol (`make smoke-blkproto`, S136), which holds each client to the extent of the disk its
-token was bound to. The kernel never waits on a ring-3 task mid-call, so neither can serve the
-kernel's storage; they become disks the system stores to when the kernel stops doing disk I/O,
-and the ring-0 drivers are then deleted ([`design/ring3-storage.md`](design/ring3-storage.md)):
-the IDE driver in ring 3 next, then filesystem phase 2 (2.10), then swap through a ring-3 driver,
-then the cutover. NVMe then installs by the
+**2.7 🚧 Drivers in ring 3.** Each under one device capability and the IOMMU. Three storage
+drivers run in ring 3 in self-test builds, each proved by a write checked on the host: `nvmed`
+drives an NVMe controller (`make smoke-nvme`), `sdhcid` an SD card or eMMC device
+(`make smoke-sdhcid`) and `atad` an IDE disk (`make smoke-atad`), the last two with no memory to
+give their controllers, since they move data by PIO. All three serve the block-driver protocol
+(`make smoke-blkproto`, S136), which holds each client to the extent of the disk its token was
+bound to. The IDE controller's ports are declared for ring 3 only in `atad`'s self-test build,
+so no task can be granted them while `ata.c` drives the controller (S137). The kernel never waits
+on a ring-3 task mid-call, so none of them can serve the kernel's storage; they become disks the
+system stores to when the kernel stops doing disk I/O, and the ring-0 drivers are then deleted
+([`design/ring3-storage.md`](design/ring3-storage.md)): filesystem phase 2 (2.10) next, then swap
+through a ring-3 driver, then the cutover. NVMe then installs by the
 same path as eMMC. After that, interrupts once MSI-X is enabled, AHCI reads and writes (the
 controller is identified and the drive answers IDENTIFY), USB through xHCI (and with it a keyboard
 on machines with no PS/2 emulation), and a framebuffer server.
 
 **2.7a ⬜ Evict the in-kernel services [F-2.7a].** `.github/ring0-classification.yml` (S87) measures
-the ring-0 `service` class at about 6,000 code lines beside a 11,579-line core: `storage.c` (the
+the ring-0 `service` class at about 6,000 code lines beside a 11,588-line core: `storage.c` (the
 encrypted store and the on-disk filesystem), `kusers.c` (accounts and password hashing), the loader
 and spawn path, `crypto.c` and `syscall_fs.c`, and the IDE, SD and eMMC drivers sit in ring 0 too.
 The drivers leave by [`design/ring3-storage.md`](design/ring3-storage.md), storage with 2.10 phase

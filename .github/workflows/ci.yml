@@ -3755,6 +3755,10 @@ jobs:
       # region -- no console, no filesystem, no ambient anything.
       - name: A ring-3 driver completes an exchange on the wire, over MSI
         run: make smoke-net
+      # Its receive ring is wrapped twice by the exchanges after the first. The
+      # arm puts back the ring that handed the device descriptors with no buffer.
+      - name: Control arm — the old receive ring loses replies past its eight buffers
+        run: make smoke-net-rx-ring-control
       # The INTx fallback, on a device model with no MSI capability. Same driver,
       # same code, different device -- which is what keeps the wire path a tested
       # one rather than an assumption, and is where S46's masking applies.

@@ -47,7 +47,7 @@ gates that match kernel strings are moving to COM3, which only the kernel can wr
 ## The integration gates
 
 
-There are 535 `smoke-*` targets: 232 gates and 303 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
+There are 536 `smoke-*` targets: 232 gates and 304 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
 
 
 ### Capabilities and authorisation
@@ -295,7 +295,7 @@ There are 535 `smoke-*` targets: 232 gates and 303 control arms. Each row is a g
 | `smoke-sdhci-emmc` | The eMMC branch: power-up, extended CSD capacity and a read (local only) |  |  |
 | `smoke-iommu-teardown` | A device's translation of a frame goes when the frame or its driver does | S53 | `smoke-iommu-teardown-control`, `smoke-iommu-teardown-task-control` |
 | `smoke-irq` | A hardware interrupt reaches a ring-3 notification |  |  |
-| `smoke-net` | A ring-3 driver holding one device capability exchanges ARP on the wire, its DMA confined by the IOMMU | S44, S45, S46, S47, S48 | `smoke-net-busmaster-control`, `smoke-net-decode-control`, `smoke-net-iommu-control`, `smoke-net-irq-storm-control`, `smoke-net-mask-control`, `smoke-net-msi-vector-control`, `smoke-net-msix-table-control` |
+| `smoke-net` | A ring-3 driver holding one device capability exchanges ARP on the wire eighteen times, wrapping its receive ring twice, its DMA confined by the IOMMU | S44, S45, S46, S47, S48 | `smoke-net-busmaster-control`, `smoke-net-decode-control`, `smoke-net-iommu-control`, `smoke-net-irq-storm-control`, `smoke-net-mask-control`, `smoke-net-msi-vector-control`, `smoke-net-msix-table-control`, `smoke-net-rx-ring-control` |
 | `smoke-net-intx` | The same driver on a device with no MSI, through the masked legacy interrupt line |  |  |
 | `smoke-nvme` | A ring-3 NVMe driver holding one device capability reads a disk and writes it, the write checked on the host, its DMA confined by the IOMMU | S45 | `smoke-nvme-iommu-control`, `smoke-nvme-write-control` |
 | `smoke-sdhcid` | A ring-3 SD/eMMC driver holding one device capability, and no memory to give its controller, brings up a 64 MiB and a 4 GiB card, reads them and writes them, the write and the decoded capacity checked on the host |  | `smoke-sdhcid-addr-control`, `smoke-sdhcid-write-control`, `smoke-sdhcid-csd-control` |

@@ -155,6 +155,20 @@ struct rx_desc {
 #define NDESC       (RING_BYTES / 16)
 
 #define RXBUF_COUNT 8
+/* THE RECEIVE RING IS EXACTLY AS LONG AS THERE ARE BUFFERS (docs/LIMITATIONS.md
+ * 2.14, closed 2026-10-13). It used to share RING_BYTES with the transmit ring:
+ * 256 descriptors, of which only the first 8 were given a buffer. Recycling
+ * advanced the tail one descriptor per frame, so from the ninth frame of the
+ * boot the device was handed descriptors whose buffer address was 0, and the
+ * driver never looked at them: a frame landed at bus address 0 (refused by the
+ * IOMMU where there is one, written to physical page 0 where there is not) and
+ * was never seen. That is why the 82540EM "almost never" delivered the ARP
+ * reply: on that model more than eight frames arrive before it. 8 descriptors
+ * is 128 bytes, the length granularity RDLEN requires. */
+#define RX_NDESC    RXBUF_COUNT
+#define RX_WRAP_ROUNDS (2 * RX_NDESC + 1)   /* exchanges after the first */
+#define RX_RING_BYTES (RX_NDESC * 16)
+_Static_assert(RX_RING_BYTES % 128 == 0, "RDLEN must be a multiple of 128 bytes");
 #define BUF_SIZE    2048
 #define RXBUF_PAGES 4               /* 8 * 2048 = 16 KiB exactly */
 #define TXBUF_PAGES 1
@@ -240,10 +254,22 @@ static int frame_setup(unsigned slot, unsigned pages, unsigned long long va,
     return 0;
 }
 
+/* Is this frame the gateway's ARP reply? Prints its address when it is. */
+static int is_gateway_arp_reply(const unsigned char *f, unsigned len) {
+    if (len < 42 || f[12] != 0x08 || f[13] != 0x06) return 0;
+    const unsigned char *a = f + 14;
+    if (a[6] != 0 || a[7] != ARP_REPLY || !same(a + 14, GW_IP, 4)) return 0;
+    wr("NETD: arp reply from 10.0.2.2 at ");
+    for (int k = 0; k < 6; k++) { if (k) wr(":"); wr_hex2(a[8 + k]); }
+    wr("\n");
+    return 1;
+}
+
 void _start(void) {
     struct dev_info nic;
     struct tx_desc *txr;
-    struct rx_desc *rxr;
+    /* volatile: the device writes the status byte, and the receive loop polls it. */
+    volatile struct rx_desc *rxr;
     unsigned char *rxbuf, *txbuf, *rxring, *txring;
     uint64_t rxring_dma, txring_dma, rxbuf_dma, txbuf_dma;
 
@@ -406,9 +432,19 @@ void _start(void) {
     }
     mmio_w(E1000_RDBAL, (unsigned int)(rxring_dma & 0xFFFFFFFFu));
     mmio_w(E1000_RDBAH, (unsigned int)(rxring_dma >> 32));
+#ifdef NET_RX_RING_LEGACY
+    /* CONTROL ARM, never shipped: the ring as it was until 2026-10-13, 256
+     * descriptors behind 8 buffers, and the tail one past the last of them. */
     mmio_w(E1000_RDLEN, RING_BYTES);
     mmio_w(E1000_RDH, 0);
-    mmio_w(E1000_RDT, RXBUF_COUNT);      /* everything up to here is the device's */
+    mmio_w(E1000_RDT, RXBUF_COUNT);
+#else
+    /* RDH == RDT means the device owns nothing, so of N descriptors it is given
+     * N - 1: 0 to N - 2, with RDT naming the one it may not use. */
+    mmio_w(E1000_RDLEN, RX_RING_BYTES);
+    mmio_w(E1000_RDH, 0);
+    mmio_w(E1000_RDT, RX_NDESC - 1);
+#endif
     mmio_w(E1000_RCTL, RCTL_EN | RCTL_BAM | RCTL_UPE | RCTL_SZ_2048 | RCTL_SECRC);
 
     /* ---- 7. transmit ring ------------------------------------------------ */
@@ -642,66 +678,88 @@ void _start(void) {
      * each attempt waits. Both must leave the whole loop inside the harness
      * timeout, or the gate reports a hang instead of its own marker. */
     int got = 0;
+#ifdef NET_RX_RING_LEGACY
     unsigned tail = RXBUF_COUNT;
+#endif
+    unsigned rx_cur = 0;              /* the next descriptor the device fills */
     unsigned txi  = 1;                /* descriptor 0 carried the first request */
+    int answered = 0;                 /* exchanges answered, the first included */
 
-    for (int attempt = 0; attempt < ARP_ATTEMPTS && !got; attempt++) {
-        /* Re-arm the receive tail, then ask. Writing RDT is what tells the device
-         * fresh descriptors are available. */
-        mmio_w(E1000_RDT, tail);
+    /* THE FIRST EXCHANGE, THEN THE RING'S. Round 0 is the reply this driver has
+     * always been proved by. Rounds 1 to RX_WRAP_ROUNDS are the receive ring's
+     * witness: more exchanges than the ring has descriptors, twice over, so the
+     * device wraps the ring and every descriptor is handed back and reused. A
+     * ring that gives the device a descriptor with no buffer, or that the driver
+     * stops reading, loses a reply here (NET_RX_RING_LEGACY is that arm). */
+    for (int round = 0; round <= RX_WRAP_ROUNDS; round++) {
+        got = 0;
+        for (int attempt = 0; attempt < ARP_ATTEMPTS && !got; attempt++) {
+#ifdef NET_RX_RING_LEGACY
+            /* Re-arm the receive tail, then ask. */
+            mmio_w(E1000_RDT, tail);
+#endif
 
-        {
-            txr[txi].addr   = txbuf_dma;
-            txr[txi].length = 60;
-            txr[txi].cmd    = TXD_CMD_EOP | TXD_CMD_IFCS | TXD_CMD_RS;
-            txr[txi].status = 0;
-            txi = (txi + 1) % NDESC;
-            mmio_w(E1000_TDT, txi);
-        }
-
-        for (long spin = 0; spin < ARP_SPIN && !got; spin++) {
-            for (unsigned i = 0; i < RXBUF_COUNT && !got; i++) {
-                if (!(rxr[i].status & RXD_STA_DD)) continue;
-
-                unsigned char *f = rxbuf + (unsigned long)i * BUF_SIZE;
-                unsigned len = rxr[i].length;
-                if (len >= 42 && f[12] == 0x08 && f[13] == 0x06) {
-                    unsigned char *a = f + 14;
-                    if (a[6] == 0 && a[7] == ARP_REPLY && same(a + 14, GW_IP, 4)) {
-                        wr("NETD: arp reply from 10.0.2.2 at ");
-                        for (int k = 0; k < 6; k++) { if (k) wr(":"); wr_hex2(a[8 + k]); }
-                        wr("\n");
-                        got = 1;
-                        break;
-                    }
-                }
-                /* Recycle the descriptor either way, so unrelated traffic cannot
-                 * fill the ring before the reply arrives. */
-                rxr[i].status = 0;
-                tail = (tail + 1) % NDESC;
-                mmio_w(E1000_RDT, tail);
+            {
+                txr[txi].addr   = txbuf_dma;
+                txr[txi].length = 60;
+                txr[txi].cmd    = TXD_CMD_EOP | TXD_CMD_IFCS | TXD_CMD_RS;
+                txr[txi].status = 0;
+                txi = (txi + 1) % NDESC;
+                mmio_w(E1000_TDT, txi);
             }
-            /* Read the interrupt cause each round. A driver does this to learn
-             * why it was woken, and it is read-to-clear: leaving a cause latched
-             * is how a device stops telling you about the next one. Empirically
-             * the difference between this receive path working and not. */
-            (void)mmio_r(E1000_ICR);
-            if (!got) sys_yield();
+
+            for (long spin = 0; spin < ARP_SPIN && !got; spin++) {
+#ifdef NET_RX_RING_LEGACY
+                for (unsigned i = 0; i < RXBUF_COUNT && !got; i++) {
+                    if (!(rxr[i].status & RXD_STA_DD)) continue;
+                    unsigned char *f = rxbuf + (unsigned long)i * BUF_SIZE;
+                    unsigned len = rxr[i].length;
+                    got = is_gateway_arp_reply(f, len);
+                    rxr[i].status = 0;
+                    tail = (tail + 1) % NDESC;
+                    mmio_w(E1000_RDT, tail);
+                }
+#else
+                /* In ring order, from the cursor, every descriptor the device has
+                 * finished: read it, give it back, and make it the new tail. A
+                 * descriptor handed back always has its buffer, because the ring is
+                 * no longer than the buffers. Recycled either way, so unrelated
+                 * traffic cannot fill the ring before the reply arrives. */
+                while (!got && (rxr[rx_cur].status & RXD_STA_DD)) {
+                    unsigned char *f = rxbuf + (unsigned long)rx_cur * BUF_SIZE;
+                    got = is_gateway_arp_reply(f, rxr[rx_cur].length);
+                    rxr[rx_cur].status = 0;
+                    mmio_w(E1000_RDT, rx_cur);
+                    rx_cur = (rx_cur + 1) % RX_NDESC;
+                }
+#endif
+                /* Read the interrupt cause each round. A driver does this to learn
+                 * why it was woken, and it is read-to-clear: leaving a cause latched
+                 * is how a device stops telling you about the next one. Empirically
+                 * the difference between this receive path working and not. */
+                (void)mmio_r(E1000_ICR);
+                if (!got) sys_yield();
+            }
         }
+        if (!got) break;
+        answered++;
+        if (round == 0) wr("NETTEST: RX PASS\n");
     }
 
     (void)mmio_r(E1000_ICR);     /* read-to-clear, so nothing is left asserted */
 
-    /* NOT a gate, and the honest reason is in docs/LIMITATIONS.md 2.14: a reply
-     * has been observed exactly once, so the receive path is not categorically
-     * broken -- but it is not reliable either, and one observation is not a
-     * property. Reported either way so the next person has the signal. */
-    /* Gated on the 82574L, where it is reliable (5 boots in 5), and NOT on the
-     * 82540EM, where a reply has been seen exactly once in many attempts. Same
-     * driver, same code path, two device models -- which is what localised the
-     * problem to the model rather than the driver. docs/LIMITATIONS.md 2.14. */
-    if (got) wr("NETTEST: RX PASS\n");
-    else     wr("NETD: no arp reply after retries (LIMITATIONS 2.14)\n");
+    /* Gated on the 82574L (smoke-net requires RX RING PASS), and NOT on the
+     * 82540EM: docs/LIMITATIONS.md 2.14 records that model almost never
+     * delivering the reply on CI's QEMU. On QEMU 11 (2026-10-13) it delivered it
+     * in every boot, with the old ring and the new, so the cause is not settled
+     * and the line is reported either way for the next measurement. */
+    if (answered == 0) {
+        wr("NETD: no arp reply after retries (LIMITATIONS 2.14)\n");
+    } else if (answered == RX_WRAP_ROUNDS + 1) {
+        wr("NETTEST: RX RING PASS\n");
+    } else {
+        wr("NETTEST: FAIL rx-ring-wrap\n");
+    }
 
     for (;;) sys_yield();
 }

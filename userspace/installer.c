@@ -20,9 +20,12 @@
  *                           target's, and relying on that would be trusting a
  *                           caller for who it claims to be. The capability is
  *                           the authority; the uid is a coincidence.
- *   CAPSLOT_CONSOLE_EP      A WRITE-only console client endpoint -- draw and
- *                           read keys. Every task with a console has this; it
- *                           confers nothing an ordinary program lacks.
+ *   CAPSLOT_CONSOLE_EP      A WRITE-only console client endpoint -- draw.
+ *                           Every task with a console has this; it confers
+ *                           nothing an ordinary program lacks.
+ *   CAPSLOT_CONSOLE_IN      The keyboard: the console's input capability,
+ *                           lent by init while it waits for this task and
+ *                           taken back when it ends (S93).
  *
  * WHAT IT DOES NOT HOLD, and each absence is load-bearing. No
  * CAP_ENCRYPTED_STORAGE: it cannot read one byte of the volume it replaces, and

@@ -571,11 +571,14 @@ the highest syscall number, so a syscall cannot be added without its entry. The 
 
 The first task and the **delegation root**. The kernel endows it from the root cnode with what it
 must use or delegate: the console, storage and user capabilities, the service endpoints, the
-platform device, the kernel log, the boot modules, `CAP_STORAGE_FORMAT`, the shared libc's text,
+console's input minter (the one capability the keyboard's input capability can be minted from,
+S93), the platform device, the kernel log, the boot modules, `CAP_STORAGE_FORMAT`, the shared libc's text,
 and `CAP_UNTYPED` over `UNTYPED_ROOT`. It surveys the machine's storage, then starts `fs_server`,
 `console_server`, and either the installer (on a blank disk, or when the boot menu asked) or the
-shell, each suspended, granting each exactly its subset and resuming it last. The installer is the
-only task given `CAP_STORAGE_FORMAT`; nothing a login reaches holds one.
+shell, each suspended, granting each exactly its subset and resuming it last. The installer and
+the shell are lent the keyboard's input capability while init waits for them, and init takes it
+back when each has ended. The installer is the only task given `CAP_STORAGE_FORMAT`; nothing a login
+reaches holds one.
 
 **Adding a program** is one line in the Makefile, `$(eval $(call USERPROG,name))`, and a
 deliberate hand-written launch in `init.c`. There is no macro for delegation: which authority a
@@ -622,8 +625,15 @@ share one scancode table, `include/ps2_scancode.h`.
 
 It is the single writer to the console. It implements raw terminal mode (termios and window
 size), scrollback of the last 512 lines (Shift+PgUp and PgDn), cells for full-screen programs
-alongside their escape sequences on the serial line, and the input-owner rule that only the
-registered owner may read a password (S93). Every boot-log line is timestamped by whichever writer
+alongside their escape sequences on the serial line, and the rule that keyboard input is a
+capability (S93): it serves `GETLINE`, `GETPASS` and `READ_RAW` only to a request sent through the
+console endpoint tokened `CON_TOKEN_INPUT`, as the kernel attests it (`SYS_IPC_INVOKER`), and
+refuses every other without reading. `init` alone can mint that capability, from the one console
+capability carrying `MINT`; it lends it to the installer and the shell, and the shell lends a
+derived copy to the program it runs in the foreground and revokes it once that program has been
+waited for (`console_lend` in `libhorus`). The kernel's own console paths, `SYS_WRITE` fd 1,
+`SYS_READ` fd 0, `SYS_GET_LINE` and `SYS_GET_PASS`, ask for the console's capabilities too (S135).
+Every boot-log line is timestamped by whichever writer
 emits it, the kernel from the TSC and the server from the 10 ms clock, on one epoch, until the
 session starts. `task_teardown` hands the hardware back to the kernel if the server dies.
 
@@ -633,8 +643,8 @@ The shared freestanding runtime every server links (`include/libhorus.h`, `users
 memory and string helpers, console output, a bounded busy-wait, the TUI library the installer is
 built from, the per-task mount table and path walker (`hvfs`, which walks by capability through a
 mount backed by a directory capability, one capability per object from a pool of slots it alone
-fills, S126), and `ipc_call_retry`, which makes
-the IPC retry contract a library guarantee. It declares nothing that needs authority: anything that
+fills, S126), lending the console's input to a child and taking it back (`conlend`, S93), and
+`ipc_call_retry`, which makes the IPC retry contract a library guarantee. It declares nothing that needs authority: anything that
 would belongs behind a capability, not a function call.
 
 ---

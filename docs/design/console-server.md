@@ -196,6 +196,14 @@ object-store syscalls today. Only `console_server` is ever endowed with it: by `
 authority and nothing else holds it, so no other task can map device memory, touch a device
 port, or claim an IRQ.
 
+**Input is a capability too (2026-10-13, S93).** A client's console capability is send-only and
+untokened, and every program inherits one as its stdout, so it buys output and nothing else. The
+server reads the keyboard only for a request sent through the console endpoint tokened
+`CON_TOKEN_INPUT`, which `init` mints from an input minter the kernel gives it alone (the only
+console capability with `MINT`, and with no receive right) and lends: to the installer and the shell, and from the shell to the program it runs in the
+foreground, revoked once that program has been waited for (`include/console_proto.h`). The kernel's
+own console reads and writes ask for `CAP_CONSOLE` or the console endpoint likewise (S135).
+
 ---
 
 ## 5. `console_server` (ring-3 process)

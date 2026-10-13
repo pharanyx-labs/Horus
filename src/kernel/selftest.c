@@ -19,6 +19,25 @@ __attribute__((unused)) static void selftest_resume_all(void) {
 #include "fs_proto.h"   /* FS_EP_REQ for the FS self-test harnesses */
 #endif
 
+/* EVERY TASK A SELF-TEST LAUNCHES IS GIVEN A STDOUT, the way every program the
+ * shell runs has one: a send-only console client capability in
+ * CAPSLOT_CONSOLE_EP (root[12], naming CON_EP_REQ). Since 2026-10-13 the
+ * kernel's SYS_WRITE fd 1 writes to the console only for a task holding that or
+ * CAP_CONSOLE with WRITE (S135, LIMITATIONS 1.6), and these tasks report their
+ * markers through it. It is the same capability kspawn.c then propagates,
+ * send-only, to each task they spawn in turn, so a self-test's children print
+ * as they did; it is installed explicitly here because a task the KERNEL
+ * launches inherits nothing (the kernel task holds no console endpoint).
+ *
+ * A harness that wants something else in that slot (console_server's listen
+ * capability, say) installs it afterwards, over this one. */
+static int __attribute__((unused)) st_spawn(void) {
+    extern int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);
+    int pid = do_spawn();
+    if (pid > 0) (void)cap_install_from_root(pid, CAPSLOT_CONSOLE_EP, 12, CON_EP_REQ);
+    return pid;
+}
+
 #ifdef SPAWN_OWNER_SELFTEST
 /* Gated: prove the staged image can only be consumed by the task that armed it
  * ([G-11], roadmap 1.7).
@@ -63,7 +82,7 @@ void spawn_owner_selftest(void) {
      * boot, so this names a task that is not the consumer without disturbing a
      * live one. */
     staged_owner_task = g_max_tasks - 1;
-    int refused = do_spawn();
+    int refused = st_spawn();
     if (refused > 0) {
         spawn_stage_release();
         print("SPAWN_OWNER_SELFTEST: FAIL foreign-image-spawned pid ");
@@ -82,7 +101,7 @@ void spawn_owner_selftest(void) {
         set_current_task(saved);
         return;
     }
-    int pid = do_spawn();
+    int pid = st_spawn();
     spawn_stage_release();
     if (pid <= 0) {
         print("SPAWN_OWNER_SELFTEST: FAIL own-image-refused rc ");
@@ -900,7 +919,7 @@ void elf_loader_selftest(void) {
     loader_arm_commit();
 
     int saved = get_current_task();
-    int pid = do_spawn();                 /* runs the real try_elf_load + W^X pass */
+    int pid = st_spawn();                 /* runs the real try_elf_load + W^X pass */
     spawn_stage_release();
     if (pid <= 0) { print("ELF_SELFTEST: FAIL spawn\n"); set_current_task(saved); return; }
 
@@ -1016,7 +1035,7 @@ void elf64_loader_selftest(void) {
     loader_arm_commit();
 
     int saved = get_current_task();
-    int pid = do_spawn();                 /* the real try_elf_load + RELA + W^X */
+    int pid = st_spawn();                 /* the real try_elf_load + RELA + W^X */
     spawn_stage_release();
     if (pid <= 0) { print("ELF64_SELFTEST: FAIL spawn\n"); set_current_task(saved); return; }
 
@@ -1136,7 +1155,7 @@ void aslr_selftest(void) {
         armed_hdr.name[3] = 't'; armed_hdr.name[4] = 0;
         loader_arm_commit();
 
-        int pid = do_spawn();
+        int pid = st_spawn();
         spawn_stage_release();
         if (pid <= 0) { print("ASLR_SELFTEST: FAIL spawn\n"); set_current_task(saved); return; }
         bases[got++] = tasks[pid].image_base;
@@ -1246,7 +1265,7 @@ static int preempt_spawn_one(uint32_t entry, uint32_t size, const uint8_t *paylo
     armed_hdr.size  = size;
     armed_hdr.name[0] = 'p'; armed_hdr.name[1] = 't'; armed_hdr.name[2] = 0;
     loader_arm_commit();
-    int pid = do_spawn();
+    int pid = st_spawn();
     spawn_stage_release();
     return pid;
 }
@@ -1300,7 +1319,7 @@ static int smp_spawn_worker(uint32_t entry, uint32_t size, const uint8_t *payloa
     armed_hdr.size  = size;
     armed_hdr.name[0] = 'w'; armed_hdr.name[1] = 'k'; armed_hdr.name[2] = 0;
     loader_arm_commit();
-    int pid = do_spawn();
+    int pid = st_spawn();
     spawn_stage_release();
     return pid;
 }
@@ -1448,7 +1467,7 @@ static int proc_spawn_named(const char *name) {
     __asm__ volatile ("mov %%cr3, %0" : "=r"(kcr3));
     set_current_task(0);                 /* so do_spawn's spawner-cap grant is skipped */
     spawn_stage_acquire();
-    int pid = (arm_named_binary(name) == 0) ? do_spawn() : -1;
+    int pid = (arm_named_binary(name) == 0) ? st_spawn() : -1;
     spawn_stage_release();
     __asm__ volatile ("mov %0, %%cr3" :: "r"(kcr3) : "memory");
     return pid;
@@ -1477,7 +1496,7 @@ static int proc_spawn_embed(const uint8_t *start, const uint8_t *end, const char
     for (; nm[k] && k < 31; k++) armed_hdr.name[k] = nm[k];
     armed_hdr.name[k] = 0;
     loader_arm_commit();
-    int pid = do_spawn();
+    int pid = st_spawn();
     spawn_stage_release();
     __asm__ volatile ("mov %0, %%cr3" :: "r"(kcr3) : "memory");
     return pid;
@@ -1574,7 +1593,7 @@ void signal_selftest(void) {
     armed_hdr.name[0] = 's'; armed_hdr.name[1] = 'i'; armed_hdr.name[2] = 'g'; armed_hdr.name[3] = 0;
     loader_arm_commit();
 
-    int a = do_spawn();
+    int a = st_spawn();
     spawn_stage_release();               /* before sched_enter_user, which never returns */
     if (a <= 0) { print("SIGNAL_SELFTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
 
@@ -1618,7 +1637,7 @@ void tsd_selftest(void) {
     armed_hdr.name[0] = 't'; armed_hdr.name[1] = 's'; armed_hdr.name[2] = 'd'; armed_hdr.name[3] = 0;
     loader_arm_commit();
 
-    int a = do_spawn();
+    int a = st_spawn();
     spawn_stage_release();               /* before sched_enter_user, which never returns */
     if (a <= 0) { print("TSD_SELFTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
 
@@ -2121,7 +2140,24 @@ void console_selftest(void) {
                                 embedded_consoletest_bin_end, "consoletest");
     if (cli <= 0) { print("CONSOLE_SELFTEST: FAIL spawn-client\n"); for (;;) asm volatile("hlt"); }
     tasks[cli].uid = 0;
-    cap_install_from_root(cli, CAPSLOT_CONSOLE_EP, 12, CON_EP_REQ);  /* client: WRITE only */
+    /* The client is the witness for who may use the console (S93, S135), and
+     * starts holding NO console capability, so its first step can show the
+     * kernel refusing a task with neither: the stdout st_spawn gives every
+     * self-test task is taken back here. In its place, init's console input
+     * minter (root[23]: send, mint, grant, revoke; no receive), so it can do
+     * what init does: mint the input capability and lend it. It also talks to
+     * the server through it.
+     * Untyped memory to spawn the borrower and retype an endpoint, and CAP_DEBUG
+     * to read the borrower's slots. See userspace/consoletest.c. */
+    {
+        struct capability prev;
+        if (!cap_consume_slot_of(cli, CAPSLOT_CONSOLE_EP, &prev) ||
+            cap_install_from_root(cli, 30, 23, CON_EP_REQ) != 0 ||
+            cap_install_from_root(cli, CAPSLOT_UNTYPED, 17, UNTYPED_ROOT) != 0 ||
+            cap_install_from_root(cli, CAPSLOT_DEBUG, 18, 0) != 0) {
+            print("CONSOLE_SELFTEST: FAIL endow-client\n"); for (;;) asm volatile("hlt");
+        }
+    }
 
     /* Launch the server; when it blocks in IPC the full-context path runs the
      * client. Does not return. */
@@ -2644,7 +2680,7 @@ static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const cha
     while (k < 31 && nm[k]) { armed_hdr.name[k] = nm[k]; k++; }
     armed_hdr.name[k] = 0;
     loader_arm_commit();
-    int pid = do_spawn();
+    int pid = st_spawn();
     spawn_stage_release();
     return pid;
 }

@@ -295,4 +295,27 @@ void hvfs_grant_release(struct hvfs_grant *g);
 #define HVFS_GRANT_WHY_CWD   10
 void hvfs_grant_why(int *stage, int *krc);
 
+/* ---- Lending the console's input (S93, userspace/conlend.c) ----------------
+ *
+ * The keyboard is read through CAPSLOT_CONSOLE_IN, the console endpoint tokened
+ * CON_TOKEN_INPUT. A task that holds it (in `from_slot`; CAPSLOT_CONSOLE_IN for
+ * every task but init, which mints it) lends it to a SUSPENDED child for as
+ * long as the child runs in the foreground: console_lend mints a copy into
+ * `lend_slot` (a slot of the caller's own; it is emptied first) and grants the
+ * child a copy of THAT, at the child's CAPSLOT_CONSOLE_IN. The caller keeps *l
+ * until the child has been waited for and then calls console_unlend, which
+ * revokes the copy in `lend_slot` and with it the child's and every copy the
+ * child passed on. Only one copy is out per `lend_slot` at a time.
+ *
+ * Returns 0; -1 if the caller holds no input to lend (nothing was granted, and
+ * the child simply runs without the keyboard); -2 if the grant was refused
+ * (taken back already). l->krc is the kernel's answer to the call that failed. */
+struct con_lend { int slot; int lent; int krc; };
+int  console_lend(int child, unsigned from_slot, unsigned lend_slot, struct con_lend *l);
+void console_unlend(struct con_lend *l);
+/* Asks console_server whether the capability in `slot` carries console input:
+ * 0 if it does, SYS_ERR_PERM if not, another negative value if the server could
+ * not be asked. Reads nothing. */
+int  console_input_held(unsigned slot);
+
 #endif /* LIBHORUS_H */

@@ -29,7 +29,6 @@ The recommendation is the one the route is written around; it is not the decisio
 | D3 | Measured boot mandatory whenever a TPM is present | Yes, failing closed; a machine without a TPM boots with a visible warning | 5.6 |
 | D4 | Refuse an unanchored volume on a TPM machine; advance the rollback counter at a bounded interval; eMMC RPMB as a second anchor | Yes to the first two; RPMB opt-in only, since programming its key is irreversible | 5.7 |
 | D5 | Kernel updates by predicted PCR values and a staged second seal | Yes, over signed kernels, which would make `PCR[4]` the same for every signed kernel | 5.8 |
-| D6 | Console input becomes a capability, ending LIMITATIONS 1.6's ambient read | Yes; console writes stay ambient | 5.5 |
 | D7 | `SYS_SPAWN_IMAGE` needs a capability no session holds; exec goes through a file capability | Yes | 5.4 |
 | D8 | One capability per grant, bounded by the kernel, instead of one root carrying the union | Yes | 5.10 |
 | D9 | TLA+, and its Java toolchain, as a new verification dependency | Yes, nightly first; a full Isabelle model of the kernel is not recommended at this size of team | 5.11 |
@@ -72,7 +71,7 @@ The recommendation is the one the route is written around; it is not the decisio
 | Lane | Milestone | Items | Closes | Needs |
 |---|---|---|---|---|
 | Filesystem | Accounts as files, then exec by capability | 2.11 step 3, 5.4 | 1.23 | Wave 1 filesystem, D7 |
-| Console | Input as a capability, with job control | 5.5, 2.3 job control | 2.9b | 2.10 step 3(b), D6 |
+| Console | Job control: stopping and resuming the foreground program | 2.3 job control | | 2.10 step 3(b) |
 | Boot | Measured boot by default, rollback anchoring | 5.6, 5.7 | 2.9, 1.12 | D3, D4 |
 | Supply chain | Verifiable releases, then updates without a lockout | 4.5, 4.4, 4.11, then 5.8 | 5.3, 2.9a | D10, D5 |
 | SMP | Per-CPU run queues, one-shot timers, timers as notifications | 1.8 steps 2 and 3, 2.2 | | |
@@ -139,9 +138,11 @@ table sized from the budget.
 fixed 100 Hz tick). Then a libc `clock_gettime`, and a wall clock, which needs an RTC and a way to
 trust it.
 
-**2.3 ⬜ Processes.** Process groups and job control (with 5.5, since both are about who owns the
-terminal), `/proc` as a filesystem server behind 2.4, narrowing what a child carries into `exec`
-(today it carries everything its parent held), and namespace inheritance.
+**2.3 ⬜ Processes.** Process groups and job control, built on the input capability the shell
+already lends to the foreground program and takes back when it ends (S93), so stopping a program
+takes it back and resuming lends it again; `/proc` as a filesystem server behind 2.4; narrowing
+what a child carries into `exec` (today it carries everything its parent held); and namespace
+inheritance.
 
 **2.4 ⬜ Mounts.** Mount and unmount as syscalls, `/proc`, and namespace inheritance: a spawned or
 forked child starts with no mounts. `dev_server` runs only in the `VFS_SELFTEST` build.
@@ -155,7 +156,7 @@ answers IDENTIFY), NVMe, USB through xHCI (and with it a keyboard on machines wi
 emulation), and a framebuffer server, each under one device capability and the IOMMU.
 
 **2.7a ⬜ Evict the in-kernel services [F-2.7a].** `.github/ring0-classification.yml` (S87) measures
-the ring-0 `service` class at about 6,000 code lines beside a 11,527-line core: `storage.c` (the
+the ring-0 `service` class at about 6,000 code lines beside a 11,554-line core: `storage.c` (the
 encrypted store and the on-disk filesystem), `kusers.c` (accounts and password hashing), the loader
 and spawn path, `crypto.c` and `syscall_fs.c`, and the IDE, SD and eMMC drivers sit in ring 0 too.
 Storage leaves with 2.10 phase 2, accounts with 2.11 step 3's `auth_server`, and the loader as a
@@ -256,12 +257,6 @@ and the SD installer gates is part of this.
 `EXEC`, with `fs_server` supplying the bytes through it; `SYS_SPAWN_IMAGE` then needs a capability no
 session holds (D7). A compiler's output still runs, from a home the policy grants `EXEC`. Witness: a
 session holding a readable, non-`EXEC` file cannot run it by either route.
-
-**5.5 ⏸ Console input as a capability** (2.9b, and LIMITATIONS 1.6's read half). `console_server`
-serves input only through a foreground capability; the shell grants a derived copy to the child it
-runs in the foreground and revokes it when the child ends or stops, through 2.10 step 3(b)'s
-watcher. Writes stay ambient. Witness: a background program's read is refused while another task
-owns input.
 
 **5.6 ⏸ Measured boot whenever a TPM is present** (2.9). A machine with a TPM fails closed when
 measurement or sealing fails; one without boots, says so at install and at every login, and the

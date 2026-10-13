@@ -43,7 +43,7 @@ static int shown_r = -1, shown_c = -1;  /* last sent */
 /* One console request, with the bounded retry the shell uses: a full mailbox is
  * transient and worth yielding for, but it must not become a hang. Returns the
  * server's rc, or -1. */
-static int con_call(uint32_t op, const uint8_t *data, uint32_t len)
+static int con_call_through(unsigned slot, uint32_t op, const uint8_t *data, uint32_t len)
 {
     rq.magic = CON_PROTO_MAGIC;
     rq.op    = op;
@@ -51,7 +51,7 @@ static int con_call(uint32_t op, const uint8_t *data, uint32_t len)
     for (uint32_t i = 0; i < len && i < CON_IO_MAX; i++) rq.data[i] = data[i];
 
     for (int tries = 0; tries < 32; tries++) {
-        int rc = sys_ipc_call(CAPSLOT_CONSOLE_EP, 0, &rq, sizeof(rq), &rp);
+        int rc = sys_ipc_call(slot, 0, &rq, sizeof(rq), &rp);
         if (rc >= 0) {
             if (rp.magic != CON_PROTO_MAGIC) return -1;
             return rp.rc;
@@ -59,6 +59,15 @@ static int con_call(uint32_t op, const uint8_t *data, uint32_t len)
         sys_yield();
     }
     return -1;
+}
+
+/* Drawing goes through the console capability every program holds as its
+ * stdout; reading the keyboard goes through the INPUT capability its spawner
+ * lent it (CAPSLOT_CONSOLE_IN, S93), which console_server checks. A TUI run by
+ * a task that holds no input draws normally and reads no keys. */
+static int con_call(uint32_t op, const uint8_t *data, uint32_t len)
+{
+    return con_call_through(CAPSLOT_CONSOLE_EP, op, data, len);
 }
 
 /* Emit bytes verbatim, chunked to what one request carries. */
@@ -917,7 +926,7 @@ int tui_menu(int row, int col, int width, const char *const *items, int n, int *
 static int kfill(void)
 {
     if (kpos < klen) return 1;
-    int rc = con_call(CON_OP_READ_RAW, (const uint8_t *)"", CON_IO_MAX);
+    int rc = con_call_through(CAPSLOT_CONSOLE_IN, CON_OP_READ_RAW, (const uint8_t *)"", CON_IO_MAX);
     if (rc <= 0) return 0;
     if (rc > (int)sizeof(kbuf)) rc = (int)sizeof(kbuf);   /* never trust a length */
     for (int i = 0; i < rc; i++) kbuf[i] = rp.data[i];

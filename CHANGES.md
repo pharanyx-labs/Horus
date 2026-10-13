@@ -17,9 +17,12 @@ here.
 ### Security
 
 - The pipe end a spawned child is given for its stdin or stdout was a root of the capability graph, so revoking the spawner's end did not reach it, and no pipe end could be revoked at all. `SYS_PIPE`'s two ends now carry `REVOKE`, the child's end is derived from the spawner's (with `READ` or `WRITE` alone), and a revoke takes the ends it removed out of the pipe's counts before it returns, so the peer sees EOF or EPIPE at once. A pipe read or write now finds its end and moves the bytes under one lock, so a revoke cannot free the pipe between the two (S3, S134; LIMITATIONS 1.14). (#558)
+- Any program a person ran could read the command lines they typed afterwards, and the console's password owner was a task id. Keyboard input is now a capability: `init` mints it, the shell lends a copy to the program it runs in the foreground and takes it back when that program ends, and `console_server` serves input through nothing else (S93; LIMITATIONS 2.9b). The kernel's own console paths, `SYS_WRITE` to fd 1, `SYS_READ` from fd 0 and `SYS_GET_PASS`, asked for no capability, so any task could draw on or read the console whenever no console server owned it; they now ask for the console's capabilities (S135; LIMITATIONS 1.6). (#559)
+- A new limitation is recorded: a revocation cannot reach a copy derived through a task that has died, so a program still running when its shell dies keeps the keyboard it was lent (LIMITATIONS 1.33). (#559)
 
 ### Added
 
+- `make smoke-console-pass` now witnesses both halves: input refused to a client's stdout capability, an input capability lent to a child and gone once taken back, and the kernel's console reads and writes refused without a capability, with four control arms. `captest` asks `SYS_READ` fd 0 and `SYS_GET_PASS` without a capability, so `SYS_GET_PASS` is covered for the first time. (#559)
 - `make smoke-pipe-revoke-child` spawns stages wired to pipe ends, revokes the ends and checks the stages lost theirs, a forked child's revoke spared the original, and no pipe was left allocated; two control arms (the child's end as a root, the removed ends left counted) run beside it in the `smoke-pipe` CI job. A Kani proof shows a revoke counts exactly the pipe ends it removes, with four arms. (#558)
 
 ### Fixed

@@ -558,6 +558,13 @@ static inline int sys_console_owned(void) {
                                   * the capability in it is                    */
 #define CAPSLOT_NOTIFY     11    /* CAP_NOTIFICATION: fs-ready rendezvous      */
 #define CAPSLOT_FS_LISTEN  12    /* CAP_ENDPOINT: fs service listen (server)   */
+#define CAPSLOT_CONSOLE_IN 13    /* CAP_ENDPOINT: console service, TOKENED with
+                                  * CON_TOKEN_INPUT -- the authority to read
+                                  * the keyboard (S93). init gives the shell
+                                  * one; the shell lends a derived copy to the
+                                  * program it runs in the foreground and
+                                  * revokes it when that program has ended.
+                                  * A ring-3 convention the kernel never names. */
 #define CAPSLOT_KERNEL_LOG 16    /* CAP_KERNEL_LOG:  SYS_DMESG                 */
 #define CAPSLOT_BOOT_MODULE 17   /* CAP_BOOT_MODULE: boot-module read surface  */
 #define CAPSLOT_DEBUG      19    /* CAP_DEBUG:       observation only          */

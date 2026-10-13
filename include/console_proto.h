@@ -111,28 +111,46 @@
  * smoke-* workload that never reaches a login prompt -- prints nothing BUT a
  * boot log. Serving any input request has the same effect, as a backstop: a
  * console someone is typing at is a terminal whether or not anyone said so. */
-/* WHICH TASK MAY READ A PASSWORD FROM THIS CONSOLE (S93).
+/* WHO MAY READ FROM THIS CONSOLE (S93; LIMITATIONS 2.9b closed 2026-10-13).
  *
- * `len` carries the task id. Sent once by `init`, immediately before it resumes
- * the shell -- the moment at which init is the only ring-3 task in the system
- * holding a console client capability, so nothing can get in first.
+ * Input is a capability: the console's endpoint, TOKENED with CON_TOKEN_INPUT.
+ * The server serves GETLINE, GETPASS and READ_RAW only to a request sent through
+ * such a capability, and answers SYS_ERR_PERM, WITHOUT READING, to any other --
+ * the half that matters, because a server that read the line and then declined
+ * to return it would have taken the keystrokes out of the reader's hands. The
+ * token comes from the capability the request was sent through, attested by the
+ * kernel (SYS_IPC_INVOKER), never from the message.
  *
- * THE RULE IS "UNSET, OR THE OWNER". An owner that has not been set yet may be
- * set by anybody, which is the bootstrap; once set, only the current owner may
- * change it. That makes the boot-time registration safe without the server
- * having to recognise init, which it cannot do and should not learn to: knowing
- * "this sender is init" would be authority by identity, and the thing being
- * registered is precisely the authority.
+ * WHERE IT COMES FROM. A tokened capability can be minted only from an
+ * untokened one held with MINT, and the only such console capability is the
+ * input minter the kernel gives init alone (root[23]: send, mint, grant,
+ * revoke, and no receive right). So init mints the one input capability, lends
+ * it to the shell (and to the installer, which runs before the shell exists),
+ * and nothing else can make one: console_server's listen capability carries no
+ * MINT, and the send-only copy every program holds as its stdout carries no
+ * token and no MINT either.
  *
- * GETPASS is the only operation this gates, and that is the whole of the
- * finding rather than a first slice of it. Every task the shell spawns inherits
- * a send-only console capability -- that is how `ls` gets a stdout -- so before
- * this, any program a person ran could sit in a loop on CON_OP_GETPASS and
- * receive the password typed at the next `sudo` prompt. GETLINE and READ_RAW
- * stay open because `cat` with no arguments and the installer's own TUI read
- * through them; closing those needs a foreground-ownership model, which is
- * recorded in docs/LIMITATIONS.md rather than half-built here. */
-#define CON_OP_SET_INPUT_OWNER 8  /* len = task id -> rc = 0, or SYS_ERR_PERM */
+ * HOW A PROGRAM GETS IT: LENT FOR AS LONG AS IT RUNS. The shell mints a derived
+ * copy, grants it to the program it runs in the foreground, and revokes that
+ * copy once the program has been waited for, which sweeps every copy descended
+ * from it (console_lend in userspace/conlend.c). So the program reading a line
+ * is the one the person is looking at, and a program that has ended, or anything
+ * it handed the capability to, reads nothing more.
+ *
+ * Until 2026-10-13 the rule was a task id registered by init (op 8, retired; the
+ * number is not reused): it was authority by identity, it gated only GETPASS,
+ * and every program could read every command line typed through GETLINE and
+ * READ_RAW. */
+#define CON_TOKEN_INPUT 1u
+
+/* (no payload) -> rc = 0 if the capability this request came through carries
+ * console input, SYS_ERR_PERM otherwise. Reads nothing and changes nothing: it
+ * asks the server the same question the three input operations ask, so a
+ * program can tell whether it holds the terminal's input (as isatty() and
+ * tcgetpgrp() answer on POSIX), and a test can witness the rule in both
+ * directions without a person at the keyboard. It confers nothing: the answer
+ * is about the asker's own capability. */
+#define CON_OP_INPUT_HELD 11
 
 #define CON_OP_BOOT_DONE 7  /* (no payload) -> rc = 0; stop stamping: the session begins */
 

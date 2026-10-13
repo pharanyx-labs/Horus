@@ -40,8 +40,11 @@ only in the caller's own cspace and refuses a capability of the wrong type (S55,
   gate everyone passes is no gate (S28, S79, checked by `tools/check_dispatch_gates.py`).
 - A compile-time assertion ties the table's size to the highest number, so a syscall cannot be
   added without its entry.
-- Two paths need no capability, by decision: writing to the console (fd 1) and reading a console
-  line (fd 0), which refuses once `console_server` owns the hardware (`docs/LIMITATIONS.md` 1.6).
+- The console is no exception. Writing to it (fd 1) needs the console endpoint every program is
+  given as its stdout, or `CAP_CONSOLE` with WRITE; reading from it (fd 0, `SYS_GET_LINE`,
+  `SYS_GET_PASS`) needs `CAP_CONSOLE` with READ, which only `init` and the shell hold (S135). A
+  program reads the keyboard through `console_server` with the input capability the shell lends it
+  (S93).
 
 **IPC names objects by cspace slot.** `ipc_ep_from_slot` and `ipc_notif_from_slot` check the
 capability's type, the right for the direction (`READ` to receive, `WRITE` to send) and its
@@ -116,7 +119,7 @@ shipped kernel.
 |---|---|---|---|---|
 | 0 | `SYS_YIELD` |  | Give up the CPU | none (self) |
 | 2 | `SYS_EXIT` |  | End the calling task | none (self) |
-| 3 | `SYS_GET_LINE` | `buf` | Read a line from the console | `CAP_CONSOLE` at `CAPSLOT_CONSOLE` + READ, type-tested in the handler; no fallback |
+| 3 | `SYS_GET_LINE` | `buf` | Read a line from the console | `CAP_CONSOLE` at `CAPSLOT_CONSOLE` + READ, type-tested in the handler; no fallback. `SYS_ERR_BUSY` while `console_server` owns the console |
 | 4 | `SYS_CAP_MINT` | `(dest_slot, src_slot, rights)` | Copy within the CALLER's own cspace with rights masked to (rights & the source's); refuses a pipe end (S133) | holding the source; `cap_mint` masks to `rights & src->rights` |
 | 5 | `SYS_CLEAR` |  | Retired: cleared the kernel's VGA text buffer (only with `LEGACY_SYSCALLS_PRESENT`) | absent from the shipped kernel |
 | 6 | `SYS_SYSINFO` |  | Retired: returned a version string (only with `LEGACY_SYSCALLS_PRESENT`) | absent from the shipped kernel |
@@ -124,8 +127,8 @@ shipped kernel.
 | 8 | `SYS_CAP_TRANSFER` | `(dest_slot, src_slot)` | Copy a capability within the caller's own cspace, keeping its rights; refuses a pipe end (S133) | holding the source capability |
 | 9 | `SYS_CAP_MOVE` | `(dest_slot, src_slot)` | Move a capability to another slot of the caller's own cspace; refuses a pipe end (S133) | holding the source capability |
 | 10 | `SYS_SBRK` | `increment` | Grow or shrink the caller's heap by an increment | none (own heap, bounds-checked) |
-| 11 | `SYS_WRITE` | `fd`, `buf`, `len` | Write to the console (fd 1) | console: none (fd 1 = ambient). `klog`: `CAP_KERNEL_LOG` + WRITE |
-| 12 | `SYS_READ` | `fd`, `buf`, `len` | Read a console line (fd 0) | none for fd 0, which refuses once `console_server` owns the console |
+| 11 | `SYS_WRITE` | `fd`, `buf`, `len` | Write to the console (fd 1) | console: the console endpoint (`CON_EP_REQ`) + WRITE at `CAPSLOT_CONSOLE_EP`, or `CAP_CONSOLE` + WRITE at `CAPSLOT_CONSOLE` (S135). `klog`: `CAP_KERNEL_LOG` + WRITE (S23). Neither: `SYS_ERR_PERM` |
+| 12 | `SYS_READ` | `fd`, `buf`, `len` | Read a console line (fd 0) | `CAP_CONSOLE` at `CAPSLOT_CONSOLE` + READ (S135); `SYS_ERR_BUSY` while `console_server` owns the console |
 | 13 | `SYS_OPEN` | `name`, `flags` | Retired: opened an in-kernel ramfs file (only with `RAMFS_SLOT3_GATE`) | absent from the shipped kernel |
 | 14 | `SYS_EXEC_LEGACY` |  | Retired: created a task from a program image (only with `LEGACY_SYSCALLS_PRESENT`) | absent from the shipped kernel |
 | 15 | `SYS_RAMFS_CREATE` |  | Retired: created an in-kernel ramfs file (only with `RAMFS_SLOT3_GATE`) | absent from the shipped kernel |
@@ -145,7 +148,7 @@ shipped kernel.
 | 29 | `SYS_GETUID` |  | The caller's uid | none (self) |
 | 30 | `SYS_AUTH` | `user`, `pass` | Log in | none (self-authorising) |
 | 31 | `SYS_SUDO` | `pass` | Re-authenticate and spawn the armed image as uid 0 | re-authentication in handler and the armed image must be one this task armed (S21) |
-| 32 | `SYS_GET_PASS` | `buf` | Read a password from the console (kernel path, before the console server) | none |
+| 32 | `SYS_GET_PASS` | `buf` | Read a password from the console (kernel path, before the console server) | `CAP_CONSOLE` at `CAPSLOT_CONSOLE` + READ (S135); `SYS_ERR_BUSY` while `console_server` owns the console |
 | 33 | `SYS_USERADD` | `user`, `pass` | Create an account | `CAP_USER` at `CAPSLOT_USER` |
 | 34 | `SYS_USERDEL` | `user` | Delete an account | `CAP_USER` at `CAPSLOT_USER` |
 | 35 | `SYS_PASSWD` | `user`, `pass` | Set an account's password | `CAP_USER`, or the target is the caller's own uid |

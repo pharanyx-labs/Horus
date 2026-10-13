@@ -1059,9 +1059,16 @@ void h_get_pass(struct interrupt_frame64 *r) {
     uint32_t max_len = r->rcx;
     if (max_len > 127) max_len = 127;
 
+    /* The console's read capability first (S135, LIMITATIONS 1.6): until
+     * 2026-10-13 this asked for nothing, so any task could read the next
+     * password typed whenever no console server owned the UART -- early boot, or
+     * after the server died. See console_read_held in syscall.c. */
+    if (!console_read_held()) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+
     /* Fail closed while a ring-3 console server owns the serial UART (see
-     * h_get_line): the kernel must not race the owner reading a typed password. */
-    if (console_hw_owned()) { r->rax = (uint32_t)-1; return; }
+     * h_get_line): the kernel must not race the owner reading a typed password.
+     * SYS_ERR_BUSY, told apart from the capability refusal above. */
+    if (console_hw_owned()) { r->rax = (uint32_t)SYS_ERR_BUSY; return; }
 
     char line[128];
     uint32_t len = 0;

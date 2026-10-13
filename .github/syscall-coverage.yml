@@ -144,8 +144,11 @@ covered:
   #
   # Two of the fourteen are NOT promoted, and they are why this was measured
   # rather than argued:
-  #   - SYS_GET_PASS blocks. See its entry below; the first draft of the probe
-  #     hung the gate.
+  #   - SYS_GET_PASS blocked: it asked for no authority, so its only early
+  #     return was console_hw_owned(), and the first draft of the probe hung
+  #     the gate. It was promoted on 2026-10-13 for the right reason: it asks
+  #     for CAP_CONSOLE with READ now (S135, LIMITATIONS 1.6), so a task
+  #     holding none is refused at once. See its entry below SYS_GET_LINE.
   #   - SYS_SHLIB_INFO would enter a body that returns at its first line,
   #     because shlib_active() was false in every tracked image. Entering it
   #     would raise this file's number without running the gate the syscall is
@@ -296,6 +299,12 @@ covered:
   # task holding no CAP_CONSOLE is REFUSED still runs the handler body. A
   # syscall can be covered by a test that proves it says no.
   - SYS_GET_LINE
+  # Promoted 2026-10-13, for SYS_GET_LINE's reason exactly: it asks for the same
+  # capability now. Until then it asked for none, blocked in console_getc() in
+  # the captest image, and sat in `uncovered` as the example of a body no refusal
+  # could reach. captest section 13 asks it, and SYS_READ's fd 0, without
+  # CAP_CONSOLE and requires SYS_ERR_PERM.
+  - SYS_GET_PASS
   # Promoted 2026-08-28, and for exactly SYS_GET_LINE's reason one syscall over.
   # The device syscalls lost their fixed dispatch-table slots when a CAP_IO_DEVICE
   # started naming a device (S43), so the central gate admits every caller and the
@@ -478,13 +487,13 @@ uncovered:
   # tools/check_dispatch_gates.py is what fails the build now.
   SYS_EXEC_NAMED: >-
     MEASURED 2026-08-20: entered by a PROC_SELFTEST=1 boot, which is not a tracked arm. Also gated by make smoke-forkexec since 2026-08-28 (S42). A probe would replace captest's image
-  # (3) SC_NONE, AND STILL NOT PROBEABLE. The sweep of 2026-08-30 promoted twelve
-  # SC_NONE handlers on the argument that the dispatch table admits everyone, so
-  # a refusal test runs the body. These two are where that argument stops, and
-  # they are recorded at length because the argument is otherwise a licence to
-  # promote anything.
-  SYS_GET_PASS: >-
-    SC_NONE, so the body IS reachable by any caller -- and it BLOCKS. Its only early return is console_hw_owned(), and no ring-3 server owns the UART in the captest image, so the call reaches console_getc() and waits for a keystroke. MEASURED 2026-08-30, by writing the probe: it hung smoke-captest for the full 40s timeout with no marker. This is the difference from SYS_GET_LINE, which looks identical from the dispatch table and is `covered`: h_get_line tests CAP_CONSOLE inside the handler and refuses captest outright, where h_read's fd 0 branch and this one test no authority at all. Covering it needs a workload where a console server owns the UART, or a non-blocking branch this syscall does not have
+  # (3) SC_NONE, AND NOT PROBEABLE: empty since 2026-10-13. The sweep of
+  # 2026-08-30 promoted twelve SC_NONE handlers on the argument that the dispatch
+  # table admits everyone, so a refusal test runs the body, and two stopped that
+  # argument: SYS_SHLIB_INFO, whose body was compiled out of every tracked image
+  # (promoted 2026-09-25 when the modules workload shipped the library), and
+  # SYS_GET_PASS, which blocked because it asked for no authority (promoted
+  # 2026-10-13 when it began to). Both are in `covered` with their reasons.
   # (4) NEW ON 2026-09-25 AND NOT YET USED BY A TRACKED CLIENT. Two of the four
   # capability-token syscalls (docs/design/filesystem.md §5.1) are covered since
   # phase 1b step 1, when init and fs_server began using them. These two move to

@@ -217,9 +217,9 @@ window.HORUS_SEARCH = [
 "k": 3
 },
 {
-"t": "1.8Nine system calls have no test that runs them",
+"t": "1.8Seven system calls have no test that runs them",
 "p": "Limitations",
-"u": "limitations.html#1-8nine-system-calls-have-no-test-that-runs-them",
+"u": "limitations.html#1-8seven-system-calls-have-no-test-that-runs-them",
 "k": 3
 },
 {
@@ -229,9 +229,9 @@ window.HORUS_SEARCH = [
 "k": 3
 },
 {
-"t": "1.6The console is the one ambient authority",
+"t": "1.33A revocation cannot reach through a task that has died",
 "p": "Limitations",
-"u": "limitations.html#1-6the-console-is-the-one-ambient-authority",
+"u": "limitations.html#1-33a-revocation-cannot-reach-through-a-task-that-has-died",
 "k": 3
 },
 {

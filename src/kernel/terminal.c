@@ -1322,12 +1322,13 @@ static int replaying_klog = 0;
  * Every line it accepts is timestamped -- see the block above kmsg_stamp() for
  * why the stamp is applied here rather than by the caller, and why it must be
  * emitted without releasing the lock. */
-static void print_core(const char* str, int to_klog) {
+static void print_core(const char* str, int to_klog, int to_console) {
     uint64_t flags = console_lock_acquire();
     /* Snapshot ownership once for the whole call so a line is emitted whole to one
      * sink, never split across a handoff. `drive_hw` false => a ring-3 server owns
-     * the console; we only record to klog and leave the wire to it. */
-    int drive_hw = (console_owner_task == 0);
+     * the console, or the ring-3 writer holds no console capability (1.6); we only
+     * record to klog, if that was proved, and leave the wire alone. */
+    int drive_hw = to_console && (console_owner_task == 0);
 
     while (*str) {
         char c = *str;
@@ -1357,7 +1358,7 @@ static void print_core(const char* str, int to_klog) {
 
 /* Kernel-origin output. Always recorded to klog: every caller is ring 0, and the
  * log is the kernel's own record of what it did. */
-void print(const char* str) { print_core(str, 1); }
+void print(const char* str) { print_core(str, 1, 1); }
 
 /* Ring-3-origin output (the SYS_WRITE fd 1 path, and nothing else).
  *
@@ -1371,10 +1372,16 @@ void print(const char* str) { print_core(str, 1); }
  * primitive against the log a maintainer reads after an incident, and the read
  * side of the same ring had required CAP_KERNEL_LOG since [I-1].
  *
- * The console still takes the bytes either way. Writing to the terminal is not
- * the authority in question and is deliberately ungated (docs/SYSCALLS.md);
- * writing to the KERNEL'S LOG is, and it fails closed. */
-void print_from_user(const char* str, int may_klog) { print_core(str, may_klog != 0); }
+ * `may_console` is the other half, and it is an authority too (LIMITATIONS 1.6,
+ * closed 2026-10-13): the caller's proved capability to write to the console,
+ * resolved in h_write() the same way. Until then the terminal took the bytes
+ * from any task at all, which is how a task could paint over the screen while
+ * no console server owned it (early boot, or after the server died). Each sink
+ * now takes the bytes only from a writer that holds its capability, and
+ * h_write() refuses a writer that holds neither. */
+void print_from_user(const char* str, int may_console, int may_klog) {
+    print_core(str, may_klog != 0, may_console != 0);
+}
 
 void println(const char* str) { print(str); print("\n"); }
 

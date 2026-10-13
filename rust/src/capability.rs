@@ -2228,13 +2228,17 @@ mod tests {
         let (mut ca, mut cb, mut cc) = (2u32, 1u32, 2u32);
         let mut tally = [0u32; 8];
         unsafe {
+            // One pointer per cspace, used for both the target and the sweep: a
+            // second `as_mut_ptr` would invalidate the first (Miri, stacked
+            // borrows), as the kernel's one array per task never does.
+            let (pa, pb, pc) = (a.as_mut_ptr(), b.as_mut_ptr(), c.as_mut_ptr());
             let spaces = [
-                CSpaceDesc { caps: a.as_mut_ptr(), size: 16, caps_in_use: addr_of_mut!(ca) },
-                CSpaceDesc { caps: b.as_mut_ptr(), size: 16, caps_in_use: addr_of_mut!(cb) },
-                CSpaceDesc { caps: c.as_mut_ptr(), size: 16, caps_in_use: addr_of_mut!(cc) },
+                CSpaceDesc { caps: pa, size: 16, caps_in_use: addr_of_mut!(ca) },
+                CSpaceDesc { caps: pb, size: 16, caps_in_use: addr_of_mut!(cb) },
+                CSpaceDesc { caps: pc, size: 16, caps_in_use: addr_of_mut!(cc) },
             ];
             assert!(rust_cap_revoke_global(
-                a.as_mut_ptr(), 16, 15, addr_of_mut!(ca), spaces.as_ptr(), 3,
+                pa, 16, 15, addr_of_mut!(ca), spaces.as_ptr(), 3,
                 core::ptr::null_mut(), tally.as_mut_ptr(), 8));
         }
         assert_eq!(a[15].typ, CAP_NULL);
@@ -2259,12 +2263,13 @@ mod tests {
         let (mut ca, mut cb) = (1u32, 2u32);
         let mut tally = [0u32; 4];
         unsafe {
+            let (pa, pb) = (a.as_mut_ptr(), b.as_mut_ptr());
             let spaces = [
-                CSpaceDesc { caps: a.as_mut_ptr(), size: 16, caps_in_use: addr_of_mut!(ca) },
-                CSpaceDesc { caps: b.as_mut_ptr(), size: 16, caps_in_use: addr_of_mut!(cb) },
+                CSpaceDesc { caps: pa, size: 16, caps_in_use: addr_of_mut!(ca) },
+                CSpaceDesc { caps: pb, size: 16, caps_in_use: addr_of_mut!(cb) },
             ];
             assert!(rust_cap_revoke_global(
-                b.as_mut_ptr(), 16, 5, addr_of_mut!(cb), spaces.as_ptr(), 2,
+                pb, 16, 5, addr_of_mut!(cb), spaces.as_ptr(), 2,
                 core::ptr::null_mut(), tally.as_mut_ptr(), 4));
         }
         assert_eq!(a[5].typ, CAP_PIPE, "the ancestor end survives");

@@ -296,7 +296,8 @@ force-pushes and deletion blocked; every third-party action pinned to a full com
 least-privilege tokens per workflow; every CI job classified as gating or exempt with a written
 reason in `.github/ci-gating.yml`, and a ruleset that requires the `gates` aggregator (which needs
 every gating job) and CodeQL, with branches kept up to date before merging; a daily audit of the
-live ruleset by a read-only GitHub App; a reproducible `kernel.elf`; CodeQL, Semgrep, Trivy,
+live ruleset by a read-only GitHub App, which also fails on a workflow GitHub injects that
+`.github/injected-workflows.yml` does not record; a reproducible `kernel.elf`; CodeQL, Semgrep, Trivy,
 gitleaks and cargo-audit, the last two failing the build on a finding; a CycloneDX SBOM per run;
 Dependabot on actions and Cargo; secret scanning with push protection; fuzzing at the FFI
 boundary; bounded Kani proofs and Miri on every pull request.
@@ -309,7 +310,6 @@ boundary; bounded Kani proofs and Miri on every pull request.
 - **No build provenance or signed artifacts** (**[I-9]**, `docs/LIMITATIONS.md` 5.3). The ISO
   rebuilds to the same bytes from its tag with the same tool versions (S17), which each release
   lists, so a release can be checked by rebuilding it.
-- **Workflows GitHub injects are invisible to the tree's checks** (`docs/LIMITATIONS.md` 5.7).
 
 ---
 

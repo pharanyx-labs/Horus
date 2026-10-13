@@ -529,16 +529,6 @@ the whole of the formal methods here. The kernel as a whole is not verified, no 
 links a specification to the code, and no TLA+ specification exists (two unsound ones were removed on
 2026-09-10).
 
-### 5.7 CI workflows GitHub injects are outside the tree
-
-`tools/check_ci_gating.py` sees the workflows in `.github/workflows/`. GitHub can also inject
-**dynamic** workflows that no commit contains. One did: a GitHub Advanced Security reviewer backed
-by Copilot, which failed on every run from 2026-09-19 because the account has no Copilot licence,
-could not read any C, header or Rust file, and made network requests to a third party from an
-unpinned runtime. The project decided on 2026-09-20 not to use it. It has not run since
-2026-09-20 11:34Z; which setting stopped it was not isolated. Nothing in the tree would notice if
-another appeared.
-
 ---
 
 ## 6. Completeness estimate
@@ -640,4 +630,5 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 5.3d | | Six checkers examined nothing and passed when their parser went silent | 2026-09-10, #368, #369, #375 |
 | 5.3e | | A stale scheduler claim under the switch-commit injection, once in 200 boots: not seen again in 199 boots that finished the whole workload, 2,344 refused switches between them, pinned and unpinned | 2026-10-09, #522, #526 |
 | 5.6 | [M-3] | Governance files were in the wrong place | 2026-07-27, #107 |
+| 5.7 | | GitHub can inject workflows no commit contains, and one ran from 2026-09-19 to 2026-09-20; the scheduled `ruleset-audit` now fails on any workflow GitHub runs that is neither in the tree nor recorded in `.github/injected-workflows.yml`, and on a recorded-as-stopped one running again | 2026-10-13, #567 |
 | 5.8 | | Two Kani proofs ran only in a manual job that could not fail and had never run | 2026-10-06, #485 |

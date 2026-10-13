@@ -58,6 +58,11 @@ jobs:
     name: The live ruleset still matches the checked-in classification ([C-6])
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # `actions: read` is for the injected-workflow check below, and is the whole
+    # of what it needs: the list of the repository's workflows and their runs.
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
@@ -97,13 +102,34 @@ jobs:
       # reimplementation: a second copy of this comparison would be one more thing
       # that can drift from the classification it is meant to police.
       - name: Compare the live ruleset against .github/ci-gating.yml
+        id: ruleset
         env:
           GH_TOKEN: ${{ steps.apptoken.outputs.token }}
         run: tools/check_ci_gating.py --check-ruleset
 
+      # docs/LIMITATIONS.md 5.7: a workflow GitHub runs here that no commit
+      # contains. Every one must be a file in the tree or recorded, with its
+      # reason, in .github/injected-workflows.yml, and one recorded as stopped
+      # must not have run again. Read with this job's own token, not the App's:
+      # the list needs `actions: read`, which the App was never given.
+      - name: Every workflow GitHub runs here is in the tree or recorded
+        id: injected
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: tools/check_injected_workflows.py
+
+      - name: Explain an injected-workflow failure
+        if: ${{ failure() && steps.injected.outcome == 'failure' }}
+        run: |
+          echo "::error::GitHub runs a workflow on this repository that the tree does not account for."
+          echo "A workflow under dynamic/ is injected by GitHub with no file in the tree."
+          echo "Accepting one is a decision: record it, with its reason, in"
+          echo ".github/injected-workflows.yml; otherwise turn it off in the repository settings."
+
       # A drifted ruleset is not a transient failure and must not read like one.
       - name: Explain a failure
-        if: failure()
+        if: ${{ failure() && steps.ruleset.outcome == 'failure' }}
         run: |
           echo "::error::The live ruleset no longer matches .github/ci-gating.yml."
           echo "Either a required context was removed/renamed in the GitHub UI, or the"

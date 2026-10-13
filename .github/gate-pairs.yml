@@ -277,6 +277,9 @@ control_arms:
   smoke-net-msix-table-control: smoke-net
   smoke-nvme-iommu-control: smoke-nvme
   smoke-nvme-write-control: smoke-nvme
+  smoke-sdhcid-addr-control: smoke-sdhcid
+  smoke-sdhcid-write-control: smoke-sdhcid
+  smoke-sdhcid-csd-control: smoke-sdhcid
   smoke-newlib-dotdot-control: smoke-newlib
   smoke-newlib-walk-control: smoke-newlib
   smoke-nzcow-arena-control: smoke-nzcow
@@ -495,6 +498,8 @@ gates:
   - smoke-net
   - smoke-net-intx
   - smoke-nvme
+  - smoke-sdhcid
+  - smoke-sdhcid-emmc
   - smoke-newlib
   - smoke-newlib-tamper
   - smoke-notify

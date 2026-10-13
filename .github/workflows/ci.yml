@@ -3706,7 +3706,7 @@ jobs:
         run: make smoke-devcap-irq-control
 
   net:
-    name: "Drivers in ring 3 (network, NVMe), each holding one device capability"
+    name: "Drivers in ring 3 (network, NVMe, SD/eMMC), each holding one device capability"
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -3820,6 +3820,18 @@ jobs:
       # was never written.
       - name: Control arm — a write to the wrong block that the guest cannot see
         run: make smoke-nvme-write-control
+      # docs/design/ring3-storage.md step 1: the SD/eMMC driver in ring 3, beside
+      # nvmed. Its whole authority is one device capability: PIO, so no untyped
+      # and no bus mastering. Two cards either side of the CSD version boundary;
+      # each boot checked in the guest, on the image, and against its size.
+      - name: A ring-3 SD/eMMC driver reads and writes two cards, checked on the host
+        run: make smoke-sdhcid
+      - name: Control arm — swapped addressing units, caught at block 100
+        run: make smoke-sdhcid-addr-control
+      - name: Control arm — a write to the wrong sectors that the guest cannot see
+        run: make smoke-sdhcid-write-control
+      - name: Control arm — a CSD decoded at the specification's bit numbers
+        run: make smoke-sdhcid-csd-control
 
   shared-objects:
     name: "Every shared object is one the kernel's loader would accept"

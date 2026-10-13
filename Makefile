@@ -122,6 +122,7 @@ DEFECT_FLAGS = \
 	IO_DEVICE_CAP_UNCHECKED NET_NO_BUSMASTER NET_NO_DECODE \
 	DMA_ADDR_FRAME_ONLY NET_IOMMU_NO_MAP IRQ_NO_MASK_ON_FIRE IRQ_ACK_UNGATED \
 	NVME_IOMMU_NO_MAP NVME_WRITE_WRONG_LBA \
+	SDHCID_ADDR_INVERTED SDHCID_WRITE_WRONG_LBA SDHCID_CSD_SPEC_BITS \
 	IRQ_FORCE_PIC POLL_NOTIFY_UNGATED MSI_VECTOR_FROM_USER MSIX_TABLE_MAPPABLE \
 	SHLIB_TEXT_WRITABLE SHLIB_DATA_SHARED SHLIB_DATA_UNINITIALISED \
 	SHLIB_BASE_FIXED SHLIB_INFO_UNGATED SHLIB_INFO_TYPE_ONLY \
@@ -2655,8 +2656,38 @@ NVME_IOMMU_NO_MAP ?= 0
 # block 1. Its own read-back matches, because it reads the block it wrote, so
 # the guest prints NVMETEST: PASS; only the host-side check of the image can see
 # that block 1 was never written. The arm for that check:
-# `make smoke-nvme-write-control` requires tools/nvme_scratch.py verify to fail.
+# `make smoke-nvme-write-control` requires tools/block_scratch.py verify nvme to fail.
 NVME_WRITE_WRONG_LBA ?= 0
+
+# SDHCID_SELFTEST=1 embeds sdhcid and, at boot, spawns it holding exactly ONE
+# capability: a CAP_IO_DEVICE naming the machine's SD host controller (class
+# 08:05). No untyped: it moves data by PIO, so it never gives the controller
+# memory, and it enables memory decode without bus mastering. The ring-0 probe is
+# compiled out of this build so the controller has one driver. It brings the card
+# up, reads block 0 and block 100 and, only on a card whose block 0 carries the
+# scratch signature, writes, flushes and reads back sectors 8-15 in one command
+# (SDHCIDTEST: PASS). docs/design/ring3-storage.md step 1; `make smoke-sdhcid`
+# supplies the scratch card and checks the write and the capacity on the host.
+SDHCID_SELFTEST ?= 0
+ifeq ($(SDHCID_SELFTEST),1)
+CFLAGS  += -DSDHCID_SELFTEST
+ASFLAGS += -DSDHCID_SELFTEST
+SDHCID_SELFTEST_DEP = userspace/sdhcid.bin
+endif
+
+# sdhcid's three control arms, one for each thing smoke-sdhcid claims.
+# SDHCID_ADDR_INVERTED=1 swaps the addressing units (a block number where the
+# card takes a byte offset, and the reverse). Block 0 still reads, because 0 is
+# 0 in both; block 100 does not hold the image's nonce, and the driver fails on
+# it (SDHCIDTEST: FAIL block100). SDHCID_WRITE_WRONG_LBA=1 writes and reads back
+# sectors 24-31 instead of 8-15: the guest's own read-back matches, so only the
+# host's check of the image can see it. SDHCID_CSD_SPEC_BITS=1 reads the CSD's
+# capacity fields at the specification's bit numbers, eight bits from where a
+# controller stores them: a plausible capacity, and a wrong one, caught only by
+# comparing it with the size of the image.
+SDHCID_ADDR_INVERTED ?= 0
+SDHCID_WRITE_WRONG_LBA ?= 0
+SDHCID_CSD_SPEC_BITS ?= 0
 
 # NET_NO_BUSMASTER=1 has netd enable I/O decode but NOT bus mastering.
 #
@@ -4790,7 +4821,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin userspace/installer.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(NVME_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(TOKEN_SELFTEST_DEP) $(FSCAP_SELFTEST_DEP) $(FSCAPPOSIX_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(BLOCKPROBE_DEP) $(EXECPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(PIPEREVOKE_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin userspace/installer.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(NVME_SELFTEST_DEP) $(SDHCID_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(TOKEN_SELFTEST_DEP) $(FSCAP_SELFTEST_DEP) $(FSCAPPOSIX_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(BLOCKPROBE_DEP) $(EXECPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(PIPEREVOKE_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -5594,6 +5625,15 @@ endif
 ifeq ($(NVME_WRITE_WRONG_LBA),1)
 USERSPACE_CFLAGS += -DNVME_WRITE_WRONG_LBA
 endif
+ifeq ($(SDHCID_ADDR_INVERTED),1)
+USERSPACE_CFLAGS += -DSDHCID_ADDR_INVERTED
+endif
+ifeq ($(SDHCID_WRITE_WRONG_LBA),1)
+USERSPACE_CFLAGS += -DSDHCID_WRITE_WRONG_LBA
+endif
+ifeq ($(SDHCID_CSD_SPEC_BITS),1)
+USERSPACE_CFLAGS += -DSDHCID_CSD_SPEC_BITS
+endif
 # Both halves of the S47 arm: the kernel must honour the extra argument AND the
 # driver must supply one, so the flag reaches both compilations.
 ifeq ($(MSI_VECTOR_FROM_USER),1)
@@ -6287,7 +6327,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.stripped.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/replyprobe.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/piperevoketest.bin userspace/piperevokee.bin userspace/coninee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/nvmed.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin userspace/sealprobe.bin userspace/dynstale.bin userspace/dyncanary.bin userspace/hello_dyn.bin userspace/swaphog.bin userspace/fscaptest.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/replyprobe.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/piperevoketest.bin userspace/piperevokee.bin userspace/coninee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/nvmed.bin userspace/sdhcid.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin userspace/sealprobe.bin userspace/dynstale.bin userspace/dyncanary.bin userspace/hello_dyn.bin userspace/swaphog.bin userspace/fscaptest.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -10005,7 +10045,7 @@ smoke-net-iommu-control:
 # CAP_IO_DEVICE naming the controller and one untyped region. It identifies the
 # controller and its namespace, reads block 0 of a scratch image, and writes,
 # flushes and reads back block 1. Two witnesses, because one is not enough: the
-# guest's NVMETEST: PASS says the read-back matched, and tools/nvme_scratch.py
+# guest's NVMETEST: PASS says the read-back matched, and tools/block_scratch.py
 # reads the image after QEMU exits and says the write reached the medium, as a
 # block derived from a nonce only block 0 of THIS image carried. Booted on q35
 # with VT-d, so every page the controller touches is one nvmed mapped for it.
@@ -10015,11 +10055,11 @@ smoke-nvme:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory NVME_SELFTEST=1
 	@$(MAKE) --no-print-directory NVME_SELFTEST=1 horus.iso
-	@python3 tools/nvme_scratch.py make $(NVME_SCRATCH)
+	@python3 tools/block_scratch.py make nvme $(NVME_SCRATCH)
 	@SMOKE_NVME=$(NVME_SCRATCH) SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='NVMETEST: PASS' \
 		FAIL_MARKER='NVMETEST: FAIL' tools/smoke_test.sh horus.iso
-	@python3 tools/nvme_scratch.py verify $(NVME_SCRATCH)
+	@python3 tools/block_scratch.py verify nvme $(NVME_SCRATCH)
 
 # S45 on a storage controller. The data buffer is the one frame withheld from
 # the device's address space; the queues are mapped, so the controller comes up,
@@ -10034,7 +10074,7 @@ smoke-nvme-iommu-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory NVME_SELFTEST=1 NVME_IOMMU_NO_MAP=1
 	@$(MAKE) --no-print-directory NVME_SELFTEST=1 NVME_IOMMU_NO_MAP=1 horus.iso
-	@python3 tools/nvme_scratch.py make $(NVME_SCRATCH)
+	@python3 tools/block_scratch.py make nvme $(NVME_SCRATCH)
 	@SMOKE_NVME=$(NVME_SCRATCH) SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='NVMETEST: FAIL read-block0' tools/smoke_test.sh horus.iso
 
@@ -10047,14 +10087,87 @@ smoke-nvme-write-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory NVME_SELFTEST=1 NVME_WRITE_WRONG_LBA=1
 	@$(MAKE) --no-print-directory NVME_SELFTEST=1 NVME_WRITE_WRONG_LBA=1 horus.iso
-	@python3 tools/nvme_scratch.py make $(NVME_SCRATCH)
+	@python3 tools/block_scratch.py make nvme $(NVME_SCRATCH)
 	@SMOKE_NVME=$(NVME_SCRATCH) SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='NVMETEST: PASS' \
 		FAIL_MARKER='NVMETEST: FAIL' tools/smoke_test.sh horus.iso
-	@out=$$(python3 tools/nvme_scratch.py verify $(NVME_SCRATCH)); rc=$$?; echo "$$out"; \
+	@out=$$(python3 tools/block_scratch.py verify nvme $(NVME_SCRATCH)); rc=$$?; echo "$$out"; \
 		if [ $$rc -eq 0 ]; then echo "[nvme-write] CONTROL FAIL - the host check passed a write to the wrong block"; exit 1; fi; \
 		case "$$out" in *"FAIL block 1 is still empty"*) ;; *) echo "[nvme-write] CONTROL FAIL - unexpected verdict"; exit 1;; esac
 	@echo "[nvme-write] CONTROL PASS - the guest passed its own read-back and the host saw block 1 unwritten"
+
+# docs/design/ring3-storage.md step 1: the SD/eMMC driver in ring 3. sdhcid's
+# whole authority is one CAP_IO_DEVICE naming the host controller: no untyped and
+# no bus mastering, because it moves data by PIO. Two cards, on either side of
+# the CSD version boundary, because they are two different decoders and two
+# addressing modes: 64 MiB is a standard-capacity card (CSD v1, byte offsets),
+# 4 GiB a high-capacity one (CSD v2, block numbers). Each boot is checked three
+# ways by tools/sdhcid_gate.sh: the guest's verdict, the written sectors on the
+# image, and the decoded capacity against the image's size. Booted on q35 with
+# VT-d, so a controller that tried to DMA would reach nothing.
+.PHONY: smoke-sdhcid
+smoke-sdhcid:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SDHCID_SELFTEST=1
+	@$(MAKE) --no-print-directory SDHCID_SELFTEST=1 horus.iso
+	@tools/sdhcid_gate.sh horus.iso card 64
+	@tools/sdhcid_gate.sh horus.iso card 4096
+
+# The addressing arm. With the units swapped, block 0 still reads (0 is 0 in
+# both) and block 100 does not hold the image's nonce, so the guest must fail ON
+# BLOCK 100: an arm that died earlier, before the card came up, would prove
+# nothing about addressing. Run on the 4 GiB card, where a block number read as a
+# byte offset lands a long way off.
+.PHONY: smoke-sdhcid-addr-control
+smoke-sdhcid-addr-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SDHCID_SELFTEST=1 SDHCID_ADDR_INVERTED=1
+	@$(MAKE) --no-print-directory SDHCID_SELFTEST=1 SDHCID_ADDR_INVERTED=1 horus.iso
+	@out=$$(tools/sdhcid_gate.sh horus.iso card 4096 2>&1); rc=$$?; echo "$$out" | tail -15; \
+		if [ $$rc -eq 0 ]; then echo "[sdhcid-addr] CONTROL FAIL - swapped addressing units passed the gate"; exit 1; fi; \
+		case "$$out" in *"SDHCIDTEST: FAIL block100-not-this-image"*) ;; *) echo "[sdhcid-addr] CONTROL FAIL - it went red, but not on block 100"; exit 1;; esac
+	@rm -rf .sdhcid-evidence-card-4096
+	@echo "[sdhcid-addr] CONTROL PASS - block 0 read, block 100 did not hold this image's nonce"
+
+# The host-side witness's arm. sdhcid writes and reads back sectors 24-31, so
+# the guest must PASS (an arm failing in the guest would prove nothing about the
+# host check), and the image must then fail, naming sector 8 as still empty.
+.PHONY: smoke-sdhcid-write-control
+smoke-sdhcid-write-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SDHCID_SELFTEST=1 SDHCID_WRITE_WRONG_LBA=1
+	@$(MAKE) --no-print-directory SDHCID_SELFTEST=1 SDHCID_WRITE_WRONG_LBA=1 horus.iso
+	@out=$$(tools/sdhcid_gate.sh horus.iso card 64 2>&1); rc=$$?; echo "$$out" | tail -15; \
+		if [ $$rc -eq 0 ]; then echo "[sdhcid-write] CONTROL FAIL - the host check passed a write to the wrong sectors"; exit 1; fi; \
+		case "$$out" in *"FAIL block 8 is still empty"*) ;; *) echo "[sdhcid-write] CONTROL FAIL - unexpected verdict"; exit 1;; esac
+	@rm -rf .sdhcid-evidence-card-64
+	@echo "[sdhcid-write] CONTROL PASS - the guest passed its own read-back and the host saw sector 8 unwritten"
+
+# The capacity arm. The CSD read at the specification's bit numbers gives a
+# capacity that looks like a card's and is not this one's. The guest may still
+# pass; the comparison with the image's size must not, and must be what fails.
+.PHONY: smoke-sdhcid-csd-control
+smoke-sdhcid-csd-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SDHCID_SELFTEST=1 SDHCID_CSD_SPEC_BITS=1
+	@$(MAKE) --no-print-directory SDHCID_SELFTEST=1 SDHCID_CSD_SPEC_BITS=1 horus.iso
+	@out=$$(tools/sdhcid_gate.sh horus.iso card 4096 2>&1); rc=$$?; echo "$$out" | tail -15; \
+		if [ $$rc -eq 0 ]; then echo "[sdhcid-csd] CONTROL FAIL - the shifted CSD decode reported the card's own capacity"; exit 1; fi; \
+		case "$$out" in *"is not the card's own"*) ;; *) echo "[sdhcid-csd] CONTROL FAIL - it went red, but not on the capacity"; exit 1;; esac
+	@rm -rf .sdhcid-evidence-card-4096
+	@echo "[sdhcid-csd] CONTROL PASS - a plausible wrong capacity is caught"
+
+# The same driver on an eMMC device behind a host shaped like the IdeaPad's, the
+# machine this exists for: CMD1, the extended CSD for the capacity, and a 1.8 V
+# host. LOCAL ONLY, listed in .github/gate-exceptions.yml: it needs a QEMU with an
+# `emmc` device, which CI's does not have, and it fails, never skips, without one.
+# 64 GiB sparse, the laptop's size.
+.PHONY: smoke-sdhcid-emmc
+smoke-sdhcid-emmc:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SDHCID_SELFTEST=1
+	@$(MAKE) --no-print-directory SDHCID_SELFTEST=1 horus.iso
+	@tools/sdhcid_gate.sh horus.iso emmc 65536
 
 # Control arm 1 of 2: no decode bits at all, so the device stops answering its own
 # I/O BAR. The arm for SYS_DEVICE_ENABLE -- it writes the one configuration-space

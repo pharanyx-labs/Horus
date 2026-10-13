@@ -22,7 +22,7 @@
  * WHAT THIS MILESTONE DOES. Finds the register file, resets and enables the
  * controller, asks it to IDENTIFY itself and its first namespace, builds one I/O
  * queue pair, and reads block 0. If, and only if, block 0 carries the scratch
- * signature the test harness writes (tools/nvme_scratch.py), it then writes
+ * signature the test harness writes (tools/block_scratch.py), it then writes
  * block 1, flushes, and reads it back. A disk without the signature is never
  * written: the gate needs a write, and a real machine's disk must never get one
  * from a self-test. That is the fail-closed shape for data.
@@ -167,7 +167,7 @@ struct nvme_cqe {
 #define QDEPTH    16u
 #define IO_QID    1u
 
-/* The scratch disk's layout; tools/nvme_scratch.py writes and checks the same.
+/* The scratch disk's layout; tools/block_scratch.py writes and checks the same.
  * Block 0 carries SCRATCH_MAGIC then a 16-byte nonce the harness picked; the
  * driver writes block WRITE_LBA as WRITTEN_MAGIC, the nonce, and a pattern
  * derived from it. The host reads the image after QEMU exits, so the write is

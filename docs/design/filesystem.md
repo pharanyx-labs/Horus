@@ -106,7 +106,7 @@ that means something to a filesystem moves to ring 3.
 
 | Component | Ring | Holds | Does |
 |---|---|---|---|
-| Kernel sealed-block service | 0 | `disk_key` and the keys derived from it; the nonce counter; the TPM anchor | Seals a block to a physical address and returns its nonce and tag; opens a block given its address, nonce and tag; commits a new root with a transaction number that only goes up; verifies the root at unlock |
+| Kernel sealed-block service | 0 | `disk_key` and the keys derived from it; the nonce counter; the TPM anchor | Seals a block to a physical address and returns its ciphertext, nonce and tag; opens a block's ciphertext given its address, nonce and tag; seals a new root with a transaction number that only goes up; verifies the root at unlock. Does no disk I/O |
 | `fs_server` | 3 | A volume capability (seal, open, commit) and the receive end of its endpoint | The whole format: the tree, directories, extents, the allocator, copy on write, snapshots, xattrs. Answers single-component requests on capabilities the kernel attests |
 | `fs_scrub` | 3 | A **read-only** volume capability | Walks the tree and opens every block, so latent corruption is found before it is needed. Cannot write |
 | `init` | 3 | The root directory capability, minted at unlock | Evaluates the policy (§6) and hands every other task only the subtrees the policy names |
@@ -122,16 +122,27 @@ Three calls replace `SYS_FS_INODE_ALLOC`, `SYS_FS_INODE_FREE`, `SYS_FBLOCK_READ`
 `SYS_FBLOCK_WRITE`, `SYS_FS_STAT`, `SYS_FS_SET_SIZE`, `SYS_FS_SET_META` and `SYS_FS_INODE_LINK`,
 each gated by a `CAP_VOLUME` capability whose rights say which calls it permits:
 
-- **Seal** `(vol, phys, buf, kind) -> (nonce, tag)`: the kernel chooses the nonce (§4.2), seals
-  `buf` with AAD `(volume id, phys, kind)`, writes the ciphertext to `phys`, and returns the nonce
-  and tag. The caller stores them in whatever points at the block. WRITE right.
-- **Open** `(vol, phys, nonce, tag, kind, buf)`: reads `phys`, verifies against the tag the
-  caller supplies, and decrypts into `buf`, or fails without writing a byte of `buf`. READ right.
-- **Commit** `(vol, root pointer, txg)`: writes the next superblock slot with the new root, and
-  refuses a `txg` that is not greater than the last committed one. The TPM anchor (S70) is bound
-  into what the superblock authenticates, exactly as `rollback_gen` is today. WRITE right.
+- **Seal** `(vol, phys, buf, kind) -> (ciphertext, nonce, tag)`: the kernel chooses the nonce
+  (§4.2), seals `buf` with AAD `(volume id, phys, kind)`, and returns the ciphertext, the nonce and
+  the tag. The caller writes the ciphertext to `phys` and stores the nonce and tag in whatever
+  points at the block. WRITE right.
+- **Open** `(vol, phys, ciphertext, nonce, tag, kind, buf)`: verifies the ciphertext the caller
+  read from `phys` against the tag the caller supplies, and decrypts into `buf`, or fails without
+  writing a byte of `buf`. READ right.
+- **Commit** `(vol, root pointer, txg)`: seals the next superblock with the new root and returns
+  it for the caller to write, and refuses a `txg` that is not greater than the last committed one.
+  The TPM anchor (S70) is bound into what the superblock authenticates, exactly as `rollback_gen`
+  is today. WRITE right.
 
-Unlock gives `fs_server` the committed root pointer and nothing else. The kernel never parses
+**The kernel does no disk I/O** (decided 2026-10-13, [`ring3-storage.md`](ring3-storage.md)). It
+never switches tasks mid-call, so it cannot wait on a ring-3 driver; with the bytes moved in ring
+3, the storage drivers leave ring 0 and every call above is a computation on buffers. `fs_server`
+reads and writes through a block driver's endpoint, and the driver, like `fs_server`, sees only
+ciphertext: a stale or forged block fails its tag, which comes from the authenticated parent
+pointer and never from the driver.
+
+Unlock takes the superblock `fs_server` read, verifies it, and gives `fs_server` the committed
+root pointer and nothing else. The kernel never parses
 anything below the root, so a malformed tree is a ring-3 fault in one server, not a kernel
 parser bug.
 

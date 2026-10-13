@@ -332,7 +332,7 @@ fi
 # under SMOKE_IOMMU=1 the driver's mappings are load-bearing, as netd's are. The
 # image is written by the guest, so it is the caller's scratch file, never a
 # disk anything else reads; cache=writethrough so a flushed write is on the file
-# when QEMU exits, which is what tools/nvme_scratch.py verify reads.
+# when QEMU exits, which is what tools/block_scratch.py verify nvme reads.
 NVME_ARG=""
 if [ -n "${SMOKE_NVME:-}" ]; then
     if [ ! -f "$SMOKE_NVME" ]; then
@@ -340,6 +340,36 @@ if [ -n "${SMOKE_NVME:-}" ]; then
         exit 1
     fi
     NVME_ARG="-drive file=$SMOKE_NVME,format=raw,if=none,id=smokenvme0,cache=writethrough -device nvme,serial=HORUS0001,drive=smokenvme0"
+fi
+
+# SMOKE_SD=<image> attaches the image as the card of an emulated SD host
+# controller, for the ring-3 SD/eMMC driver gate (make smoke-sdhcid). The guest
+# writes it, so it is the caller's scratch file, never a disk anything else reads.
+# SMOKE_SD_KIND picks the card:
+#   card (default) an `sd-card` behind QEMU's default SDHCI 2.00 host;
+#   emmc           an `emmc` device behind an SDHCI 3.00 host shaped like the
+#                  IdeaPad's (200 MHz base clock, 1.8 V only; capareg as in
+#                  tools/sdhci_v3_test.sh). Needs a QEMU that has the device
+#                  (QEMU 11 does; CI's does not), and FAILS without one.
+# cache=writethrough so a flushed write is on the file when QEMU exits, which is
+# what tools/block_scratch.py verify sd reads.
+SD_ARG=""
+if [ -n "${SMOKE_SD:-}" ]; then
+    if [ ! -f "$SMOKE_SD" ]; then
+        echo "SMOKE FAIL: SMOKE_SD '$SMOKE_SD' not found" >&2
+        exit 1
+    fi
+    SD_DRIVE="-drive file=$SMOKE_SD,format=raw,if=none,id=smokesd0,cache=writethrough"
+    case "${SMOKE_SD_KIND:-card}" in
+    card) SD_ARG="-device sdhci-pci,id=smokesdhc $SD_DRIVE -device sd-card,drive=smokesd0,bus=sd-bus" ;;
+    emmc)
+        if ! qemu-system-x86_64 -device help 2>/dev/null | grep -q '"emmc"'; then
+            echo "SMOKE FAIL: this QEMU has no emmc device; an eMMC gate cannot run here" >&2
+            exit 1
+        fi
+        SD_ARG="-device sdhci-pci,id=smokesdhc,sd-spec-version=3,capareg=0x146ec881 $SD_DRIVE -device emmc,drive=smokesd0,bus=sd-bus" ;;
+    *) echo "SMOKE FAIL: SMOKE_SD_KIND must be card or emmc" >&2; exit 1 ;;
+    esac
 fi
 
 # SWTPM_REQUIRED=1 turns "swtpm is not installed" from a silent skip into an
@@ -371,7 +401,7 @@ qemu-system-x86_64 \
     -display none -no-reboot -no-shutdown \
     -device isa-debug-exit,iobase=0x604,iosize=0x04 \
     -serial file:"$LOG" -serial none -serial file:"$KDIAG" $NET_ARG \
-    $MACHINE_ARG $DRIVE_ARG $NVME_ARG $SMP_ARG $TRACE_ARG $QMP_ARG $TPM_ARG $BOOT_ARG \
+    $MACHINE_ARG $DRIVE_ARG $NVME_ARG $SD_ARG $SMP_ARG $TRACE_ARG $QMP_ARG $TPM_ARG $BOOT_ARG \
     -cdrom "$ISO" &
 QEMU_PID=$!
 

@@ -318,6 +318,16 @@ completions (NVMe interrupts are MSI-X, which is not enabled). It writes only a 
 carries the test signature. It runs in the `NVME_SELFTEST` build; the kernel's storage does not
 read through it yet.
 
+**`sdhcid`** (`userspace/sdhcid.c`) is the SD/eMMC driver in ring 3, the first step of moving the
+storage drivers out of ring 0 ([`design/ring3-storage.md`](design/ring3-storage.md)). Its whole
+authority is one device capability: it moves data by PIO, so it holds no untyped memory and
+enables the controller's memory decode without bus mastering, and the controller can start no DMA
+at all. It brings up an SD card or an eMMC device, reads, and writes only a card whose block 0
+carries the test signature. It runs in the `SDHCID_SELFTEST` build, where the ring-0 probe is
+compiled out; elsewhere `sdhci.c` still serves the kernel's storage. The kernel never waits on a
+ring-3 task mid-call, so the drivers leave ring 0 when the kernel stops doing disk I/O: the
+sealed-block calls of filesystem phase 2 take and return ciphertext, and `fs_server` moves it.
+
 ### The shared library
 
 `src/kernel/shlib.c` loads the shared libc (`lib/libc.so`, a verified boot module) once, relocates

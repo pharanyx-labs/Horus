@@ -3703,11 +3703,12 @@ void notify_selftest(void);
  * neither forge into nor evict from the kernel message ring via SYS_WRITE. */
 void klog_forge_selftest(void);
 #endif
-#if defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(KLOG_FORGE_SELFTEST) || defined(DEVCAP_SELFTEST) || defined(NET_SELFTEST) || defined(NVME_SELFTEST) || defined(SHLIB_SELFTEST) || defined(SHLIBC_SELFTEST) || defined(TUI_SELFTEST)
+#if defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(KLOG_FORGE_SELFTEST) || defined(DEVCAP_SELFTEST) || defined(NET_SELFTEST) || defined(NVME_SELFTEST) || defined(SDHCID_SELFTEST) || defined(SHLIB_SELFTEST) || defined(SHLIBC_SELFTEST) || defined(TUI_SELFTEST)
 void mapphys_selftest(void);
 void devcap_selftest(void);
 void net_selftest(void);
 void nvme_selftest(void);
+void sdhcid_selftest(void);
 void shlib_selftest(void);
 void shlibc_selftest(void);
 /* Must match SLOT_SHLIB_FIRST in userspace/shlibtest.c and shlibpeer.c. */

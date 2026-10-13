@@ -121,8 +121,10 @@ only, because CI's QEMU has no `emmc` device.
 
 ## 8. Found on the way
 
-A device whose register BAR is smaller than a page (QEMU's SD host controller has 256 bytes) is
-mapped by `SYS_MAP_PHYS` a whole page at a time, and the check covers only the length asked for.
-If firmware put another device's registers in the same page, the driver would reach them. QEMU's
-firmware gives each small BAR its own page, so no gate here can show it. It is recorded in
-`LIMITATIONS.md` and is fixed before `sdhcid` serves a real disk (step 2).
+A device whose register BAR is smaller than a page (QEMU's SD host controller has 256 bytes) was
+mapped by `SYS_MAP_PHYS` a whole page at a time while the check covered only the length asked for,
+so firmware that put another device's registers in the same page would have let the driver reach
+them. Closed (LIMITATIONS 1.34, #562): the page is checked whole, refused if another device
+declares any part of it or if it lies in the chipset window. QEMU's firmware gives each small BAR
+its own page, so `make smoke-devpage` runs the decision against a table built with the neighbours
+a real machine may have.

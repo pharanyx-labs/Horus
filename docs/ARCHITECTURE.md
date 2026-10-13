@@ -282,7 +282,10 @@ a breadth-first walk of the PCI bus tree through every bridge (each bus scanned 
 followed only downwards, so a cyclic topology costs nothing), plus one non-enumerable
 **platform** entry for the legacy console hardware (PIT, PS/2 controller, COM1, the VGA registers
 and framebuffer). Each entry declares its frames, port ranges and interrupt lines, and the device
-syscalls check every request against the entry the caller's capability names (S43). Ring 3 never
+syscalls check every request against the entry the caller's capability names (S43). A register
+page is checked whole, because it is mapped whole: a page that a BAR smaller than a page shares
+with another device's registers, or that lies in the chipset window (I/O APIC, HPET, TPM, VT-d,
+local APIC), is refused. Ring 3 never
 names a bus address and never reaches configuration space. The table holds `IODEV_MAX` (64)
 entries; a device the walk misses or that does not fit is absent, so nothing can grant it. Index 0
 names nothing, so a zeroed field fails closed.

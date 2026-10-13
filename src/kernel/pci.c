@@ -627,6 +627,10 @@ static void pci_walk_tree(void) {
     }
 }
 
+#ifdef DEVPAGE_SELFTEST
+static void iodev_page_selftest(void);
+#endif
+
 void iodev_init(void) {
     for (uint32_t i = 0; i < IODEV_MAX; i++) iodev_table[i].present = 0;
     iodev_count = 0;
@@ -684,6 +688,9 @@ void iodev_init(void) {
     /* After the real scan, so the count above still describes what is
      * delegatable and this cannot be mistaken for part of it. */
     pci_scan_trace();
+#endif
+#ifdef DEVPAGE_SELFTEST
+    iodev_page_selftest();
 #endif
 }
 
@@ -752,7 +759,68 @@ int iodev_msix_blocks_page(const struct io_device *d, uint64_t paddr, uint64_t l
     return (paddr < tend) && (tstart < paddr + len);
 }
 
-int iodev_allows_mmio(const struct io_device *d, uint64_t paddr, uint64_t len) {
+/* The chipset's fixed window: the I/O APIC (0xFEC00000), the HPET, the TPM and
+ * Intel's VT-d units (0xFED00000 upward), and the local APIC and MSI address
+ * range (0xFEE00000). The kernel owns all of it, none of it is in the device
+ * table, and firmware assigns no BAR there. */
+#define IODEV_CHIPSET_BASE  0xFEC00000ULL
+#define IODEV_CHIPSET_END   0xFF000000ULL
+
+/* May a driver of `d` be handed the WHOLE page at `page`?
+ *
+ * WHY THE WHOLE PAGE, AND NOT THE LENGTH ASKED FOR (LIMITATIONS 1.34). The MMU
+ * maps 4 KiB, so SYS_MAP_PHYS hands a driver every byte of the page whatever
+ * length it asked for, and the containment test in iodev_allows_mmio_in only
+ * ever covered the asked-for bytes. A register BAR smaller than a page (QEMU's SD
+ * host controller has 256 bytes) therefore handed its driver the rest of the
+ * page, and firmware is free to put another device's registers there: a
+ * capability for one device reaching a second, which is S43's defect. QEMU's
+ * firmware gives each small BAR a page of its own, so no boot here could show
+ * it; it was found by reading this check while writing sdhcid (2026-10-13).
+ *
+ * THE RULE. A page wholly inside one of d's own regions is d's by its own
+ * declaration. Otherwise every byte of it that ANY OTHER device in `table`
+ * declares must be declared by d too, and the page must be outside the
+ * chipset window, which the kernel owns and the table does not list. The
+ * "declared by d too" is what keeps the one legitimate overlap legal: the
+ * platform device's framebuffer window is part of the display's BAR.
+ *
+ * Bytes no device declares are allowed: there is nothing at a decoded address
+ * no device claims, and refusing them would refuse every small BAR. `table` is
+ * a parameter so the boot self-test can hand it a neighbour QEMU never makes. */
+static int iodev_page_exclusive(const struct io_device *d, uint64_t page,
+                                const struct io_device *table, uint32_t n) {
+    const uint64_t pend = page + PAGE_SIZE;
+    if (pend < page) return 0;
+    for (uint32_t i = 0; i < d->n_mmio && i < IODEV_MAX_MMIO; i++) {
+        uint64_t b = d->mmio[i].base, e = b + d->mmio[i].len;
+        if (e >= b && b <= page && pend <= e) return 1;
+    }
+    if (page < IODEV_CHIPSET_END && pend > IODEV_CHIPSET_BASE) return 0;
+    for (uint32_t j = 0; j < n; j++) {
+        const struct io_device *o = &table[j];
+        if (o == d || !o->present) continue;
+        for (uint32_t r = 0; r < o->n_mmio && r < IODEV_MAX_MMIO; r++) {
+            uint64_t ob = o->mmio[r].base, oe = ob + o->mmio[r].len;
+            if (oe < ob) return 0;                       /* a wrapping region: refuse */
+            uint64_t a = ob > page ? ob : page, z = oe < pend ? oe : pend;
+            if (a >= z) continue;                        /* not in this page */
+            int covered = 0;
+            for (uint32_t q = 0; q < d->n_mmio && q < IODEV_MAX_MMIO && !covered; q++) {
+                uint64_t qb = d->mmio[q].base, qe = qb + d->mmio[q].len;
+                if (qe >= qb && qb <= a && z <= qe) covered = 1;
+            }
+            if (!covered) return 0;
+        }
+    }
+    return 1;
+}
+
+/* The whole decision SYS_MAP_PHYS makes, over a given device table. Separate
+ * from iodev_allows_mmio only so the boot self-test can run THIS function, arm
+ * and all, against a synthetic table. */
+static int iodev_allows_mmio_in(const struct io_device *d, uint64_t paddr, uint64_t len,
+                                const struct io_device *table, uint32_t n) {
     if (!d || len == 0) return 0;
     if (paddr + len < paddr) return 0;
 #ifndef MSIX_TABLE_MAPPABLE
@@ -761,13 +829,80 @@ int iodev_allows_mmio(const struct io_device *d, uint64_t paddr, uint64_t len) {
      * through a door S47 never covered. See make smoke-net-msix-table-control. */
     if (iodev_msix_blocks_page(d, paddr, len)) return 0;
 #endif
+    int inside = 0;
     for (uint32_t i = 0; i < d->n_mmio; i++) {
         uint64_t b = d->mmio[i].base, e = b + d->mmio[i].len;
         if (e < b) continue;
-        if (paddr >= b && paddr + len <= e) return 1;
+        if (paddr >= b && paddr + len <= e) { inside = 1; break; }
     }
-    return 0;
+    if (!inside) return 0;
+#ifdef DEVPAGE_UNCHECKED
+    /* Control arm -- never ship. The check as it stood before 2026-10-13: the
+     * asked-for bytes only, so a page a small BAR shares is handed over whole.
+     * See make smoke-devpage-control. */
+    (void)table; (void)n;
+    return 1;
+#else
+    return iodev_page_exclusive(d, paddr & ~(uint64_t)(PAGE_SIZE - 1), table, n);
+#endif
 }
+
+int iodev_allows_mmio(const struct io_device *d, uint64_t paddr, uint64_t len) {
+    return iodev_allows_mmio_in(d, paddr, len, iodev_table, IODEV_MAX);
+}
+
+#ifdef DEVPAGE_SELFTEST
+/* ---- DEVPAGE_SELFTEST: the page rule against neighbours QEMU never makes ----
+ *
+ * smoke-devpage. QEMU's firmware gives every small BAR its own page, so no real
+ * device on any gate's machine shares one, and a boot can only witness the rule
+ * against a table built for it. These are the cases, each run through
+ * iodev_allows_mmio_in, the function SYS_MAP_PHYS calls:
+ *
+ *   alone    a 256-byte BAR alone in its page             allowed (sdhcid's case)
+ *   packed   two 256-byte BARs in one page, either driver refused (LIMITATIONS 1.34)
+ *   chipset  a 256-byte BAR in the kernel's chipset window refused
+ *   overlap  a platform window inside a display's BAR      allowed, both ways
+ *
+ * DEVPAGE_UNCHECKED=1 restores the old check, and must fail on `packed`. */
+static void devpage_case(const char *name, int got, int want, int *ok) {
+    /* ONE WRITE per line: smoke-devpage-control asserts a whole line, and a
+     * marker built from several prints can be split by other output (LIMITATIONS
+     * 2.6a). Names are short literals, so the buffer cannot overrun; the bound
+     * is checked anyway. */
+    static const char pfx[] = "DEVPAGE_SELFTEST: ";
+    const char *sfx = (got == want) ? " ok\n" : " WRONG\n";
+    char line[80];
+    unsigned n = 0;
+    for (const char *c = pfx; *c && n < sizeof(line) - 1; c++) line[n++] = *c;
+    for (const char *c = name; *c && n < sizeof(line) - 1; c++) line[n++] = *c;
+    for (const char *c = sfx; *c && n < sizeof(line) - 1; c++) line[n++] = *c;
+    line[n] = 0;
+    print(line);
+    if (got != want) *ok = 0;
+}
+static void iodev_page_selftest(void) {
+    static struct io_device t[6];
+    for (unsigned i = 0; i < 6; i++) { t[i].present = 1; t[i].n_mmio = 1; }
+    t[0].mmio[0].base = 0xC0000000ULL; t[0].mmio[0].len = 0x100;    /* alone          */
+    t[1].mmio[0].base = 0xC0001000ULL; t[1].mmio[0].len = 0x100;    /* packed, first  */
+    t[2].mmio[0].base = 0xC0001100ULL; t[2].mmio[0].len = 0x100;    /* packed, second */
+    t[3].mmio[0].base = 0xFED80000ULL; t[3].mmio[0].len = 0x100;    /* chipset window */
+    t[4].mmio[0].base = 0xC0100000ULL; t[4].mmio[0].len = 0x100000; /* a display BAR  */
+    t[5].mmio[0].base = 0xC0100000ULL; t[5].mmio[0].len = 0x2000;   /* platform window in it */
+
+    int ok = 1;
+    devpage_case("alone",          iodev_allows_mmio_in(&t[0], 0xC0000000ULL, 0x100, t, 6), 1, &ok);
+    devpage_case("packed first",   iodev_allows_mmio_in(&t[1], 0xC0001000ULL, 0x100, t, 6), 0, &ok);
+    devpage_case("packed second",  iodev_allows_mmio_in(&t[2], 0xC0001000ULL, 0x100, t, 6), 0, &ok);
+    devpage_case("chipset",        iodev_allows_mmio_in(&t[3], 0xFED80000ULL, 0x100, t, 6), 0, &ok);
+    devpage_case("overlap display",  iodev_allows_mmio_in(&t[4], 0xC0101000ULL, PAGE_SIZE, t, 6), 1, &ok);
+    devpage_case("overlap platform", iodev_allows_mmio_in(&t[5], 0xC0101000ULL, PAGE_SIZE, t, 6), 1, &ok);
+    /* The containment test is unchanged and still first: bytes past the BAR. */
+    devpage_case("beyond the bar", iodev_allows_mmio_in(&t[0], 0xC0000000ULL, 0x200, t, 6), 0, &ok);
+    print(ok ? "DEVPAGE_SELFTEST: PASS\n" : "DEVPAGE_SELFTEST: FAIL\n");
+}
+#endif
 
 int iodev_allows_port(const struct io_device *d, uint16_t port) {
     if (!d) return 0;

@@ -146,22 +146,6 @@ Closing it means a task's death passing its capabilities' children to their gran
 revocation above still reaches them; that is a change to the derivation tree's rules (S3, S4) and
 is not made here.
 
-### 1.34 A device register page smaller than a page can reach a neighbour's registers **[HORUS-20261013-02]**
-
-`SYS_MAP_PHYS` maps a device's registers one 4 KiB page at a time, and checks that the length the
-caller asks for lies inside a region the device declares (`iodev_allows_mmio`). The page it maps
-is the whole page, whatever the length. A device whose register BAR is smaller than a page (QEMU's
-SD host controller has 256 bytes) therefore hands its driver the rest of that page, and if firmware
-put another device's registers there, the driver reaches them: S43's "reaches only that device"
-does not hold for that page.
-
-QEMU's firmware gives each small BAR its own page, so no gate here can show it; it was found by
-reading the check while writing `sdhcid`, the first ring-3 driver for such a device. Closing it
-means refusing a page that any other device's region overlaps, unless the caller's device declares
-that part too (the platform device and a display's BAR legitimately share the framebuffer). It is
-closed before `sdhcid` serves a real disk ([`design/ring3-storage.md`](design/ring3-storage.md)
-step 2); today `sdhcid` runs only in a self-test build.
-
 ## 2. Correctness
 
 ### 2.3 Only retyped kernel objects have a lifecycle
@@ -633,6 +617,7 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 1.28 | [HORUS-20261012-02] | A crafted program header offset wrapped the spawn path's premap bound (S84) | 2026-10-12, #551 |
 | 1.29 | [HORUS-20261012-03] | A forked or granted pipe end was not counted, so the pipe could be freed under its holder (S41, S133) | 2026-10-12, #553, #555 |
 | 1.32 | [HORUS-20261012-06] | A reply, and the sender identity a server authorises on, named a task slot, so a dead client's successor could receive both (S13, S13b) | 2026-10-12, #554 |
+| 1.34 | [HORUS-20261013-02] | A register BAR smaller than a page handed its driver the whole page, so a neighbour's registers in that page were reachable (S43) | 2026-10-13, #562 |
 | 2.0 | [C-3] | Spinlock interrupt state was global | 2026-08-13, #135 |
 | 2.1 | [I-2] | Heap syscalls truncated 64-bit arithmetic | 2026-08-13, #145 |
 | 2.2 | [I-5] | Endpoints were single-slot mailboxes | 2026-08-10, #120 |

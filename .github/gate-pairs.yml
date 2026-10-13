@@ -280,6 +280,7 @@ control_arms:
   smoke-sdhcid-addr-control: smoke-sdhcid
   smoke-sdhcid-write-control: smoke-sdhcid
   smoke-sdhcid-csd-control: smoke-sdhcid
+  smoke-devpage-control: smoke-devpage
   smoke-newlib-dotdot-control: smoke-newlib
   smoke-newlib-walk-control: smoke-newlib
   smoke-nzcow-arena-control: smoke-nzcow
@@ -500,6 +501,7 @@ gates:
   - smoke-nvme
   - smoke-sdhcid
   - smoke-sdhcid-emmc
+  - smoke-devpage
   - smoke-newlib
   - smoke-newlib-tamper
   - smoke-notify

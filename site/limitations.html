@@ -96,7 +96,6 @@
 <li><a href="#1-8seven-system-calls-have-no-test-that-runs-them">1.8Seven system calls have no test that runs them</a></li>
 <li><a href="#source-review-findings">1.30Findings from a source review</a></li>
 <li><a href="#1-33a-revocation-cannot-reach-through-a-task-that-has-died">1.33A revocation cannot reach through a task that has died</a></li>
-<li><a href="#1-34a-small-device-register-page-can-reach-a-neighbour">1.34A small device register page can reach a neighbour</a></li>
 <li><a href="#2-6cmost-gates-still-read-kernel-reports-off-a-shared-consol">2.6cMost gates still read kernel reports off a shared console</a></li>
 <li><a href="#2-9measured-boot-is-opt-in">2.9Measured boot is opt-in</a></li>
 <li><a href="#4a-programs-execute-right-is-advisory">4A program's execute right is advisory</a></li>
@@ -169,16 +168,6 @@
       a task dies its capabilities are emptied, so a copy whose parent was in that task is out
       of reach of any revocation above it. If the shell dies while a program it lent the
       keyboard to is still running, that program keeps reading until it ends.
-    </p>
-  </li>
-  <li>
-    <h3 id="1-34a-small-device-register-page-can-reach-a-neighbour"><span class="id">1.34</span>A small device register page can reach a neighbour</h3>
-    <p>
-      A driver maps its device's registers a whole page at a time, but the kernel checks only
-      the part it asked for. A device whose registers take less than a page hands its driver
-      the rest of the page, and if firmware put another device's registers there, the driver
-      reaches them. Emulators give each such device a page of its own, so no test here shows
-      it. It is fixed before the ring-3 SD/eMMC driver serves a real disk.
     </p>
   </li>
   <li>

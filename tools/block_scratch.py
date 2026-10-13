@@ -6,9 +6,15 @@ check of what the driver wrote to it.
     tools/block_scratch.py verify <kind> <image> [log]  # the written run holds what the
                                                         # driver derives from the nonce
 
-<kind> is `nvme` (userspace/nvmed.c, `make smoke-nvme`) or `sd`
-(userspace/sdhcid.c, `make smoke-sdhcid`). Each kind's layout must match its
-driver: the magics, NONCE_OFF, the run it writes, and the pattern loop.
+<kind> is `nvme` (userspace/nvmed.c, `make smoke-nvme`), `sd`
+(userspace/sdhcid.c, `make smoke-sdhcid`) or `blk` (userspace/blktest.c, `make
+smoke-blkproto`, through either driver). Each kind's layout must match what
+writes it: the magics, NONCE_OFF, the run it writes, and the pattern loop.
+
+THE BLK KIND'S RUN IS AT SECTOR 2048, the start of the extent blktest binds to
+its first client, who writes at ITS sector 0. A driver that took the client's
+sector as the device's would write sectors 0-7 instead, overwriting this image's
+block 0 and passing every check made in the guest; only this one sees it.
 
 WHY THE CHECK IS MADE HERE, OUTSIDE THE GUEST. A driver reads back the blocks it
 wrote and compares, but a driver that wrote to the wrong block, or whose write
@@ -51,6 +57,9 @@ KINDS = {
     "sd": dict(scratch=b"HORUS-SDHC-SCRATCH-V1\0", written=b"HORUS-SDHC-WRITTEN-V1\0",
                read_magic=b"HORUS-SDHC-BLOCK100-V1\0", read_lba=100,
                write_lba=8, write_count=8, default_mib=64),
+    # blktest's first client writes eight sectors at the start of its extent.
+    "blk": dict(scratch=b"HORUS-BLKP-SCRATCH-V1\0", written=b"HORUS-BLKP-WRITTEN-V1\0",
+                read_lba=None, write_lba=2048, write_count=8, default_mib=64),
 }
 
 
@@ -126,7 +135,7 @@ def main() -> int:
     a = sys.argv[1:]
     if len(a) < 3 or a[0] not in ("make", "verify") or a[1] not in KINDS:
         print(__doc__.splitlines()[0], file=sys.stderr)
-        print("usage: block_scratch.py make|verify nvme|sd <image> [MiB|log]", file=sys.stderr)
+        print("usage: block_scratch.py make|verify nvme|sd|blk <image> [MiB|log]", file=sys.stderr)
         return 2
     k = KINDS[a[1]]
     if a[0] == "make":

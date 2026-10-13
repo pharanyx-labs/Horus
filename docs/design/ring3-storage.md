@@ -44,7 +44,7 @@ The maintainer asked for the most secure route for a least-privilege kernel. It 
 | Step | What lands | What it needs |
 |---|---|---|
 | 1 | **`sdhcid`**, the SD/eMMC driver in ring 3, proved on its own in the `SDHCID_SELFTEST` build (`make smoke-sdhcid`). Nothing else changes | Done |
-| 2 | **The block-driver protocol** (section 5), served by `sdhcid` and `nvmed`, and **filesystem phase 2** with the amendment in section 4: `fs_server` moves ciphertext between the kernel's sealed-block calls and a driver | Roadmap 2.10 phase 2 |
+| 2 | **The block-driver protocol** (section 5), served by `sdhcid` and `nvmed`: done. Then the IDE driver in ring 3, and **filesystem phase 2** with the amendment in section 4: `fs_server` moves ciphertext between the kernel's sealed-block calls and a driver | Roadmap 2.10 phase 2 |
 | 3 | **Swap through a ring-3 driver** (section 6). Revises `swap.md` decision 4 | Step 2 |
 | 4 | **The cutover.** No kernel path does disk I/O; `sdhci.c`, `ata.c` and `ahci.c` are deleted, each replaced by its ring-3 driver and its gates moved onto it. The installer formats through the same protocol | Steps 2 and 3, and a full install on the IdeaPad (eMMC) and an NVMe machine |
 
@@ -71,24 +71,41 @@ trust the key gives, and remain so.
 
 ## 5. The block-driver protocol
 
-A driver answers on one endpoint. The data moves in a frame the client lends; no data travels in
-the message itself.
+Built (#563): [`include/blkproto.h`](../../include/blkproto.h) and its server half,
+`userspace/blkserve.c`, linked into `sdhcid` and `nvmed` alike, so every driver holds a client to
+the same rules. A driver answers on one endpoint; each request and reply is one message, and the
+sectors move in a frame, never in the message.
 
-| Request | Reply |
-|---|---|
-| `INFO` | the extent in 512-byte sectors and the transfer limit |
-| `READ (sector, count)` | the sectors, into the lent frame |
-| `WRITE (sector, count)` | done, from the lent frame |
-| `FLUSH` | done once everything accepted is on stable media (an SD card's DAT0 released, an NVMe flush completed) |
+| Request | From | Reply |
+|---|---|---|
+| `BIND (token, start, length, frame)` | the supervisor | done: that token now reaches that extent, through that frame |
+| `INFO` | a client | its extent's length in 512-byte sectors, and the transfer limit |
+| `READ (sector, count)` | a client | the sectors, into its frame |
+| `WRITE (sector, count)` | a client | done, from its frame |
+| `FLUSH` | a client | done once everything accepted is on stable media (an SD card's DAT0 released, an NVMe flush completed) |
 
-- **A client is given a range, not a disk.** The endpoint capability a client holds is badged with
-  a partition's extent, and the driver refuses any request outside it. `fs_server` gets the volume,
-  the swap path gets the swap partition, and only the installer gets the whole disk.
-- **Both ends check.** The driver bounds every request against the badge and the device's own
-  reported extent (S64). The client treats every reply as hostile: a short or malformed reply is
-  a failure.
-- **A dead or stalled driver fails closed.** A request not answered within its bound is an I/O
-  error to the client; `init` may restart the driver; nothing reads a block from anywhere else.
+- **Authority is the capability the request came through** (`SYS_IPC_INVOKER`), never the message.
+  The untokened capability is the supervisor's: minting a tokened one needs it, so only the task
+  that made the endpoint holds one, and it alone may bind. Every client holds a tokened, send-only
+  capability, and a token nobody bound reaches nothing. The supervisor is not a client.
+- **A client is given a range, not a disk.** Its sectors are relative to its extent's start, and a
+  transfer must lie wholly inside the extent, so it cannot name a sector it was not given. The
+  driver also bounds every transfer by the device's own extent (S64). In the installed system
+  `fs_server` will hold the volume, the swap path the swap partition, and only the installer the
+  whole disk.
+- **One frame per client.** The supervisor grants the driver each client's frame and names it in
+  that client's binding; a frame already bound is refused, so no two clients' data pass through
+  the same memory. `nvmed` copies between a client's frame and its own buffer, so a controller is
+  never given a client's memory.
+- **The driver's own authority is the endpoint's receive right**, the frames, and its device: it
+  cannot send on the endpoint or mint from it.
+- **A dead or stalled driver must fail closed at the client.** A client blocks in its call, so the
+  storage service that consumes this (filesystem phase 2) must bound its wait and treat no answer
+  as an I/O error, with `init` restarting the driver; nothing reads a block from anywhere else.
+
+`make smoke-blkproto` runs `blktest`, which plays the supervisor's part and then the clients',
+through both drivers, and the host checks the disk afterwards. `nvmed` serves only a namespace
+formatted with 512-byte blocks; a 4 KiB format is refused rather than translated.
 
 ## 6. Swap
 

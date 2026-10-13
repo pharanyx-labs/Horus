@@ -875,6 +875,17 @@ embedded_sdhcid_bin_start:
 embedded_sdhcid_bin_end:
 #endif
 
+#ifdef BLKPROTO_SELFTEST
+/* PIE blktest binary: the supervisor and clients of a ring-3 storage driver
+ * (docs/design/ring3-storage.md step 2, the block-driver protocol). */
+.align 16
+.global embedded_blktest_bin_start
+embedded_blktest_bin_start:
+.incbin "userspace/blktest.bin"
+.global embedded_blktest_bin_end
+embedded_blktest_bin_end:
+#endif
+
 #ifdef DEVCAP_SELFTEST
 /* PIE devcaptest binary: endowed with TWO device capabilities (the platform
  * console hardware and the PCI NIC), it proves each reaches its own device's

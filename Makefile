@@ -123,6 +123,7 @@ DEFECT_FLAGS = \
 	DMA_ADDR_FRAME_ONLY NET_IOMMU_NO_MAP IRQ_NO_MASK_ON_FIRE IRQ_ACK_UNGATED \
 	NVME_IOMMU_NO_MAP NVME_WRITE_WRONG_LBA \
 	SDHCID_ADDR_INVERTED SDHCID_WRITE_WRONG_LBA SDHCID_CSD_SPEC_BITS DEVPAGE_UNCHECKED \
+	BLK_NO_EXTENT_CHECK BLK_BIND_UNCHECKED BLK_ABSOLUTE_SECTORS BLK_FRAME_REUSE \
 	IRQ_FORCE_PIC POLL_NOTIFY_UNGATED MSI_VECTOR_FROM_USER MSIX_TABLE_MAPPABLE \
 	SHLIB_TEXT_WRITABLE SHLIB_DATA_SHARED SHLIB_DATA_UNINITIALISED \
 	SHLIB_BASE_FIXED SHLIB_INFO_UNGATED SHLIB_INFO_TYPE_ONLY \
@@ -2689,6 +2690,33 @@ SDHCID_ADDR_INVERTED ?= 0
 SDHCID_WRITE_WRONG_LBA ?= 0
 SDHCID_CSD_SPEC_BITS ?= 0
 
+# BLKPROTO=1, with SDHCID_SELFTEST=1 or NVME_SELFTEST=1, spawns the driver to
+# SERVE the block-driver protocol (include/blkproto.h, userspace/blkserve.c) and
+# blktest as its supervisor and clients, in place of the driver's own self-test.
+# blktest makes the endpoint and one frame per client from its untyped memory,
+# grants the driver the receive right and the frames, binds each client's token
+# to an extent, and checks every rule a client is held to (BLKTEST: PASS).
+# docs/design/ring3-storage.md step 2; `make smoke-blkproto` checks the write on
+# the host.
+BLKPROTO ?= 0
+ifeq ($(BLKPROTO),1)
+CFLAGS  += -DBLKPROTO_SELFTEST
+ASFLAGS += -DBLKPROTO_SELFTEST
+BLKPROTO_SELFTEST_DEP = userspace/blktest.bin
+endif
+
+# The protocol's four control arms, each in userspace/blkserve.c, one for each
+# rule blktest checks. BLK_NO_EXTENT_CHECK=1 serves a run that leaves the
+# client's extent; BLK_BIND_UNCHECKED=1 lets a tokened capability bind;
+# BLK_ABSOLUTE_SECTORS=1 takes a client's sector as the device's, ignoring its
+# extent's start, which no check in the guest can see and the host's check of
+# the image does; BLK_FRAME_REUSE=1 binds a second token to a frame already
+# bound, so two clients' data would pass through one page.
+BLK_NO_EXTENT_CHECK ?= 0
+BLK_BIND_UNCHECKED ?= 0
+BLK_ABSOLUTE_SECTORS ?= 0
+BLK_FRAME_REUSE ?= 0
+
 # NET_NO_BUSMASTER=1 has netd enable I/O decode but NOT bus mastering.
 #
 # NO GATE, DELIBERATELY, and the reason is a measurement: with the bit clear the
@@ -4838,7 +4866,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin userspace/installer.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(NVME_SELFTEST_DEP) $(SDHCID_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(TOKEN_SELFTEST_DEP) $(FSCAP_SELFTEST_DEP) $(FSCAPPOSIX_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(BLOCKPROBE_DEP) $(EXECPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(PIPEREVOKE_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin userspace/installer.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(NVME_SELFTEST_DEP) $(SDHCID_SELFTEST_DEP) $(BLKPROTO_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(TOKEN_SELFTEST_DEP) $(FSCAP_SELFTEST_DEP) $(FSCAPPOSIX_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(BLOCKPROBE_DEP) $(EXECPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(PIPEREVOKE_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -5651,6 +5679,18 @@ endif
 ifeq ($(SDHCID_CSD_SPEC_BITS),1)
 USERSPACE_CFLAGS += -DSDHCID_CSD_SPEC_BITS
 endif
+ifeq ($(BLK_NO_EXTENT_CHECK),1)
+USERSPACE_CFLAGS += -DBLK_NO_EXTENT_CHECK
+endif
+ifeq ($(BLK_BIND_UNCHECKED),1)
+USERSPACE_CFLAGS += -DBLK_BIND_UNCHECKED
+endif
+ifeq ($(BLK_ABSOLUTE_SECTORS),1)
+USERSPACE_CFLAGS += -DBLK_ABSOLUTE_SECTORS
+endif
+ifeq ($(BLK_FRAME_REUSE),1)
+USERSPACE_CFLAGS += -DBLK_FRAME_REUSE
+endif
 # Both halves of the S47 arm: the kernel must honour the extra argument AND the
 # driver must supply one, so the flag reaches both compilations.
 ifeq ($(MSI_VECTOR_FROM_USER),1)
@@ -5795,6 +5835,13 @@ $(LIBHORUS_LIB): $(LIBHORUS_OBJS)
 
 userspace/%.pie.elf: userspace/%.o $(MALLOC_OBJ) $(LIBHORUS_LIB) userspace/pie.ld
 	$(LD) -m elf_x86_64 -pie -T userspace/pie.ld -o $@ $< $(MALLOC_OBJ) $(LIBHORUS_LIB)
+
+# The ring-3 storage drivers carry the block-driver protocol's server half,
+# written once (userspace/blkserve.c) so every driver holds a client to the same
+# rules.
+BLKSERVE_DRIVERS = userspace/sdhcid.pie.elf userspace/nvmed.pie.elf
+$(BLKSERVE_DRIVERS): userspace/%.pie.elf: userspace/%.o userspace/blkserve.o $(MALLOC_OBJ) $(LIBHORUS_LIB) userspace/pie.ld
+	$(LD) -m elf_x86_64 -pie -T userspace/pie.ld -o $@ $< userspace/blkserve.o $(MALLOC_OBJ) $(LIBHORUS_LIB)
 
 # Adding a freestanding userspace program is one line:
 #
@@ -6344,7 +6391,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.stripped.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/replyprobe.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/piperevoketest.bin userspace/piperevokee.bin userspace/coninee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/nvmed.bin userspace/sdhcid.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin userspace/sealprobe.bin userspace/dynstale.bin userspace/dyncanary.bin userspace/hello_dyn.bin userspace/swaphog.bin userspace/fscaptest.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/replyprobe.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/piperevoketest.bin userspace/piperevokee.bin userspace/coninee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/nvmed.bin userspace/sdhcid.bin userspace/blktest.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin userspace/sealprobe.bin userspace/dynstale.bin userspace/dyncanary.bin userspace/hello_dyn.bin userspace/swaphog.bin userspace/fscaptest.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -10211,6 +10258,77 @@ smoke-devpage-control:
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='DEVPAGE_SELFTEST: packed first WRONG' tools/smoke_test.sh horus.iso
 	@echo "[devpage] CONTROL PASS - the old check hands a page two devices share to one of their drivers"
+
+# docs/design/ring3-storage.md step 2: the block-driver protocol. blktest plays
+# init's part, as supervisor of a ring-3 storage driver: it makes the endpoint
+# and one frame per client, grants the driver the receive right and the frames,
+# binds each client's token to an extent, then acts as those clients through
+# tokened capabilities and checks each rule (BLKTEST: PASS). The server half is
+# one file, userspace/blkserve.c, linked into both drivers, and the gate runs it
+# through both: sdhcid on an SD card and nvmed on an NVMe namespace under VT-d.
+# tools/blkproto_gate.sh then reads the disk on the host: the client's write must
+# be at its extent's start, sector 2048.
+.PHONY: smoke-blkproto
+smoke-blkproto:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SDHCID_SELFTEST=1 BLKPROTO=1
+	@$(MAKE) --no-print-directory SDHCID_SELFTEST=1 BLKPROTO=1 horus.iso
+	@tools/blkproto_gate.sh horus.iso sd
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory NVME_SELFTEST=1 BLKPROTO=1
+	@$(MAKE) --no-print-directory NVME_SELFTEST=1 BLKPROTO=1 horus.iso
+	@tools/blkproto_gate.sh horus.iso nvme
+
+# The four arms, one per rule, each through sdhcid: the rule is blkserve's, the
+# same file in both drivers. Each must fail on ITS rule, not merely fail.
+
+.PHONY: smoke-blkproto-extent-control
+smoke-blkproto-extent-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SDHCID_SELFTEST=1 BLKPROTO=1 BLK_NO_EXTENT_CHECK=1
+	@$(MAKE) --no-print-directory SDHCID_SELFTEST=1 BLKPROTO=1 BLK_NO_EXTENT_CHECK=1 horus.iso
+	@out=$$(tools/blkproto_gate.sh horus.iso sd 2>&1); rc=$$?; echo "$$out" | tail -15; \
+		if [ $$rc -eq 0 ]; then echo "[blkproto-extent] CONTROL FAIL - BLK_NO_EXTENT_CHECK passed the gate"; exit 1; fi; \
+		case "$$out" in *"BLKTEST: FAIL read-outside-extent-served"*) ;; *) echo "[blkproto-extent] CONTROL FAIL - it went red, but not on the extent"; exit 1;; esac
+	@rm -rf .blkproto-evidence-sd
+	@echo "[blkproto-extent] CONTROL PASS - caught on the extent"
+
+.PHONY: smoke-blkproto-bind-control
+smoke-blkproto-bind-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SDHCID_SELFTEST=1 BLKPROTO=1 BLK_BIND_UNCHECKED=1
+	@$(MAKE) --no-print-directory SDHCID_SELFTEST=1 BLKPROTO=1 BLK_BIND_UNCHECKED=1 horus.iso
+	@out=$$(tools/blkproto_gate.sh horus.iso sd 2>&1); rc=$$?; echo "$$out" | tail -15; \
+		if [ $$rc -eq 0 ]; then echo "[blkproto-bind] CONTROL FAIL - BLK_BIND_UNCHECKED passed the gate"; exit 1; fi; \
+		case "$$out" in *"BLKTEST: FAIL client-could-bind"*) ;; *) echo "[blkproto-bind] CONTROL FAIL - it went red, but not on who may bind"; exit 1;; esac
+	@rm -rf .blkproto-evidence-sd
+	@echo "[blkproto-bind] CONTROL PASS - caught on who may bind"
+
+.PHONY: smoke-blkproto-frame-control
+smoke-blkproto-frame-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SDHCID_SELFTEST=1 BLKPROTO=1 BLK_FRAME_REUSE=1
+	@$(MAKE) --no-print-directory SDHCID_SELFTEST=1 BLKPROTO=1 BLK_FRAME_REUSE=1 horus.iso
+	@out=$$(tools/blkproto_gate.sh horus.iso sd 2>&1); rc=$$?; echo "$$out" | tail -15; \
+		if [ $$rc -eq 0 ]; then echo "[blkproto-frame] CONTROL FAIL - BLK_FRAME_REUSE passed the gate"; exit 1; fi; \
+		case "$$out" in *"BLKTEST: FAIL frame-bound-twice"*) ;; *) echo "[blkproto-frame] CONTROL FAIL - it went red, but not on one frame per client"; exit 1;; esac
+	@rm -rf .blkproto-evidence-sd
+	@echo "[blkproto-frame] CONTROL PASS - caught on one frame per client"
+
+# The host-side witness's arm. The client's sector is taken as the device's, so
+# its write lands on sectors 0-7: the guest passes (that is required here), and
+# the image must then fail, its block 0 overwritten.
+.PHONY: smoke-blkproto-absolute-control
+smoke-blkproto-absolute-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SDHCID_SELFTEST=1 BLKPROTO=1 BLK_ABSOLUTE_SECTORS=1
+	@$(MAKE) --no-print-directory SDHCID_SELFTEST=1 BLKPROTO=1 BLK_ABSOLUTE_SECTORS=1 horus.iso
+	@out=$$(tools/blkproto_gate.sh horus.iso sd 2>&1); rc=$$?; echo "$$out" | tail -15; \
+		if [ $$rc -eq 0 ]; then echo "[blkproto-absolute] CONTROL FAIL - the host check passed a write outside the extent"; exit 1; fi; \
+		case "$$out" in *"BLKTEST: PASS"*) ;; *) echo "[blkproto-absolute] CONTROL FAIL - the guest did not pass, so this proves nothing about the host check"; exit 1;; esac; \
+		case "$$out" in *"FAIL block 0 lost its signature"*) ;; *) echo "[blkproto-absolute] CONTROL FAIL - unexpected verdict"; exit 1;; esac
+	@rm -rf .blkproto-evidence-sd
+	@echo "[blkproto-absolute] CONTROL PASS - the guest passed and the host saw block 0 overwritten"
 
 # Control arm 1 of 2: no decode bits at all, so the device stops answering its own
 # I/O BAR. The arm for SYS_DEVICE_ENABLE -- it writes the one configuration-space

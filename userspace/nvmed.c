@@ -1,4 +1,6 @@
 #include "syscall.h"
+#include "blkproto.h"
+#include "blkserve.h"
 
 /*
  * nvmed -- an NVMe driver in ring 3, holding one device capability.
@@ -302,18 +304,56 @@ static int submit_and_wait(struct queue *q, struct nvme_sqe *cmd, unsigned *out_
 
 static void cmd_clear(struct nvme_sqe *c) { zero(c, sizeof(*c)); }
 
-/* An I/O command on one block. The buffer is one page and the block size is
- * checked to fit it, so PRP1 alone describes the transfer and PRP2 stays 0. */
-static int block_io(unsigned opcode, unsigned nsid, unsigned long long lba,
-                    unsigned long long dma) {
+/* An I/O command on `nblocks` consecutive blocks. The buffer is one page and
+ * every caller keeps nblocks * the block size within it, so PRP1 alone
+ * describes the transfer and PRP2 stays 0. */
+static int block_io_n(unsigned opcode, unsigned nsid, unsigned long long lba,
+                      unsigned long long dma, unsigned nblocks) {
     struct nvme_sqe c; cmd_clear(&c);
     c.cdw0  = opcode;
     c.nsid  = nsid;
     c.prp1  = dma;
     c.cdw10 = (unsigned)(lba & 0xFFFFFFFFu);
     c.cdw11 = (unsigned)(lba >> 32);
-    c.cdw12 = 0;                         /* number of blocks, 0-based: one */
+    c.cdw12 = nblocks - 1u;              /* number of blocks, 0-based */
     return submit_and_wait(&ioq, &c, 0);
+}
+static int block_io(unsigned opcode, unsigned nsid, unsigned long long lba,
+                    unsigned long long dma) {
+    return block_io_n(opcode, nsid, lba, dma, 1);
+}
+
+/* ---- the block-driver protocol's backend (userspace/blkserve.c) ---------- */
+/* The device moves data through nvmed's own buffer, which the IOMMU lets it
+ * reach, and never through a client's frame, which it has no mapping for: a
+ * client's memory is copied, never handed to the controller. */
+static unsigned g_nsid;
+static unsigned long long g_nsze;
+static unsigned char *g_buf;
+static unsigned long long g_buf_dma;
+
+static int be_check(uint64_t lba, unsigned count) {
+    if (count == 0 || count > BLK_FRAME_BYTES / 512u) return -1;
+    if (lba >= g_nsze || (unsigned long long)count > g_nsze - lba) return -1;
+    return 0;
+}
+static int be_read(uint64_t lba, void *buf, unsigned count) {
+    if (be_check(lba, count) != 0) return -1;
+    if (block_io_n(NVM_READ, g_nsid, lba, g_buf_dma, count) != 0) return -1;
+    unsigned char *out = (unsigned char *)buf;
+    for (unsigned i = 0; i < count * 512u; i++) out[i] = g_buf[i];
+    return 0;
+}
+static int be_write(uint64_t lba, const void *buf, unsigned count) {
+    if (be_check(lba, count) != 0) return -1;
+    const unsigned char *in = (const unsigned char *)buf;
+    for (unsigned i = 0; i < count * 512u; i++) g_buf[i] = in[i];
+    return block_io_n(NVM_WRITE, g_nsid, lba, g_buf_dma, count) != 0 ? -1 : 0;
+}
+static int be_flush(void) {
+    struct nvme_sqe c; cmd_clear(&c);
+    c.cdw0 = NVM_FLUSH; c.nsid = g_nsid;
+    return submit_and_wait(&ioq, &c, 0) != 0 ? -1 : 0;
 }
 
 /* The status of a failed command, in the log, so a red run says which. */
@@ -495,6 +535,28 @@ void _start(void) {
         c.cdw11 = (IO_QID << 16) | 1u;    /* its completions go to queue 1      */
         int rc = submit_and_wait(&adminq, &c, 0);
         if (rc != 0) { wr_status("create I/O submission queue", rc); FAIL("create-iosq"); }
+    }
+
+    /* ---- serving: the block-driver protocol, when spawned to serve -------- */
+    /* The protocol's unit is the 512-byte sector. A namespace formatted with
+     * 4 KiB blocks is refused rather than translated: translating would turn a
+     * client's one-sector write into a read-modify-write of a block the client
+     * was not given whole. */
+    if (sys_spawn_arg() == BLK_SERVE_ARG) {
+        if (lba_bytes != 512u) FAIL("serve-needs-512-byte-blocks");
+        void *bp;
+        if (frame_setup(SLOT_DATA, VA_DATA, 1, &bp, &g_buf_dma) != 0) FAIL("data-alloc");
+        g_buf = (unsigned char *)bp;
+        g_nsid = nsid;
+        g_nsze = nsze;
+        static struct blk_backend be;
+        be.sectors = nsze;
+        be.max_count = BLK_MAX_COUNT;
+        be.read = be_read;
+        be.write = be_write;
+        be.flush = be_flush;
+        wr("NVMED: serving the block protocol\n");
+        blkserve_run(&be);
     }
 
     /* ---- 9. read block 0 ------------------------------------------------- */

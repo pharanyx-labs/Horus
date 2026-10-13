@@ -47,7 +47,7 @@ gates that match kernel strings are moving to COM3, which only the kernel can wr
 ## The integration gates
 
 
-There are 521 `smoke-*` targets: 228 gates and 293 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
+There are 526 `smoke-*` targets: 229 gates and 297 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
 
 
 ### Capabilities and authorisation
@@ -298,6 +298,7 @@ There are 521 `smoke-*` targets: 228 gates and 293 control arms. Each row is a g
 | `smoke-nvme` | A ring-3 NVMe driver holding one device capability reads a disk and writes it, the write checked on the host, its DMA confined by the IOMMU | S45 | `smoke-nvme-iommu-control`, `smoke-nvme-write-control` |
 | `smoke-sdhcid` | A ring-3 SD/eMMC driver holding one device capability, and no memory to give its controller, brings up a 64 MiB and a 4 GiB card, reads them and writes them, the write and the decoded capacity checked on the host |  | `smoke-sdhcid-addr-control`, `smoke-sdhcid-write-control`, `smoke-sdhcid-csd-control` |
 | `smoke-sdhcid-emmc` | The same driver on a 64 GiB eMMC behind a host shaped like the IdeaPad's (local only) |  |  |
+| `smoke-blkproto` | The block-driver protocol through `sdhcid` and `nvmed`: a client reaches only its bound extent and frame, only the supervisor binds, and the write lands at the extent's start on the disk, checked on the host | S136 | `smoke-blkproto-absolute-control`, `smoke-blkproto-bind-control`, `smoke-blkproto-extent-control`, `smoke-blkproto-frame-control` |
 
 ### Userspace, loading and shared libraries
 
@@ -412,7 +413,7 @@ Two of those deserve a sentence each.
 there with no `continue-on-error`, each named with its measured cost in
 `.github/kani-harnesses.yml`, and the job refuses a proof that is not listed. And **`invariants`** requires every property in `SECURITY.md` to
 name a witness that exists and runs; its exemption list, `.github/invariants.yml`, is
-currently **empty**: all 137 properties name a witness that resolves.
+currently **empty**: all 138 properties name a witness that resolves.
 
 Every `tools/check_*.py` has a falsification harness, `tools/test_check_*.sh`, with one case per
 rule showing the rule can fail, and each checker asserts a floor on what it parsed, so a parser

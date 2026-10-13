@@ -211,3 +211,33 @@ int ipc_call_retry(int ep_slot, uint32_t badge,
     }
     return r;
 }
+
+/* A failed SYS_PASSWD, said with its code AND what the code means (2026-09-24).
+ *
+ * "could not set the password" was all an operator got, on a laptop with no
+ * serial port, for any of eight different failures. The kernel now returns which
+ * step failed (docs/SYSCALLS.md, SYS_PASSWD), and this names it in the one line
+ * the gates and the screen both show, so a failed install can be diagnosed from
+ * a photograph of the screen. Unknown codes are printed as numbers rather than
+ * guessed at.
+ *
+ * In libhorus since 2026-10-13, so the shell's `passwd` says the same thing:
+ * it said only "passwd failed" for every one of these, the ninth account's
+ * "no free key slot" included (docs/LIMITATIONS.md 2.6b). One table, so the
+ * installer and the shell cannot come to describe a code differently. */
+const char *passwd_reason(int rc)
+{
+    switch (rc) {
+    case -21: return "the volume was not open";
+    case -22: return "the key slots could not be read from the disk";
+    case -23: return "the volume has no free key slot";
+    case -24: return "the password could not be sealed to the volume "
+                     "(key derivation or the TPM refused)";
+    case -25: return "the key slots could not be written to the disk";
+    case -32: return "the volume's key slot could not be read back from the disk";
+    case -33: return "the password could not be sealed to the volume "
+                     "(key derivation or the TPM refused)";
+    case -34: return "the key slot could not be written to the disk";
+    default:  return "";
+    }
+}

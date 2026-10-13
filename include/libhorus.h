@@ -318,4 +318,9 @@ void console_unlend(struct con_lend *l);
  * not be asked. Reads nothing. */
 int  console_input_held(unsigned slot);
 
+/* What a failed SYS_PASSWD's code means, as one phrase ("the volume has no free
+ * key slot"), or "" for a code it does not know, which the caller then prints
+ * as a number. Used by the installer and the shell. */
+const char *passwd_reason(int rc);
+
 #endif /* LIBHORUS_H */

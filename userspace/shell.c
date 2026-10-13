@@ -2985,7 +2985,16 @@ static void handle_command(char *cmd) {
                  * whichever account was actually written, so the output could not
                  * distinguish the two. */
                 if (r == 0) { print("password changed for uid "); print_decimal(target); println(""); }
-                else        println("passwd failed");
+                else {
+                    /* Which step failed, in the installer's words (libhorus
+                     * passwd_reason): "passwd failed" alone covered eight
+                     * failures, the ninth account's full key slots among them
+                     * (docs/LIMITATIONS.md 2.6b). Nothing was changed either way. */
+                    const char *why = passwd_reason(r);
+                    print("passwd failed, nothing changed: ");
+                    if (why[0]) println(why);
+                    else { print("code -"); print_decimal((uint32_t)-r); println(""); }
+                }
             } else {
                 println("passwd aborted");
             }

@@ -95,7 +95,7 @@ The recommendation is the one the route is written around; it is not the decisio
 | Lane | Milestone | Items | Needs |
 |---|---|---|---|
 | Filesystem | Links, timestamps, sparse files; then snapshots, reflinks, extended attributes | 2.10 phases 3 and 4 | phase 2 |
-| Drivers | AHCI, then NVMe, then xHCI with USB keyboards | 2.7 | |
+| Drivers | NVMe as a disk the kernel stores to, then AHCI, then xHCI with USB keyboards | 2.7 | |
 | Network | IP, UDP, TCP and socket capabilities | 2.6 | |
 | Processes | `/proc`, mounts as syscalls, namespace inheritance, narrowing what `exec` carries | 2.3, 2.4 | |
 | Time | A wall clock and `clock_gettime` | 2.2 | Wave 2 SMP |
@@ -151,12 +151,16 @@ forked child starts with no mounts. `dev_server` runs only in the `VFS_SELFTEST`
 endpoint capability per connection, and DHCP. `netd` receives on the 82574L only (LIMITATIONS
 2.14) and runs only in the `NET_SELFTEST` build; shipping it is part of this item.
 
-**2.7 ⬜ Drivers in ring 3.** AHCI reads and writes (the controller is identified and the drive
-answers IDENTIFY), NVMe, USB through xHCI (and with it a keyboard on machines with no PS/2
-emulation), and a framebuffer server, each under one device capability and the IOMMU.
+**2.7 🚧 Drivers in ring 3.** Each under one device capability and the IOMMU. `nvmed` drives an
+NVMe controller from ring 3 in the `NVME_SELFTEST` build: it identifies the controller, reads and
+writes, polling, and `make smoke-nvme` checks the write on the host. Next, the kernel's storage
+reading blocks through a ring-3 driver, so an NVMe disk can be installed onto (a design question
+first: the protocol between the two); interrupts once MSI-X is enabled. Then AHCI reads and
+writes (the controller is identified and the drive answers IDENTIFY), USB through xHCI (and with
+it a keyboard on machines with no PS/2 emulation), and a framebuffer server.
 
 **2.7a ⬜ Evict the in-kernel services [F-2.7a].** `.github/ring0-classification.yml` (S87) measures
-the ring-0 `service` class at about 6,000 code lines beside a 11,554-line core: `storage.c` (the
+the ring-0 `service` class at about 6,000 code lines beside a 11,563-line core: `storage.c` (the
 encrypted store and the on-disk filesystem), `kusers.c` (accounts and password hashing), the loader
 and spawn path, `crypto.c` and `syscall_fs.c`, and the IDE, SD and eMMC drivers sit in ring 0 too.
 Storage leaves with 2.10 phase 2, accounts with 2.11 step 3's `auth_server`, and the loader as a

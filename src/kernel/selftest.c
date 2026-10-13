@@ -1986,6 +1986,58 @@ void net_selftest(void) {
 }
 #endif /* NET_SELFTEST */
 
+#ifdef NVME_SELFTEST
+static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
+/* ---- Ring-3 NVMe driver self-test (NVME_SELFTEST builds only) ---------------
+ *
+ * Roadmap 2.7: stand up `nvmed`, an NVMe driver whose ENTIRE authority is one
+ * CAP_IO_DEVICE naming the controller plus a delegated untyped region, and
+ * require it to identify the controller, read block 0, and write, flush and
+ * read back block 1 of a scratch disk (NVMETEST: PASS). `make smoke-nvme` then
+ * reads the image on the host, so the write is witnessed outside the guest.
+ *
+ * The controller is found by its WHOLE class code, 01:08:02. The class byte
+ * alone (iodev_first_of_class) would also match q35's AHCI controller, 01:06,
+ * which sits on every IOMMU boot, and handing a driver the wrong device's
+ * capability is the S43 defect wearing a different name.
+ *
+ * FAILS rather than skips with no controller, for net_selftest's reason: a gate
+ * that quietly becomes a no-op reports PASS. */
+void nvme_selftest(void) {
+    extern uint8_t embedded_nvmed_bin_start[], embedded_nvmed_bin_end[];
+
+    print("NVME_SELFTEST: launch\n");
+
+    uint64_t ctrl = IODEV_NONE;
+    for (uint64_t i = IODEV_PLATFORM; i < IODEV_MAX; i++) {
+        const struct io_device *d = iodev_get(i);
+        if (d && d->bdf != IODEV_BDF_NONE && (d->classcode & 0xFFFFFFu) == 0x010802u) {
+            ctrl = i; break;
+        }
+    }
+    if (ctrl == IODEV_NONE) {
+        print("NVMETEST: FAIL no-controller-present\n"); for (;;) asm volatile("hlt");
+    }
+
+    int a = fs_spawn_embedded(embedded_nvmed_bin_start, embedded_nvmed_bin_end, "nvmed");
+    if (a <= 0) { print("NVME_SELFTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
+
+    /* The controller, and the memory its queues and buffers are built from.
+     * Nothing else: no notification, because the driver polls (MSI-X is not
+     * enabled, S48), and no uid, because nothing it does asks who it is. */
+    if (cap_install_from_root(a, CAPSLOT_IO_DEVICE, 10, (uint32_t)ctrl) != 0) {
+        print("NVME_SELFTEST: FAIL endow-controller\n"); for (;;) asm volatile("hlt");
+    }
+    if (cap_install_from_root(a, CAPSLOT_UNTYPED, 17, UNTYPED_ROOT) != 0) {
+        print("NVME_SELFTEST: FAIL endow-untyped\n"); for (;;) asm volatile("hlt");
+    }
+
+    selftest_resume_all();
+    sched_enable_preemption();
+    sched_enter_user(a);
+}
+#endif /* NVME_SELFTEST */
+
 #ifdef DEVCAP_SELFTEST
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
 /* ---- Device-capability isolation self-test (DEVCAP_SELFTEST builds only) -----
@@ -2654,7 +2706,7 @@ void e820_selftest(void) {
 #endif /* E820_SELFTEST */
 
 #if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(RECVBLOCK_SELFTEST) || defined(TOKEN_SELFTEST) || defined(KLOG_FORGE_SELFTEST) \
-    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE) || defined(VFS_SELFTEST) || defined(FORK_SELFTEST) || defined(FPU_SELFTEST) || defined(FORKEXEC_SELFTEST) || defined(PIPEREVOKE_SELFTEST) || defined(DEVCAP_SELFTEST) || defined(NET_SELFTEST) || defined(SHLIB_SELFTEST) || defined(SHLIBC_SELFTEST) || defined(TUI_SELFTEST) \
+    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE) || defined(VFS_SELFTEST) || defined(FORK_SELFTEST) || defined(FPU_SELFTEST) || defined(FORKEXEC_SELFTEST) || defined(PIPEREVOKE_SELFTEST) || defined(DEVCAP_SELFTEST) || defined(NET_SELFTEST) || defined(NVME_SELFTEST) || defined(SHLIB_SELFTEST) || defined(SHLIBC_SELFTEST) || defined(TUI_SELFTEST) \
     || defined(FSCAP_SELFTEST)
 /* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT/IRQ/CONSOLE/RECVBLOCK/TOKEN/KLOG_FORGE/FORK only) ----
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */

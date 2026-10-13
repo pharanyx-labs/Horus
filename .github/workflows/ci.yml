@@ -3706,7 +3706,7 @@ jobs:
         run: make smoke-devcap-irq-control
 
   net:
-    name: "A network driver in ring 3, holding one device capability"
+    name: "Drivers in ring 3 (network, NVMe), each holding one device capability"
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -3801,6 +3801,25 @@ jobs:
       # the fallback controller exercised as well as the property.
       - name: Control arm — an unmasked level-triggered line livelocks the machine
         run: make smoke-net-irq-storm-control
+      # Roadmap 2.7: an NVMe driver in ring 3, beside netd because it rests on the
+      # same delegation (one device capability, one untyped region) and the same
+      # IOMMU. nvmed identifies the controller, reads block 0 of a scratch image,
+      # and writes, flushes and reads back block 1; the host then reads the image
+      # and checks the write reached it, as a block derived from a nonce only
+      # that image's block 0 carried.
+      - name: A ring-3 NVMe driver reads a disk and writes it, checked on the host
+        run: make smoke-nvme
+      # S45 on a storage controller: the data buffer alone is withheld from the
+      # device's address space, so the controller comes up and identifies itself
+      # and then cannot deliver the block it was asked to read. QEMU still
+      # completes that read with success, so the driver checks the buffer changed.
+      - name: Control arm — a read into a buffer the controller cannot reach
+        run: make smoke-nvme-iommu-control
+      # The host-side check's arm. The driver writes block 2 and reads block 2
+      # back, so its own check passes; only the image on the host shows block 1
+      # was never written.
+      - name: Control arm — a write to the wrong block that the guest cannot see
+        run: make smoke-nvme-write-control
 
   shared-objects:
     name: "Every shared object is one the kernel's loader would accept"

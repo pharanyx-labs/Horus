@@ -22,6 +22,7 @@ here.
 
 ### Added
 
+- An NVMe driver, `nvmed`, runs in ring 3 holding one device capability and one untyped region, confined by the IOMMU: it identifies the controller and its namespace, reads, writes and flushes, polling, and never writes a disk whose block 0 lacks the test signature. It runs in the `NVME_SELFTEST` build; the kernel's storage cannot read through it yet, so nothing installs onto NVMe (ROADMAP 2.7). `make smoke-nvme` checks the write on the host as well as in the guest, with two control arms. (#560)
 - `make smoke-console-pass` now witnesses both halves: input refused to a client's stdout capability, an input capability lent to a child and gone once taken back, and the kernel's console reads and writes refused without a capability, with four control arms. `captest` asks `SYS_READ` fd 0 and `SYS_GET_PASS` without a capability, so `SYS_GET_PASS` is covered for the first time. (#559)
 - `make smoke-pipe-revoke-child` spawns stages wired to pipe ends, revokes the ends and checks the stages lost theirs, a forked child's revoke spared the original, and no pipe was left allocated; two control arms (the child's end as a root, the removed ends left counted) run beside it in the `smoke-pipe` CI job. A Kani proof shows a revoke counts exactly the pipe ends it removes, with four arms. (#558)
 

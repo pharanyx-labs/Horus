@@ -150,8 +150,9 @@ slot number; it never sees the capability itself.
 ## What it cannot do yet
 
 - **No networking above Ethernet.** No IP, TCP, sockets or ARP table.
-- **No storage beyond IDE, SD and eMMC.** A SATA drive is identified but not read, and there is no
-  NVMe.
+- **No installing beyond IDE, SD and eMMC.** A SATA drive is identified but not read. An NVMe
+  driver reads and writes a disk from ring 3 in a self-test build, but the kernel's storage cannot
+  use it yet.
 - **No USB**, and so no keyboard on a machine without PS/2 emulation.
 - **Programs still reach files by user id and mode.** The capability path is built, in `fs_server`
   and in the shell and the POSIX layer, and `fs_server` opens sessions from the policy (S128), but
@@ -267,7 +268,7 @@ test does not exist or does not run.
 | Layer | What it covers |
 |---|---|
 | Security properties | 137 numbered properties, each bound to a witness by `tools/check_invariants.py` |
-| QEMU integration tests | 511 `smoke-*` targets: 224 base gates and 287 control arms |
+| QEMU integration tests | 514 `smoke-*` targets: 225 base gates and 289 control arms |
 | Control arms | A build that puts a defect back on purpose; CI requires its gate to go red against it |
 | Kani | 35 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
 | Miri | The security core's tests, interpreted for undefined behaviour on every pull request |

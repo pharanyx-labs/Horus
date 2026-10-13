@@ -212,8 +212,9 @@
         </p>
         <p>
           So supporting a new kind of storage means writing one driver that answers those
-          four requests, not reworking the system. eMMC support arrived exactly that way,
-          and the same route is open for NVMe and SATA next.
+          four requests, not reworking the system. eMMC support arrived exactly that way.
+          An NVMe driver already runs outside the kernel, in ring 3, and connecting it to that
+          interface is next; SATA follows the same route.
         </p>
       </div>
     </div>

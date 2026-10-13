@@ -47,7 +47,7 @@ gates that match kernel strings are moving to COM3, which only the kernel can wr
 ## The integration gates
 
 
-There are 511 `smoke-*` targets: 224 gates and 287 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Four gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
+There are 514 `smoke-*` targets: 225 gates and 289 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Four gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
 
 
 ### Capabilities and authorisation
@@ -294,6 +294,7 @@ There are 511 `smoke-*` targets: 224 gates and 287 control arms. Each row is a g
 | `smoke-irq` | A hardware interrupt reaches a ring-3 notification |  |  |
 | `smoke-net` | A ring-3 driver holding one device capability exchanges ARP on the wire, its DMA confined by the IOMMU | S44, S45, S46, S47, S48 | `smoke-net-busmaster-control`, `smoke-net-decode-control`, `smoke-net-iommu-control`, `smoke-net-irq-storm-control`, `smoke-net-mask-control`, `smoke-net-msi-vector-control`, `smoke-net-msix-table-control` |
 | `smoke-net-intx` | The same driver on a device with no MSI, through the masked legacy interrupt line |  |  |
+| `smoke-nvme` | A ring-3 NVMe driver holding one device capability reads a disk and writes it, the write checked on the host, its DMA confined by the IOMMU | S45 | `smoke-nvme-iommu-control`, `smoke-nvme-write-control` |
 
 ### Userspace, loading and shared libraries
 
@@ -384,7 +385,7 @@ The jobs that are not boot tests:
 | `image-abi` | The kernel reads the .bin container the build tool wrote (S80) |
 | `frame` | A frame capability names an object, and a delegate maps only what it holds |
 | `devcap` | A device capability names one device, and reaches only that device |
-| `net` | A network driver in ring 3, holding one device capability |
+| `net` | Drivers in ring 3 (network, NVMe), each holding one device capability |
 | `shared-objects` | Every shared object is one the kernel's loader would accept |
 | `shlib` | Shared library text is executed by many tasks and writable by none |
 | `fpu` | A task cannot read another's XMM register file |

@@ -1224,6 +1224,33 @@ void _start(void) {
           "ipc-reply-on-empty-slot-not-refused");
     check(sys_ipc_reply(SLOT_FRAME, "x", 1) == SYS_ERR_PERM,
           "ipc-reply-accepted-a-frame-capability-as-an-endpoint");
+
+    /* (g) The capability-addressed pair, SYS_IPC_CALL_CAP and SYS_IPC_REPLY_CAP,
+     * are SC_NONE in the table and resolve their endpoint inside the handler
+     * (ipc_call_common, ipc_reply_common), so a refused call ENTERS the body.
+     * No tracked workload called them before 2026-10-13: nothing in a session
+     * calls through a capability until a login is handed one (docs/LIMITATIONS.md
+     * 1.8). Both doors, as (f): an empty slot, and a live capability that is not
+     * an endpoint. A reply buffer is passed so a call that wrongly succeeded
+     * would have somewhere to put its answer rather than fault. */
+    {
+        static char rbuf[256];   /* IPC_MSG_MAX, the kernel's reply bound */
+        check(sys_ipc_call_cap(SLOT_EMPTY_HI, IPC_NO_CAP, "x", 1, rbuf, IPC_NO_CAP) == SYS_ERR_PERM,
+              "ipc-call-cap-on-empty-slot-not-refused");
+        check(sys_ipc_call_cap(SLOT_FRAME, IPC_NO_CAP, "x", 1, rbuf, IPC_NO_CAP) == SYS_ERR_PERM,
+              "ipc-call-cap-accepted-a-frame-capability-as-an-endpoint");
+        check(sys_ipc_reply_cap(SLOT_EMPTY_HI, "x", 1, CAP_RIGHT_READ, 1) == SYS_ERR_PERM,
+              "ipc-reply-cap-on-empty-slot-not-refused");
+        check(sys_ipc_reply_cap(SLOT_FRAME, "x", 1, CAP_RIGHT_READ, 1) == SYS_ERR_PERM,
+              "ipc-reply-cap-accepted-a-frame-capability-as-an-endpoint");
+    }
+
+    /* (h) SYS_EXEC_NAMED is SC_NONE too: it replaces only the caller's own image,
+     * so its body is the gate. A name that is no embedded binary is refused
+     * before anything is staged or replaced, which is the one way captest can
+     * enter it and still be captest afterwards. */
+    check(sys_exec_named("captest-no-such-binary") == SYS_ERR_NOENT,
+          "exec-named-of-no-binary-not-refused");
 #endif /* SYSCOV_PROBES_ABSENT */
 
 

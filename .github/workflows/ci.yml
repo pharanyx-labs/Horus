@@ -2234,6 +2234,12 @@ jobs:
         run: make smoke-smp-topology-sparse-control
       - name: Control arm, SMT sibling-ness from the index schedules a sibling
         run: make smoke-smp-topology-sibling-control
+      # LIMITATIONS 2.28: bring-up closes after the timed wait, so a CPU arriving
+      # later is refused, never counted and never run (S138).
+      - name: A secondary CPU that checks in after bring-up closed is refused
+        run: make smoke-smp-ap-closed
+      - name: Control arm, no close, so the late CPU is counted and runs
+        run: make smoke-smp-ap-closed-control
 
   # THE SMP RACE BASE GATES AGAIN, UNDER KVM (2026-09-21). Every gate's evidence
   # is measured under TCG and stays there; this job adds a second environment,
@@ -2274,6 +2280,14 @@ jobs:
       # `make smoke-smp-kvm` cannot drift apart.
       - name: The SMP race base gates, under KVM
         run: make smoke-smp-kvm
+      # LIMITATIONS 2.28 is a KVM defect: the old loop-count bound was a few
+      # milliseconds here and long enough under TCG to hide it, so this gate AND
+      # its arm run in this job, the one place the arm can go red. Both targets
+      # set QEMU_ACCEL=kvm themselves.
+      - name: Secondary CPUs a second late are still counted (the wait is timed)
+        run: make smoke-smp-ap-late
+      - name: Control arm, the loop-count bound misses them
+        run: make smoke-smp-ap-late-control
 
   smoke-smt:
     name: QEMU SMT sibling-parking self-test (headless, -smp 4 cores=2 threads=2)

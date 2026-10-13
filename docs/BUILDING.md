@@ -211,6 +211,10 @@ column names the targets that build with the flag; an arm must turn its gate red
 | `EXIT_RECORD_STALE_ON_REUSE` | `create_task` leaves a reused slot's `exit_info` and `wait_exit_info` as the previous occupant left them, as before S98 ([HORUS-20260920-02]). | `smoke-proc-exit-record-control` (arm of `smoke-proc`) |
 | `WAIT_TCB_UNCHECKED` | `h_wait` tests no authority again, as before S99 ([HORUS-20260921-01]): any task may wait on any tid and collect its exit record. | `smoke-proc-wait-control` (arm of `smoke-proc`) |
 | `APIC_ID_IS_CPU_INDEX` | CPU index equals LAPIC id again, whatever the MADT lists, as before 2026-09-21: a core whose id reaches `MAX_CPUS` gets no slot and parks. | `smoke-smp-topology-sparse-control` (arm of `smoke-smp-topology`) |
+| `AP_CHECKIN_LATE=1` | Instrument, never shipped: every secondary CPU waits 1 s of the calibrated clock before it checks in, inside the 2 s bound and far past what the old loop-count bound spent under KVM. | `smoke-smp-ap-late`, `smoke-smp-ap-late-control` (arm of `smoke-smp-ap-late`) |
+| `AP_WAIT_LOOP_COUNT=1` | The check-in wait as it was before 2026-10-13: 200 calls of a 20000-iteration `pause` loop, a few milliseconds under KVM, so late CPUs are missed (LIMITATIONS 2.28). | `smoke-smp-ap-late-control` (arm of `smoke-smp-ap-late`); `make smoke-smp-ap-late` must go red under it |
+| `AP_CHECKIN_PAST_BOUND=1` | Instrument, never shipped: the highest-numbered secondary CPU waits 2.5 s before it checks in, after bring-up has closed, so the refusal is exercised. | `smoke-smp-ap-closed`, `smoke-smp-ap-closed-control` (arm of `smoke-smp-ap-closed`) |
+| `AP_LATE_ADMITTED=1` | Bring-up never closes: a CPU that checks in after the BSP stopped waiting is counted anyway and runs tasks on a boot that printed it absent, and can take a TLB shootdown it was not counted for (S138). | `smoke-smp-ap-closed-control` (arm of `smoke-smp-ap-closed`); `make smoke-smp-ap-closed` must go red under it |
 | `SMT_SIBLING_BY_INDEX` | `ap_entry64` decides SMT sibling-ness from the dense CPU index instead of the LAPIC id (S101), which parks the wrong threads. The scheduler's own refusal still keeps tasks off the real siblings, so the arm builds with `SIBLING_SCHED_UNGUARDED=1` as well, and `make smoke-smp-topology` goes red with both. | `smoke-smp-topology-sibling-control` (arm of `smoke-smp-topology`) |
 | `SLOT_REUSE_UNCHECKED` | Slot selection by `state == 0` alone, as before 2026-09-21 (S20, [HORUS-20260921-03]): a spawn can reuse a slot whose kernel stack a CPU is still on. | `smoke-kstack-reuse-control` (arm of `smoke-kstack-reuse`) |
 | `KSTACK_REUSE_WIDEN=1` | Instrument, never shipped: Holds a dying CPU on the dead task's stack for the first sixteen exits, so a respawn meets the window, and logs each slot the picker skips for it. | `smoke-kstack-reuse`, `smoke-kstack-reuse-control` (arm of `smoke-kstack-reuse`) |
@@ -578,7 +582,7 @@ of the most important:
 
 | Target | Asserts |
 |---|---|
-| `smoke-captest` | Unheld capabilities, post-revoke use, and bad input are all refused (214 checks, printed by the suite as `CAPTEST: PASS <n> checks`) |
+| `smoke-captest` | Unheld capabilities, post-revoke use, and bad input are all refused (219 checks, printed by the suite as `CAPTEST: PASS <n> checks`) |
 | `smoke-wx` | No kernel page is both writable and executable |
 | `smoke-modules-tamper` | A corrupted boot module is refused |
 | `smoke-tpm-seal` | A changed PCR leaves the volume locked |

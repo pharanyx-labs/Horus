@@ -2535,6 +2535,11 @@ void console_progress_note(const char *note);
 void console_progress_permit(int on);
 
 uint64_t kmsg_uptime_ticks(void);   /* whole PIT ticks since boot -- quantised, see terminal.c */
+/* Bounded kernel waits in wall time on the calibrated TSC (terminal.c). A
+ * deadline to compare against, never the time itself. */
+uint64_t kclock_deadline_us(uint64_t us);
+int kclock_passed(uint64_t deadline);
+void kclock_delay_us(uint64_t us);
 #ifdef CLOCK_TSC_RESOLUTION
 uint64_t kmsg_uptime_us(void);      /* control arm only -- see terminal.c */
 #endif

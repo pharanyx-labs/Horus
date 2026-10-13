@@ -1203,6 +1203,38 @@ uint64_t kmsg_uptime_ticks(void) {
     return us / (1000000u / PIT_TICK_HZ);
 }
 
+/* A kernel wait bounded by TIME, not by a loop count (docs/LIMITATIONS.md 2.28).
+ *
+ * `pause` loops were the kernel's only delay, and what one costs varies more
+ * than tenfold between processor models and between TCG and KVM, so a bound
+ * written as a loop count was a different bound on every machine: on a fast host
+ * under KVM the wait for the secondary CPUs ended in a few milliseconds and a CPU
+ * the host scheduled late was not counted.
+ *
+ * A DEADLINE, NOT A TIME. kclock_deadline_us returns a TSC value to compare
+ * against, and kclock_passed says whether it has gone by; neither returns the
+ * time since boot, so these add no reading finer than kmsg_uptime_ticks to the
+ * kernel's interface (the S34 reasoning above). Kernel-internal: no syscall
+ * reaches them.
+ *
+ * Before kmsg_clock_init has run the rate is unknown, and the deadline is taken
+ * at 4,000 ticks per microsecond, a 4 GHz clock, so an uncalibrated wait errs
+ * LONG on any slower one. A bound on a wait for hardware that is too long costs
+ * boot time; one that is too short was the defect. */
+uint64_t kclock_deadline_us(uint64_t us) {
+    const uint64_t rate = tsc_per_us ? tsc_per_us : 4000u;
+    return rd_tsc() + us * rate;
+}
+
+int kclock_passed(uint64_t deadline) {
+    return (int64_t)(rd_tsc() - deadline) >= 0;
+}
+
+void kclock_delay_us(uint64_t us) {
+    const uint64_t d = kclock_deadline_us(us);
+    while (!kclock_passed(d)) __asm__ volatile ("pause");
+}
+
 #ifdef CLOCK_TSC_RESOLUTION
 /* Microseconds since boot from the calibrated TSC. Exists ONLY for the
  * CLOCK_TSC_RESOLUTION control arm (roadmap 2.2): it is the cycle-accurate

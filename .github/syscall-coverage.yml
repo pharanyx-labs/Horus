@@ -176,6 +176,9 @@ covered:
   - SYS_MEM_SEAL             # a stack page, an unaligned address, a zero length; and every coreutil's crt0
   - SYS_MAP_REGION           # a zero-length run, and an empty slot
   - SYS_FB_INFO              # no device capability, and a wrong-type slot
+  - SYS_IPC_CALL_CAP         # captest: an empty slot and a frame capability, refused in the body (2026-10-13)
+  - SYS_IPC_REPLY_CAP        # captest: likewise
+  - SYS_EXEC_NAMED           # captest: a name that is no binary, refused before anything is staged
   - SYS_FRAME_PAGES          # empty slot, and the legacy slot-3 decoy
   - SYS_REGISTER_STORAGE_BACKEND  # retired syscall 46; must still fail closed
 
@@ -419,8 +422,8 @@ covered:
   - SYS_FORK                 # captest 16c forks a grant target
 
 uncovered:
-  # Twelve left, in four groups: three from the 2026-08-30 sweep, and a fourth of
-  # syscalls added on 2026-09-25 that only their own witness calls yet. The
+  # Four left, all in group (1); groups (2) to (4) are empty since 2026-10-13,
+  # each header kept for the reason its members left. The
   # grouping is the useful part: it says what each one would COST to
   # cover, which is the question this file is asked when somebody wants the
   # number to go up.
@@ -458,7 +461,10 @@ uncovered:
   SYS_CONSOLE_RELEASE: >-
     SC_NONE in the table, with the authority tested inside the handler (a CAP_IO_DEVICE with WRITE, plus the caller must BE the console's current owner). Its only caller is console_server, and only on a start-up FAILURE path -- the grant, the map, or the VGA round-trip going wrong -- none of which happens in a boot that works. So the tracked workloads cannot enter it without breaking themselves, which is the opposite of what they exist to do. It IS entered on every boot of a CONSOLE_VGA_CHECK_FAIL=1 build, which is `make smoke-console-handover-control`, and that arm is the gate: it requires the marker the handler makes audible to appear on the wire. Promoting this would mean making a tracked workload fail its own console handover on purpose
 
-  # (2) THE CALL WOULD SUCCEED, WHICH IS WHY NO PROBE ENTERS IT. What stops a
+  # (2) THE CALL WOULD SUCCEED, WHICH IS WHY NO PROBE ENTERS IT: empty since
+  # 2026-10-13, when SYS_EXEC_NAMED left. Its success replaces the caller, and
+  # its refusal of a name that is no binary does not: captest (h) enters the
+  # body that way and is still captest afterwards. What stops a
   # probe here is the opposite of the group above: not that the call would be
   # refused, but that it would WORK -- replacing the caller's image or
   # duplicating the caller -- and a conformance suite that execs itself away has
@@ -485,8 +491,6 @@ uncovered:
   # it correctly described as ungated sat under the same sentence and were read
   # as covered by the same claim. A fact recorded here gates nothing --
   # tools/check_dispatch_gates.py is what fails the build now.
-  SYS_EXEC_NAMED: >-
-    MEASURED 2026-08-20: entered by a PROC_SELFTEST=1 boot, which is not a tracked arm. Also gated by make smoke-forkexec since 2026-08-28 (S42). A probe would replace captest's image
   # (3) SC_NONE, AND NOT PROBEABLE: empty since 2026-10-13. The sweep of
   # 2026-08-30 promoted twelve SC_NONE handlers on the argument that the dispatch
   # table admits everyone, so a refusal test runs the body, and two stopped that
@@ -494,12 +498,10 @@ uncovered:
   # (promoted 2026-09-25 when the modules workload shipped the library), and
   # SYS_GET_PASS, which blocked because it asked for no authority (promoted
   # 2026-10-13 when it began to). Both are in `covered` with their reasons.
-  # (4) NEW ON 2026-09-25 AND NOT YET USED BY A TRACKED CLIENT. Two of the four
-  # capability-token syscalls (docs/design/filesystem.md §5.1) are covered since
-  # phase 1b step 1, when init and fs_server began using them. These two move to
-  # `covered` with step 2, when hvfs walks by capability and a tracked session
-  # calls through one on every boot.
-  SYS_IPC_CALL_CAP: >-
-    Entered by TOKEN_SELFTEST (make smoke-captoken, S105) on every call tokencli makes. fs_server answers one from phase 1b step 1, but no tracked client calls through a capability until hvfs does in step 2
-  SYS_IPC_REPLY_CAP: >-
-    Entered by TOKEN_SELFTEST (make smoke-captoken, S105), successfully and refused, by tokensrv. fs_server reply-mints from phase 1b step 1, but only for a request naming a receive slot, and no tracked client sends one until hvfs does in step 2
+  # (4) NEW ON 2026-09-25 AND NOT YET USED BY A TRACKED CLIENT: empty since
+  # 2026-10-13. Two of the four capability-token syscalls (docs/design/filesystem.md
+  # §5.1) were covered from phase 1b step 1, when init and fs_server began using
+  # them. The other two waited for a tracked session to call through a
+  # capability, which still waits for a login to be handed one. They are SC_NONE,
+  # resolving the endpoint in the body, so captest (g) covers them by refusal, as
+  # SYS_IPC_REPLY was; a session calling through one will cover their success.

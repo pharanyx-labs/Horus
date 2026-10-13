@@ -64,7 +64,6 @@ The recommendation is the one the route is written around; it is not the decisio
 | Observability | Kernel reports on their own channel | 5.3 | 2.6c | |
 | Storage | Metadata authenticated on the current format | 5.2 | 1.30 | D2 |
 | Storage | `rotate_keys` withdrawn or rebuilt | 2.26 | 2.26 | D14 |
-| SMP | Secondary CPUs waited for by the clock, not a loop count | 5.12 | 2.28 | |
 
 ### Wave 2: authority completes, the boot chain tightens
 
@@ -168,7 +167,7 @@ controller is identified and the drive answers IDENTIFY), USB through xHCI (and 
 on machines with no PS/2 emulation), and a framebuffer server.
 
 **2.7a ⬜ Evict the in-kernel services [F-2.7a].** `.github/ring0-classification.yml` (S87) measures
-the ring-0 `service` class at about 6,000 code lines beside a 11,588-line core: `storage.c` (the
+the ring-0 `service` class at about 6,000 code lines beside a 11,653-line core: `storage.c` (the
 encrypted store and the on-disk filesystem), `kusers.c` (accounts and password hashing), the loader
 and spawn path, `crypto.c` and `syscall_fs.c`, and the IDE, SD and eMMC drivers sit in ring 0 too.
 The drivers leave by [`design/ring3-storage.md`](design/ring3-storage.md), storage with 2.10 phase
@@ -301,12 +300,6 @@ swapped in under it. D8 first.
 specified and model-checked: spawn, wait and teardown (S125), the kernel-stack claim and park (S20),
 the TLB shootdown (S124), and revocation against lookup. Each model ships with a seeded defect it
 must catch, as every gate has an arm. Nightly first. D9 first.
-
-**5.12 ⬜ Secondary CPUs waited for by the clock** (2.28). `smp_start_aps` bounds its wait by
-the calibrated TSC rather than by a count of `pause` instructions, and a CPU that checks in after
-the wait ends is either counted or parked, never left running uncounted. Witness: a build that
-delays one secondary's check-in past the old loop's length must still report every CPU; the arm
-restores the loop count.
 
 **5.13 ⬜ A pipe end that cannot outlive its pipe.** A pipe's generation goes into its ends'
 `object` beside the index, and every pipe operation compares it under `pipe_lock`, so an end left

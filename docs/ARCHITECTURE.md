@@ -454,7 +454,10 @@ SMP is on by default; `SMP=0` compiles it out.
 
 - **Up to eight CPUs** (`MAX_CPUS`, `src/include/cpu_limits.h`), from the ACPI MADT, started with
   INIT-SIPI-SIPI through a real-mode trampoline linked at 0x8000 by its own script and bounded
-  three times against the cells above it (`make smoke-ap-trampoline`).
+  three times against the cells above it (`make smoke-ap-trampoline`). The BSP waits for them for
+  at most 2 s of the calibrated clock and then closes bring-up: a CPU that checks in later is
+  parked with interrupts off, never counted and never run, so the count printed is the boot's
+  (S138).
 - **A CPU's index is not its LAPIC id.** The BSP builds `apic_to_cpu[]` from the MADT (itself,
   then primary threads, then SMT siblings) so sparse ids work, and a core past the ceiling parks.
 - **SMT siblings are parked** in `ap_entry64`, identified by LAPIC id (S101), so no task shares a

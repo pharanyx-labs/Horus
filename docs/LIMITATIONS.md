@@ -21,11 +21,11 @@ status, and it is the one given here.
 
 ## 1. Security
 
-### 1.8 Seven syscalls have no test that runs their handler
+### 1.8 Four syscalls have no test that runs their handler
 
-As of the last merge and gated since: **96 of 103** implemented syscalls have their handler body
+As of the last merge and gated since: **99 of 103** implemented syscalls have their handler body
 entered by a tracked workload (the scripted ring-3 session, the conformance suite, and the
-boot-modules session). The other 7 are listed in `.github/syscall-coverage.yml`, each with a
+boot-modules session). The other 4 are listed in `.github/syscall-coverage.yml`, each with a
 written reason. `tools/check_syscall_coverage.py` (required job `syscall-coverage`) fails on drift
 in either direction, so the number cannot quietly fall (`SECURITY.md` S25).
 
@@ -33,16 +33,17 @@ The risk is not hypothetical. Four times a probe written to enter an uncovered h
 defect on its first run: a kernel hang on a NULL lookup under `cap_lock` (S52), an audit record
 declared at two sizes that overran a ring-3 array (S71), block syscalls whose "no such block" and
 "permission denied" were the same value, and an ELF loader bounded by the wrong buffer (S84).
-So a defect in any of those 7 handlers is invisible in the same way. `captest` cannot find these: it
+So a defect in any of those 4 handlers is invisible in the same way. `captest` cannot find these: it
 is a refusal suite, and the capability gate returns before a refused handler runs.
 
-What is left falls into two groups, and the grouping says what each would cost:
+All four are gated on a capability `captest` does not hold, or entered only on a failure path:
 
-- **Gated on a capability `captest` does not hold.** Covering one needs a probe task holding
-  exactly that capability, the way `auditprobe` and `blockprobe` were written.
-  `SYS_STORAGE_FORMAT` is the exception: entering its body formats the disk the run is using.
-- **The call would succeed and replace the caller**: `SYS_FORK` and `SYS_EXEC_NAMED`, each covered
-  by its own self-test build rather than a tracked workload.
+- `SYS_STORAGE_DEVICE` and `SYS_ROTATE_KEYS` need a probe task holding exactly that capability,
+  the way `auditprobe` and `blockprobe` were written.
+- `SYS_STORAGE_FORMAT`'s body formats the disk the run is using, so no tracked workload can enter
+  it; the installer gates do.
+- `SYS_CONSOLE_RELEASE` runs only when `console_server`'s start-up fails, which
+  `smoke-console-handover-control` makes happen.
 
 ### 1.12 Rollback protection is anchored only on a machine with a TPM
 
@@ -295,11 +296,6 @@ for, and seals the table read-only (S107, S108). What remains:
 - **`hello_shared`, the oldest self-test, still uses the index-based stub archive**, which cannot
   reach library data such as `optarg`. Every shipped program uses the linker instead.
 
-### 2.17 `hello_newlib` is 1.2 MB of real code
-
-It is linked without `--gc-sections`, unlike the coreutils, so it keeps every newlib object it
-could call. It is a self-test binary and ships in no default image, so it costs nothing today.
-
 ### 2.20 The reply endpoint table is a fixed array
 
 `MAX_ENDPOINTS` is `REPLY_EP_BASE + MAX_TASKS`, so the table always covers every task's reply
@@ -342,18 +338,6 @@ under a fresh key and `docs/SYSCALLS.md` as rotating the audit chain's keys; bot
 does. Rebuilding it as a real rotation of the volume key, or withdrawing it, is a decision for the
 maintainer.
 
-
-### 2.28 The wait for secondary CPUs is bounded in instructions, not time
-
-`smp_start_aps` waits for the secondary CPUs to check in for at most 200 calls of
-`smp_busy_delay(20000)`, a loop of `pause` instructions, whose cost varies by more than tenfold
-between processor models. On a fast host under KVM the whole wait can be a few milliseconds, so a
-secondary CPU that the host schedules late is not counted: the boot prints one core fewer than it
-has, and the CPU checks in afterwards and runs tasks anyway. In CI on 2026-10-12
-`smoke-smp-topology` under KVM saw `smp: 3 cores online` at `-smp 4`, with all three secondaries
-then running work (`cpus_ran=0xe`); the KVM job had passed in 31 of the 32 readable runs before it.
-The fix is to bound the wait by the calibrated clock rather than by a loop count. Whether anything
-sized from the printed count goes wrong when a CPU arrives after it is not yet analysed.
 ---
 
 ## 3. Scale and performance
@@ -634,11 +618,13 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 2.10a | | Two more uncalled syscalls, retired with 1.6c (S79) | 2026-09-03, #307 |
 | 2.11 | | A forked child did not inherit its parent's cspace (S41) | 2026-08-28, #221 |
 | 2.13 | | A PCI interrupt line could not be delivered to ring 3 (S46) | 2026-08-28, #232 |
+| 2.17 | | `hello_newlib` is 1.2 MB of real code: withdrawn, not a defect. Measured 2026-10-13: its code is 98 KB and 1.06 MiB is `big_rodata`, which it carries on purpose to prove an image over 1 MiB loads; `--gc-sections` saves 368 bytes, since `libc.a` members are linked only when referenced | 2026-10-13, #565 |
 | 2.18 | | The `.bin` container was declared four times and parsed in eleven places (S80) | 2026-09-03, #308 |
 | 2.19 | | The end of a directory and its absence were the same answer | 2026-09-06, #318 |
 | 2.23 | [A3] | Revoking one capability could make an unrelated live one unusable: revocations were also recorded in a 4096-cell hashed table (S5) | 2026-10-11, #540 |
 | 2.24 | | Capability serials repeated: the 32-bit counter wrapped after about 4.3 billion mints, passing through the primordial range, and a reused task slot reissued its birth serials (S5) | 2026-10-11, #540 |
 | 2.27 | | The monotonic clock ran at twice wall-clock speed under QEMU's TCG, so `failure_delay` waited half as long: the timer tick, in mode 3, was delivered twice per period | 2026-10-12, #549 |
+| 2.28 | | The wait for secondary CPUs was a loop count, a few milliseconds on a fast host under KVM, so a CPU the host scheduled late went uncounted and then ran anyway, and could take a TLB shootdown it was not counted for; the wait is now 2 s of the calibrated clock and bring-up then closes, so a later CPU is parked and never used (S138) | 2026-10-13, #565 |
 | 3.2 | [I-6] | `this_cpu()` read LAPIC MMIO on every call | 2026-07-31, #116 |
 | 3.5 | | The block allocator rescanned the bitmap from the start | 2026-09-01, #277 |
 | 5.2 | [C-6] | Which checks gate a merge was reconciled by hand | 2026-09-21, #415 |

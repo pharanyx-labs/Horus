@@ -116,7 +116,7 @@ DEFECT_FLAGS = \
 	MEASURED_BOOT_REQUIRED MEASURED_VOLUME_EXEMPT_NONE MEASURED_VOLUME_UNCHECKED \
 	LEGACY_SYSCALLS_PRESENT CAP_ENUMERATE_UNGATED CLOCK_TSC_RESOLUTION \
 	IMAGE_HDR_WRITER_SKEW \
-	TASKINFO_WIDE_AUTHORITY WAIT_TCB_UNCHECKED TCB_GENERATION_UNCHECKED APIC_ID_IS_CPU_INDEX SMT_SIBLING_BY_INDEX SLOT_REUSE_UNCHECKED KSTACK_REUSE_WIDEN DEAD_TASK_RUNS GETLINE_SLOT3_FALLBACK CAP_LOOKUP_ASSERT_HANG \
+	TASKINFO_WIDE_AUTHORITY WAIT_TCB_UNCHECKED TCB_GENERATION_UNCHECKED APIC_ID_IS_CPU_INDEX SMT_SIBLING_BY_INDEX AP_WAIT_LOOP_COUNT AP_LATE_ADMITTED AP_CHECKIN_LATE AP_CHECKIN_PAST_BOUND SLOT_REUSE_UNCHECKED KSTACK_REUSE_WIDEN DEAD_TASK_RUNS GETLINE_SLOT3_FALLBACK CAP_LOOKUP_ASSERT_HANG \
 	IOMMU_NO_FRAME_TEARDOWN IOMMU_NO_TASK_TEARDOWN \
 	IO_DEVICE_OBJECT_UNCHECKED IO_DEVICE_PORTS_GLOBAL IO_DEVICE_IRQ_UNCHECKED \
 	IO_DEVICE_CAP_UNCHECKED NET_NO_BUSMASTER NET_NO_DECODE \
@@ -1905,6 +1905,33 @@ endif
 APIC_ID_IS_CPU_INDEX ?= 0
 ifeq ($(APIC_ID_IS_CPU_INDEX),1)
 CFLAGS += -DAPIC_ID_IS_CPU_INDEX
+endif
+
+# docs/LIMITATIONS.md 2.28: the wait for the secondary CPUs is bounded by the
+# calibrated clock, and bring-up then closes, so a CPU arriving later is refused.
+# Two instruments and two arms, never shipped:
+#   AP_CHECKIN_LATE=1       every AP checks in 1 s late, inside the 2 s bound
+#                           (smoke-smp-ap-late must still count all of them);
+#   AP_CHECKIN_PAST_BOUND=1 the highest-numbered AP checks in 2.5 s late, past it
+#                           (smoke-smp-ap-closed: refused, never counted, never run);
+#   AP_WAIT_LOOP_COUNT=1    the arm: the old bound, 200 pause loops, a few ms on a
+#                           fast host, so the late APs are missed;
+#   AP_LATE_ADMITTED=1      the arm: no close, so the late AP is counted and runs.
+AP_CHECKIN_LATE ?= 0
+AP_CHECKIN_PAST_BOUND ?= 0
+AP_WAIT_LOOP_COUNT ?= 0
+AP_LATE_ADMITTED ?= 0
+ifeq ($(AP_CHECKIN_LATE),1)
+CFLAGS += -DAP_CHECKIN_LATE
+endif
+ifeq ($(AP_CHECKIN_PAST_BOUND),1)
+CFLAGS += -DAP_CHECKIN_PAST_BOUND
+endif
+ifeq ($(AP_WAIT_LOOP_COUNT),1)
+CFLAGS += -DAP_WAIT_LOOP_COUNT
+endif
+ifeq ($(AP_LATE_ADMITTED),1)
+CFLAGS += -DAP_LATE_ADMITTED
 endif
 SMT_SIBLING_BY_INDEX ?= 0
 ifeq ($(SMT_SIBLING_BY_INDEX),1)
@@ -8323,7 +8350,7 @@ SYSCOV_CONTROL_EXPECTED = \
 	SYS_MAP_REGION SYS_READ SYS_READ_AUDIT SYS_REGISTER_STORAGE_BACKEND \
 	SYS_SIGACTION SYS_SIGRETURN SYS_SPAWN_ARG SYS_TASK_EXIT_INFO \
 	SYS_UNMAP_FRAME SYS_BLOCK_READ SYS_BLOCK_WRITE SYS_EXEC_IMAGE \
-	SYS_GET_PASS
+	SYS_GET_PASS SYS_IPC_CALL_CAP SYS_IPC_REPLY_CAP SYS_EXEC_NAMED
 
 smoke-syscall-coverage-control:
 	@set -eu; \
@@ -9180,6 +9207,56 @@ smoke-smp-topology:
 			REQUIRE_MARKER="SMP_SELFTEST: PASS online=$$want " \
 			FAIL_MARKER='SMP_SELFTEST: FAIL' tools/smoke_test.sh horus.iso; \
 	done
+
+# docs/LIMITATIONS.md 2.28. Every AP checks in 1 s late; the wait is bounded by
+# the clock at 2 s, so all four CPUs must still be counted and run work.
+#
+# UNDER KVM, ALWAYS, and the harness refuses to run without it. The defect was a
+# bound in instructions, and under TCG the old loop runs for longer than the
+# AP's delay (measured 2026-10-13: all four counted with the arm's bound), so a
+# TCG run of the arm would stay green and witness nothing. Under KVM the old
+# bound is a few milliseconds, which is where CI saw a core go uncounted.
+.PHONY: smoke-smp-ap-late
+smoke-smp-ap-late:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 AP_CHECKIN_LATE=1
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 AP_CHECKIN_LATE=1 horus.iso
+	@QEMU_ACCEL=kvm SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=4 \
+		REQUIRE_MARKER='SMP_SELFTEST: PASS online=4 ' \
+		FAIL_MARKER='SMP_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
+
+# Its arm: the loop-count bound, which under KVM ends long before 1 s, so no AP
+# is counted, every one is refused at the close, and the self-test finds none.
+.PHONY: smoke-smp-ap-late-control
+smoke-smp-ap-late-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 AP_CHECKIN_LATE=1 AP_WAIT_LOOP_COUNT=1
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 AP_CHECKIN_LATE=1 AP_WAIT_LOOP_COUNT=1 horus.iso
+	@QEMU_ACCEL=kvm SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=4 \
+		REQUIRE_MARKER='SMP_SELFTEST: FAIL no-aps' tools/smoke_test.sh horus.iso
+
+# The close. The highest-numbered AP checks in 2.5 s late, after the 2 s bound:
+# it must be refused, so three CPUs are counted, the late one runs no task, and
+# the count never changes. The PASS line carries late_refused=1 only when the
+# refusal happened.
+.PHONY: smoke-smp-ap-closed
+smoke-smp-ap-closed:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 AP_CHECKIN_PAST_BOUND=1
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 AP_CHECKIN_PAST_BOUND=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=4 \
+		REQUIRE_MARKER='late_refused=1 shootdown=ok' \
+		FAIL_MARKER='SMP_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
+
+# Its arm: no close. The late AP is counted when it arrives, after the kernel
+# printed three, and the self-test sees the count change.
+.PHONY: smoke-smp-ap-closed-control
+smoke-smp-ap-closed-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 AP_CHECKIN_PAST_BOUND=1 AP_LATE_ADMITTED=1
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 AP_CHECKIN_PAST_BOUND=1 AP_LATE_ADMITTED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=4 \
+		REQUIRE_MARKER='SMP_SELFTEST: FAIL late-cpu-admitted' tools/smoke_test.sh horus.iso
 
 # Control arm: index == LAPIC id again. On the sparse topology two of the eight
 # cores have ids past the ceiling and park, and the kernel must say six.

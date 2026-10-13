@@ -183,7 +183,6 @@ what later work needs:
 3. **Kernel reports on their own channel** (2.6c): the gates stop reading kernel output off the
    console that user programs also write.
 4. **Authenticated filesystem metadata** (1.30), if the maintainer takes it before the new format.
-5. **The boot's wait for secondary CPUs bounded by time** (2.28), not by a count of instructions.
 
 The later waves finish moving authority to capabilities (accounts as files, exec by capability),
 add job control, tighten the boot chain, move the kernel's remaining services to
@@ -273,8 +272,8 @@ test does not exist or does not run.
 
 | Layer | What it covers |
 |---|---|
-| Security properties | 139 numbered properties, each bound to a witness by `tools/check_invariants.py` |
-| QEMU integration tests | 531 `smoke-*` targets: 230 base gates and 301 control arms |
+| Security properties | 140 numbered properties, each bound to a witness by `tools/check_invariants.py` |
+| QEMU integration tests | 535 `smoke-*` targets: 232 base gates and 303 control arms |
 | Control arms | A build that puts a defect back on purpose; CI requires its gate to go red against it |
 | Kani | 35 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
 | Miri | The security core's tests, interpreted for undefined behaviour on every pull request |

@@ -1,4 +1,6 @@
 #include "syscall.h"
+#include "blkproto.h"
+#include "blkserve.h"
 
 /*
  * sdhcid -- an SD/eMMC driver in ring 3, holding one device capability.
@@ -595,6 +597,13 @@ static int card_identify(int *is_mmc_out, unsigned *rca_out) {
     return 0;
 }
 
+/* The block-driver protocol's backend (userspace/blkserve.c). blkserve has
+ * already held the request to the client's extent; rw_sectors holds it to the
+ * card's own, whatever blkserve decided. */
+static int be_read(uint64_t lba, void *buf, unsigned count)        { return rw_sectors(lba, buf, count, 0); }
+static int be_write(uint64_t lba, const void *buf, unsigned count) { return rw_sectors(lba, (void *)buf, count, 1); }
+static int be_flush(void)                                          { return sd_flush(); }
+
 /* Indexed by -rc of card_identify; keep in step with its returns. */
 static const char *const identify_step[] = {
     "",
@@ -711,6 +720,21 @@ void _start(void) {
     }
     if (data_khz) { wr("SDHCID: 4-bit bus at "); wr_dec(data_khz); wr(" kHz\n"); }
     else          wr("SDHCID: one data line at the identification clock\n");
+
+    /* ---- serving: the block-driver protocol, when spawned to serve ---------- */
+    /* From here the driver answers clients instead of testing itself, and what
+     * it may write is whatever its supervisor bound: the scratch-signature rule
+     * below is the self-test's, and blktest keeps the same rule as supervisor. */
+    if (sys_spawn_arg() == BLK_SERVE_ARG) {
+        static struct blk_backend be;
+        be.sectors = g_sectors;
+        be.max_count = BLK_MAX_COUNT;
+        be.read = be_read;
+        be.write = be_write;
+        be.flush = be_flush;
+        wr("SDHCID: serving the block protocol\n");
+        blkserve_run(&be);
+    }
 
     /* ---- 7. a real card is read and never written ----------------------- */
     if (!same(blk0, SCRATCH_MAGIC, SCRATCH_LEN)) {

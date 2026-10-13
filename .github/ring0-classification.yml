@@ -561,7 +561,11 @@
 # harness, never in the ship build, exactly as nvmed's took. The driver itself is
 # ring 3 (userspace/sdhcid.c); selftest.c (selftest) grew by its launcher, and
 # sdhci.c (driver) by the guard that keeps the ring-0 probe off in that build.
-core_budget_loc: 11572
+# 2026-10-13: 11572 -> 11579, +7, docs/design/ring3-storage.md step 2: multiboot.S
+# embedding blktest for the BLKPROTO_SELFTEST harness, never in the ship build.
+# The protocol's server half is ring 3 (userspace/blkserve.c); its launcher is in
+# selftest.c (selftest), and the dispatch reuses sdhcid's and nvmed's.
+core_budget_loc: 11579
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

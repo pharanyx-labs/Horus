@@ -1986,6 +1986,36 @@ void net_selftest(void) {
 }
 #endif /* NET_SELFTEST */
 
+#ifdef BLKPROTO_SELFTEST
+#include "blkproto.h"
+/* ---- The block-driver protocol's launcher (BLKPROTO_SELFTEST builds only) ----
+ *
+ * docs/design/ring3-storage.md step 2, the protocol. `drv` has been spawned and
+ * endowed with its device; this tells it to serve (BLK_SERVE_ARG), spawns
+ * blktest as its supervisor, and runs blktest first. blktest gets what init will
+ * have: untyped memory to make the endpoint and frames from, and a CAP_TCB
+ * naming the driver, the right to push capabilities down into it. The driver
+ * stays held until blktest has granted it the endpoint and the frames, then
+ * blktest resumes it, as frametest does its peer. */
+static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
+static void __attribute__((noreturn)) blkproto_launch(int drv) {
+    extern int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);
+    extern uint8_t embedded_blktest_bin_start[], embedded_blktest_bin_end[];
+    tasks[drv].spawn_arg = BLK_SERVE_ARG;
+    int t = fs_spawn_embedded(embedded_blktest_bin_start, embedded_blktest_bin_end, "blktest");
+    if (t <= 0) { print("BLKTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
+    tasks[t].spawn_arg = (uint64_t)drv;
+    if (cap_install_from_root(t, CAPSLOT_UNTYPED, 17, UNTYPED_ROOT) != 0 ||
+        cap_install_from_root(t, 29, 0, (uint32_t)drv) != 0) {
+        print("BLKTEST: FAIL endow\n"); for (;;) asm volatile("hlt");
+    }
+    selftest_resume_all();
+    tasks[drv].runnable_ctx = 0;
+    sched_enable_preemption();
+    sched_enter_user(t);
+}
+#endif /* BLKPROTO_SELFTEST */
+
 #ifdef NVME_SELFTEST
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
 /* ---- Ring-3 NVMe driver self-test (NVME_SELFTEST builds only) ---------------
@@ -2031,6 +2061,9 @@ void nvme_selftest(void) {
     if (cap_install_from_root(a, CAPSLOT_UNTYPED, 17, UNTYPED_ROOT) != 0) {
         print("NVME_SELFTEST: FAIL endow-untyped\n"); for (;;) asm volatile("hlt");
     }
+#ifdef BLKPROTO_SELFTEST
+    blkproto_launch(a);
+#endif
 
     selftest_resume_all();
     sched_enable_preemption();
@@ -2081,6 +2114,9 @@ void sdhcid_selftest(void) {
     if (cap_install_from_root(a, CAPSLOT_IO_DEVICE, 10, (uint32_t)ctrl) != 0) {
         print("SDHCID_SELFTEST: FAIL endow-controller\n"); for (;;) asm volatile("hlt");
     }
+#ifdef BLKPROTO_SELFTEST
+    blkproto_launch(a);
+#endif
 
     selftest_resume_all();
     sched_enable_preemption();

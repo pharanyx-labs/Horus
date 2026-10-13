@@ -281,6 +281,10 @@ control_arms:
   smoke-sdhcid-write-control: smoke-sdhcid
   smoke-sdhcid-csd-control: smoke-sdhcid
   smoke-devpage-control: smoke-devpage
+  smoke-blkproto-extent-control: smoke-blkproto
+  smoke-blkproto-bind-control: smoke-blkproto
+  smoke-blkproto-frame-control: smoke-blkproto
+  smoke-blkproto-absolute-control: smoke-blkproto
   smoke-newlib-dotdot-control: smoke-newlib
   smoke-newlib-walk-control: smoke-newlib
   smoke-nzcow-arena-control: smoke-nzcow
@@ -502,6 +506,7 @@ gates:
   - smoke-sdhcid
   - smoke-sdhcid-emmc
   - smoke-devpage
+  - smoke-blkproto
   - smoke-newlib
   - smoke-newlib-tamper
   - smoke-notify

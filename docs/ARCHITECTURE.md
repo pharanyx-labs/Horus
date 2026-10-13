@@ -331,6 +331,14 @@ compiled out; elsewhere `sdhci.c` still serves the kernel's storage. The kernel 
 ring-3 task mid-call, so the drivers leave ring 0 when the kernel stops doing disk I/O: the
 sealed-block calls of filesystem phase 2 take and return ciphertext, and `fs_server` moves it.
 
+**The block-driver protocol** (`include/blkproto.h`) is how a client reads and writes through
+either storage driver, and its server half (`userspace/blkserve.c`) is one file linked into both.
+A supervisor (in the installed system, `init`) makes the driver's endpoint and one frame per
+client, grants the driver the endpoint's receive right and the frames, and binds each client's
+token to an extent of the disk. A client's sectors are relative to its extent and cannot leave
+it; a token nobody bound, and the supervisor's own capability, reach nothing; only the untokened
+capability binds (S136). Nothing consumes it yet: filesystem phase 2 will.
+
 ### The shared library
 
 `src/kernel/shlib.c` loads the shared libc (`lib/libc.so`, a verified boot module) once, relocates

@@ -3839,6 +3839,19 @@ jobs:
         run: make smoke-sdhcid-write-control
       - name: Control arm — a CSD decoded at the specification's bit numbers
         run: make smoke-sdhcid-csd-control
+      # docs/design/ring3-storage.md step 2: the block-driver protocol, served by
+      # both storage drivers from one file (userspace/blkserve.c). blktest is the
+      # supervisor and the clients; the host checks where the write landed.
+      - name: The block-driver protocol holds each client to its extent (S136)
+        run: make smoke-blkproto
+      - name: Control arm — a run leaving the client's extent is served
+        run: make smoke-blkproto-extent-control
+      - name: Control arm — a client binds a token for itself
+        run: make smoke-blkproto-bind-control
+      - name: Control arm — a bound frame is bound to a second client
+        run: make smoke-blkproto-frame-control
+      - name: Control arm — the extent's start ignored, seen only on the host
+        run: make smoke-blkproto-absolute-control
 
   shared-objects:
     name: "Every shared object is one the kernel's loader would accept"

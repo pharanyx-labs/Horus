@@ -85,7 +85,7 @@ The recommendation is the one the route is written around; it is not the decisio
 |---|---|---|---|---|
 | Filesystem | The kernel a sealed-block service, v12 in `fs_server` | 2.10 phase 2, the storage half of 2.7a | 1.30 for good | Wave 2 filesystem |
 | Filesystem | A session's grants bounded by the kernel | 5.10 | 1.24 | phase 2, D8 |
-| Kernel | The loader and spawn path, and the IDE, SD and eMMC drivers, out of ring 0 | 2.7a | | |
+| Kernel | The loader and spawn path out of ring 0, and no disk I/O in ring 0: the IDE, SD and eMMC drivers replaced by ring-3 ones | 2.7a, 2.7 | | phase 2 |
 | SMP | Scheduling contexts, passive servers, affinity, more than eight CPUs, then the `%gs` block | 1.8 steps 4 to 8, 1.2 | | Wave 2 SMP |
 | Hardening | Indirect-branch tracking, then kernel ASLR | 3.8 | | 2.7a |
 | Observability | The audit stream, then deterministic replay | 3.6, 3.7 | | |
@@ -95,7 +95,7 @@ The recommendation is the one the route is written around; it is not the decisio
 | Lane | Milestone | Items | Needs |
 |---|---|---|---|
 | Filesystem | Links, timestamps, sparse files; then snapshots, reflinks, extended attributes | 2.10 phases 3 and 4 | phase 2 |
-| Drivers | NVMe as a disk the kernel stores to, then AHCI, then xHCI with USB keyboards | 2.7 | |
+| Drivers | NVMe installable by the ring-3 storage route, then AHCI, then xHCI with USB keyboards | 2.7 | Wave 3 kernel |
 | Network | IP, UDP, TCP and socket capabilities | 2.6 | |
 | Processes | `/proc`, mounts as syscalls, namespace inheritance, narrowing what `exec` carries | 2.3, 2.4 | |
 | Time | A wall clock and `clock_gettime` | 2.2 | Wave 2 SMP |
@@ -151,22 +151,26 @@ forked child starts with no mounts. `dev_server` runs only in the `VFS_SELFTEST`
 endpoint capability per connection, and DHCP. `netd` receives on the 82574L only (LIMITATIONS
 2.14) and runs only in the `NET_SELFTEST` build; shipping it is part of this item.
 
-**2.7 🚧 Drivers in ring 3.** Each under one device capability and the IOMMU. `nvmed` drives an
-NVMe controller from ring 3 in the `NVME_SELFTEST` build: it identifies the controller, reads and
-writes, polling, and `make smoke-nvme` checks the write on the host. Next, the kernel's storage
-reading blocks through a ring-3 driver, so an NVMe disk can be installed onto (a design question
-first: the protocol between the two); interrupts once MSI-X is enabled. Then AHCI reads and
-writes (the controller is identified and the drive answers IDENTIFY), USB through xHCI (and with
-it a keyboard on machines with no PS/2 emulation), and a framebuffer server.
+**2.7 🚧 Drivers in ring 3.** Each under one device capability and the IOMMU. Two storage drivers
+run in ring 3 in self-test builds, each proved by a write checked on the host: `nvmed` drives an
+NVMe controller (`make smoke-nvme`), and `sdhcid` an SD card or eMMC device (`make smoke-sdhcid`)
+with no memory to give its controller, since it moves data by PIO. The kernel never waits on a
+ring-3 task mid-call, so neither can serve the kernel's storage; they become disks the system
+stores to when the kernel stops doing disk I/O, and the ring-0 drivers are then deleted
+([`design/ring3-storage.md`](design/ring3-storage.md)): the block-driver protocol and filesystem
+phase 2 (2.10), then swap through a ring-3 driver, then the cutover. NVMe then installs by the
+same path as eMMC. After that, interrupts once MSI-X is enabled, AHCI reads and writes (the
+controller is identified and the drive answers IDENTIFY), USB through xHCI (and with it a keyboard
+on machines with no PS/2 emulation), and a framebuffer server.
 
 **2.7a ⬜ Evict the in-kernel services [F-2.7a].** `.github/ring0-classification.yml` (S87) measures
-the ring-0 `service` class at about 6,000 code lines beside a 11,563-line core: `storage.c` (the
+the ring-0 `service` class at about 6,000 code lines beside a 11,572-line core: `storage.c` (the
 encrypted store and the on-disk filesystem), `kusers.c` (accounts and password hashing), the loader
 and spawn path, `crypto.c` and `syscall_fs.c`, and the IDE, SD and eMMC drivers sit in ring 0 too.
-Storage leaves with 2.10 phase 2, accounts with 2.11 step 3's `auth_server`, and the loader as a
-ring-3 spawn server that builds a task's address space through frame and untyped capabilities, the
-ELF validator staying in the Rust core. S87 sets no line target for the whole kernel: the
-classification is the property.
+The drivers leave by [`design/ring3-storage.md`](design/ring3-storage.md), storage with 2.10 phase
+2, accounts with 2.11 step 3's `auth_server`, and the loader as a ring-3 spawn server that builds a
+task's address space through frame and untyped capabilities, the ELF validator staying in the Rust
+core. S87 sets no line target for the whole kernel: the classification is the property.
 
 **2.10 🚧 A capability-addressed filesystem.** Specified in [`design/filesystem.md`](design/filesystem.md),
 every load-bearing question answered. The disk holds no authority: capabilities are derived fresh
@@ -178,7 +182,7 @@ truthful. Phase 1b's steps 1, 2, 4 and 5 and step 3(a) are done. Open:
 | 3(b) ⏸ | `init` asks for the session at login and grants it, a watcher task reaping the shell (D1) |
 | 3(c) | The installer writes `/etc/fs.policy` |
 | 6 | The identity path removed: `perm_ok`, the root check on `chown`, the uid half of `SYS_IPC_SENDER` in the filesystem, `SYS_FS_SET_META` and `SYS_CONNECT_FS_SERVER`. Closes LIMITATIONS 1.31 |
-| Phase 2 | The kernel's sealed-block service, and the copy-on-write v12 format in `fs_server`, whose pointer tree is the Merkle tree, so all metadata is authenticated; separate system and home volumes |
+| Phase 2 | The kernel's sealed-block service, its calls taking and returning ciphertext so that `fs_server` moves the blocks through a ring-3 driver ([`design/ring3-storage.md`](design/ring3-storage.md)), and the copy-on-write v12 format in `fs_server`, whose pointer tree is the Merkle tree, so all metadata is authenticated; separate system and home volumes |
 | Phase 3 | Symbolic links, timestamps and a time service, cross-directory rename, sparse files |
 | Phase 4 | Snapshots, reflinks, extended attributes, quotas, locks, open-unlinked files |
 

@@ -864,6 +864,17 @@ embedded_nvmed_bin_start:
 embedded_nvmed_bin_end:
 #endif
 
+#ifdef SDHCID_SELFTEST
+/* PIE sdhcid binary: an SD/eMMC driver holding one device capability and no
+ * memory to give its controller (docs/design/ring3-storage.md step 1). */
+.align 16
+.global embedded_sdhcid_bin_start
+embedded_sdhcid_bin_start:
+.incbin "userspace/sdhcid.bin"
+.global embedded_sdhcid_bin_end
+embedded_sdhcid_bin_end:
+#endif
+
 #ifdef DEVCAP_SELFTEST
 /* PIE devcaptest binary: endowed with TWO device capabilities (the platform
  * console hardware and the PCI NIC), it proves each reaches its own device's

@@ -34,7 +34,11 @@ pool that already holds all of the RAM below 4 GiB.
    own.
 4. **The pager is in the kernel and minimal.** Page tables and the fault path are kernel state
    already. Swap I/O goes through the kernel's own block drivers, not `fs_server`, so bringing a
-   page back never depends on a ring-3 server that might itself be swapped.
+   page back never depends on a ring-3 server that might itself be swapped. **To change
+   (2026-10-13):** when the storage drivers leave ring 0
+   ([`ring3-storage.md`](ring3-storage.md) step 3), the pager still seals and keeps every tag in
+   RAM, and only the I/O moves: through a ring-3 driver whose pages, like those of the swap path,
+   never leave RAM, so the reason above still holds.
 
 ## 3. The design
 

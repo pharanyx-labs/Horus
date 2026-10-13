@@ -235,6 +235,12 @@ window.HORUS_SEARCH = [
 "k": 3
 },
 {
+"t": "1.34A small device register page can reach a neighbour",
+"p": "Limitations",
+"u": "limitations.html#1-34a-small-device-register-page-can-reach-a-neighbour",
+"k": 3
+},
+{
 "t": "2.6cMost gates still read kernel reports off a shared console",
 "p": "Limitations",
 "u": "limitations.html#2-6cmost-gates-still-read-kernel-reports-off-a-shared-consol",

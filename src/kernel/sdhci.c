@@ -1141,6 +1141,13 @@ void sdhci_probe(void) {
      * 2026-09-07, and the reason the installer finds no disk on a laptop whose
      * storage is eMMC. See make smoke-sdhci-detect. */
     return;
+#elif defined(SDHCID_SELFTEST)
+    /* The ring-3 driver's self-test build (docs/design/ring3-storage.md step 1):
+     * sdhcid drives the controller, so the kernel must not. Two drivers issuing
+     * commands to one register file would each see the other's state as a
+     * fault, which is the sdhci_lock hazard across privilege levels. */
+    print("sdhci: the ring-0 probe is off in this build; sdhcid drives the controller\n");
+    return;
 #else
     uint64_t devindex = 0;
     const struct io_device *d = find_sdhci_controller(&devindex);

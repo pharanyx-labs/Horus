@@ -30,6 +30,13 @@ not_in_ci:
     maintainer. What CI can run of the same host, the 3.00 divider, is gated
     by smoke-sdhci-v3clock.
 
+  smoke-sdhcid-emmc: >-
+    The ring-3 SD/eMMC driver on an emulated 64 GiB eMMC, for the same reason
+    as smoke-sdhci-emmc: CI's QEMU 8.2.2 has no `emmc` device, and the gate
+    fails rather than skips without one. smoke-sdhcid runs the same driver in
+    CI over two SD cards; what this adds is the eMMC branch (CMD1, the
+    extended CSD's capacity, the 1.8 V host) the laptop's storage takes.
+
   smoke-installer-emmc: >-
     A whole install onto an emulated 64 GiB eMMC, for the same reason as
     smoke-sdhci-emmc: CI's QEMU 8.2.2 has no `emmc` device. smoke-installer-sd

@@ -556,7 +556,12 @@
 # +7, dispatching and embedding nvmed for the NVME_SELFTEST harness, never in
 # the ship build, as netd's took. The driver itself is ring 3 (userspace/nvmed.c),
 # which is the point of it; selftest.c (selftest) grew by 28 for the launcher.
-core_budget_loc: 11563
+# 2026-10-13: 11563 -> 11572, +9, docs/design/ring3-storage.md step 1: smp.c +2
+# and multiboot.S +7, dispatching and embedding sdhcid for the SDHCID_SELFTEST
+# harness, never in the ship build, exactly as nvmed's took. The driver itself is
+# ring 3 (userspace/sdhcid.c); selftest.c (selftest) grew by its launcher, and
+# sdhci.c (driver) by the guard that keeps the ring-0 probe off in that build.
+core_budget_loc: 11572
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

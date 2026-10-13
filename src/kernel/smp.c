@@ -720,6 +720,13 @@ void smp_bringup(void) {
      * writes, flushes and reads back block 1 of a scratch disk (NVMETEST: PASS).
      * Roadmap 2.7; falsified by NVME_IOMMU_NO_MAP and NVME_WRITE_WRONG_LBA. */
     nvme_selftest();
+#elif defined(SDHCID_SELFTEST)
+    /* Gated: a ring-3 SD/eMMC driver whose whole authority is one device
+     * capability brings its card up and writes, flushes and reads back a run of
+     * a scratch card (SDHCIDTEST: PASS). docs/design/ring3-storage.md step 1;
+     * falsified by SDHCID_ADDR_INVERTED, SDHCID_WRITE_WRONG_LBA and
+     * SDHCID_CSD_SPEC_BITS. */
+    sdhcid_selftest();
 #elif defined(DEVCAP_SELFTEST)
     /* Gated: a ring-3 task holding TWO device capabilities proves each reaches
      * only its own device's frames, ports and IRQ (DEVCAPTEST: PASS). The witness

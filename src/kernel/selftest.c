@@ -2038,6 +2038,56 @@ void nvme_selftest(void) {
 }
 #endif /* NVME_SELFTEST */
 
+#ifdef SDHCID_SELFTEST
+static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
+/* ---- Ring-3 SD/eMMC driver self-test (SDHCID_SELFTEST builds only) ----------
+ *
+ * Step 1 of docs/design/ring3-storage.md: stand up `sdhcid`, an SD/eMMC driver
+ * whose ENTIRE authority is one CAP_IO_DEVICE naming the host controller, and
+ * require it to bring the card up, read block 0 and block 100, and write, flush
+ * and read back a run of eight sectors of a scratch card (SDHCIDTEST: PASS).
+ * `make smoke-sdhcid` then reads the image on the host.
+ *
+ * NO UNTYPED, unlike nvmed: the driver moves data by PIO, so it never builds a
+ * buffer for the device, and memory it cannot retype is memory it cannot hand
+ * to one. The ring-0 probe is compiled out of this build (sdhci_probe), so the
+ * controller has exactly one driver.
+ *
+ * Class 08:05 is the SD host controller whatever its programming interface (00
+ * no DMA, 01 DMA, 02 vendor), which is the test sdhci.c makes. FAILS rather
+ * than skips with no controller, for net_selftest's reason: a gate that quietly
+ * becomes a no-op reports PASS. */
+void sdhcid_selftest(void) {
+    extern uint8_t embedded_sdhcid_bin_start[], embedded_sdhcid_bin_end[];
+
+    print("SDHCID_SELFTEST: launch\n");
+
+    uint64_t ctrl = IODEV_NONE;
+    for (uint64_t i = IODEV_PLATFORM; i < IODEV_MAX; i++) {
+        const struct io_device *d = iodev_get(i);
+        if (d && d->bdf != IODEV_BDF_NONE && (d->classcode >> 8) == 0x0805u) {
+            ctrl = i; break;
+        }
+    }
+    if (ctrl == IODEV_NONE) {
+        print("SDHCIDTEST: FAIL no-controller-present\n"); for (;;) asm volatile("hlt");
+    }
+
+    int a = fs_spawn_embedded(embedded_sdhcid_bin_start, embedded_sdhcid_bin_end, "sdhcid");
+    if (a <= 0) { print("SDHCID_SELFTEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
+
+    /* The controller, and nothing else: no untyped (PIO, no DMA), no
+     * notification (it polls), no uid (nothing it does asks who it is). */
+    if (cap_install_from_root(a, CAPSLOT_IO_DEVICE, 10, (uint32_t)ctrl) != 0) {
+        print("SDHCID_SELFTEST: FAIL endow-controller\n"); for (;;) asm volatile("hlt");
+    }
+
+    selftest_resume_all();
+    sched_enable_preemption();
+    sched_enter_user(a);
+}
+#endif /* SDHCID_SELFTEST */
+
 #ifdef DEVCAP_SELFTEST
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
 /* ---- Device-capability isolation self-test (DEVCAP_SELFTEST builds only) -----
@@ -2706,7 +2756,7 @@ void e820_selftest(void) {
 #endif /* E820_SELFTEST */
 
 #if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(RECVBLOCK_SELFTEST) || defined(TOKEN_SELFTEST) || defined(KLOG_FORGE_SELFTEST) \
-    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE) || defined(VFS_SELFTEST) || defined(FORK_SELFTEST) || defined(FPU_SELFTEST) || defined(FORKEXEC_SELFTEST) || defined(PIPEREVOKE_SELFTEST) || defined(DEVCAP_SELFTEST) || defined(NET_SELFTEST) || defined(NVME_SELFTEST) || defined(SHLIB_SELFTEST) || defined(SHLIBC_SELFTEST) || defined(TUI_SELFTEST) \
+    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE) || defined(VFS_SELFTEST) || defined(FORK_SELFTEST) || defined(FPU_SELFTEST) || defined(FORKEXEC_SELFTEST) || defined(PIPEREVOKE_SELFTEST) || defined(DEVCAP_SELFTEST) || defined(NET_SELFTEST) || defined(NVME_SELFTEST) || defined(SDHCID_SELFTEST) || defined(SHLIB_SELFTEST) || defined(SHLIBC_SELFTEST) || defined(TUI_SELFTEST) \
     || defined(FSCAP_SELFTEST)
 /* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT/IRQ/CONSOLE/RECVBLOCK/TOKEN/KLOG_FORGE/FORK only) ----
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */

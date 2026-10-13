@@ -47,7 +47,7 @@ gates that match kernel strings are moving to COM3, which only the kernel can wr
 ## The integration gates
 
 
-There are 514 `smoke-*` targets: 225 gates and 289 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Four gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
+There are 519 `smoke-*` targets: 227 gates and 292 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
 
 
 ### Capabilities and authorisation
@@ -295,6 +295,8 @@ There are 514 `smoke-*` targets: 225 gates and 289 control arms. Each row is a g
 | `smoke-net` | A ring-3 driver holding one device capability exchanges ARP on the wire, its DMA confined by the IOMMU | S44, S45, S46, S47, S48 | `smoke-net-busmaster-control`, `smoke-net-decode-control`, `smoke-net-iommu-control`, `smoke-net-irq-storm-control`, `smoke-net-mask-control`, `smoke-net-msi-vector-control`, `smoke-net-msix-table-control` |
 | `smoke-net-intx` | The same driver on a device with no MSI, through the masked legacy interrupt line |  |  |
 | `smoke-nvme` | A ring-3 NVMe driver holding one device capability reads a disk and writes it, the write checked on the host, its DMA confined by the IOMMU | S45 | `smoke-nvme-iommu-control`, `smoke-nvme-write-control` |
+| `smoke-sdhcid` | A ring-3 SD/eMMC driver holding one device capability, and no memory to give its controller, brings up a 64 MiB and a 4 GiB card, reads them and writes them, the write and the decoded capacity checked on the host |  | `smoke-sdhcid-addr-control`, `smoke-sdhcid-write-control`, `smoke-sdhcid-csd-control` |
+| `smoke-sdhcid-emmc` | The same driver on a 64 GiB eMMC behind a host shaped like the IdeaPad's (local only) |  |  |
 
 ### Userspace, loading and shared libraries
 
@@ -385,7 +387,7 @@ The jobs that are not boot tests:
 | `image-abi` | The kernel reads the .bin container the build tool wrote (S80) |
 | `frame` | A frame capability names an object, and a delegate maps only what it holds |
 | `devcap` | A device capability names one device, and reaches only that device |
-| `net` | Drivers in ring 3 (network, NVMe), each holding one device capability |
+| `net` | Drivers in ring 3 (network, NVMe, SD/eMMC), each holding one device capability |
 | `shared-objects` | Every shared object is one the kernel's loader would accept |
 | `shlib` | Shared library text is executed by many tasks and writable by none |
 | `fpu` | A task cannot read another's XMM register file |

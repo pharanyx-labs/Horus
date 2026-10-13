@@ -146,6 +146,22 @@ Closing it means a task's death passing its capabilities' children to their gran
 revocation above still reaches them; that is a change to the derivation tree's rules (S3, S4) and
 is not made here.
 
+### 1.34 A device register page smaller than a page can reach a neighbour's registers **[HORUS-20261013-02]**
+
+`SYS_MAP_PHYS` maps a device's registers one 4 KiB page at a time, and checks that the length the
+caller asks for lies inside a region the device declares (`iodev_allows_mmio`). The page it maps
+is the whole page, whatever the length. A device whose register BAR is smaller than a page (QEMU's
+SD host controller has 256 bytes) therefore hands its driver the rest of that page, and if firmware
+put another device's registers there, the driver reaches them: S43's "reaches only that device"
+does not hold for that page.
+
+QEMU's firmware gives each small BAR its own page, so no gate here can show it; it was found by
+reading the check while writing `sdhcid`, the first ring-3 driver for such a device. Closing it
+means refusing a page that any other device's region overlaps, unless the caller's device declares
+that part too (the platform device and a display's BAR legitimately share the framebuffer). It is
+closed before `sdhcid` serves a real disk ([`design/ring3-storage.md`](design/ring3-storage.md)
+step 2); today `sdhcid` runs only in a self-test build.
+
 ## 2. Correctness
 
 ### 2.3 Only retyped kernel objects have a lifecycle
@@ -442,7 +458,11 @@ this.
   installed onto. An NVMe controller is driven from ring 3: `nvmed` identifies it and reads and
   writes it, polling, under one device capability and the IOMMU, in the `NVME_SELFTEST` build
   only (`make smoke-nvme`). The kernel's storage reads blocks only from ring-0 drivers, so an NVMe
-  disk cannot yet be installed onto or booted from (ROADMAP 2.7).
+  disk cannot yet be installed onto or booted from (ROADMAP 2.7). The SD/eMMC driver also runs in
+  ring 3, as `sdhcid` in the `SDHCID_SELFTEST` build (`make smoke-sdhcid`), but `sdhci.c` still
+  serves the kernel. The kernel never waits on a ring-3 task mid-call, so both become disks the
+  system stores to when the kernel stops doing disk I/O (filesystem phase 2,
+  [`design/ring3-storage.md`](design/ring3-storage.md)).
 - **USB.** A machine with no PS/2 controller emulation has no keyboard. On eMMC, write durability
   across a power cut rests on the driver's flush and the laptop's register reading; no emulated
   gate can witness it.

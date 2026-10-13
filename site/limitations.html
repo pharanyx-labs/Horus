@@ -93,9 +93,9 @@
 <li><a href="#limits">Findings</a>
 <ol class="toc__sub">
 <li><a href="#c-5nobody-reviews-a-change-before-it-lands">C-5Nobody reviews a change before it lands</a></li>
-<li><a href="#1-8nine-system-calls-have-no-test-that-runs-them">1.8Nine system calls have no test that runs them</a></li>
+<li><a href="#1-8seven-system-calls-have-no-test-that-runs-them">1.8Seven system calls have no test that runs them</a></li>
 <li><a href="#source-review-findings">1.30Findings from a source review</a></li>
-<li><a href="#1-6the-console-is-the-one-ambient-authority">1.6The console is the one ambient authority</a></li>
+<li><a href="#1-33a-revocation-cannot-reach-through-a-task-that-has-died">1.33A revocation cannot reach through a task that has died</a></li>
 <li><a href="#2-6cmost-gates-still-read-kernel-reports-off-a-shared-consol">2.6cMost gates still read kernel reports off a shared console</a></li>
 <li><a href="#2-9measured-boot-is-opt-in">2.9Measured boot is opt-in</a></li>
 <li><a href="#4a-programs-execute-right-is-advisory">4A program's execute right is advisory</a></li>
@@ -141,11 +141,11 @@
     </p>
   </li>
   <li>
-    <h3 id="1-8nine-system-calls-have-no-test-that-runs-them"><span class="id">1.8</span>Nine system calls have no test that runs them</h3>
+    <h3 id="1-8seven-system-calls-have-no-test-that-runs-them"><span class="id">1.8</span>Seven system calls have no test that runs them</h3>
     <p>
-      <strong>95 of 103</strong> system calls have their handler actually executed by the
+      <strong>96 of 103</strong> system calls have their handler actually executed by the
       scripted session, the permission conformance suite, or the boot-modules session.
-      The other 8 are each listed with a written reason, and a checked-in file
+      The other 7 are each listed with a written reason, and a checked-in file
       classifies all 103 implemented syscalls, covered or not, so the number cannot quietly
       fall. The gap
       matters: four times, a probe written to run an uncovered handler found a real defect on
@@ -162,12 +162,12 @@
     </p>
   </li>
   <li>
-    <h3 id="1-6the-console-is-the-one-ambient-authority"><span class="id">1.6</span>The console is the one ambient authority</h3>
+    <h3 id="1-33a-revocation-cannot-reach-through-a-task-that-has-died"><span class="id">1.33</span>A revocation cannot reach through a task that has died</h3>
     <p>
-      Writing to standard output and reading a console line need no capability, by decision:
-      every task has a standard output. The read side refuses once the console server owns
-      the hardware, and the write side cannot reach the kernel log. Every other system call
-      in the shipping kernel is authorised by a capability.
+      A copy of a capability names its parent, and a revocation follows those names down. When
+      a task dies its capabilities are emptied, so a copy whose parent was in that task is out
+      of reach of any revocation above it. If the shell dies while a program it lent the
+      keyboard to is still running, that program keeps reading until it ends.
     </p>
   </li>
   <li>
@@ -244,8 +244,7 @@
     <p>
       A destroyed kernel object's memory is not reused until its budget is reset, which is not
       written. A program linked to the shared libc cannot fork. There is a monotonic clock at
-      10 ms resolution, deliberately, and no wall clock or timers. Any program a person runs
-      can read the command lines they type, though not their passwords. Scheduling is a
+      10 ms resolution, deliberately, and no wall clock or timers. Scheduling is a
       single shared pool with global locks, fine at eight CPUs and not beyond.
     </p>
   </li>

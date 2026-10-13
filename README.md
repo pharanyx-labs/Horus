@@ -48,9 +48,9 @@ Horus is a research system, and nobody independent has reviewed it.
   sets direction and decides anything that touches the security model.
 - **The checks are extensive, but they are not review.** Every gate is built to fail when the
   defect it guards against is put back; that is evidence, not a second pair of eyes.
-- **Some security limitations are open.** Any program a person runs can read the command lines
-  they type (2.9b), measured boot is opt-in on a machine without a TPM (2.9), and the cryptography
-  is unaudited (5.4). A source review found
+- **Some security limitations are open.** A revocation cannot reach a copy derived through a task
+  that has died (1.33), measured boot is opt-in on a machine without a TPM (2.9), and the
+  cryptography is unaudited (5.4). A source review found
   two more, open until each is fixed (1.30, 1.31): the inode table is not authenticated at rest,
   and the older by-user-id file path checks a file's own mode, not its directories.
 
@@ -74,10 +74,9 @@ slot number; it never sees the capability itself.
   task.
 - **Refusal is the default.** Every system call passes a dispatch table that states the
   capability it needs, and an unknown number returns an error rather than reaching a handler.
-
-Two console paths are the deliberate exception: writing to standard output and reading a console
-line need no capability, and the read side is refused once `console_server` owns the console
-(`docs/LIMITATIONS.md` 1.6).
+- **Even the keyboard is a capability.** `init` mints the one capability the console reads input
+  for, and the shell lends a copy to the program running in the foreground and takes it back when
+  that program ends, so a program a person ran cannot read what they type afterwards.
 
 ## What it can do
 
@@ -179,8 +178,8 @@ what later work needs:
 4. **Authenticated filesystem metadata** (1.30), if the maintainer takes it before the new format.
 5. **The boot's wait for secondary CPUs bounded by time** (2.28), not by a count of instructions.
 
-The later waves finish moving authority to capabilities (accounts as files, exec by capability,
-console input as a capability), tighten the boot chain, move the kernel's remaining services to
+The later waves finish moving authority to capabilities (accounts as files, exec by capability),
+add job control, tighten the boot chain, move the kernel's remaining services to
 ring 3, and then grow the drivers and networking on top.
 
 ## Architecture
@@ -267,8 +266,8 @@ test does not exist or does not run.
 
 | Layer | What it covers |
 |---|---|
-| Security properties | 136 numbered properties, each bound to a witness by `tools/check_invariants.py` |
-| QEMU integration tests | 508 `smoke-*` targets: 224 base gates and 284 control arms |
+| Security properties | 137 numbered properties, each bound to a witness by `tools/check_invariants.py` |
+| QEMU integration tests | 511 `smoke-*` targets: 224 base gates and 287 control arms |
 | Control arms | A build that puts a defect back on purpose; CI requires its gate to go red against it |
 | Kani | 35 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
 | Miri | The security core's tests, interpreted for undefined behaviour on every pull request |

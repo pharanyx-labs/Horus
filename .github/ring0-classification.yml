@@ -541,7 +541,18 @@
 # is a capability and a count, and the count has to change under the lock the
 # capability changes under; that lock is the core's. kspawn.c, not core, shrank
 # by 6. The tally itself is in rust/src/capability.rs.
-core_budget_loc: 11527
+# 2026-10-13: 11527 -> 11554, +27, LIMITATIONS 1.6 (S135) and 2.9b (S93),
+# measured per file against main: syscall.c +19 (console_read_held and
+# console_write_held, the capability checks in SYS_WRITE fd 1 and SYS_READ fd 0,
+# and the KCONSOLE_READ_UNGATED / KCONSOLE_WRITE_UNGATED arms), terminal.c +2
+# (the console sink taking a proved capability, as the klog sink already did),
+# capability.c +6 (root[23], the console input minter init alone is given, and
+# EXEC_RESET_CSPACE's arm keeping the stdout its probe reports through). The
+# kernel's console paths are syscalls in the core, and their gates have to sit
+# where they run. kusers.c (service) grew by 1 for SYS_GET_PASS's check, and
+# selftest.c (selftest) by 14. The input capability itself is ring 3: init,
+# console_server and libhorus's conlend.
+core_budget_loc: 11554
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

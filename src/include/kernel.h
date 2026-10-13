@@ -2504,10 +2504,17 @@ int probe_com1_present(void);
 
 void println(const char *s);
 void print(const char *s);
-/* The ring-3 console write path (SYS_WRITE fd 1). `may_klog` is the caller's
- * PROVED CAP_KERNEL_LOG(WRITE) authority to append to the kernel message ring;
- * 0 means console only. Finding [H-2] -- see the comment on the definition. */
-void print_from_user(const char *s, int may_klog);
+/* The ring-3 console write path (SYS_WRITE fd 1). `may_console` and `may_klog`
+ * are the caller's PROVED authority to write to the console (LIMITATIONS 1.6) and
+ * to append to the kernel message ring (CAP_KERNEL_LOG with WRITE, finding
+ * [H-2]); each sink takes the bytes only when its flag is set. See the comment
+ * on the definition. */
+void print_from_user(const char *s, int may_console, int may_klog);
+/* Whether the CURRENT task may read from / write to the kernel's console
+ * (S135, LIMITATIONS 1.6). Defined in syscall.c beside h_get_line, whose
+ * capability the read half is. */
+int console_read_held(void);
+int console_write_held(void);
 /* The TSC boot clock behind the "[    S.uuuuuu] " prefix print() puts in front
  * of every line (terminal.c). There is no kmsg()/kmsg_begin() any more: the
  * stamp is applied by the writer, so a caller cannot forget it. */

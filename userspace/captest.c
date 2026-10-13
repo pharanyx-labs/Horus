@@ -1121,18 +1121,19 @@ void _start(void) {
     check(sys_map_region(SLOT_EMPTY_HI, 1, 0x30000000UL, CAP_RIGHT_READ) < 0,
           "map-region-on-empty-slot-not-refused");
 
-    /* (b) SYS_READ, and NOT through fd 0. The first draft of this probe read fd
-     * 0 and HUNG THE GATE, which is worth recording because it corrects an
-     * assumption this file could easily have shipped: SYS_GET_LINE is `covered`
-     * by a refusal, so fd 0 looked like the same shape. It is not. h_get_line
-     * tests CAP_CONSOLE inside the handler and refuses captest outright;
-     * h_read's fd 0 branch tests no authority at all -- it is ambient console
-     * input -- and its only early return is console_hw_owned(). No ring-3 server
-     * owns the UART in the captest image, so the call went to console_getc()
-     * and waited for a keystroke that never came. A syscall that blocks cannot
-     * be probed by a test that has to finish; SYS_GET_PASS has no non-blocking
-     * branch at all and stays uncovered for that reason, written down in the
-     * manifest rather than left as the reason it looks like.
+    /* (b) SYS_READ, fd 0 included since 2026-10-13, and SYS_GET_PASS. The
+     * first draft of this probe read fd 0 and HUNG THE GATE: h_read's fd 0
+     * branch tested no authority at all -- it was ambient console input -- and
+     * its only early return was console_hw_owned(). No ring-3 server owns the
+     * UART in the captest image, so the call went to console_getc() and waited
+     * for a keystroke that never came, and SYS_GET_PASS, the same shape, stayed
+     * uncovered for that reason (.github/syscall-coverage.yml).
+     *
+     * Both now ask for CAP_CONSOLE with READ before anything else, as
+     * h_get_line always did (S135, LIMITATIONS 1.6), and captest holds none, so
+     * both refuse at once. Under KCONSOLE_READ_UNGATED they would block here
+     * again, which is why that defect's witness is consoletest, where a server
+     * owns the UART and the refusal is non-blocking either way.
      *
      * fd >= 3 is the branch that matters anyway. It is the fourth [H-3] door --
      * the one the kernel's own comment calls "the one that MOVES BYTES" -- and
@@ -1149,6 +1150,11 @@ void _start(void) {
          * which is the fail-closed default an unhandled fd must take. */
         check(sys_read(1, lb, sizeof(lb)) == -1,
               "read-fd1-not-refused");
+        /* The console's input, without the console's read capability. */
+        check(sys_read(0, lb, sizeof(lb)) == SYS_ERR_PERM,
+              "read-fd0-console-without-capability");
+        check(sys_get_pass(lb, sizeof(lb)) == SYS_ERR_PERM,
+              "getpass-console-without-capability");
     }
 
     /* (c) Calls that answer about the CALLER, where there is no authority to

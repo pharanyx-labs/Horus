@@ -510,8 +510,12 @@ static int con_server_read_raw(void *buf, size_t len) {
     g_con_rq.len   = n;
     int rc = -1;
     for (int tries = 0; tries < 20000; tries++) {
-        rc = sys_ipc_call(CAPSLOT_CONSOLE_EP, 0, &g_con_rq, sizeof(g_con_rq), &g_con_rp);
-        if (rc >= 0) break;
+        /* The keyboard is read through the INPUT capability this program's
+         * spawner lent it (S93), never the stdout one, which console_server
+         * refuses input to. A program lent none fails here at once rather than
+         * after twenty thousand retries: an empty slot is not transient. */
+        rc = sys_ipc_call(CAPSLOT_CONSOLE_IN, 0, &g_con_rq, sizeof(g_con_rq), &g_con_rp);
+        if (rc >= 0 || !ipc_transient(rc)) break;
         sys_yield();
     }
     if (rc < 0 || g_con_rp.magic != CON_PROTO_MAGIC || g_con_rp.rc < 0) return -1;

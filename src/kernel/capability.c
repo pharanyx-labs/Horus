@@ -320,6 +320,28 @@ void cap_init(void) {
     root_cnode[22].badge  = 0;
     root_cnode[22].serial = 0xC0DE0016U;
 
+    /* The console's INPUT MINTER (2026-10-13, S93): the console endpoint with
+     * the rights to send, mint, pass on and take back, and NOT to receive.
+     * init alone is given a copy (spawn_initial_userspace_init), and mints from
+     * it the one capability console_server reads the keyboard for -- a tokened
+     * copy, CON_TOKEN_INPUT -- which it lends to the installer and the shell. A
+     * tokened mint needs MINT on an untokened source; lending needs GRANT and
+     * REVOKE to survive into the minted copy, since a mint keeps only rights its
+     * source holds.
+     *
+     * A root of its own rather than more rights on the listen capability above,
+     * which was tried first: the listen root is also what captest's second
+     * endpoint and the console self-tests are made from, and REVOKE on it broke
+     * captest's "holding is not revoking" check at once. That check was right:
+     * the authority to read requests and the authority to issue input are two
+     * authorities, and the server, which checks input capabilities, should not
+     * be able to make one. */
+    root_cnode[23].type   = CAP_ENDPOINT;
+    root_cnode[23].rights = CAP_RIGHT_WRITE | CAP_RIGHT_MINT | CAP_RIGHT_GRANT | CAP_RIGHT_REVOKE;
+    root_cnode[23].object = CON_EP_REQ;
+    root_cnode[23].badge  = 0;
+    root_cnode[23].serial = 0xC0DE0017U;
+
     for (int i = 0; i < MAX_REV_SETS; i++) rev_sets[i].valid = 0;
 }
 
@@ -1621,6 +1643,13 @@ void cap_exec_mutate_cspace(int t) {
     for (uint32_t s = KERNEL_RESERVED_CAPS; s < sz; s++) {
         if (cs[s].type == CAP_NULL) continue;
 #ifdef EXEC_RESET_CSPACE
+        /* Every delegated capability goes, except the image's stdout. Since
+         * 2026-10-13 the kernel's SYS_WRITE fd 1 needs that capability (S135),
+         * and the image this arm runs reports what it lost through it: wiped
+         * too, the arm timed out without its marker instead of naming the
+         * capability exec dropped. Keeping it does not soften the defect: the
+         * probes check CAPSLOT_DEBUG, and that still goes. */
+        if (s == CAPSLOT_CONSOLE_EP) continue;
         cs[s].type       = CAP_NULL;
         cs[s].rights     = 0;
         cs[s].object     = 0;

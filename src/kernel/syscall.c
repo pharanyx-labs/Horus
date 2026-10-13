@@ -64,6 +64,41 @@ void syscall_handler64(void)
  * CAP_FRAME on slot 3 and admitted everyone until 2026-09-10, and the type made
  * it read MORE like enforcement. S28 is about which capability, not which
  * type. */
+/* WHO MAY USE THE KERNEL'S CONSOLE (S135, LIMITATIONS 1.6 closed 2026-10-13).
+ *
+ * Reading: the kernel console capability with READ in CAPSLOT_CONSOLE, the gate
+ * h_get_line has had since 2026-08-24. SYS_READ fd 0 and SYS_GET_PASS read the
+ * same keyboard and asked for nothing; they ask for this now. init holds it from
+ * the root and delegates it to the shell, and nothing else is given a copy, so
+ * a program the shell runs reads input only through the console service, with
+ * the input capability the shell lends it (console_server.c, S93).
+ *
+ * Writing: the console service's endpoint with WRITE in CAPSLOT_CONSOLE_EP --
+ * the capability every program already holds as its stdout, so the kernel path
+ * and the service path are one authority -- or the kernel console capability
+ * with WRITE, which is what init writes with before the service exists. The
+ * endpoint is compared by OBJECT, not only by type, or any endpoint capability
+ * in that slot (a task's own retyped endpoint, say) would buy the console.
+ *
+ * Both fail closed: a task with an empty slot, the wrong type, or the wrong
+ * rights is refused. */
+int console_read_held(void) {
+#ifdef KCONSOLE_READ_UNGATED
+    /* CONTROL ARM -- never ship. The pre-2026-10-13 kernel, whose SYS_READ fd 0
+     * and SYS_GET_PASS read the console for any task. consoletest's kernel-read
+     * probes must report a FAIL marker under it. */
+    return 1;
+#else
+    return cap_lookup(CAPSLOT_CONSOLE, CAP_CONSOLE, CAP_RIGHT_READ) != NULL;
+#endif
+}
+
+int console_write_held(void) {
+    struct capability *ep = cap_lookup(CAPSLOT_CONSOLE_EP, CAP_ENDPOINT, CAP_RIGHT_WRITE);
+    if (ep && ep->object == (uint64_t)CON_EP_REQ) return 1;
+    return cap_lookup(CAPSLOT_CONSOLE, CAP_CONSOLE, CAP_RIGHT_WRITE) != NULL;
+}
+
 static void h_get_line(struct interrupt_frame64 *r) {
     struct capability *c = cap_lookup(CAPSLOT_CONSOLE, CAP_CONSOLE, CAP_RIGHT_READ);
     if (!c) {
@@ -80,7 +115,7 @@ static void h_get_line(struct interrupt_frame64 *r) {
      * read here would race the owner's read and steal bytes from a typed line. The
      * caller must route input through the console server (see userspace sh_get_line);
      * this in-kernel path is only for before handoff / after the owner has died. */
-    if (console_hw_owned()) { r->rax = (uint32_t)-1; return; }
+    if (console_hw_owned()) { r->rax = (uint32_t)SYS_ERR_BUSY; return; }
 
     void *user_dest = (void *)(addr_t)r->rbx;
     uint32_t max_len = 127;
@@ -302,10 +337,28 @@ static void h_brk(struct interrupt_frame64 *r) {
 
 /* SYS_WRITE (11): write to fd 1 (console). Length clamped to the scratch buf.
  *
- * SC_NONE in the dispatch table, and that stays right: writing to the TERMINAL
- * is not an authority this system rations -- every ring-3 task has a stdout, and
- * `SYSCALLS.md` marks fd 1 ambient deliberately. What IS an authority, and was
- * being handed out with it, is appending to the KERNEL MESSAGE RING.
+ * SC_NONE in the dispatch table because the call has TWO sinks, each with its
+ * own capability, and the table can name only one: the console, and the kernel
+ * message ring. Both are resolved below and each sink takes the bytes only from
+ * a writer that holds its capability; a writer that holds neither is refused.
+ *
+ * THE CONSOLE HALF (LIMITATIONS 1.6, closed 2026-10-13). Until then this was the
+ * one write path in the ship kernel that needed no capability at all, on the
+ * reasoning that every task has a stdout. Every task the shell runs does -- but
+ * as a capability: the console service's endpoint, which the spawner passes down
+ * (kspawn.c propagates a send-only copy to each child). This path is a second
+ * route to the same effect, the console's screen and wire, and a second route
+ * to an existing capability's effect inherits that capability's gate. So it
+ * asks for exactly that one: a CAP_ENDPOINT with WRITE naming the console
+ * service in CAPSLOT_CONSOLE_EP, or the kernel console capability itself
+ * (CAP_CONSOLE with WRITE in CAPSLOT_CONSOLE), which init holds before the
+ * console service exists. It was not only a nicety: the kernel drives the
+ * screen whenever no console server owns it, which is early boot and every
+ * moment after the server dies, and in those moments any task could draw a
+ * fake login prompt.
+ *
+ * What IS also an authority, and was being handed out with it, is appending to
+ * the KERNEL MESSAGE RING.
  *
  * Finding [H-2]. `print()` calls `klog_append()` for every byte before it tests
  * console ownership, so until this gate existed an unprivileged task could
@@ -317,8 +370,9 @@ static void h_brk(struct interrupt_frame64 *r) {
  * ring -- was converted to require CAP_KERNEL_LOG by [I-1], and the write side
  * was never considered.
  *
- * So the append is gated on the capability and the console write is not. Note
- * what this deliberately does NOT do: it does not gate on uid, on task id, or on
+ * So the append is gated on its own capability, separately from the console
+ * write: holding one sink's capability never buys the other. Note what this
+ * deliberately does NOT do: it does not gate on uid, on task id, or on
  * "is this the shell" (no ambient authority -- see [I-1]/[H-1]). It asks the
  * capability graph, and it fails closed when the answer is no.
  *
@@ -339,8 +393,9 @@ static void h_brk(struct interrupt_frame64 *r) {
  * Witness: `make smoke-klog-forge`. Falsified by `KLOG_WRITE_UNGATED=1`
  * (`make smoke-klog-forge-control`), which restores the unconditional append. */
 /* Carries S23: a ring-3 task cannot forge entries into the kernel message ring,
- * nor evict what is already there. The console write stays ungated; the klog
- * append below is what requires CAP_KERNEL_LOG with WRITE ([H-2]). */
+ * nor evict what is already there; the klog append below requires
+ * CAP_KERNEL_LOG with WRITE ([H-2]). Carries S135: the console write requires
+ * the console's capability (LIMITATIONS 1.6). */
 static void h_write(struct interrupt_frame64 *r) {
     int fd = r->rbx;
     void *buf = (void*)(addr_t)r->rcx;
@@ -367,7 +422,17 @@ static void h_write(struct interrupt_frame64 *r) {
     int may_klog = (logc != NULL);
 #endif
 
-    print_from_user(kbuf, may_klog);
+#ifdef KCONSOLE_WRITE_UNGATED
+    /* Control arm for 1.6's write half -- the pre-2026-10-13 behaviour, where
+     * the console took a ring-3 write from any task. Never set in a ship build;
+     * `smoke-console-pass-kwrite-control` sets it and REQUIRES the FAIL marker. */
+    int may_console = 1;
+#else
+    int may_console = console_write_held();
+#endif
+
+    if (!may_console && !may_klog) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    print_from_user(kbuf, may_console, may_klog);
     r->rax = to_copy;
 }
 
@@ -378,9 +443,21 @@ static void h_read(struct interrupt_frame64 *r) {
     size_t len = r->rdx;
 
     if (fd == 0) {
+        /* The console read needs the console's read capability, as h_get_line
+         * and h_get_pass do (LIMITATIONS 1.6, closed 2026-10-13). Until then fd 0
+         * was the one read in the ship kernel that asked for nothing, which was
+         * survivable only because a console server owns the UART in a live boot
+         * -- and it stops owning it the moment it dies, at which point every
+         * task could read what was typed, the password at a `sudo` prompt
+         * included. Asked BEFORE the ownership test, so a task without the
+         * capability is refused as such (SYS_ERR_PERM) whoever owns the UART,
+         * and the refusal is testable while a server owns it. */
+        if (!console_read_held()) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
         /* Fail closed while a ring-3 console server owns the serial UART (see
-         * h_get_line): the kernel must not be a second reader. */
-        if (console_hw_owned()) { r->rax = (uint32_t)-1; return; }
+         * h_get_line): the kernel must not be a second reader. SYS_ERR_BUSY, not
+         * -1: -1 is SYS_ERR_PERM, and "a server owns it" must be told apart from
+         * "you hold no capability" (consoletest, S135). */
+        if (console_hw_owned()) { r->rax = (uint32_t)SYS_ERR_BUSY; return; }
         char line[128];
         uint32_t got = 0;
         while (got < len && got < 127) {
@@ -1486,8 +1563,8 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_CAP_TRANSFER]             = { h_cap_transfer,            SC_NONE, 0, SC_ANYTYPE }, /* authority in cap_transfer */
     [SYS_CAP_MOVE]                 = { h_cap_move,                SC_NONE, 0, SC_ANYTYPE }, /* authority in cap_move */
     [SYS_SBRK]                     = { h_sbrk,                    SC_NONE, 0, SC_ANYTYPE }, /* own heap, bounds-checked */
-    [SYS_WRITE]                    = { h_write,                   SC_NONE, 0, SC_ANYTYPE }, /* ambient console (fd 1) */
-    [SYS_READ]                     = { h_read,                    SC_NONE, 0, SC_ANYTYPE }, /* fd 0 ambient; fd>=3 slot-3 READ in handler */
+    [SYS_WRITE]                    = { h_write,                   SC_NONE, 0, SC_ANYTYPE }, /* console endpoint or CAP_CONSOLE WRITE, and/or CAP_KERNEL_LOG WRITE, in handler */
+    [SYS_READ]                     = { h_read,                    SC_NONE, 0, SC_ANYTYPE }, /* fd 0: CAP_CONSOLE READ in handler; fd>=3 retired */
     /* ---- The in-kernel ramfs surface, retired 2026-08-22 ------------------
      *
      * SYS_OPEN, 15 (ramfs create) and 16 (ramfs list) used to read
@@ -1626,7 +1703,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_CONSOLE_OWNED]            = { h_console_owned,           SC_NONE, 0, SC_ANYTYPE }, /* console status: read-only, self-authorizing */
     [SYS_AUTH]                     = { h_auth,                    SC_NONE, 0, SC_ANYTYPE }, /* self-authorizing */
     [SYS_SUDO]                     = { h_sudo,                    SC_NONE, 0, SC_ANYTYPE }, /* re-auth in handler */
-    [SYS_GET_PASS]                 = { h_get_pass,                SC_NONE, 0, SC_ANYTYPE },
+    [SYS_GET_PASS]                 = { h_get_pass,                SC_NONE, 0, SC_ANYTYPE }, /* CAP_CONSOLE READ in handler */
     [SYS_USERADD]                  = { h_useradd,                 SC_NONE, 0, SC_ANYTYPE }, /* admin check in do_useradd */
     [SYS_USERDEL]                  = { h_userdel,                 SC_NONE, 0, SC_ANYTYPE }, /* admin check in do_userdel */
     [SYS_USERLIST]                 = { h_userlist,                SC_NONE, 0, SC_ANYTYPE }, /* admin check in do_userlist */

@@ -417,25 +417,37 @@ static int con_stamping = 1;      /* until CON_OP_BOOT_DONE, or the first read *
 #endif
 static int con_line_start = 1;
 
-/* WHICH TASK MAY READ A PASSWORD (S93). 0 is "nobody yet", and a GETPASS while
- * it is 0 is REFUSED rather than served -- fail closed, so a build whose init
- * never registers an owner cannot have passwords read by whoever asks first.
+/* WHO MAY READ THE KEYBOARD (S93; LIMITATIONS 2.9b closed 2026-10-13).
  *
- * Every task the shell spawns inherits a send-only console capability, which is
- * how `ls` gets a stdout. Before this, that capability also bought the right to
- * sit in a loop on CON_OP_GETPASS and collect the password typed at the next
- * `sudo` prompt -- from any program the person had run. The capability cannot
- * be withheld without taking stdout away with it, so the discrimination has to
- * happen here, against the kernel's attestation of who sent the request.
+ * A request is served input only if it came through the console's INPUT
+ * capability: this endpoint, tokened CON_TOKEN_INPUT (include/console_proto.h
+ * says where those come from and how a program is lent one). The token is the
+ * kernel's attestation of the capability the request was sent through
+ * (SYS_IPC_INVOKER), read before the reply moves the endpoint on, and a failure
+ * to read it is a refusal.
  *
- * OUTSIDE THE CONSOLE_TIMESTAMPS_LEGACY #ifdef, and it was not on the first
- * try. Written beside `con_stamping`, it landed in that flag's #else branch --
- * so the ship build compiled, every local gate passed, and the TIMESTAMP
- * control arm failed to build with `con_input_owner undeclared`. Two unrelated
- * flags, one declaration, and the only build that noticed was an arm for
- * something else entirely. A declaration belongs where its OWN flag scopes it,
- * which for this one is nowhere. */
-static uint32_t con_input_owner;  /* task id; 0 = unset */
+ * Every task the shell spawns inherits a send-only, UNTOKENED console
+ * capability, which is how `ls` gets a stdout, so the discrimination has to be
+ * on the capability rather than on holding one at all. Until 2026-10-13 it was
+ * on the sender's task id instead, registered by init: authority by identity,
+ * gating GETPASS alone, so every program a person ran could read every command
+ * line typed after it through GETLINE or READ_RAW.
+ *
+ * ONE PREDICATE FOR ALL FOUR OPERATIONS that ask it (GETLINE, GETPASS, READ_RAW
+ * and INPUT_HELD), so the probe a test asks cannot disagree with the gate the
+ * reads use. */
+static int con_input_permitted(int have_inv, const struct ipc_invoker *inv) {
+#ifdef CONSOLE_INPUT_UNGATED
+    /* CONTROL ARM -- never ship. The pre-2026-10-13 server's reach, widened to
+     * all three reads: input served to any holder of the console endpoint,
+     * which is every task the shell has ever spawned. See
+     * make smoke-console-pass-control. */
+    (void)have_inv; (void)inv;
+    return 1;
+#else
+    return have_inv && inv->token == CON_TOKEN_INPUT;
+#endif
+}
 
 /* Cooked output has reached the display since a full-screen program last drew.
  * See con_draw_cells for what that obliges the next draw to tidy. Starts set,
@@ -1721,17 +1733,18 @@ display_ready:
             sys_exit();
         }
 
-        /* WHO SENT IT, asked of the kernel and never of the message. The
-         * request carries no identity field and must not grow one: a client
-         * that could name itself could name somebody else (S93).
+        /* WHAT IT WAS SENT THROUGH, asked of the kernel and never of the
+         * message: the request carries no authority field and must not grow
+         * one, because a client that could state its own authority could state
+         * anybody's (S93).
          *
          * Read BEFORE the dispatch below, because sys_ipc_reply_to and the next
-         * receive both move the endpoint's record of the last sender on. A
-         * failure here reports 0, which no task has, so every gated operation
-         * fails closed. */
-        uint32_t sender_gid = 0, sender_pid = 0;
-        if (sys_ipc_sender_task(CAPSLOT_CONSOLE_EP, &sender_gid, &sender_pid) == (uint32_t)-1)
-            sender_pid = 0;
+         * receive both move the endpoint's record of the last message on. A
+         * failure here leaves have_inv 0, so every input operation fails closed. */
+        struct ipc_invoker inv;
+        umemset(&inv, 0, sizeof(inv));
+        int have_inv = (sys_ipc_invoker(CAPSLOT_CONSOLE_EP, &inv) == 0);
+        int may_input = con_input_permitted(have_inv, &inv);
 
         umemset(&rp, 0, sizeof(rp));
         rp.magic = CON_PROTO_MAGIC;
@@ -1743,28 +1756,23 @@ display_ready:
             con_write(rq.data, n);                    /* <-- ring-3 drives the hardware */
             rp.rc = (int)n;
         } else if (rq.op == CON_OP_GETLINE) {
-            rp.rc = con_getline(rp.data, rq.len ? rq.len : (CON_LINE_MAX - 1), 0);
+            /* REFUSED WITHOUT READING, for each of the three reads: a server that
+             * read the line and then declined to return it would have taken the
+             * keystrokes out of the reader's hands. */
+            if (!may_input) rp.rc = SYS_ERR_PERM;
+            else rp.rc = con_getline(rp.data, rq.len ? rq.len : (CON_LINE_MAX - 1), 0);
         } else if (rq.op == CON_OP_GETPASS) {
-#ifdef CONSOLE_PASS_UNGATED
-            /* CONTROL ARM -- never ship. The pre-2026-09-12 server, which served
-             * a password read to any holder of the send-only console capability
-             * -- which is every task the shell has ever spawned. See
-             * make smoke-console-pass-control. */
-            rp.rc = con_getline(rp.data, rq.len ? rq.len : (CON_LINE_MAX - 1), 1);
-            was_pass = 1;
-#else
-            if (con_input_owner == 0 || sender_pid != con_input_owner) {
-                /* REFUSED WITHOUT READING, which is the half that matters: a
-                 * server that read the line and then declined to return it
-                 * would have taken the keystrokes out of the owner's hands. */
+            if (!may_input) {
                 rp.rc = SYS_ERR_PERM;
             } else {
                 rp.rc = con_getline(rp.data, rq.len ? rq.len : (CON_LINE_MAX - 1), 1);
                 was_pass = 1;
             }
-#endif
         } else if (rq.op == CON_OP_READ_RAW) {
-            rp.rc = con_read_raw(rp.data, rq.len ? rq.len : (CON_LINE_MAX - 1));
+            if (!may_input) rp.rc = SYS_ERR_PERM;
+            else rp.rc = con_read_raw(rp.data, rq.len ? rq.len : (CON_LINE_MAX - 1));
+        } else if (rq.op == CON_OP_INPUT_HELD) {
+            rp.rc = may_input ? 0 : SYS_ERR_PERM;
         } else if (rq.op == CON_OP_WRITE_RAW) {
             unsigned n = rq.len; if (n > CON_IO_MAX) n = CON_IO_MAX;
             con_write_raw(rq.data, n);
@@ -1776,16 +1784,6 @@ display_ready:
             rp.rc = con_draw_cells(rq.data, n);
         } else if (rq.op == CON_OP_WINSZ) {
             rp.rc = (CON_ROWS << 16) | CON_COLS;
-        } else if (rq.op == CON_OP_SET_INPUT_OWNER) {
-            /* Unset, or the current owner. See include/console_proto.h for why
-             * the bootstrap is safe and why the server does not try to
-             * recognise init instead. */
-            if (con_input_owner == 0 || sender_pid == con_input_owner) {
-                con_input_owner = rq.len;
-                rp.rc = 0;
-            } else {
-                rp.rc = SYS_ERR_PERM;
-            }
         } else if (rq.op == CON_OP_CLEAR) {
             con_clear();
             rp.rc = 0;

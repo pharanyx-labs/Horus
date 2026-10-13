@@ -450,6 +450,7 @@ void spawn_initial_userspace_init(void) {
         cap_install_from_root(pid, 11, 13, FS_EP_REQ);        /* root[13] = CAP_ENDPOINT FS_EP_REQ  (listen) */
         cap_install_from_root(pid, 13, 11, CON_EP_REQ);       /* root[11] = CAP_ENDPOINT CON_EP_REQ (listen) */
         cap_install_from_root(pid, 14, 12, CON_EP_REQ);       /* root[12] = CAP_ENDPOINT CON_EP_REQ (client) */
+        cap_install_from_root(pid, 49, 23, CON_EP_REQ);       /* root[23] = CAP_ENDPOINT CON_EP_REQ (input minter, S93) */
         cap_install_from_root(pid, 15, 14, NOTIF_FS_READY);   /* root[14] = CAP_NOTIFICATION fs-ready        */
         /* Formerly-ambient root authority (finding I-1): init delegates the
          * kernel log to the shell and the boot-module surface to fs_server. */

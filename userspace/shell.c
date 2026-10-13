@@ -77,7 +77,10 @@ static int con_read_line(uint32_t op, char *buf, unsigned max) {
     con_rq.len   = max;
     int rc = -1;
     for (int tries = 0; tries < CON_MAX_RETRY; tries++) {
-        rc = sys_ipc_call(CAPSLOT_CONSOLE_EP, 0, &con_rq, sizeof(con_rq), &con_rp);
+        /* Through the INPUT capability init gave this shell, never the stdout
+         * one: console_server reads the keyboard only for a request that came
+         * through a capability tokened CON_TOKEN_INPUT (S93). */
+        rc = sys_ipc_call(CAPSLOT_CONSOLE_IN, 0, &con_rq, sizeof(con_rq), &con_rp);
         if (rc >= 0) break;
         sys_yield();
     }
@@ -665,6 +668,30 @@ static void sh_unendow(struct hvfs_grant *g) {
     hvfs_grant_release(g);
 }
 
+/* The slot this shell lends the keyboard from: a copy of its input capability
+ * is minted here and the foreground program's copy is granted from it, so one
+ * revoke of this slot takes back the program's copy and anything it passed on
+ * (console_lend, include/libhorus.h). One program at a time holds it: the shell
+ * waits for each before the next prompt, and a pipeline lends it to its first
+ * stage only. Clear of 24/25 (the filesystem root and working directory) and of
+ * hvfs's pool, 32 to 63. */
+#define SH_SLOT_CON_LEND 26
+
+/* Lend the keyboard to the SUSPENDED child the shell is about to run in the
+ * foreground (S93, LIMITATIONS 2.9b). A program the shell starts and does not
+ * wait for (`spawn`) is not lent it, and neither is a pipeline stage whose
+ * input is a pipe: a program that is not the one in front of the person reads
+ * nothing typed. A failure is said and is not fatal: the program runs without
+ * the keyboard, which is the fail-closed half of the same rule. */
+static void sh_lend_input(int pid, struct con_lend *l) {
+    int r = console_lend(pid, CAPSLOT_CONSOLE_IN, SH_SLOT_CON_LEND, l);
+    if (r == 0 || r == -1) return;   /* lent, or nothing to lend (no input held) */
+    print("spawn: could not lend the program the keyboard (kernel ");
+    if (l->krc < 0) { print("-"); print_decimal((uint32_t)-l->krc); }
+    else print_decimal((uint32_t)l->krc);
+    println("); it runs without input");
+}
+
 /* If `cmd`'s first bare word names an executable file in /bin, load it and run it
  * as a child with the full argv, blocking until it exits; return 1. Returns 0
  * when the word is not a /bin file (or /bin does not exist yet, or the word
@@ -707,11 +734,14 @@ static int try_run_from_bin(const char *cmd) {
     if (pid < 0) { print(argv[0]); println(": failed to spawn"); return 1; }
     struct hvfs_grant g;
     if (sh_endow(pid, &g) != 0) return 1;
+    struct con_lend kb;
+    sh_lend_input(pid, &kb);
     sys_task_resume(pid);                /* spawn leaves the child suspended */
     /* Block until the child finishes so its output lands before the next prompt.
      * SYS_ERR_INTR (a signal interrupted the wait) is retried; any other return
      * means the child is already gone. */
     while (sys_wait(pid) == SYS_ERR_INTR) { }
+    console_unlend(&kb);
     sh_unendow(&g);
     return 1;
 }
@@ -796,6 +826,10 @@ static int try_run_pipeline(const char *cmd) {
     int pid[PL_MAX_STAGES];
     struct hvfs_grant grant[PL_MAX_STAGES];
     for (int i = 0; i < nstage; i++) { pid[i] = -1; grant[i].root.owned = 0; grant[i].cwd.owned = 0; }
+    /* The keyboard goes to the first stage alone: it is the only one whose
+     * input is the console; every later stage reads a pipe. */
+    struct con_lend kb;
+    kb.lent = 0;
 
     for (int i = 0; i < nstage; i++) {
         char store[128];
@@ -810,6 +844,7 @@ static int try_run_pipeline(const char *cmd) {
         uint32_t out_slot = (i < nstage - 1) ? wslot[i]     : 0;
         pid[i] = sys_spawn_image_stdio(buf, size, argc, argv, in_slot, out_slot);
         if (pid[i] > 0 && sh_endow(pid[i], &grant[i]) != 0) pid[i] = -1;
+        if (pid[i] > 0 && in_slot == 0 && !kb.lent) sh_lend_input(pid[i], &kb);
         if (pid[i] > 0) sys_task_resume(pid[i]);   /* spawn leaves the child suspended */
         free(buf);
         if (pid[i] < 0) { print(argv[0]); println(": failed to spawn"); }
@@ -822,6 +857,7 @@ static int try_run_pipeline(const char *cmd) {
     /* Wait for all spawned stages so their output lands before the next prompt. */
     for (int i = 0; i < nstage; i++)
         if (pid[i] > 0) while (sys_wait(pid[i]) == SYS_ERR_INTR) { }
+    console_unlend(&kb);
     for (int i = 0; i < nstage; i++) sh_unendow(&grant[i]);
 
     return 1;
@@ -2973,7 +3009,9 @@ static void handle_command(char *cmd) {
     } else if (strcmp(cmd, "spawn") == 0 || strncmp(cmd, "spawn ", 6) == 0) {
         /* Not waited for, so nothing could ever give a grant back: a task this
          * starts gets no filesystem from the shell (sh_endow is not called),
-         * and through capabilities it has none. Fail closed. */
+         * and through capabilities it has none, and no keyboard either
+         * (sh_lend_input is not called): it is not the program in front of the
+         * person. Fail closed. */
         int pid;
         if (cmd[5] == ' ') {
             const char *name = cmd + 6;
@@ -3028,9 +3066,12 @@ static void handle_command(char *cmd) {
         if (pid <= 0) { println("run: exec failed (not a valid program image?)"); return; }
         struct hvfs_grant g;
         if (sh_endow(pid, &g) != 0) return;
+        struct con_lend kb;
+        sh_lend_input(pid, &kb);
         sys_task_resume(pid);                      /* spawn leaves the child suspended */
         print("run: pid="); print_decimal(pid); println("");
         while (sys_wait(pid) == SYS_ERR_INTR) { }
+        console_unlend(&kb);
         sh_unendow(&g);
         println("run: done");
     } else if (strncmp(cmd, "fss", 3) == 0) {

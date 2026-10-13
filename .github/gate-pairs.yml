@@ -177,6 +177,9 @@ control_arms:
   smoke-boot-menu-control: smoke-boot-menu
   smoke-boot-pin-control: smoke-boot-pin
   smoke-console-pass-control: smoke-console-pass
+  smoke-console-pass-lend-control: smoke-console-pass
+  smoke-console-pass-kread-control: smoke-console-pass
+  smoke-console-pass-kwrite-control: smoke-console-pass
   smoke-tpm-bootimg-control: smoke-tpm-bootimg
   smoke-serial-bound-control: smoke-serial-bound
   smoke-keyslots-control: smoke-keyslots

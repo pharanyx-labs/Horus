@@ -2,6 +2,7 @@
 #include "console_proto.h"
 #include "exit_reason.h"   /* format_exit_reason(): shared with proctest, which asserts its text */
 #include "fs_proto.h"      /* FS_R_* and fs_token(): the root directory capability (launch_fs_server) */
+#include "libhorus.h"     /* console_lend(): the keyboard, lent to the installer and the shell (S93) */
 
 /*
  * Ring-3 init process (PID-1 role).
@@ -141,29 +142,6 @@ static void console_boot_done(void) {
         if (!ipc_transient(rc)) return;
         sys_yield();
     }
-}
-
-/* Tell console_server which task may read a password from the console (S93).
- *
- * Shares init_con_rq/rp with console_boot_done above: init sends both, one at a
- * time, from its own single thread, so one pair of buffers is the honest shape.
- *
- * BOUNDED RETRY AND A REPORTED FAILURE, unlike console_boot_done, which returns
- * on any non-transient error because a missing boot-done only means the log
- * keeps its timestamps. This one decides whether the shell can read a password
- * at all, so the caller is told. Returns 0 when the server accepted it. */
-static int console_set_input_owner(uint32_t pid) {
-    init_con_rq.magic = CON_PROTO_MAGIC;
-    init_con_rq.op    = CON_OP_SET_INPUT_OWNER;
-    init_con_rq.len   = pid;
-    for (int tries = 0; tries < 20000; tries++) {
-        int rc = sys_ipc_call(INIT_CON_CLIENT_SLOT, 0,
-                              &init_con_rq, sizeof(init_con_rq), &init_con_rp);
-        if (rc >= 0) return init_con_rp.rc == 0 ? 0 : -1;
-        if (!ipc_transient(rc)) return -1;
-        sys_yield();
-    }
-    return -1;
 }
 
 /* Report why the supervised shell ended, using the record SYS_TASK_EXIT_INFO
@@ -357,6 +335,17 @@ static void report_storage(void) {
 /* INIT_SHELL_ROOT_READONLY instrument only: the read-only copy of the root
  * directory handed to the shell (smoke-fs-cap-shell). */
 #define INIT_FS_SHELL_RO    45
+/* THE CONSOLE'S INPUT (S93, LIMITATIONS 2.9b). The kernel gives init one more
+ * console capability, in INIT_CON_MINTER: send, mint, pass on and take back,
+ * and no receive right (root[23]). From it init mints the one capability
+ * console_server reads the keyboard for: the console endpoint tokened
+ * CON_TOKEN_INPUT, in INIT_CON_INPUT. It is lent, never given: to the installer
+ * while init waits for it and to the shell while init supervises it, each
+ * through a copy in INIT_CON_LEND that init revokes once the borrower has been
+ * waited for (console_lend, include/libhorus.h). */
+#define INIT_CON_INPUT      47
+#define INIT_CON_LEND       48
+#define INIT_CON_MINTER     49
 
 /* EVERY SLOT INIT FILLS, AS CASE LABELS, so two of them sharing a number is a
  * compile error rather than a capability put where another already is. Phase 1b
@@ -370,6 +359,7 @@ static void __attribute__((unused)) init_slots_distinct(int slot)
     case INIT_FS_LISTEN: case INIT_CON_LISTEN: case INIT_CON_CLIENT: case INIT_NOTIFY:
     case INIT_KERNEL_LOG: case INIT_BOOT_MODULE: case INIT_DEV_LISTEN: case INIT_DEV_CLIENT:
     case INIT_CON_NOTIFY: case INIT_FS_SRV: case INIT_FS_ROOT: case INIT_FS_SHELL_RO:
+    case INIT_CON_INPUT: case INIT_CON_LEND: case INIT_CON_MINTER:
         break;
     default:
         break;
@@ -408,6 +398,13 @@ static int launch_fs_server(void) {
     /* Boot-module read surface. Formerly ambient uid==0 (finding I-1); now an
      * explicit, revocable capability held only by the task that provisions /bin. */
     if (sys_cap_grant(srv, INIT_BOOT_MODULE, CAPSLOT_BOOT_MODULE) != 0) return -6;
+    /* Its console output: a send-only copy of init's console client, which is
+     * what the kernel's SYS_WRITE fd 1 now asks for (S135, LIMITATIONS 1.6).
+     * Until 2026-10-13 that path needed nothing, so the server's startup lines
+     * ("FS_STORE: ...", which the installer gate reads) reached the console
+     * because every task could write to it. Granted, so they still do. Not
+     * fatal: a server that cannot log still serves. */
+    (void)sys_cap_grant(srv, INIT_CON_CLIENT, CAPSLOT_CONSOLE_EP);
     /* Fully endowed: let it run. Spawn leaves a child suspended precisely so this
      * ordering is guaranteed rather than raced (see do_spawn). */
     if (sys_task_resume(srv) != 0) return -7;
@@ -476,6 +473,8 @@ static int launch_dev_server(void) {
     if (srv <= 0) return -3;
     /* The LISTEN right, to the server and to nobody else. */
     if (sys_cap_grant(srv, INIT_DEV_LISTEN, CAPSLOT_FS_LISTEN) != 0) return -4;
+    /* Its console output, as launch_fs_server grants it (S135). */
+    (void)sys_cap_grant(srv, INIT_CON_CLIENT, CAPSLOT_CONSOLE_EP);
     if (sys_task_resume(srv) != 0) return -5;
     return srv;
 }
@@ -547,7 +546,9 @@ static int launch_console_server(void) {
     int csrv = sys_spawn_named("console_server");
     if (csrv <= 0) return -1;
     /* Console LISTEN capability: the receive right on CON_EP_REQ. Only the
-     * console server gets this; clients get the WRITE-only copy below. */
+     * console server gets this; clients get the WRITE-only copy below. It
+     * carries no MINT, so the server, which checks input capabilities, cannot
+     * make one (S93). */
     if (sys_cap_grant(csrv, INIT_CON_LISTEN,    CAPSLOT_CONSOLE_EP) != 0) return -2;
     /* A NOTIFICATION TO WAIT FOR INPUT ON (2026-09-25), so the server sleeps
      * until the keyboard's interrupt or the tick rather than spinning on
@@ -573,6 +574,22 @@ static int launch_console_server(void) {
 #endif
     if (sys_task_resume(csrv) != 0) return -4;
     return csrv;
+}
+
+/* The keyboard as lent to the current shell (launch_shell), taken back once it
+ * has been waited for. */
+static struct con_lend g_shell_kb;
+
+/* Mint the console's INPUT capability into INIT_CON_INPUT, once: the console
+ * endpoint tokened CON_TOKEN_INPUT, which console_server serves keyboard reads
+ * to and nothing else does (include/console_proto.h). From INIT_CON_MINTER,
+ * the only console capability that carries MINT. Its rights are what a
+ * borrower needs to lend it on (GRANT, MINT, REVOKE) and to send (WRITE).
+ * Returns 0, or the kernel's refusal. */
+static int init_console_input(void) {
+    return sys_cap_mint_token(INIT_CON_INPUT, INIT_CON_MINTER,
+                              CAP_RIGHT_WRITE | CAP_RIGHT_GRANT | CAP_RIGHT_MINT | CAP_RIGHT_REVOKE,
+                              CON_TOKEN_INPUT);
 }
 
 /* Spawn the shell and delegate it the console + storage capabilities. Returns
@@ -640,26 +657,23 @@ static int launch_shell(void) {
      * per-delegate accounting is what a `SYS_UNTYPED_SPLIT` would buy, and is not
      * needed for the authority property this closes. */
     if (sys_cap_grant(sh, CAPSLOT_UNTYPED, CAPSLOT_UNTYPED) != 0) return -9;
-    /* WHICH TASK MAY READ A PASSWORD FROM THE CONSOLE (S93), told to the server
-     * BEFORE the shell can run -- so the registration is in place before the
-     * first `horus login:` prompt, and before any task the shell spawns exists
-     * to race it.
+    /* THE KEYBOARD (S93, LIMITATIONS 2.9b): lent, through a copy init can
+     * take back, before the shell can run -- so it is in place before the
+     * first `horus login:` prompt. The shell reads through it and lends it on,
+     * in turn, to each program it runs in the foreground. When init has waited
+     * for this shell it revokes the copy, which takes back the shell's and
+     * every copy descended from it (console_unlend in the supervision loop).
      *
-     * This is the one moment it can safely be done. init holds a console client
-     * capability and, right now, is the only ring-3 task that does: console_server
-     * is running, the shell is spawned but suspended, and nothing else has been
-     * launched. The server's rule is "unset, or the current owner", so this
-     * first registration is accepted and every later attempt by anything other
-     * than the shell is refused.
+     * Until 2026-10-13 this was a task id told to console_server: authority by
+     * identity, and it gated password reads alone.
      *
-     * A failure is reported and NOT fatal. The server fails closed on an unset
-     * owner -- GETPASS is refused rather than served -- so the cost of this not
-     * landing is a shell that cannot read a password, which is visible
-     * immediately at the login prompt. Killing the boot instead would turn a
-     * console-server hiccup into an unbootable machine. */
-    if (console_set_input_owner((uint32_t)sh) != 0)
-        report("init: WARN could not register the shell as the console input owner; "
-               "password entry will be refused\n");
+     * A failure is reported and NOT fatal. The server fails closed -- a shell
+     * without the capability is refused every read -- so the cost is a login
+     * prompt that cannot be answered, visible immediately, and killing the boot
+     * instead would turn a console hiccup into an unbootable machine. */
+    if (console_lend(sh, INIT_CON_INPUT, INIT_CON_LEND, &g_shell_kb) != 0)
+        report("init: WARN could not lend the shell the console's input; "
+               "the login prompt will be refused\n");
 
     /* THE SHARED LIBC'S TEXT, and only the text (docs/design/shared-libc.md,
      * D4). The shell is freestanding, so its own image never asks for the
@@ -904,19 +918,28 @@ static int machine_needs_install(void) {
  *   who it claims to be, which is the pattern this project exists to refuse. The
  *   capability is the authority; the uid is a coincidence of how init spawns.
  *
- *   The console client endpoint -- draw, and read keys. Every task with a console
- *   holds one; it confers nothing an ordinary program lacks.
+ *   The console client endpoint, to draw. Every task with a console holds one;
+ *   it confers nothing an ordinary program lacks. And the keyboard, lent until
+ *   init has waited for it (S93).
  *
  * It is NOT given CAP_ENCRYPTED_STORAGE (it must not be able to read the volume
  * it replaces), CAP_UNTYPED (it cannot create a task, so nothing it does outlives
  * it), or CAP_BOOT_MODULE (fs_server copies the base system; see do_install). */
+/* The keyboard as lent to the installer, taken back once init has waited for
+ * it. */
+static struct con_lend g_installer_kb;
+
 static int launch_installer(void) {
     int in = sys_spawn_named("installer");
     if (in <= 0) return -1;
     if (sys_cap_grant(in, CAPSLOT_STORAGE_FORMAT, CAPSLOT_STORAGE_FORMAT) != 0) return -2;
     if (sys_cap_grant(in, CAP_SLOT_USER, CAPSLOT_USER) != 0) return -3;
     if (sys_cap_grant(in, INIT_CON_CLIENT, CAPSLOT_CONSOLE_EP) != 0) return -4;
-    if (sys_task_resume(in) != 0) return -5;
+    /* Its keys, lent until init has waited for it (_start). Fatal here, unlike
+     * the shell's: an installer that cannot read a key cannot be answered or
+     * cancelled, and the machine would sit on its first screen. */
+    if (console_lend(in, INIT_CON_INPUT, INIT_CON_LEND, &g_installer_kb) != 0) return -6;
+    if (sys_task_resume(in) != 0) { console_unlend(&g_installer_kb); return -5; }
     return in;
 }
 
@@ -984,6 +1007,9 @@ void _start(void) {
         g_console_launched = 1;
         report("init: console_server launched\n");
     }
+    if (init_console_input() != 0)
+        report("init: WARN could not mint the console's input capability; "
+               "nothing will be able to read the keyboard\n");
 
     /* Asked and answered before anything consults it, and unconditionally --
      * including on a machine with no disk, where no install question is ever
@@ -1015,10 +1041,12 @@ void _start(void) {
                  : in == -2 ? "init: FAIL could not delegate CAP_STORAGE_FORMAT\n"
                  : in == -3 ? "init: FAIL could not delegate CAP_USER\n"
                  : in == -4 ? "init: FAIL could not delegate the console endpoint\n"
+                 : in == -6 ? "init: FAIL could not lend the installer the console's input\n"
                             : "init: FAIL could not resume the installer\n");
         } else {
             report("init: this machine has a disk and no volume; running the installer\n");
             sys_wait(in);
+            console_unlend(&g_installer_kb);
             report("init: the installer finished\n");
         }
     }
@@ -1079,6 +1107,10 @@ void _start(void) {
         int wr;
         while ((wr = sys_wait(sh)) == SYS_ERR_INTR) { }
         if (wr != 0) { report("init: FATAL cannot wait on the shell\n"); for (;;) settle(); }
+        /* The shell is dead: take back its keyboard, and with it the copy of any
+         * program it was running. See LIMITATIONS 1.33 for the case this cannot
+         * reach: a copy that descends through a task that has already died. */
+        console_unlend(&g_shell_kb);
         /* Read the cause BEFORE relaunching: launch_shell() may be handed the
          * dead shell's task slot, and the record is only guaranteed until this
          * task's next completed wait. */

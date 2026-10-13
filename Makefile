@@ -143,7 +143,8 @@ DEFECT_FLAGS = \
 	CONSOLE_PROGRESS_BELOW_SURFACE CONSOLE_PROGRESS_AT_LOGIN \
 	SYSTEM_TREES_WRITABLE SYSTEM_TREES_NO_PRUNE SYSTEM_TREES_SIZE_ONLY ARCHIVE_NO_PRECHECK CONF_VALUE_UNCHECKED \
 	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY BOOT_MENU_NO_LIVE_TOKEN \
-	BOOT_PIN_UNCHECKED BOOT_IMAGE_UNBOUND CONSOLE_PASS_UNGATED \
+	BOOT_PIN_UNCHECKED BOOT_IMAGE_UNBOUND CONSOLE_INPUT_UNGATED CONSOLE_LEND_UNREVOKED \
+	KCONSOLE_READ_UNGATED KCONSOLE_WRITE_UNGATED \
 	PIPE_CAP_UNACCOUNTED TOKEN_REPLY_MINT_UNMASKED \
 	REPLY_EP_SPACE_OVERLAP \
 	AHCI_PROBE_ABSENT AHCI_CAPACITY_CONSTANT SDHCI_PROBE_ABSENT \
@@ -2280,25 +2281,25 @@ BOOT_MENU_NO_LIVE_TOKEN ?= 0
 # defect is in the boot configuration. Control arm for make smoke-boot-pin.
 BOOT_PIN_UNCHECKED ?= 0
 
-# CONSOLE_PASS_UNGATED=1 restores the pre-2026-09-12 console server, which served
-# CON_OP_GETPASS to any holder of the send-only console capability -- which is
-# every task the shell has ever spawned, since that capability is how a child
-# gets a stdout. Under it a program a person ran can sit on GETPASS and receive
-# the password typed at the next `sudo` prompt (S93).
+# CONSOLE_INPUT_UNGATED=1 rebuilds console_server serving keyboard input to any
+# holder of the console endpoint, untokened or not -- which is every task the
+# shell has ever spawned, since that capability is how a child gets a stdout.
+# Under it a program a person ran can read every command line typed after it, and
+# the password at the next `sudo` prompt (S93; the server's reach before
+# 2026-09-12, and its reach over GETLINE and READ_RAW until 2026-10-13).
+# smoke-console-pass-control requires CONSOLE_PASS: FAIL untokened-holds-input.
 #
-# THE ARM'S EVIDENCE IS AN ABSENCE, and deliberately: under the flag the server
-# SERVES the read, so the probe blocks inside it and never reaches its verdict.
-# smoke-console-pass-control therefore requires the "asking" marker and fails on
-# the refusal verdict -- the same shape smoke-captest-getline-control uses,
-# where a task admitted to a console read prints nothing.
+# CONSOLE_LEND_UNREVOKED=1 rebuilds console_unlend (userspace/conlend.c) without
+# its revoke: a lender never takes the keyboard back, so a program that has ended
+# keeps reading. smoke-console-pass-lend-control requires
+# CONSOLE_PASS: FAIL lent-input-survived.
 #
-# The -D is applied further down, AFTER USERSPACE_CFLAGS is assigned with `=`,
-# and NOT here. A `+=` beside this declaration is silently discarded -- the trap
-# SYSCALL_PTR_TRUNC32's comment records and the TUI arms hit, where the flags
-# were set, the build succeeded, and not one -D reached the compiler. Written
-# here first, and caught by asking `make -n` whether the -D was on the command
-# line rather than by assuming it.
-CONSOLE_PASS_UNGATED ?= 0
+# Both -D's are applied further down, AFTER USERSPACE_CFLAGS is assigned with
+# `=`, and NOT here. A `+=` beside this declaration is silently discarded -- the
+# trap SYSCALL_PTR_TRUNC32's comment records and the TUI arms hit, where the
+# flags were set, the build succeeded, and not one -D reached the compiler.
+CONSOLE_INPUT_UNGATED ?= 0
+CONSOLE_LEND_UNREVOKED ?= 0
 
 # BOOT_IMAGE_UNBOUND=1 restores the pre-2026-09-11 seal policy: PolicyPCR over
 # PCR[8] and PCR[9] only, the two this kernel extends about itself. The pin in
@@ -2473,6 +2474,24 @@ SYSCOV_PROBES_ABSENT ?= 0
 KLOG_WRITE_UNGATED ?= 0
 ifeq ($(KLOG_WRITE_UNGATED),1)
 CFLAGS += -DKLOG_WRITE_UNGATED
+endif
+
+# KCONSOLE_READ_UNGATED=1 rebuilds the pre-2026-10-13 SYS_READ fd 0 and
+# SYS_GET_PASS, which read the console for any task at all (LIMITATIONS 1.6, the
+# read half). KCONSOLE_WRITE_UNGATED=1 rebuilds the pre-2026-10-13 SYS_WRITE fd 1
+# console half, which took the bytes from any task (the write half). Not build
+# options -- control arms for smoke-console-pass (S135):
+# smoke-console-pass-kread-control requires
+# CONSOLE_PASS: FAIL kernel-read-without-capability and
+# smoke-console-pass-kwrite-control requires
+# CONSOLE_PASS: FAIL kernel-write-without-capability.
+KCONSOLE_READ_UNGATED ?= 0
+ifeq ($(KCONSOLE_READ_UNGATED),1)
+CFLAGS += -DKCONSOLE_READ_UNGATED
+endif
+KCONSOLE_WRITE_UNGATED ?= 0
+ifeq ($(KCONSOLE_WRITE_UNGATED),1)
+CFLAGS += -DKCONSOLE_WRITE_UNGATED
 endif
 
 # AUDIT_ABI_LEGACY=1 restores the pre-2026-09-01 SYS_READ_AUDIT ABI: ring 3
@@ -3302,10 +3321,11 @@ endif
 # birth endowment create_task installs. It is the "give the new image a clean
 # slate" instinct written out, and it breaks the pairing a shell needs: a task
 # that forks, is endowed, and then execs arrives with nothing. Everything the
-# task was DELEGATED -- its console endpoint included -- is gone, which is why
-# forkexecee reports through the capability graph rather than the console: under
-# this arm a console write is exactly the channel the defect closes. Roadmap 2.3,
-# S42.
+# task was DELEGATED is gone except its stdout, the console endpoint, which the
+# arm keeps since 2026-10-13 so execprobe's image can still say what it lost:
+# the kernel's SYS_WRITE fd 1 needs that capability now (S135), and without it
+# the arm timed out instead of naming its defect. forkexecee reports through the
+# capability graph anyway. Roadmap 2.3, S42.
 EXEC_RESET_CSPACE ?= 0
 ifeq ($(EXEC_RESET_CSPACE),1)
 CFLAGS  += -DEXEC_RESET_CSPACE
@@ -5391,8 +5411,11 @@ endif
 ifeq ($(CONSOLE_VGA_CHECK_FAIL),1)
 USERSPACE_CFLAGS += -DCONSOLE_VGA_CHECK_FAIL
 endif
-ifeq ($(CONSOLE_PASS_UNGATED),1)
-USERSPACE_CFLAGS += -DCONSOLE_PASS_UNGATED
+ifeq ($(CONSOLE_INPUT_UNGATED),1)
+USERSPACE_CFLAGS += -DCONSOLE_INPUT_UNGATED
+endif
+ifeq ($(CONSOLE_LEND_UNREVOKED),1)
+USERSPACE_CFLAGS += -DCONSOLE_LEND_UNREVOKED
 endif
 ifeq ($(CONSOLE_FB_ABSENT),1)
 USERSPACE_CFLAGS += -DCONSOLE_FB_ABSENT
@@ -5669,7 +5692,9 @@ LIBHORUS_LIB = userspace/libhorus.a
 # 3840 bytes of .bss for the front/back cell buffers, and a program that never
 # draws a screen (captest, framepeer, every non-interactive self-test) must not
 # pay for them. ld extracts a member only when something references it.
-LIBHORUS_OBJS = userspace/libhorus.o userspace/hvfs.o userspace/tui.o
+# conlend.o is a fourth for the same reason: only a program that starts another
+# lends it the console's input.
+LIBHORUS_OBJS = userspace/libhorus.o userspace/hvfs.o userspace/tui.o userspace/conlend.o
 $(LIBHORUS_LIB): $(LIBHORUS_OBJS)
 	$(AR) rcs $@ $(LIBHORUS_OBJS)
 
@@ -6224,7 +6249,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.stripped.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/replyprobe.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/piperevoketest.bin userspace/piperevokee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin userspace/sealprobe.bin userspace/dynstale.bin userspace/dyncanary.bin userspace/hello_dyn.bin userspace/swaphog.bin userspace/fscaptest.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/replyprobe.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/piperevoketest.bin userspace/piperevokee.bin userspace/coninee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin userspace/sealprobe.bin userspace/dynstale.bin userspace/dyncanary.bin userspace/hello_dyn.bin userspace/swaphog.bin userspace/fscaptest.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -6274,6 +6299,16 @@ userspace/piperevokee_image.h: userspace/piperevokee.bin
 	@printf '};\nstatic const unsigned piperevokee_image_len = sizeof(piperevokee_image);\n' >> $@
 
 userspace/piperevoketest.o: userspace/piperevokee_image.h
+
+# The borrower consoletest lends the console's input to and takes it back from
+# (S93), embedded the same way, so the client can spawn it with SYS_SPAWN_IMAGE
+# from its own memory. CONSOLE_SELFTEST only.
+userspace/coninee_image.h: userspace/coninee.bin
+	@printf 'static const unsigned char coninee_image[] = {' > $@
+	@od -An -v -tu1 $< | tr -s ' ' '\n' | grep -v '^$$' | paste -sd, >> $@
+	@printf '};\nstatic const unsigned coninee_image_len = sizeof(coninee_image);\n' >> $@
+
+userspace/consoletest.o: userspace/coninee_image.h
 
 # The image execprobe hands to SYS_EXEC_IMAGE, embedded in its own binary the
 # same way -- the bytes a client would have read from a file. A purpose-built
@@ -8093,7 +8128,8 @@ SYSCOV_CONTROL_EXPECTED = \
 	SYS_AUDIT_DIGEST SYS_BRK SYS_FRAME_PAGES SYS_IPC_REPLY \
 	SYS_MAP_REGION SYS_READ SYS_READ_AUDIT SYS_REGISTER_STORAGE_BACKEND \
 	SYS_SIGACTION SYS_SIGRETURN SYS_SPAWN_ARG SYS_TASK_EXIT_INFO \
-	SYS_UNMAP_FRAME SYS_BLOCK_READ SYS_BLOCK_WRITE SYS_EXEC_IMAGE
+	SYS_UNMAP_FRAME SYS_BLOCK_READ SYS_BLOCK_WRITE SYS_EXEC_IMAGE \
+	SYS_GET_PASS
 
 smoke-syscall-coverage-control:
 	@set -eu; \
@@ -9270,40 +9306,69 @@ smoke-console:
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='CONSOLE_SELFTEST: PASS' \
 		FAIL_MARKER='CONSOLE_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
-# ---- S93: a console client is not entitled to read a password ---------------
+# ---- S93 and S135: who may use the console ----------------------------------
 #
 # Every task the shell spawns inherits a send-only console capability -- that is
-# how `ls` gets a stdout -- and before 2026-09-12 that capability also bought
-# CON_OP_GETPASS. A program a person ran could sit in a loop on it and receive
-# the password typed at the next `sudo` prompt.
+# how `ls` gets a stdout. Keyboard input is a different capability: the console
+# endpoint tokened CON_TOKEN_INPUT, minted by init and LENT to the program in the
+# foreground for as long as it runs (S93, LIMITATIONS 2.9b). And the kernel's own
+# console paths, SYS_WRITE fd 1, SYS_READ fd 0 and SYS_GET_PASS, ask for the
+# console's capabilities like everything else (S135, LIMITATIONS 1.6).
 #
-# The probe holds exactly that and nothing more. It first registers a DIFFERENT
-# task as the input owner, so the refusal it then gets is specifically "you are
-# not the owner" rather than the server's fail-closed default for an unset one
-# -- a probe that merely asked would prove the default and say nothing about the
-# gate.
+# consoletest is the witness, in four steps whose first failures differ, so each
+# arm below names exactly the defect it puts back (userspace/consoletest.c):
+# the kernel write, the kernel reads, the server's input gate, and the lend being
+# taken back. Every refusal is asked about before the read it refuses, through
+# CON_OP_INPUT_HELD, so an arm that admits a read fails on a marker rather than
+# blocking for a keystroke nobody will type.
 .PHONY: smoke-console-pass
 smoke-console-pass:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CONSOLE_SELFTEST=1
 	@$(MAKE) --no-print-directory CONSOLE_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
-		REQUIRE_MARKER='CONSOLE_PASS: PASS refused a non-owner' \
+		REQUIRE_MARKER='CONSOLE_PASS: PASS' \
 		FAIL_MARKER='CONSOLE_PASS: FAIL' tools/smoke_test.sh horus.iso
 
-# CONTROL ARM. Under the flag the server SERVES the read, so the probe blocks
-# inside it and never reaches its verdict -- the evidence is an absence, the
-# same shape smoke-captest-getline-control uses. So the arm requires the marker
-# printed BEFORE the request and fails on the refusal verdict: the request was
-# made, and it was not refused.
+# CONTROL ARM: input served to the untokened stdout capability.
 .PHONY: smoke-console-pass-control
 smoke-console-pass-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory CONSOLE_SELFTEST=1 CONSOLE_PASS_UNGATED=1
-	@$(MAKE) --no-print-directory CONSOLE_SELFTEST=1 CONSOLE_PASS_UNGATED=1 horus.iso
+	@$(MAKE) --no-print-directory CONSOLE_SELFTEST=1 CONSOLE_INPUT_UNGATED=1
+	@$(MAKE) --no-print-directory CONSOLE_SELFTEST=1 CONSOLE_INPUT_UNGATED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
-		REQUIRE_MARKER='CONSOLE_PASS: asking for a password as a non-owner' \
-		FAIL_MARKER='CONSOLE_PASS: PASS refused' tools/smoke_test.sh horus.iso
+		REQUIRE_MARKER='CONSOLE_PASS: FAIL untokened-holds-input' \
+		FAIL_MARKER='CONSOLE_PASS: PASS' tools/smoke_test.sh horus.iso
+
+# CONTROL ARM: the lender never takes the keyboard back.
+.PHONY: smoke-console-pass-lend-control
+smoke-console-pass-lend-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CONSOLE_SELFTEST=1 CONSOLE_LEND_UNREVOKED=1
+	@$(MAKE) --no-print-directory CONSOLE_SELFTEST=1 CONSOLE_LEND_UNREVOKED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CONSOLE_PASS: FAIL lent-input-survived' \
+		FAIL_MARKER='CONSOLE_PASS: PASS' tools/smoke_test.sh horus.iso
+
+# CONTROL ARM: the kernel's console reads asking for nothing.
+.PHONY: smoke-console-pass-kread-control
+smoke-console-pass-kread-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CONSOLE_SELFTEST=1 KCONSOLE_READ_UNGATED=1
+	@$(MAKE) --no-print-directory CONSOLE_SELFTEST=1 KCONSOLE_READ_UNGATED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CONSOLE_PASS: FAIL kernel-read-without-capability' \
+		FAIL_MARKER='CONSOLE_PASS: PASS' tools/smoke_test.sh horus.iso
+
+# CONTROL ARM: the kernel's console write asking for nothing.
+.PHONY: smoke-console-pass-kwrite-control
+smoke-console-pass-kwrite-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CONSOLE_SELFTEST=1 KCONSOLE_WRITE_UNGATED=1
+	@$(MAKE) --no-print-directory CONSOLE_SELFTEST=1 KCONSOLE_WRITE_UNGATED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CONSOLE_PASS: FAIL kernel-write-without-capability' \
+		FAIL_MARKER='CONSOLE_PASS: PASS' tools/smoke_test.sh horus.iso
 
 # ---- A network driver in ring 3, holding one device capability --------------
 #

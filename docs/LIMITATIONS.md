@@ -21,23 +21,11 @@ status, and it is the one given here.
 
 ## 1. Security
 
-### 1.6 Two console paths need no capability, by decision
+### 1.8 Seven syscalls have no test that runs their handler
 
-`SYS_WRITE` to fd 1 writes to the console with no capability check, and `SYS_READ` from fd 0
-reads a console line with none. Every task has a standard output, and writing to a terminal is not
-an authority this system rations. The read side refuses once `console_server` owns the console
-hardware, which is from early boot onwards, so in practice console input goes through
-`console_server` and its own rules (2.9b). The write side cannot reach the kernel log:
-that needs `CAP_KERNEL_LOG` with `WRITE` (**[H-2]**, closed; `SECURITY.md` S23).
-
-This is recorded as a limitation because it is ambient authority, however small, in a system that
-otherwise has none. Every other syscall path in the ship kernel is authorised by a capability.
-
-### 1.8 Nine syscalls have no test that runs their handler
-
-As of the last merge and gated since: **95 of 103** implemented syscalls have their handler body
+As of the last merge and gated since: **96 of 103** implemented syscalls have their handler body
 entered by a tracked workload (the scripted ring-3 session, the conformance suite, and the
-boot-modules session). The other 8 are listed in `.github/syscall-coverage.yml`, each with a
+boot-modules session). The other 7 are listed in `.github/syscall-coverage.yml`, each with a
 written reason. `tools/check_syscall_coverage.py` (required job `syscall-coverage`) fails on drift
 in either direction, so the number cannot quietly fall (`SECURITY.md` S25).
 
@@ -45,18 +33,16 @@ The risk is not hypothetical. Four times a probe written to enter an uncovered h
 defect on its first run: a kernel hang on a NULL lookup under `cap_lock` (S52), an audit record
 declared at two sizes that overran a ring-3 array (S71), block syscalls whose "no such block" and
 "permission denied" were the same value, and an ELF loader bounded by the wrong buffer (S84).
-So a defect in any of those 8 handlers is invisible in the same way. `captest` cannot find these: it
+So a defect in any of those 7 handlers is invisible in the same way. `captest` cannot find these: it
 is a refusal suite, and the capability gate returns before a refused handler runs.
 
-What is left falls into three groups, and the grouping says what each would cost:
+What is left falls into two groups, and the grouping says what each would cost:
 
 - **Gated on a capability `captest` does not hold.** Covering one needs a probe task holding
   exactly that capability, the way `auditprobe` and `blockprobe` were written.
   `SYS_STORAGE_FORMAT` is the exception: entering its body formats the disk the run is using.
 - **The call would succeed and replace the caller**: `SYS_FORK` and `SYS_EXEC_NAMED`, each covered
   by its own self-test build rather than a tracked workload.
-- **Two `SC_NONE` handlers that cannot usefully be entered**: `SYS_GET_PASS` blocks in the
-  `captest` image, and `SYS_SHLIB_INFO`'s interesting body is compiled out of every tracked image.
 
 ### 1.12 Rollback protection is anchored only on a machine with a TPM
 
@@ -141,6 +127,24 @@ inode, and inode numbers are small and handed out lowest first. The capability p
 this gap: a capability names one object reached by a walk. Phase 1b step 6 removes the uid path.
 
 ---
+
+### 1.33 A revocation cannot reach through a task that has died **[HORUS-20261013-01]**
+
+A derived capability names its parent by serial, and a revocation finds a capability's descendants
+by following those names down from the one revoked (S3). When a task dies, its cspace is emptied
+(`cap_release_cspace`), and with it every capability other tasks' copies name as their parent. A
+copy whose parent was in the dead task is then out of reach of any revocation above it: nothing
+revokes it but its own holder, or that holder's death.
+
+Found while closing 2.9b, where it is concrete: if the shell dies while a program it lent the
+keyboard to is still running, `init` takes back the shell's copy, and the program's copy, derived
+through the dead shell, is not taken back with it. The program can read what is typed at the next
+shell's prompt until it ends. The same holds for a filesystem capability a dead spawner lent
+(decision 10) and for any delegation chain with a dead link.
+
+Closing it means a task's death passing its capabilities' children to their grandparents, so a
+revocation above still reaches them; that is a change to the derivation tree's rules (S3, S4) and
+is not made here.
 
 ## 2. Correctness
 
@@ -236,14 +240,6 @@ SHA-256 (`SECURITY.md` S92). So:
 
 GRUB's own `tpm` module would let the bootloader measure the kernel instead; it exists only for
 `x86_64-efi`, not for the `i386-pc` GRUB the BIOS path uses.
-
-### 2.9b Console input has an owner for passwords only
-
-`CON_OP_GETPASS` is served only to the registered input owner (`SECURITY.md` S93), so a program a
-person runs cannot read the password typed at the next `sudo` prompt. `CON_OP_GETLINE` and
-`CON_OP_READ_RAW` have no owner, so such a program **can** read command lines as they are typed.
-Restricting those needs a foreground-ownership model (one task owns input at a time, and ownership
-passes to a child and back), which touches every place the shell spawns a program.
 
 ### 2.12 What a device capability does not cover
 
@@ -561,7 +557,7 @@ Against "a complete, self-hosting operating system":
 | Boot and low-level x86-64 | 85% |
 | Memory management | 70% |
 | Capability model, design | 80% |
-| Capability model, enforcement | 80% (two console paths stay ambient by decision, 1.6) |
+| Capability model, enforcement | 85% (no ambient authority left in the ship kernel; 1.33) |
 | Scheduling | 55% |
 | SMP | 50% |
 | IPC | 55% |
@@ -591,6 +587,7 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 1.3 | [I-4] | `SYS_GET_TASK_INFO` disclosed another task's instruction pointer | 2026-07-27, #109 |
 | 1.4 | [C-4] | User copies truncated silently and reported success | 2026-08-13, #141 |
 | 1.5 | [I-3] | An unprivileged task could force a broad revocation | 2026-08-16, #160 |
+| 1.6 | | Three kernel console paths needed no capability: `SYS_WRITE` to fd 1, `SYS_READ` from fd 0 and `SYS_GET_PASS`, so any task could read or draw on the console whenever no console server owned it (S135) | 2026-10-13, #559 |
 | 1.6a | [H-3] | Four ramfs paths were gated on the slot-3 decoy capability | 2026-08-22, #194 |
 | 1.6b | | Task-creating syscalls were gated on the slot-3 decoy | 2026-08-30, #256 |
 | 1.6c | | Two ship-build syscalls were gated on the slot-3 decoy (S79) | 2026-09-03, #307 |
@@ -622,6 +619,7 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 2.6 | | User accounts did not survive a reboot (S62) | 2026-08-31, #267 |
 | 2.6a | | Self-test markers written in pieces could be split; now refused by `tools/check_split_markers.py` (kernel markers are 2.6c) | 2026-09-01, #268, #284 |
 | 2.8 | | The CSPRNG was safe by boot ordering, not by construction (S30) | 2026-08-23, #200 |
+| 2.9b | | Console input had an owner for passwords only, named by task id, so any program a person ran could read the command lines they typed; input is now a capability lent to the foreground program (S93) | 2026-10-13, #559 |
 | 2.10 | | Four live syscalls had no caller | 2026-08-23, #204 |
 | 2.10a | | Two more uncalled syscalls, retired with 1.6c (S79) | 2026-09-03, #307 |
 | 2.11 | | A forked child did not inherit its parent's cspace (S41) | 2026-08-28, #221 |

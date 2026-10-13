@@ -1775,7 +1775,7 @@ jobs:
         run: make smoke-tpm-tamper
 
   smoke-console-pass:
-    name: "S93: a console client is refused a password read"
+    name: "S93, S135: console input is a lent capability; the kernel's console paths ask for theirs"
     runs-on: ubuntu-latest
     # Backstop, not a performance budget; same bound and reason as its neighbours.
     timeout-minutes: 105
@@ -1787,11 +1787,11 @@ jobs:
           packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86 grub-efi-amd64-bin ovmf
       - name: Add bare-metal Rust target
         run: rustup target add x86_64-unknown-none
-      - name: A non-owner console client must be refused CON_OP_GETPASS
+      - name: Input only through the input capability, lent and taken back; kernel console reads and writes refused without a capability
         run: make smoke-console-pass
 
   smoke-console-pass-control:
-    name: "S93 falsification: an ungated server serves the password read"
+    name: "S93, S135 falsification: each console gate put back fails its own step"
     runs-on: ubuntu-latest
     # Backstop, not a performance budget; same bound and reason as its neighbours.
     timeout-minutes: 105
@@ -1803,8 +1803,14 @@ jobs:
           packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86 grub-efi-amd64-bin ovmf
       - name: Add bare-metal Rust target
         run: rustup target add x86_64-unknown-none
-      - name: The pre-2026-09-12 server must serve it (the refusal must not appear)
+      - name: A server serving input to any client must fail at untokened-holds-input
         run: make smoke-console-pass-control
+      - name: A lender that never takes the keyboard back must fail at lent-input-survived
+        run: make smoke-console-pass-lend-control
+      - name: Kernel console reads asking for nothing must fail at kernel-read-without-capability
+        run: make smoke-console-pass-kread-control
+      - name: A kernel console write asking for nothing must fail at kernel-write-without-capability
+        run: make smoke-console-pass-kwrite-control
 
   smoke-boot-pin:
     name: "S92: a kernel the measured boot image does not pin is refused"

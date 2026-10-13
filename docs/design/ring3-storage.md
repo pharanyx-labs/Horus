@@ -44,7 +44,7 @@ The maintainer asked for the most secure route for a least-privilege kernel. It 
 | Step | What lands | What it needs |
 |---|---|---|
 | 1 | **`sdhcid`**, the SD/eMMC driver in ring 3, proved on its own in the `SDHCID_SELFTEST` build (`make smoke-sdhcid`). Nothing else changes | Done |
-| 2 | **The block-driver protocol** (section 5), served by `sdhcid` and `nvmed`: done. Then the IDE driver in ring 3, and **filesystem phase 2** with the amendment in section 4: `fs_server` moves ciphertext between the kernel's sealed-block calls and a driver | Roadmap 2.10 phase 2 |
+| 2 | **The block-driver protocol** (section 5), served by `sdhcid`, `nvmed` and the IDE driver `atad` (section 8): done. Then **filesystem phase 2** with the amendment in section 4: `fs_server` moves ciphertext between the kernel's sealed-block calls and a driver | Roadmap 2.10 phase 2 |
 | 3 | **Swap through a ring-3 driver** (section 6). Revises `swap.md` decision 4 | Step 2 |
 | 4 | **The cutover.** No kernel path does disk I/O; `sdhci.c`, `ata.c` and `ahci.c` are deleted, each replaced by its ring-3 driver and its gates moved onto it. The installer formats through the same protocol | Steps 2 and 3, and a full install on the IdeaPad (eMMC) and an NVMe machine |
 
@@ -72,7 +72,7 @@ trust the key gives, and remain so.
 ## 5. The block-driver protocol
 
 Built (#563): [`include/blkproto.h`](../../include/blkproto.h) and its server half,
-`userspace/blkserve.c`, linked into `sdhcid` and `nvmed` alike, so every driver holds a client to
+`userspace/blkserve.c`, linked into `sdhcid`, `nvmed` and `atad` alike, so every driver holds a client to
 the same rules. A driver answers on one endpoint; each request and reply is one message, and the
 sectors move in a frame, never in the message.
 
@@ -82,7 +82,7 @@ sectors move in a frame, never in the message.
 | `INFO` | a client | its extent's length in 512-byte sectors, and the transfer limit |
 | `READ (sector, count)` | a client | the sectors, into its frame |
 | `WRITE (sector, count)` | a client | done, from its frame |
-| `FLUSH` | a client | done once everything accepted is on stable media (an SD card's DAT0 released, an NVMe flush completed) |
+| `FLUSH` | a client | done once everything accepted is on stable media (an SD card's DAT0 released, an NVMe flush completed, an ATA FLUSH CACHE completed) |
 
 - **Authority is the capability the request came through** (`SYS_IPC_INVOKER`), never the message.
   The untokened capability is the supervisor's: minting a tokened one needs it, so only the task
@@ -104,7 +104,7 @@ sectors move in a frame, never in the message.
   as an I/O error, with `init` restarting the driver; nothing reads a block from anywhere else.
 
 `make smoke-blkproto` runs `blktest`, which plays the supervisor's part and then the clients',
-through both drivers, and the host checks the disk afterwards. `nvmed` serves only a namespace
+through all three drivers, and the host checks the disk afterwards. `nvmed` serves only a namespace
 formatted with 512-byte blocks; a 4 KiB format is refused rather than translated.
 
 ## 6. Swap
@@ -136,7 +136,34 @@ has a control arm (`SDHCID_ADDR_INVERTED`, `SDHCID_WRITE_WRONG_LBA`, `SDHCID_CSD
 `make smoke-sdhcid-emmc` runs the eMMC branch on a host shaped like the IdeaPad's; it is local
 only, because CI's QEMU has no `emmc` device.
 
-## 8. Found on the way
+## 8. The IDE driver, as built
+
+`atad` (`userspace/atad.c`) holds **one capability**: a `CAP_IO_DEVICE` naming the IDE controller.
+Like `sdhcid` it holds no untyped memory, because it moves data by PIO through the data port, and
+it sets I/O decode without bus mastering, so the controller's DMA engine cannot reach memory. It
+is a port of `ata.c`'s logic (LBA28, one command per run, DRQ checked before every sector, FLUSH
+CACHE that fails closed) with its waits bounded by the clock rather than by spin counts. It drives
+the primary channel's master; the slave, which the installer's two-disk survey uses, moves with
+the cutover.
+
+**The ports exist for ring 3 only in its self-test build (S137).** A controller in compatibility
+mode, as QEMU's PIIX and most firmware set it, has no BAR for its command block: the ports are the
+fixed legacy ones, so the device table declares none of them and no capability can reach them.
+The `ATAD_SELFTEST` build declares the primary channel's (0x1F0 to 0x1F7 and 0x3F6) on the
+controller's entry, and the same flag turns `ata_init`'s probe off. Every other build, the ship
+kernel among them, declares neither channel's, because ring 0 drives the controller there and a
+declared port is one `SYS_IOPORT_GRANT` would open to ring 3 beside it (decided 2026-10-13). At
+the cutover, when `ata.c` is deleted, the declaration moves into every build. `make smoke-devcap`
+checks that a capability naming the IDE controller declares no ATA port, and its arm
+`smoke-devcap-ata-control` (`ATA_PORTS_IN_SHIP`) declares them and goes red.
+
+`make smoke-atad` boots it on QEMU's default machine against a 128 MiB disk and checks three
+things: the guest's verdict, which includes a block planted at LBA 0x010205, whose address has a
+different byte in each of the three LBA registers; the written sectors on the image read on the
+host; and the IDENTIFY capacity against the image's size. Each has a control arm
+(`ATAD_LBA_REGS_SWAPPED`, `ATAD_WRITE_WRONG_LBA`, `ATAD_CAPACITY_CHS`).
+
+## 9. Found on the way
 
 A device whose register BAR is smaller than a page (QEMU's SD host controller has 256 bytes) was
 mapped by `SYS_MAP_PHYS` a whole page at a time while the check covered only the length asked for,

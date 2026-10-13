@@ -875,6 +875,17 @@ embedded_sdhcid_bin_start:
 embedded_sdhcid_bin_end:
 #endif
 
+#ifdef ATAD_SELFTEST
+/* PIE atad binary: an IDE driver holding one device capability and no memory to
+ * give its controller (docs/design/ring3-storage.md). */
+.align 16
+.global embedded_atad_bin_start
+embedded_atad_bin_start:
+.incbin "userspace/atad.bin"
+.global embedded_atad_bin_end
+embedded_atad_bin_end:
+#endif
+
 #ifdef BLKPROTO_SELFTEST
 /* PIE blktest binary: the supervisor and clients of a ring-3 storage driver
  * (docs/design/ring3-storage.md step 2, the block-driver protocol). */

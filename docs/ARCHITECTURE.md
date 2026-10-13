@@ -327,12 +327,20 @@ authority is one device capability: it moves data by PIO, so it holds no untyped
 enables the controller's memory decode without bus mastering, and the controller can start no DMA
 at all. It brings up an SD card or an eMMC device, reads, and writes only a card whose block 0
 carries the test signature. It runs in the `SDHCID_SELFTEST` build, where the ring-0 probe is
-compiled out; elsewhere `sdhci.c` still serves the kernel's storage. The kernel never waits on a
+compiled out; elsewhere `sdhci.c` still serves the kernel's storage.
+
+**`atad`** (`userspace/atad.c`) is the IDE driver in ring 3, built the same way: one device
+capability, PIO, I/O decode without bus mastering. It drives the primary channel's master. A
+controller in compatibility mode has no BAR for its command block, so its legacy ports are
+declared on the controller's device entry only in the `ATAD_SELFTEST` build, which also compiles
+the ring-0 probe out; every other build declares no ATA port, so no ring-3 task can be granted the
+ports `ata.c` is using (S137). The kernel never waits on a
 ring-3 task mid-call, so the drivers leave ring 0 when the kernel stops doing disk I/O: the
 sealed-block calls of filesystem phase 2 take and return ciphertext, and `fs_server` moves it.
 
 **The block-driver protocol** (`include/blkproto.h`) is how a client reads and writes through
-either storage driver, and its server half (`userspace/blkserve.c`) is one file linked into both.
+any of the three storage drivers, and its server half (`userspace/blkserve.c`) is one file linked
+into each.
 A supervisor (in the installed system, `init`) makes the driver's endpoint and one frame per
 client, grants the driver the endpoint's receive right and the frames, and binds each client's
 token to an extent of the disk. A client's sectors are relative to its extent and cannot leave

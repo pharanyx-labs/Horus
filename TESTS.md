@@ -47,7 +47,7 @@ gates that match kernel strings are moving to COM3, which only the kernel can wr
 ## The integration gates
 
 
-There are 526 `smoke-*` targets: 229 gates and 297 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
+There are 531 `smoke-*` targets: 230 gates and 301 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
 
 
 ### Capabilities and authorisation
@@ -71,7 +71,7 @@ There are 526 `smoke-*` targets: 229 gates and 297 control arms. Each row is a g
 | `smoke-console-isolation` | A task without a device capability cannot reach the device-delegation syscalls |  |  |
 | `smoke-devcap-fb` | `SYS_FB_INFO` reveals the display's geometry only to the holder of the framebuffer's device | S43 | `smoke-devcap-fb-control` |
 | `smoke-devpage` | A register page is mapped only if no other device declares any of it and it is outside the chipset window: `SYS_MAP_PHYS`'s decision against a table with neighbours QEMU never makes | S43 | `smoke-devpage-control` |
-| `smoke-devcap` | A device capability reaches its own device's frame, port and interrupt, and is refused another device's | S43 | `smoke-devcap-irq-control`, `smoke-devcap-object-control`, `smoke-devcap-ports-control` |
+| `smoke-devcap` | A device capability reaches its own device's frame, port and interrupt, and is refused another device's; the IDE controller's, which ring 0 drives, declares no ATA port | S43, S137 | `smoke-devcap-ata-control`, `smoke-devcap-irq-control`, `smoke-devcap-object-control`, `smoke-devcap-ports-control` |
 | `smoke-kdiag-ioport` | A ring-3 write to the kernel's diagnostic port faults: no device declares it, so no grant can open it | S81 | `smoke-kdiag-grant-control` |
 | `smoke-init-provision` | `init` provisions a server on an endpoint it retyped from its own untyped budget | S59 | `smoke-init-provision-control` |
 | `smoke-ioport` | A port grant gives the holder native ring-3 port I/O through the TSS bitmap |  |  |
@@ -298,7 +298,8 @@ There are 526 `smoke-*` targets: 229 gates and 297 control arms. Each row is a g
 | `smoke-nvme` | A ring-3 NVMe driver holding one device capability reads a disk and writes it, the write checked on the host, its DMA confined by the IOMMU | S45 | `smoke-nvme-iommu-control`, `smoke-nvme-write-control` |
 | `smoke-sdhcid` | A ring-3 SD/eMMC driver holding one device capability, and no memory to give its controller, brings up a 64 MiB and a 4 GiB card, reads them and writes them, the write and the decoded capacity checked on the host |  | `smoke-sdhcid-addr-control`, `smoke-sdhcid-write-control`, `smoke-sdhcid-csd-control` |
 | `smoke-sdhcid-emmc` | The same driver on a 64 GiB eMMC behind a host shaped like the IdeaPad's (local only) |  |  |
-| `smoke-blkproto` | The block-driver protocol through `sdhcid` and `nvmed`: a client reaches only its bound extent and frame, only the supervisor binds, and the write lands at the extent's start on the disk, checked on the host | S136 | `smoke-blkproto-absolute-control`, `smoke-blkproto-bind-control`, `smoke-blkproto-extent-control`, `smoke-blkproto-frame-control` |
+| `smoke-atad` | A ring-3 IDE driver holding one device capability, and no memory to give its controller, identifies the primary master, reads a planted block whose address uses every LBA register, and writes a disk, the write and the capacity checked on the host | S137 | `smoke-atad-capacity-control`, `smoke-atad-lba-control`, `smoke-atad-write-control` |
+| `smoke-blkproto` | The block-driver protocol through `sdhcid`, `nvmed` and `atad`: a client reaches only its bound extent and frame, only the supervisor binds, and the write lands at the extent's start on the disk, checked on the host | S136 | `smoke-blkproto-absolute-control`, `smoke-blkproto-bind-control`, `smoke-blkproto-extent-control`, `smoke-blkproto-frame-control` |
 
 ### Userspace, loading and shared libraries
 
@@ -389,7 +390,7 @@ The jobs that are not boot tests:
 | `image-abi` | The kernel reads the .bin container the build tool wrote (S80) |
 | `frame` | A frame capability names an object, and a delegate maps only what it holds |
 | `devcap` | A device capability names one device, and reaches only that device |
-| `net` | Drivers in ring 3 (network, NVMe, SD/eMMC), each holding one device capability |
+| `net` | Drivers in ring 3 (network, NVMe, SD/eMMC, IDE), each holding one device capability |
 | `shared-objects` | Every shared object is one the kernel's loader would accept |
 | `shlib` | Shared library text is executed by many tasks and writable by none |
 | `fpu` | A task cannot read another's XMM register file |
@@ -413,7 +414,7 @@ Two of those deserve a sentence each.
 there with no `continue-on-error`, each named with its measured cost in
 `.github/kani-harnesses.yml`, and the job refuses a proof that is not listed. And **`invariants`** requires every property in `SECURITY.md` to
 name a witness that exists and runs; its exemption list, `.github/invariants.yml`, is
-currently **empty**: all 138 properties name a witness that resolves.
+currently **empty**: all 139 properties name a witness that resolves.
 
 Every `tools/check_*.py` has a falsification harness, `tools/test_check_*.sh`, with one case per
 rule showing the rule can fail, and each checker asserts a floor on what it parsed, so a parser

@@ -395,6 +395,32 @@ static void pci_add_function(uint8_t bus, uint8_t dev, uint8_t fn,
 
         pci_cfg_write32(bus, dev, fn, PCI_COMMAND, cmd);
 
+#if defined(ATAD_SELFTEST) || defined(ATA_PORTS_IN_SHIP)
+        /* An IDE controller's primary channel in COMPATIBILITY mode (class 01:01,
+         * programming-interface bit 0 clear) has no BAR for its command block: its
+         * ports are the fixed legacy ones, so the BAR walk above declares none of
+         * them and no capability can reach them. The ring-3 driver's self-test
+         * build declares them here, on the controller's own entry, and only the
+         * primary channel's, because only the primary is driven.
+         *
+         * ONLY IN THAT BUILD (SECURITY.md S137, decided 2026-10-13). A ship kernel
+         * drives this controller from ring 0 (ata.c), and a port declared here is
+         * a port SYS_IOPORT_GRANT hands to whoever holds the controller's
+         * capability: two drivers on one register file, one of them in ring 3. So
+         * the declaration and the ring-0 probe's absence (ata_init) are one build
+         * flag, and the ports become declared in every build at the cutover, when
+         * ata.c is deleted. ATA_PORTS_IN_SHIP is the arm: it declares them in a
+         * build where ring 0 still drives the controller, and smoke-devcap's
+         * check of the controller's declared ports goes red. */
+        if ((d->classcode >> 8) == 0x0101u && !(d->classcode & 0x01u) &&
+            d->n_port + 2u <= IODEV_MAX_PORT) {
+            d->port[d->n_port].base = 0x1F0; d->port[d->n_port].len = 8;  /* command block */
+            d->n_port++;
+            d->port[d->n_port].base = 0x3F6; d->port[d->n_port].len = 1;  /* control       */
+            d->n_port++;
+        }
+#endif
+
         /* The interrupt line firmware programmed. 0xFF means "unrouted", and 15
          * is the top of the legacy PIC's range; anything else declares nothing,
          * so the device may route no interrupt at all. */

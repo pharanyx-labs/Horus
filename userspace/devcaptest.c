@@ -30,6 +30,9 @@
  *
  * N7 is separate: SYS_DEVICE_ENABLE's input validation, which is load-bearing
  * because it writes the only configuration-space register ring 3 can reach.
+ * N8 is S137: a third capability, naming the IDE controller that ring 0 drives
+ * in this build as in a ship kernel, must declare no ATA port
+ * (ATA_PORTS_IN_SHIP is its arm).
  *
  * One direction alone would not do it. "The NIC cap is refused the VGA" is
  * satisfied by a kernel that refuses everything, and P3/P4 are what rule that
@@ -48,6 +51,7 @@ static void wr(const char *s) { sys_write(1, s, slen(s)); }
 #define NOTIF_SLOT     CAPSLOT_NOTIFY          /* not a device capability     */
 #define CONSOLE_SLOT   CAPSLOT_CONSOLE         /* not a device capability     */
 #define EMPTY_SLOT     40                      /* nothing was ever put here   */
+#define IDE_SLOT       41                      /* the IDE controller (N8)     */
 
 #define VGA_PADDR      0xB8000ULL
 #define VGA_VADDR      0xB8000ULL              /* identity, as mapphystest does */
@@ -207,6 +211,40 @@ void _start(void) {
      * the console's keyboard. */
     if (sys_irq_register(NIC_SLOT, IRQ_KEYBOARD, NOTIF_SLOT, BADGE) == 0) {
         wr("DEVCAPTEST: FAIL nic-cap-took-platform-irq\n"); sys_exit();
+    }
+
+    /* ---- N8: the IDE controller's capability declares no ATA port (S137) ----
+     * In this build, as in a ship kernel, ring 0 drives the IDE controller
+     * (ata.c), and a port its capability declared is a port SYS_IOPORT_GRANT
+     * would hand to ring 3 while ring 0 is using it. The legacy ports are
+     * declared only in atad's self-test build. What the capability declares is
+     * exactly what a grant opens (N6 witnesses that), so reading the
+     * declaration is the check. Both channels are tested: neither may be
+     * declared while ring 0 owns the controller.
+     *
+     * The device must BE the IDE controller, or "declares no ATA port" holds
+     * of the wrong device. Under ATA_PORTS_IN_SHIP the ports are declared and
+     * this fails. */
+    {
+        struct dev_info ide;
+        if (sys_device_info(IDE_SLOT, &ide) != 0) {
+            wr("DEVCAPTEST: FAIL ide-info\n"); sys_exit();
+        }
+        if ((ide.classcode >> 8) != 0x0101u) {
+            wr("DEVCAPTEST: FAIL ide-slot-not-an-ide-controller\n"); sys_exit();
+        }
+        static const struct { unsigned base, len; } ata[] = {
+            { 0x1F0, 8 }, { 0x3F6, 1 }, { 0x170, 8 }, { 0x376, 1 },
+        };
+        for (unsigned i = 0; i < ide.n_port && i < IODEV_MAX_PORT; i++) {
+            const unsigned b = ide.port[i].base, e = b + ide.port[i].len;
+            for (unsigned k = 0; k < sizeof(ata) / sizeof(ata[0]); k++) {
+                if (b < ata[k].base + ata[k].len && ata[k].base < e) {
+                    wr("DEVCAPTEST: FAIL ide-cap-declares-ata-ports\n"); sys_exit();
+                }
+            }
+        }
+        wr("DEVCAPTEST: the IDE controller's capability declares no ATA port\n");
     }
 
     /* ---- N6: nor may it be granted the console's ports ---------------------

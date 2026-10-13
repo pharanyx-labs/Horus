@@ -727,6 +727,12 @@ void smp_bringup(void) {
      * falsified by SDHCID_ADDR_INVERTED, SDHCID_WRITE_WRONG_LBA and
      * SDHCID_CSD_SPEC_BITS. */
     sdhcid_selftest();
+#elif defined(ATAD_SELFTEST)
+    /* Gated: a ring-3 IDE driver whose whole authority is one device capability
+     * identifies the primary master and writes, flushes and reads back a run of
+     * a scratch disk (ATADTEST: PASS). docs/design/ring3-storage.md; falsified
+     * by ATAD_LBA_REGS_SWAPPED, ATAD_WRITE_WRONG_LBA and ATAD_CAPACITY_CHS. */
+    atad_selftest();
 #elif defined(DEVCAP_SELFTEST)
     /* Gated: a ring-3 task holding TWO device capabilities proves each reaches
      * only its own device's frames, ports and IRQ (DEVCAPTEST: PASS). The witness

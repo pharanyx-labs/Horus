@@ -442,12 +442,13 @@ this.
   installed onto. An NVMe controller is driven from ring 3: `nvmed` identifies it and reads and
   writes it, polling, under one device capability and the IOMMU, in the `NVME_SELFTEST` build
   only (`make smoke-nvme`). The kernel's storage reads blocks only from ring-0 drivers, so an NVMe
-  disk cannot yet be installed onto or booted from (ROADMAP 2.7). The SD/eMMC driver also runs in
-  ring 3, as `sdhcid` in the `SDHCID_SELFTEST` build (`make smoke-sdhcid`), but `sdhci.c` still
-  serves the kernel. Both drivers serve the block-driver protocol to clients in a test build
-  (`make smoke-blkproto`), `nvmed` only for a namespace with 512-byte blocks. The kernel never
-  waits on a ring-3 task mid-call, so both become disks the system stores to when the kernel stops
-  doing disk I/O (filesystem phase 2, [`design/ring3-storage.md`](design/ring3-storage.md)).
+  disk cannot yet be installed onto or booted from (ROADMAP 2.7). The SD/eMMC and IDE drivers
+  also run in ring 3, as `sdhcid` in the `SDHCID_SELFTEST` build (`make smoke-sdhcid`) and `atad`
+  in the `ATAD_SELFTEST` build (`make smoke-atad`, the primary channel's master only), but
+  `sdhci.c` and `ata.c` still serve the kernel. All three serve the block-driver protocol to
+  clients in a test build (`make smoke-blkproto`), `nvmed` only for a namespace with 512-byte
+  blocks. The kernel never waits on a ring-3 task mid-call, so they become disks the system stores
+  to when the kernel stops doing disk I/O (filesystem phase 2, [`design/ring3-storage.md`](design/ring3-storage.md)).
 - **USB.** A machine with no PS/2 controller emulation has no keyboard. On eMMC, write durability
   across a power cut rests on the driver's flush and the laptop's register reading; no emulated
   gate can witness it.

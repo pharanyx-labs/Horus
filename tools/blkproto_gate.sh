@@ -3,7 +3,7 @@
 # a ring-3 storage driver's supervisor and clients, then the host's check of the
 # disk afterwards.
 #
-#   tools/blkproto_gate.sh <iso> <sd|nvme>
+#   tools/blkproto_gate.sh <iso> <sd|nvme|ata>
 #
 # TWO WITNESSES. The guest's BLKTEST: PASS says every rule blktest checks held:
 # a client reaches only its extent, an unbound token and the supervisor's
@@ -15,27 +15,31 @@
 #
 # The evidence is kept when it goes red and removed when it is green.
 set -u
-ISO=${1:?usage: blkproto_gate.sh <iso> <sd|nvme>}
-KIND=${2:?usage: blkproto_gate.sh <iso> <sd|nvme>}
+ISO=${1:?usage: blkproto_gate.sh <iso> <sd|nvme|ata>}
+KIND=${2:?usage: blkproto_gate.sh <iso> <sd|nvme|ata>}
 EVID=".blkproto-evidence-$KIND"
 rm -rf "$EVID"; mkdir -p "$EVID"
 IMG="$EVID/disk.img"
 LOG="$EVID/serial.log"
 
 python3 tools/block_scratch.py make blk "$IMG" 64 || { echo "[blkproto] FAIL could not make the disk"; exit 1; }
+# The SD and NVMe halves boot q35 under VT-d, as their drivers' own gates do.
+# The IDE half boots QEMU's default machine: q35 has no PIIX IDE controller, and
+# atad does no DMA, so there is nothing for an IOMMU to confine.
 case "$KIND" in
-sd)   DISK=(SMOKE_SD="$IMG") ;;
-nvme) DISK=(SMOKE_NVME="$IMG") ;;
-*)    echo "[blkproto] FAIL kind must be sd or nvme"; exit 2 ;;
+sd)   DISK=(SMOKE_SD="$IMG" SMOKE_IOMMU=1) ;;
+nvme) DISK=(SMOKE_NVME="$IMG" SMOKE_IOMMU=1) ;;
+ata)  DISK=(SMOKE_DISK="$IMG" SMOKE_BOOT_ORDER=d) ;;
+*)    echo "[blkproto] FAIL kind must be sd, nvme or ata"; exit 2 ;;
 esac
 
-# 'TEST: FAIL' matches the driver's own failure (SDHCIDTEST, NVMETEST) as well
+# 'TEST: FAIL' matches the driver's own failure (SDHCIDTEST, NVMETEST, ATADTEST) as well
 # as blktest's, so a driver that never came up fails at once, not at the bound.
-if ! env "${DISK[@]}" SMOKE_IOMMU=1 SMOKE_LOG="$LOG" SMOKE_TIMEOUT="${SMOKE_TIMEOUT:-90}" \
+if ! env "${DISK[@]}" SMOKE_LOG="$LOG" SMOKE_TIMEOUT="${SMOKE_TIMEOUT:-90}" \
      MARKER_ONLY=1 REQUIRE_MARKER='BLKTEST: PASS' FAIL_MARKER='TEST: FAIL' \
      tools/smoke_test.sh "$ISO"; then
     echo "[blkproto] FAIL ($KIND) the guest did not pass; what blktest and the driver said:"
-    grep -a -E 'BLKTEST|SDHCID|NVMED|TEST: FAIL' "$LOG" | sed 's/\r//; s/^/    /'
+    grep -a -E 'BLKTEST|SDHCID|NVMED|ATAD|TEST: FAIL' "$LOG" | sed 's/\r//; s/^/    /'
     echo "  evidence: $EVID"
     exit 1
 fi

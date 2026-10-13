@@ -124,6 +124,7 @@ DEFECT_FLAGS = \
 	NVME_IOMMU_NO_MAP NVME_WRITE_WRONG_LBA \
 	SDHCID_ADDR_INVERTED SDHCID_WRITE_WRONG_LBA SDHCID_CSD_SPEC_BITS DEVPAGE_UNCHECKED \
 	BLK_NO_EXTENT_CHECK BLK_BIND_UNCHECKED BLK_ABSOLUTE_SECTORS BLK_FRAME_REUSE \
+	ATAD_LBA_REGS_SWAPPED ATAD_WRITE_WRONG_LBA ATAD_CAPACITY_CHS ATA_PORTS_IN_SHIP \
 	IRQ_FORCE_PIC POLL_NOTIFY_UNGATED MSI_VECTOR_FROM_USER MSIX_TABLE_MAPPABLE \
 	SHLIB_TEXT_WRITABLE SHLIB_DATA_SHARED SHLIB_DATA_UNINITIALISED \
 	SHLIB_BASE_FIXED SHLIB_INFO_UNGATED SHLIB_INFO_TYPE_ONLY \
@@ -2536,6 +2537,8 @@ endif
 # directions (prints DEVCAPTEST: PASS to serial). The witness that a CAP_IO_DEVICE
 # names a device rather than conferring the console; gated off the ship kernel.
 # Needs a NIC on the machine: run it under `tools/smoke_test.sh` with SMOKE_NET=1.
+# It also holds a third, naming the IDE controller, and checks it declares no ATA
+# port (S137): ring 0 drives that controller in every build but atad's.
 DEVCAP_SELFTEST ?= 0
 ifeq ($(DEVCAP_SELFTEST),1)
 CFLAGS  += -DDEVCAP_SELFTEST
@@ -2689,6 +2692,46 @@ endif
 SDHCID_ADDR_INVERTED ?= 0
 SDHCID_WRITE_WRONG_LBA ?= 0
 SDHCID_CSD_SPEC_BITS ?= 0
+
+# ATAD_SELFTEST=1 embeds atad and, at boot, spawns it holding exactly ONE
+# capability: a CAP_IO_DEVICE naming the machine's IDE controller (class 01:01).
+# No untyped: it moves data by PIO, and it enables I/O decode without bus
+# mastering. This build ALONE declares the primary channel's legacy ports
+# (0x1F0-0x1F7, 0x3F6) on the controller's entry, and it compiles the ring-0
+# probe out (ata_init), so the controller has one driver and a ship kernel's
+# table declares no ATA port (S137). atad IDENTIFYs the primary master, reads
+# block 0 and a planted block and, only on a disk whose block 0 carries the
+# scratch signature, writes, flushes and reads back sectors 8-15 in one command
+# (ATADTEST: PASS). `make smoke-atad` supplies the scratch disk and checks the
+# write and the capacity on the host.
+ATAD_SELFTEST ?= 0
+ifeq ($(ATAD_SELFTEST),1)
+CFLAGS  += -DATAD_SELFTEST
+ASFLAGS += -DATAD_SELFTEST
+ATAD_SELFTEST_DEP = userspace/atad.bin
+endif
+
+# atad's three control arms, one for each thing smoke-atad claims.
+# ATAD_LBA_REGS_SWAPPED=1 writes LBA bits 8-15 and 16-23 to each other's
+# register: block 0 and sector 8 still read and write, the planted block at
+# 0x010205 does not hold the image's nonce, and the driver fails on it.
+# ATAD_WRITE_WRONG_LBA=1 writes and reads back sectors 24-31 instead of 8-15: the
+# guest's own read-back matches, so only the host's check of the image can see
+# it. ATAD_CAPACITY_CHS=1 takes the capacity from IDENTIFY words 57-58 (the
+# current CHS capacity) instead of 60-61: a plausible number and a wrong one,
+# caught only by comparing it with the size of the image.
+ATAD_LBA_REGS_SWAPPED ?= 0
+ATAD_WRITE_WRONG_LBA ?= 0
+ATAD_CAPACITY_CHS ?= 0
+
+# ATA_PORTS_IN_SHIP=1 is S137's arm: it declares the legacy IDE ports on the
+# controller's entry in a build where the ring-0 driver still drives it, which
+# is what a ship kernel must never do. `make smoke-devcap-ata-control` requires
+# DEVCAPTEST: FAIL ide-cap-declares-ata-ports.
+ATA_PORTS_IN_SHIP ?= 0
+ifeq ($(ATA_PORTS_IN_SHIP),1)
+CFLAGS += -DATA_PORTS_IN_SHIP
+endif
 
 # BLKPROTO=1, with SDHCID_SELFTEST=1 or NVME_SELFTEST=1, spawns the driver to
 # SERVE the block-driver protocol (include/blkproto.h, userspace/blkserve.c) and
@@ -4866,7 +4909,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin userspace/installer.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(NVME_SELFTEST_DEP) $(SDHCID_SELFTEST_DEP) $(BLKPROTO_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(TOKEN_SELFTEST_DEP) $(FSCAP_SELFTEST_DEP) $(FSCAPPOSIX_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(BLOCKPROBE_DEP) $(EXECPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(PIPEREVOKE_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin userspace/installer.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(NVME_SELFTEST_DEP) $(SDHCID_SELFTEST_DEP) $(ATAD_SELFTEST_DEP) $(BLKPROTO_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(TOKEN_SELFTEST_DEP) $(FSCAP_SELFTEST_DEP) $(FSCAPPOSIX_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(BLOCKPROBE_DEP) $(EXECPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(PIPEREVOKE_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -5679,6 +5722,15 @@ endif
 ifeq ($(SDHCID_CSD_SPEC_BITS),1)
 USERSPACE_CFLAGS += -DSDHCID_CSD_SPEC_BITS
 endif
+ifeq ($(ATAD_LBA_REGS_SWAPPED),1)
+USERSPACE_CFLAGS += -DATAD_LBA_REGS_SWAPPED
+endif
+ifeq ($(ATAD_WRITE_WRONG_LBA),1)
+USERSPACE_CFLAGS += -DATAD_WRITE_WRONG_LBA
+endif
+ifeq ($(ATAD_CAPACITY_CHS),1)
+USERSPACE_CFLAGS += -DATAD_CAPACITY_CHS
+endif
 ifeq ($(BLK_NO_EXTENT_CHECK),1)
 USERSPACE_CFLAGS += -DBLK_NO_EXTENT_CHECK
 endif
@@ -5839,7 +5891,7 @@ userspace/%.pie.elf: userspace/%.o $(MALLOC_OBJ) $(LIBHORUS_LIB) userspace/pie.l
 # The ring-3 storage drivers carry the block-driver protocol's server half,
 # written once (userspace/blkserve.c) so every driver holds a client to the same
 # rules.
-BLKSERVE_DRIVERS = userspace/sdhcid.pie.elf userspace/nvmed.pie.elf
+BLKSERVE_DRIVERS = userspace/sdhcid.pie.elf userspace/nvmed.pie.elf userspace/atad.pie.elf
 $(BLKSERVE_DRIVERS): userspace/%.pie.elf: userspace/%.o userspace/blkserve.o $(MALLOC_OBJ) $(LIBHORUS_LIB) userspace/pie.ld
 	$(LD) -m elf_x86_64 -pie -T userspace/pie.ld -o $@ $< userspace/blkserve.o $(MALLOC_OBJ) $(LIBHORUS_LIB)
 
@@ -6391,7 +6443,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.stripped.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/replyprobe.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/piperevoketest.bin userspace/piperevokee.bin userspace/coninee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/nvmed.bin userspace/sdhcid.bin userspace/blktest.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin userspace/sealprobe.bin userspace/dynstale.bin userspace/dyncanary.bin userspace/hello_dyn.bin userspace/swaphog.bin userspace/fscaptest.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/replyprobe.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/piperevoketest.bin userspace/piperevokee.bin userspace/coninee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/nvmed.bin userspace/sdhcid.bin userspace/atad.bin userspace/blktest.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin userspace/sealprobe.bin userspace/dynstale.bin userspace/dyncanary.bin userspace/hello_dyn.bin userspace/swaphog.bin userspace/fscaptest.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -10233,6 +10285,59 @@ smoke-sdhcid-emmc:
 	@$(MAKE) --no-print-directory SDHCID_SELFTEST=1 horus.iso
 	@tools/sdhcid_gate.sh horus.iso emmc 65536
 
+# docs/design/ring3-storage.md: the IDE driver in ring 3. atad's whole authority
+# is one CAP_IO_DEVICE naming the IDE controller; the legacy ports it drives are
+# declared only in this build, which also turns the ring-0 probe off (S137).
+# Witnessed three ways by tools/atad_gate.sh: the guest's verdict (including the
+# planted block at 0x010205, whose address uses all three LBA registers), the
+# written sectors on the image read on the host, and the IDENTIFY capacity
+# against the image's size. Each has an arm below.
+.PHONY: smoke-atad
+smoke-atad:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory ATAD_SELFTEST=1
+	@$(MAKE) --no-print-directory ATAD_SELFTEST=1 horus.iso
+	@tools/atad_gate.sh horus.iso
+
+# The addressing check's arm: two LBA registers crossed. Block 0 and sector 8 are
+# unchanged by it, so only the planted block can catch it.
+.PHONY: smoke-atad-lba-control
+smoke-atad-lba-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory ATAD_SELFTEST=1 ATAD_LBA_REGS_SWAPPED=1
+	@$(MAKE) --no-print-directory ATAD_SELFTEST=1 ATAD_LBA_REGS_SWAPPED=1 horus.iso
+	@out=$$(tools/atad_gate.sh horus.iso 2>&1); rc=$$?; echo "$$out" | tail -15; \
+		if [ $$rc -eq 0 ]; then echo "[atad-lba] CONTROL FAIL - crossed LBA registers passed the gate"; exit 1; fi; \
+		case "$$out" in *"ATADTEST: FAIL planted-block-not-this-image"*) ;; *) echo "[atad-lba] CONTROL FAIL - it went red, but not on the planted block"; exit 1;; esac
+	@rm -rf .atad-evidence-128
+	@echo "[atad-lba] CONTROL PASS - block 0 read, the planted block did not hold this image's nonce"
+
+# The host-side witness's arm. atad writes and reads back sectors 24-31, so its
+# own read-back matches and only the image shows sector 8 never written.
+.PHONY: smoke-atad-write-control
+smoke-atad-write-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory ATAD_SELFTEST=1 ATAD_WRITE_WRONG_LBA=1
+	@$(MAKE) --no-print-directory ATAD_SELFTEST=1 ATAD_WRITE_WRONG_LBA=1 horus.iso
+	@out=$$(tools/atad_gate.sh horus.iso 2>&1); rc=$$?; echo "$$out" | tail -15; \
+		if [ $$rc -eq 0 ]; then echo "[atad-write] CONTROL FAIL - the host check passed a write to the wrong sectors"; exit 1; fi; \
+		case "$$out" in *"FAIL block 8 is still empty"*) ;; *) echo "[atad-write] CONTROL FAIL - unexpected verdict"; exit 1;; esac
+	@rm -rf .atad-evidence-128
+	@echo "[atad-write] CONTROL PASS - the guest passed its own read-back and the host saw sector 8 unwritten"
+
+# The capacity check's arm: the CHS capacity, a plausible number short of the
+# disk, caught only by comparing it with the size of the image.
+.PHONY: smoke-atad-capacity-control
+smoke-atad-capacity-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory ATAD_SELFTEST=1 ATAD_CAPACITY_CHS=1
+	@$(MAKE) --no-print-directory ATAD_SELFTEST=1 ATAD_CAPACITY_CHS=1 horus.iso
+	@out=$$(tools/atad_gate.sh horus.iso 2>&1); rc=$$?; echo "$$out" | tail -15; \
+		if [ $$rc -eq 0 ]; then echo "[atad-capacity] CONTROL FAIL - the CHS capacity was taken for the disk's own"; exit 1; fi; \
+		case "$$out" in *"is not the disk's own"*) ;; *) echo "[atad-capacity] CONTROL FAIL - it went red, but not on the capacity"; exit 1;; esac
+	@rm -rf .atad-evidence-128
+	@echo "[atad-capacity] CONTROL PASS - a plausible wrong capacity is caught"
+
 # LIMITATIONS 1.34, S43: a device's register page is handed to its driver only if
 # no other device declares any of it. SYS_MAP_PHYS's decision runs at boot against
 # a table holding the neighbours QEMU never makes (two small BARs in one page, one
@@ -10278,6 +10383,10 @@ smoke-blkproto:
 	@$(MAKE) --no-print-directory NVME_SELFTEST=1 BLKPROTO=1
 	@$(MAKE) --no-print-directory NVME_SELFTEST=1 BLKPROTO=1 horus.iso
 	@tools/blkproto_gate.sh horus.iso nvme
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory ATAD_SELFTEST=1 BLKPROTO=1
+	@$(MAKE) --no-print-directory ATAD_SELFTEST=1 BLKPROTO=1 horus.iso
+	@tools/blkproto_gate.sh horus.iso ata
 
 # The four arms, one per rule, each through sdhcid: the rule is blkserve's, the
 # same file in both drivers. Each must fail on ITS rule, not merely fail.
@@ -10418,6 +10527,18 @@ smoke-devcap-irq-control:
 	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 IO_DEVICE_IRQ_UNCHECKED=1 horus.iso
 	@SMOKE_NET=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='DEVCAPTEST: FAIL nic-cap-took-platform-irq' tools/smoke_test.sh horus.iso
+
+# S137's arm: the legacy IDE ports declared in a build where the ring-0 driver
+# still drives the controller, which no ship kernel may do. The IDE capability
+# then declares them, and the probe says so.
+.PHONY: smoke-devcap-ata-control
+smoke-devcap-ata-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 ATA_PORTS_IN_SHIP=1
+	@$(MAKE) --no-print-directory DEVCAP_SELFTEST=1 ATA_PORTS_IN_SHIP=1 horus.iso
+	@SMOKE_NET=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='DEVCAPTEST: FAIL ide-cap-declares-ata-ports' tools/smoke_test.sh horus.iso
+	@echo "[devcap-ata] CONTROL PASS - with the ports declared beside the ring-0 driver, the probe caught it"
 
 # Build with the gated console blast-radius test, boot headless, and require the
 # marker proving the ring-3 console_server's deliberate fault was contained (the

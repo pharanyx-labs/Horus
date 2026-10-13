@@ -565,7 +565,13 @@
 # embedding blktest for the BLKPROTO_SELFTEST harness, never in the ship build.
 # The protocol's server half is ring 3 (userspace/blkserve.c); its launcher is in
 # selftest.c (selftest), and the dispatch reuses sdhcid's and nvmed's.
-core_budget_loc: 11579
+# 2026-10-13: 11579 -> 11588, +9, docs/design/ring3-storage.md, the IDE driver:
+# smp.c +2 and multiboot.S +7, dispatching and embedding atad for the
+# ATAD_SELFTEST harness, never in the ship build, exactly as sdhcid's took. The
+# driver itself is ring 3 (userspace/atad.c); selftest.c (selftest) grew by its
+# launcher, and pci.c and ata.c (driver) by the legacy-port declaration and the
+# probe guard that build alone compiles (S137).
+core_budget_loc: 11588
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

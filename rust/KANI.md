@@ -20,6 +20,7 @@ them.
 | `revoke_root_nulls_every_descendant` | The completeness half: revoking the root nulls both the child and the grandchild, for every distinct serial triple. Together the two pin revocation to exactly the target's subtree: no ancestors, all descendants. |
 | `revoke_reaches_every_cspace_and_spares_a_peer` | **S3, S4 across cspaces.** A root in one cspace, its child granted into a second and a grandchild granted back: revoking the root nulls all three, and an independent capability on the same object in the second cspace survives, for every distinct serial quadruple. |
 | `revoke_leaves_no_slot_holding_the_serial` | **S5.** For every content of two two-slot cspaces, after a system-wide revoke of a live, non-primordial capability no slot anywhere still holds its serial, a second slot carrying the same serial included. This is why lookup needs no record of revocation beyond the emptied slot. |
+| `revoke_counts_exactly_the_pipe_ends_it_removes` | **S134.** For every content of two two-slot cspaces and every live target, the revoke counts, for each pipe and direction, exactly the pipe ends it removed, and writes nothing past the tally's length. The kernel takes these counts out of the pipe table, so one too many would free a pipe an end still names and one too few would leave a peer waiting for EOF. |
 | `lookup_grants_exactly_the_rights_held` | **Roadmap 3.5.** For every (held, requested) rights pair, `rust_cap_lookup` succeeds **exactly when** the capability holds every requested right. Stated as an equivalence, not an implication, so a lookup that refused too much fails it too, "never grants what it should not" is satisfied by a predicate that always returns null. |
 | `lookup_never_returns_an_empty_slot` | For every rights value, including the degenerate `required_rights == 0` that a "does it hold these" check answers vacuously, an empty slot never satisfies a lookup. |
 | `lookup_refuses_every_out_of_range_slot` | For every slot index past the cspace, lookup refuses rather than reading whatever follows the cspace in memory. |
@@ -59,7 +60,7 @@ as a whole (`docs/LIMITATIONS.md` 5.5).
 
 All of them. `.github/kani-harnesses.yml` lists every harness, the required `kani-bounded` job
 runs each one on every pull request, and `tools/check_kani_harnesses.py` fails the build if a
-proof is missing from the list. All **34** gate. There is no way to excuse a proof from running:
+proof is missing from the list. All **35** gate. There is no way to excuse a proof from running:
 the checker refuses any list but `gating`. The count is declared in `.github/doc-claims.yml` and
 re-derived on every run.
 

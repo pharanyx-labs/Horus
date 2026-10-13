@@ -2618,7 +2618,7 @@ void e820_selftest(void) {
 #endif /* E820_SELFTEST */
 
 #if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(RECVBLOCK_SELFTEST) || defined(TOKEN_SELFTEST) || defined(KLOG_FORGE_SELFTEST) \
-    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE) || defined(VFS_SELFTEST) || defined(FORK_SELFTEST) || defined(FPU_SELFTEST) || defined(FORKEXEC_SELFTEST) || defined(DEVCAP_SELFTEST) || defined(NET_SELFTEST) || defined(SHLIB_SELFTEST) || defined(SHLIBC_SELFTEST) || defined(TUI_SELFTEST) \
+    || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE) || defined(VFS_SELFTEST) || defined(FORK_SELFTEST) || defined(FPU_SELFTEST) || defined(FORKEXEC_SELFTEST) || defined(PIPEREVOKE_SELFTEST) || defined(DEVCAP_SELFTEST) || defined(NET_SELFTEST) || defined(SHLIB_SELFTEST) || defined(SHLIBC_SELFTEST) || defined(TUI_SELFTEST) \
     || defined(FSCAP_SELFTEST)
 /* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT/IRQ/CONSOLE/RECVBLOCK/TOKEN/KLOG_FORGE/FORK only) ----
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
@@ -3112,6 +3112,39 @@ void fork_selftest(void) {
     sched_enter_user(pid);   /* forktest prints the PASS/FAIL marker; does not return */
 }
 #endif /* FORK_SELFTEST */
+
+#ifdef PIPEREVOKE_SELFTEST
+/* ---- revocable pipe ends (LIMITATIONS 1.14, PIPEREVOKE_SELFTEST only) -------
+ *
+ * Spawn userspace/piperevoketest, which spawns stages wired to its pipe ends,
+ * revokes its own ends, and asserts from ring 3 that each stage's end went with
+ * the end it was derived from, that a forked child's revoke of its copy leaves
+ * the original, and that the pipe's counts follow the capabilities. Every
+ * assertion is userspace-side; see userspace/piperevoketest.c.
+ *
+ * Endowed as fork_selftest endows forktest, for the same two reasons: a
+ * CAP_UNTYPED, because SYS_SPAWN_IMAGE charges a child's cspace to one (S57),
+ * and a READ-only CAP_DEBUG, so the driver can see its stages' stdio slots with
+ * SYS_CAP_ENUMERATE -- the structural half of every check, beside what the pipe
+ * itself answers. Pipes, revocation and fork need nothing further: SYS_PIPE and
+ * SYS_CAP_REVOKE are authorised by the ends themselves. */
+void piperevoke_selftest(void) {
+    extern uint8_t embedded_piperevoketest_bin_start[], embedded_piperevoketest_bin_end[];
+    extern int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);
+    print("PIPEREVOKE_SELFTEST: begin\n");
+
+    int pid = fs_spawn_embedded(embedded_piperevoketest_bin_start,
+                                embedded_piperevoketest_bin_end, "piperevoketest");
+    if (pid <= 0) { print("PIPEREVOKE: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
+
+    cap_install_from_root(pid, CAPSLOT_UNTYPED, 17, UNTYPED_ROOT);
+    cap_install_from_root(pid, CAPSLOT_DEBUG, 18, 0);
+
+    selftest_resume_all();
+    sched_enable_preemption();
+    sched_enter_user(pid);   /* piperevoketest prints the PASS/FAIL marker; does not return */
+}
+#endif /* PIPEREVOKE_SELFTEST */
 
 #ifdef FORKEXEC_SELFTEST
 /* ---- fork+exec self-test (roadmap 2.3, FORKEXEC_SELFTEST only) -------------

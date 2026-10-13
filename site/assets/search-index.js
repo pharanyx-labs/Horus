@@ -223,12 +223,6 @@ window.HORUS_SEARCH = [
 "k": 3
 },
 {
-"t": "1.14A child's inherited pipe end escapes revocation",
-"p": "Limitations",
-"u": "limitations.html#1-14a-child-s-inherited-pipe-end-escapes-revocation",
-"k": 3
-},
-{
 "t": "1.30Findings from a source review",
 "p": "Limitations",
 "u": "limitations.html#source-review-findings",

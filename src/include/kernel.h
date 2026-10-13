@@ -853,15 +853,20 @@ extern struct pipe pipes[MAX_PIPES];
  * but writers remain. write: SYS_ERR_AGAIN == full but a reader remains;
  * SYS_ERR_PIPE == no reader left. */
 int  pipe_alloc(void);                                   /* -> pipe index, or -1 */
-void pipe_end_ref(int idx, int is_writer);               /* +1 that direction     */
+bool pipe_end_ref(int idx, int is_writer);               /* +1; false if no pipe  */
 void pipe_end_unref(int idx, int is_writer);             /* -1; frees at 0/0      */
-int  pipe_read(int idx, uint8_t *dst, uint32_t len);
-int  pipe_write(int idx, const uint8_t *src, uint32_t len);
 /* Close every CAP_PIPE end in a dying task's cspace (task_teardown). */
 void pipe_close_task_ends(int task_id);
-/* Count every pipe end in a just-forked child's cspace, which cap_clone_cspace
- * copied without counting. Fork only: called twice it counts twice. */
-void pipe_count_forked_ends(int child);
+/* Count every pipe end in a just-forked child's cspace. cap_clone_cspace calls it
+ * with cap_lock HELD, after its copies and before it releases the lock (takes
+ * pipe_lock: cap_lock -> pipe_lock). All or nothing: false counts nothing, and the
+ * fork must fail. Fork only: called twice it counts twice. */
+bool pipe_count_forked_ends(int child);
+/* Release the pipe ends a revocation removed, as counted by the Rust sweep:
+ * tally[2*i] reader ends and tally[2*i+1] writer ends of pipe i. cap_revoke
+ * calls it with cap_lock HELD. False if it was asked to release more ends than a
+ * pipe had counted (it stops at zero). */
+bool pipe_release_revoked_ends(const uint32_t *tally, uint32_t cells);
 #ifdef PIPE_SELFTEST
 void pipe_selftest(void);                 /* in-kernel pipe mechanics exercise (smoke-pipe) */
 void pipe_task_teardown_selftest(void);   /* its phase 2: a stage that dies holding an end */
@@ -3099,8 +3104,8 @@ bool cap_consume_slot(uint32_t dest_slot);
  * the capability owned -- a pipe end's direction refcount -- knowing it was the
  * CPU that emptied the slot. A cross-cspace reduction of authority, never a
  * widening, which is why this takes a pid where cap_install_* does not. Call
- * pipe_end_unref OUTSIDE this: it takes pipe_lock, and the order here is
- * cap_lock -> pipe_lock. */
+ * pipe_end_unref after this returns, not inside: a removal needs no nesting,
+ * because an unref after the lock only leaves a count briefly too high (pipe.c). */
 bool cap_consume_slot_of(int pid, uint32_t slot, struct capability *out_prev);
 /* Release the capabilities a dead task held (task_teardown). The cspace's BYTES
  * stay with the slot -- the arena is a monotonic bump allocator and the kernel
@@ -3128,11 +3133,11 @@ bool cap_install_reply_for(int pid, int sender, uint64_t sender_gen);
  * cross-cspace install": type fixed to CAP_PIPE, destination restricted to the
  * two stdio slots, rights refused unless already a subset of the source's, and
  * the source looked up under cap_lock with cap_lookup's validity rules so a
- * revoked end cannot be copied. Keeps badge 0 (HORUS-20260911-04 is a separate
- * change; see the definition for why it cannot land alone). */
+ * revoked end cannot be copied. The installed end is DERIVED from the spawner's
+ * (badge = its serial), so revoking the spawner's end removes it (S3,
+ * HORUS-20260911-04), and it is counted in the pipe table under the same lock. */
 bool cap_install_child_pipe_end(int child, uint32_t dest_slot, int spawner,
-                                uint32_t src_slot, uint32_t rights,
-                                uint64_t *out_object);
+                                uint32_t src_slot, uint32_t rights);
 /* Read-only view of the kernel root cnode, so the object-reachability sweep in
  * untyped.c can see kernel-held capabilities too. root_cnode is otherwise
  * file-private to capability.c and must stay that way: handing out a mutable
@@ -3201,7 +3206,11 @@ bool rust_cap_mint_token(capability_t *cspace, uint32_t sz, uint32_t dest_slot,
 bool rust_cap_reply_mint(const capability_t *src, capability_t *dest_cspace,
                          uint32_t dest_cspace_size, uint32_t dest_slot,
                          uint32_t new_rights, uint64_t token, uint64_t *next_serial);
-bool rust_cap_revoke(capability_t *cspace, uint32_t sz, uint32_t slot, uint64_t *next_serial);
+/* pipe_tally: NULL, or pipe_tally_len cells in which every pipe end the revoke
+ * removes is counted ([2*pipe] readers, [2*pipe+1] writers); see PipeTally in
+ * rust/src/capability.rs. Same for rust_cap_revoke_global. */
+bool rust_cap_revoke(capability_t *cspace, uint32_t sz, uint32_t slot, uint64_t *next_serial,
+                     uint32_t *pipe_tally, uint32_t pipe_tally_len);
 
 /* One capability space, for the system-wide revocation sweep. Layout MUST match
  * `struct CSpaceDesc` in rust/src/capability.rs. */
@@ -3217,7 +3226,8 @@ typedef struct cspace_desc {
 bool rust_cap_revoke_global(capability_t *target_cspace, uint32_t target_cspace_size,
                             uint32_t target_slot, uint32_t *target_caps_in_use,
                             const cspace_desc_t *spaces, uint32_t space_count,
-                            uint64_t *next_serial);
+                            uint64_t *next_serial,
+                            uint32_t *pipe_tally, uint32_t pipe_tally_len);
 
 /* Is fault address `a` a legitimate part of the faulting task's user address
  * space? Region-aware: the caller passes the task's image and heap bounds; the

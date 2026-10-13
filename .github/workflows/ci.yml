@@ -4908,6 +4908,20 @@ jobs:
       # benign NULL a boot with nothing retyped happens to produce.
       - name: Control arm — a task's private reply endpoint resolves into the dynamic range
         run: make smoke-reply-ep-control
+      # LIMITATIONS 1.14, S3 and S4 for pipe ends. Steps of this job for the
+      # reason above: it already builds and boots pipe self-tests. A stage's
+      # stdio end is derived from its spawner's, so revoking the spawner's end
+      # removes it; a forked child's revoke of its copy spares the original; and
+      # the pipe's counts follow, so the peer sees EOF or EPIPE at once.
+      - name: Revoking a pipe end removes the copies a spawn and a fork handed on
+        run: make smoke-pipe-revoke-child
+      # The lineage. The child's end installed as a root survives the revoke.
+      - name: Control arm, a spawned child's pipe end is a root and survives the revoke
+        run: make smoke-pipe-revoke-child-control
+      # The count. The ends go and their counts stay, so the reader never sees
+      # EOF: why the badge could not be fixed on its own.
+      - name: Control arm, a revoke leaves the removed ends counted and the reader sees no EOF
+        run: make smoke-pipe-revoke-uncounted-control
 
   smoke-init-fs:
     name: QEMU delegated boot-through-init filesystem self-test (headless)

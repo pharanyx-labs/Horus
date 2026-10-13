@@ -61,6 +61,20 @@ nesting:
       nesting above landed 2026-08-11 and made it false the next day. Both
       paths are still correct -- exactly one of them nests -- but the reason
       given in the second is not.
+  - outer: cap_lock
+    inner: pipe_lock
+    reason: >-
+      A pipe end is a capability and a count of ends in the pipe table, and the
+      two must change together wherever a revocation sweep could see them apart
+      (LIMITATIONS 1.14). cap_install_child_pipe_end and pipe_count_forked_ends
+      count an end inside the cap_lock section that installs it; cap_revoke
+      releases the ends its sweep removed (pipe_release_revoked_ends) before it
+      drops cap_lock; and SYS_PIPE_READ / SYS_PIPE_WRITE resolve the end and move
+      the bytes under one cap_lock, so a revoke cannot free the pipe between the
+      lookup and the use. Until 2026-10-13 this nesting was avoided on purpose,
+      which was safe only while no pipe end could be revoked. pipe_lock is a
+      leaf: nothing in pipe.c takes another lock while holding it, so the reverse
+      edge cannot exist.
   - outer: endpoint_lock
     inner: page_lock
     reason: >-

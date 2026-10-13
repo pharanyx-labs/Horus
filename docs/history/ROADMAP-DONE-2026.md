@@ -70,3 +70,9 @@ open. The account of each is in its pull requests.
 | 4.10 Third-party material declared | `THIRD_PARTY.md`, 2026-09-08 |
 | 4.12 A security-invariant registry [F-4.1] | `tools/check_invariants.py` binds every `SECURITY.md` property to a witness that runs. 2026-08-28 |
 | 4.14 Nightly fuzzing and full Kani | Every Kani proof gates every pull request (#485); each proof's recorded mutation is replayed nightly to show it still fails (#493); every fuzz target runs nightly for ten minutes and a crash fails the run (#492). 2026-10-06 |
+
+## Track 5: closing the known limitations
+
+| Item | Delivered |
+|---|---|
+| 5.1 Revocable pipe ends (LIMITATIONS 1.14) | A spawned child's stdio end is derived from the spawner's, `SYS_PIPE`'s ends carry `REVOKE`, and a revoke releases the ends it removed from the pipe table under `cap_lock` (S134). 2026-10-13, #558 |

@@ -44,7 +44,7 @@ reason it is rated Critical rather than a build annoyance.
 | User address-space construction (`create_user_pagedir`) | close read | robust |
 | Physical allocator and refcounted free (`paging.c`, `untyped.c`) | close read | **F3** (hardening, closed 2026-09-21), else robust |
 | Capability core and FFI (`rust/src/capability.rs`, `capability.c`) | close read | robust |
-| Revocation subtree, and the §1.14 stdio-pipe root | close read | §1.14 confirmed still accurate |
+| Revocation subtree, and the §1.14 stdio-pipe root | close read | §1.14 confirmed still accurate (closed 2026-10-13, #558) |
 | Syscall ABI and dispatch (`syscall.c`, `include/syscall.h`) | close read | robust |
 | ELF loader and load-plan validation (`rust/src/lib.rs`) | close read | robust |
 | Build and CI TCB (action pinning, token scopes, deps, newlib pin) | mechanical | robust |
@@ -143,6 +143,7 @@ Recorded so the coverage is honest, not to claim more than was read.
 - **`§1.14` is still accurate.** `cap_install_child_pipe_end` sets the child pipe end's
   `badge = 0`, and `revoke_subtree` skips `badge == 0`, exactly as the limitation records. The
   path is otherwise careful: the source is looked up under `cap_lock` with a lineage check.
+  (Closed 2026-10-13, #558: the end is now derived from the spawner's and counted under the lock.)
 - **The build and CI TCB is hardened.** All 134 external action references are pinned by commit
   SHA; `ci.yml` is read-only at the top level with no per-job write override; only `pages.yml`
   (`id-token`) and `codeql.yml` (`security-events`) carry the one write each needs. The Rust

@@ -18,6 +18,7 @@ _Static_assert(sizeof(capability_t) == 40, "capability_t size (matches Rust)");
 _Static_assert(CAP_ENDPOINT == 3, "CAP_ENDPOINT must match rust/src/capability.rs");
 _Static_assert(CAP_PIPE == 13, "CAP_PIPE must match rust/src/capability.rs");
 _Static_assert(CAP_RIGHT_READ == (1u << 0), "the token-stripped right must match rust/src/capability.rs");
+_Static_assert(CAP_RIGHT_WRITE == (1u << 1), "a pipe end's direction must match rust/src/capability.rs");
 _Static_assert(CAP_NULL == 0, "CAP_NULL must be 0 (matches Rust)");
 
 
@@ -598,9 +599,10 @@ bool cap_consume_slot(uint32_t dest_slot) {
  * contents from inside the lock makes the unref the exclusive right of whichever
  * CPU actually emptied the slot.
  *
- * `pipe_end_unref` is then called by the caller OUTSIDE this lock, deliberately:
- * it takes pipe_lock, and cap_lock -> pipe_lock would be a new lock order. Every
- * cap-write in pipe.c now happens with pipe_lock unheld for exactly that reason.
+ * `pipe_end_unref` is then called by the caller after this lock is released.
+ * cap_lock -> pipe_lock is a declared nesting (LIMITATIONS 1.14), but a removal
+ * does not need it: until the unref lands the count is one too HIGH, which only
+ * delays the peer's EOF, never frees a pipe an end still names (pipe.c).
  *
  * A cross-cspace REDUCTION of authority, which is why it takes a pid where
  * cap_install_* does not: removing a capability can never widen anything, so the
@@ -656,19 +658,29 @@ bool cap_consume_slot_of(int pid, uint32_t slot, struct capability *out_prev) {
  * looked up HERE, under the lock, with the same validity rules cap_lookup applies
  * -- so a revoked or stale source is refused rather than copied.
  *
- * WHAT THIS DOES NOT YET FIX. The installed capability keeps badge 0, which makes
- * it a derivation ROOT rather than a child of the spawner's end, so revoking the
- * spawner's end does not reach it (audit HORUS-20260911-04). That is preserved
- * here on purpose: correcting it makes pipe capabilities reachable by
- * revoke_subtree for the first time, and revoke_subtree nulls slots without
- * releasing the pipe-end refcount those slots own -- so the fix needs the
- * refcount reconciliation to land with it, or a revoke leaves a reader waiting on
- * EOF that can never come. This commit is the locking and accounting half only;
- * the badge is a separate change with its own witness. */
+ * THE CHILD'S END IS DERIVED FROM THE SPAWNER'S (HORUS-20260911-04, LIMITATIONS
+ * 1.14). Its badge is the spawner's end's serial, so it is a child of that end in
+ * the derivation tree, and revoking the spawner's end -- or anything above it --
+ * removes it, as S3 says of every derived capability. Until 2026-10-13 it was
+ * installed with badge 0, a second ROOT holding the spawner's authority that no
+ * revocation could reach: the shape fork's FORK_CSPACE_ORPHAN_COPY arm
+ * reproduces, through the one capability spawn hands on.
+ *
+ * COUNTED HERE, UNDER THE LOCK THAT INSTALLS IT. A pipe end is two pieces of
+ * state, the capability and a count in the pipe table, and once the end is
+ * derived a revocation sweep can remove it. Until 2026-10-13 the count was taken
+ * by wire_child_stdio after this returned: a revoke landing between the two would
+ * have subtracted an end that had never been added, leaving the count one too
+ * few while other ends still named the pipe. Taking the ref before cap_lock is
+ * released means a sweep, which holds cap_lock, sees the end and its count
+ * together or neither. pipe_end_ref takes pipe_lock: the nesting cap_lock ->
+ * pipe_lock in .github/lock-order.yml.
+ *
+ * `rights` is READ or WRITE from wire_child_stdio, never REVOKE: a spawned stage
+ * may use the end it was given but not take back anything, and it has nothing
+ * below it to take back. */
 bool cap_install_child_pipe_end(int child, uint32_t dest_slot, int spawner,
-                                uint32_t src_slot, uint32_t rights,
-                                uint64_t *out_object) {
-    if (out_object) *out_object = 0;
+                                uint32_t src_slot, uint32_t rights) {
     if (child <= 0 || child >= g_max_tasks) return false;
     if (spawner <= 0 || spawner >= g_max_tasks) return false;
     if (dest_slot != STDIN_PIPE_SLOT && dest_slot != STDOUT_PIPE_SLOT) return false;
@@ -697,21 +709,37 @@ bool cap_install_child_pipe_end(int child, uint32_t dest_slot, int spawner,
         spin_unlock(&cap_lock);
         return false;
     }
-    uint64_t object = src->object;
+    /* The stdio slots are empty in a child this young (create_task installs
+     * nothing there), and an end already in one would be replaced without being
+     * released -- its pipe's count would never come down. Refused rather than
+     * overwritten. */
+    if (!was_null) { spin_unlock(&cap_lock); return false; }
+    /* A pipe outside the table cannot be counted, so it is not installed. No
+     * such end exists (h_pipe names a pipe it allocated); checked because the
+     * count below indexes the table with it. */
+    if (src->object >= MAX_PIPES) { spin_unlock(&cap_lock); return false; }
+    /* Counted before the slot is written, and refused if it cannot be: the
+     * source is a live end, so its pipe is in use while the counts keep their
+     * invariant, and an end the table never counted must not be made. */
+    if (!pipe_end_ref((int)src->object, (rights & CAP_RIGHT_WRITE) != 0)) {
+        spin_unlock(&cap_lock);
+        return false;
+    }
     ccs[dest_slot].type       = CAP_PIPE;
     ccs[dest_slot].rights     = rights;          /* already proved a subset */
-    ccs[dest_slot].object     = object;
-    ccs[dest_slot].badge      = 0;               /* HORUS-20260911-04, above */
+    ccs[dest_slot].object     = src->object;
+#ifdef PIPE_CHILD_END_UNDERIVED
+    /* CONTROL ARM (smoke-pipe-revoke-child-control): the pre-2026-10-13 root.
+     * The end is counted exactly as below, so only its place in the derivation
+     * tree differs, and revoking the spawner's end leaves it working. */
+    ccs[dest_slot].badge      = 0;
+#else
+    ccs[dest_slot].badge      = src->serial;     /* a child of the spawner's end */
+#endif
     ccs[dest_slot].serial     = serial;
     ccs[dest_slot].token      = 0;
-    if (was_null) tasks[child].caps_in_use++;
+    tasks[child].caps_in_use++;
     spin_unlock(&cap_lock);
-    /* The caller must take a pipe-end refcount for this install, and it needs the
-     * object to do it. Reporting it from inside the lock is the point: re-reading
-     * the spawner's slot afterwards would be one more unlocked read of a cspace,
-     * and a revoke landing in between would send the refcount to a different
-     * pipe than the one the child now holds. */
-    if (out_object) *out_object = object;
     return true;
 }
 
@@ -1529,6 +1557,22 @@ int cap_clone_cspace(int parent, int child) {
 #endif
     }
 
+    /* The pipe ends among the copies are holders like any other, and a pipe is
+     * freed when its count of holders reaches zero (LIMITATIONS 1.29). Counted
+     * HERE, before cap_lock is released, because the copies are derived from the
+     * parent's ends and a revocation sweep can remove them the moment the lock
+     * drops; counted after, a revoke in between would subtract ends never added
+     * (LIMITATIONS 1.14). Only on success: a failed clone's child never runs and
+     * no sweep visits it once its slot is freed, so its copies hold nothing. An
+     * end that cannot be counted fails the whole fork, for the all-or-nothing
+     * reason above, with nothing counted. */
+#ifndef FORK_PIPE_UNCOUNTED
+    if (!pipe_count_forked_ends(child)) {
+        spin_unlock(&cap_lock);
+        return -3;
+    }
+#endif
+
     spin_unlock(&cap_lock);
     return copied;
 }
@@ -1619,14 +1663,26 @@ bool cap_revoke(uint32_t slot) {
     }
     uint32_t orig_type = cspace[slot].type;
 
+    /* Every pipe end either revoke below removes is counted here by the Rust
+     * sweep ([2*i] reader ends and [2*i+1] writer ends of pipe i), and released
+     * from the pipe table before cap_lock is dropped (LIMITATIONS 1.14). On the
+     * stack, 256 bytes: a static would cost a page of .bss for it. */
+    uint32_t pipe_tally[2 * MAX_PIPES];
+    for (uint32_t i = 0; i < 2 * MAX_PIPES; i++) pipe_tally[i] = 0;
+
     /* Revocation-set indirection: a CAP_REVOCATION capability names a target
      * slot in `object`. Revoke the helper slot itself (single cspace), then
      * redirect to the real target before the system-wide sweep. */
     if (orig_type == CAP_REVOCATION && cspace[slot].object < CNODE_SIZE) {
         uint32_t real_target = (uint32_t)cspace[slot].object;
-        rust_cap_revoke(cspace, cspace_sz, slot, &cap_next_serial);
+        rust_cap_revoke(cspace, cspace_sz, slot, &cap_next_serial,
+                        pipe_tally, 2 * MAX_PIPES);
         slot = real_target;
         if (slot >= CNODE_SIZE) {
+            /* real_target came from a slot index and is below CNODE_SIZE, so
+             * this is unreachable; released anyway so no path that revoked
+             * leaves a pipe end counted. */
+            (void)pipe_release_revoked_ends(pipe_tally, 2 * MAX_PIPES);
             spin_unlock(&cap_lock);
             return true;
         }
@@ -1688,7 +1744,19 @@ bool cap_revoke(uint32_t slot) {
     uint32_t *target_ciu = (cspace == root_cnode) ? NULL : &tasks[get_current_task()].caps_in_use;
 
     bool ok = rust_cap_revoke_global(cspace, cspace_sz, slot, target_ciu,
-                                     spaces, nspaces, &cap_next_serial);
+                                     spaces, nspaces, &cap_next_serial,
+                                     pipe_tally, 2 * MAX_PIPES);
+
+    /* THE PIPE ENDS THE SWEEP REMOVED COME OUT OF THE PIPE TABLE NOW, while
+     * cap_lock still makes every cspace and every producer's count quiescent
+     * (LIMITATIONS 1.14, S134). A pipe end is a capability and a count; the sweep
+     * removed the first, and without this the second would stay, so a peer whose
+     * last opposite end was revoked would wait for an EOF or EPIPE that never
+     * came. pipe_lock nests inside cap_lock here (.github/lock-order.yml). */
+    bool pipes_exact = true;
+#ifndef PIPE_REVOKE_UNCOUNTED
+    pipes_exact = pipe_release_revoked_ends(pipe_tally, 2 * MAX_PIPES);
+#endif
 
     for (int r = 0; r < MAX_REV_SETS; r++) {
         if (rev_sets[r].valid &&
@@ -1712,6 +1780,12 @@ bool cap_revoke(uint32_t slot) {
     kobj_gc();
 
     spin_unlock(&cap_lock);
+    /* The invariant says a pipe's count is never below its ends, so a revoke can
+     * never release more than were counted. If one did, a count was wrong before
+     * the revoke, and a pipe may have been freed under an end: say so, once, in
+     * one write. */
+    if (!pipes_exact)
+        print("PIPE: a revocation released more pipe ends than were counted\n");
     return ok;
 }
 

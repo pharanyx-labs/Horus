@@ -219,12 +219,14 @@ reserved `0xC0DE****` serial tag and are not revocable.
 - **`cap_grant_into(target, dest, src, rights)`** derives into another task's cspace, authorised
   by a `CAP_TCB` naming that task. `SYS_CAP_GRANT` reaches it as `cap_grant_from_user`.
 - **`cap_clone_cspace`** gives a forked child a derived copy of every capability its parent holds
-  (S41), and `pipe_count_forked_ends` then counts each pipe end the child holds, since a pipe is
-  freed when no counted end is left.
+  (S41), and `pipe_count_forked_ends`, before the clone releases `cap_lock`, counts each pipe end
+  the child holds, since a pipe is freed when no counted end is left.
 
 A pipe end's holders are counted in the pipe table, not in the capability, so only the kernel's
 own copies (creating the pipe, a fork, the stdio wiring at spawn) may make one, and each counts
-the end it makes. Ring 3 cannot copy a pipe end: `cap_grant_from_user` and `cap_mint` (and so
+the end it makes inside the `cap_lock` section that installs it. A pipe's count is therefore never
+below the ends that exist, which is what keeps a pipe from being freed while an end still names it
+(S134). Ring 3 cannot copy a pipe end: `cap_grant_from_user` and `cap_mint` (and so
 `cap_transfer`) refuse one by type in the Rust core (S133).
 
 Every write to a capability slot takes `cap_lock` and goes through the accounted cap-write path
@@ -232,18 +234,23 @@ Every write to a capability slot takes `cap_lock` and goes through the accounted
 `.github/cap-write-sites.yml`. This matters beyond the slot being written: revocation reads every
 cspace, and a capability is several fields a C store writes one at a time, so an unlocked writer
 could show the sweep a half-written slot. One declared exemption, `create_task` building a cspace
-for a task already published, is safe by a stated argument that the manifest pins. One known gap:
-`cap_install_child_pipe_end` gives a spawned child's stdio pipe end no parent link
-(`docs/LIMITATIONS.md` 1.14).
+for a task already published, is safe by a stated argument that the manifest pins.
+`cap_install_child_pipe_end`, the spawn path's stdio wiring, derives the child's pipe end from the
+spawner's, so a revoke of the spawner's end reaches it like any other derived capability (S3).
 
 ### Revocation
 
 `cap_revoke(slot)` is **system-wide** and **subtree-scoped**. It hands every live cspace plus the
-root cnode to `rust_cap_revoke_global`, which nulls the target, bumps its serial's generation, and
-computes and nulls the whole descendant closure across all cspaces. Afterwards no cspace holds the
-target or anything derived from it, and ancestors, siblings and independent capabilities to the
-same object are untouched (S3, S4, proved in Kani). The closure marks in place and iterates to a
-fixpoint, so it is exact at any subtree size and needs no allocation.
+root cnode to `rust_cap_revoke_global`, which nulls the target and computes and nulls the whole
+descendant closure across all cspaces. Afterwards no cspace holds the target or anything derived
+from it, and ancestors, siblings and independent capabilities to the same object are untouched
+(S3, S4, proved in Kani). The closure marks in place and iterates to a fixpoint, so it is exact at
+any subtree size and needs no allocation.
+
+A pipe end is a capability and a count in the pipe table, so the sweep counts every pipe end it
+removes, by pipe and direction, and `cap_revoke` releases those ends from the table
+(`pipe_release_revoked_ends`) before it drops `cap_lock`. A peer whose last opposite end was
+revoked sees EOF or EPIPE on its next call (S134, proved in Kani).
 
 ### One serial, one slot
 
@@ -461,14 +468,18 @@ one that is.
 | `cap_lock` | Every cspace |
 | `page_lock` | The pager's structures |
 | `untyped_lock` | The untyped regions; `cap_lock -> untyped_lock` |
-| `pipe_lock` | Pipe objects |
+| `pipe_lock` | Pipe objects; a leaf, and `cap_lock -> pipe_lock` |
 | `scheduler_lock` | The run pool and the claim invariant |
 
-Two nestings exist on purpose: `endpoint_lock -> cap_lock` (the reply capability is minted before
-the receiver wakes, which a receiver already running on another CPU would otherwise race) and
-`endpoint_lock -> page_lock` (delivering a reply body can fault the destination in). Neither is a
-cycle while no `cap_lock` or `page_lock` holder enters IPC, and the checker keeps it so. There is
-no runtime lock-order check: `spin_lock` records no lock identity.
+The nestings that exist on purpose are declared, each with its reason, in
+`.github/lock-order.yml`: `endpoint_lock -> cap_lock` (the reply capability is minted before the
+receiver wakes, which a receiver already running on another CPU would otherwise race),
+`endpoint_lock -> page_lock` (delivering a reply body can fault the destination in),
+`page_lock -> swap_lock` and `endpoint_lock -> swap_lock` (a swapped page is freed or brought back
+under the swap slot table), and `cap_lock -> pipe_lock` (a pipe end and its count change together
+under `cap_lock`, S134). None is a cycle while its reverse stays absent, and
+`tools/check_lock_order.py` keeps it so. There is no runtime lock-order check: `spin_lock` records
+no lock identity.
 
 ---
 
@@ -511,6 +522,10 @@ ring-3 driver sleeps until its device needs it.
 
 Bounded in-kernel byte streams with a `CAP_PIPE` for each end, back-pressure, and EOF or EPIPE when
 the peer closes. `task_teardown` releases a dying task's ends so a pipeline cannot wedge.
+`SYS_PIPE` gives both ends `CAP_RIGHT_REVOKE`, so the creator can take back every copy of an end
+it handed on to a forked or spawned child; a spawned stage gets `READ` or `WRITE` alone. A read or
+write resolves its end and moves the bytes under one `cap_lock`, so a revoke cannot free the pipe
+between the two (S134).
 
 ### Capability addressing
 

@@ -225,6 +225,8 @@ control_arms:
   smoke-fork-cspace-orphan-control: smoke-fork
   smoke-fork-pipe-control: smoke-fork
   smoke-fork-share-control: smoke-fork
+  smoke-pipe-revoke-child-control: smoke-pipe-revoke-child
+  smoke-pipe-revoke-uncounted-control: smoke-pipe-revoke-child
   smoke-forkexec-reset-control: smoke-forkexec
   smoke-forkexec-root-control: smoke-forkexec
   smoke-kdiag-split-control: smoke-kdiag
@@ -495,6 +497,7 @@ gates:
   - smoke-passwd-probe
   - smoke-percpu
   - smoke-pipe
+  - smoke-pipe-revoke-child
   - smoke-preempt
   - smoke-proc
   - smoke-killed-task

@@ -54,6 +54,10 @@ gating:
   # and a sweep that spares a second slot holding the revoked serial.
   - fresh_serials_never_repeat                               # 0s
   - revoke_leaves_no_slot_holding_the_serial                 # 9s
+  # LIMITATIONS 1.14, added 2026-10-13 with the pipe-end tally: a revoke counts
+  # exactly the pipe ends it removes, per pipe and direction, and writes nothing
+  # past the tally. FALSIFIED by its four kani-arms.yml arms.
+  - revoke_counts_exactly_the_pipe_ends_it_removes           # 31s
   - mint_never_escalates_rights                              # 1s
   - lookup_grants_exactly_the_rights_held                    # 0s
   - lookup_never_returns_an_empty_slot                       # 1s

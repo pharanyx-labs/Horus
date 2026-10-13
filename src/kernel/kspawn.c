@@ -271,10 +271,12 @@ static void build_child_argv(int tid) {
 /* Wire the child's stdin/stdout to pipe ends the spawner holds. Runs inside
  * do_spawn_inner, before sched_prepare_user_context publishes a resumable frame
  * — so the child cannot be picked by any CPU until its stdio slots and
- * stdio_flags are set. Copies the spawner's pipe-end cap into the child's
- * reserved slot with a fresh serial and bumps that end's refcount, so the child
- * holds a first-class end that task_teardown will release. A malformed/absent
- * slot is silently left as the console default (fail-safe).
+ * stdio_flags are set. Derives the child's end from the spawner's into the
+ * child's reserved slot, with a fresh serial and the spawner's end as its parent,
+ * and counts it in the pipe table under the same lock (cap_install_child_pipe_end),
+ * so the child holds a first-class end that task_teardown will release and that a
+ * revoke of the spawner's end removes. A malformed/absent slot is silently left
+ * as the console default (fail-safe).
  *
  * `caller` and `spec` are PARAMETERS, and that is the fix, not a tidy-up
  * (roadmap 1.7, the authority half). They were two file-scope globals:
@@ -301,25 +303,24 @@ static void wire_child_stdio(int child, int caller, uint32_t spec) {
     uint32_t in_slot  = spec & 0xFFFFu;           /* read end -> child stdin  */
     uint32_t out_slot = (spec >> 16) & 0xFFFFu;   /* write end -> child stdout */
 
-    /* THE COPY GOES THROUGH THE LOCKED PATH, and the end is ref'd only if it
-     * succeeded. The old code tested `pcs[slot].type == CAP_PIPE` and then
-     * struct-copied the capability with no lock held: a revocation sweep landing
-     * between the test and the copy handed the child an end that had just been
-     * destroyed, and a sweep landing DURING the copy could read the child's slot
-     * with some fields written and some not. cap_install_child_pipe_end does the
-     * lookup and the install under one cap_lock, with cap_lookup's validity rules
-     * applied to the source, so a revoked or stale end is refused instead. */
-    uint64_t obj = 0;
+    /* THE COPY GOES THROUGH THE LOCKED PATH, and so does its count. The old code
+     * tested `pcs[slot].type == CAP_PIPE` and then struct-copied the capability
+     * with no lock held: a revocation sweep landing between the test and the copy
+     * handed the child an end that had just been destroyed, and a sweep landing
+     * DURING the copy could read the child's slot with some fields written and
+     * some not. cap_install_child_pipe_end does the lookup, the install and the
+     * count under one cap_lock, with cap_lookup's validity rules applied to the
+     * source, so a revoked or stale end is refused instead. The count used to be
+     * taken here, after the lock, which a revoke of the (now derived) end could
+     * have landed in front of (LIMITATIONS 1.14). */
     if (in_slot && in_slot < psz &&
         cap_install_child_pipe_end(child, STDIN_PIPE_SLOT, caller, in_slot,
-                                   CAP_RIGHT_READ, &obj)) {
-        pipe_end_ref((int)obj, 0);                   /* +1 read end */
+                                   CAP_RIGHT_READ)) {
         tasks[child].stdio_flags |= STDIO_STDIN_PIPE;
     }
     if (out_slot && out_slot < psz &&
         cap_install_child_pipe_end(child, STDOUT_PIPE_SLOT, caller, out_slot,
-                                   CAP_RIGHT_WRITE, &obj)) {
-        pipe_end_ref((int)obj, 1);                   /* +1 write end */
+                                   CAP_RIGHT_WRITE)) {
         tasks[child].stdio_flags |= STDIO_STDOUT_PIPE;
     }
 }
@@ -864,13 +865,6 @@ void h_fork(struct interrupt_frame64 *r) {
      * lands in the PARENT's cspace, so it is not part of the race above; it is
      * kept here so the two halves of "who may reach whom" read together. */
     grant_child_tcb_cap(parent, child);
-
-    /* The pipe ends the clone copied are holders like any other, and a pipe is
-     * freed when its count of holders reaches zero (LIMITATIONS 1.29). Before
-     * the child can run, so it can close nothing first. */
-#ifndef FORK_PIPE_UNCOUNTED
-    pipe_count_forked_ends(child);
-#endif
 
     /* The child resumes from the same instruction as the parent, on its own copy
      * of the same user stack, with rax = 0. `r` IS the parent's live trap frame

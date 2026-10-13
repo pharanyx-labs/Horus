@@ -48,9 +48,9 @@ Horus is a research system, and nobody independent has reviewed it.
   sets direction and decides anything that touches the security model.
 - **The checks are extensive, but they are not review.** Every gate is built to fail when the
   defect it guards against is put back; that is evidence, not a second pair of eyes.
-- **Some security limitations are open.** An inherited pipe end escapes revocation (1.14), any
-  program a person runs can read the command lines they type (2.9b), measured boot is opt-in on a
-  machine without a TPM (2.9), and the cryptography is unaudited (5.4). A source review found
+- **Some security limitations are open.** Any program a person runs can read the command lines
+  they type (2.9b), measured boot is opt-in on a machine without a TPM (2.9), and the cryptography
+  is unaudited (5.4). A source review found
   two more, open until each is fixed (1.30, 1.31): the inode table is not authenticated at rest,
   and the older by-user-id file path checks a file's own mode, not its directories.
 
@@ -170,8 +170,8 @@ The full list, with the reasons, is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.
 with the decisions it waits on listed first. The first wave closes the remaining holes and builds
 what later work needs:
 
-1. **Revocable pipe ends** (LIMITATIONS 1.14): revoking a pipe end reaches the copy a spawned child
-   holds.
+1. **A pipe end that cannot outlive its pipe** (5.13): an end left over from a freed pipe is
+   refused, not joined to the next pipe that takes its index.
 2. **Sessions at login, then the uid path removed** (2.10): `init` grants each login a session from
    the policy, and the filesystem stops authorising anything by user id (closing 1.31).
 3. **Kernel reports on their own channel** (2.6c): the gates stop reading kernel output off the
@@ -267,10 +267,10 @@ test does not exist or does not run.
 
 | Layer | What it covers |
 |---|---|
-| Security properties | 135 numbered properties, each bound to a witness by `tools/check_invariants.py` |
-| QEMU integration tests | 505 `smoke-*` targets: 223 base gates and 282 control arms |
+| Security properties | 136 numbered properties, each bound to a witness by `tools/check_invariants.py` |
+| QEMU integration tests | 508 `smoke-*` targets: 224 base gates and 284 control arms |
 | Control arms | A build that puts a defect back on purpose; CI requires its gate to go red against it |
-| Kani | 34 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
+| Kani | 35 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
 | Miri | The security core's tests, interpreted for undefined behaviour on every pull request |
 | Fuzzing | The FFI predicates under cargo-fuzz, ten minutes per target, nightly |
 | Reproducibility | `kernel.elf` builds byte for byte the same twice; the ISO does not yet |

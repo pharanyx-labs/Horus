@@ -63,6 +63,11 @@ const fn copyable_from_ring3(typ: u32) -> bool {
 /// carries it: a token is a client identity, and a client that could receive
 /// could dequeue its peers' requests (finding C-1).
 pub const CAP_RIGHT_READ: u32 = 1 << 0;
+/// The write right (`CAP_RIGHT_WRITE`). On a pipe end it is the direction: a
+/// writer end carries it and a reader end never does, which is how the C close
+/// paths and `PipeTally` tell the two apart. Pinned against the C value by a
+/// `_Static_assert` in `src/kernel/capability.c`.
+pub const CAP_RIGHT_WRITE: u32 = 1 << 1;
 /// The mint right (`CAP_RIGHT_MINT`). On an untokened endpoint capability it is
 /// what `rust_cap_mint_token` requires. A tokened capability MAY keep it, and
 /// then it means only what it means everywhere else, the right to make narrowed
@@ -671,7 +676,71 @@ const _: () = {
     assert!(CAP_MARK_NEW != CAP_NULL);
     assert!(CAP_MARK_DONE != CAP_NULL);
     assert!(CAP_MARK_NEW != CAP_MARK_DONE);
+    // `PipeTally::note` is a no-op on a marked capability because a sentinel is
+    // not CAP_PIPE; the sweep relies on that not to count a pipe end twice.
+    assert!(CAP_MARK_NEW != CAP_PIPE);
+    assert!(CAP_MARK_DONE != CAP_PIPE);
 };
+
+/// Where a revocation records the pipe ends it removes (LIMITATIONS 1.14, S134).
+///
+/// A pipe end is two pieces of state: the capability, and a count of ends in the
+/// C kernel's pipe table, which frees the pipe when its readers and writers both
+/// reach zero. This module empties slots and knows nothing of that table, so a
+/// sweep that removed a pipe end and said nothing would leave the count one too
+/// high, and the peer would wait for an EOF that never comes. So every pipe end
+/// a revocation empties is counted here, by pipe and direction, and `cap_revoke`
+/// subtracts the counts from the table before it releases `cap_lock`.
+///
+/// Counted in the same step that decides the slot is emptied, not by comparing
+/// before and after: a capability marked as a descendant loses its type to the
+/// mark, so `mark_children_of` counts it as it marks it (every marked capability
+/// is emptied by the sweep that follows, with no return in between), and the
+/// sweep counts the ones it empties unmarked (the target, a holder of the root's
+/// serial, the by-object match).
+///
+/// The cells are the C side's: `[2 * pipe]` counts reader ends and
+/// `[2 * pipe + 1]` writer ends, `len` cells in all. Every write is checked
+/// against `len`, so an end naming a pipe outside the table is not counted (none
+/// can exist: `h_pipe` names a pipe it allocated, and every other end is derived
+/// from one of its two), and a null pointer counts nothing. The direction is the
+/// end's WRITE right, the same test the C close paths use, so a revoke and a close
+/// of the same end always release the same direction.
+#[derive(Clone, Copy)]
+struct PipeTally {
+    cells: *mut u32,
+    len: u32,
+}
+
+impl PipeTally {
+    /// Counts nothing: for the single-cspace tests and proofs that do not
+    /// involve pipes.
+    #[cfg(kani)]
+    const NONE: PipeTally = PipeTally { cells: ptr::null_mut(), len: 0 };
+
+    /// Count `c` if it is a pipe end. Call it exactly once for each capability
+    /// the revocation empties, before the slot is emptied.
+    ///
+    /// # Safety
+    /// `self.cells` must be null or point to `self.len` writable `u32`s that
+    /// nothing else accesses during the call (in the kernel, `cap_lock` is held
+    /// and the cells are `cap_revoke`'s own).
+    #[inline]
+    unsafe fn note(self, c: &Capability) {
+        if c.typ != CAP_PIPE || self.cells.is_null() {
+            return;
+        }
+        let pipes = u64::from(self.len / 2);
+        if c.object >= pipes {
+            return;
+        }
+        let writer = usize::from(c.rights & CAP_RIGHT_WRITE != 0);
+        // c.object < len / 2 <= u32::MAX / 2, so this neither overflows nor
+        // reaches past cell len - 1.
+        let cell = &mut *self.cells.add(c.object as usize * 2 + writer);
+        *cell = cell.saturating_add(1);
+    }
+}
 
 /// Mark every not-yet-marked capability whose `badge` names `parent_serial` — the
 /// direct children of one node of the derivation tree — as `CAP_MARK_NEW`.
@@ -682,12 +751,18 @@ const _: () = {
 ///
 /// # Safety
 /// As `revoke_subtree`: `spaces` must be null or point to `space_count` valid
-/// `CSpaceDesc`s whose `caps`/`size` describe live arrays. Called under `cap_lock`.
+/// `CSpaceDesc`s whose `caps`/`size` describe live arrays, and `tally` must
+/// satisfy `PipeTally::note`. Called under `cap_lock`.
 #[inline]
 // Unused when the [I-3] control arm is compiled in, which selects the legacy
 // bounded closure instead. Not dead code in any shipping configuration.
 #[cfg_attr(feature = "revoke_legacy_bounded", allow(dead_code))]
-unsafe fn mark_children_of(spaces: *const CSpaceDesc, space_count: u32, parent_serial: u64) {
+unsafe fn mark_children_of(
+    spaces: *const CSpaceDesc,
+    space_count: u32,
+    parent_serial: u64,
+    tally: PipeTally,
+) {
     if parent_serial == 0 {
         return;
     }
@@ -706,6 +781,9 @@ unsafe fn mark_children_of(spaces: *const CSpaceDesc, space_count: u32, parent_s
                 continue;
             }
             if c.badge == parent_serial {
+                // Counted now, while `typ` still says what it is: the mark
+                // replaces it, and the sweep empties every marked slot.
+                tally.note(c);
                 c.typ = CAP_MARK_NEW;
             }
         }
@@ -765,9 +843,13 @@ unsafe fn mark_children_of(spaces: *const CSpaceDesc, space_count: u32, parent_s
 /// Should that ever cease to hold, a capability left carrying a sentinel is not
 /// a valid type and fails every type check — the fail-closed direction.
 ///
+/// Every pipe end it empties is counted in `tally` (see `PipeTally`), so the
+/// caller can release the ends in the pipe table.
+///
 /// # Safety
 /// `spaces` must be null or point to `space_count` valid `CSpaceDesc`s whose
-/// `caps`/`size` describe live arrays. Called under `cap_lock`.
+/// `caps`/`size` describe live arrays, and `tally` must satisfy
+/// `PipeTally::note`. Called under `cap_lock`.
 /// Carries S3 (a revoke reaches the whole derivation subtree) and S4 (it
 /// reaches nothing else: no ancestor, sibling or independent peer). The
 /// exactness half is what `--features=revoke_legacy_bounded` falsifies.
@@ -777,6 +859,7 @@ unsafe fn revoke_subtree(
     space_count: u32,
     root_serial: u64,
     root_object: u64,
+    tally: PipeTally,
 ) {
     if spaces.is_null() {
         return;
@@ -791,7 +874,7 @@ unsafe fn revoke_subtree(
         // Seed: mark the root's direct children. The root capability itself is
         // handled by the sweep below via `serial == root_serial`, so it is not
         // marked here and cannot be mistaken for its own child.
-        mark_children_of(spaces, space_count, root_serial);
+        mark_children_of(spaces, space_count, root_serial, tally);
 
         // Expand to a fixpoint. Each pass promotes every NEW mark to DONE and
         // marks that capability's children NEW; a mark created late in a pass is
@@ -813,7 +896,7 @@ unsafe fn revoke_subtree(
                     c.typ = CAP_MARK_DONE;
                     let serial = c.serial;
                     if serial != 0 {
-                        mark_children_of(spaces, space_count, serial);
+                        mark_children_of(spaces, space_count, serial, tally);
                     }
                     progress = true;
                 }
@@ -843,6 +926,9 @@ unsafe fn revoke_subtree(
                 || (root_serial != 0 && c.serial == root_serial)
                 || (by_object && root_object != 0 && c.object == root_object);
             if hit {
+                // A marked end was counted when it was marked; its `typ` is
+                // now a sentinel, so this counts only the unmarked hits.
+                tally.note(c);
                 // Emptying the slot is the whole record of the revoke: no
                 // other slot holds this serial (one serial, one slot), and
                 // none will again.
@@ -874,6 +960,7 @@ unsafe fn revoke_subtree(
     space_count: u32,
     root_serial: u64,
     root_object: u64,
+    tally: PipeTally,
 ) {
     const MAX_REVOKE_LINEAGE: usize = 256;
 
@@ -946,6 +1033,8 @@ unsafe fn revoke_subtree(
             let hit = set_contains(&revoked[..n], c.serial)
                 || (overflow && root_object != 0 && c.object == root_object);
             if hit {
+                // No marks on this path, so every hit still has its type.
+                tally.note(c);
                 note_revoked(c.serial);
                 nullify(c);
                 if !d.caps_in_use.is_null() && *d.caps_in_use > 0 {
@@ -973,6 +1062,10 @@ unsafe fn is_primordial_root(cspace: *mut Capability, slot: u32) -> bool {
 /// Single-cspace revoke. Used for moves and for revoking a CAP_REVOCATION
 /// helper slot. For system-wide revocation use `rust_cap_revoke_global`.
 ///
+/// Every pipe end it empties is counted in `pipe_tally` (see `PipeTally`),
+/// exactly as the global revoke counts them, so no path that empties a pipe end
+/// leaves its count behind.
+///
 /// # Safety
 /// `cspace` must be null, or point to at least `cspace_size` valid
 /// `Capability`s -- and `cspace_size` must be the TRUE length of that array, not
@@ -981,13 +1074,17 @@ unsafe fn is_primordial_root(cspace: *mut Capability, slot: u32) -> bool {
 /// code cannot discharge for itself is the truthfulness of that length. Call
 /// under `cap_lock`: these read and write the array non-atomically, and a
 /// concurrent revoke would otherwise be able to change a capability between the
-/// validity check and the use.
+/// validity check and the use. `pipe_tally` must be null or point to
+/// `pipe_tally_len` writable `u32`s; the length is trusted in the same way, and
+/// every index is checked against it.
 #[no_mangle]
 pub unsafe extern "C" fn rust_cap_revoke(
     cspace: *mut Capability,
     cspace_size: u32,
     slot: u32,
     _next_serial: *mut u64,
+    pipe_tally: *mut u32,
+    pipe_tally_len: u32,
 ) -> bool {
     if cspace.is_null() {
         return false;
@@ -1006,7 +1103,9 @@ pub unsafe extern "C" fn rust_cap_revoke(
 
     let ts = target.serial;
     let to = target.object;
+    let tally = PipeTally { cells: pipe_tally, len: pipe_tally_len };
 
+    tally.note(target);
     nullify(target);
     note_revoked(ts);
 
@@ -1017,7 +1116,7 @@ pub unsafe extern "C" fn rust_cap_revoke(
         size: cspace_size,
         caps_in_use: core::ptr::null_mut(),
     };
-    revoke_subtree(&desc as *const CSpaceDesc, 1, ts, to);
+    revoke_subtree(&desc as *const CSpaceDesc, 1, ts, to, tally);
     true
 }
 
@@ -1051,6 +1150,11 @@ pub struct CSpaceDesc {
 ///
 /// Must be called by C under `cap_lock` so the `spaces` snapshot is stable.
 ///
+/// Every pipe end the revoke empties, the target included, is counted in
+/// `pipe_tally` (see `PipeTally`). The caller must release those ends in the pipe
+/// table before it drops `cap_lock`, or a pipe's count stays above the ends that
+/// exist and its peer never sees EOF (LIMITATIONS 1.14).
+///
 /// # Safety
 /// `target_cspace` carries the obligation described on `rust_cap_lookup`.
 /// `spaces` must be null, or point to `space_count` valid `CSpaceDesc`s, each of
@@ -1059,7 +1163,9 @@ pub struct CSpaceDesc {
 /// omitted here keeps a derived copy the revoke was supposed to reach.
 /// `caps_in_use` pointers must be null or valid writable `u32`s. `cap_lock` must
 /// be held for the whole call: the snapshot of `tasks[]` this describes has to
-/// stay stable across a sweep that visits every task.
+/// stay stable across a sweep that visits every task. `pipe_tally` must be null
+/// or point to `pipe_tally_len` writable `u32`s, a length trusted like the
+/// cspace sizes; every index into it is checked against that length.
 #[no_mangle]
 pub unsafe extern "C" fn rust_cap_revoke_global(
     target_cspace: *mut Capability,
@@ -1069,6 +1175,8 @@ pub unsafe extern "C" fn rust_cap_revoke_global(
     spaces: *const CSpaceDesc,
     space_count: u32,
     _next_serial: *mut u64,
+    pipe_tally: *mut u32,
+    pipe_tally_len: u32,
 ) -> bool {
     if target_cspace.is_null() {
         return false;
@@ -1087,7 +1195,9 @@ pub unsafe extern "C" fn rust_cap_revoke_global(
 
     let ts = target.serial;
     let to = target.object;
+    let tally = PipeTally { cells: pipe_tally, len: pipe_tally_len };
 
+    tally.note(target);
     nullify(target);
     if !target_caps_in_use.is_null() && *target_caps_in_use > 0 {
         *target_caps_in_use -= 1;
@@ -1098,7 +1208,7 @@ pub unsafe extern "C" fn rust_cap_revoke_global(
     // Sweep every supplied cspace for the target's derivation subtree only — the
     // target's descendants, not its ancestors, siblings, or same-object peers
     // (audit A1). The target slot is already null, so it cannot re-match.
-    revoke_subtree(spaces, space_count, ts, to);
+    revoke_subtree(spaces, space_count, ts, to, tally);
     true
 }
 
@@ -1155,6 +1265,8 @@ mod tests {
                 spaces.as_ptr(),
                 2,
                 core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                0,
             );
             assert!(ok);
 
@@ -1197,7 +1309,7 @@ mod tests {
                 CSpaceDesc { caps: b_ptr, size: 16, caps_in_use: addr_of_mut!(ciu_b) },
             ];
             let ok = rust_cap_revoke_global(
-                a_ptr, 16, 4, addr_of_mut!(ciu_a), spaces.as_ptr(), 2, core::ptr::null_mut());
+                a_ptr, 16, 4, addr_of_mut!(ciu_a), spaces.as_ptr(), 2, core::ptr::null_mut(), core::ptr::null_mut(), 0);
             assert!(ok);
             assert!(!rust_cap_lookup(b_ptr, 16, 7, 0x1).is_null(),
                 "unrelated capability must not be revoked");
@@ -1248,7 +1360,7 @@ mod tests {
             assert!(child_before.serial >= MIN_DERIVED_SERIAL, "the child has a serial of its own");
 
             
-            let rev_ok = rust_cap_revoke(cspace.as_mut_ptr(), 16, 0, core::ptr::null_mut());
+            let rev_ok = rust_cap_revoke(cspace.as_mut_ptr(), 16, 0, core::ptr::null_mut(), core::ptr::null_mut(), 0);
             assert!(rev_ok);
 
             let looked = rust_cap_lookup(cspace.as_mut_ptr(), 16, 6, 0x1);
@@ -1275,7 +1387,7 @@ mod tests {
             for round in 0..40_000u32 {
                 assert!(rust_cap_mint(p, 16, 6, 4, 0x1, &mut next, 0),
                     "round {round}: minting from the live capability was refused");
-                assert!(rust_cap_revoke(p, 16, 6, core::ptr::null_mut()));
+                assert!(rust_cap_revoke(p, 16, 6, core::ptr::null_mut(), core::ptr::null_mut(), 0));
             }
             assert!(!rust_cap_lookup(p, 16, 4, 0x3f).is_null(),
                 "40,000 unrelated revokes must leave the live capability usable");
@@ -1352,7 +1464,7 @@ mod tests {
                 "primordial cap is usable to begin with");
 
             // Single-cspace revoke refuses and leaves the slot untouched.
-            assert!(!rust_cap_revoke(cs.as_mut_ptr(), 16, 2, core::ptr::null_mut()));
+            assert!(!rust_cap_revoke(cs.as_mut_ptr(), 16, 2, core::ptr::null_mut(), core::ptr::null_mut(), 0));
             assert_eq!(cs[2].serial, 0xC0DE0002, "primordial cap must be untouched");
 
             // System-wide revoke refuses too, and performs no sweep. One
@@ -1361,7 +1473,7 @@ mod tests {
             let spaces = [CSpaceDesc { caps: cs_ptr, size: 16, caps_in_use: core::ptr::null_mut() }];
             assert!(!rust_cap_revoke_global(
                 cs_ptr, 16, 2, core::ptr::null_mut(),
-                spaces.as_ptr(), 1, core::ptr::null_mut()));
+                spaces.as_ptr(), 1, core::ptr::null_mut(), core::ptr::null_mut(), 0));
             assert_eq!(cs[2].typ, 9);
             assert!(!rust_cap_lookup(cs.as_mut_ptr(), 16, 2, 0x1).is_null(),
                 "primordial cap remains usable after an attempted revocation");
@@ -1388,7 +1500,7 @@ mod tests {
             assert!(!rust_cap_lookup(cs.as_mut_ptr(), 16, 8, 0x3f).is_null());
 
             // Revoking the source lineage clears the transferred copy as well.
-            assert!(rust_cap_revoke(cs.as_mut_ptr(), 16, 4, core::ptr::null_mut()));
+            assert!(rust_cap_revoke(cs.as_mut_ptr(), 16, 4, core::ptr::null_mut(), core::ptr::null_mut(), 0));
             assert_eq!(cs[4].typ, CAP_NULL);
             assert_eq!(cs[8].typ, CAP_NULL,
                 "a transferred copy is revoked together with its source (shared lineage)");
@@ -1426,7 +1538,7 @@ mod tests {
             let mut ciu = 1u32;
             let spaces = [CSpaceDesc { caps: cs_ptr, size: 16, caps_in_use: addr_of_mut!(ciu) }];
             assert!(rust_cap_revoke_global(
-                cs_ptr, 16, 5, addr_of_mut!(ciu), spaces.as_ptr(), 1, core::ptr::null_mut()));
+                cs_ptr, 16, 5, addr_of_mut!(ciu), spaces.as_ptr(), 1, core::ptr::null_mut(), core::ptr::null_mut(), 0));
 
             // The live slot is emptied, so the snapshot fails its re-check...
             assert_eq!((*cs_ptr.add(5)).typ, CAP_NULL);
@@ -1504,7 +1616,7 @@ mod tests {
                 "out-of-range dest must be refused");
             assert!(!rust_cap_mint(cs.as_mut_ptr(), 16, 5, 16, 0x3f, &mut next, 0),
                 "out-of-range src must be refused");
-            assert!(!rust_cap_revoke(cs.as_mut_ptr(), 16, 16, core::ptr::null_mut()),
+            assert!(!rust_cap_revoke(cs.as_mut_ptr(), 16, 16, core::ptr::null_mut(), core::ptr::null_mut(), 0),
                 "out-of-range revoke must be refused");
 
             // None of the above disturbed the one valid in-range capability.
@@ -1530,7 +1642,7 @@ mod tests {
                     "slot {slot} must be usable before revocation");
             }
             // Revoke the ROOT parent only.
-            assert!(rust_cap_revoke(cs.as_mut_ptr(), 16, 4, core::ptr::null_mut()));
+            assert!(rust_cap_revoke(cs.as_mut_ptr(), 16, 4, core::ptr::null_mut(), core::ptr::null_mut(), 0));
             for slot in [4u32, 5, 6] {
                 assert_eq!(cs[slot as usize].typ, CAP_NULL,
                     "slot {slot} in the derivation chain must be revoked with its ancestor");
@@ -1561,7 +1673,7 @@ mod tests {
             let cs_ptr = cs.as_mut_ptr();
             let spaces = [CSpaceDesc { caps: cs_ptr, size: 16, caps_in_use: addr_of_mut!(ciu) }];
             assert!(rust_cap_revoke_global(
-                cs_ptr, 16, 4, addr_of_mut!(ciu), spaces.as_ptr(), 1, core::ptr::null_mut()));
+                cs_ptr, 16, 4, addr_of_mut!(ciu), spaces.as_ptr(), 1, core::ptr::null_mut(), core::ptr::null_mut(), 0));
             assert_eq!(cs[4].typ, CAP_NULL);
             assert_eq!(cs[5].typ, CAP_NULL, "the same-object derived copy is swept too");
             assert_eq!(ciu, 0, "caps_in_use must saturate at 0, never wrap to u32::MAX");
@@ -1650,7 +1762,7 @@ mod tests {
                 CSpaceDesc { caps: grantee_ptr, size: 16, caps_in_use: addr_of_mut!(ciu_e) },
             ];
             assert!(rust_cap_revoke_global(
-                grantor_ptr, 16, 5, addr_of_mut!(ciu_g), spaces.as_ptr(), 2, &mut next));
+                grantor_ptr, 16, 5, addr_of_mut!(ciu_g), spaces.as_ptr(), 2, &mut next, core::ptr::null_mut(), 0));
             assert_eq!(grantor[5].typ, CAP_NULL);
             assert_eq!(grantee[6].typ, CAP_NULL, "the delegated copy is revoked with its grantor");
             assert_eq!(ciu_e, 0, "grantee accounting decremented for the swept copy");
@@ -1684,7 +1796,7 @@ mod tests {
             // Revoke the DELEGATED CHILD (child_space slot 6) — not the parent.
             assert!(rust_cap_revoke_global(
                 child_space_ptr, 16, 6, addr_of_mut!(ciu_c),
-                spaces.as_ptr(), 2, core::ptr::null_mut()));
+                spaces.as_ptr(), 2, core::ptr::null_mut(), core::ptr::null_mut(), 0));
 
             // The child is gone...
             assert_eq!(child_space[6].typ, CAP_NULL);
@@ -1723,7 +1835,7 @@ mod tests {
                 CSpaceDesc { caps: b_ptr, size: 16, caps_in_use: addr_of_mut!(ciu_b) },
             ];
             assert!(rust_cap_revoke_global(
-                a_ptr, 16, 5, addr_of_mut!(ciu_a), spaces.as_ptr(), 2, core::ptr::null_mut()));
+                a_ptr, 16, 5, addr_of_mut!(ciu_a), spaces.as_ptr(), 2, core::ptr::null_mut(), core::ptr::null_mut(), 0));
             assert_eq!(a[5].typ, CAP_NULL, "the revoked cap is gone");
             assert_eq!(b[5].typ, 3, "an independent same-object cap must survive (A1)");
             assert!(!rust_cap_lookup(b_ptr, 16, 5, 0x1).is_null(),
@@ -1802,7 +1914,7 @@ mod tests {
             ];
             assert!(rust_cap_revoke_global(
                 a_ptr, 256, 0, addr_of_mut!(ciu_a),
-                descs.as_ptr(), 2, core::ptr::null_mut()));
+                descs.as_ptr(), 2, core::ptr::null_mut(), core::ptr::null_mut(), 0));
 
             // Every descendant, at every depth, is gone.
             for (i, c) in a.iter().enumerate() {
@@ -1874,7 +1986,7 @@ mod tests {
             ];
             assert!(rust_cap_revoke_global(
                 a_ptr, 256, 0, addr_of_mut!(ciu_a),
-                descs.as_ptr(), 2, core::ptr::null_mut()));
+                descs.as_ptr(), 2, core::ptr::null_mut(), core::ptr::null_mut(), 0));
 
             for (i, c) in a.iter().enumerate() {
                 assert_eq!(c.typ, CAP_NULL, "a[{i}] is link {i} of the chain");
@@ -1923,7 +2035,7 @@ mod tests {
                 CSpaceDesc { caps: other_ptr, size: 16, caps_in_use: addr_of_mut!(ciu_x) },
             ];
             assert!(rust_cap_revoke_global(
-                owner_ptr, 16, 4, addr_of_mut!(ciu_o), spaces.as_ptr(), 2, &mut next));
+                owner_ptr, 16, 4, addr_of_mut!(ciu_o), spaces.as_ptr(), 2, &mut next, core::ptr::null_mut(), 0));
 
             // (a) The child's detached snapshot now fails revalidation: its slot
             // was swept, the hole finding 3.3 identified.
@@ -2091,6 +2203,123 @@ mod tests {
             );
         }
     }
+
+    // ---- pipe ends a revocation removes are counted (LIMITATIONS 1.14) ----
+
+    const R: u32 = CAP_RIGHT_READ;
+    const W: u32 = CAP_RIGHT_WRITE;
+    const RV: u32 = 1 << 5; // CAP_RIGHT_REVOKE
+
+    /// The shape `do_spawn` and fork give a pipe end's holders: the spawner's
+    /// root end, a forked child's derived copy, and a spawned grandchild's stdio
+    /// end derived from that. Revoking the root removes all three and counts
+    /// three ends of that pipe's direction; the other direction, and another
+    /// pipe, are neither removed nor counted.
+    #[test]
+    fn global_revoke_counts_every_pipe_end_it_removes() {
+        let mut a = [cap(0, 0, 0, 0, 0); 16];
+        let mut b = [cap(0, 0, 0, 0, 0); 16];
+        let mut c = [cap(0, 0, 0, 0, 0); 16];
+        a[15] = cap(CAP_PIPE, W | RV, 3, 0, 0x5_0001); // spawner's writer root
+        a[14] = cap(CAP_PIPE, R | RV, 3, 0, 0x5_0002); // its reader end: untouched
+        b[9] = cap(CAP_PIPE, W | RV, 3, 0x5_0001, 0x5_0003); // forked child's copy
+        c[15] = cap(CAP_PIPE, W, 3, 0x5_0003, 0x5_0004); // spawned stdout end
+        c[14] = cap(CAP_PIPE, W, 2, 0, 0x5_0005); // another pipe: untouched
+        let (mut ca, mut cb, mut cc) = (2u32, 1u32, 2u32);
+        let mut tally = [0u32; 8];
+        unsafe {
+            // One pointer per cspace, used for both the target and the sweep: a
+            // second `as_mut_ptr` would invalidate the first (Miri, stacked
+            // borrows), as the kernel's one array per task never does.
+            let (pa, pb, pc) = (a.as_mut_ptr(), b.as_mut_ptr(), c.as_mut_ptr());
+            let spaces = [
+                CSpaceDesc { caps: pa, size: 16, caps_in_use: addr_of_mut!(ca) },
+                CSpaceDesc { caps: pb, size: 16, caps_in_use: addr_of_mut!(cb) },
+                CSpaceDesc { caps: pc, size: 16, caps_in_use: addr_of_mut!(cc) },
+            ];
+            assert!(rust_cap_revoke_global(
+                pa, 16, 15, addr_of_mut!(ca), spaces.as_ptr(), 3,
+                core::ptr::null_mut(), tally.as_mut_ptr(), 8));
+        }
+        assert_eq!(a[15].typ, CAP_NULL);
+        assert_eq!(b[9].typ, CAP_NULL, "the forked copy is in the subtree");
+        assert_eq!(c[15].typ, CAP_NULL, "the spawned child's stdio end is in the subtree");
+        assert_eq!(a[14].typ, CAP_PIPE, "the reader end is not the writer's descendant");
+        assert_eq!(c[14].typ, CAP_PIPE, "another pipe's end is not in the subtree");
+        assert_eq!(tally, [0, 0, 0, 0, 0, 0, 0, 3],
+            "three writer ends of pipe 3 removed, three counted, nothing else");
+    }
+
+    /// Revoking a DERIVED end removes and counts only its own subtree: the
+    /// ancestor end survives and is not counted, so the pipe's count stays at
+    /// the one end that is left (S4 for pipe ends).
+    #[test]
+    fn revoking_a_derived_pipe_end_counts_only_its_subtree() {
+        let mut a = [cap(0, 0, 0, 0, 0); 16];
+        let mut b = [cap(0, 0, 0, 0, 0); 16];
+        a[5] = cap(CAP_PIPE, R | RV, 1, 0, 0x6_0001);
+        b[5] = cap(CAP_PIPE, R | RV, 1, 0x6_0001, 0x6_0002);
+        b[14] = cap(CAP_PIPE, R, 1, 0x6_0002, 0x6_0003);
+        let (mut ca, mut cb) = (1u32, 2u32);
+        let mut tally = [0u32; 4];
+        unsafe {
+            let (pa, pb) = (a.as_mut_ptr(), b.as_mut_ptr());
+            let spaces = [
+                CSpaceDesc { caps: pa, size: 16, caps_in_use: addr_of_mut!(ca) },
+                CSpaceDesc { caps: pb, size: 16, caps_in_use: addr_of_mut!(cb) },
+            ];
+            assert!(rust_cap_revoke_global(
+                pb, 16, 5, addr_of_mut!(cb), spaces.as_ptr(), 2,
+                core::ptr::null_mut(), tally.as_mut_ptr(), 4));
+        }
+        assert_eq!(a[5].typ, CAP_PIPE, "the ancestor end survives");
+        assert_eq!((b[5].typ, b[14].typ), (CAP_NULL, CAP_NULL));
+        assert_eq!(tally, [0, 0, 2, 0]);
+    }
+
+    /// A revoke of something that is not a pipe end counts nothing, and the
+    /// single-cspace revoke counts exactly as the global one does.
+    #[test]
+    fn single_cspace_revoke_counts_pipe_ends_and_nothing_else() {
+        let mut cs = [cap(0, 0, 0, 0, 0); 16];
+        cs[4] = cap(1, 0x3f, 0x9000, 0, 0x7_0001);
+        cs[5] = cap(1, 0x3f, 0x9000, 0x7_0001, 0x7_0002);
+        cs[6] = cap(CAP_PIPE, W | RV, 0, 0, 0x7_0003);
+        cs[7] = cap(CAP_PIPE, W, 0, 0x7_0003, 0x7_0004);
+        let mut tally = [0u32; 2];
+        unsafe {
+            assert!(rust_cap_revoke(cs.as_mut_ptr(), 16, 4, core::ptr::null_mut(), tally.as_mut_ptr(), 2));
+            assert_eq!(tally, [0, 0], "no pipe end was in that subtree");
+            assert!(rust_cap_revoke(cs.as_mut_ptr(), 16, 6, core::ptr::null_mut(), tally.as_mut_ptr(), 2));
+        }
+        assert_eq!((cs[6].typ, cs[7].typ), (CAP_NULL, CAP_NULL));
+        assert_eq!(tally, [0, 2]);
+    }
+
+    /// The tally is the C side's array and its length is the only bound: an end
+    /// naming a pipe past the length is removed but not counted, nothing is
+    /// written beyond the length (the guard cells), and a null tally counts
+    /// nothing without failing the revoke.
+    #[test]
+    fn pipe_tally_writes_only_inside_its_length() {
+        let mut cs = [cap(0, 0, 0, 0, 0); 16];
+        cs[4] = cap(CAP_PIPE, W | RV, 0, 0, 0x8_0001);
+        cs[5] = cap(CAP_PIPE, W, 2, 0x8_0001, 0x8_0002); // pipe 2: past len 4
+        cs[6] = cap(CAP_PIPE, R, u64::MAX, 0x8_0001, 0x8_0003);
+        let mut cells = [0u32; 8];
+        unsafe {
+            assert!(rust_cap_revoke(cs.as_mut_ptr(), 16, 4, core::ptr::null_mut(), cells.as_mut_ptr(), 4));
+        }
+        assert_eq!((cs[4].typ, cs[5].typ, cs[6].typ), (CAP_NULL, CAP_NULL, CAP_NULL),
+            "every end in the subtree is removed, counted or not");
+        assert_eq!(cells, [0, 1, 0, 0, 0, 0, 0, 0], "only pipe 0 is inside the tally");
+
+        cs[4] = cap(CAP_PIPE, W | RV, 0, 0, 0x8_0004);
+        unsafe {
+            assert!(rust_cap_revoke(cs.as_mut_ptr(), 16, 4, core::ptr::null_mut(), core::ptr::null_mut(), 4));
+        }
+        assert_eq!(cs[4].typ, CAP_NULL);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2218,7 +2447,7 @@ mod kani_proofs {
             caps_in_use: core::ptr::null_mut(),
         };
         // Revoke the LEAF (grandchild) subtree.
-        unsafe { revoke_subtree(&desc as *const CSpaceDesc, 1, g, 0) };
+        unsafe { revoke_subtree(&desc as *const CSpaceDesc, 1, g, 0, PipeTally::NONE) };
 
         assert!(cs[0].typ != CAP_NULL, "revoking a descendant must not null the parent");
         assert!(cs[0].serial == p, "the parent must be left byte-for-byte intact");
@@ -2429,7 +2658,7 @@ mod kani_proofs {
             size: 3,
             caps_in_use: core::ptr::null_mut(),
         };
-        unsafe { revoke_subtree(&desc as *const CSpaceDesc, 1, p, 0) };
+        unsafe { revoke_subtree(&desc as *const CSpaceDesc, 1, p, 0, PipeTally::NONE) };
 
         assert!(cs[0].typ == CAP_NULL, "the revoked root must be nulled");
         assert!(cs[1].typ == CAP_NULL, "a direct child must be revoked with its parent");
@@ -2459,7 +2688,7 @@ mod kani_proofs {
             CSpaceDesc { caps: a.as_mut_ptr(), size: 2, caps_in_use: core::ptr::null_mut() },
             CSpaceDesc { caps: b.as_mut_ptr(), size: 2, caps_in_use: core::ptr::null_mut() },
         ];
-        unsafe { revoke_subtree(d.as_ptr(), 2, p, obj) };
+        unsafe { revoke_subtree(d.as_ptr(), 2, p, obj, PipeTally::NONE) };
 
         assert!(a[0].typ == CAP_NULL, "the revoked root must be nulled");
         assert!(b[0].typ == CAP_NULL, "a child granted into another cspace must be revoked");
@@ -2502,7 +2731,7 @@ mod kani_proofs {
         ];
         let ok = unsafe {
             rust_cap_revoke_global(pa, 2, 1, core::ptr::null_mut(), spaces.as_ptr(), 2,
-                                   core::ptr::null_mut())
+                                   core::ptr::null_mut(), core::ptr::null_mut(), 0)
         };
         assert!(ok, "revoking a live, non-primordial capability must succeed");
         for i in 0..2 {
@@ -2513,6 +2742,68 @@ mod kani_proofs {
                 assert!(cb.typ == CAP_NULL || cb.serial != target, "a slot in `b` still holds the revoked serial");
             }
         }
+    }
+
+    /// LIMITATIONS 1.14: a revocation counts exactly the pipe ends it removes.
+    /// For every content of two two-slot cspaces and every live target, the
+    /// tally cell of each pipe and direction rises by exactly the number of
+    /// ends of that pipe and direction that were in a slot before the revoke
+    /// and are gone after it, and nothing is written past the tally's length.
+    /// `cap_revoke` subtracts these counts from the pipe table: one too many
+    /// frees a pipe while an end still names it (the #553 hazard), one too few
+    /// leaves its peer waiting for an EOF that never comes.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn revoke_counts_exactly_the_pipe_ends_it_removes() {
+        let empty = Capability { typ: CAP_NULL, rights: 0, object: 0, badge: 0, serial: 0, token: 0 };
+        let mut a = [empty; 2];
+        let mut b = [empty; 2];
+        for c in a.iter_mut().chain(b.iter_mut()) {
+            *c = Capability {
+                typ: kani::any(), rights: kani::any(), object: kani::any(),
+                badge: kani::any(), serial: kani::any(), token: kani::any(),
+            };
+            kani::assume(c.typ != CAP_MARK_NEW && c.typ != CAP_MARK_DONE);
+            // Pipes 0 and 1 are inside the tally; pipe 2 is past its end.
+            kani::assume(c.object < 3);
+        }
+        kani::assume(a[1].typ != CAP_NULL && a[1].serial != 0);
+        kani::assume(!serial_is_primordial(a[1].serial));
+        let (a0, b0) = (a, b);
+
+        // Four cells for pipes 0 and 1; the last two are guards.
+        let mut cells = [0u32; 6];
+        let pa = a.as_mut_ptr();
+        let pb = b.as_mut_ptr();
+        let spaces = [
+            CSpaceDesc { caps: pa, size: 2, caps_in_use: core::ptr::null_mut() },
+            CSpaceDesc { caps: pb, size: 2, caps_in_use: core::ptr::null_mut() },
+        ];
+        let ok = unsafe {
+            rust_cap_revoke_global(pa, 2, 1, core::ptr::null_mut(), spaces.as_ptr(), 2,
+                                   core::ptr::null_mut(), cells.as_mut_ptr(), 4)
+        };
+        assert!(ok, "revoking a live, non-primordial capability must succeed");
+
+        let removed = |pipe: u64, writer: bool| -> u32 {
+            let mut n = 0u32;
+            for i in 0..2 {
+                for (before, after) in [(a0[i], unsafe { *pa.add(i) }), (b0[i], unsafe { *pb.add(i) })] {
+                    if before.typ == CAP_PIPE && before.object == pipe
+                        && ((before.rights & CAP_RIGHT_WRITE) != 0) == writer
+                        && after.typ == CAP_NULL
+                    {
+                        n += 1;
+                    }
+                }
+            }
+            n
+        };
+        assert!(cells[0] == removed(0, false), "pipe 0's reader ends miscounted");
+        assert!(cells[1] == removed(0, true), "pipe 0's writer ends miscounted");
+        assert!(cells[2] == removed(1, false), "pipe 1's reader ends miscounted");
+        assert!(cells[3] == removed(1, true), "pipe 1's writer ends miscounted");
+        assert!(cells[4] == 0 && cells[5] == 0, "a count was written past the tally");
     }
 
     /// A reply-mint never widens: for EVERY (invoker rights, requested rights,

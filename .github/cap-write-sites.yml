@@ -81,9 +81,12 @@ sites:
     status: locked
     reason: >
       The second bounded cross-cspace install: do_spawn's stdio wiring. Type fixed
-      to CAP_PIPE, destination restricted to the two stdio slots, rights refused
-      unless already a subset of the source's, and the source looked up under the
-      same lock with cap_lookup's validity rules.
+      to CAP_PIPE, destination restricted to the two empty stdio slots, rights
+      refused unless already a subset of the source's, and the source looked up
+      under the same lock with cap_lookup's validity rules. The end is derived from
+      the spawner's (badge = its serial) and counted in the pipe table before the
+      lock is released (LIMITATIONS 1.14). PIPE_CHILD_END_UNDERIVED's badge-0 store
+      is in this function too, behind its flag, and is the same locked write.
   - file: src/kernel/capability.c
     function: cap_consume_slot
     status: locked

@@ -49,12 +49,8 @@ arms:
   harness: revoke_descendant_never_nulls_ancestors
   file: rust/src/capability.rs
   defect: the closure marks capabilities that are not children, so an ancestor is swept
-  find: |2-
-                if c.badge == parent_serial {
-                    c.typ = CAP_MARK_NEW;
-  replace: |2-
-                if c.badge != parent_serial {
-                    c.typ = CAP_MARK_NEW;
+  find: '            if c.badge == parent_serial {'
+  replace: '            if c.badge != parent_serial {'
 - id: lookup-any-overlap
   harness: lookup_grants_exactly_the_rights_held
   file: rust/src/capability.rs
@@ -124,7 +120,7 @@ arms:
   defect: revocation marks children but never their children
   find: |2-
                         if serial != 0 {
-                            mark_children_of(spaces, space_count, serial);
+                            mark_children_of(spaces, space_count, serial, tally);
                         }
   replace: '                    let _ = serial;'
 - id: reply-mint-widens
@@ -301,6 +297,42 @@ arms:
   defect: swap and the volume are compared by where they start, not where the first ends
   find: '        (Some(ea), Some(eb)) => ea <= b || eb <= a,'
   replace: '        (Some(_ea), Some(eb)) => a <= b || eb <= a,'
+- id: revoke-tally-skips-marked
+  harness: revoke_counts_exactly_the_pipe_ends_it_removes
+  file: rust/src/capability.rs
+  defect: a descendant pipe end is removed without being counted, so its count stays and the peer never sees EOF
+  find: |2-
+                    tally.note(c);
+                    c.typ = CAP_MARK_NEW;
+  replace: |2-
+                    c.typ = CAP_MARK_NEW;
+- id: revoke-tally-skips-target
+  harness: revoke_counts_exactly_the_pipe_ends_it_removes
+  file: rust/src/capability.rs
+  defect: the revoked end itself is removed without being counted
+  find: |2-
+        tally.note(target);
+        nullify(target);
+        if !target_caps_in_use.is_null() && *target_caps_in_use > 0 {
+  replace: |2-
+        nullify(target);
+        if !target_caps_in_use.is_null() && *target_caps_in_use > 0 {
+- id: revoke-tally-unbounded
+  harness: revoke_counts_exactly_the_pipe_ends_it_removes
+  file: rust/src/capability.rs
+  defect: an end naming a pipe past the tally's length is counted past its end
+  find: |2-
+            if c.object >= pipes {
+                return;
+            }
+  replace: |2-
+            let _ = pipes;
+- id: revoke-tally-direction
+  harness: revoke_counts_exactly_the_pipe_ends_it_removes
+  file: rust/src/capability.rs
+  defect: the direction is read from the READ right, so a writer end with READ is counted as a reader
+  find: '        let writer = usize::from(c.rights & CAP_RIGHT_WRITE != 0);'
+  replace: '        let writer = usize::from(c.rights & CAP_RIGHT_READ == 0);'
 
 # Proofs with no arm yet, each with the reason. This list only shrinks: the
 # checker refuses an entry whose proof has gained an arm.

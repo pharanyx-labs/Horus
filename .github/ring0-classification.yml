@@ -529,7 +529,19 @@
 # over one locked body, and pins CAP_PIPE against the Rust core. The refusal
 # itself is in rust/src/capability.rs; the split has to sit where cap_lock is
 # taken, so that the type is read under the lock that covers the copy.
-core_budget_loc: 11456
+# 2026-10-13: 11456 -> 11527, +71, LIMITATIONS 1.14 (S3, S134), measured per
+# file against main: capability.c +24 (the derived stdio install, counted before
+# the slot is written; fork's count inside the clone's lock, failing the fork if
+# an end cannot be counted; cap_revoke releasing the tallied ends; and the
+# PIPE_CHILD_END_UNDERIVED / PIPE_REVOKE_UNCOUNTED arms), pipe.c +36
+# (pipe_release_revoked_ends; pipe_io_by_slot resolving an end and moving the
+# bytes under one cap_lock; SYS_PIPE counting its ends before installing them;
+# the all-or-nothing fork count), smp.c +2 and multiboot.S +9 (dispatching and
+# embedding the PIPEREVOKE_SELFTEST driver, never in the ship build). A pipe end
+# is a capability and a count, and the count has to change under the lock the
+# capability changes under; that lock is the core's. kspawn.c, not core, shrank
+# by 6. The tally itself is in rust/src/capability.rs.
+core_budget_loc: 11527
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

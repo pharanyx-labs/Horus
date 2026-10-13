@@ -714,6 +714,12 @@ void smp_bringup(void) {
      * (NETTEST: PASS). Roadmap 2.6; falsified by NET_NO_BUSMASTER and
      * NET_DMA_ADDR_VIRTUAL. */
     net_selftest();
+#elif defined(NVME_SELFTEST)
+    /* Gated: a ring-3 NVMe driver whose whole authority is one device capability
+     * and one untyped region identifies its controller, reads block 0, and
+     * writes, flushes and reads back block 1 of a scratch disk (NVMETEST: PASS).
+     * Roadmap 2.7; falsified by NVME_IOMMU_NO_MAP and NVME_WRITE_WRONG_LBA. */
+    nvme_selftest();
 #elif defined(DEVCAP_SELFTEST)
     /* Gated: a ring-3 task holding TWO device capabilities proves each reaches
      * only its own device's frames, ports and IRQ (DEVCAPTEST: PASS). The witness

@@ -275,6 +275,8 @@ control_arms:
   smoke-net-mask-control: smoke-net
   smoke-net-msi-vector-control: smoke-net
   smoke-net-msix-table-control: smoke-net
+  smoke-nvme-iommu-control: smoke-nvme
+  smoke-nvme-write-control: smoke-nvme
   smoke-newlib-dotdot-control: smoke-newlib
   smoke-newlib-walk-control: smoke-newlib
   smoke-nzcow-arena-control: smoke-nzcow
@@ -492,6 +494,7 @@ gates:
   - smoke-modules-tamper
   - smoke-net
   - smoke-net-intx
+  - smoke-nvme
   - smoke-newlib
   - smoke-newlib-tamper
   - smoke-notify

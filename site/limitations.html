@@ -204,8 +204,9 @@
     <h3 id="4hardware-support-is-narrow"><span class="id">4</span>Hardware support is narrow</h3>
     <p>
       Horus installs onto legacy IDE disks and SD or eMMC storage, and it has installed onto
-      a laptop's soldered eMMC. It identifies a SATA drive and cannot read or write one, has
-      no NVMe or USB support, and so has no keyboard on a machine that offers no PS/2
+      a laptop's soldered eMMC. It identifies a SATA drive and cannot read or write one. It
+      drives an NVMe disk from ring 3 only in a self-test build, so it cannot install onto one.
+      It has no USB support, and so has no keyboard on a machine that offers no PS/2
       emulation. One user-mode network driver completes an ARP exchange; there is no IP
       stack above it. A DMA-capable device is confined by the IOMMU where the machine has
       one; where it does not, the boot says so.

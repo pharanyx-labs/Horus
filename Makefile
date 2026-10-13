@@ -121,6 +121,7 @@ DEFECT_FLAGS = \
 	IO_DEVICE_OBJECT_UNCHECKED IO_DEVICE_PORTS_GLOBAL IO_DEVICE_IRQ_UNCHECKED \
 	IO_DEVICE_CAP_UNCHECKED NET_NO_BUSMASTER NET_NO_DECODE \
 	DMA_ADDR_FRAME_ONLY NET_IOMMU_NO_MAP IRQ_NO_MASK_ON_FIRE IRQ_ACK_UNGATED \
+	NVME_IOMMU_NO_MAP NVME_WRITE_WRONG_LBA \
 	IRQ_FORCE_PIC POLL_NOTIFY_UNGATED MSI_VECTOR_FROM_USER MSIX_TABLE_MAPPABLE \
 	SHLIB_TEXT_WRITABLE SHLIB_DATA_SHARED SHLIB_DATA_UNINITIALISED \
 	SHLIB_BASE_FIXED SHLIB_INFO_UNGATED SHLIB_INFO_TYPE_ONLY \
@@ -2628,6 +2629,35 @@ ASFLAGS += -DNET_SELFTEST
 NET_SELFTEST_DEP = userspace/netd.bin
 endif
 
+# NVME_SELFTEST=1 embeds nvmed and, at boot, spawns it holding exactly two
+# capabilities -- a CAP_IO_DEVICE naming the machine's NVMe controller (found by
+# its whole class code, 01:08:02) and the untyped region it builds its queues
+# from. It identifies the controller, reads block 0, and, only on a disk whose
+# block 0 carries the scratch signature, writes, flushes and reads back block 1
+# (NVMETEST: PASS). Roadmap 2.7; `make smoke-nvme` supplies the scratch disk and
+# checks the write on the host. Gated off the ship kernel, like netd.
+NVME_SELFTEST ?= 0
+ifeq ($(NVME_SELFTEST),1)
+CFLAGS  += -DNVME_SELFTEST
+ASFLAGS += -DNVME_SELFTEST
+NVME_SELFTEST_DEP = userspace/nvmed.bin
+endif
+
+# NVME_IOMMU_NO_MAP=1 has nvmed ask SYS_DMA_ADDR for its data buffer's address
+# WITHOUT the device mapping (DMA_ADDR_NO_MAP). The queues and the identify
+# buffer stay mapped, so the controller comes up and identifies itself; only the
+# buffer the read lands in is outside the device's reach. The arm for S45 on a
+# storage controller: `make smoke-nvme-iommu-control` requires a marker
+# beginning NVMETEST: FAIL read-block0.
+NVME_IOMMU_NO_MAP ?= 0
+
+# NVME_WRITE_WRONG_LBA=1 has nvmed write, and read back, block 2 instead of
+# block 1. Its own read-back matches, because it reads the block it wrote, so
+# the guest prints NVMETEST: PASS; only the host-side check of the image can see
+# that block 1 was never written. The arm for that check:
+# `make smoke-nvme-write-control` requires tools/nvme_scratch.py verify to fail.
+NVME_WRITE_WRONG_LBA ?= 0
+
 # NET_NO_BUSMASTER=1 has netd enable I/O decode but NOT bus mastering.
 #
 # NO GATE, DELIBERATELY, and the reason is a measurement: with the bit clear the
@@ -4760,7 +4790,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin userspace/installer.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(TOKEN_SELFTEST_DEP) $(FSCAP_SELFTEST_DEP) $(FSCAPPOSIX_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(BLOCKPROBE_DEP) $(EXECPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(PIPEREVOKE_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin userspace/installer.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(NVME_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(TOKEN_SELFTEST_DEP) $(FSCAP_SELFTEST_DEP) $(FSCAPPOSIX_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(BLOCKPROBE_DEP) $(EXECPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(PIPEREVOKE_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -5556,6 +5586,14 @@ endif
 ifeq ($(NET_IOMMU_NO_MAP),1)
 USERSPACE_CFLAGS += -DNET_IOMMU_NO_MAP
 endif
+# nvmed's two arms, here for the reason netd's are: USERSPACE_CFLAGS is assigned
+# with `=` above, and anything appended before that assignment is discarded.
+ifeq ($(NVME_IOMMU_NO_MAP),1)
+USERSPACE_CFLAGS += -DNVME_IOMMU_NO_MAP
+endif
+ifeq ($(NVME_WRITE_WRONG_LBA),1)
+USERSPACE_CFLAGS += -DNVME_WRITE_WRONG_LBA
+endif
 # Both halves of the S47 arm: the kernel must honour the extra argument AND the
 # driver must supply one, so the flag reaches both compilations.
 ifeq ($(MSI_VECTOR_FROM_USER),1)
@@ -6249,7 +6287,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.stripped.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/replyprobe.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/piperevoketest.bin userspace/piperevokee.bin userspace/coninee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin userspace/sealprobe.bin userspace/dynstale.bin userspace/dyncanary.bin userspace/hello_dyn.bin userspace/swaphog.bin userspace/fscaptest.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/replyprobe.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/piperevoketest.bin userspace/piperevokee.bin userspace/coninee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/nvmed.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin userspace/sealprobe.bin userspace/dynstale.bin userspace/dyncanary.bin userspace/hello_dyn.bin userspace/swaphog.bin userspace/fscaptest.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -9962,6 +10000,61 @@ smoke-net-iommu-control:
 	@$(MAKE) --no-print-directory NET_SELFTEST=1 NET_IOMMU_NO_MAP=1 horus.iso
 	@SMOKE_NET=e1000 SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='NETTEST: FAIL dma-never-completed' tools/smoke_test.sh horus.iso
+
+# Roadmap 2.7: an NVMe driver in ring 3. nvmed's whole authority is one
+# CAP_IO_DEVICE naming the controller and one untyped region. It identifies the
+# controller and its namespace, reads block 0 of a scratch image, and writes,
+# flushes and reads back block 1. Two witnesses, because one is not enough: the
+# guest's NVMETEST: PASS says the read-back matched, and tools/nvme_scratch.py
+# reads the image after QEMU exits and says the write reached the medium, as a
+# block derived from a nonce only block 0 of THIS image carried. Booted on q35
+# with VT-d, so every page the controller touches is one nvmed mapped for it.
+NVME_SCRATCH ?= nvme-scratch.img
+.PHONY: smoke-nvme
+smoke-nvme:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory NVME_SELFTEST=1
+	@$(MAKE) --no-print-directory NVME_SELFTEST=1 horus.iso
+	@python3 tools/nvme_scratch.py make $(NVME_SCRATCH)
+	@SMOKE_NVME=$(NVME_SCRATCH) SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='NVMETEST: PASS' \
+		FAIL_MARKER='NVMETEST: FAIL' tools/smoke_test.sh horus.iso
+	@python3 tools/nvme_scratch.py verify $(NVME_SCRATCH)
+
+# S45 on a storage controller. The data buffer is the one frame withheld from
+# the device's address space; the queues are mapped, so the controller comes up,
+# identifies itself and accepts the read, and then cannot write the block where
+# it was told to. QEMU 11 still completes that read with status 0 (measured
+# 2026-10-13), so the driver checks the buffer changed; an emulator that returns
+# an error or never completes is caught by the status check or the timeout. All
+# three print a marker beginning `read-block0`, and the arm requires that prefix,
+# so an arm that fails earlier, before the controller is up, does not satisfy it.
+.PHONY: smoke-nvme-iommu-control
+smoke-nvme-iommu-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory NVME_SELFTEST=1 NVME_IOMMU_NO_MAP=1
+	@$(MAKE) --no-print-directory NVME_SELFTEST=1 NVME_IOMMU_NO_MAP=1 horus.iso
+	@python3 tools/nvme_scratch.py make $(NVME_SCRATCH)
+	@SMOKE_NVME=$(NVME_SCRATCH) SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='NVMETEST: FAIL read-block0' tools/smoke_test.sh horus.iso
+
+# The host-side witness's arm. nvmed writes and reads back block 2, so the guest
+# prints NVMETEST: PASS (that is required here: an arm that failed in the guest
+# would prove nothing about the host check), and the image must then fail
+# verification, naming block 1 as still empty.
+.PHONY: smoke-nvme-write-control
+smoke-nvme-write-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory NVME_SELFTEST=1 NVME_WRITE_WRONG_LBA=1
+	@$(MAKE) --no-print-directory NVME_SELFTEST=1 NVME_WRITE_WRONG_LBA=1 horus.iso
+	@python3 tools/nvme_scratch.py make $(NVME_SCRATCH)
+	@SMOKE_NVME=$(NVME_SCRATCH) SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='NVMETEST: PASS' \
+		FAIL_MARKER='NVMETEST: FAIL' tools/smoke_test.sh horus.iso
+	@out=$$(python3 tools/nvme_scratch.py verify $(NVME_SCRATCH)); rc=$$?; echo "$$out"; \
+		if [ $$rc -eq 0 ]; then echo "[nvme-write] CONTROL FAIL - the host check passed a write to the wrong block"; exit 1; fi; \
+		case "$$out" in *"FAIL block 1 is still empty"*) ;; *) echo "[nvme-write] CONTROL FAIL - unexpected verdict"; exit 1;; esac
+	@echo "[nvme-write] CONTROL PASS - the guest passed its own read-back and the host saw block 1 unwritten"
 
 # Control arm 1 of 2: no decode bits at all, so the device stops answering its own
 # I/O BAR. The arm for SYS_DEVICE_ENABLE -- it writes the one configuration-space

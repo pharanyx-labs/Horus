@@ -853,6 +853,17 @@ embedded_netd_bin_start:
 embedded_netd_bin_end:
 #endif
 
+#ifdef NVME_SELFTEST
+/* PIE nvmed binary: an NVMe driver holding one device capability and one
+ * untyped region, proved by a read and a host-witnessed write (roadmap 2.7). */
+.align 16
+.global embedded_nvmed_bin_start
+embedded_nvmed_bin_start:
+.incbin "userspace/nvmed.bin"
+.global embedded_nvmed_bin_end
+embedded_nvmed_bin_end:
+#endif
+
 #ifdef DEVCAP_SELFTEST
 /* PIE devcaptest binary: endowed with TWO device capabilities (the platform
  * console hardware and the PCI NIC), it proves each reaches its own device's

@@ -439,7 +439,10 @@ this.
   exchange (2.14).
 - **Storage beyond ATA and SD/eMMC.** Legacy IDE and SD/eMMC are readable, writable and
   installable. AHCI identifies a SATA drive and stops: no reads or writes, so a SATA SSD cannot be
-  installed onto. NVMe is not addressed at all.
+  installed onto. An NVMe controller is driven from ring 3: `nvmed` identifies it and reads and
+  writes it, polling, under one device capability and the IOMMU, in the `NVME_SELFTEST` build
+  only (`make smoke-nvme`). The kernel's storage reads blocks only from ring-0 drivers, so an NVMe
+  disk cannot yet be installed onto or booted from (ROADMAP 2.7).
 - **USB.** A machine with no PS/2 controller emulation has no keyboard. On eMMC, write durability
   across a power cut rests on the driver's flush and the laptop's register reading; no emulated
   gate can witness it.
@@ -563,7 +566,7 @@ Against "a complete, self-hosting operating system":
 | IPC | 55% |
 | Filesystem | 65% |
 | Userspace and libc | 65% |
-| Drivers | 25% (IDE, SD/eMMC, one NIC, PS/2; no AHCI I/O, NVMe or USB) |
+| Drivers | 25% (IDE, SD/eMMC, one NIC, PS/2, NVMe in a self-test; no AHCI I/O or USB) |
 | Networking | 10% (a driver and one ARP exchange; nothing above Ethernet) |
 | Formal verification | 10% |
 | Build and supply chain | 80% |

@@ -326,6 +326,22 @@ elif [ "${SMOKE_NET:-0}" = e1000 ]; then
     NET_ARG="-netdev user,id=smokenet0 -device e1000,netdev=smokenet0"
 fi
 
+# SMOKE_NVME=<image> attaches the image as the one namespace of an emulated NVMe
+# controller, for the ring-3 driver gate (make smoke-nvme). QEMU's nvme model is
+# a real PCI bus master that DMAs through the device's own address space, so
+# under SMOKE_IOMMU=1 the driver's mappings are load-bearing, as netd's are. The
+# image is written by the guest, so it is the caller's scratch file, never a
+# disk anything else reads; cache=writethrough so a flushed write is on the file
+# when QEMU exits, which is what tools/nvme_scratch.py verify reads.
+NVME_ARG=""
+if [ -n "${SMOKE_NVME:-}" ]; then
+    if [ ! -f "$SMOKE_NVME" ]; then
+        echo "SMOKE FAIL: SMOKE_NVME '$SMOKE_NVME' not found" >&2
+        exit 1
+    fi
+    NVME_ARG="-drive file=$SMOKE_NVME,format=raw,if=none,id=smokenvme0,cache=writethrough -device nvme,serial=HORUS0001,drive=smokenvme0"
+fi
+
 # SWTPM_REQUIRED=1 turns "swtpm is not installed" from a silent skip into an
 # error -- see tools/swtpm_lib.sh for why that mattered.
 TPM_ARG=""
@@ -355,7 +371,7 @@ qemu-system-x86_64 \
     -display none -no-reboot -no-shutdown \
     -device isa-debug-exit,iobase=0x604,iosize=0x04 \
     -serial file:"$LOG" -serial none -serial file:"$KDIAG" $NET_ARG \
-    $MACHINE_ARG $DRIVE_ARG $SMP_ARG $TRACE_ARG $QMP_ARG $TPM_ARG $BOOT_ARG \
+    $MACHINE_ARG $DRIVE_ARG $NVME_ARG $SMP_ARG $TRACE_ARG $QMP_ARG $TPM_ARG $BOOT_ARG \
     -cdrom "$ISO" &
 QEMU_PID=$!
 

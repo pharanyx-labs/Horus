@@ -143,7 +143,7 @@ What a real machine needs:
 | | Supported |
 |---|---|
 | Console | VGA text, or a framebuffer (including a 24-bit one under UEFI), in both rings |
-| Storage | Legacy IDE and SD/eMMC, including a laptop's soldered eMMC. SATA drives are identified but not read; NVMe is not supported |
+| Storage | Legacy IDE and SD/eMMC, including a laptop's soldered eMMC. SATA drives are identified but not read. An NVMe driver runs in ring 3 in a self-test build (`make smoke-nvme`), but nothing installs onto NVMe yet |
 | Keyboard | PS/2, or a firmware's PS/2 emulation. There is no USB stack |
 | Serial | Optional; the machine works without one |
 
@@ -331,6 +331,8 @@ column names the targets that build with the flag; an arm must turn its gate red
 | `IO_DEVICE_IRQ_UNCHECKED=1` | The interrupt half: `SYS_IRQ_REGISTER` does not test the line against the named device, so a NIC driver subscribes to the console's keyboard IRQ. | `smoke-devcap-irq-control` (arm of `smoke-devcap`); `make smoke-devcap` must go red under it |
 | `IO_DEVICE_CAP_UNCHECKED=1` | Removes the capability lookup from `iodev_from_slot` altogether, so every caller of a device syscall resolves to the platform device while holding nothing. | `smoke-captest-devcap-control` (arm of `smoke-captest`); `make smoke-captest` must go red under it |
 | `NET_IOMMU_NO_MAP=1` | `netd` asks `SYS_DMA_ADDR` for its frames' addresses with `DMA_ADDR_NO_MAP`, so every capability check still runs and every address is still correct, but no device mapping is installed. | `smoke-net-iommu-control` (arm of `smoke-net`); `make smoke-net` must go red under it |
+| `NVME_IOMMU_NO_MAP=1` | `nvmed` asks `SYS_DMA_ADDR` for its data buffer's address with `DMA_ADDR_NO_MAP`; its queues stay mapped, so the controller comes up and identifies itself, but the block it is told to read never reaches the buffer (QEMU still reports the read as successful, so `nvmed` checks the buffer changed). | `smoke-nvme-iommu-control` (arm of `smoke-nvme`); `make smoke-nvme` must go red under it |
+| `NVME_WRITE_WRONG_LBA=1` | `nvmed` writes and reads back block 2 instead of block 1, so its own read-back matches and the guest passes; only the host-side check of the image sees block 1 unwritten. | `smoke-nvme-write-control` (arm of `smoke-nvme`); `make smoke-nvme` must go red under it |
 | `IRQ_NO_MASK_ON_FIRE=1` | A registered interrupt line is left unmasked when it fires: what a kernel does if it treats an EOI as the end of the story. | `smoke-net-mask-control` (arm of `smoke-net`), `smoke-net-irq-storm-control` (arm of `smoke-net`) |
 | `POLL_NOTIFY_UNGATED=1` | `SYS_POLL_NOTIFY` with no capability check, so the slot is used as a raw notification index and any task consumes any other task's badges, finding [C-2] arriving in a new syscall, which is what a "convenience" variant invites. | `smoke-captest-poll-notify-control` (arm of `smoke-captest`) |
 | `MSI_VECTOR_FROM_USER=1` | `SYS_MSI_REGISTER` honours a vector the CALLER supplies; the shape this syscall takes the moment anyone decides a driver "knows best" which vector it wants. | `smoke-net-msi-vector-control` (arm of `smoke-net`) |
@@ -638,4 +640,6 @@ watches Cargo anyway.
   16 MiB. `.bss` has an exact budget (`.github/image-budget.yml`); move the array into a
   physical-pool reservation as `loader_staging` is.
 - **A real machine shows no disk to install onto**: its storage is probably NVMe or SATA, which
-  Horus cannot drive yet. `PCI_SCAN_TRACE=1` lists what is on the bus.
+  Horus cannot install onto yet. `PCI_SCAN_TRACE=1` lists what is on the bus, and an
+  `NVME_SELFTEST=1` image says whether the ring-3 NVMe driver can identify and read the disk
+  (it never writes a disk whose block 0 lacks the test signature).

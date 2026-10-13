@@ -311,6 +311,13 @@ confined by the IOMMU. It drives e1000 rather than virtio on purpose, because a 
 reads guest memory directly and could not witness DMA confinement. It runs in the `NET_SELFTEST`
 build, not in the shipped system, and speaks only enough Ethernet to exchange ARP.
 
+**`nvmed`** (`userspace/nvmed.c`) is the first storage driver outside ring 0: an NVMe controller
+driven with one device capability and one untyped region, confined by the IOMMU. It resets the
+controller, identifies it and its first namespace, builds one I/O queue pair and polls its
+completions (NVMe interrupts are MSI-X, which is not enabled). It writes only a disk whose block 0
+carries the test signature. It runs in the `NVME_SELFTEST` build; the kernel's storage does not
+read through it yet.
+
 ### The shared library
 
 `src/kernel/shlib.c` loads the shared libc (`lib/libc.so`, a verified boot module) once, relocates

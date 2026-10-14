@@ -958,11 +958,22 @@ def provision(disk):
     An arm that asserted only "/bin is empty" would be satisfied by a run that
     never reached a shell, which is how the S63 pair first passed vacuously.
 
-    The `ls` is the consequence and is checked in both directions too, against the
-    WHOLE base system: the base arm requires every program the image carries, and
-    the control requires at least one of them to be missing. The list comes from
-    the Makefile (INSTALLER_BIN_PROGRAMS, which is COREUTILS_PROGS), so it cannot
-    drift from what was built, and it is required rather than defaulted.
+    The `ls` is the consequence, checked against the WHOLE base system: the base
+    arm requires every program the image carries. The list comes from the Makefile
+    (INSTALLER_BIN_PROGRAMS, which is COREUTILS_PROGS), so it cannot drift from
+    what was built, and it is required rather than defaulted.
+
+    THE CONTROL ASSERTS THE COPY, NOT THE LISTING (2026-10-14). Boot 1 is not
+    idle: the installer opens the volume to format it, fs_server notices, and its
+    copy of the base system races the session's power-off at the login prompt.
+    When the copy wins, boot 2 finds every program already on the disk and the
+    defect has nothing left to break, so a listing check reported "the defect
+    did not reproduce" about a boot that HAD reproduced it. Measured on main:
+    1 of 6 runs left a program missing, and CI went red on the other kind. What
+    the defect does in boot 2 is deterministic: the copy runs against the locked
+    store and every write fails, which fs_server reports as `0 inodes`. That is
+    what the control requires; the listing is still read and reported, not
+    required, because what it shows depends on boot 1.
 
     THIS USED TO PROBE ONE NAME, `basename`, and that made the control arm a coin
     toss. Once the defect began leaving a few programs behind, the arm reported
@@ -1000,6 +1011,18 @@ def provision(disk):
         if control:
             s.expect("FS_STORE: open at startup; provisioning now", BOOT)
             step("CONTROL: the sealed store answered, so fs_server provisioned against a locked volume")
+            # The copy's own report, at the end of the startup copy and before
+            # the console is handed over. Every write against the locked store
+            # fails, so it rebuilt nothing; a nonzero count is a copy that WORKED,
+            # which is not this defect.
+            s.expect("[fs_server] system trees rebuilt from the verified modules: ", BOOT)
+            s.expect(" inodes", STEP)
+            written = s.buf[s.buf.rfind("verified modules: ", 0, s.pos) + len("verified modules: "):s.pos - len(" inodes")]
+            if written.strip() != "0":
+                raise SessionFail("CONTROL: the startup copy against the sealed store wrote %r inodes; "
+                                  "the defect did not reproduce" % written.strip())
+            step("CONTROL: the copy against the locked store wrote 0 inodes, and fs_server "
+                 "recorded itself provisioned")
         else:
             s.expect("FS_STORE: sealed at startup; provisioning deferred until unlock", BOOT)
             step("the sealed store refused, so fs_server deferred to the post-login pass")
@@ -1026,11 +1049,13 @@ def provision(disk):
         present = {w.rstrip("*/@") for w in listing.split()}
         missing = [n for n in expected if n not in present]
         if control:
-            if not missing:
-                raise SessionFail("CONTROL: every one of the %d programs was provisioned; "
-                                  "the defect did not reproduce" % len(expected))
-            step("CONTROL: the base system is incomplete on the installed disk: %d of %d "
-                 "programs missing" % (len(missing), len(expected)))
+            # Reported, not required: see the docstring. Boot 1's copy decides it.
+            if missing:
+                step("CONTROL: the base system is incomplete on the installed disk: %d of %d "
+                     "programs missing" % (len(missing), len(expected)))
+            else:
+                step("CONTROL: all %d programs are on the disk, copied in boot 1 before the "
+                     "power-off; the defect's 0-inode copy is the assertion" % len(expected))
         else:
             if missing:
                 raise SessionFail("the base system is incomplete on the installed disk: "

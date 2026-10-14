@@ -3493,9 +3493,10 @@ jobs:
       # The arm. STORE_LOCKED_UNCHECKED=1 and nothing else, so both arms drive
       # the same install and differ only in what the store says about a volume
       # nobody has opened. Its marker is POSITIVE -- the branch fs_server took --
-      # and an incomplete base system is the consequence checked after it. It
-      # probed one program until 2026-09-25 and missed 6 boots in 15 that way.
-      - name: Control arm — a sealed store that answers leaves the base system incomplete
+      # and the consequence checked after it is the copy against the locked store
+      # writing 0 inodes. It required programs missing from /bin until 2026-10-14,
+      # which depended on how far boot 1's own copy got: 1 run in 6 on main.
+      - name: Control arm — a sealed store that answers is copied into, and the copy writes nothing
         run: make smoke-installer-provision-control
       # Both targets append every boot's serial here. Kept only when the job fails:
       # the one time anyone needs it, and the red run of 2026-09-25 had none.

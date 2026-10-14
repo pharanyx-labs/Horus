@@ -1215,6 +1215,10 @@ void _start(void) {
      * answering is the fail-open this repository reserves numbers to prevent. */
     check((int)syscall(SYS_REGISTER_STORAGE_BACKEND, 0, 0, 0) == SYS_ERR_NOSYS,
           "retired-storage-backend-syscall-answered");
+    /* SYS_ROTATE_KEYS (36), withdrawn 2026-10-14 (LIMITATIONS 2.26, D14): it
+     * changed no key. Reserved, and it must answer nobody. */
+    check((int)syscall(SYS_ROTATE_KEYS, 0, 0, 0) == SYS_ERR_NOSYS,
+          "withdrawn-rotate-keys-syscall-answered");
 
     /* (f) SYS_IPC_REPLY resolves its endpoint from the capability's own object
      * through ipc_ep_from_slot, which is [C-1]'s fix: the authority is the

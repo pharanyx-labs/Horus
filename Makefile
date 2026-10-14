@@ -8358,12 +8358,16 @@ smoke-syscall-coverage:
 # the modules workload links the shared libc, so its crt0 maps the library's text
 # and seals its resolved table on every run. They are covered by real programs
 # now, probes or no probes, which is the better kind of coverage.
+# SYS_READ left this set on 2026-10-14: auditprobe and blockprobe now check that
+# their slot-7 capabilities do not answer for the console's slot 8 with a read of
+# fd 0 (it was SYS_ROTATE_KEYS until that was withdrawn), and that is an
+# authority check, compiled in with or without the coverage probes.
 SYSCOV_CONTROL_EXPECTED = \
 	SYS_AUDIT_DIGEST SYS_BRK SYS_FRAME_PAGES SYS_IPC_REPLY \
-	SYS_MAP_REGION SYS_READ SYS_READ_AUDIT SYS_REGISTER_STORAGE_BACKEND \
+	SYS_MAP_REGION SYS_READ_AUDIT SYS_REGISTER_STORAGE_BACKEND \
 	SYS_SIGACTION SYS_SIGRETURN SYS_SPAWN_ARG SYS_TASK_EXIT_INFO \
 	SYS_UNMAP_FRAME SYS_BLOCK_READ SYS_BLOCK_WRITE SYS_EXEC_IMAGE \
-	SYS_GET_PASS SYS_IPC_CALL_CAP SYS_IPC_REPLY_CAP SYS_EXEC_NAMED
+	SYS_GET_PASS SYS_IPC_CALL_CAP SYS_IPC_REPLY_CAP SYS_EXEC_NAMED SYS_ROTATE_KEYS
 
 smoke-syscall-coverage-control:
 	@set -eu; \

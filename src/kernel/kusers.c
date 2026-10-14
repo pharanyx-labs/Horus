@@ -1156,9 +1156,14 @@ void h_passwd(struct interrupt_frame64 *r) {
     secure_zero(newpass, sizeof(newpass));
 }
 
-/* SYS_ROTATE_KEYS (36): slot-8 READ, type CAP_CONSOLE enforced by the table. */
+/* SYS_ROTATE_KEYS (36): WITHDRAWN 2026-10-14 (LIMITATIONS 2.26, decision D14).
+ * It re-sealed at most four blocks of each of the caller's files under the same
+ * key, stopped at 64 blocks, and changed no key; its name promised a rotation it
+ * did not do. Real rotation of the volume key comes with filesystem phase 2's
+ * format. The number stays reserved and answers SYS_ERR_NOSYS to every caller,
+ * so it cannot quietly come to mean something else (captest checks it). */
 void h_rotate_keys(struct interrupt_frame64 *r) {
-    r->rax = (uint32_t)do_rotate_keys();
+    r->rax = (uint32_t)SYS_ERR_NOSYS;
 }
 
 /* FS ops (38-45): authority is the per-call dir/file capability, checked inside

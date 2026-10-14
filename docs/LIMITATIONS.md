@@ -21,11 +21,11 @@ status, and it is the one given here.
 
 ## 1. Security
 
-### 1.8 Four syscalls have no test that runs their handler
+### 1.8 Three syscalls have no test that runs their handler
 
-As of the last merge and gated since: **99 of 103** implemented syscalls have their handler body
+As of the last merge and gated since: **100 of 103** implemented syscalls have their handler body
 entered by a tracked workload (the scripted ring-3 session, the conformance suite, and the
-boot-modules session). The other 4 are listed in `.github/syscall-coverage.yml`, each with a
+boot-modules session). The other 3 are listed in `.github/syscall-coverage.yml`, each with a
 written reason. `tools/check_syscall_coverage.py` (required job `syscall-coverage`) fails on drift
 in either direction, so the number cannot quietly fall (`SECURITY.md` S25).
 
@@ -33,13 +33,13 @@ The risk is not hypothetical. Four times a probe written to enter an uncovered h
 defect on its first run: a kernel hang on a NULL lookup under `cap_lock` (S52), an audit record
 declared at two sizes that overran a ring-3 array (S71), block syscalls whose "no such block" and
 "permission denied" were the same value, and an ELF loader bounded by the wrong buffer (S84).
-So a defect in any of those 4 handlers is invisible in the same way. `captest` cannot find these: it
+So a defect in any of those 3 handlers is invisible in the same way. `captest` cannot find these: it
 is a refusal suite, and the capability gate returns before a refused handler runs.
 
-All four are gated on a capability `captest` does not hold, or entered only on a failure path:
+All three are gated on a capability `captest` does not hold, or entered only on a failure path:
 
-- `SYS_STORAGE_DEVICE` and `SYS_ROTATE_KEYS` need a probe task holding exactly that capability,
-  the way `auditprobe` and `blockprobe` were written.
+- `SYS_STORAGE_DEVICE` needs a probe task holding exactly that capability, the way `auditprobe`
+  and `blockprobe` were written.
 - `SYS_STORAGE_FORMAT`'s body formats the disk the run is using, so no tracked workload can enter
   it; the installer gates do.
 - `SYS_CONSOLE_RELEASE` runs only when `console_server`'s start-up fails, which
@@ -331,17 +331,6 @@ who may reach it. The rule that would allow a safe move (`docs/design/filesystem
 each object's back-references, which arrive with the v12 format in phase 3. Until then a mover
 copies the file and removes the original, and a directory cannot be moved at all.
 
-### 2.26 `rotate_keys` changes no key
-
-`SYS_ROTATE_KEYS`, and the shell's `rotate_keys`, rewrite the first four blocks of each file the
-caller owns, stopping at 64 blocks, and report how many. Each block is sealed again under the same
-key, derived from the volume key, the inode and the block, with a fresh nonce. No key is derived
-afresh, the volume key is untouched, and files past their fourth block or past the 64th block
-overall are not touched at all. Until 2026-10-11 the shell described it as re-encrypting the volume
-under a fresh key and `docs/SYSCALLS.md` as rotating the audit chain's keys; both now say what it
-does. Rebuilding it as a real rotation of the volume key, or withdrawing it, is a decision for the
-maintainer.
-
 ---
 
 ## 3. Scale and performance
@@ -617,6 +606,7 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 2.19 | | The end of a directory and its absence were the same answer | 2026-09-06, #318 |
 | 2.23 | [A3] | Revoking one capability could make an unrelated live one unusable: revocations were also recorded in a 4096-cell hashed table (S5) | 2026-10-11, #540 |
 | 2.24 | | Capability serials repeated: the 32-bit counter wrapped after about 4.3 billion mints, passing through the primordial range, and a reused task slot reissued its birth serials (S5) | 2026-10-11, #540 |
+| 2.26 | | `rotate_keys` changed no key: it re-sealed a few blocks of the caller's files under the same key. Withdrawn (decision D14): the shell command is gone and `SYS_ROTATE_KEYS` answers `SYS_ERR_NOSYS` to every caller; real rotation of the volume key comes with filesystem phase 2 | 2026-10-14, #572 |
 | 2.27 | | The monotonic clock ran at twice wall-clock speed under QEMU's TCG, so `failure_delay` waited half as long: the timer tick, in mode 3, was delivered twice per period | 2026-10-12, #549 |
 | 2.28 | | The wait for secondary CPUs was a loop count, a few milliseconds on a fast host under KVM, so a CPU the host scheduled late went uncounted and then ran anyway, and could take a TLB shootdown it was not counted for; the wait is now 2 s of the calibrated clock and bring-up then closes, so a later CPU is parked and never used (S138) | 2026-10-13, #565 |
 | 3.2 | [I-6] | `this_cpu()` read LAPIC MMIO on every call | 2026-07-31, #116 |

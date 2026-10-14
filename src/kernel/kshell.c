@@ -39,7 +39,6 @@ static void show_general_help(void) {
     help_line("kill <pid>",         "Terminate a task (cap: CAP_CONSOLE)");
     help_line("load",               "Receive a binary on :4444 then spawn it");
     println("Storage:");
-    help_line("rotate_keys",        "Re-encrypt your blocks (cap: CONSOLE+ENC_STORAGE)");
     set_text_colour(0x08);
     println("Numbers are decimal. 'rights' is a decimal bitmask (see ARCHITECTURE.md).");
     set_text_colour(0x0F);
@@ -67,12 +66,6 @@ static void show_topic_help(const char *topic) {
         println("  Wait on serial port 4444 for a headered program image, then spawn");
         println("  it as a new ring-3 task. Requires a FRAME cap (slot 3, WRITE|EXEC)");
         println("  and CAP_CONSOLE. Pipe a .bin built by tools/mkheadered to :4444.");
-        return;
-    }
-    if (kstrcmp(topic, "rotate_keys") == 0) {
-        println("rotate_keys");
-        println("  Re-encrypt the storage blocks you own under a freshly derived key");
-        println("  (ChaCha20+HMAC AEAD). Requires CAP_CONSOLE and CAP_ENCRYPTED_STORAGE.");
         return;
     }
     println("No per-topic help for that command. Showing the full list:");
@@ -297,20 +290,6 @@ int process_user_command(const char *cmd) {
         }
     }
 
-    if (action == 36) {
-        
-        if (!has_console_cap()) {
-            println("Permission denied (CAP_CONSOLE required for rotate_keys)");
-            return -1;
-        }
-        if (get_current_task() != 0 && !has_encrypted_storage_cap()) {
-            println("Permission denied (CAP_ENCRYPTED_STORAGE required for rotate_keys)");
-            return -1;
-        }
-        int n = do_rotate_keys();
-        print("Rotated "); print_decimal((uint32_t)n); println(" blocks");
-        return 0;
-    }
 
     if (cmd[0] == 'y' && cmd[1] == 'i' && cmd[2] == 'e' && cmd[3] == 'l' && cmd[4] == 'd' &&
         (cmd[5] == 0 || cmd[5] == ' ')) {

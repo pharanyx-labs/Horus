@@ -184,7 +184,7 @@ path.
 ## 4. Capability model
 
 `CAP_CONSOLE` (type 8) already exists, but it is a **software privilege token**, it gates
-kernel-shell operations (`ps` full view, `kill`, `dmesg`, poweroff, `rotate_keys`;
+kernel-shell operations (`ps` full view, `kill`, `dmesg`, poweroff;
 `src/kernel/kshell.c`), not hardware. It is not reused here.
 
 Add a **hardware device capability** (e.g. `CAP_IO_DEVICE`) carrying which of {port-range,

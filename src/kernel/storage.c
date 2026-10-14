@@ -5108,46 +5108,6 @@ int derive_and_store_user_file_key(uint32_t uid, const char *material, size_t ma
     return 0;
 }
 
-int do_rotate_keys(void)
-{
-
-    if (get_current_task() < 0 || get_current_task() >= g_max_tasks) return -1;
-    if (!tasks[get_current_task()].has_file_key) return -2;
-    if (get_current_task() != 0 && !has_encrypted_storage_cap()) return -4;
-
-    struct mounted_fs *mfs = storage_get_mounted_fs();
-    if (!mfs || !mfs->mounted) return -3;
-
-    uint32_t uid = tasks[get_current_task()].uid;
-    uint32_t rotated = 0;
-
-    
-    for (uint64_t ino = 0; ino < mfs->sb.inode_count && rotated < 64; ino++) {
-        struct on_disk_inode inode;
-        if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) continue;
-        if (inode.links == 0 || inode.uid != uid) continue;
-
-        
-        for (uint64_t b = 0; b < 4; b++) {
-            uint8_t tmp[BLOCK_SIZE];
-            if (storage_read_file_block(mfs, ino, b, tmp) != 0) break;
-            
-            if (storage_write_file_block(mfs, ino, b, tmp) == 0) {
-                rotated++;
-            }
-        }
-    }
-
-    /* (The legacy capfs fs_objects[] integrity-tag refresh was removed with the
-     * capfs engine; only the encrypted object store above is rotated now.) */
-
-    spin_lock(&storage_lock);
-    intent_append(4 , uid, rotated, (uint32_t)read_tsc());
-    spin_unlock(&storage_lock);
-
-    return (int)rotated;
-}
-
 int storage_create_file(struct mounted_fs *mfs, uint32_t uid, uint32_t gid,
                         const char *name, uint64_t dir_ino, uint64_t *out_ino) {
     int64_t ino = storage_alloc_inode(mfs->bd, &mfs->sb);

@@ -1277,7 +1277,7 @@ void users_init(void);
 #define SYS_USERADD   33
 #define SYS_USERDEL   34
 #define SYS_PASSWD    35
-#define SYS_ROTATE_KEYS   36  
+#define SYS_ROTATE_KEYS   36   /* withdrawn 2026-10-14 (LIMITATIONS 2.26): SYS_ERR_NOSYS to every caller */
 #define SYS_READ_AUDIT    37
 #define SYS_FS_MINT_FILE  38
 #define SYS_FS_LOOKUP     39
@@ -3545,7 +3545,6 @@ void     storage_test_fill_bitmap_blocks(mounted_fs_t *mfs, uint64_t n);
 #endif
 int  storage_block_read(uint64_t block, void *buf);
 int  storage_block_write(uint64_t block, const void *buf);
-int  do_rotate_keys(void);
 
 
 int  ramfs_open(const char *path, int flags);

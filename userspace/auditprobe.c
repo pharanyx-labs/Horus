@@ -266,11 +266,14 @@ void _start(void) {
     kput("AUDITPROBE: dmesg -> "); kput_int(drc); kputln("");
     check(drc == SYS_ERR_PERM, "cap-audit-authorised-dmesg");
 
-    /* Same again against a slot this task does not own: SYS_ROTATE_KEYS is gated
-     * on CAP_CONSOLE at slot 8. Holding slot 7 must not answer for slot 8. */
-    int rrc = sys_rotate_keys();
-    kput("AUDITPROBE: rotate_keys -> "); kput_int(rrc); kputln("");
-    check(rrc < 0, "cap-audit-authorised-key-rotation");
+    /* Same again against a slot this task does not own: a read of fd 0 asks for
+     * the console capability at slot 8 (S135). Holding slot 7 must not answer for
+     * slot 8. (SYS_ROTATE_KEYS carried this check, gated on slot 8 by the table,
+     * until it was withdrawn on 2026-10-14.) */
+    static char cin[4];
+    int rrc = sys_read(0, cin, sizeof(cin));
+    kput("AUDITPROBE: read fd0 -> "); kput_int(rrc); kputln("");
+    check(rrc == SYS_ERR_PERM, "cap-audit-authorised-console-input");
 
     if (failures) {
         kput("AUDITPROBE: FAIL ");

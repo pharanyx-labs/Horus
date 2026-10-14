@@ -217,16 +217,15 @@ void _start(void) {
     check(arc == SYS_ERR_PERM, "cap-encrypted-storage-authorised-the-audit-log");
 
     /* ---- 8. and holding slot 7 does not answer for slot 8 ------------------ */
-    /* SYS_ROTATE_KEYS is gated on CAP_CONSOLE at slot 8, so the table refuses
-     * this task before h_rotate_keys runs. Worth stating what is behind that
-     * refusal as well: do_rotate_keys asks has_encrypted_storage_cap(), which
-     * looks in CAPSLOT_STORAGE (slot 9) -- so even past the table, this task's
-     * CAP_ENCRYPTED_STORAGE would not answer, because it is the right type in
-     * the wrong slot. Slot identity is part of the name of a capability and not
-     * merely where it happens to sit. */
-    int rrc = sys_rotate_keys();
-    kput("BLOCKPROBE: rotate_keys -> "); kput_int(rrc); kputln("");
-    check(rrc < 0, "cap-encrypted-storage-authorised-key-rotation");
+    /* A read of fd 0 asks for the console capability at slot 8 (S135), so this
+     * task's CAP_ENCRYPTED_STORAGE at slot 7 must not answer for it: the right
+     * kind of capability elsewhere is not the capability. Slot identity is part
+     * of the name of a capability and not merely where it happens to sit.
+     * (SYS_ROTATE_KEYS carried this check until it was withdrawn on 2026-10-14.) */
+    static char cin[4];
+    int rrc = sys_read(0, cin, sizeof(cin));
+    kput("BLOCKPROBE: read fd0 -> "); kput_int(rrc); kputln("");
+    check(rrc == SYS_ERR_PERM, "cap-encrypted-storage-authorised-console-input");
 
     if (failures) {
         kput("BLOCKPROBE: FAIL ");

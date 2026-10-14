@@ -113,7 +113,7 @@ struct task_info {
 #define SYS_USERADD   33
 #define SYS_USERDEL   34
 #define SYS_PASSWD    35
-#define SYS_ROTATE_KEYS   36  
+#define SYS_ROTATE_KEYS   36   /* withdrawn 2026-10-14 (LIMITATIONS 2.26): SYS_ERR_NOSYS to every caller */
 #define SYS_READ_AUDIT    37
 /* 38-45: the legacy in-memory capfs. Removed — the syscalls fail closed and the
  * numbers are reserved (kept defined, not reused) so no future syscall silently
@@ -1631,11 +1631,6 @@ static inline int sys_userdel(uint32_t uid) {
 
 static inline int sys_passwd(uint32_t target_uid, const char *newpass) {
     return syscall(SYS_PASSWD, target_uid, (uint64_t)(uintptr_t)newpass, 0);
-}
-
-static inline int sys_rotate_keys(void) {
-
-    return syscall(SYS_ROTATE_KEYS, 0, 0, 0);
 }
 
 /* Copy up to `max_events` retained audit records into `events`; returns how many

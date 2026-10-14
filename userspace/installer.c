@@ -1303,30 +1303,7 @@ static void screen_working(void)
  * task whose job it is. That is a strictly larger installer holding strictly
  * more authority to achieve the same bytes on disk.
  */
-/* A failed SYS_PASSWD, said with its code AND what the code means (2026-09-24).
- *
- * "could not set the password" was all an operator got, on a laptop with no
- * serial port, for any of eight different failures. The kernel now returns which
- * step failed (docs/SYSCALLS.md, SYS_PASSWD), and this names it in the one line
- * the gates and the screen both show, so a failed install can be diagnosed from
- * a photograph of the screen. Unknown codes are printed as numbers rather than
- * guessed at. */
-static const char *passwd_reason(int rc)
-{
-    switch (rc) {
-    case -21: return "the volume was not open";
-    case -22: return "the key slots could not be read from the disk";
-    case -23: return "the volume has no free key slot";
-    case -24: return "the password could not be sealed to the volume "
-                     "(key derivation or the TPM refused)";
-    case -25: return "the key slots could not be written to the disk";
-    case -32: return "the volume's key slot could not be read back from the disk";
-    case -33: return "the password could not be sealed to the volume "
-                     "(key derivation or the TPM refused)";
-    case -34: return "the key slot could not be written to the disk";
-    default:  return "";
-    }
-}
+/* passwd_reason() is in libhorus, shared with the shell's `passwd`. */
 
 /* A failed install, said twice from one string (2026-09-25).
  *

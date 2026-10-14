@@ -184,7 +184,8 @@ Either installed account's password opens the disk (`SECURITY.md` S76). A key sl
 an administrator sets a password; `useradd` alone leaves an account locked and slotless, and a
 user changing their own password re-seals the slot they already hold. A volume has
 `HORUS_KEYSLOTS` (8) slots, so a machine with more than eight password-holding accounts cannot
-give each one. At the ninth, `do_passwd` fails closed with a poor message.
+give each one. At the ninth, `do_passwd` fails closed and changes nothing, and the shell and the
+installer both say the volume has no free key slot.
 
 ### 2.6c Most gates still read kernel markers from the shared console
 

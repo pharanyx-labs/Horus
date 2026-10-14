@@ -4976,6 +4976,11 @@ jobs:
         run: rustup target add x86_64-unknown-none
       - name: Boot PIPE_SELFTEST kernel and assert the pipe object round-trips with correct EOF/EPIPE/back-pressure
         run: make smoke-pipe
+      # ROADMAP 5.13, S139: a pipe end names one use of its slot. The arm drops
+      # the generation comparison, and the end left over from a pipe freed under
+      # it writes into the next pipe to take the slot.
+      - name: Control arm — a leftover pipe end reaches the next pipe in its slot
+        run: make smoke-pipe-generation-control
       # The teardown backstop's ordering, gated for the first time on 2026-09-09.
       # cap_release_cspace empties the cspace pipe_close_task_ends walks, so
       # releasing first means a stage that dies holding an end never releases it

@@ -176,13 +176,11 @@ The full list, with the reasons, is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.
 with the decisions it waits on listed first. The first wave closes the remaining holes and builds
 what later work needs:
 
-1. **A pipe end that cannot outlive its pipe** (5.13): an end left over from a freed pipe is
-   refused, not joined to the next pipe that takes its index.
-2. **Sessions at login, then the uid path removed** (2.10): `init` grants each login a session from
+1. **Sessions at login, then the uid path removed** (2.10): `init` grants each login a session from
    the policy, and the filesystem stops authorising anything by user id (closing 1.31).
-3. **Kernel reports on their own channel** (2.6c): the gates stop reading kernel output off the
+2. **Kernel reports on their own channel** (2.6c): the gates stop reading kernel output off the
    console that user programs also write.
-4. **Authenticated filesystem metadata** (1.30), if the maintainer takes it before the new format.
+3. **Authenticated filesystem metadata** (1.30), if the maintainer takes it before the new format.
 
 The later waves finish moving authority to capabilities (accounts as files, exec by capability),
 add job control, tighten the boot chain, move the kernel's remaining services to
@@ -272,8 +270,8 @@ test does not exist or does not run.
 
 | Layer | What it covers |
 |---|---|
-| Security properties | 140 numbered properties, each bound to a witness by `tools/check_invariants.py` |
-| QEMU integration tests | 536 `smoke-*` targets: 232 base gates and 304 control arms |
+| Security properties | 141 numbered properties, each bound to a witness by `tools/check_invariants.py` |
+| QEMU integration tests | 537 `smoke-*` targets: 232 base gates and 305 control arms |
 | Control arms | A build that puts a defect back on purpose; CI requires its gate to go red against it |
 | Kani | 35 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
 | Miri | The security core's tests, interpreted for undefined behaviour on every pull request |

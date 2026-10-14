@@ -47,7 +47,7 @@ gates that match kernel strings are moving to COM3, which only the kernel can wr
 ## The integration gates
 
 
-There are 536 `smoke-*` targets: 232 gates and 304 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
+There are 537 `smoke-*` targets: 232 gates and 305 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
 
 
 ### Capabilities and authorisation
@@ -147,7 +147,7 @@ There are 536 `smoke-*` targets: 232 gates and 304 control arms. Each row is a g
 | `smoke-kfault` | A kernel-mode page fault is reported on the serial line after the console handover |  | `smoke-kfault-legacy` |
 | `smoke-kfault-record` | A task's exit record carries no kernel address | S97 | `smoke-kfault-record-control` |
 | `smoke-notify` | A notification wakes a blocked waiter with the accumulated badge |  |  |
-| `smoke-pipe` | Bounded pipes with back-pressure, EOF and EPIPE |  | `smoke-pipe-cspace-order-control` |
+| `smoke-pipe` | Bounded pipes with back-pressure, EOF and EPIPE; an end left over from a pipe freed under it reaches nothing, not the next pipe in its slot | S139 | `smoke-pipe-cspace-order-control`, `smoke-pipe-generation-control` |
 | `smoke-pipe-revoke-child` | Revoking a pipe end removes the end a spawned child was given and spares the original when a forked child revokes its copy; the peer sees EOF or EPIPE at once and no pipe is left allocated | S3, S4, S134 | `smoke-pipe-revoke-child-control`, `smoke-pipe-revoke-uncounted-control` |
 | `smoke-proc` | Spawn, wait, kill and signals, and the `CAP_TCB` authority behind each: a wait or kill needs a capability naming that task | S13, S13b, S32, S57, S80, S84, S98, S99, S100 | `smoke-proc-exit-record-control`, `smoke-proc-overreach-control`, `smoke-proc-phoff-wrap-control`, `smoke-proc-spawn-decoy-control`, `smoke-proc-stale-reply-control`, `smoke-proc-stale-sender-control`, `smoke-proc-taskinfo-control`, `smoke-proc-tcb-reuse-control`, `smoke-proc-truncated-image-control`, `smoke-proc-wait-control` |
 | `smoke-recvblock` | A server waiting in a blocking receive makes one receive per message, so it slept rather than polled |  |  |
@@ -416,7 +416,7 @@ Two of those deserve a sentence each.
 there with no `continue-on-error`, each named with its measured cost in
 `.github/kani-harnesses.yml`, and the job refuses a proof that is not listed. And **`invariants`** requires every property in `SECURITY.md` to
 name a witness that exists and runs; its exemption list, `.github/invariants.yml`, is
-currently **empty**: all 140 properties name a witness that resolves.
+currently **empty**: all 141 properties name a witness that resolves.
 
 Every `tools/check_*.py` has a falsification harness, `tools/test_check_*.sh`, with one case per
 rule showing the rule can fail, and each checker asserts a floor on what it parsed, so a parser

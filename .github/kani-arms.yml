@@ -322,7 +322,7 @@ arms:
   file: rust/src/capability.rs
   defect: an end naming a pipe past the tally's length is counted past its end
   find: |2-
-            if c.object >= pipes {
+            if index >= pipes {
                 return;
             }
   replace: |2-
@@ -333,6 +333,12 @@ arms:
   defect: the direction is read from the READ right, so a writer end with READ is counted as a reader
   find: '        let writer = usize::from(c.rights & CAP_RIGHT_WRITE != 0);'
   replace: '        let writer = usize::from(c.rights & CAP_RIGHT_READ == 0);'
+- id: revoke-tally-generation-unmixed
+  harness: revoke_counts_exactly_the_pipe_ends_it_removes
+  file: rust/src/capability.rs
+  defect: ends of two generations of one pipe slot are recorded as the first one's, so the C side would subtract a dead pipe's ends from the live one (S139)
+  find: '            *seen = PIPE_TALLY_GEN_MIXED;'
+  replace: '            let _ = PIPE_TALLY_GEN_MIXED;'
 
 # Proofs with no arm yet, each with the reason. This list only shrinks: the
 # checker refuses an entry whose proof has gained an arm.

@@ -227,7 +227,10 @@ own copies (creating the pipe, a fork, the stdio wiring at spawn) may make one, 
 the end it makes inside the `cap_lock` section that installs it. A pipe's count is therefore never
 below the ends that exist, which is what keeps a pipe from being freed while an end still names it
 (S134). Ring 3 cannot copy a pipe end: `cap_grant_from_user` and `cap_mint` (and so
-`cap_transfer`) refuse one by type in the Rust core (S133).
+`cap_transfer`) refuse one by type in the Rust core (S133). Behind the counts, a pipe end names
+one use of its pipe slot, not the slot: its object carries the slot's generation beside the
+index, and every pipe operation compares it, so an end left over from a freed pipe, should the
+counts ever be wrong, reaches nothing rather than the next pipe in the slot (S139).
 
 Every write to a capability slot takes `cap_lock` and goes through the accounted cap-write path
 (S94): `tools/check_cap_writes.py` holds the list of writers, declared in
@@ -248,8 +251,9 @@ from it, and ancestors, siblings and independent capabilities to the same object
 any subtree size and needs no allocation.
 
 A pipe end is a capability and a count in the pipe table, so the sweep counts every pipe end it
-removes, by pipe and direction, and `cap_revoke` releases those ends from the table
-(`pipe_release_revoked_ends`) before it drops `cap_lock`. A peer whose last opposite end was
+removes, by pipe and direction with the generation the ends named, and `cap_revoke` releases
+those ends from the table (`pipe_release_revoked_ends`) before it drops `cap_lock`, only from the
+pipe that generation names. A peer whose last opposite end was
 revoked sees EOF or EPIPE on its next call (S134, proved in Kani).
 
 ### One serial, one slot

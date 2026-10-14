@@ -107,7 +107,7 @@ DEFECT_FLAGS = \
 	FRAME_PAGES_SAME_PHYS FRAME_INFO_BY_INDEX COW_ARENA_UNGUARDED RAMFS_SLOT3_GATE \
 	FORK_SHARE_WRITABLE FORK_ARENA_UNCHECKED \
 	FORK_CSPACE_FLAT_COPY FORK_CSPACE_ORPHAN_COPY FORK_PIPE_UNCOUNTED PIPE_GRANT_UNREFUSED \
-	PIPE_CHILD_END_UNDERIVED PIPE_REVOKE_UNCOUNTED \
+	PIPE_CHILD_END_UNDERIVED PIPE_REVOKE_UNCOUNTED PIPE_GEN_UNCHECKED \
 	EXEC_RESET_CSPACE EXEC_ROOT_CSPACE \
 	FPU_NO_SAVE FPU_NO_RESTORE \
 	VFS_FIRST_MATCH VFS_MOUNT_UNGATED \
@@ -1413,6 +1413,14 @@ endif
 PIPE_SELFTEST ?= 0
 ifeq ($(PIPE_SELFTEST),1)
 CFLAGS  += -DPIPE_SELFTEST
+endif
+
+# PIPE_GEN_UNCHECKED=1 drops the generation comparison in pipe.c's pipe_of, so an
+# end left over from a freed pipe reaches whatever pipe takes its slot next
+# (ROADMAP 5.13, S139). The arm of smoke-pipe's generation phase; never shipped.
+PIPE_GEN_UNCHECKED ?= 0
+ifeq ($(PIPE_GEN_UNCHECKED),1)
+CFLAGS  += -DPIPE_GEN_UNCHECKED
 endif
 
 # TPM_KEK_SELFTEST=1 builds the in-kernel TPM-sealed-KEK end-to-end test (roadmap
@@ -9074,6 +9082,16 @@ smoke-pipe:
 	@$(MAKE) --no-print-directory PIPE_SELFTEST=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='PIPE_SELFTEST: PASS' \
 		FAIL_MARKER='PIPE_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
+
+# S139's arm: the generation comparison dropped, so the end left over from a pipe
+# freed under it writes into the next pipe to take its slot.
+.PHONY: smoke-pipe-generation-control
+smoke-pipe-generation-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PIPE_SELFTEST=1 PIPE_GEN_UNCHECKED=1
+	@$(MAKE) --no-print-directory PIPE_SELFTEST=1 PIPE_GEN_UNCHECKED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='PIPE_SELFTEST: FAIL stale-end-reached-new-pipe' tools/smoke_test.sh horus.iso
 
 # The ordering inside task_teardown, which had a defect flag and no arm from
 # 2026-08-30: cap_release_cspace empties the cspace pipe_close_task_ends walks,

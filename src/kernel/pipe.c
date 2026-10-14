@@ -53,32 +53,60 @@ static spinlock_t pipe_lock;
  * read/write short; posix.c loops for larger transfers. */
 #define PIPE_IO_CHUNK 1024
 
-int pipe_alloc(void) {
+/* Take a free pipe slot and start a new use of it. Returns the object a pipe end
+ * names (PIPE_OBJ: the index, and this use's generation), or 0 if every slot is
+ * in use; 0 is never a valid object, since no generation is 0.
+ *
+ * THE GENERATION CHANGES ON EVERY ALLOCATION OF THE SLOT (ROADMAP 5.13, S139).
+ * It skips 0 (no object is 0) and PIPE_TALLY_GEN_MIXED (the revocation tally's
+ * marker), and it wraps after about four billion uses of one slot: an end would
+ * have to outlive that many pipes in its slot to meet its generation again, and
+ * S134's counts are what keep it from outliving even one. */
+uint64_t pipe_alloc(void) {
     spin_lock(&pipe_lock);
     for (int i = 0; i < MAX_PIPES; i++) {
         if (!pipes[i].in_use) {
             struct pipe *p = &pipes[i];
             p->in_use = 1;
+            p->gen++;
+            if (p->gen == 0 || p->gen == PIPE_TALLY_GEN_MIXED) p->gen = 1;
             p->head = 0; p->count = 0;
             p->reader_ends = 0; p->writer_ends = 0;
+            uint64_t obj = PIPE_OBJ(i, p->gen);
             spin_unlock(&pipe_lock);
-            return i;
+            return obj;
         }
     }
     spin_unlock(&pipe_lock);
-    return -1;
+    return 0;
 }
 
-/* Count one more end of pipe `idx`. False, counting nothing, if there is no
- * such pipe: an end of a freed pipe is never counted, so a caller that is about
- * to install one refuses instead (cap_install_child_pipe_end). */
-bool pipe_end_ref(int idx, int is_writer) {
-    if (idx < 0 || idx >= MAX_PIPES) return false;
+/* The pipe an end's object names, or NULL: no such slot, a slot not in use, or
+ * a slot in use by a LATER pipe than the one the end was made for (S139). Every
+ * operation on a pipe goes through this, under pipe_lock, so none can reach a
+ * pipe through an end of another. PIPE_GEN_UNCHECKED is the arm: the comparison
+ * dropped, a leftover end reaches whatever now holds its index. */
+static struct pipe *pipe_of(uint64_t obj) {
+    uint32_t idx = PIPE_OBJ_IDX(obj);
+    if (idx >= MAX_PIPES) return 0;
+    struct pipe *p = &pipes[idx];
+    if (!p->in_use) return 0;
+#ifndef PIPE_GEN_UNCHECKED
+    if (p->gen != PIPE_OBJ_GEN(obj)) return 0;
+#endif
+    return p;
+}
+
+/* Count one more end of the pipe `obj` names. False, counting nothing, if there
+ * is no such pipe: an end of a freed pipe is never counted, so a caller that is
+ * about to install one refuses instead (cap_install_child_pipe_end). */
+bool pipe_end_ref(uint64_t obj, int is_writer) {
     bool counted = false;
     spin_lock(&pipe_lock);
-    if (pipes[idx].in_use) {
-        if (is_writer) pipes[idx].writer_ends++;
-        else           pipes[idx].reader_ends++;
+    struct pipe *p = pipe_of(obj);
+    if (p) {
+        if (is_writer) p->writer_ends++;
+        else           p->reader_ends++;
         counted = true;
     }
     spin_unlock(&pipe_lock);
@@ -93,11 +121,13 @@ static void pipe_free_if_unheld(struct pipe *p) {
     }
 }
 
-void pipe_end_unref(int idx, int is_writer) {
-    if (idx < 0 || idx >= MAX_PIPES) return;
+/* Release one end. An end of a pipe that is gone releases nothing: before
+ * 2026-10-14 it decremented whatever pipe held the index, taking that pipe's
+ * count below its own live ends (S139). */
+void pipe_end_unref(uint64_t obj, int is_writer) {
     spin_lock(&pipe_lock);
-    struct pipe *p = &pipes[idx];
-    if (p->in_use) {
+    struct pipe *p = pipe_of(obj);
+    if (p) {
         if (is_writer) { if (p->writer_ends) p->writer_ends--; }
         else           { if (p->reader_ends) p->reader_ends--; }
         pipe_free_if_unheld(p);
@@ -132,15 +162,21 @@ void pipe_end_unref(int idx, int is_writer) {
  * wrapping, and the caller reports it once it has dropped its locks. */
 bool pipe_release_revoked_ends(const uint32_t *tally, uint32_t cells) {
     if (!tally) return true;
-    uint32_t n = cells / 2;
+    uint32_t n = cells / PIPE_TALLY_CELLS;
     if (n > MAX_PIPES) n = MAX_PIPES;
     bool exact = true;
     spin_lock(&pipe_lock);
     for (uint32_t i = 0; i < n; i++) {
-        uint32_t readers = tally[2 * i], writers = tally[2 * i + 1];
+        uint32_t readers = tally[PIPE_TALLY_CELLS * i];
+        uint32_t writers = tally[PIPE_TALLY_CELLS * i + 1];
+        uint32_t gen     = tally[PIPE_TALLY_CELLS * i + 2];
         if (readers == 0 && writers == 0) continue;
-        struct pipe *p = &pipes[i];
-        if (!p->in_use) { exact = false; continue; }
+        /* The ends removed must be ends of THIS use of the slot (S139). Ends of
+         * an earlier pipe, or a mixture, are released from nothing: subtracting
+         * them from the pipe that now holds the index would take its count below
+         * its own live ends, the defect S134 forbids. */
+        struct pipe *p = (gen == PIPE_TALLY_GEN_MIXED) ? 0 : pipe_of(PIPE_OBJ(i, gen));
+        if (!p) { exact = false; continue; }
         if (readers > p->reader_ends || writers > p->writer_ends) exact = false;
         p->reader_ends = readers > p->reader_ends ? 0 : p->reader_ends - readers;
         p->writer_ends = writers > p->writer_ends ? 0 : p->writer_ends - writers;
@@ -154,11 +190,10 @@ bool pipe_release_revoked_ends(const uint32_t *tally, uint32_t cells) {
  * syscall handlers below stage through a bounded on-stack buffer and copy across
  * the user boundary, while the self-test drives these directly. Return semantics
  * are SYS_PIPE_READ's and SYS_PIPE_WRITE's. */
-static int pipe_read_bytes(int idx, uint8_t *dst, uint32_t len) {
-    if (idx < 0 || idx >= MAX_PIPES) return SYS_ERR_INVAL;
+static int pipe_read_bytes(uint64_t obj, uint8_t *dst, uint32_t len) {
     spin_lock(&pipe_lock);
-    struct pipe *p = &pipes[idx];
-    if (!p->in_use) { spin_unlock(&pipe_lock); return SYS_ERR_INVAL; }
+    struct pipe *p = pipe_of(obj);
+    if (!p) { spin_unlock(&pipe_lock); return SYS_ERR_INVAL; }
     if (p->count == 0) {
         uint32_t writers = p->writer_ends;
         spin_unlock(&pipe_lock);
@@ -173,11 +208,10 @@ static int pipe_read_bytes(int idx, uint8_t *dst, uint32_t len) {
     return (int)n;
 }
 
-static int pipe_write_bytes(int idx, const uint8_t *src, uint32_t len) {
-    if (idx < 0 || idx >= MAX_PIPES) return SYS_ERR_INVAL;
+static int pipe_write_bytes(uint64_t obj, const uint8_t *src, uint32_t len) {
     spin_lock(&pipe_lock);
-    struct pipe *p = &pipes[idx];
-    if (!p->in_use)          { spin_unlock(&pipe_lock); return SYS_ERR_INVAL; }
+    struct pipe *p = pipe_of(obj);
+    if (!p)                  { spin_unlock(&pipe_lock); return SYS_ERR_INVAL; }
     if (p->reader_ends == 0) { spin_unlock(&pipe_lock); return SYS_ERR_PIPE;  }
     uint32_t space = PIPE_BUF_BYTES - p->count;
     if (space == 0)          { spin_unlock(&pipe_lock); return SYS_ERR_AGAIN; }
@@ -211,10 +245,9 @@ static int pipe_io_by_slot(uint32_t slot, int write, uint8_t *stage, uint32_t le
     int rc;
     spin_lock(&cap_lock);
     struct capability *c = cap_lookup(slot, CAP_PIPE, write ? CAP_RIGHT_WRITE : CAP_RIGHT_READ);
-    if (!c)                          rc = SYS_ERR_PERM;
-    else if (c->object >= MAX_PIPES) rc = SYS_ERR_INVAL;
-    else if (write)                  rc = pipe_write_bytes((int)c->object, stage, len);
-    else                             rc = pipe_read_bytes((int)c->object, stage, len);
+    if (!c)         rc = SYS_ERR_PERM;
+    else if (write) rc = pipe_write_bytes(c->object, stage, len);
+    else            rc = pipe_read_bytes(c->object, stage, len);
     spin_unlock(&cap_lock);
     return rc;
 }
@@ -266,7 +299,7 @@ void pipe_close_task_ends(int task_id) {
         if (found >= sz) return;                 /* no ends left to release */
         if (!cap_consume_slot_of(task_id, found, &prev)) return;
         if (prev.type != CAP_PIPE) continue;      /* another CPU got there first */
-        pipe_end_unref((int)prev.object, (prev.rights & CAP_RIGHT_WRITE) != 0);
+        pipe_end_unref(prev.object, (prev.rights & CAP_RIGHT_WRITE) != 0);
     }
 }
 
@@ -313,15 +346,16 @@ bool pipe_count_forked_ends(int child) {
     spin_lock(&pipe_lock);
     for (uint32_t s = 0; s < sz; s++) {
         if (cs[s].type != CAP_PIPE || cs[s].serial == 0) continue;
-        if (cs[s].object >= MAX_PIPES || !pipes[cs[s].object].in_use) {
+        if (!pipe_of(cs[s].object)) {
             spin_unlock(&pipe_lock);
             return false;
         }
     }
     for (uint32_t s = 0; s < sz; s++) {
         if (cs[s].type != CAP_PIPE || cs[s].serial == 0) continue;
-        if (cs[s].rights & CAP_RIGHT_WRITE) pipes[cs[s].object].writer_ends++;
-        else                                pipes[cs[s].object].reader_ends++;
+        struct pipe *p = pipe_of(cs[s].object);
+        if (cs[s].rights & CAP_RIGHT_WRITE) p->writer_ends++;
+        else                                p->reader_ends++;
     }
     spin_unlock(&pipe_lock);
     return true;
@@ -345,8 +379,8 @@ void h_pipe(struct interrupt_frame64 *r) {
     int cur = get_current_task();
     if (!tasks[cur].cspace) { r->rax = (uint64_t)(uint32_t)SYS_ERR_PERM; return; }
 
-    int idx = pipe_alloc();
-    if (idx < 0) { r->rax = (uint64_t)(uint32_t)SYS_ERR_NOMEM; return; }
+    uint64_t obj = pipe_alloc();
+    if (!obj) { r->rax = (uint64_t)(uint32_t)SYS_ERR_NOMEM; return; }
 
     /* THE TWO ENDS GO IN THROUGH THE LOCKED, ACCOUNTED CAP-WRITE PATH.
      *
@@ -368,8 +402,8 @@ void h_pipe(struct interrupt_frame64 *r) {
      * index next. Counted first, the count is never below the ends that exist.
      * Every failure below has installed nothing it keeps, so it releases both
      * refs, which frees and scrubs the pipe (pipe_end_unref at 0/0). */
-    pipe_end_ref(idx, 0);   /* read end  */
-    pipe_end_ref(idx, 1);   /* write end */
+    pipe_end_ref(obj, 0);   /* read end  */
+    pipe_end_ref(obj, 1);   /* write end */
     uint32_t rslot = 0, wslot = 0;
 #ifdef PIPE_CAP_UNACCOUNTED
     /* CONTROL ARM: the pre-2026-09-12 raw store. Same two slots, same fields, no
@@ -386,37 +420,37 @@ void h_pipe(struct interrupt_frame64 *r) {
             }
         }
         if (rs < 0 || ws < 0) {
-            pipe_end_unref(idx, 0);
-            pipe_end_unref(idx, 1);
+            pipe_end_unref(obj, 0);
+            pipe_end_unref(obj, 1);
             r->rax = (uint64_t)(uint32_t)SYS_ERR_NOMEM;
             return;
         }
         cs[rs].type = CAP_PIPE; cs[rs].rights = CAP_RIGHT_READ | CAP_RIGHT_REVOKE;
-        cs[rs].object = (uint64_t)(uint32_t)idx; cs[rs].badge = 0;
+        cs[rs].object = obj; cs[rs].badge = 0;
         cs[rs].serial = cap_alloc_fresh_serial();
         cs[rs].token = 0;
         cs[ws].type = CAP_PIPE; cs[ws].rights = CAP_RIGHT_WRITE | CAP_RIGHT_REVOKE;
-        cs[ws].object = (uint64_t)(uint32_t)idx; cs[ws].badge = 0;
+        cs[ws].object = obj; cs[ws].badge = 0;
         cs[ws].serial = cap_alloc_fresh_serial();
         cs[ws].token = 0;
         rslot = (uint32_t)rs; wslot = (uint32_t)ws;
     }
 #else
-    if (!cap_install_object_first_free(CAP_DYNAMIC_FLOOR, CAP_PIPE, (uint64_t)(uint32_t)idx,
+    if (!cap_install_object_first_free(CAP_DYNAMIC_FLOOR, CAP_PIPE, obj,
                                        CAP_RIGHT_READ | CAP_RIGHT_REVOKE, 0, &rslot)) {
         /* Nothing has been installed, so the two refs above are the pipe's only
          * holders: releasing them frees and scrubs it, which is the rollback. */
-        pipe_end_unref(idx, 0);
-        pipe_end_unref(idx, 1);
+        pipe_end_unref(obj, 0);
+        pipe_end_unref(obj, 1);
         r->rax = (uint64_t)(uint32_t)SYS_ERR_NOMEM;
         return;
     }
-    if (!cap_install_object_first_free(CAP_DYNAMIC_FLOOR, CAP_PIPE, (uint64_t)(uint32_t)idx,
+    if (!cap_install_object_first_free(CAP_DYNAMIC_FLOOR, CAP_PIPE, obj,
                                        CAP_RIGHT_WRITE | CAP_RIGHT_REVOKE, 0, &wslot)) {
         capability_t prev;
         cap_consume_slot_of(cur, rslot, &prev);   /* give the read end back */
-        pipe_end_unref(idx, 0);                   /* and free the pipe */
-        pipe_end_unref(idx, 1);
+        pipe_end_unref(obj, 0);                   /* and free the pipe */
+        pipe_end_unref(obj, 1);
         r->rax = (uint64_t)(uint32_t)SYS_ERR_NOMEM;
         return;
     }
@@ -462,7 +496,7 @@ void h_pipe_close(struct interrupt_frame64 *r) {
     if (!cap_consume_slot_of(cur, slot, &prev) || prev.type != CAP_PIPE) {
         r->rax = (uint64_t)(uint32_t)SYS_ERR_INVAL; return;
     }
-    pipe_end_unref((int)prev.object, (prev.rights & CAP_RIGHT_WRITE) != 0);
+    pipe_end_unref(prev.object, (prev.rights & CAP_RIGHT_WRITE) != 0);
     r->rax = 0;
 }
 
@@ -480,8 +514,8 @@ void h_stdio_info(struct interrupt_frame64 *r) {
 static int pst_fail(const char *why) { print("PIPE_SELFTEST: FAIL ("); print(why); println(")"); return 0; }
 
 void pipe_selftest(void) {
-    int idx = pipe_alloc();
-    if (idx < 0) { pst_fail("alloc"); return; }
+    uint64_t idx = pipe_alloc();
+    if (!idx) { pst_fail("alloc"); return; }
     pipe_end_ref(idx, 0);   /* one reader end  */
     pipe_end_ref(idx, 1);   /* one writer end  */
 
@@ -510,8 +544,8 @@ void pipe_selftest(void) {
     pipe_end_unref(idx, 0);   /* frees the pipe (both ends gone) */
 
     /* 5. EPIPE: writing to a pipe whose reader end is gone. */
-    int idx2 = pipe_alloc();
-    if (idx2 < 0) { pst_fail("alloc2"); return; }
+    uint64_t idx2 = pipe_alloc();
+    if (!idx2) { pst_fail("alloc2"); return; }
     pipe_end_ref(idx2, 0);
     pipe_end_ref(idx2, 1);
     pipe_end_unref(idx2, 0);   /* drop the reader */
@@ -519,9 +553,9 @@ void pipe_selftest(void) {
     pipe_end_unref(idx2, 1);   /* frees it */
 
     /* 6. a freed pipe is scrubbed (no residue from step 3's fill). */
-    if (pipes[idx].in_use != 0) { pst_fail("not-freed"); return; }
+    if (pipes[PIPE_OBJ_IDX(idx)].in_use != 0) { pst_fail("not-freed"); return; }
     for (uint32_t i = 0; i < PIPE_BUF_BYTES; i++)
-        if (pipes[idx].buf[i] != 0) { pst_fail("residue"); return; }
+        if (pipes[PIPE_OBJ_IDX(idx)].buf[i] != 0) { pst_fail("residue"); return; }
 
     println("PIPE_SELFTEST: object phase ok");
 }
@@ -551,9 +585,73 @@ void pipe_selftest(void) {
  * phase prints PASS, so `smoke-pipe` cannot pass on the object phase alone -- the
  * harness ends a boot at its required marker, so an earlier PASS would stop the
  * run before this ever executed. */
+/* PHASE 3: AN END LEFT OVER FROM A FREED PIPE REACHES NOTHING (ROADMAP 5.13, S139).
+ *
+ * S134's counts keep a pipe from being freed while an end names it, so no
+ * workload can produce a leftover end, and that is exactly why this phase makes
+ * one by hand: the accounting mistake S134 forbids, committed on purpose. A
+ * capability for pipe A stays in a slot while A's counted ends are released, so
+ * A is freed under it; pipe B is then allocated, and takes A's slot. Every way
+ * the leftover end could reach B is tried, and each must miss:
+ *   - a write through the slot (pipe_io_by_slot, the syscall path);
+ *   - a release of the leftover end, which must not lower B's count;
+ *   - a count of a new end from it, which must be refused;
+ *   - a revocation that removed it, whose tally names A's generation.
+ * PIPE_GEN_UNCHECKED drops the comparison in pipe_of, and the write lands in B. */
+static int pipe_generation_selftest(void) {
+    uint32_t slot = KERNEL_RESERVED_CAPS + 1;
+    uint64_t a = pipe_alloc();
+    if (!a) { pst_fail("gen-alloc-a"); return 0; }
+    pipe_end_ref(a, 0);
+    pipe_end_ref(a, 1);
+    if (!cap_install_object(slot, CAP_PIPE, a, CAP_RIGHT_READ | CAP_RIGHT_WRITE, 0)) {
+        pst_fail("gen-cap-install"); return 0;
+    }
+    pipe_end_unref(a, 0);              /* the mistake: A freed under a live end */
+    pipe_end_unref(a, 1);
+    uint64_t b = pipe_alloc();
+    if (!b) { pst_fail("gen-alloc-b"); return 0; }
+    /* The premise: B is in A's slot, as a later use of it. Without this the
+     * refusals below are satisfied by a B the leftover end never pointed at. */
+    if (PIPE_OBJ_IDX(b) != PIPE_OBJ_IDX(a) || PIPE_OBJ_GEN(b) == PIPE_OBJ_GEN(a)) {
+        pst_fail("gen-slot-not-reused"); return 0;
+    }
+    pipe_end_ref(b, 0);
+    pipe_end_ref(b, 1);
+    struct pipe *pb = &pipes[PIPE_OBJ_IDX(b)];
+
+    /* ONE literal write for the marker the arm asserts on (LIMITATIONS 2.6a). */
+    uint8_t x = 0x5A;
+    int rc = pipe_io_by_slot(slot, 1, &x, 1);
+    if (rc != SYS_ERR_INVAL || pb->count != 0) {
+        println("PIPE_SELFTEST: FAIL stale-end-reached-new-pipe");
+        return 0;
+    }
+    pipe_end_unref(a, 1);
+    if (pb->writer_ends != 1) { pst_fail("gen-stale-unref-lowered-new-pipe"); return 0; }
+    if (pipe_end_ref(a, 0))   { pst_fail("gen-stale-ref-counted"); return 0; }
+    {
+        uint32_t tally[PIPE_TALLY_CELLS * MAX_PIPES] = { 0 };
+        uint32_t i = PIPE_OBJ_IDX(a);
+        tally[PIPE_TALLY_CELLS * i + 1] = 1;                 /* one writer end of A */
+        tally[PIPE_TALLY_CELLS * i + 2] = PIPE_OBJ_GEN(a);
+        if (pipe_release_revoked_ends(tally, PIPE_TALLY_CELLS * MAX_PIPES) ||
+            pb->writer_ends != 1) {
+            pst_fail("gen-stale-revoke-lowered-new-pipe"); return 0;
+        }
+    }
+
+    if (!cap_consume_slot(slot)) { pst_fail("gen-cap-release"); return 0; }
+    pipe_end_unref(b, 0);
+    pipe_end_unref(b, 1);
+    if (pb->in_use) { pst_fail("gen-b-not-freed"); return 0; }
+    println("PIPE_SELFTEST: generation phase ok");
+    return 1;
+}
+
 void pipe_task_teardown_selftest(void) {
-    int idx = pipe_alloc();
-    if (idx < 0) { pst_fail("teardown-alloc"); return; }
+    uint64_t idx = pipe_alloc();
+    if (!idx) { pst_fail("teardown-alloc"); return; }
     pipe_end_ref(idx, 0);   /* the reader end, held by this task: the peer */
     pipe_end_ref(idx, 1);   /* the writer end, held by the task about to die */
 
@@ -561,7 +659,7 @@ void pipe_task_teardown_selftest(void) {
      * because rights can only be reduced on delegation, and the end the dying
      * task must hold is the writer's. */
     uint32_t src_slot = KERNEL_RESERVED_CAPS;
-    if (!cap_install_object(src_slot, CAP_PIPE, (uint64_t)idx,
+    if (!cap_install_object(src_slot, CAP_PIPE, idx,
                             CAP_RIGHT_READ | CAP_RIGHT_WRITE | CAP_RIGHT_GRANT, 0)) {
         pst_fail("teardown-cap-install"); return;
     }
@@ -608,8 +706,10 @@ void pipe_task_teardown_selftest(void) {
     }
 
     pipe_end_unref(idx, 0);   /* the peer lets go; the pipe is freed */
-    if (pipes[idx].in_use != 0) { pst_fail("teardown-not-freed"); return; }
+    if (pipes[PIPE_OBJ_IDX(idx)].in_use != 0) { pst_fail("teardown-not-freed"); return; }
+    if (!cap_consume_slot(src_slot)) { pst_fail("teardown-cap-release"); return; }
 
+    if (!pipe_generation_selftest()) return;
     println("PIPE_SELFTEST: PASS");
 }
 #endif

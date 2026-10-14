@@ -59,7 +59,6 @@ The recommendation is the one the route is written around; it is not the decisio
 
 | Lane | Milestone | Items | Closes | Needs |
 |---|---|---|---|---|
-| Capabilities | A pipe end that cannot outlive its pipe | 5.13 | | |
 | Filesystem | Sessions at login, then the uid path removed | 2.10 steps 3(b), 3(c), 6 | 1.31 | D1 |
 | Observability | Kernel reports on their own channel | 5.3 | 2.6c | |
 | Storage | Metadata authenticated on the current format | 5.2 | 1.30 | D2 |
@@ -167,7 +166,7 @@ controller is identified and the drive answers IDENTIFY), USB through xHCI (and 
 on machines with no PS/2 emulation), and a framebuffer server.
 
 **2.7a ⬜ Evict the in-kernel services [F-2.7a].** `.github/ring0-classification.yml` (S87) measures
-the ring-0 `service` class at about 6,000 code lines beside a 11,653-line core: `storage.c` (the
+the ring-0 `service` class at about 6,000 code lines beside a 11,711-line core: `storage.c` (the
 encrypted store and the on-disk filesystem), `kusers.c` (accounts and password hashing), the loader
 and spawn path, `crypto.c` and `syscall_fs.c`, and the IDE, SD and eMMC drivers sit in ring 0 too.
 The drivers leave by [`design/ring3-storage.md`](design/ring3-storage.md), storage with 2.10 phase
@@ -300,11 +299,3 @@ swapped in under it. D8 first.
 specified and model-checked: spawn, wait and teardown (S125), the kernel-stack claim and park (S20),
 the TLB shootdown (S124), and revocation against lookup. Each model ships with a seeded defect it
 must catch, as every gate has an arm. Nightly first. D9 first.
-
-**5.13 ⬜ A pipe end that cannot outlive its pipe.** A pipe's generation goes into its ends'
-`object` beside the index, and every pipe operation compares it under `pipe_lock`, so an end left
-over from a freed pipe is refused rather than reaching the next pipe to take the index. Defence in
-depth behind S134, whose counts already keep a pipe from being freed while an end names it: a
-future accounting mistake becomes an error instead of a read of another task's pipe. Witness: a
-build that frees a pipe under a live end must see the stale end refused; the arm drops the
-comparison.

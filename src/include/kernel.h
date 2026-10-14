@@ -840,6 +840,7 @@ struct endpoint *endpoint_by_index(uint32_t idx);
 #define PIPE_BUF_BYTES   4096
 struct pipe {
     int      in_use;
+    uint32_t gen;                  /* which use of this slot; see PIPE_OBJ */
     uint32_t head;                 /* next byte to read  */
     uint32_t count;                /* bytes currently buffered */
     uint32_t reader_ends;          /* live read-end caps  */
@@ -852,9 +853,27 @@ extern struct pipe pipes[MAX_PIPES];
  * negative SYS_ERR_*. read: 0 == EOF (all writers closed); SYS_ERR_AGAIN == empty
  * but writers remain. write: SYS_ERR_AGAIN == full but a reader remains;
  * SYS_ERR_PIPE == no reader left. */
-int  pipe_alloc(void);                                   /* -> pipe index, or -1 */
-bool pipe_end_ref(int idx, int is_writer);               /* +1; false if no pipe  */
-void pipe_end_unref(int idx, int is_writer);             /* -1; frees at 0/0      */
+/* A PIPE END NAMES ONE USE OF A PIPE SLOT, NOT THE SLOT (ROADMAP 5.13, S139).
+ * Its capability's `object` is the slot's index in the low 32 bits and the
+ * slot's generation, bumped on every allocation and never 0, in the high 32.
+ * Every operation that turns an object back into a pipe compares the generation
+ * under pipe_lock, so an end left over from a freed pipe reaches nothing, and
+ * in particular not the next pipe to take the index. S134's counts already keep
+ * a pipe from being freed while an end names it; this is the defence behind
+ * them, which turns a future accounting mistake into an error instead of a read
+ * of another task's pipe. */
+#define PIPE_OBJ(idx, gen)  (((uint64_t)(uint32_t)(gen) << 32) | (uint32_t)(idx))
+#define PIPE_OBJ_IDX(obj)   ((uint32_t)((uint64_t)(obj) & 0xFFFFFFFFu))
+#define PIPE_OBJ_GEN(obj)   ((uint32_t)((uint64_t)(obj) >> 32))
+/* The revocation tally (pipe_release_revoked_ends) keeps three cells per pipe:
+ * reader ends, writer ends, and the generation the ends it counted named, or
+ * PIPE_TALLY_GEN_MIXED if they named more than one. Must match the Rust sweep's
+ * PipeTally (rust/src/capability.rs). */
+#define PIPE_TALLY_CELLS     3
+#define PIPE_TALLY_GEN_MIXED 0xFFFFFFFFu
+uint64_t pipe_alloc(void);                               /* -> PIPE_OBJ, or 0 if none */
+bool pipe_end_ref(uint64_t obj, int is_writer);          /* +1; false if no such pipe */
+void pipe_end_unref(uint64_t obj, int is_writer);        /* -1; frees at 0/0          */
 /* Close every CAP_PIPE end in a dying task's cspace (task_teardown). */
 void pipe_close_task_ends(int task_id);
 /* Count every pipe end in a just-forked child's cspace. cap_clone_cspace calls it
@@ -863,9 +882,10 @@ void pipe_close_task_ends(int task_id);
  * fork must fail. Fork only: called twice it counts twice. */
 bool pipe_count_forked_ends(int child);
 /* Release the pipe ends a revocation removed, as counted by the Rust sweep:
- * tally[2*i] reader ends and tally[2*i+1] writer ends of pipe i. cap_revoke
- * calls it with cap_lock HELD. False if it was asked to release more ends than a
- * pipe had counted (it stops at zero). */
+ * PIPE_TALLY_CELLS cells per pipe i, the reader ends, the writer ends and their
+ * generation. cap_revoke calls it with cap_lock HELD. False if it was asked to
+ * release more ends than a pipe had counted (it stops at zero), or ends of a use
+ * of the slot that is not the current one (it releases none of those). */
 bool pipe_release_revoked_ends(const uint32_t *tally, uint32_t cells);
 #ifdef PIPE_SELFTEST
 void pipe_selftest(void);                 /* in-kernel pipe mechanics exercise (smoke-pipe) */

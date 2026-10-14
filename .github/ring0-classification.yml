@@ -577,7 +577,12 @@
 # deadline primitives on the calibrated TSC that the wait and the INIT/SIPI
 # settle times use. Bring-up has nowhere else to live, and the arms and
 # instruments compile out of the ship build.
-core_budget_loc: 11653
+# 2026-10-14: 11653 -> 11711, +58, ROADMAP 5.13 (S139): pipe.c, the generation in
+# a pipe end's object, pipe_of (the one lookup that compares it) and the
+# generation phase of the PIPE_SELFTEST harness, which is most of the lines and
+# never in the ship build; kernel.h the encoding; capability.c the tally's third
+# cell. A pipe end is a capability, so its check belongs in the core.
+core_budget_loc: 11711
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

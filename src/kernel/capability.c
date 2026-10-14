@@ -736,14 +736,13 @@ bool cap_install_child_pipe_end(int child, uint32_t dest_slot, int spawner,
      * released -- its pipe's count would never come down. Refused rather than
      * overwritten. */
     if (!was_null) { spin_unlock(&cap_lock); return false; }
-    /* A pipe outside the table cannot be counted, so it is not installed. No
-     * such end exists (h_pipe names a pipe it allocated); checked because the
-     * count below indexes the table with it. */
-    if (src->object >= MAX_PIPES) { spin_unlock(&cap_lock); return false; }
     /* Counted before the slot is written, and refused if it cannot be: the
      * source is a live end, so its pipe is in use while the counts keep their
-     * invariant, and an end the table never counted must not be made. */
-    if (!pipe_end_ref((int)src->object, (rights & CAP_RIGHT_WRITE) != 0)) {
+     * invariant, and an end the table never counted must not be made.
+     * pipe_end_ref refuses an object naming no slot, a slot not in use, and a
+     * slot now used by a later pipe than the source's (S139), so a stale source
+     * hands on nothing. */
+    if (!pipe_end_ref(src->object, (rights & CAP_RIGHT_WRITE) != 0)) {
         spin_unlock(&cap_lock);
         return false;
     }
@@ -1693,11 +1692,12 @@ bool cap_revoke(uint32_t slot) {
     uint32_t orig_type = cspace[slot].type;
 
     /* Every pipe end either revoke below removes is counted here by the Rust
-     * sweep ([2*i] reader ends and [2*i+1] writer ends of pipe i), and released
-     * from the pipe table before cap_lock is dropped (LIMITATIONS 1.14). On the
-     * stack, 256 bytes: a static would cost a page of .bss for it. */
-    uint32_t pipe_tally[2 * MAX_PIPES];
-    for (uint32_t i = 0; i < 2 * MAX_PIPES; i++) pipe_tally[i] = 0;
+     * sweep (PIPE_TALLY_CELLS cells per pipe i: its reader ends, its writer ends,
+     * and the generation they named, S139), and released from the pipe table
+     * before cap_lock is dropped (LIMITATIONS 1.14). On the stack, 384 bytes: a
+     * static would cost a page of .bss for it. */
+    uint32_t pipe_tally[PIPE_TALLY_CELLS * MAX_PIPES];
+    for (uint32_t i = 0; i < PIPE_TALLY_CELLS * MAX_PIPES; i++) pipe_tally[i] = 0;
 
     /* Revocation-set indirection: a CAP_REVOCATION capability names a target
      * slot in `object`. Revoke the helper slot itself (single cspace), then
@@ -1705,13 +1705,13 @@ bool cap_revoke(uint32_t slot) {
     if (orig_type == CAP_REVOCATION && cspace[slot].object < CNODE_SIZE) {
         uint32_t real_target = (uint32_t)cspace[slot].object;
         rust_cap_revoke(cspace, cspace_sz, slot, &cap_next_serial,
-                        pipe_tally, 2 * MAX_PIPES);
+                        pipe_tally, PIPE_TALLY_CELLS * MAX_PIPES);
         slot = real_target;
         if (slot >= CNODE_SIZE) {
             /* real_target came from a slot index and is below CNODE_SIZE, so
              * this is unreachable; released anyway so no path that revoked
              * leaves a pipe end counted. */
-            (void)pipe_release_revoked_ends(pipe_tally, 2 * MAX_PIPES);
+            (void)pipe_release_revoked_ends(pipe_tally, PIPE_TALLY_CELLS * MAX_PIPES);
             spin_unlock(&cap_lock);
             return true;
         }
@@ -1774,7 +1774,7 @@ bool cap_revoke(uint32_t slot) {
 
     bool ok = rust_cap_revoke_global(cspace, cspace_sz, slot, target_ciu,
                                      spaces, nspaces, &cap_next_serial,
-                                     pipe_tally, 2 * MAX_PIPES);
+                                     pipe_tally, PIPE_TALLY_CELLS * MAX_PIPES);
 
     /* THE PIPE ENDS THE SWEEP REMOVED COME OUT OF THE PIPE TABLE NOW, while
      * cap_lock still makes every cspace and every producer's count quiescent
@@ -1784,7 +1784,7 @@ bool cap_revoke(uint32_t slot) {
      * came. pipe_lock nests inside cap_lock here (.github/lock-order.yml). */
     bool pipes_exact = true;
 #ifndef PIPE_REVOKE_UNCOUNTED
-    pipes_exact = pipe_release_revoked_ends(pipe_tally, 2 * MAX_PIPES);
+    pipes_exact = pipe_release_revoked_ends(pipe_tally, PIPE_TALLY_CELLS * MAX_PIPES);
 #endif
 
     for (int r = 0; r < MAX_REV_SETS; r++) {

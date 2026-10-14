@@ -37,6 +37,12 @@ pub const CAP_NULL: u32 = 0;
 /// The capability type the token primitives operate on (`CAP_ENDPOINT` in
 /// `src/include/kernel.h`). Pinned against the C value by the layout check below.
 pub const CAP_ENDPOINT: u32 = 3;
+/// Cells per pipe in a revocation's tally, and the generation cell's marker for
+/// ends of more than one generation (`PIPE_TALLY_CELLS`, `PIPE_TALLY_GEN_MIXED`
+/// in `src/include/kernel.h`; see `PipeTally`).
+const PIPE_TALLY_CELLS: u32 = 3;
+const PIPE_TALLY_GEN_MIXED: u32 = 0xFFFF_FFFF;
+
 /// A pipe end (`CAP_PIPE` in `src/include/kernel.h`). Pinned against the C value
 /// by a `_Static_assert` in `src/kernel/capability.c`.
 pub const CAP_PIPE: u32 = 13;
@@ -699,13 +705,19 @@ const _: () = {
 /// sweep counts the ones it empties unmarked (the target, a holder of the root's
 /// serial, the by-object match).
 ///
-/// The cells are the C side's: `[2 * pipe]` counts reader ends and
-/// `[2 * pipe + 1]` writer ends, `len` cells in all. Every write is checked
-/// against `len`, so an end naming a pipe outside the table is not counted (none
-/// can exist: `h_pipe` names a pipe it allocated, and every other end is derived
-/// from one of its two), and a null pointer counts nothing. The direction is the
-/// end's WRITE right, the same test the C close paths use, so a revoke and a close
-/// of the same end always release the same direction.
+/// The cells are the C side's, `PIPE_TALLY_CELLS` (3) per pipe: `[3 * pipe]`
+/// counts reader ends, `[3 * pipe + 1]` writer ends, and `[3 * pipe + 2]` holds
+/// the generation those ends named (S139): 0 until an end is counted, the
+/// generation of the first, or `PIPE_TALLY_GEN_MIXED` once two ends named
+/// different generations of the slot. A pipe end's `object` is the slot index in
+/// its low 32 bits and the generation in its high 32 (`PIPE_OBJ` in kernel.h);
+/// the C side releases the counted ends only from a pipe whose generation is the
+/// one recorded, so ends left over from a freed pipe are never subtracted from
+/// the next pipe to take the index. Every write is checked against `len`, so an
+/// end naming a slot outside the table is not counted, and a null pointer counts
+/// nothing. The direction is the end's WRITE right, the same test the C close
+/// paths use, so a revoke and a close of the same end always release the same
+/// direction.
 #[derive(Clone, Copy)]
 struct PipeTally {
     cells: *mut u32,
@@ -730,15 +742,24 @@ impl PipeTally {
         if c.typ != CAP_PIPE || self.cells.is_null() {
             return;
         }
-        let pipes = u64::from(self.len / 2);
-        if c.object >= pipes {
+        let pipes = u64::from(self.len / PIPE_TALLY_CELLS);
+        let index = c.object & 0xFFFF_FFFF;
+        let generation = (c.object >> 32) as u32;
+        if index >= pipes {
             return;
         }
+        let base = index as usize * PIPE_TALLY_CELLS as usize;
         let writer = usize::from(c.rights & CAP_RIGHT_WRITE != 0);
-        // c.object < len / 2 <= u32::MAX / 2, so this neither overflows nor
-        // reaches past cell len - 1.
-        let cell = &mut *self.cells.add(c.object as usize * 2 + writer);
-        *cell = cell.saturating_add(1);
+        // index < len / 3, so base + 2 <= len - 1: neither overflows nor reaches
+        // past the last cell.
+        let count = &mut *self.cells.add(base + writer);
+        *count = count.saturating_add(1);
+        let seen = &mut *self.cells.add(base + 2);
+        if *seen == 0 {
+            *seen = generation;
+        } else if *seen != generation {
+            *seen = PIPE_TALLY_GEN_MIXED;
+        }
     }
 }
 
@@ -2220,13 +2241,16 @@ mod tests {
         let mut a = [cap(0, 0, 0, 0, 0); 16];
         let mut b = [cap(0, 0, 0, 0, 0); 16];
         let mut c = [cap(0, 0, 0, 0, 0); 16];
-        a[15] = cap(CAP_PIPE, W | RV, 3, 0, 0x5_0001); // spawner's writer root
-        a[14] = cap(CAP_PIPE, R | RV, 3, 0, 0x5_0002); // its reader end: untouched
-        b[9] = cap(CAP_PIPE, W | RV, 3, 0x5_0001, 0x5_0003); // forked child's copy
-        c[15] = cap(CAP_PIPE, W, 3, 0x5_0003, 0x5_0004); // spawned stdout end
-        c[14] = cap(CAP_PIPE, W, 2, 0, 0x5_0005); // another pipe: untouched
+        // Pipe ends name a use of a slot: generation in the high half (S139).
+        let p3 = (7u64 << 32) | 3;
+        let p2 = (5u64 << 32) | 2;
+        a[15] = cap(CAP_PIPE, W | RV, p3, 0, 0x5_0001); // spawner's writer root
+        a[14] = cap(CAP_PIPE, R | RV, p3, 0, 0x5_0002); // its reader end: untouched
+        b[9] = cap(CAP_PIPE, W | RV, p3, 0x5_0001, 0x5_0003); // forked child's copy
+        c[15] = cap(CAP_PIPE, W, p3, 0x5_0003, 0x5_0004); // spawned stdout end
+        c[14] = cap(CAP_PIPE, W, p2, 0, 0x5_0005); // another pipe: untouched
         let (mut ca, mut cb, mut cc) = (2u32, 1u32, 2u32);
-        let mut tally = [0u32; 8];
+        let mut tally = [0u32; 12];
         unsafe {
             // One pointer per cspace, used for both the target and the sweep: a
             // second `as_mut_ptr` would invalidate the first (Miri, stacked
@@ -2239,15 +2263,15 @@ mod tests {
             ];
             assert!(rust_cap_revoke_global(
                 pa, 16, 15, addr_of_mut!(ca), spaces.as_ptr(), 3,
-                core::ptr::null_mut(), tally.as_mut_ptr(), 8));
+                core::ptr::null_mut(), tally.as_mut_ptr(), 12));
         }
         assert_eq!(a[15].typ, CAP_NULL);
         assert_eq!(b[9].typ, CAP_NULL, "the forked copy is in the subtree");
         assert_eq!(c[15].typ, CAP_NULL, "the spawned child's stdio end is in the subtree");
         assert_eq!(a[14].typ, CAP_PIPE, "the reader end is not the writer's descendant");
         assert_eq!(c[14].typ, CAP_PIPE, "another pipe's end is not in the subtree");
-        assert_eq!(tally, [0, 0, 0, 0, 0, 0, 0, 3],
-            "three writer ends of pipe 3 removed, three counted, nothing else");
+        assert_eq!(tally, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 7],
+            "three writer ends of pipe 3 removed, counted with their generation, nothing else");
     }
 
     /// Revoking a DERIVED end removes and counts only its own subtree: the
@@ -2257,11 +2281,12 @@ mod tests {
     fn revoking_a_derived_pipe_end_counts_only_its_subtree() {
         let mut a = [cap(0, 0, 0, 0, 0); 16];
         let mut b = [cap(0, 0, 0, 0, 0); 16];
-        a[5] = cap(CAP_PIPE, R | RV, 1, 0, 0x6_0001);
-        b[5] = cap(CAP_PIPE, R | RV, 1, 0x6_0001, 0x6_0002);
-        b[14] = cap(CAP_PIPE, R, 1, 0x6_0002, 0x6_0003);
+        let p1 = (9u64 << 32) | 1;
+        a[5] = cap(CAP_PIPE, R | RV, p1, 0, 0x6_0001);
+        b[5] = cap(CAP_PIPE, R | RV, p1, 0x6_0001, 0x6_0002);
+        b[14] = cap(CAP_PIPE, R, p1, 0x6_0002, 0x6_0003);
         let (mut ca, mut cb) = (1u32, 2u32);
-        let mut tally = [0u32; 4];
+        let mut tally = [0u32; 6];
         unsafe {
             let (pa, pb) = (a.as_mut_ptr(), b.as_mut_ptr());
             let spaces = [
@@ -2270,11 +2295,11 @@ mod tests {
             ];
             assert!(rust_cap_revoke_global(
                 pb, 16, 5, addr_of_mut!(cb), spaces.as_ptr(), 2,
-                core::ptr::null_mut(), tally.as_mut_ptr(), 4));
+                core::ptr::null_mut(), tally.as_mut_ptr(), 6));
         }
         assert_eq!(a[5].typ, CAP_PIPE, "the ancestor end survives");
         assert_eq!((b[5].typ, b[14].typ), (CAP_NULL, CAP_NULL));
-        assert_eq!(tally, [0, 0, 2, 0]);
+        assert_eq!(tally, [0, 0, 0, 2, 0, 9]);
     }
 
     /// A revoke of something that is not a pipe end counts nothing, and the
@@ -2284,16 +2309,17 @@ mod tests {
         let mut cs = [cap(0, 0, 0, 0, 0); 16];
         cs[4] = cap(1, 0x3f, 0x9000, 0, 0x7_0001);
         cs[5] = cap(1, 0x3f, 0x9000, 0x7_0001, 0x7_0002);
-        cs[6] = cap(CAP_PIPE, W | RV, 0, 0, 0x7_0003);
-        cs[7] = cap(CAP_PIPE, W, 0, 0x7_0003, 0x7_0004);
-        let mut tally = [0u32; 2];
+        let p0 = 4u64 << 32; // slot 0, generation 4
+        cs[6] = cap(CAP_PIPE, W | RV, p0, 0, 0x7_0003);
+        cs[7] = cap(CAP_PIPE, W, p0, 0x7_0003, 0x7_0004);
+        let mut tally = [0u32; 3];
         unsafe {
-            assert!(rust_cap_revoke(cs.as_mut_ptr(), 16, 4, core::ptr::null_mut(), tally.as_mut_ptr(), 2));
-            assert_eq!(tally, [0, 0], "no pipe end was in that subtree");
-            assert!(rust_cap_revoke(cs.as_mut_ptr(), 16, 6, core::ptr::null_mut(), tally.as_mut_ptr(), 2));
+            assert!(rust_cap_revoke(cs.as_mut_ptr(), 16, 4, core::ptr::null_mut(), tally.as_mut_ptr(), 3));
+            assert_eq!(tally, [0, 0, 0], "no pipe end was in that subtree");
+            assert!(rust_cap_revoke(cs.as_mut_ptr(), 16, 6, core::ptr::null_mut(), tally.as_mut_ptr(), 3));
         }
         assert_eq!((cs[6].typ, cs[7].typ), (CAP_NULL, CAP_NULL));
-        assert_eq!(tally, [0, 2]);
+        assert_eq!(tally, [0, 2, 4]);
     }
 
     /// The tally is the C side's array and its length is the only bound: an end
@@ -2303,22 +2329,38 @@ mod tests {
     #[test]
     fn pipe_tally_writes_only_inside_its_length() {
         let mut cs = [cap(0, 0, 0, 0, 0); 16];
-        cs[4] = cap(CAP_PIPE, W | RV, 0, 0, 0x8_0001);
-        cs[5] = cap(CAP_PIPE, W, 2, 0x8_0001, 0x8_0002); // pipe 2: past len 4
+        cs[4] = cap(CAP_PIPE, W | RV, 3u64 << 32, 0, 0x8_0001);
+        cs[5] = cap(CAP_PIPE, W, (3u64 << 32) | 2, 0x8_0001, 0x8_0002); // pipe 2: past len 4
         cs[6] = cap(CAP_PIPE, R, u64::MAX, 0x8_0001, 0x8_0003);
         let mut cells = [0u32; 8];
         unsafe {
+            // len 4 holds one pipe's three cells; the fourth is a guard.
             assert!(rust_cap_revoke(cs.as_mut_ptr(), 16, 4, core::ptr::null_mut(), cells.as_mut_ptr(), 4));
         }
         assert_eq!((cs[4].typ, cs[5].typ, cs[6].typ), (CAP_NULL, CAP_NULL, CAP_NULL),
             "every end in the subtree is removed, counted or not");
-        assert_eq!(cells, [0, 1, 0, 0, 0, 0, 0, 0], "only pipe 0 is inside the tally");
+        assert_eq!(cells, [0, 1, 3, 0, 0, 0, 0, 0], "only pipe 0 is inside the tally");
 
-        cs[4] = cap(CAP_PIPE, W | RV, 0, 0, 0x8_0004);
+        cs[4] = cap(CAP_PIPE, W | RV, 3u64 << 32, 0, 0x8_0004);
         unsafe {
             assert!(rust_cap_revoke(cs.as_mut_ptr(), 16, 4, core::ptr::null_mut(), core::ptr::null_mut(), 4));
         }
         assert_eq!(cs[4].typ, CAP_NULL);
+    }
+
+    /// Ends of two uses of one slot (S139): the tally keeps both counts but
+    /// marks the generation MIXED, so the C side releases them from neither
+    /// pipe rather than subtracting a dead pipe's ends from a live one.
+    #[test]
+    fn pipe_tally_marks_ends_of_two_generations_mixed() {
+        let mut cs = [cap(0, 0, 0, 0, 0); 16];
+        cs[4] = cap(CAP_PIPE, R | RV, (2u64 << 32) | 1, 0, 0x9_0001);
+        cs[5] = cap(CAP_PIPE, R, (3u64 << 32) | 1, 0x9_0001, 0x9_0002);
+        let mut tally = [0u32; 6];
+        unsafe {
+            assert!(rust_cap_revoke(cs.as_mut_ptr(), 16, 4, core::ptr::null_mut(), tally.as_mut_ptr(), 6));
+        }
+        assert_eq!(tally, [0, 0, 0, 2, 0, PIPE_TALLY_GEN_MIXED]);
     }
 }
 
@@ -2749,6 +2791,11 @@ mod kani_proofs {
     /// tally cell of each pipe and direction rises by exactly the number of
     /// ends of that pipe and direction that were in a slot before the revoke
     /// and are gone after it, and nothing is written past the tally's length.
+    /// Each pipe's generation cell (S139) is 0 if none of its ends was removed,
+    /// the generation they named if all named one, and `PIPE_TALLY_GEN_MIXED`
+    /// if they named two: the C side releases ends only from the pipe that
+    /// generation names, so a wrong cell would subtract a dead pipe's ends from
+    /// a live one.
     /// `cap_revoke` subtracts these counts from the pipe table: one too many
     /// frees a pipe while an end still names it (the #553 hazard), one too few
     /// leaves its peer waiting for an EOF that never comes.
@@ -2764,15 +2811,19 @@ mod kani_proofs {
                 badge: kani::any(), serial: kani::any(), token: kani::any(),
             };
             kani::assume(c.typ != CAP_MARK_NEW && c.typ != CAP_MARK_DONE);
-            // Pipes 0 and 1 are inside the tally; pipe 2 is past its end.
-            kani::assume(c.object < 3);
+            // Pipes 0 and 1 are inside the tally; pipe 2 is past its end. The
+            // generation (the high half) is any value but the two the
+            // allocator never issues.
+            kani::assume((c.object & 0xFFFF_FFFF) < 3);
+            let g = (c.object >> 32) as u32;
+            kani::assume(g != 0 && g != PIPE_TALLY_GEN_MIXED);
         }
         kani::assume(a[1].typ != CAP_NULL && a[1].serial != 0);
         kani::assume(!serial_is_primordial(a[1].serial));
         let (a0, b0) = (a, b);
 
-        // Four cells for pipes 0 and 1; the last two are guards.
-        let mut cells = [0u32; 6];
+        // Six cells for pipes 0 and 1, three each; the last three are guards.
+        let mut cells = [0u32; 9];
         let pa = a.as_mut_ptr();
         let pb = b.as_mut_ptr();
         let spaces = [
@@ -2781,7 +2832,7 @@ mod kani_proofs {
         ];
         let ok = unsafe {
             rust_cap_revoke_global(pa, 2, 1, core::ptr::null_mut(), spaces.as_ptr(), 2,
-                                   core::ptr::null_mut(), cells.as_mut_ptr(), 4)
+                                   core::ptr::null_mut(), cells.as_mut_ptr(), 6)
         };
         assert!(ok, "revoking a live, non-primordial capability must succeed");
 
@@ -2789,7 +2840,7 @@ mod kani_proofs {
             let mut n = 0u32;
             for i in 0..2 {
                 for (before, after) in [(a0[i], unsafe { *pa.add(i) }), (b0[i], unsafe { *pb.add(i) })] {
-                    if before.typ == CAP_PIPE && before.object == pipe
+                    if before.typ == CAP_PIPE && (before.object & 0xFFFF_FFFF) == pipe
                         && ((before.rights & CAP_RIGHT_WRITE) != 0) == writer
                         && after.typ == CAP_NULL
                     {
@@ -2799,11 +2850,33 @@ mod kani_proofs {
             }
             n
         };
+        // What the generation cell must hold for `pipe`: 0 if none of its ends
+        // was removed, their generation if they all named one, MIXED if not.
+        let generation = |pipe: u64| -> u32 {
+            let mut seen = 0u32;
+            for i in 0..2 {
+                for (before, after) in [(a0[i], unsafe { *pa.add(i) }), (b0[i], unsafe { *pb.add(i) })] {
+                    if before.typ == CAP_PIPE && (before.object & 0xFFFF_FFFF) == pipe
+                        && after.typ == CAP_NULL
+                    {
+                        let g = (before.object >> 32) as u32;
+                        if seen == 0 {
+                            seen = g;
+                        } else if seen != g {
+                            seen = PIPE_TALLY_GEN_MIXED;
+                        }
+                    }
+                }
+            }
+            seen
+        };
         assert!(cells[0] == removed(0, false), "pipe 0's reader ends miscounted");
         assert!(cells[1] == removed(0, true), "pipe 0's writer ends miscounted");
-        assert!(cells[2] == removed(1, false), "pipe 1's reader ends miscounted");
-        assert!(cells[3] == removed(1, true), "pipe 1's writer ends miscounted");
-        assert!(cells[4] == 0 && cells[5] == 0, "a count was written past the tally");
+        assert!(cells[2] == generation(0), "pipe 0's generation misrecorded");
+        assert!(cells[3] == removed(1, false), "pipe 1's reader ends miscounted");
+        assert!(cells[4] == removed(1, true), "pipe 1's writer ends miscounted");
+        assert!(cells[5] == generation(1), "pipe 1's generation misrecorded");
+        assert!(cells[6] == 0 && cells[7] == 0 && cells[8] == 0, "a count was written past the tally");
     }
 
     /// A reply-mint never widens: for EVERY (invoker rights, requested rights,

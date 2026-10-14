@@ -57,7 +57,7 @@ gating:
   # LIMITATIONS 1.14, added 2026-10-13 with the pipe-end tally: a revoke counts
   # exactly the pipe ends it removes, per pipe and direction, and writes nothing
   # past the tally. FALSIFIED by its four kani-arms.yml arms.
-  - revoke_counts_exactly_the_pipe_ends_it_removes           # 31s
+  - revoke_counts_exactly_the_pipe_ends_it_removes           # 127s (2026-10-14, Kani 0.68: the generation is a free 32-bit value; 31s before)
   - mint_never_escalates_rights                              # 1s
   - lookup_grants_exactly_the_rights_held                    # 0s
   - lookup_never_returns_an_empty_slot                       # 1s

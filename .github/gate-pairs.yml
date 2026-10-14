@@ -252,6 +252,7 @@ control_arms:
   smoke-iommu-teardown-control: smoke-iommu-teardown
   smoke-iommu-teardown-task-control: smoke-iommu-teardown
   smoke-pipe-cspace-order-control: smoke-pipe
+  smoke-pipe-generation-control: smoke-pipe
   smoke-meta-evict-control: smoke-meta-evict
   smoke-kfault-legacy: smoke-kfault
   smoke-kfault-record-control: smoke-kfault-record

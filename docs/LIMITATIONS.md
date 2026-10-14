@@ -153,21 +153,6 @@ user changing their own password re-seals the slot they already hold. A volume h
 give each one. At the ninth, `do_passwd` fails closed and changes nothing, and the shell and the
 installer both say the volume has no free key slot.
 
-### 2.6c Most gates still read kernel markers from the shared console
-
-The kernel writes a report one byte at a time to a UART that `console_server` also writes from
-ring 3, so another task's output can land in the middle of a single kernel message and a gate
-matching that message misses it. It has happened in CI. The static rule that gated markers are
-written in one piece (`tools/check_split_markers.py`) cannot help here, because the kernel's
-message *is* one call.
-
-Since 2026-09-03 the kernel has a channel only it can write: COM3, which no capability names
-(`SECURITY.md` S81, `make smoke-kdiag`). **Four gates read it so far**: `smoke-kstack-park`,
-`smoke-kstack-reuse` and their control arms. A string search of the gate definitions against the
-kernel sources (2026-10-12) finds 55 other base gates whose required marker only the kernel
-prints. Which of those are exposed depends on whether each prints after `console_server` owns the
-UART, which is not yet measured; ROADMAP 5.3 measures it first.
-
 ### 2.6d Only the boot is timestamped, from two clocks
 
 Boot-console lines carry a `[    S.uuuuuu] ` stamp until `init` hands the console to the shell.
@@ -567,6 +552,8 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 2.5a | [HORUS-20260919-01] | The physical free path was safe by its callers, not by construction (S102) | 2026-09-22, #425 |
 | 2.6 | | User accounts did not survive a reboot (S62) | 2026-08-31, #267 |
 | 2.6a | | Self-test markers written in pieces could be split; now refused by `tools/check_split_markers.py` (kernel markers are 2.6c) | 2026-09-01, #268, #284 |
+| 2.6c | | Gates read kernel markers off the console that ring 3 also writes, so one could arrive split; the kernel keeps a whole copy of what it prints on COM4, which no capability names, every gate that waits for a kernel marker reads it there or is listed with its reason in `.github/kernel-markers.yml`, and `tools/check_kernel_markers.py` keeps it so (S144) | 2026-10-14, #576 |
+| 2.30 | [HORUS-20261014-05] | The console changed hands without waiting for a kernel line already being written on another CPU, so that line and `console_server`'s first lines interleaved on COM1; the owner now changes under the console lock (S145) | 2026-10-14, #576 |
 | 2.8 | | The CSPRNG was safe by boot ordering, not by construction (S30) | 2026-08-23, #200 |
 | 2.9b | | Console input had an owner for passwords only, named by task id, so any program a person ran could read the command lines they typed; input is now a capability lent to the foreground program (S93) | 2026-10-13, #559 |
 | 2.10 | | Four live syscalls had no caller | 2026-08-23, #204 |

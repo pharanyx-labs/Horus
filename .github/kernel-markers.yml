@@ -1,0 +1,66 @@
+# Gates that read a kernel marker off the shared console, and why each still does
+# (ROADMAP 5.3, docs/LIMITATIONS.md 2.6c). Checked by tools/check_kernel_markers.py.
+#
+# WHY THIS FILE EXISTS. After the console handover the kernel's print() reaches
+# COM1 only through console_server, from ring 3, among everything else it writes,
+# so a gate waiting for a kernel line there can be handed it in pieces. The kernel
+# keeps its own whole copy on COM4 (S144), and a gate that sets MARKER_CHANNEL=kcon
+# reads REQUIRE_MARKER from that copy instead. The checker finds every
+# tools/smoke_test.sh invocation in a smoke-* target whose REQUIRE_MARKER only the
+# kernel prints and which does not opt in; each must be listed here.
+#
+# `console:` values:
+#   exposed                  not moved yet. The count is a ratchet: exposed_count
+#                            must equal the number of these, so the list shrinks
+#                            only by someone writing the smaller number down.
+#   early: <why>             printed before any ring-3 task runs, so nothing can
+#                            interleave with it on COM1.
+#   console-is-the-point: <why>  the gate exists to show the line reaches the console.
+#
+# `scripts:` names every harness under tools/ that boots the guest itself or
+# drives tools/smoke_test.sh with markers of its own. The checker cannot read
+# their markers, so each says here what it reads, and a new one fails the check
+# until it is listed. Each says `kcon:` (moved), `early:`, `ring 3:`,
+# `console-is-the-point:` or names the channel it is the witness for.
+
+console:
+  smoke-defect-flags: "early: the DEFECT FLAGS line is printed in kernel_main before init exists"
+  smoke-defect-flags-control: "early: the DEFECT FLAGS line is printed in kernel_main before init exists"
+  smoke-defect-flags-rebuild: "early: the DEFECT FLAGS line is printed in kernel_main before init exists"
+  smoke-defect-flags-rebuild-control: "early: the DEFECT FLAGS line is printed in kernel_main before init exists"
+  smoke-boot-pin-control: "early: the DEFECT FLAGS line is printed in kernel_main before init exists"
+
+exposed_count: 0
+
+scripts:
+  tools/ahci_detect_test.sh: "early: kernel probe lines, printed before init exists"
+  tools/atad_gate.sh: "ring 3: atad's own verdict"
+  tools/backspace_session.py: "ring 3: drives the shell and reads the screen"
+  tools/blkproto_gate.sh: "ring 3: blktest's verdict"
+  tools/boot_media_test.sh: "early: kernel boot lines before init, and the ring-3 login prompt"
+  tools/console_cursor_test.py: "ring 3: console_server's own behaviour"
+  tools/console_escape_test.py: "ring 3: console_server's own behaviour"
+  tools/console_resume_test.py: "ring 3: console_server's own behaviour"
+  tools/console_scroll_test.py: "ring 3: console_server's own behaviour"
+  tools/fb_console_test.sh: "the screen itself, read from QEMU, not a serial line"
+  tools/fb_tag_test.sh: "early: kernel framebuffer lines, printed before init exists"
+  tools/kcon_test.sh: "COM4 itself: the witness for this file's channel (S144)"
+  tools/handover_test.sh: "COM1 and COM4 together: the witness that the console changes hands only between lines (S145)"
+  tools/kdiag_test.sh: "COM3 and COM1 together: the witness for the diagnostic channel (S81)"
+  tools/keymap_session.py: "ring 3: drives the shell and reads what it echoes"
+  tools/kfault_test.sh: "console-is-the-point: the fault report must reach the console after the login prompt"
+  tools/measured_persist_replay.sh: "kcon: its targets set MARKER_CHANNEL=kcon, which reaches smoke_test.sh"
+  tools/merkle_replay.sh: "kcon: MERKLE_ENV sets MARKER_CHANNEL=kcon, which reaches smoke_test.sh"
+  tools/meta_span_tamper.sh: "kcon: SPAN_ENV sets MARKER_CHANNEL=kcon, which reaches smoke_test.sh"
+  tools/noserial_keyboard_session.py: "ring 3: drives the shell from the keyboard"
+  tools/rollback_replay.sh: "kcon: ROLLBACK_ENV sets MARKER_CHANNEL=kcon, which reaches run_with_swtpm.sh"
+  tools/run_with_swtpm.sh: "kcon: honours MARKER_CHANNEL like smoke_test.sh; its recipe invocations are checked"
+  tools/sdhci_bridge_test.sh: "early: kernel probe lines, printed before init exists"
+  tools/sdhci_crowded_test.sh: "early: kernel probe lines, printed before init exists"
+  tools/sdhci_detect_test.sh: "early: kernel probe lines, printed before init exists"
+  tools/sdhci_v3_test.sh: "early: kernel probe lines, printed before init exists"
+  tools/sdhcid_gate.sh: "ring 3: sdhcid's own verdict"
+  tools/session_test.py: "ring 3: drives the shell and reads what it prints"
+  tools/smoke_tpm.sh: "early: the measurement lines are printed before init exists"
+  tools/stress_boot.sh: "console-is-the-point: its callers set FAIL_MARKER only, for corruption seen ON the console"
+  tools/swtpm_lib.sh: "a library: run_with_swtpm.sh and smoke_test.sh boot through it"

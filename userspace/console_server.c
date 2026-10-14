@@ -1706,6 +1706,18 @@ display_ready:
     }
 #endif
 
+#ifdef KCON_RING3_PROBE
+    /* Test-only: the authority pair for COM4, the kernel console's own copy
+     * (terminal.c, g_kcon_present), built exactly as KDIAG_RING3_PROBE's for
+     * COM3. The write is attempted in both arms and only the kernel's port
+     * declaration moves (KCON_PORTS_GRANTABLE), so the base arm's #GP is the
+     * statement "ring 3 CANNOT write it", not "it did not". */
+    for (int i = 0; i < 200; i++) {
+        const char *p = "KCONRING3";
+        while (*p) { outb(0x2E8, (uint8_t)*p); p++; }
+    }
+#endif
+
 #ifdef CONSOLE_ISOLATION_TEST
     con_isolation_fault();   /* prove a console-driver fault stays contained in ring 3 */
 #endif

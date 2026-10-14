@@ -91,6 +91,11 @@ arm R5b "a manifest entry whose Makefile target is gone" \
   "sed -i 's/^gates:\$/gates:\n  - smoke-deleted-long-ago/' .github/gate-pairs.yml" \
   caught "smoke-deleted-long-ago"
 
+# R7. A second recipe under an existing name replaces the first in silence.
+arm R7 "a target defined twice" \
+  "printf '\n.PHONY: smoke-captest\nsmoke-captest:\n\t@true\n' >> Makefile" \
+  caught "smoke-captest"
+
 # R6. The other direction. An unmutated tree must pass, or the six arms above are
 #     satisfied by a checker that rejects everything.
 arm R6 "an unmutated tree passes" "true" clean

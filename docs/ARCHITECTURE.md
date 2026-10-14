@@ -294,9 +294,14 @@ names a bus address and never reaches configuration space. The table holds `IODE
 entries; a device the walk misses or that does not fit is absent, so nothing can grant it. Index 0
 names nothing, so a zeroed field fails closed.
 
-**What the table does not declare is load-bearing too.** COM3 (`0x3E8`) is in no entry, so no
-capability or port grant can reach it, and that is the kernel's own diagnostic channel (S81): the
-kernel writes every report there first, where no ring-3 output can interleave with it.
+**What the table does not declare is load-bearing too.** COM3 (`0x3E8`) and COM4 (`0x2E8`) are in
+no entry, so no capability or port grant can reach them. COM3 is the kernel's own diagnostic
+channel (S81): the kernel writes every report there first, where no ring-3 output can interleave
+with it. COM4 is the kernel console's own copy (S144): everything the kernel prints, whole, written
+inside the console lock, and nothing else, so a gate that waits for a kernel line reads it there
+rather than off COM1, where after the handover it arrives through `console_server` among ring 3's
+writes. The handover itself happens between lines: the owner changes under the console lock, so a
+kernel line already being written finishes first (S145).
 
 **Interrupts.** Interrupts route through the I/O APIC when the MADT describes one; the 8259 is the
 fallback, kept buildable with `IRQ_FORCE_PIC=1`. Every delegatable line starts masked and goes live

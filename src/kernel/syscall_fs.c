@@ -114,8 +114,17 @@ void h_storage_format(struct interrupt_frame64 *r) {
      * plan in storage_authorize_format, which refuses rather than clamps. */
     uint64_t swap_blocks = r->r8;
 
+#ifdef STORAGE_FORMAT_PASSWORD_TRUNCATED
+    /* CONTROL ARM -- never ship. An over-long password is shortened to the
+     * bound instead of refused, which is the "forgiving" shape this comment
+     * warns about: the volume is sealed to the first 31 characters, a string the
+     * operator never chose. Nothing overruns, since pw[] still fits. See
+     * make smoke-formatprobe-control. */
+    if (plen > STORAGE_FORMAT_PASSWORD_MAX) plen = STORAGE_FORMAT_PASSWORD_MAX;
+#endif
     /* Refuse before copying anything: an empty password seals a volume to
-     * nothing, and an over-long one cannot be typed back at a login prompt. */
+     * nothing, and an over-long one cannot be typed back at a login prompt
+     * (SECURITY.md S142). */
     if (plen == 0 || plen > STORAGE_FORMAT_PASSWORD_MAX) {
         r->rax = (uint32_t)SYS_ERR_INVAL;
         return;

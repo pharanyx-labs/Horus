@@ -3620,6 +3620,37 @@ void captest_selftest(void) {
         for (;;) asm volatile("hlt");
     }
 
+    /* ---- formatprobe: the authority to erase a disk, held and never spent ----
+     *
+     * SYS_STORAGE_DEVICE and SYS_STORAGE_FORMAT carry
+     * { CAPSLOT_STORAGE_FORMAT, READ / WRITE, CAP_STORAGE_FORMAT }, so the
+     * central gate refuses captest before either body runs, exactly as for the
+     * three probes above. init holds the capability but enters the survey only
+     * with a disk attached and the format never; the installer does. So both
+     * bodies ran only in boots with disk images attached, which no tracked
+     * workload is.
+     *
+     * root_cnode[22] is READ|WRITE and no more, so the copy is too: the probe
+     * needs WRITE because SYS_STORAGE_FORMAT's row demands it, and that is the
+     * reason to read userspace/formatprobe.c before trusting it. Every format
+     * call it makes is refused inside the handler before storage_unlock, the
+     * one step that writes, and each is one argument away from a call the
+     * handler would authorise, which is what makes the refusals measurements.
+     *
+     * uid 1000, and fatal on failure, for the reasons given above. */
+    extern uint8_t embedded_formatprobe_bin_start[], embedded_formatprobe_bin_end[];
+    int fpid = fs_spawn_embedded(embedded_formatprobe_bin_start,
+                                 embedded_formatprobe_bin_end, "formatprobe");
+    if (fpid <= 0) {
+        print("FORMATPROBE: FAIL spawn\n");
+        for (;;) asm volatile("hlt");
+    }
+    tasks[fpid].uid = 1000;
+    if (cap_install_from_root(fpid, CAPSLOT_STORAGE_FORMAT, 22, 0) != 0) {
+        print("FORMATPROBE: FAIL endow\n");
+        for (;;) asm volatile("hlt");
+    }
+
     print("CAPTEST_SELFTEST: launching\n");
     selftest_resume_all();
     sched_enable_preemption();

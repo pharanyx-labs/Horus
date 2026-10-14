@@ -1058,6 +1058,19 @@ embedded_execprobe_bin_start:
 .incbin "userspace/execprobe.bin"
 .global embedded_execprobe_bin_end
 embedded_execprobe_bin_end:
+
+/* PIE formatprobe binary: endowed with ONE CAP_STORAGE_FORMAT and nothing else,
+ * it enters the survey and format handler bodies, which only boots with disk
+ * images attached had reached, and every call it makes is refused before
+ * anything is written. Embedded on the same terms as the probes above: a task
+ * whose whole purpose is to hold the authority to erase a disk has no business
+ * in the ship image. */
+.align 16
+.global embedded_formatprobe_bin_start
+embedded_formatprobe_bin_start:
+.incbin "userspace/formatprobe.bin"
+.global embedded_formatprobe_bin_end
+embedded_formatprobe_bin_end:
 #endif
 
 #ifdef FRAME_SELFTEST

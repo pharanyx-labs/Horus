@@ -168,6 +168,7 @@ DEFECT_FLAGS = \
 	TUI_ACS_NO_RESTORE TUI_WRAP_NO_BREAK TUI_NO_INVALIDATE \
 	TUI_NO_CELLS \
 	STORAGE_SINGLE_DEVICE STORAGE_DEVICE_INDEX_CLAMP STORAGE_FORMAT_TARGET_IGNORED \
+	STORAGE_FORMAT_PASSWORD_TRUNCATED \
 	CSPACE_KEEP_ON_TEARDOWN \
 	CSPACE_RELEASE_BEFORE_PIPES SPAWN_SLOT3_DECOY_GATE UNTYPED_SPLIT_FREE_BYTES \
 	INIT_PROVISION_NO_UNTYPED AUDIT_ABI_LEGACY STORE_LOCKED_UNCHECKED \
@@ -1075,6 +1076,18 @@ ifeq ($(STORAGE_DEVICE_INDEX_CLAMP),1)
 CFLAGS += -DSTORAGE_DEVICE_INDEX_CLAMP
 endif
 
+# STORAGE_FORMAT_PASSWORD_TRUNCATED=1 shortens a SYS_STORAGE_FORMAT password
+# longer than STORAGE_FORMAT_PASSWORD_MAX to the bound instead of refusing it, so
+# the volume is sealed to the first 31 characters of what the operator typed: a
+# string they never chose, and one a login can then match only by accident.
+# Nothing overruns; the kernel's buffer still fits. It is the "forgiving" shape a
+# length check takes, and the probe that holds the format capability is what
+# notices (make smoke-formatprobe-control).
+STORAGE_FORMAT_PASSWORD_TRUNCATED ?= 0
+ifeq ($(STORAGE_FORMAT_PASSWORD_TRUNCATED),1)
+CFLAGS += -DSTORAGE_FORMAT_PASSWORD_TRUNCATED
+endif
+
 # TUI_NO_INVALIDATE=1 makes tui_invalidate a no-op, so the library keeps
 # believing a screen something else has written over. Every program here that
 # emits marker lines writes to the same UART the TUI draws on -- cooked
@@ -1473,6 +1486,7 @@ ASFLAGS += -DCAPTEST_SELFTEST
 AUDITPROBE_DEP = userspace/auditprobe.bin
 BLOCKPROBE_DEP = userspace/blockprobe.bin
 EXECPROBE_DEP = userspace/execprobe.bin
+FORMATPROBE_DEP = userspace/formatprobe.bin
 endif
 
 # The set of utilities ported so far. Each is an unmodified upstream .c in
@@ -4951,7 +4965,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin userspace/installer.bin userspace/shellwatch.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(NVME_SELFTEST_DEP) $(SDHCID_SELFTEST_DEP) $(ATAD_SELFTEST_DEP) $(BLKPROTO_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(TOKEN_SELFTEST_DEP) $(FSCAP_SELFTEST_DEP) $(FSCAPPOSIX_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(BLOCKPROBE_DEP) $(EXECPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(PIPEREVOKE_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin userspace/installer.bin userspace/shellwatch.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(NVME_SELFTEST_DEP) $(SDHCID_SELFTEST_DEP) $(ATAD_SELFTEST_DEP) $(BLKPROTO_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(TOKEN_SELFTEST_DEP) $(FSCAP_SELFTEST_DEP) $(FSCAPPOSIX_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(BLOCKPROBE_DEP) $(EXECPROBE_DEP) $(FORMATPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(PIPEREVOKE_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -6510,7 +6524,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.stripped.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/replyprobe.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/piperevoketest.bin userspace/piperevokee.bin userspace/coninee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/nvmed.bin userspace/sdhcid.bin userspace/atad.bin userspace/blktest.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin userspace/sealprobe.bin userspace/dynstale.bin userspace/dyncanary.bin userspace/hello_dyn.bin userspace/swaphog.bin userspace/fscaptest.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/replyprobe.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/piperevoketest.bin userspace/piperevokee.bin userspace/coninee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/nvmed.bin userspace/sdhcid.bin userspace/atad.bin userspace/blktest.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/formatprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin userspace/sealprobe.bin userspace/dynstale.bin userspace/dyncanary.bin userspace/hello_dyn.bin userspace/swaphog.bin userspace/fscaptest.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -7770,6 +7784,43 @@ smoke-execprobe-root-control:
 		REQUIRE_MARKER='EXECPROBE: FAIL exec-recreated-our-capability' \
 		tools/smoke_test.sh horus.iso
 
+# formatprobe rides in the same CAPTEST_SELFTEST image as a FIFTH task, holding
+# exactly one CAP_STORAGE_FORMAT. SYS_STORAGE_DEVICE and SYS_STORAGE_FORMAT carry
+# { CAPSLOT_STORAGE_FORMAT, READ / WRITE, CAP_STORAGE_FORMAT }, so the central
+# gate refuses captest before either body runs, and until 2026-10-14 the two
+# bodies ran only in boots with disk images attached (smoke-storage-survey and
+# the installer gates), which no tracked workload is.
+#
+# NOTHING IS FORMATTED. The image attaches no disk, and every format call the
+# probe makes is refused inside the handler before storage_unlock, the one step
+# that writes. Each call is one argument away from a call the handler would
+# authorise, which is what lets the arm below move one refusal past its check.
+.PHONY: smoke-formatprobe
+smoke-formatprobe:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 REQUIRE_MARKER='FORMATPROBE: PASS' \
+		FAIL_MARKER='FORMATPROBE: FAIL' tools/smoke_test.sh horus.iso
+
+# The falsifying arm. STORAGE_FORMAT_PASSWORD_TRUNCATED=1 shortens an over-long
+# password to the 31 characters a login can offer back, instead of refusing it.
+#
+# THE MARKER IS THE ACCEPTANCE, not "it failed". The probe's 32-character call
+# differs from an authorised call in its length alone, so under the flag it is
+# authorised and reaches storage_unlock, which on this diskless boot answers -8
+# (no device to format) where the length check answers SYS_ERR_INVAL. On a machine
+# with a disk the same call would seal the volume to a string nobody typed. A
+# build that broke some other way does not print this marker.
+.PHONY: smoke-formatprobe-control
+smoke-formatprobe-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 STORAGE_FORMAT_PASSWORD_TRUNCATED=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 STORAGE_FORMAT_PASSWORD_TRUNCATED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='FORMATPROBE: FAIL format-accepted-a-password-a-login-cannot-type' \
+		tools/smoke_test.sh horus.iso
+
 # The falsifying arm for the loader bound (S84). ELF_LOAD_BOUND_STAGING=1 puts
 # back the bound the ELF parses used until 2026-09-09: the size of the 8 MiB
 # staging REGION rather than the size of the image staged in it.
@@ -7858,10 +7909,11 @@ smoke-auditprobe-abi-control:
 # The one call in this system that DESTROYS a volume answers to a capability
 # nothing else holds (roadmap 2.9, S72). The arm removes the whole dispatch-table
 # row -- slot, rights and type -- so captest, holding no CAP_STORAGE_FORMAT,
-# reaches the handler. It then SUCCEEDS rather than failing differently: captest
-# boots on the ephemeral RAM vdisk, which is already mounted and unlocked, so
-# storage_unlock is idempotent and nothing is destroyed. That is what makes the
-# refusal in the base arm a measurement instead of a coincidence.
+# reaches the handler, the format is authorised, and storage_unlock answers -8:
+# captest boots on the ephemeral RAM vdisk, which gives the format no device to
+# write, so nothing is destroyed. The base arm requires exactly SYS_ERR_PERM, and
+# the ungated call never returns it; that is what makes the refusal a
+# measurement instead of a coincidence.
 .PHONY: smoke-captest-storage-format-control
 smoke-captest-storage-format-control:
 	@$(MAKE) --no-print-directory clean
@@ -8426,12 +8478,16 @@ smoke-syscall-coverage:
 # (phase 1b step 3(b)): every login now asks init for a session, init asks
 # fs_server through a carried capability, the shell walks by reply-minted
 # capabilities, and it hands the programs it runs their root and cwd.
+# SYS_CONSOLE_RELEASE, SYS_STORAGE_DEVICE and SYS_STORAGE_FORMAT joined it on
+# 2026-10-14, the last three on the `uncovered` list: captest's section 13 (i)
+# and formatprobe enter them, and both compile out under the flag.
 SYSCOV_CONTROL_EXPECTED = \
 	SYS_AUDIT_DIGEST SYS_BRK SYS_FRAME_PAGES SYS_IPC_REPLY \
 	SYS_MAP_REGION SYS_READ_AUDIT SYS_REGISTER_STORAGE_BACKEND \
 	SYS_SIGACTION SYS_SIGRETURN SYS_TASK_EXIT_INFO \
 	SYS_UNMAP_FRAME SYS_BLOCK_READ SYS_BLOCK_WRITE SYS_EXEC_IMAGE \
-	SYS_GET_PASS SYS_EXEC_NAMED SYS_ROTATE_KEYS
+	SYS_GET_PASS SYS_EXEC_NAMED SYS_ROTATE_KEYS \
+	SYS_CONSOLE_RELEASE SYS_STORAGE_DEVICE SYS_STORAGE_FORMAT
 
 smoke-syscall-coverage-control:
 	@set -eu; \

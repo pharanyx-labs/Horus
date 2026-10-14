@@ -436,6 +436,7 @@ column names the targets that build with the flag; an arm must turn its gate red
 | `STORAGE_REPLACE_VIEW_UNRESOLVED=1` | Compares the mounted volume's device with the disk a format names without resolving a GPT partition view to its disk, so the comparison never matches and an unlocked volume in a partition can be reformatted from under the running system (S90, S114). | `smoke-replace-partition-control` (arm of `smoke-replace-live`); `make smoke-replace-live` must go red under it |
 | `CONSOLE_PROGRESS_BELOW_SURFACE=1` | Puts the kernel's format progress panel back at the bottom of the grid, which on a framebuffer is mostly outside the installer's centred surface, where `console_server` blanks rows: six of its eight rows go black while the password is hashed. | `smoke-installer-panel-control` (arm of `smoke-installer-panel`); `make smoke-installer-panel` must go red under it |
 | `CONSOLE_PROGRESS_AT_LOGIN=1` | Lets the kernel draw the format progress panel whenever it is asked, as before 2026-10-08, rather than only for the installer: a login that unlocks the disk then leaves "Turning your password into a key" on the screen for good, since nothing repaints a login screen. | `smoke-installer-panel-login-control` (arm of `smoke-installer-panel`); `make smoke-installer-panel` must go red under it |
+| `STORAGE_FORMAT_PASSWORD_TRUNCATED=1` | Shortens a `SYS_STORAGE_FORMAT` password longer than `STORAGE_FORMAT_PASSWORD_MAX` to that bound instead of refusing it, so the volume would be sealed to the first 31 characters, a string the operator never chose and a login can match only by accident. | `smoke-formatprobe-control` (arm of `smoke-formatprobe`); `make smoke-formatprobe` must go red under it |
 | `STORAGE_FORMAT_AUTH_STICKY=1` | Restores the pre-2026-09-11 lifetime of `g_format_authorized`: set once by `storage_authorize_format` and never cleared. | `smoke-replace-oneshot-control` (arm of `smoke-replace-oneshot`) |
 | `BOOT_CMDLINE_UNMEASURED=1` | Restores the pre-2026-09-11 PCR[8] serialisation, which covered the boot-module manifest and not the kernel command line. | `smoke-tpm-cmdline-control` (arm of `smoke-tpm-cmdline`) |
 | `STORAGE_FORMAT_UNGATED=1` | Removes the dispatch-table row in front of `SYS_STORAGE_FORMAT` entirely, no slot, no rights floor, no type, so any ring-3 task may authorise a format of the attached disk (S72). | `smoke-captest-storage-format-control` (arm of `smoke-captest`); `make smoke-captest` must go red under it |
@@ -587,7 +588,7 @@ of the most important:
 
 | Target | Asserts |
 |---|---|
-| `smoke-captest` | Unheld capabilities, post-revoke use, and bad input are all refused (220 checks, printed by the suite as `CAPTEST: PASS <n> checks`) |
+| `smoke-captest` | Unheld capabilities, post-revoke use, and bad input are all refused (223 checks, printed by the suite as `CAPTEST: PASS <n> checks`) |
 | `smoke-wx` | No kernel page is both writable and executable |
 | `smoke-modules-tamper` | A corrupted boot module is refused |
 | `smoke-tpm-seal` | A changed PCR leaves the volume locked |

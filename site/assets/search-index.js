@@ -217,12 +217,6 @@ window.HORUS_SEARCH = [
 "k": 3
 },
 {
-"t": "1.8Three system calls have no test that runs them",
-"p": "Limitations",
-"u": "limitations.html#1-8three-system-calls-have-no-test-that-runs-them",
-"k": 3
-},
-{
 "t": "1.30Findings from a source review",
 "p": "Limitations",
 "u": "limitations.html#source-review-findings",

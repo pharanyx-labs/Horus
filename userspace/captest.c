@@ -1255,6 +1255,24 @@ void _start(void) {
      * enter it and still be captest afterwards. */
     check(sys_exec_named("captest-no-such-binary") == SYS_ERR_NOENT,
           "exec-named-of-no-binary-not-refused");
+
+    /* (i) SYS_CONSOLE_RELEASE is SC_NONE as well: the console is one device, so
+     * the authority is a CAP_IO_DEVICE with WRITE that iodev_from_slot resolves
+     * inside the handler, and then the caller must BE the console's owner. Its
+     * one caller is console_server on a FAILED start-up, so a boot that works
+     * never enters the body, and from 2026-08 to 2026-10-14 it was entered only
+     * by smoke-console-handover-control's broken build (docs/LIMITATIONS.md
+     * 1.8). The three ways to hold no device authority, as the device checks
+     * above: the device slot this task was never endowed with, the slot-3
+     * CAP_FRAME of the wrong type, and a slot that has never held anything.
+     * Every one is refused before console ownership is consulted, so the
+     * console stays exactly where it was. */
+    check(sys_console_release(CAPSLOT_IO_DEVICE) == SYS_ERR_PERM,
+          "console-release-without-cap-io-device");
+    check(sys_console_release(SLOT_FRAME) == SYS_ERR_PERM,
+          "console-release-accepted-a-frame-capability-as-a-device");
+    check(sys_console_release(SLOT_EMPTY_HI) == SYS_ERR_PERM,
+          "console-release-on-empty-slot-not-refused");
 #endif /* SYSCOV_PROBES_ABSENT */
 
 
@@ -1350,11 +1368,13 @@ void _start(void) {
      *
      * THE ARM IS WHAT MAKES THE REFUSAL A MEASUREMENT. Under
      * STORAGE_FORMAT_UNGATED=1 the row loses its slot, rights and type; this
-     * task then reaches the handler and the call SUCCEEDS, because captest boots
-     * on the ephemeral RAM vdisk, which is already mounted and unlocked, so
-     * storage_unlock is idempotent and returns 0 without destroying anything. A
-     * refusal test whose ungated path also failed would pass under the defect
-     * and witness nothing; this one cannot.
+     * task then reaches the handler, the format is AUTHORISED, and the call
+     * gets as far as storage_unlock, which answers -8 because captest boots on
+     * the ephemeral RAM vdisk and that gives the format no device to write
+     * (measured 2026-10-14; this said "returns 0" until then). Nothing is
+     * destroyed either way. A refusal test whose ungated path was refused with
+     * the same code would pass under the defect and witness nothing; this one
+     * requires exactly SYS_ERR_PERM, which the ungated path never returns.
      *
      * Exact SYS_ERR_PERM, never `< 0`. SYS_ERR_INVAL is what a rejected password
      * length returns, so "you may not ask" stays distinguishable from "you asked

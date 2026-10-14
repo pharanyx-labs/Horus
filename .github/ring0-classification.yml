@@ -586,7 +586,13 @@
 # watcher is a system program the kernel loads by name, so it is embedded like
 # the installer (multiboot.S's .incbin, loader.c's table row and its two
 # externs). kspawn.c's D1 change adds a right to an existing call, no line.
-core_budget_loc: 11719
+# 2026-10-14: 11719 -> 11730, +11, docs/LIMITATIONS.md 1.8 (S142): multiboot.S
+# embedding formatprobe for the CAPTEST_SELFTEST image, never in the ship build:
+# 6 directive lines, and 5 lines of its comment, which this counter counts in a
+# .S file because they do not begin with `#` or `/`. The probe is ring 3
+# (userspace/formatprobe.c); its launcher is in selftest.c (selftest), and the
+# arm's line is in syscall_fs.c (service).
+core_budget_loc: 11730
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

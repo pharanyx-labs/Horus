@@ -21,30 +21,6 @@ status, and it is the one given here.
 
 ## 1. Security
 
-### 1.8 Three syscalls have no test that runs their handler
-
-As of the last merge and gated since: **100 of 103** implemented syscalls have their handler body
-entered by a tracked workload (the scripted ring-3 session, the conformance suite, and the
-boot-modules session). The other 3 are listed in `.github/syscall-coverage.yml`, each with a
-written reason. `tools/check_syscall_coverage.py` (required job `syscall-coverage`) fails on drift
-in either direction, so the number cannot quietly fall (`SECURITY.md` S25).
-
-The risk is not hypothetical. Four times a probe written to enter an uncovered handler found a
-defect on its first run: a kernel hang on a NULL lookup under `cap_lock` (S52), an audit record
-declared at two sizes that overran a ring-3 array (S71), block syscalls whose "no such block" and
-"permission denied" were the same value, and an ELF loader bounded by the wrong buffer (S84).
-So a defect in any of those 3 handlers is invisible in the same way. `captest` cannot find these: it
-is a refusal suite, and the capability gate returns before a refused handler runs.
-
-All three are gated on a capability `captest` does not hold, or entered only on a failure path:
-
-- `SYS_STORAGE_DEVICE` needs a probe task holding exactly that capability, the way `auditprobe`
-  and `blockprobe` were written.
-- `SYS_STORAGE_FORMAT`'s body formats the disk the run is using, so no tracked workload can enter
-  it; the installer gates do.
-- `SYS_CONSOLE_RELEASE` runs only when `console_server`'s start-up fails, which
-  `smoke-console-handover-control` makes happen.
-
 ### 1.12 Rollback protection is anchored only on a machine with a TPM
 
 The Merkle tree catches partial rollback, and since 2026-09-01 a TPM NV monotonic counter bound
@@ -570,6 +546,7 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 1.6b | | Task-creating syscalls were gated on the slot-3 decoy | 2026-08-30, #256 |
 | 1.6c | | Two ship-build syscalls were gated on the slot-3 decoy (S79) | 2026-09-03, #307 |
 | 1.7 | | Two syscall wrappers truncated a buffer pointer to 32 bits | 2026-08-20, #177 |
+| 1.8 | | Syscall handlers no tracked workload entered; every implemented syscall's body is entered now, the last three (`SYS_STORAGE_DEVICE`, `SYS_STORAGE_FORMAT`, `SYS_CONSOLE_RELEASE`) by refusals inside the body from `formatprobe` and `captest` (S25) | 2026-10-14, #574 |
 | 1.9 | | S16 had no witness | 2026-08-28, #222 |
 | 1.10 | | A gate was classified as a control arm by its name | 2026-08-30, #251 |
 | 1.11 | | The property table's `enforced by` column was parsed and discarded | 2026-08-30, #251 |

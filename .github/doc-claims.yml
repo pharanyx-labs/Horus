@@ -183,12 +183,8 @@ counts:
         pattern: 'Currently \*\*(\d+) of \d+\*\*: the property'
       - file: TESTS.md
         pattern: 'Currently \*\*(\d+) of \d+\*\* implemented syscalls'
-      - file: docs/LIMITATIONS.md
-        pattern: 'gated since: \*\*(\d+) of \d+\*\* implemented syscalls'
-      - file: site/limitations.html
-        pattern: '<strong>(\d+) of \d+</strong> system calls'
 
-  # The other half of those four ratios. Declared 2026-08-27, because it had
+  # The other half of those ratios. Declared 2026-08-27, because it had
   # drifted in a way the numerator could not: the four sentences above were
   # gated and correct, and the sentences immediately after them said 25, 25 and
   # 33 for one quantity whose live value was 27. Gating a numerator and leaving
@@ -197,14 +193,12 @@ counts:
     describe: "syscalls with a written reason for no handler-entry coverage (.github/syscall-coverage.yml `uncovered`)"
     derive: syscalls_uncovered
     occurrences:
-      - file: docs/LIMITATIONS.md
-        pattern: 'The other (\d+) are listed in `\.github/syscall-coverage\.yml`'
-      - file: docs/LIMITATIONS.md
-        pattern: 'a defect in any of those (\d+) handlers'
-      - file: site/limitations.html
-        pattern: 'The other (\d+) are each'
+      # LIMITATIONS 1.8 and the site's copy of it carried this count until the
+      # entry closed on 2026-10-14; the remainder is stated in TESTS.md now.
+      - file: TESTS.md
+        pattern: 'and \*\*(\d+)\*\* are listed uncovered'
 
-  # The DENOMINATOR of the four ratios above, which until 2026-08-22 was the
+  # The DENOMINATOR of the ratios above, which until 2026-08-22 was the
   # literal `76` inside each of their patterns -- so the number every one of
   # those sentences states was the one thing here that nothing checked. It was
   # wrong when it was noticed: three syscalls with real handlers sat in the
@@ -221,16 +215,6 @@ counts:
         pattern: 'Currently \*\*\d+ of (\d+)\*\*: the property'
       - file: TESTS.md
         pattern: 'Currently \*\*\d+ of (\d+)\*\* implemented syscalls'
-      - file: docs/LIMITATIONS.md
-        pattern: 'gated since: \*\*\d+ of (\d+)\*\* implemented syscalls'
-      - file: site/limitations.html
-        pattern: '<strong>\d+ of (\d+)</strong> system calls'
-      # site/index.html stated this denominator as a bare `76` from before
-      # 2026-08-22, when the live value was 92 and nothing compared them. It sat
-      # three paragraphs under a ratio that WAS gated, which is the same
-      # half-gated shape `syscalls_uncovered` was declared for. Gated 2026-09-01.
-      - file: site/limitations.html
-        pattern: 'classifies all (\d+) implemented syscalls'
 
   # frametest's parent-side checks, declared 2026-08-27 for the reason the entry
   # above it exists: TESTS.md carried 17 while the wire said 31, and the number

@@ -1607,6 +1607,19 @@ jobs:
         run: make smoke-execprobe-reset-control
       - name: Control arm — an exec that re-mints the inherited capability
         run: make smoke-execprobe-root-control
+      # The fifth probe, and the last two bodies a tracked workload had not
+      # entered behind a real capability: SYS_STORAGE_DEVICE and
+      # SYS_STORAGE_FORMAT ran only in boots with disk images attached.
+      # formatprobe holds one CAP_STORAGE_FORMAT, and every format call it makes
+      # is one argument away from an authorised one and refused before
+      # storage_unlock, so nothing is written (S142).
+      - name: A task holding one CAP_STORAGE_FORMAT runs the survey and format handlers, and every refusal is the handler's
+        run: make smoke-formatprobe
+      # The marker is the acceptance: under the flag a 32-character password is
+      # shortened instead of refused, so the call is authorised and reaches
+      # storage_unlock, which on this diskless boot answers for want of a device.
+      - name: Control arm — an over-long password is shortened instead of refused
+        run: make smoke-formatprobe-control
 
   smoke-modules:
     name: QEMU boot-module transport (printf / tail provisioned into /bin, run from FS)
@@ -3086,7 +3099,7 @@ jobs:
       # The falsifying arm for the 2026-08-30 SC_NONE promotions. Without it, a
       # promotion captest's probes EARNED is indistinguishable from one that was
       # free all along, and deleting the probes would leave this gate green.
-      - name: Remove the probes and require the gate to name exactly its twelve
+      - name: Remove the probes and require the gate to name exactly the set they earn
         run: make smoke-syscall-coverage-control
 
   gate-pairs:

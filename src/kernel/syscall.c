@@ -1744,11 +1744,13 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
      * falsified is that a gate exists at all.
      *
      * captest holds no CAP_STORAGE_FORMAT and calls this, so under the flag the
-     * call SUCCEEDS -- the store in a captest boot is the ephemeral vdisk, which
-     * is already unlocked, so storage_unlock is idempotent and returns 0 rather
-     * than destroying anything. That is what makes the refusal test a
-     * measurement: a refusal test whose ungated path also fails witnesses
-     * nothing. See make smoke-captest-storage-format-control. */
+     * format is AUTHORISED and the call reaches storage_unlock, which answers -8:
+     * the store in a captest boot is the ephemeral vdisk, which gives the format
+     * no device to write, so nothing is destroyed. That is what makes the
+     * refusal test a measurement: it requires exactly SYS_ERR_PERM, and the
+     * ungated path answers something else. A refusal test whose ungated path
+     * gave the same answer would witness nothing.
+     * See make smoke-captest-storage-format-control. */
     [SYS_STORAGE_FORMAT]           = { h_storage_format,          SC_NONE, 0, SC_ANYTYPE },
 #else
     [SYS_STORAGE_FORMAT]           = { h_storage_format,          CAPSLOT_STORAGE_FORMAT, CAP_RIGHT_WRITE, CAP_STORAGE_FORMAT },

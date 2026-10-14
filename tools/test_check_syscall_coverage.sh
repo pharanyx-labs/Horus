@@ -88,16 +88,24 @@ arm "2" "a covered syscall the workload never entered" \
 # ---- THE OTHER DIRECTION: a syscall declared uncovered that WAS entered. Good
 #      news, and still a manifest that no longer describes the tree -- an
 #      exemption that has quietly stopped being needed.
+#
+#      THE ARM PLANTS ITS OWN EXEMPTION rather than borrowing one from the
+#      manifest. Until 2026-10-14 it took the first `uncovered` entry and appended
+#      its SYSCOV line, which stopped working the day the list emptied (every
+#      implemented syscall entered, docs/LIMITATIONS.md 1.8): an arm that depends
+#      on the tree still having a gap cannot outlive the gap. Moving a covered
+#      syscall across, with its line still in the log, is the same divergence.
 arm "3" "an uncovered syscall that the workload did enter" \
     'python3 - <<PY
-import yaml, re, pathlib
-man = yaml.safe_load(open(".github/syscall-coverage.yml"))
-name = sorted(man.get("uncovered") or {})[0]
-hdr = pathlib.Path("include/syscall.h").read_text()
-n = int(re.search(r"^#define\s+" + name + r"\s+(\d+)", hdr, re.M).group(1))
-open("serial.log", "a").write(f"SYSCOV {n}\n")
+import yaml
+p = ".github/syscall-coverage.yml"
+man = yaml.safe_load(open(p))
+name = man["covered"].pop(0)
+man["uncovered"] = dict(man.get("uncovered") or {})
+man["uncovered"][name] = "planted by the falsification suite, a long enough reason to pass"
+yaml.safe_dump(man, open(p, "w"))
 PY' \
-    caught "uncovered"
+    caught "declared uncovered but its handler DID run"
 
 # ---- A SYSCALL IN BOTH LISTS. Ambiguous classification is not classification.
 arm "4" "a syscall declared both covered and uncovered" \
@@ -112,17 +120,26 @@ PY' \
     caught "both"
 
 # ---- A TOKEN REASON. Otherwise `uncovered` becomes a place to park a syscall
-#      rather than an argument for not exercising it.
+#      rather than an argument for not exercising it. Planted, as arm 3 is, and
+#      its SYSCOV line is dropped from the log: left in, the entry would also be
+#      "uncovered but entered", whose message says "the reason is stale" -- so a
+#      checker that had lost the token rule would still print the word this arm
+#      used to look for. It asks for the token rule's own words now.
 arm "5" "an uncovered entry with a token reason" \
     'python3 - <<PY
-import yaml
+import yaml, re, pathlib
 p = ".github/syscall-coverage.yml"
 man = yaml.safe_load(open(p))
-name = sorted(man.get("uncovered") or {})[0]
+name = man["covered"].pop(0)
+man["uncovered"] = dict(man.get("uncovered") or {})
 man["uncovered"][name] = "later"
 yaml.safe_dump(man, open(p, "w"))
+hdr = pathlib.Path("include/syscall.h").read_text()
+n = int(re.search(r"^#define\s+" + name + r"\s+(\d+)", hdr, re.M).group(1))
+log = pathlib.Path("serial.log")
+log.write_text("".join(l for l in log.read_text().splitlines(True) if l != f"SYSCOV {n}\n"))
 PY' \
-    caught "reason"
+    caught "is uncovered with no substantive reason"
 
 # ---- THE GUARD THAT REFUSES TO MEASURE NOTHING. A log with no SYSCOV lines is
 #      not a boot with no coverage -- it is a boot that was not built with

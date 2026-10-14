@@ -126,6 +126,7 @@ control_arms:
   smoke-blockprobe-control: smoke-blockprobe
   smoke-execprobe-reset-control: smoke-execprobe
   smoke-execprobe-root-control: smoke-execprobe
+  smoke-formatprobe-control: smoke-formatprobe
   smoke-proc-truncated-image-control: smoke-proc
   smoke-proc-overreach-control: smoke-proc
   smoke-proc-stale-sender-control: smoke-proc
@@ -361,6 +362,7 @@ gates:
   - smoke-auditprobe
   - smoke-blockprobe
   - smoke-execprobe
+  - smoke-formatprobe
   - smoke-readdir-end
   - smoke-installer-panel
   - smoke-ls-path

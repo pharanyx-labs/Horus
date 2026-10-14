@@ -25,34 +25,17 @@
 # This does not demand every syscall be covered. It demands that the number be
 # decided rather than drifting, and that every gap be written down.
 #
-# The `uncovered` reasons say why the TRACKED WORKLOADS do not reach each one.
-#
-# Ten of them used to name another build that supposedly would, as unmeasured
-# hypotheses. All ten were measured on 2026-08-20 by booting those builds under
-# SYSCALL_COVERAGE=1, and each now records what was OBSERVED rather than what was
-# assumed. Six were confirmed; FOUR WERE WRONG -- SIGNAL_SELFTEST does not drive
-# sigaction or sigreturn (it passes while entering only syscalls 0 and 11), and
-# IRQ_POLICY_AUDIT does not drive SYS_IRQ_POLICY_INFO. SYS_EXEC (19) was reached
-# by no build and has since been retired; SYS_EXEC_IMAGE was reached by none
-# either until execprobe covered it on 2026-09-09 (see the covered list).
-#
-# The confirmed ones are NOT promoted to `covered`, and the reason is a cost
-# judgement rather than a doubt: `covered` means "a TRACKED arm enters it", and
-# each of those builds is a full kernel build plus a boot on every run.
-#
-# WHAT ADDING ONE WOULD BUY IS NOW ALMOST NOTHING, and that is the 2026-08-30
-# sweep's doing rather than a change of mind. PROC_SELFTEST was the one worth its
-# cost at 4 promotions; three of its four (SYS_SIGACTION, SYS_SPAWN_ARG,
-# SYS_TASK_EXIT_INFO) are SC_NONE and were promoted that day from captest for the
-# price of a probe, leaving it SYS_EXEC_NAMED alone. IRQ_SELFTEST is at zero --
-# both syscalls it was cited for were promoted on 2026-08-28 when the device gate
-# moved into the handlers. FORK_SELFTEST and SHLIB_SELFTEST would buy one each.
-# Read those numbers off the `uncovered` entries below, which name the build for
-# each; do not copy them from this paragraph, which has been wrong before.
-#
-# PROC_SELFTEST additionally must not be added yet: its workload still trips
-# [G-9] on ~7% of boots, so it would make this gate intermittently red for a
-# reason that is not about coverage.
+# Since 2026-10-14 `uncovered` is empty: every implemented syscall's body is
+# entered by one of the three. Its reasons used to say why the tracked workloads
+# did not reach each one, and they were wrong often enough to be worth
+# remembering. On 2026-08-20 ten of them named another build that supposedly
+# would, and booting those builds showed four were wrong (for example,
+# SIGNAL_SELFTEST does not drive sigaction or sigreturn, and IRQ_POLICY_AUDIT
+# does not drive SYS_IRQ_POLICY_INFO). The later promotions came from a refusal
+# inside the body, a probe task holding one capability, or a feature reaching a
+# tracked image, never from adding a selftest build as a tracked arm: each of
+# those is a full kernel build plus a boot on every run.
+# The list's own comment says what each kind of gap cost to close.
 
 # Compiled only under a flag, so no tracked workload can enter them and neither
 # `covered` nor `uncovered` can describe them. Declaring them here is what keeps
@@ -285,6 +268,34 @@ covered:
   # are compiled out, so this body is not entered and the coverage control arm
   # names it (SYSCOV_CONTROL_EXPECTED in the Makefile).
   - SYS_EXEC_IMAGE
+  # Promoted 2026-10-14, the last two of group (1), by formatprobe
+  # (userspace/formatprobe.c), a fifth probe holding one CAP_STORAGE_FORMAT.
+  # init holds the capability too, but enters the survey only with a disk
+  # attached and the format never, so both bodies ran only in boots with disk
+  # images attached (make smoke-storage-survey, the installer gates). The entry
+  # for the format said no probe could enter it "without destroying the volume
+  # the run is using". That was wrong about the body: the length check, the copy
+  # and storage_authorize_format all come before storage_unlock, the one step
+  # that writes. formatprobe's calls are each one argument away from a call the
+  # handler would authorise, and every one is refused. On this diskless image the
+  # survey's every index is past the end, so its body is entered by refusals;
+  # the success paths are still the attached-disk gates'.
+  #
+  # Witness: make smoke-formatprobe. Falsified by
+  # STORAGE_FORMAT_PASSWORD_TRUNCATED=1, which shortens an over-long password
+  # instead of refusing it, and under SYSCOV_PROBES_ABSENT=1 the probe's calls are
+  # compiled out and the coverage control arm names both.
+  - SYS_STORAGE_DEVICE
+  - SYS_STORAGE_FORMAT
+  # Promoted 2026-10-14 by captest (i). SC_NONE, with the authority tested inside
+  # the handler: a CAP_IO_DEVICE with WRITE, then console ownership. Its one
+  # caller is console_server on a FAILED start-up, so a boot that works never
+  # entered it; only smoke-console-handover-control's broken build did. The
+  # entry here said promoting it "would mean making a tracked workload fail its
+  # own console handover on purpose", which was true of the success path and not
+  # of the body: a task holding no device capability enters it and is refused.
+  # The release itself is still witnessed by that arm alone.
+  - SYS_CONSOLE_RELEASE
   # Promoted 2026-08-29 with S52, and the promotion is the point rather than a
   # side effect. All three were listed below as "not entered by any tracked
   # workload, and by no build known in this tree" -- and all three reached a
@@ -422,85 +433,30 @@ covered:
   # have a live target for SYS_CAP_GRANT; the parent carries on with its checks.
   - SYS_FORK                 # captest 16c forks a grant target
 
-uncovered:
-  # Three left, all in group (1); groups (2) to (4) are empty since 2026-10-13,
-  # each header kept for the reason its members left. The
-  # grouping is the useful part: it says what each one would COST to
-  # cover, which is the question this file is asked when somebody wants the
-  # number to go up.
+uncovered: {}
+  # EMPTY SINCE 2026-10-14: every implemented syscall's handler body is entered by
+  # a tracked workload (docs/LIMITATIONS.md 1.8, closed). The checker still fails
+  # on an implemented syscall in neither list, so a new syscall lands here with a
+  # reason or in `covered` with a workload that enters it.
   #
-  # (1) THE CENTRAL GATE RETURNS FIRST. These have a real capability in their
-  # dispatch row -- a slot, a rights floor and a type -- so syscall_handler
-  # refuses an unauthorised caller before the handler body runs. That is issue
-  # #176's shape exactly, and it is the group where "captest asserts the refusal"
-  # is worth nothing: the refusal is the table's, not the handler's. Covering one
-  # means a task that HOLDS the capability calling it, and captest deliberately
-  # holds none of CAP_AUDIT, CAP_ENCRYPTED_STORAGE or CAP_STORAGE_FORMAT. Endowing
-  # it with them to raise this number would widen the authority of the one task in
-  # this tree whose job is to hold as little as possible, so none of these moves
-  # without a separate probe task that holds exactly one of them.
+  # What each kind of gap has cost to close, which is the question this list is
+  # asked when somebody wants to park an entry here:
   #
-  # THE PRESCRIPTION WAS FOLLOWED ON 2026-09-01 and it worked. auditprobe holds one
-  # CAP_AUDIT and nothing else, so SYS_READ_AUDIT and SYS_AUDIT_DIGEST are
-  # `covered` above -- and the first entry into either found a defect. Four of the
-  # five left then were the CAP_ENCRYPTED_STORAGE half; the same prescription applies,
-  # and the cost is now known to be one small task rather than a widened captest.
+  # (1) THE CENTRAL GATE RETURNS FIRST: a real capability in the dispatch row, so
+  #     a refusal is the table's and the body never runs (issue #176's shape).
+  #     Closed by a probe task holding exactly that capability and nothing else
+  #     (auditprobe, blockprobe, execprobe, formatprobe), never by endowing
+  #     captest, whose refusals are only worth anything because it holds nothing.
+  # (2) THE CALL WOULD SUCCEED and replace or duplicate the caller. Closed by a
+  #     refusal inside the body (captest (h)) or by making the successor image
+  #     the second half of the probe (execprobe).
+  # (3) SC_NONE BUT NOT REACHED: compiled out of the tracked images, or blocking
+  #     because it asked for no authority. Closed when the feature shipped in a
+  #     tracked image, or when the call began to ask.
+  # (4) NOT YET USED BY A TRACKED CLIENT. Closed by a refusal in the body
+  #     (captest (g)) until a session called through it.
   #
-  # THE FIFTH IS WHERE THE PRESCRIPTION STOPS WORKING, and that is worth stating
-  # rather than leaving as an unexplained hold-out. SYS_STORAGE_FORMAT's handler
-  # body FORMATS THE ATTACHED DISK, so there is no probe task that can enter it
-  # without destroying the volume the run is using -- the cost is not a task, it is
-  # the workload. Its sibling SYS_STORAGE_INFO took the same capability to the
-  # `covered` list on the same day, which is the cleanest illustration this file
-  # has that the gate and the consequence are different questions.
-  SYS_STORAGE_DEVICE: >-
-    dispatch row (CAPSLOT_STORAGE_FORMAT, READ, CAP_STORAGE_FORMAT), and init DOES hold that capability and DOES call this at boot -- but only when the machine has a persistent device. All three tracked workloads boot diskless on the ephemeral vdisk, where `present` is 0 and report_storage returns before it reaches the enumeration, so the handler is never entered. That is the syscall behaving correctly rather than a test that stopped: enumerating persistent devices on a machine with none is a call with no answer to give. Its sibling SYS_STORAGE_INFO IS covered because init calls that one unconditionally. The boot that enters this body is `make smoke-storage-survey`, which attaches one disk and then two, and the two-disk arm is the whole reason the syscall exists -- a separate boot with attached images rather than a promotion this file can make
-  SYS_STORAGE_FORMAT: >-
-    dispatch row (CAPSLOT_STORAGE_FORMAT, WRITE, CAP_STORAGE_FORMAT). captest holds no CAP_STORAGE_FORMAT and its checks assert a refusal the TABLE issues, so the handler never runs. Its sibling SYS_STORAGE_INFO IS covered, by init calling it at boot from the same capability -- the difference is that entering this body FORMATS THE ATTACHED DISK, so no tracked workload can enter it without destroying the volume the run is using. The installer build is what enters it (roadmap 2.9), and that is a separate boot with a blank image rather than a promotion this file can make
-  SYS_CONSOLE_RELEASE: >-
-    SC_NONE in the table, with the authority tested inside the handler (a CAP_IO_DEVICE with WRITE, plus the caller must BE the console's current owner). Its only caller is console_server, and only on a start-up FAILURE path -- the grant, the map, or the VGA round-trip going wrong -- none of which happens in a boot that works. So the tracked workloads cannot enter it without breaking themselves, which is the opposite of what they exist to do. It IS entered on every boot of a CONSOLE_VGA_CHECK_FAIL=1 build, which is `make smoke-console-handover-control`, and that arm is the gate: it requires the marker the handler makes audible to appear on the wire. Promoting this would mean making a tracked workload fail its own console handover on purpose
-
-  # (2) THE CALL WOULD SUCCEED, WHICH IS WHY NO PROBE ENTERS IT: empty since
-  # 2026-10-13, when SYS_EXEC_NAMED left. Its success replaces the caller, and
-  # its refusal of a name that is no binary does not: captest (h) enters the
-  # body that way and is still captest afterwards. What stops a
-  # probe here is the opposite of the group above: not that the call would be
-  # refused, but that it would WORK -- replacing the caller's image or
-  # duplicating the caller -- and a conformance suite that execs itself away has
-  # no section 14. They are covered by their own selftest builds instead, which
-  # are full kernel builds plus a boot and are therefore not tracked arms.
-  #
-  # THIS HEADER SAID SOMETHING ELSE UNTIL 2026-09-03, and the correction is the
-  # reason it is written out. It read: "THE GATE IS THE [C-1] DECOY ... These
-  # carry (slot 3, WRITE|EXEC, SC_ANYTYPE) ... So captest PASSES the table check
-  # on all five." That was true of five entries when it was written and of none
-  # of the three left here now. SYS_FORK and SYS_EXEC_NAMED are SC_NONE and gated
-  # in their handlers -- fork on CAP_UNTYPED (S57), exec_named self-only,
-  # replacing the caller's own image and creating no task. SYS_EXEC_IMAGE was the
-  # third here until 2026-09-09, when execprobe covered it -- see the covered
-  # list. SYS_FORK left on 2026-10-12: captest 16c forks a child so that it has
-  # a supervised task to grant a pipe end into, so the fork is the probe's
-  # setup rather than its subject, and captest survives it. What made that possible where "a suite that execs itself away has no
-  # section 14" said it was not: the SUCCESSOR image is the second half of the
-  # probe, so the checks run AFTER the exec, in the image it entered.
-  #
-  # The two the header was STILL right about were SYS_EXEC (19) and
-  # SYS_RECEIVE_PROGRAM (27), which is the whole lesson: a reason field went on
-  # asserting a gate shape for three syscalls that had been fixed, while the two
-  # it correctly described as ungated sat under the same sentence and were read
-  # as covered by the same claim. A fact recorded here gates nothing --
-  # tools/check_dispatch_gates.py is what fails the build now.
-  # (3) SC_NONE, AND NOT PROBEABLE: empty since 2026-10-13. The sweep of
-  # 2026-08-30 promoted twelve SC_NONE handlers on the argument that the dispatch
-  # table admits everyone, so a refusal test runs the body, and two stopped that
-  # argument: SYS_SHLIB_INFO, whose body was compiled out of every tracked image
-  # (promoted 2026-09-25 when the modules workload shipped the library), and
-  # SYS_GET_PASS, which blocked because it asked for no authority (promoted
-  # 2026-10-13 when it began to). Both are in `covered` with their reasons.
-  # (4) NEW ON 2026-09-25 AND NOT YET USED BY A TRACKED CLIENT: empty since
-  # 2026-10-13. Two of the four capability-token syscalls (docs/design/filesystem.md
-  # §5.1) were covered from phase 1b step 1, when init and fs_server began using
-  # them. The other two waited for a tracked session to call through a
-  # capability, which still waits for a login to be handed one. They are SC_NONE,
-  # resolving the endpoint in the body, so captest (g) covers them by refusal, as
-  # SYS_IPC_REPLY was; a session calling through one will cover their success.
+  # A call whose body DESTROYS something is not a reason to leave it here. The
+  # format's body refuses before it writes, so formatprobe enters it with calls
+  # that are each one argument away from one it would authorise; the entry
+  # this list carried until 2026-10-14 said the opposite.

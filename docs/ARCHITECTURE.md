@@ -417,7 +417,9 @@ preemption would have left, with `rsp` biased by 8 to satisfy the System V ABI's
 function entry.
 
 **Spawn is suspended.** A spawned child is not schedulable until its supervisor has endowed it and
-called `SYS_TASK_RESUME`, so no child can observe a half-populated cspace.
+called `SYS_TASK_RESUME`, so no child can observe a half-populated cspace. The supervisor's
+`CAP_TCB` to the child carries READ, WRITE and MINT: MINT so it can hand on less than it holds, as
+`init` gives the shell's watcher a copy that can only wait (decision D1; S140).
 
 **A dead task stays dead.** `task_teardown` empties the cspace before the object sweep (S56),
 sends the kill IPI to any CPU still running the task, and a torn-down task is never resumed or
@@ -638,8 +640,9 @@ and lookup, create and mkdir hand back the child's capability, narrowed and revo
 parent (S120). A walk of several names below a directory hands back one capability, to the last,
 derived from the one invoked, so a client holds one per path and not one per component. A rename or link that would cross directories is refused on every path (S121).
 Every other request is authorised against the uid the kernel recorded for the sender at login
-(`SYS_IPC_SENDER`), never a claim from the client (S13, S14). A file's mode may be set by its owner
-or root, its owner by root alone (S77), and every account gets a home directory it owns (S78). It
+(`SYS_IPC_SENDER`), never a claim from the client (S13, S14). On that path a file's mode may be set
+by its owner or root and its owner by root alone (S77), and every account gets a home directory it
+owns (S78). It
 rebuilds the system trees (`/bin`, `/sbin`, `/lib`, `/usr` and below) from the verified boot
 modules once the volume is open: a file that matches its module byte for byte stays, any other is
 rewritten, and anything no module names is removed. Every request that would change a file or an
@@ -654,8 +657,14 @@ the way to a grant allows only what the policy gives there (S128). Each session'
 directory of its own, kept in a store no session can see and removed when the session ends
 (S129). A stat through a session's capability is synthesised, never read from the disk: owner bits
 are the capability's rights, other bits a bound on every other account's grants at or above the
-policy node the token names, which the session's compiled tree also holds (S130). Once logins are handed
-sessions the uid path is removed (phase 1b of `docs/design/filesystem.md`, roadmap 2.10).
+policy node the token names, which the session's compiled tree also holds (S130), and a chmod or
+chown through it succeeds only when it asks for what is already true (S131). After each login the
+shell asks `init` for its session; `init` names the account by `SYS_IPC_SENDER`, never by the
+request, grants the shell the session's root and working directory, and revokes and ends the
+session at logout or when the shell dies, and a shell holding a session never reaches the uid path
+(S141). An account the policy gives nothing (on an installed volume without `/etc/fs.policy`,
+everyone but the administrator) stays on the uid path until phase 1b removes it (steps 3(c) and 6
+of `docs/design/filesystem.md`, roadmap 2.10).
 
 ### `console_server`
 

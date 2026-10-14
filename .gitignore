@@ -214,6 +214,8 @@ soak-evidence/
 
 # Stamp of the CFLAGS/ASFLAGS a build was made with; forces a rebuild when they change
 .build-flags
+# The GRUB configuration the ISO rule stages before it fills in the ESP pin.
+.bootcfg.staged
 
 # The serial capture smoke-console-timestamps and its two control arms keep, so
 # a red arm still has the boot log it rejected. Local evidence, never tracked --

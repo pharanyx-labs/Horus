@@ -4439,6 +4439,12 @@ jobs:
         run: rustup target add x86_64-unknown-none
       - name: Drive the ring-3 shell over serial and assert auth + least-privilege enforcement
         run: make smoke-session
+      # Phase 1b step 3(b), decision 19: init hears the shell's death from a
+      # watcher that holds it READ-only (S140). The arm hands the watcher WRITE.
+      - name: init hears the shell's death from a watcher that can only wait on it
+        run: make smoke-shellwatch
+      - name: Control arm — the watcher is handed WRITE on the shell
+        run: make smoke-shellwatch-control
       # THE CONSOLE'S OWN BEHAVIOUR, gated here rather than in the smoke-boot job
       # on purpose. That job had grown from 33 to 52 minutes against a 105-minute
       # backstop as this session's console gates landed in it, and each of these
@@ -4505,17 +4511,11 @@ jobs:
       # happened -- the assertion cannot tell a report from a coincidence.
       - name: Restore the flattened fs error and require the guess to REPRODUCE
         run: make smoke-session-fs-err-control
-      # S77, one arm per rule. Each removes ONE of the fs_server's metadata
-      # checks; each must leave the OTHER refusal standing, which is what shows
-      # the two rules are independent rather than one rule read twice.
-      - name: Remove the chown gate and require a standard user to TAKE root's file
-        run: make smoke-session-chown-control
-      - name: Remove the chmod gate and require a standard user to set a mode they do not own
-        run: make smoke-session-chmod-control
-      # S78: the home is created and then not given away, so the account can see
-      # it and cannot write in it.
-      - name: Withhold ownership of the home directory and require the account to be locked out
-        run: make smoke-session-home-control
+      # S141: init opens the administrator's session for every login, so the
+      # standard user's session reaches root's directory. The arm requires the
+      # session to fail on exactly that.
+      - name: Control arm — every login is given the administrator's session
+        run: make smoke-session-login-control
       # A builtin typed without its operand prints its usage instead of "Unknown
       # command"; the arm is the shell before that, and must fail on it.
       - name: Control arm — a bare builtin reported as an unknown command
@@ -4678,6 +4678,18 @@ jobs:
       # through a forged entry accepted, root's file freed.
       - name: Control arm — fs_server reads any inode as a directory
         run: make smoke-fs-dir-operand-control
+      # S77 on the uid path, one arm per rule. Each removes ONE of fs_server's
+      # metadata checks and must leave the OTHER refusal standing, which is what
+      # shows the two rules are independent rather than one rule read twice. A
+      # login walks by capability since phase 1b step 3(b), so these are the uid
+      # path's rules, witnessed here until step 6 removes that path.
+      - name: Remove the chown gate and require a user to give its file away, with chmod still refused
+        run: make smoke-fs-perms-chown-control
+      - name: Remove the chmod gate and require a user to set root's file's mode, with chown still refused
+        run: make smoke-fs-perms-chmod-control
+      # S78: the home is created and then not given away.
+      - name: Withhold ownership of the home directory and require the check to see it
+        run: make smoke-fs-perms-home-control
 
   smoke-fs-conc:
     name: QEMU filesystem multi-client concurrency self-test (headless)

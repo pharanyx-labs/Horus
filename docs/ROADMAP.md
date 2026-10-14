@@ -56,7 +56,7 @@ The recommendation is the one the route is written around; it is not the decisio
 
 | Lane | Milestone | Items | Closes | Needs |
 |---|---|---|---|---|
-| Filesystem | Sessions at login, then the uid path removed | 2.10 steps 3(b), 3(c), 6 | 1.31 | |
+| Filesystem | A policy on every installed system, then the uid path removed | 2.10 steps 3(c), 6 | 1.31 | |
 | Observability | Kernel reports on their own channel | 5.3 | 2.6c | |
 | Storage | Metadata authenticated on the current format | 5.2 | 1.30 | |
 
@@ -65,7 +65,7 @@ The recommendation is the one the route is written around; it is not the decisio
 | Lane | Milestone | Items | Closes | Needs |
 |---|---|---|---|---|
 | Filesystem | Accounts as files, then exec by capability | 2.11 step 3, 5.4 | 1.23 | Wave 1 filesystem, D7 |
-| Console | Job control: stopping and resuming the foreground program | 2.3 job control | | 2.10 step 3(b) |
+| Console | Job control: stopping and resuming the foreground program | 2.3 job control | | |
 | Boot | Measured boot by default, rollback anchoring | 5.6, 5.7 | 2.9, 1.12 | D3, D4 |
 | Supply chain | Verifiable releases, then updates without a lockout | 4.5, 4.4, 4.11, then 5.8 | 5.3, 2.9a | D10, D5 |
 | SMP | Per-CPU run queues, one-shot timers, timers as notifications | 1.8 steps 2 and 3, 2.2 | | |
@@ -162,7 +162,7 @@ controller is identified and the drive answers IDENTIFY), USB through xHCI (and 
 on machines with no PS/2 emulation), and a framebuffer server.
 
 **2.7a ⬜ Evict the in-kernel services [F-2.7a].** `.github/ring0-classification.yml` (S87) measures
-the ring-0 `service` class at about 6,000 code lines beside a 11,711-line core: `storage.c` (the
+the ring-0 `service` class at about 6,000 code lines beside a 11,719-line core: `storage.c` (the
 encrypted store and the on-disk filesystem), `kusers.c` (accounts and password hashing), the loader
 and spawn path, `crypto.c` and `syscall_fs.c`, and the IDE, SD and eMMC drivers sit in ring 0 too.
 The drivers leave by [`design/ring3-storage.md`](design/ring3-storage.md), storage with 2.10 phase
@@ -173,12 +173,11 @@ core. S87 sets no line target for the whole kernel: the classification is the pr
 **2.10 🚧 A capability-addressed filesystem.** Specified in [`design/filesystem.md`](design/filesystem.md),
 every load-bearing question answered. The disk holds no authority: capabilities are derived fresh
 each boot from a policy inside the encrypted, Merkle-verified volume, and the POSIX view is
-truthful. Phase 1b's steps 1, 2, 4 and 5 and step 3(a) are done. Open:
+truthful. Phase 1b's steps 1, 2, 4 and 5 and steps 3(a) and 3(b) are done. Open:
 
 | Step | What lands |
 |---|---|
-| 3(b) | `init` asks for the session at login and grants it, a watcher task reaping the shell with a READ copy of its `CAP_TCB` that `init` mints (the spawner's `CAP_TCB` carries `MINT`, D1) |
-| 3(c) | The installer writes `/etc/fs.policy` |
+| 3(c) | The installer writes `/etc/fs.policy`, with read grants on `/etc/shell.conf` and `/etc/login.conf` for every account (`design/configuration.md`) |
 | 6 | The identity path removed: `perm_ok`, the root check on `chown`, the uid half of `SYS_IPC_SENDER` in the filesystem, `SYS_FS_SET_META` and `SYS_CONNECT_FS_SERVER`. Closes LIMITATIONS 1.31 |
 | Phase 2 | The kernel's sealed-block service, its calls taking and returning ciphertext so that `fs_server` moves the blocks through a ring-3 driver ([`design/ring3-storage.md`](design/ring3-storage.md)), and the copy-on-write v12 format in `fs_server`, whose pointer tree is the Merkle tree, so all metadata is authenticated; separate system and home volumes |
 | Phase 3 | Symbolic links, timestamps and a time service, cross-directory rename, sparse files |

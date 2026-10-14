@@ -983,6 +983,16 @@ embedded_installer_bin_start:
 .global embedded_installer_bin_end
 embedded_installer_bin_end:
 
+/* shellwatch: how init hears the shell has died while it listens for session
+ * requests (docs/design/filesystem.md decision 19). A system program, so
+ * unconditional, like the installer. */
+.align 16
+.global embedded_shellwatch_bin_start
+embedded_shellwatch_bin_start:
+.incbin "userspace/shellwatch.bin"
+.global embedded_shellwatch_bin_end
+embedded_shellwatch_bin_end:
+
 #if defined(VFS_SELFTEST) || defined(INIT_PROVISION_SELFTEST)
 .align 16
 .global embedded_dev_server_bin_start

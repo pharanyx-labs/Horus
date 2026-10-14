@@ -160,9 +160,10 @@ slot number; it never sees the capability itself.
   driver reads and writes a disk from ring 3 in a self-test build, but the kernel's storage cannot
   use it yet.
 - **No USB**, and so no keyboard on a machine without PS/2 emulation.
-- **Programs still reach files by user id and mode.** The capability path is built, in `fs_server`
-  and in the shell and the POSIX layer, and `fs_server` opens sessions from the policy (S128), but
-  nothing asks for one at login until filesystem phase 1b step 3(b).
+- **A standard user on an installed system still reaches files by user id and mode.** Each login
+  asks for a filesystem session and works through its capabilities (S141), but the installer does
+  not yet write a policy, and a volume without one gives a session to the administrator alone
+  (filesystem phase 1b step 3(c)). Every login on a live boot gets one.
 - **No RAM above 4 GiB.** A machine's memory up to 4 GiB is used; what lies above is reported
   and left alone.
 - **No threads, job control, `/proc`, wall clock or kernel address randomisation.**
@@ -270,8 +271,8 @@ test does not exist or does not run.
 
 | Layer | What it covers |
 |---|---|
-| Security properties | 141 numbered properties, each bound to a witness by `tools/check_invariants.py` |
-| QEMU integration tests | 537 `smoke-*` targets: 232 base gates and 305 control arms |
+| Security properties | 143 numbered properties, each bound to a witness by `tools/check_invariants.py` |
+| QEMU integration tests | 540 `smoke-*` targets: 233 base gates and 307 control arms |
 | Control arms | A build that puts a defect back on purpose; CI requires its gate to go red against it |
 | Kani | 35 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
 | Miri | The security core's tests, interpreted for undefined behaviour on every pull request |

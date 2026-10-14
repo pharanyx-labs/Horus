@@ -124,6 +124,19 @@ int hvfs_mount_cap(const char *prefix, int dir_slot) {
     return mount_install(prefix, dir_slot, 0u, 1);
 }
 
+int hvfs_unmount(const char *prefix) {
+    if (!prefix || prefix[0] != '/') return HVFS_ERR_INVAL;
+    unsigned plen = pfx_len(prefix);
+    for (int i = 0; i < HVFS_MAX_MOUNTS; i++) {
+        if (g_mounts[i].in_use && g_mounts[i].plen == plen &&
+            under_prefix(g_mounts[i].prefix, prefix, plen)) {
+            g_mounts[i].in_use = 0;
+            return 0;
+        }
+    }
+    return HVFS_ERR_INVAL;
+}
+
 /* Longest-prefix match.
  *
  * "/" matches every path and "/dev" matches a subset of them, so a table
@@ -328,6 +341,23 @@ static int walk_body(const char *path, uint32_t cwd_ino, int cwd_slot,
  * never allocates in (CAPSLOT_DYNAMIC_FIRST is above it). */
 #define POOL_N (CAPSLOT_FS_POOL_LAST - CAPSLOT_FS_POOL_FIRST + 1)
 static uint8_t g_pool_used[POOL_N];
+
+/* Give back every pool slot the kernel reports EMPTY, for a task whose
+ * capabilities were revoked from above (the shell at logout: init revokes the
+ * session, and every walk the shell made from it goes too). The pool's rule is
+ * that a slot returns only once it is known empty, and here the kernel says so
+ * slot by slot (SYS_CAP_ENUMERATE, which needs CAP_DEBUG READ). A slot it will
+ * not describe, or that still holds something, stays used: fails closed. */
+void hvfs_pool_reclaim(void) {
+    int self = sys_getpid();
+    for (int i = 0; i < POOL_N; i++) {
+        if (!g_pool_used[i]) continue;
+        struct cap_info ci;
+        if (sys_cap_enumerate(self, (unsigned)(CAPSLOT_FS_POOL_FIRST + i), &ci) == 0 &&
+            !ci.occupied)
+            g_pool_used[i] = 0;
+    }
+}
 
 int hvfs_slot_alloc(void) {
     for (int i = 0; i < POOL_N; i++)

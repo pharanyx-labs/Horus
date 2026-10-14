@@ -293,7 +293,6 @@ void _start(void) {
     if (p_write((uint32_t)s_ino, "x") != SYS_ERR_PERM) pfail("secret-write-not-denied");
     if (p_make(0, "nope", 0)          != -1)          pfail("root-dir-create-not-denied");
     if (pp.rc                         != SYS_ERR_PERM) pfail("root-dir-create-wrong-rc");
-    if (p_chmod((uint32_t)s_ino, 0666) != SYS_ERR_PERM) pfail("secret-chmod-not-denied");
 
     /* in a directory it owns: allowed to create/write/read/chmod */
     int m_ino = p_make((uint32_t)d_ino, "mine", 0);  if (m_ino < 0) pfail("user-create-owned");
@@ -301,8 +300,61 @@ void _start(void) {
     if (p_read((uint32_t)m_ino, 8) != 6)             pfail("user-read-owned");
     if (!content_is("mydata", 6))                    pfail("owned-content");
     if (p_chmod((uint32_t)m_ino, 0600) != 0)         pfail("user-chmod-owned");
-    /* but chown is root-only, even of its own file */
-    if (p_chown((uint32_t)m_ino, 0, 0) != SYS_ERR_PERM) pfail("user-chown-not-denied");
+
+    /* The two metadata rules (S77): a mode is set by its owner or root, so
+     * root's file is refused; an owner is set by root alone, so even the
+     * user's own file is. Both are asked BEFORE either is reported, and the
+     * answer is one line naming both, because each rule has an arm
+     * (FS_CHMOD_ANY_OWNER=1, FS_CHOWN_ANY_UID=1) that must show its own refusal
+     * gone AND the other one standing: that is what shows two independent
+     * rules rather than one rule read twice. A selftest that stopped at the
+     * first could show only one half of that. */
+    {
+        int chmod_rc = p_chmod((uint32_t)s_ino, 0666);
+        int chown_rc = p_chown((uint32_t)m_ino, 0, 0);
+        if (chmod_rc != SYS_ERR_PERM || chown_rc != SYS_ERR_PERM) {
+            /* One write, so no other task's output can split the line an arm
+             * asserts (LIMITATIONS 2.6a). */
+            const char *parts[4] = {
+                "metadata chmod=",
+                chmod_rc == SYS_ERR_PERM ? "refused" : chmod_rc == 0 ? "ALLOWED" : "error",
+                " chown=",
+                chown_rc == SYS_ERR_PERM ? "refused" : chown_rc == 0 ? "ALLOWED" : "error",
+            };
+            char line[64];
+            unsigned n = 0;
+            for (int k = 0; k < 4; k++)
+                for (const char *c = parts[k]; *c && n < sizeof(line) - 1; c++) line[n++] = *c;
+            line[n] = 0;
+            kput_marker("PERM_SELFTEST: FAIL ", line);
+            sys_exit();
+        }
+    }
+
+    /* --- the account's home is the account's (S78, uid path) ---------------
+     *
+     * fs_server makes /home/<name> for every account in the table when it
+     * mounts (provision_home_dirs), owned by that account. A login session
+     * reaches its home through the policy's capability since phase 1b step
+     * 3(b), where ownership is not what decides, so the uid path's half of the
+     * claim is witnessed here until step 6 removes that path. Ownership is
+     * asked of the server, and then USED: a home that stat called the
+     * account's and that refused the account a file would be the lie.
+     * HOME_DIR_ROOT_OWNED=1 leaves the home root's; its arm requires the
+     * first marker below. */
+    {
+        if (p_dirop(FS_OP_LOOKUP, 0, "home") != 0)          pfail("home-missing");
+        uint32_t h = pp.ino;
+        if (p_dirop(FS_OP_LOOKUP, h, "user") != 0)          pfail("home-user-missing");
+        uint32_t hu = pp.ino;
+        umemset(&pq, 0, sizeof(pq)); pq.op = FS_OP_STAT; pq.ino = hu;
+        int st = rpc(&pq, &pp);
+        /* A home its account may not even stat is not the account's: a root-
+         * owned 0700 home is refused here, before its owner can be read. */
+        if (st == SYS_ERR_PERM || (st == 0 && pp.uid != 1000)) pfail("home-not-owned");
+        if (st != 0 || pp.type != FS_TYPE_DIR)               pfail("home-user-stat");
+        if (p_make(hu, "inhome", 0) < 0)                     pfail("home-not-writable");
+    }
 
     /* --- a FILE is never a directory operand -------------------------------
      *

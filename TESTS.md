@@ -47,7 +47,7 @@ gates that match kernel strings are moving to COM3, which only the kernel can wr
 ## The integration gates
 
 
-There are 537 `smoke-*` targets: 232 gates and 305 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
+There are 540 `smoke-*` targets: 233 gates and 307 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
 
 
 ### Capabilities and authorisation
@@ -204,7 +204,7 @@ There are 537 `smoke-*` targets: 232 gates and 305 control arms. Each row is a g
 | `smoke-fs` | File operations over the encrypted store | S80 |  |
 | `smoke-fs-conc` | Several clients are served concurrently without cross-talk |  |  |
 | `smoke-fs-large` | Large files through indirect blocks |  |  |
-| `smoke-fs-perms` | File permissions are checked against the kernel-attested user, not a client's claim | S13, S14 |  |
+| `smoke-fs-perms` | File permissions are checked against the kernel-attested user, not a client's claim; on the uid path a mode is set by its owner or root and an owner by root alone, and each account's home is its own | S13, S14, S77, S78 | `smoke-fs-perms-chmod-control`, `smoke-fs-perms-chown-control`, `smoke-fs-perms-home-control` |
 | `smoke-fs-dir-operand` | A file is never read as a directory, so a forged entry frees nothing | S113 | `smoke-fs-dir-operand-control` |
 | `smoke-fs-persist` | Data survives a reboot |  |  |
 | `smoke-install-boot-disk` | An install under UEFI lays out GPT, ESP, swap and volume, and the machine then starts from the disk alone, records every module its ESP carries, logs in, runs `seq` from `/bin` and finds the licences and source offer in `/usr/share/doc` | S114, S115, S116 | `smoke-install-boot-disk-control`, `smoke-install-boot-disk-lowmod-control` |
@@ -317,7 +317,8 @@ There are 537 `smoke-*` targets: 232 gates and 305 control arms. Each row is a g
 | `smoke-libhorus` | The shared runtime keeps its bounds and its bounded IPC retry |  | `smoke-libhorus-retry-control`, `smoke-libhorus-strncpy-control` |
 | `smoke-newlib` | newlib runs in ring 3, including `.` and `..` in paths | S29 | `smoke-newlib-dotdot-control`, `smoke-newlib-walk-control` |
 | `smoke-newlib-tamper` | A tampered newlib tarball is refused before unpacking, and the genuine one is accepted |  |  |
-| `smoke-session` | A scripted login and session in the real shell, including permissions, ownership, home directories and hard links | S29, S32, S77, S78, S93 | `smoke-session-chmod-control`, `smoke-session-chown-control`, `smoke-session-fs-err-control`, `smoke-session-hardlink-control`, `smoke-session-home-control`, `smoke-session-usage-control` |
+| `smoke-session` | A scripted login and session in the real shell: each login's filesystem session, what it reaches and refuses, chmod and chown through it, home directories and hard links | S29, S32, S78, S93, S141 | `smoke-session-fs-err-control`, `smoke-session-hardlink-control`, `smoke-session-login-control`, `smoke-session-usage-control` |
+| `smoke-shellwatch` | `init` hears the shell's death from a watcher holding the shell READ-only, reports why and relaunches, twice, and a login works after | S140 | `smoke-shellwatch-control` |
 | `smoke-session-smp` | The same under SMP |  |  |
 | `smoke-session-smp-soak` | Repeated SMP sessions, all of which must complete |  |  |
 | `smoke-shlib` | Shared library text is executable by many tasks and writable by none, and its data is private to each | S49, S50, S51 | `smoke-shlib-data-init-control`, `smoke-shlib-data-shared-control`, `smoke-shlib-info-control`, `smoke-shlib-info-object-control`, `smoke-shlib-writable-control` |
@@ -416,7 +417,7 @@ Two of those deserve a sentence each.
 there with no `continue-on-error`, each named with its measured cost in
 `.github/kani-harnesses.yml`, and the job refuses a proof that is not listed. And **`invariants`** requires every property in `SECURITY.md` to
 name a witness that exists and runs; its exemption list, `.github/invariants.yml`, is
-currently **empty**: all 141 properties name a witness that resolves.
+currently **empty**: all 143 properties name a witness that resolves.
 
 Every `tools/check_*.py` has a falsification harness, `tools/test_check_*.sh`, with one case per
 rule showing the rule can fail, and each checker asserts a floor on what it parsed, so a parser

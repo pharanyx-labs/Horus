@@ -63,9 +63,11 @@ control_arms:
   smoke-passwd-target-control: smoke-passwd-target
   smoke-passwd-own-control: smoke-passwd-target
   smoke-session-fs-err-control: smoke-session
-  smoke-session-chmod-control: smoke-session
-  smoke-session-chown-control: smoke-session
-  smoke-session-home-control: smoke-session
+  smoke-shellwatch-control: smoke-shellwatch
+  smoke-session-login-control: smoke-session
+  smoke-fs-perms-chmod-control: smoke-fs-perms
+  smoke-fs-perms-chown-control: smoke-fs-perms
+  smoke-fs-perms-home-control: smoke-fs-perms
   smoke-session-usage-control: smoke-session
   smoke-session-hardlink-control: smoke-session
   smoke-kstack-imp-control: smoke-kstack-imp
@@ -543,6 +545,7 @@ gates:
   - smoke-enter-user-claim
   - smoke-installer-slowdisk
   - smoke-session
+  - smoke-shellwatch
   - smoke-session-smp
   - smoke-session-smp-soak
   - smoke-shlib

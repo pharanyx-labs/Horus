@@ -1708,7 +1708,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_USERDEL]                  = { h_userdel,                 SC_NONE, 0, SC_ANYTYPE }, /* admin check in do_userdel */
     [SYS_USERLIST]                 = { h_userlist,                SC_NONE, 0, SC_ANYTYPE }, /* admin check in do_userlist */
     [SYS_PASSWD]                   = { h_passwd,                  SC_NONE, 0, SC_ANYTYPE }, /* admin/self in do_passwd */
-    [SYS_ROTATE_KEYS]              = { h_rotate_keys,             8, CAP_RIGHT_READ, CAP_CONSOLE },
+    [SYS_ROTATE_KEYS]              = { h_rotate_keys,             SC_NONE, 0, SC_ANYTYPE }, /* withdrawn 2026-10-14: SYS_ERR_NOSYS to everyone */
     [SYS_READ_AUDIT]               = { h_read_audit,              7, CAP_RIGHT_READ, CAP_AUDIT },
     /* Syscalls 38-45 were the legacy in-memory capfs (a parallel, unencrypted
      * capability-FS separate from the encrypted fs_server). Removed: the entries

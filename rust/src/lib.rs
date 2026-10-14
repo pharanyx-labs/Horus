@@ -183,7 +183,6 @@ pub unsafe extern "C" fn rust_handle_command(cmd: *const u8, len: usize) -> i32 
     if cmd_str == "clear" { return 48; }
     if cmd_str.starts_with("kill ") { return 49; }
     if cmd_str.starts_with("mint ") { return 50; }
-    if cmd_str == "rotate_keys" { return 36; }
     if cmd_str.starts_with("fs ") || cmd_str.starts_with("cap_") { return 52; }
 
     -1

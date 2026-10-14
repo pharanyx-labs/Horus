@@ -24,8 +24,6 @@ The recommendation is the one the route is written around; it is not the decisio
 
 | | Question | Recommendation | Blocks |
 |---|---|---|---|
-| D1 | How `init` narrows the spawner's `CAP_TCB` to READ for the login watcher | Give the spawner's `CAP_TCB` the `MINT` right, so a supervisor can hand out narrowed copies (S2 already proves a mint only narrows) | 2.10 step 3(b) |
-| D2 | Authenticate the inode table and bitmaps on the current format, or wait for filesystem phase 2 | Now: a format bump costs a reformat, and phase 2 is far off | 5.2 |
 | D3 | Measured boot mandatory whenever a TPM is present | Yes, failing closed; a machine without a TPM boots with a visible warning | 5.6 |
 | D4 | Refuse an unanchored volume on a TPM machine; advance the rollback counter at a bounded interval; eMMC RPMB as a second anchor | Yes to the first two; RPMB opt-in only, since programming its key is irreversible | 5.7 |
 | D5 | Kernel updates by predicted PCR values and a staged second seal | Yes, over signed kernels, which would make `PCR[4]` the same for every signed kernel | 5.8 |
@@ -36,7 +34,6 @@ The recommendation is the one the route is written around; it is not the decisio
 | D11 | A second reviewer for the capability and IPC paths | The maintainer's to find; the ruleset change follows | 4.1 |
 | D12 | Whether to build virtualisation at all | Defer until there is a hosting need | 3.9 |
 | D13 | A syscall operation by which a task marks pages that hold secrets as never swapped | Yes, as an operation on the task's own pages only, refusing shared and lent frames | 2.12 remainder |
-| D14 | `rotate_keys` (LIMITATIONS 2.26): rebuild it as a real rotation of the volume key, or withdraw it | Withdraw it now; key rotation comes naturally with the phase 2 format | 2.26 |
 | D15 | CI throughput: a merge queue, and a fast path that skips the QEMU gates for a change touching only documentation | Yes to both; the fast path decided by a checked allowlist of paths, never by a label | The pace of everything |
 
 ---
@@ -59,10 +56,9 @@ The recommendation is the one the route is written around; it is not the decisio
 
 | Lane | Milestone | Items | Closes | Needs |
 |---|---|---|---|---|
-| Filesystem | Sessions at login, then the uid path removed | 2.10 steps 3(b), 3(c), 6 | 1.31 | D1 |
+| Filesystem | Sessions at login, then the uid path removed | 2.10 steps 3(b), 3(c), 6 | 1.31 | |
 | Observability | Kernel reports on their own channel | 5.3 | 2.6c | |
-| Storage | Metadata authenticated on the current format | 5.2 | 1.30 | D2 |
-| Storage | `rotate_keys` withdrawn or rebuilt | 2.26 | 2.26 | D14 |
+| Storage | Metadata authenticated on the current format | 5.2 | 1.30 | |
 
 ### Wave 2: authority completes, the boot chain tightens
 
@@ -181,7 +177,7 @@ truthful. Phase 1b's steps 1, 2, 4 and 5 and step 3(a) are done. Open:
 
 | Step | What lands |
 |---|---|
-| 3(b) ⏸ | `init` asks for the session at login and grants it, a watcher task reaping the shell (D1) |
+| 3(b) | `init` asks for the session at login and grants it, a watcher task reaping the shell with a READ copy of its `CAP_TCB` that `init` mints (the spawner's `CAP_TCB` carries `MINT`, D1) |
 | 3(c) | The installer writes `/etc/fs.policy` |
 | 6 | The identity path removed: `perm_ok`, the root check on `chown`, the uid half of `SYS_IPC_SENDER` in the filesystem, `SYS_FS_SET_META` and `SYS_CONNECT_FS_SERVER`. Closes LIMITATIONS 1.31 |
 | Phase 2 | The kernel's sealed-block service, its calls taking and returning ciphertext so that `fs_server` moves the blocks through a ring-3 driver ([`design/ring3-storage.md`](design/ring3-storage.md)), and the copy-on-write v12 format in `fs_server`, whose pointer tree is the Merkle tree, so all metadata is authenticated; separate system and home volumes |
@@ -251,11 +247,11 @@ document.
 
 ### Track 5: closing the known limitations
 
-**5.2 ⏸ Authenticated metadata on the current format** (1.30). The inode-table and bitmap blocks
+**5.2 ⬜ Authenticated metadata on the current format** (1.30). The inode-table and bitmap blocks
 become leaves of the existing Merkle tree, so a changed owner, mode, size or bitmap is refused at
 first use. A format version bump: an older volume is refused with a message, never mounted
 unverified. Witness: a gate that edits an inode's mode on the image and must see it refused; the arm
-skips the leaf check. Without D2, 1.30 waits for 2.10 phase 2.
+skips the leaf check. Taken on the current format rather than waiting for phase 2 (D2).
 
 **5.3 ⬜ Kernel reports off the shared console** (2.6c). First a checker that classifies every base
 gate's required marker by who prints it and whether before or after the console handover, with a

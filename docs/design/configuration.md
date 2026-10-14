@@ -91,7 +91,7 @@ authority, EXIT STATUS, SEE ALSO.
 | 1 | every shell builtin (`ls`, `cd`, `cat`, `capview`, `ps`, `sudo`, `passwd`, ...) |
 | 5 | `shell.conf`, `login.conf`, `fs.policy` |
 | 7 | `horus` (an overview), `capabilities` (the model a user meets), `hier` (updated) |
-| 8 | `useradd`, `userdel`, `rotate_keys` |
+| 8 | `useradd`, `userdel` |
 
 Forty or more pages cannot each be a boot module (48 in all). They ship as **one** module, a `ustar`
 archive built reproducibly (sorted, zero mtimes and owners), verified by its hash like every other

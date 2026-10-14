@@ -16099,7 +16099,9 @@ smoke-installer-provision:
 
 # Control arm: STORE_LOCKED_UNCHECKED=1 and nothing else, so both arms drive the
 # same install and differ only in what the store says about a volume nobody has
-# opened.
+# opened. It requires the copy against the locked store to have written 0 inodes;
+# whether /bin then lacks programs depends on how far boot 1's own copy got before
+# the power-off, so that is reported and not required (tools/installer_session.py).
 .PHONY: smoke-installer-provision-control
 smoke-installer-provision-control:
 	@$(MAKE) --no-print-directory clean
@@ -16111,7 +16113,7 @@ smoke-installer-provision-control:
 		INSTALLER_BIN_PROGRAMS="$(COREUTILS_PROGS)" SESSION_SERIAL_LOG=installer-pc-serial.log \
 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) 		python3 tools/installer_session.py horus.iso
 	@rm -f installer-pc.img
-	@echo "[installer] CONTROL PASS - a sealed store that answers leaves the base system incomplete"
+	@echo "[installer] CONTROL PASS - a sealed store that answers is copied into, and the copy writes nothing"
 
 # S76: AN ACCOUNT AN ADMINISTRATOR CREATES CAN BE THE FIRST LOGIN AFTER A POWER
 # CYCLE -- docs/LIMITATIONS.md 2.6b, closed.

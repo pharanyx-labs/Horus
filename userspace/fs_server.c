@@ -1245,6 +1245,11 @@ static void session_cwd(struct fs_session *s, uint32_t g, const char *home,
     if (tracked) fs_session_bind(s, pol.node, cur);
     sg->cwd_token = fs_token_in(cur, g_gen[cur], g, (uint32_t)pol.at, tracked);
     sg->cwd_rights = (pol.carry & FS_R_ALL) | FS_KERNEL_RIGHTS;
+    /* The name of what was just walked, for the shell's pwd: fsp_split has
+     * already refused anything that is not a clean absolute path. */
+    unsigned n = 0;
+    while (n < FS_SESSION_PATH - 1 && home[n]) { sg->cwd_path[n] = home[n]; n++; }
+    sg->cwd_path[n] = 0;
 }
 
 /* Remove everything below directory `top`, however deep, and leave `top`.
@@ -1457,6 +1462,7 @@ static void session_open(const struct fs_request *rq, struct fs_response *rp)
         sg.g = g;
         sg.root_token = fs_token_in(0, g_gen[0], g, 0, tracked);
         sg.root_rights = root->below | FS_KERNEL_RIGHTS;
+        sg.cwd_path[0] = '/';            /* the root, unless session_cwd walks further */
         session_cwd(s, g, e.home, &sg);
         /* Its private /tmp, if the policy gives one. A /tmp that cannot be made
          * (a full volume) leaves the session without one, answered as absent,

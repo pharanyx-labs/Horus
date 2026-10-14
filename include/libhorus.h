@@ -246,6 +246,12 @@ struct hvfs_obj {
 /* Install a mount backed by a DIRECTORY CAPABILITY rather than an endpoint and
  * an inode. Probed as hvfs_mount probes, with a stat through it. */
 int hvfs_mount_cap(const char *prefix, int dir_slot);
+/* Remove the mount at exactly `prefix`. 0, or HVFS_ERR_INVAL if none. For the
+ * shell at logout, whose next login may hold a different root, or none. */
+int hvfs_unmount(const char *prefix);
+/* Free the pool slots the kernel reports empty (needs CAP_DEBUG READ; frees
+ * nothing without it). For a task whose capabilities were revoked from above. */
+void hvfs_pool_reclaim(void);
 
 /* Resolve `path` (absolute, or relative to `cwd`) to an object. Same contract as
  * hvfs_walk (0 resolved, 1 all but the leaf, which is in out_name, -1 refused),

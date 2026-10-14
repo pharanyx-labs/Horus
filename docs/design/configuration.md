@@ -66,11 +66,13 @@ login is offered as a setting.
 |---|---|---|---|
 | `failure_delay` | `0` | `0` to `30` seconds | Tighten-only: a pause after each failed login, on top of the kernel's account lockout (`rust/src/auth.rs`, proved by `the_throttle_locks_within_the_limit`), which no file can change. Before the boot's first login on an installed system the default applies |
 
-Both files are readable by every account and secret to none. Once logins open sessions through
-the filesystem policy (roadmap 2.10, step 3(b)), the default policy gains `@all /etc/shell.conf
-read` and `@all /etc/login.conf read`, two read grants on two files that hold no secret, so that
-the shell can read them with the login's own capability; that change is made, and stated, with
-step 3(b).
+Both files are readable by every account and secret to none. Logins open sessions through the
+filesystem policy since roadmap 2.10 step 3(b), and a session reads only what its policy grants.
+The policy the installer writes (step 3(c)) gains `@all /etc/shell.conf read` and `@all
+/etc/login.conf read`, two read grants on two files that hold no secret, so that the shell can
+read them with the login's own capability. Until then a standard user on an installed system has
+no session and reads them by the uid path, and a live boot, whose compiled-in policy gives a
+standard user no `/etc`, has neither file unless the administrator writes one during the boot.
 
 ### `/etc/fs.policy`, read by `fs_server`
 

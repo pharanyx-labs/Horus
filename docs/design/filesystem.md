@@ -822,15 +822,32 @@ already hold a name for the file. `hvfs_link_cap` makes the call; the shell's `l
 layer's `link()` use it when they walk by capability. Witness: `make smoke-fs-cap`, arm
 `smoke-fs-cap-link-control` (`FS_CAP_LINK_WIDENS=1`: a read-only file gets a writable name).
 
-**Step 3(b) needs `init` to listen and wait at once** (decision 19). `init` blocks in `SYS_WAIT`
-on the shell and has nothing that would also wake it for a request. It spawns a small watcher
-instead, holding a copy of `init`'s capability to the shell narrowed to `READ`, which lets it
+**Step 3(b) needs `init` to listen and wait at once** (decision 19, built: `userspace/shellwatch.c`,
+`make smoke-shellwatch`). `init` blocked in `SYS_WAIT` on the shell, with nothing that would also
+wake it for a request. It spawns a small watcher
+instead, holding a copy of `init`'s capability to the shell minted down to `READ` (the spawner's
+`CAP_TCB` carries `MINT` for this, decision D1), which lets it
 wait and nothing else (granting into the shell, killing or signalling it all need `WRITE`), and a
 send capability to a session endpoint `init` makes. The watcher waits for the shell, sends `init`
 its exit record and exits. `init` blocks receiving on that endpoint, and tells the shell's
 requests from the watcher's by the token of the capability each came through, never by who
 sent it. When the shell dies with a session open, `init` revokes the session and ends it before
 it relaunches the shell.
+
+**Step 3(b) as built (S141).** After a login, before it touches a file, the shell sends
+`SESS_OP_OPEN` (`include/session_proto.h`) through a send capability tokened `SESS_TOKEN_SHELL`
+that `init` granted it at launch, and only when the watcher started. The request carries no
+identity: `init` names the account by `SYS_IPC_SENDER`, asks `fs_server` for `FS_OP_SESSION`,
+keeps copies of the root and working directory with `REVOKE`, and grants the shell narrower ones
+in slots 24 and 25, then answers with the grant set and the working directory's path, which is
+only a name for `pwd`. The shell walks by those capabilities from its next request, passes them
+to every program it runs (decision 10), and, holding a session, refuses rather than reaching the
+uid path if its root will not mount. `SESS_OP_END` at logout, the shell's death, and the next
+login each have `init` revoke its copies, which takes everything derived from them, and end the
+grant set in `fs_server`. An account the policy gives nothing is answered with no grant set and
+keeps the uid path until step 6. Witness: `make smoke-session` (root, then a standard user, in one
+boot), arm `smoke-session-login-control` (`INIT_SESSION_AS_ADMIN=1`: every login is given the
+administrator's session).
 
 **Step 3(a) as built.** The policy is parsed and compiled by `userspace/fs_policy.h`, pure
 functions with no system calls, which `fs_server` includes and a host test compiles unchanged
@@ -841,7 +858,7 @@ the next login. A store that cannot be read refuses the session (`IO`) rather th
 file as absent, and a malformed file is reported on the console with its line number. A
 session's grants are at most 32 path nodes; more refuses the session. The reply
 (`struct fs_session_grant`) carries the root's and the working directory's tokens and rights for
-`init` to mint, the grant set, and which policy applied; an account the policy gives nothing gets
+`init` to mint, the grant set, which policy applied, and the working directory's path as walked; an account the policy gives nothing gets
 no grant set and a root token of 0. Grant sets are handed out next free after the last, not
 lowest free, so a set just ended stays unused while others are free: reusing one while a
 capability naming it lived would hand that capability the new session's policy, which `init`'s

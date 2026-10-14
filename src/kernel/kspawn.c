@@ -520,8 +520,16 @@ static void grant_child_tcb_cap(int spawner, int pid) {
      * made void in both directions. */
     /* tcb_object, not the bare pid: the capability names this child, and stops
      * naming anything once the child's slot is reused (HORUS-20260921-02). */
+    /* MINT, SO A SUPERVISOR CAN HAND ON LESS THAN IT HOLDS (decision D1,
+     * 2026-10-14). init gives the shell's watcher a copy narrowed to READ, which
+     * lets it wait on the shell and nothing else (docs/design/filesystem.md
+     * decision 19); without MINT the only way to share the capability was to
+     * grant it whole, WRITE included, and with it the power to kill the shell or
+     * grant into it. A mint only narrows (S2) and its copy is derived from this
+     * one, so revoking this capability sweeps every copy (S3). MINT is not GRANT:
+     * the spawner still cannot pass this capability on undiminished. */
     (void)cap_install_object_first_free(CAP_DYNAMIC_FLOOR, CAP_TCB, tcb_object(pid),
-                                        CAP_RIGHT_READ | CAP_RIGHT_WRITE, 0, NULL);
+                                        CAP_RIGHT_READ | CAP_RIGHT_WRITE | CAP_RIGHT_MINT, 0, NULL);
 }
 
 /* do_spawn must run in the kernel address space: create_user_pagedir and the

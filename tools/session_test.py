@@ -77,18 +77,11 @@ FS_ERR_FLAT = os.environ.get("SESSION_FS_ERR_FLAT", "0") == "1"
 # differ only in what the shell is required to say back, which is what makes the
 # pair a measurement of the dispatch rather than of the harness.
 LS_NO_PATH = os.environ.get("SESSION_LS_NO_PATH", "0") == "1"
-# S77's two arms, one per rule. FS_CHMOD_ANY_OWNER=1 removes the owner-or-root
-# test on chmod; FS_CHOWN_ANY_UID=1 removes the root-only test on chown. Each
-# knob flips exactly ONE of the two refusals below into a required SUCCESS and
-# leaves the other refusal standing -- which is what makes the pair a measurement
-# of two independent rules rather than of "something gates metadata".
-CHMOD_UNGATED = os.environ.get("SESSION_CHMOD_UNGATED", "0") == "1"
-CHOWN_UNGATED = os.environ.get("SESSION_CHOWN_UNGATED", "0") == "1"
-# S78's arm. HOME_DIR_ROOT_OWNED=1 has fs_server create /home/<name> and then
-# NOT give it away, so the directory exists and the account cannot write in it --
-# which is the state the tree was in before it created them at all, reached by a
-# route the account can observe.
-HOME_ROOT_OWNED = os.environ.get("SESSION_HOME_ROOT_OWNED", "0") == "1"
+# S77's and S78's arms are no longer this harness's. A login walks by its
+# session's capability since phase 1b step 3(b), where chmod and chown answer
+# only whether what they ask is already true (S131) and a stat's owner is the
+# caller, so the uid path's metadata rules and its home ownership are witnessed
+# by `make smoke-fs-perms` and its arms until step 6 removes that path.
 # The hard-link arm (SYS_FS_INODE_LINK, the last member of the coverage list's
 # "the gate would pass" group). FS_LINK_UNCOUNTED=1 makes the kernel report the
 # link without bumping the on-disk link count, so `stat` shows ONE link where two
@@ -788,8 +781,14 @@ def run():
         # ls -l is a table now: a header row, then aligned columns. Assert the
         # header and the directory's mode string, so a regression in the column
         # layout shows up here rather than only to the eye.
+        #
+        # THROUGH THE SESSION'S CAPABILITY (phase 1b step 3(b)) the mode is the
+        # truthful one (S130): the owner's bits are what the caller may do, and
+        # the other bits are what other principals' grants reach. Nothing in the
+        # default policy reaches a directory root makes at "/", so it reads
+        # drwx------ where the uid path printed the stored 0755.
         s.send("ls -l"); s.expect("Mode", STEP_TIMEOUT)
-        s.expect("drwxr-xr-x", STEP_TIMEOUT)
+        s.expect("drwx------", STEP_TIMEOUT)
         step("ls -l prints an aligned table with a header")
         s.expect("root@horus#", STEP_TIMEOUT)
         s.send("cd sess_d")                       # no output; next prompt confirms
@@ -882,34 +881,40 @@ def run():
         s.send("stat note3"); s.expect("stat: not found", STEP_TIMEOUT)
         step("rm unlinks a file and the name no longer resolves")
 
-        # --- 4b-ii. metadata: chmod and chown from a real login (S77) ------
-        #        Both fs_server operations existed from the beginning and
-        #        neither had a ring-3 caller until 2026-09-02: the shell had no
-        #        command for them, so no test in the tree had ever exercised
-        #        either rule from a login. `owned` is created here and given
-        #        away, so the standard user below has a file of their OWN to
-        #        chmod -- without it the only thing observable is a refusal, and
-        #        a rule that refuses everyone is not the rule being claimed.
-        #        `keepme` stays root's, as the target of the chmod refusal:
-        #        under FS_CHOWN_ANY_UID the user takes `note`, so the two
-        #        refusals must not share a file or one arm would hand the user
-        #        ownership of the other arm's target and both would pass.
+        # --- 4b-ii. metadata through a session: only the truth (S131) -------
+        #        Through a capability neither chmod nor chown is stored. Each
+        #        succeeds when it asks for what is already true and is refused
+        #        otherwise, so not even the administrator's session can give a
+        #        file away or make it look shared. Both halves, because a server
+        #        that refused every chmod and chown would pass the refusals alone:
+        #        root may chown a file to root, and may ask for the mode a stat
+        #        reports, and the stat afterwards shows nothing changed.
+        #
+        #        The refusals go through fs_err(): SHELL_FS_ERR_FLAT is a defect
+        #        flag of the whole image, and its arm runs this harness.
         s.expect("root@horus#", STEP_TIMEOUT)
         s.send("touch owned"); s.expect("touch: created owned", STEP_TIMEOUT)
         s.expect("root@horus#", STEP_TIMEOUT)
-        s.send("cp note keepme"); s.expect("cp: copied to keepme", STEP_TIMEOUT)
-        s.expect("root@horus#", STEP_TIMEOUT)
         s.send("chown 1000 owned")
-        s.expect("chown: owned is now uid=1000", STEP_TIMEOUT)
+        s.expect(fs_err("chown", "permission denied"), STEP_TIMEOUT)
         s.expect("root@horus#", STEP_TIMEOUT)
-        # Asked of the server rather than inferred from the command's own reply,
-        # which is the shell reporting what it believes it asked for.
-        s.send("stat owned"); s.expect("uid=1000", STEP_TIMEOUT)
+        s.send("chmod 640 owned")
+        s.expect(fs_err("chmod", "permission denied"), STEP_TIMEOUT)
         s.expect("root@horus#", STEP_TIMEOUT)
-        s.send("chmod 640 owned"); s.expect("chmod: owned is now 0640", STEP_TIMEOUT)
+        # Asked of the server rather than inferred from the commands' replies.
+        s.send("stat owned"); s.expect("-rwx------", STEP_TIMEOUT)
+        s.expect("uid=0", STEP_TIMEOUT)
+        step("root's session can neither give a file away nor make it look shared (S131)")
+
         s.expect("root@horus#", STEP_TIMEOUT)
-        s.send("stat owned"); s.expect("-rw-r-----", STEP_TIMEOUT)
-        step("root gives a file away and sets its mode; the server confirms both")
+        s.send("chown 0 owned")
+        s.expect("chown: owned: uid=0 gid=0 already holds, nothing changed", STEP_TIMEOUT)
+        s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("chmod 700 owned")
+        s.expect("chmod: owned: 0700 already holds, nothing changed", STEP_TIMEOUT)
+        s.expect("root@horus#", STEP_TIMEOUT)
+        s.send("stat owned"); s.expect("-rwx------", STEP_TIMEOUT)
+        step("a chmod or chown that asks for what is true succeeds and changes nothing")
 
         s.expect("root@horus#", STEP_TIMEOUT)
         s.send("cd /")                            # back to root for the logout below
@@ -981,57 +986,57 @@ def run():
         s.expect("userdel: permission denied (root only)", STEP_TIMEOUT)
         step("userdel denied for standard user")
 
-        # --- 6c. cross-user filesystem access: the fs_server is the reference
-        #         monitor and checks POSIX permissions against the caller's
-        #         KERNEL-ATTESTED uid (SYS_IPC_SENDER), never an identity from
-        #         the request. /sess_d/note is a 0644 file owned by root (created
-        #         in section 4), so a standard user (uid 1000, "other") may READ
-        #         it but must NOT be able to WRITE it. This exercises the
-        #         reference-monitor property end-to-end from ring 3, not just in
-        #         a unit test (docs/LIMITATIONS.md).
-        s.send("cd /sess_d"); s.expect("user@horus$", STEP_TIMEOUT)
-        s.send("cat note"); s.expect("hello", STEP_TIMEOUT)
-        step("standard user can read a world-readable root-owned file")
-        s.send("echo pwned > note")
-        s.expect(fs_err("echo", "permission denied"), STEP_TIMEOUT)
-        step("standard user cannot write a root-owned file (fs_server denies by attested uid)")
-        # The write was genuinely refused, not silently applied: the content is
-        # still root's. If enforcement were bypassed, this cat would show "pwned"
-        # and the expect below would fail instead of passing.
-        s.send("cat note"); s.expect("hello", STEP_TIMEOUT)
-        step("the root-owned file is unchanged after the denied write")
+        # --- 6c. a session reaches what its policy grants, and no more -----
+        #         Since phase 1b step 3(b) a login walks by the capabilities init
+        #         asked fs_server for at login, so what a standard user can name
+        #         is what the policy grants the account: here (the compiled-in
+        #         default of a live boot) /bin, /lib and /usr to read, a home, and
+        #         a private /tmp. Root's /sess_d (made in section 4) is not
+        #         refused, it is not THERE: no name in this session reaches it.
+        #         The session starts in the home, and says so.
+        #         smoke-session-login-control (INIT_SESSION_AS_ADMIN=1) requires
+        #         the first expect below to be the one that fails.
+        #         (stat, not ls: smoke-ls-path-control builds an ls that takes
+        #         no path, and runs this harness.)
+        s.send("stat /sess_d"); s.expect("stat: not found", STEP_TIMEOUT)
+        s.expect("user@horus$", STEP_TIMEOUT)
+        s.send("cat /sess_d/note"); s.expect("cat: file not found", STEP_TIMEOUT)
+        step("root's directory is not reachable from a standard user's session")
+        s.expect("user@horus$", STEP_TIMEOUT)
+        s.send("pwd"); s.expect("/home/user", STEP_TIMEOUT)
+        step("a standard user's session starts in their home")
+        # A tree the policy grants for reading refuses a write, and the write
+        # left nothing behind.
+        s.expect("user@horus$", STEP_TIMEOUT)
+        s.send("cd /bin"); s.expect("user@horus$", STEP_TIMEOUT)
+        s.send("touch x")
+        s.expect(fs_err("touch", "permission denied"), STEP_TIMEOUT)
+        s.expect("user@horus$", STEP_TIMEOUT)
+        s.send("stat x"); s.expect("stat: not found", STEP_TIMEOUT)
+        s.expect("user@horus$", STEP_TIMEOUT)
+        s.send("cd /home/user")
+        step("a standard user cannot write in a tree granted for reading")
 
-        # --- 6c-ii. metadata is gated by two different rules (S77) --------
-        #         chown is root-only and chmod is owner-or-root, so a standard
-        #         user is refused one on any file and allowed the other on their
-        #         own. Three checks, because the first two alone are satisfied by
-        #         a server that refuses metadata changes to everybody.
+        # --- 6c-ii. metadata through a session (S131) ----------------------
+        #         In the user's own home: a chmod or chown that asks for what is
+        #         true succeeds and changes nothing; one that would widen who may
+        #         reach the file, or give it away, is refused. Both halves, as in
+        #         4b-ii, and both read back from the server.
         s.expect("user@horus$", STEP_TIMEOUT)
-        s.send("chown 1000 note")
-        # The refusal goes through fs_err(), not a literal. SHELL_FS_ERR_FLAT is
-        # a neighbouring arm in the same CI job and a defect flag is global to
-        # the IMAGE: under it every fs_fail() prints the one flattened sentence,
-        # so a literal here reddens that arm rather than this one. It did, on
-        # 2026-09-02, and the arm it broke was the one nobody re-ran.
-        s.expect("chown: note is now uid=1000" if CHOWN_UNGATED
-                 else fs_err("chown", "permission denied"), STEP_TIMEOUT)
-        step("chown by a standard user: "
-             + ("ALLOWED under FS_CHOWN_ANY_UID" if CHOWN_UNGATED else "refused (root only)"))
-
+        s.send("touch owned"); s.expect("touch: created owned", STEP_TIMEOUT)
         s.expect("user@horus$", STEP_TIMEOUT)
-        s.send("chmod 777 keepme")
-        s.expect("chmod: keepme is now 0777" if CHMOD_UNGATED
-                 else fs_err("chmod", "permission denied"), STEP_TIMEOUT)
-        step("chmod on a file owned by root: "
-             + ("ALLOWED under FS_CHMOD_ANY_OWNER" if CHMOD_UNGATED else "refused (not the owner)"))
-
-        # The positive half, and it holds in every arm: a standard user may set
-        # the mode of a file that is theirs. Read back from the server.
+        s.send("chmod 777 owned")
+        s.expect(fs_err("chmod", "permission denied"), STEP_TIMEOUT)
         s.expect("user@horus$", STEP_TIMEOUT)
-        s.send("chmod 600 owned"); s.expect("chmod: owned is now 0600", STEP_TIMEOUT)
+        s.send("chown 0 owned")
+        s.expect(fs_err("chown", "permission denied"), STEP_TIMEOUT)
         s.expect("user@horus$", STEP_TIMEOUT)
-        s.send("stat owned"); s.expect("-rw-------", STEP_TIMEOUT)
-        step("a standard user sets the mode of a file they own")
+        s.send("chmod 700 owned")
+        s.expect("chmod: owned: 0700 already holds, nothing changed", STEP_TIMEOUT)
+        s.expect("user@horus$", STEP_TIMEOUT)
+        s.send("stat owned"); s.expect("-rwx------", STEP_TIMEOUT)
+        s.expect("uid=1000", STEP_TIMEOUT)
+        step("a standard user can neither widen nor give away a file; the truth is accepted")
 
         # --- 6d. dmesg is root-only: the kernel gates it on the attested
         #         uid (like Linux's dmesg_restrict), so a standard user is
@@ -1044,9 +1049,9 @@ def run():
         # --- 6e. a refusal in / names its own reason ---------------------
         #         Reported from a real installed machine: a standard user typed
         #         `mkdir tmp` in / and got "mkdir: failed (name exists or server
-        #         not running)". Neither cause was true. The skeleton / is
-        #         root-owned 0755, so this is SYS_ERR_PERM out of fs_server's
-        #         perm_ok(&st, cuid, cgid, P_W) gate -- the reference monitor
+        #         not running)". Neither cause was true. The session's root
+        #         carries no right to create (the policy grants trees below it),
+        #         so this is SYS_ERR_PERM from fs_server -- the reference monitor
         #         working exactly as designed, described to the operator as a
         #         name clash or a dead server.
         #
@@ -1065,35 +1070,20 @@ def run():
         s.send("stat userdir"); s.expect("stat: not found", STEP_TIMEOUT)
         step("the refused mkdir created nothing")
 
-        # --- 6f. the account has a home directory it owns (S78) -----------
-        #         The gap this closes was found on an installed machine: every
-        #         directory in the provisioned skeleton is root-owned 0755, and
-        #         nothing created a home, so a standard user had NOWHERE
-        #         writable and no way to be given one -- root could make a
-        #         directory but not hand it over. fs_server creates it at
-        #         provisioning, which is the only moment the account list, the
-        #         authority to stamp ownership, and an unlocked volume are all
-        #         available at once.
-        #
-        #         Two checks and they are different claims: the directory is
-        #         OWNED by the account (asked of the server), and the account can
-        #         actually WRITE in it. Ownership without a usable mode, or a
-        #         mode without ownership, satisfies one and not the other.
+        # --- 6f. the account has a home it can write in --------------------
+        #         The gap this closed was found on an installed machine: nothing
+        #         created a home, so a standard user had NOWHERE writable. A
+        #         session reaches its home through the policy's grant, so what a
+        #         login can show is that the home is there and takes a write;
+        #         that fs_server makes it OWNED by the account (S78) is the uid
+        #         path's claim, witnessed by `make smoke-fs-perms` and its home
+        #         arm, since a stat through a capability names the caller.
         s.expect("user@horus$", STEP_TIMEOUT)
-        s.send("cd /home"); s.expect("user@horus$", STEP_TIMEOUT)
-        s.send("stat user")
-        s.expect(fs_err("stat", "permission denied") if HOME_ROOT_OWNED
-                 else "uid=1000", STEP_TIMEOUT)
-        step("the home directory is owned by the account"
-             + (" -- NOT, under HOME_DIR_ROOT_OWNED" if HOME_ROOT_OWNED else ""))
-
+        s.send("cd /home/user"); s.expect("user@horus$", STEP_TIMEOUT)
+        s.send("mkdir mine"); s.expect("mkdir: created mine", STEP_TIMEOUT)
         s.expect("user@horus$", STEP_TIMEOUT)
-        s.send("cd user"); s.expect("user@horus$", STEP_TIMEOUT)
-        s.send("mkdir mine")
-        s.expect(fs_err("mkdir", "permission denied") if HOME_ROOT_OWNED
-                 else "mkdir: created mine", STEP_TIMEOUT)
-        step("a standard user can write in their own home"
-             + (" -- CANNOT, under HOME_DIR_ROOT_OWNED" if HOME_ROOT_OWNED else ""))
+        s.send("stat mine"); s.expect("Type:   directory", STEP_TIMEOUT)
+        step("a standard user can write in their own home")
         s.expect("user@horus$", STEP_TIMEOUT)
         s.send("cd /"); s.expect("user@horus$", STEP_TIMEOUT)
 

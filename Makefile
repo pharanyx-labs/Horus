@@ -146,6 +146,7 @@ DEFECT_FLAGS = \
 	SWAP_SELFTEST SWAP_SEAL_OFF SWAP_TAG_UNCHECKED SWAP_HOG SWAP_OUT_ZEROED SWAP_IDLE_OFF SWAP_UNPINNED \
 	CONSOLE_PROGRESS_BELOW_SURFACE CONSOLE_PROGRESS_AT_LOGIN \
 	SYSTEM_TREES_WRITABLE SYSTEM_TREES_NO_PRUNE SYSTEM_TREES_SIZE_ONLY ARCHIVE_NO_PRECHECK CONF_VALUE_UNCHECKED \
+	INIT_WATCH_TCB_FULL INIT_SESSION_AS_ADMIN \
 	READDIR_END_IS_NOENT SHELL_LS_NO_PATH_ARG BOOT_ROOT_CD_ONLY BOOT_MENU_NO_LIVE_TOKEN \
 	BOOT_PIN_UNCHECKED BOOT_IMAGE_UNBOUND CONSOLE_INPUT_UNGATED CONSOLE_LEND_UNREVOKED \
 	KCONSOLE_READ_UNGATED KCONSOLE_WRITE_UNGATED \
@@ -906,11 +907,12 @@ CFLAGS  += -DSHELL_CAP_FALLBACK
 ASFLAGS += -DSHELL_CAP_FALLBACK
 endif
 
-# The two fs_server metadata arms. SEPARATE FLAGS, not one: chmod is owner-or-root
-# and chown is root-only, and an arm that removed both would show only that
-# "something" gates metadata. Each removes exactly its own check, so each arm must
-# leave the OTHER refusal standing -- which is what shows the two rules are
-# independent rather than one rule read twice. Userspace-only; see the note beside
+# The two fs_server metadata arms (S77, the uid path's rules; arms of
+# smoke-fs-perms). SEPARATE FLAGS, not one: chmod is owner-or-root and chown is
+# root-only, and an arm that removed both would show only that "something" gates
+# metadata. Each removes exactly its own check, so each arm must leave the OTHER
+# refusal standing -- which is what shows the two rules are independent rather
+# than one rule read twice. Userspace-only; see the note beside
 # SHELL_FS_ERR_FLAT above for why the -D that matters is applied further down.
 FS_CHMOD_ANY_OWNER ?= 0
 ifeq ($(FS_CHMOD_ANY_OWNER),1)
@@ -935,7 +937,7 @@ endif
 # HOME_DIR_ROOT_OWNED=1 has fs_server create /home/<name> and then NOT give it
 # away. The directory exists and the account cannot write in it -- which is the
 # state the tree was in before homes were created at all, reached by a route the
-# account can observe. Userspace-only; the -D that matters is applied to
+# account can observe (S78 on the uid path; arm of smoke-fs-perms). Userspace-only; the -D that matters is applied to
 # USERSPACE_CFLAGS at top level.
 HOME_DIR_ROOT_OWNED ?= 0
 ifeq ($(HOME_DIR_ROOT_OWNED),1)
@@ -3869,7 +3871,12 @@ endif
 #   RESUME_RSP_INJECT_PRECLAIM=1         ... even behind another CPU's fatal claim
 #   RESUME_GUARD_DISABLE=1               guard compiled out: the silence, on demand
 RESUME_RSP_INJECT ?= 0
-RESUME_RSP_INJECT_TICKS ?= 400
+# Dispatcher returns after the console handover before it fires. It must land
+# after the login prompt, which the harness waits for first: 400 did until
+# 2026-10-14, when spawning the shell's watcher (phase 1b step 3(b)) put the
+# prompt past 800. Measured that day: 800 fires before the prompt, 1600 and 3200
+# after it, and an idle machine reaches 3200 within the same second.
+RESUME_RSP_INJECT_TICKS ?= 3200
 RESUME_RSP_INJECT_PRECLAIM ?= 0
 RESUME_GUARD_DISABLE ?= 0
 # Which bogus value to inject. 4 is the 2026-08-13 capture and exercises the
@@ -4944,7 +4951,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin userspace/installer.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(NVME_SELFTEST_DEP) $(SDHCID_SELFTEST_DEP) $(ATAD_SELFTEST_DEP) $(BLKPROTO_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(TOKEN_SELFTEST_DEP) $(FSCAP_SELFTEST_DEP) $(FSCAPPOSIX_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(BLOCKPROBE_DEP) $(EXECPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(PIPEREVOKE_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin userspace/installer.bin userspace/shellwatch.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(NVME_SELFTEST_DEP) $(SDHCID_SELFTEST_DEP) $(ATAD_SELFTEST_DEP) $(BLKPROTO_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(TOKEN_SELFTEST_DEP) $(FSCAP_SELFTEST_DEP) $(FSCAPPOSIX_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(BLOCKPROBE_DEP) $(EXECPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(PIPEREVOKE_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -5582,6 +5589,25 @@ USERSPACE_CFLAGS += -DARCHIVE_PROBE
 endif
 ifeq ($(ARCHIVE_NO_PRECHECK),1)
 USERSPACE_CFLAGS += -DARCHIVE_NO_PRECHECK
+endif
+# The shell's watcher (docs/design/filesystem.md decision 19). SHELLWATCH_PROBE=1
+# is an instrument: init reports what the watcher holds, and the shell gains a
+# command that ends it, for make smoke-shellwatch. INIT_WATCH_TCB_FULL=1 is the
+# control arm: the watcher gets init's capability to the shell unnarrowed.
+SHELLWATCH_PROBE ?= 0
+INIT_WATCH_TCB_FULL ?= 0
+ifeq ($(SHELLWATCH_PROBE),1)
+USERSPACE_CFLAGS += -DSHELLWATCH_PROBE
+endif
+ifeq ($(INIT_WATCH_TCB_FULL),1)
+USERSPACE_CFLAGS += -DINIT_WATCH_TCB_FULL
+endif
+# The session at login (phase 1b step 3(b)). INIT_SESSION_AS_ADMIN=1 is the
+# control arm of smoke-session: init opens the administrator's session for every
+# login, whoever the kernel attests logged in.
+INIT_SESSION_AS_ADMIN ?= 0
+ifeq ($(INIT_SESSION_AS_ADMIN),1)
+USERSPACE_CFLAGS += -DINIT_SESSION_AS_ADMIN
 endif
 ifneq ($(strip $(DEBUG_LABEL)),)
 USERSPACE_CFLAGS += -DDEBUG_BUILD -DHORUS_DEBUG_LABEL='"$(DEBUG_LABEL)"'
@@ -6474,7 +6500,8 @@ tools/mkheadered: tools/mkheadered.c include/program_abi.h
 # kernel's do_spawn routes it through try_elf_load with ASLR + relocations).
 SHIPPED_PIE_BINS = userspace/shell.bin userspace/init.bin userspace/hello.bin \
                    userspace/fs_server.bin userspace/captest.bin \
-                   userspace/console_server.bin userspace/installer.bin
+                   userspace/console_server.bin userspace/installer.bin \
+                   userspace/shellwatch.bin
 $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.stripped.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -7205,6 +7232,39 @@ smoke-fs-dir-operand-control:
 	@$(MAKE) --no-print-directory PERM_SELFTEST=1 FS_DIR_OPERAND_UNCHECKED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='PERM_SELFTEST: FAIL dir-operand-delete-file' \
+		tools/smoke_test.sh horus.iso
+
+# The uid path's metadata rules (S77) and its home directories (S78), one arm per
+# rule. A login session walks by capability since phase 1b step 3(b), where
+# chmod and chown are refused unless they ask for what is already true (S131),
+# so these rules are the uid path's alone and are witnessed here, by a client
+# that speaks it, until step 6 removes that path. The selftest asks both
+# metadata questions before it reports either, so each S77 arm requires its own
+# refusal gone and the other one standing, on one line. The home arm requires
+# the ownership check, the first thing its defect breaks.
+.PHONY: smoke-fs-perms-chown-control smoke-fs-perms-chmod-control smoke-fs-perms-home-control
+smoke-fs-perms-chown-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PERM_SELFTEST=1 FS_CHOWN_ANY_UID=1
+	@$(MAKE) --no-print-directory PERM_SELFTEST=1 FS_CHOWN_ANY_UID=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='PERM_SELFTEST: FAIL metadata chmod=refused chown=ALLOWED' \
+		tools/smoke_test.sh horus.iso
+
+smoke-fs-perms-chmod-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PERM_SELFTEST=1 FS_CHMOD_ANY_OWNER=1
+	@$(MAKE) --no-print-directory PERM_SELFTEST=1 FS_CHMOD_ANY_OWNER=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='PERM_SELFTEST: FAIL metadata chmod=ALLOWED chown=refused' \
+		tools/smoke_test.sh horus.iso
+
+smoke-fs-perms-home-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PERM_SELFTEST=1 HOME_DIR_ROOT_OWNED=1
+	@$(MAKE) --no-print-directory PERM_SELFTEST=1 HOME_DIR_ROOT_OWNED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='PERM_SELFTEST: FAIL home-not-owned' \
 		tools/smoke_test.sh horus.iso
 
 # Multi-client concurrency: one fs_server, several clients hammering it at once,
@@ -8362,12 +8422,16 @@ smoke-syscall-coverage:
 # their slot-7 capabilities do not answer for the console's slot 8 with a read of
 # fd 0 (it was SYS_ROTATE_KEYS until that was withdrawn), and that is an
 # authority check, compiled in with or without the coverage probes.
+# SYS_IPC_CALL_CAP, SYS_IPC_REPLY_CAP and SYS_SPAWN_ARG left it on 2026-10-14
+# (phase 1b step 3(b)): every login now asks init for a session, init asks
+# fs_server through a carried capability, the shell walks by reply-minted
+# capabilities, and it hands the programs it runs their root and cwd.
 SYSCOV_CONTROL_EXPECTED = \
 	SYS_AUDIT_DIGEST SYS_BRK SYS_FRAME_PAGES SYS_IPC_REPLY \
 	SYS_MAP_REGION SYS_READ_AUDIT SYS_REGISTER_STORAGE_BACKEND \
-	SYS_SIGACTION SYS_SIGRETURN SYS_SPAWN_ARG SYS_TASK_EXIT_INFO \
+	SYS_SIGACTION SYS_SIGRETURN SYS_TASK_EXIT_INFO \
 	SYS_UNMAP_FRAME SYS_BLOCK_READ SYS_BLOCK_WRITE SYS_EXEC_IMAGE \
-	SYS_GET_PASS SYS_IPC_CALL_CAP SYS_IPC_REPLY_CAP SYS_EXEC_NAMED SYS_ROTATE_KEYS
+	SYS_GET_PASS SYS_EXEC_NAMED SYS_ROTATE_KEYS
 
 smoke-syscall-coverage-control:
 	@set -eu; \
@@ -8960,6 +9024,24 @@ smoke-tpm-bootimg-control:
 	@echo "[bootimg] control PASS - with PCR[4] out of the policy the other image unseals"
 
 .PHONY: smoke-modules
+# init hears the shell's death through a watcher that can only wait on it
+# (docs/design/filesystem.md decision 19). The shell is ended twice; each time
+# init must report why and bring up a working login.
+.PHONY: smoke-shellwatch smoke-shellwatch-control
+smoke-shellwatch:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SHELLWATCH_PROBE=1
+	@$(MAKE) --no-print-directory SHELLWATCH_PROBE=1 horus.iso
+	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) python3 tools/shellwatch_session.py horus.iso
+
+# Control arm: the watcher holds the shell with WRITE as well, so it could
+# grant into, signal or kill it.
+smoke-shellwatch-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SHELLWATCH_PROBE=1 INIT_WATCH_TCB_FULL=1
+	@$(MAKE) --no-print-directory SHELLWATCH_PROBE=1 INIT_WATCH_TCB_FULL=1 horus.iso
+	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) SHELLWATCH_EXPECT_FULL=1 python3 tools/shellwatch_session.py horus.iso
+
 smoke-modules:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory COREUTILS_MODULES=1
@@ -11853,36 +11935,26 @@ smoke-session-fs-err-control:
 	@SESSION_FS_ERR_FLAT=1 python3 tools/session_test.py horus.iso
 	@echo "[session] CONTROL PASS - the flattened sentence is back, and it still names two causes and not the one that fired"
 
-# S77's two arms. Each removes ONE of the fs_server's metadata checks and the
-# harness then requires THAT refusal to become a success -- while still requiring
-# the other one to hold, which is what makes the pair a measurement of two rules
-# rather than of "something is gating metadata".
-#
-# `clean` first for the reason the arm above needs it: userspace/%.o has no
-# .build-flags prerequisite, so a userspace-only -D does not force a rebuild.
-.PHONY: smoke-session-chmod-control
-smoke-session-chmod-control:
-	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory FS_CHMOD_ANY_OWNER=1
-	@$(MAKE) --no-print-directory FS_CHMOD_ANY_OWNER=1 horus.iso
-	@SESSION_CHMOD_UNGATED=1 python3 tools/session_test.py horus.iso
-	@echo "[session] CONTROL PASS - a standard user set the mode of a file they do not own"
-
-.PHONY: smoke-session-chown-control
-smoke-session-chown-control:
-	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory FS_CHOWN_ANY_UID=1
-	@$(MAKE) --no-print-directory FS_CHOWN_ANY_UID=1 horus.iso
-	@SESSION_CHOWN_UNGATED=1 python3 tools/session_test.py horus.iso
-	@echo "[session] CONTROL PASS - a standard user took ownership of root's file"
-
-# S78's arm: the home directory is created and then not given away. The account
-# can see it and cannot write in it, which is the pre-2026-09-02 state reached by
-# a route the account can observe -- before this, /home simply had nothing in it.
-.PHONY: smoke-session-home-control
 # Control arm for the usage check in the session: the shell built as it was
 # before 2026-09-24, where a bare `touch` falls through to "Unknown command". The
 # session must fail on exactly that and on nothing earlier.
+# Control arm for the session at login: init opens the administrator's session
+# for every login (INIT_SESSION_AS_ADMIN=1), so the account it asks for comes
+# from something other than what the kernel attests. The session must fail on
+# exactly that: the standard user reaching root's directory.
+.PHONY: smoke-session-login-control
+smoke-session-login-control:
+	@out=$$($(MAKE) --no-print-directory clean >/dev/null; $(MAKE) --no-print-directory INIT_SESSION_AS_ADMIN=1 horus.iso >/dev/null && python3 tools/session_test.py horus.iso 2>&1); rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "LOGIN CONTROL: FAIL - every login had the administrator's session and the session passed"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "waiting for 'stat: not found'"; then \
+	    echo "LOGIN CONTROL: FAIL - it failed, but not on the standard user reaching root's directory."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "LOGIN CONTROL: PASS - a login given the administrator's session is caught"
+
 .PHONY: smoke-session-usage-control
 smoke-session-usage-control:
 	@out=$$($(MAKE) --no-print-directory clean >/dev/null; $(MAKE) --no-print-directory SHELL_BARE_UNKNOWN=1 horus.iso >/dev/null && python3 tools/session_test.py horus.iso 2>&1); rc=$$?; \
@@ -11895,13 +11967,6 @@ smoke-session-usage-control:
 	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
 	fi; \
 	echo "USAGE CONTROL: PASS - a bare builtin reported as unknown is caught"
-
-smoke-session-home-control:
-	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory HOME_DIR_ROOT_OWNED=1
-	@$(MAKE) --no-print-directory HOME_DIR_ROOT_OWNED=1 horus.iso
-	@SESSION_HOME_ROOT_OWNED=1 python3 tools/session_test.py horus.iso
-	@echo "[session] CONTROL PASS - the home exists and its account cannot write in it"
 
 # Control arm for the hard-link half of the session (SYS_FS_INODE_LINK, the last
 # member of the coverage list's "the gate would pass" group -- docs/LIMITATIONS.md

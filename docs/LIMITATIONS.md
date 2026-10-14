@@ -120,7 +120,8 @@ verified boot modules at every boot (S116), so this does not reach `/bin`. `SECU
 
 ### 1.31 The uid path reaches a file by inode number, whatever its directories allow **[HORUS-20261012-05]**
 
-On the uid path, which every login uses until phase 1b step 3(b) opens a session at login, read,
+On the uid path, which a standard user's login on an installed system still uses (the installer
+writes no policy until phase 1b step 3(c), and without one only the administrator gets a session), read,
 write, append, stat and truncate name an inode number and check that inode's own mode bits only.
 Nothing checks that the caller could have reached it through directories it may search, so a
 mode 0644 file inside another account's mode 0700 directory is readable by anyone who names its
@@ -406,8 +407,9 @@ this.
   addresses, so a larger disk's remainder is unused. What swap does not yet do is below.
 - **Parts of the installed layout.** The install media puts GNU coreutils, TCC, their man pages,
   licences and source offer in the system trees (S116), but `/lib` stays empty (programs link the
-  shared libc the kernel loads, not a file), there is no `/tmp` until logins are handed sessions
-  (filesystem phase 1b step 3(b); `fs_server` gives each session a private one, S129), and the
+  shared libc the kernel loads, not a file), a standard user has no `/tmp` until the installer
+  writes a policy that gives their login a session (filesystem phase 1b step 3(c); `fs_server`
+  gives each session a private one, S129), and the
   shell's file commands
   (`rm`, `touch`, `mv`, `cp`, `mkdir`, `chmod`, `stat`) take a name in the current directory, not
   a path. The servers `init` starts are compiled into the kernel image, by design
@@ -440,9 +442,9 @@ this.
   builds. The capability filesystem of [`design/filesystem.md`](design/filesystem.md) has its
   kernel half (phase 1a, IPC tokens, S105), and `fs_server` answers through capabilities (S120),
   refuses moves across directories (S121) and opens sessions from the policy (S128), and the POSIX
-  layer and the shell walk with capabilities when they hold a root (S126, S127); nothing asks for
-  a session at login yet, so programs still reach files by the uid path (phase 1b step 3(b) and
-  (c), steps 4 and 6).
+  layer and the shell walk with capabilities when they hold a root (S126, S127), and every login
+  asks for its session (S141). The installer does not yet write a policy, so on an installed
+  system a standard user's programs still reach files by the uid path (phase 1b steps 3(c) and 6).
 - **Swap has no way to keep a secret out of it.** On an installed boot idle pages go to the
   sealed partition under pressure, an idle task's included, and come back on touch (S118, S119,
   S123). A page goes out sealed under a key that dies with the boot, but a task cannot yet ask for

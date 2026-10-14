@@ -3,6 +3,7 @@
 #include "exit_reason.h"   /* format_exit_reason(): shared with proctest, which asserts its text */
 #include "fs_proto.h"      /* FS_R_* and fs_token(): the root directory capability (launch_fs_server) */
 #include "libhorus.h"     /* console_lend(): the keyboard, lent to the installer and the shell (S93) */
+#include "shellwatch.h"    /* the watcher's message and slots (decision 19) */
 
 /*
  * Ring-3 init process (PID-1 role).
@@ -159,11 +160,15 @@ static void console_boot_done(void) {
  * format_exit_reason() is shared with proctest, which asserts the exact text it
  * produces — so this line is known to render correctly before the failure it
  * exists to explain ever happens. */
-static void report_shell_exit(void) {
+static void report_shell_exit(const struct task_exit_info *given) {
     struct task_exit_info ei;
     for (unsigned z = 0; z < sizeof(ei); z++) ((char *)&ei)[z] = 0;
 
-    if (sys_task_exit_info(&ei) != 0) {
+    /* From the watcher's message when there is one; from init's own wait when
+     * init waited itself. */
+    if (given) {
+        ei = *given;
+    } else if (sys_task_exit_info(&ei) != 0) {
         report("init: shell exited (exit reason unavailable), relaunching\n");
         return;
     }
@@ -346,6 +351,21 @@ static void report_storage(void) {
 #define INIT_CON_INPUT      47
 #define INIT_CON_LEND       48
 #define INIT_CON_MINTER     49
+/* Phase 1b step 3(b), decision 19: the session endpoint init makes and listens
+ * on, the watcher's tokened send capability to it, and the READ-only copy of
+ * init's CAP_TCB to the shell that the watcher waits with. */
+#define INIT_SESS_LISTEN    46
+#define INIT_SESS_WATCH     50
+#define INIT_SHELL_TCB_RO   51
+/* Phase 1b step 3(b), the session itself (docs/design/filesystem.md §6.4): the
+ * shell's tokened send capability to the session endpoint; init's own copies of
+ * the open session's root and working directory, which carry REVOKE and MINT;
+ * and the narrower copies minted from them for the shell, without either. */
+#define INIT_SESS_SHELL     52
+#define INIT_SESS_ROOT      53
+#define INIT_SESS_CWD       54
+#define INIT_SESS_SH_ROOT   55
+#define INIT_SESS_SH_CWD    56
 
 /* EVERY SLOT INIT FILLS, AS CASE LABELS, so two of them sharing a number is a
  * compile error rather than a capability put where another already is. Phase 1b
@@ -360,6 +380,9 @@ static void __attribute__((unused)) init_slots_distinct(int slot)
     case INIT_KERNEL_LOG: case INIT_BOOT_MODULE: case INIT_DEV_LISTEN: case INIT_DEV_CLIENT:
     case INIT_CON_NOTIFY: case INIT_FS_SRV: case INIT_FS_ROOT: case INIT_FS_SHELL_RO:
     case INIT_CON_INPUT: case INIT_CON_LEND: case INIT_CON_MINTER:
+    case INIT_SESS_LISTEN: case INIT_SESS_WATCH: case INIT_SHELL_TCB_RO:
+    case INIT_SESS_SHELL: case INIT_SESS_ROOT: case INIT_SESS_CWD:
+    case INIT_SESS_SH_ROOT: case INIT_SESS_SH_CWD:
         break;
     default:
         break;
@@ -594,9 +617,215 @@ static int init_console_input(void) {
 
 /* Spawn the shell and delegate it the console + storage capabilities. Returns
  * the shell's task id, or a negative value on failure. */
+/* ---- the session endpoint and the shell's watcher (decision 19) ------------
+ *
+ * init used to block in SYS_WAIT on the shell. Step 3(b) needs it to answer the
+ * shell's session requests as well, and SYS_WAIT and a receive cannot be waited
+ * on at once, so init blocks receiving on an endpoint it makes, and a watcher
+ * (userspace/shellwatch.c) waits for the shell and tells init over it.
+ *
+ * WHICH SLOT HOLDS WHICH CAP_TCB is found by difference: a spawn installs the
+ * spawner's CAP_TCB in the first free slot, so the one slot that is new after
+ * it is the child's. Read with CAP_DEBUG, which init holds for the shell's sake
+ * and which observes and nothing else. */
+static unsigned char g_occ[CAP_ENUM_MAX_SLOT];
+static int g_shell_tcb_slot = -1;
+static int g_watch_tcb_slot = -1;
+
+static void cspace_snapshot(void) {
+    int self = sys_getpid();
+    for (unsigned s = 0; s < CAP_ENUM_MAX_SLOT; s++) {
+        struct cap_info ci;
+        g_occ[s] = (sys_cap_enumerate(self, s, &ci) == 0 && ci.occupied) ? 1 : 0;
+    }
+}
+
+static int cspace_new_slot(void) {
+    int self = sys_getpid(), found = -1;
+    for (unsigned s = 0; s < CAP_ENUM_MAX_SLOT; s++) {
+        struct cap_info ci;
+        if (sys_cap_enumerate(self, s, &ci) == 0 && ci.occupied && !g_occ[s]) {
+            if (found >= 0) return -1;
+            found = (int)s;
+        }
+    }
+    return found;
+}
+
+static int g_sess_ready;
+
+/* The endpoint, carved from init's own untyped like dev_server's, and the
+ * watcher's send capability to it: WRITE only, tokened, so the watcher can send
+ * and nothing more, and init knows its messages by the token. */
+static int session_endpoint_init(void) {
+    if (sys_retype(CAPSLOT_UNTYPED, KOBJ_ENDPOINT, 1, INIT_SESS_LISTEN) != 1) return -1;
+    if (sys_cap_mint_token(INIT_SESS_WATCH, INIT_SESS_LISTEN, CAP_RIGHT_WRITE,
+                           SESS_TOKEN_WATCH) != 0) return -2;
+    /* The shell's: send only, and its own token, so a request is the shell's
+     * because the kernel says it came through this capability. */
+    if (sys_cap_mint_token(INIT_SESS_SHELL, INIT_SESS_LISTEN, CAP_RIGHT_WRITE,
+                           SESS_TOKEN_SHELL) != 0) return -3;
+    g_sess_ready = 1;
+    return 0;
+}
+
+/* Start the watcher on shell `sh`, before the shell runs, so the shell cannot
+ * die and give its slot away before anything is waiting on it. Its capability
+ * to the shell is minted down to READ: wait, and nothing else (S140). 0 on
+ * success. */
+static int launch_watcher(int sh) {
+    if (!g_sess_ready || g_shell_tcb_slot < 0) return -1;
+    (void)sys_cap_revoke(INIT_SHELL_TCB_RO);          /* the last shell's copy */
+#ifndef INIT_WATCH_TCB_FULL
+    uint32_t r = CAP_RIGHT_READ;
+#else
+    /* CONTROL ARM -- never ship. The watcher gets init's capability to the
+     * shell unnarrowed, so it could grant into, signal or kill the shell. See
+     * make smoke-shellwatch-control. */
+    uint32_t r = CAP_RIGHT_READ | CAP_RIGHT_WRITE;
+#endif
+    if (sys_cap_mint(INIT_SHELL_TCB_RO, (uint32_t)g_shell_tcb_slot, r) != 0) return -2;
+    cspace_snapshot();
+    int w = sys_spawn_named_arg("shellwatch", (uint32_t)sh);
+    if (w <= 0) return -3;
+    g_watch_tcb_slot = cspace_new_slot();
+    if (sys_cap_grant(w, INIT_SHELL_TCB_RO, SW_TCB_SLOT) != 0) return -4;
+    if (sys_cap_grant(w, INIT_SESS_WATCH, SW_EP_SLOT) != 0) return -5;
+#ifdef SHELLWATCH_PROBE
+    /* make smoke-shellwatch: the watcher's capability to the shell, as the
+     * kernel records it, must carry READ and not WRITE. */
+    {
+        struct cap_info ci;
+        if (sys_cap_enumerate(w, SW_TCB_SLOT, &ci) == 0 && ci.occupied &&
+            (ci.rights & CAP_RIGHT_READ) && !(ci.rights & CAP_RIGHT_WRITE))
+            report("SHELLWATCH_PROBE: the watcher holds the shell READ-only\n");
+        else
+            report("SHELLWATCH_PROBE: FAIL the watcher can do more than wait on the shell\n");
+    }
+#endif
+    if (sys_task_resume(w) != 0) return -6;
+    return 0;
+}
+
+/* ---- the session (phase 1b step 3(b), docs/design/filesystem.md §6.4) -------
+ *
+ * After a login the shell asks for its session, and init asks fs_server for the
+ * account's grants (FS_OP_SESSION), naming the account by the uid the KERNEL
+ * attests for the shell's request (SYS_IPC_SENDER, fixed by SYS_AUTH), never by
+ * anything the request says. fs_server answers that only through the untokened
+ * endpoint capability that holds MINT, which init alone has (§5.1), so opening a
+ * session is authorised by a capability, not by who asks.
+ *
+ * init mints the session's root and working directory with the tokens and
+ * rights fs_server names, keeps those copies (with REVOKE and MINT), and gives
+ * the shell narrower ones minted from them: the endpoint's WRITE, so it can be
+ * invoked; GRANT, so the shell can hand its programs their root and directory
+ * (decision 10); and exactly the file rights the session has. Every capability
+ * the shell or its programs get through the session is derived from init's two,
+ * so revoking them at logout sweeps it all (S3), and only then is the grant set
+ * ended, so it is never reused while a capability naming it lives. */
+static uint32_t g_sess_g;            /* the open session's grant set, 0 if none */
+static int      g_sess_open;
+
+/* One request to fs_server through init's own untokened capability. */
+static int fs_ask(struct fs_request *rq, struct fs_response *rp) {
+    for (int tries = 0; tries < 200000; tries++) {
+        int r = sys_ipc_call_cap(INIT_FS_LISTEN, IPC_NO_CAP, rq, sizeof(*rq), rp, IPC_NO_CAP);
+        if (r >= (int)sizeof(struct fs_response)) return rp->rc;
+        if (r >= 0) return -1000;
+        if (r != IPC_AGAIN) return -2000 + r;
+        sys_yield();
+    }
+    return -3000;
+}
+
+static void session_end_g(uint32_t g) {
+    static struct fs_request rq;
+    static struct fs_response rp;
+    for (unsigned z = 0; z < sizeof(rq); z++) ((char *)&rq)[z] = 0;
+    rq.magic = FS_PROTO_MAGIC;
+    rq.op = FS_OP_SESSION_END;
+    rq.offset = g;
+    if (fs_ask(&rq, &rp) != 0) report("init: fs_server did not end a session\n");
+}
+
+/* Revoke the open session, if there is one, and end its grant set. */
+static void session_close(void) {
+    if (!g_sess_open) return;
+    (void)sys_cap_revoke(INIT_SESS_ROOT);
+    (void)sys_cap_revoke(INIT_SESS_CWD);
+    session_end_g(g_sess_g);
+    g_sess_open = 0;
+    g_sess_g = 0;
+}
+
+_Static_assert(SESS_CWD_MAX == FS_SESSION_PATH, "a session's cwd fits the reply");
+
+/* Open the session of the account logged in on shell `sh`. Fills `rep`. The
+ * account is the one the kernel attests for the request (SYS_IPC_SENDER),
+ * never one the request names: it names none (S141). */
+static void session_open(int sh, struct sess_reply *rep) {
+    rep->rc = 0; rep->g = 0; rep->source = 0; rep->reserved = 0;
+    rep->cwd[0] = '/'; rep->cwd[1] = 0;
+    session_close();                     /* a second login replaces the first */
+
+    uint32_t gid = 0;
+    uint32_t uid = sys_ipc_sender(INIT_SESS_LISTEN, &gid);
+#ifdef INIT_SESSION_AS_ADMIN
+    /* CONTROL ARM -- never ship. Every login is given the administrator's
+     * session, whoever logged in. See make smoke-session-login-control. */
+    uid = 0;
+#endif
+    if (uid == (uint32_t)-1) { rep->rc = SYS_ERR_PERM; return; }   /* not logged in */
+
+    static struct fs_request rq;
+    static struct fs_response rp;
+    for (unsigned z = 0; z < sizeof(rq); z++) ((char *)&rq)[z] = 0;
+    rq.magic = FS_PROTO_MAGIC;
+    rq.op = FS_OP_SESSION;
+    rq.arg_uid = uid;
+    int rc = fs_ask(&rq, &rp);
+    if (rc != 0) { rep->rc = rc; return; }
+    struct fs_session_grant sg;
+    for (unsigned z = 0; z < sizeof(sg); z++) ((char *)&sg)[z] = ((char *)rp.data)[z];
+    rep->source = sg.source;
+    if (sg.root_token == 0) return;      /* the policy gives this account nothing */
+
+    const uint32_t keep = CAP_RIGHT_WRITE | CAP_RIGHT_GRANT | CAP_RIGHT_REVOKE | CAP_RIGHT_MINT;
+    const uint32_t give = CAP_RIGHT_WRITE | CAP_RIGHT_GRANT;
+    uint64_t ct = sg.cwd_token ? sg.cwd_token  : sg.root_token;
+    uint32_t cr = sg.cwd_token ? sg.cwd_rights : sg.root_rights;
+    if (sys_cap_mint_token(INIT_SESS_ROOT, INIT_FS_LISTEN, keep | sg.root_rights, sg.root_token) != 0) {
+        session_end_g(sg.g); rep->rc = SYS_ERR_NOMEM; return;
+    }
+    g_sess_open = 1;                     /* from here session_close undoes it all */
+    g_sess_g = sg.g;
+    if (sys_cap_mint_token(INIT_SESS_CWD, INIT_FS_LISTEN, keep | cr, ct) != 0 ||
+        sys_cap_mint(INIT_SESS_SH_ROOT, INIT_SESS_ROOT, give | sg.root_rights) != 0 ||
+        sys_cap_mint(INIT_SESS_SH_CWD, INIT_SESS_CWD, give | cr) != 0 ||
+        sys_cap_grant(sh, INIT_SESS_SH_ROOT, CAPSLOT_FS_ROOT) != 0 ||
+        sys_cap_grant(sh, INIT_SESS_SH_CWD, CAPSLOT_FS_CWD) != 0) {
+        session_close();
+        rep->rc = SYS_ERR_NOMEM;
+        return;
+    }
+    /* The working directory's name, as fs_server walked it. Taken only when it
+     * is an absolute path that ends inside the field, and only with the home's
+     * own token: a session started at its root is "/", whatever was said. */
+    if (sg.cwd_token && sg.cwd_token != sg.root_token && sg.cwd_path[0] == '/') {
+        unsigned n = 0;
+        while (n < SESS_CWD_MAX - 1 && sg.cwd_path[n]) { rep->cwd[n] = sg.cwd_path[n]; n++; }
+        if (n < SESS_CWD_MAX - 1 || sg.cwd_path[n] == 0) rep->cwd[n] = 0;
+        else { rep->cwd[0] = '/'; rep->cwd[1] = 0; }
+    }
+    rep->g = sg.g;
+}
+
 static int launch_shell(void) {
+    cspace_snapshot();
     int sh = sys_spawn_named("shell");
     if (sh <= 0) return -1;
+    g_shell_tcb_slot = cspace_new_slot();
     /* Delegate least privilege into the same slots the shell expects (8/9).
      * Done immediately after the spawn, before the shell needs them for login;
      * init holds a CAP_TCB to the shell from the spawn, so the grants pass. */
@@ -719,6 +948,28 @@ static int launch_shell(void) {
         sys_cap_grant(sh, INIT_FS_SHELL_RO, CAPSLOT_FS_ROOT) != 0)
         report("init: FAIL could not hand the shell its read-only root\n");
 #endif
+
+    /* The watcher before the shell runs (decision 19). Without one, init falls
+     * back to waiting on the shell itself, as it did before. */
+    int wrc = launch_watcher(sh);
+    /* The shell may ask for its session only while init is listening for it,
+     * which is while a watcher waits on the shell in init's place. Without one,
+     * init blocks in SYS_WAIT and would never answer, so the shell is given no
+     * way to ask and reaches files by the uid path, as before step 3(b). */
+#ifndef INIT_SHELL_ROOT_READONLY
+    if (wrc == 0 && sys_cap_grant(sh, INIT_SESS_SHELL, SESS_SHELL_SLOT) != 0)
+        report("init: could not give the shell its session capability; the uid path it is\n");
+#else
+    /* The instrument's read-only root above is what smoke-fs-cap-shell
+     * measures; a session at login would replace it with the policy's. */
+#endif
+    if (wrc != 0) {
+        /* Which step, as a digit, so a capture says why. */
+        char msg[] = "init: could not start the shell's watcher (step -0); waiting on the shell directly\n";
+        for (char *q = msg; *q; q++) if (*q == '0' && q[-1] == '-') { *q = (char)('0' + (-wrc % 10)); break; }
+        report(msg);
+        g_watch_tcb_slot = -1;
+    }
 
     /* The shell's console capability is granted above; resuming only now is what
      * guarantees it can never start writing before it holds one. That race is
@@ -1091,10 +1342,17 @@ void _start(void) {
     }
 #endif
 
-    /* Launch the shell, then block in SYS_WAIT until it exits or faults, and
-     * relaunch. SYS_WAIT suspends init on the preemptive block/switch path, so
-     * while the shell runs init is off the run queue entirely (no polling). The
-     * fs_server launched above keeps serving alongside the shell. */
+    /* Launch the shell, then block until it exits or faults, and relaunch.
+     * init blocks receiving on its session endpoint, where the shell's watcher
+     * reports the death (decision 19); without a watcher it blocks in SYS_WAIT
+     * on the shell itself. Either way init is off the run queue while the shell
+     * runs (no polling), and the fs_server keeps serving alongside. */
+    /* The session endpoint, once: the watcher reports through it, and in step
+     * 3(b) the shell will ask for its session over it. Without it init waits on
+     * the shell directly, as it always has. */
+    if (session_endpoint_init() != 0)
+        report("init: could not make the session endpoint; waiting on the shell directly\n");
+
     for (;;) {
         int sh = launch_shell();
         if (sh < 0) { report("init: FATAL could not launch shell\n"); for (;;) settle(); }
@@ -1104,17 +1362,69 @@ void _start(void) {
          * CAP_TCB for the target, and init's comes from the spawn. Relaunching on
          * a refusal would start a second shell beside a live one, and then another,
          * as fast as the loop turns; stop and say why instead. */
-        int wr;
-        while ((wr = sys_wait(sh)) == SYS_ERR_INTR) { }
-        if (wr != 0) { report("init: FATAL cannot wait on the shell\n"); for (;;) settle(); }
-        /* The shell is dead: take back its keyboard, and with it the copy of any
-         * program it was running. See LIMITATIONS 1.33 for the case this cannot
-         * reach: a copy that descends through a task that has already died. */
-        console_unlend(&g_shell_kb);
-        /* Read the cause BEFORE relaunching: launch_shell() may be handed the
-         * dead shell's task slot, and the record is only guaranteed until this
-         * task's next completed wait. */
-        report_shell_exit();
+        if (g_watch_tcb_slot < 0) {
+            int wr;
+            while ((wr = sys_wait(sh)) == SYS_ERR_INTR) { }
+            if (wr != 0) { report("init: FATAL cannot wait on the shell\n"); for (;;) settle(); }
+            /* The shell is dead: take back its keyboard, and with it the copy of
+             * any program it was running. See LIMITATIONS 1.33 for the case this
+             * cannot reach: a copy that descends through a task that has died. */
+            console_unlend(&g_shell_kb);
+            /* Read the cause BEFORE relaunching: launch_shell() may be handed the
+             * dead shell's task slot, and the record is only guaranteed until this
+             * task's next completed wait. */
+            report_shell_exit(0);
+        } else {
+            /* Listen on the session endpoint until the watcher reports, and
+             * answer the shell's session requests meanwhile. Whose a message is
+             * comes from the token of the capability it came through, which the
+             * kernel attests; anything else is neither a death notice nor a
+             * request, whatever it says. */
+            for (;;) {
+                union { struct shellwatch_msg w; struct sess_request q; } u;
+                struct shellwatch_msg m;
+                int n = sys_ipc_recv_block(INIT_SESS_LISTEN, &u, sizeof(u));
+                if (n < 0) { report("init: FATAL session endpoint lost\n"); for (;;) settle(); }
+                struct ipc_invoker inv;
+                for (unsigned z = 0; z < sizeof(inv); z++) ((char *)&inv)[z] = 0;
+                if (sys_ipc_invoker(INIT_SESS_LISTEN, &inv) != 0) continue;
+                if (inv.token == SESS_TOKEN_SHELL) {
+                    /* The shell, after a login or at logout. Answered every
+                     * time, so its call never waits on init for ever. */
+                    struct sess_reply rp;
+                    rp.rc = SYS_ERR_INVAL; rp.g = 0; rp.source = 0; rp.reserved = 0;
+                    if (n == (int)sizeof(u.q) && u.q.magic == SESS_PROTO_MAGIC) {
+                        if (u.q.op == SESS_OP_OPEN) {
+                            session_open(sh, &rp);
+                        } else if (u.q.op == SESS_OP_END) {
+                            session_close();
+                            rp.rc = 0;
+                        }
+                    }
+                    while (sys_ipc_reply_to(INIT_SESS_LISTEN, &rp, sizeof(rp)) < 0) sys_yield();
+                    continue;
+                }
+                m = u.w;
+                if (inv.token != SESS_TOKEN_WATCH || n != (int)sizeof(m) ||
+                    m.magic != SHELLWATCH_MAGIC || m.target != sh) continue;
+                if (m.wait_rc != 0) {
+                    /* The watcher could not wait: the shell is NOT known to be
+                     * dead, and relaunching would start a second one. */
+                    report("init: FATAL the watcher cannot wait on the shell\n");
+                    for (;;) settle();
+                }
+                /* Dead, as the watcher saw: take back its keyboard (above), and
+                 * its session, which a shell that died logged in still has. */
+                console_unlend(&g_shell_kb);
+                session_close();
+                report_shell_exit(&m.exit);
+                break;
+            }
+            /* Both are dead: their capabilities name nothing now, and keeping
+             * them would cost init a slot per relaunch. */
+            if (g_watch_tcb_slot >= 0) (void)sys_cap_revoke((uint32_t)g_watch_tcb_slot);
+        }
+        if (g_shell_tcb_slot >= 0) (void)sys_cap_revoke((uint32_t)g_shell_tcb_slot);
     }
 #endif
 }

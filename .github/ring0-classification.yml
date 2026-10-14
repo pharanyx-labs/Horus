@@ -582,7 +582,11 @@
 # generation phase of the PIPE_SELFTEST harness, which is most of the lines and
 # never in the ship build; kernel.h the encoding; capability.c the tally's third
 # cell. A pipe end is a capability, so its check belongs in the core.
-core_budget_loc: 11711
+# 2026-10-14: 11711 -> 11719, +8, phase 1b step 3(b) (S140, S141): the shell's
+# watcher is a system program the kernel loads by name, so it is embedded like
+# the installer (multiboot.S's .incbin, loader.c's table row and its two
+# externs). kspawn.c's D1 change adds a right to an existing call, no line.
+core_budget_loc: 11719
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

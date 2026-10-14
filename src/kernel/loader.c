@@ -96,6 +96,8 @@ extern uint8_t embedded_console_server_bin_start[];
 extern uint8_t embedded_console_server_bin_end[];
 extern uint8_t embedded_installer_bin_start[];
 extern uint8_t embedded_installer_bin_end[];
+extern uint8_t embedded_shellwatch_bin_start[];
+extern uint8_t embedded_shellwatch_bin_end[];
 #ifdef FSCAPPOSIX_SELFTEST
 extern uint8_t embedded_fscapchild_bin_start[], embedded_fscapchild_bin_end[];
 #endif
@@ -153,6 +155,9 @@ static const struct embedded_binary embedded_binaries[] = {
      * carrying no volume (roadmap 2.9). Unconditional, unlike the test fixtures
      * below: being able to install onto bare hardware is not a test build. */
     { "installer", embedded_installer_bin_start, embedded_installer_bin_end },
+    /* shellwatch: spawned by init beside every shell, holding the shell READ-only,
+     * to report its death over init's session endpoint (decision 19). */
+    { "shellwatch", embedded_shellwatch_bin_start, embedded_shellwatch_bin_end },
 #ifdef FSCAPPOSIX_SELFTEST
     /* fscapchild: spawned by fscapposix, which hands it a narrowed filesystem
      * (smoke-fs-cap-posix, decision 10). */

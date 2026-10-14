@@ -3,6 +3,7 @@
 #include "console_proto.h"
 #include "malloc.h"
 #include "libhorus.h"   /* hvfs: the mount table and the one path walker */
+#include "session_proto.h"   /* asking init for the session at login (phase 1b step 3(b)) */
 
 /* Wipe a password buffer so it does not outlive its use on the stack. Volatile,
  * because the plain `for (i) buf[i] = 0` this replaces is a dead store to a
@@ -145,9 +146,15 @@ static uint32_t fss_ep_slot = 0;
 static int             sh_capmode = 0;
 static struct hvfs_obj sh_root = { CAPSLOT_FS_EP, 0, 0, 0, 0 };
 static struct hvfs_obj sh_cwd  = { CAPSLOT_FS_EP, 0, 0, 0, 0 };
+/* sh_cwd's name, for pwd and for resolving relative paths. */
+#define SH_PATH_MAX 256
+static char            sh_cwd_path[SH_PATH_MAX] = "/";
 
 static int fss_strlen(const char *s) { int l=0; while(s[l]) l++; return l; }
 static void fss_strcpy(char *d, const char *s) { while((*d++ = *s++)); }
+
+/* The open session's grant set, 0 if none (session_open_request). */
+static uint32_t sh_session_g = 0;
 
 static int fss_connect(void) {
     if (fss_connected) return 0;
@@ -155,9 +162,21 @@ static int fss_connect(void) {
         sh_capmode = 1;
         sh_root.slot = CAPSLOT_FS_ROOT; sh_root.ino = 0; sh_root.cap = 1; sh_root.owned = 0;
         sh_cwd = sh_root;
+        /* A session starts in its working directory, the home the policy grants
+         * when it grants one, which init put in CAPSLOT_FS_CWD beside the root. */
+        if (sh_session_g) {
+            sh_cwd.slot = CAPSLOT_FS_CWD; sh_cwd.ino = 0; sh_cwd.cap = 1; sh_cwd.owned = 0;
+        }
         fss_connected = 1;
         return 0;
     }
+    /* A session is open and its root would not mount: fail closed (S141). Falling
+     * through to the uid path here is the fail-open CLAUDE.md §1 forbids, and
+     * it is not hypothetical: until fs_forget dropped the uid path's mount of
+     * "/", a file touched between a logout and the next login left that mount
+     * behind, this mount was refused as a duplicate, and every login after the
+     * first in a boot ran on the uid path with its session unused. */
+    if (sh_session_g) return -1;
     fss_ep_slot = CAPSLOT_FS_EP;
     /* sys_connect_fs_server mints a cap in slot fss_ep_slot so the kernel's
      * slot-3 check passes for SYS_IPC_CALL.  The actual send/receive uses the
@@ -173,6 +192,72 @@ static int fss_connect(void) {
         return 0;
     }
     return -1;
+}
+
+/* ---- the session (phase 1b step 3(b), docs/design/filesystem.md §6.4) -------
+ *
+ * After a login the shell asks init for its session through the one capability
+ * init gave it for that (SESS_SHELL_SLOT). init names the account from what the
+ * kernel attests for this request, and puts the session's root and working
+ * directory in CAPSLOT_FS_ROOT and CAPSLOT_FS_CWD; from the first filesystem
+ * request on, the shell walks by capability (fss_connect) and so does every
+ * program it runs (decision 10). A shell with no such capability, or an account
+ * the policy gives nothing, reaches files by the uid path, as before step 3(b),
+ * until step 6 removes it.
+ *
+ * At logout the shell gives the session back: init revokes it, which takes
+ * everything derived from it, the shell's own walks included, and the shell
+ * forgets its mode, so the next login decides afresh. */
+static void session_call(uint32_t op, struct sess_reply *rp) {
+    struct sess_request rq;
+    rq.magic = SESS_PROTO_MAGIC;
+    rq.op = op;
+    /* Received into a whole message's room, as sys_ipc_call's contract asks,
+     * and taken only when it is a whole reply. */
+    static union { struct sess_reply r; char raw[256]; } in;   /* IPC_MSG_MAX */
+    int r = sys_ipc_call(SESS_SHELL_SLOT, 0, &rq, sizeof(rq), in.raw);
+    if (r < (int)sizeof(*rp)) {
+        rp->rc = SYS_ERR_PERM; rp->g = 0; rp->source = 0; rp->reserved = 0;
+        rp->cwd[0] = '/'; rp->cwd[1] = 0;
+        return;
+    }
+    *rp = in.r;
+    rp->cwd[SESS_CWD_MAX - 1] = 0;
+    if (rp->cwd[0] != '/') { rp->cwd[0] = '/'; rp->cwd[1] = 0; }
+}
+
+static void fs_forget(void) {
+    /* "/" goes in either mode, so the next fss_connect mounts it afresh: the
+     * uid path's mount of the endpoint, left in place, makes the next session's
+     * hvfs_mount_cap a duplicate. Whatever the shell's walks left in the pool
+     * went with the session (init revoked it); give back the slots the kernel
+     * now reports empty. */
+    if (fss_connected) (void)hvfs_unmount("/");
+    if (sh_capmode) hvfs_pool_reclaim();
+    sh_capmode = 0;
+    fss_connected = 0;
+    sh_root.slot = CAPSLOT_FS_EP; sh_root.ino = 0; sh_root.cap = 0; sh_root.owned = 0;
+    sh_cwd = sh_root;
+    sh_cwd_path[0] = '/'; sh_cwd_path[1] = 0;
+}
+
+static void session_open_request(void) {
+    struct sess_reply rp;
+    session_call(SESS_OP_OPEN, &rp);
+    sh_session_g = (rp.rc == 0) ? rp.g : 0;
+    fs_forget();                         /* the next request decides the mode */
+    /* A session starts in its working directory (fss_connect), so pwd starts
+     * there too. Until 2026-10-14 it said "/" while relative names went to the
+     * home: `mkdir d` then made /home/<name>/d under a prompt that said "/". */
+    if (sh_session_g) fss_strcpy(sh_cwd_path, rp.cwd);
+}
+
+static void session_end_request(void) {
+    if (!sh_session_g) return;
+    struct sess_reply rp;
+    session_call(SESS_OP_END, &rp);
+    sh_session_g = 0;
+    fs_forget();
 }
 
 /* One request about object `o`, sent through its slot: the endpoint on the uid
@@ -308,9 +393,8 @@ static void print_decimal(uint32_t n) {
  * The shell does its own path handling (it does not link posix.c). It tracks a
  * cwd inode for relative fs ops and a canonical absolute path string for `pwd`.
  * Directory ops below (ls/cat/mkdir/rm/touch) resolve names within sh_cwd, the
- * working directory as an object (see fss_call_on). */
-#define SH_PATH_MAX 256
-static char     sh_cwd_path[SH_PATH_MAX] = "/";
+ * working directory as an object (see fss_call_on). sh_cwd_path is defined
+ * beside sh_cwd above, since a session sets both. */
 
 /* Normalize `arg` against sh_cwd_path into `out` (absolute). Resolves ".", "..",
  * a leading "/", and repeated slashes — pure string work (mirrors posix.c's
@@ -1974,6 +2058,11 @@ static void handle_command(char *cmd) {
      * the builtins below run as before. */
     if (try_run_from_bin(cmd)) return;
 
+#ifdef SHELLWATCH_PROBE
+    /* make smoke-shellwatch only: end the shell, so the gate can see init hear
+     * of it through the watcher and relaunch. */
+    if (strcmp(cmd, "shellwatch-die") == 0) { println("shellwatch-die: exiting"); sys_exit(); }
+#endif
     if (strcmp(cmd, "man") == 0) {
         man_index();
     } else if (strncmp(cmd, "man ", 4) == 0) {
@@ -2209,6 +2298,12 @@ static void handle_command(char *cmd) {
         }
 
         struct hvfs_obj dir = sh_cwd;   /* lent unless a path is named */
+        /* LENT, SO NOT OURS TO RELEASE. The working directory is the shell's own
+         * capability once `cd` has walked to it (owned = 1), and the release
+         * below revoked it: every request after an `ls -l` in a directory the
+         * shell had cd'd into then failed at the transport (phase 1b step 3(b),
+         * found as every login began walking by capability). */
+        dir.owned = 0;
         int      ok       = 1;
 
         if (*arg != '\0') {
@@ -2384,9 +2479,17 @@ static void handle_command(char *cmd) {
                 struct fs_response rp;
                 rq.op = FS_OP_CHMOD; rq.ino = f.ino; rq.mode = mode & 07777u;
                 int t = fss_call_on(&f, &rq, &rp);
+                int via_cap = f.cap;
                 hvfs_release(&f);
                 if (t < 0 || rp.rc < 0) fs_fail("chmod", t, &rp);
-                else {
+                else if (via_cap) {
+                    /* Nothing was stored, so "is now" would be a claim the next
+                     * stat contradicts: owner bits are accepted when they are
+                     * among the caller's rights, so 0600 holds of a file a stat
+                     * reports as 0700. */
+                    print("chmod: "); print(p); print(": 0");
+                    print_octal(mode & 07777u); println(" already holds, nothing changed");
+                } else {
                     print("chmod: "); print(p); print(" is now 0");
                     print_octal(mode & 07777u); println("");
                 }
@@ -2437,12 +2540,15 @@ static void handle_command(char *cmd) {
                     rq.arg_uid = nuid;
                     rq.arg_gid = have_gid ? ngid : sp.gid;
                     int t = fss_call_on(&f, &rq, &rp);
+                    int via_cap = f.cap;
                     hvfs_release(&f);
                     if (t < 0 || rp.rc < 0) fs_fail("chown", t, &rp);
                     else {
-                        print("chown: "); print(p); print(" is now uid=");
+                        print("chown: "); print(p);
+                        print(via_cap ? ": uid=" : " is now uid=");
                         print_decimal(rq.arg_uid); print(" gid=");
-                        print_decimal(rq.arg_gid); println("");
+                        print_decimal(rq.arg_gid);
+                        println(via_cap ? " already holds, nothing changed" : "");
                     }
                 }
             }
@@ -3233,6 +3339,8 @@ static void do_login(void) {
             print("! You are ");
             println(got_uid == 0 ? "the administrator (root)." : "a standard user.");
             println("Type 'help' for available commands, 'logout' to end the session.");
+            /* The session, before anything here touches a file. */
+            session_open_request();
             g_logged_in_once = 1;
             shell_conf_read();
             show_motd();
@@ -3530,6 +3638,7 @@ void _start(void) {
 
         if (strcmp(cmd, "logout") == 0 || strcmp(cmd, "exit") == 0) {
             println("Logging out...");
+            session_end_request();
             current_login_uid = 0;
             for (int i = 0; i < 32; i++) current_login_name[i] = 0;
             do_login();

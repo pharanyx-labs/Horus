@@ -75,6 +75,7 @@ open. The account of each is in its pull requests.
 
 | Item | Delivered |
 |---|---|
+| 5.2 Authenticated metadata on the current format (LIMITATIONS 1.30, D2) | The inode bitmap, block bitmap and inode table are leaves of the Merkle tree, checked in the block layer on every read and carried to the root on every write, and sealed with the block AEAD; indirect pointer blocks are sealed too; the root binds the superblock's layout and flags. Format v14: an older volume is refused with a message. Three findings of the same kind closed with it (LIMITATIONS 1.35, 1.36, 1.37), and the delete that overflowed the journal (2.29) (S143). 2026-10-14, #575 |
 | 5.1 Revocable pipe ends (LIMITATIONS 1.14) | A spawned child's stdio end is derived from the spawner's, `SYS_PIPE`'s ends carry `REVOKE`, and a revoke releases the ends it removed from the pipe table under `cap_lock` (S134). 2026-10-13, #558 |
 | 2.26 `rotate_keys` withdrawn (LIMITATIONS 2.26, D14) | It changed no key; the shell command is gone and `SYS_ROTATE_KEYS` answers `SYS_ERR_NOSYS` to everyone. Real rotation of the volume key comes with filesystem phase 2. 2026-10-14, #572 |
 | 5.13 A pipe end that cannot outlive its pipe | A pipe end's object carries its pipe slot's generation beside the index, and every pipe operation (I/O, count, release, the revocation tally's release) compares it under `pipe_lock`, so an end left over from a freed pipe reaches nothing, not the next pipe to take the slot (S139). 2026-10-14, #571 |

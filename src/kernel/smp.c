@@ -744,6 +744,17 @@ void smp_bringup(void) {
      * image, with the host restoring a genuine past state between them. */
     { extern void merkle_selftest(void); merkle_selftest();
       for (;;) __asm__ volatile ("hlt"); }
+#elif defined(FREEBATCH_SELFTEST)
+    /* Deleting a file across more bitmap blocks than the journal holds
+     * succeeds, in batches (LIMITATIONS 2.29). One boot on a 4 GiB image. */
+    { extern void freebatch_selftest(void); freebatch_selftest();
+      for (;;) __asm__ volatile ("hlt"); }
+#elif defined(SPAN_SELFTEST)
+    /* The plaintext metadata span, pointer blocks and superblock geometry are
+     * authenticated (LIMITATIONS 1.30): three boots on one image, with the host
+     * editing the disk between them. */
+    { extern void span_selftest(void); span_selftest();
+      for (;;) __asm__ volatile ("hlt"); }
 #elif defined(META_CRASH_SELFTEST)
     /* Arm A of docs/design/meta-cache-merkle.md: a committed metadata update is
      * durable across a crash whether or not its cache entry was evicted first.

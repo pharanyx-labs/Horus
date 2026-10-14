@@ -54,7 +54,15 @@ static void my_strncpy(char *dst, const char *src, size_t n) {
 static uint32_t g_unlocked_slot = 0;
 static uint32_t g_unlocked_uid  = 0;
 
-#define STORAGE_VERSION 13  /* v13: the superblock carries rollback_gen and
+#define STORAGE_VERSION 14  /* v14: the METADATA IS AUTHENTICATED (docs/LIMITATIONS.md
+                             * 1.30). The inode bitmap, block bitmap and inode table
+                             * are leaves of the Merkle tree; the root binds the
+                             * superblock's geometry and flags as well as the
+                             * generation; and indirect pointer blocks are sealed
+                             * with the block AEAD. Every one of those changes the
+                             * bytes a v13 volume would have to carry, so a v13
+                             * volume is refused with a message, never mounted.
+                             * v13: the superblock carries rollback_gen and
                              * rollback_anchored, and the Merkle ROOT binds the
                              * generation -- so the root of a v12 volume does not
                              * verify under v13's rule even where the bytes are
@@ -367,11 +375,12 @@ static void meta_cache_reset(void);
 static int  merkle_verify_leaf(uint64_t meta_blk, const uint8_t *img);
 static int  merkle_update_leaf(uint64_t meta_blk, const uint8_t *img);
 static int  merkle_flush_all(void);
-static int  merkle_root_hash(uint64_t gen, const uint8_t *top_img,
+static int  merkle_root_hash(const struct fs_superblock *sb, const uint8_t *top_img,
                              const uint8_t *mac_key, uint32_t levels,
                              uint8_t out32[32]);
 static void merkle_drop_dirty(void);
 static void merkle_cache_reset(void);
+static int  pm_leaf_of(const struct fs_superblock *sb, uint64_t block, uint64_t *leaf);
 /* Is a journal transaction open? The transaction state is declared further down
  * with the journal itself; the crypto layer above needs to know whether there is
  * a commit coming that will write its dirty line back for it. */
@@ -544,6 +553,74 @@ int storage_decrypt_block(uint64_t phys, uint64_t ino, uint64_t block, void *buf
     return (rc == 0) ? 0 : -1;
 }
 
+/* ---- pointer blocks, sealed like data (v14, LIMITATIONS 1.30) ------------
+ *
+ * An indirect pointer block was the one part of a file stored in the clear with
+ * no MAC: it held block numbers rather than file data, so it was not sealed. But
+ * a block number is what decides WHICH ciphertext a read opens, and a freed
+ * block's nonce and tag are left in place (storage_free_inode_blocks says why),
+ * so an attacker with the disk could point a pointer entry at a block that held
+ * the same logical block of the same file at an earlier time: it decrypted, and
+ * the file served stale contents with nothing refused.
+ *
+ * So a pointer block is sealed with the same AEAD, under the inode it belongs to
+ * and an identity that no data block can have. The nonce and tag live in the
+ * metadata region like any block's, so the Merkle tree covers their freshness
+ * too, and the block numbers stop being readable off the disk as a side effect.
+ *
+ * THE IDENTITY. Data blocks are sealed under their logical block number, which
+ * is below 2^28 for the largest file the mapping can describe. A pointer block
+ * is sealed under PTR_BLOCK_TAG | tree << 60 | depth << 56 | base, where `tree`
+ * is which root it hangs from (0 single, 1 double, 2 triple), `depth` the levels
+ * of pointer block below it, and `base` the first entry it covers, counted from
+ * that root. No two pointer blocks of one inode share all three, and the tag bit
+ * keeps the whole space apart from data. */
+#define PTR_BLOCK_TAG  (1ull << 63)
+
+static int do_block_read(uint64_t block, void *buf);
+static int do_block_write(uint64_t block, const void *buf);
+
+static uint64_t ptr_block_id(unsigned tree, unsigned depth, uint64_t base)
+{
+    return PTR_BLOCK_TAG | ((uint64_t)(tree & 7u) << 60)
+                         | ((uint64_t)(depth & 15u) << 56)
+                         | (base & ((1ull << 56) - 1));
+}
+
+/* Read and open one pointer block. Non-zero means it did not authenticate, or
+ * could not be read, and the caller treats the mapping it would have given as
+ * absent: there is no path that uses a pointer the volume did not vouch for. */
+static int ptr_block_read(struct mounted_fs *mfs, uint64_t ino, uint64_t id,
+                          uint64_t phys, uint8_t *buf)
+{
+    (void)mfs;
+    if (do_block_read(phys, buf) != 0) return -1;
+#ifdef POINTER_BLOCKS_UNSEALED
+    /* THE DEFECT: the v13 behaviour, pointer blocks taken off the medium as
+     * they stand. Paired with the write below, so the volume is consistent
+     * with itself and only an edit made behind the kernel's back differs. */
+    (void)ino; (void)id;
+    return 0;
+#else
+    return storage_decrypt_block(phys, ino, id, buf);
+#endif
+}
+
+/* Seal `buf` IN PLACE and write it. The caller's copy is ciphertext afterwards,
+ * which every caller is written for: each writes a pointer block as the last
+ * thing it does with it, or clears the buffer before using it again. */
+static int ptr_block_write(struct mounted_fs *mfs, uint64_t ino, uint64_t id,
+                           uint64_t phys, uint8_t *buf)
+{
+    (void)mfs;
+#ifndef POINTER_BLOCKS_UNSEALED
+    if (storage_encrypt_block(phys, ino, id, buf) != 0) return -1;
+#else
+    (void)ino; (void)id;
+#endif
+    return do_block_write(phys, buf);
+}
+
 struct block_device *storage_get_default_device(void) {
     return current_bd;
 }
@@ -641,7 +718,18 @@ static int raw_block_flush(void) {
  * never the journal itself). Staged data blocks are already ciphertext; staged
  * metadata is plaintext exactly as it lives on disk — no new disclosure. */
 #define JOURNAL_MAGIC     0x4C52574Au        /* "JWRL" */
-#define JOURNAL_DATA_MAX  16                  /* max home sectors one txn may touch */
+/* THE LARGEST TRANSACTION, derived (v14). storage_write_file_block on the first
+ * block of a triple-indirect file allocates three pointer blocks and the data
+ * block: 4 data-region writes, their bitmap bits in at most 2 bitmap blocks and
+ * their nonces in at most 2 nonce/tag blocks, the inode's table block and the
+ * superblock -- 10 -- plus the tree nodes those 5 leaves dirty: at most 5 at
+ * level 0, 3 at level 1 on a 16 GiB volume, and the top, 19 in all. Before the
+ * span's leaves were in the tree the same count was 15, which is why 16 was
+ * enough and is not now. Measured on the 16 GiB gate: 14, with no boundary
+ * straddled. 24 leaves room for the straddles; the buffers this sizes cost no
+ * more .bss than 16 did, because journal_recover now replays out of g_txn's
+ * buffer instead of a static array of its own. */
+#define JOURNAL_DATA_MAX  24                  /* max home sectors one txn may touch */
 #define JOURNAL_BLOCKS    (1 + JOURNAL_DATA_MAX)   /* header sector + data sectors */
 
 struct journal_header {
@@ -666,25 +754,185 @@ static uint64_t g_journal_seq = 1;
 /* HMAC preimage scratch (seq||count||targets||data), guarded by storage_lock. */
 static uint8_t g_jscratch[8 + 4 + JOURNAL_DATA_MAX * 8 + JOURNAL_DATA_MAX * BLOCK_SIZE];
 
+/* ---- the metadata span: under the tree, and sealed (v14, LIMITATIONS 1.30, 1.35)
+ *
+ * The inode bitmap, the block bitmap and the inode table are leaves of the
+ * Merkle tree (merkle_leaves), and every block of them the kernel writes is
+ * sealed with the block AEAD. This is where both are enforced, and it is the
+ * ONLY place: every read and write of those blocks goes through do_block_read
+ * and do_block_write, so no caller can reach one without them, and a new caller
+ * added later gets them without knowing they exist.
+ *
+ *   READ. A block read from the medium is trusted only if it hashes to the leaf
+ *   the tree records for it, on the path from the root. A forged block is
+ *   refused, and so is a genuine earlier state of the block (the parent chain).
+ *   A block staged in the open transaction is not re-checked: this kernel wrote
+ *   it moments ago, and it has not been to the disk. Then it is opened (below).
+ *
+ *   WRITE. The block is sealed, and the hash of the SEALED bytes is carried up
+ *   to the root in the same transaction. A write with no transaction open gets
+ *   one of its own, so a span block, its nonce and its leaf can never reach the
+ *   disk apart: if they could, a crash between them would leave a block the
+ *   tree refuses, which at the next mount looks exactly like tampering.
+ *
+ * WHY SEALED AS WELL AS IN THE TREE (1.35). The tree stops an edit; it does not
+ * stop a read. In the clear, the table gave anyone holding the disk every file's
+ * size, owner, mode and link count and where its first blocks are, and the
+ * bitmaps which blocks are in use. A span block is sealed under SPAN_INO and its
+ * own physical number, an identity no file block can have, with its nonce and
+ * tag in the metadata region like any block's.
+ *
+ * ONE BLOCK MAY STILL BE IN THE CLEAR: one the format wrote and nothing has
+ * written since. The format lays the span down before a key schedule exists to
+ * seal it under (the root inode, the root's bitmap bit, zeros, and whatever an
+ * unzeroed table block held), so its entry in the metadata region says "absent",
+ * and an absent entry means "the format's image": served as it stands, vouched
+ * for by its leaf. The entry is itself a leaf of the tree, so an attacker cannot
+ * mark a sealed block absent to have its ciphertext served raw. What such a block
+ * discloses is the format's own contents: an empty root and zeros.
+ *
+ * With no volume mounted there is no tree and nothing to check (the format
+ * writes the span with bd directly before building the tree). A volume that is
+ * mounted but not unlocked has a tree and no key, so a span block cannot be
+ * vouched for and is refused.
+ *
+ * METADATA_SPAN_UNCHECKED=1 is format v13's span: neither checked nor sealed,
+ * so the tampered inode is served (make smoke-meta-span-control).
+ * METADATA_SPAN_UNSEALED=1 keeps the check and drops the seal, so the table is
+ * readable off the image (make smoke-meta-span-plain-control). */
+#define SPAN_INO  ((uint64_t)-1)      /* never an inode number: inode_count is far below */
+
+static uint64_t g_span_refusals;
+uint64_t storage_span_refusals(void) { return g_span_refusals; }
+
+/* 1 if `block` is in the mounted volume's span (and *leaf names its leaf), 0 if
+ * the span rule does not apply to it, -1 if it does and cannot be honoured. */
+static int span_leaf(uint64_t block, uint64_t *leaf)
+{
+    struct mounted_fs *mfs = storage_get_mounted_fs();
+    if (!mfs || !mfs->mounted) return 0;
+    if (!pm_leaf_of(&mfs->sb, block, leaf)) return 0;
+    if (!mfs->unlocked || mfs->sb.merkle_start == 0) return -1;
+    return 1;
+}
+
+/* The largest number of home blocks one transaction has staged, since boot. The
+ * span's leaves put more tree nodes into a transaction than the nonce leaves
+ * alone did, and JOURNAL_DATA_MAX is a hard limit, so the figure is measured
+ * rather than argued; the 16 GiB and span gates print it from the boots that
+ * write. */
+static int g_txn_highwater;
+int storage_journal_highwater(void) { return g_txn_highwater; }
+
+/* Batches a delete committed early to stay inside the journal (LIMITATIONS 2.29).
+ * The witness asserts it is non-zero, or its file never needed a second batch. */
+static uint64_t g_free_batches;
+uint64_t storage_free_batches(void) { return g_free_batches; }
+
+/* Open a span block in place: decrypt it if its entry in the metadata region is
+ * present, serve it as it stands if the format wrote it and nothing has since
+ * (see the block comment above). Non-zero means refused. */
+static int span_open(uint64_t phys, uint8_t *buf)
+{
+#if defined(METADATA_SPAN_UNSEALED) || defined(METADATA_SPAN_UNCHECKED)
+    (void)phys; (void)buf;
+    return 0;
+#else
+    spin_lock(&storage_lock);
+    struct meta_cache_line *l = meta_cache_get(phys / META_ENTRIES_PER_BLOCK);
+    int present = l ? (meta_entry_in(l, phys)->present != 0) : -1;
+    spin_unlock(&storage_lock);
+    if (present < 0) return -1;
+    if (present == 0) return 0;          /* the format's image, vouched for by its leaf */
+    return storage_decrypt_block(phys, SPAN_INO, phys, buf);
+#endif
+}
+
 static int do_block_read(uint64_t block, void *buf) {
+    int staged = 0;
     if (g_txn.active) {
         for (int i = g_txn.n - 1; i >= 0; i--)          /* newest staged write wins */
-            if (g_txn.target[i] == block) { my_memcpy(buf, g_txn.data[i], BLOCK_SIZE); return 0; }
+            if (g_txn.target[i] == block) {
+                my_memcpy(buf, g_txn.data[i], BLOCK_SIZE);
+                staged = 1;
+                break;
+            }
     }
-    return raw_block_read(block, buf);
+    if (!staged && raw_block_read(block, buf) != 0) return -1;
+
+    uint64_t leaf;
+    int span = span_leaf(block, &leaf);
+    if (span == 0) return 0;
+#ifndef METADATA_SPAN_UNCHECKED
+    if (span < 0 || (!staged && merkle_verify_leaf(leaf, buf) != 0) ||
+        span_open(block, (uint8_t *)buf) != 0) {
+        /* Never hand back the bytes that failed: a caller that ignores the
+         * return code (and a few do, on paths that only ever free) must not be
+         * able to act on an inode the tree refused. */
+        my_memset(buf, 0, BLOCK_SIZE);
+        g_span_refusals++;
+        return -1;
+    }
+#else
+    /* THE DEFECT: the span is read straight off the medium, as format v13 read
+     * it. The leaf is still UPDATED on every write, so the tree stays consistent
+     * and nothing else notices; only an edit made behind the kernel's back gets
+     * through, which is exactly the attack. */
+    (void)leaf;
+#endif
+    return 0;
+}
+
+static void journal_begin(void);
+static void journal_abort(void);
+static int  journal_commit(void);
+
+/* Stage `buf` for `block` in the open transaction and return the slot it is in,
+ * or -1 on overflow. */
+static int stage_slot(uint64_t block, const void *buf) {
+    for (int i = 0; i < g_txn.n; i++)                   /* coalesce repeat writes to a block */
+        if (g_txn.target[i] == block) { my_memcpy(g_txn.data[i], buf, BLOCK_SIZE); return i; }
+    if (g_txn.n >= JOURNAL_DATA_MAX) { g_txn.overflow = 1; return -1; }
+    g_txn.target[g_txn.n] = block;
+    my_memcpy(g_txn.data[g_txn.n], buf, BLOCK_SIZE);
+    g_txn.n++;
+    if (g_txn.n > g_txn_highwater) g_txn_highwater = g_txn.n;
+    return g_txn.n - 1;
+}
+
+static int stage_block(uint64_t block, const void *buf) {
+    return stage_slot(block, buf) < 0 ? -1 : 0;
 }
 
 static int do_block_write(uint64_t block, const void *buf) {
-    if (g_txn.active) {
-        for (int i = 0; i < g_txn.n; i++)               /* coalesce repeat writes to a block */
-            if (g_txn.target[i] == block) { my_memcpy(g_txn.data[i], buf, BLOCK_SIZE); return 0; }
-        if (g_txn.n >= JOURNAL_DATA_MAX) { g_txn.overflow = 1; return -1; }
-        g_txn.target[g_txn.n] = block;
-        my_memcpy(g_txn.data[g_txn.n], buf, BLOCK_SIZE);
-        g_txn.n++;
-        return 0;
+    uint64_t leaf;
+    int span = span_leaf(block, &leaf);
+    if (span < 0) return -1;
+    if (span == 0) {
+        if (g_txn.active) return stage_block(block, buf);
+        return raw_block_write(block, buf);
     }
-    return raw_block_write(block, buf);
+
+    /* A span block. Its own transaction if the caller has none, so the block
+     * and its leaf commit together whatever the caller remembered to do. */
+    int own = !g_txn.active;
+    if (own) journal_begin();
+    /* Staged as plaintext and sealed IN THE SLOT, so the caller's copy stays
+     * plaintext (every caller goes on using it) and no buffer of our own is
+     * needed. A seal that fails leaves plaintext in the slot, and the
+     * transaction is then aborted or marked so that it cannot commit: nothing
+     * unsealed reaches the journal, let alone home. */
+    int slot = stage_slot(block, buf);
+    int bad = (slot < 0);
+#if !defined(METADATA_SPAN_UNSEALED) && !defined(METADATA_SPAN_UNCHECKED)
+    if (!bad && storage_encrypt_block(block, SPAN_INO, block, g_txn.data[slot]) != 0) bad = 1;
+#endif
+    if (bad || merkle_update_leaf(leaf, g_txn.data[slot]) != 0) {
+        if (own) journal_abort();
+        else     g_txn.overflow = 1;      /* the caller's commit must not succeed */
+        return -1;
+    }
+    return own ? journal_commit() : 0;
 }
 
 static int journal_txn_open(void) { return g_txn.active; }
@@ -763,12 +1011,19 @@ static int journal_commit(void) {
      * written (failure mode E2). */
 #if !defined(META_CACHE_NO_WRITEBACK) && !defined(META_CACHE_WB_OUTSIDE_TXN)
     if (meta_cache_flush_all() != 0) { journal_abort(); return -1; }
+#endif
     /* The tree nodes the flush above dirtied travel in the same transaction. A
      * node written outside it would leave the root promising a metadata block
      * that a crash rolled back -- the same class of tear the journal exists to
-     * prevent, one layer up. */
+     * prevent, one layer up.
+     *
+     * OUTSIDE the arms' #if since format v14, and deliberately: the span's
+     * writes dirty tree nodes inside the transaction too (do_block_write), and
+     * the superblock carrying the root they produce is already staged. The two
+     * arms are about the METADATA LINES' write-back; compiling this out with
+     * them left the root staged without its nodes, so their second boot refused
+     * to unlock at all instead of showing the lost nonce they exist to show. */
     if (merkle_flush_all() != 0)    { journal_abort(); return -1; }
-#endif
 
     if (g_txn.n == 0)   { g_txn.active = 0; return 0; }
 
@@ -1088,7 +1343,11 @@ static int journal_recover(struct mounted_fs *mfs)
 
     /* Load the staged data and re-derive the HMAC over exactly what we would
      * apply; a torn/forged journal fails here and is discarded. */
-    static uint8_t jdata[JOURNAL_DATA_MAX][BLOCK_SIZE];
+    /* g_txn's buffer, not a static array of its own: recovery runs at unlock,
+     * before anything can open a transaction, so the buffer is free, and a
+     * second JOURNAL_DATA_MAX-block array would be .bss spent on nothing. */
+    if (g_txn.active) return 0;
+    uint8_t (*jdata)[BLOCK_SIZE] = g_txn.data;
     for (uint32_t i = 0; i < hdr.count; i++)
         if (raw_block_read(jstart + 1 + i, jdata[i]) != 0) goto discard;
 
@@ -1161,11 +1420,11 @@ static uint8_t g_mac_pre[8 + BLOCK_SIZE];   /* same serialisation as g_jscratch 
  * one block. Derived rather than stored: two numbers that can disagree are one
  * too many, and this is the derivation both format and mount use. Returns the
  * number of levels, or 0 if the volume is outside what the tree can describe. */
-static uint32_t merkle_layout(uint64_t meta_blocks, uint64_t *counts)
+static uint32_t merkle_layout(uint64_t leaves, uint64_t *counts)
 {
-    if (meta_blocks == 0) return 0;
+    if (leaves == 0) return 0;
     uint32_t levels = 0;
-    uint64_t n = (meta_blocks + MERKLE_FANOUT - 1) / MERKLE_FANOUT;
+    uint64_t n = (leaves + MERKLE_FANOUT - 1) / MERKLE_FANOUT;
     for (;;) {
         if (levels >= MERKLE_MAX_LEVELS) return 0;
         counts[levels++] = n;
@@ -1175,11 +1434,59 @@ static uint32_t merkle_layout(uint64_t meta_blocks, uint64_t *counts)
     return levels;
 }
 
+/* THE TREE'S LEAVES (v14, docs/LIMITATIONS.md 1.30). The first sb->meta_blocks
+ * are the nonce/tag blocks, as they always were. After them comes one leaf for
+ * every block of the PLAINTEXT METADATA SPAN, [inode_bitmap_start, data_start):
+ * the inode bitmap, the block bitmap and the inode table, which the format lays
+ * out contiguously and in that order.
+ *
+ * WHY THE SPAN IS IN THE TREE. Until v14 these blocks were written in the clear
+ * with no MAC at all, so anyone holding the disk could rewrite an inode's owner,
+ * mode, size or block pointers, or the allocation bitmaps, and the volume served
+ * the edit as its own. Data blocks were sealed; what said WHOSE they were and
+ * WHO may open them was not. Each block of the span is now hashed into the same
+ * tree as the nonces, under the same generation-bound root, so a forged block
+ * and a rewound one are both refused at first use (do_block_read).
+ *
+ * 0 means "no tree can describe this", and every caller fails closed on it: a
+ * superblock whose span is empty or inverted is malformed, not merely small. */
+static uint64_t merkle_leaves(const struct fs_superblock *sb)
+{
+    if (sb->meta_blocks == 0 || sb->data_start <= sb->inode_bitmap_start) return 0;
+    return (uint64_t)sb->meta_blocks + (sb->data_start - sb->inode_bitmap_start);
+}
+
+/* Does the tree the geometry describes fit the node region the superblock
+ * reserves for it? The format sizes that region from a bound (see
+ * storage_format_sealed), so the region can be a block or two larger than the
+ * tree; never smaller, or the top levels would land in the journal. */
+static int merkle_tree_fits(const struct fs_superblock *sb)
+{
+    uint64_t counts[MERKLE_MAX_LEVELS];
+    uint32_t levels = merkle_layout(merkle_leaves(sb), counts);
+    if (levels == 0) return 0;
+    uint64_t nodes = 0;
+    for (uint32_t l = 0; l < levels; l++) nodes += counts[l];
+    return nodes <= sb->merkle_blocks;
+}
+
+/* Is `block` in the plaintext metadata span, and if so which leaf records it?
+ * The leaf is a function of the block's PHYSICAL position, and that is safe only
+ * because the root binds the geometry that gives positions their meaning (see
+ * merkle_root_hash): with inode_table_start free to move, inode N would read
+ * another inode's genuine slot and every per-block check would pass. */
+static int pm_leaf_of(const struct fs_superblock *sb, uint64_t block, uint64_t *leaf)
+{
+    if (block < sb->inode_bitmap_start || block >= sb->data_start) return 0;
+    *leaf = (uint64_t)sb->meta_blocks + (block - sb->inode_bitmap_start);
+    return 1;
+}
+
 /* First block of `level` within the node region. Levels are contiguous from 0. */
 static uint64_t merkle_level_base(const struct fs_superblock *sb, uint32_t level)
 {
     uint64_t counts[MERKLE_MAX_LEVELS];
-    uint32_t levels = merkle_layout(sb->meta_blocks, counts);
+    uint32_t levels = merkle_layout(merkle_leaves(sb), counts);
     uint64_t base = sb->merkle_start;
     for (uint32_t l = 0; l < level && l < levels; l++) base += counts[l];
     return base;
@@ -1188,7 +1495,8 @@ static uint64_t merkle_level_base(const struct fs_superblock *sb, uint32_t level
 /* The hash recorded for one node or leaf. The tag and the (level, index) pair
  * are inside the preimage, so a node cannot be reused at another position and a
  * leaf's hash can never collide with an interior node's. Level 0 here means "a
- * metadata block"; level k+1 means "a node block of level k". */
+ * leaf" (a nonce/tag block, or a block of the plaintext metadata span); level
+ * k+1 means "a node block of level k". */
 static int merkle_hash(uint32_t level, uint64_t index, const uint8_t *mac_key,
                        const uint8_t *img, uint8_t out32[32])
 {
@@ -1329,7 +1637,7 @@ static struct merkle_line *merkle_node(uint32_t level, uint64_t index)
     if (!mfs || !mfs->mounted || mfs->sb.merkle_start == 0) return NULL;
 
     uint64_t counts[MERKLE_MAX_LEVELS];
-    uint32_t levels = merkle_layout(mfs->sb.meta_blocks, counts);
+    uint32_t levels = merkle_layout(merkle_leaves(&mfs->sb), counts);
     if (levels == 0 || level >= levels || index >= counts[level]) return NULL;
 
     /* Each ancestor's index, from the node wanted up to the top. */
@@ -1354,7 +1662,7 @@ static struct merkle_line *merkle_node(uint32_t level, uint64_t index)
             if (l == top) {
                 /* The top node is judged against the generation-bound root, so a
                  * superblock whose generation was edited does not verify. */
-                if (merkle_root_hash(mfs->sb.rollback_gen, line->img,
+                if (merkle_root_hash(&mfs->sb, line->img,
                                      mfs->meta_mac_key, levels, root_want) != 0) return NULL;
                 for (int i = 0; i < 32; i++) want[i] = root_want[i];
                 have = mfs->sb.meta_root;
@@ -1417,7 +1725,7 @@ static int merkle_update_leaf(uint64_t meta_blk, const uint8_t *img)
     if (!mfs || !mfs->mounted || mfs->sb.merkle_start == 0) return -1;
 
     uint64_t counts[MERKLE_MAX_LEVELS];
-    uint32_t levels = merkle_layout(mfs->sb.meta_blocks, counts);
+    uint32_t levels = merkle_layout(merkle_leaves(&mfs->sb), counts);
     if (levels == 0) return -1;
 
     uint8_t h[32];
@@ -1436,7 +1744,7 @@ static int merkle_update_leaf(uint64_t meta_blk, const uint8_t *img)
         if (l + 1 == levels) {
             /* The top node: its hash is wrapped with the generation before it
              * becomes the root, so the two cannot be separated. */
-            if (merkle_root_hash(mfs->sb.rollback_gen, line->img,
+            if (merkle_root_hash(&mfs->sb, line->img,
                                  mfs->meta_mac_key, levels, h) != 0) return -1;
         } else if (merkle_hash(l + 1, node_idx, mfs->meta_mac_key, line->img, h) != 0) {
             return -1;
@@ -1483,7 +1791,7 @@ static int merkle_build(struct block_device *bd, struct fs_superblock *sb,
                         const uint8_t *mac_key, const uint8_t *leaf_img)
 {
     uint64_t counts[MERKLE_MAX_LEVELS];
-    uint32_t levels = merkle_layout(sb->meta_blocks, counts);
+    uint32_t levels = merkle_layout(merkle_leaves(sb), counts);
     if (levels == 0) return -1;
 
     static uint8_t img[BLOCK_SIZE];
@@ -1493,13 +1801,14 @@ static int merkle_build(struct block_device *bd, struct fs_superblock *sb,
     /* THE WORK IS ONE HMAC PER CHILD, so that is what the panel counts. On a
      * 16 GiB volume that is 32,768 leaf hashes of 4 KiB each: seconds of CPU,
      * not minutes of disk, but still long enough to need a moving bar. */
-    uint64_t total_children = sb->meta_blocks;
+    const uint64_t leaves = merkle_leaves(sb);
+    uint64_t total_children = leaves;
     for (uint32_t l = 1; l < levels; l++) total_children += counts[l - 1];
     uint64_t done_children = 0;
 
     uint64_t base = sb->merkle_start;
     for (uint32_t l = 0; l < levels; l++) {
-        uint64_t children = (l == 0) ? sb->meta_blocks : counts[l - 1];
+        uint64_t children = (l == 0) ? leaves : counts[l - 1];
         uint64_t child_base = (l == 0) ? sb->meta_start : base - counts[l - 1];
         for (uint64_t n = 0; n < counts[l]; n++) {
             my_memset(node, 0, BLOCK_SIZE);
@@ -1509,6 +1818,16 @@ static int merkle_build(struct block_device *bd, struct fs_superblock *sb,
                 const uint8_t *src = leaf_img;
                 if (l > 0) {
                     if (bd->read_block(bd, child_base + child, img) != 0) return -1;
+                    src = img;
+                } else if (child >= sb->meta_blocks) {
+                    /* A leaf of the plaintext metadata span (v14). READ BACK,
+                     * unlike the nonce/tag leaves: the span is not one uniform
+                     * image (the root inode and its bitmap bit are in it, and an
+                     * unzeroed table block holds whatever the disk held), and it
+                     * is a few hundred blocks against tens of thousands, so
+                     * hashing what is on the medium costs nothing worth saving. */
+                    uint64_t blk = sb->inode_bitmap_start + (child - sb->meta_blocks);
+                    if (bd->read_block(bd, blk, img) != 0) return -1;
                     src = img;
                 }
                 if (merkle_hash(l, child, mac_key, src, h) != 0) return -1;
@@ -1534,7 +1853,7 @@ static int merkle_build(struct block_device *bd, struct fs_superblock *sb,
     /* The root is the hash of the single top node block, which merkle_build has
      * just written -- read back like every interior level above. */
     if (bd->read_block(bd, base - 1, node) != 0) return -1;
-    if (merkle_root_hash(sb->rollback_gen, node, mac_key, levels, sb->meta_root) != 0) return -1;
+    if (merkle_root_hash(sb, node, mac_key, levels, sb->meta_root) != 0) return -1;
     return 0;
 }
 
@@ -1549,19 +1868,73 @@ static int merkle_build(struct block_device *bd, struct fs_superblock *sb,
  * sb.rollback_gen against the TPM counter, and if the field were unauthenticated
  * the attacker would simply write the current counter value into the old
  * superblock and keep everything else. */
-static int merkle_root_hash(uint64_t gen, const uint8_t *top_img,
+/*
+ * THE ROOT ALSO BINDS THE SUPERBLOCK'S GEOMETRY AND FLAGS (v14).
+ *
+ * Every leaf is bound to its index, and an index means something only through
+ * the superblock fields that lay the volume out. Those fields were not
+ * authenticated by anything. With the plaintext metadata span in the tree that
+ * stops being harmless: moving inode_table_start one block on makes inode N read
+ * the genuine, correctly-hashed slot of inode N+16, and every per-block check
+ * passes, because every block it reads is authentic -- just not the one asked
+ * for. The same holds for every other start and count.
+ *
+ * rollback_anchored is here for a sharper reason. It decides whether unlock
+ * compares rollback_gen with the TPM counter at all, so an attacker restoring a
+ * whole earlier image could clear it and walk past the anchor (S70) without
+ * touching anything else the root covered.
+ *
+ * What is deliberately NOT bound: rollback_gen, which is bound separately above
+ * and is the field the anchor compares; meta_root, which is this value; and
+ * needs_fsck, which changes without the tree changing and only ever makes the
+ * kernel do MORE checking. The key-slot, TPM-blob and user-table fields are read
+ * before the key exists, so binding them cannot stop them being read; it stops
+ * a volume whose layout was edited from unlocking, which is the refusal that
+ * matters. */
+#define MERKLE_GEOM_FIELDS 24
+static int merkle_root_hash(const struct fs_superblock *sb, const uint8_t *top_img,
                             const uint8_t *mac_key, uint32_t levels,
                             uint8_t out32[32])
 {
     uint8_t node_hash[32];
     if (merkle_hash(levels, 0, mac_key, top_img, node_hash) != 0) return -1;
 
-    uint8_t pre[8 + 8 + 32];
-    const char tag[8] = { 'M','K','R','O','O','T','v','1' };
-    for (int i = 0; i < 8; i++) pre[i] = (uint8_t)tag[i];
-    for (int i = 0; i < 8; i++) pre[8 + i] = (uint8_t)(gen >> (i * 8));
-    my_memcpy(pre + 16, node_hash, 32);
-    return rust_hmac_sha256(mac_key, 32, pre, sizeof(pre), out32);
+#ifndef SUPERBLOCK_GEOMETRY_UNBOUND
+    const uint64_t geom[MERKLE_GEOM_FIELDS] = {
+        sb->magic,              sb->version,            sb->block_size,
+        sb->total_blocks,       sb->meta_start,         sb->meta_blocks,
+        sb->tpm_blob_block,     sb->keyslot_start,      sb->keyslot_blocks,
+        sb->users_start,        sb->users_blocks,       sb->merkle_start,
+        sb->merkle_blocks,      sb->merkle_levels,      sb->journal_start,
+        sb->journal_blocks,     sb->inode_bitmap_start, sb->inode_bitmap_blocks,
+        sb->block_bitmap_start, sb->inode_table_start,  sb->data_start,
+        sb->inode_count,        sb->block_count,
+        /* The three flags share one word: none is wider than a byte's worth. */
+        (uint64_t)sb->rollback_anchored | ((uint64_t)sb->unsealed << 32)
+                                        | ((uint64_t)sb->tpm_mode << 40),
+    };
+    const uint8_t *salt = sb->volume_key_salt;
+#else
+    /* THE DEFECT: v13's root, which binds the generation and nothing else of
+     * the superblock. Every leaf is still checked, so this is the arm for the
+     * one attack per-block checks cannot see: the layout moved under them. */
+    const uint64_t geom[MERKLE_GEOM_FIELDS] = { 0 };
+    static const uint8_t salt[16] = { 0 };
+#endif
+
+    uint8_t pre[8 + 8 + MERKLE_GEOM_FIELDS * 8 + 16 + 32];
+    const char tag[8] = { 'M','K','R','O','O','T','v','2' };
+    size_t p = 0;
+    for (int i = 0; i < 8; i++) pre[p++] = (uint8_t)tag[i];
+    for (int i = 0; i < 8; i++) pre[p++] = (uint8_t)(sb->rollback_gen >> (i * 8));
+    for (int f = 0; f < MERKLE_GEOM_FIELDS; f++)
+        for (int i = 0; i < 8; i++) pre[p++] = (uint8_t)(geom[f] >> (i * 8));
+    /* The salt every key on the volume is diversified by. Editing it already
+     * makes every key wrong; bound so that it fails HERE, as "tampered", rather
+     * than as a volume whose every block mysteriously stopped decrypting. */
+    my_memcpy(pre + p, salt, 16);                p += 16;
+    my_memcpy(pre + p, node_hash, 32);           p += 32;
+    return rust_hmac_sha256(mac_key, 32, pre, p, out32);
 }
 
 /* Recompute the root at the CURRENT sb.rollback_gen and stage the superblock.
@@ -1575,12 +1948,12 @@ static int merkle_reseal_root(void)
     struct mounted_fs *mfs = storage_get_mounted_fs();
     if (!mfs || !mfs->mounted) return -1;
     uint64_t counts[MERKLE_MAX_LEVELS];
-    uint32_t levels = merkle_layout(mfs->sb.meta_blocks, counts);
+    uint32_t levels = merkle_layout(merkle_leaves(&mfs->sb), counts);
     if (levels == 0) return -1;
 
     struct merkle_line *top = merkle_node(levels - 1, 0);
     if (!top) return -1;
-    if (merkle_root_hash(mfs->sb.rollback_gen, top->img,
+    if (merkle_root_hash(&mfs->sb, top->img,
                          mfs->meta_mac_key, levels, mfs->sb.meta_root) != 0) return -1;
     do_block_write(0, &mfs->sb);
     return 0;
@@ -1596,7 +1969,7 @@ static int merkle_verify_root(void)
     struct mounted_fs *mfs = storage_get_mounted_fs();
     if (!mfs || !mfs->mounted) return -1;
     uint64_t counts[MERKLE_MAX_LEVELS];
-    uint32_t levels = merkle_layout(mfs->sb.meta_blocks, counts);
+    uint32_t levels = merkle_layout(merkle_leaves(&mfs->sb), counts);
     if (levels == 0) return -1;
     return merkle_node(levels - 1, 0) ? 0 : -1;
 }
@@ -2617,12 +2990,14 @@ int storage_write_inode(struct block_device *bd, struct fs_superblock *sb,
  * witness does not have to depend on the first one's flag being set. */
 #if defined(MERKLE_SELFTEST) || defined(FSCKREF_SELFTEST) || \
     defined(BIGVOL_SELFTEST)  || defined(ALLOCHINT_SELFTEST) || \
-    defined(META_CRASH_SELFTEST)
+    defined(META_CRASH_SELFTEST) || defined(SPAN_SELFTEST) || \
+    defined(FREEBATCH_SELFTEST)
 #define STORAGE_TEST_HOOKS 1
 #endif
 
 #ifdef STORAGE_TEST_HOOKS
-static uint64_t get_physical_block(struct mounted_fs *mfs, struct on_disk_inode *inode,
+static uint64_t get_physical_block(struct mounted_fs *mfs, uint64_t ino,
+                                   struct on_disk_inode *inode,
                                    uint64_t logical_block, int allocate);
 /* ---- Arm B's harness (docs/design/meta-cache-merkle.md §3) ------------------
  *
@@ -2657,7 +3032,7 @@ uint64_t storage_test_phys_block(struct mounted_fs *mfs, uint64_t ino, uint64_t 
 {
     struct on_disk_inode inode;
     if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) return 0;
-    return get_physical_block(mfs, &inode, block, 0);
+    return get_physical_block(mfs, ino, &inode, block, 0);
 }
 
 /* The two disk blocks that together are a consistent past state of one
@@ -2757,9 +3132,13 @@ void storage_test_fill_bitmap_blocks(struct mounted_fs *mfs, uint64_t n)
     my_memset(ones, 0xFF, BLOCK_SIZE);
     uint64_t total = storage_test_bitmap_blocks(mfs);
     if (n > total) n = total;
+    /* Through do_block_write, one transaction per block, since v14: the
+     * bitmap is a leaf of the tree, and a raw write would leave a block the
+     * next read refuses as tampered. Slower than the raw loop by a journal
+     * commit per block, which at the few dozen blocks any witness fills is
+     * nothing next to the half-million allocations it stands in for. */
     for (uint64_t i = 0; i < n; i++)
-        raw_block_write(mfs->sb.block_bitmap_start + i, ones);
-    raw_block_flush();
+        do_block_write(mfs->sb.block_bitmap_start + i, ones);
 }
 
 /* Is this physical block marked allocated in the data bitmap? The fsck witness
@@ -2776,6 +3155,62 @@ int storage_test_block_allocated(struct mounted_fs *mfs, uint64_t phys)
     if (do_block_read(mfs->sb.block_bitmap_start + rel / BITS_PER_BITMAP_BLOCK, bm) != 0)
         return -1;
     return bitmap_test(bm, rel % BITS_PER_BITMAP_BLOCK) ? 1 : 0;
+}
+
+/* Mark every data block below `phys` allocated, in the first data-bitmap block,
+ * so the next allocation lands at `phys` or later. For a witness that needs its
+ * data under a different Merkle node than the metadata span's entries; one
+ * bitmap write rather than thousands of allocations. Returns 0, or -1 if `phys`
+ * is outside the first bitmap block's reach. */
+int storage_test_reserve_until(struct mounted_fs *mfs, uint64_t phys)
+{
+    if (phys <= mfs->sb.data_start) return 0;
+    uint64_t upto = phys - mfs->sb.data_start;
+    if (upto > BITS_PER_BITMAP_BLOCK || upto > mfs->sb.block_count) return -1;
+    static uint8_t bm[BLOCK_SIZE];
+    if (do_block_read(mfs->sb.block_bitmap_start, bm) != 0) return -1;
+    for (uint64_t b = 0; b < upto; b++) bitmap_set(bm, b);
+    return do_block_write(mfs->sb.block_bitmap_start, bm);
+}
+
+/* Move logical block `block` of `ino`, which must be in the single-indirect
+ * range, into a FRESH physical block holding `buf`, and free the block it was
+ * in. The old ciphertext and its nonce and tag stay on the disk, as they do for
+ * any freed block (storage_free_inode_blocks says why), so the old block is a
+ * genuine earlier version of this logical block that still opens: the material
+ * the pointer edit in `make smoke-meta-span` needs, made the way a relocating
+ * rewrite would make it. The fresh block is allocated BEFORE the old one is
+ * freed, or the allocator would hand the old one straight back. Returns the old
+ * physical block, or 0. */
+uint64_t storage_test_relocate_block(struct mounted_fs *mfs, uint64_t ino, uint64_t block,
+                                     const void *buf)
+{
+    if (block < 12 || block >= 12 + PTRS_PER_BLOCK) return 0;
+    static uint8_t ptrs_img[BLOCK_SIZE];
+    static uint8_t data[BLOCK_SIZE];
+    const uint64_t id = ptr_block_id(0, 0, 0);
+
+    journal_begin();
+    struct on_disk_inode inode;
+    if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0 || inode.indirect == 0 ||
+        ptr_block_read(mfs, ino, id, inode.indirect, ptrs_img) != 0) {
+        journal_abort();
+        return 0;
+    }
+    uint64_t *ptrs = (uint64_t *)ptrs_img;
+    uint64_t old = ptrs[block - 12];
+    int64_t fresh = (old != 0) ? storage_alloc_block(mfs->bd, &mfs->sb) : -1;
+    if (fresh < 0) { journal_abort(); return 0; }
+    ptrs[block - 12] = (uint64_t)fresh;
+    my_memcpy(data, buf, BLOCK_SIZE);
+    if (ptr_block_write(mfs, ino, id, inode.indirect, ptrs_img) != 0 ||
+        storage_encrypt_block((uint64_t)fresh, ino, block, data) != 0 ||
+        do_block_write((uint64_t)fresh, data) != 0) {
+        journal_abort();
+        return 0;
+    }
+    storage_free_block(mfs->bd, &mfs->sb, old);
+    return journal_commit() == 0 ? old : 0;
 }
 #endif /* STORAGE_TEST_HOOKS */
 
@@ -3143,24 +3578,6 @@ static int storage_format_sealed(struct block_device *bd,
     /* v8: the sealed user table follows the key slots. */
     sb.users_start        = sb.keyslot_start + KEYSLOT_BLOCKS;
     sb.users_blocks       = USERS_BLOCKS;
-    /* v11: the Merkle node region follows the user table. Sized from the
-     * metadata region, which is itself sized from the device -- so a bigger disk
-     * buys a deeper tree rather than a bigger constant anywhere in RAM. */
-    {
-        uint64_t counts[MERKLE_MAX_LEVELS];
-        uint32_t levels = merkle_layout(sb.meta_blocks, counts);
-        if (levels == 0) return -1;      /* past what the tree can describe */
-        uint64_t total = 0;
-        for (uint32_t l = 0; l < levels; l++) total += counts[l];
-        sb.merkle_start  = sb.users_start + USERS_BLOCKS;
-        sb.merkle_blocks = (uint32_t)total;
-        sb.merkle_levels = levels;
-    }
-    /* Write-ahead redo log sits right after the tree. */
-    sb.journal_start      = sb.merkle_start + sb.merkle_blocks;
-    sb.journal_blocks     = JOURNAL_BLOCKS;
-    uint64_t after_j      = sb.journal_start + JOURNAL_BLOCKS;
-
     /* Geometry is computed from the device size. One bitmap block addresses
      * BLOCK_SIZE*8 bits. BOTH bitmaps span as many blocks as they need:
      *   inode_bitmap : ib_blocks blocks
@@ -3174,7 +3591,11 @@ static int storage_format_sealed(struct block_device *bd,
      * 16 MiB table, one-per-32 is 131072 and 2 MiB. The old ratio was chosen
      * when the cap below made it moot -- inodes were clamped to a single bitmap
      * block, 32768 of them, so a 16 GiB volume would have had one inode per 128
-     * blocks whatever this number said. */
+     * blocks whatever this number said.
+     *
+     * Computed BEFORE the tree is sized (v14), because the inode bitmap and
+     * table are leaves of it now. Neither depends on anything placed above it:
+     * both are functions of `total` alone. */
     const uint64_t BITS_PER_BLOCK = (uint64_t)BLOCK_SIZE * 8;
 
     uint64_t inodes = total / 32;
@@ -3185,6 +3606,34 @@ static int storage_format_sealed(struct block_device *bd,
     if (ib_blocks == 0) ib_blocks = 1;
     sb.inode_count          = inodes;
     sb.inode_bitmap_blocks  = (uint32_t)ib_blocks;
+
+    /* v11: the Merkle node region follows the user table. Sized from the
+     * metadata region, which is itself sized from the device -- so a bigger disk
+     * buys a deeper tree rather than a bigger constant anywhere in RAM.
+     *
+     * v14: SIZED FROM A BOUND, because the leaves now include the block bitmap,
+     * whose length depends on where the data region starts, which depends on how
+     * big this region is. The bound breaks the circle: the bitmap can never need
+     * more than one block per BITS_PER_BLOCK blocks of the whole volume, and the
+     * node count only grows with the leaf count, so a region sized for the bound
+     * holds the tree the real geometry produces. The slack is a block or two of
+     * a region that is a few hundred long. sb.merkle_blocks is the REGION's size;
+     * the per-level counts are always re-derived from the actual leaves. */
+    {
+        uint64_t counts[MERKLE_MAX_LEVELS];
+        uint64_t span_max = ib_blocks + table_blocks
+                          + (total + BITS_PER_BLOCK - 1) / BITS_PER_BLOCK;
+        uint32_t levels = merkle_layout((uint64_t)sb.meta_blocks + span_max, counts);
+        if (levels == 0) return -1;      /* past what the tree can describe */
+        uint64_t nodes = 0;
+        for (uint32_t l = 0; l < levels; l++) nodes += counts[l];
+        sb.merkle_start  = sb.users_start + USERS_BLOCKS;
+        sb.merkle_blocks = (uint32_t)nodes;
+    }
+    /* Write-ahead redo log sits right after the tree. */
+    sb.journal_start      = sb.merkle_start + sb.merkle_blocks;
+    sb.journal_blocks     = JOURNAL_BLOCKS;
+    uint64_t after_j      = sb.journal_start + JOURNAL_BLOCKS;
 
     sb.inode_bitmap_start = after_j;
     sb.block_bitmap_start = after_j + ib_blocks;
@@ -3210,6 +3659,16 @@ static int storage_format_sealed(struct block_device *bd,
     sb.data_start        = sb.inode_table_start + table_blocks;
     if (sb.data_start >= total) return -1;              /* disk too small */
     sb.block_count = data_blocks;
+
+    /* The tree the real geometry produces, which must fit the region the bound
+     * reserved; merkle_tree_fits says so at mount as well, for a superblock this
+     * function did not write. */
+    {
+        uint64_t counts[MERKLE_MAX_LEVELS];
+        uint32_t levels = merkle_layout(merkle_leaves(&sb), counts);
+        if (levels == 0 || !merkle_tree_fits(&sb)) return -1;
+        sb.merkle_levels = levels;
+    }
 
     /* Per-volume HKDF diversifier — random per-format, stable on disk. */
     secure_random_bytes(sb.volume_key_salt, sizeof(sb.volume_key_salt));
@@ -3377,37 +3836,8 @@ static int storage_format_sealed(struct block_device *bd,
         sb.rollback_anchored = 1;
     }
 
-    {
-        uint8_t fmt_mac_key[32];
-        if (derive_meta_mac_key(disk_key, sizeof(disk_key),
-                                sb.volume_key_salt, sizeof(sb.volume_key_salt),
-                                fmt_mac_key) != 0) {
-            secure_zero(disk_key, sizeof(disk_key));
-            return -1;
-        }
-        /* Builds the whole tree over the region just zeroed and leaves its root
-         * in sb.meta_root. `zero` is the buffer every metadata block was written
-         * from, and it has not changed since: bitmap_set marks it further down,
-         * after the tree exists. */
-        int rc = merkle_build(bd, &sb, fmt_mac_key, zero);
-        secure_zero(fmt_mac_key, sizeof(fmt_mac_key));
-        if (rc != 0) { secure_zero(disk_key, sizeof(disk_key)); return -1; }
-    }
-    secure_zero(disk_key, sizeof(disk_key));
-
-    /* FROM HERE ON EVERY WRITE IS CHECKED TOO. These five were the last in the
-     * format whose return codes were dropped, and the superblock is the one that
-     * matters most: a format that reported success over a refused superblock
-     * write left a disk that init then called blank. A refusal now fails the
-     * format, which is the only answer a caller can act on. */
-    if (bd->write_block(bd, 0, &sb) != 0) return -1;
-
-    /* v6: clear the reserved TPM blob block on a password-mode volume. In TPM mode
-     * format_seal_tpm already wrote the sealed blob there — must not wipe it. */
-    if (!want_tpm && bd->write_block(bd, tpm_blob_block, zero) != 0) return -1;
-
     /* Zero the journal region: a cleared header (magic 0) means "no committed
-     * transaction to replay" — a fresh volume has nothing to recover. */
+     * transaction to replay" -- a fresh volume has nothing to recover. */
     console_progress("Preparing the encrypted volume",
                      "Clearing the write-ahead journal, which is what lets a power cut",
                      "leave the volume whole rather than half written.",
@@ -3417,41 +3847,93 @@ static int storage_format_sealed(struct block_device *bd,
         return -1;
     }
 
-    /* Zero every block-bitmap block (the data allocator may span several). */
+    /* THE PLAINTEXT METADATA SPAN IS LAID DOWN BEFORE THE TREE (v14), because
+     * the tree now covers it: merkle_build reads these blocks back and hashes
+     * them as leaves, so whatever is here when it runs is what the volume will
+     * vouch for. Until v14 they were written after the tree, which was harmless
+     * only because nothing checked them. */
     console_progress("Preparing the encrypted volume",
                      "Clearing the maps that record which blocks and which files",
                      "are in use. A fresh volume has none.",
                      0, 0);
+    /* Every block-bitmap block (the data allocator may span several). */
     if (bd_fill(bd, sb.block_bitmap_start, zero, bm_blocks) != 0) {
         secure_zero(disk_key, sizeof(disk_key));
         return -1;
     }
 
-    /* Zero every inode-BITMAP block. The TABLE is not zeroed here: at a 16 GiB
+    /* Every inode-BITMAP block. The TABLE is not zeroed here: at a 16 GiB
      * volume it is 2 MiB written to a PIO disk before the login prompt, and the
      * requirement it served -- an inode sharing a block with a freshly used one
      * must not read back as garbage off a second-hand disk -- is met instead by
      * storage_alloc_inode, which zeros a table block the first time any inode in
-     * it is allocated. The bitmap is what says whether that has happened. */
+     * it is allocated. The bitmap is what says whether that has happened.
+     *
+     * Whatever an unzeroed table block holds is hashed into the tree as it
+     * stands, so it is AUTHENTICATED garbage: nothing can change it unnoticed,
+     * and nothing reads an inode the bitmap does not mark. */
     if (bd_fill(bd, sb.inode_bitmap_start, zero, ib_blocks) != 0) {
         secure_zero(disk_key, sizeof(disk_key));
         return -1;
     }
 
-    /* Root inode 0 is written directly rather than allocated, so the lazy
-     * zeroing above never runs for its table block. Zero it here. */
-    if (bd->write_block(bd, sb.inode_table_start, zero) != 0) return -1;
+    {
+        /* Root inode 0 is written directly rather than allocated, so the lazy
+         * zeroing never runs for its table block: the block is built here, root
+         * in slot 0 and the rest zero. Built in its own buffer and written
+         * with bd, not through storage_write_inode, because that goes through
+         * do_block_write and no volume is mounted for it to belong to. */
+        uint8_t blk[BLOCK_SIZE];
+        my_memset(blk, 0, BLOCK_SIZE);
+        struct on_disk_inode root;
+        my_memset(&root, 0, sizeof(root));
+        root.type = 2;          /* directory */
+        root.mode = 0040755;
+        root.links = 2;
+        my_memcpy(blk, &root, sizeof(root));
+        if (bd->write_block(bd, sb.inode_table_start, blk) != 0) {
+            secure_zero(disk_key, sizeof(disk_key));
+            return -1;
+        }
 
-    /* inode 0 (root) is allocated in the inode bitmap. */
-    bitmap_set(zero, 0);
-    if (bd->write_block(bd, sb.inode_bitmap_start, zero) != 0) return -1;
+        /* inode 0 (root) is allocated in the inode bitmap. */
+        my_memset(blk, 0, BLOCK_SIZE);
+        bitmap_set(blk, 0);
+        if (bd->write_block(bd, sb.inode_bitmap_start, blk) != 0) {
+            secure_zero(disk_key, sizeof(disk_key));
+            return -1;
+        }
+    }
 
-    struct on_disk_inode root;
-    my_memset(&root, 0, sizeof(root));
-    root.type = 2;          /* directory */
-    root.mode = 0040755;
-    root.links = 2;
-    if (storage_write_inode(bd, &sb, 0, &root) != 0) return -1;
+    {
+        uint8_t fmt_mac_key[32];
+        if (derive_meta_mac_key(disk_key, sizeof(disk_key),
+                                sb.volume_key_salt, sizeof(sb.volume_key_salt),
+                                fmt_mac_key) != 0) {
+            secure_zero(disk_key, sizeof(disk_key));
+            return -1;
+        }
+        /* Builds the whole tree over the nonce/tag region just zeroed and the
+         * plaintext span just written, and leaves its root in sb.meta_root.
+         * `zero` is the buffer every nonce/tag block was written from, and it has
+         * not changed since. Every superblock field the root binds is final by
+         * now: the geometry above, the flags with it, the anchor just set. */
+        int rc = merkle_build(bd, &sb, fmt_mac_key, zero);
+        secure_zero(fmt_mac_key, sizeof(fmt_mac_key));
+        if (rc != 0) { secure_zero(disk_key, sizeof(disk_key)); return -1; }
+    }
+    secure_zero(disk_key, sizeof(disk_key));
+
+    /* FROM HERE ON EVERY WRITE IS CHECKED TOO. These were the last in the
+     * format whose return codes were dropped, and the superblock is the one that
+     * matters most: a format that reported success over a refused superblock
+     * write left a disk that init then called blank. A refusal now fails the
+     * format, which is the only answer a caller can act on. */
+    if (bd->write_block(bd, 0, &sb) != 0) return -1;
+
+    /* v6: clear the reserved TPM blob block on a password-mode volume. In TPM mode
+     * format_seal_tpm already wrote the sealed blob there -- must not wipe it. */
+    if (!want_tpm && bd->write_block(bd, tpm_blob_block, zero) != 0) return -1;
 
     /* NO FLUSH HERE, deliberately, and one was tried (2026-09-24). The format
      * is made durable by the first journal commit after it, which the installer
@@ -3489,7 +3971,31 @@ int storage_mount(struct block_device *bd) {
      * has no metadata region (meta_start=0) and would silently serve undecryptable
      * blocks after reboot.  Returning -2 here triggers storage_init to reformat,
      * which is the correct recovery for an incompatible layout. */
-    if (sb->magic != STORAGE_MAGIC || sb->version != STORAGE_VERSION) {
+    if (sb->magic != STORAGE_MAGIC) return -2;
+    if (sb->version != STORAGE_VERSION) {
+        /* SAID, not just refused. A volume of another format is never mounted
+         * unverified: v13 and older carry an inode table and bitmaps that no
+         * tree covers, so there is nothing to check them against, and reading
+         * them as v14 would refuse every block as tampered. The disk is left
+         * untouched; only an install formats it. */
+        print("STORAGE: this volume is format v");
+        print_decimal(sb->version);
+        print(", and this kernel reads only v");
+        print_decimal(STORAGE_VERSION);
+        print("; it is not mounted. Reinstall to use the disk.\n");
+        return -2;
+    }
+
+    /* THE LAYOUT MUST DESCRIBE A TREE THAT FITS ITS REGION (v14). Nothing here
+     * is authenticated yet -- the root that binds these fields is checked at
+     * unlock, which refuses an edited layout whatever this finds -- so this is
+     * about the arithmetic between now and then: a span that is empty, inverted
+     * or past the volume, or a tree larger than the region reserved for it,
+     * would have the leaf mapping and the node offsets computed from nonsense.
+     * Refused here, before any of it is used. */
+    if (sb->inode_bitmap_start >= sb->data_start || sb->data_start > sb->total_blocks ||
+        !merkle_tree_fits(sb)) {
+        println("STORAGE: refusing a volume whose layout does not describe its own tree");
         return -2;
     }
 
@@ -4584,21 +5090,24 @@ static void fsck_mark(uint8_t *referenced, uint64_t p,
 
 /* Mark a pointer block and everything it names. `depth` counts the levels of
  * pointer block BELOW this one: 0 means its entries are data blocks. */
-static void fsck_mark_tree(uint8_t *referenced, uint64_t ptr_blk, unsigned depth,
-                           uint64_t data_start, uint64_t block_count)
+static void fsck_mark_tree(struct mounted_fs *mfs, uint64_t ino, unsigned tree,
+                           uint64_t base, uint8_t *referenced, uint64_t ptr_blk,
+                           unsigned depth, uint64_t data_start, uint64_t block_count)
 {
     if (ptr_blk < data_start || ptr_blk >= data_start + block_count) return;
     if (depth >= FSCK_MAX_DEPTH) return;             /* cannot happen; fail closed */
     bitmap_set(referenced, ptr_blk - data_start);    /* the pointer block itself */
 
     uint8_t *blk = g_fsck_ptr_buf[depth];
-    if (do_block_read(ptr_blk, blk) != 0) return;
+    if (ptr_block_read(mfs, ino, ptr_block_id(tree, depth, base), ptr_blk, blk) != 0) return;
     uint64_t *ptrs = (uint64_t *)blk;
+    uint64_t span = 1;
+    for (unsigned d = 0; d < depth; d++) span *= PTRS_PER_BLOCK;
     for (unsigned k = 0; k < PTRS_PER_BLOCK; k++) {
         if (!ptrs[k]) continue;
         if (depth == 0) fsck_mark(referenced, ptrs[k], data_start, block_count);
-        else            fsck_mark_tree(referenced, ptrs[k], depth - 1,
-                                       data_start, block_count);
+        else            fsck_mark_tree(mfs, ino, tree, base + k * span, referenced,
+                                       ptrs[k], depth - 1, data_start, block_count);
     }
 }
 
@@ -4646,6 +5155,10 @@ static void storage_fsck_pass(struct mounted_fs *mfs)
             uint64_t ib = ino / BITS_PER_BITMAP_BLOCK;
             if (ib != ib_resident) {
                 if (inode_dirty && ib_resident != (uint64_t)-1) {
+                    /* Through do_block_write with no transaction open, so the
+                     * bitmap block gets one of its own and its leaf goes with
+                     * it (v14): fsck's repairs are as authenticated as any
+                     * other write to the span. */
                     do_block_write(mfs->sb.inode_bitmap_start + ib_resident, inode_bitmap);
                     inode_dirty = 0;
                 }
@@ -4673,13 +5186,13 @@ static void storage_fsck_pass(struct mounted_fs *mfs)
             for (int d = 0; d < 12; d++)
                 fsck_mark(referenced, nd->direct[d], data_start, block_count);
             if (nd->indirect)
-                fsck_mark_tree(referenced, nd->indirect, 0, data_start, block_count);
+                fsck_mark_tree(mfs, ino, 0, 0, referenced, nd->indirect, 0, data_start, block_count);
 #ifndef FSCK_SHALLOW_REFS
             if (nd->double_indirect)
-                fsck_mark_tree(referenced, nd->double_indirect, 1,
+                fsck_mark_tree(mfs, ino, 1, 0, referenced, nd->double_indirect, 1,
                                data_start, block_count);
             if (nd->triple_indirect)
-                fsck_mark_tree(referenced, nd->triple_indirect, 2,
+                fsck_mark_tree(mfs, ino, 2, 0, referenced, nd->triple_indirect, 2,
                                data_start, block_count);
 #endif
         }
@@ -5154,11 +5667,20 @@ int storage_create_file(struct mounted_fs *mfs, uint32_t uid, uint32_t gid,
  * `*slot` is the inode field (or parent entry) naming this pointer block, read
  * and written in place, so a newly allocated block is linked by the caller that
  * asked for it rather than by a separate fix-up step. */
-static uint64_t walk_ptr_tree(struct mounted_fs *mfs, uint64_t *slot,
+static uint64_t walk_ptr_tree(struct mounted_fs *mfs, uint64_t ino, unsigned tree,
+                              uint64_t base, uint64_t *slot,
                               unsigned depth, uint64_t index, int allocate)
 {
     struct block_device *bd = mfs->bd;
     struct fs_superblock *sb = &mfs->sb;
+
+    /* One BLOCK_SIZE frame per level, and the recursion is bounded by
+     * FSCK_MAX_DEPTH, so the deepest walk is three frames. The BSP kernel stack
+     * is 16 KiB and #270 already overflowed it once, which is why the bound is a
+     * named constant and not an assumption about how deep files get. */
+    if (depth >= FSCK_MAX_DEPTH) return 0;
+    const uint64_t id = ptr_block_id(tree, depth, base);
+    uint8_t blk[BLOCK_SIZE];
 
     uint64_t ptr_blk = *slot;
     if (ptr_blk == 0) {
@@ -5167,18 +5689,15 @@ static uint64_t walk_ptr_tree(struct mounted_fs *mfs, uint64_t *slot,
         if (got < 0) return 0;
         ptr_blk = (uint64_t)got;
         *slot = ptr_blk;
-        uint8_t zero[BLOCK_SIZE];
-        my_memset(zero, 0, BLOCK_SIZE);
-        do_block_write(ptr_blk, zero);
+        /* A new pointer block is all zeros, sealed like any other. Written now
+         * rather than with its first entry below, so that a block this function
+         * allocated is never on the disk unsealed, whichever way it returns. */
+        my_memset(blk, 0, BLOCK_SIZE);
+        if (ptr_block_write(mfs, ino, id, ptr_blk, blk) != 0) return 0;
+        my_memset(blk, 0, BLOCK_SIZE);
+    } else if (ptr_block_read(mfs, ino, id, ptr_blk, blk) != 0) {
+        return 0;                       /* unreadable or refused: no mapping */
     }
-
-    /* One BLOCK_SIZE frame per level, and the recursion is bounded by
-     * FSCK_MAX_DEPTH, so the deepest walk is three frames. The BSP kernel stack
-     * is 16 KiB and #270 already overflowed it once, which is why the bound is a
-     * named constant and not an assumption about how deep files get. */
-    if (depth >= FSCK_MAX_DEPTH) return 0;
-    uint8_t blk[BLOCK_SIZE];
-    if (do_block_read(ptr_blk, blk) != 0) return 0;
     uint64_t *ptrs = (uint64_t *)blk;
 
     uint64_t span = 1;                          /* entries one slot covers */
@@ -5193,17 +5712,18 @@ static uint64_t walk_ptr_tree(struct mounted_fs *mfs, uint64_t *slot,
             if (got < 0) return 0;
             phys = (uint64_t)got;
             ptrs[slot_i] = phys;
-            do_block_write(ptr_blk, blk);
+            if (ptr_block_write(mfs, ino, id, ptr_blk, blk) != 0) return 0;
         }
         return phys;
     }
 
     uint64_t child = ptrs[slot_i];
     uint64_t before = child;
-    uint64_t phys = walk_ptr_tree(mfs, &child, depth - 1, index % span, allocate);
+    uint64_t phys = walk_ptr_tree(mfs, ino, tree, base + slot_i * span, &child,
+                                  depth - 1, index % span, allocate);
     if (child != before) {                      /* the level below was allocated */
         ptrs[slot_i] = child;
-        do_block_write(ptr_blk, blk);
+        if (ptr_block_write(mfs, ino, id, ptr_blk, blk) != 0) return 0;
     }
     return phys;
 }
@@ -5214,7 +5734,8 @@ static uint64_t walk_ptr_tree(struct mounted_fs *mfs, uint64_t *slot,
  * block number, or 0 on absent/unallocatable/out-of-range. Pointer blocks are
  * stored unencrypted -- they hold block numbers, not file data -- so they use
  * do_block_read/write directly. */
-static uint64_t get_physical_block(struct mounted_fs *mfs, struct on_disk_inode *inode,
+static uint64_t get_physical_block(struct mounted_fs *mfs, uint64_t ino,
+                                   struct on_disk_inode *inode,
                                    uint64_t logical_block, int allocate) {
     if (logical_block < 12) {
         uint64_t phys = inode->direct[logical_block];
@@ -5229,15 +5750,15 @@ static uint64_t get_physical_block(struct mounted_fs *mfs, struct on_disk_inode 
     logical_block -= 12;
 
     if (logical_block < PTRS_PER_BLOCK)
-        return walk_ptr_tree(mfs, &inode->indirect, 0, logical_block, allocate);
+        return walk_ptr_tree(mfs, ino, 0, 0, &inode->indirect, 0, logical_block, allocate);
     logical_block -= PTRS_PER_BLOCK;
 
     if (logical_block < PTRS_PER_BLOCK * PTRS_PER_BLOCK)
-        return walk_ptr_tree(mfs, &inode->double_indirect, 1, logical_block, allocate);
+        return walk_ptr_tree(mfs, ino, 1, 0, &inode->double_indirect, 1, logical_block, allocate);
     logical_block -= PTRS_PER_BLOCK * PTRS_PER_BLOCK;
 
     if (logical_block < PTRS_PER_BLOCK * PTRS_PER_BLOCK * PTRS_PER_BLOCK)
-        return walk_ptr_tree(mfs, &inode->triple_indirect, 2, logical_block, allocate);
+        return walk_ptr_tree(mfs, ino, 2, 0, &inode->triple_indirect, 2, logical_block, allocate);
 
     /* Beyond triple-indirect: 12 + 512 + 512^2 + 512^3 blocks, half a terabyte at
      * a 4 KiB block. A hard ceiling, not a silent truncation -- and one no volume
@@ -5249,7 +5770,7 @@ int storage_read_file_block(struct mounted_fs *mfs, uint64_t ino, uint64_t block
     struct on_disk_inode inode;
     if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) return -1;
 
-    uint64_t phys = get_physical_block(mfs, &inode, block, 0);
+    uint64_t phys = get_physical_block(mfs, ino, &inode, block, 0);
     if (phys == 0) return -1;
 
     uint8_t temp[BLOCK_SIZE];
@@ -5279,7 +5800,7 @@ int storage_write_file_block(struct mounted_fs *mfs, uint64_t ino, uint64_t bloc
      * mapping in place when it allocates, so just persist it. (The old explicit
      * inode.direct[block] fix-up here both duplicated that and indexed direct[]
      * out of bounds for block >= 12.) */
-    uint64_t phys = get_physical_block(mfs, &inode, block, 1);
+    uint64_t phys = get_physical_block(mfs, ino, &inode, block, 1);
     if (phys == 0) { journal_abort(); return -1; }
 
     storage_write_inode(mfs->bd, &mfs->sb, ino, &inode);
@@ -5293,24 +5814,74 @@ int storage_write_file_block(struct mounted_fs *mfs, uint64_t ino, uint64_t bloc
     return journal_commit();
 }
 
+/* What one more freed block can add to the open transaction: its bitmap block,
+ * that block's path of tree nodes, and the superblock the root lives in. */
+#define FREE_BATCH_HEADROOM  (2u + MERKLE_MAX_LEVELS)
+
+static unsigned merkle_dirty_lines(void)
+{
+    unsigned n = 0;
+    for (unsigned i = 0; i < MERKLE_CACHE_LINES; i++)
+        if (g_merkle_cache[i].index != MERKLE_IDX_NONE && g_merkle_cache[i].dirty) n++;
+    return n;
+}
+
+/* Free one block of a file being deleted, committing the batch so far first if
+ * this block could take the transaction past what the journal holds
+ * (LIMITATIONS 2.29). Dirty tree nodes are counted as well as staged blocks,
+ * because they are not staged until the commit writes them back, and they are
+ * what the commit would overflow on.
+ *
+ * Splitting the free is safe because of the order storage_free_inode_blocks
+ * keeps: the inode is dead and needs_fsck is set before the first block goes,
+ * so a crash between two batches leaves exactly the state fsck repairs. Nothing
+ * else runs between the batches to reallocate a freed block while the walk is
+ * still reading pointer blocks, and a pointer block is freed only after
+ * everything under it.
+ *
+ * FREE_TREE_ONE_TXN=1 is the defect: no batch is ever committed early, so a
+ * tree across more bitmap blocks than the journal holds overflows it. */
+static int free_block_batched(struct mounted_fs *mfs, uint64_t blk)
+{
+#ifndef FREE_TREE_ONE_TXN
+    if ((unsigned)g_txn.n + merkle_dirty_lines() + FREE_BATCH_HEADROOM > JOURNAL_DATA_MAX) {
+        g_free_batches++;
+        if (journal_commit() != 0) return -1;
+        journal_begin();
+    }
+#endif
+    storage_free_block(mfs->bd, &mfs->sb, blk);
+    return g_txn.overflow ? -1 : 0;
+}
+
 /* Free a pointer tree: every block it names, then the pointer blocks themselves,
  * deepest first. `depth` is the number of pointer levels below this block.
+ * Called with a transaction open, which it may commit and reopen between blocks
+ * (free_block_batched); non-zero means a batch failed to commit.
  *
  * Bounded by FSCK_MAX_DEPTH like the other tree walks, and for the same reason:
  * one BLOCK_SIZE frame per level against a 16 KiB kernel stack. */
-static void free_ptr_tree(struct mounted_fs *mfs, uint64_t ptr_blk, unsigned depth)
+static int free_ptr_tree(struct mounted_fs *mfs, uint64_t ino, unsigned tree,
+                         uint64_t base, uint64_t ptr_blk, unsigned depth)
 {
-    if (ptr_blk == 0 || depth >= FSCK_MAX_DEPTH) return;
+    if (ptr_blk == 0 || depth >= FSCK_MAX_DEPTH) return 0;
     uint8_t blk[BLOCK_SIZE];
-    if (do_block_read(ptr_blk, blk) == 0) {
+    /* A pointer block that does not open frees only itself. Its children are
+     * then leaked rather than freed on the word of bytes the volume did not
+     * vouch for; the fsck sweep reclaims them, by what LIVE inodes reference. */
+    if (ptr_block_read(mfs, ino, ptr_block_id(tree, depth, base), ptr_blk, blk) == 0) {
         uint64_t *ptrs = (uint64_t *)blk;
+        uint64_t span = 1;
+        for (unsigned d = 0; d < depth; d++) span *= PTRS_PER_BLOCK;
         for (unsigned k = 0; k < PTRS_PER_BLOCK; k++) {
             if (!ptrs[k]) continue;
-            if (depth == 0) storage_free_block(mfs->bd, &mfs->sb, ptrs[k]);
-            else            free_ptr_tree(mfs, ptrs[k], depth - 1);
+            int rc = (depth == 0)
+                   ? free_block_batched(mfs, ptrs[k])
+                   : free_ptr_tree(mfs, ino, tree, base + k * span, ptrs[k], depth - 1);
+            if (rc != 0) return -1;
         }
     }
-    storage_free_block(mfs->bd, &mfs->sb, ptr_blk);
+    return free_block_batched(mfs, ptr_blk);
 }
 
 /* Free every data block an inode references and release the inode.
@@ -5318,7 +5889,7 @@ static void free_ptr_tree(struct mounted_fs *mfs, uint64_t ptr_blk, unsigned dep
  * THE INODE IS KILLED FIRST, IN A TRANSACTION OF ITS OWN, and the ordering is
  * what makes the rest safe to do in pieces. Freeing a large file touches more
  * bitmap blocks than one journal transaction can hold -- at a 16 GiB volume the
- * data bitmap spans 128 blocks against JOURNAL_DATA_MAX of 16 -- so a single
+ * data bitmap spans 128 blocks against JOURNAL_DATA_MAX of 24 -- so a single
  * atomic free is not merely expensive, it OVERFLOWS AND ABORTS, leaving the file
  * whole and the caller told it was deleted. The old comment reasoned that every
  * bitmap clear coalesces onto one sector, which was true of a volume with one
@@ -5360,25 +5931,30 @@ int storage_free_inode_blocks(struct mounted_fs *mfs, uint64_t ino) {
     do_block_write(0, &mfs->sb);
     if (journal_commit() != 0) return -1;
 
-    /* 2. Release the blocks, a transaction at a time. Each batch is bounded by
-     * how many distinct bitmap blocks it may touch, which is what the journal
-     * actually limits -- so the batch size is expressed in bitmap blocks rather
-     * than in data blocks, and a run of blocks sharing one bitmap block costs
-     * one staged write however long it is. */
+    /* 2. Release the blocks, in batches. A batch ends when the next block could
+     * take it past what the journal holds (free_block_batched), which is a
+     * bound in STAGED BLOCKS -- bitmap blocks and the tree nodes above them --
+     * rather than in data blocks, so a run of blocks sharing one bitmap block
+     * costs one staged write however long it is. Until 2026-10-14 this said the
+     * same and committed once per pointer tree instead, so a tree across more
+     * bitmap blocks than the journal holds overflowed it and the delete failed
+     * (LIMITATIONS 2.29). */
     journal_begin();
     for (int i = 0; i < 12; i++)
-        if (inode.direct[i]) storage_free_block(mfs->bd, &mfs->sb, inode.direct[i]);
-    if (journal_commit() != 0) return -1;
-
+        if (inode.direct[i] && free_block_batched(mfs, inode.direct[i]) != 0) {
+            journal_abort();
+            return -1;
+        }
     for (unsigned lvl = 0; lvl < 3; lvl++) {
         uint64_t root = (lvl == 0) ? inode.indirect
                       : (lvl == 1) ? inode.double_indirect
                                    : inode.triple_indirect;
-        if (!root) continue;
-        journal_begin();
-        free_ptr_tree(mfs, root, lvl);
-        if (journal_commit() != 0) return -1;
+        if (root && free_ptr_tree(mfs, ino, lvl, 0, root, lvl) != 0) {
+            journal_abort();
+            return -1;
+        }
     }
+    if (journal_commit() != 0) return -1;
 
     /* 3. Clear the pointers and release the slot. */
     journal_begin();

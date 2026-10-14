@@ -592,7 +592,14 @@
 # .S file because they do not begin with `#` or `/`. The probe is ring 3
 # (userspace/formatprobe.c); its launcher is in selftest.c (selftest), and the
 # arm's line is in syscall_fs.c (service).
-core_budget_loc: 11730
+# 2026-10-14: 11730 -> 11733, +3, ROADMAP 5.2 (S143): smp.c dispatching the
+# SPAN_SELFTEST harness, never in the ship build. The metadata authentication
+# itself is in storage.c (service): the span check in the block layer, the
+# sealed pointer blocks and the root's geometry binding.
+# 2026-10-14: 11733 -> 11736, +3, LIMITATIONS 2.29: smp.c dispatching the
+# FREEBATCH_SELFTEST harness, never in the ship build. The batched free is in
+# storage.c (service).
+core_budget_loc: 11736
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

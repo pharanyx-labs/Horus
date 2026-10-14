@@ -3526,10 +3526,17 @@ uint64_t storage_fsck_runs(void);
  * same number on a fast host and a slow one. */
 uint64_t storage_alloc_bitmap_reads(void);
 uint64_t storage_mount_oversize_refusals(void);
+/* Plaintext-span blocks refused by the tree since boot, and the most home blocks
+ * one journal transaction has staged (LIMITATIONS 1.30; see do_block_read). */
+uint64_t storage_span_refusals(void);
+int      storage_journal_highwater(void);
+/* Batches a delete committed early to stay inside the journal (LIMITATIONS 2.29). */
+uint64_t storage_free_batches(void);
 int      storage_is_mounted(void);
 #if defined(MERKLE_SELFTEST) || defined(FSCKREF_SELFTEST) || \
     defined(BIGVOL_SELFTEST)  || defined(ALLOCHINT_SELFTEST) || \
-    defined(META_CRASH_SELFTEST)
+    defined(META_CRASH_SELFTEST) || defined(SPAN_SELFTEST) || \
+    defined(FREEBATCH_SELFTEST)
 /* Storage witness hooks. Selftest builds only -- they expose the allocator's
  * choices and reach the block one past the volume, neither of which a shipping
  * kernel has any business doing. */
@@ -3542,6 +3549,9 @@ int      storage_test_block_allocated(mounted_fs_t *mfs, uint64_t phys);
 void     storage_test_arm_fsck(mounted_fs_t *mfs);
 uint64_t storage_test_bitmap_blocks(const mounted_fs_t *mfs);
 void     storage_test_fill_bitmap_blocks(mounted_fs_t *mfs, uint64_t n);
+uint64_t storage_test_relocate_block(mounted_fs_t *mfs, uint64_t ino, uint64_t block,
+                                     const void *buf);
+int      storage_test_reserve_until(mounted_fs_t *mfs, uint64_t phys);
 #endif
 int  storage_block_read(uint64_t block, void *buf);
 int  storage_block_write(uint64_t block, const void *buf);

@@ -34,11 +34,11 @@ and the parts worth keeping are the parts most systems get wrong.
 |---|---|
 | Confidentiality at rest | Per-block AEAD (ChaCha20 with HMAC-SHA256, encrypt then MAC). `disk_key` is wrapped by a KEK derived with Argon2id from the passphrase, LUKS style, and never stored in plaintext. A volume can be formatted unsealed when the operator chooses that (S104) |
 | Nonces | A **fresh random** 96-bit nonce per block write, stored in a side table with the tag |
-| Integrity | A Merkle tree over the metadata region, rooted in `meta_root` in the superblock and verified at unlock (S66) |
+| Integrity | A Merkle tree over the nonce and tag region, the inode bitmap, the block bitmap and the inode table, rooted in `meta_root` in the superblock, which also binds the superblock's layout and flags; the root is verified at unlock and every leaf at first use (S66, S143). Indirect pointer blocks, the inode table and the bitmaps are sealed like data |
 | Rollback of the whole volume | Refused on a TPM machine: `sb.rollback_gen` is bound into the root and checked against a TPM NV monotonic counter at unlock (S70, `docs/LIMITATIONS.md` 1.12) |
 | Crash atomicity | A write-ahead redo log: stage, commit with an HMAC-authenticated header, then apply |
 | Privilege separation | `fs_server` runs in ring 3 and **never sees key material**; the kernel does the crypto behind `SYS_FBLOCK_READ`/`WRITE` |
-| Layout | Superblock, inode bitmap, block bitmap, data bitmap, inode table, data region |
+| Layout | Superblock, nonce and tag region, TPM blob, key slots, user table, Merkle nodes, journal, inode bitmap, block bitmap, inode table, data region (format v14) |
 | Directories | An array of `fs_dirent` records in ordinary inode data; root is inode 0. Only an inode typed as a directory is ever read as one, whatever the authority model (S113) |
 | Authority | Kernel-attested uid/gid (`SYS_IPC_SENDER`) and Unix mode bits |
 

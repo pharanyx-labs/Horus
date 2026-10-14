@@ -83,17 +83,6 @@ no grant set (held by system tasks, never by a session) rename without that rule
 that way under another principal's grant can show a bound that is low through a capability
 minted before the move, until it is opened again.
 
-### 1.30 The inode table and allocation bitmaps are not authenticated at rest **[HORUS-20261012-04]**
-
-On an encrypted volume every data block is sealed with an AEAD bound to its inode and block
-number, and the Merkle tree covers the nonce and tag blocks. The inode table and the allocation
-bitmaps are written in the clear with no MAC and are not leaves of the tree. An attacker with the
-disk can therefore change an inode's owner, group, mode, type, size or link count, or the
-bitmaps, without detection, and can read every file's size and the volume's layout. File contents
-stay confidential and cannot be moved between files. The system trees are rebuilt from the
-verified boot modules at every boot (S116), so this does not reach `/bin`. `SECURITY.md` A3 is
-*partly defended* until the metadata is authenticated.
-
 ### 1.31 The uid path reaches a file by inode number, whatever its directories allow **[HORUS-20261012-05]**
 
 On the uid path, which a standard user's login on an installed system still uses (the installer
@@ -564,8 +553,12 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 1.27 | [HORUS-20261012-01] | Changing your own password re-sealed the key slot of the boot's first login (S75) | 2026-10-12, #552 |
 | 1.28 | [HORUS-20261012-02] | A crafted program header offset wrapped the spawn path's premap bound (S84) | 2026-10-12, #551 |
 | 1.29 | [HORUS-20261012-03] | A forked or granted pipe end was not counted, so the pipe could be freed under its holder (S41, S133) | 2026-10-12, #553, #555 |
+| 1.30 | [HORUS-20261012-04] | The inode table and allocation bitmaps were not authenticated at rest, so an owner, mode, size, link count or bitmap could be changed on the disk undetected (S143) | 2026-10-14, #575 |
 | 1.32 | [HORUS-20261012-06] | A reply, and the sender identity a server authorises on, named a task slot, so a dead client's successor could receive both (S13, S13b) | 2026-10-12, #554 |
 | 1.34 | [HORUS-20261013-02] | A register BAR smaller than a page handed its driver the whole page, so a neighbour's registers in that page were reachable (S43) | 2026-10-13, #562 |
+| 1.35 | [HORUS-20261014-01] | Once authenticated, the inode table and allocation bitmaps were still in the clear, so every file's size, owner, mode and link count could be read off the disk; every block of them the kernel writes is now sealed (S143) | 2026-10-14, #575 |
+| 1.36 | [HORUS-20261014-02] | Indirect pointer blocks were stored in the clear with no MAC, and a freed block keeps its nonce and tag, so a pointer edited on the disk could serve a file its own earlier contents (S143) | 2026-10-14, #575 |
+| 1.37 | [HORUS-20261014-03] | The Merkle root bound the rollback generation and no other superblock field, so moving the inode table made an inode read another inode's genuine slot, and clearing `rollback_anchored` on a restored image skipped the TPM counter check (S143, S70) | 2026-10-14, #575 |
 | 2.0 | [C-3] | Spinlock interrupt state was global | 2026-08-13, #135 |
 | 2.1 | [I-2] | Heap syscalls truncated 64-bit arithmetic | 2026-08-13, #145 |
 | 2.2 | [I-5] | Endpoints were single-slot mailboxes | 2026-08-10, #120 |
@@ -588,6 +581,7 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 2.26 | | `rotate_keys` changed no key: it re-sealed a few blocks of the caller's files under the same key. Withdrawn (decision D14): the shell command is gone and `SYS_ROTATE_KEYS` answers `SYS_ERR_NOSYS` to every caller; real rotation of the volume key comes with filesystem phase 2 | 2026-10-14, #572 |
 | 2.27 | | The monotonic clock ran at twice wall-clock speed under QEMU's TCG, so `failure_delay` waited half as long: the timer tick, in mode 3, was delivered twice per period | 2026-10-12, #549 |
 | 2.28 | | The wait for secondary CPUs was a loop count, a few milliseconds on a fast host under KVM, so a CPU the host scheduled late went uncounted and then ran anyway, and could take a TLB shootdown it was not counted for; the wait is now 2 s of the calibrated clock and bring-up then closes, so a later CPU is parked and never used (S138) | 2026-10-13, #565 |
+| 2.29 | [HORUS-20261014-04] | A delete freed each pointer tree in one journal transaction, so a file across more bitmap blocks than the journal holds failed to delete and finished at the next unlock's fsck; the free is committed in batches bounded by what the journal holds | 2026-10-14, #575 |
 | 3.2 | [I-6] | `this_cpu()` read LAPIC MMIO on every call | 2026-07-31, #116 |
 | 3.5 | | The block allocator rescanned the bitmap from the start | 2026-09-01, #277 |
 | 5.2 | [C-6] | Which checks gate a merge was reconciled by hand | 2026-09-21, #415 |

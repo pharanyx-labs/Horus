@@ -1968,6 +1968,17 @@ jobs:
         env:
           SWTPM_REQUIRED: "1"
         run: make smoke-rollback-control
+      # S143 with S70: the restored image with its rollback_anchored flag
+      # cleared. The root binds the flag, so the volume is refused before the
+      # anchor is asked; a root that binds only the generation serves era 1.
+      - name: A restored volume whose anchor flag was cleared is refused
+        env:
+          SWTPM_REQUIRED: "1"
+        run: make smoke-rollback-anchor-flag
+      - name: "Control arm: a root that does not bind the anchor flag serves a rolled-back volume"
+        env:
+          SWTPM_REQUIRED: "1"
+        run: make smoke-rollback-anchor-flag-control
 
   smoke-coreutils-shell:
     name: QEMU GNU coreutils via the shell (head / wc / seq on real files)
@@ -4815,6 +4826,26 @@ jobs:
       # IS checked here, against a node that is not placed under the root.
       - name: Control arm — a node verified without its parent chain
         run: make smoke-merkle-parent-bind-control
+      # S143. Three boots on one image, the HOST editing an inode, a pointer
+      # block and a bitmap bit between boots 1 and 2, and the superblock's inode
+      # table position between boots 2 and 3. Each arm puts one of the three
+      # checks back the way format v13 had it.
+      - name: Metadata edited on the disk is refused, and an untouched block is served
+        run: make smoke-meta-span
+      - name: "Control arm: an unchecked inode table serves an edited inode"
+        run: make smoke-meta-span-control
+      - name: "Control arm: an unsealed inode table is readable off the disk"
+        run: make smoke-meta-span-plain-control
+      # LIMITATIONS 2.29: one file spread across 28 bitmap blocks of a 4 GiB
+      # image, more than one journal transaction holds, then deleted.
+      - name: A file across many bitmap blocks is deleted, in batches
+        run: make smoke-fs-free-batch
+      - name: "Control arm: one transaction per pointer tree overflows the journal"
+        run: make smoke-fs-free-batch-control
+      - name: "Control arm: an unsealed pointer block serves a file's earlier contents"
+        run: make smoke-meta-pointer-control
+      - name: "Control arm: a root that does not bind the geometry unlocks a moved inode table"
+        run: make smoke-meta-geometry-control
       # fsck reclaims blocks no live inode references. Its reference walk stopped
       # at single-indirect, so every block reachable only through the
       # double-indirect tree was reclaimed at every unlock and handed to the next

@@ -160,6 +160,8 @@ DEFECT_FLAGS = \
 	AHCI_PROBE_ABSENT AHCI_CAPACITY_CONSTANT SERIAL_TX_NEVER_DRAINS \
 	META_CACHE_NO_WRITEBACK META_CACHE_WB_OUTSIDE_TXN META_CACHE_EVICT_NOWB \
 	META_CACHE_TINY MERKLE_NODE_TRUST_CACHED MERKLE_SKIP_PARENT_BIND \
+	METADATA_SPAN_UNCHECKED METADATA_SPAN_UNSEALED POINTER_BLOCKS_UNSEALED SUPERBLOCK_GEOMETRY_UNBOUND \
+	FREE_TREE_ONE_TXN \
 	FSCK_SHALLOW_REFS STORAGE_MOUNT_ANY_SIZE ALLOC_NO_HINT ATA_READY_ERR_ONLY \
 	ROLLBACK_ANCHOR_IGNORE \
 	VDISK_TOTAL_UNBOUNDED \
@@ -1180,6 +1182,71 @@ MERKLE_SKIP_PARENT_BIND ?= 0
 ifeq ($(MERKLE_SKIP_PARENT_BIND),1)
 CFLAGS  += -DMERKLE_SKIP_PARENT_BIND
 ASFLAGS += -DMERKLE_SKIP_PARENT_BIND
+endif
+
+# SPAN_SELFTEST=1 builds the witness for docs/LIMITATIONS.md 1.30: three boots on
+# one image, with the HOST editing an inode, a pointer block and the block bitmap
+# between boots 1 and 2, and the superblock's geometry between boots 2 and 3
+# (tools/meta_span_tamper.sh). Every edit must be refused.
+SPAN_SELFTEST ?= 0
+ifeq ($(SPAN_SELFTEST),1)
+CFLAGS  += -DSPAN_SELFTEST
+ASFLAGS += -DSPAN_SELFTEST
+endif
+
+# FREEBATCH_SELFTEST=1 builds the witness for docs/LIMITATIONS.md 2.29: one file
+# spread across 28 bitmap blocks on a 4 GiB image, deleted, and every one of its
+# blocks free afterwards.
+FREEBATCH_SELFTEST ?= 0
+ifeq ($(FREEBATCH_SELFTEST),1)
+CFLAGS  += -DFREEBATCH_SELFTEST
+ASFLAGS += -DFREEBATCH_SELFTEST
+endif
+
+# FREE_TREE_ONE_TXN=1 never commits a delete's batch early, so freeing a tree
+# across more bitmap blocks than the journal holds overflows it and the delete
+# fails, as it did until 2026-10-14.
+FREE_TREE_ONE_TXN ?= 0
+ifeq ($(FREE_TREE_ONE_TXN),1)
+CFLAGS  += -DFREE_TREE_ONE_TXN
+ASFLAGS += -DFREE_TREE_ONE_TXN
+endif
+
+# METADATA_SPAN_UNCHECKED=1 is format v13's span: the inode bitmap, block bitmap
+# and inode table are written in the clear and read straight off the medium,
+# without checking them against the tree. Their leaves are still updated on every
+# write, so the volume stays consistent with itself and only an edit made behind
+# the kernel's back gets through. (The seal goes with the check because the seal
+# alone would refuse the edit too, and the arm would then show nothing.)
+METADATA_SPAN_UNCHECKED ?= 0
+ifeq ($(METADATA_SPAN_UNCHECKED),1)
+CFLAGS  += -DMETADATA_SPAN_UNCHECKED
+ASFLAGS += -DMETADATA_SPAN_UNCHECKED
+endif
+
+# METADATA_SPAN_UNSEALED=1 keeps the tree check and writes the span in the clear,
+# so every edit is still refused and the inode table can be read off the disk.
+METADATA_SPAN_UNSEALED ?= 0
+ifeq ($(METADATA_SPAN_UNSEALED),1)
+CFLAGS  += -DMETADATA_SPAN_UNSEALED
+ASFLAGS += -DMETADATA_SPAN_UNSEALED
+endif
+
+# POINTER_BLOCKS_UNSEALED=1 stores indirect pointer blocks in the clear, as v13
+# did, so an edited pointer entry is followed.
+POINTER_BLOCKS_UNSEALED ?= 0
+ifeq ($(POINTER_BLOCKS_UNSEALED),1)
+CFLAGS  += -DPOINTER_BLOCKS_UNSEALED
+ASFLAGS += -DPOINTER_BLOCKS_UNSEALED
+endif
+
+# SUPERBLOCK_GEOMETRY_UNBOUND=1 builds v13's Merkle root, which binds the
+# generation and no other superblock field, so a volume whose layout was edited
+# still unlocks.
+SUPERBLOCK_GEOMETRY_UNBOUND ?= 0
+ifeq ($(SUPERBLOCK_GEOMETRY_UNBOUND),1)
+CFLAGS  += -DSUPERBLOCK_GEOMETRY_UNBOUND
+ASFLAGS += -DSUPERBLOCK_GEOMETRY_UNBOUND
 endif
 
 # FSCKREF_SELFTEST=1 builds the witness for "fsck does not free a live file's
@@ -16240,16 +16307,22 @@ smoke-installer-provision:
 	@rm -f installer-p.img
 	@echo "[installer] PASS - a sealed store defers provisioning, and the next boot completes it"
 
-# Control arm: STORE_LOCKED_UNCHECKED=1 and nothing else, so both arms drive the
-# same install and differ only in what the store says about a volume nobody has
-# opened. It requires the copy against the locked store to have written 0 inodes;
+# Control arm: STORE_LOCKED_UNCHECKED=1 with METADATA_SPAN_UNCHECKED=1, so both
+# arms drive the same install and differ only in what the store says about a
+# volume nobody has opened. TWO flags since format v14 (S143), and that is the
+# finding rather than a convenience: the storage layer now refuses a locked
+# volume's inode table by itself (the tree has no key to check it against, and
+# the blocks are sealed), so the handlers' check is the outer of two layers and
+# the defect reappears only with both removed. With the handlers' flag alone
+# the store says "usable" and every read under it fails, which is the outcome
+# S74 wants, by another route. It requires the copy against the locked store to have written 0 inodes;
 # whether /bin then lacks programs depends on how far boot 1's own copy got before
 # the power-off, so that is reported and not required (tools/installer_session.py).
 .PHONY: smoke-installer-provision-control
 smoke-installer-provision-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORE_LOCKED_UNCHECKED=1
-	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORE_LOCKED_UNCHECKED=1 COREUTILS_MODULES=1 horus.iso
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORE_LOCKED_UNCHECKED=1 METADATA_SPAN_UNCHECKED=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 STORE_LOCKED_UNCHECKED=1 METADATA_SPAN_UNCHECKED=1 COREUTILS_MODULES=1 horus.iso
 	@rm -f installer-pc.img && truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-pc.img
 	@rm -f installer-pc-serial.log
 	@SESSION_DISK=installer-pc.img INSTALLER_MODE=provision INSTALLER_EXPECT_EMPTY_BIN=1 \
@@ -16690,6 +16763,35 @@ smoke-rollback-control:
 		tools/rollback_replay.sh horus.iso
 	@echo "[rollback] CONTROL PASS - without the anchor an old volume mounts and serves stale data"
 
+# S143 and S70 together: the restored image from smoke-rollback, with its
+# rollback_anchored flag cleared, so the old volume claims never to have been
+# anchored and the TPM counter is never asked. The Merkle root binds the flag, so
+# the volume is refused before the anchor is consulted.
+.PHONY: smoke-rollback-anchor-flag
+smoke-rollback-anchor-flag:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(ROLLBACK_ARGS)
+	@$(MAKE) --no-print-directory $(ROLLBACK_ARGS) horus.iso
+	@$(ROLLBACK_ENV) ROLLBACK_IMG=rollback-a.img ROLLBACK_CLEAR_ANCHOR=1 \
+		ROLLBACK_EXPECT='ROLLBACK: refused - the volume does not verify under its root' \
+		ROLLBACK_OPPOSITE='ROLLBACK: found era' \
+		tools/rollback_replay.sh horus.iso
+	@echo "[rollback] PASS - a restored volume whose anchor flag was cleared is refused"
+
+# The falsifying arm: v13's root, which binds the generation and not the flag. The
+# restored volume unlocks without asking the counter and serves era 1, the state
+# the machine had already left. The marker is that era, not "no refusal".
+.PHONY: smoke-rollback-anchor-flag-control
+smoke-rollback-anchor-flag-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(ROLLBACK_ARGS) SUPERBLOCK_GEOMETRY_UNBOUND=1
+	@$(MAKE) --no-print-directory $(ROLLBACK_ARGS) SUPERBLOCK_GEOMETRY_UNBOUND=1 horus.iso
+	@$(ROLLBACK_ENV) ROLLBACK_IMG=rollback-ac.img ROLLBACK_CLEAR_ANCHOR=1 \
+		ROLLBACK_EXPECT='ROLLBACK: FAIL a restored volume with its anchor flag cleared served era 1' \
+		ROLLBACK_OPPOSITE='ROLLBACK: refused' \
+		tools/rollback_replay.sh horus.iso
+	@echo "[rollback] CONTROL PASS - a root that does not bind the anchor flag serves a rolled-back volume"
+
 # A sector transfer happens only when the drive says it is ready (S69).
 #
 # Checked as a PURE FUNCTION of the status byte, over all 256 of them, because
@@ -16965,6 +17067,114 @@ smoke-merkle-parent-bind-control:
 		MERKLE_OPPOSITE='MERKLE: PASS' \
 		tools/merkle_replay.sh horus.iso
 	@echo "[merkle] CONTROL PASS - a node verified without its parent chain serves a rollback"
+
+# S143: the volume's metadata is authenticated and sealed (docs/LIMITATIONS.md
+# 1.30, 1.35). Three boots on one image, the HOST reading and editing the disk
+# between them: an inode's owner must not be readable anywhere on the image; then
+# an inode's mode and owner, a pointer entry aimed at a genuine earlier version of
+# the same block, and a block-bitmap bit, all refused in boot
+# 2 while an untouched block is still served; then the superblock's inode table
+# moved two blocks on, refused at unlock in boot 3.
+SPAN_ARGS = SPAN_SELFTEST=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
+SPAN_ENV  = SPAN_BS=$(FS_BLOCK_SIZE) SPAN_BLOCKS=$(PERSIST_BLOCKS) \
+            SPAN_TIMEOUT=$(META_CRASH_TIMEOUT)
+
+.PHONY: smoke-meta-span
+smoke-meta-span:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(SPAN_ARGS)
+	@$(MAKE) --no-print-directory $(SPAN_ARGS) horus.iso
+	@$(SPAN_ENV) SPAN_IMG=span.img tools/meta_span_tamper.sh horus.iso
+	@echo "[meta-span] PASS - edits to inodes, pointers, bitmaps and the superblock are refused"
+
+# The falsifying arm for the inode table and the bitmaps: format v13's span, in
+# the clear and read off the medium unchecked, so boot 1 leaves inode A's owner
+# readable and boot 2 serves the edited inode. The marker is what
+# HAPPENED -- the mode and owner the host wrote came back -- not "no refusal".
+.PHONY: smoke-meta-span-control
+smoke-meta-span-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(SPAN_ARGS) METADATA_SPAN_UNCHECKED=1
+	@$(MAKE) --no-print-directory $(SPAN_ARGS) METADATA_SPAN_UNCHECKED=1 horus.iso
+	@$(SPAN_ENV) SPAN_IMG=span-c.img SPAN_EXPECT_PLAIN=1 \
+		SPAN_EXPECT2='SPAN: FAIL tampered inode accepted - anyone may open it now' \
+		SPAN_OPPOSITE2='SPAN: PASS' SPAN_EXPECT3= \
+		tools/meta_span_tamper.sh horus.iso
+	@echo "[meta-span] CONTROL PASS - an unchecked inode table serves an edited inode"
+
+# docs/LIMITATIONS.md 2.29: a delete is not limited by the journal. One boot on a
+# 4 GiB image (a 31-block bitmap): a file spread so that each of 28 blocks lies in
+# its own bitmap block, more than one transaction can stage, then deleted. The
+# delete must succeed, must have needed more than one batch, and must leave every
+# block of the file free.
+FREEBATCH_ARGS   = FREEBATCH_SELFTEST=1 STORAGE_ATA=1 STORAGE_AUTOFORMAT=1
+FREEBATCH_BLOCKS ?= 1048576
+
+.PHONY: smoke-fs-free-batch
+smoke-fs-free-batch:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(FREEBATCH_ARGS)
+	@$(MAKE) --no-print-directory $(FREEBATCH_ARGS) horus.iso
+	@rm -f freebatch.img && truncate -s $$(( $(FREEBATCH_BLOCKS) * $(FS_BLOCK_SIZE) )) freebatch.img
+	@SMOKE_TIMEOUT=$(ALLOCHINT_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=freebatch.img \
+		REQUIRE_MARKER='FREEBATCH: PASS' FAIL_MARKER='FREEBATCH: FAIL' \
+		tools/smoke_test.sh horus.iso
+	@rm -f freebatch.img
+	@echo "[free-batch] PASS - a file across many bitmap blocks is deleted in batches"
+
+# The falsifying arm: the whole free in one transaction per tree, as before. The
+# marker is the overflow itself, not any failure.
+.PHONY: smoke-fs-free-batch-control
+smoke-fs-free-batch-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(FREEBATCH_ARGS) FREE_TREE_ONE_TXN=1
+	@$(MAKE) --no-print-directory $(FREEBATCH_ARGS) FREE_TREE_ONE_TXN=1 horus.iso
+	@rm -f freebatch-c.img && truncate -s $$(( $(FREEBATCH_BLOCKS) * $(FS_BLOCK_SIZE) )) freebatch-c.img
+	@SMOKE_TIMEOUT=$(ALLOCHINT_TIMEOUT) MARKER_ONLY=1 SMOKE_DISK=freebatch-c.img \
+		REQUIRE_MARKER='FREEBATCH: FAIL deleting a file across many bitmap blocks overflowed the journal' \
+		FAIL_MARKER='FREEBATCH: PASS' \
+		tools/smoke_test.sh horus.iso
+	@rm -f freebatch-c.img
+	@echo "[free-batch] CONTROL PASS - one transaction per tree overflows the journal"
+
+# The falsifying arm for confidentiality (LIMITATIONS 1.35): the span written in
+# the clear with the tree check kept, so nothing an attacker edits is accepted,
+# and inode A's owner and group can be read straight off the image after boot 1.
+.PHONY: smoke-meta-span-plain-control
+smoke-meta-span-plain-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(SPAN_ARGS) METADATA_SPAN_UNSEALED=1
+	@$(MAKE) --no-print-directory $(SPAN_ARGS) METADATA_SPAN_UNSEALED=1 horus.iso
+	@$(SPAN_ENV) SPAN_IMG=span-u.img SPAN_EXPECT_PLAIN=1 SPAN_PLAIN_ONLY=1 \
+		tools/meta_span_tamper.sh horus.iso
+	@echo "[meta-span] CONTROL PASS - an unsealed inode table is readable off the disk"
+
+# The falsifying arm for pointer blocks: stored in the clear, as v13 stored them,
+# the edited entry is followed and the file serves its own earlier contents.
+.PHONY: smoke-meta-pointer-control
+smoke-meta-pointer-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(SPAN_ARGS) POINTER_BLOCKS_UNSEALED=1
+	@$(MAKE) --no-print-directory $(SPAN_ARGS) POINTER_BLOCKS_UNSEALED=1 horus.iso
+	@$(SPAN_ENV) SPAN_IMG=span-p.img \
+		SPAN_EXPECT2='SPAN: FAIL tampered pointer served an earlier version of the block' \
+		SPAN_OPPOSITE2='SPAN: PASS' SPAN_EXPECT3= \
+		tools/meta_span_tamper.sh horus.iso
+	@echo "[meta-span] CONTROL PASS - an unsealed pointer block serves a file's earlier contents"
+
+# The falsifying arm for the superblock: v13's root, binding only the generation.
+# Boot 2 passes (every block is still checked) and boot 3 unlocks a volume whose
+# inode table was moved.
+.PHONY: smoke-meta-geometry-control
+smoke-meta-geometry-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(SPAN_ARGS) SUPERBLOCK_GEOMETRY_UNBOUND=1
+	@$(MAKE) --no-print-directory $(SPAN_ARGS) SUPERBLOCK_GEOMETRY_UNBOUND=1 horus.iso
+	@$(SPAN_ENV) SPAN_IMG=span-g.img \
+		SPAN_EXPECT3="GEOM: FAIL an edited superblock was accepted - inode 1 read another inode's slot" \
+		SPAN_OPPOSITE3='GEOM: PASS' \
+		tools/meta_span_tamper.sh horus.iso
+	@echo "[meta-span] CONTROL PASS - a root that does not bind the geometry unlocks a moved inode table"
 
 # Arm A: a metadata update in a committed transaction is durable across a crash,
 # whether or not its cache line was evicted first. Two boots on one image -- boot 1

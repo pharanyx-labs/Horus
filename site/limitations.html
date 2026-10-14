@@ -93,7 +93,7 @@
 <li><a href="#limits">Findings</a>
 <ol class="toc__sub">
 <li><a href="#c-5nobody-reviews-a-change-before-it-lands">C-5Nobody reviews a change before it lands</a></li>
-<li><a href="#source-review-findings">1.30Findings from a source review</a></li>
+<li><a href="#source-review-findings">1.31Findings from a source review</a></li>
 <li><a href="#1-33a-revocation-cannot-reach-through-a-task-that-has-died">1.33A revocation cannot reach through a task that has died</a></li>
 <li><a href="#2-6cmost-gates-still-read-kernel-reports-off-a-shared-consol">2.6cMost gates still read kernel reports off a shared console</a></li>
 <li><a href="#2-9measured-boot-is-opt-in">2.9Measured boot is opt-in</a></li>
@@ -140,12 +140,11 @@
     </p>
   </li>
   <li>
-    <h3 id="source-review-findings"><span class="id">1.30</span>Findings from a source review</h3>
+    <h3 id="source-review-findings"><span class="id">1.31</span>Findings from a source review</h3>
     <p>
-      A static review of the source found six defects. Four are fixed; two are open, each
-      recorded as LIMITATIONS 1.30 and 1.31 until it is fixed. The inode table is not
-      authenticated at rest. The older by-user-id file path checks a file's own mode, not
-      its directories.
+      A static review of the source found six defects. Five are fixed; one is open,
+      LIMITATIONS 1.31: the older by-user-id file path checks a file's own mode, not its
+      directories.
     </p>
   </li>
   <li>

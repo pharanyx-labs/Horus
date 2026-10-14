@@ -194,11 +194,17 @@ control_arms:
   smoke-meta-crash-vacuity-control: smoke-meta-crash
   smoke-merkle-replay-control: smoke-merkle-replay
   smoke-merkle-parent-bind-control: smoke-merkle-replay
+  smoke-meta-span-control: smoke-meta-span
+  smoke-meta-span-plain-control: smoke-meta-span
+  smoke-fs-free-batch-control: smoke-fs-free-batch
+  smoke-meta-pointer-control: smoke-meta-span
+  smoke-meta-geometry-control: smoke-meta-span
   smoke-fsck-refs-control: smoke-fsck-refs
   smoke-fs-shrink-control: smoke-fs-shrink
   smoke-alloc-hint-control: smoke-alloc-hint
   smoke-ata-ready-control: smoke-ata-ready
   smoke-rollback-control: smoke-rollback
+  smoke-rollback-anchor-flag-control: smoke-rollback-anchor-flag
   smoke-vdisk-bound-control: smoke-vdisk-bound
   smoke-storage-noformat-control: smoke-storage-noformat
   smoke-storage-survey-single-control: smoke-storage-survey
@@ -417,6 +423,8 @@ gates:
   - smoke-keyslots
   - smoke-meta-crash
   - smoke-merkle-replay
+  - smoke-meta-span
+  - smoke-fs-free-batch
   - smoke-fsck-refs
   - smoke-fs-16g
   - smoke-fs-shrink
@@ -452,6 +460,7 @@ gates:
   - smoke-passwd-target
   - smoke-nvcounter
   - smoke-rollback
+  - smoke-rollback-anchor-flag
   - smoke-vdisk-bound
   - smoke-users-persist
   - smoke-users-tamper

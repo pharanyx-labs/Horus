@@ -51,8 +51,8 @@ Horus is a research system, and nobody independent has reviewed it.
 - **Some security limitations are open.** A revocation cannot reach a copy derived through a task
   that has died (1.33), measured boot is opt-in on a machine without a TPM (2.9), and the
   cryptography is unaudited (5.4). A source review found
-  two more, open until each is fixed (1.30, 1.31): the inode table is not authenticated at rest,
-  and the older by-user-id file path checks a file's own mode, not its directories.
+  one more that is still open (1.31): the older by-user-id file path checks a file's own mode, not
+  its directories.
 
 [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) is the single authoritative status of every known
 finding, and the numbers above are its entries. Read it before drawing conclusions.
@@ -116,8 +116,10 @@ slot number; it never sees the capability itself.
 
 ### Storage
 
-- Every block of the volume is encrypted and authenticated under its own derived key, and the key
-  never leaves the kernel.
+- Every block of file data, directories, file block maps, the inode table and the allocation
+  bitmaps is encrypted and authenticated under its own derived key, and the key never leaves the
+  kernel. An owner, a mode or a bitmap edited on the disk is refused, and none of them can be read
+  off it (S143).
 - A Merkle tree catches a block rolled back to an older version, and on a machine with a TPM a
   hardware counter catches the whole volume being swapped for an older copy.
 - A journal keeps the filesystem consistent across a power cut.
@@ -181,7 +183,6 @@ what later work needs:
    the policy, and the filesystem stops authorising anything by user id (closing 1.31).
 2. **Kernel reports on their own channel** (2.6c): the gates stop reading kernel output off the
    console that user programs also write.
-3. **Authenticated filesystem metadata** (1.30), if the maintainer takes it before the new format.
 
 The later waves finish moving authority to capabilities (accounts as files, exec by capability),
 add job control, tighten the boot chain, move the kernel's remaining services to
@@ -271,8 +272,8 @@ test does not exist or does not run.
 
 | Layer | What it covers |
 |---|---|
-| Security properties | 144 numbered properties, each bound to a witness by `tools/check_invariants.py` |
-| QEMU integration tests | 542 `smoke-*` targets: 234 base gates and 308 control arms |
+| Security properties | 145 numbered properties, each bound to a witness by `tools/check_invariants.py` |
+| QEMU integration tests | 551 `smoke-*` targets: 237 base gates and 314 control arms |
 | Control arms | A build that puts a defect back on purpose; CI requires its gate to go red against it |
 | Kani | 35 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
 | Miri | The security core's tests, interpreted for undefined behaviour on every pull request |

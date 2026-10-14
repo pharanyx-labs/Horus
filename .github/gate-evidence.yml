@@ -174,6 +174,27 @@ exempt:
     the arm rather than being credited with reproducing the defect.
   smoke-merkle-parent-bind-control: >
     Same script, same shape, same positive boot-3 marker as the arm above.
+  smoke-meta-span: >
+    Three boots inside tools/meta_span_tamper.sh under `set -euo pipefail`, each
+    with its own REQUIRE_MARKER and FAIL_MARKER, so a boot that died fails the run
+    rather than being read as the property holding. It refuses to boot again
+    unless boot 1 reported every target and each of the four edits provably
+    CHANGED the image, and boot 2 must also serve a block nobody edited, so a
+    volume that refused everything cannot pass.
+  smoke-meta-span-control: >
+    Same script and the same asserted boots 1 and 2; boot 2 requires the positive
+    FAIL marker (the edited inode came back with the mode and owner the host
+    wrote), so a dead boot reddens the arm rather than being credited with it.
+  smoke-meta-span-plain-control: >
+    Same script; after boot 1 it requires inode A's owner and group to be FOUND
+    on the image and ends, so a boot that died (which writes nothing) cannot be
+    credited with reproducing the defect.
+  smoke-meta-pointer-control: >
+    Same script and shape as the arm above; boot 2 requires the positive marker
+    that the file served the earlier version of its own block.
+  smoke-meta-geometry-control: >
+    Same script and all three asserted boots; boot 2 must PASS, and boot 3
+    requires the positive marker that inode 1 read another inode's slot.
   smoke-fsck-refs: >
     Two written-out boots on one image, each asserting its own REQUIRE_MARKER
     with a FAIL_MARKER set, so a boot that died fails the target rather than
@@ -200,6 +221,15 @@ exempt:
     Same three boots and the same whole-image restore; boot 3 requires the stale
     era it served, so a dead boot reddens the arm rather than being credited with
     reproducing the defect.
+  smoke-rollback-anchor-flag: >
+    The same three boots as smoke-rollback, with the same assertions before boot
+    3, and the restored image's rollback_anchored flag cleared only after the
+    script has read it back as 1, so a flag that was never set cannot make the
+    edit a no-op. Boot 3 requires the refusal at the tree, which a dead boot does
+    not print.
+  smoke-rollback-anchor-flag-control: >
+    Same script and edit; boot 3 requires the positive marker that the restored
+    volume served era 1, so a dead boot reddens the arm.
   smoke-fs-shrink: >
     Two written-out boots on one image, the host truncating it between them, each
     asserting its own REQUIRE_MARKER with a FAIL_MARKER set so a boot that died

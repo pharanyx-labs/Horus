@@ -2889,6 +2889,24 @@ jobs:
         run: make smoke-kdiag-ioport
       - name: Declaring the port lets ring 3 into the kernel's channel
         run: make smoke-kdiag-grant-control
+      # S144, COM4: the kernel's own copy of everything it prints, which gates
+      # opt into with MARKER_CHANNEL=kcon. Same shape as the four above: the
+      # property, the arm with no copy, and the authority pair.
+      - name: "Every kernel line after the handover is whole on COM4, and no ring-3 byte is there"
+        run: make smoke-kcon
+      - name: "Control arm: with no copy the base gate is red"
+        run: make smoke-kcon-control
+      - name: Ring 3 is refused the kernel console port
+        run: make smoke-kcon-ioport
+      - name: "Control arm: declaring the port lets ring 3 into the kernel's copy"
+        run: make smoke-kcon-grant-control
+      # S145: the console changes hands only between lines. A kernel line is
+      # provably mid-write on another CPU at the handover; it and the server's
+      # first lines must arrive whole, and the arm's unlocked owner cuts it.
+      - name: The console changes hands only between lines
+        run: make smoke-console-handover-lines
+      - name: "Control arm: an unlocked handover cuts the line in flight"
+        run: make smoke-console-handover-lines-control
 
   smoke-kstack-race:
     name: A task's kernel stack is executed by at most one CPU (S20; and the control arm proves it)
@@ -5597,6 +5615,15 @@ jobs:
         run: python3 tools/check_split_markers.py
       - name: Falsify that checker in every direction
         run: tools/test_check_split_markers.sh
+      # The half check_split_markers cannot reach (ROADMAP 5.3, LIMITATIONS
+      # 2.6c): a kernel marker IS one call, and after the console handover it
+      # reaches COM1 through console_server among ring 3's writes. Every gate
+      # that waits for one reads the kernel's own copy on COM4 instead, or is
+      # listed with its reason, and the list of exposed ones is a ratchet.
+      - name: No gate reads a kernel marker off the shared console without a reason
+        run: python3 tools/check_kernel_markers.py
+      - name: Falsify that checker in every direction
+        run: tools/test_check_kernel_markers.sh
       # Fourth instance of the same class, and the quietest: a comment or a
       # document telling a reader to run a gate that does not exist. The reader
       # who follows it gets `No rule to make target`, which reads as their own

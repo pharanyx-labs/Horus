@@ -247,6 +247,9 @@ control_arms:
   smoke-kdiag-split-control: smoke-kdiag
   smoke-kdiag-legacy-control: smoke-kdiag
   smoke-kdiag-grant-control: smoke-kdiag-ioport
+  smoke-kcon-control: smoke-kcon
+  smoke-console-handover-lines-control: smoke-console-handover-lines
+  smoke-kcon-grant-control: smoke-kcon-ioport
   smoke-fpu-leak-control: smoke-fpu
   smoke-fpu-save-control: smoke-fpu
   smoke-frame-dma-control: smoke-frame
@@ -479,6 +482,9 @@ gates:
   - smoke-forkexec
   - smoke-kdiag
   - smoke-kdiag-ioport
+  - smoke-kcon
+  - smoke-console-handover-lines
+  - smoke-kcon-ioport
   - smoke-fpu
   - smoke-frame
   - smoke-fs

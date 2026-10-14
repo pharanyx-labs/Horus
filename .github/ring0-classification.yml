@@ -599,7 +599,17 @@
 # 2026-10-14: 11733 -> 11736, +3, LIMITATIONS 2.29: smp.c dispatching the
 # FREEBATCH_SELFTEST harness, never in the ship build. The batched free is in
 # storage.c (service).
-core_budget_loc: 11736
+# 2026-10-14: 11736 -> 11779, +43, ROADMAP 5.3 (S144): terminal.c's copy of
+# every kernel print to COM4 (the probe, the bounded writer, the flag through
+# print_core and emit_char) and idt.c's setup of the port and the KCON_PROBE
+# instrument. The console path is core, so its copy is too; the instrument
+# compiles out of the ship build.
+# 2026-10-14: 11779 -> 11810, +31, ROADMAP 5.3 (S145): terminal.c's console
+# handover under the console lock, and the HANDOVER_PROBE instrument in
+# terminal.c and idt.c that holds a kernel line in flight across it, which
+# compiles out of the ship build. The handover is the console path's own
+# synchronisation, so it is core.
+core_budget_loc: 11810
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

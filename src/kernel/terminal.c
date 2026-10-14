@@ -83,8 +83,47 @@ static void console_lock_release(uint64_t rflags) {
 }
 
 /* A ring-3 task took native port I/O over the console (SYS_IOPORT_GRANT): it now
- * owns the hardware, so the kernel stops driving serial + VGA. */
-void console_set_owner(int tid) { console_owner_task = tid; }
+ * owns the hardware, so the kernel stops driving serial + VGA.
+ *
+ * UNDER THE CONSOLE LOCK (S145, docs/LIMITATIONS.md 2.30). print_core samples the
+ * owner once, inside the lock, and then writes its whole line to COM1 if the
+ * kernel still drives it. Setting the owner without the lock let a line that
+ * had sampled "the kernel drives it" go on writing, byte by byte, after this
+ * returned -- by which time the new owner was writing too, and the two lines
+ * interleaved. Taking the lock waits for that line to finish, so the instant
+ * the owner changes no kernel write to the hardware is under way, and every
+ * later print_core sees the new owner. The caller is a syscall, never a print
+ * path, so the lock cannot already be held on this CPU.
+ *
+ * CONSOLE_HANDOVER_UNLOCKED=1 is the arm: the store as it was, unlocked (make
+ * smoke-console-handover-lines-control).
+ *
+ * Releasing ownership (console_clear_owner) stays unlocked: it hands the
+ * console back to the kernel when its owner has died or faulted, and a dead
+ * owner writes nothing, so there is no second writer to wait out. */
+void console_set_owner(int tid) {
+#ifdef CONSOLE_HANDOVER_UNLOCKED
+    console_owner_task = tid;
+#else
+    uint64_t flags = console_lock_acquire();
+    console_owner_task = tid;
+    console_lock_release(flags);
+#endif
+}
+
+#ifdef HANDOVER_PROBE
+/* Test-only, an instrument (make smoke-console-handover-lines): a kernel line kept
+ * in flight across the moment the console changes hands, so that whether the
+ * handover waits for it is a question with a deterministic answer. An AP's
+ * timer tick prints it, slowly, once the display-map syscall has armed it; that
+ * syscall then waits until the line is inside print_core, holding the console
+ * lock, before it sets the owner. */
+const char g_handover_probe_line[] =
+    "HANDOVERPROBE: a kernel line still being written when the console changes hands\n";
+volatile int g_handover_probe_armed;     /* 1 armed, 2 taken by an AP */
+volatile int g_handover_probe_cpu = -1;  /* the CPU running the syscall */
+volatile int g_handover_probe_inside;    /* the line holds the console lock */
+#endif
 
 /* The owning task died (task_teardown): reclaim the console for the kernel so the
  * in-kernel print()/console fallback works again. No-op if `tid` was not the owner. */
@@ -210,6 +249,48 @@ uint8_t inb(uint16_t port) {
  * believed. Leaving the write path alone also keeps the boot log exactly where
  * it was on every machine that does have a port. */
 int g_com1_present = 1;   /* until serial_init measures it */
+
+/* ---- COM4: the kernel console's own copy (ROADMAP 5.3, LIMITATIONS 2.6c) ---
+ *
+ * Once console_server owns the console, the kernel's print() reaches the wire
+ * only through it: the bytes go to the klog and the server forwards them, from
+ * ring 3, among everything else it writes. A gate reading a kernel marker off
+ * COM1 is therefore reading something a ring-3 task re-emitted, and another
+ * task's output can land inside it. COM3 already fixed that for the fault and
+ * panic reports (kdiag_ch, scheduler.c); this does the same for everything the
+ * kernel prints, on a line of its own, so that the two kinds of report never
+ * share a wire either.
+ *
+ * WHY NO RING-3 TASK CAN WRITE IT. 0x2E8 is not among the platform device's
+ * ports (src/kernel/pci.c), so no capability names it and SYS_IOPORT_GRANT
+ * cannot open it -- the same construction that makes COM3 the kernel's. Every
+ * byte on COM4 came from print_core with kernel origin.
+ *
+ * WHY IT IS WHOLE. print_core holds console_lock for one whole call, and the
+ * copy is written inside it, so one print() reaches COM4 contiguously whatever
+ * the other CPUs do. A line built from several calls (print, print_decimal,
+ * print) can still interleave with another CPU's kernel output, exactly as on
+ * COM1 before the handover; no ring-3 byte ever can.
+ *
+ * WHY IT IS PROBED. A machine with no COM4 should pay nothing, and one with an
+ * unrelated device decoding 0x2E8 (some legacy video cards did) must not be
+ * written at all. The scratch-register test probe_com1_present uses decides,
+ * once, at serial_init; absent means no byte is ever sent. Under QEMU the port
+ * exists only when the harness attaches a fourth serial device, which
+ * tools/smoke_test.sh does.
+ *
+ * KCON_MIRROR_OFF=1 is the control arm: no copy, so a gate that reads COM4
+ * finds nothing (make smoke-kcon-control). */
+int g_kcon_present = 0;   /* until serial_init measures it */
+
+int probe_kcon_present(void) {
+    outb(0x2EF, 0xAA);
+    if (inb(0x2EF) != 0xAA) return 0;
+    outb(0x2EF, 0x55);
+    if (inb(0x2EF) != 0x55) return 0;
+    return 1;
+}
+
 
 int probe_com1_present(void) {
     outb(0x3FF, 0xAA);
@@ -1071,6 +1152,18 @@ void serial_write_char(char c) {
     outb(0x3F8, c);
 }
 
+/* One byte to COM4, bounded like serial_wait (see g_kcon_present). */
+static void kcon_write_char(char c) {
+#ifdef KCON_MIRROR_OFF
+    (void)c;
+#else
+    if (!g_kcon_present) return;
+    for (uint32_t i = 0; i < SERIAL_TX_SPINS; i++)
+        if (inb(0x2ED) & 0x20) break;
+    outb(0x2E8, (uint8_t)c);
+#endif
+}
+
 static void serial2_wait(void) {
     for (uint32_t i = 0; i < SERIAL_TX_SPINS; i++) {
 #ifdef SERIAL_TX_NEVER_DRAINS
@@ -1283,12 +1376,15 @@ static int kmsg_stamp(char *buf) {
  * the VGA text buffer and COM1. Split out of print_core so the timestamp prefix
  * can go through exactly the same path as the text it precedes, inside the same
  * lock. Callers hold `console_lock`. */
-static void emit_char(char c, int to_klog, int drive_hw) {
+static void emit_char(char c, int to_klog, int drive_hw, int to_kcon) {
     /* The kernel log survives the handoff to ring 3: this append is placed
      * BEFORE the drive_hw test on purpose, so a kernel diagnostic is still
      * recorded once console_server owns the wire. That placement is also
      * what made [H-2] reachable when the caller was ring 3. */
     if (to_klog) klog_append(c);
+    /* Kernel origin only, and before the drive_hw test for the same reason as
+     * the klog: the copy matters most once ring 3 owns COM1. */
+    if (to_kcon) kcon_write_char(c);
 
     if (!drive_hw) return;
 
@@ -1354,13 +1450,17 @@ static int replaying_klog = 0;
  * Every line it accepts is timestamped -- see the block above kmsg_stamp() for
  * why the stamp is applied here rather than by the caller, and why it must be
  * emitted without releasing the lock. */
-static void print_core(const char* str, int to_klog, int to_console) {
+static void print_core(const char* str, int to_klog, int to_console, int to_kcon) {
     uint64_t flags = console_lock_acquire();
     /* Snapshot ownership once for the whole call so a line is emitted whole to one
      * sink, never split across a handoff. `drive_hw` false => a ring-3 server owns
      * the console, or the ring-3 writer holds no console capability (1.6); we only
      * record to klog, if that was proved, and leave the wire alone. */
     int drive_hw = to_console && (console_owner_task == 0);
+#ifdef HANDOVER_PROBE
+    int probe = (str == g_handover_probe_line);
+    if (probe) g_handover_probe_inside = 1;
+#endif
 
     while (*str) {
         char c = *str;
@@ -1374,14 +1474,21 @@ static void print_core(const char* str, int to_klog, int to_console) {
         if (at_line_start && !replaying_klog && ((unsigned char)c >= ' ' || c == '\t')) {
             char st[24];
             int n = kmsg_stamp(st);
-            for (int i = 0; i < n; i++) emit_char(st[i], to_klog, drive_hw);
+            for (int i = 0; i < n; i++) emit_char(st[i], to_klog, drive_hw, to_kcon);
             at_line_start = 0;
         }
 #endif
         if (c == '\n') at_line_start = 1;
         else if ((unsigned char)c >= ' ' || c == '\t') at_line_start = 0;
 
-        emit_char(c, to_klog, drive_hw);
+        emit_char(c, to_klog, drive_hw, to_kcon);
+#ifdef HANDOVER_PROBE
+        /* The window: a few milliseconds a character, so the new owner's first
+         * lines land inside the probe line if the handover does not wait. */
+        if (probe)
+            for (volatile unsigned long w = 0; w < (unsigned long)HANDOVER_PROBE_SPINS; w++)
+                __asm__ volatile ("pause");
+#endif
         str++;
     }
     if (drive_hw) update_cursor();
@@ -1390,7 +1497,7 @@ static void print_core(const char* str, int to_klog, int to_console) {
 
 /* Kernel-origin output. Always recorded to klog: every caller is ring 0, and the
  * log is the kernel's own record of what it did. */
-void print(const char* str) { print_core(str, 1, 1); }
+void print(const char* str) { print_core(str, 1, 1, 1); }
 
 /* Ring-3-origin output (the SYS_WRITE fd 1 path, and nothing else).
  *
@@ -1412,7 +1519,8 @@ void print(const char* str) { print_core(str, 1, 1); }
  * now takes the bytes only from a writer that holds its capability, and
  * h_write() refuses a writer that holds neither. */
 void print_from_user(const char* str, int may_console, int may_klog) {
-    print_core(str, may_klog != 0, may_console != 0);
+    /* Never to COM4: that line is the kernel's alone, whatever the writer holds. */
+    print_core(str, may_klog != 0, may_console != 0, 0);
 }
 
 void println(const char* str) { print(str); print("\n"); }

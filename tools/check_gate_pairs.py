@@ -77,6 +77,17 @@ def main():
 
     problems = []
 
+    # 7. a target is defined once. make keeps the LAST recipe for a target and
+    #    only warns about the first, so a second definition under an existing
+    #    name silently replaces a gate: on 2026-10-14 a new
+    #    `smoke-console-handover` overrode the #326 gate of that name, CI ran the
+    #    new one under the old name, and nothing here noticed.
+    from collections import Counter
+    for t, n in sorted(Counter(re.findall(r"^(smoke-[a-z0-9-]+):(?!=)", mk, re.M)).items()):
+        if n > 1:
+            problems.append(f"{t}: defined {n} times in the Makefile; make keeps only the last "
+                            f"recipe, so the others never run. Give each gate its own name")
+
     # 5. everything is classified, and nothing stale is classified
     for t in unclassified:
         problems.append(

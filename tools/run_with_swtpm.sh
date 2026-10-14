@@ -34,6 +34,14 @@ TIMEOUT="${SWTPM_TIMEOUT:-60}"
 REQUIRE_MARKER="${REQUIRE_MARKER:-}"
 EXPECT_FAULT="${EXPECT_FAULT:-}"
 FAIL_MARKER="${FAIL_MARKER:-}"
+# MARKER_CHANNEL=kcon: look for REQUIRE_MARKER on COM4, the kernel's own whole
+# copy of what it prints, instead of on the console; FAIL_MARKER on both. The
+# same opt-in as tools/smoke_test.sh's, for the same reason (LIMITATIONS 2.6c).
+MARKER_CHANNEL="${MARKER_CHANNEL:-console}"
+case "$MARKER_CHANNEL" in
+    console|kcon|kdiag) ;;
+    *) echo "SWTPM FAIL: MARKER_CHANNEL must be console, kcon or kdiag" >&2; exit 2 ;;
+esac
 
 if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
     echo "SWTPM SKIP: qemu-system-x86_64 not found" >&2; exit 0
@@ -51,13 +59,30 @@ fi
 swtpm_start "${KEEP_TPMSTATE:-}" || exit 1
 
 LOG="$(mktemp)"
+KCON="$(mktemp)"
+KDIAG="$(mktemp)"
 QEMU_PID=""
+req_seen() {
+    case "$MARKER_CHANNEL" in
+        kcon)  grep -qF "$1" "$KCON" 2>/dev/null ;;
+        kdiag) grep -qF "$1" "$KDIAG" 2>/dev/null ;;
+        *)     grep -qF "$1" "$LOG" 2>/dev/null ;;
+    esac
+}
+fail_seen() {
+    grep -qF "$1" "$LOG" 2>/dev/null && return 0
+    case "$MARKER_CHANNEL" in
+        kcon)  grep -qF "$1" "$KCON" 2>/dev/null ;;
+        kdiag) grep -qF "$1" "$KDIAG" 2>/dev/null ;;
+        *)     return 1 ;;
+    esac
+}
 
 cleanup() {
     [ -n "$QEMU_PID" ] && kill "$QEMU_PID" 2>/dev/null || true
     [ -n "$QEMU_PID" ] && wait "$QEMU_PID" 2>/dev/null || true
     swtpm_stop
-    rm -f "$LOG"
+    rm -f "$LOG" "$KCON" "$KDIAG"
 }
 trap cleanup EXIT INT TERM
 
@@ -85,7 +110,7 @@ qemu-system-x86_64 \
     -tpmdev emulator,id=tpm0,chardev=chrtpm \
     -device tpm-tis,tpmdev=tpm0 \
     -device isa-debug-exit,iobase=0x604,iosize=0x04 \
-    -serial file:"$LOG" -net none \
+    -serial file:"$LOG" -serial none -serial file:"$KDIAG" -serial file:"$KCON" -net none \
     "$@" \
     -cdrom "$ISO" &
 QEMU_PID=$!
@@ -103,8 +128,8 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
         fi
         if [ -z "$EXPECT_FAULT" ]; then status="fault"; break; fi
     fi
-    if [ -n "$FAIL_MARKER" ] && grep -qF "$FAIL_MARKER" "$LOG" 2>/dev/null; then status="marker_fail"; break; fi
-    if [ -n "$REQUIRE_MARKER" ] && grep -qF "$REQUIRE_MARKER" "$LOG" 2>/dev/null; then status="ok"; break; fi
+    if [ -n "$FAIL_MARKER" ] && fail_seen "$FAIL_MARKER"; then status="marker_fail"; break; fi
+    if [ -n "$REQUIRE_MARKER" ] && req_seen "$REQUIRE_MARKER"; then status="ok"; break; fi
     sleep 1
 done
 

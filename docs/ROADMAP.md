@@ -57,7 +57,6 @@ The recommendation is the one the route is written around; it is not the decisio
 | Lane | Milestone | Items | Closes | Needs |
 |---|---|---|---|---|
 | Filesystem | A policy on every installed system, then the uid path removed | 2.10 steps 3(c), 6 | 1.31 | |
-| Observability | Kernel reports on their own channel | 5.3 | 2.6c | |
 
 ### Wave 2: authority completes, the boot chain tightens
 
@@ -161,7 +160,7 @@ controller is identified and the drive answers IDENTIFY), USB through xHCI (and 
 on machines with no PS/2 emulation), and a framebuffer server.
 
 **2.7a ⬜ Evict the in-kernel services [F-2.7a].** `.github/ring0-classification.yml` (S87) measures
-the ring-0 `service` class at about 6,000 code lines beside a 11,736-line core: `storage.c` (the
+the ring-0 `service` class at about 6,000 code lines beside a 11,810-line core: `storage.c` (the
 encrypted store and the on-disk filesystem), `kusers.c` (accounts and password hashing), the loader
 and spawn path, `crypto.c` and `syscall_fs.c`, and the IDE, SD and eMMC drivers sit in ring 0 too.
 The drivers leave by [`design/ring3-storage.md`](design/ring3-storage.md), storage with 2.10 phase
@@ -245,11 +244,6 @@ document.
 
 ### Track 5: closing the known limitations
 
-**5.3 ⬜ Kernel reports off the shared console** (2.6c). First a checker that classifies every base
-gate's required marker by who prints it and whether before or after the console handover, with a
-ratchet that only shrinks, so the exposed number is measured. Then the exposed gates move to COM3 in
-batches by subsystem until the ratchet is empty. The COM1 split at the handover that reddened `kdiag`
-and the SD installer gates is part of this.
 
 **5.4 ⏸ Exec only from a file capability** (1.23). A spawn call that takes a file capability carrying
 `EXEC`, with `fs_server` supplying the bytes through it; `SYS_SPAWN_IMAGE` then needs a capability no

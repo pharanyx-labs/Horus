@@ -212,6 +212,13 @@ static void iodev_add_platform(void) {
     d->port[5].base = 0x3E8; d->port[5].len = 8;      /* COM3 -- the arm     */
     d->n_port = 6;
 #endif
+    /* 0x2E8 (COM4), the kernel console's own copy, is absent for the same
+     * reason (see g_kcon_present in terminal.c); KCON_PORTS_GRANTABLE=1 is its
+     * arm. */
+#ifdef KCON_PORTS_GRANTABLE
+    d->port[d->n_port].base = 0x2E8; d->port[d->n_port].len = 8;   /* COM4 -- the arm */
+    d->n_port++;
+#endif
 
     d->irq_mask = (1u << 0) | (1u << 1);
     d->msi_cap  = 0;                  /* the platform device has no config space */

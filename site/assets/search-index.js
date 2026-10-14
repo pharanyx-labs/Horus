@@ -229,12 +229,6 @@ window.HORUS_SEARCH = [
 "k": 3
 },
 {
-"t": "2.6cMost gates still read kernel reports off a shared console",
-"p": "Limitations",
-"u": "limitations.html#2-6cmost-gates-still-read-kernel-reports-off-a-shared-consol",
-"k": 3
-},
-{
 "t": "2.9Measured boot is opt-in",
 "p": "Limitations",
 "u": "limitations.html#2-9measured-boot-is-opt-in",

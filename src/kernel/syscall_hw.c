@@ -139,6 +139,20 @@ void h_map_phys(struct interrupt_frame64 *r) {
      * kernel console, so neither may lose ownership of it. */
     if (rc == 0 && paddr_is_a_display(paddr) &&
         cur > 0 && cur < g_max_tasks && tasks[cur].io_device == IODEV_PLATFORM) {
+#ifdef HANDOVER_PROBE
+        /* The handover instrument: arm the probe line on another CPU and wait,
+         * bounded, until it is inside print_core holding the console lock, so
+         * the owner changes while a kernel line is provably mid-write. Nothing
+         * is printed HERE: a print would wait on that same lock, and in the
+         * arm that wait alone would keep console_server from writing until the
+         * line was done, hiding the defect. The AP says it instead. */
+        if (!console_hw_owned() && g_handover_probe_armed == 0) {
+            g_handover_probe_cpu = this_cpu();
+            g_handover_probe_armed = 1;
+            for (unsigned long w = 0; w < 200000000ul && !g_handover_probe_inside; w++)
+                __asm__ volatile ("pause");
+        }
+#endif
         console_set_owner(cur);
     }
 }

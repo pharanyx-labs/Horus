@@ -95,7 +95,6 @@
 <li><a href="#c-5nobody-reviews-a-change-before-it-lands">C-5Nobody reviews a change before it lands</a></li>
 <li><a href="#source-review-findings">1.31Findings from a source review</a></li>
 <li><a href="#1-33a-revocation-cannot-reach-through-a-task-that-has-died">1.33A revocation cannot reach through a task that has died</a></li>
-<li><a href="#2-6cmost-gates-still-read-kernel-reports-off-a-shared-consol">2.6cMost gates still read kernel reports off a shared console</a></li>
 <li><a href="#2-9measured-boot-is-opt-in">2.9Measured boot is opt-in</a></li>
 <li><a href="#4a-programs-execute-right-is-advisory">4A program's execute right is advisory</a></li>
 <li><a href="#4hardware-support-is-narrow">4Hardware support is narrow</a></li>
@@ -154,17 +153,6 @@
       a task dies its capabilities are emptied, so a copy whose parent was in that task is out
       of reach of any revocation above it. If the shell dies while a program it lent the
       keyboard to is still running, that program keeps reading until it ends.
-    </p>
-  </li>
-  <li>
-    <h3 id="2-6cmost-gates-still-read-kernel-reports-off-a-shared-consol"><span class="id">2.6c</span>Most gates still read kernel reports off a shared console</h3>
-    <p>
-      The kernel writes a report one byte at a time to a serial line that a user-mode
-      program also writes, so an unrelated program's output can land in the middle of it and
-      a gate matching that report misses it. It has happened in CI. The kernel now has a
-      diagnostic port that no capability names, so only the kernel can write it; four gates
-      read it, and 55 others still wait for a report only the kernel prints on the shared
-      console. How many of those are exposed is being measured first.
     </p>
   </li>
   <li>

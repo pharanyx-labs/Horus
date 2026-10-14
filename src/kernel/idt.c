@@ -293,6 +293,24 @@ static void kdiag_probe_tick(void) {
 }
 #endif
 
+#ifdef KCON_PROBE
+/* Test-only, an instrument: the line `make smoke-kcon` is about. A plain
+ * print(), on a timer tick after the console handover, while ring 3 is still
+ * writing (KDIAG_NOISE), so the kernel's copy on COM4 is asked to carry a kernel
+ * line from exactly the period in which COM1 cannot. print() and not
+ * kfault_str, unlike kdiag_probe_tick: the property is about print_core's copy,
+ * and a probe that took the reporters' path would be measuring COM3. */
+static void kcon_probe_tick(void) {
+    static unsigned owned_ticks = 0;
+    static unsigned emitted = 0;
+    if (!console_hw_owned()) return;
+    if (emitted >= (unsigned)KCON_PROBE_COUNT) return;
+    if (++owned_ticks % (unsigned)KCON_PROBE_EVERY) return;
+    emitted++;
+    print("KCONPROBE: a kernel line printed after the console handover\n");
+}
+#endif
+
 #ifdef RESUME_RSP_INJECT
 /* Test-only. Forces the dispatcher's resume %rsp to a bogus value ONCE, after
  * the console handover, so the floor guard in interrupt_handler64 can be gated
@@ -548,6 +566,9 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
 #ifdef KDIAG_PROBE
         kdiag_probe_tick();
 #endif
+#ifdef KCON_PROBE
+        kcon_probe_tick();
+#endif
 #ifdef KFAULT_INJECT
         kfault_inject_tick();
 #endif
@@ -651,6 +672,18 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
          * preemptive scheduler decide whether to switch this CPU's task. */
         lapic_eoi();
         __sync_fetch_and_add(&ap_timer_ticks, 1ul);
+#ifdef HANDOVER_PROBE
+        /* The handover instrument's writer: any AP but the one running the
+         * display-map syscall takes the armed probe, once. */
+        if (g_handover_probe_armed == 1 && this_cpu() != g_handover_probe_cpu &&
+            __sync_bool_compare_and_swap(&g_handover_probe_armed, 1, 2)) {
+            print(g_handover_probe_line);
+            /* The gate's precondition, on COM4: the line was written while the
+             * handover was waiting for it, so the owner changed mid-line or
+             * (with the fix) just after it. */
+            print("HANDOVER: the probe line was in flight when the console changed hands\n");
+        }
+#endif
         return preempt_on_tick((uint64_t)frame, frame->cs);
     } else if (vector == 0xFC) {
         /* Kill IPI (smp_kick_cpu): the task this CPU is running was torn down by
@@ -1189,6 +1222,21 @@ static void serial_init(void) {
     outb(0x3EB, 0x03);
     outb(0x3EA, 0xC7);
     outb(0x3EC, 0x0B);
+
+    /* COM4, the kernel console's own copy (see g_kcon_present in terminal.c).
+     * Probed FIRST, and programmed only if a UART answered: unlike COM3's
+     * writes, which an absent port drops, these must not reach a device that
+     * merely decodes the address. */
+    g_kcon_present = probe_kcon_present();
+    if (g_kcon_present) {
+        outb(0x2E9, 0x00);
+        outb(0x2EB, 0x80);
+        outb(0x2E8, 0x03);
+        outb(0x2E9, 0x00);
+        outb(0x2EB, 0x03);
+        outb(0x2EA, 0xC7);
+        outb(0x2EC, 0x0B);
+    }
 }
 
 /* Program PIT channel 0 for a fixed periodic tick so the preemptive scheduler

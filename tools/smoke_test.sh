@@ -131,6 +131,45 @@ LOG="${SMOKE_LOG:-$(mktemp)}"
 # capability names 0x3E8 -- so a marker here is contiguous or it was never
 # emitted. A gate asserting on a KERNEL string reads this file.
 KDIAG="${SMOKE_KDIAG_LOG:-$(mktemp)}"
+# The kernel console's own copy, COM4 (ROADMAP 5.3, docs/LIMITATIONS.md 2.6c):
+# everything the kernel print()s, and nothing else, because no capability names
+# 0x2E8 either. After the console handover the kernel's lines reach COM1 only
+# through console_server, from ring 3, among everything else it writes; here they
+# are whole.
+#
+# MARKER_CHANNEL=kcon makes REQUIRE_MARKER be looked for HERE instead of on the
+# console. It is per gate, deliberately, and not a default: a gate whose point is
+# that a kernel line reaches the user's console must keep reading the console,
+# or a broken forwarder would pass it. FAIL_MARKER is looked for on BOTH, so
+# opting in can only add ways to fail. tools/check_kernel_markers.py lists the
+# gates that read a kernel marker off the console after the handover, and that
+# list only shrinks.
+KCON="${SMOKE_KCON_LOG:-$(mktemp)}"
+MARKER_CHANNEL="${MARKER_CHANNEL:-console}"
+# MARKER_CHANNEL=kdiag is the same for a marker the kernel writes through its
+# diagnostic reporter (panic_str, kfault_str), which goes to COM3 and COM1 and
+# never through print(), so never to COM4.
+case "$MARKER_CHANNEL" in
+    console|kcon|kdiag) ;;
+    *) echo "SMOKE FAIL: MARKER_CHANNEL must be console, kcon or kdiag, not '$MARKER_CHANNEL'"; exit 2 ;;
+esac
+# Where REQUIRE_MARKER is looked for, and whether FAIL_MARKER is looked for on
+# the kernel's copy too.
+req_seen() {
+    case "$MARKER_CHANNEL" in
+        kcon)  grep -qF "$1" "$KCON" 2>/dev/null ;;
+        kdiag) grep -qF "$1" "$KDIAG" 2>/dev/null ;;
+        *)     grep -qF "$1" "$LOG" 2>/dev/null ;;
+    esac
+}
+fail_seen() {
+    grep -qF "$1" "$LOG" 2>/dev/null && return 0
+    case "$MARKER_CHANNEL" in
+        kcon)  grep -qF "$1" "$KCON" 2>/dev/null ;;
+        kdiag) grep -qF "$1" "$KDIAG" 2>/dev/null ;;
+        *)     return 1 ;;
+    esac
+}
 QEMU_PID=""
 TRACE_FILE=""   # declared before the EXIT trap so cleanup() is safe under set -u
 QMP_SOCK=""
@@ -143,6 +182,7 @@ cleanup() {
     # Only the mktemp we created ourselves is ours to delete.
     [ -n "${SMOKE_LOG:-}" ] || rm -f "$LOG"
     [ -n "${SMOKE_KDIAG_LOG:-}" ] || rm -f "$KDIAG"
+    [ -n "${SMOKE_KCON_LOG:-}" ] || rm -f "$KCON"
     # Only remove a trace file we created ourselves; when the caller named one
     # via SMOKE_TRACE_FILE it belongs to them and is usually the whole point.
     [ -n "$TRACE_FILE" ] && [ -z "${SMOKE_TRACE_FILE:-}" ] && rm -f "$TRACE_FILE"
@@ -400,7 +440,7 @@ qemu-system-x86_64 \
     -m "${SMOKE_MEM:-512M}" -cpu "${QEMU_CPU:-qemu64,+aes,+rdrand,+smep,+smap,+umip}" -accel "$QEMU_ACCEL" \
     -display none -no-reboot -no-shutdown \
     -device isa-debug-exit,iobase=0x604,iosize=0x04 \
-    -serial file:"$LOG" -serial none -serial file:"$KDIAG" $NET_ARG \
+    -serial file:"$LOG" -serial none -serial file:"$KDIAG" -serial file:"$KCON" $NET_ARG \
     $MACHINE_ARG $DRIVE_ARG $NVME_ARG $SD_ARG $SMP_ARG $TRACE_ARG $QMP_ARG $TPM_ARG $BOOT_ARG \
     -cdrom "$ISO" &
 QEMU_PID=$!
@@ -451,7 +491,7 @@ while [ "$SECONDS" -lt "$deadline" ]; do
     # no gate in this tree sets both (checked). Making the order depend on which
     # role the fault plays is what keeps that true without forbidding the
     # combination outright.
-    if [ -z "$EXPECT_FAULT" ] && [ -n "$FAIL_MARKER" ] && grep -qF "$FAIL_MARKER" "$LOG" 2>/dev/null; then
+    if [ -z "$EXPECT_FAULT" ] && [ -n "$FAIL_MARKER" ] && fail_seen "$FAIL_MARKER"; then
         status="marker_fail"; break
     fi
     if grep -qE "$FAULT_RE" "$LOG" 2>/dev/null; then
@@ -466,10 +506,10 @@ while [ "$SECONDS" -lt "$deadline" ]; do
             status="fault"; break
         fi
     fi
-    if [ -n "$FAIL_MARKER" ] && grep -qF "$FAIL_MARKER" "$LOG" 2>/dev/null; then status="marker_fail"; break; fi
+    if [ -n "$FAIL_MARKER" ] && fail_seen "$FAIL_MARKER"; then status="marker_fail"; break; fi
     # MARKER_ONLY: the required marker alone is success (no shell banner).
     if [ "$MARKER_ONLY" = "1" ] && [ -n "$REQUIRE_MARKER" ]; then
-        if grep -qF "$REQUIRE_MARKER" "$LOG" 2>/dev/null; then
+        if req_seen "$REQUIRE_MARKER"; then
             # WAIT_FOR_EXIT ([I-11]). The marker says the guest reached the
             # point of interest; it does not say the run is over. Ask QEMU to
             # quit over QMP — once — and then WAIT for the process to go away,
@@ -498,7 +538,7 @@ while [ "$SECONDS" -lt "$deadline" ]; do
     # Otherwise the banner is the primary success signal; if an extra marker is
     # required, wait until both have appeared.
     elif grep -q "$PASS_MARKER" "$LOG" 2>/dev/null; then
-        if [ -z "$REQUIRE_MARKER" ] || grep -qF "$REQUIRE_MARKER" "$LOG" 2>/dev/null; then
+        if [ -z "$REQUIRE_MARKER" ] || req_seen "$REQUIRE_MARKER"; then
             status="ok"; break
         fi
     fi
@@ -527,7 +567,7 @@ case "$status" in
             echo "SMOKE FAIL: kernel fault/panic on serial"
             exit 1
         fi
-        if [ -n "$FAIL_MARKER" ] && grep -qF "$FAIL_MARKER" "$LOG"; then
+        if [ -n "$FAIL_MARKER" ] && fail_seen "$FAIL_MARKER"; then
             echo "SMOKE FAIL: saw fail marker '$FAIL_MARKER'"
             exit 1
         fi
@@ -569,7 +609,7 @@ case "$status" in
             exit 1
         fi
         if [ "$MARKER_ONLY" = "1" ]; then
-            echo "SMOKE PASS: required marker '$REQUIRE_MARKER' observed on serial"
+            echo "SMOKE PASS: required marker '$REQUIRE_MARKER' observed on serial$(case "$MARKER_CHANNEL" in kcon) echo ' (the kernel console copy, COM4)';; kdiag) echo ' (the kernel diagnostic channel, COM3)';; esac)"
             exit 0
         fi
         extra=""
@@ -623,7 +663,7 @@ case "$status" in
             echo "  ever printing '$ABSENT_MARKER' -- which is the expected refusal-by-block"
             exit 0
         fi
-        if [ -n "$REQUIRE_MARKER" ] && ! grep -qF "$REQUIRE_MARKER" "$LOG"; then
+        if [ -n "$REQUIRE_MARKER" ] && ! req_seen "$REQUIRE_MARKER"; then
             echo "SMOKE FAIL: timed out after ${TIMEOUT}s without required marker '$REQUIRE_MARKER'"
         else
             echo "SMOKE FAIL: timed out after ${TIMEOUT}s before the shell banner"

@@ -2513,6 +2513,16 @@ char console_getc(void);
  * is always waiting and never reaches the keyboard. See terminal.c. */
 extern int g_com1_present;
 int probe_com1_present(void);
+#ifdef HANDOVER_PROBE
+/* The handover instrument (terminal.c, console_set_owner). */
+extern const char g_handover_probe_line[];
+extern volatile int g_handover_probe_armed;
+extern volatile int g_handover_probe_cpu;
+extern volatile int g_handover_probe_inside;
+#endif
+/* COM4, the kernel console's own copy (terminal.c, LIMITATIONS 2.6c). */
+extern int g_kcon_present;
+int probe_kcon_present(void);
 /* Set by the Makefile from DEFECT_ACTIVE: the space-separated list of
  * defect-reproducing flags this kernel was built with, or "none". Printed at
  * boot so a serial transcript is self-describing -- see main.c. The fallback

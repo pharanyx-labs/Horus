@@ -47,7 +47,7 @@ gates that match kernel strings are moving to COM3, which only the kernel can wr
 ## The integration gates
 
 
-There are 551 `smoke-*` targets: 237 gates and 314 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
+There are 557 `smoke-*` targets: 240 gates and 317 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
 
 
 ### Capabilities and authorisation
@@ -74,6 +74,7 @@ There are 551 `smoke-*` targets: 237 gates and 314 control arms. Each row is a g
 | `smoke-devpage` | A register page is mapped only if no other device declares any of it and it is outside the chipset window: `SYS_MAP_PHYS`'s decision against a table with neighbours QEMU never makes | S43 | `smoke-devpage-control` |
 | `smoke-devcap` | A device capability reaches its own device's frame, port and interrupt, and is refused another device's; the IDE controller's, which ring 0 drives, declares no ATA port | S43, S137 | `smoke-devcap-ata-control`, `smoke-devcap-irq-control`, `smoke-devcap-object-control`, `smoke-devcap-ports-control` |
 | `smoke-kdiag-ioport` | A ring-3 write to the kernel's diagnostic port faults: no device declares it, so no grant can open it | S81 | `smoke-kdiag-grant-control` |
+| `smoke-kcon-ioport` | A ring-3 write to COM4, the kernel console's copy, faults: no device declares it | S144 | `smoke-kcon-grant-control` |
 | `smoke-init-provision` | `init` provisions a server on an endpoint it retyped from its own untyped budget | S59 | `smoke-init-provision-control` |
 | `smoke-ioport` | A port grant gives the holder native ring-3 port I/O through the TSS bitmap |  |  |
 | `smoke-klog-forge` | A ring-3 task cannot forge entries into the kernel log or evict what is there | S23, S24 | `smoke-klog-forge-abi-control`, `smoke-klog-forge-control` |
@@ -145,6 +146,8 @@ There are 551 `smoke-*` targets: 237 gates and 314 control arms. Each row is a g
 |---|---|---|---|
 | `smoke-forkexec` | After `fork` and `exec`, a child's capabilities stay derived from its parent's, three generations deep | S39, S42 | `smoke-forkexec-reset-control`, `smoke-forkexec-root-control` |
 | `smoke-kdiag` | Every kernel marker arrives intact on COM3, the channel only the kernel can write | S81 | `smoke-kdiag-legacy-control`, `smoke-kdiag-split-control` |
+| `smoke-kcon` | Every kernel line printed after the console handover arrives whole on COM4, and no ring-3 byte is there | S144 | `smoke-kcon-control` |
+| `smoke-console-handover-lines` | A kernel line mid-write when `console_server` takes the console arrives whole, and so do the server's first lines | S145 | `smoke-console-handover-lines-control` |
 | `smoke-kfault` | A kernel-mode page fault is reported on the serial line after the console handover |  | `smoke-kfault-legacy` |
 | `smoke-kfault-record` | A task's exit record carries no kernel address | S97 | `smoke-kfault-record-control` |
 | `smoke-notify` | A notification wakes a blocked waiter with the accumulated badge |  |  |
@@ -421,7 +424,7 @@ Two of those deserve a sentence each.
 there with no `continue-on-error`, each named with its measured cost in
 `.github/kani-harnesses.yml`, and the job refuses a proof that is not listed. And **`invariants`** requires every property in `SECURITY.md` to
 name a witness that exists and runs; its exemption list, `.github/invariants.yml`, is
-currently **empty**: all 145 properties name a witness that resolves.
+currently **empty**: all 147 properties name a witness that resolves.
 
 Every `tools/check_*.py` has a falsification harness, `tools/test_check_*.sh`, with one case per
 rule showing the rule can fail, and each checker asserts a floor on what it parsed, so a parser

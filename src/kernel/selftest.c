@@ -4305,19 +4305,21 @@ void rollback_selftest(void)
         print("ROLLBACK: PASS a rolled-back volume was refused\n");
         for (;;) asm volatile ("hlt");
     }
+    if (rc == -9) {
+        /* The tree does not stand under the root. `make
+         * smoke-rollback-anchor-flag` asks for exactly this: the restored image
+         * with its rollback_anchored flag cleared, which the root binds (S143),
+         * so the edit is caught before the anchor is ever consulted. Not a PASS
+         * of the plain rollback gate, which waits for -11 above. */
+        print("ROLLBACK: refused - the volume does not verify under its root\n");
+        for (;;) asm volatile ("hlt");
+    }
     if (rc != 0) {
         print("ROLLBACK: FAIL unlock failed for a reason that is not a rollback\n");
         for (;;) asm volatile ("hlt");
     }
 
     mounted_fs_t *mfs = storage_get_mounted_fs();
-    if (!mfs->sb.rollback_anchored) {
-        /* Positive, and a failure: an unanchored volume cannot demonstrate
-         * anything about rollback, and a run without a TPM would otherwise sail
-         * through every boot below and look green. */
-        print("ROLLBACK: FAIL the volume is not anchored - this run tested nothing\n");
-        for (;;) asm volatile ("hlt");
-    }
 
     /* WHAT ERA IS ALREADY HERE? Read before writing -- the first version of this
      * wrote first and then read its own bytes back, so the stale-data check
@@ -4343,7 +4345,26 @@ void rollback_selftest(void)
                 if (match) { found = e; break; }
             }
         }
-    } else {
+    }
+
+    if (!mfs->sb.rollback_anchored) {
+        if (found > 0) {
+            /* POSITIVE, for the anchor-flag arm: a volume that WAS anchored,
+             * restored with the flag cleared, unlocked without the counter being
+             * asked and served the era it had already left. */
+            print("ROLLBACK: FAIL a restored volume with its anchor flag cleared served era ");
+            print_decimal((uint64_t)found);
+            print("\n");
+            for (;;) asm volatile ("hlt");
+        }
+        /* Positive, and a failure: an unanchored volume cannot demonstrate
+         * anything about rollback, and a run without a TPM would otherwise sail
+         * through every boot below and look green. */
+        print("ROLLBACK: FAIL the volume is not anchored - this run tested nothing\n");
+        for (;;) asm volatile ("hlt");
+    }
+
+    if (fresh) {
         int64_t ino = storage_alloc_inode(mfs->bd, &mfs->sb);
         if (ino != ROLLBACK_INO) {
             print("ROLLBACK: FAIL unexpected inode\n"); for (;;) asm volatile ("hlt");
@@ -4355,6 +4376,9 @@ void rollback_selftest(void)
 
     print("ROLLBACK: gen=");
     print_decimal(mfs->sb.rollback_gen);
+    /* Where the flag lives on the image, for ROLLBACK_CLEAR_ANCHOR=1. */
+    print(" anchored_at=");
+    print_decimal(__builtin_offsetof(fs_superblock_t, rollback_anchored));
     print("\n");
 
     uint8_t era = (uint8_t)(found + 1);
@@ -4940,6 +4964,13 @@ void bigvol_selftest(void)
             for (;;) asm volatile ("hlt");
         }
         storage_test_scratch_set(1);
+        /* The most home blocks one transaction staged, against JOURNAL_DATA_MAX.
+         * The span's leaves (LIMITATIONS 1.30) put more tree nodes into a
+         * transaction, and the deepest one this tree makes is the first block
+         * of a triple-indirect file, which this boot has just written. */
+        print("BIGVOL: journal highwater=");
+        print_decimal((uint64_t)storage_journal_highwater());
+        print("\n");
         print("BIGVOL: boot1 formatted 16 GiB and wrote past the 1 GiB ceiling\n");
         for (;;) asm volatile ("hlt");
     }
@@ -5221,6 +5252,22 @@ void merkle_selftest(void)
         nd.type = 1; nd.mode = 0100600; nd.links = 1;
         storage_write_inode(mfs->bd, &mfs->sb, (uint64_t)ino, &nd);
 
+        /* SET A STARTS UNDER A LEVEL-0 NODE OF ITS OWN (since format v14).
+         * The inode table and bitmaps are sealed now, so their nonces and tags
+         * are entries in the metadata region, and on a small volume one level-0
+         * node covers both their entries and the first data blocks'. Restoring
+         * that node would then also roll back the inode table's entry, the
+         * inode read would fail its tag, and every set-A read would be refused
+         * for that reason alone, in the arms as much as the base: the run would
+         * test the span, not the tree. So set A is placed past the data the
+         * first level-0 node covers (MERKLE_FANOUT metadata blocks of
+         * META_ENTRIES_PER_BLOCK entries); the blocks below are marked used and
+         * never touched. */
+        if (storage_test_reserve_until(mfs, (uint64_t)MERKLE_FANOUT * META_ENTRIES_PER_BLOCK) != 0) {
+            print("MERKLE: FAIL the volume is too small to place set A under its own node\n");
+            for (;;) asm volatile ("hlt");
+        }
+
         for (uint32_t k = 0; k < MERKLE_SET_N; k++) {
             uint32_t b = MERKLE_SET_A + k;
             for (uint32_t i = 0; i < BLOCK_SIZE; i++) buf[i] = merkle_byte(b, i);
@@ -5304,6 +5351,369 @@ void merkle_selftest(void)
     print("MERKLE: PASS stale node refused\n");
 }
 #endif /* MERKLE_SELFTEST */
+
+#ifdef SPAN_SELFTEST
+/* The metadata a volume keeps in the clear is authenticated (docs/LIMITATIONS.md
+ * 1.30, SECURITY.md S143): an edit made to the disk behind the kernel's back is
+ * refused, not served.
+ *
+ * Three boots on one ATA image, with the HOST doing the editing between them
+ * (see `make smoke-meta-span` and tools/meta_span_tamper.sh), because a physical
+ * attacker with the disk is exactly what the property is about:
+ *
+ *   phase 1  make two files and report where their metadata lives.
+ *              A (inode 16, mode 0600, an owner and group no other bytes on
+ *                the image spell) is alone in its table block, so refusing
+ *                that block refuses nothing else asked for.
+ *              B (inode 1) has block 0 and block 12; block 12 sits under a
+ *                single-indirect pointer block and was MOVED once, so the block
+ *                it used to be in still holds a genuine earlier version of it,
+ *                with the nonce and tag that open it.
+ *            [host: A's owner and group must not appear anywhere on the image;
+ *             then A's mode to 0777 and owner to 0; B's pointer to the earlier
+ *             block; B's block-0 bit cleared in the block bitmap]
+ *   phase 2  each edit must be refused, and B's untouched block 0 still served.
+ *            [host: the superblock's inode_table_start moved two blocks on]
+ *   phase 3  the volume must not unlock.
+ *
+ * WHY THESE THREE EDITS. Each is the cheapest useful attack on one structure:
+ * an inode whose owner and mode say anyone may open it; a pointer that serves a
+ * file's own earlier contents (nothing forged, every byte this volume wrote);
+ * and a bitmap that hands a live file's block to the next file that asks. The
+ * superblock edit is the one that gets past every per-block check: each block
+ * read is genuine, and only the geometry that says which block is which inode
+ * has moved.
+ *
+ * WHY THE UNTOUCHED BLOCK IS READ. A kernel that refused everything would pass
+ * the three refusals; reading B's block 0 back is what shows the refusals are
+ * about the edits. */
+#define SPAN_INO_B        1
+#define SPAN_INO_A        16          /* table block 1: alone with its edit */
+#define SPAN_UID          1000
+/* Inode A's owner and group: eight bytes that occur nowhere else on the image, so
+ * the host can look for them. In the clear they sit side by side in A's slot; a
+ * sealed table hides them (LIMITATIONS 1.35). */
+#define SPAN_A_UID        0x7A3B9C51u
+#define SPAN_A_GID        0x5E1D2F83u
+#define SPAN_MOVED_BLOCK  12          /* the first single-indirect block */
+
+static uint8_t span_byte(uint32_t tag, uint32_t i)
+{
+    return (uint8_t)((tag * 151u + i * 29u + 0x3Cu) & 0xFFu);
+}
+
+static int span_matches(const uint8_t *buf, uint32_t tag)
+{
+    for (uint32_t i = 0; i < BLOCK_SIZE; i++)
+        if (buf[i] != span_byte(tag, i)) return 0;
+    return 1;
+}
+
+static void span_fill(uint8_t *buf, uint32_t tag)
+{
+    for (uint32_t i = 0; i < BLOCK_SIZE; i++) buf[i] = span_byte(tag, i);
+}
+
+#define SPAN_TAG_B0   1u
+#define SPAN_TAG_OLD  2u              /* block 12 before it moved */
+#define SPAN_TAG_NEW  3u              /* block 12 after */
+
+static void span_halt(const char *msg)
+{
+    print(msg);
+    for (;;) asm volatile ("hlt");
+}
+
+static void span_new_file(mounted_fs_t *mfs, uint64_t ino)
+{
+    on_disk_inode_t nd;
+    for (size_t i = 0; i < sizeof(nd); i++) ((uint8_t *)&nd)[i] = 0;
+    nd.type = 1; nd.mode = 0100600; nd.links = 1;
+    nd.uid = SPAN_UID; nd.gid = SPAN_UID;
+    if (storage_write_inode(mfs->bd, &mfs->sb, ino, &nd) != 0)
+        span_halt("SPAN: FAIL an inode could not be written\n");
+}
+
+void span_selftest(void)
+{
+    print("SPAN: begin\n");
+    static uint8_t buf[BLOCK_SIZE];
+
+    /* Read BEFORE the unlock, because phase 3 is the boot whose unlock must
+     * fail. The scratch block is reached through the mounted superblock, which
+     * the boot has already read; nothing about it needs the key. */
+    uint32_t phase = storage_test_scratch_get();
+    if (phase == 0xFFFFFFFFu) span_halt("SPAN: FAIL scratch block unreadable\n");
+
+    int unlocked = storage_unlock("spanpw", 6);
+    mounted_fs_t *mfs = storage_get_mounted_fs();
+
+    if (phase == 2) {
+        if (unlocked != 0) {
+            print("GEOM: PASS an edited superblock was refused at unlock\n");
+            return;
+        }
+        /* POSITIVE: say what the volume served, not merely that it opened. */
+        on_disk_inode_t nd;
+        int rc = storage_read_inode(mfs->bd, &mfs->sb, SPAN_INO_B, &nd);
+        print("GEOM: inode 1 after the edit rc=");
+        print_decimal((uint64_t)(rc == 0 ? 0 : 1));
+        print(" type=");
+        print_decimal(rc == 0 ? nd.type : 0);
+        print(" uid=");
+        print_decimal(rc == 0 ? nd.uid : 0);
+        print("\n");
+        if (rc == 0 && (nd.type != 1 || nd.uid != SPAN_UID))
+            print("GEOM: FAIL an edited superblock was accepted - inode 1 read another inode's slot\n");
+        else
+            print("GEOM: FAIL an edited superblock was accepted\n");
+        return;
+    }
+    if (unlocked != 0) span_halt("SPAN: FAIL volume did not mount\n");
+
+    if (phase == 0) {
+        int64_t b = storage_alloc_inode(mfs->bd, &mfs->sb);
+        if (b != SPAN_INO_B) span_halt("SPAN: FAIL unexpected inode for B\n");
+        span_new_file(mfs, SPAN_INO_B);
+        /* Fill inodes 2..15 so that A lands in table block 1. */
+        for (;;) {
+            int64_t ino = storage_alloc_inode(mfs->bd, &mfs->sb);
+            if (ino < 0 || ino > SPAN_INO_A) span_halt("SPAN: FAIL inode allocation\n");
+            span_new_file(mfs, (uint64_t)ino);
+            if (ino == SPAN_INO_A) break;
+        }
+        {
+            on_disk_inode_t nd;
+            for (size_t i = 0; i < sizeof(nd); i++) ((uint8_t *)&nd)[i] = 0;
+            nd.type = 1; nd.mode = 0100600; nd.links = 1;
+            nd.uid = SPAN_A_UID; nd.gid = SPAN_A_GID;
+            if (storage_write_inode(mfs->bd, &mfs->sb, SPAN_INO_A, &nd) != 0)
+                span_halt("SPAN: FAIL inode A could not be written\n");
+        }
+
+        span_fill(buf, SPAN_TAG_B0);
+        if (storage_write_file_block(mfs, SPAN_INO_B, 0, buf) != 0)
+            span_halt("SPAN: FAIL block 0 write\n");
+        span_fill(buf, SPAN_TAG_OLD);
+        if (storage_write_file_block(mfs, SPAN_INO_B, SPAN_MOVED_BLOCK, buf) != 0)
+            span_halt("SPAN: FAIL block 12 write\n");
+        span_fill(buf, SPAN_TAG_NEW);
+        uint64_t old = storage_test_relocate_block(mfs, SPAN_INO_B, SPAN_MOVED_BLOCK, buf);
+        if (old == 0) span_halt("SPAN: FAIL block 12 could not be moved\n");
+
+        /* Everything reads back as written BEFORE any edit: a refusal in phase
+         * 2 must not be a write that was already broken. */
+        on_disk_inode_t a, bnode;
+        if (storage_read_inode(mfs->bd, &mfs->sb, SPAN_INO_A, &a) != 0 ||
+            a.mode != 0100600 || a.uid != SPAN_A_UID || a.gid != SPAN_A_GID)
+            span_halt("SPAN: FAIL inode A did not read back\n");
+        if (storage_read_file_block(mfs, SPAN_INO_B, 0, buf) != 0 || !span_matches(buf, SPAN_TAG_B0))
+            span_halt("SPAN: FAIL block 0 did not read back\n");
+        if (storage_read_file_block(mfs, SPAN_INO_B, SPAN_MOVED_BLOCK, buf) != 0 ||
+            !span_matches(buf, SPAN_TAG_NEW))
+            span_halt("SPAN: FAIL block 12 did not read back\n");
+        if (storage_read_inode(mfs->bd, &mfs->sb, SPAN_INO_B, &bnode) != 0 || bnode.indirect == 0)
+            span_halt("SPAN: FAIL inode B did not read back\n");
+        uint64_t b0 = storage_test_phys_block(mfs, SPAN_INO_B, 0);
+        if (b0 == 0 || storage_test_block_allocated(mfs, b0) != 1)
+            span_halt("SPAN: FAIL block 0 is not marked allocated\n");
+
+        /* Byte positions on the IMAGE, for the host. Computed from the layout
+         * the kernel itself uses, so the harness carries no copy of it. */
+        const uint64_t bs = BLOCK_SIZE;
+        uint64_t a_at = (mfs->sb.inode_table_start + SPAN_INO_A / INODES_PER_BLOCK) * bs
+                      + (SPAN_INO_A % INODES_PER_BLOCK) * sizeof(on_disk_inode_t);
+        uint64_t rel = b0 - mfs->sb.data_start;
+        uint64_t bit_at = (mfs->sb.block_bitmap_start + rel / (bs * 8)) * bs + (rel % (bs * 8)) / 8;
+        print("SPAN: targets mode_at=");
+        print_decimal(a_at + __builtin_offsetof(on_disk_inode_t, mode));
+        print(" uid_at=");
+        print_decimal(a_at + __builtin_offsetof(on_disk_inode_t, uid));
+        print(" ptr_at=");
+        print_decimal(bnode.indirect * bs + (SPAN_MOVED_BLOCK - 12) * 8);
+        print(" old_block=");
+        print_decimal(old);
+        print(" bit_at=");
+        print_decimal(bit_at);
+        print(" bit_mask=");
+        print_decimal((uint64_t)1 << (rel % 8));
+        print(" geom_at=");
+        print_decimal(__builtin_offsetof(fs_superblock_t, inode_table_start));
+        print(" a_uid=");
+        print_decimal(SPAN_A_UID);
+        print(" a_gid=");
+        print_decimal(SPAN_A_GID);
+        print("\n");
+        print("SPAN: journal highwater=");
+        print_decimal((uint64_t)storage_journal_highwater());
+        print("\n");
+        storage_test_scratch_set(1);
+        span_halt("SPAN: phase1 complete\n");
+    }
+
+    if (phase != 1) span_halt("SPAN: FAIL unexpected phase\n");
+
+    /* Phase 2. Every check runs and says what it found, so one arm's FAIL line
+     * is never hidden behind another's. */
+    int bad = 0;
+    uint64_t refusals_before = storage_span_refusals();
+
+    on_disk_inode_t a;
+    if (storage_read_inode(mfs->bd, &mfs->sb, SPAN_INO_A, &a) == 0) {
+        bad++;
+        print("SPAN: inode A served mode=");
+        print_decimal(a.mode & 07777u);
+        print(" uid=");
+        print_decimal(a.uid);
+        print("\n");
+        if ((a.mode & 0777u) == 0777u && a.uid == 0)
+            print("SPAN: FAIL tampered inode accepted - anyone may open it now\n");
+        else
+            print("SPAN: FAIL inode A was served but the edit is not in it - the harness edited nothing\n");
+    } else {
+        print("SPAN: tampered inode refused\n");
+    }
+
+    uint64_t b0 = storage_test_phys_block(mfs, SPAN_INO_B, 0);
+    int alloc = (b0 == 0) ? -2 : storage_test_block_allocated(mfs, b0);
+    if (alloc == 0) {
+        bad++;
+        print("SPAN: FAIL tampered bitmap accepted - a live file's block reads as free\n");
+    } else if (alloc == 1) {
+        bad++;
+        print("SPAN: FAIL the bitmap bit is still set - the harness edited nothing\n");
+    } else {
+        print("SPAN: tampered bitmap refused\n");
+    }
+
+    if (storage_read_file_block(mfs, SPAN_INO_B, SPAN_MOVED_BLOCK, buf) == 0) {
+        bad++;
+        if (span_matches(buf, SPAN_TAG_OLD))
+            print("SPAN: FAIL tampered pointer served an earlier version of the block\n");
+        else if (span_matches(buf, SPAN_TAG_NEW))
+            print("SPAN: FAIL block 12 is unchanged - the harness edited nothing\n");
+        else
+            print("SPAN: FAIL tampered pointer served some other block\n");
+    } else {
+        print("SPAN: tampered pointer refused\n");
+    }
+
+    /* The control: what nobody edited is still served. */
+    if (storage_read_file_block(mfs, SPAN_INO_B, 0, buf) != 0 || !span_matches(buf, SPAN_TAG_B0)) {
+        bad++;
+        print("SPAN: FAIL an untouched block was refused - the volume refuses everything\n");
+    }
+
+    print("SPAN: span refusals this boot=");
+    print_decimal(storage_span_refusals() - refusals_before);
+    print("\n");
+
+    if (bad) span_halt("SPAN: FAIL a metadata edit was not refused\n");
+    storage_test_scratch_set(2);
+    span_halt("SPAN: PASS inode, bitmap and pointer edits refused\n");
+}
+#endif /* SPAN_SELFTEST */
+
+#ifdef FREEBATCH_SELFTEST
+/* Deleting a file is not limited by the journal (docs/LIMITATIONS.md 2.29).
+ *
+ * storage_free_inode_blocks committed once per pointer tree, so a tree whose
+ * blocks lay in more bitmap blocks than one transaction can stage overflowed the
+ * journal and the delete failed with the file already dead. Reaching that by
+ * writing a file several gigabytes long is hours of emulated I/O, so the file
+ * here is small and SPREAD: before each of its blocks is written, every bitmap
+ * block below the next one is marked full (storage_test_fill_bitmap_blocks), so
+ * the allocator has to put block k in bitmap block k. FREEBATCH_SPREAD blocks
+ * then lie in FREEBATCH_SPREAD bitmap blocks, more than JOURNAL_DATA_MAX, and
+ * one single-indirect tree holds them all.
+ *
+ * The gate asserts the shape before it trusts the result: every block in its
+ * own bitmap block, the delete returning success, the free having needed more
+ * than one batch, and every one of the file's blocks free afterwards. The image
+ * is 4 GiB, a bitmap of 31 blocks, so the spread fits. One boot. */
+#define FREEBATCH_INO     1
+#define FREEBATCH_SPREAD  28
+
+void freebatch_selftest(void)
+{
+    print("FREEBATCH: begin\n");
+    if (storage_unlock("freebatchpw", 11) != 0) {
+        print("FREEBATCH: FAIL unlock\n"); for (;;) asm volatile ("hlt");
+    }
+    mounted_fs_t *mfs = storage_get_mounted_fs();
+    static uint8_t buf[BLOCK_SIZE];
+    static uint64_t phys[FREEBATCH_SPREAD];
+
+    uint64_t nbm = storage_test_bitmap_blocks(mfs);
+    if (nbm < FREEBATCH_SPREAD + 2) {
+        print("FREEBATCH: FAIL the bitmap is too small to spread a file - this run tested nothing\n");
+        for (;;) asm volatile ("hlt");
+    }
+
+    int64_t ino = storage_alloc_inode(mfs->bd, &mfs->sb);
+    if (ino != FREEBATCH_INO) {
+        print("FREEBATCH: FAIL unexpected inode\n"); for (;;) asm volatile ("hlt");
+    }
+    on_disk_inode_t nd;
+    for (size_t i = 0; i < sizeof(nd); i++) ((uint8_t *)&nd)[i] = 0;
+    nd.type = 1; nd.mode = 0100600; nd.links = 1;
+    storage_write_inode(mfs->bd, &mfs->sb, FREEBATCH_INO, &nd);
+
+    const uint64_t per_bitmap = (uint64_t)BLOCK_SIZE * 8;
+    for (unsigned k = 0; k < FREEBATCH_SPREAD; k++) {
+        if (k > 0) storage_test_fill_bitmap_blocks(mfs, k);
+        for (uint32_t i = 0; i < BLOCK_SIZE; i++) buf[i] = (uint8_t)(k * 37u + i);
+        if (storage_write_file_block(mfs, FREEBATCH_INO, 12 + k, buf) != 0) {
+            print("FREEBATCH: FAIL a block of the file could not be written\n");
+            for (;;) asm volatile ("hlt");
+        }
+        phys[k] = storage_test_phys_block(mfs, FREEBATCH_INO, 12 + k);
+        if (phys[k] < mfs->sb.data_start ||
+            (phys[k] - mfs->sb.data_start) / per_bitmap != k) {
+            print("FREEBATCH: FAIL the file did not spread - block ");
+            print_decimal(k);
+            print(" is not in bitmap block ");
+            print_decimal(k);
+            print("\n");
+            for (;;) asm volatile ("hlt");
+        }
+    }
+    print("FREEBATCH: one file across ");
+    print_decimal(FREEBATCH_SPREAD);
+    print(" bitmap blocks\n");
+
+    uint64_t batches = storage_free_batches();
+    int rc = storage_free_inode_blocks(mfs, FREEBATCH_INO);
+    batches = storage_free_batches() - batches;
+    print("FREEBATCH: delete rc=");
+    print_decimal((uint64_t)(rc == 0 ? 0 : 1));
+    print(" batches=");
+    print_decimal(batches);
+    print(" journal highwater=");
+    print_decimal((uint64_t)storage_journal_highwater());
+    print("\n");
+
+    if (rc != 0) {
+        print("FREEBATCH: FAIL deleting a file across many bitmap blocks overflowed the journal\n");
+        return;
+    }
+    if (batches == 0) {
+        print("FREEBATCH: FAIL the delete never needed a second batch - this run tested nothing\n");
+        return;
+    }
+    for (unsigned k = 0; k < FREEBATCH_SPREAD; k++) {
+        if (storage_test_block_allocated(mfs, phys[k]) != 0) {
+            print("FREEBATCH: FAIL a block of the deleted file is still allocated\n");
+            return;
+        }
+    }
+    if (storage_read_inode(mfs->bd, &mfs->sb, FREEBATCH_INO, &nd) != 0 || nd.links != 0) {
+        print("FREEBATCH: FAIL the deleted inode is still live\n");
+        return;
+    }
+    print("FREEBATCH: PASS a file across many bitmap blocks was deleted in batches\n");
+}
+#endif /* FREEBATCH_SELFTEST */
 
 #ifdef META_CRASH_SELFTEST
 /* Arm A of docs/design/meta-cache-merkle.md: a metadata update belonging to a

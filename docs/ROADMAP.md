@@ -58,7 +58,6 @@ The recommendation is the one the route is written around; it is not the decisio
 |---|---|---|---|---|
 | Filesystem | A policy on every installed system, then the uid path removed | 2.10 steps 3(c), 6 | 1.31 | |
 | Observability | Kernel reports on their own channel | 5.3 | 2.6c | |
-| Storage | Metadata authenticated on the current format | 5.2 | 1.30 | |
 
 ### Wave 2: authority completes, the boot chain tightens
 
@@ -77,7 +76,7 @@ The recommendation is the one the route is written around; it is not the decisio
 
 | Lane | Milestone | Items | Closes | Needs |
 |---|---|---|---|---|
-| Filesystem | The kernel a sealed-block service, v12 in `fs_server` | 2.10 phase 2, the storage half of 2.7a | 1.30 for good | Wave 2 filesystem |
+| Filesystem | The kernel a sealed-block service, v12 in `fs_server` | 2.10 phase 2, the storage half of 2.7a | | Wave 2 filesystem |
 | Filesystem | A session's grants bounded by the kernel | 5.10 | 1.24 | phase 2, D8 |
 | Kernel | The loader and spawn path out of ring 0, and no disk I/O in ring 0: the IDE, SD and eMMC drivers replaced by ring-3 ones | 2.7a, 2.7 | | phase 2 |
 | SMP | Scheduling contexts, passive servers, affinity, more than eight CPUs, then the `%gs` block | 1.8 steps 4 to 8, 1.2 | | Wave 2 SMP |
@@ -162,7 +161,7 @@ controller is identified and the drive answers IDENTIFY), USB through xHCI (and 
 on machines with no PS/2 emulation), and a framebuffer server.
 
 **2.7a ⬜ Evict the in-kernel services [F-2.7a].** `.github/ring0-classification.yml` (S87) measures
-the ring-0 `service` class at about 6,000 code lines beside a 11,730-line core: `storage.c` (the
+the ring-0 `service` class at about 6,000 code lines beside a 11,736-line core: `storage.c` (the
 encrypted store and the on-disk filesystem), `kusers.c` (accounts and password hashing), the loader
 and spawn path, `crypto.c` and `syscall_fs.c`, and the IDE, SD and eMMC drivers sit in ring 0 too.
 The drivers leave by [`design/ring3-storage.md`](design/ring3-storage.md), storage with 2.10 phase
@@ -245,12 +244,6 @@ the release, including the PCR values. Needs 4.5.
 document.
 
 ### Track 5: closing the known limitations
-
-**5.2 ⬜ Authenticated metadata on the current format** (1.30). The inode-table and bitmap blocks
-become leaves of the existing Merkle tree, so a changed owner, mode, size or bitmap is refused at
-first use. A format version bump: an older volume is refused with a message, never mounted
-unverified. Witness: a gate that edits an inode's mode on the image and must see it refused; the arm
-skips the leaf check. Taken on the current format rather than waiting for phase 2 (D2).
 
 **5.3 ⬜ Kernel reports off the shared console** (2.6c). First a checker that classifies every base
 gate's required marker by who prints it and whether before or after the console handover, with a

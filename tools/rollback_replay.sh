@@ -79,6 +79,26 @@ echo "[rollback] the volume moved on: generation $g1 -> $g2"
 
 echo "[rollback] restoring the ENTIRE earlier image"
 cp "$SNAP" "$IMG"
+# ROLLBACK_CLEAR_ANCHOR=1: also clear the superblock's rollback_anchored flag on
+# the restored image, so the old volume claims never to have had an anchor. The
+# Merkle root binds the flag (S143), so the base build must refuse the volume
+# before the counter is consulted; a root that does not bind it unlocks, skips the
+# counter, and serves era 1 (make smoke-rollback-anchor-flag and its arm).
+if [ "${ROLLBACK_CLEAR_ANCHOR:-0}" = 1 ]; then
+    at=$(grep -oE 'anchored_at=[0-9]+' "$LOG-p1.log" | head -1 | cut -d= -f2 || true)
+    if [ -z "${at:-}" ]; then
+        echo "[rollback] FAIL: boot 1 did not report where the anchor flag lives" >&2
+        exit 1
+    fi
+    before=$(od -An -tu4 -j "$at" -N4 "$IMG" | tr -d ' ')
+    if [ "$before" != 1 ]; then
+        echo "[rollback] FAIL: the restored image's anchor flag reads $before, not 1;" \
+             "clearing it would test nothing" >&2
+        exit 1
+    fi
+    printf '\0\0\0\0' | dd of="$IMG" bs=1 seek="$at" count=4 conv=notrunc status=none
+    echo "[rollback] and cleared its rollback_anchored flag (byte $at)"
+fi
 
 echo "[rollback] boot 3/3 - the rolled-back volume is presented to the machine"
 boot 3 "$EXPECT" "$OPPOSITE" "$LOG-p3.log"

@@ -47,7 +47,7 @@ gates that match kernel strings are moving to COM3, which only the kernel can wr
 ## The integration gates
 
 
-There are 542 `smoke-*` targets: 234 gates and 308 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
+There are 551 `smoke-*` targets: 237 gates and 314 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
 
 
 ### Capabilities and authorisation
@@ -168,6 +168,7 @@ There are 542 `smoke-*` targets: 234 gates and 308 control arms. Each row is a g
 | `smoke-tpm-bootimg` | A volume sealed under one boot image is found but not opened under another | S11, S92 | `smoke-tpm-bootimg-control` |
 | `smoke-nvcounter` | The TPM monotonic counter provisions once, reads back, and only goes up | S70 |  |
 | `smoke-rollback` | A whole volume restored from an older image is refused | S70 | `smoke-rollback-control` |
+| `smoke-rollback-anchor-flag` | A restored volume whose `rollback_anchored` flag was cleared is refused before the anchor is consulted | S70, S143 | `smoke-rollback-anchor-flag-control` |
 | `smoke-irq-policy` | The interrupt state at five named boot milestones matches the stated policy |  |  |
 | `smoke-measured-boot-required` | A `MEASURED_BOOT_REQUIRED` kernel halts when measured boot is unavailable | S12, S85 | `smoke-measured-boot-required-control`, `smoke-measured-boot-required-volume-control` |
 | `smoke-measured-persist` | Under that policy, a persistent disk that was never sealed is refused | S85 | `smoke-measured-persist-control` |
@@ -192,6 +193,8 @@ There are 542 `smoke-*` targets: 234 gates and 308 control arms. Each row is a g
 | `smoke-keyslots` | Several passwords open one volume, and revoking one revokes exactly that one | S61 | `smoke-keyslots-control` |
 | `smoke-meta-crash` | A committed metadata update survives a crash whether or not its cache line was evicted | S65 | `smoke-meta-crash-control`, `smoke-meta-crash-txn-control`, `smoke-meta-crash-vacuity-control` |
 | `smoke-merkle-replay` | A metadata block rolled back on the disk is refused | S66 | `smoke-merkle-parent-bind-control`, `smoke-merkle-replay-control` |
+| `smoke-meta-span` | An inode's owner cannot be read off the disk; an inode, a pointer block, a bitmap bit and the inode table's position edited on it are each refused, and an untouched block is still served | S143 | `smoke-meta-geometry-control`, `smoke-meta-pointer-control`, `smoke-meta-span-control`, `smoke-meta-span-plain-control` |
+| `smoke-fs-free-batch` | A file across more bitmap blocks than one journal transaction holds is deleted, in batches, and every block of it is free afterwards |  | `smoke-fs-free-batch-control` |
 | `smoke-fsck-refs` | `fsck` never frees a live file's blocks | S67 | `smoke-fsck-refs-control` |
 | `smoke-fs-16g` | A 16 GiB volume formats, survives a reboot and a crash, and holds a file past the old 1 GiB limit | S68 |  |
 | `smoke-fs-shrink` | A volume larger than its disk is refused | S68 | `smoke-fs-shrink-control` |
@@ -418,7 +421,7 @@ Two of those deserve a sentence each.
 there with no `continue-on-error`, each named with its measured cost in
 `.github/kani-harnesses.yml`, and the job refuses a proof that is not listed. And **`invariants`** requires every property in `SECURITY.md` to
 name a witness that exists and runs; its exemption list, `.github/invariants.yml`, is
-currently **empty**: all 144 properties name a witness that resolves.
+currently **empty**: all 145 properties name a witness that resolves.
 
 Every `tools/check_*.py` has a falsification harness, `tools/test_check_*.sh`, with one case per
 rule showing the rule can fail, and each checker asserts a floor on what it parsed, so a parser

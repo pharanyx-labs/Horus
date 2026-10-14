@@ -384,11 +384,23 @@
       kind it is rather than leaving you to guess.
     </p>
     <p>
+      The tree covers the filesystem's own bookkeeping as well. The inode table and the
+      allocation bitmaps are leaves of it, checked in the one block-layer function every
+      read of them goes through, so an owner, a mode or a bitmap bit changed on the disk is
+      refused rather than served. A file's indirect block maps are sealed like its data, and
+      the root binds the superblock's layout and its anchor flag, so moving the inode table,
+      or clearing the flag that says a volume has a TPM anchor, fails at unlock. The test
+      makes each of those edits to a real image between boots, requires every refusal, and
+      requires a block nobody touched to be served. The inode table and bitmaps are sealed
+      as well, so a file's size, owner and mode cannot be read off the disk either; the test
+      looks for one inode's owner across the whole image and requires it to be absent.
+    </p>
+    <p>
       Both of those are what a 16 GiB volume needed: the mirror would have been 128 MiB
       of static kernel memory against a 16 MiB budget, and the flat MAC would have hashed
       a megabyte on every metadata write and read the whole region at every mount. A file
       reaches 512 GiB now, so the disk is what you run into rather than the layout.</p>
-    <span class="witness">smoke-fs · smoke-meta-crash · smoke-merkle-replay</span>
+    <span class="witness">smoke-fs · smoke-meta-crash · smoke-merkle-replay · smoke-meta-span</span>
   </article>
   <article>
     <h3 id="erasing-a-disk-is-its-own-authority">Erasing a disk is its own authority</h3>
@@ -484,8 +496,8 @@
       when the volume unlocks, so an install nobody logs into leaves the copy unfinished,
       and finishing it is the next boot's job. It was not being done. A sealed volume is
       mounted and locked, and the object store answered anyway, the encryption
-      layer refused, because it needs the key, but the inode table is plaintext on disk
-      and nothing there refused at all. The filesystem server asks the store whether it
+      layer refused, because it needs the key, but the inode table was read with no check
+      at all, and nothing there refused. The filesystem server asks the store whether it
       is usable, was told yes by a volume nobody had opened, copied into a locked disk
       where every write failed, and recorded the job done. <code>/bin</code> was then
       empty on that machine for good. The store now answers only an unlocked volume, in

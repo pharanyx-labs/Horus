@@ -3,6 +3,10 @@
 *Design written 2026-08-31, before any code. Stages 2 and 3 of the work that lets
 a volume be large enough to install onto; stage 1 (4 KiB blocks) landed in #270.*
 **Built:** stage 2 in #273 (S65) and stage 3 in #274 (S66); ROADMAP 2.8 is done.
+**Extended** in format v14 (#575, S143): the tree's leaves are now the nonce and tag blocks
+followed by every block of the inode bitmap, block bitmap and inode table, and the root binds
+the superblock's layout and flags as well as the generation. The cache and the arms below are
+unchanged; [`../ARCHITECTURE.md`](../ARCHITECTURE.md) §11 describes the tree as it is.
 
 The two falsifying arms are designed **first**, deliberately. These stages rewrite
 the rollback-protection chain, the mechanism standing between a physical

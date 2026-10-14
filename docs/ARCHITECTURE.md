@@ -709,16 +709,24 @@ never sees a key. Authority is one capability, `CAP_ENCRYPTED_STORAGE` with `REA
 by the dispatch table, and the store answers only an **unlocked** volume, not merely a mounted one
 (S74).
 
-- **Encryption.** Every block is sealed with an AEAD under a per-`(inode, block)` subkey derived
-  with HKDF from the volume key, with a fresh nonce per write.
+- **Encryption.** Every block of file data, directories, indirect pointer blocks, the inode
+  table and the allocation bitmaps is sealed with an AEAD under a per-`(inode, block)` subkey
+  derived with HKDF from the volume key, with a fresh nonce per write. A pointer block is sealed
+  under an identity no data block can have, and a metadata block under `SPAN_INO` and its own
+  block number. A metadata block the format wrote and nothing has rewritten (the empty root, the
+  root's bitmap bit, zeros) is the one kind left in the clear, vouched for by its leaf.
 - **Key slots.** The volume key is wrapped in up to eight key slots, each under a KEK derived with
   Argon2id from one password, and sealed to the TPM's PCRs where there is one (S61, S12). An
   installer may instead write the volume **unsealed**, the key in the clear, when its operator
   chooses (S104).
-- **Integrity.** A Merkle tree over the block metadata (fanout 128) whose root is in the
-  superblock. Unlock verifies one node; everything else is verified on the path from the root
-  when first loaded, and each node is checked against its parent, so a block rewound to an older
-  valid version fails (S66).
+- **Integrity.** A Merkle tree (fanout 128) whose leaves are the nonce and tag blocks and every
+  block of the inode bitmap, block bitmap and inode table, with its root in the superblock. The
+  root also binds the superblock's layout and its anchor, sealing and TPM flags, so a moved region
+  or a cleared flag fails at unlock. Unlock verifies one node; everything else is verified on the
+  path from the root when first read, and each node is checked against its parent, so a block
+  rewound to an older valid version fails (S66). The check sits in the block layer every read and
+  write of the inode table and bitmaps goes through, and a write carries its leaf up to the root
+  in the same journal transaction (S143). A volume of an older format is refused, never mounted.
 - **Rollback.** The tree's root lives in the superblock it protects, so a whole volume swapped for
   an older copy would pass. `sb.rollback_gen` is a TPM NV monotonic counter value bound into the
   root, and unlock refuses a volume behind the counter (S70).

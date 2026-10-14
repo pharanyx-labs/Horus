@@ -1248,7 +1248,7 @@ static void session_cwd(struct fs_session *s, uint32_t g, const char *home,
     /* The name of what was just walked, for the shell's pwd: fsp_split has
      * already refused anything that is not a clean absolute path. */
     unsigned n = 0;
-    while (home[n] && n < FS_SESSION_PATH - 1) { sg->cwd_path[n] = home[n]; n++; }
+    while (n < FS_SESSION_PATH - 1 && home[n]) { sg->cwd_path[n] = home[n]; n++; }
     sg->cwd_path[n] = 0;
 }
 

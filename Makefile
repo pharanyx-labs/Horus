@@ -3871,7 +3871,12 @@ endif
 #   RESUME_RSP_INJECT_PRECLAIM=1         ... even behind another CPU's fatal claim
 #   RESUME_GUARD_DISABLE=1               guard compiled out: the silence, on demand
 RESUME_RSP_INJECT ?= 0
-RESUME_RSP_INJECT_TICKS ?= 400
+# Dispatcher returns after the console handover before it fires. It must land
+# after the login prompt, which the harness waits for first: 400 did until
+# 2026-10-14, when spawning the shell's watcher (phase 1b step 3(b)) put the
+# prompt past 800. Measured that day: 800 fires before the prompt, 1600 and 3200
+# after it, and an idle machine reaches 3200 within the same second.
+RESUME_RSP_INJECT_TICKS ?= 3200
 RESUME_RSP_INJECT_PRECLAIM ?= 0
 RESUME_GUARD_DISABLE ?= 0
 # Which bogus value to inject. 4 is the 2026-08-13 capture and exercises the

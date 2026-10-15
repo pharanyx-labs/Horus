@@ -4850,6 +4850,9 @@ CAP_LOOKUP_TYPE_UNCHECKED ?= 0
 ifeq ($(CAP_LOOKUP_TYPE_UNCHECKED),1)
 CFLAGS  += -DCAP_LOOKUP_TYPE_UNCHECKED
 ASFLAGS += -DCAP_LOOKUP_TYPE_UNCHECKED
+# The type test is in Rust since 2026-10-14 (ROADMAP 3.5), so the arm has to
+# reach the Rust build too: one switch disarms the whole rule.
+RUST_FEATURES := cap_lookup_type_unchecked
 endif
 
 # CAP_LOOKUP_RANGE_FALLBACK=1 restores only the OUT-OF-RANGE half of that `else`:

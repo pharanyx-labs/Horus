@@ -68,7 +68,7 @@ The recommendation is the one the route is written around; it is not the decisio
 | Supply chain | Verifiable releases, then updates without a lockout | 4.5, 4.4, 4.11, then 5.8 | 5.3, 2.9a | D10, D5 |
 | SMP | Per-CPU run queues, one-shot timers, timers as notifications | 1.8 steps 2 and 3, 2.2 | | |
 | Memory | Reclaimable kernel memory | 5.9, 2.1 | 2.5, 2.3 | |
-| Proofs | Typed lookup proved, IPC authority modelled, concurrent protocols modelled | 3.5, 5.11 | narrows 5.5 | D9 |
+| Proofs | Concurrent protocols modelled | 5.11 | narrows 5.5 | D9 |
 | Swap | Secrets kept out of swap | 2.12 | | D13 |
 
 ### Wave 3: shrink ring 0
@@ -160,7 +160,7 @@ controller is identified and the drive answers IDENTIFY), USB through xHCI (and 
 on machines with no PS/2 emulation), and a framebuffer server.
 
 **2.7a ⬜ Evict the in-kernel services [F-2.7a].** `.github/ring0-classification.yml` (S87) measures
-the ring-0 `service` class at about 6,000 code lines beside a 11,856-line core: `storage.c` (the
+the ring-0 `service` class at about 6,000 code lines beside a 11,865-line core: `storage.c` (the
 encrypted store and the on-disk filesystem), `kusers.c` (accounts and password hashing), the loader
 and spawn path, `crypto.c` and `syscall_fs.c`, and the IDE, SD and eMMC drivers sit in ring 0 too.
 The drivers leave by [`design/ring3-storage.md`](design/ring3-storage.md), storage with 2.10 phase
@@ -191,11 +191,6 @@ Compressed memory stays deferred: if it comes, it is a cache in front of swap th
 task's pages only, never a page marked secret, and charges each task for its own.
 
 ### Track 3: assurance and observability
-
-**3.5 ⬜ Proofs over the capability algebra.** A type check inside `rust_cap_lookup` and its proof,
-with the `CAP_LOOKUP_TYPE_UNCHECKED` arm reaching the Rust build too, so one switch disarms both
-halves; a Rust model of `ipc_ep_from_slot` and a proof that IPC authority implies a held endpoint
-capability; and a checker that every `rust_cap_*` export has a Kani harness.
 
 **3.6 ⬜ The audit stream.** Mint, grant and revoke are audited but not readable as a stream; make
 them a stream readable through `CAP_DEBUG`, and `capview` a program rather than a shell builtin.

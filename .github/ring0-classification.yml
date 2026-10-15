@@ -615,7 +615,11 @@
 # dispatching the STORAGE_SMP_SELFTEST harness on CPU 0 and CPU 1, which never
 # reaches the ship build. The storage layer's use of the lock is in storage.c
 # (service). The lock is a synchronisation primitive beside spin_lock, so core.
-core_budget_loc: 11856
+# 2026-10-14: 11856 -> 11865, +9, ROADMAP 3.5: capability.c's cspace choice
+# shared by cap_lookup and the new cap_lookup_ipc_object, whose capability half
+# is rust_ipc_object_from_slot. The type test itself left C for the Rust
+# resolver, where its proof is. Capability resolution is core.
+core_budget_loc: 11865
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

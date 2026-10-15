@@ -340,6 +340,47 @@ arms:
   find: '            *seen = PIPE_TALLY_GEN_MIXED;'
   replace: '            let _ = PIPE_TALLY_GEN_MIXED;'
 
+- id: lookup-typed-ignores-type
+  harness: lookup_typed_returns_only_what_was_asked
+  file: rust/src/capability.rs
+  defect: the typed resolver returns the capability whatever its type, so a frame answers a request for an endpoint
+  find: '    if expected_type != CAP_ANYTYPE && (*p).typ != expected_type {'
+  replace: '    if false && (*p).typ != expected_type {'
+- id: ipc-index-unbounded
+  harness: ipc_index_implies_a_held_capability
+  file: rust/src/capability.rs
+  defect: the IPC resolver hands back whatever index the capability names, in range or not
+  find: '    if obj >= index_max as u64 {'
+  replace: '    if false {'
+- id: exported-serial-truncated
+  harness: exported_serials_are_derived_or_refused
+  file: rust/src/capability.rs
+  defect: the export narrows the serial to 32 bits, so a derived serial comes back as 0 or primordial
+  find: |2
+        assign_fresh_serial(next_serial)
+    }
+  replace: |2
+        assign_fresh_serial(next_serial) & 0xFFFF_FFFF
+    }
+- id: transfer-drops-a-right
+  harness: transfer_keeps_rights_and_records_the_parent
+  file: rust/src/capability.rs
+  defect: a transfer masks off the first right instead of copying the source's rights
+  find: '    rust_cap_mint(cspace, cspace_size, dest_slot, src_slot, !0u32, next_serial, 0)'
+  replace: '    rust_cap_mint(cspace, cspace_size, dest_slot, src_slot, !1u32, next_serial, 0)'
+- id: grant-from-user-copies-pipe-ends
+  harness: grant_from_user_refuses_exactly_pipe_ends
+  file: rust/src/capability.rs
+  defect: a ring-3 grant copies a pipe end like any other type
+  find: '    if src.is_null() || !copyable_from_ring3((*src).typ) {'
+  replace: '    if src.is_null() {'
+- id: revoke-target-only
+  harness: revoke_empties_the_target_and_its_children_only
+  file: rust/src/capability.rs
+  defect: the single-cspace revoke empties the target and never sweeps what was derived from it
+  find: '    revoke_subtree(&desc as *const CSpaceDesc, 1, ts, to, tally);'
+  replace: '    let _ = (&desc, to, &tally);'
+
 # Proofs with no arm yet, each with the reason. This list only shrinks: the
 # checker refuses an entry whose proof has gained an arm.
 unarmed: {}

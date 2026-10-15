@@ -48,6 +48,12 @@ rng_unseeded_legacy = []
 # resealing the array is believed, and the kernel mounts wherever it now points.
 gpt_entries_crc_unchecked = []
 
+# CONTROL ARM for S60, the Rust half of CAP_LOOKUP_TYPE_UNCHECKED=1 (ROADMAP
+# 3.5): `rust_cap_lookup_typed` returns whatever the slot holds and checks no
+# type. The Makefile sets it with the C define, so one switch disarms the whole
+# typed resolver. Never in a shipped build.
+cap_lookup_type_unchecked = []
+
 # CONTROL ARM for LIMITATIONS 2.23 (make smoke-captest-hashed-revoke-control).
 # Puts back a revocation record kept in a 4096-cell table indexed by a hash of
 # the serial and consulted on every lookup, so revoking one capability makes a

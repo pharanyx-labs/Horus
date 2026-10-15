@@ -619,7 +619,12 @@
 # shared by cap_lookup and the new cap_lookup_ipc_object, whose capability half
 # is rust_ipc_object_from_slot. The type test itself left C for the Rust
 # resolver, where its proof is. Capability resolution is core.
-core_budget_loc: 11865
+# 2026-10-15: 11865 -> 11894, +29, LIMITATIONS 2.32 (S56): scheduler.c's
+# teardown_wait_stopped, which makes task_teardown return only once no other CPU
+# is running the dead task, with its bound and its KILL_ASYNC arm, and the
+# KILL_IPI_WITHHELD instrument, which compiles out of the ship build. Teardown
+# is the scheduler's, so core.
+core_budget_loc: 11894
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

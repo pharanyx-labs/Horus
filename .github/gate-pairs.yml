@@ -276,6 +276,7 @@ control_arms:
   smoke-proc-wait-control: smoke-proc
   smoke-proc-tcb-reuse-control: smoke-proc
   smoke-proc-killed-task-control: smoke-killed-task
+  smoke-killed-task-late-control: smoke-killed-task-late
   smoke-pagefree-control: smoke-pagefree
   smoke-klog-forge-abi-control: smoke-klog-forge
   smoke-klog-forge-control: smoke-klog-forge
@@ -553,6 +554,7 @@ gates:
   - smoke-preempt
   - smoke-proc
   - smoke-killed-task
+  - smoke-killed-task-late
   - smoke-recvblock
   - smoke-recvblock-smp
   - smoke-repro-iso

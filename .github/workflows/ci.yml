@@ -2319,6 +2319,14 @@ jobs:
         run: make smoke-smp-ap-late
       - name: Control arm, the loop-count bound misses them
         run: make smoke-smp-ap-late-control
+      # S56: a kill has stopped the task by the time sys_kill returns. The build
+      # withholds the kill IPI, as a slow relay delivers it, so the check passes
+      # only because teardown waits; the arm drops the wait. KVM only, for the
+      # same reason as the two above: TCG's slow loops hide the arm's defect.
+      - name: A killed task has stopped when sys_kill returns, even with the IPI late
+        run: make smoke-killed-task-late
+      - name: "Control arm: a kill that does not wait leaves the task writing"
+        run: make smoke-killed-task-late-control
 
   smoke-smt:
     name: QEMU SMT sibling-parking self-test (headless, -smp 4 cores=2 threads=2)

@@ -47,7 +47,7 @@ gates that match kernel strings are moving to COM3, which only the kernel can wr
 ## The integration gates
 
 
-There are 563 `smoke-*` targets: 242 gates and 321 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
+There are 565 `smoke-*` targets: 243 gates and 322 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
 
 
 ### Capabilities and authorisation
@@ -121,6 +121,7 @@ There are 563 `smoke-*` targets: 242 gates and 321 control arms. Each row is a g
 | `smoke-percpu` | Each CPU's identity from its TSS selector agrees with its LAPIC |  |  |
 | `smoke-preempt` | The timer time-slices two ring-3 tasks | S80 |  |
 | `smoke-killed-task` | A task killed while it runs on another CPU stops, and stops writing memory it shares | S56 | `smoke-proc-killed-task-control` |
+| `smoke-killed-task-late` | The same with the kill IPI withheld, under KVM: the task has stopped when `SYS_KILL` returns because teardown waits for its CPU | S56 | `smoke-killed-task-late-control` |
 | `smoke-resume-guard` | A bogus resume stack pointer is caught and reported after the console handover |  | `smoke-resume-guard-legacy`, `smoke-resume-guard-nofloor`, `smoke-resume-guard-preclaim` |
 | `smoke-resume-guard-ist` | The resume guard never fires on a legitimate return to an IST stack |  | `smoke-resume-guard-ist-control` |
 | `smoke-resume-guard-negative` | The resume guard rejects a negative bogus value |  | `smoke-resume-guard-negative-control` |

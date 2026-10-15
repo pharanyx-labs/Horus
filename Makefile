@@ -118,7 +118,7 @@ DEFECT_FLAGS = \
 	MEASURED_BOOT_REQUIRED MEASURED_VOLUME_EXEMPT_NONE MEASURED_VOLUME_UNCHECKED \
 	LEGACY_SYSCALLS_PRESENT CAP_ENUMERATE_UNGATED CLOCK_TSC_RESOLUTION \
 	IMAGE_HDR_WRITER_SKEW \
-	TASKINFO_WIDE_AUTHORITY WAIT_TCB_UNCHECKED TCB_GENERATION_UNCHECKED APIC_ID_IS_CPU_INDEX SMT_SIBLING_BY_INDEX AP_WAIT_LOOP_COUNT AP_LATE_ADMITTED AP_CHECKIN_LATE AP_CHECKIN_PAST_BOUND SLOT_REUSE_UNCHECKED KSTACK_REUSE_WIDEN DEAD_TASK_RUNS GETLINE_SLOT3_FALLBACK CAP_LOOKUP_ASSERT_HANG \
+	TASKINFO_WIDE_AUTHORITY WAIT_TCB_UNCHECKED TCB_GENERATION_UNCHECKED APIC_ID_IS_CPU_INDEX SMT_SIBLING_BY_INDEX AP_WAIT_LOOP_COUNT AP_LATE_ADMITTED AP_CHECKIN_LATE AP_CHECKIN_PAST_BOUND SLOT_REUSE_UNCHECKED KSTACK_REUSE_WIDEN DEAD_TASK_RUNS KILL_ASYNC KILL_IPI_WITHHELD GETLINE_SLOT3_FALLBACK CAP_LOOKUP_ASSERT_HANG \
 	IOMMU_NO_FRAME_TEARDOWN IOMMU_NO_TASK_TEARDOWN \
 	IO_DEVICE_OBJECT_UNCHECKED IO_DEVICE_PORTS_GLOBAL IO_DEVICE_IRQ_UNCHECKED \
 	IO_DEVICE_CAP_UNCHECKED NET_NO_BUSMASTER NET_NO_DECODE \
@@ -2109,6 +2109,25 @@ endif
 # another CPU while it runs (HORUS-20260921-04): the tick returns into it, its
 # syscalls are dispatched, it can be torn down twice, and no kill IPI is sent.
 # Control arm for smoke-proc's killed-task phase; never shipped.
+# KILL_ASYNC=1 restores the kill as it was before 2026-10-15: task_teardown sends
+# the kill IPI and returns without waiting for the other CPU to take it, so the
+# dead task can go on writing shared memory after sys_kill has returned (S56).
+KILL_ASYNC ?= 0
+ifeq ($(KILL_ASYNC),1)
+CFLAGS  += -DKILL_ASYNC
+ASFLAGS += -DKILL_ASYNC
+endif
+
+# KILL_IPI_WITHHELD=1 is an instrument, never shipped: teardown sends no kill
+# IPI, so a dead task's CPU leaves it only at its own next tick. That is the
+# kill IPI as a slow relay delivers it (a nested hypervisor), made certain
+# rather than occasional, for smoke-killed-task-late.
+KILL_IPI_WITHHELD ?= 0
+ifeq ($(KILL_IPI_WITHHELD),1)
+CFLAGS  += -DKILL_IPI_WITHHELD
+ASFLAGS += -DKILL_IPI_WITHHELD
+endif
+
 DEAD_TASK_RUNS ?= 0
 ifeq ($(DEAD_TASK_RUNS),1)
 CFLAGS += -DDEAD_TASK_RUNS
@@ -9798,6 +9817,34 @@ smoke-proc-killed-task-control:
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=4 \
 		REQUIRE_MARKER='PROC_SELFTEST: FAIL killed-task-still-writes' \
 		tools/smoke_test.sh horus.iso
+
+# A kill has STOPPED the task by the time sys_kill returns (S56; 2026-10-15).
+# The kill IPI usually lands in microseconds, which is why the plain gate above
+# passes on bare metal with or without the wait; CI's nested KVM delayed it
+# enough to fail that gate 2 times in 31. This build withholds the IPI, so the
+# dead task's CPU leaves it only at its next tick, and the killed-task check
+# passes only because task_teardown waits for that. The arm drops the wait.
+# BOTH RUN UNDER KVM, and set it themselves: under TCG the busy loops that time
+# the test's grace run so slowly that the dead task's next tick lands inside it,
+# and the arm goes green with the defect in place. So they run in the KVM job,
+# as smoke-smp-ap-late and its arm do.
+.PHONY: smoke-killed-task-late smoke-killed-task-late-control
+smoke-killed-task-late:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KILL_IPI_WITHHELD=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KILL_IPI_WITHHELD=1 horus.iso
+	@QEMU_ACCEL=kvm SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=4 \
+		REQUIRE_MARKER='PROC_SELFTEST: killed-task OK' FAIL_MARKER='PROC_SELFTEST: FAIL' \
+		tools/smoke_test.sh horus.iso
+
+smoke-killed-task-late-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KILL_IPI_WITHHELD=1 KILL_ASYNC=1
+	@$(MAKE) --no-print-directory PROC_SELFTEST=1 KILL_IPI_WITHHELD=1 KILL_ASYNC=1 horus.iso
+	@QEMU_ACCEL=kvm SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=4 \
+		REQUIRE_MARKER='PROC_SELFTEST: FAIL killed-task-still-writes' \
+		tools/smoke_test.sh horus.iso
+	@echo "[killed-task-late] CONTROL PASS - a kill that does not wait left the task writing"
 
 .PHONY: smoke-proc
 smoke-proc:

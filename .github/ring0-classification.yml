@@ -609,7 +609,13 @@
 # terminal.c and idt.c that holds a kernel line in flight across it, which
 # compiles out of the ship build. The handover is the console path's own
 # synchronisation, so it is core.
-core_budget_loc: 11810
+# 2026-10-15: 11810 -> 11856, +46, LIMITATIONS 2.31 (S146): scheduler.c's
+# operation lock (oplock_t: enter, leave, held-here), kusers.c serialising the
+# Argon2 scratch through it (and its ARGON2_SCRATCH_UNLOCKED arm), and smp.c
+# dispatching the STORAGE_SMP_SELFTEST harness on CPU 0 and CPU 1, which never
+# reaches the ship build. The storage layer's use of the lock is in storage.c
+# (service). The lock is a synchronisation primitive beside spin_lock, so core.
+core_budget_loc: 11856
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

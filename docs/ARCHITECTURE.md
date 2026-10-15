@@ -531,6 +531,17 @@ under `cap_lock`, S134). None is a cycle while its reverse stays absent, and
 `tools/check_lock_order.py` keeps it so. There is no runtime lock-order check: `spin_lock` records
 no lock identity.
 
+**Two operation locks sit outside all of these** (S146). `g_storage_op` makes each exported storage
+call one operation, and `g_argon2_op` lets one password hash at a time use the 4 MiB Argon2 scratch
+buffer. Both are `oplock_t`: held for the whole operation (seconds, for a format or a hash), taken
+again by the CPU that holds it, owned by a CPU rather than a task (sound because ring 0 is not
+preemptible and nothing under them blocks), and waited for with interrupts on so that a waiter
+still acknowledges TLB shootdowns. The only nesting between them is `g_storage_op -> g_argon2_op`
+(a key slot's key is derived inside a storage call). Every spinlock, `storage_lock` included, is
+taken inside them, never around them: `oplock_enter` halts by name if this CPU holds a spinlock,
+because its waiter turns interrupts on. `tools/check_lock_order.py` reads only `spin_lock`, so
+these two are held to that rule at run time instead.
+
 ---
 
 ## 8. IPC and notifications
@@ -720,6 +731,10 @@ by the dispatch table, and the store answers only an **unlocked** volume, not me
   under an identity no data block can have, and a metadata block under `SPAN_INO` and its own
   block number. A metadata block the format wrote and nothing has rewritten (the empty root, the
   root's bitmap bit, zeros) is the one kind left in the clear, vouched for by its leaf.
+- **One operation at a time.** Each exported call is one operation under `g_storage_op` (S146),
+  because the journal's open transaction, the metadata and Merkle caches and the superblock in
+  memory have one copy each, and an install on two CPUs has the installer and `fs_server` in the
+  store together. The block reads and writes refuse to run outside an operation.
 - **Key slots.** The volume key is wrapped in up to eight key slots, each under a KEK derived with
   Argon2id from one password, and sealed to the TPM's PCRs where there is one (S61, S12). An
   installer may instead write the volume **unsealed**, the key in the clear, when its operator

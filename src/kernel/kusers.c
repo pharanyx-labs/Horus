@@ -179,10 +179,34 @@ static void generate_salt(uint8_t *salt, size_t len) {
  *   attacker who exfiltrates the user database alone still lacks a secret
  *   needed to mount an offline dictionary attack.
  * - The raw 32-byte tag is stored (PASS_HASH_LEN == 32), preserving full
- *   entropy. The 4 MiB scratch buffer is a kernel static; hashing runs
- *   non-preemptibly inside the syscall, so the single shared buffer is safe.
+ *   entropy. The 4 MiB scratch buffer is a kernel static, used by one hash at
+ *   a time: g_argon2_op below.
  */
 static uint64_t argon2_scratch[ARGON2_M_COST_KIB * 128];
+/* ONE HASH AT A TIME IN THE SCRATCH (S146). A hash used to be assumed alone here
+ * because ring 0 is not preemptible, which is true of one CPU only: with two, a
+ * login hashing on one and a key-slot derivation on the other (storage_keyslot_add during an install, a sudo beside a login) would both
+ * run Argon2 through these 4 MiB at once, and each would compute a hash of the
+ * other's half-written memory. The lock is an operation lock, not a spinlock,
+ * because a hash takes about a second and its waiter must keep answering TLB
+ * shootdowns (see oplock_t). It nests inside g_storage_op (a key-slot derivation
+ * runs inside a storage operation) and never the other way round. */
+static oplock_t g_argon2_op = OPLOCK_INIT;
+#ifdef ARGON2_SCRATCH_UNLOCKED
+/* CONTROL ARM -- never ship. Two CPUs hash through the scratch at once, as
+ * before S146. Overlaps are counted so the arm shows they happened. */
+static volatile int g_argon2_inside;
+static void argon2_enter(void) {
+    if (__atomic_fetch_add(&g_argon2_inside, 1, __ATOMIC_ACQ_REL) != 0)
+        __atomic_fetch_add(&g_argon2_op.contended, 1, __ATOMIC_RELAXED);
+}
+static void argon2_leave(void) { __atomic_fetch_sub(&g_argon2_inside, 1, __ATOMIC_ACQ_REL); }
+#else
+static void argon2_enter(void) { oplock_enter(&g_argon2_op); }
+static void argon2_leave(void) { oplock_leave(&g_argon2_op); }
+#endif
+/* Hashes that waited for another CPU's, or under the arm ran alongside one. */
+uint64_t argon2_op_contended(void) { return g_argon2_op.contended; }
 
 static void strong_password_hash(const char *password, const uint8_t *salt,
                                  const uint8_t *pepper, uint8_t *out_hash) {
@@ -190,11 +214,13 @@ static void strong_password_hash(const char *password, const uint8_t *salt,
     for (int i = 0; i < PASS_SALT_LEN; i++) combined_salt[i] = salt[i];
     for (int i = 0; i < 16; i++) combined_salt[PASS_SALT_LEN + i] = pepper[i];
 
+    argon2_enter();
     rust_argon2id_hash((const uint8_t *)password, kstrlen(password),
                        combined_salt, sizeof(combined_salt),
                        ARGON2_T_COST, ARGON2_M_COST_KIB, ARGON2_P_COST,
                        argon2_scratch, sizeof(argon2_scratch) / sizeof(argon2_scratch[0]),
                        out_hash, PASS_HASH_LEN);
+    argon2_leave();
 
     secure_zero(combined_salt, sizeof(combined_salt));
 }
@@ -203,11 +229,14 @@ int kernel_argon2id(const uint8_t *pwd, size_t plen,
                     const uint8_t *salt, size_t salt_len,
                     uint8_t *out, size_t out_len)
 {
-    return rust_argon2id_hash(pwd, plen, salt, salt_len,
-                              ARGON2_T_COST, ARGON2_M_COST_KIB, ARGON2_P_COST,
-                              argon2_scratch,
-                              sizeof(argon2_scratch) / sizeof(argon2_scratch[0]),
-                              out, out_len);
+    argon2_enter();
+    int rc = rust_argon2id_hash(pwd, plen, salt, salt_len,
+                                ARGON2_T_COST, ARGON2_M_COST_KIB, ARGON2_P_COST,
+                                argon2_scratch,
+                                sizeof(argon2_scratch) / sizeof(argon2_scratch[0]),
+                                out, out_len);
+    argon2_leave();
+    return rc;
 }
 
 int set_user_password(uint32_t uid, const char *new_password) {

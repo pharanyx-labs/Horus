@@ -206,6 +206,8 @@ control_arms:
   smoke-rollback-control: smoke-rollback
   smoke-rollback-anchor-flag-control: smoke-rollback-anchor-flag
   smoke-vdisk-bound-control: smoke-vdisk-bound
+  smoke-storage-smp-control: smoke-storage-smp
+  smoke-storage-smp-argon2-control: smoke-storage-smp
   smoke-storage-noformat-control: smoke-storage-noformat
   smoke-storage-survey-single-control: smoke-storage-survey
   smoke-storage-device-clamp-control: smoke-storage-survey
@@ -465,6 +467,7 @@ gates:
   - smoke-rollback
   - smoke-rollback-anchor-flag
   - smoke-vdisk-bound
+  - smoke-storage-smp
   - smoke-users-persist
   - smoke-users-tamper
   - smoke-storage-noformat

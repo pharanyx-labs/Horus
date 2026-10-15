@@ -2390,6 +2390,36 @@ extern spinlock_t storage_lock;
 extern spinlock_t cap_lock;
 extern spinlock_t page_lock;
 
+/* A lock on an OPERATION rather than on a data structure (S146).
+ *
+ * A spinlock guards a few lines and masks interrupts while it does. Some kernel
+ * work is one operation for much longer than that: a storage call that reads,
+ * verifies, stages and commits a dozen blocks, or a password hash that runs for
+ * a second, each through state (the journal, the metadata and Merkle caches, a
+ * 4 MiB Argon2 scratch buffer) that has exactly one copy. On one CPU nothing else
+ * could run in the middle, because ring 0 is not preemptible. With two, another
+ * CPU can enter the same operation half-way through, and nothing stopped it.
+ *
+ * - Held for the whole operation, and taken again by the CPU that holds it
+ *   without deadlocking: an exported storage function calls others.
+ * - Owned by a CPU, not a task. That is sound because ring 0 is not preemptible
+ *   (preempt_on_tick's ring-0 guard) and nothing under such a lock blocks, so the
+ *   CPU that took it runs the operation to its end before running anything else.
+ * - Waited for with interrupts ON, as smp_maybe_shootdown's window is, because
+ *   the holder may need this CPU to acknowledge a TLB shootdown, and a waiter
+ *   that had them masked for the length of a format would halt it at the
+ *   shootdown's backstop. So it must never be taken with a spinlock held, and
+ *   that is checked rather than assumed. */
+typedef struct oplock {
+    volatile int cpu;        /* the CPU inside the operation, or -1 */
+    int          depth;      /* how many times that CPU has entered it */
+    uint64_t     contended;  /* entries that found another CPU inside and waited */
+} oplock_t;
+#define OPLOCK_INIT { -1, 0, 0 }
+void oplock_enter(oplock_t *l);
+void oplock_leave(oplock_t *l);
+int  oplock_held_here(const oplock_t *l);
+
 
 
 int  get_current_task(void);

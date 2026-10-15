@@ -270,8 +270,8 @@ test does not exist or does not run.
 
 | Layer | What it covers |
 |---|---|
-| Security properties | 147 numbered properties, each bound to a witness by `tools/check_invariants.py` |
-| QEMU integration tests | 557 `smoke-*` targets: 240 base gates and 317 control arms |
+| Security properties | 148 numbered properties, each bound to a witness by `tools/check_invariants.py` |
+| QEMU integration tests | 560 `smoke-*` targets: 241 base gates and 319 control arms |
 | Control arms | A build that puts a defect back on purpose; CI requires its gate to go red against it |
 | Kani | 35 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
 | Miri | The security core's tests, interpreted for undefined behaviour on every pull request |

@@ -47,7 +47,7 @@ gates that match kernel strings are moving to COM3, which only the kernel can wr
 ## The integration gates
 
 
-There are 557 `smoke-*` targets: 240 gates and 317 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
+There are 560 `smoke-*` targets: 241 gates and 319 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
 
 
 ### Capabilities and authorisation
@@ -205,6 +205,7 @@ There are 557 `smoke-*` targets: 240 gates and 317 control arms. Each row is a g
 | `smoke-ata-ready` | An ATA transfer happens only when the drive reports ready | S69 | `smoke-ata-ready-control` |
 | `smoke-storage-survey` | A capability holder learns which disks the machine has, and whether each holds a volume | S72, S82 | `smoke-storage-device-clamp-control`, `smoke-storage-survey-single-control` |
 | `smoke-vdisk-bound` | The RAM disk accepts only blocks it has memory for | S64 | `smoke-vdisk-bound-control` |
+| `smoke-storage-smp` | Two CPUs in storage and in the password hash at once: each CPU's file reads back as it wrote it, each hash is right, and the two did overlap | S146 | `smoke-storage-smp-control`, `smoke-storage-smp-argon2-control` |
 | `smoke-users-persist` | Accounts survive a reboot | S62 | `smoke-users-persist-control` |
 | `smoke-users-tamper` | A tampered account table refuses every login | S62 |  |
 | `smoke-storage-noformat` | A login is not consent to format: an unrecognised disk is refused | S63 | `smoke-storage-noformat-control` |
@@ -248,7 +249,7 @@ There are 557 `smoke-*` targets: 240 gates and 317 control arms. Each row is a g
 | `smoke-live-locked` | A live boot neither opens nor changes an installed disk | S110 | `smoke-live-locked-control` |
 | `smoke-installer-unsealed` | An unencrypted install says so at every boot and still requires the password | S104 | `smoke-installer-unsealed-control` |
 | `smoke-installer-sd` | A whole install onto an SD card, through a power cycle |  | `smoke-installer-sd-devregs-control`, `smoke-installer-sd-stride-control` |
-| `smoke-installer-sd-smp` | The same with two CPUs, which the driver's lock makes safe |  | `smoke-installer-sd-smp-control` |
+| `smoke-installer-sd-smp` | The same with two CPUs, which the storage operation lock and the driver's lock make safe | S146 | `smoke-installer-sd-smp-control` |
 | `smoke-passwd-target` | `passwd <uid>` changes that account and only that one, and an account's own `passwd` re-seals its own key slot | S75 | `smoke-passwd-own-control`, `smoke-passwd-target-control` |
 | `smoke-installer-slowdisk` | A slow disk is not mistaken for a wedged install |  | `smoke-installer-wedge-control` |
 
@@ -424,7 +425,7 @@ Two of those deserve a sentence each.
 there with no `continue-on-error`, each named with its measured cost in
 `.github/kani-harnesses.yml`, and the job refuses a proof that is not listed. And **`invariants`** requires every property in `SECURITY.md` to
 name a witness that exists and runs; its exemption list, `.github/invariants.yml`, is
-currently **empty**: all 147 properties name a witness that resolves.
+currently **empty**: all 148 properties name a witness that resolves.
 
 Every `tools/check_*.py` has a falsification harness, `tools/test_check_*.sh`, with one case per
 rule showing the rule can fail, and each checker asserts a floor on what it parsed, so a parser

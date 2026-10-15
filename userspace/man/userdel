@@ -11,7 +11,9 @@ DESCRIPTION
     left where they are, still owned by the number UID.
 
 SECURITY
-    The administrator only.
+    The administrator's session only. The kernel requires CAP_USER, which
+    init lends the shell when the administrator logs in and takes back at
+    logout.
 
 SEE ALSO
     useradd(8)

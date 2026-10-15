@@ -1219,6 +1219,11 @@ void _start(void) {
      * changed no key. Reserved, and it must answer nobody. */
     check((int)syscall(SYS_ROTATE_KEYS, 0, 0, 0) == SYS_ERR_NOSYS,
           "withdrawn-rotate-keys-syscall-answered");
+    /* SYS_SUDO (31), withdrawn 2026-10-15: it turned the caller's own password
+     * into a uid-0 spawn. A standard account has no way to become root, so the
+     * number answers nobody, a real password included. */
+    check((int)syscall(SYS_SUDO, (uint64_t)(uintptr_t)"toor", 0, 0) == SYS_ERR_NOSYS,
+          "withdrawn-sudo-syscall-answered");
 
     /* (f) SYS_IPC_REPLY resolves its endpoint from the capability's own object
      * through ipc_ep_from_slot, which is [C-1]'s fix: the authority is the

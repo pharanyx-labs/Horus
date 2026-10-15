@@ -147,7 +147,7 @@ shipped kernel.
 | 28 | `SYS_SPAWN` |  | Spawn a named program as a suspended child | `CAP_UNTYPED` at `CAPSLOT_UNTYPED`: WRITE (S57) |
 | 29 | `SYS_GETUID` |  | The caller's uid | none (self) |
 | 30 | `SYS_AUTH` | `user`, `pass` | Log in | none (self-authorising) |
-| 31 | `SYS_SUDO` | `pass` | Re-authenticate and spawn the armed image as uid 0 | re-authentication in handler and the armed image must be one this task armed (S21) |
+| 31 | `SYS_SUDO` |  | Withdrawn 2026-10-15: answers `SYS_ERR_NOSYS` to every caller. It took the caller's own password and spawned the armed image as uid 0; a standard account has no way to become root, and administration is a login as the administrator. Reserved so the number cannot come to mean something else | none |
 | 32 | `SYS_GET_PASS` | `buf` | Read a password from the console (kernel path, before the console server) | `CAP_CONSOLE` at `CAPSLOT_CONSOLE` + READ (S135); `SYS_ERR_BUSY` while `console_server` owns the console |
 | 33 | `SYS_USERADD` | `user`, `pass` | Create an account | `CAP_USER` at `CAPSLOT_USER` |
 | 34 | `SYS_USERDEL` | `user` | Delete an account | `CAP_USER` at `CAPSLOT_USER` |

@@ -637,7 +637,8 @@ console's input minter (the one capability the keyboard's input capability can b
 S93), the platform device, the kernel log, the boot modules, `CAP_STORAGE_FORMAT`, the shared libc's text,
 and `CAP_UNTYPED` over `UNTYPED_ROOT`. It surveys the machine's storage, then starts `fs_server`,
 `console_server`, and either the installer (on a blank disk, or when the boot menu asked) or the
-shell, each suspended, granting each exactly its subset and resuming it last. The installer and
+shell, each suspended, granting each exactly its subset and resuming it last. The shell's subset
+holds nothing of administration until an administrator logs in (S149). The installer and
 the shell are lent the keyboard's input capability while init waits for them, and init takes it
 back when each has ended. The installer is the only task given `CAP_STORAGE_FORMAT`; nothing a login
 reaches holds one.
@@ -681,7 +682,11 @@ request, grants the shell the session's root and working directory, and revokes 
 session at logout or when the shell dies, and a shell holding a session never reaches the uid path
 (S141). The shell walks by the root in its slot only while a session is open, and drops its root
 and working directory at logout whatever `init` did, so no login holds an earlier one's
-filesystem (S147). `fs_server` writes `/etc/fs.policy` into a new installed volume when it first
+filesystem (S147). The administrator's session, and no other, is also lent what administration
+needs: when the kernel attests a login as uid 0, `init` grants the shell `CAP_USER`, the kernel
+log and `CAP_DEBUG`, each minted from a copy `init` keeps and revokes at logout, so the kernel's
+capability test is what refuses `dmesg`, `capview`, `useradd` and the rest to a standard account,
+and the shell asks no uid (S149). `fs_server` writes `/etc/fs.policy` into a new installed volume when it first
 provisions it, the live default with read on `/etc/shell.conf` and `/etc/login.conf` for every
 account, and never writes it again, so a deleted policy leaves the administrator alone (S148). An
 account the policy gives nothing stays on the uid path until phase 1b step 6 removes it
@@ -853,6 +858,6 @@ company the core keeps: the `service` class (the on-disk filesystem and object s
 Argon2id, ELF loading and spawn staging, the CSPRNG's seeding) is about 6,000 code lines of policy
 at the same privilege as the capability engine, and a defect in any of it is a defect in ring 0.
 Evicting it is roadmap 2.7a, and the two large moves are design decisions rather than mechanisms:
-`storage.c` holds the volume key, and `kusers.c` is reached from the capability-minting
-`SYS_SUDO`. The capability filesystem's phase 2 (roadmap 2.10) and the installed system's
+`storage.c` holds the volume key, and `kusers.c` holds the accounts and their password
+hashes. The capability filesystem's phase 2 (roadmap 2.10) and the installed system's
 `auth_server` (roadmap 2.11) are those decisions.

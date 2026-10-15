@@ -384,18 +384,6 @@ static int spawn_untyped_region(uint32_t *out_index)
 #endif
 }
 
-int spawn_untyped_region_for(int task, uint32_t *out_index)
-{
-    /* Same rule as spawn_untyped_region, for a caller that is current but is
-     * resolving on another file's behalf (h_sudo). `task` is checked against the
-     * current one rather than trusted: cap_lookup resolves the CURRENT task's
-     * cspace, so a `task` that is not current would silently answer about
-     * somebody else. */
-    if (task != get_current_task()) return SYS_ERR_PERM;
-    return spawn_untyped_region(out_index);
-}
-
-
 static int do_spawn_inner(int caller, uint32_t stdio_spec, uint32_t untyped_index) {
     if (!program_armed) {
         return -1;
@@ -542,8 +530,7 @@ static void grant_child_tcb_cap(int spawner, int pid) {
  * granted a CAP_TCB to the new child. */
 int do_spawn_charged(uint32_t stdio_spec, uint32_t untyped_index);
 
-/* Kernel-initiated spawn: the boot shell launching init, and h_sudo re-launching
- * the shell. Charged to UNTYPED_KERNEL, which is not delegable and is sized at
+/* Kernel-initiated spawn: the boot shell launching init. Charged to UNTYPED_KERNEL, which is not delegable and is sized at
  * exactly MAX_TASKS cspaces -- see create_task. */
 int do_spawn(void) { return do_spawn_stdio(0); }
 

@@ -161,14 +161,20 @@ static uint32_t sh_session_g = 0;
  * did not happen (init could not be asked, or did not answer) and for a login
  * that opened no session, so that no earlier login's capability is left where
  * fss_connect would find it. Revoking an empty slot does nothing. */
-static void sh_drop_fs_slots(void) {
+static int sh_drop_fs_slots(void) {
     /* Not in the read-only-root instrument either: there init grants slot 24
      * once, at launch, with no session ever (smoke-fs-cap-shell), so what is
      * in it is init's for the whole boot and not an earlier login's. Dropping
      * it put that gate's root session on the uid path, where root may write. */
 #if !defined(SHELL_STALE_ROOT) && !defined(INIT_SHELL_ROOT_READONLY)
-    (void)sys_cap_revoke(CAPSLOT_FS_ROOT);
-    (void)sys_cap_revoke(CAPSLOT_FS_CWD);
+    /* 1 when both revokes succeeded, so everything derived from them, the
+     * pool's walks included, is gone (S3). An empty slot does not revoke (it
+     * carries no REVOKE right), so 0 also means "already empty". */
+    int a = sys_cap_revoke(CAPSLOT_FS_ROOT) == 0;
+    int b = sys_cap_revoke(CAPSLOT_FS_CWD) == 0;
+    return a && b;
+#else
+    return 0;
 #endif
 }
 
@@ -252,14 +258,20 @@ static void session_call(uint32_t op, struct sess_reply *rp) {
     if (rp->cwd[0] != '/') { rp->cwd[0] = '/'; rp->cwd[1] = 0; }
 }
 
-static void fs_forget(void) {
+static void fs_forget(int swept) {
     /* "/" goes in either mode, so the next fss_connect mounts it afresh: the
      * uid path's mount of the endpoint, left in place, makes the next session's
      * hvfs_mount_cap a duplicate. Whatever the shell's walks left in the pool
-     * went with the session (init revoked it); give back the slots the kernel
-     * now reports empty. */
+     * went with the session. `swept` says the root and working directory every
+     * pool capability descends from were revoked, by init or by this shell, so
+     * the pool is empty by S3 and is freed without asking the kernel, which a
+     * standard account's shell cannot (it holds no CAP_DEBUG, S149). Otherwise
+     * only the slots the kernel reports empty go back: fails closed. */
     if (fss_connected) (void)hvfs_unmount("/");
-    if (sh_capmode) hvfs_pool_reclaim();
+    if (sh_capmode) {
+        if (swept) hvfs_pool_forget_all();
+        else       hvfs_pool_reclaim();
+    }
     sh_capmode = 0;
     fss_connected = 0;
     sh_root.slot = CAPSLOT_FS_EP; sh_root.ino = 0; sh_root.cap = 0; sh_root.owned = 0;
@@ -271,8 +283,9 @@ static void session_open_request(void) {
     struct sess_reply rp;
     session_call(SESS_OP_OPEN, &rp);
     sh_session_g = (rp.rc == 0) ? rp.g : 0;
-    if (!sh_session_g) sh_drop_fs_slots();   /* none: nothing here may be used */
-    fs_forget();                         /* the next request decides the mode */
+    int swept = 0;
+    if (!sh_session_g) swept = sh_drop_fs_slots();   /* none: nothing here may be used */
+    fs_forget(swept);                    /* the next request decides the mode */
     /* A session starts in its working directory (fss_connect), so pwd starts
      * there too. Until 2026-10-14 it said "/" while relative names went to the
      * home: `mkdir d` then made /home/<name>/d under a prompt that said "/". */
@@ -280,15 +293,17 @@ static void session_open_request(void) {
 }
 
 static void session_end_request(void) {
+    int swept = 0;
     if (sh_session_g) {
         struct sess_reply rp;
         session_call(SESS_OP_END, &rp);
+        swept = rp.rc == 0;              /* init revoked the session's two roots */
     }
     sh_session_g = 0;
     /* Whether or not init heard: a logout leaves this shell holding nothing of
      * the session, so the next login starts from its own or from none. */
-    sh_drop_fs_slots();
-    fs_forget();
+    if (sh_drop_fs_slots()) swept = 1;
+    fs_forget(swept);
 }
 
 /* One request about object `o`, sent through its slot: the endpoint on the uid
@@ -354,9 +369,9 @@ static int sh_open(const char *path, struct hvfs_obj *o, uint32_t *type, uint32_
  * looking for a fault that was not there. `rp.rc` carried the reason the whole
  * time and was thrown away one line after it arrived.
  *
- * This is the same lesson section 9 of tools/session_test.py already encodes
- * for sudo -- "the CORRECT password does not report invalid argument" -- and
- * it is a correctness defect rather than a security one: nothing was permitted
+ * This is the lesson section 9 of tools/session_test.py encoded for sudo, until
+ * sudo was withdrawn on 2026-10-15 -- "the CORRECT password does not report
+ * invalid argument" -- and it is a correctness defect rather than a security one: nothing was permitted
  * that should not have been. What it costs is the operator's time and their
  * trust in the next refusal they read.
  *
@@ -1322,6 +1337,7 @@ static const char *const d_run[] = {
     "nothing else; run waits for it to finish.",
     0 };
 
+#ifdef SHELL_DEMO_COMMANDS
 static const char *const d_spawn[] = {
     "Spawn an embedded binary by name, or the last image armed by `run`.",
     "",
@@ -1329,6 +1345,7 @@ static const char *const d_spawn[] = {
     "down. There is no ambient authority: a spawned task can do nothing its",
     "cspace does not name.",
     0 };
+#endif
 
 static const char *const d_capview[] = {
     "Print the capability graph: for each live task, every occupied cspace slot",
@@ -1344,7 +1361,8 @@ static const char *const d_capview[] = {
     "A PARENT of \"root\" is a capability the kernel minted, with no parent.",
     "Serials are 64-bit, issued once and never again.",
     "",
-    "Needs CAP_DEBUG, which init delegates to the shell. It is observation only:",
+    "Needs CAP_DEBUG, which init lends the shell for the administrator's",
+    "session only, and takes back at logout. It is observation only:",
     "the object each capability names is deliberately NOT reported, and the",
     "capability is minted read-only so no delegate can hold anything more.",
     0 };
@@ -1353,7 +1371,8 @@ static const char *const d_ps[] = {
     "List visible tasks: pid, owner, name, state, heap use, capability count",
     "and flags. Your own task is marked with '*'.",
     "",
-    "Visibility is authority-scoped. Without uid 0 you see only your own task",
+    "Visibility is authority-scoped. Outside the administrator's session",
+    "(which alone holds CAP_DEBUG) you see only your own task",
     "-- task listings are an information leak like any other, so they are",
     "gated rather than shown in full to everyone.",
     0 };
@@ -1366,16 +1385,11 @@ static const char *const d_whoami[] = {
     "the fs_server is made against it.",
     0 };
 
-static const char *const d_sudo[] = {
-    "Re-authenticate at a secure prompt and spawn an elevated image.",
-    "",
-    "Takes no argument. The password is read at a masked prompt, never echoed,",
-    "and wiped from the shell's memory once the kernel has checked it.",
-    0 };
 static const char *const d_passwd[] = {
     "Change a password at a secure prompt. With no argument, your own.",
     "",
-    "`passwd <uid>` changes THAT account's password and requires uid 0. It is",
+    "`passwd <uid>` changes THAT account's password, in the administrator's",
+    "session only (the kernel requires CAP_USER). It is",
     "the only way to give an account created by useradd a usable password:",
     "useradd leaves the new account locked, with no password that can match.",
     "",
@@ -1387,12 +1401,14 @@ static const char *const d_passwd[] = {
     "persists across reboots.",
     0 };
 static const char *const d_useradd[] = {
-    "Create a user account with the given uid and name. Requires uid 0.",
+    "Create a user account with the given uid and name. The administrator's",
+    "session only: the kernel requires CAP_USER, which init lends for it.",
     0 };
 static const char *const d_userdel[] = {
-    "Delete a user account. Requires uid 0.",
+    "Delete a user account. The administrator's session only (CAP_USER).",
     0 };
 
+#ifdef SHELL_DEMO_COMMANDS
 static const char *const d_mem[] = {
     "Grow the heap by one page and touch it, demonstrating sbrk(2) and the",
     "demand pager: the page is not backed by physical memory until written.",
@@ -1401,10 +1417,11 @@ static const char *const d_yield[] = {
     "Hand the CPU to another runnable task. Scheduling is preemptive, so this",
     "is a courtesy rather than a requirement.",
     0 };
+#endif
 static const char *const d_help[] = {
     "Without an argument, print the categorised command index.",
     "With one, print details for a command or a group (files, security,",
-    "process, ipc, loader).",
+    "process).",
     "",
     "For a full reference page on a single command, use man(1).",
     0 };
@@ -1452,16 +1469,19 @@ static const struct man_page man_pages[] = {
  { "mv","1","rename a file","mv SRC DST",d_mv,0,0,"cp(1), rm(1)" },
  { "wc","1","count lines, words and bytes","wc FILE",d_wc,0,0,"cat(1)" },
  { "echo","1","print text, or write it to a file","echo TEXT [> FILE]",d_echo,0,0,"cat(1), touch(1)" },
- { "run","1","execute a program image from a file","run FILE",d_run,0,0,"spawn(1), ps(1)" },
+ { "run","1","execute a program image from a file","run FILE",d_run,0,0,"ps(1)" },
+#ifdef SHELL_DEMO_COMMANDS
  { "spawn","1","spawn an embedded binary","spawn [NAME]",d_spawn,0,0,"run(1), ps(1)" },
- { "ps","1","list visible tasks","ps",d_ps,0,0,"spawn(1), whoami(1)" },
+#endif
+ { "ps","1","list visible tasks","ps",d_ps,0,0,"whoami(1)" },
  { "capview","1","print the capability graph","capview [PID]",d_capview,0,0,"ps(1)" },
+#ifdef SHELL_DEMO_COMMANDS
  { "mem","1","grow the heap by one page","mem",d_mem,0,0,"ps(1)" },
  { "yield","1","hand the CPU to another task","yield",d_yield,0,0,"ps(1)" },
- { "whoami","1","show your attested uid and gid","whoami",d_whoami,0,0,"id(1), sudo(1), ps(1)" },
+#endif
+ { "whoami","1","show your attested uid and gid","whoami",d_whoami,0,0,"id(1), ps(1)" },
  { "id","1","show your attested uid and gid","id",d_whoami,0,0,"whoami(1)" },
- { "sudo","1","re-authenticate and elevate","sudo",d_sudo,0,0,"passwd(1), whoami(1)" },
- { "passwd","1","change a password","passwd [UID]",d_passwd,0,0,"useradd(8), sudo(1)" },
+ { "passwd","1","change a password","passwd [UID]",d_passwd,0,0,"useradd(8)" },
  { "useradd","8","create a user account","useradd UID NAME",d_useradd,0,0,"userdel(8), passwd(1)" },
  { "userdel","8","delete a user account","userdel UID",d_userdel,0,0,"useradd(8)" },
  { "help","1","print the command index","help [TOPIC]",d_help,0,0,"man(1), apropos(1)" },
@@ -1502,8 +1522,10 @@ static int usage_for_bare(const char *cmd) {
     const char *syn = 0;
     const struct man_page *m = man_find(cmd);
     if (m) syn = m->synopsis;
+#ifdef SHELL_DEMO_COMMANDS
     else if (strcmp(cmd, "ipc_send") == 0) syn = "ipc_send <msg>";
     else if (strcmp(cmd, "notify") == 0)   syn = "notify <badge>";
+#endif
     if (!syn) return 0;
     print(cmd); println(": missing operand");
     print("usage: "); println(syn);
@@ -1600,7 +1622,7 @@ static void man_index(void) {
         println(man_pages[i].summary);
     }
     println("");
-    println("  Section 1 = user command, 8 = requires uid 0.");
+    println("  Section 1 = user command, 8 = the administrator's session only.");
     println("  apropos <keyword> searches these summaries; help shows them grouped.");
     println("");
 }
@@ -1627,12 +1649,13 @@ static void show_general_help_us(void) {
     print_cmd("echo <text>",       "print text to the console");
     print_cmd("echo <text> > <f>", "write text to a file (creates it if needed)");
     print_cmd("run <file>",        "load a program image from the FS and run it");
+#ifdef SHELL_DEMO_COMMANDS
     print_cmd("fss, fss_ls, ...",  "low-level fs_server demo client ('help fss')");
+#endif
     println("");
     println("  IDENTITY & SECURITY");
     print_cmd("whoami, id",        "show your login uid / gid");
     print_cmd("passwd [<uid>]",    "change a password, yours or an account's (root)");
-    print_cmd("sudo",              "re-authenticate (secure prompt), spawn elevated");
     print_cmd("dmesg",             "print the kernel message log            (root)");
     print_cmd("irqpolicy",         "interrupt-policy audit counters         (root)");
     print_cmd("useradd <uid> <n>", "create a user account                   (root)");
@@ -1640,17 +1663,21 @@ static void show_general_help_us(void) {
     println("");
     println("  PROCESSES");
     print_cmd("ps",                "list visible tasks (non-root sees only its own)");
+#ifdef SHELL_DEMO_COMMANDS
     print_cmd("spawn <name>",      "spawn an embedded binary (hello/captest/fs_server)");
     print_cmd("spawn",             "spawn the last armed image");
     print_cmd("mem",               "allocate a page from the heap (sbrk demo)");
     print_cmd("yield",             "voluntarily hand the CPU to another task");
+#endif
     println("");
+#ifdef SHELL_DEMO_COMMANDS
     println("  IPC & NOTIFICATIONS");
     print_cmd("ipc_send <msg>",    "send a message on endpoint 4");
     print_cmd("ipc_recv",          "receive a message on endpoint 4");
     print_cmd("notify <badge>",    "post an async notification badge on slot 4");
     print_cmd("wait_notify",       "block until a notification badge arrives");
     println("");
+#endif
     println("  LOADER (over serial)   and   SESSION");
     print_cmd("help [topic]",      "this list, or details for a command or group");
     print_cmd("man <command>",     "full reference page for one command");
@@ -1659,7 +1686,7 @@ static void show_general_help_us(void) {
     print_cmd("exit, logout",      "end the session, return to the login prompt");
     println("");
     println("  Legend:  <arg> required   (root) needs uid 0   / is the FS root");
-    println("  Groups:  help files | security | process | ipc | loader");
+    println("  Groups:  help files | security | process");
     println("  Detail:  help <command>       e.g.   help run");
     println("  Manual:  man <command>        e.g.   man ls        (man = index)");
     help_rule();
@@ -1706,10 +1733,9 @@ static void show_topic_help_us(const char *topic) {
         println("");
         print_cmd("whoami, id",     "show your uid / gid");
         print_cmd("passwd",         "change a password (passwd <uid> for another, root)");
-        print_cmd("sudo <pw>",      "re-authenticate, spawn an elevated image");
         print_cmd("useradd/userdel","manage user accounts                    (root)");
         println("");
-        println("  Detail:  help <command>    e.g.  help sudo");
+        println("  Detail:  help <command>    e.g.  help passwd");
         return;
     }
     if (strcmp(t,"process")==0 || strcmp(t,"processes")==0 || strcmp(t,"proc")==0) {
@@ -1717,14 +1743,19 @@ static void show_topic_help_us(const char *topic) {
         println("  was granted - there is no ambient authority to create or signal tasks.");
         println("");
         print_cmd("ps",            "list visible tasks");
+#ifdef SHELL_DEMO_COMMANDS
         print_cmd("spawn <name>",  "spawn an embedded binary");
+#endif
         print_cmd("run <file>",    "run a program image from the FS");
+#ifdef SHELL_DEMO_COMMANDS
         print_cmd("mem",           "grow the heap by a page (sbrk demo)");
         print_cmd("yield",         "hand the CPU to another task");
+#endif
         println("");
-        println("  Detail:  help <command>    e.g.  help spawn");
+        println("  Detail:  help <command>    e.g.  help run");
         return;
     }
+#ifdef SHELL_DEMO_COMMANDS
     if (strcmp(t,"ipc")==0 || strcmp(t,"notifications")==0 || strcmp(t,"notification")==0) {
         println("  Tasks talk over capability-gated endpoints (synchronous messages) and");
         println("  notification slots (async single-badge signals); both need a slot-3 cap.");
@@ -1746,6 +1777,7 @@ static void show_topic_help_us(const char *topic) {
         println("  Detail:  help run | help spawn");
         return;
     }
+#endif
 
     /* ---- individual commands ------------------------------------------ */
     if (strcmp(t,"ls")==0) {
@@ -1800,14 +1832,15 @@ static void show_topic_help_us(const char *topic) {
         help_line("Notes:",   "The shell reads the image over the fs_server, then the kernel");
         help_line("",         "validates it with the same loader a named binary uses (W^X,");
         help_line("",         "bounds, fail-closed relocations) and waits for it to finish.");
-        help_line("See also:","spawn, cat");
+        help_line("See also:","cat, ps");
     } else if (strcmp(t,"ps")==0) {
         help_line("Purpose:", "List the tasks you are allowed to see.");
         help_line("Usage:",   "ps");
         help_line("Notes:",   "Columns: PID UID NAME STATE HEAP CAPS FLAGS. '*' marks your");
         help_line("",         "task; STATE is run/blkd; FLAGS: K=in kernel, B<n>=blocked on");
         help_line("",         "task n, N=waiting on a notification. Non-root sees only itself.");
-        help_line("See also:","spawn, whoami");
+        help_line("See also:","whoami");
+#ifdef SHELL_DEMO_COMMANDS
     } else if (strcmp(t,"spawn")==0) {
         help_line("Purpose:", "Launch an embedded binary, or the last image you armed.");
         help_line("Usage:",   "spawn <name>    hello | captest | fs_server");
@@ -1825,12 +1858,13 @@ static void show_topic_help_us(const char *topic) {
         help_line("Usage:",   "yield");
         help_line("Notes:",   "Scheduling is preemptive, so this is a courtesy hand-off, not");
         help_line("",         "something other tasks depend on to run.");
+#endif
     } else if (strcmp(t,"whoami")==0 || strcmp(t,"id")==0) {
         help_line("Purpose:", "Show your kernel-attested login identity.");
         help_line("Usage:",   "whoami    |    id");
         help_line("Notes:",   "This uid is fixed at login and cannot be forged; the fs_server");
         help_line("",         "and every privileged op are checked against it.");
-        help_line("See also:","passwd, sudo, ps");
+        help_line("See also:","passwd, ps");
     } else if (strcmp(t,"passwd")==0) {
         help_line("Purpose:", "Change a password: your own, or another account's as root.");
         help_line("Usage:",   "passwd            |    passwd <uid>");
@@ -1842,24 +1876,16 @@ static void show_topic_help_us(const char *topic) {
         help_line("",         "a name, and a malformed one is REFUSED -- it is never taken as");
         help_line("",         "a request to change your own.");
         help_line("",         "Changing your OWN password also re-seals the volume to it.");
-        help_line("See also:","useradd, sudo");
-    } else if (strcmp(t,"sudo")==0) {
-        help_line("Purpose:", "Re-authenticate and spawn a privileged (armed) image.");
-        help_line("Usage:",   "sudo            (prompts for your password, masked)");
-        help_line("Notes:",   "Takes no argument: a password on the command line would be");
-        help_line("",         "echoed to the console and the serial log. Verifies your");
-        help_line("",         "password (lockout/throttle on failure), then spawns the");
-        help_line("",         "armed image as uid 0 — so arm one first, or it has nothing");
-        help_line("",         "to elevate and will say so.");
-        help_line("See also:","spawn, receive");
+        help_line("See also:","useradd");
     } else if (strcmp(t,"useradd")==0 || strcmp(t,"userdel")==0) {
         help_line("Purpose:", "Create or delete a user account (admin).");
         help_line("Usage:",   "useradd <uid> <name>    |    userdel <uid>");
         help_line("Example:", "useradd 1001 bob");
-        help_line("Notes:",   "Requires uid 0. New accounts persist across reboots, and are");
-        help_line("",         "created LOCKED: give one a password with passwd <uid> before it");
-        help_line("",         "can be logged into.");
+        help_line("Notes:",   "Administrator's session only. New accounts persist across");
+        help_line("",         "reboots, and are created LOCKED: give one a password with");
+        help_line("",         "passwd <uid> before it can be logged into.");
         help_line("See also:","passwd, whoami");
+#ifdef SHELL_DEMO_COMMANDS
     } else if (strcmp(t,"ipc_send")==0 || strcmp(t,"ipc_recv")==0 || strcmp(t,"ipc")==0) {
         help_line("Purpose:", "Exchange a message over a capability endpoint.");
         help_line("Usage:",   "ipc_send <msg>     send on endpoint 4");
@@ -1882,6 +1908,7 @@ static void show_topic_help_us(const char *topic) {
         help_line("Notes:",   "The high-level commands (ls, cat, ...) are what you normally");
         help_line("",         "want; fss_* just exposes the raw protocol for demonstration.");
         help_line("See also:","ls, cat, files");
+#endif
     } else if (strcmp(t,"exit")==0 || strcmp(t,"logout")==0) {
         help_line("Purpose:", "End your session and return to the login prompt.");
         help_line("Usage:",   "exit    |    logout");
@@ -1893,7 +1920,7 @@ static void show_topic_help_us(const char *topic) {
     } else {
         println("  No help entry for that word.");
         println("");
-        println("  Groups:  help files | security | process | ipc | loader");
+        println("  Groups:  help files | security | process");
         println("  All:     help");
     }
 }
@@ -1935,7 +1962,7 @@ static void sh_list_dir(const struct hvfs_obj *d, int long_fmt) {
          * prints nothing at all. */
         int rc = fss_call_on(d, &rq, &rp);
         if (rc < 0) {
-            if (!fss_connected) println("ls: spawn fs_server first");
+            if (!fss_connected) println("ls: no filesystem server");
             else { print("ls: fs_server call failed ("); print(sys_strerror(rc)); println(")"); }
             break;
         }
@@ -2111,6 +2138,17 @@ static void sh_list_dir(const struct hvfs_obj *d, int long_fmt) {
     }
 }
 
+/* Does this shell hold CAP_USER right now? Answered by the kernel, not by the
+ * shell: SYS_USERLIST refuses without it (do_userlist, the same test useradd,
+ * userdel and passwd <uid> meet). init lends CAP_USER into an administrator's
+ * session only (S149), so this is "is an administrator logged in" asked of the
+ * one component that cannot be told otherwise. Index 0 reads one account's
+ * public metadata, which is discarded. */
+static int sh_holds_cap_user(void) {
+    struct user_entry e;
+    return sys_userlist(0, &e) != SYS_ERR_PERM;
+}
+
 static void handle_command(char *cmd) {
 
     /* A pipeline (`a | b | ...`) of /bin programs — checked before the single
@@ -2166,6 +2204,12 @@ static void handle_command(char *cmd) {
     } else if (strcmp(cmd, "exit") == 0) {
         println("Exiting userspace shell...");
         sys_exit();
+#ifdef SHELL_DEMO_COMMANDS
+    /* DEMONSTRATION COMMANDS, in a DEBUG_SHELL=1 build only (S149, never
+     * shipped). They drive raw IPC on slot 4, grow the heap, and start a named
+     * boot module or an armed image as an unwaited child, and the maintainer
+     * took them out of the shell every account logs in to on 2026-10-15: a
+     * standard account gets what it needs, and these are not that. */
     } else if (strcmp(cmd, "yield") == 0) {
         println("Yielding...");
         sys_yield();
@@ -2177,6 +2221,7 @@ static void handle_command(char *cmd) {
         } else {
             println("sbrk failed");
         }
+#endif
     } else if (strcmp(cmd, "capview") == 0 || strncmp(cmd, "capview ", 8) == 0) {
         /* Roadmap 3.6: print the capability graph. The security argument of this
          * system is that graph, and until now it could be read in the source but
@@ -2521,12 +2566,9 @@ static void handle_command(char *cmd) {
     } else if (strncmp(cmd, "chmod ", 6) == 0) {
         /* WHO MAY DO THIS IS NOT DECIDED HERE, and that is deliberate.
          *
-         * `useradd` and `userdel` above carry a shell-side `sys_getuid() != 0`
-         * gate because the authority they use is CAP_USER, which is per-TASK:
-         * the shell is one long-lived task serving successive logins, so the
-         * kernel's gate cannot tell which human is at the terminal.
-         *
-         * The filesystem is the other case. fs_server decides with
+         * `useradd` and `userdel` are decided by the kernel's CAP_USER test,
+         * and the shell holds CAP_USER only in an administrator's session
+         * (S149). The filesystem is decided by the server. fs_server decides with
          * SYS_IPC_SENDER, the uid the KERNEL attests for the calling task, and
          * SYS_AUTH rewrites that uid at every login -- so the attested identity
          * IS who is at the terminal, and a second check here would be a copy of
@@ -2819,6 +2861,7 @@ static void handle_command(char *cmd) {
             println(rest);
         }
     } else if (cmd[0] == 0) {
+#ifdef SHELL_DEMO_COMMANDS   /* see yield and mem above (S149) */
     } else if (strncmp(cmd, "ipc_send ", 9) == 0) {
         const char *p = cmd + 9;
         while (*p == ' ') p++;
@@ -2840,6 +2883,7 @@ static void handle_command(char *cmd) {
         uint32_t badge = 0;
         sys_wait_notify(4, &badge);
         print("wait_notify badge="); print_decimal(badge); println("");
+#endif
     } else if (strcmp(cmd, "whoami") == 0) {
         uint32_t uid = sys_getuid();
         print("uid=");
@@ -2852,34 +2896,23 @@ static void handle_command(char *cmd) {
         print(" gid=100");
         println("");
     } else if (strcmp(cmd, "dmesg") == 0) {
-        /* Print the kernel message ring (boot + kernel log). ROOT ONLY.
-         *
-         * Two independent gates, answering two different questions:
-         *   - the KERNEL asks "does this task hold CAP_KERNEL_LOG?" (finding I-1
-         *     replaced the old ambient uid==0 check with a real capability);
-         *   - the SHELL asks "is the user at this terminal allowed to use it?".
-         *
-         * The shell's check is not redundant. Capabilities are per-TASK, and the
-         * shell is a single long-lived task serving successive logins, so its
-         * capability cannot by itself express "only while root is logged in".
-         * The session manager is the only component that knows who is logged in,
-         * so the per-user policy belongs here. Without this, delegating
-         * CAP_KERNEL_LOG to the shell would hand every standard user the kernel
-         * log — a privilege WIDENING versus the uid==0 gate it replaced. */
-        if (sys_getuid() != 0) {
-            println("dmesg: permission denied (root only)");
-        } else {
+        /* Print the kernel message ring (boot + kernel log). An administrator's
+         * session only, and THE KERNEL SAYS WHICH (S149): it asks whether this
+         * task holds CAP_KERNEL_LOG, and init lends the shell that capability
+         * for an administrator's session alone and takes it back at logout.
+         * Until 2026-10-15 the shell held it for the whole boot and asked
+         * sys_getuid() itself, the only thing between a standard account and
+         * the log; the refusal below is now the kernel's. */
         char buf[512];
         uint32_t off = 0;
         for (;;) {
             int n = sys_dmesg(buf, off, sizeof(buf) - 1);
-            if (n == SYS_ERR_PERM) { println("dmesg: permission denied (root only)"); break; }
+            if (n == SYS_ERR_PERM) { println("dmesg: permission denied (an administrator's session only)"); break; }
             if (n < 0)             { println("dmesg: read failed"); break; }
             if (n == 0)            break;   /* end of the log */
             buf[n] = 0;
             print(buf);
             off += (uint32_t)n;
-        }
         }
     } else if (strcmp(cmd, "irqpolicy") == 0) {
         /* Roadmap 1.1 step 2b: read the interrupt-policy audit counters in band.
@@ -2892,20 +2925,15 @@ static void handle_command(char *cmd) {
          * through console_server like any other program. Run it at the end of a
          * session and the totals cover that session.
          *
-         * Same two gates as dmesg, for the same reason: the kernel checks the
-         * task holds CAP_KERNEL_LOG, and the shell checks who is logged in --
-         * capabilities are per-task, and one long-lived shell serves successive
-         * logins, so per-user policy has to live here or delegating the
-         * capability would widen authority. */
-        if (sys_getuid() != 0) {
-            println("irqpolicy: permission denied (root only)");
-        } else {
+         * The same gate as dmesg: the kernel's test for CAP_KERNEL_LOG, which
+         * the shell holds only in an administrator's session (S149). */
+        {
             struct irq_policy_info info;
             int rc = sys_irq_policy_info(&info);
             if (rc == SYS_ERR_NOSYS) {
                 println("irqpolicy: not an IRQ_POLICY_AUDIT build");
             } else if (rc == SYS_ERR_PERM) {
-                println("irqpolicy: permission denied (root only)");
+                println("irqpolicy: permission denied (an administrator's session only)");
             } else if (rc < 0) {
                 println("irqpolicy: read failed");
             } else {
@@ -2936,58 +2964,15 @@ static void handle_command(char *cmd) {
                 println("irq-policy: end");
             }
         }
-    } else if (strcmp(cmd, "sudo") == 0 || strncmp(cmd, "sudo ", 5) == 0) {
-        /* The password is PROMPTED for, never taken from the command line.
-         * `sudo <password>` used to be the interface, which put the password on
-         * a line the terminal echoes to VGA *and mirrors to the serial log* —
-         * so the one credential that grants uid 0 was written, in cleartext, to
-         * the log of every session that used it. login and passwd have always
-         * read passwords through sys_get_pass (masked echo); sudo was the odd
-         * one out. Anything after "sudo" is now refused rather than silently
-         * accepted, so a habitual `sudo hunter2` fails loudly instead of
-         * leaking and working. */
-        if (cmd[4] != 0) {
-            println("sudo: takes no argument — it prompts for your password");
-            println("      (passing it on the command line would echo it to the log)");
-        } else {
-            char sudopass[32];
-            print("Password: ");
-            int plen = sh_get_pass(sudopass, sizeof(sudopass) - 1);
-            if (plen < 0) {
-                println("sudo: input error");
-            } else {
-                sudopass[plen] = 0;
-                int r = sys_sudo(sudopass);
-                scrub(sudopass, sizeof(sudopass));
-                if (r > 0) {
-                    print("sudo: elevated spawn successful (pid ");
-                    print_decimal(r);
-                    println(")");
-                } else if (r == SYS_ERR_AUTH) {
-                    println("sudo: incorrect password or locked out");
-                } else if (r == SYS_ERR_NOENT) {
-                    println("sudo: authenticated, but no image is armed to elevate");
-                    println("      arm one first (see 'help run' / 'help spawn')");
-                } else {
-                    print("sudo: failed (");
-                    print(sys_strerror(r));
-                    println(")");
-                }
-            }
-        }
     } else if (strncmp(cmd, "useradd ", 8) == 0) {
-        /* ROOT ONLY, and for the same reason `dmesg` above is: two independent
-         * gates answering two different questions. The KERNEL asks "does this
-         * task hold CAP_USER?" — since finding H-1 that is the only thing
-         * current_user_is_admin() accepts, the ambient uid==0 fallback having
-         * been removed. The SHELL asks "is the user at this terminal allowed to
-         * use it?", which the kernel cannot answer: CAP_USER is per-TASK and the
-         * shell is one long-lived task serving successive logins, so without this
-         * check delegating it would hand account creation to every standard user
-         * — strictly weaker than the uid==0 gate it replaced. */
-        if (sys_getuid() != 0) {
-            println("useradd: permission denied (root only)");
-        } else {
+        /* An administrator's session only, and the kernel says which: since
+         * finding H-1 do_useradd accepts nothing but CAP_USER, and init lends
+         * the shell CAP_USER for an administrator's session alone (S149). The
+         * shell's own uid check, the only thing that stood between a standard
+         * account and this while the shell held CAP_USER all boot, went with
+         * that on 2026-10-15. -1 is that refusal (the name buffer is ours, so
+         * the copy cannot fault). */
+        {
         const char *p = cmd + 8;
         uint32_t newuid = 0;
         char newname[32];
@@ -2999,14 +2984,16 @@ static void handle_command(char *cmd) {
         newname[ni] = 0;
 
         int r = sys_useradd(newuid, 100, newname);
-        if (r != 0) { println("useradd failed"); }
+        if (r == -1) { println("useradd: permission denied (an administrator's session only)"); }
+        else if (r != 0) { println("useradd failed"); }
         else {
             println("user added");
             /* AND A HOME DIRECTORY, because an account without one has nowhere
              * to write: every directory in the provisioned skeleton is root's.
              * fs_server does this for the accounts that exist when a volume is
              * provisioned; an account created afterwards is this path's job, and
-             * the shell can do it because it is running as root here -- /home is
+             * the shell can do it because only an administrator's session gets
+             * this far, and that session walks by root's capability: /home is
              * root-owned, and chown is root-only (S77).
              *
              * REPORTED BUT NOT FATAL. The account exists either way and saying
@@ -3059,17 +3046,15 @@ static void handle_command(char *cmd) {
         }
         }
     } else if (strncmp(cmd, "userdel ", 8) == 0) {
-        /* ROOT ONLY — see the note on useradd above. */
-        if (sys_getuid() != 0) {
-            println("userdel: permission denied (root only)");
-        } else {
+        /* The kernel's CAP_USER test, as for useradd above (S149). */
         const char *p = cmd + 8;
         uint32_t deluid = 0;
         while (*p == ' ') p++;
         while (*p >= '0' && *p <= '9') { deluid = deluid*10 + (*p-'0'); p++; }
         int r = sys_userdel(deluid);
-        println(r == 0 ? "user deleted" : "userdel failed");
-        }
+        println(r == 0 ? "user deleted"
+              : r == -1 ? "userdel: permission denied (an administrator's session only)"
+              : "userdel failed");
     } else if (strcmp(cmd, "passwd") == 0 || strncmp(cmd, "passwd ", 7) == 0) {
         /* WHO THIS CHANGES THE PASSWORD OF, and why the argument is not optional
          * once it is typed.
@@ -3101,14 +3086,12 @@ static void handle_command(char *cmd) {
          * useradd and userdel are uid-only for the same reason, the shell has no
          * syscall that resolves a name.
          *
-         * THE ROOT TEST IS THE SHELL'S OWN, for the reason the useradd branch
-         * above gives at length: the kernel asks "does this TASK hold CAP_USER?",
-         * and the shell is one long-lived task serving successive logins, so
-         * without this check delegating that capability would hand every logged-in
-         * user the ability to set anybody's password. do_passwd would also refuse
-         * uid != self for a non-admin, so this is the second of two gates rather
-         * than the only one -- but it is the one that knows who is at the
-         * terminal. */
+         * ANOTHER ACCOUNT'S PASSWORD NEEDS CAP_USER, and the kernel says whether
+         * this shell holds it (sh_holds_cap_user): init lends it for an
+         * administrator's session only (S149). Until 2026-10-15 the shell held
+         * CAP_USER all boot and asked sys_getuid() here instead. do_passwd
+         * refuses uid != self without CAP_USER regardless; asking first is so
+         * that no password is typed for a request that will be refused. */
         uint32_t target = sys_getuid();
         int may_ask = 1;
         const char *arg = cmd + 6;
@@ -3128,8 +3111,8 @@ static void handle_command(char *cmd) {
             if (!digits || *arg) {
                 println("passwd: usage: passwd [uid]   (a uid, not a name)");
                 may_ask = 0;
-            } else if (want != target && sys_getuid() != 0) {
-                println("passwd: permission denied (root only sets another account's password)");
+            } else if (want != target && !sh_holds_cap_user()) {
+                println("passwd: permission denied (an administrator's session only sets another account's password)");
                 may_ask = 0;
             } else {
                 target = want;
@@ -3179,6 +3162,7 @@ static void handle_command(char *cmd) {
      * anyway -- docs/LIMITATIONS.md 2.18. `run <file>` is how an image gets
      * into a task now: it reads the file over fs_server and hands the bytes
      * to SYS_SPAWN_IMAGE, which validates them with the same loader. */
+#ifdef SHELL_DEMO_COMMANDS   /* see yield and mem above (S149) */
     } else if (strcmp(cmd, "spawn") == 0 || strncmp(cmd, "spawn ", 6) == 0) {
         /* Not waited for, so nothing could ever give a grant back: a task this
          * starts gets no filesystem from the shell (sh_endow is not called),
@@ -3208,6 +3192,7 @@ static void handle_command(char *cmd) {
         } else if (pid < 0) {
             println("Spawn failed (no armed image or no free task slot)");
         }
+#endif
     } else if (strncmp(cmd, "run ", 4) == 0) {
         /* execve-from-fd: read a program image from a file in the encrypted FS
          * (over the fs_server, exactly like `cat`), then hand the bytes to
@@ -3222,7 +3207,7 @@ static void handle_command(char *cmd) {
         struct hvfs_obj f;
         uint32_t type, size;
         if (sh_open(name, &f, &type, &size) != 0) {
-            println("run: file not found (is fs_server running? try: spawn fs_server)");
+            println("run: file not found");
             return;
         }
         if (type != FS_TYPE_FILE) { hvfs_release(&f); println("run: not a regular file"); return; }
@@ -3247,6 +3232,7 @@ static void handle_command(char *cmd) {
         console_unlend(&kb);
         sh_unendow(&g);
         println("run: done");
+#ifdef SHELL_DEMO_COMMANDS   /* see yield and mem above (S149) */
     } else if (strncmp(cmd, "fss", 3) == 0) {
         if (strcmp(cmd, "fss_connect") == 0 || strcmp(cmd, "fss") == 0) {
             if (fss_connect() == 0) {
@@ -3351,6 +3337,7 @@ static void handle_command(char *cmd) {
         } else {
             println("fss commands: fss fss_connect fss_ls fss_cat <name> fss_write <file> <txt> fss_create <name>");
         }
+#endif
     } else if (usage_for_bare(cmd)) {
         /* printed; see usage_for_bare */
     } else {

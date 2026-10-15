@@ -1176,7 +1176,7 @@ static void h_cap_grant_locked(struct interrupt_frame64 *r) {
  * the slot NOW. That closes the finding only if the slot cannot be reused
  * between the check and the act, or a capability that was valid when checked
  * would be applied to the successor. Every path that creates a task
- * (do_spawn_inner, h_fork, h_sudo, and the kernel's own launchers) runs under
+ * (do_spawn_inner, h_fork, and the kernel's own launchers) runs under
  * spawn_stage_acquire, so holding it here makes check-and-act atomic with
  * respect to slot reuse, by construction rather than by a race being unlikely.
  * These are syscall entry points holding nothing, so taking the kernel's
@@ -1702,7 +1702,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_GETPID]                   = { h_getpid,                  SC_NONE, 0, SC_ANYTYPE }, /* own id: self-authorizing */
     [SYS_CONSOLE_OWNED]            = { h_console_owned,           SC_NONE, 0, SC_ANYTYPE }, /* console status: read-only, self-authorizing */
     [SYS_AUTH]                     = { h_auth,                    SC_NONE, 0, SC_ANYTYPE }, /* self-authorizing */
-    [SYS_SUDO]                     = { h_sudo,                    SC_NONE, 0, SC_ANYTYPE }, /* re-auth in handler */
+    [SYS_SUDO]                     = { h_sudo,                    SC_NONE, 0, SC_ANYTYPE }, /* withdrawn 2026-10-15: SYS_ERR_NOSYS to everyone */
     [SYS_GET_PASS]                 = { h_get_pass,                SC_NONE, 0, SC_ANYTYPE }, /* CAP_CONSOLE READ in handler */
     [SYS_USERADD]                  = { h_useradd,                 SC_NONE, 0, SC_ANYTYPE }, /* admin check in do_useradd */
     [SYS_USERDEL]                  = { h_userdel,                 SC_NONE, 0, SC_ANYTYPE }, /* admin check in do_userdel */

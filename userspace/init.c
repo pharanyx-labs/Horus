@@ -366,6 +366,16 @@ static void report_storage(void) {
 #define INIT_SESS_CWD       54
 #define INIT_SESS_SH_ROOT   55
 #define INIT_SESS_SH_CWD    56
+/* An ADMINISTRATOR'S session only (S149): init's revocable copies of the
+ * capabilities administration needs, and the copies minted from them for the
+ * shell. A standard account's session gets none of them, and logout revokes
+ * them, so the shell holds them only while the administrator is logged in. */
+#define INIT_SESS_USER      57   /* CAP_USER: useradd, userdel, passwd <uid> */
+#define INIT_SESS_KLOG      58   /* CAP_KERNEL_LOG: dmesg                     */
+#define INIT_SESS_DEBUG     59   /* CAP_DEBUG: ps of every task, capview, irqpolicy */
+#define INIT_SESS_SH_USER   60
+#define INIT_SESS_SH_KLOG   61
+#define INIT_SESS_SH_DEBUG  62
 
 /* EVERY SLOT INIT FILLS, AS CASE LABELS, so two of them sharing a number is a
  * compile error rather than a capability put where another already is. Phase 1b
@@ -383,6 +393,8 @@ static void __attribute__((unused)) init_slots_distinct(int slot)
     case INIT_SESS_LISTEN: case INIT_SESS_WATCH: case INIT_SHELL_TCB_RO:
     case INIT_SESS_SHELL: case INIT_SESS_ROOT: case INIT_SESS_CWD:
     case INIT_SESS_SH_ROOT: case INIT_SESS_SH_CWD:
+    case INIT_SESS_USER: case INIT_SESS_KLOG: case INIT_SESS_DEBUG:
+    case INIT_SESS_SH_USER: case INIT_SESS_SH_KLOG: case INIT_SESS_SH_DEBUG:
         break;
     default:
         break;
@@ -749,14 +761,74 @@ static void session_end_g(uint32_t g) {
     if (fs_ask(&rq, &rp) != 0) report("init: fs_server did not end a session\n");
 }
 
-/* Revoke the open session, if there is one, and end its grant set. */
-static void session_close(void) {
-    if (!g_sess_open) return;
-    (void)sys_cap_revoke(INIT_SESS_ROOT);
-    (void)sys_cap_revoke(INIT_SESS_CWD);
+/* THE ADMINISTRATOR'S CAPABILITIES, LENT FOR ONE SESSION (S149). For each,
+ * init mints a copy it keeps (with MINT, to make the shell's, and REVOKE, to
+ * take it back), mints the shell's copy from that, and grants it into the slot
+ * the kernel checks (a grant asks only that init hold the source). One revoke
+ * of init's copy at logout takes the shell's and everything the shell passed
+ * on (S3). CAP_USER goes with every right because the kernel asks for all of
+ * them; the kernel log and CAP_DEBUG go READ-only, so the shell can neither
+ * mint nor revoke them. A failure is reported and the session stays open
+ * without that capability: less authority, never more. */
+static int g_sess_admin;               /* the open session holds the three */
+
+static void admin_lend_one(int sh, uint32_t src, uint32_t keep_slot, uint32_t sh_slot,
+                           uint32_t dest, uint32_t give, const char *what) {
+    const uint32_t deleg = CAP_RIGHT_MINT | CAP_RIGHT_REVOKE;
+    if (sys_cap_mint(keep_slot, src, give | deleg) != 0 ||
+        sys_cap_mint(sh_slot, keep_slot, give) != 0 ||
+        sys_cap_grant(sh, sh_slot, dest) != 0) {
+        report("init: could not lend the administrator's ");
+        report(what);
+        report("\n");
+    }
+}
+
+static void admin_lend(int sh) {
+#ifndef INIT_ADMIN_CAPS_AT_LAUNCH
+    g_sess_admin = 1;
+    admin_lend_one(sh, CAP_SLOT_USER, INIT_SESS_USER, INIT_SESS_SH_USER, CAPSLOT_USER,
+                   0xFFFFFFFFu /* every right: the kernel asks for all */, "CAP_USER");
+    admin_lend_one(sh, INIT_KERNEL_LOG, INIT_SESS_KLOG, INIT_SESS_SH_KLOG, CAPSLOT_KERNEL_LOG,
+                   CAP_RIGHT_READ, "kernel log");
+    admin_lend_one(sh, CAPSLOT_DEBUG, INIT_SESS_DEBUG, INIT_SESS_SH_DEBUG, CAPSLOT_DEBUG,
+                   CAP_RIGHT_READ, "CAP_DEBUG");
+#else
+    (void)sh;
+#endif
+}
+
+/* 0 when every lent capability was taken back. A slot init never filled does
+ * not revoke (it has no REVOKE right), so only a lent one is asked. */
+static int admin_take_back(void) {
+    if (!g_sess_admin) return 0;
+#ifdef INIT_ADMIN_CAPS_KEPT
+    /* CONTROL ARM -- never ship (make smoke-session-admin-caps-control): the
+     * administrator's capabilities are not taken back at logout, so the next
+     * login's shell, a standard account's, still holds them. */
+    g_sess_admin = 0;
+    return 0;
+#endif
+    int a = sys_cap_revoke(INIT_SESS_USER);
+    int b = sys_cap_revoke(INIT_SESS_KLOG);
+    int c = sys_cap_revoke(INIT_SESS_DEBUG);
+    g_sess_admin = 0;
+    return (a == 0 && b == 0 && c == 0) ? 0 : SYS_ERR_IO;
+}
+
+/* Revoke the open session, if there is one, and end its grant set. 0 when
+ * both of the session's roots were revoked, which is what the shell's answer
+ * to its logout reports: the shell then knows everything derived from them,
+ * its own walks included, is gone (S3). */
+static int session_close(void) {
+    int adm = admin_take_back();
+    if (!g_sess_open) return adm;
+    int a = sys_cap_revoke(INIT_SESS_ROOT);
+    int b = sys_cap_revoke(INIT_SESS_CWD);
     session_end_g(g_sess_g);
     g_sess_open = 0;
     g_sess_g = 0;
+    return (a == 0 && b == 0 && adm == 0) ? 0 : SYS_ERR_IO;
 }
 
 _Static_assert(SESS_CWD_MAX == FS_SESSION_PATH, "a session's cwd fits the reply");
@@ -818,6 +890,10 @@ static void session_open(int sh, struct sess_reply *rep) {
         if (n < SESS_CWD_MAX - 1 || sg.cwd_path[n] == 0) rep->cwd[n] = 0;
         else { rep->cwd[0] = '/'; rep->cwd[1] = 0; }
     }
+    /* The administrator, as the kernel attests the login (uid 0, the account
+     * the policy's @admin names), and nobody else, is lent what administration
+     * needs, for this session only (S149). */
+    if (uid == 0) admin_lend(sh);
     rep->g = sg.g;
 }
 
@@ -826,47 +902,37 @@ static int launch_shell(void) {
     int sh = sys_spawn_named("shell");
     if (sh <= 0) return -1;
     g_shell_tcb_slot = cspace_new_slot();
-    /* Delegate least privilege into the same slots the shell expects (8/9).
-     * Done immediately after the spawn, before the shell needs them for login;
-     * init holds a CAP_TCB to the shell from the spawn, so the grants pass. */
+    /* Delegate least privilege into the slot the shell expects (8). Done
+     * immediately after the spawn, before the shell needs it for login; init
+     * holds a CAP_TCB to the shell from the spawn, so the grant passes.
+     *
+     * NOT THE OBJECT STORE. Until 2026-10-15 the shell was also given init's
+     * CAP_ENCRYPTED_STORAGE (slot 9), with every right, for the whole boot and
+     * every login: the kernel derived a per-user "file key" at login only if
+     * the caller held it, and nothing ever read that key. The store is
+     * fs_server's alone, and a standard account's shell holds no part of it. */
     if (sys_cap_grant(sh, CAP_SLOT_CONSOLE, CAP_SLOT_CONSOLE) != 0) return -2;
-    if (sys_cap_grant(sh, CAP_SLOT_STORAGE, CAP_SLOT_STORAGE) != 0) return -3;
     /* The console CLIENT capability: WRITE only, so the shell can send to the
      * console server but never receive on its endpoint. do_spawn propagates a
      * send-only copy to every utility the shell runs. */
     if (sys_cap_grant(sh, INIT_CON_CLIENT, CAPSLOT_CONSOLE_EP) != 0) return -4;
-    /* The kernel log (`dmesg`). Formerly ambient uid==0 (finding I-1). Delegating
-     * it explicitly means it can be withdrawn from the shell without changing who
-     * the shell is — which an identity check could never do. */
+    /* NOT THE ADMINISTRATOR'S CAPABILITIES (S149). The kernel log (`dmesg`),
+     * CAP_DEBUG (`ps` of every task, `capview`, `irqpolicy`) and CAP_USER
+     * (`useradd`, `userdel`, `passwd <uid>`) were granted here until 2026-10-15,
+     * for the life of the boot and so for every login, and only the shell's own
+     * uid check kept a standard account from using them. They are lent now by
+     * session_open, into an administrator's session alone, and revoked with it
+     * (admin_lend, admin_take_back), so a standard account's shell holds none
+     * of them and the kernel refuses what the shell would have refused. */
+#ifdef INIT_ADMIN_CAPS_AT_LAUNCH
+    /* CONTROL ARM -- never ship (make smoke-session-admin-caps-launch-control):
+     * the shell before 2026-10-15, given all three here for the whole boot,
+     * so a standard account's session holds them too. admin_lend then does
+     * nothing. */
     if (sys_cap_grant(sh, INIT_KERNEL_LOG, CAPSLOT_KERNEL_LOG) != 0) return -5;
-    /* `ps` and `capview` read other tasks' info, which requires a real capability
-     * rather than uid 0 (finding I-1). Until 2026-08-23 that capability was
-     * CAP_AUDIT -- which ALSO rotates the audit chain's keys and reads the log,
-     * neither of which the shell ever called. The gate was real; it just named
-     * far more authority than the caller needed, which is a bundling mistake and
-     * survives an ambient-authority sweep untouched.
-     *
-     * CAP_DEBUG (roadmap 3.6) is observation and nothing else, minted READ-only
-     * at the root so no delegation can widen it. Swapping the grant NARROWS the
-     * shell: `ps` still works, and the shell can no longer touch the audit log.
-     * `smoke-session` runs `ps`, so the narrowing is gated rather than asserted. */
     if (sys_cap_grant(sh, CAPSLOT_DEBUG, CAPSLOT_DEBUG) != 0) return -6;
-    /* `useradd` / `userdel`. Until 2026-08-15 these worked because
-     * current_user_is_admin() in the kernel accepted uid 0 as an alternative to
-     * holding CAP_USER — the last ambient gate from finding I-1, missed because
-     * roadmap 0.2's sweep covered syscall.c and syscall_fs.c but not kusers.c
-     * (finding H-1). With that fallback gone the shell needs the real capability,
-     * so init delegates it here, exactly as it does the kernel log above.
-     *
-     * The shell holds this for the life of the boot, across every login, so the
-     * kernel's possession check cannot by itself express "only while root is at
-     * the terminal". That half is enforced in the shell (see the useradd/userdel
-     * handlers), which is the same split CAP_KERNEL_LOG uses: the KERNEL asks
-     * whether the task holds the authority, the SESSION MANAGER asks whether this
-     * user may exercise it. Granting without that check would be a privilege
-     * WIDENING versus the uid==0 gate being removed, which is precisely the
-     * mistake smoke-session caught when CAP_KERNEL_LOG was delegated. */
     if (sys_cap_grant(sh, CAP_SLOT_USER, CAPSLOT_USER) != 0) return -7;
+#endif
     /* CAP_UNTYPED, and this grant is what lets the shell run `spawn` at all.
      *
      * Creating a task carves the child's cspace out of an untyped region since
@@ -1412,8 +1478,7 @@ void _start(void) {
                         if (u.q.op == SESS_OP_OPEN) {
                             session_open(sh, &rp);
                         } else if (u.q.op == SESS_OP_END) {
-                            session_close();
-                            rp.rc = 0;
+                            rp.rc = session_close();
                         }
                     }
                     while (sys_ipc_reply_to(INIT_SESS_LISTEN, &rp, sizeof(rp)) < 0) sys_yield();

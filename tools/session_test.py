@@ -998,15 +998,15 @@ def run():
         #        when the SYSCALL refuses — and the syscall refused because
         #        current_user_is_admin() fell back to `uid == 0`, i.e. this check
         #        was passing on the strength of the ambient gate the capability
-        #        model exists to eliminate. Now the shell holds a real CAP_USER
-        #        delegated by init and enforces the per-user half itself, so the
-        #        refusal is specific and names its reason. Asserting the specific
+        #        model exists to eliminate. Since 2026-10-15 (S149) the shell
+        #        holds CAP_USER only in an administrator's session, so this is the
+        #        KERNEL refusing, and the shell names the reason. Asserting the specific
         #        string is deliberately STRICTER: "useradd failed" would also
         #        match a useradd that was authorised and then failed on its
         #        arguments, which is the same "a negative result is not a refusal"
         #        confusion that made the first draft of the C-1 suite worthless.
         s.send("useradd 1235 eve")
-        s.expect("useradd: permission denied (root only)", STEP_TIMEOUT)
+        s.expect("useradd: permission denied (an administrator's session only)", STEP_TIMEOUT)
         step("useradd denied for standard user (least privilege enforced)")
 
         # --- 6b. userdel is an admin op too: the same identity gate must cover
@@ -1014,7 +1014,7 @@ def run():
         #         alice, uid 1234, added by root earlier) would be a trivial
         #         escalation/denial-of-service, so it must be refused.
         s.send("userdel 1234")
-        s.expect("userdel: permission denied (root only)", STEP_TIMEOUT)
+        s.expect("userdel: permission denied (an administrator's session only)", STEP_TIMEOUT)
         step("userdel denied for standard user")
 
         # --- 6c. a session reaches what its policy grants, and no more -----
@@ -1069,12 +1069,12 @@ def run():
         s.expect("uid=1000", STEP_TIMEOUT)
         step("a standard user can neither widen nor give away a file; the truth is accepted")
 
-        # --- 6d. dmesg is root-only: the kernel gates it on the attested
-        #         uid (like Linux's dmesg_restrict), so a standard user is
-        #         refused reading the kernel log.
+        # --- 6d. dmesg is the administrator's: the kernel requires
+        #         CAP_KERNEL_LOG, which init lends the shell for root's session
+        #         only (S149), so a standard user is refused the kernel log.
         s.expect("user@horus$", STEP_TIMEOUT)
         s.send("dmesg"); s.expect("permission denied", STEP_TIMEOUT)
-        step("dmesg denied for a standard user (root only)")
+        step("dmesg denied for a standard user (the administrator's session only)")
         s.send("cd /"); s.expect("user@horus$", STEP_TIMEOUT)
 
         # --- 6e. a refusal in / names its own reason ---------------------
@@ -1118,26 +1118,15 @@ def run():
         s.expect("user@horus$", STEP_TIMEOUT)
         s.send("cd /"); s.expect("user@horus$", STEP_TIMEOUT)
 
-        # --- 7. sudo refuses to take the password on the command line ----
-        #        It would be echoed to the console and mirrored to the serial
-        #        log, which is where this was found: the password was legible
-        #        in a pasted session transcript.
-        s.send("sudo password"); s.expect("takes no argument", STEP_TIMEOUT)
-        step("sudo rejects a command-line password")
-
-        # --- 8. a wrong password at the sudo prompt is rejected -----------
-        s.send("sudo"); s.expect("Password:", STEP_TIMEOUT)
-        s.send("wrongpass"); s.expect("incorrect password or locked out", STEP_TIMEOUT)
-        step("sudo rejects a wrong password")
-
-        # --- 9. the CORRECT password does not report "invalid argument" ---
-        #        The regression this encodes: sudo authenticated, then failed
-        #        the armed-image check and reported SYS_ERR_INVAL — so typing
-        #        the right password blamed the password. Nothing is armed here,
-        #        so the honest answer is "nothing to elevate".
-        s.send("sudo"); s.expect("Password:", STEP_TIMEOUT)
-        s.send("password"); s.expect("no image is armed", STEP_TIMEOUT)
-        step("sudo with the correct password reports the real reason")
+        # --- 7. there is no sudo -------------------------------------------
+        #        Withdrawn 2026-10-15: a standard account has no way to become
+        #        root. The command is gone from the shell (and SYS_SUDO answers
+        #        nobody, which captest checks), so the shell must say it does
+        #        not know the word, and must not prompt for a password: a prompt
+        #        would be a credential typed for nothing.
+        s.send("sudo"); s.expect("Unknown command", STEP_TIMEOUT)
+        step("there is no sudo: the shell does not know the command")
+        s.expect("user@horus$", STEP_TIMEOUT)
 
     finally:
         transcript = s.buf

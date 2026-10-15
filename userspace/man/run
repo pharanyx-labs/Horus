@@ -20,4 +20,4 @@ DESCRIPTION
     A bare name such as `wc` is looked up in /bin without `run` (sh(1)).
 
 SEE ALSO
-    spawn(1), sh(1), capabilities(7)
+    ps(1), sh(1), capabilities(7)

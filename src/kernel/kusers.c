@@ -479,9 +479,9 @@ void users_init(void) {
  *
  * Nothing legitimate depended on it. CAP_USER is minted once in the primordial
  * root cnode (capability.c), delegated to `init` (kshell.c), propagated to a
- * child by do_spawn_inner only when the SPAWNER already holds it, and granted to
- * the elevated task h_sudo creates. So the shell, its children, and sudo all
- * still pass; what stops passing is a task that was never given the authority
+ * child by do_spawn_inner only when the SPAWNER already holds it. (It was also
+ * granted to the task h_sudo created, until SYS_SUDO was withdrawn on
+ * 2026-10-15.) So the shell and its children still pass; what stops passing is a task that was never given the authority
  * and was relying on its uid to supply it.
  *
  * The slot-6 convention is itself unlovely — authority ought not depend on WHERE
@@ -873,7 +873,9 @@ void h_auth(struct interrupt_frame64 *r) {
             {
                 char *mat = upass;
                 size_t mlen = kstrlen(upass);
-                derive_and_store_user_file_key(u->uid, mat, mlen);
+                /* (A per-user "file master key" was derived here and kept in
+                 * the task until 2026-10-15. Nothing ever read it; it was the
+                 * one reason the shell held the object-store capability.) */
                 /* Unlock ATA storage (or format+seal on first boot).
                  * Uses the same password: same Argon2id input, different
                  * salt (kek_salt vs login salt||pepper) → independent keys. */
@@ -905,181 +907,18 @@ void h_auth(struct interrupt_frame64 *r) {
     secure_zero(upass, sizeof(upass));
 }
 
-/* SYS_SUDO: re-auth the current user, then spawn an armed program as uid 0. */
+/* SYS_SUDO (31), WITHDRAWN 2026-10-15 at the maintainer's request: a standard
+ * account gets the bare minimum and no way to become root. It took the CALLER'S
+ * OWN password and then spawned whatever image that task had armed as uid 0,
+ * so knowing your own password was the whole of the elevation; and uid 0 is
+ * authority by identity, which CLAUDE.md section 1 refuses. Nothing in
+ * userspace could leave an image armed for it, so it never elevated anything,
+ * but the mechanism was the wrong one to keep. Administration is a login as
+ * the administrator. The number stays reserved and answers SYS_ERR_NOSYS to
+ * every caller, so it cannot quietly come to mean something else (captest
+ * checks it, as it does SYS_ROTATE_KEYS). */
 void h_sudo(struct interrupt_frame64 *r) {
-    uint32_t now = get_system_ticks();
-    struct user_account *cur_user = NULL;
-    uint32_t cur_uid = tasks[get_current_task()].uid;
-    for (int i = 0; i < MAX_USERS; i++) {
-        if (users[i].valid && users[i].uid == cur_uid) {
-            cur_user = &users[i];
-            break;
-        }
-    }
-    if (rust_auth_global_locked(now)) {
-        r->rax = (uint32_t)SYS_ERR_AUTH;
-        return;
-    }
-    if (cur_user && rust_auth_is_locked(cur_user->auth_lockout_until, now)) {
-        r->rax = (uint32_t)SYS_ERR_AUTH;
-        return;
-    }
-
-    char upass[32];
-    if (copy_from_user(upass, (void*)(addr_t)r->rbx, 31) != 0) {
-        secure_zero(upass, sizeof(upass));
-        r->rax = (uint32_t)SYS_ERR_FAULT;
-        return;
-    }
-    upass[31] = 0;
-
-    struct user_account *cur = cur_user;
-    if (!cur) {
-        uint32_t cur_uid2 = tasks[get_current_task()].uid;
-        for (int i = 0; i < MAX_USERS; i++) {
-            if (users[i].valid && users[i].uid == cur_uid2) {
-                cur = &users[i];
-                break;
-            }
-        }
-    }
-    if (!cur) {
-        secure_zero(upass, sizeof(upass));
-        r->rax = (uint32_t)SYS_ERR_NOENT;
-        return;
-    }
-
-    if (!verify_password(cur->name, upass)) {
-        rust_auth_global_on_failure(now);
-        if (cur_user) {
-            uint32_t new_count = cur_user->auth_fail_count;
-            uint64_t new_lockout = 0;
-            rust_auth_on_failure(cur_user->auth_fail_count, now, &new_count, &new_lockout);
-            cur_user->auth_fail_count = new_count;
-            if (new_lockout) cur_user->auth_lockout_until = (uint32_t)new_lockout;
-        }
-        secure_zero(upass, sizeof(upass));
-        r->rax = (uint32_t)SYS_ERR_AUTH;
-        return;
-    }
-    rust_auth_global_on_success();
-    if (cur_user) {
-        cur_user->auth_fail_count = 0;
-        cur_user->auth_lockout_until = 0;
-    }
-
-
-    {
-        char *mat = upass;
-        size_t mlen = kstrlen(upass);
-        derive_and_store_user_file_key(cur->uid, mat, mlen);
-
-    }
-    /* Password material is no longer needed past key derivation; clear it
-     * from the kernel stack frame on every remaining exit path. */
-    secure_zero(upass, sizeof(upass));
-
-    /* Nothing to elevate. NOENT ("no such object") rather than INVAL: the
-     * argument was not invalid, it was correct — the caller authenticated. What
-     * is missing is an armed image to spawn. Reporting that as "invalid
-     * argument" told a user who had just typed the right password that their
-     * password was the problem.
-     *
-     * Audited separately, and NOT as a success. The audit entry used to be
-     * written above this check, so a sudo that granted no privilege at all —
-     * because there was nothing to spawn — still logged "sudo success". An
-     * auditor would read a successful elevation that never happened. The
-     * credential use is worth recording either way, so record what it was. */
-    /* The armed image and the sudo are SEPARATE syscalls, so this is the one
-     * consumer of the staging that cannot be inside the arming task's bracket.
-     * Take the lock for the consume alone -- it stops an arm landing underneath
-     * this spawn -- and let do_spawn's owner check ([G-11], loader.c) decide
-     * whether the image is this caller's to elevate. Before that check, a task
-     * that authenticated correctly could be made to spawn ANOTHER task's image
-     * at uid 0: the password proved who was asking, and nothing proved what was
-     * being asked for. */
-    spawn_stage_acquire();
-    if (!program_armed) {
-        spawn_stage_release();
-        audit_log(AUDIT_SUDO, 0, 0, "sudo auth ok, no image armed (nothing elevated)");
-        r->rax = (uint32_t)SYS_ERR_NOENT;
-        return;
-    }
-    if (!staged_image_owned_by_current()) {
-        spawn_stage_release();
-        /* Audited as a refusal, not as a failure: a correct password that was
-         * about to elevate somebody else's program is the interesting event. */
-        audit_log(AUDIT_SUDO, 0, (uint32_t)staged_owner_task,
-                  "sudo refused: armed image belongs to another task");
-        r->rax = (uint32_t)SYS_ERR_PERM;
-        return;
-    }
-
-    /* CHARGED TO THE CALLER, not to the kernel reserve. SYS_SUDO is ring-3
-     * initiated -- the shell asks for it, holding its own CAP_UNTYPED -- so the
-     * task it creates is the caller's to pay for, exactly as SYS_SPAWN's is
-     * (S57). Routing it through the kernel reserve instead would have been the
-     * easy line and would have been wrong twice: the reserve is sized at exactly
-     * MAX_TASKS cspaces on the assumption that it is drawn on ONCE PER SLOT at
-     * boot, and repeated sudo into recycled slots is not that; and a task whose
-     * cspace came from the reserve, occupying a slot whose next occupant is
-     * charged elsewhere, is the sort of cross-region tenancy a future
-     * untyped-region reset would have to reason about. Keeping every post-boot
-     * creation on the caller's region means kernel-initiated creation is boot
-     * only, into fresh slots, and no kernel task's cspace ever lives in a
-     * delegated region. */
-    uint32_t sudo_ut;
-    if (spawn_untyped_region_for(get_current_task(), &sudo_ut) != 0) {
-        spawn_stage_release();
-        audit_log(AUDIT_SUDO, 0, 0, "sudo refused: caller holds no CAP_UNTYPED");
-        r->rax = (uint32_t)SYS_ERR_PERM;
-        return;
-    }
-    int pid = do_spawn_charged(0, sudo_ut);
-    spawn_stage_release();
-    if (pid > 0) {
-        tasks[pid].uid = 0;
-        tasks[pid].gid = 0;
-
-        /* Allocate the three fresh serials BEFORE taking cap_lock:
-         * cap_alloc_fresh_serial() grabs cap_lock itself and the lock
-         * is not recursive, so calling it inside the locked region
-         * (as this path previously did) deadlocks the kernel on the
-         * first sudo. Same ordering do_spawn uses. */
-        uint64_t s3 = cap_alloc_fresh_serial();
-        uint64_t s6 = cap_alloc_fresh_serial();
-        uint64_t s7 = cap_alloc_fresh_serial();
-
-        spin_lock(&cap_lock);
-        tasks[pid].cspace[3].type   = CAP_FRAME;
-        /* Least privilege: a memory frame needs only read/write/execute,
-         * not the mint/revoke/grant/audit bits CAP_RIGHT_ALL carried.
-         * Mask comes from rust/src/auth.rs (single source of truth). */
-        tasks[pid].cspace[3].rights = rust_sudo_frame_rights();
-        tasks[pid].cspace[3].object = USER_VIRT_BASE;
-        tasks[pid].cspace[3].badge  = 0;
-        tasks[pid].cspace[3].serial = s3;
-        tasks[pid].cspace[3].token = 0;
-
-        tasks[pid].cspace[6].type   = CAP_USER;
-        tasks[pid].cspace[6].rights = CAP_RIGHT_ALL;
-        tasks[pid].cspace[6].object = 0;
-        tasks[pid].cspace[6].badge  = 0xC0DE0006U;
-        tasks[pid].cspace[6].serial = s6;
-        tasks[pid].cspace[6].token = 0;
-
-        tasks[pid].cspace[7].type   = CAP_TCB;
-        tasks[pid].cspace[7].rights = CAP_RIGHT_ALL;
-        tasks[pid].cspace[7].object = tcb_object(pid);   /* HORUS-20260921-02 */
-        tasks[pid].cspace[7].badge  = 0;
-        tasks[pid].cspace[7].serial = s7;
-        tasks[pid].cspace[7].token = 0;
-        spin_unlock(&cap_lock);
-        audit_log(AUDIT_SUDO, 0, (uint32_t)pid, "sudo success: spawned uid 0");
-    } else {
-        audit_log(AUDIT_SUDO, 0, 0, "sudo auth ok, spawn failed (nothing elevated)");
-    }
-    r->rax = pid;
+    r->rax = (uint32_t)SYS_ERR_NOSYS;
 }
 
 /* SYS_GET_PASS: read a line with masked echo; scrubs the scratch buffer. */

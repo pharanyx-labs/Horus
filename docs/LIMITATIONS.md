@@ -546,6 +546,7 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 1.35 | [HORUS-20261014-01] | Once authenticated, the inode table and allocation bitmaps were still in the clear, so every file's size, owner, mode and link count could be read off the disk; every block of them the kernel writes is now sealed (S143) | 2026-10-14, #575 |
 | 1.36 | [HORUS-20261014-02] | Indirect pointer blocks were stored in the clear with no MAC, and a freed block keeps its nonce and tag, so a pointer edited on the disk could serve a file its own earlier contents (S143) | 2026-10-14, #575 |
 | 1.37 | [HORUS-20261014-03] | The Merkle root bound the rollback generation and no other superblock field, so moving the inode table made an inode read another inode's genuine slot, and clearing `rollback_anchored` on a restored image skipped the TPM counter check (S143, S70) | 2026-10-14, #575 |
+| 1.38 | [HORUS-20261015-03] | The shell lent the keyboard from the slot holding its session capability, so the first program a login ran destroyed it; logout ended nothing and the next login on that console walked by the previous one's root, a standard user by root's (S147) | 2026-10-15, #579 |
 | 2.0 | [C-3] | Spinlock interrupt state was global | 2026-08-13, #135 |
 | 2.1 | [I-2] | Heap syscalls truncated 64-bit arithmetic | 2026-08-13, #145 |
 | 2.2 | [I-5] | Endpoints were single-slot mailboxes | 2026-08-10, #120 |

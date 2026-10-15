@@ -156,9 +156,35 @@ static void fss_strcpy(char *d, const char *s) { while((*d++ = *s++)); }
 /* The open session's grant set, 0 if none (session_open_request). */
 static uint32_t sh_session_g = 0;
 
+/* Drop whatever this shell holds in its root and working-directory slots. At
+ * logout init revokes the session, which empties them; this is for when that
+ * did not happen (init could not be asked, or did not answer) and for a login
+ * that opened no session, so that no earlier login's capability is left where
+ * fss_connect would find it. Revoking an empty slot does nothing. */
+static void sh_drop_fs_slots(void) {
+    /* Not in the read-only-root instrument either: there init grants slot 24
+     * once, at launch, with no session ever (smoke-fs-cap-shell), so what is
+     * in it is init's for the whole boot and not an earlier login's. Dropping
+     * it put that gate's root session on the uid path, where root may write. */
+#if !defined(SHELL_STALE_ROOT) && !defined(INIT_SHELL_ROOT_READONLY)
+    (void)sys_cap_revoke(CAPSLOT_FS_ROOT);
+    (void)sys_cap_revoke(CAPSLOT_FS_CWD);
+#endif
+}
+
 static int fss_connect(void) {
     if (fss_connected) return 0;
-    if (hvfs_mount_cap("/", CAPSLOT_FS_ROOT) == 0) {
+    /* THE ROOT IN SLOT 24 IS THE OPEN SESSION'S, OR IT IS NOT USED. A login with
+     * no session must never walk by a capability it was not given: whatever is
+     * in the slot then is an earlier login's (S147). The read-only-root
+     * instrument is the one build where init grants a root without a session.
+     * SHELL_STALE_ROOT=1 mounts the slot whatever it holds, the shell before
+     * 2026-10-15, for make smoke-session-handover-stale-control; never ship. */
+    int may_mount = sh_session_g != 0;
+#if defined(INIT_SHELL_ROOT_READONLY) || defined(SHELL_STALE_ROOT)
+    may_mount = 1;
+#endif
+    if (may_mount && hvfs_mount_cap("/", CAPSLOT_FS_ROOT) == 0) {
         sh_capmode = 1;
         sh_root.slot = CAPSLOT_FS_ROOT; sh_root.ino = 0; sh_root.cap = 1; sh_root.owned = 0;
         sh_cwd = sh_root;
@@ -245,6 +271,7 @@ static void session_open_request(void) {
     struct sess_reply rp;
     session_call(SESS_OP_OPEN, &rp);
     sh_session_g = (rp.rc == 0) ? rp.g : 0;
+    if (!sh_session_g) sh_drop_fs_slots();   /* none: nothing here may be used */
     fs_forget();                         /* the next request decides the mode */
     /* A session starts in its working directory (fss_connect), so pwd starts
      * there too. Until 2026-10-14 it said "/" while relative names went to the
@@ -253,10 +280,14 @@ static void session_open_request(void) {
 }
 
 static void session_end_request(void) {
-    if (!sh_session_g) return;
-    struct sess_reply rp;
-    session_call(SESS_OP_END, &rp);
+    if (sh_session_g) {
+        struct sess_reply rp;
+        session_call(SESS_OP_END, &rp);
+    }
     sh_session_g = 0;
+    /* Whether or not init heard: a logout leaves this shell holding nothing of
+     * the session, so the next login starts from its own or from none. */
+    sh_drop_fs_slots();
     fs_forget();
 }
 
@@ -757,9 +788,44 @@ static void sh_unendow(struct hvfs_grant *g) {
  * revoke of this slot takes back the program's copy and anything it passed on
  * (console_lend, include/libhorus.h). One program at a time holds it: the shell
  * waits for each before the next prompt, and a pipeline lends it to its first
- * stage only. Clear of 24/25 (the filesystem root and working directory) and of
- * hvfs's pool, 32 to 63. */
-#define SH_SLOT_CON_LEND 26
+ * stage only.
+ *
+ * NOT 26. It was, from #559, and #573 then gave slot 26 to the session
+ * capability (SESS_SHELL_SLOT). console_lend empties its slot before minting,
+ * so the first program a login ran took the shell's way to ask init for
+ * sessions with it: logout ended nothing, init never revoked the session, the
+ * next login got none of its own, and the shell mounted the root still in slot
+ * 24, the previous login's. A standard user after root held root's filesystem
+ * (LIMITATIONS 1.38, S147). sh_slot_map below makes two fixed slots sharing a
+ * number a compile error. SH_LEND_SLOT_SESSION=1 puts it back for
+ * make smoke-session-handover-control, never ship. */
+#ifndef SH_LEND_SLOT_SESSION
+#define SH_SLOT_CON_LEND 27
+#else
+#define SH_SLOT_CON_LEND SESS_SHELL_SLOT
+#endif
+
+#ifndef SH_LEND_SLOT_SESSION
+/* EVERY FIXED SLOT THIS SHELL HOLDS OR USES, ONE CASE EACH. Never called: two
+ * that share a number are a duplicate case label, which does not compile, so a
+ * collision like the one above cannot be merged again. A slot added to the
+ * shell's use goes here. The hvfs pool (CAPSLOT_FS_POOL_FIRST..LAST) and the
+ * kernel's dynamic slots are ranges, checked below. */
+__attribute__((unused)) static void sh_slot_map(int s) {
+    switch (s) {
+    case CAPSLOT_TCB: case CAPSLOT_FRAME: case CAPSLOT_REPLY_EP: case CAPSLOT_CONSOLE_EP:
+    case CAPSLOT_USER: case CAPSLOT_AUDIT: case CAPSLOT_CONSOLE: case CAPSLOT_STORAGE:
+    case CAPSLOT_IO_DEVICE: case CAPSLOT_NOTIFY: case CAPSLOT_FS_LISTEN: case CAPSLOT_CONSOLE_IN:
+    case CAPSLOT_KERNEL_LOG: case CAPSLOT_BOOT_MODULE: case CAPSLOT_UNTYPED: case CAPSLOT_DEBUG:
+    case CAPSLOT_FS_EP: case CAPSLOT_REPLY: case CAPSLOT_IO_DEVICE_ALT: case CAPSLOT_STORAGE_FORMAT:
+    case CAPSLOT_FS_ROOT: case CAPSLOT_FS_CWD: case SESS_SHELL_SLOT: case SH_SLOT_CON_LEND:
+        break;
+    default:
+        break;
+    }
+}
+#endif
+_Static_assert(SH_SLOT_CON_LEND < CAPSLOT_FS_POOL_FIRST, "the lend slot must lie below hvfs's pool");
 
 /* Lend the keyboard to the SUSPENDED child the shell is about to run in the
  * foreground (S93, LIMITATIONS 2.9b). A program the shell starts and does not

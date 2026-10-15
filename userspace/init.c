@@ -1393,6 +1393,21 @@ void _start(void) {
                      * time, so its call never waits on init for ever. */
                     struct sess_reply rp;
                     rp.rc = SYS_ERR_INVAL; rp.g = 0; rp.source = 0; rp.reserved = 0;
+#ifdef INIT_SESSION_DEAF_AFTER_FIRST
+                    /* INSTRUMENT -- never ship (make smoke-session-handover):
+                     * after the first session is opened, init answers every
+                     * session request with a refusal and does nothing, as if
+                     * the shell had lost its way to ask. Logout then ends
+                     * nothing here and the next login gets no session, which
+                     * is the state the shell must fail closed in (S147). */
+                    static int deaf_opened;
+                    if (deaf_opened) {
+                        rp.rc = SYS_ERR_PERM;
+                        while (sys_ipc_reply_to(INIT_SESS_LISTEN, &rp, sizeof(rp)) < 0) sys_yield();
+                        continue;
+                    }
+                    if (n == (int)sizeof(u.q) && u.q.op == SESS_OP_OPEN) deaf_opened = 1;
+#endif
                     if (n == (int)sizeof(u.q) && u.q.magic == SESS_PROTO_MAGIC) {
                         if (u.q.op == SESS_OP_OPEN) {
                             session_open(sh, &rp);

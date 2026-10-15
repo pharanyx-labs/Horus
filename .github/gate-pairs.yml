@@ -65,6 +65,8 @@ control_arms:
   smoke-session-fs-err-control: smoke-session
   smoke-shellwatch-control: smoke-shellwatch
   smoke-session-login-control: smoke-session
+  smoke-session-handover-control: smoke-session-handover
+  smoke-session-handover-stale-control: smoke-session-handover
   smoke-fs-perms-chmod-control: smoke-fs-perms
   smoke-fs-perms-chown-control: smoke-fs-perms
   smoke-fs-perms-home-control: smoke-fs-perms
@@ -356,6 +358,7 @@ control_arms:
 # "gate" is exactly the failure this file fixes: an arm silently counted as a
 # gate is an arm nobody notices is missing its pair.
 gates:
+  - smoke-session-handover
   - smoke-ap-trampoline
   - smoke-aslr
   - smoke-boot-module-reserve

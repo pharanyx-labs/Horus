@@ -140,7 +140,7 @@ DEFECT_FLAGS = \
 	FS_SESSION_TMP_SHARED FS_SESSION_TMP_STORE_VISIBLE FS_SESSION_TMP_KEPT \
 	FS_TOKEN_NODE_IGNORED FS_CAP_CHMOD_UNTRUE FS_CAP_LINK_WIDENS FS_SEALED_POLL_SPIN \
 	FSCAPPOSIX_SELFTEST POSIX_CLOSE_KEEPS_CAP HVFS_GRANT_UNNARROWED \
-	INIT_SHELL_ROOT_READONLY SHELL_CAP_FALLBACK \
+	INIT_SHELL_ROOT_READONLY SHELL_CAP_FALLBACK SH_LEND_SLOT_SESSION SHELL_STALE_ROOT INIT_SESSION_DEAF_AFTER_FIRST \
 	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED ELF_SPAN_C_PARSE IPC_SENDER_SLOT_ONLY IPC_REPLY_SLOT_ONLY \
 	FS_LINK_UNCOUNTED FS_DIR_OPERAND_UNCHECKED GPT_ENTRIES_CRC_UNCHECKED REVOKE_HASHED_BACKSTOP STORAGE_REPLACE_VIEW_UNRESOLVED \
 	ESP_PIN_UNCHECKED ESP_NOT_WRITTEN DEBUG_BUILD \
@@ -950,6 +950,30 @@ HOME_DIR_ROOT_OWNED ?= 0
 ifeq ($(HOME_DIR_ROOT_OWNED),1)
 CFLAGS  += -DHOME_DIR_ROOT_OWNED
 ASFLAGS += -DHOME_DIR_ROOT_OWNED
+endif
+
+# S147, LIMITATIONS 1.38 (make smoke-session-handover). SH_LEND_SLOT_SESSION=1
+# puts the shell's keyboard-lending slot back on its session capability's slot,
+# 26, so the first program a login runs destroys the session capability (the
+# defect, an arm). SHELL_STALE_ROOT=1 has the shell mount whatever is in its
+# root slot with no session open and never drop it at logout (the other arm).
+# INIT_SESSION_DEAF_AFTER_FIRST=1 is an instrument: init refuses every session
+# request after the first, the state the shell must fail closed in. All three
+# are userspace-only; the -D that matters is applied to USERSPACE_CFLAGS.
+SH_LEND_SLOT_SESSION ?= 0
+ifeq ($(SH_LEND_SLOT_SESSION),1)
+CFLAGS  += -DSH_LEND_SLOT_SESSION
+ASFLAGS += -DSH_LEND_SLOT_SESSION
+endif
+SHELL_STALE_ROOT ?= 0
+ifeq ($(SHELL_STALE_ROOT),1)
+CFLAGS  += -DSHELL_STALE_ROOT
+ASFLAGS += -DSHELL_STALE_ROOT
+endif
+INIT_SESSION_DEAF_AFTER_FIRST ?= 0
+ifeq ($(INIT_SESSION_DEAF_AFTER_FIRST),1)
+CFLAGS  += -DINIT_SESSION_DEAF_AFTER_FIRST
+ASFLAGS += -DINIT_SESSION_DEAF_AFTER_FIRST
 endif
 
 USERS_TAMPER_INJECT ?= 0
@@ -5888,6 +5912,16 @@ endif
 
 ifeq ($(HOME_DIR_ROOT_OWNED),1)
 USERSPACE_CFLAGS += -DHOME_DIR_ROOT_OWNED
+endif
+
+ifeq ($(SH_LEND_SLOT_SESSION),1)
+USERSPACE_CFLAGS += -DSH_LEND_SLOT_SESSION
+endif
+ifeq ($(SHELL_STALE_ROOT),1)
+USERSPACE_CFLAGS += -DSHELL_STALE_ROOT
+endif
+ifeq ($(INIT_SESSION_DEAF_AFTER_FIRST),1)
+USERSPACE_CFLAGS += -DINIT_SESSION_DEAF_AFTER_FIRST
 endif
 
 # PASSWD_TARGET_IGNORED, here for exactly the reason above: USERSPACE_CFLAGS is
@@ -12146,6 +12180,45 @@ smoke-session-fs-err-control:
 # for every login (INIT_SESSION_AS_ADMIN=1), so the account it asks for comes
 # from something other than what the kernel attests. The session must fail on
 # exactly that: the standard user reaching root's directory.
+# S147, LIMITATIONS 1.38: a login never holds an earlier login's filesystem.
+# On a live boot with /bin/seq: root runs it (the shell lends it the keyboard)
+# and logs out; the standard account must then be refused `mkdir` at /, which
+# only root's capability would allow, and must have its own session. Then the
+# same under INIT_SESSION_DEAF_AFTER_FIRST, where init refuses the second
+# session, so the shell has none and must fail closed. `clean` before each
+# build: the flags are userspace-only. Every boot's serial is kept in
+# handover-serial.log.
+HANDOVER_BUILD = COREUTILS_MODULES=1 COREUTILS_MODULE_SET=seq
+HANDOVER_RUN = SESSION_TIMEOUT=$(SMOKE_TIMEOUT) SESSION_SERIAL_LOG=handover-serial.log python3 tools/session_handover.py horus.iso
+.PHONY: smoke-session-handover smoke-session-handover-control smoke-session-handover-stale-control
+smoke-session-handover:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(HANDOVER_BUILD)
+	@$(MAKE) --no-print-directory $(HANDOVER_BUILD) horus.iso
+	@HANDOVER_EXPECT=own $(HANDOVER_RUN)
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(HANDOVER_BUILD) INIT_SESSION_DEAF_AFTER_FIRST=1
+	@$(MAKE) --no-print-directory $(HANDOVER_BUILD) INIT_SESSION_DEAF_AFTER_FIRST=1 horus.iso
+	@HANDOVER_EXPECT=nosession $(HANDOVER_RUN)
+	@echo "[handover] PASS - a login after root's holds only its own filesystem, with a session or without"
+
+# The arm for the defect itself: the lend slot back on the session's. The
+# shell's fail-closed half still stands, so what shows is the account left with
+# no session of its own, which the base gate's first half refuses.
+smoke-session-handover-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(HANDOVER_BUILD) SH_LEND_SLOT_SESSION=1
+	@$(MAKE) --no-print-directory $(HANDOVER_BUILD) SH_LEND_SLOT_SESSION=1 horus.iso
+	@HANDOVER_EXPECT=lost $(HANDOVER_RUN)
+
+# The arm for the shell's fail-closed half: init refuses the second session and
+# the shell mounts the root it still holds.
+smoke-session-handover-stale-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory $(HANDOVER_BUILD) INIT_SESSION_DEAF_AFTER_FIRST=1 SHELL_STALE_ROOT=1
+	@$(MAKE) --no-print-directory $(HANDOVER_BUILD) INIT_SESSION_DEAF_AFTER_FIRST=1 SHELL_STALE_ROOT=1 horus.iso
+	@HANDOVER_EXPECT=leak $(HANDOVER_RUN)
+
 .PHONY: smoke-session-login-control
 smoke-session-login-control:
 	@out=$$($(MAKE) --no-print-directory clean >/dev/null; $(MAKE) --no-print-directory INIT_SESSION_AS_ADMIN=1 horus.iso >/dev/null && python3 tools/session_test.py horus.iso 2>&1); rc=$$?; \

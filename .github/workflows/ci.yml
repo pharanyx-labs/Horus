@@ -211,6 +211,7 @@ jobs:
       - store-locked
       - installer-policy
       - session-handover
+      - session-admin-caps
       - switch-commit
       - syscall-abi
       - syscall-coverage
@@ -3627,6 +3628,37 @@ jobs:
         with:
           name: session-handover-serial
           path: handover-serial.log
+          if-no-files-found: ignore
+          retention-days: 90
+
+  session-admin-caps:
+    name: "Administration is lent to an administrator's session only (S149)"
+    runs-on: ubuntu-latest
+    # Backstop, not a performance budget: three builds, one boot each.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # LIMITATIONS 1.39. root's session holds CAP_USER, the kernel log and
+      # CAP_DEBUG; the standard account's session after it is refused each by
+      # the kernel; root's next session has them again.
+      - name: Administration in root's session, and in no other
+        run: make smoke-session-admin-caps
+      - name: Control arm — init keeps the capabilities with the shell at logout
+        run: make smoke-session-admin-caps-control
+      - name: Control arm — init grants them for the whole boot, as before
+        run: make smoke-session-admin-caps-launch-control
+      - name: Upload the boots' serial (evidence of a red run)
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: session-admin-caps-serial
+          path: admincaps-serial.log
           if-no-files-found: ignore
           retention-days: 90
 

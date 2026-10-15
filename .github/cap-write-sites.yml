@@ -122,13 +122,6 @@ sites:
     reason: >
       Propagates the creator's CAP_USER into the child's identity slot 6 under
       cap_lock, with the creator's serial as the derivation badge.
-  - file: src/kernel/kusers.c
-    function: h_sudo
-    status: locked
-    reason: >
-      Re-stamps the identity slots (3, 6, 7) when SYS_SUDO changes who a task is,
-      under cap_lock, with the three fresh serials allocated before the lock is
-      taken because cap_alloc_fresh_serial takes it too and it is not recursive.
   - file: src/kernel/kshell.c
     function: spawn_initial_userspace_shell
     status: locked

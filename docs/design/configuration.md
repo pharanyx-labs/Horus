@@ -90,7 +90,7 @@ authority, EXIT STATUS, SEE ALSO.
 
 | Section | Pages |
 |---|---|
-| 1 | every shell builtin (`ls`, `cd`, `cat`, `capview`, `ps`, `sudo`, `passwd`, ...) |
+| 1 | every shell builtin (`ls`, `cd`, `cat`, `capview`, `ps`, `passwd`, ...) |
 | 5 | `shell.conf`, `login.conf`, `fs.policy` |
 | 7 | `horus` (an overview), `capabilities` (the model a user meets), `hier` (updated) |
 | 8 | `useradd`, `userdel` |
@@ -118,4 +118,4 @@ not check out.
 | Anything the kernel does: lockout thresholds, swap, scheduling, the boot measurement, crypto parameters | Rule 1. Each would need a kernel interface that reads policy from a file, which makes the file part of the trusted computing base |
 | The keyboard layout | Decoded in the kernel today, chosen at build time (`PS2_LAYOUT_DEFAULT`). A runtime choice needs a kernel interface: a §4 question, held |
 | Loosening anything | Rule 2 |
-| `sudo` behaviour, who is an administrator | Accounts and authority are the kernel's and the policy's, not a preference |
+| Who is an administrator, or a way to become one | Accounts and authority are the kernel's and the policy's, not a preference; there is no `sudo` (withdrawn 2026-10-15) |

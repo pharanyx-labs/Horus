@@ -180,7 +180,12 @@ void cap_init(void) {
      * ambient uid check can never be withdrawn from one task without changing
      * its identity, which is why root was such a blunt instrument. */
     root_cnode[15].type   = CAP_KERNEL_LOG;
-    root_cnode[15].rights = CAP_RIGHT_READ;
+    /* READ, and the rights to delegate it revocably (S149): init lends a copy
+     * to the shell for an administrator's session only and takes it back at
+     * logout, which needs MINT for its own copy and REVOKE on it. Not GRANT:
+     * SYS_CAP_GRANT asks only that the source be held. No WRITE, so no copy
+     * can ever write to the log. */
+    root_cnode[15].rights = CAP_RIGHT_READ | CAP_RIGHT_MINT | CAP_RIGHT_REVOKE;
     root_cnode[15].object = 0;
     root_cnode[15].badge  = 0;
     root_cnode[15].serial = 0xC0DE000FU;
@@ -219,13 +224,16 @@ void cap_init(void) {
     root_cnode[17].badge  = 0;
     root_cnode[17].serial = 0xC0DE0011U;
 
-    /* CAP_DEBUG (roadmap 3.6): observation, and nothing else. READ-only at the
+    /* CAP_DEBUG (roadmap 3.6): observation, and nothing else. No WRITE at the
      * root, so no delegation can widen it -- rights only ever narrow, so a
      * primordial that never held WRITE cannot produce a descendant that does.
-     * init delegates it to the shell, which is what lets `ps` and `capview`
-     * work without the CAP_AUDIT that also rotates the audit chain's keys. */
+     * It carries MINT and REVOKE since 2026-10-15 because init lends it to
+     * the shell for an administrator's session only, revocably (S149): that
+     * is what lets `ps` of every task and `capview` work for the
+     * administrator, without the CAP_AUDIT that also rotates the audit chain's
+     * keys, and not for anyone else. The shell's copy is READ alone. */
     root_cnode[18].type   = CAP_DEBUG;
-    root_cnode[18].rights = CAP_RIGHT_READ;
+    root_cnode[18].rights = CAP_RIGHT_READ | CAP_RIGHT_MINT | CAP_RIGHT_REVOKE;
     root_cnode[18].object = 0;
     root_cnode[18].badge  = 0;
     root_cnode[18].serial = 0xC0DE0012U;
@@ -1880,7 +1888,3 @@ bool cap_create_revocation_set(uint32_t target_slot, uint32_t rev_slot) {
     return true;
 }
 
-bool has_encrypted_storage_cap(void) {
-    struct capability *c = cap_lookup(CAPSLOT_STORAGE, CAP_ENCRYPTED_STORAGE, 0);
-    return c != NULL;
-}

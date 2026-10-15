@@ -277,6 +277,9 @@ required:
   # Gating. It carries S147: a login never holds an earlier login's filesystem,
   # with a session of its own or with none.
   - session-handover
+  # Gating. It carries S149: administration is lent to an administrator's
+  # session and taken back at logout, so the kernel refuses it to anyone else.
+  - session-admin-caps
   # Gating. It carries S75: a password command names the account it writes.
   # The shell matched `passwd <uid>` and dropped the argument, so an admin
   # giving a new account a password silently changed their own -- and, since

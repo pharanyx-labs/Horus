@@ -18,9 +18,10 @@ DESCRIPTION
     revocation follows (capabilities(7)).
 
 SECURITY
-    Needs CAP_DEBUG, which init gives the shell read-only. It observes and
-    changes nothing, and the object each capability names is deliberately
-    not reported.
+    Needs CAP_DEBUG, which init lends the shell read-only for the
+    administrator's session and takes back at logout; in any other session
+    the kernel refuses. It observes and changes nothing, and the object
+    each capability names is deliberately not reported.
 
 SEE ALSO
     ps(1), capabilities(7)

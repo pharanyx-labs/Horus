@@ -14,4 +14,4 @@ DESCRIPTION
     is against what the kernel says, not what a client asserts.
 
 SEE ALSO
-    sudo(1), passwd(1)
+    passwd(1)

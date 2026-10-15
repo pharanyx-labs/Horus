@@ -97,7 +97,10 @@ slot number; it never sees the capability itself.
 
 ### Servers and drivers in ring 3
 
-- `init` starts and supervises every other task and hands each one its capabilities.
+- `init` starts and supervises every other task and hands each one its capabilities. A standard
+  account's login holds the bare minimum; what administration needs is lent to the shell for
+  root's session only and taken back at logout, so the kernel refuses `dmesg`, `capview` or
+  `useradd` to anyone else, and there is no `sudo` (S149).
 - `console_server` owns the serial port, the screen (VGA text or a framebuffer, under BIOS or
   UEFI) and the PS/2 keyboard.
 - `fs_server` serves files from the encrypted volume. It answers through tokened capabilities,
@@ -243,7 +246,8 @@ A boot with no installed disk has two built-in accounts:
 | `root` | `toor` | Administrator |
 | `user` | `password` | Unprivileged |
 
-Then try `ls /bin`, `ps`, `capview`, `dmesg`, `man hier`, `tcc -v` or `help`. The built-in
+Then try `ls /bin`, `ps`, `capview`, `dmesg`, `man hier`, `tcc -v` or `help`. `capview`, `dmesg`
+and a full `ps` work in root's session only: the kernel refuses them to `user`. The built-in
 accounts never work on an installed machine, which has only the accounts its installer created.
 
 ### Real hardware
@@ -269,8 +273,8 @@ test does not exist or does not run.
 
 | Layer | What it covers |
 |---|---|
-| Security properties | 150 numbered properties, each bound to a witness by `tools/check_invariants.py` |
-| QEMU integration tests | 569 `smoke-*` targets: 244 base gates and 325 control arms |
+| Security properties | 151 numbered properties, each bound to a witness by `tools/check_invariants.py` |
+| QEMU integration tests | 572 `smoke-*` targets: 245 base gates and 327 control arms |
 | Control arms | A build that puts a defect back on purpose; CI requires its gate to go red against it |
 | Kani | 41 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
 | Miri | The security core's tests, interpreted for undefined behaviour on every pull request |
@@ -278,7 +282,7 @@ test does not exist or does not run.
 | Reproducibility | `kernel.elf` builds byte for byte the same twice; the ISO does not yet |
 | Toolchain | The Rust compiler, Kani, the fuzzing toolchain, PyYAML and semgrep are pinned to exact versions |
 
-`.github/workflows/ci.yml` defines 142 jobs; 146 of the 155 status checks the workflows produce
+`.github/workflows/ci.yml` defines 143 jobs; 147 of the 156 status checks the workflows produce
 gate a merge. The 9 that do not are the nightly fuzzing, the nightly Kani control arms and the
 scheduled ruleset audit, each with its reason in `.github/ci-gating.yml`.
 [`TESTS.md`](TESTS.md) lists every test and what it proves.

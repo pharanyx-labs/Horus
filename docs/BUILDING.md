@@ -338,6 +338,8 @@ column names the targets that build with the flag; an arm must turn its gate red
 | `SH_LEND_SLOT_SESSION=1` | The shell lends the keyboard from slot 26, its session capability's, so the first program a login runs destroys that capability and the next login walks by the previous one's root (S147, LIMITATIONS 1.38). Turns `sh_slot_map` off, since it would not compile. | `smoke-session-handover-control` (arm of `smoke-session-handover`); `make smoke-session-handover` must go red under it |
 | `SHELL_STALE_ROOT=1` | The shell mounts its root slot with no session open and never drops it at logout, so a login `init` gave no session walks by the previous login's root (S147). | `smoke-session-handover-stale-control` (arm of `smoke-session-handover`, with the instrument below); `make smoke-session-handover` must go red under it |
 | `INIT_SESSION_DEAF_AFTER_FIRST=1` | Instrument, not a defect: `init` refuses every session request after the first, the state in which the shell must fail closed (S147). | Built by the second half of `smoke-session-handover` and by `smoke-session-handover-stale-control` |
+| `INIT_ADMIN_CAPS_KEPT=1` | `init` does not take the administrator's capabilities back at logout, so the standard account that logs in next holds `CAP_USER`, the kernel log and `CAP_DEBUG` (S149, LIMITATIONS 1.39). | `smoke-session-admin-caps-control` (arm of `smoke-session-admin-caps`); `make smoke-session-admin-caps` must go red under it |
+| `INIT_ADMIN_CAPS_AT_LAUNCH=1` | `init` grants the shell `CAP_USER`, the kernel log and `CAP_DEBUG` at launch, for the whole boot, as before 2026-10-15; with no uid check left in the shell, every login holds them (S149). | `smoke-session-admin-caps-launch-control` (arm of `smoke-session-admin-caps`); `make smoke-session-admin-caps` must go red under it |
 | `INIT_SESSION_AS_ADMIN=1` | `init` opens the administrator's session for every login, whoever the kernel attests logged in (S141). | `smoke-session-login-control` (arm of `smoke-session`); `make smoke-session` must go red under it |
 | `PIPE_GEN_UNCHECKED=1` | Drops the generation comparison in `pipe.c`'s `pipe_of`, so an end left over from a pipe freed under it reaches whatever pipe takes its slot next: the self-test's write through it lands in the new pipe (S139). | `smoke-pipe-generation-control` (arm of `smoke-pipe`); `make smoke-pipe` must go red under it |
 | `FORK_CSPACE_ORPHAN_COPY=1` | Gives each copy a fresh serial (so the flat-copy defect above is absent) but leaves `badge` as the source's, so the copy is not a child of the parent's capability in the derivation tree. | `smoke-fork-cspace-orphan-control` (arm of `smoke-fork`); `make smoke-fork` must go red under it |
@@ -614,7 +616,7 @@ of the most important:
 
 | Target | Asserts |
 |---|---|
-| `smoke-captest` | Unheld capabilities, post-revoke use, and bad input are all refused (223 checks, printed by the suite as `CAPTEST: PASS <n> checks`) |
+| `smoke-captest` | Unheld capabilities, post-revoke use, and bad input are all refused (224 checks, printed by the suite as `CAPTEST: PASS <n> checks`) |
 | `smoke-wx` | No kernel page is both writable and executable |
 | `smoke-modules-tamper` | A corrupted boot module is refused |
 | `smoke-tpm-seal` | A changed PCR leaves the volume locked |

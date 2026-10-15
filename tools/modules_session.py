@@ -88,9 +88,12 @@ def run():
         # printf and tail actually run from /bin.
         cmd("printf %s=%d\\n foo 7", "foo=7")
         step("printf runs (upstream printf.c, from /bin)")
-        cmd("fss_create cu.txt", "created")
-        cmd("fss_write cu.txt one two three four five six", "wrote")
-        cmd("tail -c 3 cu.txt", "six")
+        # A file the image already holds: the last line of the hier page. The
+        # typed command does not contain it, and the cursor is past `man hier`.
+        # (fss_create and fss_write made a file for this until 2026-10-15, when
+        # the demo commands left the shipped shell, S149; `echo > f` is /bin's
+        # echo in this image, which takes `>` as an argument.)
+        cmd("tail -n 1 /usr/share/man/hier", "horus(7), ls(1)")
         step("tail runs (upstream tail.c, from /bin)")
 
         # A real pipeline between two /bin programs. This is the only thing in

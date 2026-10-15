@@ -10,11 +10,10 @@ DESCRIPTION
     Print the kernel's message ring: what it said at boot and since.
 
 SECURITY
-    Two checks, for two different questions. The kernel asks whether the
-    shell's task holds CAP_KERNEL_LOG. The shell asks whether the person
-    logged in is the administrator, because the shell is one task serving
-    every login and its capability alone cannot say who is at the
-    keyboard. Without the second, every login would read the kernel log.
+    The kernel asks whether the shell's task holds CAP_KERNEL_LOG, and
+    nothing else decides. init lends the shell that capability when the
+    administrator logs in and takes it back at logout, so in any other
+    account's session the kernel refuses.
 
 SEE ALSO
     ps(1)

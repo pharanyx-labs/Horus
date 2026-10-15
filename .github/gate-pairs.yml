@@ -69,6 +69,8 @@ control_arms:
   smoke-session-login-control: smoke-session
   smoke-session-handover-control: smoke-session-handover
   smoke-session-handover-stale-control: smoke-session-handover
+  smoke-session-admin-caps-control: smoke-session-admin-caps
+  smoke-session-admin-caps-launch-control: smoke-session-admin-caps
   smoke-fs-perms-chmod-control: smoke-fs-perms
   smoke-fs-perms-chown-control: smoke-fs-perms
   smoke-fs-perms-home-control: smoke-fs-perms
@@ -363,6 +365,7 @@ control_arms:
 # gate is an arm nobody notices is missing its pair.
 gates:
   - smoke-session-handover
+  - smoke-session-admin-caps
   - smoke-ap-trampoline
   - smoke-aslr
   - smoke-boot-module-reserve

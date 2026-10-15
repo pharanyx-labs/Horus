@@ -1,12 +1,12 @@
-//! Authentication / sudo throttling and privilege policy (safe Rust).
+//! Authentication throttling (safe Rust).
 //!
-//! This module is the single source of truth for the kernel's login and `sudo`
-//! lockout arithmetic and for the privilege a `sudo`-spawned task is granted.
-//! The logic previously lived as hand-inlined constants and counter arithmetic
-//! (increment, compare against 5, add an 8000-tick lockout) duplicated across
-//! the `SYS_AUTH` and `SYS_SUDO` handlers in `syscall.c`; centralising it here
-//! makes the policy auditable and unit-tested, and lets the kernel call one
-//! vetted implementation from both paths.
+//! This module is the single source of truth for the kernel's login lockout
+//! arithmetic. The logic previously lived as hand-inlined constants and counter
+//! arithmetic (increment, compare against 5, add an 8000-tick lockout)
+//! duplicated across the `SYS_AUTH` and `SYS_SUDO` handlers in `syscall.c`;
+//! centralising it here made the policy auditable and unit-tested. `SYS_SUDO`
+//! was withdrawn on 2026-10-15, and with it the rights a `sudo`-spawned task
+//! was given, which lived here.
 //!
 //! Two layers of throttling. Per-account: after `MAX_AUTH_FAILS` failures an
 //! account is locked for `LOCKOUT_TICKS` (counters live in the C `user_account`;
@@ -28,25 +28,6 @@ pub const GLOBAL_MAX_FAILS: u32 = 12;
 /// Global cooldown duration, in scheduler ticks (shorter than per-account so a
 /// spray is slowed without locking every legitimate user out for long).
 pub const GLOBAL_LOCKOUT_TICKS: u64 = 2000;
-
-// ---------------------------------------------------------------------------
-// Capability-right bits (mirror of src/include/kernel.h). Kept in sync by the
-// least-privilege test below being explicit about the expected mask.
-// ---------------------------------------------------------------------------
-const CAP_RIGHT_READ: u32 = 1 << 0;
-const CAP_RIGHT_WRITE: u32 = 1 << 1;
-const CAP_RIGHT_EXEC: u32 = 1 << 2;
-
-/// Rights a `sudo`-spawned task should receive on its memory **frame**
-/// capability (cspace slot 3). The handler previously stamped this slot with
-/// `CAP_RIGHT_ALL` (0xFFFFFFFF); a frame only needs read/write/execute, so the
-/// mint/revoke/grant/audit bits were ambient authority with no legitimate use
-/// on a frame. Returning the minimal mask is defence-in-depth (least
-/// privilege) with no loss of function.
-#[no_mangle]
-pub extern "C" fn rust_sudo_frame_rights() -> u32 {
-    CAP_RIGHT_READ | CAP_RIGHT_WRITE | CAP_RIGHT_EXEC
-}
 
 /// True if an account whose lockout deadline is `lockout_until` is still locked
 /// at tick `now`.
@@ -161,12 +142,6 @@ pub extern "C" fn rust_auth_global_on_success() {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn frame_rights_are_minimal() {
-        // read|write|exec only — no mint/revoke/grant/audit/ALL.
-        assert_eq!(rust_sudo_frame_rights(), 0b111);
-    }
 
     #[test]
     fn lock_predicate() {

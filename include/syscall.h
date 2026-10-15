@@ -107,7 +107,7 @@ struct task_info {
 
 #define SYS_GETUID   29
 #define SYS_AUTH     30
-#define SYS_SUDO     31
+#define SYS_SUDO     31   /* withdrawn 2026-10-15: SYS_ERR_NOSYS to every caller */
 #define SYS_GET_PASS 32
 
 #define SYS_USERADD   33
@@ -1599,10 +1599,6 @@ static inline uint32_t sys_getuid(void) {
 
 static inline int sys_auth(const char *user, const char *pass, uint32_t *out_uid) {
     return syscall(SYS_AUTH, (uint64_t)(uintptr_t)user, (uint64_t)(uintptr_t)pass, (uint64_t)(uintptr_t)out_uid);
-}
-
-static inline int sys_sudo(const char *pass) {
-    return syscall(SYS_SUDO, (uint64_t)(uintptr_t)pass, 0, 0);
 }
 
 static inline int sys_get_pass(char *buf, size_t max) {

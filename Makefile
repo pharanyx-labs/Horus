@@ -142,6 +142,7 @@ DEFECT_FLAGS = \
 	FSCAPPOSIX_SELFTEST POSIX_CLOSE_KEEPS_CAP HVFS_GRANT_UNNARROWED \
 	INIT_SHELL_ROOT_READONLY SHELL_CAP_FALLBACK FS_POLICY_NO_SEED FS_POLICY_RESEED FSP_PASS_RIGHTS_UNCARRIED \
 	SH_LEND_SLOT_SESSION SHELL_STALE_ROOT INIT_SESSION_DEAF_AFTER_FIRST \
+	INIT_ADMIN_CAPS_KEPT INIT_ADMIN_CAPS_AT_LAUNCH \
 	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED ELF_SPAN_C_PARSE IPC_SENDER_SLOT_ONLY IPC_REPLY_SLOT_ONLY \
 	FS_LINK_UNCOUNTED FS_DIR_OPERAND_UNCHECKED GPT_ENTRIES_CRC_UNCHECKED REVOKE_HASHED_BACKSTOP STORAGE_REPLACE_VIEW_UNRESOLVED \
 	ESP_PIN_UNCHECKED ESP_NOT_WRITTEN DEBUG_BUILD \
@@ -993,6 +994,22 @@ INIT_SESSION_DEAF_AFTER_FIRST ?= 0
 ifeq ($(INIT_SESSION_DEAF_AFTER_FIRST),1)
 CFLAGS  += -DINIT_SESSION_DEAF_AFTER_FIRST
 ASFLAGS += -DINIT_SESSION_DEAF_AFTER_FIRST
+endif
+
+# S149 (make smoke-session-admin-caps). INIT_ADMIN_CAPS_KEPT=1: init does not
+# take the administrator's capabilities back at logout, so the next login's
+# shell, a standard account's, still holds them. INIT_ADMIN_CAPS_AT_LAUNCH=1:
+# init grants them to the shell for the whole boot, as before 2026-10-15. Both
+# are arms and userspace-only; the -D that matters is in USERSPACE_CFLAGS.
+INIT_ADMIN_CAPS_KEPT ?= 0
+ifeq ($(INIT_ADMIN_CAPS_KEPT),1)
+CFLAGS  += -DINIT_ADMIN_CAPS_KEPT
+ASFLAGS += -DINIT_ADMIN_CAPS_KEPT
+endif
+INIT_ADMIN_CAPS_AT_LAUNCH ?= 0
+ifeq ($(INIT_ADMIN_CAPS_AT_LAUNCH),1)
+CFLAGS  += -DINIT_ADMIN_CAPS_AT_LAUNCH
+ASFLAGS += -DINIT_ADMIN_CAPS_AT_LAUNCH
 endif
 
 USERS_TAMPER_INJECT ?= 0
@@ -5967,11 +5984,24 @@ endif
 ifeq ($(SH_LEND_SLOT_SESSION),1)
 USERSPACE_CFLAGS += -DSH_LEND_SLOT_SESSION
 endif
+# S149: the shell's demonstration commands (spawn, fss*, ipc_send, ipc_recv,
+# notify, wait_notify, mem, yield) are built only into a DEBUG_SHELL=1 shell,
+# which is never shipped (CLAUDE.md section 6). A separate name from the kernel's
+# DEBUG_SHELL so that no other userspace program changes with it.
+ifeq ($(DEBUG_SHELL),1)
+USERSPACE_CFLAGS += -DSHELL_DEMO_COMMANDS
+endif
 ifeq ($(SHELL_STALE_ROOT),1)
 USERSPACE_CFLAGS += -DSHELL_STALE_ROOT
 endif
 ifeq ($(INIT_SESSION_DEAF_AFTER_FIRST),1)
 USERSPACE_CFLAGS += -DINIT_SESSION_DEAF_AFTER_FIRST
+endif
+ifeq ($(INIT_ADMIN_CAPS_KEPT),1)
+USERSPACE_CFLAGS += -DINIT_ADMIN_CAPS_KEPT
+endif
+ifeq ($(INIT_ADMIN_CAPS_AT_LAUNCH),1)
+USERSPACE_CFLAGS += -DINIT_ADMIN_CAPS_AT_LAUNCH
 endif
 
 # PASSWD_TARGET_IGNORED, here for exactly the reason above: USERSPACE_CFLAGS is
@@ -8713,12 +8743,14 @@ smoke-syscall-coverage:
 # SYS_CONSOLE_RELEASE, SYS_STORAGE_DEVICE and SYS_STORAGE_FORMAT joined it on
 # 2026-10-14, the last three on the `uncovered` list: captest's section 13 (i)
 # and formatprobe enter them, and both compile out under the flag.
+# SYS_SUDO joined it on 2026-10-15 when it was withdrawn: only captest's probe
+# of the NOSYS answer enters it now, as for SYS_ROTATE_KEYS.
 SYSCOV_CONTROL_EXPECTED = \
 	SYS_AUDIT_DIGEST SYS_BRK SYS_FRAME_PAGES SYS_IPC_REPLY \
 	SYS_MAP_REGION SYS_READ_AUDIT SYS_REGISTER_STORAGE_BACKEND \
 	SYS_SIGACTION SYS_SIGRETURN SYS_TASK_EXIT_INFO \
 	SYS_UNMAP_FRAME SYS_BLOCK_READ SYS_BLOCK_WRITE SYS_EXEC_IMAGE \
-	SYS_GET_PASS SYS_EXEC_NAMED SYS_ROTATE_KEYS \
+	SYS_GET_PASS SYS_EXEC_NAMED SYS_ROTATE_KEYS SYS_SUDO \
 	SYS_CONSOLE_RELEASE SYS_STORAGE_DEVICE SYS_STORAGE_FORMAT
 
 smoke-syscall-coverage-control:
@@ -12251,13 +12283,6 @@ smoke-session-fs-err-control:
 	@SESSION_FS_ERR_FLAT=1 python3 tools/session_test.py horus.iso
 	@echo "[session] CONTROL PASS - the flattened sentence is back, and it still names two causes and not the one that fired"
 
-# Control arm for the usage check in the session: the shell built as it was
-# before 2026-09-24, where a bare `touch` falls through to "Unknown command". The
-# session must fail on exactly that and on nothing earlier.
-# Control arm for the session at login: init opens the administrator's session
-# for every login (INIT_SESSION_AS_ADMIN=1), so the account it asks for comes
-# from something other than what the kernel attests. The session must fail on
-# exactly that: the standard user reaching root's directory.
 # S147, LIMITATIONS 1.38: a login never holds an earlier login's filesystem.
 # On a live boot with /bin/seq: root runs it (the shell lends it the keyboard)
 # and logs out; the standard account must then be refused `mkdir` at /, which
@@ -12297,6 +12322,42 @@ smoke-session-handover-stale-control:
 	@$(MAKE) --no-print-directory $(HANDOVER_BUILD) INIT_SESSION_DEAF_AFTER_FIRST=1 SHELL_STALE_ROOT=1 horus.iso
 	@HANDOVER_EXPECT=leak $(HANDOVER_RUN)
 
+# S149: administration is lent to an administrator's session only. root's
+# session reads the kernel log and the capability graph, sees every task and
+# manages accounts; the standard account's session that follows is refused each
+# by the kernel (the shell holds none of the capabilities) and has no demo
+# commands; root's next session has them again. `clean` before each build: the
+# flags are userspace-only. Every boot's serial is kept in admincaps-serial.log.
+ADMINCAPS_RUN = SESSION_TIMEOUT=$(SMOKE_TIMEOUT) SESSION_SERIAL_LOG=admincaps-serial.log python3 tools/session_admin_caps.py horus.iso
+.PHONY: smoke-session-admin-caps smoke-session-admin-caps-control smoke-session-admin-caps-launch-control
+smoke-session-admin-caps:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory
+	@$(MAKE) --no-print-directory horus.iso
+	@ADMINCAPS_EXPECT=pass $(ADMINCAPS_RUN)
+	@echo "[admincaps] PASS - administration is lent to an administrator's session and taken back at logout"
+
+# The arm for taking back: init leaves the capabilities with the shell at
+# logout, so the standard account that logs in next reads the kernel log.
+smoke-session-admin-caps-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory INIT_ADMIN_CAPS_KEPT=1
+	@$(MAKE) --no-print-directory INIT_ADMIN_CAPS_KEPT=1 horus.iso
+	@ADMINCAPS_EXPECT=held $(ADMINCAPS_RUN)
+
+# The arm for lending at all: init grants them for the whole boot, as before
+# 2026-10-15, and nothing in the shell asks who is logged in any more.
+smoke-session-admin-caps-launch-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory INIT_ADMIN_CAPS_AT_LAUNCH=1
+	@$(MAKE) --no-print-directory INIT_ADMIN_CAPS_AT_LAUNCH=1 horus.iso
+	@ADMINCAPS_EXPECT=held $(ADMINCAPS_RUN)
+
+# Control arm for the session at login: init opens the administrator's session
+# for every login (INIT_SESSION_AS_ADMIN=1), so the account it asks for comes
+# from something other than what the kernel attests. The session must fail on
+# exactly that, where it first shows: since S149 the administrator's session
+# also carries CAP_USER, so the standard user's `useradd` goes through.
 .PHONY: smoke-session-login-control
 smoke-session-login-control:
 	@out=$$($(MAKE) --no-print-directory clean >/dev/null; $(MAKE) --no-print-directory INIT_SESSION_AS_ADMIN=1 horus.iso >/dev/null && python3 tools/session_test.py horus.iso 2>&1); rc=$$?; \
@@ -12304,12 +12365,15 @@ smoke-session-login-control:
 	    echo "LOGIN CONTROL: FAIL - every login had the administrator's session and the session passed"; \
 	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
 	fi; \
-	if ! echo "$$out" | grep -q "waiting for 'stat: not found'"; then \
-	    echo "LOGIN CONTROL: FAIL - it failed, but not on the standard user reaching root's directory."; \
+	if ! echo "$$out" | grep -q "waiting for .useradd: permission denied (an administrator's session only)"; then \
+	    echo "LOGIN CONTROL: FAIL - it failed, but not on the standard user holding the administrator's session."; \
 	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
 	fi; \
 	echo "LOGIN CONTROL: PASS - a login given the administrator's session is caught"
 
+# Control arm for the usage check in the session: the shell built as it was
+# before 2026-09-24, where a bare `touch` falls through to "Unknown command". The
+# session must fail on exactly that and on nothing earlier.
 .PHONY: smoke-session-usage-control
 smoke-session-usage-control:
 	@out=$$($(MAKE) --no-print-directory clean >/dev/null; $(MAKE) --no-print-directory SHELL_BARE_UNKNOWN=1 horus.iso >/dev/null && python3 tools/session_test.py horus.iso 2>&1); rc=$$?; \

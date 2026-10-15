@@ -163,6 +163,7 @@ covered:
   - SYS_IPC_REPLY_CAP        # captest: likewise
   - SYS_EXEC_NAMED           # captest: a name that is no binary, refused before anything is staged
   - SYS_ROTATE_KEYS          # captest: withdrawn 2026-10-14, answers SYS_ERR_NOSYS to everyone
+  - SYS_SUDO                 # captest: withdrawn 2026-10-15, answers SYS_ERR_NOSYS to everyone
   - SYS_FRAME_PAGES          # empty slot, and the legacy slot-3 decoy
   - SYS_REGISTER_STORAGE_BACKEND  # retired syscall 46; must still fail closed
 
@@ -379,7 +380,6 @@ covered:
   - SYS_SPAWN
   - SYS_GETUID
   - SYS_AUTH
-  - SYS_SUDO
   - SYS_USERADD
   - SYS_USERDEL
   - SYS_USERLIST

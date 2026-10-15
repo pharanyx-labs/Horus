@@ -359,6 +359,12 @@ void hvfs_pool_reclaim(void) {
     }
 }
 
+/* See libhorus.h: the caller vouches, by S3, that every slot is now empty. A
+ * standard account's shell holds no CAP_DEBUG (S149), so it cannot ask. */
+void hvfs_pool_forget_all(void) {
+    for (int i = 0; i < POOL_N; i++) g_pool_used[i] = 0;
+}
+
 int hvfs_slot_alloc(void) {
     for (int i = 0; i < POOL_N; i++)
         if (!g_pool_used[i]) { g_pool_used[i] = 1; return CAPSLOT_FS_POOL_FIRST + i; }

@@ -5702,39 +5702,6 @@ int storage_rekey(uint32_t slot, uint32_t uid, const char *new_password, size_t 
     return rc == 0 ? 0 : -4;
 }
 
-int derive_and_store_user_file_key(uint32_t uid, const char *material, size_t material_len)
-{
-
-    extern uint8_t kernel_pepper[16];
-
-    if (get_current_task() < 0 || get_current_task() >= g_max_tasks) return -1;
-
-    
-    if (get_current_task() != 0 && !has_encrypted_storage_cap()) {
-        return -3;
-    }
-
-    /* Per-user file master key = HKDF-SHA256(password material, salt=pepper,
-     * info="horus-user-file-key-v1" || uid). Replaces the previous custom
-     * 8-round XOR/add mixing, which had no diffusion guarantees. */
-    uint8_t *mk = tasks[get_current_task()].user_file_master_key;
-    const uint8_t zero = 0;
-    const uint8_t *ikm = (material && material_len > 0) ? (const uint8_t *)material : &zero;
-    size_t ikm_len = (material && material_len > 0) ? material_len : 1;
-
-    uint8_t info[23 + 4];
-    const char *label = "horus-user-file-key-v1";
-    size_t p = 0;
-    for (const char *c = label; *c; c++) info[p++] = (uint8_t)*c;
-    for (int i = 0; i < 4; i++) info[p++] = (uint8_t)(uid >> (i * 8));
-
-    if (rust_hkdf_sha256(ikm, ikm_len, kernel_pepper, 16, info, p, mk, 32) != 0) {
-        return -1;
-    }
-    tasks[get_current_task()].has_file_key = 1;
-    return 0;
-}
-
 int storage_create_file(struct mounted_fs *mfs, uint32_t uid, uint32_t gid,
                         const char *name, uint64_t dir_ino, uint64_t *out_ino) {
     STORAGE_OP;

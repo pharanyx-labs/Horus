@@ -14,8 +14,9 @@ DESCRIPTION
 
 SECURITY
     Which tasks you see is decided by your authority, not by asking: a
-    login that is not the administrator sees only its own task. A task
-    list is an information leak like any other.
+    login that is not the administrator sees only its own task, because
+    only the administrator's session holds CAP_DEBUG. A task list is an
+    information leak like any other.
 
 SEE ALSO
     capview(1), whoami(1)

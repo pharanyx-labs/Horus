@@ -253,6 +253,13 @@ int hvfs_unmount(const char *prefix);
  * nothing without it). For a task whose capabilities were revoked from above. */
 void hvfs_pool_reclaim(void);
 
+/* Free every pool slot WITHOUT asking the kernel. Only for a caller that has
+ * just seen revoked every capability the pool's contents descend from (the
+ * shell at logout: its root and working directory, revoked by init or by
+ * itself): a revoke empties the whole subtree (S3), so each slot is empty by
+ * construction. Anything else must use hvfs_pool_reclaim. */
+void hvfs_pool_forget_all(void);
+
 /* Resolve `path` (absolute, or relative to `cwd`) to an object. Same contract as
  * hvfs_walk (0 resolved, 1 all but the leaf, which is in out_name, -1 refused),
  * and with want_parent as hvfs_walk_parent. Through a capability mount the whole

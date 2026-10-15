@@ -1271,7 +1271,7 @@ void users_init(void);
 
 #define SYS_GETUID   29
 #define SYS_AUTH     30
-#define SYS_SUDO     31
+#define SYS_SUDO     31   /* withdrawn 2026-10-15: SYS_ERR_NOSYS to every caller */
 #define SYS_GET_PASS 32
 
 #define SYS_USERADD   33
@@ -1854,8 +1854,6 @@ typedef struct tcb {
     uint32_t uid;
     uint32_t gid;
     char     name[32];
-    uint8_t  user_file_master_key[32];
-    int      has_file_key;
 
     
     uint64_t heap_start;
@@ -3234,7 +3232,6 @@ bool cap_grant_from_user(int target_pid, uint32_t dest_slot, uint32_t src_slot, 
 int cap_clone_cspace(int parent, int child);
 bool cap_revoke(uint32_t slot);
 bool cap_create_revocation_set(uint32_t target_slot, uint32_t rev_slot);
-bool has_encrypted_storage_cap(void);
 
 
 /* A serial no capability has had or will have, or 0 when none can be issued
@@ -3441,7 +3438,6 @@ int  sched_stack_task(void);         /* the task whose kernel stack this CPU is 
 void h_userlist(struct interrupt_frame64 *r);
 int  do_userdel(uint32_t uid);
 int  do_passwd(uint32_t target, const char *newpass);
-int derive_and_store_user_file_key(uint32_t uid, const char *material, size_t material_len);
 
 
 int  storage_mount(block_device_t *bd);
@@ -4023,8 +4019,7 @@ int  rust_aead_open(const uint8_t *enc_key, const uint8_t *mac_key, const uint8_
                     uint8_t *buf, size_t len, const uint8_t *tag);
 /* ps presentation (rust/src/ps.rs): NUL-terminated static state label. */
 const char *rust_task_state_name(uint32_t state);
-/* Authentication / sudo throttling + privilege policy (rust/src/auth.rs) */
-uint32_t rust_sudo_frame_rights(void);
+/* Authentication throttling (rust/src/auth.rs) */
 bool     rust_auth_is_locked(uint64_t lockout_until, uint64_t now);
 void     rust_auth_on_failure(uint32_t fail_count, uint64_t now,
                               uint32_t *out_count, uint64_t *out_lockout_until);
@@ -4121,11 +4116,6 @@ void create_task(int id, uint64_t entry, uint64_t stack_top, uint64_t image_base
  * do_spawn()/do_spawn_stdio() are the kernel-initiated forms and pass
  * UNTYPED_KERNEL; every post-boot creation should use this instead (S57). */
 int  do_spawn_charged(uint32_t stdio_spec, uint32_t untyped_index);
-/* Resolve `task`'s CAP_UNTYPED region for a task-creating syscall. `task` must be
- * the current one -- cap_lookup answers about the current cspace, so anything
- * else would silently resolve somebody else's. 0 on success, SYS_ERR_PERM if the
- * caller holds none. */
-int  spawn_untyped_region_for(int task, uint32_t *out_index);
 void create_user_pagedir(uint32_t id);
 /* Pages the currently-armed staged image will occupy once loaded at `load_base`
  * (its PT_LOAD span, from the validated load plan), so the image-window premap

@@ -3817,6 +3817,44 @@ static void task_teardown_body(int id, const struct task_exit_cause *cause,
  * The lock is not recursive, and a supervisor page fault can reach here from a
  * syscall that already holds it, so it is taken only if this CPU does not.
  * WAIT_WAKE_EARLY=1 restores the old order for the control arm. */
+#if defined(SMP) && !defined(DEAD_TASK_RUNS)
+/* How long task_teardown waits for another CPU to leave a dead task. The wait
+ * normally ends in microseconds, when the CPU takes the kill IPI. The bound is
+ * for the one case where it cannot: that CPU is itself inside the kernel for
+ * the task (a syscall, a fault) and cannot take the IPI until it returns, and
+ * may be waiting on a lock the caller of teardown holds. It is running kernel
+ * code then, not the task's, and the IPI is taken as it returns to ring 3, so
+ * giving up waits for nothing that matters. 50 ms is five ticks, an order of
+ * magnitude above the IPI delays measured under nested virtualisation. */
+#define KILL_WAIT_US 50000
+static uint64_t g_kill_wait_expired;   /* waits that reached KILL_WAIT_US */
+
+/* Return once no CPU but this one names `id` as its current task, or at the
+ * bound. Interrupts stay as the caller has them (off: teardown is reached
+ * through an interrupt gate, possibly holding spawn_stage_lock); the CPU being
+ * waited for needs nothing from this one to switch away. */
+#ifndef KILL_ASYNC
+static void teardown_wait_stopped(int id) {
+    int me = this_cpu();
+    uint64_t deadline = 0;
+    for (int c = 0; c < MAX_CPUS; c++) {
+        if (c == me) continue;
+        while (__atomic_load_n(&percpu_current_task[c], __ATOMIC_ACQUIRE) == id) {
+            if (deadline == 0) deadline = kclock_deadline_us(KILL_WAIT_US);
+            if (kclock_passed(deadline)) {
+                if (g_kill_wait_expired++ == 0)
+                    println("sched: a killed task's CPU did not leave it within 50 ms; "
+                            "it was inside the kernel, and the IPI is taken as it returns");
+                return;
+            }
+            __asm__ volatile ("pause" ::: "memory");
+        }
+    }
+}
+#endif
+uint64_t teardown_wait_expired(void) { return g_kill_wait_expired; }
+#endif
+
 void task_teardown(int id, const struct task_exit_cause *cause) {
     extern int  spawn_stage_held_here(void);
     extern void spawn_stage_acquire(void);
@@ -4008,8 +4046,22 @@ static void task_teardown_body(int id, const struct task_exit_cause *cause,
      * after the state change is published: a CPU that picks up the task after
      * this cannot, since it is no longer selectable. (HORUS-20260921-04) */
 #ifndef DEAD_TASK_RUNS
+#ifndef KILL_IPI_WITHHELD
     for (int c = 0; c < MAX_CPUS; c++)
         if (c != this_cpu() && percpu_current_task[c] == id) smp_kick_cpu(c);
+#endif
+    /* AND WAIT FOR IT TO STOP (S56, LIMITATIONS 2.32). Sending the IPI is not
+     * the task stopping: until the other CPU takes it, the dead task goes on
+     * running its own code and writing any memory it shares with live tasks,
+     * and a caller that kills a task and then reuses their shared buffer would
+     * have it written under it. That takes microseconds on bare metal, and
+     * milliseconds when a hypervisor relays the IPI: CI's nested KVM failed
+     * PROC_SELFTEST's killed-task check in 2 of 31 runs that way, the counter
+     * still rising after sys_kill had returned. So teardown returns only once
+     * no other CPU is running the task. */
+#ifndef KILL_ASYNC
+    teardown_wait_stopped(id);
+#endif
 #endif
 #endif
 

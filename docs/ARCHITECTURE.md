@@ -427,8 +427,9 @@ called `SYS_TASK_RESUME`, so no child can observe a half-populated cspace. The s
 `init` gives the shell's watcher a copy that can only wait (decision D1; S140).
 
 **A dead task stays dead.** `task_teardown` empties the cspace before the object sweep (S56),
-sends the kill IPI to any CPU still running the task, and a torn-down task is never resumed or
-dispatched again. A reused slot starts with no death record (S98), and a `CAP_TCB` records the
+sends the kill IPI to any CPU still running the task and waits until none is, and a torn-down task
+is never resumed or dispatched again. So when `SYS_KILL` returns the task has stopped: an IPI
+relayed by a hypervisor can take milliseconds, and the task used to run on through them. A reused slot starts with no death record (S98), and a `CAP_TCB` records the
 slot's generation, so a capability for a dead task never names its successor (S100).
 
 **FPU.** `fxsave` and `fxrstor` bracket every ring transition (S16). New tasks start from a

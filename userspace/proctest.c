@@ -27,6 +27,15 @@ static void report(const char *s) {
     sys_write(1, s, (unsigned)n);
 }
 
+/* Decimal, for the few failure reports that must carry numbers to be useful. */
+static void report_u(unsigned long v) {
+    char b[24], o[24]; int n = 0;
+    if (!v) b[n++] = '0';
+    while (v) { b[n++] = (char)('0' + v % 10); v /= 10; }
+    for (int i = 0; i < n; i++) o[i] = b[n - 1 - i];
+    sys_write(1, o, (unsigned)n);
+}
+
 /* Non-zero if `s` begins with `pfx`. */
 static int starts_with(const char *s, const char *pfx) {
     int i = 0;
@@ -665,11 +674,22 @@ void _start(void) {
         }
         if (!running) { report("PROC_SELFTEST: FAIL killed-task-never-ran\n"); sys_exit(); }
         if (sys_kill(k) != 0) { report("PROC_SELFTEST: FAIL killed-task-kill\n"); sys_exit(); }
+        unsigned long at_ret = *ctr;
         for (int i = 0; i < 200; i++) settle();            /* grace: the kill lands */
         unsigned long a = *ctr;
         for (int i = 0; i < 5000; i++) settle();           /* many ticks' worth */
         unsigned long b = *ctr;
-        if (b != a) { report("PROC_SELFTEST: FAIL killed-task-still-writes\n"); sys_exit(); }
+        if (b != a) {
+            /* THE NUMBERS ARE THE EVIDENCE. On 2026-10-14 this failed in CI with
+             * only its name, twice in 31 runs and never locally, and which of
+             * "the dead task ran on" (the counter climbed from sys_kill's return
+             * and then froze) or "something else wrote the frame" (a jump, or a
+             * reset) it was could not be told. */
+            report("PROC_SELFTEST: killed-task counter at sys_kill's return ");
+            report_u(at_ret); report(", after the grace "); report_u(a);
+            report(", after the wait "); report_u(b); report("\n");
+            report("PROC_SELFTEST: FAIL killed-task-still-writes\n"); sys_exit();
+        }
         /* And it died of the kill, as recorded once: nothing it did afterwards
          * may have rewritten the record (a dead task cannot die again). */
         struct task_exit_info kr;

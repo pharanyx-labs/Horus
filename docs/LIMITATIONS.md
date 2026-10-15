@@ -325,7 +325,8 @@ One shared run pool scanned linearly: no affinity, no load balancing, no priorit
 real-time guarantees. Under TCG emulation more cores are slower than one; the benefit needs KVM or
 hardware. Each supported CPU costs about 104 KiB of `.bss` whether present or not, so beyond about
 16 the per-CPU blocks would have to be allocated at boot. The scheduler, capability, IPC, spawn,
-page and storage locks are each global, so beyond eight to sixteen cores extra CPUs mostly wait.
+page and storage locks are each global, and a storage call holds the storage layer for the whole
+call (S146), so beyond eight to sixteen cores extra CPUs mostly wait.
 The SMP race gates run at four CPUs; `smoke-smp-topology` covers bring-up at eight. The design that
 replaces this is [`design/scheduler.md`](design/scheduler.md) (ROADMAP 1.8).
 
@@ -554,6 +555,7 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 2.6a | | Self-test markers written in pieces could be split; now refused by `tools/check_split_markers.py` (kernel markers are 2.6c) | 2026-09-01, #268, #284 |
 | 2.6c | | Gates read kernel markers off the console that ring 3 also writes, so one could arrive split; the kernel keeps a whole copy of what it prints on COM4, which no capability names, every gate that waits for a kernel marker reads it there or is listed with its reason in `.github/kernel-markers.yml`, and `tools/check_kernel_markers.py` keeps it so (S144) | 2026-10-14, #576 |
 | 2.30 | [HORUS-20261014-05] | The console changed hands without waiting for a kernel line already being written on another CPU, so that line and `console_server`'s first lines interleaved on COM1; the owner now changes under the console lock (S145) | 2026-10-14, #576 |
+| 2.31 | [HORUS-20261015-01] | Two CPUs could be inside the storage layer at once, through its one journal and one set of metadata and Merkle caches, and two password hashes could share the Argon2 scratch buffer, so an install on two CPUs could write a volume that failed its own checks on the next boot; every storage call and every hash is now one operation at a time (S146) | 2026-10-15, #577 |
 | 2.8 | | The CSPRNG was safe by boot ordering, not by construction (S30) | 2026-08-23, #200 |
 | 2.9b | | Console input had an owner for passwords only, named by task id, so any program a person ran could read the command lines they typed; input is now a capability lent to the foreground program (S93) | 2026-10-13, #559 |
 | 2.10 | | Four live syscalls had no caller | 2026-08-23, #204 |

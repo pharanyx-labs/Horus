@@ -492,6 +492,12 @@ void ap_entry64(void) {
     smp_checkin_instrument(cpu);
     if (!smp_check_in(&smp_cpus_online)) smp_park_refused(cpu);
 
+#ifdef STORAGE_SMP_SELFTEST
+    /* Before this CPU is idle or ticking, so nothing is scheduled onto it while
+     * it is the second CPU of make smoke-storage-smp. */
+    if (cpu == 1) { extern void storage_smp_selftest_ap(void); storage_smp_selftest_ap(); }
+#endif
+
     percpu_idle[cpu] = 1;
 
     lapic_timer_start_periodic();
@@ -679,6 +685,11 @@ void smp_bringup(void) {
      * encrypted object store, proving the Phase 2 stack end-to-end
      * (prints FS_SELFTEST: PASS). */
     fs_selftest();
+#elif defined(STORAGE_SMP_SELFTEST)
+    /* Gated: two CPUs in storage at once (S146). CPU 1 is waiting in
+     * ap_entry64; this starts it and runs CPU 0's half. */
+    { extern void storage_smp_selftest(void); storage_smp_selftest();
+      for (;;) __asm__ volatile ("hlt"); }
 #elif defined(VDISK_BOUND_SELFTEST)
     /* Gated: a block device may not accept a block it has no memory for
      * (S64). Both directions -- the last in-range block writable, the first

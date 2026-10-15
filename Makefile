@@ -167,6 +167,8 @@ DEFECT_FLAGS = \
 	FSCK_SHALLOW_REFS STORAGE_MOUNT_ANY_SIZE ALLOC_NO_HINT ATA_READY_ERR_ONLY \
 	ROLLBACK_ANCHOR_IGNORE \
 	VDISK_TOTAL_UNBOUNDED \
+	STORAGE_OP_UNLOCKED \
+	ARGON2_SCRATCH_UNLOCKED STORAGE_SMP_SELFTEST \
 	TUI_NO_DAMAGE_DIFF TUI_CLAMP_OFF \
 	TUI_INPUT_ECHO_SECRET TUI_INPUT_UNBOUNDED TUI_MENU_UNCLAMPED \
 	TUI_ACS_NO_RESTORE TUI_WRAP_NO_BREAK TUI_NO_INVALIDATE \
@@ -1404,6 +1406,31 @@ VDISK_TOTAL_UNBOUNDED ?= 0
 ifeq ($(VDISK_TOTAL_UNBOUNDED),1)
 CFLAGS  += -DVDISK_TOTAL_UNBOUNDED
 ASFLAGS += -DVDISK_TOTAL_UNBOUNDED
+endif
+
+# STORAGE_SMP_SELFTEST=1 runs two CPUs through the storage API at once: each
+# writes and reads back its own file while the other does (S146).
+STORAGE_SMP_SELFTEST ?= 0
+ifeq ($(STORAGE_SMP_SELFTEST),1)
+CFLAGS  += -DSTORAGE_SMP_SELFTEST
+ASFLAGS += -DSTORAGE_SMP_SELFTEST
+endif
+
+# STORAGE_OP_UNLOCKED=1 restores storage as it was before S146: no operation
+# lock, so two CPUs run exported storage calls through the one journal and the
+# one set of metadata and Merkle caches at once. Overlaps are still counted.
+STORAGE_OP_UNLOCKED ?= 0
+ifeq ($(STORAGE_OP_UNLOCKED),1)
+CFLAGS  += -DSTORAGE_OP_UNLOCKED
+ASFLAGS += -DSTORAGE_OP_UNLOCKED
+endif
+
+# ARGON2_SCRATCH_UNLOCKED=1 lets two CPUs hash passwords through the one Argon2
+# scratch buffer at once, as before S146. Overlaps are still counted.
+ARGON2_SCRATCH_UNLOCKED ?= 0
+ifeq ($(ARGON2_SCRATCH_UNLOCKED),1)
+CFLAGS  += -DARGON2_SCRATCH_UNLOCKED
+ASFLAGS += -DARGON2_SCRATCH_UNLOCKED
 endif
 
 KEYSLOT_SELFTEST ?= 0
@@ -15865,7 +15892,16 @@ smoke-installer-sd:
 # so a write on one CPU and a read on another ran on the controller at once; the
 # IdeaPad (two cores) failed every install at the password step, and every gate
 # here boots one CPU, so none of them could see it. Measured before the fix: this
-# target failed 3 of 3 with the laptop's own `rc=-32`. The arm is SDHCI_NO_LOCK=1.
+# target failed 3 of 3 with the laptop's own `rc=-32`.
+#
+# THE ARM TAKES AWAY BOTH SERIALISATIONS (2026-10-15). Since S146 every storage
+# call is one operation under g_storage_op, so in an install the controller is
+# only ever reached by one CPU at a time even without sdhci_lock, and
+# SDHCI_NO_LOCK=1 alone installs cleanly. The arm is therefore the tree before
+# 2026-09-24 in full, SDHCI_NO_LOCK=1 with STORAGE_OP_UNLOCKED=1, and it fails
+# on the disk with the laptop's `rc=-32` (4 of 4 on 2026-10-15). sdhci_lock still
+# matters where the controller is reached outside a storage call (swap's slot
+# I/O), which no gate drives on two CPUs.
 .PHONY: smoke-installer-sd-smp smoke-installer-sd-smp-control
 smoke-installer-sd-smp:
 	@$(MAKE) --no-print-directory clean
@@ -15882,16 +15918,16 @@ smoke-installer-sd-smp:
 	@rm -f installer-sd.img
 
 smoke-installer-sd-smp-control:
-	@out=$$($(MAKE) --no-print-directory smoke-installer-sd-smp SDSMPARM=SDHCI_NO_LOCK=1 2>&1); rc=$$?; \
+	@out=$$($(MAKE) --no-print-directory smoke-installer-sd-smp SDSMPARM="SDHCI_NO_LOCK=1 STORAGE_OP_UNLOCKED=1" 2>&1); rc=$$?; \
 	if [ $$rc -eq 0 ]; then \
-	    echo "SD SMP CONTROL: FAIL - an unlocked driver installed on two CPUs"; \
+	    echo "SD SMP CONTROL: FAIL - an install with nothing serialising the SD path succeeded on two CPUs"; \
 	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
 	fi; \
 	if ! echo "$$out" | grep -q "could not be read back from the disk\|could not be read from the disk\|could not be written"; then \
 	    echo "SD SMP CONTROL: FAIL - it failed, but not on the disk."; \
 	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
 	fi; \
-	echo "SD SMP CONTROL: PASS - two CPUs on an unlocked driver fail the install"
+	echo "SD SMP CONTROL: PASS - two CPUs with neither the driver lock nor the storage lock fail the install on the disk"
 
 # CONTROL ARM: the register file present only in the KERNEL's address space.
 #
@@ -16800,6 +16836,39 @@ smoke-vdisk-bound-control:
 		MARKER_CHANNEL=kcon REQUIRE_MARKER='VDISKBOUND: FAIL a write past the backing store reached the free page pool' \
 		tools/smoke_test.sh horus.iso
 	@echo "[vdisk-bound] CONTROL PASS - a block past the backing store reached the free page pool"
+
+# Two CPUs in storage at once (S146). Every exported storage call is one
+# operation under g_storage_op; this has CPU 0 and CPU 1 each write and read back
+# their own file at the same time, and passes only if every block came back as
+# its CPU wrote it, nothing was refused, AND the two CPUs did overlap (a run
+# where they took turns proves nothing, so it fails). Two CPUs, not the default
+# eight: the test uses CPU 1 alone, and fewer vCPUs leaves more of the host to it.
+smoke-storage-smp:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_SMP_SELFTEST=1
+	@$(MAKE) --no-print-directory STORAGE_SMP_SELFTEST=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=2 \
+		MARKER_CHANNEL=kcon REQUIRE_MARKER='STORAGESMP: PASS' \
+		FAIL_MARKER='STORAGESMP: FAIL' \
+		tools/smoke_test.sh horus.iso
+
+smoke-storage-smp-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_SMP_SELFTEST=1 STORAGE_OP_UNLOCKED=1
+	@$(MAKE) --no-print-directory STORAGE_SMP_SELFTEST=1 STORAGE_OP_UNLOCKED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=2 \
+		MARKER_CHANNEL=kcon REQUIRE_MARKER='STORAGESMP: FAIL storage went wrong with two CPUs in it' \
+		tools/smoke_test.sh horus.iso
+	@echo "[storage-smp] CONTROL PASS - two CPUs in storage without the operation lock damaged it"
+
+smoke-storage-smp-argon2-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_SMP_SELFTEST=1 ARGON2_SCRATCH_UNLOCKED=1
+	@$(MAKE) --no-print-directory STORAGE_SMP_SELFTEST=1 ARGON2_SCRATCH_UNLOCKED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=2 \
+		MARKER_CHANNEL=kcon REQUIRE_MARKER='STORAGESMP: FAIL a password hash came out wrong with two CPUs hashing' \
+		tools/smoke_test.sh horus.iso
+	@echo "[storage-smp] CONTROL PASS - two CPUs hashing through one scratch buffer got wrong hashes"
 
 # The anchor itself, before anything is built on it: the TPM NV counter
 # provisions, reads, is idempotent to re-provision, and only ever goes UP. A

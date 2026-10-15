@@ -4987,6 +4987,59 @@ int irq_locks_held_here(void) {
 #endif
 }
 
+/* ---- Operation locks (S146; see oplock_t in kernel.h) ---------------------- */
+
+static int oplock_cpu_here(void) {
+    int c = this_cpu();
+    return (c < 0 || c >= MAX_CPUS) ? 0 : c;
+}
+
+int oplock_held_here(const oplock_t *l) {
+    return __atomic_load_n(&l->cpu, __ATOMIC_ACQUIRE) == oplock_cpu_here();
+}
+
+void oplock_enter(oplock_t *l) {
+    int c = oplock_cpu_here();
+    if (__atomic_load_n(&l->cpu, __ATOMIC_ACQUIRE) == c) {   /* re-entry by the holder */
+        l->depth++;
+        return;
+    }
+    /* The waiter below turns interrupts on, and an interrupt handler that took a
+     * spinlock this CPU holds would then deadlock against it. The rule is the
+     * one smp_maybe_shootdown enforces, and for the same reason it is a named
+     * halt rather than a hang somewhere else: a caller holding a spinlock here
+     * has the lock order backwards on every boot, not only on a contended one. */
+    if (irq_locks_held_here() != 0) {
+        println("PANIC: an operation lock was entered with a spinlock held");
+        for (;;) __asm__ volatile ("cli; hlt");
+    }
+    int expected = -1;
+    if (!__atomic_compare_exchange_n(&l->cpu, &expected, c, 0,
+                                     __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+        __atomic_fetch_add(&l->contended, 1, __ATOMIC_RELAXED);   /* a statistic */
+        uint64_t fl;
+        __asm__ volatile ("pushfq; pop %0" : "=r"(fl) :: "memory");
+        __asm__ volatile ("sti" ::: "memory");      /* deliberate; see oplock_t */
+        do {
+            __asm__ volatile ("pause" ::: "memory");
+            expected = -1;
+        } while (!__atomic_compare_exchange_n(&l->cpu, &expected, c, 0,
+                                              __ATOMIC_ACQUIRE, __ATOMIC_RELAXED));
+        if (!(fl & 0x200)) __asm__ volatile ("cli" ::: "memory");   /* restore */
+    }
+    l->depth = 1;
+}
+
+void oplock_leave(oplock_t *l) {
+    /* Only the holder may leave; anything else is a caller bug, and releasing a
+     * lock another CPU is inside would be the very overlap this exists to stop. */
+    if (!oplock_held_here(l) || l->depth <= 0) {
+        println("PANIC: an operation lock was left by a CPU that does not hold it");
+        for (;;) __asm__ volatile ("cli; hlt");
+    }
+    if (--l->depth == 0) __atomic_store_n(&l->cpu, -1, __ATOMIC_RELEASE);
+}
+
 
 
 #ifdef REPLY_EP_SELFTEST

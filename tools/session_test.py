@@ -120,6 +120,36 @@ class SessionFail(Exception):
     pass
 
 
+_BOOTS = [0]       # machines started by this process; see kernel_channels
+
+
+def kernel_channels():
+    """QEMU arguments for the kernel's own channels, when asked for.
+
+    COM1 is the shell's line; since ROADMAP 5.3 the kernel's messages after the
+    console handover go to COM4 (the kernel console copy) and its diagnostics to
+    COM3, so a session that fails on a refusal the kernel explains (a login
+    refused, a span that failed verification) shows only the refusal on COM1.
+    SESSION_KCON_LOG and SESSION_KDIAG_LOG name files to keep COM4 and COM3 in;
+    unset, the machine is built exactly as before. A session that boots more
+    than once (the installer's install-then-reboot) gets one file per boot,
+    `<name>.boot1`, `<name>.boot2` and so on, because QEMU truncates a `file:`
+    serial when it opens it and the first boot is the one that wrote the volume.
+    """
+    kcon = os.environ.get("SESSION_KCON_LOG", "")
+    kdiag = os.environ.get("SESSION_KDIAG_LOG", "")
+    if not kcon and not kdiag:
+        return []
+    _BOOTS[0] += 1
+    if kcon:
+        kcon = "%s.boot%d" % (kcon, _BOOTS[0])
+    if kdiag:
+        kdiag = "%s.boot%d" % (kdiag, _BOOTS[0])
+    return ["-serial", "none",
+            "-serial", ("file:" + kdiag) if kdiag else "none",
+            "-serial", ("file:" + kcon) if kcon else "none"]
+
+
 def _dump_serial(buf):
     if not SERIAL_LOG:
         return
@@ -294,7 +324,8 @@ class Serial:
              "-display", "none", "-no-reboot", "-no-shutdown",
              "-device", "isa-debug-exit,iobase=0x604,iosize=0x04",
              "-qmp", "unix:%s,server,nowait" % self.qmp_path,
-             "-serial", "pty", "-net", "none"] + uefi + drive + (["-cdrom", iso] if iso else []),
+             "-serial", "pty", "-net", "none"] + kernel_channels() + uefi + drive
+            + (["-cdrom", iso] if iso else []),
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
         self.fd = self._await_pty()

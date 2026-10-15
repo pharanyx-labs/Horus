@@ -930,11 +930,11 @@ jobs:
       # The same install on TWO CPUs. The driver had no lock, so a write on one
       # CPU and a read on the other ran on the controller at once; a two-core
       # laptop failed every install at the password step, and every other gate
-      # here boots one CPU. The arm (SDHCI_NO_LOCK=1) is the driver before the
-      # fix and must fail on the disk.
+      # here boots one CPU. The arm is the tree before that fix: no driver lock
+      # and no storage operation lock (S146), and it must fail on the disk.
       - name: An SD/eMMC install on two CPUs, the controller serialised
         run: make smoke-installer-sd-smp
-      - name: Control arm — an unlocked SD driver on two CPUs fails the install
+      - name: "Control arm: an SD path nothing serialises fails the install on two CPUs"
         run: make smoke-installer-sd-smp-control
       # The driver's registers are memory-mapped, and a syscall reaches them on
       # the CALLING task's cr3 -- not the kernel's, which is the only one the
@@ -4896,6 +4896,15 @@ jobs:
         run: make smoke-vdisk-bound
       - name: Control arm — a write past the backing store reaches the page pool
         run: make smoke-vdisk-bound-control
+      # S146. Two CPUs in the storage layer and the Argon2 scratch at once: each
+      # writes and reads back its own file and hashes its own password while the
+      # other does. Diskless (the RAM store), two CPUs, seconds.
+      - name: Two CPUs in storage at once get their own blocks and hashes back
+        run: make smoke-storage-smp
+      - name: "Control arm: without the storage operation lock the blocks come back wrong"
+        run: make smoke-storage-smp-control
+      - name: "Control arm: two hashes through one scratch buffer come out wrong"
+        run: make smoke-storage-smp-argon2-control
       # S61. Two boots on one image: both passwords must open the volume after a
       # power cycle, and revoking one must revoke that one only. Runs here rather
       # than in a job of its own so no new required context is created.

@@ -5930,3 +5930,177 @@ void pool_span_selftest(void) {
     print(line);
 }
 #endif
+
+/* TWO CPUs IN STORAGE AT ONCE (S146; make smoke-storage-smp).
+ *
+ * The RAM store is formatted, mounted and unlocked by the time this runs. CPU 1
+ * (storage_smp_selftest_ap, called from ap_entry64 before it starts its timer)
+ * and CPU 0 (storage_smp_selftest, after "kernel ready") each allocate a file
+ * and then, for SSMP_ROUNDS rounds, write SSMP_BLOCKS blocks stamped with
+ * (cpu, round, block) and read every one of them back. The blocks reach past the
+ * twelve direct pointers, so every round also stages pointer-block, bitmap and
+ * inode updates through the one journal both CPUs share.
+ *
+ * PASS needs all of: no write or read refused, every block read back as the round
+ * just wrote it, both files intact once both CPUs are done, no span refused by
+ * the Merkle check, no block I/O outside a storage operation, AND at least one
+ * entry that found the other CPU inside. That last one is the test's own
+ * vacuity check: two CPUs that happened to take turns would pass with or
+ * without the lock and show nothing. Under STORAGE_OP_UNLOCKED=1 the same
+ * counter counts the overlaps the arm let through. */
+#ifdef STORAGE_SMP_SELFTEST
+#define SSMP_ROUNDS 8
+#define SSMP_BLOCKS 24
+uint64_t storage_op_contended(void);
+uint64_t storage_op_unheld(void);
+uint64_t argon2_op_contended(void);
+
+/* The Argon2 half: each CPU hashes its own password through the one scratch
+ * buffer while the other does, and must get the hash it got alone. */
+#define SSMP_HASHES 2
+static const char *const ssmp_pw[2] = { "storage-smp-cpu0", "storage-smp-cpu1" };
+static const uint8_t ssmp_salt[16] = { 's','t','o','r','a','g','e','-','s','m','p','-','s','a','l','t' };
+static uint8_t ssmp_ref[2][32];
+static volatile uint32_t ssmp_hash_bad[2];
+
+static void ssmp_hash(int cpu) {
+    for (int i = 0; i < SSMP_HASHES; i++) {
+        uint8_t h[32];
+        if (kernel_argon2id((const uint8_t *)ssmp_pw[cpu], 16, ssmp_salt, sizeof(ssmp_salt), h, 32) != 0) {
+            ssmp_hash_bad[cpu]++;
+            continue;
+        }
+        int bad = 0;
+        for (int j = 0; j < 32; j++) bad |= h[j] ^ ssmp_ref[cpu][j];
+        if (bad) ssmp_hash_bad[cpu]++;
+    }
+}
+
+static volatile int      ssmp_go;
+static volatile int      ssmp_done[2];
+static volatile uint64_t ssmp_ino[2];
+static volatile uint32_t ssmp_errors[2];
+static uint8_t           ssmp_buf[2][BLOCK_SIZE];
+
+static void ssmp_fill(uint8_t *b, int cpu, uint32_t round, uint64_t blk) {
+    for (int j = 0; j < BLOCK_SIZE; j++)
+        b[j] = (uint8_t)(blk * 13u + round * 7u + (unsigned)cpu * 101u + (unsigned)j);
+    b[0] = (uint8_t)cpu; b[1] = (uint8_t)round; b[2] = (uint8_t)blk;
+}
+
+static int ssmp_check(const uint8_t *b, int cpu, uint32_t round, uint64_t blk) {
+    if (b[0] != (uint8_t)cpu || b[1] != (uint8_t)round || b[2] != (uint8_t)blk) return -1;
+    for (int j = 3; j < BLOCK_SIZE; j++)
+        if (b[j] != (uint8_t)(blk * 13u + round * 7u + (unsigned)cpu * 101u + (unsigned)j))
+            return -1;
+    return 0;
+}
+
+/* One CPU's half. Counts failures rather than stopping at the first, so the
+ * other CPU is never left waiting on a half that gave up. */
+static void ssmp_work(int cpu) {
+    mounted_fs_t *mfs = storage_get_mounted_fs();
+    uint8_t *buf = ssmp_buf[cpu];
+    int64_t ino = storage_alloc_inode(mfs->bd, &mfs->sb);
+    if (ino < 1) { ssmp_errors[cpu]++; return; }
+    on_disk_inode_t nd;
+    for (size_t i = 0; i < sizeof(nd); i++) ((uint8_t *)&nd)[i] = 0;
+    nd.type = 1; nd.mode = 0100644; nd.links = 1;
+    if (storage_write_inode(mfs->bd, &mfs->sb, (uint64_t)ino, &nd) != 0) ssmp_errors[cpu]++;
+    ssmp_ino[cpu] = (uint64_t)ino;
+    for (uint32_t r = 0; r < SSMP_ROUNDS; r++) {
+        for (uint64_t b = 0; b < SSMP_BLOCKS; b++) {
+            ssmp_fill(buf, cpu, r, b);
+            if (storage_write_file_block(mfs, (uint64_t)ino, b, buf) != 0) ssmp_errors[cpu]++;
+        }
+        for (uint64_t b = 0; b < SSMP_BLOCKS; b++) {
+            if (storage_read_file_block(mfs, (uint64_t)ino, b, buf) != 0 ||
+                ssmp_check(buf, cpu, r, b) != 0)
+                ssmp_errors[cpu]++;
+        }
+    }
+}
+
+/* Wait with interrupts on, so a TLB shootdown from the other CPU is answered. */
+static int ssmp_wait(volatile int *flag, uint64_t spins) {
+    uint64_t fl;
+    __asm__ volatile ("pushfq; pop %0" : "=r"(fl) :: "memory");
+    __asm__ volatile ("sti" ::: "memory");
+    while (!*flag && spins--) __asm__ volatile ("pause" ::: "memory");
+    if (!(fl & 0x200)) __asm__ volatile ("cli" ::: "memory");
+    return *flag ? 0 : -1;
+}
+
+void storage_smp_selftest_ap(void) {
+    if (ssmp_wait(&ssmp_go, 4000000000ull) != 0) return;
+    ssmp_work(1);
+    ssmp_hash(1);
+    ssmp_done[1] = 1;
+}
+
+void storage_smp_selftest(void) {
+    mounted_fs_t *mfs = storage_get_mounted_fs();
+    if (!mfs || !mfs->mounted || !mfs->unlocked) {
+        println("STORAGESMP: FAIL the store is not open");
+        return;
+    }
+    if (smp_get_online_count() < 2) {
+        println("STORAGESMP: FAIL needs two CPUs online");
+        return;
+    }
+    /* The reference hashes, computed alone before CPU 1 is let go. */
+    for (int cpu = 0; cpu < 2; cpu++)
+        if (kernel_argon2id((const uint8_t *)ssmp_pw[cpu], 16, ssmp_salt, sizeof(ssmp_salt),
+                            ssmp_ref[cpu], 32) != 0) {
+            println("STORAGESMP: FAIL the reference hash could not be computed");
+            return;
+        }
+    ssmp_go = 1;
+    ssmp_work(0);
+    ssmp_hash(0);
+    ssmp_done[0] = 1;
+    if (ssmp_wait(&ssmp_done[1], 40000000000ull) != 0) {
+        println("STORAGESMP: FAIL cpu 1 never finished");
+        return;
+    }
+    /* Both files as the last round left them, read once nobody else is writing:
+     * a write one CPU lost to the other is caught here even if its own read-back
+     * happened to see it. */
+    uint32_t late = 0;
+    for (int cpu = 0; cpu < 2; cpu++)
+        for (uint64_t b = 0; b < SSMP_BLOCKS; b++)
+            if (storage_read_file_block(mfs, ssmp_ino[cpu], b, ssmp_buf[0]) != 0 ||
+                ssmp_check(ssmp_buf[0], cpu, SSMP_ROUNDS - 1, b) != 0)
+                late++;
+    uint64_t overlaps = storage_op_contended();
+    uint64_t spans    = storage_span_refusals();
+    uint64_t unheld   = storage_op_unheld();
+    print("STORAGESMP: errors cpu0="); print_decimal(ssmp_errors[0]);
+    print(" cpu1=");                   print_decimal(ssmp_errors[1]);
+    print(" late=");                   print_decimal(late);
+    print(" spans-refused=");          print_decimal(spans);
+    print(" unheld=");                 print_decimal(unheld);
+    print(" overlaps=");               print_decimal(overlaps);
+    print(" hash-wrong cpu0=");        print_decimal(ssmp_hash_bad[0]);
+    print(" cpu1=");                   print_decimal(ssmp_hash_bad[1]);
+    print(" hash-overlaps=");          print_decimal(argon2_op_contended());
+    print("\n");
+    if (overlaps == 0) {
+        println("STORAGESMP: FAIL the two CPUs never overlapped in storage, so this showed nothing");
+        return;
+    }
+    if (argon2_op_contended() == 0) {
+        println("STORAGESMP: FAIL the two CPUs never hashed at once, so this showed nothing");
+        return;
+    }
+    if (ssmp_errors[0] || ssmp_errors[1] || late || spans || unheld) {
+        println("STORAGESMP: FAIL storage went wrong with two CPUs in it");
+        return;
+    }
+    if (ssmp_hash_bad[0] || ssmp_hash_bad[1]) {
+        println("STORAGESMP: FAIL a password hash came out wrong with two CPUs hashing");
+        return;
+    }
+    println("STORAGESMP: PASS two CPUs wrote and read back their own files at once, every block was theirs, and every hash was right");
+}
+#endif

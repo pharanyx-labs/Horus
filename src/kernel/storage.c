@@ -39,6 +39,75 @@ static void my_strncpy(char *dst, const char *src, size_t n) {
     while (n-- && (*dst++ = *src++));
 }
 
+/* ---- One storage operation at a time (S146) --------------------------------
+ *
+ * Everything below shares single copies of its working state: the journal's open
+ * transaction (g_txn), the metadata and Merkle caches, the superblock in
+ * g_mounted_fs, and the preimage buffers g_mac_pre and g_jscratch. On one CPU an
+ * exported storage call ran to its end before any other could start, because
+ * ring 0 is not preemptible. On two nothing kept a second call out: at the end of
+ * an install the installer's last writes (accounts, key slots) and fs_server's
+ * provisioning of /bin, which starts as soon as the volume reads as unlocked, are
+ * in here at the same time (measured: a dozen entries in that boot find the other
+ * CPU inside). A volume written like that could fail its own Merkle checks on the
+ * next boot, refusing the correct password or the root directory:
+ * smoke-installer-sd-smp failed 11 of 16 runs of one kernel build that way
+ * (2026-10-15), every failure with metadata spans refused, and passed 8 of 8 with
+ * this lock. Two CPUs running storage calls together without it get wrong blocks
+ * back and spans refused within a few hundred operations (smoke-storage-smp's
+ * arm), so the hazard is not particular to that build.
+ *
+ * So every exported entry point is one operation, taken under g_storage_op
+ * (STORAGE_OP, released on every return by the cleanup attribute), and the
+ * block-I/O primitives refuse to run outside one: an entry point added without
+ * STORAGE_OP fails on its first read rather than racing quietly on two CPUs.
+ * make smoke-storage-smp is the witness; STORAGE_OP_UNLOCKED=1 removes the
+ * exclusion (keeping only a count of the overlaps it would have stopped) for
+ * smoke-storage-smp-control. */
+static oplock_t g_storage_op = OPLOCK_INIT;
+static uint64_t g_storage_op_unheld;   /* block I/O refused: no operation held */
+
+#ifndef STORAGE_OP_UNLOCKED
+static void storage_op_enter(void) { oplock_enter(&g_storage_op); }
+static void storage_op_leave(int *unused) { (void)unused; oplock_leave(&g_storage_op); }
+static int  storage_op_held(void) { return oplock_held_here(&g_storage_op); }
+#else
+/* CONTROL ARM -- never ship. No exclusion: two CPUs run storage operations at
+ * once, as they did before S146. Entries that found another CPU already inside
+ * are counted in g_storage_op.contended, so the arm can show the overlap it
+ * allowed happened rather than infer it from the damage. */
+static volatile int g_storage_op_inside[MAX_CPUS];
+static int storage_op_cpu(void) { int c = this_cpu(); return (c < 0 || c >= MAX_CPUS) ? 0 : c; }
+static void storage_op_enter(void) {
+    int c = storage_op_cpu();
+    if (g_storage_op_inside[c]++ != 0) return;
+    for (int i = 0; i < MAX_CPUS; i++)
+        if (i != c && g_storage_op_inside[i] > 0) {
+            __atomic_fetch_add(&g_storage_op.contended, 1, __ATOMIC_RELAXED);
+            break;
+        }
+}
+static void storage_op_leave(int *unused) { (void)unused; g_storage_op_inside[storage_op_cpu()]--; }
+static int  storage_op_held(void) { return 1; }
+#endif
+
+#define STORAGE_OP \
+    int storage_op_ __attribute__((cleanup(storage_op_leave), unused)) = (storage_op_enter(), 0)
+
+/* The primitives' half of the rule: 1 when this CPU is inside a storage
+ * operation, else 0 after counting and reporting the refusal once. */
+static int storage_io_permitted(void) {
+    if (storage_op_held()) return 1;
+    if (g_storage_op_unheld++ == 0)
+        println("STORAGE: block I/O outside a storage operation was refused");
+    return 0;
+}
+
+/* Entries that waited for another CPU's storage operation, or, in the
+ * STORAGE_OP_UNLOCKED arm, ran alongside one. */
+uint64_t storage_op_contended(void) { return g_storage_op.contended; }
+uint64_t storage_op_unheld(void)    { return g_storage_op_unheld; }
+
 #define STORAGE_MAGIC   0x48534653
 
 /* The smallest volume worth laying out: superblock, metadata region, TPM blob,
@@ -404,6 +473,7 @@ int storage_derive_block_keys(uint64_t ino, uint64_t block,
                               const uint8_t *vol_key, size_t vol_key_len,
                               uint8_t *enc_key32, uint8_t *mac_key32)
 {
+    STORAGE_OP;
     struct mounted_fs *mfs = storage_get_mounted_fs();
     if (!mfs || !mfs->mounted || !mfs->unlocked) return -1;
 
@@ -444,6 +514,7 @@ static size_t storage_block_aad(uint64_t ino, uint64_t block, uint8_t *aad16)
  * block. */
 int storage_encrypt_block(uint64_t phys, uint64_t ino, uint64_t block, void *buf)
 {
+    STORAGE_OP;
     if (phys >= BLOCKS_PER_DISK) return -1;
     struct mounted_fs *mfs = storage_get_mounted_fs();
     if (!mfs || !mfs->mounted || !mfs->unlocked) return -1;
@@ -510,6 +581,7 @@ int storage_encrypt_block(uint64_t phys, uint64_t ino, uint64_t block, void *buf
  * or one whose tag/AAD/key no longer matches, fails closed (buf zeroed). */
 int storage_decrypt_block(uint64_t phys, uint64_t ino, uint64_t block, void *buf)
 {
+    STORAGE_OP;
     if (phys >= BLOCKS_PER_DISK) { secure_zero(buf, BLOCK_SIZE); return -1; }
     struct mounted_fs *mfs = storage_get_mounted_fs();
     if (!mfs || !mfs->mounted || !mfs->unlocked) { secure_zero(buf, BLOCK_SIZE); return -1; }
@@ -637,10 +709,12 @@ void storage_set_default_device(struct block_device *bd) {
  * transport only ever moves ciphertext; a userspace disk driver, if ever
  * wanted, belongs behind an IPC server, not an in-kernel callback. */
 static int raw_block_read(uint64_t block, void *buf) {
+    if (!storage_io_permitted()) return -1;
     return current_bd->read_block(current_bd, block, buf);
 }
 
 static int raw_block_write(uint64_t block, const void *buf) {
+    if (!storage_io_permitted()) return -1;
     return current_bd->write_block(current_bd, block, buf);
 }
 
@@ -849,6 +923,7 @@ static int span_open(uint64_t phys, uint8_t *buf)
 }
 
 static int do_block_read(uint64_t block, void *buf) {
+    if (!storage_io_permitted()) return -1;   /* g_txn and the caches are the operation's */
     int staged = 0;
     if (g_txn.active) {
         for (int i = g_txn.n - 1; i >= 0; i--)          /* newest staged write wins */
@@ -905,6 +980,7 @@ static int stage_block(uint64_t block, const void *buf) {
 }
 
 static int do_block_write(uint64_t block, const void *buf) {
+    if (!storage_io_permitted()) return -1;
     uint64_t leaf;
     int span = span_leaf(block, &leaf);
     if (span < 0) return -1;
@@ -1150,10 +1226,12 @@ static int journal_commit(void) {
 }
 
 int storage_block_read(uint64_t block, void *buf) {
+    STORAGE_OP;
     return raw_block_read(block, buf);
 }
 
 int storage_block_write(uint64_t block, const void *buf) {
+    STORAGE_OP;
     return raw_block_write(block, buf);
 }
 
@@ -2410,6 +2488,7 @@ static struct block_device *storage_device_at(int index)
  * restores whatever it displaced so the boot survives to print. */
 void storage_vdisk_bound_selftest(void)
 {
+    STORAGE_OP;
     if (!g_vdisk_backing || current_bd != &g_vdisk_bd) {
         print("VDISKBOUND: FAIL not running on the RAM vdisk\n");
         return;
@@ -2517,6 +2596,7 @@ static uint8_t meta_evict_byte(uint32_t k, uint32_t i)
 
 void meta_evict_selftest(void)
 {
+    STORAGE_OP;
     struct mounted_fs *mfs = storage_get_mounted_fs();
     print("METAEVICT: begin\n");
     if (!mfs || !mfs->mounted || !mfs->unlocked) {
@@ -2594,6 +2674,7 @@ void meta_evict_selftest(void)
 #endif /* META_EVICT_SELFTEST */
 
 int storage_init(void) {
+    STORAGE_OP;
     /* Persistent by default: probe for an ATA disk. If one is attached, use the
      * encrypted ATA store — it comes up mounted-but-locked and disk_key is only
      * unwrapped at login (storage_unlock), so files survive a reboot but the
@@ -2832,6 +2913,7 @@ static int write_block_bitmap_n(const struct fs_superblock *sb, uint64_t bm_idx,
 static uint64_t g_alloc_hint;
 
 int64_t storage_alloc_block(struct block_device *bd, struct fs_superblock *sb) {
+    STORAGE_OP;
     (void)bd;
     uint8_t bitmap[BLOCK_SIZE];
 
@@ -2886,6 +2968,7 @@ int64_t storage_alloc_block(struct block_device *bd, struct fs_superblock *sb) {
  * one pass later. Space is reused a little less eagerly in exchange for the scan
  * staying bounded; that is the same trade ext2's allocator makes. */
 void storage_free_block(struct block_device *bd, struct fs_superblock *sb, uint64_t block) {
+    STORAGE_OP;
     (void)bd;
     uint64_t rel = block - sb->data_start;
     uint64_t bm  = rel / BITS_PER_BITMAP_BLOCK;
@@ -2911,6 +2994,7 @@ static int inode_table_block_in_use(const struct fs_superblock *sb,
 }
 
 int64_t storage_alloc_inode(struct block_device *bd, struct fs_superblock *sb) {
+    STORAGE_OP;
     (void)bd;
     uint8_t bitmap[BLOCK_SIZE];
     uint64_t remaining = sb->inode_count;
@@ -2947,6 +3031,7 @@ int64_t storage_alloc_inode(struct block_device *bd, struct fs_superblock *sb) {
 }
 
 void storage_free_inode(struct block_device *bd, struct fs_superblock *sb, uint64_t ino) {
+    STORAGE_OP;
     (void)bd;
     if (ino >= sb->inode_count) return;
     uint64_t bm  = ino / BITS_PER_BITMAP_BLOCK;
@@ -2959,6 +3044,7 @@ void storage_free_inode(struct block_device *bd, struct fs_superblock *sb, uint6
 
 int storage_read_inode(struct block_device *bd, struct fs_superblock *sb,
                        uint64_t ino, struct on_disk_inode *inode_out) {
+    STORAGE_OP;
     if (ino >= sb->inode_count) return -1;
 
     uint64_t block = sb->inode_table_start + (ino / INODES_PER_BLOCK);
@@ -2973,6 +3059,7 @@ int storage_read_inode(struct block_device *bd, struct fs_superblock *sb,
 
 int storage_write_inode(struct block_device *bd, struct fs_superblock *sb,
                         uint64_t ino, const struct on_disk_inode *inode) {
+    STORAGE_OP;
     if (ino >= sb->inode_count) return -1;
 
     uint64_t block = sb->inode_table_start + (ino / INODES_PER_BLOCK);
@@ -3030,6 +3117,7 @@ static uint64_t get_physical_block(struct mounted_fs *mfs, uint64_t ino,
  * choices, which nothing in a shipping kernel has any business asking. */
 uint64_t storage_test_phys_block(struct mounted_fs *mfs, uint64_t ino, uint64_t block)
 {
+    STORAGE_OP;
     struct on_disk_inode inode;
     if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) return 0;
     return get_physical_block(mfs, ino, &inode, block, 0);
@@ -3040,6 +3128,7 @@ uint64_t storage_test_phys_block(struct mounted_fs *mfs, uint64_t ino, uint64_t 
 void storage_test_merkle_targets(struct mounted_fs *mfs, uint64_t phys,
                                  uint64_t *meta_block_out, uint64_t *node_block_out)
 {
+    STORAGE_OP;
     uint64_t meta_blk = phys / META_ENTRIES_PER_BLOCK;
     *meta_block_out = mfs->sb.meta_start + meta_blk;
     *node_block_out = merkle_level_base(&mfs->sb, 0) + meta_blk / MERKLE_FANOUT;
@@ -3055,6 +3144,7 @@ void storage_test_merkle_targets(struct mounted_fs *mfs, uint64_t phys,
  * one. */
 void storage_test_arm_fsck(struct mounted_fs *mfs)
 {
+    STORAGE_OP;
     mfs->sb.needs_fsck = 1;
     raw_block_write(0, &mfs->sb);
     raw_block_flush();
@@ -3084,6 +3174,7 @@ static uint64_t storage_test_scratch_block(const struct mounted_fs *mfs)
 
 uint32_t storage_test_scratch_get(void)
 {
+    STORAGE_OP;
     struct mounted_fs *mfs = storage_get_mounted_fs();
     uint64_t blk = storage_test_scratch_block(mfs);
     if (blk == 0) return 0xFFFFFFFFu;
@@ -3095,6 +3186,7 @@ uint32_t storage_test_scratch_get(void)
 
 void storage_test_scratch_set(uint32_t phase)
 {
+    STORAGE_OP;
     struct mounted_fs *mfs = storage_get_mounted_fs();
     uint64_t blk = storage_test_scratch_block(mfs);
     if (blk == 0) return;
@@ -3110,6 +3202,7 @@ void storage_test_scratch_set(uint32_t phase)
  * whose bitmap is one block there is nothing to measure. */
 uint64_t storage_test_bitmap_blocks(const struct mounted_fs *mfs)
 {
+    STORAGE_OP;
     return (mfs->sb.block_count + BITS_PER_BITMAP_BLOCK - 1) / BITS_PER_BITMAP_BLOCK;
 }
 
@@ -3128,6 +3221,7 @@ uint64_t storage_test_bitmap_blocks(const struct mounted_fs *mfs)
  * every answer it gives is a real allocation out of the region that is left. */
 void storage_test_fill_bitmap_blocks(struct mounted_fs *mfs, uint64_t n)
 {
+    STORAGE_OP;
     static uint8_t ones[BLOCK_SIZE];
     my_memset(ones, 0xFF, BLOCK_SIZE);
     uint64_t total = storage_test_bitmap_blocks(mfs);
@@ -3148,6 +3242,7 @@ void storage_test_fill_bitmap_blocks(struct mounted_fs *mfs, uint64_t n)
  * and only fail once the allocator happened to collide. */
 int storage_test_block_allocated(struct mounted_fs *mfs, uint64_t phys)
 {
+    STORAGE_OP;
     if (phys < mfs->sb.data_start) return -1;
     uint64_t rel = phys - mfs->sb.data_start;
     if (rel >= mfs->sb.block_count) return -1;
@@ -3164,6 +3259,7 @@ int storage_test_block_allocated(struct mounted_fs *mfs, uint64_t phys)
  * is outside the first bitmap block's reach. */
 int storage_test_reserve_until(struct mounted_fs *mfs, uint64_t phys)
 {
+    STORAGE_OP;
     if (phys <= mfs->sb.data_start) return 0;
     uint64_t upto = phys - mfs->sb.data_start;
     if (upto > BITS_PER_BITMAP_BLOCK || upto > mfs->sb.block_count) return -1;
@@ -3185,6 +3281,7 @@ int storage_test_reserve_until(struct mounted_fs *mfs, uint64_t phys)
 uint64_t storage_test_relocate_block(struct mounted_fs *mfs, uint64_t ino, uint64_t block,
                                      const void *buf)
 {
+    STORAGE_OP;
     if (block < 12 || block >= 12 + PTRS_PER_BLOCK) return 0;
     static uint8_t ptrs_img[BLOCK_SIZE];
     static uint8_t data[BLOCK_SIZE];
@@ -3215,6 +3312,7 @@ uint64_t storage_test_relocate_block(struct mounted_fs *mfs, uint64_t ino, uint6
 #endif /* STORAGE_TEST_HOOKS */
 
 int storage_dir_lookup(struct mounted_fs *mfs, uint64_t dir_ino, const char *name, uint64_t *out_ino) {
+    STORAGE_OP;
     struct on_disk_inode dir;
     if (storage_read_inode(mfs->bd, &mfs->sb, dir_ino, &dir) != 0) return -1;
 
@@ -3241,6 +3339,7 @@ int storage_dir_lookup(struct mounted_fs *mfs, uint64_t dir_ino, const char *nam
 
 int storage_dir_add(struct mounted_fs *mfs, uint64_t dir_ino, const char *name,
                     uint64_t child_ino, uint8_t type) {
+    STORAGE_OP;
     struct on_disk_inode dir;
     if (storage_read_inode(mfs->bd, &mfs->sb, dir_ino, &dir) != 0) return -1;
 
@@ -3960,6 +4059,7 @@ static struct mounted_fs g_mounted_fs;
 int storage_is_mounted(void) { return g_mounted_fs.mounted; }
 
 int storage_mount(struct block_device *bd) {
+    STORAGE_OP;
     uint8_t block_buf[BLOCK_SIZE];
     if (bd->read_block(bd, 0, block_buf) != 0) {
         return -1;
@@ -4084,6 +4184,7 @@ int storage_store_kind(void) {
  * the second is what S63 says. */
 int storage_authorize_format(int index, uint64_t volume_blocks, uint32_t flags, uint64_t swap_blocks)
 {
+    STORAGE_OP;
     /* THE TARGET IS AN ARGUMENT, NOT AMBIENT STATE, and that is the whole shape
      * of this function since 2026-09-06 (SECURITY.md S83). The alternative was a
      * "select the device" call followed by a "format it" call, which is a
@@ -4400,6 +4501,7 @@ static struct block_device *storage_lay_out_bootable(struct block_device *dev,
  * installer says so, rather than offering to format memory. */
 void storage_query(struct storage_info *out)
 {
+    STORAGE_OP;
     if (!out) return;
     my_memset(out, 0, sizeof(*out));
 
@@ -4468,6 +4570,7 @@ void storage_query(struct storage_info *out)
  * install onto" without the caller having to know which device is mounted. */
 int storage_device_query(int index, struct storage_info *out)
 {
+    STORAGE_OP;
     if (!out) return -1;
     struct block_device *bd = storage_device_at(index);
     if (!bd) return -1;
@@ -4526,6 +4629,7 @@ static void storage_swap_start(struct mounted_fs *mfs)
 
 int storage_unlock(const char *password, size_t plen)
 {
+    STORAGE_OP;
     /* CONSUMED HERE, WHATEVER HAPPENS NEXT, and this is the edit the rest of the
      * change hangs on.
      *
@@ -5001,6 +5105,7 @@ int storage_unlock(const char *password, size_t plen)
  * (password/high-entropy) use, so normal boot is unaffected. */
 void storage_tpm_kek_selftest(void)
 {
+    STORAGE_OP;
     if (!tpm_present())    { println("TPM_KEK_SELFTEST: SKIP (no TPM)"); return; }
     if (!g_vdisk_backing)  { println("TPM_KEK_SELFTEST: SKIP (no vdisk backing)"); return; }
 
@@ -5238,6 +5343,7 @@ static void storage_fsck_pass(struct mounted_fs *mfs)
 int storage_keyslot_probe(const char *password, size_t plen,
                           uint32_t *uid_out, uint32_t *idx_out)
 {
+    STORAGE_OP;
     struct mounted_fs *mfs = &g_mounted_fs;
     if (!mfs->mounted) return -1;
     fs_keyslot_t slots[HORUS_KEYSLOTS];
@@ -5289,6 +5395,7 @@ static int users_key(const struct mounted_fs *mfs, uint8_t *key64)
 
 int storage_users_save(const void *buf, uint32_t len)
 {
+    STORAGE_OP;
     struct mounted_fs *mfs = &g_mounted_fs;
     if (!mfs->mounted || !mfs->unlocked) return -1;
     if (mfs->sb.users_start == 0 || len == 0)  return -1;
@@ -5355,6 +5462,7 @@ int storage_users_save(const void *buf, uint32_t len)
  * scribble on the region roll the machine back to its compiled-in defaults. */
 int storage_users_load(void *buf, uint32_t len)
 {
+    STORAGE_OP;
     struct mounted_fs *mfs = &g_mounted_fs;
     if (!mfs->mounted || !mfs->unlocked) return -1;
     if (mfs->sb.users_start == 0 || len == 0)  return -1;
@@ -5398,6 +5506,7 @@ int storage_users_load(void *buf, uint32_t len)
  * Test-only; writes raw so the corruption is on the platter rather than staged. */
 int storage_users_corrupt_for_test(void)
 {
+    STORAGE_OP;
     struct mounted_fs *mfs = &g_mounted_fs;
     if (!mfs->mounted || mfs->sb.users_start == 0) return -1;
     uint8_t blk[BLOCK_SIZE];
@@ -5421,6 +5530,7 @@ int storage_users_corrupt_for_test(void)
 int storage_keyslot_add(const char *new_password, size_t nlen, uint32_t uid,
                         uint32_t *slot_out)
 {
+    STORAGE_OP;
     struct mounted_fs *mfs = &g_mounted_fs;
     if (!mfs->mounted || !mfs->unlocked) return -1;
     if (!new_password || nlen == 0)      return -1;
@@ -5462,6 +5572,7 @@ int storage_keyslot_add(const char *new_password, size_t nlen, uint32_t uid,
  * which is worse than a refusal because it looks like it worked. */
 int storage_keyslot_remove(uint32_t idx)
 {
+    STORAGE_OP;
     struct mounted_fs *mfs = &g_mounted_fs;
     if (!mfs->mounted || !mfs->unlocked) return -1;
     if (idx >= HORUS_KEYSLOTS)           return -1;
@@ -5502,6 +5613,7 @@ int storage_keyslot_remove(uint32_t idx)
  * two cases apart and to say which one they are in. */
 int storage_volume_has_keyslots(void)
 {
+    STORAGE_OP;
     return storage_volume_is_persistent() && !g_mounted_fs.sb.unsealed;
 }
 
@@ -5522,6 +5634,7 @@ int storage_volume_is_persistent(void)
  * it reveals a count, never a uid. */
 int storage_keyslot_count(void)
 {
+    STORAGE_OP;
     struct mounted_fs *mfs = &g_mounted_fs;
     if (!mfs->mounted || !mfs->unlocked) return -1;
     fs_keyslot_t slots[HORUS_KEYSLOTS];
@@ -5539,6 +5652,7 @@ uint32_t storage_unlocked_slot(void) { return g_unlocked_slot; }
 
 int storage_rekey(uint32_t slot, uint32_t uid, const char *new_password, size_t plen)
 {
+    STORAGE_OP;
     struct mounted_fs *mfs = &g_mounted_fs;
     if (!mfs->mounted || !mfs->unlocked) return -1;
     struct fs_superblock *sb = &mfs->sb;
@@ -5623,6 +5737,7 @@ int derive_and_store_user_file_key(uint32_t uid, const char *material, size_t ma
 
 int storage_create_file(struct mounted_fs *mfs, uint32_t uid, uint32_t gid,
                         const char *name, uint64_t dir_ino, uint64_t *out_ino) {
+    STORAGE_OP;
     int64_t ino = storage_alloc_inode(mfs->bd, &mfs->sb);
     if (ino < 0) return -1;
     
@@ -5767,6 +5882,7 @@ static uint64_t get_physical_block(struct mounted_fs *mfs, uint64_t ino,
 }
 
 int storage_read_file_block(struct mounted_fs *mfs, uint64_t ino, uint64_t block, void *buf) {
+    STORAGE_OP;
     struct on_disk_inode inode;
     if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) return -1;
 
@@ -5786,6 +5902,7 @@ int storage_read_file_block(struct mounted_fs *mfs, uint64_t ino, uint64_t block
 }
 
 int storage_write_file_block(struct mounted_fs *mfs, uint64_t ino, uint64_t block, const void *buf) {
+    STORAGE_OP;
     /* One atomic transaction: the data-block allocation (block bitmap), the inode
      * link, the per-block crypto metadata (+ the rollback tree above it), and the
      * ciphertext all commit together or not at all. A crash therefore leaves the
@@ -5914,6 +6031,7 @@ static int free_ptr_tree(struct mounted_fs *mfs, uint64_t ino, unsigned tree,
  * Clearing it here would flush one metadata block (and the tree above it) per
  * freed block. */
 int storage_free_inode_blocks(struct mounted_fs *mfs, uint64_t ino) {
+    STORAGE_OP;
     struct on_disk_inode inode;
 
     /* 1. Kill the inode, and say that a multi-transaction operation is in
@@ -5971,6 +6089,7 @@ int storage_free_inode_blocks(struct mounted_fs *mfs, uint64_t ino) {
 }
 
 int storage_write_capfs_blob(uint64_t inode, const void *data, size_t len) {
+    STORAGE_OP;
     (void)len;
     struct mounted_fs *mfs = storage_get_mounted_fs();
     if (!mfs->mounted) return -1;
@@ -5978,6 +6097,7 @@ int storage_write_capfs_blob(uint64_t inode, const void *data, size_t len) {
 }
 
 int storage_read_capfs_blob(uint64_t inode, void *data, size_t len) {
+    STORAGE_OP;
     (void)len;
     struct mounted_fs *mfs = storage_get_mounted_fs();
     if (!mfs->mounted) return -1;
@@ -5986,6 +6106,7 @@ int storage_read_capfs_blob(uint64_t inode, void *data, size_t len) {
 
 int storage_sync(void)
 {
+    STORAGE_OP;
     
     spin_lock(&storage_lock);
     

@@ -59,6 +59,8 @@ control_arms:
   smoke-installer-refuse-control: smoke-installer-refuse
   smoke-installer-provision-control: smoke-installer-provision
   smoke-installer-accounts-control: smoke-installer-accounts
+  smoke-installer-policy-noseed-control: smoke-installer-policy
+  smoke-installer-policy-reseed-control: smoke-installer-policy
   smoke-installer-target-control: smoke-installer-target
   smoke-passwd-target-control: smoke-passwd-target
   smoke-passwd-own-control: smoke-passwd-target
@@ -120,6 +122,7 @@ control_arms:
   smoke-fs-cap-chmod-control: smoke-fs-cap
   smoke-fs-cap-link-control: smoke-fs-cap
   smoke-fs-policy-control: smoke-fs-policy
+  smoke-fs-policy-pass-control: smoke-fs-policy
   smoke-fs-cap-posix-close-control: smoke-fs-cap-posix
   smoke-fs-cap-posix-grant-control: smoke-fs-cap-posix
   smoke-fs-cap-shell-fallback-control: smoke-fs-cap-shell
@@ -445,6 +448,7 @@ gates:
   - smoke-installer-refuse
   - smoke-installer-provision
   - smoke-installer-accounts
+  - smoke-installer-policy
   - smoke-installer-target
   - smoke-installer-back
   - smoke-installer-sized

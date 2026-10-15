@@ -26,6 +26,7 @@ Env:    SESSION_DISK      the disk image; REQUIRED, and the same one for both bo
         INSTALLER_MODE    "refuse", "provision", "sized", "unsealed", ...; default is the install-then-login pair
         SIZED_MIB         the volume size the "sized" scenario asks for (default 96)
         INSTALLER_EXPECT_EMPTY_BIN  provision mode's control arm: require the empty /bin
+        INSTALLER_EXPECT_POLICY     policy mode's control arms: "noseed" or "reseed"
         INSTALL_PASSWORD  the password to install with (default "installpw1")
         SESSION_TIMEOUT   per-step expect timeout (default 90; formatting is slow)
         BOOT_TIMEOUT      time to the first marker (default 120)
@@ -1156,8 +1157,10 @@ def accounts(disk):
             #
             # `ls` first, because "the server answers at all" is the weaker claim
             # and has to hold before the stronger one means anything.
+            # `ls /`, not `ls`: the login has a session (S148), which starts in
+            # its home, and a new home is empty.
             s.expect("%s@horus$" % USER_NAME, STEP)
-            s.send("ls")
+            s.send("ls /")
             s.expect("bin/", STEP)
             step("the filesystem answers an unprivileged login on the installed volume")
 
@@ -1187,6 +1190,127 @@ def accounts(disk):
             if login(s, "user", "password"):
                 raise SessionFail("the compiled-in user/password account survived the install")
             step("the compiled-in user/password account is not on the installed volume")
+    finally:
+        keep_serial(s.buf)
+        s.close()
+
+
+def _ush(s, cmd, prompt, timeout=None):
+    """Run one shell command; return what it printed before the next `prompt`.
+
+    The caller is at a prompt already consumed: login() matches "@horus", and
+    each call here consumes the prompt after its command."""
+    start = len(s.buf)
+    s.send(cmd)
+    s.expect(prompt, timeout if timeout is not None else STEP)
+    out = s.buf[start:]
+    return out[:out.rfind(prompt)]
+
+
+def policy(disk):  # noqa: ARG001 - uniform scenario signature
+    """A new installed volume is given /etc/fs.policy once, and never again (S148).
+
+    Roadmap 2.10 step 3(c). fs_server writes fsp_installed_text when it first
+    provisions a persistent volume with no /etc, so the everyday account has a
+    session from its FIRST login after the install, the first login of the boot
+    included (the session request can arrive before provisioning has run, which
+    fs_server now checks after the receive as well as before it). Then root
+    deletes the file, and the next boot must keep the administrator-only rule:
+    putting the default back would widen what the administrator narrowed.
+
+    WHAT A SESSION LOOKS LIKE FROM THE SHELL. A session shows only the names that
+    lead to a grant, so `ls /` in one has bin/ and no var/, which no policy line
+    names. A login without a session (an account the policy gives nothing) walks
+    by uid until phase 1b step 6, and its `ls /` has var/. So the same command
+    answers "session or not" positively both ways.
+
+    INSTALLER_EXPECT_POLICY=noseed is the arm FS_POLICY_NO_SEED: boot 2's user
+    must have NO session. INSTALLER_EXPECT_POLICY=reseed is the arm
+    FS_POLICY_RESEED: boot 3's user must have one again after the deletion.
+    """
+    expect = os.environ.get("INSTALLER_EXPECT_POLICY", "")
+    uprompt = "%s@horus$" % USER_NAME
+    rprompt = "root@horus#"
+
+    # ---- boot 1: install, two accounts ----
+    s = Serial(ISO)
+    try:
+        answer_survey(s, first_timeout=BOOT)
+        answer_accounts(s)
+        answer_review_and_confirm(s)
+        expect_installed(s)
+        s.expect("horus login:", STEP)
+        step("installed, with the everyday account")
+    finally:
+        keep_serial(s.buf)
+        s.close()
+
+    # ---- boot 2: the everyday account first, on a volume nobody has opened ----
+    s = Serial(ISO)
+    try:
+        if not login(s, USER_NAME, USER_PASSWORD, BOOT):
+            raise SessionFail("the everyday account could not log in after the install")
+        root_ls = _ush(s, "ls /", uprompt)
+        if "bin/" not in root_ls:
+            raise SessionFail("`ls /` did not list bin/, so it says nothing either way: %r" % root_ls)
+        if expect == "noseed":
+            if "var/" not in root_ls:
+                raise SessionFail("CONTROL: the user has a session although no policy was written")
+            step("CONTROL: no policy written, so the everyday account has no session "
+                 "(`ls /` shows var/)")
+            return
+        if "var/" in root_ls:
+            raise SessionFail("the everyday account has no session on a new volume: "
+                              "`ls /` shows var/, which no policy line grants")
+        step("the everyday account's first login has a session: `ls /` shows bin/ and no var/")
+
+        conf = _ush(s, "cat /etc/shell.conf", uprompt)
+        if "hostname" not in conf:
+            raise SessionFail("the session cannot read /etc/shell.conf: %r; `ls /etc` says %r"
+                              % (conf, _ush(s, "ls /etc", uprompt)))
+        pol = _ush(s, "cat /etc/fs.policy", uprompt)
+        if "@admin" in pol:
+            raise SessionFail("an everyday session read /etc/fs.policy, which nothing grants it")
+        step("the session reads /etc/shell.conf (@all read) and not /etc/fs.policy")
+        s.send("logout")
+
+        if not login(s, "root", PASSWORD):
+            raise SessionFail("root could not log in")
+        pol = _ush(s, "cat /etc/fs.policy", rprompt)
+        if "@all         /etc/shell.conf   read" not in pol:
+            raise SessionFail("/etc/fs.policy is not the installed default: %r" % pol)
+        step("/etc/fs.policy holds the installed default")
+        # The builtin rm takes a name in the working directory, not a path.
+        _ush(s, "cd /etc", rprompt)
+        out = _ush(s, "rm fs.policy", rprompt)
+        if "rm: removed" not in out:
+            raise SessionFail("root could not delete /etc/fs.policy: %r" % out)
+        _ush(s, "cd /", rprompt)
+        step("root deleted /etc/fs.policy")
+        s.send("logout")
+        s.expect("horus login:", STEP)
+    finally:
+        keep_serial(s.buf)
+        s.close()
+
+    # ---- boot 3: the policy is gone, and must stay gone ----
+    s = Serial(ISO)
+    try:
+        if not login(s, USER_NAME, USER_PASSWORD, BOOT):
+            raise SessionFail("the everyday account could not log in on boot 3")
+        root_ls = _ush(s, "ls /", uprompt)
+        if "bin/" not in root_ls:
+            raise SessionFail("`ls /` did not list bin/ on boot 3: %r" % root_ls)
+        if expect == "reseed":
+            if "var/" in root_ls:
+                raise SessionFail("CONTROL: the policy was not written back, so the arm shows nothing")
+            step("CONTROL: the deleted policy was written back and the everyday account "
+                 "has its session again")
+            return
+        if "var/" not in root_ls:
+            raise SessionFail("the deleted policy came back: the everyday account has a "
+                              "session again on boot 3")
+        step("boot 3: no policy, so the administrator alone; the everyday account has no session")
     finally:
         keep_serial(s.buf)
         s.close()
@@ -2055,6 +2179,13 @@ def run():
     if mode == "accounts":
         accounts(disk)
         print("INSTALLER_SESSION: PASS")
+        return 0
+    if mode == "policy":
+        policy(disk)
+        if os.environ.get("INSTALLER_EXPECT_POLICY"):
+            print("INSTALLER_SESSION: CONTROL PASS")
+        else:
+            print("INSTALLER_SESSION: PASS")
         return 0
     if mode == "walkback":
         walkback(disk)

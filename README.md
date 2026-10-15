@@ -162,10 +162,9 @@ slot number; it never sees the capability itself.
   driver reads and writes a disk from ring 3 in a self-test build, but the kernel's storage cannot
   use it yet.
 - **No USB**, and so no keyboard on a machine without PS/2 emulation.
-- **A standard user on an installed system still reaches files by user id and mode.** Each login
-  asks for a filesystem session and works through its capabilities (S141), but the installer does
-  not yet write a policy, and a volume without one gives a session to the administrator alone
-  (filesystem phase 1b step 3(c)). Every login on a live boot gets one.
+- **The uid path is still there.** Every login on a live boot or a new installed system works
+  through a filesystem session (S141, S148), but an account the policy gives nothing still
+  reaches files by user id and mode until filesystem phase 1b step 6 removes that path.
 - **No RAM above 4 GiB.** A machine's memory up to 4 GiB is used; what lies above is reported
   and left alone.
 - **No threads, job control, `/proc`, wall clock or kernel address randomisation.**
@@ -270,8 +269,8 @@ test does not exist or does not run.
 
 | Layer | What it covers |
 |---|---|
-| Security properties | 149 numbered properties, each bound to a witness by `tools/check_invariants.py` |
-| QEMU integration tests | 565 `smoke-*` targets: 243 base gates and 322 control arms |
+| Security properties | 150 numbered properties, each bound to a witness by `tools/check_invariants.py` |
+| QEMU integration tests | 569 `smoke-*` targets: 244 base gates and 325 control arms |
 | Control arms | A build that puts a defect back on purpose; CI requires its gate to go red against it |
 | Kani | 41 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
 | Miri | The security core's tests, interpreted for undefined behaviour on every pull request |
@@ -279,7 +278,7 @@ test does not exist or does not run.
 | Reproducibility | `kernel.elf` builds byte for byte the same twice; the ISO does not yet |
 | Toolchain | The Rust compiler, Kani, the fuzzing toolchain, PyYAML and semgrep are pinned to exact versions |
 
-`.github/workflows/ci.yml` defines 141 jobs; 145 of the 154 status checks the workflows produce
+`.github/workflows/ci.yml` defines 142 jobs; 146 of the 155 status checks the workflows produce
 gate a merge. The 9 that do not are the nightly fuzzing, the nightly Kani control arms and the
 scheduled ruleset audit, each with its reason in `.github/ci-gating.yml`.
 [`TESTS.md`](TESTS.md) lists every test and what it proves.

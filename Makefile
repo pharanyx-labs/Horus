@@ -140,7 +140,8 @@ DEFECT_FLAGS = \
 	FS_SESSION_TMP_SHARED FS_SESSION_TMP_STORE_VISIBLE FS_SESSION_TMP_KEPT \
 	FS_TOKEN_NODE_IGNORED FS_CAP_CHMOD_UNTRUE FS_CAP_LINK_WIDENS FS_SEALED_POLL_SPIN \
 	FSCAPPOSIX_SELFTEST POSIX_CLOSE_KEEPS_CAP HVFS_GRANT_UNNARROWED \
-	INIT_SHELL_ROOT_READONLY SHELL_CAP_FALLBACK SH_LEND_SLOT_SESSION SHELL_STALE_ROOT INIT_SESSION_DEAF_AFTER_FIRST \
+	INIT_SHELL_ROOT_READONLY SHELL_CAP_FALLBACK FS_POLICY_NO_SEED FS_POLICY_RESEED FSP_PASS_RIGHTS_UNCARRIED \
+	SH_LEND_SLOT_SESSION SHELL_STALE_ROOT INIT_SESSION_DEAF_AFTER_FIRST \
 	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED ELF_SPAN_C_PARSE IPC_SENDER_SLOT_ONLY IPC_REPLY_SLOT_ONLY \
 	FS_LINK_UNCOUNTED FS_DIR_OPERAND_UNCHECKED GPT_ENTRIES_CRC_UNCHECKED REVOKE_HASHED_BACKSTOP STORAGE_REPLACE_VIEW_UNRESOLVED \
 	ESP_PIN_UNCHECKED ESP_NOT_WRITTEN DEBUG_BUILD \
@@ -950,6 +951,24 @@ HOME_DIR_ROOT_OWNED ?= 0
 ifeq ($(HOME_DIR_ROOT_OWNED),1)
 CFLAGS  += -DHOME_DIR_ROOT_OWNED
 ASFLAGS += -DHOME_DIR_ROOT_OWNED
+endif
+
+# FS_POLICY_NO_SEED=1 has fs_server write no /etc/fs.policy into a new
+# installed volume, so it keeps the administrator-only rule and its ordinary
+# accounts have no session (arm of smoke-installer-policy, S148).
+# FS_POLICY_RESEED=1 writes the policy whenever the file is missing, so an
+# administrator who deleted it gets the default back at the next boot (the
+# other arm). Userspace-only; the -D that matters is applied to
+# USERSPACE_CFLAGS at top level.
+FS_POLICY_NO_SEED ?= 0
+ifeq ($(FS_POLICY_NO_SEED),1)
+CFLAGS  += -DFS_POLICY_NO_SEED
+ASFLAGS += -DFS_POLICY_NO_SEED
+endif
+FS_POLICY_RESEED ?= 0
+ifeq ($(FS_POLICY_RESEED),1)
+CFLAGS  += -DFS_POLICY_RESEED
+ASFLAGS += -DFS_POLICY_RESEED
 endif
 
 # S147, LIMITATIONS 1.38 (make smoke-session-handover). SH_LEND_SLOT_SESSION=1
@@ -3759,6 +3778,9 @@ FS_CAP_RIGHTS_UNCHECKED ?= 0
 FS_XDEV_UNCHECKED ?= 0
 FS_WALK_NAMES_UNCHECKED ?= 0
 FS_SESSION_GRANTS_ROOT ?= 0
+# FSP_PASS_RIGHTS_UNCARRIED=1: a directory on the way to a grant carries only its
+# subtree's rights (arm smoke-fs-policy-pass-control, S148).
+FSP_PASS_RIGHTS_UNCARRIED ?= 0
 FS_SESSION_RIGHTS_UNCHECKED ?= 0
 FS_SESSION_ANY_CALLER ?= 0
 FS_SESSION_TMP_SHARED ?= 0
@@ -5624,6 +5646,9 @@ endif
 ifeq ($(FS_SESSION_GRANTS_ROOT),1)
 USERSPACE_CFLAGS += -DFS_SESSION_GRANTS_ROOT
 endif
+ifeq ($(FSP_PASS_RIGHTS_UNCARRIED),1)
+USERSPACE_CFLAGS += -DFSP_PASS_RIGHTS_UNCARRIED
+endif
 ifeq ($(FS_SESSION_RIGHTS_UNCHECKED),1)
 USERSPACE_CFLAGS += -DFS_SESSION_RIGHTS_UNCHECKED
 endif
@@ -5933,6 +5958,12 @@ ifeq ($(HOME_DIR_ROOT_OWNED),1)
 USERSPACE_CFLAGS += -DHOME_DIR_ROOT_OWNED
 endif
 
+ifeq ($(FS_POLICY_NO_SEED),1)
+USERSPACE_CFLAGS += -DFS_POLICY_NO_SEED
+endif
+ifeq ($(FS_POLICY_RESEED),1)
+USERSPACE_CFLAGS += -DFS_POLICY_RESEED
+endif
 ifeq ($(SH_LEND_SLOT_SESSION),1)
 USERSPACE_CFLAGS += -DSH_LEND_SLOT_SESSION
 endif
@@ -14091,6 +14122,7 @@ FSPOLICY_TEST_BIN = tools/fs_policy_test
 .PHONY: smoke-fs-policy smoke-fs-policy-control
 smoke-fs-policy:
 	@$(CC) -std=gnu99 -Wall -Wextra -Werror -I include $(if $(filter 1,$(FS_SESSION_GRANTS_ROOT)),-DFS_SESSION_GRANTS_ROOT) \
+		$(if $(filter 1,$(FSP_PASS_RIGHTS_UNCARRIED)),-DFSP_PASS_RIGHTS_UNCARRIED) \
 		-o $(FSPOLICY_TEST_BIN) tools/fs_policy_test.c
 	@./$(FSPOLICY_TEST_BIN) > fs-policy-test.log 2>&1; rc=$$?; cat fs-policy-test.log; \
 	 if [ -n "$(FSPOLICYEXPECT)" ]; then \
@@ -14100,6 +14132,13 @@ smoke-fs-policy:
 smoke-fs-policy-control:
 	@$(MAKE) --no-print-directory smoke-fs-policy FS_SESSION_GRANTS_ROOT=1 \
 		FSPOLICYEXPECT='FS_POLICY_TEST: FAIL user-root-not-granted'
+
+# A directory on the way to a grant carries only its subtree's rights, so one
+# whose grants below are on files alone cannot be walked through (S148).
+.PHONY: smoke-fs-policy-pass-control
+smoke-fs-policy-pass-control:
+	@$(MAKE) --no-print-directory smoke-fs-policy FSP_PASS_RIGHTS_UNCARRIED=1 \
+		FSPOLICYEXPECT='FS_POLICY_TEST: FAIL installed-user-etc-carries-pass'
 
 # PROGRAMS WALK BY CAPABILITY (phase 1b step 2, client half, S126). fscapposix,
 # a newlib program holding a read-only root at CAPSLOT_FS_ROOT and a writable one
@@ -16643,6 +16682,51 @@ smoke-installer-accounts:
 	@SESSION_DISK=installer-a.img INSTALLER_MODE=accounts 		SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT) 		python3 tools/installer_session.py horus.iso
 	@rm -f installer-a.img
 	@echo "[installer] PASS - the everyday account boots the machine, and the built-in one is gone"
+
+# S148, roadmap 2.10 step 3(c): a new installed volume is given /etc/fs.policy
+# once, when fs_server first provisions it, and never again. Three boots: the
+# install; the everyday account's first login has a session (`ls /` shows bin/
+# and no var/), reads /etc/shell.conf and not /etc/fs.policy, and root deletes
+# the policy; then the account has no session, because a deleted policy stays
+# deleted. Its arms are FS_POLICY_NO_SEED (boot 2 has no session) and
+# FS_POLICY_RESEED (boot 3 has one again). `clean` first: the flags are
+# userspace-only and userspace objects do not depend on the build flags.
+# COREUTILS_MODULES=1 as the shipped image has it: /etc/shell.conf comes from
+# its seed module, and without it there is no file for the session to read.
+# Every boot's serial is appended to installer-pol-serial.log, and each boot's
+# kernel console (COM4, where fs_server's reports go) is kept in
+# installer-pol-kcon.log.boot<n>: the evidence when it goes red.
+INSTALLER_POLICY_RUN = \
+	rm -f installer-pol.img installer-pol-serial.log installer-pol-kcon.log.boot* && \
+	truncate -s $$(( $(INSTALLER_BLOCKS_IMG) * $(FS_BLOCK_SIZE) )) installer-pol.img && \
+	SESSION_DISK=installer-pol.img INSTALLER_MODE=policy SESSION_SERIAL_LOG=installer-pol-serial.log \
+	SESSION_KCON_LOG=installer-pol-kcon.log \
+	SESSION_TIMEOUT=$(INSTALLER_TIMEOUT) INSTALLER_FORMAT_TIMEOUT=$(INSTALLER_FORMAT_TIMEOUT) BOOT_TIMEOUT=$(INSTALLER_TIMEOUT)
+
+.PHONY: smoke-installer-policy smoke-installer-policy-noseed-control smoke-installer-policy-reseed-control
+smoke-installer-policy:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 COREUTILS_MODULES=1 horus.iso
+	@$(INSTALLER_POLICY_RUN) python3 tools/installer_session.py horus.iso
+	@rm -f installer-pol.img
+	@echo "[installer] PASS - a new volume's policy gives the everyday account a session, and a deleted one stays deleted"
+
+smoke-installer-policy-noseed-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 FS_POLICY_NO_SEED=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 FS_POLICY_NO_SEED=1 COREUTILS_MODULES=1 horus.iso
+	@$(INSTALLER_POLICY_RUN) INSTALLER_EXPECT_POLICY=noseed python3 tools/installer_session.py horus.iso
+	@rm -f installer-pol.img
+	@echo "[installer] CONTROL PASS - no policy written, so the everyday account had no session"
+
+smoke-installer-policy-reseed-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 FS_POLICY_RESEED=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 FS_POLICY_RESEED=1 COREUTILS_MODULES=1 horus.iso
+	@$(INSTALLER_POLICY_RUN) INSTALLER_EXPECT_POLICY=reseed python3 tools/installer_session.py horus.iso
+	@rm -f installer-pol.img
+	@echo "[installer] CONTROL PASS - the deleted policy was written back"
 
 # Control arm: PASSWD_NO_KEYSLOT=1 and nothing else, so both arms drive the same
 # install and differ only in whether the password is authorised to open the disk.

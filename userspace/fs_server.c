@@ -2012,7 +2012,56 @@ static unsigned prune_tree(uint32_t dir, int depth) {
     return removed;
 }
 
+/* Write /etc/fs.policy from fsp_installed_text (roadmap 2.10 step 3(c), S148),
+ * root-owned 0600: on the uid path, until phase 1b step 6 removes it, an
+ * ordinary account reads nothing a session would not show it. The contents go
+ * in before the name, as seed_file_at does, so a write that fails part-way
+ * leaves no file and the volume keeps the administrator-only rule (fail
+ * closed); the caller has made /etc by then, so it is not tried again. 1
+ * written, 0 a file of that name already there, -1 on failure. */
+#ifndef FS_POLICY_NO_SEED
+static int seed_policy(uint32_t etc_ino) {
+    if (dir_find(etc_ino, "fs.policy", 0, 0)) return 0;
+    int ino = sys_fs_inode_alloc(FS_TYPE_FILE);
+    if (ino < 0) return -1;
+    sys_fs_set_meta((uint32_t)ino, 0600u, 0, 0);
+    static uint8_t buf[BLK];
+    const uint32_t size = sizeof(fsp_installed_text) - 1;
+    for (uint32_t off = 0, blk = 0; off < size; off += BLK, blk++) {
+        uint32_t chunk = size - off; if (chunk > BLK) chunk = BLK;
+        umemcpy(buf, fsp_installed_text + off, chunk);
+        if (sys_fblock_write((uint32_t)ino, blk, buf, chunk) != (int)chunk) {
+            fs_ino_free((uint32_t)ino); return -1;
+        }
+    }
+    sys_fs_set_size((uint32_t)ino, size);
+    if (dir_add(etc_ino, "fs.policy", (uint32_t)ino, FS_TYPE_FILE) != 0) {
+        fs_ino_free((uint32_t)ino); return -1;
+    }
+    return 1;
+}
+#endif
+
 static void provision_boot_modules(void) {
+    /* WHETHER THIS VOLUME HAS EVER BEEN SET UP decides its policy (3(c)), and it
+     * is read before the skeleton below makes /etc. A persistent volume with no
+     * /etc is one nobody has configured: a fresh install. It is given
+     * fsp_installed_text, so its ordinary accounts have sessions from their
+     * first login. A volume that has an /etc keeps whatever it has, and one
+     * whose policy file is gone keeps the administrator-only rule (decision 9):
+     * an administrator who deletes the policy has narrowed the system, and a
+     * boot that put the file back would widen it behind their back. A live
+     * boot's store is ephemeral and takes the compiled-in default, so nothing
+     * is written there; a store whose kind the kernel will not say is treated
+     * as neither, and seeded with nothing. */
+#ifdef FS_POLICY_RESEED
+    /* CONTROL ARM -- never ship. The policy is written whenever the file is
+     * missing, /etc or not: deleting it grants the default again at the next
+     * boot. See make smoke-installer-policy-reseed-control. */
+    int seed_policy_file = 1;
+#else
+    int seed_policy_file = !dir_find(0, "etc", 0, 0);
+#endif
     /* THE SYSTEM TREES FIRST (S116): made, marked, owned by root. Then the rest
      * of the layout in docs/design/installed-system.md section 2, which is the
      * operator's and is left as it is. /tmp is not made: there is no shared
@@ -2026,6 +2075,20 @@ static void provision_boot_modules(void) {
     g_sys_n = 0;
     for (int i = 0; sys_dirs[i]; i++) system_dir(sys_dirs[i]);
     for (int i = 0; skel[i]; i++) ensure_dir_path(skel[i]);
+#ifndef FS_POLICY_NO_SEED
+    /* (FS_POLICY_NO_SEED, the CONTROL ARM for make smoke-installer-policy-noseed-
+     * control, never ship: no policy is written, so an installed volume keeps
+     * the administrator-only rule and its ordinary accounts have no session.) */
+    if (seed_policy_file && sys_fs_store_kind() == FS_STORE_PERSISTENT) {
+        int etc = ensure_dir_path("etc");
+        int r = etc < 0 ? -1 : seed_policy((uint32_t)etc);
+        if (r == 1) kputln("[fs_server] new volume: /etc/fs.policy written");
+        else if (r < 0) kputln("[fs_server] new volume: /etc/fs.policy could not be written; "
+                               "the administrator alone");
+    }
+#else
+    (void)seed_policy_file;
+#endif
 
     /* After the skeleton, because it needs /home to exist; before the modules,
      * because a full volume should cost an account its home last, not first. */
@@ -2097,6 +2160,16 @@ static void provision_boot_modules(void) {
     /* One marker whether or not modules were shipped: the skeleton is always
      * created, so a default (module-free) boot still reports a real filesystem. */
     kputln("[fs_server] filesystem provisioned");
+}
+
+/* The sealed-volume case: the volume was locked at startup, so provision once a
+ * login has unlocked it (a stat of the root inode fails while it is locked). */
+static void provision_if_unlocked(int *provisioned) {
+    struct fs_stat root_st;
+    if (sys_fs_stat(0, &root_st) != 0) return;
+    kputln("FS_STORE: unlocked; provisioning now");
+    provision_boot_modules();
+    *provisioned = 1;
 }
 
 /* The gate endpoint init shares with us (slot 3, object 0), and the badge we
@@ -2192,14 +2265,7 @@ void _start(void) {
         /* Fallback for the sealed-ATA case: the volume was locked at startup, so
          * provision on the first loop after login unlocks it (a stat of the root
          * inode fails while locked). On the RAM disk this already ran above. */
-        if (!provisioned) {
-            struct fs_stat root_st;
-            if (sys_fs_stat(0, &root_st) == 0) {
-                kputln("FS_STORE: unlocked; provisioning now");
-                provision_boot_modules();
-                provisioned = 1;
-            }
-        }
+        if (!provisioned) provision_if_unlocked(&provisioned);
         /* Sleep until a request arrives (roadmap 1.3), but only once the volume
          * has been provisioned.
          *
@@ -2245,6 +2311,13 @@ void _start(void) {
                 continue;
             }
         }
+
+        /* AND AGAIN NOW A REQUEST HAS COME. The check at the top of the loop ran
+         * before the receive, and a login can unlock the volume in between: its
+         * session request would then be compiled before provisioning had
+         * written a new volume's policy, and an ordinary account's first login
+         * after an install would get the administrator-only rule (3(c)). */
+        if (!provisioned) provision_if_unlocked(&provisioned);
 
         /* Take the caller's identity from the kernel, not from the request: this
          * is tasks[sender].uid, fixed at that task's login (SYS_AUTH). A client

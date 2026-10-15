@@ -56,7 +56,7 @@ The recommendation is the one the route is written around; it is not the decisio
 
 | Lane | Milestone | Items | Closes | Needs |
 |---|---|---|---|---|
-| Filesystem | A policy on every installed system, then the uid path removed | 2.10 steps 3(c), 6 | 1.31 | |
+| Filesystem | The uid path removed | 2.10 step 6 | 1.31 | |
 
 ### Wave 2: authority completes, the boot chain tightens
 
@@ -171,11 +171,10 @@ core. S87 sets no line target for the whole kernel: the classification is the pr
 **2.10 🚧 A capability-addressed filesystem.** Specified in [`design/filesystem.md`](design/filesystem.md),
 every load-bearing question answered. The disk holds no authority: capabilities are derived fresh
 each boot from a policy inside the encrypted, Merkle-verified volume, and the POSIX view is
-truthful. Phase 1b's steps 1, 2, 4 and 5 and steps 3(a) and 3(b) are done. Open:
+truthful. Phase 1b's steps 1 to 5 are done. Open:
 
 | Step | What lands |
 |---|---|
-| 3(c) | The installer writes `/etc/fs.policy`, with read grants on `/etc/shell.conf` and `/etc/login.conf` for every account (`design/configuration.md`) |
 | 6 | The identity path removed: `perm_ok`, the root check on `chown`, the uid half of `SYS_IPC_SENDER` in the filesystem, `SYS_FS_SET_META` and `SYS_CONNECT_FS_SERVER`. Closes LIMITATIONS 1.31 |
 | Phase 2 | The kernel's sealed-block service, its calls taking and returning ciphertext so that `fs_server` moves the blocks through a ring-3 driver ([`design/ring3-storage.md`](design/ring3-storage.md)), and the copy-on-write v12 format in `fs_server`, whose pointer tree is the Merkle tree, so all metadata is authenticated; separate system and home volumes |
 | Phase 3 | Symbolic links, timestamps and a time service, cross-directory rename, sparse files |

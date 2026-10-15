@@ -2421,18 +2421,29 @@ static void handle_command(char *cmd) {
         if (sh_lookup(name, &f, 0) != 0) {
             println("cat: file not found");
         } else {
-            rq.op = FS_OP_READ; rq.ino = f.ino;
-            rq.offset = 0; rq.len = FS_IO_MAX;
-            int rt = fss_call_on(&f, &rq, &rp);
-            hvfs_release(&f);
-            if (rt < 0 || rp.rc < 0) {
-                println("cat: read failed");
-            } else {
+            /* THE WHOLE FILE, one read at a time until the server says the end
+             * (0). Until 2026-10-15 this printed the first FS_IO_MAX bytes and
+             * stopped, so a file longer than that was shown cut off with no
+             * sign of it. Each chunk is printed as it comes, so the shell holds
+             * no copy of the file. */
+            uint32_t off = 0;
+            char last = '\n';
+            for (;;) {
+                rq.op = FS_OP_READ; rq.ino = f.ino;
+                rq.offset = off; rq.len = FS_IO_MAX - 1;
+                int rt = fss_call_on(&f, &rq, &rp);
+                if (rt < 0 || rp.rc < 0) { println("cat: read failed"); break; }
+                if (rp.rc == 0) {
+                    if (last != '\n') print("\n");
+                    break;
+                }
                 int l = rp.rc < FS_IO_MAX ? rp.rc : FS_IO_MAX - 1;
                 rp.data[l] = 0;
                 print((char *)rp.data);
-                if (l == 0 || rp.data[l-1] != '\n') print("\n");
+                last = (char)rp.data[l - 1];
+                off += (uint32_t)l;
             }
+            hvfs_release(&f);
         }
     } else if (strncmp(cmd, "mkdir ", 6) == 0) {
         const char *name = cmd + 6;

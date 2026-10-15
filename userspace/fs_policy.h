@@ -141,6 +141,35 @@ static const char fsp_default_text[] =
     "@self   ~     all\n"
     "@self   /tmp  read,write,lookup,create,delete,setattr\n";
 
+/* The policy an installed volume starts with (roadmap 2.10 step 3(c), S148):
+ * fs_server writes it as /etc/fs.policy when it provisions a persistent volume
+ * that has no /etc yet, which is a volume nobody has configured. The live
+ * default's grants, and read on the two configuration files every login reads
+ * (docs/design/configuration.md), which hold no secret. It is a file the
+ * administrator edits, so it says what it is. Never written over: a volume
+ * that has an /etc has had its say, and one without a usable policy file gives
+ * the administrator alone (fsp_load), so deleting it narrows and never widens. */
+static const char fsp_installed_text[] =
+    "# /etc/fs.policy - who may reach which part of the filesystem. See fs.policy(5).\n"
+    "#\n"
+    "# Horus wrote this once, when it first set this volume up, and will never\n"
+    "# write it again. A login's session reaches only what a line here grants it;\n"
+    "# rights only add up. A file that does not parse, or no file at all, gives\n"
+    "# the administrator \"/ all\" and nobody anything else.\n"
+    "#\n"
+    "# principal  path              rights\n"
+    "@admin       /                 all\n"
+    "@all         /bin              read,lookup,exec\n"
+    "@all         /lib              read,lookup\n"
+    "@all         /usr              read,lookup,exec\n"
+    "@all         /etc/shell.conf   read\n"
+    "@all         /etc/login.conf   read\n"
+    "@self        ~                 all\n"
+    "@self        /tmp              read,write,lookup,create,delete,setattr\n";
+
+_Static_assert(sizeof(fsp_installed_text) - 1 <= FSP_MAX_BYTES,
+               "the installed policy must be one the parser accepts");
+
 /* A persistent volume with no usable policy (decision 9, §6.4): the
  * administrator gets the root, so they can log in and write one, and nobody
  * else gets anything. */
@@ -509,6 +538,20 @@ static int fsp_compile(const struct fsp_policy *p, const struct fsp_who *who, st
         struct fsp_node *nn = &t->node[i];
         nn->eff = nn->granted | (nn->parent >= 0 ? t->node[nn->parent].eff : 0);
         nn->below = nn->eff;
+#ifndef FSP_PASS_RIGHTS_UNCARRIED
+        /* A DIRECTORY ON THE WAY TO A GRANT IS WALKED THROUGH, and a capability
+         * to it must carry what fsp_op_rights lets an operation there use, or
+         * the walk stops at it. Its subtree's rights did not always include
+         * that: "@all /etc/shell.conf read" gave /etc only READ, so nothing in
+         * /etc could be looked up (found 2026-10-15 by the first policy to
+         * grant a file alone, S148). Nothing wider follows: operations here
+         * are held to FSP_PASS_RIGHTS, and a child gets its own grant. */
+        if (nn->eff == 0 && nn->nchild > 0) nn->below = FSP_PASS_RIGHTS;
+#else
+        /* CONTROL ARM, never ship (make smoke-fs-policy-pass-control): the
+         * subtree's rights alone, so a directory whose grants below are on
+         * files only cannot be walked through. */
+#endif
     }
     for (unsigned i = t->n; i-- > 1; )
         t->node[t->node[i].parent].below |= t->node[i].below;

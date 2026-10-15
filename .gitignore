@@ -89,6 +89,8 @@ userspace/*.tmp.*
 
 # Log and trace files
 *.log
+# A gate's per-boot logs (installer-pol-kcon.log.boot1, ...)
+*.log.boot*
 qemu.log
 *.trace
 *.dump

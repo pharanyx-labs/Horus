@@ -270,6 +270,10 @@ required:
   # account and not the volume, and the account works only on a machine somebody
   # else has already unlocked -- which is why root-first tests never saw it.
   - installer-accounts
+  # Gating. It carries S148: a new installed volume is given /etc/fs.policy
+  # once, so its everyday account has a session from the first login, and a
+  # policy the administrator deleted is never written back.
+  - installer-policy
   # Gating. It carries S147: a login never holds an earlier login's filesystem,
   # with a session of its own or with none.
   - session-handover

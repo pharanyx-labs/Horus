@@ -8,14 +8,15 @@ SYNOPSIS
 
 DESCRIPTION
     The filesystem policy says, for each login, which subtrees its session
-    may reach and with which rights. fs_server reads it when it starts and
-    compiles each login's grants into the one root capability that login's
-    session is given; everything the session opens is reached through
-    that capability, and the policy is applied to all of it.
+    may reach and with which rights. fs_server reads it at every login and
+    compiles that login's grants into the one root capability its session
+    is given; everything the session opens is reached through that
+    capability, and the policy is applied to all of it. An edit applies
+    from the next login.
 
-    Logins do not open sessions yet: until the login handshake lands
-    (roadmap 2.10, step 3(b)), the shell still authorises file access by
-    the uid the kernel attests, and this file decides nothing at login.
+    An account this file gives nothing has no session. Until the uid path
+    is removed (roadmap 2.10, step 6), its login reaches files by the uid
+    the kernel attests and the mode bits, as before sessions existed.
 
 FORMAT
     One grant per line, three fields separated by spaces or tabs:
@@ -51,6 +52,17 @@ STRICT BY DESIGN
     administrator "/ all" and nobody anything else, so the administrator
     can log in and write one. A live boot uses the default below.
 
+INSTALLED
+    fs_server writes this file once, when it first sets up a new installed
+    volume (one with no /etc), as the live default below with two more
+    lines, so every login can read the configuration files:
+
+        @all    /etc/shell.conf  read
+        @all    /etc/login.conf  read
+
+    It is root's, mode 0600, and is never written again: deleting it
+    leaves the administrator alone, and never brings the default back.
+
 DEFAULT
     The live boot's policy, compiled into fs_server:
 
@@ -73,4 +85,5 @@ FILES
     /etc/fs.policy
 
 SEE ALSO
-    hier(7), capabilities(7), stat(1), chmod(1)
+    hier(7), capabilities(7), shell.conf(5), login.conf(5), stat(1),
+    chmod(1)

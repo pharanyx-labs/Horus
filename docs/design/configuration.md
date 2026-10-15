@@ -11,7 +11,7 @@ design takes; each is open to revision, and §6 lists what is deliberately left 
 
 | Piece | State |
 |---|---|
-| `/etc` | Created by `fs_server` at boot. Holds `fs.policy` on a persistent volume (the installer writes it; design `filesystem.md` §6.2). Not a system tree: it is not rebuilt from boot modules, so what an administrator writes there persists |
+| `/etc` | Created by `fs_server` at boot. Holds `fs.policy` on a persistent volume (`fs_server` writes it once, into a new volume, S148; design `filesystem.md` §6.2). Not a system tree: it is not rebuilt from boot modules, so what an administrator writes there persists |
 | Readers | `fs_server` reads `/etc/fs.policy` from its own store. The shell reads files through its filesystem endpoint (`sh_open`, `sh_read_file`). The kernel reads no file at all |
 | Manual pages | Plain text, one file per page under `userspace/man/`, each a verified boot module placed at `/usr/share/man/<name>`. `man` prefers a page on disk and falls back to the shell's built-in table. Shipped today: `hier(7)`, `tcc(1)` and the coreutils pages |
 | Boot modules | `MAX_BOOT_MODULES` is 48, and an install image uses about 30 |
@@ -68,18 +68,18 @@ login is offered as a setting.
 
 Both files are readable by every account and secret to none. Logins open sessions through the
 filesystem policy since roadmap 2.10 step 3(b), and a session reads only what its policy grants.
-The policy the installer writes (step 3(c)) gains `@all /etc/shell.conf read` and `@all
-/etc/login.conf read`, two read grants on two files that hold no secret, so that the shell can
-read them with the login's own capability. Until then a standard user on an installed system has
-no session and reads them by the uid path, and a live boot, whose compiled-in policy gives a
-standard user no `/etc`, has neither file unless the administrator writes one during the boot.
+The policy a new installed volume is given (step 3(c), S148) has `@all /etc/shell.conf read` and
+`@all /etc/login.conf read`, two read grants on two files that hold no secret, so that the shell
+reads them with the login's own capability. A live boot's compiled-in policy gives a standard user
+no `/etc`, so there a standard user's shell uses the compiled defaults.
 
 ### `/etc/fs.policy`, read by `fs_server`
 
-Exists. Its rules are design `filesystem.md` §6; this design only adds its manual page
-(`fs.policy(5)`) and ships a commented example beside the defaults (`/usr/share/doc/horus/fs.policy.example`)
-rather than an `/etc/fs.policy`, because a policy file's absence has a meaning (the administrator
-alone, decision 9) that seeding one would change.
+Exists. Its rules are design `filesystem.md` §6; this design adds its manual page
+(`fs.policy(5)`). It is not seeded like the two files above, whose absence means only "the
+defaults": a policy file's absence means the administrator alone (decision 9), so `fs_server`
+writes one only into a volume nobody has configured, a persistent volume with no `/etc`, and
+never writes it back (S148).
 
 ## 4. Manual pages
 

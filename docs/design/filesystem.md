@@ -1,11 +1,12 @@
 # A capability-addressed filesystem for Horus
 
-**Status: specification; phase 1a is built, the rest is not.** Phase 1a, the kernel primitive
-file capabilities need (§5.1: tokens, the reply-mint and the carried capability), landed on
-2026-09-25 (**S105**, `make smoke-captoken`). Nothing uses it yet: `fs_server` still authorises
-by uid and mode until phase 1b. Every load-bearing question has been answered by the
-maintainer: three on 2026-09-23 and four more on 2026-09-25. §13 records them all as decisions.
-What remains open is listed there too, and none of it blocks phase 1b.
+**Status: phase 1a and phase 1b steps 1 to 5 are built; step 6 and phases 2 to 4 are not.**
+Phase 1a, the kernel primitive file capabilities need (§5.1: tokens, the reply-mint and the
+carried capability), landed on 2026-09-25 (**S105**, `make smoke-captoken`). Phase 1b's steps are
+in §11.1: `fs_server` answers through capabilities, every login works through a session compiled
+from the policy, and a new installed volume is given one (S148); the uid path stays until step 6.
+Every load-bearing question has been answered by the maintainer, and §13 records them all as
+decisions. What remains open is listed there too.
 
 The brief, in the maintainer's words: "a much more robust filesystem, a hybrid of the major unix
 ones out there but definitely unique and most importantly, secure" (2026-09-22), and "least
@@ -713,7 +714,7 @@ it, so no step has to land the whole change at once.
 |---|---|---|
 | 1 ✅ | `fs_server` answers capability-addressed requests: the object comes from the token the kernel attests, rights from the invoking capability, `LOOKUP` reply-mints a child capability narrowed to the directory's rights (§5.3), and a name that is `.`, `..` or holds `/` is refused (§5.4). `init` mints the root directory capability (§6.1). Old ino-addressed requests still work | A read-only capability cannot write, `LOOKUP` refuses `..`, and revoking a directory capability revokes what was opened through it; the arm skips the rights check |
 | 2 ✅ | Clients walk with capabilities: `hvfs`, the POSIX layer and the shell (`fsclient`, a self-test client, stays on the uid path until step 6 removes it). The shell keeps a root and a current-directory capability, and before a child runs its spawner grants it derived copies of both, never wider than its own (decision 10). Open files are not inherited | A child given a read-only root cannot write anywhere; the arm grants the child the spawner's capability unnarrowed |
-| 3 | Sessions from the policy (§6.2, §6.4): the shell authenticates as today and asks `init` for its session; `fs_server` compiles the principal's grants, and `init` grants the session one root naming them, and its home as the working directory, and revokes both at logout. The installer writes `/etc/fs.policy`. A live boot uses a compiled-in default; an installed volume without a policy file grants the root capability to the administrator only (decision 9) | A session reaches only what its grants name; the arm grants every session the root |
+| 3 ✅ | Sessions from the policy (§6.2, §6.4): the shell authenticates as today and asks `init` for its session; `fs_server` compiles the principal's grants, and `init` grants the session one root naming them, and its home as the working directory, and revokes both at logout. `fs_server` writes `/etc/fs.policy` into a new installed volume. A live boot uses a compiled-in default; an installed volume without a policy file grants the root capability to the administrator only (decision 9) | A session reaches only what its grants name; the arm grants every session the root |
 | 4 ✅ | The truthful view (§7): `stat` from the caller's rights and a bound on everyone else's, `chmod` and `chown` succeed only when they ask for what is true, and `link` within one directory through a capability. Lands before step 3(b) | `chmod 600` on a file another grant reaches fails; the arm reports success |
 | 5 ✅ | Cross-directory `rename` and `link` return `EXDEV` (decision 11); same-directory rename needs `CREATE` and `DELETE` on that directory | A cross-directory move is refused; the arm lets it through |
 | 6 | The identity path is removed: `perm_ok`, `FS_OP_CHOWN`'s root check, the uid half of `SYS_IPC_SENDER` in the filesystem, `SYS_FS_SET_META` and `SYS_CONNECT_FS_SERVER` | No filesystem operation succeeds on the strength of a uid; the arm restores `perm_ok` (the Falsification list below) |
@@ -795,8 +796,11 @@ it. Steps 3, 4 and 6 follow.
 `FS_OP_SESSION` and `FS_OP_SESSION_END`, and tracked capabilities (§6.4), witnessed by a
 self-test harness that opens sessions directly. (b) `init` and the shell: the session request
 after login, the grants into slots 24 and 25, and the revocation at logout, witnessed through a
-real login. (c) The installer writes `/etc/fs.policy`. Each is its own pull request with its own
-gate and arm.
+real login. (c) A new installed volume's `/etc/fs.policy`, written by `fs_server` when it first
+provisions a persistent volume that has no `/etc` (decided 2026-10-15, since the installer holds no
+filesystem authority): the live default with read on `/etc/shell.conf` and `/etc/login.conf` for
+every account. It is never written again, so a deleted policy leaves the administrator alone
+(S148, `make smoke-installer-policy`). Each is its own pull request with its own gate and arm.
 
 **Step 4 comes before step 3(b)** (decided 2026-10-11). Once every login is handed a root, the
 shell walks by capability in every session, and on that path `chmod`, `chown` and `ln` are
@@ -935,7 +939,9 @@ still asks a settled question is stale.
 9. **With no `/etc/fs.policy`,** a live boot uses a compiled-in default (the administrator gets the
    root; an ordinary account gets read and lookup on `/bin`, `/lib` and `/usr`, and a private home
    and `/tmp`). An installed volume without a policy file fails closed: only the administrator
-   gets the root capability, so they can log in and write one. The installer writes it.
+   gets the root capability, so they can log in and write one. A new installed volume is given
+   one by `fs_server` when it is first provisioned, and a deleted one is not written back
+   (2026-10-15: the installer holds no filesystem authority, so it does not write it).
 10. **A child gets its spawner's root and current-directory capabilities**, as derived copies that
     are never wider than the spawner's own, so revoking the spawner's sweeps the child's. Open
     files are not inherited.

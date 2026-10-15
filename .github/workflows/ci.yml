@@ -209,6 +209,7 @@ jobs:
       - shootdown-unacked
       - wait-after-death
       - store-locked
+      - installer-policy
       - session-handover
       - switch-commit
       - syscall-abi
@@ -2708,6 +2709,8 @@ jobs:
         run: make smoke-fs-policy
       - name: Control arm — the compiled policy gives every session the root
         run: make smoke-fs-policy-control
+      - name: Control arm — a directory on the way to a grant on a file cannot be walked through
+        run: make smoke-fs-policy-pass-control
       # S126, step 2's client half: a newlib program walking by capability.
       - name: Boot FSCAPPOSIX_SELFTEST and assert POSIX calls walk by capability and close gives it back
         run: make smoke-fs-cap-posix
@@ -3562,6 +3565,10 @@ jobs:
           if-no-files-found: ignore
           retention-days: 90
 
+  installer-policy:
+    name: "A new installed volume is given its policy once, and a deleted one stays deleted (S148)"
+    runs-on: ubuntu-latest
+    # Backstop, not a performance budget: three installs of three boots each.
   session-handover:
     name: "A login never holds an earlier login's filesystem (S147)"
     runs-on: ubuntu-latest
@@ -3575,6 +3582,23 @@ jobs:
           packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86
       - name: Add bare-metal Rust target
         run: rustup target add x86_64-unknown-none
+      # Roadmap 2.10 step 3(c). Install; the everyday account's FIRST login of
+      # the next boot has a session (`ls /` shows bin/ and no var/), reads
+      # /etc/shell.conf and not the policy; root deletes the policy; the boot
+      # after gives that account no session. Both answers are positive text on
+      # the wire, so neither can be satisfied by a boot that printed nothing.
+      - name: A new volume's policy gives the everyday account a session, and a deleted one stays deleted
+        run: make smoke-installer-policy
+      - name: Control arm — no policy written, so the everyday account has no session
+        run: make smoke-installer-policy-noseed-control
+      - name: Control arm — a deleted policy written back at the next boot
+        run: make smoke-installer-policy-reseed-control
+      - name: Upload the installer boots' serial logs (evidence of a red run)
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: installer-policy-serial
+          path: installer-pol-serial.log
       # LIMITATIONS 1.38. Root runs /bin/seq (the shell lends it the keyboard)
       # and logs out; the standard account must be refused mkdir at /, which
       # only root's capability allows, with its own session and with none.

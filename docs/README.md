@@ -27,7 +27,7 @@ Specifications written before the code. Each says at its top what of it is built
 
 | Design | Status |
 |---|---|
-| [`design/filesystem.md`](design/filesystem.md) | The capability-addressed filesystem. Phase 1a (endpoint tokens, S105) and phase 1b steps 1, 2, 3(a), 3(b), 4 and 5 are built; steps 3(c) and 6 remain (ROADMAP 2.10) |
+| [`design/filesystem.md`](design/filesystem.md) | The capability-addressed filesystem. Phase 1a (endpoint tokens, S105) and phase 1b steps 1 to 5 are built; step 6 and phases 2 to 4 remain (ROADMAP 2.10) |
 | [`design/installed-system.md`](design/installed-system.md) | Programs on the disk under a pinned manifest, a disk that boots itself, accounts as files. The first two are built; accounts as files are not (ROADMAP 2.11) |
 | [`design/scheduler.md`](design/scheduler.md) | Scheduling and SMP: CPU time as a capability accounted per CPU, priorities capped by authority, passive servers, per-CPU run queues, one-shot timers, affinity that only narrows, more than eight CPUs. Steps 0, 1, 1b and 2a are built (#523 to #526); per-CPU run queues are next (ROADMAP 1.8) |
 | [`design/swap.md`](design/swap.md) | Encrypted swap: a per-boot key, every page authenticated with its tag kept in RAM, only private pages, an in-kernel pager. Steps 1, 2 and 2a are built: the sealed slot store, eviction and fault-in, and the pager hold (S118, S119, S123) |

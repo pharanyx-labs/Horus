@@ -211,8 +211,9 @@
     That is the path that replaces the user ID: after a login <code>init</code> asks
     <code>fs_server</code> for the account's session, which compiles its grants from the
     policy into one root capability, and grants it to the shell, which walks by it and
-    hands what it runs a narrowed copy. An installed system's standard users keep the
-    user ID path until the installer writes a policy.
+    hands what it runs a narrowed copy. A new installed volume is given a policy
+    that gives every account a session; an account a policy gives nothing keeps the
+    user ID path until it is removed.
   </p>
 </div>
 </section>

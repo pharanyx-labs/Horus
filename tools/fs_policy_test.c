@@ -366,6 +366,35 @@ int main(void)
               !fsp_chown_true(0, 0, 5, 7), "chown-other-refused");
     }
 
+    /* ---- the policy a new installed volume is given (3(c), S148) ---- */
+    {
+        /* The default's six lines and the two configuration files, and nothing
+         * else: a line added here is a grant on every installed system. */
+        check(parses(fsp_installed_text, 0) && pol.n == 8, "installed-parses");
+        check(fsp_load(0, 1, fsp_installed_text, (uint32_t)strlen(fsp_installed_text), &pol, &bad)
+              == FS_SESSION_SRC_FILE, "installed-loads-as-file");
+        check(compile(fsp_installed_text, "user", "/home/user", 0) == 0, "installed-compile-user");
+        check(walk("/etc/shell.conf", 1, &carry, &node) >= 0 && carry == FS_R_READ,
+              "installed-user-reads-shell-conf");
+        check(walk("/etc/login.conf", 1, &carry, &node) >= 0 && carry == FS_R_READ,
+              "installed-user-reads-login-conf");
+        check(walk("/etc/fs.policy", 1, &carry, &node) == -1, "installed-user-policy-absent");
+        check(walk("/etc/passwd", 1, &carry, &node) == -1, "installed-user-passwd-absent");
+        check(walk("/var", 0, &carry, &node) == -1, "installed-user-var-absent");
+        /* What a capability to /etc carries must let it do what /etc allows,
+         * or the walk to /etc/shell.conf stops there (the defect the arm puts
+         * back). */
+        check(walk("/etc", 0, &carry, &node) == 1 &&
+              (carry & FSP_PASS_RIGHTS) == FSP_PASS_RIGHTS, "installed-user-etc-carries-pass");
+        check(walk("/etc", 0, &carry, &node) == 1 && fsp_op_rights(&tree, node) == FSP_PASS_RIGHTS &&
+              fsp_visible(&tree, node, "shell.conf", 0) && !fsp_visible(&tree, node, "fs.policy", 0),
+              "installed-user-etc-pass-through-filtered");
+        check(walk("/bin", 0, &carry, &node) == 0 && carry == RX, "installed-user-bin-as-default");
+        check(walk("/home/user", 0, &carry, &node) == 0 && carry == FS_R_ALL, "installed-user-home");
+        check(compile(fsp_installed_text, "root", "/", 1) == 0 && tree.node[0].eff == FS_R_ALL,
+              "installed-admin-root-all");
+    }
+
     printf("FS_POLICY_TEST: PASS %d checks\n", checks);
     return 0;
 }

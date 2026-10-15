@@ -3569,10 +3569,6 @@ jobs:
     name: "A new installed volume is given its policy once, and a deleted one stays deleted (S148)"
     runs-on: ubuntu-latest
     # Backstop, not a performance budget: three installs of three boots each.
-  session-handover:
-    name: "A login never holds an earlier login's filesystem (S147)"
-    runs-on: ubuntu-latest
-    # Backstop, not a performance budget: four builds with /bin/seq, one boot each.
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
@@ -3599,6 +3595,23 @@ jobs:
         with:
           name: installer-policy-serial
           path: installer-pol-serial.log
+          if-no-files-found: ignore
+          retention-days: 90
+
+
+  session-handover:
+    name: "A login never holds an earlier login's filesystem (S147)"
+    runs-on: ubuntu-latest
+    # Backstop, not a performance budget: four builds with /bin/seq, one boot each.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
       # LIMITATIONS 1.38. Root runs /bin/seq (the shell lends it the keyboard)
       # and logs out; the standard account must be refused mkdir at /, which
       # only root's capability allows, with its own session and with none.

@@ -3252,6 +3252,17 @@ capability_t *cap_revalidate(uint32_t slot, uint32_t required_rights,
 
 
 capability_t *rust_cap_lookup(capability_t *cspace, uint32_t sz, uint32_t slot, uint32_t rights);
+/* The typed resolver (ROADMAP 3.5): rust_cap_lookup plus the type test, which
+ * CAP_ANYTYPE waives. */
+capability_t *rust_cap_lookup_typed(capability_t *cspace, uint32_t sz, uint32_t slot,
+                                    uint32_t expected_type, uint32_t rights);
+/* The IPC authority resolver: 0 and *out_index when the slot holds a live
+ * capability of expected_type with need_rights naming an index below index_max. */
+int rust_ipc_object_from_slot(capability_t *cspace, uint32_t sz, uint32_t slot,
+                              uint32_t expected_type, uint32_t need_rights,
+                              uint32_t index_max, uint32_t *out_index);
+int cap_lookup_ipc_object(uint32_t slot, uint32_t expected_type, uint32_t need_rights,
+                          uint32_t index_max, uint32_t *out_index);
 bool rust_cap_mint(capability_t *dest_array, uint32_t sz, uint32_t dest_slot,
                    uint32_t src_slot, uint32_t new_rights, uint64_t *next_serial, uint32_t caps_in_use);
 bool rust_cap_transfer(capability_t *dest_array, uint32_t sz, uint32_t dest_slot,

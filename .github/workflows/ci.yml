@@ -5564,6 +5564,12 @@ jobs:
       # kani-arms.yml; this makes a moved anchor fail today, not tonight.
       - name: Every Kani proof has a control arm that still applies
         run: python3 tools/check_kani_arms.py
+      # ROADMAP 3.5: every capability export of the security core has a proof.
+      # Four had none until 2026-10-14, each trusted on its neighbours' proofs.
+      - name: Every capability export has a Kani proof
+        run: python3 tools/check_kani_ffi.py
+      - name: Falsify that checker in every direction
+        run: tools/test_check_kani_ffi.sh
       - name: Falsify that checker in every direction
         run: tools/test_check_kani_arms.sh
       # Cheap and source-only, so it rides along here rather than paying for its

@@ -13,6 +13,8 @@ _Static_assert(__builtin_offsetof(capability_t, rights)     == 4,  "cap.rights o
 _Static_assert(__builtin_offsetof(capability_t, object)     == 8,  "cap.object offset");
 _Static_assert(__builtin_offsetof(capability_t, badge)      == 16, "cap.badge offset");
 _Static_assert(__builtin_offsetof(capability_t, serial)     == 24, "cap.serial offset");
+/* The "any type" sentinel crosses the FFI by value (rust_cap_lookup_typed). */
+_Static_assert(CAP_ANYTYPE == 0xFFFFFFFFu, "CAP_ANYTYPE must match rust/src/capability.rs");
 _Static_assert(__builtin_offsetof(capability_t, token)      == 32, "cap.token offset");
 _Static_assert(sizeof(capability_t) == 40, "capability_t size (matches Rust)");
 _Static_assert(CAP_ENDPOINT == 3, "CAP_ENDPOINT must match rust/src/capability.rs");
@@ -920,9 +922,12 @@ const capability_t *cap_root_cnode_ref(void) { return root_cnode; }
  * table that made unrelated live capabilities unusable (LIMITATIONS 2.23).
  *
  * `SECURITY.md` **S55**. */
-struct capability *cap_lookup(uint32_t slot, uint32_t expected_type,
-                              uint32_t required_rights) {
-    if (slot >= CNODE_SIZE) return NULL;
+/* The cspace a lookup by the CURRENT task resolves against, and its size: the
+ * caller's own, or the root cnode for task 0 alone. Shared by cap_lookup and
+ * cap_lookup_ipc_object so the two can never choose differently. Returns 0, or
+ * -1 when there is nothing the caller may resolve against. */
+static int cap_current_cspace(uint32_t slot, struct capability **out_cs, uint32_t *out_sz) {
+    if (slot >= CNODE_SIZE) return -1;
 
     int cur = get_current_task();
     struct capability *cspace = tasks[cur].cspace;
@@ -940,7 +945,7 @@ struct capability *cap_lookup(uint32_t slot, uint32_t expected_type,
         /* Task 0 is the kernel boot/idle/reaper task and has no cspace of its
          * own by design; every other task without one is refused rather than
          * handed the root cnode. */
-        if (cur != 0) return NULL;
+        if (cur != 0) return -1;
         cspace = root_cnode;
         cspace_sz = CNODE_SIZE;
 #endif
@@ -964,23 +969,40 @@ struct capability *cap_lookup(uint32_t slot, uint32_t expected_type,
      * make smoke-cap-lookup-range-control. */
     if (slot >= cspace_sz) { cspace = root_cnode; cspace_sz = CNODE_SIZE; }
 #else
-    if (slot >= cspace_sz) return NULL;
+    if (slot >= cspace_sz) return -1;
 #endif
+    *out_cs = cspace;
+    *out_sz = cspace_sz;
+    return 0;
+}
 
-    struct capability *p = rust_cap_lookup(cspace, cspace_sz, slot, required_rights);
-#ifndef CAP_LOOKUP_TYPE_UNCHECKED
-    /* The type test the callers used to carry. It is here rather than there so
-     * that forgetting it is not possible; see CAP_ANYTYPE in kernel.h for the
-     * four cases that legitimately opt out. */
-    if (p && expected_type != CAP_ANYTYPE && p->type != expected_type) return NULL;
-#else
-    /* CONTROL ARM -- never ship. Restores the pre-2026-08-31 resolver, which
-     * returned whatever the slot held and left the type to the caller. captest
-     * then resolves a CAP_FRAME through a lookup that asked for CAP_ENDPOINT.
-     * See make smoke-captest-lookup-type-control. */
-    (void)expected_type;
-#endif
-    return p;
+struct capability *cap_lookup(uint32_t slot, uint32_t expected_type,
+                              uint32_t required_rights) {
+    struct capability *cspace;
+    uint32_t cspace_sz;
+    if (cap_current_cspace(slot, &cspace, &cspace_sz) != 0) return NULL;
+    /* The type test the callers used to carry, and since 2026-10-14 in Rust
+     * with its proof (ROADMAP 3.5, lookup_typed_returns_only_what_was_asked):
+     * it is in the resolver so that forgetting it is not possible; see
+     * CAP_ANYTYPE in kernel.h for the four cases that legitimately opt out.
+     * CAP_LOOKUP_TYPE_UNCHECKED=1 builds the Rust half without it (the
+     * `cap_lookup_type_unchecked` feature), so the arm still disarms the whole
+     * rule. See make smoke-captest-lookup-type-control. */
+    return rust_cap_lookup_typed(cspace, cspace_sz, slot, expected_type, required_rights);
+}
+
+/* Resolve a slot to the index of the IPC object of `expected_type` it names,
+ * through a capability with `need_rights`, bounded by `index_max`. The
+ * authority half of every IPC syscall (S13a), decided in Rust with its proof
+ * (ipc_index_implies_a_held_capability); the cspace choice is cap_lookup's.
+ * Returns 0 and writes *out_index, or -1. */
+int cap_lookup_ipc_object(uint32_t slot, uint32_t expected_type, uint32_t need_rights,
+                          uint32_t index_max, uint32_t *out_index) {
+    struct capability *cspace;
+    uint32_t cspace_sz;
+    if (cap_current_cspace(slot, &cspace, &cspace_sz) != 0) return -1;
+    return rust_ipc_object_from_slot(cspace, cspace_sz, slot, expected_type, need_rights,
+                                     index_max, out_index);
 }
 
 /* WHY THIS IS NO LONGER A HALTING ASSERT.

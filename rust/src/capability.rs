@@ -261,6 +261,86 @@ pub unsafe extern "C" fn rust_cap_lookup(
     cap
 }
 
+/// The "any type" sentinel a caller passes to `rust_cap_lookup_typed` when the
+/// type is not the question. Pinned against the C `CAP_ANYTYPE` by a
+/// `_Static_assert` in `src/kernel/capability.c`.
+pub const CAP_ANYTYPE: u32 = 0xFFFF_FFFF;
+
+/// Resolve a slot to a live capability of `expected_type` (or of any type, for
+/// `CAP_ANYTYPE`) carrying at least `required_rights`, or null. Every capability
+/// gate in the kernel resolves through this one function (`cap_lookup` in C
+/// chooses the cspace and asks here), so the type test is a property of the
+/// resolver and cannot be forgotten by a caller. It was in C until 2026-10-14
+/// (ROADMAP 3.5), where no proof reached it; `lookup_typed_returns_only_what_was_asked`
+/// is its proof.
+///
+/// The `cap_lookup_type_unchecked` feature is the control arm: no type test,
+/// whatever the slot holds is returned (S60).
+///
+/// # Safety
+/// As `rust_cap_lookup`: `cspace` must be null, or point to at least
+/// `cspace_size` valid `Capability`s with `cspace_size` its true length, and the
+/// call must be made under `cap_lock`.
+#[no_mangle]
+pub unsafe extern "C" fn rust_cap_lookup_typed(
+    cspace: *mut Capability,
+    cspace_size: u32,
+    slot: u32,
+    expected_type: u32,
+    required_rights: u32,
+) -> *mut Capability {
+    let p = rust_cap_lookup(cspace, cspace_size, slot, required_rights);
+    if p.is_null() {
+        return p;
+    }
+    #[cfg(not(feature = "cap_lookup_type_unchecked"))]
+    if expected_type != CAP_ANYTYPE && (*p).typ != expected_type {
+        return ptr::null_mut();
+    }
+    #[cfg(feature = "cap_lookup_type_unchecked")]
+    let _ = expected_type;
+    p
+}
+
+/// Resolve a slot to the index of the IPC object (endpoint or notification) its
+/// capability names: the capability must be a live one of `expected_type` with
+/// at least `need_rights`, and the index it names must be below `index_max`.
+/// Returns 0 and writes `*out_index` on success, -1 otherwise, writing nothing.
+///
+/// This is the authority half of every IPC syscall (S13a, finding C-1): the
+/// object index comes from a capability the caller holds, never from a
+/// register. Whether the object still EXISTS is the C side's question, asked
+/// next (`endpoint_by_index`), because the object tables are the C kernel's.
+/// `ipc_index_implies_a_held_capability` proves that an index this returns names
+/// exactly the object a held capability of the right type and rights names.
+///
+/// # Safety
+/// As `rust_cap_lookup_typed`; `out_index` must be null or a valid writable
+/// `u32`.
+#[no_mangle]
+pub unsafe extern "C" fn rust_ipc_object_from_slot(
+    cspace: *mut Capability,
+    cspace_size: u32,
+    slot: u32,
+    expected_type: u32,
+    need_rights: u32,
+    index_max: u32,
+    out_index: *mut u32,
+) -> i32 {
+    let p = rust_cap_lookup_typed(cspace, cspace_size, slot, expected_type, need_rights);
+    if p.is_null() {
+        return -1;
+    }
+    let obj = (*p).object;
+    if obj >= index_max as u64 {
+        return -1;
+    }
+    if !out_index.is_null() {
+        *out_index = obj as u32;
+    }
+    0
+}
+
 /// Allocate a fresh derived serial, advancing `*next_serial`, or return 0 when
 /// none can be issued. This is the SINGLE implementation of serial allocation:
 /// both the Rust derivations and the C `cap_alloc_fresh_serial` go through it,
@@ -2975,4 +3055,172 @@ mod kani_proofs {
         assert!(ok);
         assert!(cs[4].token == token, "a narrowed copy names the same thing");
     }
+
+    /// Every field equal: `Capability` derives no `PartialEq`, on purpose, so
+    /// that kernel code compares the fields it means.
+    fn same(a: &Capability, b: &Capability) -> bool {
+        a.typ == b.typ && a.rights == b.rights && a.object == b.object
+            && a.badge == b.badge && a.serial == b.serial && a.token == b.token
+    }
+
+    /// ROADMAP 3.5: the typed resolver returns only what was asked for. For
+    /// every capability in the slot and every (type, rights) request, a
+    /// returned capability is live (a real type and serial), of the requested
+    /// type unless `CAP_ANYTYPE` was asked, and holds every requested right; and
+    /// a capability that meets all of that is returned, so the resolver refuses
+    /// nothing it should grant.
+    #[kani::proof]
+    fn lookup_typed_returns_only_what_was_asked() {
+        let mut cs = [Capability { typ: 0, rights: 0, object: 0, badge: 0, serial: 0, token: 0 }; 4];
+        cs[1] = Capability {
+            typ: kani::any(), rights: kani::any(), object: kani::any(),
+            badge: kani::any(), serial: kani::any(), token: kani::any(),
+        };
+        let want_type: u32 = kani::any();
+        let want_rights: u32 = kani::any();
+        let held = cs[1];
+        let p = unsafe { rust_cap_lookup_typed(cs.as_mut_ptr(), 4, 1, want_type, want_rights) };
+        let fits = held.typ != CAP_NULL
+            && held.serial != 0
+            && (held.rights & want_rights) == want_rights
+            && (want_type == CAP_ANYTYPE || held.typ == want_type);
+        if p.is_null() {
+            assert!(!fits, "the resolver refused a capability that meets the request");
+        } else {
+            assert!(fits, "the resolver returned a capability that does not meet the request");
+            assert!(p == unsafe { cs.as_mut_ptr().add(1) }, "the resolver returned another slot");
+        }
+    }
+
+    /// ROADMAP 3.5: IPC authority implies a held capability. When the resolver
+    /// hands back an object index, the slot holds a live capability of the
+    /// requested type with every requested right, naming exactly that object,
+    /// and the index is in range; when it refuses, it writes nothing.
+    #[kani::proof]
+    fn ipc_index_implies_a_held_capability() {
+        let mut cs = [Capability { typ: 0, rights: 0, object: 0, badge: 0, serial: 0, token: 0 }; 4];
+        let slot: u32 = kani::any();
+        kani::assume(slot < 4);
+        cs[slot as usize] = Capability {
+            typ: kani::any(), rights: kani::any(), object: kani::any(),
+            badge: kani::any(), serial: kani::any(), token: kani::any(),
+        };
+        let want_type: u32 = kani::any();
+        kani::assume(want_type != CAP_ANYTYPE);
+        let need: u32 = kani::any();
+        let max: u32 = kani::any();
+        let held = cs[slot as usize];
+        let mut out: u32 = 0xDEAD_BEEF;
+        let rc = unsafe {
+            rust_ipc_object_from_slot(cs.as_mut_ptr(), 4, slot, want_type, need, max, &mut out as *mut u32)
+        };
+        if rc == 0 {
+            assert!(held.typ == want_type, "IPC authority from a capability of another type");
+            assert!(held.typ != CAP_NULL && held.serial != 0, "IPC authority from an empty slot");
+            assert!((held.rights & need) == need, "IPC authority without the right asked for");
+            assert!(held.object < max as u64, "an index out of range");
+            assert!(out as u64 == held.object, "an index other than the one the capability names");
+        } else {
+            assert!(rc == -1, "a refusal is -1");
+            assert!(out == 0xDEAD_BEEF, "a refusal wrote an index");
+        }
+    }
+
+    /// The exported allocator is the internal one: every serial it issues is
+    /// above the derived floor, never primordial, never 0, and a refusal leaves
+    /// the counter where it was. (The C kernel's own derivations go through this
+    /// export, so this is the proof that reaches them.)
+    #[kani::proof]
+    fn exported_serials_are_derived_or_refused() {
+        let mut counter: u64 = kani::any();
+        let before = counter;
+        let s = unsafe { rust_cap_alloc_serial(&mut counter as *mut u64) };
+        if s == 0 {
+            assert!(counter == before, "a refusal must not move the counter");
+        } else {
+            assert!(s >= MIN_DERIVED_SERIAL, "serial below the derived floor");
+            assert!(!serial_is_primordial(s), "a derived serial in the primordial range");
+            assert!(counter == s, "the counter must advance to the serial issued");
+        }
+    }
+
+    /// A transfer is a copy that keeps the source's rights exactly, is a new
+    /// node of the derivation graph (a fresh serial, the source as its parent)
+    /// and leaves the source untouched, for every source rights value.
+    #[kani::proof]
+    fn transfer_keeps_rights_and_records_the_parent() {
+        let src_rights: u32 = kani::any();
+        let mut cs = [Capability { typ: 0, rights: 0, object: 0, badge: 0, serial: 0, token: 0 }; 8];
+        cs[0] = Capability { typ: 1, rights: src_rights, object: 7, badge: 0, serial: MIN_DERIVED_SERIAL, token: 3 };
+        let mut next: u64 = MIN_DERIVED_SERIAL;
+        let before = cs[0];
+        let ok = unsafe { rust_cap_transfer(cs.as_mut_ptr(), 8, 4, 0, &mut next as *mut u64) };
+        assert!(ok, "a transfer of a valid source into a free, non-reserved slot must succeed");
+        let t = cs[4];
+        assert!(t.rights == src_rights, "a transfer changed the rights");
+        assert!(t.typ == before.typ && t.object == before.object && t.token == before.token,
+                "a transfer changed what the capability names");
+        assert!(t.badge == before.serial, "a transfer did not record its parent");
+        assert!(t.serial != before.serial && t.serial >= MIN_DERIVED_SERIAL, "a transfer reused a serial");
+        assert!(same(&cs[0], &before), "a transfer changed its source");
+    }
+
+    /// A grant a ring-3 task asked for never copies a pipe end, and writes
+    /// nothing when it refuses; for every other type it is exactly the kernel's
+    /// grant.
+    #[kani::proof]
+    fn grant_from_user_refuses_exactly_pipe_ends() {
+        let typ: u32 = kani::any();
+        kani::assume(typ != CAP_NULL);
+        let src = Capability { typ, rights: kani::any(), object: 5, badge: 0, serial: MIN_DERIVED_SERIAL, token: 0 };
+        let mut dest = [Capability { typ: 0, rights: 0, object: 0, badge: 0, serial: 0, token: 0 }; 4];
+        let mut next: u64 = MIN_DERIVED_SERIAL;
+        let rights: u32 = kani::any();
+        let ok = unsafe {
+            rust_cap_grant_from_user(&src as *const Capability, dest.as_mut_ptr(), 4, 2, rights, &mut next as *mut u64)
+        };
+        if typ == CAP_PIPE {
+            assert!(!ok, "a pipe end was granted from ring 3");
+            assert!(dest[2].typ == CAP_NULL && next == MIN_DERIVED_SERIAL, "a refused grant wrote something");
+        } else {
+            assert!(ok, "a grant of any other live type must succeed");
+            assert!(dest[2].typ == typ && dest[2].rights == (rights & src.rights) && dest[2].badge == src.serial,
+                    "a ring-3 grant differs from the kernel's");
+        }
+    }
+
+    /// The single-cspace revoke empties the target and everything derived from
+    /// it, and nothing else: an unrelated capability to the same object, and the
+    /// target's own parent, survive.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn revoke_empties_the_target_and_its_children_only() {
+        let parent = MIN_DERIVED_SERIAL;
+        let target = MIN_DERIVED_SERIAL + 1;
+        let child = MIN_DERIVED_SERIAL + 2;
+        let other = MIN_DERIVED_SERIAL + 3;
+        let mut cs = [Capability { typ: 0, rights: 0, object: 0, badge: 0, serial: 0, token: 0 }; 4];
+        let typ: u32 = kani::any();
+        // A real type: not empty, not a pipe end (whose count the tally
+        // tracks), and not one of the two values the sweep itself writes into
+        // `typ` to mark what it has reached, which no capability ever holds
+        // outside a revoke.
+        kani::assume(typ != CAP_NULL && typ != CAP_PIPE && typ < CAP_MARK_DONE);
+        cs[0] = Capability { typ, rights: kani::any(), object: 9, badge: 0, serial: parent, token: 0 };
+        cs[1] = Capability { typ, rights: kani::any(), object: 9, badge: parent, serial: target, token: 0 };
+        cs[2] = Capability { typ, rights: kani::any(), object: 9, badge: target, serial: child, token: 0 };
+        cs[3] = Capability { typ, rights: kani::any(), object: 9, badge: 0, serial: other, token: 0 };
+        let keep_parent = cs[0];
+        let keep_other = cs[3];
+        let mut next: u64 = MIN_DERIVED_SERIAL + 4;
+        let ok = unsafe {
+            rust_cap_revoke(cs.as_mut_ptr(), 4, 1, &mut next as *mut u64, core::ptr::null_mut(), 0)
+        };
+        assert!(ok, "a revoke of a live, non-primordial slot must succeed");
+        assert!(cs[1].typ == CAP_NULL && cs[1].serial == 0, "the target survived its revoke");
+        assert!(cs[2].typ == CAP_NULL && cs[2].serial == 0, "a child survived its parent's revoke");
+        assert!(same(&cs[0], &keep_parent), "the target's parent was touched");
+        assert!(same(&cs[3], &keep_other), "an unrelated capability to the same object was touched");
+    }
+
 }

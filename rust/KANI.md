@@ -24,6 +24,12 @@ them.
 | `lookup_grants_exactly_the_rights_held` | **Roadmap 3.5.** For every (held, requested) rights pair, `rust_cap_lookup` succeeds **exactly when** the capability holds every requested right. Stated as an equivalence, not an implication, so a lookup that refused too much fails it too, "never grants what it should not" is satisfied by a predicate that always returns null. |
 | `lookup_never_returns_an_empty_slot` | For every rights value, including the degenerate `required_rights == 0` that a "does it hold these" check answers vacuously, an empty slot never satisfies a lookup. |
 | `lookup_refuses_every_out_of_range_slot` | For every slot index past the cspace, lookup refuses rather than reading whatever follows the cspace in memory. |
+| `lookup_typed_returns_only_what_was_asked` | **Roadmap 3.5, S60.** For every capability and every (type, rights) request, `rust_cap_lookup_typed` (the resolver every capability gate in the kernel goes through) returns a live capability of the requested type, or any type for `CAP_ANYTYPE`, holding every requested right, and returns every capability that meets that. The type test was in C, where no proof reached it. |
+| `ipc_index_implies_a_held_capability` | **Roadmap 3.5, S13a.** When `rust_ipc_object_from_slot` hands back an IPC object index, the slot holds a live capability of the requested type with every requested right, naming exactly that index, and the index is in range; a refusal writes nothing. IPC authority comes from a held capability and nothing else. |
+| `exported_serials_are_derived_or_refused` | The C kernel's own derivations take their serials from `rust_cap_alloc_serial`, so the serial proofs are stated again through the export: derived or refused, never primordial, never 0. |
+| `transfer_keeps_rights_and_records_the_parent` | For every source rights value, `rust_cap_transfer` copies the rights exactly, records the source as parent with a fresh serial, and leaves the source untouched. |
+| `grant_from_user_refuses_exactly_pipe_ends` | For every live type, a grant a ring-3 task asked for refuses a pipe end and writes nothing, and for every other type is exactly the kernel's grant. |
+| `revoke_empties_the_target_and_its_children_only` | The single-cspace revoke (moves and the revocation helper) empties the target and its child and leaves the target's parent and an unrelated capability to the same object untouched. |
 | `grant_never_escalates_rights` | For every (source, requested) pair, `rust_cap_grant_into` yields exactly `requested & source`; the same algebra as mint, on the operation that hands authority to a **different task**. |
 | `grant_records_its_parent_and_takes_a_fresh_serial` | For every source serial, the grantee records the grantor as parent (`badge = src.serial`) and takes a fresh derived serial of its own, what makes a later revoke of the grantor sweep the grantee, and what keeps the derivation graph a tree. |
 | `grant_from_an_invalid_source_refuses_and_writes_nothing` | Authority cannot be fabricated: granting from an empty source, or one with the lookup-invalid serial 0, refuses **and leaves the destination untouched**. |
@@ -60,7 +66,7 @@ as a whole (`docs/LIMITATIONS.md` 5.5).
 
 All of them. `.github/kani-harnesses.yml` lists every harness, the required `kani-bounded` job
 runs each one on every pull request, and `tools/check_kani_harnesses.py` fails the build if a
-proof is missing from the list. All **35** gate. There is no way to excuse a proof from running:
+proof is missing from the list. All **41** gate. There is no way to excuse a proof from running:
 the checker refuses any list but `gating`. The count is declared in `.github/doc-claims.yml` and
 re-derived on every run.
 

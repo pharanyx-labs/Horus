@@ -134,16 +134,18 @@ static int ep_dequeue(struct endpoint *e, uint8_t *dst, int max, int *sender,
  * block of the dispatch table, which is why finding [C-1] was a defect here
  * rather than in any individual handler. */
 int ipc_ep_from_slot(uint32_t slot, uint32_t need_rights, uint32_t *out_ep) {
-    struct capability *c = cap_lookup(slot, CAP_ENDPOINT, need_rights);
-    if (!c) return -1;
-    if (c->object >= EP_INDEX_MAX)     return -1;
+    /* The capability half -- a live CAP_ENDPOINT with the right, naming an index
+     * in range -- is decided in Rust and proved there (ROADMAP 3.5,
+     * ipc_index_implies_a_held_capability). */
+    uint32_t ep;
+    if (cap_lookup_ipc_object(slot, CAP_ENDPOINT, need_rights, EP_INDEX_MAX, &ep) != 0) return -1;
     /* The index may name a RETYPED endpoint (roadmap 0.3), so bounds-checking it
      * is no longer sufficient — a retyped object can be destroyed while a stale
      * capability still names its index. Resolve it here so every IPC syscall
      * fails closed on a dead object at the same choke point that enforces the
      * capability, rather than each handler having to remember to check. */
-    if (!endpoint_by_index((uint32_t)c->object)) return -1;
-    if (out_ep) *out_ep = (uint32_t)c->object;
+    if (!endpoint_by_index(ep)) return -1;
+    if (out_ep) *out_ep = ep;
     return 0;
 }
 
@@ -152,11 +154,10 @@ int ipc_ep_from_slot(uint32_t slot, uint32_t need_rights, uint32_t *out_ep) {
  * same way (finding C-2), which let any task forge IRQ delivery to a ring-3
  * driver, since SYS_IRQ_REGISTER routes hardware interrupts to these slots. */
 int ipc_notif_from_slot(uint32_t slot, uint32_t need_rights, uint32_t *out_slot) {
-    struct capability *c = cap_lookup(slot, CAP_NOTIFICATION, need_rights);
-    if (!c)  return -1;
-    if (c->object >= NOTIF_INDEX_MAX)       return -1;
-    if (!notification_by_index((uint32_t)c->object)) return -1;   /* see ipc_ep_from_slot */
-    if (out_slot) *out_slot = (uint32_t)c->object;
+    uint32_t n;
+    if (cap_lookup_ipc_object(slot, CAP_NOTIFICATION, need_rights, NOTIF_INDEX_MAX, &n) != 0) return -1;
+    if (!notification_by_index(n)) return -1;   /* see ipc_ep_from_slot */
+    if (out_slot) *out_slot = n;
     return 0;
 }
 

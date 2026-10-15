@@ -136,3 +136,14 @@ gating:
   # the kernel writes sealed pages wherever the swap partition says, so it must
   # never share a block with the volume. FALSIFIED by its kani-arms.yml arm.
   - gpt_swap_never_overlaps_the_volume                       # 1s
+  # ROADMAP 3.5, added 2026-10-14: the typed resolver every capability gate goes
+  # through (the type test moved from C into rust_cap_lookup_typed), the IPC
+  # authority resolver, and the four exports that had no harness of their own.
+  # Each FALSIFIED by its kani-arms.yml arm. Solver times measured on Kani
+  # 0.68.0 / CBMC 6.11.0, on the maintainer's machine.
+  - lookup_typed_returns_only_what_was_asked                 # 1s
+  - ipc_index_implies_a_held_capability                      # 2s
+  - exported_serials_are_derived_or_refused                  # 0s
+  - transfer_keeps_rights_and_records_the_parent             # 1s
+  - grant_from_user_refuses_exactly_pipe_ends                # 1s
+  - revoke_empties_the_target_and_its_children_only          # 6s

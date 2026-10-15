@@ -209,6 +209,7 @@ jobs:
       - shootdown-unacked
       - wait-after-death
       - store-locked
+      - session-handover
       - switch-commit
       - syscall-abi
       - syscall-coverage
@@ -3550,6 +3551,37 @@ jobs:
           path: |
             installer-p-serial.log
             installer-pc-serial.log
+          if-no-files-found: ignore
+          retention-days: 90
+
+  session-handover:
+    name: "A login never holds an earlier login's filesystem (S147)"
+    runs-on: ubuntu-latest
+    # Backstop, not a performance budget: four builds with /bin/seq, one boot each.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install build toolchain + QEMU
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      # LIMITATIONS 1.38. Root runs /bin/seq (the shell lends it the keyboard)
+      # and logs out; the standard account must be refused mkdir at /, which
+      # only root's capability allows, with its own session and with none.
+      - name: A login after root's holds only its own filesystem
+        run: make smoke-session-handover
+      - name: Control arm — the keyboard lent from the session capability's slot
+        run: make smoke-session-handover-control
+      - name: Control arm — a shell with no session mounts the root it still holds
+        run: make smoke-session-handover-stale-control
+      - name: Upload the boots' serial (evidence of a red run)
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: session-handover-serial
+          path: handover-serial.log
           if-no-files-found: ignore
           retention-days: 90
 

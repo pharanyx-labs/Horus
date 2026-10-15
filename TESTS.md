@@ -47,7 +47,7 @@ gates that match kernel strings are moving to COM3, which only the kernel can wr
 ## The integration gates
 
 
-There are 560 `smoke-*` targets: 241 gates and 319 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
+There are 563 `smoke-*` targets: 242 gates and 321 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
 
 
 ### Capabilities and authorisation
@@ -326,6 +326,7 @@ There are 560 `smoke-*` targets: 241 gates and 319 control arms. Each row is a g
 | `smoke-newlib` | newlib runs in ring 3, including `.` and `..` in paths | S29 | `smoke-newlib-dotdot-control`, `smoke-newlib-walk-control` |
 | `smoke-newlib-tamper` | A tampered newlib tarball is refused before unpacking, and the genuine one is accepted |  |  |
 | `smoke-session` | A scripted login and session in the real shell: each login's filesystem session, what it reaches and refuses, chmod and chown through it, home directories and hard links | S29, S32, S78, S93, S141 | `smoke-session-fs-err-control`, `smoke-session-hardlink-control`, `smoke-session-login-control`, `smoke-session-usage-control` |
+| `smoke-session-handover` | After root runs a `/bin` program and logs out, the standard account is refused `mkdir` at `/` and has its own session; and the same when `init` refuses it a session, so the shell has none | S147 | `smoke-session-handover-control`, `smoke-session-handover-stale-control` |
 | `smoke-shellwatch` | `init` hears the shell's death from a watcher holding the shell READ-only, reports why and relaunches, twice, and a login works after | S140 | `smoke-shellwatch-control` |
 | `smoke-session-smp` | The same under SMP |  |  |
 | `smoke-session-smp-soak` | Repeated SMP sessions, all of which must complete |  |  |
@@ -361,10 +362,10 @@ Currently **103 of 103** implemented syscalls are covered, and **0** are listed 
 ## CI
 
 
-`.github/workflows/ci.yml` defines **140** jobs, run on every push and pull request; most are sharded runs of the gates above. With CodeQL, the scheduled ruleset audit, the nightly fuzzing (`fuzz.yml`, one context per target) and the nightly Kani control arms (`kani-arms.yml`) the total is below: **144** jobs, **153** contexts, counted by `tools/check_ci_gating.py`.
+`.github/workflows/ci.yml` defines **141** jobs, run on every push and pull request; most are sharded runs of the gates above. With CodeQL, the scheduled ruleset audit, the nightly fuzzing (`fuzz.yml`, one context per target) and the nightly Kani control arms (`kani-arms.yml`) the total is below: **145** jobs, **154** contexts, counted by `tools/check_ci_gating.py`.
 
 `.github/ci-gating.yml` classifies every job as gating or exempt with a written reason, and the `ci-gating` job fails on a job in neither list. The branch ruleset requires two checks: `gates`, which needs every gating job and passes only if each succeeded (skipped or cancelled counts as failed), and CodeQL.
-The set is **144 gating contexts and 9 reasoned exemptions**: `fuzz` (seven targets, ten minutes each, nightly; a crash fails it, but it never runs on a pull request), `kani-arms` and `ruleset-audit` (both run on a schedule, never on a pull request). `ruleset-audit` also checks that every workflow GitHub runs on the repository is a file in the tree or recorded, with its reason, in `.github/injected-workflows.yml`, and that one recorded as stopped has not run again (`tools/check_injected_workflows.py`).
+The set is **145 gating contexts and 9 reasoned exemptions**: `fuzz` (seven targets, ten minutes each, nightly; a crash fails it, but it never runs on a pull request), `kani-arms` and `ruleset-audit` (both run on a schedule, never on a pull request). `ruleset-audit` also checks that every workflow GitHub runs on the repository is a file in the tree or recorded, with its reason, in `.github/injected-workflows.yml`, and that one recorded as stopped has not run again (`tools/check_injected_workflows.py`).
 
 The jobs that are not boot tests:
 
@@ -425,7 +426,7 @@ Two of those deserve a sentence each.
 there with no `continue-on-error`, each named with its measured cost in
 `.github/kani-harnesses.yml`, and the job refuses a proof that is not listed. And **`invariants`** requires every property in `SECURITY.md` to
 name a witness that exists and runs; its exemption list, `.github/invariants.yml`, is
-currently **empty**: all 148 properties name a witness that resolves.
+currently **empty**: all 149 properties name a witness that resolves.
 
 Every `tools/check_*.py` has a falsification harness, `tools/test_check_*.sh`, with one case per
 rule showing the rule can fail, and each checker asserts a floor on what it parsed, so a parser

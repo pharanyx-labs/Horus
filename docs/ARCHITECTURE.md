@@ -678,7 +678,9 @@ chown through it succeeds only when it asks for what is already true (S131). Aft
 shell asks `init` for its session; `init` names the account by `SYS_IPC_SENDER`, never by the
 request, grants the shell the session's root and working directory, and revokes and ends the
 session at logout or when the shell dies, and a shell holding a session never reaches the uid path
-(S141). An account the policy gives nothing (on an installed volume without `/etc/fs.policy`,
+(S141). The shell walks by the root in its slot only while a session is open, and drops its root and
+working directory at logout whatever `init` did, so no login holds an earlier one's filesystem
+(S147). An account the policy gives nothing (on an installed volume without `/etc/fs.policy`,
 everyone but the administrator) stays on the uid path until phase 1b removes it (steps 3(c) and 6
 of `docs/design/filesystem.md`, roadmap 2.10).
 

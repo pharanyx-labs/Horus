@@ -252,7 +252,7 @@ void _start(void) {
      * client/server split that makes a shared service safe.
      *
      * Slot 5 holds a send-only capability to the console service, exactly what a
-     * client is given (and what SYS_CONNECT_FS_SERVER mints). The refusals are
+     * client is given. The refusals are
      * the C-1 attack itself:
      *   - recv would let a client DEQUEUE other clients' requests to the server,
      *     both disclosing them and starving the real server;
@@ -1224,6 +1224,20 @@ void _start(void) {
      * number answers nobody, a real password included. */
     check((int)syscall(SYS_SUDO, (uint64_t)(uintptr_t)"toor", 0, 0) == SYS_ERR_NOSYS,
           "withdrawn-sudo-syscall-answered");
+    /* SYS_REGISTER_FS_SERVER (49), SYS_CONNECT_FS_SERVER (50) and
+     * SYS_FS_SET_META (74), withdrawn 2026-10-16 with the filesystem's uid path
+     * (phase 1b step 6, S14). Connect handed ANY task a send capability to
+     * fs_server, to be served by its uid; set-meta stamped the owner and mode
+     * that path checked. Reserved, and they answer nobody: a connect into an
+     * empty slot must leave it empty. */
+    check((int)syscall(SYS_REGISTER_FS_SERVER, SLOT_EMPTY_HI, 0, 0) == SYS_ERR_NOSYS,
+          "withdrawn-register-fs-server-syscall-answered");
+    check((int)syscall(SYS_CONNECT_FS_SERVER, SLOT_EMPTY_HI, 3, 0) == SYS_ERR_NOSYS,
+          "withdrawn-connect-fs-server-syscall-answered");
+    check(sys_ipc_send(SLOT_EMPTY_HI, "x", 1) < 0,
+          "withdrawn-connect-fs-server-minted-anyway");
+    check((int)syscall6(SYS_FS_SET_META, 0, 0777, 1000, 100, 0, 0) == SYS_ERR_NOSYS,
+          "withdrawn-fs-set-meta-syscall-answered");
 
     /* (f) SYS_IPC_REPLY resolves its endpoint from the capability's own object
      * through ipc_ep_from_slot, which is [C-1]'s fix: the authority is the

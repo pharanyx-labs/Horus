@@ -133,19 +133,17 @@ static const char* strstr(const char *haystack, const char *needle) {
 
 
 static int fss_connected = 0;
-static uint32_t fss_ep_slot = 0;
 
-/* THE TWO OBJECTS EVERY PATH STARTS FROM, and the mode (filesystem phase 1b
- * step 2). A shell given a root directory capability at CAPSLOT_FS_ROOT walks
- * by capability and never connects to the uid path, so a refused request has
- * nowhere to fall back to; one given none uses the uid path as before. Chosen
- * once, at the first connect, never per request. Every request below names the
- * object it is about (fss_call_on): through a capability that object IS the
- * capability and its inode field is 0, on the uid path it is the endpoint and
- * an inode. Before the first connect both are the uid path's root. */
+/* THE TWO OBJECTS EVERY PATH STARTS FROM (filesystem phase 1b step 2). The
+ * shell reaches files only through the root directory capability its session
+ * put at CAPSLOT_FS_ROOT, so a refused request has nowhere to fall back to:
+ * the uid path is gone (step 6). Every request below names the object it is
+ * about (fss_call_on): that object IS a capability, and its inode field is 0.
+ * sh_capmode is 1 once that root is mounted. Before then, and with no session,
+ * both name no slot, and every request fails. */
 static int             sh_capmode = 0;
-static struct hvfs_obj sh_root = { CAPSLOT_FS_EP, 0, 0, 0, 0 };
-static struct hvfs_obj sh_cwd  = { CAPSLOT_FS_EP, 0, 0, 0, 0 };
+static struct hvfs_obj sh_root = { -1, 0, 0, 0, 0 };
+static struct hvfs_obj sh_cwd  = { -1, 0, 0, 0, 0 };
 /* sh_cwd's name, for pwd and for resolving relative paths. */
 #define SH_PATH_MAX 256
 static char            sh_cwd_path[SH_PATH_MAX] = "/";
@@ -165,7 +163,7 @@ static int sh_drop_fs_slots(void) {
     /* Not in the read-only-root instrument either: there init grants slot 24
      * once, at launch, with no session ever (smoke-fs-cap-shell), so what is
      * in it is init's for the whole boot and not an earlier login's. Dropping
-     * it put that gate's root session on the uid path, where root may write. */
+     * it would leave that gate's session no filesystem at all. */
 #if !defined(SHELL_STALE_ROOT) && !defined(INIT_SHELL_ROOT_READONLY)
     /* 1 when both revokes succeeded, so everything derived from them, the
      * pool's walks included, is gone (S3). An empty slot does not revoke (it
@@ -202,27 +200,11 @@ static int fss_connect(void) {
         fss_connected = 1;
         return 0;
     }
-    /* A session is open and its root would not mount: fail closed (S141). Falling
-     * through to the uid path here is the fail-open CLAUDE.md §1 forbids, and
-     * it is not hypothetical: until fs_forget dropped the uid path's mount of
-     * "/", a file touched between a logout and the next login left that mount
-     * behind, this mount was refused as a duplicate, and every login after the
-     * first in a boot ran on the uid path with its session unused. */
-    if (sh_session_g) return -1;
-    fss_ep_slot = CAPSLOT_FS_EP;
-    /* sys_connect_fs_server mints a cap in slot fss_ep_slot so the kernel's
-     * slot-3 check passes for SYS_IPC_CALL.  The actual send/receive uses the
-     * capability it mints into CAPSLOT_FS_EP — the only way to reach the server
-     * now that IPC is capability-addressed (finding C-1). */
-    int rc = sys_connect_fs_server(fss_ep_slot, CAP_R_W);
-    if (rc == 0) {
-        fss_connected = 1;
-        /* One mount, "/" on the endpoint just minted. hvfs_mount probes the
-         * slot, so it must follow the connect; it is idempotent-by-refusal
-         * (HVFS_ERR_EXIST) if this runs twice. */
-        (void)hvfs_mount("/", CAPSLOT_FS_EP, 0u);
-        return 0;
-    }
+    /* No root to mount: no session, or its root would not mount. Fail
+     * closed (S141): there is nothing else to reach files by. Until step 6 a
+     * login with no session fell through to the uid path here, which is how
+     * a file touched between a logout and the next login once left every
+     * later login of a boot on the uid path with its session unused. */
     return -1;
 }
 
@@ -233,9 +215,8 @@ static int fss_connect(void) {
  * kernel attests for this request, and puts the session's root and working
  * directory in CAPSLOT_FS_ROOT and CAPSLOT_FS_CWD; from the first filesystem
  * request on, the shell walks by capability (fss_connect) and so does every
- * program it runs (decision 10). A shell with no such capability, or an account
- * the policy gives nothing, reaches files by the uid path, as before step 3(b),
- * until step 6 removes it.
+ * program it runs (decision 10). A login that gets no session reaches no file,
+ * and do_login ends it (step 6).
  *
  * At logout the shell gives the session back: init revokes it, which takes
  * everything derived from it, the shell's own walks included, and the shell
@@ -259,9 +240,8 @@ static void session_call(uint32_t op, struct sess_reply *rp) {
 }
 
 static void fs_forget(int swept) {
-    /* "/" goes in either mode, so the next fss_connect mounts it afresh: the
-     * uid path's mount of the endpoint, left in place, makes the next session's
-     * hvfs_mount_cap a duplicate. Whatever the shell's walks left in the pool
+    /* "/" goes, so the next fss_connect mounts it afresh: a mount left in
+     * place would make the next session's hvfs_mount_cap a duplicate. Whatever the shell's walks left in the pool
      * went with the session. `swept` says the root and working directory every
      * pool capability descends from were revoked, by init or by this shell, so
      * the pool is empty by S3 and is freed without asking the kernel, which a
@@ -274,22 +254,33 @@ static void fs_forget(int swept) {
     }
     sh_capmode = 0;
     fss_connected = 0;
-    sh_root.slot = CAPSLOT_FS_EP; sh_root.ino = 0; sh_root.cap = 0; sh_root.owned = 0;
+    sh_root.slot = -1; sh_root.ino = 0; sh_root.cap = 0; sh_root.owned = 0;
     sh_cwd = sh_root;
     sh_cwd_path[0] = '/'; sh_cwd_path[1] = 0;
 }
 
-static void session_open_request(void) {
+/* Ask init for this login's session. Returns 1 with one open; 0 with none, and
+ * then *why is init's answer: 0 when the policy gives the account nothing, a
+ * SYS_ERR_* when no session could be asked for or opened. */
+static int session_open_request(int *why) {
     struct sess_reply rp;
     session_call(SESS_OP_OPEN, &rp);
     sh_session_g = (rp.rc == 0) ? rp.g : 0;
+    *why = rp.rc;
     int swept = 0;
     if (!sh_session_g) swept = sh_drop_fs_slots();   /* none: nothing here may be used */
-    fs_forget(swept);                    /* the next request decides the mode */
+    fs_forget(swept);                    /* the next request mounts the root */
     /* A session starts in its working directory (fss_connect), so pwd starts
      * there too. Until 2026-10-14 it said "/" while relative names went to the
      * home: `mkdir d` then made /home/<name>/d under a prompt that said "/". */
     if (sh_session_g) fss_strcpy(sh_cwd_path, rp.cwd);
+#ifdef INIT_SHELL_ROOT_READONLY
+    /* The instrument's root is init's, granted at launch with no session
+     * (smoke-fs-cap-shell): that is what the login walks by. */
+    return 1;
+#else
+    return sh_session_g != 0;
+#endif
 }
 
 static void session_end_request(void) {
@@ -306,9 +297,8 @@ static void session_end_request(void) {
     fs_forget(swept);
 }
 
-/* One request about object `o`, sent through its slot: the endpoint on the uid
- * path, the object's own capability on the capability path. The caller puts
- * o->ino in the request's address field. There is deliberately no form that
+/* One request about object `o`, sent through its slot: the object's own
+ * capability. The caller puts o->ino (0) in the request's address field. There is deliberately no form that
  * picks the slot itself, so a request cannot reach the server through something
  * other than the object it names. Blocks until the reply arrives on this task's
  * private reply endpoint. */
@@ -320,14 +310,6 @@ static int fss_call_on(const struct hvfs_obj *o, struct fs_request *req, struct 
     req->magic = FS_PROTO_MAGIC;
     int r = sys_ipc_call((uint32_t)o->slot, 0,
                          (const char *)req, sizeof(*req), (char *)rep);
-#ifdef SHELL_CAP_FALLBACK
-    /* CONTROL ARM for make smoke-fs-cap-shell-fallback-control, never ship: a
-     * request the capability refused is sent again down the uid path, as the
-     * logged-in user. The "helpful" fail-open CLAUDE.md §1 forbids. */
-    if (r >= 0 && sh_capmode && rep->rc == SYS_ERR_PERM &&
-        sys_connect_fs_server(CAPSLOT_FS_EP, CAP_R_W) == 0)
-        r = sys_ipc_call(CAPSLOT_FS_EP, 0, (const char *)req, sizeof(*req), (char *)rep);
-#endif
     return (r < 0) ? r : 0;
 }
 
@@ -361,11 +343,9 @@ static int sh_open(const char *path, struct hvfs_obj *o, uint32_t *type, uint32_
  * WHY THIS EXISTS. Every fs command used to collapse `fss_call_on() < 0 ||
  * rp.rc < 0` into one sentence that GUESSED at the cause -- "mkdir: failed
  * (name exists or server not running)" -- and the guess did not contain the
- * answer the server gives most often. A standard user's `mkdir` in a
- * root-owned 0755 directory is SYS_ERR_PERM, returned by the `perm_ok(&st,
- * cuid, cgid, P_W)` gate in fs_server.c: the reference monitor doing its job,
- * against the uid the KERNEL attests rather than one the client claimed. The
- * shell reported that as a name clash or a dead server and sent the reader
+ * answer the server gives most often. A standard user's `mkdir` where the
+ * session holds no CREATE is SYS_ERR_PERM: the reference monitor doing its
+ * job, against the capability the kernel attests. The shell reported that as a name clash or a dead server and sent the reader
  * looking for a fault that was not there. `rp.rc` carried the reason the whole
  * time and was thrown away one line after it arrived.
  *
@@ -705,17 +685,16 @@ static void shell_conf_read(void) {
     conf_load("/etc/shell.conf", "shell.conf", shell_conf_apply);
 }
 
-/* NOTHING BEFORE THE BOOT'S FIRST LOGIN. On an installed system the volume is
- * sealed until that login unlocks it (S74), so the file cannot be read then, and
- * asking would be the shell's first filesystem request: fss_connect would probe
- * the mount against a sealed store, and the shell would carry a failed mount
- * into the session. So login.conf applies from the second login of a boot, on
- * every system, and the first prompt makes no request at all. */
-static int g_logged_in_once;
-
+/* READ AT LOGOUT, THROUGH THE SESSION THAT IS ENDING, and applied to the login
+ * prompts that follow. A file is reached only through a session (phase 1b step
+ * 6), and between logins the shell holds none, so this is the last moment it
+ * can be read without new authority. A session that cannot read it (the live
+ * default grants an ordinary account no /etc) leaves the defaults, which is
+ * safe because failure_delay only ever adds a pause. Nothing is read before
+ * the boot's first login: on an installed system the volume is sealed until
+ * that login unlocks it (S74), so the first prompt makes no request at all. */
 static void login_conf_read(void) {
     g_failure_delay = 0;
-    if (!g_logged_in_once) return;
     conf_load("/etc/login.conf", "login.conf", login_conf_apply);
 }
 
@@ -774,9 +753,9 @@ static int tokenize(const char *cmd, char *store, int store_sz, char *argv[]) {
  * decision 10). Through capabilities: copies of the root and the working
  * directory, never wider than the shell's (hvfs_grant_fs), kept in *g until the
  * child is gone, when sh_unendow gives them back and the child's access ends
- * with them. On the uid path nothing is granted: the child connects itself, as
- * it always has. Returns 0, or -1 having killed the child, which must then not
- * be waited for: a child that cannot be given its filesystem does not run. */
+ * with them. A shell with no root mounted hands nothing, so the child has no
+ * filesystem either. Returns 0, or -1 having killed the child, which must then
+ * not be waited for: a child that cannot be given its filesystem does not run. */
 static int sh_endow(int pid, struct hvfs_grant *g) {
     g->root.owned = 0;
     g->cwd.owned  = 0;
@@ -1276,7 +1255,8 @@ static const char *const d_ln[] = {
     "Both names live in the current directory. The two names refer to one file",
     "and one inode: writing through either is seen through the other, and the",
     "file's data survives until its LAST name is removed (see the link count in",
-    "stat(1)). You must own the file, and directories cannot be hard-linked.",
+    "stat(1)). You must already hold every right the new name would give,",
+    "and directories cannot be hard-linked.",
     0 };
 
 static const char *const d_stat[] = {
@@ -1288,30 +1268,28 @@ static const char *const d_stat[] = {
     0 };
 
 static const char *const d_chmod[] = {
-    "Change a file's permission bits. The mode is OCTAL and required:",
+    "Confirm a file's permission bits. The mode is OCTAL and required:",
     "there is no symbolic form, and a malformed mode is refused rather than",
     "partly applied.",
     "",
-    "The owner of a file may change its mode, and so may root. The check is",
-    "made by the fs_server against the uid the KERNEL attests for your",
-    "session, never against anything the shell claims.",
+    "Nothing is stored: who may reach a file is the filesystem policy's to",
+    "say. chmod succeeds only when the mode is already true, so chmod 600 on",
+    "a file another account can reach fails, and says the file is shared.",
+    "The fs_server decides, through your session's capability to the file.",
     0 };
 
 static const char *const d_chown[] = {
-    "Give a file to another account. Root only.",
+    "Confirm a file's owner. Nothing is stored, and a file is never given",
+    "away: stat names your session's account as the owner of what it",
+    "reaches, so chown succeeds only to your own uid and group.",
     "",
     "The uid is numeric; there is no name lookup, as for useradd and userdel.",
-    "With no group given the file keeps the group it has -- the group is read",
-    "back and rewritten, because the underlying operation sets both fields and",
-    "an unspecified group would otherwise become gid 0.",
-    "",
-    "Changing a mode and giving a file away are different acts with different",
-    "rules: an owner may do the first and only root may do the second.",
+    "With no group given the group is read back and asked for unchanged.",
     0 };
 
 static const char *const d_cp[] = {
     "Copy a file. Reads the source and writes a new file at the destination,",
-    "so the copy is owned by you regardless of who owned the original.",
+    "which whoever the policy grants the destination may reach.",
     0 };
 static const char *const d_mv[] = {
     "Rename a file. Both parent directories must be writable by you.",
@@ -1459,12 +1437,12 @@ static const struct man_page man_pages[] = {
    "0 on success; non-zero if the name is missing, or a directory is not empty.","mkdir(1), stat(1)" },
  { "touch","1","create an empty file","touch FILE",d_touch,0,0,"echo(1), stat(1)" },
  { "ln","1","make a hard link to a file","ln OLD NEW",d_ln,0,
-   "0 on success; non-zero if OLD is missing or not a regular file, NEW exists, or you do not own OLD.","rm(1), stat(1)" },
+   "0 on success; non-zero if OLD is missing or not a regular file, NEW exists, or the new name would give more than you hold on OLD.","rm(1), stat(1)" },
  { "stat","1","show a file's metadata","stat FILE",d_stat,0,0,"ls(1)" },
- { "chmod","1","change a file's permission bits","chmod MODE FILE",d_chmod,0,
-   "0 on success; non-zero if the mode is malformed, the name is missing, or you are neither the owner nor root.","chown(8), stat(1), ls(1)" },
- { "chown","8","change a file's owner","chown UID[:GID] FILE",d_chown,0,
-   "0 on success; non-zero if the name is missing or you are not root.","chmod(1), stat(1)" },
+ { "chmod","1","confirm a file's permission bits","chmod MODE FILE",d_chmod,0,
+   "0 if the mode is already true; non-zero if it is malformed, the name is missing, or the mode is not true.","chown(8), stat(1), ls(1)" },
+ { "chown","8","confirm a file's owner","chown UID[:GID] FILE",d_chown,0,
+   "0 if the owner is already you; non-zero if the name is missing or the uid is anyone else's.","chmod(1), stat(1)" },
  { "cp","1","copy a file","cp SRC DST",d_cp,0,0,"mv(1)" },
  { "mv","1","rename a file","mv SRC DST",d_mv,0,0,"cp(1), rm(1)" },
  { "wc","1","count lines, words and bytes","wc FILE",d_wc,0,0,"cat(1)" },
@@ -1643,8 +1621,8 @@ static void show_general_help_us(void) {
     print_cmd("cp <src> <dst>",    "copy a file within the current directory");
     print_cmd("mv <src> <dst>",    "rename a file within the current directory");
     print_cmd("stat <file>",       "show type, mode, owner and size");
-    print_cmd("chmod <mode> <f>",  "change permission bits, octal   (owner or root)");
-    print_cmd("chown <uid> <f>",   "give a file to another account          (root)");
+    print_cmd("chmod <mode> <f>",  "confirm permission bits, octal (stores nothing)");
+    print_cmd("chown <uid> <f>",   "confirm a file's owner           (stores nothing)");
     print_cmd("wc <file>",         "count lines, words and bytes");
     print_cmd("echo <text>",       "print text to the console");
     print_cmd("echo <text> > <f>", "write text to a file (creates it if needed)");
@@ -1934,8 +1912,7 @@ static void show_topic_help_us(const char *topic) {
  * stating: an inode number means nothing without knowing which server was asked.
  * hvfs_walk resolves a path to exactly that pair, so a path that crosses a mount
  * point is listed by the server that owns it rather than by whichever server the
- * shell last spoke to. The cwd case passes CAPSLOT_FS_EP, which is what it has
- * always used. */
+ * shell last spoke to. */
 static void sh_list_dir(const struct hvfs_obj *d, int long_fmt) {
 
     /* Entries are collected before anything is printed. Column widths are a
@@ -2545,40 +2522,24 @@ static void handle_command(char *cmd) {
                  * message, since a directory has no second name by design. */
                 print("ln: "); print(oldn); println(": not a regular file");
             } else {
-                struct fs_request  rq = {0};
                 struct fs_response rp;
-                int t;
-                if (sh_cwd.cap && src.cap) {
-                    /* Through capabilities the source travels as a carried
-                     * capability, not an inode (design §11.1, step 4(c)). */
-                    rp.rc = hvfs_link_cap(&sh_cwd, &src, newn);
-                    t = 0;
-                } else {
-                    rq.op = FS_OP_LINK; rq.ino = src.ino; rq.dir_ino = sh_cwd.ino;
-                    fss_strcpy(rq.name, newn);
-                    t = fss_call_on(&sh_cwd, &rq, &rp);
-                }
+                umemset(&rp, 0, sizeof(rp));
+                rp.magic = FS_PROTO_MAGIC;
+                /* The source travels as a carried capability, not an inode
+                 * (design §11.1, step 4(c)). */
+                rp.rc = hvfs_link_cap(&sh_cwd, &src, newn);
                 hvfs_release(&src);
-                if (t < 0 || rp.rc < 0) fs_fail("ln", t, &rp);
+                if (rp.rc < 0) fs_fail("ln", 0, &rp);
                 else { print("ln: "); print(newn); print(" -> "); println(oldn); }
             }
         }
     } else if (strncmp(cmd, "chmod ", 6) == 0) {
-        /* WHO MAY DO THIS IS NOT DECIDED HERE, and that is deliberate.
-         *
-         * `useradd` and `userdel` are decided by the kernel's CAP_USER test,
-         * and the shell holds CAP_USER only in an administrator's session
-         * (S149). The filesystem is decided by the server. fs_server decides with
-         * SYS_IPC_SENDER, the uid the KERNEL attests for the calling task, and
-         * SYS_AUTH rewrites that uid at every login -- so the attested identity
-         * IS who is at the terminal, and a second check here would be a copy of
-         * the reference monitor's rule kept in a place nothing verifies. On the
-         * uid path the rule is "owner or root" (fs_server.c, FS_OP_CHMOD) and a
-         * standard user changing the mode of their own file is correct, not an
-         * escalation. Through a capability nothing is changed at all: the
-         * server answers whether the mode asked for is already true
-         * (fs_policy.h fsp_chmod_true, S131), so "is now" below is a truth the
-         * server confirmed, not a change it made. */
+        /* WHAT IS TRUE IS NOT DECIDED HERE, and that is deliberate. fs_server
+         * answers through the file's capability whether the mode asked for is
+         * already true (fs_policy.h fsp_chmod_true, S131) and changes nothing,
+         * so "already holds" below is a truth the server confirmed, not a
+         * change it made; a second check here would be a copy of the reference
+         * monitor's rule kept in a place nothing verifies. */
         const char *p = cmd + 6; while (*p == ' ') p++;
         uint32_t mode = 0; int digits = 0;
         while (*p >= '0' && *p <= '7') { mode = (mode << 3) | (uint32_t)(*p - '0'); p++; digits++; }
@@ -2598,32 +2559,22 @@ static void handle_command(char *cmd) {
                 struct fs_response rp;
                 rq.op = FS_OP_CHMOD; rq.ino = f.ino; rq.mode = mode & 07777u;
                 int t = fss_call_on(&f, &rq, &rp);
-                int via_cap = f.cap;
                 hvfs_release(&f);
                 if (t < 0 || rp.rc < 0) fs_fail("chmod", t, &rp);
-                else if (via_cap) {
+                else {
                     /* Nothing was stored, so "is now" would be a claim the next
                      * stat contradicts: owner bits are accepted when they are
                      * among the caller's rights, so 0600 holds of a file a stat
                      * reports as 0700. */
                     print("chmod: "); print(p); print(": 0");
                     print_octal(mode & 07777u); println(" already holds, nothing changed");
-                } else {
-                    print("chmod: "); print(p); print(" is now 0");
-                    print_octal(mode & 07777u); println("");
                 }
             }
         }
     } else if (strncmp(cmd, "chown ", 6) == 0) {
-        /* Root only on the uid path, enforced by fs_server against the attested
-         * uid -- see the note on chmod above for why the shell does not repeat
-         * the test. Through a capability only a chown to the caller itself is
-         * true, and nothing is changed (fsp_chown_true, S131).
-         *
-         * Giving a file away is not the same act as changing its mode, which is
-         * why the two rules differ: an owner who could hand a file to another
-         * uid could plant a setuid-shaped object under someone else's name, and
-         * an owner who could take one could not, so only root does either. */
+        /* Through a capability only a chown to the session's own account is
+         * true, and nothing is changed (fsp_chown_true, S131); see the note on
+         * chmod above for why the shell does not repeat the test. */
         const char *p = cmd + 6; while (*p == ' ') p++;
         uint32_t nuid = 0, ngid = 0;
         int ud = 0, gd = 0, have_gid = 0;
@@ -2659,15 +2610,14 @@ static void handle_command(char *cmd) {
                     rq.arg_uid = nuid;
                     rq.arg_gid = have_gid ? ngid : sp.gid;
                     int t = fss_call_on(&f, &rq, &rp);
-                    int via_cap = f.cap;
                     hvfs_release(&f);
                     if (t < 0 || rp.rc < 0) fs_fail("chown", t, &rp);
                     else {
                         print("chown: "); print(p);
-                        print(via_cap ? ": uid=" : " is now uid=");
+                        print(": uid=");
                         print_decimal(rq.arg_uid); print(" gid=");
                         print_decimal(rq.arg_gid);
-                        println(via_cap ? " already holds, nothing changed" : "");
+                        println(" already holds, nothing changed");
                     }
                 }
             }
@@ -2988,13 +2938,14 @@ static void handle_command(char *cmd) {
         else if (r != 0) { println("useradd failed"); }
         else {
             println("user added");
-            /* AND A HOME DIRECTORY, because an account without one has nowhere
-             * to write: every directory in the provisioned skeleton is root's.
-             * fs_server does this for the accounts that exist when a volume is
-             * provisioned; an account created afterwards is this path's job, and
-             * the shell can do it because only an administrator's session gets
-             * this far, and that session walks by root's capability: /home is
-             * root-owned, and chown is root-only (S77).
+            /* AND A HOME DIRECTORY, because the policy's @self line grants an
+             * account /home/<name> and a grant of a name that does not exist
+             * reaches nothing. fs_server does this for the accounts that exist
+             * when a volume is provisioned; an account created afterwards is
+             * this path's job, and only an administrator's session gets this
+             * far, walking by a root that may create in /home. Nothing is
+             * stamped on it: ownership decides nothing (phase 1b step 6), the
+             * grant does.
              *
              * REPORTED BUT NOT FATAL. The account exists either way and saying
              * so twice would be a lie in one direction or the other: `useradd`
@@ -3012,36 +2963,8 @@ static void handle_command(char *cmd) {
                 fss_strcpy(mq.name, newname);
                 int mt = fss_call_on(&home, &mq, &mp);
                 hvfs_release(&home);
-                /* The new directory is looked up afresh: through capabilities
-                 * the mkdir's reply names nothing this shell can send to. (Owner
-                 * and mode are the uid path's; through capabilities chown and
-                 * chmod wait for phase 1b step 4, and say so.) */
-                char hpath[FS_NAME_MAX + 8];
-                int hn = 0;
-                for (const char *q = "/home/"; *q; q++) hpath[hn++] = *q;
-                for (const char *q = newname; *q && hn < (int)sizeof(hpath) - 1; q++) hpath[hn++] = *q;
-                hpath[hn] = '\0';
-                struct hvfs_obj hd;
-                if (mt < 0 || mp.rc < 0) {
-                    fs_fail("useradd: home", mt, &mp);
-                } else if (sh_lookup(hpath, &hd, 0) != 0) {
-                    println("useradd: home created, but cannot open it");
-                } else {
-                    struct fs_request  cq = {0};
-                    struct fs_response cp;
-                    cq.op = FS_OP_CHOWN; cq.ino = hd.ino;
-                    cq.arg_uid = newuid; cq.arg_gid = 100;
-                    int ct = fss_call_on(&hd, &cq, &cp);
-                    if (ct < 0 || cp.rc < 0) fs_fail("useradd: home", ct, &cp);
-                    else {
-                        struct fs_request  pq = {0};
-                        struct fs_response pp;
-                        pq.op = FS_OP_CHMOD; pq.ino = hd.ino; pq.mode = 0700u;
-                        (void)fss_call_on(&hd, &pq, &pp);
-                        print("useradd: created /home/"); println(newname);
-                    }
-                    hvfs_release(&hd);
-                }
+                if (mt < 0 || mp.rc < 0) fs_fail("useradd: home", mt, &mp);
+                else { print("useradd: created /home/"); println(newname); }
             }
         }
         }
@@ -3355,7 +3278,6 @@ static void do_login(void) {
     const int max_attempts = 5;
 
     while (1) {
-        login_conf_read();
         {
             /* One write, so the prompt every harness waits for cannot be split
              * by other console output landing between its pieces. */
@@ -3403,9 +3325,29 @@ static void do_login(void) {
             print("! You are ");
             println(got_uid == 0 ? "the administrator (root)." : "a standard user.");
             println("Type 'help' for available commands, 'logout' to end the session.");
-            /* The session, before anything here touches a file. */
-            session_open_request();
-            g_logged_in_once = 1;
+            /* The session, before anything here touches a file. A login with
+             * none would reach no file at all, so it is ended here, saying why,
+             * rather than left at a prompt where every command fails (phase 1b
+             * step 6, decided 2026-10-16). Not a failed attempt: the password
+             * was right. SHELL_NO_SESSION_ALLOWED=1 keeps it, for the control
+             * arm smoke-installer-policy-nogrant-control. */
+            int why = 0;
+            if (!session_open_request(&why)) {
+#ifndef SHELL_NO_SESSION_ALLOWED
+                if (why == 0) {
+                    print("The filesystem policy grants ");
+                    print(current_login_name);
+                    println(" nothing, so this login cannot reach any file.");
+                    println("Ask the administrator to grant the account in /etc/fs.policy.");
+                } else {
+                    println("No filesystem session could be opened for this login.");
+                }
+                println("Login ended.");
+                current_login_uid = 0;
+                for (int i = 0; i < 32; i++) current_login_name[i] = 0;
+                continue;
+#endif
+            }
             shell_conf_read();
             show_motd();
             attempts = 0;
@@ -3702,6 +3644,7 @@ void _start(void) {
 
         if (strcmp(cmd, "logout") == 0 || strcmp(cmd, "exit") == 0) {
             println("Logging out...");
+            login_conf_read();           /* through this session, before it goes */
             session_end_request();
             current_login_uid = 0;
             for (int i = 0; i < 32; i++) current_login_name[i] = 0;

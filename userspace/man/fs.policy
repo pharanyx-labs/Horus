@@ -14,9 +14,9 @@ DESCRIPTION
     capability, and the policy is applied to all of it. An edit applies
     from the next login.
 
-    An account this file gives nothing has no session. Until the uid path
-    is removed (roadmap 2.10, step 6), its login reaches files by the uid
-    the kernel attests and the mode bits, as before sessions existed.
+    An account this file gives nothing has no session, and so no way to
+    any file: its password is accepted, the shell says that the policy
+    grants it nothing, and the login is ended.
 
 FORMAT
     One grant per line, three fields separated by spaces or tabs:

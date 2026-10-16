@@ -203,17 +203,15 @@
     So a server never trusts what a client says about itself.
     <code>SYS_IPC_SENDER</code> returns the user ID the <em>kernel</em> recorded for the
     sender of a message, established only by a successful login and unforgeable by the
-    sender. <code>fs_server</code> authorises a file operation against that value rather
-    than against anything in the request, which is why the filesystem can enforce rwx
-    correctly while being an ordinary unprivileged program with no way to check identity
-    itself. A request through a filesystem capability is authorised by the capability
-    instead: the kernel attests which object its token names and which rights it carries.
-    That is the path that replaces the user ID: after a login <code>init</code> asks
-    <code>fs_server</code> for the account's session, which compiles its grants from the
-    policy into one root capability, and grants it to the shell, which walks by it and
-    hands what it runs a narrowed copy. A new installed volume is given a policy
-    that gives every account a session; an account a policy gives nothing keeps the
-    user ID path until it is removed.
+    sender. It is asked once per login, by <code>init</code>, to name the account whose
+    session to open: <code>fs_server</code> compiles that account's grants from the
+    policy into one root capability, and <code>init</code> grants it to the shell, which
+    walks by it and hands what it runs a narrowed copy. From then on the user ID decides
+    nothing. Every file request is authorised by the capability it came through: the
+    kernel attests which object its token names and which rights it carries, and
+    <code>fs_server</code>, an ordinary unprivileged program, never asks who sent it. A
+    new installed volume is given a policy that gives every account a session, and a login
+    the policy gives nothing reaches no file, so it is ended.
   </p>
 </div>
 </section>

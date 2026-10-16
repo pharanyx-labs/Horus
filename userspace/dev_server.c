@@ -9,7 +9,7 @@
  *
  * WHAT MAKES IT THE RIGHT SECOND MOUNT is what it does NOT hold. fs_server is
  * endowed with CAP_ENCRYPTED_STORAGE (the object store), CAP_BOOT_MODULE (the
- * /bin provisioning surface) and CAP_USER (its registration gate). This server
+ * /bin provisioning surface) and CAP_USER (the account list). This server
  * is endowed with ONE capability: the listen end of its own endpoint. It has no
  * object store, no boot modules, no user database, and there is no syscall it
  * can reach that touches any of them.

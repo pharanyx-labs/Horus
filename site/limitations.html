@@ -93,7 +93,6 @@
 <li><a href="#limits">Findings</a>
 <ol class="toc__sub">
 <li><a href="#c-5nobody-reviews-a-change-before-it-lands">C-5Nobody reviews a change before it lands</a></li>
-<li><a href="#source-review-findings">1.31Findings from a source review</a></li>
 <li><a href="#1-33a-revocation-cannot-reach-through-a-task-that-has-died">1.33A revocation cannot reach through a task that has died</a></li>
 <li><a href="#2-9measured-boot-is-opt-in">2.9Measured boot is opt-in</a></li>
 <li><a href="#4a-programs-execute-right-is-advisory">4A program's execute right is advisory</a></li>
@@ -136,14 +135,6 @@
       2026-07 critical finding passed every gate of its day, because the tests checked the
       property the author had in mind rather than the one the documentation claimed. The
       honest claim is "thoroughly automatically verified", not "independently reviewed".
-    </p>
-  </li>
-  <li>
-    <h3 id="source-review-findings"><span class="id">1.31</span>Findings from a source review</h3>
-    <p>
-      A static review of the source found six defects. Five are fixed; one is open,
-      LIMITATIONS 1.31: the older by-user-id file path checks a file's own mode, not its
-      directories.
     </p>
   </li>
   <li>

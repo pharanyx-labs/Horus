@@ -23,8 +23,10 @@
 #include "libhorus.h"
 #include "fs_proto.h"
 
-/* Where the harness puts the two endpoint capabilities. */
-#define SLOT_FS_CLIENT   CAPSLOT_FS_EP        /* WRITE-only -> fs_server   */
+/* Where the harness puts the endpoint capabilities, and where this task puts
+ * the root it mints. */
+#define SLOT_FS_PLAIN    31                   /* untokened, MINT -> fs_server (init's stand-in) */
+#define SLOT_FS_CLIENT   CAPSLOT_FS_ROOT      /* the root directory, minted from it */
 #define SLOT_DEV_CLIENT  21                   /* WRITE-only -> dev_server  */
 #define SLOT_EMPTY       30                   /* deliberately holds nothing */
 
@@ -40,21 +42,27 @@ static void check(int ok, const char *what) {
 void _start(void) {
     kputln("VFSTEST: begin");
 
-    /* Acquire the root filesystem capability the ordinary way -- the same call
-     * posix.c's fs_connect() makes. Bounded retry: fs_server registers from
-     * another task, so the capability is merely late rather than absent, and an
-     * unbounded wait would turn a genuine refusal into a hang ([G-8] sig C). */
+    /* The root filesystem's directory capability, minted from the untokened
+     * one the harness lent, as init mints every session's (phase 1b step 6:
+     * there is no other way to reach fs_server). */
+    {
+        uint32_t kern = CAP_RIGHT_WRITE | CAP_RIGHT_GRANT | CAP_RIGHT_REVOKE | CAP_RIGHT_MINT;
+        check(sys_cap_mint_token(SLOT_FS_CLIENT, SLOT_FS_PLAIN, kern | FS_R_READ | FS_R_LOOKUP,
+                                 fs_token(0, 0)) == 0, "mint-the-root-filesystem");
+    }
+
+    /* (1) The root mount, as every program has it. The mount probe is a stat,
+     * and fs_server may still be starting, so it is asked until it answers:
+     * bounded, since an unbounded wait would turn a genuine refusal into a
+     * hang ([G-8] sig C). */
     {
         int r = -1;
         for (int i = 0; i < 4000 && r != 0; i++) {
-            r = sys_connect_fs_server(SLOT_FS_CLIENT, CAP_R_W);
+            r = hvfs_mount_cap("/", SLOT_FS_CLIENT);
             if (r != 0) { sys_yield(); spin_delay(); }
         }
-        check(r == 0, "connect-to-the-root-filesystem");
+        check(r == 0, "mount-root");
     }
-
-    /* (1) The root mount, as every program has today. */
-    check(hvfs_mount("/", SLOT_FS_CLIENT, 0) == 0, "mount-root");
 
     /* (2) A mount must be backed by a capability. SLOT_EMPTY holds nothing, so
      * the prefix alone must not install one -- otherwise every path under it

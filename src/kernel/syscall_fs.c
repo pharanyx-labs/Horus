@@ -251,58 +251,20 @@ void h_block_write(struct interrupt_frame64 *r) {
 #endif
 }
 
-/* SYS_REGISTER_FS_SERVER: register the caller as the fs server. The admin
- * capability (slot 6, ALL, type CAP_USER) is enforced centrally by the table;
- * the per-call endpoint-slot lookup stays here. */
+/* SYS_REGISTER_FS_SERVER (49) and SYS_CONNECT_FS_SERVER (50), withdrawn
+ * 2026-10-16 with the uid path (phase 1b step 6, S14). fs_server registered
+ * itself so that ANY task could take a send capability to it and be served by
+ * the uid the kernel recorded at its login: authority by identity, granted to
+ * whoever asked. A client now reaches the filesystem only through a capability
+ * its spawner handed it, derived from the root init mints. Both numbers answer
+ * SYS_ERR_NOSYS to every caller so they cannot come to mean something else
+ * (captest checks it, as it does SYS_SUDO). */
 void h_register_fs_server(struct interrupt_frame64 *r) {
-    uint32_t ep_slot = r->rbx;
-    struct capability *ep = cap_lookup(ep_slot, CAP_ENDPOINT, CAP_RIGHT_READ | CAP_RIGHT_WRITE);
-    if (!ep) {
-        r->rax = -2;
-        return;
-    }
-    fs_server_task_id = get_current_task();
-    fs_server_listen_ep_idx = ep->object;
-    r->rax = 0;
+    r->rax = (uint32_t)SYS_ERR_NOSYS;
 }
 
-/* SYS_CONNECT_FS_SERVER: mint an endpoint cap to the registered fs server. */
 void h_connect_fs_server(struct interrupt_frame64 *r) {
-    uint32_t dest_slot = r->rbx;
-    uint32_t rights = r->rcx;
-    if (fs_server_task_id < 0 || fs_server_listen_ep_idx < 0) {
-        r->rax = -1;
-        return;
-    }
-    /* Install the endpoint cap through the locked, authority-checked, accounted
-     * cap path (cap_install_endpoint) rather than a raw cspace store. Policy is
-     * unchanged: any task may connect — the fs_server is a reference monitor
-     * that authorizes every request by kernel-attested identity (SYS_IPC_SENDER),
-     * so the endpoint alone grants no file access — but the cap must be written
-     * with the same discipline as every other one: SMP-safe against a concurrent
-     * global revoke, reserved-slot-checked, and counted against MAX_CAPS_PER_TASK.
-     * A fresh serial is required or cap_lookup treats the slot as
-     * empty and the client cannot pass the IPC capability gate. Rights are masked
-     * to R/W/GRANT here so the connect policy lives at the policy site. */
-    /* WRITE ONLY — never READ (audit finding C-1).
-     *
-     * READ is the RECEIVE right on an endpoint. A client minted with READ on the
-     * server's listen endpoint could dequeue other clients' requests
-     * (SYS_IPC_RECV) and, because SYS_IPC_REPLY_TO also requires READ, forge the
-     * server's replies into a victim's blocked SYS_IPC_CALL buffer. That is
-     * exactly the C-1 attack. A client only ever needs to SEND to the service, so
-     * it is minted WRITE-only and the caller-supplied `rights` cannot widen that.
-     *
-     * The client's replies come back on its own private reply endpoint, for which
-     * it already holds a capability (slot 4) that nobody else has.
-     *
-     * Policy note: any task may still connect. The fs_server is a reference
-     * monitor that authorises every request against the caller's kernel-attested
-     * uid (SYS_IPC_SENDER), so a send-only channel to it confers no file access. */
-    (void)rights;
-    bool ok = cap_install_endpoint(dest_slot, (uint32_t)fs_server_listen_ep_idx,
-                                   CAP_RIGHT_WRITE, 0xF51A0000U);
-    r->rax = ok ? 0 : -2;
+    r->rax = (uint32_t)SYS_ERR_NOSYS;
 }
 
 /* ---- Encrypted object-store API for the userspace FS server -------------- *
@@ -345,7 +307,7 @@ void h_connect_fs_server(struct interrupt_frame64 *r) {
  * SO THE STORE FAILED OPEN IN BOTH DIRECTIONS on a locked volume. Reading:
  * SYS_FS_STAT answered with a real inode -- size, mode, uid, gid, type, links --
  * for any inode number on a sealed disk. Writing: SYS_FS_INODE_ALLOC,
- * SYS_FS_SET_META, SYS_FS_SET_SIZE, SYS_FS_INODE_LINK and SYS_FS_INODE_FREE all
+ * SYS_FS_SET_META (withdrawn since), SYS_FS_SET_SIZE, SYS_FS_INODE_LINK and SYS_FS_INODE_FREE all
  * edited the inode table of a volume that had never been opened. The gate on all
  * of them is CAP_ENCRYPTED_STORAGE, so this was never reachable from an ordinary
  * ring-3 task -- but "only the filesystem server can do it" is a statement about
@@ -522,30 +484,30 @@ void h_fs_set_size(struct interrupt_frame64 *r) {
     r->rax = 0;
 }
 
-/* SYS_FS_SET_META (74): persist an inode's owner (uid/gid) and permission bits.
- * Same gate as the rest of the object-store API: CAP_ENCRYPTED_STORAGE at
- * CAPSLOT_AUDIT, from the dispatch table. There is no uid check here, and this
- * comment claimed one until 2026-08-29. Holding that capability is what makes a
- * caller the trusted filesystem server.
- * The server is the reference monitor: it chooses the values (owner = the
- * kernel-attested creator at create time; chmod/chown only after authorising the
- * attested caller), and this writes them through. Only the low 12 permission bits
- * are caller-settable; the file-type bits are preserved, so a chmod can never
- * turn a directory into a regular file. */
+/* SYS_FS_SET_META (74), withdrawn 2026-10-16 (phase 1b step 6, S14). It
+ * stamped an inode's owner and mode bits, which the uid path then checked; with
+ * that path gone nothing decides by them, and a call that wrote them would only
+ * make the disk look as if it held authority (design decision 1: it holds
+ * none). An inode's mode, uid and gid are now whatever SYS_FS_INODE_ALLOC wrote.
+ * SYS_ERR_NOSYS to every caller, reserved as SYS_SUDO is. */
 void h_fs_set_meta(struct interrupt_frame64 *r) {
-    uint64_t ino  = r->rbx;
-    uint32_t mode = r->rcx;
-    uint32_t uid  = r->rdx;
-    uint32_t gid  = r->rsi;
+#ifdef FS_SET_META_RESTORED
+    /* CONTROL ARM, never ship (smoke-captest-setmeta-control): the call is
+     * back, gated as it was, so a caller without the store's capability is
+     * refused PERM where NOSYS is due, and the store's holder stamps again. */
+    uint64_t ino = r->rbx;
     struct mounted_fs *mfs = store_open();
     if (!mfs) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
     struct on_disk_inode inode;
     if (storage_read_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) { r->rax = (uint32_t)SYS_ERR_NOENT; return; }
-    inode.mode = (inode.mode & ~0007777u) | (mode & 0007777u);
-    inode.uid  = uid;
-    inode.gid  = gid;
+    inode.mode = (inode.mode & ~0007777u) | ((uint32_t)r->rcx & 0007777u);
+    inode.uid  = (uint32_t)r->rdx;
+    inode.gid  = (uint32_t)r->rsi;
     if (storage_write_inode(mfs->bd, &mfs->sb, ino, &inode) != 0) { r->rax = (uint32_t)SYS_ERR_IO; return; }
     r->rax = 0;
+#else
+    r->rax = (uint32_t)SYS_ERR_NOSYS;
+#endif
 }
 
 void h_fs_stat(struct interrupt_frame64 *r) {

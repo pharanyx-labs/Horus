@@ -10,13 +10,14 @@
  * records (BLK/32 per block); the root directory is inode 0. Clients reach
  * the server over IPC (endpoint slot 4) using the protocol in <fs_proto.h>.
  *
- * Access control: this server is the filesystem reference monitor. Every request
- * is checked against the caller's KERNEL-ATTESTED identity — the uid/gid the
- * kernel recorded for the sending task at login (SYS_IPC_SENDER), not anything
- * the client puts in the message — using POSIX owner/group/other permission bits
- * and ownership stamped on the creator; root (uid 0) is the only ambient
- * authority. A client cannot forge who it is, cannot reach the store directly
- * (only this server holds the storage capability), and cannot bypass the checks.
+ * Access control: this server is the filesystem reference monitor, and it
+ * decides every request by the CAPABILITY it came through, as the kernel
+ * attests it (SYS_IPC_INVOKER): the token names the object and the session's
+ * grants, the capability's rights say what may be done (docs/design/
+ * filesystem.md §5). Who sent a request is never asked; there is no uid check
+ * and no ambient authority, root's included (phase 1b step 6). A client cannot
+ * forge a token, cannot reach the store directly (only this server holds the
+ * storage capability), and cannot widen what it was handed.
  *
  * Limitations this increment (documented): one in-flight request at a time
  * (single-slot mailbox).
@@ -229,30 +230,17 @@ static int file_truncate(uint32_t ino, uint32_t newlen, uint32_t oldlen) {
     return sys_fs_set_size(ino, newlen) == 0 ? 0 : SYS_ERR_IO;
 }
 
-/* Permission bits (owner/group/other rwx). */
-#define P_R 4u
-#define P_X 1u
-#define P_W 2u
-
-/* POSIX owner/group/other check of `want` (an rwx mask) against the caller's
- * KERNEL-ATTESTED (cuid, cgid) — never an identity from the request. Root
- * (uid 0) always passes; this is the only ambient authority, matching the rest
- * of the kernel's uid==0 admin model. */
-/* Set while a CAPABILITY-ADDRESSED request is being served (cap_request): its
- * rights were already checked against the invoking capability, which the kernel
- * attests, so the uid check below has nothing to add (docs/design/filesystem.md
- * §5, phase 1b step 1). The uid path is untouched for every other request. */
-static int g_by_cap;
-
-static int perm_ok(const struct fs_stat *st, uint32_t cuid, uint32_t cgid, unsigned want) {
-    if (g_by_cap) return 1;                        /* the capability already said */
-    if (cuid == 0) return 1;                       /* superuser */
-    unsigned bits;
-    if      (cuid == st->uid) bits = (unsigned)(st->mode >> 6) & 7u;   /* owner */
-    else if (cgid == st->gid) bits = (unsigned)(st->mode >> 3) & 7u;   /* group */
-    else                      bits = (unsigned)(st->mode) & 7u;        /* other */
-    return (bits & want) == want;
-}
+/* NO REQUEST IS DECIDED BY WHO SENT IT (phase 1b step 6, S14). Until step 6
+ * an untokened request was the "uid path": fs_server asked the kernel for the
+ * sender's uid (SYS_IPC_SENDER) and checked it against an inode's mode bits
+ * (perm_ok), and uid 0 passed everything. That path is gone. Every request
+ * comes through a capability, which the kernel attests: a tokened one names its
+ * object and carries its rights (cap_request), and init's untokened one, which
+ * holds MINT, opens and ends sessions (session_request). Anything else is
+ * refused in _start before it reaches handle(). The mode, uid and gid fields of
+ * an inode are no longer written or read for authority: stat reports the
+ * truthful view (§7.1) instead. FS_UID_PATH_RESTORED=1 puts the uid path back
+ * for the control arm smoke-fs-perms-uid-control. */
 
 /* ---- token generations (docs/design/filesystem.md §5.2) --------------------
  *
@@ -358,10 +346,12 @@ static int system_tree_refuses(const struct fs_request *rq) {
 #endif
 }
 
-/* Enforce access to an already-existing object, then dispatch. cuid/cgid are the
- * caller's kernel-attested identity; the request body carries none. */
-static void handle(const struct fs_request *rq, struct fs_response *rp,
-                   uint32_t cuid, uint32_t cgid) {
+/* Do one operation on objects a capability already reached: cap_request has
+ * checked the invoking capability's rights and put the token's object into the
+ * request, so nothing here asks who the caller is. What is left is the
+ * operation's own sense: the operand is a directory, the name is free, the
+ * directory is empty. */
+static void handle(const struct fs_request *rq, struct fs_response *rp) {
     umemset(rp, 0, sizeof(*rp));
     rp->magic = FS_PROTO_MAGIC;
 
@@ -373,7 +363,6 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
     switch (rq->op) {
     case FS_OP_LOOKUP: {
         if (sys_fs_stat(rq->dir_ino, &st) != 0)      { rp->rc = SYS_ERR_NOENT; break; }
-        if (!perm_ok(&st, cuid, cgid, P_X))          { rp->rc = SYS_ERR_PERM;  break; }  /* search the dir */
         if (!is_dir(&st))                            { rp->rc = SYS_ERR_INVAL; break; }  /* see is_dir */
         uint32_t ino, type;
         if (dir_find(rq->dir_ino, rq->name, &ino, &type)) { rp->rc = 0; rp->ino = ino; rp->type = type; }
@@ -383,7 +372,6 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
     case FS_OP_CREATE:
     case FS_OP_MKDIR: {
         if (sys_fs_stat(rq->dir_ino, &st) != 0)      { rp->rc = SYS_ERR_NOENT; break; }
-        if (!perm_ok(&st, cuid, cgid, P_W))          { rp->rc = SYS_ERR_PERM;  break; }  /* modify the dir */
         if (!is_dir(&st))                            { rp->rc = SYS_ERR_INVAL; break; }  /* see is_dir */
         if (rq->name[0] == 0 || uslen(rq->name) >= FS_DIRENT_NAME) { rp->rc = SYS_ERR_INVAL; break; }
         /* EXIST, not INVAL. The code is the only thing a client can report a
@@ -394,10 +382,6 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
         uint32_t type = (rq->op == FS_OP_MKDIR) ? FS_TYPE_DIR : FS_TYPE_FILE;
         int ino = sys_fs_inode_alloc(type);
         if (ino < 0) { rp->rc = ino; break; }
-        /* Stamp ownership on the kernel-attested creator with default perms
-         * (dir 0755, file 0644). The inode is not yet linked into any directory,
-         * so this brief window is invisible to other clients. */
-        sys_fs_set_meta((uint32_t)ino, (type == FS_TYPE_DIR) ? 0755u : 0644u, cuid, cgid);
         int rc = dir_add(rq->dir_ino, rq->name, (uint32_t)ino, type);
         if (rc != 0) { fs_ino_free((uint32_t)ino); rp->rc = rc; break; }
         rp->rc = 0; rp->ino = (uint32_t)ino; rp->type = type;
@@ -405,7 +389,6 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
     }
     case FS_OP_DELETE: {
         if (sys_fs_stat(rq->dir_ino, &st) != 0)      { rp->rc = SYS_ERR_NOENT; break; }
-        if (!perm_ok(&st, cuid, cgid, P_W))          { rp->rc = SYS_ERR_PERM;  break; }  /* modify the dir */
         if (!is_dir(&st))                            { rp->rc = SYS_ERR_INVAL; break; }  /* see is_dir */
         uint32_t ino, type;
         if (!dir_find(rq->dir_ino, rq->name, &ino, &type)) { rp->rc = SYS_ERR_NOENT; break; }
@@ -425,20 +408,17 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
     }
     case FS_OP_LINK: {
         /* Hard-link: give the existing regular file `rq->ino` a second name
-         * `rq->name` in dir `rq->dir_ino`. Needs write on the new parent dir; the
-         * caller must own the source (or be root), since a link bumps the file's
-         * on-disk link count — an owner-or-root gate keeps a client from pinning
-         * or exposing an inode it has no claim to by guessing its number. A later
-         * unlink of either name only frees the file once the last name is gone. */
+         * `rq->name` in dir `rq->dir_ino`. Both come from capabilities: the
+         * directory from the one invoked, the file from the one the request
+         * carried, whose rights cap_request has compared (S132). A later unlink
+         * of either name only frees the file once the last name is gone. */
         if (sys_fs_stat(rq->dir_ino, &st) != 0)          { rp->rc = SYS_ERR_NOENT; break; }
         if (st.type != FS_TYPE_DIR)                      { rp->rc = SYS_ERR_INVAL; break; }
-        if (!perm_ok(&st, cuid, cgid, P_W))              { rp->rc = SYS_ERR_PERM;  break; }  /* modify the dir */
         if (rq->name[0] == 0 || uslen(rq->name) >= FS_DIRENT_NAME) { rp->rc = SYS_ERR_INVAL; break; }
         if (dir_find(rq->dir_ino, rq->name, 0, 0))       { rp->rc = SYS_ERR_EXIST; break; }  /* name exists */
         struct fs_stat sst;
         if (sys_fs_stat(rq->ino, &sst) != 0)             { rp->rc = SYS_ERR_NOENT; break; }  /* source inode */
         if (sst.type != FS_TYPE_FILE)                    { rp->rc = SYS_ERR_INVAL; break; }  /* no dir/other links */
-        if (!(g_by_cap || cuid == 0 || cuid == sst.uid)) { rp->rc = SYS_ERR_PERM;  break; }  /* owner or root; through a capability, the carried one decided */
         /* The second name goes beside a name the file already has, never into
          * another directory (decision 11). v11 keeps no back-references, so
          * "the directory it is in" can only be answered this way. */
@@ -470,7 +450,6 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
 #else
         if (strc != 0) { rp->rc = strc; break; }
 #endif
-        if (!perm_ok(&st, cuid, cgid, P_R))          { rp->rc = SYS_ERR_PERM;  break; }  /* read the dir */
         if (!is_dir(&st))                            { rp->rc = SYS_ERR_INVAL; break; }  /* see is_dir */
         uint32_t ino, type; char name[FS_NAME_MAX];
         if (dir_get(rq->dir_ino, rq->offset, &ino, &type, name)) {
@@ -496,10 +475,9 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
     }
     case FS_OP_STAT: {
         if (sys_fs_stat(rq->ino, &st) != 0)          { rp->rc = SYS_ERR_NOENT; break; }
-        /* Metadata is visible to root, the owner, or anyone who can read it. */
-        if (!(cuid == st.uid || perm_ok(&st, cuid, cgid, P_R))) { rp->rc = SYS_ERR_PERM; break; }
+        /* Mode, uid and gid are cap_request's to fill: the truthful view
+         * (§7.1), never what an inode once had stamped on it. */
         rp->rc = 0; rp->type = st.type; rp->size = (uint32_t)st.size;
-        rp->mode = st.mode & 07777u; rp->uid = st.uid; rp->gid = st.gid;
         rp->links = st.links;
         /* The object's own inode, for st_ino: through a capability the client
          * never named it (a walk's reply already tells the holder as much). */
@@ -508,7 +486,6 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
     }
     case FS_OP_READ: {
         if (sys_fs_stat(rq->ino, &st) != 0)          { rp->rc = SYS_ERR_NOENT; break; }
-        if (!perm_ok(&st, cuid, cgid, P_R))          { rp->rc = SYS_ERR_PERM;  break; }
         if (rq->offset >= st.size) { rp->rc = 0; rp->size = 0; break; }   /* EOF */
         uint32_t blk = rq->offset / BLK, boff = rq->offset % BLK;
         static uint8_t tmp[BLK];
@@ -526,7 +503,6 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
     case FS_OP_WRITE: {
         if (sys_fs_stat(rq->ino, &st) != 0)          { rp->rc = SYS_ERR_NOENT; break; }
         if (st.type == FS_TYPE_DIR)                  { rp->rc = SYS_ERR_INVAL; break; }  /* files only */
-        if (!perm_ok(&st, cuid, cgid, P_W))          { rp->rc = SYS_ERR_PERM;  break; }
         /* O_APPEND: the offset is the current end of file, chosen here rather
          * than by the client. We already hold the size from the stat above and
          * nothing else runs between it and the write, so the append cannot land
@@ -549,39 +525,11 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
         rp->size = end;          /* so the client can track its offset */
         break;
     }
-    /* THE TWO METADATA RULES ARE DIFFERENT ON PURPOSE, and each has a control
-     * arm of its own (FS_CHMOD_ANY_OWNER=1, FS_CHOWN_ANY_UID=1) because an arm
-     * against one says nothing about the other. Changing a mode is something an
-     * owner does to their own file; giving a file AWAY is not, so chown is
-     * root-only -- an owner who could hand a file to another uid could leave an
-     * object under a name that account is answerable for, and an owner who could
-     * TAKE one could help themselves to anything readable. Both checks are made
-     * against `cuid`, which is SYS_IPC_SENDER's kernel-attested uid and never a
-     * field of the request. Until 2026-09-02 neither had a ring-3 caller at all:
-     * the operations existed, the shell had no command for them, and nothing in
-     * the tree had ever exercised either rule from a real login. */
-    case FS_OP_CHMOD: {
-        if (sys_fs_stat(rq->ino, &st) != 0)          { rp->rc = SYS_ERR_NOENT; break; }
-#ifndef FS_CHMOD_ANY_OWNER
-        if (!(cuid == 0 || cuid == st.uid))          { rp->rc = SYS_ERR_PERM;  break; }  /* owner or root */
-#endif
-        if (sys_fs_set_meta(rq->ino, rq->mode & 07777u, st.uid, st.gid) != 0) { rp->rc = SYS_ERR_IO; break; }
-        rp->rc = 0;
-        break;
-    }
-    case FS_OP_CHOWN: {
-        if (sys_fs_stat(rq->ino, &st) != 0)          { rp->rc = SYS_ERR_NOENT; break; }
-#ifndef FS_CHOWN_ANY_UID
-        if (cuid != 0)                               { rp->rc = SYS_ERR_PERM;  break; }  /* only root may chown */
-#endif
-        if (sys_fs_set_meta(rq->ino, st.mode & 07777u, rq->arg_uid, rq->arg_gid) != 0) { rp->rc = SYS_ERR_IO; break; }
-        rp->rc = 0;
-        break;
-    }
+    /* FS_OP_CHMOD and FS_OP_CHOWN never reach here: cap_request answers them
+     * against the truth stat reports and stores nothing (§7.2, S131). */
     case FS_OP_TRUNCATE: {
         if (sys_fs_stat(rq->ino, &st) != 0)          { rp->rc = SYS_ERR_NOENT; break; }
         if (st.type == FS_TYPE_DIR)                  { rp->rc = SYS_ERR_INVAL; break; }  /* files only */
-        if (!perm_ok(&st, cuid, cgid, P_W))          { rp->rc = SYS_ERR_PERM;  break; }
         rp->rc = file_truncate(rq->ino, rq->offset, (uint32_t)st.size);
         break;
     }
@@ -592,8 +540,6 @@ static void handle(const struct fs_request *rq, struct fs_response *rp,
         struct fs_stat sp, sq;
         if (sys_fs_stat(old_parent, &sp) != 0)       { rp->rc = SYS_ERR_NOENT; break; }
         if (sys_fs_stat(new_parent, &sq) != 0)       { rp->rc = SYS_ERR_NOENT; break; }
-        if (!perm_ok(&sp, cuid, cgid, P_W) ||
-            !perm_ok(&sq, cuid, cgid, P_W))          { rp->rc = SYS_ERR_PERM;  break; }  /* modify both dirs */
         if (!is_dir(&sp) || !is_dir(&sq))            { rp->rc = SYS_ERR_INVAL; break; }  /* see is_dir */
         if (fs_xdev(old_parent != new_parent))       { rp->rc = SYS_ERR_XDEV;  break; }  /* decision 11 */
 
@@ -671,8 +617,8 @@ static int fs_name_ok(const char *n)
  * EVERY NAME IS CHECKED BEFORE ANY IS LOOKED UP. The hazard is checking only
  * the first, as a single-name LOOKUP needs to: then "a" followed by ".." reaches
  * the directory search with a name the protocol forbids. v11 directories hold no
- * ".." entry, but the uid path, until step 6 removes it, will create one under
- * that name, and a format that stores one would turn the walk into a way up.
+ * ".." entry, and no request can now make one under that name, but a format
+ * that stored one would turn the walk into a way up.
  * So a bad name anywhere refuses the whole walk, before any step is taken.
  *
  * EACH STEP IS AN ORDINARY LOOKUP, through handle(), so it gets everything a
@@ -708,6 +654,7 @@ struct fs_session {
     struct fsp_tree tree;
     uint32_t        tmp_ino;    /* its private /tmp (§6.3), or 0: none */
     uint32_t        epoch;      /* the policy it was compiled from (g_policy_epoch) */
+    uint32_t        uid, gid;   /* the account it was opened for: what stat says "you" is */
 };
 
 /* WHICH POLICY A SESSION'S BOUNDS CAME FROM (§7.1). The policy is read afresh
@@ -736,8 +683,8 @@ static char     g_policy_seen_text[FSP_MAX_BYTES];
  * request through a session's capability that names it in the root is answered
  * as absent, and a listing of the root leaves it out. Without that, "/ all"
  * would reach every other session's /tmp through it. Capabilities with no grant
- * set (init's, step 1's) still see it, and so does the uid path until step 6
- * removes it; docs/LIMITATIONS.md 1.24 says so. */
+ * set (init's root, held by no session) still see it; docs/LIMITATIONS.md 1.24
+ * says so. */
 static struct fs_session g_sess[FS_SESSIONS_MAX + 1];   /* [0] is never used */
 
 /* The rights of the kernel's own that a session's capabilities keep: send, pass
@@ -755,6 +702,11 @@ struct fs_pol {
 /* Does the session know every grant there is to know about where `p` stands?
  * Not if the others did not fit its tree, and not if the policy has changed
  * since it was compiled. */
+/* Who "you" are to stat and chown (§7.1, §7.2): the session's account, or 0 for
+ * a capability with no session, which only system tasks hold. Descriptive only. */
+static uint32_t fs_pol_uid(const struct fs_pol *p) { return p->s ? p->s->uid : 0; }
+static uint32_t fs_pol_gid(const struct fs_pol *p) { return p->s ? p->s->gid : 0; }
+
 static int fs_pol_complete(const struct fs_pol *p)
 {
     return p->s && !p->s->tree.other_full && p->s->epoch == g_policy_epoch;
@@ -827,7 +779,7 @@ static void fs_session_bind(struct fs_session *s, int node, uint32_t ino)
 }
 
 static void walk(const struct fs_request *rq, struct fs_response *rp, uint32_t from,
-                 uint32_t cuid, uint32_t cgid, struct fs_pol *pol)
+                 struct fs_pol *pol)
 {
     const char *d = (const char *)rq->data;
     uint32_t len = rq->len;
@@ -870,7 +822,7 @@ static void walk(const struct fs_request *rq, struct fs_response *rp, uint32_t f
             rp->ino = pol->s->tmp_ino;
             rp->type = FS_TYPE_DIR;
         } else {
-            handle(&step, rp, cuid, cgid);
+            handle(&step, rp);
             if (rp->rc != 0) return;
         }
         /* The name exists; does this session see it? Answered after the lookup
@@ -887,7 +839,7 @@ static void walk(const struct fs_request *rq, struct fs_response *rp, uint32_t f
 }
 
 static void cap_request(const struct fs_request *rq, struct fs_response *rp,
-                        const struct ipc_invoker *inv, uint32_t cuid, uint32_t cgid,
+                        const struct ipc_invoker *inv,
                         uint32_t *mint_rights, uint64_t *mint_token)
 {
     umemset(rp, 0, sizeof(*rp));
@@ -1077,7 +1029,7 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
         int is_true = (rq->op == FS_OP_CHMOD)
             ? fsp_chmod_true(rq->mode & 07777u, have & FS_R_ALL, fs_pol_other(&pol, st.links),
                              st.type == FS_TYPE_DIR)
-            : fsp_chown_true(rq->arg_uid, rq->arg_gid, cuid, cgid);
+            : fsp_chown_true(rq->arg_uid, rq->arg_gid, fs_pol_uid(&pol), fs_pol_gid(&pol));
 #ifdef FS_CAP_CHMOD_UNTRUE
         /* CONTROL ARM, never ship (smoke-fs-cap-chmod-control): every chmod
          * and chown through a capability reports success, the reassuring
@@ -1106,9 +1058,8 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
     }
 
     /* A DELETE's generation bump happens in fs_ino_free, on the free itself. */
-    g_by_cap = 1;
     if (wrq->op == FS_OP_WALK) {
-        walk(wrq, rp, obj, cuid, cgid, &pol);
+        walk(wrq, rp, obj, &pol);
     } else if (rq->op == FS_OP_READDIR && pol.s && (pol.node >= 0 || obj == 0)) {
         /* A SESSION'S DIRECTORY LISTS WHAT THE SESSION SEES and no more: the
          * entry at `offset` counts only visible names, so the listing is dense
@@ -1120,7 +1071,7 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
         uint32_t seen = 0;
         for (uint32_t idx = 0; ; idx++) {
             r2.offset = idx;
-            handle(&r2, rp, cuid, cgid);
+            handle(&r2, rp);
             if (rp->rc != 0) break;
             int vis = !fs_pol_hidden(&pol, obj, rp->name) && !fs_pol_private(&pol, rp->name) &&
                       (pol.node < 0 ||
@@ -1139,19 +1090,20 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
             ustrncpy(rp->name, "tmp", FS_NAME_MAX);
         }
     } else {
-        handle(&r2, rp, cuid, cgid);
+        handle(&r2, rp);
         if (rq->op == FS_OP_STAT && rp->rc == 0) {
             /* THE TRUTHFUL VIEW (§7.1). Owner bits are this capability's
              * rights, as far as its node lets it use them; group bits are zero;
              * other bits are the bound on everyone else's. Nothing on the disk
              * is consulted for them: decision 1, the disk holds no authority.
-             * uid and gid say "you": the caller's own, as the kernel attests
-             * them for this request. They describe the caller and authorise
-             * nothing; the capability already decided. */
+             * uid and gid say "you": the account the capability's session was
+             * opened for, 0 for a capability with no session (a system task's).
+             * Taken from the session, never from who sent the request (step
+             * 6), they describe the holder and authorise nothing. */
             rp->mode = fsp_mode(have & FS_R_ALL, fs_pol_other(&pol, rp->links),
                                 rp->type == FS_TYPE_DIR);
-            rp->uid = cuid;
-            rp->gid = cgid;
+            rp->uid = fs_pol_uid(&pol);
+            rp->gid = fs_pol_gid(&pol);
         }
         /* The child a lookup, create or mkdir names: is it in this session? */
         if (rp->rc == 0 && (rq->op == FS_OP_LOOKUP || rq->op == FS_OP_CREATE ||
@@ -1162,7 +1114,6 @@ static void cap_request(const struct fs_request *rq, struct fs_response *rp,
             rp->rc = SYS_ERR_NOENT;
         }
     }
-    g_by_cap = 0;
 
     if (rp->rc == 0 && (rq->op == FS_OP_LOOKUP || rq->op == FS_OP_WALK ||
                         rq->op == FS_OP_CREATE || rq->op == FS_OP_MKDIR)
@@ -1293,8 +1244,7 @@ static int empty_tree(uint32_t top)
     return -1;
 }
 
-/* The store of private /tmps, made if missing: root-owned 0700, so that the
- * uid path, until step 6 removes it, refuses it to everyone but root. */
+/* The store of private /tmps, made if missing. */
 static int session_tmp_store(uint32_t *out)
 {
     uint32_t ino, type;
@@ -1305,7 +1255,6 @@ static int session_tmp_store(uint32_t *out)
     }
     int n = sys_fs_inode_alloc(FS_TYPE_DIR);
     if (n < 0) return -1;
-    sys_fs_set_meta((uint32_t)n, 0700u, 0, 0);
     if (dir_add(0, FS_SESSION_TMP_STORE_NAME, (uint32_t)n, FS_TYPE_DIR) != 0) {
         fs_ino_free((uint32_t)n);
         return -1;
@@ -1321,11 +1270,10 @@ static void session_tmp_name(uint32_t g, char out[4])
     out[2] = 0;
 }
 
-/* Make session g's private /tmp, owned by its account and 0700 for the uid
- * path's sake. The first session of a boot first clears whatever a session of
+/* Make session g's private /tmp. The first session of a boot first clears whatever a session of
  * an earlier boot left (a crash, a power cut): no session of this boot exists
  * yet, so everything there is a leftover. Returns the directory, or 0. */
-static uint32_t session_tmp_make(uint32_t g, uint32_t uid, uint32_t gid)
+static uint32_t session_tmp_make(uint32_t g)
 {
     static int swept;
     uint32_t store;
@@ -1347,7 +1295,6 @@ static uint32_t session_tmp_make(uint32_t g, uint32_t uid, uint32_t gid)
     }
     int n = sys_fs_inode_alloc(FS_TYPE_DIR);
     if (n < 0) return 0;
-    sys_fs_set_meta((uint32_t)n, 0700u, uid, gid);
     if (dir_add(store, nm, (uint32_t)n, FS_TYPE_DIR) != 0) {
         fs_ino_free((uint32_t)n);
         return 0;
@@ -1474,15 +1421,17 @@ static void session_open(const struct fs_request *rq, struct fs_response *rp)
             /* CONTROL ARM, never ship (smoke-fs-cap-session-tmp-shared-control):
              * every session is given the same directory, one shared /tmp. */
             static uint32_t shared;
-            if (!shared) shared = session_tmp_make(FS_SESSIONS_MAX + 1, 0, 0);
+            if (!shared) shared = session_tmp_make(FS_SESSIONS_MAX + 1);
             s->tmp_ino = shared;
 #else
-            s->tmp_ino = session_tmp_make(g, e.uid, e.gid);
+            s->tmp_ino = session_tmp_make(g);
 #endif
             if (s->tmp_ino == 0) kputln("[fs_server] a session's /tmp could not be made; it has none");
             break;
         }
         s->epoch = g_policy_epoch;
+        s->uid = e.uid;
+        s->gid = e.gid;
         s->live = 1;
         last_g = g;
     }
@@ -1492,8 +1441,7 @@ static void session_open(const struct fs_request *rq, struct fs_response *rp)
 
 /* FS_OP_SESSION and FS_OP_SESSION_END are answered ONLY through the untokened
  * capability that holds MINT (§6.4). init created the endpoint and alone holds
- * one; every client capability is tokened, or WRITE-only from
- * SYS_CONNECT_FS_SERVER. So opening a session is authorised by a capability,
+ * one; every client capability is tokened. So opening a session is authorised by a capability,
  * never by who asks. FS_SESSION_ANY_CALLER=1 is the control arm
  * (make smoke-fs-cap-session-caller-control). */
 static void session_request(const struct fs_request *rq, struct fs_response *rp,
@@ -1517,15 +1465,13 @@ static void session_request(const struct fs_request *rq, struct fs_response *rp,
     rp->rc = 0;
 }
 
-/* Find `name` in `parent_ino`; if it is a directory return it, else create it as a
- * root-owned 0755 directory. Idempotent — reuses the directory if present. Returns
+/* Find `name` in `parent_ino`; if it is a directory return it, else create it. Idempotent — reuses the directory if present. Returns
  * the directory inode, or -1 (including when `name` exists as a non-directory). */
 static int resolve_or_make_dir(uint32_t parent_ino, const char *name) {
     uint32_t ino, type;
     if (dir_find(parent_ino, name, &ino, &type)) return (type == FS_TYPE_DIR) ? (int)ino : -1;
     int nino = sys_fs_inode_alloc(FS_TYPE_DIR);
     if (nino < 0) return -1;
-    sys_fs_set_meta((uint32_t)nino, 0755u, 0, 0);            /* root-owned */
     if (dir_add(parent_ino, name, (uint32_t)nino, FS_TYPE_DIR) != 0) { fs_ino_free((uint32_t)nino); return -1; }
     return nino;
 }
@@ -1554,9 +1500,9 @@ static int has_prefix(const char *s, const char *pre) {
 }
 
 /* Destination allowlist for boot modules (defence-in-depth, audit A4 companion).
- * A module's cmdline is its destination path and each module becomes a ROOT-OWNED
- * file — an executable 0755 under /bin. Constrain WHERE a module may land so a
- * stray or tampered module list cannot plant a root-owned file outside the two
+ * A module's cmdline is its destination path and each module becomes a system
+ * file (S116), read-only to every session. Constrain WHERE a module may land so
+ * a stray or tampered module list cannot plant such a file outside the two
  * intended trees. Accept only: a bare name (no '/', defaults under /bin), a path
  * under `bin/`, or a path under `usr/share/man/`. Reject absolute paths and any
  * empty, `.` or `..` component, so no entry can be named to climb out. Module
@@ -1586,9 +1532,9 @@ static int module_dest_ok(const char *path) {
 
 /* Copy boot module `mod_index` (size bytes) to the '/'-relative destination `path`
  * (e.g. "bin/tail" or "usr/share/man/tail"): create any missing parent directories,
- * then write a root-owned file at the leaf. A bare name with no '/' defaults under
- * /bin (the common case — a runnable program). Executables under /bin are 0755;
- * everything else (man pages, config) is 0644. Idempotent: a leaf already present
+ * then write the file at the leaf. A bare name with no '/' defaults under /bin (the
+ * common case — a runnable program). Who may run it is the policy's EXEC grant
+ * on /bin, never a mode bit. Idempotent: a leaf already present
  * at the right size is left alone. Returns 1 if installed, 0 if skipped (current),
  * -1 on failure (including the volume filling up, or a disallowed destination path).
  * Runs entirely inside the server, so the store primitives are called directly
@@ -1645,19 +1591,15 @@ static int install_module_at(const char *path, uint32_t mod_index, uint32_t mod_
 
     int parent_ino;
     const char *leaf;
-    int is_exec;
     if (slash) {
         char parent[FS_NAME_MAX * 6]; int n = 0;
         for (const char *q = path; q < slash && n < (int)sizeof(parent) - 1; q++) parent[n++] = *q;
         parent[n] = 0;
         parent_ino = ensure_dir_path(parent);
         leaf = slash + 1;
-        is_exec = (parent[0]=='b' && parent[1]=='i' && parent[2]=='n' &&
-                   (parent[3]==0 || parent[3]=='/'));
     } else {
         parent_ino = ensure_dir_path("bin");                /* bare name -> /bin */
         leaf = path;
-        is_exec = 1;
     }
     if (parent_ino < 0 || leaf[0] == 0) return -1;
 
@@ -1667,10 +1609,8 @@ static int install_module_at(const char *path, uint32_t mod_index, uint32_t mod_
         /* UP TO DATE MEANS THE SAME BYTES, not the same size (S116). Until
          * 2026-10-08 a file of the module's size was taken as current, so one
          * changed in place, byte for byte the same length, survived every boot.
-         * Compared by reading, so an unchanged file costs reads and no writes;
-         * its owner and mode are put back either way. */
+         * Compared by reading, so an unchanged file costs reads and no writes. */
         if (etype == FS_TYPE_FILE && file_matches_module(eino, mod_index, mod_off, size)) {
-            sys_fs_set_meta(eino, is_exec ? 0755u : 0644u, 0, 0);
             sys_mark(eino);
             return 0;
         }
@@ -1679,7 +1619,6 @@ static int install_module_at(const char *path, uint32_t mod_index, uint32_t mod_
 
     int ino = sys_fs_inode_alloc(FS_TYPE_FILE);
     if (ino < 0) return -1;
-    sys_fs_set_meta((uint32_t)ino, is_exec ? 0755u : 0644u, 0, 0);   /* root-owned */
     static uint8_t buf[BLK];
     uint32_t off = 0, blk = 0;
     while (off < size) {
@@ -1813,7 +1752,7 @@ static int walk_archive(uint32_t mod_index, uint32_t msize, const char *dir, int
 }
 
 /* Write `size` bytes of module `mod_index` from `mod_off` as a NEW file `leaf` in
- * directory `dir_ino`, root-owned 0644, if and only if no entry of that name is
+ * directory `dir_ino`, if and only if no entry of that name is
  * there. The /etc defaults (docs/design/configuration.md, rule 7): seeded, never
  * imposed, so an administrator's edit survives every boot. Not marked as a
  * system inode, because /etc is not a system tree. 1 written, 0 left alone, -1
@@ -1823,7 +1762,6 @@ static int seed_file_at(uint32_t dir_ino, const char *leaf, uint32_t mod_index,
     if (dir_find(dir_ino, leaf, 0, 0)) return 0;
     int ino = sys_fs_inode_alloc(FS_TYPE_FILE);
     if (ino < 0) return -1;
-    sys_fs_set_meta((uint32_t)ino, 0644u, 0, 0);
     static uint8_t buf[BLK];
     uint32_t off = 0, blk = 0;
     while (off < size) {
@@ -1888,30 +1826,23 @@ static int unpack_archive_module(uint32_t mod_index, uint32_t msize, const char 
  *      first boot that sees a new/changed module.
  * This is how program binaries and their man pages reach the filesystem WITHOUT
  * being baked into the kernel image. The 16 MiB store holds all of it at once. */
-/* Give every account a home directory that the account OWNS.
+/* Give every account a home directory, which the policy's @self line grants it
+ * (§6.2); nothing is stamped on it, since a stamp decides nothing (step 6).
  *
- * WHY THIS IS HERE AND NOT ANYWHERE ELSE. Three things have to be true at the
+ * WHY THIS IS HERE AND NOT ANYWHERE ELSE. Two things have to be true at the
  * same moment, and this is the only place in the system where they are.
  *
- *   The account list. This is the one server holding CAP_USER for a reason of
- *   its own (init grants it as the SYS_REGISTER_FS_SERVER gate), so SYS_USERLIST
- *   costs no new authority -- nothing is granted here that was not already held.
- *
- *   The ability to stamp ownership. sys_fs_set_meta is gated on
- *   CAP_ENCRYPTED_STORAGE, which is this server and nothing else in ring 3. The
- *   installer deliberately holds no storage capability and could not do it; a
- *   task running as the account cannot either, because /home is root's.
+ *   The account list. This server holds CAP_USER to read it (SYS_USERLIST),
+ *   which it needs to open sessions anyway, so this costs no new authority.
  *
  *   The right MOMENT. On an installed machine the volume is sealed from
  *   power-on until a login unlocks it (S74), so anything attempted at boot runs
  *   against a locked store and silently writes nothing. Provisioning is already
  *   the code that waits for the unlock, and this rides with it.
  *
- * AN EXISTING DIRECTORY IS LEFT ENTIRELY ALONE -- not re-stamped. Re-asserting
- * 0700 and the owner on every boot would undo a mode the account chose for
- * itself, which is a filesystem server overruling its own permission model once
- * per power cycle. Absent means "this account has never had one"; present means
- * somebody -- the account, or an operator -- has had their say.
+ * AN EXISTING DIRECTORY IS LEFT ENTIRELY ALONE. Absent means "this account has
+ * never had one"; present means somebody -- the account, or an operator -- has
+ * had their say.
  *
  * A home is only ever /home/<leaf>. The path is validated rather than walked:
  * anything else in the record is left for whoever put it there, and a name with
@@ -1939,19 +1870,14 @@ static void provision_home_dirs(void) {
 
         uint32_t ino, type;
         if (dir_find((uint32_t)home_ino, leaf, &ino, &type)) continue;   /* had their say */
+#ifdef HOME_DIR_UNPROVISIONED
+        /* CONTROL ARM, never ship (smoke-session-home-control): no account is
+         * given a home, so a session has nowhere its @self line reaches. */
+        continue;
+#endif
 
         int nino = sys_fs_inode_alloc(FS_TYPE_DIR);
         if (nino < 0) continue;
-        /* Owner and mode BEFORE the link, for the reason FS_OP_CREATE gives: the
-         * inode is not reachable by name yet, so the window in which it exists
-         * owned by nobody is invisible to every other client. */
-#ifdef HOME_DIR_ROOT_OWNED
-        /* Control arm: created, but never given away. The directory is there and
-         * the account cannot write a thing in it. */
-        sys_fs_set_meta((uint32_t)nino, 0700u, 0, 0);
-#else
-        sys_fs_set_meta((uint32_t)nino, 0700u, e.uid, e.gid);
-#endif
         if (dir_add((uint32_t)home_ino, leaf, (uint32_t)nino, FS_TYPE_DIR) != 0) {
             fs_ino_free((uint32_t)nino);
         }
@@ -1960,7 +1886,7 @@ static void provision_home_dirs(void) {
 
 /* A system directory (S116), made if missing, and remade if something that is
  * not a directory sits where it belongs: a file named "bin" in the root would
- * otherwise stop /bin from existing at all. Root-owned and 0755 every boot. */
+ * otherwise stop /bin from existing at all. */
 static int system_dir(const char *path) {
     int d = ensure_dir_path(path);
     if (d < 0) {
@@ -1980,10 +1906,7 @@ static int system_dir(const char *path) {
             remove_tree((uint32_t)parent, leaf, ino, type, 0);
         d = ensure_dir_path(path);
     }
-    if (d >= 0) {
-        sys_fs_set_meta((uint32_t)d, 0755u, 0, 0);
-        sys_mark((uint32_t)d);
-    }
+    if (d >= 0) sys_mark((uint32_t)d);
     return d;
 }
 
@@ -2012,9 +1935,9 @@ static unsigned prune_tree(uint32_t dir, int depth) {
     return removed;
 }
 
-/* Write /etc/fs.policy from fsp_installed_text (roadmap 2.10 step 3(c), S148),
- * root-owned 0600: on the uid path, until phase 1b step 6 removes it, an
- * ordinary account reads nothing a session would not show it. The contents go
+/* Write /etc/fs.policy from fsp_installed_text (roadmap 2.10 step 3(c), S148).
+ * Who may read it is the policy's own business: the administrator's "/" and no
+ * ordinary account's grant reaches it. The contents go
  * in before the name, as seed_file_at does, so a write that fails part-way
  * leaves no file and the volume keeps the administrator-only rule (fail
  * closed); the caller has made /etc by then, so it is not tried again. 1
@@ -2024,7 +1947,6 @@ static int seed_policy(uint32_t etc_ino) {
     if (dir_find(etc_ino, "fs.policy", 0, 0)) return 0;
     int ino = sys_fs_inode_alloc(FS_TYPE_FILE);
     if (ino < 0) return -1;
-    sys_fs_set_meta((uint32_t)ino, 0600u, 0, 0);
     static uint8_t buf[BLK];
     const uint32_t size = sizeof(fsp_installed_text) - 1;
     for (uint32_t off = 0, blk = 0; off < size; off += BLK, blk++) {
@@ -2181,40 +2103,13 @@ static void provision_if_unlocked(int *provisioned) {
 void _start(void) {
     kputln("[fs_server] userspace FS server starting (encrypted object store).");
 
-    /* Register FIRST, before any provisioning work.
-     *
-     * Registration publishes the service so clients can acquire a capability to
-     * it with SYS_CONNECT_FS_SERVER. Since IPC became capability-addressed
-     * (finding C-1) that is the ONLY way a client reaches this server — the
-     * ambient endpoint capability every task used to be born with is gone. So a
-     * client that starts before registration completes cannot connect at all,
-     * where previously it would simply have sent to the well-known endpoint and
-     * waited. Registration is a couple of stores; provisioning copies megabytes
-     * block-by-block through the encrypted store. Doing the cheap publish first
-     * removes the window entirely rather than leaving clients to race it. */
-    /* Retry until the capability arrives.
-     *
-     * A spawned task becomes runnable before its supervisor has finished
-     * endowing it, and under SMP it genuinely runs first on another core — so
-     * this registration can execute before init's SYS_CAP_GRANT of the listen
-     * capability into CAPSLOT_FS_LISTEN has landed. Registration then fails for
-     * want of a capability that is merely late, not absent.
-     *
-     * That window has always existed; it was hidden while registration happened
-     * after the multi-megabyte provisioning copy, which gave init ample time.
-     * Registering first (so clients can connect promptly — see above) exposes it,
-     * so wait for the grant rather than racing it. Bounded, and yields between
-     * attempts so the granting task actually gets the CPU on a single core. */
-    {
-        int reg = -1;
-        for (int attempt = 0; attempt < 2000; attempt++) {
-            reg = sys_register_fs_server(CAPSLOT_FS_LISTEN);
-            if (reg == 0) break;
-            sys_yield();
-        }
-        if (reg == 0) kputln("[fs_server] registered; serving.");
-        else          kputln("[fs_server] warning: registration failed; serving anyway.");
-    }
+    /* NO REGISTRATION. fs_server once published itself (SYS_REGISTER_FS_SERVER)
+     * so that any task could take a send capability to it with
+     * SYS_CONNECT_FS_SERVER and be served by its uid. Both calls went with the
+     * uid path in phase 1b step 6: a client reaches this server only through a
+     * capability its spawner handed it, derived from the root init minted. It
+     * starts with every capability in place: spawn leaves it suspended until
+     * init (or a self-test harness) has endowed it. */
 
     /* Which store this is decides every session's policy (§6.4), so say it once
      * where the log shows which rule this boot will apply. Asked again at each
@@ -2319,30 +2214,37 @@ void _start(void) {
          * after an install would get the administrator-only rule (3(c)). */
         if (!provisioned) provision_if_unlocked(&provisioned);
 
-        /* Take the caller's identity from the kernel, not from the request: this
-         * is tasks[sender].uid, fixed at that task's login (SYS_AUTH). A client
-         * therefore cannot claim to be another user. Fail closed if the kernel
-         * reports no valid sender. */
-        uint32_t cgid = 0;
-        uint32_t cuid = sys_ipc_sender(CAPSLOT_FS_LISTEN, &cgid);
-        /* WHICH CAPABILITY THE REQUEST CAME THROUGH, as the kernel attests it. A
-         * tokened one addresses its object by the token (cap_request); an
-         * untokened one is the old uid path, until phase 1b step 6. */
+        /* WHICH CAPABILITY THE REQUEST CAME THROUGH, as the kernel attests it,
+         * and nothing else about the caller: who sent it is never asked (step
+         * 6, S14). A tokened capability addresses its object by the token
+         * (cap_request). An untokened one only opens and ends sessions, and
+         * only with MINT (session_request); any other request through one is
+         * refused, as is one whose invoker the kernel will not name. */
         struct ipc_invoker inv;
         umemset(&inv, 0, sizeof(inv));
-        if (sys_ipc_invoker(CAPSLOT_FS_LISTEN, &inv) != 0) inv.token = 0;
+        int have_inv = sys_ipc_invoker(CAPSLOT_FS_LISTEN, &inv) == 0;
         uint32_t mint_rights = 0;
         uint64_t mint_token = 0;
-        if (cuid == (uint32_t)-1) {
+        if (!have_inv) {
             umemset(&rp, 0, sizeof(rp));
             rp.magic = FS_PROTO_MAGIC;
             rp.rc = SYS_ERR_PERM;
         } else if (rq.op == FS_OP_SESSION || rq.op == FS_OP_SESSION_END) {
             session_request(&rq, &rp, &inv);
         } else if (inv.token != 0) {
-            cap_request(&rq, &rp, &inv, cuid, cgid, &mint_rights, &mint_token);
+            cap_request(&rq, &rp, &inv, &mint_rights, &mint_token);
         } else {
-            handle(&rq, &rp, cuid, cgid);
+#ifdef FS_UID_PATH_RESTORED
+            /* CONTROL ARM, never ship (smoke-fs-perms-uid-control): the uid path
+             * is back. An untokened request is served on the object it names,
+             * as perm_ok served uid 0, so whoever reaches the endpoint without
+             * a token reaches every file. */
+            handle(&rq, &rp);
+#else
+            umemset(&rp, 0, sizeof(rp));
+            rp.magic = FS_PROTO_MAGIC;
+            rp.rc = SYS_ERR_PERM;
+#endif
         }
         /* A reply that carries a capability to the child. Refused (the client
          * named no slot for it) delivers nothing and keeps the reply right, so

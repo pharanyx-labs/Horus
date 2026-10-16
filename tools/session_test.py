@@ -77,11 +77,10 @@ FS_ERR_FLAT = os.environ.get("SESSION_FS_ERR_FLAT", "0") == "1"
 # differ only in what the shell is required to say back, which is what makes the
 # pair a measurement of the dispatch rather than of the harness.
 LS_NO_PATH = os.environ.get("SESSION_LS_NO_PATH", "0") == "1"
-# S77's and S78's arms are no longer this harness's. A login walks by its
-# session's capability since phase 1b step 3(b), where chmod and chown answer
-# only whether what they ask is already true (S131) and a stat's owner is the
-# caller, so the uid path's metadata rules and its home ownership are witnessed
-# by `make smoke-fs-perms` and its arms until step 6 removes that path.
+# A login walks by its session's capability since phase 1b step 3(b), where
+# chmod and chown answer only whether what they ask is already true (S131), and
+# since step 6 nothing else reaches a file. S78's home is witnessed below (6f)
+# and by smoke-session-home-control (HOME_DIR_UNPROVISIONED=1).
 # The hard-link arm (SYS_FS_INODE_LINK, the last member of the coverage list's
 # "the gate would pass" group). FS_LINK_UNCOUNTED=1 makes the kernel report the
 # link without bumping the on-disk link count, so `stat` shows ONE link where two
@@ -1104,11 +1103,10 @@ def run():
         # --- 6f. the account has a home it can write in --------------------
         #         The gap this closed was found on an installed machine: nothing
         #         created a home, so a standard user had NOWHERE writable. A
-        #         session reaches its home through the policy's grant, so what a
-        #         login can show is that the home is there and takes a write;
-        #         that fs_server makes it OWNED by the account (S78) is the uid
-        #         path's claim, witnessed by `make smoke-fs-perms` and its home
-        #         arm, since a stat through a capability names the caller.
+        #         session reaches its home through the policy's @self grant, so
+        #         what a login shows is that the home is there and takes a
+        #         write (S78). Ownership is not stored: since phase 1b step 6
+        #         the grant decides, and a stat names the session's account.
         s.expect("user@horus$", STEP_TIMEOUT)
         s.send("cd /home/user"); s.expect("user@horus$", STEP_TIMEOUT)
         s.send("mkdir mine"); s.expect("mkdir: created mine", STEP_TIMEOUT)

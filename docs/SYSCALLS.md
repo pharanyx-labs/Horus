@@ -157,8 +157,8 @@ shipped kernel.
 | 46 | `SYS_REGISTER_STORAGE_BACKEND` |  | A stub: always returns `SYS_ERR_NOSYS` | none |
 | 47 | `SYS_BLOCK_READ` |  | Read a raw block beneath the filesystem | slot `CAPSLOT_AUDIT` `CAP_ENCRYPTED_STORAGE`, READ \| WRITE |
 | 48 | `SYS_BLOCK_WRITE` |  | Write a raw block beneath the filesystem | slot `CAPSLOT_AUDIT` `CAP_ENCRYPTED_STORAGE`, READ \| WRITE |
-| 49 | `SYS_REGISTER_FS_SERVER` | `ep_slot` | Register as the filesystem server | slot 6: `CAP_USER` (ALL) |
-| 50 | `SYS_CONNECT_FS_SERVER` | `dest_slot`, `rights` | Get a send-only capability to the filesystem server | none, any task may connect |
+| 49 | `SYS_REGISTER_FS_SERVER` |  | Withdrawn 2026-10-16 (phase 1b step 6): answers `SYS_ERR_NOSYS` to every caller. It published `fs_server` so that `SYS_CONNECT_FS_SERVER` could reach it. Reserved so the number cannot come to mean something else | none |
+| 50 | `SYS_CONNECT_FS_SERVER` |  | Withdrawn 2026-10-16 (phase 1b step 6): answers `SYS_ERR_NOSYS` to every caller. It gave any task that asked a send capability to `fs_server`, which served it by its uid; a task now reaches files only through the root its spawner hands it (S14). Reserved | none |
 | 51 | `SYS_CAP_REVOKE` | `slot` | Revoke a capability and everything derived from it | `CAP_RIGHT_REVOKE` on target |
 | 52 | `SYS_AUDIT_DIGEST` | `buf` | Read the audit chain's digest | slot 7: `CAP_AUDIT` READ |
 | 53 | `SYS_PREEMPT_TRACE` |  | Read preemption trace records (test build only) (only with `PREEMPT_SELFTEST`) | none |
@@ -181,8 +181,8 @@ shipped kernel.
 | 70 | `SYS_SPAWN_IMAGE` | `(image, len, arg, argv, argc, stdio)` | Spawn a child from a caller-supplied program image (execve-from-fd). `stdio` names a read end for the child's stdin (low 16 bits) and a write end for its stdout (high 16 bits) among the caller's pipe ends; each is derived from the caller's end with `READ` or `WRITE` alone, so revoking the caller's end removes it (S3) | `CAP_UNTYPED` at `CAPSLOT_UNTYPED`: WRITE (S57) |
 | 71 | `SYS_EXEC_IMAGE` | `(image, len, 0, argv, argc)` | No return on success | none (self), as `SYS_EXEC_NAMED` |
 | 72 | `SYS_SIGALTSTACK` | `(ss_sp, ss_size)` | Register this task's alternate signal stack (ss_size 0 disables) | self only |
-| 73 | `SYS_IPC_SENDER` | `(ep, uint32_t *out_gid)` | Kernel-attested identity of an endpoint's last sender; `-1` once that sender has died, even if its slot holds another task | `CAP_ENDPOINT` at `ep_slot`: READ |
-| 74 | `SYS_FS_SET_META` | `(ino, mode, uid, gid)` | Persist an inode's owner/mode (fs server only) | slot `CAPSLOT_AUDIT` `CAP_ENCRYPTED_STORAGE`, READ \| WRITE |
+| 73 | `SYS_IPC_SENDER` | `(ep, uint32_t *out_gid)` | Kernel-attested identity of an endpoint's last sender; `-1` once that sender has died, even if its slot holds another task. `init` names a login's session by it; the filesystem never asks it (S14) | `CAP_ENDPOINT` at `ep_slot`: READ |
+| 74 | `SYS_FS_SET_META` |  | Withdrawn 2026-10-16 (phase 1b step 6): answers `SYS_ERR_NOSYS` to every caller. It stamped an inode's owner and mode for the uid path to check; nothing is stored now (S77). Reserved | none |
 | 75 | `SYS_IPC_REPLY_TO` | `(req_ep, msg, len)` | Reply to the last sender on req_ep (multi-client safe routing) | `CAP_ENDPOINT` at `req_slot`: READ, *plus* the one-shot `CAP_REPLY` at `CAPSLOT_REPLY` (21), which it consumes |
 | 76 | `SYS_FS_INODE_LINK` | `(ino)` | Increment an inode's hard-link count (fs server only) | slot `CAPSLOT_AUDIT` `CAP_ENCRYPTED_STORAGE`, READ \| WRITE |
 | 77 | `SYS_BOOT_MODULE_INFO` | `(index, struct boot_module_info*)` | Fills *info for a valid index (store owner only) | slot `CAPSLOT_BOOT_MODULE` `CAP_BOOT_MODULE`, READ |

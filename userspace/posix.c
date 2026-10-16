@@ -67,12 +67,12 @@ typedef struct {
 
 static fd_entry_t  g_fdt[POSIX_MAX_FDS];
 static int         g_inited       = 0;
-static int         g_fs_connected = 0;
 /* THE MODE, CHOSEN ONCE (filesystem phase 1b step 2). A task that holds a root
- * directory capability in CAPSLOT_FS_ROOT walks by capability and never touches
- * the uid path: it does not even connect to it, so no request of its can fall
- * back there when a capability refuses. A task that holds none uses the uid
- * path, as before, until step 6 removes it. Never decided per request. */
+ * directory capability in CAPSLOT_FS_ROOT walks by capability. A task that
+ * holds none has no "/" at all: the uid path it used to fall back to was
+ * removed in step 6, and nothing else reaches fs_server, so its every path
+ * operation fails at the empty root (fss_rpc refuses slot -1). Never decided
+ * per request. */
 static int         g_capmode      = 0;
 
 /* ----- fd allocation -------------------------------------------------- */
@@ -94,7 +94,7 @@ static int fd_alloc(void) {
 
 static void fd_free(int fd) {
     /* A file's or directory's own capability goes with it (hvfs_release
-     * revokes it; a uid-path object owns nothing). */
+     * revokes it; an object through an endpoint mount owns nothing). */
 #ifndef POSIX_CLOSE_KEEPS_CAP
     if (g_fdt[fd].type == FD_FS || g_fdt[fd].type == FD_DIR) hvfs_release(&g_fdt[fd].obj);
 #endif
@@ -106,40 +106,11 @@ static void fd_free(int fd) {
 
 /* ----- fs_server IPC -------------------------------------------------- */
 
-/* ep slot for the fs_server capability (must be >= 4 per kernel rule). */
-#define FSS_CAP_SLOT CAPSLOT_FS_EP
-
-static void fs_connect(void) {
-    if (g_fs_connected || g_capmode) return;
-    /* Acquire a (WRITE-only) capability to the fs service.
-     *
-     * Retry until it succeeds. Since IPC became capability-addressed (finding
-     * C-1) this is the ONLY way a client reaches the server: there is no ambient
-     * endpoint capability to fall back on, so a failed connect is not a
-     * degraded-but-working state, it is no filesystem at all. And the call can
-     * legitimately fail for a moment — SYS_CONNECT_FS_SERVER needs the server to
-     * have registered, and a client spawned early (or scheduled first on another
-     * core under SMP) can run before that. Both parties therefore wait for each
-     * other rather than racing: the server retries its registration, the client
-     * retries its connect. Bounded, with a yield so the server actually gets the
-     * CPU on a single core. */
-    for (int attempt = 0; attempt < 2000; attempt++) {
-        if (sys_connect_fs_server(FSS_CAP_SLOT, CAP_R_W) == 0) {
-            g_fs_connected = 1;
-            return;
-        }
-        sys_yield();
-    }
-    /* Give up after a bounded wait: the first RPC then fails with a non-magic
-     * reply, which callers already handle, rather than spinning forever. */
-    g_fs_connected = 1;
-}
-
-/* Single round-trip to the fs_server about object `o`: through its capability
- * on the capability path, through the endpoint on the uid path. Returns rp->rc
- * on success, -1 on transport failure (bad magic or sys_ipc_call error). */
+/* Single round-trip to the server about object `o`, through the slot it names:
+ * its own capability on the capability path, or a mounted endpoint (another
+ * server's, hvfs_mount). Returns rp->rc on success, -1 on transport failure
+ * (no slot, bad magic or sys_ipc_call error). */
 static int fss_rpc(const struct hvfs_obj *o, struct fs_request *rq, struct fs_response *rp) {
-    fs_connect();
     rq->magic = FS_PROTO_MAGIC;
     _umemset(rp, 0, sizeof(*rp));
     if (o->slot < 0) return -1;
@@ -188,60 +159,11 @@ static int             g_cwd_named = 1;
  * 0 = resolved, 1 = everything but the leaf resolved (*out_ino is the parent),
  * -1 = bad path or a missing intermediate.
  *
- * The mount is installed in posix_init: "/" on CAPSLOT_FS_EP, root inode 0.
- * That is the whole namespace a newlib program starts with -- one entry, the
- * filesystem it was already talking to. A program that needs a second mount
+ * The mount is installed in posix_init: "/" on the root directory capability
+ * the spawner granted at CAPSLOT_FS_ROOT. That is the whole namespace a newlib
+ * program starts with -- one entry, or none if it was granted no root. A program that needs a second mount
  * calls hvfs_mount itself, over a capability it already holds.
  */
-#ifdef POSIX_LEGACY_WALK
-/* CONTROL ARM: the private walker as it stood until 2026-08-23, restored.
- *
- * It is a faithful copy, not a weakened one -- which is the point. It resolves
- * neither "." nor "..": both are looked up as literal directory entries, and
- * `fs_server` creates no such entries, so every libc path containing one fails
- * with ENOENT. `make smoke-newlib` must go red under this flag. */
-#define LEGACY_MAX_PATH_DEPTH 16
-static int legacy_walk(const char *path, uint32_t *out_ino, char *out_name,
-                       int want_parent) {
-    if (!path || path[0] == '\0') return -1;
-    uint32_t dir_ino = (path[0] == '/') ? 0u : g_cwd_ino;
-    const char *p = path;
-    if (*p == '/') p++;
-    char comp[FS_NAME_MAX];
-    int  depth = 0;
-    out_name[0] = '\0';
-    while (*p) {
-        uint32_t clen = 0;
-        while (p[clen] && p[clen] != '/') clen++;
-        if (clen == 0)           { p++; continue; }
-        if (clen >= FS_NAME_MAX) return -1;
-        if (++depth > LEGACY_MAX_PATH_DEPTH) return -1;
-        _umemcpy(comp, p, clen);
-        comp[clen] = '\0';
-        p += clen;
-        if (*p == '/') p++;
-        struct fs_request rq;
-        struct fs_response rp;
-        _umemset(&rq, 0, sizeof(rq));
-        rq.op      = FS_OP_LOOKUP;
-        rq.dir_ino = dir_ino;
-        _umemcpy(rq.name, comp, clen + 1u);
-        if (*p != '\0') {
-            if (fss_rpc(&g_root, &rq, &rp) != 0) return -1;
-            dir_ino = rp.ino;
-        } else {
-            _umemcpy(out_name, comp, clen + 1u);
-            if (want_parent) { *out_ino = dir_ino; return 0; }
-            if (fss_rpc(&g_root, &rq, &rp) == 0) { *out_ino = rp.ino; return 0; }
-            *out_ino = dir_ino;
-            return 1;
-        }
-    }
-    *out_ino = dir_ino;
-    out_name[0] = '\0';
-    return 0;
-}
-#endif
 
 /* Resolve `path` to an object (want_parent: the directory holding its last
  * component). The contract is hvfs_walk's, 0, 1 or -1. An object that comes
@@ -249,16 +171,7 @@ static int legacy_walk(const char *path, uint32_t *out_ino, char *out_name,
  * hvfs_release, on every path out. */
 static int path_obj_at(const char *path, const struct hvfs_obj *cwd, int want_parent,
                        struct hvfs_obj *out, char *out_name) {
-#ifdef POSIX_LEGACY_WALK
-    uint32_t ino;
-    (void)cwd;
-    int r = legacy_walk(path, &ino, out_name, want_parent);
-    *out = g_root;
-    out->ino = ino;
-    return r;
-#else
     return hvfs_lookup(path, cwd, want_parent, out, out_name);
-#endif
 }
 
 static int path_obj(const char *path, int want_parent, struct hvfs_obj *out, char *out_name) {
@@ -284,17 +197,12 @@ void posix_init(void) {
     if (sio & 0x1) { g_fdt[0].type = FD_PIPE; g_fdt[0].ino = STDIN_PIPE_SLOT;  g_fdt[0].flags = O_RDONLY; }
     if (sio & 0x2) { g_fdt[1].type = FD_PIPE; g_fdt[1].ino = STDOUT_PIPE_SLOT; g_fdt[1].flags = O_WRONLY; }
 
-    /* The namespace this process starts with: one mount, "/" on the fs_server
-     * endpoint. fs_connect() first, because hvfs_mount PROBES the slot with the
-     * weakest legal request and refuses one holding no usable capability -- so
-     * mounting before the connect would be refused for the right reason at the
-     * wrong time. A refusal here is not fatal and is not silently ignored
-     * either: every path operation then fails at hvfs_resolve with nothing
-     * mounted, which is the same fail-closed answer as a missing endpoint. */
-    /* A root directory capability, if the spawner granted one, decides it: the
-     * mount probe is a stat through it, so an empty slot is refused and the
-     * task stays on the uid path. With a root, the working directory is the one
-     * granted at CAPSLOT_FS_CWD if that answers, else the root. */
+    /* The namespace this process starts with: "/" on the root directory
+     * capability the spawner granted, if it granted one; the mount probe is a
+     * stat through it, so an empty slot is refused. With a root, the working
+     * directory is the one granted at CAPSLOT_FS_CWD if that answers, else the
+     * root. Without one there is no "/": every path operation then fails at
+     * hvfs_resolve with nothing mounted, failing closed (step 6). */
     if (hvfs_mount_cap("/", CAPSLOT_FS_ROOT) == 0) {
         g_capmode = 1;
         g_root.slot = CAPSLOT_FS_ROOT; g_root.ino = 0; g_root.cap = 1; g_root.owned = 0;
@@ -311,9 +219,7 @@ void posix_init(void) {
             }
         }
     } else {
-        fs_connect();
-        (void)hvfs_mount("/", CAPSLOT_FS_EP, 0u);
-        g_root.slot = CAPSLOT_FS_EP; g_root.ino = 0; g_root.cap = 0; g_root.owned = 0;
+        g_root.slot = -1; g_root.ino = 0; g_root.cap = 0; g_root.owned = 0;
         g_cwd_base = g_root;
     }
     g_cwd = g_cwd_base;
@@ -734,8 +640,8 @@ int posix_fstat(int fd, posix_stat_t *st) {
 
     _umemset(st, 0, sizeof(*st));
     /* Through a capability the client never named the inode, so the server's
-     * report is the only one; on the uid path the walked inode is, since not
-     * every server reports it (dev_server does not). */
+     * report is the only one; through a mounted endpoint the walked inode is,
+     * since not every server reports it (dev_server does not). */
     st->ino  = e->obj.cap ? rp.ino : e->obj.ino;
     st->size = rp.size;
     /* Real metadata from the server: the type bit from rp.type
@@ -1032,8 +938,8 @@ int posix_unlink(const char *path) {
     /* Propagate the server's rc: 0 on success, a negative SYS_ERR_* on a
      * permission / not-found / non-empty-directory refusal, or -1 on a
      * transport failure. The server is the reference monitor: it checks the
-     * request against the parent's capability, or on the uid path against our
-     * kernel-attested uid, so no client-side check is needed (or trusted). */
+     * request against the parent's capability, so no client-side check is
+     * needed (or trusted). */
     int rc = fss_rpc(&parent, &rq, &rp);
     hvfs_release(&parent);
     return rc;

@@ -568,14 +568,45 @@ def login(s, user, pw, timeout=None):
 
     A refusal is read from the shell SAYING SO rather than from a timeout, so an
     expected refusal is quick and an unexpected hang is still a timeout. The two
-    are different answers and were previously the same one.
+    are different answers and were previously the same one; until 2026-10-16
+    the timeout still came back as False, so a hang passed every check that
+    wanted a refusal. Since phase 1b step 6 a login whose password was accepted
+    but which opened no filesystem session is ended without a prompt, which is
+    neither answer either: both raise.
     """
     t = timeout if timeout is not None else STEP
     s.expect("horus login:", t)
     s.send(user)
     s.expect("Password:", t)
     s.send(pw)
-    return expect_any(s, ["@horus", "Login incorrect"], t) == 0
+    i = expect_any(s, ["@horus", "Login incorrect", "Login ended."], t)
+    if i == 2:
+        raise SessionFail("%s's password was accepted, but the login was ended: no "
+                          "filesystem session opened for it" % user)
+    if i < 0:
+        raise SessionFail("no answer to %s's login: neither a prompt nor a refusal" % user)
+    return i == 0
+
+
+def login_no_grants(s, user, pw, timeout=None):
+    """One login attempt by an account the policy gives nothing (phase 1b step 6).
+
+    The password is right, so the shell says so, and then that the policy
+    grants the account nothing, and ends the login: there is no uid path left to
+    put it on. Returns "ended" for exactly that, "prompt" if it reached a shell
+    prompt (a session after all), "incorrect" on a refusal of the password.
+    """
+    t = timeout if timeout is not None else STEP
+    s.expect("horus login:", t)
+    s.send(user)
+    s.expect("Password:", t)
+    s.send(pw)
+    i = expect_any(s, ["@horus", "Login ended.", "Login incorrect"], t)
+    if i < 0:
+        raise SessionFail("no answer to a login: neither a prompt, an ended login nor a refusal")
+    if i == 1 and ("grants %s nothing" % user) not in s.buf:
+        raise SessionFail("a login was ended, but not for want of a grant: %r" % s.buf[-400:])
+    return ("prompt", "ended", "incorrect")[i]
 
 
 def answer_accounts(s, root_pw=None, user=None, user_pw=None, typist=None,
@@ -772,12 +803,20 @@ def boot2(disk, unsealed=False):
         # anything. Asked FIRST, while the account table in RAM is still the
         # compiled-in one, because that is exactly when it used to work. The
         # refusal is read off the wire.
+        # "Welcome, " and not the prompt: the shell says it the moment the
+        # password is accepted, and since phase 1b step 6 an accepted login
+        # that opens no filesystem session is ended before any prompt, which a
+        # wait for the prompt alone scored as a refusal.
         s.send("root")
         s.expect("Password:", STEP)
         s.send(LIVE_ROOT_PASSWORD)
-        if expect_any(s, ["@horus", "Login incorrect"], STEP) == 0:
+        i = expect_any(s, ["Welcome, ", "Login incorrect"], STEP)
+        if i == 0:
             raise SessionFail("the compiled-in root password logged in on an "
                               "installed machine")
+        if i < 0:
+            raise SessionFail("no answer to the compiled-in root password: neither "
+                              "accepted nor refused")
         step("the compiled-in root password was refused on the installed machine")
         s.expect("horus login:", STEP)
 
@@ -1220,9 +1259,10 @@ def policy(disk):  # noqa: ARG001 - uniform scenario signature
 
     WHAT A SESSION LOOKS LIKE FROM THE SHELL. A session shows only the names that
     lead to a grant, so `ls /` in one has bin/ and no var/, which no policy line
-    names. A login without a session (an account the policy gives nothing) walks
-    by uid until phase 1b step 6, and its `ls /` has var/. So the same command
-    answers "session or not" positively both ways.
+    names. A login the policy gives nothing has no session, and since phase 1b
+    step 6 nothing else reaches a file, so the shell says so and ends the login
+    (login_no_grants). Either answer is positive: a prompt with a session, or
+    the shell naming the missing grant.
 
     INSTALLER_EXPECT_POLICY=noseed is the arm FS_POLICY_NO_SEED: boot 2's user
     must have NO session. INSTALLER_EXPECT_POLICY=reseed is the arm
@@ -1248,17 +1288,19 @@ def policy(disk):  # noqa: ARG001 - uniform scenario signature
     # ---- boot 2: the everyday account first, on a volume nobody has opened ----
     s = Serial(ISO)
     try:
+        if expect == "noseed":
+            got = login_no_grants(s, USER_NAME, USER_PASSWORD, BOOT)
+            if got != "ended":
+                raise SessionFail("CONTROL: the user's login was not ended for want of a "
+                                  "grant although no policy was written (%s)" % got)
+            step("CONTROL: no policy written, so the everyday account has no session "
+                 "and its login is ended")
+            return
         if not login(s, USER_NAME, USER_PASSWORD, BOOT):
             raise SessionFail("the everyday account could not log in after the install")
         root_ls = _ush(s, "ls /", uprompt)
         if "bin/" not in root_ls:
             raise SessionFail("`ls /` did not list bin/, so it says nothing either way: %r" % root_ls)
-        if expect == "noseed":
-            if "var/" not in root_ls:
-                raise SessionFail("CONTROL: the user has a session although no policy was written")
-            step("CONTROL: no policy written, so the everyday account has no session "
-                 "(`ls /` shows var/)")
-            return
         if "var/" in root_ls:
             raise SessionFail("the everyday account has no session on a new volume: "
                               "`ls /` shows var/, which no policy line grants")
@@ -1296,21 +1338,34 @@ def policy(disk):  # noqa: ARG001 - uniform scenario signature
     # ---- boot 3: the policy is gone, and must stay gone ----
     s = Serial(ISO)
     try:
-        if not login(s, USER_NAME, USER_PASSWORD, BOOT):
-            raise SessionFail("the everyday account could not log in on boot 3")
-        root_ls = _ush(s, "ls /", uprompt)
-        if "bin/" not in root_ls:
-            raise SessionFail("`ls /` did not list bin/ on boot 3: %r" % root_ls)
+        got = login_no_grants(s, USER_NAME, USER_PASSWORD, BOOT)
         if expect == "reseed":
-            if "var/" in root_ls:
-                raise SessionFail("CONTROL: the policy was not written back, so the arm shows nothing")
+            if got != "prompt":
+                raise SessionFail("CONTROL: the policy was not written back, so the arm shows "
+                                  "nothing (%s)" % got)
+            root_ls = _ush(s, "ls /", uprompt)
+            if "bin/" not in root_ls or "var/" in root_ls:
+                raise SessionFail("CONTROL: a prompt, but not a session: %r" % root_ls)
             step("CONTROL: the deleted policy was written back and the everyday account "
                  "has its session again")
             return
-        if "var/" not in root_ls:
-            raise SessionFail("the deleted policy came back: the everyday account has a "
-                              "session again on boot 3")
-        step("boot 3: no policy, so the administrator alone; the everyday account has no session")
+        if got == "prompt":
+            root_ls = _ush(s, "ls /", uprompt)
+            if "bin/" in root_ls:
+                raise SessionFail("the deleted policy came back: the everyday account has a "
+                                  "session again on boot 3")
+            # SHELL_NO_SESSION_ALLOWED=1's arm requires exactly this line.
+            raise SessionFail("a login the policy gives nothing was left at a prompt with no "
+                              "filesystem, not ended: %r" % root_ls)
+        if got != "ended":
+            raise SessionFail("the everyday account's password was refused on boot 3")
+        step("boot 3: no policy, so the everyday account's login is ended for want of a grant")
+        # Fenced by a success, so a shell that ended every login cannot pass.
+        if not login(s, "root", PASSWORD):
+            raise SessionFail("root could not log in on boot 3")
+        if "bin/" not in _ush(s, "ls /", rprompt):
+            raise SessionFail("root's session on boot 3 cannot list /")
+        step("boot 3: the administrator alone still has a session")
     finally:
         keep_serial(s.buf)
         s.close()
@@ -1533,10 +1588,15 @@ def replace(disk):
         os.write(s.fd, b"root" + ENTER)
         s.expect("assword", STEP)
         os.write(s.fd, pw1.encode() + ENTER)
-        i = expect_any(s, ["@horus", "Login incorrect"], STEP)
+        # "Welcome, ": accepted, whether or not a session then opens (step 6
+        # ends a login with none before any prompt). Only the shell's own
+        # refusal counts as one.
+        i = expect_any(s, ["Welcome, ", "Login incorrect"], STEP)
         if i == 0:
             raise SessionFail("the password from the REPLACED volume still opens "
                               "the disk; the volume was not replaced")
+        if i < 0:
+            raise SessionFail("no answer to the replaced volume's password")
         step("the password the replaced volume was sealed to is refused")
 
         s.expect("horus login: ", STEP)

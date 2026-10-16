@@ -24,6 +24,8 @@
 
 /* Direct kernel write bypassing newlib stdio for tracing */
 #include "../include/syscall.h"
+#include "../include/fs_proto.h"
+#include "../include/libhorus.h"   /* hvfs_rpc, for the root probe in _start */
 
 static void kwrite(const char *s) {
     uint32_t len = 0;
@@ -60,6 +62,36 @@ static const volatile unsigned char big_rodata[BIG_RODATA_SIZE] = {
     [BIG_RODATA_SIZE - 2] = 0x44,
     [BIG_RODATA_SIZE - 1] = 0x55,
 };
+
+/* THE ENTRY, in place of crt0's. crt0 runs posix_init before main, and
+ * posix_init is where "/" is mounted, so the root must be in its slot before
+ * it: the order a spawner that grants one produces, done here by the task
+ * itself because the kernel harness cannot mint a tokened capability into it.
+ * It lends an untokened capability to fs_server's endpoint with MINT at
+ * SLOT_PLAIN, init's stand-in (phase 1b step 6: nothing else reaches the
+ * filesystem). The server may not be serving yet, and the mount probe is one
+ * stat, so a stat through the root must answer first. */
+#define SLOT_PLAIN 30
+extern void posix_init(void);
+int main(int argc, char **argv, char **envp);
+static char *no_argv[] = { (char *)"hello_newlib", (char *)0 };
+
+void _start(void) {
+    uint32_t kern = CAP_RIGHT_WRITE | CAP_RIGHT_GRANT | CAP_RIGHT_REVOKE | CAP_RIGHT_MINT;
+    if (sys_cap_mint_token(CAPSLOT_FS_ROOT, SLOT_PLAIN, kern | FS_R_ALL, fs_token(0, 0)) != 0)
+        kwrite("NEWLIB_SELFTEST: FAIL mint-root\n");
+    int up = 0;
+    for (int i = 0; i < 2000 && !up; i++) {
+        struct fs_request rq;
+        struct fs_response rp;
+        memset(&rq, 0, sizeof(rq));
+        rq.op = FS_OP_STAT;
+        if (hvfs_rpc(CAPSLOT_FS_ROOT, &rq, &rp) == 0) up = 1; else sys_yield();
+    }
+    if (!up) kwrite("NEWLIB_SELFTEST: FAIL server-never-answered\n");
+    posix_init();
+    exit(main(1, no_argv, 0));
+}
 
 int main(int argc, char **argv, char **envp) {
     (void)argc; (void)argv; (void)envp;
@@ -118,10 +150,11 @@ int main(int argc, char **argv, char **envp) {
     }
 
     /* --- filesystem: real newlib open()/write()/unlink() over the fs_server ---
-     * The kernel launched an fs_server alongside us and delegated an endpoint
-     * cap; the RAM store is auto-unlocked and we run as kernel-attested uid 0,
-     * so these libc calls exercise unlink() → posix_unlink() → FS_OP_DELETE
-     * end-to-end, plus the path-resolution and errno-mapping paths. */
+     * The kernel launched an fs_server alongside us and lent an endpoint cap,
+     * from which _start minted a root carrying every right; the RAM store is
+     * auto-unlocked, so these libc calls exercise unlink() → posix_unlink() →
+     * FS_OP_DELETE end-to-end, plus the path-resolution and errno-mapping
+     * paths. */
     {
         const char *path = "/unlinkme";
 
@@ -129,21 +162,24 @@ int main(int argc, char **argv, char **envp) {
         if (fd < 0)                 { printf("NEWLIB_SELFTEST: FAIL fs-open-create\n"); return 1; }
         if (write(fd, "bye", 3) != 3) { printf("NEWLIB_SELFTEST: FAIL fs-write\n");     return 1; }
 
-        /* fstat on the open fd: the fs_server reports the real inode metadata
-         * (a new file is a regular file, mode 0644, owned by our uid 0). */
+        /* fstat on the open fd: the truthful view (design §7.1). Owner bits
+         * are this capability's rights, read, write and exec; group bits are
+         * zero; and a capability with no session has no policy to bound who
+         * else may reach the file, so the other bits are every bit: 0707,
+         * owned by uid 0 because no session's account owns it. */
         struct stat fsb;
         if (fstat(fd, &fsb) != 0)         { printf("NEWLIB_SELFTEST: FAIL fs-fstat\n");      return 1; }
         if (!S_ISREG(fsb.st_mode))        { printf("NEWLIB_SELFTEST: FAIL fs-fstat-type\n"); return 1; }
-        if ((fsb.st_mode & 0777) != 0644) { printf("NEWLIB_SELFTEST: FAIL fs-fstat-mode\n"); return 1; }
+        if ((fsb.st_mode & 0777) != 0707) { printf("NEWLIB_SELFTEST: FAIL fs-fstat-mode\n"); return 1; }
         if (fsb.st_uid != 0)              { printf("NEWLIB_SELFTEST: FAIL fs-fstat-uid\n");  return 1; }
         if (fsb.st_size != 3)             { printf("NEWLIB_SELFTEST: FAIL fs-fstat-size\n"); return 1; }
         close(fd);
 
-        /* stat by path returns the same real metadata. */
+        /* stat by path returns the same view. */
         struct stat sb;
         if (stat(path, &sb) != 0)         { printf("NEWLIB_SELFTEST: FAIL fs-stat\n");       return 1; }
         if (!S_ISREG(sb.st_mode))         { printf("NEWLIB_SELFTEST: FAIL fs-stat-type\n");  return 1; }
-        if ((sb.st_mode & 0777) != 0644)  { printf("NEWLIB_SELFTEST: FAIL fs-stat-mode\n");  return 1; }
+        if ((sb.st_mode & 0777) != 0707)  { printf("NEWLIB_SELFTEST: FAIL fs-stat-mode\n");  return 1; }
         if (sb.st_uid != 0)               { printf("NEWLIB_SELFTEST: FAIL fs-stat-uid\n");   return 1; }
         if (sb.st_size != 3)              { printf("NEWLIB_SELFTEST: FAIL fs-stat-size\n");  return 1; }
 

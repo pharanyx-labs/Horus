@@ -5,17 +5,17 @@ Phase 1b step 2 (docs/design/filesystem.md section 11.1), driven through the REA
 ring-3 shell over serial on an INIT_SHELL_ROOT_READONLY build: init hands the
 shell the root directory narrowed to read, lookup and exec, and nothing else.
 
-The session logs in as root. On the uid path root may write anywhere, so every
-refusal below is the capability deciding, not the mode bits:
+The session logs in as root, the identity the uid path let write anywhere until
+phase 1b step 6, so every refusal below is the capability deciding:
 
   - `ls /bin`, `cd`, `pwd`, a relative `ls` and `man` read through the
     capability;
   - /bin/wc, run from the shell, reads a file: the child was handed the
     shell's root (hvfs_grant_fs) and walks with it;
   - `mkdir`, `touch` and `rm` are refused "permission denied". `mkdir-refused`
-    is the check the control arm SHELL_CAP_FALLBACK=1 must turn red: a shell
-    that sends a refused request again down the uid path, which as root
-    succeeds.
+    is the check the control arm FS_CAP_RIGHTS_UNCHECKED=1 must turn red: a
+    server that does not consult the capability's rights lets the read-only
+    root write.
 
 Usage:  tools/fscap_shell_session.py [horus.iso]
 Exit:   0 and "FSCAP_SHELL_SESSION: PASS" on success; 1 and a FAIL line otherwise.

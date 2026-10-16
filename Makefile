@@ -140,7 +140,8 @@ DEFECT_FLAGS = \
 	FS_SESSION_TMP_SHARED FS_SESSION_TMP_STORE_VISIBLE FS_SESSION_TMP_KEPT \
 	FS_TOKEN_NODE_IGNORED FS_CAP_CHMOD_UNTRUE FS_CAP_LINK_WIDENS FS_SEALED_POLL_SPIN \
 	FSCAPPOSIX_SELFTEST POSIX_CLOSE_KEEPS_CAP HVFS_GRANT_UNNARROWED \
-	INIT_SHELL_ROOT_READONLY SHELL_CAP_FALLBACK FS_POLICY_NO_SEED FS_POLICY_RESEED FSP_PASS_RIGHTS_UNCARRIED \
+	INIT_SHELL_ROOT_READONLY FS_POLICY_NO_SEED FS_POLICY_RESEED FSP_PASS_RIGHTS_UNCARRIED \
+	FS_UID_PATH_RESTORED SHELL_NO_SESSION_ALLOWED HOME_DIR_UNPROVISIONED FS_SET_META_RESTORED \
 	SH_LEND_SLOT_SESSION SHELL_STALE_ROOT INIT_SESSION_DEAF_AFTER_FIRST \
 	INIT_ADMIN_CAPS_KEPT INIT_ADMIN_CAPS_AT_LAUNCH \
 	ELF_LOAD_BOUND_STAGING IMAGE_LEN_UNCHECKED ELF_SPAN_C_PARSE IPC_SENDER_SLOT_ONLY IPC_REPLY_SLOT_ONLY \
@@ -181,8 +182,8 @@ DEFECT_FLAGS = \
 	CSPACE_RELEASE_BEFORE_PIPES SPAWN_SLOT3_DECOY_GATE UNTYPED_SPLIT_FREE_BYTES \
 	INIT_PROVISION_NO_UNTYPED AUDIT_ABI_LEGACY STORE_LOCKED_UNCHECKED \
 	PASSWD_TARGET_IGNORED PASSWD_NO_KEYSLOT PASSWD_REKEY_FIRST_UNLOCK \
-	SHELL_FS_ERR_FLAT FS_CHMOD_ANY_OWNER FS_CHOWN_ANY_UID \
-	USERLIST_UNGATED HOME_DIR_ROOT_OWNED CLAIM_IMP_TRACE \
+	SHELL_FS_ERR_FLAT \
+	USERLIST_UNGATED CLAIM_IMP_TRACE \
 	KSTACK_COLLIDE_IMPERSONATED CLAIM_AUDIT_NO_REREAD \
 	ENTER_USER_STEAL_WIDEN ENTER_USER_PUBLISH_EARLY ENTER_USER_CLAIM_UNCHECKED \
 	STORAGE_FORMAT_WEDGE STORAGE_FORMAT_SIZE_IGNORED CONSOLE_TIMESTAMPS_LEGACY CLOCK_EPOCH_FROM_FIRST_TICK \
@@ -902,36 +903,38 @@ endif
 
 # INIT_SHELL_ROOT_READONLY=1 is an instrument, never shipped: init hands the shell
 # the root directory read-only, so the shell and what it runs walk by capability
-# (filesystem phase 1b step 2; make smoke-fs-cap-shell). SHELL_CAP_FALLBACK=1 is
-# its arm: a request the capability refused is sent again down the uid path.
+# (filesystem phase 1b step 2; make smoke-fs-cap-shell). Its arm is
+# FS_CAP_RIGHTS_UNCHECKED=1: the read-only root writes, and mkdir succeeds.
 # Userspace-only, applied to USERSPACE_CFLAGS below, as SHELL_FS_ERR_FLAT is.
 INIT_SHELL_ROOT_READONLY ?= 0
 ifeq ($(INIT_SHELL_ROOT_READONLY),1)
 CFLAGS  += -DINIT_SHELL_ROOT_READONLY
 ASFLAGS += -DINIT_SHELL_ROOT_READONLY
 endif
-SHELL_CAP_FALLBACK ?= 0
-ifeq ($(SHELL_CAP_FALLBACK),1)
-CFLAGS  += -DSHELL_CAP_FALLBACK
-ASFLAGS += -DSHELL_CAP_FALLBACK
+
+# FS_UID_PATH_RESTORED=1 has fs_server serve a request through an untokened
+# capability on the object it names, as the uid path served uid 0 until phase 1b
+# step 6 (S14; arm of smoke-fs-perms). SHELL_NO_SESSION_ALLOWED=1 leaves a login
+# the policy gives nothing at a prompt with no filesystem instead of ending it
+# (arm of smoke-installer-policy). Userspace-only; see the note beside
+# SHELL_FS_ERR_FLAT above for why the -D that matters is applied further down.
+FS_UID_PATH_RESTORED ?= 0
+ifeq ($(FS_UID_PATH_RESTORED),1)
+CFLAGS  += -DFS_UID_PATH_RESTORED
+ASFLAGS += -DFS_UID_PATH_RESTORED
+endif
+SHELL_NO_SESSION_ALLOWED ?= 0
+ifeq ($(SHELL_NO_SESSION_ALLOWED),1)
+CFLAGS  += -DSHELL_NO_SESSION_ALLOWED
+ASFLAGS += -DSHELL_NO_SESSION_ALLOWED
 endif
 
-# The two fs_server metadata arms (S77, the uid path's rules; arms of
-# smoke-fs-perms). SEPARATE FLAGS, not one: chmod is owner-or-root and chown is
-# root-only, and an arm that removed both would show only that "something" gates
-# metadata. Each removes exactly its own check, so each arm must leave the OTHER
-# refusal standing -- which is what shows the two rules are independent rather
-# than one rule read twice. Userspace-only; see the note beside
-# SHELL_FS_ERR_FLAT above for why the -D that matters is applied further down.
-FS_CHMOD_ANY_OWNER ?= 0
-ifeq ($(FS_CHMOD_ANY_OWNER),1)
-CFLAGS  += -DFS_CHMOD_ANY_OWNER
-ASFLAGS += -DFS_CHMOD_ANY_OWNER
-endif
-FS_CHOWN_ANY_UID ?= 0
-ifeq ($(FS_CHOWN_ANY_UID),1)
-CFLAGS  += -DFS_CHOWN_ANY_UID
-ASFLAGS += -DFS_CHOWN_ANY_UID
+# FS_SET_META_RESTORED=1 puts SYS_FS_SET_META's body and gate back, withdrawn
+# with the uid path in phase 1b step 6 (S77; arm of smoke-captest). KERNEL flag.
+FS_SET_META_RESTORED ?= 0
+ifeq ($(FS_SET_META_RESTORED),1)
+CFLAGS  += -DFS_SET_META_RESTORED
+ASFLAGS += -DFS_SET_META_RESTORED
 endif
 
 # USERLIST_UNGATED=1 removes SYS_USERLIST's CAP_USER test, so any ring-3 task
@@ -943,15 +946,14 @@ CFLAGS  += -DUSERLIST_UNGATED
 ASFLAGS += -DUSERLIST_UNGATED
 endif
 
-# HOME_DIR_ROOT_OWNED=1 has fs_server create /home/<name> and then NOT give it
-# away. The directory exists and the account cannot write in it -- which is the
-# state the tree was in before homes were created at all, reached by a route the
-# account can observe (S78 on the uid path; arm of smoke-fs-perms). Userspace-only; the -D that matters is applied to
-# USERSPACE_CFLAGS at top level.
-HOME_DIR_ROOT_OWNED ?= 0
-ifeq ($(HOME_DIR_ROOT_OWNED),1)
-CFLAGS  += -DHOME_DIR_ROOT_OWNED
-ASFLAGS += -DHOME_DIR_ROOT_OWNED
+# HOME_DIR_UNPROVISIONED=1 has fs_server make no /home/<name>, so an account's
+# @self grant names nothing and its session has no home -- the state the tree was
+# in before homes were created at all (S78; arm of smoke-session). Userspace-only;
+# the -D that matters is applied to USERSPACE_CFLAGS at top level.
+HOME_DIR_UNPROVISIONED ?= 0
+ifeq ($(HOME_DIR_UNPROVISIONED),1)
+CFLAGS  += -DHOME_DIR_UNPROVISIONED
+ASFLAGS += -DHOME_DIR_UNPROVISIONED
 endif
 
 # FS_POLICY_NO_SEED=1 has fs_server write no /etc/fs.policy into a new
@@ -976,7 +978,9 @@ endif
 # puts the shell's keyboard-lending slot back on its session capability's slot,
 # 26, so the first program a login runs destroys the session capability (the
 # defect, an arm). SHELL_STALE_ROOT=1 has the shell mount whatever is in its
-# root slot with no session open and never drop it at logout (the other arm).
+# root slot with no session open and never drop it at logout; since step 6 a
+# login with no session is ended before it mounts anything, so the other arm
+# adds SHELL_NO_SESSION_ALLOWED=1 to take that layer away too.
 # INIT_SESSION_DEAF_AFTER_FIRST=1 is an instrument: init refuses every session
 # request after the first, the state the shell must fail closed in. All three
 # are userspace-only; the -D that matters is applied to USERSPACE_CFLAGS.
@@ -1983,10 +1987,11 @@ endif
 # key. Unlike every other flag in this list it is not a -D: the defect lives in
 # Rust, so it must reach cargo. It IS stamped into DEFECT FLAGS all the same --
 # a transcript that does not name it is a transcript nobody can audit.
-# POSIX_LEGACY_WALK=1 restores posix.c's private path walker, the pre-2026-08-23
-# copy that resolved neither "." nor ".." -- it looked both up as literal
-# directory entries, which fs_server never creates. `make smoke-newlib` must go
-# red under it.
+# POSIX_LEGACY_WALK=1 makes the path walker resolve neither "." nor "..", as
+# posix.c's private copy did until 2026-08-23: hvfs sends both to the server as
+# names, which fs_server refuses (since phase 1b step 6 that walker's inode
+# addressing has nothing to talk to, so the arm lives in hvfs's split).
+# `make smoke-newlib` must go red under it.
 # MEASURED_BOOT_REQUIRED=1 is a POLICY flag, not a defect arm: it makes an
 # unavailable measured boot fatal instead of a log line, and refuses to unlock a
 # persistent volume that was never sealed. Off by default because this kernel is
@@ -5960,19 +5965,15 @@ endif
 ifeq ($(INIT_SHELL_ROOT_READONLY),1)
 USERSPACE_CFLAGS += -DINIT_SHELL_ROOT_READONLY
 endif
-ifeq ($(SHELL_CAP_FALLBACK),1)
-USERSPACE_CFLAGS += -DSHELL_CAP_FALLBACK
+ifeq ($(FS_UID_PATH_RESTORED),1)
+USERSPACE_CFLAGS += -DFS_UID_PATH_RESTORED
+endif
+ifeq ($(SHELL_NO_SESSION_ALLOWED),1)
+USERSPACE_CFLAGS += -DSHELL_NO_SESSION_ALLOWED
 endif
 
-ifeq ($(FS_CHMOD_ANY_OWNER),1)
-USERSPACE_CFLAGS += -DFS_CHMOD_ANY_OWNER
-endif
-ifeq ($(FS_CHOWN_ANY_UID),1)
-USERSPACE_CFLAGS += -DFS_CHOWN_ANY_UID
-endif
-
-ifeq ($(HOME_DIR_ROOT_OWNED),1)
-USERSPACE_CFLAGS += -DHOME_DIR_ROOT_OWNED
+ifeq ($(HOME_DIR_UNPROVISIONED),1)
+USERSPACE_CFLAGS += -DHOME_DIR_UNPROVISIONED
 endif
 
 ifeq ($(FS_POLICY_NO_SEED),1)
@@ -6305,7 +6306,7 @@ userspace/hello_newlib.o: userspace/hello_newlib.c $(NEWLIB_LIB)/libc.a
 userspace/hello_newlib.pie.elf: userspace/hello_newlib.o $(NEWLIB_GLUE_OBJS) \
                                 userspace/malloc.o $(LIBHORUS_LIB) userspace/pie.ld
 	$(LD) -m elf_x86_64 -pie -T userspace/pie.ld -o $@ \
-	    userspace/crt0.o userspace/hello_newlib.o userspace/newlib_glue.o \
+	    userspace/hello_newlib.o userspace/newlib_glue.o \
 	    userspace/newlib_glue64.o userspace/posix.o userspace/malloc.o \
 	    $(LIBHORUS_LIB) -L$(NEWLIB_LIB) -lc
 
@@ -7469,11 +7470,11 @@ smoke-gpt-volume-control:
 		REQUIRE_MARKER='the volume is partition blocks 16640+49152' \
 		tools/smoke_test.sh horus.iso
 
-# Zero-trust ownership & permissions: root builds a scenario, the client then
-# re-authenticates as a non-root user and the fs_server enforces owner/group/other
-# rwx against the caller's kernel-attested uid (denied reads/writes/creates/chmod
-# it isn't entitled to; owner and root allowed). Proves a client cannot access
-# what its real uid disallows.
+# No filesystem request is decided by identity (phase 1b step 6, S14): the
+# client, as uid 0, asks fs_server by inode through the two untokened
+# capabilities any task could ever hold, and every operation is refused with
+# the victims untouched. The same build carries the forged-directory probe
+# (smoke-fs-dir-operand below).
 .PHONY: smoke-fs-perms
 smoke-fs-perms:
 	@$(MAKE) --no-print-directory clean
@@ -7510,37 +7511,18 @@ smoke-fs-dir-operand-control:
 		REQUIRE_MARKER='PERM_SELFTEST: FAIL dir-operand-delete-file' \
 		tools/smoke_test.sh horus.iso
 
-# The uid path's metadata rules (S77) and its home directories (S78), one arm per
-# rule. A login session walks by capability since phase 1b step 3(b), where
-# chmod and chown are refused unless they ask for what is already true (S131),
-# so these rules are the uid path's alone and are witnessed here, by a client
-# that speaks it, until step 6 removes that path. The selftest asks both
-# metadata questions before it reports either, so each S77 arm requires its own
-# refusal gone and the other one standing, on one line. The home arm requires
-# the ownership check, the first thing its defect breaks.
-.PHONY: smoke-fs-perms-chown-control smoke-fs-perms-chmod-control smoke-fs-perms-home-control
-smoke-fs-perms-chown-control:
+# NO FILESYSTEM REQUEST IS DECIDED BY WHO SENT IT (phase 1b step 6, S14). The
+# selftest, as uid 0, asks fs_server by inode through an untokened capability,
+# the shape SYS_CONNECT_FS_SERVER handed every task, and through init's own with
+# MINT, and every request must be refused. FS_UID_PATH_RESTORED=1 serves them
+# again; the arm requires the first operation the selftest asks.
+.PHONY: smoke-fs-perms-uid-control
+smoke-fs-perms-uid-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory PERM_SELFTEST=1 FS_CHOWN_ANY_UID=1
-	@$(MAKE) --no-print-directory PERM_SELFTEST=1 FS_CHOWN_ANY_UID=1 horus.iso
+	@$(MAKE) --no-print-directory PERM_SELFTEST=1 FS_UID_PATH_RESTORED=1
+	@$(MAKE) --no-print-directory PERM_SELFTEST=1 FS_UID_PATH_RESTORED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
-		REQUIRE_MARKER='PERM_SELFTEST: FAIL metadata chmod=refused chown=ALLOWED' \
-		tools/smoke_test.sh horus.iso
-
-smoke-fs-perms-chmod-control:
-	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory PERM_SELFTEST=1 FS_CHMOD_ANY_OWNER=1
-	@$(MAKE) --no-print-directory PERM_SELFTEST=1 FS_CHMOD_ANY_OWNER=1 horus.iso
-	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
-		REQUIRE_MARKER='PERM_SELFTEST: FAIL metadata chmod=ALLOWED chown=refused' \
-		tools/smoke_test.sh horus.iso
-
-smoke-fs-perms-home-control:
-	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory PERM_SELFTEST=1 HOME_DIR_ROOT_OWNED=1
-	@$(MAKE) --no-print-directory PERM_SELFTEST=1 HOME_DIR_ROOT_OWNED=1 horus.iso
-	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
-		REQUIRE_MARKER='PERM_SELFTEST: FAIL home-not-owned' \
+		REQUIRE_MARKER='PERM_SELFTEST: FAIL uid-path-read' \
 		tools/smoke_test.sh horus.iso
 
 # Multi-client concurrency: one fs_server, several clients hammering it at once,
@@ -7734,8 +7716,8 @@ smoke-newlib:
 # witness: they are the paths a libc program passes to open(), and they are what
 # a private walker got wrong.
 #
-# Control arm 1 -- the walker itself. POSIX_LEGACY_WALK=1 restores posix.c's
-# private copy, which resolved neither "." nor "..".
+# Control arm 1 -- the walker itself. POSIX_LEGACY_WALK=1 makes it resolve
+# neither "." nor "..", as posix.c's private copy did.
 .PHONY: smoke-newlib-walk-control
 smoke-newlib-walk-control:
 	@$(MAKE) --no-print-directory clean
@@ -8389,6 +8371,15 @@ smoke-kstack-imp-control:
 		MARKER_CHANNEL=kcon REQUIRE_MARKER='KSTACKIMP_SELFTEST: FAIL an impersonating cpu was accused of sharing a kernel stack' \
 		tools/smoke_test.sh horus.iso
 
+.PHONY: smoke-captest-setmeta-control
+smoke-captest-setmeta-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 FS_SET_META_RESTORED=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 FS_SET_META_RESTORED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CAPTEST: FAIL withdrawn-fs-set-meta-syscall-answered' \
+		tools/smoke_test.sh horus.iso
+
 .PHONY: smoke-captest-userlist-control
 smoke-captest-userlist-control:
 	@$(MAKE) --no-print-directory clean
@@ -8744,14 +8735,17 @@ smoke-syscall-coverage:
 # 2026-10-14, the last three on the `uncovered` list: captest's section 13 (i)
 # and formatprobe enter them, and both compile out under the flag.
 # SYS_SUDO joined it on 2026-10-15 when it was withdrawn: only captest's probe
-# of the NOSYS answer enters it now, as for SYS_ROTATE_KEYS.
+# of the NOSYS answer enters it now, as for SYS_ROTATE_KEYS. SYS_REGISTER_FS_SERVER,
+# SYS_CONNECT_FS_SERVER and SYS_FS_SET_META joined it on 2026-10-16 for the same
+# reason, withdrawn with the uid path (phase 1b step 6).
 SYSCOV_CONTROL_EXPECTED = \
 	SYS_AUDIT_DIGEST SYS_BRK SYS_FRAME_PAGES SYS_IPC_REPLY \
 	SYS_MAP_REGION SYS_READ_AUDIT SYS_REGISTER_STORAGE_BACKEND \
 	SYS_SIGACTION SYS_SIGRETURN SYS_TASK_EXIT_INFO \
 	SYS_UNMAP_FRAME SYS_BLOCK_READ SYS_BLOCK_WRITE SYS_EXEC_IMAGE \
 	SYS_GET_PASS SYS_EXEC_NAMED SYS_ROTATE_KEYS SYS_SUDO \
-	SYS_CONSOLE_RELEASE SYS_STORAGE_DEVICE SYS_STORAGE_FORMAT
+	SYS_CONSOLE_RELEASE SYS_STORAGE_DEVICE SYS_STORAGE_FORMAT \
+	SYS_REGISTER_FS_SERVER SYS_CONNECT_FS_SERVER SYS_FS_SET_META
 
 smoke-syscall-coverage-control:
 	@set -eu; \
@@ -9431,25 +9425,26 @@ smoke-archive-refused-control:
 # shell a read-only root (INIT_SHELL_ROOT_READONLY=1); the session, logged in as
 # root, lists, changes directory, reads man pages and runs /bin/wc (handed the
 # shell's root) through capabilities, and mkdir, touch and rm are refused, which
-# on the uid path root would never be. SHELL_CAP_FALLBACK=1 is the arm: a refused
-# request goes again down the uid path, and mkdir succeeds.
+# the uid path never refused root before phase 1b step 6. FS_CAP_RIGHTS_UNCHECKED=1
+# is the arm: fs_server stops consulting the capability's rights, and mkdir
+# succeeds through the read-only root.
 FSCAPSHELL_FLAGS = COREUTILS_MODULES=1 COREUTILS_MODULE_SET="wc" INIT_SHELL_ROOT_READONLY=1
-.PHONY: smoke-fs-cap-shell smoke-fs-cap-shell-fallback-control
+.PHONY: smoke-fs-cap-shell smoke-fs-cap-shell-rights-control
 smoke-fs-cap-shell:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(FSCAPSHELL_FLAGS) $(FSCAPSHELLARM)
 	@$(MAKE) --no-print-directory $(FSCAPSHELL_FLAGS) $(FSCAPSHELLARM) horus.iso
 	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) tools/fscap_shell_session.py horus.iso
-smoke-fs-cap-shell-fallback-control:
+smoke-fs-cap-shell-rights-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory $(FSCAPSHELL_FLAGS) SHELL_CAP_FALLBACK=1
-	@$(MAKE) --no-print-directory $(FSCAPSHELL_FLAGS) SHELL_CAP_FALLBACK=1 horus.iso
+	@$(MAKE) --no-print-directory $(FSCAPSHELL_FLAGS) FS_CAP_RIGHTS_UNCHECKED=1
+	@$(MAKE) --no-print-directory $(FSCAPSHELL_FLAGS) FS_CAP_RIGHTS_UNCHECKED=1 horus.iso
 	@SESSION_TIMEOUT=$(SMOKE_TIMEOUT) tools/fscap_shell_session.py horus.iso \
 		> fscap-shell-arm.log 2>&1; rc=$$?; cat fscap-shell-arm.log; \
-	 if [ $$rc -eq 0 ]; then echo "ARM FAIL: the session passed with the uid fallback in"; exit 1; fi; \
+	 if [ $$rc -eq 0 ]; then echo "ARM FAIL: the session passed with the rights unchecked"; exit 1; fi; \
 	 grep -q 'FSCAP_SHELL_SESSION: FAIL mkdir-refused' fscap-shell-arm.log || \
 	   { echo "ARM FAIL: the session failed, but not at mkdir-refused"; exit 1; }; \
-	 echo "ARM PASS: the uid fallback let mkdir through and the session caught it"
+	 echo "ARM PASS: the unchecked rights let mkdir through and the session caught it"
 
 smoke-coreutils-shell:
 	@$(MAKE) --no-print-directory clean
@@ -12286,9 +12281,9 @@ smoke-session-fs-err-control:
 # S147, LIMITATIONS 1.38: a login never holds an earlier login's filesystem.
 # On a live boot with /bin/seq: root runs it (the shell lends it the keyboard)
 # and logs out; the standard account must then be refused `mkdir` at /, which
-# only root's capability would allow, and must have its own session. Then the
-# same under INIT_SESSION_DEAF_AFTER_FIRST, where init refuses the second
-# session, so the shell has none and must fail closed. `clean` before each
+# only root's capability would allow, and must have its own session. Then
+# under INIT_SESSION_DEAF_AFTER_FIRST, where init refuses the second session:
+# the shell has none and must fail closed, ending the login (step 6). `clean` before each
 # build: the flags are userspace-only. Every boot's serial is kept in
 # handover-serial.log.
 HANDOVER_BUILD = COREUTILS_MODULES=1 COREUTILS_MODULE_SET=seq
@@ -12306,20 +12301,23 @@ smoke-session-handover:
 	@echo "[handover] PASS - a login after root's holds only its own filesystem, with a session or without"
 
 # The arm for the defect itself: the lend slot back on the session's. The
-# shell's fail-closed half still stands, so what shows is the account left with
-# no session of its own, which the base gate's first half refuses.
+# shell's fail-closed half still stands, so what shows is the account's login
+# ended for want of a session, which the base gate's first half refuses.
 smoke-session-handover-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory $(HANDOVER_BUILD) SH_LEND_SLOT_SESSION=1
 	@$(MAKE) --no-print-directory $(HANDOVER_BUILD) SH_LEND_SLOT_SESSION=1 horus.iso
 	@HANDOVER_EXPECT=lost $(HANDOVER_RUN)
 
-# The arm for the shell's fail-closed half: init refuses the second session and
-# the shell mounts the root it still holds.
+# The arm for the shell's fail-closed half: init refuses the second session,
+# the shell keeps the login (SHELL_NO_SESSION_ALLOWED=1; since step 6 it ends
+# it, so that layer must go too for anything to show) and mounts the root it
+# still holds.
+STALE_ARM = INIT_SESSION_DEAF_AFTER_FIRST=1 SHELL_STALE_ROOT=1 SHELL_NO_SESSION_ALLOWED=1
 smoke-session-handover-stale-control:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory $(HANDOVER_BUILD) INIT_SESSION_DEAF_AFTER_FIRST=1 SHELL_STALE_ROOT=1
-	@$(MAKE) --no-print-directory $(HANDOVER_BUILD) INIT_SESSION_DEAF_AFTER_FIRST=1 SHELL_STALE_ROOT=1 horus.iso
+	@$(MAKE) --no-print-directory $(HANDOVER_BUILD) $(STALE_ARM)
+	@$(MAKE) --no-print-directory $(HANDOVER_BUILD) $(STALE_ARM) horus.iso
 	@HANDOVER_EXPECT=leak $(HANDOVER_RUN)
 
 # S149: administration is lent to an administrator's session only. root's
@@ -12370,6 +12368,23 @@ smoke-session-login-control:
 	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
 	fi; \
 	echo "LOGIN CONTROL: PASS - a login given the administrator's session is caught"
+
+# Control arm for S78's first half: HOME_DIR_UNPROVISIONED=1 has fs_server make
+# no /home/<name>, so the standard user's @self grant names nothing and the
+# session starts at its root. It must fail where the session says it starts in
+# the home, and nowhere earlier.
+.PHONY: smoke-session-home-control
+smoke-session-home-control:
+	@out=$$($(MAKE) --no-print-directory clean >/dev/null; $(MAKE) --no-print-directory HOME_DIR_UNPROVISIONED=1 horus.iso >/dev/null && python3 tools/session_test.py horus.iso 2>&1); rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "HOME CONTROL: FAIL - no home was made and the session passed"; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	if ! echo "$$out" | grep -q "waiting for '/home/user'"; then \
+	    echo "HOME CONTROL: FAIL - it failed, but not where the session starts in its home."; \
+	    echo "$$out" | tail -20 | sed 's/^/  /'; exit 1; \
+	fi; \
+	echo "HOME CONTROL: PASS - an account given no home is caught"
 
 # Control arm for the usage check in the session: the shell built as it was
 # before 2026-09-24, where a bare `touch` falls through to "Unknown command". The
@@ -14121,7 +14136,8 @@ smoke-claim-release-control:
 # capability, other bits bounded by the grants at or above the node its token
 # names; FS_TOKEN_NODE_IGNORED=1 takes the bound at the root instead. A chmod or
 # chown through one succeeds only when it asks for what is true (S131);
-# FS_CAP_CHMOD_UNTRUE=1 lets every one succeed. A link through one names the
+# FS_CAP_CHMOD_UNTRUE=1 lets every one succeed, and the first refusal fscaptest
+# asks for is a chown to the uid of the task sending it. A link through one names the
 # file by a carried capability and gives no more than that capability holds
 # (S132); FS_CAP_LINK_WIDENS=1 skips the comparison.
 .PHONY: smoke-fs-cap smoke-fs-cap-control smoke-fs-cap-xdev-control smoke-fs-cap-walk-control \
@@ -14169,7 +14185,7 @@ smoke-fs-cap-stat-control:
 		FSCAPEXPECT='FSCAPTEST: FAIL session-stat-bin-not-shared'
 smoke-fs-cap-chmod-control:
 	@$(MAKE) --no-print-directory smoke-fs-cap FSCAPARM=FS_CAP_CHMOD_UNTRUE=1 \
-		FSCAPEXPECT='FSCAPTEST: FAIL session-chmod-shared-succeeded'
+		FSCAPEXPECT='FSCAPTEST: FAIL session-chown-to-sender-succeeded'
 smoke-fs-cap-link-control:
 	@$(MAKE) --no-print-directory smoke-fs-cap FSCAPARM=FS_CAP_LINK_WIDENS=1 \
 		FSCAPEXPECT='FSCAPTEST: FAIL session-link-widened'
@@ -16783,6 +16799,20 @@ smoke-installer-policy-noseed-control:
 	@$(INSTALLER_POLICY_RUN) INSTALLER_EXPECT_POLICY=noseed python3 tools/installer_session.py horus.iso
 	@rm -f installer-pol.img
 	@echo "[installer] CONTROL PASS - no policy written, so the everyday account had no session"
+
+# SHELL_NO_SESSION_ALLOWED=1: boot 3's everyday login, which the deleted policy
+# gives nothing, is left at a prompt with no filesystem instead of being ended
+# (phase 1b step 6). The scenario must fail on exactly that.
+smoke-installer-policy-nogrant-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 SHELL_NO_SESSION_ALLOWED=1
+	@$(MAKE) --no-print-directory STORAGE_ATA=1 SHELL_NO_SESSION_ALLOWED=1 COREUTILS_MODULES=1 horus.iso
+	@$(INSTALLER_POLICY_RUN) python3 tools/installer_session.py horus.iso > installer-pol-arm.log 2>&1; \
+	 rc=$$?; rm -f installer-pol.img; tail -30 installer-pol-arm.log; \
+	 if [ $$rc -eq 0 ]; then echo "ARM FAIL: the scenario passed with the login left at a prompt"; exit 1; fi; \
+	 grep -q 'a login the policy gives nothing was left at a prompt' installer-pol-arm.log || \
+	   { echo "ARM FAIL: the scenario failed, but not on the login left at a prompt"; exit 1; }; \
+	 echo "[installer] CONTROL PASS - a login with no grant left at a prompt is caught"
 
 smoke-installer-policy-reseed-control:
 	@$(MAKE) --no-print-directory clean
